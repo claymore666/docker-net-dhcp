@@ -843,6 +843,19 @@ jobs:
       - name: Lane hygiene
         run: bash scripts/check-lane-hygiene.sh
 
+      # A `branches:` filter that admits no existing branch produces no
+      # check runs, and an absent check is not a red one. At the 2.x
+      # branch renames three such mutants survived the whole local lane
+      # (#907), and `.github/dependabot.yml`'s `target-branch` is worse
+      # than silent — GitHub falls back to the default branch, so the
+      # weekly dependency PRs open somewhere nobody chose (#912).
+      #
+      # It asks the REMOTE, never this checkout's branch list: a clone
+      # carries whatever it happened to fetch, so a local answer would
+      # differ on every machine. An unreachable remote REFUSES.
+      - name: Branch names under .github/ resolve
+        run: bash scripts/check-branch-refs.sh
+
       # Two allowlists accept the same advisories under two naming
       # schemes, and both headers state they stay in sync. They did not:
       # two GHSAs stayed accepted by dependency-review — which runs at

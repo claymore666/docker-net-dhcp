@@ -139,6 +139,14 @@ KEEP_BRANCH_COMMITS="${KEEP_BRANCH_COMMITS:-1}"
 # deleting the evidence a scheduled gate then demands is not.
 if [ "$KEEP_BRANCH_COMMITS" != "0" ]; then
     SCOPE_FILE="${GATE_SCOPE_FILE:-$(dirname "$0")/../.github/gate-branch-scope.env}"
+    # A WORD IN THAT FILE MAY BE A PATTERN (#907/#912), matched the way the
+    # workflow branch filters match. The matcher is a file rather than a
+    # `case` here and a second `case` in check-missing-runs.sh, for the same
+    # reason the scope itself is a file: what this purge SPARES and what
+    # that gate DEMANDS have to be one population, and a rule written twice
+    # is a rule that will be corrected once.
+    # shellcheck source=scripts/branch-glob.sh
+    . "$(dirname "$0")/branch-glob.sh"
     if [ ! -f "$SCOPE_FILE" ] || [ ! -r "$SCOPE_FILE" ]; then
         # `-f` as well as `-r`, because a DIRECTORY is readable. Without it a
         # scope path that names a directory sails past this test, fails to
@@ -179,7 +187,7 @@ if [ "$KEEP_BRANCH_COMMITS" != "0" ]; then
     # then demands, which is why those live in one file rather than two.
     scope_foreign=$(grep -nE '[^[:space:]]' "$SCOPE_FILE" \
         | grep -vE '^[0-9]+:[[:space:]]*#' \
-        | grep -vE '^[0-9]+:[[:space:]]*GATE_SCOPE_(BRANCHES|COMMITS)=("[A-Za-z0-9_./ -]*"|[A-Za-z0-9_./-]+)[[:space:]]*$')
+        | grep -vE '^[0-9]+:[[:space:]]*GATE_SCOPE_(BRANCHES|COMMITS)=("[A-Za-z0-9_./ *?-]*"|[A-Za-z0-9_./*?-]+)[[:space:]]*$')
     if [ -n "$scope_foreign" ]; then
         echo "::error title=Branch scope has foreign content::${SCOPE_FILE} contains a line that is" \
              "neither a comment nor a plain GATE_SCOPE_BRANCHES/GATE_SCOPE_COMMITS assignment. The" \
@@ -233,13 +241,15 @@ if [ "$KEEP_BRANCH_COMMITS" != "0" ]; then
     # Emptiness stays legal through the GATE_BRANCHES environment seam, which
     # is where the self-tests need it. It is never legal in the file.
     # shellcheck disable=SC2086
-    # WHAT THIS COUNT DEPENDS ON, because it depends on a neighbour: `set --`
-    # performs pathname expansion, and so does the `for br in $BRANCHES` that
-    # consumes the list further down. Neither can glob only because the
-    # foreign-content class above admits no `*` or `?`. If that class is ever
-    # widened, BOTH sites need `set -f` -- hardening one of the two would look
-    # like the problem was handled.
-    if [ "$(set -- $GATE_SCOPE_BRANCHES; echo $#)" -eq 0 ]; then
+    # THAT CLASS HAS NOW BEEN WIDENED to admit `*` and `?` (#907/#912),
+    # so this is no longer a note about a neighbour -- it is
+    # load-bearing. `set --` performs pathname expansion, and so does
+    # the `for br in $BRANCHES` that consumes the list further down.
+    # Unprotected, this count would expand `2.*` against the CURRENT
+    # DIRECTORY and protect however many files happened to match. BOTH
+    # sites carry `set -f` now, which is what the earlier version of
+    # this comment required of anyone widening the class.
+    if [ "$(set -f; set -- $GATE_SCOPE_BRANCHES; echo $#)" -eq 0 ]; then
         echo "::error title=Branch scope names no branch::${SCOPE_FILE} sets GATE_SCOPE_BRANCHES to a" \
              "value with no words in it, which disarms keep rule 5 while it reports a count of zero as" \
              "success. Refusing rather than deleting the run records check-missing-runs.sh reads (#874)." >&2
@@ -276,25 +286,16 @@ if [ "$KEEP_BRANCH_COMMITS" != "0" ]; then
     # to take that SAME path rather than a second, quieter one -- it is not
     # a refusal here, because the seam's contract is "the caller decides".
     # shellcheck disable=SC2086
-    # Same neighbour dependency as the file-side count above: `set --` globs.
-    # Unlike the file value, a seam value passes through no character class,
-    # so a caller CAN put a `*` here. WHAT ACTUALLY HAPPENS, measured rather
-    # than assumed 2026-08-28: the glob is expanded by the shell against the
-    # CURRENT DIRECTORY before any query is made, so `GATE_BRANCHES='*'` in
-    # the repository root queried a branch named 'bin' and this script exited
-    # 2 on it. Fail-closed, but not for the reason "a glob is not a branch" --
-    # for the reason that the expansion's first element was not a branch.
-    #
-    # THE ESCAPE, named rather than claimed away: an expansion that IS a real
-    # branch name resolves, and the branch phase then runs on a population
-    # nobody wrote down. Worse for a reader, the summary line below prints
-    # ${BRANCHES} -- the UNEXPANDED value -- so it would report "protected
-    # across [*]" while having walked 'dev'. Nothing here prevents that; the
-    # seam is trusted for CONTENT and only the empty/blank case is
-    # normalised. Closing it would mean `set -f` at BOTH globbing sites,
-    # which is the judgement recorded at the file-side count -- do not
-    # harden one of the two. The self-test pins all three shapes.
-    if [ "$(set -- $BRANCHES; echo $#)" -eq 0 ]; then
+    # THE ESCAPE THIS COMMENT USED TO NAME IS CLOSED. It said a `*` here
+    # was expanded against the CURRENT DIRECTORY before any query was
+    # made -- `GATE_BRANCHES='*'` in the repository root queried a branch
+    # named 'bin' and this script exited 2 on it (MEASURED 2026-08-28) --
+    # and that closing it would mean `set -f` at BOTH globbing sites.
+    # Both sites have it. A `*` in the value, from the file or from the
+    # seam, now reaches the expansion in keep rule 5 as a BRANCH PATTERN,
+    # and the summary there prints what it RESOLVED TO rather than the
+    # word, which is the other half of what this comment complained of.
+    if [ "$(set -f; set -- $BRANCHES; echo $#)" -eq 0 ]; then
         BRANCHES=""
     fi
     # And the depth, for the same reason. The file-side message above used to
@@ -439,6 +440,41 @@ fi
 if [ "$KEEP_BRANCH_COMMITS" != "0" ] && [ -n "${BRANCHES:-}" ]; then
     BRRAW=$(mktemp) || exit 2
     trap 'rm -f "$RUNS" "$PROV" "$OPENPR" "$BRSHA" "${PRRAW:-}" "$BRRAW"' EXIT
+    # --- patterns become branch names ---------------------------------
+    #
+    # A word carrying `*` or `?` is a pattern over the branches that EXIST.
+    # A pattern matching NOTHING refuses rather than protecting an empty
+    # set: the whole reason this rule exists is that a population smaller
+    # than check-missing-runs.sh's gets its evidence deleted and the
+    # detector then goes red naming a cause that never happened.
+    #
+    # The listing is fetched only when there IS a pattern, so a
+    # literal-only scope makes no extra call and behaves exactly as before.
+    if branch_glob_list_has_pattern "$BRANCHES"; then
+        if ! br_heads=$(api "repos/$REPO/branches?per_page=100" --jq '.[].name' 2>/dev/null); then
+            echo "::error title=Cannot list branches::the branch listing for $REPO failed, so the" \
+                 "patterns in the branch scope cannot be expanded. Refusing rather than deleting the" \
+                 "run records check-missing-runs.sh reads (#874)." >&2
+            exit 2
+        fi
+        if [ -z "$(printf '%s' "$br_heads" | tr -d '[:space:]')" ]; then
+            echo "::error title=Branch listing is empty::$REPO answered with no branches at all, so" \
+                 "every pattern in the branch scope would match nothing and keep rule 5 would spare" \
+                 "an empty population. Refusing (#874)." >&2
+            exit 2
+        fi
+        if ! br_expanded=$(branch_glob_expand_list "$BRANCHES" "$br_heads" 2>&1); then
+            echo "::error title=Branch scope unresolvable::[$BRANCHES] could not be resolved against" \
+                 "the branches of $REPO. Refusing (#874). $br_expanded" >&2
+            exit 2
+        fi
+        echo "Gate branches: scope [$BRANCHES] resolves to [$br_expanded]"
+        BRANCHES="$br_expanded"
+    fi
+
+    # `set -f`: every word in $BRANCHES is a branch NAME now, and pathname
+    # expansion here would protect whatever the working directory holds.
+    set -f
     for br in $BRANCHES; do
         # `select`, not a bare `.sha`: on an object without the field jq
         # emits the literal string "null", which is non-empty and would
@@ -460,6 +496,7 @@ if [ "$KEEP_BRANCH_COMMITS" != "0" ] && [ -n "${BRANCHES:-}" ]; then
         fi
         cat "$BRRAW" >> "$BRSHA"
     done
+    set +f
     sort -u -o "$BRSHA" "$BRSHA"
     echo "Gate branches: $(grep -c . "$BRSHA") commit(s) protected across [${BRANCHES}] (last ${BRANCH_COMMITS} each)"
 else

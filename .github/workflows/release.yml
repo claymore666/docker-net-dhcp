@@ -1424,16 +1424,23 @@ jobs:
 
           EOF
 
-          # 2. Per-version section from RELEASE_NOTES.md (the extraction the
-          #    runbook documents). Exact-match the header so version dots
-          #    aren't treated as regex. Empty for rc/suffixed tags that have
-          #    no notes section — fall back to a short body so the dry-run
-          #    still produces a release.
-          awk -v hdr="## ${TAG}" '$0==hdr{flag=1; next} /^## v/{flag=0} flag' \
-            RELEASE_NOTES.md > section.md || true
-          if [ ! -s section.md ]; then
-            echo "Pre-release / dry-run build for \`${TAG}\`." > section.md
-          fi
+          # 2. Per-version section from RELEASE_NOTES.md. THE EXTRACTION IS
+          #    NOT HERE. It used to be an exact `$0 == "## ${TAG}"` awk with
+          #    `|| true` and a one-line placeholder fallback, which meant a
+          #    heading the tag did not match — `## v2.0.0 (unreleased)` is
+          #    the shape this repository actually carries — published the
+          #    placeholder and exited 0, on the release page, silently.
+          #
+          #    scripts/release-body.sh refuses instead, and it is a script
+          #    rather than a longer block here so that the lane can drive
+          #    it: a copy of the awk in this YAML would be the thing that
+          #    ships and the script would be the thing that is tested.
+          #    Its refusal fails this step under `set -e`, which is the
+          #    intent — no body is better than a wrong one — and the
+          #    runbook's step 4 runs the same command before the tag so the
+          #    refusal is met on a workstation and not after the images are
+          #    pushed.
+          bash scripts/release-body.sh "${TAG}" RELEASE_NOTES.md > section.md
           # The rest of the body is written in one group: the notes
           # section, then (3) the artifact names — GitHub lazy-loads the
           # assets list, so the filenames appear nowhere in the fetched
