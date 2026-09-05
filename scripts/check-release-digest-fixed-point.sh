@@ -92,6 +92,12 @@
 #   - E can only match manifest entries the workflow names LITERALLY. An
 #     operand that is a shell variable (the tarball is, `"$ART"`) is
 #     counted but its name is not checked against the document.
+#   - E3's precondition is keyed on the entries INSIDE the tarball, not on
+#     every entry beyond it. On any tree that reaches a verdict the two
+#     populations are the same set, because claim C refuses a manifest
+#     that covers no binary at an extracted path -- so this operand
+#     cannot change an exit code today. It is the one the sentence beside
+#     it means, and it becomes load-bearing the day C is relaxed.
 #   - It says nothing about whether a recorded digest is CORRECT. Under
 #     A that question has no answer to give; without A it is a different
 #     check.
@@ -321,7 +327,7 @@ manifest_entries() {
 }
 
 # --- C. the signed manifest covers the binary, at its extracted path ----
-declare -A ENTRY_COUNT=() MISSING_NAMES=()
+declare -A ENTRY_COUNT=() MISSING_NAMES=() INSIDE_TARBALL=()
 for m in "${MANIFESTS[@]}"; do
     mapfile -t ENTRIES < <(manifest_entries "$m")
     if [ "${#ENTRIES[@]}" -eq 0 ]; then
@@ -331,6 +337,7 @@ for m in "${MANIFESTS[@]}"; do
     ENTRY_COUNT["$m"]="${#ENTRIES[@]}"
     covered=no
     missing=""
+    inside=""
     for e in "${ENTRIES[@]}"; do
         cwd="${e%%$'\t'*}"; op="${e#*$'\t'}"
         is_tarball=no
@@ -338,6 +345,13 @@ for m in "${MANIFESTS[@]}"; do
             [ "$op" = "$t" ] && is_tarball=yes
         done
         [ "$is_tarball" = no ] && case "$op" in *'$'*) : ;; *) missing="${missing}${op} " ;; esac
+
+        # Two different populations, deliberately not one variable. MISSING
+        # is what a reader who fetched only the tarball cannot read, which is
+        # every entry but the tarball; INSIDE is the entries that exist only
+        # after unpacking. They coincide on this tree and E3 needs the second.
+        full_any="$op"; [ -n "$cwd" ] && full_any="$cwd/$op"
+        case "${full_any#./}" in "$TAR_ROOT"/*) inside="${inside}${op} " ;; esac
 
         base="${op##*/}"
         is_bin=no
@@ -369,6 +383,7 @@ for m in "${MANIFESTS[@]}"; do
         esac
     done
     MISSING_NAMES["$m"]="$missing"
+    INSIDE_TARBALL["$m"]="$inside"
     if [ "$covered" = no ]; then
         note "$m covers no binary: nothing feeding it names $(printf '%s ' "${BINARIES[@]}")under a path."
         {
@@ -437,15 +452,23 @@ block=""
 check_blocks=0
 example_blocks=0
 flush_block() {
-    local body="$1" m mre tarline shaline n_stated n_failed missing ok_m
+    local body="$1" m mre tarline shaline n_stated n_failed missing ok_m name
     [ -n "$body" ] || return 0
 
     for m in "${MANIFESTS[@]}"; do
         mre="$(printf '%s' "$m" | sed 's/[.[\*^$]/\\&/g')"
         printf '%s\n' "$body" | grep -E "sha256sum[^|]* -c +\"?${mre}\"?" >/dev/null || continue
-        # Only for a manifest with an entry that exists solely after extraction.
-        [ -n "${MISSING_NAMES[$m]:-}" ] || continue
+        # Counted here, BEFORE the precondition applies: this is "the
+        # document checks a manifest at all", which is what the refusal at
+        # the end asks about. Counting it inside the precondition's own
+        # domain would make the refusal fire on a document that checks a
+        # manifest with nothing inside the tarball -- a correct document.
         check_blocks=$((check_blocks + 1))
+        # The precondition itself is only for a manifest that records
+        # something INSIDE the tarball. An SBOM sitting beside it needs no
+        # unpacking, and demanding one would be this gate inventing a
+        # precondition the manifest does not have.
+        [ -n "${INSIDE_TARBALL[$m]:-}" ] || continue
         shaline="$(printf '%s\n' "$body" | grep -nE "sha256sum[^|]* -c +\"?${mre}\"?" | head -1 | cut -d: -f1)"
         tarline="$(printf '%s\n' "$body" | grep -nE '(^|[^a-z])tar +-[a-zA-Z]*x' | head -1 | cut -d: -f1)"
         if [ -z "$tarline" ] || [ "$tarline" -ge "$shaline" ]; then
