@@ -696,16 +696,16 @@ DOC_FAMILY_BELOW=toy_counter \
 out=$(bash "$CHECK" "$DIR/4c-family-below.md" "$DIR/4c-family-below.go" "$M4" "$F4" 2>&1); rc=$?
 [ $rc -eq 1 ] && ok "a comma-separated family row after the counters fails" \
                || no "a family stray row returned $rc (: $out)"
-case "$out" in *"toy_counter_x"*) ok "the family failure names the row it cannot judge" ;;
-  *) no "the family failure does not name the row: $out" ;; esac
+case "$out" in *"\`toy_counter_x\`, \`toy_counter_y\`"*) ok "the family failure names the row it cannot judge" ;;
+  *) no "the family failure names less than the whole row: $out" ;; esac
 
 DOC_FAMILY_MID=toy_counter DOC_FAMILY_TEXT="worth investigating whenever it moves." \
     mkdoc "$DIR/4c-family-bare.md" Four "$FOUR" "$FOUR" "$FOUR"; mkgo "$DIR/4c-family-bare.go" 4
 out=$(bash "$CHECK" "$DIR/4c-family-bare.md" "$DIR/4c-family-bare.go" "$M4" "$F4" 2>&1); rc=$?
 [ $rc -eq 1 ] && ok "a family row inside the domain is JUDGED, not dropped" \
                || no "a family near-miss row returned $rc (: $out)"
-case "$out" in *"toy_counter_x"*) ok "the family near-miss names the whole cell" ;;
-  *) no "the family near-miss does not name the cell: $out" ;; esac
+case "$out" in *"\`toy_counter_x\`, \`toy_counter_y\`"*) ok "the family near-miss names the whole cell" ;;
+  *) no "the family near-miss names less than the whole cell: $out" ;; esac
 
 DOC_FAMILY_MID=toy_counter \
     mkdoc "$DIR/4c-family-ok.md" Four "$FOUR" "$FOUR" "$FOUR"; mkgo "$DIR/4c-family-ok.go" 4
