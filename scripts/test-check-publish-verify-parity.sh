@@ -26,12 +26,54 @@ pass=0; fail=0
 
 [ -f "$SRC" ] || { echo "FAIL: no release.yml at $SRC"; exit 1; }
 
-# run NAME WANT_RC MUTATOR [NEEDLE]
+# cmds is the workflow with its comments removed. Every claim below is
+# about what the release lane RUNS; a sentence in a comment that happens
+# to spell `crane tag` or `docker plugin install` is prose, and a
+# mutator or an assertion that counted it would be measuring the
+# documentation.
+cmds() { grep -v '^[[:space:]]*#' "$1"; }
+
+# run NAME WANT_RC MUTATOR [NEEDLE [POSTCONDITION]]
+#
+# THE MUTATION IS CHECKED, NOT ASSUMED. Four mutators here are `sed`
+# expressions anchored on text from release.yml. An edit to that text --
+# a flag added to an install, a variable renamed, a line rewrapped --
+# leaves the sed matching nothing, and a case whose mutant is the
+# unmutated file asserts only what the control already asserts: it goes
+# quiet instead of red, which is the failure mode this whole script
+# exists to prevent in the gate.
+#
+# So: any mutator that leaves the file byte-identical fails the case,
+# loudly, by name. That covers every present mutator and every future
+# one without anyone remembering to add a check -- the repair `sed` and
+# `python3` mutators need equally, applied once at the call site rather
+# than four times inside the mutators.
+#
+# It is not sufficient on its own. A mutator can change SOMETHING and
+# still miss the site the case is about (three install verifiers
+# rewritten and a fourth left alone, and the gate still refuses -- for
+# the three). POSTCONDITION, where given, is a function handed the
+# mutated file that says what the mutation was supposed to achieve.
 run() {
-    local name="$1" want="$2" mut="$3" needle="${4:-}" f out got
+    local name="$1" want="$2" mut="$3" needle="${4:-}" post="${5:-}" f out got
     f="$TMP/wf.yml"
     cp "$SRC" "$f"
     [ "$mut" = "none" ] || "$mut" "$f"
+    if [ "$mut" != "none" ] && cmp -s "$SRC" "$f"; then
+        echo "FAIL: $name — the mutator \`$mut\` left release.yml byte-identical"
+        echo "      Its anchor no longer matches the workflow, so this case has been"
+        echo "      running the gate over an UNMUTATED file and reporting the control's"
+        echo "      verdict. Re-anchor it on the property, not on the line."
+        fail=$((fail + 1))
+        return
+    fi
+    if [ -n "$post" ] && ! "$post" "$f"; then
+        echo "FAIL: $name — \`$mut\` changed the file, but \`$post\` says it did not"
+        echo "      reach what this case is about. The mutation is partial: some sites"
+        echo "      moved and at least one did not."
+        fail=$((fail + 1))
+        return
+    fi
     out=$(bash "$GATE" "$f" 2>&1); got=$?
     if [ "$got" -ne "$want" ]; then
         echo "FAIL: $name — want exit $want, got $got"
@@ -46,6 +88,75 @@ run() {
         pass=$((pass + 1))
     fi
 }
+
+# --- what each mutation has to have achieved ---------------------------
+# Each is a property of the MUTATED file, derived from it rather than
+# transcribed as a count: "no real install command survives", not "four
+# lines changed". A count would go red the day the release lane grows a
+# fifth cell, which is a true change and not a defect; these go red only
+# when a site the mutator was supposed to reach is still standing.
+
+# Every `docker plugin install` left in the file is inside an echo. If
+# one real invocation survives, the gate can still see a verified cell
+# and the case's refusal is about the others.
+installs_all_echoed() {
+    [ "$(cmds "$1" | grep -c 'docker plugin install' || true)" -gt 0 ] &&
+        [ "$(cmds "$1" | grep 'docker plugin install' | grep -vc 'echo' || true)" -eq 0 ]
+}
+
+# ... and for the two echoed-with-the-flag cases, the flag has to still
+# be there as text. Without this they decay into the case above, whose
+# refusal #858 showed is produced by the missing flag and not by the
+# echo.
+echoed_flag_survives() {
+    installs_all_echoed "$1" &&
+        cmds "$1" | grep -F -- '--grant-all-permissions' >/dev/null
+}
+
+# The Hub retags are gone and the GHCR retags are NOT: this case is
+# about one cell losing its promotion, so a mutation that removed every
+# retag would be proving `break_promote`'s claim instead.
+hub_retag_only_dropped() {
+    ! cmds "$1" | grep -F 'crane tag "${HUB_NAME}' >/dev/null &&
+        cmds "$1" | grep -F 'crane tag "${GHCR_NAME}' >/dev/null
+}
+
+no_crane_tag() { ! cmds "$1" | grep -E 'crane tag ' >/dev/null; }
+
+# No publish invocation is still recognisable, and the `make ... push`
+# lines are all still there: the domain was emptied by renaming the
+# variable, not by deleting the jobs.
+no_publish_name() {
+    ! cmds "$1" | grep -F 'PLUGIN_NAME=' >/dev/null &&
+        [ "$(cmds "$1" | grep -Ec 'make .*push' || true)" -eq "$(cmds "$SRC" | grep -Ec 'make .*push' || true)" ]
+}
+
+# --- the anchors cover the whole population ----------------------------
+# The mutators above are spellings. These three assertions say the
+# spellings are the WHOLE of what they claim to mutate, so a new cell
+# written a new way is reported here rather than silently escaping every
+# mutation. This is the census the `cmp` check cannot do: it sees that a
+# mutator changed something, not that it changed everything it should.
+census() {
+    local name="$1" got="$2" want="$3"
+    if [ "$got" -eq "$want" ]; then
+        echo "ok: $name"; pass=$((pass + 1))
+    else
+        echo "FAIL: $name — $got, want $want"; fail=$((fail + 1))
+    fi
+}
+
+census "every real plugin install carries the flag the mutators anchor on" \
+    "$(cmds "$SRC" | grep 'docker plugin install' | grep -vc 'echo' || true)" \
+    "$(cmds "$SRC" | grep -Fc 'docker plugin install --grant-all-permissions "$REF"' || true)"
+
+census "every make push invocation carries PLUGIN_NAME=" \
+    "$(cmds "$SRC" | grep -Ec 'make .*push' || true)" \
+    "$(cmds "$SRC" | grep -E 'make .*push' | grep -Fc 'PLUGIN_NAME=' || true)"
+
+census "every crane retag names HUB_NAME or GHCR_NAME" \
+    "$(cmds "$SRC" | grep -Ec 'crane tag ' || true)" \
+    "$(cmds "$SRC" | grep -E 'crane tag ' | grep -Ec 'crane tag "\$\{(HUB|GHCR)_NAME\}' || true)"
 
 # --- the control -------------------------------------------------------
 # If this fails every mutant below is noise: a gate that refuses the real
@@ -68,7 +179,7 @@ run "a published cell with no install verifier fails" 1 drop_hub_arm_verify "arm
 drop_hub_promote() {
     sed -i '/crane tag "${HUB_NAME}/d' "$1"
 }
-run "a published cell that never reaches :latest fails" 1 drop_hub_promote "HUB_NAME"
+run "a published cell that never reaches :latest fails" 1 drop_hub_promote "HUB_NAME" hub_retag_only_dropped
 
 # --- a NEW registry, which is the thing this gate is for ---------------
 # The whole point is that adding a registry cannot ship unverified. A
@@ -112,7 +223,7 @@ run "a newly published registry with no verifier fails" 1 add_third_registry "QU
 echo_only_verify() {
     sed -i 's|docker plugin install --grant-all-permissions "$REF"|echo "docker plugin install $REF"|g' "$1"
 }
-run "an install stripped of --grant-all-permissions is a refusal" 2 echo_only_verify "no longer matches"
+run "an install stripped of --grant-all-permissions is a refusal" 2 echo_only_verify "no longer matches" installs_all_echoed
 
 # The mutation the case above described but never ran: the command is
 # echoed with the flag INTACT. Before #858 this returned rc=0 and the
@@ -125,7 +236,7 @@ run "an install stripped of --grant-all-permissions is a refusal" 2 echo_only_ve
 echoed_with_flag() {
     sed -i 's|docker plugin install --grant-all-permissions "$REF"|echo "docker plugin install --grant-all-permissions $REF"|g' "$1"
 }
-run "an echoed install carrying the flag is not verification" 2 echoed_with_flag "no longer matches"
+run "an echoed install carrying the flag is not verification" 2 echoed_with_flag "no longer matches" echoed_flag_survives
 
 # The other quoting form, because the position test is the whole fix and
 # a single-quote-only or double-quote-only implementation would pass the
@@ -133,7 +244,7 @@ run "an echoed install carrying the flag is not verification" 2 echoed_with_flag
 echoed_single_quoted() {
     sed -i "s|docker plugin install --grant-all-permissions \"\$REF\"|echo 'docker plugin install --grant-all-permissions ref'|g" "$1"
 }
-run "a single-quoted echoed install is not verification" 2 echoed_single_quoted "no longer matches"
+run "a single-quoted echoed install is not verification" 2 echoed_single_quoted "no longer matches" echoed_flag_survives
 
 # --- the instrument's own failure mode (regression control) ------------
 # `promote-latest` retags BOTH architectures from ONE amd64 runner. A
@@ -171,10 +282,10 @@ fi
 # Each of these breaks one detector. The gate must refuse, not report
 # the strongest possible pass.
 break_publish() { sed -i 's/PLUGIN_NAME=/PLUGIN_NOM=/g' "$1"; }
-run "zero derived publish cells is a refusal" 2 break_publish "ZERO published cells"
+run "zero derived publish cells is a refusal" 2 break_publish "ZERO published cells" no_publish_name
 
 break_promote() { sed -i 's/crane tag/crane retag/g' "$1"; }
-run "zero derived promote cells is a refusal" 2 break_promote "ZERO promoted cells"
+run "zero derived promote cells is a refusal" 2 break_promote "ZERO promoted cells" no_crane_tag
 
 # --- an unresolvable tag is a refusal, not a guess ---------------------
 # Treating an unbound name as amd64 would merge an arm64 cell into its

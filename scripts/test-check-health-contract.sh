@@ -56,9 +56,9 @@ mkdoc() {
         for n in $row; do printf ' `%s`,' "$n"; done
         printf ' is non-zero. Those %s, and only those, are the ones marked **yes** in the healthy-affecting column. |\n' "$(printf '%s' "$rword" | tr '[:upper:]' '[:lower:]')"
         for n in $yes; do printf '| `%s` | yes | %s | a fault. |\n' "$n" "${DOC_YES_CLASS:-fail}"; done
-        for n in ${DOC_WARN_LIST-lease_changed}; do printf '| `%s` | no | warn | watch it. |\n' "$n"; done
+        for n in ${DOC_WARN_LIST-lease_changed}; do printf '| `%s` | no | warn | %s |\n' "$n" "${DOC_WARN_TEXT:-watch it.}"; done
         for n in ${DOC_FAIL_EXTRA-}; do printf '| `%s` | no | fail | a fault. |\n' "$n"; done
-        printf '| `leases_renewed` | no | — | not a fault. |\n'
+        printf '| `leases_renewed` | no | — | %s |\n' "${DOC_DASH_TEXT:-not a fault.}"
         printf '| `pending_hints` | no | — | not a fault. |\n'
         printf '\n## Troubleshooting\n\n| symptom | likely cause | fix |\n| --- | --- | --- |\n'
         printf '| `healthy: false` on `/Plugin.Health` | Exactly %s counters flip it:' "$(printf '%s' "$tword" | tr '[:upper:]' '[:lower:]')"
@@ -576,6 +576,51 @@ out=$(bash "$CHECK" "$HERE/../docs/reference.md" "$HERE/../pkg/plugin/endpoints.
     "$HERE/../pkg/plugin/metrics.go" "$HERE/../test/integration/harness/healthfloor.go" 2>&1); rc=$?
 [ $rc -eq 0 ] && ok "the repository's own healthy contract agrees" \
                || no "the repo's healthy contract disagrees (rc=$rc: $out)"
+
+# --- 4c: the column must be derivable from the rows --------------------
+# The reviewer's finding: the shipped rule does not reproduce the shipped
+# table. `acd_probes_sent` and `sandbox_netns_visible` carried the
+# imperative the rule's warn clause names and were classified `-`, with
+# the clause that actually excluded them living in a handover.
+#
+# All four cells are driven: warn with and without an imperative, and a
+# `-` row carrying an imperative with and without the near-miss sentence.
+
+# (a) a warn row that tells the operator nothing about its own value.
+DOC_WARN_TEXT="a renewal returned a different address." \
+    mkdoc "$DIR/4c-warn-silent.md" Four "$FOUR" "$FOUR" "$FOUR"; mkgo "$DIR/4c-warn-silent.go" 4
+out=$(bash "$CHECK" "$DIR/4c-warn-silent.md" "$DIR/4c-warn-silent.go" "$M4" "$F4" 2>&1); rc=$?
+[ $rc -eq 1 ] && ok "a warn row with no imperative about its own value fails" \
+               || no "a warn row with no imperative returned $rc (: $out)"
+case "$out" in *"tells the operator nothing to do"*) ok "the warn-half failure says what is missing" ;;
+  *) no "the warn-half failure does not name the missing imperative: $out" ;; esac
+
+# (b) a `-` row carrying an imperative and no near-miss sentence. This
+# is exactly the shape the two rows shipped in.
+DOC_DASH_TEXT="worth investigating whenever it moves." \
+    mkdoc "$DIR/4c-dash-bare.md" Four "$FOUR" "$FOUR" "$FOUR"; mkgo "$DIR/4c-dash-bare.go" 4
+out=$(bash "$CHECK" "$DIR/4c-dash-bare.md" "$DIR/4c-dash-bare.go" "$M4" "$F4" 2>&1); rc=$?
+[ $rc -eq 1 ] && ok "an unclassified row carrying an imperative and no reason fails" \
+               || no "a bare near-miss row returned $rc (: $out)"
+case "$out" in *"clause excluded it"*) ok "the near-miss failure names the two clauses" ;;
+  *) no "the near-miss failure does not name the clauses: $out" ;; esac
+
+# (b), the other direction. The SAME imperative with the sentence added
+# passes -- without this, the case above is satisfied by a gate that
+# refuses every `-` row, and the reference could not carry a near miss
+# at all.
+DOC_DASH_TEXT="worth investigating whenever it moves. Not a check: its normal reading is non-zero." \
+    mkdoc "$DIR/4c-dash-said.md" Four "$FOUR" "$FOUR" "$FOUR"; mkgo "$DIR/4c-dash-said.go" 4
+out=$(bash "$CHECK" "$DIR/4c-dash-said.md" "$DIR/4c-dash-said.go" "$M4" "$F4" 2>&1); rc=$?
+[ $rc -eq 0 ] && ok "the same row with its near-miss reason passes" \
+               || no "a near-miss row with its reason returned $rc (: $out)"
+
+# (a), the other direction, and the vocabulary's own positive control: a
+# `-` row with NO imperative needs no sentence. A gate demanding one
+# from every unclassified row would flag most of the table.
+out=$(bash "$CHECK" "$DIR/cls-ok.md" "$DIR/cls-ok.go" "$M4B" "$F4" 2>&1); rc=$?
+[ $rc -eq 0 ] && ok "an unclassified row with no imperative needs no reason" \
+               || no "a plain informational row returned $rc (: $out)"
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

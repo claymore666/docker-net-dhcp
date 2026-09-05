@@ -363,6 +363,93 @@ if [ -n "$both" ]; then
     note "classified both fail and warn in $DOC: $(printf '%s' "$both" | tr '\n' ' ')"
 fi
 
+# --- 4c. the column must be DERIVABLE from the rows ---------------------
+# The check column is stated in docs/reference.md as a rule an operator
+# can apply to any row. Section 4b reconciles the column against the
+# code; it never asks whether the column reproduces the RULE, so the
+# next counter's classification is a judgement nothing reads. This is
+# the smallest thing that can be asked mechanically about that rule:
+#
+#   (a) every `warn` row carries an imperative about its own counter.
+#       A row classified warn with nothing in it telling the operator to
+#       act cannot be derived from the reference by a reader, which is
+#       the property the rule paragraph promises.
+#   (b) every `-` row that DOES carry such an imperative says why it is
+#       not a check, in the row, with the marker below. Those are the
+#       near misses -- the rule's second clause -- and they shipped
+#       classified `-` with the reasoning living only in a handover.
+#
+# (a) IS THE POSITIVE CONTROL FOR (b). The vocabulary is a fixed list of
+# phrasings, so a rewrite of the reference that stopped matching it
+# would silently empty (b)'s domain -- a universal satisfied by having
+# nothing to check. It cannot empty (a)'s: section 4b refuses when the
+# warn set is empty, so there is always a non-empty population that must
+# match, and a vocabulary that has gone stale fails there first.
+#
+# WHAT IT CANNOT SEE, and it is the same bound in both directions: the
+# vocabulary is ENUMERATED. A row that tells the operator to act in a
+# phrasing not on this list is invisible to (b) -- it will be neither
+# required to carry the marker nor reported. Two spellings enumerated
+# means a third exists; this list is the whole claim.
+#
+# Only COUNTER rows are judged. The document's non-counter fields
+# (`status`, `checks`, `endpoints`, `healthy`, `version`, ...) carry `-`
+# in the healthy-affecting column and describe structures rather than
+# values, and `endpoints`'s own "read the phase against the mode and
+# never alone" is an instruction about two fields of one entry, not
+# about a counter that could be a check.
+CHECK_IMPERATIVES='alert on|watch it|watch for|worth investigating|worth attention|actionable|read this \*\*before\*\*|never alone'
+CHECK_NEARMISS='Not a check:'
+
+n_warn_rows=0
+n_nearmiss=0
+while IFS= read -r row; do
+    [ -n "$row" ] || continue
+    name=$(printf '%s' "$row" | sed -E 's/^\| `([a-z0-9_]+)`.*/\1/')
+    col=$(printf '%s' "$row" | awk -F'|' '{gsub(/[* ]/,"",$4); print $4}')
+    low=$(printf '%s' "$row" | tr '[:upper:]' '[:lower:]')
+    imperative=no
+    printf '%s' "$low" | grep -E "$(printf '%s' "$CHECK_IMPERATIVES" | tr '[:upper:]' '[:lower:]')" >/dev/null && imperative=yes
+
+    case "$col" in
+        warn)
+            n_warn_rows=$((n_warn_rows + 1))
+            if [ "$imperative" = no ]; then
+                note "\`$name\` is classified warn and its row tells the operator nothing to do about its own value."
+                echo "  The check column is documented as derivable from the rows: a warn row" >&2
+                echo "  states the imperative that puts it there. Add it, or reclassify the row." >&2
+            fi
+            ;;
+        fail) ;;
+        *)
+            if [ "$imperative" = yes ]; then
+                if printf '%s' "$row" | grep -F -- "$CHECK_NEARMISS" >/dev/null; then
+                    n_nearmiss=$((n_nearmiss + 1))
+                else
+                    note "\`$name\` is classified '$col' and its row carries an imperative about the counter."
+                    echo "  Under the stated rule that reads as a warn check, so the row has to say which" >&2
+                    echo "  clause excluded it -- its own value carrying no verdict, or a normal reading" >&2
+                    echo "  that is already non-zero. Write that in the row, starting '$CHECK_NEARMISS'." >&2
+                fi
+            fi
+            ;;
+    esac
+done <<EOF
+$(awk -F'|' '
+    NF >= 6 && $2 ~ /^ `[a-z0-9_]+` $/ {
+        ha = $3; gsub(/[*[:space:]]/, "", ha)
+        if (ha == "yes" || ha == "no") print
+    }' "$DOC")
+EOF
+
+if [ "$n_warn_rows" -eq 0 ]; then
+    echo "check-health-contract: section 4c read no warn-classified counter rows in $DOC." >&2
+    echo "  Section 4b has already refused an empty warn set, so reaching here means this" >&2
+    echo "  section's row parser no longer matches the table -- it would report clean over" >&2
+    echo "  a document it cannot read." >&2
+    exit 2
+fi
+
 # --- 5. the /metrics help strings --------------------------------------
 # Operator-facing text, served on the wire. Name and help sit on one
 # line in metricDefs, so this reads that line. If the shape ever
