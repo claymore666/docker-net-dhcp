@@ -58,6 +58,7 @@ case "$path" in
     */actions/workflows/*/runs) src="$FIXDIR/wfruns.json" ;;
     */actions/runs)             src="$FIXDIR/runs.json" ;;
     */pulls*)                   src="$FIXDIR/pulls.json" ;;
+    */branches*)                src="$FIXDIR/branches.json" ;;
     */commits*)                 src="$FIXDIR/commits.json" ;;
     *)                          echo "stub: unexpected path $path" >&2; exit 1 ;;
 esac
@@ -101,6 +102,12 @@ GATE_SCOPE_COMMITS=15
 SCOPE
     cat > "$d/commits.json" <<JSON
 [{"sha":"$(printf '1%.0s' $(seq 40))"},{"sha":"$(printf '2%.0s' $(seq 40))"}]
+JSON
+    # The branches that EXIST, for the pattern expansion. Only fetched when
+    # the scope carries a pattern, so most cases never read this -- and the
+    # ones that do must not be able to reach the real repository.
+    cat > "$d/branches.json" <<'JSON'
+[{"name":"dev"},{"name":"main"},{"name":"2.0.0"},{"name":"1.9.x"}]
 JSON
 }
 
@@ -1037,12 +1044,19 @@ drive "$D" env GATE_SCOPE_COMMITS=15 RETENTION_DAYS=0 KEEP_GROUPS=1 DRY_RUN=0
 # did not. So drive the REAL artifact through the REAL script, and let any
 # degenerate shipped value (blank list, duplicate key, CRLF, bad depth)
 # turn this suite red on its own.
+#
+# The expectation is WRITTEN OUT, not computed by the matcher under test:
+# resolving the shipped words here with branch_glob_expand_list would make
+# this case agree with itself whatever the matcher does. The fixture branch
+# list is fixed (dev, main, 2.0.0, 1.9.x), so the shipped scope's reach is
+# a statement, and dropping 2.x coverage from the shipped file turns this
+# red rather than quietly narrowing the population.
 D="$TMP/shippedscope"; mkfix "$D"; runs_json "$NOW" 20 30 > "$D/runs.json"
 drive "$D" env GATE_SCOPE_FILE="$SHIPPED" RETENTION_DAYS=0 KEEP_GROUPS=1
-# shellcheck disable=SC1090
-shipped_brs=$( . "$SHIPPED"; echo "${GATE_SCOPE_BRANCHES:-}" )
-[ "$RC" != 2 ] && grep -qF "protected across [${shipped_brs}]" <<<"$OUT" \
-  && ok "the purge runs against the SHIPPED scope file and arms keep rule 5 on its branches" \
+[ "$RC" != 2 ] \
+  && grep -qF "protected across [dev main 2.0.0]" <<<"$OUT" \
+  && ! grep -qF "1.9.x" <<<"$OUT" \
+  && ok "the purge runs against the SHIPPED scope file and arms keep rule 5 on dev, main and the 2.x branch" \
   || no "the shipped scope file is not usable by this script: rc=$RC: $OUT"
 
 # --- 19b. the degenerate scope values, each driven ALONE (#874) ---------
@@ -1136,62 +1150,97 @@ drive "$D" env RETENTION_DAYS=0 KEEP_GROUPS=1 DRY_RUN=1 GATE_BRANCHES="dev"
   && ok "a real branch list through the GATE_BRANCHES seam still ARMS keep rule 5" \
   || no "the seam normalisation disarmed a legitimate override: rc=$RC: $OUT"
 
-# --- 19bc. THE SEAM GLOBS, and the direction is MEASURED, not assumed ---
-# The seam value passes through no character class, so `*` reaches
-# `for br in $BRANCHES`. The first version of this comment said that fails
-# closed "because the commit query for a glob-named branch errors". That is
-# not what happens: the shell expands the glob against the CURRENT DIRECTORY
-# first, and what gets queried is whatever the expansion produced. The
-# outcome is the same and the REASON is not, which is the difference between
-# a measurement and a story.
+# --- 19bc. A GLOB IS A BRANCH PATTERN NOW ------------------------------
+# The seam value passes through no character class, and until 2026-09-05
+# the shell expanded a `*` here against the CURRENT DIRECTORY before any
+# query was made. Three cases at this spot pinned that behaviour, one of
+# them marked KNOWN TRADE: `GATE_BRANCHES='*'` in a directory containing a
+# file called `dev` walked `dev`, exited 0, and printed "protected across
+# [*]". They were pins on a defect, not a contract, and they said so.
 #
-# Driven from a controlled CWD, because the expansion depends on it.
-glob_seam() {   # glob_seam <label> <cwd-setup-cmd> <expected-rc> <expected-grep>
-    local d="$TMP/glob$$_$RANDOM"; mkfix "$d"; runs_json "$NOW" 20 30 > "$d/runs.json"
-    # No commits fixture: the stub then FAILS the commits query, which is what
-    # the real API does for a name that is not a branch. Without this the stub
-    # answers for every name and the case measures the stub, not the script.
-    rm -f "$d/commits.json"
-    local w="$d/cwd"; mkdir -p "$w"; ( cd "$w" && eval "$2" )
-    : > "$d/calls.log"; : > "$d/deleted.log"
-    local out rc
-    out=$( cd "$w" && FIXDIR="$d" PATH="$TMP/bin:$PATH" REPO=fixture/repo NOW_EPOCH="$NOW" \
-           GATE_SCOPE_FILE="$d/scope.env" env RETENTION_DAYS=0 KEEP_GROUPS=1 DRY_RUN=0 \
-           GATE_BRANCHES='*' bash "$GATE" 2>&1 ); rc=$?
-    local dels; dels=$(wc -l < "$d/deleted.log")
-    [ "$rc" = "$3" ] && grep -qF "$4" <<<"$out" \
-      && ok "GATE_BRANCHES='*' $1" \
-      || no "GATE_BRANCHES='*' $1: rc=$rc (wanted $3) deleted=$dels, wanted \"$4\": $out"
-}
-# Nothing to expand against: bash leaves the `*` literal and the query for a
-# branch named `*` fails.
-glob_seam "in an empty directory queries a branch named '*' and refuses" \
-          "true" 2 "the commit query for '*' failed"
-# Something to expand against, and it is not a branch: the expansion is
-# queried instead, and that fails too.
-glob_seam "expands against the working directory and refuses on the result" \
-          "touch zzz-definitely-not-a-branch" 2 "the commit query for 'zzz-definitely-not-a-branch' failed"
-# THE ESCAPE, PINNED AS A CASE rather than described. If the expansion
-# happens to name a REAL branch, the query succeeds and keep rule 5 arms on
-# a population nobody wrote down -- silently, exit 0. This asserts today's
-# behaviour, which is NOT the desired behaviour; it is here so the trade is
-# visible and cannot change unnoticed. Closing it needs `set -f` at BOTH
-# globbing sites, which is a judgement recorded in the script, not a defect
-# discovered here.
-D="$TMP/globescape"; mkfix "$D"; runs_json "$NOW" 20 30 > "$D/runs.json"
-mkdir -p "$D/cwd"; ( cd "$D/cwd" && touch dev )
+# The scope file now carries `2.*` -- the 2.x branch is renamed once per
+# milestone -- so both globbing sites carry `set -f` and a pattern is
+# resolved against the BRANCHES THAT EXIST, by the matcher
+# check-missing-runs.sh uses for the same words.
+#
+# THIS FIRST CASE IS THE CONTROL that the working directory is no longer
+# consulted: it plants a file named after a real branch and one named after
+# nothing, and asserts which names reached the wire.
+D="$TMP/globexpand"; mkfix "$D"; runs_json "$NOW" 20 30 > "$D/runs.json"
+mkdir -p "$D/cwd"; ( cd "$D/cwd" && touch dev zzz-definitely-not-a-branch )
 : > "$D/calls.log"; : > "$D/deleted.log"
 OUT=$( cd "$D/cwd" && FIXDIR="$D" PATH="$TMP/bin:$PATH" REPO=fixture/repo NOW_EPOCH="$NOW" \
        GATE_SCOPE_FILE="$D/scope.env" env RETENTION_DAYS=0 KEEP_GROUPS=1 DRY_RUN=1 \
        GATE_BRANCHES='*' bash "$GATE" 2>&1 ); RC=$?
-# Note WHICH list the summary prints: `${BRANCHES}` is the UNEXPANDED value,
-# so the operator is told "protected across [*]" while the rule actually
-# walked whatever the expansion produced. Asserted, so the discrepancy is on
-# the record rather than in a reader's head.
-[ "$RC" = 0 ] && grep -qF "protected across [*]" <<<"$OUT" \
+[ "$RC" = 0 ] \
   && grep -qF "commits?sha=dev" "$D/calls.log" \
-  && ok "KNOWN TRADE: a glob through the seam expands against the CWD and is ACCEPTED (exit 0), and the summary prints the unexpanded [*] while 'dev' is what was queried -- the seam is trusted for content; see the note at the word count" \
-  || no "the glob-expansion trade changed without this case being updated: rc=$RC: $OUT :: $(cat "$D/calls.log")"
+  && grep -qF "commits?sha=2.0.0" "$D/calls.log" \
+  && ! grep -qF "zzz-definitely-not-a-branch" "$D/calls.log" \
+  && ok "a glob resolves against the branches that EXIST, and the working directory is not consulted" \
+  || no "the glob did not resolve against the branch list: rc=$RC: $OUT :: $(cat "$D/calls.log")"
+# And the summary names what it RESOLVED TO. The old comment recorded, as a
+# defect, that it printed the unexpanded word while walking something else.
+grep -qF "resolves to [dev main 2.0.0 1.9.x]" <<<"$OUT" \
+  && grep -qF "protected across [dev main 2.0.0 1.9.x]" <<<"$OUT" \
+  && ok "the summary prints the branches the pattern resolved to, not the pattern" \
+  || no "the summary still hides the expansion: $OUT"
+
+# A PATTERN THAT MATCHES NOTHING REFUSES. It is the empty word list one
+# door along: the population silently becomes smaller than the one
+# check-missing-runs.sh reconciles, in the direction that deletes evidence.
+D="$TMP/globnone"; mkfix "$D"; runs_json "$NOW" 20 30 > "$D/runs.json"
+drive "$D" env RETENTION_DAYS=0 KEEP_GROUPS=1 DRY_RUN=0 GATE_BRANCHES='9.*'
+[ "$RC" = 2 ] && [ "$DELS" = 0 ] && grep -q "Branch scope unresolvable" <<<"$OUT" \
+  && ok "a pattern matching no branch refuses and deletes nothing" \
+  || no "a pattern matching nothing did not refuse: rc=$RC, deleted=$DELS: $OUT"
+
+# The listing itself is a measurement, and an unmeasurable one must not
+# read as an empty set of patterns.
+D="$TMP/globlistfail"; mkfix "$D"; runs_json "$NOW" 20 30 > "$D/runs.json"
+rm -f "$D/branches.json"
+drive "$D" env RETENTION_DAYS=0 KEEP_GROUPS=1 DRY_RUN=0 GATE_BRANCHES='2.*'
+[ "$RC" = 2 ] && [ "$DELS" = 0 ] && grep -q "Cannot list branches" <<<"$OUT" \
+  && ok "a failed branch listing refuses and deletes nothing" \
+  || no "a failed branch listing did not refuse: rc=$RC, deleted=$DELS: $OUT"
+
+D="$TMP/globlistempty"; mkfix "$D"; runs_json "$NOW" 20 30 > "$D/runs.json"
+echo '[]' > "$D/branches.json"
+drive "$D" env RETENTION_DAYS=0 KEEP_GROUPS=1 DRY_RUN=0 GATE_BRANCHES='2.*'
+[ "$RC" = 2 ] && [ "$DELS" = 0 ] && grep -q "Branch listing is empty" <<<"$OUT" \
+  && ok "an empty branch listing refuses and deletes nothing" \
+  || no "an empty branch listing did not refuse: rc=$RC, deleted=$DELS: $OUT"
+
+# Filter syntax the matcher does not implement REFUSES rather than being
+# taken for a literal branch name. `2.0.0+` carries neither `*` nor `?`, so
+# the first version of this trigger called it a literal and spared a branch
+# by that name -- which is nothing, silently.
+D="$TMP/globunimpl"; mkfix "$D"; runs_json "$NOW" 20 30 > "$D/runs.json"
+drive "$D" env RETENTION_DAYS=0 KEEP_GROUPS=1 DRY_RUN=0 GATE_BRANCHES='2.0.0+'
+[ "$RC" = 2 ] && [ "$DELS" = 0 ] && grep -q "does not implement" <<<"$OUT" \
+  && ok "a pattern using unimplemented filter syntax refuses and deletes nothing" \
+  || no "unimplemented filter syntax was accepted: rc=$RC, deleted=$DELS: $OUT"
+
+# THE PRESERVATION CONTROL. A scope of literal names must behave exactly as
+# it did before this change -- no branch listing on the wire at all.
+D="$TMP/globnone2"; mkfix "$D"; runs_json "$NOW" 20 30 > "$D/runs.json"
+drive "$D" env RETENTION_DAYS=0 KEEP_GROUPS=1 DRY_RUN=1
+[ "$RC" = 0 ] && ! grep -qF "/branches" "$D/calls.log" \
+  && ok "a literal-only scope makes no branch-listing call (the pre-existing path is unchanged)" \
+  || no "a literal-only scope now fetches the branch list: rc=$RC: $(cat "$D/calls.log")"
+
+# --- 19bd. THE ROW THIS SCOPE CHANGE WAS MADE FOR ----------------------
+# `2.*` must reach the 2.x branch and spare its commits, and must not reach
+# a 1.x maintenance branch. Both halves, because a pattern that matched
+# everything would satisfy the first one alone.
+D="$TMP/twoxspare"; mkfix "$D"; runs_json "$NOW" 20 30 > "$D/runs.json"
+printf 'GATE_SCOPE_BRANCHES="dev main 2.*"\nGATE_SCOPE_COMMITS=15\n' > "$D/scope.env"
+echo "[{\"sha\":\"$BRSHA\"}]" > "$D/commits.json"
+drive "$D" env RETENTION_DAYS=0 KEEP_GROUPS=1 DRY_RUN=0
+[ "$DELS" = 54 ] \
+  && grep -qF "commits?sha=2.0.0" "$D/calls.log" \
+  && ! grep -qF "commits?sha=1.9.x" "$D/calls.log" \
+  && ok "the shipped-shape scope spares the 2.x branch's commits and leaves 1.9.x alone" \
+  || no "'2.*' did not spare the 2.x branch: deleted=$DELS: $(cat "$D/calls.log")"
 
 # --- 19bd. the DEPTH seam, the same defect on the other half of the scope
 # The file-side depth check said a bad depth "would protect nothing".

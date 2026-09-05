@@ -128,6 +128,18 @@ LANE=(
   "action pins|-|bash scripts/check-action-pins.sh"
   "concurrency parity|-|bash scripts/check-concurrency-parity.sh"
   "lane hygiene|-|bash scripts/check-lane-hygiene.sh"
+  # `git`, not `-`: it asks the REMOTE which branches exist. That is the
+  # one thing this gate cannot do locally from the tree, and the answer
+  # from a clone's own branch list would differ on every machine.
+  "branch refs resolve|git|bash scripts/check-branch-refs.sh"
+  # A documented command that cannot run, and a documented check whose
+  # refusal does not stop the block under it. Reads the git INDEX, so it
+  # needs no network and sees the mode that ships rather than this
+  # checkout's.
+  "direct invocations run|-|bash scripts/check-direct-invocations.sh"
+  # The release run must judge the notes before it publishes: `needs:`
+  # ordering in release.yml, which no pull request can execute.
+  "release refusal order|-|bash scripts/check-release-refusal-order.sh"
   "allowlist parity|-|bash scripts/check-allowlist-parity.sh"
   "shard-balance table|-|bash scripts/check-durations-table.sh"
   "golden fixture keying|go|bash scripts/check-golden-fixture-name-keyed.sh"

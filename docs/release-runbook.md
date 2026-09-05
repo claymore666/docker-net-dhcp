@@ -549,6 +549,33 @@ the `vX.Y.Z` milestone (the workflow leans on this for the
    - Prefer a named list over a count: "six (#720, #721, ...)" rather
      than "six of the ten", so a wrong number is visible.
 
+   **The heading is exactly `## vX.Y.Z`, with nothing after it, and this
+   is checkable.** The release workflow extracts the section by an exact
+   heading match, so a heading carrying a marker — `## v2.0.0
+   (unreleased)` is the shape this file has carried between releases —
+   matches no tag at all. Until #912 that published a generated one-line
+   placeholder in place of the notes and exited 0. It now refuses, so
+   remove whatever follows the version and confirm before tagging:
+
+   ```sh
+   # THE STATUS IS THE VERDICT. Piped straight into `head`, this block
+   # exited 0 whether the notes assembled or the extractor refused —
+   # `head` reports for the pipeline — so the two outcomes the paragraph
+   # below promises were indistinguishable to anything but a reader's
+   # eye. Assemble to a file first, and `&&` the preview onto it.
+   section=$(mktemp) &&
+   scripts/release-body.sh vX.Y.Z RELEASE_NOTES.md > "$section" &&
+   head -20 "$section"
+   ```
+
+   It prints the first 20 lines of the section the release page would
+   carry and exits 0, or refuses naming what is wrong (decorated
+   heading, no section, empty section, two sections for one version) and
+   exits non-zero with nothing previewed. Run it for the rc tag too
+   (`scripts/release-body.sh vX.Y.Z-rc1 …`): an rc has no section of its
+   own and publishes this same one, so an rc dry-run whose notes are not
+   ready refuses at the release page rather than shipping a placeholder.
+
    **The maintainer signs off on the release notes before the tag.**
    Not optional and not implied by approving the release PR: show the
    rendered `## vX.Y.Z` section and wait for an explicit go. The rc
@@ -707,8 +734,17 @@ the `vX.Y.Z` milestone (the workflow leans on this for the
    confirm the workflow run is green end-to-end (pre-release mode,
    `:latest` untouched — see "Pre-release dry-run" above). Then:
    ```sh
-   git checkout main && git pull --ff-only
-   git tag -s vX.Y.Z -m "vX.Y.Z — <one-liner>"   # signed (#175)
+   git checkout main && git pull --ff-only &&
+   # Step 4's check, on the tree that is about to be tagged. The release
+   # page's body comes from here, and its refusal would otherwise arrive
+   # after the images are pushed.
+   #
+   # THE `&&` IS THE POINT. Newline-separated, a refusal here printed its
+   # error and the next line pushed the tag anyway, which is the failure
+   # this check exists to prevent. Chained, the block stops at the first
+   # non-zero and nothing below it runs.
+   scripts/release-body.sh vX.Y.Z RELEASE_NOTES.md >/dev/null &&
+   git tag -s vX.Y.Z -m "vX.Y.Z — <one-liner>" &&   # signed (#175)
    git push origin vX.Y.Z
    ```
    Use `-s` (signed) so the release tag shows **Verified** on GitHub —
