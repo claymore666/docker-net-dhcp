@@ -30,7 +30,8 @@ is signed but not provenance-attested, and the two registries carry
 different digests. Verify provenance against the `ghcr.io` reference.
 The arm64 image is the same at `:vX.Y.Z-arm64`; every
 verification step below applies to it with the `-arm64` tag and the
-`-arm64` artifact names substituted.
+`-arm64` artifact names substituted, in a directory of its own — see
+[One architecture per directory](#one-architecture-per-directory).
 
 One signature covers every attached file: `checksums.txt` is signed, and
 the checksums inside it cover the artifacts — and the plugin binary
@@ -60,6 +61,8 @@ provenance step, the [GitHub CLI](https://cli.github.com/).
 > it, upgrade cosign and run the command again.
 
 ```sh
+# In a directory holding ONE architecture's assets: the tarballs both
+# unpack a binary to the same path. See "One architecture per directory".
 cosign verify-blob \
   --bundle checksums.txt.sigstore.json \
   --certificate-identity-regexp '^https://github.com/claymore666/docker-net-dhcp/.github/workflows/release.yml@' \
@@ -106,15 +109,37 @@ signed statement about the binary you are going to run. For an
 exhaustive check, download the tarball and both SBOMs, unpack the
 tarball, and drop the flag.
 
-The arm64 release ships its own `checksums-arm64.txt` and bundle.
-`checksums-arm64.txt` covers **four** files in the same shape: the
-arm64 tarball, its two SBOMs, and `rootfs/usr/sbin/net-dhcp` from
-inside that tarball. Verify it the same way, unpacking included; the
-two manifests do not cover each other's files.
-
 The identity regexp is the point of the exercise: it pins the signature
 to this repository's `release.yml`, so a valid Sigstore signature made by
 anything else fails.
+
+### One architecture per directory
+
+The arm64 release ships its own `checksums-arm64.txt` and bundle.
+`checksums-arm64.txt` covers **four** files in the same shape: the
+arm64 tarball, its two SBOMs, and `rootfs/usr/sbin/net-dhcp` from
+inside that tarball. Verify it exactly the same way, unpacking
+included — **in a directory that holds the arm64 assets and nothing
+else.**
+
+The attached files are named apart; the packed binary is not. A plugin
+tarball has the same layout whichever architecture it was built for, so
+`checksums.txt` and `checksums-arm64.txt` both record `rootfs/usr/sbin/net-dhcp` — the same name, for two different files.
+Unpack both tarballs in one directory and the second extraction
+overwrites the first architecture's binary. Checking the first manifest
+there then prints
+
+```
+rootfs/usr/sbin/net-dhcp: FAILED
+sha256sum: WARNING: 1 computed checksum did NOT match
+```
+
+on a release that is perfectly good, and `--ignore-missing` does not
+soften that one: the file is present, it is simply the other
+architecture's. `FAILED` is the line the worked example above tells you
+to read as tampering, so this is worth avoiding rather than explaining
+away. Two directories, one architecture each, and both manifests verify
+four files.
 
 ## Verifying the image
 
@@ -240,7 +265,9 @@ Since v1.7.0 each release also ships arm64 binaries under the `-arm64`
 tags; rebuild them the same way on an arm64 host (the build follows the
 host architecture), unpack `net-dhcp-plugin-VERSION-linux-arm64.tar.gz`
 in step 4, and check against `checksums-arm64.txt`, whose fourth entry
-is the arm64 binary at the same path.
+is the arm64 binary at the same path — which is why that unpacking, and
+this whole block, belong in a directory holding only the arm64 assets.
+See [One architecture per directory](#one-architecture-per-directory).
 
 ### What the determinism rests on
 

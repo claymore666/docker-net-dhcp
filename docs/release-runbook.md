@@ -834,7 +834,10 @@ the `vX.Y.Z` milestone (the workflow leans on this for the
    binary inside the tarball, recorded as `rootfs/usr/sbin/net-dhcp`, so
    an operator who extracts the tarball beside the manifest can run
    `sha256sum --ignore-missing -c checksums.txt` and check the binary
-   against a cosign-signed reference. Nothing here is a release step:
+   against a cosign-signed reference. That path is the same in both
+   manifests, because a plugin tarball has one layout — so each
+   architecture is verified in its own directory, which is what
+   `docs/verifying-releases.md` tells the reader. Nothing here is a release step:
    the release job does it, on every tag and every rc, with no paste and
    no re-run.
 

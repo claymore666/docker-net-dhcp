@@ -52,8 +52,18 @@ command -v go >/dev/null 2>&1 || { echo "go is not on PATH; this self-test build
 # exactly one thing:
 #   WF_BINLINE   the manifest line that records the binary
 #   WF_TAR       the packaging line
+#   WF_MEMBERS   the files the packaging line puts INTO the tarball
+#   WF_ARM       yes -> a second manifest, checksums-arm64.txt, in the
+#                same shape as the first
+#   WF_ARM_BIN   the path that second manifest records (the same one by
+#                default, which is the two-architecture collision)
 #   DF_XFLAGS    the Dockerfile's -ldflags contents
 #   DOC_COUNT    the entry count the doc states (a word; "" omits it)
+#   DOC_ARM_COUNT  the same for checksums-arm64.txt
+#   DOC_SHARE    the doc's shared-entry sentence ("" omits it)
+#   DOC_ORDINAL  an ordinal the doc uses for the manifest's last entry
+#   DOC_WRAP     yes -> that ordinal is split across a newline
+#   DOC_TWOTAR   yes -> the check block unpacks a second tarball
 #   DOC_TAR      yes -> the doc's check block unpacks the tarball first
 #   DOC_WARN_N   the number in the worked example's WARNING line
 #   DOC_MISSING  the names the worked example shows as unreadable
@@ -101,8 +111,25 @@ EOF
             echo "\`checksums.txt\` covers **${DOC_COUNT-three}** files."
             echo
         fi
+        if [ "${WF_ARM:-no}" = yes ] && [ -n "${DOC_ARM_COUNT-three}" ]; then
+            echo "\`checksums-arm64.txt\` covers **${DOC_ARM_COUNT-three}** files."
+            echo
+        fi
+        if [ -n "${DOC_SHARE-}" ]; then
+            echo "$DOC_SHARE"
+            echo
+        fi
+        if [ -n "${DOC_ORDINAL-}" ]; then
+            if [ "${DOC_WRAP:-no}" = yes ]; then
+                printf 'The binary is the %s\nentry described above.\n\n' "$DOC_ORDINAL"
+            else
+                echo "The binary is the $DOC_ORDINAL entry described above."
+                echo
+            fi
+        fi
         echo '```sh'
         [ "${DOC_TAR:-yes}" = yes ] && echo "tar -xzf art.tar.gz"
+        [ "${DOC_TWOTAR:-no}" = yes ] && echo "tar -xzf art-arm64.tar.gz"
         echo "sha256sum --ignore-missing -c checksums.txt"
         echo '```'
         echo
@@ -130,10 +157,15 @@ EOF
         echo "  release:"
         echo "    steps:"
         echo "      - run: |"
-        echo "          ${WF_TAR:-tar -czf \"\$ART\" -C plugin .}"
+        echo "          ${WF_TAR:-tar -czf \"\$ART\" -C plugin ${WF_MEMBERS:-.}}"
         echo '          sha256sum "$ART" sbom.json > checksums.txt'
         if [ "$covers" = yes ]; then
             echo "          ${WF_BINLINE:-( cd plugin && sha256sum rootfs/usr/sbin/toy ) >> checksums.txt}"
+        fi
+        if [ "${WF_ARM:-no}" = yes ]; then
+            echo "          tar -czf \"\$ART2\" -C plugin ${WF_MEMBERS:-.}"
+            echo '          sha256sum "$ART2" sbom-arm64.json > checksums-arm64.txt'
+            echo "          ( cd plugin && sha256sum ${WF_ARM_BIN:-rootfs/usr/sbin/toy} ) >> checksums-arm64.txt"
         fi
     } > "$d/.github/workflows/release.yml"
 }
@@ -317,6 +349,94 @@ mktree "$TMP/af" yes no yes
 rm "$TMP/af/docs/verifying-releases.md"
 case_ "a tree with no verification document is a refusal" "$TMP/af" 2 \
     "claim E has lost its subject"
+
+# --- what the tarball PACKS (review r3, finding 3) ----------------------
+# THE REVIEWER'S EDIT. `TAR_ROOT` was derived from -C alone, so a
+# packaging line that puts one file in the artifact and no binary left
+# claim C green: the digest is right and no operator can ever read the
+# file it is about.
+WF_MEMBERS='config.json' mktree "$TMP/ag" yes no yes
+case_ "a manifest entry the tarball does not pack is refused" "$TMP/ag" 1 \
+    "does not pack"
+
+# Two preservation controls, because `.` alone would be a spelling: an
+# explicit directory that CONTAINS the entry passes too.
+WF_MEMBERS='rootfs' mktree "$TMP/ah" yes no yes
+case_ "an entry under an explicitly packed directory passes" "$TMP/ah" 0 "signed manifest(s)"
+WF_MEMBERS='config.json rootfs' mktree "$TMP/ai" yes no yes
+case_ "an entry under one of several packed operands passes" "$TMP/ai" 0 "signed manifest(s)"
+
+# The member list is derived, so a packaging line that names nothing, or
+# two that disagree, is a refusal rather than a guess -- the same rule
+# the -C directory already follows.
+WF_TAR='tar -czf "$ART" -C plugin' mktree "$TMP/aj" yes no yes
+case_ "a packaging line naming no files to pack is a refusal" "$TMP/aj" 2 \
+    "names no files to put in it"
+WF_TAR='tar -czf "$ART" -C plugin . && tar -czf "$ART2" -C plugin config.json' \
+    mktree "$TMP/ak" yes no yes
+case_ "two packaging lines packing different files is a refusal" "$TMP/ak" 2 \
+    "different operand sets"
+
+# --- two architectures, one path (review r3, finding 1) -----------------
+# THE BLOCKING FINDING. Both manifests record the binary under the path
+# their own tarball extracts to, and that path does not depend on the
+# architecture, so they record ONE NAME for two different files. The
+# page told the reader to unpack both in one directory; MEASURED on
+# manifests built as the workflow builds them, the first manifest then
+# reports FAILED on a good release. Nothing compared the two manifests'
+# entry names.
+SHARE='`checksums.txt` and `checksums-arm64.txt` both record `rootfs/usr/sbin/toy`'
+
+WF_ARM=yes DOC_SHARE="$SHARE" mktree "$TMP/al" yes no yes
+case_ "two manifests sharing an entry, with the page saying so, passes" "$TMP/al" 0 \
+    "entry name(s) recorded by more than one manifest"
+
+WF_ARM=yes mktree "$TMP/am" yes no yes
+case_ "two manifests sharing an entry the page never mentions is refused" "$TMP/am" 1 \
+    "never says that 2 manifests record"
+
+# The other direction, and it is the one that goes stale: the page keeps
+# a warning the workflow no longer earns. Without this cell the arm above
+# is satisfied by a gate that demands the sentence unconditionally.
+WF_ARM=yes WF_ARM_BIN='rootfs/usr/sbin/arm64/toy' DOC_SHARE="$SHARE" \
+    mktree "$TMP/an" yes no yes
+case_ "a shared-entry statement the workflow does not earn is refused" "$TMP/an" 1 \
+    "and release.yml writes no such entry into it"
+
+WF_ARM=yes WF_ARM_BIN='rootfs/usr/sbin/arm64/toy' mktree "$TMP/ao" yes no yes
+case_ "two manifests that share no entry need no statement" "$TMP/ao" 0 \
+    "0 entry name(s) recorded by more than one manifest"
+
+# E6, the structural half. A block that unpacks both archives IS the
+# trap, whatever the prose beside it says.
+WF_ARM=yes DOC_SHARE="$SHARE" DOC_TWOTAR=yes mktree "$TMP/ap" yes no yes
+case_ "one block unpacking two tarballs is refused while a name is shared" "$TMP/ap" 1 \
+    "unpacks 2 tarballs"
+
+# ... and only while a name is shared. Two archives that share nothing
+# may be unpacked side by side, so this is not a rule about tar.
+WF_ARM=yes WF_ARM_BIN='rootfs/usr/sbin/arm64/toy' DOC_TWOTAR=yes \
+    mktree "$TMP/aq" yes no yes
+case_ "two tarballs in one block are fine when the manifests share nothing" "$TMP/aq" 0 \
+    "0 entry name(s) recorded by more than one manifest"
+
+# --- the count restated as an ordinal (review r3, carried unverified) ---
+# E1 read one sentence shape. The page also points at the binary as
+# "that fourth entry", three times, and a fifth entry left all three
+# stale with the gate green.
+DOC_ORDINAL=fourth mktree "$TMP/ar" yes no yes
+case_ "an ordinal that does not match the manifest's entry count is refused" "$TMP/ar" 1 \
+    "calls something the 'fourth entry'"
+
+DOC_ORDINAL=third mktree "$TMP/as" yes no yes
+case_ "the same sentence with the right ordinal passes" "$TMP/as" 0 "in step with"
+
+# The same ordinal WRAPPED across a newline. A line-keyed grep judged
+# only the sentences that happened to fit on one line -- MEASURED on the
+# real page, where one of the three was invisible for that reason alone.
+DOC_ORDINAL=fourth DOC_WRAP=yes mktree "$TMP/at" yes no yes
+case_ "an ordinal wrapped across a newline is still read" "$TMP/at" 1 \
+    "calls something the 'fourth entry'"
 
 # --- the record's shape ------------------------------------------------
 # A digest of something this tree does NOT build is not a self-

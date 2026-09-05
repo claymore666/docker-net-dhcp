@@ -35,11 +35,15 @@
 #     is what would go red the moment someone pastes the block back.
 #
 #   C — the release workflow's signed checksum manifest must cover the
-#     binary, UNDER THE PATH THE TARBALL EXTRACTS TO. This is where the
-#     digests went instead: produced by the build that makes them true,
-#     signed with the tarball. Without it, removing the block would mean
-#     no published digest at all, which is a worse tree than the one
-#     this replaced.
+#     binary, UNDER THE PATH THE TARBALL EXTRACTS TO, and the tarball
+#     must actually PACK that path. This is where the digests went
+#     instead: produced by the build that makes them true, signed with
+#     the tarball. Without it, removing the block would mean no
+#     published digest at all, which is a worse tree than the one this
+#     replaced. The second half is review r3, finding 3, MEASURED: the
+#     extracted path was derived from the packaging's -C directory
+#     alone, so `tar -czf ART -C plugin config.json` — a tarball with
+#     no binary in it — left this claim green.
 #
 #   D — the container build's link flags are the host build's. Half A
 #     measures the HOST `go build` through the Makefile's GO_LDFLAGS,
@@ -53,14 +57,31 @@
 #     pushing sentinel values through `make`.
 #
 #   E — the verification document must describe the manifest the
-#     workflow writes. Not "mention it": the number of entries, the
-#     names that go missing when only the tarball was fetched, and the
-#     extraction precondition are all DERIVED from release.yml's own
-#     `sha256sum` operands and compared against what the document says.
-#     docs/verifying-releases.md said "three" while the workflow wrote
-#     four, so its exhaustive path exited 1 on a good release and its
-#     lenient path skipped the binary in silence (review r2, finding 1,
-#     MEASURED).
+#     workflow writes. Not "mention it": the number of entries, every
+#     ordinal that restates it, the names that go missing when only the
+#     tarball was fetched, the extraction precondition, and what the
+#     manifests share with each other are all DERIVED from release.yml's
+#     own `sha256sum` operands and compared against what the document
+#     says. docs/verifying-releases.md said "three" while the workflow
+#     wrote four, so its exhaustive path exited 1 on a good release and
+#     its lenient path skipped the binary in silence (review r2,
+#     finding 1, MEASURED).
+#
+#     E5 and E6 are the two-architecture half (review r3, finding 1,
+#     MEASURED). Both manifests record the binary under the path its
+#     own tarball extracts to, and that path does not depend on the
+#     architecture — so the two manifests record the SAME NAME for two
+#     different files. A reader who unpacks both tarballs in one
+#     directory keeps the second binary, and `sha256sum -c
+#     checksums.txt` then reports FAILED on a good release, which the
+#     page's own worked example teaches means tampering.
+#     --ignore-missing does not soften it: the file is present. E5
+#     compares the manifests' entry names against each other and
+#     requires the page to state every name more than one of them
+#     records — and, the other way, refuses a statement naming a
+#     manifest that does not record it. E6 is the structural half: while
+#     such a name exists, no fenced block in the page may extract more
+#     than one tarball.
 #
 # The four cells of A x B are all reachable and all meaningful: A true
 # and B violated is the defect; A true and B clean is the shipped state;
@@ -91,7 +112,19 @@
 #     this gate would judge it by the first scenario's arithmetic.
 #   - E can only match manifest entries the workflow names LITERALLY. An
 #     operand that is a shell variable (the tarball is, `"$ART"`) is
-#     counted but its name is not checked against the document.
+#     counted but its name is not checked against the document, and E5
+#     cannot see a collision between two such operands.
+#   - E1's ordinal arm reads a DECLARED CONVENTION of this document:
+#     every "Nth entry" in it names the last entry of a manifest, so the
+#     ordinal is the count restated. A page that wanted to name an entry
+#     in the middle would have to write it some other way. A count
+#     spelled in a third shape — digits outside an ordinal, a table
+#     cell, a sentence counting the entries in words without the
+#     `covers **N** files` frame — is invisible to both arms.
+#   - E6 counts DISTINCT `tar -x` operands per fenced block. Two blocks,
+#     each unpacking one tarball, with no instruction between them about
+#     the directory, reads as fine to it; that is what E5's stated
+#     collision is for.
 #   - E3's precondition is keyed on the entries INSIDE the tarball, not on
 #     every entry beyond it. On any tree that reaches a verdict the two
 #     populations are the same set, because claim C refuses a manifest
@@ -303,6 +336,56 @@ case "${#TAR_ROOTS[@]}" in
 esac
 mapfile -t TARBALL_OPERANDS < <(grep -oE 'tar -[a-z]*c[a-z]* +[^ ]+' "$WF" | awk '{print $NF}' | tr -d '"' | sort -u)
 
+# WHAT the tar packs, not only where it runs. `-C plugin .` packs
+# everything under plugin; `-C plugin config.json` packs one file and no
+# binary, and claim C was green on exactly that (review r3, finding 3,
+# MEASURED) because the extracted path was derived from -C alone. The
+# member list is read from the same line as the -C, so the two facts
+# cannot drift apart.
+# One record per tar INVOCATION, not per line: two of them chained with
+# && on one line are two packagings, and reading the line would take the
+# first one's operands for both. The -C directories above are found with
+# grep -oE, which already sees every occurrence on a line.
+tar_member_sets() {
+    local line rest tok mems
+    while IFS= read -r line; do
+        mems=""
+        if [[ "$line" =~ -C[[:space:]]+[^[:space:]]+[[:space:]]+(.*)$ ]]; then
+            rest="${BASH_REMATCH[1]}"
+            rest="${rest%%&&*}"; rest="${rest%%|*}"; rest="${rest%%;*}"; rest="${rest%%#*}"
+            for tok in $rest; do
+                tok="${tok%\"}"; tok="${tok#\"}"
+                tok="${tok%\'}"; tok="${tok#\'}"
+                case "$tok" in -*|'') continue ;; esac
+                mems="${mems}${tok} "
+            done
+        fi
+        printf '%s\n' "${mems% }"
+    done < <(sed -e 's/&&/\n/g' -e 's/;/\n/g' "$WF" | grep -E 'tar +-[a-zA-Z]*c[a-zA-Z]* ')
+}
+mapfile -t TAR_MEMBER_SETS < <(tar_member_sets | sort -u)
+case "${#TAR_MEMBER_SETS[@]}" in
+    1) ;;
+    *) die "$WF's tarballs are packed from ${#TAR_MEMBER_SETS[@]} different operand sets (${TAR_MEMBER_SETS[*]}); which files end up inside a published artifact is ambiguous and this check will not guess" ;;
+esac
+read -r -a TAR_MEMBERS <<< "${TAR_MEMBER_SETS[0]}"
+[ "${#TAR_MEMBERS[@]}" -gt 0 ] || die "$WF packs its tarball with 'tar -c ... -C $TAR_ROOT' and names no files to put in it — what a manifest entry can be checked against cannot be derived"
+
+# An entry, written relative to the tar root, is inside the artifact only
+# if some packed operand covers it. `.` is one case of this test, not the
+# test: transcribing it would be the same defect the -C derivation
+# already avoided.
+packs() {
+    local rel="$1" mem
+    for mem in ${TAR_MEMBERS[@]+"${TAR_MEMBERS[@]}"}; do
+        mem="${mem%/}"; mem="${mem#./}"
+        [ -z "$mem" ] && return 0
+        [ "$mem" = "." ] && return 0
+        case "$rel" in "$mem"|"$mem"/*) return 0 ;; esac
+    done
+    return 1
+}
+
 # Emits one "cwd<TAB>operand" per manifest entry.
 manifest_entries() {
     local m="$1" mre line cwd rest op
@@ -364,6 +447,15 @@ for m in "${MANIFESTS[@]}"; do
         case "$full" in
             "$TAR_ROOT"/*)
                 rel="${full#"$TAR_ROOT"/}"
+                if ! packs "$rel"; then
+                    note "$m records the binary at '$rel' inside the tarball, which 'tar -c ... -C $TAR_ROOT ${TAR_MEMBERS[*]}' does not pack."
+                    {
+                        echo "  The digest is correct and the entry is unreachable: the published tarball"
+                        echo "  carries only ${TAR_MEMBERS[*]}, so an operator who extracts it has no such"
+                        echo "  file. 'sha256sum -c $m' then fails on a good release and --ignore-missing"
+                        echo "  skips the one entry that is the point of the manifest."
+                    } >&2
+                fi
                 if [ "$rel" != "$op" ]; then
                     note "$m records the binary as '$op', but after extraction that file is at '$rel'."
                     {
@@ -412,6 +504,24 @@ num_for() {
         *) echo "$1" ;;
     esac
 }
+ord_num() {
+    case "$1" in
+        first) echo 1 ;; second) echo 2 ;; third) echo 3 ;; fourth) echo 4 ;;
+        fifth) echo 5 ;; sixth) echo 6 ;; seventh) echo 7 ;; eighth) echo 8 ;;
+        ninth) echo 9 ;; tenth) echo 10 ;; eleventh) echo 11 ;; twelfth) echo 12 ;;
+        *) printf '%s\n' "${1%%[a-z][a-z]}" ;;
+    esac
+}
+
+# The prose arms read the document FLATTENED. A count sentence, an
+# ordinal or a shared-entry statement wraps across a newline as readily
+# as it fits on one, and a line-keyed grep silently judges only the
+# sentences that happened to fit -- MEASURED: `the fourth / entry
+# described above` was invisible to the ordinal arm while its two
+# unwrapped siblings were reported. The block arms below stay
+# line-keyed, because a block's structure is what they are about.
+DOC_FLAT="$TMP/doc.flat"
+tr '\n' ' ' < "$DOC" | tr -s ' ' > "$DOC_FLAT"
 
 # E1: every manifest the workflow writes is described, and every place
 # the document states its size states the size the workflow produces.
@@ -419,7 +529,7 @@ for m in "${MANIFESTS[@]}"; do
     want="${ENTRY_COUNT[$m]:-}"
     [ -n "$want" ] || continue
     mre="$(printf '%s' "$m" | sed 's/[.[\*^$]/\\&/g')"
-    mapfile -t STATED < <(grep -oE "\`${mre}\` covers \*\*[A-Za-z0-9]+\*\* files" "$DOC" | sed -E 's/.*\*\*([A-Za-z0-9]+)\*\*.*/\1/')
+    mapfile -t STATED < <(grep -oE "\`${mre}\` covers \*\*[A-Za-z0-9]+\*\* files" "$DOC_FLAT" | sed -E 's/.*\*\*([A-Za-z0-9]+)\*\*.*/\1/')
     if [ "${#STATED[@]}" -eq 0 ]; then
         note "$(basename "$DOC") never says how many files \`$m\` covers; the workflow puts $want in it."
         {
@@ -440,6 +550,112 @@ for m in "${MANIFESTS[@]}"; do
     done
 done
 
+# E1b: the count restated as an ORDINAL. The shape above reads one
+# sentence per manifest; the page also points at the binary as "that
+# fourth entry", in three places, and a fifth entry left all three stale
+# while E1 stayed green (review r3, carried unverified, MEASURED). Every
+# ordinal-entry phrase in this page names a manifest's LAST entry, so
+# the ordinal is the count written another way and is judged as one.
+COUNTS_WRITTEN=""
+for m in "${MANIFESTS[@]}"; do
+    COUNTS_WRITTEN="${COUNTS_WRITTEN}${ENTRY_COUNT[$m]:-0} "
+done
+while IFS= read -r phrase; do
+    [ -n "$phrase" ] || continue
+    ord="$(printf '%s' "$phrase" | tr '[:upper:]' '[:lower:]' | awk '{print $1}')"
+    n="$(ord_num "$ord")"
+    case "$n" in ''|*[!0-9]*) continue ;; esac
+    hit=no
+    for c in $COUNTS_WRITTEN; do [ "$c" = "$n" ] && hit=yes; done
+    if [ "$hit" = no ]; then
+        note "$(basename "$DOC") calls something the '$phrase' of a manifest, and release.yml writes ${COUNTS_WRITTEN}entr(ies)."
+        {
+            echo "  An ordinal here is the entry count restated: this page names the binary as"
+            echo "  the LAST entry of the manifest that records it. Add an entry to release.yml"
+            echo "  and this sentence has to move with the count in the shape above, or the page"
+            echo "  points a reader at an entry that is no longer the one it means."
+        } >&2
+    fi
+done < <(grep -oiE '(first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|eleventh|twelfth|[0-9]+(st|nd|rd|th)) entr(y|ies)' "$DOC_FLAT")
+
+# E5. Two architectures, one path. Each manifest records the binary
+# under the path ITS OWN tarball extracts to, and that path does not
+# depend on the architecture -- so both record the same name for two
+# different files, and a reader who unpacks both tarballs in one
+# directory is told a good release was tampered with (review r3,
+# finding 1, MEASURED). Nothing compared the two manifests' entry names.
+# This does, from the workflow's own operands, and reads the page's
+# statement about them in both directions.
+declare -A RECORDED_BY=()
+for m in "${MANIFESTS[@]}"; do
+    while IFS= read -r e; do
+        [ -n "$e" ] || continue
+        op="${e#*$'\t'}"
+        case "$op" in *'$'*) continue ;; esac
+        RECORDED_BY["$op"]="${RECORDED_BY[$op]:-}$m "
+    done < <(manifest_entries "$m")
+done
+
+COLLISIONS=()
+for op in "${!RECORDED_BY[@]}"; do
+    read -r -a rb <<< "${RECORDED_BY[$op]}"
+    [ "${#rb[@]}" -gt 1 ] && COLLISIONS+=("$op")
+done
+
+# Every statement in the page that claims two manifests share an entry,
+# parsed once and used for both directions. The manifests are read as a
+# SET, so the sentence may name them in either order.
+declare -A STATED_SHARE=()
+while IFS= read -r stmt; do
+    [ -n "$stmt" ] || continue
+    mapfile -t toks < <(printf '%s\n' "$stmt" | grep -oE '`[^`]+`' | tr -d '`')
+    [ "${#toks[@]}" -ge 3 ] || continue
+    shared_name="${toks[$(( ${#toks[@]} - 1 ))]}"
+    unset "toks[$(( ${#toks[@]} - 1 ))]"
+    mapfile -t named < <(printf '%s\n' "${toks[@]}" | sort -u)
+    bad=""
+    for t in "${named[@]}"; do
+        case " ${RECORDED_BY[$shared_name]:-} " in *" $t "*) ;; *) bad="$bad $t" ;; esac
+    done
+    if [ -n "$bad" ]; then
+        note "$(basename "$DOC") says \`$shared_name\` is recorded by$bad, and release.yml writes no such entry into it."
+        {
+            echo "  A shared-entry warning the workflow does not have teaches a reader to take a"
+            echo "  precaution against nothing, and it hides the one they do need. release.yml"
+            echo "  records \`$shared_name\` in: ${RECORDED_BY[$shared_name]:-(no manifest)}"
+        } >&2
+    fi
+    STATED_SHARE["$shared_name"]="${STATED_SHARE[$shared_name]:-}|$(printf '%s ' "${named[@]}")"
+done < <(grep -oE '(`[^`]+`[ ,]+(and )?)+(both|all) record `[^`]+`' "$DOC_FLAT")
+
+for op in $(printf '%s\n' ${COLLISIONS[@]+"${COLLISIONS[@]}"} | sort); do
+    read -r -a rb <<< "${RECORDED_BY[$op]}"
+    mapfile -t rb < <(printf '%s\n' "${rb[@]}" | sort -u)
+    want="$(printf '%s ' "${rb[@]}")"
+    case "${STATED_SHARE[$op]:-}" in
+        *"|$want"*) ;;
+        *)
+            joined=""
+            for i in "${!rb[@]}"; do
+                if [ "$i" -eq 0 ]; then joined="\`${rb[0]}\`"
+                elif [ "$i" -eq $(( ${#rb[@]} - 1 )) ]; then joined="$joined and \`${rb[$i]}\`"
+                else joined="$joined, \`${rb[$i]}\`"; fi
+            done
+            quant=both; [ "${#rb[@]}" -gt 2 ] && quant=all
+            note "$(basename "$DOC") never says that ${#rb[@]} manifests record \`$op\`."
+            {
+                echo "  ${rb[*]} each record that name, for a different file. A reader who unpacks"
+                echo "  both tarballs in one directory keeps the last one extracted, and every other"
+                echo "  manifest then reports it FAILED on a good release -- which this page's own"
+                echo "  worked example says means the release was tampered with. --ignore-missing"
+                echo "  does not soften it, because the file is present."
+                echo "  Say so, in the shape '$joined $quant record \`$op\`', and tell the reader"
+                echo "  to verify one architecture per directory."
+            } >&2
+            ;;
+    esac
+done
+
 # E2/E3: the document's blocks. A block that runs `sha256sum -c <m>` for
 # a manifest with an entry INSIDE the tarball has to unpack the tarball
 # first, in that same block -- otherwise the reader who follows it
@@ -453,7 +669,29 @@ check_blocks=0
 example_blocks=0
 flush_block() {
     local body="$1" m mre tarline shaline n_stated n_failed missing ok_m name
+    local -a xops
     [ -n "$body" ] || return 0
+
+    # E6, the structural half of the two-architecture claim. While two
+    # manifests record one name, a block that unpacks two tarballs is
+    # the trap itself: the second extraction overwrites the first
+    # architecture's file, and the manifest that recorded it reports
+    # FAILED on a good release. Keyed on the collision, so a release
+    # whose manifests share nothing may unpack whatever it likes.
+    if [ "${#COLLISIONS[@]}" -gt 0 ]; then
+        mapfile -t xops < <(printf '%s\n' "$body" |
+            grep -oE '(^|[^a-z])tar +-[a-zA-Z]*x[a-zA-Z]* +[^ ]+' |
+            awk '{print $NF}' | tr -d '"' | sort -u)
+        if [ "${#xops[@]}" -gt 1 ]; then
+            note "$(basename "$DOC") has one block that unpacks ${#xops[@]} tarballs: ${xops[*]}"
+            {
+                echo "  ${COLLISIONS[*]} is recorded by more than one manifest, so the second"
+                echo "  extraction overwrites the first archive's copy and the first manifest then"
+                echo "  reports it FAILED on a good release. One tarball per block, one"
+                echo "  architecture per directory."
+            } >&2
+        fi
+    fi
 
     for m in "${MANIFESTS[@]}"; do
         mre="$(printf '%s' "$m" | sed 's/[.[\*^$]/\\&/g')"
@@ -531,4 +769,4 @@ fi
 
 [ "$failed" -eq 0 ] || exit 1
 
-echo "PASS  release digests are a fixed point: commit-in-binary=${commit_dependent}, ${n_records} in-tree digest record(s) of ${#BINARIES[@]} built binar(ies), ${#MANIFESTS[@]} signed manifest(s) covering them at their extracted paths, link flags reconciled across Makefile and $(basename "$DOCKERFILE"), $(basename "$DOC") in step with ${#MANIFESTS[@]} manifest(s)"
+echo "PASS  release digests are a fixed point: commit-in-binary=${commit_dependent}, ${n_records} in-tree digest record(s) of ${#BINARIES[@]} built binar(ies), ${#MANIFESTS[@]} signed manifest(s) covering them at extracted paths the tarball packs from '$TAR_ROOT' (${TAR_MEMBERS[*]}), link flags reconciled across Makefile and $(basename "$DOCKERFILE"), $(basename "$DOC") in step with ${#MANIFESTS[@]} manifest(s) over ${check_blocks} check block(s) and ${example_blocks} worked example(s), ${#COLLISIONS[@]} entry name(s) recorded by more than one manifest and stated"
