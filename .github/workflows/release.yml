@@ -200,28 +200,42 @@ jobs:
       # back).
       #
       # `resolve` is the one job every publishing job descends from, so a
-      # refusal here fails the run with nothing pushed anywhere. The
-      # assembly in `github-release` stays exactly as it is — it is what
-      # produces the body — and this is the same script, run early,
-      # against the same two inputs.
+      # refusal here fails the run with nothing pushed anywhere.
       #
-      # OUR SCRIPT, THEIR DATA. `.resolver` is this workflow's own ref
-      # (see the checkout above); `.notes` is the tag's tree, checked out
-      # for one file and never executed. Running the tag's copy of the
-      # extractor would let the tag decide whether the tag is publishable.
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ steps.tag.outputs.ref }}
-          path: .notes
-          sparse-checkout: RELEASE_NOTES.md
-          sparse-checkout-cone-mode: false
-
+      # SAME SCRIPT, AND SAY WHICH COPY. This and the assembly in
+      # `github-release` are two materialisations of one source file, and
+      # on a `workflow_dispatch` of an existing tag they are two
+      # different revisions of it -- or one and none. Both now run THIS
+      # workflow's copy against the tag's notes, which is the only
+      # reading under which "the same script, run early" is true of a
+      # re-dispatch as well as of a tag push.
+      #
+      # OUR SCRIPT, THEIR DATA -- AND THE DATA IS NEVER A TREE.
+      # `.resolver` is this workflow's own ref (see the checkout above).
+      # The notes are the tag's, and they arrive as one blob read out of
+      # the object database: fetched, then `git show`n to a file. Nothing
+      # the tag names is ever placed in a working tree, so no file the
+      # tag controls can be executed, sourced or picked up by a later
+      # step -- which is what a second `actions/checkout` on
+      # `steps.tag.outputs.ref` would set up, and what CodeQL's
+      # `actions/cache-poisoning/poisonable-step` names when it sees one
+      # (alert 119, #914). Running the tag's copy of the EXTRACTOR would
+      # be the same mistake one level up: it would let the tag decide
+      # whether the tag is publishable.
       - name: Refuse a tag whose release notes cannot be assembled
         env:
           TAG: ${{ steps.tag.outputs.tag }}
+          REF: ${{ steps.tag.outputs.ref }}
         run: |
           set -euo pipefail
-          bash .resolver/scripts/release-body.sh "$TAG" .notes/RELEASE_NOTES.md >/dev/null
+          # The ref reaches git as DATA, through env, fully qualified by
+          # resolve-dispatch-ref.sh, and lands on a local ref name of our
+          # choosing -- not on HEAD and not in the work tree.
+          git -C .resolver fetch --depth=1 --no-tags origin \
+            "+${REF}:refs/notes-under-judgement"
+          git -C .resolver show refs/notes-under-judgement:RELEASE_NOTES.md \
+            > notes-under-judgement.md
+          bash .resolver/scripts/release-body.sh "$TAG" notes-under-judgement.md >/dev/null
           echo "Release notes for $TAG assemble; nothing has been published yet."
 
   release:
@@ -1433,6 +1447,26 @@ jobs:
           ref: ${{ needs.release.outputs.ref }}
           fetch-depth: 0
 
+      # OUR copy of the extractor, again -- the same rule `resolve`
+      # applies, at the site that actually produces the body. The
+      # checkout above is the TAG's tree, and `scripts/release-body.sh`
+      # does not exist in it for any tag published before #914
+      # (v2.0.0-rc1, v1.9.0): assembling with `bash scripts/...` from
+      # there made a re-dispatch of an existing tag die 127 at the last
+      # step, AFTER both registries had been re-pushed and `:latest`
+      # moved -- and a re-dispatch exists precisely to refresh a release
+      # page whose body is wrong. One fix does not reach the copies: the
+      # pre-flight in `resolve` was corrected and this, the second
+      # materialisation of the same source file, was not.
+      #
+      # Its own path, for the reason the resolve job states: a second
+      # checkout at the same path inherits the first one's sparse config.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: .resolver
+          sparse-checkout: scripts/release-body.sh
+          sparse-checkout-cone-mode: false
+
       - name: Download signed artifacts
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
@@ -1480,7 +1514,7 @@ jobs:
           #    runbook's step 4 runs the same command before the tag so the
           #    refusal is met on a workstation and not after the images are
           #    pushed.
-          bash scripts/release-body.sh "${TAG}" RELEASE_NOTES.md > section.md
+          bash .resolver/scripts/release-body.sh "${TAG}" RELEASE_NOTES.md > section.md
           # The rest of the body is written in one group: the notes
           # section, then (3) the artifact names — GitHub lazy-loads the
           # assets list, so the filenames appear nowhere in the fetched

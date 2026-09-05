@@ -558,12 +558,20 @@ the `vX.Y.Z` milestone (the workflow leans on this for the
    remove whatever follows the version and confirm before tagging:
 
    ```sh
-   scripts/release-body.sh vX.Y.Z RELEASE_NOTES.md | head -20
+   # THE STATUS IS THE VERDICT. Piped straight into `head`, this block
+   # exited 0 whether the notes assembled or the extractor refused —
+   # `head` reports for the pipeline — so the two outcomes the paragraph
+   # below promises were indistinguishable to anything but a reader's
+   # eye. Assemble to a file first, and `&&` the preview onto it.
+   section=$(mktemp) &&
+   scripts/release-body.sh vX.Y.Z RELEASE_NOTES.md > "$section" &&
+   head -20 "$section"
    ```
 
-   It prints the section the release page would carry and exits 0, or
-   refuses naming what is wrong (decorated heading, no section, empty
-   section, two sections for one version). Run it for the rc tag too
+   It prints the first 20 lines of the section the release page would
+   carry and exits 0, or refuses naming what is wrong (decorated
+   heading, no section, empty section, two sections for one version) and
+   exits non-zero with nothing previewed. Run it for the rc tag too
    (`scripts/release-body.sh vX.Y.Z-rc1 …`): an rc has no section of its
    own and publishes this same one, so an rc dry-run whose notes are not
    ready refuses at the release page rather than shipping a placeholder.

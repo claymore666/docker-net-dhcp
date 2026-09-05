@@ -280,18 +280,49 @@ older
 #     carries between releases. It must REFUSE -- which means it must first
 #     have RUN. mode 100644 gives a shell error and no refusal, and that is
 #     the difference this case exists to see.
+#
+#     AND IT MUST SAY SO IN ITS EXIT STATUS. Until this round the block was
+#     `release-body.sh … | head -20`, and a pipeline reports for `head`: it
+#     exited 0 on a refusal and 0 on notes that assemble, while the prose
+#     beside it promised two outcomes. A block whose refusal only reaches a
+#     human's eye is not a check anyone can build on, and the operator
+#     copying it into a script would have got the placeholder release the
+#     whole chain exists to prevent.
 blk=$(extract_block 'head -20')
 if [ -z "$blk" ]; then
     no "step 4's block could not be extracted from the runbook"
 else
     sb=$(mksandbox "$NOTES_DECORATED")
     out=$( (cd "$sb" && eval "$blk") 2>&1 )
-    if printf '%s' "$out" | grep -F 'Release body refused' >/dev/null &&
-       printf '%s' "$out" | grep -F '## v2.0.0 (unreleased)' >/dev/null; then
-        ok "step 4's block, as printed, executes and refuses the decorated heading"
+    rc=$?
+    if [ "$rc" -eq 0 ]; then
+        no "step 4's block exited 0 on a decorated heading it refused"
+        printf '      %s\n' "$out" | head -4 >&2
+    elif printf '%s' "$out" | grep -F 'Release body refused' >/dev/null &&
+         printf '%s' "$out" | grep -F '## v2.0.0 (unreleased)' >/dev/null; then
+        ok "step 4's block, as printed, executes, refuses the decorated heading and exits non-zero"
     else
         no "step 4's block, as printed, did not execute and refuse"
         printf '      %s\n' "$out" | head -4 >&2
+    fi
+fi
+
+# B1b. THE OTHER DIRECTION. A block that always exits non-zero satisfies B1
+#      and is useless; on notes that assemble, step 4 must exit 0 AND print
+#      the section, because the operator reads the preview before signing
+#      the notes off.
+if [ -n "${blk:-}" ]; then
+    sb=$(mksandbox "$NOTES_GOOD")
+    out=$( (cd "$sb" && eval "$blk") 2>&1 )
+    rc=$?
+    if [ "$rc" -ne 0 ]; then
+        no "step 4's block exited $rc on notes that assemble"
+        printf '      %s\n' "$out" | head -4 >&2
+    elif ! printf '%s' "$out" | grep -F 'The release everyone waited for' >/dev/null; then
+        no "step 4's block exited 0 without previewing the section"
+        printf '      %s\n' "$out" | head -4 >&2
+    else
+        ok "step 4's block previews the section and exits 0 when the notes assemble"
     fi
 fi
 

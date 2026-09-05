@@ -129,6 +129,7 @@ jobs:
   judge:
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v5
       - run: bash scripts/release-body.sh v1.0.0 RELEASE_NOTES.md
   middle:
     needs: judge
@@ -153,6 +154,7 @@ jobs:
   judge:
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v5
       - run: bash scripts/release-body.sh v1.0.0 RELEASE_NOTES.md
   publish:
     runs-on: ubuntu-latest
@@ -164,6 +166,132 @@ gate_case "a judgement running in parallel with the push is caught" 1 "$WORK/par
 
 # 8. A subject that is not there is not a subject that passed.
 gate_case "a missing workflow refuses" 2 "$WORK/absent.yml" "does not exist"
+
+# --- rule 4: every invocation runs THIS workflow's copy -------------------
+#
+# 9. THE PREVIOUS VERSION IS THE STRONGEST MUTANT. Point the assembly back
+#    at the tag's tree, which is what it read until this round: the
+#    pre-flight in `resolve` still passes, the images still publish, and the
+#    run dies 127 at the last step for any tag older than the script.
+mutate "$WORK/tagcopy.yml" '
+for s in d["jobs"]["github-release"]["steps"]:
+    r = s.get("run")
+    if isinstance(r, str) and ".resolver/scripts/release-body.sh" in r:
+        s["run"] = r.replace(".resolver/scripts/release-body.sh", "scripts/release-body.sh")
+'
+if [ -s "$WORK/tagcopy.yml" ]; then
+    gate_case "the assembly reading the tag's copy of the extractor is caught" 1 "$WORK/tagcopy.yml" "checked out at \`ref: "
+else
+    no "the tag-copy mutant could not be built"
+fi
+
+# 10. The other arm of rule 4: the invocation names a directory nothing
+#     checks out. A path typo, or the resolver checkout deleted while the
+#     call site keeps its spelling -- 127 at run time, silent here.
+mutate "$WORK/nocheckout.yml" '
+d["jobs"]["github-release"]["steps"] = [
+    s for s in d["jobs"]["github-release"]["steps"]
+    if (s.get("with") or {}).get("path") != ".resolver"]
+'
+if [ -s "$WORK/nocheckout.yml" ]; then
+    gate_case "an invocation from a directory no checkout produces is caught" 1 "$WORK/nocheckout.yml" "which no actions/checkout in that job produces"
+else
+    no "the missing-checkout mutant could not be built"
+fi
+
+# 11. A COMMENT IS NOT AN INVOCATION. The assembly step's own `run:` scalar
+#     explains the script in prose; a substring search reads that as a call
+#     from the wrong directory. Plant one more, in the other job, and the
+#     verdict must not move.
+mutate "$WORK/comment.yml" '
+for s in d["jobs"]["resolve"]["steps"]:
+    r = s.get("run")
+    if isinstance(r, str) and "release-body.sh" in r:
+        s["run"] = "# bash scripts/release-body.sh vX.Y.Z RELEASE_NOTES.md -- the shape we do NOT use\n" + r
+'
+if [ -s "$WORK/comment.yml" ]; then
+    gate_case "a commented-out invocation does not change the verdict" 0 "$WORK/comment.yml" "PASS  "
+else
+    no "the comment mutant could not be built"
+fi
+
+# --- rule 5: the pre-flight checks out no tree the trigger names ----------
+#
+# 12. The shape that raised code-scanning alert 119 (poisonable-step), put
+#     back: a second checkout in `resolve` on `steps.tag.outputs.ref`.
+mutate "$WORK/poison.yml" '
+d["jobs"]["resolve"]["steps"].append({
+    "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+    "with": {"ref": "${{ steps.tag.outputs.ref }}", "path": ".notes",
+             "sparse-checkout": "RELEASE_NOTES.md",
+             "sparse-checkout-cone-mode": False}})
+'
+if [ -s "$WORK/poison.yml" ]; then
+    gate_case "a trigger-named checkout in the pre-flight judge is caught" 1 "$WORK/poison.yml" "poisonable-step"
+else
+    no "the poisonable-checkout mutant could not be built"
+fi
+
+# 13. DRIVE THE SAFE SHAPE TOO. The same second checkout with a ref that is
+#     not an expression is not this defect, and rule 5 must not read as
+#     "`resolve` may hold only one checkout" -- a red that fires on any
+#     second checkout measures difficulty, not the property.
+mutate "$WORK/literalref.yml" '
+d["jobs"]["resolve"]["steps"].append({
+    "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+    "with": {"ref": "2.0.0", "path": ".other"}})
+'
+if [ -s "$WORK/literalref.yml" ]; then
+    gate_case "a second checkout on a literal ref is not the defect" 0 "$WORK/literalref.yml" "PASS  "
+else
+    no "the literal-ref control could not be built"
+fi
+
+# 14. The same expression checkout, in the job that ASSEMBLES rather than
+#     the one that gates. `github-release` must check the tag's tree out --
+#     that tree is the release. Rule 5 is about the pre-flight only, and a
+#     rule that cannot tell the two apart would forbid the workflow.
+mutate "$WORK/assembly-tree.yml" '
+d["jobs"]["github-release"]["steps"].append({
+    "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+    "with": {"ref": "${{ needs.release.outputs.ref }}", "path": ".extra"}})
+'
+if [ -s "$WORK/assembly-tree.yml" ]; then
+    gate_case "a trigger-named checkout outside the pre-flight is allowed" 0 "$WORK/assembly-tree.yml" "PASS  "
+else
+    no "the assembly-tree control could not be built"
+fi
+
+# 15. THE DEFECT REWRITTEN AS A SHELL LINE. `actions/checkout` is one way to
+#     put the tag's tree on disk; `git checkout` in the same job is the
+#     other, and a rule that reads only `uses:` steps would pass it.
+mutate "$WORK/shellcheckout.yml" '
+for s in d["jobs"]["resolve"]["steps"]:
+    r = s.get("run")
+    if isinstance(r, str) and "release-body.sh" in r:
+        s["run"] = r.replace("git -C .resolver show",
+                             "git -C .resolver checkout \"$REF\" && git -C .resolver show")
+'
+if [ -s "$WORK/shellcheckout.yml" ]; then
+    gate_case "the pre-flight materialising the tag's tree in its shell is caught" 1 "$WORK/shellcheckout.yml" "A working tree is a working tree however it is created"
+else
+    no "the shell-checkout mutant could not be built"
+fi
+
+# 16. AND THE SHAPE THAT IS KEPT. Reading objects -- fetch, show, log, cat-file
+#     -- is not materialising a tree, and rule 5 must not read as "the
+#     pre-flight may not use git".
+mutate "$WORK/gitread.yml" '
+for s in d["jobs"]["resolve"]["steps"]:
+    r = s.get("run")
+    if isinstance(r, str) and "release-body.sh" in r:
+        s["run"] = r + "\ngit -C .resolver log -1 --format=%H refs/notes-under-judgement\ngit -C .resolver cat-file -t refs/notes-under-judgement\n"
+'
+if [ -s "$WORK/gitread.yml" ]; then
+    gate_case "reading objects in the pre-flight is not materialising a tree" 0 "$WORK/gitread.yml" "PASS  "
+else
+    no "the git-read control could not be built"
+fi
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ] || exit 1
