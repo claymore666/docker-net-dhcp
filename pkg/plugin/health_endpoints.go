@@ -132,26 +132,51 @@ func (m *dhcpManager) healthView() EndpointHealth {
 	return e
 }
 
-// endpointViews is one entry per registered manager, sorted by endpoint
-// id so two consecutive polls of an unchanged host produce the same
-// document rather than Go's map order.
+// endpointViewsOf is one entry per manager in the slice it is given,
+// sorted by endpoint id so two consecutive polls of an unchanged host
+// produce the same document rather than Go's map order.
 //
-// p.mu is held for the copy and released before any client is asked
-// anything: healthSnapshot already takes that lock for len(persistentDHCP)
-// and holds it for two map reads, and this must not turn it into a lock
-// held across a walk of every endpoint's DHCP client.
-func (p *Plugin) endpointViews() []EndpointHealth {
-	p.mu.Lock()
-	managers := make([]*dhcpManager, 0, len(p.persistentDHCP))
-	for _, m := range p.persistentDHCP {
-		managers = append(managers, m)
-	}
-	p.mu.Unlock()
-
+// IT TAKES THE MANAGERS RATHER THAN READING THE MAP, and that is the
+// whole design. `active_endpoints` and this array are one fact — how
+// many endpoints this host manages — and until 2.0-alpha.1 each derived
+// it from its own read of p.persistentDHCP under its own acquisition of
+// p.mu. A Join or Leave committing between the two made the array
+// longer or shorter than the count while the reference shipped the
+// equality, a comment said the two could not disagree, and an
+// integration cell asserted it. Measured under churn: they disagreed.
+//
+// So healthSnapshot takes p.mu ONCE, copies the map's values, and both
+// fields come out of that one slice — the count as len() of what this
+// function returns. There is no second read to be stale, and no
+// assignment of one field from the other after the fact: the equality is
+// what the code does, not something a test has to keep noticing.
+//
+// The lock is released before any client is asked anything: a slow
+// client must not stall a Join.
+func endpointViewsOf(managers []*dhcpManager) []EndpointHealth {
 	out := make([]EndpointHealth, 0, len(managers))
 	for _, m := range managers {
 		out = append(out, m.healthView())
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Endpoint < out[j].Endpoint })
 	return out
+}
+
+// managerSnapshot copies the registered managers under one acquisition
+// of p.mu, with the join-hint count taken in the same window.
+func (p *Plugin) managerSnapshot() ([]*dhcpManager, int) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	managers := make([]*dhcpManager, 0, len(p.persistentDHCP))
+	for _, m := range p.persistentDHCP {
+		managers = append(managers, m)
+	}
+	return managers, len(p.joinHints)
+}
+
+// endpointViews is the whole walk for a caller that has no manager slice
+// of its own.
+func (p *Plugin) endpointViews() []EndpointHealth {
+	managers, _ := p.managerSnapshot()
+	return endpointViewsOf(managers)
 }

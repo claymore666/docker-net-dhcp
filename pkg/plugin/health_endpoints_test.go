@@ -4,7 +4,10 @@
 package plugin
 
 import (
+	"fmt"
 	"net/netip"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -166,8 +169,18 @@ func TestEndpointViews_NoClientYetIsUnknownNotIdle(t *testing.T) {
 	}
 }
 
-// The array is bounded by active_endpoints: the same map, so the two
-// cannot disagree about how many endpoints this host has.
+// The array is bounded by active_endpoints, and since 2.0-alpha.1 the
+// count IS the array's length: healthSnapshot copies the manager map
+// once and derives both from that copy.
+//
+// THIS COMMENT USED TO SAY THE TWO "CANNOT DISAGREE, THE SAME MAP", AND
+// THAT WAS FALSE. They came from two acquisitions of p.mu — one for
+// len(persistentDHCP) and one inside endpointViews — with every counter
+// read in between, so a Join or Leave committing in that window made the
+// array longer or shorter than the count. Measured, with a churn
+// goroutine running: they disagreed. This test is sequential and could
+// not see it; TestHealthDocument_CountAndArrayAgreeUnderChurn below is
+// the one that can.
 func TestHealthDocument_EndpointsMatchActiveEndpoints(t *testing.T) {
 	p := newHealthPlugin()
 
@@ -210,4 +223,76 @@ func TestEndpointViews_AreOrderedByEndpoint(t *testing.T) {
 			}
 		}
 	}
+}
+
+// `endpoints` and `active_endpoints` are one fact, and the reference
+// ships the equality. Drive Join and Leave concurrently with the reader
+// and require every document to satisfy it.
+//
+// WHAT MAKES THIS A TEST RATHER THAN A HOPE. Two things, and both are
+// asserted rather than assumed:
+//
+//   - the churn really overlaps the reads. The writer records how many
+//     mutations it committed while the reader was inside its loop, and
+//     the test fails when that is zero — a churn goroutine that finished
+//     before the reader started would pass over the defect and over the
+//     fix alike, which is the shape a concurrency test fails in.
+//   - the reader takes many documents, not one. The window this closes
+//     was nanoseconds wide on a quiet host; one reading proves nothing
+//     about a race, so the assertion is over every document taken.
+//
+// Run under -race in the lane, which is where the map access this used
+// to make would also be reported.
+func TestHealthDocument_CountAndArrayAgreeUnderChurn(t *testing.T) {
+	p := newHealthPlugin()
+
+	const reads = 2000
+
+	var (
+		stop      atomic.Bool
+		mutations atomic.Int64
+		wg        sync.WaitGroup
+	)
+
+	// Join and Leave, as they touch the map: under p.mu, one endpoint at
+	// a time. Nothing here reads the health document.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; !stop.Load(); i++ {
+			id := fmt.Sprintf("e%d", i%64)
+			m := newDHCPManager(nil, JoinRequest{EndpointID: id, NetworkID: "n"}, DHCPNetworkOptions{})
+			p.mu.Lock()
+			p.persistentDHCP[id] = m
+			p.mu.Unlock()
+			mutations.Add(1)
+
+			p.mu.Lock()
+			delete(p.persistentDHCP, id)
+			p.mu.Unlock()
+			mutations.Add(1)
+		}
+	}()
+
+	before := mutations.Load()
+	for i := 0; i < reads; i++ {
+		h := p.healthSnapshot()
+		if h.ActiveEndpoints != len(h.Endpoints) {
+			stop.Store(true)
+			wg.Wait()
+			t.Fatalf("document %d: active_endpoints=%d, endpoints has %d entries — "+
+				"the count and the array were derived from two different reads of the manager map",
+				i, h.ActiveEndpoints, len(h.Endpoints))
+		}
+	}
+	during := mutations.Load() - before
+
+	stop.Store(true)
+	wg.Wait()
+
+	if during == 0 {
+		t.Fatalf("no Join/Leave committed while the %d documents were being taken; "+
+			"this run measured a quiet plugin, not a concurrent one", reads)
+	}
+	t.Logf("%d documents read while %d map mutations committed", reads, during)
 }

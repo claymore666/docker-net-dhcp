@@ -4,6 +4,7 @@
 package plugin
 
 import (
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -11,31 +12,78 @@ import (
 
 // checkBumper moves exactly one of the counters a check is declared on.
 //
-// The table is keyed by the health field, and TestHealthChecks_
-// EveryDeclaredCheckIsDriven reconciles its key set against the
-// declaration in metricDefs. That reconciliation is what stops this
-// file from being a universal satisfied by an empty domain: a twelfth
-// check added without a bumper here fails, rather than being silently
-// left undriven by every test below.
+// The table is keyed by the health field AND, for a family-split check,
+// by which half it moves. TestHealthChecks_EveryDeclaredCheckIsDriven
+// reconciles that key set against the declaration in metricDefs, which
+// is what stops this file from being a universal satisfied by an empty
+// domain: a twelfth check added without a bumper here fails, rather than
+// being silently left undriven by every test below.
+//
+// THE HALF IS NOT DECORATION. A family-split check reads an aggregate
+// and its stamp is `laterOf(v4, v6)`, so a table with one row per FIELD
+// drives such a check through one operand only — and `laterOf(a, b) ->
+// return a` then survives every test in this file: the v4 row moves the
+// half that is returned, and nothing ever moves the other. Measured: it
+// did survive. The required halves are derived from `v4field`/`v6field`
+// in metricDefs rather than listed here, so the next family check
+// arrives needing both rows.
 type checkBumper struct {
 	field string
-	bump  func(p *Plugin)
+	// half is "ipv4" or "ipv6" — the exposition's family label — for a
+	// row driving one operand of a family-split check, and empty for a
+	// check that has only one counter behind it.
+	half string
+	bump func(p *Plugin)
+}
+
+// name identifies the row for a sub-test, so the two halves of one field
+// do not collide.
+func (b checkBumper) name() string {
+	if b.half == "" {
+		return b.field
+	}
+	return b.field + "/" + b.half
 }
 
 func checkBumpers() []checkBumper {
 	return []checkBumper{
-		{"recovery_failed", func(p *Plugin) { p.recoveryFailed.Add(1) }},
-		{"join_start_failures", func(p *Plugin) { p.joinStartFailures.Add(1) }},
-		{"tombstone_write_failures", func(p *Plugin) { p.tombstoneWriteFailures.Add(1) }},
-		{"tombstone_quarantines", func(p *Plugin) { p.tombstones.quarantines.Add(1) }},
-		{"address_conflicts", func(p *Plugin) { p.addressConflicts.Add(1) }},
-		{"lease_changed", func(p *Plugin) { p.leaseChangedV4.Add(1) }},
-		{"restart_link_up_timeouts", func(p *Plugin) { p.restartLinkUpTimeouts.Add(1) }},
-		{"acd_arp_send_failures", func(p *Plugin) { p.acdARPSendFailures.Add(1) }},
-		{"acd_resumed_unchecked", func(p *Plugin) { p.acdResumedUnchecked.Add(1) }},
-		{"parent_link_wait_timeouts", func(p *Plugin) { p.parentLinkWaitTimeouts.Add(1) }},
-		{"ledger_write_failures", func(p *Plugin) { p.ledgerWriteFailures.Add(1) }},
+		{"recovery_failed", "", func(p *Plugin) { p.recoveryFailed.Add(1) }},
+		{"join_start_failures", "", func(p *Plugin) { p.joinStartFailures.Add(1) }},
+		{"tombstone_write_failures", "", func(p *Plugin) { p.tombstoneWriteFailures.Add(1) }},
+		{"tombstone_quarantines", "", func(p *Plugin) { p.tombstones.quarantines.Add(1) }},
+		{"address_conflicts", "", func(p *Plugin) { p.addressConflicts.Add(1) }},
+		{"lease_changed", "ipv4", func(p *Plugin) { p.leaseChangedV4.Add(1) }},
+		{"lease_changed", "ipv6", func(p *Plugin) { p.leaseChangedV6.Add(1) }},
+		{"restart_link_up_timeouts", "", func(p *Plugin) { p.restartLinkUpTimeouts.Add(1) }},
+		{"acd_arp_send_failures", "", func(p *Plugin) { p.acdARPSendFailures.Add(1) }},
+		{"acd_resumed_unchecked", "", func(p *Plugin) { p.acdResumedUnchecked.Add(1) }},
+		{"parent_link_wait_timeouts", "", func(p *Plugin) { p.parentLinkWaitTimeouts.Add(1) }},
+		{"ledger_write_failures", "", func(p *Plugin) { p.ledgerWriteFailures.Add(1) }},
 	}
+}
+
+// requiredBumpers is the {field, half} set the declaration demands,
+// derived from metricDefs: a check with v4field/v6field set needs one
+// row per half, anything else needs exactly one.
+func requiredBumpers() map[string]map[string]bool {
+	out := map[string]map[string]bool{}
+	for _, d := range metricDefs() {
+		if !d.healthy && !d.warn {
+			continue
+		}
+		halves := map[string]bool{}
+		if d.v4field != "" {
+			halves["ipv4"] = true
+		}
+		if d.v6field != "" {
+			halves["ipv6"] = true
+		}
+		if len(halves) == 0 {
+			halves[""] = true
+		}
+		out[d.field] = halves
+	}
+	return out
 }
 
 // declaredChecks is the field -> status the classification says, read
@@ -67,24 +115,56 @@ func onlyCheck(t *testing.T, h HealthResponse, field string) HealthCheck {
 
 func TestHealthChecks_EveryDeclaredCheckIsDriven(t *testing.T) {
 	declared := declaredChecks()
-	driven := map[string]bool{}
+	required := requiredBumpers()
+
+	driven := map[string]map[string]bool{}
 	for _, b := range checkBumpers() {
-		if _, ok := declared[b.field]; !ok {
+		want, ok := required[b.field]
+		if !ok {
 			t.Errorf("checkBumpers drives %q, which metricDefs does not declare as a check — "+
 				"the bumper is stale or the declaration was dropped", b.field)
+			continue
 		}
-		if driven[b.field] {
-			t.Errorf("checkBumpers drives %q twice", b.field)
+		if !want[b.half] {
+			t.Errorf("checkBumpers drives %q with half %q; metricDefs declares the halves %v for it",
+				b.field, b.half, sortedKeys(want))
+			continue
 		}
-		driven[b.field] = true
+		if driven[b.field][b.half] {
+			t.Errorf("checkBumpers drives %s twice", b.name())
+			continue
+		}
+		if driven[b.field] == nil {
+			driven[b.field] = map[string]bool{}
+		}
+		driven[b.field][b.half] = true
 	}
-	for field := range declared {
-		if !driven[field] {
-			t.Errorf("metricDefs declares %q as a %s check and nothing here drives it. "+
-				"Add it to checkBumpers: the tests below assert on the checks they drive, "+
-				"so an undriven check is an unobserved one.", field, declared[field])
+
+	for field, halves := range required {
+		for half := range halves {
+			if driven[field][half] {
+				continue
+			}
+			if half == "" {
+				t.Errorf("metricDefs declares %q as a %s check and nothing here drives it. "+
+					"Add it to checkBumpers: the tests below assert on the checks they drive, "+
+					"so an undriven check is an unobserved one.", field, declared[field])
+				continue
+			}
+			t.Errorf("metricDefs declares %q as a family-split %s check and nothing here drives its "+
+				"%s half. Its stamp is the later of the two, so a table driving one operand "+
+				"cannot see a stamp that ignores the other.", field, declared[field], half)
 		}
 	}
+}
+
+func sortedKeys(m map[string]bool) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // The document's `status` and the 1.x `healthy` flag are two renderings
@@ -99,7 +179,7 @@ func TestHealthChecks_StatusAndHealthyAgreeOnEveryFailCounter(t *testing.T) {
 		if declared[b.field] != statusFail {
 			continue
 		}
-		t.Run(b.field, func(t *testing.T) {
+		t.Run(b.name(), func(t *testing.T) {
 			p := newHealthPlugin()
 
 			clean := p.healthSnapshot()
@@ -144,7 +224,7 @@ func TestHealthChecks_WarnNeitherClaimsAFaultNorHidesOne(t *testing.T) {
 		if declared[b.field] != statusWarn {
 			continue
 		}
-		t.Run(b.field, func(t *testing.T) {
+		t.Run(b.name(), func(t *testing.T) {
 			p := newHealthPlugin()
 			b.bump(p)
 			h := p.healthSnapshot()
@@ -182,7 +262,7 @@ func TestHealthChecks_WarnNeitherClaimsAFaultNorHidesOne(t *testing.T) {
 // the response's own clock reads AFTER `after`.
 func TestHealthChecks_TimeIsWhenTheCounterMoved(t *testing.T) {
 	for _, b := range checkBumpers() {
-		t.Run(b.field, func(t *testing.T) {
+		t.Run(b.name(), func(t *testing.T) {
 			p := newHealthPlugin()
 			// Distinguishable from the bump instant on any clock this
 			// runs on; without it "moved" and "read" can share a
@@ -343,7 +423,7 @@ func TestHealthChecks_EveryCheckHasAStamp(t *testing.T) {
 	}
 
 	for _, b := range checkBumpers() {
-		t.Run(b.field, func(t *testing.T) {
+		t.Run(b.name(), func(t *testing.T) {
 			p := newHealthPlugin()
 			for field, at := range p.checkStamps() {
 				if !at.IsZero() {
