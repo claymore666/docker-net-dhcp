@@ -713,6 +713,26 @@ out=$(bash "$CHECK" "$DIR/4c-family-ok.md" "$DIR/4c-family-ok.go" "$M4" "$F4" 2>
 [ $rc -eq 0 ] && ok "a family row with a yes/no value and no imperative passes" \
                || no "a plain family row returned $rc (: $out)"
 
+# (f) the PASS line's judged-row tally. It is the population 4c stands
+# behind, and the only place that number is derived rather than typed --
+# the PR body and the handover cite this line instead of carrying a
+# count of their own. A tally that never moved would read as a
+# measurement, so it is checked by DIFFERENCE against a document with one
+# more counter row in it.
+mkdoc "$DIR/4c-tally-a.md" Four "$FOUR" "$FOUR" "$FOUR"; mkgo "$DIR/4c-tally.go" 4
+DOC_FAMILY_MID=toy_counter \
+    mkdoc "$DIR/4c-tally-b.md" Four "$FOUR" "$FOUR" "$FOUR"
+judged() { printf '%s' "$1" | sed -nE 's/.*over ([0-9]+) judged counter row\(s\).*/\1/p'; }
+out=$(bash "$CHECK" "$DIR/4c-tally-a.md" "$DIR/4c-tally.go" "$M4" "$F4" 2>&1)
+n_a=$(judged "$out")
+out=$(bash "$CHECK" "$DIR/4c-tally-b.md" "$DIR/4c-tally.go" "$M4" "$F4" 2>&1)
+n_b=$(judged "$out")
+if [ -n "$n_a" ] && [ -n "$n_b" ] && [ "$n_b" -eq $((n_a + 1)) ]; then
+    ok "the PASS line's judged-row tally moves with the table ($n_a -> $n_b)"
+else
+    no "the judged-row tally did not move by one: '$n_a' then '$n_b'"
+fi
+
 # (a), the other direction, and the vocabulary's own positive control: a
 # `-` row with NO imperative needs no sentence. A gate demanding one
 # from every unclassified row would flag most of the table.
