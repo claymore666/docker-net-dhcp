@@ -35,15 +35,17 @@ var (
 	// ErrNoLease indicates a DHCP lease was not obtained from dhcpcd
 	ErrNoLease = errors.New("no lease was acquired")
 
-	// ErrIPv6Beta refuses ipv6=true for the whole of the 2.0 beta.
+	// ErrIPv6Unsupported refuses ipv6=true for the whole of the 2.0
+	// line, until IPv6 parity lands (#911).
 	//
-	// The beta runs the in-house DHCP library, which implements DHCPv4;
-	// DHCPv6 is written next and lands at M7. The refusal is at
+	// 2.0 runs the in-house DHCP library, which implements DHCPv4;
+	// DHCPv6 is written next and returns with #911, before
+	// v2.0.0-rc2. The refusal is at
 	// CreateNetwork and not at the first container because that is the
 	// only place an operator finds out in time to do something about
 	// it: an endpoint that quietly comes up without the v6 address the
 	// network asked for is the exact failure this names out loud.
-	ErrIPv6Beta = errors.New("ipv6=true is not supported by the 2.0 beta: this build leases through the in-house DHCP library, which is IPv4-only until milestone M7. Create the network without ipv6, or stay on the 1.x line for DHCPv6")
+	ErrIPv6Unsupported = errors.New("ipv6=true is not supported by the 2.0 line: this build leases through the in-house DHCP library, which is IPv4-only until IPv6 parity (#911). Create the network without ipv6, or stay on the 1.x line for DHCPv6")
 	// ErrNoHint indicates missing state from the CreateEndpoint stage in Join
 	ErrNoHint = errors.New("missing CreateEndpoint hints")
 	// ErrNotVEth indicates a host link was unexpectedly not a veth interface

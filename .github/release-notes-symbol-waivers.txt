@@ -84,7 +84,7 @@ NetworkInspectOptions
 #   extraction in pkg/udhcpc" — a package that had already been renamed
 #   to pkg/dhcp by the time the symbol was deleted. BuildEvent turned
 #   dhcpcd's hook environment into the JSON event the plugin consumed;
-#   the 2.0 beta has no dhcpcd and no hook, so the event builder went
+#   2.0 has no dhcpcd and no hook, so the event builder went
 #   with cmd/dhcp-handler and the library reports the same transitions
 #   as typed events on a channel. The sentence is a true record of what
 #   that release shipped and must not be rewritten to match a later

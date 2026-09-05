@@ -108,7 +108,7 @@ The host's NIC config (IP, routes, netplan/`systemd-networkd`,
   against the segment (v1.6.0+, #524) by resolving the address from the
   parent, and a host answers an ordinary ARP request only if it can route
   a reply back to the sender, so an address-less parent left the check
-  *undetermined*. Since the 2.0 beta the DHCP client runs RFC 5227 from
+  *undetermined*. Since 2.0 the DHCP client runs RFC 5227 from
   inside the container instead, and a §2.1.1 Probe carries an all-zero
   sender protocol address that Linux answers for any local target without
   consulting a route. A bare parent is fine. See

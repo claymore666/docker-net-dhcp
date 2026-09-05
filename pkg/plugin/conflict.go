@@ -40,7 +40,7 @@ const (
 // from that answer. There is no "before use" left to wait for, so
 // holding the lease back a second time buys nothing and costs the
 // whole probe window on every container start — MEASURED at ~6s on
-// the beta lane 2026-09-04, which is what broke the resolv.conf and
+// the 2.x lane 2026-09-04, which is what broke the resolv.conf and
 // MTU propagation tests: the Join manager reports its lease, and
 // everything the plugin writes into the container hangs off that.
 //

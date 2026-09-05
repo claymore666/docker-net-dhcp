@@ -178,12 +178,12 @@ they prove:
   in each attachment mode. ipvlan active since v0.7.0 (#62: `-B`
   broadcast flag + no MAC-echo on ipvlan).
 - `ipv6_refused_test.go` — what is left of the DHCPv6 suite in the
-  IPv4-only beta: an operator asking for IPv6 is TOLD at
+  IPv4-only until IPv6 parity: an operator asking for IPv6 is TOLD at
   `docker network create`, rather than getting a network that quietly
   does nothing with it. The ten dual-stack tests that used to live in
   `ipv6_test.go` and `dhcpv6_noaddress_modes_test.go` drove a v6 client
   this build does not contain; the file's own header names each one and
-  where it returns at M7. None is skipped and none passes vacuously.
+  where it returns (#911). None is skipped and none passes vacuously.
 - `concurrency_test.go` — N simultaneous containers, distinct leases.
 
 **Lease lifecycle & identity**
@@ -212,7 +212,7 @@ they prove:
   renew. The 1.x client keyed its pidfile and control socket on the
   interface name alone, so without per-client runtime-dir isolation the
   second container's client forwarded its argv to the first one's socket
-  and exited 0 (#330). The 2.0 beta's client is a goroutine holding its
+  and exited 0 (#330). The 2.0 client is a goroutine holding its
   own socket, with no pidfile, no control socket and no shared runtime
   directory, so that particular collision cannot recur — the test is kept
   because the property it asserts (two containers on one network, same

@@ -126,7 +126,7 @@ is one added and two removed, not one added. `OUTAGE_TICK` and
 `OUTAGE_GRACE` are gone from the manifest, so `docker plugin set
 OUTAGE_TICK=…` is refused by the daemon rather than accepted and ignored.
 
-**Nothing was dropped, and the measurement says why.** The beta asks first
+**Nothing was dropped, and the measurement says why.** 2.0 asks first
 for the sandbox key the daemon publishes, so that a host where that works
 can attach without the container's PID at all. For an attach it does not
 work: the plugin's read-only `/var/run/docker` is a bind mount taken when
@@ -164,7 +164,7 @@ why a proxy on its own unix socket is *not* reachable are in `SECURITY.md`.
 
 | change | effect |
 | --- | --- |
-| `docker network create … -o ipv6=true` | **Refused**, in every mode, with an error naming the beta. The refusal is keyed on the decoded option, so `ipv6`, `IPv6` and `Ipv6` are all refused |
+| `docker network create … -o ipv6=true` | **Refused**, in every mode, with an error naming the 2.0 line and where DHCPv6 is tracked. The refusal is keyed on the decoded option, so `ipv6`, `IPv6` and `Ipv6` are all refused |
 | `--ip6` / `Interface.AddressIPv6` on an endpoint | Ignored. There is no DHCPv6 exchange to carry a preferred address |
 | `docker network create --ipv6` | Unchanged: Docker's own flag does not work with the null IPAM driver, and never did |
 
@@ -332,9 +332,9 @@ type stays `application/json`.
 
 ### Changed on the wire
 
-Each line names the v1.9.0 behaviour and the beta's.
+Each line names the v1.9.0 behaviour and 2.0's.
 
-| behaviour | v1.9.0 | 2.0 beta |
+| behaviour | v1.9.0 | v2.0.0 |
 | --- | --- | --- |
 | Parameter request list (option 55) | The 16 codes 1, 2, 3, 6, 12, 15, 26, 28, 42, 66, 67, 100, 101, 119, 121, 252, asked for by name in the external client's config; the order it put them in was that client's business | The same 16 codes minus **12** (the host name is sent, not requested back) plus **33** (static routes), and the plugin controls the order: **121 first**, which RFC 3442 requires of a client that implements it |
 | Legacy static routes (option 33) | Not requested and not honoured | Requested, and used when option 121 is absent or does not decode. Option 121 supersedes it when both arrive |

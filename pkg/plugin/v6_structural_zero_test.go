@@ -15,12 +15,12 @@ import (
 	"github.com/claymore666/docker-net-dhcp/pkg/util"
 )
 
-// endpoints.go carries a claim about what the 2.0 beta ships for the
+// endpoints.go carries a claim about what 2.0 ships for the
 // four DHCPv6 health counters and the `config` audit kind, verbatim:
 //
-//	EVERY v6 FIELD BELOW IS STRUCTURALLY ZERO IN THE 2.0 BETA
+//	EVERY v6 FIELD BELOW IS STRUCTURALLY ZERO IN 2.0
 //	... A network created with ipv6=true is refused at CreateNetwork
-//	(P-8, returns at M7). So no v6 client is ever constructed and
+//	(P-8, returns with #911). So no v6 client is ever constructed and
 //	nothing increments any of these -- including dhcpv6_config_only,
 //	dhcpv6_not_offered, dhcpv6_no_router_advert and
 //	ipv6_link_enable_failures further down, and the `config` kind in
@@ -47,7 +47,7 @@ import (
 // matters as much and is asserted as the control: the SAME options
 // without ipv6 must not be refused, or the test would pass just as
 // well against a validator that rejects everything.
-func TestIPv6Beta_EveryModeRefusesIPv6(t *testing.T) {
+func TestIPv6Unsupported_EveryModeRefusesIPv6(t *testing.T) {
 	// Each row is otherwise VALID for its mode, so a refusal can only
 	// come from the ipv6 arm. The control below proves that.
 	for _, tc := range []struct {
@@ -71,8 +71,8 @@ func TestIPv6Beta_EveryModeRefusesIPv6(t *testing.T) {
 			v6 := tc.opts
 			v6.IPv6 = true
 			err := validateModeOptions(v6)
-			if !errors.Is(err, util.ErrIPv6Beta) {
-				t.Fatalf("validateModeOptions(ipv6=true) = %v, want ErrIPv6Beta. This "+
+			if !errors.Is(err, util.ErrIPv6Unsupported) {
+				t.Fatalf("validateModeOptions(ipv6=true) = %v, want ErrIPv6Unsupported. This "+
 					"refusal is the premise under the structural-zero claim in "+
 					"endpoints.go: without it a v6 network can be created and the four "+
 					"DHCPv6 counters and the `config` audit kind stop being "+
@@ -202,7 +202,7 @@ func TestV6StructuralZero_TheWritersAreStillTheEnumeratedFour(t *testing.T) {
 		t.Fatal("found no writer of any structurally-zero v6 counter and no `config` audit " +
 			"write in pkg/plugin. Either the identifiers were renamed out from under this " +
 			"test, or the writers really are gone -- in which case the endpoints.go comment " +
-			"that says M7 restores them unchanged is now wrong too")
+			"that says #911 restores them unchanged is now wrong too")
 	}
 
 	for s, pos := range got {
@@ -218,7 +218,7 @@ func TestV6StructuralZero_TheWritersAreStillTheEnumeratedFour(t *testing.T) {
 		if _, ok := got[s]; !ok {
 			t.Errorf("the endpoints.go structural-zero claim names %s writing %s in %s, and "+
 				"it is gone. If it was deleted rather than moved, the comment's promise that "+
-				"M7 restores these writers unchanged no longer holds.", s.fn, s.what, s.file)
+				"#911 restores these writers unchanged no longer holds.", s.fn, s.what, s.file)
 		}
 	}
 }

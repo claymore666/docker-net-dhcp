@@ -117,18 +117,18 @@ var errorCases = []struct {
 		wantSubstr: "leaving no server to lease from",
 	},
 	{
-		// IPv4-only beta. The refusal is at CreateNetwork and not at
+		// IPv4-only until IPv6 parity. The refusal is at CreateNetwork and not at
 		// the first container because this is the only place an
 		// operator finds out in time: an endpoint that quietly comes
 		// up without the v6 address the network asked for is the exact
 		// failure this names out loud.
-		name: "IPv6RefusedInTheBeta",
+		name: "IPv6RefusedUntilParity",
 		opts: map[string]string{
 			"mode":   "macvlan",
 			"parent": harness.HostVeth,
 			"ipv6":   "true",
 		},
-		wantSubstr: "IPv4-only until milestone M7",
+		wantSubstr: "IPv4-only until IPv6 parity (#911)",
 	},
 	{
 		// The same refusal under a different SPELLING of the key.
@@ -145,7 +145,7 @@ var errorCases = []struct {
 			"parent": harness.HostVeth,
 			"IPv6":   "true",
 		},
-		wantSubstr: "IPv4-only until milestone M7",
+		wantSubstr: "IPv4-only until IPv6 parity (#911)",
 	},
 }
 

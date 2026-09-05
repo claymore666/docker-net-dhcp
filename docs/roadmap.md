@@ -22,12 +22,13 @@ for exactly that reason.
 
 ## Where the project is today
 
-**This branch is the 2.0 beta.** The plugin leases through the
-project's own in-tree DHCP client library instead of an external client
-process, and the beta implements **DHCPv4 only**: `ipv6=true` is
-refused at `docker network create` and DHCPv6 lands in a later beta
-milestone. Everything else in this section describes the 1.x line the
-beta is replacing, feature for feature, and stays true of it.
+**This branch is the 2.0 line, published as pre-release `v2.0.0-rc1`.**
+The plugin leases through the project's own in-tree DHCP client library
+instead of an external client process, and 2.0 implements **DHCPv4
+only** until IPv6 parity lands: `ipv6=true` is refused at
+`docker network create` and DHCPv6 returns with [#911], before
+`v2.0.0-rc2`. Everything else in this section describes the 1.x line
+2.0 is replacing, feature for feature, and stays true of it.
 
 Bridge, macvlan and ipvlan attachment; DHCPv4 and DHCPv6; addresses that
 survive `docker restart`, plugin restart and daemon restart; a
@@ -155,8 +156,8 @@ is recorded so a contributor can read it before writing the PR.
   the plugin's privileges on upgrade, and that trade is the default
   answer, not a one-off.
 
-    The 2.0 beta is what this rule costs when it is met head-on. The
-    beta **does** add `CAP_NET_RAW` to `config.json`, and every
+    2.0 is what this rule costs when it is met head-on. The 2.0 line
+    **does** add `CAP_NET_RAW` to `config.json`, and every
     operator upgrading onto it re-approves. It buys no feature: the
     DHCP exchange runs on an interface with no address, which requires
     an `AF_PACKET` socket on the ordinary path for every endpoint,
@@ -168,7 +169,7 @@ is recorded so a contributor can read it before writing the PR.
     and pay the re-approval out loud when the plugin genuinely needs
     the grant it is already exercising. See [#725], whose title says
     the capability is *already granted* — true of the effective set the
-    process runs with, and the reason the beta's addition buys no power,
+    process runs with, and the reason 2.0's addition buys no power,
     only the prompt.
 - **It will not detect a conflicting container on the same host.** RFC
   5227 runs on the container's own link, and macvlan's parent/child
@@ -203,6 +204,7 @@ someone asks.
 [#815]: https://github.com/claymore666/docker-net-dhcp/issues/815
 [#868]: https://github.com/claymore666/docker-net-dhcp/issues/868
 [#875]: https://github.com/claymore666/docker-net-dhcp/issues/875
+[#911]: https://github.com/claymore666/docker-net-dhcp/issues/911
 [#111]: https://github.com/claymore666/docker-net-dhcp/issues/111
 [#125]: https://github.com/claymore666/docker-net-dhcp/issues/125
 [#218]: https://github.com/claymore666/docker-net-dhcp/issues/218

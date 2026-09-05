@@ -1106,7 +1106,7 @@ func AllowedUnprobedLeases() int32 {
 // allowance to "only if the plugin restarted" would need the floor to
 // know about restarts it cannot see, and widening the row to fire
 // inside the declaration reddens correct builds — which is the failure
-// the allowance was added for, MEASURED on the beta lane 2026-09-04.
+// the allowance was added for, MEASURED on the 2.x lane 2026-09-04.
 func AllowStagedConflicts(n int32) {
 	acdAllowance.mu.Lock()
 	defer acdAllowance.mu.Unlock()
@@ -1305,7 +1305,7 @@ func ACDCensusFindings(h *HealthResponse, allowedSendFailures, allowedUnprobed, 
 	// conflict, so the row's whole domain was the second cause. Now the
 	// conflict cases stage conflicts on purpose, and a shard that
 	// recycles the plugin afterwards -- which several do -- produces the
-	// first cause on a correct build. MEASURED on the beta lane
+	// first cause on a correct build. MEASURED on the 2.x lane
 	// 2026-09-04: two staged conflicts in the log, a counter reset out
 	// from under them, and two red shards saying address_conflicts was
 	// dropped when it had not been.

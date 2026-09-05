@@ -3,10 +3,11 @@
 
 //go:build integration
 
-// What is left of the DHCPv6 suite in the IPv4-only beta.
+// What is left of the DHCPv6 suite while 2.0 is IPv4-only.
 //
-// The 2.0 beta leases through the in-house DHCP library, which
-// implements DHCPv4; DHCPv6 is written next and lands at M7. Ten tests
+// 2.0 leases through the in-house DHCP library, which implements
+// DHCPv4; DHCPv6 is written next and returns with #911, before
+// v2.0.0-rc2. Ten tests
 // across ipv6_test.go and dhcpv6_noaddress_modes_test.go drove a v6
 // dhcpcd client alongside the v4 one, and every one of them was a test
 // of a client this build does not contain. None is skipped and none is
@@ -18,8 +19,8 @@
 // What the retired tests were, and where each one goes:
 //
 //   - TestLifecycleMacvlan_IPv6_GoldenPath, TestLifecycleBridge_IPv6_GoldenPath
-//     — a container gets a v6 address in each mode. Returns at M7 as
-//     the golden path of the v6 client.
+//     — a container gets a v6 address in each mode. Returns with #911
+//     as the golden path of the v6 client.
 //   - TestTombstoneRestart_PreservesIPv6 — v6 stickiness across a
 //     container restart. The v4 half of the same property is still
 //     covered by TestTombstoneRestart_PreservesMACAndIP.
@@ -41,7 +42,7 @@
 // TestV6Fixture_ModesComeUpAsRequested is NOT retired: it asserts that
 // the fixture's own dnsmasq instances advertise the segment shapes the
 // suite claims they do, which is a statement about the fixture and not
-// about the plugin. It keeps the v6 fixture exercised so that the M7
+// about the plugin. It keeps the v6 fixture exercised so that the #911
 // work does not start by re-debugging it.
 package integration
 
@@ -57,7 +58,7 @@ import (
 )
 
 // TestIPv6_RefusedAtCreateWithTheMilestoneNamed is the whole of IPv6 in
-// the beta.
+// 2.0.
 //
 // It asserts three things that are separate failures:
 //
@@ -65,7 +66,7 @@ import (
 //     client is the silent regression this milestone is most likely to
 //     ship: every container comes up, `docker inspect` shows no
 //     GlobalIPv6Address, and nothing anywhere says why.
-//  2. The error names the BETA and the MILESTONE. An operator reading
+//  2. The error names the LINE and WHERE IPv6 IS TRACKED. An operator reading
 //     "invalid option" has no way to tell a typo from a feature that
 //     is coming back, and the answer decides whether they stay on 1.x.
 //  3. No network is left behind. A refusal that persisted the network
@@ -99,8 +100,8 @@ func TestIPv6_RefusedAtCreateWithTheMilestoneNamed(t *testing.T) {
 	got := err.Error()
 	// Two independent halves of the message, asserted separately so a
 	// message that kept one and lost the other cannot pass. The
-	// milestone is the half an operator acts on.
-	for _, want := range []string{"2.0 beta", "M7"} {
+	// tracking reference is the half an operator acts on.
+	for _, want := range []string{"2.0 line", "#911"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("the refusal does not name %q, so an operator cannot tell "+
 				"a rejected option from a feature that is coming back: %s", want, got)

@@ -328,7 +328,7 @@ type dhcpManager struct {
 	// Under ipMu, which is released before the client is asked
 	// anything; see healthView.
 	//
-	// v6 has no counterpart: the beta refuses IPv6 before a client is
+	// v6 has no counterpart: 2.0 refuses IPv6 before a client is
 	// constructed (see NewDHCPClient), so a v6 field would be nil by
 	// construction rather than by observation.
 	clientV4 endpointClient
@@ -1129,7 +1129,7 @@ func (m *dhcpManager) setupClient(v6 bool) (chan error, error) {
 			}
 		}
 	} else if _, v6Addr := m.lastIPs(); v6Addr != nil && v6Addr.IP != nil {
-		// IPv6 is refused at CreateNetwork in the beta; this branch is
+		// IPv6 is refused at CreateNetwork in 2.0; this branch is
 		// reachable only for a network created by an earlier build,
 		// and pkg/dhcp refuses it loudly a few lines below.
 		preferredV6 = v6Addr.IP.String()

@@ -778,13 +778,13 @@ type HealthResponse struct {
 	// ClientStopFailuresV4 is the v4 half of ClientStopFailures.
 	ClientStopFailuresV4 int32 `json:"client_stop_failures_v4"`
 
-	// EVERY v6 FIELD BELOW IS STRUCTURALLY ZERO IN THE 2.0 BETA, and
+	// EVERY v6 FIELD BELOW IS STRUCTURALLY ZERO IN 2.0, and
 	// that is the reason it is written here rather than left for a
 	// reader to work out from an empty graph.
 	//
-	// The beta leases through the in-house library, which speaks
+	// 2.0 leases through the in-house library, which speaks
 	// DHCPv4; a network created with ipv6=true is refused at
-	// CreateNetwork (P-8, returns at M7). So no v6 client is ever
+	// CreateNetwork (P-8, returns with #911). So no v6 client is ever
 	// constructed and nothing increments any of these -- including
 	// dhcpv6_config_only, dhcpv6_not_offered, dhcpv6_no_router_advert
 	// and ipv6_link_enable_failures further down, and the `config`
@@ -793,7 +793,7 @@ type HealthResponse struct {
 	//
 	// A zero here therefore means "not reachable in this build", NOT
 	// "nothing went wrong". The fields are kept rather than deleted
-	// because the M7 client restores their writers unchanged and
+	// because the #911 client restores their writers unchanged and
 	// because every one of them is a documented row of
 	// docs/reference.md; deleting and re-adding a documented counter
 	// costs two documentation changes to end where it started.

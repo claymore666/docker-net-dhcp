@@ -74,7 +74,7 @@ fi
 # would leave the gate green over ten unrelated toolchain files.
 #
 # The list was `net-dhcp dhcp-handler` until 2.0. dhcp-handler was the
-# hook binary dhcpcd exec'd on every state change; the beta leases
+# hook binary dhcpcd exec'd on every state change; 2.0 leases
 # in-process and the library reports state changes on a channel, so
 # there is no process to exec and cmd/dhcp-handler is deleted. One name
 # is enough for what this guard is for — it is the sweep's own

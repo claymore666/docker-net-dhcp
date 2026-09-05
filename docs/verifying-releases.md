@@ -216,7 +216,7 @@ sha256sum rootfs/usr/sbin/net-dhcp
 
 **One binary is the 2.0 shape; a 1.x tarball carries two.** The second
 was `dhcp-handler`, the helper the external DHCP client execed for each
-lease event. The 2.0 beta leases in-process and builds `net-dhcp` alone.
+lease event. 2.0 leases in-process and builds `net-dhcp` alone.
 Verifying a **1.x** release means adding
 `out/usr/local/src/docker-net-dhcp/bin/dhcp-handler` to step 3 and
 `rootfs/usr/lib/net-dhcp/dhcp-handler` to step 4, and comparing both

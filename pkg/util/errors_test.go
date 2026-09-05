@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 )
 
@@ -68,5 +69,39 @@ func TestErrToStatus_Wrapped(t *testing.T) {
 	}
 	if got := ErrToStatus(fmt.Errorf("missing: %w", ErrNoHint)); got != http.StatusConflict {
 		t.Errorf("wrapped ErrNoHint should map to 409, got %d", got)
+	}
+}
+
+// TestErrIPv6Unsupported_NamesTheLineAndWhereIPv6IsTracked pins the two
+// halves of the refusal an operator gets from `-o ipv6=true`.
+//
+// It is a test about the TEXT, which is unusual and is the point: this
+// error is the whole of the IPv6 story for a 2.0 operator. Reading
+// "invalid option" they cannot tell a typo from a feature that is
+// coming back, and that answer decides whether they stay on 1.x. So
+// the message owes them two facts -- which line refuses, and where the
+// work is tracked -- and each is asserted on its own, because a
+// message that kept one and lost the other would pass a single
+// substring check.
+//
+// The integration suite asserts the same property end to end
+// (TestIPv6_RefusedAtCreateWithTheMilestoneNamed, against what `docker
+// network create` actually returns). This is the half that runs
+// without a daemon, so a rewrite of the string is caught in the unit
+// lane rather than at the next integration run.
+func TestErrIPv6Unsupported_NamesTheLineAndWhereIPv6IsTracked(t *testing.T) {
+	for _, c := range []struct {
+		what string
+		err  error
+	}{
+		{"the CreateNetwork refusal", ErrIPv6Unsupported},
+	} {
+		got := c.err.Error()
+		for _, want := range []string{"2.0 line", "#911"} {
+			if !strings.Contains(got, want) {
+				t.Errorf("%s does not name %q, so an operator cannot tell a rejected "+
+					"option from a feature that is coming back: %s", c.what, want, got)
+			}
+		}
 	}
 }

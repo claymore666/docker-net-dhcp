@@ -342,15 +342,18 @@ jobs:
       # lease file that does not exist, two plugin settings the manifest
       # no longer declares.
       #
+      # Two words this branch retired: `dhcpcd`, which it does not
+      # contain, and `beta`, which it was never called. Each carries its
+      # own domain -- dhcpcd over documents, beta over documents AND the
+      # Go tree, where it reached an error string an operator reads --
+      # and its own allowances, all with dated reasons in the script.
       # The gate is keyed on the SPELLING and says so in its own header:
-      # a page can describe the deleted mechanism perfectly without the
-      # word, and this is blind to that. It is a backstop against the
-      # word coming back, not evidence that the prose is true. The
-      # allowlist is two entries -- RELEASE_NOTES.md below its first 1.x
-      # heading, and the 1.x release runbook -- each with a dated reason
-      # in the script.
-      - name: No dhcpcd in a living document
-        run: bash scripts/check-no-dhcpcd-word.sh
+      # a page can describe the deleted mechanism, or call 2.0 "the
+      # preview", without either word, and this is blind to that. It is
+      # a backstop against a word coming back, not evidence that the
+      # prose is true.
+      - name: No retired word on this branch
+        run: bash scripts/check-retired-words.sh
 
       # RELEASE_NOTES.md merges last and describes code that is still
       # moving, so it is the one document whose claims can go stale

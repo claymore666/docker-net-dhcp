@@ -17,11 +17,12 @@ LAN as first-class hosts, addressable like any other machine. Bridge,
 macvlan, and ipvlan attachment modes.
 
 > [!NOTE]
-> **This branch is the 2.0 beta, and it is IPv4-only.** The plugin
+> **This branch is the 2.0 line, published as pre-release `v2.0.0-rc1`,
+> and it is IPv4-only until IPv6 parity lands (#911).** The plugin
 > leases through the project's own in-tree DHCP client library instead
 > of an external client process. `ipv6=true` is refused at
-> `docker network create`, and DHCPv6 returns in a later beta
-> milestone; the 1.x line is where DHCPv6 works today. Every page in
+> `docker network create`, and DHCPv6 returns with #911, before
+> `v2.0.0-rc2`; the 1.x line is where DHCPv6 works today. Every page in
 > this branch describes this build.
 
 > **This is a maintained fork** of [`devplayer0/docker-net-dhcp`][fork-parent]
@@ -85,7 +86,7 @@ It requests `host` networking, the host PID namespace, the Docker
 socket, a bind mount of the state directory above, a read-only bind
 mount of `/var/run/docker` (v1.6.0+), and
 `CAP_NET_ADMIN`/`CAP_NET_RAW`/`CAP_SYS_ADMIN`/`CAP_SYS_PTRACE` — grant
-them to proceed. `CAP_NET_RAW` is requested from the 2.0 beta onward,
+them to proceed. `CAP_NET_RAW` is requested from 2.0 onward,
 so an upgrade onto it asks you to approve the privilege set again; what
 that does and does not change is in
 [SECURITY.md](SECURITY.md#scope--what-this-plugin-is).

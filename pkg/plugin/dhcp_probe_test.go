@@ -100,7 +100,7 @@ func TestPreflightProbeBudget_CoversOneLostDiscover(t *testing.T) {
 // it inside RFC 5227 section 2.1 (PROBE_WAIT 1s + two intervals of up
 // to PROBE_MAX 2s + ANNOUNCE_WAIT 2s), so a probe that inherits the
 // network's mode fails `docker network create -o validate_dhcp=true`
-// against a server that answered correctly. MEASURED on the beta lane
+// against a server that answered correctly. MEASURED on the 2.x lane
 // 2026-09-04 at 8.1s.
 //
 // The mode is asserted against proto.ConflictOff, and separately

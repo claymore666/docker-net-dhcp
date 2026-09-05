@@ -235,7 +235,7 @@ func preflightProbeOptions(probeMAC net.HardwareAddr, pol serverPolicy) *dhcp.DH
 		// broken one: preflightProbeBudget is 8s and conflict_check=wait
 		// spends up to 7 of them waiting out a check whose answer
 		// nothing reads, so validate_dhcp=true failed against a
-		// perfectly good DHCP server. MEASURED on the beta lane
+		// perfectly good DHCP server. MEASURED on the 2.x lane
 		// 2026-09-04 (TestPreflightProbe_PassesOnReachableServer, 8.1s).
 		ConflictMode: proto.ConflictOff,
 	}
