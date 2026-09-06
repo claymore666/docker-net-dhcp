@@ -7,7 +7,7 @@ require (
 	github.com/docker/docker v28.5.2+incompatible
 	github.com/gorilla/handlers v1.5.2
 	github.com/mitchellh/mapstructure v1.5.0
-	github.com/sirupsen/logrus v1.10.1
+	github.com/sirupsen/logrus v1.10.2
 	github.com/vishvananda/netlink v1.3.1
 	github.com/vishvananda/netns v0.0.5
 	golang.org/x/sys v0.47.0
