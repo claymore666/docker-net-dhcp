@@ -231,8 +231,7 @@ Sep  5 23:33:16 dnsmasq-dhcp[747532]: RTR-ADVERT(br0) fd00:6470:6865::
 
 	logNoRA = `Sep  5 23:33:22 dnsmasq-dhcp[747748]: DHCP, IP range 192.168.103.10 -- 192.168.103.99, lease time 2m
 Sep  5 23:33:22 dnsmasq-dhcp[747748]: DHCPv6, IP range fd00:6470:6865::10 -- fd00:6470:6865::99, lease time 2m
-Sep  5 23:33:24 dnsmasq-dhcp[747748]: 658188 DHCPSOLICIT(br0) 00:03:00:01:ce:41:ae:6d:50:36 
-Sep  5 23:33:24 dnsmasq-dhcp[747748]: 658188 DHCPADVERTISE(br0) fd00:6470:6865::90 00:03:00:01:ce:41:ae:6d:50:36 
+Sep  5 23:33:24 dnsmasq-dhcp[747748]: 658188 DHCPSOLICIT(br0) 00:03:00:01:ce:41:ae:6d:50:36 ignored
 `
 
 	logManagedSilent = `Sep  5 23:33:27 dnsmasq-dhcp[747851]: DHCP, IP range 192.168.103.10 -- 192.168.103.99, lease time 2m
@@ -275,10 +274,16 @@ func TestV6ExchangeFindings_EachModesOwnLogPassesAndTheOthersDoNot(t *testing.T)
 	// here so it cannot widen unnoticed.
 	passesForeignLogs := map[V6Mode]map[V6Mode]bool{
 		V6SLAAC: {V6SLAAC: true},
-		// A no-RA segment's client-dependent evidence is a SOLICIT, and
-		// the managed log has one too: the two modes differ in whether
-		// the segment ADVERTISES, which is the fixture-time half.
-		V6NoRA: {V6NoRA: true, V6Managed: true, V6ManagedSilent: true},
+		// A no-RA segment and a managed-silent one produce THE SAME
+		// DHCP log: a SOLICIT that is ignored and nothing else. They
+		// differ in whether the segment ADVERTISES, which is the
+		// fixture-time half and is asserted there (AssertNoRAWithin,
+		// AwaitRAAfter) rather than here. The pair is declared in both
+		// directions because the property is symmetric, and a row that
+		// named only one direction would be claiming a discrimination
+		// the log cannot carry.
+		V6NoRA:          {V6NoRA: true, V6ManagedSilent: true},
+		V6ManagedSilent: {V6ManagedSilent: true, V6NoRA: true},
 	}
 
 	for _, mode := range V6Modes() {

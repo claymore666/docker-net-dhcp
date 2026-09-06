@@ -157,9 +157,21 @@ func (m V6Mode) rangeArgs() []string {
 			"--enable-ra",
 		}
 	case V6NoRA:
-		// --enable-ra deliberately omitted; that is the whole mode.
+		// --enable-ra deliberately omitted; that is the first half of
+		// the mode. The ignore is the second, and it is not optional:
+		// without it dnsmasq ANSWERS the Solicit this plugin sends
+		// after router discovery gives up, the endpoint gets an
+		// address, and the segment stops being one where no v6 address
+		// is obtainable. MEASURED on the lane 2026-09-06: the client
+		// solicited at 11s and was handed fd00:6470:6865::61, so the
+		// arm that exists to observe dhcpv6_no_router_advert never
+		// reached the absence path at all.
+		//
+		// See V6ManagedSilent for why the ignore is spelled this way
+		// and why the obvious `set:`/`tag:` pair does not work.
 		return []string{
 			"--dhcp-range=" + V6PoolStartV6 + "," + V6PoolEndV6 + "," + LeaseTime,
+			"--dhcp-ignore=tag:dhcpv6",
 		}
 	case V6ManagedSilent:
 		// Identical to V6Managed plus one directive. `dhcpv6` is a tag

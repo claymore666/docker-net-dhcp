@@ -205,6 +205,16 @@ func TestDHCPv6_NoAddressModes_StartTheEndpoint(t *testing.T) {
 					"the counter verdict above is attributed to a segment that was "+
 					"not in the mode this subtest asked for", tc.mode, gotRA, tc.wantRA)
 			}
+			// The DHCPv6 half of the same claim, from the same log.
+			// The advertisement check above says what the ROUTER did;
+			// this says what the SERVER did, and on all three of these
+			// segments the thing that must be true is that no address
+			// was ever handed out. Without it a segment that quietly
+			// leased one would still satisfy every assertion above:
+			// the counters would be flat, and flat is what the
+			// wantRA=false arm reads as a failure and the wantRA=true
+			// arm reads as one too.
+			f.AssertExchange(30 * time.Second)
 		})
 	}
 }

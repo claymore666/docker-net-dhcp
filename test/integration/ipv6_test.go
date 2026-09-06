@@ -685,16 +685,33 @@ func TestIPvlan_DHCPv6IdentityIsPerEndpointAndSurvivesARestart(t *testing.T) {
 	if v6A == "" || v6B == "" {
 		t.Fatalf("an ipvlan container has no global IPv6: a=%q b=%q", v6A, v6B)
 	}
-	t.Logf("ipvlan endpoints: a=%s (mac %s) b=%s (mac %s)", v6A, macA, v6B, macB)
+	linkA := containerLinkMAC(t, ctx, idA)
+	linkB := containerLinkMAC(t, ctx, idB)
+	t.Logf("ipvlan endpoints: a=%s (docker mac %q, link mac %s) b=%s (docker mac %q, link mac %s)",
+		v6A, macA, linkA, v6B, macB, linkB)
 
-	// The premise. If the two endpoints do NOT share a MAC then this
-	// test is measuring something else entirely, and the claim below
-	// would be satisfied by the MAC-derived identity 1.9.0 used.
-	if macA != macB {
+	// The premise, READ FROM THE LINK. Docker reports no MAC at all for
+	// an ipvlan endpoint, so comparing what it reports would compare
+	// two empty strings and pass whatever the kernel had done. What the
+	// claim below needs is that the two links really do wear the same
+	// address; if they do not, this test cannot distinguish a
+	// per-endpoint identity from a MAC-derived one and would be
+	// satisfied by the 1.9.0 mechanism.
+	if linkA == "" || linkB == "" {
+		t.Fatalf("could not read the ipvlan links' hardware addresses (a=%q b=%q)", linkA, linkB)
+	}
+	if linkA != linkB {
 		t.Fatalf("the two ipvlan endpoints have different MACs (%s, %s), so this test "+
 			"cannot distinguish a per-endpoint identity from a MAC-derived one. An "+
 			"ipvlan L2 slave inherits the parent's MAC; if that has changed, this "+
-			"test needs rewriting rather than relaxing (#895)", macA, macB)
+			"test needs rewriting rather than relaxing (#895)", linkA, linkB)
+	}
+	// The second premise, and the one plugin-restart recovery rests on:
+	// Docker reports NO MAC for these endpoints, which is why recovery
+	// has to inherit the parent's rather than parse what it is given.
+	if macA != "" || macB != "" {
+		t.Logf("Docker now reports MACs for ipvlan endpoints (%q, %q); recoveredMAC's "+
+			"ipvlan arm is no longer the path recovery takes here", macA, macB)
 	}
 	if v6A == v6B {
 		t.Fatalf("two ipvlan containers sharing MAC %s were both handed %s. They present "+
@@ -761,8 +778,21 @@ func TestDHCPv6_ADuplicateOnTheSegmentIsRefused(t *testing.T) {
 	// hang off, and a macvlan child does not see its own parent's
 	// traffic, so an address there would be invisible to exactly the
 	// node under test.
+	//
+	// `nodad` IS LOAD-BEARING AND IS NOT A SHORTCUT. The address being
+	// added is, by construction, one the segment already has on it, so
+	// the kernel's own duplicate-address detection on THIS side finds
+	// the container and marks the address dadfailed -- an address in
+	// that state answers nothing (RFC 4862 section 5.4.3), and the
+	// squatter this test needs would sit there silent. MEASURED on the
+	// lane 2026-09-06: without it the address never left the tentative
+	// state and the test could not begin. RFC 4429 section 3.3 is the
+	// same permission spelled for optimistic addresses: a node MAY use
+	// an address it has reason to believe is unique, and here the test
+	// has the opposite reason and wants the address anyway, because
+	// being the duplicate is its whole job.
 	dup := v6 + "/64"
-	if out, err := exec.Command("ip", "-6", "addr", "add", dup, "dev", harness.DHCPSegment).CombinedOutput(); err != nil {
+	if out, err := exec.Command("ip", "-6", "addr", "add", dup, "dev", harness.DHCPSegment, "nodad").CombinedOutput(); err != nil {
 		t.Fatalf("could not put a duplicate of %s on %s: %v\n%s",
 			v6, harness.DHCPSegment, err, out)
 	}
@@ -772,7 +802,11 @@ func TestDHCPv6_ADuplicateOnTheSegmentIsRefused(t *testing.T) {
 	// The duplicate has to be answering before the restart, or the
 	// probe finds nothing and this test measures the ordinary path.
 	// A tentative address does not answer a neighbor solicitation
-	// (RFC 4862 section 5.4.3), so wait for it to leave that state.
+	// (RFC 4862 section 5.4.3), so wait for it to leave that state --
+	// which `nodad` above should make immediate. This stays as the
+	// OBSERVER of that: if the flag is ever dropped, or a kernel stops
+	// honouring it, the failure below is the reason rather than a
+	// mysterious pass on the ordinary path.
 	if !awaitAddrSettled(t, harness.DHCPSegment, v6, 15*time.Second) {
 		t.Fatalf("the duplicate %s on %s never left the tentative state, so it would "+
 			"not have answered the client's probe and this test would measure nothing",
@@ -801,6 +835,30 @@ func TestDHCPv6_ADuplicateOnTheSegmentIsRefused(t *testing.T) {
 			"declining it, and the server still believes the binding is good "+
 			"(RFC 9915 section 18.2.10)", n)
 	}
+}
+
+// containerLinkMAC reads the hardware address the container's own
+// non-loopback link wears, from inside the container.
+//
+// FROM THE LINK AND NOT FROM DOCKER, because for an ipvlan endpoint
+// Docker reports no MAC at all: the plugin never sets one (the driver
+// rejects it) and the inherited address is not in the engine's record.
+// A premise checked against what Docker reports would be comparing two
+// empty strings.
+func containerLinkMAC(t *testing.T, ctx context.Context, id string) string {
+	t.Helper()
+	for _, line := range strings.Split(harness.ExecOutput(t, ctx, id, "ip", "-o", "link", "show"), "\n") {
+		if strings.Contains(line, ": lo:") {
+			continue
+		}
+		fields := strings.Fields(line)
+		for i, f := range fields {
+			if f == "link/ether" && i+1 < len(fields) {
+				return fields[i+1]
+			}
+		}
+	}
+	return ""
 }
 
 // awaitAddrSettled waits for addr on iface to leave the tentative
