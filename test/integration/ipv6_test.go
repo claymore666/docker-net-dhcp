@@ -829,11 +829,27 @@ func TestDHCPv6_ADuplicateOnTheSegmentIsRefused(t *testing.T) {
 			"run or did not see the answer -- and the chassis installs this address with "+
 			"IFA_F_NODAD, so the kernel will not catch it either", v6)
 	}
-	if n := countLogToken(t, fixture.DnsmasqLog(), "DHCPDECLINE") - declinesBefore; n < 1 {
+	n := countLogToken(t, fixture.DnsmasqLog(), "DHCPDECLINE") - declinesBefore
+	if n < 1 {
 		t.Errorf("the server logged no DHCPDECLINE for the duplicated address (%d new "+
 			"lines). The container may have avoided the address by luck rather than by "+
 			"declining it, and the server still believes the binding is good "+
 			"(RFC 9915 section 18.2.10)", n)
+	}
+	// THE UPPER BOUND IS THE OTHER HALF OF THE SAME CLAIM, and it is
+	// what made this test pass by accident before. Declining an address
+	// and then asking for it again is a closed loop: MEASURED on the
+	// lane 2026-09-06 (run 34058213252) the exchange ran Solicit ->
+	// Advertise -> Request -> Reply -> DAD -> Decline about once a
+	// second for sixteen seconds, because the preferred address is
+	// hinted from the tombstone (#213) and a Decline does not clear the
+	// hint. Two declines are legitimate -- the server may hand the same
+	// address back to the hintless second attempt by chance, and the
+	// library's own recovery covers that -- and a dozen are the loop.
+	if n > 4 {
+		t.Errorf("the duplicated address was declined %d times. A Decline whose retry "+
+			"asks for the same address again cannot terminate; the endpoint is spending "+
+			"the daemon's whole deadline on it (RFC 9915 sections 18.2.1 and 18.2.10.1)", n)
 	}
 }
 

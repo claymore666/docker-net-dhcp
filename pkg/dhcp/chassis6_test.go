@@ -6,6 +6,7 @@ package dhcp
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/netip"
 	"testing"
 	"time"
@@ -159,7 +160,7 @@ func TestAcquireStep6(t *testing.T) {
 		Expire: now.Add(time.Hour),
 	}}
 
-	got := acquireStep6(acquired)
+	got := acquireStep6(acquired, false)
 	if !got.Done {
 		t.Error("Acquired did not end the acquisition")
 	}
@@ -170,7 +171,7 @@ func TestAcquireStep6(t *testing.T) {
 		t.Error("Acquired produced no address")
 	}
 
-	got = acquireStep6(lease.Event{Kind: lease.Configured})
+	got = acquireStep6(lease.Event{Kind: lease.Configured}, false)
 	if !got.Done {
 		t.Error("Configured did not end the acquisition; the endpoint would wait out " +
 			"the whole lease_timeout for an address the segment has already declined to offer")
@@ -183,7 +184,7 @@ func TestAcquireStep6(t *testing.T) {
 		t.Errorf("Configured produced an address %q", got.Info.IP)
 	}
 
-	got = acquireStep6(lease.Event{Kind: lease.Failed, Reason: proto.ReasonNoServer})
+	got = acquireStep6(lease.Event{Kind: lease.Failed, Reason: proto.ReasonNoServer}, false)
 	if got.Done {
 		t.Error("Failed ended the acquisition; the ladder's next attempt is the caller's " +
 			"decision and the deadline is what ends it")
@@ -194,7 +195,7 @@ func TestAcquireStep6(t *testing.T) {
 
 	// An event that says nothing about the outcome leaves the loop
 	// running: Bound, Renewed and the rest arrive on this channel too.
-	if got := acquireStep6(lease.Event{Kind: lease.Renewed}); got.Done || got.Err != nil {
+	if got := acquireStep6(lease.Event{Kind: lease.Renewed}, false); got.Done || got.Err != nil {
 		t.Errorf("Renewed ended the acquisition or carried an error: %+v", got)
 	}
 }
@@ -599,7 +600,7 @@ func (f *fakeV6Client) Router() proto.RouterObservation { return f.router }
 // clock -- both express themselves as "later than it should have been",
 // and a test that simply called the function would express that as a
 // HANG, which is a third verdict rather than a failure.
-func acquisition6Result(t *testing.T, ctx context.Context, client v6AcquisitionClient, opts *DHCPClientOptions, window, patience time.Duration) (Info, time.Duration, error) {
+func acquisition6Result(t *testing.T, ctx context.Context, client v6AcquisitionClient, opts *DHCPClientOptions, hint netip.Addr, window, patience time.Duration) (Info, time.Duration, error) {
 	t.Helper()
 
 	type result struct {
@@ -609,7 +610,7 @@ func acquisition6Result(t *testing.T, ctx context.Context, client v6AcquisitionC
 	out := make(chan result, 1)
 	start := time.Now()
 	go func() {
-		info, err := runAcquisition6(ctx, "test0", client, opts, window)
+		info, err := runAcquisition6(ctx, "test0", client, opts, hint, window)
 		out <- result{info, err}
 	}()
 
@@ -639,7 +640,7 @@ func TestRunAcquisition6_EndsOnAnAdvertisementThatOffersNoDHCPv6(t *testing.T) {
 			router: proto.RouterObservation{Seen: true},
 		}
 		_, took, err := acquisition6Result(t, context.Background(), client,
-			&DHCPClientOptions{V6: true}, 3*time.Second, 10*time.Second)
+			&DHCPClientOptions{V6: true}, netip.Addr{}, 3*time.Second, 10*time.Second)
 
 		if !errors.Is(err, ErrNoDHCPv6OnSegment) {
 			t.Fatalf("runAcquisition6 returned %v after %v, want ErrNoDHCPv6OnSegment; "+
@@ -665,7 +666,7 @@ func TestRunAcquisition6_EndsOnAnAdvertisementThatOffersNoDHCPv6(t *testing.T) {
 			}
 		}()
 		info, _, err := acquisition6Result(t, context.Background(), client,
-			&DHCPClientOptions{V6: true}, 5*time.Second, 10*time.Second)
+			&DHCPClientOptions{V6: true}, netip.Addr{}, 5*time.Second, 10*time.Second)
 
 		if err != nil {
 			t.Fatalf("runAcquisition6: %v; a managed segment answered and the acquisition "+
@@ -690,7 +691,7 @@ func TestRunAcquisition6_HasItsOwnWindow(t *testing.T) {
 
 	client := &fakeV6Client{events: make(chan lease.Event)}
 	_, took, err := acquisition6Result(t, ctx, client,
-		&DHCPClientOptions{V6: true}, 300*time.Millisecond, 10*time.Second)
+		&DHCPClientOptions{V6: true}, netip.Addr{}, 300*time.Millisecond, 10*time.Second)
 
 	if err == nil {
 		t.Fatal("runAcquisition6 produced an address from a client that never said anything")
@@ -699,5 +700,142 @@ func TestRunAcquisition6_HasItsOwnWindow(t *testing.T) {
 		t.Errorf("the acquisition ran for %v under a 300ms window; it is on the caller's "+
 			"clock, and the caller's clock outlives the deadline the daemon keeps on "+
 			"the plugin call", took)
+	}
+}
+
+// TestAcquireStep6_AConflictOnAHintedAddressEndsTheAttempt drives the
+// arm that makes the difference between a container that starts and a
+// container that does not.
+//
+// MEASURED on the lane 2026-09-06 (run 34058213252): with the preferred
+// address held by another node, the exchange ran Solicit -> Advertise ->
+// Request -> Reply -> DAD -> Decline about once a second for sixteen
+// seconds and then the daemon gave up on the plugin call. Every one of
+// those rounds asked for the same address, because the hint is set when
+// the client is built and a Decline does not clear it.
+//
+// THE TWO CONTROLS ARE NOT OPTIONAL. Ending on any conflict at all
+// would take away the library's own recovery -- a conflict on a
+// server-chosen address is answered by restarting discovery, and the
+// next address is a different one -- and ending on any Failed at all
+// would turn every transient refusal into a second acquisition.
+func TestAcquireStep6_AConflictOnAHintedAddressEndsTheAttempt(t *testing.T) {
+	conflict := lease.Event{Kind: lease.Failed, Reason: proto.ReasonConflict, Note: "in use"}
+
+	got := acquireStep6(conflict, true)
+	if !got.Done {
+		t.Error("a conflict on the address this attempt ASKED for did not end it; the " +
+			"library restarts discovery with the same hint, the server hands back the " +
+			"same address, and the loop runs until the daemon's deadline")
+	}
+	if !errors.Is(got.Err, errV6HintInUse) {
+		t.Errorf("the conflict carried %v, want errV6HintInUse: getIP6 decides on this "+
+			"sentinel whether a second attempt is worth running", got.Err)
+	}
+
+	if got := acquireStep6(conflict, false); got.Done {
+		t.Error("a conflict on a SERVER-CHOSEN address ended the attempt; there is no " +
+			"loop to break there -- the library asks again and is given a different " +
+			"address -- and ending it costs the endpoint a whole second acquisition")
+	}
+	if got := acquireStep6(lease.Event{Kind: lease.Failed, Reason: proto.ReasonNoServer}, true); got.Done {
+		t.Error("a Failed that is not a conflict ended the attempt on a hinted " +
+			"acquisition; the ladder's next attempt is the caller's decision")
+	}
+}
+
+// TestRetryWithoutHint6 drives the decision AND its bound.
+//
+// The bound is the point: the second pass must not be able to ask for a
+// third, and it is held by the method's own state rather than by a
+// counter at the call site, so it is checked here by asking twice.
+func TestRetryWithoutHint6(t *testing.T) {
+	hint := netip.MustParseAddr("fd00:6470:6863::90")
+	inUse := fmt.Errorf("dhcp: %w: in use", errV6HintInUse)
+
+	opts := &DHCPClientOptions{V6: true, Resume: &lease.Lease{}}
+	opts.params6 = proto.Params6{Hint: hint}
+
+	declined, again := opts.retryWithoutHint6(inUse)
+	if !again {
+		t.Fatal("a hinted attempt refused for a duplicate was not retried; the endpoint " +
+			"fails with a deadline it could have avoided by asking for any other address")
+	}
+	if declined != hint {
+		t.Errorf("the retry named %v as the declined address, want %v", declined, hint)
+	}
+	if opts.params6.Hint.IsValid() {
+		t.Errorf("the second attempt still carries the hint %v, which is the address "+
+			"another node holds: the retry would fetch it again", opts.params6.Hint)
+	}
+	if opts.Resume != nil {
+		t.Error("the second attempt still carries the resumed binding, which names the " +
+			"declined address: its Confirm asks the server to bless exactly what the " +
+			"node just refused (RFC 9915 section 18.2.12)")
+	}
+
+	if _, again := opts.retryWithoutHint6(inUse); again {
+		t.Error("a THIRD pass was offered. The retry is bounded by the hint it clears; " +
+			"if it is not, a segment with a squatter turns CreateEndpoint into a loop")
+	}
+
+	// Preservation control: a hinted attempt that failed for any other
+	// reason keeps both the hint and the resumption, and gets no second
+	// pass. Widening this to every error would drop #213's preferred
+	// address on any transient refusal.
+	keep := &DHCPClientOptions{V6: true, Resume: &lease.Lease{}}
+	keep.params6 = proto.Params6{Hint: hint}
+	if _, again := keep.retryWithoutHint6(ErrNoLease); again {
+		t.Error("an attempt that failed for a reason other than a duplicate was retried")
+	}
+	if keep.params6.Hint != hint || keep.Resume == nil {
+		t.Errorf("the hint or the resumption was dropped by a refusal that was not a "+
+			"duplicate (hint %v, resume %v)", keep.params6.Hint, keep.Resume)
+	}
+
+	// And an unhinted attempt has nothing to retry differently.
+	none := &DHCPClientOptions{V6: true}
+	if _, again := none.retryWithoutHint6(inUse); again {
+		t.Error("an attempt that asked for no particular address was retried without one")
+	}
+}
+
+// TestRunAcquisition6_AHintedConflictEndsTheLoop is the same decision
+// one level up: the loop must return on the conflict rather than sit
+// out the window, because sitting it out IS the defect.
+func TestRunAcquisition6_AHintedConflictEndsTheLoop(t *testing.T) {
+	hint := netip.MustParseAddr("fd00:6470:6863::90")
+	conflict := lease.Event{Kind: lease.Failed, Reason: proto.ReasonConflict, Note: "in use"}
+
+	client := &fakeV6Client{
+		events: make(chan lease.Event, 1),
+		router: proto.RouterObservation{Seen: true, Managed: true},
+	}
+	client.events <- conflict
+	_, took, err := acquisition6Result(t, context.Background(), client,
+		&DHCPClientOptions{V6: true}, hint, 5*time.Second, 10*time.Second)
+	if !errors.Is(err, errV6HintInUse) {
+		t.Fatalf("runAcquisition6 returned %v after %v, want errV6HintInUse", err, took)
+	}
+	if took > 2*time.Second {
+		t.Errorf("the conflict took %v to reach the caller under a 5s window; the "+
+			"remaining budget is what the second attempt has to run in", took)
+	}
+
+	// The control at this level: with no hint asked for, the same event
+	// leaves the loop running for the library to recover in.
+	unhinted := &fakeV6Client{
+		events: make(chan lease.Event, 1),
+		router: proto.RouterObservation{Seen: true, Managed: true},
+	}
+	unhinted.events <- conflict
+	_, took, err = acquisition6Result(t, context.Background(), unhinted,
+		&DHCPClientOptions{V6: true}, netip.Addr{}, time.Second, 10*time.Second)
+	if errors.Is(err, errV6HintInUse) {
+		t.Fatalf("an unhinted conflict produced errV6HintInUse after %v", took)
+	}
+	if took < time.Second {
+		t.Errorf("the unhinted acquisition ended after %v, before its window was out; "+
+			"the library's own recovery never got to run", took)
 	}
 }

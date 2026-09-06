@@ -91,6 +91,20 @@
 # call deadline as well as by the derivation; the no-router arm's v6 half
 # costs about 15s under it, not 21.7.
 #
+# MEASURED 2026-09-06 in run 34058213252, under that bound, and it moved
+# ONE row: TestDHCPv6_ADuplicateOnTheSegmentIsRefused. The restart's
+# CreateEndpoint spent its whole v6 budget on one closed loop --
+# Solicit, Advertise, Request, Reply, DAD, Decline, once a second from
+# 20:36:23 to 20:36:39 -- because the tombstone's preferred address
+# (#213) is hinted on every Solicit and a Decline does not clear it,
+# and dnsmasq 2.91 honours the hint (RFC 9915 section 18.2.1). Under
+# the fix the endpoint declines once and asks again without the hint:
+#   the restart's CreateEndpoint  ~13s expected, of which the v6 half is
+#                                 ~3s to the Decline plus ~4s for the
+#                                 second, hintless acquisition
+# The row's own figure stays at its 1.9.0 value until the first green
+# run on this branch; it is a ceiling, not an estimate.
+#
 # The two rows written when the refusal replaced them are removed with
 # it: TestIPv6_RefusedAtCreateWithTheMilestoneNamed (inverted into
 # TestIPv6_AcceptedAtCreate) and TestIPv6_TheV4PathIsUnaffectedByTheRefusal

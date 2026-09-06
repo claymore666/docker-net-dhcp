@@ -696,7 +696,15 @@ What the option does, concretely:
   client has already done it — RFC 9915 §18.2.10.1 requires that — and
   running it twice costs the container a window in which it cannot use
   the address and can take the address out of service outright on a link
-  that echoes the probe back.
+  that echoes the probe back. When the check finds another node holding
+  the address, the client declines it (§18.2.8) and asks again. **The
+  second ask drops the preferred address**: a restarting container asks
+  for the address it had (see `--ip6` below), §18.2.1 allows a server to
+  honour that preference, and a server that does would hand back the
+  address that has just been declined — so the endpoint would decline it
+  again, once a second, until the Docker daemon stopped waiting for the
+  plugin to answer. The endpoint keeps its address across a restart; it
+  gives that up the moment somebody else is answering for it.
 - **A DUID and IAID that persist.** They are minted once when the
   endpoint is created and stored with it, so a plugin restart, a
   container restart and a plugin upgrade all present the same DHCPv6

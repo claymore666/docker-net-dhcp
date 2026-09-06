@@ -311,6 +311,63 @@ func getIP6(ctx context.Context, iface string, opts *DHCPClientOptions) (Info, R
 		}
 	}
 
+	// AT MOST TWO PASSES, and the bound is in retryWithoutHint6 rather
+	// than in a counter here: the only thing that asks for a second
+	// pass is a hint, the method clears the hint before it says yes,
+	// and it says no to an attempt that carried none. See
+	// errV6HintInUse for what the second pass is for.
+	for {
+		info, ra, err := acquireOnce6(ctx, iface, opts.params6, opts)
+		declined, again := opts.retryWithoutHint6(err)
+		if !again {
+			return info, ra, err
+		}
+		log.WithField("iface", iface).
+			WithField("preferred_ipv6", declined.String()).
+			Warn("The preferred DHCPv6 address is in use by another node on the segment; " +
+				"it has been declined (RFC 9915 section 18.2.10) and the endpoint is " +
+				"asking for a server-chosen address instead")
+	}
+}
+
+// retryWithoutHint6 answers whether the attempt that ended in err is
+// worth running again without its address hint, and prepares the
+// options for that second run.
+//
+// IT IS THE WHOLE OF THE BOUND ON getIP6's LOOP. A retry is offered
+// only to an attempt that carried a hint, and the hint is cleared
+// before the answer is yes, so a second refusal cannot be produced by
+// the same options and there is never a third pass. The one-line
+// version: this method is the loop's counter, held as state rather
+// than as an integer, because the state is also what the next attempt
+// has to be run with.
+//
+// THE RESUMED BINDING GOES WITH THE HINT. Both name the same address --
+// the chassis hints what it remembered -- and a Resume makes the first
+// message on the wire RFC 9915 section 18.2.12's Confirm ABOUT that
+// address, so leaving it in place would ask the server to bless the
+// very address another node answered for. The RFC 3646 lists that a
+// Confirm cannot carry, and that carryResumedConfig6 exists to restore,
+// are not lost with it: a Solicit's Reply carries them itself.
+func (o *DHCPClientOptions) retryWithoutHint6(err error) (netip.Addr, bool) {
+	if !errors.Is(err, errV6HintInUse) || !o.params6.Hint.IsValid() {
+		return netip.Addr{}, false
+	}
+	declined := o.params6.Hint
+	o.params6.Hint = netip.Addr{}
+	o.Resume = nil
+	return declined, true
+}
+
+// acquireOnce6 is ONE DHCPv6 acquisition on iface under params: a
+// client of its own, the loop, and the observation taken at the end.
+//
+// Split out of getIP6 for the one reason getIP6 runs it twice. See
+// errV6HintInUse for what the second run changes and why there is
+// never a third.
+func acquireOnce6(ctx context.Context, iface string, params proto.Params6, opts *DHCPClientOptions) (Info, RAObservation, error) {
+	var ra RAObservation
+
 	client, err := newLibClient6(iface, params, opts)
 	if err != nil {
 		return Info{}, ra, err
@@ -321,7 +378,7 @@ func getIP6(ctx context.Context, iface string, opts *DHCPClientOptions) (Info, R
 		manager = opts.Records.NewManagerID()
 	}
 
-	info, lastE := runAcquisition6(ctx, iface, client, opts, V6AcquisitionWindow(params))
+	info, lastE := runAcquisition6(ctx, iface, client, opts, params.Hint, V6AcquisitionWindow(params))
 
 	// AFTER the drain: the last advertisement can arrive on the same
 	// pass as the event that ended the loop.
@@ -336,6 +393,30 @@ func getIP6(ctx context.Context, iface string, opts *DHCPClientOptions) (Info, R
 	}
 	return info, ra, nil
 }
+
+// errV6HintInUse is a conflict found by the client's own duplicate
+// address detection (RFC 9915 section 18.2.10.1) on an attempt that
+// asked the server for a particular address.
+//
+// WHY IT ENDS THE ATTEMPT INSTEAD OF LETTING THE LIBRARY RETRY. Section
+// 18.2.10.1 says the client sends a Decline and restarts the
+// configuration process, and proto.Machine6 does exactly that -- with
+// the SAME Params6.Hint, because the hint is set once when the client
+// is built and nothing in the exchange clears it. Section 18.2.1 lets a
+// client hint and says nothing about a server refusing one, and a
+// server that honours hints (MEASURED against dnsmasq 2.91 on the lane
+// 2026-09-06, run 34058213252) hands back the address it was asked for,
+// which is the address the node just declined. That is Solicit ->
+// Advertise -> Request -> Reply -> DAD -> Decline, about once a second,
+// until the caller's deadline: the container never starts, and the
+// error it fails with is "context deadline exceeded" rather than the
+// duplicate that caused it.
+//
+// The library is where this belongs -- a declined address should not be
+// hinted again by the machine that declined it -- and the vendored copy
+// is not edited here (D21). This is the chassis refusing to wait for a
+// loop it can see is closed.
+var errV6HintInUse = errors.New("the preferred DHCPv6 address is in use by another node on the segment")
 
 // v6AcquisitionClient is the part of *dhcpruntime.Client6 the
 // acquisition loop below reads.
@@ -369,7 +450,7 @@ type v6AcquisitionClient interface {
 // CreateEndpoint to answer, so on a segment with no DHCPv6 on it the
 // verdict this function exists to produce arrived after nobody was
 // listening.
-func runAcquisition6(ctx context.Context, iface string, client v6AcquisitionClient, opts *DHCPClientOptions, window time.Duration) (Info, error) {
+func runAcquisition6(ctx context.Context, iface string, client v6AcquisitionClient, opts *DHCPClientOptions, hint netip.Addr, window time.Duration) (Info, error) {
 	acqCtx, endAcq := context.WithTimeout(ctx, window)
 	defer endAcq()
 
@@ -410,7 +491,7 @@ func runAcquisition6(ctx context.Context, iface string, client v6AcquisitionClie
 			// the persistent client's loop does it there.
 			opts.carryResumedConfig6(&ev)
 			opts.record(ev)
-			out := acquireStep6(ev)
+			out := acquireStep6(ev, hint.IsValid())
 			if out.Err != nil {
 				lastE = out.Err
 			}
@@ -455,7 +536,14 @@ func runAcquisition6(ctx context.Context, iface string, client v6AcquisitionClie
 //
 // A Lost is impossible before an Acquired and needs no arm: the library
 // emits it only for a lease it had.
-func acquireStep6(ev lease.Event) acquireOutcome {
+//
+// hinted is the fourth arm and it is a SPLIT OF THE SECOND: a Failed
+// naming a conflict ends the attempt when this one asked for a
+// particular address, and only then. See errV6HintInUse. A conflict on
+// a server-chosen address is left to the library, which restarts
+// discovery and is handed a different address the next time round --
+// the loop that arm would break does not exist without a hint.
+func acquireStep6(ev lease.Event, hinted bool) acquireOutcome {
 	switch ev.Kind {
 	case lease.Acquired:
 		info, _ := infoFromLease(ev.Lease, time.Now())
@@ -463,6 +551,9 @@ func acquireStep6(ev lease.Event) acquireOutcome {
 	case lease.Configured:
 		return acquireOutcome{Done: true, Err: ErrNoV6Address}
 	case lease.Failed:
+		if hinted && ev.Reason == proto.ReasonConflict {
+			return acquireOutcome{Done: true, Err: fmt.Errorf("dhcp: %w: %v", errV6HintInUse, ev.Note)}
+		}
 		return acquireOutcome{Err: fmt.Errorf("dhcp: DHCPv6 acquisition failed: %v", ev.Reason)}
 	}
 	return acquireOutcome{}
