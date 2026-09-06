@@ -74,8 +74,22 @@ func TestV6Fixture_ModesComeUpAsRequested(t *testing.T) {
 				t.Logf("wire: no advertisement within %s of the server starting", harness.V6NoRAWindow())
 				return
 			}
+			delay := frames[0].At.Sub(f.StartedAt())
 			t.Logf("wire: %d advertisement(s), first %s after the server started: %s",
-				len(frames), frames[0].At.Sub(f.StartedAt()).Round(time.Millisecond), frames[0])
+				len(frames), delay.Round(time.Millisecond), frames[0])
+			// The bound is asserted, not only logged. It is the same
+			// budget assertMode spends, so a delay outside it is a
+			// bring-up assertMode would have given up on and named
+			// `nora` -- and the first record of this measurement was
+			// a comment claiming a range the lane had already
+			// falsified twice, which is what an unasserted number
+			// buys.
+			if delay > harness.RABudget() {
+				t.Errorf("first advertisement %s after the server started, outside the "+
+					"derived budget %s; assertMode spends exactly this budget, so a "+
+					"segment this slow is one it would report as %s",
+					delay.Round(time.Millisecond), harness.RABudget(), harness.V6NoRA)
+			}
 			// The bytes, so the fast-lane decoder can be pinned to a
 			// frame THIS fixture produced on THIS lane rather than to
 			// one captured elsewhere with a different argv.
@@ -168,15 +182,18 @@ func TestV6Fixture_RefusesASegmentInAnotherModesShape(t *testing.T) {
 
 	for _, name := range harness.V6Modes() {
 		for _, actual := range harness.V6Modes() {
-			if exempt[[2]harness.V6Mode{name, actual}] {
-				continue
-			}
 			t.Run(name.String()+"/flags-of-"+actual.String(), func(t *testing.T) {
 				refused, msg := startUnderName(t, name, actual)
 
-				if name == actual {
+				// The exempt pair is DRIVEN, not skipped. Skipping it
+				// asserted nothing about the exemption, and these are
+				// the two cells whose names overlap -- exactly where
+				// the pair assertion below used to be satisfied by the
+				// wrong half.
+				if name == actual || exempt[[2]harness.V6Mode{name, actual}] {
 					if refused {
-						t.Fatalf("the fixture refused a segment in its OWN mode: %s", msg)
+						t.Fatalf("the fixture refused a segment it cannot tell from the mode "+
+							"asked for (%s under %s): %s", actual, name, msg)
 					}
 					return
 				}
@@ -187,12 +204,17 @@ func TestV6Fixture_RefusesASegmentInAnotherModesShape(t *testing.T) {
 				}
 				// The message has to name the pair, because that is the
 				// whole diagnosis: a refusal that says only "mode check
-				// failed" leaves the next person to reproduce it.
-				if !strings.Contains(msg, name.String()) {
-					t.Errorf("the refusal does not name the mode asked for (%s): %s", name, msg)
+				// failed" leaves the next person to reproduce it. Whole
+				// names, not substrings: `managed` is a prefix of
+				// `managed-silent`, and a refusal naming only the
+				// latter satisfied a Contains check for the former.
+				if !harness.V6ModeNamed(msg, name) {
+					t.Errorf("the refusal does not name the mode asked for (%s); names %v: %s",
+						name, harness.V6ModeNamesIn(msg), msg)
 				}
-				if !strings.Contains(msg, actual.String()) {
-					t.Errorf("the refusal does not name the mode observed (%s): %s", actual, msg)
+				if !harness.V6ModeNamed(msg, actual) {
+					t.Errorf("the refusal does not name the mode observed (%s); names %v: %s",
+						actual, harness.V6ModeNamesIn(msg), msg)
 				}
 			})
 		}
@@ -291,7 +313,7 @@ func TestV6Fixture_AwaitRAAfterAndItsNegative(t *testing.T) {
 				f.DumpLogs(func(s string) { t.Log(s) })
 			}
 		})
-		frames := f.AwaitRAAfter(f.StartedAt(), 5*time.Second)
+		frames := f.AwaitRAAfter(f.StartedAt(), harness.RABudget())
 		if len(frames) == 0 {
 			t.Fatal("AwaitRAAfter returned no frames without failing the test")
 		}
@@ -326,6 +348,40 @@ func TestV6Fixture_AwaitRAAfterAndItsNegative(t *testing.T) {
 		}
 		if !strings.Contains(msg, "must not advertise") {
 			t.Errorf("unexpected refusal: %s", msg)
+		}
+	})
+
+	// The direction that could go quiet. On an ADVERTISING segment the
+	// log column is satisfied forever -- the fixture logged an
+	// RTR-ADVERT line at construction -- so if the wire column were
+	// ever dropped, or read without the `since` filter, this call
+	// would pass while claiming something false. `since` is set past
+	// every advertisement the segment has produced, and the NEXT one
+	// is at least five seconds out -- `new_timeout` is
+	// `now + 5 + rand16()/4400`, radv.c:977, so five is the floor and
+	// not the mean -- and the budget below is two seconds, which is
+	// inside that floor with room for the call's own start-up. A
+	// budget of five would race the earliest possible next frame.
+	t.Run("an advertising segment fails AwaitRAAfter for an instant after its advertisement", func(t *testing.T) {
+		refused, msg := captureFixtureCall(t, harness.V6Managed, func(f *harness.V6Fixture) {
+			seen := f.RACapture().FramesAfter(f.StartedAt())
+			if len(seen) == 0 {
+				t.Fatalf("the managed fixture came up with no advertisement captured, so this " +
+					"case cannot set `since` past one")
+			}
+			after := seen[len(seen)-1].At.Add(time.Millisecond)
+			f.AwaitRAAfter(after, 2*time.Second)
+		})
+		if !refused {
+			t.Fatal("AwaitRAAfter passed for an instant after the segment's only advertisement; " +
+				"the log column is satisfied for this segment's whole life, so this is what a " +
+				"missing wire column looks like")
+		}
+		if !strings.Contains(msg, "no router advertisement after") {
+			t.Errorf("unexpected refusal: %s", msg)
+		}
+		if !strings.Contains(msg, "which is the column that answers") {
+			t.Errorf("the refusal does not say which column carried the \"after\" claim: %s", msg)
 		}
 	})
 

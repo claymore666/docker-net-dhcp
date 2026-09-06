@@ -349,10 +349,11 @@ func newV6Fixture(t V6FixtureT, name V6Mode, rangeArgs []string) *V6Fixture {
 		name, V6BridgeName, V6PoolStart, V6PoolEnd, V6SubnetV6CIDR, dnsmasqVersion())
 
 	// The capture is opened BEFORE dnsmasq starts. The first
-	// advertisement arrives about a second later (MEASURED, 12 of 12
-	// bring-ups, 0.950s..0.983s), and a capture opened after it would
-	// have to wait for the next one, which dnsmasq schedules 5 to 19
-	// seconds out.
+	// advertisement arrives about a second later on this fixture's
+	// branch (MEASURED, 83 of 85 bring-ups; see the schedule block in
+	// v6signature.go for the other two and for which branch they are
+	// on), and a capture opened after it would have to wait for the
+	// next one, which dnsmasq schedules 5 to 19 seconds out.
 	f.raCap = StartRACapture(t, V6BridgeName)
 
 	f.start(rangeArgs)
@@ -439,7 +440,7 @@ func (f *V6Fixture) waitReady() {
 func (f *V6Fixture) evidence() V6Evidence {
 	f.t.Helper()
 	want := f.mode.Signature()
-	budget := raBudget
+	budget := RABudget()
 	if !want.RA {
 		budget = V6NoRAWindow()
 	}
@@ -517,8 +518,27 @@ func (f *V6Fixture) StartedAt() time.Time { return f.startedAt }
 func (f *V6Fixture) RACapture() *RACapture { return f.raCap }
 
 // AwaitRAAfter fails the test unless a router advertisement arrived
-// after since, in BOTH columns: the server logged an RTR-ADVERT line
-// and the capture holds a frame with a later timestamp.
+// after since. It reads both columns, and they answer DIFFERENT
+// questions -- which is the correction this doc carries, because it
+// used to say they answered the same one:
+//
+//	the WIRE column carries the "after since" claim. It is the only
+//	column that can: the capture timestamps each frame itself.
+//
+//	the LOG column carries "and it came from THIS server". It is not
+//	filtered by since and cannot be. dnsmasq's RTR-ADVERT line is
+//	stamped by syslog at one-second resolution in a format that
+//	depends on the locale the reader is in, so the only instant a log
+//	line can honestly be compared against is one coarser than the
+//	question. The fixture logs its first advertisement at
+//	construction, so this conjunct is true for the rest of the
+//	segment's life.
+//
+// That is not a redundant conjunct. The wire column alone cannot tell
+// this segment's advertisement from another router's on the same
+// bridge; the log column is what says the server we started is
+// advertising at all. A caller who needs "no OTHER router" wants the
+// SourceMAC on the returned frames, which is why it is carried.
 //
 // This is trap 1's observer, and the reason it takes an instant rather
 // than just counting is that the trap is a test passing because the
@@ -538,11 +558,13 @@ func (f *V6Fixture) AwaitRAAfter(since time.Time, budget time.Duration) []RAFram
 		}
 		if time.Now().After(deadline) {
 			f.t.Fatalf("v6 fixture mode=%s: no router advertisement after %s within %v — "+
-				"server log has an %s line: %v, capture has %d frame(s) after that instant. "+
+				"the wire, which is the column that answers \"after\", has %d frame(s) after "+
+				"that instant; the server log has an %s line: %v, which says only that this "+
+				"server advertises at some point and never that it did so after %s. "+
 				"Every v6 assertion downstream of this rests on an advertisement the client "+
 				"could actually have heard; log:\n%s",
-				f.mode, since.Format("15:04:05.000"), budget, raLogToken, logged,
-				len(frames), f.readLog())
+				f.mode, since.Format("15:04:05.000"), budget, len(frames), raLogToken, logged,
+				since.Format("15:04:05.000"), f.readLog())
 			return nil
 		}
 		time.Sleep(100 * time.Millisecond)

@@ -195,6 +195,58 @@ func (ev V6Evidence) Observed() V6Signature {
 	return s
 }
 
+// V6ModeNamesIn returns the modes named in s as WHOLE names, never as a
+// fragment of a longer one.
+//
+// It exists because "managed" is a prefix of "managed-silent", so
+// `strings.Contains(msg, "managed")` is satisfied by a message that
+// names only managed-silent. The drift matrix's whole diagnosis is the
+// pair it names, and a refusal that names the wrong half of the pair
+// while passing the check is worse than one that names neither.
+//
+// A name counts only when neither neighbouring byte could belong to a
+// mode name -- every mode name is lower-case ASCII and hyphens -- so
+// the longer name wins wherever the two overlap, without the caller
+// having to sort by length or know which names are prefixes of which.
+func V6ModeNamesIn(s string) []V6Mode {
+	var out []V6Mode
+	for _, m := range V6Modes() {
+		name := m.String()
+		for i := 0; ; {
+			j := strings.Index(s[i:], name)
+			if j < 0 {
+				break
+			}
+			j += i
+			if !isV6NameByte(byteAt(s, j-1)) && !isV6NameByte(byteAt(s, j+len(name))) {
+				out = append(out, m)
+				break
+			}
+			i = j + 1
+		}
+	}
+	return out
+}
+
+func byteAt(s string, i int) byte {
+	if i < 0 || i >= len(s) {
+		return 0
+	}
+	return s[i]
+}
+
+func isV6NameByte(b byte) bool { return (b >= 'a' && b <= 'z') || b == '-' }
+
+// V6ModeNamed reports whether s names m as a whole mode name.
+func V6ModeNamed(s string, m V6Mode) bool {
+	for _, got := range V6ModeNamesIn(s) {
+		if got == m {
+			return true
+		}
+	}
+	return false
+}
+
 // V6EvidenceSettled reports whether ev can still change into a
 // different verdict if the observer keeps watching.
 //
@@ -495,13 +547,38 @@ func ParseRA(b []byte) (RAFrame, bool) {
 //	new_timeout, after that:             3/4..1 x MaxRtrAdvInterval,
 //	                                     default 600 s (radv.c:981, :999)
 //
-// MEASURED on the session box, dnsmasq 2.91, 12 consecutive bring-ups:
-// the first advertisement arrived 0.950 s .. 0.983 s after dnsmasq
-// started, every time -- the `context` branch, whose comment says
-// "start after 1 second to get logging right at startup". The 0..5 s
-// draw is the branch this configuration does not end up on, but it is
-// the branch a different dnsmasq build or a later address arrival CAN
-// end up on, so the bound below uses it and not the measurement.
+// WHICH BRANCH THIS FIXTURE IS ON, and it is not the one the first
+// version of this comment named. `ra_init` sets the 0..5 s draw at
+// startup, but for a plain (non-template, non-constructed) range --
+// which is every range this fixture uses -- the startup address
+// enumeration reaches `dhcp6.c:715` the first time it finds the
+// interface, "First time found, do fast RA", and calls
+// `ra_start_unsolicited(now, context)`. That is the `now + 1` branch,
+// and it OVERWRITES the draw before the draw can ever fire. The 0..5 s
+// arithmetic is real code that this configuration does not execute.
+//
+// MEASURED, 85 bring-ups, both branches of `send_alarm`
+// (`dnsmasq.c:1371-1379`) represented:
+//
+//	83 x  0.93 s .. 1.04 s   alarm(1) was armed and delivered
+//	 2 x  13 ms and 18 ms    the cached `now` had already reached
+//	                         ra_time when send_alarm ran, so it took
+//	                         the "alarm(0) doesn't do what we want"
+//	                         path and posted EVENT_ALARM immediately
+//
+// 60 of those are consecutive bring-ups off the lane with this
+// fixture's exact argv; 25 are every observation the lane logged across
+// runs 33995361430, 33996052773, 33996650903, 33997007028, 33997353467
+// and 33997868882, and the two sub-20 ms frames are both from the lane.
+// Nothing in 85 landed anywhere near the 0..5 s draw, which is what the
+// source says should happen and is why the draw is cited as a bound
+// rather than as a description.
+//
+// The gaps between LATER advertisements do exercise `rand16()`, and
+// they spread as the source says: 8, 12, 12, 15, 19 s and 5, 5, 18, 18
+// s over two 70 s captures, against `new_timeout`'s 5..19 s. So the
+// generator is not degenerate; the first advertisement simply is not
+// drawn from it.
 const (
 	dnsmasqRand16Max       = 65535
 	dnsmasqFirstRADivisor  = 13000
@@ -510,15 +587,38 @@ const (
 )
 
 // DnsmasqFirstRAUpperBound is dnsmasq's own worst case for the delay
-// from process start to the first unsolicited router advertisement.
+// from process start to the first unsolicited router advertisement,
+// over BOTH branches: the 0..5 s draw at radv.c:135 dominates the
+// fixed 1 s at radv.c:129, so the draw is the bound.
+//
+// This fixture is measured to be on the 1 s branch every time. The
+// bound is still taken from the draw, because what makes the draw
+// unreachable is that the bridge address is already up when dnsmasq
+// starts -- a property of awaitNoTentativeAddr, three hundred lines
+// away, that no compiler enforces. A bound that holds only while a
+// neighbouring function keeps a promise is not a bound.
 func DnsmasqFirstRAUpperBound() time.Duration {
 	return time.Duration(dnsmasqRand16Max/dnsmasqFirstRADivisor) * time.Second
 }
 
+// firstRASlop is what the fixture allows on top of dnsmasq's own bound
+// for everything the source cannot account for: fork and exec, config
+// parse, the netlink enumeration, and SIGALRM delivery on a loaded
+// runner.
+//
+// dnsmasq's schedule is exact in its own integer-second clock, so all
+// 85 measured bring-ups should sit at or below their scheduled second
+// and the overshoot is the slop. The largest observed was 41 ms
+// (1.041 s against a 1 s schedule, run 33997868882). One second is
+// twenty-four times that, and it is a round number rather than a
+// percentile because a percentile of 85 samples on two machines is not
+// a distribution.
+const firstRASlop = 1 * time.Second
+
 // V6NoRAWindow is how long the fixture must watch a segment before it
 // may conclude that no router advertisement is coming.
 //
-// It is twice DnsmasqFirstRAUpperBound, and the factor is the margin
+// It is twice RABudget, and the factor is the margin
 // for everything between dnsmasq deciding to send and the capture
 // recording the frame -- process scheduling on a loaded runner, and the
 // fixture's own readiness poll, which runs before the window starts.
@@ -527,52 +627,110 @@ func DnsmasqFirstRAUpperBound() time.Duration {
 // no-RA mode would then pass because it did not wait, which is a gate
 // with one possible verdict dressed as evidence.
 func V6NoRAWindow() time.Duration {
-	return 2 * DnsmasqFirstRAUpperBound()
+	return 2 * RABudget()
 }
 
-// raBudget is how long the fixture waits for an advertisement it
+// RABudget is how long the fixture waits for an advertisement it
 // EXPECTS.
 //
-// It stays at five seconds and is deliberately not widened. dnsmasq's
-// own worst case for the first unsolicited advertisement is five
-// seconds (DnsmasqFirstRAUpperBound), and the measured value on this
-// segment is a shade under one, because the address is already present
-// when dnsmasq starts and it takes the "start after 1 second to get
-// logging right at startup" branch. The margin is therefore five-fold
-// on the measurement and nil on the theoretical bound, and that is
-// recorded rather than repaired: widening this is the repair that buys
-// a fixture which no longer checks the thing it exists to check. If it
-// ever fires spuriously the answer is to make the advertisement
-// deterministic -- a router solicitation gets one back inside
-// MAX_RA_DELAY_TIME -- not to wait longer.
-const raBudget = 5 * time.Second
+// It is dnsmasq's own bound plus the slop, both derived above, and it
+// is not a literal. The literal it replaces was five seconds, which
+// happened to equal DnsmasqFirstRAUpperBound exactly -- a constant with
+// no margin at all against the bound it was being compared to, standing
+// on a measurement ("0.950 s .. 0.983 s every time") that the lane
+// falsified twice in the very run the record cited.
+//
+// A wait that expires early does not report "slow"; it reports the
+// wrong MODE, because a segment with no advertisement in hand is a
+// segment that classifies as nora. That is the failure this number
+// exists to prevent, and the reason it follows from the source instead
+// of from the fastest 85 bring-ups anyone happened to run.
+func RABudget() time.Duration { return DnsmasqFirstRAUpperBound() + firstRASlop }
 
 // --- the exchange --------------------------------------------------------
 
-// The DHCPv6 message tokens dnsmasq prints, verbatim. MEASURED
-// 2026-09-05 with `strings /usr/sbin/dnsmasq` on the session box's
-// 2.91: each of these appears exactly once in the binary.
+// dnsmasq's two message-name print tables, transcribed from the source
+// the runner's binary is built from. MEASURED 2026-09-06 against
+// dnsmasq 2.91 -- the version the lane logs from its own
+// `dnsmasq --version` probe -- by listing every `"DHCP..."` literal in
+// each file:
 //
-// DHCPREQUEST is deliberately ABSENT from every "must contain" set
-// below even though the M7 design table lists it for the managed mode,
-// and that is a correction rather than an omission. It is the one
-// DHCPv6 message name dnsmasq also prints for DHCPv4
-// (`rfc2131.c`), and this fixture is dual-stack in every mode -- the v4
-// half leases on the same server and writes the same word. Requiring it
-// is therefore satisfied by the v4 exchange alone, on a segment whose
-// v6 half never answered: an assertion that cannot fail for the reason
-// it names. DHCPADVERTISE is the token that actually separates a
-// stateful v6 exchange from anything else, and it is v6-only.
-var v6OnlyDHCPTokens = []string{
-	"DHCPSOLICIT",
-	"DHCPADVERTISE",
-	"DHCPREPLY",
-	"DHCPRENEW",
-	"DHCPREBIND",
-	"DHCPCONFIRM",
+//	grep -oE '"DHCP[A-Z-]+"' src/rfc2131.c | sort -u   (the v4 path)
+//	grep -oE '"DHCP[A-Z-]+"' src/rfc3315.c | sort -u   (the v6 path)
+//
+// and those two files are the only ones in src/ that contain such a
+// literal at all, so the tables below are the whole population and not
+// a sample of it.
+var dnsmasqV4MessageNames = []string{
+	"DHCPACK",
+	"DHCPDECLINE",
+	"DHCPDISCOVER",
+	"DHCPINFORM",
+	"DHCPNAK",
+	"DHCPOFFER",
 	"DHCPRELEASE",
+	"DHCPREQUEST",
+}
+
+var dnsmasqV6MessageNames = []string{
+	"DHCPADVERTISE",
+	"DHCPCONFIRM",
 	"DHCPDECLINE",
 	"DHCPINFORMATION-REQUEST",
+	"DHCPREBIND",
+	"DHCPRELEASE",
+	"DHCPRENEW",
+	"DHCPREPLY",
+	"DHCPREQUEST",
+	"DHCPSOLICIT",
+}
+
+// V6OnlyDHCPTokens is the DERIVED set: printed by dnsmasq's v6 path and
+// by no v4 path. It is computed from the two tables above and is never
+// written out, because writing it out is what went wrong.
+//
+// This fixture runs a v4 --dhcp-range in EVERY mode, so a token the v4
+// path also prints says nothing about the v6 half. Round 1 hand-listed
+// this set, got DHCPDECLINE and DHCPRELEASE wrong, and guarded the list
+// with a test that checked the single literal "DHCPREQUEST" -- a guard
+// keyed on a spelling reproduces its own silence, and this one did: the
+// comment it guarded claimed DHCPREQUEST was "the one" such name when
+// the intersection is three. The cost was real and not hypothetical: an
+// M7d scenario on a SLAAC segment whose v4 half hits the RFC 5227
+// conflict path makes the plugin send a v4 DHCPDECLINE, and the SLAAC
+// must-NOT column would have failed it for a v6 half that did exactly
+// what SLAAC requires.
+func V6OnlyDHCPTokens() []string {
+	v4 := make(map[string]bool, len(dnsmasqV4MessageNames))
+	for _, n := range dnsmasqV4MessageNames {
+		v4[n] = true
+	}
+	out := make([]string, 0, len(dnsmasqV6MessageNames))
+	for _, n := range dnsmasqV6MessageNames {
+		if !v4[n] {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
+// DnsmasqAmbiguousDHCPTokens is the complement V6OnlyDHCPTokens throws
+// away: printed by both paths, and therefore unusable as evidence about
+// either half of a dual-stack segment. It is returned rather than
+// implied so a test can drive the guard with the real offenders instead
+// of with a token somebody thought was one.
+func DnsmasqAmbiguousDHCPTokens() []string {
+	v4 := make(map[string]bool, len(dnsmasqV4MessageNames))
+	for _, n := range dnsmasqV4MessageNames {
+		v4[n] = true
+	}
+	out := make([]string, 0, len(dnsmasqV6MessageNames))
+	for _, n := range dnsmasqV6MessageNames {
+		if v4[n] {
+			out = append(out, n)
+		}
+	}
+	return out
 }
 
 // v6ExchangeContract is the client-dependent half of the mode
@@ -600,14 +758,16 @@ var v6OnlyDHCPTokens = []string{
 // and po/de.po:2083 renders it "ignoriert". It is safe here only
 // because withCLocale pins every fixture server to LC_ALL=C, so the
 // dependency is on that helper and is named rather than assumed.
-var v6ExchangeContract = map[V6Mode]struct {
+type v6ExchangeRule struct {
 	must    []string
 	mustNot []string
 	// mustLine is a set of substrings that have to appear on ONE line
 	// together, which is a different claim from each appearing
 	// somewhere.
 	mustLine []string
-}{
+}
+
+var v6ExchangeContract = map[V6Mode]v6ExchangeRule{
 	V6Managed: {
 		must: []string{"DHCPSOLICIT", "DHCPADVERTISE", "DHCPREPLY"},
 	},
@@ -616,7 +776,7 @@ var v6ExchangeContract = map[V6Mode]struct {
 		mustNot: []string{"DHCPADVERTISE"},
 	},
 	V6SLAAC: {
-		mustNot: v6OnlyDHCPTokens,
+		mustNot: V6OnlyDHCPTokens(),
 	},
 	V6NoRA: {
 		must: []string{"DHCPSOLICIT"},
@@ -625,6 +785,53 @@ var v6ExchangeContract = map[V6Mode]struct {
 		mustLine: []string{"DHCPSOLICIT", "ignored"},
 		mustNot:  []string{"DHCPADVERTISE", "DHCPREPLY"},
 	},
+}
+
+// V6ContractFindings reports how an exchange contract disagrees with
+// what a contract on this dual-stack fixture is allowed to say. Empty
+// means it agrees.
+//
+// It takes the table rather than reading the package-level one so its
+// own test can drive it with a contract that is WRONG in the specific
+// way round 1 was wrong -- a must-NOT column naming a token dnsmasq's
+// v4 path also prints -- instead of asserting that today's table is
+// today's table.
+//
+// The rule it enforces is the property, not a list: a must-NOT column
+// may only name tokens in V6OnlyDHCPTokens(). The must column is
+// guarded from the other side instead, by
+// TestV6ExchangeFindings_AV4OnlyExchangeSatisfiesNoModeAndAccusesNone,
+// which builds a log out of every name in dnsmasqV4MessageNames and
+// requires that it satisfies no mode -- that is the same property
+// stated as an outcome rather than as a rule about a list, and it
+// catches an ambiguous must-token without having to decide in advance
+// which tokens are ambiguous.
+func V6ContractFindings(contract map[V6Mode]v6ExchangeRule) []string {
+	v6only := make(map[string]bool)
+	for _, n := range V6OnlyDHCPTokens() {
+		v6only[n] = true
+	}
+	var out []string
+	for _, mode := range V6Modes() {
+		c, ok := contract[mode]
+		if !ok {
+			out = append(out, fmt.Sprintf(
+				"mode %s has no exchange contract, so AssertExchange cannot say anything about it", mode))
+			continue
+		}
+		for _, tok := range c.mustNot {
+			if !strings.HasPrefix(tok, "DHCP") {
+				continue
+			}
+			if !v6only[tok] {
+				out = append(out, fmt.Sprintf(
+					"mode %s forbids %q, which dnsmasq's v4 path prints too (rfc2131.c); every mode "+
+						"of this fixture runs a v4 range, so the v4 half alone can fail this mode "+
+						"for something its v6 half never did", mode, tok))
+			}
+		}
+	}
+	return out
 }
 
 // V6ExchangeFindings reports how the server's log disagrees with what

@@ -94,11 +94,12 @@
 # What dominates these is not the container work every sibling row
 # shares -- there are no containers here at all -- but two waits whose
 # lengths are known: a segment that MUST advertise settles in about
-# 1.0s (dnsmasq's first advertisement, MEASURED 0.950-0.983s over 12
-# bring-ups, 2026-09-05) on top of roughly 0.3s of bridge/process setup
-# and teardown; a segment that must NOT advertise costs the derived
-# absence window, V6NoRAWindow() = 10s, and one that was asked to
-# advertise and did not costs raBudget = 5s.
+# 1.0s (dnsmasq's first advertisement, MEASURED 83 of 85 bring-ups in
+# 0.93-1.04s, 2 at 13-18ms; the schedule block in v6signature.go says
+# which branch each is on) on top of roughly 0.3s of bridge/process
+# setup and teardown; a segment that must NOT advertise costs the
+# derived absence window, V6NoRAWindow() = 2 x RABudget() = 12s, and one
+# that was asked to advertise and did not costs RABudget() = 6s.
 #
 #   TestV6Fixture_ModesComeUpAsRequested                    15.79
 #     MEASURED. Five modes; the no-RA mode spends the derived 10s

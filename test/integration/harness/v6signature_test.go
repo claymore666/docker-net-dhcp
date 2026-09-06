@@ -5,6 +5,7 @@ package harness
 
 import (
 	"encoding/hex"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -29,6 +30,15 @@ import (
 // fixture. That is the raguard_parse.go lesson twice over: an observer
 // validated in a world it does not run in was already shipped once,
 // keyed on a field the real image never prints.
+//
+// THE BOUND ON THESE CONSTANTS, in the reviewer's words: the pinned
+// frames do not re-derive. If the runner's dnsmasq changes its RA, the
+// fast-lane decoder test keeps passing on 2026-09-05's bytes; the lane
+// fixture goes red only if a field in the signature moves. The tie is
+// the contract test printing `hex.EncodeToString(frames[0].Raw)` for a
+// human to refresh from -- a pin to the past by construction. Building
+// the re-derivation is deliberately not this round's work; the bound is
+// written here so the next reader does not have to rediscover it.
 
 // --- verbatim frames ----------------------------------------------------
 
@@ -359,24 +369,109 @@ func TestV6ExchangeFindings_NoNeedleIsProseDnsmasqTranslates(t *testing.T) {
 // prints for DHCPv4 and this fixture is dual-stack in every mode: a
 // must-set containing it is satisfied by the v4 lease alone, on a
 // segment whose v6 half never answered.
-func TestV6ExchangeContract_CoversEveryModeAndNamesNoV4AmbiguousToken(t *testing.T) {
-	for _, mode := range V6Modes() {
-		if _, ok := v6ExchangeContract[mode]; !ok {
-			t.Errorf("mode %s has no exchange contract row", mode)
+func TestV6ExchangeContract_ForbidsOnlyTokensTheV4PathNeverPrints(t *testing.T) {
+	// The shipped table agrees with the property.
+	if findings := V6ContractFindings(v6ExchangeContract); len(findings) != 0 {
+		t.Fatalf("the shipped exchange contract is not clean:\n  %s", strings.Join(findings, "\n  "))
+	}
+
+	// Drive the failure, with the real offenders rather than with a
+	// token somebody thought was one. Round 1's guard tested the
+	// literal "DHCPREQUEST" and therefore could not see DHCPDECLINE or
+	// DHCPRELEASE sitting in SLAAC's must-NOT column.
+	ambiguous := DnsmasqAmbiguousDHCPTokens()
+	if len(ambiguous) < 3 {
+		t.Fatalf("the v4/v6 name tables intersect in %v; this test's premise is that the "+
+			"intersection is bigger than the one token round 1 named", ambiguous)
+	}
+	for _, tok := range ambiguous {
+		for _, mode := range V6Modes() {
+			t.Run(mode.String()+"/forbids/"+tok, func(t *testing.T) {
+				bad := make(map[V6Mode]v6ExchangeRule, len(v6ExchangeContract))
+				for k, v := range v6ExchangeContract {
+					bad[k] = v
+				}
+				r := bad[mode]
+				r.mustNot = append(append([]string{}, r.mustNot...), tok)
+				bad[mode] = r
+
+				findings := V6ContractFindings(bad)
+				if len(findings) == 0 {
+					t.Fatalf("mode %s may forbid %q, which dnsmasq prints on BOTH paths; the "+
+						"guard is not keyed on the property it names", mode, tok)
+				}
+				if !strings.Contains(findings[0], tok) || !strings.Contains(findings[0], mode.String()) {
+					t.Errorf("the finding names neither the mode nor the token: %s", findings[0])
+				}
+			})
 		}
 	}
-	for mode, c := range v6ExchangeContract {
-		for _, n := range append(append(append([]string{}, c.must...), c.mustNot...), c.mustLine...) {
-			if n == "DHCPREQUEST" {
-				t.Errorf("mode %s names DHCPREQUEST, which dnsmasq also prints for DHCPv4; "+
-					"the v4 half of this dual-stack fixture satisfies it on its own", mode)
+
+	// The other direction: a token that IS v6-only may be forbidden by
+	// any mode, so the guard is not simply refusing everything.
+	control := V6OnlyDHCPTokens()[0]
+	for _, mode := range V6Modes() {
+		ok := make(map[V6Mode]v6ExchangeRule, len(v6ExchangeContract))
+		for k, v := range v6ExchangeContract {
+			ok[k] = v
+		}
+		r := ok[mode]
+		r.mustNot = append(append([]string{}, r.mustNot...), control)
+		ok[mode] = r
+		if findings := V6ContractFindings(ok); len(findings) != 0 {
+			t.Errorf("mode %s refused %q, which no v4 path prints: %s", mode, control, findings[0])
+		}
+	}
+
+	// A mode with no row at all is a finding, not a silent pass.
+	missing := map[V6Mode]v6ExchangeRule{}
+	for k, v := range v6ExchangeContract {
+		if k != V6SLAAC {
+			missing[k] = v
+		}
+	}
+	if findings := V6ContractFindings(missing); len(findings) != 1 ||
+		!strings.Contains(findings[0], V6SLAAC.String()) {
+		t.Errorf("dropping %s's row produced %v, want one finding naming it", V6SLAAC, findings)
+	}
+}
+
+// TestV6ExchangeFindings_AV4OnlyExchangeSatisfiesNoModeAndAccusesNone is
+// the same property from the log side, and the SLAAC row is the reason
+// it exists.
+//
+// SLAAC's must-NOT column is the derived v6-only set and nothing else,
+// which is the decision this round made: a SLAAC segment's v4 half is
+// free to do anything DHCPv4 does, including the RFC 5227 conflict path
+// where the plugin sends a DHCPDECLINE, and none of it reaches the v6
+// verdict. The alternative -- keeping the ambiguous tokens and
+// exempting SLAAC -- would have left the same trap for the next mode
+// that acquires a must-NOT column.
+func TestV6ExchangeFindings_AV4OnlyExchangeSatisfiesNoModeAndAccusesNone(t *testing.T) {
+	// Every v4 message name dnsmasq can print, in one log, including
+	// the two that used to be in SLAAC's must-NOT column. No v6.
+	var b strings.Builder
+	for _, n := range dnsmasqV4MessageNames {
+		fmt.Fprintf(&b, "Sep  6 00:00:00 dnsmasq-dhcp[1]: %s(br0) 192.168.103.10 aa:bb:cc:dd:ee:ff\n", n)
+	}
+	v4Only := b.String()
+	for _, tok := range []string{"DHCPDECLINE", "DHCPRELEASE"} {
+		if !strings.Contains(v4Only, tok) {
+			t.Fatalf("the v4 log this test drives does not contain %q, so it cannot show the "+
+				"conflict path is harmless", tok)
+		}
+	}
+
+	// It accuses nobody: no mode's must-NOT column is tripped by it.
+	for _, mode := range V6Modes() {
+		for _, f := range V6ExchangeFindings(mode, v4Only) {
+			if strings.Contains(f, "forbids") {
+				t.Errorf("mode %s is FAILED by a v4-only exchange: %s", mode, f)
 			}
 		}
 	}
-	// The v4 log line this fixture always produces must not, on its
-	// own, satisfy any mode's must-set.
-	const v4Only = "Sep  5 23:32:58 dnsmasq-dhcp[1]: DHCPREQUEST(br0) 192.168.103.10 aa:bb:cc:dd:ee:ff\n" +
-		"Sep  5 23:32:58 dnsmasq-dhcp[1]: DHCPACK(br0) 192.168.103.10 aa:bb:cc:dd:ee:ff\n"
+
+	// And it satisfies nobody that requires anything.
 	for _, mode := range V6Modes() {
 		if mode == V6SLAAC {
 			continue // requires nothing; see the bound on V6ExchangeFindings
@@ -514,6 +609,53 @@ func TestClassifyV6Segment_NamesTheModeOrNothing(t *testing.T) {
 // from dnsmasq's own scheduling constants rather than written as a
 // number, and this is the assertion that the derivation still points
 // the right way after somebody edits one of them.
+// TestRABudget_CoversBothScheduleBranchesWithAMargin is finding 2's
+// observer.
+//
+// The number this replaces was the literal 5s, which is
+// DnsmasqFirstRAUpperBound EXACTLY: a wait for an advertisement that
+// expires at the same instant as dnsmasq's own worst case for sending
+// one. The reason given for the zero margin was a measured range
+// ("0.950 s .. 0.983 s every time") that the lane falsified twice in
+// the very run the record cited. So the margin is asserted here rather
+// than argued in a comment, and it is asserted against BOTH branches:
+// the 1s branch this fixture is measured to be on (radv.c:129, reached
+// from dhcp6.c:715) and the 0..5s draw it is not (radv.c:135).
+//
+// What a too-small budget buys is not a slow test; it is the wrong
+// MODE. A bring-up whose advertisement lands after the budget is a
+// bring-up with no frame in hand, and a segment with no frame in hand
+// classifies as nora.
+func TestRABudget_CoversBothScheduleBranchesWithAMargin(t *testing.T) {
+	// The 1s branch: radv.c:129 is `ra_time = now + 1`, and dnsmasq's
+	// clock is integer seconds, so the frame lands in the second
+	// after the one it started in.
+	const fixedBranch = 2 * time.Second
+	if RABudget() < fixedBranch {
+		t.Errorf("the budget (%s) does not cover the `now + 1` branch (radv.c:129) with its "+
+			"integer-second rounding (%s), which is the branch every measured bring-up of "+
+			"this fixture is on", RABudget(), fixedBranch)
+	}
+	// The draw: radv.c:135. Covering it is what makes the budget a
+	// bound rather than a description of the fast branch.
+	if RABudget() <= DnsmasqFirstRAUpperBound() {
+		t.Errorf("the budget (%s) does not exceed dnsmasq's own worst case for a first "+
+			"advertisement (%s); a wait that expires exactly when the thing it waits for is "+
+			"still allowed to arrive reports the wrong MODE, not a slow segment",
+			RABudget(), DnsmasqFirstRAUpperBound())
+	}
+	if firstRASlop <= 0 {
+		t.Errorf("the slop is %s; the bound above is dnsmasq's own schedule and accounts for "+
+			"no fork, exec, config parse or SIGALRM delivery on a loaded runner", firstRASlop)
+	}
+	// And it is a margin, not a rewrite: the budget stays inside the
+	// no-RA window, which is the invariant the window test guards from
+	// the other side.
+	if RABudget() >= V6NoRAWindow() {
+		t.Errorf("the budget (%s) reaches the absence window (%s)", RABudget(), V6NoRAWindow())
+	}
+}
+
 func TestV6NoRAWindow_IsLongerThanDnsmasqsOwnWorstCase(t *testing.T) {
 	first := DnsmasqFirstRAUpperBound()
 	if first != 5*time.Second {
@@ -525,10 +667,10 @@ func TestV6NoRAWindow_IsLongerThanDnsmasqsOwnWorstCase(t *testing.T) {
 			"would have arrived (%s); the negative would pass by not waiting",
 			V6NoRAWindow(), first)
 	}
-	if V6NoRAWindow() <= raBudget {
+	if V6NoRAWindow() <= RABudget() {
 		t.Errorf("the no-RA window (%s) is not longer than the budget the POSITIVE case spends "+
 			"(%s); a segment declared silent on less evidence than one declared noisy",
-			V6NoRAWindow(), raBudget)
+			V6NoRAWindow(), RABudget())
 	}
 }
 
@@ -586,5 +728,64 @@ func TestV6EvidenceSettled_ADisagreementAloneDoesNotFinishAnObservation(t *testi
 	if strings.Contains(findings[0], V6NoRA.String()) {
 		t.Fatalf("the refusal names %s, the answer the unsettled observation gave: %s",
 			V6NoRA, findings[0])
+	}
+}
+
+// TestV6ModeNamesIn_APrefixOfALongerModeNameIsNotThatMode drives the
+// substring trap the drift matrix's pair assertion sat in.
+//
+// "managed" is a prefix of "managed-silent", and the refusal a drifted
+// cell produces frequently names BOTH ("the segment answers as managed
+// or managed-silent") because they are indistinguishable at fixture
+// time. So a Contains test for "managed" is satisfied by a message that
+// names only managed-silent, and the cell that was supposed to prove
+// the diagnosis proves nothing about which half of the pair was found.
+func TestV6ModeNamesIn_APrefixOfALongerModeNameIsNotThatMode(t *testing.T) {
+	cases := []struct {
+		s    string
+		want []V6Mode
+	}{
+		{"started as stateless, but the segment answers as managed-silent",
+			[]V6Mode{V6Stateless, V6ManagedSilent}},
+		{"started as stateless, but the segment answers as managed",
+			[]V6Mode{V6Managed, V6Stateless}},
+		{"the segment answers as managed or managed-silent",
+			[]V6Mode{V6Managed, V6ManagedSilent}},
+		{"mode=nora", []V6Mode{V6NoRA}},
+		{"slaac; managed-silent.", []V6Mode{V6SLAAC, V6ManagedSilent}},
+		{"no mode here", nil},
+		// The trap in isolation: naming only the longer name must not
+		// name the shorter one.
+		{"managed-silent", []V6Mode{V6ManagedSilent}},
+		// ...and the reverse control, so this is not a function that
+		// simply never reports managed.
+		{"managed", []V6Mode{V6Managed}},
+	}
+	for _, c := range cases {
+		t.Run(c.s, func(t *testing.T) {
+			got := V6ModeNamesIn(c.s)
+			if len(got) != len(c.want) {
+				t.Fatalf("V6ModeNamesIn(%q) = %v, want %v", c.s, got, c.want)
+			}
+			for _, w := range c.want {
+				if !V6ModeNamed(c.s, w) {
+					t.Errorf("V6ModeNamesIn(%q) = %v, missing %s", c.s, got, w)
+				}
+			}
+		})
+	}
+
+	// The property, stated once rather than per row: naming the longer
+	// mode never names the shorter, for every pair of modes whose names
+	// overlap that way.
+	for _, a := range V6Modes() {
+		for _, b := range V6Modes() {
+			if a == b || !strings.HasPrefix(b.String(), a.String()) {
+				continue
+			}
+			if V6ModeNamed(b.String(), a) {
+				t.Errorf("a message naming only %s also reads as naming %s", b, a)
+			}
+		}
 	}
 }
