@@ -6,14 +6,13 @@ instead of Docker's self-managed IPAM pools. Containers come up on your
 LAN as first-class hosts, addressable like any other machine. Bridge,
 macvlan, and ipvlan attachment modes.
 
-!!! note "This documentation is the 2.0 line's, and 2.0 is IPv4-only"
+!!! note "This documentation is the 2.0 line's"
     This branch is published as pre-release `v2.0.0-rc1`. The plugin
     leases through the project's own in-tree DHCP client library
-    instead of an external client process, and it is IPv4-only until
-    IPv6 parity lands (#911): `ipv6=true` is refused at
-    `docker network create`, and DHCPv6 returns with #911, before
-    `v2.0.0-rc2`. The 1.x line is where DHCPv6 works today. Pick a
-    v1.x version from the selector for the 1.x manual.
+    instead of an external client process, for both address families:
+    `ipv6=true` gives an endpoint a DHCPv6 lease alongside its DHCPv4
+    one, at parity with the 1.x line (#911). Pick a v1.x version from
+    the selector for the 1.x manual.
 
 !!! info "This is a maintained fork"
     A maintained fork of

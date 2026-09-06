@@ -65,8 +65,9 @@ Pre-releases of this version: `v2.0.0-rc1` (2026-09-05, IPv4 only).
 
 The plugin performs the DHCP exchange itself, through an in-tree Go library,
 instead of driving an external client process. The image contains no DHCP
-client and the plugin execs nothing. **This release is IPv4 only**; DHCPv6
-returns in a later 2.0 milestone, and the 1.x line is where it works today.
+client and the plugin execs nothing. Both families go through that library:
+`ipv6=true` works as it did on 1.9.0, with the differences listed under
+[DHCPv6](#dhcpv6).
 
 Everything below is a change against v1.9.0.
 
@@ -160,40 +161,31 @@ and `HEAD`, refuses anything else before sending it, and counts each refusal
 as `docker_api_non_get_refusals`. The allowed paths, a worked example, and
 why a proxy on its own unix socket is *not* reachable are in `SECURITY.md`.
 
-### IPv4 only
+### DHCPv6
+
+`-o ipv6=true` does what it did on v1.9.0: every container on the network
+gets a DHCPv6 lease alongside its DHCPv4 one, reported as
+`GlobalIPv6Address`, renewed on its own timers, requested back after a
+restart, and counted in the `*_v6` counters. It runs through the same
+in-tree library as IPv4 — no `dhcpcd`, no external process. `docs/reference.md`
+has the full behaviour, including the segments that offer no DHCPv6
+address; what follows is only what changed against v1.9.0.
 
 | change | effect |
 | --- | --- |
-| `docker network create … -o ipv6=true` | **Refused**, in every mode, with an error naming the 2.0 line and where DHCPv6 is tracked. The refusal is keyed on the decoded option, so `ipv6`, `IPv6` and `Ipv6` are all refused |
-| `--ip6` / `Interface.AddressIPv6` on an endpoint | Ignored. There is no DHCPv6 exchange to carry a preferred address |
+| DHCPv6 identity on **ipvlan** | **Each endpoint now has its own DUID**, minted from the endpoint id as a DUID-UUID (RFC 9915 §11.5). v1.9.0 derived the DUID from the MAC, and an ipvlan L2 slave inherits the parent's MAC, so every container on such a network presented one identity to the server. Bridge and macvlan are unchanged: still DUID-LL over the endpoint's own MAC (§11.4), byte for byte what 1.x sent |
+| DHCPv6 identity storage | The DUID and IAID are **stored with the endpoint** rather than recomputed, so a plugin restart, container restart or upgrade presents the same client. Server-side reservations keyed on DUID stick across all three |
+| Duplicate-address detection | **Runs in the client**, and the leased address is installed with the kernel's own check switched off (`nodad`). RFC 9915 §18.2.10.1 requires the client to do it; doing it twice cost the container a window in which the address was unusable, and took the address out of service outright on a link that echoes the probe back (RFC 7527 §4.1) |
+| A duplicate on the segment | The client **declines the address and asks for another** (RFC 9915 §18.2.8), instead of installing an address the container cannot use |
+| `--ip6` / `Interface.AddressIPv6` on an endpoint | Still ignored, as on 1.x. A hint on the wire is not a promise, and nothing here would make one |
 | `docker network create --ipv6` | Unchanged: Docker's own flag does not work with the null IPAM driver, and never did |
 
-**A network created by a 1.x build with `ipv6=true` survives the upgrade, and
-its containers stop working.** Nothing rewrites a stored network record and
-the refusal above runs at `CreateNetwork`, which an existing network does not
-go through again. What the plugin does with such a record, read from the tree
-rather than from intent:
-
-- `CreateEndpoint` **succeeds, IPv4 only**. The v6 acquisition is refused
-  inside the plugin and reports no router advertisement, which is classified
-  as the tolerated "no router on this segment" case: a warning is logged and
-  **`dhcpv6_no_router_advert` increments**.
-- `Join` **returns success and the container starts — with an address
-  nothing will renew.** Two things happen, in order. Because the record says
-  `ipv6=true`, the manager first clears the engine's `disable_ipv6` on the
-  container link; if that write fails it increments
-  **`ipv6_link_enable_failures`** and carries on. It then tries to start the
-  persistent client for the v6 family, which is refused, and that failure
-  takes down the v4 persistent client started beside it. The client start
-  runs in the background *after* `Join` has answered Docker, so the container
-  comes up holding the IPv4 address the `CreateEndpoint` one-shot won, with
-  no client renewing it. The failure increments **`join_start_failures`**,
-  which flips `healthy` to `false`.
-- At plugin start, **recovery replays the same sequence** for such an
-  endpoint — the same `disable_ipv6` clear, the same refusal — and increments
-  `recovery_failed`, which also flips `healthy` to `false`.
-
-There is no migration step. Recreate the network without `ipv6=true`.
+**Upgrading a network that already has `ipv6=true`: nothing to do.** The
+stored record means the same thing here and endpoints on it get DHCPv6
+leases as before. **On an ipvlan network each container gets a new IPv6
+address once**, because of the DUID change above, and keeps it from then
+on; re-key any server-side v6 reservation on the new DUID. Bridge and
+macvlan endpoints keep their addresses.
 
 ### Removed: plugin settings
 
@@ -215,26 +207,10 @@ reading a removed key gets zero, not an error.
 | `lease_time_clamped` | Counted a lease lifetime clamped to a 24h watchdog deadline. Option 51's `0xFFFFFFFF` is now carried as an infinite lease rather than as 4294967295 seconds, so there is no overflow to clamp and no watchdog to clamp it for |
 | `directives_refused` | Counted values dropped before being written into a generated client config file. No config file is generated |
 | `mount_prep_failures` | Counted failed steps of a per-client private mount-namespace setup. There is no per-client state directory, so there is no mount to prepare |
-| `router_advert_guard_failures` | Counted failed steps of the DHCPv6 Router Advertisement guard, which is deleted along with the rest of the DHCPv6 path |
 | `address_conflict_probes` | Counted verdicts reached by the plugin's own datagram probe on the parent link. That probe is deleted; RFC 5227 runs inside the DHCP client now, and `acd_probes_sent` is what says whether the address was checked |
 | `conflict_probe_failures` | Counted probes that could not reach a verdict, almost always because the parent carried no address on the leased subnet. An RFC 5227 probe does not need one, so the condition no longer exists. `acd_arp_send_failures` is the nearest thing that remains, and it means something narrower: the socket refused the send |
 | `conflict_probe_stale_routes` | Counted temporary `/32` routes reclaimed from a probe cut short. The probe installed no routes at all now, so there is nothing to leak or reclaim |
 | `conflict_probe_stale_addrs` | Counted borrowed link-local source addresses reclaimed from the parent NIC, for the same probe. Nothing is borrowed and nothing is left behind |
-
-**Two of the four v6 counters can still be incremented, and both mean
-something other than what their 1.x descriptions say.** On the legacy
-`ipv6=true` path described above, `dhcpv6_no_router_advert` increments once
-per `CreateEndpoint` — always, whatever the segment carries — and
-`ipv6_link_enable_failures` increments at `Join` if clearing the engine's
-`disable_ipv6` on the container link fails. That step runs even though no
-DHCPv6 client is constructed, which is why the counter is not dead here.
-
-**The other two, `dhcpv6_config_only` and `dhcpv6_not_offered`, cannot be
-incremented in this build.** Nothing emits the audit event the first reads,
-and the v6 refusal reports nothing observed about the segment, so it always
-classifies as "no router" and never as "no DHCPv6 offered". All four are still
-rendered so a scrape does not lose a series across the upgrade. **Read a zero
-on those two as "this build cannot report it", not as "nothing went wrong."**
 
 ### New: RFC 5227 address conflict detection (`conflict_check`)
 

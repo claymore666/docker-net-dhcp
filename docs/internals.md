@@ -104,49 +104,81 @@ events into the events `pkg/plugin` has always consumed. Nothing outside
 
 ## How IPv6 is handled in 2.0
 
-**It is not, until IPv6 parity lands (#911).** `validateModeOptions`
-refuses `ipv6=true` at `CreateNetwork` with `util.ErrIPv6Unsupported`,
-in every mode and for every spelling the option arrives under, and the
-error names both the 2.0 line and where DHCPv6 is tracked. The refusal is at network creation
-rather than at the first container because that is the only point where
-an operator finds out in time to do something about it: an endpoint that
-quietly comes up without the address its network asked for is precisely
-the failure this exists to prevent.
+`ipv6=true` gives an endpoint a **second DHCP client**, in the same
+shape as its first: one `dhcpManager`, one library client, one record.
+Nothing about the v4 path changes, which is the whole design — the
+maintainer's rule for this milestone was that IPv6 takes the same shape
+as IPv4 unless the v4 shape was itself a hack.
 
-`pkg/dhcp` refuses again at every entry point (`GetIP`,
-`NewDHCPClient`, `buildParams`) with `ErrIPv6Unsupported`. That is not
-belt-and-braces for the create path — it is the only guard on the one
-route that still reaches v6 code, a network created by a 1.x build whose
-stored options survived the upgrade. What happens on that route, and
-what an operator sees, is in the release notes rather than here, because
-it is behaviour rather than mechanism.
+The differences that do exist are the ones the protocol forces.
 
-The v6 code that remains — `pkg/plugin/v6_absence.go`,
-`pkg/plugin/v6_link.go`, the DHCPv6 counters, their `/Plugin.Health`
-fields and their rows in the exposition — keeps its declarations and
-loses its callers. It is left in place because the milestone that
-restores DHCPv6 restores them unchanged, and deleting a documented
-counter to add it back later costs two documentation changes to end
-where it started. **A zero in any of them means "not reachable in this
-build", not "nothing went wrong"**, and the same sentence is at the
-declaration in `pkg/plugin/endpoints.go`.
+**The identity is minted once and stored.** DHCPv4 derives its client
+identifier from the MAC on every start; DHCPv6 cannot, because RFC 9915
+§11 asks for a DUID that "SHOULD NOT change over time if at all
+possible" and one mode has no per-endpoint MAC to derive it from. So
+`resolveIdentity6` mints it at `CreateEndpoint` and the endpoint's
+record carries it (the `Identity` field, write-once). Bridge and macvlan
+get §11.4's DUID-LL over the endpoint MAC — byte for byte what 1.9.0
+handed `dhcpcd`, so an endpoint upgraded from 1.x keeps its address —
+and **ipvlan gets §11.5's DUID-UUID over the endpoint id**, because an
+ipvlan L2 slave inherits the parent link's MAC and every container on
+one network would otherwise present the same identity and claim one
+binding.
 
-`TestV6StructuralZero_TheWritersAreStillTheEnumeratedFour` is what keeps
-that claim from decaying: it derives the writer population from the AST
-and fails the build when a *new* writer appears, which is the shape that
-would make the statement silently false on an IPv4 path. It deliberately
-does not try to prove each writer sits behind a v6 branch — an AST proof
-of that breaks on a harmless refactor, and the weaker property is the
-one that can be held.
+**The two families do not share a record.** A record is keyed on scope
+and hardware address, and a dual-stack endpoint has one hardware address
+on one network, so the v6 record is filed under `Scope6(networkID)` —
+the network id with a `#v6` suffix. Without it the two families collide
+exactly and whichever bound last answers both resumptions.
 
-**The Router-Advertisement guard is deleted, not disabled.** Its sysctls
-(`accept_ra=2`, `autoconf=1`, `keep_addr_on_down=1`) were applied only
-from inside the external client's mount-namespace preparation, so the
-path that applied them went with the process. Nothing on an IPv4 path
-read them: they are `net.ipv6.conf.*` knobs by construction. The
-milestone that restores DHCPv6 restores the guard and its argument
-together — what it inherits is the measurement, not a mechanism that can
-be switched back on.
+**Duplicate-address detection happens in the client, and the kernel is
+told not to repeat it.** RFC 9915 §18.2.10.1 puts the check on the
+client; the library runs it and reports the lease only after it passes.
+The chassis then installs the address with `IFA_F_NODAD`, because a
+second run costs a `tentative` window the container cannot use the
+address in and can *fail* where the first passed — RFC 7527 §4.1's
+loopback case takes the address out of service entirely. RFC 4429 §3.3
+is the same argument from the standards side. The address also carries
+RFC 9915 §7.1's two lifetimes, so the kernel can deprecate rather than
+delete (RFC 4862 §5.5.4); expiry itself is still the library's job and
+the lifetimes are a belt for a plugin that dies inside the window.
+
+**The Router-Advertisement guard is back, and it is a precondition
+rather than an option.** DHCPv6 carries no next hop — RFC 9915 §21
+defines no router option — and RFC 5942 §4 rule 1 forbids treating the
+assigned address's prefix as on-link, so an endpoint whose kernel is not
+processing Router Advertisements ends up with an address and no route.
+`ApplyRouterAdvertGuard` writes `accept_ra=2`, `autoconf=1` and
+`keep_addr_on_down=1` and reads each back; `DHCPClientOptions` refuses a
+persistent v6 client that does not claim it, and refuses every other
+shape that does. What changed from 1.9.0 is the *mechanism*, not the
+obligation: 1.9.0 had to fight `dhcpcd`, which cleared `accept_ra` and
+`autoconf` on every carrier acquisition, so the guard wrote the knobs
+and then remounted `/proc/sys` read-only to keep them. Nothing in 2.0
+rewrites them, so there is no shield to maintain. `accept_ra=2` and not
+`1` because the engine turns on forwarding on the container's link in
+bridge mode and `1` means "accept only while forwarding is off".
+
+It runs in `prepareIPv6Link`, in the same namespace entry as the
+`disable_ipv6` clear that precedes it. That placement is a deviation
+from where the design put it — inside the client's own setup — and the
+reason is mechanical: `/proc/sys` is read-only in the managed plugin's
+rootfs, `v6_link.go` already owns the mount-namespace unshare that makes
+it writable, and doing it in the client would mean a second one. The
+ORDER the design fixed is preserved exactly: `disable_ipv6` cleared
+first, then the guard, then the client, which waits for a non-tentative
+link-local of its own before it sends anything.
+
+**An absent v6 lease is classified, not swallowed.** On a stateless or
+SLAAC segment there is no DHCPv6 address by definition, and refusing the
+endpoint there means no container can start on those networks at all
+(#868). `classifyV6Absence` decides on what the segment said: a
+`Configured` event — the library's own kind for a reply that carried
+configuration and no address — is "not offered", whatever the last
+advertisement's flags were; otherwise no advertisement at all is "no
+router", and an advertisement with the M bit set is fatal. The wire
+beats the diagnostic, because a later advertisement on the same link can
+set M after the segment has already answered.
 
 ## How a network chooses its DHCP server
 
@@ -164,9 +196,12 @@ follows from where the filtering happens.
   apart; option 54 is what the server says it is, and it is also what a
   renewal is unicast to, so 2.0 filters on it and the relay
   limitation goes with the change. The two keys agree whenever a server
-  answers directly. They stay DHCPv4-only because DHCPv6 is not
-  implemented in 2.0 yet, so a v6 entry is still refused at
-  `docker network create` rather than applying to nothing.
+  answers directly. They stay **DHCPv4-only** even now that DHCPv6 is
+  wired in: a v6 entry is refused at `docker network create` rather than
+  applying to nothing, and `clientServerLists` hands a v6 client no
+  lists at all. That is not an oversight deferred — the library's
+  `Params6` has no server-list field, so a v6 client that tried to honour
+  one would not compile.
 
     The library's predicate is where the edge cases live, and they are
     decided rather than incidental: **deny wins** over allow for a
