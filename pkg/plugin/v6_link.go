@@ -125,13 +125,18 @@ func makeProcSysWritable() error {
 // reviewer can see.
 func procSysPrepIsFatal(error) bool { return false }
 
-// ipv6DisablePath is the disable_ipv6 sysctl for one interface, as seen
-// from inside the network namespace that owns it. /proc/sys/net is
-// per-netns: the same path names a different switch depending on the
-// reader's netns, which is why the caller enters the sandbox rather than
-// reaching in from the host.
-func ipv6DisablePath(iface string) string {
-	return filepath.Join(ipv6DisableSysctlDir, iface, "disable_ipv6")
+// ipv6DisablePath is the disable_ipv6 sysctl for one interface under
+// dir, as seen from inside the network namespace that owns it.
+// /proc/sys/net is per-netns: the same path names a different switch
+// depending on the reader's netns, which is why the caller enters the
+// sandbox rather than reaching in from the host.
+//
+// dir is a parameter for the same reason ApplyRouterAdvertGuard takes
+// one -- a temp directory stands in for /proc/sys/net/ipv6/conf in a
+// test -- and production has exactly one caller, which passes
+// ipv6DisableSysctlDir.
+func ipv6DisablePath(dir, iface string) string {
+	return filepath.Join(dir, iface, "disable_ipv6")
 }
 
 // clearDisableIPv6 turns IPv6 on for the interface whose disable_ipv6
@@ -152,6 +157,32 @@ func clearDisableIPv6(path string) (bool, error) {
 		return false, fmt.Errorf("write %v: %w", path, err)
 	}
 	return true, nil
+}
+
+// prepareV6LinkUnder is the two obligations IN ORDER, over one sysctl
+// directory, with no namespace in it.
+//
+// It exists because the ORDER is the claim and the order was the part
+// no test could reach: prepareIPv6Link below is a namespace entry with
+// these four lines at the bottom, and a mutant that applied the guard
+// on a link whose IPv6 could not be turned on survived the whole unit
+// lane. The dir parameter is the seam -- ApplyRouterAdvertGuard already
+// took one for the same reason -- so both directions are drivable
+// against a temp directory.
+//
+// The disable_ipv6 failure returns the ZERO guard result and not a
+// partial one, which is the direction that matters: a guard applied to
+// a link with IPv6 administratively off writes its knobs and reads
+// them back truthfully, so router_advert_guard_failures would report
+// zero for an endpoint on which no advertisement can be processed at
+// all. One failure, one counter.
+func prepareV6LinkUnder(dir, iface string) (bool, dhcp.RouterAdvertGuardResult, error) {
+	var noGuard dhcp.RouterAdvertGuardResult
+	changed, err := clearDisableIPv6(ipv6DisablePath(dir, iface))
+	if err != nil {
+		return changed, noGuard, err
+	}
+	return changed, dhcp.ApplyRouterAdvertGuard(dir, iface), nil
 }
 
 // prepareIPv6Link puts the container side of this endpoint's link into
@@ -271,17 +302,7 @@ func (m *dhcpManager) prepareIPv6Link() (bool, dhcp.RouterAdvertGuardResult, err
 		}
 	}()
 
-	changed, err := clearDisableIPv6(ipv6DisablePath(iface))
-	if err != nil {
-		// The guard is not attempted on a link whose IPv6 could not be
-		// turned on: its knobs would be written and read back
-		// truthfully on a link where nothing they govern can happen,
-		// and router_advert_guard_failures would then read zero for an
-		// endpoint with no advertisement processing at all. One
-		// failure, one counter.
-		return changed, noGuard, err
-	}
-	return changed, dhcp.ApplyRouterAdvertGuard(ipv6DisableSysctlDir, iface), nil
+	return prepareV6LinkUnder(ipv6DisableSysctlDir, iface)
 }
 
 // ensureIPv6Enabled is the call site's view: put the link in shape for

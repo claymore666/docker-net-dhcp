@@ -10,6 +10,8 @@ import (
 	"testing"
 
 	"errors"
+
+	"github.com/claymore666/docker-net-dhcp/pkg/dhcp"
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netns"
 	"golang.org/x/sys/unix"
@@ -19,10 +21,10 @@ func TestIPv6DisablePath(t *testing.T) {
 	// The path is per-interface and per-netns; the interface name is
 	// the only variable and it belongs in the middle component, not
 	// appended to the file.
-	if got, want := ipv6DisablePath("eth0"), "/proc/sys/net/ipv6/conf/eth0/disable_ipv6"; got != want {
+	if got, want := ipv6DisablePath(ipv6DisableSysctlDir, "eth0"), "/proc/sys/net/ipv6/conf/eth0/disable_ipv6"; got != want {
 		t.Errorf("ipv6DisablePath(eth0) = %q, want %q", got, want)
 	}
-	if got, want := ipv6DisablePath("dh-abc123"), "/proc/sys/net/ipv6/conf/dh-abc123/disable_ipv6"; got != want {
+	if got, want := ipv6DisablePath(ipv6DisableSysctlDir, "dh-abc123"), "/proc/sys/net/ipv6/conf/dh-abc123/disable_ipv6"; got != want {
 		t.Errorf("ipv6DisablePath(dh-abc123) = %q, want %q", got, want)
 	}
 }
@@ -293,4 +295,126 @@ func TestClearDisableIPv6_IsTheObserver(t *testing.T) {
 	if _, err := clearDisableIPv6(filepath.Join(dir, "absent", "disable_ipv6")); err == nil {
 		t.Errorf("clearDisableIPv6 reported success on a path that does not exist")
 	}
+}
+
+// v6LinkSysctlDir builds a stand-in for /proc/sys/net/ipv6/conf with
+// one interface directory holding disable_ipv6 and the guard's three
+// knobs, all at values a real sandbox link starts from: IPv6 off, and
+// the guard's knobs at the kernel defaults the guard has to move.
+//
+// Starting them at the defaults rather than at the guard's own values
+// is what makes the second assertion below discriminating: knobs that
+// already read the right value would be indistinguishable from knobs
+// the guard wrote.
+func v6LinkSysctlDir(t *testing.T, iface string) string {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, iface), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	write := func(name, value string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(dir, iface, name), []byte(value+"\n"), 0o644); err != nil {
+			t.Fatalf("seed %s: %v", name, err)
+		}
+	}
+	write("disable_ipv6", "1")
+	for knob := range dhcp.RouterAdvertGuardContract() {
+		write(knob, "0")
+	}
+	return dir
+}
+
+func v6LinkKnob(t *testing.T, dir, iface, name string) string {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join(dir, iface, name))
+	if err != nil {
+		t.Fatalf("read %s: %v", name, err)
+	}
+	return strings.TrimSpace(string(b))
+}
+
+// TestPrepareV6LinkUnder_GuardRunsOnlyAfterIPv6IsOn drives the ORDER,
+// which is the whole claim of prepareIPv6Link and was the part no test
+// could reach: the namespace entry around it needs root and a sandbox,
+// so a mutant that applied the guard on a link whose IPv6 could not be
+// turned on survived the entire unit lane, and so did one that never
+// applied the guard at all.
+//
+// The two directions are the test. On a link that can be enabled the
+// guard's knobs must end up at the contract's values — otherwise the
+// container has a DHCPv6 address and no route, because DHCPv6 carries
+// no next hop. On a link that cannot, the guard must not have run:
+// its knobs write and read back perfectly well on a link with IPv6
+// administratively off, so a guard applied there reports success for
+// an endpoint on which no advertisement can be processed at all, and
+// router_advert_guard_failures reads zero for the one endpoint that
+// most needs it to read something.
+func TestPrepareV6LinkUnder_GuardRunsOnlyAfterIPv6IsOn(t *testing.T) {
+	const iface = "eth0"
+	contract := dhcp.RouterAdvertGuardContract()
+	if len(contract) == 0 {
+		t.Fatal("the guard contract is empty, so this test observes nothing")
+	}
+
+	t.Run("IPv6 can be enabled: the guard runs after it", func(t *testing.T) {
+		dir := v6LinkSysctlDir(t, iface)
+
+		changed, res, err := prepareV6LinkUnder(dir, iface)
+		if err != nil {
+			t.Fatalf("prepareV6LinkUnder: %v", err)
+		}
+		if !changed {
+			t.Error("disable_ipv6 read 1 and the call reports it wrote nothing")
+		}
+		if got := v6LinkKnob(t, dir, iface, "disable_ipv6"); got != "0" {
+			t.Errorf("disable_ipv6 reads %q after the call, want 0", got)
+		}
+		if res.Failures != 0 || res.Err != nil {
+			t.Errorf("the guard reported %d failure(s) on a writable directory: %v",
+				res.Failures, res.Err)
+		}
+		for knob, want := range contract {
+			if got := v6LinkKnob(t, dir, iface, knob); got != want {
+				t.Errorf("%s reads %q after the call, want %q — the guard did not run, "+
+					"and a container on this link gets a DHCPv6 address with no default "+
+					"route to use it with", knob, got, want)
+			}
+		}
+	})
+
+	t.Run("IPv6 cannot be enabled: the guard does not run", func(t *testing.T) {
+		dir := v6LinkSysctlDir(t, iface)
+		// A directory where disable_ipv6 should be: the read fails, and
+		// it fails the way a sysctl that is not there or not readable
+		// does, without needing a read-only mount or a non-root user.
+		p := filepath.Join(dir, iface, "disable_ipv6")
+		if err := os.Remove(p); err != nil {
+			t.Fatalf("remove: %v", err)
+		}
+		if err := os.Mkdir(p, 0o755); err != nil {
+			t.Fatalf("mkdir over the sysctl: %v", err)
+		}
+
+		changed, res, err := prepareV6LinkUnder(dir, iface)
+		if err == nil {
+			t.Fatal("prepareV6LinkUnder succeeded with no readable disable_ipv6")
+		}
+		if changed {
+			t.Error("the call reports it enabled IPv6 on a link where it could not")
+		}
+		if res.Failures != 0 || res.Err != nil {
+			t.Errorf("the guard produced a result (%d failure(s), %v) on a link whose "+
+				"IPv6 could not be turned on", res.Failures, res.Err)
+		}
+		for knob := range contract {
+			if got := v6LinkKnob(t, dir, iface, knob); got != "0" {
+				t.Errorf("%s reads %q — the guard wrote its knobs on a link with IPv6 "+
+					"administratively off. They write and read back truthfully there, so "+
+					"router_advert_guard_failures reports zero for an endpoint that can "+
+					"process no advertisement at all: one failure, two counters, and the "+
+					"one an operator would look at reads clean", knob, got)
+			}
+		}
+	})
 }
