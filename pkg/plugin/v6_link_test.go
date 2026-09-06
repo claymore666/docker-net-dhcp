@@ -169,31 +169,30 @@ func TestEnsureIPv6Enabled_SurvivesANilPlugin(t *testing.T) {
 }
 
 // startV6BranchWindow bounds "the same branch" for the gate below: the
-// three calls sit within a couple of dozen lines of each other today,
+// two calls sit within a couple of dozen lines of each other today,
 // and a limit keeps the ordering claim from being satisfied by two
 // calls in unrelated parts of the file.
 const startV6BranchWindow = 40
 
-// TestStart_EnablesIPv6BeforeWaitingForTheLinkLocal pins the ORDER, not
-// the presence.
+// TestStart_EnablesIPv6BeforeTheV6Client pins the ORDER, not the
+// presence.
 //
 // Both calls could be present and the fix still be dead: on a link the
-// engine disabled, the link-local never appears, so awaitLinkLocal
-// spends its whole budget and warns, and enabling IPv6 afterwards
-// arrives ten seconds late with the DHCPv6 client already started
-// against a link that had nothing on it. That is precisely the shape
-// the stateless run under #868 produced -- "No usable link-local address;
-// starting DHCPv6 client anyway", then a dhcpcd -6 that never emitted a
-// router solicitation -- so the ordering is the defect, and presence
-// alone would not have caught it.
+// engine disabled, no link-local ever appears, so the client's own wait
+// for one spends its whole budget and refuses, and enabling IPv6
+// afterwards arrives with the DHCPv6 client already given up on a link
+// that had nothing on it. That is precisely the shape the stateless run
+// under #868 produced -- "No usable link-local address", then a -6
+// client that never emitted a router solicitation -- so the ordering is
+// the defect, and presence alone would not have caught it.
 //
 // Source-reading rather than behavioural because reaching this code
 // needs a live container, a sandbox namespace and root; the alternative
-// to a gate here is no observer at all.
-func TestStart_EnablesIPv6BeforeWaitingForTheLinkLocal(t *testing.T) {
+// to a gate here is no observer at all. STATED BOUND: it reads the
+// spelling of two calls, so a rename or a wrapper is invisible to it.
+func TestStart_EnablesIPv6BeforeTheV6Client(t *testing.T) {
 	const (
 		enable  = "m.ensureIPv6Enabled()"
-		await   = "m.awaitLinkLocal(ctx)"
 		client  = "m.setupClient(true)"
 		srcFile = "dhcp_manager.go"
 	)
@@ -214,30 +213,124 @@ func TestStart_EnablesIPv6BeforeWaitingForTheLinkLocal(t *testing.T) {
 		return hits
 	}
 
-	for _, needle := range []string{enable, await, client} {
+	for _, needle := range []string{enable, client} {
 		if got := at(needle); len(got) != 1 {
 			t.Fatalf("%v: found %q on lines %v, want exactly one -- "+
 				"this gate reads the source and cannot arbitrate between copies", srcFile, needle, got)
 		}
 	}
 
+	// A LINE ORDER IS NOT AN EXECUTION ORDER. `defer m.ensureIPv6Enabled()`
+	// and `go m.ensureIPv6Enabled()` leave the call exactly where it is
+	// and move when it runs -- the first to after the client has already
+	// failed, the second to whenever. Both walked through the version of
+	// this gate that only compared line numbers (MEASURED: the mutant
+	// survived). So the enable must be a plain statement on its own line.
+	// STATED BOUND: a call moved inside a helper that defers it is still
+	// invisible here.
+	if got := strings.TrimSpace(lines[at(enable)[0]-1]); got != enable {
+		t.Errorf("%v line %d is %q, want exactly %q -- a deferred or spawned enable runs "+
+			"after or beside the client rather than before it, and the line order below "+
+			"cannot tell the difference", srcFile, at(enable)[0], got, enable)
+	}
+
 	// setupClient(true) is the unique marker for the IPv6 branch of
 	// Start -- there is exactly one persistent DHCPv6 client -- so
-	// requiring both calls to sit above it, in order and close by,
-	// says "inside that branch" without depending on how the branch
-	// itself is spelled.
-	enableLine, awaitLine, clientLine := at(enable)[0], at(await)[0], at(client)[0]
-	if !(enableLine < awaitLine && awaitLine < clientLine) {
-		t.Errorf("%v: %q is on line %d, %q on %d, %q on %d -- IPv6 must be enabled BEFORE the "+
-			"link-local wait and both before the DHCPv6 client starts, or the wait burns its "+
-			"budget on a link that cannot have a link-local (#868)",
-			srcFile, enable, enableLine, await, awaitLine, client, clientLine)
+	// requiring the enable to sit above it, and close by, says "inside
+	// that branch" without depending on how the branch itself is
+	// spelled.
+	enableLine, clientLine := at(enable)[0], at(client)[0]
+	if enableLine >= clientLine {
+		t.Errorf("%v: %q is on line %d and %q on %d -- IPv6 must be enabled BEFORE the "+
+			"DHCPv6 client starts, or the client waits out its link-local budget on a link "+
+			"that cannot have one (#868)",
+			srcFile, enable, enableLine, client, clientLine)
 	}
 	if clientLine-enableLine > startV6BranchWindow {
 		t.Errorf("%v: %q (line %d) and %q (line %d) are %d lines apart, more than the %d this gate "+
 			"allows -- they are meant to be the same branch of Start, and a gate that tolerates any "+
 			"distance stops saying so",
 			srcFile, enable, enableLine, client, clientLine, clientLine-enableLine, startV6BranchWindow)
+	}
+}
+
+// linkLocalWaitMarkers are the three things a link-local wait in THIS
+// package has to read, whatever it is called.
+//
+// Keyed on the MECHANISM and not on a function name (#911 review round
+// 1, finding 5). A wait for a usable IPv6 link-local address over
+// netlink has to select on link scope and reject the two duplicate-
+// address-detection flags; a wait that does less than that is not
+// waiting for a usable address, and one that does it under another name
+// still names these three.
+var linkLocalWaitMarkers = []string{
+	"RT_SCOPE_LINK",
+	"IFA_F_TENTATIVE",
+	"IFA_F_DADFAILED",
+}
+
+// TestTheChassisDoesNotWaitForALinkLocalItself is the observer for "the
+// v6 Join path waits for the link-local ONCE".
+//
+// One fact, one derivation. runtime.InterfaceLinkLocal resolves the
+// interface on the calling thread, refuses a tentative or dad-failed
+// address, and waits its own derived bound (RFC 4862 section 5.4.2's
+// delay plus one probe, plus a stated margin) for a usable one. The
+// chassis had a SECOND wait in front of it, on a ten-second budget
+// derived from nothing, so a link whose link-local never cleared spent
+// fourteen seconds of a thirty-second Join deadline arriving at the
+// refusal the library reaches in four -- and newLibClient6's own doc
+// comment asserted the wait was not there.
+//
+// WHY A SOURCE SCAN. The Join path needs root, a sandbox namespace and
+// a live container; nothing in the unit lane can execute it. The
+// property is an ABSENCE, and an absence is what a scan can actually
+// establish over a whole package where a behavioural test can only
+// speak for the path it drives.
+//
+// STATED BOUNDS. It reads production sources under pkg/plugin only:
+// a wait added in another package of the chassis, or one written
+// against /proc/net/if_inet6 or netip's IsLinkLocalUnicast instead of
+// netlink, is invisible to it. It cannot see a wait inside the library
+// either, which is the point -- that one is the derivation being kept.
+func TestTheChassisDoesNotWaitForALinkLocalItself(t *testing.T) {
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		t.Fatalf("read the package directory: %v", err)
+	}
+
+	scanned := 0
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		src, err := os.ReadFile(name)
+		if err != nil {
+			t.Fatalf("read %v: %v", name, err)
+		}
+		scanned++
+		for _, marker := range linkLocalWaitMarkers {
+			if !strings.Contains(string(src), marker) {
+				continue
+			}
+			t.Errorf("%v names %s. That is the mechanism of a link-local wait, and the "+
+				"chassis must not have one: runtime.InterfaceLinkLocal already waits for a "+
+				"non-tentative link-local on the interface the client binds, inside its own "+
+				"derived bound. A second wait here is a second derivation of one fact and it "+
+				"stacks on top of the library's, on a Join deadline neither of them knows "+
+				"about (#911)", name, marker)
+		}
+	}
+
+	// NON-VACUITY. A scan that read nothing reports the same clean
+	// result as a package with no wait in it.
+	if scanned < 2 {
+		t.Fatalf("scanned %d production sources in this package; the check above measured "+
+			"nothing", scanned)
+	}
+	if len(linkLocalWaitMarkers) == 0 {
+		t.Fatal("the marker list is empty, so the loop above asserted nothing")
 	}
 }
 

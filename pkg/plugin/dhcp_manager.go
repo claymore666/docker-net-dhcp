@@ -1496,34 +1496,6 @@ func (m *dhcpManager) locateContainerLink(ctx context.Context) error {
 	}, pollTime)
 }
 
-// linkLocalDADTimeout caps the wait for the container link's IPv6
-// link-local address to clear duplicate address detection. DAD with
-// kernel defaults is one solicit + 1s; the budget is generous because
-// the only cost of waiting is delaying the first SOLICIT.
-const linkLocalDADTimeout = 10 * time.Second
-
-// awaitLinkLocal blocks until the container-side link has a usable
-// (non-tentative, non-failed) IPv6 link-local address — the
-// precondition for any DHCPv6 exchange in the netns.
-func (m *dhcpManager) awaitLinkLocal(ctx context.Context) error {
-	ctx, cancel := context.WithTimeout(ctx, linkLocalDADTimeout)
-	defer cancel()
-	return util.AwaitCondition(ctx, func() (bool, error) {
-		addrs, err := m.netHandle.AddrList(m.ctrLink, unix.AF_INET6)
-		if err != nil {
-			return false, fmt.Errorf("failed to list IPv6 addresses: %w", err)
-		}
-		for _, a := range addrs {
-			if a.Scope == unix.RT_SCOPE_LINK &&
-				a.Flags&unix.IFA_F_TENTATIVE == 0 &&
-				a.Flags&unix.IFA_F_DADFAILED == 0 {
-				return true, nil
-			}
-		}
-		return false, nil
-	}, pollTime)
-}
-
 // joinPhases records how long each stage of Start took, so a Join that
 // runs out of budget can say WHERE the budget went.
 //
@@ -1763,20 +1735,23 @@ func (m *dhcpManager) Start(ctx context.Context) (err error) {
 			// reason DAD has nothing to do with. See v6_link.go.
 			m.ensureIPv6Enabled()
 
-			// DHCPv6 needs a usable link-local source address. The
-			// link just landed in this netns, so its LL is typically
-			// still DAD-tentative — and a host must NOT answer
+			// THE LINK-LOCAL WAIT IS THE LIBRARY'S AND IS NOT REPEATED
+			// HERE. DHCPv6 needs a usable link-local source address —
+			// the link has just landed in this netns, so its LL is
+			// typically still DAD-tentative, and a host must NOT answer
 			// neighbor solicitations for a tentative address, so the
-			// server's unicast ADVERTISE/REPLY can never be
-			// delivered: dhcpcd SOLICITs forever while the server's
-			// neighbor cache records an unreachable client (#103,
-			// found by TestLeaseRenewIPv6_HonorsT1). Wait for DAD to
-			// finish before starting the client. Timeout degrades to
-			// a warn-and-try — DAD normally completes in ~1s.
-			if err := m.awaitLinkLocal(ctx); err != nil {
-				log.WithError(err).WithFields(m.logFields(true)).
-					Warn("No usable link-local address; starting DHCPv6 client anyway")
-			}
+			// server's unicast ADVERTISE/REPLY can never be delivered
+			// (#103, found by TestLeaseRenewIPv6_HonorsT1). setupClient
+			// reaches runtime.InterfaceLinkLocal, which resolves the
+			// interface on the calling thread, refuses a tentative or
+			// dad-failed address and waits up to its own derived bound
+			// for a usable one. A wait here as well is a SECOND
+			// derivation of one fact: it was ten seconds against the
+			// library's four, so a link whose LL never clears spent
+			// fourteen seconds of the Join deadline reaching the same
+			// refusal (#911 review round 1, finding 5). The property
+			// that keeps it gone is
+			// TestTheChassisDoesNotWaitForALinkLocalItself.
 			if m.errChanV6, err = m.setupClient(true); err != nil {
 				close(m.stopChan)
 				// The v4 consumer goroutine is already live and may be
