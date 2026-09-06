@@ -639,9 +639,11 @@ func (f *V6Fixture) AssertNoRAWithin(window time.Duration) {
 // is a pure function over the log, driven in the fast lane against
 // captured server logs, one per mode.
 //
-// Nothing in this round can drive it positively on a live segment: the
-// 2.x branch refuses ipv6=true at network creation, so no run on this
-// branch constructs a DHCPv6 client. The live drive is M7d's.
+// The live positives are in dhcpv6_noaddress_modes_test.go, one per
+// column of the contract: the managed lease test drives the must-set,
+// the stateless test drives a must beside a must-NOT, and the
+// managed-silent test drives the mustLine. The live NEGATIVE is
+// TestV6Fixture_AssertExchangeRefusesASegmentNoClientEverUsed.
 func (f *V6Fixture) AssertExchange(budget time.Duration) {
 	f.t.Helper()
 	deadline := time.Now().Add(budget)

@@ -554,6 +554,85 @@ func TestV6ExchangeFindings_AV4OnlyExchangeSatisfiesNoModeAndAccusesNone(t *test
 	}
 }
 
+// TestV6ExchangeFindings_TheMustLineIsPerLineNotWholeLog is the
+// observer for countLinesWithAll's per-line scope, owed to this round
+// by #915.
+//
+// The mustLine column exists because it fails GREEN, and the whole
+// reason it is a LINE rule is that dnsmasq's v4 path writes the same
+// shape: `DHCPRELEASE(br0) <addr> <mac> ignored` (rfc2131.c:1096 with
+// the message at :1105). If countLinesWithAll were a whole-log
+// conjunction — `strings.Contains(log, a) && strings.Contains(log, b)`
+// — the two halves could come from two different lines, and no other
+// test in either lane would notice: the v4-only log in
+// TestV6ExchangeFindings_AV4OnlyExchangeSatisfiesNoModeAndAccusesNone
+// carries `ignored` but no DHCPSOLICIT at all, so its finding fires
+// under either scope.
+//
+// The log below is the case that separates them, and it is a segment
+// that can really happen: a managed-silent fixture whose SOLICIT was
+// in fact ANSWERED — the mistyped ignore directive AwaitIgnoredSolicit
+// guards against — on a fixture whose v4 half refused one release.
+// Both needles are in the log; neither line carries both.
+func TestV6ExchangeFindings_TheMustLineIsPerLineNotWholeLog(t *testing.T) {
+	rule, ok := v6ExchangeContract[V6ManagedSilent]
+	if !ok || len(rule.mustLine) == 0 {
+		t.Fatalf("%s has no mustLine, so this test observes nothing; the per-line scope "+
+			"of countLinesWithAll is unobserved as of now", V6ManagedSilent)
+	}
+	if len(rule.mustLine) < 2 {
+		t.Fatalf("%s's mustLine is %v; a one-token line rule cannot tell per-line from "+
+			"whole-log, so this observer would be vacuous", V6ManagedSilent, rule.mustLine)
+	}
+
+	// Every needle on its own line, none of them together. The tokens
+	// come from the contract rather than being retyped, so a contract
+	// edit cannot leave this test driving a rule that no longer exists.
+	var b strings.Builder
+	for i, tok := range rule.mustLine {
+		fmt.Fprintf(&b, "Sep  6 00:00:0%d dnsmasq-dhcp[1]: %s(br0) 2001:db8::10 00:01:00:01\n", i, tok)
+	}
+	split := b.String()
+
+	for _, tok := range rule.mustLine {
+		if !strings.Contains(split, tok) {
+			t.Fatalf("the log this test drives does not contain %q, so a whole-log "+
+				"conjunction would reject it for the wrong reason and this test "+
+				"would pass without observing anything", tok)
+		}
+	}
+	if countLinesWithAll(split, rule.mustLine) != 0 {
+		t.Fatalf("a line of the log this test drives carries every one of %v; the log is "+
+			"supposed to have them SEPARATED:\n%s", rule.mustLine, split)
+	}
+
+	findings := V6ExchangeFindings(V6ManagedSilent, split)
+	var named bool
+	for _, f := range findings {
+		if strings.Contains(f, "no single log line carries all of") {
+			named = true
+		}
+	}
+	if !named {
+		t.Errorf("mode %s is satisfied by a log whose mustLine tokens %v sit on separate "+
+			"lines (findings: %v). The rule is that they appear TOGETHER; read across the "+
+			"whole log it is satisfied by any fixture whose v4 half logged a refusal, "+
+			"which every mode of this fixture can do",
+			V6ManagedSilent, rule.mustLine, findings)
+	}
+
+	// The other direction, so the assertion above is not satisfied by a
+	// mustLine that nothing can ever meet: the same tokens on ONE line
+	// produce no line finding.
+	joined := "Sep  6 00:00:00 dnsmasq-dhcp[1]: " + strings.Join(rule.mustLine, " ") + "\n"
+	for _, f := range V6ExchangeFindings(V6ManagedSilent, joined) {
+		if strings.Contains(f, "no single log line carries all of") {
+			t.Errorf("mode %s reports a missing line against a log whose one line carries "+
+				"all of %v: %s", V6ManagedSilent, rule.mustLine, f)
+		}
+	}
+}
+
 // --- the mode signature -------------------------------------------------
 
 func evidenceFor(t *testing.T, mode V6Mode) V6Evidence {

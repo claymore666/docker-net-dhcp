@@ -304,6 +304,13 @@ func TestDHCPv6_Stateless_ConfigurationReachesTheContainer(t *testing.T) {
 		t.Errorf("the container's resolver does not carry the DHCPv6 search domain %s:\n%s",
 			harness.V6SearchDomain, resolv)
 	}
+
+	// The third live drive of the exchange contract, and the only one
+	// with a must-NOT that a wrong client trips: a stateless segment
+	// must see an INFORMATION-REQUEST and must NOT see an ADVERTISE. A
+	// client that solicited an address here and settled for the
+	// configuration in the reply satisfies every assertion above.
+	f.AssertExchange(30 * time.Second)
 }
 
 // TestDHCPv6_Managed_StillRequiresALease is the preservation control
@@ -395,6 +402,20 @@ func TestDHCPv6_Managed_StillRequiresALease(t *testing.T) {
 			settings.GlobalIPv6Address, f.CountLogLines("DHCPREPLY"))
 	}
 
+	// AssertExchange's LIVE POSITIVE, owed to this round by #915.
+	//
+	// Every other drive of this function is negative: the fast lane
+	// feeds it captured logs, and the integration lane's
+	// TestV6Fixture_AssertExchangeRefusesASegmentNoClientEverUsed only
+	// shows it refuses an empty one. Until a DHCPv6 client existed on
+	// this branch nothing could show it PASSES against a real exchange,
+	// and a contract whose must-set had rotted into something no
+	// segment can satisfy would have looked identical. This is a
+	// managed segment whose client just took a lease, so it is the one
+	// place the whole must-set — SOLICIT, ADVERTISE, REPLY — is known
+	// to be on the wire.
+	f.AssertExchange(30 * time.Second)
+
 	before, after := w.End()
 	if d := after.DHCPv6NotOffered - before.DHCPv6NotOffered; d != 0 {
 		t.Errorf("dhcpv6_not_offered moved by %d on a MANAGED segment, want 0 — "+
@@ -460,6 +481,15 @@ func TestDHCPv6_Managed_ServerSilent_IsStillFatal(t *testing.T) {
 	// here, the container would start, and the failure above would be
 	// read as the fix being wrong when it is the fixture that broke.
 	f.AwaitIgnoredSolicit(30 * time.Second)
+
+	// The live positive for the one column of the exchange contract
+	// that fails GREEN. V6ManagedSilent is the only mode with a
+	// mustLine, and it requires DHCPSOLICIT and the refusal word on
+	// ONE line: the parts on separate lines are a segment that
+	// answered a solicit and separately ignored something else. Read
+	// on the whole log instead of per line, this passes on any fixture
+	// whose v4 half logged a refusal, which every one of them can.
+	f.AssertExchange(30 * time.Second)
 
 	before, after := w.End()
 	if d := after.DHCPv6NotOffered - before.DHCPv6NotOffered; d != 0 {
