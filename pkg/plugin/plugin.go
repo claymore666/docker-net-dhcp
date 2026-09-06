@@ -284,6 +284,46 @@ func resolveIdentity6(opts DHCPNetworkOptions, endpointID string, mac net.Hardwa
 	return dhcp.Identity6{DUID: duid, IAID: iaid}, nil
 }
 
+// endpointRecordKey is the hardware-address half of the index a
+// durable record is found under: the endpoint's MAC, except where the
+// mode gives the endpoint no MAC of its own.
+//
+// THE INDEX IS (scope, chaddr) AND ipvlan COLLAPSES IT. An ipvlan L2
+// slave inherits the parent link's hardware address by kernel design,
+// so every endpoint on one ipvlan network carries the same MAC and
+// every record on that network lands under one key. dhcp.Records.Resume
+// answers such a lookup with the NEWEST match, so after a plugin
+// restart every ipvlan endpoint resumes the last one's record -- its
+// DHCPv6 DUID, its lease, its address. One container then confirms a
+// binding that belongs to another and installs an address the segment
+// already has on it, and nothing on the wire says so: the server was
+// asked about a binding it does hold.
+//
+// The endpoint id is what resolveClientID (#371) and resolveIdentity6
+// (#895) already reach for on this mode, and for the same reason -- it
+// is the only per-endpoint value that exists before the link does. The
+// key is folded to six bytes with the locally-administered bit set and
+// the group bit clear so that it is shaped like a MAC, reads beside the
+// endpoint it belongs to in a record file, and cannot collide with a
+// hardware address any link actually wears.
+//
+// UPGRADE: an ipvlan endpoint's records written by an earlier build are
+// filed under the parent MAC and are not found under this key. Such an
+// endpoint acquires afresh once, which is what it effectively did
+// anyway -- it was resuming somebody else's record.
+func endpointRecordKey(mode, endpointID string, mac net.HardwareAddr) net.HardwareAddr {
+	if mode != ModeIPvlan {
+		return mac
+	}
+	seed := endpointSeed(endpointID)
+	if len(seed) < 6 {
+		return mac
+	}
+	key := append([]byte(nil), seed[:6]...)
+	key[0] = (key[0] &^ 0x01) | 0x02
+	return key
+}
+
 // endpointSeed is the first uuidBytes of the endpoint id, or nil.
 //
 // The endpoint id is Docker's, is a hex string, and is the only
@@ -1970,6 +2010,53 @@ func (p *Plugin) recoveredHostname(ctx context.Context, containerID string) (dhc
 	return h, h.trusted()
 }
 
+// recoveredMAC is the hardware address recovery must run this endpoint
+// under, given what Docker reports for it.
+//
+// AN EMPTY MAC IS AN ipvlan ENDPOINT, NOT A CORRUPT ONE. Docker reports
+// no MAC for an ipvlan endpoint because the plugin never sets one: an
+// ipvlan slave inherits the parent link's address and the driver
+// rejects any attempt to change it (EOPNOTSUPP), so CreateEndpoint
+// deliberately leaves MacAddress out of its response. Every other path
+// in this plugin already tolerates that -- the join hint carries a nil
+// MAC, the fingerprint carries an empty string -- and recovery alone
+// did not: it parsed, failed, and counted a recovery_failed. MEASURED
+// on the lane 2026-09-06: after a plugin restart every ipvlan endpoint
+// on the host reported `parse MAC "": invalid MAC address` and no
+// renewal client came back for any of them.
+//
+// The address is not invented: it is READ FROM THE PARENT, which is
+// where the slave's own MAC comes from, so what recovery locates the
+// link by is the same value CreateEndpoint located it by. A parent that
+// cannot be read is a real failure and is returned as one -- an ipvlan
+// network whose parent is gone has no endpoint to recover.
+func recoveredMAC(opts DHCPNetworkOptions, macStr string) (net.HardwareAddr, error) {
+	if macStr != "" {
+		mac, err := net.ParseMAC(macStr)
+		if err != nil {
+			return nil, fmt.Errorf("parse MAC %q: %w", macStr, err)
+		}
+		return mac, nil
+	}
+	if opts.effectiveMode() != ModeIPvlan {
+		return nil, fmt.Errorf("parse MAC %q: %w", macStr, errNoRecoveryMAC)
+	}
+	parent, err := netlink.LinkByName(opts.Parent)
+	if err != nil {
+		return nil, fmt.Errorf("ipvlan parent %q: %w", opts.Parent, err)
+	}
+	hw := parent.Attrs().HardwareAddr
+	if len(hw) == 0 {
+		return nil, fmt.Errorf("ipvlan parent %q has no hardware address to inherit", opts.Parent)
+	}
+	return hw, nil
+}
+
+// errNoRecoveryMAC is the empty-MAC refusal for every mode that does
+// have a MAC of its own, kept as a value so the two arms of
+// recoveredMAC's test can name the same thing.
+var errNoRecoveryMAC = errors.New("invalid MAC address")
+
 // recoverOneEndpoint synthesises a JoinRequest and dhcpManager for a
 // single existing endpoint, then spawns Start in a goroutine. Idempotent:
 // if a manager already exists for the endpoint (e.g. because libnetwork
@@ -1995,9 +2082,9 @@ func (p *Plugin) recoverOneEndpoint(ctx context.Context, containerID, networkID,
 		return false, nil
 	}
 
-	mac, err := net.ParseMAC(macStr)
+	mac, err := recoveredMAC(opts, macStr)
 	if err != nil {
-		return false, fmt.Errorf("parse MAC %q: %w", macStr, err)
+		return false, err
 	}
 
 	var ipv4, ipv6 *netlink.Addr
@@ -2061,7 +2148,12 @@ func (p *Plugin) recoverOneEndpoint(ctx context.Context, containerID, networkID,
 		// same answer the CreateEndpoint paths give a refusal,
 		// arrived at from the other side (#726).
 		p.rememberEndpoint(endpointID, endpointFingerprint{
-			MAC:  mac.String(),
+			// What DOCKER reports, not what recovery resolved. The
+			// fingerprint is what DeleteEndpoint turns into a
+			// tombstone, and a tombstone naming the ipvlan parent's
+			// MAC would offer the next container an address filed
+			// under a hardware address it cannot wear.
+			MAC:  macStr,
 			IPv4: fpIPv4,
 			IPv6: fpIPv6,
 		}, hostname)

@@ -95,6 +95,18 @@ func (p *Plugin) recordCreated6(networkID string, mac net.HardwareAddr, id6 dhcp
 	return id
 }
 
+// recordKey is endpointRecordKey for this manager's endpoint: the value
+// its records are indexed under.
+//
+// It is a method rather than a call at each site because the create
+// side and the resume side must agree exactly, and they are in
+// different files. A manager that resumed under a different key from
+// the one CreateEndpoint filed the record under finds nothing, mints a
+// fresh identity, and the endpoint quietly becomes a new client.
+func (m *dhcpManager) recordKey() net.HardwareAddr {
+	return endpointRecordKey(m.opts.effectiveMode(), m.joinReq.EndpointID, m.endpointMAC())
+}
+
 // recordStore is the record file, or nil. On the manager rather than
 // reached through m.plugin directly because m.plugin is nil in unit
 // tests that drive a manager without a Plugin.
@@ -124,8 +136,7 @@ func (m *dhcpManager) resumeFromRecord() (string, dhcp.Resumption) {
 	if m.plugin == nil || m.plugin.records == nil {
 		return "", dhcp.Resumption{}
 	}
-	mac := m.endpointMAC()
-	id, res := m.plugin.recordResume(m.joinReq.NetworkID, mac)
+	id, res := m.plugin.recordResume(m.joinReq.NetworkID, m.recordKey())
 	if id == "" {
 		return "", dhcp.Resumption{}
 	}
@@ -151,11 +162,11 @@ func (m *dhcpManager) resumeFromRecord6() (string, dhcp.Resumption, dhcp.Identit
 	if m.plugin == nil || m.plugin.records == nil {
 		return "", dhcp.Resumption{}, dhcp.Identity6{}
 	}
-	mac := m.endpointMAC()
-	if len(mac) == 0 {
+	key := m.recordKey()
+	if len(key) == 0 {
 		return "", dhcp.Resumption{}, dhcp.Identity6{}
 	}
-	id, res, id6, ok := m.plugin.records.Resume6(m.joinReq.NetworkID, mac, time.Now())
+	id, res, id6, ok := m.plugin.records.Resume6(m.joinReq.NetworkID, key, time.Now())
 	if !ok {
 		return "", dhcp.Resumption{}, dhcp.Identity6{}
 	}
@@ -170,11 +181,11 @@ func (m *dhcpManager) resumeFromRecord6() (string, dhcp.Resumption, dhcp.Identit
 // record must write its events to THAT record: a second record for one
 // identity is two histories of one address, and the older one is what a
 // later restart would find first.
-func (p *Plugin) recordResume(networkID string, mac net.HardwareAddr) (string, dhcp.Resumption) {
-	if p.records == nil || len(mac) == 0 {
+func (p *Plugin) recordResume(networkID string, key net.HardwareAddr) (string, dhcp.Resumption) {
+	if p.records == nil || len(key) == 0 {
 		return "", dhcp.Resumption{}
 	}
-	id, res, ok := p.records.Resume(networkID, mac, time.Now())
+	id, res, ok := p.records.Resume(networkID, key, time.Now())
 	if !ok {
 		return "", dhcp.Resumption{}
 	}
@@ -220,14 +231,11 @@ func (p *Plugin) recordLeft(id string) {
 // only useful for as long as a re-bind may consume it, and a deadline
 // past that would keep answering lookups for an endpoint nothing can
 // claim.
-func (p *Plugin) retainRecordFor(networkID, mac string) {
-	if p.records == nil || mac == "" {
+func (p *Plugin) retainRecordFor(networkID string, key net.HardwareAddr) {
+	if p.records == nil || len(key) == 0 {
 		return
 	}
-	hw, err := net.ParseMAC(mac)
-	if err != nil {
-		return
-	}
+	hw := key
 	if id, _, ok := p.records.Resume(networkID, hw, time.Now()); ok {
 		p.recordRetained(id, time.Now().Add(tombstoneTTL))
 	}

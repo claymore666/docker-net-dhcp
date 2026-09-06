@@ -1057,7 +1057,9 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 		// the lease under. The one-shot below writes its own events to
 		// this record, and the Join manager reads them back as an
 		// INIT-REBOOT rather than starting a fresh DISCOVER.
-		recordID = p.recordCreated(r.NetworkID, ctrLink.Attrs().HardwareAddr, dhcp.ClientIdentity(clientID))
+		recordID = p.recordCreated(r.NetworkID,
+			endpointRecordKey(opts.effectiveMode(), r.EndpointID, ctrLink.Attrs().HardwareAddr),
+			dhcp.ClientIdentity(clientID))
 		p.updateJoinHint(r.EndpointID, func(hint *joinHint) {
 			hint.RecordID = recordID
 		})
@@ -1082,7 +1084,8 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 				return err
 			}
 			identity6 = id6
-			recordID6 = p.recordCreated6(r.NetworkID, ctrLink.Attrs().HardwareAddr, id6)
+			recordID6 = p.recordCreated6(r.NetworkID,
+				endpointRecordKey(opts.effectiveMode(), r.EndpointID, ctrLink.Attrs().HardwareAddr), id6)
 		}
 		initialIP := func(v6 bool) error {
 			v6str := ""
@@ -1347,7 +1350,14 @@ func (p *Plugin) DeleteEndpoint(ctx context.Context, r DeleteEndpointRequest) er
 		// the answer for this identity, and leaving a record in JOINED
 		// after its endpoint is gone would have plugin-restart recovery
 		// resume a lease for a container that no longer exists.
-		p.retainRecordFor(r.NetworkID, fp.MAC)
+		// Through the same key the record was filed under. fp.MAC is
+		// EMPTY on ipvlan -- the mode has no per-endpoint MAC to
+		// remember -- and while this took a MAC string, an ipvlan
+		// record was therefore never retained at all: it stayed JOINED
+		// after its endpoint was gone, and plugin-restart recovery
+		// would resume a lease for a container that no longer exists.
+		hw, _ := net.ParseMAC(fp.MAC)
+		p.retainRecordFor(r.NetworkID, endpointRecordKey(mode, r.EndpointID, hw))
 	}
 
 	if mode == ModeMacvlan || mode == ModeIPvlan {

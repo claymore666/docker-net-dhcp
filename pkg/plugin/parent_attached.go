@@ -454,7 +454,8 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, r CreateEndpo
 		// the lease under. The one-shot below writes its own events to
 		// this record, and the Join manager reads them back as an
 		// INIT-REBOOT rather than starting a fresh DISCOVER.
-		recordID = p.recordCreated(r.NetworkID, mac, dhcp.ClientIdentity(clientID))
+		recordID = p.recordCreated(r.NetworkID,
+			endpointRecordKey(mode, r.EndpointID, mac), dhcp.ClientIdentity(clientID))
 		p.updateJoinHint(r.EndpointID, func(hint *joinHint) {
 			hint.RecordID = recordID
 		})
@@ -471,7 +472,8 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, r CreateEndpo
 				return err
 			}
 			identity6 = id6
-			recordID6 = p.recordCreated6(r.NetworkID, mac, id6)
+			recordID6 = p.recordCreated6(r.NetworkID,
+				endpointRecordKey(mode, r.EndpointID, mac), id6)
 		}
 
 		runDHCP := func(v6 bool) error {
