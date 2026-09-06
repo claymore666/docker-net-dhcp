@@ -96,7 +96,7 @@ func TestClearDisableIPv6_MissingSysctlIsAnError(t *testing.T) {
 	}
 }
 
-func TestEnableIPv6OnContainerLink_RefusesBeforeTouchingAThread(t *testing.T) {
+func TestPrepareIPv6Link_RefusesBeforeTouchingAThread(t *testing.T) {
 	// Both refusals happen before any thread is locked or any
 	// namespace entered. The nil-link one is the important half: it is
 	// not a defensive nicety but the difference between an error and a
@@ -128,9 +128,17 @@ func TestEnableIPv6OnContainerLink_RefusesBeforeTouchingAThread(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			changed, err := tt.m.enableIPv6OnContainerLink()
+			changed, guard, err := tt.m.prepareIPv6Link()
 			if err == nil {
-				t.Fatalf("enableIPv6OnContainerLink returned nil error (changed=%v)", changed)
+				t.Fatalf("prepareIPv6Link returned nil error (changed=%v)", changed)
+			}
+			// The guard is not attempted on a link that failed its
+			// preconditions: a step count above zero here would mean
+			// sysctls were written on a link the function has just
+			// said it cannot address.
+			if guard.Failures != 0 {
+				t.Errorf("prepareIPv6Link reported %d guard steps after refusing the link; "+
+					"the guard must not run at all on a link it cannot name", guard.Failures)
 			}
 			if !strings.Contains(err.Error(), tt.want) {
 				t.Errorf("error %q does not name the precondition it failed (%q)", err, tt.want)

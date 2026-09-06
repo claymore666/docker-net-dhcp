@@ -381,7 +381,11 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, r CreateEndpo
 	// the record it opened. A CREATED record whose CreateEndpoint
 	// failed holds no lease and so offers nothing to resume, but it is
 	// a line in an append-only file that nothing would ever remove.
-	var recordID string
+	var (
+		recordID  string
+		recordID6 string
+		identity6 dhcp.Identity6
+	)
 
 	if err := func() error {
 		// Reload to pick up the kernel-assigned MAC (macvlan) or the
@@ -455,6 +459,21 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, r CreateEndpo
 			hint.RecordID = recordID
 		})
 
+		// The DHCPv6 identity and its own record — the sibling of the
+		// block in network.go, through the same two helpers so the two
+		// modes cannot drift. This is the path where the ipvlan arm of
+		// resolveIdentity6 matters: an ipvlan slave inherits the
+		// parent's MAC, so the MAC-derived DUID would be identical for
+		// every container on the network (#895).
+		if opts.IPv6 {
+			id6, err := resolveIdentity6(opts, r.EndpointID, mac)
+			if err != nil {
+				return err
+			}
+			identity6 = id6
+			recordID6 = p.recordCreated6(r.NetworkID, mac, id6)
+		}
+
 		runDHCP := func(v6 bool) error {
 			v6str := ""
 			if v6 {
@@ -476,15 +495,20 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, r CreateEndpo
 				FQDN:        opts.fqdnMode(),
 				ClientID:    clientID,
 				VendorClass: opts.VendorClass,
-				// MAC pins the dhcpcd DUID-LL/IAID so the one-shot and
-				// persistent clients share one identity (#152). NOTE:
-				// ipvlan-L2 slaves share the parent MAC, so v6 identity
-				// is not unique per endpoint in that mode — a known
-				// limitation for ipvlan+ipv6 (bridge/macvlan have unique,
-				// tombstone-preserved MACs).
+				// MAC keys the v4 lease and, on bridge and macvlan, the
+				// v6 DUID-LL too, so the one-shot and the persistent
+				// client share one identity (#152). ipvlan is the
+				// exception in BOTH families: its slaves inherit the
+				// parent's MAC, so the v4 client-id comes from the
+				// endpoint (resolveClientID) and so does the v6 DUID
+				// (resolveIdentity6, #895).
 				MAC:      mac,
 				Records:  p.records,
 				RecordID: recordID,
+			}
+			if v6 {
+				base.Identity6 = identity6
+				base.RecordID = recordID6
 			}
 			// RFC 5227 conflict detection, from the network's stored
 			// conflict_check (D23). Set on the BASE, so every attempt
@@ -553,6 +577,7 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, r CreateEndpo
 		// Best-effort: if LinkDel itself fails the kernel will reap the
 		// link with the netns soon enough.
 		p.closeRecord(recordID)
+		p.closeRecord(recordID6)
 		_ = netlink.LinkDel(link)
 		return res, err
 	}

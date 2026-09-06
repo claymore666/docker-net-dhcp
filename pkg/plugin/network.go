@@ -113,20 +113,6 @@ func validateModeOptions(opts DHCPNetworkOptions) error {
 		return err
 	}
 
-	// IPv4 only, for every mode (P-8, #911).
-	//
-	// Keyed on the DECODED FIELD and not on an option key. decodeOpts
-	// runs mapstructure with no MatchName, so the match is
-	// case-insensitive against the field name: `-o ipv6=true`,
-	// `-o IPv6=true` and `-o Ipv6=true` all set this one bool. A
-	// refusal that looked for a key string would enumerate two
-	// spellings and miss the third, and the network would be created
-	// with IPv6 silently doing nothing — which is what this refusal
-	// exists to prevent.
-	if opts.IPv6 {
-		return util.ErrIPv6Unsupported
-	}
-
 	// RFC 5227 conflict detection, per network (D23). Two refusals and
 	// they are separate questions: whether the mode NAMES anything, and
 	// whether lease_timeout can fund an acquisition in it.
@@ -1002,7 +988,11 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 	// the record it opened. A CREATED record whose CreateEndpoint
 	// failed holds no lease and so offers nothing to resume, but it is
 	// a line in an append-only file that nothing would ever remove.
-	var recordID string
+	var (
+		recordID  string
+		recordID6 string
+		identity6 dhcp.Identity6
+	)
 
 	if err := func() error {
 		if err := netlink.LinkSetUp(hostLink); err != nil {
@@ -1071,6 +1061,29 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 		p.updateJoinHint(r.EndpointID, func(hint *joinHint) {
 			hint.RecordID = recordID
 		})
+
+		// The DHCPv6 identity and ITS OWN record (D30 Q4).
+		//
+		// A SECOND RECORD AND NOT A SECOND FIELD ON THE FIRST: a
+		// lease.Record binds one family and one identity, both
+		// write-once, so a dual-stack endpoint is two records. They are
+		// kept apart by scope — dhcp.Scope6 — because the lookup index
+		// is (scope, chaddr) and the two share a chaddr.
+		//
+		// Minted HERE, once, and read back from the record on every
+		// later start. RFC 9915 section 11: a DUID "SHOULD NOT change
+		// over time if at all possible". An identity re-derived at
+		// every start from the plumbing in hand is one that changes
+		// whenever the plumbing does, and the server then files a
+		// second binding and hands out a second address.
+		if opts.IPv6 {
+			id6, err := resolveIdentity6(opts, r.EndpointID, ctrLink.Attrs().HardwareAddr)
+			if err != nil {
+				return err
+			}
+			identity6 = id6
+			recordID6 = p.recordCreated6(r.NetworkID, ctrLink.Attrs().HardwareAddr, id6)
+		}
 		initialIP := func(v6 bool) error {
 			v6str := ""
 			if v6 {
@@ -1100,6 +1113,13 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 				MAC:      ctrLink.Attrs().HardwareAddr,
 				Records:  p.records,
 				RecordID: recordID,
+			}
+			if v6 {
+				// The v6 one-shot writes to the v6 record and speaks
+				// as the v6 identity. Both are per-family and neither
+				// has a v4 analogue that could stand in.
+				base.Identity6 = identity6
+				base.RecordID = recordID6
 			}
 			// RFC 5227 conflict detection, from the network's stored
 			// conflict_check (D23). Set on the BASE, so every attempt
@@ -1177,6 +1197,7 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 		// Be sure to clean up the veth pair if any of this fails.
 		// Best-effort cleanup; ignore secondary error.
 		p.closeRecord(recordID)
+		p.closeRecord(recordID6)
 		_ = netlink.LinkDel(hostLink)
 		return res, err
 	}
@@ -1913,6 +1934,10 @@ func (p *Plugin) Leave(ctx context.Context, r LeaveRequest) error {
 	// wire (D-7, #800) — the address is left to expire on the server's
 	// clock, exactly as any other host on the segment leaves it.
 	p.recordLeft(manager.recordID)
+	// The v6 record is a second record and needs the same statement:
+	// leaving one JOINED while the other goes LEFT would make the next
+	// restart resume a manager the fold says is still running.
+	p.recordLeft(manager.recordID6)
 
 	// Refresh the endpoint fingerprint with the most recent v4/v6 IPs
 	// the persistent client saw, *whether or not Stop succeeded*. Stop

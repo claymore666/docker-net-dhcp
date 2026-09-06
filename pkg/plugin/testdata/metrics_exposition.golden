@@ -72,6 +72,10 @@ net_dhcp_dhcpv6_no_router_advert_total 2266478
 # TYPE net_dhcp_ipv6_link_enable_failures_total counter
 net_dhcp_ipv6_link_enable_failures_total 1992100
 
+# HELP net_dhcp_router_advert_guard_failures_total Steps of the DHCPv6 Router Advertisement guard that did not take: a sysctl write that failed, or a read-back holding something other than what was written. Three knobs (accept_ra=2, autoconf=1, keep_addr_on_down=1), two steps each. DHCPv6 carries no route of its own, so a container whose kernel is not processing advertisements looks healthy and then loses its route when the advertisement it already has expires. It does not count a privileged process inside the container writing the settings back.
+# TYPE net_dhcp_router_advert_guard_failures_total counter
+net_dhcp_router_advert_guard_failures_total 7077324
+
 # HELP net_dhcp_dhcp_routes_applied_total DHCP option-121 classless static routes handed to Docker. Counts routes, not Joins.
 # TYPE net_dhcp_dhcp_routes_applied_total counter
 net_dhcp_dhcp_routes_applied_total 1196133

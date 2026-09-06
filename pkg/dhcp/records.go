@@ -14,6 +14,7 @@ import (
 	"github.com/claymore666/dhcp-golib/lease"
 	"github.com/claymore666/dhcp-golib/proto"
 	dhcpruntime "github.com/claymore666/dhcp-golib/runtime"
+	log "github.com/sirupsen/logrus"
 	"golang.org/x/sys/unix"
 )
 
@@ -208,6 +209,91 @@ func (r *Records) Created(id, scope string, chaddr, identity []byte) error {
 		CHAddr:   chaddr,
 		Identity: identity,
 	})
+}
+
+// Scope6 is the record scope a DHCPv6 endpoint's record lives in: the
+// Docker network id, marked.
+//
+// A DUAL-STACK ENDPOINT NEEDS TWO RECORDS AND THEY MUST NOT COLLIDE.
+// lease.Record binds ONE family (Record.Family is write-once) and one
+// Identity (also write-once, and a v6 record with an empty one is
+// refused), so the v4 client-id and the v6 DUID cannot share a record.
+// The index that finds a record is (scope, chaddr) — Rebuilt.ByScopeMAC
+// — and a dual-stack endpoint has one chaddr, so with one scope the two
+// records would be two matches on every lookup and "the newest wins"
+// would hand a v4 manager the v6 record roughly half the time.
+//
+// The scope is the only half of the key the chassis owns, so it is the
+// half that carries the split. Marked rather than hashed so that a
+// human reading the record file can see which family a line belongs to;
+// '#' is not in a Docker network id.
+//
+// It is applied INSIDE Created6 and Resume6 rather than by the caller,
+// which is what makes "a v6 record cannot be filed under the v4 scope"
+// a property of this file instead of a rule every call site remembers.
+func Scope6(networkID string) string { return networkID + "#v6" }
+
+// Created6 is Created for a DHCPv6 endpoint.
+//
+// identity is Identity6.Bytes(): the DUID as sent, with the IAID. It is
+// write-once in the fold and it is REQUIRED — the library refuses a v6
+// record without one — because it is the whole reason the record
+// exists. RFC 9915 section 11: a DUID "SHOULD NOT change over time if
+// at all possible", and an identity re-derived on every plugin start
+// from whatever the plumbing happens to look like then is one that
+// changes.
+func (r *Records) Created6(id, networkID string, chaddr, identity []byte) error {
+	return r.append(lease.RecordEvent{
+		ID:       id,
+		Op:       lease.OpCreate,
+		Scope:    Scope6(networkID),
+		Family:   lease.FamilyV6,
+		CHAddr:   chaddr,
+		Identity: identity,
+	})
+}
+
+// Resume6 is Resume in the v6 scope, and it hands back the stored
+// identity as well as the lease.
+//
+// TWO ANSWERS BECAUSE A v6 MANAGER NEEDS BOTH, and only one of them is
+// optional. The lease is what makes the first message on the wire RFC
+// 9915 section 18.2.12's Confirm instead of a Solicit (#820); the
+// identity is what makes it the SAME client either way. A restart that
+// resumed the lease under a freshly minted DUID would Confirm a binding
+// the server files under a different client and be told NotOnLink.
+func (r *Records) Resume6(networkID string, chaddr []byte, now time.Time) (string, Resumption, Identity6, bool) {
+	id, res, ok := r.Resume(Scope6(networkID), chaddr, now)
+	if !ok {
+		return "", Resumption{}, Identity6{}, false
+	}
+	return id, res, r.identity6(id), true
+}
+
+// identity6 reads back the DUID and IAID a record was created with.
+//
+// An unreadable or absent identity comes back as the zero value, which
+// the caller reads as "mint a fresh one": that is the honest answer for
+// a record written by a build that had none, and buildParams6 refuses
+// the zero value rather than sending it.
+func (r *Records) identity6(id string) Identity6 {
+	rb, err := r.Rebuilt()
+	if err != nil {
+		return Identity6{}
+	}
+	for _, rec := range rb.Records {
+		if rec.ID != id || len(rec.Identity) == 0 {
+			continue
+		}
+		ident, err := ParseIdentity6(rec.Identity)
+		if err != nil {
+			log.WithError(err).WithField("record", id).
+				Warn("The stored DHCPv6 identity could not be read back; a fresh one will be minted and the server will see a new client")
+			return Identity6{}
+		}
+		return ident
+	}
+	return Identity6{}
 }
 
 // Bound starts a manager on the record: CREATED (or ADOPTED) becomes

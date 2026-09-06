@@ -224,6 +224,84 @@ func resolveClientID(opts DHCPNetworkOptions, endpointID string, mac net.Hardwar
 	return clientIDFromEndpoint(endpointID)
 }
 
+// uuidBytes is the width of RFC 9915 section 11.5's DUID-UUID payload
+// and of the endpoint-derived seed the ipvlan identity is cut from.
+const uuidBytes = 16
+
+// resolveIdentity6 picks the DHCPv6 DUID and IAID for a fresh endpoint
+// (D30 Q4).
+//
+// TWO SHAPES, AND WHICH ONE IS CHOSEN IS A PROPERTY OF THE MODE:
+//
+//   - bridge and macvlan get RFC 9915 section 11.4's DUID-LL over the
+//     endpoint's MAC and an IAID of that MAC's low four bytes. That is
+//     1.9.0's identity byte for byte (P-8.6): dhcpcd was handed the
+//     same value as a `duid` directive, so an endpoint upgraded from
+//     1.x presents the identity the server already holds a binding for
+//     and keeps its address across the upgrade.
+//   - ipvlan gets a per-ENDPOINT identity: section 11.5's DUID-UUID
+//     over the endpoint id, and an IAID from the same bytes. An ipvlan
+//     L2 slave inherits the parent's MAC by kernel design, so the
+//     MAC-derived form above is IDENTICAL for every container on the
+//     network — every one of them would claim one binding, and the
+//     server would hand the same address out repeatedly (#895; the v6
+//     form of what #219 names for v4).
+//
+// THE UPGRADE NOTE THAT GOES WITH IT: an ipvlan endpoint upgraded from
+// 1.x changes DUID, because 1.9.0 gave it the MAC-derived one. It gets
+// a new address on its first start and keeps that one afterwards.
+// docs/reference.md says so on the DHCPv6 section.
+//
+// The MAC-less fallback is the endpoint-derived shape as well, for the
+// reason resolveClientID falls back: a caller that cannot supply a MAC
+// degrades to a per-endpoint identity rather than to none at all, and
+// buildParams6 refuses none at all.
+func resolveIdentity6(opts DHCPNetworkOptions, endpointID string, mac net.HardwareAddr) (dhcp.Identity6, error) {
+	if opts.effectiveMode() != ModeIPvlan && len(mac) > 0 {
+		duid, err := dhcp.DUIDLL(mac)
+		if err != nil {
+			return dhcp.Identity6{}, fmt.Errorf("failed to build the endpoint's DHCPv6 identity: %w", err)
+		}
+		iaid, err := dhcp.IAIDFromMAC(mac)
+		if err != nil {
+			return dhcp.Identity6{}, fmt.Errorf("failed to build the endpoint's DHCPv6 IAID: %w", err)
+		}
+		return dhcp.Identity6{DUID: duid, IAID: iaid}, nil
+	}
+
+	seed := endpointSeed(endpointID)
+	if seed == nil {
+		return dhcp.Identity6{}, fmt.Errorf("endpoint %q is too short to derive a DHCPv6 identity from and the mode supplies no usable MAC", shortID(endpointID))
+	}
+	duid, err := dhcp.DUIDUUID(seed)
+	if err != nil {
+		return dhcp.Identity6{}, fmt.Errorf("failed to build the endpoint's DHCPv6 identity: %w", err)
+	}
+	iaid, err := dhcp.IAIDFromBytes(seed)
+	if err != nil {
+		return dhcp.Identity6{}, fmt.Errorf("failed to build the endpoint's DHCPv6 IAID: %w", err)
+	}
+	return dhcp.Identity6{DUID: duid, IAID: iaid}, nil
+}
+
+// endpointSeed is the first uuidBytes of the endpoint id, or nil.
+//
+// The endpoint id is Docker's, is a hex string, and is the only
+// per-endpoint value that exists before the link does. Taking a prefix
+// rather than hashing keeps the identity legible in a server log beside
+// the endpoint it belongs to, which is what an operator matching a
+// binding to a container actually does.
+func endpointSeed(endpointID string) []byte {
+	if len(endpointID) < uuidBytes*2 {
+		return nil
+	}
+	b, err := hex.DecodeString(endpointID[:uuidBytes*2])
+	if err != nil {
+		return nil
+	}
+	return b
+}
+
 // defaultLeaseTimeout is how long CreateEndpoint waits for a lease when
 // the network sets no lease_timeout.
 //
@@ -1196,6 +1274,31 @@ type Plugin struct {
 	// timeouts, which is why this gets a counter rather than only the
 	// warning beside it.
 	ipv6LinkEnableFailures atomic.Int32
+
+	// routerAdvertGuardFailures counts STEPS of the Router-Advertisement
+	// guard that did not take (#875): a sysctl write that failed, or a
+	// read-back that came back holding something else. Three knobs, two
+	// steps each, so at most six per endpoint.
+	//
+	// IT COUNTS THE FAILURE THAT LOOKS LIKE SUCCESS. DHCPv6 carries no
+	// router -- RFC 9915 section 21's option catalogue has no next hop
+	// -- and RFC 5942 section 4 forbids deriving an on-link prefix from
+	// the assigned address, so the container's route comes from RFC
+	// 4861 advertisements or from nowhere. A container whose guard did
+	// not take looks completely healthy: it keeps the address and the
+	// route the kernel accepted in the first seconds and loses
+	// everything through the router when that advertisement's router
+	// lifetime runs out, minutes or hours later, with nothing in any
+	// log to connect the two.
+	//
+	// WHAT IT DOES NOT COUNT (D30 Q3): a privileged process INSIDE the
+	// container writing the knobs back afterwards. 1.9.0 tried to
+	// prevent that by remounting /proc/sys read-only in dhcpcd's mount
+	// namespace; that shield is gone with dhcpcd, and it never covered
+	// the netlink route to the same settings anyway. The bound is
+	// stated on docs/reference.md's DHCPv6 row instead of being
+	// pretended away here.
+	routerAdvertGuardFailures atomic.Int32
 
 	// displacedStops tracks the goroutines Join spawns to Stop a
 	// manager it displaced (#338). Join must not block on the dhcpcd

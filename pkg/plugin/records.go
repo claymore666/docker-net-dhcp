@@ -73,6 +73,28 @@ func (p *Plugin) recordCreated(networkID string, mac net.HardwareAddr, identity 
 	return id
 }
 
+// recordCreated6 opens the DHCPv6 record for one endpoint.
+//
+// It writes the identity as bytes, which is what makes the DUID
+// durable: an identity re-derived on the next start is one that can
+// change, and RFC 9915 section 11 says a DUID "SHOULD NOT change over
+// time if at all possible".
+func (p *Plugin) recordCreated6(networkID string, mac net.HardwareAddr, id6 dhcp.Identity6) string {
+	if p.records == nil {
+		return ""
+	}
+	id := newRecordID()
+	if id == "" {
+		return ""
+	}
+	if err := p.records.Created6(id, networkID, mac, id6.Bytes()); err != nil {
+		log.WithError(err).WithField("network", shortID(networkID)).
+			Warn("Could not write the endpoint's DHCPv6 lease record; its address and its DUID will not survive a plugin restart")
+		return ""
+	}
+	return id
+}
+
 // recordStore is the record file, or nil. On the manager rather than
 // reached through m.plugin directly because m.plugin is nil in unit
 // tests that drive a manager without a Plugin.
@@ -109,6 +131,36 @@ func (m *dhcpManager) resumeFromRecord() (string, dhcp.Resumption) {
 	}
 	m.plugin.recordBound(id, res.Phase)
 	return id, res
+}
+
+// resumeFromRecord6 is resumeFromRecord in the v6 scope, and it hands
+// back the stored DHCPv6 identity as well.
+//
+// THE IDENTITY IS THE HALF THAT MATTERS MOST ACROSS A RESTART. The
+// lease makes the first message a Confirm rather than a Solicit (#820);
+// the identity is what makes it the SAME client either way, and a
+// Confirm sent under a freshly minted DUID names a binding the server
+// files under somebody else. RFC 9915 section 11 is the rule and this
+// is where it is kept.
+//
+// A zero identity means the record predates the DUID or could not be
+// read back, and the caller mints a fresh one — see setupClient. That
+// is a new client to the server, which is worse than resuming and
+// better than refusing to start.
+func (m *dhcpManager) resumeFromRecord6() (string, dhcp.Resumption, dhcp.Identity6) {
+	if m.plugin == nil || m.plugin.records == nil {
+		return "", dhcp.Resumption{}, dhcp.Identity6{}
+	}
+	mac := m.endpointMAC()
+	if len(mac) == 0 {
+		return "", dhcp.Resumption{}, dhcp.Identity6{}
+	}
+	id, res, id6, ok := m.plugin.records.Resume6(m.joinReq.NetworkID, mac, time.Now())
+	if !ok {
+		return "", dhcp.Resumption{}, dhcp.Identity6{}
+	}
+	m.plugin.recordBound(id, res.Phase)
+	return id, res, id6
 }
 
 // recordResume answers what a manager about to start on this identity
@@ -176,11 +228,17 @@ func (p *Plugin) retainRecordFor(networkID, mac string) {
 	if err != nil {
 		return
 	}
-	id, _, ok := p.records.Resume(networkID, hw, time.Now())
-	if !ok {
-		return
+	if id, _, ok := p.records.Resume(networkID, hw, time.Now()); ok {
+		p.recordRetained(id, time.Now().Add(tombstoneTTL))
 	}
-	p.recordRetained(id, time.Now().Add(tombstoneTTL))
+	// The v6 record is a SECOND record under a second scope
+	// (dhcp.Scope6), so it needs its own tombstone: a dual-stack
+	// endpoint whose v4 record was retained and whose v6 record was not
+	// keeps its IPv4 address across a restart and loses its IPv6 one,
+	// which is exactly the asymmetry #820 exists to remove.
+	if id, _, _, ok := p.records.Resume6(networkID, hw, time.Now()); ok {
+		p.recordRetained(id, time.Now().Add(tombstoneTTL))
+	}
 }
 
 // closeRecord ends a record outright: CreateEndpoint failed after

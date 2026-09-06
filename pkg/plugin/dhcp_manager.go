@@ -202,6 +202,12 @@ type dhcpManager struct {
 	// record call is a no-op then.
 	recordID string
 
+	// recordID6 is the DHCPv6 record, which is a SECOND record under a
+	// second scope: a lease.Record binds one family and one identity,
+	// both write-once, so a dual-stack endpoint has two. See
+	// dhcp.Scope6.
+	recordID6 string
+
 	// policyRestricted is whether this client was started against an
 	// operator-named allow-list. Captured at setupClient rather than
 	// re-resolved where it is read, so the counter cannot describe a
@@ -585,6 +591,9 @@ func (m *dhcpManager) renew(v6 bool, info dhcp.Info) error {
 	if err != nil {
 		return fmt.Errorf("failed to parse IP address: %w", err)
 	}
+	if v6 {
+		v6AddrAttrs(ip, info)
+	}
 
 	// Address first, routes after — the ordering the kernel itself
 	// requires (see applyAddressChange).
@@ -617,7 +626,11 @@ func (m *dhcpManager) applyAddressChange(v6 bool, ip *netlink.Addr) error {
 	if v6 {
 		lastIP = v6Last
 	}
-	if lastIP == nil || ip.Equal(*lastIP) {
+	changed := lastIP != nil && !ip.Equal(*lastIP)
+	if v6 {
+		return m.installV6Address(ip, lastIP, changed)
+	}
+	if !changed {
 		return nil
 	}
 
@@ -671,6 +684,114 @@ func (m *dhcpManager) applyAddressChange(v6 bool, ip *netlink.Addr) error {
 			WithFields(m.logFields(v6)).
 			WithField("stale_ip", lastIP).
 			Warn("Failed to remove stale address after lease change")
+	}
+	return nil
+}
+
+// v6AddrAttrs puts the two things a DHCPv6 address needs beyond its
+// bytes onto the netlink address: IFA_F_NODAD, and RFC 9915 section
+// 7.1's two lifetimes.
+//
+// # WHY NODAD (D30 Q1)
+//
+// THE DUPLICATE-ADDRESS CHECK HAS ALREADY BEEN RUN, BY THE LIBRARY, AND
+// IT PASSED. RFC 9915 section 18.2.10.1: "The client performs duplicate
+// address detection on each of the received addresses in any IAs it
+// accepts before using that address for traffic"; the library does it
+// and emits Acquired only after the check comes back clean. Installing
+// the address without this flag makes the KERNEL run RFC 4862 section
+// 5.4 a second time on an address that has just passed it, and the
+// second run is not free:
+//
+//   - the address is `tentative` for the length of the check, during
+//     which the container cannot use it and cannot answer a neighbor
+//     solicitation for it. A proof that reads `ip -6 addr` right after
+//     the bind sees a usable address on a fast box and a tentative one
+//     on a loaded runner -- so the proofs assert the FLAG, not the
+//     timing.
+//   - RFC 7527 section 4.1's loopback case, or any node that answers
+//     the second probe, marks the address `dadfailed` and the kernel
+//     takes it out of service. That is an address the library cleared
+//     seconds earlier being withdrawn by a check nobody asked for.
+//
+// RFC 4429 section 3.3 is the same argument from the other side: an
+// address whose uniqueness has been established does not need the
+// interface to hold it tentative again.
+//
+// # WHO OWNS EXPIRY
+//
+// THE LIBRARY DOES. Lost{ReasonExpired} is what removes the address;
+// the kernel lifetimes here are a BELT, not the mechanism. They are set
+// because a plugin that dies between the expiry and its own restart
+// would otherwise leave a container holding an address whose lease ran
+// out -- the kernel is then the only thing left that knows -- and
+// because a deprecated address (preferred elapsed, valid remaining) is
+// something only the kernel can express to the applications inside the
+// container: RFC 4862 section 5.5.4 has a deprecated address still
+// usable by an established connection and not chosen for a new one, and
+// no plugin-side bookkeeping can deliver that to a socket.
+//
+// Both lifetimes zero means an infinite lease and sends no
+// IFA_CACHEINFO at all, which is the kernel's "forever".
+func v6AddrAttrs(addr *netlink.Addr, info dhcp.Info) {
+	addr.Flags |= unix.IFA_F_NODAD
+	addr.ValidLft = info.LeaseSeconds
+	addr.PreferedLft = info.PreferredSeconds
+}
+
+// installV6Address applies the DHCPv6 lease to the container link.
+//
+// IT RUNS ON EVERY EVENT THAT CARRIES AN ADDRESS, not only on a change,
+// and that is the difference from the v4 path above:
+//
+//   - THE FIRST BIND IS NOT A NO-OP HERE. libnetwork installed
+//     AddressIPv6 itself when it built the sandbox, from the value
+//     CreateEndpoint returned -- with no NODAD flag and no lifetimes,
+//     because libnetwork knows nothing about either. So the address on
+//     the link is the right address with the wrong attributes until
+//     this re-applies it. The v4 path has nothing equivalent to fix.
+//   - A RENEWAL MUST REFRESH THE LIFETIMES. The address is unchanged
+//     and the DEADLINES are not; skipping the re-apply would leave the
+//     kernel counting down the lifetimes of the previous Reply, and the
+//     address would go away under a lease the server is happily
+//     renewing.
+//
+// AddrReplace and not AddrAdd for both reasons: it is the one operation
+// that is correct whether or not the address is already there.
+func (m *dhcpManager) installV6Address(ip, lastIP *netlink.Addr, changed bool) error {
+	if changed {
+		// Same counter and the same warning as the v4 path: Docker's
+		// NetworkSettings still reports the previous address, because
+		// libnetwork has no in-place endpoint-IP swap RPC (#104).
+		if m.plugin != nil {
+			bumpFamily(&m.plugin.leaseChangedV4, &m.plugin.leaseChangedV6, true)
+		}
+		log.
+			WithFields(m.logFields(true)).
+			WithField("old_ip", lastIP).
+			WithField("new_ip", ip).
+			Warn("dhcp renew with changed IP — Docker's view is now stale")
+	}
+
+	// netHandle/ctrLink are always live on the production path (renew
+	// runs from the event loop, post-Start); the guard keeps pre-Start
+	// unit tests of the counter semantics valid.
+	if m.netHandle == nil || m.ctrLink == nil {
+		return nil
+	}
+	if err := m.netHandle.AddrReplace(m.ctrLink, ip); err != nil {
+		return fmt.Errorf("failed to apply the DHCPv6 address %v: %w", ip, err)
+	}
+	if changed && lastIP != nil {
+		if err := m.netHandle.AddrDel(m.ctrLink, lastIP); err != nil {
+			// Non-fatal: a lingering stale address is strictly better
+			// than failing the bind on cleanup.
+			log.
+				WithError(err).
+				WithFields(m.logFields(true)).
+				WithField("stale_ip", lastIP).
+				Warn("Failed to remove stale address after lease change")
+		}
 	}
 	return nil
 }
@@ -1119,20 +1240,49 @@ func (m *dhcpManager) setupClient(v6 bool) (chan error, error) {
 	// whether an INIT-REBOOT is even legal.
 	requestedIP := ""
 	preferredV6 := ""
-	var resumption dhcp.Resumption
+	var (
+		resumption dhcp.Resumption
+		identity6  dhcp.Identity6
+		recordID   string
+	)
 	if !v6 {
 		m.recordID, resumption = m.resumeFromRecord()
+		recordID = m.recordID
 		requestedIP = resumption.Prefer
 		if resumption.Lease == nil && requestedIP == "" {
 			if v4Addr, _ := m.lastIPs(); v4Addr != nil && v4Addr.IP != nil {
 				requestedIP = v4Addr.IP.String()
 			}
 		}
-	} else if _, v6Addr := m.lastIPs(); v6Addr != nil && v6Addr.IP != nil {
-		// IPv6 is refused at CreateNetwork in 2.0; this branch is
-		// reachable only for a network created by an earlier build,
-		// and pkg/dhcp refuses it loudly a few lines below.
-		preferredV6 = v6Addr.IP.String()
+	} else {
+		// The v6 record answers BOTH questions a v6 manager has: what
+		// it may ask the server for, and who it is while asking. RFC
+		// 9915 section 18.2.12's Confirm is only worth sending under
+		// the DUID the binding was made with.
+		m.recordID6, resumption, identity6 = m.resumeFromRecord6()
+		recordID = m.recordID6
+		preferredV6 = resumption.Prefer
+		if resumption.Lease == nil && preferredV6 == "" {
+			if _, v6Addr := m.lastIPs(); v6Addr != nil && v6Addr.IP != nil {
+				preferredV6 = v6Addr.IP.String()
+			}
+		}
+		if identity6.IsZero() {
+			// No record, or a record with no identity: this endpoint
+			// was adopted from Docker's own view during recovery, or
+			// its record was written by a build that had no DUID.
+			// Minting one here is a NEW client to the server -- a new
+			// binding and a new address -- and it is still better than
+			// refusing to start the endpoint, so it is loud rather
+			// than fatal.
+			id6, err := resolveIdentity6(m.opts, m.joinReq.EndpointID, m.endpointMAC())
+			if err != nil {
+				return nil, fmt.Errorf("no DHCPv6 identity for this endpoint: %w", err)
+			}
+			identity6 = id6
+			log.WithFields(m.logFields(true)).
+				Warn("No stored DHCPv6 identity for this endpoint; minting one. The server sees a new client and will grant a new address")
+		}
 	}
 	// The persistent client gets the WHOLE allowed set, not the single
 	// tier that won acquisition: it must still be able to rebind after
@@ -1177,7 +1327,7 @@ func (m *dhcpManager) setupClient(v6 bool) (chan error, error) {
 		// CreateEndpoint -> Join path having found nothing to resume.
 		Resume:   resumption.Lease,
 		Records:  m.recordStore(),
-		RecordID: m.recordID,
+		RecordID: recordID,
 		// No Broadcast option: the library sets the BROADCAST flag of
 		// RFC 2131 section 2 by default and the chassis no longer
 		// overrides it. The ipvlan reason this used to name (#243 --
@@ -1191,6 +1341,14 @@ func (m *dhcpManager) setupClient(v6 bool) (chan error, error) {
 		// in hand (#371). Honours the operator's client_id override.
 		ClientID:    m.clientID(),
 		VendorClass: m.opts.VendorClass,
+		// The DHCPv6 halves. Identity6 is empty for a v4 client and
+		// buildParams6 is the only thing that reads it;
+		// HonorRouterAdverts is REQUIRED on a persistent v6 client and
+		// refused on every other shape, which is what makes "the v6
+		// endpoint's kernel is processing Router Advertisements" a
+		// precondition the client cannot start without (#875, D30 Q3).
+		Identity6:          identity6,
+		HonorRouterAdverts: v6,
 	}
 	if err := m.plugin.conflictWiring(&clientOpts, m.opts, roleJoin, m.joinReq.NetworkID, m.joinReq.EndpointID); err != nil {
 		return nil, err

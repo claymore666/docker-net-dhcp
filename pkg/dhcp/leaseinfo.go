@@ -24,6 +24,25 @@ func infoFromLease(l lease.Lease, now time.Time) (Info, int) {
 		SearchList:   append([]string(nil), l.DomainSearch...),
 		LeaseSeconds: leaseSeconds(l, now),
 	}
+	// RFC 9915 section 7.1's preferred lifetime, on a v6 lease only.
+	//
+	// THE INFINITE CASE IS NOT ZERO SECONDS, and folding the two would
+	// deprecate every address on an infinite lease the moment it was
+	// installed. The library spells an infinite lifetime as the zero
+	// Time, exactly as it does for Expire, and an infinite preferred
+	// lifetime cannot be shorter than the valid one -- so it IS the
+	// valid one, which is what the kernel is told. A preferred deadline
+	// that is set and already past is a genuinely deprecated address
+	// and comes out of secondsUntil as 0, which is what RFC 4862
+	// section 5.5.4 asks for and is the case this branch keeps
+	// distinguishable.
+	if l.Addr.IsValid() && l.Addr.Addr().Is6() {
+		if l.Preferred.IsZero() {
+			info.PreferredSeconds = info.LeaseSeconds
+		} else {
+			info.PreferredSeconds = secondsUntil(l.Preferred, now)
+		}
+	}
 	if l.Addr.IsValid() {
 		info.IP = l.Addr.String()
 	}
@@ -99,10 +118,24 @@ func infoFromLease(l lease.Lease, now time.Time) (Info, int) {
 // deadline in year 1, and every consumer downstream then reports an
 // outage on a lease that never expires.
 func leaseSeconds(l lease.Lease, now time.Time) int {
-	if l.Expire.IsZero() {
+	return secondsUntil(l.Expire, now)
+}
+
+// secondsUntil is the remaining whole seconds to a deadline, with a
+// zero Time meaning "no deadline" rather than "the epoch".
+//
+// ONE FUNCTION FOR BOTH v6 LIFETIMES AND THE v4 EXPIRY, because they
+// share the convention and sharing the convention is the whole hazard:
+// the protocol spells an infinite lifetime 0xFFFFFFFF, the library
+// represents it as the zero Time, and a duration computed from it
+// without this branch lands in year 1 -- after which every consumer
+// downstream reports an outage on a lease that never expires (seam
+// D-10).
+func secondsUntil(deadline, now time.Time) int {
+	if deadline.IsZero() {
 		return 0
 	}
-	d := l.Expire.Sub(now)
+	d := deadline.Sub(now)
 	if d <= 0 {
 		return 0
 	}
