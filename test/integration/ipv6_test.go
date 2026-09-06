@@ -328,6 +328,7 @@ func TestLifecycleMacvlan_IPv6_GoldenPath(t *testing.T) {
 		t.Errorf("inspect IPv6 %s != live link IPv6 %s", insV6, liveV6)
 	}
 
+	assertLeasedV6IsInstalledWithNODAD(t, ctx, id, liveV6, fixture.DnsmasqLog())
 	assertRouterAdvertsAreBeingProcessed(t, ctx, id, liveV6, fixture.DnsmasqLog())
 
 	// Teardown: both families stop cleanly.
@@ -371,6 +372,7 @@ func TestLifecycleBridge_IPv6_GoldenPath(t *testing.T) {
 		t.Errorf("live IPv6 %s not in bridge fixture v6 pool [%s, %s]", liveV6, harness.BridgeDHCPv6PoolStart, harness.BridgeDHCPv6PoolEnd)
 	}
 
+	assertLeasedV6IsInstalledWithNODAD(t, ctx, id, liveV6, fixture.BridgeDnsmasqLogPath())
 	assertRouterAdvertsAreBeingProcessed(t, ctx, id, liveV6, fixture.BridgeDnsmasqLogPath())
 }
 
@@ -1184,6 +1186,105 @@ func awaitPersistentV6Bind(t *testing.T, logPath, addr, mac string) {
 		replies, addr, mac, persistentV6BindBudget)
 }
 
+// awaitPersistentV6BindFor is the anchor above, taken for the endpoint
+// carrying addr, and it returns the container interface that carries
+// it.
+//
+// It exists so the two observers that depend on the PERSISTENT client
+// having bound -- the Router-Advertisement guard's knobs and the
+// installed address's flags -- take the precondition by calling for it
+// rather than by sitting after something else that took it. Adjacency
+// is not a dependency; a reorder carries a neighbouring guard along to
+// where it is vacuous.
+func awaitPersistentV6BindFor(t *testing.T, ctx context.Context, id, addr, logPath string) string {
+	t.Helper()
+
+	iface := containerV6Iface(t, ctx, id, addr)
+	mac := strings.TrimSpace(harness.ExecOutput(t, ctx, id, "cat", "/sys/class/net/"+iface+"/address"))
+	awaitPersistentV6Bind(t, logPath, addr, mac)
+	return iface
+}
+
+// assertLeasedV6IsInstalledWithNODAD is the OUTSIDE evidence for D30
+// Q1: the leased address, as the CONTAINER'S OWN KERNEL holds it,
+// carries IFA_F_NODAD and is neither tentative nor dadfailed.
+//
+// # WHY THE UNIT PROOFS ARE NOT ENOUGH
+//
+// v6AddrAttrs is a pure function and its unit tests say only that the
+// chassis ASKED for the flag. What is between the ask and the kernel is
+// installV6Address's AddrReplace over an address libnetwork already put
+// on the link, from the value CreateEndpoint returned, with no flags
+// and no lifetimes. If that re-apply does not take -- a failed replace,
+// the wrong link, a mode the call never reaches -- the container is
+// left holding the RIGHT ADDRESS with kernel duplicate-address
+// detection armed and no lifetimes, and every other proof in this file
+// still passes: linkGlobalV6 returns the first global v6 address it
+// finds and reads no flags at all. That is a silent defect with no
+// observer, which is what this closes (#911 review round 1, finding 1).
+//
+// It is the flag that is asserted and not the timing. A proof that
+// reads the address right after the bind and requires it to be usable
+// sees a settled address on a fast box and a tentative one on a loaded
+// runner; IFA_F_NODAD is a property of how it was installed and holds
+// whatever the runner is doing.
+//
+// The precondition is taken by calling for it: the re-apply is what the
+// PERSISTENT client's first Acquired does, and libnetwork's flagless
+// address is on the link well before that client exists. Read before
+// the anchor, this would assert on the engine's install and fail for a
+// correct plugin.
+//
+// The poll after the anchor is a deadline, not a settling time. The
+// server's Reply comes before the library's own duplicate-address check
+// and therefore before Acquired, so the anchor returns a moment early;
+// expiry here fails the test.
+//
+// The renderings this reads are harness.V6AddrFlagsFromAddrShow's
+// problem, and the reason it is a pure function driven in the fast lane
+// against captured output from the shipped image: alpine's busybox has
+// no name for IFA_F_NODAD and prints `flags 02`.
+func assertLeasedV6IsInstalledWithNODAD(t *testing.T, ctx context.Context, id, addr, logPath string) {
+	t.Helper()
+
+	iface := awaitPersistentV6BindFor(t, ctx, id, addr, logPath)
+
+	var last harness.V6AddrFlags
+	var out string
+	deadline := time.Now().Add(harness.IPAcquisitionBudget)
+	for time.Now().Before(deadline) {
+		out = harness.ExecOutput(t, ctx, id, "ip", "-6", "-o", "addr", "show", "dev", iface)
+		last = harness.V6AddrFlagsFromAddrShow(out, addr)
+		if last.Found && last.NoDAD && !last.Tentative && !last.DADFailed {
+			t.Logf("leased v6 %s on %s: nodad set, not tentative, not dadfailed — %q", addr, iface, last.Line)
+			return
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+
+	switch {
+	case !last.Found:
+		t.Errorf("the leased address %s is not on %s inside the container after %s. "+
+			"`ip -6 -o addr show dev %s` said:\n%s",
+			addr, iface, harness.IPAcquisitionBudget, iface, out)
+	case !last.NoDAD:
+		t.Errorf("the leased address %s is installed WITHOUT IFA_F_NODAD after %s. "+
+			"The library already ran duplicate-address detection (RFC 9915 section "+
+			"18.2.10.1) and the chassis re-applies the engine's address to say so; "+
+			"without the flag the kernel repeats RFC 4862 section 5.4 on an address "+
+			"that has just passed it, which costs a tentative window and can withdraw "+
+			"the address outright (RFC 7527 section 4.1). Line: %q",
+			addr, harness.IPAcquisitionBudget, last.Line)
+	case last.DADFailed:
+		t.Errorf("the leased address %s is DADFAILED: the kernel took an address the "+
+			"library had already cleared out of service. Line: %q", addr, last.Line)
+	default:
+		t.Errorf("the leased address %s is still tentative after %s, so the kernel is "+
+			"running duplicate-address detection on it. Line: %q",
+			addr, harness.IPAcquisitionBudget, last.Line)
+	}
+}
+
 // assertRouterAdvertsAreBeingProcessed is the OUTSIDE observer for the
 // Router-Advertisement guard. Everything else about it is visible only
 // to the plugin: it runs inside the container's namespace, its failures
@@ -1221,16 +1322,13 @@ func awaitPersistentV6Bind(t *testing.T, logPath, addr, mac string) {
 func assertRouterAdvertsAreBeingProcessed(t *testing.T, ctx context.Context, id, addr, logPath string) {
 	t.Helper()
 
-	iface := containerV6Iface(t, ctx, id, addr)
-	mac := strings.TrimSpace(harness.ExecOutput(t, ctx, id, "cat", "/sys/class/net/"+iface+"/address"))
-
 	// Establish the precondition BEFORE reading any knob -- see the
 	// measured ordering above. Everything below is a statement about
 	// the persistent client, and until this returns there is no
 	// persistent client to make a statement about.
-	awaitPersistentV6Bind(t, logPath, addr, mac)
+	iface := awaitPersistentV6BindFor(t, ctx, id, addr, logPath)
 
-	t.Logf("RA guard: asserting on derived container interface %q (mac %s)", iface, mac)
+	t.Logf("RA guard: asserting on derived container interface %q", iface)
 
 	// NON-VACUITY, kept BESIDE the obligation rather than only in the
 	// other lane. raGuardKnobs is derived from
