@@ -4,6 +4,7 @@
 package dhcp
 
 import (
+	"context"
 	"errors"
 	"net/netip"
 	"testing"
@@ -376,5 +377,327 @@ func TestRAObservation_ConvertsEveryField(t *testing.T) {
 	}
 	if got := raObservation(proto.RouterObservation{Seen: true}); got != (RAObservation{Seen: true}) {
 		t.Errorf("raObservation(Seen) = %+v", got)
+	}
+}
+
+// TestV6AcquisitionWindow_FitsInsideTheDaemonsDeadline is the guard on
+// the number #868's fix actually depends on.
+//
+// The verdict CreateEndpoint draws about a segment is worth nothing if
+// it arrives after the daemon has abandoned the request, and the
+// deadline the one-shot used to run under -- lease_timeout, whose
+// default is ConflictRecoveryWindow -- is longer than that. This pins
+// both ends: the window has to cover router discovery plus a real
+// Solicit exchange, and it has to end well before the daemon does.
+func TestV6AcquisitionWindow_FitsInsideTheDaemonsDeadline(t *testing.T) {
+	p := proto.DefaultParams6()
+	got := V6AcquisitionWindow(p)
+
+	// The lower end. Below RouterDiscoveryWindow the "no router
+	// advertisement" verdict describes the deadline rather than the
+	// segment, which is the failure RouterDiscoveryWindow exists to
+	// name, and a window with no Solicit allowance at all could not
+	// acquire on a managed segment that drops one message.
+	if got <= RouterDiscoveryWindow(p) {
+		t.Errorf("V6AcquisitionWindow(%s) does not outlast router discovery (%s); "+
+			"an absence verdict drawn inside it is about the deadline",
+			got, RouterDiscoveryWindow(p))
+	}
+	// The upper end, and the reason this function exists. moby's plugin
+	// client gives a request 30s; the endpoint's v4 half is spent
+	// before the v6 half starts.
+	const daemonDeadline = 30 * time.Second
+	if got >= daemonDeadline {
+		t.Errorf("V6AcquisitionWindow(%s) reaches the daemon's %s plugin deadline; "+
+			"CreateEndpoint would be abandoned before it could report the segment",
+			got, daemonDeadline)
+	}
+	// And the whole point: it is not lease_timeout.
+	if got >= ConflictRecoveryWindow(proto.DefaultParams(nil)) {
+		t.Errorf("V6AcquisitionWindow(%s) is not shorter than the v4-derived default "+
+			"lease_timeout (%s), so the v6 one-shot still runs on DHCPv4's budget",
+			got, ConflictRecoveryWindow(proto.DefaultParams(nil)))
+	}
+}
+
+// TestV6SolicitWindow_CoversTheRetransmissionsItClaims derives the sum
+// independently of the loop that produces it. RFC 9915 section 15
+// doubles each timer and section 18.2.1 delays the first: with the
+// library's one-second constants that is 1 + 1.1 + 2.2 + 4.4.
+func TestV6SolicitWindow_CoversTheRetransmissionsItClaims(t *testing.T) {
+	p := proto.DefaultParams6()
+	if v6SolicitTransmissions != 4 {
+		t.Fatalf("this expectation is written for 4 transmissions, not %d; "+
+			"re-derive it rather than adjusting the total", v6SolicitTransmissions)
+	}
+	want := time.Duration(p.SolMaxDelay) +
+		1100*time.Millisecond + 2200*time.Millisecond + 4400*time.Millisecond
+	if got := v6SolicitWindow(p); got != want {
+		t.Errorf("v6SolicitWindow = %s, want %s", got, want)
+	}
+
+	// A zero field means "the library's default" and must not mean
+	// "zero": a Params6 built by hand would otherwise fund no Solicit
+	// at all and the window would collapse to router discovery.
+	if got := v6SolicitWindow(proto.Params6{}); got != want {
+		t.Errorf("v6SolicitWindow(zero Params6) = %s, want the default's %s", got, want)
+	}
+}
+
+// TestAdvertisedNoDHCPv6 is the discriminator behind the early SLAAC
+// verdict, over every observation there is. Only one of the eight says
+// "the segment has already told us DHCPv6 has nothing here"; the two
+// that carry a flag are segments with something to ask for, and the
+// four with nothing seen are segments that have not answered yet.
+func TestAdvertisedNoDHCPv6(t *testing.T) {
+	for _, tc := range []struct {
+		ra   RAObservation
+		want bool
+	}{
+		{RAObservation{}, false},
+		{RAObservation{Managed: true}, false},
+		{RAObservation{Other: true}, false},
+		{RAObservation{Managed: true, Other: true}, false},
+		{RAObservation{Seen: true}, true},
+		{RAObservation{Seen: true, Managed: true}, false},
+		{RAObservation{Seen: true, Other: true}, false},
+		{RAObservation{Seen: true, Managed: true, Other: true}, false},
+	} {
+		if got := advertisedNoDHCPv6(tc.ra); got != tc.want {
+			t.Errorf("advertisedNoDHCPv6(%+v) = %v, want %v", tc.ra, got, tc.want)
+		}
+	}
+}
+
+// TestErrNoDHCPv6OnSegment_ClassifiesAsNotOffered keeps the early
+// verdict and the counter it feeds in step: an acquisition that ends
+// this way must reach the operator as "the segment offers none", never
+// as a fatal failure or as a missing router.
+//
+// It lives here rather than beside classifyV6Absence because the
+// observation is what decides, and the observation that produces this
+// error is the one asserted above.
+func TestErrNoDHCPv6OnSegment_IsAnAdvertisedAbsence(t *testing.T) {
+	ra := RAObservation{Seen: true}
+	if !advertisedNoDHCPv6(ra) {
+		t.Fatalf("the observation that produces %v is not an advertised absence", ErrNoDHCPv6OnSegment)
+	}
+	if errors.Is(ErrNoDHCPv6OnSegment, ErrNoV6Address) {
+		t.Error("ErrNoDHCPv6OnSegment must not read as ErrNoV6Address: " +
+			"the stateless Reply is an answer from a server, this is an answer from a router")
+	}
+}
+
+// TestCarryResumedConfig6 is the whole of the Confirm gap.
+//
+// RFC 9915 section 18.2.13's Reply to a Confirm carries a status and no
+// options, so the lease that comes out of a resumed binding has no DNS
+// servers on it. The four cases below are the four things that can be
+// true when the first event arrives, and the last two are the ones that
+// keep the memory from becoming a second source of truth.
+func TestCarryResumedConfig6(t *testing.T) {
+	dns := func(s ...string) []netip.Addr {
+		out := make([]netip.Addr, 0, len(s))
+		for _, one := range s {
+			out = append(out, netip.MustParseAddr(one))
+		}
+		return out
+	}
+	resume := func() *lease.Lease {
+		return &lease.Lease{DNS: dns("2001:db8::53"), DomainSearch: []string{"corp.example"}}
+	}
+
+	t.Run("a confirmed lease with nothing on it is filled", func(t *testing.T) {
+		o := &DHCPClientOptions{V6: true, Resume: resume()}
+		ev := lease.Event{Kind: lease.Acquired}
+		o.carryResumedConfig6(&ev)
+		if len(ev.Lease.DNS) != 1 || ev.Lease.DNS[0].String() != "2001:db8::53" {
+			t.Errorf("DNS = %v, want the remembered server", ev.Lease.DNS)
+		}
+		if len(ev.Lease.DomainSearch) != 1 || ev.Lease.DomainSearch[0] != "corp.example" {
+			t.Errorf("DomainSearch = %v, want the remembered list", ev.Lease.DomainSearch)
+		}
+	})
+
+	t.Run("a lease the server described is left alone", func(t *testing.T) {
+		o := &DHCPClientOptions{V6: true, Resume: resume()}
+		ev := lease.Event{Kind: lease.Acquired, Lease: lease.Lease{DNS: dns("2001:db8::9")}}
+		o.carryResumedConfig6(&ev)
+		if len(ev.Lease.DNS) != 1 || ev.Lease.DNS[0].String() != "2001:db8::9" {
+			t.Errorf("DNS = %v, want the server's own answer untouched", ev.Lease.DNS)
+		}
+		// The pair is all-or-nothing: a Reply carrying option 23 and
+		// not option 24 has said there is no search list.
+		if len(ev.Lease.DomainSearch) != 0 {
+			t.Errorf("DomainSearch = %v, want none: the server sent DNS and no search list", ev.Lease.DomainSearch)
+		}
+	})
+
+	t.Run("the memory is spent on the first lease-bearing event", func(t *testing.T) {
+		o := &DHCPClientOptions{V6: true, Resume: resume()}
+		first := lease.Event{Kind: lease.Acquired, Lease: lease.Lease{DNS: dns("2001:db8::9")}}
+		o.carryResumedConfig6(&first)
+		later := lease.Event{Kind: lease.Renewed}
+		o.carryResumedConfig6(&later)
+		if len(later.Lease.DNS) != 0 {
+			t.Errorf("DNS = %v on a later renewal, want none: the server has spoken since, "+
+				"and a memory that keeps applying is a second source of truth", later.Lease.DNS)
+		}
+	})
+
+	t.Run("an event carrying no lease does not spend it", func(t *testing.T) {
+		o := &DHCPClientOptions{V6: true, Resume: resume()}
+		lost := lease.Event{Kind: lease.Lost}
+		o.carryResumedConfig6(&lost)
+		if len(lost.Lease.DNS) != 0 {
+			t.Errorf("a Lost was filled in: %v", lost.Lease.DNS)
+		}
+		ev := lease.Event{Kind: lease.Acquired}
+		o.carryResumedConfig6(&ev)
+		if len(ev.Lease.DNS) != 1 {
+			t.Errorf("DNS = %v after a Lost, want the memory still available", ev.Lease.DNS)
+		}
+	})
+
+	t.Run("a v4 client never carries one", func(t *testing.T) {
+		o := &DHCPClientOptions{Resume: resume()}
+		ev := lease.Event{Kind: lease.Acquired}
+		o.carryResumedConfig6(&ev)
+		if len(ev.Lease.DNS) != 0 {
+			t.Errorf("DNS = %v on a v4 client: option 6 arrives in every DHCPACK, "+
+				"including an INIT-REBOOT's, so there is nothing to carry", ev.Lease.DNS)
+		}
+	})
+}
+
+// fakeV6Client is a v6AcquisitionClient with no socket under it.
+//
+// Run blocks until its context is cancelled and then closes the event
+// channel, which is what *dhcpruntime.Client6 does and what the drain
+// at the end of runAcquisition6 depends on: a Run that returned without
+// closing would park the drain forever.
+type fakeV6Client struct {
+	events chan lease.Event
+	router proto.RouterObservation
+}
+
+func (f *fakeV6Client) Run(ctx context.Context) error {
+	<-ctx.Done()
+	close(f.events)
+	return ctx.Err()
+}
+
+func (f *fakeV6Client) Events() <-chan lease.Event { return f.events }
+
+func (f *fakeV6Client) Router() proto.RouterObservation { return f.router }
+
+// acquisition6Result runs runAcquisition6 in the background and refuses
+// to wait longer than patience for it.
+//
+// The wait is bounded because the two mutants this file's tests kill --
+// the early conclusion disabled, the window replaced by the caller's
+// clock -- both express themselves as "later than it should have been",
+// and a test that simply called the function would express that as a
+// HANG, which is a third verdict rather than a failure.
+func acquisition6Result(t *testing.T, ctx context.Context, client v6AcquisitionClient, opts *DHCPClientOptions, window, patience time.Duration) (Info, time.Duration, error) {
+	t.Helper()
+
+	type result struct {
+		info Info
+		err  error
+	}
+	out := make(chan result, 1)
+	start := time.Now()
+	go func() {
+		info, err := runAcquisition6(ctx, "test0", client, opts, window)
+		out <- result{info, err}
+	}()
+
+	select {
+	case r := <-out:
+		return r.info, time.Since(start), r.err
+	case <-time.After(patience):
+		t.Fatalf("runAcquisition6 did not return within %v; window was %v", patience, window)
+		return Info{}, 0, nil
+	}
+}
+
+// TestRunAcquisition6_EndsOnAnAdvertisementThatOffersNoDHCPv6 drives the
+// early conclusion and its opposite.
+//
+// The first arm is the one #868 could not reach: a segment whose router
+// says M=0 O=0 has ANSWERED, and waiting the window out to say so is
+// what put the verdict past the deadline the daemon keeps on a plugin
+// call. The second arm is the preservation control, and it is not
+// optional -- concluding on any advertisement at all would end a managed
+// acquisition before the server had a chance to reply, which is a
+// container with no address on a network that has one for it.
+func TestRunAcquisition6_EndsOnAnAdvertisementThatOffersNoDHCPv6(t *testing.T) {
+	t.Run("M=0 O=0 ends it without waiting the window out", func(t *testing.T) {
+		client := &fakeV6Client{
+			events: make(chan lease.Event),
+			router: proto.RouterObservation{Seen: true},
+		}
+		_, took, err := acquisition6Result(t, context.Background(), client,
+			&DHCPClientOptions{V6: true}, 3*time.Second, 10*time.Second)
+
+		if !errors.Is(err, ErrNoDHCPv6OnSegment) {
+			t.Fatalf("runAcquisition6 returned %v after %v, want ErrNoDHCPv6OnSegment; "+
+				"the segment advertised that it has no DHCPv6 and the acquisition "+
+				"waited for one anyway", err, took)
+		}
+		if took > 2*time.Second {
+			t.Errorf("the verdict took %v on an advertisement that arrived at once; "+
+				"an operator's container start is charged for the whole window", took)
+		}
+	})
+
+	t.Run("M=1 leaves the acquisition running", func(t *testing.T) {
+		client := &fakeV6Client{
+			events: make(chan lease.Event, 1),
+			router: proto.RouterObservation{Seen: true, Managed: true},
+		}
+		go func() {
+			time.Sleep(400 * time.Millisecond)
+			client.events <- lease.Event{
+				Kind:  lease.Acquired,
+				Lease: lease.Lease{Addr: netip.MustParsePrefix("fd00:6470:6865::61/128")},
+			}
+		}()
+		info, _, err := acquisition6Result(t, context.Background(), client,
+			&DHCPClientOptions{V6: true}, 5*time.Second, 10*time.Second)
+
+		if err != nil {
+			t.Fatalf("runAcquisition6: %v; a managed segment answered and the acquisition "+
+				"had already concluded there was nothing to wait for", err)
+		}
+		if info.IP != "fd00:6470:6865::61/128" {
+			t.Errorf("got address %q, want the leased one", info.IP)
+		}
+	})
+}
+
+// TestRunAcquisition6_HasItsOwnWindow drives the deadline this function
+// keeps for itself.
+//
+// The caller's context is given a deadline far longer than the daemon
+// will wait on a plugin call -- which is exactly the shape lease_timeout
+// produced, and exactly what #868 saw -- so an acquisition that honours
+// only the caller's clock never returns in time to say anything.
+func TestRunAcquisition6_HasItsOwnWindow(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+
+	client := &fakeV6Client{events: make(chan lease.Event)}
+	_, took, err := acquisition6Result(t, ctx, client,
+		&DHCPClientOptions{V6: true}, 300*time.Millisecond, 10*time.Second)
+
+	if err == nil {
+		t.Fatal("runAcquisition6 produced an address from a client that never said anything")
+	}
+	if took > 5*time.Second {
+		t.Errorf("the acquisition ran for %v under a 300ms window; it is on the caller's "+
+			"clock, and the caller's clock outlives the deadline the daemon keeps on "+
+			"the plugin call", took)
 	}
 }

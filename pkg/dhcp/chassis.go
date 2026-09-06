@@ -227,6 +227,12 @@ type DHCPClientOptions struct {
 	params        proto.Params
 	params6       proto.Params6
 
+	// resumedConfigTaken is set once carryResumedConfig6 has had its one
+	// chance to fill a resumed v6 lease's RFC 3646 lists. See that
+	// method: the memory is worth at most one event and must never
+	// outlive the first thing the server says.
+	resumedConfigTaken bool
+
 	// acdSeen is the last ACD counter snapshot handed to OnACDStats,
 	// which is what makes that callback a delta rather than a total.
 	acdSeen ACDStats
@@ -733,6 +739,9 @@ func (c *DHCPClient) translate() {
 	renewedAt := time.Time{}
 	for ev := range c.src {
 		now := time.Now()
+		// BEFORE the record is written, so a second restart still finds
+		// the resolver in it; see carryResumedConfig6.
+		c.opts.carryResumedConfig6(&ev)
 		// Written before it is translated. The record is the thing a
 		// restart reads, and translateOne drops two kinds on the floor
 		// deliberately — the coalesced Changed and the stop — neither

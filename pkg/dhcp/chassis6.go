@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/netip"
 	"time"
 
 	"github.com/claymore666/dhcp-golib/lease"
@@ -54,6 +55,109 @@ func RouterDiscoveryWindow(p proto.Params6) time.Duration {
 		interval = time.Duration(proto.RtrSolicitationInterval)
 	}
 	return maxRtrSolicitationDelay + time.Duration(n)*interval
+}
+
+// v6SolicitTransmissions is how many Solicits a one-shot DHCPv6
+// acquisition is funded for: the first plus three retransmissions.
+//
+// IT IS A CHOICE AND IT HAS TO BE. RFC 9915 section 7.6 gives the
+// Solicit exchange no MRC and no MRD -- "MRC 0" and "MRD 0" -- so the
+// protocol never stops trying, and RouterDiscoveryWindow's kind of
+// derivation is not available: there is no retransmission count in the
+// RFC to read. What decides it instead is who is waiting. A one-shot
+// runs inside CreateEndpoint, which the Docker daemon abandons after
+// its own plugin-request deadline (30s, moby/pkg/plugins), and a
+// verdict that arrives after that reaches nobody: the container fails
+// to start with "context deadline exceeded" and the operator is told
+// nothing about the segment. Four transmissions survives three lost
+// messages and still leaves the answer inside that deadline.
+const v6SolicitTransmissions = 4
+
+// V6AcquisitionWindow is how long a one-shot DHCPv6 acquisition may run
+// before the chassis draws its verdict, and it is NOT lease_timeout.
+//
+// WHY THE CALLER'S DEADLINE IS THE WRONG NUMBER HERE. lease_timeout's
+// default is ConflictRecoveryWindow -- 34s with the library's constants
+// -- and every term in it is DHCPv4's: a DISCOVER retransmission, RFC
+// 5227's probe window, and RFC 2131 section 3.1(5)'s ten-second wait
+// before a declined address is asked for again. None of those describes
+// a DHCPv6 exchange, and the number they add up to is longer than the
+// daemon will wait for CreateEndpoint to answer. MEASURED on the lane
+// 2026-09-06: on a SLAAC segment the v6 one-shot ran to the 34s
+// deadline and `docker run` failed with "context deadline exceeded"
+// after ~30s -- #868's symptom exactly, from the budget rather than
+// from the verdict.
+//
+// Two terms, in the order the client spends them:
+//
+//	RouterDiscoveryWindow  RFC 4861 section 6.3.7: the client has no
+//	                       reason to speak DHCPv6 until an
+//	                       advertisement tells it to, and the library
+//	                       waits this out before soliciting anyway.
+//	the Solicit schedule   RFC 9915 section 15's doubling, from
+//	                       SOL_MAX_DELAY through v6SolicitTransmissions
+//	                       transmissions, with section 15's randomiser
+//	                       at its maximum (+0.1) on every timer.
+//
+// 13.0 + 8.7 = 21.7s with the library's defaults. A caller whose own
+// deadline is shorter still wins: getIP6 takes the smaller of the two.
+func V6AcquisitionWindow(p proto.Params6) time.Duration {
+	return RouterDiscoveryWindow(p) + v6SolicitWindow(p)
+}
+
+// v6SolicitWindow is the Solicit half of V6AcquisitionWindow.
+//
+// RFC 9915 section 18.2.1 delays the first Solicit by "a random amount
+// of time between 0 and SOL_MAX_DELAY", and section 15 sets each
+// retransmission timer from the previous one: RT = 2*RTprev +
+// RAND*2*RTprev with RAND in [-0.1, +0.1]. The maximum is what a budget
+// has to cover, so every timer here is taken at +0.1.
+func v6SolicitWindow(p proto.Params6) time.Duration {
+	d := proto.DefaultParams6()
+	delay := time.Duration(p.SolMaxDelay)
+	if delay <= 0 {
+		delay = time.Duration(d.SolMaxDelay)
+	}
+	rt := time.Duration(p.SolTimeout)
+	if rt <= 0 {
+		rt = time.Duration(d.SolTimeout)
+	}
+	total := delay
+	for i := 1; i < v6SolicitTransmissions; i++ {
+		total += rt + rt/10
+		rt *= 2
+	}
+	return total
+}
+
+// v6RouterPollInterval is how often getIP6 re-reads the running router
+// observation while it waits.
+//
+// A POLL AND NOT AN EVENT because the library has none to give: an
+// advertisement is not a lease.Event, so the only way the chassis can
+// act on one is to look. Short enough that the SLAAC verdict is not
+// noticeably later than the advertisement that produced it, long enough
+// that a quiet 21.7s acquisition costs under a hundred wake-ups.
+const v6RouterPollInterval = 250 * time.Millisecond
+
+// ErrNoDHCPv6OnSegment is a segment whose router advertisement carries
+// neither the M nor the O flag: RFC 4861 section 4.2's plain SLAAC.
+//
+// IT IS THE VERDICT THE DEADLINE WOULD HAVE REACHED, TAKEN EARLY, and
+// it is the same argument acquireStep6 makes for RFC 9915 section
+// 18.2.6's Reply. An advertisement with M=0 and O=0 says there is
+// nothing to ask DHCPv6 for, and proto.Machine6 agrees -- it sends no
+// Solicit at all on such a link, so nothing is in flight and waiting
+// out the rest of the budget cannot change the answer. Concluding here
+// turns a container start on the ordinary SLAAC home network from
+// "21.7 seconds, then no address" into "about two seconds, then no
+// address", and the endpoint is created either way.
+var ErrNoDHCPv6OnSegment = errors.New("dhcp: the segment's router advertisement offers no DHCPv6")
+
+// advertisedNoDHCPv6 reports whether the segment has already said, on
+// the wire, that DHCPv6 has nothing for this client.
+func advertisedNoDHCPv6(r RAObservation) bool {
+	return r.Seen && !r.Managed && !r.Other
 }
 
 // checkRouterAdvertGuardShape refuses HonorRouterAdverts on every shape
@@ -217,9 +321,64 @@ func getIP6(ctx context.Context, iface string, opts *DHCPClientOptions) (Info, R
 		manager = opts.Records.NewManagerID()
 	}
 
-	runCtx, cancel := context.WithCancel(ctx)
+	info, lastE := runAcquisition6(ctx, iface, client, opts, V6AcquisitionWindow(params))
+
+	// AFTER the drain: the last advertisement can arrive on the same
+	// pass as the event that ended the loop.
+	ra = raObservation(client.Router())
+	opts.count(manager, client.Stats())
+
+	if info.IP == "" {
+		if lastE == nil {
+			lastE = ErrNoLease
+		}
+		return Info{}, ra, lastE
+	}
+	return info, ra, nil
+}
+
+// v6AcquisitionClient is the part of *dhcpruntime.Client6 the
+// acquisition loop below reads.
+//
+// It is declared here for the reason libClient is declared in
+// chassis.go — it is the chassis's demand, not the library's offer —
+// and, unlike libClient, it names Router(), because the loop's second
+// exit is an observation about the SEGMENT rather than about a lease.
+type v6AcquisitionClient interface {
+	Run(ctx context.Context) error
+	Events() <-chan lease.Event
+	Router() proto.RouterObservation
+}
+
+// runAcquisition6 runs one DHCPv6 acquisition to a verdict and drains
+// what the client had left to say.
+//
+// SEPARATED FROM getIP6 SO IT CAN BE DRIVEN. Everything above it in
+// getIP6 needs a real interface in a real namespace — newLibClient6
+// opens a packet socket — so for as long as the loop lived inside that
+// function nothing in the unit lane could reach it, and MEASURED
+// 2026-09-06 three mutants of it survived: the early conclusion
+// disabled, the window replaced by the caller's clock, and (in the
+// persistent client's copy of the same call) the resumed resolver no
+// longer carried. The seam is the client, not the socket.
+//
+// THE ACQUISITION RUNS UNDER THE SMALLER OF TWO DEADLINES, and window
+// is the second one. See V6AcquisitionWindow for why the caller's
+// cannot be the only bound: lease_timeout is derived from DHCPv4's
+// conflict recovery and is longer than the daemon will wait for
+// CreateEndpoint to answer, so on a segment with no DHCPv6 on it the
+// verdict this function exists to produce arrived after nobody was
+// listening.
+func runAcquisition6(ctx context.Context, iface string, client v6AcquisitionClient, opts *DHCPClientOptions, window time.Duration) (Info, error) {
+	acqCtx, endAcq := context.WithTimeout(ctx, window)
+	defer endAcq()
+
+	runCtx, cancel := context.WithCancel(acqCtx)
 	done := make(chan error, 1)
 	go func() { done <- client.Run(runCtx) }()
+
+	poll := time.NewTicker(v6RouterPollInterval)
+	defer poll.Stop()
 
 	var (
 		info  Info
@@ -228,9 +387,18 @@ func getIP6(ctx context.Context, iface string, opts *DHCPClientOptions) (Info, R
 	)
 	for !got {
 		select {
-		case <-ctx.Done():
-			lastE = ctx.Err()
+		case <-acqCtx.Done():
+			lastE = acqCtx.Err()
 			got = true
+
+		case <-poll.C:
+			// The segment answered the question with an
+			// advertisement rather than with a lease event; see
+			// ErrNoDHCPv6OnSegment.
+			if advertisedNoDHCPv6(raObservation(client.Router())) {
+				lastE = ErrNoDHCPv6OnSegment
+				got = true
+			}
 
 		case ev, ok := <-client.Events():
 			if !ok {
@@ -238,6 +406,9 @@ func getIP6(ctx context.Context, iface string, opts *DHCPClientOptions) (Info, R
 				got = true
 				break
 			}
+			// Before the record and before the step, for the reason
+			// the persistent client's loop does it there.
+			opts.carryResumedConfig6(&ev)
 			opts.record(ev)
 			out := acquireStep6(ev)
 			if out.Err != nil {
@@ -255,23 +426,13 @@ func getIP6(ctx context.Context, iface string, opts *DHCPClientOptions) (Info, R
 	// drain gives: the Join manager reads this record the moment
 	// CreateEndpoint returns, and a background drain would race it.
 	for ev := range client.Events() {
+		opts.carryResumedConfig6(&ev)
 		opts.record(ev)
 	}
 	if err := <-done; err != nil && !errors.Is(err, context.Canceled) {
 		log.WithError(err).WithField("iface", iface).Debug("DHCPv6 acquisition manager returned an error")
 	}
-	// AFTER the drain: the last advertisement can arrive on the same
-	// pass as the event that ended the loop.
-	ra = raObservation(client.Router())
-	opts.count(manager, client.Stats())
-
-	if info.IP == "" {
-		if lastE == nil {
-			lastE = ErrNoLease
-		}
-		return Info{}, ra, lastE
-	}
-	return info, ra, nil
+	return info, lastE
 }
 
 // acquireStep6 decides whether a one-shot DHCPv6 acquisition ends on ev.
@@ -336,4 +497,49 @@ func infoFromConfig(c lease.Configuration) (Info, int) {
 	// The same filter every lease crosses, at the same boundary and for
 	// the same reason: these strings are the server's choice.
 	return info, sanitizeInfo(&info)
+}
+
+// carryResumedConfig6 fills a resumed DHCPv6 binding's RFC 3646 lists
+// from the lease the chassis remembered for it.
+//
+// WHY ANYTHING IS MISSING AT ALL. A plugin restart resumes a v6 binding
+// with RFC 9915 section 18.2.12's Confirm, and section 18.2.13's answer
+// to one is a Reply carrying a Server Identifier and a Status Code and
+// NOTHING ELSE -- no IA, no option 23, no option 24. proto.Resume6
+// carries the addresses, their lifetimes and the server DUID, which is
+// everything the Confirm MESSAGE needs and not everything the container
+// needs: the lease that comes back out of a successful Confirm has no
+// DNS servers and no search list on it. MEASURED on the lane
+// 2026-09-06: a container whose resolver had been written from DHCPv6
+// lost it at the first plugin restart and did not get it back until T1,
+// sixty seconds later.
+//
+// WHAT THIS IS NOT. It is not a second source of truth, and it cannot
+// go stale, because the memory is consumed by the FIRST event that
+// carries a lease whatever that event says. A Reply that carries option
+// 23 is the server speaking and wins outright; a Confirm that was
+// refused leads to a Solicit whose Reply does carry the lists. So the
+// remembered value is applied at most once, to the one exchange the
+// protocol gives no way to ask.
+//
+// The fill is all-or-nothing across the pair. RFC 3646 makes options 23
+// and 24 independent, so a Reply that carried one of them HAS spoken
+// about the other -- a server that sends DNS servers and no search list
+// is saying there is no search list, and topping it up from a record
+// would invent one.
+func (o *DHCPClientOptions) carryResumedConfig6(ev *lease.Event) {
+	if o.resumedConfigTaken || !o.V6 || o.Resume == nil {
+		return
+	}
+	switch ev.Kind {
+	case lease.Acquired, lease.Renewed, lease.Changed:
+	default:
+		return
+	}
+	o.resumedConfigTaken = true
+	if len(ev.Lease.DNS) > 0 || len(ev.Lease.DomainSearch) > 0 {
+		return
+	}
+	ev.Lease.DNS = append([]netip.Addr(nil), o.Resume.DNS...)
+	ev.Lease.DomainSearch = append([]string(nil), o.Resume.DomainSearch...)
 }
