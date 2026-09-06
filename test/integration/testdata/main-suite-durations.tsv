@@ -99,26 +99,60 @@
 #   TestLifecycleMacvlan_IPv6_GoldenPath                   17.02
 #   TestTombstoneRestart_PreservesIPv6                     28.29
 # EVERY ONE OF THOSE IS ABOVE THE ROW IT REPLACES, and the stanza above
-# said that would be a finding. It is, and it is NOT a v6 finding: the
-# v4-only tests moved by the same amount in the same run, and this
-# branch does not touch their path.
-#   TestLifecycleMacvlan_GoldenPath   row 7.53   run 11.60
-#   TestLifecycleBridge_GoldenPath    row 7.73   run 12.25
-#   TestLeaseRenew_HonorsT1           row 22.52  run 27.97
-# So about +4s of the v6 tests' growth is whatever moved those, and it
-# is shared. What is left -- roughly +2 to +6s on a test that starts a
-# dual-stack container -- is the v6 half of CreateEndpoint on this
-# fixture (a router solicitation, its advertisement, a Solicit and a
-# Reply), which is behaviour this branch adds rather than drift. One
-# sample cannot separate the two any further, which is the reason the
-# rows are not edited from it: regenerate by the method above.
+# said that would be a finding. It is.
+#
+# CORRECTED IN ROUND 2 (review round 1, finding 3). What stood here was
+# an exoneration: "the v4-only tests moved by the same amount in the
+# same run, and this branch does not touch their path", citing the
+# macvlan golden path at row 7.53 against run 11.60, the bridge at 7.73
+# against 12.25, and the renewal at 22.52 against 27.97. Both halves
+# were wrong to state. The comparison is one run of THIS branch against
+# medians from a DIFFERENT corpus on a pool that has since changed, so
+# it cannot tell "this branch cost the v4 path four seconds" from "the
+# runner is slower now"; and the second half is false on the diff --
+# network.go, parent_attached.go, dhcp_manager.go, plugin.go,
+# records.go and pkg/dhcp/chassis.go all moved, and all sit on the v4
+# CreateEndpoint/Join path. The conclusion was asserted, not shown.
+#
+# IT IS NOW SHOWN, by the control the finding named: a v4-only
+# measurement of the BASE, 8ba4fc6, on the same runner pool. Dispatched
+# 2026-09-06T22:11Z as run 34063305549 (workflow_dispatch on ref 2.0.0,
+# all five main shards plus failure-suite green), read against this
+# branch's run 34060966627 at c32ead5.
+#
+#   104 tests appear in both runs.
+#   base total 1804.88s   branch total 1811.72s   delta +6.84s, +0.4%
+#   deltas scatter in BOTH directions; the extremes are
+#     +2.46  TestFailure_LeaseExpiry                    152.15 then 154.61
+#     -2.28  TestClasslessStaticRoutes_AbsentWithoutOptIn 13.54 then 11.26
+#   the three tests round 1 cited, base first, branch second:
+#     TestLifecycleMacvlan_GoldenPath   12.78   11.61   (row 7.53)
+#     TestLifecycleBridge_GoldenPath    12.81   12.19   (row 7.73)
+#     TestLeaseRenew_HonorsT1           26.49   26.64   (row 22.52)
+#
+# So this branch costs the v4 path nothing measurable, and the ~5s that
+# separates those three ROWS from BOTH runs is drift in the fixture or
+# the pool since the 2026-08-28 regeneration -- which is the real
+# finding, is not this branch's, and is an argument for regenerating
+# the whole table by the method in Provenance once the branch has a
+# window of runs behind it. The v6 tests' growth is therefore the v6
+# half of CreateEndpoint (a router solicitation, its advertisement, a
+# Solicit and a Reply) on top of that shared drift, and the drift term
+# is now MEASURED rather than assumed.
+#
+# WHAT THE PAIR STILL DOES NOT SETTLE: one run on each side. A single
+# sample per side cannot resolve a per-test difference smaller than the
+# ~2s of scatter above, so a v4 cost below that would be invisible here.
+# What it does settle is the size of the claim round 1 made: a shared
+# +4s on the v4 path is not in this branch's run at all.
+#
 # The stateless prediction is not borne out either: 12.46 became 30.44.
 # That one has a second, checked cause: the restored body is not the
 # retired body. It adds the router-advert guard counter to its window
 # and a live drive of the exchange contract (AssertExchange, which
-# polls the server log), on top of the shared +4s. The client's own
-# early conclusion on the stateless Reply is still there and still
-# saves a lease_timeout; it is simply not the only term.
+# polls the server log), on top of the shared drift measured above.
+# The client's own early conclusion on the stateless Reply is still
+# there and still saves a lease_timeout; it is simply not the only term.
 #
 # MEASURED 2026-09-06 in run 34056785164, which is where the three numbers
 # above come from and where the budget's SECOND bound was found:
