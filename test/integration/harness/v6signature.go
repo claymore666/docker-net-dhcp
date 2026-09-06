@@ -557,20 +557,26 @@ func ParseRA(b []byte) (RAFrame, bool) {
 // and it OVERWRITES the draw before the draw can ever fire. The 0..5 s
 // arithmetic is real code that this configuration does not execute.
 //
-// MEASURED, 85 bring-ups, both branches of `send_alarm`
+// MEASURED, 90 bring-ups, both exits of `send_alarm`
 // (`dnsmasq.c:1371-1379`) represented:
 //
-//	83 x  0.93 s .. 1.04 s   alarm(1) was armed and delivered
+//	88 x  0.93 s .. 1.04 s   alarm(1) was armed and delivered
 //	 2 x  13 ms and 18 ms    the cached `now` had already reached
 //	                         ra_time when send_alarm ran, so it took
 //	                         the "alarm(0) doesn't do what we want"
 //	                         path and posted EVENT_ALARM immediately
 //
-// 60 of those are consecutive bring-ups off the lane with this
-// fixture's exact argv; 25 are every observation the lane logged across
-// runs 33995361430, 33996052773, 33996650903, 33997007028, 33997353467
-// and 33997868882, and the two sub-20 ms frames are both from the lane.
-// Nothing in 85 landed anywhere near the 0..5 s draw, which is what the
+// Both of those are the SAME schedule branch. The sub-20 ms pair is not
+// a second draw; it is the alarm arriving without a timer, which is the
+// only other exit send_alarm has.
+//
+// 60 of the 90 are consecutive bring-ups off the lane with this
+// fixture's exact argv; 30 are every observation the lane logged across
+// runs 33995361430, 33996052773, 33996650903, 33997007028, 33997353467,
+// 33997868882 and 34000578906, and the two sub-20 ms frames are both
+// from the lane (33997868882 main-4 slaac, 13 ms; 33997353467 main-4
+// managed, 18 ms).
+// Nothing in 90 landed anywhere near the 0..5 s draw, which is what the
 // source says should happen and is why the draw is cited as a bound
 // rather than as a description.
 //

@@ -360,15 +360,24 @@ func TestV6ExchangeFindings_NoNeedleIsProseDnsmasqTranslates(t *testing.T) {
 	}
 }
 
-// TestV6ExchangeContract_CoversEveryModeAndNamesNoV4AmbiguousToken.
+// TestV6ExchangeContract_ForbidsOnlyTokensTheV4PathNeverPrints is
+// finding 1's guard, and it replaces one that named the property in its
+// title and tested a spelling in its body.
 //
-// Two claims, both of which a reader would otherwise have to take on
-// trust. Every mode has a row -- a mode without one returns "no
-// exchange contract" rather than passing. And DHCPREQUEST appears
-// nowhere, because it is the one DHCPv6 message name dnsmasq also
-// prints for DHCPv4 and this fixture is dual-stack in every mode: a
-// must-set containing it is satisfied by the v4 lease alone, on a
-// segment whose v6 half never answered.
+// The claim: no mode's must-NOT column may name a token dnsmasq's v4
+// path also prints. This fixture is dual-stack in every mode, so such a
+// column fails a segment for something its v4 half did. The previous
+// version of this test asserted the single literal "DHCPREQUEST" and
+// therefore could not see DHCPDECLINE and DHCPRELEASE sitting in
+// SLAAC's column -- and its own comment said DHCPREQUEST was "the one"
+// such name, when the intersection of dnsmasq's two print tables is
+// three.
+//
+// It is driven, not merely asserted: the mutated contracts below are
+// wrong in exactly the way the shipped one was wrong, and every mode is
+// driven with every ambiguous token rather than with a representative
+// one. A mode with no row at all is a finding too, which is the second
+// claim the old test made and the only one it kept.
 func TestV6ExchangeContract_ForbidsOnlyTokensTheV4PathNeverPrints(t *testing.T) {
 	// The shipped table agrees with the property.
 	if findings := V6ContractFindings(v6ExchangeContract); len(findings) != 0 {

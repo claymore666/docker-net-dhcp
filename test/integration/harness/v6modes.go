@@ -350,7 +350,7 @@ func newV6Fixture(t V6FixtureT, name V6Mode, rangeArgs []string) *V6Fixture {
 
 	// The capture is opened BEFORE dnsmasq starts. The first
 	// advertisement arrives about a second later on this fixture's
-	// branch (MEASURED, 83 of 85 bring-ups; see the schedule block in
+	// branch (MEASURED, 88 of 90 bring-ups; see the schedule block in
 	// v6signature.go for the other two and for which branch they are
 	// on), and a capture opened after it would have to wait for the
 	// next one, which dnsmasq schedules 5 to 19 seconds out.
