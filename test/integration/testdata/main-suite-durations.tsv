@@ -87,6 +87,68 @@
 # Refresh all FOUR from the first green Integration run that produces
 # suite logs on this branch, by the recipe at the foot of this header.
 #
+# FIVE ROWS ADDED FOR #911, ALL MEASURED. Round 1 added them from run
+# 33994533077 with the drift matrix INFERRED; round 2 re-measured every
+# one of them from run 34000578906 (2026-09-06), the first green run
+# after the derived waits widened and two skipped cells were driven, so
+# there is no inferred row left in this stanza.
+#
+# What dominates these is not the container work every sibling row
+# shares -- there are no containers here at all -- but two waits whose
+# lengths are known: a segment that MUST advertise settles in about
+# 1.0s (dnsmasq's first advertisement, MEASURED 97 of 99 observations in
+# 0.931-1.041s, 2 at 13-18ms on the same schedule branch; the block in
+# v6signature.go says which branch and why) on top of roughly 0.3s of
+# bridge/process setup and teardown; a segment that must NOT advertise
+# costs the derived absence window, V6NoRAWindow() = 2 x RABudget() =
+# 12s, and one that was asked to advertise and did not costs
+# RABudget() = 6s.
+#
+# Both of those derived numbers grew in round 2 (10s and 5s before),
+# because the budget they are built on stopped being a literal equal to
+# dnsmasq's own worst case and became that bound plus a stated margin.
+# That is what moved four of these five rows; the fifth moved because
+# the drift matrix stopped skipping two cells.
+#
+#   TestV6Fixture_ModesComeUpAsRequested                    17.91
+#     Five modes; the no-RA mode spends the derived 12s window and the
+#     other four settle on their first advertisement (15.79 before).
+#   TestV6Fixture_AwaitRAAfterAndItsNegative                48.06
+#     Five live segments now: round 2 added the case that asks an
+#     advertising segment about an instant after its own advertisement,
+#     which costs a 2s wait, and the segments that spend an absence
+#     window each spend 2s more than they did (38.65 before).
+#   TestV6RACapture_SeesTheAdvertisementOnTheBridgeAndNotOnAQuietLink
+#                                                            1.38
+#     One managed segment plus a dummy link; no waits beyond the
+#     fixture's own. Unchanged, and it is the control for the four that
+#     moved: a row with no derived wait in it did not move.
+#   TestV6Fixture_AssertExchangeRefusesASegmentNoClientEverUsed
+#                                                            2.34
+#   TestV6Fixture_RefusesASegmentInAnotherModesShape        65.40
+#     25 cells, not the 23 round 1 measured: the two the signature
+#     table cannot separate used to be skipped and are now driven --
+#     they must be ACCEPTED, since managed and managed-silent are
+#     indistinguishable until a client speaks. 18 refusals and 7
+#     acceptances. Per-cell at that run:
+#       the 20 cells that settle on a frame           1.31-1.48 each
+#       the 5 cells whose flags are nora              6.36-12.47
+#     The five expensive ones are the whole shape of this row: nora/nora
+#     accepts, and spends the full 12s absence window doing it; the
+#     other four are refused only after spending the 6s budget for an
+#     advertisement that never comes.
+#     This is the largest row in the file. It is the price of a drift
+#     matrix whose absence cells wait out a window derived from the
+#     server's own schedule rather than chosen, and it is recorded here
+#     rather than reduced, because the reduction available is a shorter
+#     wait.
+#
+# These five are the largest single addition this file has taken and the
+# drift matrix alone outweighs most measured rows in it. Nothing here is
+# inferred any more; refresh them by the recipe at the foot of this
+# header whenever RABudget() or V6NoRAWindow() moves, because four of
+# the five are derived waits and will move with it.
+#
 # FIVE ROWS ADDED FOR THE #725 / #691 PRIVILEGE CELLS, MEASURED AND
 # SCALED (sec/privilege-set). Integration run 33927195482, one sample
 # each. That run was slow relative to the 22-run medians this file is
@@ -301,7 +363,11 @@ TestStaticRoutes_BridgeCopiesToContainer	7.29
 TestStaticRoutes_MacvlanCopiesToContainer	6.94
 TestStaticRoutes_MacvlanSkipRoutesOpt	7.55
 TestTombstoneRestart_PreservesMACAndIP	11.28
-TestV6Fixture_ModesComeUpAsRequested	9.15
+TestV6Fixture_AssertExchangeRefusesASegmentNoClientEverUsed	2.34
+TestV6Fixture_AwaitRAAfterAndItsNegative	48.06
+TestV6Fixture_ModesComeUpAsRequested	17.91
+TestV6Fixture_RefusesASegmentInAnotherModesShape	65.40
+TestV6RACapture_SeesTheAdvertisementOnTheBridgeAndNotOnAQuietLink	1.38
 TestVendorClass_DefaultUsesUntaggedGateway	7.33
 TestVendorClass_NonMatchingValueUsesDefaultGateway	7.13
 TestVendorClass_OverrideRoutesViaTaggedGateway	6.91
