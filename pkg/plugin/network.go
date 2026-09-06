@@ -874,6 +874,9 @@ func (p *Plugin) netOptionsRaw(ctx context.Context, id string) (DHCPNetworkOptio
 // Docker moves the link into the container's netns when it acts on our
 // Join response.
 func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (CreateEndpointResponse, error) {
+	// FIRST, because everything below is charged against it: the
+	// daemon's own deadline on this call. See v6AcquisitionDeadline.
+	callStart := time.Now()
 	log.WithField("options", r.Options).Debug("CreateEndpoint options")
 	res := CreateEndpointResponse{
 		Interface: &EndpointInterface{},
@@ -916,7 +919,7 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 	}
 
 	if m := opts.effectiveMode(); m == ModeMacvlan || m == ModeIPvlan {
-		return p.createParentAttachedEndpoint(ctx, r, opts)
+		return p.createParentAttachedEndpoint(ctx, callStart, r, opts)
 	}
 
 	bridge, err := netlink.LinkByName(opts.Bridge)
@@ -1139,7 +1142,17 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 				base.RequestedIP = requestedIP
 			}
 
-			info, ra, err := p.acquireWithPolicy(ctx, ctrName, pol, v6, timeout, r.EndpointID, base)
+			// The v6 half is the SECOND acquisition in this call and
+			// gets what is left of the daemon's deadline; the v4 half
+			// keeps lease_timeout untouched. See v6AcquisitionDeadline.
+			acqCtx := ctx
+			if v6 {
+				var endV6 context.CancelFunc
+				acqCtx, endV6 = withV6AcquisitionDeadline(ctx, callStart)
+				defer endV6()
+			}
+
+			info, ra, err := p.acquireWithPolicy(acqCtx, ctrName, pol, v6, timeout, r.EndpointID, base)
 			if err != nil {
 				// A DHCPv6 acquisition that produced nothing is not
 				// automatically a failure: on a stateless or SLAAC

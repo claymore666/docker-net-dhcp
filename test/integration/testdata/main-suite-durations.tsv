@@ -79,6 +79,18 @@
 #     three. It is a ceiling here, not an estimate; re-measure it with the
 #     other rows from the first green Integration run on this branch.
 #
+# MEASURED 2026-09-06 in run 34056785164, which is where the three numbers
+# above come from and where the budget's SECOND bound was found:
+#   v4-only bridge endpoint creation  11s (three samples: 20:06:41-52,
+#                                     20:07:04-15, 20:07:25-36)
+#   the SLAAC arm's CreateEndpoint    12s -- so its v6 half costs ~1s
+#   the stateless arm's               15s -- so its v6 half costs ~4s
+#   the no-router arm's               30s and CANCELLED, because 11 + 21.7
+#                                     is past the 30s the daemon waits.
+# That is why the v6 half is now bounded by what is left of the daemon's
+# call deadline as well as by the derivation; the no-router arm's v6 half
+# costs about 15s under it, not 21.7.
+#
 # The two rows written when the refusal replaced them are removed with
 # it: TestIPv6_RefusedAtCreateWithTheMilestoneNamed (inverted into
 # TestIPv6_AcceptedAtCreate) and TestIPv6_TheV4PathIsUnaffectedByTheRefusal

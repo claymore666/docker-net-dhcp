@@ -273,7 +273,12 @@ func (p *Plugin) noteRestartLinkUpWait(r CreateEndpointRequest, waited bool, err
 // dhcpcd on it (still in host netns) to acquire an initial lease, and
 // stashes the result for Join. Docker will move the link into the
 // container's netns when it acts on our Join response.
-func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, r CreateEndpointRequest, opts DHCPNetworkOptions) (CreateEndpointResponse, error) {
+// callStart is CreateEndpoint's own entry time, PASSED rather than
+// re-taken here: it is one fact -- when the daemon's deadline on this
+// call began -- and a second time.Now() in this function would be a
+// second answer to it that drifts by however long the branch above
+// took. See v6AcquisitionDeadline.
+func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, callStart time.Time, r CreateEndpointRequest, opts DHCPNetworkOptions) (CreateEndpointResponse, error) {
 	res := CreateEndpointResponse{Interface: &EndpointInterface{}}
 	mode := opts.effectiveMode()
 
@@ -524,7 +529,17 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, r CreateEndpo
 				base.RequestedIP = requestedIP
 			}
 
-			info, ra, err := p.acquireWithPolicy(ctx, la.Name, pol, v6, timeout, r.EndpointID, base)
+			// The v6 half is the SECOND acquisition in this call and
+			// gets what is left of the daemon's deadline; the v4 half
+			// keeps lease_timeout untouched. See v6AcquisitionDeadline.
+			acqCtx := ctx
+			if v6 {
+				var endV6 context.CancelFunc
+				acqCtx, endV6 = withV6AcquisitionDeadline(ctx, callStart)
+				defer endV6()
+			}
+
+			info, ra, err := p.acquireWithPolicy(acqCtx, la.Name, pol, v6, timeout, r.EndpointID, base)
 			if err != nil {
 				// A DHCPv6 acquisition that produced nothing is not
 				// automatically a failure: on a stateless or SLAAC
