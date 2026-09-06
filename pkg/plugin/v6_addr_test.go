@@ -230,3 +230,76 @@ func TestV6AddrAttrs_IsCalledUnderTheFamilySwitch(t *testing.T) {
 			calls, guarded)
 	}
 }
+
+// TestHealthClient_IsPublishedOnlyForV4 pins which family the
+// `endpoints` array of /Plugin.Health describes.
+//
+// A dual-stack endpoint runs two clients and the array has one entry
+// per ENDPOINT, so one of the two has to be the one it reads. It is
+// the v4 client: `address`, `lease_state`, the three lease times and
+// the RFC 5227 pair all come from it, and RFC 5227 is a v4 protocol
+// with no v6 counterpart at all. docs/reference.md states that bound
+// on the `endpoints` row.
+//
+// The guard is `if !v6` around ONE call, and inverting it is silent in
+// exactly the way this array cannot afford: the entry would carry the
+// container's IPv6 address in a field every consumer reads as its
+// IPv4 one, with an `acd_phase` belonging to a client that never ran
+// ACD. Nothing else in the document would disagree.
+func TestHealthClient_IsPublishedOnlyForV4(t *testing.T) {
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "dhcp_manager.go", nil, 0)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+
+	calls := 0
+	guarded := 0
+	ast.Inspect(f, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		sel, ok := call.Fun.(*ast.SelectorExpr)
+		if !ok || sel.Sel.Name != "setHealthClient" {
+			return true
+		}
+		calls++
+		return true
+	})
+	ast.Inspect(f, func(n ast.Node) bool {
+		ifs, ok := n.(*ast.IfStmt)
+		if !ok {
+			return true
+		}
+		un, ok := ifs.Cond.(*ast.UnaryExpr)
+		if !ok || un.Op != token.NOT || ifs.Init != nil {
+			return true
+		}
+		if id, ok := un.X.(*ast.Ident); !ok || id.Name != "v6" {
+			return true
+		}
+		ast.Inspect(ifs.Body, func(n ast.Node) bool {
+			call, ok := n.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			if sel, ok := call.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "setHealthClient" {
+				guarded++
+			}
+			return true
+		})
+		return true
+	})
+
+	if calls == 0 {
+		t.Fatal("setHealthClient is never called in dhcp_manager.go: the endpoints array " +
+			"reports no lease for any endpoint and this test's domain is empty")
+	}
+	if guarded != calls {
+		t.Errorf("setHealthClient is called %d times and %d of those are under `if !v6`; "+
+			"an unguarded or v6-guarded call publishes the DHCPv6 client as the one the "+
+			"endpoints array reads, so `address` carries a v6 lease in a field consumers "+
+			"read as the v4 one", calls, guarded)
+	}
+}

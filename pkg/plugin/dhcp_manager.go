@@ -334,9 +334,12 @@ type dhcpManager struct {
 	// Under ipMu, which is released before the client is asked
 	// anything; see healthView.
 	//
-	// v6 has no counterpart: 2.0 refuses IPv6 before a client is
-	// constructed (see NewDHCPClient), so a v6 field would be nil by
-	// construction rather than by observation.
+	// v6 has no counterpart BY CHOICE, not by absence. A dual-stack
+	// endpoint runs two clients and the endpoints array has one entry
+	// per endpoint, so one of them is the one it describes; it is this
+	// one, because the array's RFC 5227 pair has no v6 meaning at all.
+	// TestHealthClient_IsPublishedOnlyForV4 holds the guard at the one
+	// call site and docs/reference.md states the bound on the row.
 	clientV4 endpointClient
 }
 
