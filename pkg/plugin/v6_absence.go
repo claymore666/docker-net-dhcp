@@ -4,6 +4,8 @@
 package plugin
 
 import (
+	"errors"
+
 	log "github.com/sirupsen/logrus"
 
 	"github.com/claymore666/docker-net-dhcp/pkg/dhcp"
@@ -35,28 +37,18 @@ const (
 	// a degraded one, and the endpoint is created without a v6 address.
 	//
 	// The endpoint then starts with no global IPv6 address FROM THIS
-	// PLUGIN -- there is no lease to be had -- and this comment must be
-	// precise about which of the two statements it is making, because
-	// the stronger one used to be true here and is not any more.
+	// PLUGIN -- there is no lease to be had -- and the distinction in
+	// that sentence is the whole of it: the KERNEL may well form one.
+	// The RA guard (#875, pkg/dhcp/ra_guard.go) leaves the interface at
+	// accept_ra=2 and autoconf=1, so whether an address forms is
+	// decided by the A flag on the advertised prefix (RFC 4862 section
+	// 5.5.3) and not by this plugin. Any address that does form is the
+	// kernel's, is not a lease, and is not reported in docker inspect.
 	//
-	// It used to read: SLAAC does NOT step in, because dhcpcd writes
-	// net.ipv6.conf.<if>.autoconf=0 and accept_ra=0 on the interface it
-	// manages (if-linux.c, if_setup_inet6, dhcpcd 10.3.2) and
-	// --noconfigure does not gate that write. Both halves of that are
-	// still true OF DHCPCD, and they are no longer true of the
-	// interface: the RA guard (#875, pkg/dhcp/ra_guard.go) sets
-	// accept_ra=2 and autoconf=1 before dhcpcd starts and then makes
-	// /proc/sys read-only in the client's mount namespace so dhcpcd's
-	// write is refused. The kernel is therefore free to autoconfigure,
-	// and whether it does is decided by the A flag on the advertised
-	// prefix (RFC 4862 section 5.5.3), not by this plugin.
-	//
-	// What is unchanged: under --noconfigure -- which this plugin
-	// always passes -- DHCPCD does not apply the advertisement itself.
-	// The kernel doing it and dhcpcd doing it are different actors, and
-	// only the second is still suppressed. Any address that forms is
-	// the kernel's, is not a lease, and is not reported in
-	// docker inspect.
+	// (2.0 removed the other half of this note along with dhcpcd. In
+	// 1.x the client wrote accept_ra=0 and autoconf=0 on every carrier
+	// acquisition and the guard had to shield the sysctls from it; this
+	// build execs nothing, so the writes stand on their own -- D30 Q3.)
 	//
 	// What the container gets regardless is IPv4 from DHCP, an IPv6
 	// link-local, and the stateless DHCPv6 configuration (#815) where
@@ -76,12 +68,36 @@ const (
 )
 
 // classifyV6Absence turns what the acquisition observed about the
-// segment's router advertisements into the verdict for a DHCPv6
-// acquisition that produced no address.
+// segment's router advertisements, and what came back on the wire, into
+// the verdict for a DHCPv6 acquisition that produced no address.
 //
-// Pure and total: every RAObservation maps to exactly one verdict, and
-// the only input is what was advertised.
-func classifyV6Absence(ra dhcp.RAObservation) v6Verdict {
+// Pure and total: every (observation, cause) pair maps to exactly one
+// verdict.
+//
+// THE WIRE BEATS THE DIAGNOSTIC, which is why cause is an argument and
+// not a thing the caller handles separately. dhcp.ErrNoV6Address means
+// the server ANSWERED -- RFC 9915 section 18.2.6's Information-request
+// Reply arrived, carrying configuration and no address -- and the
+// library only ever sends that exchange on a link whose advertisement
+// said M=0 O=1. So it is a stronger statement than any reading of the
+// router observation, including a reading taken from an advertisement
+// that arrived after the Reply and said something else.
+//
+// The observation decides the rest:
+//
+//   - nothing seen: no router answered inside the budget, which no
+//     mechanism can work around (RFC 4861 section 6.3.4 has no other
+//     source of a default route).
+//   - M=1: the segment says addresses are available over DHCPv6 and
+//     none arrived. That is the failure this plugin has always
+//     reported and it stays fatal.
+//   - anything else -- O=1 alone, or neither bit -- is a segment with
+//     no DHCPv6 addresses on it, which is a configuration and not a
+//     fault.
+func classifyV6Absence(ra dhcp.RAObservation, cause error) v6Verdict {
+	if errors.Is(cause, dhcp.ErrNoV6Address) {
+		return v6NotOffered
+	}
 	switch {
 	case !ra.Seen:
 		return v6NoRouter
@@ -101,7 +117,7 @@ func classifyV6Absence(ra dhcp.RAObservation) v6Verdict {
 func (p *Plugin) noteV6Absence(ra dhcp.RAObservation, iface, endpointID string, cause error) bool {
 	fields := log.Fields{"endpoint": shortID(endpointID), "iface": iface}
 
-	switch classifyV6Absence(ra) {
+	switch classifyV6Absence(ra, cause) {
 	case v6NotOffered:
 		p.dhcpv6NotOffered.Add(1)
 		log.WithFields(fields).

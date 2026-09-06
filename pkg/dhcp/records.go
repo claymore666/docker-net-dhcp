@@ -243,6 +243,17 @@ func Scope6(networkID string) string { return networkID + "#v6" }
 // from whatever the plumbing happens to look like then is one that
 // changes.
 func (r *Records) Created6(id, networkID string, chaddr, identity []byte) error {
+	// REFUSED HERE AND NOT LEFT TO THE FOLD. The library rejects a v6
+	// create with no identity, but it rejects it at REBUILD, and the
+	// rebuild drops the offending record and carries on -- Append
+	// returns nil, Rebuilt returns nil, and the endpoint simply has no
+	// v6 record from then on. Every plugin restart then mints a fresh
+	// DUID, the server files each one as a new client, and the only
+	// symptom is an address that changes for no reason.
+	if len(identity) == 0 {
+		return fmt.Errorf("dhcp: a DHCPv6 record for %v carries no identity "+
+			"(RFC 9915 section 11: the DUID is what makes this the same client after a restart)", id)
+	}
 	return r.append(lease.RecordEvent{
 		ID:       id,
 		Op:       lease.OpCreate,
