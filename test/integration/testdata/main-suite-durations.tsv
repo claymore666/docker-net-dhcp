@@ -29,9 +29,10 @@
 #                TestMultiNetwork_SameSubnetRefused                   8
 #   corpus     879.2s across 70 tests; mean 12.56s AS SAMPLED. Ten of
 #              those rows have since been removed together with the
-#              DHCPv6 tests they costed -- see the 2.0 stanza
-#              below -- so the table now holds 66 rows, 712.0s, mean
-#              10.79s.
+#              DHCPv6 tests they costed, and are back with the rest of
+#              them -- see the #911 stanza below -- so the table now
+#              holds 91 rows, 1251.0s, mean 13.75s. Fourteen of those 91
+#              are v6 rows: ten measured on 1.9.0 and four inferred.
 #
 # Runs sampled:
 #   33146366330 33145891905 33145646801 33145007735 33144508563 
@@ -39,12 +40,11 @@
 #   33142691992 33126731828 33126471548 33125634261 33124986791 
 #   33124593887 33124518969 33124422853 33123576221 33122097314 
 #   33119628132 33119366240 #
-# TEN ROWS WERE REMOVED, AND TWO ARE INFERRED RATHER THAN MEASURED (2.0).
-# 2.0 leases through the in-house DHCP library, which speaks
-# DHCPv4 only; IPv6 is refused at CreateNetwork until #911. The ten tests
-# that drove a v6 client are retired -- named one by one in
-# test/integration/ipv6_refused_test.go and in the commit that retired
-# them -- so their rows went with them:
+# THE TEN v6 ROWS ARE BACK, AND FOUR MORE ARE INFERRED (#911, 2.0).
+# The ten DHCPv6 tests retired when 2.0 shipped without a v6 client are
+# restored against the in-house library, and so are their MEASURED rows:
+# each figure below is the one this file carried before the retirement
+# (the 2026-08-28 corpus above), recovered rather than re-guessed.
 #   TestLifecycleMacvlan_IPv6_GoldenPath  TestLifecycleBridge_IPv6_GoldenPath
 #   TestTombstoneRestart_PreservesIPv6    TestLeaseRenewIPv6_HonorsT1
 #   TestIPv6_DNS6Propagation              TestDUID_PersistsAcrossPluginRestart
@@ -52,21 +52,44 @@
 #   TestDHCPv6_Stateless_ConfigurationReachesTheContainer
 #   TestDHCPv6_Managed_StillRequiresALease
 #   TestDHCPv6_Managed_ServerSilent_IsStillFatal
-# That also retires the #868 stanza this replaces: all four of the rows
-# it described were among the ten.
 #
-# The two rows that replace them are INFERRED, not measured, and are
-# marked here rather than left to look like the rest of the file. This
-# branch cannot run the suite -- the integration lane is CI-only -- so
-# there is no `--- PASS:` line to take a median of yet. Each figure is
-# read off the nearest MEASURED row of the same shape:
-#   TestIPv6_RefusedAtCreateWithTheMilestoneNamed  0.10
-#     one refused create and one inspect, no fixture and no container.
+# TWO CAVEATS ON THOSE TEN, so a later re-measure is not read as drift.
+# They are the same tests against a different client, and two of them
+# have a reason to move:
+#   - TestDHCPv6_Stateless_ConfigurationReachesTheContainer (12.46) and
+#     the stateless/SLAAC arms of TestDHCPv6_NoAddressModes_StartTheEndpoint
+#     (41.03) should get FASTER. The library ends a stateless acquisition
+#     on the reply rather than running out lease_timeout (D30 Q7), which
+#     is worth up to one lease_timeout per arm.
+#   - Nothing here should get slower. If one does, that is a finding.
+#
+# The two rows written when the refusal replaced them are removed with
+# it: TestIPv6_RefusedAtCreateWithTheMilestoneNamed (inverted into
+# TestIPv6_AcceptedAtCreate) and TestIPv6_TheV4PathIsUnaffectedByTheRefusal
+# (renamed TestIPv6_TheV4OnlyPathIsUnchanged and given a container).
+#
+# FOUR ROWS ARE INFERRED, not measured, and are marked here rather than
+# left to look like the rest of the file. This branch cannot run the
+# suite -- the integration lane is CI-only -- so there is no
+# `--- PASS:` line to take a median of yet. Each figure is read off the
+# nearest MEASURED rows of the same shape:
+#   TestIPv6_AcceptedAtCreate                      0.10
+#     one accepted create and one inspect, no fixture and no container.
 #     Siblings: TestErrors_NetworkCreateValidation 0.04 (a table of
-#     refused creates), TestErrors_ParentIsBridge 0.08.
-#   TestIPv6_TheV4PathIsUnaffectedByTheRefusal     5.00
-#     one macvlan network that must succeed, no container. Sibling:
-#     TestPreflightProbe_PassesOnReachableServer 5.00.
+#     creates), and the 0.10 the refusal row it replaces carried.
+#   TestIPv6_TheV4OnlyPathIsUnchanged              8.00
+#     one macvlan network, one container, one exec. Sibling:
+#     TestLifecycleMacvlan_GoldenPath 7.53, plus one exec.
+#   TestDHCPv6_ADuplicateOnTheSegmentIsRefused    20.00
+#     one container, an address added on the segment, one container
+#     restart and a second acquisition that must DECLINE and ask again.
+#     Siblings: TestTombstoneRestart_PreservesIPv6 16.69 (container plus
+#     restart) plus one extra v6 exchange.
+#   TestIPvlan_DHCPv6IdentityIsPerEndpointAndSurvivesARestart  25.00
+#     two containers on one ipvlan network and a full plugin recycle.
+#     Siblings: TestDUID_PersistsAcrossPluginRestart 13.86 (one
+#     container plus the recycle) plus TestLifecycleMacvlan_GoldenPath
+#     7.53 for the second container.
 #   TestLeaseRetention_ARestartRebootsRatherThanDiscovers  35.00
 #     one container, a full plugin disable/enable recycle and one
 #     5s settle. Siblings, added: TestLeaseRetention_NothingEverReleases
@@ -306,9 +329,15 @@ TestConflictCheck_RestartInsideTheAsyncWindow	5.98
 TestConflictCheck_SquattedOfferIsDeclined	36.64
 TestConflictCheck_SquatterAfterTheFact	37.61
 TestConflictCheck_WaitAcquisitionIsTimed	9.39
+TestDHCPv6_ADuplicateOnTheSegmentIsRefused	20.00
+TestDHCPv6_Managed_ServerSilent_IsStillFatal	18.14
+TestDHCPv6_Managed_StillRequiresALease	10.74
+TestDHCPv6_NoAddressModes_StartTheEndpoint	41.03
+TestDHCPv6_Stateless_ConfigurationReachesTheContainer	12.46
 TestDNSPropagate_BridgeModeWritesResolvConfToo	8.50
 TestDNSPropagate_DefaultIsUnchanged	7.26
 TestDNSPropagate_OptInWritesResolvConf	8.71
+TestDUID_PersistsAcrossPluginRestart	13.86
 TestDockerAPI_OnlySafeMethodsReachTheDaemon	8.20
 TestErrors_DriverOptIPMalformed	0.42
 TestErrors_NetworkCreateValidation	0.04
@@ -321,19 +350,24 @@ TestFQDN_RegistersInDNS	8.36
 TestHealthCounters_ObtainedAndReleased	8.00
 TestHealthDocument_BuildInfoIsWhatTheLaneBuilt	0.01
 TestHealthDocument_EndpointEntryMatchesTheContainer	12.43
-TestIPv6_RefusedAtCreateWithTheMilestoneNamed	0.10
-TestIPv6_TheV4PathIsUnaffectedByTheRefusal	5.00
+TestIPv6_AcceptedAtCreate	0.10
+TestIPv6_DNS6Propagation	24.31
+TestIPv6_TheV4OnlyPathIsUnchanged	8.00
+TestIPvlan_DHCPv6IdentityIsPerEndpointAndSurvivesARestart	25.00
 TestInterfaceName_InvalidRejected	0.41
 TestInterfaceName_MultiNetworkDeterministic	7.41
 TestInterfaceName_PluginHonorsOption	7.04
 TestInterfaceName_ProbeSkipPrecedesTheEphemeralFixture	0.00
 TestJoinNoContainer_AddressIsHeldUntilItExpires	18.48
+TestLeaseRenewIPv6_HonorsT1	85.21
 TestLeaseRenew_HonorsT1	22.52
 TestLeaseRetention_ARestartRebootsRatherThanDiscovers	35.00
 TestLeaseRetention_NothingEverReleases	26.21
 TestLifecycleBridge_GoldenPath	7.73
+TestLifecycleBridge_IPv6_GoldenPath	9.87
 TestLifecycleIPvlan_GoldenPath	7.29
 TestLifecycleMacvlan_GoldenPath	7.53
+TestLifecycleMacvlan_IPv6_GoldenPath	10.09
 TestMTUPropagate_DefaultIsUnchanged	7.46
 TestMTUPropagate_OptInSetsLinkMTU	8.30
 TestMetrics_SocketServesTheFullSurface	0.01
@@ -362,6 +396,7 @@ TestStaticIP_DriverOpt	3.75
 TestStaticRoutes_BridgeCopiesToContainer	7.29
 TestStaticRoutes_MacvlanCopiesToContainer	6.94
 TestStaticRoutes_MacvlanSkipRoutesOpt	7.55
+TestTombstoneRestart_PreservesIPv6	16.69
 TestTombstoneRestart_PreservesMACAndIP	11.28
 TestV6Fixture_AssertExchangeRefusesASegmentNoClientEverUsed	2.34
 TestV6Fixture_AwaitRAAfterAndItsNegative	48.06

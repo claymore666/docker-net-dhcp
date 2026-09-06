@@ -280,6 +280,24 @@ type HealthResponse struct {
 	DHCPv6NoRouterAdvert   int32 `json:"dhcpv6_no_router_advert"`
 	IPv6LinkEnableFailures int32 `json:"ipv6_link_enable_failures"`
 
+	// RouterAdvertGuardFailures counts steps of the DHCPv6 Router
+	// Advertisement guard that did not take (#911). DHCPv6 carries no
+	// next hop -- RFC 9915 section 21 defines no router option -- and
+	// RFC 5942 section 4 rule 1 forbids treating the assigned address's
+	// prefix as on-link, so the container's kernel has to be processing
+	// advertisements or the endpoint ends up with an address and no
+	// route.
+	//
+	// NOT healthy-affecting and NOT in the floor table, for the reason
+	// the ipv6_link_enable_failures row above is not: a kernel built
+	// without one of the knobs, or a /proc/sys the plugin cannot write
+	// in, is the operator's environment rather than the plugin
+	// misbehaving -- and it is not a reason to refuse the container an
+	// address. It is here so a test that has PROVEN the knobs hold from
+	// inside the container can then read the guard's own account of
+	// itself; a zero on its own means "held" and "never ran" equally.
+	RouterAdvertGuardFailures int32 `json:"router_advert_guard_failures"`
+
 	// published is the key set of the payload this value was decoded
 	// from. It exists because an absent JSON field decodes to zero,
 	// which is indistinguishable from a counter that is genuinely at
