@@ -19,6 +19,34 @@ type Params struct {
 	// on a broadcast segment.
 	CHAddr []byte
 
+	// LinkHWAddr is the hardware address the INTERFACE wears, which is not
+	// necessarily CHAddr.
+	//
+	// The two were one field until 2026-09-05 and the separation is a fix, not
+	// a generalisation. CHAddr is an IDENTITY: a caller may set it to whatever
+	// the DHCP server should key the binding on, and this project's plugin has
+	// a case where it does. This is a FACT ABOUT THE LINK, and RFC 5227 is
+	// written entirely against it — section 2.1.1 makes the probe's sender
+	// hardware address "the hardware address of the interface through which it
+	// is sending the packet", and section 2.4's conflict test is "the 'sender
+	// hardware address' does not match any of the host's own interface
+	// addresses". Every frame this host's own kernel emits for the leased
+	// address, including the ARP Reply section 2.5 makes mandatory, carries
+	// THIS address and not CHAddr.
+	//
+	// MEASURED, M6 review round 2, 2026-09-04: with the two folded together
+	// and CHAddr set to something else, a Machine in ConflictAsync driven
+	// through Start/OFFER/ACK and fed an ARP Reply from the link's own address
+	// declined its own lease — one DHCPDECLINE, state INIT — on every
+	// acquisition rather than once.
+	//
+	// EMPTY FALLS BACK TO CHAddr, and that fallback is the ring boundary
+	// rather than a convenience: ring 1 has no link to read and cannot invent
+	// this. Ring 3 fills it from the interface unconditionally in
+	// runtime.NewClient, so the fallback is reachable only from a caller
+	// driving the pure machine directly.
+	LinkHWAddr []byte
+
 	// ClientID is option 61. Empty means the option is not sent.
 	//
 	// M1 sends whatever it is handed. Design decision D10 — whether this
@@ -414,6 +442,9 @@ func (p Params) validate() error {
 	if len(p.CHAddr) > 16 {
 		return fmt.Errorf("%w: %d", ErrCHAddrTooLong, len(p.CHAddr))
 	}
+	if len(p.LinkHWAddr) > 16 {
+		return fmt.Errorf("%w: LinkHWAddr is %d", ErrCHAddrTooLong, len(p.LinkHWAddr))
+	}
 	if p.DesyncMin < 0 || p.DesyncMax < 0 || p.DesyncMin > p.DesyncMax {
 		return fmt.Errorf("%w: [%s, %s]", ErrBadDesync, p.DesyncMin, p.DesyncMax)
 	}
@@ -472,4 +503,14 @@ func (p Params) parameterList() []wire.OptionCode {
 		return DefaultParameterList()
 	}
 	return p.ParameterList
+}
+
+// linkHW is the hardware address RFC 5227 is written against: the one the
+// interface wears. See Params.LinkHWAddr for why it is not CHAddr, and for why
+// an empty value falls back to it.
+func (p Params) linkHW() []byte {
+	if len(p.LinkHWAddr) > 0 {
+		return p.LinkHWAddr
+	}
+	return p.CHAddr
 }

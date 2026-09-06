@@ -89,3 +89,56 @@ func TestDeclaredTestsIgnoresNonTestFiles(t *testing.T) {
 		t.Fatalf("got %v, want none — only _test.go files hold tests", got)
 	}
 }
+
+// TestNetnsTestsAreTheCallersOfTheMarker drives the classification in both
+// directions, and the direction that matters is the second one: a test that
+// does NOT call the marker must stay in the pure suite, because the two
+// populations are a partition and anything wrongly called netns stops running
+// under the ceiling that measures the pure suite.
+func TestNetnsTestsAreTheCallersOfTheMarker(t *testing.T) {
+	dir := t.TempDir()
+	src := "package p\n\n" +
+		"import \"testing\"\n\n" +
+		"func " + netnsMarker + "(t *testing.T) {}\n\n" +
+		"func TestEntersANamespace(t *testing.T) { " + netnsMarker + "(t) }\n\n" +
+		"func TestEntersOneDeeperIn(t *testing.T) {\n\tif true {\n\t\t" + netnsMarker + "(t)\n\t}\n}\n\n" +
+		"func TestStaysHere(t *testing.T) {}\n\n" +
+		"const quoted = `" + netnsMarker + "(t)`\n\n" +
+		"func TestOnlyQuotesTheMarker(t *testing.T) { _ = quoted }\n"
+	if err := os.WriteFile(filepath.Join(dir, "x_test.go"), []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, declared, err := netnsTests(dir)
+	if err != nil {
+		t.Fatalf("netnsTests: %v", err)
+	}
+	if !declared {
+		t.Fatalf("the marker is declared in the fixture and was reported absent")
+	}
+	want := []string{"TestEntersANamespace", "TestEntersOneDeeperIn"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("got %v, want %v — a test that only names the marker in a string, or names it not at all, is not a netns test", got, want)
+	}
+}
+
+// TestNetnsTestsReportsAMissingMarkerRatherThanAnEmptyList is the refusal that
+// stops a rename from emptying an arbiter row in silence: "no test calls it"
+// and "it is not called that any more" produce the same list, and only one of
+// them is an answer.
+func TestNetnsTestsReportsAMissingMarkerRatherThanAnEmptyList(t *testing.T) {
+	dir := t.TempDir()
+	src := "package p\n\nimport \"testing\"\n\nfunc TestStaysHere(t *testing.T) {}\n"
+	if err := os.WriteFile(filepath.Join(dir, "x_test.go"), []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, declared, err := netnsTests(dir)
+	if err != nil {
+		t.Fatalf("netnsTests: %v", err)
+	}
+	if declared {
+		t.Errorf("the marker is not declared in this fixture and was reported present")
+	}
+	if len(got) != 0 {
+		t.Errorf("got %v, want no netns test at all", got)
+	}
+}

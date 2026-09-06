@@ -31,7 +31,9 @@ type ClientConfig struct {
 	Interface string
 
 	// Params is the protocol parameter set. If CHAddr is empty it is filled
-	// from the interface's hardware address.
+	// from the interface's hardware address; Params.LinkHWAddr is filled from
+	// it ALWAYS, overwriting anything the caller set, because it is a fact
+	// about the link and not a preference — see proto.Params.LinkHWAddr.
 	Params proto.Params
 
 	// JournalSize and PacketRingSize default to DefaultJournalSize and
@@ -78,13 +80,20 @@ func NewClient(cfg ClientConfig) (*Client, error) {
 	if cfg.Interface == "" {
 		return nil, fmt.Errorf("runtime: no interface named")
 	}
+	// The interface is read for BOTH addresses, and LinkHWAddr is taken from
+	// it unconditionally. CHAddr is an identity the
+	// caller may choose (option 61's shape, D10); LinkHWAddr is what the
+	// interface wears, and a caller supplying it would be supplying an answer
+	// only this line can give — which is the defect the M6 review measured
+	// when the two were one field.
+	iface, err := net.InterfaceByName(cfg.Interface)
+	if err != nil {
+		return nil, fmt.Errorf("runtime: interface %q: %w", cfg.Interface, err)
+	}
 	if len(cfg.Params.CHAddr) == 0 {
-		iface, err := net.InterfaceByName(cfg.Interface)
-		if err != nil {
-			return nil, fmt.Errorf("runtime: interface %q: %w", cfg.Interface, err)
-		}
 		cfg.Params.CHAddr = append([]byte(nil), iface.HardwareAddr...)
 	}
+	cfg.Params.LinkHWAddr = append([]byte(nil), iface.HardwareAddr...)
 
 	ent, err := NewEntropy()
 	if err != nil {

@@ -580,9 +580,13 @@ func adversarialARP() []arpCase {
 			pkt:  announcementFrom(theirMAC, testACDAddr),
 		},
 		{
-			// D17. AF_PACKET delivers this host's own outgoing frames back to
-			// it, so this is not a hypothetical row: it is what our own
-			// Announcement looks like coming back.
+			// D17, and not a hypothetical row: it is what our own
+			// Announcement looks like coming back off a link that echoes —
+			// section 2.1.1's NOTE about buffered repeaters and access
+			// points. The socket is NOT the source of the echo: an
+			// AF_PACKET/ETH_P_ARP socket is delivered inbound frames only
+			// (MEASURED 2026-09-04, M6 review round 2), which is why the
+			// ring-3 case replays the frames onto the wire itself.
 			name: "an ARP Reply for our address from our OWN hardware address",
 			pkt:  replyFrom(testCHAddr, testACDAddr, "192.168.99.9"),
 		},
@@ -787,26 +791,54 @@ func TestTheRelevanceFilterCannotHideAConflict(t *testing.T) {
 	}
 }
 
-// TestOurOwnProbesDoNotTripTheProbeWindow drives the echo AF_PACKET actually
-// delivers, defeat row M6-3.
+// TestOurOwnProbesDoNotTripTheProbeWindow drives an echoing link, defeat row
+// M6-3, and asserts the property that makes the echo survivable.
 //
-// An AF_PACKET socket receives this host's own outgoing frames. During the
-// probe window our own Probes come back, and section 2.1.1's FIRST rule has no
-// hardware-address exemption — so the only thing that saves us is that a Probe
-// carries an all-zero sender IP. If a future edit ever puts a real sender
-// address in a Probe (the 1.x defect, design section 8.4), this test is what
-// fails, and it fails as "the client can never acquire".
+// WHAT ECHOES. Not the socket: an AF_PACKET socket bound to ETH_P_ARP is
+// delivered inbound frames only (MEASURED 2026-09-04, M6 review round 2). The
+// echo is section 2.1.1's NOTE — "Some kinds of Ethernet hub (often called a
+// 'buffered repeater') and many wireless access points may 'rebroadcast' any
+// received broadcast packets to all recipients, including the original sender
+// itself" — and a bridge that forwards the frame back. This test IS that link.
+//
+// TWO ASSERTIONS, and the second is why this function exists rather than being
+// covered by the phase table. Section 2.1.1's FIRST rule has no
+// hardware-address exemption, so on an echoing link the only thing that keeps
+// our own Probe from being read as somebody claiming the address is that a
+// Probe carries an all-zero sender IP (section 1.1: "an ARP Request packet,
+// broadcast on the local link, with an all-zero 'sender IP address'"). So this
+// checks BOTH: that the echo produces no DHCPDECLINE, and that every frame the
+// machine emitted in the window really was a Probe by that definition. Until
+// 2026-09-05 it checked only the first, and the doc comment claimed the second
+// — MEASURED false in the same review: the mutant that puts a real sender
+// address in probe() left this test green, because after the section 2.4
+// exemption such an echo is our own hardware address and is exempted.
 func TestOurOwnProbesDoNotTripTheProbeWindow(t *testing.T) {
 	m, acts := acdMachine(t, ConflictWait)
 	delay, _ := armedACD(acts)
 	now := at(2)
-	var probesSeen int
+	var probesSeen, inWindow int
 	for step := 0; step < 12; step++ {
 		now = now.Add(delay)
-		_, acts = m.Step(now, uint64(step+1), TimerFired(TimerACD))
+		var st State
+		st, acts = m.Step(now, uint64(step+1), TimerFired(TimerACD))
 		for _, p := range arpSends(acts) {
-			// Feed every frame we sent straight back, which is what the
-			// kernel does.
+			// Every frame the machine emits while it is still PROBING must be
+			// a Probe as section 1.1 defines one. This is the assertion the
+			// doc comment used to claim and did not make. It is scoped to
+			// StateProbing because the same loop runs on past the window into
+			// the announcements, whose sender IP is the address on purpose
+			// (section 2.3).
+			if st == StateProbing {
+				inWindow++
+				if !p.IsProbe() {
+					t.Fatalf("the machine emitted %s while still PROBING, which is not an RFC 5227 section 1.1 Probe: "+
+						"its sender IP is %s and section 2.1.1's first rule has no hardware-address exemption, "+
+						"so on an echoing link this frame declines our own address", p, p.SenderIP)
+				}
+			}
+			// Feed every frame we sent straight back, which is what an
+			// echoing link does.
 			probesSeen++
 			_, echo := m.Step(now, 1, ARPReceived(p))
 			if n := count(echo, ActSend); n != 0 {
@@ -821,6 +853,9 @@ func TestOurOwnProbesDoNotTripTheProbeWindow(t *testing.T) {
 	}
 	if probesSeen == 0 {
 		t.Fatal("nothing was sent, so nothing was echoed; the check was vacuous")
+	}
+	if inWindow == 0 {
+		t.Fatal("no frame was emitted while the machine was PROBING, so the Probe-shape assertion judged nothing")
 	}
 	if m.State() != StateBound {
 		t.Fatalf("the machine ended in %s, want BOUND: it did not survive the echo of its own frames", m.State())
@@ -1516,5 +1551,217 @@ func TestTheRateLimitIsArmedOnTheRestartTimer(t *testing.T) {
 	if d != p.restartDelay() {
 		t.Fatalf("a second client on the same parent waits %s after its FIRST conflict, want the %s floor: "+
 			"D5 makes the rate limit per endpoint", d, p.restartDelay())
+	}
+}
+
+// ------------------------- the identity is not the link's hardware address --
+
+// linkMAC is the address the INTERFACE wears in the tests below. It differs
+// from both testCHAddr (the DHCP identity) and theirMAC (the squatter) in more
+// than one octet, so a comparison that matched on a prefix or on a single byte
+// would not pass by accident.
+var linkMAC = []byte{0x0A, 0x11, 0x22, 0x33, 0x44, 0x55}
+
+// splitIdentityParams is a client whose DHCP identity is NOT the address its
+// interface wears — the shape runtime.NewClient produces for a caller that
+// supplies its own CHAddr.
+func splitIdentityParams(mode ConflictMode) Params {
+	p := acdParams(mode)
+	p.CHAddr = append([]byte(nil), testCHAddr...)
+	p.LinkHWAddr = append([]byte(nil), linkMAC...)
+	return p
+}
+
+// splitIdentityMachine is acdMachine for a client whose CHAddr and LinkHWAddr
+// differ.
+func splitIdentityMachine(t *testing.T, mode ConflictMode) (*Machine, []Action) {
+	t.Helper()
+	m := newMachine(t, splitIdentityParams(mode))
+	_, acts := m.Step(0, 1, Simple(EvStart))
+	disc := mustSend(t, acts, wire.MsgDiscover)
+	_, acts = m.Step(at(1), 2, received(t, offerFor(disc, testACDAddr, "192.168.99.1")))
+	req := mustSend(t, acts, wire.MsgRequest)
+	_, acts = m.Step(at(2), 3, received(t, ackFor(req, testACDAddr, "192.168.99.1", 3600)))
+	return m, acts
+}
+
+// TestOurOwnLinkTrafficIsNotAConflictWhenTheIdentityDiffers is the M6 review's
+// round-2 finding 1, driven.
+//
+// THE CASE. A caller sets Params.CHAddr to a stable identity that is not the
+// interface's hardware address, which this project's plugin has a reason to do,
+// and leaves conflict detection on. In ConflictAsync the address is configured
+// at the DHCPACK (D23) while the probe window is still open, so this host's own
+// kernel starts answering for it: RFC 5227 section 2.5 makes the ARP Reply
+// MANDATORY — "whenever a host receives an ARP Request, that's not a
+// conflicting ARP packet as described above in Section 2.4, where the 'target
+// IP address' of the ARP Request is (one of) the host's own IP address(es)
+// configured on that interface, the host MUST respond with an ARP Reply" — and
+// that reply carries the LINK's hardware address.
+//
+// MEASURED at 4c7185e, before the fix: conflict, one DHCPDECLINE, state INIT,
+// on every acquisition and not once. The exemption tested Params.CHAddr, which
+// no frame the kernel emits ever carries.
+//
+// The mutant this is written against is the revert: key isOurs on CHAddr again.
+func TestOurOwnLinkTrafficIsNotAConflictWhenTheIdentityDiffers(t *testing.T) {
+	for _, mode := range []ConflictMode{ConflictWait, ConflictAsync} {
+		t.Run(mode.String(), func(t *testing.T) {
+			m, acts := splitIdentityMachine(t, mode)
+			delay, ok := armedACD(acts)
+			if !ok {
+				t.Fatal("no ACD timer was armed after the ACK; the fixture never entered the probe window")
+			}
+			now := at(3).Add(delay)
+
+			// The frame this host's own kernel puts on the wire for the
+			// address it has just configured, coming back off an echoing
+			// link. Sender hardware address: the LINK's.
+			_, out := m.Step(now, 4, ARPReceived(replyFrom(linkMAC, testACDAddr, "192.168.99.9")))
+			if n := count(out, ActSend); n != 0 {
+				t.Fatalf("our own kernel's section 2.5 ARP Reply from the link address %x produced %d DHCP message(s) "+
+					"(the client is declining its own address on every acquisition); actions: %v",
+					linkMAC, n, out)
+			}
+			if n := count(out, ActFailed); n != 0 {
+				t.Fatalf("our own kernel's section 2.5 ARP Reply produced %d Failed action(s): %v", n, out)
+			}
+
+			// The other direction, in the same function with one variable
+			// moved: a FOREIGN hardware address claiming the same address is
+			// still a conflict. Without this the fix could be "exempt
+			// everything".
+			m2, acts2 := splitIdentityMachine(t, mode)
+			delay2, _ := armedACD(acts2)
+			_, out2 := m2.Step(at(3).Add(delay2), 4, replyConflict())
+			if n := count(out2, ActSend) + count(out2, ActFailed); n == 0 {
+				t.Fatalf("a foreign hardware address claiming %s produced nothing: the exemption widened to cover a squatter; actions: %v",
+					testACDAddr, out2)
+			}
+		})
+	}
+}
+
+func replyConflict() Event {
+	return ARPReceived(replyFrom(theirMAC, testACDAddr, "192.168.99.9"))
+}
+
+// TestProbesCarryTheLinkHardwareAddressNotTheIdentity is the other half of the
+// same defect, and it is a MUST rather than an exemption.
+//
+// RFC 5227 section 2.1.1: "The client MUST fill in the 'sender hardware
+// address' field of the ARP Request with the hardware address of the interface
+// through which it is sending the packet." A probe sent with some other
+// identity in that field is answered to nobody, which from here is
+// indistinguishable from an address that is free — and it is the same field the
+// exemption reads, so one value has to feed both or the two can disagree.
+func TestProbesCarryTheLinkHardwareAddressNotTheIdentity(t *testing.T) {
+	m, acts := splitIdentityMachine(t, ConflictWait)
+	delay, _ := armedACD(acts)
+	now := at(3)
+	seen := 0
+	for step := 0; step < 12; step++ {
+		now = now.Add(delay)
+		var st State
+		st, acts = m.Step(now, uint64(step+4), TimerFired(TimerACD))
+		for _, p := range arpSends(acts) {
+			seen++
+			if !bytesEqualACD(p.SenderHW, linkMAC) {
+				t.Fatalf("%s carries sender hardware address %x, want the link's %x (the identity is %x)",
+					p, p.SenderHW, linkMAC, testCHAddr)
+			}
+		}
+		_ = st
+		var ok bool
+		delay, ok = armedACD(acts)
+		if !ok {
+			break
+		}
+	}
+	if seen == 0 {
+		t.Fatal("the machine emitted no ARP frame, so the sender-address assertion judged nothing")
+	}
+}
+
+func bytesEqualACD(a, b []byte) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// TestTheLinkHardwareAddressFallsBackToCHAddr pins the ring boundary: ring 1
+// has no link to read, so a Params with no LinkHWAddr behaves exactly as it did
+// before the field existed. Ring 3 fills it unconditionally
+// (runtime.NewClient), so this fallback is reachable only from a caller driving
+// the pure machine directly — which is every other test in this package, and
+// the reason they all still pass.
+func TestTheLinkHardwareAddressFallsBackToCHAddr(t *testing.T) {
+	p := acdParams(ConflictWait)
+	if len(p.LinkHWAddr) != 0 {
+		t.Fatalf("the fixture already sets LinkHWAddr (%x); this test would not be measuring the fallback", p.LinkHWAddr)
+	}
+	if got := p.linkHW(); !bytesEqualACD(got, p.CHAddr) {
+		t.Fatalf("linkHW() with no LinkHWAddr is %x, want CHAddr %x", got, p.CHAddr)
+	}
+	p.LinkHWAddr = append([]byte(nil), linkMAC...)
+	if got := p.linkHW(); !bytesEqualACD(got, linkMAC) {
+		t.Fatalf("linkHW() with LinkHWAddr set is %x, want %x", got, linkMAC)
+	}
+}
+
+// TestLinkHardwareAddressIsValidatedAndCopied guards the two things every other
+// byte-slice field in Params already has, and which a field added later is
+// exactly the field to be missing.
+//
+// The length bound: the ARP frame this address goes into has a one-octet hlen,
+// so an address that does not fit is a frame that cannot be built — and it
+// would be built at the first probe, several states after the caller's mistake.
+// The copy: a caller that reuses its buffer would otherwise change the address
+// the machine probes from, under a machine that has already started.
+func TestLinkHardwareAddressIsValidatedAndCopied(t *testing.T) {
+	p := acdParams(ConflictWait)
+	p.LinkHWAddr = make([]byte, 17)
+	if _, err := New(p); err == nil {
+		t.Fatalf("New accepted a %d-octet LinkHWAddr; ARP's hlen field holds one octet and CHAddr is bounded at 16 for the same reason",
+			len(p.LinkHWAddr))
+	}
+	p.LinkHWAddr = make([]byte, 16)
+	if _, err := New(p); err != nil {
+		t.Fatalf("New refused a 16-octet LinkHWAddr, which is the bound CHAddr is held to: %v", err)
+	}
+
+	buf := append([]byte(nil), linkMAC...)
+	p = acdParams(ConflictWait)
+	p.LinkHWAddr = buf
+	m, err := New(p)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	for i := range buf {
+		buf[i] = 0xFF
+	}
+	_, acts := m.Step(0, 1, Simple(EvStart))
+	disc := mustSend(t, acts, wire.MsgDiscover)
+	_, acts = m.Step(at(1), 2, received(t, offerFor(disc, testACDAddr, "192.168.99.1")))
+	req := mustSend(t, acts, wire.MsgRequest)
+	_, acts = m.Step(at(2), 3, received(t, ackFor(req, testACDAddr, "192.168.99.1", 3600)))
+	delay, ok := armedACD(acts)
+	if !ok {
+		t.Fatal("no ACD timer was armed; the fixture never reached the probe window")
+	}
+	_, acts = m.Step(at(3).Add(delay), 4, TimerFired(TimerACD))
+	sent := arpSends(acts)
+	if len(sent) == 0 {
+		t.Fatal("no ARP frame was emitted, so the copy was not observed")
+	}
+	if !bytesEqualACD(sent[0].SenderHW, linkMAC) {
+		t.Errorf("the probe carries %x after the caller overwrote its buffer, want %x: Params.LinkHWAddr is aliased, not copied",
+			sent[0].SenderHW, linkMAC)
 	}
 }

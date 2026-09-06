@@ -135,7 +135,7 @@ func New(p Params) (*Machine, error) {
 	p.Resume = p.Resume.Clone()
 	m := &Machine{params: p, state: StateStopped, resume: p.Resume}
 	if p.Conflict != ConflictOff {
-		m.acd = newACD(p.acd(), p.Conflict, p.CHAddr)
+		m.acd = newACD(p.acd(), p.Conflict, p.linkHW())
 	}
 	return m, nil
 }
@@ -1555,37 +1555,56 @@ func (m *Machine) nakText(msg *wire.Message) string {
 // ActionID so a failure can name exactly which one did not happen.
 type actions struct{ list []Action }
 
-func (a *actions) stamp(m *Machine, x Action) {
-	x.ID = m.nextAction
+// stamper is what actions needs of a machine: the next ActionID. It is an
+// INTERFACE and not *Machine because there are two machines now, and the
+// alternative was a second copy of this file with *Machine6 substituted —
+// which is how the two families' action lists come to be stamped by two
+// slightly different helpers that nobody diffs.
+//
+// It is unexported and has one method, so it widens nothing: the only
+// implementations are the two machines in this package.
+type stamper interface{ takeActionID() ActionID }
+
+func (m *Machine) takeActionID() ActionID {
+	id := m.nextAction
 	m.nextAction++
+	return id
+}
+
+func (a *actions) stamp(m stamper, x Action) {
+	x.ID = m.takeActionID()
 	a.list = append(a.list, x)
 }
 
-func (a *actions) send(m *Machine, msg *wire.Message, d Dest) {
+func (a *actions) send(m stamper, msg *wire.Message, d Dest) {
 	a.stamp(m, Action{Kind: ActSend, Msg: msg, Dest: d})
 }
 
-func (a *actions) set(m *Machine, t TimerID, d Duration) {
+func (a *actions) sendV6(m stamper, msg *wire.MessageV6, d Dest) {
+	a.stamp(m, Action{Kind: ActSendV6, MsgV6: msg, Dest: d})
+}
+
+func (a *actions) set(m stamper, t TimerID, d Duration) {
 	a.stamp(m, Action{Kind: ActSetTimer, Timer: t, After: d})
 }
 
-func (a *actions) cancel(m *Machine, t TimerID) {
+func (a *actions) cancel(m stamper, t TimerID) {
 	a.stamp(m, Action{Kind: ActCancelTimer, Timer: t})
 }
 
 // cancelAll disarms every timer, enumerated from AllTimerIDs rather than
 // hand-listed. It replaced three hand-lists that all had to be edited together;
 // TestEveryPathToIdleCancelsEveryTimer drives the property they were keeping.
-func (a *actions) cancelAll(m *Machine) {
+func (a *actions) cancelAll(m stamper) {
 	for _, t := range AllTimerIDs() {
 		a.cancel(m, t)
 	}
 }
 
-func (a *actions) journal(m *Machine, note string) {
+func (a *actions) journal(m stamper, note string) {
 	a.stamp(m, Action{Kind: ActJournal, Note: note})
 }
 
-func (a *actions) failed(m *Machine, r Reason, note string) {
+func (a *actions) failed(m stamper, r Reason, note string) {
 	a.stamp(m, Action{Kind: ActFailed, Reason: r, Note: note})
 }

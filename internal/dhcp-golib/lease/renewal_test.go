@@ -478,10 +478,15 @@ func TestEveryCounterIsBumpedBeforeItsEmit(t *testing.T) {
 		return true
 	})
 
-	// The walk above is vacuous if it matched nothing: five event kinds, five
-	// arms that emit.
-	if emitting != 5 {
-		t.Fatalf("drain has %d case arm(s) that emit, want 5 (one per event kind): the walk is not seeing what it thinks it is", emitting)
+	// The walk above is vacuous if it matched nothing: one arm that emits per
+	// event kind.
+	//
+	// THE NUMBER IS DERIVED FROM THE ENUMERATION rather than written here,
+	// because a literal is a second enumeration beside AllEventKinds and the
+	// two part company the moment a kind is added — which is exactly when
+	// this check matters most.
+	if want := len(AllEventKinds()); emitting != want {
+		t.Fatalf("drain has %d case arm(s) that emit, want %d (one per event kind): the walk is not seeing what it thinks it is", emitting, want)
 	}
 }
 

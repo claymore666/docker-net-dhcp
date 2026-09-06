@@ -46,14 +46,72 @@ MANIFEST_ROWS=(
 	gofmt
 	shellcheck
 	doc-numbers
+	readme-usage
 	gate-roster
 	t1
 	t2
 	unit-suite
+	netns-suite
 	self-drive
 	verify-oracle
 )
-MANIFEST_ROWS_N=14
+MANIFEST_ROWS_N=16
+
+# The rows an INNER run does not have. --inner exists so the oracle's copies do
+# not re-enter the oracle; netns-suite joined the list on 2026-09-05 because
+# sixty-odd copies of this tree each raising real namespaces and a real dnsmasq
+# is not a cost the oracle can carry. What that leaves undriven is stated in
+# the handover, not argued away: this row is driven by OUTER scenarios only,
+# and which ones is read off MANIFEST_SCENARIO_CONTRACTS rather than counted
+# in a sentence here.
+MANIFEST_OUTER_ROWS=(
+	netns-suite
+	self-drive
+	verify-oracle
+)
+MANIFEST_OUTER_ROWS_N=3
+
+# The rows a SCOPED run (--light) leaves out, and the entire meaning of that
+# flag. Both are the expensive populations; every other row still runs, so a
+# scoped run is a real run of everything cheap and says on its verdict line
+# which rows it did not run.
+#
+# The refusal that matters is not here but in the shape of the thing: a
+# scenario whose contract names a row in this list, and which declares itself
+# light, has scoped away the row it exists to drive — the row records nothing,
+# the contract reads ABSENT, and the scenario fails. manifest_check refuses the
+# combination outright so that it cannot be written down in the first place.
+MANIFEST_SCOPED_OUT_ROWS=(
+	unit-suite
+	netns-suite
+)
+MANIFEST_SCOPED_OUT_ROWS_N=2
+
+# The rows that may record SKIPPED. Exactly one, and record() rewrites a
+# SKIPPED from any other row to FAIL: a third verdict is a way for a row to
+# stop measuring, and the population entitled to it is enumerated here rather
+# than decided at the row.
+MANIFEST_SKIPPABLE_ROWS=(
+	verify-oracle
+)
+MANIFEST_SKIPPABLE_ROWS_N=1
+
+# The self-check row's own population: how many probe verdicts it puts through
+# record() before any real row, and how many of those record() must REFUSE.
+#
+# ROUND 2, 2026-09-05. These were derived inside verify.sh — the row counted
+# its own cases and reported `cases - 2` refusals — so a probe deleted together
+# with the arm it drives moved the expectation with it. MEASURED by review at
+# the previous head: record()'s SKIPPED arm turned into `if false` and its
+# probe deleted in one edit, every row green, the full oracle green, and the
+# only trace a note that said "refused 4" instead of 5.
+#
+# Stating them here is the same move the rest of this file is: the number is
+# not in the file that can delete the thing it counts. verify.sh compares both
+# against what actually ran, so a probe added without an edit here is a
+# refusal too — which is the direction that keeps the pair honest.
+SELF_CHECK_PROBES_N=7
+SELF_CHECK_REFUSALS_N=5
 
 # The gate commands under internal/gates that must exist and must run.
 MANIFEST_GATES=(
@@ -95,7 +153,86 @@ MANIFEST_SHELL_SCRIPTS_N=4
 # The Go pin holds a separate literal as a low-water mark, `>=` only. That one
 # is NOT maintained in step and is not meant to be: it exists so that lowering
 # the number here cannot go below a level somebody once measured.
-MIN_DECLARED_TESTS=381
+#
+# M7c (v6 runtime): 529 -> 580, and the fifty-one are enumerated per file so
+# that the number is a record of what was added rather than a number somebody
+# raised until the row went green. Measured as the difference of two
+# `go run ./internal/tools/testroster` outputs, at f901589 and here; no test
+# was renamed or removed between them.
+#
+#   lease/manager6_test.go          (4)  AV6ConflictIsCountedAndReportedAsOne,
+#     TheConfiguredRunnerIsAskedAndItsAnswerIsTheMachines,
+#     TheConfiguredRunnersDuplicateVerdictDeclines,
+#     WithoutARunnerTheCallerStillOwesTheResult
+#   proto/machine6_test.go          (2)  ADuplicateOnAFreshAcquisitionIsReported
+#     AndNotOnlyJournalled, ADuplicateUnderAHeldLeaseReportsTheLossAndNotAFailure
+#   runtime/dad6_linux_test.go      (8)  ACancelledProbeAnswersNothing,
+#     AnAddressTheCodecRefusesIsReportedTakenNotFree,
+#     AVerdictDuringTheWaitWindowIsTheAnswer, OneRunReportsExactlyOnce,
+#     SilenceThroughTheWindowIsNotAVerdict, StartWithNoReportDoesNothing,
+#     TheDuplicateCheckSortsOneFrameTheWayRFC4862Does,
+#     TheOwnFramePredicateIsLengthSafe
+#   runtime/dnsmasq6_linux_test.go  (9)  AClientOnALinkWithNoRouterStillAcquires,
+#     ADuplicateAddressOnTheLinkIsDeclined,
+#     AManagedLinkWhoseServerIsSilentIsNotALinkWithoutOne,
+#     AResumedV6LeaseConfirmsAgainstRealDnsmasq,
+#     ASLAACOnlyLinkSaysThereIsNoDHCPv6, AV6ClientAcquiresFromRealDnsmasq,
+#     AV6ClientOnAStatelessLinkIsConfiguredAndNotLeased,
+#     AV6ReleaseReachesRealDnsmasq, TheV6ClientKeepsTheNamespaceItWasBuiltIn
+#   runtime/ipudp6_test.go         (14)  ARealAdvertiseIsAcceptedAsUncompleted,
+#     ARealSolicitVerifiesAgainstItsOwnAddresses,
+#     AVerifiedFrameIsNotReportedUncompleted,
+#     BuildIPv6ICMPPutsExactlyTheChecksumsAddressesInTheHeader,
+#     BuildIPv6UDPWritesTheHeaderTheChecksumCovers,
+#     BuildRefusesAnAddressItCannotSend, IPv6UpperRefusesWhatItCannotWalk,
+#     ParseIPv6ICMPReadsARealRouterAdvertisement,
+#     ParseIPv6ICMPRefusesWhatIsNotICMPv6, ParseIPv6UDPChecksBothPorts,
+#     ParseIPv6UDPDiscardsAZeroChecksum, ParseIPv6UDPRefusesACorruptChecksum,
+#     TheKernelsPartialChecksumIsOurPseudoHeaderSum,
+#     TheV6ChecksumIsBoundedByThePayloadLengthAndNotTheFrame
+#   runtime/linklocal6_linux_test.go (2) InterfaceLinkLocalRefusesAn
+#     AddressTheKernelIsStillChecking, InterfaceLinkLocalReportsAFileItCannotRead
+#   runtime/nd_linux_test.go        (5)  TheMulticastMACIsRFC2464s,
+#     TheNDSocketDropsWhenAConsumerStalls,
+#     TheNDSocketMakesTheFourChecksItOwnsAndCountsEachApart,
+#     TheNDSocketRefusesAUnicastDestination,
+#     ThisHostsOwnFrameIsCountedAndKeptOffTheLeasePort
+#   runtime/platform_parity_test.go (3)  DADStatsDeclarationsAgree,
+#     NDStatsDeclarationsAgree, TransportStatsV6DeclarationsAgree
+#   wire/icmpv6_test.go             (4)  NeighborSolicitReadsTheSourceLinkAddrOption,
+#     NeighborSolicitRefusesWhatSection711Refuses, OurOwnDADSolicitDecodesBack,
+#     TheKernelsOwnDADSolicitDecodes
+#
+# M7c's CARRIED ROWS: 580 -> 587, measured the same way (two testroster runs,
+# at e173966 and here; nothing renamed or removed between them). Seven, per
+# file, and each one is the observer for a row the review or the CI runner
+# named rather than a test added to raise a number:
+#
+#   runtime/dad6_linux_test.go              (1)  AProbeThatCouldNotSend
+#     DeclinesNothing
+#   runtime/dnsmasq6_linux_test.go          (4)  AV6ClientDiscardsAnother
+#     ClientsReplyAtTheTransport, AV6ClientRefusesALinkThatNeverGetsA
+#     LinkLocalAddress, AV6ClientWaitsForTheKernelToAssignTheLinkLocalAddress,
+#     TheFixtureReadsItsOwnDnsmasqArguments
+#   runtime/transport_packet6_linux_test.go (2)  AnUncompletedChecksumIs
+#     CountedOnlyForThisClient, TheV6TransportCountsEachRefusalApart
+#
+# M7c's THREAD ROUND: 587 -> 591, measured the same way (two testroster runs,
+# at 560ea3b and here; one test was RENAMED, which moves no count —
+# InterfaceLinkLocalReportsAFileItCannotRead became
+# InterfaceLinkLocalReportsAKernelItCannotAsk, because there is no file any
+# more). Four, per file, each the observer for a row the runner's red or this
+# round's own enumeration named:
+#
+#   runtime/dnsmasq6_linux_test.go          (1)  TheV6ClientReadsTheLinkLocal
+#     OfTheThreadItWasBuiltOn
+#   runtime/linklocal6_linux_test.go        (3)  ADumpThatDoesNotParseIsNotAn
+#     AbsentAddress, InterfaceLinkLocalReportsAnInterfaceThatIsNotThere,
+#     TheLinkLocalDumpAsksTheKernelForIPv6Addresses
+#
+# The "Test" prefix is left off each name above so the lines fit; every one of
+# them carries it in the tree.
+MIN_DECLARED_TESTS=591
 
 # How far above MIN_DECLARED_TESTS the tree may drift before the row refuses.
 #
@@ -187,7 +324,17 @@ SELF_DRIVE_SURVIVES_N=5
 # reporting. Everything else in this file asks "is it there" or "did you say
 # so". A fake oracle that prints a correct-looking account returns instantly;
 # a real one copies the tree once per scenario and runs a race-enabled suite in
-# each copy. MEASURED 2026-08-30 on this box, this tree: 262s.
+# each copy. MEASURED 2026-08-30 on this box, that tree: 262s. RE-MEASURED
+# 2026-09-05 on this box, this tree, ORACLE_JOBS=4: 440s over the
+# population MANIFEST_SCENARIOS_N declares, at the scopes
+# MANIFEST_LIGHT_SCENARIOS declares. Round 1 wrote those two counts out here as
+# "71 scenarios, 39 of them light" and both were wrong the moment the lists
+# above moved; a count restated in a comment is a count nothing checks, which
+# is the same lesson the DOC_NUMBER_CEILING comment carries. The number below
+# is the oracle's WALL CLOCK,
+# and it moves whenever the population or the scope declaration moves, so it is
+# re-measured rather than carried: a floor derived from a measurement of a
+# different tree is a literal wearing a derivation's clothes.
 #
 # BOUND, and it is weak on purpose: this is a floor against an INSTANTANEOUS
 # stub, not proof of work. A fabricator that sleeps defeats it. It is here
@@ -204,8 +351,10 @@ SELF_DRIVE_SURVIVES_N=5
 # refuses the two drifting apart.
 #
 # Why 5% and not more, stated as a trade rather than a preference: the floor is
-# paid, in wall clock, by every scenario that has to sleep past it — three of
-# them today, each sleeping the floor plus one second. Raising the fraction
+# paid, in wall clock, by every scenario that reaches the floor through
+# fabricating_stub, each sleeping the floor plus one second — a population that
+# grows with the oracle and is not restated here, because a number in this
+# comment is a number nothing checks. Raising the fraction
 # raises that cost linearly, to catch a fabricator that is already free to
 # sleep for as long as the floor demands. The floor buys "the cheap edit is not
 # the quiet one"; it does not buy proof of work, and no fraction of a
@@ -226,7 +375,19 @@ SELF_DRIVE_SURVIVES_N=5
 # delete the number.
 DOC_NUMBER_CEILING=64
 
-ORACLE_MEASURED_SECONDS=262
+# RE-MEASURED 2026-09-06 at M7c, this box, this tree, ORACLE_JOBS=4, over the
+# 77 scenarios MANIFEST_SCENARIOS now declares: 623s, from the verify-oracle
+# row's own figure on a PASS. The population moved by two and the netns row
+# every full-scope scenario runs moved 53s -> 78s, which is where the rest of
+# the increase over the 440s above comes from.
+#
+# THE FEEDBACK IS STATED RATHER THAN HIDDEN, because this number pays for
+# itself: raising it raises ORACLE_MIN_SECONDS from 22s to 31s, and the fifteen
+# scenarios that reach the floor through fabricating_stub each sleep the floor
+# plus one, so the NEXT measurement of this same tree is about 34s higher
+# again (135s of sleep over four jobs). It is a low-water mark and understating
+# it is the safe direction, so it is not chased upward within a round.
+ORACLE_MEASURED_SECONDS=623
 ORACLE_MIN_PERCENT=5
 ORACLE_MIN_SECONDS=$((ORACLE_MEASURED_SECONDS * ORACLE_MIN_PERCENT / 100))
 
@@ -297,8 +458,97 @@ MANIFEST_SCENARIOS=(
 	observation-recorder-stubbed
 	min-declared-tests-margin
 	silent-scenario-named
+	oracle-skip-on-unchanged-arbiter
+	oracle-skip-refused-when-scripts-change
+	oracle-skip-needs-a-real-pass
+	netns-row-empty-domain
+	netns-row-control
+	netns-row-partition-broken
+	readme-usage-drifts-in-the-readme
+	readme-usage-drifts-in-the-example
+	oracle-scope-fabricated
+	self-check-skip-arm-deleted
+	suite-partition-skip-inert
+	scenario-rc-follows-the-verdict
+	v6-fixture-mode-drift
+	v6-ra-absent
 )
-MANIFEST_SCENARIOS_N=63
+MANIFEST_SCENARIOS_N=77
+
+# The scenarios that run the subject at the LIGHT scope: --inner --light, which
+# is every row except the unit suite and the netns row (MANIFEST_SCOPED_OUT_ROWS).
+#
+# DECISION 2026-09-05 (machinery batch, item 2). The oracle ran a 56s unit
+# suite inside every one of sixty-three copies of this tree in order to watch
+# the lint row go red. The rule for membership, and it is a rule rather than
+# a list somebody curated:
+#
+#   a scenario is light when its contract names a row that is not in
+#   MANIFEST_SCOPED_OUT_ROWS, AND its plant is a shell, document or manifest
+#   defect rather than Go source, AND its BODY reads no scoped-out row.
+#
+# The second clause is why the t1/t2/gofmt/vet/race scenarios are not here
+# (they edit Go). The control is not here either: a control that does not run
+# everything controls nothing.
+#
+# THE THIRD CLAUSE WAS LEARNED, MEASURED 2026-09-05: seven scenarios that plant
+# a comment or a constant read the unit-suite row as their own NEGATIVE CONTROL
+# — "this run failed for a reason this scenario does not name" — and a light
+# run makes that row ABSENT, so all seven failed at once on the first full run
+# after the split. A contract names one row; a body may read several, and the
+# rule has to cover what the body reads. It is no longer curated by hand: the
+# oracle REFUSES, before it runs anything, a light scenario whose function body
+# names a row in MANIFEST_SCOPED_OUT_ROWS, so the list cannot drift back into
+# this state without the refusal saying which scenario and which row.
+#
+# The scope is applied by the oracle's dispatcher from THIS list and recorded
+# by the run helpers as scope:light or scope:full; verify.sh compares what each
+# scenario reported against what this list declares. A body that scopes itself
+# is a breach there — and, before that, a scenario that scopes away the row it
+# exists to drive reads that row ABSENT and fails its own contract.
+MANIFEST_LIGHT_SCENARIOS=(
+	verdict-on-abort
+	verdict-without-gomod
+	roster-gate-deleted
+	roster-gate-added
+	gate-panic
+	gate-refuses
+	self-drive-blinded
+	self-drive-reddens-everything
+	doc-number-reintroduced
+	doc-sweep-deleted
+	unlinted-script
+	unlinted-shebang-script
+	oracle-is-invoked
+	citation-url
+	citation-after-url
+	invoked-by-relative-path
+	suite-args-detached
+	record-refuses-uncounted-pass
+	record-refuses-zero-count
+	row-deleted
+	row-added
+	oracle-stub-total
+	oracle-stub-partial
+	citation-embedded-identifier
+	citation-word-start
+	manifest-missing
+	manifest-count-lies
+	self-check-guard-deleted
+	oracle-names-fabricated
+	oracle-too-fast
+	scenario-body-emptied
+	observation-recorder-stubbed
+	silent-scenario-named
+	oracle-skip-on-unchanged-arbiter
+	oracle-skip-refused-when-scripts-change
+	oracle-skip-needs-a-real-pass
+	readme-usage-drifts-in-the-readme
+	readme-usage-drifts-in-the-example
+	oracle-scope-fabricated
+	self-check-skip-arm-deleted
+)
+MANIFEST_LIGHT_SCENARIOS_N=40
 
 # What each scenario must OBSERVE. One entry per scenario, same order.
 #
@@ -372,7 +622,7 @@ MANIFEST_SCENARIO_CONTRACTS=(
 	"race-detector|nonzero|unit-suite:FAIL|WARNING DATA RACE"
 	"test-cache|nonzero|unit-suite:FAIL|go test reported a cached result"
 	"ceiling-fires|nonzero|unit-suite:FAIL|passed but took"
-	"ceiling-control|zero|unit-suite:PASS|declared test s all ran across"
+	"ceiling-control|zero|unit-suite:PASS|started here and none of the"
 	"ceiling-band|static|ceiling-seconds:60|no row"
 	"gate-panic|nonzero|t2:FAIL|with no REFUSED line the gate crashed"
 	"gate-refuses|nonzero|t1:FAIL|REFUSED the gate could not measure its domain"
@@ -394,7 +644,7 @@ MANIFEST_SCENARIO_CONTRACTS=(
 	"citation-vacuous|nonzero|citations:FAIL|a scan that finds no domain is not a passing scan"
 	"citation-url|zero|citations:PASS|cited token s all declared among"
 	"citation-after-url|nonzero|citations:FAIL|TestRevCPhantomAfterAURL"
-	"invoked-by-relative-path|zero|bounds:PASS|and the one suite invocation expands SUITE ARGS"
+	"invoked-by-relative-path|zero|bounds:PASS|each invocation expands its own flag array"
 	"suite-args-detached|nonzero|bounds:FAIL|suite invocation s expanding SUITE ARGS expected exactly"
 	"suite-tests-disabled|nonzero|unit-suite:FAIL|reported no ok package line"
 	"suite-one-package-disabled|nonzero|unit-suite:FAIL|hold a test go file and ran no test"
@@ -423,8 +673,22 @@ MANIFEST_SCENARIO_CONTRACTS=(
 	"observation-recorder-stubbed|nonzero|verify-oracle:FAIL|control wants zero verify oracle ABSENT"
 	"min-declared-tests-margin|nonzero|unit-suite:FAIL|tests were ADDED"
 	"silent-scenario-named|nonzero|verify-oracle:FAIL|Silent control"
+	"oracle-skip-on-unchanged-arbiter|zero|verify-oracle:SKIPPED|which already produced ORACLE PASS"
+	"oracle-skip-refused-when-scripts-change|zero|verify-oracle:PASS|oracle ran after scripts changed"
+	"oracle-skip-needs-a-real-pass|nonzero|verify-oracle:FAIL|its answer is not the account of a run"
+	"netns-row-empty-domain|nonzero|netns-suite:FAIL|the netns population is UNMEASURED"
+	"netns-row-control|zero|netns-suite:PASS|namespaced test s each reported its own verdict"
+	"netns-row-partition-broken|nonzero|netns-suite:FAIL|reported no verdict for"
+	"readme-usage-drifts-in-the-readme|nonzero|readme-usage:FAIL|has no fenced go block under Usage"
+	"readme-usage-drifts-in-the-example|nonzero|readme-usage:FAIL|the README says byte for byte and they are not"
+	"oracle-scope-fabricated|nonzero|verify-oracle:FAIL|ABSENT scope full"
+	"self-check-skip-arm-deleted|nonzero|self-check:FAIL|a probe that dies with the arm it drives leaves the arm undriven"
+	"suite-partition-skip-inert|nonzero|unit-suite:FAIL|the skip filter did not hold them back"
+	"v6-fixture-mode-drift|nonzero|netns-suite:FAIL|TestASLAACOnlyLinkSaysThereIsNoDHCPv"
+	"v6-ra-absent|nonzero|netns-suite:FAIL|TestAManagedLinkWhoseServerIsSilentIsNotALinkWithoutOne"
+	"scenario-rc-follows-the-verdict|static|scenario-rc-fail:1|no row"
 )
-MANIFEST_SCENARIO_CONTRACTS_N=63
+MANIFEST_SCENARIO_CONTRACTS_N=77
 
 # The `static` exemption, enumerated. A scenario is static when it does not run
 # verify.sh at all, so it can read no row of the subject's table; both members
@@ -434,14 +698,26 @@ MANIFEST_SCENARIO_CONTRACTS_N=63
 #                               and observes the value.
 #   scenario-death-is-reported  runs the ORACLE in a copy, not verify.sh, and
 #                               observes the child's own death line.
+#   scenario-rc-follows-the-verdict
+#                               runs ONE scenario in a copy, twice, and
+#                               observes the exit status it answered with.
+#
+# The third member arrived in round 2 and the cap moved with it, which is the
+# pattern this file says to watch. What makes it the sanctioned case rather
+# than the routine one: both of the new-ish members are about the ORACLE'S OWN
+# PROTOCOL — how a scenario reports and what its exit status means — and a
+# scenario about the oracle's protocol has no row of the subject's table to
+# read, by construction rather than by convenience. A fourth member that is
+# not of that kind is the one to refuse.
 #
 # Set equality against the contract table is pinned from Go, so this list
 # cannot describe a membership the table does not have.
 MANIFEST_STATIC_CONTRACTS=(
 	ceiling-band
 	scenario-death-is-reported
+	scenario-rc-follows-the-verdict
 )
-MANIFEST_STATIC_CONTRACTS_N=2
+MANIFEST_STATIC_CONTRACTS_N=3
 
 
 # manifest_check — layer 2, run by every reader of this file BEFORE it is
@@ -488,7 +764,60 @@ manifest_check() {
 		bad="$bad MAX_DECLARED_MARGIN is $MAX_DECLARED_MARGIN, outside 0..4; a wide band is a floor that has stopped saying anything;"
 	[ "$ORACLE_MIN_SECONDS" -ge 1 ] || bad="$bad ORACLE_MIN_SECONDS is not positive;"
 	[ "$DOC_NUMBER_CEILING" -ge 1 ] || bad="$bad DOC_NUMBER_CEILING is not positive;"
+	# Both halves non-empty and the refusals a PROPER subset of the probes: a
+	# self-check that refuses every probe it runs has no preservation control,
+	# and one that refuses none of them is not a guard.
+	[ "$SELF_CHECK_REFUSALS_N" -ge 1 ] && [ "$SELF_CHECK_REFUSALS_N" -lt "$SELF_CHECK_PROBES_N" ] ||
+		bad="$bad SELF_CHECK_REFUSALS_N is $SELF_CHECK_REFUSALS_N against $SELF_CHECK_PROBES_N probe(s); a self-check with no refusals is not a guard and one with no survivors is a check with one possible verdict;"
 	[ "$MANIFEST_SCENARIO_CONTRACTS_N" -ge 1 ] || bad="$bad MANIFEST_SCENARIO_CONTRACTS_N is not positive;"
+	[ "${#MANIFEST_OUTER_ROWS[@]}" -eq "$MANIFEST_OUTER_ROWS_N" ] ||
+		bad="$bad MANIFEST_OUTER_ROWS has ${#MANIFEST_OUTER_ROWS[@]} name(s), MANIFEST_OUTER_ROWS_N says $MANIFEST_OUTER_ROWS_N;"
+	[ "${#MANIFEST_SCOPED_OUT_ROWS[@]}" -eq "$MANIFEST_SCOPED_OUT_ROWS_N" ] ||
+		bad="$bad MANIFEST_SCOPED_OUT_ROWS has ${#MANIFEST_SCOPED_OUT_ROWS[@]} name(s), MANIFEST_SCOPED_OUT_ROWS_N says $MANIFEST_SCOPED_OUT_ROWS_N;"
+	[ "${#MANIFEST_SKIPPABLE_ROWS[@]}" -eq "$MANIFEST_SKIPPABLE_ROWS_N" ] ||
+		bad="$bad MANIFEST_SKIPPABLE_ROWS has ${#MANIFEST_SKIPPABLE_ROWS[@]} name(s), MANIFEST_SKIPPABLE_ROWS_N says $MANIFEST_SKIPPABLE_ROWS_N;"
+	[ "${#MANIFEST_LIGHT_SCENARIOS[@]}" -eq "$MANIFEST_LIGHT_SCENARIOS_N" ] ||
+		bad="$bad MANIFEST_LIGHT_SCENARIOS has ${#MANIFEST_LIGHT_SCENARIOS[@]} name(s), MANIFEST_LIGHT_SCENARIOS_N says $MANIFEST_LIGHT_SCENARIOS_N;"
+	# Each of the three row lists is a NON-EMPTY PROPER subset of the rows.
+	# Empty, and the flag it describes means nothing; equal to the whole, and
+	# --light is a run of nothing and --inner has no rows at all.
+	local r c sc_name sc_row rest
+	for r in "${MANIFEST_OUTER_ROWS[@]}" "${MANIFEST_SCOPED_OUT_ROWS[@]}" "${MANIFEST_SKIPPABLE_ROWS[@]}"; do
+		case " ${MANIFEST_ROWS[*]} " in
+		*" $r "*) ;;
+		*) bad="$bad row list names '$r', which is not a row in MANIFEST_ROWS;" ;;
+		esac
+	done
+	[ "$MANIFEST_OUTER_ROWS_N" -ge 1 ] && [ "$MANIFEST_OUTER_ROWS_N" -lt "$MANIFEST_ROWS_N" ] ||
+		bad="$bad MANIFEST_OUTER_ROWS_N is $MANIFEST_OUTER_ROWS_N against $MANIFEST_ROWS_N row(s); an inner run with no rows measures nothing;"
+	[ "$MANIFEST_SCOPED_OUT_ROWS_N" -ge 1 ] && [ "$MANIFEST_SCOPED_OUT_ROWS_N" -lt "$MANIFEST_ROWS_N" ] ||
+		bad="$bad MANIFEST_SCOPED_OUT_ROWS_N is $MANIFEST_SCOPED_OUT_ROWS_N against $MANIFEST_ROWS_N row(s); a scope that omits every row is a run of nothing;"
+	[ "$MANIFEST_SKIPPABLE_ROWS_N" -ge 1 ] && [ "$MANIFEST_SKIPPABLE_ROWS_N" -lt "$MANIFEST_ROWS_N" ] ||
+		bad="$bad MANIFEST_SKIPPABLE_ROWS_N is $MANIFEST_SKIPPABLE_ROWS_N against $MANIFEST_ROWS_N row(s); a verdict every row may give is not an exception;"
+	# THE refusal item 2 turns on: a light scenario whose contract names a row
+	# that a light run does not produce has scoped away the row it exists to
+	# drive. It would read ABSENT and fail anyway; refusing it here means it
+	# cannot be written down.
+	for sc_name in "${MANIFEST_LIGHT_SCENARIOS[@]}"; do
+		case " ${MANIFEST_SCENARIOS[*]} " in
+		*" $sc_name "*) ;;
+		*) bad="$bad MANIFEST_LIGHT_SCENARIOS names '$sc_name', which is not a scenario;" ;;
+		esac
+		for c in "${MANIFEST_SCENARIO_CONTRACTS[@]}"; do
+			case "$c" in
+			"$sc_name|"*) ;;
+			*) continue ;;
+			esac
+			rest="${c#*|}"
+			rest="${rest#*|}"
+			sc_row="${rest%%:*}"
+			case " ${MANIFEST_SCOPED_OUT_ROWS[*]} " in
+			*" $sc_row "*)
+				bad="$bad scenario '$sc_name' is declared light and its contract wants row '$sc_row', which a light run does not run;"
+				;;
+			esac
+		done
+	done
 	if [ -n "$bad" ]; then
 		printf 'the manifest does not agree with itself:%s\n' "$bad"
 		return 1

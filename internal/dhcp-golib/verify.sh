@@ -2,10 +2,20 @@
 #
 # verify.sh — the one command. Runs every gate and prints one verdict.
 #
-# Usage:  ./verify.sh            run every gate, including the verifier oracle
-#         ./verify.sh --inner    same, minus the oracle
+# Usage:  ./verify.sh            run every gate; the oracle runs when the
+#                                arbiter's own files have changed since the
+#                                last accepted oracle pass, and is SKIPPED,
+#                                by name and by hash, when they have not
+#         ./verify.sh --oracle   run the oracle whether or not it would skip
+#         ./verify.sh --inner    minus the oracle, the self-drive and the
+#                                netns row; the oracle's own scenarios use it
+#         ./verify.sh --light    also minus the unit suite and the netns row
+#                                (see MANIFEST_SCOPED_OUT_ROWS): a SCOPED run,
+#                                which says so in its verdict line
 # Exit:   0 = PASS, 1 = FAIL. A step that cannot be measured is a FAIL, never
-#         a skip.
+#         a skip. SKIPPED is not that: it is one row, verify-oracle, declining
+#         to repeat a measurement whose subject has not changed, and it names
+#         the hash and the files that measurement covered.
 #
 # DECISION 2026-08-29: no CI here (build plan §5.1) — the runners belong to the
 # plugin repository — so this file is the only arbiter and has to be one line a
@@ -30,9 +40,13 @@ ROOT="$PWD"
 SELF="$ROOT/$(basename "$0")"
 
 INNER=0
+LIGHT=0
+FORCE_ORACLE=0
 for arg in "$@"; do
 	case "$arg" in
 	--inner) INNER=1 ;;
+	--light) LIGHT=1 ;;
+	--oracle) FORCE_ORACLE=1 ;;
 	*)
 		echo "VERDICT: FAIL — unknown argument $arg; nothing was measured." >&2
 		exit 1
@@ -62,6 +76,36 @@ if ! manifest_problem="$(manifest_check)"; then
 	exit 1
 fi
 
+# in_list NEEDLE ITEM... — set membership, used against the manifest's row
+# lists. Written once because three of them ask the same question and a fourth
+# open-coded loop is where the fourth answer differs.
+in_list() {
+	local needle="$1" x
+	shift
+	for x in "$@"; do
+		[ "$x" = "$needle" ] || continue
+		return 0
+	done
+	return 1
+}
+
+# row_omitted NAME — true when THIS RUN's scope leaves the row out.
+#
+# DECISION 2026-09-05 (machinery batch, item 2): the scope of a run is a
+# property of the run, read here from the manifest, and never a property of
+# the thing being run. The oracle's scenarios that plant a shell or a document
+# defect pass --light and do not pay for the unit suite; which rows that omits
+# is MANIFEST_SCOPED_OUT_ROWS, a list in the manifest, pinned from Go, and NOT
+# a decision any scenario body can make.
+#
+# A scoped run is not a quieter run: the verdict line names the rows it did not
+# run, and a scenario whose contract expects a verdict from an omitted row
+# reads ABSENT and fails its contract.
+row_omitted() { # NAME
+	[ "$LIGHT" -eq 1 ] || return 1
+	in_list "$1" "${MANIFEST_SCOPED_OUT_ROWS[@]}"
+}
+
 # The wall-clock ceiling on the unit suite, in seconds — T2's second
 # instrument, reading the clock where the identifier gate reads source.
 #
@@ -80,7 +124,124 @@ SUITE_TIMEOUT_SECONDS=180
 # The flags `go test` actually runs with, in ONE array, so the constant the
 # bounds step reads is the constant the suite uses. Scenarios test-cache,
 # race-detector, hang-bounded, bounds-ordering, suite-timeout-detached.
-SUITE_ARGS=(-race -count=1 -timeout "${SUITE_TIMEOUT_SECONDS}s")
+#
+# -v is here for the PARTITION, added 2026-09-05 round 2 and not for reading:
+# without it the run says nothing about WHICH tests it ran, and the row's
+# sentence about how many were held back for the netns row was a restatement of
+# the roster rather than a measurement of the run. Scenario
+# suite-partition-skip-inert.
+SUITE_ARGS=(-race -count=1 -v -timeout "${SUITE_TIMEOUT_SECONDS}s")
+
+# The netns runs — the tests that re-execute themselves into a user and
+# network namespace and talk to a real dnsmasq — have their own row, their own
+# ceiling and their own hang bound.
+#
+# DECISION 2026-09-05 (design §A.3.6 Q8, machinery batch): they were inside the
+# unit suite and the 60s ceiling was measuring both. MEASURED 2026-09-04:
+# 42s at M6 r1, 54s idle and 57-59s loaded at M6 r2, against a 60s ceiling —
+# six seconds of headroom, and M7 adds more netns runs. The ceiling is T2's
+# clock instrument (has the suite drifted into waiting), and a bound that
+# measures a pure suite and a set of runs that wait out real RFC intervals
+# measures neither. So the populations are split and each keeps a bound of its
+# own; SUITE_CEILING_SECONDS goes on measuring the pure suite.
+#
+# The two populations are a PARTITION of one roster: the netns names come from
+# internal/tools/testroster -netns, the pure suite is everything else, and the
+# suite is told to skip exactly the netns names. A test that the classifier
+# does not recognise is therefore not excluded from both rows — it runs in the
+# pure suite, where its seconds land on the ceiling above.
+#
+# THE NUMBERS, MEASURED 2026-09-05 on the session box with the partition in
+# force: the pure suite 12s and the netns row 52s idle, against 53s for the two
+# together before the split. Under load (three parallel oracle copies, same
+# box, load average 8.4) the netns row measured 53s — one second over idle,
+# because these runs are WAITING on real DHCP and ARP intervals, not competing
+# for the CPU. The ceiling is set at 90s, roughly seventy percent over the
+# loaded figure, because the M7 rounds add more of these waits; the pure suite
+# keeps its 60s with five times the headroom it had this morning.
+#
+# The bound that number did NOT give when it was written: a box slow enough to
+# change what these tests wait for (a dnsmasq that starts late, a kernel that
+# is slow to build a namespace) moves the figure in a way a CPU load does not,
+# and the ceiling was the headroom for that, measured on nothing. It is no
+# longer measured on nothing: the end of the block below carries the two-core
+# CI runner's own figure for this row against this box's.
+#
+# RAISED 90 -> 120 AT M7c (v6 runtime), then 120 -> 140 at M7c's carried rows,
+# and the enumeration is the licence for raising it rather than a summary of
+# it. MEASURED 2026-09-06 on the session box, run back to back and exactly as
+# this file runs the row (-race -count=1 -v): 53s at f901589, 78s at M7c's
+# head e173966, and 94s here (90s on a warm build cache; the larger figure is
+# the one the ceiling is set off). Per test, taking the outer (re-exec parent)
+# figure, M7c's head -> here, in seconds:
+#
+#   TestARefusedResumeRestartsAgainstRealDnsmasq            1.33 -> 1.29
+#   TestARestartResumesItsLeaseAgainstRealDnsmasq           1.32 -> 1.31
+#   TestASquatterAfterBoundTakesSection24sPath              2.46 -> 2.51
+#   TestASquatterInTheProbeWindowMakesAWaitingClientDecline 2.58 -> 2.54
+#   TestASquatterInTheProbeWindowMakesAnAsyncClientDecline  2.37 -> 2.34
+#   TestASquatterInTheProbeWindowStillDeclines...Configured 2.23 -> 2.25
+#   TestAcquiresFromRealDnsmasq                             1.19 -> 1.17
+#   TestAnExpiredResumeDiscoversAgainstRealDnsmasq          1.31 -> 1.32
+#   TestAnOffClientPutsNoARPOnTheWire                       4.22 -> 4.18
+#   TestDeclineAndReleaseReachRealDnsmasq                   2.16 -> 2.17
+#   TestOurOwnTrafficInTheProbeWindowDoesNotDeclineOurLease 4.28 -> 4.24
+#   TestPacketTransportDropsWhenTheConsumerStalls           3.64 -> 3.63
+#   TestPacketTransportFollowsAPeerToANewHardwareAddress    1.30 -> 1.28
+#   TestPacketTransportOnARealLink                          1.24 -> 1.24
+#   TestRenewalAndNakReachRealDnsmasq                       7.18 -> 7.22
+#   TestTheClientKeepsTheNamespaceItWasBuiltIn              1.18 -> 1.20
+#   TestTheDelayBeforeAnAcquisitionIsRFC5227sArithmetic     7.73 -> 8.39
+#   TestTheProbeCarriesTheLinkAddressAndNotCHAddr           1.66 -> 1.59
+#   TestTheRebuiltJournalMatchesTheServersLeaseFile         1.48 -> 1.41
+#   TestAClientOnALinkWithNoRouterStillAcquires             3.39 -> 3.08
+#   TestADuplicateAddressOnTheLinkIsDeclined                1.29 -> 1.77
+#   TestAManagedLinkWhoseServerIsSilentIsNotALinkWithoutOne 2.82 -> 2.28
+#   TestAResumedV6LeaseConfirmsAgainstRealDnsmasq           4.90 -> 4.34
+#   TestASLAACOnlyLinkSaysThereIsNoDHCPv6                   1.27 -> 1.22
+#   TestAV6ClientAcquiresFromRealDnsmasq                    2.69 -> 3.01
+#   TestAV6ClientOnAStatelessLinkIsConfiguredAndNotLeased   2.30 -> 2.00
+#   TestAV6ReleaseReachesRealDnsmasq                        4.54 -> 4.25
+#   TestTheV6ClientKeepsTheNamespaceItWasBuiltIn            3.24 -> 2.30
+#   TestAV6ClientDiscardsAnotherClientsReplyAtTheTransport     = 4.78  (new)
+#   TestAV6ClientRefusesALinkThatNeverGetsALinkLocalAddress    = 5.04  (new)
+#   TestAV6ClientWaitsForTheKernelToAssignTheLinkLocalAddress  = 2.79  (new)
+#
+# THE TWENTY-EIGHT TESTS THIS ROUND DID NOT ADD MEASURE 75.53s AGAINST 77.30s
+# at M7c's head — downward, so the whole of the 12.61s increase is the three
+# new rows and none of it is the old ones slowing. Two of the twenty-eight
+# move up by more than a tenth and both are this round's work, named rather
+# than averaged away: TestAV6ClientAcquiresFromRealDnsmasq (+0.32) now opens an
+# ETH_P_ALL watch and reads the EtherType the solicit left with, which is what
+# turns a wrong-ethertype transport into a named red in a second instead of the
+# child's 45s timeout; TestADuplicateAddressOnTheLinkIsDeclined (+0.48) pays
+# for the serves half of assertMode, a second read of dnsmasq's log at
+# Cleanup. The third mover, TestTheDelayBeforeAnAcquisitionIsRFC5227sArithmetic
+# (+0.66), waits out RFC 5227's randomised initial delay: its figure is a draw
+# from that distribution, and it moved 0.94s the other way last round.
+#
+# The per-test figures sum to 88.14s against a 94s wall clock; the difference
+# is the build, the race instrumentation and the re-exec, and it is why the
+# ceiling is set off the WALL figure.
+#
+# 140 keeps 46s of headroom (49 percent) where 120 kept 42s (54 percent)
+# before this round; the number is set so the ratio to the measured row does
+# not shrink round on round, since a ceiling that erodes is one that stops
+# diagnosing before anybody notices. It is still below NETNS_TIMEOUT_SECONDS,
+# which is what makes a row that overruns the ceiling a diagnosis rather than
+# a kill, and still above the child's own 45s budget.
+#
+# THE BOUND THIS NUMBER STILL DOES NOT GIVE is above: a box slow enough to
+# change what these tests WAIT FOR moves the figure in a way a CPU load does
+# not. What is measured against that: the two-core CI runner ran this row in
+# 48s at run 33995090303 where the session box measured 54s for the same head
+# — FASTER, on a box 6.4x to 8.7x slower for the oracle — because these tests
+# wait on DHCP, ARP and DAD intervals rather than competing for the CPU. That
+# is why a figure measured on this box is allowed to set the ceiling CI runs
+# under, and it is a measurement, not an assumption.
+NETNS_CEILING_SECONDS=140
+NETNS_TIMEOUT_SECONDS=180
+NETNS_ARGS=(-race -count=1 -v -timeout "${NETNS_TIMEOUT_SECONDS}s")
 
 # The gates that MUST run: enumerated, not discovered — a verifier that finds
 # its own checklist is silenced by deleting a check. Cross-checked below in
@@ -168,9 +329,32 @@ trap 'ABORT_LINE=$LINENO' ERR
 # that is external and is where the round's evidence actually lives — one
 # oracle scenario per row that empties THAT row's domain and requires the row
 # to go red. See the row-drive scenarios in scripts/test-verify.sh.
+# SKIPPED, added 2026-09-05 with the oracle stamp, is the third verdict and it
+# is the dangerous one: a row that may decline to run is a row that may be made
+# to decline always. Three things hold it here, at the choke point, rather than
+# beside the row that uses it:
+#
+#   1. ONE row may skip. MANIFEST_SKIPPABLE_ROWS names it; any other row
+#      recording SKIPPED is rewritten to FAIL, exactly as an uncounted PASS is.
+#   2. A SKIPPED row still states a COUNT — the size of the population its
+#      stamp covers — so "the oracle was skipped" cannot be said by a row that
+#      examined nothing.
+#   3. Both directions are driven in process, on every run, by self_check
+#      below: a skip by the wrong row must be refused and an honest one must
+#      survive. That is not the same as the arm being OBSERVED, and round 1
+#      said it was. MEASURED by review: this condition turned to `if false`
+#      AND the probe that drives it deleted in one edit left every row green
+#      and the whole oracle green, because the probes counted themselves. The
+#      count is declared in verify.manifest.sh now, out of reach of the
+#      deletion, and scenario self-check-skip-arm-deleted plants the composed
+#      edit and requires the row that owns it to go red.
 record() { # name result note [count]
 	local name="$1" result="$2" note="${3:-}" count="${4:-}"
-	if [ "$result" = PASS ]; then
+	if [ "$result" = SKIPPED ] && ! in_list "$name" "${MANIFEST_SKIPPABLE_ROWS[@]}"; then
+		note="recorded SKIPPED, which only [${MANIFEST_SKIPPABLE_ROWS[*]}] may do; every other row measures or fails"
+		result=FAIL
+	fi
+	if [ "$result" = PASS ] || [ "$result" = SKIPPED ]; then
 		case "$count" in
 		'' | *[!0-9]*)
 			result=FAIL
@@ -187,7 +371,7 @@ record() { # name result note [count]
 	NAMES+=("$name")
 	RESULTS+=("$result")
 	NOTES+=("$note")
-	[ "$result" = PASS ] || FAILED=1
+	[ "$result" = PASS ] || [ "$result" = SKIPPED ] || FAILED=1
 }
 
 # step NAME COUNT -- command... — the exit-status rows, which can no longer
@@ -249,12 +433,23 @@ command -v go >/dev/null 2>&1 || {
 # directions are driven: three shapes that must be refused and one that must
 # survive, because a guard that refuses everything measures nothing either.
 self_check() {
-	local bad="" cases=0
+	local bad="" cases=0 refused=0 i
 	[ "${#NAMES[@]}" -eq 0 ] || {
 		record "self-check" FAIL "self-check ran after ${#NAMES[@]} row(s); it cannot discard its probes safely"
 		return
 	}
 
+	# ROUND 2, 2026-09-05, and it is the reason this block is counted at all.
+	# MEASURED by review at the previous head: the SKIPPED arm's condition was
+	# turned into `if false` and the probe below that drives it was deleted in
+	# the SAME edit — the shape this row exists to refuse, one level up. Every
+	# row stayed green and the full oracle run passed; the only trace was this
+	# note saying "refused 4" where it had said 5, a number computed from the
+	# case list itself and therefore moved by the deletion that caused it.
+	#
+	# The count is now DECLARED, in verify.manifest.sh, where deleting a probe
+	# cannot move it, and it is compared against the probes that actually ran.
+	# Scenario self-check-skip-arm-deleted plants exactly that composed edit.
 	record "__probe__" PASS "no count at all"
 	cases=$((cases + 1))
 	[ "${RESULTS[cases - 1]}" = FAIL ] || bad="$bad a PASS with no count survived;"
@@ -267,12 +462,37 @@ self_check() {
 	cases=$((cases + 1))
 	[ "${RESULTS[cases - 1]}" = FAIL ] || bad="$bad a PASS with a non-numeric count survived;"
 
+	record "__probe__" SKIPPED "a row that may not skip" 1
+	cases=$((cases + 1))
+	[ "${RESULTS[cases - 1]}" = FAIL ] || bad="$bad a SKIPPED recorded by a row that may not skip survived;"
+
+	record "${MANIFEST_SKIPPABLE_ROWS[0]}" SKIPPED "a skip with no count at all"
+	cases=$((cases + 1))
+	[ "${RESULTS[cases - 1]}" = FAIL ] || bad="$bad a SKIPPED with no count survived;"
+
 	# The preservation control. Without it this row is satisfied by a record()
 	# that rewrites every PASS to FAIL, which would refuse the whole tree and
 	# still look like a working guard from here.
 	record "__probe__" PASS "an honest counted pass" 1
 	cases=$((cases + 1))
 	[ "${RESULTS[cases - 1]}" = PASS ] || bad="$bad a correctly counted PASS was rejected;"
+
+	# The other preservation control, for the verdict added beside it: a guard
+	# that refuses every skip is a row that can never skip, which is a check
+	# with one possible verdict wearing the opposite hat.
+	record "${MANIFEST_SKIPPABLE_ROWS[0]}" SKIPPED "an honest counted skip" 1
+	cases=$((cases + 1))
+	[ "${RESULTS[cases - 1]}" = SKIPPED ] || bad="$bad a correctly counted SKIPPED by the row entitled to it was rejected;"
+
+	# The refusals, COUNTED from what record() did rather than derived from the
+	# length of the case list. `cases - 2` was the derivation, and it moved
+	# with any probe that was deleted — including the probe whose deletion is
+	# the whole point of counting.
+	for ((i = 0; i < cases; i++)); do
+		if [ "${RESULTS[i]}" = FAIL ]; then
+			refused=$((refused + 1))
+		fi
+	done
 
 	NAMES=()
 	RESULTS=()
@@ -282,8 +502,11 @@ self_check() {
 	if [ -n "$bad" ]; then
 		record "self-check" FAIL "record() is not enforcing its contract:$bad"
 		echo "--- self-check FAILED: the choke point that decides every PASS does not refuse an uncounted one ---" >&2
+	elif [ "$cases" -ne "$SELF_CHECK_PROBES_N" ] || [ "$refused" -ne "$SELF_CHECK_REFUSALS_N" ]; then
+		record "self-check" FAIL "this row ran $cases probe(s) of which record() refused $refused, against the $SELF_CHECK_PROBES_N and $SELF_CHECK_REFUSALS_N declared in verify.manifest.sh; a probe that dies with the arm it drives leaves the arm undriven, which is why the count is declared somewhere the deletion cannot reach"
+		echo "--- self-check FAILED: fewer probes ran than the manifest declares, so an arm of record() is no longer driven ---" >&2
 	else
-		record "self-check" PASS "record() refused $((cases - 1)) uncountable PASS shape(s) and preserved a counted one" "$cases"
+		record "self-check" PASS "record() refused $refused unrecordable verdict shape(s) of $cases probe(s) and preserved a counted PASS and a counted SKIPPED" "$cases"
 	fi
 }
 self_check
@@ -407,8 +630,26 @@ fi
 # BOUND, and it is a real one: this checks the SPELLING of the one invocation
 # below. A second `go test` elsewhere in this file, or the array under another
 # name, is outside it. Scenarios suite-timeout-detached, suite-args-detached.
+#
+# ROUND 2026-09-05: the same three questions are now asked of the netns row's
+# pair, and a fourth of the CHILD's own budget. The netns tests re-execute
+# themselves into a namespace; the child there is bounded by its own
+# -test.timeout, and if that budget is not strictly below the parent's the
+# parent kills the child first and the child's dnsmasq log — the only thing
+# that says WHICH wait was stuck — dies with it. That was the state M6 carried
+# as row 4, and it is a relation between two numbers in two languages, so it
+# is checked rather than remembered.
 bounds_src=""
-if [ -r "$SELF" ]; then bounds_src="$(grep -c 'go test "${SUITE_ARGS\[@\]}" \./\.\.\.' "$SELF" || true)"; fi
+netns_src=""
+if [ -r "$SELF" ]; then
+	bounds_src="$(grep -c 'go test "${SUITE_ARGS\[@\]}" -skip "\$netns_skip" \./\.\.\.' "$SELF" || true)"
+	netns_src="$(grep -c 'go test "${NETNS_ARGS\[@\]}" -run "\$netns_run" \./runtime/' "$SELF" || true)"
+fi
+netns_child_file="$ROOT/runtime/dnsmasq_linux_test.go"
+netns_child_budget=""
+if [ -r "$netns_child_file" ]; then
+	netns_child_budget="$(sed -n 's/^const netnsChildTimeout = "\([0-9][0-9]*\)s"$/\1/p' "$netns_child_file")"
+fi
 if [ "$SUITE_TIMEOUT_SECONDS" -le "$SUITE_CEILING_SECONDS" ]; then
 	record "bounds" FAIL "hang timeout ${SUITE_TIMEOUT_SECONDS}s does not exceed the ${SUITE_CEILING_SECONDS}s ceiling; a slow suite would be killed before the ceiling could diagnose it"
 elif [[ " ${SUITE_ARGS[*]} " != *" -timeout ${SUITE_TIMEOUT_SECONDS}s "* ]]; then
@@ -419,8 +660,18 @@ elif [ -z "$bounds_src" ]; then
 	record "bounds" FAIL "$SELF is not readable, so whether the suite runs with these flags is UNMEASURED"
 elif [ "$bounds_src" -ne 1 ]; then
 	record "bounds" FAIL "found $bounds_src suite invocation(s) expanding SUITE_ARGS, expected exactly 1; the checked constants are not the ones in force"
+elif [ "$NETNS_TIMEOUT_SECONDS" -le "$NETNS_CEILING_SECONDS" ]; then
+	record "bounds" FAIL "netns hang timeout ${NETNS_TIMEOUT_SECONDS}s does not exceed the ${NETNS_CEILING_SECONDS}s netns ceiling; a slow netns row would be killed before the ceiling could diagnose it"
+elif [[ " ${NETNS_ARGS[*]} " != *" -timeout ${NETNS_TIMEOUT_SECONDS}s "* ]]; then
+	record "bounds" FAIL "the netns flags do not carry -timeout ${NETNS_TIMEOUT_SECONDS}s, so the checked constant is not the one in force: ${NETNS_ARGS[*]}"
+elif [ -z "$netns_src" ] || [ "$netns_src" -ne 1 ]; then
+	record "bounds" FAIL "found ${netns_src:-no} netns invocation(s) expanding NETNS_ARGS, expected exactly 1; the checked constants are not the ones in force"
+elif [ -z "$netns_child_budget" ]; then
+	record "bounds" FAIL "$netns_child_file declares no netnsChildTimeout in seconds, so the deadline every netns wait runs under is UNMEASURED"
+elif [ "$netns_child_budget" -ge "$NETNS_TIMEOUT_SECONDS" ]; then
+	record "bounds" FAIL "the netns child's own budget ${netns_child_budget}s is not below the parent's ${NETNS_TIMEOUT_SECONDS}s; the parent kills the child first and the child's log — which names the wait that stuck — dies with it"
 else
-	record "bounds" PASS "hang timeout ${SUITE_TIMEOUT_SECONDS}s > ceiling ${SUITE_CEILING_SECONDS}s, and the one suite invocation expands SUITE_ARGS" "$bounds_src"
+	record "bounds" PASS "suite ${SUITE_TIMEOUT_SECONDS}s > ceiling ${SUITE_CEILING_SECONDS}s, netns ${NETNS_TIMEOUT_SECONDS}s > ceiling ${NETNS_CEILING_SECONDS}s > child ${netns_child_budget}s, and each invocation expands its own flag array" "$((bounds_src + netns_src))"
 fi
 
 # ---------------------------------------------------------------- toolchain --
@@ -504,6 +755,54 @@ if [ ! -x "$ROOT/scripts/sweep-doc-numbers.sh" ]; then
 	record "doc-numbers" FAIL "scripts/sweep-doc-numbers.sh is missing or not executable; the numbers round 9 removed from prose have no observer"
 else
 	step "doc-numbers" "$doc_files_n" "$ROOT/scripts/sweep-doc-numbers.sh" --check
+fi
+
+# ------------------------------------------------------------ readme-usage --
+# README.md's Usage section prints a Go function and says, in the sentence
+# under it, that it is `ExampleClient` in runtime/example_test.go "byte for
+# byte, so it is compiled by the suite rather than transcribed into this file".
+# Nothing checked that. A claim of identity between two files is exactly the
+# claim a diff makes, and it was being made by prose.
+#
+# The comparison is VERBATIM — `diff` over the two extracted blocks, no
+# normalising of whitespace, no reflow — because the sentence in the README
+# says byte for byte, and a row that compares a normalised form would leave
+# that sentence false while passing. Both directions are driven (scenarios
+# readme-usage-drifts-in-the-readme, readme-usage-drifts-in-the-example).
+#
+# Either side extracting to nothing is a FAIL and not an agreement: two empty
+# files diff clean, which is how this row would go vacuous.
+readme_f="$ROOT/README.md"
+example_f="$ROOT/runtime/example_test.go"
+ru_readme="$BIN/readme-usage.md"
+ru_example="$BIN/readme-usage.go"
+: >"$ru_readme"
+: >"$ru_example"
+if [ -r "$readme_f" ]; then
+	awk '
+		/^## Usage[[:space:]]*$/ { sec = 1; next }
+		sec && /^## / { sec = 0 }
+		sec && /^```go[[:space:]]*$/ { blk = 1; next }
+		blk && /^```[[:space:]]*$/ { blk = 0; next }
+		blk { print }
+	' "$readme_f" >"$ru_readme"
+fi
+if [ -r "$example_f" ]; then
+	sed -n '/^func ExampleClient() {$/,/^}$/p' "$example_f" >"$ru_example"
+fi
+ru_readme_n="$(grep -c '' <"$ru_readme" || true)"
+ru_example_n="$(grep -c '' <"$ru_example" || true)"
+if [ ! -r "$readme_f" ] || [ ! -r "$example_f" ]; then
+	record "readme-usage" FAIL "README.md or runtime/example_test.go is unreadable, so the two sides of the byte-for-byte claim cannot be compared"
+elif [ "$ru_readme_n" -eq 0 ]; then
+	record "readme-usage" FAIL "the README has no fenced go block under ## Usage; the claim that it holds ExampleClient byte for byte has nothing on its own side"
+elif [ "$ru_example_n" -eq 0 ]; then
+	record "readme-usage" FAIL "runtime/example_test.go declares no ExampleClient the README could be quoting; the README's Usage block is now transcription"
+elif ! ru_diff="$(diff -u "$ru_example" "$ru_readme" 2>&1)"; then
+	record "readme-usage" FAIL "the README Usage block and ExampleClient differ; the README says byte for byte and they are not"
+	printf '\n--- readme-usage: --- is runtime/example_test.go, +++ is README.md ---\n%s\n' "$ru_diff" >&2
+else
+	record "readme-usage" PASS "the README Usage block and ExampleClient agree over $ru_example_n line(s), byte for byte" "$ru_example_n"
 fi
 
 # -------------------------------------------------------------- gate roster --
@@ -591,126 +890,262 @@ done
 # It is keyed on the POPULATION rather than on a floor: a floor is a number
 # somebody has to maintain, and it cannot see a single package's tests being
 # disabled. Scenarios suite-tests-disabled, suite-one-package-disabled.
-suite_start=$(date +%s)
-rc=0
-suite_out="$(go test "${SUITE_ARGS[@]}" ./... 2>&1)" || rc=$?
-suite_elapsed=$(($(date +%s) - suite_start))
-# Every directory holding a _test.go file, as the import path go test prints.
-module="$(go list -m 2>/dev/null || true)"
-tested_dirs="$(find . -name '*_test.go' -not -path './.git/*' -printf '%h\n' | sort -u)"
-missing=""
-tested_n=0
-while IFS= read -r d; do
-	[ -n "$d" ] || continue
-	tested_n=$((tested_n + 1))
-	case "$d" in
-	.) ip="$module" ;;
-	*) ip="$module/${d#./}" ;;
-	esac
-	if printf '%s\n' "$suite_out" | grep -qE "^\?[[:space:]]+${ip//./\\.}[[:space:]]+\[no test files\]"; then
-		missing="$missing $ip"
+# THE PARTITION, added 2026-09-05 with the netns row (design §A.3.6 Q8).
+#
+# The netns names come from internal/tools/testroster -netns, which reports the
+# tests that call the re-exec helper; the pure suite is told to -skip exactly
+# those names and the netns row is told to -run exactly those names. One
+# roster, two complementary filters: a test the classifier does not recognise
+# is NOT excluded from both rows — it stays in the pure suite, where its
+# seconds land on SUITE_CEILING_SECONDS. That is the failure this batch was
+# told to name and refuse, and this is where it is refused.
+#
+# The classifier REFUSING is a FAIL of both rows rather than a run of
+# everything: an empty skip list is a pure suite that quietly contains the
+# netns tests again, which is the state this replaced.
+netns_roster=""
+netns_roster_rc=0
+netns_n=0
+netns_skip=""
+netns_run=""
+if ! row_omitted unit-suite || ! row_omitted netns-suite; then
+	netns_roster="$(go run ./internal/tools/testroster -netns "$ROOT" 2>&1)" || netns_roster_rc=$?
+	if [ "$netns_roster_rc" -eq 0 ]; then
+		netns_n="$(printf '%s\n' "$netns_roster" | grep -c . || true)"
+		netns_alt="$(printf '%s\n' "$netns_roster" | grep . | paste -sd '|' -)"
+		netns_skip="^(${netns_alt})$"
+		netns_run="^(${netns_alt})$"
 	fi
-done <<EOF
-$tested_dirs
-EOF
+fi
+netns_unmeasured="the netns population is UNMEASURED (testroster -netns exit $netns_roster_rc): $(printf '%s' "$netns_roster" | tail -1 | sed "s|$ROOT/\{0,1\}|<root>/|g")"
 
-# The population that actually matters, and the one the package check above
-# cannot see. MEASURED 2026-08-30 by review: with the package check in force,
-# ten of twenty-two test files could be build-tagged out — keeping one file per
-# package — taking the suite from 161 declared tests to 61 with every row
-# green. Package granularity was exactly the boundary: including wire's only
-# test file DID go red.
-#
-# So: every test function DECLARED in a _test.go file must appear in
-# `go test -list`. internal/tools/testroster derives the declarations by
-# walking the filesystem and parsing, which is what makes it independent of the
-# build constraints that hid those ten files. It exits non-zero on an empty
-# roster rather than printing nothing, because "every declared test ran" is
-# vacuously true of no declarations at all.
-#
-# BOUNDS, stated rather than a completeness claim:
-#   - `go test -list` honours build constraints and the walk does not, so this
-#     is exact only while every _test.go builds on the host running it. The
-#     tree has no platform-conditional test file that fails to build here
-#     today; a _windows_test.go would read as declared-and-not-listed.
-#
-# ROUND 9 closes the bound this comment used to open with — "a test DELETED,
-# rather than disabled, leaves both sides agreeing" — and it is worth saying
-# how, because the reason it stood for two rounds was not difficulty. Both
-# sides were DERIVED FROM THE TREE, so deleting a test moved both of them at
-# once. MIN_DECLARED_TESTS is a literal in the manifest, derived from nothing,
-# and a literal does not move when the tree does. Scenario
-# min-declared-tests-floor.
-roster_out=""
-roster_rc2=0
-roster_out="$(go run ./internal/tools/testroster "$ROOT" 2>&1)" || roster_rc2=$?
-declared_n=0
-undeclared=""
-unlisted=""
-if [ "$roster_rc2" -eq 0 ]; then
-	listed_f="$(mktemp)"
-	declared_f="$(mktemp)"
-	printf '%s\n' "$roster_out" | LC_ALL=C sort -u >"$declared_f"
-	go test -list '.*' ./... 2>/dev/null | grep -E '^(Test|Benchmark|Fuzz|Example)' | LC_ALL=C sort -u >"$listed_f" || true
-	declared_n="$(grep -c . <"$declared_f" || true)"
-	unlisted="$(LC_ALL=C comm -23 "$declared_f" "$listed_f" | tr '\n' ' ' | sed 's/ $//')"
-	undeclared="$(LC_ALL=C comm -13 "$declared_f" "$listed_f" | tr '\n' ' ' | sed 's/ $//')"
-	rm -f "$listed_f" "$declared_f"
+if row_omitted unit-suite; then
+	: # a scoped run; the verdict line names this row as one it did not run
+elif [ "$netns_roster_rc" -ne 0 ] || [ "$netns_n" -eq 0 ]; then
+	record "unit-suite" FAIL "$netns_unmeasured; the suite cannot be told which tests are the other row's"
+else
+	suite_start=$(date +%s)
+	rc=0
+	suite_raw="$(mktemp)"
+	go test "${SUITE_ARGS[@]}" -skip "$netns_skip" ./... >"$suite_raw" 2>&1 || rc=$?
+	suite_elapsed=$(($(date +%s) - suite_start))
+	# THE PARTITION, MEASURED rather than restated (round 2, finding 3).
+	#
+	# This row used to say "N declared test(s), M of them held for the
+	# netns-suite row" with both numbers read out of the roster — the same
+	# roster that produced the -skip pattern. The sentence was therefore true
+	# of the roster whatever the run did, and MEASURED 2026-09-05 by review:
+	# with -skip naming a test no package declares, the netns tests ran HERE
+	# too, the two rows stopped being a partition, the combined 52s still fit
+	# the 60s ceiling, and this note still said nineteen were held.
+	#
+	# So "held" is now read off the run: -v makes go test name every test it
+	# starts, and a netns name appearing in this list is the partition broken.
+	# The direction the complement already closed is the other one (a test the
+	# classifier does not recognise runs here rather than nowhere); this is the
+	# direction where the FILTER, not the roster, is what failed.
+	suite_ran_f="$(mktemp)"
+	netns_owned_f="$(mktemp)"
+	sed -n 's/^=== RUN[[:space:]]\{1,\}\([^ /]*\)$/\1/p' "$suite_raw" | LC_ALL=C sort -u >"$suite_ran_f"
+	printf '%s\n' "$netns_roster" | grep . | LC_ALL=C sort -u >"$netns_owned_f"
+	suite_ran_n="$(grep -c . <"$suite_ran_f" || true)"
+	suite_netns_leak="$(LC_ALL=C comm -12 "$netns_owned_f" "$suite_ran_f" | tr '\n' ' ' | sed 's/ $//')"
+	rm -f "$suite_ran_f" "$netns_owned_f"
+	# The report every check below reads, with the per-test lines -v added
+	# taken back out. Two reasons, and the second is not tidiness: 445 tests
+	# make 200KB of PASS lines, and every `printf "$suite_out" | grep -q` in
+	# this file and in the oracle's scenarios runs under `set -o pipefail` —
+	# grep -q exits on the first match, printf dies of SIGPIPE, the pipeline
+	# reports 141 and the check reads as its own opposite. MEASURED here: the
+	# ok-package-line check inverted on the first run after -v was added.
+	suite_out="$(grep -vE '^(=== (RUN|PAUSE|CONT)|[[:space:]]*--- PASS: )' "$suite_raw" || true)"
+	rm -f "$suite_raw"
+	# Every directory holding a _test.go file, as the import path go test prints.
+	module="$(go list -m 2>/dev/null || true)"
+	tested_dirs="$(find . -name '*_test.go' -not -path './.git/*' -printf '%h\n' | sort -u)"
+	missing=""
+	tested_n=0
+	while IFS= read -r d; do
+		[ -n "$d" ] || continue
+		tested_n=$((tested_n + 1))
+		case "$d" in
+		.) ip="$module" ;;
+		*) ip="$module/${d#./}" ;;
+		esac
+		if grep -qE "^\?[[:space:]]+${ip//./\\.}[[:space:]]+\[no test files\]" <<<"$suite_out"; then
+			missing="$missing $ip"
+		fi
+	done <<-EOF
+		$tested_dirs
+	EOF
+
+	# The population that actually matters, and the one the package check above
+	# cannot see. MEASURED 2026-08-30 by review: with the package check in force,
+	# ten of twenty-two test files could be build-tagged out — keeping one file per
+	# package — taking the suite from 161 declared tests to 61 with every row
+	# green. Package granularity was exactly the boundary: including wire's only
+	# test file DID go red.
+	#
+	# So: every test function DECLARED in a _test.go file must appear in
+	# `go test -list`. internal/tools/testroster derives the declarations by
+	# walking the filesystem and parsing, which is what makes it independent of the
+	# build constraints that hid those ten files. It exits non-zero on an empty
+	# roster rather than printing nothing, because "every declared test ran" is
+	# vacuously true of no declarations at all.
+	#
+	# BOUNDS, stated rather than a completeness claim:
+	#   - `go test -list` honours build constraints and the walk does not, so this
+	#     is exact only while every _test.go builds on the host running it. The
+	#     tree has no platform-conditional test file that fails to build here
+	#     today; a _windows_test.go would read as declared-and-not-listed.
+	#
+	# ROUND 9 closes the bound this comment used to open with — "a test DELETED,
+	# rather than disabled, leaves both sides agreeing" — and it is worth saying
+	# how, because the reason it stood for two rounds was not difficulty. Both
+	# sides were DERIVED FROM THE TREE, so deleting a test moved both of them at
+	# once. MIN_DECLARED_TESTS is a literal in the manifest, derived from nothing,
+	# and a literal does not move when the tree does. Scenario
+	# min-declared-tests-floor.
+	roster_out=""
+	roster_rc2=0
+	roster_out="$(go run ./internal/tools/testroster "$ROOT" 2>&1)" || roster_rc2=$?
+	declared_n=0
+	undeclared=""
+	unlisted=""
+	if [ "$roster_rc2" -eq 0 ]; then
+		listed_f="$(mktemp)"
+		declared_f="$(mktemp)"
+		printf '%s\n' "$roster_out" | LC_ALL=C sort -u >"$declared_f"
+		go test -list '.*' ./... 2>/dev/null | grep -E '^(Test|Benchmark|Fuzz|Example)' | LC_ALL=C sort -u >"$listed_f" || true
+		declared_n="$(grep -c . <"$declared_f" || true)"
+		unlisted="$(LC_ALL=C comm -23 "$declared_f" "$listed_f" | tr '\n' ' ' | sed 's/ $//')"
+		undeclared="$(LC_ALL=C comm -13 "$declared_f" "$listed_f" | tr '\n' ' ' | sed 's/ $//')"
+		rm -f "$listed_f" "$declared_f"
+	fi
+
+	if [ "$rc" -ne 0 ]; then
+		record "unit-suite" FAIL "exit $rc after ${suite_elapsed}s: $(printf '%s\n' "$suite_out" | grep -E '^(--- FAIL|FAIL|panic:|WARNING: DATA RACE|.*test timed out)' | head -1 | sed 's/^[[:space:]]*//')"
+		printf '\n--- unit-suite FAILED ---\n%s\n' "$suite_out" >&2
+	elif grep -q '(cached)' <<<"$suite_out"; then
+		record "unit-suite" FAIL "go test reported a cached result; -count=1 was not in force, so the suite was not measured on this tree"
+		printf '\n--- unit-suite was served from the test cache ---\n%s\n' "$suite_out" >&2
+	elif [ -z "$module" ] || [ "$tested_n" -eq 0 ]; then
+		# The two ways this row's own domain check can fail to be computed. Both
+		# are a refusal, because a comparison against an empty population passes
+		# for the same reason a suite with no tests does.
+		record "unit-suite" FAIL "the suite exited 0, but its domain is UNMEASURED (module '$module', $tested_n director(ies) holding a _test.go file)"
+	elif ! grep -q '^ok[[:space:]]' <<<"$suite_out"; then
+		record "unit-suite" FAIL "the suite exited 0 but reported no 'ok' package line; its output was not the account of a run"
+		printf '\n--- unit-suite produced no ok line ---\n%s\n' "$suite_out" >&2
+	elif [ -n "$missing" ]; then
+		record "unit-suite" FAIL "exited 0, but package(s)${missing} hold a _test.go file and ran no test"
+		printf '\n--- unit-suite: these packages have test files that did not run ---\n%s\n%s\n' "$missing" "$suite_out" >&2
+	elif [ "$roster_rc2" -ne 0 ]; then
+		# The tail is rewritten relative to the tree root before it is recorded.
+		# docs/gates.md already requires diagnostics to name positions relative to
+		# the root, and this one carried the absolute path of whatever directory it
+		# was run in — which, under the oracle, is a fresh mktemp name. MEASURED
+		# 2026-08-30 running the oracle twice: this was the ONE observation in
+		# sixty that differed between runs, and it is the one thing that would have
+		# made the replay above unusable.
+		record "unit-suite" FAIL "the declared-test roster is UNMEASURED (testroster exit $roster_rc2): $(printf '%s' "$roster_out" | tail -1 | sed "s|$ROOT/\{0,1\}|<root>/|g")"
+	elif [ -n "$unlisted" ]; then
+		record "unit-suite" FAIL "declared but never run: $unlisted"
+		printf '\n--- unit-suite: these tests are declared in a _test.go file and go test did not list them ---\n%s\n' "$unlisted" >&2
+	elif [ -n "$undeclared" ]; then
+		# The other direction, and it is an INSTRUMENT failure rather than a suite
+		# failure: go test found a test the walk did not. Reported so that the
+		# comparison cannot quietly become one-sided.
+		record "unit-suite" FAIL "go test listed test(s) the declaration walk did not find: $undeclared"
+	elif [ "$declared_n" -lt "$MIN_DECLARED_TESTS" ]; then
+		record "unit-suite" FAIL "$declared_n declared test(s), below the floor of $MIN_DECLARED_TESTS in verify.manifest.sh; tests were deleted, and every check above this one derives its population from the tree and so moved with them"
+	elif [ "$declared_n" -gt "$((MIN_DECLARED_TESTS + MAX_DECLARED_MARGIN))" ]; then
+		# ROUND 11. This was a FLOOR with no upper edge, and MEASURED 2026-08-30 by
+		# review: nothing in the tree raised it, so its protection eroded with every
+		# test added and nobody would ever see the decay. Today's margin was zero,
+		# the strongest it would ever be.
+		#
+		# A strict equality was tried first and is what put this comment here: it
+		# fails every oracle scenario that plants a Go test into its own copy, which
+		# is three of them plus the ceiling helper. The band keeps the lower edge
+		# exactly where it was and caps the erosion at MAX_DECLARED_MARGIN instead
+		# of leaving it unbounded. Scenario min-declared-tests-margin.
+		record "unit-suite" FAIL "$declared_n declared test(s) against $MIN_DECLARED_TESTS (+$MAX_DECLARED_MARGIN) in verify.manifest.sh; tests were ADDED — set MIN_DECLARED_TESTS=$declared_n, because a floor with margin is a floor that has started to decay"
+	elif [ "$suite_ran_n" -eq 0 ]; then
+		# The vacuity floor for the two arms below. An empty list makes "no
+		# netns name ran here" true of nothing, which is the shape every one of
+		# rounds 5 to 8 ended in.
+		record "unit-suite" FAIL "the suite exited 0 and named no test it started, so WHICH tests ran here is UNMEASURED and the partition against the netns row cannot be read from this run"
+	elif [ -n "$suite_netns_leak" ]; then
+		record "unit-suite" FAIL "this run started test(s) the netns-suite row owns: $suite_netns_leak; the -skip filter did not hold them back, so the two rows are not a partition and their seconds land on the wrong ceiling"
+		printf '\n--- unit-suite ran tests belonging to the netns row ---\n%s\n' "$suite_netns_leak" >&2
+	elif [ "$suite_elapsed" -gt "$SUITE_CEILING_SECONDS" ]; then
+		# LAST of the failing arms, and it moved here in round 2 with the arm
+		# above it. The ceiling asks "has this suite drifted into waiting"; a
+		# suite that is running the other row's tests has not drifted into
+		# anything, it is measuring the wrong population, and reporting the
+		# clock for it would name the symptom over the cause. Every arm above
+		# is a statement about WHAT ran; this one is about how long it took.
+		record "unit-suite" FAIL "passed but took ${suite_elapsed}s, over the ${SUITE_CEILING_SECONDS}s ceiling"
+		echo "--- unit-suite exceeded the T2 wall-clock ceiling: something is waiting ---" >&2
+	else
+		record "unit-suite" PASS "${suite_elapsed}s, ceiling ${SUITE_CEILING_SECONDS}s, $declared_n declared test(s), $suite_ran_n started here and none of the $netns_n the netns-suite row owns, across $tested_n package(s)" "$declared_n"
+	fi
 fi
 
-if [ "$rc" -ne 0 ]; then
-	record "unit-suite" FAIL "exit $rc after ${suite_elapsed}s: $(printf '%s\n' "$suite_out" | grep -E '^(--- FAIL|FAIL|panic:|WARNING: DATA RACE|.*test timed out)' | head -1 | sed 's/^[[:space:]]*//')"
-	printf '\n--- unit-suite FAILED ---\n%s\n' "$suite_out" >&2
-elif printf '%s' "$suite_out" | grep -q '(cached)'; then
-	record "unit-suite" FAIL "go test reported a cached result; -count=1 was not in force, so the suite was not measured on this tree"
-	printf '\n--- unit-suite was served from the test cache ---\n%s\n' "$suite_out" >&2
-elif [ "$suite_elapsed" -gt "$SUITE_CEILING_SECONDS" ]; then
-	record "unit-suite" FAIL "passed but took ${suite_elapsed}s, over the ${SUITE_CEILING_SECONDS}s ceiling"
-	echo "--- unit-suite exceeded the T2 wall-clock ceiling: something is waiting ---" >&2
-elif [ -z "$module" ] || [ "$tested_n" -eq 0 ]; then
-	# The two ways this row's own domain check can fail to be computed. Both
-	# are a refusal, because a comparison against an empty population passes
-	# for the same reason a suite with no tests does.
-	record "unit-suite" FAIL "the suite exited 0, but its domain is UNMEASURED (module '$module', $tested_n director(ies) holding a _test.go file)"
-elif ! printf '%s\n' "$suite_out" | grep -q '^ok[[:space:]]'; then
-	record "unit-suite" FAIL "the suite exited 0 but reported no 'ok' package line; its output was not the account of a run"
-	printf '\n--- unit-suite produced no ok line ---\n%s\n' "$suite_out" >&2
-elif [ -n "$missing" ]; then
-	record "unit-suite" FAIL "exited 0, but package(s)${missing} hold a _test.go file and ran no test"
-	printf '\n--- unit-suite: these packages have test files that did not run ---\n%s\n%s\n' "$missing" "$suite_out" >&2
-elif [ "$roster_rc2" -ne 0 ]; then
-	# The tail is rewritten relative to the tree root before it is recorded.
-	# docs/gates.md already requires diagnostics to name positions relative to
-	# the root, and this one carried the absolute path of whatever directory it
-	# was run in — which, under the oracle, is a fresh mktemp name. MEASURED
-	# 2026-08-30 running the oracle twice: this was the ONE observation in
-	# sixty that differed between runs, and it is the one thing that would have
-	# made the replay above unusable.
-	record "unit-suite" FAIL "the declared-test roster is UNMEASURED (testroster exit $roster_rc2): $(printf '%s' "$roster_out" | tail -1 | sed "s|$ROOT/\{0,1\}|<root>/|g")"
-elif [ -n "$unlisted" ]; then
-	record "unit-suite" FAIL "declared but never run: $unlisted"
-	printf '\n--- unit-suite: these tests are declared in a _test.go file and go test did not list them ---\n%s\n' "$unlisted" >&2
-elif [ -n "$undeclared" ]; then
-	# The other direction, and it is an INSTRUMENT failure rather than a suite
-	# failure: go test found a test the walk did not. Reported so that the
-	# comparison cannot quietly become one-sided.
-	record "unit-suite" FAIL "go test listed test(s) the declaration walk did not find: $undeclared"
-elif [ "$declared_n" -lt "$MIN_DECLARED_TESTS" ]; then
-	record "unit-suite" FAIL "$declared_n declared test(s), below the floor of $MIN_DECLARED_TESTS in verify.manifest.sh; tests were deleted, and every check above this one derives its population from the tree and so moved with them"
-elif [ "$declared_n" -gt "$((MIN_DECLARED_TESTS + MAX_DECLARED_MARGIN))" ]; then
-	# ROUND 11. This was a FLOOR with no upper edge, and MEASURED 2026-08-30 by
-	# review: nothing in the tree raised it, so its protection eroded with every
-	# test added and nobody would ever see the decay. Today's margin was zero,
-	# the strongest it would ever be.
-	#
-	# A strict equality was tried first and is what put this comment here: it
-	# fails every oracle scenario that plants a Go test into its own copy, which
-	# is three of them plus the ceiling helper. The band keeps the lower edge
-	# exactly where it was and caps the erosion at MAX_DECLARED_MARGIN instead
-	# of leaving it unbounded. Scenario min-declared-tests-margin.
-	record "unit-suite" FAIL "$declared_n declared test(s) against $MIN_DECLARED_TESTS (+$MAX_DECLARED_MARGIN) in verify.manifest.sh; tests were ADDED — set MIN_DECLARED_TESTS=$declared_n, because a floor with margin is a floor that has started to decay"
+# ------------------------------------------------------------- netns suite --
+# The other half of the partition: the tests that re-execute themselves into a
+# user and network namespace and wait out real DHCP and ARP intervals with a
+# real dnsmasq.
+#
+# They are OUTER-only, like the oracle and the self-drive: an inner run is one
+# of sixty-odd copies of this tree, and sixty-odd sets of namespaces and
+# dnsmasq processes is not a cost the oracle can carry. What that leaves open
+# is stated in the handover: this row is driven by outer scenarios only — which
+# ones is written down in MANIFEST_SCENARIO_CONTRACTS and not counted here —
+# and a netns test failing for a PRODUCT reason is driven by the real run.
+#
+# The row's own domain check is set equality against the roster, not a count:
+# a -run regexp that matches nothing produces an exit 0 and an empty table, and
+# a count of what ran is a count of what the regexp happened to select. A SKIP
+# is a FAIL here — these tests fail closed rather than skipping when the kernel
+# or dnsmasq is missing, so a --- SKIP line is one of them having been made
+# quiet.
+if [ "$INNER" -eq 1 ] || row_omitted netns-suite; then
+	: # not an omission the verdict can be read past: see the roster check
+elif [ "$netns_roster_rc" -ne 0 ] || [ "$netns_n" -eq 0 ]; then
+	record "netns-suite" FAIL "$netns_unmeasured"
 else
-	record "unit-suite" PASS "${suite_elapsed}s, ceiling ${SUITE_CEILING_SECONDS}s, $declared_n declared test(s) all ran across $tested_n package(s)" "$declared_n"
+	netns_start=$(date +%s)
+	rc=0
+	netns_out="$(go test "${NETNS_ARGS[@]}" -run "$netns_run" ./runtime/ 2>&1)" || rc=$?
+	netns_elapsed=$(($(date +%s) - netns_start))
+	# Column 0 only: a subtest's own --- PASS is indented, and so is the
+	# child's output, which the parent streams through its own log.
+	netns_reported_f="$(mktemp)"
+	netns_wanted_f="$(mktemp)"
+	printf '%s\n' "$netns_out" | sed -n 's/^--- \(PASS\|FAIL\|SKIP\): \([^ ]*\).*/\2/p' | LC_ALL=C sort -u >"$netns_reported_f"
+	printf '%s\n' "$netns_roster" | grep . | LC_ALL=C sort -u >"$netns_wanted_f"
+	netns_skipped="$(printf '%s\n' "$netns_out" | sed -n 's/^--- SKIP: \([^ ]*\).*/\1/p' | tr '\n' ' ' | sed 's/ $//')"
+	netns_absent="$(LC_ALL=C comm -23 "$netns_wanted_f" "$netns_reported_f" | tr '\n' ' ' | sed 's/ $//')"
+	netns_surplus="$(LC_ALL=C comm -13 "$netns_wanted_f" "$netns_reported_f" | tr '\n' ' ' | sed 's/ $//')"
+	rm -f "$netns_reported_f" "$netns_wanted_f"
+	if [ "$rc" -ne 0 ]; then
+		record "netns-suite" FAIL "exit $rc after ${netns_elapsed}s: $(printf '%s\n' "$netns_out" | grep -E '^(--- FAIL|FAIL|panic:|.*test timed out)' | head -1 | sed 's/^[[:space:]]*//')"
+		printf '\n--- netns-suite FAILED ---\n%s\n' "$netns_out" >&2
+	elif [ -n "$netns_skipped" ]; then
+		record "netns-suite" FAIL "namespaced test(s) skipped themselves: $netns_skipped; these tests fail closed rather than skipping, so a skip is one of them having been silenced"
+	elif [ -n "$netns_absent" ]; then
+		record "netns-suite" FAIL "the roster names $netns_n namespaced test(s) and the run reported no verdict for: $netns_absent"
+		printf '\n--- netns-suite ran fewer tests than the roster names ---\n%s\n' "$netns_out" >&2
+	elif [ -n "$netns_surplus" ]; then
+		record "netns-suite" FAIL "the run reported test(s) the netns roster does not name: $netns_surplus; the two rows' populations are no longer a partition"
+	elif [ "$netns_elapsed" -gt "$NETNS_CEILING_SECONDS" ]; then
+		record "netns-suite" FAIL "passed but took ${netns_elapsed}s, over the ${NETNS_CEILING_SECONDS}s netns ceiling"
+		echo "--- netns-suite exceeded its wall-clock ceiling: something is waiting longer than the intervals it waits out ---" >&2
+	else
+		record "netns-suite" PASS "${netns_elapsed}s, ceiling ${NETNS_CEILING_SECONDS}s, $netns_n namespaced test(s) each reported its own verdict" "$netns_n"
+	fi
 fi
 
 # ------------------------------------------------------------- self-oracle --
@@ -789,8 +1224,71 @@ if [ "$INNER" -eq 0 ]; then
 	fi
 fi
 
+# THE SKIP, added 2026-09-05 (machinery batch, item 1).
+#
+# The oracle is 1021s of a 19-minute run and it tests THIS FILE. Running it
+# again on a tree where this file, the manifest and scripts/ are byte for byte
+# what they were when it last passed re-measures a subject that has not moved.
+#
+# Keyed on CONTENT, not on a diff against a ref: a fresh clone at a commit that
+# changed the arbiter has nothing to diff against and would skip. A stamp makes
+# a fresh clone run the oracle once, which is the direction that matters.
+#
+# What binds the stamp to a real pass, in order:
+#   - it is written in ONE place, on the far side of every check the row makes,
+#     and only when record() ACCEPTED the pass (a rewritten PASS writes no
+#     stamp; scenario oracle-skip-needs-a-real-pass drives a stub that exits 0
+#     without the ORACLE PASS line, twice);
+#   - it names the ROOT it was written for, so a stamp copied into another tree
+#     — every oracle scenario copies this one — grants nothing there;
+#   - it is gitignored, so it never travels with a commit;
+#   - --oracle ignores it entirely.
+#
+# THE BOUND, and it is not closable here: the stamp is a local cache and not
+# evidence. One written BY HAND with the right hash grants a skip, exactly as
+# editing any other single file in this tree defeats the thing that file
+# decides — any hand can compute what this block computes. What is closed is
+# the accident and the cheap forgery, not the deliberate one, and the merge
+# rule is a reviewer's own --oracle run at the head rather than a stamp.
+#
+# The second bound is the one to read before trusting a skip: this hash covers
+# the ARBITER, and scenarios that depend on the PRODUCT's shape can go stale
+# without any covered byte changing. Which scenarios those are is not typed
+# here or in the doc — a typed list omitted eleven of them, MEASURED
+# 2026-09-05 by review. It is derived from the oracle and quoted in
+# docs/verifying.md, and TestStaleAnchorBoundNamesWhatTheOracleDerives fails
+# when the derivation and the quote disagree.
 if [ "$INNER" -eq 0 ]; then
-	if [ -x "$ROOT/scripts/test-verify.sh" ]; then
+	ORACLE_STAMP="$ROOT/.verify-oracle-stamp"
+	oracle_covered="$( {
+		printf 'verify.sh\nverify.manifest.sh\n'
+		find scripts -type f -printf '%p\n' 2>/dev/null
+	} | LC_ALL=C sort -u)"
+	oracle_covered_n="$(printf '%s\n' "$oracle_covered" | grep -c . || true)"
+	# The PATHS are hashed beside the bytes: a renamed script is a changed
+	# arbiter, and a hash over contents alone cannot see a rename.
+	oracle_hash="$(printf '%s\n' "$oracle_covered" | while IFS= read -r f; do
+		if [ -r "$ROOT/$f" ]; then
+			printf '%s  %s\n' "$(sha256sum <"$ROOT/$f" | cut -d' ' -f1)" "$f"
+		else
+			printf 'ABSENT  %s\n' "$f"
+		fi
+	done | sha256sum | cut -d' ' -f1)"
+	stamp_root=""
+	stamp_hash=""
+	stamp_scn=""
+	if [ -r "$ORACLE_STAMP" ]; then
+		stamp_root="$(sed -n 's/^root //p' "$ORACLE_STAMP" | head -1)"
+		stamp_hash="$(sed -n 's/^hash //p' "$ORACLE_STAMP" | head -1)"
+		stamp_scn="$(sed -n 's/^scenarios //p' "$ORACLE_STAMP" | head -1)"
+	fi
+	if [ "$FORCE_ORACLE" -eq 0 ] &&
+		[ -n "$stamp_hash" ] &&
+		[ "$stamp_root" = "$ROOT" ] &&
+		[ "$stamp_hash" = "$oracle_hash" ] &&
+		[ "$stamp_scn" = "${#MANIFEST_SCENARIOS[@]}" ]; then
+		record "verify-oracle" SKIPPED "${oracle_covered_n} arbiter file(s) — verify.sh, verify.manifest.sh, scripts/ — hash ${oracle_hash:0:16}, which already produced ORACLE PASS: $stamp_scn scenarios in this tree; ./verify.sh --oracle runs it regardless" "$oracle_covered_n"
+	elif [ -x "$ROOT/scripts/test-verify.sh" ]; then
 		orc_start=$(date +%s)
 		orc_rc=0
 		orc_out="$("$ROOT/scripts/test-verify.sh" 2>&1)" || orc_rc=$?
@@ -843,6 +1341,25 @@ if [ "$INNER" -eq 0 ]; then
 				}
 				;;
 			esac
+			# The SCOPE the scenario ran at, against the manifest's
+			# declaration of the scope it is entitled to (item 2, 2026-09-05).
+			# The scope is set by the oracle's dispatcher from that same list
+			# and recorded by the run helpers; a body that scopes itself down
+			# to skip the row it exists to drive reports a scope the manifest
+			# does not declare for it, and is a breach here — beside the older
+			# and stronger refusal, which is that the row it scoped away then
+			# reads ABSENT and fails its own contract.
+			#
+			# static scenarios never run verify.sh, so there is no scope to
+			# observe; they are exempt by rc-class, not by name.
+			if [ "$want_rc" != static ]; then
+				want_scope=full
+				in_list "$sc_name" "${MANIFEST_LIGHT_SCENARIOS[@]}" && want_scope=light
+				printf '%s' ",$got," | grep -q ",scope:$want_scope," || {
+					sc_ok=0
+					want_tok="$want_tok/scope:$want_scope"
+				}
+			fi
 			[ "$sc_ok" -eq 1 ] || breached="$breached $sc_name(wants $want_rc,$want_tok; observed [$got])"
 		done
 		if [ "$orc_rc" -ne 0 ]; then
@@ -896,6 +1413,15 @@ if [ "$INNER" -eq 0 ]; then
 			quote_block "$orc_out" >&2
 		else
 			record "verify-oracle" PASS "$(printf '%s\n' "$orc_out" | tail -1), ${orc_elapsed}s" "$accounted"
+			# The one place the stamp is written, and it is written only if
+			# the row above it was ACCEPTED: record() rewrites an uncountable
+			# PASS to FAIL, and a stamp written before that check would record
+			# a pass the arbiter refused.
+			if [ "${RESULTS[${#RESULTS[@]} - 1]}" = PASS ]; then
+				printf 'root %s\nhash %s\nscenarios %s\nfiles %s\nwritten %s\n' \
+					"$ROOT" "$oracle_hash" "$oracle_reported" "$oracle_covered_n" \
+					"$(date -u '+%Y-%m-%dT%H:%M:%SZ')" >"$ORACLE_STAMP"
+			fi
 		fi
 	else
 		record "verify-oracle" FAIL "scripts/test-verify.sh is missing or not executable; verify.sh was not itself checked"
@@ -914,11 +1440,18 @@ echo
 # The roster cross-check. --inner does not run the oracle, so the expected set
 # is the declared one minus verify-oracle in that mode; the row is expected
 # exactly when it is meant to have run.
+# The rows an inner run does not have (MANIFEST_OUTER_ROWS) and the rows a
+# scoped run leaves out (MANIFEST_SCOPED_OUT_ROWS) come from the manifest
+# rather than from a case arm here: two lists that say which rows exist under
+# which flag, in the file that is pinned from Go, and one comparison.
 expected_rows=()
+omitted_rows=()
 for r in "${REQUIRED_ROWS[@]}"; do
-	case "$r" in
-	verify-oracle | self-drive) [ "$INNER" -eq 0 ] || continue ;;
-	esac
+	if [ "$INNER" -eq 1 ] && in_list "$r" "${MANIFEST_OUTER_ROWS[@]}"; then continue; fi
+	if row_omitted "$r"; then
+		omitted_rows+=("$r")
+		continue
+	fi
 	expected_rows+=("$r")
 done
 rows_expected="$(printf '%s\n' "${expected_rows[@]}" | LC_ALL=C sort | tr '\n' ' ' | sed 's/ $//')"
@@ -937,10 +1470,16 @@ if [ "$rows_expected" != "$rows_present" ]; then
 	exit 1
 fi
 
+# A scoped run says so ON THE VERDICT LINE. "VERDICT: PASS" read off a run
+# that did not run the suite is the whole risk of item 2, and the answer is
+# that the line cannot be read without the omission.
+scope_note=""
+[ "${#omitted_rows[@]}" -eq 0 ] || scope_note=", SCOPED: ${omitted_rows[*]} not run"
+
 VERDICT_PRINTED=1
 if [ "$FAILED" -eq 0 ]; then
-	echo "VERDICT: PASS (${#NAMES[@]} steps)"
+	echo "VERDICT: PASS (${#NAMES[@]} steps$scope_note)"
 	exit 0
 fi
-echo "VERDICT: FAIL"
+echo "VERDICT: FAIL${scope_note}"
 exit 1

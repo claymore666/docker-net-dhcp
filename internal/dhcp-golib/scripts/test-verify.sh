@@ -12,6 +12,8 @@
 #         scripts/test-verify.sh --scenario N run one (used by the parallel driver)
 # Exit:   0 = every scenario behaved, 1 = at least one did not,
 #         2 = REFUSED, the oracle could not measure its own domain.
+#         A single --scenario run answers the same way for itself: 0 when it
+#         reported PASS, 1 when it reported FAIL, 2 when it refused.
 
 set -euo pipefail
 
@@ -44,10 +46,20 @@ manifest_problem="$(manifest_check)" || refuse "$manifest_problem"
 SCENARIOS=("${MANIFEST_SCENARIOS[@]}")
 
 # copy_tree DEST — the subject, minus .git and minus the toolchain's caches.
+#
+# .verify-oracle-stamp is excluded, and this was MEASURED 2026-09-05 by a
+# mutant, not reasoned out: it is a per-clone artifact of a run, not part of
+# the tree, and after any ./verify.sh --oracle it exists at the root. Copied
+# in, it made sc_oracle_skip_on_unchanged_arbiter refuse on its own first
+# assertion — so a second --oracle run in the same clone failed the whole
+# oracle for a reason that had nothing to do with the arbiter. The stamp is
+# gitignored, so nothing else in this file could see it arrive.
 copy_tree() {
 	mkdir -p "$1"
-	tar -cf - -C "$ROOT" --exclude=./.git . | tar -xf - -C "$1"
+	tar -cf - -C "$ROOT" --exclude=./.git --exclude=./.verify-oracle-stamp . | tar -xf - -C "$1"
 	[ -x "$1/verify.sh" ] || refuse "the copy has no executable verify.sh"
+	[ ! -e "$1/.verify-oracle-stamp" ] ||
+		refuse "the copy carries an oracle stamp; a scenario would inherit a verdict the parent earned"
 }
 
 # edit FILE FROM TO — an edit that MUST change something. A mutation that fails
@@ -119,11 +131,53 @@ obs() {
 	printf '%s\n' "$1" >>"$OBSFILE"
 }
 
+# in_list NEEDLE ITEM... — set membership over a manifest list.
+in_list() {
+	local needle="$1" x
+	shift
+	for x in "$@"; do
+		[ "$x" = "$needle" ] || continue
+		return 0
+	done
+	return 1
+}
+
+# SCOPE — the scope the CURRENT scenario runs the subject at, set by run_one
+# from MANIFEST_LIGHT_SCENARIOS and by nothing else.
+#
+# DECISION 2026-09-05 (machinery batch, item 2). A scenario that plants a
+# shell or a document defect was paying for a 56s unit suite in its own copy of
+# the tree in order to watch a lint row go red, sixty-three times over. The
+# scope is declared in the manifest beside the contract, applied HERE, and
+# recorded as an observation — so a body that scopes itself reports a scope the
+# manifest does not declare for it and is refused by verify.sh, and a scenario
+# that scoped away the row it exists to drive would read that row ABSENT and
+# fail its own contract first.
+SCOPE=full
+
+# verify_flags — the flags a run of the subject carries, in ONE place.
+verify_flags() {
+	if [ "$SCOPE" = light ]; then
+		printf '%s\n' --inner --light
+	else
+		printf '%s\n' --inner
+	fi
+}
+
+# outer_flags — the same for a run with no --inner, which a person types.
+outer_flags() {
+	if [ "$SCOPE" = light ]; then
+		printf '%s\n' --light
+	fi
+}
+
 # run_verify DIR — sets RC and OUT. Uses --inner, so the copy does not run
 # this script again.
 run_verify() {
+	local flags=()
+	mapfile -t flags < <(verify_flags)
 	RC=0
-	OUT="$(cd "$1" && ./verify.sh --inner 2>&1)" || RC=$?
+	OUT="$(cd "$1" && ./verify.sh "${flags[@]}" 2>&1)" || RC=$?
 	obs "rc:$RC"
 }
 
@@ -131,8 +185,10 @@ run_verify() {
 # a person types. Only safe when the copy's scripts/test-verify.sh has been
 # replaced by a stub; otherwise this recurses without bound.
 run_verify_outer() {
+	local flags=()
+	mapfile -t flags < <(outer_flags)
 	RC=0
-	OUT="$(cd "$1" && ./verify.sh 2>&1)" || RC=$?
+	OUT="$(cd "$1" && ./verify.sh ${flags[@]+"${flags[@]}"} 2>&1)" || RC=$?
 	obs "rc:$RC"
 }
 
@@ -143,8 +199,10 @@ run_verify_inner_from_parent() {
 	local parent base
 	parent="$(dirname "$1")"
 	base="$(basename "$1")"
+	local flags=()
+	mapfile -t flags < <(verify_flags)
 	RC=0
-	OUT="$(cd "$parent" && "$base/verify.sh" --inner 2>&1)" || RC=$?
+	OUT="$(cd "$parent" && "$base/verify.sh" "${flags[@]}" 2>&1)" || RC=$?
 	obs "rc:$RC"
 }
 
@@ -155,8 +213,10 @@ run_verify_from_parent() {
 	local parent base
 	parent="$(dirname "$1")"
 	base="$(basename "$1")"
+	local flags=()
+	mapfile -t flags < <(outer_flags)
 	RC=0
-	OUT="$(cd "$parent" && "$base/verify.sh" 2>&1)" || RC=$?
+	OUT="$(cd "$parent" && "$base/verify.sh" ${flags[@]+"${flags[@]}"} 2>&1)" || RC=$?
 	obs "rc:$RC"
 }
 
@@ -215,6 +275,40 @@ why() {
 	table | awk -v n="$1" '$1 == n { $1 = ""; $2 = ""; sub(/^[ \t]+/, ""); print; found = 1 } END { if (!found) print "(row absent)" }'
 }
 
+# out_has [grep-flags] PATTERN — does the run's captured output carry PATTERN?
+#
+# MEASURED 2026-09-06, and it is the reason this helper exists at all:
+#
+#     out_has PATTERN
+#
+# returns 141, not 0, whenever PATTERN matches early enough that grep exits
+# while printf still has bytes to write. grep -q stops at the first match and
+# closes the pipe; printf takes SIGPIPE; `set -o pipefail` reports the
+# PRODUCER's death and the caller reads a match as a miss. The failure is
+# keyed on the SIZE of $OUT and the POSITION of the match, so it is invisible
+# in every scenario whose subject prints little and appears the day one
+# scenario's subject prints a lot — v6-fixture-mode-drift captured a full
+# outer run, 1.4 MB, and reported "the diagnosis does not name the proof"
+# about a diagnosis that named it on the line the row itself had just
+# recorded.
+#
+# A here-string has no producer process to kill, so the match decides.
+out_has() { grep -q "$@" <<<"$OUT"; }
+
+# str_has TEXT [grep-flags] PATTERN — out_has for a capture a scenario holds in
+# a LOCAL variable rather than in $OUT.
+#
+# ONE FIX DOES NOT REACH THE COPIES, which is why this exists as well. The
+# helper above closed 47 sites that read $OUT; six more read a nested run's
+# output out of a local `out`, through the identical
+# `printf '%s\n' "$out" | grep -q` pipeline, and are identically wrong under
+# `set -o pipefail` as soon as that capture is large enough for grep to exit
+# while printf is still writing. Those six captures are single-scenario runs
+# and small today — none of them can reach the size at which the 141 was
+# MEASURED — so this is the class being closed, not a failure being fixed, and
+# the class is one this project has now fixed in one file at a time twice.
+str_has() { local text="$1"; shift; grep -q "$@" <<<"$text"; }
+
 FAILS=()
 note() { FAILS+=("$*"); }
 
@@ -227,7 +321,7 @@ sc_control() {
 	copy_tree "$d"
 	run_verify "$d"
 	[ "$RC" -eq 0 ] || note "an unmutated copy did not pass: exit $RC"
-	printf '%s\n' "$OUT" | grep -q '^VERDICT: PASS' || note "no PASS verdict on a clean copy"
+	out_has '^VERDICT: PASS' || note "no PASS verdict on a clean copy"
 	# The copy must NOT have run this script again: if --inner did not take,
 	# every scenario below is measuring a doubly-nested run of unknown depth.
 	[ "$(row verify-oracle)" = ABSENT ] || note "--inner did not suppress the oracle; the run recursed"
@@ -248,9 +342,9 @@ sc_verdict_on_abort() {
 	# about WHERE the run stopped.
 	[ "$(row gate-roster)" = ABSENT ] ||
 		note "the run aborted but gate-roster is still in the table: $(row gate-roster)"
-	printf '%s\n' "$OUT" | grep -q '^VERDICT: FAIL' ||
+	out_has '^VERDICT: FAIL' ||
 		note "an aborted verifier printed no FAIL verdict (this is the defect the EXIT trap exists for)"
-	printf '%s\n' "$OUT" | grep -q 'aborted before reaching its verdict' ||
+	out_has 'aborted before reaching its verdict' ||
 		note "the abort verdict does not say it aborted"
 }
 
@@ -262,7 +356,7 @@ sc_verdict_without_gomod() {
 	[ "$RC" -ne 0 ] || note "a tree with no go.mod passed"
 	# MEASURED 2026-08-28 by review: this route used to exit 1 printing no
 	# verdict line at all.
-	printf '%s\n' "$OUT" | grep -q '^VERDICT: FAIL' || note "no FAIL verdict with go.mod deleted"
+	out_has '^VERDICT: FAIL' || note "no FAIL verdict with go.mod deleted"
 	[ "$(row gate-roster)" = FAIL ] || note "gate-roster did not report the unmeasurable roster: $(row gate-roster)"
 }
 
@@ -387,13 +481,13 @@ sc_test_cache() {
 	copy_tree "$d"
 	# Removing -count=1 lets the SECOND run be served from the test cache. The
 	# first run must still pass, or the second run's failure could be anything.
-	edit "$d/verify.sh" 'SUITE_ARGS=(-race -count=1 -timeout' 'SUITE_ARGS=(-race -timeout'
+	edit "$d/verify.sh" 'SUITE_ARGS=(-race -count=1 -v -timeout' 'SUITE_ARGS=(-race -v -timeout'
 	run_verify "$d"
 	[ "$RC" -eq 0 ] || note "the first run of the -count=1-less copy did not pass: exit $RC"
 	run_verify "$d"
 	[ "$RC" -ne 0 ] || note "a cached suite result passed; nothing observes -count=1"
 	[ "$(row unit-suite)" = FAIL ] || note "unit-suite did not report the cached result: $(row unit-suite) — $(why unit-suite)"
-	printf '%s\n' "$OUT" | grep -q 'cached' || note "the cached-result failure does not say it was cached"
+	out_has 'cached' || note "the cached-result failure does not say it was cached"
 }
 
 # verify_const NAME FILE — the value FILE declares for a numeric constant.
@@ -444,7 +538,7 @@ sc_ceiling_fires() {
 	run_verify "$d"
 	[ "$RC" -ne 0 ] || note "a suite over the ceiling passed"
 	[ "$(row unit-suite)" = FAIL ] || note "unit-suite did not report the ceiling: $(row unit-suite) — $(why unit-suite)"
-	printf '%s\n' "$OUT" | grep -q 'ceiling' || note "the over-ceiling failure does not name the ceiling"
+	out_has 'ceiling' || note "the over-ceiling failure does not name the ceiling"
 	[ "$(row t2)" = PASS ] || note "the busy loop tripped T2; the ceiling is not what failed this run"
 }
 
@@ -465,8 +559,59 @@ sc_hang_bounded() {
 	# scenario would hang the oracle. The hang is a receive on a channel with
 	# no sender: no time or context identifier, so T2 cannot see it either,
 	# which the last row asserts.
-	local d="$1"
+	#
+	# THE DEFECT THIS SHAPE CARRIED, MEASURED 2026-09-05 against 7798ffa: the
+	# scenario dropped the timeout to 15s and ran the WHOLE suite, which took
+	# 53s on this box. Planting nothing at all produced exactly the same red
+	# row with exactly the same `test timed out` in it — the scenario passed
+	# with no plant, so what it observed was the suite's own honest duration.
+	# §A.7's fix, and the negative control the deferred row implies:
+	#
+	#   - the run is scoped, through SUITE_ARGS so that the bounds row still
+	#     sees its own constants in force, to the test the plant adds and one
+	#     companion read out of the copy (see below);
+	#   - the scenario runs UNPLANTED first and requires the row to be green,
+	#     which is the assertion that fails if the bound is measuring anything
+	#     but the plant;
+	#   - only then does it plant, and require the row to go red.
+	#
+	# The 15s stays: a timeout that no longer separates a hang from a suite is
+	# the thing being fixed, not the number.
+	local d="$1" companion
 	copy_tree "$d"
+	edit "$d/verify.sh" \
+		"SUITE_TIMEOUT_SECONDS=$(verify_const SUITE_TIMEOUT_SECONDS "$d/verify.sh")" \
+		'SUITE_TIMEOUT_SECONDS=15'
+	# The scope, carried in the flag array the bounds row reads, so this stays
+	# one variable rather than a second invocation the arbiter does not check.
+	# THE COMPANION, and round 2 is why it exists. The scope used to select the
+	# hanging test alone, so the negative control below ran a suite of NO tests
+	# and called that green. unit-suite now refuses a run that names no test it
+	# started — WHICH tests ran is the operand two of its arms read — so
+	# "returned at once having run nothing" is a red row, correctly, and it
+	# would have reddened this control for a reason that has nothing to do with
+	# the timeout. The companion keeps the scoped population at one test in the
+	# control phase and two in the planted one, so the only thing that changes
+	# between them is whether one of them returns.
+	#
+	# It is READ OUT OF THE COPY rather than written down or planted: a name
+	# typed here would be a second premise about the product, and planting a
+	# second test would push the declared count past MAX_DECLARED_MARGIN and
+	# redden this row through the band instead of the timeout.
+	companion="$(grep -h '^func Test' "$d"/proto/*_test.go |
+		sed -n 's/^func \(Test[A-Za-z0-9_]*\)(.*/\1/p' | LC_ALL=C sort | sed -n '1p')"
+	[ -n "$companion" ] || refuse "no pure test in $d/proto to scope the hang scenario's control run to"
+	edit "$d/verify.sh" \
+		'SUITE_ARGS=(-race -count=1 -v -timeout "${SUITE_TIMEOUT_SECONDS}s")' \
+		"SUITE_ARGS=(-race -count=1 -v -run \"^(TestHangs|$companion)\$\" -timeout \"\${SUITE_TIMEOUT_SECONDS}s\")"
+
+	# THE NEGATIVE CONTROL, and it runs first. With the hang not yet planted
+	# the scoped suite runs the companion and returns at once; a 15s bound that
+	# reddens this row here is a bound measuring the suite, which is the defect.
+	run_verify "$d"
+	[ "$(row unit-suite)" = PASS ] ||
+		note "the scoped suite went red with the hang NOT planted: $(row unit-suite) — $(why unit-suite); the timeout is measuring the suite, not a hang"
+
 	cat >"$d/proto/hang_test.go" <<'GO'
 package proto
 
@@ -476,16 +621,10 @@ func TestHangs(t *testing.T) {
 	<-make(chan struct{})
 }
 GO
-	# Only ONE variable moves: the ceiling stays where it ships, so a ceiling
-	# failure cannot be what this scenario measures.
-	edit "$d/verify.sh" \
-		"SUITE_TIMEOUT_SECONDS=$(verify_const SUITE_TIMEOUT_SECONDS "$d/verify.sh")" \
-		'SUITE_TIMEOUT_SECONDS=15'
 	run_verify "$d"
 	[ "$RC" -ne 0 ] || note "a suite containing a test that never returns passed"
 	[ "$(row unit-suite)" = FAIL ] || note "unit-suite did not report the hang: $(row unit-suite) — $(why unit-suite)"
-	printf '%s
-' "$OUT" | grep -q 'test timed out' || note "the failure does not name the timeout; something else failed this run"
+	out_has 'test timed out' || note "the failure does not name the timeout; something else failed this run"
 	[ "$(row t2)" = PASS ] || note "the planted hang tripped T2; the timeout is not what failed this run"
 }
 
@@ -568,8 +707,8 @@ sc_citation_underscore() {
 	[ "$RC" -ne 0 ] || note "citations of a Test_ and a Benchmark that do not exist passed"
 	[ "$(row citations)" = FAIL ] || note "citations did not see the underscore/Benchmark names: $(row citations)"
 	[ "$(row gofmt)" = PASS ] || note "the plant is unformatted; this run failed for a reason this scenario does not name"
-	printf '%s\n' "$OUT" | grep -q 'Test_neverWrittenAtAll' || note "the diagnosis does not name the Test_ token"
-	printf '%s\n' "$OUT" | grep -q 'BenchmarkNeverWrittenEither' || note "the diagnosis does not name the Benchmark token"
+	out_has 'Test_neverWrittenAtAll' || note "the diagnosis does not name the Test_ token"
+	out_has 'BenchmarkNeverWrittenEither' || note "the diagnosis does not name the Benchmark token"
 	[ "$(row unit-suite)" = PASS ] || note "the plant broke the suite: $(row unit-suite) — $(why unit-suite)"
 }
 
@@ -589,7 +728,7 @@ var whitewashProbe = "TestWhitewashedByAStringLiteral"'
 	[ "$RC" -ne 0 ] || note "a stale citation was whitewashed by a string literal in the same file"
 	[ "$(row citations)" = FAIL ] || note "citations was whitewashed: $(row citations)"
 	[ "$(row gofmt)" = PASS ] || note "the plant is unformatted; this run failed for a reason this scenario does not name"
-	printf '%s\n' "$OUT" | grep -q 'TestWhitewashedByAStringLiteral' || note "the diagnosis does not name the whitewashed token"
+	out_has 'TestWhitewashedByAStringLiteral' || note "the diagnosis does not name the whitewashed token"
 	[ "$(row unit-suite)" = PASS ] || note "the plant broke the suite: $(row unit-suite) — $(why unit-suite)"
 }
 
@@ -604,7 +743,7 @@ sc_citation_vacuous() {
 	run_verify "$d"
 	[ "$RC" -ne 0 ] || note "a citations scan that found no domain at all passed"
 	[ "$(row citations)" = FAIL ] || note "an empty citation domain did not fail the row: $(row citations)"
-	printf '%s\n' "$OUT" | grep -q 'measured nothing' || note "the diagnosis does not say the scan measured nothing"
+	out_has 'measured nothing' || note "the diagnosis does not say the scan measured nothing"
 	[ "$(row unit-suite)" = PASS ] || note "the plant broke the suite: $(row unit-suite) — $(why unit-suite)"
 }
 
@@ -671,7 +810,7 @@ var probeDocURL2 = "https://example.invalid/x" // See TestRevCPhantomAfterAURL.'
 	run_verify "$d"
 	[ "$RC" -ne 0 ] || note "a stale citation following a URL on the same line passed"
 	[ "$(row citations)" = FAIL ] || note "citations went blind to the comment after a URL: $(row citations)"
-	printf '%s\n' "$OUT" | grep -q 'TestRevCPhantomAfterAURL' || note "the diagnosis does not name the token after the URL"
+	out_has 'TestRevCPhantomAfterAURL' || note "the diagnosis does not name the token after the URL"
 	[ "$(row gofmt)" = PASS ] || note "the plant is unformatted; this run failed for a reason this scenario does not name"
 }
 
@@ -683,11 +822,16 @@ sc_suite_args_detached() {
 	# bounds printed that the suite runs with the checked flags.
 	local d="$1"
 	copy_tree "$d"
-	edit "$d/verify.sh" 'go test "${SUITE_ARGS[@]}" ./...' 'go test -race -count=1 -timeout 300s ./...'
+	# The invocation grew the netns partition's -skip when the netns row was
+	# split out (2026-09-05); the replacement keeps it, so what this scenario
+	# moves is the flag ARRAY and nothing else.
+	edit "$d/verify.sh" \
+		'go test "${SUITE_ARGS[@]}" -skip "$netns_skip" ./...' \
+		'go test -race -count=1 -timeout 300s -skip "$netns_skip" ./...'
 	run_verify "$d"
 	[ "$RC" -ne 0 ] || note "a suite invocation that stops reading SUITE_ARGS passed"
 	[ "$(row bounds)" = FAIL ] || note "bounds did not see the detached invocation: $(row bounds)"
-	printf '%s\n' "$OUT" | grep -q 'expanding SUITE_ARGS' || note "the diagnosis does not name the missing expansion"
+	out_has 'expanding SUITE_ARGS' || note "the diagnosis does not name the missing expansion"
 }
 
 # disable_tests DIR GLOB — add `ignore` to the build constraint of each
@@ -733,7 +877,7 @@ sc_suite_one_package_disabled() {
 	run_verify "$d"
 	[ "$RC" -ne 0 ] || note "one package's tests were switched off and the run passed"
 	[ "$(row unit-suite)" = FAIL ] || note "unit-suite passed with a package's tests disabled: $(row unit-suite) — $(why unit-suite)"
-	printf '%s\n' "$OUT" | grep -q 'dhcp-golib/wire' || note "the diagnosis does not name the package that ran no test"
+	out_has 'dhcp-golib/wire' || note "the diagnosis does not name the package that ran no test"
 	[ "$(row gofmt)" = PASS ] || note "the plant is unformatted; this run failed for a reason this scenario does not name"
 }
 
@@ -748,7 +892,7 @@ sc_suite_domain_unmeasured_module() {
 	run_verify "$d"
 	[ "$RC" -ne 0 ] || note "unit-suite passed with its domain built from an empty module path"
 	[ "$(row unit-suite)" = FAIL ] || note "an unmeasurable domain did not fail the row: $(row unit-suite) — $(why unit-suite)"
-	printf '%s\n' "$OUT" | grep -q 'UNMEASURED' || note "the diagnosis does not say the domain was unmeasured"
+	out_has 'UNMEASURED' || note "the diagnosis does not say the domain was unmeasured"
 }
 
 sc_suite_domain_unmeasured_walk() {
@@ -760,7 +904,7 @@ sc_suite_domain_unmeasured_walk() {
 	run_verify "$d"
 	[ "$RC" -ne 0 ] || note "unit-suite passed with no package in its domain at all"
 	[ "$(row unit-suite)" = FAIL ] || note "an empty domain walk did not fail the row: $(row unit-suite) — $(why unit-suite)"
-	printf '%s\n' "$OUT" | grep -q 'UNMEASURED' || note "the diagnosis does not say the domain was unmeasured"
+	out_has 'UNMEASURED' || note "the diagnosis does not say the domain was unmeasured"
 }
 
 sc_suite_files_disabled_partial() {
@@ -789,7 +933,7 @@ sc_suite_files_disabled_partial() {
 	run_verify "$d"
 	[ "$RC" -ne 0 ] || note "ten test files were switched off, every package kept one, and the run passed"
 	[ "$(row unit-suite)" = FAIL ] || note "unit-suite passed with most of the suite disabled: $(row unit-suite) — $(why unit-suite)"
-	printf '%s\n' "$OUT" | grep -q 'declared but never run' || note "the diagnosis does not name the declared tests that did not run"
+	out_has 'declared but never run' || note "the diagnosis does not name the declared tests that did not run"
 	[ "$(row gofmt)" = PASS ] || note "the plant is unformatted; this run failed for a reason this scenario does not name"
 }
 
@@ -803,7 +947,7 @@ sc_suite_roster_unmeasured() {
 	run_verify "$d"
 	[ "$RC" -ne 0 ] || note "unit-suite passed with its declared-test roster unmeasurable"
 	[ "$(row unit-suite)" = FAIL ] || note "an unmeasurable roster did not fail the row: $(row unit-suite) — $(why unit-suite)"
-	printf '%s\n' "$OUT" | grep -q 'UNMEASURED' || note "the diagnosis does not say the roster was unmeasured"
+	out_has 'UNMEASURED' || note "the diagnosis does not say the roster was unmeasured"
 }
 
 sc_record_refuses_uncounted_pass() {
@@ -816,7 +960,7 @@ sc_record_refuses_uncounted_pass() {
 	run_verify "$d"
 	[ "$RC" -ne 0 ] || note "a row recorded PASS with no domain size and the run passed"
 	[ "$(row gofmt)" = FAIL ] || note "an uncounted PASS was not rewritten to FAIL: $(row gofmt)"
-	printf '%s\n' "$OUT" | grep -q 'no numeric domain size' || note "the diagnosis does not name the missing count"
+	out_has 'no numeric domain size' || note "the diagnosis does not name the missing count"
 }
 
 sc_record_refuses_zero_count() {
@@ -828,7 +972,7 @@ sc_record_refuses_zero_count() {
 	run_verify "$d"
 	[ "$RC" -ne 0 ] || note "a row recorded PASS having examined zero items and the run passed"
 	[ "$(row gofmt)" = FAIL ] || note "a zero-domain PASS was not rewritten to FAIL: $(row gofmt)"
-	printf '%s\n' "$OUT" | grep -q 'examined 0 items' || note "the diagnosis does not say the domain was empty"
+	out_has 'examined 0 items' || note "the diagnosis does not say the domain was empty"
 }
 
 sc_row_deleted() {
@@ -841,7 +985,7 @@ sc_row_deleted() {
 	run_verify "$d"
 	[ "$RC" -ne 0 ] || note "a deleted row left the run passing"
 	[ "$(row vet)" = ABSENT ] || note "this scenario is not measuring a deleted row: vet is $(row vet)"
-	printf '%s\n' "$OUT" | grep -q 'the rows recorded are not the rows required' || note "the verdict does not name the roster mismatch"
+	out_has 'the rows recorded are not the rows required' || note "the verdict does not name the roster mismatch"
 }
 
 sc_row_added() {
@@ -857,7 +1001,7 @@ record "undeclared-row" PASS "invented" 1'
 	# would pass over a run that failed for some other reason entirely.
 	[ "$(row undeclared-row)" = PASS ] ||
 		note "the invented row is not in the table, so this scenario is not measuring an undeclared row: $(row undeclared-row)"
-	printf '%s\n' "$OUT" | grep -q 'the rows recorded are not the rows required' || note "the verdict does not name the roster mismatch"
+	out_has 'the rows recorded are not the rows required' || note "the verdict does not name the roster mismatch"
 }
 
 sc_oracle_stub_total() {
@@ -874,7 +1018,7 @@ sc_oracle_stub_total() {
 	run_verify_from_parent "$d"
 	[ "$RC" -ne 0 ] || note "the oracle was replaced by 'exit 0' and the arbiter still passed"
 	[ "$(row verify-oracle)" = FAIL ] || note "a stubbed oracle did not fail its row: $(row verify-oracle)"
-	printf '%s\n' "$OUT" | grep -q 'not the account of a run' || note "the diagnosis does not say the oracle's answer was not an answer"
+	out_has 'not the account of a run' || note "the diagnosis does not say the oracle's answer was not an answer"
 }
 
 sc_oracle_stub_partial() {
@@ -895,7 +1039,7 @@ sc_oracle_stub_partial() {
 	run_verify_from_parent "$d"
 	[ "$RC" -ne 0 ] || note "an oracle claiming 3 scenarios against a manifest declaring ${#MANIFEST_SCENARIOS[@]} still passed"
 	[ "$(row verify-oracle)" = FAIL ] || note "a partial stub did not fail its row: $(row verify-oracle)"
-	printf '%s\n' "$OUT" | grep -q 'verify.manifest.sh declares' || note "the diagnosis does not compare reported against declared"
+	out_has 'verify.manifest.sh declares' || note "the diagnosis does not compare reported against declared"
 }
 
 sc_oracle_names_fabricated() {
@@ -915,7 +1059,7 @@ sc_oracle_names_fabricated() {
 	run_verify_from_parent "$d"
 	[ "$RC" -ne 0 ] || note "an oracle that reported the right number and ran nothing still passed"
 	[ "$(row verify-oracle)" = FAIL ] || note "a name-free stub did not fail its row: $(row verify-oracle)"
-	printf '%s\n' "$OUT" | grep -q 'reported no passing result for scenario' ||
+	out_has 'reported no passing result for scenario' ||
 		note "the diagnosis does not say which declared scenarios went unaccounted for"
 }
 
@@ -949,7 +1093,7 @@ sc_manifest_missing() {
 	run_verify "$d"
 	[ "$RC" -ne 0 ] || note "the arbiter ran with no statement of what must be there"
 	[ "$(row citations)" = ABSENT ] || note "rows were recorded without a manifest: citations is $(row citations)"
-	printf '%s\n' "$OUT" | grep -q 'no statement of what must be there' ||
+	out_has 'no statement of what must be there' ||
 		note "the diagnosis does not say the expectation itself was missing"
 }
 
@@ -985,7 +1129,7 @@ sc_manifest_count_lies() {
 	run_verify "$d"
 	[ "$RC" -ne 0 ] || note "the manifest disagreed with itself and the run passed"
 	[ "$(row citations)" = ABSENT ] || note "rows were recorded over an incoherent manifest: citations is $(row citations)"
-	printf '%s\n' "$OUT" | grep -q 'does not agree with itself' || note "the diagnosis does not name the disagreement"
+	out_has 'does not agree with itself' || note "the diagnosis does not name the disagreement"
 }
 
 sc_manifest_scenario_removed() {
@@ -1002,13 +1146,18 @@ sc_manifest_scenario_removed() {
 	# because an inconsistent one is caught by manifest_check before verify.sh
 	# records a single row, and would leave this scenario proving the weaker
 	# thing. This is the round-9 defeat as its author would have written it.
-	edit "$d/verify.manifest.sh" $'\tcitation-word-start\n' ''
+	# The name removed must be one that appears ONCE in this manifest. Since
+	# 2026-09-05 the light-scope list is a second array of scenario names, and
+	# citation-word-start stood in both, so the anchor became AMBIGUOUS and
+	# edit() refused -- this scenario died reporting nothing, which is exactly
+	# what a deleted scenario also reports. A full-scope name has one home.
+	edit "$d/verify.manifest.sh" $'\trace-detector\n' ''
 	# DERIVED from the parent's own contract table. Written as a literal it
 	# went stale twice — once when round 11 grew the population and once when
 	# round 13 added the diagnosis field — and a stale anchor kills the
 	# scenario silently.
 	local cw
-	cw="$(printf '%s\n' "${MANIFEST_SCENARIO_CONTRACTS[@]}" | grep '^citation-word-start|')"
+	cw="$(printf '%s\n' "${MANIFEST_SCENARIO_CONTRACTS[@]}" | grep '^race-detector|')"
 	edit "$d/verify.manifest.sh" $'\t"'"$cw"$'"\n' ''
 	# DERIVED from the parent's own manifest, not written as a literal. The
 	# literals here were 53 and the population is 57; the anchor stopped
@@ -1037,11 +1186,53 @@ sc_self_check_guard_deleted() {
 	# proves the row is not decorative.
 	local d="$1"
 	copy_tree "$d"
-	edit "$d/verify.sh" $'\tif [ "$result" = PASS ]; then' $'\tif false; then'
+	# The guard grew a second arm when SKIPPED became a verdict (2026-09-05), so
+	# the anchor names both. A literal that no longer matches kills this scenario
+	# silently, which is the failure the oracle's count guard exists for.
+	edit "$d/verify.sh" \
+		$'\tif [ "$result" = PASS ] || [ "$result" = SKIPPED ]; then' \
+		$'\tif false; then'
 	run_verify "$d"
 	[ "$RC" -ne 0 ] || note "record's guard was removed and the run passed"
 	[ "$(row self-check)" = FAIL ] || note "the in-process probe did not notice its own guard was gone: $(row self-check)"
-	printf '%s\n' "$OUT" | grep -q 'not enforcing its contract' || note "the diagnosis does not name the choke point"
+	out_has 'not enforcing its contract' || note "the diagnosis does not name the choke point"
+}
+
+sc_self_check_skip_arm_deleted() {
+	# ROUND 2, finding 1, and it is the COMPOSED mutant: the arm and the probe
+	# that drives it, removed in ONE edit.
+	#
+	# MEASURED 2026-09-05 by review at the previous head: record()'s SKIPPED
+	# arm turned into `if false` and the probe asserting it deleted together,
+	# gofmt recording SKIPPED, every row green, seventy-two scenarios green,
+	# VERDICT: PASS. A witness that dies with its subject — the same class
+	# sc_self_check_guard_deleted covers for the COUNT arm, one arm later.
+	#
+	# What makes it red now is not another probe: it is that the number of
+	# probes and the number record() must refuse are DECLARED in
+	# verify.manifest.sh, so deleting a probe moves the measurement and not the
+	# expectation. The guard-deleted scenario beside this one is the other
+	# half — it disables the arm and keeps the probe, and the probe speaks.
+	local d="$1"
+	copy_tree "$d"
+	edit "$d/verify.sh" \
+		$'\tif [ "$result" = SKIPPED ] && ! in_list "$name" "${MANIFEST_SKIPPABLE_ROWS[@]}"; then' \
+		$'\tif false; then'
+	edit "$d/verify.sh" \
+		$'\trecord "__probe__" SKIPPED "a row that may not skip" 1\n\tcases=$((cases + 1))\n\t[ "${RESULTS[cases - 1]}" = FAIL ] || bad="$bad a SKIPPED recorded by a row that may not skip survived;"\n\n' \
+		''
+	run_verify "$d"
+	[ "$RC" -ne 0 ] || note "the SKIPPED arm and the probe that drives it were deleted together and the run passed"
+	[ "$(row self-check)" = FAIL ] ||
+		note "the row did not notice a probe was missing: $(row self-check) — $(why self-check)"
+	out_has 'a probe that dies with the arm it drives' ||
+		note "the diagnosis does not say that a probe was deleted with its arm"
+	# The negative control for the same run: the count arm's own probes are
+	# untouched, so record() is still enforcing its contract. Without this the
+	# scenario is satisfied by a plant that breaks record() outright.
+	out_has 'not enforcing its contract' &&
+		note "record() stopped enforcing its contract; this run failed for a reason this scenario does not name"
+	return 0
 }
 
 sc_min_declared_tests_floor() {
@@ -1058,7 +1249,7 @@ sc_min_declared_tests_floor() {
 	run_verify "$d"
 	[ "$RC" -ne 0 ] || note "a whole test package was deleted and every derived population moved with it"
 	[ "$(row unit-suite)" = FAIL ] || note "the declared-test floor did not fire: unit-suite is $(row unit-suite) — $(why unit-suite)"
-	printf '%s\n' "$OUT" | grep -q 'below the floor of' || note "the diagnosis does not name the floor"
+	out_has 'below the floor of' || note "the diagnosis does not name the floor"
 }
 
 sc_citation_embedded_identifier() {
@@ -1089,7 +1280,7 @@ sc_citation_word_start() {
 	run_verify "$d"
 	[ "$RC" -ne 0 ] || note "a citation at a word start was not caught"
 	[ "$(row citations)" = FAIL ] || note "the word-boundary rule blinded the scan: $(row citations)"
-	printf '%s\n' "$OUT" | grep -q 'TestRevCWordStartNeverWritten' || note "the diagnosis does not name the token"
+	out_has 'TestRevCWordStartNeverWritten' || note "the diagnosis does not name the token"
 }
 
 sc_gate_panic() {
@@ -1148,9 +1339,9 @@ sc_scenario_death_is_reported() {
 	copy_tree "$d"
 	kill_scenario_body "$d/scripts/test-verify.sh" sc_control
 	out="$(cd "$d" && ./scripts/test-verify.sh --scenario control 2>&1 || true)"
-	printf '%s\n' "$out" | grep -q '^RESULT control FAIL obs=.*died before reporting' ||
+	str_has "$out" '^RESULT control FAIL obs=.*died before reporting' ||
 		note "a scenario that died did not report its own death: $out"
-	printf '%s\n' "$out" | grep -q 'not a subject failure' ||
+	str_has "$out" 'not a subject failure' ||
 		note "the death line does not distinguish a broken plant from a broken subject"
 	# ROUND 13, N8. The token used to be the literal string "reported", written
 	# here rather than read from the child: a body cut down to that one line
@@ -1210,7 +1401,7 @@ sc_doc_number_reintroduced() {
 	run_verify "$d"
 	[ "$RC" -ne 0 ] || note "a number an instrument recomputes came back into prose and the run passed"
 	[ "$(row doc-numbers)" = FAIL ] || note "the doc sweep did not see a removed number return: $(row doc-numbers)"
-	printf '%s\n' "$OUT" | grep -q 'name the instrument' ||
+	out_has 'name the instrument' ||
 		note "the diagnosis does not say what to do instead of writing the number"
 }
 
@@ -1307,6 +1498,37 @@ sc_oracle_is_invoked() {
 		note "the verify-oracle row does not name the scenario that failed: $(why verify-oracle)"
 }
 
+sc_scenario_rc_follows_the_verdict() {
+	# ROUND 2, finding 6, found by review rather than planted for: a
+	# --scenario run exited 0 for a PASS and a FAIL alike, so its exit status
+	# said only that the script had not refused. Anything reading rc — a
+	# person, a mutation harness, round 1's own negative control — read every
+	# scenario as a pass.
+	#
+	# Both directions, on the SAME scenario, so the difference is the plant and
+	# not the choice of scenario. ceiling-band is the subject because it reads
+	# a constant out of verify.sh and runs nothing: this scenario costs two
+	# sub-second runs instead of two full ones.
+	local d="$1" out rc
+	copy_tree "$d"
+	rc=0
+	out="$(cd "$d" && ./scripts/test-verify.sh --scenario ceiling-band 2>&1)" || rc=$?
+	str_has "$out" '^RESULT ceiling-band PASS' ||
+		note "the unplanted control did not report PASS, so this scenario is measuring something else: $out"
+	[ "$rc" -eq 0 ] || note "an unplanted scenario run exited $rc; a run that cannot exit 0 cannot show a FAIL by its exit status"
+	obs "scenario-rc-pass:$rc"
+	# The plant is in the SUBJECT the scenario reads, not in the scenario: a
+	# ceiling of zero is a ceiling no suite can be measured against, which is
+	# one of the two mutations ceiling-band exists to kill.
+	edit "$d/verify.sh" 'SUITE_CEILING_SECONDS=60' 'SUITE_CEILING_SECONDS=0'
+	rc=0
+	out="$(cd "$d" && ./scripts/test-verify.sh --scenario ceiling-band 2>&1)" || rc=$?
+	str_has "$out" '^RESULT ceiling-band FAIL' ||
+		note "the planted scenario did not report FAIL, so its exit status is not the thing under test: $out"
+	[ "$rc" -ne 0 ] || note "a scenario that reported FAIL exited 0; the verdict is not in the exit status, and every caller that reads rc reads a pass"
+	obs "scenario-rc-fail:$rc"
+}
+
 sc_silent_scenario_named() {
 	# ROUND 13, N14. A scenario that dies LOUDLY is caught by the death
 	# reporter — that was round 11. A scenario that dies SILENTLY, killed
@@ -1353,8 +1575,368 @@ sc_control() {
 	run_verify_from_parent "$d"
 	[ "$RC" -ne 0 ] || note "an oracle that lost a scenario without a word still passed"
 	[ "$(row verify-oracle)" = FAIL ] || note "a silent scenario did not fail the oracle row: $(row verify-oracle)"
-	printf '%s\n' "$OUT" | grep -q 'Silent: control' ||
+	out_has 'Silent: control' ||
 		note "the refusal does not NAME the scenario that went silent; the count alone is a diff of two sorted lists"
+}
+
+# --------------------------------------------- the oracle skip (item 1) ----
+#
+# Three scenarios, one per direction the stamp can be wrong in: it grants a
+# skip when it should, it does not when a covered byte moved, and it is not
+# written by a run the row did not accept.
+#
+# All three run the subject OUTER, because the row under test is the last row
+# and an inner run does not have it. That is safe here for the reason
+# run_verify_outer's comment gives: the copy's oracle is a stub.
+
+sc_oracle_skip_on_unchanged_arbiter() {
+	# (a) The stamp is written by an accepted pass, and the next run over the
+	# same arbiter content skips — by name, with the hash in the note.
+	local d="$1"
+	copy_tree "$d"
+	fabricating_stub "$d/scripts/test-verify.sh" "$((ORACLE_MIN_SECONDS + 1))" "a-pass-the-row-accepted"
+	[ ! -e "$d/.verify-oracle-stamp" ] || refuse "the copy already carries a stamp; the first run would prove nothing"
+	run_verify_outer "$d"
+	[ "$(row verify-oracle)" = PASS ] || note "the first run did not pass its oracle row: $(row verify-oracle) — $(why verify-oracle)"
+	[ -r "$d/.verify-oracle-stamp" ] || note "an oracle pass the row ACCEPTED wrote no stamp, so no run can ever skip"
+	run_verify_outer "$d"
+	[ "$RC" -eq 0 ] || note "the second run over an unchanged arbiter did not pass"
+	[ "$(row verify-oracle)" = SKIPPED ] || note "an unchanged arbiter did not skip: $(row verify-oracle) — $(why verify-oracle)"
+	# The skip must SAY what it covered. A verdict that means "not measured"
+	# and gives no account of what it declined to measure is the shape this
+	# whole row exists to refuse.
+	out_has 'arbiter file(s)' ||
+		note "the skip does not name the file set its hash covers"
+	# The stamp TRAVELS: every scenario in this file copies the tree, and a
+	# stamp that granted a skip wherever it was copied would hand each of them
+	# a skipped oracle row. It names the root it was written for, and this is
+	# the direction that check is driven in.
+	local moved="$d.moved"
+	rm -rf "$moved"
+	cp -a "$d" "$moved"
+	[ -r "$moved/.verify-oracle-stamp" ] || refuse "the copy carries no stamp, so the move proves nothing"
+	run_verify_outer "$moved"
+	[ "$(row verify-oracle)" != SKIPPED ] ||
+		note "a stamp copied to another root granted a skip there; it is not bound to the tree it was written for"
+	rm -rf "$moved"
+}
+
+sc_oracle_skip_refused_when_scripts_change() {
+	# (b) A byte under scripts/ — not verify.sh, not the manifest, and not the
+	# oracle the row invokes — moves, and the skip is refused. The edited file
+	# is one no other row reads for this purpose, so nothing but the hash can
+	# be what noticed.
+	local d="$1"
+	copy_tree "$d"
+	fabricating_stub "$d/scripts/test-verify.sh" "$((ORACLE_MIN_SECONDS + 1))" "oracle-ran-after-scripts-changed"
+	run_verify_outer "$d"
+	[ "$(row verify-oracle)" = PASS ] || note "the first run did not pass its oracle row: $(row verify-oracle)"
+	[ -r "$d/.verify-oracle-stamp" ] || note "the first run wrote no stamp, so the second cannot show a refusal to use one"
+	printf '\n# A byte under scripts/, added after the stamp was written.\n' >>"$d/scripts/sweep-doc-numbers.sh"
+	run_verify_outer "$d"
+	[ "$(row verify-oracle)" != SKIPPED ] || note "an edit under scripts/ was skipped past; the hash does not cover the directory it says it covers"
+	[ "$(row verify-oracle)" = PASS ] || note "the second run did not run the oracle: $(row verify-oracle) — $(why verify-oracle)"
+	[ "$RC" -eq 0 ] || note "the run that re-ran the oracle did not pass"
+}
+
+sc_oracle_skip_needs_a_real_pass() {
+	# (c) Three ways to get a stamp without a pass, in one scenario because
+	# they are one question: what is the stamp BOUND to?
+	#
+	#   1. an oracle that exits 0 and prints nothing — the row refuses it, so
+	#      no stamp is written;
+	#   2. the run after it — still no stamp, so still no skip;
+	#   3. a stamp written BY HAND at the right root — refused, because its
+	#      hash is not the arbiter's.
+	#
+	# What is NOT closed, and is stated rather than argued away: a hand-written
+	# stamp carrying the RIGHT hash grants a skip. Forging it is a single-file
+	# edit like every other in this tree.
+	local d="$1"
+	copy_tree "$d"
+	printf '#!/bin/sh\nexit 0\n' >"$d/scripts/test-verify.sh"
+	chmod +x "$d/scripts/test-verify.sh"
+	run_verify_outer "$d"
+	[ "$RC" -ne 0 ] || note "an oracle that exits 0 without a word passed the run"
+	[ "$(row verify-oracle)" = FAIL ] || note "a silent oracle did not fail its row: $(row verify-oracle)"
+	[ ! -e "$d/.verify-oracle-stamp" ] || note "a stub the row REFUSED wrote a stamp; the stamp is not bound to the acceptance"
+	run_verify_outer "$d"
+	[ "$(row verify-oracle)" = FAIL ] || note "the second run skipped past an oracle that has never passed here: $(row verify-oracle)"
+	printf 'root %s\nhash %s\nscenarios %s\nfiles 99\nwritten by-hand\n' \
+		"$d" "$(sha256sum "$d/verify.sh" | cut -d' ' -f1)" "${#MANIFEST_SCENARIOS[@]}" >"$d/.verify-oracle-stamp"
+	run_verify_outer "$d"
+	[ "$(row verify-oracle)" = FAIL ] || note "a hand-written stamp at the right root bought a skip: $(row verify-oracle)"
+	[ "$RC" -ne 0 ] || note "the run holding a hand-written stamp passed"
+}
+
+# ------------------------------------------- the netns row (item 3, Q8) ----
+
+sc_netns_row_empty_domain() {
+	# The failure the batch was told to NAME: a netns test excluded from both
+	# rows. The two populations are a partition derived from one roster, so the
+	# way to reach that state is to break the roster — and a broken roster is a
+	# refusal of BOTH rows, not a pure suite that quietly runs everything.
+	local d="$1"
+	copy_tree "$d"
+	fabricating_stub "$d/scripts/test-verify.sh" "$((ORACLE_MIN_SECONDS + 1))" "netns-domain-refused"
+	edit "$d/internal/tools/testroster/roster.go" \
+		'const netnsMarker = "reexecInNamespaces"' \
+		'const netnsMarker = "reexecInNamespacesThatNothingDeclares"'
+	run_verify_outer "$d"
+	[ "$RC" -ne 0 ] || note "a tree whose netns population cannot be derived passed"
+	[ "$(row netns-suite)" = FAIL ] || note "the netns row did not refuse an underivable population: $(row netns-suite)"
+	# The other half of the partition refuses too. Without this the roster
+	# could fail open into a pure suite that runs the namespaced tests again
+	# under a 60s ceiling meant for neither.
+	[ "$(row unit-suite)" = FAIL ] || note "the pure suite ran with no partition to skip by: $(row unit-suite)"
+}
+
+sc_netns_row_partition_broken() {
+	# DEFEAT 3.2, driven: the netns row's -run regexp stops naming the whole
+	# roster, so the row runs a SUBSET of its population and `go test` exits
+	# zero over it. A count cannot see that — the row would report the
+	# ROSTER's count either way — which is why the row compares the set of
+	# names the run REPORTED against the roster and not their sizes.
+	#
+	# The plant leaves the roster and the pure suite's -skip alone and narrows
+	# only the RUN, so this copy raises one namespace rather than nineteen;
+	# that is also why the scenario is affordable at all.
+	local d="$1"
+	copy_tree "$d"
+	fabricating_stub "$d/scripts/test-verify.sh" "$((ORACLE_MIN_SECONDS + 1))" "netns-row-partition-broken"
+	edit "$d/verify.sh" \
+		'netns_run="^(${netns_alt})$"' \
+		'netns_run="^(${netns_alt%%|*})$"'
+	run_verify_outer "$d"
+	[ "$RC" -ne 0 ] || note "a netns row that ran one test of its roster and exited zero passed the run"
+	[ "$(row netns-suite)" = FAIL ] ||
+		note "the netns row did not notice its run had shrunk: $(row netns-suite) — $(why netns-suite)"
+	out_has 'reported no verdict for' ||
+		note "the diagnosis does not name the tests the run never reported"
+	[ "$(row unit-suite)" = PASS ] ||
+		note "the pure suite failed; this run failed for a reason this scenario does not name: $(row unit-suite) — $(why unit-suite)"
+}
+
+sc_suite_partition_skip_inert() {
+	# DEFEAT 3.6, driven. The OTHER direction of the partition, and the one the
+	# complement does not close: the roster is derived, the netns row is told
+	# to run it, and the pure suite's -skip stops holding it back. Both rows
+	# then run the same tests, and MEASURED 2026-09-05 by review at the
+	# previous head: `go test` exited 0, the combined seconds still fitted the
+	# pure suite's ceiling, and the row went on reporting how many tests were
+	# "held" for the other row — a sentence read out of the roster that
+	# produced the filter, and therefore true of the roster whatever the run
+	# did.
+	#
+	# The plant drops the FIRST roster name from the -skip alternation and
+	# nothing else, so exactly one namespaced test leaks into the pure suite
+	# rather than nineteen. That is the same economy sc_netns_row_partition_broken
+	# takes on the other side of the pair, and for the same reason: one
+	# namespace and one dnsmasq is affordable inside an oracle copy and
+	# nineteen are not.
+	#
+	# The preservation control is every other full-scope scenario: they all run
+	# this row with the real roster and an intact -skip, and it passes.
+	local d="$1" leaked
+	copy_tree "$d"
+	edit "$d/verify.sh" \
+		'netns_skip="^(${netns_alt})$"' \
+		'netns_skip="^(${netns_alt#*|})$"'
+	# Derived, not typed: the name this plant lets through is the first the
+	# roster reports, and a literal here would be a second spelling of it.
+	leaked="$(cd "$d" && go run ./internal/tools/testroster -netns . 2>/dev/null | head -1)"
+	[ -n "$leaked" ] || refuse "the netns roster is empty in the copy; the plant has nothing to let through"
+	run_verify "$d"
+	[ "$RC" -ne 0 ] || note "the pure suite ran a test the netns row owns and the run passed"
+	[ "$(row unit-suite)" = FAIL ] ||
+		note "the pure suite did not notice it had run the other row's test: $(row unit-suite) — $(why unit-suite)"
+	out_has 'did not hold them back' ||
+		note "the diagnosis does not name the filter that failed"
+	out_has -F "$leaked" ||
+		note "the diagnosis does not name $leaked, the test that leaked across the partition"
+}
+
+sc_netns_row_control() {
+	# The preservation control, and the only scenario that runs the namespaced
+	# tests for real. Without it every check above is satisfied by a netns row
+	# that refuses everything.
+	local d="$1"
+	copy_tree "$d"
+	fabricating_stub "$d/scripts/test-verify.sh" "$((ORACLE_MIN_SECONDS + 1))" "netns-row-control"
+	run_verify_outer "$d"
+	[ "$RC" -eq 0 ] || note "an untouched tree did not pass with the netns row in it"
+	[ "$(row netns-suite)" = PASS ] || note "the netns row did not pass on an untouched tree: $(row netns-suite) — $(why netns-suite)"
+	[ "$(row unit-suite)" = PASS ] || note "the pure suite did not pass beside it: $(row unit-suite) — $(why unit-suite)"
+}
+
+# --------------------------------------- the v6 fixture's two traps (M7c) ----
+#
+# Design section A.4 names two ways a v6 netns proof goes green while measuring
+# nothing, and neither is visible from inside the proof:
+#
+#   Trap 1  green because no Router Advertisement ever arrived, so every
+#           assertion about one was made against a zero value or skipped.
+#   Trap 2  green because dnsmasq was serving a DIFFERENT mode from the one
+#           the test named, and the mode it was serving happened to satisfy
+#           the assertions that were made.
+#
+# Both scenarios plant in the FIXTURE rather than in the assertions, because
+# that is where the traps live: a test that measures nothing passes an
+# untouched fixture and a wrong one alike.
+
+sc_v6_fixture_mode_drift() {
+	# TRAP 2, driven. The SLAAC-only mode's dnsmasq argument is changed from
+	# "ra-only" to "ra-stateless": the fixture now runs a link that offers
+	# DHCPv6 for configuration, while TestASLAACOnlyLinkSaysThereIsNoDHCPv6
+	# still says the link offers no DHCPv6 at all.
+	#
+	# It is a ONE-WORD edit to an argument list and it changes nothing the
+	# test names — the interface, the prefix, the readiness line
+	# ("router advertisement on fd00:99::") are all still what they were, and
+	# dnsmasq still starts and still advertises. What changes is the answer:
+	# the O flag goes to 1 and dnsmasq logs "DHCPv6 stateless on", which is
+	# the line that mode declares it must NOT print.
+	#
+	# MEASURED 2026-09-06: before v6Mode grew its `absent` list this plant was
+	# INVISIBLE. The readiness line the SLAAC mode waited for is printed by
+	# three of the five modes, so waiting for it confirmed only that dnsmasq
+	# had started.
+	local d="$1"
+	copy_tree "$d"
+	fabricating_stub "$d/scripts/test-verify.sh" "$((ORACLE_MIN_SECONDS + 1))" "v6-fixture-mode-drift"
+	edit "$d/runtime/dnsmasq6_linux_test.go" \
+		'",ra-only,64," + fmt.Sprint(test6LeaseSec)' \
+		'",ra-stateless,64," + fmt.Sprint(test6LeaseSec)'
+	run_verify_outer "$d"
+	[ "$RC" -ne 0 ] || note "the v6 proofs passed against a fixture serving a mode they did not name"
+	[ "$(row netns-suite)" = FAIL ] ||
+		note "the netns row did not notice the fixture had drifted: $(row netns-suite) — $(why netns-suite)"
+	out_has 'TestASLAACOnlyLinkSaysThereIsNoDHCPv6' ||
+		note "the diagnosis does not name the proof whose fixture drifted"
+	# AND THE PURE SUITE CATCHES IT TOO, in a second and without a namespace.
+	#
+	# This assertion is NEW at M7c's carried rows and the change of shape is
+	# the finding: the pure suite used to be this scenario's preservation
+	# control, i.e. the row that had to stay green. Now that v6Mode.serves is
+	# re-derived from the argument vector the fixture is about to exec,
+	# ",ra-stateless," is a mode that SERVES DHCPv6 while its row still
+	# declares serves=false, and TestTheFixtureReadsItsOwnDnsmasqArguments
+	# says so before dnsmasq is started at all. A plant that reddens the
+	# cheap row and the expensive one is not a weaker plant; it is the same
+	# defect caught twice, and the netns half above still has to fire.
+	[ "$(row unit-suite)" = FAIL ] ||
+		note "the pure suite did not notice the drifted mode: $(row unit-suite) — $(why unit-suite); the fixture's own argument check reads that table"
+	out_has 'TestTheFixtureReadsItsOwnDnsmasqArguments' ||
+		note "the diagnosis does not name the fixture check that reads the mode table"
+	# The preservation control, moved to rows this plant cannot reach: a plant
+	# that broke the build or the formatting would satisfy every check above
+	# while saying nothing about the fixture.
+	[ "$(row build)" = PASS ] ||
+		note "the build failed; this run failed for a reason this scenario does not name: $(row build) — $(why build)"
+	[ "$(row gofmt)" = PASS ] ||
+		note "gofmt failed; this run failed for a reason this scenario does not name: $(row gofmt) — $(why gofmt)"
+}
+
+sc_v6_ra_absent() {
+	# TRAP 1, driven. --enable-ra is taken off the MANAGED-SILENT mode, so no
+	# Router Advertisement is emitted on that link at all while everything
+	# else about it is unchanged: dnsmasq still starts, still prints
+	# "DHCPv6, IP range fd00:99::10", still hears the Solicit and still
+	# answers nothing — so every DHCPv6 claim
+	# TestAManagedLinkWhoseServerIsSilentIsNotALinkWithoutOne makes remains
+	# true. The ONLY thing gone is the advertisement, which is the half of
+	# that test that separates "the server is there and is not answering" from
+	# "there is no router here at all".
+	#
+	# If the row still passes, every RA measurement in the file is decoration.
+	# That is exactly what Trap 1 is, and this is the scenario that catches it.
+	#
+	# WHICH MODE, and why it is this one. MEASURED 2026-09-06 against the
+	# dnsmasq 2.91 source: a --dhcp-range carrying ra-only or ra-stateless
+	# sets CONTEXT_RA and advertises whether or not --enable-ra is given, so
+	# the first draft of this scenario — which took the flag off the STATELESS
+	# mode — was a plant that changed nothing, and the row it was driving
+	# stayed green because there was nothing to notice. The flag decides the
+	# advertisement only where the range carries no ra-* keyword, which is
+	# v6Managed and v6ManagedSilent. v6ManagedSilent is the one used by
+	# exactly one proof, so the plant reddens one named test rather than
+	# whichever of six ran first.
+	local d="$1"
+	copy_tree "$d"
+	fabricating_stub "$d/scripts/test-verify.sh" "$((ORACLE_MIN_SECONDS + 1))" "v6-ra-absent"
+	edit "$d/runtime/dnsmasq6_linux_test.go" \
+		'"--enable-ra",
+			// The server is up' \
+		'// The server is up'
+	run_verify_outer "$d"
+	[ "$RC" -ne 0 ] || note "the silent-server proof passed on a link that advertised nothing"
+	[ "$(row netns-suite)" = FAIL ] ||
+		note "the netns row did not notice the advertisement was gone: $(row netns-suite) — $(why netns-suite)"
+	out_has 'TestAManagedLinkWhoseServerIsSilentIsNotALinkWithoutOne' ||
+		note "the diagnosis does not name the proof that lost its advertisement"
+	[ "$(row unit-suite)" = PASS ] ||
+		note "the pure suite failed; this run failed for a reason this scenario does not name: $(row unit-suite) — $(why unit-suite)"
+}
+
+# ------------------------------------------- README vs ExampleClient (6) ----
+
+sc_readme_usage_drifts_in_the_readme() {
+	# One direction: the README's own copy of the block goes away. This drives
+	# the vacuity arm as well — two empty extractions diff clean, which is how
+	# this row would pass while comparing nothing.
+	local d="$1"
+	copy_tree "$d"
+	python3 - "$d/README.md" <<-'PY'
+		import re, sys
+		p = sys.argv[1]
+		s = open(p).read()
+		m = re.search(r"\n```go\n.*?\n```\n", s, re.S)
+		if m is None:
+		    sys.exit(3)
+		open(p, "w").write(s[: m.start()] + "\n" + s[m.end() :])
+	PY
+	if grep -q 'func ExampleClient() {' "$d/README.md"; then
+		refuse "the README still carries the example; the plant did not apply"
+	fi
+	run_verify "$d"
+	[ "$RC" -ne 0 ] || note "a README with no Usage block passed"
+	[ "$(row readme-usage)" = FAIL ] || note "the row did not notice its own side was empty: $(row readme-usage) — $(why readme-usage)"
+}
+
+sc_readme_usage_drifts_in_the_example() {
+	# The other direction, and one byte of it: the code the README quotes
+	# changes and the README does not. A row comparing a normalised form would
+	# still catch this one; the row compares them verbatim, which is what the
+	# README's sentence says.
+	local d="$1"
+	copy_tree "$d"
+	edit "$d/runtime/example_test.go" \
+		'log.Printf("%s via %s until %s", ev.Lease.Addr, ev.Lease.Gateway, ev.Lease.Expire)' \
+		'log.Printf("%s via %s expiring %s", ev.Lease.Addr, ev.Lease.Gateway, ev.Lease.Expire)'
+	run_verify "$d"
+	[ "$RC" -ne 0 ] || note "the example drifted from the README and the run passed"
+	[ "$(row readme-usage)" = FAIL ] || note "the row did not see the example move: $(row readme-usage) — $(why readme-usage)"
+	out_has 'byte for byte' ||
+		note "the diagnosis does not say what the claim was that failed"
+}
+
+# ------------------------------------------------ the declared scope (2) ----
+
+sc_oracle_scope_fabricated() {
+	# The strongest fake this design has, told to lie about ONE thing: the
+	# scope one scenario ran at. Everything else in its account is correct and
+	# derived from the manifest, which is the point — the scope is part of what
+	# a scenario is held to, so a fake that reproduces everything but the scope
+	# must not pass.
+	local d="$1"
+	copy_tree "$d"
+	fabricating_stub "$d/scripts/test-verify.sh" "$((ORACLE_MIN_SECONDS + 1))" \
+		"scope-fabricated" "${#MANIFEST_SCENARIOS[@]}" control
+	run_verify_outer "$d"
+	[ "$RC" -ne 0 ] || note "an oracle claiming the control ran at a scope it is not declared for passed"
+	[ "$(row verify-oracle)" = FAIL ] || note "a fabricated scope did not fail the oracle row: $(row verify-oracle)"
+	out_has 'scope:full' ||
+		note "the breach does not name the scope the manifest declares"
 }
 
 sc_ceiling_band() {
@@ -1398,7 +1980,7 @@ sc_ceiling_band() {
 # keeps the file the oracle it was: still a single-file edit, still fabricating
 # everything, still the strongest defeat this design has.
 fabricating_stub() {
-	local file="$1" nap="$2" marker="$3" claim="${4:-${#MANIFEST_SCENARIOS[@]}}" c n rc tok dg o srow block anchor
+	local file="$1" nap="$2" marker="$3" claim="${4:-${#MANIFEST_SCENARIOS[@]}}" flip="${5:-}" c n rc tok dg o srow block anchor scope
 	block="$(
 		printf '#!/bin/sh\n'
 		[ "$nap" -gt 0 ] && printf 'sleep %s\n' "$nap"
@@ -1415,11 +1997,22 @@ fabricating_stub() {
 			# bound — the contract table is a specification of exactly what a
 			# terminal fake must print.
 			case "$tok" in
-			*:FAIL | *:PASS | *:ABSENT)
+			*:FAIL | *:PASS | *:ABSENT | *:SKIPPED)
 				srow="${tok%%:*}"
 				o="$o,why:$srow:$dg"
 				;;
 			esac
+			# The SCOPE too, for the same reason and from the same place: it
+			# is part of what verify.sh holds a scenario to, so a fake that
+			# does not reproduce it is not the strongest fake. FLIP names the
+			# one scenario whose scope this stub lies about, which is how the
+			# check on it is driven (scenario oracle-scope-fabricated).
+			scope=full
+			if in_list "$n" "${MANIFEST_LIGHT_SCENARIOS[@]}"; then scope=light; fi
+			if [ "$n" = "$flip" ]; then
+				if [ "$scope" = light ]; then scope=full; else scope=light; fi
+			fi
+			if [ "$rc" != static ]; then o="$o,scope:$scope"; fi
 			printf 'echo "  RESULT %s PASS obs=%s"\n' "$n" "$o"
 		done
 		printf 'echo "ORACLE PASS: %s scenarios, %s"\nexit 0\n' "$claim" "$marker"
@@ -1485,7 +2078,7 @@ sc_oracle_too_fast() {
 	run_verify_from_parent "$d"
 	[ "$RC" -ne 0 ] || note "an oracle that reported a perfect account in zero seconds passed"
 	[ "$(row verify-oracle)" = FAIL ] || note "an instant fabrication did not fail its row: $(row verify-oracle)"
-	printf '%s\n' "$OUT" | grep -q 'without doing the work' || note "the diagnosis does not say the oracle did not run"
+	out_has 'without doing the work' || note "the diagnosis does not say the oracle did not run"
 }
 
 sc_scenario_body_emptied() {
@@ -1507,9 +2100,19 @@ sc_scenario_body_emptied() {
 	# Half one, end to end: the emptied body reports an EMPTY observation. Note
 	# that it still reports PASS — it has nothing to complain about — which is
 	# precisely why the verdict cannot be left to the body.
+	#
+	# "Empty" is what the BODY contributed, not what the line holds: since
+	# 2026-09-05 the dispatcher records the scope it ran the scenario at, and
+	# that token is on every line whatever the body does. So the expected line
+	# is derived from the manifest's own declaration for this scenario rather
+	# than written as `obs=$`, which stopped matching the moment the scope
+	# token appeared and would have made this scenario pass for the wrong
+	# reason if it had been relaxed to a prefix.
+	local want_scope=full
+	in_list record-refuses-uncounted-pass "${MANIFEST_LIGHT_SCENARIOS[@]}" && want_scope=light
 	out="$(cd "$d" && ./scripts/test-verify.sh --scenario record-refuses-uncounted-pass 2>&1)"
-	printf '%s\n' "$out" | grep -q '^RESULT record-refuses-uncounted-pass PASS obs=$' ||
-		note "an emptied body did not report an empty observation: $out"
+	str_has "$out" "^RESULT record-refuses-uncounted-pass PASS obs=scope:$want_scope\$" ||
+		note "an emptied body did not report an empty observation (only the dispatcher's scope:$want_scope was expected): $out"
 
 	# Half two: an empty observation fails the row, through verify.sh, against
 	# the manifest's contract.
@@ -1518,9 +2121,9 @@ sc_scenario_body_emptied() {
 	run_verify_from_parent "$d"
 	[ "$RC" -ne 0 ] || note "a scenario reported PASS having observed nothing and the run passed"
 	[ "$(row verify-oracle)" = FAIL ] || note "an emptied body did not fail the oracle row: $(row verify-oracle)"
-	printf '%s\n' "$OUT" | grep -q 'without observing what verify.manifest.sh says' ||
+	out_has 'without observing what verify.manifest.sh says' ||
 		note "the diagnosis does not say the scenario observed nothing"
-	printf '%s\n' "$OUT" | grep -q 'record-refuses-uncounted-pass' ||
+	out_has 'record-refuses-uncounted-pass' ||
 		note "the diagnosis does not name which scenario stopped working"
 }
 
@@ -1542,7 +2145,7 @@ sc_observation_recorder_stubbed() {
 	# make every contract vacuous in one edit, which is the worst failure
 	# available to this design.
 	out="$(cd "$d" && ./scripts/test-verify.sh --scenario gofmt-violation 2>&1)"
-	printf '%s\n' "$out" | grep -q '^RESULT gofmt-violation PASS obs=$' ||
+	str_has "$out" '^RESULT gofmt-violation PASS obs=$' ||
 		note "a gutted recorder did not produce an empty observation: $out"
 
 	# Half two: all observations empty fails the row, and names scenarios.
@@ -1551,7 +2154,7 @@ sc_observation_recorder_stubbed() {
 	run_verify_from_parent "$d"
 	[ "$RC" -ne 0 ] || note "every scenario observed nothing and the run passed"
 	[ "$(row verify-oracle)" = FAIL ] || note "a gutted recorder did not fail the oracle row: $(row verify-oracle)"
-	printf '%s\n' "$OUT" | grep -q 'without observing what verify.manifest.sh says' ||
+	out_has 'without observing what verify.manifest.sh says' ||
 		note "the diagnosis does not say the scenarios observed nothing"
 }
 
@@ -1580,7 +2183,7 @@ sc_min_declared_tests_margin() {
 	run_verify "$d"
 	[ "$RC" -ne 0 ] || note "tests were added past the band, the manifest was not updated, and the run passed"
 	[ "$(row unit-suite)" = FAIL ] || note "the declared-test band did not fire upward: $(row unit-suite)"
-	printf '%s\n' "$OUT" | grep -q 'set MIN_DECLARED_TESTS=' || note "the diagnosis does not say what number to write"
+	out_has 'set MIN_DECLARED_TESTS=' || note "the diagnosis does not say what number to write"
 }
 
 # ------------------------------------------------------------------- driver --
@@ -1614,9 +2217,12 @@ run_one() {
 	OBSFILE="$(mktemp)"
 	SC_DONE=0
 	SC_NAME="$name"
+	SCOPE=full
+	if in_list "$name" "${MANIFEST_LIGHT_SCENARIOS[@]}"; then SCOPE=light; fi
 	# shellcheck disable=SC2064  # both paths must expand now, not at trap time
 	trap "run_one_exit \$? '$d' '$OBSFILE'" EXIT
 	FAILS=()
+	obs "scope:$SCOPE"
 	"$fn" "$d"
 	SC_DONE=1
 	# What the scenario actually did to the subject, as opposed to what it is
@@ -1624,15 +2230,67 @@ run_one() {
 	observed="$(LC_ALL=C sort -u "$OBSFILE" | tr '\n' ',' | sed 's/,$//')"
 	if [ "${#FAILS[@]}" -eq 0 ]; then
 		printf 'RESULT %s PASS obs=%s\n' "$name" "$observed"
-	else
-		printf 'RESULT %s FAIL obs=%s %s\n' "$name" "$observed" "$(printf '%s; ' "${FAILS[@]}")"
+		return 0
 	fi
+	printf 'RESULT %s FAIL obs=%s %s\n' "$name" "$observed" "$(printf '%s; ' "${FAILS[@]}")"
+	# ROUND 2, 2026-09-05, finding 6. A --scenario run used to exit 0 for a
+	# PASS and a FAIL alike — only refuse() ever exited non-zero — so anything
+	# reading the exit status of one scenario read every scenario as a pass.
+	# MEASURED: round 1's own hang-bounded negative control did exactly that,
+	# and had to be rewritten to parse the RESULT line. The parent driver below
+	# reads the RESULT lines and is unaffected either way; a person, a mutation
+	# harness and every other caller are not. Scenario
+	# scenario-rc-follows-the-verdict.
+	return 1
 }
+
+# A light scenario may not READ a row a light run does not produce. MEASURED
+# 2026-09-05, and this refusal is what the measurement bought: seven scenarios
+# that plant a comment or a constant read the unit-suite row as their own
+# NEGATIVE CONTROL -- "this run failed for a reason this scenario does not
+# name" -- and were declared light on the rule that looked at their CONTRACT.
+# A contract names one row; a body may read several. All seven failed together
+# on the first full run after the split, each with `ABSENT -- (row absent)`.
+#
+# It is a REFUSAL, before any scenario runs and above the --scenario dispatch
+# so a single-scenario run gets it too, rather than a scenario of its own: the
+# fault is in the DECLARATION, and a run that has already spent its wall clock
+# discovering it has spent it for nothing.
+#
+# ONE pass over this file, not one per light scenario, because this runs in
+# every one of the parallel children as well as in the parent.
+#
+# It is keyed on SPELLING, and that bound is stated rather than argued away: a
+# body reading a row through a variable is invisible here, and a body naming a
+# row inside a comment is refused although it reads nothing. Fail-closed in the
+# direction that costs seconds, not verdicts. The declared/defined cross-check
+# further down is the one that refuses a light name with no function at all;
+# this one reports it too, because it has to look the body up to do its job.
+light_breaches="$(awk \
+	-v fns="$(printf '%s\n' "${MANIFEST_LIGHT_SCENARIOS[@]}" | tr - _ | sed 's/^/sc_/' | tr '\n' ' ')" \
+	-v rows="${MANIFEST_SCOPED_OUT_ROWS[*]}" '
+BEGIN {
+	n = split(fns, a, " ")
+	for (i = 1; i <= n; i++) want[a[i]] = 1
+	m = split(rows, r, " ")
+}
+/^sc_[a-z0-9_]+\(\) \{$/ { cur = substr($1, 1, index($1, "(") - 1); seen[cur] = 1; next }
+/^\}$/ { cur = ""; next }
+cur != "" && (cur in want) {
+	for (i = 1; i <= m; i++)
+		if (index($0, "row " r[i]) || index($0, "why " r[i]))
+			print cur " reads the " r[i] " row"
+}
+END { for (f in want) if (!(f in seen)) print f " is declared light and has no body in this file" }
+' "$0" | sort -u | tr '\n' ';')"
+[ -z "$light_breaches" ] ||
+	refuse "verify.manifest.sh declares scenario(s) light whose bodies read a row --light does not run, so the row would read ABSENT and the scenario would fail on its own assertion: ${light_breaches%;}. Either drop them from MANIFEST_LIGHT_SCENARIOS or stop reading the row"
 
 if [ "${1:-}" = "--scenario" ]; then
 	[ -n "${2:-}" ] || refuse "--scenario needs a name"
-	run_one "$2"
-	exit 0
+	sc_rc=0
+	run_one "$2" || sc_rc=$?
+	exit "$sc_rc"
 fi
 
 [ "${#SCENARIOS[@]}" -gt 0 ] || refuse "no scenarios are declared; the oracle's domain is empty"
@@ -1660,6 +2318,7 @@ if [ "$declared" != "$defined" ]; then
 	printf 'defined : %s\n' "$(printf '%s' "$defined" | tr '\n' ' ')" >&2
 	refuse "the SCENARIOS list and the sc_* functions in this file do not match"
 fi
+
 
 # ROUND 11: the row-coverage check that stood here is DELETED, not repaired.
 #

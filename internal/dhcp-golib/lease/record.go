@@ -34,7 +34,12 @@ type Record struct {
 	ID    string
 	Scope string
 
-	// Family is the address family. Only FamilyV4 exists today.
+	// Family is the address family, written ONCE: a record binds in one
+	// family and a second, different one is a reject rather than an
+	// overwrite. FamilyV4 is RFC 2131's client and FamilyV6 is RFC 9915's;
+	// a caller that runs both on one endpoint keeps two records, because
+	// the two have different identities, different lifetimes and different
+	// conflict checks and nothing about them folds together.
 	Family Family
 
 	// CHAddr is the hardware address the link wears. It may change at a
@@ -96,6 +101,36 @@ type Record struct {
 	// chassis's evidence for what a half-checked lease was, not this library's
 	// control input.
 	ACD proto.ACDPhase
+
+	// DAD is where RFC 4862 section 5.4's duplicate address detection stood at
+	// the last lease event folded in, and it is ACD's counterpart for a v6
+	// record. It is proto.DADIdle on every v4 record, which reads correctly:
+	// that client runs RFC 5227 instead and reports it in ACD.
+	//
+	// NOTHING IN THIS LIBRARY READS IT. Stated here, on the field, in the same
+	// words ACD uses and for the same reason: the chassis author (M7d) is the
+	// only consumer and this is where they will look. MEASURED at this round's
+	// head: the readers of Record.DAD and RecordEvent.DAD are the fold, the
+	// JSON tag and the tests; proto.Resume6 carries addresses, lifetimes and a
+	// server DUID and nothing else.
+	//
+	// IT CARRIES LESS WEIGHT THAN ACD DOES, and the difference is worth
+	// stating because the two fields look alike. ACD exists because
+	// proto.ConflictAsync tells a v4 caller Acquired while the check is still
+	// running, so a restart inside that window is a real state. RFC 9915
+	// section 18.2.10.1 leaves no such window — "The client performs the
+	// duplicate address detection before using the received addresses for any
+	// traffic" — so a v6 record that says anything but proto.DADPassed beside
+	// a held lease is a record of a client killed mid-acquisition, not of a
+	// lease in service. What the field is good for is exactly that: telling
+	// those two apart after a crash.
+	DAD proto.DADPhase
+
+	// Config is the stateless configuration this identity last received, from
+	// RFC 9915 section 18.2.6's Information-request or from the Reply that
+	// granted the lease. Zero for a v4 record: RFC 2131 carries the same
+	// facts in the lease's own options, which are in Lease.Options.
+	Config Configuration
 
 	// Deadline is when a RETAINED record may be closed: the caller's
 	// min(lease expiry, tombstone TTL). Zero outside RETAINED.
@@ -397,6 +432,13 @@ type RecordEvent struct {
 	// OpLease and OpLost. See Record.ACD.
 	ACD proto.ACDPhase `json:"acd,omitempty"`
 
+	// DAD is the duplicate-address-detection phase the manager event carried,
+	// for Record.DAD.
+	DAD proto.DADPhase `json:"dad,omitempty"`
+
+	// Config is the stateless configuration, on a Configured event only.
+	Config *Configuration `json:"config,omitempty"`
+
 	// Stats is a manager snapshot, for OpStats.
 	Stats *Stats `json:"stats,omitempty"`
 
@@ -517,6 +559,11 @@ type RecordCounters struct {
 	// nothing.
 	StoppedNotLost uint64 `json:"stopped_not_lost,omitempty"`
 
+	// Configurations counts RFC 9915 section 18.2.6's stateless answers this
+	// identity received. Zero on a v4 record: RFC 2131's DHCPINFORM is not a
+	// message this library sends.
+	Configurations uint64 `json:"configurations,omitempty"`
+
 	Failures  uint64 `json:"failures,omitempty"`
 	Naks      uint64 `json:"naks,omitempty"`
 	Timeouts  uint64 `json:"timeouts,omitempty"`
@@ -575,12 +622,37 @@ type WireCounters struct {
 	ARPIgnored        uint64 `json:"arp_ignored,omitempty"`
 	ARPDecodeFailures uint64 `json:"arp_decode_failures,omitempty"`
 	ARPErrors         uint64 `json:"arp_errors,omitempty"`
+
+	// The IPv6 wire counters. They belong here for the ARP counters' reason:
+	// nothing in a record's own event stream counts a Neighbor Discovery
+	// frame, a Router Solicitation, a duplicate address detection request or
+	// a message RFC 9915 section 14.1's bucket refused. A record carries
+	// lease events, and none of those produces one.
+	//
+	// DADConflicts is here beside the folded Conflicts and is NOT the same
+	// number: Conflicts counts every conflict in either family, and this
+	// counts the v6 ones, so their difference is how many came from RFC
+	// 5227's check rather than RFC 4862's.
+	//
+	// ConfiguredEvents is NOT here, and that is the same rule read the other
+	// way: the record folds it from its own Configured events into
+	// RecordCounters.Configurations, so carrying it on the wire half too
+	// would be one fact derived twice.
+	RateLimited        uint64 `json:"rate_limited,omitempty"`
+	NDSeen             uint64 `json:"nd_seen,omitempty"`
+	NDIgnored          uint64 `json:"nd_ignored,omitempty"`
+	NDErrors           uint64 `json:"nd_errors,omitempty"`
+	NDSendFailures     uint64 `json:"nd_send_failures,omitempty"`
+	RouterSolicitsSent uint64 `json:"router_solicits_sent,omitempty"`
+	RouterAdvertsSeen  uint64 `json:"router_adverts_seen,omitempty"`
+	DADChecksStarted   uint64 `json:"dad_checks_started,omitempty"`
+	DADConflicts       uint64 `json:"dad_conflicts,omitempty"`
 }
 
-// The six Stats fields WireCounters deliberately does not carry, because the
+// The seven Stats fields WireCounters deliberately does not carry, because the
 // fold derives the same fact from the record's own events: LeasesAcquired,
-// LeasesLost, AcquireFailures, RenewalsCompleted, NaksAccepted and
-// ConflictsDetected.
+// LeasesLost, AcquireFailures, RenewalsCompleted, NaksAccepted,
+// ConflictsDetected and ConfiguredEvents.
 //
 // Named here as data rather than in prose so the disjointness test can read it.
 var statsFoldedInstead = map[string]string{
@@ -589,6 +661,10 @@ var statsFoldedInstead = map[string]string{
 	"AcquireFailures":   "Failures",
 	"RenewalsCompleted": "Renewals",
 	"NaksAccepted":      "Naks",
+	// The v6 stateless answer, counted at the event that reports it exactly
+	// as an acquisition is: two counters for one fact would part company the
+	// moment a record outlived its manager, which is M-3's whole point.
+	"ConfiguredEvents": "Configurations",
 	// Both paths, in two arms that cannot both fire for one conflict:
 	// foldLost's for a conflict on a lease already in service (RFC 5227
 	// section 2.4), foldLease's Failed arm for one found before the address
@@ -699,6 +775,18 @@ func Fold(rec Record, ev RecordEvent) (Record, error) {
 	// impossible, so it is refused rather than quietly overwritten.
 	if len(ev.Identity) > 0 && len(rec.Identity) > 0 && !bytesEqual(ev.Identity, rec.Identity) {
 		return reject(RejectIdentity, "the identity is written once and is already set")
+	}
+
+	// §11: the DUID "SHOULD NOT change over time if at all possible", and on a
+	// v6 record the DUID and IAID as sent are the WHOLE of what ties a lease
+	// to this client across a restart — a DHCPv6 server binds on the DUID and
+	// the client's hardware address appears nowhere in the exchange, so a v6
+	// record has no CHAddr to fall back on the way a v4 one does. A v6 record
+	// created with no identity could never be resumed, so it is refused where
+	// the record comes into existence rather than stored empty and found
+	// useless at the restart it existed for.
+	if creating && ev.Family == FamilyV6 && len(ev.Identity) == 0 {
+		return reject(RejectIdentity, "a v6 record carries the DUID and IAID as sent and they are refused empty (RFC 9915 §11)")
 	}
 
 	// The family, on the same rule and for the same reason. It was the one
@@ -862,6 +950,7 @@ func foldLease(rec Record, ev RecordEvent) (Record, error) {
 		rec.Lease = CloneLease(*ev.Lease)
 		rec.Held = true
 		rec.ACD = ev.ACD
+		rec.DAD = ev.DAD
 		switch ev.Kind {
 		case Acquired:
 			rec.Counters.Acquisitions++
@@ -870,6 +959,18 @@ func foldLease(rec Record, ev RecordEvent) (Record, error) {
 		case Renewed:
 			rec.Counters.Renewals++
 		}
+	case Configured:
+		if ev.Config == nil {
+			return rec, &Reject{Reason: RejectPayload, Op: ev.Op, Phase: rec.Phase, ID: ev.ID, Seq: ev.Seq,
+				Note: "configured with no configuration"}
+		}
+		// NO LEASE AND NO Held CHANGE. RFC 9915 section 18.2.6's exchange
+		// grants nothing: a record that set Held here would claim an address
+		// on the strength of a message that carries none, and a record that
+		// CLEARED it would lose a live lease because the client refreshed its
+		// DNS servers.
+		rec.Config = cloneConfiguration(*ev.Config)
+		rec.Counters.Configurations++
 	case Failed:
 		rec.Counters.Failures++
 		switch ev.Reason {
@@ -907,6 +1008,7 @@ func foldLost(rec Record, ev RecordEvent) Record {
 	// ACDIdle — the sub-machine stops when it declines — and that is the fact
 	// a resuming process needs: there is nothing in flight to resume.
 	rec.ACD = ev.ACD
+	rec.DAD = ev.DAD
 	if ev.Reason == proto.ReasonStopped {
 		// P-7. Cancelling a manager makes ring 1 drop the lease with this
 		// reason, so it arrives at the end of every ordinary shutdown and at
@@ -1056,4 +1158,14 @@ func bytesEqual(a, b []byte) bool {
 		}
 	}
 	return true
+}
+
+// cloneConfiguration deep-copies a Configuration, for CloneLease's reason: a
+// record that shared a slice with the event it was folded from would change
+// under a caller that mutated its own copy.
+func cloneConfiguration(c Configuration) Configuration {
+	out := c
+	out.DNS = append([]netip.Addr(nil), c.DNS...)
+	out.Search = append([]string(nil), c.Search...)
+	return out
 }
