@@ -96,8 +96,8 @@
 # What dominates these is not the container work every sibling row
 # shares -- there are no containers here at all -- but two waits whose
 # lengths are known: a segment that MUST advertise settles in about
-# 1.0s (dnsmasq's first advertisement, MEASURED 88 of 90 bring-ups in
-# 0.93-1.04s, 2 at 13-18ms on the same schedule branch; the block in
+# 1.0s (dnsmasq's first advertisement, MEASURED 97 of 99 observations in
+# 0.931-1.041s, 2 at 13-18ms on the same schedule branch; the block in
 # v6signature.go says which branch and why) on top of roughly 0.3s of
 # bridge/process setup and teardown; a segment that must NOT advertise
 # costs the derived absence window, V6NoRAWindow() = 2 x RABudget() =

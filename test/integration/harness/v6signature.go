@@ -557,28 +557,66 @@ func ParseRA(b []byte) (RAFrame, bool) {
 // and it OVERWRITES the draw before the draw can ever fire. The 0..5 s
 // arithmetic is real code that this configuration does not execute.
 //
-// MEASURED, 90 bring-ups, both exits of `send_alarm`
+// MEASURED, 99 observations, both exits of `send_alarm`
 // (`dnsmasq.c:1371-1379`) represented:
 //
-//	88 x  0.93 s .. 1.04 s   alarm(1) was armed and delivered
-//	 2 x  13 ms and 18 ms    the cached `now` had already reached
-//	                         ra_time when send_alarm ran, so it took
-//	                         the "alarm(0) doesn't do what we want"
-//	                         path and posted EVENT_ALARM immediately
+//	97 x  0.931 s .. 1.041 s  alarm(1) was armed and delivered
+//	 2 x  13 ms and 18 ms     the cached `now` had already reached
+//	                          ra_time when send_alarm ran, so it took
+//	                          the "alarm(0) doesn't do what we want"
+//	                          path and posted EVENT_ALARM immediately
 //
 // Both of those are the SAME schedule branch. The sub-20 ms pair is not
 // a second draw; it is the alarm arriving without a timer, which is the
-// only other exit send_alarm has.
+// only other exit send_alarm has. Nothing landed between 18 ms and
+// 0.931 s, and nothing landed above 1.041 s -- a uniform 0..5 s draw
+// could not produce that, which is the observation that rules the draw
+// out from the data as well as from the source.
 //
-// 60 of the 90 are consecutive bring-ups off the lane with this
-// fixture's exact argv; 30 are every observation the lane logged across
-// runs 33995361430, 33996052773, 33996650903, 33997007028, 33997353467,
-// 33997868882 and 34000578906, and the two sub-20 ms frames are both
-// from the lane (33997868882 main-4 slaac, 13 ms; 33997353467 main-4
-// managed, 18 ms).
-// Nothing in 90 landed anywhere near the 0..5 s draw, which is what the
-// source says should happen and is why the draw is cited as a bound
-// rather than as a description.
+// THE POPULATION, so the next reader can recount it rather than trust
+// it. Two parts, and every number below is a count of lines, not a
+// recollection:
+//
+// 60 consecutive bring-ups off the lane, this fixture's exact argv,
+// one dnsmasq per bring-up, first frame taken from an AF_PACKET capture
+// opened before the server started: min 0.931 s, max 0.971 s, no
+// outlier. None of these overshoot the 1 s schedule, because dnsmasq's
+// `now + 1` fires at a second boundary that can fall less than a second
+// after exec.
+//
+// 39 on the lane: every "first ... after the server started" line the
+// branch's Integration runs had logged up to and including 34001581367,
+// four per run from the mode contract test and one from the
+// vantage-point test. That run is where the population is CLOSED, and
+// the closure is stated because it has to be: every later run of this
+// branch -- including the one that carries this comment -- adds five
+// more observations, so a total written without a cut-off is false the
+// moment it is pushed. Ten runs, named, one grep each:
+//
+//	33994533077  n=1   max 1.018 s   only the vantage-point test logged
+//	                                 a delay at that head
+//	33995361430  n=5   max 1.019 s
+//	33996052773  n=5   max 1.041 s   the largest overshoot anywhere
+//	33996650903  n=3   max 1.026 s   MUT-A: managed had no --enable-ra,
+//	                                 so that mode and the vantage-point
+//	                                 test logged no delay
+//	33997007028  n=0   --            MUT-B: the constructor's assertion,
+//	                                 and with it the wait, was removed;
+//	                                 the capture was read 80 ms in
+//	33997353467  n=5   max 1.032 s   holds the 18 ms frame
+//	33997868882  n=5   max 1.019 s   holds the 13 ms frame
+//	34000578906  n=5   max 1.018 s
+//	34000948877  n=5   max 1.025 s
+//	34001581367  n=5   max 1.020 s
+//
+// 1+5+5+3+0+5+5+5+5+5 = 39, and 60 + 39 = 99, which is the total this
+// block, `v6modes.go` and the durations header all carry. The four
+// mutant heads stay in the population because none of them changed
+// dnsmasq's argv for a mode that logged a delay: MUT-A only silenced
+// modes -- they logged nothing rather than something wrong -- MUT-B
+// removed the wait, and MUT-C and MUT-D touched the capture's binding
+// and its `since` filter, neither of which moves the server's
+// schedule.
 //
 // The gaps between LATER advertisements do exercise `rand16()`, and
 // they spread as the source says: 8, 12, 12, 15, 19 s and 5, 5, 18, 18
@@ -612,13 +650,15 @@ func DnsmasqFirstRAUpperBound() time.Duration {
 // parse, the netlink enumeration, and SIGALRM delivery on a loaded
 // runner.
 //
-// dnsmasq's schedule is exact in its own integer-second clock, so all
-// 85 measured bring-ups should sit at or below their scheduled second
-// and the overshoot is the slop. The largest observed was 41 ms
-// (1.041 s against a 1 s schedule, run 33997868882). One second is
-// twenty-four times that, and it is a round number rather than a
-// percentile because a percentile of 85 samples on two machines is not
-// a distribution.
+// dnsmasq's schedule is exact in its own integer-second clock, so a
+// bring-up should sit at or below its scheduled second and the
+// overshoot is the slop. The largest overshoot in the 99 observations
+// above is 41 ms -- 1.041 s against a 1 s schedule, run 33996052773,
+// which is the run whose maximum that is; every other run's maximum is
+// 1.032 s or less, and the 60 off-lane bring-ups top out at 0.971 s and
+// overshoot nothing. One second is twenty-four times the largest
+// overshoot, and it is a round number rather than a percentile because
+// a percentile of 99 samples on two machines is not a distribution.
 const firstRASlop = 1 * time.Second
 
 // V6NoRAWindow is how long the fixture must watch a segment before it
@@ -650,7 +690,7 @@ func V6NoRAWindow() time.Duration {
 // wrong MODE, because a segment with no advertisement in hand is a
 // segment that classifies as nora. That is the failure this number
 // exists to prevent, and the reason it follows from the source instead
-// of from the fastest 85 bring-ups anyone happened to run.
+// of from the fastest bring-ups anyone happened to run.
 func RABudget() time.Duration { return DnsmasqFirstRAUpperBound() + firstRASlop }
 
 // --- the exchange --------------------------------------------------------
@@ -689,6 +729,74 @@ var dnsmasqV6MessageNames = []string{
 	"DHCPREPLY",
 	"DHCPREQUEST",
 	"DHCPSOLICIT",
+}
+
+// DnsmasqTablesTranscribedFrom is the dnsmasq version the two tables
+// above were read out of, and it is the premise the whole derivation
+// rests on: v6-minus-v4 is a statement about the message names ONE
+// dnsmasq prints.
+//
+// Round 2's record claimed the lane "asserts" this version. It logged
+// it. The difference matters because the failure a version change
+// produces is silent in the safe-looking direction: 2.92 adding or
+// renaming a v6 message name drops that name out of V6OnlyDHCPTokens(),
+// so SLAAC's must-NOT column quietly stops forbidding it and no test
+// says anything. The runner has moved before -- 2.92rel2 on 2026-08-27,
+// 2.91 on 2026-09-05.
+//
+// The ruling: a different version is a RED, in the fixture, naming the
+// version and the premise. It is not a "stated bound", because a bound
+// nobody executes is what round 2 shipped. The cost is bounded too --
+// this can only fire on a deliberate runner-image change, and the
+// message says what to redo -- and the alternative is a derivation that
+// keeps returning an answer about a program the lane stopped running.
+const DnsmasqTablesTranscribedFrom = "2.91"
+
+// DnsmasqVersionFindings reports how the `dnsmasq --version` probe
+// disagrees with the version the tables were transcribed from. Empty
+// means it agrees.
+//
+// It takes the probe's output rather than running the probe so both of
+// its outcomes are driven in the fast lane, including the one the lane
+// cannot produce: an unreadable probe. That one is a finding too. The
+// probe's own error path returns a sentence rather than an error, so
+// "could not read dnsmasq --version" would otherwise parse as "no
+// version found" and, under any rule keyed on a mismatch, pass.
+func DnsmasqVersionFindings(probe string) []string {
+	got, ok := parseDnsmasqVersion(probe)
+	if !ok {
+		return []string{fmt.Sprintf(
+			"the dnsmasq version probe returned %q, which carries no version; the DHCP "+
+				"message-name tables in v6signature.go were transcribed from %s's source and "+
+				"nothing here can say whether that still holds",
+			probe, DnsmasqTablesTranscribedFrom)}
+	}
+	if got != DnsmasqTablesTranscribedFrom {
+		return []string{fmt.Sprintf(
+			"this dnsmasq is %s; the DHCP message-name tables in v6signature.go were "+
+				"transcribed from %s's src/rfc2131.c and src/rfc3315.c, and V6OnlyDHCPTokens() "+
+				"is v6-minus-v4 over those tables. A version that adds or renames a v6 message "+
+				"name makes that set silently short, so re-run the two greps named beside the "+
+				"tables against %s's source and update them and this constant together",
+			got, DnsmasqTablesTranscribedFrom, got)}
+	}
+	return nil
+}
+
+// parseDnsmasqVersion pulls the version out of `dnsmasq --version`'s
+// first line, which reads "Dnsmasq version 2.91  Copyright ...".
+func parseDnsmasqVersion(probe string) (string, bool) {
+	fields := strings.Fields(probe)
+	for i, f := range fields {
+		if strings.EqualFold(f, "version") && i+1 < len(fields) {
+			v := fields[i+1]
+			if v == "" || !(v[0] >= '0' && v[0] <= '9') {
+				return "", false
+			}
+			return v, true
+		}
+	}
+	return "", false
 }
 
 // V6OnlyDHCPTokens is the DERIVED set: printed by dnsmasq's v6 path and
@@ -803,15 +911,37 @@ var v6ExchangeContract = map[V6Mode]v6ExchangeRule{
 // v4 path also prints -- instead of asserting that today's table is
 // today's table.
 //
-// The rule it enforces is the property, not a list: a must-NOT column
-// may only name tokens in V6OnlyDHCPTokens(). The must column is
-// guarded from the other side instead, by
+// It reads TWO of the three columns, and they carry OPPOSITE rules,
+// because they fail in opposite directions:
+//
+//	mustNot  fails RED. A token the v4 path also prints can fail a
+//	         mode for something its v6 half never did, so EVERY DHCP
+//	         token in the column has to be v6-only.
+//
+//	mustLine fails GREEN. It is a must, and it is the must that names
+//	         a whole line, so a v4 line of the same shape SATISFIES it
+//	         on a segment whose v6 half never spoke. dnsmasq's v4 path
+//	         writes exactly that shape: `log_packet("DHCPRELEASE", ...,
+//	         message, ...)` at rfc2131.c:1096 with message = _("ignored")
+//	         at rfc2131.c:1105. So AT LEAST ONE DHCP token in the line
+//	         has to be v6-only; the rest may be anything.
+//
+// The two are not the same rule with a sign flipped, and writing them
+// as one would be wrong in whichever direction it was written: "every
+// token v6-only" would reject `DHCPSOLICIT ... ignored` if a second,
+// ambiguous token were ever added to it, and "at least one v6-only"
+// would let DHCPDECLINE back into a must-NOT column beside a v6-only
+// neighbour.
+//
+// The must column is guarded from the other side instead, by
 // TestV6ExchangeFindings_AV4OnlyExchangeSatisfiesNoModeAndAccusesNone,
-// which builds a log out of every name in dnsmasqV4MessageNames and
-// requires that it satisfies no mode -- that is the same property
-// stated as an outcome rather than as a rule about a list, and it
-// catches an ambiguous must-token without having to decide in advance
-// which tokens are ambiguous.
+// which builds a log out of dnsmasq's real v4 log LINES -- each name
+// with the `message` word the v4 path appends to it -- and requires
+// that it satisfies no mode. That is the same property stated as an
+// outcome rather than as a rule about a list, it catches an ambiguous
+// must-token without anyone deciding in advance which tokens are
+// ambiguous, and because those lines carry `ignored` it is a second
+// observer of the mustLine rule as well.
 func V6ContractFindings(contract map[V6Mode]v6ExchangeRule) []string {
 	v6only := make(map[string]bool)
 	for _, n := range V6OnlyDHCPTokens() {
@@ -836,8 +966,24 @@ func V6ContractFindings(contract map[V6Mode]v6ExchangeRule) []string {
 						"for something its v6 half never did", mode, tok))
 			}
 		}
+		if len(c.mustLine) > 0 && !anyV6Only(c.mustLine, v6only) {
+			out = append(out, fmt.Sprintf(
+				"mode %s requires the line %v, in which no token is v6-only; dnsmasq's v4 path "+
+					"writes a line of this shape (rfc2131.c:1096 with the message at :1105), so "+
+					"the v4 half alone satisfies this mode on a segment whose v6 half never spoke",
+				mode, c.mustLine))
+		}
 	}
 	return out
+}
+
+func anyV6Only(tokens []string, v6only map[string]bool) bool {
+	for _, tok := range tokens {
+		if v6only[tok] {
+			return true
+		}
+	}
+	return false
 }
 
 // V6ExchangeFindings reports how the server's log disagrees with what

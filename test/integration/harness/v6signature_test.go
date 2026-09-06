@@ -432,6 +432,53 @@ func TestV6ExchangeContract_ForbidsOnlyTokensTheV4PathNeverPrints(t *testing.T) 
 		}
 	}
 
+	// The mustLine column, which is the one that fails GREEN. A line
+	// every one of whose tokens the v4 path also prints is satisfied by
+	// the v4 half alone: dnsmasq writes `DHCPRELEASE(br0) ... ignored`
+	// on the v4 path (rfc2131.c:1096 with the message at :1105), which
+	// is the same shape as the v6 `DHCPSOLICIT ... ignored` that the
+	// managed-silent row -- the one row in this table that has a
+	// mustLine -- requires.
+	for _, tok := range ambiguous {
+		t.Run(V6ManagedSilent.String()+"/requires-line/"+tok, func(t *testing.T) {
+			bad := make(map[V6Mode]v6ExchangeRule, len(v6ExchangeContract))
+			for k, v := range v6ExchangeContract {
+				bad[k] = v
+			}
+			r := bad[V6ManagedSilent]
+			r.mustLine = []string{tok, "ignored"}
+			bad[V6ManagedSilent] = r
+
+			findings := V6ContractFindings(bad)
+			if len(findings) == 0 {
+				t.Fatalf("mode %s may require the line %v, every token of which dnsmasq's v4 "+
+					"path prints; the guard reads the columns that fail red and not the one "+
+					"that fails green", V6ManagedSilent, r.mustLine)
+			}
+			if !strings.Contains(findings[0], tok) || !strings.Contains(findings[0], V6ManagedSilent.String()) {
+				t.Errorf("the finding names neither the mode nor the token: %s", findings[0])
+			}
+		})
+	}
+
+	// The preservation control for that column: a line whose tokens are
+	// ambiguous EXCEPT for one v6-only name is fine, because that one
+	// name is what the v4 path cannot write. Without this the rule
+	// above could be "reject every mustLine" and still pass.
+	for _, tok := range ambiguous {
+		ok := make(map[V6Mode]v6ExchangeRule, len(v6ExchangeContract))
+		for k, v := range v6ExchangeContract {
+			ok[k] = v
+		}
+		r := ok[V6ManagedSilent]
+		r.mustLine = []string{tok, V6OnlyDHCPTokens()[0], "ignored"}
+		ok[V6ManagedSilent] = r
+		if findings := V6ContractFindings(ok); len(findings) != 0 {
+			t.Errorf("a required line carrying the v6-only %q beside the ambiguous %q was "+
+				"refused: %s", V6OnlyDHCPTokens()[0], tok, findings[0])
+		}
+	}
+
 	// A mode with no row at all is a finding, not a silent pass.
 	missing := map[V6Mode]v6ExchangeRule{}
 	for k, v := range v6ExchangeContract {
@@ -459,15 +506,31 @@ func TestV6ExchangeContract_ForbidsOnlyTokensTheV4PathNeverPrints(t *testing.T) 
 func TestV6ExchangeFindings_AV4OnlyExchangeSatisfiesNoModeAndAccusesNone(t *testing.T) {
 	// Every v4 message name dnsmasq can print, in one log, including
 	// the two that used to be in SLAAC's must-NOT column. No v6.
+	//
+	// These are LINES, not bare names, and the difference is the point.
+	// dnsmasq's v4 log_packet appends a `message` to the name on the
+	// same line (rfc2131.c:1096, with message = _("ignored") at :1105),
+	// so a v4 line reads `DHCPRELEASE(br0) 192.168.103.10 aa:.. ignored`
+	// -- the same shape as the v6 `DHCPSOLICIT ... ignored` the
+	// stateless row requires. A log built from bare names could not
+	// have caught a mustLine satisfied by the v4 half, so this test
+	// would have been the second observer of a rule it could not see.
 	var b strings.Builder
 	for _, n := range dnsmasqV4MessageNames {
-		fmt.Fprintf(&b, "Sep  6 00:00:00 dnsmasq-dhcp[1]: %s(br0) 192.168.103.10 aa:bb:cc:dd:ee:ff\n", n)
+		fmt.Fprintf(&b, "Sep  6 00:00:00 dnsmasq-dhcp[1]: %s(br0) 192.168.103.10 aa:bb:cc:dd:ee:ff ignored\n", n)
 	}
 	v4Only := b.String()
 	for _, tok := range []string{"DHCPDECLINE", "DHCPRELEASE"} {
 		if !strings.Contains(v4Only, tok) {
 			t.Fatalf("the v4 log this test drives does not contain %q, so it cannot show the "+
 				"conflict path is harmless", tok)
+		}
+	}
+	for _, line := range strings.Split(strings.TrimSpace(v4Only), "\n") {
+		if !strings.Contains(line, "ignored") {
+			t.Fatalf("the v4 log this test drives has a line with no `message` on it (%q); "+
+				"the v4 path writes one, and without it this log cannot exercise a mustLine",
+				line)
 		}
 	}
 
@@ -796,5 +859,53 @@ func TestV6ModeNamesIn_APrefixOfALongerModeNameIsNotThatMode(t *testing.T) {
 				t.Errorf("a message naming only %s also reads as naming %s", b, a)
 			}
 		}
+	}
+}
+
+// TestDnsmasqVersionFindings_TheTranscriptionPremiseIsCheckedNotAssumed
+// is finding 3's observer, and it drives the direction the lane cannot:
+// a runner whose dnsmasq is not the one the tables were read from.
+//
+// The verbatim strings below are `dnsmasq --version`'s first line as
+// this project has actually seen it -- 2.91 on the runner 2026-09-05
+// and 2.92rel2 on the same machine role 2026-08-27 -- plus the sentence
+// dnsmasqVersion() returns when the probe itself fails, which is the
+// case that would otherwise pass by carrying no version at all.
+func TestDnsmasqVersionFindings_TheTranscriptionPremiseIsCheckedNotAssumed(t *testing.T) {
+	const transcribed = "Dnsmasq version 2.91  Copyright (c) 2000-2024 Simon Kelley"
+	if findings := DnsmasqVersionFindings(transcribed); len(findings) != 0 {
+		t.Fatalf("the version the tables were transcribed from is refused: %s", findings[0])
+	}
+
+	refused := []struct {
+		name  string
+		probe string
+	}{
+		{"a later minor", "Dnsmasq version 2.92rel2  Copyright (c) 2000-2024 Simon Kelley"},
+		{"an earlier minor", "Dnsmasq version 2.90  Copyright (c) 2000-2024 Simon Kelley"},
+		{"a later major", "Dnsmasq version 3.0  Copyright (c) 2000-2030 Simon Kelley"},
+		{"the probe failed", "(could not read dnsmasq --version: exec: \"/usr/sbin/dnsmasq\": file does not exist)"},
+		{"empty output", ""},
+	}
+	for _, c := range refused {
+		t.Run(c.name, func(t *testing.T) {
+			findings := DnsmasqVersionFindings(c.probe)
+			if len(findings) == 0 {
+				t.Fatalf("%q is accepted; the tables are v6-minus-v4 over ONE dnsmasq's names, "+
+					"and a version that renames or adds one makes the derived set silently "+
+					"short", c.probe)
+			}
+			if !strings.Contains(findings[0], DnsmasqTablesTranscribedFrom) {
+				t.Errorf("the finding does not name the version the tables came from: %s", findings[0])
+			}
+		})
+	}
+
+	// The premise is a constant a reader can check against the tables,
+	// so it must not drift into something that is not a version.
+	if v, ok := parseDnsmasqVersion("Dnsmasq version " + DnsmasqTablesTranscribedFrom); !ok ||
+		v != DnsmasqTablesTranscribedFrom {
+		t.Errorf("DnsmasqTablesTranscribedFrom = %q does not parse as a version",
+			DnsmasqTablesTranscribedFrom)
 	}
 }

@@ -77,18 +77,33 @@ func TestV6Fixture_ModesComeUpAsRequested(t *testing.T) {
 			delay := frames[0].At.Sub(f.StartedAt())
 			t.Logf("wire: %d advertisement(s), first %s after the server started: %s",
 				len(frames), delay.Round(time.Millisecond), frames[0])
-			// The bound is asserted, not only logged. It is the same
-			// budget assertMode spends, so a delay outside it is a
-			// bring-up assertMode would have given up on and named
-			// `nora` -- and the first record of this measurement was
-			// a comment claiming a range the lane had already
-			// falsified twice, which is what an unasserted number
-			// buys.
-			if delay > harness.RABudget() {
-				t.Errorf("first advertisement %s after the server started, outside the "+
-					"derived budget %s; assertMode spends exactly this budget, so a "+
-					"segment this slow is one it would report as %s",
-					delay.Round(time.Millisecond), harness.RABudget(), harness.V6NoRA)
+			// TWO CLOCKS, and they are not the same instant. The
+			// number LOGGED above is measured from the server's
+			// start, because that is what dnsmasq's schedule is
+			// relative to and what the population in
+			// v6signature.go's schedule block counts. The number
+			// ASSERTED below is measured from the instant
+			// assertMode's budget began -- after the readiness wait,
+			// which sits between the two and costs whatever it costs.
+			//
+			// Round 2 asserted the logged number against RABudget()
+			// and called it "the same budget assertMode spends". It
+			// was not: it was a strictly shorter interval, so the
+			// direction was safe and the claim was false, and a
+			// bring-up whose readiness poll cost 500 ms could have
+			// reddened here on a fixture assertMode accepted.
+			//
+			// The bound is asserted rather than only logged because
+			// the first record of this measurement was a comment
+			// claiming a range the lane had already falsified twice,
+			// which is what an unasserted number buys.
+			budgeted := frames[0].At.Sub(f.EvidenceStartedAt())
+			if budgeted > harness.RABudget() {
+				t.Errorf("first advertisement %s after assertMode's budget began (%s after the "+
+					"server started), outside the derived budget %s; that budget is what "+
+					"assertMode spends, so a segment this slow is one it would report as %s",
+					budgeted.Round(time.Millisecond), delay.Round(time.Millisecond),
+					harness.RABudget(), harness.V6NoRA)
 			}
 			// The bytes, so the fast-lane decoder can be pinned to a
 			// frame THIS fixture produced on THIS lane rather than to

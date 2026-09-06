@@ -209,7 +209,15 @@ type V6Fixture struct {
 	// startedAt is the instant dnsmasq was started, and it is the
 	// reference every "after" question is asked against.
 	startedAt time.Time
-	raCap     *RACapture
+	// evidenceStartedAt is the instant the most recent evidence() began
+	// spending its budget -- after waitReady() returned, which is a
+	// different instant from startedAt by however long the readiness
+	// poll took. It is the clock assertMode's budget actually runs on,
+	// and it is exposed so a test that asserts THAT budget measures the
+	// interval assertMode measures rather than a longer one that
+	// happens to contain it.
+	evidenceStartedAt time.Time
+	raCap             *RACapture
 
 	linkUp            bool
 	iptablesInstalled bool
@@ -345,12 +353,24 @@ func newV6Fixture(t V6FixtureT, name V6Mode, rangeArgs []string) *V6Fixture {
 	// the same machine role. Read it, never assume it -- a fixture
 	// validated against a version the runner does not run is a
 	// measurement that never ran.
+	probe := dnsmasqVersion()
 	t.Logf("v6 fixture: mode=%s bridge=%s v4=%s-%s v6=%s dnsmasq=%q",
-		name, V6BridgeName, V6PoolStart, V6PoolEnd, V6SubnetV6CIDR, dnsmasqVersion())
+		name, V6BridgeName, V6PoolStart, V6PoolEnd, V6SubnetV6CIDR, probe)
+	// ...and the version is ASSERTED, not only logged. The message-name
+	// tables the exchange contract derives from were transcribed out of
+	// one dnsmasq's source; a runner carrying a different one makes that
+	// derivation a claim about a program the lane is not running, and
+	// the failure it produces is SILENT -- a renamed or added v6 message
+	// name simply drops out of the derived set and the mode stops
+	// forbidding it. This is the loud version of that, and it fires only
+	// on a deliberate runner-image change.
+	if findings := DnsmasqVersionFindings(probe); len(findings) > 0 {
+		t.Fatalf("v6 fixture mode=%s: %s", name, strings.Join(findings, "; "))
+	}
 
 	// The capture is opened BEFORE dnsmasq starts. The first
 	// advertisement arrives about a second later on this fixture's
-	// branch (MEASURED, 88 of 90 bring-ups; see the schedule block in
+	// branch (MEASURED, 97 of 99 observations; see the schedule block in
 	// v6signature.go for the other two and for which branch they are
 	// on), and a capture opened after it would have to wait for the
 	// next one, which dnsmasq schedules 5 to 19 seconds out.
@@ -444,7 +464,8 @@ func (f *V6Fixture) evidence() V6Evidence {
 	if !want.RA {
 		budget = V6NoRAWindow()
 	}
-	deadline := time.Now().Add(budget)
+	f.evidenceStartedAt = time.Now()
+	deadline := f.evidenceStartedAt.Add(budget)
 	for {
 		log := f.readLog()
 		ev := V6Evidence{
@@ -513,6 +534,18 @@ func (f *V6Fixture) Bridge() string { return V6BridgeName }
 // StartedAt is when the server process started, which is the reference
 // for every "after" question about this segment.
 func (f *V6Fixture) StartedAt() time.Time { return f.startedAt }
+
+// EvidenceStartedAt is the instant assertMode's budget began, which is
+// after the readiness wait and therefore later than StartedAt. A test
+// asserting RABudget() has to measure from here: measuring from
+// StartedAt asserts a strictly shorter interval than assertMode allows,
+// which is safe but is not the claim, and a comment saying it is the
+// same budget would be false by however long waitReady took.
+//
+// Zero until the fixture has taken evidence at least once. Every
+// constructor in this file asserts the mode before returning, so a
+// caller holding a *V6Fixture is past that point.
+func (f *V6Fixture) EvidenceStartedAt() time.Time { return f.evidenceStartedAt }
 
 // RACapture is the segment's router-advertisement capture.
 func (f *V6Fixture) RACapture() *RACapture { return f.raCap }
