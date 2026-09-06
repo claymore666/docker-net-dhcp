@@ -704,7 +704,20 @@ What the option does, concretely:
   address that has just been declined — so the endpoint would decline it
   again, once a second, until the Docker daemon stopped waiting for the
   plugin to answer. The endpoint keeps its address across a restart; it
-  gives that up the moment somebody else is answering for it.
+  gives that up the moment somebody else is answering for it.<br><br>
+  **The escape, stated beside the claim: this covers the address the
+  container asks for when it starts, and not one taken away from it
+  later.** The drop happens in the plugin's own acquisition loop at
+  container creation, which runs at most two passes. Once the container
+  has started, the long-running client holds the preference it was built
+  with, and there is no deadline on it — so if another node takes the
+  address over *after* the container is up, that client declines it
+  about once a second for as long as the container runs. It costs a
+  DHCPDECLINE and a Solicit per second on the segment and the container
+  keeps working on the address it already has; the endpoint recovers on
+  its next restart, which goes through the bounded path above. The fix
+  belongs in the DHCPv6 client itself — an address it has just declined
+  is not one to ask for again — and is tracked for a later 2.x release.
 - **A DUID and IAID that persist.** They are minted once when the
   endpoint is created and stored with it, so a plugin restart, a
   container restart and a plugin upgrade all present the same DHCPv6
