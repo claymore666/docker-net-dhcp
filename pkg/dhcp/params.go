@@ -57,7 +57,12 @@ func ClientIdentity(clientID []byte) []byte {
 // in. TestBuildParams_NeitherManagerDesyncs asserts the equality.
 func buildParams(opts *DHCPClientOptions, once bool) (proto.Params, error) {
 	if opts.V6 {
-		return proto.Params{}, ErrIPv6Unsupported
+		// Not a refusal of IPv6 any more (#911) but a refusal to build
+		// the WRONG family's parameters: proto.Params is RFC 2131's
+		// and a v6 endpoint takes buildParams6. Loud, because the two
+		// have no field in common and a v6 client handed this would
+		// send a DHCPDISCOVER.
+		return proto.Params{}, fmt.Errorf("dhcp: buildParams was asked for a DHCPv6 endpoint")
 	}
 	if len(opts.MAC) == 0 {
 		return proto.Params{}, fmt.Errorf("dhcp: no MAC address for the endpoint")

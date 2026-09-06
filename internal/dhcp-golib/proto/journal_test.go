@@ -2,6 +2,7 @@ package proto
 
 import (
 	"errors"
+	"net/netip"
 	"testing"
 
 	"github.com/claymore666/dhcp-golib/wire"
@@ -243,6 +244,15 @@ func TestJournalEntryEventRoundTrips(t *testing.T) {
 				ev = TimerFired(TimerExpire)
 			case EvActionFailed:
 				ev = ActionFailed(ActionID(42), "ENETDOWN")
+			case EvRouterAdvert:
+				// M7a CARRIED ROW 2, AND ITS OWN TEST WAS HALF THE DEFECT.
+				// This arm used to be `Simple(k)`, so the entry carried no
+				// payload, the journal's default arm reconstructed no payload,
+				// and the round trip agreed. Both halves are fixed here: the
+				// event is built the way a transport builds it, from bytes.
+				ev = RouterAdvertRaw(mustRA(t, raBytes), raBytes)
+			case EvDADResult:
+				ev = DADResult(netip.MustParseAddr("fd00:99::183"), true)
 			default:
 				ev = Simple(k)
 			}
@@ -270,8 +280,42 @@ func TestJournalEntryEventRoundTrips(t *testing.T) {
 				if got, _ := back.Msg.Type(); got != wire.MsgAck {
 					t.Fatalf("message type %s after the round trip", got)
 				}
+			case EvRouterAdvert:
+				if back.RA == nil {
+					t.Fatal("router advertisement round-tripped to a nil advertisement")
+				}
+				if !back.RA.Managed || back.RA.Other {
+					t.Fatalf("M=%t O=%t after the round trip, want M=true O=false; the flags are what decide whether the v6 machine switches to Information-request",
+						back.RA.Managed, back.RA.Other)
+				}
+			case EvDADResult:
+				if back.DAD != ev.DAD {
+					t.Fatalf("DAD outcome %v round-tripped to %v", ev.DAD, back.DAD)
+				}
 			}
 		})
+	}
+}
+
+// raBytes is a Router Advertisement with the Managed flag set: ICMPv6 type
+// 134, code 0, an unset checksum, then RFC 4861 section 4.2's fixed fields.
+var raBytes = []byte{
+	134, 0, 0, 0,
+	64, 0x80, 0x07, 0x08,
+	0, 0, 0, 0,
+	0, 0, 0, 0,
+}
+
+// TestJournalReportsARouterAdvertisementWithNoBytes drives the OTHER half of
+// carried row 2: an entry recorded from proto.RouterAdvert, which carries a
+// decoded advertisement and no bytes, must be reported rather than replayed as
+// a client that saw no router.
+func TestJournalReportsARouterAdvertisementWithNoBytes(t *testing.T) {
+	e := NewJournalEntry(0, at(1), 7, RouterAdvert(&wire.RouterAdvert{Managed: true}),
+		StateInit, StateInit, nil)
+	_, err := e.Event()
+	if !errors.Is(err, ErrJournalNoRA) {
+		t.Fatalf("Event() = %v, want %v", err, ErrJournalNoRA)
 	}
 }
 

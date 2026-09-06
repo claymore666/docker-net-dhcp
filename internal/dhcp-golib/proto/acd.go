@@ -261,8 +261,11 @@ type acd struct {
 	// to the one this client owns. See the bound in the handover.
 	addr netip.Addr
 
-	// hw is this client's hardware address: section 2.1.1's "the hardware
-	// address of any of the host's interfaces", narrowed the same way.
+	// hw is the LINK's hardware address (Params.LinkHWAddr): section 2.1.1's
+	// "the hardware address of the interface through which it is sending the
+	// packet", which is also section 2.4's "any of the host's own interface
+	// addresses" narrowed to one. It is deliberately not Params.CHAddr; see
+	// isOurs.
 	hw []byte
 
 	// sent counts probes in ACDProbing and announcements in ACDAnnouncing.
@@ -605,10 +608,21 @@ func (a *acd) conflictRule(p *wire.ARPPacket) (rule, why string) {
 		// may 'rebroadcast' any received broadcast packets to all recipients,
 		// including the original sender itself. For this reason, the
 		// precaution described above is necessary to ensure that a host is not
-		// confused when it sees its own ARP packets echoed back." An
-		// AF_PACKET socket sees this host's own outgoing frames unconditionally,
-		// so without this check every announcement this client sends is a
-		// conflict with itself and no lease ever survives.
+		// confused when it sees its own ARP packets echoed back."
+		//
+		// WHERE THE ECHO COMES FROM, MEASURED. It is not the socket. An
+		// AF_PACKET socket bound to ETH_P_ARP is registered in the kernel's
+		// ptype_base and dev_queue_xmit_nit walks ptype_all, so it is
+		// delivered INBOUND frames only — MEASURED 2026-09-04, M6 review
+		// round 2, where a netns run with three probes and two announcements
+		// on the wire saw one inbound ARP frame. The echo is the LINK's: the
+		// rebroadcasting hub or access point section 2.1.1's NOTE describes,
+		// and a bridge or relay that forwards the frame back. On such a link,
+		// without this check, every announcement this client sends is a
+		// conflict with itself and no lease survives; on a link that does not
+		// echo, the check costs nothing and is never exercised — which is why
+		// the ring-3 case replays the frames deliberately rather than
+		// assuming the socket will.
 		if p.SenderIP == a.addr && !a.isOurs(p.SenderHW) {
 			return "RFC 5227 2.4", hw(p.SenderHW) + " is using " + a.addr.String() +
 				", which this client holds"
@@ -620,10 +634,22 @@ func (a *acd) conflictRule(p *wire.ARPPacket) (rule, why string) {
 	}
 }
 
-// isOurs reports whether hw is this client's hardware address.
+// isOurs reports whether hw is the hardware address of the interface this
+// client leases on: Params.LinkHWAddr, NOT Params.CHAddr.
+//
+// WHICH ADDRESS, AND WHY IT IS NOT THE IDENTITY. Every frame this host's own
+// kernel emits for the leased address — the ARP Reply section 2.5 makes
+// mandatory, an ordinary neighbour Request — carries the INTERFACE's hardware
+// address. A client whose CHAddr is some other stable identity (which this
+// project's plugin has a case for) and whose exemption tested CHAddr therefore
+// declined its own lease on every acquisition: MEASURED, M6 review round 2,
+// 2026-09-04, one DHCPDECLINE and state INIT in both phases. The probes this
+// file builds carry the same field, which is section 2.1.1's MUST ("the
+// hardware address of the interface through which it is sending the packet"),
+// so one value feeds both and the two cannot disagree.
 //
 // BOUND: section 2.4 says "any of the host's own interface addresses" and this
-// knows ONE — the address this client leases with. A host whose second
+// knows ONE — the interface this client leases on. A host whose SECOND
 // interface answered for our address would be read as a conflict. That is the
 // narrowing direction: it costs a DHCPDECLINE and a re-acquisition, where the
 // widening direction costs two hosts on one address.

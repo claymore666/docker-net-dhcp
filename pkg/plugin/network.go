@@ -113,20 +113,6 @@ func validateModeOptions(opts DHCPNetworkOptions) error {
 		return err
 	}
 
-	// IPv4 only, for every mode (P-8, #911).
-	//
-	// Keyed on the DECODED FIELD and not on an option key. decodeOpts
-	// runs mapstructure with no MatchName, so the match is
-	// case-insensitive against the field name: `-o ipv6=true`,
-	// `-o IPv6=true` and `-o Ipv6=true` all set this one bool. A
-	// refusal that looked for a key string would enumerate two
-	// spellings and miss the third, and the network would be created
-	// with IPv6 silently doing nothing — which is what this refusal
-	// exists to prevent.
-	if opts.IPv6 {
-		return util.ErrIPv6Unsupported
-	}
-
 	// RFC 5227 conflict detection, per network (D23). Two refusals and
 	// they are separate questions: whether the mode NAMES anything, and
 	// whether lease_timeout can fund an acquisition in it.
@@ -888,6 +874,9 @@ func (p *Plugin) netOptionsRaw(ctx context.Context, id string) (DHCPNetworkOptio
 // Docker moves the link into the container's netns when it acts on our
 // Join response.
 func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (CreateEndpointResponse, error) {
+	// FIRST, because everything below is charged against it: the
+	// daemon's own deadline on this call. See v6AcquisitionDeadline.
+	callStart := time.Now()
 	log.WithField("options", r.Options).Debug("CreateEndpoint options")
 	res := CreateEndpointResponse{
 		Interface: &EndpointInterface{},
@@ -930,7 +919,7 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 	}
 
 	if m := opts.effectiveMode(); m == ModeMacvlan || m == ModeIPvlan {
-		return p.createParentAttachedEndpoint(ctx, r, opts)
+		return p.createParentAttachedEndpoint(ctx, callStart, r, opts)
 	}
 
 	bridge, err := netlink.LinkByName(opts.Bridge)
@@ -1002,7 +991,11 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 	// the record it opened. A CREATED record whose CreateEndpoint
 	// failed holds no lease and so offers nothing to resume, but it is
 	// a line in an append-only file that nothing would ever remove.
-	var recordID string
+	var (
+		recordID  string
+		recordID6 string
+		identity6 dhcp.Identity6
+	)
 
 	if err := func() error {
 		if err := netlink.LinkSetUp(hostLink); err != nil {
@@ -1067,10 +1060,36 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 		// the lease under. The one-shot below writes its own events to
 		// this record, and the Join manager reads them back as an
 		// INIT-REBOOT rather than starting a fresh DISCOVER.
-		recordID = p.recordCreated(r.NetworkID, ctrLink.Attrs().HardwareAddr, dhcp.ClientIdentity(clientID))
+		recordID = p.recordCreated(r.NetworkID,
+			endpointRecordKey(opts.effectiveMode(), r.EndpointID, ctrLink.Attrs().HardwareAddr),
+			dhcp.ClientIdentity(clientID))
 		p.updateJoinHint(r.EndpointID, func(hint *joinHint) {
 			hint.RecordID = recordID
 		})
+
+		// The DHCPv6 identity and ITS OWN record (D30 Q4).
+		//
+		// A SECOND RECORD AND NOT A SECOND FIELD ON THE FIRST: a
+		// lease.Record binds one family and one identity, both
+		// write-once, so a dual-stack endpoint is two records. They are
+		// kept apart by scope — dhcp.Scope6 — because the lookup index
+		// is (scope, chaddr) and the two share a chaddr.
+		//
+		// Minted HERE, once, and read back from the record on every
+		// later start. RFC 9915 section 11: a DUID "SHOULD NOT change
+		// over time if at all possible". An identity re-derived at
+		// every start from the plumbing in hand is one that changes
+		// whenever the plumbing does, and the server then files a
+		// second binding and hands out a second address.
+		if opts.IPv6 {
+			id6, err := resolveIdentity6(opts, r.EndpointID, ctrLink.Attrs().HardwareAddr)
+			if err != nil {
+				return err
+			}
+			identity6 = id6
+			recordID6 = p.recordCreated6(r.NetworkID,
+				endpointRecordKey(opts.effectiveMode(), r.EndpointID, ctrLink.Attrs().HardwareAddr), id6)
+		}
 		initialIP := func(v6 bool) error {
 			v6str := ""
 			if v6 {
@@ -1101,6 +1120,13 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 				Records:  p.records,
 				RecordID: recordID,
 			}
+			if v6 {
+				// The v6 one-shot writes to the v6 record and speaks
+				// as the v6 identity. Both are per-family and neither
+				// has a v4 analogue that could stand in.
+				base.Identity6 = identity6
+				base.RecordID = recordID6
+			}
 			// RFC 5227 conflict detection, from the network's stored
 			// conflict_check (D23). Set on the BASE, so every attempt
 			// down the dhcp_servers ladder runs in the same mode.
@@ -1116,7 +1142,17 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 				base.RequestedIP = requestedIP
 			}
 
-			info, ra, err := p.acquireWithPolicy(ctx, ctrName, pol, v6, timeout, r.EndpointID, base)
+			// The v6 half is the SECOND acquisition in this call and
+			// gets what is left of the daemon's deadline; the v4 half
+			// keeps lease_timeout untouched. See v6AcquisitionDeadline.
+			acqCtx := ctx
+			if v6 {
+				var endV6 context.CancelFunc
+				acqCtx, endV6 = withV6AcquisitionDeadline(ctx, callStart)
+				defer endV6()
+			}
+
+			info, ra, err := p.acquireWithPolicy(acqCtx, ctrName, pol, v6, timeout, r.EndpointID, base)
 			if err != nil {
 				// A DHCPv6 acquisition that produced nothing is not
 				// automatically a failure: on a stateless or SLAAC
@@ -1177,6 +1213,7 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 		// Be sure to clean up the veth pair if any of this fails.
 		// Best-effort cleanup; ignore secondary error.
 		p.closeRecord(recordID)
+		p.closeRecord(recordID6)
 		_ = netlink.LinkDel(hostLink)
 		return res, err
 	}
@@ -1326,7 +1363,14 @@ func (p *Plugin) DeleteEndpoint(ctx context.Context, r DeleteEndpointRequest) er
 		// the answer for this identity, and leaving a record in JOINED
 		// after its endpoint is gone would have plugin-restart recovery
 		// resume a lease for a container that no longer exists.
-		p.retainRecordFor(r.NetworkID, fp.MAC)
+		// Through the same key the record was filed under. fp.MAC is
+		// EMPTY on ipvlan -- the mode has no per-endpoint MAC to
+		// remember -- and while this took a MAC string, an ipvlan
+		// record was therefore never retained at all: it stayed JOINED
+		// after its endpoint was gone, and plugin-restart recovery
+		// would resume a lease for a container that no longer exists.
+		hw, _ := net.ParseMAC(fp.MAC)
+		p.retainRecordFor(r.NetworkID, endpointRecordKey(mode, r.EndpointID, hw))
 	}
 
 	if mode == ModeMacvlan || mode == ModeIPvlan {
@@ -1913,6 +1957,10 @@ func (p *Plugin) Leave(ctx context.Context, r LeaveRequest) error {
 	// wire (D-7, #800) — the address is left to expire on the server's
 	// clock, exactly as any other host on the segment leaves it.
 	p.recordLeft(manager.recordID)
+	// The v6 record is a second record and needs the same statement:
+	// leaving one JOINED while the other goes LEFT would make the next
+	// restart resume a manager the fold says is still running.
+	p.recordLeft(manager.recordID6)
 
 	// Refresh the endpoint fingerprint with the most recent v4/v6 IPs
 	// the persistent client saw, *whether or not Stop succeeded*. Stop

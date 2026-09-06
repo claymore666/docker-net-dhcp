@@ -224,6 +224,124 @@ func resolveClientID(opts DHCPNetworkOptions, endpointID string, mac net.Hardwar
 	return clientIDFromEndpoint(endpointID)
 }
 
+// uuidBytes is the width of RFC 9915 section 11.5's DUID-UUID payload
+// and of the endpoint-derived seed the ipvlan identity is cut from.
+const uuidBytes = 16
+
+// resolveIdentity6 picks the DHCPv6 DUID and IAID for a fresh endpoint
+// (D30 Q4).
+//
+// TWO SHAPES, AND WHICH ONE IS CHOSEN IS A PROPERTY OF THE MODE:
+//
+//   - bridge and macvlan get RFC 9915 section 11.4's DUID-LL over the
+//     endpoint's MAC and an IAID of that MAC's low four bytes. That is
+//     1.9.0's identity byte for byte (P-8.6): dhcpcd was handed the
+//     same value as a `duid` directive, so an endpoint upgraded from
+//     1.x presents the identity the server already holds a binding for
+//     and keeps its address across the upgrade.
+//   - ipvlan gets a per-ENDPOINT identity: section 11.5's DUID-UUID
+//     over the endpoint id, and an IAID from the same bytes. An ipvlan
+//     L2 slave inherits the parent's MAC by kernel design, so the
+//     MAC-derived form above is IDENTICAL for every container on the
+//     network — every one of them would claim one binding, and the
+//     server would hand the same address out repeatedly (#895; the v6
+//     form of what #219 names for v4).
+//
+// THE UPGRADE NOTE THAT GOES WITH IT: an ipvlan endpoint upgraded from
+// 1.x changes DUID, because 1.9.0 gave it the MAC-derived one. It gets
+// a new address on its first start and keeps that one afterwards.
+// docs/reference.md says so on the DHCPv6 section.
+//
+// The MAC-less fallback is the endpoint-derived shape as well, for the
+// reason resolveClientID falls back: a caller that cannot supply a MAC
+// degrades to a per-endpoint identity rather than to none at all, and
+// buildParams6 refuses none at all.
+func resolveIdentity6(opts DHCPNetworkOptions, endpointID string, mac net.HardwareAddr) (dhcp.Identity6, error) {
+	if opts.effectiveMode() != ModeIPvlan && len(mac) > 0 {
+		duid, err := dhcp.DUIDLL(mac)
+		if err != nil {
+			return dhcp.Identity6{}, fmt.Errorf("failed to build the endpoint's DHCPv6 identity: %w", err)
+		}
+		iaid, err := dhcp.IAIDFromMAC(mac)
+		if err != nil {
+			return dhcp.Identity6{}, fmt.Errorf("failed to build the endpoint's DHCPv6 IAID: %w", err)
+		}
+		return dhcp.Identity6{DUID: duid, IAID: iaid}, nil
+	}
+
+	seed := endpointSeed(endpointID)
+	if seed == nil {
+		return dhcp.Identity6{}, fmt.Errorf("endpoint %q is too short to derive a DHCPv6 identity from and the mode supplies no usable MAC", shortID(endpointID))
+	}
+	duid, err := dhcp.DUIDUUID(seed)
+	if err != nil {
+		return dhcp.Identity6{}, fmt.Errorf("failed to build the endpoint's DHCPv6 identity: %w", err)
+	}
+	iaid, err := dhcp.IAIDFromBytes(seed)
+	if err != nil {
+		return dhcp.Identity6{}, fmt.Errorf("failed to build the endpoint's DHCPv6 IAID: %w", err)
+	}
+	return dhcp.Identity6{DUID: duid, IAID: iaid}, nil
+}
+
+// endpointRecordKey is the hardware-address half of the index a
+// durable record is found under: the endpoint's MAC, except where the
+// mode gives the endpoint no MAC of its own.
+//
+// THE INDEX IS (scope, chaddr) AND ipvlan COLLAPSES IT. An ipvlan L2
+// slave inherits the parent link's hardware address by kernel design,
+// so every endpoint on one ipvlan network carries the same MAC and
+// every record on that network lands under one key. dhcp.Records.Resume
+// answers such a lookup with the NEWEST match, so after a plugin
+// restart every ipvlan endpoint resumes the last one's record -- its
+// DHCPv6 DUID, its lease, its address. One container then confirms a
+// binding that belongs to another and installs an address the segment
+// already has on it, and nothing on the wire says so: the server was
+// asked about a binding it does hold.
+//
+// The endpoint id is what resolveClientID (#371) and resolveIdentity6
+// (#895) already reach for on this mode, and for the same reason -- it
+// is the only per-endpoint value that exists before the link does. The
+// key is folded to six bytes with the locally-administered bit set and
+// the group bit clear so that it is shaped like a MAC, reads beside the
+// endpoint it belongs to in a record file, and cannot collide with a
+// hardware address any link actually wears.
+//
+// UPGRADE: an ipvlan endpoint's records written by an earlier build are
+// filed under the parent MAC and are not found under this key. Such an
+// endpoint acquires afresh once, which is what it effectively did
+// anyway -- it was resuming somebody else's record.
+func endpointRecordKey(mode, endpointID string, mac net.HardwareAddr) net.HardwareAddr {
+	if mode != ModeIPvlan {
+		return mac
+	}
+	seed := endpointSeed(endpointID)
+	if len(seed) < 6 {
+		return mac
+	}
+	key := append([]byte(nil), seed[:6]...)
+	key[0] = (key[0] &^ 0x01) | 0x02
+	return key
+}
+
+// endpointSeed is the first uuidBytes of the endpoint id, or nil.
+//
+// The endpoint id is Docker's, is a hex string, and is the only
+// per-endpoint value that exists before the link does. Taking a prefix
+// rather than hashing keeps the identity legible in a server log beside
+// the endpoint it belongs to, which is what an operator matching a
+// binding to a container actually does.
+func endpointSeed(endpointID string) []byte {
+	if len(endpointID) < uuidBytes*2 {
+		return nil
+	}
+	b, err := hex.DecodeString(endpointID[:uuidBytes*2])
+	if err != nil {
+		return nil
+	}
+	return b
+}
+
 // defaultLeaseTimeout is how long CreateEndpoint waits for a lease when
 // the network sets no lease_timeout.
 //
@@ -1197,6 +1315,31 @@ type Plugin struct {
 	// warning beside it.
 	ipv6LinkEnableFailures atomic.Int32
 
+	// routerAdvertGuardFailures counts STEPS of the Router-Advertisement
+	// guard that did not take (#875): a sysctl write that failed, or a
+	// read-back that came back holding something else. Three knobs, two
+	// steps each, so at most six per endpoint.
+	//
+	// IT COUNTS THE FAILURE THAT LOOKS LIKE SUCCESS. DHCPv6 carries no
+	// router -- RFC 9915 section 21's option catalogue has no next hop
+	// -- and RFC 5942 section 4 forbids deriving an on-link prefix from
+	// the assigned address, so the container's route comes from RFC
+	// 4861 advertisements or from nowhere. A container whose guard did
+	// not take looks completely healthy: it keeps the address and the
+	// route the kernel accepted in the first seconds and loses
+	// everything through the router when that advertisement's router
+	// lifetime runs out, minutes or hours later, with nothing in any
+	// log to connect the two.
+	//
+	// WHAT IT DOES NOT COUNT (D30 Q3): a privileged process INSIDE the
+	// container writing the knobs back afterwards. 1.9.0 tried to
+	// prevent that by remounting /proc/sys read-only in dhcpcd's mount
+	// namespace; that shield is gone with dhcpcd, and it never covered
+	// the netlink route to the same settings anyway. The bound is
+	// stated on docs/reference.md's DHCPv6 row instead of being
+	// pretended away here.
+	routerAdvertGuardFailures atomic.Int32
+
 	// displacedStops tracks the goroutines Join spawns to Stop a
 	// manager it displaced (#338). Join must not block on the dhcpcd
 	// release cycle, but Close must not exit while one is mid-release
@@ -1867,6 +2010,53 @@ func (p *Plugin) recoveredHostname(ctx context.Context, containerID string) (dhc
 	return h, h.trusted()
 }
 
+// recoveredMAC is the hardware address recovery must run this endpoint
+// under, given what Docker reports for it.
+//
+// AN EMPTY MAC IS AN ipvlan ENDPOINT, NOT A CORRUPT ONE. Docker reports
+// no MAC for an ipvlan endpoint because the plugin never sets one: an
+// ipvlan slave inherits the parent link's address and the driver
+// rejects any attempt to change it (EOPNOTSUPP), so CreateEndpoint
+// deliberately leaves MacAddress out of its response. Every other path
+// in this plugin already tolerates that -- the join hint carries a nil
+// MAC, the fingerprint carries an empty string -- and recovery alone
+// did not: it parsed, failed, and counted a recovery_failed. MEASURED
+// on the lane 2026-09-06: after a plugin restart every ipvlan endpoint
+// on the host reported `parse MAC "": invalid MAC address` and no
+// renewal client came back for any of them.
+//
+// The address is not invented: it is READ FROM THE PARENT, which is
+// where the slave's own MAC comes from, so what recovery locates the
+// link by is the same value CreateEndpoint located it by. A parent that
+// cannot be read is a real failure and is returned as one -- an ipvlan
+// network whose parent is gone has no endpoint to recover.
+func recoveredMAC(opts DHCPNetworkOptions, macStr string) (net.HardwareAddr, error) {
+	if macStr != "" {
+		mac, err := net.ParseMAC(macStr)
+		if err != nil {
+			return nil, fmt.Errorf("parse MAC %q: %w", macStr, err)
+		}
+		return mac, nil
+	}
+	if opts.effectiveMode() != ModeIPvlan {
+		return nil, fmt.Errorf("parse MAC %q: %w", macStr, errNoRecoveryMAC)
+	}
+	parent, err := netlink.LinkByName(opts.Parent)
+	if err != nil {
+		return nil, fmt.Errorf("ipvlan parent %q: %w", opts.Parent, err)
+	}
+	hw := parent.Attrs().HardwareAddr
+	if len(hw) == 0 {
+		return nil, fmt.Errorf("ipvlan parent %q has no hardware address to inherit", opts.Parent)
+	}
+	return hw, nil
+}
+
+// errNoRecoveryMAC is the empty-MAC refusal for every mode that does
+// have a MAC of its own, kept as a value so the two arms of
+// recoveredMAC's test can name the same thing.
+var errNoRecoveryMAC = errors.New("invalid MAC address")
+
 // recoverOneEndpoint synthesises a JoinRequest and dhcpManager for a
 // single existing endpoint, then spawns Start in a goroutine. Idempotent:
 // if a manager already exists for the endpoint (e.g. because libnetwork
@@ -1892,9 +2082,9 @@ func (p *Plugin) recoverOneEndpoint(ctx context.Context, containerID, networkID,
 		return false, nil
 	}
 
-	mac, err := net.ParseMAC(macStr)
+	mac, err := recoveredMAC(opts, macStr)
 	if err != nil {
-		return false, fmt.Errorf("parse MAC %q: %w", macStr, err)
+		return false, err
 	}
 
 	var ipv4, ipv6 *netlink.Addr
@@ -1958,7 +2148,12 @@ func (p *Plugin) recoverOneEndpoint(ctx context.Context, containerID, networkID,
 		// same answer the CreateEndpoint paths give a refusal,
 		// arrived at from the other side (#726).
 		p.rememberEndpoint(endpointID, endpointFingerprint{
-			MAC:  mac.String(),
+			// What DOCKER reports, not what recovery resolved. The
+			// fingerprint is what DeleteEndpoint turns into a
+			// tombstone, and a tombstone naming the ipvlan parent's
+			// MAC would offer the next container an address filed
+			// under a hardware address it cannot wear.
+			MAC:  macStr,
 			IPv4: fpIPv4,
 			IPv6: fpIPv6,
 		}, hostname)

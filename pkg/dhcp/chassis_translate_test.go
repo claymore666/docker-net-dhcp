@@ -407,3 +407,55 @@ func TestTranslate_TheBufferHoldsWhatTheLibraryWasAskedToHold(t *testing.T) {
 		t.Errorf("%d of %d events survived the buffer", delivered, eventBuffer)
 	}
 }
+
+// TestTranslate_CarriesTheResumedV6ResolverIntoTheRecord observes the
+// call site, not the helper.
+//
+// carryResumedConfig6 has its own tests, and every one of them passes
+// whether or not the persistent client's loop calls it. This drives the
+// loop: a v6 client that resumed a binding and is handed an Acquired
+// whose lease carries no DNS -- which is what a Confirm produces, since
+// RFC 9915 section 18.2.13's Reply carries a status and nothing else --
+// must write a record a SECOND restart can still read the resolver out
+// of. The assertion is against the file on disk for that reason: the
+// record is the thing that outlives the process, and an in-memory carry
+// that never reached it would satisfy any check on the emitted event.
+func TestTranslate_CarriesTheResumedV6ResolverIntoTheRecord(t *testing.T) {
+	c, src, path := newTranslateHarness(t)
+	c.opts.V6 = true
+	c.opts.Resume = &lease.Lease{
+		DNS:          []netip.Addr{netip.MustParseAddr("fd00:6470:6865::1")},
+		DomainSearch: []string{"lan.example"},
+	}
+
+	go c.translate()
+
+	select {
+	case src <- lease.Event{
+		Kind:  lease.Acquired,
+		Lease: lease.Lease{Addr: netip.MustParsePrefix("fd00:6470:6865::61/128")},
+	}:
+	case <-time.After(wedgeBudget):
+		t.Fatalf("the event could not be handed to translate within %v", wedgeBudget)
+	}
+	select {
+	case <-c.events:
+	case <-time.After(wedgeBudget):
+		t.Fatalf("translate emitted nothing within %v", wedgeBudget)
+	}
+	close(src)
+
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading the record file: %v", err)
+	}
+	if !strings.Contains(string(raw), "fd00:6470:6865::1\"") {
+		t.Errorf("the record written for a resumed v6 lease does not carry the DNS "+
+			"server the binding was granted; a second plugin restart resumes an "+
+			"endpoint with no resolver. Record file:\n%s", raw)
+	}
+	if !strings.Contains(string(raw), "lan.example") {
+		t.Errorf("the record written for a resumed v6 lease does not carry the search "+
+			"list the binding was granted. Record file:\n%s", raw)
+	}
+}

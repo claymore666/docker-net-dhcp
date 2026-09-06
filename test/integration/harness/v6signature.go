@@ -38,11 +38,16 @@ const (
 	// V6SLAAC is RAs with neither flag and no DHCPv6 server. Address
 	// and nothing else; there is nobody to ask for configuration.
 	V6SLAAC
-	// V6NoRA is a DHCPv6 server on a segment with no router
-	// advertisements. Nothing tells the client to speak DHCPv6, so
-	// the server sits there unused. This is the negative control: it
-	// separates "the plugin handled the DHCPv6 reply" from "a DHCPv6
-	// server was running nearby".
+	// V6NoRA is a segment with no router on it: no advertisements, and
+	// a DHCPv6 server that answers nothing.
+	//
+	// BOTH HALVES ARE THE MODE. "No router advertisement" alone is not
+	// a segment where a container can fail to get a v6 address: this
+	// plugin's client solicits once router discovery gives up, and a
+	// listening server answers. The mode exists so that
+	// dhcpv6_no_router_advert -- which the plugin reports for an
+	// endpoint that ended up with NO address and never saw an
+	// advertisement -- has a segment that produces it.
 	V6NoRA
 	// V6ManagedSilent is managed DHCPv6 whose server answers nothing:
 	// RAs carry the M flag, so the segment says an address is
@@ -893,7 +898,8 @@ var v6ExchangeContract = map[V6Mode]v6ExchangeRule{
 		mustNot: V6OnlyDHCPTokens(),
 	},
 	V6NoRA: {
-		must: []string{"DHCPSOLICIT"},
+		must:    []string{"DHCPSOLICIT"},
+		mustNot: []string{"DHCPADVERTISE", "DHCPREPLY"},
 	},
 	V6ManagedSilent: {
 		mustLine: []string{"DHCPSOLICIT", "ignored"},

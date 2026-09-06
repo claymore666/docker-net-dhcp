@@ -93,10 +93,117 @@ func declaredTests(root string) ([]string, error) {
 	return out, nil
 }
 
+// netnsMarker is the helper a test calls to re-execute itself into a fresh
+// user and network namespace. A test that calls it is a netns test: it starts
+// a child process, wires a veth pair and usually a real dnsmasq, and it is the
+// reason the runtime package's seconds do not belong on the pure suite's
+// ceiling.
+//
+// The classification is keyed on the CALL, not on a file name, a build tag or
+// a naming convention: those are three spellings of the same fact and a test
+// can have any of them without doing this. What it cannot do is enter a
+// namespace without asking something to fork one.
+//
+// BOUND, and it is why the marker's absence is a REFUSAL rather than an empty
+// answer: a second way into a namespace, added later and calling something
+// else, is invisible here. Such a test then runs in the PURE suite, where its
+// seconds land on the 60s ceiling — loud, not silent, which is the direction
+// this must fail in.
+const netnsMarker = "reexecInNamespaces"
+
+// netnsTests returns the sorted names of the test functions that call
+// netnsMarker, and reports whether the marker itself is declared under root.
+//
+// A caller that gets (nil, false) must refuse rather than treat the empty list
+// as "there are none": that is the same answer a renamed marker gives.
+func netnsTests(root string) ([]string, bool, error) {
+	files, err := scan.GoFiles(root)
+	if err != nil {
+		return nil, false, err
+	}
+	seen := map[string]bool{}
+	markerDeclared := false
+	for _, path := range files {
+		if !strings.HasSuffix(path, "_test.go") {
+			continue
+		}
+		f, err := scan.Parse(root, path)
+		if err != nil {
+			return nil, false, err
+		}
+		for _, d := range f.Syntax.Decls {
+			fd, ok := d.(*ast.FuncDecl)
+			if !ok || fd.Recv != nil {
+				continue
+			}
+			if fd.Name.Name == netnsMarker {
+				markerDeclared = true
+			}
+			if !isTestFuncName(fd.Name.Name) || fd.Body == nil {
+				continue
+			}
+			if callsMarker(fd.Body) {
+				seen[fd.Name.Name] = true
+			}
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for n := range seen {
+		out = append(out, n)
+	}
+	sort.Strings(out)
+	return out, markerDeclared, nil
+}
+
+// callsMarker reports whether body calls netnsMarker by that name. A call
+// through a variable is not resolved; see the bound on netnsMarker.
+func callsMarker(body *ast.BlockStmt) bool {
+	found := false
+	ast.Inspect(body, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		if id, ok := call.Fun.(*ast.Ident); ok && id.Name == netnsMarker {
+			found = true
+		}
+		return !found
+	})
+	return found
+}
+
 func main() {
+	netns := false
+	args := os.Args[1:]
+	if len(args) > 0 && args[0] == "-netns" {
+		netns = true
+		args = args[1:]
+	}
 	root := "."
-	if len(os.Args) > 1 {
-		root = os.Args[1]
+	if len(args) > 0 {
+		root = args[0]
+	}
+	if netns {
+		names, declared, err := netnsTests(root)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "testroster: %v\n", err)
+			os.Exit(2)
+		}
+		// Two refusals, not one empty list. "No test calls the marker" and
+		// "the marker has been renamed" produce the same output, and the
+		// second one silently empties a whole arbiter row.
+		if !declared {
+			fmt.Fprintf(os.Stderr, "testroster: no function named %s is declared under %s; the netns population cannot be derived, and an empty one is not an answer\n", netnsMarker, root)
+			os.Exit(2)
+		}
+		if len(names) == 0 {
+			fmt.Fprintf(os.Stderr, "testroster: %s is declared under %s but no test calls it; the netns population is empty\n", netnsMarker, root)
+			os.Exit(2)
+		}
+		for _, n := range names {
+			fmt.Println(n)
+		}
+		return
 	}
 	names, err := declaredTests(root)
 	if err != nil {

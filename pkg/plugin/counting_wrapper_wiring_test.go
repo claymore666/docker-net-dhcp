@@ -101,12 +101,15 @@ func TestCountingWrappers_AreTheOnlyCallers(t *testing.T) {
 				"intact while silently under-reporting the inner one",
 		},
 		{
-			callee:  "enableIPv6OnContainerLink",
+			callee:  "prepareIPv6Link",
 			wrapper: "ensureIPv6Enabled",
-			why: "ipv6_link_enable_failures is counted around the enable, so a second caller would clear " +
-				"disable_ipv6 without counting the failure to -- and that counter is the only thing " +
-				"separating \"this segment is quiet\" from \"nothing IPv6 could ever have arrived on this " +
-				"link\", which otherwise present identically as DHCPv6 timeouts (#868)",
+			why: "TWO counters are taken around this one call -- ipv6_link_enable_failures and " +
+				"router_advert_guard_failures -- so a second caller would clear disable_ipv6 and write " +
+				"the Router Advertisement sysctls without counting either failure. The first counter is " +
+				"the only thing separating \"this segment is quiet\" from \"nothing IPv6 could ever have " +
+				"arrived on this link\", which otherwise present identically as DHCPv6 timeouts (#868); " +
+				"the second is the only thing that reports a guard that did not take, which otherwise " +
+				"presents as a container that is healthy until the advertisement it holds expires (#875)",
 		},
 		// The rows above cost one line each, which was the point
 		// of the table: the next instance of this shape adds a row

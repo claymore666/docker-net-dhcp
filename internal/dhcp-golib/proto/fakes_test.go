@@ -278,3 +278,18 @@ func machineIn(t *testing.T, s State) *Machine {
 
 // TestAcquisition is done-condition (c): the whole INIT-to-BOUND path, table
 // driven, with no root, no namespace, no network and no clock.
+
+// mustRA decodes a Router Advertisement fixture. It is here for the reason
+// stated at the top of this file, and MEASURED 2026-09-06: declared in
+// journal_test.go and called from five v6 test files, it made those files
+// inseparable, and verify.sh's oracle scenario suite-files-disabled-partial —
+// which switches off ten test files chosen so every package keeps one — got
+// "build failed" from proto where it needs "these declared tests never ran".
+func mustRA(t *testing.T, b []byte) *wire.RouterAdvert {
+	t.Helper()
+	ra, err := wire.DecodeRouterAdvert(b)
+	if err != nil {
+		t.Fatalf("DecodeRouterAdvert: %v", err)
+	}
+	return ra
+}

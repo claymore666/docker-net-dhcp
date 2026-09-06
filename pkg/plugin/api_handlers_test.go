@@ -404,3 +404,48 @@ func TestApiCreateNetwork_BridgeAndParentRejected(t *testing.T) {
 		t.Errorf("body: got %q want substring 'option does not apply'", msg)
 	}
 }
+
+// TestDecodeOpts_IPv6UnderEverySpelling holds the property the removed
+// refusal rows in test/integration/errors_test.go used to hold.
+//
+// decodeOpts runs mapstructure with no MatchName, so the match is
+// case-insensitive against the FIELD name and `ipv6`, `IPv6` and
+// `Ipv6` all set one bool. While the option was refused, a refusal
+// keyed on a key string rather than on the decoded value would have
+// enumerated two spellings and missed the third; now that it is
+// honoured, the same defect has the opposite and quieter shape — a
+// network created with `-o IPv6=true` where IPv6 silently does
+// nothing, with no error anywhere and no v6 address on any container.
+//
+// This is the layer the property actually lives at. Driving it through
+// a container would cost three fixtures to observe one bool, and would
+// still be reading the bool through everything downstream of it.
+func TestDecodeOpts_IPv6UnderEverySpelling(t *testing.T) {
+	for _, key := range []string{"ipv6", "IPv6", "Ipv6", "IPV6"} {
+		t.Run(key, func(t *testing.T) {
+			opts, err := decodeOpts(map[string]interface{}{
+				"mode":   "macvlan",
+				"parent": "ens18",
+				key:      "true",
+			})
+			if err != nil {
+				t.Fatalf("decode with %q: %v", key, err)
+			}
+			if !opts.IPv6 {
+				t.Errorf("-o %s=true left IPv6 false; the option decodes into nothing and "+
+					"every container on such a network comes up with no DHCPv6 address "+
+					"and no error to say why", key)
+			}
+		})
+	}
+
+	// The other direction, so the assertion above is not satisfied by a
+	// field that is true whatever arrives.
+	opts, err := decodeOpts(map[string]interface{}{"mode": "macvlan", "parent": "ens18"})
+	if err != nil {
+		t.Fatalf("decode without the option: %v", err)
+	}
+	if opts.IPv6 {
+		t.Error("IPv6 is true on options that never mentioned it")
+	}
+}

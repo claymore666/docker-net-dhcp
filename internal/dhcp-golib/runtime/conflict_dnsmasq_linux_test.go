@@ -3,7 +3,9 @@
 package runtime
 
 import (
+	"bytes"
 	"context"
+	"fmt"
 	"net"
 	"net/netip"
 	"os"
@@ -153,10 +155,16 @@ func (s *squatter) run(t *testing.T, mode squatterMode) {
 				continue
 			}
 			at := time.Now()
-			// Frames the squatter itself sent come back on its own socket —
-			// AF_PACKET echoes this host's outgoing frames — and recording
-			// them would put the squatter's own answer into the evidence it
-			// is providing about the client.
+			// Recording a frame the squatter itself put on the wire would
+			// put its own answer into the evidence it is providing about the
+			// client. MEASURED 2026-09-04 (M6 review round 2): an
+			// AF_PACKET socket bound to ETH_P_ARP is registered in the
+			// kernel's ptype_base, and dev_queue_xmit_nit walks ptype_all, so
+			// it is delivered INBOUND frames only. The squatter's own frames
+			// therefore do not come back on its own socket. This filter is
+			// kept because the link in this fixture is a veth pair with both
+			// ends in one namespace, where the peer's traffic IS visible, and
+			// because the test replays frames deliberately further down.
 			if hwEqual(p.SenderHW, s.hw) {
 				continue
 			}
@@ -213,23 +221,39 @@ func (s *squatter) sightings() []squatterSighting {
 // A Probe is RFC 5227 section 2.1.1's: an ARP Request with an all-zero sender
 // IP. An Announcement is section 2.3's: an ARP Request with sender and target
 // IP both the address being claimed.
-func isProbeFor(addr netip.Addr) func(*wire.ARPPacket) bool {
-	return func(p *wire.ARPPacket) bool { return p.IsProbe() && p.TargetIP == addr }
+//
+// A predicate carries its own DESCRIPTION. The wait helpers below announce
+// what they are waiting for before they block, and a description written at
+// the call site is a second spelling of the same fact: two places to edit, and
+// the one that goes stale is the one a person reads while the run is stuck.
+type arpPred struct {
+	what string
+	ok   func(*wire.ARPPacket) bool
 }
 
-func isAnnouncementFor(addr netip.Addr) func(*wire.ARPPacket) bool {
-	return func(p *wire.ARPPacket) bool {
-		return p.Op == wire.ARPRequest && p.SenderIP == addr && p.TargetIP == addr
+func isProbeFor(addr netip.Addr) arpPred {
+	return arpPred{
+		what: "an RFC 5227 section 2.1.1 Probe for " + addr.String(),
+		ok:   func(p *wire.ARPPacket) bool { return p.IsProbe() && p.TargetIP == addr },
+	}
+}
+
+func isAnnouncementFor(addr netip.Addr) arpPred {
+	return arpPred{
+		what: "an RFC 5227 section 2.3 Announcement of " + addr.String(),
+		ok: func(p *wire.ARPPacket) bool {
+			return p.Op == wire.ARPRequest && p.SenderIP == addr && p.TargetIP == addr
+		},
 	}
 }
 
 // matching returns, in the order they crossed the wire, the frames the
 // squatter has read so far that pred accepts. It does not wait: every caller
 // below first waits on a LATER frame, so that what it then counts is complete.
-func (s *squatter) matching(pred func(*wire.ARPPacket) bool) []squatterSighting {
+func (s *squatter) matching(pred arpPred) []squatterSighting {
 	var out []squatterSighting
 	for _, g := range s.sightings() {
-		if pred(g.p) {
+		if pred.ok(g.p) {
 			out = append(out, g)
 		}
 	}
@@ -238,27 +262,158 @@ func (s *squatter) matching(pred func(*wire.ARPPacket) bool) []squatterSighting 
 
 // waitForSighting blocks until pred has matched a frame the squatter read.
 //
-// It carries no duration of its own: a frame that never comes hangs the test
-// until go test's own timeout, which says more than a deadline chosen here.
-func (s *squatter) waitForSighting(pred func(*wire.ARPPacket) bool) squatterSighting {
+// The DEADLINE is the child process's own -test.timeout, set by
+// reexecInNamespaces below the netns row's timeout, so a predicate that cannot
+// hold ends the CHILD rather than the parent — which is what keeps the child's
+// output, including dnsmasq's log, in the parent's report. What this helper
+// owes that deadline is the sentence naming what did not happen: the goroutine
+// dump names this function, and nothing in it names the frame.
+func (s *squatter) waitForSighting(pred arpPred) squatterSighting {
+	w := announceWait("the squatter to see "+pred.what, s.waitLog())
 	for {
 		for _, g := range s.sightings() {
-			if pred(g.p) {
+			if pred.ok(g.p) {
 				return g
 			}
 		}
 		<-s.heard
+		// Before the next scan, not after it: a frame that arrives and does
+		// NOT satisfy the predicate is the one the report exists for, and a
+		// trace taken after the scan never reaches the frame that ended the
+		// wait. Scenario-free half of finding 2, driven by
+		// TestSquatterWaitReportsTheFramesThatArriveDuringIt.
+		w.note(s.waitLog())
 	}
 }
 
 // waitForCount blocks until pred has matched at least n of the frames read.
-func (s *squatter) waitForCount(pred func(*wire.ARPPacket) bool, n int) []squatterSighting {
+func (s *squatter) waitForCount(pred arpPred, n int) []squatterSighting {
+	w := announceWait(fmt.Sprintf("the squatter to see %d frame(s) matching %s", n, pred.what), s.waitLog())
 	for {
 		if out := s.matching(pred); len(out) >= n {
 			return out
 		}
 		<-s.heard
+		w.note(s.waitLog())
 	}
+}
+
+// handshakeSink is netnsWaitSink for the test below: it records what the wait
+// wrote and BLOCKS until the test has taken delivery of it.
+//
+// That is what makes the test deterministic without a clock in it. The waiting
+// goroutine and the test each hold one end of every step: the test releases a
+// report, then delivers the next frame, then waits for the report about it. T2
+// is satisfied for the same reason the fixture is honest — there is nothing to
+// wait on here but the waiter.
+type handshakeSink struct {
+	mu       sync.Mutex
+	buf      bytes.Buffer
+	released chan struct{}
+}
+
+func (h *handshakeSink) Write(p []byte) (int, error) {
+	h.mu.Lock()
+	h.buf.Write(p)
+	h.mu.Unlock()
+	h.released <- struct{}{}
+	return len(p), nil
+}
+
+func (h *handshakeSink) String() string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.buf.String()
+}
+
+// TestSquatterWaitReportsTheFramesThatArriveDuringIt drives the CALL SITE of
+// the wait report, not the formatting function beside it.
+//
+// The defect this exists against was measured, not imagined: announceWait
+// snapshots the log and then blocks, so a wait that ends on the child's
+// deadline reported the log as it stood BEFORE anything interesting happened —
+// "nothing logged yet" while the frame the predicate was reading sat fourteen
+// lines below in the same run. The evidence half was empty exactly when the
+// deadline fired, which is the only time anybody reads it.
+//
+// So this test blocks a real waitForSighting, delivers two frames while it is
+// blocked, and requires both to appear in the report — each exactly once. It
+// needs no namespace and no socket: the wait reads s.seen and s.heard and
+// nothing else.
+//
+// THE BOUND, stated because it changes how a mutant of the call site scores.
+// The handshake below is what makes the ordering deterministic: the test knows
+// the wait has begun only because the wait said so. Delete the w.note call and
+// this test does not fail, it DEADLOCKS — there is no report to hand it back,
+// and T2 forbids a timer here that could turn the wait into an assertion. The
+// bound is therefore the process one: `go test -timeout`. MEASURED 2026-09-05
+// with the call site replaced by `_ = w`: `./verify.sh --inner` ended at 184s
+// with `unit-suite FAIL exit 1 after 180s: panic: test timed out after 3m0s`.
+// The row reads it; a mutation harness reading Go's timeout panic banks it as
+// HUNG rather than KILLED, which is that harness being right about what it can
+// stand behind, not this test failing to observe.
+func TestSquatterWaitReportsTheFramesThatArriveDuringIt(t *testing.T) {
+	target := netip.MustParseAddr("192.0.2.7")
+	before := netip.MustParseAddr("192.0.2.8")
+	during := netip.MustParseAddr("192.0.2.9")
+	probe := func(a netip.Addr) *wire.ARPPacket {
+		return &wire.ARPPacket{Op: wire.ARPRequest, SenderIP: netip.AddrFrom4([4]byte{}), TargetIP: a}
+	}
+
+	// Buffered, and it has to be: the squatter's reader offers a frame without
+	// blocking on it, and a test that blocks on the send deadlocks whenever
+	// the waiter finds its match without coming back for the ping. MEASURED
+	// here, with an unbuffered channel, as a 60s timeout in one run of four.
+	s := &squatter{heard: make(chan struct{}, 4)}
+	add := func(a netip.Addr) {
+		s.mu.Lock()
+		s.seen = append(s.seen, squatterSighting{p: probe(a)})
+		s.mu.Unlock()
+		s.heard <- struct{}{}
+	}
+	add(before)
+	<-s.heard // the frame that was already logged when the wait began
+
+	sink := &handshakeSink{released: make(chan struct{})}
+	restore := netnsWaitSink
+	netnsWaitSink = sink
+	t.Cleanup(func() { netnsWaitSink = restore })
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		s.waitForSighting(isProbeFor(target))
+	}()
+	<-sink.released // the report the wait owes before it blocks
+	add(during)
+	<-sink.released // ... and the frame that arrived while it was blocked
+	add(target)
+	<-sink.released
+	<-done
+
+	got := sink.String()
+	for _, a := range []netip.Addr{before, during, target} {
+		line := "target=" + a.String() + "/"
+		if n := strings.Count(got, line); n != 1 {
+			t.Errorf("the report carries %q %d time(s), want exactly 1 — a frame reported twice stops being read, and one reported never is the half that tells %q from %q:\n%s",
+				line, n, "it never came", "it came in another shape", got)
+		}
+	}
+	if !strings.Contains(got, netnsWaitBanner+" waiting for") {
+		t.Errorf("the report does not name the predicate it is waiting for:\n%s", got)
+	}
+}
+
+// waitLog is what the squatter has heard so far, one line per frame, for the
+// announcement above: "it never came" and "it came and the predicate reads a
+// different set" are the two diagnoses, and only the frames tell them apart.
+func (s *squatter) waitLog() []string {
+	var out []string
+	for _, g := range s.sightings() {
+		out = append(out, fmt.Sprintf("op=%d sender=%s/%s target=%s/%s",
+			g.p.Op, g.p.SenderIP, net.HardwareAddr(g.p.SenderHW), g.p.TargetIP, net.HardwareAddr(g.p.TargetHW)))
+	}
+	return out
 }
 
 func hwEqual(a, b []byte) bool {
@@ -322,6 +477,19 @@ func newConflictClient(t *testing.T, mode proto.ConflictMode, acd proto.ACDParam
 // SURVIVES is proved by a renewal and dnsmasq's default T1 is a minute away.
 func newConflictClientCfg(t *testing.T, mode proto.ConflictMode, acd proto.ACDParams, hostname string, cfg dnsmasqConfig) *conflictFixture {
 	t.Helper()
+	return newConflictClientCHAddr(t, mode, acd, hostname, cfg, nil)
+}
+
+// newConflictClientCHAddr is newConflictClientCfg with the DHCP client
+// hardware address open to the caller. A nil chaddr is the interface's own,
+// which is what every other run here uses and what DefaultParams gives.
+//
+// Only TestTheProbeCarriesTheLinkAddressAndNotCHAddr passes a different one,
+// and the two addresses being different is the whole of what it measures:
+// with them equal, a probe built from the interface and a probe built from
+// CHAddr are the same frame.
+func newConflictClientCHAddr(t *testing.T, mode proto.ConflictMode, acd proto.ACDParams, hostname string, cfg dnsmasqConfig, chaddr net.HardwareAddr) *conflictFixture {
+	t.Helper()
 
 	mustRun(t, "ip", "link", "add", testClientIf, "type", "veth", "peer", "name", testServerIf)
 	mustRun(t, "ip", "addr", "add", testServerIP+"/24", "dev", testServerIf)
@@ -347,6 +515,9 @@ func newConflictClientCfg(t *testing.T, mode proto.ConflictMode, acd proto.ACDPa
 	params.Conflict = mode
 	params.ACD = acd
 	params.Hostname = hostname
+	if chaddr != nil {
+		params.CHAddr = append(net.HardwareAddr(nil), chaddr...)
+	}
 
 	c, err := NewClient(ClientConfig{Interface: testClientIf, Params: params, EventBuffer: 8})
 	if err != nil {
@@ -504,7 +675,7 @@ func squatterInProbeWindow(t *testing.T, mode proto.ConflictMode) {
 	// from the datagram trick 1.x used, which poisons the ARP cache of every
 	// host that hears it.
 	target := netip.MustParseAddr(squatted)
-	g := sq.waitForSighting(func(p *wire.ARPPacket) bool { return p.IsProbe() && p.TargetIP == target })
+	g := sq.waitForSighting(isProbeFor(target))
 	if !g.p.SenderIP.IsUnspecified() {
 		t.Fatalf("the probe carried sender IP %s, want RFC 5227 1.1's all-zero", g.p.SenderIP)
 	}
@@ -871,10 +1042,10 @@ func measureTheProbeDelay(t *testing.T) {
 // sent and pred accepts. It is a barrier, never evidence: what the client
 // believes it sent is exactly the thing the squatter's socket is here to
 // check independently.
-func countOutgoing(c *Client, pred func(*wire.ARPPacket) bool) int {
+func countOutgoing(c *Client, pred arpPred) int {
 	n := 0
 	for _, p := range c.Packets() {
-		if p.Dir == lease.DirOut && p.ARP != nil && pred(p.ARP) {
+		if p.Dir == lease.DirOut && p.ARP != nil && pred.ok(p.ARP) {
 			n++
 		}
 	}
@@ -962,23 +1133,32 @@ func slowACD() proto.ACDParams {
 // fromClient matches the frames the CLIENT's stack put on the wire: the
 // section 2.5 ARP Reply the kernel owes for the leased address, and the
 // ordinary ARP Request it sends resolving a neighbour from that address.
-func fromClientReplyFor(mac string, addr netip.Addr) func(*wire.ARPPacket) bool {
-	return func(p *wire.ARPPacket) bool {
-		return p.Op == wire.ARPReply && p.SenderIP == addr &&
-			net.HardwareAddr(p.SenderHW).String() == mac
+func fromClientReplyFor(mac string, addr netip.Addr) arpPred {
+	return arpPred{
+		what: "an ARP Reply from " + mac + " for " + addr.String(),
+		ok: func(p *wire.ARPPacket) bool {
+			return p.Op == wire.ARPReply && p.SenderIP == addr &&
+				net.HardwareAddr(p.SenderHW).String() == mac
+		},
 	}
 }
 
-func fromClientRequestTo(mac string, addr netip.Addr, target netip.Addr) func(*wire.ARPPacket) bool {
-	return func(p *wire.ARPPacket) bool {
-		return p.Op == wire.ARPRequest && p.SenderIP == addr && p.TargetIP == target &&
-			net.HardwareAddr(p.SenderHW).String() == mac
+func fromClientRequestTo(mac string, addr netip.Addr, target netip.Addr) arpPred {
+	return arpPred{
+		what: "an ARP Request from " + mac + " for " + target.String() + " sent from " + addr.String(),
+		ok: func(p *wire.ARPPacket) bool {
+			return p.Op == wire.ARPRequest && p.SenderIP == addr && p.TargetIP == target &&
+				net.HardwareAddr(p.SenderHW).String() == mac
+		},
 	}
 }
 
-func fromMAC(mac string) func(*wire.ARPPacket) bool {
-	return func(p *wire.ARPPacket) bool {
-		return net.HardwareAddr(p.SenderHW).String() == mac
+func fromMAC(mac string) arpPred {
+	return arpPred{
+		what: "any frame sent by " + mac,
+		ok: func(p *wire.ARPPacket) bool {
+			return net.HardwareAddr(p.SenderHW).String() == mac
+		},
 	}
 }
 
@@ -1315,4 +1495,92 @@ func offClientOnAWire(t *testing.T) {
 		TargetIP: ev.Lease.Addr.Addr(),
 	})
 	sq.waitForSighting(fromMAC(f.clientMAC))
+}
+
+// ------------ M7a rider 1, ring 3: whose hardware address a Probe carries --
+
+func TestTheProbeCarriesTheLinkAddressAndNotCHAddr(t *testing.T) {
+	if os.Getenv(nsChildEnv) == "1" {
+		probeCarriesTheLinkAddress(t)
+		return
+	}
+	reexecInNamespaces(t)
+}
+
+// probeCarriesTheLinkAddress is the ring-3 half of M7a's first rider, and it
+// exists because the ring-1 half cannot see ring 3's mistake.
+//
+// RFC 5227 section 2.1.1 says an ARP Probe's sender hardware address field is
+// "the hardware address of the interface sending the packet". proto builds
+// probes out of Params.LinkHWAddr and falls back to CHAddr when it is empty;
+// runtime.NewClient is the only thing in the library that knows what the
+// interface actually wears, and it fills LinkHWAddr from net.InterfaceByName.
+// Every other run in this file takes CHAddr from that same interface, so a
+// probe built from either field is the same frame: neither "ring 3 never
+// fills it" nor "ring 3 fills it from CHAddr" changes one byte on the wire.
+//
+// MEASURED 2026-09-05, by mutation: with the fill deleted, and again with it
+// sourced from CHAddr, the whole runtime suite stayed green.
+//
+// So this run moves the two fields apart — the DHCP client identifier is a
+// locally administered address that belongs to no NIC here, the interface
+// keeps its own — and reads the two halves off two different witnesses:
+//
+//   - dnsmasq's log carries the CHAddr, which is how "the two differ" becomes
+//     a fact about the exchange rather than a field this process set and read
+//     back out of its own struct;
+//   - the squatter's socket carries the Probes, and their sender hardware
+//     address is the INTERFACE's.
+//
+// Under either mutant the second assertion reads the fake address, because
+// ring 1's fallback and ring 1's mis-fill land on the same field.
+func probeCarriesTheLinkAddress(t *testing.T) {
+	// Locally administered (bit 1 of the first octet), unicast (bit 0 clear),
+	// and not the address of anything in this namespace.
+	fake := net.HardwareAddr{0x02, 0x00, 0x5e, 0x11, 0x22, 0x33}
+
+	acd := briskACD()
+	f := newConflictClientCHAddr(t, proto.ConflictWait, acd, "m7a-chaddr", dnsmasqConfig{}, fake)
+	if f.clientMAC == fake.String() {
+		t.Fatalf("the interface wears %s, which is the CHAddr this run sets: with the two equal nothing here is measurable", f.clientMAC)
+	}
+	sq := newSquatter(t, testServerIf, squatterObserve)
+	f.start(t, sq)
+
+	// ConflictWait: Acquired is after section 2.1's check, so every Probe the
+	// client will ever send for this address has already crossed the wire.
+	ev := awaitAcquired(t, f.client)
+	addr := ev.Lease.Addr.Addr()
+	if ev.ACD == proto.ACDProbing {
+		t.Fatalf("a waiting client reached Acquired while still probing (%s), so the frames counted below may not all have been sent yet", ev.ACD)
+	}
+
+	// WITNESS ONE: the server logged the fake address as the client's, so the
+	// two hardware addresses in this run really are different and the DHCP
+	// half of the exchange really used the one this test set.
+	f.srv.waitFor(t, "DHCPACK("+f.srv.iface+") "+addr.String()+" "+fake.String())
+
+	// WITNESS TWO: the frames, on another host's socket.
+	probes := sq.waitForCount(isProbeFor(addr), acd.ProbeNum)
+	for i, g := range probes {
+		if got := net.HardwareAddr(g.p.SenderHW).String(); got != f.clientMAC {
+			t.Fatalf("Probe %d carries sender hardware address %s; the interface wears %s and CHAddr is %s. "+
+				"RFC 5227 section 2.1.1 asks for the interface's.\nFrame: %s",
+				i+1, got, f.clientMAC, fake, g.p)
+		}
+	}
+	// The Announcements are built from the same field and are the frames the
+	// rest of the link caches, so they are checked too rather than assumed.
+	for i, g := range sq.waitForCount(isAnnouncementFor(addr), acd.AnnounceNum) {
+		if got := net.HardwareAddr(g.p.SenderHW).String(); got != f.clientMAC {
+			t.Fatalf("Announcement %d carries sender hardware address %s, want the interface's %s.\nFrame: %s",
+				i+1, got, f.clientMAC, g.p)
+		}
+	}
+
+	if n := f.srv.count("DHCPDECLINE(" + f.srv.iface + ")"); n != 0 {
+		t.Fatalf("the client sent %d DHCPDECLINE(s) on a wire with no squatter on it.\nLog:\n%s",
+			n, strings.Join(f.srv.lines(), "\n"))
+	}
+	f.quote(t, "the DHCP client identifier and the interface's address differ")
 }

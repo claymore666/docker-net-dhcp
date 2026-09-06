@@ -273,7 +273,12 @@ func (p *Plugin) noteRestartLinkUpWait(r CreateEndpointRequest, waited bool, err
 // dhcpcd on it (still in host netns) to acquire an initial lease, and
 // stashes the result for Join. Docker will move the link into the
 // container's netns when it acts on our Join response.
-func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, r CreateEndpointRequest, opts DHCPNetworkOptions) (CreateEndpointResponse, error) {
+// callStart is CreateEndpoint's own entry time, PASSED rather than
+// re-taken here: it is one fact -- when the daemon's deadline on this
+// call began -- and a second time.Now() in this function would be a
+// second answer to it that drifts by however long the branch above
+// took. See v6AcquisitionDeadline.
+func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, callStart time.Time, r CreateEndpointRequest, opts DHCPNetworkOptions) (CreateEndpointResponse, error) {
 	res := CreateEndpointResponse{Interface: &EndpointInterface{}}
 	mode := opts.effectiveMode()
 
@@ -381,7 +386,11 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, r CreateEndpo
 	// the record it opened. A CREATED record whose CreateEndpoint
 	// failed holds no lease and so offers nothing to resume, but it is
 	// a line in an append-only file that nothing would ever remove.
-	var recordID string
+	var (
+		recordID  string
+		recordID6 string
+		identity6 dhcp.Identity6
+	)
 
 	if err := func() error {
 		// Reload to pick up the kernel-assigned MAC (macvlan) or the
@@ -450,10 +459,27 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, r CreateEndpo
 		// the lease under. The one-shot below writes its own events to
 		// this record, and the Join manager reads them back as an
 		// INIT-REBOOT rather than starting a fresh DISCOVER.
-		recordID = p.recordCreated(r.NetworkID, mac, dhcp.ClientIdentity(clientID))
+		recordID = p.recordCreated(r.NetworkID,
+			endpointRecordKey(mode, r.EndpointID, mac), dhcp.ClientIdentity(clientID))
 		p.updateJoinHint(r.EndpointID, func(hint *joinHint) {
 			hint.RecordID = recordID
 		})
+
+		// The DHCPv6 identity and its own record — the sibling of the
+		// block in network.go, through the same two helpers so the two
+		// modes cannot drift. This is the path where the ipvlan arm of
+		// resolveIdentity6 matters: an ipvlan slave inherits the
+		// parent's MAC, so the MAC-derived DUID would be identical for
+		// every container on the network (#895).
+		if opts.IPv6 {
+			id6, err := resolveIdentity6(opts, r.EndpointID, mac)
+			if err != nil {
+				return err
+			}
+			identity6 = id6
+			recordID6 = p.recordCreated6(r.NetworkID,
+				endpointRecordKey(mode, r.EndpointID, mac), id6)
+		}
 
 		runDHCP := func(v6 bool) error {
 			v6str := ""
@@ -476,15 +502,20 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, r CreateEndpo
 				FQDN:        opts.fqdnMode(),
 				ClientID:    clientID,
 				VendorClass: opts.VendorClass,
-				// MAC pins the dhcpcd DUID-LL/IAID so the one-shot and
-				// persistent clients share one identity (#152). NOTE:
-				// ipvlan-L2 slaves share the parent MAC, so v6 identity
-				// is not unique per endpoint in that mode — a known
-				// limitation for ipvlan+ipv6 (bridge/macvlan have unique,
-				// tombstone-preserved MACs).
+				// MAC keys the v4 lease and, on bridge and macvlan, the
+				// v6 DUID-LL too, so the one-shot and the persistent
+				// client share one identity (#152). ipvlan is the
+				// exception in BOTH families: its slaves inherit the
+				// parent's MAC, so the v4 client-id comes from the
+				// endpoint (resolveClientID) and so does the v6 DUID
+				// (resolveIdentity6, #895).
 				MAC:      mac,
 				Records:  p.records,
 				RecordID: recordID,
+			}
+			if v6 {
+				base.Identity6 = identity6
+				base.RecordID = recordID6
 			}
 			// RFC 5227 conflict detection, from the network's stored
 			// conflict_check (D23). Set on the BASE, so every attempt
@@ -498,7 +529,17 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, r CreateEndpo
 				base.RequestedIP = requestedIP
 			}
 
-			info, ra, err := p.acquireWithPolicy(ctx, la.Name, pol, v6, timeout, r.EndpointID, base)
+			// The v6 half is the SECOND acquisition in this call and
+			// gets what is left of the daemon's deadline; the v4 half
+			// keeps lease_timeout untouched. See v6AcquisitionDeadline.
+			acqCtx := ctx
+			if v6 {
+				var endV6 context.CancelFunc
+				acqCtx, endV6 = withV6AcquisitionDeadline(ctx, callStart)
+				defer endV6()
+			}
+
+			info, ra, err := p.acquireWithPolicy(acqCtx, la.Name, pol, v6, timeout, r.EndpointID, base)
 			if err != nil {
 				// A DHCPv6 acquisition that produced nothing is not
 				// automatically a failure: on a stateless or SLAAC
@@ -553,6 +594,7 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, r CreateEndpo
 		// Best-effort: if LinkDel itself fails the kernel will reap the
 		// link with the netns soon enough.
 		p.closeRecord(recordID)
+		p.closeRecord(recordID6)
 		_ = netlink.LinkDel(link)
 		return res, err
 	}

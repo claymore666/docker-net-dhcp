@@ -177,13 +177,15 @@ they prove:
   `lifecycle_ipvlan_test.go` — full create→run→inspect→leave→delete
   in each attachment mode. ipvlan active since v0.7.0 (#62: `-B`
   broadcast flag + no MAC-echo on ipvlan).
-- `ipv6_refused_test.go` — what is left of the DHCPv6 suite in the
-  IPv4-only until IPv6 parity: an operator asking for IPv6 is TOLD at
-  `docker network create`, rather than getting a network that quietly
-  does nothing with it. The ten dual-stack tests that used to live in
-  `ipv6_test.go` and `dhcpv6_noaddress_modes_test.go` drove a v6 client
-  this build does not contain; the file's own header names each one and
-  where it returns (#911). None is skipped and none passes vacuously.
+- `ipv6_test.go` — the dual-stack golden paths on macvlan and bridge,
+  the DUID's survival across a plugin restart, DNS6 propagation, the
+  T1 renewal, the tombstone restart, the per-endpoint identity on
+  ipvlan, and a duplicate on the segment being DECLINEd (#911).
+- `dhcpv6_noaddress_modes_test.go` — the segments that offer no DHCPv6
+  address: stateless, SLAAC and no-router all start the endpoint, a
+  managed segment still requires a lease, and a managed segment whose
+  server answers nothing is still fatal (#868, #815). Read the polarity
+  of the last one before changing it.
 - `concurrency_test.go` — N simultaneous containers, distinct leases.
 
 **Lease lifecycle & identity**

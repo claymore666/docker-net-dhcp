@@ -179,3 +179,30 @@ func compareStatsDecls(t *testing.T, typeName, linuxPath, otherPath string) {
 		}
 	}
 }
+
+// TestTransportStatsV6DeclarationsAgree is the check transport_packet6_other.go's
+// comment names, for the DHCPv6 socket's counters.
+//
+// The v6 family is THREE more pairs and three more calls, under the bound
+// stated above: each pair is named here by hand, and a platform file that is
+// added without a call here is invisible to every one of these rows.
+func TestTransportStatsV6DeclarationsAgree(t *testing.T) {
+	compareStatsDecls(t, "TransportStatsV6", "transport_packet6_linux.go", "transport_packet6_other.go")
+}
+
+// TestNDStatsDeclarationsAgree is the check nd_other.go's comment names.
+func TestNDStatsDeclarationsAgree(t *testing.T) {
+	compareStatsDecls(t, "NDStats", "nd_linux.go", "nd_other.go")
+}
+
+// TestDADStatsDeclarationsAgree is the check dad6_other.go's comment names.
+//
+// This one carries the most weight of the three. DADStats is what a caller
+// reads to find out whether RFC 4862 section 5.4's check ran at all —
+// OwnIgnored, ForeignSolicits, ResolvingSolicits and Adverts are each a
+// different reason a run looked clean — and a counter present on one platform
+// and absent on the other is a diagnosis that exists only where somebody
+// happened to be standing.
+func TestDADStatsDeclarationsAgree(t *testing.T) {
+	compareStatsDecls(t, "DADStats", "dad6_linux.go", "dad6_other.go")
+}

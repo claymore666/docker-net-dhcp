@@ -28,18 +28,6 @@ import (
 	"github.com/vishvananda/netns"
 )
 
-// ErrIPv6Unsupported is returned by every entry point in this package
-// for an IPv6 request.
-//
-// 2.0 is IPv4-only: the library implements DHCPv4, and DHCPv6 returns
-// with #911, before v2.0.0-rc2. CreateNetwork refuses `ipv6=true`
-// outright, so the only way to
-// reach this error is a network that was created by an earlier build
-// and survived the upgrade. It is a loud failure on purpose — the
-// alternative is a container that starts with no IPv6 address and no
-// statement anywhere that it was supposed to have one.
-var ErrIPv6Unsupported = errors.New("dhcp: DHCPv6 is not implemented in 2.0 yet: IPv4-only until IPv6 parity (#911)")
-
 // ErrNoLease is returned when an acquisition ended without one.
 var ErrNoLease = errors.New("dhcp: no lease was acquired")
 
@@ -64,9 +52,50 @@ type DHCPClientOptions struct {
 	// its emptiness is read.
 	FQDN string
 
-	// V6 selects DHCPv6, which this build does not implement. Every
-	// entry point refuses it with ErrIPv6Unsupported.
+	// V6 selects DHCPv6 (RFC 9915) for this endpoint.
+	//
+	// IT SELECTS A DIFFERENT LIBRARY CLIENT, not a mode of one: the two
+	// families are two state machines over two transports with two
+	// identity schemes, and every entry point here routes on this bool
+	// to the family's own constructor. An endpoint that wants both
+	// families runs TWO of these, one per family, which is what the
+	// plugin's Join manager does.
 	V6 bool
+
+	// Identity6 is the DHCPv6 client identity: the DUID this endpoint
+	// is known by and the IAID of the identity association it asks for
+	// (RFC 9915 sections 11 and 12). REQUIRED when V6 is set, and the
+	// library refuses an empty DUID rather than inventing one.
+	//
+	// It is BYTES FROM THE CHASSIS, on the same rule as ClientID (D10):
+	// the library never derives an identity, because an identity a
+	// library invents per interface -- or worse, per process -- is one
+	// that changes whenever the caller's plumbing does, and RFC 9915
+	// section 11 says a DUID "SHOULD NOT change over time if at all
+	// possible". The chassis mints it once, writes it into the durable
+	// record, and reads it back on every restart. See identity6.go.
+	Identity6 Identity6
+
+	// HonorRouterAdverts asserts that this endpoint's link is under the
+	// Router-Advertisement guard: accept_ra=2, autoconf=1 and
+	// keep_addr_on_down=1 written and read back inside the container's
+	// network namespace (#875, ra_guard.go).
+	//
+	// IT IS NOT AN OPERATOR OPTION AND THERE IS NO WAY TO TURN IT OFF
+	// (D30 Q3). DHCPv6 carries no router -- RFC 9915 section 21's option
+	// catalogue has no next hop -- and RFC 5942 section 4 rule 1 forbids
+	// deriving an on-link prefix from an assigned address, so router
+	// discovery is RFC 4861 section 6.3.4 and advertisement processing is
+	// mandatory on the managed path too. A persistent v6 client built
+	// without it is REFUSED rather than started, because a v6 endpoint
+	// whose kernel ignores advertisements has an address and no route and
+	// looks completely healthy for the length of one router lifetime.
+	//
+	// It is refused on every other shape -- v4, no namespace, the
+	// CreateEndpoint one-shot -- because the values are host
+	// configuration for a container's link, and the one-shot's link is
+	// still in the HOST namespace when it runs.
+	HonorRouterAdverts bool
 
 	// NetNS is the network namespace to lease in, as an OPEN FILE
 	// DESCRIPTOR. nil means the caller's own namespace.
@@ -89,10 +118,12 @@ type DHCPClientOptions struct {
 	// for `--ip` and for a tombstone's address.
 	RequestedIP string
 
-	// PreferredV6 is the DHCPv6 address hint. Unreachable in this
-	// build; kept so the v6 call sites still compile against the
-	// refusal rather than being deleted and re-added at IPv6 parity
-	// (#911).
+	// PreferredV6, when non-empty, is the address this endpoint would
+	// like: RFC 9915 section 21.6's IA Address option inside the
+	// Solicit's IA_NA. A preference and not a claim -- section 18.3.2
+	// leaves the server free to assign something else -- so it is the
+	// v6 twin of RequestedIP and is used for the same two things, an
+	// operator's `--ip6` and a tombstone's address (#213).
 	PreferredV6 string
 
 	// AllowServers and DenyServers restrict which DHCPv4 servers a
@@ -183,8 +214,24 @@ type DHCPClientOptions struct {
 
 	// paramsWritten is set once the Params snapshot has ridden an
 	// event, so the second and later events do not repeat it.
+	//
+	// A v6 manager sets it before its first event and never writes a
+	// snapshot at all: lease.RecordEvent carries a *proto.Params and
+	// has no Params6 slot, so the only thing a v6 manager could attach
+	// is a ZERO v4 parameter set -- a record saying this endpoint sent
+	// a DHCPDISCOVER with no client id, which is worse than a record
+	// that says nothing. The consequence is stated rather than worked
+	// around: a v6 record is not replayable through proto.Replay, and
+	// the gap is the library's to close.
 	paramsWritten bool
 	params        proto.Params
+	params6       proto.Params6
+
+	// resumedConfigTaken is set once carryResumedConfig6 has had its one
+	// chance to fill a resumed v6 lease's RFC 3646 lists. See that
+	// method: the memory is worth at most one event and must never
+	// outlive the first thing the server says.
+	resumedConfigTaken bool
 
 	// acdSeen is the last ACD counter snapshot handed to OnACDStats,
 	// which is what makes that callback a delta rather than a total.
@@ -297,20 +344,55 @@ func (o *DHCPClientOptions) acdReport(s lease.Stats) {
 	o.OnACDStats(delta)
 }
 
-// RAObservation is what a router advertisement told us about a segment.
+// RAObservation is what this segment's router advertisements said, as
+// much of RFC 4861 section 4.2 as a caller with no address needs.
 //
-// Nothing in this build observes one: advertisements are IPv6 and 2.0
-// refuses IPv6. The type survives because the v6 call sites in
-// pkg/plugin do, and deleting it would mean deleting and restoring
-// those at IPv6 parity (#911).
+// IT IS A DIAGNOSTIC AND NEVER AN INSTRUCTION (D30 Q2). The library
+// sends the solicitations and reads the advertisements; nothing here
+// decides anything about the exchange from it. What it decides is what
+// to TELL THE OPERATOR when an acquisition produced no address, which
+// is a question the timeout alone cannot answer -- see
+// pkg/plugin/v6_absence.go, the whole of #868.
+//
+// The zero value means no advertisement was seen, which is the honest
+// answer both for a segment with no router and for a v4 endpoint that
+// never looked.
 type RAObservation struct {
-	Seen    bool
+	// Seen is RFC 4861 section 4.2: at least one advertisement arrived
+	// on this link.
+	Seen bool
+	// Managed is the M bit — "addresses are available via DHCPv6".
 	Managed bool
+	// Other is the O bit — "other configuration information is
+	// available via DHCPv6", which is the stateless segment (RFC 9915
+	// section 18.2.6) and the reason an endpoint with no address can
+	// still have a resolver.
+	Other bool
 }
 
 // Merge folds another attempt's observation into this one.
+//
+// OR and not "last wins": the server-policy ladder makes several
+// attempts on one link, and an advertisement seen on the first is still
+// evidence about the segment when the fourth times out. A flag that
+// went back to false because a later attempt was short would report a
+// routerless segment for a link that answered.
 func (o RAObservation) Merge(other RAObservation) RAObservation {
-	return RAObservation{Seen: o.Seen || other.Seen, Managed: o.Managed || other.Managed}
+	return RAObservation{
+		Seen:    o.Seen || other.Seen,
+		Managed: o.Managed || other.Managed,
+		Other:   o.Other || other.Other,
+	}
+}
+
+// raObservation is the library's router observation in the chassis's
+// spelling.
+//
+// A conversion and not a type alias, because pkg/plugin must not learn
+// a library type: the seam's rule is that the chassis is the only
+// package that names one (M6b, D22/D23).
+func raObservation(r proto.RouterObservation) RAObservation {
+	return RAObservation{Seen: r.Seen, Managed: r.Managed, Other: r.Other}
 }
 
 // acquireOutcome is what one lease.Event means to a one-shot
@@ -372,7 +454,7 @@ func acquireStep(ev lease.Event, conflicted bool, now time.Time) acquireOutcome 
 func GetIP(ctx context.Context, iface string, opts *DHCPClientOptions) (Info, RAObservation, error) {
 	var ra RAObservation
 	if opts.V6 {
-		return Info{}, ra, ErrIPv6Unsupported
+		return getIP6(ctx, iface, opts)
 	}
 
 	params, err := buildParams(opts, true)
@@ -483,11 +565,21 @@ func GetIP(ctx context.Context, iface string, opts *DHCPClientOptions) (Info, RA
 // its events drive the address, the routes, resolv.conf, the MTU, the
 // audit ledger and the health counters.
 type DHCPClient struct {
-	iface  string
-	opts   DHCPClientOptions
-	params proto.Params
+	iface   string
+	opts    DHCPClientOptions
+	params  proto.Params
+	params6 proto.Params6
 
+	// client and client6 are the two library clients, and EXACTLY ONE
+	// IS EVER NON-NIL: the family is fixed at construction and this
+	// type never changes it. Two typed fields and not one interface
+	// because the family-specific readers differ -- ACDPhase is RFC
+	// 5227 and v4-only, DADPhase and Router are RFC 4862/4861 and
+	// v6-only -- and an interface wide enough for both would have to
+	// carry four methods that half its implementations answer with a
+	// zero value.
 	client  *dhcpruntime.Client
+	client6 *dhcpruntime.Client6
 	cancel  context.CancelFunc
 	done    chan error
 	events  chan Event
@@ -542,8 +634,21 @@ func (c *DHCPClient) DroppedEvents() uint64 { return c.dropped.Load() }
 // Start: the socket must be created inside the sandbox namespace, and
 // that is a property of the thread Start runs on.
 func NewDHCPClient(iface string, opts *DHCPClientOptions) (*DHCPClient, error) {
+	if err := checkRouterAdvertGuardShape(opts, false); err != nil {
+		return nil, err
+	}
 	if opts.V6 {
-		return nil, ErrIPv6Unsupported
+		params6, err := buildParams6(opts, false)
+		if err != nil {
+			return nil, err
+		}
+		copied := *opts
+		// NO Params SNAPSHOT RIDES A v6 EVENT. See
+		// DHCPClientOptions.paramsWritten: the record carries a
+		// *proto.Params and there is no Params6 slot, so the only
+		// thing available to attach is a zero v4 parameter set.
+		copied.params6, copied.paramsWritten = params6, true
+		return &DHCPClient{iface: iface, opts: copied, params6: params6}, nil
 	}
 	params, err := buildParams(opts, false)
 	if err != nil {
@@ -557,11 +662,26 @@ func NewDHCPClient(iface string, opts *DHCPClientOptions) (*DHCPClient, error) {
 // Start opens the client in the endpoint's namespace and begins
 // leasing. The returned channel is closed when the client stops.
 func (c *DHCPClient) Start() (chan Event, error) {
-	client, err := newLibClient(c.iface, c.params, &c.opts)
-	if err != nil {
-		return nil, err
+	// ONE VARIABLE OF AN INTERFACE TYPE, ASSIGNED IN THE FAMILY SWITCH
+	// AND READ EVERYWHERE BELOW. The alternative -- duplicating the
+	// goroutine, the channels and the cancel per family -- is where a
+	// v6 client that is started but never cancelled comes from, and
+	// the defeat list's "two clients, one cancel" row is exactly that
+	// shape.
+	var runner libClient
+	if c.opts.V6 {
+		client6, err := newLibClient6(c.iface, c.params6, &c.opts)
+		if err != nil {
+			return nil, err
+		}
+		c.client6, runner = client6, client6
+	} else {
+		client, err := newLibClient(c.iface, c.params, &c.opts)
+		if err != nil {
+			return nil, err
+		}
+		c.client, runner = client, client
 	}
-	c.client = client
 	if c.opts.Records != nil {
 		c.manager = c.opts.Records.NewManagerID()
 	}
@@ -570,12 +690,26 @@ func (c *DHCPClient) Start() (chan Event, error) {
 	c.cancel = cancel
 	c.done = make(chan error, 1)
 	c.events = newEventChan()
-	c.src = client.Events()
+	c.src = runner.Events()
 
-	go func() { c.done <- client.Run(ctx) }()
+	go func() { c.done <- runner.Run(ctx) }()
 	go c.translate()
 
 	return c.events, nil
+}
+
+// libClient is the half of the library's client surface that is the
+// same in both families: run it, read its events, read what it holds,
+// read its counters.
+//
+// It is declared HERE and not in the library because it is the
+// chassis's demand, not the library's offer: *dhcpruntime.Client and
+// *dhcpruntime.Client6 satisfy it without either of them naming it.
+type libClient interface {
+	Run(ctx context.Context) error
+	Events() <-chan lease.Event
+	Lease() (lease.Lease, bool)
+	Stats() lease.Stats
 }
 
 // translate turns the library's lease events into the plugin's.
@@ -605,6 +739,9 @@ func (c *DHCPClient) translate() {
 	renewedAt := time.Time{}
 	for ev := range c.src {
 		now := time.Now()
+		// BEFORE the record is written, so a second restart still finds
+		// the resolver in it; see carryResumedConfig6.
+		c.opts.carryResumedConfig6(&ev)
 		// Written before it is translated. The record is the thing a
 		// restart reads, and translateOne drops two kinds on the floor
 		// deliberately — the coalesced Changed and the stop — neither
@@ -683,6 +820,17 @@ func translateOne(ev lease.Event, now, renewedAt time.Time) (Event, bool, time.T
 
 	var out Event
 	switch ev.Kind {
+	case lease.Configured:
+		// RFC 9915 section 18.2.6's answer: configuration and NO
+		// address. Its own event kind in the library (D30 Q7) and its
+		// own type here, because the plugin's handling of it is not a
+		// bind with fields missing -- it writes the resolver, counts
+		// dhcpv6_config_only, and deliberately does NOT clear the
+		// outage deadline, since an Information-reply proves the
+		// server is reachable and not that a lease exists.
+		cfg, cfgDropped := infoFromConfig(ev.Config)
+		dropped = cfgDropped
+		out = Event{Type: "config", Data: cfg}
 	case lease.Acquired:
 		out = Event{Type: "bound", Data: info}
 	case lease.Renewed:
@@ -743,7 +891,29 @@ func translateOne(ev lease.Event, now, renewedAt time.Time) (Event, bool, time.T
 		return Event{}, false, renewedAt
 	}
 	out.UnsafeValuesDropped = dropped
+	out.RouterFlags = routerFlags(ev.Router)
 	return out, true, renewedAt
+}
+
+// routerFlags renders RFC 4861 section 4.2's two configuration bits as
+// the letters an operator reads in a log line: "M", "O", "MO", or "" for
+// an advertisement with neither.
+//
+// It is "" for a v4 event too, and the two are not distinguishable here
+// on purpose: this string is for a human, and the machine-readable form
+// is RAObservation, which has a Seen of its own.
+func routerFlags(r proto.RouterObservation) string {
+	if !r.Seen {
+		return ""
+	}
+	out := ""
+	if r.Managed {
+		out += "M"
+	}
+	if r.Other {
+		out += "O"
+	}
+	return out
 }
 
 // coalesceWindow is how close a Changed must follow a Renewed to be
@@ -786,10 +956,13 @@ func (c *DHCPClient) Wait(ctx context.Context) error {
 // Lease is the lease the client currently holds, for the durable
 // record.
 func (c *DHCPClient) Lease() (lease.Lease, bool) {
-	if c.client == nil {
-		return lease.Lease{}, false
+	switch {
+	case c.client6 != nil:
+		return c.client6.Lease()
+	case c.client != nil:
+		return c.client.Lease()
 	}
-	return c.client.Lease()
+	return lease.Lease{}, false
 }
 
 // ACDPhase is where RFC 5227 has got to for the address this client
@@ -807,15 +980,42 @@ func (c *DHCPClient) ACDPhase() proto.ACDPhase {
 // Read from the params the client was built with rather than from the
 // network's stored options, so it is the mode in force and not the
 // mode the options would resolve to now.
+// A v6 client answers with the zero mode, which is proto.ConflictWait,
+// and that is not a claim that it runs RFC 5227: it does not. RFC 9915
+// section 18.2.10.1 obliges RFC 4862 duplicate address detection before
+// the address is used, the library performs it, and DADPhase is where
+// that is reported. Read this beside V6, never alone.
 func (c *DHCPClient) ConflictMode() proto.ConflictMode { return c.params.Conflict }
 
 // Stats is the manager's counters, which are the per-endpoint half of
 // the health surface (P-7).
 func (c *DHCPClient) Stats() lease.Stats {
-	if c.client == nil {
-		return lease.Stats{}
+	switch {
+	case c.client6 != nil:
+		return c.client6.Stats()
+	case c.client != nil:
+		return c.client.Stats()
 	}
-	return c.client.Stats()
+	return lease.Stats{}
+}
+
+// DADPhase is where RFC 4862 section 5.4's check stood for the address
+// this client holds, and it is proto.DADIdle for a v4 client: that
+// family runs RFC 5227 instead and reports it on ACDPhase.
+func (c *DHCPClient) DADPhase() proto.DADPhase {
+	if c.client6 == nil {
+		return proto.DADIdle
+	}
+	return c.client6.DADPhase()
+}
+
+// RA is the last router advertisement this client saw, and the zero
+// value for a v4 client, which never looks.
+func (c *DHCPClient) RA() RAObservation {
+	if c.client6 == nil {
+		return RAObservation{}
+	}
+	return raObservation(c.client6.Router())
 }
 
 // newLibClient opens a library client on iface, inside opts.NetNS when
@@ -844,19 +1044,64 @@ func newLibClient(iface string, params proto.Params, opts *DHCPClientOptions) (*
 		return dhcpruntime.NewClient(cfg)
 	}
 
+	var (
+		client *dhcpruntime.Client
+		cerr   error
+	)
+	if err := inNetNS(*opts.NetNS,
+		func() { client, cerr = dhcpruntime.NewClient(cfg) },
+		func() {
+			if client != nil {
+				_ = client.Run(canceledContext())
+			}
+		},
+	); err != nil {
+		return nil, err
+	}
+	if cerr != nil {
+		return nil, fmt.Errorf("dhcp: open a DHCP client on %v: %w", iface, cerr)
+	}
+	return client, nil
+}
+
+// inNetNS runs open with the calling thread inside ns, and returns it
+// to the namespace it came from.
+//
+// EXTRACTED SO THE TWO FAMILIES CANNOT DRIFT. Both constructors need
+// exactly this dance and the failure handling in it is the part that is
+// easy to get subtly wrong; a second hand-written copy for v6 is the
+// shape where one family unlocks a contaminated thread and the other
+// does not.
+//
+// open returns nothing and abandon takes nothing: whatever was built
+// lives in the caller's own variables, captured by the closures. That
+// is what keeps this function free of a type parameter for a difference
+// of one pointer type.
+//
+// abandon is called only when the thread could NOT be returned. What it
+// is for: the client was constructed successfully and is about to be
+// dropped on the floor, and dropping a library client without running
+// it leaks its sockets. It runs while the thread is still in the
+// container's namespace, which is the only namespace those sockets mean
+// anything in.
+func inNetNS(ns netns.NsHandle, open, abandon func()) error {
 	runtime.LockOSThread()
 	origin, err := netns.Get()
 	if err != nil {
-		return nil, fmt.Errorf("dhcp: read the current network namespace: %w", err)
+		// Nothing has been entered, so the thread is not contaminated
+		// and must go back to the scheduler. The base left it locked
+		// here, which retired one OS thread per failure for no gain.
+		runtime.UnlockOSThread()
+		return fmt.Errorf("dhcp: read the current network namespace: %w", err)
 	}
 	defer func() { _ = origin.Close() }()
 
-	if err := netns.Set(*opts.NetNS); err != nil {
+	if err := netns.Set(ns); err != nil {
 		runtime.UnlockOSThread()
-		return nil, fmt.Errorf("dhcp: enter the endpoint's network namespace: %w", err)
+		return fmt.Errorf("dhcp: enter the endpoint's network namespace: %w", err)
 	}
 
-	client, cerr := dhcpruntime.NewClient(cfg)
+	open()
 
 	if err := netns.Set(origin); err != nil {
 		// The thread is stranded in the container's namespace. Leaving
@@ -865,17 +1110,11 @@ func newLibClient(iface string, params proto.Params, opts *DHCPClientOptions) (*
 		// would hand a namespace-contaminated thread to unrelated
 		// goroutines, which costs correctness everywhere.
 		log.WithError(err).Error("Could not return the thread to the plugin's network namespace; it is retired")
-		if client != nil {
-			_ = client.Run(canceledContext())
-		}
-		return nil, fmt.Errorf("dhcp: return from the endpoint's network namespace: %w", err)
+		abandon()
+		return fmt.Errorf("dhcp: return from the endpoint's network namespace: %w", err)
 	}
 	runtime.UnlockOSThread()
-
-	if cerr != nil {
-		return nil, fmt.Errorf("dhcp: open a DHCP client on %v: %w", iface, cerr)
-	}
-	return client, nil
+	return nil
 }
 
 func canceledContext() context.Context {

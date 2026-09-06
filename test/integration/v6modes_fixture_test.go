@@ -419,21 +419,17 @@ func TestV6Fixture_AwaitRAAfterAndItsNegative(t *testing.T) {
 // TestV6Fixture_AssertExchangeRefusesASegmentNoClientEverUsed is
 // AssertExchange's live negative control.
 //
-// Nothing in this round can drive it positively: the 2.x branch refuses
-// ipv6=true at network creation, so no run on this branch constructs a
-// DHCPv6 client and no live log here can contain an exchange. The
-// positive is driven in the fast lane against the server logs a real
-// exchange produced, one per mode; the live positive belongs to the
-// chassis round that removes the refusal.
-//
-// What IS drivable here, and is the half that would rot silently, is
-// that the function refuses a log with no exchange in it. A contract
-// whose must-set had been emptied would pass here and would then pass
-// in M7d against a segment where nothing happened.
+// The positive is elsewhere, deliberately: the fast lane drives the
+// verdict against captured server logs, one per mode, and
+// dhcpv6_noaddress_modes_test.go drives it against live segments whose
+// clients really completed the exchange. This is the half that would
+// rot silently either way: a contract whose must-set had been emptied
+// passes every positive above and only fails here, on a log with no
+// exchange in it at all.
 func TestV6Fixture_AssertExchangeRefusesASegmentNoClientEverUsed(t *testing.T) {
 	refused, msg := captureFixtureCall(t, harness.V6Managed, func(f *harness.V6Fixture) {
-		// A budget, not a wait: no client exists on this branch, so
-		// nothing can arrive however long it polls.
+		// A budget, not a wait: no container has joined a network on
+		// this segment, so nothing can arrive however long it polls.
 		f.AssertExchange(time.Second)
 	})
 	if !refused {

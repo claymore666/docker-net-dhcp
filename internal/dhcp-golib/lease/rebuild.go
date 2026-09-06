@@ -148,15 +148,29 @@ func EventRecord(id, instance string, seq uint64, at time.Time, ev Event) Record
 		Reason:   ev.Reason,
 		Note:     ev.Note,
 		ACD:      ev.ACD,
+		DAD:      ev.DAD,
+		Family:   ev.Family,
 	}
 	if ev.Kind == Lost {
 		out.Op = OpLost
 		return out
 	}
 	out.Op = OpLease
-	if ev.Kind != Failed {
+	// Failed carries no lease because nothing was acquired, and Configured
+	// carries none because RFC 9915 section 18.2.6's exchange has no
+	// addresses in it — "The client uses an Information-request message to
+	// obtain configuration information without requesting addresses and/or
+	// delegated prefixes to be assigned." Attaching an empty one would put a
+	// zero address in the record.
+	if ev.Kind != Failed && ev.Kind != Configured {
 		l := CloneLease(ev.Lease)
 		out.Lease = &l
+	}
+	if ev.Kind == Configured {
+		// Cloned, like the lease above: the caller keeps its own slices and a
+		// record that aliased them would change under it.
+		c := cloneConfiguration(ev.Config)
+		out.Config = &c
 	}
 	return out
 }

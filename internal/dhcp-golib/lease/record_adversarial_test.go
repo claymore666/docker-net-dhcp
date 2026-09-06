@@ -561,8 +561,12 @@ func TestTheFamilyIsWrittenOnceLikeTheIdentity(t *testing.T) {
 	}
 
 	// The family is still WRITABLE on a record that has none: the rule is
-	// written once, not never.
-	fresh, err := Fold(Record{}, RecordEvent{ID: "rec-9", Seq: 1, Op: OpCreate, Scope: "net-a", Family: FamilyV6})
+	// written once, not never. The identity rides along because a v6 record
+	// is refused without one — see
+	// TestAV6RecordIsRefusedWithoutTheDUIDAndIAID — which is a different rule
+	// about a different field, and this event has to satisfy both to reach the
+	// one under test.
+	fresh, err := Fold(Record{}, RecordEvent{ID: "rec-9", Seq: 1, Op: OpCreate, Scope: "net-a", Family: FamilyV6, Identity: testIdentity6})
 	if err != nil {
 		t.Fatalf("creating a v6 record was refused: %v", err)
 	}

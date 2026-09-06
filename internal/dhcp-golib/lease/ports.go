@@ -223,3 +223,147 @@ func (d StoreDamage) Any() bool { return d.TornTail > 0 || d.Skipped > 0 }
 func (d StoreDamage) String() string {
 	return fmt.Sprintf("%d torn tail, %d skipped", d.TornTail, d.Skipped)
 }
+
+// TransportV6 carries DHCPv6 payloads — the UDP payload only, like Transport.
+//
+// IT IS A SECOND PORT AND NOT A MODE OF Transport, for ARP's reason applied to
+// a different pair: the two carry different address families on different
+// sockets (UDP/IPv4 port 68 against UDP/IPv6 port 546), and a single port
+// would have to inspect proto.Dest to decide which socket to write to — ring 3
+// reading ring 1's output to route it.
+//
+// Send TAKES A proto.Dest WHOSE Addr IS AN IPv6 ADDRESS, and for every message
+// this client sends that address is RFC 9915 section 7.1's
+// All_DHCP_Relay_Agents_and_Servers (ff02::1:2). There is no unicast
+// destination: RFC 9915 removed the Server Unicast option that RFC 3315 had —
+// see section 6.4 of the sequencing note — so a v6 client multicasts every
+// message of every exchange, including a Renew to the server that granted the
+// lease.
+type TransportV6 interface {
+	Send(dst proto.Dest, payload []byte) error
+	Received() <-chan Inbound
+	Close() error
+}
+
+// NDInbound is one ICMPv6 Neighbor Discovery frame that arrived on the link,
+// or the error that ended the stream. Frame and Err are mutually exclusive,
+// for the reason Inbound gives.
+type NDInbound struct {
+	Frame []byte
+	Err   error
+}
+
+// ND is the link's IPv6 Neighbor Discovery traffic: Router Solicitations and
+// the duplicate-address-detection Neighbor Solicitations out, Router
+// Advertisements and Neighbor Advertisements in.
+//
+// IT IS ARP's COUNTERPART AND HAS ARP's SHAPE (D30): encoding is ring 0's and
+// the manager does it, so an implementation that built its own Router
+// Solicitation would put the codec below the ring that owns it.
+//
+// THE ONE DIFFERENCE FROM ARP IS THAT Send TAKES A wire.ICMPv6Packet AND NOT A
+// []byte, and it is forced by the protocol rather than chosen. An ARP frame is
+// self-contained; an ICMPv6 message is not — RFC 4443 section 2.3 computes its
+// checksum over a pseudo-header made of the SOURCE and DESTINATION addresses,
+// so those two addresses are part of the encoded message whether or not they
+// are part of its bytes. wire.ICMPv6Packet is those three fields, and it is
+// what ring 0 produces. A []byte here would leave ring 3 to choose a source
+// address, and any choice but the one the checksum was computed over produces
+// a frame every receiver drops.
+//
+// Received DELIVERS EVERYTHING THE SOCKET GAVE IT, unfiltered, for ARP's
+// reason: which frames matter is a protocol question and it is answered above
+// this port, not in the socket where no test can see it. The manager decodes
+// each frame, routes a Router Advertisement to EvRouterAdvert and drops the
+// rest with a counter.
+//
+// WHAT IT DOES NOT DO IS RUN DUPLICATE ADDRESS DETECTION. The machine emits
+// proto.ActStartDAD and waits for a proto.EvDADResult; performing RFC 4862
+// section 5.4's exchange — joining the solicited-node multicast group, sending
+// the Neighbor Solicitations, timing the wait, and reading RFC 7527 section
+// 4.1's looped-back frames back out — is ring 3's, and it is M7c's to build.
+// This port is how those frames get on and off the link; DAD is the caller of
+// it.
+type ND interface {
+	Send(pkt wire.ICMPv6Packet) error
+	Received() <-chan NDInbound
+	Close() error
+}
+
+// Journal6 records every Machine6 Step. See proto.JournalEntry6.
+//
+// It is a second port beside Journal for JournalEntry6's reason: the recorded
+// from- and to-states are the whole point of a journal entry, and proto.State
+// and proto.State6 are two enumerations. One port taking both would record two
+// states per Step of which two are always zero.
+type Journal6 interface {
+	Append(proto.JournalEntry6)
+	Entries() []proto.JournalEntry6
+}
+
+// CapturedPacketV6 is one DHCPv6 or Neighbor Discovery frame in or out,
+// decoded, with a timestamp.
+//
+// It is a second capture type beside CapturedPacket because the decoded
+// message types differ; the ring is the same shape and the same rules apply,
+// including "a message that FAILED to decode is the one worth having".
+type CapturedPacketV6 struct {
+	At        time.Time
+	Dir       Direction
+	Raw       []byte
+	Msg       *wire.MessageV6
+	DecodeErr error
+
+	// RA is set instead of Msg when this capture is a Router Advertisement
+	// the manager admitted. Only the admitted ones are captured, for
+	// CapturedPacket.ARP's reason: a shared link carries Neighbor Discovery
+	// continuously and this ring is bounded.
+	RA *wire.RouterAdvert
+
+	// RS is true when this capture is an outgoing Router Solicitation, which
+	// carries no decoded form worth keeping: RFC 4861 section 4.1's message
+	// has no fields this client varies.
+	RS bool
+}
+
+// PacketRingV6 is the bounded ring of every v6 message in and out.
+type PacketRingV6 interface {
+	Record(CapturedPacketV6)
+	Packets() []CapturedPacketV6
+}
+
+// DADRunner performs RFC 4862 section 5.4's duplicate address detection for
+// one address and reports the verdict.
+//
+// IT IS THE OTHER HALF OF proto.ActStartDAD, and it exists because that action
+// otherwise reached nobody. The machine emits it, arms proto.DADTimeout, and
+// waits for exactly one proto.EvDADResult per address; before this port the
+// only thing that could supply that result was a caller calling
+// Manager.ReportDADResult by hand, so a client wired to real sockets and left
+// alone would fail every acquisition on the deadline. See Manager's
+// ActStartDAD arm.
+//
+// IT IS OPTIONAL, AND THE NIL VALUE IS THE BEHAVIOUR THAT SHIPPED BEFORE IT.
+// A Config without one counts the request and journals it and nothing else,
+// exactly as before, so a caller supplying its own answer through
+// ReportDADResult is unaffected and no test that did so has to change.
+// runtime.NewClient6 always supplies one, because a client that owns the
+// sockets has no excuse not to.
+//
+// Start MUST NOT BLOCK. It is called from the manager's own goroutine in the
+// middle of a Step, and RFC 4862 section 5.4.2's schedule is at least
+// RetransTimer long; a Start that waited for the verdict would stop the
+// manager answering anything for the duration, including the very exchange the
+// address came from.
+//
+// report IS CALLED EXACTLY ONCE PER Start, from another goroutine, and it is a
+// callback rather than a reference back to the Manager for a construction
+// reason: a runner holding the manager and a manager holding the runner is a
+// cycle, and the place that has to break it is the place a test cannot reach.
+// Calling it twice for one address answers a question ring 1 asked once —
+// proto.Machine6's takeDADResult ignores and journals the second, so the
+// damage is bounded, but the count is then wrong and the count is the evidence.
+// Not calling it at all is the case proto.DADTimeout exists for.
+type DADRunner interface {
+	Start(addr netip.Addr, report func(addr netip.Addr, duplicate bool))
+}

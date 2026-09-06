@@ -10,6 +10,8 @@ import (
 	"testing"
 
 	"errors"
+
+	"github.com/claymore666/docker-net-dhcp/pkg/dhcp"
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netns"
 	"golang.org/x/sys/unix"
@@ -19,10 +21,10 @@ func TestIPv6DisablePath(t *testing.T) {
 	// The path is per-interface and per-netns; the interface name is
 	// the only variable and it belongs in the middle component, not
 	// appended to the file.
-	if got, want := ipv6DisablePath("eth0"), "/proc/sys/net/ipv6/conf/eth0/disable_ipv6"; got != want {
+	if got, want := ipv6DisablePath(ipv6DisableSysctlDir, "eth0"), "/proc/sys/net/ipv6/conf/eth0/disable_ipv6"; got != want {
 		t.Errorf("ipv6DisablePath(eth0) = %q, want %q", got, want)
 	}
-	if got, want := ipv6DisablePath("dh-abc123"), "/proc/sys/net/ipv6/conf/dh-abc123/disable_ipv6"; got != want {
+	if got, want := ipv6DisablePath(ipv6DisableSysctlDir, "dh-abc123"), "/proc/sys/net/ipv6/conf/dh-abc123/disable_ipv6"; got != want {
 		t.Errorf("ipv6DisablePath(dh-abc123) = %q, want %q", got, want)
 	}
 }
@@ -96,7 +98,7 @@ func TestClearDisableIPv6_MissingSysctlIsAnError(t *testing.T) {
 	}
 }
 
-func TestEnableIPv6OnContainerLink_RefusesBeforeTouchingAThread(t *testing.T) {
+func TestPrepareIPv6Link_RefusesBeforeTouchingAThread(t *testing.T) {
 	// Both refusals happen before any thread is locked or any
 	// namespace entered. The nil-link one is the important half: it is
 	// not a defensive nicety but the difference between an error and a
@@ -128,9 +130,17 @@ func TestEnableIPv6OnContainerLink_RefusesBeforeTouchingAThread(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			changed, err := tt.m.enableIPv6OnContainerLink()
+			changed, guard, err := tt.m.prepareIPv6Link()
 			if err == nil {
-				t.Fatalf("enableIPv6OnContainerLink returned nil error (changed=%v)", changed)
+				t.Fatalf("prepareIPv6Link returned nil error (changed=%v)", changed)
+			}
+			// The guard is not attempted on a link that failed its
+			// preconditions: a step count above zero here would mean
+			// sysctls were written on a link the function has just
+			// said it cannot address.
+			if guard.Failures != 0 {
+				t.Errorf("prepareIPv6Link reported %d guard steps after refusing the link; "+
+					"the guard must not run at all on a link it cannot name", guard.Failures)
 			}
 			if !strings.Contains(err.Error(), tt.want) {
 				t.Errorf("error %q does not name the precondition it failed (%q)", err, tt.want)
@@ -159,31 +169,30 @@ func TestEnsureIPv6Enabled_SurvivesANilPlugin(t *testing.T) {
 }
 
 // startV6BranchWindow bounds "the same branch" for the gate below: the
-// three calls sit within a couple of dozen lines of each other today,
+// two calls sit within a couple of dozen lines of each other today,
 // and a limit keeps the ordering claim from being satisfied by two
 // calls in unrelated parts of the file.
 const startV6BranchWindow = 40
 
-// TestStart_EnablesIPv6BeforeWaitingForTheLinkLocal pins the ORDER, not
-// the presence.
+// TestStart_EnablesIPv6BeforeTheV6Client pins the ORDER, not the
+// presence.
 //
 // Both calls could be present and the fix still be dead: on a link the
-// engine disabled, the link-local never appears, so awaitLinkLocal
-// spends its whole budget and warns, and enabling IPv6 afterwards
-// arrives ten seconds late with the DHCPv6 client already started
-// against a link that had nothing on it. That is precisely the shape
-// the stateless run under #868 produced -- "No usable link-local address;
-// starting DHCPv6 client anyway", then a dhcpcd -6 that never emitted a
-// router solicitation -- so the ordering is the defect, and presence
-// alone would not have caught it.
+// engine disabled, no link-local ever appears, so the client's own wait
+// for one spends its whole budget and refuses, and enabling IPv6
+// afterwards arrives with the DHCPv6 client already given up on a link
+// that had nothing on it. That is precisely the shape the stateless run
+// under #868 produced -- "No usable link-local address", then a -6
+// client that never emitted a router solicitation -- so the ordering is
+// the defect, and presence alone would not have caught it.
 //
 // Source-reading rather than behavioural because reaching this code
 // needs a live container, a sandbox namespace and root; the alternative
-// to a gate here is no observer at all.
-func TestStart_EnablesIPv6BeforeWaitingForTheLinkLocal(t *testing.T) {
+// to a gate here is no observer at all. STATED BOUND: it reads the
+// spelling of two calls, so a rename or a wrapper is invisible to it.
+func TestStart_EnablesIPv6BeforeTheV6Client(t *testing.T) {
 	const (
 		enable  = "m.ensureIPv6Enabled()"
-		await   = "m.awaitLinkLocal(ctx)"
 		client  = "m.setupClient(true)"
 		srcFile = "dhcp_manager.go"
 	)
@@ -204,30 +213,124 @@ func TestStart_EnablesIPv6BeforeWaitingForTheLinkLocal(t *testing.T) {
 		return hits
 	}
 
-	for _, needle := range []string{enable, await, client} {
+	for _, needle := range []string{enable, client} {
 		if got := at(needle); len(got) != 1 {
 			t.Fatalf("%v: found %q on lines %v, want exactly one -- "+
 				"this gate reads the source and cannot arbitrate between copies", srcFile, needle, got)
 		}
 	}
 
+	// A LINE ORDER IS NOT AN EXECUTION ORDER. `defer m.ensureIPv6Enabled()`
+	// and `go m.ensureIPv6Enabled()` leave the call exactly where it is
+	// and move when it runs -- the first to after the client has already
+	// failed, the second to whenever. Both walked through the version of
+	// this gate that only compared line numbers (MEASURED: the mutant
+	// survived). So the enable must be a plain statement on its own line.
+	// STATED BOUND: a call moved inside a helper that defers it is still
+	// invisible here.
+	if got := strings.TrimSpace(lines[at(enable)[0]-1]); got != enable {
+		t.Errorf("%v line %d is %q, want exactly %q -- a deferred or spawned enable runs "+
+			"after or beside the client rather than before it, and the line order below "+
+			"cannot tell the difference", srcFile, at(enable)[0], got, enable)
+	}
+
 	// setupClient(true) is the unique marker for the IPv6 branch of
 	// Start -- there is exactly one persistent DHCPv6 client -- so
-	// requiring both calls to sit above it, in order and close by,
-	// says "inside that branch" without depending on how the branch
-	// itself is spelled.
-	enableLine, awaitLine, clientLine := at(enable)[0], at(await)[0], at(client)[0]
-	if !(enableLine < awaitLine && awaitLine < clientLine) {
-		t.Errorf("%v: %q is on line %d, %q on %d, %q on %d -- IPv6 must be enabled BEFORE the "+
-			"link-local wait and both before the DHCPv6 client starts, or the wait burns its "+
-			"budget on a link that cannot have a link-local (#868)",
-			srcFile, enable, enableLine, await, awaitLine, client, clientLine)
+	// requiring the enable to sit above it, and close by, says "inside
+	// that branch" without depending on how the branch itself is
+	// spelled.
+	enableLine, clientLine := at(enable)[0], at(client)[0]
+	if enableLine >= clientLine {
+		t.Errorf("%v: %q is on line %d and %q on %d -- IPv6 must be enabled BEFORE the "+
+			"DHCPv6 client starts, or the client waits out its link-local budget on a link "+
+			"that cannot have one (#868)",
+			srcFile, enable, enableLine, client, clientLine)
 	}
 	if clientLine-enableLine > startV6BranchWindow {
 		t.Errorf("%v: %q (line %d) and %q (line %d) are %d lines apart, more than the %d this gate "+
 			"allows -- they are meant to be the same branch of Start, and a gate that tolerates any "+
 			"distance stops saying so",
 			srcFile, enable, enableLine, client, clientLine, clientLine-enableLine, startV6BranchWindow)
+	}
+}
+
+// linkLocalWaitMarkers are the three things a link-local wait in THIS
+// package has to read, whatever it is called.
+//
+// Keyed on the MECHANISM and not on a function name (#911 review round
+// 1, finding 5). A wait for a usable IPv6 link-local address over
+// netlink has to select on link scope and reject the two duplicate-
+// address-detection flags; a wait that does less than that is not
+// waiting for a usable address, and one that does it under another name
+// still names these three.
+var linkLocalWaitMarkers = []string{
+	"RT_SCOPE_LINK",
+	"IFA_F_TENTATIVE",
+	"IFA_F_DADFAILED",
+}
+
+// TestTheChassisDoesNotWaitForALinkLocalItself is the observer for "the
+// v6 Join path waits for the link-local ONCE".
+//
+// One fact, one derivation. runtime.InterfaceLinkLocal resolves the
+// interface on the calling thread, refuses a tentative or dad-failed
+// address, and waits its own derived bound (RFC 4862 section 5.4.2's
+// delay plus one probe, plus a stated margin) for a usable one. The
+// chassis had a SECOND wait in front of it, on a ten-second budget
+// derived from nothing, so a link whose link-local never cleared spent
+// fourteen seconds of a thirty-second Join deadline arriving at the
+// refusal the library reaches in four -- and newLibClient6's own doc
+// comment asserted the wait was not there.
+//
+// WHY A SOURCE SCAN. The Join path needs root, a sandbox namespace and
+// a live container; nothing in the unit lane can execute it. The
+// property is an ABSENCE, and an absence is what a scan can actually
+// establish over a whole package where a behavioural test can only
+// speak for the path it drives.
+//
+// STATED BOUNDS. It reads production sources under pkg/plugin only:
+// a wait added in another package of the chassis, or one written
+// against /proc/net/if_inet6 or netip's IsLinkLocalUnicast instead of
+// netlink, is invisible to it. It cannot see a wait inside the library
+// either, which is the point -- that one is the derivation being kept.
+func TestTheChassisDoesNotWaitForALinkLocalItself(t *testing.T) {
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		t.Fatalf("read the package directory: %v", err)
+	}
+
+	scanned := 0
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		src, err := os.ReadFile(name)
+		if err != nil {
+			t.Fatalf("read %v: %v", name, err)
+		}
+		scanned++
+		for _, marker := range linkLocalWaitMarkers {
+			if !strings.Contains(string(src), marker) {
+				continue
+			}
+			t.Errorf("%v names %s. That is the mechanism of a link-local wait, and the "+
+				"chassis must not have one: runtime.InterfaceLinkLocal already waits for a "+
+				"non-tentative link-local on the interface the client binds, inside its own "+
+				"derived bound. A second wait here is a second derivation of one fact and it "+
+				"stacks on top of the library's, on a Join deadline neither of them knows "+
+				"about (#911)", name, marker)
+		}
+	}
+
+	// NON-VACUITY. A scan that read nothing reports the same clean
+	// result as a package with no wait in it.
+	if scanned < 2 {
+		t.Fatalf("scanned %d production sources in this package; the check above measured "+
+			"nothing", scanned)
+	}
+	if len(linkLocalWaitMarkers) == 0 {
+		t.Fatal("the marker list is empty, so the loop above asserted nothing")
 	}
 }
 
@@ -285,4 +388,126 @@ func TestClearDisableIPv6_IsTheObserver(t *testing.T) {
 	if _, err := clearDisableIPv6(filepath.Join(dir, "absent", "disable_ipv6")); err == nil {
 		t.Errorf("clearDisableIPv6 reported success on a path that does not exist")
 	}
+}
+
+// v6LinkSysctlDir builds a stand-in for /proc/sys/net/ipv6/conf with
+// one interface directory holding disable_ipv6 and the guard's three
+// knobs, all at values a real sandbox link starts from: IPv6 off, and
+// the guard's knobs at the kernel defaults the guard has to move.
+//
+// Starting them at the defaults rather than at the guard's own values
+// is what makes the second assertion below discriminating: knobs that
+// already read the right value would be indistinguishable from knobs
+// the guard wrote.
+func v6LinkSysctlDir(t *testing.T, iface string) string {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, iface), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	write := func(name, value string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(dir, iface, name), []byte(value+"\n"), 0o644); err != nil {
+			t.Fatalf("seed %s: %v", name, err)
+		}
+	}
+	write("disable_ipv6", "1")
+	for knob := range dhcp.RouterAdvertGuardContract() {
+		write(knob, "0")
+	}
+	return dir
+}
+
+func v6LinkKnob(t *testing.T, dir, iface, name string) string {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join(dir, iface, name))
+	if err != nil {
+		t.Fatalf("read %s: %v", name, err)
+	}
+	return strings.TrimSpace(string(b))
+}
+
+// TestPrepareV6LinkUnder_GuardRunsOnlyAfterIPv6IsOn drives the ORDER,
+// which is the whole claim of prepareIPv6Link and was the part no test
+// could reach: the namespace entry around it needs root and a sandbox,
+// so a mutant that applied the guard on a link whose IPv6 could not be
+// turned on survived the entire unit lane, and so did one that never
+// applied the guard at all.
+//
+// The two directions are the test. On a link that can be enabled the
+// guard's knobs must end up at the contract's values — otherwise the
+// container has a DHCPv6 address and no route, because DHCPv6 carries
+// no next hop. On a link that cannot, the guard must not have run:
+// its knobs write and read back perfectly well on a link with IPv6
+// administratively off, so a guard applied there reports success for
+// an endpoint on which no advertisement can be processed at all, and
+// router_advert_guard_failures reads zero for the one endpoint that
+// most needs it to read something.
+func TestPrepareV6LinkUnder_GuardRunsOnlyAfterIPv6IsOn(t *testing.T) {
+	const iface = "eth0"
+	contract := dhcp.RouterAdvertGuardContract()
+	if len(contract) == 0 {
+		t.Fatal("the guard contract is empty, so this test observes nothing")
+	}
+
+	t.Run("IPv6 can be enabled: the guard runs after it", func(t *testing.T) {
+		dir := v6LinkSysctlDir(t, iface)
+
+		changed, res, err := prepareV6LinkUnder(dir, iface)
+		if err != nil {
+			t.Fatalf("prepareV6LinkUnder: %v", err)
+		}
+		if !changed {
+			t.Error("disable_ipv6 read 1 and the call reports it wrote nothing")
+		}
+		if got := v6LinkKnob(t, dir, iface, "disable_ipv6"); got != "0" {
+			t.Errorf("disable_ipv6 reads %q after the call, want 0", got)
+		}
+		if res.Failures != 0 || res.Err != nil {
+			t.Errorf("the guard reported %d failure(s) on a writable directory: %v",
+				res.Failures, res.Err)
+		}
+		for knob, want := range contract {
+			if got := v6LinkKnob(t, dir, iface, knob); got != want {
+				t.Errorf("%s reads %q after the call, want %q — the guard did not run, "+
+					"and a container on this link gets a DHCPv6 address with no default "+
+					"route to use it with", knob, got, want)
+			}
+		}
+	})
+
+	t.Run("IPv6 cannot be enabled: the guard does not run", func(t *testing.T) {
+		dir := v6LinkSysctlDir(t, iface)
+		// A directory where disable_ipv6 should be: the read fails, and
+		// it fails the way a sysctl that is not there or not readable
+		// does, without needing a read-only mount or a non-root user.
+		p := filepath.Join(dir, iface, "disable_ipv6")
+		if err := os.Remove(p); err != nil {
+			t.Fatalf("remove: %v", err)
+		}
+		if err := os.Mkdir(p, 0o755); err != nil {
+			t.Fatalf("mkdir over the sysctl: %v", err)
+		}
+
+		changed, res, err := prepareV6LinkUnder(dir, iface)
+		if err == nil {
+			t.Fatal("prepareV6LinkUnder succeeded with no readable disable_ipv6")
+		}
+		if changed {
+			t.Error("the call reports it enabled IPv6 on a link where it could not")
+		}
+		if res.Failures != 0 || res.Err != nil {
+			t.Errorf("the guard produced a result (%d failure(s), %v) on a link whose "+
+				"IPv6 could not be turned on", res.Failures, res.Err)
+		}
+		for knob := range contract {
+			if got := v6LinkKnob(t, dir, iface, knob); got != "0" {
+				t.Errorf("%s reads %q — the guard wrote its knobs on a link with IPv6 "+
+					"administratively off. They write and read back truthfully there, so "+
+					"router_advert_guard_failures reports zero for an endpoint that can "+
+					"process no advertisement at all: one failure, two counters, and the "+
+					"one an operator would look at reads clean", knob, got)
+			}
+		}
+	})
 }

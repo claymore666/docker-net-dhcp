@@ -116,37 +116,15 @@ var errorCases = []struct {
 		},
 		wantSubstr: "leaving no server to lease from",
 	},
-	{
-		// IPv4-only until IPv6 parity. The refusal is at CreateNetwork and not at
-		// the first container because this is the only place an
-		// operator finds out in time: an endpoint that quietly comes
-		// up without the v6 address the network asked for is the exact
-		// failure this names out loud.
-		name: "IPv6RefusedUntilParity",
-		opts: map[string]string{
-			"mode":   "macvlan",
-			"parent": harness.HostVeth,
-			"ipv6":   "true",
-		},
-		wantSubstr: "IPv4-only until IPv6 parity (#911)",
-	},
-	{
-		// The same refusal under a different SPELLING of the key.
-		// decodeOpts runs mapstructure with no MatchName, so the match
-		// is case-insensitive against the field name and all three of
-		// ipv6 / IPv6 / Ipv6 set one bool. A refusal keyed on a key
-		// string would enumerate two spellings and miss the third, and
-		// the network would be created with IPv6 silently doing
-		// nothing. This row is the one that would go green under that
-		// mistake, which is why it is a row of its own.
-		name: "IPv6RefusedUnderAnotherSpelling",
-		opts: map[string]string{
-			"mode":   "macvlan",
-			"parent": harness.HostVeth,
-			"IPv6":   "true",
-		},
-		wantSubstr: "IPv4-only until IPv6 parity (#911)",
-	},
+	// The two IPv6 refusal rows that used to close this table are gone
+	// with the refusal (#911): `-o ipv6=true` is honoured now, and an
+	// acceptance has no place in a table of expected failures. The
+	// second of them was there for the key SPELLING, and that property
+	// outlives the refusal in the quieter direction -- an option that
+	// decodes into nothing leaves a network where IPv6 does nothing and
+	// says so nowhere. It moved to
+	// TestDecodeOpts_IPv6UnderEverySpelling, which is the layer the
+	// bool lives at; TestIPv6_AcceptedAtCreate is the live half.
 }
 
 // TestErrors_NetworkCreateValidation walks the validation matrix.

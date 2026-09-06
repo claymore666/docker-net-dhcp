@@ -41,13 +41,25 @@ var pinnedRows = []string{
 	"gofmt",
 	"shellcheck",
 	"doc-numbers",
+	"readme-usage",
 	"gate-roster",
 	"t1",
 	"t2",
 	"unit-suite",
+	"netns-suite",
 	"self-drive",
 	"verify-oracle",
 }
+
+// The three SUBSETS of that table, pinned by membership rather than by size.
+// Each names the rows one flag changes, and each is the kind of list that goes
+// wrong by growing: --inner is defined by what it does not run, --light by
+// what it leaves out, and SKIPPED by who may say it.
+var (
+	pinnedOuterRows     = []string{"netns-suite", "self-drive", "verify-oracle"}
+	pinnedScopedOutRows = []string{"unit-suite", "netns-suite"}
+	pinnedSkippableRows = []string{"verify-oracle"}
+)
 
 var pinnedGates = []string{"t1", "t2"}
 
@@ -71,10 +83,22 @@ var pinnedGates = []string{"t1", "t2"}
 // keeps the distance between the pin and the tree at zero, which is the only
 // value at which the pin is at full strength.
 const (
-	minScenarios     = 63
+	// 75 -> 77 at M7c, per the maintenance rule two paragraphs above and for
+	// the reason it exists: MEASURED 2026-09-06, with the pin left at 75
+	// against a 77-scenario manifest, the manifest-scenario-removed scenario
+	// stopped being caught by THIS test at all — deleting a scenario left 76,
+	// which is still above 75, and the run only went red because the deleted
+	// name happened to sit in docs/verifying.md's derived stale-anchor block.
+	// A count backstop holds only AT the threshold.
+	minScenarios     = 77
 	minShellScripts  = 4
-	minDeclaredTests = 381
-	minOracleSeconds = 8
+	minDeclaredTests = 382
+	// The self-check row's probes and the refusals record() owes them. Pinned
+	// here for the reason the manifest declares them at all: the count must
+	// not live in the file that can delete the probe it counts.
+	minSelfCheckProbes   = 7
+	minSelfCheckRefusals = 5
+	minOracleSeconds     = 8
 	// The two operands of that floor. The measurement is a low-water mark on
 	// how long a real oracle run takes; the percentage is what stops the floor
 	// being derived down to nothing by editing the measurement instead.
@@ -89,7 +113,11 @@ const (
 // The classes a scenario contract may declare, and the verdicts it may name.
 var (
 	rcClasses = map[string]bool{"zero": true, "nonzero": true, "static": true}
-	verdicts  = map[string]bool{"PASS": true, "FAIL": true, "ABSENT": true}
+	// SKIPPED joined the verdicts on 2026-09-05 with the oracle stamp. It is
+	// the only verdict that is neither a measurement nor a refusal, which is
+	// why MANIFEST_SKIPPABLE_ROWS exists and is pinned above: a verdict that
+	// every row may give is not an exception, it is an exit.
+	verdicts = map[string]bool{"PASS": true, "FAIL": true, "ABSENT": true, "SKIPPED": true}
 )
 
 // static means the scenario does not run the subject, so it cannot read the
@@ -101,7 +129,15 @@ var (
 // from 1 to 2 when the second member arrived, deliberately and with the count
 // beside it — the pattern to refuse is a cap raised in the same edit as the
 // member that broke it becoming routine.
-const maxStaticContracts = 2
+//
+// ROUND 2, 2026-09-05: raised to 3 with scenario-rc-follows-the-verdict, which
+// runs one scenario in a copy and observes the exit status it answered with.
+// The reason it is the sanctioned case and not the routine one: two of the
+// three members are about the ORACLE'S OWN PROTOCOL — how a scenario reports,
+// and what its exit status means — and such a scenario has no row of the
+// subject's table to read by construction. A fourth member that is not of that
+// kind is the one to refuse.
+const maxStaticContracts = 3
 
 func readManifest(t *testing.T) string {
 	t.Helper()
@@ -191,6 +227,8 @@ func TestManifestFloorsAreNotBelowTheirPins(t *testing.T) {
 		{"MANIFEST_SCENARIO_CONTRACTS_N", number(t, src, "MANIFEST_SCENARIO_CONTRACTS_N"), minScenarios},
 		{"MANIFEST_SHELL_SCRIPTS_N", number(t, src, "MANIFEST_SHELL_SCRIPTS_N"), minShellScripts},
 		{"MIN_DECLARED_TESTS", number(t, src, "MIN_DECLARED_TESTS"), minDeclaredTests},
+		{"SELF_CHECK_PROBES_N", number(t, src, "SELF_CHECK_PROBES_N"), minSelfCheckProbes},
+		{"SELF_CHECK_REFUSALS_N", number(t, src, "SELF_CHECK_REFUSALS_N"), minSelfCheckRefusals},
 		// ROUND 13, N12. ORACLE_MIN_SECONDS is no longer a literal, so the
 		// pin reads its two OPERANDS and does the arithmetic itself. Reading
 		// the derived name here would have to parse shell; reading the
@@ -210,6 +248,13 @@ func TestManifestFloorsAreNotBelowTheirPins(t *testing.T) {
 	// looks like maintenance while doing it.
 	if m := number(t, src, "MAX_DECLARED_MARGIN"); m < 0 || m > maxDeclaredMarginCap {
 		t.Errorf("MAX_DECLARED_MARGIN is %d, outside 0..%d; the band was widened rather than the floor raised", m, maxDeclaredMarginCap)
+	}
+
+	// The self-check's two halves, held apart. Refusals equal to probes is a
+	// row with no preservation control; zero refusals is not a guard at all.
+	// The shell checks this too, in the file that declares them.
+	if pr, rf := number(t, src, "SELF_CHECK_PROBES_N"), number(t, src, "SELF_CHECK_REFUSALS_N"); rf < 1 || rf >= pr {
+		t.Errorf("SELF_CHECK_REFUSALS_N is %d against %d probe(s); a self-check that refuses none of its probes is not a guard and one that refuses all of them has no control", rf, pr)
 	}
 
 	// Same direction, same reason: raising the ceiling is the cheap way to
@@ -561,4 +606,249 @@ func plantedBy(name string, bodies map[string]string, seen map[string]bool) int 
 		}
 	}
 	return n
+}
+
+// TestManifestRowSubsetsAreThePinnedSubsets holds the three lists that say
+// which rows a FLAG changes: the rows an inner run does not have, the rows a
+// scoped run leaves out, and the rows that may record SKIPPED.
+//
+// Each is pinned by membership rather than by size, in a second language and a
+// second directory, for the reason the row list itself is: these are the lists
+// that go wrong by growing. A row added to MANIFEST_SCOPED_OUT_ROWS stops
+// being run by every light scenario at once, and nothing in the shell would
+// notice — the manifest would still agree with itself.
+func TestManifestRowSubsetsAreThePinnedSubsets(t *testing.T) {
+	src := readManifest(t)
+	rows := map[string]bool{}
+	for _, r := range list(t, src, "MANIFEST_ROWS") {
+		rows[r] = true
+	}
+	for _, c := range []struct {
+		name   string
+		pinned []string
+	}{
+		{"MANIFEST_OUTER_ROWS", pinnedOuterRows},
+		{"MANIFEST_SCOPED_OUT_ROWS", pinnedScopedOutRows},
+		{"MANIFEST_SKIPPABLE_ROWS", pinnedSkippableRows},
+	} {
+		got := list(t, src, c.name)
+		if n := number(t, src, c.name+"_N"); n != len(got) {
+			t.Errorf("%s has %d name(s), %s_N says %d", c.name, len(got), c.name, n)
+		}
+		if len(got) != len(c.pinned) {
+			t.Errorf("%s has %d name(s), this file pins %d: %v", c.name, len(got), len(c.pinned), got)
+			continue
+		}
+		for i := range got {
+			if got[i] != c.pinned[i] {
+				t.Errorf("%s[%d]: manifest says %q, this file pins %q", c.name, i, got[i], c.pinned[i])
+			}
+			if !rows[got[i]] {
+				t.Errorf("%s names %q, which is not a row in MANIFEST_ROWS", c.name, got[i])
+			}
+		}
+		// Proper, in both directions. Empty and the flag means nothing;
+		// equal to the whole table and the flag is a run of nothing.
+		if len(got) == 0 || len(got) >= len(rows) {
+			t.Errorf("%s holds %d of %d row(s); it must be a non-empty PROPER subset", c.name, len(got), len(rows))
+		}
+	}
+}
+
+// TestLightScenariosCannotScopeAwayTheRowTheyDrive is the Go half of the
+// refusal item 2 turns on.
+//
+// A scenario that runs at the light scope does not run the rows in
+// MANIFEST_SCOPED_OUT_ROWS. If such a scenario's contract names one of those
+// rows, it has scoped away the row it exists to drive: the row records
+// nothing, the contract reads it ABSENT, and the scenario fails. That failure
+// is the safety net. This is the refusal — the combination cannot be written
+// down — and it is here rather than only in the shell because the shell's
+// version of it lives in the same file as the lists it compares.
+func TestLightScenariosCannotScopeAwayTheRowTheyDrive(t *testing.T) {
+	src := readManifest(t)
+	scoped := map[string]bool{}
+	for _, r := range list(t, src, "MANIFEST_SCOPED_OUT_ROWS") {
+		scoped[r] = true
+	}
+	declared := map[string]bool{}
+	for _, s := range list(t, src, "MANIFEST_SCENARIOS") {
+		declared[s] = true
+	}
+	byName := map[string]contract{}
+	for _, c := range contracts(t, src) {
+		byName[c.scenario] = c
+	}
+	light := list(t, src, "MANIFEST_LIGHT_SCENARIOS")
+	if n := number(t, src, "MANIFEST_LIGHT_SCENARIOS_N"); n != len(light) {
+		t.Errorf("MANIFEST_LIGHT_SCENARIOS has %d name(s), MANIFEST_LIGHT_SCENARIOS_N says %d", len(light), n)
+	}
+	seen := map[string]bool{}
+	for _, s := range light {
+		if seen[s] {
+			t.Errorf("MANIFEST_LIGHT_SCENARIOS names %q twice", s)
+		}
+		seen[s] = true
+		if !declared[s] {
+			t.Errorf("MANIFEST_LIGHT_SCENARIOS names %q, which is not a declared scenario", s)
+			continue
+		}
+		c, ok := byName[s]
+		if !ok {
+			t.Errorf("scenario %q is declared light and has no contract", s)
+			continue
+		}
+		if scoped[c.row] {
+			t.Errorf("scenario %q is declared light and its contract wants row %q, which a light run does not run; it would pass or fail on a row it scoped away", s, c.row)
+		}
+		if c.rcClass == "static" {
+			t.Errorf("scenario %q is static — it never runs the subject — so declaring a scope for it describes a run that does not happen", s)
+		}
+	}
+	// The control is the one scenario that must run everything: a control at a
+	// reduced scope controls a reduced thing.
+	if seen["control"] {
+		t.Error("the control is declared light; a control that does not run every row cannot say the arbiter is green on an untouched tree")
+	}
+	// Non-empty and proper, for the same reason as the row subsets: every
+	// scenario light is an oracle that never runs the suite, and none light is
+	// a list that costs a maintenance rule and buys nothing.
+	if len(light) == 0 || len(light) >= len(declared) {
+		t.Errorf("%d of %d scenario(s) are declared light; the set must be a non-empty PROPER subset", len(light), len(declared))
+	}
+}
+
+// ROUND 2, 2026-09-05, finding 4. docs/verifying.md carried a hand-typed list
+// of "the scenarios a skipped run is not re-checking" — the ones whose plants
+// depend on the PRODUCT's shape, which the arbiter hash does not cover. It
+// omitted eleven of them, MEASURED by review, and nothing could see that,
+// because it was prose beside machinery.
+//
+// The list is now DERIVED here and the doc quotes it. What the derivation says,
+// exactly: a scenario names a path inside its copy of the tree that is not
+// verify.sh, not verify.manifest.sh and not under scripts/ — directly, or
+// through a helper it calls. Those are the paths the stamp's hash does not
+// cover, so an edit to one of them can leave a scenario anchored on text that
+// is no longer there while every covered byte stands still.
+//
+// BOUNDS, because a completeness claim here would be the same defect one level
+// up:
+//   - It is textual. A scenario that reaches the product through a glob or a
+//     `find` with no path written down is invisible to it, and
+//     suite-tests-disabled is exactly that today.
+//   - A path in a comment is excluded, a path in a string literal is not: the
+//     read strips comment lines and nothing else. That direction ADDS names,
+//     which is the safe one for a list of things to re-check.
+//   - The copy root is spelled `$d` in a scenario and `$1`/`$2` in the helpers
+//     it calls. Another spelling would be missed, and would show up as a name
+//     dropping out of this list rather than as silence.
+const staleAnchorFence = "```stale-anchor-scenarios"
+
+// copyRootPath matches a path taken relative to the copied tree's root.
+var copyRootPath = regexp.MustCompile(`\$(?:d|1|2)/([A-Za-z0-9_./-]+)`)
+
+// hashedByTheStamp reports whether p is one of the arbiter files
+// .verify-oracle-stamp's hash covers. It is verify.sh's own definition of the
+// covered set, restated: verify.sh, verify.manifest.sh and everything under
+// scripts/. The stamp itself is neither — it is the cache, not a subject.
+func hashedByTheStamp(p string) bool {
+	return p == "verify.sh" || p == "verify.manifest.sh" ||
+		strings.HasPrefix(p, "scripts/") || p == ".verify-oracle-stamp"
+}
+
+// productPaths returns the paths outside the hashed set that fn names, following
+// the helpers it calls.
+func productPaths(fn string, bodies map[string]string, seen map[string]bool, out map[string]bool) {
+	if seen[fn] {
+		return
+	}
+	seen[fn] = true
+	body, ok := bodies[fn]
+	if !ok {
+		return
+	}
+	code := shellComment.ReplaceAllString(body, "")
+	for _, m := range copyRootPath.FindAllStringSubmatch(code, -1) {
+		if !hashedByTheStamp(m[1]) {
+			out[m[1]] = true
+		}
+	}
+	for callee := range bodies {
+		if callee == fn {
+			continue
+		}
+		if regexp.MustCompile(`(^|[^A-Za-z0-9_$])` + regexp.QuoteMeta(callee) + `([^A-Za-z0-9_(]|$)`).MatchString(code) {
+			productPaths(callee, bodies, seen, out)
+		}
+	}
+}
+
+func TestStaleAnchorBoundNamesWhatTheOracleDerives(t *testing.T) {
+	src, err := os.ReadFile(oraclePath)
+	if err != nil {
+		t.Fatalf("reading %s: %v", oraclePath, err)
+	}
+	bodies := shellFunctions(string(src))
+	if len(bodies) < 20 {
+		t.Fatalf("parsed %d shell function(s) out of %s; a failed parse derives an empty list, which agrees with an empty block", len(bodies), oraclePath)
+	}
+	derived := map[string]bool{}
+	for fn := range bodies {
+		if !strings.HasPrefix(fn, "sc_") {
+			continue
+		}
+		paths := map[string]bool{}
+		productPaths(fn, bodies, map[string]bool{}, paths)
+		if len(paths) > 0 {
+			derived[strings.ReplaceAll(strings.TrimPrefix(fn, "sc_"), "_", "-")] = true
+		}
+	}
+	if len(derived) == 0 {
+		t.Fatalf("no scenario was found to name a path outside the hashed set; an empty derivation is satisfied by an empty block")
+	}
+
+	const docPath = "../../docs/verifying.md"
+	doc, err := os.ReadFile(docPath)
+	if err != nil {
+		t.Fatalf("reading %s: %v", docPath, err)
+	}
+	lines := strings.Split(string(doc), "\n")
+	start := -1
+	for i, ln := range lines {
+		if strings.TrimSpace(ln) == staleAnchorFence {
+			start = i + 1
+			break
+		}
+	}
+	if start < 0 {
+		t.Fatalf("%s has no %s block; the bound is stated over nothing", docPath, staleAnchorFence)
+	}
+	stated := map[string]bool{}
+	for _, ln := range lines[start:] {
+		ln = strings.TrimSpace(ln)
+		if ln == "```" {
+			break
+		}
+		if ln != "" {
+			stated[ln] = true
+		}
+	}
+
+	declared := map[string]bool{}
+	for _, s := range list(t, readManifest(t), "MANIFEST_SCENARIOS") {
+		declared[s] = true
+	}
+	for name := range derived {
+		if !stated[name] {
+			t.Errorf("scenario %q anchors on the product and %s does not list it; the bound understates what a skipped run is not re-checking", name, docPath)
+		}
+		if !declared[name] {
+			t.Errorf("the derivation produced %q, which is not a declared scenario; the parse is reading something other than the scenario set", name)
+		}
+	}
+	for name := range stated {
+		if !derived[name] {
+			t.Errorf("%s lists %q as anchoring on the product and the oracle no longer does; a list that overstates the bound is a list nobody will believe", docPath, name)
+		}
+	}
 }

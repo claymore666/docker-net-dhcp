@@ -778,25 +778,18 @@ type HealthResponse struct {
 	// ClientStopFailuresV4 is the v4 half of ClientStopFailures.
 	ClientStopFailuresV4 int32 `json:"client_stop_failures_v4"`
 
-	// EVERY v6 FIELD BELOW IS STRUCTURALLY ZERO IN 2.0, and
-	// that is the reason it is written here rather than left for a
-	// reader to work out from an empty graph.
+	// THE v6 FIELDS BELOW HAVE WRITERS AGAIN (#911). Each one is
+	// incremented by a DHCPv6 client running beside the v4 one, and a
+	// zero means the thing did not happen rather than "this build
+	// cannot report it" -- which is what it meant while 2.0 was IPv4-
+	// only, and is the reason that statement was written here at all.
 	//
-	// 2.0 leases through the in-house library, which speaks
-	// DHCPv4; a network created with ipv6=true is refused at
-	// CreateNetwork (P-8, returns with #911). So no v6 client is ever
-	// constructed and nothing increments any of these -- including
-	// dhcpv6_config_only, dhcpv6_not_offered, dhcpv6_no_router_advert
-	// and ipv6_link_enable_failures further down, and the `config`
-	// kind in the audit ledger, whose only writer is the information
-	// reply.
-	//
-	// A zero here therefore means "not reachable in this build", NOT
-	// "nothing went wrong". The fields are kept rather than deleted
-	// because the #911 client restores their writers unchanged and
-	// because every one of them is a documented row of
-	// docs/reference.md; deleting and re-adding a documented counter
-	// costs two documentation changes to end where it started.
+	// A zero is still not evidence of health on its own. Two of them --
+	// dhcpv6_not_offered and dhcpv6_no_router_advert -- are absences
+	// the plugin TOLERATES, and their integration proofs assert
+	// dnsmasq's log beside the counter for exactly that reason: a
+	// counter is the plugin's belief, and the exchange is what
+	// happened.
 	LeaseChangedV6   int32 `json:"lease_changed_v6"`
 	LeasesObtainedV6 int32 `json:"leases_obtained_v6"`
 	LeasesRenewedV6  int32 `json:"leases_renewed_v6"`
@@ -833,6 +826,16 @@ type HealthResponse struct {
 	// enabled on before a DHCPv6 client was started. Distinguishes a
 	// quiet segment from one the plugin could never have heard.
 	IPv6LinkEnableFailures int32 `json:"ipv6_link_enable_failures"`
+	// RouterAdvertGuardFailures counts steps of the Router-Advertisement
+	// guard that did not take on a container link (#875): a sysctl
+	// write that failed, or a read-back holding something other than
+	// what was written. Three knobs, two steps each. Non-zero means
+	// some container's kernel may not be processing advertisements, and
+	// DHCPv6 supplies no route of its own -- so the endpoint looks
+	// healthy now and loses its route when the advertisement it has
+	// expires. It does not count a privileged process inside the
+	// container undoing the settings; see docs/reference.md.
+	RouterAdvertGuardFailures int32 `json:"router_advert_guard_failures"`
 
 	// Checks is one entry per named check, keyed by the counter behind
 	// it. Each value is a SINGLE-ELEMENT ARRAY because section 4 says
@@ -1030,6 +1033,7 @@ func (p *Plugin) healthSnapshot() HealthResponse {
 		DHCPv6NotOffered:             p.dhcpv6NotOffered.Load(),
 		DHCPv6NoRouterAdvert:         p.dhcpv6NoRouterAdvert.Load(),
 		IPv6LinkEnableFailures:       p.ipv6LinkEnableFailures.Load(),
+		RouterAdvertGuardFailures:    p.routerAdvertGuardFailures.Load(),
 		Version:                      buildinfo.Version,
 		Commit:                       buildinfo.Commit,
 		Library:                      buildinfo.Library,

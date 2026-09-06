@@ -24,11 +24,11 @@ for exactly that reason.
 
 **This branch is the 2.0 line, published as pre-release `v2.0.0-rc1`.**
 The plugin leases through the project's own in-tree DHCP client library
-instead of an external client process, and 2.0 implements **DHCPv4
-only** until IPv6 parity lands: `ipv6=true` is refused at
-`docker network create` and DHCPv6 returns with [#911], before
-`v2.0.0-rc2`. Everything else in this section describes the 1.x line
-2.0 is replacing, feature for feature, and stays true of it.
+instead of an external client process, and it does so for both address
+families: `ipv6=true` gives an endpoint a DHCPv6 lease alongside its
+DHCPv4 one, at parity with the 1.x line ([#911]). Everything else in
+this section describes the 1.x line 2.0 is replacing, feature for
+feature, and stays true of it.
 
 Bridge, macvlan and ipvlan attachment; DHCPv4 and DHCPv6; addresses that
 survive `docker restart`, plugin restart and daemon restart; a

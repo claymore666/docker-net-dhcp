@@ -24,6 +24,21 @@ type JournalEntry struct {
 
 	// Raw is the wire bytes for EvReceived.
 	Raw []byte
+	// RA is the ICMPv6 bytes for EvRouterAdvert, re-decoded on replay for the
+	// reason Raw is: replaying from a decoded struct re-runs ring 1 against a
+	// decode that already happened.
+	//
+	// A SEPARATE FIELD FROM Raw AND NOT A SECOND USE OF IT. The two carry
+	// different protocols with different decoders, and one field would make
+	// "which decoder does this entry want" a question answered from Kind in
+	// two places instead of one — the shape that let the RA payload be dropped
+	// in the first place (M7a carried row 2).
+	RA []byte
+	// DAD is the outcome for EvDADResult. It is a VALUE and not bytes because
+	// there are no bytes: EvDADResult is ring 3 reporting a verdict it reached
+	// from frames this ring never saw, so there is nothing to re-decode and
+	// the address-and-bool IS the event.
+	DAD DADOutcome
 	// Timer is the fired timer for EvTimerFired.
 	Timer TimerID
 	// Action and Reason describe an EvActionFailed.
@@ -52,7 +67,8 @@ type JournalEntry struct {
 func NewJournalEntry(seq uint64, now Instant, rnd uint64, ev Event, from, to State, acts []Action) JournalEntry {
 	return JournalEntry{
 		Seq: seq, Now: now, Rnd: rnd, Kind: ev.Kind,
-		Raw: ev.Raw, Timer: ev.Timer, Action: ev.Action, Reason: ev.Reason,
+		Raw: ev.Raw, RA: ev.RARaw, DAD: ev.DAD,
+		Timer: ev.Timer, Action: ev.Action, Reason: ev.Reason,
 		From: from, To: to, Actions: RenderActions(acts),
 	}
 }
@@ -62,21 +78,58 @@ func NewJournalEntry(seq uint64, now Instant, rnd uint64, ev Event, from, to Sta
 // A Received entry is re-DECODED here, so a corrupt or unparseable Raw is
 // reported rather than silently replayed as a nil message.
 func (e JournalEntry) Event() (Event, error) {
-	switch e.Kind {
+	if ev, done, err := replayEvent(e.Seq, e.Kind, e.RA, e.DAD, e.Timer, e.Action, e.Reason); done {
+		return ev, err
+	}
+	msg, err := wire.Decode(e.Raw)
+	if err != nil {
+		return Event{}, fmt.Errorf("entry %d: %w", e.Seq, err)
+	}
+	return Received(msg, e.Raw), nil
+}
+
+// replayEvent reconstructs every event kind whose payload does not depend on
+// which family's codec decodes it, and reports whether it did.
+//
+// ONE COPY, READ BY BOTH JournalEntry.Event AND JournalEntry6.Event. The two
+// entry types differ in exactly one arm — a v4 packet is decoded by wire.Decode
+// and a v6 one by wire.DecodeV6 — and the rest of the reconstruction is the
+// same rules. Written twice, the second copy is where the next payload gets
+// dropped, which is the defect M7a's carried row 2 recorded: the default arm
+// reconstructed EvRouterAdvert and EvDADResult as bare kinds, and the test
+// that was supposed to catch it built them as bare kinds too.
+func replayEvent(seq uint64, kind EventKind, ra []byte, dad DADOutcome, timer TimerID, action ActionID, reason string) (Event, bool, error) {
+	switch kind {
 	case EvReceived:
-		msg, err := wire.Decode(e.Raw)
-		if err != nil {
-			return Event{}, fmt.Errorf("entry %d: %w", e.Seq, err)
-		}
-		return Received(msg, e.Raw), nil
+		return Event{}, false, nil
 	case EvTimerFired:
-		return TimerFired(e.Timer), nil
+		return TimerFired(timer), true, nil
 	case EvActionFailed:
-		return ActionFailed(e.Action, e.Reason), nil
+		return ActionFailed(action, reason), true, nil
+	case EvRouterAdvert:
+		if len(ra) == 0 {
+			// A recorded Router Advertisement with no bytes is an event whose
+			// payload the recorder dropped, and replaying it as a bare kind is
+			// exactly the silent divergence this arm exists to stop: the M and
+			// O flags decide whether the machine switches to
+			// Information-request, so a nil advertisement replays a different
+			// client. Reported rather than reconstructed.
+			return Event{}, true, fmt.Errorf("entry %d: %w", seq, ErrJournalNoRA)
+		}
+		adv, err := wire.DecodeRouterAdvert(ra)
+		if err != nil {
+			return Event{}, true, fmt.Errorf("entry %d: %w", seq, err)
+		}
+		return RouterAdvertRaw(adv, ra), true, nil
+	case EvDADResult:
+		return DADResult(dad.Addr, dad.Duplicate), true, nil
 	default:
-		return Simple(e.Kind), nil
+		return Simple(kind), true, nil
 	}
 }
+
+// ErrJournalNoRA is a recorded EvRouterAdvert whose bytes are missing.
+var ErrJournalNoRA = errors.New("proto: journal entry records a Router Advertisement with no bytes to re-decode")
 
 // RenderActions turns an action list into the strings a JournalEntry stores.
 func RenderActions(as []Action) []string {

@@ -4,9 +4,11 @@
 package plugin
 
 import (
+	"errors"
 	"net"
 	"net/netip"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -149,7 +151,7 @@ func TestRetainRecordFor_TombstonesTheIdentity(t *testing.T) {
 		t.Fatal("nothing to resume")
 	}
 	p.recordLeft(id)
-	p.retainRecordFor("net-1", mac.String())
+	p.retainRecordFor("net-1", mac)
 
 	rb, _ := p.records.Rebuilt()
 	rec, _ := rb.ByID(id)
@@ -204,4 +206,183 @@ func TestRecordCreated_ASecondEndpointDoesNotShareTheFirstsRecord(t *testing.T) 
 	if res.Lease != nil {
 		t.Errorf("net-2 offered net-1's lease %s", res.Lease.Addr)
 	}
+}
+
+// TestEndpointRecordKey_SeparatesIpvlanEndpointsThatShareAMAC is the
+// index defect stated as a test.
+//
+// dhcp.Records.Resume answers a (scope, chaddr) lookup with the NEWEST
+// match, so two records filed under one key are one record as far as
+// every resume is concerned. Two ipvlan endpoints on one network share
+// the parent's MAC, so that is exactly what they were.
+func TestEndpointRecordKey_SeparatesIpvlanEndpointsThatShareAMAC(t *testing.T) {
+	shared, err := net.ParseMAC("02:42:ac:11:00:02")
+	if err != nil {
+		t.Fatalf("ParseMAC: %v", err)
+	}
+	epA := "aaaaaaaabbbbbbbbccccccccdddddddd11112222"
+	epB := "eeeeeeeeffffffff00000000111111112222aaaa"
+
+	a := endpointRecordKey(ModeIPvlan, epA, shared)
+	b := endpointRecordKey(ModeIPvlan, epB, shared)
+	if a.String() == b.String() {
+		t.Fatalf("two ipvlan endpoints sharing MAC %s got one record key (%s); "+
+			"the newer record answers both endpoints' resumes", shared, a)
+	}
+	if a.String() == shared.String() || b.String() == shared.String() {
+		t.Errorf("an ipvlan key is still the parent MAC: a=%s b=%s parent=%s", a, b, shared)
+	}
+
+	// Shaped like a MAC, and like one no link wears: locally
+	// administered, not a group address.
+	for _, k := range []net.HardwareAddr{a, b} {
+		if len(k) != 6 {
+			t.Errorf("key %v is %d bytes, want 6 so it reads as a hardware address", k, len(k))
+		}
+		if k[0]&0x02 == 0 {
+			t.Errorf("key %s is not locally administered, so it could collide with a real MAC", k)
+		}
+		if k[0]&0x01 != 0 {
+			t.Errorf("key %s is a group address", k)
+		}
+	}
+
+	// STABLE, which is the half that makes it usable at all: the resume
+	// side derives it again in another process.
+	if again := endpointRecordKey(ModeIPvlan, epA, shared); again.String() != a.String() {
+		t.Errorf("the key is not stable: %s then %s", a, again)
+	}
+}
+
+// TestEndpointRecordKey_LeavesEveryOtherModeOnItsMAC is the
+// preservation control. Every mode but ipvlan gives its endpoint a MAC
+// of its own, and that MAC is what a tombstone restores and therefore
+// what an address survives a container restart by. A key derived from
+// the endpoint id would be a new key for every new endpoint, and the
+// record would never be found again.
+func TestEndpointRecordKey_LeavesEveryOtherModeOnItsMAC(t *testing.T) {
+	mac, err := net.ParseMAC("02:42:ac:11:00:03")
+	if err != nil {
+		t.Fatalf("ParseMAC: %v", err)
+	}
+	for _, mode := range []string{ModeBridge, ModeMacvlan, ""} {
+		got := endpointRecordKey(mode, "aaaaaaaabbbbbbbbccccccccdddddddd11112222", mac)
+		if got.String() != mac.String() {
+			t.Errorf("endpointRecordKey(%q) = %s, want the endpoint's own MAC %s", mode, got, mac)
+		}
+	}
+}
+
+// TestRecoveredMAC_TreatsAnEmptyMACAsIpvlanOnly. Docker reports no MAC
+// for an ipvlan endpoint because the plugin never sets one; for every
+// other mode an empty MAC is a real failure and must stay one.
+func TestRecoveredMAC_TreatsAnEmptyMACAsIpvlanOnly(t *testing.T) {
+	t.Run("a reported MAC is used verbatim", func(t *testing.T) {
+		got, err := recoveredMAC(DHCPNetworkOptions{Mode: ModeMacvlan}, "02:42:ac:11:00:04")
+		if err != nil {
+			t.Fatalf("recoveredMAC: %v", err)
+		}
+		if got.String() != "02:42:ac:11:00:04" {
+			t.Errorf("got %s", got)
+		}
+	})
+	t.Run("an unparseable MAC is still a failure", func(t *testing.T) {
+		if _, err := recoveredMAC(DHCPNetworkOptions{Mode: ModeIPvlan}, "not-a-mac"); err == nil {
+			t.Error("recoveredMAC accepted a malformed MAC on the one mode that tolerates an absent one")
+		}
+	})
+	t.Run("an empty MAC on a mode that has one is a failure", func(t *testing.T) {
+		// A parent is named on purpose, and the assertion is on the
+		// error's IDENTITY rather than on its presence. Without both,
+		// a macvlan endpoint that fell through into the ipvlan branch
+		// would still fail here -- on the parent lookup, for a reason
+		// that has nothing to do with the refusal -- and the subtest
+		// would read that as the refusal it is meant to observe.
+		// MEASURED: the mutant that removes the mode check survived a
+		// bare err != nil.
+		_, err := recoveredMAC(DHCPNetworkOptions{Mode: ModeMacvlan, Parent: "dh-no-such-parent"}, "")
+		if err == nil {
+			t.Fatal("recoveredMAC accepted an empty MAC on macvlan, where an endpoint always has one")
+		}
+		if !errors.Is(err, errNoRecoveryMAC) {
+			t.Errorf("error %q is not the refusal; macvlan reached the ipvlan branch and "+
+				"went looking for a parent MAC to inherit, which is only ipvlan's rule", err)
+		}
+		if strings.Contains(err.Error(), "dh-no-such-parent") {
+			t.Errorf("error %q names the parent link; macvlan must be refused before "+
+				"any parent is consulted", err)
+		}
+	})
+	t.Run("an empty MAC on ipvlan reads the parent", func(t *testing.T) {
+		// No parent link exists in this namespace, so the outcome
+		// asserted is that the ERROR is about the parent rather than
+		// about parsing: that is the branch taken, and it is the one
+		// the lane exercises against a real parent.
+		_, err := recoveredMAC(DHCPNetworkOptions{Mode: ModeIPvlan, Parent: "dh-no-such-parent"}, "")
+		if err == nil {
+			t.Fatal("recoveredMAC found a parent that does not exist")
+		}
+		if !strings.Contains(err.Error(), "dh-no-such-parent") {
+			t.Errorf("error %q does not name the parent it went looking for; "+
+				"the empty MAC was refused rather than inherited", err)
+		}
+	})
+}
+
+// TestRecordKey_IsTheEndpointKeyAndNotTheBareMAC observes the call site
+// rather than the helper.
+//
+// endpointRecordKey has its own tests, and they pass whether or not
+// anything calls it: dhcpManager.recordKey is the single place every
+// record read and write on a manager goes through, and a version of it
+// that returns endpointMAC() directly restores the collision the helper
+// exists to remove -- silently, because every OTHER mode agrees with the
+// MAC and the ipvlan disagreement is only visible on ipvlan.
+//
+// The macvlan arm is the preservation control: keying by endpoint is
+// wrong for the modes whose endpoints already have distinct MACs,
+// because their stored records are under the MAC and would stop being
+// found.
+func TestRecordKey_IsTheEndpointKeyAndNotTheBareMAC(t *testing.T) {
+	mac, err := net.ParseMAC("02:42:ac:11:00:07")
+	if err != nil {
+		t.Fatalf("parse MAC: %v", err)
+	}
+
+	t.Run("ipvlan keys on the endpoint", func(t *testing.T) {
+		a := &dhcpManager{
+			opts:    DHCPNetworkOptions{Mode: ModeIPvlan},
+			joinReq: JoinRequest{NetworkID: "net-1", EndpointID: strings.Repeat("a", 64)},
+		}
+		a.MacAddress = mac
+		b := &dhcpManager{
+			opts:    DHCPNetworkOptions{Mode: ModeIPvlan},
+			joinReq: JoinRequest{NetworkID: "net-1", EndpointID: strings.Repeat("b", 64)},
+		}
+		b.MacAddress = mac
+
+		if a.recordKey().String() == b.recordKey().String() {
+			t.Fatalf("two ipvlan endpoints sharing the parent MAC %s got the same record "+
+				"key %s; one of them resumes the other's lease and installs a duplicate "+
+				"address", mac, a.recordKey())
+		}
+		if a.recordKey().String() == mac.String() {
+			t.Errorf("the ipvlan record key is the bare MAC %s; every endpoint on the "+
+				"network presents it, so the key identifies the network, not the endpoint",
+				mac)
+		}
+	})
+
+	t.Run("macvlan keeps its MAC", func(t *testing.T) {
+		m := &dhcpManager{
+			opts:    DHCPNetworkOptions{Mode: ModeMacvlan},
+			joinReq: JoinRequest{NetworkID: "net-1", EndpointID: strings.Repeat("a", 64)},
+		}
+		m.MacAddress = mac
+		if m.recordKey().String() != mac.String() {
+			t.Errorf("macvlan record key is %s, want the endpoint MAC %s; an endpoint "+
+				"whose stored records are under its MAC would stop finding them",
+				m.recordKey(), mac)
+		}
+	})
 }
