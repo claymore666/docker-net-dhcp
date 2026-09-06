@@ -167,8 +167,8 @@ why a proxy on its own unix socket is *not* reachable are in `SECURITY.md`.
 gets a DHCPv6 lease alongside its DHCPv4 one, reported as
 `GlobalIPv6Address`, renewed on its own timers, requested back after a
 restart, and counted in the `*_v6` counters. It runs through the same
-in-tree library as IPv4 — no `dhcpcd`, no external process. `docs/reference.md`
-has the full behaviour, including the segments that offer no DHCPv6
+in-tree library as IPv4, with no external client process.
+`docs/reference.md` has the full behaviour, including the segments that offer no DHCPv6
 address; what follows is only what changed against v1.9.0.
 
 | change | effect |

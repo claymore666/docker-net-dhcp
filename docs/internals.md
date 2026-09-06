@@ -118,8 +118,9 @@ identifier from the MAC on every start; DHCPv6 cannot, because RFC 9915
 possible" and one mode has no per-endpoint MAC to derive it from. So
 `resolveIdentity6` mints it at `CreateEndpoint` and the endpoint's
 record carries it (the `Identity` field, write-once). Bridge and macvlan
-get §11.4's DUID-LL over the endpoint MAC — byte for byte what 1.9.0
-handed `dhcpcd`, so an endpoint upgraded from 1.x keeps its address —
+get §11.4's DUID-LL over the endpoint MAC — byte for byte the DUID
+1.9.0 put on the wire, so an endpoint upgraded from 1.x keeps its
+address —
 and **ipvlan gets §11.5's DUID-UUID over the endpoint id**, because an
 ipvlan L2 slave inherits the parent link's MAC and every container on
 one network would otherwise present the same identity and claim one
@@ -152,10 +153,11 @@ processing Router Advertisements ends up with an address and no route.
 `keep_addr_on_down=1` and reads each back; `DHCPClientOptions` refuses a
 persistent v6 client that does not claim it, and refuses every other
 shape that does. What changed from 1.9.0 is the *mechanism*, not the
-obligation: 1.9.0 had to fight `dhcpcd`, which cleared `accept_ra` and
+obligation: on 1.9.0 the external client cleared `accept_ra` and
 `autoconf` on every carrier acquisition, so the guard wrote the knobs
-and then remounted `/proc/sys` read-only to keep them. Nothing in 2.0
-rewrites them, so there is no shield to maintain. `accept_ra=2` and not
+and then remounted `/proc/sys` read-only to keep them from being
+overwritten. Nothing in 2.0 rewrites them, so there is no shield to
+maintain. `accept_ra=2` and not
 `1` because the engine turns on forwarding on the container's link in
 bridge mode and `1` means "accept only while forwarding is off".
 
