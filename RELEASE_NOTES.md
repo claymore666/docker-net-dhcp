@@ -177,13 +177,20 @@ address; what follows is only what changed against v1.9.0.
 | DHCPv6 identity storage | The DUID and IAID are **stored with the endpoint** rather than recomputed, so a plugin restart, container restart or upgrade presents the same client. Server-side reservations keyed on DUID stick across all three |
 | Duplicate-address detection | **Runs in the client**, and the leased address is installed with the kernel's own check switched off (`nodad`). RFC 9915 §18.2.10.1 requires the client to do it; doing it twice cost the container a window in which the address was unusable, and took the address out of service outright on a link that echoes the probe back (RFC 7527 §4.1) |
 | A duplicate on the segment | The client **declines the address and asks for another** (RFC 9915 §18.2.8), instead of installing an address the container cannot use |
+| How long a v6 acquisition may take | The v6 half has **its own budget, derived from the protocol's own schedule**: up to 13s of router discovery (RFC 4861 §6.3.7) plus the four-transmission Solicit schedule (RFC 9915 §18.2.1), 21.7s in all, and `lease_timeout` when that is shorter. v1.9.0 spent `lease_timeout` on it, whose v4-derived 34s default outlives the ~30s the daemon waits on a plugin call, so a network with no DHCPv6 on it failed the container start rather than reporting the absence |
+| A segment that offers SLAAC only | **Concluded as soon as the router says so.** An advertisement with neither the M nor the O flag set (RFC 4861 §4.2) says there is no DHCPv6 to wait for, so the v6 half ends in about two seconds instead of running the budget out. The endpoint comes up with its v4 lease and whatever address SLAAC gave it |
+| The v6 resolver after a plugin restart | A resumed v6 lease **keeps the DNS servers and search list** it was granted (RFC 3646). The Reply to a Confirm carries a status and nothing else (RFC 9915 §18.2.13), so the answer comes from the stored record; on v1.9.0 a restart left the container without its v6 resolver until the next renewal |
+| Endpoint recovery on **ipvlan** | Now works. An ipvlan L2 slave inherits the parent's MAC and cannot be given one of its own, so Docker reports no MAC for the endpoint and recovery refused every one of them on the empty string. The parent's address is read and inherited explicitly instead |
+| Lease records on **ipvlan** | Keyed on the **endpoint**, not on the MAC — for IPv4 as well as IPv6. Every ipvlan endpoint on a network presents the same parent MAC, so one key covered all of them and a restarting container could resume, and install, a neighbour's address |
 | `--ip6` / `Interface.AddressIPv6` on an endpoint | Still ignored, as on 1.x. A hint on the wire is not a promise, and nothing here would make one |
 | `docker network create --ipv6` | Unchanged: Docker's own flag does not work with the null IPAM driver, and never did |
 
 **Upgrading a network that already has `ipv6=true`: nothing to do.** The
 stored record means the same thing here and endpoints on it get DHCPv6
-leases as before. **On an ipvlan network each container gets a new IPv6
-address once**, because of the DUID change above, and keeps it from then
+leases as before. **On an ipvlan network each container gets new addresses
+once** — a new IPv6 address because of the DUID change above, and a new
+IPv4 address too, because its stored lease records are not found under the
+per-endpoint key that replaces the shared parent MAC. Both stick from then
 on; re-key any server-side v6 reservation on the new DUID. Bridge and
 macvlan endpoints keep their addresses.
 

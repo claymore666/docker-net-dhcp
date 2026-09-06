@@ -63,6 +63,22 @@
 #     is worth up to one lease_timeout per arm.
 #   - Nothing here should get slower. If one does, that is a finding.
 #
+# THE v6 ACQUISITION BUDGET REPLACED lease_timeout (#911, round 3), which
+# changes WHY the arms above get faster and adds a third mover. The v6
+# half no longer spends lease_timeout at all: it spends
+# dhcp.V6AcquisitionWindow(), 21.7s with the library's defaults (13s of
+# router discovery plus the four-transmission Solicit schedule), or
+# lease_timeout when that is shorter.
+#   - the SLAAC arm of TestDHCPv6_NoAddressModes_StartTheEndpoint ends on
+#     the advertisement itself -- neither the M nor the O flag is set, so
+#     there is nothing to solicit -- in about 2s rather than any budget.
+#   - the nora arm of the same test now RUNS. It could not complete before
+#     (34s of lease_timeout outlived the daemon's ~30s wait on the plugin
+#     call, which is what #868 saw), and it costs the full 21.7s.
+#   - so the 41.03 that row carries is the 1.9.0 figure for two arms out of
+#     three. It is a ceiling here, not an estimate; re-measure it with the
+#     other rows from the first green Integration run on this branch.
+#
 # The two rows written when the refusal replaced them are removed with
 # it: TestIPv6_RefusedAtCreateWithTheMilestoneNamed (inverted into
 # TestIPv6_AcceptedAtCreate) and TestIPv6_TheV4PathIsUnaffectedByTheRefusal
