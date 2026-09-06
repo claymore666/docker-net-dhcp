@@ -76,8 +76,49 @@
 #     (34s of lease_timeout outlived the daemon's ~30s wait on the plugin
 #     call, which is what #868 saw), and it costs the full 21.7s.
 #   - so the 41.03 that row carries is the 1.9.0 figure for two arms out of
-#     three. It is a ceiling here, not an estimate; re-measure it with the
-#     other rows from the first green Integration run on this branch.
+#     three. It is a ceiling here, not an estimate.
+#
+# THE FIRST FULLY GREEN RUN ON THIS BRANCH IS 34059724566, and its v6
+# figures are written down here rather than into the rows, because one
+# run is a sample and every row in this file is a MEDIAN over a corpus
+# (see Provenance). Regenerate the whole file by the method above when
+# the branch has a window of successful runs behind it; until then these
+# are what the v6 rows are known to be wrong by:
+#   TestDHCPv6_ADuplicateOnTheSegmentIsRefused             30.08
+#   TestDHCPv6_Managed_ServerSilent_IsStillFatal           28.13
+#   TestDHCPv6_Managed_StillRequiresALease                 17.04
+#   TestDHCPv6_NoAddressModes_StartTheEndpoint             75.07
+#     slaac 14.39   stateless 21.48   nora 39.20
+#   TestDHCPv6_Stateless_ConfigurationReachesTheContainer  30.44
+#   TestDUID_PersistsAcrossPluginRestart                   17.61
+#   TestIPv6_AcceptedAtCreate                               0.02
+#   TestIPv6_DNS6Propagation                               34.57
+#   TestIPv6_TheV4OnlyPathIsUnchanged                      11.62
+#   TestLeaseRenewIPv6_HonorsT1                            89.24
+#   TestLifecycleBridge_IPv6_GoldenPath                    16.42
+#   TestLifecycleMacvlan_IPv6_GoldenPath                   17.02
+#   TestTombstoneRestart_PreservesIPv6                     28.29
+# EVERY ONE OF THOSE IS ABOVE THE ROW IT REPLACES, and the stanza above
+# said that would be a finding. It is, and it is NOT a v6 finding: the
+# v4-only tests moved by the same amount in the same run, and this
+# branch does not touch their path.
+#   TestLifecycleMacvlan_GoldenPath   row 7.53   run 11.60
+#   TestLifecycleBridge_GoldenPath    row 7.73   run 12.25
+#   TestLeaseRenew_HonorsT1           row 22.52  run 27.97
+# So about +4s of the v6 tests' growth is whatever moved those, and it
+# is shared. What is left -- roughly +2 to +6s on a test that starts a
+# dual-stack container -- is the v6 half of CreateEndpoint on this
+# fixture (a router solicitation, its advertisement, a Solicit and a
+# Reply), which is behaviour this branch adds rather than drift. One
+# sample cannot separate the two any further, which is the reason the
+# rows are not edited from it: regenerate by the method above.
+# The stateless prediction is not borne out either: 12.46 became 30.44.
+# That one has a second, checked cause: the restored body is not the
+# retired body. It adds the router-advert guard counter to its window
+# and a live drive of the exchange contract (AssertExchange, which
+# polls the server log), on top of the shared +4s. The client's own
+# early conclusion on the stateless Reply is still there and still
+# saves a lease_timeout; it is simply not the only term.
 #
 # MEASURED 2026-09-06 in run 34056785164, which is where the three numbers
 # above come from and where the budget's SECOND bound was found:
