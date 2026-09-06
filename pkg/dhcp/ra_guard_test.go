@@ -145,8 +145,14 @@ func TestApplyRouterAdvertGuard_ReadsBackWhatItWrote(t *testing.T) {
 	if err := os.Remove(p); err != nil {
 		t.Fatalf("remove: %v", err)
 	}
+	// FATAL, not a skip. This is the only test of the read-back, which
+	// is the half of the guard a write-only assertion cannot see, and a
+	// skip here would delete it silently on whatever host could not
+	// make the symlink. Every host this suite runs on is Linux with a
+	// writable temp directory, so a failure means the premise changed
+	// and that is worth a red.
 	if err := os.Symlink(os.DevNull, p); err != nil {
-		t.Skipf("cannot symlink %v: %v", os.DevNull, err)
+		t.Fatalf("cannot symlink %v: %v", os.DevNull, err)
 	}
 
 	res := ApplyRouterAdvertGuard(dir, iface)
