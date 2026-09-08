@@ -248,5 +248,33 @@ else
     fi
 fi
 
+# --- the two lanes must partition the same way (D41) ---------------------
+#
+# integration-hosted.yml can run the same eleven shards on hosted
+# runners, which is what makes "hosted against the pool" a comparison
+# rather than two unrelated numbers. Two matrices in two files is two
+# places a shard count can move, and only one of them would be noticed.
+# So the (suite, index, total) triples are extracted from both and
+# required to be the same set -- and the extraction refuses when either
+# side yields nothing, because two empty sets are equal.
+WF="$(dirname "$HERE")/.github/workflows"
+if [ -d "$WF" ]; then
+    pool_triples=$(sed -n 's/.*integration-test-shard SHARD=\([0-9]*\) OF=\([0-9]*\) SUITE=\([a-z]*\).*/\3-\1-of-\2/p' \
+                   "$WF/integration.yml" | LC_ALL=C sort -u)
+    hosted_triples=$(grep -o '"[a-z]*-[0-9]*-of-[0-9]*"' "$WF/integration-hosted.yml" \
+                     | tr -d '"' | LC_ALL=C sort -u)
+    if [ -z "$pool_triples" ]; then
+        no "no shard triple could be read out of integration.yml — this case would compare two empty sets"
+    elif [ -z "$hosted_triples" ]; then
+        no "no shard triple could be read out of integration-hosted.yml — this case would compare two empty sets"
+    elif [ "$pool_triples" = "$hosted_triples" ]; then
+        ok "the pool and hosted lanes name the same $(printf '%s\n' "$pool_triples" | wc -l) shard(s)"
+    else
+        no "the two lanes partition differently:$(printf '\n  only in integration.yml: %s' \
+            "$(comm -23 <(printf '%s\n' "$pool_triples") <(printf '%s\n' "$hosted_triples") | tr '\n' ' ')")$(printf '\n  only in integration-hosted.yml: %s' \
+            "$(comm -13 <(printf '%s\n' "$pool_triples") <(printf '%s\n' "$hosted_triples") | tr '\n' ' ')")"
+    fi
+fi
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
