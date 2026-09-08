@@ -633,7 +633,7 @@ jobs:
           - suite: main-4
             target: integration-test-shard SHARD=4 OF=9 SUITE=main
           - suite: main-5
-            target: integration-test-shard SHARD=5 OF=9 SUITE=main
+            target: integration-test-shard SHARD=4 OF=9 SUITE=main
           - suite: main-6
             target: integration-test-shard SHARD=6 OF=9 SUITE=main
           - suite: main-7

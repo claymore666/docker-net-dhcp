@@ -88,7 +88,7 @@ jobs:
         # and the two lanes cannot silently partition differently;
         # scripts/test-integration-shard.sh checks the two lists against
         # each other.
-        shard: ${{ (inputs.layout == 'sharded') && fromJSON('["main-1-of-9","main-2-of-9","main-3-of-9","main-4-of-9","main-5-of-9","main-6-of-9","main-7-of-9","main-8-of-9","main-9-of-9","failure-1-of-2","failure-2-of-2"]') || fromJSON('["full"]') }}
+        shard: ${{ (inputs.layout == 'sharded') && fromJSON('["main-1-of-9","main-2-of-9","main-3-of-9","main-4-of-9","main-4-of-9","main-6-of-9","main-7-of-9","main-8-of-9","main-9-of-9","failure-1-of-2","failure-2-of-2"]') || fromJSON('["full"]') }}
     # 40m, matching integration.yml: main suite + failure-injection
     # suite + plugin build + margin. The failure suite grew a fourth
     # test in #351 (~10 min of deliberate DHCP-timing waits, up from
