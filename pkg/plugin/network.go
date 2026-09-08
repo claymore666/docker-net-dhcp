@@ -1616,9 +1616,9 @@ func parseIfnameOption(options map[string]interface{}) (string, error) {
 	// whitespace -- and this name becomes DstName and the container link
 	// is renamed to it. Until 2.0 the name also reached a dhcpcd argv,
 	// where getopt permutation re-read a flag-shaped trailing positional
-	// as an option (#706); there is no argv now, and dhcp.ValidIfaceName
-	// states what the rule is kept on instead. Apply it here so the
-	// request fails at CreateEndpoint rather than deeper in (#705).
+	// as an option; there is no argv now, and dhcp.ValidIfaceName states
+	// what the rule is kept on instead. Apply it here so the request
+	// fails at CreateEndpoint rather than deeper in (#706).
 	if !dhcp.ValidIfaceName(s) {
 		return "", fmt.Errorf("invalid interface_name %q: must start with a letter or digit and contain only letters, digits, '.', '-' and '_': %w", s, util.ErrIPAM)
 	}

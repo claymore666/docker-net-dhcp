@@ -166,7 +166,7 @@ ALLOW_BELOW_RES=(
 )
 ALLOW_BELOW_REASONS=(
     "2026-09-04: history stays history. From the first 1.x release heading downwards these entries describe versions that really shipped dhcpcd; rewriting them would falsify the record. Everything ABOVE that line -- the 2.0 sections -- is held to the rule."
-    "2026-09-08: history stays history, at the same boundary. Up to v1.5.0 the client really was busybox udhcpc, and #152's entry is the record of replacing it. Everything ABOVE that line -- the 2.0 sections -- is held to the rule."
+    "2026-09-08: history stays history, at the same boundary. Up to v1.5.0 the client really was busybox udhcpc, and those entries are the record of replacing it. Everything ABOVE that line -- the 2.0 sections -- is held to the rule."
     "2026-09-05: history stays history, for the same reason and at the same boundary. A 1.x entry may describe a beta of something that really was one. Everything ABOVE that line -- the 2.0 sections -- is held to the rule."
 )
 

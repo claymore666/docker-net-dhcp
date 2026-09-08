@@ -706,19 +706,22 @@ What the option does, concretely:
   again, once a second, until the Docker daemon stopped waiting for the
   plugin to answer. The endpoint keeps its address across a restart; it
   gives that up the moment somebody else is answering for it.<br><br>
-  **The escape, stated beside the claim: this covers the address the
-  container asks for when it starts, and not one taken away from it
-  later.** The drop happens in the plugin's own acquisition loop at
-  container creation, which runs at most two passes. Once the container
-  has started, the long-running client holds the preference it was built
-  with, and there is no deadline on it — so if another node takes the
-  address over *after* the container is up, that client declines it
-  about once a second for as long as the container runs. It costs a
-  DHCPDECLINE and a Solicit per second on the segment and the container
-  keeps working on the address it already has; the endpoint recovers on
-  its next restart, which goes through the bounded path above. The fix
-  belongs in the DHCPv6 client itself — an address it has just declined
-  is not one to ask for again — and is tracked for a later 2.x release.
+  **The same rule holds after the container is up, and it holds for a
+  different reason.** At container creation the drop is the plugin's
+  own: its acquisition loop runs at most two passes and clears the
+  preference between them. The long-running client is built once and
+  holds the preference it was given, so the drop there is the DHCP
+  client's: since v2.0.0 it does not ask again for an address it has
+  declined, and it drops the resumed binding with it, so a node taking
+  the address over *after* the container is up costs one DHCPDECLINE and
+  one round of discovery rather than one of each per second.
+  **The escape, stated beside the claim:** the plugin says nothing when
+  that happens on a running container — a conflict is not a lease
+  failure, so no counter moves and no event is logged — and the address
+  the client converges on is not reported back to Docker. The container
+  keeps working on the address it already has; the endpoint takes the
+  new one on its next restart, which goes through the bounded path
+  above.
 - **A DUID and IAID that persist.** They are minted once when the
   endpoint is created and stored with it, so a plugin restart, a
   container restart and a plugin upgrade all present the same DHCPv6

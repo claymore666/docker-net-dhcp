@@ -768,6 +768,16 @@ jobs:
           docker plugin set "${INTEGRATION_PLUGIN_REF}" LOG_LEVEL=trace
           docker plugin enable "${INTEGRATION_PLUGIN_REF}"
 
+      # The bytes just installed carry their own module record, and it
+      # is the only statement about the DHCP library that no declaration
+      # can talk out of the truth (D34). The `library` label, the
+      # Makefile and the health cell below all derive from
+      # `go list -m`, which reports the REQUIRED version and is blind to
+      # a `replace`; this reads what the linker wrote. Run per shard,
+      # against the exact binary this shard is about to exercise.
+      - name: The library in the installed plugin is the module go.mod pins
+        run: bash scripts/check-library-pin.sh --binary "${GITHUB_WORKSPACE}/plugin/rootfs/usr/sbin/net-dhcp"
+
       # THE PLUGIN NOW RUNNING IS THE COMMIT THIS RUN BUILT (O-4, D41).
       #
       # While every job built its own image, "the plugin under test is

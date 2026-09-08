@@ -476,6 +476,18 @@ jobs:
       - name: Go pin consistency check
         run: bash scripts/check-go-pins.sh
 
+      # The DHCP library the BINARY was built from is the module go.mod
+      # pins (D34). `go list -m -f '{{.Version}}'`, which the Makefile
+      # and the Dockerfile derive the `library` label from, reports the
+      # REQUIRED version and says nothing about a `replace` to a local
+      # directory: the label would name a tag the bytes did not come
+      # from, and the health cell derives its expectation from the same
+      # command, so it would agree. This reads the module record the
+      # linker writes into the binary instead. It is the successor to
+      # the copy-versus-manifest check the module import deleted.
+      - name: The library in the binary is the module go.mod pins
+        run: bash scripts/check-library-pin.sh
+
       # config.json and config-cover.json must agree on privilege
       # fields — a capability landing in only one means coverage runs
       # test a different plugin than the one that ships (#317's

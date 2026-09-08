@@ -11,7 +11,6 @@ import (
 	"net"
 	"net/netip"
 	"os"
-	"os/exec"
 	"regexp"
 	"strings"
 	"testing"
@@ -277,11 +276,11 @@ func TestHealthDocument_BuildInfoIsWhatTheLaneBuilt(t *testing.T) {
 	// the Dockerfile turns an unreadable pin into the word `unknown`,
 	// and a cell that tolerated its own derivation failing would agree
 	// with that word instead of catching it.
-	out, rerr := exec.CommandContext(ctx, "go", "list", "-m",
-		"-f", "{{.Version}}", "github.com/claymore666/dhcp-golib").CombinedOutput()
+	w, rerr := harness.CommandStdout(ctx, "go", "list", "-m",
+		"-f", "{{.Version}}", "github.com/claymore666/dhcp-golib")
 	if rerr != nil {
-		t.Errorf("go list -m github.com/claymore666/dhcp-golib: %v: %s", rerr, out)
-	} else if got, w := *h.Library, strings.TrimSpace(string(out)); got != w {
+		t.Errorf("go list -m github.com/claymore666/dhcp-golib: %v", rerr)
+	} else if got := *h.Library; got != w {
 		t.Errorf("the plugin reports library=%q and this tree's go.mod pins "+
 			"%q. The image was built from a different library version than the one under test",
 			got, w)

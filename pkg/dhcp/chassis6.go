@@ -400,22 +400,30 @@ func acquireOnce6(ctx context.Context, iface string, params proto.Params6, opts 
 //
 // WHY IT ENDS THE ATTEMPT INSTEAD OF LETTING THE LIBRARY RETRY. Section
 // 18.2.10.1 says the client sends a Decline and restarts the
-// configuration process, and proto.Machine6 does exactly that -- with
-// the SAME Params6.Hint, because the hint is set once when the client
-// is built and nothing in the exchange clears it. Section 18.2.1 lets a
-// client hint and says nothing about a server refusing one, and a
-// server that honours hints (MEASURED against dnsmasq 2.91 on the lane
-// 2026-09-06, run 34058213252) hands back the address it was asked for,
-// which is the address the node just declined. That is Solicit ->
-// Advertise -> Request -> Reply -> DAD -> Decline, about once a second,
-// until the caller's deadline: the container never starts, and the
-// error it fails with is "context deadline exceeded" rather than the
-// duplicate that caused it.
+// configuration process. Until the library was imported as a module it
+// restarted with the SAME Params6.Hint, because the hint was set once
+// when the client was built and nothing in the exchange cleared it --
+// and section 18.2.1 lets a client hint and says nothing about a server
+// refusing one, so a server that honours hints (MEASURED against
+// dnsmasq 2.91 on the lane 2026-09-06, run 34058213252) handed back the
+// address the node had just declined. Solicit -> Advertise -> Request
+// -> Reply -> DAD -> Decline, about once a second, until the caller's
+// deadline: the container never started, and the error it failed with
+// was "context deadline exceeded" rather than the duplicate that caused
+// it.
 //
-// The library is where this belongs -- a declined address should not be
-// hinted again by the machine that declined it -- and the vendored copy
-// is not edited here (D21). This is the chassis refusing to wait for a
-// loop it can see is closed.
+// v0.1.0 closes that loop where it belonged: Machine6.solicitHint
+// returns no hint for an address the machine has declined, and
+// restartDiscovery drops the resumed binding with it, so the library's
+// own restart converges on a server-chosen address.
+// TestDeclinedAddressIsNotHinted pins that contract on this side of the
+// module boundary.
+//
+// The two-pass shape stays for what it does that the library's internal
+// restart cannot: getIP6's second pass is where the operator gets a
+// warning naming the declined address, and it makes the recovery one
+// the chassis can see and bound rather than one that happens inside a
+// Run it only watches.
 var errV6HintInUse = errors.New("the preferred DHCPv6 address is in use by another node on the segment")
 
 // v6AcquisitionClient is the part of *dhcpruntime.Client6 the

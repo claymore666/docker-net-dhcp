@@ -13,16 +13,12 @@ import (
 	"github.com/vishvananda/netns"
 )
 
-// THIS FILE PINS A DEFECT AS A CASE. Every assertion below states what
-// the shipped build DOES, and the shipped build is wrong; a fix makes
-// these tests fail, which is the point of writing them. Named so that a
-// reader who reaches a red one knows to delete it rather than to
-// restore the behaviour it describes.
+// THIS FILE PINNED A DEFECT AS A CASE, AND THE DEFECT IS CLOSED.
 //
 // THE DEFECT (#911 review round 1, finding 2). An address squatted
-// AFTER the endpoint has joined makes the persistent DHCPv6 client
-// decline once a second for as long as the endpoint lives. Three facts
-// compose it, and each has its own test here:
+// AFTER the endpoint had joined made the persistent DHCPv6 client
+// decline once a second for as long as the endpoint lived. Three facts
+// composed it:
 //
 //  1. the persistent client is built with the preferred address as
 //     proto.Params6.Hint (the tombstone's address, or the one the
@@ -37,14 +33,25 @@ import (
 //     client on context.Background(), so there is no deadline and no
 //     counter anywhere on the persistent path.
 //
-// The CreateEndpoint half of this is fixed, by retryWithoutHint6: there
-// the chassis OWNS the loop, so clearing the hint between passes is a
-// state change. On the persistent path the loop is inside Client6.Run,
-// and the only chassis-side bound available is to stop the client and
-// build another one -- a supervisor, on the concurrency path, not a
-// bound. THE REMEDY BELONGS IN THE LIBRARY (do not hint an address this
-// machine has just declined) and the row is handed to the M7 library
-// round by name. docs/reference.md states the escape beside the claim.
+// The CreateEndpoint half was fixed by retryWithoutHint6: there the
+// chassis OWNS the loop, so clearing the hint between passes is a state
+// change. The persistent half was handed to the library round -- do not
+// hint an address this machine has just declined -- and v0.1.0 is that
+// remedy: Machine6.solicitHint returns no hint for a declined address,
+// so what fact 2 makes unclearable is no longer what drives the loop.
+// The third fact composes nothing on its own.
+//
+// The two tests below survive the fix because each states something
+// that is still TRUE and still worth holding: the persistent client is
+// built with the hint (which is how an endpoint keeps its address
+// across a restart, #213), and the chassis emits nothing for a
+// conflict. TestDeclinedAddressIsNotHinted is what now stands where the
+// composition used to.
+//
+// WHAT IS NOT CLOSED HERE, and it is a different question: what the
+// endpoint does with the REPLACEMENT address the library converges on
+// after a squat on a running container. Nothing at this head drives
+// that path.
 
 // TestPersistentV6Client_IsBuiltWithTheHintThatFeedsTheLoop is fact 1.
 //
@@ -77,14 +84,13 @@ func TestPersistentV6Client_IsBuiltWithTheHintThatFeedsTheLoop(t *testing.T) {
 		t.Fatalf("NewDHCPClient: %v", err)
 	}
 	if got, want := c.params6.Hint, netip.MustParseAddr(preferred); got != want {
-		t.Fatalf("the persistent v6 client's hint is %v, want %v -- if this changed, "+
-			"read the file header: either the hint was dropped (which loses #213) or the "+
-			"loop this file pins has been fixed and these tests should go", got, want)
+		t.Fatalf("the persistent v6 client's hint is %v, want %v -- if this changed, the "+
+			"hint was dropped, and an endpoint stops keeping its address across a "+
+			"restart (#213)", got, want)
 	}
 }
 
-// TestPersistentV6Client_AbsorbsConflictsWithoutABound is fact 3, and
-// it is the defect itself.
+// TestPersistentV6Client_AbsorbsConflictsWithoutABound is fact 3.
 //
 // A hundred conflicts is not a threshold; it is a number far past any
 // bound a fix would plausibly choose, so a fix at two, at five or at
@@ -93,10 +99,11 @@ func TestPersistentV6Client_IsBuiltWithTheHintThatFeedsTheLoop(t *testing.T) {
 // the reasoning that a conflict is not a lease failure, and no counter
 // on this path is watching how many of them there have been.
 //
-// The outside evidence for the same shape is a DHCPDECLINE count in the
-// server's log that grows past any bound; it is not asserted here
-// because reproducing it needs a squatter on the segment AFTER Join,
-// which is an integration arm the library fix will make unnecessary.
+// It is no longer the defect: the library stops the loop a Decline used
+// to feed. It stays because "the chassis says nothing about a conflict
+// on the persistent path" is a real property with real consequences --
+// no counter, no log, no deadline -- and it should not change by
+// accident.
 func TestPersistentV6Client_AbsorbsConflictsWithoutABound(t *testing.T) {
 	const conflicts = 100
 
@@ -121,9 +128,9 @@ func TestPersistentV6Client_AbsorbsConflictsWithoutABound(t *testing.T) {
 	select {
 	case ev, ok := <-c.events:
 		if ok {
-			t.Fatalf("translate emitted %+v after a conflict. If the chassis has grown a "+
-				"bound on the persistent decline loop, this file is stale: delete it and "+
-				"take the row off the library round", ev)
+			t.Fatalf("translate emitted %+v after a conflict. A conflict is not a lease "+
+				"failure and nothing downstream is counting them; if that changed, this "+
+				"assertion is what says so", ev)
 		}
 		t.Fatal("the event stream closed under a burst of conflicts. That would be a bound " +
 			"-- read the file header before restoring anything")
