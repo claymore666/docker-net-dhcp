@@ -30,13 +30,22 @@
 #              lines across the three runs. Median rather than mean: the
 #              ephemeral runner pool produces occasional slow jobs and
 #              one such sample should not move a test's weight.
+#   one row     TestLeaseRenewIPv6_HonorsT1 is 73.85, and it alone is NOT
+#              from the corpus runs above: this round changed that test's
+#              body (its baseline moved from the bind to t1-t1Slop), so
+#              the 90.03 the corpus measured costs a tree that no longer
+#              exists — drift in the subject, which the note above says
+#              is the one thing that disqualifies a sample. Its figure
+#              is the median of the same test on the three head runs
+#              34204413442 / 34205039347 / 34206023827: 74.16, 73.60,
+#              73.85. Same method, three samples, a later corpus.
 #   samples    3 for all 95. No row is inferred. The previous edition
 #              carried four inferred rows and fourteen v6 rows recovered
 #              from the 1.9.0 corpus; every one of those is now measured
 #              against the client that actually ships here.
-#   corpus     main suite    91 tests   1756.05s   mean 19.30s
+#   corpus     main suite    91 tests   1739.87s   mean 19.12s
 #              failure suite  4 tests    272.31s   mean 68.08s
-#              both          95 tests   2028.36s
+#              both          95 tests   2012.18s
 #   spread     min and max per test across the three samples are not
 #              stored, but were read: the widest single-test spread was
 #              TestDHCPv6_NoAddressModes_StartTheEndpoint at 75.07-93.94,
@@ -60,12 +69,12 @@
 # Packing the medians above with the same greedy longest-first packer
 # the partitioner uses, per suite:
 #
-#   main    OF=5   352.5s  (what shipped before D41)
-#           OF=7   251.4s
-#           OF=8   220.1s
-#           OF=9   198.0s   <- ships
-#           OF=10  178.0s
-#           OF=12  147.2s
+#   main    OF=5   349.9s  (what shipped before D41)
+#           OF=7   250.3s
+#           OF=8   219.9s
+#           OF=9   196.3s   <- ships
+#           OF=10  177.9s
+#           OF=12  146.8s
 #   failure OF=1   272.3s  (what shipped before D41)
 #           OF=2   154.6s   <- ships; the floor is one test,
 #                            TestFailure_LeaseExpiry at 154.61s
@@ -139,7 +148,7 @@ TestInterfaceName_MultiNetworkDeterministic	12.08
 TestInterfaceName_PluginHonorsOption	12.50
 TestInterfaceName_ProbeSkipPrecedesTheEphemeralFixture	0.00
 TestJoinNoContainer_AddressIsHeldUntilItExpires	26.95
-TestLeaseRenewIPv6_HonorsT1	90.03
+TestLeaseRenewIPv6_HonorsT1	73.85
 TestLeaseRenew_HonorsT1	27.38
 TestLeaseRetention_ARestartRebootsRatherThanDiscovers	12.92
 TestLeaseRetention_NothingEverReleases	35.23

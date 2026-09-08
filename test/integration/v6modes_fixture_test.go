@@ -206,7 +206,7 @@ func startUnderName(t *testing.T, name, actual harness.V6Mode) (refused bool, ms
 // no-RA check that passes because it did not wait is a check with one
 // possible verdict. So this test keeps its clock, and the shard
 // partition is what absorbs it: at 65.36s it is the fifth-longest
-// main-suite test, well under the 198s longest shard, and the
+// main-suite test, well under the 196s longest shard, and the
 // longest-first packer places it before the filler.
 func TestV6Fixture_RefusesASegmentInAnotherModesShape(t *testing.T) {
 	exempt := map[[2]harness.V6Mode]bool{}

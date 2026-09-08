@@ -572,8 +572,9 @@ jobs:
         # edition this replaces carried four inferred rows and fourteen
         # recovered from the 1.9.0 corpus.
         #
-        #   main suite      1756.05s over 91 tests, longest single test
-        #                   TestLeaseRenewIPv6_HonorsT1 at 90.03s
+        #   main suite      1739.87s over 91 tests, longest single test
+        #                   TestDHCPv6_NoAddressModes_StartTheEndpoint
+        #                   at 80.63s
         #   failure suite    272.31s over 4 tests, longest single test
         #                   TestFailure_LeaseExpiry at 154.61s
         #
@@ -594,12 +595,12 @@ jobs:
         # scripts/integration-shard.sh uses, per suite, over those
         # medians:
         #
-        #   main    OF=5   352.5s   (what shipped before D41)
-        #           OF=7   251.4s
-        #           OF=8   220.1s
-        #           OF=9   198.0s   <-
-        #           OF=10  178.0s
-        #           OF=12  147.2s
+        #   main    OF=5   349.9s   (what shipped before D41)
+        #           OF=7   250.3s
+        #           OF=8   219.9s
+        #           OF=9   196.3s   <-
+        #           OF=10  177.9s
+        #           OF=12  146.8s
         #   failure OF=1   272.3s   (what shipped before D41)
         #           OF=2   154.6s   <-
         #           OF=3   154.6s   (no better: one test is the floor)

@@ -493,8 +493,9 @@ func TestTombstoneRestart_PreservesIPv6(t *testing.T) {
 //
 // That makes it strictly stronger than the version it replaces, and
 // faster: MEASURED 90.03s before (median of runs 34059724566 /
-// 34060966627 / 34064155841) against ~62s now, because what went is the
-// 15s of idling AFTER the renewal was already in the log.
+// 34060966627 / 34064155841) against 73.85s after (median of runs
+// 34204413442 / 34205039347 / 34206023827), because what went is the
+// idling AFTER the renewal was already in the log.
 func TestLeaseRenewIPv6_HonorsT1(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Second)
 	defer cancel()
