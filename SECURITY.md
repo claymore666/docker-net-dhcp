@@ -71,7 +71,7 @@ the effective set is the seventeen above, not these four.
 | `mount:/var/lib/net-dhcp:rbind,rw` | `STATE_DIR`: the lease record, per-network options, tombstones and the audit ledger, which must survive `docker plugin rm` and upgrade. | `pkg/plugin/state.go` |
 | `mount:/var/run/docker:rbind,ro` | Read-only. The daemon's sandbox netns entries: the route tried first into a container's network namespace, which carries a recovery after a plugin restart, and the evidence that separates "the container went away mid-attach" from a plugin fault. | `pkg/plugin/sandbox_netns.go`, `pkg/plugin/network.go` |
 | `CAP_NET_ADMIN` | Every address, route, MTU and link change the plugin applies inside a container's network namespace, and the parent/child link creation that attaches it. | `pkg/plugin/dhcp_manager.go`, `pkg/plugin/netlink_seam.go` |
-| `CAP_NET_RAW` | The `AF_PACKET` socket the DHCP exchange runs on — the interface has no address yet, so an ordinary UDP socket cannot carry it — and the RFC 5227 ARP probes on the same socket family. | `internal/dhcp-golib/runtime/transport_packet_linux.go`, `internal/dhcp-golib/runtime/arp_linux.go` |
+| `CAP_NET_RAW` | The `AF_PACKET` socket the DHCP exchange runs on — the interface has no address yet, so an ordinary UDP socket cannot carry it — and the RFC 5227 ARP probes on the same socket family. Both are opened by the `dhcp-golib` client this plugin links, constructed here. | `pkg/dhcp/chassis.go`, `pkg/dhcp/chassis6.go` |
 | `CAP_SYS_ADMIN` | `setns` into a container's network namespace on a locked OS thread, and into its mount namespace for a `resolv.conf` write. | `pkg/dhcp/chassis.go`, `pkg/plugin/resolvconf.go` |
 | `CAP_SYS_PTRACE` | Opening `/proc/<pid>/ns/*` of a container whose init runs as a non-root user: the kernel gates it on `PTRACE_MODE_READ`, which a uid mismatch fails without this capability (#317). Both `/proc/<pid>/ns/mnt` for `resolv.conf` and the netns fallback route need it. | `pkg/plugin/resolvconf.go`, `pkg/plugin/container_netns.go` |
 
@@ -220,8 +220,8 @@ in `config.json`. Reports are especially welcome for:
   namespace to open the DHCP socket, and into its **mount** namespace on
   every `resolv.conf` write (`pkg/plugin/resolvconf.go`);
 - parsing of untrusted DHCP-server responses: the wire decoders in the
-  in-tree DHCP library (`internal/dhcp-golib/wire`), the chassis that
-  turns a decoded lease into a plugin event
+  `dhcp-golib` library (`github.com/claymore666/dhcp-golib/wire`), the
+  chassis that turns a decoded lease into a plugin event
   (`pkg/dhcp/chassis.go`, `pkg/dhcp/info_sanitize.go`), and lease/option
   propagation into containers;
 - anything that lets one container influence another container's
@@ -326,10 +326,10 @@ attacker tampering with distributed images.
 
 **Mitigations and why they suffice.**
 - *Memory safety / injection:* the plugin is written in Go
-  (memory-safe). Server-supplied bytes are decoded by the in-tree DHCP
-  library's wire codec, which is a nested Go module with its own test
-  suite, pinned by SHA in `internal/dhcp-golib/SOURCE` and checked
-  byte-for-byte on every PR by `scripts/check-dhcp-golib-copy.sh`; every
+  (memory-safe). Server-supplied bytes are decoded by the `dhcp-golib`
+  wire codec, which is a separate Go module with its own test suite and
+  its own CI lane, pinned to an exact version in `go.mod` and verified
+  against `go.sum` on every build; every
   string value that reaches a container or a log first passes
   `pkg/dhcp.SafeValue`, which refuses control characters and counts the
   refusal (`unsafe_option_values_dropped`). **The named bound:** this

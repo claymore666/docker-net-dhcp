@@ -109,8 +109,8 @@ const initialDHCPHostnameLookupTimeout = 2 * time.Second
 
 // recoveryBudget caps the wall-time the plugin spends rebuilding its
 // in-memory state for already-attached endpoints on startup. Each
-// endpoint's recovery does its own DHCP DISCOVER through dhcpcd with
-// network-IO timeouts; this is the umbrella above all of them. Beyond
+// endpoint's recovery does its own DHCP DISCOVER through the library
+// with network-IO timeouts; this is the umbrella above all of them. Beyond
 // it, recovery is abandoned and the affected endpoints surface as
 // recovery_failed on /Plugin.Health.
 const recoveryBudget = 30 * time.Second
@@ -187,8 +187,8 @@ func clientIDFromMAC(mac net.HardwareAddr) []byte {
 
 // resolveClientID picks the option-61 payload for a fresh DHCP
 // exchange. Operator-supplied opts.ClientID wins when non-empty
-// (treated as opaque ASCII bytes; the dhcpcd client adds the
-// type-byte 0x00 wrapper on the wire).
+// (treated as opaque ASCII bytes; the chassis prepends the type-byte
+// 0x00 wrapper on the wire, D10).
 //
 // Otherwise the id comes from the MAC. This is what makes an IPv4
 // address survive `docker restart`: the tombstone preserves the MAC, so
@@ -497,8 +497,8 @@ type DHCPNetworkOptions struct {
 	// existing Linux bridge, where the probe semantics are different
 	// and not yet implemented.
 	//
-	// The probe runs a full DHCPDISCOVER → REQUEST → ACK cycle
-	// (dhcpcd has no DISCOVER-only mode), so the upstream
+	// The probe runs a full DHCPDISCOVER → REQUEST → ACK cycle -- an
+	// OFFER alone does not prove the server will commit -- so the upstream
 	// pool briefly sees one extra lease per `docker network create`
 	// with this opt-in. The probe MAC is random (locally-administered
 	// bit set) so it doesn't collide with anything stable upstream;
@@ -506,7 +506,7 @@ type DHCPNetworkOptions struct {
 	// on a slow release path.
 	ValidateDHCP bool `mapstructure:"validate_dhcp"`
 	// RegisterDNS, when true, makes every endpoint on this network send
-	// the DHCP FQDN option (81 v4 / 39 v6, dhcpcd `fqdn both`) built from
+	// the DHCP FQDN option (81 v4 / 39 v6) built from
 	// its resolved hostname, asking the DHCP server to register that name
 	// in DNS (forward + reverse). Default false: dynamic-DNS registration
 	// is a network-policy decision, never silent. Best-effort and advisory
@@ -543,7 +543,7 @@ type DHCPNetworkOptions struct {
 	//
 	// This is a permission, not a preference: it composes with
 	// DHCPServers rather than competing with it. See serverPolicy for
-	// why the two cannot both be handed to dhcpcd as directives.
+	// how the two are composed before either reaches the client.
 	DenyServers string `mapstructure:"dhcp_deny_servers"`
 }
 
@@ -555,9 +555,9 @@ func (o DHCPNetworkOptions) effectiveMode() string {
 	return o.Mode
 }
 
-// fqdnMode maps the register_dns opt-in to the dhcpcd `fqdn` directive
-// mode passed to the client. "both" asks the server to update forward
-// (A/AAAA) and reverse (PTR); "" omits the directive (the default). See
+// fqdnMode maps the register_dns opt-in to the FQDN mode passed to the
+// client. "both" asks the server to update forward (A/AAAA) and reverse
+// (PTR); "" sends no FQDN option (the default). See
 // DHCPNetworkOptions.RegisterDNS (#261).
 func (o DHCPNetworkOptions) fqdnMode() string {
 	if o.RegisterDNS {
@@ -918,7 +918,7 @@ type Plugin struct {
 	joinAbortedEndpointLeft atomic.Int32
 
 	// unsafeHostnamesRejected counts container hostnames dropped before
-	// they could reach the generated dhcpcd config because they carried a
+	// they could reach the DHCP hostname option because they carried a
 	// control character (#692).
 	//
 	// A counter rather than only a log line, because this is the one
@@ -948,8 +948,8 @@ type Plugin struct {
 	//
 	// What the refusal prevents is not one file: the netlink handle
 	// built from that namespace carries every address, MTU and route
-	// the manager applies, with CAP_NET_ADMIN, and dhcpcd is spawned
-	// into it as root. Refusing fails the attach, so unlike the DNS
+	// the manager applies, with CAP_NET_ADMIN, and the DHCP exchange runs
+	// inside it on a raw socket. Refusing fails the attach, so unlike the DNS
 	// case this one is at least visible as an error -- but the error
 	// reads like a slow container start, and only the counter says the
 	// PID belonged to something else.
@@ -1050,8 +1050,8 @@ type Plugin struct {
 	// Not healthy-affecting: dropping is the safe outcome and the lease
 	// proceeds. Read it for the same reason as
 	// unsafe_hostnames_rejected: no legitimate server sends one, so any
-	// rise is deliberate. The count is produced in the dhcpcd hook
-	// process and rides the event across the FIFO (#703, #704).
+	// rise is deliberate. The count is produced where the server's option
+	// values are decoded and rides in on the lease event (#703, #704).
 	unsafeOptionValuesDropped atomic.Int32
 
 	// networkOptionsRejected counts endpoint operations that met a
@@ -1101,7 +1101,7 @@ type Plugin struct {
 	// indistinguishable from success (#386).
 	tombstonesConsumed atomic.Int32
 
-	// leaseChangedV4 counts renewals where dhcpcd returned a different
+	// leaseChangedV4 counts renewals where the server returned a different
 	// IP than the manager last recorded. Container's
 	// NetworkSettings.IPAddress in `docker inspect` does NOT update
 	// — libnetwork has no in-place endpoint-IP swap RPC. This counter
@@ -1237,7 +1237,7 @@ type Plugin struct {
 	// naksReceivedV4 counts "nak" events — the server refused a
 	// REQUEST (pool reconfigured, address reassigned, lease revoked).
 	// Until v1.0.0 a NAK was only a warn-level log line, invisible to
-	// operators (#128). A NAK is followed by dhcpcd re-DISCOVERing, so
+	// operators (#128). A NAK is followed by the client re-DISCOVERing, so
 	// pair this with lease_changed: naks_received climbing while
 	// lease_changed follows means containers are being re-addressed
 	// mid-life — Docker's inspect view goes stale (see leaseChangedV4
@@ -1268,7 +1268,7 @@ type Plugin struct {
 	// advertised "other configuration available" and answered with
 	// options and no address (#815). Deliberately NOT part of the
 	// v4/v6 pairs above -- there is no v4 counterpart, because the
-	// plugin never runs dhcpcd's v4 DHCPINFORM mode, and inventing a
+	// plugin never runs a v4 DHCPINFORM, and inventing a
 	// zero-forever v4 half would imply a measurement nobody takes.
 	//
 	// It counts replies RECEIVED, not configuration applied, and the
@@ -1341,8 +1341,8 @@ type Plugin struct {
 	routerAdvertGuardFailures atomic.Int32
 
 	// displacedStops tracks the goroutines Join spawns to Stop a
-	// manager it displaced (#338). Join must not block on the dhcpcd
-	// release cycle, but Close must not exit while one is mid-release
+	// manager it displaced (#338). Join must not block on the displaced
+	// client's stop, but Close must not exit while one is mid-release
 	// either — an interrupted Stop means no DHCPRELEASE, and the
 	// upstream server holds the lease until it expires on its own.
 	// Tracked rather than bounded on purpose: a semaphore here would
@@ -1419,7 +1419,7 @@ func (p *Plugin) takeJoinHint(endpointID string) (joinHint, bool) {
 // manager happens when Join lands on an endpoint the recovery path
 // already registered (plugin restart while the container restarts:
 // Docker sends Join with no preceding Leave to this plugin instance).
-// Silently dropping it from the map would leak its running dhcpcd —
+// Silently dropping it from the map would leak its running DHCP client —
 // unstoppable forever, and colliding with the new client on the same
 // interface — so the caller must Stop it.
 func (p *Plugin) registerDHCPManager(endpointID string, m *dhcpManager) *dhcpManager {
@@ -1451,7 +1451,7 @@ func (p *Plugin) dhcpManagerExists(endpointID string) bool {
 // lock, built a manager, and registered it — and dropped the manager
 // that registration displaced, which is exactly what registerDHCPManager
 // says a caller must never do. A Join landing in that window had its
-// live manager evicted from the registry while its dhcpcd kept running:
+// live manager evicted from the registry while its DHCP client kept running:
 // untracked, unstoppable, and competing with recovery's fresh client on
 // the same interface. Join guards the mirror-image case (network.go)
 // because a Join is newer truth than a recovery and may displace it;
@@ -1478,7 +1478,7 @@ func (p *Plugin) registerDHCPManagerIfAbsent(endpointID string, m *dhcpManager) 
 // Leave) and the goroutine reaching its deregistration, a fast
 // Leave+Join cycle can install a NEW healthy manager under the same
 // key — deleting by key alone would evict that successor, leaking its
-// running dhcpcd.
+// running DHCP client.
 func (p *Plugin) removeDHCPManagerIfSame(endpointID string, m *dhcpManager) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -1749,8 +1749,8 @@ func (p *Plugin) consumeTombstone(networkID string, h dhcpHostname) (mac, ipv4, 
 // Recovery sources state from Docker rather than persisting our own
 // per-endpoint files: NetworkInspect gives us the MAC and IP of each
 // attached endpoint, ContainerInspect gives the hostname and the
-// container's PID for netns access. dhcpcd is invoked with that IP set
-// as its `request` directive (DHCP option 50) so the upstream DHCP
+// container's PID for netns access. That IP is requested as DHCP
+// option 50 so the upstream DHCP
 // server can ACK the lease the container is already using rather than
 // handing out a fresh one.
 // listNetworksWhenReady is recovery's entry gate. It retries NetworkList
@@ -2111,7 +2111,7 @@ func (p *Plugin) recoverOneEndpoint(ctx context.Context, containerID, networkID,
 	// mid-recovery keeps its own manager instead of having it evicted
 	// by ours. Building the manager first costs nothing when we lose:
 	// it was never published, so nothing can reach it and it holds no
-	// dhcpcd — Start is only spawned below, after we have won.
+	// DHCP client — Start is only called below, after we have won.
 	if !p.registerDHCPManagerIfAbsent(endpointID, m) {
 		p.recoveryAlreadyManaged.Add(1)
 		return false, nil
@@ -2468,8 +2468,8 @@ func (p *Plugin) Listen(bindSock string) error {
 // added twice now, and a per-phase timeout silently multiplies the
 // wall-clock an operator waits through on `docker plugin disable`.
 // Short enough to keep a plugin upgrade snappy on hosts with many
-// endpoints; long enough that a typical dhcpcd release-and-exit cycle
-// completes well within it.
+// endpoints; long enough that a typical client stop completes well
+// within it.
 //
 // A var, not a const, solely so tests can shrink it: the forced-path
 // and timeout behaviours are only reachable by letting the budget
@@ -2501,10 +2501,10 @@ func waitBounded(wg *sync.WaitGroup, d time.Duration) bool {
 // Join can register a manager while (or after) we stop the existing
 // ones — with the old ordering a Join dispatched during the stop
 // fan-out installed a manager into the fresh registry that nobody ever
-// stopped, leaking its dhcpcd.
+// stopped, leaking its DHCP client.
 // Persistent DHCP clients are then stopped before process exit, so that
-// a plugin upgrade or `docker plugin disable` does not leave dhcpcd
-// processes renewing leases for endpoints this plugin no longer manages.
+// a plugin upgrade or `docker plugin disable` does not leave clients
+// renewing leases for endpoints this plugin no longer manages.
 //
 // Since #800 this is NOT about releasing anything: no path sends a
 // DHCPRELEASE, and a stopped client's address stays leased until it
@@ -2608,7 +2608,7 @@ func (p *Plugin) Close() error {
 
 	// stopSnapshot drains the current registry once: snapshot under the
 	// lock, then Stop each manager in parallel outside it (Stop blocks
-	// on dhcpcd Wait and we don't want to hold p.mu across that).
+	// on the client finishing and we don't want to hold p.mu across that).
 	// Returns how many managers it stopped.
 	stopSnapshot := func() int {
 		p.mu.Lock()
@@ -2623,7 +2623,7 @@ func (p *Plugin) Close() error {
 			return 0
 		}
 		log.WithField("count", len(managers)).Info("Stopping persistent DHCP clients before shutdown")
-		// Stop in parallel — each dhcpcd release is independent and
+		// Stop in parallel — each client stop is independent and
 		// we don't want N×timeout wall time.
 		var wg sync.WaitGroup
 		for _, m := range managers {
@@ -2635,7 +2635,7 @@ func (p *Plugin) Close() error {
 				}
 			}(m)
 		}
-		// Bound wall time: we can't let one wedged dhcpcd hold up the
+		// Bound wall time: we can't let one wedged client hold up the
 		// whole shutdown.
 		if !waitBounded(&wg, remaining()) {
 			log.Warn("Timeout waiting for persistent DHCP clients to stop; continuing shutdown")
@@ -2682,10 +2682,11 @@ func (p *Plugin) Close() error {
 //
 // The hostname is the container's own and Docker does not validate it, so
 // it is the one value on this path chosen by whoever started the
-// container rather than by an operator or by us. dhcpcd.directive would
-// drop it anyway — that is the structural guarantee — but doing it here
-// means the event reaches a counter, and a counter is the only form an
-// operator can alert on.
+// container rather than by an operator or by us. There is no second line
+// of defence any more: the library sends Params.Hostname as option 12
+// verbatim, so this refusal is the only thing between a control character
+// and the wire. Doing it here also means the event reaches a counter, and
+// a counter is the only form an operator can alert on.
 //
 // Dropping rather than failing the endpoint is deliberate: the hostname
 // only decorates the DHCP exchange (and the opt-in FQDN registration), so

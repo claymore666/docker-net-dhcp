@@ -434,17 +434,6 @@ jobs:
       - name: Plugin-set settings are declared
         run: bash scripts/check-plugin-set-settings.sh
 
-      # The in-tree library copy (D21) is what the plugin is BUILT from,
-      # and five gates were taken off it on the ground that the next
-      # sync would revert any edit. Nothing compared the copy to
-      # anything. This does: the manifest half runs everywhere and needs
-      # no credential. The provenance half needs the private library
-      # checkout, which this branch has none for, so the step below
-      # prints "provenance NOT CHECKED" rather than claiming a check it
-      # could not make.
-      - name: The library copy matches its manifest
-        run: bash scripts/check-dhcp-golib-copy.sh
-
       # Presence is not agreement (#638). check-docs-drift proves every
       # counter is documented; this proves the places that say WHICH
       # ones flip `healthy` still say the same thing. The `healthy` row
@@ -486,6 +475,27 @@ jobs:
       # v1.5.0 with five stdlib findings nobody had chosen to accept.
       - name: Go pin consistency check
         run: bash scripts/check-go-pins.sh
+
+      # The DHCP library the BINARY was built from is the module go.mod
+      # pins (D34). `go list -m -f '{{.Version}}'`, which the Makefile
+      # and the Dockerfile derive the `library` label from, reports the
+      # REQUIRED version and says nothing about a `replace` to a local
+      # directory: the label would name a tag the bytes did not come
+      # from, and the health cell derives its expectation from the same
+      # command, so it would agree. This reads the module record the
+      # linker writes into the binary instead. It is the successor to
+      # the copy-versus-manifest check the module import deleted.
+      - name: The library in the binary is the module go.mod pins
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The gate compiles nothing (see the note in it), so this
+          # builds the binary it judges. Named absolutely so the cleanup
+          # can only ever remove the directory this step made.
+          d="$(mktemp -d)"
+          trap 'rm -rf "${d}"' EXIT
+          go build -o "${d}/net-dhcp" ./cmd/net-dhcp
+          bash scripts/check-library-pin.sh --binary "${d}/net-dhcp"
 
       # config.json and config-cover.json must agree on privilege
       # fields — a capability landing in only one means coverage runs

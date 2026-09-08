@@ -2,8 +2,8 @@
 # Copyright the docker-net-dhcp contributors.
 # SPDX-License-Identifier: GPL-3.0-only
 
-# No living document may say `dhcpcd`, and nothing on this branch may
-# call the 2.0 line a beta (external review row E-4; #911).
+# No living document may say `dhcpcd` or `udhcpc`, and nothing on this
+# branch may call the 2.0 line a beta (external review row E-4; #911).
 #
 # WHY THIS EXISTS
 #
@@ -57,7 +57,7 @@
 #     boundaries are (a `dhcpcdN` identifier does not trip it, and
 #     `dhcpcd.conf` does; `TestBetaFoo` does not trip `beta`, and
 #     `2.0-beta` does).
-#   * THE GO DOMAIN IS EVERY TRACKED *.go OUTSIDE THE VENDORED COPY.
+#   * THE GO DOMAIN IS EVERY TRACKED *.go.
 #     It reads comments, strings and identifiers alike, because all
 #     three reach a reader. A test fixture that legitimately wants a
 #     placeholder named `beta` therefore has to pick another word; the
@@ -65,9 +65,7 @@
 #
 # THE DOMAIN IS DERIVED, NOT LISTED
 #
-# Every tracked file matching the word's globs, outside
-# internal/dhcp-golib/ (a vendored copy of another repository, whose
-# history is not ours to rewrite). A universal gate is satisfied by
+# Every tracked file matching the word's globs. A universal gate is satisfied by
 # emptying its domain, so three things guard against that: an EXPECTED
 # list of core documents whose absence is a REFUSAL (exit 2, not a
 # pass), a REFUSAL when ANY GLOB of a word's domain comes back empty --
@@ -80,6 +78,7 @@
 #   dhcpcd  RELEASE_NOTES.md        -- from the first 1.x release
 #                                      heading DOWNWARDS only.
 #   dhcpcd  docs/release-runbook.md -- whole file.
+#   udhcpc  RELEASE_NOTES.md        -- from the same heading downwards.
 #   beta    RELEASE_NOTES.md        -- from the same heading downwards.
 #
 # `beta` is deliberately NOT allowed in docs/release-runbook.md: the
@@ -103,13 +102,16 @@ cd "$ROOT" || { echo "check-retired-words: cannot cd to $ROOT" >&2; exit 2; }
 # the announced count.
 WORDS=(
     'dhcpcd'
+    'udhcpc'
     'beta'
 )
 WORD_GLOBS=(
     '*.md'
+    '*.md'
     '*.md *.go'
 )
 WORD_WHAT=(
+    'document(s)'
     'document(s)'
     'document(s) and Go source(s)'
 )
@@ -117,6 +119,7 @@ WORD_WHAT=(
 # instead rather than only what not to write.
 WORD_REMEDY=(
     'this branch has no dhcpcd; rewrite the sentence or delete it'
+    'this branch runs no external DHCP client; rewrite the sentence or delete it'
     'there is no beta: the line is 2.0, its first pre-release is v2.0.0-rc1, and IPv6 parity is tracked in #911'
 )
 
@@ -148,18 +151,22 @@ ALLOW_FILE_REASONS=(
 # are held to the rule.
 ALLOW_BELOW_WORDS=(
     "dhcpcd"
+    "udhcpc"
     "beta"
 )
 ALLOW_BELOW_PATHS=(
+    "RELEASE_NOTES.md"
     "RELEASE_NOTES.md"
     "RELEASE_NOTES.md"
 )
 ALLOW_BELOW_RES=(
     '^## v1\.'
     '^## v1\.'
+    '^## v1\.'
 )
 ALLOW_BELOW_REASONS=(
     "2026-09-04: history stays history. From the first 1.x release heading downwards these entries describe versions that really shipped dhcpcd; rewriting them would falsify the record. Everything ABOVE that line -- the 2.0 sections -- is held to the rule."
+    "2026-09-08: history stays history, at the same boundary. Up to v1.5.0 the client really was busybox udhcpc, and those entries are the record of replacing it. Everything ABOVE that line -- the 2.0 sections -- is held to the rule."
     "2026-09-05: history stays history, for the same reason and at the same boundary. A 1.x entry may describe a beta of something that really was one. Everything ABOVE that line -- the 2.0 sections -- is held to the rule."
 )
 
@@ -207,7 +214,7 @@ for w in "${!WORDS[@]}"; do
     # emptied-universal defeat, one level down.
     FILES=()
     for g in "${globs[@]}"; do
-        mapfile -t part < <(git ls-files -- "$g" | grep -v '^internal/dhcp-golib/' | sort)
+        mapfile -t part < <(git ls-files -- "$g" | sort)
         if [ "${#part[@]}" -eq 0 ]; then
             echo "::error title=check-retired-words refuses::the '$g' half of the domain for '$WORD' is empty." \
                  "This step would otherwise pass having inspected nothing under it." >&2

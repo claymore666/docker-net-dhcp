@@ -29,10 +29,10 @@ import (
 // plugin's own persistent-client argv:
 //
 //	disable_ipv6=1 -> no link-local, no router solicitation, no
-//	                 information-request; dhcpcd -6 prints nothing at all
-//	disable_ipv6=0 -> link-local appears, RS goes out, dhcpcd reports
-//	                 "requesting DHCPv6 information" and the hook fires
-//	                 INFORM6 carrying the server's DNS and search domain
+//	                 information-request; the v6 client reports nothing at all
+//	disable_ipv6=0 -> link-local appears, RS goes out, the client requests
+//	                 DHCPv6 information and an INFORM6 event carries the
+//	                 server's DNS and search domain
 //
 // So on a stateless or SLAAC segment the endpoint now starts, and then
 // has no IPv6 of any kind — the flag the engine set for "no address"
@@ -52,8 +52,8 @@ const ipv6DisableSysctlDir = "/proc/sys/net/ipv6/conf"
 // procSysMount is the sysctl tree's mount point. It is mounted READ-ONLY
 // in the managed-plugin rootfs -- the same fact that made every lease
 // fail in #247, documented on pkg/dhcp's procSysPath, and the reason the
-// DHCP clients remount it inside their own mount namespace before
-// dhcpcd touches net/ipv6/conf/<if>/{autoconf,accept_ra}.
+// DHCP path remounts it inside its own mount namespace before
+// touching net/ipv6/conf/<if>/{autoconf,accept_ra}.
 //
 // It bit here too, and the counter added with this code is what said so:
 // the first CI run reported ipv6_link_enable_failures = 1 with "open ...
@@ -72,7 +72,7 @@ const procSysMount = "/proc/sys"
 // difference that makes a shell recipe unsafe to transcribe.
 //
 // IT IS BEST EFFORT, AND THAT IS THE MEASURED TRADE, NOT A SHRUG. The
-// sibling that does the same remount for dhcpcd's argv already carries
+// sibling that does the same remount on the pkg/dhcp side already carries
 // the measurement -- pkg/dhcp.mountPrep, and the "procsys-remount" step
 // mountPrepStep names there: on a
 // --privileged runtime the remount FAILS -- `can't find /proc/sys in

@@ -266,15 +266,23 @@ func TestHealthDocument_BuildInfoIsWhatTheLaneBuilt(t *testing.T) {
 		}
 	}
 
-	// The library revision is not a build argument: the Dockerfile
-	// reads it out of the tree. So the tree is what it is checked
-	// against, and this is the one of the three that has an
-	// independent source inside the repository.
-	if want, rerr := os.ReadFile("../../internal/dhcp-golib/SOURCE"); rerr != nil {
-		t.Errorf("read internal/dhcp-golib/SOURCE: %v", rerr)
-	} else if got, w := *h.Library, strings.TrimSpace(string(want)); got != w {
-		t.Errorf("the plugin reports library=%q and this tree's internal/dhcp-golib/SOURCE says "+
-			"%q. The image was built from a different library revision than the one under test",
+	// The library version is not a build argument: the Dockerfile
+	// reads it out of the tree, with the same `go list -m` the Makefile
+	// uses. So the tree is what it is checked against, and this is the
+	// one of the three that has an independent source inside the
+	// repository -- go.mod's pin.
+	//
+	// A derivation that fails is a FAILURE, not a skip: the fallback in
+	// the Dockerfile turns an unreadable pin into the word `unknown`,
+	// and a cell that tolerated its own derivation failing would agree
+	// with that word instead of catching it.
+	w, rerr := harness.CommandStdout(ctx, "go", "list", "-m",
+		"-f", "{{.Version}}", "github.com/claymore666/dhcp-golib")
+	if rerr != nil {
+		t.Errorf("go list -m github.com/claymore666/dhcp-golib: %v", rerr)
+	} else if got := *h.Library; got != w {
+		t.Errorf("the plugin reports library=%q and this tree's go.mod pins "+
+			"%q. The image was built from a different library version than the one under test",
 			got, w)
 	}
 

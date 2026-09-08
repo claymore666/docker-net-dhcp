@@ -90,6 +90,10 @@ LANE=(
   "manifest parity|-|bash scripts/check-manifest-parity.sh"
   "manifest delta table|-|bash scripts/check-manifest-delta-table.sh"
   "privilege sentences|-|bash scripts/check-privilege-sentences.sh"
+  # The gate reads a binary's module record and compiles nothing itself
+  # (see the note in it), so the row builds one first. `go` because of
+  # that build.
+  "library pin (bytes built)|go|d=\$(mktemp -d); trap 'rm -rf \"\$d\"' EXIT; go build -o \"\$d/net-dhcp\" ./cmd/net-dhcp && bash scripts/check-library-pin.sh --binary \"\$d/net-dhcp\""
   "issue label map|-|bash scripts/check-issue-label-map.sh"
   "label taxonomy|-|bash scripts/check-label-taxonomy.sh --static"
   "release-notes symbols|-|bash scripts/check-release-notes-symbols.sh"
@@ -151,7 +155,6 @@ LANE=(
   "scheduled shard coverage|-|bash scripts/check-shard-coverage.sh"
   "golden fixture keying|go|bash scripts/check-golden-fixture-name-keyed.sh"
   "test/policy-gates split|-|bash scripts/check-test-job-purity.sh"
-  "library copy vs manifest|-|bash scripts/check-dhcp-golib-copy.sh"
   # The lane checks itself: if test.yaml gains a gate this file does
   # not list, a local run says so instead of quietly covering less.
   "local-lane coverage|-|bash scripts/check-local-lane.sh"

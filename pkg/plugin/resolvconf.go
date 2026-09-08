@@ -110,8 +110,8 @@ func openContainerProc(pid int, ctrID string) (*os.File, error) {
 
 	// O_CLOEXEC, like the sibling openat in openContainerNetNS. Go's
 	// os/exec does not sweep foreign descriptors, so an fd opened
-	// without it is inherited by whatever unshare / sh / dhcpcd another
-	// goroutine spawns in the same window.
+	// without it is inherited by whatever another goroutine spawns in
+	// the same window.
 	fd, err := unix.Openat(int(d.Fd()), "cgroup", unix.O_RDONLY|unix.O_CLOEXEC, 0)
 	if err != nil {
 		d.Close()
@@ -175,8 +175,8 @@ func openContainerProc(pid int, ctrID string) (*os.File, error) {
 //     Containers attached to two net-dhcp networks will end up with
 //     whichever network's renewal happened most recently.
 //   - search-domain handling: prefer the multi-entry DHCP option 119
-//     (Domain Search List, dhcpcd env `new_domain_search`). Falls back to the
-//     single-entry option 15 (`domain`, dhcpcd env `new_domain_name`) when option 119
+//     (Domain Search List). Falls back to the
+//     single-entry option 15 (`domain`) when option 119
 //     isn't supplied. RFC 3397 specifies option 119 supersedes option
 //     15 when both are present.
 func writeContainerResolvConf(pid int, ctrID string, dns []string, searchList []string, searchDomain string) error {

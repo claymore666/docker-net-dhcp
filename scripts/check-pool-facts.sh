@@ -225,18 +225,10 @@ marks = []      # (path, lineno, fact, value)
 unmarked = []   # (path, lineno, text)
 unknown = []    # (path, lineno, fact)
 
-# internal/dhcp-golib/ is a VERBATIM copy of another repository (D21):
-# it is not edited here, so it can carry neither a marker nor an
-# exemption, and `scripts/check-dhcp-golib-copy.sh` goes red if anything
-# tries. Its prose is that repository's to keep true, and a statement
-# about a DHCP address pool in it is not a statement about this CI pool
-# anyway. This is the gate's one blanket exclusion and it is a path, not
-# a pattern -- a file that leaves that tree comes into the domain.
-EXCLUDED_PREFIX = "internal/dhcp-golib/"
+# NO EXEMPTION. Every tracked file in this repository is read. The DHCP
+# library is a module dependency, not a directory of this tree.
 
 for rel in tracked:
-    if rel.startswith(EXCLUDED_PREFIX):
-        continue
     p = os.path.join(root, rel)
     if not os.path.isfile(p) or os.path.islink(p):
         continue

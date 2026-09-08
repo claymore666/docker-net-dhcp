@@ -24,7 +24,7 @@ import (
 // leaves its PID free for one. What the plugin then does with the
 // namespace it opened is not one file: the netlink handle built from it
 // carries every address, MTU and route change the manager makes, with
-// CAP_NET_ADMIN, and dhcpcd is spawned into it as root.
+// CAP_NET_ADMIN, and the DHCP exchange runs inside it on a raw socket.
 //
 // openContainerProc's own comment already names the rule this function
 // exists to follow -- "re-deriving the path as a string afterwards would

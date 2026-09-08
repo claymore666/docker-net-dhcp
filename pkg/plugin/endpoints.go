@@ -593,7 +593,7 @@ type HealthResponse struct {
 	// what makes "the address survived, but via neither path" a
 	// detectable state rather than a silent pass (#386).
 	TombstonesConsumed int32 `json:"tombstones_consumed"`
-	// LeaseChanged counts renewals where dhcpcd returned a different
+	// LeaseChanged counts renewals where the server returned a different
 	// IP than the manager last recorded. Not Healthy-affecting (it
 	// doesn't break Docker's view fatally — see plugin.go for the
 	// truthfulness-gap discussion), but worth alerting on for
@@ -722,7 +722,7 @@ type HealthResponse struct {
 	// being true.
 	ClientStopFailures int32 `json:"client_stop_failures"`
 	// NAKsReceived counts server NAKs on renewal/rebind. Not
-	// Healthy-affecting on its own — dhcpcd recovers by
+	// Healthy-affecting on its own — the client recovers by
 	// re-DISCOVERing — but each NAK-triggered re-bind widens the
 	// docker-inspect divergence tracked by lease_changed (#128).
 	NAKsReceived int32 `json:"naks_received"`

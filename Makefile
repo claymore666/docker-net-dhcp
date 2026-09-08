@@ -15,8 +15,8 @@ SUITE ?= main
 # rather than in the Dockerfile because the build context is a tarball
 # with no .git. Both fall back to a WORD, never to an empty string --
 # `unknown` in a label says the build did not carry it, an empty label
-# says nothing at all. The library revision is read inside the Dockerfile
-# from internal/dhcp-golib/SOURCE, so it cannot be passed wrong.
+# says nothing at all. The library version is read inside the Dockerfile
+# from the module pin in go.mod, so it cannot be passed wrong.
 #
 # The FULL revision, not --short: git abbreviates to a length that
 # depends on how many objects the clone holds, so a rebuilder verifying
@@ -25,7 +25,7 @@ SUITE ?= main
 # a reproducible binary has to be a function of the commit alone.
 VERSION ?= dev
 COMMIT ?= $(shell git rev-parse HEAD 2>/dev/null || echo unknown)
-LIBRARY := $(shell cat internal/dhcp-golib/SOURCE 2>/dev/null || echo unknown)
+LIBRARY := $(shell go list -m -f '{{.Version}}' github.com/claymore666/dhcp-golib 2>/dev/null || echo unknown)
 BUILDINFO_PKG = github.com/claymore666/docker-net-dhcp/pkg/buildinfo
 GO_LDFLAGS = -X $(BUILDINFO_PKG).Version=$(VERSION) -X $(BUILDINFO_PKG).Commit=$(COMMIT) -X $(BUILDINFO_PKG).Library=$(LIBRARY)
 BUILD_ARGS = --build-arg VERSION=$(VERSION) --build-arg COMMIT=$(COMMIT)

@@ -25,20 +25,15 @@ ARG COVER_FLAGS=
 # Makefile passes the short revision; the integration harness passes the
 # SHA it builds.
 #
-# The library revision is deliberately NOT an argument: it is a property
-# of the tree being built (internal/dhcp-golib/SOURCE, D21), so a caller
-# cannot get it wrong and a stale image cannot claim a library it does
-# not carry.
+# The library version is deliberately NOT an argument: it is a property
+# of the tree being built (the module pin in go.mod), so a caller cannot
+# get it wrong and a stale image cannot claim a library it does not
+# carry.
 ARG VERSION=dev
 ARG COMMIT=unknown
 
 WORKDIR /usr/local/src/docker-net-dhcp
 COPY go.* ./
-# The replaced module's own go.mod must exist before `go mod download`
-# reads the replace directive, so its manifest is copied ahead of the
-# source. Its tree carries no dependencies of its own (the sync script
-# refuses a library that grew one), so this adds nothing to download.
-COPY internal/dhcp-golib/go.mod ./internal/dhcp-golib/go.mod
 # Persist the module cache across builds: unchanged go.* means no
 # re-download, and the modules survive even when the build layer is
 # invalidated by a code change (#255).
@@ -47,11 +42,6 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 
 COPY cmd/ ./cmd/
 COPY pkg/ ./pkg/
-# The DHCP library travels as a directory of this branch, resolved by
-# the `replace` in go.mod (D21). It is a nested module, so `go build
-# ./...` above does not walk into it; the compiler reaches it only
-# through the import path.
-COPY internal/ ./internal/
 # The COPY above invalidates this layer on every code change, so go build
 # re-runs each PR — but the mounted build cache makes it INCREMENTAL:
 # only the packages that actually changed recompile, the rest are reused.
@@ -60,7 +50,7 @@ COPY internal/ ./internal/
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
     mkdir bin/ && \
-    LIBRARY="$(cat internal/dhcp-golib/SOURCE 2>/dev/null || echo unknown)" && \
+    LIBRARY="$(go list -m -f '{{.Version}}' github.com/claymore666/dhcp-golib 2>/dev/null || echo unknown)" && \
     go build $COVER_FLAGS \
       -ldflags "-X github.com/claymore666/docker-net-dhcp/pkg/buildinfo.Version=${VERSION} -X github.com/claymore666/docker-net-dhcp/pkg/buildinfo.Commit=${COMMIT} -X github.com/claymore666/docker-net-dhcp/pkg/buildinfo.Library=${LIBRARY}" \
       -o bin/ ./cmd/...

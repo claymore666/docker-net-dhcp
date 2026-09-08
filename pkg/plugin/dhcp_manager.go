@@ -177,8 +177,8 @@ type dhcpManager struct {
 	// every production path goes through Plugin.Join.
 	plugin *Plugin
 
-	// ipMu guards lastIP / lastIPv6. Writes happen from the dhcpcd
-	// event goroutine (renew); reads happen from Leave after Stop has
+	// ipMu guards lastIP / lastIPv6. Writes happen from the lease-event
+	// goroutine (renew); reads happen from Leave after Stop has
 	// drained that goroutine. The drain establishes happens-before in
 	// practice, but the race detector doesn't always see the channel
 	// pairing through `select`, and a future change to stop priority
@@ -607,9 +607,9 @@ func (m *dhcpManager) renew(v6 bool, info dhcp.Info) error {
 	m.logObservedOptions(v6, info)
 
 	// Track the freshly-bound address so Leave can hand it to the
-	// tombstone (and thus the next CreateEndpoint's `request`-directive
-	// hint). Without this the manager keeps reporting whatever the very
-	// first CreateEndpoint DISCOVER produced, even if dhcpcd has
+	// tombstone (and thus the next CreateEndpoint's option-50 hint).
+	// Without this the manager keeps reporting whatever the very
+	// first CreateEndpoint DISCOVER produced, even if the client has
 	// moved to a different lease since. After applyAddressChange, which
 	// needs the previous value.
 	m.setLastIP(v6, ip)
@@ -661,7 +661,7 @@ func (m *dhcpManager) applyAddressChange(v6 bool, ip *netlink.Addr) error {
 	// aborting the bind and black-holing the endpoint. Address first,
 	// routes after — same ordering the kernel itself requires.
 	//
-	// Applies to both families now (#152): dhcpcd pins the same
+	// Applies to both families now (#152): the plugin pins the same
 	// DUID-LL/IAID for the one-shot and persistent clients, so the
 	// persistent v6 client renews the SAME address Docker was told
 	// — a "changed IP" is therefore a genuine renumber to re-apply,
@@ -843,7 +843,7 @@ func (m *dhcpManager) logObservedOptions(v6 bool, info dhcp.Info) {
 // propagateDNS applies DHCP option 6 / 23 (DNS server list) when opt-in
 // and the server actually supplied servers. Empty list is a no-op rather
 // than a clobber — see resolvconf.go for the rationale. v6 path
-// uses DHCPv6 option 23, populated by the dhcpcd handler into the
+// uses DHCPv6 option 23, populated by the chassis into the
 // same DNSServers slice. Never fails the renewal: name resolution is
 // recoverable, the lease is not.
 func (m *dhcpManager) propagateDNS(v6 bool, info dhcp.Info) {
@@ -887,7 +887,7 @@ func (m *dhcpManager) propagateMTU(v6 bool, info dhcp.Info) {
 		return
 	}
 
-	// Neither dhcpcd nor the kernel holds the bottom of this range: a
+	// Neither the library nor the kernel holds the bottom of this range: a
 	// server-supplied 68 was exported verbatim and accepted by the
 	// kernel, which destroys throughput and black-holes path MTU
 	// discovery for the container, re-applied on every renewal. Refuse
@@ -1068,7 +1068,7 @@ func clientServerLists(pol serverPolicy, v6 bool) (allow, deny []string) {
 // countOutageTick records one watchdog outage tick.
 //
 // Split out of the goroutine in setupClient so the accounting can be
-// exercised without a live dhcpcd. The whole meaning of
+// exercised without a live client. The whole meaning of
 // dhcp_server_policy_timeouts is a relationship to dhcp_timeouts --
 // strict subset -- and a relationship between two counters is not a
 // thing a comment can hold: it has to be written by one function that a
@@ -1092,7 +1092,7 @@ func (m *dhcpManager) countOutageTick(v6, policyRestricted bool) {
 	m.plugin.dhcpServerPolicyTimeouts.Add(1)
 }
 
-// handleEvent dispatches one dhcpcd lifecycle event from the
+// handleEvent dispatches one lifecycle event from the
 // persistent client: health counters, audit-ledger entries, and the
 // kernel-facing renew work. Extracted from the consumer goroutine so
 // the counter semantics are unit-testable — wire-level NAKs in
@@ -1129,8 +1129,8 @@ func (m *dhcpManager) handleEvent(event dhcp.Event, v6 bool) {
 		// hand out a fresh address per DISCOVER even for
 		// the same MAC). Reuse the renew path so LastIP
 		// reflects what's actually in the kernel.
-		// Ownership of the binding has transferred; Stop can now rely
-		// on dhcpcd's own release. See boundV4 / boundV6.
+		// Ownership of the binding has transferred; Stop no longer has
+		// an outstanding one-shot lease to answer for. See boundV4 / boundV6.
 		m.markBound(v6)
 		if m.plugin != nil {
 			bumpFamily(&m.plugin.leasesObtainedV4, &m.plugin.leasesObtainedV6, v6)
@@ -1501,7 +1501,7 @@ func (m *dhcpManager) locateContainerLink(ctx context.Context) error {
 //
 // Start is one deadline covering five quite different waits: resolving
 // the endpoint to a real container ID, inspecting that container,
-// opening its netns, locating its link, and spawning dhcpcd. When it
+// opening its netns, locating its link, and starting the client. When it
 // expires, every one of them reports the same "context deadline
 // exceeded", and the two explanations that matter are indistinguishable
 // (#406):
@@ -1687,9 +1687,9 @@ func (m *dhcpManager) Start(ctx context.Context) (err error) {
 
 	phases.mark("inspect_container")
 
-	// Config-only: m.hostname reaches the generated dhcpcd.conf and
+	// Config-only: m.hostname reaches the DHCP hostname option and
 	// nothing that makes an identity decision, so a refusal is just an
-	// omitted directive here.
+	// omitted option here.
 	m.hostname = m.plugin.safeHostname(ctr.Config.Hostname).name
 
 	// The sandbox key is the primary route (sandbox_netns.go). Join
@@ -1758,7 +1758,7 @@ func (m *dhcpManager) Start(ctx context.Context) (err error) {
 				// mid-renew on m.netHandle; stopChan only signals it.
 				// Drain its exit ack so the outer cleanup can't close
 				// the netlink/netns handles out from under it (and so
-				// the v4 dhcpcd is reaped, not orphaned).
+				// the v4 client is stopped, not orphaned).
 				<-m.errChan
 				return err
 			}
@@ -1779,8 +1779,9 @@ func (m *dhcpManager) Start(ctx context.Context) (err error) {
 // is going away.
 //
 // This is the shutdown every caller but Leave wants: plugin Close stops
-// every live manager so their dhcpcds exit cleanly rather than being
-// orphaned by process exit, and the containers behind them keep running.
+// every live manager so their persistent clients close their sockets and
+// their goroutines return rather than being cut off mid-exchange by
+// process exit, and the containers behind them keep running.
 // Same for a manager displaced by a newer one for the same endpoint, and
 // for managers cleaned up when a network is removed.
 //
@@ -1825,8 +1826,8 @@ func (m *dhcpManager) stop(leaving bool) error {
 	// state.
 	<-m.startedCh
 	if m.startErr != nil {
-		// No persistent client ever ran, so there is no dhcpcd to
-		// signal, and the CreateEndpoint one-shot's lease is left where
+		// No persistent client ever ran, so there is nothing to stop,
+		// and the CreateEndpoint one-shot's lease is left where
 		// it is. It expires on its own (#800).
 		//
 		// This block used to reclaim that lease when the endpoint was
@@ -1892,13 +1893,15 @@ func (m *dhcpManager) stop(leaving bool) error {
 	// held a binding, NOT by how its process ended. That ordering is
 	// the whole of #607.
 	//
-	// The exit status is a property of a process we deliberately
-	// signalled. dhcpcd answers SIGTERM by exiting 0 — but only once it
-	// is far enough into startup to have installed the handler. Signal
-	// it before that and it dies ON the signal, so Finish reaps
-	// "signal: terminated" and errV4 is non-nil. Testing errV4 first
-	// therefore routed the never-bound case into the stop-failure
-	// branch below, counting a fault where none had occurred. That is
+	// The stop error says how the client ENDED, which is a different
+	// question. In 1.x it was a process exit status: dhcpcd answered
+	// SIGTERM by exiting 0, but only once it was far enough into startup
+	// to have installed the handler, so a client signalled before that
+	// died ON the signal and Finish reaped "signal: terminated". The
+	// library returns its own cancellation error in the same position.
+	// Testing errV4 first therefore routed the never-bound case into the
+	// stop-failure branch below, counting a fault where none had
+	// occurred. That is
 	// #549's bug one branch to the left, and the comment this replaces
 	// stated the assumption that hid it: "the client exited cleanly, so
 	// errV4 is nil". Sometimes it is not, and it changes nothing — a

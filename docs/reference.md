@@ -706,19 +706,22 @@ What the option does, concretely:
   again, once a second, until the Docker daemon stopped waiting for the
   plugin to answer. The endpoint keeps its address across a restart; it
   gives that up the moment somebody else is answering for it.<br><br>
-  **The escape, stated beside the claim: this covers the address the
-  container asks for when it starts, and not one taken away from it
-  later.** The drop happens in the plugin's own acquisition loop at
-  container creation, which runs at most two passes. Once the container
-  has started, the long-running client holds the preference it was built
-  with, and there is no deadline on it — so if another node takes the
-  address over *after* the container is up, that client declines it
-  about once a second for as long as the container runs. It costs a
-  DHCPDECLINE and a Solicit per second on the segment and the container
-  keeps working on the address it already has; the endpoint recovers on
-  its next restart, which goes through the bounded path above. The fix
-  belongs in the DHCPv6 client itself — an address it has just declined
-  is not one to ask for again — and is tracked for a later 2.x release.
+  **The same rule holds after the container is up, and it holds for a
+  different reason.** At container creation the drop is the plugin's
+  own: its acquisition loop runs at most two passes and clears the
+  preference between them. The long-running client is built once and
+  holds the preference it was given, so the drop there is the DHCP
+  client's: since v2.0.0 it does not ask again for an address it has
+  declined, and it drops the resumed binding with it, so a node taking
+  the address over *after* the container is up costs one DHCPDECLINE and
+  one round of discovery rather than one of each per second.
+  **The escape, stated beside the claim:** the plugin says nothing when
+  that happens on a running container — a conflict is not a lease
+  failure, so no counter moves and no event is logged — and the address
+  the client converges on is not reported back to Docker. The container
+  keeps working on the address it already has; the endpoint takes the
+  new one on its next restart, which goes through the bounded path
+  above.
 - **A DUID and IAID that persist.** They are minted once when the
   endpoint is created and stored with it, so a plugin restart, a
   container restart and a plugin upgrade all present the same DHCPv6
@@ -956,7 +959,7 @@ expect a new type.
 | `instance_id` | — | — | (v1.5.0+) Opaque identifier of the plugin **process** serving this response. Every counter below is in-memory and returns to zero when the process does, so two readings are comparable as a delta only when their `instance_id` matches. If it changed between two samples, the plugin restarted and any difference you computed is meaningless — including one that reads as zero. Prefer this over `uptime_seconds` for that check: a plugin that restarts early in a long sampling window and then runs longer than the first reading shows uptime going *up*, hiding the restart. |
 | `version` | — | — | *(2.0-alpha.1+)* The release tag this binary was built for, or `dev` for anything built outside a release. Also a label on `net_dhcp_build_info`. **Never empty**: an empty value would read as "nothing to report" rather than "this build does not know". |
 | `commit` | — | — | *(2.0-alpha.1+)* The full git revision the tree was at, or `unknown`. Full rather than abbreviated because git shortens to a length that depends on the size of the clone, and [Verifying releases](verifying-releases.md) needs the same string to reproduce the same binary. |
-| `library` | — | — | *(2.0-alpha.1+)* The revision of the in-tree DHCP library this build carries — the contents of `internal/dhcp-golib/SOURCE`, which is where that fact lives while the library travels as a directory. Read from the source tree at build time, so it cannot be passed in wrong. |
+| `library` | — | — | *(2.0-alpha.1+)* The version of the `dhcp-golib` DHCP library this build carries — the module version pinned in `go.mod`. Read from the source tree at build time (`go list -m`), so it cannot be passed in wrong. |
 | `uptime_seconds` | — | — | Seconds since the plugin process started. Useful as an age, but see `instance_id` before using it to decide whether a restart happened. |
 | `active_endpoints` | — | — | DHCP managers currently registered (post-Join, pre-Leave). |
 | `pending_hints` | — | — | Join hints awaiting consumption; steady-state ~0. |

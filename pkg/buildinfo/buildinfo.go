@@ -24,10 +24,9 @@ package buildinfo
 // for anything built outside a release. Commit is the git revision the
 // tree was at, in FULL: git abbreviates to a length that depends on the
 // size of the clone, so an abbreviated value would let the same commit
-// build to different binaries. Library is the revision of the DHCP
-// library the tree carries -- the contents of internal/dhcp-golib/SOURCE,
-// which is the only place that fact is written down while the library
-// travels as a directory (D21).
+// build to different binaries. Library is the version of the DHCP
+// library the tree carries -- the module version go.mod pins, read with
+// `go list -m` at build time.
 var (
 	Version = "dev"
 	Commit  = "unknown"

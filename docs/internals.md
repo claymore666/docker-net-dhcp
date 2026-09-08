@@ -38,10 +38,9 @@ In macvlan and ipvlan mode the shape is the same, with a child interface
 on a host NIC in place of the veth pair and the bridge; the client
 lifecycle, the event plumbing, and everything below are identical.
 
-**The DHCP client is `internal/dhcp-golib`, a nested Go module** copied
-in from the project's own library repository at the SHA recorded in
-`internal/dhcp-golib/SOURCE` and checked byte-for-byte on every PR
-(`scripts/check-dhcp-golib-copy.sh`). `pkg/dhcp` is the chassis over it:
+**The DHCP client is `github.com/claymore666/dhcp-golib`**, the
+project's own library, imported as a Go module and pinned to an exact
+version in `go.mod`. `pkg/dhcp` is the chassis over it:
 it builds the protocol parameters (`pkg/dhcp/params.go`), owns the
 namespace and the socket (`pkg/dhcp/chassis.go`), and translates library
 events into the events `pkg/plugin` has always consumed. Nothing outside
