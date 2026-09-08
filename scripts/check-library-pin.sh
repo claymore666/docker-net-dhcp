@@ -53,12 +53,16 @@
 #
 # USAGE
 #
-#   check-library-pin.sh [--tree <dir>] [--binary <path>]...
+#   check-library-pin.sh [--tree <dir>] --binary <path> [--binary <path>]...
 #
-# With no --binary it builds cmd/net-dhcp into a temporary directory and
-# judges that, so a developer running the lane gets the same verdict as
-# CI without producing an artefact. CI passes the binary the run
-# actually installed.
+# IT BUILDS NOTHING. Whoever calls it supplies the binary: the local
+# lane and test.yaml compile cmd/net-dhcp into a temporary directory
+# first, and the integration lane passes the binary the run actually
+# installed. Keeping the build outside is not only separation of
+# concerns -- a checking script that also compiles is a build step, and
+# a build step in a job that has checked out an attacker-chosen ref is
+# CodeQL's actions/cache-poisoning/poisonable-step, which is an OPEN
+# alert on this workflow's dispatch path and not one to add to.
 set -uo pipefail
 
 MODULE="github.com/claymore666/dhcp-golib"
@@ -104,15 +108,9 @@ want_sum="${sumline##* }"
 
 # --- half 2: the bytes ------------------------------------------------
 
-if [ "${#BINARIES[@]}" -eq 0 ]; then
-    tmp="$(mktemp -d)" || fail "mktemp failed"
-    trap 'rm -rf "$tmp"' EXIT
-    if ! build_out="$(cd "$TREE" && go build -o "$tmp/net-dhcp" ./cmd/net-dhcp 2>&1)"; then
-        echo "$build_out" >&2
-        fail "could not build cmd/net-dhcp; there are no bytes to judge"
-    fi
-    BINARIES=("$tmp/net-dhcp")
-fi
+# Half 2 is the half that matters, so having nothing to run it on is a
+# refusal and not a quiet success on half 1 alone.
+[ "${#BINARIES[@]}" -gt 0 ] || fail "no --binary given. Half 1 alone judges the declaration, and the declaration is not what gets linked"
 
 for bin in "${BINARIES[@]}"; do
     [ -f "$bin" ] || fail "$bin does not exist; there are no bytes to judge"

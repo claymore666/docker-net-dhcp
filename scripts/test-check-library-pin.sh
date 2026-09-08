@@ -102,9 +102,10 @@ make_module "$CLEAN"
 build_into "$CLEAN" "$TMP/bin-clean" || { echo "FAIL: could not build the clean fixture" >&2; exit 1; }
 run_case "the tag pinned, no replacement, is accepted" 0 "$CLEAN" "$TMP/bin-clean"
 
-# The same tree with no --binary: the gate builds one itself, which is
-# how the local lane runs it.
-run_case "the gate builds its own binary when given none" 0 "$CLEAN" ""
+# The gate compiles nothing, so a call with no binary has nothing to
+# judge with -- and half 1 passing on its own would be the emptied-domain
+# answer, since the declaration is not what gets linked.
+run_case "a call with no --binary is refused" 1 "$CLEAN" ""
 
 # --- half 2: the bytes -------------------------------------------------
 #

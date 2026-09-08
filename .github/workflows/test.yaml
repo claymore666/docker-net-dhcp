@@ -486,7 +486,16 @@ jobs:
       # linker writes into the binary instead. It is the successor to
       # the copy-versus-manifest check the module import deleted.
       - name: The library in the binary is the module go.mod pins
-        run: bash scripts/check-library-pin.sh
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The gate compiles nothing (see the note in it), so this
+          # builds the binary it judges. Named absolutely so the cleanup
+          # can only ever remove the directory this step made.
+          d="$(mktemp -d)"
+          trap 'rm -rf "${d}"' EXIT
+          go build -o "${d}/net-dhcp" ./cmd/net-dhcp
+          bash scripts/check-library-pin.sh --binary "${d}/net-dhcp"
 
       # config.json and config-cover.json must agree on privilege
       # fields — a capability landing in only one means coverage runs

@@ -90,9 +90,10 @@ LANE=(
   "manifest parity|-|bash scripts/check-manifest-parity.sh"
   "manifest delta table|-|bash scripts/check-manifest-delta-table.sh"
   "privilege sentences|-|bash scripts/check-privilege-sentences.sh"
-  # Builds cmd/net-dhcp into a temp dir and reads the module record out
-  # of it, so the row needs the Go toolchain like the other `go` rows.
-  "library pin (bytes built)|go|bash scripts/check-library-pin.sh"
+  # The gate reads a binary's module record and compiles nothing itself
+  # (see the note in it), so the row builds one first. `go` because of
+  # that build.
+  "library pin (bytes built)|go|d=\$(mktemp -d); trap 'rm -rf \"\$d\"' EXIT; go build -o \"\$d/net-dhcp\" ./cmd/net-dhcp && bash scripts/check-library-pin.sh --binary \"\$d/net-dhcp\""
   "issue label map|-|bash scripts/check-issue-label-map.sh"
   "label taxonomy|-|bash scripts/check-label-taxonomy.sh --static"
   "release-notes symbols|-|bash scripts/check-release-notes-symbols.sh"
