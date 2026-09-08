@@ -457,9 +457,29 @@ func TestTombstoneRestart_PreservesIPv6(t *testing.T) {
 
 // TestLeaseRenewIPv6_HonorsT1: the v6 sibling of
 // TestLeaseRenew_HonorsT1 -- the direct test for "DHCPv6 renewal is
-// less battle-tested" (#103). dnsmasq derives T1 = lease/2 = 60s; we
-// idle 75s and assert the address survived and a renewal DHCPREPLY
-// landed on top of the bind's.
+// less battle-tested" (#103).
+//
+// WHAT IT PROVES, and it is two things, both on evidence from outside
+// the plugin: a renewal DHCPREPLY for this address reaches the SERVER's
+// own log after T1, and the address the container holds is the same one
+// on the far side of it. A counter would prove the plugin meant to
+// renew; the server's log is what proves the renewal happened.
+//
+// THE WAIT IS THE SERVER'S T1 AND IT IS NOT SHORTENED (D41). dnsmasq
+// derives DHCPv6 T1 as lease/2 = 60s from the fixture's 2m lease and
+// offers no way to advertise it independently -- the v4 sibling's
+// WithRenewTimes trick has no DHCPv6 counterpart in this server, and
+// shortening the LEASE to move T1 is the one remedy this work is not
+// allowed to take. So the 60s stands.
+//
+// What went is the IDLING. This used to sleep a flat 75s and then look
+// at the log once; it now polls that same log to the same 75s ceiling
+// and stops on the evidence. Nothing is asserted less: the ceiling, the
+// >= 1 renewal floor and the address comparison are unchanged, and the
+// address is now read at the moment the renewal is observed rather than
+// up to 13s afterwards. MEASURED: 90.03s before (median of runs
+// 34059724566 / 34060966627 / 34064155841), and the poll returns as
+// soon as dnsmasq logs the reply.
 func TestLeaseRenewIPv6_HonorsT1(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Second)
 	defer cancel()
@@ -527,21 +547,37 @@ func TestLeaseRenewIPv6_HonorsT1(t *testing.T) {
 	}
 	startReplies := countDHCPv6Replies(t, fixture.DnsmasqLog(), v6)
 
-	t.Log("waiting 75s for the DHCPv6 renewal cycle...")
-	select {
-	case <-ctx.Done():
-		t.Fatalf("context cancelled before renewal window: %v", ctx.Err())
-	case <-time.After(75 * time.Second):
-	}
+	// The ceiling is the same 75s the flat sleep used: T1 is 60s and
+	// the margin is what covers a loaded runner's scheduling and
+	// dnsmasq's own write of the line. The poll ends the wait on the
+	// evidence, it does not lower the bar for producing it.
+	const renewalCeiling = 75 * time.Second
 
+	t.Logf("watching the server log for a renewal DHCPREPLY, up to %s (T1 is 60s)...", renewalCeiling)
+	deadline := time.Now().Add(renewalCeiling)
+	endReplies := startReplies
+	for time.Now().Before(deadline) {
+		if endReplies = countDHCPv6Replies(t, fixture.DnsmasqLog(), v6); endReplies-startReplies >= 1 {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("context cancelled before renewal window: %v", ctx.Err())
+		case <-time.After(time.Second):
+		}
+	}
+	t.Logf("DHCPREPLYs for %s: start=%d end=%d after %s", v6, startReplies, endReplies,
+		time.Until(deadline).Round(time.Second))
+
+	// Read the address AFTER the reply is in hand, so the comparison is
+	// across the renewal rather than across an interval that happens to
+	// contain one.
 	after := linkGlobalV6(t, ctx, id, 5*time.Second)
 	if after != v6 {
 		t.Errorf("IPv6 changed across renewal window: %s -> %s", v6, after)
 	}
-	endReplies := countDHCPv6Replies(t, fixture.DnsmasqLog(), v6)
-	t.Logf("DHCPREPLYs for %s: start=%d end=%d", v6, startReplies, endReplies)
 	if endReplies-startReplies < 1 {
-		t.Errorf("no renewal DHCPREPLY for %s after crossing T1 — the v6 renewal timer never fired", v6)
+		t.Errorf("no renewal DHCPREPLY for %s within %s of the bind — T1 is 60s, so the v6 renewal timer never fired", v6, renewalCeiling)
 	}
 }
 
