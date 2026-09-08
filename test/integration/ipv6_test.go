@@ -472,14 +472,29 @@ func TestTombstoneRestart_PreservesIPv6(t *testing.T) {
 // shortening the LEASE to move T1 is the one remedy this work is not
 // allowed to take. So the 60s stands.
 //
-// What went is the IDLING. This used to sleep a flat 75s and then look
-// at the log once; it now polls that same log to the same 75s ceiling
-// and stops on the evidence. Nothing is asserted less: the ceiling, the
-// >= 1 renewal floor and the address comparison are unchanged, and the
-// address is now read at the moment the renewal is observed rather than
-// up to 13s afterwards. MEASURED: 90.03s before (median of runs
-// 34059724566 / 34060966627 / 34064155841), and the poll returns as
-// soon as dnsmasq logs the reply.
+// WHAT THE FLAT SLEEP DID NOT PROVE, and this is a finding rather than
+// a tidy-up. The old shape sampled the reply count immediately after
+// the bind, slept a flat 75s, sampled again and required growth. First
+// attempt at replacing that sleep with a poll returned in THREE
+// seconds, green: MEASURED on run 34203647801, job 101988277652 --
+// "DHCPREPLYs for fd00:...::92: start=1 end=2" with 1m12s of the
+// ceiling unused. A second DHCPREPLY for the address lands within
+// seconds of the bind, so the old assertion was satisfied by that reply
+// and not by the renewal. The 75s wait was buying nothing; a 5s wait
+// would have passed it just as reliably. The test claimed T1 and
+// measured the bind.
+//
+// SO THE BASELINE MOVED TO THE BOUNDARY. The count is now sampled again
+// at t1Floor, a slop below T1, and the growth that satisfies the test
+// has to appear AFTER that sample -- in the window where T1 sits. The
+// bind's own burst is inside the baseline by construction, and the test
+// cannot pass without having waited t1Floor: there is no arrangement of
+// bind-time replies that gets it to green early.
+//
+// That makes it strictly stronger than the version it replaces, and
+// faster: MEASURED 90.03s before (median of runs 34059724566 /
+// 34060966627 / 34064155841) against ~62s now, because what went is the
+// 15s of idling AFTER the renewal was already in the log.
 func TestLeaseRenewIPv6_HonorsT1(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Second)
 	defer cancel()
@@ -547,27 +562,55 @@ func TestLeaseRenewIPv6_HonorsT1(t *testing.T) {
 	}
 	startReplies := countDHCPv6Replies(t, fixture.DnsmasqLog(), v6)
 
-	// The ceiling is the same 75s the flat sleep used: T1 is 60s and
-	// the margin is what covers a loaded runner's scheduling and
-	// dnsmasq's own write of the line. The poll ends the wait on the
-	// evidence, it does not lower the bar for producing it.
-	const renewalCeiling = 75 * time.Second
+	// The three constants, and each is derived rather than chosen.
+	//
+	//   t1 is dnsmasq's, not ours: it advertises lease/2 for DHCPv6 and
+	//   the fixture's lease is 2m. There is no option to advertise it
+	//   independently -- the v4 sibling's WithRenewTimes has no v6
+	//   counterpart in this server -- and moving it would mean
+	//   shortening the lease, which is the one thing this is not
+	//   allowed to do.
+	//
+	//   t1Slop is how far BEFORE t1 the baseline is taken. It exists so
+	//   a renewal that lands exactly on t1 is not swallowed by the
+	//   sample meant to exclude the bind.
+	//
+	//   ceiling is unchanged from the flat sleep: t1 plus enough for a
+	//   loaded runner's scheduling and dnsmasq's own write of the line.
+	const (
+		t1             = 60 * time.Second
+		t1Slop         = 5 * time.Second
+		renewalCeiling = 75 * time.Second
+	)
+	bound := time.Now()
 
-	t.Logf("watching the server log for a renewal DHCPREPLY, up to %s (T1 is 60s)...", renewalCeiling)
-	deadline := time.Now().Add(renewalCeiling)
-	endReplies := startReplies
+	// The bind's own replies, and whatever else the exchange produces in
+	// the seconds after it, all land in the baseline -- that is the
+	// point of taking it here and not at `bound`.
+	select {
+	case <-ctx.Done():
+		t.Fatalf("context cancelled before the renewal window opened: %v", ctx.Err())
+	case <-time.After(t1 - t1Slop):
+	}
+	baseline := countDHCPv6Replies(t, fixture.DnsmasqLog(), v6)
+	atBind := startReplies
+	t.Logf("DHCPREPLYs for %s: %d at the bind, %d at %s — watching for one more until %s",
+		v6, atBind, baseline, t1-t1Slop, renewalCeiling)
+
+	deadline := bound.Add(renewalCeiling)
+	endReplies := baseline
 	for time.Now().Before(deadline) {
-		if endReplies = countDHCPv6Replies(t, fixture.DnsmasqLog(), v6); endReplies-startReplies >= 1 {
+		if endReplies = countDHCPv6Replies(t, fixture.DnsmasqLog(), v6); endReplies > baseline {
 			break
 		}
 		select {
 		case <-ctx.Done():
-			t.Fatalf("context cancelled before renewal window: %v", ctx.Err())
+			t.Fatalf("context cancelled inside the renewal window: %v", ctx.Err())
 		case <-time.After(time.Second):
 		}
 	}
-	t.Logf("DHCPREPLYs for %s: start=%d end=%d after %s", v6, startReplies, endReplies,
-		time.Until(deadline).Round(time.Second))
+	t.Logf("DHCPREPLYs for %s: baseline=%d end=%d at %s after the bind",
+		v6, baseline, endReplies, time.Since(bound).Round(time.Second))
 
 	// Read the address AFTER the reply is in hand, so the comparison is
 	// across the renewal rather than across an interval that happens to
@@ -576,8 +619,11 @@ func TestLeaseRenewIPv6_HonorsT1(t *testing.T) {
 	if after != v6 {
 		t.Errorf("IPv6 changed across renewal window: %s -> %s", v6, after)
 	}
-	if endReplies-startReplies < 1 {
-		t.Errorf("no renewal DHCPREPLY for %s within %s of the bind — T1 is 60s, so the v6 renewal timer never fired", v6, renewalCeiling)
+	if endReplies <= baseline {
+		t.Errorf("no DHCPREPLY for %s in the %s..%s window after the bind — T1 is %s, "+
+			"so the v6 renewal timer never fired (the server logged %d reply/replies before "+
+			"the window opened, and none inside it)",
+			v6, t1-t1Slop, renewalCeiling, t1, baseline)
 	}
 }
 
