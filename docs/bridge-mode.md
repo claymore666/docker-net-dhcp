@@ -2,8 +2,8 @@
 
 Bridge mode is `docker-net-dhcp`'s default. Unlike the parent-attached
 modes ([macvlan / ipvlan](parent-attached-modes.md)), bridge mode plugs
-container `veth`s into **a Linux bridge you maintain** — so it needs a
-small amount of one-time host setup, but works anywhere a bridge can be
+container `veth`s into **a Linux bridge you maintain**. It needs a small
+amount of one-time host setup, and it works anywhere a bridge can be
 bridged onto the LAN where the DHCP server lives.
 
 For the full option/observability/troubleshooting matrix see the
@@ -20,24 +20,24 @@ up to.
 !!! danger "The host's own address moves to the bridge"
     Once `eth0` is enslaved it must be left **address-less**, and DHCP
     has to run on the bridge instead. Applying this over SSH with the
-    NIC still configured — or with a typo in the bridge stanza — drops
-    the connection and does not give it back.
+    NIC still configured, or with a typo in the bridge stanza, drops the
+    connection and does not give it back.
 
     Have console or out-of-band access (IPMI, iDRAC, the hypervisor
     console) before you start. On Ubuntu, `sudo netplan try` gives you
     an automatic revert if you lose the session; the other stacks have
     no equivalent safety net.
 
-    The bridge normally inherits the NIC's MAC, but not on every
-    driver. If your DHCP server pins the host's address by MAC
-    reservation, the host may come back on a **different** address —
-    set the bridge MAC explicitly if that matters.
+    The bridge normally inherits the NIC's MAC, but not on every driver.
+    If your DHCP server pins the host's address by MAC reservation, the
+    host may come back on a **different** address. Set the bridge MAC
+    explicitly if that matters.
 
 ### Try it now (does not survive a reboot)
 
-These manual steps work on most Linux systems and are the fastest way
-to confirm the plugin does what you want. They are lost on the next
-reboot — make them permanent with one of the stanzas below.
+These manual steps work on most Linux systems and are the fastest way to
+confirm the plugin does what you want. They are lost on the next reboot.
+Make them permanent with one of the stanzas below.
 
 ```bash
 # Create the bridge
@@ -70,7 +70,7 @@ host. In every case the pattern is identical: the NIC carries **no**
 address and is listed as a bridge port, and the bridge is the thing
 that runs DHCP.
 
-Each recipe disables STP explicitly. That is not cosmetic here — see
+Each recipe disables STP explicitly. That is not cosmetic here. See
 [Leave STP off](#leave-stp-off-unless-you-need-it) below.
 
 #### Debian / ifupdown
@@ -79,11 +79,10 @@ Needs `bridge-utils` (`sudo apt install bridge-utils`).
 
 Note that `networking.service` runs `ifup -a` **synchronously**, so the
 boot blocks until the bridge's DHCP request completes or `dhclient`
-gives up — around a minute if the DHCP server is slow or absent.
-Measured at ~2 minutes to reach a settled state on a bridge whose
-lease was delayed. That is normal for this stack, not a fault; if a
-fast boot matters more than having the address ready at boot, the
-networkd or netplan recipes do not have this property.
+gives up, which is around a minute if the DHCP server is slow or absent.
+That delay is normal for this stack and is not a fault. If a fast boot
+matters more than having the address ready at boot, the networkd or
+netplan recipes do not have this property.
 
 ```ini
 # /etc/network/interfaces
@@ -128,7 +127,7 @@ sudo netplan apply
 
 #### systemd-networkd
 
-Three files — the bridge device, the port, and the bridge's own
+Three files: the bridge device, the port, and the bridge's own
 addressing:
 
 ```ini
@@ -164,8 +163,8 @@ ConfigureWithoutCarrier=yes
 `ConfigureWithoutCarrier=yes` matters at boot: a bridge with no port up
 yet has no carrier, and without it `networkd` can decline to start DHCP
 on the bridge at all. This is what `netplan` emits for the equivalent
-bridge, so it is the reference implementation's own answer rather than
-a workaround.
+bridge, so it is the reference implementation's own answer and not a
+workaround.
 
 ```bash
 sudo systemctl enable --now systemd-networkd
@@ -173,7 +172,7 @@ sudo systemctl enable --now systemd-networkd
 
 #### NetworkManager (nmcli)
 
-!!! warning "Not on Ubuntu — netplan owns ethernet there"
+!!! warning "Not on Ubuntu: netplan owns ethernet there"
     Ubuntu ships NetworkManager restricted to wireless devices:
 
     ```ini
@@ -186,8 +185,8 @@ sudo systemctl enable --now systemd-networkd
     fails with *"No suitable device found for this connection"* no
     matter how correct the profile is. Use the netplan recipe above on
     Ubuntu. This recipe is for distributions where NetworkManager
-    manages ethernet — Fedora, RHEL and derivatives, and Debian
-    installs that chose it.
+    manages ethernet: Fedora, RHEL and derivatives, and Debian installs
+    that chose it.
 
 The existing standalone profile for the NIC has to stop autoconnecting,
 or it will race the bridge for `eth0`. Find its name with
@@ -209,17 +208,17 @@ sudo nmcli con up my-bridge
 ### Leave STP off unless you need it
 
 With STP **enabled**, a bridge puts every newly added port through
-listening and learning states before it forwards — two forwarding
-delays, 30 seconds at the stock 15s setting. Container `veth`s are
-added at attach time, so a bridge with STP on **breaks DHCP for every
-container**: the client broadcasts into a port that is not forwarding
-yet, gets no answer, and the attach fails or falls back.
+listening and learning states before it forwards, which is two
+forwarding delays, 30 seconds at the stock 15s setting. Container
+`veth`s are added at attach time, so a bridge with STP on **breaks DHCP
+for every container**: the client broadcasts into a port that is not
+forwarding yet, gets no answer, and the attach fails or falls back.
 
 A bridge created with plain `ip link add ... type bridge` has STP off
 already, which is why the imperative recipe above works as written.
-Managed stacks are the risk — they apply their own default, and it is
-not always off. That is why every stanza above sets it explicitly
-rather than relying on one.
+Managed stacks are the risk. They apply their own default, and it is not
+always off. That is why every stanza above sets it explicitly instead of
+relying on a default.
 
 If containers only get addresses when you attach them slowly, or
 `leases_obtained` sits flat while `dhcp_timeouts` climbs, check STP
@@ -231,8 +230,8 @@ stp_state 0
 ```
 
 `stp_state 0` is what you want. Note that a non-zero `forward_delay` in
-the same output is harmless while STP is off — and that it is reported
-in **centiseconds**, so the stock 15 seconds reads as `1500`.
+the same output is harmless while STP is off, and that it is reported in
+**centiseconds**, so the stock 15 seconds reads as `1500`.
 
 ### Persist the firewall rule too
 
@@ -247,13 +246,13 @@ rule needs the distro's own persistence mechanism:
 | firewalld | `sudo firewall-cmd --permanent --direct --add-rule ipv4 filter FORWARD 0 -i my-bridge -j ACCEPT && sudo firewall-cmd --reload` |
 | ufw | set `DEFAULT_FORWARD_POLICY="ACCEPT"` in `/etc/default/ufw`, then `sudo ufw reload` |
 
-You only need this if the forwarding policy is `DROP` — check with
-`sudo iptables -S FORWARD | head -1`.
+You only need this if the forwarding policy is `DROP`. Check with `sudo
+iptables -S FORWARD | head -1`.
 
 ## 2. Create the network
 
 ```bash
-# On arm64 use the -arm64 tag — a network stores this exact reference
+# On arm64 use the -arm64 tag. A network stores this exact reference
 # as its driver, so it must name the plugin you installed.
 docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.9.0 \
   --ipam-driver null -o bridge=my-bridge my-dhcp-net
@@ -290,8 +289,8 @@ default via 10.255.0.123 dev my-bridge0
 ```
 
 Or in Docker Compose, against a network created out-of-band (the
-**recommended** approach — the network is shared across compose projects
-and survives `compose down`):
+**recommended** approach, because the network is shared across compose
+projects and survives `compose down`):
 
 ```yaml
 services:
@@ -308,7 +307,7 @@ networks:
 ```
 
 (The older `external:` block with a nested `name:` is deprecated and
-warns on current Compose — the two-key form above is the supported one.)
+warns on current Compose. The two-key form above is the supported one.)
 
 You can also have Compose manage the network itself (it is then deleted
 on `compose down`):
@@ -333,11 +332,12 @@ networks:
 
 Notes:
 
-- The container takes a little longer than usual to start — a DHCP lease
-  is obtained before it is created.
-- A persistent DHCP client renews the lease (and updates the container's
-  default gateway) for the life of the endpoint. **It runs separately
-  from the container.**
+- The container takes a little longer than usual to start, because a
+  DHCP lease is obtained before it is created.
+- The plugin renews the lease, and updates the container's default
+  gateway when the offered gateway changes, for the life of the
+  endpoint. The renewal runs inside the plugin process and never inside
+  the container.
 - Use `--mac-address` / `mac_address` for MAC-keyed reservations or to
   reuse an old lease; `--hostname` / `hostname` is sent as DHCP option 12
   for DHCP-DNS integration. Per-endpoint and per-container knobs are
@@ -345,6 +345,9 @@ Notes:
 
 ## See also
 
-- [Driver reference](reference.md) — all options, observability, troubleshooting
-- [macvlan / ipvlan modes](parent-attached-modes.md) — attach to a host NIC, no bridge
-- [How it works](internals.md) — the veth + DHCP-client mechanism
+- [Driver reference](reference.md) lists every option, the observability
+  surface and the troubleshooting steps.
+- [macvlan / ipvlan modes](parent-attached-modes.md) attach a container
+  to a host NIC without a bridge.
+- [How it works](internals.md) describes the veth pair and the DHCP
+  client behind both.
