@@ -8,7 +8,7 @@
 #
 # scripts/integration-shard.sh partitions the main integration suite by
 # measured duration, read from
-# test/integration/testdata/main-suite-durations.tsv. A test with no row
+# test/integration/testdata/suite-durations.tsv. A test with no row
 # is NOT dropped — it is costed at the mean — so the file going stale
 # never makes a shard incomplete. It makes the shards UNEVEN, and the
 # gate is max() over the shards, so uneven is the whole cost.
@@ -17,6 +17,7 @@
 # file was one run from 2026-08-02 and had drifted both ways at once:
 #
 #   - 18 of the 70 main-suite tests had no row and ran on a mean guess.
+#     (The population is BOTH suites since D41; see the header block below.)
 #     The three shards had drifted to 321.9/318.2/239.1s of test time and the
 #     longest job to 8m31, against a ~5-minute design.
 #   - 38 rows named tests that live in test/integration/harness/ rather
@@ -44,12 +45,21 @@
 # step, and the failure mode of a stale copy is that the gate goes green
 # over a population nobody partitions.
 #
-# WHAT IT DOES NOT COVER. TestFailure_* runs in its own unsharded job
-# and TestMain is not selectable, so neither is balanced and neither
-# belongs in the table — a row for one is caught by rule 2. Completeness
-# of the partition itself (every test in exactly one shard) is
-# scripts/test-integration-shard.sh's job, and is asserted independently
-# of this table.
+# BOTH SUITES ARE ASKED FOR, and that is a change (D41). TestFailure_*
+# used to run in one unsharded job, so it was balanced by nothing and a
+# row for one of its tests was a stray. The failure suite is sharded now,
+# so its four tests are part of the balanced population and a MISSING row
+# for one of them is the failure this gate exists for. The population is
+# therefore the union of what the partitioner places for `main` and for
+# `failure` — asked of it twice, not re-derived here, and not widened by
+# hand: a suite name this gate asks for that the partitioner does not
+# know refuses rather than contributing nothing.
+#
+# TestMain is still not selectable and still does not belong in the
+# table — a row for it is caught by rule 2. Completeness of the partition
+# itself (every test in exactly one shard of its own suite, and the two
+# suites partitioning the roster) is scripts/test-integration-shard.sh's
+# job, and is asserted independently of this table.
 #
 # A NOTE ON WHAT GOING GREEN MEANS. Once rule 1 holds, no test is ever
 # costed at the mean, so the mean stops being reachable at all. Rule 2
@@ -82,7 +92,7 @@ while [ $# -gt 0 ]; do
 done
 
 SUITE_DIR="$ROOT/test/integration"
-TABLE="$SUITE_DIR/testdata/main-suite-durations.tsv"
+TABLE="$SUITE_DIR/testdata/suite-durations.tsv"
 SHARDER="$ROOT/scripts/integration-shard.sh"
 
 cannot_see() {
@@ -98,11 +108,17 @@ cannot_see() {
 # is the whole set; it exits 2 rather than emitting an empty regex when
 # it finds no tests, which is the vacuity this gate would otherwise
 # inherit.
-if ! regex=$(bash "$SHARDER" 1 1 2>&1); then
-    cannot_see "$SHARDER 1 1 refused: $regex"
-fi
-population=$(printf '%s\n' "$regex" | sed -E 's/^\^\(//; s/\)\$$//' | tr '|' '\n' | grep -E '^Test[A-Za-z0-9_]+$' | sort -u)
-[ -n "$population" ] || cannot_see "$SHARDER 1 1 named no tests"
+population=""
+for suite in main failure; do
+    if ! regex=$(bash "$SHARDER" 1 1 "$suite" 2>&1); then
+        cannot_see "$SHARDER 1 1 $suite refused: $regex"
+    fi
+    part=$(printf '%s\n' "$regex" | sed -E 's/^\^\(//; s/\)\$$//' | tr '|' '\n' | grep -E '^Test[A-Za-z0-9_]+$' | sort -u)
+    [ -n "$part" ] || cannot_see "$SHARDER 1 1 $suite named no tests"
+    population=$(printf '%s\n%s\n' "$population" "$part")
+done
+population=$(printf '%s\n' "$population" | grep -E '^Test[A-Za-z0-9_]+$' | sort -u)
+[ -n "$population" ] || cannot_see "the partitioner named no tests for any suite"
 
 # Rule 3, before anything is compared: a row this loop cannot read is a
 # row the partitioner's awk would read as a zero, silently.
@@ -137,7 +153,7 @@ stray=$(comm -13 <(printf '%s\n' "$population") <(printf '%s\n' "$rows"))
 
 rc=0
 if [ -n "$missing" ]; then
-    echo "::error title=A main-suite test has no measured duration (#877)::these tests are" \
+    echo "::error title=A partitioned test has no measured duration (#877)::these tests are" \
          "partitioned but not costed, so each is charged the mean and the shards drift apart." \
          "Refresh $TABLE — the header says how." >&2
     printf '  %s\n' $missing >&2

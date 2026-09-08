@@ -66,6 +66,7 @@ you meant.
 | `PLUGIN_BUILD_DIR` | search `plugin/`, then `plugin-cover/` | Where `harness.BuiltPluginDir` looks for the rootfs the lane built. Leave unset in the lanes — the search already knows both. |
 | `ITEST_LOG_DIR` | `logs` | Where the Makefile tees the run's output (#378). |
 | `SHARD` / `OF` | — | Required by `make integration-test-shard`; 1-based shard and total. |
+| `SUITE` | `main` | Which suite `integration-test-shard` partitions: `main` or `failure`. CI runs `OF=9` for main and `OF=2` for failure (D41). |
 
 **`INTEGRATION_PLUGIN_REF` is the one to get right.** The harness
 deliberately does not install or enable anything — that is a global

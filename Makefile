@@ -6,6 +6,10 @@ BINARY = bin/net-dhcp
 
 PLUGIN_COVER_TAG ?= golang-cover
 
+# Which integration suite `integration-test-shard` partitions (D41):
+# `main` or `failure`. See scripts/integration-shard.sh.
+SUITE ?= main
+
 # Build identity (O-4). VERSION is `dev` for every build that is not a
 # release: release.yml overrides it with the tag. COMMIT is derived here
 # rather than in the Dockerfile because the build context is a tarball
@@ -253,23 +257,26 @@ integration-test:
 # not declare is refused by the daemon outright, which is how their
 # absence was found. The ceiling stays 20m: it was already sized for the
 # shipped cadence, so it was never the tight side of this budget.
-# One shard of the main suite (#381). SHARD is 1-based, OF is the total.
+# One shard of one suite (#381, D41). SHARD is 1-based, OF is the total,
+# SUITE is `main` (the default) or `failure`.
 #
 # The partition comes from scripts/integration-shard.sh, which balances
 # by measured duration and — the property that actually matters —
-# guarantees every main-suite test lands in exactly one shard.
-# scripts/test-integration-shard.sh asserts that, because a test in no
+# guarantees every test of the named suite lands in exactly one shard,
+# and that the two suites partition the roster between them.
+# scripts/test-integration-shard.sh asserts both, because a test in no
 # shard is silently never run and the gate goes green having tested
 # less. The WEIGHTS it balances by are kept honest separately:
 # scripts/check-durations-table.sh goes red when
-# test/integration/testdata/main-suite-durations.tsv stops naming
+# test/integration/testdata/suite-durations.tsv stops naming
 # exactly the tests the partitioner places (#877).
 #
-# CI runs OF=5 (see .github/workflows/integration.yml's matrix, which
-# carries the measurement that chose it); any OF works here.
+# CI runs OF=9 for main and OF=2 for failure (see
+# .github/workflows/integration.yml's matrix, and the derivation beside
+# the numbers in the durations table); any OF works here.
 integration-test-shard:
 	@if [ -z "$(SHARD)" ] || [ -z "$(OF)" ]; then \
-		echo "usage: make integration-test-shard SHARD=<1-based> OF=<total>"; \
+		echo "usage: make integration-test-shard SHARD=<1-based> OF=<total> [SUITE=main|failure]"; \
 		exit 2; \
 	fi
 	@if [ "$$(id -u)" -ne 0 ]; then \
@@ -277,11 +284,11 @@ integration-test-shard:
 		exit 1; \
 	fi
 	@mkdir -p $(ITEST_LOG_DIR)
-	@sel=$$(bash scripts/integration-shard.sh $(SHARD) $(OF)) || exit 1; \
-	 echo "==> shard $(SHARD)/$(OF): $$(echo "$$sel" | tr '|' '\n' | wc -l) test(s)"; \
-	 echo "==> test output: $(ITEST_LOG_DIR)/main-shard$(SHARD).log"; \
+	@sel=$$(bash scripts/integration-shard.sh $(SHARD) $(OF) $(SUITE)) || exit 1; \
+	 echo "==> $(SUITE) shard $(SHARD)/$(OF): $$(echo "$$sel" | tr '|' '\n' | wc -l) test(s)"; \
+	 echo "==> test output: $(ITEST_LOG_DIR)/$(SUITE)-shard$(SHARD).log"; \
 	 bash -o pipefail -c "go test -v -tags integration -count=1 -timeout 20m \
-	     -run '$$sel' ./test/integration/ 2>&1 | tee $(ITEST_LOG_DIR)/main-shard$(SHARD).log"
+	     -run '$$sel' ./test/integration/ 2>&1 | tee $(ITEST_LOG_DIR)/$(SUITE)-shard$(SHARD).log"
 	# The harness package, unfiltered, in EVERY shard.
 	#
 	# Three of its test files carry the integration build tag, and today

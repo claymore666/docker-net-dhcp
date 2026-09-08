@@ -680,9 +680,10 @@ the `vX.Y.Z` milestone (the workflow leans on this for the
 
    Coverage shares a concurrency group with the release PR's own
    integration run, so it normally starts once integration finishes —
-   five to eight minutes in since the main suite went to five shards
-   (#877; measured 2026-08-28 over the eight most recent successful
-   `integration.yml` runs). Do not trust that range from this page —
+   and since D41 resharded the lane to nine main shards plus two failure
+   shards behind one shared build, that is minutes rather than the five
+   to eight it was under the five-shard layout (#877, D41). Do not trust
+   any range from this page —
    `gh run list --workflow integration.yml --status success` re-derives
    it in one command. A `coverage` check still showing nothing well past
    it is worth the next paragraph.
