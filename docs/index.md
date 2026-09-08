@@ -1,199 +1,197 @@
 # docker-net-dhcp
 
-A Docker network plugin that allocates container IP addresses from an
-**existing DHCP server** — your router, a Fritz!Box, dnsmasq, anything —
-instead of Docker's self-managed IPAM pools. Containers come up on your
-LAN as first-class hosts, addressable like any other machine. Bridge,
-macvlan, and ipvlan attachment modes.
+A Docker network plugin that gives every container an address from the
+DHCP server your LAN already runs — your router, a Fritz!Box, dnsmasq —
+instead of from Docker's own IPAM, over `bridge`, `macvlan` or `ipvlan`,
+for IPv4 and IPv6. The DHCP exchange runs inside the plugin on the
+project's own engine, the
+[dhcp-golib](https://github.com/claymore666/dhcp-golib) library: there is
+no external DHCP client to install and no client process per container.
 
 !!! note "This documentation is the 2.0 line's"
-    This branch is published as pre-release `v2.0.0-rc1`. The plugin
-    leases through the project's own in-tree DHCP client library
-    instead of an external client process, for both address families:
-    `ipv6=true` gives an endpoint a DHCPv6 lease alongside its DHCPv4
-    one, at parity with the 1.x line (#911). Pick a v1.x version from
-    the selector for the 1.x manual.
+    These pages describe the 2.0 build. Its first pre-release is
+    `v2.0.0-rc1`; substitute that tag for the version in the snippets
+    below to install it. Pick a v1.x version from the selector for the
+    1.x manual.
 
-!!! info "This is a maintained fork"
-    A maintained fork of
-    [`devplayer0/docker-net-dhcp`](https://github.com/devplayer0/docker-net-dhcp)
-    (quiet since 2021, no longer builds on current Docker). This fork
-    modernises the toolchain (Go 1.27, docker SDK v28, current Alpine),
-    adds **macvlan** and **ipvlan** modes, fixes the daemon-restart
-    deadlock and a state data-race, and gates every PR on a live
-    integration suite (all three modes, recovery, failure injection)
-    with a coverage ratchet and supply-chain gates on release.
-    The maintained image lives at `ghcr.io/claymore666/docker-net-dhcp`.
+## Requirements
 
-!!! danger "⚠️ BREAKING CHANGE IN v1.5.0 — DO THIS FIRST ⚠️"
-
-    ```bash
-    sudo mkdir -p /var/lib/net-dhcp
-    ```
-
-    v1.5.0 is the first release that **bind-mounts its state directory
-    from the host** (so leases survive an upgrade), and **Docker will
-    not create a missing bind source.** Run the line above before
-    `docker plugin install`, on every host, new install or upgrade.
-
-    **If you skip it**, `docker plugin install` fails at start-up and
-    leaves the plugin **installed but disabled** — and re-running the
-    exact same install command then answers only
-    `plugin ... already exists`, which says nothing about the cause.
-    Recover with:
-
-    ```bash
-    sudo mkdir -p /var/lib/net-dhcp
-    docker plugin enable ghcr.io/claymore666/docker-net-dhcp:v1.9.0
-    ```
-
-    On arm64, enable the `-arm64` plugin instead — that is the one
-    that was installed, and the bare reference names nothing on that
-    host.
-
-    Nothing is lost or corrupted. Full detail:
-    [the reference](reference.md#install-upgrade-uninstall).
+- **Docker Engine.** Every change is tested against the engine the
+  integration suite runs on, **29.7.2** today. That is the version this
+  build is measured on, not a floor — the minimum has never been measured
+  (#670), so the measured number is the honest one to publish.
+- **Plugin interface `docker.networkdriver/1.0`**, which is what the
+  plugin manifest declares. The Docker API version is negotiated with the
+  daemon rather than pinned, so no API floor is claimed here either.
+- **One directory, created once per host, before `docker plugin install`**
+  (the line is in the quick start below). Docker will not create a missing
+  bind source, so without it the install fails at start-up and leaves the
+  plugin **installed but disabled**, after which the identical command
+  answers only `plugin ... already exists` and names nothing. Recovery:
+  [the reference](reference.md#install-upgrade-uninstall).
+- **Architecture.** `linux/amd64` on the bare tag, `linux/arm64` on the
+  `-arm64` tag — a Docker plugin cannot be installed from a
+  multi-architecture manifest list, so the tag is how the architecture is
+  chosen, in **every** snippet that names the image and not only the
+  install line. Why, in full:
+  [Install, upgrade, uninstall](reference.md#install-upgrade-uninstall).
+- **Privileges.** The manifest asks for `host` networking, the host PID
+  namespace, the Docker socket, a bind mount of the state directory, a
+  read-only bind mount of `/var/run/docker`, and `CAP_NET_ADMIN`,
+  `CAP_NET_RAW`, `CAP_SYS_ADMIN`, `CAP_SYS_PTRACE`. `docker plugin
+  install` prompts for the set; what each is for is in
+  [SECURITY.md](https://github.com/claymore666/docker-net-dhcp/blob/dev/SECURITY.md#scope--what-this-plugin-is).
+- **Mode constraints.** `bridge` expects a host bridge you maintain;
+  `macvlan` and `ipvlan` attach to a host NIC and change nothing on the
+  host, at the cost of the kernel rule that a child cannot reach its own
+  host's address. Both in
+  [macvlan / ipvlan modes](parent-attached-modes.md).
 
 ## Quick start
 
-Install the plugin:
-
 ```bash
-# One-time, and REQUIRED — see the warning above. Docker will not
-# create this directory for you, and `plugin install` fails at
-# start-up without it.
+# Once per host, before the install — see Requirements above.
 sudo mkdir -p /var/lib/net-dhcp
 
 # amd64
 docker plugin install ghcr.io/claymore666/docker-net-dhcp:v1.9.0
-
-# arm64 (v1.7.0 onward) — the architecture is in the tag, see below
+# arm64
 docker plugin install ghcr.io/claymore666/docker-net-dhcp:v1.9.0-arm64
 ```
 
-It requests `host` networking, the host PID namespace, the Docker
-socket, a bind mount of the state directory above, a read-only bind
-mount of `/var/run/docker` (v1.6.0+), and
-`CAP_NET_ADMIN`/`CAP_NET_RAW`/`CAP_SYS_ADMIN`/`CAP_SYS_PTRACE` — grant
-them to proceed. `CAP_NET_RAW` is requested from 2.0 onward,
-so an upgrade onto it asks you to approve the privilege set again.
-(If you hit `invalid rootfs in image configuration`, upgrade Docker.)
-
-Create a bridge-mode network and run a container on it (assumes you
-already have a host bridge `my-bridge` on your LAN — see
-[Bridge mode](bridge-mode.md) for that one-time setup):
+One network, created once. `macvlan` needs only a host NIC; `bridge`
+wants a bridge you bring yourself ([Bridge mode](bridge-mode.md)):
 
 ```bash
-# On arm64 use the -arm64 tag here too — a network stores this exact
-# reference as its driver, so it must name the plugin you installed.
 docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.9.0 \
-  --ipam-driver null -o bridge=my-bridge my-dhcp-net
+  --ipam-driver null -o mode=macvlan -o parent=eth0 lan-dhcp
 
-docker run --rm -ti --network my-dhcp-net alpine ip address show
+docker run --rm -ti --network lan-dhcp alpine ip address show
 ```
 
-The `null` IPAM driver is **mandatory** — it stops Docker handing out
-addresses that would collide with the real LAN.
+`--ipam-driver null` is **mandatory**: it stops Docker handing out
+addresses that would collide with the real LAN. On arm64 the `-arm64`
+tag goes in this line too — a network records the tagged reference as its
+driver. Add `-o ipv6=true` for a DHCPv6 lease beside the v4 one.
 
-## Attachment modes
+After that, plain Compose. No static addresses, no sidecar, nothing per
+container:
 
-Selected by the `mode` driver option:
+```yaml
+services:
+  app:
+    image: nginx
+    networks: [lan-dhcp]
 
-| mode | parent | host changes required |
-| ---- | ------ | --------------------- |
-| `bridge` (default) | a Linux bridge you maintain (`-o bridge=<name>`) | yes — you bring the bridge |
-| `macvlan` | a host NIC (`-o parent=<iface>`) | none |
-| `ipvlan` (L2) | a host NIC (`-o parent=<iface>`) | none |
+networks:
+  lan-dhcp:
+    external: true
+```
 
-macvlan/ipvlan attach directly to a host NIC without a bridge — the
-right pick when you don't want to reconfigure the host's networking.
+## Why this one
+
+- **The address comes from the LAN's own server**, so the router's lease
+  table, its MAC reservations and — with `-o register_dns=true` — its DNS
+  see the container as one more host on the network. The alternative is a
+  hand-assigned address in every Compose file.
+- **The lease is held, not just taken.** Renewal, rebind, NAK and expiry
+  run in the plugin, one client per endpoint, and the lifecycle is visible
+  on [the health endpoint](reference.md#pluginhealth) — no external DHCP
+  client to install, supervise or reap.
+- **IPv6 is the same one line.** `-o ipv6=true` adds a DHCPv6 lease with
+  its own timers, its own counters and a DUID that survives a restart.
+- **A restart keeps the address.** In `bridge` and `macvlan` the MAC is
+  carried across `docker restart`, so a server-side reservation still
+  matches and the old address is re-requested; a plugin restart or upgrade
+  re-adopts running containers rather than letting their leases lapse
+  ([how](reference.md#restart-stability-mac-and-ip)).
+- **No host plumbing per container.** `macvlan` and `ipvlan` attach to a
+  NIC that is already there: no bridge to build, no route to add, nothing
+  on the host to undo afterwards.
+
+What is planned, and what this project has decided not to do, is on the
+[roadmap](roadmap.md).
+
+## Origin and licence
+
+This began as a fork of
+[`devplayer0/docker-net-dhcp`](https://github.com/devplayer0/docker-net-dhcp)
+(quiet since 2021); since 2.0 it is its own product, with its own DHCP
+engine.
+
+GPL-3.0 — see
+[LICENSE.md](https://github.com/claymore666/docker-net-dhcp/blob/dev/LICENSE.md).
+The upstream project is GPL-3.0 and this derivative stays under the same
+licence.
 
 ## Documentation
 
-- **[Driver reference](reference.md)** — **the manual.** Every option,
-  setting, and counter, plus lease behaviour, observability, Compose
-  usage, and troubleshooting. Start at
-  [At a glance](reference.md#at-a-glance) for the one-screen list of
-  everything you can set.
-- **[Bridge mode](bridge-mode.md)** — host bridge setup + end-to-end
-  walkthrough.
+- **[Driver reference](reference.md)** — the manual: every option,
+  setting and counter, install and upgrade, lease behaviour,
+  observability, Compose usage, troubleshooting.
+- **[Bridge mode](bridge-mode.md)** — the one-time host bridge setup.
 - **[macvlan / ipvlan modes](parent-attached-modes.md)** — choosing
-  between the two, quick start, and the mode-specific constraints.
-- **[How it works](internals.md)** — the mechanism, for contributors:
-  the veth + DHCP-client flow, and how state survives a restart.
-- **[Roadmap](roadmap.md)** — where the project is going over the next
-  year, and what it deliberately will not do.
-- **[Verifying releases](verifying-releases.md)** — signatures,
+  between them, and their constraints.
+- **[Verifying releases](verifying-releases.md)** — signatures, SLSA
   provenance, SBOMs, and rebuilding the binaries yourself.
+- **[How it works](internals.md)** — the mechanism, for contributors.
+- **[Roadmap](roadmap.md)** — where this is going, and what it will not do.
+- **[Contributing](contributing.md)** — what an acceptable pull request
+  looks like.
 - **[Release runbook](release-runbook.md)** — maintainer-facing publish
   procedure.
 
-## Images & releases
+These pages are **versioned**: use the selector in the header to read the
+documentation matching the plugin version you have installed.
 
-This fork publishes semver-tagged plugin images on GHCR
-(`ghcr.io/claymore666/docker-net-dhcp:vX.Y.Z`) and mirrors them to
-Docker Hub (`claymore666/net-dhcp`). Pin a version (`:vX.Y.Z`) for
-reproducibility, or track `:latest`.
+## Images and releases
 
-Published builds: **`linux/amd64`** on the bare tag and
+Images go to GHCR (`ghcr.io/claymore666/docker-net-dhcp:vX.Y.Z`, primary)
+and are mirrored to Docker Hub (`claymore666/net-dhcp:vX.Y.Z`). Pin a
+version for reproducibility.
+
+Published builds are **`linux/amd64`** on the bare tag and
 **`linux/arm64`** as `:vX.Y.Z-arm64` / `:latest-arm64` (v1.7.0 onward).
-The architecture is in the tag because a Docker *plugin* cannot be
+The architecture lives in the tag because a Docker *plugin* cannot be
 installed from a multi-architecture manifest list at all: the daemon
 reads a plugin's privileges before pulling it, its manifest handler
-matches single manifests only, and an index therefore fails with `did
-not find plugin config for specified reference` on every architecture —
-with no `--platform` to steer it. The `-arm64` tag replaces the bare
-one in **every** snippet that names the image, including
-`docker network create -d`: a network stores the tagged reference as
-its driver, so a bare tag there names a plugin the host does not have.
+matches single manifests only, and an index therefore fails with `did not
+find plugin config for specified reference` on every architecture — with
+no `--platform` to steer it. The `-arm64` tag replaces the bare one in
+**every** snippet that names the image, including
+`docker network create -d`: a network records the tagged reference as its
+driver, so a bare tag there names a plugin the host does not have.
 
 - [GHCR package](https://github.com/claymore666/docker-net-dhcp/pkgs/container/docker-net-dhcp)
 - [GitHub Releases](https://github.com/claymore666/docker-net-dhcp/releases)
-  — per-release notes, credits, and signed artifacts.
-
-This documentation is **versioned**: use the selector in the header to
-read the docs matching the plugin version you have installed.
+  — per-release notes, credits and signed artifacts.
 
 ## Verifying releases
 
-Every release (v1.1.0 onward) is signed and attested via Sigstore. The
-published plugin image is signed with cosign (keyless) on **both**
-registries and ships an SBOM; the release-artifact `checksums.txt`
-manifest is cosign-signed so one signature covers every attached file.
-**SLSA build provenance is attested for the GHCR image only** — the
-Docker Hub mirror is signed but not provenance-attested, so verify
-provenance against the `ghcr.io` reference.
-The full, copy-pasteable procedure lives in
-**[Verifying releases](verifying-releases.md)**, and every
-[GitHub Release](https://github.com/claymore666/docker-net-dhcp/releases)
-links to it. Both commands need **cosign v3 or newer** — v2 cannot read the
-Sigstore bundle format the release signs with, and fails in a way that looks
-like a broken signature. In brief (replace `VERSION`):
+Every release from v1.1.0 is cosign-signed (keyless) on both registries
+and ships an SBOM; **SLSA build provenance is attested for the GHCR image
+only**, so verify provenance against the `ghcr.io` reference. Both
+commands need **cosign v3 or newer** — v2 cannot read the bundle format
+the release signs with and fails in a way that looks like a broken
+signature. Replace `VERSION`:
 
 ```bash
-# image signature
 cosign verify ghcr.io/claymore666/docker-net-dhcp:VERSION \
   --certificate-identity-regexp '^https://github.com/claymore666/docker-net-dhcp/.github/workflows/release.yml@' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 
-# SLSA build provenance (image + release artifacts)
 gh attestation verify oci://ghcr.io/claymore666/docker-net-dhcp:VERSION --repo claymore666/docker-net-dhcp
 ```
+
+The whole procedure, including rebuilding the binaries yourself, is in
+[Verifying releases](verifying-releases.md).
 
 ## Project & community
 
 - **Contributing:** open a pull request against the `dev` branch — see
-  the [Contributing section in the README](https://github.com/claymore666/docker-net-dhcp#contributing).
+  [Contributing](contributing.md).
 - **Security policy / vulnerability reporting:**
-  [SECURITY.md](https://github.com/claymore666/docker-net-dhcp/blob/dev/SECURITY.md)
-  (do not open public issues for vulnerabilities).
+  [SECURITY.md](https://github.com/claymore666/docker-net-dhcp/blob/dev/SECURITY.md).
+  Do **not** open a public issue for a vulnerability.
 - **Bug reports & feature requests:** the
   [issue forms](https://github.com/claymore666/docker-net-dhcp/issues/new/choose).
-
-## License
-
-GPL-3.0 — see
-[LICENSE.md](https://github.com/claymore666/docker-net-dhcp/blob/dev/LICENSE.md).
-This is a fork of
-[`devplayer0/docker-net-dhcp`](https://github.com/devplayer0/docker-net-dhcp),
-which is GPL-3.0; as a derivative work it stays under the same license.

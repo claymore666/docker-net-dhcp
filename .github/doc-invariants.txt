@@ -53,7 +53,7 @@ state-dir-bind-source
     file: docs/index.md
     file: docs/reference.md
     marker: sudo mkdir -p /var/lib/net-dhcp
-    marker: DO THIS FIRST
+    marker: installed but disabled
     v1.5.0 was the first release to bind-mount STATE_DIR from the host
     so leases survive an upgrade, and Docker will not create a missing
     bind source. The operator must create the directory BEFORE
@@ -70,6 +70,14 @@ state-dir-bind-source
     landed, not when the instruction expires. It does not expire. It
     was kept by hand during the v1.6.0 documentation review; this
     entry is what replaces the reviewer having to know.
-    Both markers are required in all three files. The heading alone
-    could survive while the command is dropped, and the command alone
-    could survive without the warning that makes anyone read it.
+    Both markers are required in all three files. The command alone
+    could survive without the consequence that makes anyone read it,
+    and the consequence alone could survive while the command is
+    dropped.
+    The second marker was `DO THIS FIRST` — the heading of the warning
+    box the three pages carried — until 2.0's landing pages replaced
+    that box with one Requirements bullet and a comment on the install
+    line. The box is gone from README.md and docs/index.md and stays in
+    docs/reference.md; the failure it warns about is unchanged, so the
+    marker moved to the words that state it, which all three pages
+    carry. Re-pointed, never dropped.

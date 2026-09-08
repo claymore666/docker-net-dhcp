@@ -123,7 +123,8 @@ every architecture, including the one you are on. Substitute the
 `-arm64` tag in **every** reference below, not only the install line:
 `docker network create -d` records the tagged reference as the
 network's driver, and a bare tag there names a plugin that was never
-installed. The README covers the daemon-side reason in full.
+installed. The daemon-side reason is spelled out under
+[Images and releases](index.md#images-and-releases).
 
 **Install** (interactive privilege grant, or `--grant-all-permissions`
 for unattended):
