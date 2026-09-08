@@ -27,8 +27,9 @@ TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
 pass=0; fail=0
-ok() { echo "ok   $1"; pass=$((pass + 1)); }
-no() { echo "FAIL $1"; fail=$((fail + 1)); }
+last=1
+ok() { echo "ok   $1"; pass=$((pass + 1)); last=1; }
+no() { echo "FAIL $1"; fail=$((fail + 1)); last=0; }
 
 # run <label> <want-exit> <gate-path> <workflows-or-empty> [grep...]
 run() {
@@ -71,6 +72,18 @@ treecopy() { # treecopy <name> -> echoes the path to a fresh tracked-tree copy
 run "the shipping tree covers the roster from both lanes" 0 "$GATE" "" \
     "integration.yml schedules 11 shard(s) covering all 95 test(s) exactly once" \
     "integration-hosted.yml schedules 11 shard(s) covering all 95 test(s) exactly once"
+
+# Every mutant below builds its input by EDITING this same tree, so a red control
+# makes their verdicts describe the mutation on top of a tree that already fails.
+# Measured 2026-09-08 driving mutant 1 through the lane: the control fired and
+# took seven collateral cases down with it, and the one true line was ninth on
+# screen. Nothing is suppressed -- the cases still run and still report -- but
+# the reader is told which line to act on.
+if [ "$last" -eq 0 ]; then
+    echo "NOTE: the shipping-tree control above is RED. The mutant cases that follow edit"
+    echo "      THIS tree, so their verdicts are collateral, not independent findings."
+    echo "      Fix the schedule the control names; then read this corpus again."
+fi
 
 # --- MUTANT 1: the count moves, the entry does not ------------------------
 d=$(wfcopy m1)
