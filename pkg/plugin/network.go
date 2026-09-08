@@ -511,8 +511,8 @@ func (p *Plugin) CreateNetwork(r CreateNetworkRequest) error {
 // containers when the network is removed, so without this prune they
 // linger as ghost entries in /Plugin.Health.active_endpoints. Stop is
 // safe to call against a manager whose underlying netns is gone — it
-// just unblocks the dhcpcd-events loop and returns; dhcpcd itself may
-// have already self-exited because its netns vanished.
+// just unblocks the event loop and returns; the client itself may have
+// already stopped because its netns vanished.
 func (p *Plugin) DeleteNetwork(r DeleteNetworkRequest) error {
 	if err := deleteOptions(r.NetworkID); err != nil {
 		log.WithError(err).WithField("network", r.NetworkID).
@@ -561,8 +561,8 @@ func vethPairNames(id string) (string, string) {
 // libnetwork-supplied Interface.Address (CIDR form, e.g. set by
 // `docker run --ip=192.168.0.50`). Returns "" when the field is
 // absent; an ErrIPAM-wrapped error when set but malformed or v6.
-// The bare-IP form is what dhcpcd's `request` directive (DHCP option
-// 50) wants; the mask is supplied by the DHCP ACK, not the operator.
+// The bare-IP form is what DHCP option 50 carries; the mask is
+// supplied by the DHCP ACK, not the operator.
 //
 // Note: docker-engine itself rejects `--ip` for null-IPAM networks,
 // so this path only fires when the operator has wired up a non-null
@@ -615,8 +615,8 @@ func resolveExplicitV4(r CreateEndpointRequest) (string, error) {
 // was supplied. The v6 counterpart of resolveExplicitV4, minus the
 // driver-opt channel (there is no `ip6` driver-opt — #213 scope is
 // `--ip6` and the tombstone v6 hint). libnetwork passes AddressIPv6 in
-// CIDR form; we hand the bare address to dhcpcd's `ia_na / ADDR`
-// preferred-address request (#213).
+// CIDR form; we hand the bare address over as the DHCPv6 preferred
+// address -- the IA Address option inside the Solicit's IA_NA (#213).
 func resolveExplicitV6(r CreateEndpointRequest) (string, error) {
 	if r.Interface == nil || r.Interface.AddressIPv6 == "" {
 		return "", nil
@@ -640,8 +640,8 @@ func resolveExplicitV6(r CreateEndpointRequest) (string, error) {
 // in r.Options. Bare-IP form here, since that's how operators type
 // it on the command line; netmask comes from DHCP regardless. There
 // is no `ip6` driver-opt channel: a requested v6 address arrives via
-// `--ip6` (Interface.AddressIPv6) and is honoured through dhcpcd's
-// `ia_na <iaid> / ADDR` preferred address (see resolveExplicitV6, #213).
+// `--ip6` (Interface.AddressIPv6) and is honoured as the DHCPv6
+// preferred address (see resolveExplicitV6, #213).
 func parseDriverOptIP(options map[string]interface{}) (string, error) {
 	raw, ok := options["ip"]
 	if !ok {
@@ -869,8 +869,9 @@ func (p *Plugin) netOptionsRaw(ctx context.Context, id string) (DHCPNetworkOptio
 }
 
 // CreateEndpoint creates the per-endpoint host-side network plumbing
-// (veth pair in bridge mode, macvlan child in macvlan mode), runs dhcpcd
-// once to acquire an initial lease, and stashes the result for Join.
+// (veth pair in bridge mode, macvlan child in macvlan mode), runs a
+// one-shot DHCP client to acquire an initial lease, and stashes the
+// result for Join.
 // Docker moves the link into the container's netns when it acts on our
 // Join response.
 func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (CreateEndpointResponse, error) {
@@ -887,7 +888,7 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 		return res, err
 	}
 	// `docker run --ip6` arrives as Interface.AddressIPv6. Since #152
-	// pins the dhcpcd IA_NA we can now request it as the DHCPv6
+	// pins the IA_NA identity we can now request it as the DHCPv6
 	// preferred address, so validate it here and ride it into the
 	// one-shot below (mirrors explicitV4 / RequestedIP for v4) (#213).
 	explicitV6, err := resolveExplicitV6(r)
@@ -1112,7 +1113,7 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 				FQDN:        opts.fqdnMode(),
 				ClientID:    clientID,
 				VendorClass: opts.VendorClass,
-				// Pin the dhcpcd DUID-LL/IAID off the container veth's
+				// Pin the DUID-LL/IAID off the container veth's
 				// MAC so this one-shot and the persistent client (same
 				// link, same MAC, post-move) share one identity and the
 				// server returns a single binding (#152).
@@ -1423,7 +1424,7 @@ func (p *Plugin) DeleteEndpoint(ctx context.Context, r DeleteEndpointRequest) er
 // dhcpStaticRoutes converts DHCP option-121 classless static routes
 // (dhcp.Route, captured at CreateEndpoint) into libnetwork
 // StaticRoute responses. An empty Gateway means the route is on-link
-// (dhcpcd reported the gateway as 0.0.0.0); otherwise it is a next-hop
+// (the route's router is 0.0.0.0, wire.Route.OnLink); otherwise it is a next-hop
 // route. Destinations are already canonical CIDRs from the parser.
 func dhcpStaticRoutes(routes []dhcp.Route) []*StaticRoute {
 	out := make([]*StaticRoute, 0, len(routes))
@@ -1612,12 +1613,12 @@ func parseIfnameOption(options map[string]interface{}) (string, error) {
 	}
 	// The kernel is NOT the guard here. Measured: it accepts "-cfoo",
 	// "-c", "-" and ".x" as link names and refuses only embedded
-	// whitespace -- and this name becomes DstName, the container link is
-	// renamed to it, and the name is read back and placed LAST in the
-	// dhcpcd argv, where getopt permutation re-reads a flag-shaped
-	// trailing positional as an option. Apply the same rule the client
-	// side has always applied, so the request fails at CreateEndpoint
-	// rather than surviving to the argv (#706).
+	// whitespace -- and this name becomes DstName and the container link
+	// is renamed to it. Until 2.0 the name also reached a dhcpcd argv,
+	// where getopt permutation re-read a flag-shaped trailing positional
+	// as an option (#706); there is no argv now, and dhcp.ValidIfaceName
+	// states what the rule is kept on instead. Apply it here so the
+	// request fails at CreateEndpoint rather than deeper in (#705).
 	if !dhcp.ValidIfaceName(s) {
 		return "", fmt.Errorf("invalid interface_name %q: must start with a letter or digit and contain only letters, digits, '.', '-' and '_': %w", s, util.ErrIPAM)
 	}
@@ -1795,11 +1796,11 @@ func (p *Plugin) Join(ctx context.Context, r JoinRequest) (JoinResponse, error) 
 		// A recovery-registered manager for this endpoint was still in
 		// the registry (Join with no preceding Leave to this plugin
 		// instance — plugin restart racing a container restart). Stop
-		// it so its dhcpcd doesn't run untracked forever and collide
+		// it so its client doesn't run untracked forever and collide
 		// with the new client on the same interface. Asynchronously:
-		// Stop blocks on the dhcpcd release cycle and Join shouldn't.
+		// Stop blocks on the client unwinding and Join shouldn't.
 		//
-		// Tracked on p.displacedStops so Close can wait for the release
+		// Tracked on p.displacedStops so Close can wait for that stop
 		// to finish rather than let process exit cut it short (#338).
 		// Add() runs HERE, synchronously — adding from inside the
 		// goroutine would let Close observe an empty group and return
@@ -1968,7 +1969,7 @@ func (p *Plugin) Leave(ctx context.Context, r LeaveRequest) error {
 	// the read here is sequenced after every renew that's going to
 	// happen — but go through ipMu anyway so the race detector doesn't
 	// have to reason through `select`. Doing this on the error path too
-	// means a wedged-dhcpcd shutdown still produces a tombstone with
+	// means a wedged-client shutdown still produces a tombstone with
 	// the latest known lease (W-4) — otherwise DeleteEndpoint would
 	// lay down a tombstone with the stale initial-DISCOVER IPs.
 	v4Addr, v6Addr := manager.lastIPs()

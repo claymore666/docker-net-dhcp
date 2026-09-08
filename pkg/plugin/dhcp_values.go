@@ -26,8 +26,8 @@ const (
 	// 576 is the IPv4 minimum reassembly buffer (RFC 791) and the
 	// smallest value any real deployment uses. Below it, throughput is
 	// destroyed and path MTU discovery black-holes, re-applied on every
-	// renewal — measured: dhcpcd exported 68 unchanged and the kernel
-	// accepted it.
+	// renewal — measured under 1.x: the client exported a server-supplied
+	// 68 unchanged and the kernel accepted it.
 	minPropagatedMTU = 576
 
 	// maxPropagatedMTU is the largest value the kernel's own MTU field

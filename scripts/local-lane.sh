@@ -151,7 +151,6 @@ LANE=(
   "scheduled shard coverage|-|bash scripts/check-shard-coverage.sh"
   "golden fixture keying|go|bash scripts/check-golden-fixture-name-keyed.sh"
   "test/policy-gates split|-|bash scripts/check-test-job-purity.sh"
-  "library copy vs manifest|-|bash scripts/check-dhcp-golib-copy.sh"
   # The lane checks itself: if test.yaml gains a gate this file does
   # not list, a local run says so instead of quietly covering less.
   "local-lane coverage|-|bash scripts/check-local-lane.sh"

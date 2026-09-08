@@ -183,20 +183,13 @@ d=$(tree untracked); prose "$d" "<!-- ${MK}: pool-runners=16 -->"
 echo "a $P of 99" > "$d/UNTRACKED.md"
 check "an untracked file is outside the domain, and says so by staying green" 0 "$d" "1 marker(s) agree"
 
-# internal/dhcp-golib/ is a verbatim copy of another repository (D21):
-# it cannot carry a marker or an exemption, because check-dhcp-golib-copy.sh
-# goes red the moment anything edits it. Both halves are driven -- the
-# same sentence is red outside that tree and green inside it -- so the
-# exclusion is a measured boundary and not an unchecked assumption.
-d=$(tree libcopy); prose "$d" "<!-- ${MK}: pool-runners=16 -->"
-mkdir -p "$d/internal/dhcp-golib/runtime"
-echo "// A $P of three addresses" > "$d/internal/dhcp-golib/runtime/x_test.go"
-git -C "$d" add -A
-check "the pinned library copy is outside the domain" 0 "$d" "1 marker(s) agree"
+# NO PATH IS OUTSIDE THE DOMAIN. Every tracked file is read, however
+# deep, so an unmarked pool sentence is a finding wherever it is written.
+d=$(tree anydepth); prose "$d" "<!-- ${MK}: pool-runners=16 -->"
 mkdir -p "$d/internal/other"
 echo "// A $P of three addresses" > "$d/internal/other/x_test.go"
 git -C "$d" add -A
-check "CONTROL: the same sentence one directory over is red" 1 "$d" "internal/other/x_test.go"
+check "an unmarked pool sentence deep in the tree is red" 1 "$d" "internal/other/x_test.go"
 
 # --- the derivation, driven ---------------------------------------------
 #

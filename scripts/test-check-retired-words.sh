@@ -178,6 +178,28 @@ build_repo "$R"
 plant "$R" pkg/plugin/thing.go '// This once exec would have run dhcpcd.'
 expect "planted dhcpcd in a Go source is NOT caught (control: domains are per word)" 0 "$(run "$R")"
 
+# --- outcome 1: udhcpc, the third word --------------------------------
+#
+# Added 2026-09-08 with the D34 import. It is driven in all three
+# directions the other two are: it is CAUGHT in a living document, its
+# 1.x history in RELEASE_NOTES.md is PERMITTED (proved by the clean run
+# above, which the fixture's v1.9.0 section does not exercise, so it is
+# planted here), and its domain is documents, so the same plant in a Go
+# source is NOT its business.
+build_repo "$R"
+plant "$R" README.md 'The plugin spawns udhcpc on the link.'
+expect "planted udhcpc in a living document is caught" 1 "$(run "$R")"
+expect_out "the udhcpc failure names the remedy, not only the word" \
+    "this branch runs no external DHCP client"
+
+build_repo "$R"
+plant "$R" RELEASE_NOTES.md 'This release still shipped udhcpc, and saying so is the record.'
+expect "udhcpc below the first 1.x heading is permitted" 0 "$(run "$R")"
+
+build_repo "$R"
+plant "$R" pkg/plugin/thing.go '// This once exec would have run udhcpc.'
+expect "planted udhcpc in a Go source is NOT caught (control: domains are per word)" 0 "$(run "$R")"
+
 # --- outcome 1: case and word boundaries ------------------------------
 build_repo "$R"
 plant "$R" README.md 'DHCPCD is shouted here.'
