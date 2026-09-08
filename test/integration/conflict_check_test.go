@@ -59,6 +59,7 @@ import (
 // ceiling on waiting, not a measurement of anything.
 const conflictWait = 45 * time.Second
 
+// ci-pool-exempt: a DHCP address pool, not the CI runner pool
 // The pool is TWO addresses wide on purpose. The squatter sits on the
 // first, so there is exactly one other address for the server to fall
 // back to after the DECLINE — which makes "the container came up on a

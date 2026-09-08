@@ -142,6 +142,12 @@ LANE=(
   "release refusal order|-|bash scripts/check-release-refusal-order.sh"
   "allowlist parity|-|bash scripts/check-allowlist-parity.sh"
   "shard-balance table|-|bash scripts/check-durations-table.sh"
+  # The pool size and the per-run job count, checked against their
+  # derivations rather than against each other (#879). --live is NOT
+  # passed here: it needs a token that can read the runners API, which
+  # the lane's does not have, and a gate that refuses on a credential
+  # the lane cannot supply would be red every run.
+  "pool facts|-|bash scripts/check-pool-facts.sh"
   "golden fixture keying|go|bash scripts/check-golden-fixture-name-keyed.sh"
   "test/policy-gates split|-|bash scripts/check-test-job-purity.sh"
   "library copy vs manifest|-|bash scripts/check-dhcp-golib-copy.sh"
