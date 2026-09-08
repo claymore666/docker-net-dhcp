@@ -51,18 +51,24 @@
 # check in this tree can see. Stated so nobody reads more into a green
 # run than it earned.
 #
+# It also judges a binary compiled from this tree, and not the one
+# inside the published image. That is the same reach the copy check it
+# replaces had -- a test.yaml step over the checkout -- and the reason
+# it is not extended into the integration lane is written down rather
+# than left to be rediscovered: the suite and build jobs there check out
+# `inputs.ref`, so a step added to either is a poisonable step in a job
+# holding the default branch's cache scope. CodeQL says so, and the same
+# alert is already open on that dispatch path. The image's own claim is
+# checked by the health document cell and by reproducible-build.yml.
+#
 # USAGE
 #
 #   check-library-pin.sh [--tree <dir>] --binary <path> [--binary <path>]...
 #
 # IT BUILDS NOTHING. Whoever calls it supplies the binary: the local
 # lane and test.yaml compile cmd/net-dhcp into a temporary directory
-# first, and the integration lane passes the binary the run actually
-# installed. Keeping the build outside is not only separation of
-# concerns -- a checking script that also compiles is a build step, and
-# a build step in a job that has checked out an attacker-chosen ref is
-# CodeQL's actions/cache-poisoning/poisonable-step, which is an OPEN
-# alert on this workflow's dispatch path and not one to add to.
+# first. A checking script that also compiles is a build step, and
+# where it runs decides whether that matters -- see WHAT IT CANNOT DO.
 set -uo pipefail
 
 MODULE="github.com/claymore666/dhcp-golib"
