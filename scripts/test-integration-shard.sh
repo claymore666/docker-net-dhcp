@@ -255,14 +255,22 @@ fi
 # rather than two unrelated numbers. Two matrices in two files is two
 # places a shard count can move, and only one of them would be noticed.
 # So the (suite, index, total) triples are extracted from both and
-# required to be the same set -- and the extraction refuses when either
+# required to be the same LIST -- and the extraction refuses when either
 # side yields nothing, because two empty sets are equal.
+#
+# `sort`, not `sort -u`. The first version deduplicated both sides, so a
+# matrix entry duplicated in BOTH files compared equal to itself and the
+# case was green while a shard went unscheduled; review measured exactly
+# that (drop main-5, duplicate main-4). Whether the union still covers
+# the roster is scripts/check-shard-coverage.sh's question, not this
+# case's -- this case's job is only that the two lanes say the same
+# thing -- but it must not be the place a duplicate hides.
 WF="$(dirname "$HERE")/.github/workflows"
 if [ -d "$WF" ]; then
     pool_triples=$(sed -n 's/.*integration-test-shard SHARD=\([0-9]*\) OF=\([0-9]*\) SUITE=\([a-z]*\).*/\3-\1-of-\2/p' \
-                   "$WF/integration.yml" | LC_ALL=C sort -u)
+                   "$WF/integration.yml" | LC_ALL=C sort)
     hosted_triples=$(grep -o '"[a-z]*-[0-9]*-of-[0-9]*"' "$WF/integration-hosted.yml" \
-                     | tr -d '"' | LC_ALL=C sort -u)
+                     | tr -d '"' | LC_ALL=C sort)
     if [ -z "$pool_triples" ]; then
         no "no shard triple could be read out of integration.yml — this case would compare two empty sets"
     elif [ -z "$hosted_triples" ]; then

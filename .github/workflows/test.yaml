@@ -322,6 +322,17 @@ jobs:
       - name: Pool-facts check
         run: bash scripts/check-pool-facts.sh
 
+      # Everything about the partition was checked except what the lane
+      # does with it. The shard count is a literal repeated eleven times
+      # in integration.yml and eleven more in integration-hosted.yml, and
+      # a reshard is one sed per file: bumping OF=9 to OF=10 without
+      # adding a tenth entry left nine tests scheduled by nobody while
+      # every gate above stayed green (measured in review of #921). This
+      # one asks the partitioner what each SCHEDULED triple selects and
+      # requires the union to be the roster, exactly once, per lane.
+      - name: Scheduled-shard coverage check
+        run: bash scripts/check-shard-coverage.sh
+
       # Every driver-option key the code parses must be documented in
       # docs/reference.md — an undocumented option turns CI red (#132).
       - name: Option-docs drift check

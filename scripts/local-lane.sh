@@ -148,6 +148,7 @@ LANE=(
   # the lane's does not have, and a gate that refuses on a credential
   # the lane cannot supply would be red every run.
   "pool facts|-|bash scripts/check-pool-facts.sh"
+  "scheduled shard coverage|-|bash scripts/check-shard-coverage.sh"
   "golden fixture keying|go|bash scripts/check-golden-fixture-name-keyed.sh"
   "test/policy-gates split|-|bash scripts/check-test-job-purity.sh"
   "library copy vs manifest|-|bash scripts/check-dhcp-golib-copy.sh"
