@@ -1779,8 +1779,9 @@ func (m *dhcpManager) Start(ctx context.Context) (err error) {
 // is going away.
 //
 // This is the shutdown every caller but Leave wants: plugin Close stops
-// every live manager so their dhcpcds exit cleanly rather than being
-// orphaned by process exit, and the containers behind them keep running.
+// every live manager so their persistent clients close their sockets and
+// their goroutines return rather than being cut off mid-exchange by
+// process exit, and the containers behind them keep running.
 // Same for a manager displaced by a newer one for the same endpoint, and
 // for managers cleaned up when a network is removed.
 //
