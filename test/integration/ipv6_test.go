@@ -111,6 +111,19 @@ func countDHCPv6Replies(t *testing.T, logPath, addr string, alsoMatch ...string)
 	return harness.CountDHCPv6Binds(string(data), append([]string{addr}, alsoMatch...)...)
 }
 
+// lastDHCPv6ReplyAt returns the server's own stamp on the last
+// DHCPREPLY for addr, and whether one was readable. Same file, same
+// lines and the same matcher as countDHCPv6Replies -- it reads the
+// clock off the evidence the caller is already counting.
+func lastDHCPv6ReplyAt(t *testing.T, logPath, addr string) (time.Time, bool) {
+	t.Helper()
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read dnsmasq log: %v", err)
+	}
+	return harness.LastDHCPv6BindAt(string(data), time.Now(), addr)
+}
+
 // countLogToken counts lines of the dnsmasq log carrying every needle.
 //
 // Unlike countDHCPv6Replies it is not restricted to DHCPREPLY, because
@@ -457,9 +470,55 @@ func TestTombstoneRestart_PreservesIPv6(t *testing.T) {
 
 // TestLeaseRenewIPv6_HonorsT1: the v6 sibling of
 // TestLeaseRenew_HonorsT1 -- the direct test for "DHCPv6 renewal is
-// less battle-tested" (#103). dnsmasq derives T1 = lease/2 = 60s; we
-// idle 75s and assert the address survived and a renewal DHCPREPLY
-// landed on top of the bind's.
+// less battle-tested" (#103).
+//
+// WHAT IT PROVES, and it is two things, both on evidence from outside
+// the plugin: a renewal DHCPREPLY for this address reaches the SERVER's
+// own log after T1, and the address the container holds is the same one
+// on the far side of it. A counter would prove the plugin meant to
+// renew; the server's log is what proves the renewal happened.
+//
+// THE WAIT IS THE SERVER'S T1 AND IT IS NOT SHORTENED (D41). dnsmasq
+// derives DHCPv6 T1 as lease/2 = 60s from the fixture's 2m lease and
+// offers no way to advertise it independently -- the v4 sibling's
+// WithRenewTimes trick has no DHCPv6 counterpart in this server, and
+// shortening the LEASE to move T1 is the one remedy this work is not
+// allowed to take. So the 60s stands.
+//
+// WHAT THE FLAT SLEEP DID NOT PROVE, and this is a finding rather than
+// a tidy-up. The old shape sampled the reply count immediately after
+// the bind, slept a flat 75s, sampled again and required growth. First
+// attempt at replacing that sleep with a poll returned in THREE
+// seconds, green: MEASURED on run 34203647801, job 101988277652 --
+// "DHCPREPLYs for fd00:...::92: start=1 end=2" with 1m12s of the
+// ceiling unused. A second DHCPREPLY for the address lands within
+// seconds of the bind, so the old assertion was satisfied by that reply
+// and not by the renewal. The 75s wait was buying nothing; a 5s wait
+// would have passed it just as reliably. The test claimed T1 and
+// measured the bind.
+//
+// SO THE BASELINE MOVED TO THE BOUNDARY. The count is now sampled again
+// a slop below T1, and the growth that satisfies the test has to appear
+// AFTER that sample -- in the window where T1 sits. The bind's own
+// burst is inside the baseline by construction, and the test cannot
+// pass without having waited that long: there is no arrangement of
+// bind-time replies that gets it to green early.
+//
+// AND THE WINDOW IS ANCHORED ON THE SERVER'S CLOCK. The first version
+// of this remedy anchored on time.Now() after the address surfaced,
+// which is T1's start plus an unknown bind delay; review measured only
+// four to five seconds between the baseline and the observed renewal,
+// so a slow bind would have folded the renewal into the baseline and
+// reddened a lease that was renewed on time. The anchor is now the
+// stamp dnsmasq wrote on the bind's own DHCPREPLY, read out of the log
+// this test already reads. The full reasoning, and what each shape of
+// red means, is in the block beside the constants below.
+//
+// That makes it strictly stronger than the version it replaces, and
+// faster: MEASURED 90.03s before (median of runs 34059724566 /
+// 34060966627 / 34064155841) against 73.85s after (median of runs
+// 34204413442 / 34205039347 / 34206023827), because what went is the
+// idling AFTER the renewal was already in the log.
 func TestLeaseRenewIPv6_HonorsT1(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Second)
 	defer cancel()
@@ -527,21 +586,113 @@ func TestLeaseRenewIPv6_HonorsT1(t *testing.T) {
 	}
 	startReplies := countDHCPv6Replies(t, fixture.DnsmasqLog(), v6)
 
-	t.Log("waiting 75s for the DHCPv6 renewal cycle...")
-	select {
-	case <-ctx.Done():
-		t.Fatalf("context cancelled before renewal window: %v", ctx.Err())
-	case <-time.After(75 * time.Second):
+	// The three constants, and each is derived rather than chosen.
+	//
+	//   t1 is dnsmasq's, not ours: it advertises lease/2 for DHCPv6 and
+	//   the fixture's lease is 2m. There is no option to advertise it
+	//   independently -- the v4 sibling's WithRenewTimes has no v6
+	//   counterpart in this server -- and moving it would mean
+	//   shortening the lease, which is the one thing this is not
+	//   allowed to do.
+	//
+	//   t1Slop is how far BEFORE t1 the baseline is taken. It exists so
+	//   a renewal that lands exactly on t1 is not swallowed by the
+	//   sample meant to exclude the bind.
+	//
+	//   ceiling is unchanged from the flat sleep: t1 plus enough for a
+	//   loaded runner's scheduling and dnsmasq's own write of the line.
+	const (
+		t1             = 60 * time.Second
+		t1Slop         = 5 * time.Second
+		renewalCeiling = 75 * time.Second
+	)
+
+	// WHAT THE WINDOW IS ANCHORED ON, AND WHY IT IS NOT time.Now().
+	//
+	// T1 is the SERVER's timer: dnsmasq starts counting when it sends
+	// the reply. `time.Now()` here is the moment the address became
+	// visible to `ip -6 addr` inside the container, which is that reply
+	// plus the DAD wait, the netlink hop and one poll interval -- an
+	// unknown few seconds LATER. Anchoring on it spends those seconds
+	// out of the five between the baseline (t1-t1Slop) and the renewal
+	// (t1), and review measured what was left: renewals observed at
+	// 59s, 60s and 60s after the client-side anchor against a baseline
+	// at 55s. A slower bind folds the renewal into the baseline and the
+	// test goes red although T1 was honoured exactly.
+	//
+	// So the anchor is the stamp dnsmasq itself wrote on the bind's
+	// DHCPREPLY -- already in the log this test reads for its verdict,
+	// so this is a re-derivation of the anchor and not a new
+	// instrument. Both clocks are this host's. The margin becomes a
+	// fixed five seconds that no bind delay can eat.
+	//
+	// If the stamp cannot be read the anchor falls back to the client
+	// side, which is exactly the previous behaviour -- not a weakening,
+	// and printed either way so a reader knows which window a red is
+	// about.
+	//
+	// WHAT A RED MEANS, in each shape:
+	//   baseline == end        no DHCPREPLY for this address in
+	//                          [t1-t1Slop, ceiling]. Either the renewal
+	//                          timer never fired, or it fired outside
+	//                          the window. The printed counts separate
+	//                          the two: "N at the bind" equal to the
+	//                          baseline means nothing arrived early.
+	//   address changed        the renewal produced a DIFFERENT
+	//                          address, which is a lease not renewed
+	//                          but replaced.
+	clientAnchor := time.Now()
+	anchor, anchorName := clientAnchor, "the address surfacing (server stamp unreadable)"
+	if serverBind, ok := lastDHCPv6ReplyAt(t, fixture.DnsmasqLog(), v6); ok {
+		anchor, anchorName = serverBind, "the server's own DHCPREPLY stamp"
+		t.Logf("anchor: %s, %s before the address surfaced",
+			anchorName, clientAnchor.Sub(serverBind).Round(time.Second))
+	} else {
+		t.Logf("anchor: %s", anchorName)
 	}
 
+	// The bind's own replies, and whatever else the exchange produces in
+	// the seconds after it, all land in the baseline -- that is the
+	// point of taking it at t1-t1Slop and not at the anchor.
+	if wait := time.Until(anchor.Add(t1 - t1Slop)); wait > 0 {
+		select {
+		case <-ctx.Done():
+			t.Fatalf("context cancelled before the renewal window opened: %v", ctx.Err())
+		case <-time.After(wait):
+		}
+	}
+	baseline := countDHCPv6Replies(t, fixture.DnsmasqLog(), v6)
+	atBind := startReplies
+	t.Logf("DHCPREPLYs for %s: %d at the bind, %d at %s after %s — watching for one more until %s",
+		v6, atBind, baseline, t1-t1Slop, anchorName, renewalCeiling)
+
+	deadline := anchor.Add(renewalCeiling)
+	endReplies := baseline
+	for time.Now().Before(deadline) {
+		if endReplies = countDHCPv6Replies(t, fixture.DnsmasqLog(), v6); endReplies > baseline {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("context cancelled inside the renewal window: %v", ctx.Err())
+		case <-time.After(time.Second):
+		}
+	}
+	t.Logf("DHCPREPLYs for %s: baseline=%d end=%d at %s after %s",
+		v6, baseline, endReplies, time.Since(anchor).Round(time.Second), anchorName)
+
+	// Read the address AFTER the reply is in hand, so the comparison is
+	// across the renewal rather than across an interval that happens to
+	// contain one.
 	after := linkGlobalV6(t, ctx, id, 5*time.Second)
 	if after != v6 {
 		t.Errorf("IPv6 changed across renewal window: %s -> %s", v6, after)
 	}
-	endReplies := countDHCPv6Replies(t, fixture.DnsmasqLog(), v6)
-	t.Logf("DHCPREPLYs for %s: start=%d end=%d", v6, startReplies, endReplies)
-	if endReplies-startReplies < 1 {
-		t.Errorf("no renewal DHCPREPLY for %s after crossing T1 — the v6 renewal timer never fired", v6)
+	if endReplies <= baseline {
+		t.Errorf("no DHCPREPLY for %s in the %s..%s window after %s — T1 is %s, "+
+			"so the v6 renewal timer never fired (the server logged %d reply/replies before "+
+			"the window opened, and none inside it)",
+			v6, t1-t1Slop, renewalCeiling, anchorName, t1, baseline)
 	}
 }
 

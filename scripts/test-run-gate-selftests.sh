@@ -86,6 +86,29 @@ else
     failures=$((failures + 1))
 fi
 
+# A WORKER THAT DIED WROTE NO EXIT STATUS (D41).
+#
+# Since the execution became a bounded worker pool, a subject's verdict
+# reaches the parent through a file rather than through `$?`. That adds
+# a state the serial version could not have: the file is ABSENT. It is
+# absent exactly when the worker did not live to write it -- OOM-killed,
+# SIGKILLed, the container reaped -- which is to say in the cases where
+# something went most wrong. Read as a pass, those cases are a suite
+# that silently did not run, which is the hole #542 exists to close,
+# rebuilt one level down.
+#
+# Driven, not asserted: the fixture kills its own worker with SIGKILL,
+# so no `.rc` is written for it and the runner must still call it a
+# failure. The passing directory above is the preservation control --
+# the same runner, subjects that DO write their status, exit 0 -- so
+# this case cannot be satisfied by a runner that fails everything.
+mkdir -p "$TMP/reaped"
+mk "$TMP/reaped/test-a.sh" "exit 0"
+mk "$TMP/reaped/test-b.sh" "kill -9 \$PPID"
+check "a worker killed before it wrote its status is a failure, not a pass" \
+    1 "$TMP/reaped" "1 gate self-test(s) failed"
+check "and the reaped test is the one named" 1 "$TMP/reaped" "test-b.sh"
+
 # Delegation: a test that declares an owning job is skipped here, but
 # only if a workflow actually names it. "Delegated to nowhere" is the
 # way this mechanism would rebuild the hole it exists to close.

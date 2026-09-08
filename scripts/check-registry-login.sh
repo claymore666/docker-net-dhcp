@@ -10,6 +10,7 @@
 # the whole runner pool, and when it is spent `make plugin` dies fifteen
 # seconds in with `toomanyrequests`. No test binary runs. The suite job
 # goes red, the aggregate check goes red, and it looks exactly like a
+# ci-pool-exempt: a historical shard count from run 31939915811
 # sharded test failure — on run 31939915811 two of four suite jobs died
 # this way while the other two passed, and the tree under test was fine.
 #

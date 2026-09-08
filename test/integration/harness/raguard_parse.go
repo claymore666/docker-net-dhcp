@@ -3,7 +3,10 @@
 
 package harness
 
-import "strings"
+import (
+	"strings"
+	"time"
+)
 
 // The #875 observer reads two things out of the container's own `ip`
 // output. Both parsers live here, as pure functions, for one reason:
@@ -126,4 +129,66 @@ func CountDHCPv6Binds(log string, needles ...string) int {
 		}
 	}
 	return count
+}
+
+// dnsmasqStamp is the fixed-width prefix dnsmasq writes on every line
+// under --log-facility=- : "Aug 28 13:57:39". Syslog's format, so it
+// carries no year and no zone, which is why LastDHCPv6BindAt takes the
+// reference time rather than calling time.Now() itself.
+const dnsmasqStamp = "Jan _2 15:04:05"
+
+// LastDHCPv6BindAt returns the moment the SERVER stamped on the last
+// DHCPREPLY line matching every needle, and whether such a line was
+// found with a readable stamp.
+//
+// WHY A TEST WANTS THE SERVER'S CLOCK. A renewal timer is the server's:
+// dnsmasq starts T1 when it sends the reply, not when the client's
+// address becomes visible to `ip -6 addr`. A test that anchors its
+// window on the address surfacing is anchored some unknown delay LATER
+// than the timer it is measuring, and spends that delay out of its own
+// margin. The stamp is already in the evidence the caller reads, so
+// reading it is a re-derivation of the anchor, not a new instrument.
+//
+// Both clocks are the same host's -- dnsmasq runs in the fixture beside
+// the test -- so the value is directly comparable to time.Now().
+//
+// Resolution is one second and the stamp carries no year, so `ref`
+// supplies the year and the result is rolled back one year if that
+// would put it in the future (the 31 December boundary). A line whose
+// stamp cannot be parsed is reported as not found rather than as the
+// zero time: an unreadable clock must not read as "long ago", which
+// would make every window trivially satisfied.
+func LastDHCPv6BindAt(log string, ref time.Time, needles ...string) (time.Time, bool) {
+	lowered := make([]string, 0, len(needles))
+	for _, n := range needles {
+		lowered = append(lowered, strings.ToLower(n))
+	}
+	var found time.Time
+	ok := false
+	for _, line := range strings.Split(log, "\n") {
+		l := strings.ToLower(line)
+		if !strings.Contains(l, "dhcpreply") {
+			continue
+		}
+		all := true
+		for _, n := range lowered {
+			if !strings.Contains(l, n) {
+				all = false
+				break
+			}
+		}
+		if !all || len(line) < len(dnsmasqStamp) {
+			continue
+		}
+		ts, err := time.ParseInLocation(dnsmasqStamp, line[:len(dnsmasqStamp)], ref.Location())
+		if err != nil {
+			continue
+		}
+		ts = ts.AddDate(ref.Year(), 0, 0)
+		if ts.After(ref.Add(24 * time.Hour)) {
+			ts = ts.AddDate(-1, 0, 0)
+		}
+		found, ok = ts, true
+	}
+	return found, ok
 }

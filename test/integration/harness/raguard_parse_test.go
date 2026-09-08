@@ -3,7 +3,10 @@
 
 package harness
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 // Every fixture string below is VERBATIM output, captured either from
 // alpine:3.20 (the image the suite runs containers in) or from the
@@ -165,5 +168,98 @@ func TestCountDHCPv6Binds_IsCaseInsensitiveOnBothSides(t *testing.T) {
 func TestCountDHCPv6Binds_SubstringMatchingIsTheDocumentedBound(t *testing.T) {
 	if got := CountDHCPv6Binds(ciBindMacvlan, "fd00:6470:6863::9"); got != 1 {
 		t.Errorf("documented bound (substring match): got %d, want 1", got)
+	}
+}
+
+// LastDHCPv6BindAt exists so the renewal test can anchor its window on
+// the SERVER's clock instead of on the moment the address surfaces to
+// `ip -6 addr`. Every case below runs against the verbatim CI lines
+// above, for the reason the block comment on them gives: the anchor
+// decides what the window measures, so its parser is driven against the
+// real rendering rather than a reconstruction.
+func TestLastDHCPv6BindAt_ReadsTheServersOwnStamp(t *testing.T) {
+	ref := time.Date(2026, time.September, 8, 12, 0, 0, 0, time.Local)
+
+	got, ok := LastDHCPv6BindAt(ciBindMacvlan, ref, "fd00:6470:6863::91")
+	if !ok {
+		t.Fatal("a real DHCPREPLY line was not read")
+	}
+	want := time.Date(2026, time.August, 28, 13, 57, 33, 0, time.Local)
+	if !got.Equal(want) {
+		t.Errorf("stamp: got %s, want %s", got, want)
+	}
+}
+
+// The LAST match, not the first: a shared fixture log accumulates every
+// test's traffic, and the bind this test is anchored on is the newest
+// one for the address.
+func TestLastDHCPv6BindAt_TakesTheLastMatch(t *testing.T) {
+	ref := time.Date(2026, time.September, 8, 12, 0, 0, 0, time.Local)
+	earlier := `Aug 28 13:40:01 dnsmasq-dhcp[6947]: 1111111 DHCPREPLY(dh-itest-dhcp) fd00:6470:6863::91 00:03:00:01:26:54:5f:ae:24:20`
+
+	got, ok := LastDHCPv6BindAt(earlier+"\n"+ciBindMacvlan, ref, "fd00:6470:6863::91")
+	if !ok {
+		t.Fatal("no line read")
+	}
+	if got.Minute() != 57 {
+		t.Errorf("took the earlier line: got %s, want the 13:57:33 one", got)
+	}
+}
+
+// An unreadable clock must report NOT FOUND, never the zero time. The
+// zero time is decades in the past, so a caller that anchored on it
+// would find every window already satisfied — a check with one possible
+// verdict, dressed as evidence.
+func TestLastDHCPv6BindAt_AnUnparseableStampIsNotFound(t *testing.T) {
+	ref := time.Date(2026, time.September, 8, 12, 0, 0, 0, time.Local)
+	noStamp := `dnsmasq-dhcp[6947]: 4883247 DHCPREPLY(dh-itest-dhcp) fd00:6470:6863::91 00:03:00:01:26:54:5f:ae:24:20`
+
+	if got, ok := LastDHCPv6BindAt(noStamp, ref, "fd00:6470:6863::91"); ok {
+		t.Errorf("an unstamped line was accepted as an anchor at %s", got)
+	}
+	if _, ok := LastDHCPv6BindAt(ciSolicit, ref, "IAID=1605248032"); ok {
+		t.Error("a non-DHCPREPLY line was accepted as a bind")
+	}
+	if _, ok := LastDHCPv6BindAt("", ref, "fd00:6470:6863::91"); ok {
+		t.Error("an empty log produced an anchor")
+	}
+}
+
+// The stamp carries no year. Reading a 31 December line on 1 January
+// must not place the bind eleven months in the FUTURE, which would make
+// the window unreachable and the test red for a calendar reason.
+func TestLastDHCPv6BindAt_RollsBackOverNewYear(t *testing.T) {
+	ref := time.Date(2027, time.January, 1, 0, 0, 30, 0, time.Local)
+	line := `Dec 31 23:59:58 dnsmasq-dhcp[6947]: 4883247 DHCPREPLY(dh-itest-dhcp) fd00:6470:6863::91 00:03:00:01:26:54:5f:ae:24:20`
+
+	got, ok := LastDHCPv6BindAt(line, ref, "fd00:6470:6863::91")
+	if !ok {
+		t.Fatal("no line read")
+	}
+	if got.Year() != 2026 {
+		t.Errorf("year: got %d, want 2026 (the stamp is 32 seconds before the reference)", got.Year())
+	}
+	if got.After(ref) {
+		t.Errorf("the anchor is in the future: %s after %s", got, ref)
+	}
+}
+
+// Same scoping as CountDHCPv6Binds: a reply for the same address from a
+// different client is a different container's bind, and anchoring on it
+// would start the window at somebody else's lease.
+func TestLastDHCPv6BindAt_ADifferentMACIsNotTheAnchor(t *testing.T) {
+	ref := time.Date(2026, time.September, 8, 12, 0, 0, 0, time.Local)
+	other := `Aug 28 14:10:00 dnsmasq-dhcp[6947]: 1111111 DHCPREPLY(dh-itest-dhcp) fd00:6470:6863::91 00:03:00:01:aa:bb:cc:dd:ee:ff`
+	log := ciBindMacvlan + "\n" + other
+
+	if _, ok := LastDHCPv6BindAt(log, ref, "fd00:6470:6863::91"); !ok {
+		t.Fatal("precondition: the address alone must match")
+	}
+	got, ok := LastDHCPv6BindAt(log, ref, "fd00:6470:6863::91", "26:54:5f:ae:24:20")
+	if !ok {
+		t.Fatal("scoped to my own client: no line read")
+	}
+	if got.Minute() != 57 {
+		t.Errorf("anchored on another client's reply: got %s, want the 13:57:33 one", got)
 	}
 }

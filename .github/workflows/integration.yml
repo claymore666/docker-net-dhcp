@@ -21,19 +21,43 @@ name: Integration
 # is the whole reason a comment is the wrong place to keep a count.
 # Read it from the API, not from a comment.
 #
-# JOB TOPOLOGY (#375). The two suites used to run as sequential steps in
-# one job — ~10:38 then ~8:45, a ~20:20 gate. Nothing couples them: they
-# are separate `go test` invocations, each standing up its own fixture
-# in its own TestMain. They now run as concurrent jobs on their own
+# JOB TOPOLOGY (#375, D41). The two suites used to run as sequential
+# steps in one job — ~10:38 then ~8:45, a ~20:20 gate. Nothing couples
+# them: they are separate `go test` invocations, each standing up its own
+# fixture in its own TestMain. They run as concurrent jobs on their own
 # runners, so the gate is max() over them rather than the sum.
 #
-#   gate            decide once whether the suites are needed at all
-#   main-1..5-suite \  one `go test` each, own runner, own :integration
-#   failure-suite   /  plugin build (~60s, duplicated but parallel)
-#   integration     aggregator — the required check
+#   gate               decide once whether the suites are needed at all
+#   build              build the plugin ONCE and publish it as an
+#                      artifact; hosted, no pool slot
+#   main-1..9-suite \   one `go test` each, own runner, INSTALLING the
+#   failure-1..2    /   artifact rather than building its own copy
+#   integration        aggregator — the required check
 #
-# The main suite is split five ways (#381, #468, #877); the count lives
-# in the matrix below, next to the measurement that justifies it.
+# THE BUILD IS ONE JOB NOW (#396, D41). Every suite job used to run
+# `make plugin` itself: MEASURED 2026-09-06 in run 34064155841, 82-90s
+# per job, six times, for six byte-identical images. It bought nothing —
+# the jobs do not share a Docker daemon, so the duplication was not even
+# a cache miss, it was six cold builds of one tree — and it cost six
+# Docker Hub pulls of the same two base images against a per-address
+# quota the whole pool shares (#562). The build now happens once, on a
+# hosted runner, and the suite jobs install what it published.
+#
+# WHAT THAT MOVES AND WHAT IT DOES NOT. It does not move the critical
+# path by itself: the build leaves each suite job and reappears in front
+# of them, and hosted builds it in about half the time the pool did. What
+# it buys is BUDGET — ~85s of every suite job's wall clock — which is
+# what makes a shard count that clears five minutes affordable at all.
+#
+# Suite jobs no longer build, so nothing in them can produce a DIFFERENT
+# plugin from the one the run is about. That is asserted rather than
+# assumed: the build job derives the commit ONCE, exports it as a job
+# output, and every suite job requires the RUNNING plugin to report that
+# commit before a test executes.
+#
+# The main suite is split nine ways and the failure suite two (#381,
+# #468, #877, D41); the counts live in the matrix below, next to the
+# measurement that justifies them.
 #
 # The aggregator is named `integration` ON PURPOSE. That is the literal
 # required-status context on both `dev` and `main`, so this topology
@@ -117,14 +141,14 @@ on:
 #
 # This paragraph used to end "the dose is also smaller: #296 saw three
 # privileged jobs overlap, this is two". That stopped being true when
-# #468 made it four, and #877 makes it SIX. The dose argument is retired
-# rather than renumbered, because it was never the load-bearing one:
-# what makes concurrent privileged jobs safe here is that #296's three
-# shared one bare-metal host and these six share nothing — one job per
-# ephemeral container, each with its own nested Docker daemon and its
-# own fixture. That property does not degrade with the count. What does
-# degrade is pool capacity, and capacity shows up as queueing, not as
-# flaking.
+# #468 made it four, #877 made it six, and D41 makes it ELEVEN. The dose
+# argument is retired rather than renumbered, because it was never the
+# load-bearing one: what makes concurrent privileged jobs safe here is
+# that #296's three shared one bare-metal host and these eleven share
+# nothing — one job per ephemeral container, each with its own nested
+# Docker daemon and its own fixture. That property does not degrade with
+# the count. What does degrade is pool capacity, and capacity shows up as
+# queueing, not as flaking.
 #
 # Coverage shares this group deliberately. coverage.yml is not
 # manual-only — it also runs on `pull_request` into main, i.e. on the
@@ -134,16 +158,14 @@ on:
 #
 # The cost is one INTEGRATION GATE of extra wall clock, once per release
 # — that is the operand, not the coverage run: serialising costs the
-# shorter of the two, and the gate is the shorter. MEASURED 2026-08-28
-# from the jobs API, gate = max over a run's suite jobs: 311s (5m11) on
-# the first five-shard run, against a 469s (7m49) median over the 26 most
-# recent successful three-shard runs. That window is later and wider than
-# the one the matrix comment below quotes (441s main-1 median at 06:00Z),
-# which is why the two differ; each names its own sample on purpose.
-# This line read "~12 minutes" and named no operand until #878, and had
-# not been re-measured since the suites were split. That is still the
-# cheaper side of the trade against flaking the one gate that cannot be
-# waved through (#365).
+# shorter of the two, and the gate is the shorter. MEASURED 2026-09-06
+# from the jobs API on the last run before D41 (34064155841, six jobs,
+# each building its own plugin): gate = max over a run's suite jobs =
+# 568s (9m28). D41 rebuilds that operand — see the matrix below for what
+# it becomes and how it was derived. This line read "~12 minutes" and
+# named no operand until #878. Either way it is still the cheaper side of
+# the trade against flaking the one gate that cannot be waved through
+# (#365).
 #
 # EXIT CONDITION, if you are here because CI got flaky: any
 # contention-signature failure — `context deadline exceeded` on the
@@ -165,16 +187,27 @@ on:
 # since nothing shares a queue to be displaced from.
 #
 # What made this safe to widen is topology, not optimism: #296's
+# ci-pool-exempt: #296's historical dose, not a claim about today's pool
 # contention was three privileged jobs on shared bare metal. The pool is
 # now ephemeral, one job per container, each with its own nested Docker
 # daemon, so the isolation the group provided by hand is provided by the
-# pool. The limit becomes capacity — privileged runners against the six
-# jobs a run now asks for (#877) — which is the correct thing to queue
-# on. That expansion is done: the pool is 16 (dhcp-ci-1..16, MEASURED
-# 2026-08-28 from the runners API) against the six privileged jobs a run
-# asks for, so two concurrent runs fit and a third queues. The watchdog
-# names a shortage as a shortage (#513) rather than letting it read as a
-# suite failure.
+# pool. The limit becomes capacity — privileged runners against the
+# eleven jobs a run now asks for (D41) — which is the correct thing to
+# ci-pool: integration-pool-jobs=11
+# queue on. The pool is 16 (dhcp-ci-1..16, MEASURED 2026-09-08 from the
+# ci-pool: pool-runners=16
+# runners API) against those eleven, so ONE run fits and the next queues.
+# That is a real change from #877's two: D41 spends throughput to buy
+# latency, deliberately, because the maintainer's bar is on the gate a
+# single PR waits for.
+#
+# What keeps the trade honest is that the thing being queued for got
+# shorter at the same time. A job queued behind a full pool waits for a
+# running suite to release its runner, and that wait is now bounded by
+# the suite's own wall clock — which D41 takes from ~9m30 to under five
+# minutes. The watchdog's 600s queue budget cleared the old number and
+# clears the new one with more room, not less. It also names a shortage
+# as a shortage (#513) rather than letting it read as a suite failure.
 concurrency:
   # Branch pushes key on the COMMIT (#617): a merge burst into dev used to
   # evict the queued run, leaving a commit nothing ever tested. PR events
@@ -305,6 +338,108 @@ jobs:
           echo "decision=${decision}" >> "$GITHUB_OUTPUT"
           echo "gate decision: ${decision}"
 
+  # Build the plugin ONCE per run and publish it (#396, D41).
+  #
+  # Every suite job used to run `make plugin` itself, and the note beside
+  # that step said the duplication "costs aggregate CPU, not wall clock".
+  # That was true of the wall clock of the BUILD; it was not true of the
+  # budget. MEASURED 2026-09-06 in run 34064155841: 82-90s per job, six
+  # jobs, six byte-identical images. Against a five-minute gate that is
+  # a third of the budget spent six times over on one artifact.
+  #
+  # ubuntu-latest, not the dhcp-ci pool, for two reasons and the second
+  # is the load-bearing one:
+  #
+  #   - it costs no privileged runner slot, and the run already asks for
+  #     eleven of them;
+  #   - it is FASTER. MEASURED: the same `make plugin` plus install took
+  #     35s on ubuntu-latest (run 34105560953, integration-hosted.yml's
+  #     build step) against 82-90s on the pool. The pool's runners are
+  #     ephemeral containers with their own nested Docker daemon, so
+  #     every build there is cold no matter how often it runs; the
+  #     hosted image's advantage is the CPU underneath it.
+  #
+  # It does NOT enable the plugin — enabling needs the netns and mount
+  # privileges the suite jobs have and this one does not, and there is
+  # nothing here for it to serve. It builds the directory `docker plugin
+  # create` consumes and hands it on.
+  #
+  # THE COMMIT IS DERIVED HERE AND ONLY HERE (O-4). It is threaded into
+  # the binary through the Dockerfile's build-arg -> ldflags and exported
+  # as this job's output, so every consumer reads one derivation. A suite
+  # job that re-derived it from its own checkout would be comparing a
+  # derivation with itself, and the looser of the two would decide.
+  build:
+    needs: gate
+    if: needs.gate.outputs.decision == 'run'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      commit: ${{ steps.build.outputs.commit }}
+    env:
+      # Same shape and same reason as the suite job's copy below: a
+      # step-level `if:` cannot read the `secrets` context directly.
+      HAS_HUB_CREDS: ${{ secrets.DOCKERHUB_USERNAME != '' && secrets.DOCKERHUB_TOKEN != '' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Empty on every event except workflow_dispatch, where
+          # checkout falls back to the triggering ref (#419). Validated
+          # by dispatch-ref, which gate depends on and this job descends
+          # from (#593).
+          ref: ${{ inputs.ref }}
+
+      # The two Hub base images are pulled ONCE per run now instead of
+      # once per suite job, which is the other half of #562 the login
+      # step could only mitigate.
+      - name: Log in to Docker Hub
+        if: env.HAS_HUB_CREDS == 'true'
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Note that Docker Hub pulls are anonymous
+        if: env.HAS_HUB_CREDS != 'true'
+        run: |
+          echo "::warning title=Anonymous Docker Hub pulls::DOCKERHUB_USERNAME / DOCKERHUB_TOKEN are not available to this job, so base-image pulls share the per-address anonymous quota and may hit a 429 (#562). Expected on pull requests from forks, which are never given secrets. On an internal branch it means the secrets are missing or expired."
+
+      - name: Build the plugin the suite jobs will install
+        id: build
+        shell: bash
+        run: |
+          set -euo pipefail
+          COMMIT="$(git rev-parse HEAD)"
+          echo "commit=${COMMIT}" >> "$GITHUB_OUTPUT"
+          make PLUGIN_NAME=ghcr.io/claymore666/docker-net-dhcp PLUGIN_TAG=integration COMMIT="${COMMIT}" plugin
+          # TAR FIRST, then upload. actions/upload-artifact does not
+          # preserve file modes, and a plugin rootfs that arrives with
+          # its executables unexecutable fails at `docker plugin enable`
+          # with an error about the entrypoint rather than about the
+          # transport that broke it.
+          #
+          # --numeric-owner --owner=0 --group=0: this job runs as an
+          # unprivileged user, so `docker export | tar x` gave every file
+          # that user's ownership, while the suite jobs run as root. The
+          # archive is normalised here so the bytes the suite jobs
+          # install do not depend on which kind of runner built them.
+          tar --numeric-owner --owner=0 --group=0 -czf integration-plugin.tar.gz -C plugin .
+          ls -l integration-plugin.tar.gz
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: integration-plugin
+          path: integration-plugin.tar.gz
+          # One day: this exists to travel between jobs of one run, and
+          # a copy that outlives the run is a copy somebody can install
+          # by hand believing it is current.
+          retention-days: 1
+          # An upload that found nothing must not report success: the
+          # suite jobs would then fail on the download with a message
+          # about a missing artifact rather than about the build that
+          # produced none.
+          if-no-files-found: error
+
   # Queue watchdog (#392). Runs alongside the suites on a hosted runner,
   # so it is never queued behind the shortage it exists to report.
   #
@@ -368,26 +503,29 @@ jobs:
         # long a job may sit with no runner, not how long one may run.
         # The floor it has to clear is therefore one suite generation —
         # a job queued behind a full pool waits for a running suite to
-        # release its runner. Measured 2026-08-28 over 22 runs, the
-        # longest suite job was 511s (8m31) and the median 441s; #877
-        # takes the predicted figure to ~293s. 600s cleared the old
-        # number and clears the new one with more room, and the observed
-        # #392 incident sat unassigned for 11 minutes before a human
-        # noticed, so it still beats a person watching the Actions tab.
+        # release its runner. MEASURED 2026-09-06 in run 34064155841, the
+        # last run before D41: the longest suite job was 568s (9m28). D41
+        # takes that under 300s, so the floor this budget has to clear
+        # HALVES.
         #
-        # Deliberately NOT tightened alongside #877's shorter suites.
-        # Firing this watchdog CANCELS the run, and #877 also takes the
-        # per-run privileged job count from four to six against a pool
-        # whose expanded size is not measured here. Tightening a
-        # destructive timeout at the same moment the demand on the pool
-        # rises is how a capacity wobble becomes a cancelled run. Retune
-        # it against a measured pool, not against this change.
+        # Deliberately NOT tightened alongside D41's shorter suites, and
+        # the reason is the same one #877 gave. Firing this watchdog
+        # CANCELS the run, and D41 also takes the per-run privileged job
+        # ci-pool: integration-pool-jobs=11 ci-pool: pool-runners=16
+        # count from six to eleven against a pool of 16 — so where two
+        # runs used to fit, one does, and the SECOND run's jobs now
+        # genuinely queue rather than starting immediately. Tightening a
+        # destructive timeout at the moment the demand on the pool rises
+        # is how a capacity wobble becomes a cancelled run. 600s against
+        # a ~300s suite generation leaves a full generation of headroom;
+        # retune it against a measured pool, not against this change.
         run: bash scripts/ci-queue-watchdog.sh "${{ github.run_id }}" 600 30
 
   # The suites. Identical except for the make target and log name, so a
   # matrix rather than near-duplicate job bodies — the previous single
   # job had already drifted into per-step `if:` conditions repeated six
-  # times. Six entries today: five main shards plus failure (#877).
+  # times. Eleven entries today: nine main shards plus two failure shards
+  # (#877, D41).
   #
   # fail-fast: false is deliberate and is a BEHAVIOUR CHANGE. In the old
   # sequential form a failing main suite skipped the failure suite
@@ -396,107 +534,120 @@ jobs:
   # the gate's wall clock is max() either way, so letting both finish
   # costs no PR time and says whether one suite broke or two.
   suite:
-    needs: gate
+    needs: [gate, build]
     if: needs.gate.outputs.decision == 'run'
     name: ${{ matrix.suite }}-suite
     runs-on: [self-hosted, dhcp-ci]
-    # 25 per suite. Measured 2026-08-28 over 22 runs on the pool: the
-    # longest main shard ran 511s (8m31) and the failure suite 299s
-    # (4m59), both inclusive of the ~115s of build, install and
-    # teardown; #877's five-way split takes the predicted main shard to
-    # ~293s (4m53). The old single job carried 40 for both suites
-    # sequentially, so the headroom here is several times the job rather
-    # than a fraction of it — deliberately, since this timeout exists to
-    # bound a hang, not to police a slow run. It is left at 25 for the
-    # same reason: shortening it would convert a slow runner into a red
-    # check, which is not what it is for.
+    # 25 per suite, unchanged. MEASURED 2026-09-06 in run 34064155841:
+    # the longest main shard ran 568s (9m28) and the failure suite 382s
+    # (6m22), both inclusive of ~120s of build, install, compile and
+    # teardown; D41's partition takes the predicted longest job under
+    # 300s. This timeout exists to bound a HANG, not to police a slow
+    # run, so it is deliberately left at several times the job:
+    # shortening it would convert a slow runner into a red check, which
+    # is not what it is for.
     timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
-        # The main suite is sharded (#381, three in #468, five in #877).
+        # THE SHARD COUNTS (#381, three in #468, five in #877, nine
+        # plus two in D41).
         #
-        # RE-DERIVED 2026-08-28 (#877). The #468 reasoning that stopped
-        # at three was correct against the corpus it measured — 99 tests
-        # at 540s — and that corpus no longer exists. The main suite is
-        # now 70 tests at 879s, roughly double, and rebalancing alone
-        # cannot reach the ~5-minute design target: only shard count
-        # moves it. The old table is not reproduced here on purpose; it
-        # described a tree that is gone, and a stale derivation left in
-        # place is read as a current one.
+        # RE-DERIVED 2026-09-08 (D41). The #877 reasoning that stopped at
+        # five was correct against the corpus it measured — 70 tests at
+        # 879.2s, with the failure suite unsharded at 126.2s of test time
+        # — and that corpus no longer exists. The suite is now 95 tests
+        # at 2028.4s, and the failure suite alone carries 272.3s of it.
+        # The old table is not reproduced here on purpose; it described a
+        # tree that is gone, and a stale derivation left in place is read
+        # as a current one.
         #
-        # MEASURED over the 22 successful Integration runs that produced
-        # suite logs inside the API's retention window at
-        # 2026-08-28T06:00Z. Medians unless stated:
+        # THE MEASUREMENT. Per-test medians over the three consecutive
+        # successful runs of the tree this branch starts from —
+        # 34059724566, 34060966627, 34064155841 — in
+        # test/integration/testdata/suite-durations.tsv, whose header
+        # carries the method and names its population (top-level test
+        # functions, parents only; a subtest's seconds are inside its
+        # parent's figure). Every one of the 95 rows is measured; the
+        # edition this replaces carried four inferred rows and fourteen
+        # recovered from the 1.9.0 corpus.
         #
-        #   main corpus     879.2s over 70 tests — the per-test medians
-        #                   in testdata/main-suite-durations.tsv, which
-        #                   #877 regenerated from the same runs
-        #   failure suite   126.2s over 4 tests
-        #   job overhead    115s: checkout, plugin build + install,
-        #                   fixture bring-up, teardown. Ranged 91-172s
-        #                   over the window, which is why the shard
-        #                   arithmetic below is quoted to the second and
-        #                   the timeouts to the minute.
+        #   main suite      1739.87s over 91 tests, longest single test
+        #                   TestDHCPv6_NoAddressModes_StartTheEndpoint
+        #                   at 80.63s
+        #   failure suite    272.31s over 4 tests, longest single test
+        #                   TestFailure_LeaseExpiry at 154.61s
         #
-        #   observed gate   main-1 441s median, 511s max — 7m21 against
-        #                   a 5-minute design. The three shards had
-        #                   drifted to 321.9/318.2/239.1s of test time because
-        #                   18 of the 70 tests had no row in the
-        #                   durations table and were costed at the mean.
+        # THE BUDGET (D41). Everything on the way into this branch
+        # finishes well under five minutes, measured from the suite jobs'
+        # first start to the aggregate's verdict. The aggregate costs 8s
+        # (MEASURED, 34064155841: last suite ended 22:39:18, aggregate
+        # answered 22:39:25), so the budget for one suite job is ~290s,
+        # of which the job spends a FIXED cost before and after its
+        # tests. MEASURED at the base: 13s of job setup, checkout,
+        # verification and post-steps; 82-90s of `make plugin`; 28s of
+        # `go test` compilation plus the harness package. The build term
+        # is what D41 removes from every suite job — it happens once, in
+        # `build` — and an artifact download and a plugin install replace
+        # it.
         #
-        # PREDICTED with the regenerated table (per-shard test time from
-        # scripts/integration-shard.sh, plus the 115s overhead):
+        # PACKED with the same greedy longest-first packer
+        # scripts/integration-shard.sh uses, per suite, over those
+        # medians:
         #
-        #   OF=3   293/293/293s     ->  408s job  ->  gate 408s  6m48
-        #   OF=4   219..221s        ->  336s job  ->  gate 336s  5m36
-        #   OF=5   173..178s        ->  293s job  ->  gate 293s  4m53  <-
-        #   OF=6   145..149s        ->  264s job  ->  gate 264s  4m24
-        #   OF=7   123..128s        ->  243s job  ->  gate 243s  4m03
+        #   main    OF=5   349.9s   (what shipped before D41)
+        #           OF=7   250.3s
+        #           OF=8   219.9s
+        #           OF=9   196.3s   <-
+        #           OF=10  177.9s
+        #           OF=12  146.8s
+        #   failure OF=1   272.3s   (what shipped before D41)
+        #           OF=2   154.6s   <-
+        #           OF=3   154.6s   (no better: one test is the floor)
         #
-        #   failure suite   126s test -> 239s job median, 299s max
+        # Nine and two. Nine is where the main suite's longest shard
+        # first lands far enough under the budget that the fixed cost and
+        # an ephemeral pool's job-to-job variance both fit inside it.
+        # Two is the failure suite's own floor and nothing past it helps:
+        # TestFailure_LeaseExpiry is 154.61s of a real 20s Kea lease
+        # lapsing and then the library's real REBOOTING/backoff, and
+        # shortening either of those is the one thing this work is not
+        # allowed to do.
         #
-        # Five, and this time the failure suite is NOT the reason. It
-        # does not become the critical path here: 293s of main against
-        # 239s of failure. The crossover is OF=7, where the shards land
-        # on the failure job and sharding THAT becomes the next lever
-        # (#430) — so a sixth or seventh shard is available if wanted,
-        # it just is not what this change is buying.
-        #
-        # Five is where the gate first clears five minutes, and past it
-        # each extra shard costs a whole privileged runner slot for a
-        # shrinking return: 3->5 buys 115s for two slots, 5->7 buys 50s
-        # for two. Five main shards plus failure is SIX privileged jobs
-        # per run where three shards was four, and that is the cost this
-        # change actually spends. #468 stopped at three for exactly that
-        # reason against the pool of 8 it measured, where two concurrent
-        # runs had to fit. That premise no longer binds: the pool is 16
-        # (dhcp-ci-1..16, MEASURED 2026-08-28 from the runners API), so
-        # two runs at six jobs fit with headroom and a third queues —
-        # which the watchdog reports as a capacity shortage rather than
-        # as a suite failure (#513), so the symptom is legible rather
-        # than silent.
+        # WHAT ELEVEN JOBS COST. A whole privileged runner slot each,
+        # ci-pool: pool-runners=16 -- and ci-pool: integration-pool-jobs=11
+        # against a pool of 16 (dhcp-ci-1..16, MEASURED 2026-09-08 from
+        # the runners API). One run now fits where two did. Past nine
+        # each extra main shard buys ~20s for a whole slot, and at OF=12
+        # the failure suite's 154.6s floor becomes the critical path and
+        # further main shards buy nothing at all. That is the ceiling
+        # this partition is up against, and it is a property of one test,
+        # not of the count.
         include:
           - suite: main-1
-            target: integration-test-shard SHARD=1 OF=5
+            target: integration-test-shard SHARD=1 OF=9 SUITE=main
           - suite: main-2
-            target: integration-test-shard SHARD=2 OF=5
+            target: integration-test-shard SHARD=2 OF=9 SUITE=main
           - suite: main-3
-            target: integration-test-shard SHARD=3 OF=5
+            target: integration-test-shard SHARD=3 OF=9 SUITE=main
           - suite: main-4
-            target: integration-test-shard SHARD=4 OF=5
+            target: integration-test-shard SHARD=4 OF=9 SUITE=main
           - suite: main-5
-            target: integration-test-shard SHARD=5 OF=5
-          - suite: failure
-            target: integration-test-failure
+            target: integration-test-shard SHARD=5 OF=9 SUITE=main
+          - suite: main-6
+            target: integration-test-shard SHARD=6 OF=9 SUITE=main
+          - suite: main-7
+            target: integration-test-shard SHARD=7 OF=9 SUITE=main
+          - suite: main-8
+            target: integration-test-shard SHARD=8 OF=9 SUITE=main
+          - suite: main-9
+            target: integration-test-shard SHARD=9 OF=9 SUITE=main
+          - suite: failure-1
+            target: integration-test-shard SHARD=1 OF=2 SUITE=failure
+          - suite: failure-2
+            target: integration-test-shard SHARD=2 OF=2 SUITE=failure
     env:
       INTEGRATION_PLUGIN_REF: ghcr.io/claymore666/docker-net-dhcp:integration
-      # Materialized at job level so the login step can gate on `env`.
-      # A step-level `if:` cannot read the `secrets` context directly —
-      # that is rejected at parse time. Resolves to the literal string
-      # "true" or "false"; compare with `== 'true'`. Same shape as
-      # release.yml's HAS_HUB_CREDS, deliberately.
-      HAS_HUB_CREDS: ${{ secrets.DOCKERHUB_USERNAME != '' && secrets.DOCKERHUB_TOKEN != '' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -504,44 +655,13 @@ jobs:
           # checkout falls back to the triggering ref (#419).
           ref: ${{ inputs.ref }}
 
-      # Authenticate to Docker Hub before anything pulls from it (#562).
-      #
-      # The plugin build pulls two Hub base images — golang:*-alpine and
-      # alpine:* — on each of the six suite jobs. Anonymously, those are
-      # billed to a per-ADDRESS quota shared by the whole runner pool and
-      # by anything else behind the same address. Run 31939915811 spent
-      # it: two suite jobs died 15s into `make plugin` with
-      # `toomanyrequests: You have reached your unauthenticated pull rate
-      # limit`, no test binary ran, and the red looked exactly like a
-      # sharded test failure. Authenticated pulls are billed to the
-      # account instead, which is a bucket only this project spends.
-      #
-      # WHY THIS MUST NOT BE MANDATORY. `pull_request` events from forks
-      # are not given repository secrets, so HAS_HUB_CREDS is "false"
-      # there and this step is skipped. That is the correct outcome, not
-      # a degraded one: a fork PR then pulls anonymously exactly as it
-      # does today. Making the login required would turn every external
-      # contribution red for want of a credential we cannot hand it.
-      #
-      # It follows that this reduces the anonymous pull volume rather
-      # than eliminating it, so #562 is mitigated here, not closed by
-      # arithmetic. Cutting the four builds to one (#396) is the other
-      # half.
-      - name: Log in to Docker Hub
-        if: env.HAS_HUB_CREDS == 'true'
-        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      # Said out loud rather than inferred from a missing step. Without
-      # this, an expired or revoked token looks identical to a fork PR —
-      # both simply skip the login — and the next 429 gets diagnosed
-      # from scratch.
-      - name: Note that Docker Hub pulls are anonymous
-        if: env.HAS_HUB_CREDS != 'true'
-        run: |
-          echo "::warning title=Anonymous Docker Hub pulls::DOCKERHUB_USERNAME / DOCKERHUB_TOKEN are not available to this job, so base-image pulls share the per-address anonymous quota and may hit a 429 (#562). Expected on pull requests from forks, which are never given secrets. On an internal branch it means the secrets are missing or expired."
+      # The Docker Hub login moved to the `build` job with the build
+      # itself (#562, D41). These jobs no longer pull a base image: the
+      # only thing they install is the artifact `build` published, and
+      # `docker plugin create` reads it off local disk. The credential is
+      # therefore not in this job at all any more, which is a smaller
+      # exposure than the note at the top of this file describes and not
+      # a larger one.
 
       # The Go toolchain (go.mod's version) is baked into the dhcp-ci
       # runner image, so actions/setup-go is skipped. Fail loudly if
@@ -602,44 +722,107 @@ jobs:
       - name: Cleanup orphans from previous runs
         run: bash test/integration/cleanup-orphans.sh
 
-      # Build + install the plugin from THIS PR's source tree, tagged
-      # `:integration` so it coexists with `:golang` (production) and
-      # `:golang-cover` (coverage workflow). Replaces the pre-v0.9.0
-      # behaviour of testing against a manually-installed `:golang`
-      # — that approach silently skipped validation for any PR that
-      # modified plugin code (new driver-opts, RPC shape changes,
-      # etc.), since the production plugin pre-dated the change.
+      # Install the plugin THIS RUN built (D41), tagged `:integration` so
+      # it coexists with `:golang` (production) and `:golang-cover`
+      # (coverage workflow). It is built from this PR's source tree by
+      # the `build` job — replacing the pre-v0.9.0 behaviour of testing
+      # against a manually-installed `:golang`, which silently skipped
+      # validation for any PR that modified plugin code (new driver-opts,
+      # RPC shape changes, etc.), since the production plugin pre-dated
+      # the change.
       #
-      # Every suite job builds its own. The tag is identical in all of
-      # them, which is safe because the dhcp-ci runners are ephemeral and
-      # one-job-per-container — each has its own nested Docker daemon,
-      # so there is no shared plugin namespace to collide in. The ~60s
-      # is duplicated but parallel: it costs aggregate CPU, not wall
-      # clock.
-      - name: Build + install integration plugin
+      # The tag is identical in every suite job, which is safe because
+      # the dhcp-ci runners are ephemeral and one-job-per-container —
+      # each has its own nested Docker daemon, so there is no shared
+      # plugin namespace to collide in.
+      - name: Download the plugin this run built
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: integration-plugin
+
+      - name: Install the plugin this run built
+        shell: bash
         run: |
-          # O-4: the SHA this lane builds, threaded into the binary
-          # through the Dockerfile's build-arg -> ldflags, and exported
-          # so the health cell can read it back out of the running
-          # plugin. Derived ONCE, here: a cell that re-derived it would
-          # be comparing a derivation with itself, and the looser of the
-          # two would decide.
-          COMMIT="$(git rev-parse HEAD)"
-          echo "NET_DHCP_EXPECT_COMMIT=$COMMIT" >> "$GITHUB_ENV"
-          make PLUGIN_NAME=ghcr.io/claymore666/docker-net-dhcp PLUGIN_TAG=integration COMMIT="$COMMIT" plugin
+          set -euo pipefail
+          # The checkout carries no plugin/ directory, but a re-run on a
+          # runner that somehow did would install the wrong bytes and
+          # nothing downstream could tell. Named absolutely so this can
+          # only ever remove the one path meant.
+          rm -rf "${GITHUB_WORKSPACE}/plugin"
+          mkdir -p "${GITHUB_WORKSPACE}/plugin"
+          tar -xzf integration-plugin.tar.gz -C "${GITHUB_WORKSPACE}/plugin"
           docker plugin rm -f "${INTEGRATION_PLUGIN_REF}" 2>/dev/null || true
           # STATE_DIR is bind-mounted from the host since #440, and the
           # daemon does NOT create a missing bind source — `plugin enable`
           # fails with "failed to fulfil mount request". Every place that
           # installs the plugin has to make it first.
           mkdir -p /var/lib/net-dhcp
+          # `plugin`, not the absolute path: scripts/check-plugin-bind-sources.sh
+          # maps this argument to the manifest the Makefile copies into
+          # it, and the map is keyed on the build directory's NAME. The
+          # job's working directory is the workspace, so the two spell
+          # the same place.
           docker plugin create "${INTEGRATION_PLUGIN_REF}" plugin
-          # Tighten the outage-watchdog cadence (#278). The failure
-          # suite otherwise pays the production 30s/25s on top of a
-          # fixture lease that cannot go below dnsmasq's 2m floor.
-          # Test-only: released images ship config.json's defaults.
+          # Trace logging is test-only; released images ship
+          # config.json's defaults.
           docker plugin set "${INTEGRATION_PLUGIN_REF}" LOG_LEVEL=trace
           docker plugin enable "${INTEGRATION_PLUGIN_REF}"
+
+      # THE PLUGIN NOW RUNNING IS THE COMMIT THIS RUN BUILT (O-4, D41).
+      #
+      # While every job built its own image, "the plugin under test is
+      # this tree" was true by construction. It is not any more: the
+      # bytes arrive over a transport, and a stale artifact, a re-run
+      # against an old upload, or a `plugin/` left on disk would each
+      # produce a green suite that measured a plugin nobody changed.
+      # Construction is replaced by a check, and the check runs BEFORE
+      # any test, in EVERY shard — the one place the previous
+      # arrangement was weakest, since the health cell that reads this
+      # value back lives in exactly one shard of nine.
+      #
+      # The expected value is the build job's OUTPUT, not a second
+      # `git rev-parse` here: one fact derived twice gives two answers
+      # and the looser one decides.
+      #
+      # An absent, empty or unreadable answer is as fatal as a wrong
+      # one. A check that treats "I could not tell" as a pass is the
+      # failure this whole file keeps finding in other shapes.
+      - name: The running plugin is the commit this run built
+        shell: bash
+        env:
+          EXPECT_COMMIT: ${{ needs.build.outputs.commit }}
+        run: |
+          set -euo pipefail
+          if [ -z "${EXPECT_COMMIT}" ]; then
+            echo "::error title=The build job published no commit::there is nothing to compare the running plugin against, so this check cannot be made." >&2
+            exit 1
+          fi
+          id="$(docker plugin inspect "${INTEGRATION_PLUGIN_REF}" --format '{{.Id}}')"
+          sock="/run/docker/plugins/${id}/net-dhcp.sock"
+          for _ in $(seq 1 50); do
+            [ -S "${sock}" ] && break
+            sleep 0.2
+          done
+          if [ ! -S "${sock}" ]; then
+            echo "::error title=The plugin socket never appeared::${sock} is not a socket 10s after enable." >&2
+            exit 1
+          fi
+          doc="$(curl -sS --max-time 10 --unix-socket "${sock}" -X POST http://plugin/Plugin.Health)"
+          got="$(printf '%s' "${doc}" | jq -r '.commit // empty')"
+          if [ -z "${got}" ]; then
+            echo "::error title=The plugin reports no commit::Plugin.Health carried no commit field, so the installed image cannot be identified." >&2
+            printf '%s\n' "${doc}" >&2
+            exit 1
+          fi
+          if [ "${got}" != "${EXPECT_COMMIT}" ]; then
+            echo "::error title=The installed plugin is not the commit this run built::the running plugin reports ${got} and this run built ${EXPECT_COMMIT}. The suite would be measuring a different tree." >&2
+            exit 1
+          fi
+          echo "the running plugin reports commit ${got}, which is what this run built"
+          # The health cell reads this back too, on both surfaces it is
+          # published on (TestHealthDocument_BuildInfoIsWhatTheLaneBuilt).
+          # It lives in one shard; this step is in all of them.
+          echo "NET_DHCP_EXPECT_COMMIT=${EXPECT_COMMIT}" >> "$GITHUB_ENV"
 
       # tee the verbose output so the timing-summary step below can
       # report where the wall-clock went. `shell: bash` is LOAD-BEARING:
@@ -679,7 +862,7 @@ jobs:
   # ubuntu-latest: it decides, it does not test, and it must not hold a
   # privileged slot while doing so.
   integration:
-    needs: [gate, suite]
+    needs: [gate, build, suite]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -692,10 +875,12 @@ jobs:
         env:
           GATE: ${{ needs.gate.result }}
           DECISION: ${{ needs.gate.outputs.decision }}
+          BUILD: ${{ needs.build.result }}
           SUITES: ${{ needs.suite.result }}
         run: |
           echo "gate job:       $GATE"
           echo "gate decision:  $DECISION"
+          echo "build job:      $BUILD"
           echo "suite rollup:   $SUITES"
 
           if [ "$GATE" != "success" ]; then
@@ -704,11 +889,24 @@ jobs:
           fi
 
           if [ "$DECISION" != "run" ]; then
-            if [ "$SUITES" = "skipped" ]; then
-              echo "PASS: gate decided the suites were not needed for this event; every suite job was skipped."
+            if [ "$BUILD" = "skipped" ] && [ "$SUITES" = "skipped" ]; then
+              echo "PASS: gate decided the suites were not needed for this event; the build and every suite job were skipped."
               exit 0
             fi
-            echo "FAIL: gate said '$DECISION' but the suite rollup is '$SUITES' — expected 'skipped'."
+            echo "FAIL: gate said '$DECISION' but the build is '$BUILD' and the suite rollup is '$SUITES' — expected both 'skipped'."
+            exit 1
+          fi
+
+          # A FAILED BUILD SKIPS THE SUITES, AND A SKIP IS NOT A PASS
+          # (D41). `suite` needs `build`, so a red build leaves the
+          # matrix skipped — which is the same rollup a gate-skipped
+          # event produces. Without this arm the aggregate would take
+          # the branch below, see 'skipped', and have to guess which of
+          # the two happened. It is judged here, before the rollup, so
+          # the verdict names the build rather than the suites it
+          # prevented.
+          if [ "$BUILD" != "success" ]; then
+            echo "FAIL: the gate asked for a run and the build job is '$BUILD' — no suite job could install a plugin, so nothing was tested."
             exit 1
           fi
 

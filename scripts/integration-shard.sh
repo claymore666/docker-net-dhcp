@@ -2,11 +2,21 @@
 # Copyright the docker-net-dhcp contributors.
 # SPDX-License-Identifier: GPL-3.0-only
 
-# Partition the main integration suite across jobs (#381).
+# Partition an integration suite across jobs (#381, #877, D41).
 #
-# After #375 the gate is max(main, failure) and the main suite is the
-# critical path: ~540s against the failure suite's ~495s. Nothing else
-# improves the gate until main comes down.
+# The gate is max() over the jobs a run asks for, so the only thing that
+# brings it down is shorter shards. Both suites are partitioned here now:
+# the failure suite's four tests carry 272s of deliberate DHCP-timing
+# waits, of which one test is 155s, so unsharded it alone is over the
+# five-minute budget D41 sets for everything on the way into the branch.
+#
+# The two populations stay SEPARATE PROCESSES rather than one pooled
+# partition. They are one Go package with one TestMain, so pooling them
+# would balance better on paper; what stops it is that the failure suite
+# kills DHCP servers out from under a bound client and a main-suite test
+# scheduled behind one of those would be the first thing to inherit the
+# wreckage. The suites have never shared a process and this change is not
+# the place to find out what happens when they do.
 #
 # The suite is serial by design and must stay so IN-PROCESS — there is
 # no t.Parallel() anywhere, and TestRecovery_DaemonRestart_PreservesContainer
@@ -15,17 +25,20 @@
 # that: each shard is its own runner, own daemon, own fixture, exactly
 # the isolation stage 1 already relies on.
 #
-# Usage: integration-shard.sh <index> <total>
+# Usage: integration-shard.sh <index> <total> [main|failure]
 #   prints a `go test -run` regex selecting this shard's tests.
+#   The suite defaults to `main` for the callers that predate the split.
 #
 # Exit: 0 with a regex on stdout, 2 on bad usage or an empty partition.
 #
 # THE PROPERTY THAT MATTERS is not balance, it is completeness: every
-# test must land in exactly one shard. A test assigned to none is
-# silently never run, and the suite goes green having tested less —
+# test must land in exactly one shard OF ITS OWN SUITE, and the two
+# suites must partition the roster between them. A test assigned to none
+# is silently never run, and the suite goes green having tested less —
 # which is the failure this whole milestone keeps finding in other
 # shapes. scripts/test-integration-shard.sh asserts the union across all
-# shards equals the full list, for several values of <total>.
+# shards of each suite, and the union across the two suites, against a
+# roster it extracts independently.
 set -uo pipefail
 
 # THE PARTITION MUST BE A FUNCTION OF THE TREE, NOT OF WHO RUNS IT (#554).
@@ -55,35 +68,64 @@ export LC_ALL=C
 
 IDX="${1:-}"
 TOTAL="${2:-}"
+SUITE="${3:-main}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(dirname "$HERE")"
 SUITE_DIR="$ROOT/test/integration"
-DURATIONS="$SUITE_DIR/testdata/main-suite-durations.tsv"
+DURATIONS="$SUITE_DIR/testdata/suite-durations.tsv"
+
+case "$SUITE" in
+    main|failure) ;;
+    *) echo "usage: $0 <index> <total> [main|failure]   (unknown suite '$SUITE')" >&2; exit 2 ;;
+esac
 
 case "$IDX$TOTAL" in
-    *[!0-9]*|"") echo "usage: $0 <index> <total>   (index is 1-based)" >&2; exit 2 ;;
+    *[!0-9]*|"") echo "usage: $0 <index> <total> [main|failure]   (index is 1-based)" >&2; exit 2 ;;
 esac
 [ "$IDX" -ge 1 ] && [ "$IDX" -le "$TOTAL" ] || { echo "index $IDX out of range 1..$TOTAL" >&2; exit 2; }
 
 # Test names come from the sources, not `go test -list`: listing runs
 # TestMain, which requires root, and a partitioner that needs root to
 # decide what to run is useless in half the places it is wanted.
-mapfile -t ALL < <(
+#
+# The two suites are COMPLEMENTS over one roster — `TestFailure_` is in
+# the failure suite and everything else is in the main suite — rather
+# than two independent greps. A pair of greps can both miss a test, and
+# missing it is exactly the silent failure this file exists to prevent.
+mapfile -t ROSTER < <(
     grep -hoE '^func (Test[A-Za-z0-9_]+)\(t \*testing\.T\)' "$SUITE_DIR"/*_test.go 2>/dev/null \
     | sed -E 's/^func (Test[A-Za-z0-9_]+)\(.*/\1/' \
-    | grep -v '^TestFailure_' \
     | sort -u
 )
 
+ALL=()
+for t in "${ROSTER[@]:-}"; do
+    [ -n "$t" ] || continue
+    case "$t" in
+        TestFailure_*) [ "$SUITE" = failure ] && ALL+=("$t") ;;
+        *)             [ "$SUITE" = main ]    && ALL+=("$t") ;;
+    esac
+done
+
 if [ "${#ALL[@]}" -eq 0 ]; then
-    echo "no main-suite tests found in $SUITE_DIR — refusing to emit a regex that would run nothing" >&2
+    echo "no $SUITE-suite tests found in $SUITE_DIR — refusing to emit a regex that would run nothing" >&2
     exit 2
 fi
 
 # Greedy longest-first bin packing against measured durations. A test
 # absent from the durations file gets the mean, so a stale file makes
 # shards less even and never makes one incomplete.
-mean=$(awk -F'\t' '$1 !~ /^#/ && NF==2 {s+=$2; n++} END {if (n) printf "%.2f", s/n; else print "1"}' "$DURATIONS" 2>/dev/null || echo 1)
+#
+# The mean is taken over THIS SUITE'S rows, not over the whole table.
+# The failure suite's tests average 68s against the main suite's 19s, so
+# one mean over both would cost a missing failure row at a third of what
+# it is and a missing main row at three times — the mis-costing that
+# #877 found compounding in the other direction.
+population=$(printf '%s\n' "${ALL[@]}")
+mean=$(awk -F'\t' -v pop="$population" '
+    BEGIN { n = split(pop, p, "\n"); for (i = 1; i <= n; i++) inpop[p[i]] = 1 }
+    $1 !~ /^#/ && NF == 2 && ($1 in inpop) { s += $2; c++ }
+    END { if (c) printf "%.2f", s / c; else print "1" }' "$DURATIONS" 2>/dev/null || echo 1)
 
 assigned=$(
     for t in "${ALL[@]}"; do
@@ -115,7 +157,7 @@ assigned=$(
 mine=$(printf '%s\n' "$assigned" | awk -F'\t' -v i="$IDX" '$1==i {print $2}' | sort)
 
 if [ -z "$mine" ]; then
-    echo "shard $IDX of $TOTAL is empty — more shards than tests?" >&2
+    echo "shard $IDX of $TOTAL is empty for the $SUITE suite — more shards than tests?" >&2
     exit 2
 fi
 

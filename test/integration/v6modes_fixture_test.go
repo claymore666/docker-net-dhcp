@@ -187,6 +187,27 @@ func startUnderName(t *testing.T, name, actual harness.V6Mode) (refused bool, ms
 // server does once a client speaks, and it is pinned to exactly that
 // one pair by a fast-lane test — so a third collision arriving later is
 // named rather than silently exempted.
+//
+// WHAT IT PROVES: the fixture refuses a segment whose dnsmasq flags are
+// another mode's, before the consumer's body runs, and its refusal
+// names both modes by whole name. Every ordered pair is started the
+// wrong way round; the diagonal is started too, so a fixture that
+// refused everything is red here as well.
+//
+// WHY ITS WALL CLOCK STANDS (D41). Measured 65.44s, of which ~38s is
+// spent in exactly five of the 25 cells — the ones whose ACTUAL mode is
+// nora, where the only evidence of the mode is that no router
+// advertisement arrives (4 refusal cells at ~6.4s = one RABudget each,
+// and the nora/flags-of-nora diagonal at 12.4s = the full
+// V6NoRAWindow). The remaining 20 cells cost ~1.4s each and are already
+// nothing but a fixture start. The absence windows are DERIVED in
+// harness/v6signature.go from dnsmasq's own first-RA bound, and
+// shortening one is the precise failure they were written to guard: a
+// no-RA check that passes because it did not wait is a check with one
+// possible verdict. So this test keeps its clock, and the shard
+// partition is what absorbs it: at 65.36s it is the fifth-longest
+// main-suite test, well under the 196s longest shard, and the
+// longest-first packer places it before the filler.
 func TestV6Fixture_RefusesASegmentInAnotherModesShape(t *testing.T) {
 	exempt := map[[2]harness.V6Mode]bool{}
 	for _, p := range harness.V6IndistinguishableModes() {

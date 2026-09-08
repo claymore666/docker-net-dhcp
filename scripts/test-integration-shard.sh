@@ -2,13 +2,17 @@
 # Copyright the docker-net-dhcp contributors.
 # SPDX-License-Identifier: GPL-3.0-only
 
-# Tests for integration-shard.sh (#381).
+# Tests for integration-shard.sh (#381, D41).
 #
 # Balance is a nice-to-have. COMPLETENESS is the property that must
-# hold: every main-suite test lands in exactly one shard. A test
-# assigned to none is silently never run, and the gate goes green having
-# tested less than it did before — a green that means less than it
-# looks, which is the failure this milestone keeps finding.
+# hold, and since D41 it has two halves: every test of a suite lands in
+# exactly one shard OF THAT SUITE, and the two suites partition the
+# roster between them. A test assigned to none is silently never run,
+# and the gate goes green having tested less than it did before — a
+# green that means less than it looks, which is the failure this
+# milestone keeps finding. Splitting the failure suite off into its own
+# partition added a second way to lose a test: one that is in neither
+# population. The roster case below is what closes it.
 set -uo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -20,24 +24,50 @@ no() { printf 'FAIL  %s\n' "$1" >&2; fail=$((fail + 1)); }
 
 # The same extraction the script uses, restated here on purpose: if the
 # two ever disagree, this test is meant to notice.
-all_tests() {
+roster() {
     grep -hoE '^func (Test[A-Za-z0-9_]+)\(t \*testing\.T\)' "$SUITE"/*_test.go \
-        | sed -E 's/^func (Test[A-Za-z0-9_]+)\(.*/\1/' \
-        | grep -v '^TestFailure_' | sort -u
+        | sed -E 's/^func (Test[A-Za-z0-9_]+)\(.*/\1/' | sort -u
 }
 
-names_of() { # <index> <total> -> one test name per line
-    bash "$SHARD" "$1" "$2" | sed -E 's/^\^\(//; s/\)\$$//' | tr '|' '\n' | sort
+all_tests() { roster | grep -v '^TestFailure_'; }
+failure_tests() { roster | grep '^TestFailure_'; }
+
+names_of() { # <index> <total> [suite] -> one test name per line
+    bash "$SHARD" "$1" "$2" "${3:-main}" | sed -E 's/^\^\(//; s/\)\$$//' | tr '|' '\n' | sort
 }
 
+ROSTER_TESTS=$(roster | wc -l)
 TOTAL_TESTS=$(all_tests | wc -l)
+FAILURE_TESTS=$(failure_tests | wc -l)
 [ "$TOTAL_TESTS" -gt 0 ] && ok "found $TOTAL_TESTS main-suite tests to partition" \
-    || no "no tests found — every case below would pass vacuously"
+    || no "no main-suite tests found — every case below would pass vacuously"
+[ "$FAILURE_TESTS" -gt 0 ] && ok "found $FAILURE_TESTS failure-suite tests to partition" \
+    || no "no failure-suite tests found — the failure cases below would pass vacuously"
 
-# 5 is the value CI actually ships (#877); the rest bracket it. A
-# completeness property asserted at every n EXCEPT the production one
-# is a property nobody has checked where it matters.
-for n in 1 2 3 4 5 7 13; do
+# THE TWO POPULATIONS MUST PARTITION THE ROSTER (D41).
+#
+# The per-suite completeness cases below cannot see this: each asks
+# whether its own population is fully covered, and both hold perfectly
+# while a test sits in neither population. That is a test nothing runs
+# and nothing reports, which is the whole failure class this file is
+# for. Asserted against a roster extracted here, not against either
+# suite's own derivation.
+both=$( { names_of 1 1 main; names_of 1 1 failure; } | sort )
+both_uniq=$(printf '%s\n' "$both" | sort -u)
+overlap=$(printf '%s\n' "$both" | uniq -d)
+if [ -n "$overlap" ]; then
+    no "these tests are in BOTH suites' populations, so they run twice: $(printf '%s' "$overlap" | tr '\n' ' ')"
+elif [ "$(printf '%s\n' "$both_uniq" | wc -l)" != "$ROSTER_TESTS" ]; then
+    orphan=$(comm -23 <(roster) <(printf '%s\n' "$both_uniq") | tr '\n' ' ')
+    no "the two suites cover $(printf '%s\n' "$both_uniq" | wc -l)/${ROSTER_TESTS} of the roster — in NEITHER population: ${orphan}"
+else
+    ok "the main and failure populations partition the roster ($ROSTER_TESTS tests)"
+fi
+
+# 9 is the value CI actually ships for main and 2 for failure (D41); the
+# rest bracket them. A completeness property asserted at every n EXCEPT
+# the production one is a property nobody has checked where it matters.
+for n in 1 2 3 4 5 7 9 13; do
     union=$(for i in $(seq 1 "$n"); do names_of "$i" "$n"; done | sort)
     dupes=$(printf '%s\n' "$union" | uniq -d)
     uniq_count=$(printf '%s\n' "$union" | sort -u | wc -l)
@@ -48,7 +78,22 @@ for n in 1 2 3 4 5 7 13; do
         missing=$(comm -23 <(all_tests) <(printf '%s\n' "$union" | sort -u) | tr '\n' ' ')
         no "n=$n: ${uniq_count}/${TOTAL_TESTS} tests covered — MISSING: ${missing}"
     else
-        ok "n=$n: every test in exactly one shard"
+        ok "n=$n: every main-suite test in exactly one shard"
+    fi
+done
+
+for n in 1 2 3 4; do
+    union=$(for i in $(seq 1 "$n"); do names_of "$i" "$n" failure; done | sort)
+    dupes=$(printf '%s\n' "$union" | uniq -d)
+    uniq_count=$(printf '%s\n' "$union" | sort -u | wc -l)
+
+    if [ -n "$dupes" ]; then
+        no "failure n=$n: these tests are in more than one shard: $(printf '%s' "$dupes" | tr '\n' ' ')"
+    elif [ "$uniq_count" != "$FAILURE_TESTS" ]; then
+        missing=$(comm -23 <(failure_tests) <(printf '%s\n' "$union" | sort -u) | tr '\n' ' ')
+        no "failure n=$n: ${uniq_count}/${FAILURE_TESTS} tests covered — MISSING: ${missing}"
+    else
+        ok "failure n=$n: every failure-suite test in exactly one shard"
     fi
 done
 
@@ -65,17 +110,44 @@ case "$(bash "$SHARD" 1 2)" in
     *) no "regex is not anchored — prefix names would cross-select" ;;
 esac
 
-# No shard may select a failure-suite test: those run in their own job
-# with their own fixture, and pulling one in here would run it twice.
-if names_of 1 1 | grep '^TestFailure_' >/dev/null; then
-    no "a shard selected a TestFailure_ test"
+# Neither suite may select the other's tests: they run in separate jobs
+# in separate processes, and a crossing test would be run twice — once
+# under a fixture written for the other suite.
+if names_of 1 1 main | grep '^TestFailure_' >/dev/null; then
+    no "a main shard selected a TestFailure_ test"
 else
-    ok "no shard selects failure-suite tests"
+    ok "no main shard selects failure-suite tests"
+fi
+if names_of 1 1 failure | grep -v '^TestFailure_' > /dev/null; then
+    no "a failure shard selected a main-suite test"
+else
+    ok "no failure shard selects main-suite tests"
+fi
+
+# A shard with nothing in it must REFUSE. `go test -run` with an empty
+# alternation matches every test, and an empty regex emitted here would
+# be handed straight to it: the shard that was meant to run nothing runs
+# everything, or — with the anchors — nothing at all, and exits 0 either
+# way. Asked past the failure suite's four tests, where it is reachable.
+if bash "$SHARD" 5 5 failure >/dev/null 2>&1; then
+    no "shard 5 of 5 on a four-test suite was accepted — an empty partition emitted a regex"
+else
+    ok "a shard with no tests in it refuses instead of emitting an empty regex"
+fi
+
+# An unknown suite name must refuse rather than fall back to `main`: a
+# caller that asks for a population this script does not have would
+# otherwise silently run the main suite under the failure suite's name,
+# and both would be green.
+if bash "$SHARD" 1 1 mian >/dev/null 2>&1; then
+    no "an unknown suite name was accepted"
+else
+    ok "an unknown suite name is rejected"
 fi
 
 # Usage errors must be errors, not an empty regex that silently runs
 # every test or none.
-for bad in "" "0 2" "3 2" "x y"; do
+for bad in "" "0 2" "3 2" "x y" "1 2 3"; do
     # shellcheck disable=SC2086
     if bash "$SHARD" $bad >/dev/null 2>&1; then
         no "bad usage '$bad' was accepted"
@@ -135,11 +207,14 @@ if [ -z "$alt_locale" ]; then
       sudo locale-gen de_DE.UTF-8"
 else
     drift=""
-    for n in 2 4 7; do
-        for i in $(seq 1 "$n"); do
-            a=$(LC_ALL=C bash "$SHARD" "$i" "$n" 2>/dev/null)
-            b=$(LC_ALL="$alt_locale" bash "$SHARD" "$i" "$n" 2>/dev/null)
-            [ "$a" = "$b" ] || drift="$drift $i/$n"
+    for suite in main failure; do
+        for n in 2 4 7; do
+            [ "$suite" = failure ] && [ "$n" -gt "$FAILURE_TESTS" ] && continue
+            for i in $(seq 1 "$n"); do
+                a=$(LC_ALL=C bash "$SHARD" "$i" "$n" "$suite" 2>/dev/null)
+                b=$(LC_ALL="$alt_locale" bash "$SHARD" "$i" "$n" "$suite" 2>/dev/null)
+                [ "$a" = "$b" ] || drift="$drift $suite:$i/$n"
+            done
         done
     done
     if [ -n "$drift" ]; then
@@ -158,11 +233,11 @@ else
     # reshuffled the shards and it is pinned.
     if [ "$(LC_ALL="$alt_locale" awk 'BEGIN{printf "%.1f", 1.5}' 2>/dev/null)" = "1,5" ]; then
         m_c=$(LC_ALL=C awk -F'\t' '$1 !~ /^#/ && NF==2 {s+=$2; n++} END {if (n) printf "%.2f", s/n}' \
-            "$SUITE/testdata/main-suite-durations.tsv" 2>/dev/null)
+            "$SUITE/testdata/suite-durations.tsv" 2>/dev/null)
         # Ambient locale is the alt one; the pin the script applies must
         # make the result identical anyway. That is the whole fix.
         m_x=$(LC_ALL="$alt_locale" bash -c 'export LC_ALL=C; awk -F"\t" '"'"'$1 !~ /^#/ && NF==2 {s+=$2; n++} END {if (n) printf "%.2f", s/n}'"'"' "$1"' _ \
-            "$SUITE/testdata/main-suite-durations.tsv" 2>/dev/null)
+            "$SUITE/testdata/suite-durations.tsv" 2>/dev/null)
         if [ -n "$m_c" ] && [ "$m_c" = "$m_x" ]; then
             ok "the mean duration is computed identically once LC_ALL is pinned ($m_c)"
         else
@@ -170,6 +245,42 @@ else
         fi
     else
         ok "this awk ignores LC_NUMERIC, so the decimal half cannot arise here (collation half asserted above)"
+    fi
+fi
+
+# --- the two lanes must partition the same way (D41) ---------------------
+#
+# integration-hosted.yml can run the same eleven shards on hosted
+# runners, which is what makes "hosted against the pool" a comparison
+# rather than two unrelated numbers. Two matrices in two files is two
+# places a shard count can move, and only one of them would be noticed.
+# So the (suite, index, total) triples are extracted from both and
+# required to be the same LIST -- and the extraction refuses when either
+# side yields nothing, because two empty sets are equal.
+#
+# `sort`, not `sort -u`. The first version deduplicated both sides, so a
+# matrix entry duplicated in BOTH files compared equal to itself and the
+# case was green while a shard went unscheduled; review measured exactly
+# that (drop main-5, duplicate main-4). Whether the union still covers
+# the roster is scripts/check-shard-coverage.sh's question, not this
+# case's -- this case's job is only that the two lanes say the same
+# thing -- but it must not be the place a duplicate hides.
+WF="$(dirname "$HERE")/.github/workflows"
+if [ -d "$WF" ]; then
+    pool_triples=$(sed -n 's/.*integration-test-shard SHARD=\([0-9]*\) OF=\([0-9]*\) SUITE=\([a-z]*\).*/\3-\1-of-\2/p' \
+                   "$WF/integration.yml" | LC_ALL=C sort)
+    hosted_triples=$(grep -o '"[a-z]*-[0-9]*-of-[0-9]*"' "$WF/integration-hosted.yml" \
+                     | tr -d '"' | LC_ALL=C sort)
+    if [ -z "$pool_triples" ]; then
+        no "no shard triple could be read out of integration.yml — this case would compare two empty sets"
+    elif [ -z "$hosted_triples" ]; then
+        no "no shard triple could be read out of integration-hosted.yml — this case would compare two empty sets"
+    elif [ "$pool_triples" = "$hosted_triples" ]; then
+        ok "the pool and hosted lanes name the same $(printf '%s\n' "$pool_triples" | wc -l) shard(s)"
+    else
+        no "the two lanes partition differently:$(printf '\n  only in integration.yml: %s' \
+            "$(comm -23 <(printf '%s\n' "$pool_triples") <(printf '%s\n' "$hosted_triples") | tr '\n' ' ')")$(printf '\n  only in integration-hosted.yml: %s' \
+            "$(comm -13 <(printf '%s\n' "$pool_triples") <(printf '%s\n' "$hosted_triples") | tr '\n' ' ')")"
     fi
 fi
 

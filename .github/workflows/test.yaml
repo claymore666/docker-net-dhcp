@@ -306,6 +306,33 @@ jobs:
       - name: Shard-balance table check
         run: bash scripts/check-durations-table.sh
 
+      # The pool's size and the number of jobs a run puts on it were
+      # stated in six places and checked in none, and two of the six
+      # were the text an operator reads during an incident (#879). The
+      # job counts are derived from the workflows themselves; the pool
+      # size is read from .github/ci-pool.json, because listing
+      # self-hosted runners needs repo administration rights and
+      # `administration` is not one of GITHUB_TOKEN's permission scopes
+      # at all -- see the script's header, and ci-queue-watchdog.sh's
+      # classify_wait, which measured that first.
+      #
+      # --live is not passed here for that reason. It runs from a
+      # workstation, where a token that CAN read the API compares the
+      # constant to the live count.
+      - name: Pool-facts check
+        run: bash scripts/check-pool-facts.sh
+
+      # Everything about the partition was checked except what the lane
+      # does with it. The shard count is a literal repeated eleven times
+      # in integration.yml and eleven more in integration-hosted.yml, and
+      # a reshard is one sed per file: bumping OF=9 to OF=10 without
+      # adding a tenth entry left nine tests scheduled by nobody while
+      # every gate above stayed green (measured in review of #921). This
+      # one asks the partitioner what each SCHEDULED triple selects and
+      # requires the union to be the roster, exactly once, per lane.
+      - name: Scheduled-shard coverage check
+        run: bash scripts/check-shard-coverage.sh
+
       # Every driver-option key the code parses must be documented in
       # docs/reference.md — an undocumented option turns CI red (#132).
       - name: Option-docs drift check

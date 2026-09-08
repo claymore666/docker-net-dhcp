@@ -1,0 +1,17 @@
+{
+  "_comment": [
+    "The one machine-readable statement of the self-hosted runner pool's size.",
+    "scripts/check-pool-facts.sh checks every prose statement in the tree",
+    "against this file, and `bash scripts/check-pool-facts.sh --live` checks",
+    "this file against the runners API. See that script's header for why the",
+    "number lives here and not in the API: listing self-hosted runners needs",
+    "repo administration rights, and `administration` is not one of the",
+    "workflow GITHUB_TOKEN's permission scopes at all, so an in-lane query",
+    "cannot be made to work by granting anything."
+  ],
+  "x64_label": "dhcp-ci",
+  "x64_runners": 16,
+  "arm64_label": "dhcp-ci-arm64",
+  "arm64_runners": 1,
+  "measured": "2026-09-08, repos/claymore666/docker-net-dhcp/actions/runners: 16 dhcp-ci-1..16 carrying `dhcp-ci`, plus rpi-arm64-1 carrying `dhcp-ci-arm64` (17 registered in total, which is the number the API prints and the number this file exists to stop anyone quoting as the pool)."
+}
