@@ -55,7 +55,7 @@ each group.
 | `bridge` | bridge | *(required)* |
 | `parent` | macvlan, ipvlan | *(required)* |
 | `gateway` | all | from DHCP |
-| `ipv6` | all | `false` (**refused** — see below) |
+| `ipv6` | all | `false` |
 | `lease_timeout` | all | `34s` |
 | `conflict_check` | all | `wait` |
 | `ignore_conflicts` | bridge | `false` |
@@ -115,6 +115,8 @@ The plugin publishes to two registries; GHCR is primary:
 
 Published builds: **`linux/amd64`** on the bare tag and
 **`linux/arm64`** as `:vX.Y.Z-arm64` / `:latest-arm64` (v1.7.0 onward).
+Those two are the whole set. **32-bit ARM is not built**, so there is no
+`armv7` or `armhf` tag to install.
 The architecture lives in the tag because a Docker plugin cannot be
 installed from a multi-architecture manifest list at all, and
 `docker plugin install` has no `--platform` to steer one — an index
@@ -428,8 +430,10 @@ option-12 hostname hint the plugin already sends: the hostname says *who we
 are*, the FQDN option asks the server to *publish it*. The flags byte asks the
 server to perform **both** the forward (A) and the reverse (PTR) update; the
 container runs no DNS updater of its own, so the server does all the work. The
-v6 equivalent (option 39, RFC 4704) is not sent, because 2.0 runs no
-DHCPv6 exchange to send it in.
+v6 equivalent (option 39, RFC 4704) is not sent. The DHCPv6 parameter
+set the client is built from carries no FQDN field, so a v6 client asked
+to send one would not compile. This is the same structural limit that
+keeps `dhcp_servers` on DHCPv4.
 
 The payoff is on-mission: a container becomes resolvable **by name** on
 the LAN, not just reachable by its DHCP-leased IP — with no per-container
@@ -451,7 +455,7 @@ Passed per container via `docker network connect --driver-opt`, or as
 | option | description |
 | ------ | ----------- |
 | `ip` | Request a specific IPv4 address (bare IP, no CIDR — the netmask comes from DHCP). Equivalent to `docker run --ip`; setting both to different values is an error. The address is *requested* from the DHCP server (DHCPREQUEST for it); the server still has final say. |
-| `com.docker.network.endpoint.ifname` | (v1.0.0+) Request a specific interface name inside the container (Compose `interface_name`, engine 28+; or this key under `driver_opts`, any engine). The plugin validates the name (≤15 bytes, kernel charset — invalid names fail the attach with a clear error) and returns it in its Join response. **Engine support:** moby's remote-driver layer discarded the returned name (`drivers/remote/driver.go` passed an empty `DstName`) until [moby/moby#52866](https://github.com/moby/moby/pull/52866), merged to moby master on 2026-08-26 and milestoned for engine **29.8.0**. No *released* engine carries it yet (latest 29.7.2 as of 2026-08-27), so on 29.7.x and older the name is still not applied for *plugin* drivers — built-in drivers only, and interfaces stay `ethN` in attach order. The plugin side is ready; the rename activates by itself on the first engine carrying the pass-through, with no change here. |
+| `com.docker.network.endpoint.ifname` | (v1.0.0+) Request a specific interface name inside the container (Compose `interface_name`, engine 28+; or this key under `driver_opts`, any engine). The plugin validates the name (≤15 bytes, kernel charset — invalid names fail the attach with a clear error) and returns it in its Join response. **Engine support:** moby's remote-driver layer discarded the returned name (`drivers/remote/driver.go` passed an empty `DstName`) until [moby/moby#52866](https://github.com/moby/moby/pull/52866), merged to moby master on 2026-08-26 and milestoned for engine **29.8.0**, which was released on 2026-09-03. On 29.7.x and older the name is still not applied for *plugin* drivers: built-in drivers only, and interfaces stay `ethN` in attach order. The integration suite has not yet run on an engine carrying the change, so the pass-through is unconfirmed here rather than measured. The plugin side is ready and the rename activates by itself on the first engine that applies the returned name, with no change on this side. |
 
 A static IPv6 request (`--ip6` / Interface.AddressIPv6) is sent as the
 Solicit's IA Address, which is the DHCPv6 equivalent of option 50 and, like
@@ -1261,9 +1265,8 @@ networks:
 Multi-network containers work (one plugin network per container is
 the *supported* shape; multiple attach, but interface naming order is
 engine-determined on any engine without moby's remote-driver
-`interface_name` pass-through, which is merged upstream but not in a
-released engine yet — see the `com.docker.network.endpoint.ifname` row
-above and issue #125).
+`interface_name` pass-through. See the
+`com.docker.network.endpoint.ifname` row above.
 
 ### The base/override merge trap
 

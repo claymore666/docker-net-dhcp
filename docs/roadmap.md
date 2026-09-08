@@ -17,8 +17,10 @@ no entrypoint script that has to know it is running on this network.
 
 That bar decides most design arguments before they start. A workaround a
 user has to script around the plugin is read here as a **bug report
-against this principle**, not as a solution — see [#125], which is open
-for exactly that reason.
+against this principle**. [#125] is the worked example. Containers
+landed on `eth0`, `eth1` and so on in attach order, which left users
+scripting around the name, so the plugin now returns the requested
+interface name to the engine.
 
 ## Where the project is today
 
@@ -54,6 +56,44 @@ each one ends in a test or a counter rather than a paragraph. The
 [driver reference](reference.md) is the authority on what exists right
 now — if this page and that one disagree, that one is right.
 
+## The 2.x releases
+
+Milestones, read from the tracker rather than written here by hand. Each
+release closes its milestone, so the issues below are what that tag is
+working towards.
+
+**[v2.0.0](https://github.com/claymore666/docker-net-dhcp/milestone/28)**
+is parity with 1.9.0 on the project's own DHCP engine, plus the bugs the
+milestone carries: [#911] tracks the IPv6 half, [#895] gives every ipvlan
+endpoint its own DHCPv6 identity, [#820] settles the path a restarted
+container takes, and [#816] stops a v6 acquisition reporting a lease
+timeout where no exchange was possible. The rest are test and CI defects:
+[#881], [#802], [#682], [#879], [#839], [#827], and this page's own
+sibling [#672].
+
+**[v2.1.0](https://github.com/claymore666/docker-net-dhcp/milestone/30)**
+is addressing Docker can see. [#110] bundles a DHCP IPAM driver, so
+`--ipam-driver null` stops being the only supported shape. [#218], the
+deterministic MAC, is on it and blocked upstream (below).
+
+**[v2.2.0](https://github.com/claymore666/docker-net-dhcp/milestone/29)**
+is full IPv6. [#818] and [#808] acquire an address by SLAAC, [#821] takes
+the gateway, DNS, MTU and routes from the advertisement, [#819] handles
+lifetimes, withdrawal and renumbering, [#817] adds an `ipv6_mode` option,
+[#814] parses Router Advertisements into a first-class event, [#214] is
+prefix delegation, and [#925] accepts a server-initiated Reconfigure.
+
+**[v2.3.0](https://github.com/claymore666/docker-net-dhcp/milestone/31)**
+is the host plumbing an operator does by hand today: [#902] VLAN
+sub-interfaces, [#903] a bridge the plugin creates and owns, [#904]
+link-local fallback where no server answers, [#905] macvlan and ipvlan
+sub-modes. **[#903] and the rule "it will not reconfigure the host's
+networking" below disagree**, and the disagreement is open rather than
+settled: one of the two moves before that milestone is designed.
+
+Two DHCPv6 features carry no milestone and are not scheduled: [#926]
+Rapid Commit and [#927] temporary addresses (IA_TA).
+
 ## Direction
 
 Five themes, in rough order of how much they change for a user. Issue
@@ -67,18 +107,25 @@ accepted an address a statically-configured host already held and every
 counter stayed at zero — the container came up, Docker reported an
 address, and nothing anywhere said otherwise.
 
-The direction that follows from it: **every new failure mode gets a
-counter, not just a log line**, and a counter that can read clean while
-the feature is broken is treated as an unfinished instrument. Expect
-more of the health surface, and more assertions made against what the
-DHCP server saw rather than against what the plugin believes.
+2.0 delivered the next step of this theme. The check moved off the
+parent link and into the DHCP client, as RFC 5227 Address Conflict
+Detection running inside the container's own namespace for the whole
+life of the lease, with `conflict_check` choosing who pays for it
+([`conflict_check`](reference.md#driver-options-network-level)). The
+theme stays open: **every new failure mode gets a counter, not just a
+log line**, and a counter that can read clean while the feature is
+broken is treated as an unfinished instrument. Expect more of the health
+surface, and more assertions made against what the DHCP server saw
+rather than against what the plugin believes.
 
 ### 2. Lease identity across recreates
 
 A DHCP server keys on identity, so address stability is an identity
-problem. Two pieces are designed and blocked rather than unplanned —
-[#218] (deterministic MAC) and [#219] (client-id for ipvlan, where every
-child shares the parent's MAC). See *Blocked upstream* below.
+problem. Two pieces are designed rather than unplanned. [#218], the
+deterministic MAC, is on v2.1.0 and blocked upstream (below). [#219],
+a stable client-id for ipvlan where every child shares the parent's MAC,
+carries no milestone. 2.0 settled the DHCPv6 half of the same question:
+an ipvlan endpoint now gets a DUID of its own ([#895]).
 
 ### 3. arm64
 
@@ -111,24 +158,25 @@ translate into something concrete — this page exists because
 
 ## Blocked upstream, not unplanned
 
-Two features are implemented or designed here and cannot ship until
-Docker's own engine carries a change. They stay open on purpose:
+One feature is designed here and cannot ship until Docker's own engine
+carries a change. It stays open on purpose:
 
 | Here | Needs | Upstream |
 | --- | --- | --- |
-| [#125] — Compose `interface_name` | the remote driver to honour a plugin-returned `DstName` | [moby/moby#52865] (issue, closed), [moby/moby#52866] (PR, **merged** — ships in engine 29.8.0) |
-| [#218] — deterministic MAC | network drivers to receive the endpoint name at `CreateEndpoint`, as IPAM drivers already do | [moby/moby#52870] (issue), [moby/moby#52871] (PR) |
+| [#218] — deterministic MAC | network drivers to receive the endpoint name at `CreateEndpoint`, as IPAM drivers already do | [moby/moby#52870] (issue), [moby/moby#52871] (PR, open) |
 
-Both were filed in June 2026. The `interface_name` pass-through
-([moby/moby#52866]) was **merged** to moby master on 2026-08-26 and is
-milestoned for engine **29.8.0**; [moby/moby#52865] closed with it. It
-unblocks [#125] on the first engine *release* carrying it — 29.8.0 is
-not out yet (measured 2026-08-28: latest release 29.7.2, with
-29.8.0-rc.1 published as a pre-release that day), so the blocker moved from
-review to a release, not away. The endpoint-name change
-([moby/moby#52871]) is still awaiting review. Neither issue here will be closed as "won't fix" while
-that is the only thing in the way; the fork's own half of each is
-written and waiting.
+Both halves were filed in June 2026. The endpoint-name change
+([moby/moby#52871]) is still awaiting review, and [#218] will not be
+closed as "won't fix" while that is the only thing in the way. This
+fork's own half is written and waiting.
+
+The other one has moved. The `interface_name` pass-through
+([moby/moby#52866]) was merged to moby master on 2026-08-26, milestoned
+for engine **29.8.0**, and that engine was released on 2026-09-03;
+[moby/moby#52865] closed with it and [#125] closed on this side. The
+integration suite has not yet run against an engine carrying the change,
+so the behaviour is unconfirmed rather than measured. The tests probe
+for it and turn themselves on, so no change here is waiting on it.
 
 ## What this project will deliberately not do
 
@@ -200,7 +248,31 @@ without motion, or a "will not do" has quietly become something the
 project does, that review is where it gets corrected — not the next time
 someone asks.
 
+[#110]: https://github.com/claymore666/docker-net-dhcp/issues/110
+[#214]: https://github.com/claymore666/docker-net-dhcp/issues/214
+[#672]: https://github.com/claymore666/docker-net-dhcp/issues/672
 [#800]: https://github.com/claymore666/docker-net-dhcp/issues/800
+[#802]: https://github.com/claymore666/docker-net-dhcp/issues/802
+[#808]: https://github.com/claymore666/docker-net-dhcp/issues/808
+[#814]: https://github.com/claymore666/docker-net-dhcp/issues/814
+[#816]: https://github.com/claymore666/docker-net-dhcp/issues/816
+[#817]: https://github.com/claymore666/docker-net-dhcp/issues/817
+[#818]: https://github.com/claymore666/docker-net-dhcp/issues/818
+[#819]: https://github.com/claymore666/docker-net-dhcp/issues/819
+[#820]: https://github.com/claymore666/docker-net-dhcp/issues/820
+[#821]: https://github.com/claymore666/docker-net-dhcp/issues/821
+[#879]: https://github.com/claymore666/docker-net-dhcp/issues/879
+[#881]: https://github.com/claymore666/docker-net-dhcp/issues/881
+[#895]: https://github.com/claymore666/docker-net-dhcp/issues/895
+[#902]: https://github.com/claymore666/docker-net-dhcp/issues/902
+[#903]: https://github.com/claymore666/docker-net-dhcp/issues/903
+[#904]: https://github.com/claymore666/docker-net-dhcp/issues/904
+[#905]: https://github.com/claymore666/docker-net-dhcp/issues/905
+[#925]: https://github.com/claymore666/docker-net-dhcp/issues/925
+[#926]: https://github.com/claymore666/docker-net-dhcp/issues/926
+[#927]: https://github.com/claymore666/docker-net-dhcp/issues/927
+[#827]: https://github.com/claymore666/docker-net-dhcp/issues/827
+[#839]: https://github.com/claymore666/docker-net-dhcp/issues/839
 [#815]: https://github.com/claymore666/docker-net-dhcp/issues/815
 [#868]: https://github.com/claymore666/docker-net-dhcp/issues/868
 [#875]: https://github.com/claymore666/docker-net-dhcp/issues/875
@@ -220,6 +292,7 @@ someone asks.
 [#669]: https://github.com/claymore666/docker-net-dhcp/issues/669
 [#682]: https://github.com/claymore666/docker-net-dhcp/issues/682
 [#699]: https://github.com/claymore666/docker-net-dhcp/issues/699
+[#725]: https://github.com/claymore666/docker-net-dhcp/issues/725
 [moby/moby#52865]: https://github.com/moby/moby/issues/52865
 [moby/moby#52866]: https://github.com/moby/moby/pull/52866
 [moby/moby#52870]: https://github.com/moby/moby/issues/52870

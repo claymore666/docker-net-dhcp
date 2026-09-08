@@ -46,6 +46,18 @@ in the snippets below to install it.
   `CAP_NET_RAW`, `CAP_SYS_ADMIN`, `CAP_SYS_PTRACE`. `docker plugin
   install` prompts for the set; what each is for is in
   [SECURITY.md](SECURITY.md#scope--what-this-plugin-is).
+- **Kernel link types.** Bridge mode needs `veth` and `bridge`; `macvlan`
+  and `ipvlan` each need the kernel module of the same name. A stock
+  distribution kernel loads one the first time that link type is asked
+  for, so there is normally nothing to do: measured on Linux 6.12,
+  `ipvlan` was absent from `lsmod` before the first
+  `ip link add ... type ipvlan` and present after, with no `modprobe`. A
+  kernel built without the type, or a host where module loading is
+  turned off, fails `docker network create` for that mode.
+- **Root on the host.** The plugin runs as root and its socket lives
+  under `/run/docker/plugins`, which only root can read. Reading
+  [`/Plugin.Health`](docs/reference.md#pluginhealth) therefore needs `sudo`; without it `curl -s`
+  prints nothing and exits 0, which looks like a dead endpoint.
 - **Mode constraints.** `bridge` expects a host bridge you maintain;
   `macvlan` and `ipvlan` attach to a host NIC and change nothing on the
   host, at the cost of the kernel rule that a child cannot reach its own

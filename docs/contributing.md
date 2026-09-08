@@ -9,7 +9,9 @@ rather than in a public issue.
 
 This page is what an acceptable pull request looks like. Everything on it
 is enforced by a check, so nothing here depends on a reviewer remembering
-it.
+it. The
+[pull request template](https://github.com/claymore666/docker-net-dhcp/blob/dev/.github/PULL_REQUEST_TEMPLATE.md)
+carries the same list as a checklist you fill in as you open one.
 
 ## Before you push
 

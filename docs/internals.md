@@ -678,13 +678,14 @@ they probe whether the engine applies a remote driver's `DstName` and
 skip when it does not. The probe (`engineAppliesIfname`, used by
 `TestInterfaceName_MultiNetworkDeterministic`) runs a throwaway
 container and checks the interface the engine actually created — there
-is no version threshold to hit. The probe fails on every *released*
-engine: the upstream fix (moby/moby#52866, stopping the remote-driver
-proxy from dropping `DstName`) merged to moby master on 2026-08-26 and
-is milestoned for engine 29.8.0, which is not out yet (latest release
-29.7.2 as of 2026-08-27). Until a box running an engine that carries it
-executes the suite, those tests skip in CI and locally alike. A skip is
-expected, not a signal that the run diverged.
+is no version threshold to hit. The probe fails on the engine the suite runs
+against: the upstream fix (moby/moby#52866, stopping the remote-driver
+proxy from dropping `DstName`) merged to moby master on 2026-08-26,
+is milestoned for engine 29.8.0, and that engine was released on
+2026-09-03. The lane's engine is still 29.7.2, read from the run's
+`Fixture engine drift` step. Until a box running an engine that carries
+the change executes the suite, those tests skip in CI and locally alike.
+A skip is expected, and it is not a signal that the run diverged.
 
 ## Request fixtures
 
@@ -841,4 +842,3 @@ and the fixtures are what showed it.
 
 - [Driver reference](reference.md) — every option, counter, and behaviour
 - [Bridge mode](bridge-mode.md) and [macvlan / ipvlan](parent-attached-modes.md) setup
-[#725]: https://github.com/claymore666/docker-net-dhcp/issues/725
