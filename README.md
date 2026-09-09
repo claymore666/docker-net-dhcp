@@ -9,7 +9,7 @@
 [![Docs](https://img.shields.io/badge/docs-claymore666.github.io-blue?logo=materialformkdocs&logoColor=white)](https://claymore666.github.io/docker-net-dhcp/)
 
 A Docker network plugin that gives every container an address from the
-DHCP server your LAN already runs — your router, a Fritz!Box, dnsmasq —
+DHCP server your LAN already runs (your router, a Fritz!Box, dnsmasq)
 instead of from Docker's own IPAM, over `bridge`, `macvlan` or `ipvlan`,
 for IPv4 and IPv6. The DHCP exchange runs inside the plugin on the
 project's own engine, the [dhcp-golib][dhcp-golib] library: there is no
@@ -22,12 +22,13 @@ in the snippets below to install it.
 ## Requirements
 
 - **Docker Engine.** Every change is tested against the engine the
-  integration suite runs on, **29.7.2** today. That is the version this
-  build is measured on, not a floor — the minimum has never been measured
-  (#670), so the measured number is the honest one to publish.
+  integration suite runs on, **29.7.2** today, read from that run's
+  `Fixture engine drift` step. It is the version this build is measured
+  on. It is not a floor: the minimum has never been measured (#670), so
+  the measured number is the honest one to publish.
 - **Plugin interface `docker.networkdriver/1.0`**, which is what the
-  plugin manifest declares. The Docker API version is negotiated with the
-  daemon rather than pinned, so no API floor is claimed here either.
+  plugin manifest declares. The plugin negotiates the Docker API version
+  with the daemon, so no API floor is claimed here either.
 - **One directory, created once per host, before `docker plugin install`**
   (the line is in the quick start below). Docker will not create a missing
   bind source, so without it the install fails at start-up and leaves the
@@ -35,7 +36,7 @@ in the snippets below to install it.
   answers only `plugin ... already exists` and names nothing. Recovery:
   [the reference](docs/reference.md#install-upgrade-uninstall).
 - **Architecture.** `linux/amd64` on the bare tag, `linux/arm64` on the
-  `-arm64` tag — a Docker plugin cannot be installed from a
+  `-arm64` tag. A Docker plugin cannot be installed from a
   multi-architecture manifest list, so the tag is how the architecture is
   chosen, in **every** snippet that names the image and not only the
   install line. Why, in full:
@@ -46,6 +47,20 @@ in the snippets below to install it.
   `CAP_NET_RAW`, `CAP_SYS_ADMIN`, `CAP_SYS_PTRACE`. `docker plugin
   install` prompts for the set; what each is for is in
   [SECURITY.md](SECURITY.md#scope--what-this-plugin-is).
+- **Kernel link types.** Bridge mode needs `veth` and `bridge`; `macvlan`
+  and `ipvlan` each need the kernel module of the same name. A stock
+  distribution kernel loads one the first time that link type is asked
+  for, so there is normally nothing to do: measured on Linux 6.12,
+  `ipvlan` was absent from `lsmod` before the first
+  `ip link add ... type ipvlan` and present after, with no `modprobe`. A
+  kernel built without the type, or a host where module loading is
+  turned off, fails `docker network create` for that mode.
+- **Root on the host.** The plugin runs as root and its socket lives
+  under `/run/docker/plugins`, which only root can read. Reading
+  [`/Plugin.Health`](docs/reference.md#pluginhealth) therefore needs
+  `sudo`. Without it `curl -s` prints nothing and exits 7, which is what
+  an absent socket also gives, so a permission problem looks like a
+  stopped plugin.
 - **Mode constraints.** `bridge` expects a host bridge you maintain;
   `macvlan` and `ipvlan` attach to a host NIC and change nothing on the
   host, at the cost of the kernel rule that a child cannot reach its own
@@ -55,7 +70,7 @@ in the snippets below to install it.
 ## Quick start
 
 ```bash
-# Once per host, before the install — see Requirements above.
+# Once per host, before the install. See Requirements above.
 sudo mkdir -p /var/lib/net-dhcp
 
 # amd64
@@ -76,8 +91,8 @@ docker run --rm -ti --network lan-dhcp alpine ip address show
 
 `--ipam-driver null` is **mandatory**: it stops Docker handing out
 addresses that would collide with the real LAN. On arm64 the `-arm64`
-tag goes in this line too — a network records the tagged reference as its
-driver. Add `-o ipv6=true` for a DHCPv6 lease beside the v4 one.
+tag goes in this line too, because a network records the tagged reference
+as its driver. Add `-o ipv6=true` for a DHCPv6 lease beside the v4 one.
 
 After that, plain Compose. No static addresses, no sidecar, nothing per
 container:
@@ -96,19 +111,19 @@ networks:
 ## Why this one
 
 - **The address comes from the LAN's own server**, so the router's lease
-  table, its MAC reservations and — with `-o register_dns=true` — its DNS
-  see the container as one more host on the network. The alternative is a
-  hand-assigned address in every Compose file.
-- **The lease is held, not just taken.** Renewal, rebind, NAK and expiry
+  table, its MAC reservations and, with `-o register_dns=true`, its DNS
+  all see the container as one more host on the network. The alternative
+  is a hand-assigned address in every Compose file.
+- **The lease is held for as long as the container runs.** Renewal, rebind, NAK and expiry
   run in the plugin, one client per endpoint, and the lifecycle is visible
-  on [the health endpoint](docs/reference.md#pluginhealth) — no external
-  DHCP client to install, supervise or reap.
+  on [the health endpoint](docs/reference.md#pluginhealth). There is no
+  external DHCP client to install, supervise or reap.
 - **IPv6 is the same one line.** `-o ipv6=true` adds a DHCPv6 lease with
   its own timers, its own counters and a DUID that survives a restart.
 - **A restart keeps the address.** In `bridge` and `macvlan` the MAC is
   carried across `docker restart`, so a server-side reservation still
   matches and the old address is re-requested; a plugin restart or upgrade
-  re-adopts running containers rather than letting their leases lapse
+  re-adopts running containers, so their leases do not lapse
   ([how](docs/reference.md#restart-stability-mac-and-ip)).
 - **No host plumbing per container.** `macvlan` and `ipvlan` attach to a
   NIC that is already there: no bridge to build, no route to add, nothing
@@ -123,7 +138,7 @@ This began as a fork of [`devplayer0/docker-net-dhcp`][fork-parent]
 (quiet since 2021); since 2.0 it is its own product, with its own DHCP
 engine.
 
-GPL-3.0 — see [LICENSE.md](LICENSE.md). The upstream project is GPL-3.0
+GPL-3.0. See [LICENSE.md](LICENSE.md). The upstream project is GPL-3.0
 and this derivative stays under the same licence.
 
 [fork-parent]: https://github.com/devplayer0/docker-net-dhcp
@@ -132,20 +147,20 @@ and this derivative stays under the same licence.
 ## Documentation
 
 Published at **<https://claymore666.github.io/docker-net-dhcp/>**, one
-version per release; the same pages live in `docs/`.
+version per release; the same pages live in [`docs/`](docs).
 
-- **[Driver reference](docs/reference.md)** — the manual: every option,
+- **[Driver reference](docs/reference.md)** is the manual: every option,
   setting and counter, install and upgrade, lease behaviour,
   observability, Compose usage, troubleshooting.
-- **[Bridge mode](docs/bridge-mode.md)** — the one-time host bridge setup.
-- **[macvlan / ipvlan modes](docs/parent-attached-modes.md)** — choosing
-  between them, and their constraints.
-- **[Verifying releases](docs/verifying-releases.md)** — signatures, SLSA
-  provenance, SBOMs, and rebuilding the binaries yourself.
-- **[How it works](docs/internals.md)** — the mechanism, for contributors.
-- **[Roadmap](docs/roadmap.md)** — where this is going, and what it will
+- **[Bridge mode](docs/bridge-mode.md)** is the one-time host bridge setup.
+- **[macvlan / ipvlan modes](docs/parent-attached-modes.md)** covers
+  choosing between them, and their constraints.
+- **[Verifying releases](docs/verifying-releases.md)** covers signatures,
+  SLSA provenance, SBOMs, and rebuilding the binaries yourself.
+- **[How it works](docs/internals.md)** is the mechanism, for contributors.
+- **[Roadmap](docs/roadmap.md)** is where this is going, and what it will
   not do.
-- **[Contributing](docs/contributing.md)** — what an acceptable pull
+- **[Contributing](docs/contributing.md)** is what an acceptable pull
   request looks like.
 - **[Changelog](RELEASE_NOTES.md)** · **[Release runbook](docs/release-runbook.md)**
 
@@ -157,8 +172,8 @@ and are mirrored to Docker Hub (`claymore666/net-dhcp:vX.Y.Z`).
 Every release from v1.1.0 is cosign-signed (keyless) on both registries
 and ships an SBOM; **SLSA build provenance is attested for the GHCR image
 only**, so verify provenance against the `ghcr.io` reference. Both
-commands need **cosign v3 or newer** — v2 cannot read the bundle format
-the release signs with and fails in a way that looks like a broken
+commands need **cosign v3 or newer**. v2 cannot read the bundle format
+the release signs with, and it fails in a way that looks like a broken
 signature. Replace `VERSION`:
 
 ```bash
@@ -179,7 +194,7 @@ The whole procedure, including rebuilding the binaries yourself, is in
 - **Bug reports & feature requests:** the
   [issue forms](https://github.com/claymore666/docker-net-dhcp/issues/new/choose).
   Include the plugin version, your Docker version, the mode, and the
-  [plugin log](docs/reference.md#plugin-log) — Docker has no
+  [plugin log](docs/reference.md#plugin-log). Docker has no
   `plugin logs` subcommand.
 - **Questions:** ask in
   [Discussions](https://github.com/claymore666/docker-net-dhcp/discussions/new?category=q-a);
@@ -200,18 +215,18 @@ Contributions are welcome. Open a pull request against the `dev` branch;
 - New functionality is expected to ship with tests, and a per-package
   coverage ratchet enforces that at release time.
 - Commits and pull request descriptions carry no AI-assistant
-  attribution and the commit author is a person — the `attribution`
+  attribution and the commit author is a person. The `attribution`
   check reads every commit and the description.
 - Every required check must be green; branch protection holds the list.
 
 <!-- starter-task-claim: begin -->
 - **Looking for somewhere to start?** There are no starter tasks open at the
   moment. The ones that were seeded were closed as the work they described
-  landed, and rather than send you to an empty list this section says so. If
-  you would like a first task,
+  landed, and this section says so instead of sending you to an empty list.
+  If you would like a first task,
   [ask in Discussions](https://github.com/claymore666/docker-net-dhcp/discussions/new?category=q-a)
-  and say what interests you — a subsystem, a bug you hit, a piece of the
-  documentation you found thin — and one will be scoped against it. When
+  and say what interests you: a subsystem, a bug you hit, a piece of the
+  documentation you found thin. One will be scoped against it. When
   starter tasks exist again they carry the `good first issue` label and this
   section links to them.
 <!-- starter-task-claim: end -->
