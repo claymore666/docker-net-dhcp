@@ -158,8 +158,36 @@ jobs:
 
       # shell: bash is LOAD-BEARING for pipefail, exactly as in
       # integration.yml (#297).
+      # ITEST_TIMEOUT, not the Makefile's 20m default. THIS LANE RUNS THE
+      # WHOLE MAIN SUITE IN ONE go test BINARY; the amd64 lane splits the
+      # same suite across nine shards, so the 20m ceiling that leaves
+      # every shard idle is the whole budget here. At v2.0.0-rc2 it fired:
+      # run 34368481103 panicked with "test timed out after 20m0s" having
+      # completed 56 of the 93 main tests.
+      #
+      # DERIVED, not guessed. The 56 that ran cost 1167.7s on this board.
+      # test/integration/testdata/suite-durations.tsv gives 1201.3s for
+      # the same 56 on amd64, so this board runs them at 0.972 of amd64
+      # in aggregate and at a per-test median of 1.011. The 37 that never
+      # ran cost 606.6s on amd64, so the whole main suite projects to
+      # 1167.7 + 606.6 x 1.011 = 1780.6s, 29.7 minutes. Everything
+      # outside the per-test timers measured 4 seconds at rc1.
+      #
+      # 45m is that projection with 1.52x of headroom, 15 minutes of
+      # slack. rc1 passed with 0.3 percent of margin (19m59s against 20m)
+      # and rc2 was the next commit, so the margin this lane had was not
+      # a margin.
+      #
+      # It fits the job. Measured on the rc2 job: 2m08s before this step,
+      # 4m39s for the failure suite after it, under a minute for the rest.
+      # Both suites hanging to their ceilings is 45 + 20 + 4 = 69 minutes,
+      # inside timeout-minutes: 120 above.
+      #
+      # The failure suite keeps the 20m default: it measured 4m39s here.
       - name: Run main suite
         shell: bash
+        env:
+          ITEST_TIMEOUT: 45m
         run: make integration-test 2>&1 | tee /tmp/itest-arm64-main.log
 
       # if: always() for the same reason as integration-hosted.yml (#742):
