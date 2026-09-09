@@ -54,8 +54,8 @@ import (
 // libnetwork has no in-place endpoint-address swap, so the container's
 // NetworkSettings still name the address the squatter holds. That is
 // the same truthfulness gap lease_changed reports for IPv4 (#104) and
-// it is a v2.1 IPAM matter; it is pinned here so that closing it
-// arrives as a failing test rather than as nobody noticing.
+// it is a v2.1 IPAM matter; it is pinned by an EQUALITY here, so that
+// closing it arrives as a failing test rather than as nobody noticing.
 func TestDHCPv6_ASquatOnARunningContainerIsCountedAndTheAddressChanges(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 	defer cancel()
@@ -208,12 +208,18 @@ func TestDHCPv6_ASquatOnARunningContainerIsCountedAndTheAddressChanges(t *testin
 			"will find none")
 	}
 
-	// PINNED, KNOWN WRONG, AND NAMED AS SUCH. Docker still reports the
-	// address the squatter holds: libnetwork has no in-place endpoint
-	// address swap, so nothing the plugin can do here updates it
-	// (#104). This is the v2.1 IPAM question, not a defect this test
-	// wants fixed silently -- if it ever starts passing, the assertion
-	// below is the notification.
+	// PINNED, KNOWN WRONG, AND ASSERTED AS SUCH. Docker still reports
+	// the address the squatter holds: libnetwork has no in-place
+	// endpoint address swap, so nothing the plugin can do here updates
+	// it (#104). This is the v2.1 IPAM question, not a defect this test
+	// wants fixed silently.
+	//
+	// ASSERTED, not logged. A log line goes green whatever Docker
+	// answers -- the replacement address, an empty string, a third
+	// value -- and a pin that cannot go red pins nothing. The equality
+	// below fails the moment the divergence closes OR changes shape,
+	// which is the notification this test exists to give; when it does,
+	// the failure message says what to write instead.
 	ins, err := cli.ContainerInspect(ctx, id)
 	if err != nil {
 		t.Fatalf("ContainerInspect: %v", err)
@@ -223,10 +229,14 @@ func TestDHCPv6_ASquatOnARunningContainerIsCountedAndTheAddressChanges(t *testin
 		t.Fatalf("container is not attached to %s any more", netName)
 	}
 	if ep.GlobalIPv6Address != held {
-		t.Logf("KNOWN-WRONG PIN MOVED: docker now reports %q for this endpoint, not the "+
-			"pre-conflict %s. If libnetwork gained an endpoint-address swap, or the plugin "+
-			"started using one, this test is the place that records it (#104, v2.1 IPAM)",
-			ep.GlobalIPv6Address, held)
+		t.Errorf("KNOWN-WRONG PIN MOVED: docker reports %q for this endpoint, not the "+
+			"pre-conflict %s that this round pins.\n"+
+			"  The container's interface carries %s. If libnetwork gained an endpoint-address "+
+			"swap, or the plugin started using one, the divergence #104 describes has closed "+
+			"and this assertion is what should change (v2.1 IPAM). If docker reports neither "+
+			"address, the endpoint record is being written by something this test does not "+
+			"know about, which is a defect and not a closure.",
+			ep.GlobalIPv6Address, held, replacement)
 	}
 
 	// The conflict this test staged is real and the counter is

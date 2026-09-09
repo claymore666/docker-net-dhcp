@@ -132,12 +132,13 @@ func TestACDCensusFindings(t *testing.T) {
 			// whose only bind was a v6 one has an EMPTY domain for this
 			// gate and a non-zero sum.
 			//
-			// This is the post-restart shape the issue names, arrived at
-			// from the family side: the plugin is recycled, recovery
-			// re-adopts a running endpoint, its resumed client re-binds
-			// in the new process, and no CreateEndpoint ran here at all.
-			// Under the pre-fix guard: FATAL, on a run in which nothing
-			// was wrong.
+			// This is the post-restart shape from the FAMILY side: the
+			// plugin is recycled, recovery re-adopts a running endpoint
+			// whose lease is v6, its resumed client re-binds in the new
+			// process, and no CreateEndpoint ran here at all. Under the
+			// pre-fix guard: FATAL, on a run in which nothing was wrong.
+			// The v4 side of the same shape is the case two rows below,
+			// and it is NOT closed by this change.
 			name: "a v6 lease with no v4 lease is not a never-ran finding",
 			h:    &HealthResponse{ACDProbesSent: 0, ACDARPSendFailures: 0, LeasesObtained: 1, LeasesObtainedV4: 0},
 			want: nil,
@@ -149,6 +150,33 @@ func TestACDCensusFindings(t *testing.T) {
 			name: "a v4 lease alongside v6 ones still fails when nothing probed",
 			h:    &HealthResponse{ACDProbesSent: 0, ACDARPSendFailures: 0, LeasesObtained: 4, LeasesObtainedV4: 1},
 			want: []string{"acd_probes_sent"},
+		},
+		{
+			// PINNED OPEN, NOT CLOSED: the P-3 residual of #881, and the
+			// half the family narrowing does NOT reach. Written as a
+			// case so the tree says which of the two it is.
+			//
+			// The shape: the plugin is recycled, recovery adopts a live
+			// IPv4 endpoint, and the resumed client's DHCPACK binds, so
+			// leases_obtained_v4 moves. At Join the mode is
+			// ConflictAsync, and async binds first and probes after: the
+			// library arms a timer at uniform(0, PROBE_WAIT) (RFC 5227
+			// section 2.1) and the first ARP Probe leaves when it fires.
+			// A health read inside that window sees the lease and not
+			// the probe. Both counters here read BELOW the baseline,
+			// which is the restart itself.
+			//
+			// FATAL, deliberately. The counters carry no time, so this
+			// census cannot tell that window from a plugin that never
+			// probes at all — which is the fault the row exists to
+			// catch — and narrowing the domain any further would delete
+			// the check rather than fix it. If this verdict ever
+			// changes it has to change as a decision; this case is what
+			// makes that loud.
+			name:     "a v4 lease whose probe timer has not fired yet is STILL fatal (P-3)",
+			h:        &HealthResponse{ACDProbesSent: 0, ACDARPSendFailures: 0, LeasesObtained: 1, LeasesObtainedV4: 1},
+			baseline: &HealthResponse{ACDProbesSent: 9, ACDARPSendFailures: 0, LeasesObtained: 9, LeasesObtainedV4: 9},
+			want:     []string{"acd_probes_sent"},
 		},
 		{
 			// The v6 half does not leak into the domain through the
