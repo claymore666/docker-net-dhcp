@@ -16,8 +16,7 @@ project's own engine, the [dhcp-golib][dhcp-golib] library: there is no
 external DHCP client to install and no client process per container.
 
 This branch is the 2.0 line and every page on it describes that build.
-Its first pre-release is `v2.0.0-rc1`; substitute that tag for the version
-in the snippets below to install it.
+The snippets below install the current release.
 
 ## Requirements
 

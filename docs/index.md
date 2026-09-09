@@ -9,10 +9,9 @@ project's own engine, the
 no external DHCP client to install and no client process per container.
 
 !!! note "This documentation is the 2.0 line's"
-    These pages describe the 2.0 build. Its first pre-release is
-    `v2.0.0-rc1`; substitute that tag for the version in the snippets
-    below to install it. Pick a v1.x version from the selector for the
-    1.x manual.
+    These pages describe the 2.0 build. The snippets below install the
+    current release. Pick a v1.x version from the selector for the 1.x
+    manual.
 
 ## Requirements
 
