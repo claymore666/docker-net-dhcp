@@ -10,7 +10,7 @@
 #
 # POPULATION: TOP-LEVEL TEST FUNCTIONS, PARENTS ONLY.
 # One row per `func TestX(t *testing.T)` in test/integration/*_test.go —
-# 95 of them, the main suite's 91 and the failure suite's 4. A subtest's
+# 97 of them, the main suite's 93 and the failure suite's 4. A subtest's
 # seconds are inside its parent's figure and are NOT a row of their own.
 # That is stated because the previous edition's header did not state it
 # and the population was read back two ways: 104 rows summing 1804.88s
@@ -115,6 +115,7 @@ TestConflictCheck_SquattedOfferIsDeclined	37.00
 TestConflictCheck_SquatterAfterTheFact	36.71
 TestConflictCheck_WaitAcquisitionIsTimed	9.15
 TestDHCPv6_ADuplicateOnTheSegmentIsRefused	30.08
+TestDHCPv6_ASquatOnARunningContainerIsCountedAndTheAddressChanges	38.00
 TestDHCPv6_Managed_ServerSilent_IsStillFatal	27.95
 TestDHCPv6_Managed_StillRequiresALease	16.39
 TestDHCPv6_NoAddressModes_StartTheEndpoint	80.63
@@ -123,6 +124,7 @@ TestDNSPropagate_BridgeModeWritesResolvConfToo	11.60
 TestDNSPropagate_DefaultIsUnchanged	11.72
 TestDNSPropagate_OptInWritesResolvConf	12.62
 TestDUID_PersistsAcrossPluginRestart	17.79
+TestDisplacedClient_TheDisplacedClientLeavesTheInterface	30.00
 TestDockerAPI_OnlySafeMethodsReachTheDaemon	11.41
 TestErrors_DriverOptIPMalformed	0.40
 TestErrors_NetworkCreateValidation	0.04

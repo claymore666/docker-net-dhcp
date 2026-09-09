@@ -109,6 +109,12 @@ type HealthResponse struct {
 	ActiveEndpoints int     `json:"active_endpoints"`
 	PendingHints    int     `json:"pending_hints"`
 	RecoveredOK     int32   `json:"recovered_ok"`
+	// DisplacedStops counts managers a Join stopped because it found
+	// one already registered for the endpoint (#338). It is the
+	// plugin's own opinion that it ASKED a client to stop; what proves
+	// the client went is the AF_PACKET socket table in the container's
+	// namespace. See PacketSocket.
+	DisplacedStops int32 `json:"displaced_stops"`
 	RecoveryFailed int32 `json:"recovery_failed"`
 	// RecoveryFailed has four benign twins, at the four points recovery
 	// can stop early for a reason that is not a plugin fault. None is
