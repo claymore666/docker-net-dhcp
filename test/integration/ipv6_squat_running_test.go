@@ -184,11 +184,23 @@ func TestDHCPv6_ASquatOnARunningContainerIsCountedAndTheAddressChanges(t *testin
 	// lines across the whole run; a conflict that moved a counter and
 	// wrote nothing would be invisible to it.
 	logText := harness.ReadPluginLog(t, ctx)
-	const wantLine = "The IPv6 address this endpoint HOLDS was found in use by another node on the link"
-	if !strings.Contains(logText, wantLine) {
-		t.Errorf("the plugin log does not carry the DHCPv6 conflict line %q.\n"+
-			"  The health floor counts conflicts by matching this text across the whole run, "+
-			"so every v6 squat in a run the plugin restarted through would be invisible.", wantLine)
+	// The citation rather than a whole sentence, because WHICH of the
+	// two DHCPv6 lines is written is not this test's business and is
+	// not fixed by the construction: the recycled client runs detection
+	// on an address it has not confirmed yet, so the library reports it
+	// as offered (held=false) even though the container had been using
+	// it all run. Both v6 lines carry this citation and neither v4 line
+	// does, so it identifies the family and the protocol that found the
+	// conflict without pinning the arm.
+	const wantCitation = "(RFC 4862 section 5.4 Duplicate Address Detection)"
+	if !strings.Contains(logText, wantCitation) {
+		t.Errorf("the plugin log carries no DHCPv6 conflict line: nothing cites %q.\n"+
+			"  The health floor counts conflicts by matching these lines across the whole run, "+
+			"so every v6 squat in a run the plugin restarted through would be invisible.", wantCitation)
+	}
+	if !strings.Contains(logText, "family=ipv6") {
+		t.Error("no log line carries family=ipv6; the conflict was reported without saying " +
+			"which protocol found it, which is what sends an operator to the wrong tool")
 	}
 	if strings.Contains(logText, "(RFC 5227 section 2.4)") {
 		t.Error("the plugin reported this conflict as RFC 5227 section 2.4, which is ARP. " +
