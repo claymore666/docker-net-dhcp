@@ -126,10 +126,12 @@ func TestMetrics_SocketServesTheFullSurface(t *testing.T) {
 			}
 			continue
 		}
-		// The _v6 counters are exposed as family="ipv6" on the base
-		// name rather than as series of their own; the base name is
-		// checked on its own iteration.
-		if base, ok := strings.CutSuffix(tag, "_v6"); ok {
+		// A family half is exposed as family="ipv4" / family="ipv6" on
+		// the base name rather than as a series of its own; the base
+		// name is checked on its own iteration. BOTH halves: a rule
+		// that knew only _v6 would report every new v4 half as
+		// unexposed, which is a false alarm about the same shape.
+		if base, ok := familyHalfBase(tag); ok {
 			if !series["net_dhcp_"+base+"_total"] {
 				missing = append(missing, tag+" (via "+base+")")
 			}
@@ -145,6 +147,19 @@ func TestMetrics_SocketServesTheFullSurface(t *testing.T) {
 			"An operator alerting on these would get no series and no error — silence that looks like zero.",
 			len(missing), strings.Join(missing, ", "))
 	}
+}
+
+// familyHalfBase reports the base counter a per-family half belongs to.
+// The halves carry no series of their own: they ride the base name with
+// a family label, which is what makes address_conflicts and
+// leases_obtained comparable across the two protocols.
+func familyHalfBase(tag string) (string, bool) {
+	for _, suffix := range []string{"_v4", "_v6"} {
+		if base, ok := strings.CutSuffix(tag, suffix); ok {
+			return base, true
+		}
+	}
+	return "", false
 }
 
 // seriesNames pulls the metric names out of an exposition body, ignoring
