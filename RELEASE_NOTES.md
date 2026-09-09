@@ -2205,9 +2205,9 @@ callers reach for the right pattern.
   container netnses via `/proc/<pid>/ns/net` symlink resolution
   through `setns(2)`, which only needs `CAP_SYS_ADMIN`. The smoke
   test confirmed the plugin still works without the cap (I-2).
-- `govulncheck` findings GO-2026-4887 / GO-2026-4883 documented in
-  the "Acknowledged findings" preamble as not reachable from
-  client-only `docker.Client` usage (I-10).
+- `govulncheck` findings GO-2026-4887 / GO-2026-4883 documented as
+  not reachable from client-only `docker.Client` usage (I-10). The
+  justification is now kept in `.github/vuln-allowlist.txt`.
 
 ### Code-review polish
 
