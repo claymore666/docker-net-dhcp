@@ -46,9 +46,10 @@ name: Label taxonomy
 # place.
 #
 # NOTE ON WHICH COPY RUNS. Scheduled workflows only ever fire from the
-# default branch, so this file's behaviour is whatever is on `main` — not
-# what is on `dev`. Changes here take effect at the next release, not at
-# merge.
+# default branch, so the triggers and steps in THIS FILE are whatever is on
+# `main`, and an edit to them takes effect at the next release. The script
+# and the declaration it judges are not: the checkout below is pinned to
+# `dev` (#839).
 on:
   schedule:
     # Daily, offset from Milestone scope (23 6) and Starter tasks (41 7) so
@@ -67,6 +68,16 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Pinned (#839), for the reason issue-state-labels.yml is
+          # pinned (#490): a cron only ever fires from the default
+          # branch, so unpinned this judges live tracker state against
+          # `main`'s declaration for the whole window between a change
+          # merging and shipping. It binds workflow_dispatch too, so a
+          # dispatch reports on `dev`'s copy whatever ref it names.
+          # Workflows that judge the TREE stay unpinned: for those,
+          # `main`'s copy is the right copy.
+          ref: dev
 
       - name: The tracker matches the declared taxonomy
         env:
