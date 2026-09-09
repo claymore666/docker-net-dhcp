@@ -11,58 +11,21 @@ forks that have been waiting on review.
 
 [upstream]: https://github.com/devplayer0/docker-net-dhcp
 
-## Acknowledged findings (not applicable to this fork)
-
-The third-pass code review of v0.5.3 ran `govulncheck` and surfaced
-two informational findings on `github.com/docker/docker`:
-
-- **GO-2026-4887** — Moby AuthZ plugin bypass on oversized request bodies.
-- **GO-2026-4883** — Moby off-by-one in plugin privilege validation.
-
-Both are **daemon-side** vulnerabilities. This plugin uses
-`github.com/docker/docker` only as a client library — the call sites
-are `NetworkList`, `NetworkInspect`, and `ContainerInspect`. Neither
-vulnerable code path is reachable from the plugin process, so no
-action is required. Recorded here so future audits don't
-re-investigate. (Original report: third-pass code review, 2026-05-04.)
-
-The v1.1.0 Dependency Review gate (#193) surfaced two further
-`github.com/docker/docker` advisories at v28.5.2:
-
-- **GHSA-x86f-5xw2-fm2r** — `PUT /containers/{id}/archive` executes a
-  container binary on the host.
-- **GHSA-rg2x-37c3-w2rh** — race condition in `docker cp` allows
-  bind-mount redirection to a host path.
-
-Both are `docker cp` / archive-extraction paths in the Moby daemon and
-CLI. The plugin invokes none of them — its only client calls remain the
-three inspect/list APIs above. No fix is published on the frozen
-`github.com/docker/docker` module path (successor `moby/moby/v2`
-migration tracked in #178). They are accepted at the advisory level in
-`.github/dependency-review-config.yml` with a review date, alongside the
-older AuthZ finding (GHSA-x744-4wpc-v9h2 = GO-2026-4887), and will be
-re-evaluated when the module migration lands.
-
-During the v1.3.0 window (2026-06-28) the Go vulnerability database
-imported these advisories, so `govulncheck` now reports them through
-module-init symbol traces — the assessment above is unchanged, but
-"govulncheck is green" no longer holds. All three (GO-2026-5746 =
-GHSA-x86f-5xw2-fm2r, GO-2026-5617 = GHSA-rg2x-37c3-w2rh, plus the
-newly published GO-2026-5668 = GHSA-vp62-88p7-qqf5, a `docker cp`
-symlink-swap empty-file race, also daemon-side) are accepted with
-justification in `.github/vuln-allowlist.txt` (#291, #292) until a
-fixed release ships on the module path we depend on.
-
-As of v1.3.4 (#333), GO-2026-5746 is no longer reported by
-`govulncheck` and its allowlist entry has been removed — the
-assessment above is retained here as the audit trail. If it becomes
-reachable again the gate fails loudly rather than silently
-re-accepting it.
-
 ## v2.0.0
 
 Pre-releases of this version: `v2.0.0-rc1` (2026-09-05, IPv4 only) and
 `v2.0.0-rc2` (2026-09-09).
+
+Version 2.0 replaces the external DHCP client with a library written for this
+plugin, `github.com/claymore666/dhcp-golib`, which handles IPv4 and IPv6. That
+client was involved in a large share of the bugs closed on the 1.x line. The
+plugin saw it only through its hook environment, so parts of the exchange
+could not be observed or tested from inside the plugin. The library carries
+its own tests, many of them driving a real DHCP server. The plugin's
+integration suite runs against real DHCP servers on amd64 in CI and on arm64
+hardware at each release candidate, covering address conflicts, plugin and
+daemon restarts, and lease recovery. The 2.0 line has run in CI and has not
+yet run in production.
 
 The plugin performs the DHCP exchange itself, through the Go library
 `github.com/claymore666/dhcp-golib` v0.1.0, instead of driving an external
@@ -80,7 +43,7 @@ Required on every host before `docker plugin install`, unchanged since v1.5.0:
 sudo mkdir -p /var/lib/net-dhcp
 ```
 
-**The upgrade re-prompts for privileges, and you must approve it.** The
+The upgrade re-prompts for privileges, and you must approve it. The
 plugin manifest now requests a fourth Linux capability, `CAP_NET_RAW`,
 alongside `CAP_NET_ADMIN`, `CAP_SYS_ADMIN` and `CAP_SYS_PTRACE`. It is
 requested because the plugin now opens the packet socket that carries the
@@ -88,7 +51,7 @@ DHCP exchange, which the external client used to open for it. `docker plugin
 upgrade` shows the new list and waits; an unattended upgrade that does not
 pass `--grant-all-permissions` stops there.
 
-**The capability the plugin can exercise does not change.** Docker composes a
+The capability the plugin can exercise does not change. Docker composes a
 plugin's requested capabilities *additively* over the OCI default set, and
 `CAP_NET_RAW` is already in that default set, so the effective capability set
 of the plugin process is the same seventeen it was before. What changed is
@@ -128,7 +91,7 @@ is one added and two removed, not one added. `OUTAGE_TICK` and
 `OUTAGE_GRACE` are gone from the manifest, so `docker plugin set
 OUTAGE_TICK=…` is refused by the daemon rather than accepted and ignored.
 
-**Nothing was dropped, and the measurement says why.** 2.0 asks first
+Nothing was dropped, and the measurement says why. 2.0 asks first
 for the sandbox key the daemon publishes, so that a host where that works
 can attach without the container's PID at all. For an attach it does not
 work: the plugin's read-only `/var/run/docker` is a bind mount taken when
@@ -178,7 +141,7 @@ gets zero, not an error.
 | `conflict_probe_stale_routes` | Counted temporary `/32` routes reclaimed from a probe cut short. The probe installed no routes at all now, so there is nothing to leak or reclaim |
 | `conflict_probe_stale_addrs` | Counted borrowed link-local source addresses reclaimed from the parent NIC, for the same probe. Nothing is borrowed and nothing is left behind |
 
-**`address_conflicts` is split by family.** The health document gains
+`address_conflicts` is split by family. The health document gains
 `address_conflicts_v4` and `address_conflicts_v6`, and `address_conflicts`
 becomes the sum of the two. On `/metrics` the unlabelled
 `net_dhcp_address_conflicts_total` sample is gone: that series now carries
@@ -272,7 +235,7 @@ is no longer blind. A conflict now also produces a `DHCPDECLINE` (RFC
 2131 §3.1(5)) and a fresh DISCOVER, which means **your DHCP server's log
 is evidence**. It never was before.
 
-**It costs seconds, and `-o conflict_check=<mode>` says who pays them.**
+It costs seconds, and `-o conflict_check=<mode>` says who pays them.
 
 | mode | `docker run` | on a conflict |
 | --- | --- | --- |
@@ -316,7 +279,7 @@ flipping `healthy`. It is now the sum of `address_conflicts_v4` and
 `address_conflicts_v6`, and the v4 half is fed by the DHCP client instead
 of by the plugin's probe.
 
-**The health document says what is wrong, when it started, and where.**
+The health document says what is wrong, when it started, and where.
 `/Plugin.Health` keeps every field it had. `healthy` is unchanged, with the same
 latch, the same counters behind it and the same meaning, so a dashboard
 that reads it needs no edit.
@@ -2242,9 +2205,9 @@ callers reach for the right pattern.
   container netnses via `/proc/<pid>/ns/net` symlink resolution
   through `setns(2)`, which only needs `CAP_SYS_ADMIN`. The smoke
   test confirmed the plugin still works without the cap (I-2).
-- `govulncheck` findings GO-2026-4887 / GO-2026-4883 documented in
-  the "Acknowledged findings" preamble as not reachable from
-  client-only `docker.Client` usage (I-10).
+- `govulncheck` findings GO-2026-4887 / GO-2026-4883 documented as
+  not reachable from client-only `docker.Client` usage (I-10). The
+  justification is now kept in `.github/vuln-allowlist.txt`.
 
 ### Code-review polish
 
