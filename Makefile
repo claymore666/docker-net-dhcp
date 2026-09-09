@@ -155,6 +155,20 @@ clean:
 # suites in one `make integration-test integration-test-failure`
 # invocation land under the same stamp and are trivially correlated.
 ITEST_LOG_DIR ?= logs
+
+# The per-BINARY deadline `go test -timeout` enforces. One variable, used
+# at every go test site below, because the number is a property of the
+# LANE and not of the suite: the amd64 lane runs the main suite as nine
+# shards and the arm64 lane runs all of it in one process, so the same
+# suite needs two different ceilings and a literal can only carry one.
+#
+# 20m is the amd64 default and is unchanged. It was sized for a whole
+# unsharded suite (#146: 15m raised to 20m when the suite measured 558s),
+# so every shard now sits far inside it.
+#
+# The arm64 lane raises it on its main-suite step; the derivation is in
+# .github/workflows/integration-arm64.yml beside the value.
+ITEST_TIMEOUT ?= 20m
 ITEST_STAMP := $(shell date +%Y%m%d-%H%M%S)
 ITEST_MAIN_LOG = $(ITEST_LOG_DIR)/integration-main-$(ITEST_STAMP).log
 ITEST_FAILURE_LOG = $(ITEST_LOG_DIR)/integration-failure-$(ITEST_STAMP).log
@@ -233,20 +247,20 @@ integration-test:
 	 if [ -n "$$id" ]; then \
 		echo "==> plugin log:  /var/lib/docker/plugins/$$id/rootfs/var/log/net-dhcp.log"; \
 	 fi
-	@bash -o pipefail -c 'go test -v -tags integration -count=1 -timeout 20m -skip "TestFailure_" ./test/integration/... 2>&1 | tee $(ITEST_MAIN_LOG)'
-# (20m, not #146's 15m: the suite measured 558s on runner-class
-# hardware before the v1.0.0 additions; 20m keeps the same headroom
-# ratio with them.)
+	@bash -o pipefail -c 'go test -v -tags integration -count=1 -timeout $(ITEST_TIMEOUT) -skip "TestFailure_" ./test/integration/... 2>&1 | tee $(ITEST_MAIN_LOG)'
+# The ceiling is ITEST_TIMEOUT, not a literal. On the one-job arm64 lane
+# this target IS the whole main suite, and at v2.0.0-rc2 it hit the 20m
+# alarm with 37 of 93 tests still queued (run 34368481103).
 
 # Failure-injection suite (#128): crosses real DHCP timing boundaries
 # (lease expiry, NAK at T1) against per-test ephemeral DHCP servers —
 # ~9 serial minutes of mostly deliberate waiting, so it runs as its
 # own step instead of inflating the main suite's feedback loop.
 #
-# 20m, not 15m (#278): each test waits for the persistent client's own
-# bind BEFORE killing the server, so the outage it injects has to be
-# detected the slow way — a bound 2m lease lapsing. The 2m lease floor
-# is dnsmasq's and stays (#356).
+# The ceiling is ITEST_TIMEOUT, raised from 15m to 20m in #278: each test
+# waits for the persistent client's own bind BEFORE killing the server,
+# so the outage it injects has to be detected the slow way, by a bound 2m
+# lease lapsing. The 2m lease floor is dnsmasq's and stays (#356).
 #
 # 2.0 REMOVED THE KNOBS THAT USED TO TRIM THIS. The outage watchdog went
 # with dhcpcd: dhcp_timeouts is re-sourced from the library's
@@ -255,8 +269,9 @@ integration-test:
 # shorten. The two test variables here, and the settings they fed, went
 # with it — and a `docker plugin set` naming a setting the manifest does
 # not declare is refused by the daemon outright, which is how their
-# absence was found. The ceiling stays 20m: it was already sized for the
-# shipped cadence, so it was never the tight side of this budget.
+# absence was found. The default ceiling is unchanged: it was already
+# sized for the shipped cadence, so it was never the tight side of this
+# budget. Measured on arm64 at rc2, this suite costs 4m39s.
 # One shard of one suite (#381, D41). SHARD is 1-based, OF is the total,
 # SUITE is `main` (the default) or `failure`.
 #
@@ -287,7 +302,7 @@ integration-test-shard:
 	@sel=$$(bash scripts/integration-shard.sh $(SHARD) $(OF) $(SUITE)) || exit 1; \
 	 echo "==> $(SUITE) shard $(SHARD)/$(OF): $$(echo "$$sel" | tr '|' '\n' | wc -l) test(s)"; \
 	 echo "==> test output: $(ITEST_LOG_DIR)/$(SUITE)-shard$(SHARD).log"; \
-	 bash -o pipefail -c "go test -v -tags integration -count=1 -timeout 20m \
+	 bash -o pipefail -c "go test -v -tags integration -count=1 -timeout $(ITEST_TIMEOUT) \
 	     -run '$$sel' ./test/integration/ 2>&1 | tee $(ITEST_LOG_DIR)/$(SUITE)-shard$(SHARD).log"
 	# The harness package, unfiltered, in EVERY shard.
 	#
@@ -315,7 +330,7 @@ integration-test-failure:
 	 if [ -n "$$id" ]; then \
 		echo "==> plugin log:  /var/lib/docker/plugins/$$id/rootfs/var/log/net-dhcp.log"; \
 	 fi
-	@bash -o pipefail -c 'go test -v -tags integration -count=1 -timeout 20m -run "TestFailure_" ./test/integration/... 2>&1 | tee $(ITEST_FAILURE_LOG)'
+	@bash -o pipefail -c 'go test -v -tags integration -count=1 -timeout $(ITEST_TIMEOUT) -run "TestFailure_" ./test/integration/... 2>&1 | tee $(ITEST_FAILURE_LOG)'
 
 # Manual orphan cleanup for when an integration test panics mid-setup
 # and leaves dh-itest-* interfaces / containers / networks behind.
@@ -429,7 +444,7 @@ define capture_one_flow
 	echo "==> capturing flow '$(1)' from $(CAPTURE_TEST_$(1))"; \
 	rm -rf $(CAPTURE_HOST_DIR)/*; \
 	if ! INTEGRATION_PLUGIN_REF=$(COVER_PLUGIN_REF) \
-	     go test -tags integration -count=1 -timeout 20m \
+	     go test -tags integration -count=1 -timeout $(ITEST_TIMEOUT) \
 	     -run '^$(CAPTURE_TEST_$(1))$$' ./test/integration/; then \
 		echo "!!  $(CAPTURE_TEST_$(1)) failed; flow '$(1)' NOT refreshed"; rc=1; \
 	else \

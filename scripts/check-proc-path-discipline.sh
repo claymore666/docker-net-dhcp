@@ -136,10 +136,22 @@ while IFS= read -r line; do
     # says WHY, so looking only at the immediately preceding line would
     # push the reason away from the marker.
     prev=$((lineno - 1))
-    # grep without -q on purpose: -q exits at the first match, the
-    # SIGPIPE kills the producer, and under pipefail the pipeline then
-    # reports failure ON SUCCESS. Redirecting reads to EOF instead.
-    if [ "$prev" -ge 1 ] && head -n "$prev" "$file" | tac | awk '/^[[:space:]]*\/\//{print;next}{exit}' \
+    # NEITHER CONSUMER MAY EXIT EARLY (#837's class again). grep without
+    # -q was already deliberate: -q exits at the first match, the SIGPIPE
+    # kills the producer, and under pipefail the pipeline then reports
+    # failure ON SUCCESS, which here means the allow marker is ignored
+    # and an exempt line is reported as a violation.
+    #
+    # The awk had the same shape and was missed. `{exit}` closed the pipe
+    # at the first non-comment line while `tac` was still writing the
+    # rest of the prefix. Under 64 KB of prefix tac fits in the pipe
+    # buffer and finishes first, so it passed everywhere; the buffer
+    # shrinks to one page when the user is over the pipe-page limit,
+    # which a parallel self-test runner reaches, and then tac blocks,
+    # takes the SIGPIPE and returns 141. Observed once on PR #935's
+    # policy-gates job and green on the re-run, which is the signature.
+    # It stops printing at the first non-comment line and reads to EOF.
+    if [ "$prev" -ge 1 ] && head -n "$prev" "$file" | tac | awk '/^[[:space:]]*\/\//{if(!stop)print;next}{stop=1}' \
         | grep 'proc-path-discipline: allow' >/dev/null; then
         continue
     fi
