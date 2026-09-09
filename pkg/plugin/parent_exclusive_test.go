@@ -203,3 +203,67 @@ func TestNewProbeLink_MatchesTheNetworkMode(t *testing.T) {
 		}
 	})
 }
+
+// A link table that cannot be read is not a parent that carries
+// nothing. This is #802's product half: childLinkKind used to return ""
+// on a dump error, and "" is the caller's encoding for "neither kind is
+// here" — so a transient netlink failure made the mode-collision guard
+// report the parent as free, in the fail-open direction.
+//
+// The message is the observer because it is what the operator gets.
+// Asserting on the returned pair alone would pass for a caller that
+// received `known=false` and then wrote the old sentence anyway.
+func TestExplainChildLinkAdd_UnreadableLinkTableIsNotAnEmptyParent(t *testing.T) {
+	withLinkList(t, nil, errors.New("netlink: operation not permitted"))
+
+	err := explainChildLinkAdd(unix.EBUSY, ModeIPvlan, "eth0", 7)
+	if !errors.Is(err, unix.EBUSY) {
+		t.Fatalf("error no longer wraps EBUSY: %v", err)
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "could not be read") {
+		t.Errorf("the message does not say the link table was unreadable, so a failed scan "+
+			"reads to an operator exactly like a parent with no children of the other kind "+
+			"(#802): %s", msg)
+	}
+	if strings.Contains(msg, "retry once it has finished") {
+		t.Errorf("the message claims the blocker is a teardown in progress, which is a "+
+			"statement about a scan that never happened: %s", msg)
+	}
+}
+
+// The direction the tolerance is for, and it must reach the VERDICT and
+// not only the error return: with ErrDumpInterrupted the dump's results
+// are usable, so a macvlan child in them still has to be named.
+//
+// Without util.DumpResult at the call site this reads as an unreadable
+// table and the operator is told nothing about the ipvlan network that
+// is actually in the way.
+func TestChildLinkKind_DumpInterruptedStillUsesTheResults(t *testing.T) {
+	const parentIdx = 7
+	withLinkList(t, []netlink.Link{childOn(t, ModeMacvlan, parentIdx)}, netlink.ErrDumpInterrupted)
+
+	kind, known := childLinkKind(parentIdx)
+	if !known {
+		t.Fatal("ErrDumpInterrupted was treated as a failed scan, but netlink v1.3.1 " +
+			"returns it alongside a usable result set (#802)")
+	}
+	if kind != ModeMacvlan {
+		t.Errorf("kind = %q, want %q: the results that came back with the sentinel were discarded",
+			kind, ModeMacvlan)
+	}
+}
+
+// The preservation control for the pair: a clean dump over an empty
+// parent still answers "nothing here, and I could tell".
+func TestChildLinkKind_EmptyParentIsKnown(t *testing.T) {
+	withLinkList(t, nil, nil)
+
+	kind, known := childLinkKind(7)
+	if !known {
+		t.Error("a successful dump over a parent with no children reported that it could not tell")
+	}
+	if kind != "" {
+		t.Errorf("kind = %q, want empty", kind)
+	}
+}

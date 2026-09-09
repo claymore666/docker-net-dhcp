@@ -14,6 +14,8 @@ import (
 	"github.com/docker/docker/api/types/network"
 	docker "github.com/docker/docker/client"
 	"github.com/vishvananda/netlink"
+
+	"github.com/claymore666/docker-net-dhcp/pkg/util"
 )
 
 // CreateNetwork drives `docker network create` with the plugin and
@@ -100,7 +102,7 @@ func AssertParentFreeOfOtherKind(t *testing.T, parent, mode string) {
 	if err != nil {
 		t.Fatalf("parent %s for a %s network does not exist: %v", parent, mode, err)
 	}
-	links, err := netlink.LinkList()
+	links, err := util.DumpResult(netlink.LinkList())
 	if err != nil {
 		t.Fatalf("LinkList: %v", err)
 	}

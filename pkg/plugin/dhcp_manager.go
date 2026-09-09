@@ -962,10 +962,10 @@ func (m *dhcpManager) reconcileDefaultRoute(v6 bool, info dhcp.Info) error {
 		return nil
 	}
 
-	routes, err := m.netHandle.RouteListFiltered(unix.AF_INET, &netlink.Route{
+	routes, err := util.DumpResult(m.netHandle.RouteListFiltered(unix.AF_INET, &netlink.Route{
 		LinkIndex: m.ctrLink.Attrs().Index,
 		Dst:       nil,
-	}, netlink.RT_FILTER_OIF|netlink.RT_FILTER_DST)
+	}, netlink.RT_FILTER_OIF|netlink.RT_FILTER_DST))
 	if err != nil {
 		return fmt.Errorf("failed to list routes: %w", err)
 	}

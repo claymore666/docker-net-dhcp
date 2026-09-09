@@ -17,6 +17,8 @@ import (
 
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
+
+	"github.com/claymore666/docker-net-dhcp/pkg/util"
 )
 
 // A per-test dual-stack segment whose IPv6 service mode is chosen by
@@ -820,7 +822,7 @@ func awaitNoTentativeAddr(t V6FixtureT) {
 	}
 	deadline := time.Now().Add(tentativeBudget)
 	for {
-		addrs, err := netlink.AddrList(link, netlink.FAMILY_V6)
+		addrs, err := util.DumpResult(netlink.AddrList(link, netlink.FAMILY_V6))
 		if err != nil {
 			t.Fatalf("AddrList %s: %v", V6BridgeName, err)
 		}

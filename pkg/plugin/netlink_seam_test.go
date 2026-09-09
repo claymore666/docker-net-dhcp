@@ -255,6 +255,24 @@ func TestFindLinkByMAC(t *testing.T) {
 			t.Fatal("expected error when LinkList fails")
 		}
 	})
+	// #802: netlink v1.3.1 returns ErrDumpInterrupted alongside a
+	// usable result set, and re-discovering the child inside the
+	// container netns used to abort on it although the link it wants is
+	// very likely in `links`. The tolerance has to reach the RESULT --
+	// an implementation that returned (nil, nil) for the sentinel would
+	// satisfy an error-only assertion and still lose the link.
+	t.Run("dump_interrupted_still_finds_it", func(t *testing.T) {
+		got, err := findLinkByMAC(fakeLinkLister{
+			links: []netlink.Link{match},
+			err:   netlink.ErrDumpInterrupted,
+		}, mac)
+		if err != nil {
+			t.Fatalf("ErrDumpInterrupted treated as fatal: %v", err)
+		}
+		if got != match {
+			t.Fatalf("link = %v, want the one carrying the MAC", got)
+		}
+	})
 	t.Run("no_match", func(t *testing.T) {
 		_, err := findLinkByMAC(fakeLinkLister{links: []netlink.Link{
 			&fakeLink{typ: "device", attrs: netlink.LinkAttrs{HardwareAddr: other}},

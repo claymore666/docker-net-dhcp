@@ -440,11 +440,11 @@ func (p *Plugin) CreateNetwork(r CreateNetworkRequest) error {
 	}
 
 	if !opts.IgnoreConflicts {
-		v4Addrs, err := nlAddrList(link, unix.AF_INET)
+		v4Addrs, err := util.DumpResult(nlAddrList(link, unix.AF_INET))
 		if err != nil {
 			return fmt.Errorf("failed to retrieve IPv4 addresses for %v: %w", opts.Bridge, err)
 		}
-		v6Addrs, err := nlAddrList(link, unix.AF_INET6)
+		v6Addrs, err := util.DumpResult(nlAddrList(link, unix.AF_INET6))
 		if err != nil {
 			return fmt.Errorf("failed to retrieve IPv6 addresses for %v: %w", opts.Bridge, err)
 		}
@@ -1511,10 +1511,10 @@ func (p *Plugin) addRoutes(opts *DHCPNetworkOptions, v6 bool, link netlink.Link,
 		family = unix.AF_INET6
 	}
 
-	routes, err := nlRouteListFiltered(family, &netlink.Route{
+	routes, err := util.DumpResult(nlRouteListFiltered(family, &netlink.Route{
 		LinkIndex: link.Attrs().Index,
 		Type:      unix.RTN_UNICAST,
-	}, netlink.RT_FILTER_OIF|netlink.RT_FILTER_TYPE)
+	}, netlink.RT_FILTER_OIF|netlink.RT_FILTER_TYPE))
 	if err != nil {
 		return fmt.Errorf("failed to list routes: %w", err)
 	}

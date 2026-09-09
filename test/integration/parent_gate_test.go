@@ -14,6 +14,7 @@ import (
 	docker "github.com/docker/docker/client"
 	"github.com/vishvananda/netlink"
 
+	"github.com/claymore666/docker-net-dhcp/pkg/util"
 	"github.com/claymore666/docker-net-dhcp/test/integration/harness"
 )
 
@@ -276,7 +277,7 @@ func awaitProbeLinksGone(t *testing.T, budget time.Duration) bool {
 
 func probeLinks(t *testing.T) []string {
 	t.Helper()
-	links, err := netlink.LinkList()
+	links, err := util.DumpResult(netlink.LinkList())
 	if err != nil {
 		t.Fatalf("LinkList: %v", err)
 	}

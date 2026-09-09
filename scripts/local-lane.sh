@@ -101,6 +101,7 @@ LANE=(
   "python deps|-|bash scripts/check-python-deps.sh"
   "fixture hygiene|-|bash scripts/check-selftest-fixtures.sh"
   "pipefail consumers|-|bash scripts/check-pipefail-consumers.sh"
+  "netlink dump errors|-|bash scripts/check-netlink-dump-errors.sh"
   "lint tag coverage|-|bash scripts/check-lint-tag-coverage.sh"
   "plugin bind sources|-|bash scripts/check-plugin-bind-sources.sh"
   "license headers|-|bash scripts/check-license-headers.sh"

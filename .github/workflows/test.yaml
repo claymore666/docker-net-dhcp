@@ -497,6 +497,15 @@ jobs:
           go build -o "${d}/net-dhcp" ./cmd/net-dhcp
           bash scripts/check-library-pin.sh --binary "${d}/net-dhcp"
 
+      # netlink v1.3.1 hands ErrDumpInterrupted back ALONGSIDE a usable
+      # result set, so a dump call comparing its error against nil turns
+      # an ordinary mid-dump table change into a hard failure. It cost
+      # the arm64 lane a red on the v1.8.0-rc2 tag and it is the
+      # fail-open half of the parent mode-collision guard (#802). The
+      # migration was one-time; this is the part that does not decay.
+      - name: netlink dump calls go through the tolerant helper
+        run: bash scripts/check-netlink-dump-errors.sh
+
       # config.json and config-cover.json must agree on privilege
       # fields — a capability landing in only one means coverage runs
       # test a different plugin than the one that ships (#317's
