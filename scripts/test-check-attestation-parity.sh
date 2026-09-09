@@ -16,8 +16,13 @@
 # v1.9.0 fixed it). The second is the one people forget, because it is
 # the good news.
 #
-# Every branch is reachable offline through ATTEST_QUERY. A live release
-# can only ever exercise one of them.
+# TWO SEAMS, DELIBERATELY. ATTEST_QUERY drives the CALLER's branches --
+# every verdict the checker can reach, offline, including the ones a live
+# release can never exercise. But it returns from `ask` one line ABOVE the
+# `gh` call, so nothing here had ever executed the block that runs `gh`
+# and discriminates its three answers, which is where the gate's shape
+# guard lives (#827). The cases at the end of this file drive that block
+# by stubbing `gh` on PATH, each with a per-digest call witness.
 set -u
 
 CHECK="$(cd "$(dirname "$0")" && pwd)/check-attestation-parity.sh"
@@ -203,6 +208,128 @@ else
     echo "FAIL: re-ask asymmetry -- control asked $gcalls time(s), pinned side $hcalls time(s); want 2 and 1"
     failures=$((failures + 1))
 fi
+
+# --- the gh path: the block ATTEST_QUERY has always short-circuited ----
+# A PREFIX on PATH, never a replacement: the checker also needs mktemp,
+# grep, tr, cut and rm, and a replaced PATH exits 127 before reaching any
+# of the logic these cases are here to grade.
+#
+# EVERY CASE CARRIES A PER-DIGEST WITNESS. Measured in #827: with the stub
+# not applied, cases returned the CORRECT exit code having made ZERO `gh`
+# calls, because the real binary answered them from the network. The call
+# log is the only thing that tells "the stub answered" apart from "GitHub
+# did", and one case below asserts a count of zero, which no live call
+# could produce.
+mkdir -p "$TMP/bin"
+cat > "$TMP/bin/gh" <<'STUB'
+#!/usr/bin/env bash
+# The checker makes exactly one shape of call:
+#   gh api repos/<repo>/attestations/<digest> --jq <expr>
+digest="${2##*/}"
+printf '%s\n' "$digest" >> "$GH_CALLS"
+. "$GH_PLAN"
+STUB
+chmod +x "$TMP/bin/gh"
+
+# gh_case NAME WANT_EXIT WANT_CONTROL_CALLS WANT_PINNED_CALLS  < plan
+#
+# The plan is read from stdin and sourced by the stub with $digest set;
+# its exit status becomes gh's, and what it prints goes where gh's would.
+gh_case() {
+    local name="$1" want="$2" wg="$3" wh="$4" got g h
+    cat > "$TMP/gh-plan"
+    : > "$TMP/gh-calls"
+    n=$((n + 1))
+    # ATTEST_QUERY empty, not unset: an exported one in the environment
+    # would silently put every case below back on the seam being retired.
+    REPO="owner/name" GHCR_DIGEST="$GHCR" HUB_DIGEST="$HUB" \
+        ATTEST_QUERY="" CONTROL_ATTEMPTS=2 CONTROL_SLEEP=0 \
+        GH_CALLS="$TMP/gh-calls" GH_PLAN="$TMP/gh-plan" \
+        PATH="$TMP/bin:$PATH" \
+        bash "$CHECK" > "$TMP/out" 2>&1
+    got=$?
+    g=$(grep -c -F -x -- "$GHCR" "$TMP/gh-calls") || g=0
+    h=$(grep -c -F -x -- "$HUB" "$TMP/gh-calls") || h=0
+    if [ "$got" -eq "$want" ] && [ "$g" -eq "$wg" ] && [ "$h" -eq "$wh" ]; then
+        echo "PASS: $name (exit $got; gh calls control $g, pinned $h)"
+    else
+        echo "FAIL: $name -- want exit $want with gh calls $wg/$wh, got $got with $g/$h"
+        sed 's/^/    /' "$TMP/out"
+        failures=$((failures + 1))
+    fi
+}
+
+gh_case "gh: control attested, pinned side 404" 0 1 1 <<EOF
+case "\$digest" in
+    "$GHCR") printf '1\n' ;;
+    *)       echo 'gh: Not Found (HTTP 404)' >&2; exit 1 ;;
+esac
+EOF
+want_in "control OK"
+want_in "no provenance attestation"
+
+gh_case "gh: control resolved to zero attestations" 1 1 0 <<EOF
+case "\$digest" in
+    "$GHCR") printf '0\n' ;;
+    *)       echo 'gh: Not Found (HTTP 404)' >&2; exit 1 ;;
+esac
+EOF
+want_in "GHCR provenance regressed"
+
+gh_case "gh: the pinned side gained an attestation" 1 1 1 <<'EOF'
+printf '2\n'
+EOF
+want_in "pin is stale"
+
+# The pinned side is never asked, so its witness is 0 -- a count the real
+# `gh` cannot produce for a case that reaches a verdict at all.
+gh_case "gh: a 404 for every digest cannot judge" 2 2 0 <<'EOF'
+echo 'gh: Not Found (HTTP 404)' >&2
+exit 1
+EOF
+want_in "LOST its provenance"
+
+# --- the two diagnostic cases (#827) ----------------------------------
+# rc is non-zero, the shape guard correctly rejects the body, and stderr
+# is EMPTY -- so before the fix the refusal named the transport and then
+# said nothing at all about what the endpoint actually replied.
+gh_case "gh: a 4xx body on stdout with an empty stderr is quoted in the refusal" 2 2 0 <<'EOF'
+printf '{"message":"Bad credentials","status":"401"}\n'
+exit 1
+EOF
+want_in "Bad credentials"
+want_in "control side went dark"
+
+# The same hole one exit code over: rc ZERO with a body the shape guard
+# rejects. Driven on the pinned side, whose refusal is a different string.
+gh_case "gh: a non-numeric body with rc 0 is quoted in the pinned-side refusal" 2 1 1 <<EOF
+case "\$digest" in
+    "$GHCR") printf '1\n' ;;
+    *)       printf '{"message":"Moved Permanently"}\n' ;;
+esac
+EOF
+want_in "Moved Permanently"
+want_in "pinned side went dark"
+
+# PRESERVATION CONTROL for the two above: when stderr does carry the
+# diagnosis, that is still what the refusal quotes.
+gh_case "gh: a transport error still quotes stderr" 2 2 0 <<'EOF'
+echo 'dial tcp: lookup api.github.com: no such host' >&2
+exit 1
+EOF
+want_in "no such host"
+want_in "control side went dark"
+
+# BOTH streams carry text. stderr is gh's own diagnosis and stdout is only
+# the body it was reading, so stderr is what the refusal quotes. Every
+# other case leaves exactly one stream non-empty, which leaves the
+# fallback's ORDER unobserved: reversing it survived a mutation run.
+gh_case "gh: with both streams filled the refusal quotes stderr" 2 2 0 <<'EOF'
+printf '{"message":"Not Found"}\n'
+echo 'gh: this API operation is rate limited (403)' >&2
+exit 1
+EOF
+want_in "rate limited"
 
 echo
 if [ "$failures" -ne 0 ]; then

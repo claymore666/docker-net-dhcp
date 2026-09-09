@@ -94,7 +94,7 @@ is_digest "$HUB_DIGEST"  || refuse "HUB_DIGEST is not a sha256 digest (got: '${H
 # on SHAPE and never on emptiness -- an unguarded read here would take the
 # JSON error object as an answer.
 ask() {
-    local digest="$1" out err rc
+    local digest="$1" out err rc diag
     if [ -n "${ATTEST_QUERY:-}" ]; then
         $ATTEST_QUERY "$digest"
         return 0
@@ -107,7 +107,16 @@ ask() {
     elif grep -q 'HTTP 404' "$err"; then
         printf 'notfound'
     else
-        printf 'error:%s' "$(tr '\n' ' ' < "$err" | cut -c1-200)"
+        # NEVER REFUSE WITHOUT WORDS (#827). `gh api --jq` prints a 4xx
+        # error BODY on stdout and leaves stderr EMPTY, which is the very
+        # case the shape guard above exists to reject -- so the refusal
+        # built from stderr alone read "could not be reached ... : . The
+        # control side went dark", blaming the transport, with nothing
+        # after the colon, for an endpoint that answered.
+        diag="$(tr '\n' ' ' < "$err")"
+        [ -n "${diag//[[:space:]]/}" ] || diag="$(printf '%s' "$out" | tr '\n' ' ')"
+        [ -n "${diag//[[:space:]]/}" ] || diag="gh exited $rc and printed nothing on either stream"
+        printf 'error:%s' "$(printf '%s' "$diag" | cut -c1-200)"
     fi
     rm -f "$err"
 }
