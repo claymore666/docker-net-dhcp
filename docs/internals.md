@@ -244,10 +244,14 @@ follows from where the filtering happens.
   same reading applies to the undivided budget: the library's intervals
   are 4s, 8s, 16s, 32s with a 64s ceiling and ±1s of jitter, each armed
   as its packet goes out, so retransmissions land at ~4s, ~12s, ~28s and
-  ~60s and the default 10s `lease_timeout` funds one of them. That is
-  not a regression, since the same 3s used to have to pay for a
-  namespace and a process spawn as well, but its original derivation is
-  dead and nothing re-derives it against the library's schedule.
+  ~60s, and the default `lease_timeout` of 34s funds the first three of
+  them. That is not a regression, since the same 3s used to have to pay
+  for a namespace and a process spawn as well, but its original
+  derivation is dead and nothing re-derives it against the library's
+  schedule. At that default the budget pays for eleven attempts (34s
+  divided by 3s, integer division), so a list of eleven or fewer keeps
+  one attempt each at 3.09s apiece, and a longer list has its tail
+  packed into the eleventh.
   `dhcp_server_tier_fallbacks` counts a fall-through to a lower tier,
   which is the only outside signal that a preferred server has gone
   quiet while every container still starts;
