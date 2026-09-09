@@ -124,7 +124,7 @@ TestDNSPropagate_BridgeModeWritesResolvConfToo	11.60
 TestDNSPropagate_DefaultIsUnchanged	11.72
 TestDNSPropagate_OptInWritesResolvConf	12.62
 TestDUID_PersistsAcrossPluginRestart	17.79
-TestDisplacedClient_TheDisplacedClientLeavesTheInterface	30.00
+TestDisplacedClient_TheInterfaceNeverCarriesTwoClients	30.00
 TestDockerAPI_OnlySafeMethodsReachTheDaemon	11.41
 TestErrors_DriverOptIPMalformed	0.40
 TestErrors_NetworkCreateValidation	0.04
