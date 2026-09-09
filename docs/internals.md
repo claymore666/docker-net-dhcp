@@ -250,8 +250,10 @@ follows from where the filtering happens.
   derivation is dead and nothing re-derives it against the library's
   schedule. At that default the budget pays for eleven attempts (34s
   divided by 3s, integer division), so a list of eleven or fewer keeps
-  one attempt each at 3.09s apiece, and a longer list has its tail
-  packed into the eleventh.
+  one attempt each, and a longer list has its tail packed into the
+  eleventh. The budget is divided evenly over the attempts it funds, so
+  the slice each attempt gets falls as the list grows, and it stops
+  falling once the packing starts.
   `dhcp_server_tier_fallbacks` counts a fall-through to a lower tier,
   which is the only outside signal that a preferred server has gone
   quiet while every container still starts;
