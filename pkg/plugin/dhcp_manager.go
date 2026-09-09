@@ -1353,7 +1353,7 @@ func (m *dhcpManager) setupClient(v6 bool) (chan error, error) {
 		Identity6:          identity6,
 		HonorRouterAdverts: v6,
 	}
-	if err := m.plugin.conflictWiring(&clientOpts, m.opts, roleJoin, m.joinReq.NetworkID, m.joinReq.EndpointID); err != nil {
+	if err := m.plugin.conflictWiring(&clientOpts, m.opts, roleJoin, m.joinReq.NetworkID, m.joinReq.EndpointID, v6); err != nil {
 		return nil, err
 	}
 	// THE PHASE IS NOT PASSED TO THE CLIENT, and there is nothing for it

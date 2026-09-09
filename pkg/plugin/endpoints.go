@@ -599,15 +599,19 @@ type HealthResponse struct {
 	// truthfulness-gap discussion), but worth alerting on for
 	// long-running containers.
 	LeaseChanged int32 `json:"lease_changed"`
-	// AddressConflicts counts leased addresses RFC 5227 found already
-	// in use on the segment (#524, D12). Healthy-affecting: the
+	// AddressConflicts counts leased addresses found already in use on
+	// the segment (#524, D12), in both families. Healthy-affecting: the
 	// endpoint is up and reporting an address that does not work, and
 	// no other counter moves for it.
 	//
 	// Since 2.0 it covers the whole life of the lease, not just the
-	// moment after acquisition: section 2.1's probes before the address
-	// is used AND section 2.4's listener afterwards. A conflict that
-	// appears an hour into a container's life moves it.
+	// moment after acquisition: RFC 5227 section 2.1's probes before
+	// the address is used AND section 2.4's listener afterwards. A
+	// conflict that appears an hour into a container's life moves it.
+	//
+	// IT IS THE SUM OF AddressConflictsV4 AND AddressConflictsV6, and
+	// only the v4 half is the population ACDConflictsDetected counts.
+	// See those two fields.
 	AddressConflicts int32 `json:"address_conflicts"`
 	// ACDProbesSent, ACDAnnouncementsSent, ACDConflictsDetected and
 	// ACDARPSendFailures are the library's own RFC 5227 counters.
@@ -777,6 +781,11 @@ type HealthResponse struct {
 	NAKsReceivedV4   int32 `json:"naks_received_v4"`
 	// ClientStopFailuresV4 is the v4 half of ClientStopFailures.
 	ClientStopFailuresV4 int32 `json:"client_stop_failures_v4"`
+	// AddressConflictsV4 is the RFC 5227 half of AddressConflicts, and
+	// it is the ONLY half that may be compared against ACDProbesSent
+	// and ACDConflictsDetected: those two count ARP, which no DHCPv6
+	// conflict can produce.
+	AddressConflictsV4 int32 `json:"address_conflicts_v4"`
 
 	// THE v6 FIELDS BELOW HAVE WRITERS AGAIN (#911). Each one is
 	// incremented by a DHCPv6 client running beside the v4 one, and a
@@ -795,6 +804,19 @@ type HealthResponse struct {
 	LeasesRenewedV6  int32 `json:"leases_renewed_v6"`
 	DHCPTimeoutsV6   int32 `json:"dhcp_timeouts_v6"`
 	NAKsReceivedV6   int32 `json:"naks_received_v6"`
+	// AddressConflictsV6 is the DHCPv6 half of AddressConflicts: an
+	// address the kernel's Duplicate Address Detection (RFC 4862
+	// section 5.4) found on the link, declined to the server under RFC
+	// 9915 section 18.2.8. NOTHING ARP-SHAPED COUNTS IT -- not
+	// ACDProbesSent, not ACDConflictsDetected -- so a non-zero here
+	// beside a zero ACDConflictsDetected is the two protocols, not a
+	// seam defect.
+	//
+	// The replacement address the library then wins arrives as an
+	// ordinary bind and is applied to the container's interface.
+	// Docker's record of the endpoint is NOT updated, exactly as for a
+	// v4 lease change (#104); read LeaseChangedV6 beside this.
+	AddressConflictsV6 int32 `json:"address_conflicts_v6"`
 	// ClientStopFailuresV6 is the v6 share of ClientStopFailures
 	// (#608): the persistent DHCPv6 client held a binding and did not
 	// shut down cleanly when the plugin signalled it. No release is
@@ -871,7 +893,7 @@ func (p *Plugin) checkStamps() map[string]time.Time {
 		"join_start_failures":       p.joinStartFailures.LastMoved(),
 		"tombstone_write_failures":  p.tombstoneWriteFailures.LastMoved(),
 		"tombstone_quarantines":     p.tombstones.quarantines.LastMoved(),
-		"address_conflicts":         p.addressConflicts.LastMoved(),
+		"address_conflicts":         laterOf(p.addressConflictsV4.LastMoved(), p.addressConflictsV6.LastMoved()),
 		"lease_changed":             laterOf(p.leaseChangedV4.LastMoved(), p.leaseChangedV6.LastMoved()),
 		"acd_arp_send_failures":     p.acdARPSendFailures.LastMoved(),
 		"acd_resumed_unchecked":     p.acdResumedUnchecked.LastMoved(),
@@ -917,7 +939,9 @@ func (p *Plugin) healthSnapshot() HealthResponse {
 	failed := p.recoveryFailed.Load()
 	joinFails := p.joinStartFailures.Load()
 	tsFails := p.tombstoneWriteFailures.Load()
-	conflicts := p.addressConflicts.Load()
+	conflictsV4 := p.addressConflictsV4.Load()
+	conflictsV6 := p.addressConflictsV6.Load()
+	conflicts := conflictsV4 + conflictsV6
 	tsQuarantines := p.tombstones.quarantines.Load()
 
 	// One load per half, used for both the half and the sum.
@@ -999,6 +1023,8 @@ func (p *Plugin) healthSnapshot() HealthResponse {
 		TombstonesConsumed:           p.tombstonesConsumed.Load(),
 		LeaseChanged:                 leaseChangedV4 + leaseChangedV6,
 		AddressConflicts:             conflicts,
+		AddressConflictsV4:           conflictsV4,
+		AddressConflictsV6:           conflictsV6,
 		ACDProbesSent:                p.acdProbesSent.Load(),
 		ACDAnnouncementsSent:         p.acdAnnouncementsSent.Load(),
 		ACDConflictsDetected:         p.acdConflictsDetected.Load(),

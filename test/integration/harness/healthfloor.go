@@ -109,7 +109,7 @@ type HealthResponse struct {
 	ActiveEndpoints int     `json:"active_endpoints"`
 	PendingHints    int     `json:"pending_hints"`
 	RecoveredOK     int32   `json:"recovered_ok"`
-	RecoveryFailed  int32   `json:"recovery_failed"`
+	RecoveryFailed int32 `json:"recovery_failed"`
 	// RecoveryFailed has four benign twins, at the four points recovery
 	// can stop early for a reason that is not a plugin fault. None is
 	// healthy-affecting.
@@ -175,6 +175,16 @@ type HealthResponse struct {
 	// mirrored here so a run can say whether the check actually ran —
 	// a check that never ran reads exactly like a clean segment.
 	AddressConflicts int32 `json:"address_conflicts"`
+	// AddressConflictsV4 and AddressConflictsV6 are its two halves, and
+	// they are two different protocols rather than two views of one.
+	// The v4 half is RFC 5227 ARP and is the ONLY half the ACD rows
+	// below cover; the v6 half is the kernel's Duplicate Address
+	// Detection (RFC 4862 section 5.4), declined under RFC 9915 section
+	// 18.2.8, which sends no ARP and moves no ACD counter. A suite that
+	// compares acd_conflicts_detected against the aggregate reports a
+	// seam defect for every DHCPv6 conflict.
+	AddressConflictsV4 int32 `json:"address_conflicts_v4"`
+	AddressConflictsV6 int32 `json:"address_conflicts_v6"`
 	// ACDProbesSent is what makes address_conflicts=0 mean anything:
 	// zero probes and a clean segment read identically otherwise. It is
 	// RFC 5227 section 2.1.1's ARP Probes, counted by the library.
@@ -1198,6 +1208,11 @@ func deltaSincePluginStart(now, was int32) int32 {
 const (
 	conflictProbeMsg = "The address this endpoint was offered is already in use on the segment"
 	conflictHeldMsg  = "The address this endpoint HOLDS was found in use by another device on the segment"
+	// The DHCPv6 pair. A conflict found by Duplicate Address Detection
+	// writes one of these instead, and a census that listed only the
+	// two above counted every v6 squat as zero.
+	conflictProbeMsg6 = "The IPv6 address this endpoint was offered is already in use on the link"
+	conflictHeldMsg6  = "The IPv6 address this endpoint HOLDS was found in use by another node on the link"
 )
 
 // conflictMsgs is every one of them. Listed rather than pattern-matched
@@ -1207,6 +1222,8 @@ const (
 var conflictMsgs = []string{
 	conflictHeldMsg,
 	conflictProbeMsg,
+	conflictHeldMsg6,
+	conflictProbeMsg6,
 }
 
 // ConflictsInLog counts conflicts across the WHOLE run.

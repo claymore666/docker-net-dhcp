@@ -201,10 +201,16 @@ func TestConflictCheck_SquattedOfferIsDeclined(t *testing.T) {
 			// one are two derivations of one population. They must
 			// agree; a divergence is a seam defect, not a segment
 			// property.
-			if after.ACDConflictsDetected < after.AddressConflicts {
-				t.Errorf("acd_conflicts_detected=%d is below address_conflicts=%d; the plugin "+
+			//
+			// AGAINST THE v4 HALF, not the aggregate. The library
+			// counter is RFC 5227 ARP; a DHCPv6 conflict is found by
+			// Duplicate Address Detection and never reaches it, so
+			// comparing it against address_conflicts would report a
+			// seam defect for every v6 squat.
+			if after.ACDConflictsDetected < after.AddressConflictsV4 {
+				t.Errorf("acd_conflicts_detected=%d is below address_conflicts_v4=%d; the plugin "+
 					"counted conflicts the library did not",
-					after.ACDConflictsDetected, after.AddressConflicts)
+					after.ACDConflictsDetected, after.AddressConflictsV4)
 			}
 
 			// A window that is opened and never closed measured nothing

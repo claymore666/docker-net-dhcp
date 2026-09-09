@@ -537,10 +537,10 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, callStart tim
 				base.Identity6 = identity6
 				base.RecordID = recordID6
 			}
-			// RFC 5227 conflict detection, from the network's stored
+			// Conflict detection, from the network's stored
 			// conflict_check (D23). Set on the BASE, so every attempt
 			// down the dhcp_servers ladder runs in the same mode.
-			if err := p.conflictWiring(&base, opts, roleAcquire, r.NetworkID, r.EndpointID); err != nil {
+			if err := p.conflictWiring(&base, opts, roleAcquire, r.NetworkID, r.EndpointID, v6); err != nil {
 				return err
 			}
 			if v6 {

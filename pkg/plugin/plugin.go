@@ -1136,12 +1136,27 @@ type Plugin struct {
 	// exclusive per conflict, which is asserted rather than assumed --
 	// see pkg/dhcp's TestConflict_TheLibraryEmitsExactlyOneEventPerConflict.
 	//
-	// READ IT AGAINST acdProbesSent. A zero here over a plugin whose
-	// networks all run conflict_check=off, or whose ARP socket is
-	// failing every send, is not a clean segment; it is a detector that
-	// is not running. That ambiguity is #524 itself, and the four rows
-	// below are what removes it.
-	addressConflicts stampedCounter
+	// READ THE v4 HALF AGAINST acdProbesSent. A zero there over a
+	// plugin whose networks all run conflict_check=off, or whose ARP
+	// socket is failing every send, is not a clean segment; it is a
+	// detector that is not running. That ambiguity is #524 itself, and
+	// the four rows below are what removes it.
+	//
+	// SPLIT BY FAMILY BECAUSE THE TWO ARE DIFFERENT PROTOCOLS AND ONLY
+	// ONE OF THEM IS RFC 5227. A DHCPv4 conflict is found by ARP
+	// (RFC 5227 sections 2.1 and 2.4) and is the population
+	// acdConflictsDetected counts inside the library. A DHCPv6
+	// conflict is found by Duplicate Address Detection (RFC 4862
+	// section 5.4) and declined under RFC 9915 section 18.2.8; the ARP
+	// machine never sees it and never counts it. Summed into one
+	// counter, a v6 conflict made acdConflictsDetected < the aggregate,
+	// which this repository's own contract reads as "the plugin counted
+	// conflicts the library did not" -- a seam defect that had not
+	// happened. The halves are what acdProbesSent and
+	// acdConflictsDetected may be compared against; the sum is what an
+	// operator alerts on.
+	addressConflictsV4 stampedCounter
+	addressConflictsV6 stampedCounter
 
 	// acdProbesSent / acdAnnouncementsSent / acdConflictsDetected /
 	// acdARPSendFailures are the library's own RFC 5227 counters,
