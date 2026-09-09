@@ -6,14 +6,14 @@ body:
     attributes:
       value: >-
         Thanks for filing a bug. **Do not use this form for security
-        vulnerabilities** — follow the private process in
+        vulnerabilities.** Follow the private process in
         [SECURITY.md](https://github.com/claymore666/docker-net-dhcp/blob/main/SECURITY.md).
   - type: input
     id: plugin-version
     attributes:
       label: Plugin version
-      description: From `docker plugin ls` (e.g. v1.1.0).
-      placeholder: v1.1.0
+      description: From `docker plugin ls` (e.g. v2.0.0-rc1).
+      placeholder: v2.0.0-rc1
     validations:
       required: true
   - type: input
@@ -21,7 +21,7 @@ body:
     attributes:
       label: Docker version
       description: "Output of `docker version --format '{{.Server.Version}}'`."
-      placeholder: "26.1.5"
+      placeholder: "29.7.2"
     validations:
       required: true
   - type: dropdown
@@ -56,8 +56,11 @@ body:
     attributes:
       label: Plugin logs
       description: >-
-        Relevant output from `docker plugin logs <plugin>`. Automatically
-        rendered as code, so no backticks needed.
+        Docker has no `plugin logs` subcommand. Read the log with
+        `sudo cat /var/lib/docker/plugins/*/rootfs/var/log/net-dhcp.log`,
+        or from the daemon log where dockerd captured it. Both recipes are
+        under [Plugin log](https://claymore666.github.io/docker-net-dhcp/reference/#plugin-log).
+        Automatically rendered as code, so no backticks needed.
       render: shell
     validations:
       required: false
