@@ -135,20 +135,32 @@ func TestDockerAPI_OnlySafeMethodsReachTheDaemon(t *testing.T) {
 	methods := map[string]int{}
 	sawContainerInspect := false
 	sawNetworkRead := false
-	for _, line := range strings.Split(harness.ReadPluginLogSince(t, ctx, logMark), "\n") {
-		method, path, isCall := parseDockerAPICall(t, line)
-		if !isCall {
-			continue
+	// Re-read until the window holds both calls this test drove. The
+	// ContainerInspect is written as Join returns, so a single read
+	// after the attach can miss it by milliseconds; over the whole log
+	// an earlier test's inspect stood in for it and the race never
+	// showed.
+	harness.AwaitPluginLogSince(t, ctx, logMark, 10*time.Second, func(window string) bool {
+		observed = map[string]bool{}
+		methods = map[string]int{}
+		sawContainerInspect = false
+		sawNetworkRead = false
+		for _, line := range strings.Split(window, "\n") {
+			method, path, isCall := parseDockerAPICall(t, line)
+			if !isCall {
+				continue
+			}
+			observed[method+" "+path] = true
+			methods[method]++
+			if strings.Contains(path, "/containers/") && strings.HasSuffix(path, "/json") {
+				sawContainerInspect = true
+			}
+			if strings.Contains(path, "/networks") {
+				sawNetworkRead = true
+			}
 		}
-		observed[method+" "+path] = true
-		methods[method]++
-		if strings.Contains(path, "/containers/") && strings.HasSuffix(path, "/json") {
-			sawContainerInspect = true
-		}
-		if strings.Contains(path, "/networks") {
-			sawNetworkRead = true
-		}
-	}
+		return sawContainerInspect && sawNetworkRead
+	})
 
 	calls := make([]string, 0, len(observed))
 	for c := range observed {

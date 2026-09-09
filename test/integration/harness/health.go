@@ -233,6 +233,36 @@ func ReadPluginLogSince(t *testing.T, ctx context.Context, mark int64) string {
 	return string(PluginLogWindow(data, mark))
 }
 
+// AwaitPluginLogSince polls the window until want says it holds what
+// the caller is about to assert on, and returns the last window read.
+//
+// A windowed read races the write. Mark, drive the plugin, read once,
+// and the assertion judges whatever had reached the file by then; the
+// line it is about can be milliseconds behind. Over the whole log that
+// race was invisible, because an earlier test's line answered in its
+// place, which is the substitution the window exists to remove (#933).
+// Removing it therefore means waiting for the line rather than
+// sampling for it.
+//
+// It never fails on its own. An incomplete window is returned with a
+// note, so the caller's own assertion writes the diagnosis.
+func AwaitPluginLogSince(t *testing.T, ctx context.Context, mark int64, budget time.Duration,
+	want func(window string) bool) string {
+	t.Helper()
+	deadline := time.Now().Add(budget)
+	for {
+		got := ReadPluginLogSince(t, ctx, mark)
+		if want(got) {
+			return got
+		}
+		if !time.Now().Before(deadline) {
+			t.Logf("the plugin log window was still incomplete after %s; asserting on what it holds", budget)
+			return got
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+}
+
 // CountPluginLogLines returns how many lines of the plugin log contain
 // every one of subs.
 //

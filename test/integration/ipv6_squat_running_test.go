@@ -193,7 +193,10 @@ func TestDHCPv6_ASquatOnARunningContainerIsCountedAndTheAddressChanges(t *testin
 	// and the log does not, which is why the health floor counts these
 	// lines across the whole run; a conflict that moved a counter and
 	// wrote nothing would be invisible to it.
-	logText := harness.ReadPluginLogSince(t, ctx, logMark)
+	logText := harness.AwaitPluginLogSince(t, ctx, logMark, 5*time.Second, func(window string) bool {
+		return strings.Contains(window, "(RFC 4862 section 5.4 Duplicate Address Detection)") &&
+			strings.Contains(window, "family=ipv6")
+	})
 	// The citation rather than a whole sentence, because WHICH of the
 	// two DHCPv6 lines is written is not this test's business and is
 	// not fixed by the construction: the recycled client runs detection

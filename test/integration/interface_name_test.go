@@ -127,7 +127,10 @@ func TestInterfaceName_PluginHonorsOption(t *testing.T) {
 
 	// Plugin half: Join logged that it honored the name (the response
 	// DstName). This is the assertable contract on every engine.
-	logTxt := harness.ReadPluginLogSince(t, ctx, logMark)
+	logTxt := harness.AwaitPluginLogSince(t, ctx, logMark, 5*time.Second, func(window string) bool {
+		return strings.Contains(window, "Honoring custom interface name") &&
+			strings.Contains(window, "lan0")
+	})
 	if !strings.Contains(logTxt, "Honoring custom interface name") || !strings.Contains(logTxt, "lan0") {
 		t.Error("plugin log shows no 'Honoring custom interface name' for lan0 — Join did not consume the ifname option")
 	}
