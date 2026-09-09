@@ -156,7 +156,7 @@ on the IP its DHCP server handed it.
 
 If you also want to confirm the lease is not colliding with something
 already on the segment, read `acd_probes_sent` before believing
-`address_conflicts` is zero. With no probes the two readings are
+`address_conflicts_v4` is zero. With no probes the two readings are
 identical, and "the detector never ran" is what the fault behind #524
 looked like. A zero is also the honest answer on a network created with
 `-o conflict_check=off`, which asks for no probes at all. Both counters
