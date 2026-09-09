@@ -169,7 +169,7 @@ net_dhcp_address_conflicts_total{family="ipv6"} 6756106
 # TYPE net_dhcp_acd_probes_sent_total counter
 net_dhcp_acd_probes_sent_total 4230282
 
-# HELP net_dhcp_acd_announcements_sent_total RFC 5227 section 2.3 ARP Announcements sent, two per address that passed the probe. Moves in conflict_check=wait and =async, never in =off. Read against acd_probes_sent: probes climbing with no announcements means addresses are being checked and none is coming back clean.
+# HELP net_dhcp_acd_announcements_sent_total RFC 5227 section 2.3 ARP Announcements sent. Two go out per address that passed the probe, and a live scrape can be one behind: the first is sent at the bind and the second from a timer 2s later (section 2.3 ANNOUNCE_INTERVAL), while the plugin folds the library counter on client events, so a freshly bound address reads 1 until the next event on that endpoint. Moves in conflict_check=wait and =async, never in =off. Read against acd_probes_sent: probes climbing with no announcements means addresses are being checked and none is coming back clean.
 # TYPE net_dhcp_acd_announcements_sent_total counter
 net_dhcp_acd_announcements_sent_total 5321411
 
