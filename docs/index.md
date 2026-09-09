@@ -52,8 +52,10 @@ no external DHCP client to install and no client process per container.
   turned off, fails `docker network create` for that mode.
 - **Root on the host.** The plugin runs as root and its socket lives
   under `/run/docker/plugins`, which only root can read. Reading
-  [`/Plugin.Health`](reference.md#pluginhealth) therefore needs `sudo`; without it `curl -s`
-  prints nothing and exits 0, which looks like a dead endpoint.
+  [`/Plugin.Health`](reference.md#pluginhealth) therefore needs `sudo`.
+  Without it `curl -s` prints nothing and exits 7, which is what an
+  absent socket also gives, so a permission problem looks like a stopped
+  plugin.
 - **Mode constraints.** `bridge` expects a host bridge you maintain;
   `macvlan` and `ipvlan` attach to a host NIC and change nothing on the
   host, at the cost of the kernel rule that a child cannot reach its own

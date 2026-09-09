@@ -892,9 +892,10 @@ Having the plugin sweep `STATE_DIR` at startup is tracked in
 ### `/Plugin.Health`
 
 JSON liveness + counters on the plugin's UNIX socket. **`sudo` is
-required**, because `/run/docker/plugins` is `drwx------ root root`, and
-without it `curl -s` swallows the permission error and prints nothing,
-which looks exactly like a dead endpoint:
+required**, because `/run/docker/plugins` is `drwx------ root root`.
+Without it `curl -s` prints nothing and exits 7, which is what an absent
+socket also gives, so a permission problem looks exactly like a dead
+endpoint:
 
 ```bash
 PLUGIN_ID=$(docker plugin inspect -f '{{.Id}}' ghcr.io/claymore666/docker-net-dhcp:v1.9.0)
@@ -1354,7 +1355,7 @@ consumer-side:
 | Container can't reach the Docker host (or vice versa) | macvlan/ipvlan kernel rule: children can't talk to the parent NIC's host IP | Bridge mode, or a second NIC; this is not a plugin setting |
 | `healthy: false` on `/Plugin.Health` | Exactly five counters flip it, and they call for different action: `recovery_failed`, `join_start_failures`, `tombstone_write_failures`, `tombstone_quarantines`, `address_conflicts` | Read the five in the field table above to see which one moved, because the flag alone does not say. `recovery_failed` / `join_start_failures`: restart the affected containers. `tombstone_write_failures`: check space and writability on the filesystem holding [`STATE_DIR`](#plugin-settings), the host's `/var/lib/net-dhcp` since v1.5.0 and the plugin rootfs before that. `tombstone_quarantines`: read the `tombstones.json.corrupt-<timestamp>` file that was left in `STATE_DIR`, then check the same filesystem, since nothing reaps that file and it is the only record of what was lost. `address_conflicts`: the lease collided with a host already using that address, so the fault is on the DHCP server or the segment and never the plugin. **Doing any of this will not clear the flag**, because the counters are monotonic and `healthy` latches for the life of the plugin process. Only restarting the plugin resets it, which tears down every managed endpoint's renewal client on the host, so it is not a step to take just to silence the flag. Compare *instance_id* across reads to tell a still-latched process from a new one that has already gone bad |
 | Container came back on a **different IP** after a plugin upgrade | Recreating the network minted a new child MAC; the server keys the old lease to the old MAC and declines the re-request | Expected; see the callout under [Upgrade](#install-upgrade-uninstall). Pin the endpoint MAC and reserve it server-side to make the address survive future upgrades |
-| `/Plugin.Health` prints nothing and exits 0 | `curl` run without `sudo`; `/run/docker/plugins` is root-only and `-s` hides the error | Re-run with `sudo`; see [`/Plugin.Health`](#pluginhealth) |
+| `/Plugin.Health` prints nothing and exits 7 | `curl` run without `sudo`; `/run/docker/plugins` is root-only, and `-s` hides `curl: (7) Failed to connect` | Re-run with `sudo`; see [`/Plugin.Health`](#pluginhealth) |
 | `leases_renewed` still 0 and the log looks empty | Probably nothing; clean renewals log at `Debug`, and T1 may not have arrived | [Verify renewal properly](#verifying-that-renewal-works): read T1 from the lease, then re-check the counter |
 | Compose doesn't attach the container to the DHCP network, with no error | Base/override merge produced a hybrid network definition | [The base/override merge trap](#the-baseoverride-merge-trap) |
 | `docker plugin disable` refuses | Networks still reference the plugin | `docker network rm` them first |

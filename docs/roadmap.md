@@ -88,9 +88,10 @@ exchange was possible.
 is the host plumbing an operator does by hand today: [#902] VLAN
 sub-interfaces, [#903] a bridge the plugin creates and owns, [#904]
 link-local fallback where no server answers, [#905] macvlan and ipvlan
-sub-modes. **[#903] and the rule "it will not reconfigure the host's
-networking" below disagree**, and the disagreement is open: one of the
-two moves before that milestone is designed.
+sub-modes. [#903] sits inside the rule below that the plugin does not
+change interfaces the host already has: the bridge is one the plugin
+creates for its own networks and owns for as long as they exist, and no
+interface the host configured is touched.
 
 [#926] Rapid Commit and [#927] temporary addresses (IA_TA) carry no
 milestone and are not scheduled.
@@ -191,10 +192,12 @@ is recorded so a contributor can read it before writing the PR.
   `dhcp_deny_servers` decide which existing server a network leases from
   ([#111]). That stays on this side of the line: the plugin picks among
   authorities and never becomes one.
-- **It will not reconfigure the host's networking.** Bridge mode needs a
-  bridge you maintain, and the parent-attached modes will not bring a NIC
-  up, add an address, or edit netplan/`systemd-networkd`. The plugin
-  reads host configuration; it does not own it.
+- **It will not change interfaces the host already has.** Bridge mode
+  today needs a bridge you maintain, and the parent-attached modes will
+  not bring a NIC up, add an address, or edit netplan/`systemd-networkd`.
+  The plugin reads host configuration; it does not own it. A bridge the
+  plugin creates for its own networks and owns for as long as they exist
+  ([#903], v2.3.0) is inside this rule.
 - **It will not gain a static-IP workflow.** If an address must be
   fixed, fix it where addresses are decided, in a reservation on the
   DHCP server. A per-container static-IP option would be a second,
