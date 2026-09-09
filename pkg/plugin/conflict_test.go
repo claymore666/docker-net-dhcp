@@ -12,6 +12,8 @@ import (
 
 	"github.com/claymore666/dhcp-golib/proto"
 	"github.com/claymore666/docker-net-dhcp/pkg/dhcp"
+	log "github.com/sirupsen/logrus"
+	logtest "github.com/sirupsen/logrus/hooks/test"
 )
 
 // newHealthPlugin is a Plugin with the maps a health snapshot reads and
@@ -212,6 +214,44 @@ func TestConflictReporter_AV6OnlyConflictIsUnhealthyAndStamped(t *testing.T) {
 	}
 	if stamp := p.checkStamps()["address_conflicts"]; stamp.IsZero() {
 		t.Error("address_conflicts has no stamp after a v6 conflict; laterOf reads one half only")
+	}
+}
+
+// The family the reporter carries has to reach the MESSAGE, not only
+// the counter.
+//
+// THE CALL SITE, NOT THE FUNCTION. conflictMessage is exercised
+// directly below; that says nothing about which argument the reporter
+// passes it. A reporter that counts a DHCPv6 conflict in the v6 half
+// and then prints the ARP sentence sends the operator to tcpdump for
+// ARP frames that were never sent, and every counter assertion in this
+// file still passes.
+func TestConflictReporter_LogsTheMessageOfItsOwnFamily(t *testing.T) {
+	p := newHealthPlugin()
+	hook := logtest.NewLocal(log.StandardLogger())
+	defer hook.Reset()
+
+	p.conflictReporter("net", "ep", true)(dhcp.Conflict{Held: true, Addr: "2001:db8::5"})
+	entry := hook.LastEntry()
+	if entry == nil {
+		t.Fatal("a DHCPv6 conflict logged nothing at all")
+	}
+	if !strings.Contains(entry.Message, "RFC 4862") || strings.Contains(entry.Message, "RFC 5227") {
+		t.Errorf("a DHCPv6 conflict logged %q; the reporter lost its family on the way "+
+			"to the message and named the ARP standard", entry.Message)
+	}
+	if got := entry.Data["family"]; got != "ipv6" {
+		t.Errorf("family field is %v after a DHCPv6 conflict, want ipv6", got)
+	}
+
+	p.conflictReporter("net", "ep", false)(dhcp.Conflict{Held: true, Addr: "192.0.2.5"})
+	entry = hook.LastEntry()
+	if !strings.Contains(entry.Message, "RFC 5227") || strings.Contains(entry.Message, "RFC 4862") {
+		t.Errorf("a DHCPv4 conflict logged %q, which is not the ARP line the operator "+
+			"documentation points at", entry.Message)
+	}
+	if got := entry.Data["family"]; got != "ipv4" {
+		t.Errorf("family field is %v after a DHCPv4 conflict, want ipv4", got)
 	}
 }
 
