@@ -169,20 +169,30 @@ func WaitPluginHealthFor(t *testing.T, ctx context.Context, cli *docker.Client, 
 	return nil
 }
 
-// ReadPluginLog returns the current contents of the plugin's
+// ReadWholePluginLog returns the current contents of the plugin's
 // /var/log/net-dhcp.log as a string, or an empty string with a t.Logf
-// note on error. Useful when a test wants to assert on a specific log
-// line emitted by the plugin during a bound/renew event (e.g. T2-2
-// surfaces NTP / TFTP / search-list values at info level there).
+// note on error.
 //
 // A thin t-flavoured wrapper over PluginLog: swallowing the error into
 // a log note is what a mid-test assertion helper wants, and is exactly
 // what the health floor must not do.
-func ReadPluginLog(t *testing.T, ctx context.Context) string {
+//
+// THE NAME IS THE POINT (#933). The plugin log spans the whole suite,
+// and on the arm64 lane the whole suite is one process with one plugin
+// install, so an assertion over this string is satisfied, or defeated,
+// by a line another test wrote ten minutes earlier. Almost every caller
+// wants MarkPluginLog plus ReadPluginLogSince instead. The one that
+// does not is docker_api_readonly_test.go's GET/HEAD claim, which is a
+// negative assertion about the whole run and would be weakened by a
+// window. A call site typing the old, shorter name no longer compiles,
+// which is the only observer the tree can carry: the population that
+// would otherwise catch the regression is one whole-suite run, and that
+// happens at rc tag time.
+func ReadWholePluginLog(t *testing.T, ctx context.Context) string {
 	t.Helper()
 	_, data, err := PluginLog(ctx)
 	if err != nil {
-		t.Logf("ReadPluginLog: %v", err)
+		t.Logf("ReadWholePluginLog: %v", err)
 		return ""
 	}
 	return string(data)
@@ -192,7 +202,7 @@ func ReadPluginLog(t *testing.T, ctx context.Context) string {
 // passed to ReadPluginLogSince so a test asserts only on what its own
 // run wrote.
 //
-// It FAILS the test when the log cannot be read, where ReadPluginLog
+// It FAILS the test when the log cannot be read, where ReadWholePluginLog
 // returns an empty string and a note. A mark that quietly defaults to
 // zero is a window over the whole log, which is the exact reading this
 // pair exists to remove, and it would be invisible in a green run.
@@ -242,7 +252,7 @@ func CountPluginLogLines(t *testing.T, ctx context.Context, subs ...string) int 
 		return 0
 	}
 	n := 0
-	for _, line := range strings.Split(ReadPluginLog(t, ctx), "\n") {
+	for _, line := range strings.Split(ReadWholePluginLog(t, ctx), "\n") {
 		matched := true
 		for _, sub := range subs {
 			if !strings.Contains(line, sub) {

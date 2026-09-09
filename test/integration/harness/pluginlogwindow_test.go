@@ -34,7 +34,7 @@ func TestPluginLogWindow_ExcludesWhatCameBeforeTheMark(t *testing.T) {
 }
 
 // The pre-fix reading, pinned. A mark of zero is the whole log, which
-// is what ReadPluginLog gives a caller, and the section 2.4 line is
+// is what ReadWholePluginLog gives a caller, and the section 2.4 line is
 // then inside the assertion's population.
 func TestPluginLogWindow_MarkAtZeroIsTheWholeLog(t *testing.T) {
 	log := []byte(arpConflictLine + "\n" + dadConflictLine + "\n")

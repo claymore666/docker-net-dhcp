@@ -185,7 +185,7 @@ func TestDockerAPI_OnlySafeMethodsReachTheDaemon(t *testing.T) {
 	// every call another test provoked out of the only place that
 	// judges them.
 	all := map[string]bool{}
-	for _, line := range strings.Split(harness.ReadPluginLog(t, ctx), "\n") {
+	for _, line := range strings.Split(harness.ReadWholePluginLog(t, ctx), "\n") {
 		method, path, isCall := parseDockerAPICall(t, line)
 		if !isCall {
 			continue
