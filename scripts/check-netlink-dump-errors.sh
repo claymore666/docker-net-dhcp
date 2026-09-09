@@ -100,6 +100,16 @@ fi
 # seam call site out.
 CALL_RE="(\.(${DUMPS})\(|\bnl(${DUMPS})\()"
 
+# The same rule for awk, which is not grep. `\b` is a word boundary in
+# GNU grep and is NOT one in every awk, and an `-v` assignment has its
+# escape sequences processed BEFORE the regex is compiled, so `\(`
+# reaches the matcher as a bare `(` and the expression stops parsing.
+# gawk refuses it and mawk does not, which is a difference between a
+# developer box and the runner. Written with bracket expressions so it
+# carries no backslash at all, and passed through the environment,
+# where nothing rewrites it.
+AWK_RE="([.](${DUMPS})[(]|nl(${DUMPS})[(])"
+
 ALL=$(grep -nEH "$CALL_RE" "${GOFILES[@]}" 2>/dev/null)
 TOTAL=$(printf '%s' "$ALL" | grep -c . )
 
@@ -115,7 +125,8 @@ fi
 
 # The rule. `DumpResult(` must open to the LEFT of the call, which is
 # what wrapping means; a line carrying it to the right is not a wrap.
-BAD=$(printf '%s\n' "$ALL" | awk -v re="$CALL_RE" '
+BAD=$(printf '%s\n' "$ALL" | AWK_RE="$AWK_RE" awk '
+BEGIN { re = ENVIRON["AWK_RE"]; if (re == "") exit 3 }
 {
     line = $0
     # Strip "file:lineno:" so a path containing DumpResult cannot pass a
@@ -129,6 +140,16 @@ BAD=$(printf '%s\n' "$ALL" | awk -v re="$CALL_RE" '
     if (match(code, re) == 0) next
     if (RSTART < w) print head code
 }')
+SCAN=$?
+
+# The scan is the whole rule. If awk could not run it -- a regex this
+# awk refuses, a missing interpreter -- the result is an empty BAD,
+# which is indistinguishable from a clean tree. Read the status.
+if [ "$SCAN" -ne 0 ]; then
+    echo "check-netlink-dump-errors: the scan itself failed (awk exit $SCAN), so an empty " \
+         "result means nothing; refusing to judge" >&2
+    exit 2
+fi
 
 if [ -n "$BAD" ]; then
     echo "check-netlink-dump-errors: netlink dump call(s) not going through util.DumpResult (#802)." >&2

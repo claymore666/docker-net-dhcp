@@ -175,6 +175,21 @@ git -C "$real" config user.name t
 track "$real"
 check "the shipped tree is clean" 0 "$real" "all through util.DumpResult"
 
+# The scan cannot fail into a pass. awk is stubbed to fail over the
+# CLEAN shipped tree, where a gate that ignored the scan's status would
+# print "all through util.DumpResult" and exit 0. This is not a
+# hypothetical: the first version passed the expression with `awk -v`,
+# whose escape processing left the regex unparseable, and gawk on the
+# runner died on it while mawk on the author's box did not.
+stub="$TMP/stub"
+mkdir -p "$stub"
+printf '#!/bin/sh\nexit 1\n' > "$stub/awk"
+chmod +x "$stub/awk"
+saved_path="$PATH"
+PATH="$stub:$PATH"
+check "a failing scan refuses rather than passing" 2 "$real" "the scan itself failed"
+PATH="$saved_path"
+
 # One real site loses its wrap. The line number is DERIVED from the
 # shipped file rather than typed, so a rewrite of parent_attached.go
 # moves the expectation with it instead of turning this case into a
