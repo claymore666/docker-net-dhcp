@@ -107,7 +107,18 @@ func explainChildLinkAdd(err error, mode, parent string, parentIndex int) error 
 		return fmt.Errorf("failed to create %v link: %w", mode, err)
 	}
 
-	occupant := childLinkKind(parentIndex)
+	occupant, known := childLinkKind(parentIndex)
+	if !known {
+		// The link table could not be read, so nothing is known about
+		// what the parent carries. Said out loud rather than folded
+		// into the branch below: "nothing of the other kind is there"
+		// and "the question could not be asked" are different answers
+		// and want different next steps from the operator (#802).
+		return fmt.Errorf("failed to create %v link on %q: %w — the parent would not "+
+			"accept another child, and its link table could not be read, so whether it "+
+			"already carries %v children is unknown; check with `ip -d link show` and "+
+			"retry", mode, parent, err, otherChildMode(mode))
+	}
 	if occupant == "" || occupant == mode {
 		// EBUSY with nothing of the other kind visible: the blocker has
 		// already gone (a teardown that completed between the refusal
@@ -126,11 +137,21 @@ func explainChildLinkAdd(err error, mode, parent string, parentIndex int) error 
 }
 
 // childLinkKind reports the kind of parent-attached child already on
-// this parent — "macvlan", "ipvlan", or "" if it carries neither.
-func childLinkKind(parentIndex int) string {
-	links, err := nlLinkList()
+// this parent — "macvlan", "ipvlan", or "" if it carries neither — and
+// whether the link table could be read at all.
+//
+// THE SECOND RETURN IS THE FIX, NOT THE DUMP TOLERANCE (#802). A
+// `string` return cannot express "I could not tell": the dump error
+// used to come back as "", which is the caller's encoding for "this
+// parent carries neither kind", so a transient netlink failure made a
+// mode-collision guard report the parent as free. Name the opposite
+// failure: refusing a legitimate create would be loud and
+// self-correcting; admitting an illegitimate one is silent and lands as
+// a kernel EBUSY the operator has to decode.
+func childLinkKind(parentIndex int) (kind string, known bool) {
+	links, err := util.DumpResult(nlLinkList())
 	if err != nil {
-		return ""
+		return "", false
 	}
 	for _, l := range links {
 		if l.Attrs().ParentIndex != parentIndex {
@@ -138,12 +159,12 @@ func childLinkKind(parentIndex int) string {
 		}
 		switch l.Type() {
 		case "macvlan":
-			return ModeMacvlan
+			return ModeMacvlan, true
 		case "ipvlan":
-			return ModeIPvlan
+			return ModeIPvlan, true
 		}
 	}
-	return ""
+	return "", true
 }
 
 // otherChildMode names the kind that would conflict with this one.
@@ -516,10 +537,10 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, callStart tim
 				base.Identity6 = identity6
 				base.RecordID = recordID6
 			}
-			// RFC 5227 conflict detection, from the network's stored
+			// Conflict detection, from the network's stored
 			// conflict_check (D23). Set on the BASE, so every attempt
 			// down the dhcp_servers ladder runs in the same mode.
-			if err := p.conflictWiring(&base, opts, roleAcquire, r.NetworkID, r.EndpointID); err != nil {
+			if err := p.conflictWiring(&base, opts, roleAcquire, r.NetworkID, r.EndpointID, v6); err != nil {
 				return err
 			}
 			if v6 {
@@ -668,7 +689,7 @@ func (p *Plugin) deleteParentAttachedEndpoint(r DeleteEndpointRequest) error {
 // address. Used to re-discover a macvlan child after Docker has moved and
 // renamed it inside the container.
 func findLinkByMAC(handle linkLister, mac net.HardwareAddr) (netlink.Link, error) {
-	links, err := handle.LinkList()
+	links, err := util.DumpResult(handle.LinkList())
 	if err != nil {
 		return nil, fmt.Errorf("failed to list links: %w", err)
 	}

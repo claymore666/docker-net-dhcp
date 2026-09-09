@@ -109,7 +109,13 @@ type HealthResponse struct {
 	ActiveEndpoints int     `json:"active_endpoints"`
 	PendingHints    int     `json:"pending_hints"`
 	RecoveredOK     int32   `json:"recovered_ok"`
-	RecoveryFailed  int32   `json:"recovery_failed"`
+	// DisplacedStops counts managers a Join stopped because it found
+	// one already registered for the endpoint (#338). It is the
+	// plugin's own opinion that it ASKED a client to stop; what proves
+	// the client went is the AF_PACKET socket table in the container's
+	// namespace. See PacketSocket.
+	DisplacedStops int32 `json:"displaced_stops"`
+	RecoveryFailed int32 `json:"recovery_failed"`
 	// RecoveryFailed has four benign twins, at the four points recovery
 	// can stop early for a reason that is not a plugin fault. None is
 	// healthy-affecting.
@@ -175,6 +181,16 @@ type HealthResponse struct {
 	// mirrored here so a run can say whether the check actually ran —
 	// a check that never ran reads exactly like a clean segment.
 	AddressConflicts int32 `json:"address_conflicts"`
+	// AddressConflictsV4 and AddressConflictsV6 are its two halves, and
+	// they are two different protocols rather than two views of one.
+	// The v4 half is RFC 5227 ARP and is the ONLY half the ACD rows
+	// below cover; the v6 half is the kernel's Duplicate Address
+	// Detection (RFC 4862 section 5.4), declined under RFC 9915 section
+	// 18.2.8, which sends no ARP and moves no ACD counter. A suite that
+	// compares acd_conflicts_detected against the aggregate reports a
+	// seam defect for every DHCPv6 conflict.
+	AddressConflictsV4 int32 `json:"address_conflicts_v4"`
+	AddressConflictsV6 int32 `json:"address_conflicts_v6"`
 	// ACDProbesSent is what makes address_conflicts=0 mean anything:
 	// zero probes and a clean segment read identically otherwise. It is
 	// RFC 5227 section 2.1.1's ARP Probes, counted by the library.
@@ -231,8 +247,13 @@ type HealthResponse struct {
 	DockerAPINonGETRefusals *int32 `json:"docker_api_non_get_refusals"`
 	LeaseChanged            int32  `json:"lease_changed"`
 	LeasesObtained          int32  `json:"leases_obtained"`
-	LeasesRenewed           int32  `json:"leases_renewed"`
-	DHCPTimeouts            int32  `json:"dhcp_timeouts"`
+	// LeasesObtainedV4 is the half of LeasesObtained that RFC 5227's
+	// check can cover. LeasesObtained is the SUM of the two families
+	// (pkg/plugin/endpoints.go), and ARP is IPv4's; the ACD census
+	// judges against this one, not the sum (#881).
+	LeasesObtainedV4 int32 `json:"leases_obtained_v4"`
+	LeasesRenewed    int32 `json:"leases_renewed"`
+	DHCPTimeouts     int32 `json:"dhcp_timeouts"`
 	// ClientStopFailures was lease_release_failures until #800. A
 	// renewal client that did not shut down cleanly when signalled — it
 	// says nothing about the lease, which is held to expiry either way
@@ -1018,8 +1039,23 @@ func sortedKeys(m map[string]int) []string {
 //     every run containing the off-mode test, and the fix reached for
 //     under time pressure would be to delete the gate.
 //
-// leases_obtained is v4-only — v6 has its own counter — so a v6-only
-// shard cannot trip this.
+//  4. NEW SINCE THE v6 COUNTERS SPLIT THE ATOM, and the reason this
+//     gate failed on a coin toss (#881). The premise that used to end
+//     this block — "leases_obtained is v4-only, so a v6-only shard
+//     cannot trip this" — was true when it was written and is false
+//     now: leases_obtained is published as the SUM of
+//     leases_obtained_v4 and leases_obtained_v6
+//     (pkg/plugin/endpoints.go). RFC 5227's check is ARP, so no v6
+//     lease can ever produce a probe, and a shard whose v4 leases were
+//     all declared while a v6 lease landed reads probes=0 against a
+//     non-empty domain. That is the two-populations defect: the domain
+//     operand admitted addresses the probe does not cover. The gate
+//     therefore reads leases_obtained_v4, which is the population the
+//     probe covers, and refuses when the plugin does not publish it.
+//
+// The v6 half is not left unwatched by this change: a DHCPv6 conflict
+// moves address_conflicts_v6 and writes its own log line, and the
+// conflict row below judges both families together.
 
 // acdAllowance accumulates what this shard EXPECTS, declared by the
 // tests that cause it deliberately.
@@ -1178,6 +1214,11 @@ func deltaSincePluginStart(now, was int32) int32 {
 const (
 	conflictProbeMsg = "The address this endpoint was offered is already in use on the segment"
 	conflictHeldMsg  = "The address this endpoint HOLDS was found in use by another device on the segment"
+	// The DHCPv6 pair. A conflict found by Duplicate Address Detection
+	// writes one of these instead, and a census that listed only the
+	// two above counted every v6 squat as zero.
+	conflictProbeMsg6 = "The IPv6 address this endpoint was offered is already in use on the link"
+	conflictHeldMsg6  = "The IPv6 address this endpoint HOLDS was found in use by another node on the link"
 )
 
 // conflictMsgs is every one of them. Listed rather than pattern-matched
@@ -1187,6 +1228,8 @@ const (
 var conflictMsgs = []string{
 	conflictHeldMsg,
 	conflictProbeMsg,
+	conflictHeldMsg6,
+	conflictProbeMsg6,
 }
 
 // ConflictsInLog counts conflicts across the WHOLE run.
@@ -1241,7 +1284,13 @@ func ACDCensusFindings(h *HealthResponse, allowedSendFailures, allowedUnprobed, 
 	// point — silently treating <not reported> as 0 would rebuild the
 	// blindness this closes.
 	if h.published != nil {
-		for _, k := range []string{"acd_probes_sent", "acd_arp_send_failures"} {
+		// leases_obtained_v4 is here for the same reason as the two
+		// ACD counters and not as a formality: it is the gate's DOMAIN
+		// operand, so a plugin that does not publish it would empty the
+		// domain and the gate would pass over every run in silence —
+		// the same defeat as reading a probe count of <absent> as zero
+		// (#881).
+		for _, k := range []string{"acd_probes_sent", "acd_arp_send_failures", "leases_obtained_v4"} {
 			if _, ok := h.published[k]; !ok {
 				return []FloorFinding{{
 					Counter: k,
@@ -1272,7 +1321,10 @@ func ACDCensusFindings(h *HealthResponse, allowedSendFailures, allowedUnprobed, 
 	// could be masked by subtracting.
 	sendFailures := deltaSincePluginStart(h.ACDARPSendFailures, base(baseline).ACDARPSendFailures)
 	probes := deltaSincePluginStart(h.ACDProbesSent, base(baseline).ACDProbesSent)
-	leases := deltaSincePluginStart(h.LeasesObtained, base(baseline).LeasesObtained)
+	// The v4 half, not the sum. See the block above: ARP covers IPv4
+	// and nothing else, so a v6 lease in the domain is an operand the
+	// probe was never going to answer for (#881).
+	leases := deltaSincePluginStart(h.LeasesObtainedV4, base(baseline).LeasesObtainedV4)
 	conflicts := deltaSincePluginStart(h.AddressConflicts, base(baseline).AddressConflicts)
 
 	if excess := sendFailures - allowedSendFailures; excess > 0 {
@@ -1303,11 +1355,11 @@ func ACDCensusFindings(h *HealthResponse, allowedSendFailures, allowedUnprobed, 
 			Value:   0,
 			Fatal:   true,
 			Why: fmt.Sprintf(
-				"%d v4 lease(s) were obtained on networks that run RFC 5227's check (%d more were "+
-					"declared as conflict_check=off and are not counted here) and not one ARP Probe "+
-					"was sent. The check is opt-out per network, so with the off-mode leases already "+
-					"subtracted this is the check having stopped working rather than a shard with "+
-					"nothing to look at (#551).",
+				"%d v4 lease(s) (leases_obtained_v4, not the v4+v6 sum) were obtained on networks "+
+					"that run RFC 5227's check (%d more were declared as conflict_check=off and are "+
+					"not counted here) and not one ARP Probe was sent. The check is opt-out per "+
+					"network, so with the off-mode leases already subtracted this is the check "+
+					"having stopped working rather than a shard with nothing to look at (#551).",
 				checked, allowedUnprobed),
 		})
 	}

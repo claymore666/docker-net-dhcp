@@ -12,6 +12,8 @@ import (
 
 	"github.com/claymore666/dhcp-golib/proto"
 	"github.com/claymore666/docker-net-dhcp/pkg/dhcp"
+	log "github.com/sirupsen/logrus"
+	logtest "github.com/sirupsen/logrus/hooks/test"
 )
 
 // newHealthPlugin is a Plugin with the maps a health snapshot reads and
@@ -38,7 +40,7 @@ func TestConflictWiring_EveryModeReachesTheClientOptions(t *testing.T) {
 			t.Fatalf("ParseConflictCheck(%q): %v", name, err)
 		}
 		var o dhcp.DHCPClientOptions
-		if err := p.conflictWiring(&o, DHCPNetworkOptions{ConflictCheck: name}, roleAcquire, "net", "ep"); err != nil {
+		if err := p.conflictWiring(&o, DHCPNetworkOptions{ConflictCheck: name}, roleAcquire, "net", "ep", false); err != nil {
 			t.Fatalf("conflictWiring(%q): %v", name, err)
 		}
 		if o.ConflictMode != want {
@@ -59,7 +61,7 @@ func TestConflictWiring_EveryModeReachesTheClientOptions(t *testing.T) {
 func TestConflictWiring_TheUnsetOptionIsTheLibrarySOwnDefault(t *testing.T) {
 	p := newHealthPlugin()
 	var o dhcp.DHCPClientOptions
-	if err := p.conflictWiring(&o, DHCPNetworkOptions{}, roleAcquire, "net", "ep"); err != nil {
+	if err := p.conflictWiring(&o, DHCPNetworkOptions{}, roleAcquire, "net", "ep", false); err != nil {
 		t.Fatalf("conflictWiring: %v", err)
 	}
 	// The library's default is the zero value of the field it is read
@@ -104,7 +106,7 @@ func TestConflictWiring_AnUnknownModeIsRefusedAndNamesTheAlternatives(t *testing
 
 	p := newHealthPlugin()
 	var o dhcp.DHCPClientOptions
-	if err := p.conflictWiring(&o, DHCPNetworkOptions{ConflictCheck: "waite"}, roleAcquire, "net", "ep"); err == nil {
+	if err := p.conflictWiring(&o, DHCPNetworkOptions{ConflictCheck: "waite"}, roleAcquire, "net", "ep", false); err == nil {
 		t.Error("a corrupt persisted conflict_check started a client anyway")
 	}
 }
@@ -125,7 +127,7 @@ func TestConflictWiring_ANilPluginStillSetsTheMode(t *testing.T) {
 	if name == "" {
 		t.Fatal("no non-default mode to drive with")
 	}
-	if err := p.conflictWiring(&o, DHCPNetworkOptions{ConflictCheck: name}, roleAcquire, "net", "ep"); err != nil {
+	if err := p.conflictWiring(&o, DHCPNetworkOptions{ConflictCheck: name}, roleAcquire, "net", "ep", false); err != nil {
 		t.Fatalf("conflictWiring on a nil plugin: %v", err)
 	}
 	if o.ConflictMode.String() != name {
@@ -141,15 +143,156 @@ func TestConflictWiring_ANilPluginStillSetsTheMode(t *testing.T) {
 // operator's situation does.
 func TestConflictReporter_CountsOncePerConflict(t *testing.T) {
 	p := newHealthPlugin()
-	report := p.conflictReporter("net", "ep")
+	report := p.conflictReporter("net", "ep", false)
 
 	report(dhcp.Conflict{Held: false})
-	if got := p.addressConflicts.Load(); got != 1 {
-		t.Fatalf("a probe-window conflict bumped address_conflicts to %d, want 1", got)
+	if got := p.addressConflictsV4.Load(); got != 1 {
+		t.Fatalf("a probe-window conflict bumped address_conflicts_v4 to %d, want 1", got)
 	}
 	report(dhcp.Conflict{Held: true, Addr: "192.0.2.5"})
-	if got := p.addressConflicts.Load(); got != 2 {
-		t.Fatalf("a section 2.4 conflict bumped address_conflicts to %d, want 2", got)
+	if got := p.addressConflictsV4.Load(); got != 2 {
+		t.Fatalf("a section 2.4 conflict bumped address_conflicts_v4 to %d, want 2", got)
+	}
+	if got := p.addressConflictsV6.Load(); got != 0 {
+		t.Fatalf("two v4 conflicts moved address_conflicts_v6 to %d, want 0", got)
+	}
+}
+
+// A DHCPv6 conflict is counted on its OWN half, and the aggregate on
+// the health document is the sum.
+//
+// THE HALF IS THE POINT, not the total. acd_conflicts_detected counts
+// what the ARP state machine found, and the suite asserts it is not
+// below address_conflicts (test/integration/conflict_check_test.go). A
+// v6 conflict folded into one counter makes that comparison read "the
+// plugin counted conflicts the library did not" -- a seam defect that
+// has not happened -- on a correct build. Both halves are asserted here
+// in both directions, so a reporter that bumped the wrong one, or both,
+// fails.
+func TestConflictReporter_SplitsTheFamilies(t *testing.T) {
+	p := newHealthPlugin()
+
+	p.conflictReporter("net", "ep", true)(dhcp.Conflict{Held: true, Addr: "2001:db8::5"})
+	if got := p.addressConflictsV6.Load(); got != 1 {
+		t.Errorf("a DHCPv6 conflict bumped address_conflicts_v6 to %d, want 1", got)
+	}
+	if got := p.addressConflictsV4.Load(); got != 0 {
+		t.Errorf("a DHCPv6 conflict bumped address_conflicts_v4 to %d; that half is what "+
+			"acd_conflicts_detected is compared against, and ARP never saw this conflict", got)
+	}
+
+	p.conflictReporter("net", "ep", false)(dhcp.Conflict{Held: true, Addr: "192.0.2.5"})
+	h := p.healthSnapshot()
+	if h.AddressConflictsV4 != 1 || h.AddressConflictsV6 != 1 {
+		t.Errorf("health document reports v4=%d v6=%d, want 1 and 1",
+			h.AddressConflictsV4, h.AddressConflictsV6)
+	}
+	if h.AddressConflicts != 2 {
+		t.Errorf("address_conflicts=%d, want 2: the aggregate is the sum of the two halves",
+			h.AddressConflicts)
+	}
+	if h.Healthy {
+		t.Error("healthy is still true with two conflicts recorded")
+	}
+}
+
+// A v6-only conflict is enough to flip healthy, and to stamp the check.
+//
+// The opposite direction of the split: a family-split counter whose
+// aggregate is read from the v4 half alone would pass every assertion
+// above and leave a squatted IPv6 container reporting itself healthy.
+func TestConflictReporter_AV6OnlyConflictIsUnhealthyAndStamped(t *testing.T) {
+	p := newHealthPlugin()
+	p.conflictReporter("net", "ep", true)(dhcp.Conflict{Held: true, Addr: "2001:db8::5"})
+
+	h := p.healthSnapshot()
+	if h.AddressConflicts != 1 {
+		t.Errorf("address_conflicts=%d after one v6 conflict, want 1", h.AddressConflicts)
+	}
+	if h.Healthy {
+		t.Error("healthy is true although a container holds an address another node on the link owns")
+	}
+	if stamp := p.checkStamps()["address_conflicts"]; stamp.IsZero() {
+		t.Error("address_conflicts has no stamp after a v6 conflict; laterOf reads one half only")
+	}
+}
+
+// The family the reporter carries has to reach the MESSAGE, not only
+// the counter.
+//
+// THE CALL SITE, NOT THE FUNCTION. conflictMessage is exercised
+// directly below; that says nothing about which argument the reporter
+// passes it. A reporter that counts a DHCPv6 conflict in the v6 half
+// and then prints the ARP sentence sends the operator to tcpdump for
+// ARP frames that were never sent, and every counter assertion in this
+// file still passes.
+func TestConflictReporter_LogsTheMessageOfItsOwnFamily(t *testing.T) {
+	p := newHealthPlugin()
+	hook := logtest.NewLocal(log.StandardLogger())
+	defer hook.Reset()
+
+	p.conflictReporter("net", "ep", true)(dhcp.Conflict{Held: true, Addr: "2001:db8::5"})
+	entry := hook.LastEntry()
+	if entry == nil {
+		t.Fatal("a DHCPv6 conflict logged nothing at all")
+	}
+	if !strings.Contains(entry.Message, "RFC 4862") || strings.Contains(entry.Message, "RFC 5227") {
+		t.Errorf("a DHCPv6 conflict logged %q; the reporter lost its family on the way "+
+			"to the message and named the ARP standard", entry.Message)
+	}
+	if got := entry.Data["family"]; got != "ipv6" {
+		t.Errorf("family field is %v after a DHCPv6 conflict, want ipv6", got)
+	}
+
+	p.conflictReporter("net", "ep", false)(dhcp.Conflict{Held: true, Addr: "192.0.2.5"})
+	entry = hook.LastEntry()
+	if !strings.Contains(entry.Message, "RFC 5227") || strings.Contains(entry.Message, "RFC 4862") {
+		t.Errorf("a DHCPv4 conflict logged %q, which is not the ARP line the operator "+
+			"documentation points at", entry.Message)
+	}
+	if got := entry.Data["family"]; got != "ipv4" {
+		t.Errorf("family field is %v after a DHCPv4 conflict, want ipv4", got)
+	}
+}
+
+// The four messages are four different messages, and each names the
+// protocol that found the conflict.
+//
+// A REFERENCE AN OPERATOR ACTS ON. RFC 5227 is ARP; a DHCPv6 conflict
+// is found by the kernel's Duplicate Address Detection (RFC 4862
+// section 5.4) and declined under RFC 9915 section 18.2.8, and no ARP
+// frame is ever sent for it. The v4 lines are unchanged and are pinned
+// here as the preservation control: the integration harness counts them
+// in the plugin's log across a whole run.
+func TestConflictMessage_NamesTheProtocolThatFoundIt(t *testing.T) {
+	cases := []struct {
+		held, v6 bool
+		must     []string
+		mustNot  []string
+	}{
+		{false, false, []string{"RFC 5227", "was offered"}, []string{"RFC 4862", "IPv6"}},
+		{true, false, []string{"RFC 5227 section 2.4", "HOLDS"}, []string{"RFC 4862", "IPv6"}},
+		{false, true, []string{"RFC 4862 section 5.4", "RFC 9915 section 18.2.8", "IPv6"}, []string{"RFC 5227"}},
+		{true, true, []string{"RFC 4862 section 5.4", "RFC 9915 section 18.2.8", "HOLDS", "CHANGE"}, []string{"RFC 5227"}},
+	}
+	seen := map[string]bool{}
+	for _, c := range cases {
+		msg := conflictMessage(c.held, c.v6)
+		if seen[msg] {
+			t.Errorf("held=%v v6=%v repeats a message already used by another case", c.held, c.v6)
+		}
+		seen[msg] = true
+		for _, want := range c.must {
+			if !strings.Contains(msg, want) {
+				t.Errorf("held=%v v6=%v: message does not carry %q:\n  %s", c.held, c.v6, want, msg)
+			}
+		}
+		for _, no := range c.mustNot {
+			if strings.Contains(msg, no) {
+				t.Errorf("held=%v v6=%v: message carries %q, which is the wrong protocol for it:\n  %s",
+					c.held, c.v6, no, msg)
+			}
+		}
 	}
 }
 
@@ -314,7 +457,7 @@ func TestConflictWiring_TheJoinManagerNeverHoldsTheAddressBack(t *testing.T) {
 
 	for _, c := range cases {
 		var o dhcp.DHCPClientOptions
-		if err := p.conflictWiring(&o, DHCPNetworkOptions{ConflictCheck: c.option}, c.role, "net", "ep"); err != nil {
+		if err := p.conflictWiring(&o, DHCPNetworkOptions{ConflictCheck: c.option}, c.role, "net", "ep", false); err != nil {
 			t.Fatalf("conflictWiring(%q, role %d): %v", c.option, c.role, err)
 		}
 		if o.ConflictMode != c.want {
@@ -328,7 +471,7 @@ func TestConflictWiring_TheJoinManagerNeverHoldsTheAddressBack(t *testing.T) {
 	// decision rather than a default.
 	for _, m := range proto.AllConflictModes() {
 		var o dhcp.DHCPClientOptions
-		if err := p.conflictWiring(&o, DHCPNetworkOptions{ConflictCheck: m.String()}, roleJoin, "net", "ep"); err != nil {
+		if err := p.conflictWiring(&o, DHCPNetworkOptions{ConflictCheck: m.String()}, roleJoin, "net", "ep", false); err != nil {
 			t.Fatalf("conflictWiring(%q, roleJoin): %v", m, err)
 		}
 		if o.ConflictMode == proto.ConflictWait {

@@ -14,6 +14,7 @@ import (
 	docker "github.com/docker/docker/client"
 	"github.com/vishvananda/netlink"
 
+	"github.com/claymore666/docker-net-dhcp/pkg/util"
 	"github.com/claymore666/docker-net-dhcp/test/integration/harness"
 )
 
@@ -206,7 +207,7 @@ const joinNoContainerBudget = 45 * time.Second
 func awaitNoReleaseLinks(t *testing.T) {
 	t.Helper()
 
-	links, err := netlink.LinkList()
+	links, err := util.DumpResult(netlink.LinkList())
 	if err != nil {
 		t.Fatalf("LinkList: %v", err)
 	}

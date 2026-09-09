@@ -49,13 +49,13 @@ func TestACDCensusFindings(t *testing.T) {
 		},
 		{
 			name: "probes went out and no send was refused",
-			h:    &HealthResponse{ACDProbesSent: 4, LeasesObtained: 4},
+			h:    &HealthResponse{ACDProbesSent: 4, LeasesObtained: 4, LeasesObtainedV4: 4},
 		},
 		{
 			// THE motivating run, #527 through #550. A gate that passes
 			// this is the gate we already had.
 			name:        "one probe out and two sends refused, none declared, fails",
-			h:           &HealthResponse{ACDProbesSent: 1, ACDARPSendFailures: 2, LeasesObtained: 3},
+			h:           &HealthResponse{ACDProbesSent: 1, ACDARPSendFailures: 2, LeasesObtained: 3, LeasesObtainedV4: 3},
 			allowedSend: 0,
 			want:        []string{"acd_arp_send_failures"},
 		},
@@ -63,13 +63,13 @@ func TestACDCensusFindings(t *testing.T) {
 			// A test that degrades the ARP socket on purpose declares
 			// it, so it is not a finding.
 			name:        "a declared deliberate refusal is not a finding",
-			h:           &HealthResponse{ACDProbesSent: 3, ACDARPSendFailures: 1, LeasesObtained: 4},
+			h:           &HealthResponse{ACDProbesSent: 3, ACDARPSendFailures: 1, LeasesObtained: 4, LeasesObtainedV4: 4},
 			allowedSend: 1,
 			want:        nil,
 		},
 		{
 			name:        "one refusal beyond the declared allowance fails",
-			h:           &HealthResponse{ACDProbesSent: 3, ACDARPSendFailures: 2, LeasesObtained: 5},
+			h:           &HealthResponse{ACDProbesSent: 3, ACDARPSendFailures: 2, LeasesObtained: 5, LeasesObtainedV4: 5},
 			allowedSend: 1,
 			want:        []string{"acd_arp_send_failures"},
 		},
@@ -78,12 +78,12 @@ func TestACDCensusFindings(t *testing.T) {
 			// here would make the verdict depend on how the partitioner
 			// balanced the run.
 			name: "a shard that leased no v4 address is not a failure",
-			h:    &HealthResponse{ACDProbesSent: 0, LeasesObtained: 0},
+			h:    &HealthResponse{ACDProbesSent: 0, LeasesObtained: 0, LeasesObtainedV4: 0},
 		},
 		{
 			// Distinct from a refused send: nothing was even attempted.
 			name: "leases obtained but the check never ran fails",
-			h:    &HealthResponse{ACDProbesSent: 0, ACDARPSendFailures: 0, LeasesObtained: 6},
+			h:    &HealthResponse{ACDProbesSent: 0, ACDARPSendFailures: 0, LeasesObtained: 6, LeasesObtainedV4: 6},
 			want: []string{"acd_probes_sent"},
 		},
 		{
@@ -93,7 +93,7 @@ func TestACDCensusFindings(t *testing.T) {
 			// on conflict_check=off networks reaches zero probes on the
 			// operator's own instruction, and declares it.
 			name:        "declared conflict_check=off leases are not a never-ran finding",
-			h:           &HealthResponse{ACDProbesSent: 0, LeasesObtained: 3},
+			h:           &HealthResponse{ACDProbesSent: 0, LeasesObtained: 3, LeasesObtainedV4: 3},
 			allowedUnpr: 3,
 			want:        nil,
 		},
@@ -103,7 +103,7 @@ func TestACDCensusFindings(t *testing.T) {
 			// taken on a network that was supposed to probe, and none
 			// did.
 			name:        "an undeclared lease among declared ones still fails",
-			h:           &HealthResponse{ACDProbesSent: 0, LeasesObtained: 4},
+			h:           &HealthResponse{ACDProbesSent: 0, LeasesObtained: 4, LeasesObtainedV4: 4},
 			allowedUnpr: 3,
 			want:        []string{"acd_probes_sent"},
 		},
@@ -113,15 +113,80 @@ func TestACDCensusFindings(t *testing.T) {
 			// a finding, but neither is it a licence: there was nothing
 			// to check either way.
 			name:        "an over-declared allowance is still not a finding",
-			h:           &HealthResponse{ACDProbesSent: 0, LeasesObtained: 1},
+			h:           &HealthResponse{ACDProbesSent: 0, LeasesObtained: 1, LeasesObtainedV4: 1},
 			allowedUnpr: 9,
 			want:        nil,
 		},
 		{
-			// v6 has its own counter; leases_obtained is v4-only, so a
-			// v6-only shard reads as "nothing to check", not as a fault.
-			name: "a v6-only shard does not trip the never-ran case",
-			h:    &HealthResponse{ACDProbesSent: 0, ACDARPSendFailures: 0, LeasesObtained: 0},
+			// A shard that leased nothing in either family reads as
+			// "nothing to check", not as a fault.
+			name: "a shard that leased nothing does not trip the never-ran case",
+			h:    &HealthResponse{ACDProbesSent: 0, ACDARPSendFailures: 0, LeasesObtained: 0, LeasesObtainedV4: 0},
+		},
+		{
+			// #881, AND THE CASE THIS GATE FAILED ON. leases_obtained is
+			// the SUM of the two families, and the premise the old
+			// comment carried — "leases_obtained is v4-only" — stopped
+			// being true when the counters split. RFC 5227's check is
+			// ARP: no DHCPv6 lease can ever produce a probe, so a shard
+			// whose only bind was a v6 one has an EMPTY domain for this
+			// gate and a non-zero sum.
+			//
+			// This is the post-restart shape from the FAMILY side: the
+			// plugin is recycled, recovery re-adopts a running endpoint
+			// whose lease is v6, its resumed client re-binds in the new
+			// process, and no CreateEndpoint ran here at all. Under the
+			// pre-fix guard: FATAL, on a run in which nothing was wrong.
+			// The v4 side of the same shape is the case two rows below,
+			// and it is NOT closed by this change.
+			name: "a v6 lease with no v4 lease is not a never-ran finding",
+			h:    &HealthResponse{ACDProbesSent: 0, ACDARPSendFailures: 0, LeasesObtained: 1, LeasesObtainedV4: 0},
+			want: nil,
+		},
+		{
+			// THE PRESERVATION CONTROL for the narrowing, and the half a
+			// change that simply deleted the operand would lose: one v4
+			// lease among the v6 ones, nothing probed, still fatal.
+			name: "a v4 lease alongside v6 ones still fails when nothing probed",
+			h:    &HealthResponse{ACDProbesSent: 0, ACDARPSendFailures: 0, LeasesObtained: 4, LeasesObtainedV4: 1},
+			want: []string{"acd_probes_sent"},
+		},
+		{
+			// PINNED OPEN, NOT CLOSED: the P-3 residual of #881, and the
+			// half the family narrowing does NOT reach. Written as a
+			// case so the tree says which of the two it is.
+			//
+			// The shape: the plugin is recycled, recovery adopts a live
+			// IPv4 endpoint, and the resumed client's DHCPACK binds, so
+			// leases_obtained_v4 moves. At Join the mode is
+			// ConflictAsync, and async binds first and probes after: the
+			// library arms a timer at uniform(0, PROBE_WAIT) (RFC 5227
+			// section 2.1) and the first ARP Probe leaves when it fires.
+			// A health read inside that window sees the lease and not
+			// the probe. Both counters here read BELOW the baseline,
+			// which is the restart itself.
+			//
+			// FATAL, deliberately. The counters carry no time, so this
+			// census cannot tell that window from a plugin that never
+			// probes at all — which is the fault the row exists to
+			// catch — and narrowing the domain any further would delete
+			// the check rather than fix it. If this verdict ever
+			// changes it has to change as a decision; this case is what
+			// makes that loud.
+			name:     "a v4 lease whose probe timer has not fired yet is STILL fatal (P-3)",
+			h:        &HealthResponse{ACDProbesSent: 0, ACDARPSendFailures: 0, LeasesObtained: 1, LeasesObtainedV4: 1},
+			baseline: &HealthResponse{ACDProbesSent: 9, ACDARPSendFailures: 0, LeasesObtained: 9, LeasesObtainedV4: 9},
+			want:     []string{"acd_probes_sent"},
+		},
+		{
+			// The v6 half does not leak into the domain through the
+			// BASELINE either. Both operands are deltas, so a baseline
+			// read from the sum would make a v6 bind look like a v4 one
+			// going backwards.
+			name:     "a v6 bind after the baseline does not enter the domain",
+			h:        &HealthResponse{ACDProbesSent: 2, LeasesObtained: 5, LeasesObtainedV4: 2},
+			baseline: &HealthResponse{ACDProbesSent: 2, LeasesObtained: 2, LeasesObtainedV4: 2},
+			want:     nil,
 		},
 		{
 			// THE reason the log is read at all. The plugin restarts
@@ -131,7 +196,7 @@ func TestACDCensusFindings(t *testing.T) {
 			// clean run — and a conflict is a container up on somebody
 			// else's address.
 			name:        "counters clean but the log records conflicts still fails",
-			h:           &HealthResponse{ACDProbesSent: 2, LeasesObtained: 2},
+			h:           &HealthResponse{ACDProbesSent: 2, LeasesObtained: 2, LeasesObtainedV4: 2},
 			conflictLog: 3,
 			want:        []string{"address_conflicts"},
 		},
@@ -140,7 +205,7 @@ func TestACDCensusFindings(t *testing.T) {
 			// when the counter IS the larger there is nothing extra to
 			// say.
 			name:        "the counter agreeing with the log is not a finding",
-			h:           &HealthResponse{ACDProbesSent: 2, AddressConflicts: 4, LeasesObtained: 2},
+			h:           &HealthResponse{ACDProbesSent: 2, AddressConflicts: 4, LeasesObtained: 2, LeasesObtainedV4: 2},
 			conflictLog: 1,
 			want:        nil,
 		},
@@ -148,7 +213,7 @@ func TestACDCensusFindings(t *testing.T) {
 			// A refused send recorded nowhere but the counter still
 			// means the check ran, so this is not "never invoked".
 			name:        "a refused send alone does not also raise the never-ran finding",
-			h:           &HealthResponse{ACDProbesSent: 0, ACDARPSendFailures: 2, LeasesObtained: 5},
+			h:           &HealthResponse{ACDProbesSent: 0, ACDARPSendFailures: 2, LeasesObtained: 5, LeasesObtainedV4: 5},
 			allowedSend: 9,
 			want:        nil,
 		},
@@ -160,9 +225,9 @@ func TestACDCensusFindings(t *testing.T) {
 			// release PR goes red; judged against the baseline it is
 			// nothing to do with this process.
 			name:        "a refusal that predates this process is not ours",
-			h:           &HealthResponse{ACDProbesSent: 5, ACDARPSendFailures: 1, LeasesObtained: 5},
+			h:           &HealthResponse{ACDProbesSent: 5, ACDARPSendFailures: 1, LeasesObtained: 5, LeasesObtainedV4: 5},
 			allowedSend: 0,
-			baseline:    &HealthResponse{ACDProbesSent: 4, ACDARPSendFailures: 1, LeasesObtained: 4},
+			baseline:    &HealthResponse{ACDProbesSent: 4, ACDARPSendFailures: 1, LeasesObtained: 4, LeasesObtainedV4: 4},
 			want:        nil,
 		},
 		{
@@ -170,9 +235,9 @@ func TestACDCensusFindings(t *testing.T) {
 			// direction that matters: a fix which only ever silences
 			// findings is not a fix.
 			name:        "a refusal after the baseline is still ours",
-			h:           &HealthResponse{ACDProbesSent: 5, ACDARPSendFailures: 2, LeasesObtained: 5},
+			h:           &HealthResponse{ACDProbesSent: 5, ACDARPSendFailures: 2, LeasesObtained: 5, LeasesObtainedV4: 5},
 			allowedSend: 0,
-			baseline:    &HealthResponse{ACDProbesSent: 4, ACDARPSendFailures: 1, LeasesObtained: 4},
+			baseline:    &HealthResponse{ACDProbesSent: 4, ACDARPSendFailures: 1, LeasesObtained: 4, LeasesObtainedV4: 4},
 			want:        []string{"acd_arp_send_failures"},
 		},
 		{
@@ -182,9 +247,9 @@ func TestACDCensusFindings(t *testing.T) {
 			// report a clean run for one in which the plugin died — #385
 			// exactly.
 			name:        "a counter below the baseline is a restart, not a negative",
-			h:           &HealthResponse{ACDProbesSent: 1, ACDARPSendFailures: 2, LeasesObtained: 1},
+			h:           &HealthResponse{ACDProbesSent: 1, ACDARPSendFailures: 2, LeasesObtained: 1, LeasesObtainedV4: 1},
 			allowedSend: 0,
-			baseline:    &HealthResponse{ACDProbesSent: 9, ACDARPSendFailures: 7, LeasesObtained: 9},
+			baseline:    &HealthResponse{ACDProbesSent: 9, ACDARPSendFailures: 7, LeasesObtained: 9, LeasesObtainedV4: 9},
 			want:        []string{"acd_arp_send_failures"},
 		},
 		{
@@ -192,15 +257,15 @@ func TestACDCensusFindings(t *testing.T) {
 			// plugin has probed plenty; this process leased addresses and
 			// probed none of them, which is the blindness #551 is about.
 			name:     "the check not running in THIS process is still a finding",
-			h:        &HealthResponse{ACDProbesSent: 4, ACDARPSendFailures: 0, LeasesObtained: 7},
-			baseline: &HealthResponse{ACDProbesSent: 4, ACDARPSendFailures: 0, LeasesObtained: 4},
+			h:        &HealthResponse{ACDProbesSent: 4, ACDARPSendFailures: 0, LeasesObtained: 7, LeasesObtainedV4: 7},
+			baseline: &HealthResponse{ACDProbesSent: 4, ACDARPSendFailures: 0, LeasesObtained: 4, LeasesObtainedV4: 4},
 			want:     []string{"acd_probes_sent"},
 		},
 		{
 			// Every fault is reported, not just the first: the run has
 			// unexplained refusals AND a conflict the counter lost.
 			name:        "faults are reported together, not just the first",
-			h:           &HealthResponse{ACDProbesSent: 2, ACDARPSendFailures: 3, LeasesObtained: 2},
+			h:           &HealthResponse{ACDProbesSent: 2, ACDARPSendFailures: 3, LeasesObtained: 2, LeasesObtainedV4: 2},
 			allowedSend: 0,
 			conflictLog: 1,
 			want:        []string{"acd_arp_send_failures", "address_conflicts"},
@@ -211,7 +276,7 @@ func TestACDCensusFindings(t *testing.T) {
 			// counter reset out from under the log. Nothing was
 			// dropped by the seam and nothing should be red.
 			name:        "staged conflicts the counter lost to a restart are declared, not red",
-			h:           &HealthResponse{ACDProbesSent: 6, LeasesObtained: 4},
+			h:           &HealthResponse{ACDProbesSent: 6, LeasesObtained: 4, LeasesObtainedV4: 4},
 			allowedConf: 2,
 			conflictLog: 2,
 		},
@@ -229,7 +294,7 @@ func TestACDCensusFindings(t *testing.T) {
 			// change to the row cannot move this boundary silently in
 			// either direction.
 			name:        "inside the declaration a dropped conflict is invisible to the row",
-			h:           &HealthResponse{ACDProbesSent: 3, LeasesObtained: 2},
+			h:           &HealthResponse{ACDProbesSent: 3, LeasesObtained: 2, LeasesObtainedV4: 2},
 			allowedConf: 1,
 			conflictLog: 1,
 		},
@@ -239,7 +304,7 @@ func TestACDCensusFindings(t *testing.T) {
 			// than the shard staged is still the seam dropping an
 			// event, which is #524 restored.
 			name:        "one conflict more than declared is still fatal",
-			h:           &HealthResponse{ACDProbesSent: 6, LeasesObtained: 4},
+			h:           &HealthResponse{ACDProbesSent: 6, LeasesObtained: 4, LeasesObtainedV4: 4},
 			allowedConf: 2,
 			conflictLog: 3,
 			want:        []string{"address_conflicts"},
@@ -248,7 +313,7 @@ func TestACDCensusFindings(t *testing.T) {
 			// A declaration cannot make an UNDECLARED shard pass: with
 			// nothing staged the row is exactly what it was.
 			name:        "an undeclared conflict the counter never saw is fatal",
-			h:           &HealthResponse{ACDProbesSent: 6, LeasesObtained: 4},
+			h:           &HealthResponse{ACDProbesSent: 6, LeasesObtained: 4, LeasesObtainedV4: 4},
 			conflictLog: 1,
 			want:        []string{"address_conflicts"},
 		},
@@ -257,7 +322,7 @@ func TestACDCensusFindings(t *testing.T) {
 			// not anything was declared — a declaration is a licence to
 			// under-report, never a requirement to.
 			name:        "the counter matching the log is clean with a declaration standing",
-			h:           &HealthResponse{ACDProbesSent: 6, LeasesObtained: 4, AddressConflicts: 2},
+			h:           &HealthResponse{ACDProbesSent: 6, LeasesObtained: 4, LeasesObtainedV4: 4, AddressConflicts: 2},
 			allowedConf: 2,
 			conflictLog: 2,
 		},
@@ -294,6 +359,30 @@ func TestACDCensusFindingsAbsentCounter(t *testing.T) {
 	}
 	if !got[0].Fatal {
 		t.Errorf("Fatal = false, want true")
+	}
+}
+
+// The domain operand's own absence, driven separately from the two ACD
+// counters above.
+//
+// A payload carrying both ACD counters and NOT leases_obtained_v4 is
+// what an older plugin publishes, and reading its absence as zero
+// empties the gate's domain: probes==0 with checked==0 is no finding,
+// so every run would pass in silence. That is the same defeat as
+// reading an absent probe count as zero, one operand over (#881).
+func TestACDCensusFindingsAbsentDomainCounter(t *testing.T) {
+	h := decodeHealth(t, `{"healthy":true,"acd_probes_sent":0,"acd_arp_send_failures":0,"leases_obtained":3}`)
+
+	got := ACDCensusFindings(h, 0, 0, 0, 0, nil)
+	if len(got) != 1 {
+		t.Fatalf("findings = %v, want exactly one", got)
+	}
+	if got[0].Counter != "leases_obtained_v4" {
+		t.Errorf("Counter = %q, want leases_obtained_v4", got[0].Counter)
+	}
+	if !got[0].Absent || !got[0].Fatal {
+		t.Errorf("Absent=%v Fatal=%v, want both true — an unpublished domain operand must not "+
+			"be judged as zero", got[0].Absent, got[0].Fatal)
 	}
 }
 

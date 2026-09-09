@@ -962,10 +962,10 @@ func (m *dhcpManager) reconcileDefaultRoute(v6 bool, info dhcp.Info) error {
 		return nil
 	}
 
-	routes, err := m.netHandle.RouteListFiltered(unix.AF_INET, &netlink.Route{
+	routes, err := util.DumpResult(m.netHandle.RouteListFiltered(unix.AF_INET, &netlink.Route{
 		LinkIndex: m.ctrLink.Attrs().Index,
 		Dst:       nil,
-	}, netlink.RT_FILTER_OIF|netlink.RT_FILTER_DST)
+	}, netlink.RT_FILTER_OIF|netlink.RT_FILTER_DST))
 	if err != nil {
 		return fmt.Errorf("failed to list routes: %w", err)
 	}
@@ -1353,7 +1353,7 @@ func (m *dhcpManager) setupClient(v6 bool) (chan error, error) {
 		Identity6:          identity6,
 		HonorRouterAdverts: v6,
 	}
-	if err := m.plugin.conflictWiring(&clientOpts, m.opts, roleJoin, m.joinReq.NetworkID, m.joinReq.EndpointID); err != nil {
+	if err := m.plugin.conflictWiring(&clientOpts, m.opts, roleJoin, m.joinReq.NetworkID, m.joinReq.EndpointID, v6); err != nil {
 		return nil, err
 	}
 	// THE PHASE IS NOT PASSED TO THE CLIENT, and there is nothing for it

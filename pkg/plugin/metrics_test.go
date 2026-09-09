@@ -510,6 +510,13 @@ type familyPair struct {
 
 func familyPairs() []familyPair {
 	return []familyPair{
+		{"net_dhcp_address_conflicts_total",
+			func(p *Plugin) (intCounter, intCounter) {
+				return &p.addressConflictsV4, &p.addressConflictsV6
+			},
+			func(h HealthResponse) (int32, int32, int32) {
+				return h.AddressConflicts, h.AddressConflictsV4, h.AddressConflictsV6
+			}},
 		{"net_dhcp_lease_changed_total",
 			func(p *Plugin) (intCounter, intCounter) { return &p.leaseChangedV4, &p.leaseChangedV6 },
 			func(h HealthResponse) (int32, int32, int32) {

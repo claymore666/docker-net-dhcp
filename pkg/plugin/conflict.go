@@ -86,7 +86,7 @@ func (r clientRole) mode(want proto.ConflictMode) proto.ConflictMode {
 // for the same reason resolveServerPolicy refuses: silently starting a
 // client in a mode the operator did not ask for is how `off` becomes
 // `wait` on a network that chose speed, and nothing would say so.
-func (p *Plugin) conflictWiring(o *dhcp.DHCPClientOptions, opts DHCPNetworkOptions, role clientRole, networkID, endpointID string) error {
+func (p *Plugin) conflictWiring(o *dhcp.DHCPClientOptions, opts DHCPNetworkOptions, role clientRole, networkID, endpointID string, v6 bool) error {
 	mode, err := dhcp.ParseConflictCheck(opts.ConflictCheck)
 	if err != nil {
 		return fmt.Errorf("invalid persisted conflict_check: %w", err)
@@ -101,7 +101,7 @@ func (p *Plugin) conflictWiring(o *dhcp.DHCPClientOptions, opts DHCPNetworkOptio
 	if p == nil {
 		return nil
 	}
-	o.OnConflict = p.conflictReporter(networkID, endpointID)
+	o.OnConflict = p.conflictReporter(networkID, endpointID, v6)
 	o.OnACDStats = p.addACDStats
 	return nil
 }
@@ -118,13 +118,20 @@ func (p *Plugin) conflictWiring(o *dhcp.DHCPClientOptions, opts DHCPNetworkOptio
 // segment's ARP tables have the holder; this says which endpoint, which
 // network, which address, and whether the container is changing address
 // or never had one.
-func (p *Plugin) conflictReporter(networkID, endpointID string) func(dhcp.Conflict) {
+// THE FAMILY IS NOT COSMETIC IN EITHER HALF. The counter it moves is
+// the one an operator may compare against acdProbesSent and
+// acdConflictsDetected, which are ARP-only; and the RFC in the message
+// is the operator's next step, so naming RFC 5227 for a conflict the
+// kernel found by Duplicate Address Detection sends them to look for
+// ARP traffic that was never sent.
+func (p *Plugin) conflictReporter(networkID, endpointID string, v6 bool) func(dhcp.Conflict) {
 	return func(c dhcp.Conflict) {
-		p.addressConflicts.Add(1)
+		bumpFamily(&p.addressConflictsV4, &p.addressConflictsV6, v6)
 		fields := log.Fields{
 			"network":  shortID(networkID),
 			"endpoint": shortID(endpointID),
 			"held":     c.Held,
+			"family":   familyLabel(v6),
 		}
 		if c.Addr != "" {
 			fields["address"] = c.Addr
@@ -132,15 +139,47 @@ func (p *Plugin) conflictReporter(networkID, endpointID string) func(dhcp.Confli
 		if c.Note != "" {
 			fields["detail"] = c.Note
 		}
-		msg := "The address this endpoint was offered is already in use on the segment (RFC 5227). " +
+		log.WithFields(fields).Error(conflictMessage(c.Held, v6))
+	}
+}
+
+// familyLabel is the log line's `family` value, spelled the way the
+// exposition's family label is.
+func familyLabel(v6 bool) string {
+	if v6 {
+		return "ipv6"
+	}
+	return "ipv4"
+}
+
+// conflictMessage is the operator's line for one conflict, in four
+// cases: held or not, v4 or v6.
+//
+// SPELLED OUT RATHER THAN COMPOSED FROM FRAGMENTS. The integration
+// harness copies these strings and counts them across a whole run of
+// the plugin's log, because the counters reset on a plugin restart and
+// the log does not (ConflictsInLog in the harness); a message assembled
+// at runtime cannot be copied that way, and TestConflictMsgsMatchTheSource
+// reads this file to keep the copies honest.
+func conflictMessage(held, v6 bool) string {
+	switch {
+	case held && v6:
+		return "The IPv6 address this endpoint HOLDS was found in use by another node on the link " +
+			"(RFC 4862 section 5.4 Duplicate Address Detection). It has been declined to the DHCPv6 " +
+			"server (RFC 9915 section 18.2.8) and the container's IPv6 address will CHANGE; " +
+			"connections on the old address are already broken for both hosts."
+	case v6:
+		return "The IPv6 address this endpoint was offered is already in use on the link " +
+			"(RFC 4862 section 5.4 Duplicate Address Detection). It was declined to the DHCPv6 " +
+			"server (RFC 9915 section 18.2.8) and a different address will be requested."
+	case held:
+		return "The address this endpoint HOLDS was found in use by another device on the segment " +
+			"(RFC 5227 section 2.4). It has been declined and the container's address will CHANGE; " +
+			"connections on the old address are already broken for both hosts."
+	default:
+		return "The address this endpoint was offered is already in use on the segment (RFC 5227). " +
 			"It was declined and a different address will be requested. The DHCP server cannot see " +
 			"statically configured hosts, so an address inside the pool range will be handed out again."
-		if c.Held {
-			msg = "The address this endpoint HOLDS was found in use by another device on the segment " +
-				"(RFC 5227 section 2.4). It has been declined and the container's address will CHANGE; " +
-				"connections on the old address are already broken for both hosts."
-		}
-		log.WithFields(fields).Error(msg)
 	}
 }
 
