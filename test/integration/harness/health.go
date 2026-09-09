@@ -188,6 +188,41 @@ func ReadPluginLog(t *testing.T, ctx context.Context) string {
 	return string(data)
 }
 
+// MarkPluginLog returns the current size of the plugin log, to be
+// passed to ReadPluginLogSince so a test asserts only on what its own
+// run wrote.
+//
+// It FAILS the test when the log cannot be read, where ReadPluginLog
+// returns an empty string and a note. A mark that quietly defaults to
+// zero is a window over the whole log, which is the exact reading this
+// pair exists to remove, and it would be invisible in a green run.
+func MarkPluginLog(t *testing.T, ctx context.Context) int64 {
+	t.Helper()
+	path, data, err := PluginLog(ctx)
+	if err != nil {
+		t.Fatalf("marking the plugin log (%s): %v\n"+
+			"Without a mark the window is the whole log, and an assertion over the whole log "+
+			"is satisfied by another test's lines.", path, err)
+	}
+	return int64(len(data))
+}
+
+// ReadPluginLogSince returns the plugin log written after mark.
+//
+// An unreadable log yields an empty window, so the positive assertions
+// over it fail. A negative assertion passes on an empty window, which
+// is why a test that carries one carries a positive assertion beside
+// it.
+func ReadPluginLogSince(t *testing.T, ctx context.Context, mark int64) string {
+	t.Helper()
+	_, data, err := PluginLog(ctx)
+	if err != nil {
+		t.Logf("ReadPluginLogSince: %v", err)
+		return ""
+	}
+	return string(PluginLogWindow(data, mark))
+}
+
 // CountPluginLogLines returns how many lines of the plugin log contain
 // every one of subs.
 //
@@ -300,21 +335,6 @@ func PluginLogSize(ctx context.Context) int64 {
 		return 0
 	}
 	return int64(len(data))
-}
-
-// LogSince returns the portion of data after off, for scoping a census
-// to one test process.
-//
-// An offset past the end means the log was TRUNCATED or replaced since
-// the baseline — a plugin reinstall, or a rotation. Falling back to the
-// whole log is deliberate: the alternative is judging nothing, and a
-// census that silently judges nothing is the failure mode this whole
-// mechanism exists to prevent.
-func LogSince(data []byte, off int64) []byte {
-	if off <= 0 || off > int64(len(data)) {
-		return data
-	}
-	return data[off:]
 }
 
 // WaitPluginEnabled polls PluginInspect until p.Enabled matches want

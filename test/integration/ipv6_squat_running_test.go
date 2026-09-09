@@ -128,6 +128,16 @@ func TestDHCPv6_ASquatOnARunningContainerIsCountedAndTheAddressChanges(t *testin
 
 	declinesBefore := countLogToken(t, fixture.DnsmasqLog(), "DHCPDECLINE")
 
+	// The plugin log, from HERE. The container is bound and the
+	// squatter is planted, so every conflict line after this mark is
+	// this test's. Reading the whole log instead was a defect: the
+	// assertions below name a family and a protocol, and the suite runs
+	// many tests through one plugin whose log survives every restart in
+	// it. On the arm64 lane, which runs the whole main suite in one
+	// process, the section 2.4 assertion read three lines a
+	// TestConflictCheck_ test had written ten minutes earlier.
+	logMark := harness.MarkPluginLog(t, ctx)
+
 	w := harness.BeginCounterWindow(t, ctx, cli,
 		"address_conflicts", "address_conflicts_v4", "address_conflicts_v6").ExpectRecycle()
 
@@ -183,7 +193,7 @@ func TestDHCPv6_ASquatOnARunningContainerIsCountedAndTheAddressChanges(t *testin
 	// and the log does not, which is why the health floor counts these
 	// lines across the whole run; a conflict that moved a counter and
 	// wrote nothing would be invisible to it.
-	logText := harness.ReadPluginLog(t, ctx)
+	logText := harness.ReadPluginLogSince(t, ctx, logMark)
 	// The citation rather than a whole sentence, because WHICH of the
 	// two DHCPv6 lines is written is not this test's business and is
 	// not fixed by the construction: the recycled client runs detection

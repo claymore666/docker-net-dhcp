@@ -109,6 +109,13 @@ func TestDockerAPI_OnlySafeMethodsReachTheDaemon(t *testing.T) {
 
 	w := harness.BeginCounterWindow(t, ctx, cli, "docker_api_non_get_refusals")
 
+	// The log gets the same window as the counter. The DOMAIN checks
+	// below ask whether THIS test drove a network read and a container
+	// inspect, and over the whole log any earlier test answers them, so
+	// the record could be short by exactly the calls this test exists
+	// to cover and still report them as covered.
+	logMark := harness.MarkPluginLog(t, ctx)
+
 	// Exercise the plugin so the window covers real API traffic rather
 	// than only whatever startup left behind: CreateNetwork drives the
 	// network reads, and attaching a container drives Join's
@@ -128,7 +135,7 @@ func TestDockerAPI_OnlySafeMethodsReachTheDaemon(t *testing.T) {
 	methods := map[string]int{}
 	sawContainerInspect := false
 	sawNetworkRead := false
-	for _, line := range strings.Split(harness.ReadPluginLog(t, ctx), "\n") {
+	for _, line := range strings.Split(harness.ReadPluginLogSince(t, ctx, logMark), "\n") {
 		method, path, isCall := parseDockerAPICall(t, line)
 		if !isCall {
 			continue
@@ -172,8 +179,25 @@ func TestDockerAPI_OnlySafeMethodsReachTheDaemon(t *testing.T) {
 			"come from: %v", calls)
 	}
 
-	// The claim.
-	for _, c := range calls {
+	// The claim, over the WHOLE log and not the window above. The
+	// domain is about what this test drove; the claim is about what the
+	// plugin has ever sent, and narrowing it to the window would drop
+	// every call another test provoked out of the only place that
+	// judges them.
+	all := map[string]bool{}
+	for _, line := range strings.Split(harness.ReadPluginLog(t, ctx), "\n") {
+		method, path, isCall := parseDockerAPICall(t, line)
+		if !isCall {
+			continue
+		}
+		all[method+" "+path] = true
+	}
+	everyCall := make([]string, 0, len(all))
+	for c := range all {
+		everyCall = append(everyCall, c)
+	}
+	sort.Strings(everyCall)
+	for _, c := range everyCall {
 		method := strings.SplitN(c, " ", 2)[0]
 		if method != "GET" && method != "HEAD" {
 			t.Errorf("the plugin sent %q to the daemon. Only GET and HEAD are safe and body-less "+

@@ -112,6 +112,12 @@ func TestInterfaceName_PluginHonorsOption(t *testing.T) {
 	defer cli.Close()
 
 	harness.CreateNetwork(t, ctx, netName, "macvlan", nil)
+
+	// Scoped to this attach. "Honoring custom interface name" and lan0
+	// are what the sibling tests in this file log too, so over the
+	// whole log this assertion is satisfied by whichever of them ran
+	// first.
+	logMark := harness.MarkPluginLog(t, ctx)
 	id, ip := runContainerWithIfname(t, ctx, cli, netName, "dh-itest-ifname-ctr", "lan0")
 
 	// The lease itself must be unaffected by the option.
@@ -121,7 +127,7 @@ func TestInterfaceName_PluginHonorsOption(t *testing.T) {
 
 	// Plugin half: Join logged that it honored the name (the response
 	// DstName). This is the assertable contract on every engine.
-	logTxt := harness.ReadPluginLog(t, ctx)
+	logTxt := harness.ReadPluginLogSince(t, ctx, logMark)
 	if !strings.Contains(logTxt, "Honoring custom interface name") || !strings.Contains(logTxt, "lan0") {
 		t.Error("plugin log shows no 'Honoring custom interface name' for lan0 — Join did not consume the ifname option")
 	}
