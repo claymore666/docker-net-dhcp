@@ -16,8 +16,7 @@ project's own engine, the [dhcp-golib][dhcp-golib] library: there is no
 external DHCP client to install and no client process per container.
 
 This branch is the 2.0 line and every page on it describes that build.
-Its first pre-release is `v2.0.0-rc1`; substitute that tag for the version
-in the snippets below to install it.
+The snippets below install the current release.
 
 ## Requirements
 
@@ -74,16 +73,16 @@ in the snippets below to install it.
 sudo mkdir -p /var/lib/net-dhcp
 
 # amd64
-docker plugin install ghcr.io/claymore666/docker-net-dhcp:v1.9.0
+docker plugin install ghcr.io/claymore666/docker-net-dhcp:v2.0.0
 # arm64
-docker plugin install ghcr.io/claymore666/docker-net-dhcp:v1.9.0-arm64
+docker plugin install ghcr.io/claymore666/docker-net-dhcp:v2.0.0-arm64
 ```
 
 One network, created once. `macvlan` needs only a host NIC; `bridge`
 wants a bridge you bring yourself ([bridge mode](docs/bridge-mode.md)):
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.9.0 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.0.0 \
   --ipam-driver null -o mode=macvlan -o parent=eth0 lan-dhcp
 
 docker run --rm -ti --network lan-dhcp alpine ip address show

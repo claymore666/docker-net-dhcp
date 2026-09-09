@@ -254,7 +254,7 @@ iptables -S FORWARD | head -1`.
 ```bash
 # On arm64 use the -arm64 tag. A network stores this exact reference
 # as its driver, so it must name the plugin you installed.
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.9.0 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.0.0 \
   --ipam-driver null -o bridge=my-bridge my-dhcp-net
 ```
 
@@ -263,7 +263,7 @@ work with the null IPAM driver; use the `ipv6` driver option instead):
 
 ```bash
 # arm64: the -arm64 tag here too.
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.9.0 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.0.0 \
   --ipam-driver null -o bridge=my-bridge -o ipv6=true my-dhcp-net
 ```
 
@@ -322,7 +322,7 @@ services:
 networks:
   dhcp:
     # arm64: the -arm64 tag, matching the plugin you installed.
-    driver: ghcr.io/claymore666/docker-net-dhcp:v1.9.0
+    driver: ghcr.io/claymore666/docker-net-dhcp:v2.0.0
     driver_opts:
       bridge: my-bridge
       ipv6: 'true'
