@@ -119,9 +119,18 @@ permissions:
 jobs:
   coverage:
     runs-on: [self-hosted, dhcp-ci]
-    # 35 = main + failure-injection suites against the instrumented
-    # plugin (#128) + cover build + margin.
-    timeout-minutes: 35
+    # A BACKSTOP ABOVE THE STEP CEILINGS, not a second estimate of the
+    # suite. Both integration steps below carry their own `go test`
+    # alarm, 45m and 20m, and a job timeout below their sum cannot fire
+    # second: at 35 it would have killed the job with the main suite
+    # still holding ten minutes of its own budget.
+    #
+    # 45 + 20 = 65 minutes of ceilings, plus what surrounds them,
+    # measured on run 34523956617: 2m31s before the main suite (setup-go
+    # 1m12s, cover build and install 1m10s) and 39s after the failure
+    # suite (counter flush, unit tests, summary, ratchet, reports,
+    # upload). 69 minutes with both rounded up, inside 75.
+    timeout-minutes: 75
     env:
       COVER_PLUGIN_REF: ghcr.io/claymore666/docker-net-dhcp:golang-cover
       COVER_DIR: /var/lib/dh-cover
@@ -214,9 +223,32 @@ jobs:
       # The harness routes everything through INTEGRATION_PLUGIN_REF
       # (default :golang). Pointing it at :golang-cover makes the
       # whole suite drive the instrumented plugin.
+      #
+      # ITEST_TIMEOUT, not the Makefile's 20m default. THIS LANE RUNS THE
+      # WHOLE MAIN SUITE IN ONE go test BINARY, as integration-arm64.yml
+      # does; the amd64 shard lane splits the same suite nine ways and
+      # Makefile:171's 20m is that lane's number. It fired here: run
+      # 34523956617 panicked with "test timed out after 20m0s" having
+      # completed 56 of the 93 main tests.
+      #
+      # DERIVED, not guessed. The 56 that ran cost 1198.1s of per-test
+      # time on this lane. test/integration/testdata/suite-durations.tsv
+      # gives 1201.3s for the same 56, so the cover build costs nothing
+      # measurable in aggregate here: 0.997 of the table. The 37 that
+      # never ran cost 606.6s in the table, so the whole main suite
+      # projects to 1198.1 + 606.6 x 0.997 = 1802.9s, 30.0 minutes.
+      #
+      # The binary charges more than the per-test timers do: the alarm
+      # fired at 1200.3s against 1198.1s summed and 2s in flight.
+      # Carried in the headroom below, not in the projection.
+      #
+      # 45m is that projection with 1.50x of headroom, 15 minutes of
+      # slack, and it is the ceiling integration-arm64.yml derived for
+      # the same suite in one process.
       - name: Run integration tests against cover plugin
         env:
           INTEGRATION_PLUGIN_REF: ${{ env.COVER_PLUGIN_REF }}
+          ITEST_TIMEOUT: 45m
         run: make integration-test
 
       # The failure-injection suite (#128) exercises paths the main
@@ -231,10 +263,17 @@ jobs:
       # would compare a partial measurement against a full baseline.
       # Found by scripts/check-lane-hygiene.sh, not by #742, which
       # listed only the two non-gating lanes.
+      #
+      # 20m is the Makefile default, written out because this lane's two
+      # budgets are read together and a default sized for the shard lane
+      # must not decide this step by accident. The suite measured 4m38s
+      # here on run 34523956617 and 272.3s in the durations table, so 20m
+      # holds it four times over.
       - name: Run failure-injection tests against cover plugin
         if: always()
         env:
           INTEGRATION_PLUGIN_REF: ${{ env.COVER_PLUGIN_REF }}
+          ITEST_TIMEOUT: 20m
         run: make integration-test-failure
 
       # Flush counter files. Go's binary coverage runtime only writes
