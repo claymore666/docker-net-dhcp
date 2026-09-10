@@ -291,17 +291,31 @@ jobs:
       # 30.1 minutes, for the 93 main tests, measured on the self-hosted
       # pool.
       #
-      # THE HOSTED FACTOR IS INFERRED, from the one comparable pair this
-      # lane has. Its only green run, 34105560953 on 2026-09-07, ran the
-      # default branch's 73-test suite in 14m33s of step wall against
-      # 914.3s summed in that branch's own durations table, so hosted
-      # came in at 0.955 of the pool for that work, not slower than the
-      # pool as this job's previous cap comment asserted without a
-      # measurement behind it. Applying it gives about 28.8
-      # minutes for the 2.0 suite and 1.56x of headroom at 45m. What
-      # that inference cannot carry: it is a different tree, a different
-      # DHCP client and one observation, and this lane has never executed
-      # the 93 tests, because that green run was on `main`.
+      # THE HOSTED FACTOR IS MEASURED, on this tree, by run 34537348413 --
+      # the dispatch of this arm that the commit raising these numbers
+      # ran rather than leaving the question to an inference. Hosted did
+      # the 2.0 main suite in 1936.6s against the pool's 1807.9s, a
+      # factor of 1.071: seven percent SLOWER than the self-hosted pool.
+      # 45m is 1.38x that, twelve minutes of slack.
+      #
+      # WHAT THAT NUMBER IS NOT. The run concluded red -- 77 PASS, 1 SKIP
+      # and 15 FAIL of the 93, all of them hosted-environment findings
+      # (no router advertisement on this kernel, observers that cannot
+      # see a container's DHCP socket) and none a budget failure. Failed
+      # tests do not cost what passing ones do: some ended in 6.14s and
+      # one took 183.8s, so a like-for-like factor does NOT exist from
+      # this run and 1.071 is the closest thing to it that does. The
+      # suite ENDED rather than being cut, which is the property the
+      # ceiling is here for.
+      #
+      # It replaces an inference of 0.955 -- taken from this lane's only
+      # green run, 34105560953, which did the DEFAULT BRANCH's 73-test
+      # suite in 14m33s against 914.3s in that branch's own table -- that
+      # predicted about 28.8 minutes and 1.56x. The measurement
+      # contradicts it in the safe direction, and it is recorded here
+      # rather than quietly dropped: a different tree and a different
+      # DHCP client is exactly the escape the inference named, and it is
+      # the escape that turned out to matter.
       - name: Run integration tests
         if: matrix.shard == 'full'
         env:
