@@ -306,6 +306,20 @@ jobs:
       - name: Shard-balance table check
         run: bash scripts/check-durations-table.sh
 
+      # Three lanes now run a whole integration suite in ONE go test
+      # binary -- arm64, coverage and the hosted cross-check -- and each
+      # derived the same 45m ceiling in its own comment, reconciled by
+      # nothing (#934). The gate derives that population from the
+      # workflows themselves and asks three things of it: the main
+      # suite's ceiling is stated rather than inherited from the
+      # Makefile's shard-sized default, the value survives the `sudo`
+      # that resets the environment on the hosted lane, and the job cap
+      # sits above the ceilings under it so a suite alarm is not
+      # pre-empted by a job kill that names the wrong cause. Both halves
+      # of that defect shipped to a release PR before this existed.
+      - name: One-process lane budget check
+        run: bash scripts/check-one-process-itest-budget.sh
+
       # The pool's size and the number of jobs a run puts on it were
       # stated in six places and checked in none, and two of the six
       # were the text an operator reads during an incident (#879). The

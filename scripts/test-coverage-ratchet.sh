@@ -396,6 +396,108 @@ else
     sed 's/^/    /' "$TMP/out"; failures=$((failures + 1))
 fi
 
+# --- two packages on one line (coverage run 34528649522) -----------------
+# `go tool covdata percent` prints a package that contributes no
+# statements as its name alone, with no percentage and no newline, so the
+# next package's entry lands on the same line. The four lines below are
+# the ones that run produced, bytes and tabs as they came off the tool:
+# pkg/buildinfo has no statements and swallowed pkg/dhcp, which measured
+# 90.5%. Read a line at a time, the ratchet called pkg/dhcp "absent from
+# coverage output" and failed a required check over coverage that was
+# there.
+GLUED="$TMP/glued.txt"
+{
+    printf '\tgithub.com/claymore666/docker-net-dhcp/cmd/net-dhcp\t\tcoverage: 83.3%% of statements\n'
+    printf '\tgithub.com/claymore666/docker-net-dhcp/pkg/buildinfo\t\t\tgithub.com/claymore666/docker-net-dhcp/pkg/dhcp\t\tcoverage: 90.5%% of statements\n'
+    printf '\tgithub.com/claymore666/docker-net-dhcp/pkg/plugin\t\tcoverage: 90.1%% of statements\n'
+    printf '\tgithub.com/claymore666/docker-net-dhcp/pkg/util\t\tcoverage: 97.3%% of statements\n'
+} > "$GLUED"
+
+REAL_BASELINE="$TMP/baseline-2x.txt"
+cat > "$REAL_BASELINE" <<'EOF'
+github.com/claymore666/docker-net-dhcp/pkg/util 95.0
+github.com/claymore666/docker-net-dhcp/pkg/plugin 86.8
+github.com/claymore666/docker-net-dhcp/pkg/dhcp 89.9
+github.com/claymore666/docker-net-dhcp/cmd/net-dhcp 77.8
+EOF
+
+RATCHET_REPORT='' bash "$RATCHET" "$GLUED" "$REAL_BASELINE" > "$TMP/out" 2>&1
+got=$?
+if [ "$got" -eq 0 ] \
+   && grep -F 'pkg/dhcp: 90.5% beats baseline 89.9%' "$TMP/out" > /dev/null; then
+    echo "PASS: a swallowed package keeps its percentage"
+else
+    echo "FAIL: the swallowed package did not get its verdict (exit $got)"
+    sed 's/^/    /' "$TMP/out"; failures=$((failures + 1))
+fi
+
+# THE OTHER HALF, and the one that makes the fix a parse rather than a
+# search: the package that did the swallowing has no percentage of its
+# own on that line, so it must still read as absent. A lookup that took
+# any number from a line carrying the name would credit pkg/buildinfo
+# with pkg/dhcp's 90.5 and pass this baseline.
+BUILDINFO_BASELINE="$TMP/baseline-buildinfo.txt"
+cat > "$BUILDINFO_BASELINE" <<'EOF'
+github.com/claymore666/docker-net-dhcp/pkg/buildinfo 90.0
+EOF
+RATCHET_REPORT='' bash "$RATCHET" "$GLUED" "$BUILDINFO_BASELINE" > "$TMP/out" 2>&1
+got=$?
+if [ "$got" -eq 1 ] \
+   && grep -F 'pkg/buildinfo: in baseline but absent from coverage output' "$TMP/out" > /dev/null; then
+    echo "PASS: the swallowing package is not credited with the percentage it swallowed"
+else
+    echo "FAIL: pkg/buildinfo was given a number it does not have (exit $got)"
+    sed 's/^/    /' "$TMP/out"; failures=$((failures + 1))
+fi
+
+# THE VANISHED-PACKAGE RULE, DRIVEN AGAINST THE NEW PARSE. The absence is
+# real here: pkg/dhcp is deleted from the output entirely, leaving
+# pkg/buildinfo alone on its line exactly as the tool prints it when
+# nothing follows. A field scan that fell back to "any number on any line
+# mentioning nothing in particular" would find 90.1 or 97.3 and pass.
+GONE="$TMP/glued-gone.txt"
+{
+    printf '\tgithub.com/claymore666/docker-net-dhcp/cmd/net-dhcp\t\tcoverage: 83.3%% of statements\n'
+    printf '\tgithub.com/claymore666/docker-net-dhcp/pkg/buildinfo\t\t\tgithub.com/claymore666/docker-net-dhcp/pkg/plugin\t\tcoverage: 90.1%% of statements\n'
+    printf '\tgithub.com/claymore666/docker-net-dhcp/pkg/util\t\tcoverage: 97.3%% of statements\n'
+} > "$GONE"
+RATCHET_REPORT='' bash "$RATCHET" "$GONE" "$REAL_BASELINE" > "$TMP/out" 2>&1
+got=$?
+if [ "$got" -eq 1 ] \
+   && grep -F 'pkg/dhcp: in baseline but absent from coverage output' "$TMP/out" > /dev/null; then
+    echo "PASS: a package genuinely absent from the output still fails"
+else
+    echo "FAIL: the vanished-package rule did not fire (exit $got)"
+    sed 's/^/    /' "$TMP/out"; failures=$((failures + 1))
+fi
+
+# The measured-but-not-floored warning reads the same file with the same
+# hazard: line-at-a-time it could not see a package whose entry shared a
+# line, so the one thing it exists to say went unsaid about exactly the
+# package this run measured and this baseline does not floor.
+THREE_BASELINE="$TMP/baseline-three.txt"
+cat > "$THREE_BASELINE" <<'EOF'
+github.com/claymore666/docker-net-dhcp/pkg/util 95.0
+github.com/claymore666/docker-net-dhcp/pkg/plugin 86.8
+github.com/claymore666/docker-net-dhcp/cmd/net-dhcp 77.8
+EOF
+{
+    echo "count 3"
+    echo "package github.com/claymore666/docker-net-dhcp/pkg/util"
+    echo "package github.com/claymore666/docker-net-dhcp/pkg/plugin"
+    echo "package github.com/claymore666/docker-net-dhcp/cmd/net-dhcp"
+} > "$TMP/report-three"
+RATCHET_REPORT="$TMP/report-three" bash "$RATCHET" "$GLUED" "$THREE_BASELINE" > "$TMP/out" 2>&1
+got=$?
+if [ "$got" -eq 0 ] \
+   && grep -F 'Measured but not floored' "$TMP/out" > /dev/null \
+   && grep -F 'pkg/dhcp' "$TMP/out" > /dev/null; then
+    echo "PASS: a swallowed package is named in the unfloored warning"
+else
+    echo "FAIL: the unfloored warning did not name the swallowed package (exit $got)"
+    sed 's/^/    /' "$TMP/out"; failures=$((failures + 1))
+fi
+
 if [ "$failures" -ne 0 ]; then
     echo "$failures ratchet test(s) failed"
     exit 1

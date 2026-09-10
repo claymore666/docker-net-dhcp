@@ -147,6 +147,10 @@ LANE=(
   "release refusal order|-|bash scripts/check-release-refusal-order.sh"
   "allowlist parity|-|bash scripts/check-allowlist-parity.sh"
   "shard-balance table|-|bash scripts/check-durations-table.sh"
+  # The ceilings of the lanes that run a whole suite in one process, and
+  # the job caps over them (#934). Reads the workflows and the Makefile,
+  # so it runs anywhere.
+  "one-process lane budget|-|bash scripts/check-one-process-itest-budget.sh"
   # The pool size and the per-run job count, checked against their
   # derivations rather than against each other (#879). --live is NOT
   # passed here: it needs a token that can read the runners API, which

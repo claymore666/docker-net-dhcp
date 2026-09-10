@@ -12,6 +12,21 @@
 #   <covdata-percent-output>: file containing `go tool covdata percent`
 #       output, lines like:
 #         github.com/.../pkg/plugin   coverage: 82.4% of statements
+#
+#       ONE LINE CAN CARRY TWO PACKAGES. `go tool covdata percent` prints
+#       a package that contributes no statements as its name alone, with
+#       no percentage AND NO NEWLINE, so the next package's entry lands
+#       on the same line. Measured on coverage run 34528649522, where
+#       pkg/buildinfo (new in 2.0, no statements) swallowed pkg/dhcp:
+#         \tgithub.com/.../pkg/buildinfo\t\t\tgithub.com/.../pkg/dhcp\t\tcoverage: 90.5% of statements
+#       The ratchet read that file a line at a time, found no row whose
+#       FIRST field was pkg/dhcp, and reported a package measured at
+#       90.5% as "in baseline but absent from coverage output" -- a
+#       vanished-package failure on the release PR's required check,
+#       with nothing wrong with the coverage. Both readers below scan
+#       the FIELDS of a line instead: a percentage belongs to the name
+#       immediately before its `coverage:`, so a swallowed name gets no
+#       number and a swallowing name is not credited with one either.
 #   <baseline-file>: lines of "<package> <min-percent>", '#' comments ok.
 #
 # RATCHET_EPSILON (default 0.5): tolerated drop in percentage points,
@@ -141,7 +156,17 @@ while read -r pkg want; do
         continue
     fi
 
-    got=$(awk -v p="$pkg" '$1 == p && $2 == "coverage:" { gsub(/%/, "", $3); print $3; exit }' "$PERCENT_FILE")
+    # The name is looked for at EVERY field, not only the first, for the
+    # two-packages-on-one-line shape in the header. The percentage is the
+    # field after this package's own `coverage:` and no other, so a name
+    # printed without one stays absent, which is what keeps the
+    # vanished-package rule below meaning what it says.
+    got=$(awk -v p="$pkg" '{
+              for (i = 1; i + 2 <= NF; i++)
+                  if ($i == p && $(i + 1) == "coverage:") {
+                      pct = $(i + 2); gsub(/%/, "", pct); print pct; exit
+                  }
+          }' "$PERCENT_FILE")
     if [ -z "$got" ]; then
         echo "FAIL  $pkg: in baseline but absent from coverage output — deleted/renamed? Update $BASELINE_FILE deliberately."
         fail=1
@@ -260,7 +285,13 @@ else
     # that fails on both would fire on every new package until someone
     # updated the baseline, and a gate that cries wolf gets discharged.
     # Naming them costs a line and lets a human decide in one glance.
-    measured=$(awk '$2 == "coverage:" { print $1 }' "$PERCENT_FILE" | sort -u)
+    # Field-scanned for the same reason as the lookup above: read a line
+    # at a time, this missed every package whose entry shared a line, and
+    # the warning that exists to name an unfloored package stayed silent
+    # about the one package the run measured and the baseline did not
+    # floor.
+    measured=$(awk '{ for (i = 1; i < NF; i++) if ($(i + 1) == "coverage:") print $i }' \
+                   "$PERCENT_FILE" | sort -u)
     unfloored=$(comm -13 <(sed -n 's/^package //p' "$REPORT" | sort -u) \
                          <(printf '%s\n' "$measured" | grep .) | paste -sd, - | sed 's/,/, /g')
     if [ -n "$unfloored" ]; then
