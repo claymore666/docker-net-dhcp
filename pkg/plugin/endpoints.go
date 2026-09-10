@@ -759,6 +759,14 @@ type HealthResponse struct {
 	// degrades forensics, not networking; operators using audit_log
 	// alert on this directly.
 	LedgerWriteFailures int32 `json:"ledger_write_failures"`
+	// StateFileChmodFailures counts files the startup sweep could not
+	// tighten, plus one for a STATE_DIR it could not read at all
+	// (#804). Not Healthy-affecting: nothing the plugin does is
+	// degraded by a loose mode on a state file. It is a `warn` check
+	// because the remedy is an operator's to apply, one `chmod` on the
+	// path the plugin log names, and because a sweep that failed and a
+	// sweep that found nothing to do are otherwise the same reading.
+	StateFileChmodFailures int32 `json:"state_file_chmod_failures"`
 
 	// Per-family breakdown of the wire counters (#212, #730). Both
 	// halves are STORED; the un-suffixed field above is their sum,
@@ -900,6 +908,7 @@ func (p *Plugin) checkStamps() map[string]time.Time {
 		"restart_link_up_timeouts":  p.restartLinkUpTimeouts.LastMoved(),
 		"parent_link_wait_timeouts": p.parentLinkWaitTimeouts.LastMoved(),
 		"ledger_write_failures":     p.ledgerWriteFailures.LastMoved(),
+		"state_file_chmod_failures": p.stateFileChmodFailures.LastMoved(),
 	}
 }
 
@@ -1043,6 +1052,7 @@ func (p *Plugin) healthSnapshot() HealthResponse {
 		ParentLinkWaits:              p.parentLinkWaits.Load(),
 		ParentLinkWaitTimeouts:       p.parentLinkWaitTimeouts.Load(),
 		LedgerWriteFailures:          p.ledgerWriteFailures.Load(),
+		StateFileChmodFailures:       p.stateFileChmodFailures.Load(),
 		LeaseChangedV4:               leaseChangedV4,
 		LeasesObtainedV4:             leasesObtainedV4,
 		LeasesRenewedV4:              leasesRenewedV4,

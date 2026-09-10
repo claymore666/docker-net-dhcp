@@ -4,9 +4,11 @@
 package plugin
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -75,4 +77,260 @@ func TestLedger_TightensAnExistingWorldReadableFile(t *testing.T) {
 	if got := fi.Mode().Perm(); got != 0o600 {
 		t.Errorf("pre-existing ledger mode = %#o, want 0600", got)
 	}
+}
+
+// TestStateDir_SweepTightensWhatAnUpgradeLeftBehind is #804.
+//
+// stateFileMode reaches a file when the plugin WRITES it, and an
+// upgrade writes nothing: tombstones.json is rewritten only when a
+// tombstone is laid or consumed. A production host upgraded to v1.8.0
+// was observed with a 0600 network file beside a 0644 tombstones.json,
+// and the docs claimed the upgrade had tightened both.
+//
+// It drives prepareStateDir, which is what NewPlugin calls, so deleting
+// the sweep from the startup path fails here and not only in a test of
+// a function nothing calls.
+//
+// The narrower files are the controls for "tightens only". Without
+// them this passes against an implementation that chmods every file it
+// finds to 0600, which WIDENS a mode an operator chose, and it does so
+// for an incomparable mode (0440, 0500) as well as a narrower one. The
+// subdirectory is the control for "does not recurse": a request
+// capture directory can live under STATE_DIR and its contents are not
+// state files.
+func TestStateDir_SweepTightensWhatAnUpgradeLeftBehind(t *testing.T) {
+	dir := t.TempDir()
+	withStateDir(t, dir)
+
+	// The 1.x name and a leftover of a crashed 2.0 write. Neither is
+	// enumerated by the sweep; both are just files in the directory.
+	loose := []string{"tombstones.json", "x.json.tmp"}
+	for _, name := range loose {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("{}"), 0o644); err != nil {
+			t.Fatalf("seed %s: %v", name, err)
+		}
+	}
+	const alreadyTight = "lease-records.jsonl"
+	if err := os.WriteFile(filepath.Join(dir, alreadyTight), []byte("{}"), 0o600); err != nil {
+		t.Fatalf("seed %s: %v", alreadyTight, err)
+	}
+	// The controls for "tightens only", in the two shapes that claim
+	// can fail in.
+	//
+	// 0400 and 0000 are narrower than 0600, so the answer is the mode
+	// they already have. Without them this passes against a sweep that
+	// chmods every file it finds and WIDENS a mode an operator chose.
+	//
+	// 0440, 0500, 0444 and 0404 are neither wider nor narrower than
+	// 0600, which is the case a family that stops at comparable modes
+	// never reaches. A sweep that writes 0600 over them adds owner
+	// write, which the release note says it does not do. The answer is
+	// the seeded mode with every bit outside 0600 cleared.
+	narrower := map[string]os.FileMode{
+		"operator-chose-0400.json": 0o400,
+		"operator-chose-0000.json": 0o000,
+		"operator-chose-0440.json": 0o400,
+		"operator-chose-0500.json": 0o400,
+		"operator-chose-0444.json": 0o400,
+		"operator-chose-0404.json": 0o400,
+	}
+	seeded := map[string]os.FileMode{
+		"operator-chose-0400.json": 0o400,
+		"operator-chose-0000.json": 0o000,
+		"operator-chose-0440.json": 0o440,
+		"operator-chose-0500.json": 0o500,
+		"operator-chose-0444.json": 0o444,
+		"operator-chose-0404.json": 0o404,
+	}
+	for name, mode := range seeded {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("{}"), mode); err != nil {
+			t.Fatalf("seed %s: %v", name, err)
+		}
+		// WriteFile applies the umask, so the seeded mode is asserted
+		// before the sweep runs. Without this a umask that already
+		// cleared the group and other bits would make these cases
+		// controls for nothing.
+		if got := permOf(t, filepath.Join(dir, name)); got != mode {
+			t.Fatalf("seed %s: mode = %#o, want %#o; the umask ate the case", name, got, mode)
+		}
+	}
+	sub := filepath.Join(dir, "capture")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatalf("seed capture dir: %v", err)
+	}
+	nested := filepath.Join(sub, "request.json")
+	if err := os.WriteFile(nested, []byte("{}"), 0o644); err != nil {
+		t.Fatalf("seed %s: %v", nested, err)
+	}
+
+	before := changeTime(t, filepath.Join(dir, alreadyTight))
+
+	// Timestamps are stamped from a coarse clock, so two operations
+	// inside one tick share a ctime. Without this wait an unchanged
+	// reading below could be the clock and not the file.
+	time.Sleep(30 * time.Millisecond)
+
+	var failures stampedCounter
+	if _, err := prepareStateDir(&failures); err != nil {
+		t.Fatalf("prepareStateDir: %v", err)
+	}
+	if got := failures.Load(); got != 0 {
+		t.Errorf("state_file_chmod_failures = %d after a sweep that had nothing to fail on; want 0", got)
+	}
+
+	for _, name := range loose {
+		// The literal, not stateFileMode: asserting a constant against
+		// itself passes whatever the constant becomes.
+		if got := permOf(t, filepath.Join(dir, name)); got != 0o600 {
+			t.Errorf("%s mode = %#o after the sweep, want 0600", name, got)
+		}
+	}
+	if got := permOf(t, filepath.Join(dir, alreadyTight)); got != 0o600 {
+		t.Errorf("%s mode = %#o, want 0600 unchanged", alreadyTight, got)
+	}
+	if after := changeTime(t, filepath.Join(dir, alreadyTight)); !after.Equal(before) {
+		t.Errorf("%s was already 0600 and the sweep touched it anyway (ctime %v -> %v)",
+			alreadyTight, before, after)
+	}
+	for name, want := range narrower {
+		if got := permOf(t, filepath.Join(dir, name)); got != want {
+			t.Errorf("%s was seeded %#o and is %#o after the sweep; want %#o. The sweep granted "+
+				"access a mode an operator chose did not, which is what it exists to remove",
+				name, seeded[name], got, want)
+		}
+	}
+	if got := permOf(t, nested); got != 0o644 {
+		t.Errorf("%s mode = %#o; the sweep recursed into a subdirectory, want 0644", nested, got)
+	}
+}
+
+// TestStateDir_SweepFailuresAreCountedAndDoNotStopIt drives the arm a
+// green run never reaches.
+//
+// Two things are asserted that a "return on the first error" sweep
+// would break: the counter carries one tick per file, and the file
+// AFTER the failing one is still tightened. The second is the outside
+// evidence; the counter alone would pass against a sweep that gave up.
+func TestStateDir_SweepFailuresAreCountedAndDoNotStopIt(t *testing.T) {
+	dir := t.TempDir()
+	withStateDir(t, dir)
+
+	// Sorted order is the readdir order os.ReadDir guarantees, so
+	// "a.json" is reached before "b.json".
+	for _, name := range []string{"a.json", "b.json"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("{}"), 0o644); err != nil {
+			t.Fatalf("seed %s: %v", name, err)
+		}
+	}
+
+	// os.Chmod succeeds on both files for the user running these tests,
+	// and always succeeds for root, so the refusal is injected at the
+	// call instead of arranged on the filesystem.
+	real := chmodFile
+	t.Cleanup(func() { chmodFile = real })
+	chmodFile = func(path string, mode os.FileMode) error {
+		if filepath.Base(path) == "a.json" {
+			return fmt.Errorf("injected: %w", os.ErrPermission)
+		}
+		return real(path, mode)
+	}
+
+	var failures stampedCounter
+	if _, err := prepareStateDir(&failures); err != nil {
+		t.Fatalf("prepareStateDir returned %v; a chmod that fails must not fail startup", err)
+	}
+	if got := failures.Load(); got != 1 {
+		t.Errorf("state_file_chmod_failures = %d after one refused chmod, want 1", got)
+	}
+	if got := permOf(t, filepath.Join(dir, "a.json")); got != 0o644 {
+		t.Errorf("a.json mode = %#o; the injected refusal did not take, so this test proves nothing", got)
+	}
+	if got := permOf(t, filepath.Join(dir, "b.json")); got != 0o600 {
+		t.Errorf("b.json mode = %#o after the file before it was refused, want 0600: "+
+			"one failure ended the sweep", got)
+	}
+}
+
+// TestStateDir_SweepDoesNotChmodThroughASymlink is the containment
+// control.
+//
+// chmod(2) follows symlinks, so a sweep that chmods every name readdir
+// returns applies a state file's mode to whatever a link points at,
+// which can be any file on the host. Nothing on disk inside STATE_DIR
+// records that it happened, so the observer has to be the target's own
+// mode, read from the other directory.
+//
+// A link is not a regular file, so skipping it is also the right answer
+// for the link's own sake: its mode means nothing on Linux.
+func TestStateDir_SweepDoesNotChmodThroughASymlink(t *testing.T) {
+	dir := t.TempDir()
+	withStateDir(t, dir)
+
+	outside := filepath.Join(t.TempDir(), "not-a-state-file")
+	if err := os.WriteFile(outside, []byte("{}"), 0o644); err != nil {
+		t.Fatalf("seed %s: %v", outside, err)
+	}
+	if err := os.Symlink(outside, filepath.Join(dir, "tombstones.json")); err != nil {
+		t.Fatalf("seed symlink: %v", err)
+	}
+
+	var failures stampedCounter
+	if _, err := prepareStateDir(&failures); err != nil {
+		t.Fatalf("prepareStateDir: %v", err)
+	}
+
+	if got := permOf(t, outside); got != 0o644 {
+		t.Errorf("%s mode = %#o; the sweep followed a symlink out of STATE_DIR and "+
+			"chmod'ed a file that is not its own, want 0644", outside, got)
+	}
+	// A skipped entry is not a failure to report: there was nothing the
+	// sweep was entitled to tighten.
+	if got := failures.Load(); got != 0 {
+		t.Errorf("state_file_chmod_failures = %d after a symlink was skipped, want 0", got)
+	}
+}
+
+// TestStateDir_SweepCountsADirectoryItCannotRead closes the vacuity
+// hole. A sweep that examined nothing reports the same zero as a sweep
+// that found nothing to tighten, and the first leaves every old file
+// loose. Driven with a regular file where the directory should be,
+// which readdir refuses for root as well.
+func TestStateDir_SweepCountsADirectoryItCannotRead(t *testing.T) {
+	notADir := filepath.Join(t.TempDir(), "state")
+	if err := os.WriteFile(notADir, []byte("{}"), 0o600); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	var failures stampedCounter
+	sweepStateDirModes(notADir, &failures)
+
+	if got := failures.Load(); got != 1 {
+		t.Errorf("state_file_chmod_failures = %d after an unreadable STATE_DIR, want 1", got)
+	}
+}
+
+// permOf is the file's permission bits, or a fatal error.
+func permOf(t *testing.T, path string) os.FileMode {
+	t.Helper()
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat %s: %v", path, err)
+	}
+	return fi.Mode().Perm()
+}
+
+// changeTime is the file's ctime, which chmod moves and which nothing
+// else in these tests touches. mtime is no use here: chmod does not
+// change it, so an untouched mtime is what a chmod'd file looks like.
+func changeTime(t *testing.T, path string) time.Time {
+	t.Helper()
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat %s: %v", path, err)
+	}
+	st, ok := fi.Sys().(*syscall.Stat_t)
+	if !ok {
+		t.Fatalf("stat %s: no syscall.Stat_t, so the untouched-file assertion has no observer", path)
+	}
+	return time.Unix(st.Ctim.Sec, st.Ctim.Nsec)
 }

@@ -60,6 +60,7 @@ func checkBumpers() []checkBumper {
 		{"acd_resumed_unchecked", "", func(p *Plugin) { p.acdResumedUnchecked.Add(1) }},
 		{"parent_link_wait_timeouts", "", func(p *Plugin) { p.parentLinkWaitTimeouts.Add(1) }},
 		{"ledger_write_failures", "", func(p *Plugin) { p.ledgerWriteFailures.Add(1) }},
+		{"state_file_chmod_failures", "", func(p *Plugin) { p.stateFileChmodFailures.Add(1) }},
 	}
 }
 

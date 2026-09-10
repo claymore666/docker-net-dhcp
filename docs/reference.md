@@ -872,18 +872,36 @@ audit trail were readable by any user on the host. Nothing there is a
 credential and the writer is root either way, so this is not a privilege
 boundary.
 
-The mode is applied **when the plugin writes a file**, which means an
-upgrade does not retroactively tighten what it finds. `tombstones.json` is
-rewritten only when a tombstone is laid or consumed, so on a host with
-stable containers it can keep its old `0644` indefinitely. If you upgraded
-from v1.7.1 or older, tighten them once by hand:
+Since v2.0.0 the plugin also sweeps `STATE_DIR` once at every start,
+before it reads or writes any state, and clears every permission bit
+outside `0600` from each file it finds there
+([#804](https://github.com/claymore666/docker-net-dhcp/issues/804)), so
+a `0644` file becomes `0600`. An upgrade tightens what an older plugin
+left behind, and it does so at the moment the new process starts.
+
+The limits on that sweep, because they are what an operator sees on
+disk:
+
+- It only tightens. The mode it writes is the mode it found with the
+  bits outside `0600` removed, so no file gains access it did not have.
+  A file you set to `0400` stays `0400`, and one you set to `0440`
+  becomes `0400`.
+- It does not recurse. Only files directly in `STATE_DIR` are swept;
+  anything in a subdirectory keeps its mode.
+- It skips anything that is not a regular file. A symlink in
+  `STATE_DIR` is left alone and its target is never touched.
+- A failed `chmod` never stops the plugin. It is logged at warn level
+  with the path, and counted in `state_file_chmod_failures`.
+
+Before v2.0.0 the mode was applied only **when the plugin wrote a
+file**, so an upgrade did not tighten what it found. `tombstones.json`
+is rewritten only when a tombstone is laid or consumed, so on a host
+with stable containers it could keep its old `0644` for as long as the
+host ran. On a plugin older than v2.0.0, tighten them once by hand:
 
 ```bash
 sudo chmod 0600 /var/lib/net-dhcp/*.json /var/lib/net-dhcp/leases.jsonl
 ```
-
-Having the plugin sweep `STATE_DIR` at startup is tracked in
-[#804](https://github.com/claymore666/docker-net-dhcp/issues/804).
 
 ---
 
@@ -1038,6 +1056,7 @@ already parse it were not told to expect a new type.
 | `sandbox_pid_fallbacks` | no | n/a | (v2.0.0+) Endpoints whose network namespace was entered through `/proc/<pid>/ns/net` after the key route was refused. **On a stock engine this is every attach.** That route is why the manifest asks for the host PID namespace and `CAP_SYS_PTRACE`, and it carries the PID-recycling hazard `netns_pid_mismatches` counts. Not `healthy`-affecting, because a fallback that succeeds is a working endpoint, but read against `sandbox_key_entries` it is the one number that says which route your host actually uses. **Not a check:** both clauses fail. The imperative is to read it *against* `sandbox_key_entries`, and on a stock engine its normal reading is one per attach, so a check firing on non-zero would fire on every healthy host. |
 | `docker_api_non_get_refusals` | no | n/a | (v2.0.0+) Requests to the Docker API refused before they were sent because their method was neither `GET` nor `HEAD`. The plugin's whole Docker surface is `NetworkList`, `NetworkInspect`, `ContainerInspect` and the client library's version ping, so this stays at zero for the life of an installation; a non-zero value means code in this process tried to **write** to the daemon, which is the grant that makes a compromise of the plugin equivalent to root on the host (#691). Not `healthy`-affecting: the refusal is the safe outcome and the caller sees the error. |
 | `ledger_write_failures` | no | warn | Failed `audit_log` ledger appends. It degrades forensics and never networking. Operators using `audit_log` alert on this. |
+| `state_file_chmod_failures` | no | warn | (v2.0.0+) Files the startup sweep could not tighten under [`STATE_DIR`](#plugin-settings), plus one for a `STATE_DIR` that could not be read at all, in which case no file was examined (#804). Not healthy-affecting: a loose mode on a state file degrades nothing the plugin does, and the writer is root either way. **Worth investigating** whenever it moves: zero is the normal reading on every host, including one that has never been upgraded, so each tick is a file still readable by any user on the host. The plugin log names the path; `chmod 0600` it. A reading of 1 with no path in the log is the directory arm, and there the whole sweep did nothing. |
 | `dhcpv6_config_only` | no | n/a | (v1.9.0+) DHCPv6 replies that carried configuration and no address, such as a stateless network answering an Information-request with DNS servers and a search list (#815). On a stateless segment this rising is the feature working; on a managed or IPv4-only one it stays at zero on its own. Not `healthy`-affecting. |
 | `dhcpv6_not_offered` | no | n/a | (v1.9.0+) Endpoints created on an IPv6 network that offers no DHCPv6 address (#868): the segment answered with configuration and no address, or advertised with the managed flag clear. The endpoint starts without a DHCPv6 lease and gets its address from SLAAC. Not `healthy`-affecting: this is a description of the segment and never a fault. Read it against `dhcpv6_no_router_advert`: the two exist to tell an advertised absence from an absent advertisement, and their sum would not. **Not a check:** both clauses fail. Its own value carries no verdict, because the same number is correct behaviour on a stateless or SLAAC network and a misconfiguration on one meant to be managed, and on a stateless or SLAAC network its normal reading is one per endpoint, so a check on non-zero would fire on every healthy container there. |
 | `dhcpv6_no_router_advert` | no | n/a | (v1.9.0+) Endpoints created on an IPv6 network where **no router advertisement arrived at all** inside the acquisition budget (#868). The endpoint starts without a DHCPv6 lease, and the plugin logs a warning: unlike the row above this usually is a fault, because a segment with no IPv6 router gives the container no route either. Not `healthy`-affecting, because the plugin cannot tell a misconfigured segment from a deliberately routerless one. If it rises on a segment that does have a router, the advertisement did not arrive inside RFC 4861's discovery window. The DHCPv6 acquisition budget covers that window by derivation, so the usual cause is something cutting the budget below it: a `lease_timeout` set under 13 seconds, or a DHCPv4 half that took so long that little of the daemon's 30-second call deadline was left for the v6 one. The plugin logs a warning naming both numbers when that happens. |
