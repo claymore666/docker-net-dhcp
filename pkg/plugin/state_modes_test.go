@@ -106,14 +106,10 @@ func TestStateDir_SweepTightensWhatAnUpgradeLeftBehind(t *testing.T) {
 	// enumerated by the sweep; both are just files in the directory.
 	loose := []string{"tombstones.json", "x.json.tmp"}
 	for _, name := range loose {
-		if err := os.WriteFile(filepath.Join(dir, name), []byte("{}"), 0o644); err != nil {
-			t.Fatalf("seed %s: %v", name, err)
-		}
+		seedFile(t, filepath.Join(dir, name), 0o644)
 	}
 	const alreadyTight = "lease-records.jsonl"
-	if err := os.WriteFile(filepath.Join(dir, alreadyTight), []byte("{}"), 0o600); err != nil {
-		t.Fatalf("seed %s: %v", alreadyTight, err)
-	}
+	seedFile(t, filepath.Join(dir, alreadyTight), 0o600)
 	// The controls for "tightens only", in the two shapes that claim
 	// can fail in.
 	//
@@ -143,25 +139,14 @@ func TestStateDir_SweepTightensWhatAnUpgradeLeftBehind(t *testing.T) {
 		"operator-chose-0404.json": 0o404,
 	}
 	for name, mode := range seeded {
-		if err := os.WriteFile(filepath.Join(dir, name), []byte("{}"), mode); err != nil {
-			t.Fatalf("seed %s: %v", name, err)
-		}
-		// WriteFile applies the umask, so the seeded mode is asserted
-		// before the sweep runs. Without this a umask that already
-		// cleared the group and other bits would make these cases
-		// controls for nothing.
-		if got := permOf(t, filepath.Join(dir, name)); got != mode {
-			t.Fatalf("seed %s: mode = %#o, want %#o; the umask ate the case", name, got, mode)
-		}
+		seedFile(t, filepath.Join(dir, name), mode)
 	}
 	sub := filepath.Join(dir, "capture")
 	if err := os.MkdirAll(sub, 0o755); err != nil {
 		t.Fatalf("seed capture dir: %v", err)
 	}
 	nested := filepath.Join(sub, "request.json")
-	if err := os.WriteFile(nested, []byte("{}"), 0o644); err != nil {
-		t.Fatalf("seed %s: %v", nested, err)
-	}
+	seedFile(t, nested, 0o644)
 
 	before := changeTime(t, filepath.Join(dir, alreadyTight))
 
@@ -218,9 +203,7 @@ func TestStateDir_SweepFailuresAreCountedAndDoNotStopIt(t *testing.T) {
 	// Sorted order is the readdir order os.ReadDir guarantees, so
 	// "a.json" is reached before "b.json".
 	for _, name := range []string{"a.json", "b.json"} {
-		if err := os.WriteFile(filepath.Join(dir, name), []byte("{}"), 0o644); err != nil {
-			t.Fatalf("seed %s: %v", name, err)
-		}
+		seedFile(t, filepath.Join(dir, name), 0o644)
 	}
 
 	// os.Chmod succeeds on both files for the user running these tests,
@@ -267,9 +250,7 @@ func TestStateDir_SweepDoesNotChmodThroughASymlink(t *testing.T) {
 	withStateDir(t, dir)
 
 	outside := filepath.Join(t.TempDir(), "not-a-state-file")
-	if err := os.WriteFile(outside, []byte("{}"), 0o644); err != nil {
-		t.Fatalf("seed %s: %v", outside, err)
-	}
+	seedFile(t, outside, 0o644)
 	if err := os.Symlink(outside, filepath.Join(dir, "tombstones.json")); err != nil {
 		t.Fatalf("seed symlink: %v", err)
 	}
@@ -297,15 +278,35 @@ func TestStateDir_SweepDoesNotChmodThroughASymlink(t *testing.T) {
 // which readdir refuses for root as well.
 func TestStateDir_SweepCountsADirectoryItCannotRead(t *testing.T) {
 	notADir := filepath.Join(t.TempDir(), "state")
-	if err := os.WriteFile(notADir, []byte("{}"), 0o600); err != nil {
-		t.Fatalf("seed: %v", err)
-	}
+	seedFile(t, notADir, 0o600)
 
 	var failures stampedCounter
 	sweepStateDirModes(notADir, &failures)
 
 	if got := failures.Load(); got != 1 {
 		t.Errorf("state_file_chmod_failures = %d after an unreadable STATE_DIR, want 1", got)
+	}
+}
+
+// seedFile writes path and puts it at exactly mode.
+//
+// os.WriteFile applies the process umask, so a file seeded 0644 under
+// umask 077 arrives at 0600 and the case it was seeding is gone. The
+// test then measures the umask and reports the result as the product's
+// doing: the symlink case accuses the sweep of following a link out of
+// STATE_DIR, and the failure case accuses the injected refusal of not
+// taking. The chmod is what makes the mode the test's; the read-back is
+// what makes that a measurement rather than an intention.
+func seedFile(t *testing.T, path string, mode os.FileMode) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte("{}"), mode); err != nil {
+		t.Fatalf("seed %s: %v", path, err)
+	}
+	if err := os.Chmod(path, mode); err != nil {
+		t.Fatalf("seed %s: chmod %#o: %v", path, mode, err)
+	}
+	if got := permOf(t, path); got != mode {
+		t.Fatalf("seed %s: mode = %#o, want %#o", path, got, mode)
 	}
 }
 
