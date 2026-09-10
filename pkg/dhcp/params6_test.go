@@ -170,7 +170,7 @@ func TestBuildParams6_HintIsOptional(t *testing.T) {
 // The retransmission ceiling stays the library's, and the Solicit stays
 // uncapped.
 //
-// RFC 8415 section 18.2.1 gives Solicit no MRC and no MRD: a client that
+// RFC 9915 section 18.2.1 gives Solicit no MRC and no MRD: a client that
 // hears no server keeps soliciting at SOL_MAX_RT forever. That is the
 // behaviour the plugin wants -- the container's deadline, not the
 // client's, decides when to give up -- and it is a property of
