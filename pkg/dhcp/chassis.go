@@ -325,12 +325,20 @@ func bareAddr(l lease.Lease) string {
 // acdReport hands the caller everything the library's RFC 5227 counters
 // have gained since the last call.
 //
-// Called on every event and once more when the manager ends. The probes
-// are sent from a TIMER and not from an event, so between events these
-// numbers lag by up to one probe interval; the call after the drain is
-// what makes the total exact for a manager that has finished. Stated
-// rather than hidden: a live scrape of acd_probes_sent can be one probe
-// behind the wire, and no operator decision turns on that.
+// Called on every event and once more when the manager ends, and
+// nowhere else. The probes are sent from a TIMER, so a probe run that
+// finishes with no further lease event to ride on stays unreported
+// until the next event on that endpoint, however long that is. The lag
+// is not one probe interval: MEASURED on the production host
+// 2026-09-10, a ConflictAsync endpoint whose probes went out within 9 s
+// of the bind had them folded 19h52m later, at the first renewal. The
+// call after the drain is what makes the total exact for a manager that
+// has finished.
+//
+// An operator decision does turn on this. acd_probes_sent is what
+// pkg/plugin/endpoints.go tells the operator to read before believing
+// address_conflicts is zero, and a persistent client's own probe run is
+// missing from that reading until its next lease event.
 func (o *DHCPClientOptions) acdReport(s lease.Stats) {
 	if o.OnACDStats == nil {
 		return

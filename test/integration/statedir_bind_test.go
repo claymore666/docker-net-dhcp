@@ -186,11 +186,19 @@ func TestStateDirBindSource_MissingSourceContract(t *testing.T) {
 	}
 
 	// 6. Recovery: create the directory, enable, done — and nothing
-	//    already in that directory is touched. The marker stands in for
+	//    already in that directory is lost. The marker stands in for
 	//    the tombstones, per-network options and audit ledger a real
 	//    operator's state dir holds; #440's entire point is that they
 	//    survive, so an enable that wiped them would be silent data
 	//    loss.
+	//
+	//    It is seeded 0644, which is the state #804 found on a
+	//    production host: a file an older plugin wrote before
+	//    stateFileMode existed, which no later write ever touched. The
+	//    contents must survive and the mode must not, so this is also
+	//    the end-to-end observer for the startup sweep. The unit tests
+	//    in pkg/plugin drive the sweep; only this drives a real plugin
+	//    process starting over a pre-populated STATE_DIR.
 	if err := os.MkdirAll(bindSource, 0o755); err != nil {
 		t.Fatalf("mkdir bind source: %v", err)
 	}
@@ -208,6 +216,27 @@ func TestStateDirBindSource_MissingSourceContract(t *testing.T) {
 	if b, err := os.ReadFile(marker); err != nil || string(b) != `{"kept":true}` {
 		t.Errorf("pre-existing state in the bind source did not survive enable (%q, %v); "+
 			"the recovery is documented as lossless", string(b), err)
+	}
+
+	// The sweep runs inside NewPlugin, a few lines before the socket
+	// this enable waited for, so the mode is expected to be 0600
+	// already. The poll keeps the assertion off the ordering of two
+	// events in another process and costs nothing when it is.
+	mode := os.FileMode(0)
+	for deadline := time.Now().Add(15 * time.Second); ; {
+		fi, err := os.Stat(marker)
+		if err != nil {
+			t.Fatalf("stat %s after enable: %v", marker, err)
+		}
+		mode = fi.Mode().Perm()
+		if mode == 0o600 || !time.Now().Before(deadline) {
+			break
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	if mode != 0o600 {
+		t.Errorf("%s was seeded 0644 and is %#o after a plugin started over it; the startup "+
+			"sweep did not tighten a file an older plugin left behind (#804)", marker, mode)
 	}
 }
 

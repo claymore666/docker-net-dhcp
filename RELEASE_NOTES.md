@@ -348,6 +348,13 @@ The 2.0 chassis:
   interface. The client is a goroutine since 2.0, so the container's
   `AF_PACKET` sockets are read from inside its network namespace, and the
   interface carries exactly one DHCPv4 client after a displacement (#682).
+- State files an older plugin left behind kept their old mode. `0600` is
+  applied when the plugin writes a file and an upgrade writes nothing, so a
+  `tombstones.json` from before v1.8.0 stayed `0644` for as long as the host
+  ran, while the docs said the upgrade had tightened it. The plugin now
+  sweeps `STATE_DIR` once at startup. It only removes access and never
+  grants it, so a file an operator narrowed stays at least as narrow
+  (#804).
 
 Documentation:
 

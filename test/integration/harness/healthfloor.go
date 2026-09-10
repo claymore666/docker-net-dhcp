@@ -261,6 +261,13 @@ type HealthResponse struct {
 	ClientStopFailures  int32 `json:"client_stop_failures"`
 	NAKsReceived        int32 `json:"naks_received"`
 	LedgerWriteFailures int32 `json:"ledger_write_failures"`
+	// StateFileChmodFailures counts files the startup sweep could not
+	// tighten under STATE_DIR, plus one for a STATE_DIR that could not
+	// be read at all (#804). Not healthy-affecting and
+	// deliberately not in the floor table: a loose mode on a state file
+	// degrades nothing the plugin does, and the writer is root either
+	// way.
+	StateFileChmodFailures int32 `json:"state_file_chmod_failures"`
 	// ParentLinkWaits / ParentLinkWaitTimeouts cover contention on a
 	// shared parent NIC, where a macvlan and an ipvlan child cannot
 	// coexist (#486/#549). Waits means an operation queued and got

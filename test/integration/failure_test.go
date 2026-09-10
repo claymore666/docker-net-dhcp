@@ -46,12 +46,22 @@
 //     the daemon rejects a `docker plugin set` naming a setting
 //     config.json does not declare.
 //
-//   - the counter therefore moves ONCE PER FAILED ATTEMPT, not once
-//     per tick, and the first bump lands when the first attempt after
-//     the kill exhausts its retransmissions rather than at
-//     lastAffirmed + lease + grace. The first attempt after a renewal
-//     boundary is what starts that clock, so the rise is bounded below
-//     by the time to the next T1 and above by T1 plus one exhausted
+//   - on a BOUND client the counter moves when the LEASE LAPSES, not
+//     once per tick and not once per failed attempt. A renewal has no
+//     retransmission budget: renewalDelay is half the time remaining
+//     to Rebind, floored, and every attempt re-arms the retransmit
+//     timer with it, so RENEWING has exactly two exits, Rebind and
+//     expiry (dhcp-golib v0.1.0 proto/machine.go:1214-1234). Nothing
+//     counts or logs an unanswered renewal, so the first visible sign
+//     of a silent server is Lost{ReasonExpired} translated to
+//     "leasefail" (pkg/dhcp/chassis.go:877-878). The rise therefore
+//     lands at the expiry of the lease that was live when the server
+//     died, which is the lifetime remaining at the kill and at most
+//     one whole lease. MEASURED on the production host 2026-09-10: a
+//     renewal went unanswered for 7h52m past T1 and moved no counter
+//     and wrote no log line at any level.
+//     Failed{ReasonNoServer} does reach the counter, but only on the
+//     acquisition path, where the container's deadline bounds the
 //     attempt.
 //
 //     The budgets below are poll deadlines, not waits: each test

@@ -1380,6 +1380,14 @@ type Plugin struct {
 	ledger              *leaseLedger
 	ledgerWriteFailures stampedCounter
 
+	// stateFileChmodFailures counts files the startup sweep could not
+	// tighten, plus one for a STATE_DIR that could not be read at all
+	// (state.go). Not Healthy-affecting: a loose mode on
+	// a state file degrades nothing the plugin does, and refusing to
+	// serve over one would be worse than the condition. It is a `warn`
+	// check so the condition is visible instead of only logged (#804).
+	stateFileChmodFailures stampedCounter
+
 	// records is the durable lease record: the file a plugin restart
 	// reads to resume a lease as INIT-REBOOT instead of DISCOVERing a
 	// new address. Exactly one per process, and the one-writer
@@ -2360,7 +2368,17 @@ func NewPlugin(opts Options) (*Plugin, error) {
 		return nil, err
 	}
 	p.docker = client
-	p.ledger = newLeaseLedger(filepath.Join(stateDir, ledgerFileName), &p.ledgerWriteFailures)
+
+	// prepareStateDir creates the directory and runs the #804 sweep. It
+	// hands back the path the two openers below use, so a version of
+	// this function that skipped it would have nothing to give them.
+	// The sweep has to reach the files an older plugin left behind
+	// before anything in this process opens one.
+	dir, err := prepareStateDir(&p.stateFileChmodFailures)
+	if err != nil {
+		return nil, err
+	}
+	p.ledger = newLeaseLedger(filepath.Join(dir, ledgerFileName), &p.ledgerWriteFailures)
 
 	// Opened BEFORE recovery below, which reads it. Fatal on failure,
 	// and the commonest failure is the one that must be fatal: a second
@@ -2369,10 +2387,7 @@ func NewPlugin(opts Options) (*Plugin, error) {
 	// other's events as stale, and the endpoint that survives is
 	// whichever wrote last — silently, because a rejected event is
 	// folded, counted and dropped rather than returned.
-	if err := os.MkdirAll(stateDir, 0o755); err != nil {
-		return nil, fmt.Errorf("failed to create state dir %v: %w", stateDir, err)
-	}
-	records, err := dhcp.OpenRecords(filepath.Join(stateDir, recordFileName), p.instanceID)
+	records, err := dhcp.OpenRecords(filepath.Join(dir, recordFileName), p.instanceID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open the lease record: %w", err)
 	}

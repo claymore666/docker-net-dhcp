@@ -67,7 +67,7 @@ func V6IfaceFromAddrShow(out, addr string) string {
 //
 // Keyed on the VIA ADDRESS, not on a `proto ra` field, because busybox
 // prints no proto field at all. The property is protocol-level rather
-// than tool-level: DHCPv6 carries no router (RFC 8415 §21) and this
+// than tool-level: DHCPv6 carries no router (RFC 9915 §21) and this
 // plugin sets no IPv6 gateway, so a default route via fe80::/10 can
 // only have been learned from a Router Advertisement.
 func HasLinkLocalDefaultRoute(out string) bool {
