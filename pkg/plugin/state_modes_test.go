@@ -63,9 +63,11 @@ func TestStateFiles_AreNotWorldReadable(t *testing.T) {
 func TestLedger_TightensAnExistingWorldReadableFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, ledgerFileName)
-	if err := os.WriteFile(path, []byte("{}\n"), 0o644); err != nil {
-		t.Fatalf("seed ledger: %v", err)
-	}
+	// Through seedFile: under a umask that clears the group and other
+	// bits, a raw WriteFile seed lands at 0600 and this test goes INERT
+	// rather than red. MEASURED with ledger.go's f.Chmod deleted: FAIL
+	// at umask 022, ok at umask 077.
+	seedFile(t, path, 0o644)
 
 	var failures atomic.Int32
 	newLeaseLedger(path, &failures).Append(ledgerEntry{Kind: "bound", Network: "n", Endpoint: "e"})
@@ -299,7 +301,7 @@ func TestStateDir_SweepCountsADirectoryItCannotRead(t *testing.T) {
 // what makes that a measurement rather than an intention.
 func seedFile(t *testing.T, path string, mode os.FileMode) {
 	t.Helper()
-	if err := os.WriteFile(path, []byte("{}"), mode); err != nil {
+	if err := os.WriteFile(path, []byte("{}\n"), mode); err != nil {
 		t.Fatalf("seed %s: %v", path, err)
 	}
 	if err := os.Chmod(path, mode); err != nil {
