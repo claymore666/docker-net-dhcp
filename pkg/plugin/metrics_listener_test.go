@@ -53,7 +53,7 @@ func TestMetricsListener_ServesTheExposition(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read body: %v", err)
 	}
-	if !strings.Contains(string(body), `net_dhcp_build_info{instance_id="test-instance"}`) {
+	if !strings.Contains(string(body), `net_dhcp_build_info{instance_id="test-instance",`) {
 		t.Errorf("exposition does not carry this instance's identity:\n%s", body)
 	}
 }

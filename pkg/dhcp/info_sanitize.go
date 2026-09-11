@@ -64,7 +64,7 @@ func sanitizeValue(v reflect.Value) int {
 	dropped := 0
 	switch v.Kind() {
 	case reflect.String:
-		if s := v.String(); s != "" && !SafeDirectiveValue(s) {
+		if s := v.String(); s != "" && !SafeValue(s) {
 			log.WithField("value", quoteForLog(s)).
 				Warn("Dropping DHCP-supplied option value: it carries a control character")
 			v.SetString("")
@@ -75,7 +75,7 @@ func sanitizeValue(v reflect.Value) int {
 			kept := v.Slice(0, 0)
 			for i := 0; i < v.Len(); i++ {
 				s := v.Index(i).String()
-				if s != "" && !SafeDirectiveValue(s) {
+				if s != "" && !SafeValue(s) {
 					log.WithField("value", quoteForLog(s)).
 						Warn("Dropping DHCP-supplied option value: it carries a control character")
 					dropped++
@@ -128,7 +128,7 @@ func quoteForLog(s string) string {
 // FirstSearchDomain keeps only the first whitespace-separated token of
 // an option-15 domain, reporting whether it had to cut anything.
 //
-// SafeDirectiveValue CANNOT do this job, and the reason is worth
+// SafeValue CANNOT do this job, and the reason is worth
 // writing down: it rejects r < 0x20 || r == 0x7f, and 0x20 -- the space
 // -- is precisely the field separator of the sink it protects. So a
 // space passes the filter, `search %s` renders it verbatim, and one
@@ -144,7 +144,7 @@ func quoteForLog(s string) string {
 // option 6 -- but it lets the attacker put his domain FIRST in the
 // search order, which changes which host a bare name resolves to (#704).
 //
-// Exported for the same reason as SafeDirectiveValue: the filter that
+// Exported for the same reason as SafeValue: the filter that
 // counts runs at the BuildEvent boundary, and the renderer keeps the
 // same rule as an uncounted backstop, so both need it.
 func FirstSearchDomain(domain string) (string, bool) {

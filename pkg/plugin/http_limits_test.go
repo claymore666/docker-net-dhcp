@@ -17,7 +17,8 @@ import (
 // A WriteTimeout on the plugin socket is a deadline on the whole
 // exchange, measured from the start of reading the request, and it does
 // not know a handler is still working. CreateEndpoint holds a real DHCP
-// acquisition, a parent-link wait and a conflict probe, so a copied
+// acquisition -- RFC 5227's check included -- and a parent-link wait,
+// so a copied
 // "sensible" default here would hand libnetwork a truncated response for
 // an endpoint the plugin had already created.
 //

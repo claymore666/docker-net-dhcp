@@ -66,6 +66,7 @@ you meant.
 | `PLUGIN_BUILD_DIR` | search `plugin/`, then `plugin-cover/` | Where `harness.BuiltPluginDir` looks for the rootfs the lane built. Leave unset in the lanes — the search already knows both. |
 | `ITEST_LOG_DIR` | `logs` | Where the Makefile tees the run's output (#378). |
 | `SHARD` / `OF` | — | Required by `make integration-test-shard`; 1-based shard and total. |
+| `SUITE` | `main` | Which suite `integration-test-shard` partitions: `main` or `failure`. CI runs `OF=9` for main and `OF=2` for failure (D41). |
 
 **`INTEGRATION_PLUGIN_REF` is the one to get right.** The harness
 deliberately does not install or enable anything — that is a global
@@ -177,11 +178,15 @@ they prove:
   `lifecycle_ipvlan_test.go` — full create→run→inspect→leave→delete
   in each attachment mode. ipvlan active since v0.7.0 (#62: `-B`
   broadcast flag + no MAC-echo on ipvlan).
-- `ipv6_test.go` — dual-stack golden paths (macvlan + bridge) with
-  `ipv6=true`, DNS6 default-off, and failure-only wire diagnostics
-  (tcpdump + neighbor tables). Three deeper tests (v6 renewal,
-  DNS6 opt-in, DUID persistence across plugin restart) are
-  `t.Skip`'d pending the IA unification (#152).
+- `ipv6_test.go` — the dual-stack golden paths on macvlan and bridge,
+  the DUID's survival across a plugin restart, DNS6 propagation, the
+  T1 renewal, the tombstone restart, the per-endpoint identity on
+  ipvlan, and a duplicate on the segment being DECLINEd (#911).
+- `dhcpv6_noaddress_modes_test.go` — the segments that offer no DHCPv6
+  address: stateless, SLAAC and no-router all start the endpoint, a
+  managed segment still requires a lease, and a managed segment whose
+  server answers nothing is still fatal (#868, #815). Read the polarity
+  of the last one before changing it.
 - `concurrency_test.go` — N simultaneous containers, distinct leases.
 
 **Lease lifecycle & identity**
@@ -207,10 +212,15 @@ they prove:
   in #800.
 - `concurrent_renew_test.go` — two containers on one network, both with
   the default `eth0`, each keep their own persistent client and each
-  renew. dhcpcd keys its pidfile and control sockets by interface name
-  alone, so without per-client runtime-dir isolation the second
-  container's client forwarded its argv to the first one's socket and
-  exited 0 (#330). No single-container renewal test can see that.
+  renew. The 1.x client keyed its pidfile and control socket on the
+  interface name alone, so without per-client runtime-dir isolation the
+  second container's client forwarded its argv to the first one's socket
+  and exited 0 (#330). The 2.0 client is a goroutine holding its
+  own socket, with no pidfile, no control socket and no shared runtime
+  directory, so that particular collision cannot recur — the test is kept
+  because the property it asserts (two containers on one network, same
+  interface name, both renewing) is the one that mattered, and no
+  single-container renewal test can see it.
 - `nonroot_test.go` — the persistent client starts in a container whose
   init process runs as a **non-root** user (#317). Every other test
   here runs its container as root, so the netns open passed on the
@@ -250,19 +260,21 @@ they prove:
   Bridge-mode only — a point-to-point veth fixture cannot host a second
   server, and the selection path itself is mode-independent.
 
-**Address conflict detection**
-- `address_conflict_test.go` — an address the server leased that
-  another device on the segment already holds is **reported**, not
-  silently accepted (#524), with a clean segment, bridge mode, and a
-  bare parent (verdict: undetermined) as the negative cases. The
-  fixture server's log is deliberately not an assertion here: from its
-  point of view the lease was ordinary, and it cannot see a static host
-  that never asked it for anything.
-- `probe_stale_route_test.go` — a `/32` the conflict probe left on the
-  parent when its process went away mid-window does not blind every
-  later probe for that address; the plugin reclaims the route instead
-  of failing at `RouteAdd` with EEXIST (#572). The test leaves the
-  route itself rather than racing a daemon restart for it.
+**Address conflict detection (RFC 5227, `conflict_check`)**
+- `conflict_check_test.go` — an address the server leased that another
+  device on the segment already holds is **detected and declined**, not
+  silently accepted (#524, D23). A squatter on the offered address
+  (`wait` and `async`), a squatter that arrives after the container is
+  up (RFC 5227 section 2.4, `wait` and `async`), `conflict_check=off`
+  sending no ARP at all, the timed cost of a clean `wait` acquisition,
+  a plugin restart inside `async`'s probe window, and bridge mode not
+  reporting its own endpoint as a conflict.
+  The fixture server's log IS an assertion here, which it was not under
+  the old chassis probe: RFC 5227 obliges a `DHCPDECLINE` (RFC 2131
+  section 3.1(5)), so the server learns about the conflict and writes
+  it down. The `off` case can only be shown from the wire — an absence
+  of frames, which no counter can report — and uses the harness's ARP
+  capture on the parent link (`harness/arpcapture.go`).
 
 **Failure injection (#128, separate step: `make integration-test-failure`)**
 - `failure_test.go` — `TestFailure_*` against per-test ephemeral
@@ -514,8 +526,10 @@ about itself.** Shards run tests in declaration order, so a test that
 returns while the plugin is still tearing down on its behalf hands that
 state to whichever test is declared next. If your test can leave links
 on a fixture parent, wait until they are gone before returning (see
-`awaitReleaseLinksGone` in `orphan_release_test.go`) rather than
-assuming teardown outruns the next test.
+`awaitProbeLinksGone` in `parent_gate_test.go`, or `awaitNoReleaseLinks`
+in `join_no_container_test.go`) rather than assuming teardown outruns the
+next test. The original example lived in `orphan_release_test.go`, which
+went with the reclaim in #800.
 
 Distinct subnets keep the two dnsmasq instances cleanly isolated
 from each other — without that, two DHCP servers on the same

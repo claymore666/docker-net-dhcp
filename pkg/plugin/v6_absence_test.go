@@ -5,6 +5,7 @@ package plugin
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 
 	log "github.com/sirupsen/logrus"
@@ -13,54 +14,94 @@ import (
 	"github.com/claymore666/docker-net-dhcp/pkg/dhcp"
 )
 
-// TestClassifyV6Absence covers all four RAObservation values, which is
-// every input the type has: two booleans, one of them (Managed) only
-// meaningful when the other is set.
+// TestClassifyV6Absence covers every RAObservation value -- three
+// booleans, eight inhabitants -- against both causes the classifier
+// distinguishes.
 //
-// The fourth row is the one worth writing down. {Seen:false,
-// Managed:true} cannot arise from the acquisition path — nothing sets
-// Managed without having seen an advertisement — but a classifier that
-// tested Managed FIRST would read it as fatal, and that same reordering
-// silently turns every stateless segment fatal too. Pinning the
-// impossible row states which of the two fields decides.
+// TWO ROWS ARE WORTH WRITING DOWN.
+//
+// {Seen:false, Managed:true} cannot arise from the acquisition path --
+// nothing sets Managed without having seen an advertisement -- but a
+// classifier that tested Managed FIRST would read it as fatal, and that
+// same reordering silently turns every stateless segment fatal too.
+// Pinning the impossible row states which of the two fields decides.
+//
+// And {Seen:true, Managed:true} with dhcp.ErrNoV6Address is the row
+// where the wire overrules the diagnostic. It is reachable: the library
+// switches to the Information-request on an M=0 O=1 advertisement, and
+// a LATER advertisement on the same link can set M -- at which point
+// Router() says managed while the segment has already answered "no
+// addresses here" on the wire. A classifier that read only the
+// observation would call that fatal and refuse to start the container.
 func TestClassifyV6Absence(t *testing.T) {
+	timeout := errors.New("timed out")
 	cases := []struct {
-		name string
-		ra   dhcp.RAObservation
-		want v6Verdict
+		name  string
+		ra    dhcp.RAObservation
+		cause error
+		want  v6Verdict
 	}{
-		{"managed segment", dhcp.RAObservation{Seen: true, Managed: true}, v6Fatal},
-		{"stateless or slaac", dhcp.RAObservation{Seen: true}, v6NotOffered},
-		{"no router advertised", dhcp.RAObservation{}, v6NoRouter},
-		{"managed without an advertisement", dhcp.RAObservation{Managed: true}, v6NoRouter},
+		{"managed segment", dhcp.RAObservation{Seen: true, Managed: true}, timeout, v6Fatal},
+		{"managed and other", dhcp.RAObservation{Seen: true, Managed: true, Other: true}, timeout, v6Fatal},
+		{"stateless", dhcp.RAObservation{Seen: true, Other: true}, timeout, v6NotOffered},
+		{"slaac only", dhcp.RAObservation{Seen: true}, timeout, v6NotOffered},
+		{"no router advertised", dhcp.RAObservation{}, timeout, v6NoRouter},
+		{"no router, other set", dhcp.RAObservation{Other: true}, timeout, v6NoRouter},
+		{"managed without an advertisement", dhcp.RAObservation{Managed: true}, timeout, v6NoRouter},
+		{"managed and other without an advertisement", dhcp.RAObservation{Managed: true, Other: true}, timeout, v6NoRouter},
+
+		// The wire beats the diagnostic, in both directions.
+		{"stateless reply, quiet observation", dhcp.RAObservation{}, dhcp.ErrNoV6Address, v6NotOffered},
+		{"stateless reply, managed observation", dhcp.RAObservation{Seen: true, Managed: true}, dhcp.ErrNoV6Address, v6NotOffered},
+		{"stateless reply, wrapped cause", dhcp.RAObservation{Seen: true, Managed: true},
+			fmt.Errorf("failed to get initial IPv6 address: %w", dhcp.ErrNoV6Address), v6NotOffered},
 	}
 
 	// NON-VACUITY, keyed on the input domain rather than on a row
-	// count. "All four RAObservation values" is what the comment above
-	// claims, and a table is a universal that a deleted row satisfies
+	// count. A table is a universal that a deleted row satisfies
 	// silently -- nothing else in the package, and not
 	// check-test-weakening.sh, reports a row that stopped being there.
-	// Two booleans have exactly four inhabitants, so the domain can be
-	// stated rather than counted.
+	// Three booleans have exactly eight inhabitants, so the domain can
+	// be stated rather than counted.
 	covered := map[dhcp.RAObservation]bool{}
 	for _, tc := range cases {
-		covered[tc.ra] = true
+		if tc.cause == timeout {
+			covered[tc.ra] = true
+		}
 	}
 	for _, seen := range []bool{false, true} {
 		for _, managed := range []bool{false, true} {
-			ra := dhcp.RAObservation{Seen: seen, Managed: managed}
-			if !covered[ra] {
-				t.Fatalf("no row for %+v. This table is the whole statement of which "+
-					"field decides the verdict, and every RAObservation value has to "+
-					"be in it -- a missing row is a case nothing judges", ra)
+			for _, other := range []bool{false, true} {
+				ra := dhcp.RAObservation{Seen: seen, Managed: managed, Other: other}
+				if !covered[ra] {
+					t.Fatalf("no row for %+v under an ordinary timeout. This table is the "+
+						"whole statement of which field decides the verdict, and every "+
+						"RAObservation value has to be in it -- a missing row is a case "+
+						"nothing judges", ra)
+				}
 			}
 		}
+	}
+	// And the wire-beats-the-diagnostic half needs at least one row
+	// whose observation would classify DIFFERENTLY on its own; without
+	// it the ErrNoV6Address arm could be deleted and every remaining
+	// row would still pass.
+	overruled := false
+	for _, tc := range cases {
+		if errors.Is(tc.cause, dhcp.ErrNoV6Address) && classifyV6Absence(tc.ra, timeout) != tc.want {
+			overruled = true
+		}
+	}
+	if !overruled {
+		t.Fatal("no row exercises dhcp.ErrNoV6Address against an observation that would " +
+			"classify differently on its own, so deleting the wire-beats-the-diagnostic " +
+			"arm would leave this table green")
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := classifyV6Absence(tc.ra); got != tc.want {
-				t.Errorf("classifyV6Absence(%+v) = %v, want %v", tc.ra, got, tc.want)
+			if got := classifyV6Absence(tc.ra, tc.cause); got != tc.want {
+				t.Errorf("classifyV6Absence(%+v, %v) = %v, want %v", tc.ra, tc.cause, got, tc.want)
 			}
 		})
 	}

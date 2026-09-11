@@ -127,10 +127,15 @@ fi
 # gate is meant to be useful, and never showed in CI, where a fresh
 # checkout makes tracked and present mean the same thing. Same argument
 # and same fix as check-license-headers.sh:74.
-mapfile -t FILES < <({
+mapfile -t ALL < <({
     git -C "$ROOT" ls-files -- '*.sh'
     git -C "$ROOT" ls-files --others --exclude-standard -- '*.sh'
 } | sort -u)
+
+# NO EXEMPTION. Every shell file in this repository is inspected. The
+# DHCP library is a module dependency, not a directory of this tree, and
+# carries this same class of check in its own lane.
+FILES=("${ALL[@]}")
 
 if [ "${#FILES[@]}" -eq 0 ]; then
     echo "::error title=Nothing to inspect::no *.sh files in $ROOT." \

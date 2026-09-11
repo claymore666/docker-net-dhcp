@@ -81,6 +81,9 @@ J
 $states
 J
      ;;
+  *"/branches?"*)
+     [ "\${STUB_BRANCHES:-}" = "ERR" ] && exit 1
+     printf '%s' "\${STUB_BRANCHES-dev}" | tr ' ' '\n' ;;
   *"repo view"*) echo "o/r" ;;
   *) echo "" ;;
 esac
@@ -857,6 +860,92 @@ out=$(run_scope "$SMUG/legal.env"); rc=$?
   && ok "a legal scope with comments, blanks, indentation and a slashed branch is ACCEPTED" \
   || no "the foreign-content guard refused a legal scope file: $out"
 rm -rf "$SMUG"
+
+# --- a scope word may be a PATTERN (#874, the 2.x rename) --------------
+#
+# `.github/gate-branch-scope.env` carries `2.*` because the 2.x branch is
+# renamed once per milestone -- `2.x-beta`, `2.0.0-alpha.1`, `2.0.0` -- and
+# a literal there is one more place every rename has to edit. Until somebody
+# did, this gate demanded evidence for a branch that no longer existed and
+# demanded NONE for the one that did: the 2.x line carried a whole milestone
+# of merges with no missing-runs coverage, silently, exiting 0.
+#
+# A pattern is expanded against the branches the API reports, by the same
+# scripts/branch-glob.sh purge-workflow-runs.sh uses for the same words, so
+# the two gates cannot come to read different populations.
+#
+# Every case here asserts ON THE WIRE which branches were queried, because
+# the exit code alone is satisfied by a gate that resolved the pattern to
+# nothing and reconciled an empty set.
+glob_branch() {   # glob_branch <gate-branches> <stub-branch-list> -> GOUT, GRC, GLOG
+    GDIR=$(mktemp -d)
+    make_branch_gh "$GDIR" "$OLD_COMMIT" ""
+    GOUT=$(PATH="$GDIR/bin:$PATH" GATE_REPO=o/r GATE_BRANCHES="$1" \
+           STUB_BRANCHES="$2" GHLOG="$GDIR/calls" bash "$CHECK" 20 2>&1); GRC=$?
+    GLOG=$(cat "$GDIR/calls" 2>/dev/null)
+    rm -rf "$GDIR"
+}
+ALL_HEADS='dev main 2.0.0 1.9.x'
+
+# THE ROW THIS CHANGE WAS MADE FOR. The commit is the same one in both
+# halves and it has no run at all, so the only variable is which branches
+# the scope reaches.
+glob_branch 'dev main 2.*' "$ALL_HEADS"
+[ "$GRC" = 1 ] \
+  && grep -qF 'commits?sha=2.0.0' <<<"$GLOG" \
+  && grep -qF '  2.0.0 deadbeef' <<<"$GOUT" \
+  && ok "a commit on the 2.x branch is DEMANDED through the pattern '2.*'" \
+  || no "'2.*' did not reach the 2.x branch (exit $GRC): $GOUT :: $GLOG"
+! grep -qF 'commits?sha=1.9.x' <<<"$GLOG" \
+  && ok "a commit on 1.9.x is not demanded: the pattern selects the 2.x line only" \
+  || no "'dev main 2.*' queried 1.9.x: $GLOG"
+# ...and the half above says nothing on its own unless 1.9.x WOULD have been
+# flagged had the scope named it. Same fixture, same commit, scope moved.
+glob_branch '1.9.*' "$ALL_HEADS"
+[ "$GRC" = 1 ] && grep -qF 'commits?sha=1.9.x' <<<"$GLOG" \
+  && ok "the same commit IS demanded when the scope names 1.9.x, so the case above measures the scope" \
+  || no "1.9.x was not reachable at all (exit $GRC): $GOUT :: $GLOG"
+
+# The pattern is resolved GitHub's way, not the shell's, and the summary
+# names what it resolved to rather than the word that was written.
+glob_branch 'dev 2.*' "$ALL_HEADS"
+grep -qF 'resolves to [dev 2.0.0]' <<<"$GOUT" \
+  && ok "the run names the branches the pattern resolved to" \
+  || no "the resolution is not reported: $GOUT"
+
+# A PATTERN THAT MATCHES NOTHING REFUSES. This is the empty word list one
+# door along: reconcile an empty population and the answer is always clean,
+# while the purge keeps deleting on its own idea of the scope.
+glob_branch '9.*' "$ALL_HEADS"
+[ "$GRC" = 2 ] && grep -q 'could not be resolved' <<<"$GOUT" \
+  && ok "a pattern matching no branch REFUSES rather than reconciling nothing" \
+  || no "a pattern matching nothing did not refuse (exit $GRC): $GOUT"
+
+# The listing is a measurement, and an unmeasurable one is not an empty set.
+glob_branch '2.*' 'ERR'
+[ "$GRC" = 2 ] && grep -q 'could not list the branches' <<<"$GOUT" \
+  && ok "a failed branch listing refuses, naming the listing" \
+  || no "a failed branch listing did not refuse (exit $GRC): $GOUT"
+glob_branch '2.*' ''
+[ "$GRC" = 2 ] && grep -q 'no branches at all' <<<"$GOUT" \
+  && ok "an empty branch listing refuses" \
+  || no "an empty branch listing did not refuse (exit $GRC): $GOUT"
+
+# Unimplemented filter syntax is refused, not matched approximately: an
+# approximate match is a population nobody wrote down.
+glob_branch '2.0.0+' "$ALL_HEADS"
+[ "$GRC" = 2 ] && grep -q 'does not implement' <<<"$GOUT" \
+  && ok "a pattern using filter syntax branch-glob.sh does not implement REFUSES" \
+  || no "unimplemented filter syntax was accepted (exit $GRC): $GOUT"
+
+# THE PRESERVATION CONTROL. A literal-only scope must behave exactly as it
+# did before patterns existed -- no branch listing on the wire at all, and
+# a dead literal still reported as UNKNOWN by the commit query rather than
+# resolved away here.
+glob_branch 'dev main' "$ALL_HEADS"
+[ "$GRC" = 1 ] && ! grep -qF '/branches?' <<<"$GLOG" \
+  && ok "a literal-only scope makes no branch-listing call (the pre-existing path is unchanged)" \
+  || no "a literal-only scope now lists branches (exit $GRC): $GLOG"
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

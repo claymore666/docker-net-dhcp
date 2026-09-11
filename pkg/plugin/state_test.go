@@ -278,17 +278,17 @@ func TestTombstones_HostnameNarrowsMatch(t *testing.T) {
 	withStateDir(t, t.TempDir())
 	p := newPluginForTest()
 	p.addTombstone("net-A", "alpha", "aa:aa:aa:aa:aa:aa", "10.0.0.1", "")
-	p.addTombstone("net-A", "beta", "bb:bb:bb:bb:bb:bb", "10.0.0.2", "")
+	p.addTombstone("net-A", "bravo", "bb:bb:bb:bb:bb:bb", "10.0.0.2", "")
 
 	// Consume narrowed by hostname returns only the matching MAC.
 	mac, ip, _, ok := p.consumeTombstone("net-A", dhcpHostname{name: "alpha"})
 	if !ok || mac != "aa:aa:aa:aa:aa:aa" || ip != "10.0.0.1" {
 		t.Fatalf("alpha consume: got (%q, %q, %v), want alpha's tombstone", mac, ip, ok)
 	}
-	// beta's tombstone must still be there.
-	mac, ip, _, ok = p.consumeTombstone("net-A", dhcpHostname{name: "beta"})
+	// bravo's tombstone must still be there.
+	mac, ip, _, ok = p.consumeTombstone("net-A", dhcpHostname{name: "bravo"})
 	if !ok || mac != "bb:bb:bb:bb:bb:bb" || ip != "10.0.0.2" {
-		t.Fatalf("beta consume: got (%q, %q, %v), want beta's tombstone", mac, ip, ok)
+		t.Fatalf("bravo consume: got (%q, %q, %v), want bravo's tombstone", mac, ip, ok)
 	}
 }
 

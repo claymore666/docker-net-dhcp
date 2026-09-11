@@ -33,7 +33,8 @@ var (
 	// ErrMACAddress indicates an invalid MAC address
 	ErrMACAddress = errors.New("invalid MAC address")
 	// ErrNoLease indicates a DHCP lease was not obtained from dhcpcd
-	ErrNoLease = errors.New("dhcpcd did not output a lease")
+	ErrNoLease = errors.New("no lease was acquired")
+
 	// ErrNoHint indicates missing state from the CreateEndpoint stage in Join
 	ErrNoHint = errors.New("missing CreateEndpoint hints")
 	// ErrNotVEth indicates a host link was unexpectedly not a veth interface

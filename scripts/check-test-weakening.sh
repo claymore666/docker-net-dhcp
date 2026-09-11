@@ -218,8 +218,13 @@ added_code_lines() { # <file>
         }'
 }
 
-mapfile -t FILES < <(git diff --name-only --diff-filter=d "$DIFF_RANGE" -- \
+mapfile -t ALL_FILES < <(git diff --name-only --diff-filter=d "$DIFF_RANGE" -- \
     "${TEST_PATHS[@]}" 2>/dev/null || true)
+
+# NO EXEMPTION. Every changed test file in the range is judged. The DHCP
+# library is a module dependency, not a directory of this tree, and its
+# tests are judged in its own lane.
+FILES=("${ALL_FILES[@]}")
 
 # --- work the range cannot see (#569) --------------------------------
 #

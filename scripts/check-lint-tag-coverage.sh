@@ -116,6 +116,9 @@ if ! git -C "$ROOT" rev-parse --git-dir >/dev/null 2>&1; then
          "be read. This is not the same as finding no Go files there." >&2
     exit 2
 fi
+# NO EXEMPTION. Every tracked Go file in this repository is inspected.
+# The DHCP library is a module dependency, not a directory of this tree,
+# and is linted in its own lane.
 mapfile -t gofiles < <(git -C "$ROOT" ls-files '*.go' 2>/dev/null)
 if [ "${#gofiles[@]}" -eq 0 ]; then
     echo "FAIL  no tracked .go files under $ROOT. A coverage rule over an" \

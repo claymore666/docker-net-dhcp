@@ -79,13 +79,21 @@ LANE=(
   "option-docs drift|-|bash scripts/check-option-docs.sh"
   "starter-task claims|-|bash scripts/check-good-first-issues.sh --static"
   "docs drift|-|bash scripts/check-docs-drift.sh"
+  "retired words|-|bash scripts/check-retired-words.sh"
   "health contract|-|bash scripts/check-health-contract.sh"
   "plugin-set order|-|bash scripts/check-plugin-set-order.sh"
+  "plugin-set settings declared|-|bash scripts/check-plugin-set-settings.sh"
   "fuzz budget|-|bash scripts/check-fuzz-budget.sh"
   "upstream-blocker claims|-|bash scripts/check-upstream-blocker-claims.sh"
   "version pins|-|bash scripts/check-version-pins.sh"
   "go pins|-|bash scripts/check-go-pins.sh"
   "manifest parity|-|bash scripts/check-manifest-parity.sh"
+  "manifest delta table|-|bash scripts/check-manifest-delta-table.sh"
+  "privilege sentences|-|bash scripts/check-privilege-sentences.sh"
+  # The gate reads a binary's module record and compiles nothing itself
+  # (see the note in it), so the row builds one first. `go` because of
+  # that build.
+  "library pin (bytes built)|go|d=\$(mktemp -d); trap 'rm -rf \"\$d\"' EXIT; go build -o \"\$d/net-dhcp\" ./cmd/net-dhcp && bash scripts/check-library-pin.sh --binary \"\$d/net-dhcp\""
   "issue label map|-|bash scripts/check-issue-label-map.sh"
   "label taxonomy|-|bash scripts/check-label-taxonomy.sh --static"
   "release-notes symbols|-|bash scripts/check-release-notes-symbols.sh"
@@ -93,6 +101,7 @@ LANE=(
   "python deps|-|bash scripts/check-python-deps.sh"
   "fixture hygiene|-|bash scripts/check-selftest-fixtures.sh"
   "pipefail consumers|-|bash scripts/check-pipefail-consumers.sh"
+  "netlink dump errors|-|bash scripts/check-netlink-dump-errors.sh"
   "lint tag coverage|-|bash scripts/check-lint-tag-coverage.sh"
   "plugin bind sources|-|bash scripts/check-plugin-bind-sources.sh"
   "license headers|-|bash scripts/check-license-headers.sh"
@@ -111,6 +120,11 @@ LANE=(
   "cosign docs|-|bash scripts/check-cosign-docs.sh"
   "dispatch-ref guard|-|bash scripts/check-dispatch-ref-guard.sh"
   "latest promotion order|-|bash scripts/check-latest-promotion.sh"
+  # `go` rather than `-`: half of it is a measurement, not a scan -- it
+  # builds ./cmd twice with two commits and once more as a determinism
+  # control. It is the only gate here that has to compile to reach its
+  # verdict.
+  "release digest fixed point|go|bash scripts/check-release-digest-fixed-point.sh"
   "sparse-checkout paths|-|bash scripts/check-sparse-checkout-paths.sh"
   "per-arch build parallelism|-|bash scripts/check-build-job-independence.sh"
   "run-body expansions|-|bash scripts/check-run-expansions.sh"
@@ -119,8 +133,31 @@ LANE=(
   "action pins|-|bash scripts/check-action-pins.sh"
   "concurrency parity|-|bash scripts/check-concurrency-parity.sh"
   "lane hygiene|-|bash scripts/check-lane-hygiene.sh"
+  # `git`, not `-`: it asks the REMOTE which branches exist. That is the
+  # one thing this gate cannot do locally from the tree, and the answer
+  # from a clone's own branch list would differ on every machine.
+  "branch refs resolve|git|bash scripts/check-branch-refs.sh"
+  # A documented command that cannot run, and a documented check whose
+  # refusal does not stop the block under it. Reads the git INDEX, so it
+  # needs no network and sees the mode that ships rather than this
+  # checkout's.
+  "direct invocations run|-|bash scripts/check-direct-invocations.sh"
+  # The release run must judge the notes before it publishes: `needs:`
+  # ordering in release.yml, which no pull request can execute.
+  "release refusal order|-|bash scripts/check-release-refusal-order.sh"
   "allowlist parity|-|bash scripts/check-allowlist-parity.sh"
   "shard-balance table|-|bash scripts/check-durations-table.sh"
+  # The ceilings of the lanes that run a whole suite in one process, and
+  # the job caps over them (#934). Reads the workflows and the Makefile,
+  # so it runs anywhere.
+  "one-process lane budget|-|bash scripts/check-one-process-itest-budget.sh"
+  # The pool size and the per-run job count, checked against their
+  # derivations rather than against each other (#879). --live is NOT
+  # passed here: it needs a token that can read the runners API, which
+  # the lane's does not have, and a gate that refuses on a credential
+  # the lane cannot supply would be red every run.
+  "pool facts|-|bash scripts/check-pool-facts.sh"
+  "scheduled shard coverage|-|bash scripts/check-shard-coverage.sh"
   "golden fixture keying|go|bash scripts/check-golden-fixture-name-keyed.sh"
   "test/policy-gates split|-|bash scripts/check-test-job-purity.sh"
   # The lane checks itself: if test.yaml gains a gate this file does

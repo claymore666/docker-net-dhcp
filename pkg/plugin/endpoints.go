@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/claymore666/docker-net-dhcp/pkg/dhcp"
+	"github.com/claymore666/docker-net-dhcp/pkg/buildinfo"
 	"github.com/claymore666/docker-net-dhcp/pkg/util"
 )
 
@@ -288,7 +288,25 @@ func (p *Plugin) apiLeave(w http.ResponseWriter, r *http.Request) {
 // silence. If "unhealthy right now" is ever wanted, it is a new field,
 // not a change to this one.
 type HealthResponse struct {
-	Healthy bool `json:"healthy"`
+	// Status is draft-inadarei-api-health-check-06 section 3.1's
+	// pass/warn/fail, and Checks is its section 3.6 object. They are a
+	// REFINEMENT of Healthy, never a replacement: `fail` is exactly
+	// `healthy: false`, because both are read from the one declaration
+	// (metricDef.healthy) rather than derived twice. What they add is
+	// WHICH counter, WHEN it last moved, and a middle value for the
+	// counters the reference tells an operator to watch without
+	// calling them a fault.
+	//
+	// Healthy stays exactly as it was. 1.x dashboards read it, and a
+	// field whose meaning is narrowed by a new sibling is a field that
+	// silently changed.
+	Status string `json:"status"`
+	// Version, Commit and Library are what this binary was built from
+	// (pkg/buildinfo). They are also the labels of net_dhcp_build_info.
+	Version string `json:"version"`
+	Commit  string `json:"commit"`
+	Library string `json:"library"`
+	Healthy bool   `json:"healthy"`
 	// InstanceID identifies the plugin process that served this
 	// response. Every counter below is in-memory and returns to zero
 	// when the process does, so two reads are only comparable as a
@@ -451,8 +469,8 @@ type HealthResponse struct {
 	// particular symptom cleared itself.
 	TombstoneQuarantines int32 `json:"tombstone_quarantines"`
 	// UnsafeHostnamesRejected counts container hostnames dropped before
-	// reaching the generated DHCP client config because they carried a
-	// control character (#692). NOT healthy-affecting: the drop is the
+	// reaching the DHCP request because they carried a control
+	// character (#692). NOT healthy-affecting: the drop is the
 	// safe outcome and the lease proceeds. It is reported because a
 	// legitimate hostname never contains one, so a rising value is
 	// somebody probing rather than background noise.
@@ -491,6 +509,64 @@ type HealthResponse struct {
 	// failure looks like a slow start; only this counter distinguishes a
 	// recycled PID from one.
 	NetnsPIDMismatches int32 `json:"netns_pid_mismatches"`
+	// SandboxKeyEntries, SandboxKeyEntryFailures and SandboxPIDFallbacks
+	// say which route the plugin took into each container's network
+	// namespace. SandboxKeyEntries counts opens carried by the sandbox
+	// key the daemon publishes; SandboxKeyEntryFailures counts refusals
+	// of that route; SandboxPIDFallbacks counts the endpoints that ended
+	// up on the /proc/<pid>/ns/net route instead.
+	//
+	// READ FALLBACKS AGAINST ENTRIES. Zero fallbacks with zero entries
+	// is not "the key route works" -- it is "nothing was opened". The
+	// pair is what makes the claim have a domain, and it is the evidence
+	// for whether the host PID namespace and CAP_SYS_PTRACE are still
+	// needed for the netns route on this host. Neither is
+	// healthy-affecting: a fallback that succeeds is a working endpoint.
+	SandboxKeyEntries       int32 `json:"sandbox_key_entries"`
+	SandboxKeyEntryFailures int32 `json:"sandbox_key_entry_failures"`
+	SandboxPIDFallbacks     int32 `json:"sandbox_pid_fallbacks"`
+
+	// The four arms SandboxKeyEntryFailures folds together, published
+	// separately because the aggregate cannot say WHICH refusal
+	// happened and the two most likely ones want opposite remedies.
+	//
+	// SandboxKeyNotANamespace is the expected one on a stock engine:
+	// the entry is the placeholder file libnetwork creates before it
+	// bind-mounts the namespace over it, and the plugin's own
+	// /var/run/docker bind was taken before that mount existed. Nothing
+	// to do about it; the PID route carries the attach.
+	//
+	// SandboxKeyNotPermitted is the one that looks identical in the
+	// aggregate and is NOT expected: the daemon is publishing keys
+	// somewhere this plugin does not accept, which is what a
+	// non-default `dockerd --exec-root` produces. The remedy there is a
+	// change to this plugin, not to the host.
+	//
+	// SandboxKeyWrongNSType has never been observed and is published
+	// anyway, because "never observed" is a claim that needs a counter
+	// to stay true. SandboxKeyUnavailable is the residual: the entry
+	// never became openable inside the attach budget.
+	//
+	// SandboxKeyAbsent is the endpoint no key was published for at
+	// all, by either source. It used to land in
+	// SandboxKeyNotPermitted, whose documented cause and remedy are
+	// about a key that exists.
+	//
+	// They sum to SandboxKeyEntryFailures exactly. None is
+	// healthy-affecting.
+	SandboxKeyAbsent        int32 `json:"sandbox_key_absent"`
+	SandboxKeyNotPermitted  int32 `json:"sandbox_key_not_permitted"`
+	SandboxKeyNotANamespace int32 `json:"sandbox_key_not_a_namespace"`
+	SandboxKeyWrongNSType   int32 `json:"sandbox_key_wrong_ns_type"`
+	SandboxKeyUnavailable   int32 `json:"sandbox_key_unavailable"`
+
+	// DockerAPINonGETRefusals counts requests to the Docker API the
+	// plugin refused to send because their method was not GET. The
+	// plugin's whole Docker surface is three read calls, so this is
+	// expected to stay zero for the life of an installation; a non-zero
+	// value means code in this process tried to write to the daemon
+	// (#691). NOT healthy-affecting: the refusal is the safe outcome.
+	DockerAPINonGETRefusals int32 `json:"docker_api_non_get_refusals"`
 	// DHCPRoutesApplied counts DHCP option-121 classless static routes
 	// handed to Docker. DHCPDefaultRouteSuperseded counts the Joins
 	// where those routes cover 0.0.0.0/0 by union rather than by a
@@ -501,13 +577,6 @@ type HealthResponse struct {
 	// often as it is not. They are the evidence trail (#700).
 	DHCPRoutesApplied          int32 `json:"dhcp_routes_applied"`
 	DHCPDefaultRouteSuperseded int32 `json:"dhcp_default_route_superseded"`
-	// LeaseTimeClamped counts option-51 lifetimes cut down before use
-	// as the outage watchdog's deadline. NOT healthy-affecting -- the
-	// clamp is the safe outcome and the lease time reported to
-	// operators is unchanged. Any non-zero value is worth reading: an
-	// over-long lease is how a server switches this plugin's only
-	// silent-lapse detector off (#701).
-	LeaseTimeClamped int32 `json:"lease_time_clamped"`
 	// MTURefused counts option-26 MTUs outside the range the plugin
 	// will apply; the link keeps the MTU it had. NOT healthy-affecting.
 	// Read it because the alternative was silent: a link clamped near
@@ -524,39 +593,57 @@ type HealthResponse struct {
 	// what makes "the address survived, but via neither path" a
 	// detectable state rather than a silent pass (#386).
 	TombstonesConsumed int32 `json:"tombstones_consumed"`
-	// LeaseChanged counts renewals where dhcpcd returned a different
+	// LeaseChanged counts renewals where the server returned a different
 	// IP than the manager last recorded. Not Healthy-affecting (it
 	// doesn't break Docker's view fatally — see plugin.go for the
 	// truthfulness-gap discussion), but worth alerting on for
 	// long-running containers.
 	LeaseChanged int32 `json:"lease_changed"`
-	// AddressConflicts counts leases whose address was already held by
-	// another device on the segment, found by probing after the lease
-	// (#524). Healthy-affecting: the endpoint is up and reporting an
-	// address that does not work, and no other counter moves for it.
+	// AddressConflicts counts leased addresses found already in use on
+	// the segment (#524, D12), in both families. Healthy-affecting: the
+	// endpoint is up and reporting an address that does not work, and
+	// no other counter moves for it.
 	//
-	// ConflictProbeFailures counts probes that could not run. NOT
-	// Healthy-affecting — it says the question went unasked, not that
-	// the answer was bad. Watch it anyway: a detector that has stopped
-	// running looks identical to a clean segment.
-	AddressConflicts      int32 `json:"address_conflicts"`
-	ConflictProbeFailures int32 `json:"conflict_probe_failures"`
-	// ConflictProbeStaleRoutes counts leftover probe routes reclaimed
-	// from a probe that was cut short before it could clean up (#572).
-	// Not Healthy-affecting — the probe that reclaimed it went on to
-	// run — but a rising count means the plugin is being stopped inside
-	// probe windows.
-	ConflictProbeStaleRoutes int32 `json:"conflict_probe_stale_routes"`
-	// ConflictProbeStaleAddrs counts leftover borrowed probe SOURCE
-	// addresses reclaimed from the parent NIC (#723). Its sibling
-	// above covers the leftover route; this one covers the address the
-	// route was sourced from, which nothing recognised because it is
-	// randomly chosen. NOT healthy-affecting: the probe went on to run.
-	ConflictProbeStaleAddrs int32 `json:"conflict_probe_stale_addrs"`
-	// AddressConflictProbes counts probes that reached a verdict. Read
-	// it before believing address_conflicts=0: a zero here means the
-	// detector did not run, not that the segment is clean.
-	AddressConflictProbes int32 `json:"address_conflict_probes"`
+	// Since 2.0 it covers the whole life of the lease, not just the
+	// moment after acquisition: RFC 5227 section 2.1's probes before
+	// the address is used AND section 2.4's listener afterwards. A
+	// conflict that appears an hour into a container's life moves it.
+	//
+	// IT IS THE SUM OF AddressConflictsV4 AND AddressConflictsV6, and
+	// only the v4 half is the population ACDConflictsDetected counts.
+	// See those two fields.
+	AddressConflicts int32 `json:"address_conflicts"`
+	// ACDProbesSent, ACDAnnouncementsSent, ACDConflictsDetected and
+	// ACDARPSendFailures are the library's own RFC 5227 counters.
+	//
+	// READ ACDProbesSent BEFORE BELIEVING AddressConflicts IS ZERO.
+	// That is the whole reason these are here: a zero conflict count
+	// over a plugin that never sent a probe is not a clean segment, and
+	// the two readings were indistinguishable in #524.
+	// ACDProbesSent and ACDAnnouncementsSent move on every acquisition
+	// in conflict_check=wait and =async, and never in =off.
+	//
+	// ACDConflictsDetected is the library's count of the same conflicts
+	// AddressConflicts counts from the chassis side. They must agree;
+	// a divergence is a defect in this seam, not a property of the
+	// segment.
+	//
+	// ACDARPSendFailures is probes and announcements the ARP socket
+	// refused. NOT Healthy-affecting on its own — but a probe that was
+	// never sent proves nothing about the address, so a rise here is
+	// what turns "no conflict" into "no question asked".
+	ACDProbesSent        int32 `json:"acd_probes_sent"`
+	ACDAnnouncementsSent int32 `json:"acd_announcements_sent"`
+	ACDConflictsDetected int32 `json:"acd_conflicts_detected"`
+	ACDARPSendFailures   int32 `json:"acd_arp_send_failures"`
+	// ACDResumedUnchecked counts endpoints resumed from a record whose
+	// section 2.1 check had not completed when the previous plugin
+	// process stopped (D23). NOT healthy-affecting: the resumed client
+	// re-runs the check on its INIT-REBOOT acknowledgement, so the
+	// window closes on its own. It is a `warn` check because during
+	// that window a container holds an address nothing finished
+	// checking.
+	ACDResumedUnchecked int32 `json:"acd_resumed_unchecked"`
 
 	// SandboxNetnsVisible is how many sandbox netns entries the plugin
 	// can currently see, or -1 when it cannot read the directory at all
@@ -639,7 +726,7 @@ type HealthResponse struct {
 	// being true.
 	ClientStopFailures int32 `json:"client_stop_failures"`
 	// NAKsReceived counts server NAKs on renewal/rebind. Not
-	// Healthy-affecting on its own — dhcpcd recovers by
+	// Healthy-affecting on its own — the client recovers by
 	// re-DISCOVERing — but each NAK-triggered re-bind widens the
 	// docker-inspect divergence tracked by lease_changed (#128).
 	NAKsReceived int32 `json:"naks_received"`
@@ -672,59 +759,14 @@ type HealthResponse struct {
 	// degrades forensics, not networking; operators using audit_log
 	// alert on this directly.
 	LedgerWriteFailures int32 `json:"ledger_write_failures"`
-
-	// DirectivesRefused / MountPrepFailures are the two places pkg/dhcp
-	// declines to do what it was asked and carries on anyway (#780).
-	// They are pulled from that package at snapshot time rather than
-	// pushed into a sink, because one of them fires during config
-	// rendering, which no caller watches.
-	//
-	// DirectivesRefused counts dhcpcd directives dropped for carrying a
-	// control character in their value. dhcpcd.conf has no quoting, so a
-	// value with a newline in it would become a second directive; the
-	// drop is correct. What was missing is that an operator who set
-	// hostname, vendor class or client ID then had it silently not
-	// applied, and read a healthy plugin.
-	//
-	// MountPrepFailures counts individual commands in the per-client
-	// mount-namespace preparation that failed. The chain is `;`-joined
-	// deliberately, so dhcpcd starts regardless — but two containers
-	// whose interface is the default eth0 then collide on dhcpcd's
-	// control socket, and the second client silently never renews or
-	// releases. It counts COMMANDS, so one client failing three of four
-	// steps adds 3.
-	//
-	// Neither latches the healthy flag. Both describe an input that did
-	// not take effect, not a container left without a renewal client,
-	// and either can be non-zero on a plugin that is otherwise doing its
-	// job. Alert on them moving, not on their absolute value.
-	//
-	// Both are process-global in pkg/dhcp and therefore do NOT reset
-	// with a plugin restart of anything smaller than the process — which
-	// is the same lifetime as every other counter here, since the
-	// instance_id label changes with the process.
-	DirectivesRefused int32 `json:"directives_refused"`
-	MountPrepFailures int32 `json:"mount_prep_failures"`
-
-	// RouterAdvertGuardFailures counts individual steps of the
-	// Router-Advertisement guard that failed inside a DHCPv6 client's
-	// private mount namespace (#875).
-	//
-	// The guard is what makes the container's kernel perform router
-	// discovery and prefix processing -- the only source of an IPv6
-	// default route and of on-link determination, on the managed path as
-	// much as the stateless one -- and what stops dhcpcd switching that
-	// back off. Like MountPrepFailures its steps are `;`-joined, so a
-	// failure degrades rather than refusing the endpoint, and the
-	// degrade is invisible from inside the plugin: the container has an
-	// address, on-link traffic works, and only off-link traffic stops,
-	// seconds later, when the advertisement nothing refreshed expires.
-	//
-	// NOT healthy-affecting, for the same reason as its two neighbours:
-	// it describes configuration that did not take, not a running
-	// container left without a renewal client. Alert on it moving.
-	// Counts STEPS, not clients.
-	RouterAdvertGuardFailures int32 `json:"router_advert_guard_failures"`
+	// StateFileChmodFailures counts files the startup sweep could not
+	// tighten, plus one for a STATE_DIR it could not read at all
+	// (#804). Not Healthy-affecting: nothing the plugin does is
+	// degraded by a loose mode on a state file. It is a `warn` check
+	// because the remedy is an operator's to apply, one `chmod` on the
+	// path the plugin log names, and because a sweep that failed and a
+	// sweep that found nothing to do are otherwise the same reading.
+	StateFileChmodFailures int32 `json:"state_file_chmod_failures"`
 
 	// Per-family breakdown of the wire counters (#212, #730). Both
 	// halves are STORED; the un-suffixed field above is their sum,
@@ -747,12 +789,42 @@ type HealthResponse struct {
 	NAKsReceivedV4   int32 `json:"naks_received_v4"`
 	// ClientStopFailuresV4 is the v4 half of ClientStopFailures.
 	ClientStopFailuresV4 int32 `json:"client_stop_failures_v4"`
+	// AddressConflictsV4 is the RFC 5227 half of AddressConflicts, and
+	// it is the ONLY half that may be compared against ACDProbesSent
+	// and ACDConflictsDetected: those two count ARP, which no DHCPv6
+	// conflict can produce.
+	AddressConflictsV4 int32 `json:"address_conflicts_v4"`
 
+	// THE v6 FIELDS BELOW HAVE WRITERS AGAIN (#911). Each one is
+	// incremented by a DHCPv6 client running beside the v4 one, and a
+	// zero means the thing did not happen rather than "this build
+	// cannot report it" -- which is what it meant while 2.0 was IPv4-
+	// only, and is the reason that statement was written here at all.
+	//
+	// A zero is still not evidence of health on its own. Two of them --
+	// dhcpv6_not_offered and dhcpv6_no_router_advert -- are absences
+	// the plugin TOLERATES, and their integration proofs assert
+	// dnsmasq's log beside the counter for exactly that reason: a
+	// counter is the plugin's belief, and the exchange is what
+	// happened.
 	LeaseChangedV6   int32 `json:"lease_changed_v6"`
 	LeasesObtainedV6 int32 `json:"leases_obtained_v6"`
 	LeasesRenewedV6  int32 `json:"leases_renewed_v6"`
 	DHCPTimeoutsV6   int32 `json:"dhcp_timeouts_v6"`
 	NAKsReceivedV6   int32 `json:"naks_received_v6"`
+	// AddressConflictsV6 is the DHCPv6 half of AddressConflicts: an
+	// address the kernel's Duplicate Address Detection (RFC 4862
+	// section 5.4) found on the link, declined to the server under RFC
+	// 9915 section 18.2.8. NOTHING ARP-SHAPED COUNTS IT -- not
+	// ACDProbesSent, not ACDConflictsDetected -- so a non-zero here
+	// beside a zero ACDConflictsDetected is the two protocols, not a
+	// seam defect.
+	//
+	// The replacement address the library then wins arrives as an
+	// ordinary bind and is applied to the container's interface.
+	// Docker's record of the endpoint is NOT updated, exactly as for a
+	// v4 lease change (#104); read LeaseChangedV6 beside this.
+	AddressConflictsV6 int32 `json:"address_conflicts_v6"`
 	// ClientStopFailuresV6 is the v6 share of ClientStopFailures
 	// (#608): the persistent DHCPv6 client held a binding and did not
 	// shut down cleanly when the plugin signalled it. No release is
@@ -784,10 +856,60 @@ type HealthResponse struct {
 	// enabled on before a DHCPv6 client was started. Distinguishes a
 	// quiet segment from one the plugin could never have heard.
 	IPv6LinkEnableFailures int32 `json:"ipv6_link_enable_failures"`
+	// RouterAdvertGuardFailures counts steps of the Router-Advertisement
+	// guard that did not take on a container link (#875): a sysctl
+	// write that failed, or a read-back holding something other than
+	// what was written. Three knobs, two steps each. Non-zero means
+	// some container's kernel may not be processing advertisements, and
+	// DHCPv6 supplies no route of its own -- so the endpoint looks
+	// healthy now and loses its route when the advertisement it has
+	// expires. It does not count a privileged process inside the
+	// container undoing the settings; see docs/reference.md.
+	RouterAdvertGuardFailures int32 `json:"router_advert_guard_failures"`
+
+	// Checks is one entry per named check, keyed by the counter behind
+	// it. Each value is a SINGLE-ELEMENT ARRAY because section 4 says
+	// so: the draft's keys point to arrays so that a sub-component
+	// backed by several nodes can report each of them, and it asks for
+	// a one-element array where that is not relevant, "for
+	// consistency".
+	Checks map[string][]HealthCheck `json:"checks"`
+	// Endpoints is one entry per registered manager, bounded by
+	// ActiveEndpoints. Not in /metrics: a series per container is a
+	// cardinality decision, and it is taken separately.
+	Endpoints []EndpointHealth `json:"endpoints"`
 }
 
 func (p *Plugin) apiHealth(w http.ResponseWriter, r *http.Request) {
 	util.JSONResponse(w, p.healthSnapshot(), http.StatusOK)
+}
+
+// checkStamps is the movement time of every counter a check is declared
+// on, keyed by the json tag the check is keyed on.
+//
+// A METHOD RATHER THAN A LITERAL INSIDE healthSnapshot, so that this map
+// can be read on its own. A check whose field is missing here renders
+// with the time of the reading -- a fresh-looking timestamp on a latched
+// fault, saying the opposite of what happened -- and a stamp taken from
+// the neighbouring counter is the same lie with a plausible value. Both
+// are invisible in a document; TestHealthChecks_EveryCheckHasAStamp
+// drives one counter at a time and reads this map, which is the only
+// place either is observable at all.
+func (p *Plugin) checkStamps() map[string]time.Time {
+	return map[string]time.Time{
+		"recovery_failed":           p.recoveryFailed.LastMoved(),
+		"join_start_failures":       p.joinStartFailures.LastMoved(),
+		"tombstone_write_failures":  p.tombstoneWriteFailures.LastMoved(),
+		"tombstone_quarantines":     p.tombstones.quarantines.LastMoved(),
+		"address_conflicts":         laterOf(p.addressConflictsV4.LastMoved(), p.addressConflictsV6.LastMoved()),
+		"lease_changed":             laterOf(p.leaseChangedV4.LastMoved(), p.leaseChangedV6.LastMoved()),
+		"acd_arp_send_failures":     p.acdARPSendFailures.LastMoved(),
+		"acd_resumed_unchecked":     p.acdResumedUnchecked.LastMoved(),
+		"restart_link_up_timeouts":  p.restartLinkUpTimeouts.LastMoved(),
+		"parent_link_wait_timeouts": p.parentLinkWaitTimeouts.LastMoved(),
+		"ledger_write_failures":     p.ledgerWriteFailures.LastMoved(),
+		"state_file_chmod_failures": p.stateFileChmodFailures.LastMoved(),
+	}
 }
 
 // healthSnapshot builds one consistent view of the plugin's counters.
@@ -816,19 +938,20 @@ func (p *Plugin) apiHealth(w http.ResponseWriter, r *http.Request) {
 // Do not reintroduce a second .Load() of one of these halves; that is
 // the defect, not the arithmetic.
 func (p *Plugin) healthSnapshot() HealthResponse {
-	p.mu.Lock()
-	active := len(p.persistentDHCP)
-	pending := len(p.joinHints)
-	p.mu.Unlock()
+	// ONE read of the manager map, for both `endpoints` and
+	// `active_endpoints`. See endpointViewsOf: the two are one fact, and
+	// deriving them from two acquisitions of p.mu let a Join or Leave
+	// land between them.
+	managers, pending := p.managerSnapshot()
+	endpoints := endpointViewsOf(managers)
 
 	failed := p.recoveryFailed.Load()
 	joinFails := p.joinStartFailures.Load()
 	tsFails := p.tombstoneWriteFailures.Load()
-	conflicts := p.addressConflicts.Load()
+	conflictsV4 := p.addressConflictsV4.Load()
+	conflictsV6 := p.addressConflictsV6.Load()
+	conflicts := conflictsV4 + conflictsV6
 	tsQuarantines := p.tombstones.quarantines.Load()
-
-	// Pulled from pkg/dhcp rather than held here: see DirectivesRefused.
-	directivesRefused, mountPrepFailures, raGuardFailures := dhcp.RefusalCounts()
 
 	// One load per half, used for both the half and the sum.
 	leaseChangedV4 := p.leaseChangedV4.Load()
@@ -844,7 +967,8 @@ func (p *Plugin) healthSnapshot() HealthResponse {
 	clientStopFailuresV4 := p.clientStopFailuresV4.Load()
 	clientStopFailuresV6 := p.clientStopFailuresV6.Load()
 
-	return HealthResponse{
+	now := time.Now()
+	h := HealthResponse{
 		// Healthy is false on any condition that means an operator
 		// should look: a recovery or join-start failure means a running
 		// container has no renewal goroutine; a tombstone-write failure
@@ -858,10 +982,13 @@ func (p *Plugin) healthSnapshot() HealthResponse {
 		// See HealthResponse's own comment for what this flag does and
 		// does not say — in particular that it latches for the life of
 		// the process.
-		Healthy:           failed == 0 && joinFails == 0 && tsFails == 0 && conflicts == 0 && tsQuarantines == 0,
-		InstanceID:        p.instanceID,
-		UptimeSeconds:     time.Since(p.startTime).Seconds(),
-		ActiveEndpoints:   active,
+		Healthy:       failed == 0 && joinFails == 0 && tsFails == 0 && conflicts == 0 && tsQuarantines == 0,
+		InstanceID:    p.instanceID,
+		UptimeSeconds: time.Since(p.startTime).Seconds(),
+		// len(endpoints), not a second len(p.persistentDHCP): the count
+		// IS the length of the array beside it.
+		ActiveEndpoints:   len(endpoints),
+		Endpoints:         endpoints,
 		PendingHints:      pending,
 		RecoveredOK:       p.recoveredOK.Load(),
 		RecoveryFailed:    failed,
@@ -890,17 +1017,28 @@ func (p *Plugin) healthSnapshot() HealthResponse {
 		NetworkOptionsRejected:       p.networkOptionsRejected.Load(),
 		DNSPropagationPIDMismatches:  p.dnsPropagationPIDMismatches.Load(),
 		NetnsPIDMismatches:           p.netnsPIDMismatches.Load(),
+		SandboxKeyEntries:            p.sandboxKeyEntries.Load(),
+		SandboxKeyEntryFailures:      p.sandboxKeyEntryFailures.Load(),
+		SandboxPIDFallbacks:          p.sandboxPIDFallbacks.Load(),
+		SandboxKeyAbsent:             p.sandboxKeyAbsent.Load(),
+		SandboxKeyNotPermitted:       p.sandboxKeyNotPermitted.Load(),
+		SandboxKeyNotANamespace:      p.sandboxKeyNotANamespace.Load(),
+		SandboxKeyWrongNSType:        p.sandboxKeyWrongNSType.Load(),
+		SandboxKeyUnavailable:        p.sandboxKeyUnavailable.Load(),
+		DockerAPINonGETRefusals:      p.dockerAPINonGETRefusals.Load(),
 		DHCPRoutesApplied:            p.dhcpRoutesApplied.Load(),
 		DHCPDefaultRouteSuperseded:   p.dhcpDefaultRouteSuperseded.Load(),
-		LeaseTimeClamped:             p.leaseTimeClamped.Load(),
 		MTURefused:                   p.mtuRefused.Load(),
 		TombstonesConsumed:           p.tombstonesConsumed.Load(),
 		LeaseChanged:                 leaseChangedV4 + leaseChangedV6,
 		AddressConflicts:             conflicts,
-		ConflictProbeFailures:        p.conflictProbeFailures.Load(),
-		ConflictProbeStaleRoutes:     p.conflictProbeStaleRoutes.Load(),
-		ConflictProbeStaleAddrs:      p.conflictProbeStaleAddrs.Load(),
-		AddressConflictProbes:        p.addressConflictProbes.Load(),
+		AddressConflictsV4:           conflictsV4,
+		AddressConflictsV6:           conflictsV6,
+		ACDProbesSent:                p.acdProbesSent.Load(),
+		ACDAnnouncementsSent:         p.acdAnnouncementsSent.Load(),
+		ACDConflictsDetected:         p.acdConflictsDetected.Load(),
+		ACDARPSendFailures:           p.acdARPSendFailures.Load(),
+		ACDResumedUnchecked:          p.acdResumedUnchecked.Load(),
 		SandboxNetnsVisible:          sandboxNetnsVisibleIn(sandboxNetnsDirs),
 		LeasesObtained:               leasesObtainedV4 + leasesObtainedV6,
 		LeasesRenewed:                leasesRenewedV4 + leasesRenewedV6,
@@ -914,9 +1052,7 @@ func (p *Plugin) healthSnapshot() HealthResponse {
 		ParentLinkWaits:              p.parentLinkWaits.Load(),
 		ParentLinkWaitTimeouts:       p.parentLinkWaitTimeouts.Load(),
 		LedgerWriteFailures:          p.ledgerWriteFailures.Load(),
-		DirectivesRefused:            directivesRefused,
-		MountPrepFailures:            mountPrepFailures,
-		RouterAdvertGuardFailures:    raGuardFailures,
+		StateFileChmodFailures:       p.stateFileChmodFailures.Load(),
 		LeaseChangedV4:               leaseChangedV4,
 		LeasesObtainedV4:             leasesObtainedV4,
 		LeasesRenewedV4:              leasesRenewedV4,
@@ -933,5 +1069,15 @@ func (p *Plugin) healthSnapshot() HealthResponse {
 		DHCPv6NotOffered:             p.dhcpv6NotOffered.Load(),
 		DHCPv6NoRouterAdvert:         p.dhcpv6NoRouterAdvert.Load(),
 		IPv6LinkEnableFailures:       p.ipv6LinkEnableFailures.Load(),
+		RouterAdvertGuardFailures:    p.routerAdvertGuardFailures.Load(),
+		Version:                      buildinfo.Version,
+		Commit:                       buildinfo.Commit,
+		Library:                      buildinfo.Library,
 	}
+
+	// The checks are built from the response ABOVE, so the value a
+	// check reports and the value the counter field reports are the
+	// same read: they cannot disagree even under a concurrent bump.
+	h.Status, h.Checks = healthChecks(h, p.checkStamps(), now)
+	return h
 }

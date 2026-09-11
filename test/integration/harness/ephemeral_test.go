@@ -558,3 +558,73 @@ func TestCountLogLines_KeaTokenChoiceIsPerLog(t *testing.T) {
 		t.Errorf("2.4.1: = %d, want 2 — the same history must count the same on both versions", got)
 	}
 }
+
+// keaBroadcastACKLog is keaACKLog's bind, as Kea 2.6.3 actually logs it
+// once the client sets the BROADCAST flag of RFC 2131 section 2 — which
+// every client on this plugin's raw transport does. The ONLY difference
+// from the unicast capture is the ACK's destination: 255.255.255.255
+// instead of the address being granted.
+const keaBroadcastACKLog = `
+2026-09-03 15:41:02.326 INFO  [kea-dhcp4.packets/17.14014647] DHCP4_PACKET_RECEIVED [hwtype=1 02:11:22:33:44:55], cid=[ff:22], tid=0x517eb529: DHCPDISCOVER (type 1) received from 0.0.0.0 to 255.255.255.255 on interface dh-itest-edhcp
+2026-09-03 15:41:02.326 INFO  [kea-dhcp4.leases/17.14014647] DHCP4_LEASE_ALLOC [hwtype=1 02:11:22:33:44:55], cid=[ff:22], tid=0x517eb529: lease 192.168.101.10 has been allocated for 20 seconds
+2026-09-03 15:41:02.326 INFO  [kea-dhcp4.packets/17.14014647] DHCP4_PACKET_SEND [hwtype=1 02:11:22:33:44:55], cid=[ff:22], tid=0x517eb529: trying to send packet DHCPACK (type 5) from 192.168.101.1:67 to 255.255.255.255:68 on interface dh-itest-edhcp
+`
+
+// TestLastACKAddress_BroadcastACKStillNamesTheGrant is the regression.
+//
+// The reader used to take Kea's `DHCPACK ... to <addr>:68` and treat the
+// recipient as the granted address, and ackAddress's own comment
+// asserted the two were the same thing. They coincide only while the
+// reply is unicast. Setting the BROADCAST flag made Kea send to
+// 255.255.255.255, so LastACKAddress answered 255.255.255.255 and
+// TestFailure_ServerLossDuringRenewal reported the container and the
+// server as diverged when in fact they agreed — a red on the ONE
+// assertion in that file that checks the product's real claim, caused
+// entirely by the observer.
+//
+// Driven against the unicast capture too, in the same test: a fix that
+// read the allocation line but broke the unicast path would move the
+// failure rather than remove it.
+func TestLastACKAddress_BroadcastACKStillNamesTheGrant(t *testing.T) {
+	bc := newLogFixture(t, backendKea, keaBroadcastACKLog)
+	if got := bc.LastACKAddress(keaMAC); got != "192.168.101.10" {
+		t.Errorf("broadcast ACK: LastACKAddress = %q, want 192.168.101.10 — the address the "+
+			"server GRANTED. 255.255.255.255 is where the packet went and says nothing about "+
+			"which address this client holds.", got)
+	}
+	uc := newLogFixture(t, backendKea, keaACKLog)
+	if got := uc.LastACKAddress("aa:bb:cc:dd:ee:ff"); got != "192.168.101.42" {
+		t.Errorf("unicast ACK: LastACKAddress = %q, want 192.168.101.42; the fix must not "+
+			"break the path that was working", got)
+	}
+}
+
+// TestLastACKAddressFrom_ACKedButUnreadableIsNotEmpty pins the
+// difference between the two ways of answering "".
+//
+// "" is legitimate for a client the server never ACKed, and the caller
+// guards on `acked != ""` precisely so an un-ACKed client does not fail
+// the divergence check. That same guard means a PARSER failure returning
+// "" would disable the check silently instead of failing it. matched is
+// what separates the two, so it is asserted here directly rather than
+// through the t.Errorf the method raises from it.
+func TestLastACKAddressFrom_ACKedButUnreadableIsNotEmpty(t *testing.T) {
+	const unreadable = `
+2026-09-03 15:41:02.326 INFO  [kea-dhcp4.packets/1.1] DHCP4_PACKET_SEND [hwtype=1 02:11:22:33:44:55], cid=[ff:22], tid=0x1: trying to send packet DHCPACK (type 5) from 192.168.101.1:67 to 255.255.255.255:68 on interface dh-itest-edhcp
+`
+	addr, matched := lastACKAddressFrom(backendKea, unreadable, "dhcpack", keaMAC)
+	if addr != "" {
+		t.Fatalf("addr = %q, want empty: the only line names a broadcast destination and no grant", addr)
+	}
+	if matched == 0 {
+		t.Error("matched = 0 for a log containing an ACK for this MAC. The caller cannot then " +
+			"tell a never-ACKed client from a reader that failed, and the divergence check " +
+			"would pass by being skipped.")
+	}
+
+	// The other side of it: a MAC the server never ACKed must report
+	// zero, or every un-ACKed client becomes a harness error.
+	if _, m := lastACKAddressFrom(backendKea, keaACKLog, "dhcpack", "de:ad:be:ef:00:00"); m != 0 {
+		t.Errorf("matched = %d for a MAC with no ACK, want 0", m)
+	}
+}

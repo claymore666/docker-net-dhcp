@@ -10,7 +10,6 @@ import (
 	"io/fs"
 	"os"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	log "github.com/sirupsen/logrus"
@@ -58,7 +57,7 @@ type leaseLedger struct {
 	maxSize  int64
 	maxAge   time.Duration
 	now      func() time.Time
-	failures *atomic.Int32
+	failures intCounter
 
 	mu sync.Mutex
 	// firstTS is the timestamp of the active file's first entry,
@@ -67,7 +66,7 @@ type leaseLedger struct {
 	firstTS time.Time
 }
 
-func newLeaseLedger(path string, failures *atomic.Int32) *leaseLedger {
+func newLeaseLedger(path string, failures intCounter) *leaseLedger {
 	return &leaseLedger{
 		path:     path,
 		maxSize:  ledgerMaxSize,

@@ -96,6 +96,16 @@ GRACE_MIN="${1:-20}"
 # would let the two gates disagree while both looked healthy, which is the
 # whole failure being closed.
 SCOPE_FILE="${GATE_SCOPE_FILE:-$(dirname "$0")/../.github/gate-branch-scope.env}"
+
+# A WORD IN THAT FILE MAY BE A PATTERN (#907/#912). The 2.x branch is
+# renamed once per milestone -- 2.x-beta, 2.0.0-alpha.1, 2.0.0 -- so a scope
+# written as literal names is one more place every rename has to edit, and
+# in between it demands evidence for a branch that no longer exists while
+# demanding none for the one that does. A word is therefore matched the way
+# the workflow branch filters match, by the ONE matcher all three readers
+# share.
+# shellcheck source=scripts/branch-glob.sh
+. "$(dirname "$0")/branch-glob.sh"
 # `-f` as well as `-r`: a DIRECTORY is readable, and a scope path naming one
 # would otherwise pass here, fail to source, and be caught below under the
 # wrong diagnosis. Exit 2 is not the product of this gate; the diagnosis is.
@@ -126,7 +136,7 @@ fi
 # script becomes stricter and refuses, and a refusal destroys nothing.
 scope_foreign=$(grep -nE '[^[:space:]]' "$SCOPE_FILE" \
     | grep -vE '^[0-9]+:[[:space:]]*#' \
-    | grep -vE '^[0-9]+:[[:space:]]*GATE_SCOPE_(BRANCHES|COMMITS)=("[A-Za-z0-9_./ -]*"|[A-Za-z0-9_./-]+)[[:space:]]*$')
+    | grep -vE '^[0-9]+:[[:space:]]*GATE_SCOPE_(BRANCHES|COMMITS)=("[A-Za-z0-9_./ *?-]*"|[A-Za-z0-9_./*?-]+)[[:space:]]*$')
 if [ -n "$scope_foreign" ]; then
     echo "check-missing-runs: ${SCOPE_FILE} contains a line that is neither a comment nor a plain" \
          "GATE_SCOPE_BRANCHES/GATE_SCOPE_COMMITS assignment; the file is sourced, so such a line" \
@@ -170,13 +180,15 @@ fi
 # Emptiness stays legal through the GATE_BRANCHES environment seam, which is
 # where the self-tests need it. It is never legal in the file.
 # shellcheck disable=SC2086
-# WHAT THIS COUNT DEPENDS ON, because it depends on a neighbour: `set --`
-# performs pathname expansion, and so does the `for br in $BRANCHES` that
-# consumes the list further down. Neither can glob only because the
-# foreign-content class above admits no `*` or `?`. If that class is ever
-# widened, BOTH sites need `set -f` -- hardening one of the two would look
-# like the problem was handled.
-if [ "$(set -- $GATE_SCOPE_BRANCHES; echo $#)" -eq 0 ]; then
+# THAT CLASS HAS NOW BEEN WIDENED to admit `*` and `?` (#907/#912), so
+# this is no longer a note about a neighbour -- it is load-bearing. `set
+# --` performs pathname expansion, and so does the `for br in $BRANCHES`
+# that consumes the list further down. Unprotected, this count would
+# expand `2.*` against the CURRENT DIRECTORY and report however many
+# files happened to match. BOTH sites carry `set -f` now, which is what
+# the earlier version of this comment required of anyone widening the
+# class.
+if [ "$(set -f; set -- $GATE_SCOPE_BRANCHES; echo $#)" -eq 0 ]; then
     echo "check-missing-runs: ${SCOPE_FILE} sets GATE_SCOPE_BRANCHES to a value with no words in it," \
          "which silently turns the branch phase off on this gate and on the purge — cannot judge" >&2
     exit 2
@@ -218,22 +230,14 @@ WORKFLOW="${GATE_WORKFLOW:-integration.yml}"
 # the branch phase and the self-tests drive it. A blank list is made to take
 # that SAME path, not a second and quieter one.
 # shellcheck disable=SC2086
-# Same neighbour dependency as the file-side count: `set --` globs. A seam
-# value passes through no character class, so a caller CAN put a `*` here.
-# WHAT ACTUALLY HAPPENS, measured rather than assumed 2026-08-28: the shell
-# expands the glob against the CURRENT DIRECTORY before any query is made,
-# so GATE_BRANCHES='*' in the repository root reconciled branches named
-# 'bin', 'ci', 'cmd' … — each failed the commit query, each was counted
-# UNKNOWN rather than clean, and the gate exited 1. Fail-closed, but for the
-# reason that those names are not branches, not because a glob is not one.
-#
-# THE ESCAPE, named rather than claimed away: an expansion that IS a real
-# branch name resolves, and the branch phase then runs on a population
-# nobody wrote down. Nothing here prevents that; the seam is trusted for
-# CONTENT and only the empty/blank case is normalised. Closing it would mean
-# `set -f` at BOTH globbing sites, which is the judgement recorded at the
-# file-side count — do not harden one of the two.
-if [ "$(set -- $BRANCHES; echo $#)" -eq 0 ]; then
+# THE ESCAPE THIS COMMENT USED TO NAME IS CLOSED. It said a `*` here was
+# expanded against the CURRENT DIRECTORY before any query was made -- so
+# GATE_BRANCHES='*' in the repository root reconciled branches named
+# 'bin', 'ci', 'cmd' (MEASURED 2026-08-28) -- and that closing it would
+# mean `set -f` at BOTH globbing sites. Both sites have it. A `*` in the
+# value, from the file or from the seam, now reaches the expansion below
+# as a BRANCH PATTERN, which is what a reader writing `2.*` means.
+if [ "$(set -f; set -- $BRANCHES; echo $#)" -eq 0 ]; then
     BRANCHES=""
 fi
 # And the depth after the seam, for the reason corrected above: a degenerate
@@ -386,9 +390,12 @@ while IFS=$'\t' read -r num head branch _ draft; do
             # validated before it is read — sha as hex, observed as
             # YYYY-MM-DD, the run id as digits — and none of those classes
             # admits `*`, `?` or `[`. If a field is ever added whose class
-            # is wider, this site needs `set -f` and so does the other one;
-            # hardening one of the two would look like the problem was
-            # handled.
+            # is wider, this site needs `set -f`. The two BRANCH-list sites
+            # now carry it -- their class admits `*` since the scope gained
+            # patterns -- and this one deliberately does not, because every
+            # field of a record is still validated against a class that
+            # cannot expand. That is a measurement about this site, not an
+            # inheritance from theirs.
             # shellcheck disable=SC2086
             set -- $rec
             # THE WITNESS IS CHECKED FOR TRUTH, NOT PRESENCE. A numeric
@@ -518,6 +525,46 @@ cover_parents() {
 #
 # Parents come from the same listing, so this costs no extra API call,
 # and a commit already covered is never queried at all.
+# --- patterns become branch names -------------------------------------
+#
+# A word carrying `*` or `?` is a pattern over the branches that EXIST, and
+# it is expanded against the API's branch list, never a local one: this gate
+# runs on a schedule where there is no checkout to trust, and the purge it
+# is paired with runs in the same shape.
+#
+# A PATTERN THAT MATCHES NOTHING REFUSES. It is the empty word list one
+# level along -- the population silently becomes smaller than the one
+# purge-workflow-runs.sh spares -- and it is the shape a universal gate is
+# satisfied by: demand evidence of every commit in an empty set and the
+# answer is always clean.
+#
+# The listing is fetched only when there IS a pattern, so a literal-only
+# scope makes no extra API call and behaves exactly as it did before.
+if branch_glob_list_has_pattern "$BRANCHES"; then
+    heads=$(gh api --paginate "repos/${REPO}/branches?per_page=100" --jq '.[].name' 2>/dev/null) || {
+        echo "check-missing-runs: could not list the branches of ${REPO}, so the patterns in the" \
+             "branch scope cannot be expanded -- cannot judge" >&2
+        exit 2
+    }
+    if [ -z "$(printf '%s' "$heads" | tr -d '[:space:]')" ]; then
+        echo "check-missing-runs: ${REPO} answered with no branches at all, so every pattern in the" \
+             "branch scope would match nothing and this gate would reconcile an empty population" \
+             "-- cannot judge" >&2
+        exit 2
+    fi
+    if ! expanded=$(branch_glob_expand_list "$BRANCHES" "$heads" 2>&1); then
+        echo "check-missing-runs: ${SCOPE_FILE}'s branch scope [${BRANCHES}] could not be resolved" \
+             "against the branches of ${REPO} -- cannot judge. ${expanded}" >&2
+        exit 2
+    fi
+    echo "check-missing-runs: branch scope [${BRANCHES}] resolves to [${expanded}]"
+    BRANCHES="$expanded"
+fi
+
+# `set -f`: $BRANCHES is a word list that may have arrived as a pattern, and
+# every word in it is now a branch NAME. Pathname expansion here would judge
+# the working directory.
+set -f
 for br in $BRANCHES; do
     commits=$(gh api "repos/${REPO}/commits?sha=${br}&per_page=${BRANCH_COMMITS}" \
                 --jq '.[] | [.sha, .commit.committer.date, ([.parents[].sha] | join(","))] | @tsv' 2>/dev/null) || {
@@ -594,6 +641,7 @@ EOF
 $commits
 EOF
 done
+set +f
 
 if [ "$missing" -eq 0 ]; then
     echo "check-missing-runs: ${checked} open PR head(s) past the ${GRACE_MIN}m grace, all have runs"

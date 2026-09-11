@@ -31,9 +31,16 @@ import (
 // That is not the same as "an upgrade tightens what it finds", which
 // this comment used to claim. Nothing in the upgrade path writes
 // tombstones.json -- it is rewritten only when a tombstone is laid or
-// consumed -- so on a host with stable containers it keeps its old mode
-// indefinitely. Observed 0644 after a production upgrade to v1.8.0.
-// Sweeping stateDir at startup is #804.
+// consumed -- so on a host with stable containers it kept its old mode
+// for as long as the host ran. Observed 0644 after a production
+// upgrade to v1.8.0 (#804).
+//
+// Since v2.0.0 that gap is closed at the other end: sweepStateDirModes
+// tightens what an older plugin left behind, once per plugin start,
+// before anything reads or writes state. So the guarantee is "every
+// file under stateDir is at most 0600 from the first moment this
+// process serves", and no longer "from whenever each file is next
+// written".
 const stateFileMode = 0o600
 
 // stateSchemaVersion is the version stamped on the per-network options
@@ -270,6 +277,115 @@ func warnIfStateDirIsNotThePersistentOne() {
 		"guards nothing. Intentional for a test rig; otherwise unset STATE_DIR.")
 }
 
+// prepareStateDir makes stateDir usable and tightens what an older
+// plugin left in it. NewPlugin calls it once, before anything reads or
+// writes state.
+//
+// The two steps are one function because they are one startup step: a
+// caller that only wants the directory created is a caller that has
+// skipped the sweep. It returns the swept path for the same reason,
+// so the openers in NewPlugin take their directory from the call that
+// swept it. The unit tests drive this function and not
+// sweepStateDirModes directly, so removing the sweep from the startup
+// step fails them (#804).
+func prepareStateDir(failures intCounter) (string, error) {
+	if err := os.MkdirAll(stateDir, 0o755); err != nil {
+		return "", fmt.Errorf("failed to create state dir %v: %w", stateDir, err)
+	}
+	sweepStateDirModes(stateDir, failures)
+	return stateDir, nil
+}
+
+// chmodFile is os.Chmod. It is a variable so that the failure arm of
+// the sweep can be driven on a filesystem where every chmod succeeds,
+// which is every filesystem when the tests run as root.
+var chmodFile = os.Chmod
+
+// sweepStateDirModes clears every permission bit outside stateFileMode
+// from every regular file directly in dir.
+//
+// WHY IT EXISTS. stateFileMode is applied when the plugin WRITES a
+// file, and an upgrade writes nothing. tombstones.json is rewritten
+// only when a tombstone is laid or consumed, and a network's options
+// file only when that network is saved again, so a host with stable
+// containers kept a 0644 tombstones.json for as long as it ran while
+// the docs said the upgrade had tightened it (#804).
+//
+// IT ONLY TIGHTENS, and that is a property of the mode it computes,
+// not of the files it happens to meet. The mode written is
+// perm&stateFileMode, which is a subset of perm for every input, so no
+// file gains access it did not already have. Setting stateFileMode
+// itself would not hold: 0440 and 0500 are neither wider nor narrower
+// than 0600, and writing 0600 over them ADDS owner write, which is the
+// opposite of what this exists to do and of what the release note
+// promises. A file already a subset of stateFileMode has nothing to
+// clear and is skipped, so an operator who chose 0400 keeps 0400.
+//
+// NO RECURSION. The population is one readdir of dir. A request
+// capture directory can sit under stateDir (capture.go) and its
+// contents are not state files, and a directory is not a file whose
+// mode this constant describes.
+//
+// A FAILED CHMOD NEVER FAILS STARTUP. The plugin serves correctly with
+// a loose file, and refusing to start over a permission bit would be a
+// worse outcome than the one being fixed. Each failure is logged once
+// and counted in state_file_chmod_failures, so an operator sees it on
+// /Plugin.Health and /metrics and not only in the log. A directory
+// that cannot be read at all counts once for the same reason: a sweep
+// that examined nothing must not read as a sweep that found nothing to
+// do.
+func sweepStateDirModes(dir string, failures intCounter) {
+	bump := func() {
+		if failures != nil {
+			failures.Add(1)
+		}
+	}
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		bump()
+		log.WithError(err).WithField("state_dir", dir).
+			Warn("Could not read STATE_DIR to tighten files an older plugin left behind. " +
+				"No file was examined; any that predate this version keep the mode they have.")
+		return
+	}
+
+	for _, e := range entries {
+		// Info is an lstat, so a symlink is reported as a symlink and
+		// is skipped below. Following one would apply a state file's
+		// mode to whatever it points at.
+		info, err := e.Info()
+		if err != nil {
+			// Gone between the readdir and the stat. There is nothing
+			// left to tighten, so this is not a failure to report.
+			continue
+		}
+		if !info.Mode().IsRegular() {
+			continue
+		}
+		perm := info.Mode().Perm()
+		if perm&^stateFileMode == 0 {
+			continue
+		}
+		tightened := perm & stateFileMode
+
+		path := filepath.Join(dir, e.Name())
+		if err := chmodFile(path, tightened); err != nil {
+			bump()
+			log.WithError(err).WithFields(log.Fields{
+				"file": path,
+				"mode": fmt.Sprintf("%#o", uint32(perm)),
+			}).Warn("Could not tighten a state file left behind by an older plugin; it keeps the mode it has")
+			continue
+		}
+		log.WithFields(log.Fields{
+			"file": path,
+			"from": fmt.Sprintf("%#o", uint32(perm)),
+			"to":   fmt.Sprintf("%#o", uint32(tightened)),
+		}).Info("Tightened a state file left behind by an older plugin")
+	}
+}
+
 // validNetworkID accepts only a flat token — the shape of a libnetwork
 // network ID (hex). It rejects path separators and traversal elements
 // before networkID is ever interpolated into a filesystem path.
@@ -335,13 +451,13 @@ type tombstone struct {
 	Hostname string `json:"hostname,omitempty"`
 	// IPAddress, when non-empty, is the bare IPv4 address (no /mask)
 	// from the previous endpoint's lease. The next CreateEndpoint
-	// passes it to dhcpcd via the `request` directive (DHCP option 50)
+	// requests it as DHCP option 50
 	// so the upstream DHCP server can ACK the same lease back to the
 	// same MAC. Empty means
 	// "do an unhinted DISCOVER".
 	IPAddress string `json:"ip_address,omitempty"`
 	// IPv6Address, when non-empty, is the bare IPv6 address from the
-	// previous lease. Since #152 (dhcpcd) and #213 it is requested as
+	// previous lease. Since #152 and #213 it is requested as
 	// the DHCPv6 preferred address (IA_NA) on the next CreateEndpoint,
 	// so a restarting container keeps its v6 lease the same way the
 	// IPAddress hint keeps its v4 lease.

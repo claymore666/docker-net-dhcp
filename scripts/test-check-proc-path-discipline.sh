@@ -77,6 +77,30 @@ fixture() {
 got=$(fixture pristine)
 check "the real tree passes" 0 "$got"
 
+# --- the allow marker must survive a prefix that does not fit a pipe ---
+# The marker is read by `head | tac | awk | grep`, and under pipefail
+# every stage's status counts. A consumer that exits early closes the
+# pipe while tac is still writing, tac takes the SIGPIPE, and the marker
+# is discarded -- so the gate reports the one line it exists to excuse,
+# and the report names the subject when the plumbing is what broke.
+#
+# It only bites when the prefix does not fit in the pipe buffer, which is
+# why it passed everywhere and went red once, on a parallel runner whose
+# pipes had been shrunk to one page. This fixture removes the race by
+# making the prefix too large to fit at any buffer size.
+pad_above_marker() {
+    local f="$1/pkg/plugin/pid_revalidation_test.go"
+    awk 'NR==1{
+             print
+             for (i = 0; i < 20000; i++)
+                 printf "var pad%d = \"%s\"\n", i, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+             next
+         }
+         {print}' "$f" >"$f.padded" && mv "$f.padded" "$f"
+}
+got=$(fixture bigprefix pad_above_marker)
+check "a large prefix above the allow marker does not discard it" 0 "$got"
+
 # --- the regression this gate exists for -------------------------------
 # Verbatim the line that shipped in dhcp_manager.go after #688.
 reintroduce_688() {

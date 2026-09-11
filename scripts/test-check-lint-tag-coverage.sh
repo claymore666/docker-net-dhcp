@@ -398,6 +398,17 @@ else
     bad "could not build mutant C; case 11 is unverified"
 fi
 
+# --- the emptied-domain refusal ---------------------------------------
+#
+# A universal gate is satisfied by emptying its domain: with no Go file
+# to read, "every build tag is covered" is true and worthless, so this
+# must refuse. Exit 2 is "cannot see", not "clean". This is what the
+# pinned-library exemption used to be checked through; the exemption is
+# gone with the in-tree copy and the refusal it protected is not.
+SHAPE=bare
+repo v3; wf_both; track
+chk "a tree with no Go files is a refusal, not a pass" "$(rc)" "2"
+
 # UNMUTATED CONTROL. A mutant that fails to run at all produces the same
 # verdict as one that runs and behaves differently.
 for SHAPE in bare named block; do

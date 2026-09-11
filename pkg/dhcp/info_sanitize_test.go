@@ -5,10 +5,14 @@ package dhcp
 
 import (
 	"bytes"
+	"net/netip"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/claymore666/dhcp-golib/lease"
+	"github.com/claymore666/dhcp-golib/wire"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -128,34 +132,39 @@ func TestSanitizeInfo_LeavesLegitimateValuesAlone(t *testing.T) {
 	}
 }
 
-// TestBuildEvent_FiltersStringOptions drives the real hook path with the
-// values dhcpcd was measured to pass through unchanged. Removing the
-// sanitizeInfo call in BuildEvent turns this red.
-func TestBuildEvent_FiltersStringOptions(t *testing.T) {
-	env := map[string]string{
-		"new_ip_address":       "192.168.99.10",
-		"new_subnet_mask":      "255.255.255.0",
-		"new_routers":          "192.168.99.1",
-		"new_tftp_server_name": "boot\nduid 00:03:00:01:de:ad:be:ef:00:01",
-		"new_bootfile_name":    "pxelinux.0\rCR",
-		"new_wpad":             "http://wpad/\nblacklist 192.168.99.1",
-		"new_posix_timezone":   "CET\n",
-		"new_tzdb_timezone":    "Europe/Berlin\x01",
-	}
-	ev, ok := BuildEvent("BOUND", func(k string) string { return env[k] })
-	if !ok {
-		t.Fatal("BuildEvent did not emit the event")
+// TestInfoFromLease_FiltersStringOptions drives the REAL boundary — the
+// one point every lease crosses from the library into the plugin — with
+// option values a hostile server can send. Removing the sanitizeInfo
+// call in infoFromLease turns this red.
+//
+// It replaces TestBuildEvent_FiltersStringOptions, which drove the same
+// filter through the dhcpcd hook's environment. The hook is gone; the
+// filter and its counting are not, and the test follows the filter
+// rather than the mechanism that used to feed it.
+func TestInfoFromLease_FiltersStringOptions(t *testing.T) {
+	l := lease.Lease{
+		Addr:    netip.MustParsePrefix("192.168.99.10/24"),
+		Gateway: netip.MustParseAddr("192.168.99.1"),
+		Options: wire.Options{
+			wire.OptTFTPServer:    []byte("boot\nduid 00:03:00:01:de:ad:be:ef:00:01"),
+			wire.OptBootfileName:  []byte("pxelinux.0\rCR"),
+			wire.OptWPAD:          []byte("http://wpad/\nblacklist 192.168.99.1"),
+			wire.OptPosixTimezone: []byte("CET\n"),
+			wire.OptTZDatabase:    []byte("Europe/Berlin\x01"),
+		},
 	}
 
-	if ev.UnsafeValuesDropped != 5 {
-		t.Errorf("UnsafeValuesDropped = %d, want 5", ev.UnsafeValuesDropped)
+	info, dropped := infoFromLease(l, time.Now())
+
+	if dropped != 5 {
+		t.Errorf("dropped = %d, want 5", dropped)
 	}
 	for name, got := range map[string]string{
-		"TFTPServer":    ev.Data.TFTPServer,
-		"BootFile":      ev.Data.BootFile,
-		"WPAD":          ev.Data.WPAD,
-		"PosixTimezone": ev.Data.PosixTimezone,
-		"TZDBTimezone":  ev.Data.TZDBTimezone,
+		"TFTPServer":    info.TFTPServer,
+		"BootFile":      info.BootFile,
+		"WPAD":          info.WPAD,
+		"PosixTimezone": info.PosixTimezone,
+		"TZDBTimezone":  info.TZDBTimezone,
 	} {
 		if got != "" {
 			t.Errorf("Info.%s = %q, want it dropped", name, got)
@@ -163,8 +172,11 @@ func TestBuildEvent_FiltersStringOptions(t *testing.T) {
 	}
 	// The lease itself must survive: a hostile option must not cost the
 	// container its address.
-	if ev.Data.IP != "192.168.99.10/24" {
-		t.Errorf("Info.IP = %q; the lease was lost along with the bad options", ev.Data.IP)
+	if info.IP != "192.168.99.10/24" {
+		t.Errorf("Info.IP = %q; the lease was lost along with the bad options", info.IP)
+	}
+	if info.Gateway != "192.168.99.1" {
+		t.Errorf("Info.Gateway = %q; the lease was lost along with the bad options", info.Gateway)
 	}
 }
 
@@ -219,22 +231,19 @@ func TestFirstSearchDomain(t *testing.T) {
 	}
 }
 
-// TestBuildEvent_TruncatesMultiDomain drives it through the hook path
-// and counts it. Removing the FirstSearchDomain call turns this red.
-func TestBuildEvent_TruncatesMultiDomain(t *testing.T) {
-	env := map[string]string{
-		"new_ip_address":  "192.168.99.10",
-		"new_subnet_mask": "255.255.255.0",
-		"new_domain_name": "a.attacker.test b.attacker.test corp.example",
+// TestInfoFromLease_TruncatesMultiDomain drives the option-15 rule at
+// the boundary and counts it. Removing the FirstSearchDomain call in
+// infoFromLease turns this red.
+func TestInfoFromLease_TruncatesMultiDomain(t *testing.T) {
+	l := lease.Lease{
+		Addr:   netip.MustParsePrefix("192.168.99.10/24"),
+		Domain: "a.attacker.test b.attacker.test corp.example",
 	}
-	ev, ok := BuildEvent("BOUND", func(k string) string { return env[k] })
-	if !ok {
-		t.Fatal("BuildEvent did not emit the event")
+	info, dropped := infoFromLease(l, time.Now())
+	if info.Domain != "a.attacker.test" {
+		t.Errorf("Info.Domain = %q, want only the first domain", info.Domain)
 	}
-	if ev.Data.Domain != "a.attacker.test" {
-		t.Errorf("Info.Domain = %q, want only the first domain", ev.Data.Domain)
-	}
-	if ev.UnsafeValuesDropped != 1 {
-		t.Errorf("UnsafeValuesDropped = %d, want 1", ev.UnsafeValuesDropped)
+	if dropped != 1 {
+		t.Errorf("dropped = %d, want 1", dropped)
 	}
 }

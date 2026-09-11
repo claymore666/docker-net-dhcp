@@ -5,9 +5,10 @@ body:
   - type: markdown
     attributes:
       value: >-
-        The guiding principle for this plugin is: one `docker network create`
-        line, then plain `networks: [...]` in any compose file — no static IPs,
-        sidecars, or per-container plumbing. Please frame requests against that.
+        The guiding principle for this plugin is one `docker network create`
+        line, then plain `networks: [...]` in any compose file. No static IPs,
+        no sidecars, no per-container plumbing. Please frame requests against
+        that.
   - type: textarea
     id: problem
     attributes:

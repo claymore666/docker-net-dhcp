@@ -116,7 +116,7 @@ RUN test -n "${RUNNER_VERSION}" || { echo "RUNNER_VERSION build-arg is required"
     && /opt/runner/bin/installdependencies.sh \
     && rm -rf /var/lib/apt/lists/*
 
-# Baked Go caches: module cache from go.mod/go.sum, then a warm compile
+# Baked Go caches: module cache from the module graph, then a warm compile
 # cache from building the tree (integration tag pulls in the docker SDK
 # test deps). PR source will differ, but stdlib and dependency compile
 # units still hit. Source is dropped afterwards; only caches stay.

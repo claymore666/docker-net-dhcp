@@ -38,9 +38,8 @@ const healthFloorBudget = 30 * time.Second
 // Two honest limits, stated here rather than discovered later:
 //
 //   - The counters reset when the plugin process does, and
-//     TestRecovery_PluginDisableEnable_PreservesEndpoint,
-//     TestIPv6_..._MACSurvivesPluginRecycle and the daemon-restart
-//     test all recycle it. So this is "no fault since the last plugin
+//     TestRecovery_PluginDisableEnable_PreservesEndpoint and the
+//     daemon-restart test both recycle it. So this is "no fault since the last plugin
 //     restart in this run", not "no fault in the whole run". The
 //     failure suite has no such test, so there it does cover
 //     everything. The per-test deltas cover what the reset erases.
@@ -130,7 +129,7 @@ func checkHealthFloor(suite time.Duration) int {
 	// increments each sit next to a distinct log line, and the log
 	// spans the run while the counters span only the last restart —
 	// 10% of one recent run.
-	censusFailures, faultCount, probeFailuresInLog := printCensuses(ctx)
+	censusFailures, faultCount, conflictsInLog := printCensuses(ctx)
 
 	// Printed before the verdict either way. The census answers "did
 	// anything break"; this answers "did the #406 grace carry attaches
@@ -140,20 +139,21 @@ func checkHealthFloor(suite time.Duration) int {
 	// distinguishes them.
 	fmt.Fprint(os.Stderr, harness.AttachGraceLine(h, censusFailures))
 
-	// Same question for the #524 detector: did it run at all? A green
-	// run with address_conflicts=0 says nothing until this does.
-	fmt.Fprint(os.Stderr, harness.ConflictProbeLine(h))
+	// Same question for the #524 check: did it run at all? A green run
+	// with address_conflicts=0 says nothing until this does.
+	fmt.Fprint(os.Stderr, harness.ACDCensusLine(h))
 
 	findings := harness.CheckHealthFloor(h)
 
-	// The census above printed whether the detector ran; this is what
-	// acts on it (#551). Printing alone is what let every run between
-	// #527 and #550 report "2 probe(s) could not run at all" and stay
-	// green. Appended to the same findings list so it prints, counts and
-	// fails through the existing path rather than a parallel one.
+	// The census above printed whether the check ran; this is what acts
+	// on it (#551). Printing alone is what let every run between #527
+	// and #550 report "2 probe(s) could not run at all" and stay green.
+	// Appended to the same findings list so it prints, counts and fails
+	// through the existing path rather than a parallel one.
 	findings = append(findings,
-		harness.ConflictCensusFindings(h, harness.AllowedConflictProbeFailures(), probeFailuresInLog,
-			floorHealthBaseline)...)
+		harness.ACDCensusFindings(h, harness.AllowedARPSendFailures(), harness.AllowedUnprobedLeases(),
+			harness.AllowedStagedConflicts(),
+			conflictsInLog, floorHealthBaseline)...)
 	if len(findings) == 0 && faultCount > 0 {
 		fmt.Fprintf(os.Stderr,
 			"HEALTH FLOOR: the counters came back clean, but the log records %d "+
@@ -273,9 +273,9 @@ func printCensuses(ctx context.Context) (joinFailures, otherFaults, probeFailure
 	// whereas narrowing them would give back the restart-blindness #385
 	// closed.
 	//
-	// The conflict census is the one that must be scoped, because it is
-	// the only one judged against an allowance that a test process
-	// declares and cannot carry across an exec.
+	// The ACD census is the one that must be scoped, because it is the
+	// only one judged against allowances that a test process declares
+	// and cannot carry across an exec.
 	return harness.JoinFailureCount(data), faults,
-		harness.ConflictProbeFailuresInLog(harness.LogSince(data, floorLogBaseline))
+		harness.ConflictsInLog(harness.LogSince(data, floorLogBaseline))
 }

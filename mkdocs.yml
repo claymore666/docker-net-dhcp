@@ -96,5 +96,6 @@ nav:
   - How it works: internals.md
   - Roadmap: roadmap.md
   - Verifying releases: verifying-releases.md
+  - Contributing: contributing.md
   - Maintainer:
       - Release runbook: release-runbook.md

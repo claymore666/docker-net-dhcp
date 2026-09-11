@@ -273,6 +273,28 @@ else
     fail "--fix reaches an untracked file too" "header not inserted" "$(cat "$REPO/newly-written.go")"
 fi
 
+# --- the emptied-domain refusal ---------------------------------------
+#
+# A rule over an empty population is satisfied by emptying the
+# population, so a tree with no candidate source file at all must REFUSE
+# (exit 2), not pass. This is the whole of what the pinned-library
+# exemption used to be checked through; the exemption is gone with the
+# in-tree copy and the refusal it protected is not.
+D="$TMP/empty-domain"; rm -rf "$D"; mkdir -p "$D"
+(
+    cd "$D" || exit 1
+    git init -q .; git config user.email t@example.com; git config user.name t
+    git config commit.gpgsign false
+    printf 'nothing to inspect\n' > README.md
+    git add -A; git commit -qm fixture
+) >/dev/null 2>&1
+vout=$(cd "$D" && bash "$CHECK" 2>&1); vrc=$?
+if [ "$vrc" -eq 2 ] && grep -qF 'Nothing to inspect' <<<"$vout"; then
+    pass "a tree with no candidate source file is a refusal, not a pass"
+else
+    fail "a tree with no candidate source file is a refusal, not a pass" "exit $vrc" "$vout"
+fi
+
 if [ "$failures" -ne 0 ]; then
     echo "$failures test(s) failed" >&2
     exit 1

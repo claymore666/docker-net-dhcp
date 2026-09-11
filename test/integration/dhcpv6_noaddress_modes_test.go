@@ -205,6 +205,16 @@ func TestDHCPv6_NoAddressModes_StartTheEndpoint(t *testing.T) {
 					"the counter verdict above is attributed to a segment that was "+
 					"not in the mode this subtest asked for", tc.mode, gotRA, tc.wantRA)
 			}
+			// The DHCPv6 half of the same claim, from the same log.
+			// The advertisement check above says what the ROUTER did;
+			// this says what the SERVER did, and on all three of these
+			// segments the thing that must be true is that no address
+			// was ever handed out. Without it a segment that quietly
+			// leased one would still satisfy every assertion above:
+			// the counters would be flat, and flat is what the
+			// wantRA=false arm reads as a failure and the wantRA=true
+			// arm reads as one too.
+			f.AssertExchange(30 * time.Second)
 		})
 	}
 }
@@ -223,6 +233,15 @@ func TestDHCPv6_NoAddressModes_StartTheEndpoint(t *testing.T) {
 // counter proves the plugin formed an intention, and only the file
 // inside the container proves the configuration arrived. The counter is
 // checked too, as the narrower claim that the reply was read at all.
+//
+// WHAT CHANGED IN 2.0. The library reports a stateless reply as its own
+// event kind rather than as a timeout (D30 Q7), so the acquisition ENDS
+// when the reply arrives instead of running out the whole lease_timeout,
+// and the classifier reads the sentinel the wire produced rather than
+// inferring the segment's shape from the last advertisement it saw. The
+// observable is unchanged, which is the parity claim; what changed is
+// that a stateless endpoint now starts in about the time the exchange
+// takes.
 func TestDHCPv6_Stateless_ConfigurationReachesTheContainer(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
@@ -236,7 +255,8 @@ func TestDHCPv6_Stateless_ConfigurationReachesTheContainer(t *testing.T) {
 	f := harness.NewV6Fixture(t, harness.V6Stateless)
 	dumpOnFailure(t, f)
 
-	w := harness.BeginCounterWindow(t, ctx, cli, "dhcpv6_config_only", "ipv6_link_enable_failures")
+	w := harness.BeginCounterWindow(t, ctx, cli,
+		"dhcpv6_config_only", "ipv6_link_enable_failures", "router_advert_guard_failures")
 	id, err := startOnV6Segment(t, ctx, cli, f, "dh-itest-v6slcfg")
 	if err != nil {
 		t.Fatalf("the container did not start on a stateless segment: %v", err)
@@ -266,6 +286,22 @@ func TestDHCPv6_Stateless_ConfigurationReachesTheContainer(t *testing.T) {
 			after.IPv6LinkEnableFailures)
 	}
 
+	// The Router-Advertisement guard runs in the same namespace entry
+	// as that clear, immediately after it (#911). It is asserted here
+	// rather than only on the golden paths because THIS is the endpoint
+	// with no address: the guard's whole purpose is that an endpoint
+	// with a DHCPv6 address still gets a route, and an endpoint that
+	// never got one is the case where a broken guard is completely
+	// invisible. A stateless container is expected to reach the network
+	// over its SLAAC address and the advertised router, which needs the
+	// same knobs.
+	if after.RouterAdvertGuardFailures > 0 {
+		t.Errorf("router_advert_guard_failures moved to %d on a stateless segment — the "+
+			"container's kernel may not be processing Router Advertisements, and on this "+
+			"segment that is the ONLY way it can get a route at all (#911)",
+			after.RouterAdvertGuardFailures)
+	}
+
 	// propagate_dns is on for this network, so the reply's DNS server
 	// and search domain must reach the container's resolver.
 	resolv := harness.ExecOutput(t, ctx, id, "cat", "/etc/resolv.conf")
@@ -278,6 +314,13 @@ func TestDHCPv6_Stateless_ConfigurationReachesTheContainer(t *testing.T) {
 		t.Errorf("the container's resolver does not carry the DHCPv6 search domain %s:\n%s",
 			harness.V6SearchDomain, resolv)
 	}
+
+	// The third live drive of the exchange contract, and the only one
+	// with a must-NOT that a wrong client trips: a stateless segment
+	// must see an INFORMATION-REQUEST and must NOT see an ADVERTISE. A
+	// client that solicited an address here and settled for the
+	// configuration in the reply satisfies every assertion above.
+	f.AssertExchange(30 * time.Second)
 }
 
 // TestDHCPv6_Managed_StillRequiresALease is the preservation control
@@ -369,6 +412,20 @@ func TestDHCPv6_Managed_StillRequiresALease(t *testing.T) {
 			settings.GlobalIPv6Address, f.CountLogLines("DHCPREPLY"))
 	}
 
+	// AssertExchange's LIVE POSITIVE, owed to this round by #915.
+	//
+	// Every other drive of this function is negative: the fast lane
+	// feeds it captured logs, and the integration lane's
+	// TestV6Fixture_AssertExchangeRefusesASegmentNoClientEverUsed only
+	// shows it refuses an empty one. Until a DHCPv6 client existed on
+	// this branch nothing could show it PASSES against a real exchange,
+	// and a contract whose must-set had rotted into something no
+	// segment can satisfy would have looked identical. This is a
+	// managed segment whose client just took a lease, so it is the one
+	// place the whole must-set — SOLICIT, ADVERTISE, REPLY — is known
+	// to be on the wire.
+	f.AssertExchange(30 * time.Second)
+
 	before, after := w.End()
 	if d := after.DHCPv6NotOffered - before.DHCPv6NotOffered; d != 0 {
 		t.Errorf("dhcpv6_not_offered moved by %d on a MANAGED segment, want 0 — "+
@@ -434,6 +491,15 @@ func TestDHCPv6_Managed_ServerSilent_IsStillFatal(t *testing.T) {
 	// here, the container would start, and the failure above would be
 	// read as the fix being wrong when it is the fixture that broke.
 	f.AwaitIgnoredSolicit(30 * time.Second)
+
+	// The live positive for the one column of the exchange contract
+	// that fails GREEN. V6ManagedSilent is the only mode with a
+	// mustLine, and it requires DHCPSOLICIT and the refusal word on
+	// ONE line: the parts on separate lines are a segment that
+	// answered a solicit and separately ignored something else. Read
+	// on the whole log instead of per line, this passes on any fixture
+	// whose v4 half logged a refusal, which every one of them can.
+	f.AssertExchange(30 * time.Second)
 
 	before, after := w.End()
 	if d := after.DHCPv6NotOffered - before.DHCPv6NotOffered; d != 0 {

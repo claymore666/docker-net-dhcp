@@ -88,11 +88,22 @@ command -v git >/dev/null 2>&1 || {
 # nested worktrees under .claude/ stay out, exactly as before. Untracked
 # and ignored are different questions and only the first one is being
 # reversed here.
+# NO EXEMPTION. Every tracked and untracked source file in this
+# repository is inspected. The DHCP library is a module dependency, not
+# a directory of this tree, and carries its own licence.
+#
+# The emptied-domain case is refused below.
 FILES="${LICENSE_HEADER_FILES:-}"
 if [ -z "$FILES" ]; then
     tracked=$(git ls-files '*.go' '*.sh' '*.py') || exit 2
     untracked=$(git ls-files --others --exclude-standard '*.go' '*.sh' '*.py') || exit 2
     FILES=$(printf '%s\n%s\n' "$tracked" "$untracked" | grep -v '^$' | sort -u)
+    if [ -z "$FILES" ]; then
+        echo "::error title=Nothing to inspect::no candidate file was found." \
+             "A header rule over an empty population is satisfied" \
+             "by emptying the population, so this is a refusal and not a pass." >&2
+        exit 2
+    fi
 fi
 
 MODE="$MODE" FILES="$FILES" python3 -c '

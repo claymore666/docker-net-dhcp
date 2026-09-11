@@ -1,0 +1,199 @@
+# Measured per-test wall clock for the integration suites. Used ONLY to
+# balance shards (#381, #877, D41).
+#
+# A test missing from this file is NOT skipped — it is assigned the mean
+# of its own suite's rows, so the file going stale makes shards less even
+# and never makes one incomplete. scripts/test-integration-shard.sh
+# asserts completeness independently of this file, and
+# scripts/check-durations-table.sh goes red the moment the rows stop
+# naming exactly the tests the partitioner places.
+#
+# POPULATION: TOP-LEVEL TEST FUNCTIONS, PARENTS ONLY.
+# One row per `func TestX(t *testing.T)` in test/integration/*_test.go —
+# 97 of them, the main suite's 93 and the failure suite's 4. A subtest's
+# seconds are inside its parent's figure and are NOT a row of their own.
+# That is stated because the previous edition's header did not state it
+# and the population was read back two ways: 104 rows summing 1804.88s
+# (parents and subtests, a subtest counted twice) against 91 top-level
+# rows. The extraction below excludes subtests by construction — the
+# `--- PASS:` lines it reads are anchored at column zero and the name
+# class carries no `/`, which is what a subtest's line has.
+#
+# Provenance (regenerated 2026-09-08, D41):
+#   source     the three consecutive successful Integration runs of the
+#              v6-wiring branch that produced suite logs for the tree
+#              this table costs — 34059724566, 34060966627, 34064155841.
+#              Earlier runs are deliberately NOT sampled: the v6 tests
+#              they cost had different bodies, which is drift in the
+#              subject rather than in the runner.
+#   method     median of the per-test `--- PASS/SKIP/FAIL: <name> (<n>s)`
+#              lines across the three runs. Median rather than mean: the
+#              ephemeral runner pool produces occasional slow jobs and
+#              one such sample should not move a test's weight.
+#   one row     TestLeaseRenewIPv6_HonorsT1 is 73.85, and it alone is NOT
+#              from the corpus runs above: this round changed that test's
+#              body (its baseline moved from the bind to t1-t1Slop), so
+#              the 90.03 the corpus measured costs a tree that no longer
+#              exists — drift in the subject, which the note above says
+#              is the one thing that disqualifies a sample. Its figure
+#              is the median of the same test on the three head runs
+#              34204413442 / 34205039347 / 34206023827: 74.16, 73.60,
+#              73.85. Same method, three samples, a later corpus.
+#   samples    3 for all 95. No row is inferred. The previous edition
+#              carried four inferred rows and fourteen v6 rows recovered
+#              from the 1.9.0 corpus; every one of those is now measured
+#              against the client that actually ships here.
+#   corpus     main suite    91 tests   1739.87s   mean 19.12s
+#              failure suite  4 tests    272.31s   mean 68.08s
+#              both          95 tests   2012.18s
+#   spread     min and max per test across the three samples are not
+#              stored, but were read: the widest single-test spread was
+#              TestDHCPv6_NoAddressModes_StartTheEndpoint at 75.07-93.94,
+#              and 90 of the 95 spread under 3s. A row is a median of
+#              three, not a constant.
+#
+# THE SHARD COUNTS ARE DERIVED FROM THESE NUMBERS AND THE BUDGET (D41).
+# The maintainer's bar is that everything on the way into the branch
+# finishes well under five minutes. The measured window is the suite
+# jobs' first start to the aggregate's verdict, so the arithmetic is
+#
+#   window = max over jobs(fixed + test seconds) + aggregate (8s measured)
+#
+# `fixed` is what a suite job costs before and after the tests. Since
+# D41 the plugin is built ONCE per run and installed from an artifact,
+# so `fixed` no longer carries a build: MEASURED at the base it was 13s
+# of job setup, checkout and post-steps plus 82-90s of `make plugin`
+# plus 28s of `go test` compilation and the harness package; the build
+# term is gone and the download and install replace it.
+#
+# Packing the medians above with the same greedy longest-first packer
+# the partitioner uses, per suite:
+#
+#   main    OF=5   349.9s  (what shipped before D41)
+#           OF=7   250.3s
+#           OF=8   219.9s
+#           OF=9   196.3s   <- ships
+#           OF=10  177.9s
+#           OF=12  146.8s
+#   failure OF=1   272.3s  (what shipped before D41)
+#           OF=2   154.6s   <- ships; the floor is one test,
+#                            TestFailure_LeaseExpiry at 154.61s
+#
+# Nine and two. Nine is where the main suite's longest shard first lands
+# far enough under the budget that a fixed cost of ~60s and an ephemeral
+# pool's job-to-job variance both fit inside it; the failure suite is
+# split at its own floor, which no further shard can improve because one
+# test is 155s of a real lease lapsing.
+# ci-pool: integration-pool-jobs=11
+# Eleven privileged jobs per run
+# where six shipped before: that is the price, and it is paid in pool
+# ci-pool: pool-runners=16
+# capacity (16 runners, MEASURED from the runners API 2026-09-08), not
+# in wall clock. Past nine each extra main shard buys ~20s for a whole
+# runner slot and the failure suite becomes the critical path at OF=12.
+#
+# REFRESH RECIPE. Take the three most recent consecutive successful
+# Integration runs on this branch that produced suite logs, and for each:
+#   gh api repos/<owner>/<repo>/actions/runs/<id>/logs > run.zip
+#   unzip -o run.zip -d run/ && cat run/*suite*.txt \
+#     | grep -aoE '^\S+ --- (PASS|FAIL|SKIP): [A-Za-z0-9_]+ \([0-9]+\.[0-9]+s\)' \
+#     | sed -E 's/.*: ([A-Za-z0-9_]+) \(([0-9.]+)s\)/\1\t\2/'
+# then take the per-name median across the three, sort by name, and
+# re-derive the shard counts above from the new totals.
+TestAuditLog_DefaultOff	12.63
+TestAuditLog_RecordsLifecycle	12.31
+TestClasslessStaticRoutes_AbsentWithoutOptIn	12.09
+TestClasslessStaticRoutes_AppliedFromDHCP	11.96
+TestClientID_DefaultIsMACDerived	11.50
+TestClientID_OverrideAppearsInLeaseFile	11.98
+TestConcurrency_DistinctLeases	45.25
+TestConcurrentRenew_SameInterfaceNameBothRenew	41.65
+TestConflictCheck_BridgeModeDoesNotSelfReport	11.81
+TestConflictCheck_OffSendsNoProbe	33.76
+TestConflictCheck_RestartInsideTheAsyncWindow	4.60
+TestConflictCheck_SquattedOfferIsDeclined	37.00
+TestConflictCheck_SquatterAfterTheFact	36.71
+TestConflictCheck_WaitAcquisitionIsTimed	9.15
+TestDHCPv6_ADuplicateOnTheSegmentIsRefused	30.08
+TestDHCPv6_ASquatOnARunningContainerIsCountedAndTheAddressChanges	38.00
+TestDHCPv6_Managed_ServerSilent_IsStillFatal	27.95
+TestDHCPv6_Managed_StillRequiresALease	16.39
+TestDHCPv6_NoAddressModes_StartTheEndpoint	80.63
+TestDHCPv6_Stateless_ConfigurationReachesTheContainer	30.44
+TestDNSPropagate_BridgeModeWritesResolvConfToo	11.60
+TestDNSPropagate_DefaultIsUnchanged	11.72
+TestDNSPropagate_OptInWritesResolvConf	12.62
+TestDUID_PersistsAcrossPluginRestart	17.79
+TestDisplacedClient_TheInterfaceNeverCarriesTwoClients	30.00
+TestDockerAPI_OnlySafeMethodsReachTheDaemon	11.41
+TestErrors_DriverOptIPMalformed	0.40
+TestErrors_NetworkCreateValidation	0.04
+TestErrors_ParentDown	0.01
+TestErrors_ParentIsBridge	0.09
+TestExtraOptions_NTPAndTFTPLogged	12.12
+TestExtraOptions_SearchListInResolvConf	12.42
+TestExtraOptions_WPADAndTimezoneLogged	11.98
+TestFQDN_RegistersInDNS	11.60
+TestFailure_LeaseExpiry	154.61
+TestFailure_LeaseRefusedOnRenewal	29.64
+TestFailure_ServerLossDuringRenewal	33.34
+TestFailure_ServerReturnsBeforeExpiry	54.72
+TestHealthCounters_ObtainedAndReleased	12.13
+TestHealthDocument_BuildInfoIsWhatTheLaneBuilt	0.01
+TestHealthDocument_EndpointEntryMatchesTheContainer	12.05
+TestIPv6_AcceptedAtCreate	0.02
+TestIPv6_DNS6Propagation	34.17
+TestIPv6_TheV4OnlyPathIsUnchanged	11.57
+TestIPvlan_DHCPv6IdentityIsPerEndpointAndSurvivesARestart	30.86
+TestInterfaceName_InvalidRejected	0.44
+TestInterfaceName_MultiNetworkDeterministic	12.08
+TestInterfaceName_PluginHonorsOption	12.50
+TestInterfaceName_ProbeSkipPrecedesTheEphemeralFixture	0.00
+TestJoinNoContainer_AddressIsHeldUntilItExpires	26.95
+TestLeaseRenewIPv6_HonorsT1	73.85
+TestLeaseRenew_HonorsT1	27.38
+TestLeaseRetention_ARestartRebootsRatherThanDiscovers	12.92
+TestLeaseRetention_NothingEverReleases	35.23
+TestLifecycleBridge_GoldenPath	12.19
+TestLifecycleBridge_IPv6_GoldenPath	16.98
+TestLifecycleIPvlan_GoldenPath	11.80
+TestLifecycleMacvlan_GoldenPath	11.61
+TestLifecycleMacvlan_IPv6_GoldenPath	17.68
+TestMTUPropagate_DefaultIsUnchanged	12.15
+TestMTUPropagate_OptInSetsLinkMTU	11.79
+TestMetrics_SocketServesTheFullSurface	0.01
+TestMultiNetwork_SameSubnetRefused	27.75
+TestNonRootContainer_PersistentClientStarts	27.48
+TestParentGate_EndpointQueuesBehindAProbe	40.23
+TestPreflightProbe_FailsWhenServerUnreachable	8.15
+TestPreflightProbe_IPvlanProbeCoexistsWithIPvlanEndpoints	14.96
+TestPreflightProbe_PassesOnReachableServer	3.47
+TestPreflightProbe_RejectedInBridgeMode	0.01
+TestRecovery_DaemonKilled_LeaseIsHeldUntilItExpires	31.98
+TestRecovery_DaemonRestart_PreservesContainer	30.00
+TestRecovery_PluginDisableEnable_PreservesEndpoint	12.86
+TestSandboxKeyRoute_Bridge	11.89
+TestSandboxKeyRoute_Ipvlan	11.60
+TestSandboxKeyRoute_Macvlan	12.25
+TestSandboxKeyRoute_NonRootContainer	11.48
+TestSandboxNetnsIsVisibleToThePlugin	11.83
+TestServerPolicy_DenyBeatsPreferForTheSameServer	35.28
+TestServerPolicy_DenyExcludesTheNamedServer	70.00
+TestServerPolicy_ExhaustedFailsClosed	30.75
+TestServerPolicy_FallsBackToTheNextServer	20.39
+TestServerPolicy_PrefersTheNamedServer	69.34
+TestStateDirBindSource_MissingSourceContract	5.96
+TestStaticIP_DriverOpt	9.01
+TestStaticRoutes_BridgeCopiesToContainer	11.80
+TestStaticRoutes_MacvlanCopiesToContainer	12.23
+TestStaticRoutes_MacvlanSkipRoutesOpt	11.82
+TestTombstoneRestart_PreservesIPv6	27.17
+TestTombstoneRestart_PreservesMACAndIP	20.39
+TestV6Fixture_AssertExchangeRefusesASegmentNoClientEverUsed	2.34
+TestV6Fixture_AwaitRAAfterAndItsNegative	48.13
+TestV6Fixture_ModesComeUpAsRequested	17.89
+TestV6Fixture_RefusesASegmentInAnotherModesShape	65.36
+TestV6RACapture_SeesTheAdvertisementOnTheBridgeAndNotOnAQuietLink	1.46
+TestVendorClass_DefaultUsesUntaggedGateway	12.02
+TestVendorClass_NonMatchingValueUsesDefaultGateway	12.23
+TestVendorClass_OverrideRoutesViaTaggedGateway	12.30

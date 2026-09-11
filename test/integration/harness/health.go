@@ -112,42 +112,155 @@ func PluginHealth(ctx context.Context, cli *docker.Client) (*HealthResponse, err
 // It deliberately makes no claim about counters, and comparing two of
 // its results is not a measurement: use BeginCounterWindow for that.
 //
+// It is also the suite's ONE-READING reader, for the same reason: a
+// cell that reads a field of the document rather than a change in one
+// (the `endpoints` array, `status`, the build identity) has no window
+// to belong to, and taking a lone PluginHealth for it is what
+// counterwindow_guard_test.go refuses.
+//
 // It exists so a readiness poll is not written as a bare PluginHealth
 // loop, which is indistinguishable at a glance from an unguarded
 // measurement and is what the suite-source guard rejects (#405).
 func WaitPluginHealth(t *testing.T, ctx context.Context, cli *docker.Client, budget time.Duration) *HealthResponse {
 	t.Helper()
+	return WaitPluginHealthFor(t, ctx, cli, budget, "the plugin socket to answer", nil)
+}
+
+// WaitPluginHealthFor is WaitPluginHealth with a precondition on the
+// state the document describes: it polls until the socket answers AND
+// cond accepts, and fails naming what it was waiting for.
+//
+// WHY A ONE-READING CELL NEEDS ONE. A manager is registered in
+// persistentDHCP when the Join returns and its renewal client binds
+// after that, so there is a window in which `endpoints` truthfully
+// reports the container's entry as `acquiring` with no address. A cell
+// that reads the document once lands in it (measured in CI, run
+// 33938855928, on a container whose start had already returned).
+//
+// STILL NOT A MEASUREMENT, and two rules keep it from becoming the
+// unguarded before/after pair #405 found: cond sees ONE document, so
+// there is nothing to subtract; and cond must be written on a DIFFERENT
+// field from the ones the caller then asserts on. A cond that waits for
+// the answer the test wants makes the test a report that the answer was
+// eventually produced, which is the failure `--- FAIL` cannot show you.
+func WaitPluginHealthFor(t *testing.T, ctx context.Context, cli *docker.Client, budget time.Duration, what string, cond func(*HealthResponse) bool) *HealthResponse {
+	t.Helper()
 	deadline := time.Now().Add(budget)
 	var lastErr error
+	var last *HealthResponse
 	for time.Now().Before(deadline) {
 		h, err := PluginHealth(ctx, cli)
-		if err == nil {
-			return h
+		if err != nil {
+			lastErr = err
+		} else {
+			last = h
+			if cond == nil || cond(h) {
+				return h
+			}
 		}
-		lastErr = err
 		time.Sleep(200 * time.Millisecond)
 	}
-	t.Fatalf("plugin health never became reachable within %s; last error: %v", budget, lastErr)
+	if last == nil {
+		t.Fatalf("plugin health never became reachable within %s while waiting for %s; last error: %v",
+			budget, what, lastErr)
+	}
+	t.Fatalf("waited %s for %s and it never happened. The last document reported %d endpoint(s): %+v",
+		budget, what, len(last.Endpoints), last.Endpoints)
 	return nil
 }
 
-// ReadPluginLog returns the current contents of the plugin's
+// ReadWholePluginLog returns the current contents of the plugin's
 // /var/log/net-dhcp.log as a string, or an empty string with a t.Logf
-// note on error. Useful when a test wants to assert on a specific log
-// line emitted by the plugin during a bound/renew event (e.g. T2-2
-// surfaces NTP / TFTP / search-list values at info level there).
+// note on error.
 //
 // A thin t-flavoured wrapper over PluginLog: swallowing the error into
 // a log note is what a mid-test assertion helper wants, and is exactly
 // what the health floor must not do.
-func ReadPluginLog(t *testing.T, ctx context.Context) string {
+//
+// THE NAME IS THE POINT (#933). The plugin log spans the whole suite,
+// and on the arm64 lane the whole suite is one process with one plugin
+// install, so an assertion over this string is satisfied, or defeated,
+// by a line another test wrote ten minutes earlier. Almost every caller
+// wants MarkPluginLog plus ReadPluginLogSince instead. The one that
+// does not is docker_api_readonly_test.go's GET/HEAD claim, which is a
+// negative assertion about the whole run and would be weakened by a
+// window. A call site typing the old, shorter name no longer compiles,
+// which is the only observer the tree can carry: the population that
+// would otherwise catch the regression is one whole-suite run, and that
+// happens at rc tag time.
+func ReadWholePluginLog(t *testing.T, ctx context.Context) string {
 	t.Helper()
 	_, data, err := PluginLog(ctx)
 	if err != nil {
-		t.Logf("ReadPluginLog: %v", err)
+		t.Logf("ReadWholePluginLog: %v", err)
 		return ""
 	}
 	return string(data)
+}
+
+// MarkPluginLog returns the current size of the plugin log, to be
+// passed to ReadPluginLogSince so a test asserts only on what its own
+// run wrote.
+//
+// It FAILS the test when the log cannot be read, where ReadWholePluginLog
+// returns an empty string and a note. A mark that quietly defaults to
+// zero is a window over the whole log, which is the exact reading this
+// pair exists to remove, and it would be invisible in a green run.
+func MarkPluginLog(t *testing.T, ctx context.Context) int64 {
+	t.Helper()
+	path, data, err := PluginLog(ctx)
+	if err != nil {
+		t.Fatalf("marking the plugin log (%s): %v\n"+
+			"Without a mark the window is the whole log, and an assertion over the whole log "+
+			"is satisfied by another test's lines.", path, err)
+	}
+	return int64(len(data))
+}
+
+// ReadPluginLogSince returns the plugin log written after mark.
+//
+// An unreadable log yields an empty window, so the positive assertions
+// over it fail. A negative assertion passes on an empty window, which
+// is why a test that carries one carries a positive assertion beside
+// it.
+func ReadPluginLogSince(t *testing.T, ctx context.Context, mark int64) string {
+	t.Helper()
+	_, data, err := PluginLog(ctx)
+	if err != nil {
+		t.Logf("ReadPluginLogSince: %v", err)
+		return ""
+	}
+	return string(PluginLogWindow(data, mark))
+}
+
+// AwaitPluginLogSince polls the window until want says it holds what
+// the caller is about to assert on, and returns the last window read.
+//
+// A windowed read races the write. Mark, drive the plugin, read once,
+// and the assertion judges whatever had reached the file by then; the
+// line it is about can be milliseconds behind. Over the whole log that
+// race was invisible, because an earlier test's line answered in its
+// place, which is the substitution the window exists to remove (#933).
+// Removing it therefore means waiting for the line rather than
+// sampling for it.
+//
+// It never fails on its own. An incomplete window is returned with a
+// note, so the caller's own assertion writes the diagnosis.
+func AwaitPluginLogSince(t *testing.T, ctx context.Context, mark int64, budget time.Duration,
+	want func(window string) bool) string {
+	t.Helper()
+	deadline := time.Now().Add(budget)
+	for {
+		got := ReadPluginLogSince(t, ctx, mark)
+		if want(got) {
+			return got
+		}
+		if !time.Now().Before(deadline) {
+			t.Logf("the plugin log window was still incomplete after %s; asserting on what it holds", budget)
+			return got
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
 }
 
 // CountPluginLogLines returns how many lines of the plugin log contain
@@ -169,7 +282,7 @@ func CountPluginLogLines(t *testing.T, ctx context.Context, subs ...string) int 
 		return 0
 	}
 	n := 0
-	for _, line := range strings.Split(ReadPluginLog(t, ctx), "\n") {
+	for _, line := range strings.Split(ReadWholePluginLog(t, ctx), "\n") {
 		matched := true
 		for _, sub := range subs {
 			if !strings.Contains(line, sub) {
@@ -262,21 +375,6 @@ func PluginLogSize(ctx context.Context) int64 {
 		return 0
 	}
 	return int64(len(data))
-}
-
-// LogSince returns the portion of data after off, for scoping a census
-// to one test process.
-//
-// An offset past the end means the log was TRUNCATED or replaced since
-// the baseline — a plugin reinstall, or a rotation. Falling back to the
-// whole log is deliberate: the alternative is judging nothing, and a
-// census that silently judges nothing is the failure mode this whole
-// mechanism exists to prevent.
-func LogSince(data []byte, off int64) []byte {
-	if off <= 0 || off > int64(len(data)) {
-		return data
-	}
-	return data[off:]
 }
 
 // WaitPluginEnabled polls PluginInspect until p.Enabled matches want

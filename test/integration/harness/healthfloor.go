@@ -22,10 +22,85 @@ import (
 	"sync"
 )
 
+// HealthCheck mirrors pkg/plugin.HealthCheck: one element of the
+// health document's `checks` object. camelCase field names are the
+// draft's, not this repo's, and a cell that renamed them would be
+// reading a different document.
+type HealthCheck struct {
+	Status        string `json:"status"`
+	ObservedValue int64  `json:"observedValue"`
+	ObservedUnit  string `json:"observedUnit"`
+	Time          string `json:"time"`
+	Output        string `json:"output,omitempty"`
+}
+
+// EndpointHealth mirrors pkg/plugin.EndpointHealth: one entry of the
+// health document's `endpoints` array.
+type EndpointHealth struct {
+	Endpoint      string `json:"endpoint"`
+	Network       string `json:"network"`
+	Mode          string `json:"mode"`
+	Address       string `json:"address,omitempty"`
+	LeaseState    string `json:"lease_state"`
+	RenewAt       string `json:"renew_at,omitempty"`
+	RebindAt      string `json:"rebind_at,omitempty"`
+	ExpiresAt     string `json:"expires_at,omitempty"`
+	Server        string `json:"server,omitempty"`
+	LastEvent     string `json:"last_event,omitempty"`
+	LastEventAt   string `json:"last_event_at,omitempty"`
+	ConflictCheck string `json:"conflict_check"`
+	ACDPhase      string `json:"acd_phase"`
+}
+
+// HealthFieldSeries names the exposition series for the health fields
+// whose series is not net_dhcp_<tag> or net_dhcp_<tag>_total.
+var HealthFieldSeries = map[string]string{
+	"status": "health_status",
+}
+
+// HealthFieldsInBuildInfo are the fields carried as LABELS on
+// net_dhcp_build_info instead of as series of their own, and
+// HealthFieldsNotExposed the ones deliberately absent from /metrics,
+// with the reason.
+//
+// MIRRORS pkg/plugin's metricLabelOnlyFields and metricNotExposedFields
+// for the reason HealthResponse mirrors HealthResponse: this suite asks
+// what the INSTALLED plugin serves, and an oracle imported from the
+// plugin would answer out of the plugin's own declaration. Drift is
+// loud in both directions -- TestMetrics_SocketServesTheFullSurface
+// reports a field it can find no series for, and reports a label it was
+// told to expect and did not find on the line.
+var HealthFieldsInBuildInfo = []string{"instance_id", "version", "commit", "library"}
+
+var HealthFieldsNotExposed = map[string]string{
+	"checks":    "each check's observedValue is the counter's own series, already exposed",
+	"endpoints": "a series per container is a cardinality decision O-5 takes, not this one",
+}
+
 // HealthResponse mirrors pkg/plugin.HealthResponse. Duplicated here
 // so the integration package doesn't pull on pkg/plugin internals.
 type HealthResponse struct {
 	Healthy bool `json:"healthy"`
+	// Status is draft-inadarei-api-health-check-06's pass/warn/fail
+	// (2.0-alpha.1). A pointer: an older plugin publishes none, and
+	// reading its absence as "pass" is the failure this field exists
+	// to make visible. Healthy stays the latched flag it always was;
+	// Status is never allowed to disagree with it, which is what
+	// TestHealth_StatusAgreesWithHealthy drives per counter.
+	Status *string `json:"status"`
+	// Checks is the same document's named checks, one array per
+	// counter that backs one. Nil on a plugin that publishes none.
+	Checks map[string][]HealthCheck `json:"checks"`
+	// Endpoints is one entry per registered manager (O-3), bounded by
+	// ActiveEndpoints.
+	Endpoints []EndpointHealth `json:"endpoints"`
+	// Version / Commit / Library identify the binary that served this
+	// response (O-4). Pointers, because "" and "not published" are the
+	// two answers a cell has to tell apart -- an empty label is the
+	// failure that looks like nothing.
+	Version *string `json:"version"`
+	Commit  *string `json:"commit"`
+	Library *string `json:"library"`
 	// InstanceID identifies the plugin process that served this
 	// response. Two reads are comparable as a delta only when their
 	// InstanceID matches — see counterwindow.go and #405.
@@ -34,7 +109,13 @@ type HealthResponse struct {
 	ActiveEndpoints int     `json:"active_endpoints"`
 	PendingHints    int     `json:"pending_hints"`
 	RecoveredOK     int32   `json:"recovered_ok"`
-	RecoveryFailed  int32   `json:"recovery_failed"`
+	// DisplacedStops counts managers a Join stopped because it found
+	// one already registered for the endpoint (#338). It is the
+	// plugin's own opinion that it ASKED a client to stop; what proves
+	// the client went is the AF_PACKET socket table in the container's
+	// namespace. See PacketSocket.
+	DisplacedStops int32 `json:"displaced_stops"`
+	RecoveryFailed int32 `json:"recovery_failed"`
 	// RecoveryFailed has four benign twins, at the four points recovery
 	// can stop early for a reason that is not a plugin fault. None is
 	// healthy-affecting.
@@ -96,28 +177,83 @@ type HealthResponse struct {
 	// WHICH path ran instead of only that the address survived (#386).
 	TombstonesConsumed int32 `json:"tombstones_consumed"`
 	// AddressConflicts is healthy-affecting (#524) and so appears in
-	// floorCounters below. ConflictProbeFailures is not, but is mirrored
-	// here so a run can say whether the detector actually ran — a probe
-	// that never happened reads exactly like a clean segment.
-	AddressConflicts      int32 `json:"address_conflicts"`
-	ConflictProbeFailures int32 `json:"conflict_probe_failures"`
-	// ConflictProbeStaleRoutes counts leftover probe routes reclaimed
-	// from a probe cut short before it could clean up (#572).
-	ConflictProbeStaleRoutes int32 `json:"conflict_probe_stale_routes"`
-	// AddressConflictProbes is what makes address_conflicts=0 mean
-	// anything: zero probes and a clean segment read identically
-	// otherwise.
-	AddressConflictProbes int32 `json:"address_conflict_probes"`
+	// floorCounters below. The ACD rows under it are not, but are
+	// mirrored here so a run can say whether the check actually ran —
+	// a check that never ran reads exactly like a clean segment.
+	AddressConflicts int32 `json:"address_conflicts"`
+	// AddressConflictsV4 and AddressConflictsV6 are its two halves, and
+	// they are two different protocols rather than two views of one.
+	// The v4 half is RFC 5227 ARP and is the ONLY half the ACD rows
+	// below cover; the v6 half is the kernel's Duplicate Address
+	// Detection (RFC 4862 section 5.4), declined under RFC 9915 section
+	// 18.2.8, which sends no ARP and moves no ACD counter. A suite that
+	// compares acd_conflicts_detected against the aggregate reports a
+	// seam defect for every DHCPv6 conflict.
+	AddressConflictsV4 int32 `json:"address_conflicts_v4"`
+	AddressConflictsV6 int32 `json:"address_conflicts_v6"`
+	// ACDProbesSent is what makes address_conflicts=0 mean anything:
+	// zero probes and a clean segment read identically otherwise. It is
+	// RFC 5227 section 2.1.1's ARP Probes, counted by the library.
+	ACDProbesSent int32 `json:"acd_probes_sent"`
+	// ACDAnnouncementsSent is section 2.3's, two per address that
+	// passed. Probes climbing with no announcements means addresses are
+	// being checked and none comes back clean.
+	ACDAnnouncementsSent int32 `json:"acd_announcements_sent"`
+	// ACDConflictsDetected is the library's own count of the same
+	// population as AddressConflicts, taken inside the state machine
+	// rather than from the events it emitted. The two are expected to
+	// agree; a difference is a defect in the plugin's event handling.
+	ACDConflictsDetected int32 `json:"acd_conflicts_detected"`
+	// ACDARPSendFailures counts probes and announcements the socket
+	// refused. A probe that never went out proves nothing about the
+	// address: this is the question that was not asked.
+	ACDARPSendFailures int32 `json:"acd_arp_send_failures"`
+	// ACDResumedUnchecked counts endpoints resumed from a record whose
+	// RFC 5227 check had not finished when the plugin last stopped
+	// (D23's operator half). Not healthy-affecting -- it is a `warn`
+	// check, and the address is re-checked on the INIT-REBOOT
+	// acknowledgement.
+	ACDResumedUnchecked int32 `json:"acd_resumed_unchecked"`
 	// SandboxNetnsVisible is how many sandbox netns entries the plugin
 	// can see, or -1 if it cannot read the directory (#567). Sampled per
 	// request, not accumulated. A pointer so an older plugin that does
 	// not publish it is distinguishable from one reporting -1 — absent
 	// data is not a value.
 	SandboxNetnsVisible *int32 `json:"sandbox_netns_visible"`
-	LeaseChanged        int32  `json:"lease_changed"`
-	LeasesObtained      int32  `json:"leases_obtained"`
-	LeasesRenewed       int32  `json:"leases_renewed"`
-	DHCPTimeouts        int32  `json:"dhcp_timeouts"`
+	// SandboxKeyEntries / SandboxKeyEntryFailures / SandboxPIDFallbacks
+	// say which route the plugin took into each container's network
+	// namespace. Pointers, all three: a plugin that does not publish
+	// them is not a plugin reporting zero, and reading an absence as
+	// "no fallbacks" is exactly the claim these exist to support.
+	SandboxKeyEntries       *int32 `json:"sandbox_key_entries"`
+	SandboxKeyEntryFailures *int32 `json:"sandbox_key_entry_failures"`
+	SandboxPIDFallbacks     *int32 `json:"sandbox_pid_fallbacks"`
+	// The five arms SandboxKeyEntryFailures folds together. They are
+	// what lets a cell assert WHICH refusal happened rather than only
+	// that one did: an unpropagated bind mount (NotANamespace, the
+	// expected arm on a stock engine) and a daemon publishing keys
+	// under a non-default --exec-root (NotPermitted) produce identical
+	// aggregate counts and want opposite remedies. Pointers for the
+	// same reason as the three above.
+	// SandboxKeyAbsent is the fifth arm (2.0-alpha.1): no key was
+	// published for the endpoint at all, by either source.
+	SandboxKeyAbsent        *int32 `json:"sandbox_key_absent"`
+	SandboxKeyNotPermitted  *int32 `json:"sandbox_key_not_permitted"`
+	SandboxKeyNotANamespace *int32 `json:"sandbox_key_not_a_namespace"`
+	SandboxKeyWrongNSType   *int32 `json:"sandbox_key_wrong_ns_type"`
+	SandboxKeyUnavailable   *int32 `json:"sandbox_key_unavailable"`
+	// DockerAPINonGETRefusals counts requests to the Docker API the
+	// plugin refused to send because their method was not safe (#691).
+	DockerAPINonGETRefusals *int32 `json:"docker_api_non_get_refusals"`
+	LeaseChanged            int32  `json:"lease_changed"`
+	LeasesObtained          int32  `json:"leases_obtained"`
+	// LeasesObtainedV4 is the half of LeasesObtained that RFC 5227's
+	// check can cover. LeasesObtained is the SUM of the two families
+	// (pkg/plugin/endpoints.go), and ARP is IPv4's; the ACD census
+	// judges against this one, not the sum (#881).
+	LeasesObtainedV4 int32 `json:"leases_obtained_v4"`
+	LeasesRenewed    int32 `json:"leases_renewed"`
+	DHCPTimeouts     int32 `json:"dhcp_timeouts"`
 	// ClientStopFailures was lease_release_failures until #800. A
 	// renewal client that did not shut down cleanly when signalled — it
 	// says nothing about the lease, which is held to expiry either way
@@ -125,24 +261,13 @@ type HealthResponse struct {
 	ClientStopFailures  int32 `json:"client_stop_failures"`
 	NAKsReceived        int32 `json:"naks_received"`
 	LedgerWriteFailures int32 `json:"ledger_write_failures"`
-	// DirectivesRefused / MountPrepFailures are the two places the DHCP
-	// client package declines to do what it was asked and carries on
-	// anyway (#780): a dhcpcd directive dropped for a control character
-	// in its value, and a per-client mount-namespace preparation command
-	// that failed. Neither is healthy-affecting — both describe an input
-	// that did not take effect, not a container without a renewal
-	// client. MountPrepFailures counts COMMANDS, not clients.
-	DirectivesRefused int32 `json:"directives_refused"`
-	MountPrepFailures int32 `json:"mount_prep_failures"`
-	// RouterAdvertGuardFailures counts steps of a DHCPv6 client's
-	// Router-Advertisement guard that failed (#875): the guard puts the
-	// container's kernel in charge of router discovery and prefix
-	// processing and stops dhcpcd turning that off again. Not
-	// healthy-affecting, and it counts STEPS, not clients. A suite that
-	// reads it non-zero is looking at a container whose IPv6 default
-	// route will stop being refreshed, which the plugin's own view
-	// cannot distinguish from a quiet segment.
-	RouterAdvertGuardFailures int32 `json:"router_advert_guard_failures"`
+	// StateFileChmodFailures counts files the startup sweep could not
+	// tighten under STATE_DIR, plus one for a STATE_DIR that could not
+	// be read at all (#804). Not healthy-affecting and
+	// deliberately not in the floor table: a loose mode on a state file
+	// degrades nothing the plugin does, and the writer is root either
+	// way.
+	StateFileChmodFailures int32 `json:"state_file_chmod_failures"`
 	// ParentLinkWaits / ParentLinkWaitTimeouts cover contention on a
 	// shared parent NIC, where a macvlan and an ipvlan child cannot
 	// coexist (#486/#549). Waits means an operation queued and got
@@ -182,6 +307,24 @@ type HealthResponse struct {
 	DHCPv6NotOffered       int32 `json:"dhcpv6_not_offered"`
 	DHCPv6NoRouterAdvert   int32 `json:"dhcpv6_no_router_advert"`
 	IPv6LinkEnableFailures int32 `json:"ipv6_link_enable_failures"`
+
+	// RouterAdvertGuardFailures counts steps of the DHCPv6 Router
+	// Advertisement guard that did not take (#911). DHCPv6 carries no
+	// next hop -- RFC 9915 section 21 defines no router option -- and
+	// RFC 5942 section 4 rule 1 forbids treating the assigned address's
+	// prefix as on-link, so the container's kernel has to be processing
+	// advertisements or the endpoint ends up with an address and no
+	// route.
+	//
+	// NOT healthy-affecting and NOT in the floor table, for the reason
+	// the ipv6_link_enable_failures row above is not: a kernel built
+	// without one of the knobs, or a /proc/sys the plugin cannot write
+	// in, is the operator's environment rather than the plugin
+	// misbehaving -- and it is not a reason to refuse the container an
+	// address. It is here so a test that has PROVEN the knobs hold from
+	// inside the container can then read the guard's own account of
+	// itself; a zero on its own means "held" and "never ran" equally.
+	RouterAdvertGuardFailures int32 `json:"router_advert_guard_failures"`
 
 	// published is the key set of the payload this value was decoded
 	// from. It exists because an absent JSON field decodes to zero,
@@ -618,40 +761,40 @@ func AttachGraceLine(h *HealthResponse, joinFailures int) string {
 	}
 }
 
-// ConflictProbeLine reports whether the address-conflict detector
-// actually ran, which address_conflicts alone cannot say. Zero
-// conflicts and zero probes are the same reading, and "nothing checked"
-// is exactly what #524 looked like in production for months — green
-// health, every counter at zero, a container on somebody else's
-// address.
+// ACDCensusLine reports whether the address-conflict check actually
+// ran, which address_conflicts alone cannot say. Zero conflicts and
+// zero probes are the same reading, and "nothing checked" is exactly
+// what #524 looked like in production for months — green health, every
+// counter at zero, a container on somebody else's address.
 //
 // Same shape as AttachGraceLine above, for the same reason: a zero that
 // could mean either "the mechanism worked" or "the condition never
 // arose" is not evidence until something distinguishes them.
-func ConflictProbeLine(h *HealthResponse) string {
+func ACDCensusLine(h *HealthResponse) string {
 	if h == nil {
 		return ""
 	}
 	switch {
 	case h.AddressConflicts > 0:
 		return fmt.Sprintf(
-			"CONFLICT PROBE: %d leased address(es) were already held by another device on the\n"+
-				"  segment, out of %d probe(s). The floor fails on this — see above (#524).\n",
-			h.AddressConflicts, h.AddressConflictProbes)
-	case h.AddressConflictProbes == 0:
-		return "CONFLICT PROBE: no probe reached a verdict this run, so address_conflicts=0 is not\n" +
+			"ACD CENSUS: %d leased address(es) were already held by another device on the\n"+
+				"  segment, out of %d ARP Probe(s) sent. The floor fails on this — see above (#524).\n",
+			h.AddressConflicts, h.ACDProbesSent)
+	case h.ACDProbesSent == 0:
+		return "ACD CENSUS: no ARP Probe was sent this run, so address_conflicts=0 is not\n" +
 			"  evidence the segment was clean — it is the absence of a measurement. Either no\n" +
-			"  endpoint was leased a v4 address, or the detector did not run (#524).\n"
-	case h.ConflictProbeFailures > 0:
+			"  endpoint was leased a v4 address, every network ran conflict_check=off, or the\n" +
+			"  check did not run (#524).\n"
+	case h.ACDARPSendFailures > 0:
 		return fmt.Sprintf(
-			"CONFLICT PROBE: %d probe(s) reached a verdict and found no conflict, but %d could not\n"+
-				"  run at all. The clean verdict covers only the endpoints that were checked (#524).\n",
-			h.AddressConflictProbes, h.ConflictProbeFailures)
+			"ACD CENSUS: %d ARP Probe(s)/Announcement(s) went out and found no conflict, but %d\n"+
+				"  send(s) were refused. The clean verdict covers only what was actually asked (#524).\n",
+			h.ACDProbesSent, h.ACDARPSendFailures)
 	default:
 		return fmt.Sprintf(
-			"CONFLICT PROBE: %d probe(s) reached a verdict, none found a conflict, none failed.\n"+
-				"  The detector ran and the segment was clean — observed, not inferred (#524).\n",
-			h.AddressConflictProbes)
+			"ACD CENSUS: %d ARP Probe(s) sent and %d Announcement(s); no conflict, no refused\n"+
+				"  send. The check ran and the segment was clean — observed, not inferred (#524).\n",
+			h.ACDProbesSent, h.ACDAnnouncementsSent)
 	}
 }
 
@@ -849,79 +992,193 @@ func sortedKeys(m map[string]int) []string {
 	return out
 }
 
-// ---- the conflict-probe census gate (#551) --------------------------
+// ---- the ACD census gate (#551) -------------------------------------
 //
-// ConflictProbeLine above already distinguishes the three states that
-// matter. Nothing acted on the third. From #527 merging until #550,
-// every single run printed
+// ACDCensusLine above already distinguishes the states that matter.
+// Nothing acted on the third. From #527 merging until #550, every
+// single run printed
 //
 //	CONFLICT PROBE: 1 probe(s) reached a verdict and found no conflict,
 //	  but 2 could not run at all.
 //
 // because the macvlan/ipvlan fixture's parent carried no on-subnet
-// address, so the detector could not run on two of the three attachment
-// modes. The line said so on every run and the suite went green
-// throughout. That is the failure the detector itself exists to prevent,
-// one level up: "nothing checked" and "nothing found" must not read the
-// same. The instrument was right; there was no gate behind it.
+// address, so the chassis's own datagram probe could not run on two of
+// the three attachment modes. The line said so on every run and the
+// suite went green throughout. That is the failure the detector itself
+// exists to prevent, one level up: "nothing checked" and "nothing
+// found" must not read the same. The instrument was right; there was no
+// gate behind it.
+//
+// The mechanism underneath has since changed completely — the datagram
+// probe is gone and the DHCP library runs RFC 5227 on a raw ARP socket
+// — so the counters this reads are new. The property is not: it is
+// still the case that a green run with address_conflicts=0 says nothing
+// until something else says the check ran.
 //
 // WHY THE OBVIOUS GATE IS THE WRONG ONE. "Endpoints were created and no
-// probe reached a verdict" sounds like the property, and it never fires
-// on the case above — one probe DID reach a verdict there. The blindness
-// was in the two that could not run, so the failures are what must be
-// judged, against what the suite legitimately expects.
+// probe ran" sounds like the property, and it never fired on the case
+// above — one probe DID reach a verdict there. The blindness was in the
+// two that could not run, so the refusals are what must be judged,
+// against what the suite legitimately expects.
 //
-// Two things would otherwise make this fail for reasons unrelated to the
-// property:
+// Three things would otherwise make this fail for reasons unrelated to
+// the property:
 //
-//  1. TestAddressConflict_BareParentIsUndetermined (#541) drives the
-//     degraded path ON PURPOSE and increments conflict_probe_failures.
-//     Failing on failures > 0 would break a correct test, so a test that
-//     means to degrade a probe declares it with AllowConflictProbeFailures
-//     and the gate judges the excess.
+//  1. A test that degrades the ARP socket on purpose. Failing on
+//     acd_arp_send_failures > 0 would break a correct test, so such a
+//     test declares it with AllowARPSendFailures and the gate judges
+//     the excess.
 //  2. The floor runs per shard, and a shard whose tests lease no v4
 //     address legitimately reaches zero probes. Failing on
-//     address_conflict_probes == 0 alone would make the verdict depend on
-//     how the partitioner happened to balance that run — a gate whose
+//     acd_probes_sent == 0 alone would make the verdict depend on how
+//     the partitioner happened to balance that run — a gate whose
 //     result depends on shard assignment is worse than no gate.
+//  3. NEW SINCE THE PROBE WAS REPLACED, and the reason the old comment
+//     here is no longer true. The check is now OPT-OUT per network:
+//     conflict_check=off runs no probe at all, by the operator's
+//     instruction. The old premise — "the post-lease conflict probe is
+//     NOT opt-in, checkAddressConflict runs for every endpoint that
+//     received a v4 address" — was load-bearing for case 2's gate and
+//     is now false. A shard that leases addresses on conflict_check=off
+//     networks reaches zero probes legitimately, so those leases are
+//     declared with AllowUnprobedLeases and subtracted before the gate
+//     asks its question. Without that subtraction this gate would fail
+//     every run containing the off-mode test, and the fix reached for
+//     under time pressure would be to delete the gate.
 //
-// The premise that makes "leases but no probes" sound: the post-lease
-// conflict probe is NOT opt-in. checkAddressConflict runs for every
-// endpoint that received a v4 address, on both the bridge and the
-// parent-attached paths. (The opt-in validate_dhcp preflight is a
-// different probe entirely and does not touch these counters.) And
-// leases_obtained is v4-only — v6 has its own counter — so a v6-only
-// shard cannot trip this.
+//  4. NEW SINCE THE v6 COUNTERS SPLIT THE ATOM, and the reason this
+//     gate failed on a coin toss (#881). The premise that used to end
+//     this block — "leases_obtained is v4-only, so a v6-only shard
+//     cannot trip this" — was true when it was written and is false
+//     now: leases_obtained is published as the SUM of
+//     leases_obtained_v4 and leases_obtained_v6
+//     (pkg/plugin/endpoints.go). RFC 5227's check is ARP, so no v6
+//     lease can ever produce a probe, and a shard whose v4 leases were
+//     all declared while a v6 lease landed reads probes=0 against a
+//     non-empty domain. That is the two-populations defect: the domain
+//     operand admitted addresses the probe does not cover. The gate
+//     therefore reads leases_obtained_v4, which is the population the
+//     probe covers, and refuses when the plugin does not publish it.
+//
+// The v6 half is not left unwatched by this change: a DHCPv6 conflict
+// moves address_conflicts_v6 and writes its own log line, and the
+// conflict row below judges both families together.
 
-// conflictAllowance accumulates the probe failures this shard EXPECTS,
-// declared by the tests that cause them deliberately.
+// acdAllowance accumulates what this shard EXPECTS, declared by the
+// tests that cause it deliberately.
 //
 // Package-level and mutex-guarded rather than plumbed through: the floor
 // runs in TestMain after every test has finished, so there is no value
 // to thread and no ordering to get wrong. A test declares its intent
-// where it degrades the probe, which is the only place that knows.
-var conflictAllowance struct {
-	mu sync.Mutex
-	n  int32
+// where it causes the condition, which is the only place that knows.
+var acdAllowance struct {
+	mu        sync.Mutex
+	sendFail  int32
+	unprobed  int32
+	conflicts int32
 }
 
-// AllowConflictProbeFailures declares that n conflict-probe failures are
-// expected in this shard, because a test degrades a probe on purpose.
+// AllowARPSendFailures declares that n refused ARP sends are expected in
+// this shard, because a test degrades the socket on purpose.
 //
 // Call it from the test that does the degrading, next to the degrading,
 // so the declaration cannot drift away from its reason. Anything beyond
 // the declared count fails the run.
-func AllowConflictProbeFailures(n int32) {
-	conflictAllowance.mu.Lock()
-	defer conflictAllowance.mu.Unlock()
-	conflictAllowance.n += n
+func AllowARPSendFailures(n int32) {
+	acdAllowance.mu.Lock()
+	defer acdAllowance.mu.Unlock()
+	acdAllowance.sendFail += n
 }
 
-// AllowedConflictProbeFailures reports the total declared so far.
-func AllowedConflictProbeFailures() int32 {
-	conflictAllowance.mu.Lock()
-	defer conflictAllowance.mu.Unlock()
-	return conflictAllowance.n
+// AllowedARPSendFailures reports the total declared so far.
+func AllowedARPSendFailures() int32 {
+	acdAllowance.mu.Lock()
+	defer acdAllowance.mu.Unlock()
+	return acdAllowance.sendFail
+}
+
+// AllowUnprobedLeases declares that n v4 leases in this shard were taken
+// on networks running conflict_check=off, so no ARP Probe was ever going
+// to be sent for them.
+//
+// This is the declaration that keeps the zero-probes gate alive after
+// the check became per-network. Call it in the test that creates the
+// off-mode network, once per lease it expects to take there. Declaring
+// MORE than the shard actually takes weakens the gate silently, so
+// declare the leases, not the containers.
+func AllowUnprobedLeases(n int32) {
+	acdAllowance.mu.Lock()
+	defer acdAllowance.mu.Unlock()
+	acdAllowance.unprobed += n
+}
+
+// AllowedUnprobedLeases reports the total declared so far.
+func AllowedUnprobedLeases() int32 {
+	acdAllowance.mu.Lock()
+	defer acdAllowance.mu.Unlock()
+	return acdAllowance.unprobed
+}
+
+// AllowStagedConflicts declares that n address conflicts in this shard
+// were STAGED by a test, with a squatter it put on the segment itself.
+//
+// It does NOT excuse the conflict. It excuses one thing only: the
+// counter under-reporting a conflict the log recorded, which is what
+// happens when the plugin is recycled later in the shard — the log file
+// outlives the process, the counter does not. That is an outcome the
+// conflict row's own comment already named as one of its two causes,
+// and before conflict_check existed no test ever produced the first
+// one, so the row had never had to tell them apart.
+//
+// The row still fails on anything BEYOND the declared count, which is
+// the case it exists for: a conflict the suite did not stage, with a
+// counter that stayed at zero, is the seam dropping an event —
+// address_conflicts reporting itself as zero, #524's own failure.
+//
+// Declare it in the test that puts the squatter there, once per
+// conflict it expects to cause, so the declaration cannot drift from
+// its reason. Declaring more than the shard causes weakens the row
+// silently.
+//
+// # THE BOUNDARY THIS BUYS, stated rather than left to be discovered
+//
+// The two causes are indistinguishable at the row's inputs. "The
+// counter lost a staged conflict to a plugin restart" and "the seam
+// dropped that conflict on its way to the counter" both arrive here as
+// log=n, counter<n, and the subtraction excuses n of them. So inside a
+// shard that declares n, the floor does NOT hold "a conflict the plugin
+// failed to count is caught" for the first n conflicts. MEASURED
+// (review r1, finding 3): declared=1, log=1, counter=0 yields zero
+// fatal findings. Beyond n it holds exactly as before, and in a shard
+// that declares nothing it holds from the first conflict — both pinned
+// in conflictcensus_test.go.
+//
+// What holds the property inside the declaration is the conflict cases
+// themselves, which is the right place for it: each one takes a counter
+// window across its own squatter and asserts address_conflicts moved
+// (conflict_check_test.go, TestConflictCheck_SquattedOfferIsDeclined and
+// TestConflictCheck_SquatterAfterTheFact), so a seam that drops the
+// event fails the test that staged it rather than the run that followed
+// it. The unit half is pkg/dhcp's conflict() Kind guard, whose mutant —
+// counting Failed{ReasonConflict} and not Lost{ReasonConflict} — is
+// killed by the unit suite.
+//
+// The floor is deliberately not widened to close this. Narrowing the
+// allowance to "only if the plugin restarted" would need the floor to
+// know about restarts it cannot see, and widening the row to fire
+// inside the declaration reddens correct builds — which is the failure
+// the allowance was added for, MEASURED on the 2.x lane 2026-09-04.
+func AllowStagedConflicts(n int32) {
+	acdAllowance.mu.Lock()
+	defer acdAllowance.mu.Unlock()
+	acdAllowance.conflicts += n
+}
+
+// AllowedStagedConflicts reports the total declared so far.
+func AllowedStagedConflicts() int32 {
+	acdAllowance.mu.Lock()
+	defer acdAllowance.mu.Unlock()
+	return acdAllowance.conflicts
 }
 
 // base returns a usable baseline, so callers with none (a hand-built
@@ -953,38 +1210,57 @@ func deltaSincePluginStart(now, was int32) int32 {
 	return now - was
 }
 
-// ConflictCensusFindings judges whether the conflict-probe census is
-// evidence or an alibi, given how many failures the shard declared.
-//
-// Returns nil when there is nothing to say — including the honest
-// nothing of a shard that leased no v4 address.
-// conflictProbeFailureMsgs is every log line the plugin writes at a
-// conflict_probe_failures increment (pkg/plugin/conflict_probe.go).
-// Listed rather than pattern-matched so that adding a fourth failure
-// path without adding it here is the only way to under-count, and so a
-// reader can check the list against the source by eye.
-var conflictProbeFailureMsgs = []string{
-	"[conflict-probe] address-conflict probe could not run",
-	"[conflict-probe] cannot parse leased address; address conflict not checked",
-	"[conflict-probe] cannot parse endpoint MAC; address conflict not checked",
+// The two log lines the plugin writes at an address_conflicts increment
+// (pkg/plugin/conflict.go). COPIED, not imported, for the same reason
+// the rest of this harness never imports pkg/…: the suite runs against
+// an INSTALLED plugin, which may be a different build from this tree, so
+// a compile-time constant would be a claim about the source rather than
+// about the process under test. TestConflictMsgsMatchTheSource reads the
+// plugin source and fails when these copies drift, which is the half a
+// literal cannot give itself.
+const (
+	conflictProbeMsg = "The address this endpoint was offered is already in use on the segment"
+	conflictHeldMsg  = "The address this endpoint HOLDS was found in use by another device on the segment"
+	// The DHCPv6 pair. A conflict found by Duplicate Address Detection
+	// writes one of these instead, and a census that listed only the
+	// two above counted every v6 squat as zero.
+	conflictProbeMsg6 = "The IPv6 address this endpoint was offered is already in use on the link"
+	conflictHeldMsg6  = "The IPv6 address this endpoint HOLDS was found in use by another node on the link"
+)
+
+// conflictMsgs is every one of them. Listed rather than pattern-matched
+// so that adding a third path without adding it here is the only way to
+// under-count, and so a reader can check the list against the source by
+// eye.
+var conflictMsgs = []string{
+	conflictHeldMsg,
+	conflictProbeMsg,
+	conflictHeldMsg6,
+	conflictProbeMsg6,
 }
 
-// ConflictProbeFailuresInLog counts probe failures across the WHOLE run.
+// ConflictsInLog counts conflicts across the WHOLE run.
 //
 // This exists because the counters do not. The plugin's counters live in
 // its process, the main suite recycles that process, and the floor's own
 // output says so: "the plugin restarted mid-suite and its counters reset
 // with it ... this verdict says nothing about the earlier 209s". A
-// counter-only census would therefore read clean for every probe that
-// failed before the last restart — the same shape as #385, which is why
-// the Join half already counts log lines instead.
-func ConflictProbeFailuresInLog(logData []byte) int {
+// counter-only census would therefore miss every conflict that happened
+// before the last restart — the same shape as #385, which is why the
+// Join half already counts log lines instead.
+//
+// It replaces ConflictProbeFailuresInLog, whose three log lines belonged
+// to the deleted datagram probe. The counter it backstops has changed
+// with it: the old one watched the probe's failures, this one watches
+// the conflicts themselves, which is the healthy-affecting row and the
+// one an operator acts on.
+func ConflictsInLog(logData []byte) int {
 	if len(logData) == 0 {
 		return 0
 	}
 	n := 0
 	for _, l := range strings.Split(string(logData), "\n") {
-		for _, msg := range conflictProbeFailureMsgs {
+		for _, msg := range conflictMsgs {
 			if strings.Contains(l, msg) {
 				n++
 				break
@@ -994,11 +1270,19 @@ func ConflictProbeFailuresInLog(logData []byte) int {
 	return n
 }
 
-// ConflictCensusFindings judges the census. observedInLog is the count
-// from ConflictProbeFailuresInLog; the larger of it and the counter wins,
-// because the counter can only ever under-report after a restart and the
-// log can only under-report if a line was lost.
-func ConflictCensusFindings(h *HealthResponse, allowed int32, observedInLog int, baseline *HealthResponse) []FloorFinding {
+// ACDCensusFindings judges whether the census is evidence or an alibi,
+// given what the shard declared.
+//
+// conflictsInLog is the count from ConflictsInLog; for the conflict row
+// the larger of it and the counter wins, because the counter can only
+// ever under-report after a restart and the log can only under-report if
+// a line was lost. allowedConflicts is how many of those the shard
+// STAGED and declared -- see AllowStagedConflicts for why that is a
+// subtraction and not an exemption.
+//
+// Returns nil when there is nothing to say — including the honest
+// nothing of a shard that leased no v4 address.
+func ACDCensusFindings(h *HealthResponse, allowedSendFailures, allowedUnprobed, allowedConflicts int32, conflictsInLog int, baseline *HealthResponse) []FloorFinding {
 	if h == nil {
 		return nil
 	}
@@ -1007,14 +1291,20 @@ func ConflictCensusFindings(h *HealthResponse, allowed int32, observedInLog int,
 	// point — silently treating <not reported> as 0 would rebuild the
 	// blindness this closes.
 	if h.published != nil {
-		for _, k := range []string{"address_conflict_probes", "conflict_probe_failures"} {
+		// leases_obtained_v4 is here for the same reason as the two
+		// ACD counters and not as a formality: it is the gate's DOMAIN
+		// operand, so a plugin that does not publish it would empty the
+		// domain and the gate would pass over every run in silence —
+		// the same defeat as reading a probe count of <absent> as zero
+		// (#881).
+		for _, k := range []string{"acd_probes_sent", "acd_arp_send_failures", "leases_obtained_v4"} {
 			if _, ok := h.published[k]; !ok {
 				return []FloorFinding{{
 					Counter: k,
 					Absent:  true,
 					Fatal:   true,
-					Why: "the plugin did not publish this, so whether the address-conflict " +
-						"detector ran cannot be established. address_conflicts=0 is not evidence " +
+					Why: "the plugin did not publish this, so whether RFC 5227's check " +
+						"ran cannot be established. address_conflicts=0 is not evidence " +
 						"without it (#551).",
 				}}
 			}
@@ -1036,43 +1326,93 @@ func ConflictCensusFindings(h *HealthResponse, allowed int32, observedInLog int,
 	// failure that happened before this process started would be
 	// attributed to it, and a real one that happened after a restart
 	// could be masked by subtracting.
-	probeFailures := deltaSincePluginStart(h.ConflictProbeFailures, base(baseline).ConflictProbeFailures)
-	probes := deltaSincePluginStart(h.AddressConflictProbes, base(baseline).AddressConflictProbes)
-	leases := deltaSincePluginStart(h.LeasesObtained, base(baseline).LeasesObtained)
+	sendFailures := deltaSincePluginStart(h.ACDARPSendFailures, base(baseline).ACDARPSendFailures)
+	probes := deltaSincePluginStart(h.ACDProbesSent, base(baseline).ACDProbesSent)
+	// The v4 half, not the sum. See the block above: ARP covers IPv4
+	// and nothing else, so a v6 lease in the domain is an operand the
+	// probe was never going to answer for (#881).
+	leases := deltaSincePluginStart(h.LeasesObtainedV4, base(baseline).LeasesObtainedV4)
+	conflicts := deltaSincePluginStart(h.AddressConflicts, base(baseline).AddressConflicts)
 
-	failures := probeFailures
-	if int32(observedInLog) > failures {
-		failures = int32(observedInLog)
-	}
-
-	if excess := failures - allowed; excess > 0 {
-		why := fmt.Sprintf(
-			"%d conflict probe(s) could not run at all; %d is the number this shard declared "+
-				"as deliberate, so %d went unexplained. Each one is an endpoint whose address was "+
-				"never checked, and address_conflicts=0 does not cover them — that reading is "+
-				"exactly how #524 stayed invisible in production for months (#551).",
-			failures, allowed, excess)
+	if excess := sendFailures - allowedSendFailures; excess > 0 {
 		out = append(out, FloorFinding{
-			Counter: "conflict_probe_failures",
-			Value:   failures,
+			Counter: "acd_arp_send_failures",
+			Value:   sendFailures,
 			Fatal:   true,
-			Why:     why,
+			Why: fmt.Sprintf(
+				"%d ARP Probe(s)/Announcement(s) were refused by the socket; %d is the number "+
+					"this shard declared as deliberate, so %d went unexplained. A probe that never "+
+					"went out proves nothing about the address, and address_conflicts=0 does not "+
+					"cover it — that reading is exactly how #524 stayed invisible in production "+
+					"for months (#551).",
+				sendFailures, allowedSendFailures, excess),
 		})
 	}
 
-	// The detector never even tried, on a shard that leased addresses
-	// for it to check. Distinct from the case above: there, probes were
-	// attempted and failed; here nothing was attempted at all.
-	if probes == 0 && failures == 0 && leases > 0 {
+	// The check never even tried, on a shard that leased addresses for
+	// it to check. Distinct from the case above: there, probes went out
+	// and some sends were refused; here nothing was attempted at all.
+	//
+	// The declared off-mode leases come out first. What is left is leases
+	// on networks that were supposed to probe, so a zero here is the
+	// check having stopped working rather than an operator's choice.
+	if checked := leases - allowedUnprobed; probes == 0 && sendFailures == 0 && checked > 0 {
 		out = append(out, FloorFinding{
-			Counter: "address_conflict_probes",
+			Counter: "acd_probes_sent",
 			Value:   0,
 			Fatal:   true,
 			Why: fmt.Sprintf(
-				"%d v4 lease(s) were obtained and the conflict detector was never invoked for "+
-					"any of them. The probe is not opt-in, so this is the detector having stopped "+
-					"working rather than a shard with nothing to check (#551).",
-				h.LeasesObtained),
+				"%d v4 lease(s) (leases_obtained_v4, not the v4+v6 sum) were obtained on networks "+
+					"that run RFC 5227's check (%d more were declared as conflict_check=off and are "+
+					"not counted here) and not one ARP Probe was sent. The check is opt-out per "+
+					"network, so with the off-mode leases already subtracted this is the check "+
+					"having stopped working rather than a shard with nothing to look at (#551).",
+				checked, allowedUnprobed),
+		})
+	}
+
+	// The log saw conflicts the counter did not. Either the counter reset
+	// under the floor (a restart, which the log survives) or the seam
+	// dropped an event on its way to the counter. The second is the
+	// defect address_conflicts exists to report, reporting itself as
+	// zero, and it is why this row is fatal.
+	//
+	// The first used to be red too, and could afford to be: before
+	// conflict_check existed, no test in this suite ever caused a
+	// conflict, so the row's whole domain was the second cause. Now the
+	// conflict cases stage conflicts on purpose, and a shard that
+	// recycles the plugin afterwards -- which several do -- produces the
+	// first cause on a correct build. MEASURED on the 2.x lane
+	// 2026-09-04: two staged conflicts in the log, a counter reset out
+	// from under them, and two red shards saying address_conflicts was
+	// dropped when it had not been.
+	//
+	// So a STAGED conflict is subtracted, and only a staged one: the
+	// test that put the squatter on the segment declares it. Everything
+	// beyond the declaration is judged exactly as before.
+	//
+	// The cost is that inside the declaration this row cannot tell the
+	// restart from a dropped event, so it does not hold #524's property
+	// there. AllowStagedConflicts names the boundary and names what
+	// holds the property instead.
+	if int32(conflictsInLog) > conflicts+allowedConflicts {
+		why := fmt.Sprintf(
+			"the log records %d address conflict(s) across the run and the counter shows %d. "+
+				"A conflict is a container up on somebody else's address; the log is the record "+
+				"that survives a plugin restart, so the higher number is the one to believe "+
+				"(#385, #524).",
+			conflictsInLog, conflicts)
+		if allowedConflicts > 0 {
+			why += fmt.Sprintf(
+				" %d of them were staged by this shard and declared with AllowStagedConflicts, "+
+					"which the counter is allowed to have lost to a plugin restart; the excess is not.",
+				allowedConflicts)
+		}
+		out = append(out, FloorFinding{
+			Counter: "address_conflicts",
+			Value:   int32(conflictsInLog),
+			Fatal:   true,
+			Why:     why,
 		})
 	}
 

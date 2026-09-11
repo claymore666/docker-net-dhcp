@@ -51,13 +51,20 @@ mkdoc() {
         printf '## At a glance\n\n'
         printf '**[Health counters](#pluginhealth)** — `/Plugin.Health` on the socket. %s flip `healthy` to `false`:' "$word"
         for n in $summary; do printf ' `%s`,' "$n"; done
-        printf '\n\n## Counters\n\n| field | healthy-affecting | meaning |\n| --- | --- | --- |\n'
-        printf '| `healthy` | — | `false` when'
+        printf '\n\n## Counters\n\n| field | healthy-affecting | check | meaning |\n| --- | --- | --- | --- |\n'
+        for n in ${DOC_STRAY_ABOVE-}; do printf '| `%s` | — | — | a structure. |\n' "$n"; done
+        printf '| `healthy` | — | — | `false` when'
         for n in $row; do printf ' `%s`,' "$n"; done
-        printf ' is non-zero. Those %s, and only those, are the ones marked **yes** in this column. |\n' "$(printf '%s' "$rword" | tr '[:upper:]' '[:lower:]')"
-        for n in $yes; do printf '| `%s` | yes | a fault. |\n' "$n"; done
-        printf '| `leases_renewed` | no | not a fault. |\n'
-        printf '| `pending_hints` | no | not a fault. |\n'
+        printf ' is non-zero. Those %s, and only those, are the ones marked **yes** in the healthy-affecting column. |\n' "$(printf '%s' "$rword" | tr '[:upper:]' '[:lower:]')"
+        for n in $yes; do printf '| `%s` | yes | %s | a fault. |\n' "$n" "${DOC_YES_CLASS:-fail}"; done
+        for n in ${DOC_WARN_LIST-lease_changed}; do printf '| `%s` | no | warn | %s |\n' "$n" "${DOC_WARN_TEXT:-watch it.}"; done
+        for n in ${DOC_FAIL_EXTRA-}; do printf '| `%s` | no | fail | a fault. |\n' "$n"; done
+        printf '| `leases_renewed` | no | — | %s |\n' "${DOC_DASH_TEXT:-not a fault.}"
+        for n in ${DOC_STRAY_MID-}; do printf '| `%s` | — | — | a structure. |\n' "$n"; done
+        for n in ${DOC_FAMILY_MID-}; do printf '| `%s_x`, `%s_y` | no | — | %s |\n' "$n" "$n" "${DOC_FAMILY_TEXT:-not a fault.}"; done
+        printf '| `pending_hints` | no | — | not a fault. |\n'
+        for n in ${DOC_STRAY_BELOW-}; do printf '| `%s` | — | — | a structure. |\n' "$n"; done
+        for n in ${DOC_FAMILY_BELOW-}; do printf '| `%s_x`, `%s_y` | — | — | a structure. |\n' "$n" "$n"; done
         printf '\n## Troubleshooting\n\n| symptom | likely cause | fix |\n| --- | --- | --- |\n'
         printf '| `healthy: false` on `/Plugin.Health` | Exactly %s counters flip it:' "$(printf '%s' "$tword" | tr '[:upper:]' '[:lower:]')"
         for n in $trouble; do printf ' `%s`,' "$n"; done
@@ -92,6 +99,9 @@ mkmetrics_opposed() {
         for n in leases_renewed pending_hints; do
             printf '\t{name: "%s", counter: true, help: "not a fault.", field: "%s"},\n' "$n" "$n"
         done
+        for n in ${METRICS_WARN_LIST-lease_changed}; do
+            printf '\t{name: "%s", counter: true, warn: true, unit: "renewals", action: "watch it.", help: "watch it.", field: "%s"},\n' "$n" "$n"
+        done
         for t in "$@"; do
             nm="${t%%=*}"; hy="${t#*=}"; hl="${hy#*=}"; hy="${hy%%=*}"
             if [ "$hy" = "yes" ]; then
@@ -120,6 +130,9 @@ mkmetrics() {
         done
         for n in leases_renewed pending_hints; do
             printf '\t{name: "%s", counter: true, help: "not a fault.", field: "%s"},\n' "$n" "$n"
+        done
+        for n in ${METRICS_WARN_LIST-lease_changed}; do
+            printf '\t{name: "%s", counter: true, warn: true, unit: "renewals", action: "watch it.", help: "watch it.", field: "%s"},\n' "$n" "$n"
         done
         for n in $extra; do
             printf '\t{name: "%s", counter: true, healthy: true, help: "not a fault. Healthy-affecting.", field: "%s"},\n' "$n" "$n"
@@ -485,11 +498,247 @@ out=$(bash "$CHECK" "$DIR/norow2.md" "$DIR/ok.go" "$M4" "$F4" 2>&1); rc=$?
 out=$(bash "$CHECK" "$DIR/does-not-exist.md" "$DIR/ok.go" "$M4" "$F4" 2>&1); rc=$?
 [ $rc -eq 2 ] && ok "a missing doc exits 2" || no "a missing doc returned $rc"
 
+# --- the check classification column (O-1) -----------------------------
+# The column an operator reads and the metricDef declaration the health
+# document is BUILT from are one fact in two places, which is the shape
+# this whole gate exists for. Each case moves exactly one side.
+
+# A fail check downgraded to warn in the doc. This is the mutant the
+# brief names: the document would still list the counter, still describe
+# it, and quietly tell an operator that the thing that flips `healthy`
+# is only worth watching.
+DOC_YES_CLASS=warn mkdoc "$DIR/cls-down.md" Four "$FOUR" "$FOUR" "$FOUR"; mkgo "$DIR/cls-down.go" 4
+out=$(bash "$CHECK" "$DIR/cls-down.md" "$DIR/cls-down.go" "$M4" "$F4" 2>&1); rc=$?
+[ $rc -eq 1 ] && ok "a fail check downgraded to warn in the doc fails" \
+               || no "a downgraded classification returned $rc (: $out)"
+case "$out" in *"not declared warn: true"*) ok "the downgrade names the direction of the disagreement" ;;
+  *) no "the downgrade failure does not say which side is which: $out" ;; esac
+
+# The other direction: the doc classifies a counter warn that the code
+# declares nothing about. An operator is promised a check that will
+# never appear in the document.
+DOC_WARN_LIST="lease_changed parent_link_wait_timeouts" \
+    mkdoc "$DIR/cls-extra.md" Four "$FOUR" "$FOUR" "$FOUR"; mkgo "$DIR/cls-extra.go" 4
+out=$(bash "$CHECK" "$DIR/cls-extra.md" "$DIR/cls-extra.go" "$M4" "$F4" 2>&1); rc=$?
+[ $rc -eq 1 ] && ok "a warn row the code does not declare fails" \
+               || no "an undeclared warn row returned $rc (: $out)"
+case "$out" in *parent_link_wait_timeouts*) ok "the failure names the undeclared warn counter" ;;
+  *) no "the failure does not name it: $out" ;; esac
+
+# And the same drift from the code side: a counter declared warn: true
+# and absent from the column, which is a check that turns up in the
+# document with nothing in the reference explaining it.
+M4W="$DIR/rail4warn.metrics.go"
+METRICS_WARN_LIST="lease_changed ledger_write_failures" mkmetrics "$M4W" "$FOUR"
+mkdoc "$DIR/cls-missing.md" Four "$FOUR" "$FOUR" "$FOUR"; mkgo "$DIR/cls-missing.go" 4
+out=$(bash "$CHECK" "$DIR/cls-missing.md" "$DIR/cls-missing.go" "$M4W" "$F4" 2>&1); rc=$?
+[ $rc -eq 1 ] && ok "a warn declaration missing from the column fails" \
+               || no "an undocumented warn declaration returned $rc (: $out)"
+
+# Drive the absence on each side: a column with no warn row at all, and
+# a metricDefs with no warn declaration at all, are both "this check
+# read nothing" rather than "everything agrees". A gate that cannot see
+# must not report clean.
+DOC_WARN_LIST="" mkdoc "$DIR/cls-none.md" Four "$FOUR" "$FOUR" "$FOUR"; mkgo "$DIR/cls-none.go" 4
+out=$(bash "$CHECK" "$DIR/cls-none.md" "$DIR/cls-none.go" "$M4" "$F4" 2>&1); rc=$?
+[ $rc -eq 2 ] && ok "a doc with no warn classification at all exits 2" \
+               || no "an empty check column returned $rc (: $out)"
+
+M4N="$DIR/rail4nowarn.metrics.go"
+METRICS_WARN_LIST="" mkmetrics "$M4N" "$FOUR"
+out=$(bash "$CHECK" "$DIR/ok.md" "$DIR/ok.go" "$M4N" "$F4" 2>&1); rc=$?
+[ $rc -eq 2 ] && ok "metricDefs with no warn declaration at all exits 2" \
+               || no "an empty warn declaration set returned $rc (: $out)"
+
+# The fail half, moved ALONE. Every case above that disagrees about a
+# fail row also disagrees about a warn row, so the fail comparison could
+# be deleted and this file would stay green -- MEASURED 2026-09-05 as a
+# surviving mutant. Here the doc classifies a counter `fail` in the
+# check column while its healthy-affecting column still says no, which
+# is a row section 4 has no quarrel with and only the fail comparison
+# can see.
+DOC_FAIL_EXTRA="leases_renewed" \
+    mkdoc "$DIR/cls-failextra.md" Four "$FOUR" "$FOUR" "$FOUR"; mkgo "$DIR/cls-failextra.go" 4
+out=$(bash "$CHECK" "$DIR/cls-failextra.md" "$DIR/cls-failextra.go" "$M4" "$F4" 2>&1); rc=$?
+[ $rc -eq 1 ] && ok "a fail row the code does not declare healthy fails" \
+               || no "an undeclared fail row returned $rc (: $out)"
+case "$out" in *"not declared healthy: true"*) ok "the fail-half failure names the direction" ;;
+  *) no "the fail-half failure does not say which side is which: $out" ;; esac
+
+# Preservation control: a SIXTH counter, classified warn on both sides,
+# passes. Without this the cases above are satisfied by a gate that
+# rejects every warn row it sees.
+DOC_WARN_LIST="lease_changed acd_arp_send_failures" \
+    mkdoc "$DIR/cls-ok.md" Four "$FOUR" "$FOUR" "$FOUR"; mkgo "$DIR/cls-ok.go" 4
+M4B="$DIR/rail4both.metrics.go"
+METRICS_WARN_LIST="lease_changed acd_arp_send_failures" mkmetrics "$M4B" "$FOUR"
+out=$(bash "$CHECK" "$DIR/cls-ok.md" "$DIR/cls-ok.go" "$M4B" "$F4" 2>&1); rc=$?
+[ $rc -eq 0 ] && ok "a new warn check agreed on both sides passes" \
+               || no "an agreeing warn classification failed (rc=$rc: $out)"
+
 # --- the repository itself ---------------------------------------------
 out=$(bash "$CHECK" "$HERE/../docs/reference.md" "$HERE/../pkg/plugin/endpoints.go" \
     "$HERE/../pkg/plugin/metrics.go" "$HERE/../test/integration/harness/healthfloor.go" 2>&1); rc=$?
 [ $rc -eq 0 ] && ok "the repository's own healthy contract agrees" \
                || no "the repo's healthy contract disagrees (rc=$rc: $out)"
+
+# --- 4c: the column must be derivable from the rows --------------------
+# The reviewer's finding: the shipped rule does not reproduce the shipped
+# table. `acd_probes_sent` and `sandbox_netns_visible` carried the
+# imperative the rule's warn clause names and were classified `-`, with
+# the clause that actually excluded them living in a handover.
+#
+# All four cells are driven: warn with and without an imperative, and a
+# `-` row carrying an imperative with and without the near-miss sentence.
+
+# (a) a warn row that tells the operator nothing about its own value.
+DOC_WARN_TEXT="a renewal returned a different address." \
+    mkdoc "$DIR/4c-warn-silent.md" Four "$FOUR" "$FOUR" "$FOUR"; mkgo "$DIR/4c-warn-silent.go" 4
+out=$(bash "$CHECK" "$DIR/4c-warn-silent.md" "$DIR/4c-warn-silent.go" "$M4" "$F4" 2>&1); rc=$?
+[ $rc -eq 1 ] && ok "a warn row with no imperative about its own value fails" \
+               || no "a warn row with no imperative returned $rc (: $out)"
+case "$out" in *"tells the operator nothing to do"*) ok "the warn-half failure says what is missing" ;;
+  *) no "the warn-half failure does not name the missing imperative: $out" ;; esac
+
+# (b) a `-` row carrying an imperative and no near-miss sentence. This
+# is exactly the shape the two rows shipped in.
+DOC_DASH_TEXT="worth investigating whenever it moves." \
+    mkdoc "$DIR/4c-dash-bare.md" Four "$FOUR" "$FOUR" "$FOUR"; mkgo "$DIR/4c-dash-bare.go" 4
+out=$(bash "$CHECK" "$DIR/4c-dash-bare.md" "$DIR/4c-dash-bare.go" "$M4" "$F4" 2>&1); rc=$?
+[ $rc -eq 1 ] && ok "an unclassified row carrying an imperative and no reason fails" \
+               || no "a bare near-miss row returned $rc (: $out)"
+case "$out" in *"clause excluded it"*) ok "the near-miss failure names the two clauses" ;;
+  *) no "the near-miss failure does not name the clauses: $out" ;; esac
+
+# (b), the other direction. The SAME imperative with the sentence added
+# passes -- without this, the case above is satisfied by a gate that
+# refuses every `-` row, and the reference could not carry a near miss
+# at all.
+DOC_DASH_TEXT="worth investigating whenever it moves. Not a check: its normal reading is non-zero." \
+    mkdoc "$DIR/4c-dash-said.md" Four "$FOUR" "$FOUR" "$FOUR"; mkgo "$DIR/4c-dash-said.go" 4
+out=$(bash "$CHECK" "$DIR/4c-dash-said.md" "$DIR/4c-dash-said.go" "$M4" "$F4" 2>&1); rc=$?
+[ $rc -eq 0 ] && ok "the same row with its near-miss reason passes" \
+               || no "a near-miss row with its reason returned $rc (: $out)"
+
+# (c) the phrasings the vocabulary gained in review r3. Two shipped `-`
+# rows told the operator to read the counter against another one --
+# `acd_announcements_sent` ("Read against `acd_probes_sent`") and
+# `dhcp_routes_applied` ("Read it as the denominator for the row below")
+# -- in words the list could not see, so the rule's claim that such a row
+# says why it is not a check was false for them and nothing reported it.
+# Each new phrasing is driven in both directions: bare it fails, with the
+# reason it passes. Without the passing half these would be satisfied by
+# a gate that refuses the phrasing outright.
+for phrasing in "read against \`leases_obtained\`, not alone." \
+                "read it as the denominator for the row below." \
+                "a strict subset of \`dhcp_timeouts\`, and that is how to read it."; do
+    tag=$(printf '%s' "$phrasing" | tr -cd 'a-z' | cut -c1-12)
+    DOC_DASH_TEXT="$phrasing" \
+        mkdoc "$DIR/4c-$tag-bare.md" Four "$FOUR" "$FOUR" "$FOUR"; mkgo "$DIR/4c-$tag-bare.go" 4
+    out=$(bash "$CHECK" "$DIR/4c-$tag-bare.md" "$DIR/4c-$tag-bare.go" "$M4" "$F4" 2>&1); rc=$?
+    [ $rc -eq 1 ] && ok "a '-' row saying '$phrasing' with no reason fails" \
+                   || no "'$phrasing' bare returned $rc (: $out)"
+
+    DOC_DASH_TEXT="$phrasing Not a check: its own value carries no verdict." \
+        mkdoc "$DIR/4c-$tag-said.md" Four "$FOUR" "$FOUR" "$FOUR"; mkgo "$DIR/4c-$tag-said.go" 4
+    out=$(bash "$CHECK" "$DIR/4c-$tag-said.md" "$DIR/4c-$tag-said.go" "$M4" "$F4" 2>&1); rc=$?
+    [ $rc -eq 0 ] && ok "the same row with its near-miss reason passes" \
+                   || no "'$phrasing' with its reason returned $rc (: $out)"
+done
+
+# (d) 4c's DOMAIN. A row is judged only when its healthy-affecting cell
+# says yes or no, so a row that carries `-` there is dropped -- correct
+# for the document's field rows, which lead the table, and a hole for a
+# counter row written the same way after them. Both directions, moving
+# only the row's POSITION: the same cell above the counters is a field
+# and passes, after them it is undecidable and fails. Without the
+# passing half this is satisfied by a gate that refuses every `-`/`-`
+# row, which is every field the health document has.
+DOC_STRAY_BELOW=stray_counter \
+    mkdoc "$DIR/4c-stray-below.md" Four "$FOUR" "$FOUR" "$FOUR"; mkgo "$DIR/4c-stray-below.go" 4
+out=$(bash "$CHECK" "$DIR/4c-stray-below.md" "$DIR/4c-stray-below.go" "$M4" "$F4" 2>&1); rc=$?
+[ $rc -eq 1 ] && ok "a row after the counters with no yes/no healthy-affecting value fails" \
+               || no "a stray row after the counters returned $rc (: $out)"
+case "$out" in *"stray_counter"*) ok "the domain failure names the row it cannot judge" ;;
+  *) no "the domain failure does not name the row: $out" ;; esac
+
+DOC_STRAY_ABOVE=stray_counter \
+    mkdoc "$DIR/4c-stray-above.md" Four "$FOUR" "$FOUR" "$FOUR"; mkgo "$DIR/4c-stray-above.go" 4
+out=$(bash "$CHECK" "$DIR/4c-stray-above.md" "$DIR/4c-stray-above.go" "$M4" "$F4" 2>&1); rc=$?
+[ $rc -eq 0 ] && ok "the same row ahead of the counters is a field and passes" \
+               || no "a field row before the counters returned $rc (: $out)"
+
+# (d), the anchor. The refusal asks whether a dropped row sits below the
+# FIRST judged one, and the cases above cannot tell that apart from the
+# LAST judged one: their stray row is after every counter, so both
+# readings report it. The reviewer's mutant -- `{ print NR; exit }`
+# replaced by `{ last = NR } END { print last }` -- SURVIVED for exactly
+# that reason (review r3, finding 5, MEASURED). This row sits BETWEEN
+# two counters, where the two readings disagree: the first-judged anchor
+# reports it, the last-judged anchor cannot see it.
+DOC_STRAY_MID=stray_counter \
+    mkdoc "$DIR/4c-stray-mid.md" Four "$FOUR" "$FOUR" "$FOUR"; mkgo "$DIR/4c-stray-mid.go" 4
+out=$(bash "$CHECK" "$DIR/4c-stray-mid.md" "$DIR/4c-stray-mid.go" "$M4" "$F4" 2>&1); rc=$?
+[ $rc -eq 1 ] && ok "a row BETWEEN two counters with no yes/no value fails" \
+               || no "a stray row between counters returned $rc (: $out)"
+case "$out" in *"stray_counter"*) ok "the between-counters failure names the row" ;;
+  *) no "the between-counters failure does not name the row: $out" ;; esac
+
+# (e) the row SHAPE. The reference writes the v4/v6 counter families as a
+# comma-separated list of names in one cell, and section 4c read only the
+# single-name spelling -- so the same `-`/`-` row that fails as one name
+# passed as a family, and the section judged fewer rows than the domain
+# the reference states (review r3, finding 2, MEASURED). Both directions:
+# a family row outside the domain fails where a single name would, and a
+# family row inside it is judged rather than dropped.
+DOC_FAMILY_BELOW=toy_counter \
+    mkdoc "$DIR/4c-family-below.md" Four "$FOUR" "$FOUR" "$FOUR"; mkgo "$DIR/4c-family-below.go" 4
+out=$(bash "$CHECK" "$DIR/4c-family-below.md" "$DIR/4c-family-below.go" "$M4" "$F4" 2>&1); rc=$?
+[ $rc -eq 1 ] && ok "a comma-separated family row after the counters fails" \
+               || no "a family stray row returned $rc (: $out)"
+case "$out" in *"\`toy_counter_x\`, \`toy_counter_y\`"*) ok "the family failure names the row it cannot judge" ;;
+  *) no "the family failure names less than the whole row: $out" ;; esac
+
+DOC_FAMILY_MID=toy_counter DOC_FAMILY_TEXT="worth investigating whenever it moves." \
+    mkdoc "$DIR/4c-family-bare.md" Four "$FOUR" "$FOUR" "$FOUR"; mkgo "$DIR/4c-family-bare.go" 4
+out=$(bash "$CHECK" "$DIR/4c-family-bare.md" "$DIR/4c-family-bare.go" "$M4" "$F4" 2>&1); rc=$?
+[ $rc -eq 1 ] && ok "a family row inside the domain is JUDGED, not dropped" \
+               || no "a family near-miss row returned $rc (: $out)"
+case "$out" in *"\`toy_counter_x\`, \`toy_counter_y\`"*) ok "the family near-miss names the whole cell" ;;
+  *) no "the family near-miss names less than the whole cell: $out" ;; esac
+
+DOC_FAMILY_MID=toy_counter \
+    mkdoc "$DIR/4c-family-ok.md" Four "$FOUR" "$FOUR" "$FOUR"; mkgo "$DIR/4c-family-ok.go" 4
+out=$(bash "$CHECK" "$DIR/4c-family-ok.md" "$DIR/4c-family-ok.go" "$M4" "$F4" 2>&1); rc=$?
+[ $rc -eq 0 ] && ok "a family row with a yes/no value and no imperative passes" \
+               || no "a plain family row returned $rc (: $out)"
+
+# (f) the PASS line's judged-row tally. It is the population 4c stands
+# behind, and the only place that number is derived rather than typed --
+# the PR body and the handover cite this line instead of carrying a
+# count of their own. A tally that never moved would read as a
+# measurement, so it is checked by DIFFERENCE against a document with one
+# more counter row in it.
+mkdoc "$DIR/4c-tally-a.md" Four "$FOUR" "$FOUR" "$FOUR"; mkgo "$DIR/4c-tally.go" 4
+DOC_FAMILY_MID=toy_counter \
+    mkdoc "$DIR/4c-tally-b.md" Four "$FOUR" "$FOUR" "$FOUR"
+judged() { printf '%s' "$1" | sed -nE 's/.*over ([0-9]+) judged counter row\(s\).*/\1/p'; }
+out=$(bash "$CHECK" "$DIR/4c-tally-a.md" "$DIR/4c-tally.go" "$M4" "$F4" 2>&1)
+n_a=$(judged "$out")
+out=$(bash "$CHECK" "$DIR/4c-tally-b.md" "$DIR/4c-tally.go" "$M4" "$F4" 2>&1)
+n_b=$(judged "$out")
+if [ -n "$n_a" ] && [ -n "$n_b" ] && [ "$n_b" -eq $((n_a + 1)) ]; then
+    ok "the PASS line's judged-row tally moves with the table ($n_a -> $n_b)"
+else
+    no "the judged-row tally did not move by one: '$n_a' then '$n_b'"
+fi
+
+# (a), the other direction, and the vocabulary's own positive control: a
+# `-` row with NO imperative needs no sentence. A gate demanding one
+# from every unclassified row would flag most of the table.
+out=$(bash "$CHECK" "$DIR/cls-ok.md" "$DIR/cls-ok.go" "$M4B" "$F4" 2>&1); rc=$?
+[ $rc -eq 0 ] && ok "an unclassified row with no imperative needs no reason" \
+               || no "a plain informational row returned $rc (: $out)"
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

@@ -55,6 +55,31 @@ run_case "a pipe into grep -${Q} is reported" 1 \
     "scripts/x.sh:::set -uo pipefail
 if git grep -n foo | grep -${Q}E 'bar'; then echo hi; fi"
 
+# --- the emptied-domain refusal ---------------------------------------
+#
+# A universal gate is satisfied by emptying its domain: with no shell
+# file to read, this gate would report a clean pass having read nothing.
+# It must refuse instead, and exit 2 is "cannot see", not "nothing
+# wrong". This is what the pinned-library exemption used to be checked
+# through; the exemption is gone with the in-tree copy and the refusal
+# it protected is not.
+edir=$(mktemp -d)
+(
+    cd "$edir" || exit 2
+    git init -q .; git config user.email t@t; git config user.name t
+    git config commit.gpgsign false
+    printf 'nothing to inspect\n' > README.md
+    git add -A; git commit -qm fixture
+) >/dev/null 2>&1
+eout=$(PIPE_ROOT="$edir" bash "$GATE" 2>&1); erc=$?
+rm -rf "$edir"
+if [ "$erc" -eq 2 ] && printf '%s\n' "$eout" | grep -F 'Nothing to inspect' >/dev/null; then
+    ok "a tree with no shell files is a refusal, not a pass"
+else
+    no "a tree with no shell files is a refusal, not a pass"
+    printf '      exit %s\n      %s\n' "$erc" "$eout" >&2
+fi
+
 # The fix, which must read as clean or nobody can satisfy the gate.
 run_case "the redirect form is clean" 0 \
     "scripts/x.sh:::set -uo pipefail

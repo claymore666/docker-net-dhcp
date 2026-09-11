@@ -251,8 +251,48 @@
 #   - cmd/dhcp-handler LEFT AT 74.0, measured 75.0, as at every release
 #     since v1.3.1. The v1.8.0 entry gives the reason: one ~16-statement
 #     main(), so a real regression here is a six-point fall.
-github.com/claymore666/docker-net-dhcp/pkg/util 95.0
-github.com/claymore666/docker-net-dhcp/pkg/plugin 86.8
-github.com/claymore666/docker-net-dhcp/pkg/dhcp 89.9
-github.com/claymore666/docker-net-dhcp/cmd/net-dhcp 77.8
-github.com/claymore666/docker-net-dhcp/cmd/dhcp-handler 74.0
+#
+# 2.0 (branch 2.0.0): FOUR PACKAGES, NOT FIVE.
+#
+# cmd/dhcp-handler is DELETED on this branch. It was the hook binary
+# dhcpcd exec'd on every state change, and 2.0 has no dhcpcd: the
+# library reports state changes on a Go channel from lease.Manager, so
+# there is no process to exec and no argv to parse.
+#
+# REMOVING ITS ROW HERE IS NOT WHAT MAKES THE RELEASE PR GREEN. The
+# sentence that stood here said it was, which was true when it was
+# written and false since #735: the floors are resolved AT THE MERGE
+# BASE, so the release PR is measured against MAIN's copy of this file,
+# and main still carries the cmd/dhcp-handler row. The removal is
+# invisible to that comparison. Measured on run 34541498417 (release PR
+# #937): four packages PASS and cmd/dhcp-handler FAILs "in baseline but
+# absent from coverage output", on a required check.
+#
+# What passes it is the ratchet's DROPPED verdict: a baselined package
+# that no longer builds at head AND carries no row in the head's own
+# baseline is counted as compared and does not fail the run. Removing the
+# row is what AUTHORISES that verdict rather than what delivers it --
+# leave the row in and the same run is a FAIL naming this file. The three
+# arms are in scripts/coverage-ratchet.sh.
+#
+# THE FOUR FLOORS ARE RAISED HERE, 2026-09-11. The entry this replaces
+# held them at the 1.x numbers because a raise written from a local unit
+# run is a floor nobody measured, and said to raise them off this
+# branch's first green coverage runs. Three have now measured them, and
+# they agree on every package but one:
+#
+#   run 34528649522 (#939)  util 97.3  plugin 90.1  dhcp 90.5  net-dhcp 83.3
+#   run 34534398848 (#939)  util 97.3  plugin 90.1  dhcp 90.9  net-dhcp 83.3
+#   run 34541498417 (#937)  util 97.3  plugin 90.1  dhcp 90.5  net-dhcp 83.3
+#
+# Each floor is 0.5 under the LOWEST of the three readings, which is this
+# file's own margin and the ratchet's epsilon: util 95.0 -> 96.8, plugin
+# 86.8 -> 89.6, dhcp 89.9 -> 90.0, net-dhcp 77.8 -> 82.8. pkg/dhcp is the
+# one package that moved between runs (90.5/90.9), which is why the
+# margin is taken from the lower reading and not from the most recent
+# one. pkg/buildinfo contributes no statements, gets no percentage out of
+# `go tool covdata` and is deliberately not floored.
+github.com/claymore666/docker-net-dhcp/pkg/util 96.8
+github.com/claymore666/docker-net-dhcp/pkg/plugin 89.6
+github.com/claymore666/docker-net-dhcp/pkg/dhcp 90.0
+github.com/claymore666/docker-net-dhcp/cmd/net-dhcp 82.8

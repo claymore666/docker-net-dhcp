@@ -26,11 +26,14 @@ on:
   # median 1258s) over the 13 successful runs retained.
   #
   # THAT GAP IS ACCEPTED, AND IT IS NOT UNWATCHED (#735). Measuring
-  # coverage on every dev PR would add a SEVENTH privileged job to the
-  # six a PR run already asks for (#877), against a pool of 16
-  # (dhcp-ci-1..16, MEASURED 2026-08-28 from the runners API): two
-  # concurrent PRs would ask for 14 of it, leaving two, so a third would
-  # queue most of its jobs rather than run beside them.
+  # coverage on every dev PR would add a TWELFTH privileged job to the
+  # eleven a PR run already asks for (#877, resharded by D41), against a
+  # ci-pool: integration-pool-jobs=11
+  # pool of 16 (dhcp-ci-1..16, MEASURED 2026-09-08 from the runners API):
+  # ci-pool: pool-runners=16
+  # one PR would then ask for 12 of it, leaving four, so a second PR's
+  # suite would queue almost entirely rather than run beside the first.
+  # ci-pool: coverage-pool-jobs=1
   # What was actually dangerous about the gap was
   # narrower than the measurement: a floor could be LOWERED on the way
   # into dev, seen by no coverage run at all, and the release PR would
@@ -61,7 +64,8 @@ on:
 # The original argument was that splitting "would put three privileged
 # jobs on the host at once, which is the dose #296 saw flake". That has
 # been overtaken: #375 split the suites and #381/#468/#877 sharded main,
-# so every PR run already puts six privileged jobs on the pool. Three is
+# ci-pool: integration-pool-jobs=11
+# so every PR run already puts 11 privileged jobs on the pool. Three is
 # not an untested dose; it is Tuesday.
 #
 # The reason it stays is arithmetic. RE-MEASURED 2026-08-28 (#878) from
@@ -74,12 +78,14 @@ on:
 #                      26 most recent successful three-shard runs
 #   coverage job       1094-1321s (median 1258s), n=13
 #   coverage run       1122-2195s (18m42-36m35, median 22m45), n=13
-#   pool               16 runners, dhcp-ci-1..16
+#   pool               16 runners, dhcp-ci-1..16 -- ci-pool: pool-runners=16
 #
 # So on a release PR the split saves one integration gate — ~5 minutes
 # of a ~30 minute wall clock, once per release — and it does so by
-# adding a SEVENTH privileged job to the six a run already asks for
-# (#877), on a pool of 16. Queue time was ~2s across every run in #430's
+# ci-pool: coverage-pool-jobs=1 beside ci-pool: integration-pool-jobs=11
+# adding a TWELFTH privileged job to the eleven a run already asks for
+# ci-pool: pool-runners=16
+# (#877, resharded by D41), on a pool of 16. Queue time was ~2s across every run in #430's
 # window; that one is NOT re-measured here and is quoted as its own.
 # The overlap it excepted cost a suite job 2m10.
 #
@@ -113,9 +119,18 @@ permissions:
 jobs:
   coverage:
     runs-on: [self-hosted, dhcp-ci]
-    # 35 = main + failure-injection suites against the instrumented
-    # plugin (#128) + cover build + margin.
-    timeout-minutes: 35
+    # A BACKSTOP ABOVE THE STEP CEILINGS, not a second estimate of the
+    # suite. Both integration steps below carry their own `go test`
+    # alarm, 45m and 20m, and a job timeout below their sum cannot fire
+    # second: at 35 it would have killed the job with the main suite
+    # still holding ten minutes of its own budget.
+    #
+    # 45 + 20 = 65 minutes of ceilings, plus what surrounds them,
+    # measured on run 34523956617: 2m31s before the main suite (setup-go
+    # 1m12s, cover build and install 1m10s) and 39s after the failure
+    # suite (counter flush, unit tests, summary, ratchet, reports,
+    # upload). 69 minutes with both rounded up, inside 75.
+    timeout-minutes: 75
     env:
       COVER_PLUGIN_REF: ghcr.io/claymore666/docker-net-dhcp:golang-cover
       COVER_DIR: /var/lib/dh-cover
@@ -202,16 +217,38 @@ jobs:
           docker plugin create "${COVER_PLUGIN_REF}" plugin-cover
           # Same test-only cadence as integration.yml (#278) — this job
           # runs the failure suite too, so it pays the same waits.
-          docker plugin set "${COVER_PLUGIN_REF}" LOG_LEVEL=trace \
-            OUTAGE_TICK=2s OUTAGE_GRACE=10s
+          docker plugin set "${COVER_PLUGIN_REF}" LOG_LEVEL=trace
           docker plugin enable "${COVER_PLUGIN_REF}"
 
       # The harness routes everything through INTEGRATION_PLUGIN_REF
       # (default :golang). Pointing it at :golang-cover makes the
       # whole suite drive the instrumented plugin.
+      #
+      # ITEST_TIMEOUT, not the Makefile's 20m default. THIS LANE RUNS THE
+      # WHOLE MAIN SUITE IN ONE go test BINARY, as integration-arm64.yml
+      # does; the amd64 shard lane splits the same suite nine ways and
+      # Makefile:171's 20m is that lane's number. It fired here: run
+      # 34523956617 panicked with "test timed out after 20m0s" having
+      # completed 56 of the 93 main tests.
+      #
+      # DERIVED, not guessed. The 56 that ran cost 1198.1s of per-test
+      # time on this lane. test/integration/testdata/suite-durations.tsv
+      # gives 1201.3s for the same 56, so the cover build costs nothing
+      # measurable in aggregate here: 0.997 of the table. The 37 that
+      # never ran cost 606.6s in the table, so the whole main suite
+      # projects to 1198.1 + 606.6 x 0.997 = 1802.9s, 30.0 minutes.
+      #
+      # The binary charges more than the per-test timers do: the alarm
+      # fired at 1200.3s against 1198.1s summed and 2s in flight.
+      # Carried in the headroom below, not in the projection.
+      #
+      # 45m is that projection with 1.50x of headroom, 15 minutes of
+      # slack, and it is the ceiling integration-arm64.yml derived for
+      # the same suite in one process.
       - name: Run integration tests against cover plugin
         env:
           INTEGRATION_PLUGIN_REF: ${{ env.COVER_PLUGIN_REF }}
+          ITEST_TIMEOUT: 45m
         run: make integration-test
 
       # The failure-injection suite (#128) exercises paths the main
@@ -226,10 +263,17 @@ jobs:
       # would compare a partial measurement against a full baseline.
       # Found by scripts/check-lane-hygiene.sh, not by #742, which
       # listed only the two non-gating lanes.
+      #
+      # 20m is the Makefile default, written out because this lane's two
+      # budgets are read together and a default sized for the shard lane
+      # must not decide this step by accident. The suite measured 4m38s
+      # here on run 34523956617 and 272.3s in the durations table, so 20m
+      # holds it four times over.
       - name: Run failure-injection tests against cover plugin
         if: always()
         env:
           INTEGRATION_PLUGIN_REF: ${{ env.COVER_PLUGIN_REF }}
+          ITEST_TIMEOUT: 20m
         run: make integration-test-failure
 
       # Flush counter files. Go's binary coverage runtime only writes
@@ -297,6 +341,12 @@ jobs:
       # sentence in the script's header, and a sentence is not a check.
       # On a push or a dispatch there is no merge base, so the working
       # copy is the honest answer and is used as-is.
+      #
+      # The ratchet reads the HEAD baseline too, to tell a package
+      # deleted on purpose from one whose coverage vanished, and it
+      # finds that file from its own path rather than from an argument
+      # here: a second wiring step is one someone forgets, and the run
+      # that would find out is the release PR (#791).
       - name: Coverage ratchet
         env:
           BASE_REF: ${{ github.event.pull_request.base.sha }}

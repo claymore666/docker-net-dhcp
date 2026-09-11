@@ -102,6 +102,23 @@ type Info struct {
 	// t+105s. A T1-derived deadline would therefore fire on every
 	// healthy client.
 	LeaseSeconds int `json:",omitempty"`
+
+	// PreferredSeconds is RFC 9915 section 7.1's preferred lifetime for
+	// a DHCPv6 address, in seconds, and 0 for a v4 lease or an infinite
+	// v6 one.
+	//
+	// TWO LIFETIMES AND NOT ONE, which is the v6 lease's shape. Section
+	// 7.1 calls the preferred lifetime "the length of time that a valid
+	// address is preferred", after which "the address becomes
+	// deprecated"; RFC 4862 section 5.5.4 says a deprecated address is
+	// still usable by an established connection and MUST NOT be chosen
+	// for a new one. LeaseSeconds above is the VALID lifetime, which is
+	// when the address goes away. The kernel enforces the difference
+	// once both are installed on the link, which is why they are
+	// carried rather than folded: a chassis that installed only the
+	// valid lifetime would have the container opening new connections
+	// on a deprecated address for the whole of the gap.
+	PreferredSeconds int `json:",omitempty"`
 }
 
 // Route is a single classless static route from DHCP option 121.
@@ -127,14 +144,22 @@ type Event struct {
 	// leaves no trace is indistinguishable from an attack that was
 	// never attempted.
 	UnsafeValuesDropped int `json:",omitempty"`
-	// RouterFlags is the raw nd1_flags string from a ROUTERADVERT hook
-	// event -- the flag letters dhcpcd recognised in the advertisement
-	// ("MO", "O", or empty). Only ever set on a "routeradvert" event,
-	// which only the one-shot acquisition client receives (#868).
+	// RouterFlags is RFC 4861 section 4.2's two configuration bits as
+	// the letters an operator reads in a log line: "M", "O", "MO", or
+	// empty for an advertisement carrying neither -- and empty as well
+	// for a v4 event and for a v6 link where no advertisement has
+	// arrived yet.
 	//
-	// The string is dhcpcd's spelling, not a protocol name, and it is
-	// carried verbatim rather than pre-interpreted so a later consumer
-	// that cares about the O flag (stateless configuration, #815) does
-	// not need the hook to change.
+	// FOR A HUMAN, NOT FOR A DECISION. Nothing branches on this string:
+	// the machine-readable form is dhcp.RAObservation, which has a
+	// Seen of its own and can therefore tell "no advertisement" from
+	// "an advertisement with neither bit set" -- a distinction this
+	// string deliberately does not make, because the log line it goes
+	// on says which link and which endpoint beside it.
+	//
+	// It rides EVERY v6 event rather than a "routeradvert" event of its
+	// own (which is what 1.9.0 had, from the dhcpcd hook): the library
+	// stamps its running observation on every event it emits, so a
+	// separate event kind would be a second copy of one fact.
 	RouterFlags string `json:",omitempty"`
 }

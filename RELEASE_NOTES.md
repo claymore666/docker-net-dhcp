@@ -11,53 +11,384 @@ forks that have been waiting on review.
 
 [upstream]: https://github.com/devplayer0/docker-net-dhcp
 
-## Acknowledged findings (not applicable to this fork)
+## v2.0.0
 
-The third-pass code review of v0.5.3 ran `govulncheck` and surfaced
-two informational findings on `github.com/docker/docker`:
+Pre-releases of this version: `v2.0.0-rc1` (2026-09-05, IPv4 only),
+`v2.0.0-rc2` (2026-09-09) and `v2.0.0-rc3` (2026-09-11).
 
-- **GO-2026-4887** — Moby AuthZ plugin bypass on oversized request bodies.
-- **GO-2026-4883** — Moby off-by-one in plugin privilege validation.
+Version 2.0 replaces the external DHCP client with a library written for this
+plugin, `github.com/claymore666/dhcp-golib`, which handles IPv4 and IPv6. That
+client was involved in a large share of the bugs closed on the 1.x line. The
+plugin saw it only through its hook environment, so parts of the exchange
+could not be observed or tested from inside the plugin. The library carries
+its own tests, many of them driving a real DHCP server. The plugin's
+integration suite runs against real DHCP servers on amd64 in CI and on arm64
+hardware at each release candidate, covering address conflicts, plugin and
+daemon restarts, and lease recovery. The 2.0 line has run in CI and has not
+yet run in production.
 
-Both are **daemon-side** vulnerabilities. This plugin uses
-`github.com/docker/docker` only as a client library — the call sites
-are `NetworkList`, `NetworkInspect`, and `ContainerInspect`. Neither
-vulnerable code path is reachable from the plugin process, so no
-action is required. Recorded here so future audits don't
-re-investigate. (Original report: third-pass code review, 2026-05-04.)
+The plugin performs the DHCP exchange itself, through the Go library
+`github.com/claymore666/dhcp-golib` v0.1.0, instead of driving an external
+client process. The image contains no DHCP client and the plugin execs
+nothing. Both families go through that library: `ipv6=true` works as it did
+on 1.9.0, with the differences under **DHCPv6** below.
 
-The v1.1.0 Dependency Review gate (#193) surfaced two further
-`github.com/docker/docker` advisories at v28.5.2:
+Everything below is a change against v1.9.0.
 
-- **GHSA-x86f-5xw2-fm2r** — `PUT /containers/{id}/archive` executes a
-  container binary on the host.
-- **GHSA-rg2x-37c3-w2rh** — race condition in `docker cp` allows
-  bind-mount redirection to a host path.
+### Upgrade notes
 
-Both are `docker cp` / archive-extraction paths in the Moby daemon and
-CLI. The plugin invokes none of them — its only client calls remain the
-three inspect/list APIs above. No fix is published on the frozen
-`github.com/docker/docker` module path (successor `moby/moby/v2`
-migration tracked in #178). They are accepted at the advisory level in
-`.github/dependency-review-config.yml` with a review date, alongside the
-older AuthZ finding (GHSA-x744-4wpc-v9h2 = GO-2026-4887), and will be
-re-evaluated when the module migration lands.
+Required on every host before `docker plugin install`, unchanged since v1.5.0:
 
-During the v1.3.0 window (2026-06-28) the Go vulnerability database
-imported these advisories, so `govulncheck` now reports them through
-module-init symbol traces — the assessment above is unchanged, but
-"govulncheck is green" no longer holds. All three (GO-2026-5746 =
-GHSA-x86f-5xw2-fm2r, GO-2026-5617 = GHSA-rg2x-37c3-w2rh, plus the
-newly published GO-2026-5668 = GHSA-vp62-88p7-qqf5, a `docker cp`
-symlink-swap empty-file race, also daemon-side) are accepted with
-justification in `.github/vuln-allowlist.txt` (#291, #292) until a
-fixed release ships on the module path we depend on.
+```bash
+sudo mkdir -p /var/lib/net-dhcp
+```
 
-As of v1.3.4 (#333), GO-2026-5746 is no longer reported by
-`govulncheck` and its allowlist entry has been removed — the
-assessment above is retained here as the audit trail. If it becomes
-reachable again the gate fails loudly rather than silently
-re-accepting it.
+The upgrade re-prompts for privileges, and you must approve it. The
+plugin manifest now requests a fourth Linux capability, `CAP_NET_RAW`,
+alongside `CAP_NET_ADMIN`, `CAP_SYS_ADMIN` and `CAP_SYS_PTRACE`. It is
+requested because the plugin now opens the packet socket that carries the
+DHCP exchange, which the external client used to open for it. `docker plugin
+upgrade` shows the new list and waits; an unattended upgrade that does not
+pass `--grant-all-permissions` stops there.
+
+The capability the plugin can exercise does not change. Docker composes a
+plugin's requested capabilities *additively* over the OCI default set, and
+`CAP_NET_RAW` is already in that default set, so the effective capability set
+of the plugin process is the same seventeen it was before. What changed is
+the manifest, and therefore the prompt: the request is now honest about a
+power the process already had. See `SECURITY.md`.
+
+**The manifest delta against v1.9.0, field by field.** `docker plugin
+upgrade` prompts on the *privilege* fields only, so the two halves of this
+table are read differently: the first is what the prompt shows you, the
+second is not prompted at all.
+
+Every cell below is the full set for that field, not a description of how
+it changed. `scripts/check-manifest-delta-table.sh` derives both columns,
+the left from `v1.9.0:config.json` in git and the right from the manifest
+in the tree, and fails if either disagrees with what is written here. The
+`prompted` column is not derived: which fields the daemon prompts on is a
+property of Docker, not of this manifest.
+
+<!-- manifest-delta: begin baseline=v1.9.0 -->
+
+| field | v1.9.0 | v2.0.0 | prompted |
+| --- | --- | --- | --- |
+| `linux.capabilities` | `CAP_NET_ADMIN`, `CAP_SYS_ADMIN`, `CAP_SYS_PTRACE` | `CAP_NET_ADMIN`, `CAP_NET_RAW`, `CAP_SYS_ADMIN`, `CAP_SYS_PTRACE` | **yes** |
+| `network.type` | `host` | `host` | no change |
+| `ipchost` | `false` | `false` | **yes**, when true |
+| `pidhost` | `true` | `true` | no change |
+| `mounts` | `/var/run/docker.sock:bind`, `/var/lib/net-dhcp:rbind,rw`, `/var/run/docker:rbind,ro` | `/var/run/docker.sock:bind`, `/var/lib/net-dhcp:rbind,rw`, `/var/run/docker:rbind,ro` | source only |
+| `propagatedmount` | `(absent)` | `(absent)` | no change |
+| `linux.devices` | `(absent)` | `(absent)` | no change |
+| `linux.allowalldevices` | `false` | `false` | **yes**, when true |
+| `env` | `LOG_LEVEL`, `AWAIT_TIMEOUT`, `STATE_DIR`, `OUTAGE_TICK`, `OUTAGE_GRACE`, `METRICS_ADDR` | `LOG_LEVEL`, `AWAIT_TIMEOUT`, `STATE_DIR`, `METRICS_ADDR`, `DOCKER_HOST` | no: a setting is not a privilege |
+
+<!-- manifest-delta: end -->
+
+Read the `env` row against **Removed plugin settings** below: the delta
+is one added and two removed, not one added. `OUTAGE_TICK` and
+`OUTAGE_GRACE` are gone from the manifest, so `docker plugin set
+OUTAGE_TICK=…` is refused by the daemon rather than accepted and ignored.
+
+Nothing was dropped, and the measurement says why. 2.0 asks first
+for the sandbox key the daemon publishes, so that a host where that works
+can attach without the container's PID at all. For an attach it does not
+work: the plugin's read-only `/var/run/docker` is a bind mount taken when
+the plugin starts, so it never receives the per-sandbox namespace mounts the
+daemon makes afterwards, the key is refused, and `/proc/<pid>/ns/net` carries
+the attach exactly as before. Recovery after a plugin restart is the
+exception: the sandbox is older than the plugin process, so the key route
+carries it. `pidhost` and `CAP_SYS_PTRACE` therefore stay, and would have
+stayed regardless, because `resolv.conf` propagation enters the container's
+*mount* namespace by PID and a mount namespace has no sandbox key.
+`sandbox_key_entries`, `sandbox_key_entry_failures` and
+`sandbox_pid_fallbacks` report which route your host is using, and
+`sandbox_key_absent`, `sandbox_key_not_permitted`,
+`sandbox_key_not_a_namespace`, `sandbox_key_wrong_ns_type` and
+`sandbox_key_unavailable` say which
+refusal it was, and the arms sum to `sandbox_key_entry_failures`. On a stock
+engine the one that rises is `sandbox_key_not_a_namespace`, once per
+attach, and that is the expected state: nothing is degraded, the log line
+that accompanies it is at `debug`, and no action is indicated. A rise in
+`sandbox_key_not_permitted` is the one to look at. It means the daemon
+publishes sandbox keys somewhere this plugin does not accept, which a
+non-default `--exec-root` does. It means a key that exists and was
+refused: an endpoint no key was published for at all has its own arm,
+`sandbox_key_absent`, so a rise in one is never the other.
+
+**Removed plugin settings.**
+
+| setting | why |
+| --- | --- |
+| `OUTAGE_TICK` | The outage watchdog it paced is gone. The DHCP client holds the lease and reports a failed attempt itself, so there is no cadence to tune |
+| `OUTAGE_GRACE` | Same. It was the settling time the watchdog added on top of the lease lifetime |
+
+Both are removed from `config.json`, so `docker plugin set OUTAGE_TICK=…` is
+refused by the daemon rather than accepted and ignored.
+
+**Removed health counters and `/metrics` series.** Each is removed from
+`/Plugin.Health` and from `/metrics`. A JSON consumer reading a removed key
+gets zero, not an error.
+
+| counter | why |
+| --- | --- |
+| `lease_time_clamped` | Counted a lease lifetime clamped to a 24h watchdog deadline. Option 51's `0xFFFFFFFF` is now carried as an infinite lease rather than as 4294967295 seconds, so there is no overflow to clamp and no watchdog to clamp it for |
+| `directives_refused` | Counted values dropped before being written into a generated client config file. No config file is generated |
+| `mount_prep_failures` | Counted failed steps of a per-client private mount-namespace setup. There is no per-client state directory, so there is no mount to prepare |
+| `address_conflict_probes` | Counted verdicts reached by the plugin's own datagram probe on the parent link. That probe is deleted; RFC 5227 runs inside the DHCP client now, and `acd_probes_sent` is what says whether the address was checked |
+| `conflict_probe_failures` | Counted probes that could not reach a verdict, almost always because the parent carried no address on the leased subnet. An RFC 5227 probe does not need one, so the condition no longer exists. `acd_arp_send_failures` is the nearest thing that remains, and it means something narrower: the socket refused the send |
+| `conflict_probe_stale_routes` | Counted temporary `/32` routes reclaimed from a probe cut short. The probe installed no routes at all now, so there is nothing to leak or reclaim |
+| `conflict_probe_stale_addrs` | Counted borrowed link-local source addresses reclaimed from the parent NIC, for the same probe. Nothing is borrowed and nothing is left behind |
+
+`address_conflicts` is split by family. The health document gains
+`address_conflicts_v4` and `address_conflicts_v6`, and `address_conflicts`
+becomes the sum of the two. On `/metrics` the unlabelled
+`net_dhcp_address_conflicts_total` sample is gone: that series now carries
+`family="ipv4"` and `family="ipv6"`, so a query naming it without a label
+selects two samples where it selected one. The v4 half is RFC 5227 ARP and
+`conflict_check` governs it. The v6 half is the container kernel's
+Duplicate Address Detection (RFC 4862 §5.4), declined under RFC 9915
+§18.2.8; no `acd_*` counter moves for it, and `conflict_check=off` does not
+reach it. A DHCPv6 conflict on a running container is counted there and
+logged with the RFC 4862 citation.
+
+**DHCPv6.** `-o ipv6=true` does what it did on v1.9.0: every container on
+the network gets a DHCPv6 lease alongside its DHCPv4 one, reported as
+`GlobalIPv6Address`, renewed on its own timers, requested back after a
+restart, and counted in the `*_v6` counters. It runs through the same
+library as IPv4, with no external client process.
+`docs/reference.md` has the full behaviour, including the segments that offer no DHCPv6
+address; what follows is only what changed against v1.9.0.
+
+| change | effect |
+| --- | --- |
+| DHCPv6 identity on **ipvlan** | **Each endpoint now has its own DUID**, minted from the endpoint id as a DUID-UUID (RFC 9915 §11.5). v1.9.0 derived the DUID from the MAC, and an ipvlan L2 slave inherits the parent's MAC, so every container on such a network presented one identity to the server. Bridge and macvlan are unchanged: still DUID-LL over the endpoint's own MAC (§11.4), byte for byte what 1.x sent |
+| DHCPv6 identity storage | The DUID and IAID are **stored with the endpoint** rather than recomputed, so a plugin restart, container restart or upgrade presents the same client. Server-side reservations keyed on DUID stick across all three |
+| Duplicate-address detection | **Runs in the client**, and the leased address is installed with the kernel's own check switched off (`nodad`). RFC 9915 §18.2.10.1 requires the client to do it; doing it twice cost the container a window in which the address was unusable, and took the address out of service outright on a link that echoes the probe back (RFC 7527 §4.1) |
+| A duplicate on the segment | The client **declines the address and asks for another** (RFC 9915 §18.2.8), instead of installing an address the container cannot use. If the declined address was the one the endpoint asked for by preference, and a restarting container asks for the address it had, the second ask **drops the preference**, because a server that honours it (§18.2.1) hands back the address that was just declined and the endpoint never gets past it |
+| How long a v6 acquisition may take | The v6 half has **its own budget**, derived from the protocol's own schedule: up to 13s of router discovery (RFC 4861 §6.3.7) plus the four-transmission Solicit schedule (RFC 9915 §18.2.1), 21.7s in all. On a dual-stack endpoint it also has **whatever is left of the 30 seconds the Docker daemon waits for the plugin to answer**, because the DHCPv4 half runs first and has already spent part of it. v1.9.0 spent `lease_timeout` on it, whose v4-derived 34s default outlives the daemon's wait, so a network with no DHCPv6 on it failed the container start rather than reporting the absence |
+| A segment that offers SLAAC only | **Concluded as soon as the router says so.** An advertisement with neither the M nor the O flag set (RFC 4861 §4.2) says there is no DHCPv6 to wait for, so the v6 half ends in about a second instead of running the budget out. The endpoint comes up with its v4 lease and whatever address SLAAC gave it |
+| The v6 resolver after a plugin restart | A resumed v6 lease **keeps the DNS servers and search list** it was granted (RFC 3646). The Reply to a Confirm carries a status and nothing else (RFC 9915 §18.2.13), so the answer comes from the stored record; on v1.9.0 a restart left the container without its v6 resolver until the next renewal |
+| Endpoint recovery on **ipvlan** | Now works. An ipvlan L2 slave inherits the parent's MAC and cannot be given one of its own, so Docker reports no MAC for the endpoint and recovery refused every one of them on the empty string. The parent's address is read and inherited explicitly instead |
+| Lease records on **ipvlan** | Keyed on the **endpoint**, not on the MAC, for IPv4 as well as IPv6. Every ipvlan endpoint on a network presents the same parent MAC, so one key covered all of them and a restarting container could resume, and install, a neighbour's address |
+| `--ip6` / `Interface.AddressIPv6` on an endpoint | Still ignored, as on 1.x. A hint on the wire is not a promise, and nothing here would make one |
+| `docker network create --ipv6` | Unchanged: Docker's own flag does not work with the null IPAM driver, and never did |
+
+**Upgrading a network that already has `ipv6=true`: nothing to do.** The
+stored record means the same thing here and endpoints on it get DHCPv6
+leases as before. **On an ipvlan network each container gets new addresses
+once**: a new IPv6 address because of the DUID change above, and a new
+IPv4 address too, because its stored lease records are not found under the
+per-endpoint key that replaces the shared parent MAC. Both stick from then
+on; re-key any server-side v6 reservation on the new DUID. Bridge and
+macvlan endpoints keep their addresses.
+
+**Changed on the wire.** Each line names the v1.9.0 behaviour and 2.0's.
+
+| behaviour | v1.9.0 | v2.0.0 |
+| --- | --- | --- |
+| Parameter request list (option 55) | The 16 codes 1, 2, 3, 6, 12, 15, 26, 28, 42, 66, 67, 100, 101, 119, 121, 252, asked for by name in the external client's config; the order it put them in was that client's business | The same 16 codes minus **12** (the host name is sent, not requested back) plus **33** (static routes), and the plugin controls the order: **121 first**, which RFC 3442 requires of a client that implements it |
+| Legacy static routes (option 33) | Not requested and not honoured | Requested, and used when option 121 is absent or does not decode. Option 121 supersedes it when both arrive |
+| Broadcast flag in the DHCP header | Set for **ipvlan only** | Set for **every mode**. The plugin's socket is a raw packet socket on an interface with no address yet, which is the condition RFC 2131 defines the flag for; clearing it works against servers that ignore the flag and hangs against servers that honour it |
+| Initial-DISCOVER delay (RFC 2131 §4.4.1) | Whatever the external client did; not set or observed by the plugin | **None**, explicitly. The 1–10 second random delay is a rule for a fleet of hosts booting together; a container start is one client asking for one address. The library defaults to applying it and the plugin disables it, on both the acquisition and the renewal client |
+| Retransmission schedule | The external client's; not set or observed by the plugin | RFC 2131 §4.1's worked example, set by the plugin: intervals of 4s, 8s, 16s, 32s to a 64s ceiling, ±1s of jitter on each, armed as each packet goes out, so retransmissions land at ~4s, ~12s, ~28s and ~60s after the first DISCOVER, and the fourth is followed by a restart of the exchange. The default `lease_timeout` funds one retransmission. It now also has to cover RFC 5227's probe window **and one conflict found inside it**, which is a DHCPDECLINE, RFC 2131 §3.1(5)'s mandatory ten-second restart delay, and a second acquisition, so it is **34s** where v1.9.0 had 10s. The value is derived from the two schedules |
+| `dhcp_servers` / `dhcp_deny_servers` matching | Matched the **packet's source address**, so the lists did not work behind a DHCP relay (#111) | Matches the **server identifier (option 54)**, so the lists work behind a relay. Deny wins over allow; an allow list refuses a message that carries no server identifier at all; a deny list alone permits one |
+| First-attempt budget floor for the `dhcp_servers` ladder | 3s per attempt, sized for a process spawn | Unchanged at 3s. The attempt no longer spawns a process, but the floor is a policy choice pinned by tests, not a measurement of the old cost |
+| DHCPRELEASE | Never sent (v1.9.0, #800) | Never sent. Unchanged |
+
+**Address conflict detection runs on every network, including the ones
+you already have.** `conflict_check` defaults to `wait`, and a network
+created before the option existed reads as `wait`. What that costs, and how
+to opt out at create time, is under **RFC 5227 address conflict detection**
+below.
+
+Two more, both visible at upgrade time:
+
+- **One binary per release.** The image built only `net-dhcp` and
+  `dhcp-handler`; the handler was the hook the external client called back
+  into, and it is gone. From this release the checksum list in
+  `docs/verifying-releases.md` has one entry per platform, not two.
+- **`/etc/resolv.conf` and the link MTU are still applied by the plugin**,
+  over netlink and a `setns` into the container's mount namespace, exactly as
+  before. Nothing about `propagate_dns`, `propagate_mtu`, `skip_routes`,
+  `register_dns` or `audit_log` changes for an operator.
+
+### New
+
+**RFC 5227 address conflict detection (`conflict_check`).** The plugin
+checks whether the address its DHCP server just leased is already in use on
+the segment, and this is the release where that check
+becomes real rather than best-effort. It is run by the DHCP client, as
+RFC 5227 Address Conflict Detection, from inside the container's own
+network namespace. The plugin no longer runs it from the parent link.
+
+Two holes in the v1.6.0 probe close with it. The old check could only
+look at the address a **new** endpoint was about to be handed, so a
+conflict that started after the container was up was never seen; RFC 5227
+§2.4 listens for the whole life of the lease. And the old check needed
+the parent to carry an address on the leased subnet, because a host
+answers an ordinary ARP request only if it can route a reply back to the
+sender; a §2.1.1 Probe carries an all-zero sender address, which Linux
+answers for any local target without consulting a route, so a bare parent
+is no longer blind. A conflict now also produces a `DHCPDECLINE` (RFC
+2131 §3.1(5)) and a fresh DISCOVER, which means **your DHCP server's log
+is evidence**. It never was before.
+
+It costs seconds, and `-o conflict_check=<mode>` says who pays them.
+
+| mode | `docker run` | on a conflict |
+| --- | --- | --- |
+| `wait` (default) | Waits for §2.1 to clear the address: **4.0s best, 5.5s mean, 7.0s worst**, on top of the DHCP exchange | The container never comes up on the contested address. The client declines it and asks for another |
+| `async` | Returns at the DHCPACK, with no added wait | The address of a **running** container changes, about **11s** after the conflict appears (MEASURED; ten of those are RFC 2131 §3.1(5)'s mandatory wait after the DHCPDECLINE, during which the container still holds the contested address). Connections on the old address are already broken for both hosts; `docker inspect` does not update (watch `lease_changed`) |
+| `off` | Returns at the DHCPACK | Nothing inside the client detects it. No ARP is sent; `address_conflicts_v4` and `acd_conflicts_detected` move only for a conflict reported to the client from outside it, which nothing in the plugin does today, and `acd_probes_sent` stays where it was |
+
+Any other value is refused at `docker network create`, with the three
+names in the message. Networks created before this option existed read as
+`wait`, so **an upgrade adds up to seven seconds to `docker run` on every
+existing network**. Set `-o conflict_check=async` at create time if that
+matters more than starting clean. The default `lease_timeout` grows with
+it, from 10s to **34s**; see its entry in `docs/reference.md` for what
+that buys and what it costs on a segment with no DHCP server.
+
+`wait` is a rule about **acquiring** an address, not about keeping one.
+Two paths deliberately do not wait:
+
+- **A container joining a network it already has a lease on** (the
+  resumed-lease path) runs the check in `async` even where the network
+  says `wait`. Nothing is skipped: the same probes, the same §2.4
+  listener and the same DHCPDECLINE. The address the container
+  already holds is not held back while they run. Holding it back would
+  add the probe window to every restart of every container, to re-check
+  an address the previous run already cleared.
+- **`-o validate_dhcp=true`'s preflight probe at `docker network
+  create`** runs `off`. It is asking whether a DHCP server answers on
+  this parent; the address it is offered is released immediately and
+  never configured, so there is nothing for RFC 5227 to protect and no
+  reason to spend the window inside an 8s budget.
+
+`ignore_conflicts` is untouched and is not related: it is about another
+Docker network on **this host** already owning the bridge you named,
+before any lease exists.
+
+Four counters are added, on `/Plugin.Health` and `/metrics`:
+`acd_probes_sent` (read it before believing `address_conflicts_v4` is zero),
+`acd_announcements_sent`, `acd_conflicts_detected` and
+`acd_arp_send_failures`. `address_conflicts` keeps its name and keeps
+flipping `healthy`. It is now the sum of `address_conflicts_v4` and
+`address_conflicts_v6`, and the v4 half is fed by the DHCP client instead
+of by the plugin's probe.
+
+The health document says what is wrong, when it started, and where.
+`/Plugin.Health` keeps every field it had. `healthy` is unchanged, with the same
+latch, the same counters behind it and the same meaning, so a dashboard
+that reads it needs no edit.
+
+Beside it there is now a `status` of `pass`, `warn` or `fail` and a `checks`
+object, in the shape of the IETF health-check draft
+(`draft-inadarei-api-health-check`). **What to poll:** `status` answers "is
+anything wrong", `checks` names which counter says so, and each check carries
+a `time`, the moment that counter last moved, which answers "is it still
+happening". That last question had no answer before: the flags latch, so a
+fault an hour ago and a fault in progress produced the same document.
+`fail` is exactly the set of counters that flips `healthy`, and the two are
+never allowed to disagree; `warn` is the set the reference table tells you to
+watch without calling it a fault, and it never touches `healthy`. Everything
+else stays informational and is not a check.
+
+The document also gains an `endpoints` array, one entry per attached
+container, with its address, lease state, T1/T2/expiry as absolute times, the
+server that granted the lease, the last lifecycle event and its time, the
+`conflict_check` mode and where RFC 5227 has got to. It also gains
+`version`, `commit` and `library`, which say exactly which binary answered. The same three are
+labels on a new `net_dhcp_build_info` series with the value 1. A build made
+outside the release pipeline reports `dev` and the commit it was built from.
+
+Two deliberate departures from the draft, both stated in `docs/reference.md`:
+the endpoint answers HTTP 200 for every status, because a latched flag would
+otherwise make the socket look down for the life of the process, and the media
+type stays `application/json`.
+
+**`DOCKER_HOST`.** Empty by default, which keeps the mounted socket and
+the behaviour every earlier release had. Point it at a read-only Docker API
+proxy, a plain TCP endpoint on the host's loopback that the plugin reaches
+through host networking, and the plugin loses nothing: it issues only `GET`
+and `HEAD`, refuses anything else before sending it, and counts each refusal
+as `docker_api_non_get_refusals`. The allowed paths, a worked example, and
+why a proxy on its own unix socket is *not* reachable are in `SECURITY.md`.
+
+### Fixed
+
+IPv6 parity with v1.9.0 (#911) is listed under **DHCPv6** above; what an
+operator sees there is the capability returning. Three repairs inside it are
+defects of their own:
+
+- DHCPv6 identity was derived from the MAC. An ipvlan L2 slave inherits the
+  parent's MAC, so every container on such a network presented the same
+  identity to the server and a reservation could not name one of them
+  (#895).
+- A fresh container and a restarted one took different DHCPv6 paths on the
+  same network, so which client the server saw depended on the path (#820).
+- A DHCPv6 conflict on a running container was counted in the same cell as
+  an RFC 5227 ARP conflict and logged with the ARP citation, which points an
+  operator at the wrong protocol. It is now the `address_conflicts_v6` half,
+  with the RFC 4862 and RFC 9915 citations (#911).
+
+The 2.0 chassis:
+
+- Every netlink dump call site treated `ErrDumpInterrupted` as fatal. The
+  kernel restarts a dump when a link is added or removed anywhere on the
+  host and returns that sentinel together with a usable result, so an
+  unrelated interface change could fail an endpoint operation (#802).
+- The conflict-probe census compared two populations, one counted in the
+  running process and one counted over every bind, so it could report that
+  the ARP probe had never run for a lease a restarted plugin recovered
+  (#881).
+- Nothing established that a displaced DHCP client stops holding the
+  interface. The client is a goroutine since 2.0, so the container's
+  `AF_PACKET` sockets are read from inside its network namespace, and the
+  interface carries exactly one DHCPv4 client after a displacement (#682).
+- State files an older plugin left behind kept their old mode. `0600` is
+  applied when the plugin writes a file and an upgrade writes nothing, so a
+  `tombstones.json` from before v1.8.0 stayed `0644` for as long as the host
+  ran, while the docs said the upgrade had tightened it. The plugin now
+  sweeps `STATE_DIR` once at startup. It only removes access and never
+  grants it, so a file an operator narrowed stays at least as narrow
+  (#804).
+
+Documentation:
+
+- `README.md` and `docs/index.md` had no Requirements section, so the engine
+  the suite runs on, the interface and API version the manifest declares,
+  the state directory, the architectures and the privilege set were
+  undocumented or buried. The minimum engine version is still not stated,
+  because it has never been measured (#670), and the section says so (#672).
+
+### Deferred to v2.1.0
+
+- A standalone DHCP IPAM driver, so `docker inspect` reports the address the
+  container holds after a lease change (#110).
+- An opt-in deterministic MAC, for a stable lease across recreates (#218).
+
+### Deferred to v2.2.0
+
+- The rest of IPv6. An acquisition still reports a lease timeout where no
+  exchange was possible (#816). The gateway, DNS, MTU and routes are not
+  taken from the advertisement (#821), and the advertisement is not parsed
+  into a first-class event (#814). SLAAC is not something the plugin
+  acquires (#818, #808), there is no `ipv6_mode` option to choose between
+  them (#817), and address lifetimes, withdrawal and renumbering (#819) and
+  prefix delegation (#214) are later still.
+- A server-initiated Reconfigure is not accepted (#925).
+- Two DHCPv6 protocol options carry no milestone yet: Rapid Commit (#926)
+  and temporary addresses (#927).
+
+### Deferred to v2.3.0
+
+- Host plumbing the plugin does not do: a bridge it creates and owns
+  (#903), VLAN sub-interfaces off the parent (#902), macvlan and ipvlan
+  sub-mode options (#905), and a link-local fallback when no DHCP server
+  answers (#904).
 
 ## v1.9.0
 
@@ -1881,9 +2212,9 @@ callers reach for the right pattern.
   container netnses via `/proc/<pid>/ns/net` symlink resolution
   through `setns(2)`, which only needs `CAP_SYS_ADMIN`. The smoke
   test confirmed the plugin still works without the cap (I-2).
-- `govulncheck` findings GO-2026-4887 / GO-2026-4883 documented in
-  the "Acknowledged findings" preamble as not reachable from
-  client-only `docker.Client` usage (I-10).
+- `govulncheck` findings GO-2026-4887 / GO-2026-4883 documented as
+  not reachable from client-only `docker.Client` usage (I-10). The
+  justification is now kept in `.github/vuln-allowlist.txt`.
 
 ### Code-review polish
 

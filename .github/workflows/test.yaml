@@ -5,10 +5,12 @@ on:
     branches:
       - main
       - dev
+      - '2.*'
   pull_request:
     branches:
       - main
       - dev
+      - '2.*'
     # `edited` IS LOAD-BEARING HERE (#742). The default set is
     # opened/synchronize/reopened, so nothing re-ran when a PR BODY
     # changed — and three gates in this workflow read the body:
@@ -238,6 +240,59 @@ jobs:
             exit 1
           }
 
+      # THE TAGS ARE LOAD-BEARING, and the default checkout has none:
+      # it is a depth-1 clone of one ref. The manifest-delta table is
+      # checked against the PREVIOUS RELEASE's config.json, which exists
+      # nowhere but in history, and the gate refuses rather than passing
+      # when it cannot resolve the tag.
+      #
+      # IT SITS HERE, AHEAD OF THE SELF-TESTS, AND NOT BESIDE THE GATE
+      # IT FEEDS. test-check-manifest-delta-table.sh's last case runs
+      # the gate against THIS repository — the preservation control that
+      # keeps "refuse everything" from satisfying its refusal cases — so
+      # the self-test step needs the tags as much as the gate step does.
+      # MEASURED: with the fetch below the self-tests, run 33932483754
+      # failed on exactly that case with "git cannot resolve 'v1.9.0'",
+      # while the local lane stayed green because a workstation clone
+      # has tags.
+      #
+      # --depth=1 and not fetch-depth: 0 on the checkout: the gate needs
+      # each tag's tree, not the history between them. MEASURED
+      # 2026-09-05 on a shallow clone of this repository: the tag
+      # resolves and `git show v1.9.0:config.json` reads, with .git at
+      # 5.5M.
+      #
+      # It asserts afterwards rather than trusting the fetch's exit
+      # code, like the locale and PyYAML steps above and for the same
+      # reason: a fetch that reported success while the baseline is
+      # still unresolvable must go red HERE, where the cause is named,
+      # not two steps later inside a gate.
+      - name: Fetch the release tags the manifest-delta gate reads
+        run: |
+          git fetch --tags --depth=1 --no-recurse-submodules origin
+          # The baseline comes from the table's own marker, so this step
+          # cannot drift from the gate by naming a different tag.
+          baseline=$(sed -n 's/^<!-- manifest-delta: begin baseline=\([^ ]*\) -->$/\1/p' \
+                     RELEASE_NOTES.md | head -n 1)
+          if [ -z "$baseline" ]; then
+            echo "::error title=No manifest-delta baseline::RELEASE_NOTES.md carries no" \
+                 "'<!-- manifest-delta: begin baseline=... -->' marker, so there is no tag" \
+                 "to fetch and check-manifest-delta-table.sh will refuse." >&2
+            exit 1
+          fi
+          if ! git rev-parse -q --verify "refs/tags/$baseline^{commit}" >/dev/null; then
+            echo "::error title=Baseline tag unavailable::'$baseline' is still unresolvable" \
+                 "after fetching tags. The manifest-delta gate and its self-test both read" \
+                 "that tag's config.json out of history and refuse without it." >&2
+            exit 1
+          fi
+          if ! git cat-file -e "$baseline:config.json" 2>/dev/null; then
+            echo "::error title=Baseline manifest missing::'$baseline' resolves but carries no" \
+                 "config.json, so there is nothing to compare the delta table against." >&2
+            exit 1
+          fi
+          echo "manifest-delta baseline $baseline resolves and carries config.json"
+
       - name: Gate script self-tests
         run: bash scripts/run-gate-selftests.sh
 
@@ -250,6 +305,47 @@ jobs:
       # that the missing tests are charged.
       - name: Shard-balance table check
         run: bash scripts/check-durations-table.sh
+
+      # Three lanes now run a whole integration suite in ONE go test
+      # binary -- arm64, coverage and the hosted cross-check -- and each
+      # derived the same 45m ceiling in its own comment, reconciled by
+      # nothing (#934). The gate derives that population from the
+      # workflows themselves and asks three things of it: the main
+      # suite's ceiling is stated rather than inherited from the
+      # Makefile's shard-sized default, the value survives the `sudo`
+      # that resets the environment on the hosted lane, and the job cap
+      # sits above the ceilings under it so a suite alarm is not
+      # pre-empted by a job kill that names the wrong cause. Both halves
+      # of that defect shipped to a release PR before this existed.
+      - name: One-process lane budget check
+        run: bash scripts/check-one-process-itest-budget.sh
+
+      # The pool's size and the number of jobs a run puts on it were
+      # stated in six places and checked in none, and two of the six
+      # were the text an operator reads during an incident (#879). The
+      # job counts are derived from the workflows themselves; the pool
+      # size is read from .github/ci-pool.json, because listing
+      # self-hosted runners needs repo administration rights and
+      # `administration` is not one of GITHUB_TOKEN's permission scopes
+      # at all -- see the script's header, and ci-queue-watchdog.sh's
+      # classify_wait, which measured that first.
+      #
+      # --live is not passed here for that reason. It runs from a
+      # workstation, where a token that CAN read the API compares the
+      # constant to the live count.
+      - name: Pool-facts check
+        run: bash scripts/check-pool-facts.sh
+
+      # Everything about the partition was checked except what the lane
+      # does with it. The shard count is a literal repeated eleven times
+      # in integration.yml and eleven more in integration-hosted.yml, and
+      # a reshard is one sed per file: bumping OF=9 to OF=10 without
+      # adding a tenth entry left nine tests scheduled by nobody while
+      # every gate above stayed green (measured in review of #921). This
+      # one asks the partitioner what each SCHEDULED triple selects and
+      # requires the union to be the roster, exactly once, per lane.
+      - name: Scheduled-shard coverage check
+        run: bash scripts/check-shard-coverage.sh
 
       # Every driver-option key the code parses must be documented in
       # docs/reference.md — an undocumented option turns CI red (#132).
@@ -279,6 +375,26 @@ jobs:
       # release stale without anyone noticing.
       - name: Docs-drift check
         run: bash scripts/check-docs-drift.sh
+
+      # External review row E-4. This branch has no dhcpcd: not in the
+      # image, not in the tree, and no helper the plugin execs. The
+      # documents said otherwise in 82 places, and each one was a wrong
+      # instruction rather than a stale sentence -- `pgrep dhcpcd`, a
+      # lease file that does not exist, two plugin settings the manifest
+      # no longer declares.
+      #
+      # Two words this branch retired: `dhcpcd`, which it does not
+      # contain, and `beta`, which it was never called. Each carries its
+      # own domain -- dhcpcd over documents, beta over documents AND the
+      # Go tree, where it reached an error string an operator reads --
+      # and its own allowances, all with dated reasons in the script.
+      # The gate is keyed on the SPELLING and says so in its own header:
+      # a page can describe the deleted mechanism, or call 2.0 "the
+      # preview", without either word, and this is blind to that. It is
+      # a backstop against a word coming back, not evidence that the
+      # prose is true.
+      - name: No retired word on this branch
+        run: bash scripts/check-retired-words.sh
 
       # RELEASE_NOTES.md merges last and describes code that is still
       # moving, so it is the one document whose claims can go stale
@@ -318,6 +434,19 @@ jobs:
 
       - name: Plugin-set snippet order
         run: bash scripts/check-plugin-set-order.sh
+
+      # The sibling above reads these same invocations to check that a
+      # `set` is preceded by a `disable`. So they were being parsed all
+      # along and nothing asked the more basic question: does the
+      # setting being set exist? 2.0 deleted the outage watchdog and its
+      # two settings from config.json; the deletion reached the manifest
+      # and the Go code but not the five places that INSTALL the plugin.
+      # The daemon refuses `docker plugin set` naming an undeclared
+      # setting outright, so package, scan, integration, all five main-*
+      # shards and failure-suite went red together and the error named
+      # the setting rather than the file that set it.
+      - name: Plugin-set settings are declared
+        run: bash scripts/check-plugin-set-settings.sh
 
       # Presence is not agreement (#638). check-docs-drift proves every
       # counter is documented; this proves the places that say WHICH
@@ -361,12 +490,64 @@ jobs:
       - name: Go pin consistency check
         run: bash scripts/check-go-pins.sh
 
+      # The DHCP library the BINARY was built from is the module go.mod
+      # pins (D34). `go list -m -f '{{.Version}}'`, which the Makefile
+      # and the Dockerfile derive the `library` label from, reports the
+      # REQUIRED version and says nothing about a `replace` to a local
+      # directory: the label would name a tag the bytes did not come
+      # from, and the health cell derives its expectation from the same
+      # command, so it would agree. This reads the module record the
+      # linker writes into the binary instead. It is the successor to
+      # the copy-versus-manifest check the module import deleted.
+      - name: The library in the binary is the module go.mod pins
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The gate compiles nothing (see the note in it), so this
+          # builds the binary it judges. Named absolutely so the cleanup
+          # can only ever remove the directory this step made.
+          d="$(mktemp -d)"
+          trap 'rm -rf "${d}"' EXIT
+          go build -o "${d}/net-dhcp" ./cmd/net-dhcp
+          bash scripts/check-library-pin.sh --binary "${d}/net-dhcp"
+
+      # netlink v1.3.1 hands ErrDumpInterrupted back ALONGSIDE a usable
+      # result set, so a dump call comparing its error against nil turns
+      # an ordinary mid-dump table change into a hard failure. It cost
+      # the arm64 lane a red on the v1.8.0-rc2 tag and it is the
+      # fail-open half of the parent mode-collision guard (#802). The
+      # migration was one-time; this is the part that does not decay.
+      - name: netlink dump calls go through the tolerant helper
+        run: bash scripts/check-netlink-dump-errors.sh
+
       # config.json and config-cover.json must agree on privilege
       # fields — a capability landing in only one means coverage runs
       # test a different plugin than the one that ships (#317's
       # CAP_SYS_PTRACE did exactly that on the v1.3.3 release PR).
       - name: Plugin-manifest parity check
         run: bash scripts/check-manifest-parity.sh
+
+      # RELEASE_NOTES.md's manifest-delta table is what an operator
+      # reads before approving `docker plugin upgrade`'s privilege
+      # prompt, and it was TYPED: every cell prose written from memory,
+      # compared against a manifest that is only in git and that nothing
+      # read. It was wrong — the v1.9.0 `env` row named four of six
+      # settings, so a removal of two read as "nothing was dropped",
+      # while the same file said otherwise sixty lines further down.
+      # This derives both columns with jq, from the tag the table's own
+      # marker names and from the manifest in the tree, and fails in
+      # either direction.
+      - name: Manifest-delta table check
+        run: bash scripts/check-manifest-delta-table.sh
+
+      # Every grant in config.json has one sentence in SECURITY.md and
+      # every sentence names a grant still requested (E-2, #725). The
+      # direction that is easy to forget is the second: a privilege
+      # dropped from the manifest and left in the prose reads as one
+      # the plugin still holds, and an operator's approval decision is
+      # made against the prose.
+      - name: Privilege-sentence check
+        run: bash scripts/check-privilege-sentences.sh
 
       # The issue labeller's rule map (#393). A pattern that has stopped
       # matching costs nothing visible at runtime — issues just fall
@@ -608,6 +789,23 @@ jobs:
       - name: Floating-tag promotion order
         run: bash scripts/check-latest-promotion.sh
 
+      # The release lane must have a reachable passing state (#910).
+      # Until 2.0 a release step compared a digest block in
+      # docs/verifying-releases.md against the binaries it had just
+      # built, and its recovery was to land the corrected block on the
+      # tagged commit -- which, once the commit is compiled into the
+      # binary, changes the digest it states. This measures whether the
+      # commit is still part of the binary's identity and refuses a tree
+      # that records a digest of a binary it builds while it is, and
+      # requires the release manifest to carry the digest instead.
+      #
+      # Here rather than only in release.yml for the same reason as
+      # sparse-checkout above: release.yml runs on a tag push and on
+      # nothing else, so anything checked only there is first executed
+      # on tag day.
+      - name: Release digests are a fixed point
+        run: bash scripts/check-release-digest-fixed-point.sh
+
       # A checkout that sets `sparse-checkout:` must not share its
       # workspace path with another checkout in the same job (#736).
       # actions/checkout does not clear a sparse configuration it finds
@@ -704,6 +902,37 @@ jobs:
       # workflow text at the only point they are visible — the edit.
       - name: Lane hygiene
         run: bash scripts/check-lane-hygiene.sh
+
+      # A `branches:` filter that admits no existing branch produces no
+      # check runs, and an absent check is not a red one. At the 2.x
+      # branch renames three such mutants survived the whole local lane
+      # (#907), and `.github/dependabot.yml`'s `target-branch` is worse
+      # than silent — GitHub falls back to the default branch, so the
+      # weekly dependency PRs open somewhere nobody chose (#912).
+      #
+      # It asks the REMOTE, never this checkout's branch list: a clone
+      # carries whatever it happened to fetch, so a local answer would
+      # differ on every machine. An unreachable remote REFUSES.
+      - name: Branch names under .github/ resolve
+        run: bash scripts/check-branch-refs.sh
+
+      # A command a document tells someone to RUN must be runnable, and a
+      # documented check whose refusal is the point must stop the block
+      # under it. scripts/release-body.sh shipped mode 100644 with both
+      # runbook blocks invoking it directly: exit 126, nothing read, and
+      # the tag pushed on the next line regardless. The bit is read from
+      # the git INDEX, which is the one place the filesystem cannot lie
+      # about.
+      - name: Documented commands run, and their refusals stop the block
+        run: bash scripts/check-direct-invocations.sh
+
+      # release.yml judges the release notes in `resolve`, which every
+      # publishing job descends from. Until #914 the only judgement was in
+      # `github-release`, downstream of both registry pushes, so a refusal
+      # arrived with the images already published. Nothing a pull request
+      # runs can execute release.yml; this reads its job graph instead.
+      - name: The release run judges the notes before it publishes
+        run: bash scripts/check-release-refusal-order.sh
 
       # Two allowlists accept the same advisories under two naming
       # schemes, and both headers state they stay in sync. They did not:

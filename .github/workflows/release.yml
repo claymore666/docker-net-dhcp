@@ -99,7 +99,11 @@ jobs:
           # load-bearing for the reason above, which never depended on
           # the cleanup.
           path: .resolver
-          sparse-checkout: scripts/resolve-dispatch-ref.sh
+          # Two files, both OURS: the resolver, and the release-body
+          # extractor the pre-flight below runs against the tag's notes.
+          sparse-checkout: |
+            scripts/resolve-dispatch-ref.sh
+            scripts/release-body.sh
           sparse-checkout-cone-mode: false
 
       # The dispatch input reaches the shell as DATA, through env, and is
@@ -183,6 +187,56 @@ jobs:
             echo "latest_tag=$LATEST"
             echo "latest_arm_tag=$LATEST_ARM"
           } >> "$GITHUB_OUTPUT"
+
+      # THE NOTES ARE JUDGED HERE, BEFORE ANYTHING IS PUBLISHED.
+      #
+      # `github-release` assembles the body, and it `needs:` the four
+      # verify jobs, which need `release`/`release-arm64`. By the time a
+      # refusal there is printed, both registries hold the tag and
+      # `promote-latest` is moving the floating tags in parallel: the run
+      # goes red with the images already published and no release page.
+      # That is what v2.0.0-rc1 shipped (a generated placeholder, then;
+      # a refusal, now that the extraction refuses instead of falling
+      # back).
+      #
+      # `resolve` is the one job every publishing job descends from, so a
+      # refusal here fails the run with nothing pushed anywhere.
+      #
+      # SAME SCRIPT, AND SAY WHICH COPY. This and the assembly in
+      # `github-release` are two materialisations of one source file, and
+      # on a `workflow_dispatch` of an existing tag they are two
+      # different revisions of it -- or one and none. Both now run THIS
+      # workflow's copy against the tag's notes, which is the only
+      # reading under which "the same script, run early" is true of a
+      # re-dispatch as well as of a tag push.
+      #
+      # OUR SCRIPT, THEIR DATA -- AND THE DATA IS NEVER A TREE.
+      # `.resolver` is this workflow's own ref (see the checkout above).
+      # The notes are the tag's, and they arrive as one blob read out of
+      # the object database: fetched, then `git show`n to a file. Nothing
+      # the tag names is ever placed in a working tree, so no file the
+      # tag controls can be executed, sourced or picked up by a later
+      # step -- which is what a second `actions/checkout` on
+      # `steps.tag.outputs.ref` would set up, and what CodeQL's
+      # `actions/cache-poisoning/poisonable-step` names when it sees one
+      # (alert 119, #914). Running the tag's copy of the EXTRACTOR would
+      # be the same mistake one level up: it would let the tag decide
+      # whether the tag is publishable.
+      - name: Refuse a tag whose release notes cannot be assembled
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+          REF: ${{ steps.tag.outputs.ref }}
+        run: |
+          set -euo pipefail
+          # The ref reaches git as DATA, through env, fully qualified by
+          # resolve-dispatch-ref.sh, and lands on a local ref name of our
+          # choosing -- not on HEAD and not in the work tree.
+          git -C .resolver fetch --depth=1 --no-tags origin \
+            "+${REF}:refs/notes-under-judgement"
+          git -C .resolver show refs/notes-under-judgement:RELEASE_NOTES.md \
+            > notes-under-judgement.md
+          bash .resolver/scripts/release-body.sh "$TAG" notes-under-judgement.md >/dev/null
+          echo "Release notes for $TAG assemble; nothing has been published yet."
 
   release:
     needs: resolve
@@ -285,40 +339,38 @@ jobs:
       # digest and the single signature made below covers both — which
       # is why promotion can happen after signing without needing a
       # second signature.
+      #
+      # VERSION="${TAG}" is the one point where the release tag reaches
+      # the binary (O-4): the Makefile turns it into -ldflags -X, and it
+      # comes back out of /Plugin.Health and net_dhcp_build_info. COMMIT
+      # is derived by the Makefile from this checkout. Nothing else in
+      # this job changes for build identity.
       - name: Push to GHCR
         env:
           TAG: ${{ needs.resolve.outputs.tag }}
-        run: make PLUGIN_NAME="${GHCR_NAME}" PLUGIN_TAG="${TAG}" push
+        run: make PLUGIN_NAME="${GHCR_NAME}" PLUGIN_TAG="${TAG}" VERSION="${TAG}" push
 
-      # The reference digests in docs/verifying-releases.md must describe
-      # the binaries this tag actually publishes (#502).
+      # THERE IS NO DOC-VERSUS-BUILD DIGEST GATE HERE ANY MORE, and the
+      # reason is arithmetic rather than taste. Until 2.0 this step
+      # compared a digest block in docs/verifying-releases.md against
+      # the binaries `make push` had just built, and its documented
+      # recovery was: take the block from the failed run, land it on the
+      # TAGGED commit, re-tag. From 2.0 the tag and the commit are
+      # inside the binary (VERSION/COMMIT above), so landing the block
+      # changes the commit, which changes the binary, which changes the
+      # digest the block states. No commit can record the digest of a
+      # binary built from itself, so the recovery could not converge and
+      # this step had no passing state to reach — it sat between the
+      # GHCR push and the Hub push, so every attempt left a
+      # half-published release.
       #
-      # Placed here deliberately: `make push` above has just built
-      # plugin/, so this is the earliest point the binaries exist. Since
-      # #736 every failure in this job is ahead of the floating tag, not
-      # just this one — a failure leaves a published `:vX.Y.Z` with
-      # `:latest` untouched, recoverable by fixing the doc and re-running,
-      # with nothing user-visible pointing at a release that was never
-      # announced.
-      #
-      # It fails the release rather than warning, and it fails on an rc
-      # too. That is the point: the rc dry-run is where a documentation
-      # error should stop the train, not the real tag. An rc compares
-      # against its base version (v1.6.0-rc1 -> v1.6.0) because it builds
-      # from the same source and therefore carries the same digests.
-      #
-      # The digests can only be known after a tag builds, so the first rc
-      # of a new version is EXPECTED to fail here and print the block to
-      # paste into the doc. That is runbook step 10b becoming enforced
-      # rather than remembered.
-      - name: Check the documented reference digests against this build
-        env:
-          TAG: ${{ needs.resolve.outputs.tag }}
-        run: |
-          bash scripts/check-reference-digests.sh \
-            "${TAG}" \
-            plugin/rootfs/usr/sbin/net-dhcp \
-            plugin/rootfs/usr/lib/net-dhcp/dhcp-handler
+      # The digests still ship. They are produced by the build that
+      # makes them true, into the cosign-signed checksums manifest
+      # below, which records the binary under the path it has inside the
+      # release tarball. scripts/check-release-digest-fixed-point.sh
+      # holds both halves of that: no file in this tree may record a
+      # digest of a binary this tree builds while the commit is part of
+      # the binary, and the manifest must cover the binary.
 
       # Same plugin to Docker Hub when credentials are present. Make
       # rebuilds the rootfs with the Hub-prefixed name; the underlying
@@ -329,7 +381,7 @@ jobs:
         env:
           TAG: ${{ needs.resolve.outputs.tag }}
         run: |
-          make PLUGIN_NAME="${HUB_NAME}" PLUGIN_TAG="${TAG}" push
+          make PLUGIN_NAME="${HUB_NAME}" PLUGIN_TAG="${TAG}" VERSION="${TAG}" push
           # Written AFTER the push, so it records a push that happened
           # rather than a step that started.
           echo "pushed=true" >> "$GITHUB_OUTPUT"
@@ -477,9 +529,18 @@ jobs:
           set -euo pipefail
           ART="net-dhcp-plugin-${TAG}-linux-amd64.tar.gz"
           tar -czf "$ART" -C plugin .
-          # Manifest covers the tarball AND the SBOMs, so the single
-          # keyless signature below attests all release assets at once.
+          # Manifest covers the tarball, the SBOMs AND the binary
+          # inside the tarball, so the single keyless signature below
+          # attests all release assets at once.
           sha256sum "$ART" sbom.spdx.json sbom.cdx.json > checksums.txt
+          # The binary is recorded under the path it has once the
+          # tarball is extracted, so `sha256sum --ignore-missing -c
+          # checksums.txt` in the directory where you unpacked it checks
+          # the binary too. This is what replaced the digest block that
+          # used to live in docs/verifying-releases.md: a digest
+          # produced by the build that makes it true, signed, rather
+          # than one a commit would have to state about itself.
+          ( cd plugin && sha256sum rootfs/usr/sbin/net-dhcp ) >> checksums.txt
           # Keyless (Fulcio/OIDC) signature over the checksum manifest,
           # emitted as a Sigstore bundle (cosign v3 default; the v2
           # --output-signature/--output-certificate pair was removed —
@@ -636,14 +697,19 @@ jobs:
   # It is accepted for ONE class of amd64 failure, and it is worth
   # naming which, because the two classes are not alike:
   #
-  #   FAILS AFTER PUBLISHING — the digest gate. `Check the documented
-  #   reference digests against this build` runs AFTER `Push to GHCR`,
-  #   deliberately: that is the earliest point the binaries exist. So
-  #   a failed gate already leaves a published `:vX.Y.Z` behind, and
-  #   this is every first rc of a new version. Here the old edge
-  #   bought consistency between two
-  #   leftovers, not the absence of one, and giving it up costs
-  #   nothing that was not already spent.
+  #   FAILS AFTER PUBLISHING — everything from `Sign published images`
+  #   onward: cosign, the SBOM, the signed checksum manifest, both
+  #   provenance attestations and the cross-registry parity check all
+  #   run after `Push to GHCR`, because they act on bytes that have to
+  #   exist first. A failure in any of them already leaves a published
+  #   `:vX.Y.Z` behind. Here the old edge bought consistency between two
+  #   leftovers, not the absence of one, and giving it up costs nothing
+  #   that was not already spent.
+  #
+  #   (Until 2.0 the example given here was the doc-versus-build digest
+  #   gate, which was expected to fail on the first rc of every version.
+  #   That gate is gone — see the note in the `Push to GHCR` step — so
+  #   this class is no longer routine. It is still real.)
   #
   #   FAILS BEFORE PUBLISHING — a broken build, a bad ref, an expired
   #   token, or the `Both registries, or say why not` step. Checkout,
@@ -658,9 +724,9 @@ jobs:
   # The trade is deliberate. Nothing floating points at that tag --
   # both floating tags move only in `promote-latest`, which names every
   # build and verify job -- and re-running the tag recovers it. The
-  # price of keeping it was a whole rc round per release, because a
-  # skipped `release-arm64` never runs its own digest gate, so the
-  # first rc of a new version could only ever print the amd64 block.
+  # price of keeping it, when it was paid, was a whole rc round per
+  # release: a skipped `release-arm64` never reached its own steps, so
+  # an amd64 failure hid whatever arm64 would have said.
   release-arm64:
     needs: resolve
     runs-on: ubuntu-24.04-arm
@@ -716,7 +782,7 @@ jobs:
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Push to GHCR
-        run: make PLUGIN_NAME="${GHCR_NAME}" PLUGIN_TAG="${ARM_TAG}" push
+        run: make PLUGIN_NAME="${GHCR_NAME}" PLUGIN_TAG="${ARM_TAG}" VERSION="${TAG}" push
 
       # Belt to the assert's braces: the binary that was actually packed
       # into the rootfs must be arm64. `go version -m` is not available
@@ -727,22 +793,15 @@ jobs:
           echo "net-dhcp machine: $m"
           case "$m" in *AArch64*) ;; *) echo "::error::rootfs binary is not arm64: $m"; exit 1;; esac
 
-      # Same gate as amd64, against the arm64-labelled digest block in
-      # docs/verifying-releases.md (#502). Same expected-fail flow: the
-      # first rc of a new version prints the block to paste.
-      - name: Check the documented reference digests against this build
-        run: |
-          bash scripts/check-reference-digests.sh \
-            "${TAG}" \
-            plugin/rootfs/usr/sbin/net-dhcp \
-            plugin/rootfs/usr/lib/net-dhcp/dhcp-handler \
-            arm64
+      # No doc-versus-build digest gate here either — see the note in
+      # the amd64 job. This architecture's digests reach operators the
+      # same way: through checksums-arm64.txt below.
 
       - name: Push to Docker Hub
         id: hub-push-arm
         if: env.HAS_HUB_CREDS == 'true'
         run: |
-          make PLUGIN_NAME="${HUB_NAME}" PLUGIN_TAG="${ARM_TAG}" push
+          make PLUGIN_NAME="${HUB_NAME}" PLUGIN_TAG="${ARM_TAG}" VERSION="${TAG}" push
           echo "pushed=true" >> "$GITHUB_OUTPUT"
 
       - name: Install cosign
@@ -785,6 +844,10 @@ jobs:
           ART="net-dhcp-plugin-${TAG}-linux-arm64.tar.gz"
           tar -czf "$ART" -C plugin .
           sha256sum "$ART" sbom-arm64.spdx.json sbom-arm64.cdx.json > checksums-arm64.txt
+          # Same as amd64: the binary under its extracted path, so the
+          # signed manifest covers what is inside the tarball as well as
+          # the tarball.
+          ( cd plugin && sha256sum rootfs/usr/sbin/net-dhcp ) >> checksums-arm64.txt
           cosign sign-blob --yes \
             --bundle checksums-arm64.txt.sigstore.json \
             "checksums-arm64.txt"
@@ -1384,6 +1447,26 @@ jobs:
           ref: ${{ needs.release.outputs.ref }}
           fetch-depth: 0
 
+      # OUR copy of the extractor, again -- the same rule `resolve`
+      # applies, at the site that actually produces the body. The
+      # checkout above is the TAG's tree, and `scripts/release-body.sh`
+      # does not exist in it for any tag published before #914
+      # (v2.0.0-rc1, v1.9.0): assembling with `bash scripts/...` from
+      # there made a re-dispatch of an existing tag die 127 at the last
+      # step, AFTER both registries had been re-pushed and `:latest`
+      # moved -- and a re-dispatch exists precisely to refresh a release
+      # page whose body is wrong. One fix does not reach the copies: the
+      # pre-flight in `resolve` was corrected and this, the second
+      # materialisation of the same source file, was not.
+      #
+      # Its own path, for the reason the resolve job states: a second
+      # checkout at the same path inherits the first one's sparse config.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: .resolver
+          sparse-checkout: scripts/release-body.sh
+          sparse-checkout-cone-mode: false
+
       - name: Download signed artifacts
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
@@ -1415,16 +1498,23 @@ jobs:
 
           EOF
 
-          # 2. Per-version section from RELEASE_NOTES.md (the extraction the
-          #    runbook documents). Exact-match the header so version dots
-          #    aren't treated as regex. Empty for rc/suffixed tags that have
-          #    no notes section — fall back to a short body so the dry-run
-          #    still produces a release.
-          awk -v hdr="## ${TAG}" '$0==hdr{flag=1; next} /^## v/{flag=0} flag' \
-            RELEASE_NOTES.md > section.md || true
-          if [ ! -s section.md ]; then
-            echo "Pre-release / dry-run build for \`${TAG}\`." > section.md
-          fi
+          # 2. Per-version section from RELEASE_NOTES.md. THE EXTRACTION IS
+          #    NOT HERE. It used to be an exact `$0 == "## ${TAG}"` awk with
+          #    `|| true` and a one-line placeholder fallback, which meant a
+          #    heading the tag did not match — `## v2.0.0 (unreleased)` is
+          #    the shape this repository actually carries — published the
+          #    placeholder and exited 0, on the release page, silently.
+          #
+          #    scripts/release-body.sh refuses instead, and it is a script
+          #    rather than a longer block here so that the lane can drive
+          #    it: a copy of the awk in this YAML would be the thing that
+          #    ships and the script would be the thing that is tested.
+          #    Its refusal fails this step under `set -e`, which is the
+          #    intent — no body is better than a wrong one — and the
+          #    runbook's step 4 runs the same command before the tag so the
+          #    refusal is met on a workstation and not after the images are
+          #    pushed.
+          bash .resolver/scripts/release-body.sh "${TAG}" RELEASE_NOTES.md > section.md
           # The rest of the body is written in one group: the notes
           # section, then (3) the artifact names — GitHub lazy-loads the
           # assets list, so the filenames appear nowhere in the fetched
@@ -1444,8 +1534,8 @@ jobs:
               case "$f" in
                 *-linux-amd64.tar.gz)     what="plugin rootfs + \`config.json\` (amd64)" ;;
                 *-linux-arm64.tar.gz)     what="plugin rootfs + \`config.json\` (arm64)" ;;
-                checksums.txt)            what="SHA-256 of the amd64 files" ;;
-                checksums-arm64.txt)      what="SHA-256 of the arm64 files" ;;
+                checksums.txt)            what="SHA-256 of the amd64 files, and of the binary inside the tarball" ;;
+                checksums-arm64.txt)      what="SHA-256 of the arm64 files, and of the binary inside the tarball" ;;
                 checksums.txt.sigstore.json) what="cosign bundle signing \`checksums.txt\`" ;;
                 checksums-arm64.txt.sigstore.json) what="cosign bundle signing \`checksums-arm64.txt\`" ;;
                 sbom.spdx.json)           what="SBOM, SPDX (amd64)" ;;

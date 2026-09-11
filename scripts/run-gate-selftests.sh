@@ -23,10 +23,30 @@
 # together at the end. The old list was fail-fast, which meant a commit
 # breaking three gates took three CI rounds to diagnose.
 #
+# THEY RUN CONCURRENTLY, AND THE OUTPUT DOES NOT (D41). MEASURED on
+# run 34065502420: this one step was 228s of `policy-gates`' 266s —
+# ninety-odd independent bash suites executed one after another on a
+# four-vCPU hosted runner. Nothing here shares state: every self-test
+# builds its subject in its own `mktemp -d` (the three that do not use
+# `$$`-suffixed paths), and none writes into the repository. So the
+# EXECUTION is a worker pool, while the REPORTING is still the sorted
+# serial walk it was: each test's stdout and stderr are captured to a
+# file and replayed, in name order, under the same `::group::` heading,
+# with the same verdict lines and the same exit codes. Two logs still
+# diff line for line; what changed is only how long it took to produce
+# them.
+#
+# The concurrency is bounded and it must stay bounded: an unbounded
+# fan-out over ninety suites on a two-core runner thrashes and comes out
+# slower than the serial walk it replaced. The default is `nproc`.
+#
 # Usage: bash scripts/run-gate-selftests.sh
-# Env:   SELFTEST_DIR  directory to discover in (default: the scripts/
-#                      directory this file lives in) — the seam the
-#                      self-test drives.
+# Env:   SELFTEST_DIR   directory to discover in (default: the scripts/
+#                       directory this file lives in) — the seam the
+#                       self-test drives.
+#        SELFTEST_JOBS  how many self-tests run at once (default:
+#                       `nproc`, floor 1). SELFTEST_JOBS=1 is the serial
+#                       walk, and the self-test drives both.
 # Exit:  0 all passed, 1 one or more failed, 2 nothing to run.
 
 set -uo pipefail
@@ -98,10 +118,21 @@ else
     workflow_shell=""
 fi
 
-echo "Discovered ${#tests[@]} gate self-test(s) in $DIR."
+jobs="${SELFTEST_JOBS:-$(nproc 2>/dev/null || echo 1)}"
+case "$jobs" in
+    ''|*[!0-9]*|0) jobs=1 ;;
+esac
+
+echo "Discovered ${#tests[@]} gate self-test(s) in $DIR, running up to ${jobs} at a time."
 failed=()
 skipped=()
 undelegated=()
+
+# The delegation walk stays serial and stays FIRST: it runs no test, it
+# is a sed and a case glob per file, and it decides which files the pool
+# is given. Deciding that inside the pool would mean the skip list
+# arrived out of order.
+run=()
 for t in "${tests[@]}"; do
     base="$(basename "$t")"
     owner=$(sed -n 's/^#[[:space:]]*gate-selftest-runs-in:[[:space:]]*\(.*\)$/\1/p' "$t" | head -1)
@@ -119,13 +150,44 @@ for t in "${tests[@]}"; do
         esac
         continue
     fi
+    run+=("$t")
+done
+
+OUT="$(mktemp -d)"
+trap 'rm -rf "$OUT"' EXIT
+
+# One file per test, named by index so the replay order is the discovery
+# order regardless of which worker finished first. The exit code is
+# written as the last thing the worker does; a worker killed before that
+# leaves no .rc file, which the replay reads as a failure rather than as
+# a pass — the same direction as every other refusal here.
+worker() { # <index> <path>
+    local i="$1" t="$2"
+    bash "$t" > "$OUT/$i.out" 2>&1
+    echo "$?" > "$OUT/$i.rc"
+}
+
+running=0
+for i in "${!run[@]}"; do
+    worker "$i" "${run[$i]}" &
+    running=$(( running + 1 ))
+    if [ "$running" -ge "$jobs" ]; then
+        wait -n 2>/dev/null || true
+        running=$(( running - 1 ))
+    fi
+done
+wait
+
+for i in "${!run[@]}"; do
+    base="$(basename "${run[$i]}")"
     echo "::group::${base}"
-    if bash "$t"; then
-        echo "::endgroup::"
-    else
-        echo "::endgroup::"
+    [ -f "$OUT/$i.out" ] && cat "$OUT/$i.out"
+    echo "::endgroup::"
+    rc=1
+    [ -f "$OUT/$i.rc" ] && rc="$(cat "$OUT/$i.rc")"
+    if [ "$rc" -ne 0 ]; then
         echo "::error title=Gate self-test failed::${base}" >&2
-        failed+=("$t")
+        failed+=("${run[$i]}")
     fi
 done
 

@@ -234,16 +234,26 @@ advise() {
             echo "work and this run never got a runner, so no suite executed. Re-run it once the"
             echo "pool drains; do not go looking for a bug in the diff."
             echo
-            echo "Concurrent runs are expected to fit: each integration run puts 6 jobs on the"
-            echo "pool (the suite matrix; gate, watchdog and the aggregator are hosted). Two runs"
-            echo "fit a 16-runner pool with four to spare, so a third gets a PARTIAL pickup —"
-            echo "four of its six assigned, two queued past the budget (#513)." ;;
+            # These two paths are what an operator reads DURING an incident, and
+            # they misstated both operands for a month (#879). They are checked
+            # now: scripts/check-pool-facts.sh derives the job count from the
+            # suite matrix and the pool size from .github/ci-pool.json, and the
+            # markers below are what it compares against.
+            echo "Concurrent runs are expected to fit — but since D41 only just: each integration"
+            # ci-pool: integration-pool-jobs=11
+            echo "run puts 11 jobs on the pool (the suite matrix; gate, build, watchdog and the"
+            # ci-pool: pool-runners=16
+            echo "aggregator are hosted). ONE run fits a 16-runner pool with five to spare, so a"
+            echo "SECOND run queues most of its suite past the budget (#513) — expected now,"
+            echo "where under the six-job layout it took a third run to provoke." ;;
         "POOL SHORT")
             echo "Nothing else was competing for the pool, so this is not capacity — the pool"
             echo "itself is short, offline, or not being assigned. A re-run queues behind the"
             echo "same condition, so check the orchestrator and the runner host first. This is"
+            # ci-pool: pool-runners=16
             echo "the 2026-07-31 shape, where one runner was registered instead of the"
-            echo "contracted eight (#392)."
+            echo "contracted 16 (#392; the contracted number was eight when that happened —"
+            echo ".github/ci-pool.json is what says the number now)."
             echo
             echo "It says nothing about the change under test either: no suite executed." ;;
         *)

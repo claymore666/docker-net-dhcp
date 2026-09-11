@@ -46,6 +46,29 @@ on:
   schedule:
     - cron: '17 4 * * 1'   # weekly Mon 04:17 UTC, off-peak odd minute
   workflow_dispatch:
+    inputs:
+      # THE HOSTED-VERSUS-POOL INSTRUMENT (D41). The maintainer's rule is
+      # "if GitHub is as fast as the hosted runner, prefer GitHub", and a
+      # rule keyed on a number needs the number measured on the same
+      # shape. `full` is this lane as it has always been -- one job, both
+      # suites, the shape the weekly cron runs and the shape a schedule
+      # gets because inputs are empty there. `sharded` runs the SAME
+      # eleven shards integration.yml runs, on hosted runners, so the two
+      # lanes' longest suite job can be compared at one SHA with one
+      # variable moved.
+      #
+      # It is a dispatch input and not a second workflow because the
+      # setup this lane does -- the fixture packages, the port check, the
+      # AppArmor check, the kea PATH check -- is what makes a hosted run
+      # comparable at all, and a copy of it in another file is a copy
+      # that will be corrected in one of the two places (#542's shape).
+      layout:
+        description: 'full = one job, both suites (the cross-check); sharded = the eleven shards integration.yml runs, on hosted runners'
+        type: choice
+        options:
+          - full
+          - sharded
+        default: full
 
 permissions:
   contents: read
@@ -53,14 +76,33 @@ permissions:
 jobs:
   integration-hosted:
     runs-on: ubuntu-latest
-    # 40m, matching integration.yml: main suite + failure-injection
-    # suite + plugin build + margin. The failure suite grew a fourth
-    # test in #351 (~10 min of deliberate DHCP-timing waits, up from
-    # ~9), and hosted hardware is slower than the self-hosted pool for
-    # the same work — the self-hosted lane lands at ~28-29 min, so 35m
-    # left too little room here. Hosted timings are still being
-    # calibrated (see #238).
-    timeout-minutes: 40
+    strategy:
+      # fail-fast: false for the same reason integration.yml gives: one
+      # shard's red must not delete the other ten's evidence, and this
+      # lane exists to produce evidence.
+      fail-fast: false
+      matrix:
+        # `full` on a schedule and by default, because `inputs` is empty
+        # on a scheduled run. The sharded list mirrors integration.yml's
+        # matrix and carries its own OF, so a shard id is self-describing
+        # and the two lanes cannot silently partition differently;
+        # scripts/test-integration-shard.sh checks the two lists against
+        # each other.
+        shard: ${{ (inputs.layout == 'sharded') && fromJSON('["main-1-of-9","main-2-of-9","main-3-of-9","main-4-of-9","main-5-of-9","main-6-of-9","main-7-of-9","main-8-of-9","main-9-of-9","failure-1-of-2","failure-2-of-2"]') || fromJSON('["full"]') }}
+    # A BACKSTOP ABOVE THE STEP CEILINGS, not an estimate of the suite.
+    # The `full` arm below runs the WHOLE main suite in one go test
+    # binary and then the whole failure suite, each under its own alarm
+    # (45m and 20m), so a job cap under their sum cannot fire second: at
+    # 40 it would have killed the job with the main suite still holding
+    # most of its budget, and 40 sits UNDER the 34.6 minutes the two
+    # suites cost on the 2.0 tree before any margin at all.
+    #
+    # 45 + 20 = 65 minutes of ceilings, plus 1m11s of checkout, toolchain,
+    # fixture install and plugin build measured on this lane's run
+    # 34105560953 and nothing measurable after the suites, is 67 minutes
+    # rounded up, inside 70. The sharded arm keeps the Makefile's 20m per
+    # shard and is nowhere near this.
+    timeout-minutes: 70
     env:
       # Distinct tag from :integration (self-hosted) and :golang-cover
       # (coverage). The VM is ephemeral so collisions can't happen, but
@@ -175,8 +217,8 @@ jobs:
       # that has to resolve it; a PATH without /usr/sbin reproduces the
       # exact "kea-dhcp4 not found in PATH" failure on a host where the
       # binary is present. Assert against the real invocation, not
-      # against this step's own shell, and fail here rather than 40
-      # minutes later inside a test.
+      # against this step's own shell, and fail here rather than deep
+      # inside the suite.
       - name: Verify kea resolves in the PATH the suite will use
         run: |
           sudo env "PATH=$PATH" sh -c 'command -v kea-dhcp4' \
@@ -199,8 +241,8 @@ jobs:
 
       # Second half of the same idea: assert the OUTCOME, not the
       # configuration meant to produce it. An enforcing kea profile
-      # denies the fixture its lockfile and the tests fail 40 minutes
-      # later with a message about readiness that names no cause.
+      # denies the fixture its lockfile and the tests fail much later
+      # with a message about readiness that names no cause.
       - name: Verify no kea AppArmor profile is enforcing
         run: |
           if sudo aa-status 2>/dev/null \
@@ -226,16 +268,82 @@ jobs:
           # without it the hosted run pays the shipped 30s/25s on top of
           # the fixture's immovable 2m lease — ~80s more than the other
           # two lanes, against the same 35m budget.
-          docker plugin set "${INTEGRATION_PLUGIN_REF}" LOG_LEVEL=trace \
-            OUTAGE_TICK=2s OUTAGE_GRACE=10s
+          docker plugin set "${INTEGRATION_PLUGIN_REF}" LOG_LEVEL=trace
           docker plugin enable "${INTEGRATION_PLUGIN_REF}"
 
       # The Makefile targets require root (netns/veth/UDP-67). Hosted
       # runs as the `runner` user with passwordless sudo, so wrap with
       # sudo — and forward PATH (for the setup-go toolchain) and the
       # plugin ref explicitly, since sudo resets the environment.
+      #
+      # ITEST_TIMEOUT, and FORWARDED THROUGH sudo, which is the whole
+      # trick here. `sudo` resets the environment, so a step-level `env:`
+      # alone reads as a budget and delivers nothing: make would take
+      # Makefile:171's 20m default and the alarm would fire mid-suite
+      # exactly as it did on the coverage lane. The value is named once
+      # in `env:` and forwarded by name, the same shape this step already
+      # uses for the plugin ref.
+      #
+      # THIS ARM RUNS THE WHOLE MAIN SUITE IN ONE go test BINARY, like
+      # integration-arm64.yml and coverage.yml, and 45m is the ceiling
+      # all three now carry for it. Sized on the 2.0 suite:
+      # test/integration/testdata/suite-durations.tsv sums to 1807.9s,
+      # 30.1 minutes, for the 93 main tests, measured on the self-hosted
+      # pool.
+      #
+      # THE HOSTED FACTOR IS MEASURED, on this tree, by run 34537348413 --
+      # the dispatch of this arm that the commit raising these numbers
+      # ran rather than leaving the question to an inference. Hosted did
+      # the 2.0 main suite in 1936.6s against the pool's 1807.9s, a
+      # factor of 1.071: seven percent SLOWER than the self-hosted pool.
+      # 45m is 1.38x that, twelve minutes of slack.
+      #
+      # WHAT THAT NUMBER IS NOT. The run concluded red -- 77 PASS, 1 SKIP
+      # and 15 FAIL of the 93, all of them hosted-environment findings
+      # (no router advertisement on this kernel, observers that cannot
+      # see a container's DHCP socket) and none a budget failure. Failed
+      # tests do not cost what passing ones do: some ended in 6.14s and
+      # one took 183.8s, so a like-for-like factor does NOT exist from
+      # this run and 1.071 is the closest thing to it that does. The
+      # suite ENDED rather than being cut, which is the property the
+      # ceiling is here for.
+      #
+      # It replaces an inference of 0.955 -- taken from this lane's only
+      # green run, 34105560953, which did the DEFAULT BRANCH's 73-test
+      # suite in 14m33s against 914.3s in that branch's own table -- that
+      # predicted about 28.8 minutes and 1.56x. The measurement
+      # contradicts it in the safe direction, and it is recorded here
+      # rather than quietly dropped: a different tree and a different
+      # DHCP client is exactly the escape the inference named, and it is
+      # the escape that turned out to matter.
       - name: Run integration tests
-        run: sudo env "PATH=$PATH" "INTEGRATION_PLUGIN_REF=$INTEGRATION_PLUGIN_REF" make integration-test
+        if: matrix.shard == 'full'
+        env:
+          ITEST_TIMEOUT: 45m
+        run: sudo env "PATH=$PATH" "INTEGRATION_PLUGIN_REF=$INTEGRATION_PLUGIN_REF" "ITEST_TIMEOUT=$ITEST_TIMEOUT" make integration-test
+
+      # The sharded arm. The suite, the 1-based index and the total are
+      # all read out of the matrix id, so this step states no partition
+      # of its own -- there is nothing here to drift from
+      # integration.yml's matrix except the list above, which is checked.
+      - name: Run one shard
+        if: matrix.shard != 'full'
+        env:
+          SHARD_ID: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          case "${SHARD_ID}" in
+            *-*-of-*) : ;;
+            *) echo "::error title=Unreadable shard id::'${SHARD_ID}' is not <suite>-<index>-of-<total>" >&2
+               exit 1 ;;
+          esac
+          suite="${SHARD_ID%%-*}"
+          rest="${SHARD_ID#*-}"
+          idx="${rest%%-of-*}"
+          of="${rest##*-of-}"
+          echo "hosted shard: SUITE=${suite} SHARD=${idx} OF=${of}"
+          sudo env "PATH=$PATH" "INTEGRATION_PLUGIN_REF=$INTEGRATION_PLUGIN_REF" \
+              make integration-test-shard "SHARD=${idx}" "OF=${of}" "SUITE=${suite}"
 
       # if: always() IS THE WHOLE POINT OF RUNNING THIS LANE (#742). Without
       # it a red main suite skips the failure-injection suite entirely, so
@@ -245,9 +353,17 @@ jobs:
       # integration.yml:109-114 documents as the bug `fail-fast: false`
       # fixed there; it was never applied here. Observed live in run
       # 32166474894.
+      #
+      # 20m is the Makefile default, written out and forwarded for the
+      # same two reasons as the main step: this lane's budgets are read
+      # together, and under sudo an unforwarded value is not a budget at
+      # all. The suite sums to 272.3s in the durations table and took
+      # 2m02s here on run 34105560953, so 20m holds it several times over.
       - name: Run failure-injection tests
-        if: always()
-        run: sudo env "PATH=$PATH" "INTEGRATION_PLUGIN_REF=$INTEGRATION_PLUGIN_REF" make integration-test-failure
+        if: always() && matrix.shard == 'full'
+        env:
+          ITEST_TIMEOUT: 20m
+        run: sudo env "PATH=$PATH" "INTEGRATION_PLUGIN_REF=$INTEGRATION_PLUGIN_REF" "ITEST_TIMEOUT=$ITEST_TIMEOUT" make integration-test-failure
 
       # Belt-and-braces on an ephemeral VM, kept for parity with
       # integration.yml so the two workflows read the same.

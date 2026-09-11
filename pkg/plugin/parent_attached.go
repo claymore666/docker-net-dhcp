@@ -107,7 +107,18 @@ func explainChildLinkAdd(err error, mode, parent string, parentIndex int) error 
 		return fmt.Errorf("failed to create %v link: %w", mode, err)
 	}
 
-	occupant := childLinkKind(parentIndex)
+	occupant, known := childLinkKind(parentIndex)
+	if !known {
+		// The link table could not be read, so nothing is known about
+		// what the parent carries. Said out loud rather than folded
+		// into the branch below: "nothing of the other kind is there"
+		// and "the question could not be asked" are different answers
+		// and want different next steps from the operator (#802).
+		return fmt.Errorf("failed to create %v link on %q: %w — the parent would not "+
+			"accept another child, and its link table could not be read, so whether it "+
+			"already carries %v children is unknown; check with `ip -d link show` and "+
+			"retry", mode, parent, err, otherChildMode(mode))
+	}
 	if occupant == "" || occupant == mode {
 		// EBUSY with nothing of the other kind visible: the blocker has
 		// already gone (a teardown that completed between the refusal
@@ -126,11 +137,21 @@ func explainChildLinkAdd(err error, mode, parent string, parentIndex int) error 
 }
 
 // childLinkKind reports the kind of parent-attached child already on
-// this parent — "macvlan", "ipvlan", or "" if it carries neither.
-func childLinkKind(parentIndex int) string {
-	links, err := nlLinkList()
+// this parent — "macvlan", "ipvlan", or "" if it carries neither — and
+// whether the link table could be read at all.
+//
+// THE SECOND RETURN IS THE FIX, NOT THE DUMP TOLERANCE (#802). A
+// `string` return cannot express "I could not tell": the dump error
+// used to come back as "", which is the caller's encoding for "this
+// parent carries neither kind", so a transient netlink failure made a
+// mode-collision guard report the parent as free. Name the opposite
+// failure: refusing a legitimate create would be loud and
+// self-correcting; admitting an illegitimate one is silent and lands as
+// a kernel EBUSY the operator has to decode.
+func childLinkKind(parentIndex int) (kind string, known bool) {
+	links, err := util.DumpResult(nlLinkList())
 	if err != nil {
-		return ""
+		return "", false
 	}
 	for _, l := range links {
 		if l.Attrs().ParentIndex != parentIndex {
@@ -138,12 +159,12 @@ func childLinkKind(parentIndex int) string {
 		}
 		switch l.Type() {
 		case "macvlan":
-			return ModeMacvlan
+			return ModeMacvlan, true
 		case "ipvlan":
-			return ModeIPvlan
+			return ModeIPvlan, true
 		}
 	}
-	return ""
+	return "", true
 }
 
 // otherChildMode names the kind that would conflict with this one.
@@ -269,11 +290,16 @@ func (p *Plugin) noteRestartLinkUpWait(r CreateEndpointRequest, waited bool, err
 }
 
 // createParentAttachedEndpoint creates the per-endpoint child link on
-// the host's parent NIC (macvlan or ipvlan depending on mode), runs
-// dhcpcd on it (still in host netns) to acquire an initial lease, and
+// the host's parent NIC (macvlan or ipvlan depending on mode), runs a
+// one-shot DHCP client on it (still in host netns) to acquire an initial lease, and
 // stashes the result for Join. Docker will move the link into the
 // container's netns when it acts on our Join response.
-func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, r CreateEndpointRequest, opts DHCPNetworkOptions) (CreateEndpointResponse, error) {
+// callStart is CreateEndpoint's own entry time, PASSED rather than
+// re-taken here: it is one fact -- when the daemon's deadline on this
+// call began -- and a second time.Now() in this function would be a
+// second answer to it that drifts by however long the branch above
+// took. See v6AcquisitionDeadline.
+func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, callStart time.Time, r CreateEndpointRequest, opts DHCPNetworkOptions) (CreateEndpointResponse, error) {
 	res := CreateEndpointResponse{Interface: &EndpointInterface{}}
 	mode := opts.effectiveMode()
 
@@ -287,8 +313,7 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, r CreateEndpo
 	// HardwareAddr, so the tombstone path doesn't apply there (and an
 	// explicit MAC is rejected loudly to avoid silent misconfiguration).
 	// Static IPs (`docker run --ip`) are accepted in both modes — they
-	// pass through to dhcpcd as a `request`-directive (DHCP option 50)
-	// hint.
+	// pass through as a DHCP option 50 hint.
 	effectiveMAC := ""
 	if r.Interface != nil {
 		effectiveMAC = r.Interface.MacAddress
@@ -321,10 +346,15 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, r CreateEndpo
 			if requestedV6 == "" {
 				requestedV6 = tombIPv6
 			}
+			// hostname is a dhcpHostname, which is a NAME AND A REFUSAL
+			// FLAG. Logging the struct printed `hostname="{ false}"` on
+			// a real run (2026-09-04) -- the operator got the zero value
+			// of the flag and no name at all, on the one line that says
+			// which container's identity was inherited. Log the name.
 			log.WithFields(log.Fields{
 				"network":  shortID(r.NetworkID),
 				"endpoint": shortID(r.EndpointID),
-				"hostname": hostname,
+				"hostname": hostname.name,
 			}).Info("Inherited MAC/IP from recent endpoint on same network (likely container restart)")
 			log.WithFields(log.Fields{
 				"network":      shortID(r.NetworkID),
@@ -371,6 +401,16 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, r CreateEndpo
 	if err != nil {
 		return res, explainChildLinkAdd(err, mode, opts.Parent, parent.Attrs().Index)
 	}
+
+	// Hoisted out of the closure so the failure path below can close
+	// the record it opened. A CREATED record whose CreateEndpoint
+	// failed holds no lease and so offers nothing to resume, but it is
+	// a line in an append-only file that nothing would ever remove.
+	var (
+		recordID  string
+		recordID6 string
+		identity6 dhcp.Identity6
+	)
 
 	if err := func() error {
 		// Reload to pick up the kernel-assigned MAC (macvlan) or the
@@ -433,6 +473,34 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, r CreateEndpo
 		// client_id overrides the derived value.
 		clientID := resolveClientID(opts, r.EndpointID, mac)
 
+		// The CREATED record (D10). Identity is generated once, here,
+		// and written with the record: the option-61 value AS SENT,
+		// type byte included, because that is what the server files
+		// the lease under. The one-shot below writes its own events to
+		// this record, and the Join manager reads them back as an
+		// INIT-REBOOT rather than starting a fresh DISCOVER.
+		recordID = p.recordCreated(r.NetworkID,
+			endpointRecordKey(mode, r.EndpointID, mac), dhcp.ClientIdentity(clientID))
+		p.updateJoinHint(r.EndpointID, func(hint *joinHint) {
+			hint.RecordID = recordID
+		})
+
+		// The DHCPv6 identity and its own record — the sibling of the
+		// block in network.go, through the same two helpers so the two
+		// modes cannot drift. This is the path where the ipvlan arm of
+		// resolveIdentity6 matters: an ipvlan slave inherits the
+		// parent's MAC, so the MAC-derived DUID would be identical for
+		// every container on the network (#895).
+		if opts.IPv6 {
+			id6, err := resolveIdentity6(opts, r.EndpointID, mac)
+			if err != nil {
+				return err
+			}
+			identity6 = id6
+			recordID6 = p.recordCreated6(r.NetworkID,
+				endpointRecordKey(mode, r.EndpointID, mac), id6)
+		}
+
 		runDHCP := func(v6 bool) error {
 			v6str := ""
 			if v6 {
@@ -454,14 +522,26 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, r CreateEndpo
 				FQDN:        opts.fqdnMode(),
 				ClientID:    clientID,
 				VendorClass: opts.VendorClass,
-				Broadcast:   mode == ModeIPvlan,
-				// MAC pins the dhcpcd DUID-LL/IAID so the one-shot and
-				// persistent clients share one identity (#152). NOTE:
-				// ipvlan-L2 slaves share the parent MAC, so v6 identity
-				// is not unique per endpoint in that mode — a known
-				// limitation for ipvlan+ipv6 (bridge/macvlan have unique,
-				// tombstone-preserved MACs).
-				MAC: mac,
+				// MAC keys the v4 lease and, on bridge and macvlan, the
+				// v6 DUID-LL too, so the one-shot and the persistent
+				// client share one identity (#152). ipvlan is the
+				// exception in BOTH families: its slaves inherit the
+				// parent's MAC, so the v4 client-id comes from the
+				// endpoint (resolveClientID) and so does the v6 DUID
+				// (resolveIdentity6, #895).
+				MAC:      mac,
+				Records:  p.records,
+				RecordID: recordID,
+			}
+			if v6 {
+				base.Identity6 = identity6
+				base.RecordID = recordID6
+			}
+			// Conflict detection, from the network's stored
+			// conflict_check (D23). Set on the BASE, so every attempt
+			// down the dhcp_servers ladder runs in the same mode.
+			if err := p.conflictWiring(&base, opts, roleAcquire, r.NetworkID, r.EndpointID, v6); err != nil {
+				return err
 			}
 			if v6 {
 				base.PreferredV6 = requestedV6
@@ -469,7 +549,17 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, r CreateEndpo
 				base.RequestedIP = requestedIP
 			}
 
-			info, ra, err := p.acquireWithPolicy(ctx, la.Name, pol, v6, timeout, r.EndpointID, base)
+			// The v6 half is the SECOND acquisition in this call and
+			// gets what is left of the daemon's deadline; the v4 half
+			// keeps lease_timeout untouched. See v6AcquisitionDeadline.
+			acqCtx := ctx
+			if v6 {
+				var endV6 context.CancelFunc
+				acqCtx, endV6 = withV6AcquisitionDeadline(ctx, callStart)
+				defer endV6()
+			}
+
+			info, ra, err := p.acquireWithPolicy(acqCtx, la.Name, pol, v6, timeout, r.EndpointID, base)
 			if err != nil {
 				// A DHCPv6 acquisition that produced nothing is not
 				// automatically a failure: on a stateless or SLAAC
@@ -523,6 +613,8 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, r CreateEndpo
 		// Roll back the child link if anything after LinkAdd failed.
 		// Best-effort: if LinkDel itself fails the kernel will reap the
 		// link with the netns soon enough.
+		p.closeRecord(recordID)
+		p.closeRecord(recordID6)
 		_ = netlink.LinkDel(link)
 		return res, err
 	}
@@ -544,16 +636,6 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, r CreateEndpo
 	// parent's and there's nothing to stabilize.
 	if mode == ModeMacvlan {
 		p.rememberEndpoint(r.EndpointID, endpointFingerprint{MAC: hintMAC, IPv4: hintIPv4, IPv6: hintIPv6, Ifname: p.hintIfname(r.EndpointID)}, hostname)
-	}
-
-	// Is anyone else already using the address we were just given
-	// (#524)? Asynchronous on purpose: the answer changes no part of
-	// this response, and keeping it off the critical path is what lets
-	// dhcpcd keep `-A` and its acquisition deadline. The probe runs on
-	// the parent link in the host namespace, so it cannot be raced by
-	// Docker moving the child into the container's netns.
-	if res.Interface.Address != "" {
-		go p.checkAddressConflict(opts.Parent, res.Interface.Address, hintMAC, r.EndpointID, r.NetworkID)
 	}
 
 	log.WithFields(log.Fields{
@@ -607,7 +689,7 @@ func (p *Plugin) deleteParentAttachedEndpoint(r DeleteEndpointRequest) error {
 // address. Used to re-discover a macvlan child after Docker has moved and
 // renamed it inside the container.
 func findLinkByMAC(handle linkLister, mac net.HardwareAddr) (netlink.Link, error) {
-	links, err := handle.LinkList()
+	links, err := util.DumpResult(handle.LinkList())
 	if err != nil {
 		return nil, fmt.Errorf("failed to list links: %w", err)
 	}

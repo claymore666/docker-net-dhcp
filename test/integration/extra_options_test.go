@@ -109,12 +109,18 @@ func TestExtraOptions_NTPAndTFTPLogged(t *testing.T) {
 	// Doesn't need propagate_dns — the log line fires unconditionally
 	// when the captured info struct has any of the new fields set.
 	harness.CreateNetwork(t, ctx, netName, "macvlan", nil)
+
+	// The values below are fixture constants, so every container on
+	// this fixture logs them. Over the whole log this test passes on a
+	// neighbour's line and would pass with its own container never
+	// attached at all.
+	logMark := harness.MarkPluginLog(t, ctx)
 	harness.RunContainer(t, ctx, netName, ctrName)
 
 	deadline := time.Now().Add(5 * time.Second)
 	var got string
 	for time.Now().Before(deadline) {
-		got = harness.ReadPluginLog(t, ctx)
+		got = harness.ReadPluginLogSince(t, ctx, logMark)
 		if strings.Contains(got, "DHCP options received") &&
 			strings.Contains(got, harness.TestNTPServer) &&
 			strings.Contains(got, harness.TestTFTPServer) {
@@ -150,13 +156,17 @@ func TestExtraOptions_WPADAndTimezoneLogged(t *testing.T) {
 	})
 
 	harness.CreateNetwork(t, ctx, netName, "macvlan", nil)
+
+	// Scoped for the reason the NTP/TFTP test above is scoped: these
+	// are fixture constants and every container logs them.
+	logMark := harness.MarkPluginLog(t, ctx)
 	harness.RunContainer(t, ctx, netName, ctrName)
 
 	want := []string{harness.TestWPAD, harness.TestPosixTZ, harness.TestTZDBTZ, harness.TestTimeOffset}
 	deadline := time.Now().Add(5 * time.Second)
 	var got string
 	for time.Now().Before(deadline) {
-		got = harness.ReadPluginLog(t, ctx)
+		got = harness.ReadPluginLogSince(t, ctx, logMark)
 		if strings.Contains(got, "DHCP options received") && containsAll(got, want) {
 			t.Logf("plugin log surfaced WPAD/timezone extras: %v", want)
 			return

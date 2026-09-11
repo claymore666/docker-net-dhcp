@@ -26,7 +26,9 @@ trap 'rm -rf "$TMP"' EXIT
 failures=0
 
 # A synthetic tree: three main-suite tests, one failure-suite test, the
-# real partitioner. Table contents are written per-case.
+# real partitioner. Since D41 the failure suite is SHARDED too, so the
+# gate's population is the union of both suites and the failure test
+# needs a row like any other. Table contents are written per-case.
 tree() {
     local d="$TMP/$1"
     mkdir -p "$d/scripts" "$d/test/integration/testdata"
@@ -41,14 +43,14 @@ GO
 package integration
 
 func TestBeta_One(t *testing.T) {}
-func TestFailure_Excluded(t *testing.T) {}
+func TestFailure_Costed(t *testing.T) {}
 GO
     echo "$d"
 }
 
 table() { # <tree> <lines...>
     local d="$1"; shift
-    { echo "# synthetic"; printf '%s\n' "$@"; } > "$d/test/integration/testdata/main-suite-durations.tsv"
+    { echo "# synthetic"; printf '%s\n' "$@"; } > "$d/test/integration/testdata/suite-durations.tsv"
 }
 
 check() { # <name> <want-exit> <root> <want-grep>
@@ -69,72 +71,76 @@ check() { # <name> <want-exit> <root> <want-grep>
 d=$(tree nosuite); rm -rf "$d/test/integration"
 check "no suite directory is 'cannot see', not a pass" 2 "$d" "not a directory"
 
-d=$(tree nosharder); table "$d" "TestAlpha_One	1.00"; rm "$d/scripts/integration-shard.sh"
+d=$(tree nosharder); table "$d" "TestAlpha_One	1.00"; rm "$d/scripts/integration-shard.sh" "TestFailure_Costed	4.00"
 check "no partitioner is 'cannot see', not a pass" 2 "$d" "does not exist"
 
-d=$(tree notable); rm -f "$d/test/integration/testdata/main-suite-durations.tsv"
+d=$(tree notable); rm -f "$d/test/integration/testdata/suite-durations.tsv"
 check "no table is 'cannot see', not a pass" 2 "$d" "missing, unreadable"
 
-d=$(tree dirtable); rm -f "$d/test/integration/testdata/main-suite-durations.tsv"
-mkdir -p "$d/test/integration/testdata/main-suite-durations.tsv"
+d=$(tree dirtable); rm -f "$d/test/integration/testdata/suite-durations.tsv"
+mkdir -p "$d/test/integration/testdata/suite-durations.tsv"
 check "an unreadable table (a directory) is 'cannot see'" 2 "$d" "not a regular file"
 
-d=$(tree commentsonly); printf '# nothing but prose\n# and more prose\n' > "$d/test/integration/testdata/main-suite-durations.tsv"
+d=$(tree commentsonly); printf '# nothing but prose\n# and more prose\n' > "$d/test/integration/testdata/suite-durations.tsv"
 check "a table of only comments is 'cannot see', not a pass" 2 "$d" "holds no rows"
 
-d=$(tree notests); table "$d" "TestAlpha_One	1.00"; rm -f "$d"/test/integration/*_test.go
+d=$(tree notests); table "$d" "TestAlpha_One	1.00"; rm -f "$d"/test/integration/*_test.go "TestFailure_Costed	4.00"
 check "no test files at all is 'cannot see', not a pass" 2 "$d" "refused"
 
-d=$(tree refuser); table "$d" "TestAlpha_One	1.00"
+d=$(tree refuser); table "$d" "TestAlpha_One	1.00" "TestFailure_Costed	4.00"
 printf '#!/usr/bin/env bash\nexit 3\n' > "$d/scripts/integration-shard.sh"
 check "a partitioner that refuses is 'cannot see', not a pass" 2 "$d" "refused"
 
-d=$(tree silent); table "$d" "TestAlpha_One	1.00"
+d=$(tree silent); table "$d" "TestAlpha_One	1.00" "TestFailure_Costed	4.00"
 printf '#!/usr/bin/env bash\necho "^()$"\n' > "$d/scripts/integration-shard.sh"
 check "a partitioner that names no test is 'cannot see', not a pass" 2 "$d" "named no tests"
 
 # --- rule 1: a partitioned test with no row ----------------------------
 
-d=$(tree missing); table "$d" "TestAlpha_One	1.00" "TestAlpha_Two	2.00"
+d=$(tree missing); table "$d" "TestAlpha_One	1.00" "TestAlpha_Two	2.00" "TestFailure_Costed	4.00"
 check "a main-suite test with no row is red, and is named" 1 "$d" "TestBeta_One"
 
 # --- rule 2: a row naming nothing the partitioner places ---------------
 
-d=$(tree stray); table "$d" "TestAlpha_One	1.00" "TestAlpha_Two	2.00" "TestBeta_One	3.00" "TestGone_Renamed	4.00"
+d=$(tree stray); table "$d" "TestAlpha_One	1.00" "TestAlpha_Two	2.00" "TestBeta_One	3.00" "TestGone_Renamed	4.00" "TestFailure_Costed	4.00"
 check "a row naming a test that does not exist is red, and is named" 1 "$d" "TestGone_Renamed"
 
-d=$(tree strayfail); table "$d" "TestAlpha_One	1.00" "TestAlpha_Two	2.00" "TestBeta_One	3.00" "TestFailure_Excluded	9.00"
-check "a failure-suite row is red — that job is not sharded" 1 "$d" "TestFailure_Excluded"
+# The failure suite is sharded since D41, so its tests are IN the
+# population: a failure-suite test with no row is red exactly like a
+# main-suite one. This case is the inverse of the pre-D41 one it
+# replaces, which asserted such a row was stray.
+d=$(tree missingfail); table "$d" "TestAlpha_One	1.00" "TestAlpha_Two	2.00" "TestBeta_One	3.00"
+check "a failure-suite test with no row is red, and is named" 1 "$d" "TestFailure_Costed"
 
-d=$(tree straypkg); table "$d" "TestAlpha_One	1.00" "TestAlpha_Two	2.00" "TestBeta_One	3.00" "TestHostConfig_EnablesInit	0.00"
+d=$(tree straypkg); table "$d" "TestAlpha_One	1.00" "TestAlpha_Two	2.00" "TestBeta_One	3.00" "TestHostConfig_EnablesInit	0.00" "TestFailure_Costed	4.00"
 check "a row from another package is red — it moves the mean" 1 "$d" "TestHostConfig_EnablesInit"
 
 # --- rule 3: malformed rows --------------------------------------------
 
-d=$(tree onefield); table "$d" "TestAlpha_One" "TestAlpha_Two	2.00" "TestBeta_One	3.00"
+d=$(tree onefield); table "$d" "TestAlpha_One" "TestAlpha_Two	2.00" "TestBeta_One	3.00" "TestFailure_Costed	4.00"
 check "a row with no duration is red" 1 "$d" "field(s), want 2"
 
-d=$(tree notanumber); table "$d" "TestAlpha_One	fast" "TestAlpha_Two	2.00" "TestBeta_One	3.00"
+d=$(tree notanumber); table "$d" "TestAlpha_One	fast" "TestAlpha_Two	2.00" "TestBeta_One	3.00" "TestFailure_Costed	4.00"
 check "a non-numeric duration is red" 1 "$d" "want a non-negative number"
 
-d=$(tree negative); table "$d" "TestAlpha_One	-1.00" "TestAlpha_Two	2.00" "TestBeta_One	3.00"
+d=$(tree negative); table "$d" "TestAlpha_One	-1.00" "TestAlpha_Two	2.00" "TestBeta_One	3.00" "TestFailure_Costed	4.00"
 check "a negative duration is red" 1 "$d" "want a non-negative number"
 
-d=$(tree comma); table "$d" "TestAlpha_One	1,00" "TestAlpha_Two	2.00" "TestBeta_One	3.00"
+d=$(tree comma); table "$d" "TestAlpha_One	1,00" "TestAlpha_Two	2.00" "TestBeta_One	3.00" "TestFailure_Costed	4.00"
 check "a comma-decimal duration is red — awk would read it as 1 (#554)" 1 "$d" "want a non-negative number"
 
 # --- rule 4: duplicates -------------------------------------------------
 
-d=$(tree dupe); table "$d" "TestAlpha_One	1.00" "TestAlpha_One	9.00" "TestAlpha_Two	2.00" "TestBeta_One	3.00"
+d=$(tree dupe); table "$d" "TestAlpha_One	1.00" "TestAlpha_One	9.00" "TestAlpha_Two	2.00" "TestBeta_One	3.00" "TestFailure_Costed	4.00"
 check "a duplicated row is red" 1 "$d" "TestAlpha_One"
 
 # --- green --------------------------------------------------------------
 
-d=$(tree ok); table "$d" "TestAlpha_One	1.00" "TestAlpha_Two	2.00" "TestBeta_One	3.00"
-check "exactly the partitioned set passes" 0 "$d" "name exactly the 3 test(s)"
+d=$(tree ok); table "$d" "TestAlpha_One	1.00" "TestAlpha_Two	2.00" "TestBeta_One	3.00" "TestFailure_Costed	4.00"
+check "exactly the partitioned set — both suites — passes" 0 "$d" "name exactly the 4 test(s)"
 
-d=$(tree zerocost); table "$d" "TestAlpha_One	0.00" "TestAlpha_Two	2.00" "TestBeta_One	3.00"
-check "a measured 0.00 is legitimate and stays green" 0 "$d" "name exactly the 3 test(s)"
+d=$(tree zerocost); table "$d" "TestAlpha_One	0.00" "TestAlpha_Two	2.00" "TestBeta_One	3.00" "TestFailure_Costed	4.00"
+check "a measured 0.00 is legitimate and stays green" 0 "$d" "name exactly the 4 test(s)"
 
 # --- drive the absence, against the tree that actually ships ------------
 
@@ -142,19 +148,19 @@ real="$TMP/real"
 mkdir -p "$real/scripts" "$real/test/integration/testdata"
 cp "$HERE/integration-shard.sh" "$real/scripts/"
 cp "$REPO"/test/integration/*_test.go "$real/test/integration/"
-cp "$REPO/test/integration/testdata/main-suite-durations.tsv" "$real/test/integration/testdata/"
+cp "$REPO/test/integration/testdata/suite-durations.tsv" "$real/test/integration/testdata/"
 check "a copy of the shipped tree passes" 0 "$real" "name exactly the"
 
 victim=$(awk -F'\t' '$1 !~ /^#/ && NF == 2 { print $1 }' \
-    "$real/test/integration/testdata/main-suite-durations.tsv" | sed -n '5p')
+    "$real/test/integration/testdata/suite-durations.tsv" | sed -n '5p')
 if [ -z "$victim" ]; then
     echo "FAIL: could not pick a row to delete — the shipped table has fewer than five rows"
     failures=$((failures + 1))
 else
-    cp "$real/test/integration/testdata/main-suite-durations.tsv" "$TMP/table.bak"
-    grep -v "^${victim}	" "$TMP/table.bak" > "$real/test/integration/testdata/main-suite-durations.tsv"
+    cp "$real/test/integration/testdata/suite-durations.tsv" "$TMP/table.bak"
+    grep -v "^${victim}	" "$TMP/table.bak" > "$real/test/integration/testdata/suite-durations.tsv"
     check "deleting $victim's row from the shipped table goes red" 1 "$real" "$victim"
-    cp "$TMP/table.bak" "$real/test/integration/testdata/main-suite-durations.tsv"
+    cp "$TMP/table.bak" "$real/test/integration/testdata/suite-durations.tsv"
     check "restoring it goes green again" 0 "$real" "name exactly the"
 fi
 

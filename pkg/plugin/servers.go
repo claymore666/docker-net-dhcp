@@ -23,24 +23,23 @@ import (
 // merged: Prefer is an ORDERING ("which of these wins when several
 // answer"), Deny is a PERMISSION ("this one never answers for us").
 //
-// Both are enforced by dhcpcd's `whitelist` / `blacklist` directives,
-// which carry two properties the rest of this file exists to respect:
+// Both are enforced by the library's proto.ServerPolicy, which matches
+// on the Server Identifier (option 54) the message advertises. Two
+// properties the rest of this file respects:
 //
-//  1. They match the packet's IP SOURCE address, not the Server
-//     Identifier (option 54) it advertises — dhcpcd 10.3.2
-//     src/dhcp.c:3641 sets `from` from `ip->ip_src`, and :3181/:3190
-//     test that. Behind a DHCP relay every offer is sourced from the
-//     relay, so neither option can tell servers apart there.
-//  2. A configured whitelist DISABLES the blacklist outright: in
-//     src/dhcp.c:3181-3196 the blacklist is only consulted in the
-//     WHTLST_NONE branch. Emitting both directives would therefore make
-//     a deny-list silently inert on any network that also sets a
-//     preference.
+//  1. The key is what the server SAYS it is, not where the packet came
+//     from. 1.x used dhcpcd's whitelist, which matched the IP source
+//     address; behind a relay that is the relay agent for every offer,
+//     so neither option could tell servers apart there. Option 54 is
+//     also what a renewal is unicast to. pkg/dhcp's Params documents
+//     the change.
+//  2. Deny wins over Allow inside the library, and an Allow list fails
+//     CLOSED on a message that carries no server identifier at all.
 //
-// (2) is why Deny is subtracted from Prefer here, at parse time, rather
-// than left to dhcpcd to compose. After resolveServerPolicy there is one
-// truth about what is allowed, and the renderer never emits both kinds
-// of directive at once.
+// Deny is nonetheless subtracted from Prefer here, at parse time: after
+// resolveServerPolicy there is one truth about what is allowed, and the
+// acquisition tiers below are built from that one list rather than from
+// two that have to be re-composed at each tier.
 type serverPolicy struct {
 	// Prefer is the operator's ordered preference list with denied
 	// entries already removed. Empty means no preference.
@@ -56,10 +55,12 @@ func (p serverPolicy) IsZero() bool { return len(p.Prefer) == 0 && len(p.Deny) =
 // parseServerList parses one comma-separated option value into unique
 // IPv4 addresses, preserving order.
 //
-// IPv6 is rejected rather than ignored. dhcpcd stores both lists as
-// in_addr_t (src/if-options.c:1436-1457) and dhcp6.c never consults
-// them, so a v6 entry would parse, apply to nothing, and leave the
-// operator believing a server was ranked or denied when it was not.
+// IPv6 is rejected rather than ignored. Both lists filter on DHCPv4's
+// option 54, which is a server's IPv4 address; DHCPv6's Server
+// Identifier is an opaque DUID naming no address, and proto.Params6
+// carries no policy field at all (pkg/dhcp/params6.go). A v6 entry
+// would parse, apply to nothing, and leave the operator believing a
+// server was ranked or denied when it was not.
 // The same reasoning as the validate_dhcp carve-out in
 // validateModeOptions: refuse loudly instead of no-op'ing quietly.
 func parseServerList(option, value string) ([]netip.Addr, error) {
@@ -108,9 +109,9 @@ func resolveServerPolicy(opts DHCPNetworkOptions) (serverPolicy, error) {
 		denied[a] = struct{}{}
 	}
 
-	// Subtract, so the whitelist dhcpcd sees never contains a denied
-	// address — see the type comment for why this cannot be left to
-	// dhcpcd's own precedence.
+	// Subtract, so the allow list the client sees never contains a
+	// denied address — see the type comment for why the tiers are
+	// built from one list rather than two.
 	kept := prefer[:0:0]
 	for _, a := range prefer {
 		if _, bad := denied[a]; bad {
@@ -132,26 +133,25 @@ func resolveServerPolicy(opts DHCPNetworkOptions) (serverPolicy, error) {
 	return serverPolicy{Prefer: kept, Deny: deny}, nil
 }
 
-// allowList is the set of servers the client may accept from, as
-// dhcpcd `whitelist` arguments. Empty means "impose no whitelist".
+// allowList is the set of servers the client may accept from. Empty
+// means "impose no allow list".
 //
 // The PERSISTENT client gets the whole preference list rather than one
 // tier: it must be able to renew and rebind after the preferred server
 // goes away, and a whitelist pinned to the tier that won acquisition
 // would strand the endpoint with no lease instead of failing over.
-// Ordering is not expressible to dhcpcd, so preference is enforced at
-// acquisition (see tiers) and the lease then stays with whoever granted
+// Ordering is not expressible to the client, so preference is enforced
+// at acquisition (see tiers) and the lease then stays with whoever granted
 // it — DHCP renewal is unicast to that server.
 func (p serverPolicy) allowList() []string {
 	return addrsToStrings(p.Prefer)
 }
 
-// denyList is the set of servers to reject, as dhcpcd `blacklist`
-// arguments. It is empty whenever a preference list exists, because
-// dhcpcd would ignore a blacklist in that case anyway (dhcp.c:3181) —
-// the denial is already carried by the subtraction in
-// resolveServerPolicy, and emitting a directive dhcpcd will not read
-// would misrepresent what is enforced.
+// denyList is the set of servers to reject. It is empty whenever a
+// preference list exists: an allow list already refuses every server
+// not on it, the denied entries were subtracted from that list in
+// resolveServerPolicy, and a deny list beside it would add nothing
+// while implying the two were composed at the client.
 func (p serverPolicy) denyList() []string {
 	if len(p.Prefer) > 0 {
 		return nil
@@ -201,11 +201,19 @@ type acquisitionAttempt struct {
 // attempt may be given.
 //
 // This is a POLICY CHOICE, not a measurement, and saying so is the
-// point: nothing here has timed a dhcpcd spawn on the hosts this runs
-// on. What it encodes is that an attempt costs an unshare, a process
-// spawn, FIFO setup and a DHCP round trip before it can succeed, so
-// below some slice an attempt cannot answer the question it was given
-// and the ladder is spending the budget on nothing.
+// point: nothing here has timed an acquisition on the hosts this runs
+// on. What it encodes is that an attempt costs entering the container's
+// network namespace, opening a raw socket on the link and a DHCP round
+// trip before it can succeed -- and since M6, in the default
+// conflict_check=wait, RFC 5227's check on top of that -- so below some
+// slice an attempt cannot answer the question it was given and the
+// ladder is spending the budget on nothing.
+//
+// The daemon this was first written for is gone. An attempt used to be
+// priced as a process spawn: an unshare, a dhcpcd exec and a FIFO
+// handshake. None of those happen now, and the arithmetic below did not
+// change, because what the floor is protecting is the DHCP EXCHANGE at
+// the end of the attempt and that has not moved.
 //
 // The number is NOT the adjustable part, and an earlier draft of this
 // comment said it was. Moving it is a BEHAVIOUR CHANGE, not a tuning
@@ -264,10 +272,10 @@ func packTiers(tiers [][]string, n int) [][]string {
 // dead time from the same path), so buying ordering with extra seconds
 // there would trade a rare misconfiguration for a common regression.
 //
-// v6 always gets a single unrestricted attempt: dhcpcd's whitelist and
-// blacklist are DHCPv4-only (dhcp6.c never reads them, and
-// if-options.c stores both as in_addr_t), so applying them to a v6
-// exchange would restrict nothing while implying it had.
+// v6 always gets a single unrestricted attempt: both lists are
+// DHCPv4-only (proto.Params6 has no policy field, so a v6 client that
+// carried one would not compile), and tiering a v6 exchange would
+// restrict nothing while implying it had.
 func acquisitionAttempts(pol serverPolicy, v6 bool, total time.Duration) []acquisitionAttempt {
 	return acquisitionAttemptsWithFloor(pol, v6, total, minAttemptBudget)
 }
@@ -295,10 +303,11 @@ func acquisitionAttemptsWithFloor(pol serverPolicy, v6 bool, total, floor time.D
 	// same as the number of servers named.
 	//
 	// Dividing total by the list length with no floor is what #731
-	// found: every attempt is a full dhcp.NewDHCPClient -- an unshare,
-	// a dhcpcd spawn, FIFO setup, then a DHCP round trip -- so a slice
-	// too small to hold one exchange is not a fast attempt, it is a
-	// guaranteed failure. Six preferred servers bought 1.66s each and
+	// found: every attempt is a full acquisition -- entering the
+	// container's netns, opening a raw socket, then a DHCP round trip,
+	// with RFC 5227's check after it under conflict_check=wait -- so a
+	// slice too small to hold one exchange is not a fast attempt, it is
+	// a guaranteed failure. Six preferred servers bought 1.66s each and
 	// twenty bought 500ms, which made an operator's careful ordering
 	// FAIL where naming nothing would have succeeded. An option that
 	// gets worse the more carefully it is filled in is not an option.
@@ -308,9 +317,9 @@ func acquisitionAttemptsWithFloor(pol serverPolicy, v6 bool, total, floor time.D
 	// on -- a preference list must never make `docker run` slower than
 	// it is today (#403, #417). Capping the LIST at validation time
 	// would refuse a legitimate configuration for an implementation
-	// reason. Instead the tail shares one attempt: dhcpcd's whitelist
-	// takes several servers, so [a] [b] [c d e ... t] tries the top
-	// preferences in strict order and asks the rest as a group.
+	// reason. Instead the tail shares one attempt: a server whitelist
+	// takes several servers at once, so [a] [b] [c d e ... t] tries the
+	// top preferences in strict order and asks the rest as a group.
 	//
 	// What degrades is strict ordering WITHIN the last attempt, and
 	// only once the list outgrows the budget. What does not degrade is
@@ -379,8 +388,8 @@ func policyRestricted(attempts []acquisitionAttempt) bool {
 
 // dhcpGetIP indirects the one-shot acquisition, in the same shape and
 // for the same reason as the netlink seam: the ladder below could not
-// be tested at all otherwise, because every attempt spawns dhcpcd in a
-// new namespace. That left the counter semantics #731 found -- one
+// be tested at all otherwise, because every attempt opens a raw socket
+// in the container's network namespace. That left the counter semantics #731 found -- one
 // bump per STEP down the ladder, not one per acquisition -- described
 // in four places, wrong in three, and pinned by nothing.
 var dhcpGetIP = dhcp.GetIP
@@ -416,8 +425,8 @@ func (p *Plugin) acquireWithPolicy(
 	for i, attempt := range attempts {
 		clientOpts := base
 		clientOpts.V6 = v6
-		// Never both — see serverPolicy for why dhcpcd cannot be handed
-		// a whitelist and a blacklist together.
+		// Never both — see serverPolicy for why one list is built
+		// rather than two.
 		clientOpts.AllowServers = attempt.Allow
 		clientOpts.DenyServers = attempt.Deny
 

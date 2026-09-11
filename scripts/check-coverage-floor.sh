@@ -110,10 +110,72 @@ report() {
     findings=$((findings + 1))
 }
 
+# --- a floor removed WITH its package (2.0 M8b) ----------------------
+#
+# A removed floor is strictly weaker than a lowered one -- the ratchet
+# stops judging the package altogether -- so the check above is right to
+# treat it as a decrease. It has one blind spot, and 2.0 walks straight
+# into it: `cmd/dhcp-handler` is DELETED, not merely unmeasured. A floor
+# for a package that no longer exists cannot be honoured by anything,
+# and leaving the row in is the worse of the two errors: the coverage
+# job then either fails on a package it cannot find or, if it skips
+# what it cannot find, carries a floor nothing will ever test again --
+# a ratchet tooth with no gear behind it.
+#
+# So the question is asked of the TREE, not of a list of blessed
+# packages: is there any .go file left under the package's directory at
+# the head of the range? Derived, so it cannot go stale, and it answers
+# for a package this gate has never heard of.
+#
+# THREE OUTCOMES, and the third is the one that keeps this from being
+# an escape hatch. Gone -> announced and not a finding. Still present
+# -> the original finding, unchanged. CANNOT TELL -> also a finding,
+# said in those words. A gate that guesses "probably deleted" when it
+# cannot resolve the module path would be switched off by a malformed
+# go.mod, which is wrong in the direction of silence.
+MODULE=$(git show "$HEAD_REF:go.mod" 2>/dev/null | awk '$1 == "module" { print $2; exit }')
+
+package_state() { # <import path> -> prints gone | present | unknown
+    local path="$1" dir
+    if [ -z "$MODULE" ]; then echo unknown; return; fi
+    case "$path" in
+        "$MODULE")   dir="." ;;
+        "$MODULE"/*) dir="${path#"$MODULE"/}" ;;
+        # A floor on some other module's package is not something this
+        # gate can resolve against this tree, and saying so is the
+        # honest answer.
+        *) echo unknown; return ;;
+    esac
+    # Read to EOF rather than `grep -q`: a short-circuiting consumer
+    # SIGPIPEs its producer, and this repo has already shipped one
+    # refusal that inverted that way (scripts/check-pipefail-consumers.sh).
+    if git ls-tree -r --name-only "$HEAD_REF" -- "$dir" 2>/dev/null |
+        grep -E '\.go$' >/dev/null; then
+        echo present
+    else
+        echo gone
+    fi
+}
+
+gone_count=0
+
 while read -r pkg was; do
     now=$(awk -v p="$pkg" '$1 == p { print $2; exit }' "$TMP/head.floors")
     if [ -z "$now" ]; then
-        report "$pkg: floor ${was}% removed from $BASELINE_PATH — the ratchet no longer judges this package."
+        case "$(package_state "$pkg")" in
+            gone)
+                gone_count=$((gone_count + 1))
+                echo "note: $pkg: floor ${was}% removed, and no .go file remains under that" \
+                     "package at $HEAD_REF. The package is gone, so the row had nothing left" \
+                     "to judge; keeping it would be a floor nothing can ever test."
+                ;;
+            unknown)
+                report "$pkg: floor ${was}% removed, and this gate cannot tell whether the package still exists at $HEAD_REF (its module path did not resolve). Reported rather than assumed."
+                ;;
+            *)
+                report "$pkg: floor ${was}% removed from $BASELINE_PATH — the ratchet no longer judges this package."
+                ;;
+        esac
         continue
     fi
     lowered=$(awk -v a="$was" -v b="$now" 'BEGIN { print (b + 0 < a + 0) ? "yes" : "no" }')
@@ -122,7 +184,26 @@ while read -r pkg was; do
     fi
 done < "$TMP/base.floors"
 
+# The emptied-domain case, which the note above would otherwise hide.
+# If EVERY floor in the baseline was dropped because its package went
+# away, this gate has just approved a tree it no longer measures
+# anywhere -- and it would say "no floor lowered or removed", which
+# reads as a clean ratchet rather than an absent one.
+base_rows=$(wc -l < "$TMP/base.floors")
+if [ "$gone_count" -ne 0 ] && [ "$gone_count" -eq "${base_rows:-0}" ]; then
+    echo "::error title=Nothing left to ratchet::all $gone_count floor(s) were dropped" \
+         "because their packages no longer exist at $HEAD_REF. There is no coverage floor" \
+         "left in $BASELINE_PATH to judge anything by, and reporting that as 'no floor" \
+         "lowered' would be a pass over a ratchet that is gone. This is a refusal." >&2
+    exit 2
+fi
+
 if [ "$findings" -eq 0 ]; then
+    if [ "$gone_count" -ne 0 ]; then
+        echo "coverage-floor gate: no floor lowered or removed against $BASE_REF" \
+             "($gone_count floor(s) dropped with their package)"
+        exit 0
+    fi
     echo "coverage-floor gate: no floor lowered or removed against $BASE_REF"
     exit 0
 fi

@@ -5,6 +5,7 @@
 #
 # THE FAILURE THIS CATCHES IS A COPY THAT WENT STALE. #390 put
 # integration.yml, coverage.yml and capture-fixtures.yml in a single
+# ci-pool-exempt: a count of colliding jobs, not of the pool
 # concurrency group so two privileged jobs — each installing a plugin,
 # each driving the integration suite — could not run against the same
 # ref at once. #617 then changed the key so branch pushes bucket on the
@@ -57,6 +58,7 @@ GROUP_PREFIX='selfhosted-privileged-'
 # the privileged one. test.yaml is here rather than in LANES because it
 # is hosted and has no business excluding the self-hosted lanes — but it
 # was the only CI-heavy workflow in the tree that had never had a group
+# ci-pool-exempt: an incident's count of idled runners, not the pool size
 # at all (#742), so three fixups in five minutes left fifteen runners
 # live and ten of them testing dead commits.
 #
@@ -133,6 +135,7 @@ if [ "${#SEEN[@]}" -gt 1 ]; then
     done
     echo "      Two workflows that disagree about their key do not exclude each" >&2
     echo "      other, and nothing goes red when they stop — the only symptom is" >&2
+    # ci-pool-exempt: a count of colliding jobs, not of the pool
     echo "      two privileged jobs running that were meant to take turns." >&2
     echo "      Make them byte-identical, or take the odd one out of the LANES" >&2
     echo "      list in this gate with a commit that says why." >&2

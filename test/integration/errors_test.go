@@ -116,6 +116,15 @@ var errorCases = []struct {
 		},
 		wantSubstr: "leaving no server to lease from",
 	},
+	// The two IPv6 refusal rows that used to close this table are gone
+	// with the refusal (#911): `-o ipv6=true` is honoured now, and an
+	// acceptance has no place in a table of expected failures. The
+	// second of them was there for the key SPELLING, and that property
+	// outlives the refusal in the quieter direction -- an option that
+	// decodes into nothing leaves a network where IPv6 does nothing and
+	// says so nowhere. It moved to
+	// TestDecodeOpts_IPv6UnderEverySpelling, which is the layer the
+	// bool lives at; TestIPv6_AcceptedAtCreate is the live half.
 }
 
 // TestErrors_NetworkCreateValidation walks the validation matrix.

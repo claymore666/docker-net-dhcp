@@ -33,8 +33,8 @@ import (
 // is the only concurrent multi-container test and asserts only the
 // *initial* IP/MAC, which comes from the one-shot client at
 // CreateEndpoint — it never waits for a renewal. Every renewal test
-// (TestLeaseRenew_HonorsT1, TestLeaseRenewIPv6_HonorsT1, the failure
-// suite) runs a single container. So the suite passed identically with
+// (TestLeaseRenew_HonorsT1 and the failure suite) runs a single
+// container. So the suite passed identically with
 // the bug present and absent, and the fix for it — a tmpfs over the
 // runtime dir — was covered only by a unit test asserting that string
 // appears in the generated mount script.
@@ -108,6 +108,29 @@ func TestConcurrentRenew_SameInterfaceNameBothRenew(t *testing.T) {
 
 	if ctrs[0].ip == ctrs[1].ip {
 		t.Fatalf("both containers got the same IP %s — the fixture pool is not handing out distinct leases", ctrs[0].ip)
+	}
+
+	// THE MAC IS THE ONLY THING THAT MAKES THE TWO COUNTS PER-CONTAINER,
+	// so it is asserted before it is used rather than trusted.
+	//
+	// CountLogLines AND-matches substrings against each server log line.
+	// An EMPTY mac therefore matches every DHCPACK in the log, and two
+	// empty MACs make both counters read the same global ACK stream: one
+	// container renewing twice would satisfy both assertions below and
+	// the test would report that concurrent renewal works when only one
+	// client exists. Two EQUAL non-empty MACs do the same thing more
+	// quietly. Neither is hypothetical — RunContainer reads the MAC out
+	// of `docker inspect`, and a plugin that stopped reporting one would
+	// hand back "" without failing anything.
+	for i, c := range ctrs {
+		if c.mac == "" {
+			t.Fatalf("container %d has no MAC, so its ACK count would match every ACK in the "+
+				"fixture log and this test would measure the whole server rather than one client", i)
+		}
+	}
+	if ctrs[0].mac == ctrs[1].mac {
+		t.Fatalf("both containers report MAC %s, so the two ACK counts below are the same count "+
+			"and one renewing client would satisfy both", ctrs[0].mac)
 	}
 
 	// Count from here: the binds have happened, so any further ACK for

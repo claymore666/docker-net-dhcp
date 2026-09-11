@@ -101,7 +101,7 @@ func TestBuildResolvConf_KeepsOrdinaryValues(t *testing.T) {
 }
 
 // TestBuildResolvConf_DomainYieldsOneSearchDomain closes the gap #689
-// recorded one character short: SafeDirectiveValue rejects r < 0x20, and
+// recorded one character short: SafeValue rejects r < 0x20, and
 // 0x20 -- the space -- is the field separator of the file it protects.
 // So a space passed the filter and one search domain became three, with
 // the server's choices ahead of the operator's.
