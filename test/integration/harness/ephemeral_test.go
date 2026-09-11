@@ -628,3 +628,90 @@ func TestLastACKAddressFrom_ACKedButUnreadableIsNotEmpty(t *testing.T) {
 		t.Errorf("matched = %d for a MAC with no ACK, want 0", m)
 	}
 }
+
+// --- the OFFER token, the ACK token's neighbour (#942) -------------------
+
+// kea24ConflictLog is VERBATIM from the hosted cross-check, run
+// 34537348413: Ubuntu's kea 2.4.1 serving the segment
+// TestConflictCheck_SquattedOfferIsDeclined builds, through the offer,
+// the decline and the second offer that test is waiting for. It carries
+// no line containing DHCPOFFER and no line containing DHCPACK, which is
+// why every offer count in that test read zero.
+const kea24ConflictLog = `
+2026-09-10 22:29:00.539 INFO  [kea-dhcp4.leases/11572.139789029430976] DHCP4_LEASE_ADVERT [hwtype=1 4e:b2:23:e0:6f:f9], cid=[00:4e:b2:23:e0:6f:f9], tid=0x5a1e48c7: lease 192.168.101.42 will be advertised
+2026-09-10 22:29:00.540 INFO  [kea-dhcp4.leases/11572.139789021038272] DHCP4_LEASE_ALLOC [hwtype=1 4e:b2:23:e0:6f:f9], cid=[00:4e:b2:23:e0:6f:f9], tid=0x5a1e48c7: lease 192.168.101.42 has been allocated for 120 seconds
+2026-09-10 22:29:01.298 INFO  [kea-dhcp4.leases/11572.139789012645568] DHCP4_DECLINE_LEASE Received DHCPDECLINE for addr 192.168.101.42 from client [hwtype=1 4e:b2:23:e0:6f:f9], cid=[00:4e:b2:23:e0:6f:f9], tid=0xaeb7d074. The lease will be unavailable for 86400 seconds.
+2026-09-10 22:29:11.308 INFO  [kea-dhcp4.leases/11572.139789004252864] DHCP4_LEASE_ADVERT [hwtype=1 4e:b2:23:e0:6f:f9], cid=[00:4e:b2:23:e0:6f:f9], tid=0xad73c779: lease 192.168.101.43 will be advertised
+2026-09-10 22:29:11.308 INFO  [kea-dhcp4.leases/11572.139789029430976] DHCP4_LEASE_ALLOC [hwtype=1 4e:b2:23:e0:6f:f9], cid=[00:4e:b2:23:e0:6f:f9], tid=0xad73c779: lease 192.168.101.43 has been allocated for 120 seconds
+`
+
+const kea24ConflictMAC = "4e:b2:23:e0:6f:f9"
+
+// TestCountLogLines_Kea24CountsLeaseAdverts is the 2.4.x side of the
+// OFFER token, driven on the sequence the conflict test actually reads:
+// one offer, a decline, a second offer. The test waits for
+// offersBefore+2, so a reader that answers 0 twice reports a server
+// that declined and then offered nothing — which is what it did report.
+func TestCountLogLines_Kea24CountsLeaseAdverts(t *testing.T) {
+	ef := newLogFixture(t, backendKea, kea24ConflictLog)
+	if got := ef.CountLogLines("DHCPOFFER", kea24ConflictMAC); got != 2 {
+		t.Errorf("CountLogLines(DHCPOFFER, %s) on kea 2.4 = %d, want 2 (the offer before the "+
+			"decline and the one after it)", kea24ConflictMAC, got)
+	}
+	if got := ef.CountLogLines("DHCPDECLINE", kea24ConflictMAC); got != 1 {
+		t.Errorf("CountLogLines(DHCPDECLINE, %s) = %d, want 1; this token is spelt the same on "+
+			"both versions and must not be disturbed by the stand-in", kea24ConflictMAC, got)
+	}
+	if got := ef.CountLogLines("DHCPOFFER", "de:ad:be:ef:00:00"); got != 0 {
+		t.Errorf("CountLogLines(DHCPOFFER, unknown MAC) = %d, want 0", got)
+	}
+}
+
+// TestCountLogLines_OfferTokenChoiceIsPerLog is the OFFER's half of the
+// property the ACK token already carries: the two Kea shapes must give
+// the same answer for the same history, and a log that writes the
+// literal line must not have the stand-in counted beside it.
+func TestCountLogLines_OfferTokenChoiceIsPerLog(t *testing.T) {
+	// 2.6.3: one DHCPOFFER line for keaMAC.
+	ef26 := newLogFixture(t, backendKea, keaACKLog)
+	if got := ef26.CountLogLines("DHCPOFFER", keaMAC); got != 1 {
+		t.Errorf("2.6.3: CountLogLines(DHCPOFFER) = %d, want 1", got)
+	}
+	// 2.4.1: the same history, written the other way, must answer 1.
+	const oneOffer = `
+2026-08-18 16:18:35.302 INFO  [kea-dhcp4.leases/1.1] DHCP4_LEASE_ADVERT [hwtype=1 02:11:22:33:44:55], cid=[00], tid=0x1: lease 192.168.101.10 will be advertised
+2026-08-18 16:18:35.303 INFO  [kea-dhcp4.leases/1.1] DHCP4_LEASE_ALLOC [hwtype=1 02:11:22:33:44:55], cid=[00], tid=0x1: lease 192.168.101.10 has been allocated for 120 seconds
+`
+	ef24 := newLogFixture(t, backendKea, oneOffer)
+	if got := ef24.CountLogLines("DHCPOFFER", keaMAC); got != 1 {
+		t.Errorf("2.4.1: CountLogLines(DHCPOFFER) = %d, want 1 — the same history must count "+
+			"the same on both versions", got)
+	}
+	// A log carrying BOTH spellings for one event counts it once. No
+	// released Kea writes both today; the rule is what makes that safe
+	// if one starts, and the stand-in is otherwise a silent doubling.
+	both := keaACKLog + `
+2026-08-02 09:53:52.325 INFO  [kea-dhcp4.leases/17.1401] DHCP4_LEASE_ADVERT [hwtype=1 02:11:22:33:44:55], cid=[ff:22], tid=0x517eb529: lease 192.168.101.10 will be advertised
+`
+	efBoth := newLogFixture(t, backendKea, both)
+	if got := efBoth.CountLogLines("DHCPOFFER", keaMAC); got != 1 {
+		t.Errorf("both spellings for one offer: CountLogLines(DHCPOFFER) = %d, want 1", got)
+	}
+}
+
+// TestCountLogLines_DnsmasqOfferIsUntouched is the preservation control.
+// The stand-in is a Kea-only substitution, and a widening that reached
+// dnsmasq would make every offer count on that backend zero.
+func TestCountLogLines_DnsmasqOfferIsUntouched(t *testing.T) {
+	const dnsmasqLog = `
+Aug 20 11:04:07 dnsmasq-dhcp[1]: DHCPOFFER(dh-itest-mv) 192.168.99.34 1e:c1:60:88:5a:ef
+Aug 20 11:04:07 dnsmasq-dhcp[1]: DHCPACK(dh-itest-mv) 192.168.99.34 1e:c1:60:88:5a:ef
+`
+	ef := newLogFixture(t, backendDnsmasq, dnsmasqLog)
+	if got := ef.CountLogLines("DHCPOFFER", "1e:c1:60:88:5a:ef"); got != 1 {
+		t.Errorf("dnsmasq: CountLogLines(DHCPOFFER) = %d, want 1", got)
+	}
+	if got := ef.CountLogLines("DHCPACK", "1e:c1:60:88:5a:ef"); got != 1 {
+		t.Errorf("dnsmasq: CountLogLines(DHCPACK) = %d, want 1", got)
+	}
+}
