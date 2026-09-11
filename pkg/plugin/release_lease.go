@@ -203,8 +203,41 @@ func (m *dhcpManager) withdrawV6Address() error {
 	return nil
 }
 
+// releaseOutcome is WHY a family's release did or did not leave the
+// host, and it is a named value rather than a bool because the four
+// answers below are four different operator problems.
+//
+// A bare false read "the address was not handed back" and said nothing
+// about whether this plugin never had a client to ask, asked one and
+// waited in vain, or refused to ask because the v6 address was still on
+// the link. The first of those is the `docker run --rm` shape this
+// option exists for -- a container stopped before the persistent client
+// attached -- and it left no line in the log naming itself.
+//
+// The counters do NOT split along this type. A release that did not
+// happen is a release failure whatever the reason, and an operator
+// reading `release_failures_v4` is asking how often the address was not
+// handed back; the reason is what the log line is for.
+type releaseOutcome string
+
+const (
+	// releaseSent is the only outcome the library saw a packet for.
+	releaseSent releaseOutcome = "sent"
+	// releaseNoClient is no running DHCP client for this family at
+	// teardown: the endpoint left before one was published, or the
+	// family was never started.
+	releaseNoClient releaseOutcome = "no_client"
+	// releaseWithdrawFailed is the v6-only arm: the address could not
+	// be taken off the link, so RFC 9915 section 18.2.7 forbids
+	// beginning the exchange and nothing was sent.
+	releaseWithdrawFailed releaseOutcome = "withdraw_failed"
+	// releaseBudgetExpired is a client that was asked and whose send
+	// counter did not move before releaseSendBudget ran out.
+	releaseBudgetExpired releaseOutcome = "budget_expired"
+)
+
 // releaseHeldLease hands one family's lease back and reports whether a
-// packet actually left the host.
+// packet actually left the host, and when it did not, why.
 //
 // THE RETURN VALUE IS READ OFF THE LIBRARY'S SEND COUNTER AND NOT OFF
 // THE CALL. `Release` does not block and does not report success; the
@@ -251,10 +284,10 @@ func (m *dhcpManager) withdrawV6Address() error {
 //
 // Both are the library's to obey; the v4 address stays on the link
 // because section 3.1(6) identifies the lease by 'ciaddr'.
-func (m *dhcpManager) releaseHeldLease(v6 bool) bool {
+func (m *dhcpManager) releaseHeldLease(v6 bool) releaseOutcome {
 	client := m.releaseClient(v6)
 	if client == nil {
-		return false
+		return releaseNoClient
 	}
 
 	if v6 {
@@ -262,7 +295,7 @@ func (m *dhcpManager) releaseHeldLease(v6 bool) bool {
 			log.WithError(err).WithFields(m.logFields(true)).
 				Warn("Not releasing the DHCPv6 lease: the address could not be taken off the link first, " +
 					"and RFC 9915 section 18.2.7 requires that before the exchange begins")
-			return false
+			return releaseWithdrawFailed
 		}
 	}
 
@@ -272,13 +305,53 @@ func (m *dhcpManager) releaseHeldLease(v6 bool) bool {
 	deadline := time.Now().Add(releaseSendBudget)
 	for {
 		if client.Stats().ReleasesSent > before {
-			return true
+			return releaseSent
 		}
 		if !time.Now().Before(deadline) {
-			return false
+			return releaseBudgetExpired
 		}
 		time.Sleep(releaseSendPoll)
 	}
+}
+
+// announceRelease is the line an operator reads when a stop did not
+// hand the address back.
+//
+// IT IS A WARNING FOR EVERY OUTCOME BUT THE SEND, because on a network
+// configured `release_lease=on_stop` a stop that releases nothing is
+// the configuration not doing its job, and the address then sits in the
+// server's pool until its own clock frees it. Each reason gets its own
+// sentence: they are not variations on one problem and the fix for each
+// is different.
+func (m *dhcpManager) announceRelease(v6 bool, out releaseOutcome) {
+	entry := log.WithFields(m.logFields(v6)).WithField("outcome", string(out))
+	switch out {
+	case releaseSent:
+		entry.Debug("The lease was handed back before the client stopped")
+	case releaseNoClient:
+		entry.Warn("No DHCP client held this endpoint's lease when it left, so nothing was sent " +
+			"and the address is left to expire on the server. The container stopped before this " +
+			"family's persistent client attached; the address it used came from the acquisition at " +
+			"endpoint creation")
+	case releaseWithdrawFailed:
+		entry.Warn("The address could not be taken off the link, so no release was sent " +
+			"and the address is left to expire on the server")
+	case releaseBudgetExpired:
+		entry.Warn("The release did not leave the host within the send budget, so the address is " +
+			"left to expire on the server. The client was asked and its send counter did not move")
+	}
+}
+
+// releaseFamily is one family's whole teardown step: ask, count, say.
+//
+// The three are together because they are one event seen three ways,
+// and a caller that did two of them is the defect this collapses.
+func (m *dhcpManager) releaseFamily(v6 bool) bool {
+	out := m.releaseHeldLease(v6)
+	sent := out == releaseSent
+	m.countRelease(v6, sent)
+	m.announceRelease(v6, out)
+	return sent
 }
 
 // releaseHeldLeases is the whole of what `release_lease=on_stop` does
@@ -293,11 +366,9 @@ func (m *dhcpManager) releaseHeldLease(v6 bool) bool {
 // on its own outcome, because a v6 lease that was not released is a v6
 // lease this endpoint may still resume.
 func (m *dhcpManager) releaseHeldLeases() (releasedV4, releasedV6 bool) {
-	releasedV4 = m.releaseHeldLease(false)
-	m.countRelease(false, releasedV4)
+	releasedV4 = m.releaseFamily(false)
 	if m.opts.IPv6 {
-		releasedV6 = m.releaseHeldLease(true)
-		m.countRelease(true, releasedV6)
+		releasedV6 = m.releaseFamily(true)
 	}
 
 	log.WithFields(m.logFields(false)).

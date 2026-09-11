@@ -213,8 +213,16 @@ func (p *Plugin) recordBound(id string, phase string) {
 	}
 }
 
-// recordLeft is Leave: the manager stopped and the last lease snapshot
-// stays. No RELEASE goes on the wire (D-7, #800).
+// recordLeft is a Leave THAT RELEASED NOTHING: the manager stopped and
+// the last lease snapshot stays, so a restart inside the tombstone TTL
+// can still resume this address.
+//
+// Nothing went on the wire, and since #962 that has two causes rather
+// than one: the network is `release_lease=never`, which is the default
+// and D-7's rule (#800), or it is `release_lease=on_stop` and the
+// release did not leave the host. A Leave that DID release ends the
+// record instead of leaving it resumable; settleReleasedRecord is where
+// the two are chosen between.
 func (p *Plugin) recordLeft(id string) {
 	if p.records == nil || id == "" {
 		return

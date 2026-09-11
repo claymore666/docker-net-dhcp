@@ -313,7 +313,9 @@ they prove:
   server: the returned container holds a lease the server actually
   granted, and the pre-death lease was **not** released — since #800
   the address is held until it expires, the same as for a machine
-  powered off abruptly. The ACK is checked first and is the positive
+  powered off abruptly. The network under test is the default
+  `release_lease=never`; a daemon that dies reaches no `Leave`, so an
+  `on_stop` network would hold the address here too (#962). The ACK is checked first and is the positive
   control; the absence after it would otherwise read as a pass against
   a log that had gone missing or stale.
 - `preflight_probe_test.go` — `validate_dhcp=true` probe accept/

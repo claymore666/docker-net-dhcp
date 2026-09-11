@@ -414,9 +414,15 @@ func (r *Records) Observed(id string, ev lease.Event, params *proto.Params) erro
 	return r.append(rev)
 }
 
-// Left stops the manager and keeps the last lease snapshot. No RELEASE
-// goes on the wire (D-7, #800): the address is left to expire on the
-// server, exactly as any other host on the segment leaves it.
+// Left stops the manager and keeps the last lease snapshot, which is
+// what makes the address resumable after a restart.
+//
+// It is the op for a teardown in which NOTHING was released: the
+// network is `release_lease=never`, which is the default and D-7's rule
+// (#800), or a release was attempted and did not leave the host (#962).
+// Either way the address is left to expire on the server, exactly as
+// any other host on the segment leaves it. A teardown that did release
+// calls Closed instead, because there is nothing left to resume.
 func (r *Records) Left(id string) error {
 	return r.append(lease.RecordEvent{ID: id, Op: lease.OpLeave})
 }

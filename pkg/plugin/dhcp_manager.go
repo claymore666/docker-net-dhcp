@@ -262,8 +262,10 @@ type dhcpManager struct {
 	// release of an address the server had never been asked to free,
 	// and the reclaim — v4-only until then — left the IA_NA address the
 	// one-shot took held upstream until it expired, which since #800 is
-	// what happens to every lease. Not a race, the
-	// only behaviour. Both flags are now read the same way when the
+	// what happens to every lease on a `release_lease=never` network.
+	// #962 added the one exception: a Leave on a `release_lease=on_stop`
+	// network asks the running client to hand the address back. Not a
+	// race, the only behaviour. Both flags are now read the same way when the
 	// ledger entry for each family is written.
 	boundV6 atomic.Bool
 	// MacAddress is set in macvlan mode so we can re-find the link inside
@@ -2096,6 +2098,13 @@ func (m *dhcpManager) stop(leaving bool) error {
 		// server holds its address for the lease time and hands it back
 		// when the host returns. A container is a host on this segment
 		// and now costs the server exactly what one costs.
+		//
+		// A `release_lease=on_stop` network has already had its chance
+		// by the time this runs: the release is attempted at the top of
+		// stop(), above this return, precisely so that a Start failure
+		// does not silently skip it (#962). Reaching here means it
+		// found no client that ever bound and sent nothing, which is
+		// the paragraph above all over again.
 		if v4, v6 := m.lastIPs(); v4 != nil || v6 != nil {
 			log.WithFields(m.logFields(false)).
 				WithField("ip", auditIP(v4)).
@@ -2179,9 +2188,13 @@ func (m *dhcpManager) stop(leaving bool) error {
 		// family. It stays outstanding and expires on the server's
 		// clock (#800) — the reclaim that used to run here was removed
 		// because it raced the tombstone for the same address. Nothing is audited
-		// either way: no RELEASE was sent, and writing "stopped" would
-		// be the ledger claiming something the server never saw, which
-		// is the one thing this ledger exists not to do.
+		// either way: no RELEASE was sent on this path, and writing
+		// "stopped" would be the ledger claiming something the server
+		// never saw, which is the one thing this ledger exists not to
+		// do. `release_lease=on_stop` reaches the same answer here by a
+		// different route: the release runs before this point and finds
+		// no client that ever bound, so it sends nothing and counts a
+		// release failure (#962).
 		log.WithFields(m.logFields(false)).
 			WithField("v4_outstanding", neverBoundV4).
 			WithField("v6_outstanding", neverBoundV6).
@@ -2230,7 +2243,11 @@ func (m *dhcpManager) settleFamily(v6 bool, last *netlink.Addr, exitErr error, l
 		// referred to had been deleted. An operator reading it would
 		// have been told the lease was handed back when it was not.
 		// What is settled here is that nothing is audited as released,
-		// which is the honest record: no RELEASE was sent, on any path.
+		// which is the honest record: no RELEASE was sent on this path.
+		// It is "this path" and no longer "any path" since #962, which
+		// gave `release_lease=on_stop` networks a release at Leave; a
+		// client that never bound has no lease to hand back, so that
+		// path arrives here having sent nothing either.
 		// TestStop_NoStopPathClaimsAReclaimOrRelease keeps it honest,
 		// because prose cannot — and this comment is the proof of that:
 		// it named the test's pre-rename spelling long after the rename,

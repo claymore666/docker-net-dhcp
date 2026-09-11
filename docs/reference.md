@@ -740,8 +740,10 @@ container's mount namespace on every renewal.
 alongside its DHCPv4 one**. Docker reports it as `GlobalIPv6Address`,
 and it behaves like the v4 address in every way the protocol allows: it
 is requested back after a restart, renewed on its own timers, counted in
-its own `*_v6` counters, and released to nobody (this plugin sends no
-RELEASE on either family).
+its own `*_v6` counters, and handed back on exactly the same rule as the
+v4 address: no Release at all on a `release_lease=never` network, which
+is the default, and one per family at Leave on a `release_lease=on_stop`
+network (#962).
 
 What the option does, concretely:
 
@@ -1053,9 +1055,9 @@ already parse it were not told to expect a new type.
 | `recovery_network_gone` | no | n/a | (v1.8.0+) Networks skipped during post-restart recovery because they had been removed between the listing that found them and the read of their detail. Not a fault: a network that is gone leaves no running container without a renewal client, so this never flips `healthy`. Counted instead of passed over in silence: a host where this climbs steadily is churning networks under a restarting daemon, which is worth knowing even though no single occurrence is a problem. Until v1.8.0 it landed in `recovery_failed`, where an ordinary `docker network rm` racing a daemon restart reported the plugin's most serious fault (#648). |
 | `recovery_fingerprints_skipped` | no | n/a | (v1.8.0+) Endpoints that post-restart recovery adopted but could not describe: the `ContainerInspect` that supplies the hostname did not answer, or answered with no hostname. **No** because the endpoint keeps its renewal client: nothing is running without one, which is the line `recovery_failed` draws. What it loses is the fingerprint, so `DeleteEndpoint` lays no tombstone and that container gets a fresh MAC, and in general a different address, on its next `docker restart`. Counted because before #721 the only sign was `tombstones_consumed` staying flat, which is also what a quiet host looks like, so an operator could not tell "recovery worked" from "recovery silently skipped half my endpoints". A hostname *refused* for carrying a control character is not counted here; it moves `unsafe_hostnames_rejected` instead, so a degraded daemon stays distinguishable from a hostile container. |
 | `recovery_already_managed` | no | n/a | (v1.8.0+) Endpoints a recovery walk found already registered to another manager, and therefore left alone, because a `Join` reached them first. Not a fault: the endpoint has a renewal client, it just is not the one this walk would have built. It is counted because it is the only outward evidence of recovery racing a `Join`, the window that made the registration a compare-and-set instead of a read followed by a write; before v1.8.0 those endpoints were reported as *recovered* in the completion log while `recovered_ok` correctly did not move (#480). |
-| `join_start_failures` | yes | fail | (v1.3.3+) Persistent-client start failures at attach time **for a container that is still running**. It got its initial lease but runs without renewal, and the lease is never released on disconnect (#317). The plugin log carries the cause; fix it and restart the container. A container that *exited* mid-attach is counted separately and is not a fault; see below (#373). |
+| `join_start_failures` | yes | fail | (v1.3.3+) Persistent-client start failures at attach time **for a container that is still running**. It got its initial lease but runs without renewal, and the lease is not released on disconnect (#317). `release_lease=on_stop` does not change that: the release is asked of the persistent client, this counter is the case where there is none, so nothing is sent, the log names `no_client` and `release_failures_v4` / `release_failures_v6` moves (#962). The plugin log carries the cause; fix it and restart the container. A container that *exited* mid-attach is counted separately and is not a fault; see below (#373). |
 | `join_aborted_container_gone` | no | n/a | (v1.4.0+) Attaches abandoned because the container exited before the persistent client was up. Not a fault: there is no running container missing a renewal client, so this never flips `healthy`. A sustained rise still says something real: containers dying seconds after start, e.g. a crash-loop (#373). Recognised three ways: the daemon answering "no such container", the container's netns having gone, or its sandbox key being unlinked. An attach that fails for any other reason is counted as a fault and never excused (#401). |
-| `join_aborted_no_container` | no | n/a | (v1.6.0+) Attaches abandoned because no container ever claimed the endpoint on the network. Since v1.9.0 the leased address is **left to expire** and not released (#800); before then it was released here, which is why the counter's name says nothing about either. Not a fault: nothing is running without a renewal client, because nothing is running, so this never flips `healthy`. Distinct from `join_aborted_container_gone`, which needs the daemon to say "no such container" or the sandbox netns to be visibly gone; this one covers the case where the endpoint is simply unclaimed after the attach budget, which previously fell through to `join_start_failures` and leaked the address (#566). |
+| `join_aborted_no_container` | no | n/a | (v1.6.0+) Attaches abandoned because no container ever claimed the endpoint on the network. Since v1.9.0 the leased address is **left to expire** and not released (#800); before then it was released here, which is why the counter's name says nothing about either. `release_lease=on_stop` does not change this row: a release happens at Leave, and an endpoint no container ever claimed reaches no Leave (#962). Not a fault: nothing is running without a renewal client, because nothing is running, so this never flips `healthy`. Distinct from `join_aborted_container_gone`, which needs the daemon to say "no such container" or the sandbox netns to be visibly gone; this one covers the case where the endpoint is simply unclaimed after the attach budget, which previously fell through to `join_start_failures` and leaked the address (#566). |
 | `join_attach_slow` | no | n/a | (v1.4.0+) Attaches that succeeded, but only after outlasting `AWAIT_TIMEOUT`. Not a fault: the container has its renewal client. It is reported because the wait has an external cause worth seeing: the attach asks the daemon about the container being attached, and the daemon does not answer while it is still inside that container's start. Before v1.4.0 those attaches were abandoned and counted as `join_start_failures`, leaving a running container with no renewal client (#406). A rising count means the daemon is holding containers longer and never that the plugin is degrading. |
 | `join_attach_completed` | no | n/a | (v2.1.0+) Successful attaches. It is the population `join_attach_under_1s`, `join_attach_1s_to_budget` and `join_attach_slow` partition, and without it a bucket reading zero cannot be told from a plugin that has attached nothing (#403). |
 | `join_attach_under_1s` | no | n/a | (v2.1.0+) Successful attaches that stayed inside `AWAIT_TIMEOUT` and finished in under a second. |
@@ -1343,9 +1345,13 @@ One JSON object per line; kinds `bound`, `renew`, `stopped`,
 `stop_failed`. `stopped` means the renewal client was asked to stop and
 its goroutine returned; `stop_failed` means it returned an error other
 than the cancellation, or did not return inside the finish timeout.
-Neither says anything about the lease, because since v1.9.0 the plugin
-never releases one, and the address is held until it expires (#800). The
-kinds were `release` and `release_failed` before that, and were renamed
+Neither says anything about the lease. On a `release_lease=never`
+network, which is the default, the plugin sends no DHCPRELEASE at all
+and the address is held until it expires (#800). On a
+`release_lease=on_stop` network the release is attempted at Leave,
+before the client is stopped, and it is reported in `releases_sent_v4`,
+`releases_sent_v6` and their failure pair, never here (#962). The kinds
+were `release` and `release_failed` before v1.9.0, and were renamed
 instead of kept: the ledger must never assert something the server did
 not see.
 

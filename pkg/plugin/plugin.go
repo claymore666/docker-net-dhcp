@@ -816,7 +816,11 @@ type Plugin struct {
 	// joinStartFailures counts persistent-DHCP-client Start failures
 	// at Join time (#317). Each bump is a running container that got
 	// its initial lease but has NO renewal client: the lease silently
-	// ages toward expiry and is never released on disconnect. The
+	// ages toward expiry and is not released on disconnect, on any
+	// network. `release_lease=on_stop` asks the persistent client for
+	// the address back, and this counter is precisely the case where
+	// there is no such client to ask, so that network sends nothing
+	// here either and charges a release failure instead (#962). The
 	// canonical cause was the missing CAP_SYS_PTRACE (netns open on a
 	// non-root container's /proc/<pid>/ns/net); the counter exists so
 	// the next cause is visible on /Plugin.Health instead of only in

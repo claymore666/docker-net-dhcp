@@ -19,6 +19,8 @@ import (
 	"time"
 
 	"github.com/claymore666/dhcp-golib/lease"
+	log "github.com/sirupsen/logrus"
+	logtest "github.com/sirupsen/logrus/hooks/test"
 	"github.com/vishvananda/netlink"
 
 	"github.com/claymore666/docker-net-dhcp/pkg/dhcp"
@@ -340,19 +342,25 @@ func TestReleaseLease_AFailedV6WithdrawalSendsNothing(t *testing.T) {
 		wantCalls    int
 		wantSent     int32
 		wantFailures int32
+		// wantOutcome is the REASON, read beside the count. Without it
+		// the three arms are one bool and a wrong reason in the log is
+		// invisible here.
+		wantOutcome releaseOutcome
 	}{
-		{name: "the address came off", delErr: nil, wantCalls: 1, wantSent: 1},
+		{name: "the address came off", delErr: nil, wantCalls: 1, wantSent: 1,
+			wantOutcome: releaseSent},
 		{
 			name:         "the address could not be taken off",
 			delErr:       errors.New("netlink: operation not permitted"),
 			wantCalls:    0,
 			wantFailures: 1,
+			wantOutcome:  releaseWithdrawFailed,
 		},
 		{
 			// The link is being torn down around this call. An address
 			// that is already gone satisfies the MUST by being absent.
 			name: "the address was already gone", delErr: syscall.EADDRNOTAVAIL,
-			wantCalls: 1, wantSent: 1,
+			wantCalls: 1, wantSent: 1, wantOutcome: releaseSent,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -375,8 +383,8 @@ func TestReleaseLease_AFailedV6WithdrawalSendsNothing(t *testing.T) {
 			client := &fakeReleaser{sends: 1}
 			m.setReleaseClient(true, client)
 
-			if got := m.releaseHeldLease(true); got != (tc.wantSent == 1) {
-				t.Errorf("releaseHeldLease(v6) = %v, want %v", got, tc.wantSent == 1)
+			if got := m.releaseHeldLease(true); got != tc.wantOutcome {
+				t.Errorf("releaseHeldLease(v6) = %q, want %q", got, tc.wantOutcome)
 			}
 			if got := client.callCount(); got != tc.wantCalls {
 				t.Fatalf("Release() was called %d time(s), want %d: RFC 9915 section 18.2.7 "+
@@ -497,6 +505,21 @@ func TestReleaseLease_AReleasedEndpointLeavesNothingBehind(t *testing.T) {
 			// holds.
 			"only the v6 lease went back: the v4 record still gets its tombstone phase", false, true,
 			false, lease.PhaseRetained, lease.PhaseClosed,
+		},
+		{
+			// THE SAME MIXED OUTCOME THE OTHER WAY ROUND, and it is
+			// here because the two are not symmetric in the code that
+			// produces them. retainRecordFor walks the two scopes in
+			// one loop, v4 first; a CLOSED record is skipped and the
+			// walk goes on to the next family. Skip written as a stop
+			// -- `break` for `continue` -- is invisible from the row
+			// above, where the CLOSED record is the last one visited
+			// and stopping and skipping do the same thing. With the
+			// families the other way round it is the difference
+			// between the live v6 record getting its tombstone phase
+			// and never being looked at.
+			"only the v4 lease went back: the v6 record still gets its tombstone phase", true, false,
+			false, lease.PhaseClosed, lease.PhaseRetained,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -889,5 +912,145 @@ func TestReleaseLease_TheRetainedRecordIsNeverAnOlderOne(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestReleaseLease_EveryReasonForNotSendingIsNamed drives the four
+// outcomes apart.
+//
+// WHY THE REASON IS A TESTED VALUE AND NOT JUST LOG TEXT. A stop on a
+// `release_lease=on_stop` network that hands nothing back has three
+// unrelated causes, and until this change all three returned a bare
+// false: no client to ask, a client that was asked and never sent, and
+// a v6 address that could not come off the link. They are three
+// different operator problems -- a container that stopped before its
+// persistent client attached, a wedged send, and a netlink permission
+// failure -- and the counter pair deliberately does not tell them
+// apart, so the outcome is the only place the difference survives.
+//
+// The no-client arm is the one measured against the product: it is the
+// `docker run --rm` shape the option exists for, where the address in
+// use came from the acquisition at endpoint creation and no persistent
+// client ever attached to be asked.
+func TestReleaseLease_EveryReasonForNotSendingIsNamed(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// hasClient false means nothing was ever published for this
+		// family; sends is how many of the fake's calls reach the wire.
+		hasClient bool
+		sends     int
+		want      releaseOutcome
+	}{
+		{"no client was ever published", false, 0, releaseNoClient},
+		{"the client was asked and sent nothing", true, 0, releaseBudgetExpired},
+		{"the client sent", true, 1, releaseSent},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			shortReleaseBudget(t)
+			client := func() *fakeReleaser {
+				if !tc.hasClient {
+					return nil
+				}
+				return &fakeReleaser{sends: tc.sends}
+			}
+
+			// The reason.
+			c := client()
+			m := releasingManager(t, &Plugin{}, ReleaseOnStop, c, nil)
+			if got := m.releaseHeldLease(false); got != tc.want {
+				t.Errorf("releaseHeldLease(v4) = %q, want %q", got, tc.want)
+			}
+			// The client is asked in every arm that has one; a mutant
+			// answering no_client without looking would pass above.
+			if c != nil && c.callCount() != 1 {
+				t.Errorf("Release() was called %d time(s), want 1", c.callCount())
+			}
+
+			// The counters, on a FRESH manager, because the fake's send
+			// budget is spent by the probe above. They stay a two-way
+			// split: every outcome but the send is one failure.
+			p := &Plugin{}
+			m2 := releasingManager(t, p, ReleaseOnStop, client(), nil)
+
+			prevLevel := log.GetLevel()
+			log.SetLevel(log.DebugLevel)
+			t.Cleanup(func() { log.SetLevel(prevLevel) })
+			hook := logtest.NewLocal(log.StandardLogger())
+			defer hook.Reset()
+
+			if got := m2.releaseFamily(false); got != (tc.want == releaseSent) {
+				t.Errorf("releaseFamily(v4) = %v, want %v", got, tc.want == releaseSent)
+			}
+
+			// THE LINE AN OPERATOR READS. Without this the whole
+			// outcome type is a value nothing outside the package can
+			// see: deleting the announcement leaves every count and
+			// every return value correct.
+			var said []string
+			for _, e := range hook.AllEntries() {
+				v, ok := e.Data["outcome"]
+				if !ok {
+					continue
+				}
+				said = append(said, v.(string))
+				wantLevel := log.WarnLevel
+				if tc.want == releaseSent {
+					wantLevel = log.DebugLevel
+				}
+				if e.Level != wantLevel {
+					t.Errorf("the %q line is at %s, want %s: a stop that hands nothing back "+
+						"on a releasing network is a warning", v, e.Level, wantLevel)
+				}
+			}
+			if len(said) != 1 || said[0] != string(tc.want) {
+				t.Errorf("the log named outcomes %v, want exactly [%s]", said, tc.want)
+			}
+			wantSent, wantFailed := int32(0), int32(1)
+			if tc.want == releaseSent {
+				wantSent, wantFailed = 1, 0
+			}
+			if got := p.releasesSentV4.Load(); got != wantSent {
+				t.Errorf("releases_sent_v4 = %d, want %d", got, wantSent)
+			}
+			if got := p.releaseFailuresV4.Load(); got != wantFailed {
+				t.Errorf("release_failures_v4 = %d, want %d", got, wantFailed)
+			}
+		})
+	}
+}
+
+// TestReleaseLease_TheShippedSendBudgetIsTheOneInForce closes the gap
+// every other test in this file opens.
+//
+// shortReleaseBudget replaces releaseSendBudget in all of them, so the
+// value that actually ships has never executed: a change to it, to
+// `time.Second`'s units, or to the line that reads it would be caught
+// by nothing here. This case runs the send path with the shipped budget
+// untouched, which costs nothing because a client that sends returns on
+// the first poll.
+//
+// WHAT THIS DOES NOT COVER, stated rather than implied: the EXPIRY arm
+// under the shipped value is still driven only under the short budget.
+// Waiting a real second for it would put a second on every run of this
+// package to observe a `time.Now` comparison that the short-budget
+// cases already drive. The constant below is pinned instead, so a
+// change to the shipped number is a change to this test.
+func TestReleaseLease_TheShippedSendBudgetIsTheOneInForce(t *testing.T) {
+	if releaseSendBudget != time.Second {
+		t.Fatalf("releaseSendBudget = %v, want 1s: the number is documented in docs/reference.md "+
+			"as the per-family cost of a stop that cannot release", releaseSendBudget)
+	}
+
+	p := &Plugin{}
+	client := &fakeReleaser{sends: 1}
+	m := releasingManager(t, p, ReleaseOnStop, client, nil)
+
+	start := time.Now()
+	if got := m.releaseHeldLease(false); got != releaseSent {
+		t.Fatalf("releaseHeldLease(v4) = %q, want %q", got, releaseSent)
+	}
+	if elapsed := time.Since(start); elapsed >= releaseSendBudget {
+		t.Errorf("the send path took %v with a client that sends immediately; "+
+			"it must not wait out the budget", elapsed)
 	}
 }

@@ -407,8 +407,11 @@ type HealthResponse struct {
 	// are dying seconds after start.
 	JoinAbortedContainerGone int32 `json:"join_aborted_container_gone"`
 	// JoinAbortedNoContainer counts attaches abandoned because no
-	// container ever claimed the endpoint on the network, and whose
-	// address was therefore released rather than left to expire (#566).
+	// container ever claimed the endpoint on the network (#566). The
+	// address is LEFT TO EXPIRE. It was released here until #800
+	// removed that path, and `release_lease=on_stop` does not restore
+	// it: a release happens at Leave, and an endpoint no container
+	// claimed reaches no Leave (#962).
 	// Not Healthy-affecting: nothing is running without a renewal
 	// client, because nothing is running. A rise means endpoints are
 	// being created for containers that never attach.
@@ -970,7 +973,11 @@ type HealthResponse struct {
 	// ClientStopFailuresV6 is the v6 share of ClientStopFailures
 	// (#608): the persistent DHCPv6 client held a binding and did not
 	// shut down cleanly when the plugin signalled it. No release is
-	// involved — since #800 nothing this plugin runs sends one.
+	// involved in THIS counter: on a `release_lease=on_stop` network
+	// the release is attempted at Leave, before the client is
+	// signalled, and it is counted in ReleasesSentV6 and
+	// ReleaseFailuresV6 below (#962). On every other network nothing
+	// this plugin runs sends one (#800).
 	ClientStopFailuresV6 int32 `json:"client_stop_failures_v6"`
 	// ReleasesSentV6 and ReleaseFailuresV6 are the same pair for
 	// DHCPv6 Release messages (RFC 9915 section 18.2.7). Read them per

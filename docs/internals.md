@@ -411,9 +411,12 @@ The surviving teardown counter was renamed to match: what was
 `lease_release_failures` is now `client_stop_failures`, because a client
 that exits badly is all it can still mean.
 
-The cost is that a short-lived container's address is unavailable for
-one lease time. Size the server's pool and lease time for the churn,
-the same way you would for any other population of hosts.
+The cost on a `release_lease=never` network, the default, is that a
+short-lived container's address is unavailable for one lease time. Size
+the server's pool and lease time for the churn, the same way you would
+for any other population of hosts. `release_lease=on_stop` is the
+setting that buys the address back sooner, at the price of the stop-time
+cost above and of the cases where the release cannot be sent.
 
 ## How operations on one parent NIC are serialised
 
