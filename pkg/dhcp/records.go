@@ -54,12 +54,16 @@ import (
 //     TestRecords_SecondOpenIsRefused drives it in-process for that
 //     reason.
 //
-// What neither closes is a file on a filesystem with no working flock —
-// an NFS mount without lockd. Since v1.5.0 the state directory is a bind
-// of a fixed host path, not the plugin's own rootfs, so whether the lock
-// holds is the host's choice of filesystem and not ours. That is why this
-// is a bound and not a defect; it is written here rather than assumed,
-// and docs/reference.md states it where an operator picks the mount.
+// The filesystem can refuse to lock at all — an NFS mount without lockd.
+// That does not leave either hazard open: flock failing for ANY reason is
+// refused as ErrRecordsLocked and NewPlugin gives up on it, so the FIRST
+// opener does not start and the guarantee is kept by refusing to run.
+// Since v1.5.0 the state directory is a bind of a fixed host path, not
+// the plugin's own rootfs, so which filesystem sits under the lock is the
+// host's choice. The bound is on where the plugin can run, not on whether
+// two writers can overlap; docs/reference.md states it where an operator
+// picks the mount, because the start-up failure there carries the same
+// message as a real second writer.
 type Records struct {
 	path string
 

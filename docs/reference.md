@@ -267,10 +267,12 @@ second 2.0 tag sharing that directory cannot be enabled while the first one
 is enabled. `docker plugin enable` fails and the daemon log says `the lease
 record file is already open by another writer`, so disable the old tag before
 enabling the new one. The lock lives in the plugin and is advisory, taken on
-a file beside the record, so it holds only where the filesystem implements
-file locking. If the host directory behind `STATE_DIR` sits on a mount with
-no working locks, NFS without lockd for example, both plugins open the record
-and nothing reports the overlap.
+a file beside the record, so it needs a filesystem that implements file
+locking. If the host directory behind `STATE_DIR` sits on a mount with no
+working locks, NFS without lockd for example, taking the lock fails and a
+single plugin does not start, with that same message in the daemon log. The
+two cases read alike, so check whether another tag of this plugin is enabled.
+If none is, the mount is the cause and disabling tags will not help.
 
 (`docker plugin upgrade` exists but in-place upgrades while networks
 exist risk a driver-reference mismatch; the remove/recreate path is
