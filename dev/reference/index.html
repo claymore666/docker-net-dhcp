@@ -3161,6 +3161,12 @@ already parse it were not told to expect a new type.</p>
 <td>Client renewal events, including the case where the renewal returned a different address. v4+v6 aggregate, equal to its <code>_v4</code> half in 2.0.</td>
 </tr>
 <tr>
+<td><code>renewals_unanswered</code></td>
+<td>no</td>
+<td>n/a</td>
+<td><em>(v2.1.0+)</em> Renewal requests the server did not answer, one per request, counted while the client keeps running (#940). It moves at the first retransmission of a renewal request. RFC 2131 section 4.4.5 has the client "wait one-half of the remaining time until T2 (in RENEWING state) and one-half of the remaining lease time (in REBINDING state), down to a minimum of 60 seconds", so 60 seconds is a FLOOR under that wait and not a bound on it, and the wait is long on a long lease. On the 24-hour lease this was reported from, T1 falls at 12 hours and T2 at 21 hours, so the first retransmission lands about 4.5 hours after the client's first renewal request at T1, and this counter moves there. <code>dhcp_timeouts</code> first moves for a <strong>held</strong> lease only when that lease ends, at 24 hours, so the gain on that lease is about 7.5 hours of warning and not a day of it. Size an alert on the lease in use: the 60-second floor is reached only when T2 is about two minutes away or less. The request currently in flight is not counted, because only the retransmission that follows a request proves that request went unanswered, so a client that has sent N requests into silence reads N-1. An answer of any kind ends the renewal and leaves this counter alone, a DHCPNAK included; <code>naks_received</code> is where that case is counted. Both families: a DHCPv6 Renew or Rebind counts the same way. Not healthy-affecting; the container keeps a working address for the rest of the lease. <strong>Not a check:</strong> the imperative is to read this counter <em>against</em> <code>leases_renewed</code>, because renewals completing beside it is a healthy lease and renewals flat beside it is a server that has gone quiet, and a single lost datagram moves it on a segment that is working, so non-zero on its own carries no verdict.</td>
+</tr>
+<tr>
 <td><code>dhcp_server_tier_fallbacks</code></td>
 <td>no</td>
 <td>n/a</td>
@@ -3383,13 +3389,13 @@ already parse it were not told to expect a new type.</p>
 <td>(v2.0.0) The DHCPv6 share: an address the container's kernel found on the link by Duplicate Address Detection (RFC 4862 §5.4), declined to the server under RFC 9915 §18.2.8. It is <strong>not ARP</strong>: no <code>acd_*</code> counter moves for it and <code>conflict_check</code> does not govern it, because DAD is the kernel's, runs on every IPv6 address, and cannot be turned off from a network option. The client then acquires a replacement address and the plugin applies it to the container's interface, while <strong>Docker's record of the endpoint keeps the old address</strong>, the same truthfulness gap <code>lease_changed</code> describes, so read <code>lease_changed_v6</code> beside this.</td>
 </tr>
 <tr>
-<td><code>lease_changed_v6</code>, <code>leases_obtained_v6</code>, <code>leases_renewed_v6</code>, <code>dhcp_timeouts_v6</code>, <code>naks_received_v6</code></td>
+<td><code>lease_changed_v6</code>, <code>leases_obtained_v6</code>, <code>leases_renewed_v6</code>, <code>renewals_unanswered_v6</code>, <code>dhcp_timeouts_v6</code>, <code>naks_received_v6</code></td>
 <td>no</td>
 <td>n/a</td>
 <td>(v1.2.0+) The IPv6-only share of the matching counter above (#212). Each counts only the v6 client's events. On a dual-stack host this isolates the v6-specific NAK/timeout signal the combined number hides. <code>client_stop_failures_v6</code> (v1.7.0+, #608) joins the split with the same rule; <code>ledger_write_failures</code> has no per-family split.</td>
 </tr>
 <tr>
-<td><code>lease_changed_v4</code>, <code>leases_obtained_v4</code>, <code>leases_renewed_v4</code>, <code>dhcp_timeouts_v4</code>, <code>naks_received_v4</code>, <code>client_stop_failures_v4</code></td>
+<td><code>lease_changed_v4</code>, <code>leases_obtained_v4</code>, <code>leases_renewed_v4</code>, <code>renewals_unanswered_v4</code>, <code>dhcp_timeouts_v4</code>, <code>naks_received_v4</code>, <code>client_stop_failures_v4</code></td>
 <td>no</td>
 <td>n/a</td>
 <td>(v1.8.0+, #730) The IPv4-only share, on the same rule. Both halves are now stored and the unsuffixed counter is their <strong>sum</strong>. It is not a counter in its own right and nothing increments it. Before v1.8.0 the v4 share was not stored: it was recovered as <code>aggregate − *_v6</code> at render time, which could read one lower than the previous scrape and make Prometheus treat the whole counter as reset. Use <code>*_v4</code> instead of doing that subtraction yourself.</td>
@@ -3428,14 +3434,14 @@ an upgrade.</p>
 </blockquote>
 <h4 id="metric-names-and-the-family-label">Metric names and the <code>family</code> label<a class="headerlink" href="#metric-names-and-the-family-label" title="Permanent link">&para;</a></h4>
 <p>Counters are <code>net_dhcp_&lt;name&gt;_total</code>, gauges are <code>net_dhcp_&lt;name&gt;</code>.</p>
-<p>Six counters carry a <code>family</code> label: <code>leases_obtained</code>,
-<code>leases_renewed</code>, <code>lease_changed</code>, <code>dhcp_timeouts</code>, <code>naks_received</code> and
-<code>client_stop_failures</code>:</p>
+<p>Seven counters carry a <code>family</code> label: <code>leases_obtained</code>,
+<code>leases_renewed</code>, <code>lease_changed</code>, <code>renewals_unanswered</code>,
+<code>dhcp_timeouts</code>, <code>naks_received</code> and <code>client_stop_failures</code>:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-15-1" name="__codelineno-15-1" href="#__codelineno-15-1"></a>net_dhcp_leases_obtained_total{family=&quot;ipv4&quot;} 42
 <a id="__codelineno-15-2" name="__codelineno-15-2" href="#__codelineno-15-2"></a>net_dhcp_leases_obtained_total{family=&quot;ipv6&quot;} 7
 </code></pre></div>
 <p><strong>Both family series are stored and neither is derived</strong> (v1.8.0+, #730).
-Each of the six has a <code>_v4</code> and a <code>_v6</code> field in
+Each of the seven has a <code>_v4</code> and a <code>_v6</code> field in
 <code>/Plugin.Health</code>, and the unsuffixed counter is their <strong>sum</strong>. So
 <code>leases_obtained</code> equals <code>leases_obtained_v4 + leases_obtained_v6</code>, and
 the <code>family="ipv4"</code> series is the <code>_v4</code> field read straight out. Every
@@ -3490,8 +3496,18 @@ renewal logs nothing</strong>. It is emitted at <code>Debug</code> and the plugi
 <code>info</code>, so a silent log is correct behaviour and never evidence of a
 problem.</p>
 <p><code>leases_renewed</code> on <code>/Plugin.Health</code> is the cheap proof. It should be
-non-zero once the first renewal is due, with <code>naks_received</code> and
-<code>dhcp_timeouts</code> still at zero.</p>
+non-zero once the first renewal is due, with <code>naks_received</code>,
+<code>renewals_unanswered</code> and <code>dhcp_timeouts</code> still at zero.</p>
+<p><code>renewals_unanswered</code> is the one to read when <code>leases_renewed</code> has not
+moved and the renewal is overdue. It counts renewal requests the server
+did not answer, and it moves at the first retransmission, while
+<code>dhcp_timeouts</code> waits for the lease to lapse. How long that is depends
+on the lease: the wait before a retransmission is half the time left to
+T2, floored at 60 seconds, so it is a minute on a short lease and hours
+on a long one. <code>renewals_unanswered</code> rising with <code>leases_renewed</code> flat
+is a server that has gone quiet. Both flat with the renewal overdue is a
+client that has not asked yet, so check the lease time rather than the
+server.</p>
 <p><em>When</em> it is due comes from the lease and never from any plugin setting:
 DHCP option 58 (T1), typically half the lease time.</p>
 <p><strong>In 2.0 there is no lease file to read.</strong> The client is a goroutine
