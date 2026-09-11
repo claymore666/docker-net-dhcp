@@ -28,11 +28,12 @@ const unknownEngineField = "unknown"
 // WHICH VALUE THE FLOOR COMPARES, and why it is the engine version and
 // not the negotiated API version.
 //
-// The floor is a property of the DAEMON BUILD, not of the API. What
-// failed on the row below the floor was `docker plugin enable` — the
-// plugin subsystem — and the plugin's own API calls (NetworkList,
+// The floor is a property of the DAEMON BUILD, not of the API. What the
+// matrix measures on a row is a whole install — plugin create, enable,
+// a network per mode, a lease, a restart — and that is a property of
+// the build the tag names. The plugin's own API calls (NetworkList,
 // NetworkInspect, ContainerInspect, the ping) are older than every
-// engine in the matrix. So an API-version floor would be a number
+// engine in the matrix, so an API-version floor would be a number
 // nothing here measured, gating calls that all work far below it.
 //
 // The negotiated API version is published beside it and never refuses
@@ -209,6 +210,29 @@ func (p *Plugin) engineSnapshot() engineIdentity {
 // moby/moby#52866, which taught libnetwork's remote proxy to pass
 // DstName through instead of dropping it, and which shipped in 29.8.0.
 //
+// A VERSION IS A PROXY FOR THE BEHAVIOUR, and this one can be wrong in
+// both directions. #670 makes the point about this exact field: an
+// engine that reports a number may be built without the change, and a
+// vendor may backport it into a line below this one. Nothing here
+// reads what the engine actually does, so a backported 29.7.x is
+// warned about and counted, and a 29.8 build with the change patched
+// out is called supported.
+//
+// THE ALTERNATIVE WAS PRICED AND NOT TAKEN. Probing the behaviour means
+// creating an endpoint with a requested name and reading the link back,
+// which at CreateEndpoint is somebody's live container on somebody's
+// production host, at the moment they asked for something else. The
+// version comparison is what is left, and it is wrong only where an
+// engine's build departs from its version. The behaviour itself IS
+// probed where a throwaway container is free: the integration suite
+// asks the engine under test what it did and fails if the two part
+// (test/integration/interface_name_test.go: engineAppliesIfname there
+// reads the container's own `ip link`, and engineVersionAppliesIfname
+// there is the version expectation it is checked against). That covers
+// the engine a run happens to be on, not the population this constant
+// covers. The naming is the same on both sides: a name carrying
+// `Version` compares numbers, one without it reads behaviour.
+//
 // BELOW IT NOTHING FAILS, and that is the whole problem. The plugin
 // returns DstName on every engine, the engine below this one ignores the
 // field, and the container comes up on a working network with a name
@@ -217,14 +241,14 @@ func (p *Plugin) engineSnapshot() engineIdentity {
 // ifname_unsupported counter for an operator who is not reading logs.
 const MinEngineIfnameVersion = "29.8"
 
-// engineAppliesIfname reports whether the engine this process identified
+// engineVersionAppliesIfname reports whether the engine this process identified
 // applies a requested interface name, and whether that is known at all.
 //
 // ok=false is a real state and not a corner: the daemon may not have
 // answered at startup (#383), or may report a version string the
 // comparison cannot read. Neither is evidence that the name will be
 // ignored, so neither counts one.
-func (p *Plugin) engineAppliesIfname() (applies, ok bool) {
+func (p *Plugin) engineVersionAppliesIfname() (applies, ok bool) {
 	below, known := engineBelowFloor(p.engineSnapshot().Version, MinEngineIfnameVersion)
 	if !known {
 		return false, false
@@ -250,7 +274,7 @@ func (p *Plugin) noteIfnameRequest(networkID, endpointID, ifname string) {
 		"engine_version": id.Version,
 	}
 
-	applies, known := p.engineAppliesIfname()
+	applies, known := p.engineVersionAppliesIfname()
 	switch {
 	case !known:
 		log.WithFields(fields).Info("[CreateEndpoint] Custom interface name requested; this engine did not report a version, so whether it applies the name is unknown")
@@ -259,6 +283,6 @@ func (p *Plugin) noteIfnameRequest(networkID, endpointID, ifname string) {
 	default:
 		p.ifnameUnsupported.Add(1)
 		fields["engine_applies_ifname_from"] = MinEngineIfnameVersion
-		log.WithFields(fields).Warn("[CreateEndpoint] This Docker Engine ignores a remote driver's interface name, so the container interface will be named by the driver prefix instead of the requested name")
+		log.WithFields(fields).Warn("[CreateEndpoint] This Docker Engine is older than the first that applies a remote driver's interface name, so the container interface will be named by the driver prefix and index instead of the requested name")
 	}
 }

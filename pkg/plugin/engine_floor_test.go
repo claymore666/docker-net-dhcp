@@ -23,10 +23,9 @@ import (
 //
 // THE DIRECTION OF THE UNREADABLE CASE IS THE POINT. A string this
 // cannot parse yields ok=false and NEVER below=true: the caller says so
-// out loud and starts anyway. A guard that failed closed here would turn
-// an unrecognised vendor suffix into a plugin that will not install,
-// which is worse than the condition it guards — the engines below the
-// floor cannot install the plugin at all.
+// out loud and starts anyway. The reason for that direction is the cost
+// comparison written above engineBelowFloor, not a claim about what
+// engines below the floor do; nothing here measured one.
 func TestEngineBelowFloor_VersionSpellings(t *testing.T) {
 	const floor = "20.10"
 
@@ -333,7 +332,7 @@ func TestHealthSnapshot_PublishesWhatTheDaemonSaid(t *testing.T) {
 // com.docker.network.endpoint.ifname=lan0, and the container's `ip link`
 // was read. 28.5.2 and 29.7.2 named the interface by the driver prefix;
 // 29.8.0 named it lan0.
-func TestEngineAppliesIfname_TheMeasuredBoundary(t *testing.T) {
+func TestEngineVersionAppliesIfname_TheMeasuredBoundary(t *testing.T) {
 	cases := []struct {
 		version string
 		applies bool
@@ -353,7 +352,7 @@ func TestEngineAppliesIfname_TheMeasuredBoundary(t *testing.T) {
 			p := &Plugin{}
 			p.engine.Store(&engineIdentity{Version: tc.version, APIVersion: "1.51"})
 
-			applies, known := p.engineAppliesIfname()
+			applies, known := p.engineVersionAppliesIfname()
 			if known != tc.known {
 				t.Fatalf("known = %v, want %v", known, tc.known)
 			}
@@ -379,7 +378,7 @@ func TestNoteIfnameRequest_SaysSoWhenTheEngineIgnoresIt(t *testing.T) {
 	if got := p.ifnameUnsupported.Load(); got != 1 {
 		t.Errorf("ifname_unsupported: got %d want 1", got)
 	}
-	for _, want := range []string{"ignores", "lan0", "28.5.2", MinEngineIfnameVersion} {
+	for _, want := range []string{"older than the first", "lan0", "28.5.2", MinEngineIfnameVersion} {
 		if !strings.Contains(out, want) {
 			t.Errorf("the log does not carry %q: %s", want, out)
 		}

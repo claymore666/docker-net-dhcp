@@ -108,10 +108,22 @@ func versionKey(v string) (major, minor int, ok bool) {
 //
 // THE UNREADABLE CASE IS NOT BELOW THE FLOOR. It returns false with
 // ok=false, and every caller treats that as "no evidence" rather than
-// as a refusal. A guard that fails closed on a string it could not
-// parse would refuse to start on a vendor version string nobody
-// anticipated, which is a worse failure than the one it guards: the
-// engines this floor excludes cannot install the plugin at all.
+// as a refusal.
+//
+// WHY IT FAILS OPEN, and the reason is a cost comparison and not a
+// claim about old engines. Nothing is measured about an engine whose
+// version this cannot read, so neither direction is the safe one on
+// evidence. What differs is what each costs when it is wrong. Failing
+// closed on a vendor spelling nobody anticipated refuses an engine that
+// may well work, and it refuses it at install time, where the operator
+// has no way to overrule it. Failing open on an engine that really is
+// below the floor leaves the plugin running unsupported, which is the
+// state every release before this one shipped in, and judgeEngine says
+// out loud that the minimum was not checked. This project has no
+// measurement of what a below-floor engine does after an install that
+// got that far: the matrix row below the floor never reached an install
+// step (19.03 stops at the cell's control container), so any sentence
+// here about how such an engine fails would be a guess.
 func engineBelowFloor(engineVersion, floor string) (below, ok bool) {
 	eMajor, eMinor, eOK := versionKey(engineVersion)
 	fMajor, fMinor, fOK := versionKey(floor)

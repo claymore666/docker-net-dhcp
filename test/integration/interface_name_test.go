@@ -144,7 +144,7 @@ func TestInterfaceName_PluginHonorsOption(t *testing.T) {
 
 	wantStatement := "Honoring custom interface name"
 	if !engineApplies {
-		wantStatement = "ignores a remote driver's interface name"
+		wantStatement = "older than the first that applies a remote driver's interface name"
 	}
 	logTxt := harness.AwaitPluginLogSince(t, ctx, logMark, 5*time.Second, func(window string) bool {
 		return strings.Contains(window, wantStatement) && strings.Contains(window, "lan0")
