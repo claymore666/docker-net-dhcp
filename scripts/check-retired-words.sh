@@ -52,6 +52,19 @@
 #     preview" or "the pre-release line". This gate is blind to every
 #     one of them. It is a backstop against the word coming back, not
 #     evidence that the prose is true.
+#   * `stock engine` IS A CLAIM ABOUT THE WRONG NOUN, not a deleted
+#     component. It was written in eleven places, documents and Go
+#     sources alike, to mean "the ordinary case", and the ordinary case
+#     it named was the opposite of the production host's: which route an
+#     attach takes is decided by the propagation of the mount the daemon
+#     publishes sandbox keys on, and both readings of it are ordinary.
+#     The gate is blind to the same claim written without the phrase,
+#     which is why the cells in
+#     test/integration/sandbox_key_route_test.go assert the route per
+#     host and this only keeps the phrase from coming back.
+#   * AN ENTRY IS AN ERE, matched between word boundaries, so a single
+#     entry can cover an inflection (`stock engines?`). It is still a
+#     spelling and not a meaning.
 #   * SPLIT AND HYPHENATED FORMS ARE NOT COVERED. `dhcp cd`, `dhcp-cd`
 #     and a URL-encoded form all pass. Case is covered (-i) and word
 #     boundaries are (a `dhcpcdN` identifier does not trip it, and
@@ -104,15 +117,18 @@ WORDS=(
     'dhcpcd'
     'udhcpc'
     'beta'
+    'stock engines?'
 )
 WORD_GLOBS=(
     '*.md'
     '*.md'
     '*.md *.go'
+    '*.md *.go'
 )
 WORD_WHAT=(
     'document(s)'
     'document(s)'
+    'document(s) and Go source(s)'
     'document(s) and Go source(s)'
 )
 # Said in the failure, so the person who trips it is told what to write
@@ -121,6 +137,7 @@ WORD_REMEDY=(
     'this branch has no dhcpcd; rewrite the sentence or delete it'
     'this branch runs no external DHCP client; rewrite the sentence or delete it'
     'there is no beta: the line is 2.0, its first pre-release is v2.0.0-rc1, and IPv6 parity is tracked in #911'
+    'which route an attach takes into a container netns is a property of the HOST mount the daemon publishes sandbox keys on, not of the engine: name the sandbox_netns_propagation reading (0 private, 1 linked) and say what each host does (#417)'
 )
 
 # Documents that must exist. Their absence means the repository is not

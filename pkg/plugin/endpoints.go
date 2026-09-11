@@ -567,7 +567,8 @@ type HealthResponse struct {
 	// separately because the aggregate cannot say WHICH refusal
 	// happened and the two most likely ones want opposite remedies.
 	//
-	// SandboxKeyNotANamespace is the expected one on a stock engine:
+	// SandboxKeyNotANamespace is the expected one where the sandbox
+	// netns mount is private (sandbox_netns_propagation=0):
 	// the entry is the placeholder file libnetwork creates before it
 	// bind-mounts the namespace over it, and the plugin's own
 	// /var/run/docker bind was taken before that mount existed. Nothing

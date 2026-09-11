@@ -69,7 +69,7 @@ the effective set is the seventeen above, not these four.
 | `pidhost` | Two consumers, and only one of them is the network namespace: the fallback route into a container's netns via `/proc/<pid>/ns/net`, and every `resolv.conf` write, which enters the container's MOUNT namespace through `/proc/<pid>/ns/mnt` and has no sandbox-key equivalent. | `pkg/plugin/resolvconf.go`, `pkg/plugin/container_netns.go` |
 | `mount:/var/run/docker.sock:bind` | The Docker API, read-only: `NetworkList`, `NetworkInspect` and `ContainerInspect`, which is where a container's hostname for DHCP option 12 comes from, plus `Ping` and `ServerVersion` once at startup for the minimum supported engine check. Anything but GET and HEAD is refused before it is sent. | `pkg/plugin/docker_client.go`, `pkg/plugin/docker_transport.go`, `pkg/plugin/engine_probe.go` |
 | `mount:/var/lib/net-dhcp:rbind,rw` | `STATE_DIR`: the lease record, per-network options, tombstones and the audit ledger, which must survive `docker plugin rm` and upgrade. | `pkg/plugin/state.go` |
-| `mount:/var/run/docker:rbind,ro` | Read-only. The daemon's sandbox netns entries: the route tried first into a container's network namespace, which carries a recovery after a plugin restart, and the evidence that separates "the container went away mid-attach" from a plugin fault. | `pkg/plugin/sandbox_netns.go`, `pkg/plugin/network.go` |
+| `mount:/var/run/docker:rbind,ro` | Read-only. The daemon's sandbox netns entries: the route tried first into a container's network namespace. It carries every recovery after a plugin restart, and it carries the attaches too on a host whose mount propagation delivers the daemon's later bind (`sandbox_netns_propagation`). It is also the evidence that separates "the container went away mid-attach" from a plugin fault. | `pkg/plugin/sandbox_netns.go`, `pkg/plugin/network.go` |
 | `CAP_NET_ADMIN` | Every address, route, MTU and link change the plugin applies inside a container's network namespace, and the parent/child link creation that attaches it. | `pkg/plugin/dhcp_manager.go`, `pkg/plugin/netlink_seam.go` |
 | `CAP_NET_RAW` | The `AF_PACKET` socket the DHCP exchange runs on — the interface has no address yet, so an ordinary UDP socket cannot carry it — and the RFC 5227 ARP probes on the same socket family. Both are opened by the `dhcp-golib` client this plugin links, constructed here. | `pkg/dhcp/chassis.go`, `pkg/dhcp/chassis6.go` |
 | `CAP_SYS_ADMIN` | `setns` into a container's network namespace on a locked OS thread, and into its mount namespace for a `resolv.conf` write. | `pkg/dhcp/chassis.go`, `pkg/plugin/resolvconf.go` |
@@ -77,42 +77,66 @@ the effective set is the seventeen above, not these four.
 
 <!-- privilege-sentences: end -->
 
-**The sandbox-key route was measured, and it carries a re-adoption but
-not an attach.** The plugin asks first for the key the daemon publishes
-under `/var/run/docker/netns/`. Whether that key resolves depends on one
-thing: libnetwork creates each entry as an ordinary empty file and
-bind-mounts the namespace over it, and the plugin's read-only
-`/var/run/docker` is a bind mount taken when the *plugin process*
-starts — a snapshot, not a subscription. A sandbox that already existed
-at that moment is reachable through its key; one created afterwards is
-not, and the key resolves to the empty file underneath.
+The sandbox-key route depends on the host, and this section says which
+part of the host. The plugin asks first for the key the daemon
+publishes under `/var/run/docker/netns/`. libnetwork creates each entry
+as an ordinary empty file and bind-mounts the namespace over it. The
+plugin's read-only `/var/run/docker` is a bind taken when the *plugin
+process* starts, and a bind is a snapshot and not a subscription. So
+whether a sandbox created after that moment is reachable through its key
+depends on the propagation of the mount the daemon publishes on. A mount
+linked to the plugin's delivers the later bind and the key resolves. A
+private one does not, the key resolves to the empty file underneath, and
+the plugin refuses it.
 
-A `Join` is always for a sandbox younger than the plugin, so
-`/proc/<pid>/ns/net` carries **every attach**, as it always has. The one
-case that goes the other way is recovery after a plugin restart, where
-the container predates the new plugin process: there the key route is
-used and the container's PID is never read. The plugin verifies that
-what it opened is a network namespace before using it, so the refusal is
-immediate and counted rather than surfacing later as a dead persistent
-client.
+The plugin publishes its own reading of that mount as
+`sandbox_netns_propagation`: `1` linked, `0` private, `-1` the mount
+table could not be read. Both readings are ordinary and both are
+measured. On the production host, 2026-09-11, and on a GitHub-hosted
+ubuntu-latest runner, Integration (hosted cross-check) run 34617922956,
+the gauge reads `1` and the key route carried every attach. On this
+project's nested CI daemon, Integration run 34616833894, the gauge reads
+`0` and `/proc/<pid>/ns/net` carried every attach.
+Recovery after a plugin restart takes the key route on either host,
+because the sandbox is then older than the plugin process. No plugin
+setting changes the reading: propagation belongs to the daemon's mount,
+not to this plugin's bind.
 
-That is why `pidhost` and `CAP_SYS_PTRACE` are unchanged, and it is now
-two independent reasons rather than one: the network namespace, above,
-and `resolv.conf` propagation, which enters the container's **mount**
-namespace by PID and for which no sandbox key exists at all.
+`pidhost` and `CAP_SYS_PTRACE` stay, for two independent reasons. The
+first is the netns fallback above, which is load-bearing on a host that
+answers `0` and idle on one that answers `1`. The second is
+`resolv.conf` propagation, which enters the container's **mount**
+namespace by PID on every host, and for which no sandbox key exists at
+all.
 
-On such a host, per attach, `sandbox_key_entry_failures` and
-`sandbox_pid_fallbacks` each rise by one and `sandbox_key_entries` stays
-flat; after a plugin restart `sandbox_key_entries` rises once per
-recovered endpoint instead. If attaches start counting under
-`sandbox_key_entries`, the daemon's sandbox mounts are reaching this
-plugin — a newer engine, or a different mount configuration — and the
-netns half of these two grants is no longer load-bearing on your host.
-None of that is `healthy`-affecting: a fallback that succeeds is a
-working endpoint, and it costs a privilege rather than a lease. The
-per-attach log line naming the refused key is at `debug`, because on a
-stock engine it is correct on every attach and there is nothing to do
-about it; the counters carry the signal at every level.
+What the attach asks the daemon, and when. From v2.1.0 the plugin opens
+the container's network namespace and finds its link before it makes any
+Docker call. The sandbox key arrives in the `Join` request and neither
+step needs anything else. One `ContainerInspect` follows, for the
+hostname that becomes DHCP option 12, and the persistent client starts
+when it answers. Where the key route is refused, that same single
+inspect supplies the container's PID for the fallback.
+
+So the attach is not daemon-free, and this section does not claim it is.
+A daemon that never answers still means no persistent client, and
+`attachDaemonBusyGrace` still covers the wait, because the daemon is
+inside `ContainerStart` for this container while it is asked (#406).
+What changed is that the namespace and the link no longer wait on it. A
+hostname source that is not `ContainerInspect` is what a daemon-free
+attach needs, and
+[#961](https://github.com/claymore666/docker-net-dhcp/issues/961) is
+open for it.
+
+The counters per attach, by host. Where the key route carries it,
+`sandbox_key_entries` rises by one and `sandbox_key_entry_failures` and
+`sandbox_pid_fallbacks` stay flat. Where it does not, those two rise by
+one each and `sandbox_key_entries` stays flat. After a plugin restart
+`sandbox_key_entries` rises once per recovered endpoint on both. None of
+it is `healthy`-affecting: a fallback that succeeds is a working
+endpoint, and it costs a privilege and not a lease. The per-attach log
+line naming the refused key is at `debug`, because on a host that
+answers `0` it is correct on every attach and there is nothing to do
+about it. The counters carry the signal at every level.
 
 **Which refusal, and how you can tell.** The paragraph above names one
 cause — the entry is the placeholder file, because the daemon's bind
@@ -127,11 +151,14 @@ refused (`sandbox_key_absent`, the endpoint no key was published for at
 all, `sandbox_key_wrong_ns_type` and `sandbox_key_unavailable` are the
 remaining three; all five sum to `sandbox_key_entry_failures`).
 
-The claim in this section is the first, and it is asserted rather than
-argued: `TestSandboxKeyRoute_Macvlan`, `_Bridge`, `_Ipvlan` and
-`_NonRootContainer` in `test/integration/sandbox_key_route_test.go` each
-require `sandbox_key_not_a_namespace` to rise by exactly one per attach
-and the other three arms to stay flat, and
+The claim in this section is the first, and it is asserted and not
+argued. `TestSandboxKeyRoute_Macvlan`, `_Bridge`, `_Ipvlan` and
+`_NonRootContainer` in `test/integration/sandbox_key_route_test.go` key
+themselves on `sandbox_netns_propagation` and assert the route that
+reading predicts: on `0`, `sandbox_key_not_a_namespace` rises by exactly
+one per attach and the other arms stay flat; on `1`, the key route
+carries the attach and no arm rises at all. A `-1` fails those cells,
+because a cell that cannot read the host cannot assert a route. And
 `TestRecovery_PluginDisableEnable_PreservesEndpoint` in
 `test/integration/recovery_test.go` requires all five to be zero on the
 recovered instance — the same key form, on the same daemon, in the same

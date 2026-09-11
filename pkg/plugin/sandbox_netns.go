@@ -67,7 +67,9 @@ var (
 	// errSandboxKeyNotANamespace: the entry opened and is not a
 	// namespace at all. This is the placeholder file libnetwork
 	// creates before it bind-mounts the namespace over it, seen
-	// through a mount namespace the later bind never reached.
+	// through a mount namespace the later bind never reached. That is
+	// the private-propagation host (sandbox_netns_propagation=0); where
+	// the mount is linked the bind arrives and this arm stays at zero.
 	errSandboxKeyNotANamespace = errors.New("sandbox key entry is not a namespace")
 
 	// errSandboxKeyWrongNSType: a namespace, of some other type.

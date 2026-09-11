@@ -74,8 +74,7 @@ sibling [#672].
 
 **[v2.1.0](https://github.com/claymore666/docker-net-dhcp/milestone/30)**
 is addressing Docker can see. [#110] bundles a DHCP IPAM driver, so
-`--ipam-driver null` stops being the only supported shape. [#218], the
-deterministic MAC, is on it and blocked upstream (below).
+`--ipam-driver null` stops being the only supported shape.
 
 **[v2.2.0](https://github.com/claymore666/docker-net-dhcp/milestone/29)**
 is full IPv6. [#818] and [#808] acquire an address by SLAAC, [#821] takes
@@ -96,7 +95,9 @@ creates for its own networks and owns for as long as they exist, and no
 interface the host configured is touched.
 
 [#926] Rapid Commit and [#927] temporary addresses (IA_TA) carry no
-milestone and are not scheduled.
+milestone and are not scheduled. [#218], the deterministic MAC, is
+backlog: it waits on upstream Docker ([moby/moby#52871], the table
+below) and is scheduled only when that lands.
 
 ## Direction
 
@@ -126,7 +127,7 @@ instead of what the plugin believes.
 
 A DHCP server keys on identity, so address stability is an identity
 problem. Two pieces are designed, and neither is unplanned. [#218], the
-deterministic MAC, is on v2.1.0 and blocked upstream (below). [#219], a
+deterministic MAC, is backlog and blocked upstream (below). [#219], a
 stable client-id for ipvlan where every child shares the parent's MAC,
 carries no milestone. 2.0 settled the DHCPv6 half of the same question:
 an ipvlan endpoint now gets a DUID of its own ([#895]).
