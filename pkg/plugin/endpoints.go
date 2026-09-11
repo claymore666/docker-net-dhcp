@@ -1072,6 +1072,10 @@ func (p *Plugin) healthSnapshot() HealthResponse {
 	// version from before a re-probe beside an API version from after.
 	engine := p.engineSnapshot()
 
+	// ONE resolution of the three sandbox-netns readings' sources, so the
+	// three fields below describe the same directory set.
+	netns := p.netnsReadingSources()
+
 	failed := p.recoveryFailed.Load()
 	joinFails := p.joinStartFailures.Load()
 	tsFails := p.tombstoneWriteFailures.Load()
@@ -1174,9 +1178,9 @@ func (p *Plugin) healthSnapshot() HealthResponse {
 		ACDConflictsDetected:         p.acdConflictsDetected.Load(),
 		ACDARPSendFailures:           p.acdARPSendFailures.Load(),
 		ACDResumedUnchecked:          p.acdResumedUnchecked.Load(),
-		SandboxNetnsVisible:          sandboxNetnsVisibleIn(sandboxNetnsDirs),
-		SandboxNetnsPropagation:      sandboxNetnsPropagationIn(sandboxNetnsDirs, selfMountinfo),
-		SandboxNetnsInitMounts:       sandboxNetnsInitMountsIn(sandboxNetnsDirs, selfMountNS, initMountNS, initMountinfo),
+		SandboxNetnsVisible:          sandboxNetnsVisibleIn(netns.dirs),
+		SandboxNetnsPropagation:      sandboxNetnsPropagationIn(netns.dirs, netns.mountinfo),
+		SandboxNetnsInitMounts:       sandboxNetnsInitMountsIn(netns.dirs, netns.selfNS, netns.initNS, netns.initMountinfo),
 		LeasesObtained:               leasesObtainedV4 + leasesObtainedV6,
 		LeasesRenewed:                leasesRenewedV4 + leasesRenewedV6,
 		RenewalsUnanswered:           renewalsUnansweredV4 + renewalsUnansweredV6,

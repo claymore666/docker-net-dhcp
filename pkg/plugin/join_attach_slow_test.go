@@ -208,7 +208,12 @@ func TestJoin_RecordsTheAttachDurationWhereTheLogCannotBeRead(t *testing.T) {
 			"join_attach_completed and its buckets are the only per-attach duration a host " +
 			"running the shipped LOG_LEVEL carries; outside the branch they would count " +
 			"failed attaches as successes, and with a freshly measured elapsed they would " +
-			"describe a different attach from the timing line (#403).")
+			"describe a different attach from the timing line (#403).\n" +
+			"The ORDER inside the branch is part of this pattern and is load-bearing beyond " +
+			"the counter: the lane cross-reads the two records over one window and treats a " +
+			"window with more lines than the counter counted as a counter that missed " +
+			"attaches, which holds only while the counter is incremented first " +
+			"(test/integration/join_duration_test.go).")
 	}
 }
 

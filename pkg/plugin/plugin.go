@@ -872,6 +872,10 @@ type Plugin struct {
 	// buckets partition every successful attach.
 	//
 	// Not healthy-affecting. All four are readings of successes.
+	// netnsSrc redirects the three sandbox-netns readings at fixtures.
+	// Zero in production; see netnsSources.
+	netnsSrc netnsSources
+
 	joinAttachCompleted  atomic.Int32
 	joinAttachUnder1s    atomic.Int32
 	joinAttach1sToBudget atomic.Int32

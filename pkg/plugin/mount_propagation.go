@@ -106,6 +106,46 @@ func sandboxNetnsPropagationIn(dirs []string, mountinfoPath string) int32 {
 	return sandboxPropagationUnknown
 }
 
+// netnsSources are the paths the three sandbox-netns readings are taken
+// from. A zero value means the production ones.
+//
+// It exists for the reason sandboxNetnsPropagationIn takes its
+// directories as a parameter: the readings have to be drivable without
+// root and without a live daemon. The parameters made each FUNCTION
+// drivable; this makes the hop from the function to the published field
+// drivable too, which is where a field can quietly carry its
+// neighbour's number (#417 review r1).
+//
+// Production never sets it. NewPlugin leaves it zero and every reading
+// resolves to the constants below.
+type netnsSources struct {
+	dirs          []string
+	mountinfo     string
+	selfNS        string
+	initNS        string
+	initMountinfo string
+}
+
+func (p *Plugin) netnsReadingSources() netnsSources {
+	s := p.netnsSrc
+	if len(s.dirs) == 0 {
+		s.dirs = sandboxNetnsDirs
+	}
+	if s.mountinfo == "" {
+		s.mountinfo = selfMountinfo
+	}
+	if s.selfNS == "" {
+		s.selfNS = selfMountNS
+	}
+	if s.initNS == "" {
+		s.initNS = initMountNS
+	}
+	if s.initMountinfo == "" {
+		s.initMountinfo = initMountinfo
+	}
+	return s
+}
+
 // resolveThroughMissing resolves dir's symlinks, and keeps answering
 // once the path stops existing.
 //

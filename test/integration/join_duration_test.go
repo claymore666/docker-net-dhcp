@@ -73,6 +73,15 @@ func TestJoinDuration_DistributionInThisShard(t *testing.T) {
 	}
 	defer cli.Close()
 
+	// Marked BEFORE the window opens, so the log window and the counter
+	// window cover the same stretch of time. The whole-log figures
+	// further down cannot be cross-read against a counter: the log
+	// spans the plugin's whole life and the counter spans the current
+	// process, and at this PR's first head the two printed 7 and 1 in
+	// one shard with nothing published to say which of the two readings
+	// applied (#417 review r1).
+	mark := harness.MarkPluginLog(t, ctx)
+
 	w := harness.BeginCounterWindow(t, ctx, cli, "join_attach_completed")
 
 	harness.CreateNetwork(t, ctx, "dhcptest-joindur", "macvlan", nil)
@@ -96,7 +105,41 @@ func TestJoinDuration_DistributionInThisShard(t *testing.T) {
 	}
 	// End closes the window, which is also the check that the plugin
 	// did not restart under the reading above.
-	_, after := w.End()
+	before, after := w.End()
+
+	// THE TWO RECORDS OVER ONE WINDOW. Both sides are now bounded by
+	// the same stretch, and End has already established that the plugin
+	// did not restart inside it, so a reset cannot explain a
+	// disagreement here.
+	//
+	// The direction is decided by the order the plugin writes them in:
+	// noteAttachDuration increments the counter and the timing line is
+	// written after it, so at any instant the counter leads the log by
+	// at most the attach in flight. A window carrying MORE lines than
+	// the counter counted is therefore a counter that missed attaches,
+	// not a sampling race.
+	//
+	// Awaited rather than sampled for the same reason: the positive
+	// assertion below would otherwise judge whatever had reached the
+	// file, and a `<=` over an empty window is satisfied by emptying
+	// it.
+	window := harness.AwaitPluginLogSince(t, ctx, mark, attachObservationBudget,
+		func(w string) bool { return len(harness.AttachDurations(w)) > 0 })
+	windowTook := harness.AttachDurations(window)
+	counted := after.JoinAttachCompleted - before.JoinAttachCompleted
+	if len(windowTook) == 0 {
+		t.Errorf("no attach line reached the plugin log in this test's own window, though the "+
+			"counter moved by %d for a container that HAS its address (%s).\n"+
+			"The two records of #403 are written side by side from one elapsed value; a window "+
+			"with the counter and without the line is the line being lost.", counted, ipv4)
+	}
+	if int32(len(windowTook)) > counted {
+		t.Errorf("this test's window carries %d attach line(s) and the counter moved by %d. "+
+			"The plugin did not restart inside the window, and it increments the counter before "+
+			"it writes the line, so this is the counter missing attaches. Every figure a host "+
+			"running the shipped LOG_LEVEL reads for #403 comes from that counter.",
+			len(windowTook), counted)
+	}
 
 	log := harness.ReadWholePluginLog(t, ctx)
 	if log == "" {
@@ -127,12 +170,24 @@ func TestJoinDuration_DistributionInThisShard(t *testing.T) {
 	}
 
 	sort.Slice(took, func(i, j int) bool { return took[i] < took[j] })
+	// instance and uptime travel with the figures. The lines below are
+	// over the plugin's whole life and the counters are over the
+	// current process, so a reader comparing them needs to know whether
+	// those are the same stretch. Without it a recycle and a counter
+	// that missed attaches look alike, which is what a seven-to-one
+	// disagreement looked like at this PR's first head.
 	t.Logf("JOIN-DURATION shard-local n=%d p50=%s p90=%s p99=%s max=%s counted=%d "+
-		"(budget: AWAIT_TIMEOUT as installed on this lane; the population is this shard, not the run)",
-		len(took), harness.Percentile(took, 50), harness.Percentile(took, 90), harness.Percentile(took, 99), took[len(took)-1], after.JoinAttachCompleted)
+		"instance=%s uptime=%.0fs window_lines=%d window_counted=%d "+
+		"(budget: AWAIT_TIMEOUT as installed on this lane; the population is this shard, not the run; "+
+		"n is over the plugin's whole life and counted is over the process named by instance)",
+		len(took), harness.Percentile(took, 50), harness.Percentile(took, 90), harness.Percentile(took, 99), took[len(took)-1], after.JoinAttachCompleted,
+		after.InstanceID, after.UptimeSeconds, len(windowTook), counted)
 	t.Logf("JOIN-DURATION-BUCKETS shard-local under_1s=%d 1s_to_budget=%d slow=%d max_ms=%d "+
-		"(the same distribution as a host running the shipped LOG_LEVEL sees it)",
-		after.JoinAttachUnder1s, after.JoinAttach1sToBudget, after.JoinAttachSlow, after.JoinAttachMsMax)
+		"instance=%s uptime=%.0fs "+
+		"(the same distribution as a host running the shipped LOG_LEVEL sees it, over the process "+
+		"named by instance and not over the shard)",
+		after.JoinAttachUnder1s, after.JoinAttach1sToBudget, after.JoinAttachSlow, after.JoinAttachMsMax,
+		after.InstanceID, after.UptimeSeconds)
 
 	// THE PHASES, and this is the assertion that holds the success-side
 	// recording rather than the log line. Start records its phase
