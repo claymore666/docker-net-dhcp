@@ -77,8 +77,9 @@ supported shape: naming the plugin in its place makes `docker run --ip`,
 `docker network connect --ip` and Compose's `ipv4_address` legal, fills
 the IPAM block `docker network inspect` prints, and drops `null` from
 the create line. `docker inspect` already reports the leased address in
-either shape. `ipvlan` keeps `--ipam-driver null` for now; [#949] tracks
-the rest. [#218], the deterministic MAC, is on the milestone and blocked
+either shape. `ipvlan` keeps `--ipam-driver null` for now ([#949]), and
+so does IPv6: the IPAM shape is IPv4 only and refuses both Docker's
+`--ipv6` and `-o ipv6=true` ([#960]). [#218], the deterministic MAC, is on the milestone and blocked
 upstream (below).
 
 **[v2.2.0](https://github.com/claymore666/docker-net-dhcp/milestone/29)**
@@ -264,6 +265,7 @@ for the next time someone asks.
 
 [#110]: https://github.com/claymore666/docker-net-dhcp/issues/110
 [#949]: https://github.com/claymore666/docker-net-dhcp/issues/949
+[#960]: https://github.com/claymore666/docker-net-dhcp/issues/960
 [#214]: https://github.com/claymore666/docker-net-dhcp/issues/214
 [#672]: https://github.com/claymore666/docker-net-dhcp/issues/672
 [#800]: https://github.com/claymore666/docker-net-dhcp/issues/800

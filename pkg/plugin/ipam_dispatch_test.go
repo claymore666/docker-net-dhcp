@@ -239,10 +239,15 @@ func TestRequestPool_RefusesWhatV2_1DoesNotDo(t *testing.T) {
 	cases := []struct {
 		name string
 		req  RequestPoolRequest
-		says string
+		says []string
 	}{
-		{"an IPv6 pool", RequestPoolRequest{AddressSpace: ipamLocalAddressSpace, V6: true}, "v2.2.0"},
-		{"an --ip-range", RequestPoolRequest{AddressSpace: ipamLocalAddressSpace, Pool: ipamTestPool, SubPool: "192.168.99.128/25"}, "--ip-range"},
+		// The v6 refusal names the SHAPE that works, not a version. It
+		// used to say "use -o ipv6=true, which is unchanged", and on
+		// this network that sends the operator to a second dead end:
+		// the IPAM endpoint path runs no DHCPv6 exchange either, so
+		// both doors are closed and only --ipam-driver null is open.
+		{"an IPv6 pool", RequestPoolRequest{AddressSpace: ipamLocalAddressSpace, V6: true}, []string{"#960", "--ipam-driver null"}},
+		{"an --ip-range", RequestPoolRequest{AddressSpace: ipamLocalAddressSpace, Pool: ipamTestPool, SubPool: "192.168.99.128/25"}, []string{"--ip-range"}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -253,9 +258,11 @@ func TestRequestPool_RefusesWhatV2_1DoesNotDo(t *testing.T) {
 			if !errors.Is(err, util.ErrIPAM) {
 				t.Errorf("error %v does not wrap util.ErrIPAM, so the daemon gets a 500 instead of a 400", err)
 			}
-			if !strings.Contains(err.Error(), c.says) {
-				t.Errorf("the refusal is %q and does not mention %q, so it tells the operator "+
-					"nothing they can act on", err, c.says)
+			for _, want := range c.says {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("the refusal is %q and does not mention %q, so it tells the operator "+
+						"nothing they can act on", err, want)
+				}
 			}
 		})
 	}
@@ -1267,4 +1274,96 @@ func ipamSecondNetwork(t *testing.T, p *Plugin) string {
 	}
 	p.ipamIndex.bind(poolID, id)
 	return poolID
+}
+
+// createIPAMBridgeNetwork drives the whole CreateNetwork entrance for a
+// bridge network allocated by THIS plugin's IPAM driver, which is the
+// only place the ipv6 combination can be refused in time to help: the
+// option is read from the network's own options and nothing later in a
+// container start has both facts to hand.
+//
+// The pool is issued first because ipamBindingFor consumes an issue and
+// refuses without one, and a test that never got past that refusal
+// would report a pass for the wrong reason.
+func createIPAMBridgeNetwork(t *testing.T, ipv6 bool, space string) error {
+	t.Helper()
+	const bridge = "br-ipam6"
+	withStateDir(t, t.TempDir())
+	withFakeBridge(t, bridge)
+
+	p := newPluginForTest()
+	p.ipamPools = newIssuedPools()
+	p.ipamIndex = newIPAMIndex()
+	p.docker = &fakeDocker{}
+
+	if space != "null" {
+		if _, err := p.RequestPool(RequestPoolRequest{AddressSpace: space, Pool: ipamTestPool}); err != nil {
+			t.Fatalf("RequestPool: %v", err)
+		}
+	}
+	data := &IPAMData{AddressSpace: space, Pool: ipamTestPool}
+	if space == "null" {
+		data = &IPAMData{AddressSpace: "null", Pool: "0.0.0.0/0"}
+	}
+	return p.CreateNetwork(CreateNetworkRequest{
+		NetworkID: ipamTestNetwork,
+		Options: map[string]interface{}{
+			util.OptionsKeyGeneric: map[string]interface{}{
+				"bridge": bridge,
+				"ipv6":   ipv6,
+			},
+		},
+		IPv4Data: []*IPAMData{data},
+	})
+}
+
+// TestCreateNetwork_IPAMModeRefusesIPv6 is the entrance for issue #960.
+//
+// docs/reference.md said `-o ipv6=true` "keeps working in both shapes",
+// and in the IPAM shape it does not work at all: ipam_endpoint.go runs
+// no DHCPv6 exchange, opens no v6 record and returns no AddressIPv6, so
+// the container gets no IPv6 address from the plugin. What it does get
+// is a Join-time DUID minted from the endpoint MAC, which libnetwork
+// regenerates for every endpoint in IPAM mode, so even the degraded
+// half changes identity at every restart.
+//
+// The two controls are what give the refusal a boundary: null-mode
+// ipv6=true is the shipping product and must survive, and an IPAM
+// network without ipv6 must still be created, or the refusal has taken
+// the feature away from everyone.
+func TestCreateNetwork_IPAMModeRefusesIPv6(t *testing.T) {
+	t.Run("an IPAM network with ipv6 is refused", func(t *testing.T) {
+		err := createIPAMBridgeNetwork(t, true, ipamLocalAddressSpace)
+		if err == nil {
+			t.Fatal("`-o ipv6=true` was accepted on a network this plugin is the IPAM driver " +
+				"for. No DHCPv6 exchange runs on that path, so the operator who asked for " +
+				"IPv6 in writing gets none, and the DUID the v6 manager falls back to at " +
+				"Join changes at every restart because the endpoint MAC does")
+		}
+		if !errors.Is(err, util.ErrIPAM) {
+			t.Errorf("the refusal %v is not a util.ErrIPAM, so it does not map to the status "+
+				"code the other IPAM refusals use", err)
+		}
+		// The message is the remedy. Without the supported shape and
+		// the issue, an operator can only guess whether IPv6 is coming.
+		for _, want := range []string{"ipv6", "--ipam-driver null", "#960"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("the refusal is %q and does not mention %q", err, want)
+			}
+		}
+	})
+
+	t.Run("an IPAM network without ipv6 is created", func(t *testing.T) {
+		if err := createIPAMBridgeNetwork(t, false, ipamLocalAddressSpace); err != nil {
+			t.Fatalf("an IPAM network with no ipv6 option was refused: %v. The refusal is "+
+				"about one combination and must not reach the ordinary shape", err)
+		}
+	})
+
+	t.Run("a null-IPAM network with ipv6 is created", func(t *testing.T) {
+		if err := createIPAMBridgeNetwork(t, true, "null"); err != nil {
+			t.Fatalf("`-o ipv6=true` was refused on a --ipam-driver null network: %v. That is "+
+				"the shipping product since v1.x and nothing in this issue touches it", err)
+		}
+	})
 }

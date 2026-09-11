@@ -91,7 +91,7 @@ func ipamCanonicalPool(pool string) (string, error) {
 		return "", fmt.Errorf("pool %q is not a CIDR prefix: %w", pool, util.ErrIPAM)
 	}
 	if !p.Addr().Is4() {
-		return "", fmt.Errorf("pool %q is not IPv4; IPv6 pools arrive in v2.2.0: %w", pool, util.ErrIPAM)
+		return "", fmt.Errorf("pool %q is not IPv4; this plugin's IPAM driver serves IPv4 only, and IPv6 in this shape is issue #960: %w", pool, util.ErrIPAM)
 	}
 	return p.Masked().String(), nil
 }

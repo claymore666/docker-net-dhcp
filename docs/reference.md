@@ -460,13 +460,32 @@ option. One network needs neither key.
 IPAM driver: Docker generates a MAC per endpoint for an IPAM driver that
 asks for one, and ipvlan children share the parent's MAC and refuse a
 supplied one. The network create is refused, and `--ipam-driver null` is
-unchanged and supported for ipvlan (#949). IPv6 pools are refused for
-the same reason of scope, with the message naming v2.2.0; `-o ipv6=true`
-keeps working in both shapes.
+unchanged and supported for ipvlan (#949).
+
+**IPv6 is IPv4-only in this shape, and the combination is refused.** The
+plugin allocates no IPv6 pool, so Docker's `--ipv6` is refused; and
+`-o ipv6=true` is refused too, because the IPAM endpoint path runs no
+DHCPv6 exchange at all. A container on such a network would get no IPv6
+address from the plugin, and the identity the v6 client falls back to at
+join time is derived from the endpoint MAC, which Docker regenerates at
+every restart in this shape. Both refusals name #960. `-o ipv6=true` on
+an `--ipam-driver null` network is unchanged and supported.
 
 **A network's IPAM driver is fixed when it is created.** Upgrading the
 plugin never moves an existing `--ipam-driver null` network into the new
 shape, and switching shapes is a `docker network rm` and a create.
+
+**Going back to v2.0.0 or earlier strands an IPAM-mode network.** Those
+builds do not offer an IPAM driver at all, so the daemon cannot find the
+one the network names: `docker run` on it fails with the daemon's own
+"IPAM driver not found" error, at once and for every container, and it
+says nothing about this plugin. `docker network rm` still works, and
+re-creating the network with `--ipam-driver null` is the way back.
+Existing `--ipam-driver null` networks are unaffected by the downgrade.
+Nothing on disk is damaged either way — the plugin refuses to read a
+state file newer than it understands rather than rewriting it — but the
+file is not what protects you here, the missing driver is, so plan a
+rollback around removing the IPAM-mode networks first.
 
 ---
 

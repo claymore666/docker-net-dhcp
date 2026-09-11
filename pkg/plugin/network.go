@@ -488,6 +488,9 @@ func (p *Plugin) CreateNetwork(r CreateNetworkRequest) error {
 		if err := ipamRefuseIPvlan(opts.effectiveMode()); err != nil {
 			return err
 		}
+		if err := ipamRefuseIPv6(opts.IPv6); err != nil {
+			return err
+		}
 		iface := opts.Bridge
 		if m := opts.effectiveMode(); m == ModeMacvlan || m == ModeIPvlan {
 			iface = opts.Parent

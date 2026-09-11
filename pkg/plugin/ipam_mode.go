@@ -332,3 +332,35 @@ func ipamRefuseIPvlan(mode string) error {
 	}
 	return fmt.Errorf("%w: ipvlan networks cannot use this plugin as an IPAM driver in v2.1.0, because ipvlan children share the parent's MAC and Docker's IPAM contract requires a per-endpoint one. Create the network with --ipam-driver null instead, which is unchanged and supported. Progress on ipvlan in IPAM mode is tracked in issue #949", util.ErrIPAM)
 }
+
+// ipamRefuseIPv6 closes `-o ipv6=true` on a network this plugin is the
+// IPAM driver for, and it is a refusal of a combination that the tree
+// already did not serve.
+//
+// What the option promises in null mode is a second address: the null
+// CreateEndpoint runs a DHCPv6 exchange, opens a v6 record through
+// recordCreated6 and hands libnetwork an AddressIPv6. The IPAM
+// CreateEndpoint (ipam_endpoint.go) does none of those three -- the
+// whole path is v4 -- so the option set on an IPAM network buys a
+// container no v6 address from the plugin at all.
+//
+// What it does instead is worse than nothing. At Join the v6 manager
+// finds no record for the endpoint and mints a DUID-LL out of the
+// endpoint's hardware address, which in IPAM mode libnetwork generates
+// anew for every endpoint. So the DUID changes at every restart, the
+// server sees a stranger each time, and the one property this driver
+// exists to give -- the same address back across a restart -- is the
+// one v6 cannot have here. Leaving the option accepted would ship that
+// as a silent half-feature on a network whose operator asked for v6 in
+// writing.
+//
+// Refused at `docker network create` for the reason ipvlan is: the cost
+// is paid once, by the operator who can still act on it, rather than at
+// every container start by a message about something else. It takes
+// nothing away from a null-mode network, where ipv6=true is unchanged.
+func ipamRefuseIPv6(ipv6 bool) error {
+	if !ipv6 {
+		return nil
+	}
+	return fmt.Errorf("%w: `-o ipv6=true` cannot be combined with this plugin as the IPAM driver in v2.1.0. This plugin's IPAM driver serves IPv4 only, so the network would run no DHCPv6 exchange and the container would get no IPv6 address from it. Create the network with --ipam-driver null instead, where `-o ipv6=true` is unchanged and supported, or create it without ipv6. Progress on IPv6 in IPAM mode is tracked in issue #960", util.ErrIPAM)
+}

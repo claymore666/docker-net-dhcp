@@ -109,9 +109,12 @@ docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.0.0 \
 
 One of the two is required. On arm64 the `-arm64` tag goes in these
 lines too, because a network records the tagged reference as its driver.
-Add `-o ipv6=true` for a DHCPv6 lease beside the v4 one. The two shapes
-are set out in
+Add `-o ipv6=true` for a DHCPv6 lease beside the v4 one; it needs the
+`null` line, because the IPAM shape is IPv4 only in v2.1.0 and refuses
+the combination ([#960]). The two shapes are set out in
 [the driver reference](reference.md#address-allocation).
+
+[#960]: https://github.com/claymore666/docker-net-dhcp/issues/960
 
 After that, plain Compose. No static addresses, no sidecar, nothing per
 container:
@@ -139,6 +142,8 @@ networks:
   external DHCP client to install, supervise or reap.
 - **IPv6 is the same one line.** `-o ipv6=true` adds a DHCPv6 lease with
   its own timers, its own counters and a DUID that survives a restart.
+  On `--ipam-driver null` networks; the IPAM shape is IPv4 only in
+  v2.1.0.
 - **A restart keeps the address.** In `bridge` and `macvlan` the MAC is
   carried across `docker restart`, so a server-side reservation still
   matches and the old address is re-requested; a plugin restart or upgrade

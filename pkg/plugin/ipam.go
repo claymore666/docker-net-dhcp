@@ -166,7 +166,7 @@ func (p *Plugin) apiRequestPool(w http.ResponseWriter, r *http.Request) {
 // that wrote state here, would unbind every network at every restart.
 func (p *Plugin) RequestPool(req RequestPoolRequest) (RequestPoolResponse, error) {
 	if req.V6 {
-		return RequestPoolResponse{}, fmt.Errorf("%w: this plugin does not allocate IPv6 pools yet. Run the network without Docker's --ipv6 and use -o ipv6=true, which is unchanged, or wait for v2.2.0", util.ErrIPAM)
+		return RequestPoolResponse{}, fmt.Errorf("%w: this plugin does not allocate IPv6 pools. In this shape it serves IPv4 only: `-o ipv6=true` is refused on such a network too, because no DHCPv6 exchange runs on the IPAM endpoint path. For IPv6 today, create the network with --ipam-driver null and `-o ipv6=true`, which is unchanged and supported. Progress on IPv6 in IPAM mode is tracked in issue #960", util.ErrIPAM)
 	}
 	if req.SubPool != "" {
 		return RequestPoolResponse{}, fmt.Errorf("%w: --ip-range is not supported: addresses come from the LAN's DHCP server, which this plugin does not narrow", util.ErrIPAM)
