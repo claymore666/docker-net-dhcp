@@ -44,6 +44,10 @@ var errIPAMBindingLost = errors.New("this network's IPAM pool binding could not 
 type ipamIndex struct {
 	mu sync.Mutex
 	m  map[string]string
+	// incomplete records that the start-up fold could not read every
+	// network, which is what makes an UNBOUND pool ambiguous. See
+	// markIncomplete.
+	incomplete bool
 }
 
 func newIPAMIndex() *ipamIndex { return &ipamIndex{m: map[string]string{}} }
@@ -105,6 +109,41 @@ func (x *ipamIndex) boundTo(poolID, exceptNetworkID string) (string, bool) {
 	return n, true
 }
 
+// markIncomplete says the start-up fold skipped at least one network.
+//
+// IT IS THE DIFFERENCE BETWEEN A CREATE IN FLIGHT AND A LOST BINDING,
+// which is otherwise unanswerable. A RequestAddress for a pool no
+// network holds has two causes and they arrive on the same wire: the
+// aux addresses libnetwork asks for while a create is still running,
+// before CreateNetwork has bound anything, and the daemon's replay of a
+// stored endpoint whose network was skipped by rebuildIPAMIndex because
+// its file would not read. Echoing the first is correct. Echoing the
+// second confirms Docker's stored address from a process that holds no
+// record of it, which is the one shape of row A neither replay counter
+// can see, because the dispatch never reaches them.
+//
+// So the fold reports what it could not read, and the unbound branch
+// refuses while anything is missing. The cost is borne by the host that
+// already has an unreadable state file: on it, a create carrying
+// `--aux-address` is refused too, loudly, naming the pool.
+func (x *ipamIndex) markIncomplete() {
+	if x == nil {
+		return
+	}
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	x.incomplete = true
+}
+
+func (x *ipamIndex) isIncomplete() bool {
+	if x == nil {
+		return false
+	}
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	return x.incomplete
+}
+
 func (x *ipamIndex) len() int {
 	if x == nil {
 		return 0
@@ -127,12 +166,14 @@ func rebuildIPAMIndex(x *ipamIndex) {
 	}
 	ids, err := listStateNetworks()
 	if err != nil {
+		x.markIncomplete()
 		log.WithError(err).Warn("Could not list the state directory; IPAM-mode networks will refuse until their state is readable")
 		return
 	}
 	for _, id := range ids {
 		sn, err := loadNetwork(id)
 		if err != nil {
+			x.markIncomplete()
 			log.WithError(err).WithField("network", shortID(id)).
 				Warn("Could not read a persisted network; if it is in IPAM mode its endpoint calls will be refused")
 			continue

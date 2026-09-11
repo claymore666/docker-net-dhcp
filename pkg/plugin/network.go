@@ -1026,7 +1026,7 @@ func (p *Plugin) netOptionsRaw(ctx context.Context, id string) (DHCPNetworkOptio
 	// themselves never call Docker (ipamNetwork reads disk alone), since
 	// they run inside the daemon's start-up replay before its API
 	// serves.
-	if IsDHCPPlugin(n.IPAM.Driver) {
+	if ipamDriverIsRemote(n.IPAM.Driver) {
 		return dummy, fmt.Errorf("%w: %v: %w", errIPAMBindingLost, id, loadErr)
 	}
 
@@ -1045,6 +1045,39 @@ func (p *Plugin) netOptionsRaw(ctx context.Context, id string) (DHCPNetworkOptio
 		}
 	}
 	return opts, nil
+}
+
+// ipamDriverIsRemote reports whether Docker's record names an IPAM
+// driver that is not one of the daemon's own.
+//
+// NOT IsDHCPPlugin, and the difference is the whole reason this
+// function exists. That predicate matches the PUBLISHED IMAGE
+// REFERENCE (driverRegexp), which is right where it is used -- the
+// bridge-overlap scan, where mistaking a stranger's image for ours is
+// the hazard -- and wrong here. `docker plugin install <ref> --alias
+// lan-dhcp` makes Docker store "lan-dhcp" as the network's IPAM driver,
+// the regexp misses, and the refusal above does not fire: the network
+// the D46 amendment exists to protect goes down the null path after
+// all. A name is not an authenticator.
+//
+// What IS authoritative is the domain closed at CREATE.
+// validateIPAMData admits exactly two shapes, `--ipam-driver null` and
+// this plugin's own two address spaces, and it refused everything else
+// before this feature as well. So a network of this driver whose IPAM
+// driver is neither of the daemon's built-ins cannot have been created
+// with anything but a remote IPAM driver serving it, whatever the name
+// spells -- and serving that on the null path is the degradation row A
+// refuses. The built-in names are listed rather than guessed: "null" is
+// the null driver, "default" is the daemon's own, and an empty string
+// is a record that names no driver at all, which is not evidence of a
+// remote one.
+func ipamDriverIsRemote(name string) bool {
+	switch name {
+	case "", "null", "default":
+		return false
+	default:
+		return true
+	}
 }
 
 // CreateEndpoint creates the per-endpoint host-side network plumbing

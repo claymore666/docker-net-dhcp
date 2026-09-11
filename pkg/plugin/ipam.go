@@ -4,6 +4,7 @@
 package plugin
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"net"
@@ -231,12 +232,33 @@ func (p *Plugin) RequestAddress(ctx context.Context, req RequestAddressRequest) 
 
 	networkID, bound := p.ipamIndex.network(req.PoolID)
 	if !bound {
-		// No network holds this pool. The only calls that can legally
-		// arrive are the gateway and aux ones libnetwork makes while a
-		// create is still in flight, before CreateNetwork has bound
-		// anything; both carry an address and want it back unchanged.
+		// No network holds this pool. The calls that legally arrive are
+		// the gateway and aux ones libnetwork makes while a create is
+		// still in flight, before CreateNetwork has bound anything;
+		// both carry an address and want it back unchanged.
 		if req.Address == "" {
 			return none, fmt.Errorf("%w: no network is bound to pool %v, so there is nothing to lease from", util.ErrIPAM, req.PoolID)
+		}
+		// A gateway says so on the wire and is never an endpoint's
+		// address, so it is answered whatever the index knows.
+		if req.Options[ipamOptRequestAddressType] == ipamOptGateway {
+			return ipamEchoAddress(req.Address, ipamAnyPool)
+		}
+		// The aux shape and a stored endpoint's replay are otherwise
+		// wire-identical, and one more thing can make a pool unbound:
+		// rebuildIPAMIndex skipping a network whose file would not
+		// read. Echoing there would confirm Docker's stored address
+		// from a process holding no record of it -- row A's
+		// degradation, arriving before either replay counter is
+		// reached. While anything is missing from the fold, the echo is
+		// refused and counted as the miss it is.
+		if p.ipamIndex.isIncomplete() {
+			p.ipamReplayMiss.Add(1)
+			log.WithFields(log.Fields{
+				"pool":    req.PoolID,
+				"address": req.Address,
+			}).Warn("An address was requested for a pool no network holds, on a host where at least one network's state could not be read at start-up; refusing rather than confirming it")
+			return none, fmt.Errorf("%w: no network is bound to pool %v, and at least one network's state file could not be read when this plugin started, so this address cannot be confirmed. Repair or remove the unreadable file in the plugin's state directory and restart the plugin", util.ErrIPAM, req.PoolID)
 		}
 		return ipamEchoAddress(req.Address, ipamAnyPool)
 	}
@@ -274,6 +296,9 @@ func (p *Plugin) RequestAddress(ctx context.Context, req RequestAddressRequest) 
 			// The replay of a stored endpoint, and also how a re-sent
 			// RequestAddress body finds the reservation the first copy
 			// of it already made.
+			if err := ipamRecordAnswersFor(rec, mac, addr); err != nil {
+				return none, err
+			}
 			p.ipamReplayHits.Add(1)
 			return ipamAddressOfRecord(rec.Lease.Addr, sn.Binding.Pool)
 		}
@@ -305,6 +330,36 @@ func (p *Plugin) RequestAddress(ctx context.Context, req RequestAddressRequest) 
 		return none, err
 	}
 	return RequestAddressResponse{Address: res.addr.String()}, nil
+}
+
+// ipamRecordAnswersFor refuses a record that belongs to some other
+// endpoint.
+//
+// THE MATCH ON THE ADDRESS ALONE IS NOT ENOUGH WHEN THE REQUEST CARRIES
+// A MAC. libnetwork injects the hardware address only when it is
+// CREATING an endpoint, so `docker run --ip X` for an address a running
+// container already holds looks exactly like that container's own
+// replay: the call would be answered, libnetwork would allocate one
+// address to two endpoints, ipam_replay_hits would move for something
+// that is not a replay, and the contradiction would surface later at
+// CreateEndpoint wearing a message about a plugin restart that never
+// happened. A record answers a creating endpoint only when it is that
+// endpoint's, which the CHAddr says.
+//
+// An empty CHAddr is refused with the rest. A record that cannot say
+// whose it is cannot be handed to a new endpoint, and the refusal is
+// visible at `docker run` rather than silent.
+func ipamRecordAnswersFor(rec lease.Record, mac net.HardwareAddr, addr netip.Addr) error {
+	if mac == nil {
+		// The replay shape: no MAC to compare, and the address is what
+		// Docker stored for this endpoint.
+		return nil
+	}
+	if len(rec.CHAddr) > 0 && bytes.Equal(rec.CHAddr, mac) {
+		return nil
+	}
+	return fmt.Errorf("%w: %v is held by another endpoint on this network (record %v), so it cannot be given to %v as well. Pick a free address, or stop the container holding this one",
+		util.ErrIPAM, addr, rec.ID, mac)
 }
 
 // ipamRecordFor is the phase-filtered lookup, lifted so the dispatch

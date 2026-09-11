@@ -6,15 +6,18 @@ package plugin
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net"
 	"net/netip"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/claymore666/dhcp-golib/lease"
 
 	"github.com/claymore666/docker-net-dhcp/pkg/dhcp"
+	"github.com/claymore666/docker-net-dhcp/pkg/util"
 )
 
 // TestIpamReserve_ASecondRequestJoinsTheFirst is defeat row 14 and the
@@ -295,4 +298,143 @@ func schemaVersionOfFile(t *testing.T, path string) int {
 		t.Fatalf("%s is not a versioned options file: %v", path, err)
 	}
 	return vo.V
+}
+
+// TestIpamACKIsTheOneAsked is the design's §3 rule for the `--ip`
+// shape, and it is a rule about libnetwork rather than about DHCP.
+//
+// Option 50 is a REQUEST: a server may answer another address because
+// the one asked for is reserved for a different client, already leased,
+// or outside the range it serves. libnetwork does not compare the
+// driver's answer to the address it preferred -- it adopts whatever
+// comes back -- so an unchecked ACK makes `docker run --ip A` publish B
+// and exit 0, with nothing anywhere saying the pin did not take.
+func TestIpamACKIsTheOneAsked(t *testing.T) {
+	for _, c := range []struct {
+		name, demanded, got string
+		refuse              bool
+	}{
+		{"nothing was demanded, so the server chooses", "", "192.168.99.50", false},
+		{"the server answered the address asked for", "192.168.99.50", "192.168.99.50", false},
+		{"the server answered a different address", "192.168.99.50", "192.168.99.51", true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			got, err := netip.ParseAddr(c.got)
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = ipamACKIsTheOneAsked(got, c.demanded)
+			if !c.refuse {
+				if err != nil {
+					t.Fatalf("refused %v against %q (%v); the address the server chose is the "+
+						"product everywhere no --ip was typed", got, c.demanded, err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatal("an ACK for another address was accepted. libnetwork adopts whatever " +
+					"the driver returns, so `docker run --ip` succeeds with an address the " +
+					"operator did not ask for and nothing reports the substitution.")
+			}
+			if !errors.Is(err, util.ErrIPAM) {
+				t.Errorf("error %v does not wrap util.ErrIPAM", err)
+			}
+			// The operator has to be able to tell which address they
+			// asked for from which one the server offered.
+			for _, want := range []string{c.demanded, c.got} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("the refusal is %q and does not name %q", err, want)
+				}
+			}
+		})
+	}
+}
+
+// TestIpamGiveUpRecord_AFailedExchangeLeavesTheCandidate.
+//
+// ipamRebindCandidate writes OpRebind before any packet goes out --
+// the exchange has to run under the identity the server already has a
+// lease filed under -- and that fold clears the tombstone deadline. So
+// a reserve that then fails has taken the candidate off the board. If
+// it closes the record, a container restarted on its own during a brief
+// outage finds nothing to re-bind on the retry seconds later, takes a
+// fresh address, and no counter moves: ipam_rebind_ambiguous is about
+// two candidates, not none.
+func TestIpamGiveUpRecord_AFailedExchangeLeavesTheCandidate(t *testing.T) {
+	mac, _ := net.ParseMAC(ipamTestMAC)
+	ident := dhcp.ClientIdentity([]byte{7})
+
+	t.Run("a re-bound record goes back to being a tombstone", func(t *testing.T) {
+		p, _ := ipamFixture(t)
+		id := p.recordCreated(ipamTestNetwork, mac, ident)
+		if err := p.records.Observed(id, acquired("192.168.99.10/24", time.Hour), nil); err != nil {
+			t.Fatalf("Observed: %v", err)
+		}
+		if err := p.records.Retained(id, time.Now().Add(time.Minute)); err != nil {
+			t.Fatalf("Retained: %v", err)
+		}
+		restarted, _ := net.ParseMAC("02:42:c0:a8:63:0b")
+		gotID, gotAddr := p.ipamRebindCandidate(ipamTestNetwork, restarted)
+		if gotID != id || gotAddr != "192.168.99.10" {
+			t.Fatalf("the candidate was not taken: (%q, %q)", gotID, gotAddr)
+		}
+
+		// The exchange fails -- the server is unreachable, or the ACK
+		// is refused by the subnet rule.
+		p.ipamGiveUpRecord(id, true)
+
+		// The retry, well inside the window.
+		againID, againAddr := p.ipamRebindCandidate(ipamTestNetwork, restarted)
+		if againID != id {
+			t.Errorf("the retry found candidate %q, want %q. The failed attempt consumed the "+
+				"tombstone, so this container takes a fresh address and the documented "+
+				"restart stability is gone with nothing counting it.", againID, id)
+		}
+		if againAddr != "192.168.99.10" {
+			t.Errorf("the retry asks for %q, want 192.168.99.10", againAddr)
+		}
+	})
+
+	t.Run("a record that was never a tombstone is closed", func(t *testing.T) {
+		p, _ := ipamFixture(t)
+		id := p.recordReserved(ipamTestNetwork, mac, ident)
+		if id == "" {
+			t.Fatal("recordReserved returned no record")
+		}
+		p.ipamGiveUpRecord(id, false)
+		if got := ipamPhaseOf(t, p, id); got != lease.PhaseClosed {
+			t.Errorf("phase = %v, want Closed. Nothing is owed to an address the plugin never "+
+				"held, and a reservation left open answers address lookups forever.", got)
+		}
+	})
+}
+
+// TestIpamExchangeAddresses is the line between a pin and a preference.
+//
+// `--ip` is a demand and an ACK for another address is refused. A
+// tombstone's address is how a restarted container keeps what it had,
+// and the server answering otherwise is the documented limit: refusing
+// there would turn "your address moved" into "your container will not
+// start", on the one path that exists to make restarts survivable.
+func TestIpamExchangeAddresses(t *testing.T) {
+	for _, c := range []struct {
+		name, requested, rebind string
+		ask, demand             string
+	}{
+		{"--ip alone", "192.168.99.50", "", "192.168.99.50", "192.168.99.50"},
+		{"a tombstone alone", "", "192.168.99.10", "192.168.99.10", ""},
+		{"--ip wins over a tombstone, and is still the demand", "192.168.99.50", "192.168.99.10", "192.168.99.50", "192.168.99.50"},
+		{"neither", "", "", "", ""},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			ask, demand := ipamExchangeAddresses(c.requested, c.rebind)
+			if ask != c.ask {
+				t.Errorf("asks for %q, want %q", ask, c.ask)
+			}
+			if demand != c.demand {
+				t.Errorf("demands %q, want %q. A re-bind address demanded is a restarted "+
+					"container refused when the server hands it a different one.", demand, c.demand)
+			}
+		})
+	}
 }

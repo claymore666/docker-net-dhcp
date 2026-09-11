@@ -483,6 +483,49 @@ func TestIPAM_StaticIPIsHonouredWithASubnet(t *testing.T) {
 			"never granted is the worst of both shapes: the store says one thing and the "+
 			"segment another.\nACKs for it: %v", harness.StaticTestIP, mac, acks)
 	}
+
+	// The other side of the same pin, and the one nothing else can
+	// reach: the address is asked for by a container the reservation is
+	// NOT for, so the server hands out something else (or nothing).
+	// libnetwork adopts whatever the driver returns without comparing
+	// it to the address it preferred, so an unchecked ACK publishes an
+	// address the operator never asked for and exits 0. The invariant
+	// is written as the invariant: what Docker publishes is the address
+	// that was demanded, or the run fails. It is asserted after the
+	// first container is up and still holding the reservation.
+	t.Run("an --ip the server will not grant is refused, never substituted", func(t *testing.T) {
+		const otherName = "dh-itest-ipam-static-other"
+		other, err := cli.ContainerCreate(ctx,
+			&container.Config{
+				Image:    harness.TestImage,
+				Cmd:      []string{"sleep", "infinity"},
+				Hostname: otherName,
+			},
+			harness.HostConfig(),
+			&network.NetworkingConfig{EndpointsConfig: map[string]*network.EndpointSettings{
+				netName: {IPAMConfig: &network.EndpointIPAMConfig{IPv4Address: harness.StaticTestIP}},
+			}},
+			nil, otherName)
+		if err != nil {
+			t.Fatalf("ContainerCreate: %v", err)
+		}
+		t.Cleanup(func() {
+			bg := context.Background()
+			_ = cli.ContainerStop(bg, other.ID, container.StopOptions{})
+			_ = cli.ContainerRemove(bg, other.ID, container.RemoveOptions{Force: true})
+		})
+		if err := cli.ContainerStart(ctx, other.ID, container.StartOptions{}); err != nil {
+			t.Logf("refused, which is the expected branch: %v", err)
+			return
+		}
+		got, _ := ipamNetworkAddress(t, ctx, cli, other.ID, netName)
+		if got != harness.StaticTestIP {
+			t.Fatalf("this container asked for %s and Docker published %s. The address the "+
+				"operator pinned is not the one the container has, `docker run` exited 0, "+
+				"and nothing anywhere reports the substitution.", harness.StaticTestIP, got)
+		}
+		t.Logf("the server granted %s to this container as well; the demand was met", got)
+	})
 }
 
 // TestIPAM_StaticIPWithoutASubnetIsRefused is the other half of row 4.

@@ -9,11 +9,13 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/claymore666/dhcp-golib/lease"
+	dNetwork "github.com/docker/docker/api/types/network"
 	"github.com/vishvananda/netlink"
 
 	"github.com/claymore666/docker-net-dhcp/pkg/dhcp"
@@ -540,6 +542,261 @@ func TestIpamMode_DeleteEndpointWritesNoJSONTombstone(t *testing.T) {
 			if ok != c.wantWrite {
 				t.Errorf("a JSON tombstone was consumable=%v (mac=%q ipv4=%q), want %v: %s",
 					ok, mac, ipv4, c.wantWrite, c.why)
+			}
+		})
+	}
+}
+
+// TestIpamReplay_AnAddressHeldByAnotherEndpointIsNotAReplay.
+//
+// The replay branch matches a record by ADDRESS, and three different
+// calls arrive carrying one: the daemon's replay of a stored endpoint,
+// a re-sent request body looking for the reservation its first copy
+// made, and `docker run --ip X` for an address someone else already
+// holds. libnetwork injects the endpoint's MAC only in the third, so
+// the MAC is what separates "this endpoint's own address" from "an
+// address that is taken" — and answering the third would hand one
+// address to two endpoints, move ipam_replay_hits for something that is
+// not a replay, and surface the contradiction later at CreateEndpoint
+// wearing a message about a plugin restart that never happened.
+func TestIpamReplay_AnAddressHeldByAnotherEndpointIsNotAReplay(t *testing.T) {
+	holder, _ := net.ParseMAC(ipamTestMAC)
+	other, _ := net.ParseMAC("02:42:c0:a8:63:0b")
+
+	// One running container on 192.168.99.10, filed under its own MAC.
+	seed := func(t *testing.T) (*Plugin, *ipamBinding) {
+		t.Helper()
+		p, b := ipamFixture(t)
+		id := p.recordCreated(ipamTestNetwork, holder, dhcp.ClientIdentity([]byte{7}))
+		if err := p.records.Observed(id, acquired("192.168.99.10/24", time.Hour), nil); err != nil {
+			t.Fatalf("Observed: %v", err)
+		}
+		return p, b
+	}
+
+	t.Run("a creating endpoint may not take a running one's address", func(t *testing.T) {
+		p, b := seed(t)
+		_, err := p.RequestAddress(context.Background(), RequestAddressRequest{
+			PoolID:  b.PoolID,
+			Address: "192.168.99.10",
+			Options: map[string]string{ipamOptMacAddress: other.String()},
+		})
+		if err == nil {
+			t.Fatal("an address a running container holds was handed to a second endpoint. " +
+				"libnetwork publishes both, and the collision arrives at CreateEndpoint as " +
+				"a message about a plugin restart that did not happen.")
+		}
+		if !errors.Is(err, util.ErrIPAM) {
+			t.Errorf("error %v does not wrap util.ErrIPAM", err)
+		}
+		if n := p.ipamReplayHits.Load(); n != 0 {
+			t.Errorf("ipam_replay_hits = %d, want 0: this was not a replay and the counter "+
+				"is the denominator an operator reads ipam_replay_miss against", n)
+		}
+	})
+
+	t.Run("the same endpoint's re-sent request still finds its reservation", func(t *testing.T) {
+		p, b := seed(t)
+		res, err := p.RequestAddress(context.Background(), RequestAddressRequest{
+			PoolID:  b.PoolID,
+			Address: "192.168.99.10",
+			Options: map[string]string{ipamOptMacAddress: holder.String()},
+		})
+		if err != nil {
+			t.Fatalf("RequestAddress: %v", err)
+		}
+		if res.Address != "192.168.99.10/24" {
+			t.Errorf("address = %q, want 192.168.99.10/24", res.Address)
+		}
+		if n := p.ipamReplayHits.Load(); n != 1 {
+			t.Errorf("ipam_replay_hits = %d, want 1", n)
+		}
+	})
+
+	t.Run("the replay shape, which carries no MAC, is unchanged", func(t *testing.T) {
+		p, b := seed(t)
+		res, err := p.RequestAddress(context.Background(), RequestAddressRequest{
+			PoolID: b.PoolID, Address: "192.168.99.10",
+		})
+		if err != nil {
+			t.Fatalf("RequestAddress: %v", err)
+		}
+		if res.Address != "192.168.99.10/24" {
+			t.Errorf("address = %q, want 192.168.99.10/24", res.Address)
+		}
+		if n := p.ipamReplayHits.Load(); n != 1 {
+			t.Errorf("ipam_replay_hits = %d, want 1", n)
+		}
+	})
+}
+
+// TestIpamUnboundPool_ALostBindingIsNotConfirmed.
+//
+// A pool no network holds has two causes that arrive on the same wire:
+// the aux address libnetwork asks for while a create is still running,
+// and the daemon's replay of a stored endpoint whose network
+// rebuildIPAMIndex had to skip. Echoing the first is correct; echoing
+// the second confirms Docker's stored address from a process that holds
+// no record of it, which is row A's degradation reached before either
+// replay counter. What separates them is whether the start-up fold read
+// everything.
+func TestIpamUnboundPool_ALostBindingIsNotConfirmed(t *testing.T) {
+	const strayPool = "dhcp/dhcp-local/192.168.99.0/24"
+
+	t.Run("a create in flight still gets its aux address back", func(t *testing.T) {
+		p, _ := ipamFixture(t)
+		p.ipamIndex = newIPAMIndex()
+		res, err := p.RequestAddress(context.Background(), RequestAddressRequest{
+			PoolID: strayPool, Address: "192.168.99.2",
+		})
+		if err != nil {
+			t.Fatalf("RequestAddress: %v — a create carrying --aux-address is refused before "+
+				"CreateNetwork can bind anything", err)
+		}
+		if res.Address != "192.168.99.2/32" {
+			t.Errorf("aux = %q, want 192.168.99.2/32 (a host route: the any-pool carries no prefix to wear)", res.Address)
+		}
+	})
+
+	t.Run("a lost binding is refused and counted", func(t *testing.T) {
+		p, _ := ipamFixture(t)
+		p.ipamIndex = newIPAMIndex()
+		p.ipamIndex.markIncomplete()
+		_, err := p.RequestAddress(context.Background(), RequestAddressRequest{
+			PoolID: strayPool, Address: "192.168.99.10",
+		})
+		if err == nil {
+			t.Fatal("an endpoint address was confirmed by a process holding no record of it, " +
+				"on a host where a state file could not be read. Docker keeps serving the " +
+				"address and nothing ever says the record is gone.")
+		}
+		if !errors.Is(err, util.ErrIPAM) {
+			t.Errorf("error %v does not wrap util.ErrIPAM", err)
+		}
+		if n := p.ipamReplayMiss.Load(); n != 1 {
+			t.Errorf("ipam_replay_miss = %d, want 1: this is exactly what that counter "+
+				"documents, an address the plugin would not confirm at a restart", n)
+		}
+	})
+
+	t.Run("the gateway is answered even then", func(t *testing.T) {
+		p, _ := ipamFixture(t)
+		p.ipamIndex = newIPAMIndex()
+		p.ipamIndex.markIncomplete()
+		res, err := p.RequestAddress(context.Background(), RequestAddressRequest{
+			PoolID:  strayPool,
+			Address: "192.168.99.1",
+			Options: map[string]string{ipamOptRequestAddressType: ipamOptGateway},
+		})
+		if err != nil {
+			t.Fatalf("RequestAddress (gateway): %v — a gateway says so on the wire and is "+
+				"never an endpoint's address", err)
+		}
+		if res.Address != "192.168.99.1/32" {
+			t.Errorf("gateway = %q, want 192.168.99.1/32", res.Address)
+		}
+		if n := p.ipamReplayMiss.Load(); n != 0 {
+			t.Errorf("ipam_replay_miss = %d, want 0", n)
+		}
+	})
+}
+
+// TestRebuildIPAMIndex_ReportsWhatItCouldNotRead is the other half of
+// the rule above: the flag has to be SET by the fold, and it has to stay
+// clear on a directory that read cleanly. A flag that is always set
+// refuses every create with an aux address; one that is never set is
+// the defect it exists to close.
+func TestRebuildIPAMIndex_ReportsWhatItCouldNotRead(t *testing.T) {
+	t.Run("a directory that reads cleanly leaves it clear", func(t *testing.T) {
+		p, _ := ipamFixture(t)
+		x := newIPAMIndex()
+		rebuildIPAMIndex(x)
+		if x.isIncomplete() {
+			t.Error("the fold reported a skip on a state directory it read completely; " +
+				"every create carrying --aux-address on this host is now refused")
+		}
+		if x.len() != 1 {
+			t.Errorf("the fold bound %d pool(s), want 1", x.len())
+		}
+		_ = p
+	})
+
+	t.Run("a file that will not read is reported", func(t *testing.T) {
+		p, _ := ipamFixture(t)
+		path, err := stateFilePath(ipamTestNetwork)
+		if err != nil {
+			t.Fatalf("stateFilePath: %v", err)
+		}
+		if err := os.WriteFile(path, []byte("{not json"), 0o600); err != nil {
+			t.Fatalf("rewriting the state file: %v", err)
+		}
+		x := newIPAMIndex()
+		rebuildIPAMIndex(x)
+		if !x.isIncomplete() {
+			t.Error("a network whose file would not read was skipped silently; its stored " +
+				"endpoints then replay against an unbound pool and are echoed back")
+		}
+		_ = p
+	})
+}
+
+// TestIpamFallback_ARemoteIPAMDriverRefusesUnderAnyName.
+//
+// The refusal on the state-file fallback is the D46 amendment: an
+// IPAM-mode network whose binding cannot be read is refused rather than
+// served on the null path. It used to be keyed on the plugin's
+// published image reference, which is a name the operator chooses:
+// `docker plugin install <ref> --alias lan-dhcp` stores "lan-dhcp", the
+// pattern misses, and the refusal does not fire on precisely the
+// installation that named it something else.
+//
+// The second half is the preservation control. The null shape reaches
+// this same line on every load failure and must still fall through to
+// the Docker API, which is authoritative for everything in
+// DHCPNetworkOptions.
+func TestIpamFallback_ARemoteIPAMDriverRefusesUnderAnyName(t *testing.T) {
+	for _, c := range []struct {
+		name, driver string
+		refuse       bool
+	}{
+		{"the plugin under its published reference", "ghcr.io/claymore666/docker-net-dhcp:v2.0.0", true},
+		{"the same plugin installed under an alias", "lan-dhcp", true},
+		{"a remote IPAM driver of some other name", "example-ipam", true},
+		{"the null driver, the other supported shape", "null", false},
+		{"the daemon's own IPAM", "default", false},
+		{"a record naming no IPAM driver at all", "", false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			dir := t.TempDir()
+			withStateDir(t, dir)
+			if err := os.WriteFile(filepath.Join(dir, "net1.json"), []byte("{not json"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			p := &Plugin{docker: &fakeDocker{inspectResult: map[string]dNetwork.Inspect{
+				"net1": {
+					Options: map[string]string{"mode": "bridge", "bridge": "br-test"},
+					IPAM:    dNetwork.IPAM{Driver: c.driver},
+				},
+			}}}
+			opts, err := p.netOptions(context.Background(), "net1")
+			if c.refuse {
+				if err == nil {
+					t.Fatalf("IPAM driver %q was served from the Docker API with no binding. "+
+						"That path runs a second DHCP exchange, writes a JSON tombstone this "+
+						"shape does not use, and answers libnetwork with an address it has "+
+						"already allocated.", c.driver)
+				}
+				if !errors.Is(err, errIPAMBindingLost) {
+					t.Errorf("error %v is not errIPAMBindingLost", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("IPAM driver %q was refused (%v); the null shape must still fall back "+
+					"to the Docker API on a load failure", c.driver, err)
+			}
+			if opts.Bridge != "br-test" {
+				t.Errorf("fallback returned bridge %q, want br-test", opts.Bridge)
 			}
 		})
 	}

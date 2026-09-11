@@ -214,7 +214,7 @@ TestIPAM_NoSubnetAnswersTheAnyPool	14.00
 TestIPAM_ReplayAfterDaemonRestart	45.00
 TestIPAM_RestartedTogetherIsTheDocumentedLimit	38.00
 TestIPAM_SingleRestartKeepsTheAddress	22.00
-TestIPAM_StaticIPIsHonouredWithASubnet	13.00
+TestIPAM_StaticIPIsHonouredWithASubnet	24.00
 TestIPAM_StaticIPWithoutASubnetIsRefused	7.00
 TestIPAM_TwoNetworksCannotShareOnePool	40.00
 TestIPv6_AcceptedAtCreate	0.02

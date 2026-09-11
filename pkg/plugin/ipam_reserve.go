@@ -274,12 +274,13 @@ func (p *Plugin) runIPAMReserve(ctx context.Context, networkID string, sn stored
 	// RequestAddress carries no hostname and no endpoint id, so the
 	// server decides and the ambiguity is counted rather than guessed.
 	recordID, rebindAddr := p.ipamRebindCandidate(networkID, mac)
-	if rebindAddr != "" && requestedIP == "" {
-		requestedIP = rebindAddr
-	}
+	rebound := recordID != ""
+	requestedIP, demanded := ipamExchangeAddresses(requestedIP, rebindAddr)
 	if recordID == "" {
 		recordID = p.recordReserved(networkID, mac, identity)
 	}
+
+	giveUp := func() { p.ipamGiveUpRecord(recordID, rebound) }
 
 	pol, err := resolveServerPolicy(opts)
 	if err != nil {
@@ -300,20 +301,105 @@ func (p *Plugin) runIPAMReserve(ctx context.Context, networkID string, sn stored
 
 	info, _, err := p.acquireWithPolicy(ctx, name, pol, false, budget, "", base)
 	if err != nil {
-		p.closeRecord(recordID)
+		giveUp()
 		return none, fmt.Errorf("failed to reserve an address for %v via DHCP within %v: %w", mac, budget, err)
 	}
 
 	got, err := netip.ParsePrefix(info.IP)
 	if err != nil {
-		p.closeRecord(recordID)
+		giveUp()
 		return none, fmt.Errorf("the DHCP server answered %q, which is not an address with a prefix: %w", info.IP, util.ErrIPAM)
 	}
 	if err := ipamACKInPool(got.Addr(), sn.Binding.Pool); err != nil {
-		p.closeRecord(recordID)
+		giveUp()
+		return none, err
+	}
+	if err := ipamACKIsTheOneAsked(got.Addr(), demanded); err != nil {
+		giveUp()
 		return none, err
 	}
 	return ipamReservation{addr: got, info: info, record: recordID}, nil
+}
+
+// ipamExchangeAddresses splits what the exchange ASKS for from what the
+// ACK must EQUAL.
+//
+// They are not the same question and only one of them is a demand.
+// `--ip` is the operator pinning an address, and an ACK for another one
+// is refused (ipamACKIsTheOneAsked). A tombstone's address is a
+// PREFERENCE: it is how a restarted container keeps what it had, and
+// the server answering otherwise is the documented limit -- refusing
+// there would turn "your address moved" into "your container will not
+// start", on the path that exists to make restarts survivable. The two
+// are one line apart in the reserve, so they are decided here where a
+// test can ask.
+func ipamExchangeAddresses(requestedIP, rebindAddr string) (ask, demand string) {
+	if requestedIP != "" {
+		return requestedIP, requestedIP
+	}
+	return rebindAddr, ""
+}
+
+// ipamGiveUpRecord is what a failed reserve does to its record, and the
+// answer is not the same for a fresh one and a re-bound one.
+//
+// A FAILED EXCHANGE MUST NOT CONSUME THE CANDIDATE. ipamRebindCandidate
+// writes OpRebind before any packet goes out, because the exchange has
+// to run under the identity the server already has a lease filed under,
+// and that fold clears the tombstone deadline: the record stops being a
+// candidate the moment it is taken. Closing it on failure would spend
+// the documented address stability on an attempt that never reached the
+// server -- a container restarted on its own during a brief outage
+// would find nothing to re-bind seconds later, take a fresh address,
+// and nothing would say so, because ipam_rebind_ambiguous counts a
+// different case entirely. Retaining it puts the tombstone back with a
+// fresh deadline, so a retry inside the window finds exactly the one
+// candidate it had, and an attempt that never comes expires as it would
+// have.
+//
+// A record that was never a tombstone is closed, which is what the
+// reserve has always done: nothing is owed to an address the plugin
+// never held.
+func (p *Plugin) ipamGiveUpRecord(recordID string, rebound bool) {
+	if rebound {
+		p.recordRetained(recordID, time.Now().Add(tombstoneTTL))
+		return
+	}
+	p.closeRecord(recordID)
+}
+
+// ipamACKIsTheOneAsked refuses an ACK for an address other than the one
+// `--ip` demanded.
+//
+// A DHCP request carries the wanted address as option 50, which is a
+// REQUEST and not a command: a server may answer with another address
+// because the one asked for is reserved for a different client, or
+// already leased, or outside the range it serves. libnetwork does not
+// compare the driver's answer to the address it preferred -- it adopts
+// whatever comes back (moby libnetwork/endpoint.go, `*address = addr`)
+// -- so without this, `docker run --ip A` publishes B in `docker
+// inspect` and exits 0, and the operator's pinned address is silently
+// not the one the container has.
+//
+// Refusing costs a failed `docker run` and one lease left to expire at
+// the server, which is the price ipamACKInPool already pays for D50 and
+// the price `--ip` pays everywhere else. A re-bind's address is NOT
+// demanded and is not checked here: that one is a preference, and the
+// server choosing otherwise is the documented limit the ambiguity
+// counter is about.
+func ipamACKIsTheOneAsked(got netip.Addr, demanded string) error {
+	if demanded == "" {
+		return nil
+	}
+	want, err := netip.ParseAddr(demanded)
+	if err != nil {
+		return fmt.Errorf("the requested address %q is not an address: %w", demanded, util.ErrIPAM)
+	}
+	if got == want {
+		return nil
+	}
+	return fmt.Errorf("--ip asked for %v and the DHCP server answered %v instead; the address was not taken and that lease is left to expire. The server decides: %v may be reserved for another client, already leased, or outside the range it hands out. Ask for an address the server will grant this client, or create the container without --ip: %w",
+		want, got, want, util.ErrIPAM)
 }
 
 // ipamACKInPool is D50: an ACK outside the subnet the user typed is
