@@ -2088,15 +2088,28 @@ so the safe sequence for moving from <code>vOLD</code> to <code>vNEW</code> is:<
 </code></pre></div>
 <p>A 2.0 plugin takes an exclusive lock on the lease record in <code>STATE_DIR</code>, so a
 second 2.0 tag sharing that directory cannot be enabled while the first one
-is enabled. <code>docker plugin enable</code> fails and the daemon log says <code>the lease
-record file is already open by another writer</code>, so disable the old tag before
-enabling the new one. The lock lives in the plugin and is advisory, taken on
-a file beside the record, so it needs a filesystem that implements file
-locking. If the host directory behind <code>STATE_DIR</code> sits on a mount with no
-working locks, NFS without lockd for example, taking the lock fails and a
-single plugin does not start, with that same message in the daemon log. The
-two cases read alike, so check whether another tag of this plugin is enabled.
-If none is, the mount is the cause and disabling tags will not help.</p>
+is enabled. <code>docker plugin enable</code> fails, the CLI prints only a socket error,
+and the daemon log carries the reason: <code>another tag of this plugin is enabled
+and holds the lease record /var/lib/net-dhcp/lease-records.jsonl; disable it
+before enabling this one</code>. Disable the old tag, then enable the new one.</p>
+<p>The lock is advisory and is taken on a file beside the record, so it needs a
+filesystem that implements file locking. If the host directory behind
+<code>STATE_DIR</code> sits on a mount with no working locks, NFS without lockd for
+example, taking the lock fails and a single plugin does not start. That case
+has its own line in the daemon log, <code>the filesystem under
+/var/lib/net-dhcp/lease-records.jsonl does not support locks; the plugin
+refuses to start rather than risk two writers</code>. Disabling tags does not clear
+it. Back <code>/var/lib/net-dhcp</code> on the host with a filesystem that implements
+file locking. Do not repoint <code>STATE_DIR</code>: the bind source is fixed at that
+path, so any other value puts the state back inside the plugin rootfs, where
+the next upgrade wipes it. The <code>STATE_DIR</code> row under
+<a href="#plugin-settings">Plugin settings</a> states the same rule.</p>
+<p>An errno the plugin does not recognise keeps the older wording, <code>the lease
+record file is already open by another writer</code>, with the errno printed after
+it. A plugin that cannot create the lock file at all never reaches any of the
+three: the log says <code>lock file for</code> and then the path and the reason, for
+example <code>permission denied</code> on a state directory the plugin may not write.
+Check the owner and the mode of the host directory in that case.</p>
 <p>(<code>docker plugin upgrade</code> exists but in-place upgrades while networks
 exist risk a driver-reference mismatch; the remove/recreate path is
 the supported one.)</p>
