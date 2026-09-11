@@ -109,13 +109,25 @@ func (p *Plugin) ipamBindingFor(networkID string, ipv4 []*IPAMData, iface string
 	if err != nil {
 		return nil, err
 	}
-	poolID, ok := p.ipamPools.take(d.AddressSpace, pool, iface, time.Now())
+	poolID, ok, otherName := p.ipamPools.take(d.AddressSpace, pool, iface, time.Now())
 	if !ok {
-		// Nothing issued for this space and pool. The plugin restarted
-		// between RequestPool and here, so there is no in-memory issue
-		// to consume; a create that guessed the identity instead would
-		// bind a network to a pool nobody asked for.
-		return nil, fmt.Errorf("%w: this plugin did not issue pool %v in address space %v, or restarted since it did. Re-run `docker network create`", util.ErrIPAM, pool, d.AddressSpace)
+		// THE MISMATCH FIRST, because it is a typo and the message
+		// below sends its author to look at the plugin instead. The
+		// pool identity was minted against the interface named in
+		// `--ipam-opt`, and this network is being created on another
+		// one; there is nothing wrong with either call on its own.
+		if otherName != "" && otherName != iface {
+			return nil, fmt.Errorf("%w: this network's pool identity was built for interface %q (from `--ipam-opt parent=` or `--ipam-opt bridge=`) and the network itself is being created on %q (from `-o parent=` or `-o bridge=`). The two have to name the same interface: the IPAM option exists only to tell two networks with the same subnet apart, and it cannot send the addresses somewhere else. Fix whichever of the two is wrong, or drop the `--ipam-opt` if this network is the only one on this subnet", util.ErrIPAM, otherName, iface)
+		}
+		// Nothing issued for this space and pool. Three ways to get
+		// here and the operator can act on all three, so all three are
+		// named: a plugin restart between the two calls leaves no
+		// in-memory issue to consume; a second `docker network create`
+		// for the same subnet consumed it first, because two
+		// unsuffixed creates derive one pool identity and the later
+		// RequestPool overwrote the earlier issue; and a create that
+		// already failed for another reason has spent it.
+		return nil, fmt.Errorf("%w: this plugin has no issued pool %v in address space %v to bind. Either the plugin restarted between `docker network create` asking for the pool and creating the network, or another `docker network create` for the same subnet is running on this host and consumed it -- two such networks derive one pool identity unless one of them names its interface with `--ipam-opt parent=<nic>` (or `--ipam-opt bridge=<name>`). Re-run `docker network create`, one at a time", util.ErrIPAM, pool, d.AddressSpace)
 	}
 	if other, taken := p.ipamIndex.boundTo(poolID, networkID); taken {
 		return nil, fmt.Errorf("%w: network %v already holds pool %v. Two DHCP networks with the same subnet need one of them to name its interface: add `--ipam-opt parent=<nic>` (or `--ipam-opt bridge=<name>`), or give this one its own `--subnet`", util.ErrIPAM, shortID(other), pool)

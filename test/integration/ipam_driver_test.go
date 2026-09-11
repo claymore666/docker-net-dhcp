@@ -1197,3 +1197,164 @@ func TestIPAM_TwoEndpointsCannotShareOneHardwareAddress(t *testing.T) {
 			firstAddr, firstMAC, againAddr, againMAC)
 	}
 }
+
+// TestIPAM_AContainerStartedInsideTheWindowTakesTheTombstone pins what
+// the re-bind rule actually does, which is not what the reference said
+// it does.
+//
+// The docs conditioned single-restart stability on no OTHER container
+// being "stopped or removed in the previous minute". That names the
+// wrong side of the window. The rule in the code is "exactly one live
+// tombstone, consumed by the next address request on this network"
+// (ipamRebindCandidate), and a request is what a container START makes.
+// So a container started for the first time inside the window takes the
+// stopped container's record, its DHCP identity and its address, and
+// the container that was stopped comes back on a fresh one -- with
+// nothing stopped or removed besides itself.
+//
+// It is pinned rather than fixed because RequestAddress carries no
+// hostname and no endpoint id (moby 28.5.2: the only option libnetwork
+// injects is the endpoint MAC, and it generates that per endpoint). The
+// null shape narrows by hostname because CreateEndpoint has one; here
+// there is nothing to narrow on, and a rule that guessed would hand one
+// address to whichever container asked first while claiming otherwise.
+// The docs now state the rule the code has.
+//
+// ipam_rebind_ambiguous staying still is part of the finding: this is
+// not the ambiguous case, there is exactly one candidate, and the
+// counter that makes the documented limit visible is silent here. An
+// operator who reads only the counter sees nothing at all.
+func TestIPAM_AContainerStartedInsideTheWindowTakesTheTombstone(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 240*time.Second)
+	defer cancel()
+	ipamDumpOnFailure(t)
+
+	const netName = "dh-itest-ipam-window"
+
+	cli := ipamDockerClient(t)
+	harness.CreateNetworkIPAM(t, ctx, netName, "macvlan", harness.SubnetCIDR, nil, nil)
+	idA, addrA, _ := harness.RunContainer(t, ctx, netName, "dh-itest-ipam-window-a")
+	t.Logf("a started on %s", addrA)
+
+	w := harness.BeginCounterWindow(t, ctx, cli, "ipam_rebind_ambiguous")
+
+	if err := cli.ContainerStop(ctx, idA, container.StopOptions{}); err != nil {
+		t.Fatalf("ContainerStop(a): %v", err)
+	}
+
+	// A brand-new container, inside A's retention window. Nothing about
+	// it has ever been on this network.
+	idB, addrB, _ := harness.RunContainer(t, ctx, netName, "dh-itest-ipam-window-b")
+	t.Logf("b started on %s", addrB)
+
+	if err := cli.ContainerStart(ctx, idA, container.StartOptions{}); err != nil {
+		t.Fatalf("ContainerStart(a): %v", err)
+	}
+	addrA2, _ := ipamNetworkAddress(t, ctx, cli, idA, netName)
+	t.Logf("a came back on %s", addrA2)
+
+	if addrB != addrA {
+		t.Errorf("the new container came up on %s and the stopped one held %s.\n"+
+			"This test pins the rule the code has: one live tombstone, consumed by the next "+
+			"address request on the network, whoever makes it. If this changed on purpose, "+
+			"the reference's Restart stability section is the other half of the change.",
+			addrB, addrA)
+	}
+	if addrA2 == addrA {
+		t.Errorf("the stopped container came back on its own address %s even though a new "+
+			"container had already claimed the only tombstone. Two endpoints cannot hold one "+
+			"address on this network, so one of the two readings above is wrong.", addrA)
+	}
+	if !harness.IsInPool(harness.AssertIP(t, addrA2)) {
+		t.Errorf("the restarted container came back on %s, outside the fixture's pool", addrA2)
+	}
+	_ = idB
+	if addrB == addrA2 {
+		t.Errorf("both containers report %s; the fixture handed one address to two endpoints", addrB)
+	}
+
+	before, after := w.End()
+	if after.IPAMRebindAmbiguous != before.IPAMRebindAmbiguous {
+		t.Errorf("ipam_rebind_ambiguous moved (%d -> %d) on a sequence with exactly one "+
+			"candidate at every request. If the driver now sees this as ambiguous, it is no "+
+			"longer the case this test documents.",
+			before.IPAMRebindAmbiguous, after.IPAMRebindAmbiguous)
+	}
+}
+
+// TestIPAM_SingleRestartNeedsAServerThatKeepsClientIDBindings is the
+// dependence behind TestIPAM_SingleRestartKeepsTheAddress, driven.
+//
+// In IPAM mode a restarted container comes back under a NEW hardware
+// address, because libnetwork generates one per endpoint. It keeps its
+// address only because the plugin re-sends the previous endpoint's
+// client identifier and the server matches the binding on THAT. RFC
+// 2131 section 4.2: where a client sends option 61 a server "MUST use
+// that identifier to identify the client".
+//
+// A server keyed on the hardware address alone -- dnsmasq's
+// --dhcp-ignore-clid, a supported setting -- has nothing to match on,
+// sees a stranger asking for an address it has leased to someone else,
+// and hands out a different one. Nothing is broken and no counter
+// moves; the property is simply not available there. Null mode does not
+// depend on this, because it restores the MAC itself.
+//
+// Both arms run on the same ephemeral fixture one flag apart, so the
+// red arm measures the flag and not the shape of the test.
+func TestIPAM_SingleRestartNeedsAServerThatKeepsClientIDBindings(t *testing.T) {
+	restartOnce := func(t *testing.T, ef *harness.EphemeralFixture, netName, ctrName string) (before, after string) {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(context.Background(), 240*time.Second)
+		defer cancel()
+		t.Cleanup(func() {
+			if t.Failed() {
+				ef.DumpLogs(func(s string) { t.Log(s) })
+				harness.DumpPluginLog(t)
+			}
+		})
+
+		cli := ipamDockerClient(t)
+		// No --subnet, so `--ipam-opt parent=` is what separates this
+		// network's pool identity from any other subnet-less one.
+		harness.CreateNetworkIPAM(t, ctx, netName, "macvlan", "",
+			map[string]string{"parent": harness.EphemeralHostVeth},
+			map[string]string{"parent": harness.EphemeralHostVeth})
+		id, before, _ := harness.RunContainer(t, ctx, netName, ctrName)
+		if err := cli.ContainerRestart(ctx, id, container.StopOptions{}); err != nil {
+			t.Fatalf("ContainerRestart: %v", err)
+		}
+		after, _ = ipamNetworkAddress(t, ctx, cli, id, netName)
+		t.Logf("%s: before=%s after=%s", t.Name(), before, after)
+		return before, after
+	}
+
+	// The control first. Without it the arm below measures "a restart
+	// on the ephemeral fixture loses the address", which would be a
+	// different and much worse finding.
+	t.Run("a server that honours option 61 keeps the address", func(t *testing.T) {
+		ef := harness.NewEphemeralFixture(t, harness.WithDnsmasqBackend())
+		before, after := restartOnce(t, ef, "dh-itest-ipam-clid-on", "dh-itest-ipam-clid-on-ctr")
+		if after != before {
+			t.Errorf("the container came back on %s; it held %s. Against a server that keys "+
+				"its bindings on the client identifier the plugin re-sends, a single restart "+
+				"keeps the address, and that is the property IPAM mode claims.", after, before)
+		}
+	})
+
+	t.Run("a server keyed on the MAC alone does not", func(t *testing.T) {
+		ef := harness.NewEphemeralFixture(t, harness.WithIgnoreClientID())
+		before, after := restartOnce(t, ef, "dh-itest-ipam-clid-off", "dh-itest-ipam-clid-off-ctr")
+		if after == before {
+			t.Errorf("the container kept %s against a server started with --dhcp-ignore-clid.\n"+
+				"That server cannot match the re-sent client identifier, and the endpoint's "+
+				"hardware address is new, so keeping the address would mean the stability this "+
+				"driver advertises comes from somewhere this test does not know about. Either "+
+				"the fixture flag stopped taking effect or the mechanism changed; the "+
+				"reference's Restart stability section rests on the answer.", after)
+		}
+		if !harness.IsInEphemeralPool(harness.AssertIP(t, after)) {
+			t.Errorf("the restarted container came back on %s, outside the ephemeral pool; the "+
+				"weaker server must still hand out an address", after)
+		}
+	})
+}

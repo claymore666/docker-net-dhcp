@@ -168,7 +168,7 @@ func TestIssuedPools_TakePrefersTheSuffixedIssue(t *testing.T) {
 	s.add("dhcp/dhcp-local/192.168.100.0/24", ipamLocalAddressSpace, "192.168.100.0/24", "", now)
 	s.add("dhcp/dhcp-local/192.168.100.0/24/parent=eth1", ipamLocalAddressSpace, "192.168.100.0/24", "eth1", now)
 
-	got, ok := s.take(ipamLocalAddressSpace, "192.168.100.0/24", "eth1", now)
+	got, ok, _ := s.take(ipamLocalAddressSpace, "192.168.100.0/24", "eth1", now)
 	if !ok {
 		t.Fatal("no issue taken for a network on eth1")
 	}
@@ -178,7 +178,7 @@ func TestIssuedPools_TakePrefersTheSuffixedIssue(t *testing.T) {
 	}
 	// The unsuffixed one is still there for the network that typed no
 	// interface, and it is taken by a create on a different parent.
-	got, ok = s.take(ipamLocalAddressSpace, "192.168.100.0/24", "eth0", now)
+	got, ok, _ = s.take(ipamLocalAddressSpace, "192.168.100.0/24", "eth0", now)
 	if !ok || got != "dhcp/dhcp-local/192.168.100.0/24" {
 		t.Errorf("second take = (%q, %v), want the unsuffixed issue", got, ok)
 	}
@@ -193,7 +193,7 @@ func TestIssuedPools_ExpireDropsTheUnconsumed(t *testing.T) {
 	now := time.Now()
 	s := newIssuedPools()
 	s.add("dhcp/dhcp-local/0.0.0.0/0", ipamLocalAddressSpace, ipamAnyPool, "", now)
-	if _, ok := s.take(ipamLocalAddressSpace, ipamAnyPool, "", now.Add(issuedPoolTTL+time.Second)); ok {
+	if _, ok, _ := s.take(ipamLocalAddressSpace, ipamAnyPool, "", now.Add(issuedPoolTTL+time.Second)); ok {
 		t.Error("an issue older than the TTL was still taken; it has outlived the create it belonged to")
 	}
 }
@@ -281,4 +281,95 @@ func ipamCapabilityCost(name string) string {
 		return "libnetwork stops re-asking for stored endpoints' addresses at daemon start, " +
 			"so an IPAM-mode network survives a restart with its endpoints unallocated."
 	}
+}
+
+// TestIpamBindingFor_TheRefusalNamesTheRealReason.
+//
+// One miss in issuedPools.take used to produce one sentence, and that
+// sentence named a plugin restart. Two of the three ways to reach it
+// are not a restart, and an operator sent to look for one finds
+// nothing wrong with the plugin and nothing wrong with their command.
+//
+//   - `--ipam-opt parent=eth0` beside `-o parent=eth1`. The pool
+//     identity was minted against eth0 and the network is created on
+//     eth1, so take finds an entry for the right space and pool whose
+//     suffix names something else, and it is a typo in one of the two
+//     flags.
+//   - Two `docker network create` for one subnet at once. Both ask for
+//     the same unsuffixed pool, so the second RequestPool overwrites
+//     the first's issue (one map key), one create consumes it, and the
+//     other finds nothing. The remedy is the `--ipam-opt` the other
+//     message tells them to drop.
+//
+// The restart wording stays as one of the named causes, because it is
+// still one of them.
+func TestIpamBindingFor_TheRefusalNamesTheRealReason(t *testing.T) {
+	const pool = "192.168.100.0/24"
+
+	newPlugin := func() *Plugin {
+		return &Plugin{ipamPools: newIssuedPools(), ipamIndex: newIPAMIndex()}
+	}
+	data := []*IPAMData{{AddressSpace: ipamLocalAddressSpace, Pool: pool}}
+
+	t.Run("a suffix naming another interface", func(t *testing.T) {
+		p := newPlugin()
+		if _, err := p.RequestPool(RequestPoolRequest{
+			AddressSpace: ipamLocalAddressSpace,
+			Pool:         pool,
+			Options:      map[string]string{"parent": "eth0"},
+		}); err != nil {
+			t.Fatalf("RequestPool: %v", err)
+		}
+
+		_, err := p.ipamBindingFor("net-1", data, "eth1")
+		if err == nil {
+			t.Fatal("a network on eth1 bound a pool identity minted for eth0")
+		}
+		for _, want := range []string{"eth0", "eth1", "--ipam-opt"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("the refusal is %q and does not mention %q, so it does not point at "+
+					"the two flags that disagree", err, want)
+			}
+		}
+		if strings.Contains(err.Error(), "restarted") {
+			t.Errorf("the refusal is %q and blames a plugin restart. Nothing restarted; two "+
+				"flags on one command line name different interfaces, and that is what the "+
+				"operator has to change.", err)
+		}
+	})
+
+	t.Run("nothing issued at all", func(t *testing.T) {
+		p := newPlugin()
+		_, err := p.ipamBindingFor("net-1", data, "eth0")
+		if err == nil {
+			t.Fatal("a network bound a pool identity this plugin never issued")
+		}
+		// All three causes, because the operator cannot tell which one
+		// they hit from anything else they can see.
+		for _, want := range []string{"restarted", "same subnet", "--ipam-opt parent="} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("the refusal is %q and does not mention %q", err, want)
+			}
+		}
+	})
+
+	t.Run("the matching suffix still binds", func(t *testing.T) {
+		p := newPlugin()
+		if _, err := p.RequestPool(RequestPoolRequest{
+			AddressSpace: ipamLocalAddressSpace,
+			Pool:         pool,
+			Options:      map[string]string{"parent": "eth0"},
+		}); err != nil {
+			t.Fatalf("RequestPool: %v", err)
+		}
+		b, err := p.ipamBindingFor("net-1", data, "eth0")
+		if err != nil {
+			t.Fatalf("a network on eth0 could not bind the pool identity minted for eth0: %v. "+
+				"The refusals above are about a mismatch; the match must still work or the "+
+				"option is useless.", err)
+		}
+		if b.Pool != pool {
+			t.Errorf("bound pool %q, want %q", b.Pool, pool)
+		}
+	})
 }

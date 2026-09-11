@@ -234,9 +234,19 @@ func (s *issuedPools) add(poolID, space, pool, name string, now time.Time) {
 // the suffix, and this lookup can tell the two apart. Without a suffix
 // there is at most one such entry, because a second unsuffixed create in
 // the same space and pool derives the same PoolID.
-func (s *issuedPools) take(space, pool, iface string, now time.Time) (string, bool) {
+//
+// THE THIRD RETURN IS FOR THE REFUSAL, and it exists because the
+// caller's message was wrong in a case that is easy to hit. An entry
+// for this space and pool whose suffix names a DIFFERENT interface is
+// not a miss for the ordinary reason: the operator typed
+// `--ipam-opt parent=eth0` beside `-o parent=eth1`, the pool identity
+// was minted against the first and the network is being created on the
+// second, and telling them the plugin "did not issue this pool, or
+// restarted since it did" sends them to look at the wrong thing
+// entirely. The name is returned so the refusal can name it.
+func (s *issuedPools) take(space, pool, iface string, now time.Time) (id string, ok bool, otherName string) {
 	if s == nil {
-		return "", false
+		return "", false, ""
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -248,17 +258,19 @@ func (s *issuedPools) take(space, pool, iface string, now time.Time) (string, bo
 		}
 		if e.name != "" && e.name == iface {
 			delete(s.m, id)
-			return id, true
+			return id, true, ""
 		}
 		if e.name == "" {
 			fallback = id
+		} else {
+			otherName = e.name
 		}
 	}
 	if fallback != "" {
 		delete(s.m, fallback)
-		return fallback, true
+		return fallback, true, ""
 	}
-	return "", false
+	return "", false, otherName
 }
 
 // drop removes one entry. ReleasePool's whole effect.
