@@ -25,6 +25,14 @@ var (
 	// the namespace open, which is where #417 moved the work that
 	// matters.
 	nlNewHandleAt = netlink.NewHandleAt
+
+	// nlLinkByIndex re-reads a link the manager already holds. It is a
+	// closure and not a method value because the handle is per-attach,
+	// and a var because the rename it exists to survive cannot be
+	// produced root-free: renaming a link needs CAP_NET_ADMIN.
+	nlLinkByIndex = func(h *netlink.Handle, index int) (netlink.Link, error) {
+		return h.LinkByIndex(index)
+	}
 )
 
 // linkLister is the subset of *netlink.Handle that findLinkByMAC needs.

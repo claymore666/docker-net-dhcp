@@ -1232,6 +1232,34 @@ func (m *dhcpManager) setupClient(v6 bool) (chan error, error) {
 		WithFields(m.logFields(v6)).
 		Info("Starting persistent DHCP client")
 
+	// THE LINK'S NAME IS READ HERE, NOT WHERE THE LINK WAS FOUND. The
+	// engine moves the link into the sandbox and then renames it, and
+	// locateContainerLink takes the link the moment it appears, so the
+	// snapshot it leaves can carry the pre-rename name. That was
+	// harmless while this call followed it immediately. The reorder put
+	// the hostname inspect in between, and that wait is the whole of
+	// #406: on a busy daemon it is most of the attach budget, and the
+	// client is then opened by a name the kernel no longer has. Hosted
+	// run 34624582681 did exactly that -- phases
+	// "locate_link=0.22s resolve_container_id=0.42s", then no such
+	// network interface for dh-3b1d3b0061fd -- and the container it
+	// belonged to kept no renewal client at all.
+	//
+	// The index survives a rename, so re-reading by it is what makes
+	// the name current. A read that fails leaves the snapshot in place:
+	// the link being gone is what the client open is about to report,
+	// with the reason, and there is nothing better to say here (#417).
+	if m.netHandle != nil && m.ctrLink != nil {
+		if link, err := nlLinkByIndex(m.netHandle, m.ctrLink.Attrs().Index); err != nil {
+			log.
+				WithError(err).
+				WithFields(m.logFields(v6)).
+				Debug("re-reading the endpoint's link before opening the client failed")
+		} else {
+			m.ctrLink = link
+		}
+	}
+
 	// WHAT THIS MANAGER MAY ASK THE SERVER FOR, and the difference
 	// between the two answers is a whole RFC section.
 	//

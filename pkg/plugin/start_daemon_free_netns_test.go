@@ -242,6 +242,14 @@ func TestStart_AsksTheDaemonNothingBeforeTheLinkIsLocated(t *testing.T) {
 // Embedding the interface is what lets the rest compile, and it is also
 // the hole: a call Start starts making later reaches the embedded
 // client without passing note(), so a new call needs a wrapper here.
+//
+// "The link is located" is read as m.ctrLink != nil, and that equality
+// is this fixture's, not the general one. Both assignments to the field
+// are inside locateContainerLink; on the macvlan branch the only one
+// runs when the search has succeeded, so the two coincide. The bridge
+// branch assigns on every poll round, before its rename condition
+// passes, so there the field is non-nil while location is still going
+// on. This drive is macvlan and does not reach that.
 type firstCallWatcher struct {
 	dockerClient
 	m               *dhcpManager
@@ -269,6 +277,124 @@ func (w *firstCallWatcher) NetworkInspect(ctx context.Context, networkID string,
 func (w *firstCallWatcher) ContainerInspect(ctx context.Context, containerID string) (dContainer.InspectResponse, error) {
 	w.note()
 	return w.dockerClient.ContainerInspect(ctx, containerID)
+}
+
+// TestStart_TheClientOpensOnTheNameTheLinkHasAtOpenTime drives the gap
+// the reorder opened between finding the link and using it.
+//
+// The engine moves the link into the sandbox and then renames it, and
+// the macvlan branch of locateContainerLink takes the link the moment
+// its MAC appears, which can be before that rename. What made that
+// harmless was adjacency: the client was opened on the next line. The
+// reorder put the hostname inspect in between, so the name can go stale
+// while the daemon is answering -- and on a daemon inside ContainerStart
+// for this very container, #406's case, that wait is most of the attach
+// budget. Hosted run 34624582681 opened a client on a name the kernel
+// had already replaced; the endpoint got no renewal client, and the
+// address it had just declined was never replaced either.
+//
+// THE RENAME IS TIED TO THE INSPECT, and that is what makes this a
+// drive for the gap and not for a re-read. Renaming a link needs
+// CAP_NET_ADMIN, so the rename arrives through the seam the re-read
+// goes through; the seam reports the new name only once the daemon has
+// been asked. A re-read placed anywhere before that call sees the old
+// name and fails here, which is the mutant that moves the fix back to
+// the locate.
+//
+// WHAT THIS CANNOT CATCH: a Start that re-reads the link and then opens
+// the client on some other copy of it. It asserts the field, and the
+// field is the one expression the open reads.
+func TestStart_TheClientOpensOnTheNameTheLinkHasAtOpenTime(t *testing.T) {
+	docker := &fakeDocker{
+		inspectResult: map[string]dNetwork.Inspect{
+			"net-1": {Containers: map[string]dNetwork.EndpointResource{
+				"ctr-1": {EndpointID: "ep-abcdef"},
+			}},
+		},
+		containerResult: map[string]dContainer.InspectResponse{
+			"ctr-1": {
+				ContainerJSONBase: &dContainer.ContainerJSONBase{State: &dContainer.State{Pid: os.Getpid()}},
+				Config:            &dContainer.Config{Hostname: "ctr-1"},
+			},
+		},
+	}
+	gate := &renameOnInspect{dockerClient: docker}
+	m, _ := daemonFreeManager(t, gate)
+
+	// A name no link in this namespace carries, so the assertion below
+	// can only pass if the re-read happened after the rename.
+	const renamed = "ep-abcdef-renamed"
+	var (
+		refreshes    int
+		askedIndex   int
+		locatedName  string
+		locatedIndex int
+		sawInspect   bool
+	)
+	prev := nlLinkByIndex
+	nlLinkByIndex = func(_ *netlink.Handle, index int) (netlink.Link, error) {
+		refreshes++
+		askedIndex = index
+		sawInspect = gate.inspected
+		if m.ctrLink != nil {
+			locatedName = m.ctrLink.Attrs().Name
+			locatedIndex = m.ctrLink.Attrs().Index
+		}
+		name := locatedName
+		if gate.inspected {
+			name = renamed
+		}
+		return &netlink.Device{LinkAttrs: netlink.LinkAttrs{
+			Index:        index,
+			Name:         name,
+			HardwareAddr: m.MacAddress,
+		}}, nil
+	}
+	t.Cleanup(func() { nlLinkByIndex = prev })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	// Start goes on to open the client, which this lane cannot do.
+	_ = m.Start(ctx)
+
+	if refreshes == 0 {
+		t.Fatal("the link was never re-read before the client was opened, so the name handed to the " +
+			"client is the one locateContainerLink saw, however long ago that was (#417)")
+	}
+	if locatedName == renamed {
+		t.Fatal("the located link already carried the renamed name, so this drive would pass without " +
+			"the re-read: the fixture is not measuring anything")
+	}
+	if !sawInspect {
+		t.Error("the link was re-read before the daemon was asked anything, which is not where the " +
+			"name goes stale: the rename lands while the inspect is outstanding (#417)")
+	}
+	if m.ctrLink == nil {
+		t.Fatal("no link on the manager after Start: the re-read cannot be judged")
+	}
+	if got := m.ctrLink.Attrs().Name; got != renamed {
+		t.Errorf("the client was opened on %q, but the link had been renamed to %q by then: a name read "+
+			"before the hostname inspect is a name the kernel may no longer have (#417)", got, renamed)
+	}
+	if askedIndex != locatedIndex {
+		t.Errorf("the re-read asked for index %d and the located link is index %d: an index that is not "+
+			"the located link's re-reads some other link", askedIndex, locatedIndex)
+	}
+}
+
+// renameOnInspect records that the daemon has been asked for the
+// hostname. The engine's rename of the link and this call are not
+// ordered by anything in production; what the drive needs is a rename
+// that lands inside the interval the reorder created, and the inspect
+// is that interval.
+type renameOnInspect struct {
+	dockerClient
+	inspected bool
+}
+
+func (r *renameOnInspect) ContainerInspect(ctx context.Context, id string) (dContainer.InspectResponse, error) {
+	r.inspected = true
+	return r.dockerClient.ContainerInspect(ctx, id)
 }
 
 // TestStart_DoesNotStartTheClientBeforeTheInspectAnswers is the other
