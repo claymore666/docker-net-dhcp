@@ -10,7 +10,7 @@
 #
 # POPULATION: TOP-LEVEL TEST FUNCTIONS, PARENTS ONLY.
 # One row per `func TestX(t *testing.T)` in test/integration/*_test.go —
-# 116 of them, the main suite's 109 and the failure suite's 7. A subtest's
+# 115 of them, the main suite's 108 and the failure suite's 7. A subtest's
 # seconds are inside its parent's figure and are NOT a row of their own.
 # That is stated because the previous edition's header did not state it
 # and the population was read back two ways: 104 rows summing 1804.88s
@@ -72,7 +72,7 @@
 #              counter wait and a log grown over a shard. The first run
 #              that executes it costs it, the way
 #              TestFailure_UnansweredRenewalsCounted was costed.
-#   sixteen    the #110 IPAM-driver rows are INFERRED, not measured: they
+#   fifteen    the #110 IPAM-driver rows are INFERRED, not measured: they
 #   rows       arrive with the feature and no corpus run could have costed
 #              them. Each is derived from the measured row of the test
 #              whose shape it copies -- a golden-path lifecycle at 11.61,
@@ -83,8 +83,8 @@
 #              are refreshed to the median of three runs at the next
 #              pass, like TestFailure_UnansweredRenewalsCounted was.
 #   samples    3 for every corpus row; the three rows noted above, the
-#              TestJoinDuration row and the sixteen #110 rows are the
-#              exceptions, and seventeen of those are inferred rather
+#              TestJoinDuration row and the fifteen #110 rows are the
+#              exceptions, and sixteen of those are inferred rather
 #              than measured. The previous edition carried four inferred
 #              rows and fourteen v6 rows recovered from the 1.9.0
 #              corpus; every one of those is now measured against the
