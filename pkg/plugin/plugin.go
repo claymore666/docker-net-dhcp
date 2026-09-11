@@ -1169,9 +1169,19 @@ type Plugin struct {
 	//
 	// Not healthy-affecting: joining is the mechanism working, and the
 	// alternative is two DHCP exchanges and two server leases for one
-	// container. Worth investigating: the daemon only re-sends a request
-	// body when its own call timed out, so a rise means the plugin-call
-	// timeout is set below what an acquisition on this segment costs.
+	// container.
+	//
+	// It moves when two RequestAddress calls for the same pool and the
+	// same MAC are in flight at once. It is NOT moved by the daemon's
+	// re-send after a plugin-call timeout, which is what an earlier
+	// version of this comment said: moby encodes the call into a
+	// bytes.Buffer and hands the SAME reader to every attempt
+	// (pkg/plugins/client.go, callWithRetry), so the first attempt
+	// drains it and the re-send arrives with no body and is refused
+	// before any handler runs. MEASURED, integration run 34600486961
+	// failure-1: "IpamDriver.RequestAddress: failed to parse request
+	// body: EOF", and this counter did not move. Raising --timeout is
+	// therefore not the remedy for a rise here.
 	ipamReserveJoined stampedCounter
 
 	// ipamReleaseUnknown counts addresses libnetwork released that no
