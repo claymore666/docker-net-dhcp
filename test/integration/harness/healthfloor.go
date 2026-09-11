@@ -1120,14 +1120,15 @@ func sortedKeys(m map[string]int) []string {
 //     NOT opt-in, checkAddressConflict runs for every endpoint that
 //     received a v4 address" — was load-bearing for case 2's gate and
 //     is now false. A shard that leases addresses on conflict_check=off
-//     networks reaches zero probes legitimately, so those leases are
+//     networks — or resumes an endpoint, whose probe is asynchronous —
+//     reaches zero probes legitimately, so those leases are
 //     declared with AllowUnprobedLeases and subtracted before the gate
 //     asks its question. Without that subtraction this gate would fail
 //     every run containing the off-mode test, and the fix reached for
 //     under time pressure would be to delete the gate.
 //
 //  5. NEW SINCE THE IPAM BRANCH RE-SHARDED THE SUITE (#110), and the
-//     second two-populations defect in this one gate. The domain was
+//     second two-populations defect in this one gate. The domain is
 //     leases_obtained_v4, which counts the PERSISTENT client's bind --
 //     and the probe the gate demands for it is not that client's. A new
 //     endpoint probes in the CreateEndpoint one-shot, roleAcquire under
@@ -1142,10 +1143,19 @@ func sortedKeys(m map[string]int) []string {
 //     MEASURED, integration run 34600486961 main-3: a shard whose last
 //     test recycled the plugin (recovered_ok=1) read
 //     leases_obtained_v4=1 and acd_probes_sent=0 on a process 1s old,
-//     and the gate called the check broken. Recovered endpoints are
-//     therefore subtracted from the domain the same way conflict_check
-//     =off leases are. They are not left unwatched: an address resumed
-//     from a record whose check had not completed moves
+//     and the gate called the check broken.
+//
+//     Such a lease is declared by the test that causes it, with
+//     AllowUnprobedLeases, exactly as an off-mode lease is. It is NOT
+//     subtracted here from recovered_ok, which is what this gate did
+//     first: recovered_ok counts ENDPOINTS OF EITHER FAMILY and this
+//     gate's domain is v4 leases, so a recovered v6-only endpoint would
+//     have silently cancelled a real v4 miss -- a gate quietly emptying
+//     its own domain, which is the failure this whole block exists
+//     against. A declaration is per test, bounded, and sits next to its
+//     cause where the reader can check it against the shard.
+//     Recovered endpoints are not left unwatched either way: an address
+//     resumed from a record whose check had not completed moves
 //     acd_resumed_unchecked, which is the warn row below, and a
 //     conflict found by the async probe still moves address_conflicts.
 //
@@ -1200,15 +1210,29 @@ func AllowedARPSendFailures() int32 {
 	return acdAllowance.sendFail
 }
 
-// AllowUnprobedLeases declares that n v4 leases in this shard were taken
-// on networks running conflict_check=off, so no ARP Probe was ever going
-// to be sent for them.
+// AllowUnprobedLeases declares that n v4 leases in this shard will never
+// be covered by an ARP Probe. Two causes produce such a lease:
+//
+//   - conflict_check=off on the network. No probe is sent at all, by the
+//     operator's instruction.
+//   - a RESUMED endpoint. The probe RFC 5227 asks for runs in the
+//     CreateEndpoint one-shot, before the address is used (roleAcquire
+//     under ConflictWait). Recovery never goes through CreateEndpoint:
+//     it synthesises the Join manager from Docker's view, and the Join
+//     client probes asynchronously, beside the address. So the resumed
+//     bind moves leases_obtained_v4 while the only probe it will ever
+//     produce races the test that caused it.
 //
 // This is the declaration that keeps the zero-probes gate alive after
-// the check became per-network. Call it in the test that creates the
-// off-mode network, once per lease it expects to take there. Declaring
-// MORE than the shard actually takes weakens the gate silently, so
-// declare the leases, not the containers.
+// the check became per-network. Call it in the test that causes the
+// unprobed lease, next to the cause, once per lease. Declaring MORE
+// than the shard actually takes weakens the gate silently, so declare
+// the leases, not the containers.
+//
+// It is deliberately a per-test declaration rather than a subtraction
+// inside the gate: recovered_ok counts endpoints of either family while
+// this gate's domain is v4 leases, so subtracting it there would let a
+// recovered v6-only endpoint cancel a real v4 miss.
 func AllowUnprobedLeases(n int32) {
 	acdAllowance.mu.Lock()
 	defer acdAllowance.mu.Unlock()
@@ -1436,10 +1460,6 @@ func ACDCensusFindings(h *HealthResponse, allowedSendFailures, allowedUnprobed, 
 	// probe was never going to answer for (#881).
 	leases := deltaSincePluginStart(h.LeasesObtainedV4, base(baseline).LeasesObtainedV4)
 	conflicts := deltaSincePluginStart(h.AddressConflicts, base(baseline).AddressConflicts)
-	// The endpoints this process picked up rather than created. See case
-	// 5 above: their lease is in the domain operand and the probe the
-	// gate asks for is not theirs to produce in time.
-	recovered := deltaSincePluginStart(h.RecoveredOK, base(baseline).RecoveredOK)
 
 	if excess := sendFailures - allowedSendFailures; excess > 0 {
 		out = append(out, FloorFinding{
@@ -1460,26 +1480,24 @@ func ACDCensusFindings(h *HealthResponse, allowedSendFailures, allowedUnprobed, 
 	// it to check. Distinct from the case above: there, probes went out
 	// and some sends were refused; here nothing was attempted at all.
 	//
-	// The declared off-mode leases come out first. What is left is leases
-	// on networks that were supposed to probe, so a zero here is the
-	// check having stopped working rather than an operator's choice.
-	// Recovered endpoints come out with them, for the different reason
-	// in case 5 of the block above: their bind is counted by a client
-	// that probes asynchronously, with no preceding one-shot, so a zero
-	// here says nothing about whether the check works.
-	if checked := leases - allowedUnprobed - recovered; probes == 0 && sendFailures == 0 && checked > 0 {
+	// The declared leases come out first -- an off-mode network's, and a
+	// resumed endpoint's, both declared by the test that causes them
+	// (case 5 above). What is left is leases taken by endpoints that
+	// were supposed to probe before using the address, so a zero here
+	// is the check having stopped working rather than an operator's
+	// choice or a shard shape.
+	if checked := leases - allowedUnprobed; probes == 0 && sendFailures == 0 && checked > 0 {
 		out = append(out, FloorFinding{
 			Counter: "acd_probes_sent",
 			Value:   0,
 			Fatal:   true,
 			Why: fmt.Sprintf(
 				"%d v4 lease(s) (leases_obtained_v4, not the v4+v6 sum) were obtained by endpoints "+
-					"that run RFC 5227's check before the address is used (%d more were declared as "+
-					"conflict_check=off, and %d were endpoints this process RECOVERED, whose only "+
-					"probe is the asynchronous one; neither is counted here) and not one ARP Probe "+
-					"was sent. With both populations subtracted this is the check having stopped "+
-					"working rather than a shard with nothing to look at (#551).",
-				checked, allowedUnprobed, recovered),
+					"that run RFC 5227's check before the address is used (%d more were declared "+
+					"with AllowUnprobedLeases and are not counted here) and not one ARP Probe "+
+					"was sent. With the declared population subtracted this is the check having "+
+					"stopped working rather than a shard with nothing to look at (#551).",
+				checked, allowedUnprobed),
 		})
 	}
 

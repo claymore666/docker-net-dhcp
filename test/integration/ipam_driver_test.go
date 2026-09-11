@@ -104,9 +104,9 @@ func ipamRunContainerErr(t *testing.T, ctx context.Context, cli *docker.Client, 
 		&network.NetworkingConfig{EndpointsConfig: map[string]*network.EndpointSettings{netName: ep}},
 		nil, ctrName)
 	if err != nil {
-		// The daemon can refuse at create time -- `--ip` without
-		// `--subnet` is refused there -- and that is a refusal, not a
-		// harness failure.
+		// The daemon can refuse at create time -- an address no pool on
+		// the network contains is refused there -- and that is a
+		// refusal, not a harness failure.
 		return err
 	}
 	t.Cleanup(func() {
@@ -965,6 +965,12 @@ func TestIPAM_ReplayAfterDaemonRestart(t *testing.T) {
 	waitLeaseObtained(t, bindW, 30*time.Second)
 	bindW.End()
 
+	// Who the plugin process was before the restart, and from when the
+	// clock runs. Both are needed to tell the third path below apart
+	// from the two modelled ones; see the switch.
+	healthBefore := harness.WaitPluginHealth(t, ctx, cli, 30*time.Second)
+	restartMark := time.Now()
+
 	harness.RestartDockerDaemon(t, ctx)
 
 	// Every connection the old daemon held is dead, this test's
@@ -983,8 +989,24 @@ func TestIPAM_ReplayAfterDaemonRestart(t *testing.T) {
 	// only -- this makes no claim about a delta, and there is none to
 	// make across a process that was replaced.
 	health := harness.WaitPluginHealth(t, ctx, cli2, 90*time.Second)
-	t.Logf("replay: hits=%d miss=%d tombstones_consumed=%d",
-		health.IPAMReplayHits, health.IPAMReplayMiss, health.TombstonesConsumed)
+	windowSeconds := time.Since(restartMark).Seconds()
+	t.Logf("replay: hits=%d miss=%d tombstones_consumed=%d; plugin instance %s -> %s, "+
+		"uptime %.0fs -> %.0fs across a %.0fs window",
+		health.IPAMReplayHits, health.IPAMReplayMiss, health.TombstonesConsumed,
+		healthBefore.InstanceID, health.InstanceID,
+		healthBefore.UptimeSeconds, health.UptimeSeconds, windowSeconds)
+
+	// Did the plugin process survive the restart?
+	//
+	// Two independent answers, and both must say so. instance_id is the
+	// plugin's own identity, minted once per process (#405); uptime_seconds
+	// is measured from that process's start, so a process that started
+	// inside this window cannot report an uptime longer than the window.
+	// Requiring both means a stuck or defaulted instance_id cannot on its
+	// own make the restart disappear.
+	samePlugin := healthBefore.InstanceID != "" &&
+		healthBefore.InstanceID == health.InstanceID &&
+		health.UptimeSeconds > windowSeconds
 
 	after, _ := ipamNetworkAddress(t, ctx, cli2, id, netName)
 	if after != before {
@@ -1006,11 +1028,33 @@ func TestIPAM_ReplayAfterDaemonRestart(t *testing.T) {
 		t.Log("the address was confirmed by the replayed RequestAddress finding its record")
 	case health.TombstonesConsumed >= 1:
 		t.Log("the endpoint was rebuilt and the tombstone handed back the same address")
+	case samePlugin:
+		// The third path, and MEASURED the one this fixture actually
+		// takes: harness.RestartDockerDaemon's direct branch (no
+		// systemd) signals the daemon only. The plugin is a separate
+		// process and keeps running, so libnetwork's startup replay
+		// resolves the endpoint against state the SAME plugin still
+		// holds, asks this driver for nothing, and neither counter can
+		// move. Nothing was reallocated because nothing was released.
+		//
+		// This is a pass, not a hole: the address was compared above
+		// and it held, ipam_replay_miss is 0, and the survival is
+		// attributed to a named mechanism -- the plugin never went
+		// away -- rather than to "some mechanism". Run 34604958124
+		// main-8 read hits=0 miss=0 tombstones_consumed=0 here with
+		// the address preserved, which is this case and not the
+		// default.
+		t.Logf("the plugin process outlived the daemon (instance %s, uptime %.0fs > the "+
+			"%.0fs window), so the endpoint was never torn down and nothing was replayed "+
+			"through this driver", health.InstanceID, health.UptimeSeconds, windowSeconds)
 	default:
 		t.Error("the address above survived the restart by neither modelled path: " +
 			"ipam_replay_hits=0 and tombstones_consumed=0. Either it did not really survive " +
 			"(the comparison above says), or it survived by a mechanism this test does not " +
-			"model -- and an unmodelled mechanism is not something to pass on (#386).")
+			"model -- and an unmodelled mechanism is not something to pass on (#386).\n" +
+			"The plugin process did NOT outlive the daemon either, so the third path is " +
+			"out: a plugin that restarted and still reports no hit and no tombstone " +
+			"rebuilt this endpoint from something neither counter names.")
 	}
 
 	// The container is not merely recorded, it works.

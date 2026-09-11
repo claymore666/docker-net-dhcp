@@ -318,40 +318,35 @@ func TestACDCensusFindings(t *testing.T) {
 			want:        []string{"address_conflicts"},
 		},
 		{
-			// The recovered population, MEASURED as run 34600486961's
-			// main-3: a shard whose last test recycled the plugin, so
-			// the only v4 lease on the new process belongs to an
-			// endpoint it RECOVERED. That endpoint has no CreateEndpoint
-			// one-shot to probe for it and its Join client probes
-			// asynchronously, racing the shard's teardown, so a zero
-			// here is not the check having stopped.
-			name: "a lease taken by a recovered endpoint does not demand a probe",
+			// THE UNITS CONTROL, and it pins a subtraction this gate
+			// briefly had. A recovered endpoint's lease IS unprobed --
+			// MEASURED, run 34600486961 main-3: a shard whose last test
+			// recycled the plugin read leases_obtained_v4=1 and
+			// acd_probes_sent=0 on a process 1s old -- and the remedy
+			// is the declaration the causing test makes, not
+			// recovered_ok subtracted here. recovered_ok counts
+			// ENDPOINTS OF EITHER FAMILY; this domain is v4 leases. So
+			// recovered_ok on its own excuses nothing, and this case
+			// fails the moment the subtraction comes back.
+			name: "recovered_ok does not excuse an undeclared unprobed lease",
 			h:    &HealthResponse{ACDProbesSent: 0, LeasesObtained: 1, LeasesObtainedV4: 1, RecoveredOK: 1},
-		},
-		{
-			// THE PRESERVATION CONTROL for that subtraction. A shard
-			// that recovered one endpoint and leased two addresses has
-			// one lease left that a one-shot was supposed to probe for,
-			// and a zero there is still the gate's own case.
-			name: "one lease more than the recovered count is still fatal",
-			h:    &HealthResponse{ACDProbesSent: 0, LeasesObtained: 2, LeasesObtainedV4: 2, RecoveredOK: 1},
 			want: []string{"acd_probes_sent"},
 		},
 		{
-			// The subtraction is per PROCESS, like every other operand
-			// here: a recovery that happened before this process started
-			// cannot excuse a lease taken after it.
-			name:     "a recovery from before the baseline excuses nothing",
-			h:        &HealthResponse{ACDProbesSent: 0, LeasesObtained: 4, LeasesObtainedV4: 4, RecoveredOK: 3},
-			baseline: &HealthResponse{ACDProbesSent: 0, LeasesObtained: 3, LeasesObtainedV4: 3, RecoveredOK: 3},
-			want:     []string{"acd_probes_sent"},
+			// The same point at the scale that made it visible: three
+			// recovered endpoints, of which the v6-only ones can never
+			// have moved this domain, must not cancel a v4 lease that
+			// nothing probed for.
+			name: "recovered endpoints of another family cannot cancel a v4 miss",
+			h:    &HealthResponse{ACDProbesSent: 0, LeasesObtained: 1, LeasesObtainedV4: 1, RecoveredOK: 3},
+			want: []string{"acd_probes_sent"},
 		},
 		{
-			// And the two subtractions compose: an off-mode lease and a
-			// recovered one, declared and counted respectively, leave an
-			// empty domain and nothing to say.
-			name:        "an off-mode lease and a recovered one together empty the domain",
-			h:           &HealthResponse{ACDProbesSent: 0, LeasesObtained: 2, LeasesObtainedV4: 2, RecoveredOK: 1},
+			// And the declared shape of exactly that shard: the recycle
+			// test declares its one resumed lease, and the gate has
+			// nothing left to judge.
+			name:        "a declared resumed lease is not a never-ran finding",
+			h:           &HealthResponse{ACDProbesSent: 0, LeasesObtained: 1, LeasesObtainedV4: 1, RecoveredOK: 1},
 			allowedUnpr: 1,
 		},
 		{

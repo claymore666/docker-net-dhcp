@@ -120,6 +120,35 @@ func TestFailure_IPAMServerDownFailsInsideTheBudget(t *testing.T) {
 		map[string]string{"parent": harness.EphemeralHostVeth},
 		map[string]string{"parent": harness.EphemeralHostVeth, "lease_timeout": "40s"})
 
+	// One container that SUCCEEDS, before the server is killed.
+	//
+	// Two jobs, and neither is decoration. It is the preservation
+	// control: every assertion below is about a refusal, and a refusal
+	// proves nothing unless the same network, the same parent and the
+	// same reserve path can be shown to work when the server is there.
+	// Without it a network that never could have leased an address --
+	// wrong parent, wrong pool -- passes this test perfectly.
+	//
+	// And it is what the fixture itself requires. EphemeralFixture
+	// checks at teardown that the server logged at least one lease
+	// allocation (harness/ephemeral.go, checkLeaseGrants, #472),
+	// because a fixture that granted nothing is one whose timings were
+	// never confirmed against the server. A test whose every exchange
+	// is meant to fail has to produce that one grant rather than have
+	// the check relaxed for everybody else.
+	const controlName = "dh-itest-ipam-down-control"
+	if err := ipamRunContainerErr(t, ctx, cli, "dh-itest-ipam-down", controlName, nil); err != nil {
+		t.Fatalf("the control container could not start while the DHCP server was UP: %v\n"+
+			"Nothing below would mean anything: the refusals this test is about would be "+
+			"indistinguishable from a network that never worked.", err)
+	}
+	controlAddr, _ := ipamNetworkAddress(t, ctx, cli, controlName, "dh-itest-ipam-down")
+	t.Logf("control: the same network leased %s while the server was up", controlAddr)
+	if !strings.HasPrefix(controlAddr, "192.168.101.") {
+		t.Errorf("the control came up at %s, which is not from the ephemeral fixture's pool, "+
+			"so the exchange it proves ran against some other server", controlAddr)
+	}
+
 	capMark := harness.MarkPluginLog(t, ctx)
 	ef.Stop()
 	t.Log("DHCP server killed; every reservation from here on has nobody to answer it")
@@ -358,6 +387,32 @@ func TestFailure_IPAMResentRequestIsRefusedNotServedTwice(t *testing.T) {
 			len(macs), macs)
 	}
 	assertNoReserveLinksLeft(t, "after a reservation the daemon stopped waiting for")
+
+	// Back to the stock timeout BEFORE the retry.
+	//
+	// MEASURED: at --timeout 5 no reserve can finish, server up or not.
+	// The reserve's own ARP Probe schedule (RFC 5227: three probes, 1-2s
+	// apart, spread over roughly 6s -- pkg/plugin/conflict.go, roleAcquire
+	// under ConflictWait) outlasts the five-second client budget on its
+	// own, so the retry below would fail with the same "no body" error
+	// and the failure would say nothing about the address being wedged.
+	// The wedge this assertion is about is the plugin's; five seconds is
+	// the operator's, and leaving it in place would let the operator's
+	// setting answer for the plugin's.
+	if err := cli.PluginDisable(ctx, harness.PluginRef, types.PluginDisableOptions{Force: true}); err != nil {
+		t.Fatalf("PluginDisable before the retry: %v", err)
+	}
+	if err := harness.WaitPluginEnabled(ctx, cli, false, 15*time.Second); err != nil {
+		t.Fatalf("plugin did not reach disabled state before the retry: %v", err)
+	}
+	if err := cli.PluginEnable(ctx, harness.PluginRef, types.PluginEnableOptions{Timeout: 30}); err != nil {
+		t.Fatalf("PluginEnable back at the stock timeout: %v", err)
+	}
+	if err := harness.WaitPluginEnabled(ctx, cli, true, 30*time.Second); err != nil {
+		t.Fatalf("plugin did not re-enable at the stock timeout: %v", err)
+	}
+	harness.WaitPluginHealth(t, ctx, cli, 30*time.Second)
+	t.Log("plugin back at the stock 30s client timeout for the retry")
 
 	// The address is not wedged. A reservation the daemon abandoned is
 	// retained rather than closed, so the retry inside the tombstone
