@@ -53,6 +53,66 @@ const (
 // purpose, by someone who read this comment.
 var v6AbsenceSiteFiles = []string{"network.go", "parent_attached.go"}
 
+// v6AbsenceV4OnlySites is the second population: files that acquire a
+// lease and can never acquire a v6 one, so the classifier has nothing to
+// classify for them.
+//
+// AN EXEMPTION WITH A MECHANICAL PROOF, not a waiver. A site is only in
+// here if every one of its acquisitions passes the LITERAL false for
+// acquireWithPolicy's v6 argument, which is checked below: a v6-capable
+// call cannot hide in this list, because the moment the argument stops
+// being that literal the site fails here instead of being excused. The
+// IPAM driver's reserve is the one member -- the driver is IPv4-only in
+// v2.1.0, and RequestPool refuses an IPv6 pool naming v2.2.0 -- and when
+// v6 arrives it moves to the list above, which is the change this
+// structure forces someone to make on purpose.
+var v6AbsenceV4OnlySites = []string{"ipam_reserve.go"}
+
+// v6AbsenceV4OnlyCall is what a v4-only acquisition looks like: the v6
+// argument spelled as the literal false. It is the fourth argument, and
+// the three before it are matched loosely because their spelling is the
+// caller's business -- the same lesson v6AbsenceAcquireCall records.
+const v6AbsenceV4OnlyCall = ", false,"
+
+// TestV6Absence_V4OnlySitesCannotAcquireV6 is the proof behind the
+// exemption list. Without it, adding a file to v6AbsenceV4OnlySites
+// would be a way to opt out of the classifier -- the exact thing the
+// named populations above exist to prevent.
+func TestV6Absence_V4OnlySitesCannotAcquireV6(t *testing.T) {
+	total := 0
+	for _, name := range v6AbsenceV4OnlySites {
+		body, err := os.ReadFile(filepath.Join(".", name))
+		if err != nil {
+			t.Fatalf("reading %s: %v\nIf it was renamed, rename it in "+
+				"v6AbsenceV4OnlySites too — do not drop it.", name, err)
+		}
+		found := 0
+		for i, line := range strings.Split(string(body), "\n") {
+			if !strings.Contains(line, v6AbsenceAcquireCall) {
+				continue
+			}
+			found++
+			total++
+			if !strings.Contains(line, v6AbsenceV4OnlyCall) {
+				t.Errorf("%s:%d is exempt from the DHCPv6-absence classifier because it "+
+					"only ever acquires IPv4, and this line does not pass the literal "+
+					"false for the v6 argument:\n  %s\nEither keep it v4-only, or move "+
+					"the file to v6AbsenceSiteFiles and make it consult %s.",
+					name, i+1, strings.TrimSpace(line), v6AbsenceConsult)
+			}
+		}
+		if found == 0 {
+			t.Errorf("%s is listed as a v4-only acquisition site and contains no %s call. "+
+				"An exemption for a site that does not exist is an exemption nothing checks.",
+				name, v6AbsenceAcquireCall)
+		}
+	}
+	if total == 0 {
+		t.Errorf("found no acquisition site across %v — a universal over an empty set "+
+			"is not a check", v6AbsenceV4OnlySites)
+	}
+}
+
 func TestV6Absence_EveryAcquisitionSiteConsultsTheClassifier(t *testing.T) {
 	total := 0
 	for _, name := range v6AbsenceSiteFiles {
@@ -106,6 +166,11 @@ func TestV6Absence_EveryAcquisitionSiteConsultsTheClassifier(t *testing.T) {
 	for _, n := range v6AbsenceSiteFiles {
 		named[n] = true
 	}
+	// The v4-only sites are named too, and they are not a hole: their
+	// own test above proves each one cannot acquire a v6 lease at all.
+	for _, n := range v6AbsenceV4OnlySites {
+		named[n] = true
+	}
 	for _, e := range entries {
 		name := e.Name()
 		if e.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
@@ -119,9 +184,10 @@ func TestV6Absence_EveryAcquisitionSiteConsultsTheClassifier(t *testing.T) {
 			t.Fatalf("reading %s: %v", name, err)
 		}
 		if strings.Contains(string(body), v6AbsenceAcquireCall) {
-			t.Errorf("%s acquires a lease and is not in v6AbsenceSiteFiles, so nothing "+
-				"checked whether it tolerates a segment that offers no DHCPv6. Add it to "+
-				"the list — after making it consult %s.", name, v6AbsenceConsult)
+			t.Errorf("%s acquires a lease and is in neither v6AbsenceSiteFiles nor "+
+				"v6AbsenceV4OnlySites, so nothing checked whether it tolerates a segment "+
+				"that offers no DHCPv6. Add it to the first list — after making it consult "+
+				"%s — or, if it can only ever acquire IPv4, to the second.", name, v6AbsenceConsult)
 		}
 	}
 
