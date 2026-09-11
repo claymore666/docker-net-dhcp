@@ -58,10 +58,10 @@ var HealthFieldSeries = map[string]string{
 	"status": "health_status",
 }
 
-// HealthFieldsInBuildInfo are the fields carried as LABELS on
-// net_dhcp_build_info instead of as series of their own, and
-// HealthFieldsNotExposed the ones deliberately absent from /metrics,
-// with the reason.
+// HealthFieldsAsLabels are the fields carried as LABELS on an identity
+// series instead of as series of their own, mapped to the series that
+// carries each one, and HealthFieldsNotExposed the ones deliberately
+// absent from /metrics, with the reason.
 //
 // MIRRORS pkg/plugin's metricLabelOnlyFields and metricNotExposedFields
 // for the reason HealthResponse mirrors HealthResponse: this suite asks
@@ -70,7 +70,20 @@ var HealthFieldSeries = map[string]string{
 // loud in both directions -- TestMetrics_SocketServesTheFullSurface
 // reports a field it can find no series for, and reports a label it was
 // told to expect and did not find on the line.
-var HealthFieldsInBuildInfo = []string{"instance_id", "version", "commit", "library"}
+//
+// IT IS A MAP AND NOT A LIST OF BUILD_INFO FIELDS, because #670 added a
+// second identity series and the list shape could only express the
+// first one. A field named here is checked against the line of the
+// series named here, so a field moving between identity series is a
+// failure and not a silent pass.
+var HealthFieldsAsLabels = map[string]string{
+	"instance_id":    "build_info",
+	"version":        "build_info",
+	"commit":         "build_info",
+	"library":        "build_info",
+	"engine_version": "engine_info",
+	"api_version":    "engine_info",
+}
 
 var HealthFieldsNotExposed = map[string]string{
 	"checks":    "each check's observedValue is the counter's own series, already exposed",

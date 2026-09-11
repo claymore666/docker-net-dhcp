@@ -7,6 +7,7 @@ package integration
 
 import (
 	"context"
+	"maps"
 	"reflect"
 	"slices"
 	"strings"
@@ -68,26 +69,38 @@ func TestMetrics_SocketServesTheFullSurface(t *testing.T) {
 	if health.InstanceID == "" {
 		t.Fatal("/Plugin.Health reported no instance_id; the identity cross-check below would pass vacuously")
 	}
-	info, ok := buildInfoLine(body)
-	if !ok {
-		t.Fatalf("/metrics carries no net_dhcp_build_info series:\n%s", firstLines(body, 8))
+	// Every identity series named by the mirror, not build_info alone:
+	// #670 added net_dhcp_engine_info, and a loop that knew only the
+	// first one would have reported nothing about the second.
+	lines := map[string]string{}
+	for _, family := range slices.Sorted(maps.Values(harness.HealthFieldsAsLabels)) {
+		if _, seen := lines[family]; seen {
+			continue
+		}
+		line, ok := identityLine(body, family)
+		if !ok {
+			t.Fatalf("/metrics carries no net_dhcp_%s series:\n%s", family, firstLines(body, 8))
+		}
+		if !strings.HasSuffix(line, "} 1") {
+			t.Errorf("%s is %q; an identity series is always 1", family, line)
+		}
+		lines[family] = line
 	}
-	if !strings.HasSuffix(info, "} 1") {
-		t.Errorf("build_info is %q; the identity series is always 1", info)
-	}
-	for _, tag := range harness.HealthFieldsInBuildInfo {
+	for _, tag := range slices.Sorted(maps.Keys(harness.HealthFieldsAsLabels)) {
+		family := harness.HealthFieldsAsLabels[tag]
+		info := lines[family]
 		got, present := labelValue(info, tag)
 		want, known := healthFieldString(health, tag)
 		switch {
 		case !present:
-			t.Errorf("build_info carries no %s label; the document reports %q for it.\nline: %s", tag, want, info)
+			t.Errorf("%s carries no %s label; the document reports %q for it.\nline: %s", family, tag, want, info)
 		case got == "":
-			t.Errorf("build_info carries %s=\"\"; an empty label scrapes and alerts exactly like a "+
-				"populated one, so this is the build-identity failure that looks like nothing.\nline: %s", tag, info)
+			t.Errorf("%s carries %s=\"\"; an empty label scrapes and alerts exactly like a "+
+				"populated one, so this is the identity failure that looks like nothing.\nline: %s", family, tag, info)
 		case !known:
 			t.Errorf("/Plugin.Health published no %s, so the label above is unverifiable", tag)
 		case got != want:
-			t.Errorf("build_info says %s=%q, /Plugin.Health says %q; the two views are reading different state", tag, got, want)
+			t.Errorf("%s says %s=%q, /Plugin.Health says %q; the two views are reading different state", family, tag, got, want)
 		}
 	}
 
@@ -105,9 +118,9 @@ func TestMetrics_SocketServesTheFullSurface(t *testing.T) {
 		if tag == "" || tag == "-" {
 			continue
 		}
-		// The build-identity fields ride as build_info labels and were
-		// asserted, value and all, above.
-		if slices.Contains(harness.HealthFieldsInBuildInfo, tag) {
+		// The identity fields ride as labels on build_info or
+		// engine_info and were asserted, value and all, above.
+		if _, isLabel := harness.HealthFieldsAsLabels[tag]; isLabel {
 			continue
 		}
 		// Deliberately not exposed, with the reason declared beside the
@@ -189,9 +202,9 @@ func firstLines(s string, n int) string {
 
 // buildInfoLine is the exposition's net_dhcp_build_info sample, without
 // its HELP and TYPE comments.
-func buildInfoLine(body string) (string, bool) {
+func identityLine(body, family string) (string, bool) {
 	for _, line := range strings.Split(body, "\n") {
-		if strings.HasPrefix(line, "net_dhcp_build_info{") {
+		if strings.HasPrefix(line, "net_dhcp_"+family+"{") {
 			return line, true
 		}
 	}
