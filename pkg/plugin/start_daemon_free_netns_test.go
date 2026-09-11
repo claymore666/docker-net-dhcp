@@ -188,29 +188,86 @@ func TestStart_EntersTheNamespaceAndLocatesTheLinkWithoutTheDaemon(t *testing.T)
 // leaves is the link's, at a point where the daemon has been asked
 // nothing at all.
 func TestStart_AsksTheDaemonNothingBeforeTheLinkIsLocated(t *testing.T) {
-	daemonDown := errors.New("daemon is not answering anything")
-	docker := &fakeDocker{listErr: daemonDown, inspectErr: daemonDown, containerErr: daemonDown}
-	// A MAC no link carries, so link location is what fails and the
-	// inspect that follows it is never reached.
-	m, _ := daemonFreeManager(t, docker)
-	m.MacAddress = net.HardwareAddr{0x02, 0x00, 0x00, 0x00, 0x00, 0x01}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
-	defer cancel()
-	if err := m.Start(ctx); err == nil {
-		t.Fatal("Start found a link carrying a MAC nothing in this namespace has")
+	docker := &fakeDocker{
+		inspectResult: map[string]dNetwork.Inspect{
+			"net-1": {Containers: map[string]dNetwork.EndpointResource{
+				"ctr-1": {EndpointID: "ep-abcdef"},
+			}},
+		},
+		containerResult: map[string]dContainer.InspectResponse{
+			"ctr-1": {
+				ContainerJSONBase: &dContainer.ContainerJSONBase{State: &dContainer.State{Pid: os.Getpid()}},
+				Config:            &dContainer.Config{Hostname: "ctr-1"},
+			},
+		},
 	}
+	m, _ := daemonFreeManager(t, docker)
+
+	// The observer sits IN the client, so the order is read at the
+	// moment of the call and not inferred from what is left at the end.
+	// m.ctrLink is assigned by locateContainerLink and by nothing else,
+	// so "the link was already located" is a fact about this attach and
+	// not about the fixture.
+	watch := &firstCallWatcher{dockerClient: docker, m: m}
+	m.docker = watch
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	// Start goes on to build a DHCP client, which this lane cannot do.
+	_ = m.Start(ctx)
 
 	if !strings.Contains(m.startPhases, "open_netns=") {
 		t.Errorf("phase summary %q has no open_netns: the namespace was not entered", m.startPhases)
 	}
-	if calls := docker.listCalls + docker.inspectCalls + docker.containerCalls; calls != 0 {
-		t.Errorf("the daemon was called %d time(s) (list %d, network inspect %d, container inspect %d) "+
-			"before the container's link was located. Every one of them can block for the length of a "+
-			"ContainerStart (#406), which is the whole reason the namespace is entered through the "+
-			"sandbox key first (#417)",
-			calls, docker.listCalls, docker.inspectCalls, docker.containerCalls)
+	if watch.calls == 0 {
+		t.Fatal("the daemon was never called at all, so there is no first call to order against the " +
+			"link and this drive asserts nothing")
 	}
+	if !watch.linkAtFirstCall {
+		t.Errorf("the daemon's first call (list %d, network inspect %d, container inspect %d) was made "+
+			"while m.ctrLink was still nil, so the link had not been located yet. Every daemon call can "+
+			"block for the length of a ContainerStart (#406), which is the whole reason the namespace "+
+			"is entered through the sandbox key and the link found before anything is asked (#417)",
+			docker.listCalls, docker.inspectCalls, docker.containerCalls)
+	}
+}
+
+// firstCallWatcher records the manager's state at the moment the daemon
+// is first asked anything.
+//
+// The property is an ORDER, and a count at the end of Start cannot see
+// one: an attach that inspected first and then found the link leaves
+// exactly the same totals as an attach that did it the other way round.
+// Embedding the interface keeps this to the three calls Start makes, so
+// a method added to dockerClient later cannot silently escape the watch
+// by not being listed here.
+type firstCallWatcher struct {
+	dockerClient
+	m               *dhcpManager
+	calls           int
+	linkAtFirstCall bool
+}
+
+func (w *firstCallWatcher) note() {
+	if w.calls == 0 {
+		w.linkAtFirstCall = w.m.ctrLink != nil
+	}
+	w.calls++
+}
+
+func (w *firstCallWatcher) NetworkList(ctx context.Context, options dNetwork.ListOptions) ([]dNetwork.Summary, error) {
+	w.note()
+	return w.dockerClient.NetworkList(ctx, options)
+}
+
+func (w *firstCallWatcher) NetworkInspect(ctx context.Context, networkID string, options dNetwork.InspectOptions) (dNetwork.Inspect, error) {
+	w.note()
+	return w.dockerClient.NetworkInspect(ctx, networkID, options)
+}
+
+func (w *firstCallWatcher) ContainerInspect(ctx context.Context, containerID string) (dContainer.InspectResponse, error) {
+	w.note()
+	return w.dockerClient.ContainerInspect(ctx, containerID)
 }
 
 // TestStart_DoesNotStartTheClientBeforeTheInspectAnswers is the other
@@ -389,5 +446,82 @@ func TestStart_ARefusedKeyAndNoDaemonNamesBothCauses(t *testing.T) {
 	if !strings.Contains(err.Error(), "sandbox key route") {
 		t.Errorf("err = %v: it does not name the key refusal that made the PID necessary, and the "+
 			"refusal is what says which route this host takes", err)
+	}
+}
+
+// TestStart_AnEndpointNoContainerClaimsIsNotAStartFailure is the
+// attribution the reorder took away and this drive puts back.
+//
+// A Join can name a real sandbox for an endpoint no container holds:
+// #566's shape, and the shape a container disconnected from the network
+// mid-attach leaves behind. The old order found that out first, because
+// the container-ID poll ran before anything else and util.ErrNoContainer
+// was the only way out. Reordered, the link lookup runs first and ends
+// on its own deadline, which is not that error, so an endpoint nobody
+// claimed was charged to join_start_failures: Healthy-affecting, and an
+// operator paged about a container that does not exist.
+//
+// The drive is the error identity rather than the counter, because
+// joinFailureLeavesAddressUnused keys on exactly that
+// (network.go: errors.Is(err, util.ErrNoContainer)) and the counter is
+// Join's to move. The integration cell TestJoinNoContainer_Address
+// IsHeldUntilItExpires asserts the counters on a live daemon, and it is
+// what caught this: it is green on a host that refuses the sandbox key
+// and red on a host that takes it, because only the second one reaches
+// the link lookup before the daemon is asked anything.
+func TestStart_AnEndpointNoContainerClaimsIsNotAStartFailure(t *testing.T) {
+	// No container holds this endpoint: the network answers, and its
+	// container map has nothing with this endpoint id in it.
+	docker := &fakeDocker{
+		inspectResult: map[string]dNetwork.Inspect{
+			"net-1": {Containers: map[string]dNetwork.EndpointResource{
+				"some-other-container": {EndpointID: "ep-somebody-else"},
+			}},
+		},
+	}
+	m, _ := daemonFreeManager(t, docker)
+
+	// A MAC no link in this namespace carries, so the macvlan wait can
+	// only end on its own deadline. Locally administered and unicast,
+	// so it cannot collide with a real adapter.
+	m.MacAddress = net.HardwareAddr{0x02, 0x00, 0x5e, 0x00, 0x53, 0x01}
+
+	// The production cap is 30s inside a 70s attach window, which is
+	// what leaves budget for the question below. Shrunk here so the
+	// same two steps fit in a unit drive.
+	prev := linkAwaitTimeout
+	linkAwaitTimeout = 200 * time.Millisecond
+	t.Cleanup(func() { linkAwaitTimeout = prev })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	err := m.Start(ctx)
+	if err == nil {
+		t.Fatal("Start succeeded for an endpoint no container holds and a link that never appeared")
+	}
+	if !errors.Is(err, util.ErrNoContainer) {
+		t.Errorf("Start returned %v, which is not util.ErrNoContainer. network.go decides "+
+			"join_aborted_no_container against join_start_failures with errors.Is on exactly "+
+			"that sentinel, so an endpoint nobody claimed is charged to the Healthy-affecting "+
+			"counter and pages an operator about a container that does not exist (#566)", err)
+	}
+	if !strings.Contains(err.Error(), "no link for this endpoint in the sandbox") {
+		t.Errorf("Start returned %v: it names the missing container but not the link lookup that "+
+			"asked the question, so a reader cannot tell this from an endpoint whose container "+
+			"was never created at all", err)
+	}
+	if strings.Contains(m.startPhases, "locate_link=") {
+		t.Errorf("phase summary %q records locate_link for an attach whose link never appeared, "+
+			"so the phase that consumed the budget is not the one the summary names", m.startPhases)
+	}
+	// The question is asked ONCE. It is asked at all only because the
+	// link never appeared, and a link lookup that polls the daemon each
+	// time round would turn the one call this attach can afford into as
+	// many as the budget allows (#406).
+	if docker.inspectCalls != 1 || docker.containerCalls != 0 {
+		t.Errorf("the daemon was asked %d network inspect(s) and %d container inspect(s) for one "+
+			"failed attach, want exactly one network inspect: the endpoint has no container, so "+
+			"the question is answered by the first call and nothing after it can change the answer",
+			docker.inspectCalls, docker.containerCalls)
 	}
 }

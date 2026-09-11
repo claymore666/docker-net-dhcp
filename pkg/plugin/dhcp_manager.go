@@ -28,7 +28,13 @@ import (
 // reappear in the container netns under its post-rename name. Bridge mode
 // keys off the veth peer index, which is symmetric across netns and
 // available immediately, so it doesn't need this.
-const linkAwaitTimeout = 30 * time.Second
+//
+// A var and not a const so a drive can shrink it, the way
+// attachDaemonBusyGrace is shrunk: the behaviour that follows a link
+// which never appears cannot be driven root-free in 30 seconds, and a
+// drive that cannot run is a property nobody asserts. Production never
+// writes it.
+var linkAwaitTimeout = 30 * time.Second
 
 const pollTime = 100 * time.Millisecond
 
@@ -1821,6 +1827,35 @@ func (m *dhcpManager) Start(ctx context.Context) (err error) {
 
 	if err := func() error {
 		if err := m.locateContainerLink(ctx); err != nil {
+			// A link that never appears has two causes, and they want
+			// opposite answers from an operator: a container whose link
+			// is late or already gone, which is a fault, and an
+			// endpoint no container ever claimed, which is not one
+			// (#566). The namespace and the link are found without the
+			// daemon, but telling those two apart is precisely what the
+			// daemon knows and this plugin cannot see.
+			//
+			// Before the reorder the container-ID poll ran first and
+			// answered this by construction, so util.ErrNoContainer was
+			// the only way out of an unclaimed endpoint's attach and
+			// join_aborted_no_container was the counter that moved. The
+			// reorder made the link lookup fail first, with a deadline
+			// that is not that error, and charged an endpoint nobody
+			// claimed to join_start_failures, which is Healthy-
+			// affecting and pages about a container that does not
+			// exist. Only a host that takes the key route reaches it,
+			// which is why the pool lane stayed green and the hosted
+			// one went red.
+			//
+			// So the question is asked here, once, on what is left of
+			// the attach budget: the macvlan wait is capped at
+			// linkAwaitTimeout inside a window of awaitTimeout plus
+			// attachDaemonBusyGrace, so the answer is affordable. If
+			// nothing is left, the link error stands on its own, which
+			// is the behaviour without this branch.
+			if ierr := inspect(); ierr != nil {
+				return fmt.Errorf("%w (no link for this endpoint in the sandbox: %w)", ierr, err)
+			}
 			return err
 		}
 
