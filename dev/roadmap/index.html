@@ -1180,8 +1180,16 @@ restarted container takes. The rest are test and CI defects:
 <a href="https://github.com/claymore666/docker-net-dhcp/issues/881">#881</a>, <a href="https://github.com/claymore666/docker-net-dhcp/issues/802">#802</a>, <a href="https://github.com/claymore666/docker-net-dhcp/issues/682">#682</a>, <a href="https://github.com/claymore666/docker-net-dhcp/issues/879">#879</a>, <a href="https://github.com/claymore666/docker-net-dhcp/issues/839">#839</a>, <a href="https://github.com/claymore666/docker-net-dhcp/issues/827">#827</a>, and this page's own
 sibling <a href="https://github.com/claymore666/docker-net-dhcp/issues/672">#672</a>.</p>
 <p><strong><a href="https://github.com/claymore666/docker-net-dhcp/milestone/30">v2.1.0</a></strong>
-is addressing Docker can see. <a href="https://github.com/claymore666/docker-net-dhcp/issues/110">#110</a> bundles a DHCP IPAM driver, so
-<code>--ipam-driver null</code> stops being the only supported shape.</p>
+puts the leased address into Docker's own address management. <a href="https://github.com/claymore666/docker-net-dhcp/issues/110">#110</a>
+bundles a DHCP IPAM driver, so <code>--ipam-driver null</code> stops being the only
+supported shape: naming the plugin in its place makes <code>docker run --ip</code>,
+<code>docker network connect --ip</code> and Compose's <code>ipv4_address</code> legal, fills
+the IPAM block <code>docker network inspect</code> prints, and drops <code>null</code> from
+the create line. <code>docker inspect</code> already reports the leased address in
+either shape. <code>ipvlan</code> keeps <code>--ipam-driver null</code> for now (<a href="https://github.com/claymore666/docker-net-dhcp/issues/949">#949</a>), and
+so does IPv6: the IPAM shape is IPv4 only and refuses both Docker's
+<code>--ipv6</code> and <code>-o ipv6=true</code> (<a href="https://github.com/claymore666/docker-net-dhcp/issues/960">#960</a>). <a href="https://github.com/claymore666/docker-net-dhcp/issues/218">#218</a>, the deterministic MAC, is
+backlog and waits on upstream Docker (below).</p>
 <p><strong><a href="https://github.com/claymore666/docker-net-dhcp/milestone/29">v2.2.0</a></strong>
 is full IPv6. <a href="https://github.com/claymore666/docker-net-dhcp/issues/818">#818</a> and <a href="https://github.com/claymore666/docker-net-dhcp/issues/808">#808</a> acquire an address by SLAAC, <a href="https://github.com/claymore666/docker-net-dhcp/issues/821">#821</a> takes
 the gateway, DNS, MTU and routes from the advertisement, <a href="https://github.com/claymore666/docker-net-dhcp/issues/819">#819</a> handles

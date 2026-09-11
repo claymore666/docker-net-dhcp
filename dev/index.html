@@ -1109,20 +1109,31 @@ wants a bridge you bring yourself (<a href="bridge-mode/">Bridge mode</a>):</p>
 <a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>
 <a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>docker<span class="w"> </span>run<span class="w"> </span>--rm<span class="w"> </span>-ti<span class="w"> </span>--network<span class="w"> </span>lan-dhcp<span class="w"> </span>alpine<span class="w"> </span>ip<span class="w"> </span>address<span class="w"> </span>show
 </code></pre></div>
-<p><code>--ipam-driver null</code> is <strong>mandatory</strong>: it stops Docker handing out
-addresses that would collide with the real LAN. On arm64 the <code>-arm64</code>
-tag goes in this line too, because a network records the tagged reference
-as its driver. Add <code>-o ipv6=true</code> for a DHCPv6 lease beside the v4 one.</p>
+<p><code>--ipam-driver null</code> stops Docker handing out addresses that would
+collide with the real LAN. From v2.1.0 there is a second supported
+shape: name the plugin again in place of <code>null</code> and the leased address
+goes into Docker's own address management, which makes <code>--ip</code> and
+Compose's <code>ipv4_address</code> work.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>docker<span class="w"> </span>network<span class="w"> </span>create<span class="w"> </span>-d<span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:v2.0.0<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="w">  </span>--ipam-driver<span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:v2.0.0<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="w">  </span>-o<span class="w"> </span><span class="nv">mode</span><span class="o">=</span>macvlan<span class="w"> </span>-o<span class="w"> </span><span class="nv">parent</span><span class="o">=</span>eth0<span class="w"> </span>lan-dhcp
+</code></pre></div>
+<p>One of the two is required. On arm64 the <code>-arm64</code> tag goes in these
+lines too, because a network records the tagged reference as its driver.
+Add <code>-o ipv6=true</code> for a DHCPv6 lease beside the v4 one; it needs the
+<code>null</code> line, because the IPAM shape is IPv4 only in v2.1.0 and refuses
+the combination (<a href="https://github.com/claymore666/docker-net-dhcp/issues/960">#960</a>). The two shapes are set out in
+<a href="reference/#address-allocation">the driver reference</a>.</p>
 <p>After that, plain Compose. No static addresses, no sidecar, nothing per
 container:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="nt">services</span><span class="p">:</span>
-<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="w">  </span><span class="nt">app</span><span class="p">:</span>
-<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="w">    </span><span class="nt">image</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">nginx</span>
-<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="w">    </span><span class="nt">networks</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">lan-dhcp</span><span class="p p-Indicator">]</span>
-<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>
-<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a><span class="nt">networks</span><span class="p">:</span>
-<a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a><span class="w">  </span><span class="nt">lan-dhcp</span><span class="p">:</span>
-<a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a><span class="w">    </span><span class="nt">external</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="nt">services</span><span class="p">:</span>
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="w">  </span><span class="nt">app</span><span class="p">:</span>
+<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="w">    </span><span class="nt">image</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">nginx</span>
+<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="w">    </span><span class="nt">networks</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">lan-dhcp</span><span class="p p-Indicator">]</span>
+<a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a>
+<a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a><span class="nt">networks</span><span class="p">:</span>
+<a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a><span class="w">  </span><span class="nt">lan-dhcp</span><span class="p">:</span>
+<a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a><span class="w">    </span><span class="nt">external</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
 </code></pre></div>
 <h2 id="why-this-one">Why this one<a class="headerlink" href="#why-this-one" title="Permanent link">&para;</a></h2>
 <ul>
@@ -1135,7 +1146,9 @@ container:</p>
   on <a href="reference/#pluginhealth">the health endpoint</a>. There is no
   external DHCP client to install, supervise or reap.</li>
 <li><strong>IPv6 is the same one line.</strong> <code>-o ipv6=true</code> adds a DHCPv6 lease with
-  its own timers, its own counters and a DUID that survives a restart.</li>
+  its own timers, its own counters and a DUID that survives a restart.
+  On <code>--ipam-driver null</code> networks; the IPAM shape is IPv4 only in
+  v2.1.0.</li>
 <li><strong>A restart keeps the address.</strong> In <code>bridge</code> and <code>macvlan</code> the MAC is
   carried across <code>docker restart</code>, so a server-side reservation still
   matches and the old address is re-requested; a plugin restart or upgrade
@@ -1204,11 +1217,11 @@ only</strong>, so verify provenance against the <code>ghcr.io</code> reference. 
 commands need <strong>cosign v3 or newer</strong>. v2 cannot read the bundle format
 the release signs with, and it fails in a way that looks like a broken
 signature. Replace <code>VERSION</code>:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>cosign<span class="w"> </span>verify<span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:VERSION<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="w">  </span>--certificate-identity-regexp<span class="w"> </span><span class="s1">&#39;^https://github.com/claymore666/docker-net-dhcp/.github/workflows/release.yml@&#39;</span><span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="w">  </span>--certificate-oidc-issuer<span class="w"> </span>https://token.actions.githubusercontent.com
-<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a>
-<a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a>gh<span class="w"> </span>attestation<span class="w"> </span>verify<span class="w"> </span>oci://ghcr.io/claymore666/docker-net-dhcp:VERSION<span class="w"> </span>--repo<span class="w"> </span>claymore666/docker-net-dhcp
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>cosign<span class="w"> </span>verify<span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:VERSION<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="w">  </span>--certificate-identity-regexp<span class="w"> </span><span class="s1">&#39;^https://github.com/claymore666/docker-net-dhcp/.github/workflows/release.yml@&#39;</span><span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="w">  </span>--certificate-oidc-issuer<span class="w"> </span>https://token.actions.githubusercontent.com
+<a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a>
+<a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a>gh<span class="w"> </span>attestation<span class="w"> </span>verify<span class="w"> </span>oci://ghcr.io/claymore666/docker-net-dhcp:VERSION<span class="w"> </span>--repo<span class="w"> </span>claymore666/docker-net-dhcp
 </code></pre></div>
 <p>The whole procedure, including rebuilding the binaries yourself, is in
 <a href="verifying-releases/">Verifying releases</a>.</p>

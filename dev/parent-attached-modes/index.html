@@ -1139,8 +1139,12 @@ sidecar, no <code>cap_add</code>:</p>
 <li><strong>ipvlan-specific:</strong> only one of macvlan or ipvlan can be active on
   a given parent NIC at a time. The kernel rejects mixing them with
   <code>EBUSY</code>. Use one mode per parent.</li>
-<li>The plugin requires <code>--ipam-driver=null</code> because the LAN's DHCP
-  server is the address source of truth in place of Docker's IPAM.</li>
+<li>Docker's default IPAM is never the allocator: the LAN's DHCP server
+  is the address source of truth. Pass <code>--ipam-driver=null</code>, or, from
+  v2.1.0, this plugin's own IPAM driver
+  (<a href="../reference/#address-allocation">reference</a>). <code>ipvlan</code> takes
+  <code>--ipam-driver=null</code> only, because an IPAM driver needs a MAC per
+  endpoint and ipvlan children share the parent's (#949).</li>
 <li>One DHCP-served network per container. If a container also joins a
   bridge or other Docker network, that's its problem to coordinate.</li>
 </ul>
