@@ -84,10 +84,18 @@ func daemonFreeManager(t *testing.T, docker dockerClient) (*dhcpManager, *Plugin
 // handle whose zero value talks to the caller's current namespace,
 // which is the same namespace the fixture key names, so the link walk
 // that follows is the production one over real links. What the swap
-// replaces is the setns, and it asserts the handle Start opened is the
-// one it was about to enter: a seam that accepted any descriptor would
-// hide a Start that entered the wrong namespace, which is the failure
-// the sandbox key route exists to avoid.
+// replaces is the setns.
+//
+// WHAT THE DESCRIPTOR ASSERTION CATCHES, exactly, because an earlier
+// version of this comment claimed more than it can fail for: Start
+// handing this call a descriptor other than the namespace handle it
+// just opened. It cannot catch Start opening the WRONG namespace. The
+// field it compares against was assigned from that same open, and the
+// substitute handle talks to the caller's namespace whatever Start
+// opened, so the link walk would look identical. That property is held
+// by a different drive: an opener that ignored the key and took the
+// current namespace dies in TestStart_AsksTheDaemonOnceForTheWholeAttach,
+// where sandbox_key_entries must stay 0 for a key naming no entry.
 func withNetlinkHandleInThisNamespace(t *testing.T, m *dhcpManager) {
 	t.Helper()
 	prev := nlNewHandleAt
