@@ -16,10 +16,11 @@ type RenewalStats struct {
 	// Unanswered is how many further DHCPREQUESTs sent to extend a held
 	// lease were PROVEN to have gone unanswered since the previous
 	// report. A request is proven unanswered by the retransmission that
-	// follows it or by the acknowledgement that ends its renewal, never
-	// by having been sent: a request still in flight is not counted,
-	// which is why a client that has sent N renewal requests into
-	// silence reports N-1.
+	// follows it, and by nothing else: not by having been sent, and not
+	// by the acknowledgement that ends the renewal, which proves the
+	// opposite about the request in flight. That request is not
+	// counted, which is why a client that has sent N renewal requests
+	// into silence reports N-1.
 	Unanswered uint64
 }
 

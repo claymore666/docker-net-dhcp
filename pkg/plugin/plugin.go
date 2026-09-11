@@ -1234,16 +1234,27 @@ type Plugin struct {
 	// IT IS NOT AN EARLY dhcpTimeouts AND THE PAIR IS THE READING.
 	// dhcpTimeouts moves when an attempt runs out of retransmissions,
 	// which for a held lease is at the lease's end; this moves at the
-	// first retransmission, minutes after the server went quiet. On the
-	// production host #940 was reported from, that is the difference
-	// between seeing the outage at 00:01 and seeing it at 24:00.
+	// first retransmission.
 	//
-	// A request is counted when a later request, or the acknowledgement
-	// that ends the renewal, proves it was never answered. The one
-	// still in flight is not counted, so a client that has sent N
-	// requests into silence reports N-1 -- see renewalWatch, which owns
-	// the arithmetic and the reason it is a running maximum rather than
-	// a subtraction.
+	// HOW EARLY THAT IS COMES FROM THE LEASE, not from a constant. RFC
+	// 2131 section 4.4.5 has the client "wait one-half of the remaining
+	// time until T2 (in RENEWING state) and one-half of the remaining
+	// lease time (in REBINDING state), down to a minimum of 60
+	// seconds", which proto.renewalDelay implements as that max, so the
+	// 60 seconds is a floor under the wait and never a bound on it. On
+	// the 24 hour lease #940 was reported from, T1 falls at 12h and T2
+	// at 21h, so the first retransmission is about 4h30m after the
+	// renewal starts: seeing the outage at 16:30 into the lease instead
+	// of at 24:00, which is about 7.5 hours of warning and not a day.
+	//
+	// A request is counted when a LATER REQUEST proves it went
+	// unanswered, and by nothing else. An acknowledgement proves the
+	// opposite: it ends the renewal, and the request in flight when it
+	// arrives was answered. That request is never counted, so a client
+	// that has sent N requests into silence reports N-1 -- see
+	// renewalWatch, which owns the arithmetic, reads the end of a
+	// renewal from the event stream, and gives the reason the value is
+	// a running maximum rather than a subtraction.
 	//
 	// Fed as a DELTA from every persistent client, on the same rule as
 	// the RFC 5227 counters: summing the live managers would make the
@@ -1304,9 +1315,9 @@ type Plugin struct {
 	// renewalsUnansweredV6 is the DHCPv6 half. The library counts a
 	// Renew and a Rebind as renewal requests (RFC 9915 sections 18.2.4
 	// and 18.2.5) exactly as it counts a v4 DHCPREQUEST with a
-	// non-zero ciaddr, and the acknowledgement that ends one is the
-	// same lease event in both families, so the arithmetic is the
-	// arithmetic. A v6-only silence is invisible in the sum.
+	// non-zero ciaddr, and the event that ends one is the same lease
+	// event in both families, so the arithmetic is the arithmetic. A
+	// v6-only silence is invisible in the sum.
 	renewalsUnansweredV6 atomic.Int32
 
 	// dhcpv6ConfigOnly counts DHCPv6 information replies: the server
