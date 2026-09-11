@@ -56,14 +56,14 @@ import (
 //
 // The filesystem can refuse to lock at all — an NFS mount without lockd.
 // That does not leave either hazard open: flock failing for ANY reason is
-// refused as ErrRecordsLocked and NewPlugin gives up on it, so the FIRST
-// opener does not start and the guarantee is kept by refusing to run.
-// Since v1.5.0 the state directory is a bind of a fixed host path, not
-// the plugin's own rootfs, so which filesystem sits under the lock is the
-// host's choice. The bound is on where the plugin can run, not on whether
-// two writers can overlap; docs/reference.md states it where an operator
-// picks the mount, because the start-up failure there carries the same
-// message as a real second writer.
+// refused as ErrRecordsLocked and NewPlugin gives up on it (D51), so the
+// FIRST opener does not start and the guarantee is kept by refusing to
+// run. Since v1.5.0 the state directory is a bind of a fixed host path,
+// not the plugin's own rootfs, so which filesystem sits under the lock is
+// the host's choice. The bound is on where the plugin can run, not on
+// whether two writers can overlap; docs/reference.md states it where an
+// operator picks the mount. Which of the two the operator is looking at
+// is read off the errno and said in the refusal — lockRefused.
 type Records struct {
 	path string
 
@@ -83,8 +83,62 @@ type Records struct {
 	managers atomic.Uint64
 }
 
-// ErrRecordsLocked is a second writer refused.
+// ErrRecordsLocked is a refused start: the exclusive lock on the lease
+// record was not taken. Every reading lockRefused produces matches it,
+// including the ones that are not a second writer.
 var ErrRecordsLocked = errors.New("dhcp: the lease record file is already open by another writer")
+
+// lockRefusal is one reading of a failed flock. Error prints the
+// reading; Unwrap hands back both ErrRecordsLocked, which is what a
+// caller matches a refused start on, and the errno the reading was
+// derived from.
+type lockRefusal struct {
+	msg   string
+	errno error
+}
+
+func (e *lockRefusal) Error() string   { return e.msg }
+func (e *lockRefusal) Unwrap() []error { return []error{ErrRecordsLocked, e.errno} }
+
+// lockRefused turns the errno flock returned into the sentence an
+// operator can act on (#950).
+//
+// THE TWO READINGS LEAD TO OPPOSITE ACTIONS, which is why one text for
+// both was a defect rather than a wording preference: a held lock is
+// cleared by disabling whatever holds it, and a mount that cannot lock
+// is not cleared by disabling anything. The errno is the only evidence
+// that separates them at the moment of the refusal.
+//
+// EAGAIN and EOPNOTSUPP each stand for a PAIR: EWOULDBLOCK is the same
+// value as the first on Linux and ENOTSUP the same as the second, so
+// spelling both members is a duplicate case. The test table names all
+// four and goes red on a build that splits a pair.
+//
+// An errno in neither list keeps the generic text and prints the number
+// beside it. Guessing a remedy from an errno we have not thought about
+// is how one text came to cover two causes.
+func lockRefused(path string, err error) error {
+	switch {
+	case errors.Is(err, unix.EAGAIN):
+		return &lockRefusal{
+			msg: fmt.Sprintf("dhcp: another tag of this plugin is enabled and holds the lease record %s; "+
+				"disable it before enabling this one", path),
+			errno: err,
+		}
+	case errors.Is(err, unix.ENOLCK), errors.Is(err, unix.EOPNOTSUPP),
+		errors.Is(err, unix.EINVAL), errors.Is(err, unix.ENOSYS):
+		return &lockRefusal{
+			msg: fmt.Sprintf("dhcp: the filesystem under %s does not support locks; "+
+				"the plugin refuses to start rather than risk two writers", path),
+			errno: err,
+		}
+	default:
+		return &lockRefusal{
+			msg:   fmt.Sprintf("%v (%s): %v", ErrRecordsLocked, path, err),
+			errno: err,
+		}
+	}
+}
 
 // OpenRecords opens or creates the record file at path.
 //
@@ -105,7 +159,7 @@ func OpenRecords(path, instance string) (*Records, error) {
 	}
 	if err := unix.Flock(int(lock.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
 		_ = lock.Close()
-		return nil, fmt.Errorf("%w (%s): %v", ErrRecordsLocked, path, err)
+		return nil, lockRefused(path, err)
 	}
 
 	store, err := dhcpruntime.OpenRecordStore(path)

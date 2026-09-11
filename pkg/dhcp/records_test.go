@@ -14,6 +14,7 @@ import (
 
 	"github.com/claymore666/dhcp-golib/lease"
 	"github.com/claymore666/dhcp-golib/proto"
+	"golang.org/x/sys/unix"
 )
 
 func testRecords(t *testing.T) (*Records, string) {
@@ -71,6 +72,162 @@ func TestRecords_LockIsReleasedOnClose(t *testing.T) {
 		t.Fatalf("the lock outlived its Records: %v", err)
 	}
 	_ = second.Close()
+}
+
+// TestRecords_AHeldLockNamesTheOtherTag is #950 end to end: the refusal
+// an operator actually reads, produced by a real kernel EWOULDBLOCK
+// rather than an injected one.
+//
+// End to end because the classification is worth nothing if OpenRecords
+// does not reach it. This is the only case that ties the two together;
+// the errno table below cannot see a call site that stopped calling.
+func TestRecords_AHeldLockNamesTheOtherTag(t *testing.T) {
+	_, path := testRecords(t)
+
+	second, err := OpenRecords(path, "instance-b")
+	if err == nil {
+		_ = second.Close()
+		t.Fatal("a second writer was admitted to the same record file")
+	}
+	got := err.Error()
+	if !strings.Contains(got, "disable it before enabling this one") {
+		t.Errorf("the refusal does not name the action: %q", got)
+	}
+	if !strings.Contains(got, "another tag of this plugin is enabled") {
+		t.Errorf("the refusal does not name the cause: %q", got)
+	}
+	if strings.Contains(got, "does not support locks") {
+		t.Errorf("a held lock was reported as an unlockable filesystem: %q", got)
+	}
+	if !strings.Contains(got, path) {
+		t.Errorf("the refusal does not name the record file: %q", got)
+	}
+}
+
+// TestRecords_TheLockRefusalReadsTheErrno drives the readings that no
+// filesystem we can reach produces.
+//
+// The errno is injected, and injected is all it can be: EWOULDBLOCK is
+// the only one of these a test can make the kernel return. What each
+// case asserts is the pair -- the sentence it must carry AND the
+// sentence it must not -- because the defect #950 describes is one text
+// standing in for two opposite remedies, and a case that only checks
+// for its own text passes while both arms return the same string.
+//
+// EWOULDBLOCK and EAGAIN are one value on Linux, and so are EOPNOTSUPP
+// and ENOTSUP. They are named separately here and once each in
+// lockRefused: if a build ever splits a pair, this table goes red and
+// the classification is what has to change.
+func TestRecords_TheLockRefusalReadsTheErrno(t *testing.T) {
+	const path = "/state/lease-records.jsonl"
+
+	const (
+		held        = "another tag of this plugin is enabled and holds the lease record"
+		unsupported = "does not support locks"
+		generic     = "already open by another writer"
+	)
+
+	cases := []struct {
+		name    string
+		errno   error
+		want    string
+		notWant []string
+	}{
+		{"EWOULDBLOCK", unix.EWOULDBLOCK, held, []string{unsupported}},
+		{"EAGAIN", unix.EAGAIN, held, []string{unsupported}},
+		{"ENOLCK", unix.ENOLCK, unsupported, []string{held}},
+		{"EOPNOTSUPP", unix.EOPNOTSUPP, unsupported, []string{held}},
+		{"ENOTSUP", unix.ENOTSUP, unsupported, []string{held}},
+		{"EINVAL", unix.EINVAL, unsupported, []string{held}},
+		{"ENOSYS", unix.ENOSYS, unsupported, []string{held}},
+		// Neither reading. The generic text is what ships for an errno
+		// we cannot name, and it ships WITH the errno: a refusal whose
+		// cause we are guessing at must hand the operator the number.
+		{"EINTR", unix.EINTR, generic, []string{held, unsupported}},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			err := lockRefused(path, c.errno)
+			if err == nil {
+				t.Fatal("a failed lock produced no refusal")
+			}
+			got := err.Error()
+			if !strings.Contains(got, c.want) {
+				t.Errorf("refusal for %v does not say %q: %q", c.errno, c.want, got)
+			}
+			for _, nw := range c.notWant {
+				if strings.Contains(got, nw) {
+					t.Errorf("refusal for %v also says %q, which is the other reading: %q", c.errno, nw, got)
+				}
+			}
+			if !strings.Contains(got, path) {
+				t.Errorf("refusal for %v does not name the record file: %q", c.errno, got)
+			}
+			// Both of these are load-bearing for a caller. The
+			// sentinel is what pkg/plugin and any importer matches a
+			// lock refusal on, and nothing else in this repository
+			// reads it, so only this assertion can see it go.
+			if !errors.Is(err, ErrRecordsLocked) {
+				t.Errorf("refusal for %v is not an ErrRecordsLocked", c.errno)
+			}
+			if !errors.Is(err, c.errno) {
+				t.Errorf("refusal for %v dropped the errno", c.errno)
+			}
+		})
+	}
+}
+
+// TestRecords_TheGenericRefusalCarriesTheErrno is the half of the
+// fallback arm the table above states in words: an unnamed errno is
+// printed, not only wrapped, because the operator reading the daemon log
+// has no errors.Is.
+func TestRecords_TheGenericRefusalCarriesTheErrno(t *testing.T) {
+	got := lockRefused("/state/lease-records.jsonl", unix.EINTR).Error()
+	if !strings.Contains(got, unix.EINTR.Error()) {
+		t.Errorf("the generic refusal does not print the errno: %q", got)
+	}
+}
+
+// TestRecords_TheReferenceQuotesTheRefusals holds the operator manual to
+// the three sentences this file produces.
+//
+// The upgrade section of docs/reference.md is where an operator is sent
+// after a failed `docker plugin enable`, and it tells them apart by
+// quoting them. A quote retyped from memory, or left behind when the
+// wording moves, sends the reader looking in the daemon log for a line
+// that is not there -- and no test that reads only Go can see it. The
+// fragments come from lockRefused, so the manual cannot drift from the
+// code without this going red.
+//
+// The path is elided: the sentences carry the record file's path, which
+// this package cannot derive (the state directory is pkg/plugin's), so
+// the quoted path itself is unchecked. That is the bound.
+func TestRecords_TheReferenceQuotesTheRefusals(t *testing.T) {
+	b, err := os.ReadFile(filepath.Join("..", "..", "docs", "reference.md"))
+	if err != nil {
+		t.Fatalf("read the reference: %v", err)
+	}
+	doc := strings.Join(strings.Fields(string(b)), " ")
+
+	const elided = "<the record file>"
+	for _, errno := range []error{unix.EWOULDBLOCK, unix.ENOLCK} {
+		msg := strings.TrimPrefix(lockRefused(elided, errno).Error(), "dhcp: ")
+		for _, part := range strings.Split(msg, elided) {
+			part = strings.Join(strings.Fields(part), " ")
+			if part == "" {
+				continue
+			}
+			if !strings.Contains(doc, part) {
+				t.Errorf("docs/reference.md does not quote %q, which the refusal for %v says", part, errno)
+			}
+		}
+	}
+
+	generic := strings.TrimPrefix(ErrRecordsLocked.Error(), "dhcp: ")
+	if !strings.Contains(doc, generic) {
+		t.Errorf("docs/reference.md does not quote %q, the wording an unrecognised errno keeps", generic)
+	}
 }
 
 // TestRecords_SequenceSurvivesAReopen is the defect a per-process
