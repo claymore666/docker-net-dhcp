@@ -46,7 +46,9 @@ server's configuration was received and discarded ([#815]), and on a
 managed segment the leased address stopped being refreshed and its
 default route disappeared ([#875]). The same release stops the plugin
 sending DHCPRELEASE on any path: an address is held until the lease
-expires, like any other host's ([#800]).
+expires, like any other host's ([#800]). v2.2.0 puts that back under
+the operator's control with `release_lease`, per network and off by
+default ([#962]).
 
 v1.8.0 carried the first human review of the design and its trust
 boundaries ([#457], [#699]), pulled into that release because it is the
@@ -282,6 +284,7 @@ for the next time someone asks.
 [#815]: https://github.com/claymore666/docker-net-dhcp/issues/815
 [#868]: https://github.com/claymore666/docker-net-dhcp/issues/868
 [#875]: https://github.com/claymore666/docker-net-dhcp/issues/875
+[#962]: https://github.com/claymore666/docker-net-dhcp/issues/962
 [#911]: https://github.com/claymore666/docker-net-dhcp/issues/911
 [#111]: https://github.com/claymore666/docker-net-dhcp/issues/111
 [#125]: https://github.com/claymore666/docker-net-dhcp/issues/125

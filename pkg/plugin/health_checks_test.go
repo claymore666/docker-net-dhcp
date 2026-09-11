@@ -62,6 +62,8 @@ func checkBumpers() []checkBumper {
 		{"ledger_write_failures", "", func(p *Plugin) { p.ledgerWriteFailures.Add(1) }},
 		{"state_file_chmod_failures", "", func(p *Plugin) { p.stateFileChmodFailures.Add(1) }},
 		{"ifname_unsupported", "", func(p *Plugin) { p.ifnameUnsupported.Add(1) }},
+		{"release_failures", "ipv4", func(p *Plugin) { p.releaseFailuresV4.Add(1) }},
+		{"release_failures", "ipv6", func(p *Plugin) { p.releaseFailuresV6.Add(1) }},
 	}
 }
 

@@ -828,12 +828,26 @@ type HealthResponse struct {
 	// cleanly when the plugin signalled them at teardown. Not
 	// Healthy-affecting: the endpoint is going away either way.
 	//
-	// It does NOT mean a lease was not handed back. Nothing this plugin
-	// runs sends a DHCPRELEASE — a stopped container's lease expires on
-	// the server's clock, like any other host's (#800). This counter
-	// was called lease_release_failures until v1.9.0, when that stopped
-	// being true.
+	// It does NOT mean a lease was not handed back. Whether a lease
+	// goes back at all is `release_lease`'s question (#962), and on the
+	// default `never` no path sends a DHCPRELEASE: a stopped
+	// container's lease expires on the server's clock, like any other
+	// host's (#800). The counter that answers the release question is
+	// ReleaseFailures. This one was called lease_release_failures until
+	// v1.9.0, when it stopped describing a release at all.
 	ClientStopFailures int32 `json:"client_stop_failures"`
+	// ReleasesSent and ReleaseFailures are the sum of their per-family
+	// halves below (#962), stored the way every other pair is: the
+	// halves are the counters and this is their sum, computed in
+	// healthSnapshot rather than incremented anywhere.
+	//
+	// ReleaseFailures is warn-classified because it names addresses
+	// that are still leased upstream against the operator's stated
+	// intent. It is not Healthy-affecting: nothing on this host is
+	// broken by it, and the outcome is the one a `never` network has
+	// on every teardown.
+	ReleasesSent    int32 `json:"releases_sent"`
+	ReleaseFailures int32 `json:"release_failures"`
 	// NAKsReceived counts server NAKs on renewal/rebind. Not
 	// Healthy-affecting on its own — the client recovers by
 	// re-DISCOVERing — but each NAK-triggered re-bind widens the
@@ -906,6 +920,12 @@ type HealthResponse struct {
 	NAKsReceivedV4       int32 `json:"naks_received_v4"`
 	// ClientStopFailuresV4 is the v4 half of ClientStopFailures.
 	ClientStopFailuresV4 int32 `json:"client_stop_failures_v4"`
+	// ReleasesSentV4 and ReleaseFailuresV4 are the `release_lease`
+	// pair for IPv4 (#962): DHCPRELEASE messages that left the host,
+	// and attempts that produced none. Both stay at zero on a network
+	// that does not set the option, which is every network by default.
+	ReleasesSentV4    int32 `json:"releases_sent_v4"`
+	ReleaseFailuresV4 int32 `json:"release_failures_v4"`
 	// AddressConflictsV4 is the RFC 5227 half of AddressConflicts, and
 	// it is the ONLY half that may be compared against ACDProbesSent
 	// and ACDConflictsDetected: those two count ARP, which no DHCPv6
@@ -951,6 +971,13 @@ type HealthResponse struct {
 	// shut down cleanly when the plugin signalled it. No release is
 	// involved — since #800 nothing this plugin runs sends one.
 	ClientStopFailuresV6 int32 `json:"client_stop_failures_v6"`
+	// ReleasesSentV6 and ReleaseFailuresV6 are the same pair for
+	// DHCPv6 Release messages (RFC 9915 section 18.2.7). Read them per
+	// family and never as a sum: a dual-stack endpoint that handed its
+	// v4 address back and could not hand its v6 one back is the case
+	// the split exists to make visible.
+	ReleasesSentV6    int32 `json:"releases_sent_v6"`
+	ReleaseFailuresV6 int32 `json:"release_failures_v6"`
 	// DHCPv6ConfigOnly counts DHCPv6 information replies -- address-less
 	// configuration from a network advertising the RA "other config"
 	// flag (#815). NOT healthy-affecting: it is a normal exchange on a
@@ -1031,6 +1058,7 @@ func (p *Plugin) checkStamps() map[string]time.Time {
 		"ledger_write_failures":     p.ledgerWriteFailures.LastMoved(),
 		"state_file_chmod_failures": p.stateFileChmodFailures.LastMoved(),
 		"ifname_unsupported":        p.ifnameUnsupported.LastMoved(),
+		"release_failures":          laterOf(p.releaseFailuresV4.LastMoved(), p.releaseFailuresV6.LastMoved()),
 	}
 }
 
@@ -1099,6 +1127,10 @@ func (p *Plugin) healthSnapshot() HealthResponse {
 	naksReceivedV6 := p.naksReceivedV6.Load()
 	clientStopFailuresV4 := p.clientStopFailuresV4.Load()
 	clientStopFailuresV6 := p.clientStopFailuresV6.Load()
+	releasesSentV4 := p.releasesSentV4.Load()
+	releasesSentV6 := p.releasesSentV6.Load()
+	releaseFailuresV4 := p.releaseFailuresV4.Load()
+	releaseFailuresV6 := p.releaseFailuresV6.Load()
 
 	now := time.Now()
 	h := HealthResponse{
@@ -1189,6 +1221,8 @@ func (p *Plugin) healthSnapshot() HealthResponse {
 		DHCPServerPolicyTimeouts:     p.dhcpServerPolicyTimeouts.Load(),
 		DHCPTimeouts:                 dhcpTimeoutsV4 + dhcpTimeoutsV6,
 		ClientStopFailures:           clientStopFailuresV4 + clientStopFailuresV6,
+		ReleasesSent:                 releasesSentV4 + releasesSentV6,
+		ReleaseFailures:              releaseFailuresV4 + releaseFailuresV6,
 		NAKsReceived:                 naksReceivedV4 + naksReceivedV6,
 		DisplacedStops:               p.displacedStopsTotal.Load(),
 		ParentLinkWaits:              p.parentLinkWaits.Load(),
@@ -1203,6 +1237,8 @@ func (p *Plugin) healthSnapshot() HealthResponse {
 		DHCPTimeoutsV4:               dhcpTimeoutsV4,
 		NAKsReceivedV4:               naksReceivedV4,
 		ClientStopFailuresV4:         clientStopFailuresV4,
+		ReleasesSentV4:               releasesSentV4,
+		ReleaseFailuresV4:            releaseFailuresV4,
 		LeaseChangedV6:               leaseChangedV6,
 		LeasesObtainedV6:             leasesObtainedV6,
 		LeasesRenewedV6:              leasesRenewedV6,
@@ -1210,6 +1246,8 @@ func (p *Plugin) healthSnapshot() HealthResponse {
 		DHCPTimeoutsV6:               dhcpTimeoutsV6,
 		NAKsReceivedV6:               naksReceivedV6,
 		ClientStopFailuresV6:         clientStopFailuresV6,
+		ReleasesSentV6:               releasesSentV6,
+		ReleaseFailuresV6:            releaseFailuresV6,
 		DHCPv6ConfigOnly:             p.dhcpv6ConfigOnly.Load(),
 		DHCPv6NotOffered:             p.dhcpv6NotOffered.Load(),
 		DHCPv6NoRouterAdvert:         p.dhcpv6NoRouterAdvert.Load(),

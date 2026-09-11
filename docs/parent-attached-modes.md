@@ -82,9 +82,12 @@ docker inspect app | jq '.[0].NetworkSettings.Networks'
    plugin process and never a child process, and it never configures the
    link itself: the plugin applies every lease change via netlink.
 6. On `docker stop`, libnetwork calls `Leave` → the persistent client is
-   stopped. It does **not** release the lease: the address stays leased
-   until it expires, or until the container comes back and re-claims it,
-   exactly as it would for a physical host that rebooted (v1.9.0+, #800).
+   stopped. By default it does **not** release the lease: the address
+   stays leased until it expires, or until the container comes back and
+   re-claims it, exactly as it would for a physical host that rebooted
+   (v1.9.0+, #800). A network created with `release_lease=on_stop` hands
+   it back here instead, and gives up the stable MAC and address across
+   a restart to do so (v2.2.0+, #962).
 7. The macvlan link is reaped automatically when the container netns is
    destroyed.
 

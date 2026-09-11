@@ -330,8 +330,9 @@ this is the mechanism.
 
 ## How a lease gets handed back
 
-It does not. Nothing this plugin runs ever sends a `DHCPRELEASE`, and
-that is deliberate as of v1.9.0 (#800).
+By default it does not, and that is deliberate as of v1.9.0 (#800). A
+network that says `release_lease=on_stop` is the exception, and the
+whole of it (#962).
 
 A lease is a lease. When a container stops, its address stays leased
 until the lease expires, and if the container comes back before then it
@@ -340,15 +341,42 @@ and exactly what happens when a physical host on the segment reboots or
 loses power. A container is a host on this segment and costs the server
 what one costs.
 
-Neither client releases. The `CreateEndpoint` one-shot ends by
-cancelling its own manager, which drops the lease locally with
-`ReasonStopped` and sends nothing. The record carries the lease to the
-persistent client that takes over moments later, which resumes it as
-INIT-REBOOT instead of discovering afresh. The persistent client is
-stopped at `Leave` and keeps the address for the container that may be
-about to restart. A stop is this process's own shutdown reported back to
-it, which is why nothing counts it as a lease loss: doing so would
-report one for every container that started successfully.
+On a default network neither client releases. The `CreateEndpoint`
+one-shot ends by cancelling its own manager, which drops the lease
+locally with `ReasonStopped` and sends nothing. The record carries the
+lease to the persistent client that takes over moments later, which
+resumes it as INIT-REBOOT instead of discovering afresh. The persistent
+client is stopped at `Leave` and keeps the address for the container
+that may be about to restart. A stop is this process's own shutdown
+reported back to it, which is why nothing counts it as a lease loss:
+doing so would report one for every container that started
+successfully.
+
+**What `release_lease=on_stop` changes.** At `Leave`, and only there,
+the endpoint's own running client hands its lease back: a `DHCPRELEASE`
+(RFC 2131 section 4.4.6) for IPv4 and a `Release` (RFC 9915 section
+18.2.7) for IPv6. The v6 address comes off the container link first,
+which section 18.2.7 requires before the exchange may begin; if it
+cannot be removed, nothing is sent and the address expires on the
+server's clock instead.
+
+Everything else about that teardown follows from the address being
+gone. The record is `CLOSED` rather than `LEFT`, per family, so the next
+start cannot resume an address the server has already put back in its
+pool. No tombstone is laid, so no other container inherits the MAC and
+the addresses beside it. The tombstone is one object carrying both
+families' addresses, so either family releasing suppresses it, while the
+record of a family whose release did not happen is retained exactly as
+under `never` and stays resumable. `releases_sent` counts what left the host and
+`release_failures` counts attempts that put nothing on the wire, both
+split per family; `release_failures` is folded from the library's own
+send counter, never from the decision to release.
+
+`Leave` is the only path that releases. `Plugin.Close`, a manager
+displaced by a newer one for the same endpoint, and the cleanup after
+`docker network rm` all stop clients whose containers are still
+running, and a release there would tell the server an address is free
+while a live container holds it.
 
 **Why this changed.** Up to v1.8.x the plugin released aggressively. The
 external client emitted a `RELEASE` on a graceful stop, and a background
@@ -372,6 +400,12 @@ manufactured by the plugin itself. Waiting for expiry has no such
 failure mode, so the whole mechanism went: the release itself, the
 reclaim, and the `orphaned_leases_released` and
 `orphaned_lease_release_failures` counters that measured it.
+
+`release_lease=on_stop` does not bring that mechanism back. What it
+sends comes from the endpoint's own live client, inside the container's
+sandbox, before anything is torn down, and the tombstone it would have
+raced is not written at all for an endpoint that released. The
+background reclaim and its synthesised link stay gone.
 
 The surviving teardown counter was renamed to match: what was
 `lease_release_failures` is now `client_stop_failures`, because a client

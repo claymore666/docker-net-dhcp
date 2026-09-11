@@ -148,8 +148,9 @@ func TestRecovery_DaemonRestart_PreservesContainer(t *testing.T) {
 	// event (leases_obtained) before pulling the daemon down.
 	//
 	// The mechanism written here until #800 was that no client existed
-	// to RELEASE the lease on shutdown. That is now false outright:
-	// nothing this plugin runs sends a DHCPRELEASE, on any path. What
+	// to RELEASE the lease on shutdown. That is now false for this
+	// network: it does not set release_lease, so no path sends a
+	// DHCPRELEASE for it (#962). What
 	// survives is the window itself — an endpoint whose Join has not
 	// finished is not the steady state this test is about — so the wait
 	// stays. Whether it is still LOAD-BEARING has not been re-measured

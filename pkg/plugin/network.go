@@ -130,6 +130,12 @@ func validateModeOptions(opts DHCPNetworkOptions) error {
 		return fmt.Errorf("%w: %v", util.ErrIPAM, err)
 	}
 
+	// Whether this network hands leases back (#962). Mode-independent:
+	// a release is a DHCP message and every mode sends DHCP.
+	if _, err := parseReleaseLease(opts.ReleaseLease); err != nil {
+		return err
+	}
+
 	switch opts.effectiveMode() {
 	case ModeMacvlan, ModeIPvlan:
 		if opts.Parent == "" {
@@ -777,6 +783,27 @@ func (p *Plugin) checkStoredOptions(id string, opts DHCPNetworkOptions) error {
 		return fmt.Errorf("stored mode %q is not one this plugin implements: %w", m, util.ErrInvalidMode)
 	}
 
+	// The stored release_lease, on the read path for the reason the
+	// names above are on it: a network created before this option
+	// existed replays its stored record on every endpoint call, and so
+	// does one whose record was written by hand. A value this plugin
+	// does not implement must not resolve to "no release" by accident,
+	// because the two answers are "the address stays leased" and "the
+	// address goes back", and picking the wrong one silently is the
+	// whole of what this refusal prevents.
+	//
+	// DeleteEndpoint is unaffected: it reads the mode through netMode
+	// and no other stored field, so a network refused here still tears
+	// its endpoints down.
+	if _, err := parseReleaseLease(opts.ReleaseLease); err != nil {
+		p.networkOptionsRejected.Add(1)
+		log.WithFields(log.Fields{
+			"network": shortID(id),
+			"value":   fmt.Sprintf("%q", opts.ReleaseLease),
+		}).Error("Refusing stored network options: release_lease is not a value this plugin implements")
+		return err
+	}
+
 	for _, f := range []struct{ field, name string }{
 		{"bridge", opts.Bridge},
 		{"parent", opts.Parent},
@@ -1351,8 +1378,34 @@ func (p *Plugin) DeleteEndpoint(ctx context.Context, r DeleteEndpointRequest) er
 	// that this one container does not keep its MAC across a restart,
 	// which is the correct price for a hostname the plugin would not
 	// put in a DHCP packet.
+	// A RELEASED ENDPOINT LEAVES NOTHING BEHIND, and it is the third
+	// skip on the same list rather than a new mechanism (#962). The two
+	// above are about whether the next container may INHERIT this MAC;
+	// this one is about whether the addresses beside it are still ours
+	// to hand over. They are not: `release_lease=on_stop` gave them
+	// back, the server has put them in its pool, and a tombstone would
+	// have the next container ask for an address that may by then
+	// belong to somebody else -- which is #524's duplicate assignment
+	// with the plugin's own fingerprints on it.
+	//
+	// It does NOT skip the record's tombstone phase, and that asymmetry
+	// is the point. The tombstone is one object carrying both families'
+	// addresses, so either family releasing makes the whole of it
+	// unsafe to hand on; a record is per family. The record of a family
+	// that released is already CLOSED -- Leave writes the phase from
+	// what actually left the host -- and a CLOSED record is not a
+	// record retainRecordFor can find, because Resume walks past it. So
+	// the released family needs no guard here and the family that did
+	// NOT release gets exactly the tombstone phase it would get under
+	// `never`, which is what keeps its lease resumable.
 	if fp, ok := p.takeEndpoint(r.EndpointID); ok {
-		if modeKnown && mode != ModeIPvlan && !fp.HostnameRefused {
+		if fp.Released {
+			log.WithFields(log.Fields{
+				"network":  shortID(r.NetworkID),
+				"endpoint": shortID(r.EndpointID),
+			}).Info("Endpoint released its lease at Leave; laying no tombstone for it")
+		}
+		if modeKnown && mode != ModeIPvlan && !fp.HostnameRefused && !fp.Released {
 			p.addTombstone(r.NetworkID, fp.Hostname, fp.MAC, fp.IPv4, fp.IPv6)
 		}
 		// RETAINED, on every mode and every hostname decision, which is
@@ -2016,14 +2069,32 @@ func (p *Plugin) Leave(ctx context.Context, r LeaveRequest) error {
 	// LEFT: the manager stopped and the last lease snapshot stays.
 	// Written on the error path too, because what it records is that
 	// no manager is renewing this lease any more, and that is true
-	// whether the stop was clean or wedged. NO RELEASE goes on the
-	// wire (D-7, #800) — the address is left to expire on the server's
-	// clock, exactly as any other host on the segment leaves it.
-	p.recordLeft(manager.recordID)
+	// whether the stop was clean or wedged. Under `release_lease=never`
+	// — the default, and v1.9.0's rule (D-7, #800) — no release goes on
+	// the wire and the address is left to expire on the server's clock,
+	// exactly as any other host on the segment leaves it.
+	//
+	// CLOSED instead, for a family whose lease WAS handed back (#962).
+	// A record that survives as re-bindable is an INIT-REBOOT on the
+	// next start naming an address the server has already put back in
+	// its pool, and by then it may belong to somebody else. The phase
+	// is decided per family, from what actually left the host: a v6
+	// release that failed leaves a v6 lease this endpoint still holds
+	// and may still resume.
 	// The v6 record is a second record and needs the same statement:
 	// leaving one JOINED while the other goes LEFT would make the next
 	// restart resume a manager the fold says is still running.
-	p.recordLeft(manager.recordID6)
+	p.settleReleasedRecord(manager.recordID, manager.releasedV4.Load())
+	p.settleReleasedRecord(manager.recordID6, manager.releasedV6.Load())
+	if manager.releasedAny() {
+		// The tombstone is ONE object carrying the MAC and both
+		// addresses, so it is skipped whenever either family released.
+		// Marked here rather than decided again at DeleteEndpoint:
+		// that handler reads no network options by design (netMode's
+		// comment), and a second derivation of the same decision is
+		// where the two would come apart.
+		p.markEndpointReleased(r.EndpointID)
+	}
 
 	// Refresh the endpoint fingerprint with the most recent v4/v6 IPs
 	// the persistent client saw, *whether or not Stop succeeded*. Stop

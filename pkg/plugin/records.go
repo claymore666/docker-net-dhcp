@@ -223,6 +223,24 @@ func (p *Plugin) recordLeft(id string) {
 	}
 }
 
+// settleReleasedRecord writes the teardown phase of one family's
+// record: CLOSED when its lease was handed back, LEFT when it was not.
+//
+// ONE FUNCTION FOR BOTH ANSWERS so the two cannot be written at
+// different call sites and drift. CLOSED is the right phase for a
+// released lease for the reason closeRecord gives for an abandoned one:
+// the record answers no lookup any more. There is a difference worth
+// stating -- closeRecord's record never had an address, and this one
+// had it and gave it back -- and it makes no difference to what the
+// record must now do, which is nothing (#962).
+func (p *Plugin) settleReleasedRecord(id string, released bool) {
+	if released {
+		p.closeRecord(id)
+		return
+	}
+	p.recordLeft(id)
+}
+
 // retainRecordFor lays the tombstone on the record for one identity.
 //
 // The deadline is the tombstone store's own TTL, from now. It is the

@@ -28,9 +28,13 @@ Aug 20 11:04:22 dnsmasq-dhcp[1]: DHCPACK(dh-itest-mv) 192.168.99.35 12:2a:92:35:
 // TestLeaseRetention_NothingEverReleases, and it has to live here
 // because that test can no longer produce its own.
 //
-// Since #800 nothing this plugin runs sends a DHCPRELEASE, so the
-// integration test asserts an absence with no way to demonstrate that
-// the matcher would notice a presence. That is the shape where a
+// Since #800 nothing sends a DHCPRELEASE on a network that does not set
+// release_lease, and that test's network does not, so it asserts an
+// absence with no way to demonstrate that the matcher would notice a
+// presence. (A releasing network does produce one, and
+// TestReleaseLease_OnStopHandsTheAddressBack reads it -- but a control
+// that needs the whole integration lane to run is not a control this
+// test can rely on.) That is the shape where a
 // silently broken check reads exactly like a clean tree: CountLogLines
 // returns 0 for a log it cannot read, for a log with no releases, and
 // for a matcher that stopped recognising the token — three very

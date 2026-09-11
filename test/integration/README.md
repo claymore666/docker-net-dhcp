@@ -202,7 +202,9 @@ they prove:
 - `join_no_container_test.go` — an attach that fails because no
   container ever claimed the endpoint leaves the address leased
   upstream until it expires, and sends no DHCPRELEASE (#800; the file
-  covered the opposite behaviour for #566 before that). The Join is
+  covered the opposite behaviour for #566 before that). No `Leave`
+  runs for such an endpoint, so `release_lease` cannot reach it either
+  (#962). The Join is
   issued against a genuinely live sandbox, so "nobody holds this
   endpoint" is the only branch that can answer. It also asserts no
   `dh-rel-*` link is on the host — the removed reclaim's fingerprint,

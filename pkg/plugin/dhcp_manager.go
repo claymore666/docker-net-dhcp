@@ -48,7 +48,10 @@ const dhcpClientReapTimeout = 5 * time.Second
 // client to unwind and return.
 //
 // Two things it no longer covers, in the order they went. Before #800 it
-// covered a DHCPRELEASE round trip; the client has nothing to send. And
+// covered a DHCPRELEASE round trip; a release now happens before this
+// wait begins, on its own budget, and only on a `release_lease=on_stop`
+// network (#962), so by the time Stop waits the client has nothing to
+// send. And
 // it once bounded a SIGTERM to a dhcpcd child and that child's own
 // teardown — dropping the address, closing its lease file, reaping its
 // own children. There is no child: the client is a goroutine and a
@@ -348,6 +351,34 @@ type dhcpManager struct {
 	// TestHealthClient_IsPublishedOnlyForV4 holds the guard at the one
 	// call site and docs/reference.md states the bound on the row.
 	clientV4 endpointClient
+
+	// releaseV4 / releaseV6 are the two persistent clients seen through
+	// the only two methods `release_lease=on_stop` needs: ask for the
+	// lease back, and read whether a packet left (#962).
+	//
+	// BOTH FAMILIES, unlike clientV4 beside them. The health document
+	// describes one endpoint and picks the v4 client to describe it
+	// with; a release is owed by whichever family holds a lease, and a
+	// field for one of them is the "v6 half missing" defeat row built
+	// into the type.
+	//
+	// Under ipMu, written in setupClient and read in stop after
+	// startedCh has closed.
+	releaseV4 releasingClient
+	releaseV6 releasingClient
+
+	// releasedV4 / releasedV6 record that this endpoint's lease was
+	// actually handed back, so Leave can close the record instead of
+	// leaving it re-bindable and DeleteEndpoint can decline to lay a
+	// tombstone for an address that is no longer ours.
+	//
+	// WRITTEN FROM THE OUTCOME, NOT FROM THE OPTION. A network set to
+	// release whose release did not leave the host still holds its
+	// lease upstream, and a tombstone skipped on the option alone would
+	// throw away restart stability for an endpoint that released
+	// nothing.
+	releasedV4 atomic.Bool
+	releasedV6 atomic.Bool
 }
 
 func newDHCPManager(docker dockerClient, r JoinRequest, opts DHCPNetworkOptions) *dhcpManager {
@@ -1384,6 +1415,11 @@ func (m *dhcpManager) setupClient(v6 bool) (chan error, error) {
 	if !v6 {
 		m.setHealthClient(client)
 	}
+	// BOTH FAMILIES, and before Start: a client that fails to start
+	// still has to be asked for its lease back, because the one-shot's
+	// lease is outstanding either way and the attempt is what the
+	// failure counter counts.
+	m.setReleaseClient(v6, client)
 
 	events, err := client.Start()
 	if err != nil {
@@ -1867,6 +1903,27 @@ func (m *dhcpManager) stop(leaving bool) error {
 					"other host on the segment")
 		}
 		return nil
+	}
+
+	// THE RELEASE, AND THE `leaving` ARM IS THE WHOLE GUARD ON IT
+	// (#962). Plugin.Close, a manager displaced by a newer one for the
+	// same endpoint, and the cleanup that follows `docker network rm`
+	// all arrive here through Stop, with leaving false and their
+	// containers still running: releasing there tells the server an
+	// address is free while a live container holds it, which is the
+	// duplicate assignment #524 added detection for, manufactured by
+	// the plugin. TestReleaseLease_StopDoesNotRelease drives that arm
+	// under a network that DOES release, which is the only shape where
+	// the guard can be seen to do anything.
+	//
+	// Before close(m.stopChan) and before the clients are drained,
+	// because a release is something a RUNNING client does: the socket
+	// is open, the machine holds the binding, and the identity on the
+	// wire is the one the server filed the lease under.
+	if leaving && m.opts.releasesOnStop() {
+		releasedV4, releasedV6 := m.releaseHeldLeases()
+		m.releasedV4.Store(releasedV4)
+		m.releasedV6.Store(releasedV6)
 	}
 
 	// Guard against zero handles: Stop can be called against a manager

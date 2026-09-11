@@ -72,6 +72,26 @@
 #              counter wait and a log grown over a shard. The first run
 #              that executes it costs it, the way
 #              TestFailure_UnansweredRenewalsCounted was costed.
+#   four rows  The four TestReleaseLease_* rows are INFERRED, not
+#              measured: #962 adds them and no run has executed them.
+#              TestReleaseLease_TheOptionIsRefusedAtCreateOrItIsNot is
+#              0.10 -- four network creates and no container, which is
+#              the shape of TestIPv6_AcceptedAtCreate (0.02) four times
+#              over, rounded up for the two that are refused after the
+#              option is parsed. TestReleaseLease_OnStopHandsTheAddressBack
+#              is 24.00: one network, one container, a stop that waits
+#              for the server's lease DB to drop the entry, and a start
+#              that waits for a fresh address -- the shape of
+#              TestTombstoneRestart_PreservesMACAndIP (20.39) plus room
+#              for the release wait.
+#              TestReleaseLease_DefaultNetworksStillKeepTheirAddresses
+#              is 26.00: the same walk plus the 5s settle it spends
+#              proving an absence. TestReleaseLease_OnStopHandsTheV6AddressBackToo
+#              is 32.00, the dual-stack version of the first, sized off
+#              TestTombstoneRestart_PreservesIPv6 (27.17) the way that
+#              row sits above its v4 twin. The first run that executes
+#              each costs it, the way TestFailure_UnansweredRenewalsCounted
+#              was costed.
 #   samples    3 for every corpus row; the four rows noted above are
 #              the exceptions, and two of those four are inferred rather
 #              than measured. The previous edition carried four inferred
@@ -222,6 +242,10 @@ TestPreflightProbe_RejectedInBridgeMode	0.01
 TestRecovery_DaemonKilled_LeaseIsHeldUntilItExpires	31.98
 TestRecovery_DaemonRestart_PreservesContainer	30.00
 TestRecovery_PluginDisableEnable_PreservesEndpoint	12.86
+TestReleaseLease_DefaultNetworksStillKeepTheirAddresses	26.00
+TestReleaseLease_OnStopHandsTheAddressBack	24.00
+TestReleaseLease_OnStopHandsTheV6AddressBackToo	32.00
+TestReleaseLease_TheOptionIsRefusedAtCreateOrItIsNot	0.10
 TestSandboxKeyRoute_Bridge	11.89
 TestSandboxKeyRoute_Ipvlan	11.60
 TestSandboxKeyRoute_Macvlan	12.25
