@@ -17,8 +17,16 @@ name: Docs site
 #   - workflow_dispatch         → re-publish docs for an existing tag, or, with
 #                                 no input, the current dev
 #
-# Pull requests touching the docs only get a `mkdocs build --strict` check —
-# they never publish. actionlint gates this file like every other workflow.
+# Every pull request into dev or main gets a `mkdocs build --strict` check
+# under the job name `docs-site`; they never publish. actionlint gates this
+# file like every other workflow.
+#
+# THAT JOB CARRIES NO PATH FILTER, and that is what makes it usable as a
+# required context (#889). A required check that is path-filtered is ABSENT
+# on every pull request the filter excludes, and an absent required check
+# does not pass, it blocks: the merge button stays grey with nothing red to
+# fix. The cost of the other direction is one pip install and one mkdocs
+# build on pull requests that touch no docs, which is under two minutes.
 #
 # One-time setup (maintainer, after the first run creates gh-pages):
 #   Settings → Pages → Build and deployment → Source = "Deploy from a branch",
@@ -28,10 +36,7 @@ on:
     branches: [dev]
     tags: ["v*"]
   pull_request:
-    paths:
-      - docs/**
-      - mkdocs.yml
-      - .github/workflows/pages.yml
+    branches: [dev, main]
   workflow_dispatch:
     inputs:
       tag:
@@ -43,19 +48,36 @@ on:
 permissions:
   contents: read
 
-# Serialise deploys so concurrent runs don't race on the gh-pages branch.
-# Don't cancel an in-flight deploy mid-push — let it finish cleanly.
-concurrency:
-  group: docs-site
-  cancel-in-progress: false
+# Concurrency is PER JOB, not per workflow, because the two jobs need
+# opposite things and a workflow-level group gives them one (#889).
+#
+# The group used to be the single string `docs-site` with
+# cancel-in-progress false, which serialised EVERY run of this workflow
+# against every other: two pull requests pushed a minute apart, or one
+# pushed while a dev merge was deploying, and the second pull request's
+# `docs-site` check sat queued behind a deploy it has nothing to do with.
+# That is a required context held in flight by an unrelated run.
+#
+# So the deploy keeps the serialisation it was written for, and the build
+# gets its own group keyed by ref: two refs never wait on each other, and a
+# new push to one ref cancels its own superseded build, whose verdict is
+# about a SHA nothing will merge.
 
 jobs:
   # Always-on validation: the site must build cleanly (no broken internal
   # links, no bad config) before anything is published. This is the only
   # job that runs on pull requests.
+  #
+  # The NAME is the context string branch protection requires, so it is
+  # spelled once here and must not drift: `build` alone said nothing about
+  # which workflow produced it.
   build:
+    name: docs-site
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    concurrency:
+      group: docs-build-${{ github.ref }}
+      cancel-in-progress: true
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -75,6 +97,11 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    # One deploy at a time, and never cancelled mid-push: mike rewrites the
+    # gh-pages branch, and two of those racing is the hazard this guards.
+    concurrency:
+      group: docs-site-deploy
+      cancel-in-progress: false
     permissions:
       contents: write # mike commits + pushes the built site to gh-pages
     steps:
