@@ -92,6 +92,12 @@ remedy. [#417] and [#403] take the attach into the container's network
 namespace and find its link before any Docker call, and publish the
 durations the attach spends in each phase.
 
+Three more on the milestone change nothing a user sees. [#889] makes
+the documentation site a required check, so a broken navigation cannot
+merge green. [#942] takes the hosted cross-check green in the three
+families it ran red in. [#963] stops a gate self-test from building its
+fixture inside the checkout when its temporary directory is missing.
+
 **[v2.2.0](https://github.com/claymore666/docker-net-dhcp/milestone/29)**
 is mostly IPv6. [#818] and [#808] acquire an address by SLAAC, [#821]
 takes the gateway, DNS, MTU and routes from the advertisement, [#819]
@@ -287,7 +293,10 @@ for the next time someone asks.
 [#961]: https://github.com/claymore666/docker-net-dhcp/issues/961
 [#962]: https://github.com/claymore666/docker-net-dhcp/issues/962
 [#670]: https://github.com/claymore666/docker-net-dhcp/issues/670
+[#889]: https://github.com/claymore666/docker-net-dhcp/issues/889
 [#940]: https://github.com/claymore666/docker-net-dhcp/issues/940
+[#942]: https://github.com/claymore666/docker-net-dhcp/issues/942
+[#963]: https://github.com/claymore666/docker-net-dhcp/issues/963
 [#950]: https://github.com/claymore666/docker-net-dhcp/issues/950
 [#417]: https://github.com/claymore666/docker-net-dhcp/issues/417
 [#214]: https://github.com/claymore666/docker-net-dhcp/issues/214
