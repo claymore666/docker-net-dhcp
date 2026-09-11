@@ -532,6 +532,13 @@ func familyPairs() []familyPair {
 			func(h HealthResponse) (int32, int32, int32) {
 				return h.LeasesRenewed, h.LeasesRenewedV4, h.LeasesRenewedV6
 			}},
+		{"net_dhcp_renewals_unanswered_total",
+			func(p *Plugin) (intCounter, intCounter) {
+				return &p.renewalsUnansweredV4, &p.renewalsUnansweredV6
+			},
+			func(h HealthResponse) (int32, int32, int32) {
+				return h.RenewalsUnanswered, h.RenewalsUnansweredV4, h.RenewalsUnansweredV6
+			}},
 		{"net_dhcp_dhcp_timeouts_total",
 			func(p *Plugin) (intCounter, intCounter) { return &p.dhcpTimeoutsV4, &p.dhcpTimeoutsV6 },
 			func(h HealthResponse) (int32, int32, int32) {

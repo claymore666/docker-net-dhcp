@@ -41,6 +41,11 @@ net_dhcp_leases_renewed_total{family="ipv6"} 8205822
 net_dhcp_lease_changed_total{family="ipv4"} 7219253
 net_dhcp_lease_changed_total{family="ipv6"} 9664015
 
+# HELP net_dhcp_renewals_unanswered_total Renewal requests the server did not answer, one per request, counted while the client is still running. Read it against leases_renewed: renewals completing with this flat is a healthy lease, and this climbing with leases_renewed flat is a DHCP server that has gone quiet. It moves at the first retransmission, minutes after the silence starts, where dhcp_timeouts first moves for a held lease at the end of the lease. The request currently in flight is not counted, so a client that has sent N requests into silence reports N-1.
+# TYPE net_dhcp_renewals_unanswered_total counter
+net_dhcp_renewals_unanswered_total{family="ipv4"} 2359982
+net_dhcp_renewals_unanswered_total{family="ipv6"} 4804744
+
 # HELP net_dhcp_dhcp_timeouts_total Acquisitions or renewals that expired without an answer.
 # TYPE net_dhcp_dhcp_timeouts_total counter
 net_dhcp_dhcp_timeouts_total{family="ipv4"} 7428680

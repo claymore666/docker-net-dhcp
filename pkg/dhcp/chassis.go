@@ -188,6 +188,30 @@ type DHCPClientOptions struct {
 	// nil is the unit-test and probe shape.
 	OnACDStats func(ACDStats)
 
+	// OnRenewalStats is called with the GAIN in this manager's count of
+	// renewal requests that went unanswered, from the manager's own
+	// goroutine.
+	//
+	// A GAIN and not a total, for the reason OnACDStats gives: the
+	// plugin's counters are monotonic across every manager that ever
+	// ran, and a manager that exits takes its snapshot with it.
+	//
+	// IT IS FED FROM A TIMER AS WELL AS FROM THE EVENTS, and that is
+	// the whole of #940. A renewal request is sent from the library's
+	// retransmission timer and produces no lease event, so a counter
+	// folded on events alone reads zero for the entire outage and
+	// first moves when the lease expires -- MEASURED on a production
+	// host over a 24 hour lease, four renewal requests across 7h52m
+	// with dhcp_timeouts at 0 and nothing in the log. See translate.
+	//
+	// WIRED ON THE PERSISTENT CLIENT ONLY. GetIP's one-shot acquires
+	// and returns; it holds no lease to renew, so a fold there could
+	// only add a second writer to a counter about renewals for a path
+	// that has none.
+	//
+	// nil is the unit-test and probe shape.
+	OnRenewalStats func(RenewalStats)
+
 	// Resume is a lease this identity held in a previous run of the
 	// plugin. Supplying it makes the first message on the wire an
 	// INIT-REBOOT DHCPREQUEST (RFC 2131 section 4.4.2) instead of a
@@ -593,6 +617,29 @@ type DHCPClient struct {
 	events  chan Event
 	manager string
 
+	// runner is the family-independent half of whichever of the two
+	// clients above was built, taken once in Start.
+	//
+	// Stats() reads it rather than switching on the family again,
+	// because the counters are the one thing both families answer
+	// identically and a second switch is a second place for the
+	// families to drift apart. It is also what lets the renewal fold
+	// be driven with no socket: a test can supply a libClient whose
+	// Stats() it controls, which is the only way to place a
+	// retransmission on this side of the seam without a wire.
+	runner libClient
+
+	// renewals turns the library's two renewal counters into the
+	// unanswered-request count. Touched from the translate goroutine
+	// and from nowhere else.
+	renewals renewalWatch
+
+	// pollEvery is how often translate folds the counters with no event
+	// to ride on. Zero means renewalPollInterval, which is what
+	// production runs; a test sets it so a retransmission can be
+	// observed without waiting out RFC 2131's floor.
+	pollEvery time.Duration
+
 	// src is the library's event stream, taken once in Start. translate
 	// ranges over THIS rather than over c.client.Events() so that the
 	// goroutine can be driven without a socket: the wedge this field
@@ -694,6 +741,8 @@ func (c *DHCPClient) Start() (chan Event, error) {
 		c.manager = c.opts.Records.NewManagerID()
 	}
 
+	c.runner = runner
+
 	ctx, cancel := context.WithCancel(context.Background())
 	c.cancel = cancel
 	c.done = make(chan error, 1)
@@ -741,11 +790,42 @@ func (c *DHCPClient) translate() {
 	defer func() {
 		final := c.Stats()
 		c.opts.acdReport(final)
+		c.renewals.report(final, c.opts.OnRenewalStats)
 		c.opts.count(c.manager, final)
 	}()
 
+	// THE FOLD RUNS ON A TIMER AND NOT ONLY ON AN EVENT (#940).
+	//
+	// A renewal request leaves the host from the library's
+	// retransmission timer, and a renewal that is not answered produces
+	// no lease event at all: the state machine stays in RENEWING and
+	// asks again. Every counter this loop folds on the event arm is
+	// therefore frozen for the whole of an outage, and the first thing
+	// that moves is dhcp_timeouts, at the end of the lease -- 24 hours
+	// after the server went quiet, on a 24 hour lease. acdReport
+	// carries the same defect in the other direction and says so: a
+	// probe run with no later event stayed unreported for 19h52m,
+	// MEASURED on a production host.
+	//
+	// So the tick is not a convenience. It is the only thing that makes
+	// "the server stopped answering" observable while the client is
+	// still holding a perfectly good address.
+	poll := time.NewTicker(c.renewalPoll())
+	defer poll.Stop()
+
 	renewedAt := time.Time{}
-	for ev := range c.src {
+	for {
+		var ev lease.Event
+		select {
+		case <-poll.C:
+			c.renewals.report(c.Stats(), c.opts.OnRenewalStats)
+			continue
+		case e, ok := <-c.src:
+			if !ok {
+				return
+			}
+			ev = e
+		}
 		now := time.Now()
 		// BEFORE the record is written, so a second restart still finds
 		// the resolver in it; see carryResumedConfig6.
@@ -756,6 +836,7 @@ func (c *DHCPClient) translate() {
 		// of which the record may lose.
 		c.opts.record(ev)
 		c.opts.acdReport(c.Stats())
+		c.renewals.report(c.Stats(), c.opts.OnRenewalStats)
 		c.opts.conflict(ev)
 
 		out, emit, at := translateOne(ev, now, renewedAt)
@@ -998,13 +1079,10 @@ func (c *DHCPClient) ConflictMode() proto.ConflictMode { return c.params.Conflic
 // Stats is the manager's counters, which are the per-endpoint half of
 // the health surface (P-7).
 func (c *DHCPClient) Stats() lease.Stats {
-	switch {
-	case c.client6 != nil:
-		return c.client6.Stats()
-	case c.client != nil:
-		return c.client.Stats()
+	if c.runner == nil {
+		return lease.Stats{}
 	}
-	return lease.Stats{}
+	return c.runner.Stats()
 }
 
 // DADPhase is where RFC 4862 section 5.4's check stood for the address

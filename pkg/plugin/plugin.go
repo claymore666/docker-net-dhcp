@@ -1227,6 +1227,29 @@ type Plugin struct {
 	dhcpTimeoutsV4       atomic.Int32
 	clientStopFailuresV4 atomic.Int32
 
+	// renewalsUnansweredV4 counts renewal requests this host sent to
+	// extend a held lease and got no answer to, one per request, while
+	// the client was still running (#940).
+	//
+	// IT IS NOT AN EARLY dhcpTimeouts AND THE PAIR IS THE READING.
+	// dhcpTimeouts moves when an attempt runs out of retransmissions,
+	// which for a held lease is at the lease's end; this moves at the
+	// first retransmission, minutes after the server went quiet. On the
+	// production host #940 was reported from, that is the difference
+	// between seeing the outage at 00:01 and seeing it at 24:00.
+	//
+	// A request is counted when a later request, or the acknowledgement
+	// that ends the renewal, proves it was never answered. The one
+	// still in flight is not counted, so a client that has sent N
+	// requests into silence reports N-1 -- see renewalWatch, which owns
+	// the arithmetic and the reason it is a running maximum rather than
+	// a subtraction.
+	//
+	// Fed as a DELTA from every persistent client, on the same rule as
+	// the RFC 5227 counters: summing the live managers would make the
+	// number fall when a container stops.
+	renewalsUnansweredV4 atomic.Int32
+
 	// parentGate serialises child-link creation per parent NIC, so the
 	// validate_dhcp preflight probe cannot hold a parent in one
 	// attachment mode while an endpoint asks for the other. See
@@ -1278,6 +1301,13 @@ type Plugin struct {
 	// dual-stack operator alerting on client_stop_failures could not
 	// tell which family's client had failed to hand its lease back.
 	clientStopFailuresV6 atomic.Int32
+	// renewalsUnansweredV6 is the DHCPv6 half. The library counts a
+	// Renew and a Rebind as renewal requests (RFC 9915 sections 18.2.4
+	// and 18.2.5) exactly as it counts a v4 DHCPREQUEST with a
+	// non-zero ciaddr, and the acknowledgement that ends one is the
+	// same lease event in both families, so the arithmetic is the
+	// arithmetic. A v6-only silence is invisible in the sum.
+	renewalsUnansweredV6 atomic.Int32
 
 	// dhcpv6ConfigOnly counts DHCPv6 information replies: the server
 	// advertised "other configuration available" and answered with

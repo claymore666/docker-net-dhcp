@@ -690,6 +690,26 @@ type HealthResponse struct {
 	// halves being derived from it.
 	LeasesObtained int32 `json:"leases_obtained"`
 	LeasesRenewed  int32 `json:"leases_renewed"`
+	// RenewalsUnanswered counts renewal requests that got no answer,
+	// one per request, while the client kept running (#940). Read it
+	// beside LeasesRenewed and ahead of DHCPTimeouts: renewals
+	// completing with this flat is a healthy lease; this climbing with
+	// LeasesRenewed flat is a DHCP server that has gone quiet, minutes
+	// after it went quiet rather than at the end of the lease, which is
+	// when DHCPTimeouts first moves for a held lease.
+	//
+	// NOT Healthy-affecting, and not a `warn` check either. A single
+	// lost datagram moves it on a segment that is working, so non-zero
+	// is not by itself the abnormal state a check can fire on; what is
+	// actionable is a rise with no renewals completing beside it, which
+	// is a relationship between two counters and not a threshold on
+	// one.
+	//
+	// The request currently in flight is not counted: one is proven
+	// unanswered by the retransmission after it, or by the
+	// acknowledgement that ends the renewal. A client that has sent N
+	// requests into silence reports N-1.
+	RenewalsUnanswered int32 `json:"renewals_unanswered"`
 	// DHCPServerTierFallbacks counts STEPS DOWN the dhcp_servers
 	// ladder: one per preferred entry that did not answer inside its
 	// slice of the budget and handed on to the next (#111). One
@@ -785,7 +805,9 @@ type HealthResponse struct {
 	LeaseChangedV4   int32 `json:"lease_changed_v4"`
 	LeasesObtainedV4 int32 `json:"leases_obtained_v4"`
 	LeasesRenewedV4  int32 `json:"leases_renewed_v4"`
-	DHCPTimeoutsV4   int32 `json:"dhcp_timeouts_v4"`
+	// RenewalsUnansweredV4 is the IPv4 half of RenewalsUnanswered.
+	RenewalsUnansweredV4 int32 `json:"renewals_unanswered_v4"`
+	DHCPTimeoutsV4       int32 `json:"dhcp_timeouts_v4"`
 	NAKsReceivedV4   int32 `json:"naks_received_v4"`
 	// ClientStopFailuresV4 is the v4 half of ClientStopFailures.
 	ClientStopFailuresV4 int32 `json:"client_stop_failures_v4"`
@@ -810,7 +832,11 @@ type HealthResponse struct {
 	LeaseChangedV6   int32 `json:"lease_changed_v6"`
 	LeasesObtainedV6 int32 `json:"leases_obtained_v6"`
 	LeasesRenewedV6  int32 `json:"leases_renewed_v6"`
-	DHCPTimeoutsV6   int32 `json:"dhcp_timeouts_v6"`
+	// RenewalsUnansweredV6 is the DHCPv6 half: Renew and Rebind
+	// messages (RFC 9915 sections 18.2.4 and 18.2.5) the server did not
+	// answer. A v6-only silence is invisible in the sum.
+	RenewalsUnansweredV6 int32 `json:"renewals_unanswered_v6"`
+	DHCPTimeoutsV6       int32 `json:"dhcp_timeouts_v6"`
 	NAKsReceivedV6   int32 `json:"naks_received_v6"`
 	// AddressConflictsV6 is the DHCPv6 half of AddressConflicts: an
 	// address the kernel's Duplicate Address Detection (RFC 4862
@@ -960,6 +986,8 @@ func (p *Plugin) healthSnapshot() HealthResponse {
 	leasesObtainedV6 := p.leasesObtainedV6.Load()
 	leasesRenewedV4 := p.leasesRenewedV4.Load()
 	leasesRenewedV6 := p.leasesRenewedV6.Load()
+	renewalsUnansweredV4 := p.renewalsUnansweredV4.Load()
+	renewalsUnansweredV6 := p.renewalsUnansweredV6.Load()
 	dhcpTimeoutsV4 := p.dhcpTimeoutsV4.Load()
 	dhcpTimeoutsV6 := p.dhcpTimeoutsV6.Load()
 	naksReceivedV4 := p.naksReceivedV4.Load()
@@ -1042,6 +1070,7 @@ func (p *Plugin) healthSnapshot() HealthResponse {
 		SandboxNetnsVisible:          sandboxNetnsVisibleIn(sandboxNetnsDirs),
 		LeasesObtained:               leasesObtainedV4 + leasesObtainedV6,
 		LeasesRenewed:                leasesRenewedV4 + leasesRenewedV6,
+		RenewalsUnanswered:           renewalsUnansweredV4 + renewalsUnansweredV6,
 		DHCPServerTierFallbacks:      p.dhcpServerTierFallbacks.Load(),
 		DHCPServerPolicyExhausted:    p.dhcpServerPolicyExhausted.Load(),
 		DHCPServerPolicyTimeouts:     p.dhcpServerPolicyTimeouts.Load(),
@@ -1056,12 +1085,14 @@ func (p *Plugin) healthSnapshot() HealthResponse {
 		LeaseChangedV4:               leaseChangedV4,
 		LeasesObtainedV4:             leasesObtainedV4,
 		LeasesRenewedV4:              leasesRenewedV4,
+		RenewalsUnansweredV4:         renewalsUnansweredV4,
 		DHCPTimeoutsV4:               dhcpTimeoutsV4,
 		NAKsReceivedV4:               naksReceivedV4,
 		ClientStopFailuresV4:         clientStopFailuresV4,
 		LeaseChangedV6:               leaseChangedV6,
 		LeasesObtainedV6:             leasesObtainedV6,
 		LeasesRenewedV6:              leasesRenewedV6,
+		RenewalsUnansweredV6:         renewalsUnansweredV6,
 		DHCPTimeoutsV6:               dhcpTimeoutsV6,
 		NAKsReceivedV6:               naksReceivedV6,
 		ClientStopFailuresV6:         clientStopFailuresV6,

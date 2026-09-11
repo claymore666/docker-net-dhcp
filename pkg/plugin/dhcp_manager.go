@@ -1356,6 +1356,11 @@ func (m *dhcpManager) setupClient(v6 bool) (chan error, error) {
 	if err := m.plugin.conflictWiring(&clientOpts, m.opts, roleJoin, m.joinReq.NetworkID, m.joinReq.EndpointID, v6); err != nil {
 		return nil, err
 	}
+	// HERE AND NOT IN conflictWiring, AND ON THIS PATH ONLY. This is
+	// the persistent client, the only one that holds a lease long
+	// enough to renew it; the two roleAcquire call sites are
+	// CreateEndpoint one-shots (#940).
+	m.plugin.renewalWiring(&clientOpts, m.joinReq.NetworkID, m.joinReq.EndpointID, v6)
 	// THE PHASE IS NOT PASSED TO THE CLIENT, and there is nothing for it
 	// to do there: proto.Machine runs RFC 5227 section 2.1's check on
 	// the INIT-REBOOT DHCPACK whatever the record said, so the resumed
