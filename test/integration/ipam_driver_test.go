@@ -1238,6 +1238,7 @@ func TestIPAM_AContainerStartedInsideTheWindowTakesTheTombstone(t *testing.T) {
 
 	w := harness.BeginCounterWindow(t, ctx, cli, "ipam_rebind_ambiguous")
 
+	stopped := time.Now()
 	if err := cli.ContainerStop(ctx, idA, container.StopOptions{}); err != nil {
 		t.Fatalf("ContainerStop(a): %v", err)
 	}
@@ -1245,7 +1246,22 @@ func TestIPAM_AContainerStartedInsideTheWindowTakesTheTombstone(t *testing.T) {
 	// A brand-new container, inside A's retention window. Nothing about
 	// it has ever been on this network.
 	idB, addrB, _ := harness.RunContainer(t, ctx, netName, "dh-itest-ipam-window-b")
-	t.Logf("b started on %s", addrB)
+	claimed := time.Since(stopped)
+	t.Logf("b started on %s, %s after a stopped", addrB, claimed.Round(time.Second))
+
+	// retentionWindow mirrors the plugin's tombstoneTTL, and it decides
+	// which MESSAGE a failure carries, never whether this test passes.
+	// Past it there is no tombstone left to claim, so the rule below
+	// has nothing to act on and the run says nothing about it. If the
+	// plugin's value ever changes, the cost here is a misleading
+	// sentence on an already-red row and never a green one.
+	const retentionWindow = 60 * time.Second
+	if claimed >= retentionWindow {
+		t.Fatalf("b's address request landed %s after a stopped, past the %s the plugin keeps a "+
+			"stopped endpoint's identity for. There was no tombstone left to claim, so this run "+
+			"cannot decide the rule in either direction.",
+			claimed.Round(time.Second), retentionWindow)
+	}
 
 	if err := cli.ContainerStart(ctx, idA, container.StartOptions{}); err != nil {
 		t.Fatalf("ContainerStart(a): %v", err)
@@ -1254,11 +1270,13 @@ func TestIPAM_AContainerStartedInsideTheWindowTakesTheTombstone(t *testing.T) {
 	t.Logf("a came back on %s", addrA2)
 
 	if addrB != addrA {
-		t.Errorf("the new container came up on %s and the stopped one held %s.\n"+
+		t.Errorf("the new container came up on %s and the stopped one held %s, %s apart.\n"+
 			"This test pins the rule the code has: one live tombstone, consumed by the next "+
-			"address request on the network, whoever makes it. If this changed on purpose, "+
-			"the reference's Restart stability section is the other half of the change.",
-			addrB, addrA)
+			"address request on the network, whoever makes it. The window is ruled out above, "+
+			"measured, so what is left is the rule itself or the tombstone never being laid: "+
+			"read the plugin log for the retain before reading this as a change of rule. If it "+
+			"did change on purpose, the reference's Restart stability section is the other half "+
+			"of the change.", addrB, addrA, claimed.Round(time.Second))
 	}
 	if addrA2 == addrA {
 		t.Errorf("the stopped container came back on its own address %s even though a new "+
@@ -1320,11 +1338,26 @@ func TestIPAM_SingleRestartNeedsAServerThatKeepsClientIDBindings(t *testing.T) {
 			map[string]string{"parent": harness.EphemeralHostVeth},
 			map[string]string{"parent": harness.EphemeralHostVeth})
 		id, before, _ := harness.RunContainer(t, ctx, netName, ctrName)
+
+		// The restart has to finish inside the fixture's lease. Past it
+		// the old binding is gone at the server, the address changes
+		// whatever the server keys on, and neither arm below means what
+		// its name says. Measured rather than assumed: it is the one
+		// non-product cause either arm can have.
+		started := time.Now()
 		if err := cli.ContainerRestart(ctx, id, container.StopOptions{}); err != nil {
 			t.Fatalf("ContainerRestart: %v", err)
 		}
 		after, _ = ipamNetworkAddress(t, ctx, cli, id, netName)
-		t.Logf("%s: before=%s after=%s", t.Name(), before, after)
+		gap := time.Since(started)
+		t.Logf("%s: before=%s after=%s, the restart took %s of the fixture's %ds lease",
+			t.Name(), before, after, gap.Round(time.Second), harness.EphemeralDefaultLeaseSeconds)
+		if gap >= time.Duration(harness.EphemeralDefaultLeaseSeconds)*time.Second {
+			t.Fatalf("the restart took %s, longer than the fixture's %ds lease, so the old "+
+				"binding had expired at the server before the new request arrived. This run "+
+				"cannot decide what the server keys its bindings on, in either direction.",
+				gap.Round(time.Second), harness.EphemeralDefaultLeaseSeconds)
+		}
 		return before, after
 	}
 
@@ -1347,14 +1380,17 @@ func TestIPAM_SingleRestartNeedsAServerThatKeepsClientIDBindings(t *testing.T) {
 		if after == before {
 			t.Errorf("the container kept %s against a server started with --dhcp-ignore-clid.\n"+
 				"That server cannot match the re-sent client identifier, and the endpoint's "+
-				"hardware address is new, so keeping the address would mean the stability this "+
-				"driver advertises comes from somewhere this test does not know about. Either "+
-				"the fixture flag stopped taking effect or the mechanism changed; the "+
-				"reference's Restart stability section rests on the answer.", after)
+				"hardware address is new, so keeping the address means the stability this "+
+				"driver advertises comes from somewhere this test does not know about. Read the "+
+				"dnsmasq arguments in the fixture dump first, since the flag not reaching the "+
+				"server produces exactly this, and the mechanism second; the reference's Restart "+
+				"stability section rests on the answer. The lease window is ruled out above, "+
+				"measured.", after)
 		}
-		if !harness.IsInEphemeralPool(harness.AssertIP(t, after)) {
-			t.Errorf("the restarted container came back on %s, outside the ephemeral pool; the "+
-				"weaker server must still hand out an address", after)
-		}
+		// Scoped to THIS fixture. harness.AssertIP carries its own
+		// fatal on the MAIN fixture's pool, so composing the two kills
+		// the subtest on every run, naming a range no address on this
+		// fixture was ever supposed to be in.
+		harness.AssertEphemeralIP(t, after)
 	})
 }
