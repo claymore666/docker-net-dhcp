@@ -546,6 +546,57 @@ func TestParentGate_AHolderSwapIsNotEvidenceOfSafety(t *testing.T) {
 	})
 }
 
+// TestParentGate_AWaiterIsDeregistered covers the other end of the
+// registration: every acquisition adds one, and nothing else removes
+// them.
+//
+// A waiter that is never deregistered is not a wrong answer, which is
+// why the rest of this file stays green without it. It is one struct
+// per acquisition retained for the life of the daemon, walked under the
+// gate's lock by every take on that parent -- an endpoint-creation path
+// that gets slower the longer the host has been up, and slowest on the
+// busiest NIC.
+func TestParentGate_AWaiterIsDeregistered(t *testing.T) {
+	waiters := func(p *Plugin) int {
+		p.parentGate.mu.Lock()
+		defer p.parentGate.mu.Unlock()
+		return len(p.parentGate.waiters["eth0"])
+	}
+
+	t.Run("after an uncontended take", func(t *testing.T) {
+		p := &Plugin{}
+		release, ok, _ := p.parentGate.acquire(context.Background(), "eth0", ModeMacvlan, time.Second)
+		if !ok {
+			t.Fatal("could not take an uncontended gate")
+		}
+		if got := waiters(p); got != 0 {
+			t.Errorf("%d waiter(s) still registered for a caller that HOLDS the gate, want 0. "+
+				"Every acquisition would leave one behind, and every take on this parent "+
+				"walks them under the lock.", got)
+		}
+		release()
+	})
+
+	t.Run("after a give-up", func(t *testing.T) {
+		p := &Plugin{}
+		holder, ok, _ := p.parentGate.acquire(context.Background(), "eth0", ModeMacvlan, time.Second)
+		if !ok {
+			t.Fatal("could not take an uncontended gate")
+		}
+		defer holder()
+
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		if _, ok, _ := p.parentGate.acquire(ctx, "eth0", ModeMacvlan, time.Second); ok {
+			t.Fatal("the second acquire took a gate that was already held")
+		}
+		if got := waiters(p); got != 0 {
+			t.Errorf("%d waiter(s) still registered after a caller gave up, want 0. The "+
+				"contended path is the one that accumulates them.", got)
+		}
+	})
+}
+
 // TestParentGate_TheHolderKindIsCleared. The record of who holds a
 // parent is a map entry written on acquire, and an entry left behind by
 // a release would make the NEXT waiter compare itself against a holder

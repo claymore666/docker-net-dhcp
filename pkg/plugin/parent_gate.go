@@ -53,8 +53,15 @@ const parentGateBudget = 4 * time.Second
 //
 // LOCK ORDERING. Two locks live here and they are not peers:
 //
-//   - mu is a leaf. It is held only for the map lookup in tokenFor, never
-//     across IO, and nothing else may be acquired while it is held.
+//   - mu is a leaf, and it covers all three maps here: the tokens, the
+//     holders and the waiter registry. enterWait holds it across every
+//     one of them plus a NON-BLOCKING send on the token and a walk of
+//     the waiters for that one parent -- which is the point of that
+//     function, since splitting the registration from the attempt is
+//     what reopens the window it exists to close. Nothing under this
+//     lock can block, and nothing else may be acquired while it is
+//     held. That is the whole rule: not "one map lookup", but "never
+//     across anything that waits".
 //   - the per-parent token (the channel) IS held across blocking IO —
 //     that is its job. It must therefore never be taken while holding
 //     Plugin.mu, or a slow probe would block every registry read on the
