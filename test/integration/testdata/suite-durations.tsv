@@ -10,7 +10,7 @@
 #
 # POPULATION: TOP-LEVEL TEST FUNCTIONS, PARENTS ONLY.
 # One row per `func TestX(t *testing.T)` in test/integration/*_test.go —
-# 115 of them, the main suite's 108 and the failure suite's 7. A subtest's
+# 116 of them, the main suite's 109 and the failure suite's 7. A subtest's
 # seconds are inside its parent's figure and are NOT a row of their own.
 # That is stated because the previous edition's header did not state it
 # and the population was read back two ways: 104 rows summing 1804.88s
@@ -82,20 +82,27 @@
 #              a refusal that waits out the 26s reservation budget. They
 #              are refreshed to the median of three runs at the next
 #              pass, like TestFailure_UnansweredRenewalsCounted was.
-#   samples    3 for every corpus row. EIGHTEEN rows are exceptions: the
-#              three noted individually above -- 84.19, 0.05 and 13.00 --
-#              and the fifteen #110 rows. Seventeen of the eighteen are
-#              INFERRED; TestFailure_UnansweredRenewalsCounted is the one
-#              that is measured, from a single sample rather than three.
-#              The previous edition carried four inferred
+#   samples    3 for every corpus row. NINETEEN rows are not corpus
+#              samples: the four noted individually above -- 73.85,
+#              84.19, 0.05 and 13.00 -- and the fifteen #110 rows.
+#              Seventeen of the nineteen are INFERRED; the two that are
+#              measured are TestLeaseRenewIPv6_HonorsT1, from three later
+#              head runs, and TestFailure_UnansweredRenewalsCounted, from
+#              a single sample. The previous edition carried four inferred
 #              rows and fourteen v6 rows recovered from the 1.9.0
 #              corpus; every one of those is now measured against the
 #              client that actually ships here.
 #   corpus     main suite    91 tests   1739.87s   mean 19.12s
 #              failure suite  4 tests    272.31s   mean 68.08s
 #              both          95 tests   2012.18s
-#              (the corpus is unchanged: those eighteen rows are not
-#              samples and are not averaged into these means)
+#              (the corpus is unchanged: those nineteen rows are not
+#              samples and are not averaged into these means. These
+#              figures are a record of THAT RUN, not a count of this
+#              file: every row added since -- by this branch and by the
+#              changes it rebased onto -- is outside them, which is why
+#              95 plus the exceptions does not reach the population
+#              above. The next refresh re-measures the whole file and
+#              the two numbers close again.)
 #   spread     min and max per test across the three samples are not
 #              stored, but were read: the widest single-test spread was
 #              TestDHCPv6_NoAddressModes_StartTheEndpoint at 75.07-93.94,
