@@ -1035,14 +1035,26 @@ manual.</p>
 </div>
 <h2 id="requirements">Requirements<a class="headerlink" href="#requirements" title="Permanent link">&para;</a></h2>
 <ul>
-<li><strong>Docker Engine.</strong> Every change is tested against the engine the
-  integration suite runs on, <strong>29.7.2</strong> today, read from that run's
-  <code>Fixture engine drift</code> step. It is the version this build is measured
-  on. It is not a floor: the minimum has never been measured (#670), so
-  the measured number is the honest one to publish.</li>
+<li><strong>Docker Engine 20.10 or newer.</strong> 20.10 is the lowest version this
+  plugin is measured on. The engine matrix drives the whole baseline on
+  every engine line from 20.10 to the current release: the plugin
+  created from a local build and enabled, <code>docker network create</code> in
+  bridge, macvlan and ipvlan mode, a lease confirmed in the DHCP
+  server's own log, and an endpoint that keeps its address across
+  <code>docker restart</code>. Pulling the published plugin from a registry is not
+  part of that measurement. It runs weekly and on every change to the
+  measurement. Below 20.10 the plugin refuses to start, and the refusal
+  names the minimum and the engine it saw. 19.03 is <code>unsupported</code>
+  because it is unmeasured: on a cgroup v2 host it cannot start a
+  container at all, so nothing there tests this plugin.
+  Every change is also tested against the engine the integration suite
+  runs on, <strong>29.7.2</strong> today, read from that run's <code>Fixture engine drift</code>
+  step.</li>
 <li><strong>Plugin interface <code>docker.networkdriver/1.0</code></strong>, which is what the
   plugin manifest declares. The plugin negotiates the Docker API version
-  with the daemon, so no API floor is claimed here either.</li>
+  with the daemon. It publishes both numbers on <code>/Plugin.Health</code> as
+  <code>engine_version</code> and <code>api_version</code>. The minimum above is a version of
+  the engine, not of the API, and nothing is refused on the API version.</li>
 <li><strong>One directory, created once per host, before <code>docker plugin install</code></strong>
   (the line is in the quick start below). Docker will not create a missing
   bind source, so without it the install fails at start-up and leaves the
