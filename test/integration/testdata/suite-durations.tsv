@@ -10,7 +10,7 @@
 #
 # POPULATION: TOP-LEVEL TEST FUNCTIONS, PARENTS ONLY.
 # One row per `func TestX(t *testing.T)` in test/integration/*_test.go —
-# 100 of them, the main suite's 95 and the failure suite's 5. A subtest's
+# 116 of them, the main suite's 109 and the failure suite's 7. A subtest's
 # seconds are inside its parent's figure and are NOT a row of their own.
 # That is stated because the previous edition's header did not state it
 # and the population was read back two ways: 104 rows summing 1804.88s
@@ -72,8 +72,19 @@
 #              counter wait and a log grown over a shard. The first run
 #              that executes it costs it, the way
 #              TestFailure_UnansweredRenewalsCounted was costed.
-#   samples    3 for every corpus row; the four rows noted above are
-#              the exceptions, and two of those four are inferred rather
+#   sixteen    the #110 IPAM-driver rows are INFERRED, not measured: they
+#   rows       arrive with the feature and no corpus run could have costed
+#              them. Each is derived from the measured row of the test
+#              whose shape it copies -- a golden-path lifecycle at 11.61,
+#              a container restart at 20.39, a daemon restart at 30.00,
+#              a plugin recycle at 12.86 -- plus the seconds this test
+#              adds on purpose: a second container, a deliberate outage,
+#              a refusal that waits out the 26s reservation budget. They
+#              are refreshed to the median of three runs at the next
+#              pass, like TestFailure_UnansweredRenewalsCounted was.
+#   samples    3 for every corpus row; the three rows noted above, the
+#              TestJoinDuration row and the sixteen #110 rows are the
+#              exceptions, and seventeen of those are inferred rather
 #              than measured. The previous edition carried four inferred
 #              rows and fourteen v6 rows recovered from the 1.9.0
 #              corpus; every one of those is now measured against the
@@ -81,8 +92,9 @@
 #   corpus     main suite    91 tests   1739.87s   mean 19.12s
 #              failure suite  4 tests    272.31s   mean 68.08s
 #              both          95 tests   2012.18s
-#              (the corpus is unchanged: the three rows noted above are
-#              not samples and are not averaged into these means)
+#              (the corpus is unchanged: the three rows noted above and
+#              the fifteen #110 rows are not samples and are not
+#              averaged into these means)
 #   spread     min and max per test across the three samples are not
 #              stored, but were read: the widest single-test spread was
 #              TestDHCPv6_NoAddressModes_StartTheEndpoint at 75.07-93.94,
@@ -182,6 +194,8 @@ TestExtraOptions_NTPAndTFTPLogged	12.12
 TestExtraOptions_SearchListInResolvConf	12.42
 TestExtraOptions_WPADAndTimezoneLogged	11.98
 TestFQDN_RegistersInDNS	11.60
+TestFailure_IPAMResentRequestJoinsTheReserve	60.00
+TestFailure_IPAMServerDownFailsInsideTheBudget	75.00
 TestFailure_LeaseExpiry	154.61
 TestFailure_LeaseRefusedOnRenewal	29.64
 TestFailure_ServerLossDuringRenewal	33.34
@@ -190,6 +204,19 @@ TestFailure_UnansweredRenewalsCounted	84.19
 TestHealthCounters_ObtainedAndReleased	12.13
 TestHealthDocument_BuildInfoIsWhatTheLaneBuilt	0.01
 TestHealthDocument_EndpointEntryMatchesTheContainer	12.05
+TestIPAM_ARemovedNeighbourMakesTheRebindAmbiguous	34.00
+TestIPAM_AddressIsTheServersACK	13.00
+TestIPAM_AnAddressOutsideTheSubnetIsRefused	16.00
+TestIPAM_BothShapesOnOneDaemon	26.00
+TestIPAM_GatewayAndAuxNeverLease	9.00
+TestIPAM_IpvlanIsRefusedAtCreate	15.00
+TestIPAM_NoSubnetAnswersTheAnyPool	14.00
+TestIPAM_ReplayAfterDaemonRestart	45.00
+TestIPAM_RestartedTogetherIsTheDocumentedLimit	38.00
+TestIPAM_SingleRestartKeepsTheAddress	22.00
+TestIPAM_StaticIPIsHonouredWithASubnet	13.00
+TestIPAM_StaticIPWithoutASubnetIsRefused	7.00
+TestIPAM_TwoNetworksCannotShareOnePool	40.00
 TestIPv6_AcceptedAtCreate	0.02
 TestIPv6_DNS6Propagation	34.17
 TestIPv6_TheV4OnlyPathIsUnchanged	11.57

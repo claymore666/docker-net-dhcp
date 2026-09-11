@@ -386,6 +386,26 @@ type HealthResponse struct {
 	// itself; a zero on its own means "held" and "never ran" equally.
 	RouterAdvertGuardFailures int32 `json:"router_advert_guard_failures"`
 
+	// The five IPAM-driver counters (#110). None is healthy-affecting
+	// and none is in the floor table: an IPAM-mode network is one of
+	// the product's two shapes, and every one of these describes what
+	// the DHCP server or the daemon did, not a plugin fault.
+	//
+	// IPAMReplayHits and IPAMReleaseUnknown are not checks at all --
+	// the first counts the daemon-start replay working, which is the
+	// normal path, and the second counts a ReleaseAddress for an
+	// address no record holds, which libnetwork sends legitimately
+	// after a create it rolled back. The other three are warn-level:
+	// a replay that missed leaves one endpoint to re-lease,
+	// an ambiguous re-bind is the documented N>=2 limit, and a joined
+	// reserve means the daemon re-sent a RequestAddress while the
+	// first exchange was still running.
+	IPAMReplayHits      int32 `json:"ipam_replay_hits"`
+	IPAMReplayMiss      int32 `json:"ipam_replay_miss"`
+	IPAMRebindAmbiguous int32 `json:"ipam_rebind_ambiguous"`
+	IPAMReserveJoined   int32 `json:"ipam_reserve_joined"`
+	IPAMReleaseUnknown  int32 `json:"ipam_release_unknown"`
+
 	// published is the key set of the payload this value was decoded
 	// from. It exists because an absent JSON field decodes to zero,
 	// which is indistinguishable from a counter that is genuinely at
