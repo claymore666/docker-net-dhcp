@@ -92,10 +92,11 @@ the plugin refuses it.
 The plugin publishes its own reading of that mount as
 `sandbox_netns_propagation`: `1` linked, `0` private, `-1` the mount
 table could not be read. Both readings are ordinary and both are
-measured. On the production host, 2026-09-11, and on a stock hosted
-GitHub runner, Integration run 34598318503, the key route carried every
-attach. On this project's nested CI daemon, Integration run 34601503020,
-the gauge reads `0` and `/proc/<pid>/ns/net` carried every attach.
+measured. On the production host, 2026-09-11, and on a GitHub-hosted
+ubuntu-latest runner, Integration (hosted cross-check) run 34617922956,
+the gauge reads `1` and the key route carried every attach. On this
+project's nested CI daemon, Integration run 34616833894, the gauge reads
+`0` and `/proc/<pid>/ns/net` carried every attach.
 Recovery after a plugin restart takes the key route on either host,
 because the sandbox is then older than the plugin process. No plugin
 setting changes the reading: propagation belongs to the daemon's mount,

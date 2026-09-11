@@ -32,16 +32,23 @@ import (
 // arrives, 0 it is private and the plugin opens the placeholder file
 // underneath.
 //
-// MEASURED, both branches:
+// MEASURED, both branches, BY THESE CELLS. A citation naming a run in
+// which these cells did not execute is not a measurement of them, which
+// is how the earlier version of this block came to cite a probe: run
+// 34598318503 was dispatched with a layout whose only job logged the
+// counters and asserted nothing, and the job that runs these cells was
+// skipped in it.
 //
-//   - 1: production 2026-09-11 (systemd host, v2.0.0, read-only probe),
-//     and the hosted runner in Integration run 34598318503
-//     (ubuntu-latest, Engine 28.0.4), all four cells. The key route
-//     carries the attach.
-//   - 0: this suite's own pool, Integration run 34601503020, all four
-//     cells. The container PID route carries the attach, which is why
-//     the manifest still asks for the host PID namespace and
-//     CAP_SYS_PTRACE.
+//   - 1: Integration (hosted cross-check) run 34617922956, ubuntu-latest,
+//     all four cells, each printing branch=linked and
+//     sandbox_netns_propagation=1, every refusal arm +0. The key route
+//     carries the attach. Production 2026-09-11 answers 1 as well, read
+//     by a probe and not by these cells.
+//   - 0: this suite's own pool, Integration run 34616833894, all four
+//     cells, each printing branch=private and
+//     sandbox_netns_propagation=0 with sandbox_key_not_a_namespace +1.
+//     The container PID route carries the attach, which is why the
+//     manifest still asks for the host PID namespace and CAP_SYS_PTRACE.
 //
 // WHAT THESE CELLS ASSERT. Three things:
 //
