@@ -357,24 +357,37 @@ func TestLockParent_ASameKindHolderIsNotAHealthWarning(t *testing.T) {
 	})
 }
 
-// TestParentGate_AHolderSwapIsNotEvidenceOfSafety is the interval the
+// TestParentGate_AHolderSwapIsNotEvidenceOfSafety is the INTERVAL the
 // same-kind branch is really about.
 //
-// The branch acts on "the holder could never have conflicted with me",
-// and a waiter observes the holder twice: once when it starts waiting
-// and once when it gives up. Two equal kinds at those two moments do
-// not mean one holder: a CROSS-kind holder that released just as a
-// same-kind one took the parent reads as same-kind at the give-up, and
-// that is precisely the case where the kernel may refuse the waiter's
-// LinkAdd -- so the one path where the warning is earned would be the
-// one path that silences it.
-//
-// Driven on the gate rather than through lockParent because staging the
-// swap end to end would need the token to change hands without ever
-// being free, which the gate cannot do: the waiter would take it
-// instead. The rule itself is what is asserted, in both directions.
+// The branch acts on "nothing that held this parent while I waited
+// could ever have conflicted with me", and that is a statement about a
+// stretch of time, not about a moment. Sampling the holder at each end
+// of the wait answers it only while nothing changed twice in between: a
+// cross-kind holder that releases to a same-kind one reads as the
+// caller's own kind at both ends, and the child it attached is still on
+// the parent, which is precisely where the kernel refuses. So the
+// caller registers itself before its first attempt and every take of
+// another kind marks it, and these are the arms of that rule.
 func TestParentGate_AHolderSwapIsNotEvidenceOfSafety(t *testing.T) {
-	t.Run("the holder it sampled still holds it", func(t *testing.T) {
+	t.Run("one holder of my own kind, start to finish", func(t *testing.T) {
+		p := &Plugin{}
+		release, ok, _ := p.parentGate.acquire(context.Background(), "eth0", ModeMacvlan, time.Second)
+		if !ok {
+			t.Fatal("could not take an uncontended gate")
+		}
+		defer release()
+
+		_, w, _ := p.parentGate.enterWait("eth0", ModeMacvlan)
+		defer p.parentGate.leaveWait("eth0", w)
+		if got := p.parentGate.heldThroughout(w); got != ModeMacvlan {
+			t.Errorf("heldThroughout = %q for a holder of my own kind that never changed, want "+
+				"%q. This is the ordinary case the branch exists for, and if it cannot be "+
+				"identified the branch is unreachable and the change is a no-op.", got, ModeMacvlan)
+		}
+	})
+
+	t.Run("the other kind held it when I arrived", func(t *testing.T) {
 		p := &Plugin{}
 		release, ok, _ := p.parentGate.acquire(context.Background(), "eth0", ModeIPvlan, time.Second)
 		if !ok {
@@ -382,43 +395,135 @@ func TestParentGate_AHolderSwapIsNotEvidenceOfSafety(t *testing.T) {
 		}
 		defer release()
 
-		at := p.parentGate.holder("eth0")
-		if got := p.parentGate.heldThroughout("eth0", at); got != ModeIPvlan {
-			t.Errorf("heldThroughout = %q while the sampled holder still holds the parent, want "+
-				"%q. An unchanged holder is the ordinary case and it must still be identified, "+
-				"or the same-kind branch is unreachable and the change is a no-op.", got, ModeIPvlan)
+		_, w, _ := p.parentGate.enterWait("eth0", ModeMacvlan)
+		defer p.parentGate.leaveWait("eth0", w)
+		if got := p.parentGate.heldThroughout(w); got != "" {
+			t.Errorf("heldThroughout = %q against an ipvlan holder, want empty. That is the one "+
+				"pair the kernel refuses and the whole reason the gate exists.", got)
 		}
 	})
 
-	t.Run("another kind took it during the wait", func(t *testing.T) {
+	t.Run("the other kind took it during the wait", func(t *testing.T) {
+		// The swap, staged as the waiter experiences it: the holder
+		// changes while the waiter is registered and still waiting. It
+		// cannot be staged through the token, since a waiter blocked on
+		// it would take it the moment it came free.
+		p := &Plugin{}
+		release, ok, _ := p.parentGate.acquire(context.Background(), "eth0", ModeMacvlan, time.Second)
+		if !ok {
+			t.Fatal("could not take an uncontended gate")
+		}
+		_, w, _ := p.parentGate.enterWait("eth0", ModeMacvlan)
+		defer p.parentGate.leaveWait("eth0", w)
+
+		release()
+		swap, ok, _ := p.parentGate.acquire(context.Background(), "eth0", ModeIPvlan, time.Second)
+		if !ok {
+			t.Fatal("could not take the gate after the release")
+		}
+		defer swap()
+
+		if got := p.parentGate.heldThroughout(w); got != "" {
+			t.Errorf("heldThroughout = %q, want empty. A macvlan caller that started waiting "+
+				"behind a macvlan holder, and had an ipvlan one take the parent under it, is "+
+				"exactly the caller whose LinkAdd the kernel may refuse: the ipvlan child stays "+
+				"on the parent after its holder releases. Answering with the kind it started "+
+				"beside drops the warning on the one path that earns it.", got)
+		}
+	})
+
+	t.Run("the other kind released to my own kind under me", func(t *testing.T) {
+		// The swap the reviewer named, in its worst order: the caller
+		// arrives behind the other kind, that holder LEAVES, and a
+		// holder of the caller's own kind takes the parent in its
+		// place. Every reading taken after that moment says "same kind,
+		// harmless", and the ipvlan child is still on the parent.
 		p := &Plugin{}
 		release, ok, _ := p.parentGate.acquire(context.Background(), "eth0", ModeIPvlan, time.Second)
 		if !ok {
 			t.Fatal("could not take an uncontended gate")
 		}
-		at := p.parentGate.holder("eth0")
-		release()
+		_, w, _ := p.parentGate.enterWait("eth0", ModeMacvlan)
+		defer p.parentGate.leaveWait("eth0", w)
 
+		release()
 		swap, ok, _ := p.parentGate.acquire(context.Background(), "eth0", ModeMacvlan, time.Second)
 		if !ok {
 			t.Fatal("could not take the gate after the release")
 		}
 		defer swap()
 
-		if got := p.parentGate.heldThroughout("eth0", at); got != "" {
-			t.Errorf("heldThroughout = %q after the holder was swapped, want empty. The waiter "+
-				"lost its wait to an ipvlan holder and sees a macvlan one; reading that as "+
-				"\"the holder is attaching my own kind\" drops the health warning on the one "+
-				"pair the kernel refuses.", got)
+		if got := p.parentGate.heldThroughout(w); got != "" {
+			t.Errorf("heldThroughout = %q after the ipvlan holder left and a macvlan one took "+
+				"the parent, want empty. A release conflicts with nobody, but it also clears "+
+				"nothing: the child the departed holder attached stays on the parent, and it "+
+				"is the reason the kernel can still refuse this caller.", got)
 		}
 	})
 
-	t.Run("the decision is the holder it lost to, not the one it finds", func(t *testing.T) {
-		// The interval, driven end to end. The token cannot change
-		// hands while a waiter is blocked on it -- the waiter would
-		// take it -- so the swap is staged on the holder record while
-		// the token stays held, which is exactly what a waiter sees
-		// when a cross-kind holder releases as a same-kind one takes.
+	t.Run("an unidentified holder took it during the wait", func(t *testing.T) {
+		p := &Plugin{}
+		release, ok, _ := p.parentGate.acquire(context.Background(), "eth0", ModeMacvlan, time.Second)
+		if !ok {
+			t.Fatal("could not take an uncontended gate")
+		}
+		_, w, _ := p.parentGate.enterWait("eth0", ModeMacvlan)
+		defer p.parentGate.leaveWait("eth0", w)
+
+		release()
+		unknown, ok, _ := p.parentGate.acquire(context.Background(), "eth0", "", time.Second)
+		if !ok {
+			t.Fatal("could not take the gate after the release")
+		}
+		defer unknown()
+
+		if got := p.parentGate.heldThroughout(w); got != "" {
+			t.Errorf("heldThroughout = %q after a holder that named no kind, want empty. No "+
+				"evidence about a holder is not evidence that it cannot conflict, and the "+
+				"give-up path reads this the same way it reads an unknown holder at the start.", got)
+		}
+	})
+
+	t.Run("end to end through acquire, both verdicts", func(t *testing.T) {
+		// The arms above reach heldThroughout directly. This one drives
+		// the entry point, so the registration that decides the verdict
+		// is the one acquire makes for itself, at the instant it first
+		// tries the queue -- the two are one critical section, and a
+		// budget this short leaves no room for a reading taken later.
+		for _, tc := range []struct {
+			name   string
+			holder string
+			want   string
+		}{
+			{"a holder of my own kind is named", ModeMacvlan, ModeMacvlan},
+			{"a holder of the other kind is not", ModeIPvlan, ""},
+			{"a holder that named no kind is not", "", ""},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				p := &Plugin{}
+				release, ok, _ := p.parentGate.acquire(context.Background(), "eth0", tc.holder, time.Second)
+				if !ok {
+					t.Fatal("could not take an uncontended gate")
+				}
+				defer release()
+
+				_, ok, kind := p.parentGate.acquire(context.Background(), "eth0", ModeMacvlan, time.Millisecond)
+				if ok {
+					t.Fatal("the second acquire took a gate that was already held")
+				}
+				if kind != tc.want {
+					t.Errorf("acquire gave up reporting %q, want %q. This is the string "+
+						"lockParent switches on, and the wrong one either drops the health "+
+						"warning on a collision the kernel will refuse or raises it on a pair "+
+						"the kernel permits.", kind, tc.want)
+				}
+			})
+		}
+	})
+
+	t.Run("the give-up path answers on the registration, not a fresh read", func(t *testing.T) {
+		// End to end through waitForParent, with the parent held by the
+		// other kind and the caller's context already cancelled.
 		p := &Plugin{}
 		release, ok, _ := p.parentGate.acquire(context.Background(), "eth0", ModeIPvlan, time.Second)
 		if !ok {
@@ -426,46 +531,17 @@ func TestParentGate_AHolderSwapIsNotEvidenceOfSafety(t *testing.T) {
 		}
 		defer release()
 
-		at := p.parentGate.holder("eth0")
-		p.parentGate.setHolder("eth0", "")
-		p.parentGate.setHolder("eth0", ModeMacvlan)
-
+		tok, w, _ := p.parentGate.enterWait("eth0", ModeMacvlan)
+		defer p.parentGate.leaveWait("eth0", w)
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
-		_, got, kind := p.parentGate.waitForParent(ctx, "eth0", ModeMacvlan, time.Second, at)
+		_, got, kind := p.parentGate.waitForParent(ctx, "eth0", ModeMacvlan, time.Second, tok, w)
 		if got {
 			t.Fatal("the wait succeeded while the parent was held")
 		}
 		if kind != "" {
-			t.Errorf("the give-up path answered %q, want empty. It answered on the holder it "+
-				"FOUND rather than the one it LOST to, so a macvlan start that queued behind "+
-				"an ipvlan holder is reported as harmless contention -- on the one pair the "+
-				"kernel refuses.", kind)
-		}
-	})
-
-	t.Run("the same kind, but a different take", func(t *testing.T) {
-		p := &Plugin{}
-		first, ok, _ := p.parentGate.acquire(context.Background(), "eth0", ModeMacvlan, time.Second)
-		if !ok {
-			t.Fatal("could not take an uncontended gate")
-		}
-		at := p.parentGate.holder("eth0")
-		first()
-
-		second, ok, _ := p.parentGate.acquire(context.Background(), "eth0", ModeMacvlan, time.Second)
-		if !ok {
-			t.Fatal("could not take the gate after the release")
-		}
-		defer second()
-
-		if got := p.parentGate.heldThroughout("eth0", at); got != "" {
-			t.Errorf("heldThroughout = %q for a second take of the same kind, want empty. The "+
-				"gate keeps no history of what ran in between, and what the waiter needs to "+
-				"know is not who holds the parent now but whether a cross-kind CHILD was "+
-				"attached during the wait -- a child outlives the holder that added it, so the "+
-				"kernel can still refuse a LinkAdd made while a same-kind holder holds the "+
-				"gate.", got)
+			t.Errorf("the give-up path answered %q, want empty: it answered on a reading of its "+
+				"own rather than on what its caller registered.", kind)
 		}
 	})
 }
