@@ -58,10 +58,16 @@ func TestIpamPoolID_IsAFunctionOfItsInputs(t *testing.T) {
 // different identities the network is unbound the first time dockerd
 // restarts.
 func TestIpamPoolID_CreateAndReplayDeriveOneIdentity(t *testing.T) {
-	cases := []struct{ name, typed string }{
-		{"host bits set", "192.168.0.7/24"},
-		{"already masked", "192.168.0.0/24"},
-		{"no subnet typed", ""},
+	// canonical is what the driver must ANSWER with, written out here
+	// rather than taken from ipamCanonicalPool. A replay derived by
+	// calling the subject would agree with the create for any
+	// derivation at all, including one that never masks: the two sides
+	// would be the same wrong function. This column is the independent
+	// half, and it is what makes the masking observable.
+	cases := []struct{ name, typed, canonical string }{
+		{"host bits set", "192.168.0.7/24", "192.168.0.0/24"},
+		{"already masked", "192.168.0.0/24", "192.168.0.0/24"},
+		{"no subnet typed", "", ipamAnyPool},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -76,7 +82,13 @@ func TestIpamPoolID_CreateAndReplayDeriveOneIdentity(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ipamCanonicalPool: %v", err)
 			}
-			atReplay, err := ipamPoolID(ipamLocalAddressSpace, returned, opts)
+			if returned != c.canonical {
+				t.Fatalf("the driver answers %q for a typed %q; libnetwork stores that answer "+
+					"and replays it, and the daemon's own pool check reads it, so an answer "+
+					"carrying host bits is a pool nothing else agrees with. Want %q.",
+					returned, c.typed, c.canonical)
+			}
+			atReplay, err := ipamPoolID(ipamLocalAddressSpace, c.canonical, opts)
 			if err != nil {
 				t.Fatalf("replay derivation: %v", err)
 			}

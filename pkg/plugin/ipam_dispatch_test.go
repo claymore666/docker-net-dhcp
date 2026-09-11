@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/claymore666/dhcp-golib/lease"
+	"github.com/vishvananda/netlink"
 
 	"github.com/claymore666/docker-net-dhcp/pkg/dhcp"
 	"github.com/claymore666/docker-net-dhcp/pkg/util"
@@ -325,24 +326,71 @@ func ipamPhaseOf(t *testing.T, p *Plugin, id string) lease.Phase {
 // use, and an address libnetwork already allocated and will refuse.
 // Every one of those is silent here and arrives at the user as
 // something else.
+// The two ways the binding can be missing are driven separately,
+// because they fail in different functions and only one of them looks
+// broken from the outside. An unparseable file is a file nothing can
+// read. A file that parses and carries no binding block is what a
+// NULL-MODE network's state file looks like, and it is the shape a
+// half-written upgrade, a rolled-back build or a hand-edited file
+// produces: perfectly valid, and silently the wrong network.
 func TestIpamBindingLost_RefusesRatherThanDegrades(t *testing.T) {
-	p, b := ipamFixture(t)
-	path, err := stateFilePath(ipamTestNetwork)
-	if err != nil {
-		t.Fatalf("stateFilePath: %v", err)
+	for _, c := range []struct{ name, content string }{
+		{"the file cannot be parsed", "{not json"},
+		{"the file parses and carries no binding", `{"schema_version":1,"options":{"mode":"bridge","bridge":"br-test"}}`},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			p, b := ipamFixture(t)
+			path, err := stateFilePath(ipamTestNetwork)
+			if err != nil {
+				t.Fatalf("stateFilePath: %v", err)
+			}
+			if err := os.WriteFile(path, []byte(c.content), 0o600); err != nil {
+				t.Fatalf("rewriting the state file: %v", err)
+			}
+			_, err = p.RequestAddress(context.Background(), RequestAddressRequest{
+				PoolID: b.PoolID, Address: "192.168.99.10",
+			})
+			if err == nil {
+				t.Fatal("an IPAM-mode network whose binding could not be read was served anyway. " +
+					"That path runs a second DHCP exchange, writes a tombstone this shape does " +
+					"not use, and answers with an address libnetwork already allocated.")
+			}
+			if !errors.Is(err, errIPAMBindingLost) {
+				t.Errorf("error %v is not errIPAMBindingLost; the refusal has to be recognisable "+
+					"to the one caller that may survive it (DeleteEndpoint)", err)
+			}
+		})
 	}
-	if err := os.WriteFile(path, []byte("{not json"), 0o600); err != nil {
-		t.Fatalf("corrupting the state file: %v", err)
-	}
-	_, err = p.RequestAddress(context.Background(), RequestAddressRequest{
-		PoolID: b.PoolID, Address: "192.168.99.10",
-	})
+}
+
+// TestIpamRefuseIPvlan is D49, and the second half is the preservation
+// control: a refusal tested only on what it now rejects has no
+// boundary, and this one rejects a mode the null shape still serves.
+func TestIpamRefuseIPvlan(t *testing.T) {
+	err := ipamRefuseIPvlan(ModeIPvlan)
 	if err == nil {
-		t.Fatal("an IPAM-mode network with an unreadable binding was served anyway")
+		t.Fatal("ipvlan was accepted in IPAM mode. libnetwork generates a MAC per endpoint " +
+			"for an IPAM driver that asks for one, and the ipvlan branch of CreateEndpoint " +
+			"refuses any supplied MAC, so every container on such a network fails to start " +
+			"with an error that names nothing about IPAM.")
 	}
-	if !errors.Is(err, errIPAMBindingLost) {
-		t.Errorf("error %v is not errIPAMBindingLost; the refusal has to be recognisable "+
-			"to the one caller that may survive it (DeleteEndpoint)", err)
+	if !errors.Is(err, util.ErrIPAM) {
+		t.Errorf("the refusal %v is not a util.ErrIPAM, so it does not map to the status "+
+			"code the other IPAM refusals use", err)
+	}
+	// The message is the whole remedy: an operator reading it has to
+	// learn the cause, the supported shape, and where the work is.
+	for _, want := range []string{"ipvlan", "--ipam-driver null", "#949"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal is %q and does not mention %q", err, want)
+		}
+	}
+	for _, mode := range []string{ModeBridge, ModeMacvlan, ""} {
+		if err := ipamRefuseIPvlan(mode); err != nil {
+			t.Errorf("mode %q was refused in IPAM mode (%v); only ipvlan is out of scope for "+
+				"v2.1.0 and a refusal that reached the other modes would take the feature "+
+				"away from everyone", mode, err)
+		}
 	}
 }
 
@@ -404,5 +452,95 @@ func TestIpamACKInPool(t *testing.T) {
 		if (err != nil) != c.wantErr {
 			t.Errorf("ipamACKInPool(%v, %v) = %v, wantErr %v", c.addr, c.pool, err, c.wantErr)
 		}
+	}
+}
+
+// TestIpamMode_CreateEndpointIsDispatchedToTheIPAMBranch drives the
+// fork in CreateEndpoint from the side that needs no netlink.
+//
+// The branch itself builds a link and cannot run in this lane, but the
+// choice of branch can: an IPAM-mode network with no reservation held
+// is refused by the IPAM branch with a message naming the reservation,
+// and a null-mode network of the same shape is not. Without the fork
+// the first call takes the null path instead and fails somewhere else
+// entirely, saying nothing about IPAM -- which is the failure an
+// operator would have to debug.
+func TestIpamMode_CreateEndpointIsDispatchedToTheIPAMBranch(t *testing.T) {
+	p, _ := ipamFixture(t)
+
+	_, err := p.CreateEndpoint(context.Background(), CreateEndpointRequest{
+		NetworkID:  ipamTestNetwork,
+		EndpointID: "ep-ipam-1",
+		Interface:  &EndpointInterface{MacAddress: ipamTestMAC, Address: "192.168.99.10/24"},
+	})
+	if err == nil {
+		t.Fatal("an endpoint was created with no reservation held for its MAC. The address " +
+			"Docker published for it is then one nothing claimed at the DHCP server.")
+	}
+	if !strings.Contains(err.Error(), "no reservation is held") {
+		t.Errorf("the refusal is %q. That is not the IPAM branch's, so CreateEndpoint took the "+
+			"null path for a network whose addresses Docker allocates: it would run a second "+
+			"DHCP exchange and answer with an address libnetwork did not hand out.", err)
+	}
+}
+
+// TestIpamMode_DeleteEndpointWritesNoJSONTombstone is design row 10.
+//
+// The 1.x hostname-keyed JSON store is still in the tree and is still
+// the re-bind mechanism for null mode. In IPAM mode the candidate is
+// the record store's retained record instead, and both stores holding
+// one for the same endpoint is one address offered to two containers.
+//
+// The null-mode half of the table is the preservation control: this
+// gate must take the write away from IPAM-mode networks and from
+// nothing else.
+func TestIpamMode_DeleteEndpointWritesNoJSONTombstone(t *testing.T) {
+	p, _ := ipamFixture(t)
+
+	// A null-mode network beside it, on the same plugin and the same
+	// state directory.
+	const nullNetwork = "net-null-1"
+	if err := saveOptions(nullNetwork, DHCPNetworkOptions{Mode: ModeBridge, Bridge: "br-test"}); err != nil {
+		t.Fatalf("saveOptions: %v", err)
+	}
+
+	restore := nlLinkByName
+	nlLinkByName = func(string) (netlink.Link, error) { return nil, netlink.LinkNotFoundError{} }
+	t.Cleanup(func() { nlLinkByName = restore })
+
+	for _, c := range []struct {
+		name      string
+		network   string
+		wantWrite bool
+		why       string
+	}{
+		{
+			name: "IPAM mode writes nothing", network: ipamTestNetwork, wantWrite: false,
+			why: "the retained record is the only re-bind candidate in this shape; a JSON " +
+				"tombstone beside it is a second claim on the same address",
+		},
+		{
+			name: "null mode is unchanged", network: nullNetwork, wantWrite: true,
+			why: "D19: the null shape is the product and its restart stability is carried by " +
+				"exactly this store",
+		},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			ep := "ep-" + c.network
+			p.rememberEndpoint(ep, endpointFingerprint{
+				MAC: ipamTestMAC, IPv4: "192.168.99.10",
+			}, dhcpHostname{name: "", refused: false})
+
+			if err := p.DeleteEndpoint(context.Background(), DeleteEndpointRequest{
+				NetworkID: c.network, EndpointID: ep,
+			}); err != nil {
+				t.Fatalf("DeleteEndpoint: %v", err)
+			}
+			mac, ipv4, _, ok := p.tombstones.consume(c.network, "some-container")
+			if ok != c.wantWrite {
+				t.Errorf("a JSON tombstone was consumable=%v (mac=%q ipv4=%q), want %v: %s",
+					ok, mac, ipv4, c.wantWrite, c.why)
+			}
+		})
 	}
 }
