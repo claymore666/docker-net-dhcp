@@ -63,7 +63,23 @@
 # as well, and the handler for that signal exits 2 rather than
 # letting the shell die by it: a script killed by a signal is
 # reported as "Terminated" by whatever waited on it, and a refusal
-# should read as a refusal.
+# should read as a refusal. The caller's own TERM handler, if it
+# has one, is composed in front of that exit rather than left in
+# place -- a handler that returns would otherwise let the caller
+# resume with the empty string, which is the defect again.
+#
+# ITS BOUNDARY, because a guarantee without one is worth less than
+# it reads. The `exit` ends the subshell the refusal was raised in;
+# the signal that stops the TOP-LEVEL shell is delivered between ITS
+# commands. Measured over four shapes: a command substitution (every
+# fixture builder in this tree, as an argument, an assignment, an
+# `if` condition or a `for` list), a pipeline element, a background
+# job and a plain `( ... )` all stop before anything else runs. The
+# one shape where something does run first is a subshell nested
+# inside another subshell -- `x=$( ( guarded_tmpdir w ); more )` --
+# where `more` completes before the script exits 2. No site in this
+# tree has that shape, and the self-test pins it so a new one cannot
+# be added believing otherwise.
 #
 # THE REGISTRY IS A FILE, NOT AN ARRAY, FOR THE SAME REASON. A
 # fixture built inside `$(mkws)` is created by a SUBSHELL, and a
@@ -83,14 +99,18 @@
 # preserved and still runs; one installed afterwards is re-composed
 # at the next call and lost if there is no next call.
 #
-# Env: TMPDIR_GUARD_ROOT  the tree a temp path must stay out of
-#                         (default: the repository this file lives
-#                         in) -- the seam the self-test drives.
+# Env: TMPDIR_GUARD_ROOT      the tree a temp path must stay out of
+#                             (default: the repository this file
+#                             lives in).
+#      TMPDIR_GUARD_REGISTRY  where the cleanup list is kept
+#                             (default: `.tmpdir-guard.$$` under
+#                             TMPDIR). Both are the seams the
+#                             self-test drives.
 
 # One registry per top-level shell. `$$` is the top-level shell's pid in
 # every subshell it forks, which is exactly the scope the sweep needs.
-_tmpdir_guard_registry="${TMPDIR:-/tmp}/.tmpdir-guard.$$"
-: > "$_tmpdir_guard_registry" 2>/dev/null || _tmpdir_guard_registry=
+_tmpdir_guard_registry="${TMPDIR_GUARD_REGISTRY:-${TMPDIR:-/tmp}/.tmpdir-guard.$$}"
+: > "$_tmpdir_guard_registry" 2>/dev/null || true
 
 _tmpdir_guard_refuse() {
     printf '::error title=Unsafe temp directory::%s: %s\n' \
@@ -103,17 +123,36 @@ _tmpdir_guard_refuse() {
     exit 2
 }
 
-# The signal a subshell refusal raises. Exiting from the handler keeps
-# the status at 2 and keeps the EXIT sweep running.
+# The signal a subshell refusal raises. Whatever the caller had on TERM
+# runs first, then this exits 2: a caller handler that RETURNS would
+# hand control back to the line that is about to `cd` into the empty
+# string, and declining to arm at all would do the same.
+_tmpdir_guard_prev_term=
 _tmpdir_guard_terminated() {
+    if [ -n "$_tmpdir_guard_prev_term" ]; then
+        eval "$_tmpdir_guard_prev_term"
+    fi
     exit 2
+}
+
+_tmpdir_guard_arm_term() {
+    local prev
+    local -a parts
+    prev="$(trap -p TERM)"
+    case "$prev" in
+        *_tmpdir_guard_terminated*) return 0 ;;
+    esac
+    if [ -n "$prev" ]; then
+        eval "parts=($prev)"
+        _tmpdir_guard_prev_term="${parts[2]:-}"
+    fi
+    trap '_tmpdir_guard_terminated' TERM
 }
 
 _tmpdir_guard_sweep() {
     # Only the shell that owns the registry sweeps it. A subshell that
     # re-armed the trap must not delete its parent's fixtures.
     [ "${BASHPID:-$$}" = "$$" ] || return 0
-    [ -n "$_tmpdir_guard_registry" ] || return 0
     [ -f "$_tmpdir_guard_registry" ] || return 0
     local d
     while IFS= read -r d; do
@@ -192,8 +231,14 @@ guarded_tmpdir() {
     __tg_dir="$(mktemp -d "$@" 2>/dev/null)" || __tg_dir=
     _tmpdir_guard_check "$__tg_dir"
     _tmpdir_guard_arm
-    if [ -n "$_tmpdir_guard_registry" ]; then
-        printf '%s\n' "$__tg_dir" >> "$_tmpdir_guard_registry"
+    _tmpdir_guard_arm_term
+    # The registry IS the cleanup: nine of the callers gave up their own
+    # EXIT trap for it. A directory that cannot be recorded would never
+    # be removed by anything, so failing to record is a refusal and not
+    # a shrug. The path is named so it can be removed by hand.
+    if ! printf '%s\n' "$__tg_dir" >> "$_tmpdir_guard_registry" 2>/dev/null; then
+        _tmpdir_guard_refuse \
+            "cannot record '$__tg_dir' in the cleanup registry '$_tmpdir_guard_registry', so nothing would ever remove it."
     fi
     printf -v "$__tg_var" '%s' "$__tg_dir"
 }
@@ -201,4 +246,4 @@ guarded_tmpdir() {
 # Armed here, at source time, so the traps belong to the top-level shell
 # and not to whichever subshell happens to ask for the first directory.
 _tmpdir_guard_arm
-[ -n "$(trap -p TERM)" ] || trap '_tmpdir_guard_terminated' TERM
+_tmpdir_guard_arm_term

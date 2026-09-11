@@ -54,6 +54,9 @@
 
 set -uo pipefail
 
+# shellcheck source=scripts/tmpdir-guard.sh
+. "$(cd "$(dirname "$0")" && pwd)/tmpdir-guard.sh"
+
 SC="${STATICCHECK:-staticcheck}"
 if ! command -v "$SC" >/dev/null 2>&1; then
     echo "FAIL  no staticcheck binary on PATH (tried '$SC'). This test refuses" >&2
@@ -62,7 +65,7 @@ if ! command -v "$SC" >/dev/null 2>&1; then
     exit 2
 fi
 
-TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
+guarded_tmpdir TMP
 pass=0; fail=0
 ok()  { pass=$((pass+1)); echo "  ok   $1"; }
 bad() { fail=$((fail+1)); echo "  FAIL $1"; }

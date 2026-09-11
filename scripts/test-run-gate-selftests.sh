@@ -21,9 +21,11 @@
 # rather than asserted.
 set -u
 
+# shellcheck source=scripts/tmpdir-guard.sh
+. "$(cd "$(dirname "$0")" && pwd)/tmpdir-guard.sh"
+
 RUNNER="$(dirname "$0")/run-gate-selftests.sh"
-TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT
+guarded_tmpdir TMP
 
 failures=0
 # check NAME WANT_EXIT DIR GREP

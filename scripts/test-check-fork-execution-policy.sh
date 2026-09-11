@@ -22,9 +22,11 @@
 # seven cases returned the right exit code having invoked nothing.
 set -u
 
+# shellcheck source=scripts/tmpdir-guard.sh
+. "$(cd "$(dirname "$0")" && pwd)/tmpdir-guard.sh"
+
 CHECK="$(cd "$(dirname "$0")" && pwd)/check-fork-execution-policy.sh"
-TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT
+guarded_tmpdir TMP
 
 STUB="$TMP/bin"; mkdir -p "$STUB"
 export GH_CALLS="$TMP/calls" GH_MODE="$TMP/mode"

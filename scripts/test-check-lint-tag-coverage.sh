@@ -37,9 +37,12 @@
 # Usage: bash scripts/test-check-lint-tag-coverage.sh
 
 set -uo pipefail
+
+# shellcheck source=scripts/tmpdir-guard.sh
+. "$(cd "$(dirname "$0")" && pwd)/tmpdir-guard.sh"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 GATE="$HERE/check-lint-tag-coverage.sh"
-TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
+guarded_tmpdir TMP
 pass=0; fail=0
 SHAPE=bare
 ok()  { pass=$((pass+1)); echo "  ok   [$SHAPE] $1"; }

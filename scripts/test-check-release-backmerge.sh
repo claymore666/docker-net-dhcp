@@ -20,9 +20,11 @@
 #     exit 2, never 0. A gate that cannot see must say so.
 set -u
 
+# shellcheck source=scripts/tmpdir-guard.sh
+. "$(cd "$(dirname "$0")" && pwd)/tmpdir-guard.sh"
+
 CHECK="$(cd "$(dirname "$0")" && pwd)/check-release-backmerge.sh"
-TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT
+guarded_tmpdir TMP
 
 # Fixed clock. Every commit date below is expressed as an offset from
 # this, and the gate is told the same value as "now".

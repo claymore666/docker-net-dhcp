@@ -10,9 +10,11 @@
 # falsely reported as an upgrade candidate.
 set -u
 
+# shellcheck source=scripts/tmpdir-guard.sh
+. "$(cd "$(dirname "$0")" && pwd)/tmpdir-guard.sh"
+
 CHECK="$(dirname "$0")/check-apk-pins.sh"
-TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT
+guarded_tmpdir TMP
 
 # Synthetic Dockerfile the checker parses pins + alpine ref from.
 DF="$TMP/Dockerfile"

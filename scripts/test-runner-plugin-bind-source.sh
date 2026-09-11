@@ -21,13 +21,15 @@
 # crashed by then. So the ordering is asserted here as its own case.
 set -uo pipefail
 
+# shellcheck source=scripts/tmpdir-guard.sh
+. "$(cd "$(dirname "$0")" && pwd)/tmpdir-guard.sh"
+
 HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO="$(cd "$HERE/.." && pwd)"
 EP="$REPO/ci/runner-image/entrypoint.sh"
 [ -f "$EP" ] || { echo "FAIL: $EP does not exist"; exit 2; }
 
-TMP=$(mktemp -d)
-trap 'rm -rf "$TMP"' EXIT
+guarded_tmpdir TMP
 fails=0
 
 check() {

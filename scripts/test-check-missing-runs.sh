@@ -9,6 +9,9 @@
 # health, so every unreadable answer must be loud rather than clean.
 set -uo pipefail
 
+# shellcheck source=scripts/tmpdir-guard.sh
+. "$(cd "$(dirname "$0")" && pwd)/tmpdir-guard.sh"
+
 HERE="$(cd "$(dirname "$0")" && pwd)"
 CHECK="$HERE/check-missing-runs.sh"
 pass=0; fail=0
@@ -50,7 +53,7 @@ EOF
 }
 
 run_it() {
-    local dir; dir=$(mktemp -d)
+    local dir; guarded_tmpdir dir
     make_gh "$dir" "$1" "$2" "$3"
     # Branch phase off: these cases are about open PR heads.
     PATH="$dir/bin:$PATH" GATE_REPO=o/r GATE_BRANCHES='' bash "$CHECK" 20 >"$dir/o" 2>&1
@@ -92,7 +95,7 @@ EOF
 }
 
 run_branch() {
-    local dir; dir=$(mktemp -d)
+    local dir; guarded_tmpdir dir
     make_branch_gh "$dir" "$1" "$2"
     PATH="$dir/bin:$PATH" GATE_REPO=o/r GATE_BRANCHES=dev \
         bash "$CHECK" 20 >"$dir/o" 2>&1
@@ -244,7 +247,7 @@ out=$(run_branch "$OLD_COMMIT" "ERR"); rc=$?
   no "unreadable branch runs query returned $rc"
 
 # --- the phase can be turned off ------------------------------------
-dir=$(mktemp -d); make_branch_gh "$dir" "$OLD_COMMIT" ""
+guarded_tmpdir dir; make_branch_gh "$dir" "$OLD_COMMIT" ""
 PATH="$dir/bin:$PATH" GATE_REPO=o/r GATE_BRANCHES='' bash "$CHECK" 20 >/dev/null 2>&1
 [ "$?" = 0 ] && ok "GATE_BRANCHES empty skips the branch phase" || no "empty GATE_BRANCHES still reconciled branches"
 rm -rf "$dir"
@@ -288,7 +291,7 @@ EOF
 }
 
 run_chain() {
-    local dir; dir=$(mktemp -d)
+    local dir; guarded_tmpdir dir
     make_chain_gh "$dir" "$@"
     PATH="$dir/bin:$PATH" GATE_REPO=o/r GATE_BRANCHES=dev \
         bash "$CHECK" 20 >"$dir/o" 2>&1
@@ -346,7 +349,7 @@ OTHER_PR="[{\"number\":9,\"head\":\"$OTHER_SHA\",\"branch\":\"feature/y\",\"upda
 
 # run_rec <record-body> <pulls-json>
 run_rec() {
-    local dir; dir=$(mktemp -d)
+    local dir; guarded_tmpdir dir
     make_gh "$dir" "$2" "$OLD" "0"
     printf '%s\n' "$1" > "$dir/rec.tsv"
     PATH="$dir/bin:$PATH" GATE_REPO=o/r GATE_BRANCHES='' \
@@ -398,7 +401,7 @@ out=$(run_rec "$(printf '# a comment\n\n%s' "$GOOD_REC")" "$REC_PR"); rc=$?
 
 # With no record at all the gate behaves exactly as it did before it
 # existed -- the control that proves the feature is additive.
-dir=$(mktemp -d); make_gh "$dir" "$REC_PR" "$OLD" "0"
+guarded_tmpdir dir; make_gh "$dir" "$REC_PR" "$OLD" "0"
 out=$(PATH="$dir/bin:$PATH" GATE_REPO=o/r GATE_BRANCHES='' \
       GATE_RECOVERED_FILE="$dir/absent.tsv" bash "$CHECK" 20 2>&1); rc=$?
 rm -rf "$dir"
@@ -424,7 +427,7 @@ rm -rf "$dir"
 # the same shape one level in. A case that cannot run is a case that
 # reports nothing, and the count is the only place that showed it.
 if [ -f "$HERE/../.github/recovered-heads.tsv" ]; then
-    dir=$(mktemp -d); make_gh "$dir" "$ONE_PR" "$NEW" "1"
+    guarded_tmpdir dir; make_gh "$dir" "$ONE_PR" "$NEW" "1"
     out=$(PATH="$dir/bin:$PATH" GATE_REPO=o/r GATE_BRANCHES='' bash "$CHECK" 20 2>&1); rc=$?
     rm -rf "$dir"
     [ "$rc" = 0 ] && ok "the record committed to the tree parses under the real default path" || \
@@ -539,7 +542,7 @@ esac
 # would let the two disagree while both looked healthy, which is the whole
 # failure being closed.
 run_scope() {   # run_scope <scope-file-path> [gh-call-log]
-    local dir; dir=$(mktemp -d)
+    local dir; guarded_tmpdir dir
     make_branch_gh "$dir" "$OLD_COMMIT" "completed:success"
     PATH="$dir/bin:$PATH" GATE_REPO=o/r GATE_SCOPE_FILE="$1" GHLOG="${2:-}" \
         bash "$CHECK" 20 >"$dir/o" 2>&1
@@ -559,7 +562,7 @@ out=$(run_scope "/nonexistent/gate-branch-scope.env"); rc=$?
   && ok "an unreadable scope file exits 2 rather than judging on a private default" \
   || no "missing scope returned $rc (want 2, naming the unreadable file): $out"
 
-SCOPETMP=$(mktemp -d)
+guarded_tmpdir SCOPETMP
 printf 'GATE_SCOPE_BRANCHES="dev main"\n' > "$SCOPETMP/half.env"
 out=$(run_scope "$SCOPETMP/half.env"); rc=$?
 [ "$rc" = 2 ] && ok "a scope file defining only half the scope exits 2" \
@@ -570,7 +573,7 @@ out=$(run_scope "$SCOPETMP/half.env"); rc=$?
 # completeness check runs, and a half scope file would be completed by it --
 # this gate then judging a population the file never named. Nothing exports
 # these today, which is precisely why it is asserted.
-dir=$(mktemp -d); make_branch_gh "$dir" "$OLD_COMMIT" "completed:success"
+guarded_tmpdir dir; make_branch_gh "$dir" "$OLD_COMMIT" "completed:success"
 out=$(PATH="$dir/bin:$PATH" GATE_REPO=o/r GATE_SCOPE_FILE="$SCOPETMP/half.env" \
       GATE_SCOPE_COMMITS=15 bash "$CHECK" 20 2>&1); rc=$?
 rm -rf "$dir"
@@ -584,7 +587,7 @@ rm -rf "$dir"
 # The seam still works: an empty GATE_BRANCHES in the ENVIRONMENT skips the
 # branch phase, which is what the self-tests drive and what keeps this file
 # from being the only way to isolate the PR phase.
-dir=$(mktemp -d); make_branch_gh "$dir" "$OLD_COMMIT" "completed:success"
+guarded_tmpdir dir; make_branch_gh "$dir" "$OLD_COMMIT" "completed:success"
 out=$(PATH="$dir/bin:$PATH" GATE_REPO=o/r GATE_BRANCHES='' bash "$CHECK" 20 2>&1); rc=$?
 rm -rf "$dir"
 case "$out" in
@@ -678,7 +681,7 @@ out=$(run_scope "$SCOPETMP/dupb.env"); rc=$?
 # normalised onto that same path rather than refused. Both directions are
 # asserted: the blank list disables, and a real list still reconciles.
 seam_branch() {   # seam_branch <label> <gate-branches-value>
-    local dir; dir=$(mktemp -d)
+    local dir; guarded_tmpdir dir
     make_branch_gh "$dir" "$OLD_COMMIT" "completed:success"
     local out rc
     out=$(PATH="$dir/bin:$PATH" GATE_REPO=o/r GATE_BRANCHES="$2" bash "$CHECK" 20 2>&1); rc=$?
@@ -694,7 +697,7 @@ seam_branch "set to a newline only" "$SEAM_NL"
 seam_branch "set to a space, a tab and a newline" " $SEAM_TAB$SEAM_NL"
 # THE OTHER DIRECTION: a real list through the seam still reconciles, or the
 # normalisation is a disable-only guard that switched the branch phase off.
-dir=$(mktemp -d); make_branch_gh "$dir" "$OLD_COMMIT" "completed:success"
+guarded_tmpdir dir; make_branch_gh "$dir" "$OLD_COMMIT" "completed:success"
 out=$(PATH="$dir/bin:$PATH" GATE_REPO=o/r GATE_BRANCHES="dev" bash "$CHECK" 20 2>&1); rc=$?
 rm -rf "$dir"
 [ "$rc" = 0 ] && grep -qF "branch commit(s) on [dev]" <<<"$out" \
@@ -709,7 +712,7 @@ rm -rf "$dir"
 # population, silently, and if only one of the two scripts carries the
 # override they stop reading one list.
 seam_depth() {   # seam_depth <label> <gate-branch-commits-value>
-    local dir; dir=$(mktemp -d)
+    local dir; guarded_tmpdir dir
     make_branch_gh "$dir" "$OLD_COMMIT" "completed:success"
     local out rc
     out=$(PATH="$dir/bin:$PATH" GATE_REPO=o/r GATE_BRANCHES=dev GATE_BRANCH_COMMITS="$2" \
@@ -727,7 +730,7 @@ seam_depth "carries a stray character" "15x"
 # THE OTHER DIRECTION, asserted ON THE WIRE: a legal override is honoured and
 # is the number actually queried. Exit code alone would pass against a gate
 # that accepted the value and then ignored it.
-dir=$(mktemp -d); make_branch_gh "$dir" "$OLD_COMMIT" "completed:success"
+guarded_tmpdir dir; make_branch_gh "$dir" "$OLD_COMMIT" "completed:success"
 PATH="$dir/bin:$PATH" GATE_REPO=o/r GATE_BRANCHES=dev GATE_BRANCH_COMMITS=7 \
     GHLOG="$dir/calls" bash "$CHECK" 20 >/dev/null 2>&1; rc=$?
 seam_wire=$(grep -cF 'per_page=7' "$dir/calls" 2>/dev/null || true)
@@ -745,7 +748,7 @@ rm -rf "$dir"
 # it cannot make the two gates read different populations, which is the
 # property the scope file exists to hold. Recorded as a case so the
 # direction is asserted rather than asserted about.
-dir=$(mktemp -d); make_branch_gh "$dir" "$OLD_COMMIT" ""
+guarded_tmpdir dir; make_branch_gh "$dir" "$OLD_COMMIT" ""
 out=$(PATH="$dir/bin:$PATH" GATE_REPO=o/r GATE_BRANCHES=dev GATE_WORKFLOW=nonexistent.yml \
       bash "$CHECK" 20 2>&1); rc=$?
 rm -rf "$dir"
@@ -832,7 +835,7 @@ fi
 #
 # Driven by EXIT CODE on each shape alone, and paired with the opposite
 # direction below, because a guard fails in one direction.
-SMUG=$(mktemp -d)
+guarded_tmpdir SMUG
 smuggle_scope() {   # smuggle_scope <label> <content>
     printf '%s' "$2" > "$SMUG/s.env"
     run_scope "$SMUG/s.env" >/dev/null 2>&1
@@ -881,7 +884,7 @@ rm -rf "$SMUG"
 # the exit code alone is satisfied by a gate that resolved the pattern to
 # nothing and reconciled an empty set.
 glob_branch() {   # glob_branch <gate-branches> <stub-branch-list> -> GOUT, GRC, GLOG
-    GDIR=$(mktemp -d)
+    guarded_tmpdir GDIR
     make_branch_gh "$GDIR" "$OLD_COMMIT" ""
     GOUT=$(PATH="$GDIR/bin:$PATH" GATE_REPO=o/r GATE_BRANCHES="$1" \
            STUB_BRANCHES="$2" GHLOG="$GDIR/calls" bash "$CHECK" 20 2>&1); GRC=$?

@@ -13,14 +13,16 @@
 # every other case here while blocking the next real change.
 set -uo pipefail
 
+# shellcheck source=scripts/tmpdir-guard.sh
+. "$(cd "$(dirname "$0")" && pwd)/tmpdir-guard.sh"
+
 HERE="$(cd "$(dirname "$0")" && pwd)"
 CHECK="$HERE/check-health-contract.sh"
 pass=0; fail=0
 ok() { printf 'PASS  %s\n' "$1"; pass=$((pass + 1)); }
 no() { printf 'FAIL  %s\n' "$1" >&2; fail=$((fail + 1)); }
 
-DIR=$(mktemp -d)
-trap 'rm -rf "$DIR"' EXIT
+guarded_tmpdir DIR
 
 # mkdoc <file> <count-word> <summary-list> <row-list> <yes-list> \
 #       [<trouble-list>] [<trouble-word>] [<preamble-word>] \

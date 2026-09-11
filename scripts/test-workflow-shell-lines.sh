@@ -21,11 +21,14 @@
 # Usage: bash scripts/test-workflow-shell-lines.sh
 
 set -uo pipefail
+
+# shellcheck source=scripts/tmpdir-guard.sh
+. "$(cd "$(dirname "$0")" && pwd)/tmpdir-guard.sh"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=scripts/workflow-shell-lines.sh
 . "$HERE/workflow-shell-lines.sh"
 
-TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
+guarded_tmpdir TMP
 pass=0; fail=0
 ok()  { pass=$((pass+1)); echo "  ok   $1"; }
 bad() { fail=$((fail+1)); echo "  FAIL $1"; }

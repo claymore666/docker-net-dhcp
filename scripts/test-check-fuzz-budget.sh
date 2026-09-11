@@ -11,9 +11,11 @@
 # failure mode this repo has shipped twice.
 set -u
 
+# shellcheck source=scripts/tmpdir-guard.sh
+. "$(cd "$(dirname "$0")" && pwd)/tmpdir-guard.sh"
+
 CHECK="$(dirname "$0")/check-fuzz-budget.sh"
-TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT
+guarded_tmpdir TMP
 
 failures=0
 # check NAME WANT_EXIT WORKFLOW_BODY GREP_PATTERN

@@ -22,9 +22,12 @@
 # of these cases pass with the stub inert.
 
 set -uo pipefail
+
+# shellcheck source=scripts/tmpdir-guard.sh
+. "$(cd "$(dirname "$0")" && pwd)/tmpdir-guard.sh"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 GATE="$HERE/purge-workflow-runs.sh"
-TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
+guarded_tmpdir TMP
 pass=0; fail=0
 ok()  { echo "  ok   - $1"; pass=$((pass+1)); }
 no()  { echo "  FAIL - $1"; fail=$((fail+1)); }
@@ -791,7 +794,7 @@ esac
 
 # DRIVE THE ABSENCE: the scan has to go off on each shape, or the clean
 # verdict above proves only that the pattern matches nothing.
-RESTATE=$(mktemp -d)
+guarded_tmpdir RESTATE
 # Each helper asserts ITS OWN ARM, never merely "the scan said something".
 # A widening needs a preservation control: if these cases only tested for a
 # non-empty result, deleting the `named` pattern outright would leave every

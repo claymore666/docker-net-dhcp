@@ -17,14 +17,16 @@
 # are readable in the fixture itself.
 set -uo pipefail
 
+# shellcheck source=scripts/tmpdir-guard.sh
+. "$(cd "$(dirname "$0")" && pwd)/tmpdir-guard.sh"
+
 HERE="$(cd "$(dirname "$0")" && pwd)"
 GATE="$HERE/check-release-notes-symbols.sh"
 pass=0; fail=0
 ok() { printf 'PASS  %s\n' "$1"; pass=$((pass + 1)); }
 no() { printf 'FAIL  %s\n' "$1" >&2; fail=$((fail + 1)); }
 
-WORK=$(mktemp -d) || exit 2
-trap 'rm -rf "$WORK"' EXIT
+guarded_tmpdir WORK
 
 cat > "$WORK/src.go" <<'GO'
 package fixture
