@@ -53,8 +53,15 @@ const parentGateBudget = 4 * time.Second
 //
 // LOCK ORDERING. Two locks live here and they are not peers:
 //
-//   - mu is a leaf. It is held only for the map lookup in tokenFor, never
-//     across IO, and nothing else may be acquired while it is held.
+//   - mu is a leaf, and it covers all three maps here: the tokens, the
+//     holders and the waiter registry. enterWait holds it across every
+//     one of them plus a NON-BLOCKING send on the token and a walk of
+//     the waiters for that one parent -- which is the point of that
+//     function, since splitting the registration from the attempt is
+//     what reopens the window it exists to close. Nothing under this
+//     lock can block, and nothing else may be acquired while it is
+//     held. That is the whole rule: not "one map lookup", but "never
+//     across anything that waits".
 //   - the per-parent token (the channel) IS held across blocking IO —
 //     that is its job. It must therefore never be taken while holding
 //     Plugin.mu, or a slow probe would block every registry read on the
@@ -69,17 +76,51 @@ const parentGateBudget = 4 * time.Second
 type parentGate struct {
 	mu     sync.Mutex
 	tokens map[string]chan struct{}
+	// holders is the KIND of child the current holder of each parent is
+	// about to attach -- ModeMacvlan or ModeIPvlan -- and it exists for
+	// reporting, not for exclusion. The kernel refuses only the CROSS
+	// pair; two macvlan children on one parent are legal and common.
+	// Without this the gate cannot tell a wait it was right to make
+	// from one that protected nothing, and both arrive at the operator
+	// as the same health warning.
+	holders map[string]string
+	// waiters are the callers currently waiting for each parent, and
+	// they are the half a point reading cannot replace. The question a
+	// give-up asks is about an INTERVAL -- did anything attaching the
+	// other kind hold this parent while I waited -- and sampling the
+	// holder at each end answers it only if nothing changed twice in
+	// between. So the waiter registers itself instead, and every take
+	// of a different kind marks it while it waits.
+	waiters map[string]map[*parentWaiter]struct{}
 }
 
-// tokenFor returns the queue for one parent, creating it on first use.
+// parentWaiter is one caller waiting for one parent.
+//
+// foreign is the whole verdict, and it is WRITE-ONCE-TRUE: set at
+// registration if the parent was already held by anything other than
+// this caller's kind, and set by any later take of another kind. Once
+// set it stays set, so a cross-kind holder that came and went during
+// the wait is still visible at the give-up -- the child it attached
+// outlives it on the parent, and the kernel can refuse this caller's
+// LinkAdd long after that holder is gone.
+//
+// Keeping it as a flag rather than as a holder sampled at each end is
+// what removes the interval this fix is about: there is no second
+// reading to be taken at the wrong moment, because there is no second
+// reading at all.
+type parentWaiter struct {
+	kind    string
+	foreign bool
+}
+
+// tokenLocked returns the queue for one parent, creating it on first
+// use. The caller holds g.mu.
 //
 // Entries are never removed. A host has a handful of NICs and the map
 // is keyed by interface name, so it is bounded by the machine rather
 // than by traffic; reclaiming entries would need a refcount whose only
 // purpose is to free a few dozen bytes.
-func (g *parentGate) tokenFor(parent string) chan struct{} {
-	g.mu.Lock()
-	defer g.mu.Unlock()
+func (g *parentGate) tokenLocked(parent string) chan struct{} {
 	if g.tokens == nil {
 		g.tokens = make(map[string]chan struct{})
 	}
@@ -91,35 +132,189 @@ func (g *parentGate) tokenFor(parent string) chan struct{} {
 	return tok
 }
 
+// enterWait registers a caller against one parent AND makes its first
+// attempt on the queue, both inside ONE acquisition of the lock.
+//
+// The two are fused on purpose. Reading the holder after the queue has
+// already been tried leaves a window -- between the failed attempt and
+// the read -- in which a cross-kind holder can release to a same-kind
+// one, and the caller then sees nothing but its own kind at both ends
+// of a wait whose LinkAdd the kernel may still refuse. A gap that
+// narrow cannot be driven from a test, so it is closed by construction
+// instead: there is no separate attempt to move, and reopening the
+// window means taking this lock twice.
+//
+// The non-blocking send is safe under the lock for the reason every
+// other use of g.mu is: it cannot block, so mu stays a leaf held across
+// no IO.
+//
+// Returns the queue, the registration, and whether the attempt won.
+func (g *parentGate) enterWait(parent, kind string) (chan struct{}, *parentWaiter, bool) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	tok := g.tokenLocked(parent)
+	// The holder at this instant counts exactly like a take during the
+	// wait, including "nothing holds it" and "a holder that named no
+	// kind", both of which spell an empty string and neither of which
+	// is evidence that nothing can conflict.
+	w := &parentWaiter{kind: kind, foreign: g.holders[parent] != kind}
+	if g.waiters == nil {
+		g.waiters = make(map[string]map[*parentWaiter]struct{})
+	}
+	if g.waiters[parent] == nil {
+		g.waiters[parent] = make(map[*parentWaiter]struct{})
+	}
+	g.waiters[parent][w] = struct{}{}
+	select {
+	case tok <- struct{}{}:
+		g.noteTakeLocked(parent, kind)
+		return tok, w, true
+	default:
+	}
+	return tok, w, false
+}
+
+// leaveWait deregisters a caller. Always called, waited or not.
+func (g *parentGate) leaveWait(parent string, w *parentWaiter) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	delete(g.waiters[parent], w)
+	if len(g.waiters[parent]) == 0 {
+		delete(g.waiters, parent)
+	}
+}
+
+// noteTake records a new holder and marks every waiter it could
+// conflict with.
+//
+// A take of an UNIDENTIFIED kind marks everyone, for the reason an
+// unidentified holder keeps the warning: no evidence about a holder is
+// not evidence that it cannot conflict.
+func (g *parentGate) noteTake(parent, kind string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.noteTakeLocked(parent, kind)
+}
+
+// noteTakeLocked is noteTake's body, for the take that happens inside
+// enterWait's critical section. The caller holds g.mu.
+func (g *parentGate) noteTakeLocked(parent, kind string) {
+	if g.holders == nil {
+		g.holders = make(map[string]string)
+	}
+	if kind == "" {
+		delete(g.holders, parent)
+	} else {
+		g.holders[parent] = kind
+	}
+	for w := range g.waiters[parent] {
+		if w.kind != kind {
+			w.foreign = true
+		}
+	}
+}
+
+// clearHolder forgets the holder of one parent. It is a RELEASE and
+// marks nobody: a holder going away conflicts with no one.
+func (g *parentGate) clearHolder(parent string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	delete(g.holders, parent)
+}
+
+// holderKind reports the kind the current holder is attaching, or "" if
+// nothing holds this parent right now.
+func (g *parentGate) holderKind(parent string) string {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.holders[parent]
+}
+
+// heldThroughout answers the only question the give-up path may act on:
+// was everything that held this parent during the wait attaching the
+// same kind of child as the caller?
+//
+// It reads the registration and nothing else. Anything but "my own kind
+// from the moment I registered to now" answers "" -- nothing was
+// holding it, a holder could not be identified, or something of the
+// other kind held it at any point -- because the conservative reading
+// of incomplete evidence is the one that keeps the health warning.
+func (g *parentGate) heldThroughout(w *parentWaiter) string {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if w.foreign {
+		return ""
+	}
+	// A caller that named no kind answers with its own empty string,
+	// which the give-up path already reads as no evidence.
+	return w.kind
+}
+
 // acquire takes the gate for one parent, waiting up to budget.
+//
+// kind is the child this caller is about to attach (ModeMacvlan or
+// ModeIPvlan). It changes nothing about who waits for whom -- the gate
+// stays a plain mutual exclusion -- and is recorded so that a caller
+// which GAVE UP waiting can find out whether anything that held the
+// parent while it waited could ever have conflicted with it.
 //
 // Returns a release func that is ALWAYS safe to call — on the timeout
 // path it is a no-op, so callers can defer it unconditionally without
 // caring whether the wait succeeded. The bool reports whether the gate
-// was actually held, which is what the counters key on.
-func (g *parentGate) acquire(ctx context.Context, parent string, budget time.Duration) (func(), bool) {
+// was actually held, which is what the counters key on. The string is
+// the kind that held the parent throughout, empty where that could not
+// be established, and it is meaningful only when the bool is false.
+func (g *parentGate) acquire(ctx context.Context, parent, kind string, budget time.Duration) (func(), bool, string) {
 	if parent == "" {
-		return func() {}, false
-	}
-	tok := g.tokenFor(parent)
-
-	// The uncontended path, which is nearly all of them: no timer, no
-	// allocation, no wait.
-	select {
-	case tok <- struct{}{}:
-		return func() { <-tok }, true
-	default:
+		return func() {}, false, ""
 	}
 
+	// One critical section registers this caller and makes its first
+	// attempt, which is what leaves no interval between the two. The
+	// uncontended path -- nearly all of them -- ends here, with no
+	// timer and no wait.
+	tok, w, took := g.enterWait(parent, kind)
+	defer g.leaveWait(parent, w)
+	if took {
+		return g.release(parent, tok), true, ""
+	}
+
+	return g.waitForParent(ctx, parent, kind, budget, tok, w)
+}
+
+// take marks the gate held and returns its release. enterWait does its
+// own marking, under the lock it already holds, and calls release
+// directly.
+func (g *parentGate) take(parent, kind string, tok chan struct{}) func() {
+	g.noteTake(parent, kind)
+	return g.release(parent, tok)
+}
+
+// release is what a holder calls to give the parent back.
+func (g *parentGate) release(parent string, tok chan struct{}) func() {
+	return func() {
+		g.clearHolder(parent)
+		<-tok
+	}
+}
+
+// waitForParent is acquire's contended half: wait out the budget, and
+// on giving up report which kind -- if it can be established -- held
+// the parent for the whole wait.
+//
+// w is the caller's registration. It is a parameter and not a fresh
+// read, so this half cannot answer on a later reading than the one its
+// caller started from.
+func (g *parentGate) waitForParent(ctx context.Context, parent, kind string, budget time.Duration, tok chan struct{}, w *parentWaiter) (func(), bool, string) {
 	timer := time.NewTimer(budget)
 	defer timer.Stop()
 	select {
 	case tok <- struct{}{}:
-		return func() { <-tok }, true
+		return g.take(parent, kind, tok), true, ""
 	case <-ctx.Done():
-		return func() {}, false
+		return func() {}, false, g.heldThroughout(w)
 	case <-timer.C:
-		return func() {}, false
+		return func() {}, false, g.heldThroughout(w)
 	}
 }
 
@@ -200,13 +395,13 @@ func addChildLink(_ *parentGuard, link netlink.Link) error {
 // is whether this host is contending on a parent at all.
 //
 // Never returns nil, so a caller can always defer Unlock.
-func (p *Plugin) lockParent(ctx context.Context, parent, op string) *parentGuard {
+func (p *Plugin) lockParent(ctx context.Context, parent, kind, op string) *parentGuard {
 	if p == nil || parent == "" {
 		return &parentGuard{}
 	}
 
 	start := time.Now()
-	release, ok := p.parentGate.acquire(ctx, parent, parentGateBudget)
+	release, ok, heldKind := p.parentGate.acquire(ctx, parent, kind, parentGateBudget)
 	waited := time.Since(start)
 
 	switch {
@@ -221,12 +416,37 @@ func (p *Plugin) lockParent(ctx context.Context, parent, op string) *parentGuard
 			"op":     op,
 			"waited": waited.String(),
 		}).Debug("Waited for another operation to finish with the parent interface")
-	default:
-		p.parentLinkWaitTimeouts.Add(1)
+	case heldKind != "" && heldKind == kind:
+		// GAVE UP, AND NOTHING WAS AT STAKE. The gate excludes more
+		// than the kernel does: a parent registers one rx_handler, so
+		// it refuses the CROSS pair, and children of the same kind
+		// coexist. Losing a wait to a holder of one's own kind
+		// therefore costs the budget and protects nothing, and the
+		// caller proceeds to a LinkAdd the kernel will accept.
+		//
+		// It is counted as a wait rather than as a timeout because the
+		// timeout counter is a health warning whose whole meaning is
+		// "a start on this NIC may have been refused". Two containers
+		// starting together on one macvlan network -- which is what
+		// `docker compose up` is -- land here every time once an
+		// address reservation holds a parent across its DHCP exchange,
+		// and reporting that as a warning would teach an operator to
+		// ignore the counter that names the real collision.
+		p.parentLinkWaits.Add(1)
 		log.WithFields(log.Fields{
 			"parent": parent,
 			"op":     op,
+			"kind":   kind,
 			"budget": parentGateBudget.String(),
+		}).Debug("Gave up waiting for the parent interface; the holder is attaching the same kind of child, which the kernel permits alongside this one")
+	default:
+		p.parentLinkWaitTimeouts.Add(1)
+		log.WithFields(log.Fields{
+			"parent":      parent,
+			"op":          op,
+			"kind":        kind,
+			"holder_kind": heldKind,
+			"budget":      parentGateBudget.String(),
 		}).Warn("Gave up waiting for the parent interface; proceeding, the kernel may refuse this")
 	}
 	return &parentGuard{release: release}

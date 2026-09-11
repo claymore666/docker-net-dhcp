@@ -151,6 +151,13 @@ type EphemeralFixture struct {
 	// WithParentAddress.
 	parentCIDR string
 
+	// ignoreClientID makes the server key its lease bindings on the
+	// hardware address and disregard the client identifier (option 61),
+	// which is dnsmasq's --dhcp-ignore-clid. It is the WEAKER server,
+	// and it exists so a property that depends on the stronger one can
+	// be driven rather than argued. See WithIgnoreClientID.
+	ignoreClientID bool
+
 	// leaseSeconds is the granted lease lifetime (Kea valid-lifetime).
 	// Under dnsmasq this was pinned to its 2m floor; it is now a knob,
 	// which is the whole point of #356.
@@ -312,6 +319,43 @@ func WithRenewTimes(t1, t2 int) EphemeralOption {
 func WithLeaseSeconds(seconds int) EphemeralOption {
 	return func(ef *EphemeralFixture) {
 		ef.leaseSeconds = seconds
+	}
+}
+
+// WithDnsmasqBackend selects dnsmasq with no other change. It exists
+// as the CONTROL for WithIgnoreClientID: a test that showed a property
+// failing under --dhcp-ignore-clid and holding under Kea would have
+// measured two differences and attributed both to one flag.
+func WithDnsmasqBackend() EphemeralOption {
+	return func(ef *EphemeralFixture) {
+		ef.backend = backendDnsmasq
+	}
+}
+
+// WithIgnoreClientID runs the server with lease bindings keyed on the
+// HARDWARE ADDRESS ALONE, disregarding the client identifier (option
+// 61). dnsmasq spells it --dhcp-ignore-clid; it is a supported
+// configuration and some servers behave this way by default.
+//
+// It exists because one of this plugin's headline properties rests on
+// the opposite. In IPAM mode a restarted container comes back under a
+// NEW hardware address -- libnetwork generates one per endpoint -- and
+// keeps its address only because the plugin re-sends the previous
+// endpoint's client identifier and the server matches on that (RFC 2131
+// section 4.2: a server "MUST use that identifier to identify the
+// client"). Against a server that ignores option 61 there is nothing
+// left to match on, and the property is simply not available.
+//
+// A test that only ever ran against the strong server could not tell
+// "the plugin carries the identity" from "the server happened to keep
+// the address", so this is the control that separates them.
+//
+// It selects the dnsmasq backend: Kea's equivalent is a different
+// mechanism and this is the spelling the finding was made against.
+func WithIgnoreClientID() EphemeralOption {
+	return func(ef *EphemeralFixture) {
+		ef.backend = backendDnsmasq
+		ef.ignoreClientID = true
 	}
 }
 
@@ -827,6 +871,9 @@ func (ef *EphemeralFixture) startDnsmasq() {
 		"--dhcp-broadcast",
 		"--log-dhcp",
 		"--log-facility=-",
+	}
+	if ef.ignoreClientID {
+		args = append(args, "--dhcp-ignore-clid")
 	}
 	if ef.renewT1 > 0 {
 		args = append(args, fmt.Sprintf("--dhcp-option=58,%d", ef.renewT1))

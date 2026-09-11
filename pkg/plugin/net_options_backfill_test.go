@@ -172,7 +172,11 @@ func TestNetOptions_AbsentFileStillBackfills(t *testing.T) {
 	if err := json.Unmarshal(raw, &vo); err != nil {
 		t.Fatal(err)
 	}
-	if vo.V != stateSchemaVersion {
-		t.Errorf("backfilled file carries v%d, want v%d", vo.V, stateSchemaVersion)
+	// The BASE version: a backfill writes a null-IPAM network's options
+	// and nothing else, and that file is byte-identical to what schema 1
+	// wrote. Stamping the current version here would have a v2.0 build
+	// refuse a file this one just proved it can read.
+	if vo.V != stateSchemaVersionBase {
+		t.Errorf("backfilled file carries v%d, want v%d", vo.V, stateSchemaVersionBase)
 	}
 }

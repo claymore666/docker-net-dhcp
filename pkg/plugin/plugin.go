@@ -1112,6 +1112,91 @@ type Plugin struct {
 	// writing the state directory directly.
 	networkOptionsRejected atomic.Int32
 
+	// The IPAM driver's state and counters (#110). ipamPools is the set
+	// of PoolIDs RequestPool has answered and CreateNetwork has not yet
+	// bound; ipamIndex maps a bound PoolID to its network and is rebuilt
+	// from the state directory at start-up; ipamReserves is the
+	// in-flight and unclaimed reservations, which is what holds one
+	// hardware address to one DHCP exchange.
+	ipamPools    *issuedPools
+	ipamIndex    *ipamIndex
+	ipamReserves *ipamReserves
+	// ipamSweepStop ends the reservation sweeper. Closed by Close and
+	// never written to, so a double Close is the one thing it must not
+	// tolerate -- Close already refuses to run twice.
+	ipamSweepStop chan struct{}
+
+	// ipamReplayHits counts stored endpoint addresses this plugin
+	// confirmed at a daemon restart from its own lease record.
+	//
+	// Not healthy-affecting: it is the mechanism working. It is
+	// reported because it is the only outside evidence that an
+	// IPAM-mode network survived a restart by replay rather than by
+	// luck -- the container keeps its address either way, and only this
+	// number says which path delivered it.
+	ipamReplayHits atomic.Int32
+
+	// ipamReplayMiss counts stored endpoint addresses this plugin
+	// refused to confirm because no lease record in that network holds
+	// them.
+	//
+	// Not healthy-affecting, and the refusal is the safe outcome: the
+	// daemon keeps the address it stored, logs the refusal, and the
+	// network driver's own recovery adopts the endpoint from Docker's
+	// view. Worth investigating rather than alerting on -- a rise means
+	// the lease record and Docker's store have drifted apart, which is a
+	// lost or hand-edited record file rather than a fault this process
+	// can fix.
+	ipamReplayMiss stampedCounter
+
+	// ipamRebindAmbiguous counts address requests that met more than one
+	// recently-removed endpoint on the network and so could not tell
+	// which address to ask for.
+	//
+	// THIS IS THE DOCUMENTED LIMIT, COUNTED. A RequestAddress carries no
+	// hostname and no endpoint id, so when several containers on one
+	// network restart together there is nothing to match a request to a
+	// previous lease on, and the DHCP server decides. Not
+	// healthy-affecting: every container still gets an address. Watch
+	// it: a rise is the one signal that addresses on this host moved for
+	// a reason the operator can act on, by pinning with --ip or
+	// --mac-address or by using --ipam-driver null.
+	ipamRebindAmbiguous stampedCounter
+
+	// ipamReserveDuplicateMAC counts address requests refused because
+	// this network was already leasing an address for that hardware
+	// address.
+	//
+	// Not healthy-affecting for the host, and every move is one container
+	// that did not start. Its producer is two ENDPOINTS carrying one MAC:
+	// libnetwork generates a unique MAC per endpoint and copies an
+	// operator-set one through unchanged (moby 28.5.2,
+	// libnetwork/network.go:1222 and :1240), so `docker run
+	// --mac-address X` twice on one network, or a compose file pinning
+	// one MAC on two services, puts two endpoints on one hardware
+	// address. Both halves of the guard move it: the reserve still in
+	// flight, and the endpoint already created, which the record store
+	// is what still knows about. The remedy is the operator's: give each
+	// container its own MAC, or leave it unset.
+	//
+	// It is NOT moved by the daemon's
+	// re-send after a plugin-call timeout, which is what an earlier
+	// version of this comment said: moby encodes the call into a
+	// bytes.Buffer and hands the SAME reader to every attempt
+	// (pkg/plugins/client.go, callWithRetry), so the first attempt
+	// drains it and the re-send arrives with no body and is refused
+	// before any handler runs. MEASURED, integration run 34600486961
+	// failure-1: "IpamDriver.RequestAddress: failed to parse request
+	// body: EOF", and this counter did not move. Raising --timeout is
+	// therefore not the remedy for a rise here.
+	ipamReserveDuplicateMAC stampedCounter
+
+	// ipamReleaseUnknown counts addresses libnetwork released that no
+	// lease record of ours holds. Informational: a release for an
+	// address whose record is already retained or closed is the normal
+	// ordering, not a fault.
+	ipamReleaseUnknown atomic.Int32
+
 	// tombstoneWriteFailures counts saveTombstones failures (disk full,
 	// EROFS) from addTombstone. Reported on /Plugin.Health so operators
 	// can detect a degraded restart-stability window — every failure
@@ -2451,6 +2536,10 @@ func NewPlugin(opts Options) (*Plugin, error) {
 		joinHints:            make(map[string]joinHint),
 		persistentDHCP:       make(map[string]*dhcpManager),
 		endpointFingerprints: make(map[string]endpointFingerprint),
+
+		ipamPools:    newIssuedPools(),
+		ipamIndex:    newIPAMIndex(),
+		ipamReserves: newIPAMReserves(),
 	}
 
 	// The Docker client is built AFTER p exists because the GET-only
@@ -2498,6 +2587,14 @@ func NewPlugin(opts Options) (*Plugin, error) {
 		log.WithFields(log.Fields{"torn_tail": d.TornTail, "skipped": d.Skipped}).
 			Warn("The lease record has unreadable lines; endpoints they described will be recovered from Docker instead of resumed")
 	}
+
+	// BOTH OF THESE RUN BEFORE THE SOCKET LISTENS, and that is what the
+	// order is for. The daemon replays RequestPool and one
+	// RequestAddress per stored endpoint from inside libnetwork.New,
+	// before it serves its own API, so the answer to those calls has to
+	// be on disk and already folded by the time the first one arrives.
+	rebuildIPAMIndex(p.ipamIndex)
+	retainOrphanedReservations(p.records, time.Now())
 
 	// Routing table, and the RPCs deliberately left off it: routes.go.
 	mux := p.newServeMux()
@@ -2553,6 +2650,12 @@ func NewPlugin(opts Options) (*Plugin, error) {
 	// else ever asking again. A no-op unless that happened, which is the
 	// only reason it is cheap enough to sit on the enable path.
 	p.reprobeEngine(context.Background())
+	// The reservation sweeper, last, so nothing above can return an
+	// error with it already running. It is the in-memory half of what
+	// retainOrphanedReservations does across a restart: an address
+	// Docker asked for and never created an endpoint for.
+	p.ipamSweepStop = make(chan struct{})
+	go p.ipamSweeper(p.ipamSweepStop)
 
 	return &p, nil
 }
@@ -2703,6 +2806,10 @@ func (p *Plugin) Close() error {
 	// server-first shutdown is written to prevent.
 	if p.recoveryCancel != nil {
 		p.recoveryCancel()
+	}
+	if p.ipamSweepStop != nil {
+		close(p.ipamSweepStop)
+		p.ipamSweepStop = nil
 	}
 
 	// One deadline for every phase below; see pluginShutdownTimeout.

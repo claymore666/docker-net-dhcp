@@ -218,11 +218,11 @@ net_dhcp_acd_arp_send_failures_total 6209145
 # TYPE net_dhcp_acd_resumed_unchecked_total counter
 net_dhcp_acd_resumed_unchecked_total 6930712
 
-# HELP net_dhcp_parent_link_waits_total Endpoint creations that waited for their parent interface to appear.
+# HELP net_dhcp_parent_link_waits_total Operations that queued for a parent interface another operation was using, and got it. Includes the ones that gave up waiting for a holder attaching the SAME kind of child (macvlan beside macvlan, ipvlan beside ipvlan), because a parent accepts those side by side and the wait protected nothing -- the operation proceeds and succeeds. Two containers starting together on one parent-attached network land here, since an address reservation holds the parent across its DHCP exchange. Not healthy-affecting: it is contention, not failure.
 # TYPE net_dhcp_parent_link_waits_total counter
 net_dhcp_parent_link_waits_total 5247821
 
-# HELP net_dhcp_parent_link_wait_timeouts_total Endpoint creations where the parent interface never appeared inside the wait.
+# HELP net_dhcp_parent_link_wait_timeouts_total Operations that gave up waiting for a parent interface held for the other kind of child, or held by something this plugin could no longer identify. They proceed anyway and the kernel is the authority; this counts the times that gamble was taken. Same-kind contention is NOT counted here -- see parent_link_waits -- because the kernel permits it and a warning nobody can act on is worse than none.
 # TYPE net_dhcp_parent_link_wait_timeouts_total counter
 net_dhcp_parent_link_wait_timeouts_total 8552828
 
@@ -249,6 +249,26 @@ net_dhcp_unsafe_option_values_dropped_total 9536334
 # HELP net_dhcp_network_options_rejected_total Endpoint operations that met a network's stored options and would not act on them as written: an interface name the kernel would not accept, or a mode this plugin does not implement. DeleteEndpoint counts without refusing, so a rise does not mean nothing was torn down. Not healthy-affecting: refusing is the safe outcome and the operation already fails visibly to Docker. A rise means options persisted before name validation existed, or a hand-edited state directory (#727).
 # TYPE net_dhcp_network_options_rejected_total counter
 net_dhcp_network_options_rejected_total 5605255
+
+# HELP net_dhcp_ipam_replay_hits_total Stored endpoint addresses confirmed at a daemon restart from this plugin's own lease record. The mechanism working: it is how an IPAM-mode endpoint keeps its address across a restart. Read it as the denominator for ipam_replay_miss.
+# TYPE net_dhcp_ipam_replay_hits_total counter
+net_dhcp_ipam_replay_hits_total 3406087
+
+# HELP net_dhcp_ipam_replay_miss_total Stored endpoint addresses this plugin would not confirm at a daemon restart because no lease record in that network holds them.
+# TYPE net_dhcp_ipam_replay_miss_total counter
+net_dhcp_ipam_replay_miss_total 7208309
+
+# HELP net_dhcp_ipam_rebind_ambiguous_total Address requests that met more than one recently-removed endpoint on the network and so could not tell which address to ask for.
+# TYPE net_dhcp_ipam_rebind_ambiguous_total counter
+net_dhcp_ipam_rebind_ambiguous_total 6172564
+
+# HELP net_dhcp_ipam_reserve_duplicate_mac_total Address requests refused because the network was already leasing an address for that hardware address.
+# TYPE net_dhcp_ipam_reserve_duplicate_mac_total counter
+net_dhcp_ipam_reserve_duplicate_mac_total 1804998
+
+# HELP net_dhcp_ipam_release_unknown_total Addresses libnetwork released that no lease record of ours holds. Not a fault: a release for an address whose record is already retained or closed is the normal ordering.
+# TYPE net_dhcp_ipam_release_unknown_total counter
+net_dhcp_ipam_release_unknown_total 2671279
 
 # HELP net_dhcp_dns_propagation_pid_mismatches_total DNS propagations refused because the container PID resolved through Docker no longer belonged to that container. The plugin shares the host PID namespace, so each one is a resolv.conf write that would otherwise have landed in an unrelated host process (#688).
 # TYPE net_dhcp_dns_propagation_pid_mismatches_total counter

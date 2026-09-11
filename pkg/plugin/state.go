@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -71,7 +72,21 @@ const stateFileMode = 0o600
 // authoritative for everything in the struct, so the refusal costs a
 // lookup -- whereas a v1 reading of a v2 file could attach a network in
 // the wrong mode or on the wrong parent.
-const stateSchemaVersion = 1
+const stateSchemaVersion = 2
+
+// stateSchemaVersionBase is what a network with no pool binding is
+// stamped with, and it is version 1 on purpose.
+//
+// A null-mode network's file must stay BYTE-IDENTICAL to what every
+// build before this one wrote (D19). Stamping the whole state directory
+// v2 because one network in it is new would make an older plugin refuse
+// files it understands perfectly, and the refusal would look to an
+// operator exactly like the corruption this field exists to report.
+// Version 2 says one thing and only that thing: this file carries an
+// IPAM pool binding, and a build that cannot read the binding must not
+// serve the network -- because serving it without the binding is
+// serving it as null mode, which is a different network.
+const stateSchemaVersionBase = 1
 
 // syncPolicy says whether a state write must reach the disk before it is
 // reported as done.
@@ -595,11 +610,22 @@ func pruneTombstones(ts []tombstone) []tombstone {
 // loadOptions falling back to the docker API on parse error, which
 // works but is the wrong default.)
 func saveOptions(networkID string, opts DHCPNetworkOptions) error {
+	return saveNetwork(networkID, opts, nil)
+}
+
+// saveNetwork writes a network's options and, for an IPAM-mode network,
+// its pool binding. The schema version is a function of the binding and
+// not a constant, so a null-mode network's file is what it always was.
+func saveNetwork(networkID string, opts DHCPNetworkOptions, binding *ipamBinding) error {
 	final, err := stateFilePath(networkID)
 	if err != nil {
 		return err
 	}
-	data, err := json.Marshal(versionedOptions{DHCPNetworkOptions: opts, V: stateSchemaVersion})
+	v := stateSchemaVersionBase
+	if binding != nil {
+		v = stateSchemaVersion
+	}
+	data, err := json.Marshal(versionedOptions{DHCPNetworkOptions: opts, V: v, IPAM: binding})
 	if err != nil {
 		return fmt.Errorf("failed to encode options: %w", err)
 	}
@@ -620,24 +646,47 @@ func saveOptions(networkID string, opts DHCPNetworkOptions) error {
 type versionedOptions struct {
 	DHCPNetworkOptions
 	V int `json:"v"`
+	// IPAM is the pool binding CreateNetwork learned, absent on a
+	// null-mode network. Its presence IS the statement that this
+	// network is in IPAM mode; see storedNetwork.
+	IPAM *ipamBinding `json:"ipam,omitempty"`
 }
 
 // loadOptions reads previously-persisted options for a network. Returns
 // os.ErrNotExist (wrapped) when no state file is present so callers can
 // fall back to other sources (e.g. the docker API).
 func loadOptions(networkID string) (DHCPNetworkOptions, error) {
-	var opts DHCPNetworkOptions
+	sn, err := loadNetwork(networkID)
+	return sn.Options, err
+}
+
+// storedNetwork is one network's whole on-disk record: its options and,
+// when it is in IPAM mode, its pool binding.
+type storedNetwork struct {
+	Options DHCPNetworkOptions
+	Binding *ipamBinding
+}
+
+// IPAMMode reports whether this network's addresses come from the
+// bundled IPAM driver. The binding is the statement; there is no second
+// field that could disagree with it.
+func (s storedNetwork) IPAMMode() bool { return s.Binding != nil }
+
+// loadNetwork reads one network's persisted record.
+func loadNetwork(networkID string) (storedNetwork, error) {
+	var sn storedNetwork
+	opts := &sn.Options
 	path, err := stateFilePath(networkID)
 	if err != nil {
-		return opts, err
+		return sn, err
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return opts, err
+		return sn, err
 	}
 	var vo versionedOptions
 	if err := json.Unmarshal(data, &vo); err != nil {
-		return opts, fmt.Errorf("persisted options for %v are corrupt: %w", networkID, err)
+		return sn, fmt.Errorf("persisted options for %v are corrupt: %w", networkID, err)
 	}
 	// A version we do not understand is refused, not guessed at:
 	// decoding a v2 file with v1 semantics could silently attach a
@@ -654,9 +703,60 @@ func loadOptions(networkID string) (DHCPNetworkOptions, error) {
 	// version field exists to prevent. netOptions now backfills only
 	// when the file was genuinely absent; see the comment there.
 	if vo.V > stateSchemaVersion {
-		return opts, fmt.Errorf("%w: persisted options for %v are schema v%d, this build understands v%d", errStateSchemaTooNew, networkID, vo.V, stateSchemaVersion)
+		return sn, fmt.Errorf("%w: persisted options for %v are schema v%d, this build understands v%d", errStateSchemaTooNew, networkID, vo.V, stateSchemaVersion)
 	}
-	return vo.DHCPNetworkOptions, nil
+	*opts = vo.DHCPNetworkOptions
+	sn.Binding = vo.IPAM
+	return sn, nil
+}
+
+// listStateNetworks is every network id the state directory names.
+//
+// It reads the DIRECTORY and not a table, because the directory is
+// already the record: one file per network, written by CreateNetwork and
+// removed by DeleteNetwork, so a listing cannot disagree with the thing
+// it describes. A second file listing the networks would be a second
+// lifetime, and the lifetimes are what the pool binding got wrong in
+// design round 1.
+//
+// The plugin's OWN files in this directory are skipped by name, not by
+// shape. This comment used to say that a name which is not a valid
+// network id is skipped and that tombstones.json is such a name; the
+// second half was false. validNetworkID is `^[a-zA-Z0-9_-]+$`, which
+// "tombstones" satisfies, so the store the plugin writes beside the
+// network files was listed as a network, failed to parse as one, and
+// left the IPAM index marked incomplete on every host that had ever
+// laid a tombstone -- a null-mode host included. The skip is keyed on
+// tombstoneFilePath so a rename of that file cannot reopen this.
+//
+// A name that is not a valid network id is still skipped rather than
+// refused, and the request-capture subdirectory is skipped above as a
+// directory.
+func listStateNetworks() ([]string, error) {
+	entries, err := os.ReadDir(stateDir)
+	if err != nil {
+		return nil, err
+	}
+	var ids []string
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		if !strings.HasSuffix(name, ".json") {
+			continue
+		}
+		if filepath.Join(stateDir, name) == tombstoneFilePath() {
+			continue
+		}
+		id := strings.TrimSuffix(name, ".json")
+		if !validNetworkID(id) {
+			continue
+		}
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids, nil
 }
 
 // deleteOptions removes the persisted options for a network. Called from

@@ -318,6 +318,38 @@ func TestACDCensusFindings(t *testing.T) {
 			want:        []string{"address_conflicts"},
 		},
 		{
+			// THE UNITS CONTROL, and it pins a subtraction this gate
+			// briefly had. A recovered endpoint's lease IS unprobed --
+			// MEASURED, run 34600486961 main-3: a shard whose last test
+			// recycled the plugin read leases_obtained_v4=1 and
+			// acd_probes_sent=0 on a process 1s old -- and the remedy
+			// is the declaration the causing test makes, not
+			// recovered_ok subtracted here. recovered_ok counts
+			// ENDPOINTS OF EITHER FAMILY; this domain is v4 leases. So
+			// recovered_ok on its own excuses nothing, and this case
+			// fails the moment the subtraction comes back.
+			name: "recovered_ok does not excuse an undeclared unprobed lease",
+			h:    &HealthResponse{ACDProbesSent: 0, LeasesObtained: 1, LeasesObtainedV4: 1, RecoveredOK: 1},
+			want: []string{"acd_probes_sent"},
+		},
+		{
+			// The same point at the scale that made it visible: three
+			// recovered endpoints, of which the v6-only ones can never
+			// have moved this domain, must not cancel a v4 lease that
+			// nothing probed for.
+			name: "recovered endpoints of another family cannot cancel a v4 miss",
+			h:    &HealthResponse{ACDProbesSent: 0, LeasesObtained: 1, LeasesObtainedV4: 1, RecoveredOK: 3},
+			want: []string{"acd_probes_sent"},
+		},
+		{
+			// And the declared shape of exactly that shard: the recycle
+			// test declares its one resumed lease, and the gate has
+			// nothing left to judge.
+			name:        "a declared resumed lease is not a never-ran finding",
+			h:           &HealthResponse{ACDProbesSent: 0, LeasesObtained: 1, LeasesObtainedV4: 1, RecoveredOK: 1},
+			allowedUnpr: 1,
+		},
+		{
 			// And the counter agreeing with the log is clean whether or
 			// not anything was declared — a declaration is a licence to
 			// under-report, never a requirement to.

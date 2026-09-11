@@ -86,6 +86,33 @@ func TestRecovery_PluginDisableEnable_PreservesEndpoint(t *testing.T) {
 		"sandbox_key_absent", "sandbox_key_not_permitted", "sandbox_key_not_a_namespace",
 		"sandbox_key_wrong_ns_type", "sandbox_key_unavailable").ExpectRecycle()
 
+	// The recycle below leaves this shard's plugin holding ONE v4 lease
+	// that no ARP Probe covers, and the census gate has to be told, the
+	// same way the conflict_check=off test tells it.
+	//
+	// The probe RFC 5227 asks for runs in the CreateEndpoint one-shot,
+	// before the address is used (pkg/plugin/conflict.go, roleAcquire
+	// under ConflictWait). A RECOVERED endpoint never goes through
+	// CreateEndpoint: recovery synthesises the Join manager straight
+	// from Docker's view, and the Join client runs ConflictAsync --
+	// beside the address, for the reason stated there. So the resumed
+	// bind moves leases_obtained_v4 on the new process while the only
+	// probe it will ever produce is asynchronous, and it races this
+	// test's own teardown.
+	//
+	// One lease, because one container is attached. Declaring more than
+	// the shard takes weakens the gate silently; declaring it here
+	// rather than subtracting recovered_ok inside the gate keeps the
+	// units honest -- recovered_ok counts endpoints of either family and
+	// the gate's domain is v4 leases, so a recovered v6-only endpoint
+	// would have cancelled a real v4 miss.
+	//
+	// MEASURED, integration run 34600486961 main-3: this test ran last
+	// in its shard, the floor read a plugin 1s old with
+	// leases_obtained_v4=1, acd_probes_sent=0, and called the check
+	// broken while every test in the shard had passed.
+	harness.AllowUnprobedLeases(1)
+
 	if err := cli.PluginDisable(ctx, harness.PluginRef, types.PluginDisableOptions{Force: true}); err != nil {
 		t.Fatalf("PluginDisable: %v", err)
 	}

@@ -127,7 +127,7 @@ func (p *Plugin) runDHCPProbe(ctx context.Context, parent, mode string, pol serv
 	// First statement, before the parent is even looked up: the hold
 	// must cover everything the caller used to wrap, or this is a
 	// change to the gate's duration rather than to its location.
-	guard := p.lockParent(ctx, parent, "preflight_probe")
+	guard := p.lockParent(ctx, parent, mode, "preflight_probe")
 	defer guard.Unlock()
 
 	if parent == "" {

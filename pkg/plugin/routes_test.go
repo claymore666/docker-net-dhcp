@@ -95,6 +95,15 @@ func TestRoutes_RegisteredSetIsPinned(t *testing.T) {
 		"/NetworkDriver.DeleteEndpoint",
 		"/NetworkDriver.Join",
 		"/NetworkDriver.Leave",
+		"/NetworkDriver.GwAllocCheck",
+		// The IPAM driver (#110). One plugin serves both contracts, so
+		// these arrive on the same socket as the eight above.
+		"/IpamDriver.GetCapabilities",
+		"/IpamDriver.GetDefaultAddressSpaces",
+		"/IpamDriver.RequestPool",
+		"/IpamDriver.ReleasePool",
+		"/IpamDriver.RequestAddress",
+		"/IpamDriver.ReleaseAddress",
 		"/Plugin.Health",
 		"/metrics",
 	}

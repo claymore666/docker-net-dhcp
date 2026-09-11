@@ -17,12 +17,23 @@ import (
 type CapabilitiesResponse struct {
 	Scope             string
 	ConnectivityScope string
+	// GwAllocChecker tells libnetwork it may ask this driver whether a
+	// network needs a gateway address allocated. It is what stops every
+	// `docker network create` in IPAM mode from running a DHCP exchange
+	// for an address no container uses.
+	//
+	// DECLARING IT MAKES /NetworkDriver.GwAllocCheck REQUIRED. libnetwork
+	// calls that RPC only when this field is true, and a 404 from it is a
+	// real error rather than the tolerated one the unrouted RPCs get. The
+	// route and this field are one change; see routes().
+	GwAllocChecker bool
 }
 
 func (p *Plugin) apiGetCapabilities(w http.ResponseWriter, r *http.Request) {
 	util.JSONResponse(w, CapabilitiesResponse{
 		Scope:             "local",
 		ConnectivityScope: "global",
+		GwAllocChecker:    true,
 	}, http.StatusOK)
 }
 
@@ -531,6 +542,39 @@ type HealthResponse struct {
 	// written before name validation existed (#705), or a hand-edited
 	// state directory.
 	NetworkOptionsRejected int32 `json:"network_options_rejected"`
+	// IPAMReplayHits counts stored endpoint addresses this plugin
+	// confirmed at a daemon restart from its own lease record (#110).
+	// Only moves on networks created with this plugin as their IPAM
+	// driver. NOT healthy-affecting: it is the mechanism working. It is
+	// the denominator for the counter below.
+	IPAMReplayHits int32 `json:"ipam_replay_hits"`
+	// IPAMReplayMiss counts stored endpoint addresses this plugin
+	// refused to confirm because no lease record in that network holds
+	// them. NOT healthy-affecting: the refusal is the safe outcome and
+	// the network driver's own recovery adopts the endpoint from
+	// Docker's view. Worth investigating: the lease record and Docker's
+	// store have drifted apart.
+	IPAMReplayMiss int32 `json:"ipam_replay_miss"`
+	// IPAMRebindAmbiguous counts address requests that met more than one
+	// recently-removed endpoint on the network, so nothing said which
+	// address to ask for and the DHCP server decided. NOT
+	// healthy-affecting: every container still gets an address. Watch
+	// it: it is the one signal that addresses moved for a reason the
+	// operator can act on.
+	IPAMRebindAmbiguous int32 `json:"ipam_rebind_ambiguous"`
+	// IPAMReserveDuplicateMAC counts address requests refused because the
+	// network was already leasing an address for that hardware address.
+	// NOT healthy-affecting for the host: refusing is the safe outcome,
+	// and the alternative is two endpoints holding one address. Worth
+	// investigating, because every move is a container that did not
+	// start: two endpoints on one network were pinned to one
+	// --mac-address.
+	IPAMReserveDuplicateMAC int32 `json:"ipam_reserve_duplicate_mac"`
+	// IPAMReleaseUnknown counts addresses libnetwork released that no
+	// lease record of ours holds. NOT healthy-affecting and not a
+	// fault: a release for an address whose record is already retained
+	// or closed is the normal ordering.
+	IPAMReleaseUnknown int32 `json:"ipam_release_unknown"`
 	// DNSPropagationPIDMismatches counts DNS propagations refused
 	// because the container PID resolved through Docker no longer
 	// belonged to that container by the time the plugin acted on it
@@ -1019,19 +1063,22 @@ func (p *Plugin) apiHealth(w http.ResponseWriter, r *http.Request) {
 // place either is observable at all.
 func (p *Plugin) checkStamps() map[string]time.Time {
 	return map[string]time.Time{
-		"recovery_failed":           p.recoveryFailed.LastMoved(),
-		"join_start_failures":       p.joinStartFailures.LastMoved(),
-		"tombstone_write_failures":  p.tombstoneWriteFailures.LastMoved(),
-		"tombstone_quarantines":     p.tombstones.quarantines.LastMoved(),
-		"address_conflicts":         laterOf(p.addressConflictsV4.LastMoved(), p.addressConflictsV6.LastMoved()),
-		"lease_changed":             laterOf(p.leaseChangedV4.LastMoved(), p.leaseChangedV6.LastMoved()),
-		"acd_arp_send_failures":     p.acdARPSendFailures.LastMoved(),
-		"acd_resumed_unchecked":     p.acdResumedUnchecked.LastMoved(),
-		"restart_link_up_timeouts":  p.restartLinkUpTimeouts.LastMoved(),
-		"parent_link_wait_timeouts": p.parentLinkWaitTimeouts.LastMoved(),
-		"ledger_write_failures":     p.ledgerWriteFailures.LastMoved(),
-		"state_file_chmod_failures": p.stateFileChmodFailures.LastMoved(),
-		"ifname_unsupported":        p.ifnameUnsupported.LastMoved(),
+		"recovery_failed":            p.recoveryFailed.LastMoved(),
+		"join_start_failures":        p.joinStartFailures.LastMoved(),
+		"tombstone_write_failures":   p.tombstoneWriteFailures.LastMoved(),
+		"tombstone_quarantines":      p.tombstones.quarantines.LastMoved(),
+		"address_conflicts":          laterOf(p.addressConflictsV4.LastMoved(), p.addressConflictsV6.LastMoved()),
+		"lease_changed":              laterOf(p.leaseChangedV4.LastMoved(), p.leaseChangedV6.LastMoved()),
+		"acd_arp_send_failures":      p.acdARPSendFailures.LastMoved(),
+		"acd_resumed_unchecked":      p.acdResumedUnchecked.LastMoved(),
+		"restart_link_up_timeouts":   p.restartLinkUpTimeouts.LastMoved(),
+		"parent_link_wait_timeouts":  p.parentLinkWaitTimeouts.LastMoved(),
+		"ledger_write_failures":      p.ledgerWriteFailures.LastMoved(),
+		"state_file_chmod_failures":  p.stateFileChmodFailures.LastMoved(),
+		"ifname_unsupported":         p.ifnameUnsupported.LastMoved(),
+		"ipam_replay_miss":           p.ipamReplayMiss.LastMoved(),
+		"ipam_rebind_ambiguous":      p.ipamRebindAmbiguous.LastMoved(),
+		"ipam_reserve_duplicate_mac": p.ipamReserveDuplicateMAC.LastMoved(),
 	}
 }
 
@@ -1155,6 +1202,11 @@ func (p *Plugin) healthSnapshot() HealthResponse {
 		UnsafeHostnamesRejected:      p.unsafeHostnamesRejected.Load(),
 		UnsafeOptionValuesDropped:    p.unsafeOptionValuesDropped.Load(),
 		NetworkOptionsRejected:       p.networkOptionsRejected.Load(),
+		IPAMReplayHits:               p.ipamReplayHits.Load(),
+		IPAMReplayMiss:               p.ipamReplayMiss.Load(),
+		IPAMRebindAmbiguous:          p.ipamRebindAmbiguous.Load(),
+		IPAMReserveDuplicateMAC:      p.ipamReserveDuplicateMAC.Load(),
+		IPAMReleaseUnknown:           p.ipamReleaseUnknown.Load(),
 		DNSPropagationPIDMismatches:  p.dnsPropagationPIDMismatches.Load(),
 		NetnsPIDMismatches:           p.netnsPIDMismatches.Load(),
 		SandboxKeyEntries:            p.sandboxKeyEntries.Load(),
