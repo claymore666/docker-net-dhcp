@@ -4,7 +4,10 @@
 package plugin
 
 import (
+	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -222,5 +225,60 @@ func TestIpamLeaseTimeoutFloorHolds(t *testing.T) {
 		t.Errorf("the cap produces %v, which CheckLeaseTimeout refuses: %v.\n"+
 			"Two guards disagreeing about one number leave the tighter one unreachable: "+
 			"raise the daemon budget, lower the floor, or refuse the crossing loudly.", budget, err)
+	}
+}
+
+// TestApiIpamGetCapabilities_BothCapabilitiesAreOnTheWire pins the two
+// booleans this driver cannot work without, on the wire and by moby's
+// field names.
+//
+// Neither is a preference. RequiresMACAddress is what puts the
+// endpoint's hardware address into RequestAddress at all; without it
+// there is no identity to run a DHCP exchange as and every reserve
+// invents a MAC. RequiresRequestReplay is what makes libnetwork re-ask
+// for every stored endpoint's address at daemon start; without it an
+// IPAM-mode network comes back from a restart with its endpoints
+// unallocated.
+//
+// Asserted against the raw JSON, not only the decoded struct: moby
+// decodes this body into its own type by FIELD NAME
+// (libnetwork/ipams/remote/api), so a rename on this side keeps every
+// Go test green and silently answers false to both.
+func TestApiIpamGetCapabilities_BothCapabilitiesAreOnTheWire(t *testing.T) {
+	p := newTestPlugin(t)
+
+	rec := httptest.NewRecorder()
+	p.apiIpamGetCapabilities(rec, httptest.NewRequest(http.MethodPost, "/IpamDriver.GetCapabilities", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: got %d want 200", rec.Code)
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &raw); err != nil {
+		t.Fatalf("decode: %v (raw=%q)", err, rec.Body.String())
+	}
+	for _, name := range []string{"RequiresMACAddress", "RequiresRequestReplay"} {
+		v, ok := raw[name]
+		if !ok {
+			t.Errorf("the capabilities body has no %q field; moby matches by name, so the "+
+				"capability is off and nothing says so. Body: %s", name, rec.Body.String())
+			continue
+		}
+		if v != true {
+			t.Errorf("%s is %v, want true. %s", name, v, ipamCapabilityCost(name))
+		}
+	}
+}
+
+// ipamCapabilityCost says what turning one of them off costs, so the
+// failure above names the consequence rather than the boolean.
+func ipamCapabilityCost(name string) string {
+	switch name {
+	case "RequiresMACAddress":
+		return "RequestAddress then carries no endpoint MAC, so every reservation runs its " +
+			"DHCP exchange under an invented address and the lease belongs to nobody."
+	default:
+		return "libnetwork stops re-asking for stored endpoints' addresses at daemon start, " +
+			"so an IPAM-mode network survives a restart with its endpoints unallocated."
 	}
 }

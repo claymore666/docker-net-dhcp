@@ -529,3 +529,196 @@ func TestIpamReserveLinkNames(t *testing.T) {
 			"collide on EEXIST", name, peer)
 	}
 }
+
+// TestIpamReserveVeth_TheClientHalfCarriesTheMAC is the bridge-mode
+// reserve's direction of travel, which the first edition had backwards.
+//
+// The caller hands the DHCP client the link called `name`. A frame
+// transmitted on a bridge port leaves the port rather than entering the
+// bridge, so the half the client runs on must NOT be the one enslaved:
+// with the roles swapped the DISCOVER goes to the dangling end of the
+// veth and nothing on the segment ever sees it. What made that hard to
+// see in the lane is that the direction which DOES work carried the
+// kernel's own IPv6 router solicitation from the dangling end onto the
+// bridge, so the server logged the reservation's MAC and the link
+// looked present while no DHCP ever left it.
+//
+// Two halves, asserted separately because a mutant can get one right:
+// the MAC belongs to `name`, and the peer must not carry it -- a peer
+// wearing the endpoint's MAC would put that address on the bridge from
+// the wrong side and a server answering it would answer the wrong link.
+func TestIpamReserveVeth_TheClientHalfCarriesTheMAC(t *testing.T) {
+	mac, err := net.ParseMAC("02:00:00:00:99:95")
+	if err != nil {
+		t.Fatalf("ParseMAC: %v", err)
+	}
+	v := ipamReserveVeth("dh-ipam-aabbcc", "aabbcc-ipam-dh", mac)
+
+	if v.LinkAttrs.Name != "dh-ipam-aabbcc" {
+		t.Errorf("the veth is named %q, not the name the client is given", v.LinkAttrs.Name)
+	}
+	if got := v.LinkAttrs.HardwareAddr.String(); got != mac.String() {
+		t.Errorf("the half the DHCP client runs on carries MAC %q, want the endpoint's %q. "+
+			"The reservation exists to ask the server under the endpoint's own hardware "+
+			"address; asking under any other address reserves an address for nobody.",
+			got, mac)
+	}
+	if v.PeerHardwareAddr != nil {
+		t.Errorf("the peer carries MAC %q. The peer is the BRIDGE PORT: the endpoint's MAC "+
+			"on it puts that address on the segment from the side the client is not "+
+			"listening on, which is the inversion that made every bridge reserve time out.",
+			v.PeerHardwareAddr)
+	}
+	if v.PeerName != "aabbcc-ipam-dh" {
+		t.Errorf("the peer is named %q, not the name the bridge half was given", v.PeerName)
+	}
+}
+
+// TestIpamAcceptedReservation_NoACKBecomesAReservationUnchecked drives
+// the APPLICATION of the two acceptance rules, not the rules.
+//
+// Both rules had unit tests already and both were applied on the
+// success path of runIPAMReserve, which needs netlink and a live DHCP
+// server to enter. So the unit suite could refuse a bad address in
+// isolation while a deleted call site -- the shape a cleanup takes --
+// changed nothing it could see. The rules now live in the constructor
+// that BUILDS the reservation, which is why this test can reach them,
+// and why removing one no longer compiles.
+//
+// The last case fixes the order. When an ACK breaks both rules the
+// operator is told about the network, because the other remedy --
+// asking for a different --ip -- would not help on a network whose
+// server serves a different subnet.
+func TestIpamAcceptedReservation_NoACKBecomesAReservationUnchecked(t *testing.T) {
+	for _, c := range []struct {
+		name, ackIP, pool, demanded string
+		wantErr                     string
+		// notErr is the OTHER rule's wording, for the case that breaks
+		// both. Without it "the network cause wins" is a sentence in a
+		// comment: the --ip refusal quotes the offered address too, so
+		// an assertion on the address alone passes either order.
+		notErr string
+	}{
+		{
+			name:  "in the pool and the address asked for",
+			ackIP: "192.168.99.50/24", pool: "192.168.99.0/24", demanded: "192.168.99.50",
+		},
+		{
+			name:  "no subnet and no --ip, so the server decides",
+			ackIP: "10.0.0.7/8", pool: "0.0.0.0/0",
+		},
+		{
+			name:  "an ACK outside the subnet the operator typed",
+			ackIP: "10.0.0.7/8", pool: "192.168.99.0/24",
+			wantErr: "10.0.0.7",
+		},
+		{
+			name:  "an ACK for an address other than the --ip",
+			ackIP: "192.168.99.51/24", pool: "192.168.99.0/24", demanded: "192.168.99.50",
+			wantErr: "--ip",
+		},
+		{
+			name:  "not an address with a prefix",
+			ackIP: "192.168.99.50", pool: "0.0.0.0/0",
+			wantErr: "not an address with a prefix",
+		},
+		{
+			name:  "outside the subnet AND not the --ip: the network is the cause to print",
+			ackIP: "10.0.0.7/8", pool: "192.168.99.0/24", demanded: "192.168.99.50",
+			wantErr: "outside this network's subnet", notErr: "--ip asked for",
+		},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			res, err := ipamAcceptedReservation(dhcp.Info{IP: c.ackIP}, "rec-1", c.pool, c.demanded)
+			if c.wantErr == "" {
+				if err != nil {
+					t.Fatalf("refused %s against pool %q/demanded %q: %v", c.ackIP, c.pool, c.demanded, err)
+				}
+				if res.addr.String() != c.ackIP {
+					t.Errorf("the reservation carries %v, the ACK was %s", res.addr, c.ackIP)
+				}
+				if res.record != "rec-1" {
+					t.Errorf("the reservation lost its record id: %q", res.record)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("an ACK of %s was accepted on pool %q with --ip %q. libnetwork adopts "+
+					"whatever this returns, so the container comes up at an address the "+
+					"operator neither asked for nor could have predicted.", c.ackIP, c.pool, c.demanded)
+			}
+			if !strings.Contains(err.Error(), c.wantErr) {
+				t.Errorf("the refusal is %q; it does not mention %q, which is what the "+
+					"operator has to act on", err, c.wantErr)
+			}
+			if c.notErr != "" && strings.Contains(err.Error(), c.notErr) {
+				t.Errorf("the refusal is %q, which is the --ip rule answering for a network "+
+					"whose server serves a different subnet. The remedy it offers -- ask for "+
+					"a different --ip -- cannot work here; the subnet is the thing to change.", err)
+			}
+			if res.addr.IsValid() {
+				t.Errorf("a refused ACK still produced an address (%v); a caller that ignores "+
+					"the error publishes it", res.addr)
+			}
+			if !errors.Is(err, util.ErrIPAM) {
+				t.Errorf("the refusal is not an ErrIPAM, so the daemon does not render it as "+
+					"an IPAM failure: %v", err)
+			}
+		})
+	}
+}
+
+// TestIpamRecordAnswersFor is the guard between an address replay and
+// `docker run --ip` for an address someone else already holds.
+//
+// libnetwork injects the hardware address only when it is CREATING an
+// endpoint, so a creating request for an address a running container
+// holds is byte-for-byte that container's replay apart from the MAC.
+// Answering it allocates one address to two endpoints and moves
+// ipam_replay_hits for something that is not a replay.
+func TestIpamRecordAnswersFor(t *testing.T) {
+	addr := netip.MustParseAddr("192.168.99.50")
+	mine := net.HardwareAddr{0x02, 0x42, 0x00, 0x00, 0x00, 0x01}
+	theirs := net.HardwareAddr{0x02, 0x42, 0x00, 0x00, 0x00, 0x02}
+
+	for _, c := range []struct {
+		name   string
+		rec    lease.Record
+		mac    net.HardwareAddr
+		refuse bool
+	}{
+		{"the replay shape carries no MAC, and the address is what Docker stored",
+			lease.Record{ID: "r1", CHAddr: mine}, nil, false},
+		{"the creating endpoint is the one the record belongs to",
+			lease.Record{ID: "r1", CHAddr: mine}, mine, false},
+		{"another endpoint holds it",
+			lease.Record{ID: "r1", CHAddr: theirs}, mine, true},
+		{"the record cannot say whose it is",
+			lease.Record{ID: "r1"}, mine, true},
+		// An empty-but-present MAC against an empty CHAddr. Dropping
+		// the length guard from the match leaves bytes.Equal comparing
+		// two empty slices, which is TRUE: a record belonging to nobody
+		// would answer a request identifying nobody, and every other
+		// case in this table still passes. That is the whole mutant.
+		{"neither the record nor the request says whose it is",
+			lease.Record{ID: "r1"}, net.HardwareAddr{}, true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			err := ipamRecordAnswersFor(c.rec, c.mac, addr)
+			if !c.refuse {
+				if err != nil {
+					t.Fatalf("refused: %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("record %q (CHAddr %v) was handed to %v. One address, two endpoints, "+
+					"and the contradiction surfaces later at CreateEndpoint wearing a message "+
+					"about a plugin restart that never happened.", c.rec.ID, c.rec.CHAddr, c.mac)
+			}
+			if !errors.Is(err, util.ErrIPAM) {
+				t.Errorf("the refusal is not an ErrIPAM: %v", err)
+			}
+		})
+	}
+}

@@ -322,17 +322,40 @@ func (p *Plugin) runIPAMReserve(ctx context.Context, networkID string, sn stored
 		return none, fmt.Errorf("failed to reserve an address for %v via DHCP within %v: %w", mac, budget, err)
 	}
 
-	got, err := netip.ParsePrefix(info.IP)
+	res, err := ipamAcceptedReservation(info, recordID, sn.Binding.Pool, demanded)
 	if err != nil {
-		giveUp()
-		return none, fmt.Errorf("the DHCP server answered %q, which is not an address with a prefix: %w", info.IP, util.ErrIPAM)
-	}
-	if err := ipamACKInPool(got.Addr(), sn.Binding.Pool); err != nil {
 		giveUp()
 		return none, err
 	}
+	return res, nil
+}
+
+// ipamAcceptedReservation turns an ACK into the reservation the reserve
+// returns, and refuses it if either acceptance rule says no.
+//
+// It exists as a constructor rather than as two checks above their own
+// `return ipamReservation{...}` so that skipping the checks cannot
+// compile: there is no other way to build the value the caller returns.
+// The two rules had a call site each, both on the success path of a
+// function that needs netlink and a DHCP server to enter, so the unit
+// suite could reach the rules but never their application -- and a
+// deleted call is exactly the change that reads as a cleanup.
+//
+// The order is the operator's, not the compiler's. The pool rule (D50)
+// is a property of the network they created; the --ip rule is a
+// property of the container they just started. When an ACK breaks
+// both, the network-level cause is the one to print, because acting on
+// the other one -- picking a different --ip -- would not help.
+func ipamAcceptedReservation(info dhcp.Info, recordID, pool, demanded string) (ipamReservation, error) {
+	var none ipamReservation
+	got, err := netip.ParsePrefix(info.IP)
+	if err != nil {
+		return none, fmt.Errorf("the DHCP server answered %q, which is not an address with a prefix: %w", info.IP, util.ErrIPAM)
+	}
+	if err := ipamACKInPool(got.Addr(), pool); err != nil {
+		return none, err
+	}
 	if err := ipamACKIsTheOneAsked(got.Addr(), demanded); err != nil {
-		giveUp()
 		return none, err
 	}
 	return ipamReservation{addr: got, info: info, record: recordID}, nil
@@ -513,9 +536,7 @@ func (p *Plugin) addIPAMReserveLink(ctx context.Context, name, peer, mode string
 	if err != nil {
 		return nil, fmt.Errorf("failed to get bridge interface: %w", err)
 	}
-	la := netlink.NewLinkAttrs()
-	la.Name = name
-	veth := &netlink.Veth{LinkAttrs: la, PeerName: peer, PeerHardwareAddr: mac}
+	veth := ipamReserveVeth(name, peer, mac)
 	if err := netlink.LinkAdd(veth); err != nil {
 		return nil, fmt.Errorf("failed to create the reservation veth pair: %w", err)
 	}
@@ -535,11 +556,45 @@ func (p *Plugin) addIPAMReserveLink(ctx context.Context, name, peer, mode string
 			return nil, fmt.Errorf("failed to bring the reservation link up: %w", err)
 		}
 	}
-	if err := netlink.LinkSetMaster(veth, bridge); err != nil {
+	// THE PEER IS THE BRIDGE PORT, NOT THE LINK THE CLIENT RUNS ON.
+	if err := netlink.LinkSetMaster(peerLink, bridge); err != nil {
 		remove()
 		return nil, fmt.Errorf("failed to attach the reservation link to the bridge: %w", err)
 	}
 	return remove, nil
+}
+
+// ipamReserveVeth builds the reservation's veth pair with the endpoint's
+// MAC on the half the DHCP CLIENT runs on -- `name`, the half every
+// caller passes to the acquisition -- and nothing on the half that
+// becomes the bridge port.
+//
+// WHICH HALF IS WHICH IS THE WHOLE FUNCTION, and the first edition had
+// it backwards: the MAC went on the peer (`PeerHardwareAddr`) and the
+// named half was enslaved to the bridge. Both halves of that are wrong
+// and the second is fatal. A frame TRANSMITTED on a bridge port does not
+// enter the bridge; it goes out of the port, which for a veth means into
+// its partner. The DISCOVER therefore went to the dangling end and was
+// never seen by anything on the segment, while the kernel's own IPv6
+// router solicitation from the dangling end -- entering the bridge, the
+// direction that does work -- reached the server and made the link look
+// present. MEASURED, integration run 34604958124: main-7
+// TestIPAM_NoSubnetAnswersTheAnyPool and main-8
+// TestIPAM_TwoNetworksCannotShareOnePool, the fixture's log holding
+// `RTR-SOLICIT(dh-itest-br2) 6e:d9:fe:bc:eb:c7` from the reservation's
+// own MAC and not one DHCPDISCOVER, the reserve ending at its 26s budget
+// with `context deadline exceeded`. Bridge is this plugin's default
+// mode, and the two bridge networks in the suite were the only two that
+// failed.
+//
+// The shape is CreateEndpoint's, which has always been right: the
+// container half carries the MAC and runs the client, the host half is
+// the bridge port (network.go, `hostLink`/`ctrLink`).
+func ipamReserveVeth(name, peer string, mac net.HardwareAddr) *netlink.Veth {
+	la := netlink.NewLinkAttrs()
+	la.Name = name
+	la.HardwareAddr = mac
+	return &netlink.Veth{LinkAttrs: la, PeerName: peer}
 }
 
 // recordReserved opens the RESERVED record for one reservation.
