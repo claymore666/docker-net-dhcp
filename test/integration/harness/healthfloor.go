@@ -265,7 +265,7 @@ type HealthResponse struct {
 	// The five arms SandboxKeyEntryFailures folds together. They are
 	// what lets a cell assert WHICH refusal happened rather than only
 	// that one did: an unpropagated bind mount (NotANamespace, the
-	// expected arm on a stock engine) and a daemon publishing keys
+	// expected arm where the sandbox netns mount is private) and a daemon publishing keys
 	// under a non-default --exec-root (NotPermitted) produce identical
 	// aggregate counts and want opposite remedies. Pointers for the
 	// same reason as the three above.

@@ -102,9 +102,17 @@ got=$(fixture bigprefix pad_above_marker)
 check "a large prefix above the allow marker does not discard it" 0 "$got"
 
 # --- the regression this gate exists for -------------------------------
-# Verbatim the line that shipped in dhcp_manager.go after #688.
+# Verbatim the line that shipped in dhcp_manager.go after #688, planted
+# beside the hostname assignment it shipped beside.
+#
+# THE ANCHOR IS A LINE OF THE SOURCE, so it moves when the source does.
+# #417 reordered Start and the hostname now comes from a field the
+# inspect filled rather than from the response struct, so the anchor is
+# the current spelling and the check below is what proves the plant
+# landed: a sed that matches nothing plants nothing, and a fixture that
+# changed nothing passes a gate that reads it.
 reintroduce_688() {
-    sed -i 's|^\tm.hostname = m.plugin.safeHostname(ctr.Config.Hostname).name$|\tm.nsPath = fmt.Sprintf("/proc/%v/ns/net", ctr.State.Pid)\n\tm.hostname = m.plugin.safeHostname(ctr.Config.Hostname).name|' \
+    sed -i 's|^\t\tm.hostname = m.plugin.safeHostname(ctrHostname).name$|\t\tm.nsPath = fmt.Sprintf("/proc/%v/ns/net", ctrPID)\n\t\tm.hostname = m.plugin.safeHostname(ctrHostname).name|' \
         "$1/pkg/plugin/dhcp_manager.go"
 }
 got=$(fixture reintroduced reintroduce_688)

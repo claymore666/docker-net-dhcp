@@ -30,7 +30,7 @@ net_dhcp_pending_hints 1152834
 # TYPE net_dhcp_sandbox_netns_visible gauge
 net_dhcp_sandbox_netns_visible 1679618
 
-# HELP net_dhcp_sandbox_netns_propagation Whether a mount the daemon makes under the sandbox netns directory after this process started can reach it: 1 linked, 0 private, -1 unreadable or uncovered. Answered before the directory exists, from the mount covering its parent. A 0 means every attach takes the container PID route.
+# HELP net_dhcp_sandbox_netns_propagation Whether a mount the daemon makes under the sandbox netns directory after this process started can reach it: 1 linked, 0 private, -1 unreadable or uncovered. Answered before the directory exists, from the mount covering its parent. A 0 means every attach takes the container PID route, a 1 means every attach takes the sandbox key route, and both are ordinary.
 # TYPE net_dhcp_sandbox_netns_propagation gauge
 net_dhcp_sandbox_netns_propagation 7661678
 
@@ -258,11 +258,11 @@ net_dhcp_dns_propagation_pid_mismatches_total 9341279
 # TYPE net_dhcp_netns_pid_mismatches_total counter
 net_dhcp_netns_pid_mismatches_total 9479108
 
-# HELP net_dhcp_sandbox_key_entries_total Container network namespaces entered through the sandbox key the daemon publishes at /var/run/docker/netns/<key>. This is the denominator for sandbox_pid_fallbacks: zero fallbacks with zero entries here means nothing was opened, not that the key route works.
+# HELP net_dhcp_sandbox_key_entries_total Container network namespaces entered through the sandbox key the daemon publishes at /var/run/docker/netns/<key>. Every attach counts here on a host whose sandbox_netns_propagation is 1, and every recovery after a plugin restart counts here on any host. This is the denominator for sandbox_pid_fallbacks: zero fallbacks with zero entries here means nothing was opened, not that the key route works.
 # TYPE net_dhcp_sandbox_key_entries_total counter
 net_dhcp_sandbox_key_entries_total 9128177
 
-# HELP net_dhcp_sandbox_key_entry_failures_total Attempts to enter a container network namespace through the sandbox key that were refused. EXPECTED, once per container attach, on a stock engine: the daemon bind-mounts each sandbox netns after the plugin's own /var/run/docker mount was taken, so the key resolves to the placeholder file underneath and the container PID route carries the attach. Nothing is degraded and no action is indicated. Read sandbox_key_absent, sandbox_key_not_permitted, sandbox_key_not_a_namespace, sandbox_key_wrong_ns_type and sandbox_key_unavailable to see which refusal this was; they sum to this counter.
+# HELP net_dhcp_sandbox_key_entry_failures_total Attempts to enter a container network namespace through the sandbox key that were refused. EXPECTED, once per container attach, on a host whose sandbox_netns_propagation is 0: the daemon bind-mounts each sandbox netns after the plugin's own /var/run/docker mount was taken and that mount is private, so the key resolves to the placeholder file underneath and the container PID route carries the attach. Nothing is degraded and no action is indicated. On a host answering 1 this stays flat and sandbox_key_entries rises instead. Read sandbox_key_absent, sandbox_key_not_permitted, sandbox_key_not_a_namespace, sandbox_key_wrong_ns_type and sandbox_key_unavailable to see which refusal this was; they sum to this counter.
 # TYPE net_dhcp_sandbox_key_entry_failures_total counter
 net_dhcp_sandbox_key_entry_failures_total 3507070
 
@@ -274,7 +274,7 @@ net_dhcp_sandbox_key_absent_total 5837378
 # TYPE net_dhcp_sandbox_key_not_permitted_total counter
 net_dhcp_sandbox_key_not_permitted_total 5326664
 
-# HELP net_dhcp_sandbox_key_not_a_namespace_total Key-route refusals because the entry opened and was not a namespace — the placeholder file libnetwork creates before it bind-mounts the sandbox netns over it. EXPECTED, once per container attach, on a stock engine, and it is the evidence for SECURITY.md's reason that the host PID namespace and CAP_SYS_PTRACE stay. An arm of sandbox_key_entry_failures.
+# HELP net_dhcp_sandbox_key_not_a_namespace_total Key-route refusals because the entry opened and was not a namespace — the placeholder file libnetwork creates before it bind-mounts the sandbox netns over it. EXPECTED, once per container attach, on a host whose sandbox_netns_propagation is 0, and it is the evidence for SECURITY.md's reason that the host PID namespace and CAP_SYS_PTRACE stay on such a host. An arm of sandbox_key_entry_failures.
 # TYPE net_dhcp_sandbox_key_not_a_namespace_total counter
 net_dhcp_sandbox_key_not_a_namespace_total 9354322
 
@@ -286,7 +286,7 @@ net_dhcp_sandbox_key_wrong_ns_type_total 8781143
 # TYPE net_dhcp_sandbox_key_unavailable_total counter
 net_dhcp_sandbox_key_unavailable_total 6849095
 
-# HELP net_dhcp_sandbox_pid_fallbacks_total Endpoints whose network namespace was entered through /proc/<pid>/ns/net after the sandbox key route was refused. That route is why the manifest asks for the host PID namespace and CAP_SYS_PTRACE; a zero here across a host's whole uptime, with sandbox_key_entries non-zero, is the evidence that it was not needed.
+# HELP net_dhcp_sandbox_pid_fallbacks_total Endpoints whose network namespace was entered through /proc/<pid>/ns/net after the sandbox key route was refused. Every attach counts here on a host whose sandbox_netns_propagation is 0. That route is why the manifest asks for the host PID namespace and CAP_SYS_PTRACE; a zero here across a host's whole uptime, with sandbox_key_entries non-zero, is the evidence that it was not needed.
 # TYPE net_dhcp_sandbox_pid_fallbacks_total counter
 net_dhcp_sandbox_pid_fallbacks_total 5585284
 

@@ -200,6 +200,44 @@ build_repo "$R"
 plant "$R" pkg/plugin/thing.go '// This once exec would have run udhcpc.'
 expect "planted udhcpc in a Go source is NOT caught (control: domains are per word)" 0 "$(run "$R")"
 
+# --- outcome 1: stock engine, the fourth word -------------------------
+#
+# Added 2026-09-11 with #417. Unlike the other three it names no deleted
+# component: it is a claim about the wrong noun. Eleven places said the
+# sandbox key route behaves one way "on a stock engine", and the
+# behaviour belongs to the propagation of the daemon's mount, which
+# differs between the production host and this project's CI daemon. It
+# is driven in the same directions: caught in a living document, caught
+# in a Go source (its domain is both), its remedy named, and its
+# inflection covered.
+build_repo "$R"
+plant "$R" docs/reference.md 'On a stock engine the key route is refused once per attach.'
+expect "planted stock engine in a living document is caught" 1 "$(run "$R")"
+expect_out "the stock-engine failure names the remedy, not only the phrase" \
+    "property of the HOST mount the daemon publishes sandbox keys on"
+
+build_repo "$R"
+plant "$R" pkg/plugin/thing.go '// On a stock engine this fires once per attach.'
+expect "planted stock engine in a Go source is caught (its domain is both)" 1 "$(run "$R")"
+expect_out "the stock-engine failure names the Go file" "pkg/plugin/thing.go"
+
+build_repo "$R"
+plant "$R" README.md 'Stock engines all behave the same way here.'
+expect "the plural inflection is caught" 1 "$(run "$R")"
+
+# The CONTROL: the phrase is two words, and a gate keyed on either one
+# alone would fail every sentence that says "engine" or "stock".
+build_repo "$R"
+plant "$R" README.md 'The engine floor is 24.0, and the image ships a stock configuration.'
+expect "engine and stock apart are NOT caught (control)" 0 "$(run "$R")"
+
+# It has NO history allowance, deliberately: a 1.x release note saying
+# it would have been as wrong when it was written. Planted below the
+# boundary that exempts the other three, it is still red.
+build_repo "$R"
+plant "$R" RELEASE_NOTES.md 'On a stock engine this was already true in 1.x.'
+expect "stock engine below the 1.x boundary is still caught (no allowance)" 1 "$(run "$R")"
+
 # --- outcome 1: case and word boundaries ------------------------------
 build_repo "$R"
 plant "$R" README.md 'DHCPCD is shouted here.'
