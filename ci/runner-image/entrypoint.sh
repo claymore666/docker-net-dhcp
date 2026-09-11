@@ -133,6 +133,42 @@ ensure_plugin_bind_source() {
 }
 ensure_plugin_bind_source
 
+# --- mount propagation for the nested daemon ---------------------------
+# The plugin reads a container's network namespace through the sandbox
+# key the daemon publishes at /var/run/docker/netns/<id>, and its
+# manifest binds /var/run/docker into the plugin container to reach it.
+# A bind is a snapshot, not a subscription: mounts the daemon makes
+# afterwards reach the plugin only if the SOURCE mount is shared, so
+# that the bind joins its peer group.
+#
+# MEASURED (#417): with a shared source the later netns mount arrives on
+# the plugin side with no mount option asked for at all; with a private
+# source it arrives under none of them, rslave and rshared included,
+# because propagation is decided by the source. The plugin then falls
+# back to the container PID route, which costs a daemon call per attach
+# inside the window the daemon is busy serving that same Join.
+#
+# A normal host root is already shared, which is why production and the
+# GitHub-hosted runners take the key route. This container's root is
+# not, so every attach on the pool is refused and the lane measures a
+# path production does not take.
+#
+# Guarded, and deliberately not fatal. A kernel or host that refuses
+# leaves the runner on today's behaviour, which is a working lane on the
+# PID route. The log line is read back from the mount table rather than
+# taken from the command's exit status, so it reports which of the two
+# this boot actually got.
+prepare_mount_propagation() {
+    mount --make-rshared / 2>/dev/null || true
+    local opts
+    opts=$(awk '$5 == "/" { o = ""; for (i = 7; i <= NF && $i != "-"; i++) o = o $i " " } END { print o }' /proc/self/mountinfo)
+    case " $opts" in
+        *" shared:"*) log "mount propagation: / is shared (${opts% }); the nested daemon's sandbox mounts reach a plugin's bind (#417)" ;;
+        *)            log "mount propagation: / is not shared (${opts:-none}); plugin attaches use the container PID route (#417)" ;;
+    esac
+}
+prepare_mount_propagation
+
 # --- supervised dockerd ------------------------------------------------
 # Plain relaunch loop. dockerd must NOT be the container's main
 # process: the daemon-restart test SIGTERMs it and expects a fresh
