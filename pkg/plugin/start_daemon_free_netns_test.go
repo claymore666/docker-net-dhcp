@@ -32,7 +32,7 @@ import (
 // one ContainerInspect for the hostname that becomes DHCP option 12,
 // because the library takes the hostname when the client is
 // constructed, so a client started before the answer would never send
-// it. #417 stays open for a hostname source that is not the daemon.
+// it. #961 is open for a hostname source that is not the daemon.
 //
 // The fixture is the package's own network namespace, reached through a
 // sandbox-key entry that names it, and a link inside it found by MAC in
@@ -238,9 +238,10 @@ func TestStart_AsksTheDaemonNothingBeforeTheLinkIsLocated(t *testing.T) {
 // The property is an ORDER, and a count at the end of Start cannot see
 // one: an attach that inspected first and then found the link leaves
 // exactly the same totals as an attach that did it the other way round.
-// Embedding the interface keeps this to the three calls Start makes, so
-// a method added to dockerClient later cannot silently escape the watch
-// by not being listed here.
+// The three wrappers below cover the three calls Start makes today.
+// Embedding the interface is what lets the rest compile, and it is also
+// the hole: a call Start starts making later reaches the embedded
+// client without passing note(), so a new call needs a wrapper here.
 type firstCallWatcher struct {
 	dockerClient
 	m               *dhcpManager

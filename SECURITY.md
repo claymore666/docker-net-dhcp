@@ -124,7 +124,7 @@ inside `ContainerStart` for this container while it is asked (#406).
 What changed is that the namespace and the link no longer wait on it. A
 hostname source that is not `ContainerInspect` is what a daemon-free
 attach needs, and
-[#417](https://github.com/claymore666/docker-net-dhcp/issues/417) stays
+[#961](https://github.com/claymore666/docker-net-dhcp/issues/961) is
 open for it.
 
 The counters per attach, by host. Where the key route carries it,

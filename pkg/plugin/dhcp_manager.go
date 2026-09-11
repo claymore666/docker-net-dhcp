@@ -1729,7 +1729,7 @@ func (m *dhcpManager) Start(ctx context.Context) (err error) {
 	// (the library takes the hostname at construction), so the client
 	// is not started until the inspect answers or the attach is
 	// abandoned. A daemon-free attach needs a hostname source that is
-	// not ContainerInspect; #417 stays open for it.
+	// not ContainerInspect; #961 is open for it.
 	var (
 		ctrID         string
 		ctrPID        int
