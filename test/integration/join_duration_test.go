@@ -73,16 +73,23 @@ func TestJoinDuration_DistributionInThisShard(t *testing.T) {
 	}
 	defer cli.Close()
 
-	// Marked BEFORE the window opens, so the log window and the counter
-	// window cover the same stretch of time. The whole-log figures
-	// further down cannot be cross-read against a counter: the log
-	// spans the plugin's whole life and the counter spans the current
-	// process, and at this PR's first head the two printed 7 and 1 in
-	// one shard with nothing published to say which of the two readings
-	// applied (#417 review r1).
-	mark := harness.MarkPluginLog(t, ctx)
-
 	w := harness.BeginCounterWindow(t, ctx, cli, "join_attach_completed")
+
+	// Marked AFTER the counter window's baseline read, and read below
+	// BEFORE that window closes, so the log window sits INSIDE the
+	// counter window on both ends. The whole-log figures further down
+	// cannot be cross-read against a counter at all: the log spans the
+	// plugin's whole life and the counter spans the current process,
+	// and at this PR's first head the two printed 7 and 1 in one shard
+	// with nothing published to say which of the two readings applied
+	// (#417 review r1).
+	//
+	// The order of the two ends is not cosmetic. Marking first would
+	// open the log window a whole health round trip before the counter
+	// baseline, and reading it after End would leave it open past the
+	// closing read, and a line landing in either gap is a line the
+	// counter delta does not contain.
+	mark := harness.MarkPluginLog(t, ctx)
 
 	harness.CreateNetwork(t, ctx, "dhcptest-joindur", "macvlan", nil)
 	_, ipv4, _ := harness.RunContainer(t, ctx, "dhcptest-joindur", "dhcptest-joindur-c1")
@@ -103,41 +110,50 @@ func TestJoinDuration_DistributionInThisShard(t *testing.T) {
 			"counter a host running the shipped LOG_LEVEL=info carries no per-attach duration "+
 			"at all except join_attach_slow, which is the tail (#403).", attachObservationBudget, ipv4)
 	}
-	// End closes the window, which is also the check that the plugin
-	// did not restart under the reading above.
-	before, after := w.End()
-
-	// THE TWO RECORDS OVER ONE WINDOW. Both sides are now bounded by
-	// the same stretch, and End has already established that the plugin
-	// did not restart inside it, so a reset cannot explain a
-	// disagreement here.
+	// THE TWO RECORDS OVER ONE WINDOW, read before the counter window
+	// closes so that the log window ends inside it. Anything the plugin
+	// counts between this read and End inflates the delta, which is the
+	// safe direction for the comparison below.
 	//
-	// The direction is decided by the order the plugin writes them in:
-	// noteAttachDuration increments the counter and the timing line is
-	// written after it, so at any instant the counter leads the log by
-	// at most the attach in flight. A window carrying MORE lines than
-	// the counter counted is therefore a counter that missed attaches,
-	// not a sampling race.
-	//
-	// Awaited rather than sampled for the same reason: the positive
-	// assertion below would otherwise judge whatever had reached the
-	// file, and a `<=` over an empty window is satisfied by emptying
-	// it.
+	// Awaited rather than sampled: the positive assertion would
+	// otherwise judge whatever had reached the file, and a `<=` over an
+	// empty window is satisfied by emptying it.
 	window := harness.AwaitPluginLogSince(t, ctx, mark, attachObservationBudget,
 		func(w string) bool { return len(harness.AttachDurations(w)) > 0 })
 	windowTook := harness.AttachDurations(window)
+
+	// End closes the counter window, which is also the check that the
+	// plugin did not restart under any of the reads above.
+	before, after := w.End()
 	counted := after.JoinAttachCompleted - before.JoinAttachCompleted
+
 	if len(windowTook) == 0 {
 		t.Errorf("no attach line reached the plugin log in this test's own window, though the "+
 			"counter moved by %d for a container that HAS its address (%s).\n"+
 			"The two records of #403 are written side by side from one elapsed value; a window "+
 			"with the counter and without the line is the line being lost.", counted, ipv4)
 	}
+	// WHAT THIS DIRECTION ESTABLISHES, and what it does not. The plugin
+	// increments the counter and writes the line from the same place,
+	// the counter first, so a line inside the window whose count is
+	// missing from the delta is either a counter that missed the attach
+	// or an attach whose increment beat the baseline read by less than
+	// the gap between those two statements. The second is bounded by
+	// that gap and by nothing this test can narrow further, so the red
+	// names both readings rather than asserting the first.
+	//
+	// It is still worth failing on. The residual is microseconds wide
+	// and the defect it is looking for is a counter that silently
+	// undercounts the population every figure #403 quotes is drawn
+	// from.
 	if int32(len(windowTook)) > counted {
-		t.Errorf("this test's window carries %d attach line(s) and the counter moved by %d. "+
-			"The plugin did not restart inside the window, and it increments the counter before "+
-			"it writes the line, so this is the counter missing attaches. Every figure a host "+
-			"running the shipped LOG_LEVEL reads for #403 comes from that counter.",
+		t.Errorf("this test's window carries %d attach line(s) and the counter moved by %d "+
+			"over a window that contains it, with no plugin restart inside either.\n"+
+			"Either the counter missed an attach, or an attach incremented it in the moments "+
+			"before the baseline read and wrote its line after the log mark. The first is a "+
+			"defect in the only per-attach record a host running the shipped LOG_LEVEL has "+
+			"(#403); the second is a gap of microseconds. Read them against the window_lines "+
+			"and window_counted figures logged below.",
 			len(windowTook), counted)
 	}
 

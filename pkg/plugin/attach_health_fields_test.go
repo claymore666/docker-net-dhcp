@@ -21,7 +21,15 @@ import (
 // dir is EvalSymlinks'd so the mountinfo fixtures can use one spelling:
 // the propagation reading resolves the directory before matching, the
 // init-mounts reading does not.
-func writeNetnsFixtures(t *testing.T) netnsSources {
+//
+// linked chooses the propagation answer, and the drive runs both. One
+// of the two always disagrees with what this host answers through the
+// production constants, whichever host it is: a box with a shared /run
+// answers linked, a box with a private one answers private, and the
+// gauge has no third value. Without the pair, the one field whose
+// fixture value the host can also produce is the one field whose drive
+// a call site wired to the constants still satisfies.
+func writeNetnsFixtures(t *testing.T, linked bool) netnsSources {
 	t.Helper()
 
 	dir, err := filepath.EvalSymlinks(t.TempDir())
@@ -39,12 +47,17 @@ func writeNetnsFixtures(t *testing.T) netnsSources {
 		}
 	}
 
-	// A mount covering the directory and tagged master:9, so
-	// sandbox_netns_propagation is sandboxPropagationLinked, which is 1.
+	// A mount covering the directory, with or without the master:9 tag
+	// that makes sandbox_netns_propagation read linked rather than
+	// private.
+	optional := ""
+	if linked {
+		optional = "master:9 "
+	}
 	self := filepath.Join(dir, "self-mountinfo")
 	if err := os.WriteFile(self, []byte(
 		"22 21 0:20 / / rw,relatime - ext4 /dev/sda1 rw\n"+
-			"31 22 0:27 / "+netns+" rw,relatime master:9 - tmpfs tmpfs rw\n"), 0o644); err != nil {
+			"31 22 0:27 / "+netns+" rw,relatime "+optional+"- tmpfs tmpfs rw\n"), 0o644); err != nil {
 		t.Fatalf("writing the self mountinfo: %v", err)
 	}
 
@@ -97,33 +110,45 @@ func writeNetnsFixtures(t *testing.T) netnsSources {
 // Every value here is distinct from every other, so any pair of fields
 // wired to one source, or to each other, fails.
 func TestHealthSnapshot_CarriesTheAttachFields(t *testing.T) {
-	p := &Plugin{netnsSrc: writeNetnsFixtures(t)}
-	p.joinAttachSlow.Store(11)
-	p.joinAttachCompleted.Store(13)
-	p.joinAttachUnder1s.Store(17)
-	p.joinAttach1sToBudget.Store(19)
-	p.joinAttachMsMax.Store(23)
-
-	h := p.healthSnapshot()
-	for _, tc := range []struct {
-		name string
-		got  int32
-		want int32
+	for _, source := range []struct {
+		name        string
+		linked      bool
+		propagation int32
 	}{
-		{"join_attach_slow", h.JoinAttachSlow, 11},
-		{"join_attach_completed", h.JoinAttachCompleted, 13},
-		{"join_attach_under_1s", h.JoinAttachUnder1s, 17},
-		{"join_attach_1s_to_budget", h.JoinAttach1sToBudget, 19},
-		{"join_attach_ms_max", h.JoinAttachMsMax, 23},
-		{"sandbox_netns_visible", h.SandboxNetnsVisible, 2},
-		{"sandbox_netns_propagation", h.SandboxNetnsPropagation, sandboxPropagationLinked},
-		{"sandbox_netns_init_mounts", h.SandboxNetnsInitMounts, 3},
+		{"linked source mount", true, sandboxPropagationLinked},
+		{"private source mount", false, sandboxPropagationPrivate},
 	} {
-		if tc.got != tc.want {
-			t.Errorf("/Plugin.Health carries %s = %d, want %d. A field carrying its "+
-				"neighbour's number is read as a measurement: this is the only observer of the "+
-				"hop from the counter to the published document.", tc.name, tc.got, tc.want)
-		}
+		t.Run(source.name, func(t *testing.T) {
+			p := &Plugin{netnsSrc: writeNetnsFixtures(t, source.linked)}
+			p.joinAttachSlow.Store(11)
+			p.joinAttachCompleted.Store(13)
+			p.joinAttachUnder1s.Store(17)
+			p.joinAttach1sToBudget.Store(19)
+			p.joinAttachMsMax.Store(23)
+
+			h := p.healthSnapshot()
+			for _, tc := range []struct {
+				name string
+				got  int32
+				want int32
+			}{
+				{"join_attach_slow", h.JoinAttachSlow, 11},
+				{"join_attach_completed", h.JoinAttachCompleted, 13},
+				{"join_attach_under_1s", h.JoinAttachUnder1s, 17},
+				{"join_attach_1s_to_budget", h.JoinAttach1sToBudget, 19},
+				{"join_attach_ms_max", h.JoinAttachMsMax, 23},
+				{"sandbox_netns_visible", h.SandboxNetnsVisible, 2},
+				{"sandbox_netns_propagation", h.SandboxNetnsPropagation, source.propagation},
+				{"sandbox_netns_init_mounts", h.SandboxNetnsInitMounts, 3},
+			} {
+				if tc.got != tc.want {
+					t.Errorf("/Plugin.Health carries %s = %d, want %d. A field carrying its "+
+						"neighbour's number is read as a measurement: this is the only observer "+
+						"of the hop from the counter to the published document.",
+						tc.name, tc.got, tc.want)
+				}
+			}
+		})
 	}
 }
 
