@@ -204,11 +204,7 @@ func TestRecords_TheGenericRefusalCarriesTheErrno(t *testing.T) {
 // this package cannot derive (the state directory is pkg/plugin's), so
 // the quoted path itself is unchecked. That is the bound.
 func TestRecords_TheReferenceQuotesTheRefusals(t *testing.T) {
-	b, err := os.ReadFile(filepath.Join("..", "..", "docs", "reference.md"))
-	if err != nil {
-		t.Fatalf("read the reference: %v", err)
-	}
-	doc := strings.Join(strings.Fields(string(b)), " ")
+	doc := reference(t)
 
 	const elided = "<the record file>"
 	for _, errno := range []error{unix.EWOULDBLOCK, unix.ENOLCK} {
@@ -227,6 +223,141 @@ func TestRecords_TheReferenceQuotesTheRefusals(t *testing.T) {
 	generic := strings.TrimPrefix(ErrRecordsLocked.Error(), "dhcp: ")
 	if !strings.Contains(doc, generic) {
 		t.Errorf("docs/reference.md does not quote %q, the wording an unrecognised errno keeps", generic)
+	}
+}
+
+// reference returns docs/reference.md with its line wrapping removed, so
+// a quoted sentence can be looked for as one string.
+func reference(t *testing.T) string {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join("..", "..", "docs", "reference.md"))
+	if err != nil {
+		t.Fatalf("read the reference: %v", err)
+	}
+	return strings.Join(strings.Fields(string(b)), " ")
+}
+
+// TestRecords_TheReferenceGivesEachRefusalItsOwnRemedy is the other half
+// of #950: the refusal names the cause AND the action, and the action an
+// operator is given lives in the manual rather than in the message.
+//
+// A quote check cannot see it. The sentences the plugin prints can all be
+// quoted correctly while the instruction beneath each one is the other
+// one's -- MEASURED by the reviewer at this change's first head, who
+// swapped the two remedies and watched the suite stay green.
+//
+// So the remedies are located RELATIVE TO ANCHORS DERIVED FROM THE CODE:
+// each refusal's own text opens its region, and a remedy that moves out
+// of its region, or disappears, goes red. The remedy wording itself is a
+// literal here because it is prose and has no source in the code -- which
+// is also what makes it the thing most likely to drift.
+//
+// THE REPOINTING SENTENCE IS NOT DECORATION. `STATE_DIR` is settable and
+// the bind source is not, so repointing it makes the lock succeed and
+// silently moves the lease record, the tombstones and the audit ledger
+// back inside the plugin rootfs, where the next upgrade destroys them.
+// The settings row already says so, and this holds the two to each other:
+// if that row's rule is ever reworded, this goes red beside it.
+func TestRecords_TheReferenceGivesEachRefusalItsOwnRemedy(t *testing.T) {
+	doc := reference(t)
+
+	const elided = "<the record file>"
+	// part[0] of the held message and part[1] of the unsupported one:
+	// the halves that carry no path, taken from lockRefused itself.
+	heldParts := strings.Split(strings.TrimPrefix(lockRefused(elided, unix.EWOULDBLOCK).Error(), "dhcp: "), elided)
+	unsupParts := strings.Split(strings.TrimPrefix(lockRefused(elided, unix.ENOLCK).Error(), "dhcp: "), elided)
+
+	anchors := []struct {
+		name string
+		text string
+	}{
+		{"the held refusal", strings.TrimSpace(heldParts[0])},
+		{"the unsupported refusal", strings.TrimSpace(unsupParts[1])},
+		{"the generic refusal", strings.TrimPrefix(ErrRecordsLocked.Error(), "dhcp: ")},
+	}
+	at := make([]int, len(anchors))
+	for i, a := range anchors {
+		at[i] = strings.Index(doc, a.text)
+		if at[i] < 0 {
+			t.Fatalf("docs/reference.md does not quote %s (%q)", a.name, a.text)
+		}
+	}
+	if !(at[0] < at[1] && at[1] < at[2]) {
+		t.Fatalf("the three refusals are not quoted in order in docs/reference.md: %v", at)
+	}
+
+	remedies := []struct {
+		name   string
+		text   string
+		region int // the anchor whose region the remedy must sit in
+	}{
+		{"disable the holder", "Disable the old tag, then enable the new one.", 0},
+		{"give the mount a filesystem that locks", "Back `/var/lib/net-dhcp` on the host with a filesystem that implements file locking.", 1},
+		{"do not repoint STATE_DIR", "Do not repoint `STATE_DIR`", 1},
+		{"read the owner and mode", "Check the owner and the mode of the host directory", 2},
+	}
+	for _, r := range remedies {
+		if n := strings.Count(doc, r.text); n != 1 {
+			t.Errorf("the remedy %q appears %d times in docs/reference.md, want 1: %q", r.name, n, r.text)
+			continue
+		}
+		i := strings.Index(doc, r.text)
+		lo := at[r.region]
+		hi := len(doc)
+		if r.region+1 < len(at) {
+			hi = at[r.region+1]
+		}
+		if i < lo || i >= hi {
+			t.Errorf("the remedy %q is not in %s's paragraph: it would be read as the answer to another refusal",
+				r.name, anchors[r.region].name)
+		}
+	}
+
+	// The settings row this leans on. Quoted, because the sentence above
+	// is only correct while the row still says repointing opts out.
+	if !strings.Contains(doc, "repointing this setting opts out") {
+		t.Error("docs/reference.md no longer says repointing STATE_DIR opts out; the remedy above assumes it does")
+	}
+}
+
+// TestRecords_AnUnopenableLockFileNamesItself is the arm above the
+// classification: the lock file cannot be CREATED, so there is no errno
+// from flock to read and none of the three readings applies.
+//
+// It is a fourth line in the daemon log at the same step, and the manual
+// quotes it as one. The case pins what an operator gets, including the
+// two negatives: it is not an ErrRecordsLocked, because no lock was ever
+// contended, and the errno survives for a caller that wants it.
+//
+// Driven with a missing parent directory rather than a mode the process
+// may not write: root ignores the mode, and a case that passes only for
+// an unprivileged runner is a case that stops running.
+func TestRecords_AnUnopenableLockFileNamesItself(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "no-such-directory", "leases.jsonl")
+
+	r, err := OpenRecords(path, "instance-a")
+	if err == nil {
+		_ = r.Close()
+		t.Fatal("a record store opened under a directory that does not exist")
+	}
+	got := err.Error()
+	if !strings.Contains(got, path) {
+		t.Errorf("the failure does not name the record file: %q", got)
+	}
+	if !errors.Is(err, unix.ENOENT) {
+		t.Errorf("the failure dropped the errno: %q", got)
+	}
+	if errors.Is(err, ErrRecordsLocked) {
+		t.Errorf("a lock file that could not be created was reported as a contended lock: %q", got)
+	}
+
+	// The manual quotes this line too, and the quote is derived: take
+	// what the plugin prints before the path.
+	if i := strings.Index(got, path); i > 0 {
+		lead := strings.TrimSpace(strings.TrimPrefix(got[:i], "dhcp: "))
+		if !strings.Contains(reference(t), lead) {
+			t.Errorf("docs/reference.md does not quote %q, which is how this failure opens", lead)
+		}
 	}
 }
 

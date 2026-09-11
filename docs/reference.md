@@ -276,9 +276,18 @@ example, taking the lock fails and a single plugin does not start. That case
 has its own line in the daemon log, `the filesystem under
 /var/lib/net-dhcp/lease-records.jsonl does not support locks; the plugin
 refuses to start rather than risk two writers`. Disabling tags does not clear
-it. Point `STATE_DIR` at a local filesystem instead. An errno the plugin does
-not recognise keeps the older wording, `the lease record file is already open
-by another writer`, with the errno printed after it.
+it. Back `/var/lib/net-dhcp` on the host with a filesystem that implements
+file locking. Do not repoint `STATE_DIR`: the bind source is fixed at that
+path, so any other value puts the state back inside the plugin rootfs, where
+the next upgrade wipes it. The `STATE_DIR` row under
+[Plugin settings](#plugin-settings) states the same rule.
+
+An errno the plugin does not recognise keeps the older wording, `the lease
+record file is already open by another writer`, with the errno printed after
+it. A plugin that cannot create the lock file at all never reaches any of the
+three: the log says `lock file for` and then the path and the reason, for
+example `permission denied` on a state directory the plugin may not write.
+Check the owner and the mode of the host directory in that case.
 
 (`docker plugin upgrade` exists but in-place upgrades while networks
 exist risk a driver-reference mismatch; the remove/recreate path is
