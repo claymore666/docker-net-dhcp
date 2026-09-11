@@ -2086,6 +2086,17 @@ so the safe sequence for moving from <code>vOLD</code> to <code>vNEW</code> is:<
 <a id="__codelineno-3-17" name="__codelineno-3-17" href="#__codelineno-3-17"></a>docker<span class="w"> </span>plugin<span class="w"> </span>install<span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:vNEW
 <a id="__codelineno-3-18" name="__codelineno-3-18" href="#__codelineno-3-18"></a><span class="c1"># 4. Recreate networks against vNEW, restart containers</span>
 </code></pre></div>
+<p>A 2.0 plugin takes an exclusive lock on the lease record in <code>STATE_DIR</code>, so a
+second 2.0 tag sharing that directory cannot be enabled while the first one
+is enabled. <code>docker plugin enable</code> fails and the daemon log says <code>the lease
+record file is already open by another writer</code>, so disable the old tag before
+enabling the new one. The lock lives in the plugin and is advisory, taken on
+a file beside the record, so it needs a filesystem that implements file
+locking. If the host directory behind <code>STATE_DIR</code> sits on a mount with no
+working locks, NFS without lockd for example, taking the lock fails and a
+single plugin does not start, with that same message in the daemon log. The
+two cases read alike, so check whether another tag of this plugin is enabled.
+If none is, the mount is the cause and disabling tags will not help.</p>
 <p>(<code>docker plugin upgrade</code> exists but in-place upgrades while networks
 exist risk a driver-reference mismatch; the remove/recreate path is
 the supported one.)</p>
