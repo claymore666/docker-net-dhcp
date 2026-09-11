@@ -171,6 +171,14 @@ type HealthResponse struct {
 	// to expire (#566).
 	JoinAbortedNoContainer int32 `json:"join_aborted_no_container"`
 	JoinAttachSlow         int32 `json:"join_attach_slow"`
+	// The body of the distribution join_attach_slow is the tail of
+	// (#403). Plain int32: these ship with this change, so a zero from
+	// an older plugin and a zero from a quiet lane are the same
+	// reading here, and JoinAttachCompleted tells them apart.
+	JoinAttachCompleted  int32 `json:"join_attach_completed"`
+	JoinAttachUnder1s    int32 `json:"join_attach_under_1s"`
+	JoinAttach1sToBudget int32 `json:"join_attach_1s_to_budget"`
+	JoinAttachMsMax      int32 `json:"join_attach_ms_max"`
 
 	// RestartLinkUpWaited / RestartLinkUpTimeouts mirror the #408
 	// window: a child link that came up only after the departing link
@@ -233,6 +241,19 @@ type HealthResponse struct {
 	// not publish it is distinguishable from one reporting -1 — absent
 	// data is not a value.
 	SandboxNetnsVisible *int32 `json:"sandbox_netns_visible"`
+	// SandboxNetnsPropagation says whether a mount the daemon makes
+	// under the sandbox netns directory after the plugin started can
+	// reach the plugin: 1 linked, 0 private, -1 no covering mount.
+	// It is what tells a cell which host it is running on, so a cell
+	// can assert the route this host can actually take instead of the
+	// route the lane happened to have when it was written. A pointer
+	// for the same reason as its neighbours.
+	SandboxNetnsPropagation *int32 `json:"sandbox_netns_propagation"`
+	// SandboxNetnsInitMounts is the sandbox netns mount count in PID 1's
+	// mount table: -2 PID 1 shares the plugin's mount namespace, -1
+	// unreadable, N otherwise. Under a nested engine PID 1 is that
+	// engine's init, so this says which world the lane is.
+	SandboxNetnsInitMounts *int32 `json:"sandbox_netns_init_mounts"`
 	// SandboxKeyEntries / SandboxKeyEntryFailures / SandboxPIDFallbacks
 	// say which route the plugin took into each container's network
 	// namespace. Pointers, all three: a plugin that does not publish

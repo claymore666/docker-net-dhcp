@@ -858,6 +858,29 @@ type Plugin struct {
 	// the work and the fix needs re-examining.
 	joinAttachSlow atomic.Int32
 
+	// joinAttachCompleted, joinAttachUnder1s, joinAttach1sToBudget and
+	// joinAttachMsMax are the body of the distribution joinAttachSlow
+	// is the tail of, carried where the operator of a shipped plugin
+	// can reach it (#403).
+	//
+	// The per-attach timing line is Debug and the shipped LOG_LEVEL is
+	// info, so on a host nobody has reconfigured and restarted, the
+	// log answers nothing. These do, at any level: the count gives the
+	// population, the two buckets bound the body against the one
+	// threshold #403 is about, and the maximum says how close the
+	// worst attach came to it. Together with joinAttachSlow the four
+	// buckets partition every successful attach.
+	//
+	// Not healthy-affecting. All four are readings of successes.
+	// netnsSrc redirects the three sandbox-netns readings at fixtures.
+	// Zero in production; see netnsSources.
+	netnsSrc netnsSources
+
+	joinAttachCompleted  atomic.Int32
+	joinAttachUnder1s    atomic.Int32
+	joinAttach1sToBudget atomic.Int32
+	joinAttachMsMax      atomic.Int32
+
 	// dhcpServerTierFallbacks counts initial acquisitions where a
 	// preferred DHCP server did not answer inside its slice of the
 	// budget and the next entry in dhcp_servers was tried (#111).

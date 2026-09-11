@@ -30,6 +30,14 @@ net_dhcp_pending_hints 1152834
 # TYPE net_dhcp_sandbox_netns_visible gauge
 net_dhcp_sandbox_netns_visible 1679618
 
+# HELP net_dhcp_sandbox_netns_propagation Whether a mount the daemon makes under the sandbox netns directory after this process started can reach it: 1 linked, 0 private, -1 unreadable or uncovered. Answered before the directory exists, from the mount covering its parent. A 0 means every attach takes the container PID route.
+# TYPE net_dhcp_sandbox_netns_propagation gauge
+net_dhcp_sandbox_netns_propagation 7661678
+
+# HELP net_dhcp_sandbox_netns_init_mounts Sandbox netns mounts in PID 1's mount table: -2 PID 1 shares this process's mount namespace, -1 unreadable, N otherwise. Read it against sandbox_netns_visible.
+# TYPE net_dhcp_sandbox_netns_init_mounts gauge
+net_dhcp_sandbox_netns_init_mounts 4231040
+
 # HELP net_dhcp_leases_obtained_total Leases obtained from the DHCP server.
 # TYPE net_dhcp_leases_obtained_total counter
 net_dhcp_leases_obtained_total{family="ipv4"} 4587864
@@ -156,6 +164,22 @@ net_dhcp_join_aborted_endpoint_left_total 2013096
 # HELP net_dhcp_join_attach_slow_total Attaches that outran their expected window and needed the daemon-busy grace.
 # TYPE net_dhcp_join_attach_slow_total counter
 net_dhcp_join_attach_slow_total 6508941
+
+# HELP net_dhcp_join_attach_completed_total Successful attaches. The population the join_attach_* buckets partition.
+# TYPE net_dhcp_join_attach_completed_total counter
+net_dhcp_join_attach_completed_total 2129137
+
+# HELP net_dhcp_join_attach_under_1s_total Successful attaches that finished in under a second.
+# TYPE net_dhcp_join_attach_under_1s_total counter
+net_dhcp_join_attach_under_1s_total 1843802
+
+# HELP net_dhcp_join_attach_1s_to_budget_total Successful attaches that took a second or more but stayed inside AwaitTimeout.
+# TYPE net_dhcp_join_attach_1s_to_budget_total counter
+net_dhcp_join_attach_1s_to_budget_total 3013612
+
+# HELP net_dhcp_join_attach_ms_max The longest successful attach, in milliseconds. Read it against AwaitTimeout.
+# TYPE net_dhcp_join_attach_ms_max gauge
+net_dhcp_join_attach_ms_max 9967410
 
 # HELP net_dhcp_displaced_stops_total DHCP managers stopped because a Join displaced them. Counts the intent to stop; it is not evidence the client went away.
 # TYPE net_dhcp_displaced_stops_total counter

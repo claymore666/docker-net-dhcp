@@ -748,10 +748,22 @@ func TestStart_RecordsPhasesForTheCaller(t *testing.T) {
 	}
 }
 
-// TestStart_LeavesNoPhaseRecordOnSuccess keeps the field honest. A
-// stale summary from a previous failure, or timing on every successful
-// Join, would put noise on the operator's log for no diagnostic gain.
-func TestStart_LeavesNoPhaseRecordOnSuccess(t *testing.T) {
+// TestStart_CarriesNoPhaseRecordBeforeItRuns holds the zero value, so a
+// reader of startPhases can tell "Start has not recorded" from "Start
+// recorded nothing".
+//
+// IT USED TO BE NAMED FOR A CLAIM ITS BODY NEVER DROVE. As
+// TestStart_LeavesNoPhaseRecordOnSuccess it asserted that a successful
+// Start records no timing, over a manager whose Start had never been
+// called: no unit test in this package can reach a successful Start,
+// which needs a live network namespace. The claim is also no longer the
+// tree's: #403 asks for the distribution of Join durations against the
+// 10s budget, and a record kept only for the Joins that missed the
+// budget is the tail served as the distribution. Start now records on
+// both outcomes, the success line is at debug beside the per-attach key
+// refusal, and the observer for it is the integration lane, where a
+// successful Start happens.
+func TestStart_CarriesNoPhaseRecordBeforeItRuns(t *testing.T) {
 	m := newDHCPManager(&fakeDocker{}, JoinRequest{}, DHCPNetworkOptions{})
 	if m.startPhases != "" || m.startTotal != "" {
 		t.Error("a fresh manager already carries phase timing")
