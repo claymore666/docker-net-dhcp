@@ -181,7 +181,16 @@ func TestParseJSONOrErrorResponse_AnEmptyBodyNamesTheResend(t *testing.T) {
 		t.Fatalf("status: got %d want 400", rec.Code)
 	}
 	body := rec.Body.String()
-	for _, want := range []string{"no body", "--timeout"} {
+	// "30s" and "BELOW" are the DIRECTION of the lever, not decoration.
+	// The plugin is never told what --timeout the operator enabled it
+	// with, so every budget on this side is sized to the default: a
+	// lower value breaks these calls every time rather than making them
+	// fail sooner, and a higher one is unused. A message that names the
+	// flag without naming that sends the reader to raise a number that
+	// cannot help -- and on an IPAM-mode network, where the address is
+	// acquired inside this call, "cannot help" means the network never
+	// starts a container again.
+	for _, want := range []string{"no body", "--timeout", "30s", "BELOW"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the response does not mention %q. The operator reads this text as the "+
 				"reason the container did not start:\n%s", want, body)

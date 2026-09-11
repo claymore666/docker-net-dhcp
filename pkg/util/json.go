@@ -104,6 +104,15 @@ func ParseJSONOrErrorResponse(v interface{}, w http.ResponseWriter, r *http.Requ
 // was willing to wait for, and the operator's lever is the timeout the
 // plugin was enabled with.
 //
+// THE LEVER ONLY MOVES ONE WAY, and the message says so because nothing
+// else the operator can read does. The daemon does not pass `--timeout`
+// to the plugin, so every budget on this side is sized to the 30s
+// default (plugin.pluginCallBudget, and the IPAM reserve's 26s derived
+// from it). Lowering it therefore breaks these calls permanently rather
+// than making them fail sooner, and raising it buys nothing. Naming the
+// flag without naming its direction is what sends an operator to raise
+// a number that cannot help.
+//
 // MEASURED, integration run 34600486961, failure-1: a reservation held
 // past a 5s client timeout came back to the operator as
 // `IpamDriver.RequestAddress: failed to parse request body: EOF`, which
@@ -119,7 +128,12 @@ func explainRequestBody(err error) error {
 			"the daemon re-sent a call whose body it had already spent: the first attempt was "+
 			"still running when the plugin call timeout expired (set with `--timeout` when the "+
 			"plugin is enabled, 30s by default), and a re-sent call carries nothing to serve. "+
-			"The work the first call started is unaffected and this one cannot be answered: %w", err)
+			"The work the first call started is unaffected and this one cannot be answered. "+
+			"Note the direction of that lever: this plugin is never told the value you enabled "+
+			"it with, so it sizes its own work to the 30s default and cannot follow yours. "+
+			"A `--timeout` BELOW 30s makes calls fail here every time and is not supported; "+
+			"above it, the extra time is never used. If the exchange itself is slow, the "+
+			"server or the segment is what to change: %w", err)
 	}
 	return fmt.Errorf("failed to parse request body: %w", err)
 }

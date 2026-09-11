@@ -433,9 +433,22 @@ and the IPAM block shows the subnet and the addresses in use.
 **`--subnet` is optional and changes two things.** Without it the driver
 answers the pool `0.0.0.0/0`, which is what `docker network inspect`
 then shows. With it, `docker network inspect` shows the subnet you
-typed, and the driver refuses any lease from outside it: a DHCP server handing out an address outside the
-subnet you typed would put a container in Docker's own records outside
-its network's pool, and `docker run` fails instead.
+typed, and the driver refuses any lease from outside it: a DHCP server
+handing out an address outside the subnet you typed would put a
+container in Docker's own records outside its network's pool, and
+`docker run` fails instead.
+
+**Keep `docker plugin enable --timeout` at its 30s default.** In this
+shape the address is acquired inside the daemon's IPAM call, and the
+plugin sizes that work to the default budget: one reservation gets 26s
+of it, which leaves room for a DHCP exchange plus the RFC 5227 probe
+that runs before the address is used. The plugin is not told what value
+you enabled it with and cannot follow it, so a **lower** `--timeout`
+makes every address request on such a network fail — the daemon stops
+listening mid-reservation and re-sends a call whose body it has already
+spent, which the plugin refuses with a message naming this flag — and a
+**higher** one is unused. `--ipam-driver null` networks are unaffected;
+they acquire during endpoint creation instead.
 
 **`--ipam-opt parent=<nic>` or `--ipam-opt bridge=<name>`** is needed
 only for a **second** network in this shape with the same subnet on a

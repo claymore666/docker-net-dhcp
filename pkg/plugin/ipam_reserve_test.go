@@ -722,3 +722,33 @@ func TestIpamRecordAnswersFor(t *testing.T) {
 		})
 	}
 }
+
+// TestIpamReserveBudget_IsSizedToTheDefaultCallBudget couples the number
+// the documentation tells operators to the constant the code uses.
+//
+// The daemon does not pass `docker plugin enable --timeout` to the
+// plugin, so this side cannot follow it: every budget here is derived
+// from the DEFAULT. docs/reference.md therefore tells the operator to
+// leave the flag at 30s and says why, and pkg/util's empty-body refusal
+// says the same in the message they actually see. Both statements are
+// this constant, written out. If it moves and they do not, the plugin
+// contradicts its own documentation at the one moment an operator is
+// reading it to recover a broken network.
+func TestIpamReserveBudget_IsSizedToTheDefaultCallBudget(t *testing.T) {
+	if pluginCallBudget != 30*time.Second {
+		t.Errorf("pluginCallBudget is %v, but docs/reference.md and pkg/util's empty-body "+
+			"refusal both tell the operator 30s. Update the prose with the constant, or the "+
+			"advice sends them to a value this plugin cannot work at.", pluginCallBudget)
+	}
+	got := ipamReserveBudget()
+	if got >= pluginCallBudget {
+		t.Errorf("one reservation may spend %v of a %v call budget, leaving nothing to write "+
+			"the response in. The daemon stops listening first and re-sends a call whose body "+
+			"it has already spent, which is the failure this margin exists to avoid.",
+			got, pluginCallBudget)
+	}
+	if got <= 0 {
+		t.Fatalf("the reservation budget is %v, so every reserve is out of time before it "+
+			"starts", got)
+	}
+}

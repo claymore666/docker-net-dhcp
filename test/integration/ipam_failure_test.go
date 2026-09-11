@@ -342,7 +342,14 @@ func TestFailure_IPAMResentRequestIsRefusedNotServedTwice(t *testing.T) {
 			"asked for.", pluginTimeout)
 	}
 	t.Logf("refused, as it must be: %v", startFailure)
-	for _, want := range []string{"no body", "--timeout"} {
+	// "30s" and "BELOW" are the direction of the lever. This test is the
+	// cell that drives it: the plugin was enabled at 5s, which is below
+	// the 26s one reservation is given, so on this network every
+	// address request fails from here until the operator puts the flag
+	// back. The plugin is never told the value, so it cannot adapt --
+	// and a message that names the flag without naming that sends the
+	// reader to raise a number that cannot help.
+	for _, want := range []string{"no body", "--timeout", "30s", "BELOW"} {
 		if !strings.Contains(startFailure.Error(), want) {
 			t.Errorf("the failure the operator sees does not mention %q. The cause is a call "+
 				"that outlived the plugin call timeout; a decoder error in its place reads "+
@@ -415,10 +422,13 @@ func TestFailure_IPAMResentRequestIsRefusedNotServedTwice(t *testing.T) {
 	t.Log("plugin back at the stock 30s client timeout for the retry")
 
 	// The address is not wedged. A reservation the daemon abandoned is
-	// retained rather than closed, so the retry inside the tombstone
-	// window claims it back; what is asserted is the user-visible half
-	// -- the same container starts -- because which address the server
-	// hands a returning client is the server's to decide.
+	// RETAINED rather than closed, and the lease records live on disk,
+	// so the retry below -- which meets the freshly recycled process
+	// above, not the one that took the reservation -- still finds the
+	// candidate by rebuilding them. What is asserted is the
+	// user-visible half, that the same container starts: which address
+	// the server hands a returning client is the server's to decide,
+	// and the retained record is a preference, not a demand.
 	if err := cli.ContainerStart(ctx, create.ID, container.StartOptions{}); err != nil {
 		t.Fatalf("the container did not start on the retry, with the server back: %v\n"+
 			"A reservation the daemon gave up on has left this endpoint unable to get an "+

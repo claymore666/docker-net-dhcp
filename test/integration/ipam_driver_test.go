@@ -880,11 +880,23 @@ func TestIPAM_TwoNetworksCannotShareOnePool(t *testing.T) {
 // restart, which is #480 and not this fixture.
 //
 // The demand here is the #386 shape instead: the address survives, and
-// it survived by a path this test MODELS -- a replay hit or a tombstone
-// -- because "preserved by a mechanism nobody named" reads exactly like
-// success and is how a regression hides. A replay MISS is refused in
-// either case: a miss is an endpoint libnetwork re-allocates an address
-// for.
+// it survived by a path this test MODELS, because "preserved by a
+// mechanism nobody named" reads exactly like success and is how a
+// regression hides. A replay MISS is refused in every case: a miss is
+// an endpoint libnetwork re-allocates an address for.
+//
+// THREE PATHS ARE MODELLED, and tombstones_consumed is NOT one of them.
+// The JSON tombstone write is gated on !ipamMode (network.go:1597), so
+// for an IPAM-mode network no tombstone is ever laid and that counter
+// cannot move -- an earlier edition of this switch offered it as one of
+// two alternatives, which made the disjunction half dead and the live
+// half the only thing that could ever pass. What can happen is: the
+// endpoint is replayed and its record found (ipam_replay_hits); or the
+// container is rebuilt with a NEW endpoint MAC and the retained lease
+// record re-binds the old address under its own client identity; or the
+// plugin process outlived the daemon and the endpoint was never torn
+// down at all. Each is identified by what it did, not by the absence of
+// the others.
 //
 // The pool half of the replay gets its own evidence, and it is the half
 // this driver owns: a container created AFTER the restart, on a network
@@ -953,8 +965,8 @@ func TestIPAM_ReplayAfterDaemonRestart(t *testing.T) {
 		t.Fatalf("ContainerStart: %v", err)
 	}
 
-	before, _ := ipamNetworkAddress(t, ctx, cli, id, netName)
-	t.Logf("before the restart: %s", before)
+	before, beforeMAC := ipamNetworkAddress(t, ctx, cli, id, netName)
+	t.Logf("before the restart: %s on %s", before, beforeMAC)
 
 	// The address above appears at CreateEndpoint, before Join has
 	// started the persistent client. Pulling the daemon down inside
@@ -990,6 +1002,10 @@ func TestIPAM_ReplayAfterDaemonRestart(t *testing.T) {
 	// make across a process that was replaced.
 	health := harness.WaitPluginHealth(t, ctx, cli2, 90*time.Second)
 	windowSeconds := time.Since(restartMark).Seconds()
+	// tombstones_consumed is logged, not judged: see the header -- it
+	// cannot move for an IPAM-mode network. A non-zero here would mean
+	// the !ipamMode gate stopped holding, which is a different test's
+	// subject.
 	t.Logf("replay: hits=%d miss=%d tombstones_consumed=%d; plugin instance %s -> %s, "+
 		"uptime %.0fs -> %.0fs across a %.0fs window",
 		health.IPAMReplayHits, health.IPAMReplayMiss, health.TombstonesConsumed,
@@ -1008,7 +1024,7 @@ func TestIPAM_ReplayAfterDaemonRestart(t *testing.T) {
 		healthBefore.InstanceID == health.InstanceID &&
 		health.UptimeSeconds > windowSeconds
 
-	after, _ := ipamNetworkAddress(t, ctx, cli2, id, netName)
+	after, afterMAC := ipamNetworkAddress(t, ctx, cli2, id, netName)
 	if after != before {
 		t.Errorf("the container is at %s after the daemon restart; it was at %s.\n"+
 			"Whether the endpoint was replayed or rebuilt, the address is this plugin's to "+
@@ -1021,40 +1037,45 @@ func TestIPAM_ReplayAfterDaemonRestart(t *testing.T) {
 			health.IPAMReplayMiss)
 	}
 	switch {
-	case health.IPAMReplayHits >= 1 && health.TombstonesConsumed >= 1:
-		t.Logf("both paths ran (hits=%d, tombstones_consumed=%d)",
-			health.IPAMReplayHits, health.TombstonesConsumed)
 	case health.IPAMReplayHits >= 1:
 		t.Log("the address was confirmed by the replayed RequestAddress finding its record")
-	case health.TombstonesConsumed >= 1:
-		t.Log("the endpoint was rebuilt and the tombstone handed back the same address")
-	case samePlugin:
-		// The third path, and MEASURED the one this fixture actually
-		// takes: harness.RestartDockerDaemon's direct branch (no
-		// systemd) signals the daemon only. The plugin is a separate
-		// process and keeps running, so libnetwork's startup replay
-		// resolves the endpoint against state the SAME plugin still
-		// holds, asks this driver for nothing, and neither counter can
-		// move. Nothing was reallocated because nothing was released.
+	case afterMAC != beforeMAC && beforeMAC != "" && afterMAC != "":
+		// The path this fixture MEASURABLY takes, and the one the first
+		// two editions of this switch did not model. Run 34604958124
+		// main-8: the plugin log reads "Shutting down..." 13:37:35 and
+		// "Starting server..." 13:37:45 -- the plugin went down WITH the
+		// daemon -- and the container came back as a different endpoint
+		// with a different MAC (4a:2d:08:d3:a7:e9 -> fe:d9:ef:2c:e0:ce),
+		// whose DISCOVER asked for the previous address and got it.
 		//
-		// This is a pass, not a hole: the address was compared above
-		// and it held, ipam_replay_miss is 0, and the survival is
-		// attributed to a named mechanism -- the plugin never went
-		// away -- rather than to "some mechanism". Run 34604958124
-		// main-8 read hits=0 miss=0 tombstones_consumed=0 here with
-		// the address preserved, which is this case and not the
-		// default.
+		// That is the retained lease record re-binding under its own
+		// client identity: the record survives on disk, the reserve
+		// finds exactly one live candidate for the network, and it asks
+		// under the identity the server already has the lease filed
+		// under rather than under the new MAC. A NEW MAC holding the
+		// OLD address is that mechanism's signature and nothing else's
+		// -- a replay would have restored the endpoint MAC and all.
+		t.Logf("the endpoint was rebuilt (%s -> %s) and the retained record re-bound the "+
+			"same address under its own identity", beforeMAC, afterMAC)
+	case samePlugin:
+		// The third modelled path, on the restart shapes where the
+		// plugin is NOT recycled with the daemon: the endpoint is never
+		// torn down, libnetwork's startup replay resolves it against
+		// state the same plugin still holds, and neither the driver nor
+		// the server is asked anything. Nothing was reallocated because
+		// nothing was released. Identified positively -- same
+		// instance_id AND an uptime longer than the window, so a
+		// process that started inside it cannot claim this arm.
 		t.Logf("the plugin process outlived the daemon (instance %s, uptime %.0fs > the "+
 			"%.0fs window), so the endpoint was never torn down and nothing was replayed "+
 			"through this driver", health.InstanceID, health.UptimeSeconds, windowSeconds)
 	default:
-		t.Error("the address above survived the restart by neither modelled path: " +
-			"ipam_replay_hits=0 and tombstones_consumed=0. Either it did not really survive " +
-			"(the comparison above says), or it survived by a mechanism this test does not " +
-			"model -- and an unmodelled mechanism is not something to pass on (#386).\n" +
-			"The plugin process did NOT outlive the daemon either, so the third path is " +
-			"out: a plugin that restarted and still reports no hit and no tombstone " +
-			"rebuilt this endpoint from something neither counter names.")
+		t.Errorf("the address above survived the restart by none of the three modelled "+
+			"paths: ipam_replay_hits=0, the endpoint MAC is unchanged (%s) so nothing was "+
+			"rebuilt and re-bound, and the plugin did not outlive the daemon. Either it did "+
+			"not really survive (the comparison above says), or it survived by a mechanism "+
+			"this test does not model -- and an unmodelled mechanism is not something to "+
+			"pass on (#386).", beforeMAC)
 	}
 
 	// The container is not merely recorded, it works.
