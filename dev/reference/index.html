@@ -2041,22 +2041,24 @@ the tree consumes it</strong>, and a CI gate fails when that list and
 disagree in either direction.</p>
 <p><code>CAP_SYS_PTRACE</code> and the host PID namespace are the pair worth reading
 carefully. From 2.0 the plugin ASKS FIRST for the sandbox key the daemon
-publishes under <code>/var/run/docker/netns/</code>, and for an attach it is
-refused: the read-only <code>/var/run/docker</code> mount is a bind taken when the
-plugin starts, and it does not receive the per-sandbox namespace mounts
-the daemon makes afterwards, so the key resolves to the ordinary file
-underneath. The plugin checks that what it opened is a network
-namespace, counts the refusal (<code>sandbox_key_entry_failures</code>, and
+publishes under <code>/var/run/docker/netns/</code>. Whether that key resolves for
+an attach is a property of your host, and the plugin reports it as
+<code>sandbox_netns_propagation</code>. The read-only <code>/var/run/docker</code> mount is a
+bind taken when the plugin starts. On a host where the mount the daemon
+publishes on is linked to it, the per-sandbox namespace mounts made
+afterwards arrive, the key resolves and <code>sandbox_key_entries</code> rises once
+per attach. On a host where that mount is private they do not arrive,
+the key resolves to the ordinary file underneath, and the plugin checks
+what it opened, counts the refusal (<code>sandbox_key_entry_failures</code>, and
 specifically <code>sandbox_key_not_a_namespace</code>, which is the arm that says
 the entry was the placeholder file and not a key shape this plugin
 declined), and enters through <code>/proc/&lt;pid&gt;/ns/net</code>
-(<code>sandbox_pid_fallbacks</code>) as it always has. <strong>This is the expected state
-on a stock engine and needs no action</strong>; the accompanying log line is at
-<code>debug</code> for that reason, and the counters are what an operator reads.
-Recovery after a plugin restart is the one case that goes the other way:
-the sandbox is older than the plugin process, so it is inside the bind
-snapshot and <code>sandbox_key_entries</code> rises instead. Neither grant could be
-dropped in any case: <code>resolv.conf</code> propagation enters the container's
+(<code>sandbox_pid_fallbacks</code>). Both readings are ordinary and neither needs
+action; the accompanying log line is at <code>debug</code> for that reason, and the
+counters are what an operator reads. Recovery after a plugin restart
+takes the key route on either host, because the sandbox is then older
+than the plugin process and inside the bind snapshot. Neither grant
+could be dropped in any case: <code>resolv.conf</code> propagation enters the container's
 <strong>mount</strong> namespace by PID and there is no sandbox key for a mount
 namespace at all, and it is those <code>/proc/&lt;pid&gt;/ns/*</code> opens the kernel
 ptrace-gates when the container runs as a non-root user (#317).</p>
@@ -3205,7 +3207,7 @@ already parse it were not told to expect a new type.</p>
 <td><code>sandbox_netns_propagation</code></td>
 <td>no</td>
 <td>n/a</td>
-<td>(v2.1.0+) Whether a mount the daemon makes under the sandbox netns directory after the plugin process started can reach that process: <code>1</code> linked, <code>0</code> private, <code>-1</code> no mount covers the directory or the mount table could not be read. Sampled per request. A <code>0</code> says every attach is refused on the key route with <code>sandbox_key_not_a_namespace</code> and carried by the container PID, which is what the host PID namespace and <code>CAP_SYS_PTRACE</code> grants are for. A <code>1</code> says the key route can carry an attach. The reading belongs to the mount the daemon publishes sandbox keys on, not to the plugin's own bind, so no plugin setting changes it. A <code>shared:</code> tag names a peer group the plugin cannot check is the daemon's, and the shipped manifest asks for no propagation option, so on a stock install the tag is <code>master:</code> or nothing (#417). <strong>Not a check:</strong> both readings are correct on the hosts that produce them, and a check firing on <code>0</code> would fire on every host whose <code>/run</code> is private.</td>
+<td>(v2.1.0+) Whether a mount the daemon makes under the sandbox netns directory after the plugin process started can reach that process: <code>1</code> linked, <code>0</code> private, <code>-1</code> no mount covers the directory or the mount table could not be read. Sampled per request. A <code>0</code> says every attach is refused on the key route with <code>sandbox_key_not_a_namespace</code> and carried by the container PID, which is what the host PID namespace and <code>CAP_SYS_PTRACE</code> grants are for. A <code>1</code> says the key route carries the attach and those arms stay flat. Both are ordinary. The reading belongs to the mount the daemon publishes sandbox keys on, not to the plugin's own bind, so no plugin setting changes it. A <code>shared:</code> tag names a peer group the plugin cannot check is the daemon's, and the shipped manifest asks for no propagation option, so on a stock install the tag is <code>master:</code> or nothing (#417). <strong>Not a check:</strong> both readings are correct on the hosts that produce them, and a check firing on <code>0</code> would fire on every host whose <code>/run</code> is private.</td>
 </tr>
 <tr>
 <td><code>sandbox_netns_init_mounts</code></td>
@@ -3367,13 +3369,13 @@ already parse it were not told to expect a new type.</p>
 <td><code>sandbox_key_entries</code></td>
 <td>no</td>
 <td>n/a</td>
-<td>(v2.0.0+) Container network namespaces entered through the sandbox key the daemon publishes under <code>/var/run/docker/netns/</code>. <strong>On a stock engine no attach counts here, and each endpoint recovered after a plugin restart does</strong>: the plugin's read-only <code>/var/run/docker</code> is a bind taken at plugin start, so a sandbox older than this plugin process is reachable through its key and one created afterwards is not (measured 2026-09-05). It is the <strong>denominator</strong> for the two rows below and the reason they can be read at all: zero fallbacks with zero entries means nothing was entered, and never that the key route works. If it rises on attaches, the mounts do reach this plugin on your host, and the netns half of <code>pidhost</code>/<code>CAP_SYS_PTRACE</code> is not load-bearing for you. <strong>Not a check:</strong> the imperative is to read it as the denominator for <code>sandbox_key_entry_failures</code> and <code>sandbox_pid_fallbacks</code>: zero here means nothing was entered and never that nothing went wrong, and neither direction is abnormal on its own: zero is the normal reading on a stock engine and non-zero is the normal reading on a host where the key route works.</td>
+<td>(v2.0.0+) Container network namespaces entered through the sandbox key the daemon publishes under <code>/var/run/docker/netns/</code>. <strong>Which attaches count here is a property of the host, reported as <code>sandbox_netns_propagation</code></strong>: the plugin's read-only <code>/var/run/docker</code> is a bind taken at plugin start, so a sandbox older than this plugin process is always reachable through its key, and one created afterwards is reachable only where the daemon's mount is linked to that bind. Every endpoint recovered after a plugin restart counts here on any host (measured 2026-09-05). It is the <strong>denominator</strong> for the two rows below and the reason they can be read at all: zero fallbacks with zero entries means nothing was entered, and never that the key route works. If it rises on attaches, the mounts do reach this plugin on your host, and the netns half of <code>pidhost</code>/<code>CAP_SYS_PTRACE</code> is not load-bearing for you. <strong>Not a check:</strong> the imperative is to read it as the denominator for <code>sandbox_key_entry_failures</code> and <code>sandbox_pid_fallbacks</code>: zero here means nothing was entered and never that nothing went wrong, and neither direction is abnormal on its own: zero is the normal reading on a host whose <code>/run</code> is private and non-zero is the normal reading on one where the key route works.</td>
 </tr>
 <tr>
 <td><code>sandbox_key_entry_failures</code></td>
 <td>no</td>
 <td>n/a</td>
-<td>(v2.0.0+) Attempts to enter a container network namespace through the sandbox key that were refused. <strong>This rises once per attach on a stock engine and that is the expected state, with nothing degraded and no action indicated.</strong> Each refusal falls straight through to the PID route without a retry, so the endpoint still comes up; it is the counterpart of <code>sandbox_key_entries</code> staying at zero, and it means the host PID namespace and <code>CAP_SYS_PTRACE</code> are load-bearing on this host. The five rows below say WHICH refusal it was, and they sum to this counter exactly.</td>
+<td>(v2.0.0+) Attempts to enter a container network namespace through the sandbox key that were refused. <strong>This rises once per attach on a host whose <code>sandbox_netns_propagation</code> is <code>0</code>, and that is the expected state there, with nothing degraded and no action indicated.</strong> On a host answering <code>1</code> it stays flat and <code>sandbox_key_entries</code> rises instead. Each refusal falls straight through to the PID route without a retry, so the endpoint still comes up; it is the counterpart of <code>sandbox_key_entries</code> staying at zero, and it means the host PID namespace and <code>CAP_SYS_PTRACE</code> are load-bearing on this host. The five rows below say WHICH refusal it was, and they sum to this counter exactly.</td>
 </tr>
 <tr>
 <td><code>sandbox_key_absent</code></td>
@@ -3391,7 +3393,7 @@ already parse it were not told to expect a new type.</p>
 <td><code>sandbox_key_not_a_namespace</code></td>
 <td>no</td>
 <td>n/a</td>
-<td>(v2.0.0+) An arm of <code>sandbox_key_entry_failures</code>, and <strong>the expected one: it rises once per attach on a stock engine.</strong> The entry opened and was not a namespace. It is the ordinary empty file libnetwork creates before bind-mounting the sandbox netns over it, seen through a mount namespace that bind never reached. This row is the measured evidence for the reason <a href="https://github.com/claymore666/docker-net-dhcp/blob/main/SECURITY.md"><code>SECURITY.md</code></a> gives for keeping the host PID namespace and <code>CAP_SYS_PTRACE</code>.</td>
+<td>(v2.0.0+) An arm of <code>sandbox_key_entry_failures</code>, and <strong>the expected one where <code>sandbox_netns_propagation</code> is <code>0</code>: it rises once per attach there, and stays flat where it is <code>1</code>.</strong> The entry opened and was not a namespace. It is the ordinary empty file libnetwork creates before bind-mounting the sandbox netns over it, seen through a mount namespace that bind never reached. This row is the measured evidence for the reason <a href="https://github.com/claymore666/docker-net-dhcp/blob/main/SECURITY.md"><code>SECURITY.md</code></a> gives for keeping the host PID namespace and <code>CAP_SYS_PTRACE</code>.</td>
 </tr>
 <tr>
 <td><code>sandbox_key_wrong_ns_type</code></td>
@@ -3409,7 +3411,7 @@ already parse it were not told to expect a new type.</p>
 <td><code>sandbox_pid_fallbacks</code></td>
 <td>no</td>
 <td>n/a</td>
-<td>(v2.0.0+) Endpoints whose network namespace was entered through <code>/proc/&lt;pid&gt;/ns/net</code> after the key route was refused. <strong>On a stock engine this is every attach.</strong> That route is why the manifest asks for the host PID namespace and <code>CAP_SYS_PTRACE</code>, and it carries the PID-recycling hazard <code>netns_pid_mismatches</code> counts. Not <code>healthy</code>-affecting, because a fallback that succeeds is a working endpoint, but read against <code>sandbox_key_entries</code> it is the one number that says which route your host actually uses. <strong>Not a check:</strong> both clauses fail. The imperative is to read it <em>against</em> <code>sandbox_key_entries</code>, and on a stock engine its normal reading is one per attach, so a check firing on non-zero would fire on every healthy host.</td>
+<td>(v2.0.0+) Endpoints whose network namespace was entered through <code>/proc/&lt;pid&gt;/ns/net</code> after the key route was refused. <strong>Where <code>sandbox_netns_propagation</code> is <code>0</code> this is every attach, and where it is <code>1</code> it stays at zero.</strong> That route is why the manifest asks for the host PID namespace and <code>CAP_SYS_PTRACE</code>, and it carries the PID-recycling hazard <code>netns_pid_mismatches</code> counts. Not <code>healthy</code>-affecting, because a fallback that succeeds is a working endpoint, but read against <code>sandbox_key_entries</code> it is the one number that says which route your host actually uses. <strong>Not a check:</strong> both clauses fail. The imperative is to read it <em>against</em> <code>sandbox_key_entries</code>, and on a host whose <code>/run</code> is private its normal reading is one per attach, so a check firing on non-zero would fire on every healthy host of that kind.</td>
 </tr>
 <tr>
 <td><code>docker_api_non_get_refusals</code></td>
