@@ -18,7 +18,7 @@
         <link rel="prev" href="../roadmap/">
       
       
-        <link rel="next" href="../release-runbook/">
+        <link rel="next" href="../contributing/">
       
       
         
@@ -365,6 +365,25 @@
   
   
   
+    <li class="md-tabs__item">
+      <a href="../contributing/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Contributing
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
     
     
       <li class="md-tabs__item">
@@ -673,6 +692,23 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="Verifying the release artifacts">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#one-architecture-per-directory" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        One architecture per directory
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -708,6 +744,17 @@
   
     <nav class="md-nav" aria-label="Rebuilding the binaries yourself">
       <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#where-the-published-digest-comes-from" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Where the published digest comes from
+      
+    </span>
+  </a>
+  
+</li>
         
           <li class="md-nav__item">
   <a href="#what-the-determinism-rests-on" class="md-nav__link">
@@ -750,6 +797,33 @@
   
   
   
+    <li class="md-nav__item">
+      <a href="../contributing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Contributing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
     
     
     
@@ -764,10 +838,10 @@
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_8" >
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_9" >
         
           
-          <label class="md-nav__link" for="__nav_8" id="__nav_8_label" tabindex="0">
+          <label class="md-nav__link" for="__nav_9" id="__nav_9_label" tabindex="0">
             
   
   
@@ -785,8 +859,8 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_8">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_9_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_9">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -877,6 +951,23 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="Verifying the release artifacts">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#one-architecture-per-directory" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        One architecture per directory
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -912,6 +1003,17 @@
   
     <nav class="md-nav" aria-label="Rebuilding the binaries yourself">
       <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#where-the-published-digest-comes-from" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Where the published digest comes from
+      
+    </span>
+  </a>
+  
+</li>
         
           <li class="md-nav__item">
   <a href="#what-the-determinism-rests-on" class="md-nav__link">
@@ -968,11 +1070,11 @@
 <h1 id="verifying-releases">Verifying releases<a class="headerlink" href="#verifying-releases" title="Permanent link">&para;</a></h1>
 <p>Every release from <strong>v1.1.0</strong> onward is signed and attested with
 <a href="https://www.sigstore.dev/">Sigstore</a>. Nothing here is required to <em>use</em>
-the plugin — it is here so you can establish that what you downloaded is
+the plugin. It is here so you can establish that what you downloaded is
 what this repository's release workflow built, and not something that
 acquired the same filename along the way.</p>
 <p>This page is the single copy of these instructions. Each GitHub Release
-links here rather than repeating them.</p>
+links here instead of repeating them.</p>
 <h2 id="what-is-published">What is published<a class="headerlink" href="#what-is-published" title="Permanent link">&para;</a></h2>
 <table>
 <thead>
@@ -988,7 +1090,7 @@ links here rather than repeating them.</p>
 </tr>
 <tr>
 <td><code>checksums.txt</code></td>
-<td>SHA-256 of every attached amd64 artifact</td>
+<td>SHA-256 of every attached amd64 artifact, and of the plugin binary inside the tarball</td>
 </tr>
 <tr>
 <td><code>checksums.txt.sigstore.json</code></td>
@@ -1008,7 +1110,7 @@ links here rather than repeating them.</p>
 </tr>
 <tr>
 <td><code>checksums-arm64.txt</code>, <code>checksums-arm64.txt.sigstore.json</code></td>
-<td>the arm64 checksum manifest and its cosign bundle</td>
+<td>the arm64 checksum manifest, in the same shape, and its cosign bundle</td>
 </tr>
 <tr>
 <td><code>sbom-arm64.spdx.json</code>, <code>sbom-arm64.cdx.json</code></td>
@@ -1019,16 +1121,18 @@ links here rather than repeating them.</p>
 <p>The plugin image itself lives at
 <code>ghcr.io/claymore666/docker-net-dhcp:vX.Y.Z</code> (mirrored to Docker Hub as
 <code>claymore666/net-dhcp</code>), is cosign-signed on both registries, and
-carries SLSA build provenance <strong>on GHCR only</strong> — the Docker Hub mirror
-is signed but not provenance-attested, and the two registries carry
+carries SLSA build provenance <strong>on GHCR only</strong>. The Docker Hub mirror is
+signed but not provenance-attested, and the two registries carry
 different digests. Verify provenance against the <code>ghcr.io</code> reference.
-The arm64 image is the same at <code>:vX.Y.Z-arm64</code>; every
-verification step below applies to it with the <code>-arm64</code> tag and the
-<code>-arm64</code> artifact names substituted.</p>
+The arm64 image is the same at <code>:vX.Y.Z-arm64</code>; every verification step
+below applies to it with the <code>-arm64</code> tag and the <code>-arm64</code> artifact
+names substituted, in a directory of its own. See <a href="#one-architecture-per-directory">One architecture per
+directory</a>.</p>
 <p>One signature covers every attached file: <code>checksums.txt</code> is signed, and
-the checksums inside it cover the artifacts. So verifying the manifest
-and then checking the files against it is enough — there is no per-file
-signature to chase.</p>
+the checksums inside it cover the artifacts, and the plugin binary
+packed inside the tarball, under the path it has once extracted. So
+verifying the manifest and then checking the files against it is enough,
+and there is no per-file signature to chase.</p>
 <h2 id="verifying-the-release-artifacts">Verifying the release artifacts<a class="headerlink" href="#verifying-the-release-artifacts" title="Permanent link">&para;</a></h2>
 <p>Replace <code>VERSION</code> with the release tag (for example <code>v1.9.0</code>). You need
 <a href="https://docs.sigstore.dev/cosign/installation/"><code>cosign</code></a> and, for the
@@ -1042,44 +1146,79 @@ format. Run the command below with cosign v2 and it fails like this:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>Error: bundle does not contain cert for verification, please provide public key
 </code></pre></div>
 <p>That message names the bundle, so it reads as though the release were
-signed wrong. It isn't — v2 simply cannot read the format. If you see
+signed wrong. It isn't: v2 simply cannot read the format. If you see
 it, upgrade cosign and run the command again.</p>
 </blockquote>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>cosign<span class="w"> </span>verify-blob<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="w">  </span>--bundle<span class="w"> </span>checksums.txt.sigstore.json<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="w">  </span>--certificate-identity-regexp<span class="w"> </span><span class="s1">&#39;^https://github.com/claymore666/docker-net-dhcp/.github/workflows/release.yml@&#39;</span><span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="w">  </span>--certificate-oidc-issuer<span class="w"> </span>https://token.actions.githubusercontent.com<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="w">  </span>checksums.txt
-<a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a>sha256sum<span class="w"> </span>--ignore-missing<span class="w"> </span>-c<span class="w"> </span>checksums.txt
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="c1"># In a directory holding ONE architecture&#39;s assets: the tarballs both</span>
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="c1"># unpack a binary to the same path. See &quot;One architecture per directory&quot;.</span>
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>cosign<span class="w"> </span>verify-blob<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="w">  </span>--bundle<span class="w"> </span>checksums.txt.sigstore.json<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="w">  </span>--certificate-identity-regexp<span class="w"> </span><span class="s1">&#39;^https://github.com/claymore666/docker-net-dhcp/.github/workflows/release.yml@&#39;</span><span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a><span class="w">  </span>--certificate-oidc-issuer<span class="w"> </span>https://token.actions.githubusercontent.com<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a><span class="w">  </span>checksums.txt
+<a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a>tar<span class="w"> </span>-xzf<span class="w"> </span>net-dhcp-plugin-VERSION-linux-amd64.tar.gz
+<a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a>sha256sum<span class="w"> </span>--ignore-missing<span class="w"> </span>-c<span class="w"> </span>checksums.txt
 </code></pre></div>
-<p><code>checksums.txt</code> covers <strong>three</strong> files — the plugin tarball and both
-SBOMs — because one signature over one manifest is what attests all of
-them at once. <code>--ignore-missing</code> is therefore not a weakening: without
-it, a reader who downloaded only the tarball gets</p>
+<p><code>checksums.txt</code> covers <strong>four</strong> files: the plugin tarball, both SBOMs,
+and the plugin binary from inside the tarball, listed as
+<code>rootfs/usr/sbin/net-dhcp</code>. One signature over one manifest is what
+attests all of them at once. That fourth entry is why the <code>tar -xzf</code> is
+in the block above and not an afterthought: it is a path and never an
+attached asset, and it exists only once you have unpacked the tarball
+into the directory you run the check from.</p>
+<p><code>--ignore-missing</code> is not a weakening: without it, a reader who
+downloaded only the tarball and did not unpack it gets</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>net-dhcp-plugin-vX.Y.Z-linux-amd64.tar.gz: OK
 <a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>sha256sum: sbom.spdx.json: No such file or directory
 <a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>sbom.spdx.json: FAILED open or read
 <a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>sha256sum: sbom.cdx.json: No such file or directory
 <a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>sbom.cdx.json: FAILED open or read
-<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a>sha256sum: WARNING: 2 listed files could not be read
+<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a>sha256sum: rootfs/usr/sbin/net-dhcp: No such file or directory
+<a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a>rootfs/usr/sbin/net-dhcp: FAILED open or read
+<a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a>sha256sum: WARNING: 3 listed files could not be read
 </code></pre></div>
-<p>and has every reason to conclude the release was tampered with. With
-it, every file you actually downloaded is verified and the rest are
-skipped. It does not soften the check that matters: a file that IS
-present and does not match still fails — <code>FAILED</code>, exit status 1.
-Download all three and drop the flag if you want the manifest checked
-exhaustively.</p>
-<p>The arm64 release ships its own <code>checksums-arm64.txt</code> and bundle, over
-the arm64 tarball and its two SBOMs. Verify that one the same way; the
-two manifests do not cover each other's files.</p>
+<p>and has every reason to conclude the release was tampered with. With it,
+every file you actually have is verified and the rest are skipped. It
+does not soften the check that matters: a file that IS present and does
+not match still fails with <code>FAILED</code> and exit status 1.</p>
+<p>What the flag costs you is the binary, and only the binary. The three
+attached assets are either downloaded or obviously absent; the binary is
+the one entry a reader can be missing without noticing, because skipping
+it looks exactly like not having downloaded an SBOM. Unpack the tarball
+first, as the block above does, and <code>rootfs/usr/sbin/net-dhcp: OK</code>
+appears in the output. That line is the signed statement about the
+binary you are going to run. For an exhaustive check, download the
+tarball and both SBOMs, unpack the tarball, and drop the flag.</p>
 <p>The identity regexp is the point of the exercise: it pins the signature
 to this repository's <code>release.yml</code>, so a valid Sigstore signature made by
 anything else fails.</p>
+<h3 id="one-architecture-per-directory">One architecture per directory<a class="headerlink" href="#one-architecture-per-directory" title="Permanent link">&para;</a></h3>
+<p>The arm64 release ships its own <code>checksums-arm64.txt</code> and bundle.
+<code>checksums-arm64.txt</code> covers <strong>four</strong> files in the same shape: the arm64
+tarball, its two SBOMs, and <code>rootfs/usr/sbin/net-dhcp</code> from inside that
+tarball. Verify it exactly the same way, unpacking included, in a
+directory that holds the arm64 assets and <strong>nothing else</strong>.</p>
+<p>The attached files are named apart; the packed binary is not. A plugin
+tarball has the same layout whichever architecture it was built for, so
+<code>checksums.txt</code> and <code>checksums-arm64.txt</code> both record
+<code>rootfs/usr/sbin/net-dhcp</code>, the same name, for two different files.
+Unpack both tarballs in one directory and the second extraction
+overwrites the first architecture's binary. Checking the first manifest
+there then prints</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>rootfs/usr/sbin/net-dhcp: FAILED
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>sha256sum: WARNING: 1 computed checksum did NOT match
+</code></pre></div>
+<p>on a release that is perfectly good, and <code>--ignore-missing</code> does not
+soften that one: the file is present, it is simply the other
+architecture's. <code>FAILED</code> is the line the worked example above tells you
+to read as tampering, so this is worth avoiding instead of explaining
+away. Two directories, one architecture each, and both manifests verify
+four files.</p>
 <h2 id="verifying-the-image">Verifying the image<a class="headerlink" href="#verifying-the-image" title="Permanent link">&para;</a></h2>
 <p>Also <strong>cosign v3 or newer</strong>.</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>cosign<span class="w"> </span>verify<span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:VERSION<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="w">  </span>--certificate-identity-regexp<span class="w"> </span><span class="s1">&#39;^https://github.com/claymore666/docker-net-dhcp/.github/workflows/release.yml@&#39;</span><span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="w">  </span>--certificate-oidc-issuer<span class="w"> </span>https://token.actions.githubusercontent.com
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>cosign<span class="w"> </span>verify<span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:VERSION<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="w">  </span>--certificate-identity-regexp<span class="w"> </span><span class="s1">&#39;^https://github.com/claymore666/docker-net-dhcp/.github/workflows/release.yml@&#39;</span><span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="w">  </span>--certificate-oidc-issuer<span class="w"> </span>https://token.actions.githubusercontent.com
 </code></pre></div>
 <h2 id="verifying-build-provenance">Verifying build provenance<a class="headerlink" href="#verifying-build-provenance" title="Permanent link">&para;</a></h2>
 <p>SLSA provenance covers both the image and the release artifacts. The
@@ -1087,76 +1226,124 @@ image half is <strong>GHCR only</strong>: no provenance attestation exists for t
 Docker Hub bytes, in any store, so <code>gh attestation verify</code> against a
 <code>docker.io</code> reference finds nothing. Use the <code>ghcr.io</code> reference below
 even if you installed from Docker Hub.</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>gh<span class="w"> </span>attestation<span class="w"> </span>verify<span class="w"> </span>oci://ghcr.io/claymore666/docker-net-dhcp:VERSION<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="w">  </span>--repo<span class="w"> </span>claymore666/docker-net-dhcp
-<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>gh<span class="w"> </span>attestation<span class="w"> </span>verify<span class="w"> </span>net-dhcp-plugin-VERSION-linux-amd64.tar.gz<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="w">  </span>--repo<span class="w"> </span>claymore666/docker-net-dhcp
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>gh<span class="w"> </span>attestation<span class="w"> </span>verify<span class="w"> </span>oci://ghcr.io/claymore666/docker-net-dhcp:VERSION<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="w">  </span>--repo<span class="w"> </span>claymore666/docker-net-dhcp
+<a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>gh<span class="w"> </span>attestation<span class="w"> </span>verify<span class="w"> </span>net-dhcp-plugin-VERSION-linux-amd64.tar.gz<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a><span class="w">  </span>--repo<span class="w"> </span>claymore666/docker-net-dhcp
 </code></pre></div>
 <h2 id="rebuilding-the-binaries-yourself">Rebuilding the binaries yourself<a class="headerlink" href="#rebuilding-the-binaries-yourself" title="Permanent link">&para;</a></h2>
 <p>A signature tells you <em>who</em> built an artifact. Rebuilding tells you
-<em>what</em> they built. The build here is reproducible — the same commit
-produces byte-identical binaries on any machine — so you can check that
-a published release contains the code in this repository, without
-trusting the release workflow at all.</p>
+<em>what</em> they built. The build here is reproducible: the same commit,
+built for the same tag, produces byte-identical binaries on any machine,
+so you can check that a published release contains the code in this
+repository, without trusting the release workflow at all.</p>
+<p>Since 2.0 the binary carries its own build identity (<code>version</code>, <code>commit</code>
+and the DHCP library revision, all three readable from <code>/Plugin.Health</code>
+and from the <code>net_dhcp_build_info</code> metric). <code>version</code> and <code>commit</code> reach
+it as build arguments, so the rebuild has to pass the same two values,
+and step 2 below does. The library revision is read out of the source
+tree and needs no argument.</p>
 <p>You need Docker with <code>buildx</code>, and the release tarball you already
 downloaded above.</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="c1"># 1. The source, exactly as tagged.</span>
-<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>git<span class="w"> </span>clone<span class="w"> </span>https://github.com/claymore666/docker-net-dhcp
-<a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="nb">cd</span><span class="w"> </span>docker-net-dhcp
-<a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a>git<span class="w"> </span>checkout<span class="w"> </span>VERSION
-<a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a>
-<a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a><span class="c1"># 2. Build on a builder with no caches. --no-cache alone is not enough:</span>
-<a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a><span class="c1">#    the Dockerfile mounts BuildKit caches for Go&#39;s module and build</span>
-<a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a><span class="c1">#    caches, and those survive it. A fresh docker-container builder has</span>
-<a id="__codelineno-5-9" name="__codelineno-5-9" href="#__codelineno-5-9"></a><span class="c1">#    neither.</span>
-<a id="__codelineno-5-10" name="__codelineno-5-10" href="#__codelineno-5-10"></a>docker<span class="w"> </span>buildx<span class="w"> </span>create<span class="w"> </span>--name<span class="w"> </span>repro<span class="w"> </span>--driver<span class="w"> </span>docker-container
-<a id="__codelineno-5-11" name="__codelineno-5-11" href="#__codelineno-5-11"></a>docker<span class="w"> </span>buildx<span class="w"> </span>build<span class="w"> </span>--builder<span class="w"> </span>repro<span class="w"> </span>--no-cache<span class="w"> </span>--target<span class="w"> </span>builder<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-5-12" name="__codelineno-5-12" href="#__codelineno-5-12"></a><span class="w">  </span>--output<span class="w"> </span><span class="nv">type</span><span class="o">=</span>local,dest<span class="o">=</span>out<span class="w"> </span>.
-<a id="__codelineno-5-13" name="__codelineno-5-13" href="#__codelineno-5-13"></a>docker<span class="w"> </span>buildx<span class="w"> </span>rm<span class="w"> </span>repro
-<a id="__codelineno-5-14" name="__codelineno-5-14" href="#__codelineno-5-14"></a>
-<a id="__codelineno-5-15" name="__codelineno-5-15" href="#__codelineno-5-15"></a><span class="c1"># 3. Your binaries.</span>
-<a id="__codelineno-5-16" name="__codelineno-5-16" href="#__codelineno-5-16"></a>sha256sum<span class="w"> </span>out/usr/local/src/docker-net-dhcp/bin/net-dhcp<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-5-17" name="__codelineno-5-17" href="#__codelineno-5-17"></a><span class="w">          </span>out/usr/local/src/docker-net-dhcp/bin/dhcp-handler
-<a id="__codelineno-5-18" name="__codelineno-5-18" href="#__codelineno-5-18"></a>
-<a id="__codelineno-5-19" name="__codelineno-5-19" href="#__codelineno-5-19"></a><span class="c1"># 4. The published ones, from the release tarball.</span>
-<a id="__codelineno-5-20" name="__codelineno-5-20" href="#__codelineno-5-20"></a>tar<span class="w"> </span>-xzf<span class="w"> </span>net-dhcp-plugin-VERSION-linux-amd64.tar.gz
-<a id="__codelineno-5-21" name="__codelineno-5-21" href="#__codelineno-5-21"></a>sha256sum<span class="w"> </span>rootfs/usr/sbin/net-dhcp<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-5-22" name="__codelineno-5-22" href="#__codelineno-5-22"></a><span class="w">          </span>rootfs/usr/lib/net-dhcp/dhcp-handler
+<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="c1"># 1. The source, exactly as tagged.</span>
+<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>git<span class="w"> </span>clone<span class="w"> </span>https://github.com/claymore666/docker-net-dhcp
+<a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="nb">cd</span><span class="w"> </span>docker-net-dhcp
+<a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a>git<span class="w"> </span>checkout<span class="w"> </span>VERSION
+<a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a>
+<a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a><span class="c1"># 2. Build on a builder with no caches. --no-cache alone is not enough:</span>
+<a id="__codelineno-6-7" name="__codelineno-6-7" href="#__codelineno-6-7"></a><span class="c1">#    the Dockerfile mounts BuildKit caches for Go&#39;s module and build</span>
+<a id="__codelineno-6-8" name="__codelineno-6-8" href="#__codelineno-6-8"></a><span class="c1">#    caches, and those survive it. A fresh docker-container builder has</span>
+<a id="__codelineno-6-9" name="__codelineno-6-9" href="#__codelineno-6-9"></a><span class="c1">#    neither.</span>
+<a id="__codelineno-6-10" name="__codelineno-6-10" href="#__codelineno-6-10"></a><span class="c1">#</span>
+<a id="__codelineno-6-11" name="__codelineno-6-11" href="#__codelineno-6-11"></a><span class="c1">#    VERSION is the tag you checked out; COMMIT is the FULL revision of</span>
+<a id="__codelineno-6-12" name="__codelineno-6-12" href="#__codelineno-6-12"></a><span class="c1">#    it, never the abbreviated one. Git shortens to a length that</span>
+<a id="__codelineno-6-13" name="__codelineno-6-13" href="#__codelineno-6-13"></a><span class="c1">#    depends on the size of your clone, and a different string is a</span>
+<a id="__codelineno-6-14" name="__codelineno-6-14" href="#__codelineno-6-14"></a><span class="c1">#    different binary.</span>
+<a id="__codelineno-6-15" name="__codelineno-6-15" href="#__codelineno-6-15"></a>docker<span class="w"> </span>buildx<span class="w"> </span>create<span class="w"> </span>--name<span class="w"> </span>repro<span class="w"> </span>--driver<span class="w"> </span>docker-container
+<a id="__codelineno-6-16" name="__codelineno-6-16" href="#__codelineno-6-16"></a>docker<span class="w"> </span>buildx<span class="w"> </span>build<span class="w"> </span>--builder<span class="w"> </span>repro<span class="w"> </span>--no-cache<span class="w"> </span>--target<span class="w"> </span>builder<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-6-17" name="__codelineno-6-17" href="#__codelineno-6-17"></a><span class="w">  </span>--build-arg<span class="w"> </span><span class="nv">VERSION</span><span class="o">=</span>VERSION<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-6-18" name="__codelineno-6-18" href="#__codelineno-6-18"></a><span class="w">  </span>--build-arg<span class="w"> </span><span class="nv">COMMIT</span><span class="o">=</span><span class="s2">&quot;</span><span class="k">$(</span>git<span class="w"> </span>rev-parse<span class="w"> </span>HEAD<span class="k">)</span><span class="s2">&quot;</span><span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-6-19" name="__codelineno-6-19" href="#__codelineno-6-19"></a><span class="w">  </span>--output<span class="w"> </span><span class="nv">type</span><span class="o">=</span>local,dest<span class="o">=</span>out<span class="w"> </span>.
+<a id="__codelineno-6-20" name="__codelineno-6-20" href="#__codelineno-6-20"></a>docker<span class="w"> </span>buildx<span class="w"> </span>rm<span class="w"> </span>repro
+<a id="__codelineno-6-21" name="__codelineno-6-21" href="#__codelineno-6-21"></a>
+<a id="__codelineno-6-22" name="__codelineno-6-22" href="#__codelineno-6-22"></a><span class="c1"># 3. Your binary.</span>
+<a id="__codelineno-6-23" name="__codelineno-6-23" href="#__codelineno-6-23"></a>sha256sum<span class="w"> </span>out/usr/local/src/docker-net-dhcp/bin/net-dhcp
+<a id="__codelineno-6-24" name="__codelineno-6-24" href="#__codelineno-6-24"></a>
+<a id="__codelineno-6-25" name="__codelineno-6-25" href="#__codelineno-6-25"></a><span class="c1"># 4. The published one, from the release tarball.</span>
+<a id="__codelineno-6-26" name="__codelineno-6-26" href="#__codelineno-6-26"></a>tar<span class="w"> </span>-xzf<span class="w"> </span>net-dhcp-plugin-VERSION-linux-amd64.tar.gz
+<a id="__codelineno-6-27" name="__codelineno-6-27" href="#__codelineno-6-27"></a>sha256sum<span class="w"> </span>rootfs/usr/sbin/net-dhcp
 </code></pre></div>
-<p>The two pairs of digests must match. For <strong>v1.9.0</strong> (<code>linux/amd64</code>) they are:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>eee5a6d5c269f7d05ea4ce230c30389479d4de3043b57f3cf6ef92fc0b710a06  net-dhcp
-<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>d1fb8d4487b1ec7170afe7635e7861a220a770e21b351f363b0da58b335eac85  dhcp-handler
+<p><strong>One binary is the 2.0 shape; a 1.x tarball carries two.</strong> The second
+was <code>dhcp-handler</code>, the helper the external DHCP client execed for each
+lease event. 2.0 leases in-process and builds <code>net-dhcp</code> alone.
+Verifying a <strong>1.x</strong> release means adding
+<code>out/usr/local/src/docker-net-dhcp/bin/dhcp-handler</code> to step 3 and
+<code>rootfs/usr/lib/net-dhcp/dhcp-handler</code> to step 4, and comparing both
+pairs. Everything else in the recipe is the same for either.</p>
+<p>The digests must match: one pair for a 2.0 release, two for a 1.x one.
+That is the whole check: you built it, we built it, the bytes are the
+same.</p>
+<h3 id="where-the-published-digest-comes-from">Where the published digest comes from<a class="headerlink" href="#where-the-published-digest-comes-from" title="Permanent link">&para;</a></h3>
+<p>This repository does not carry a list of per-release digests, and it
+cannot. From 2.0 the release tag and the commit are compiled into the
+binary, so a commit that recorded the digest of a binary built from
+itself would change that binary by being made. Through 1.x such a list
+lived in this section; it was removed with 2.0 instead of being left to
+describe releases it can no longer describe.</p>
+<p>Instead the digest is produced by the build that makes it true and
+signed with everything else. <code>checksums.txt</code> (<code>checksums-arm64.txt</code> for
+arm64) covers the tarball, both SBOMs, <strong>and the binary inside the
+tarball</strong>, recorded under the path it has once extracted, the fourth
+entry described above. So step 4 has a signed reference without needing
+one from a commit:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="c1"># In the directory holding the downloaded assets:</span>
+<a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a>cosign<span class="w"> </span>verify-blob<span class="w"> </span>checksums.txt<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="w">  </span>--bundle<span class="w"> </span>checksums.txt.sigstore.json<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a><span class="w">  </span>--certificate-identity-regexp<span class="w"> </span><span class="s1">&#39;^https://github.com/claymore666/docker-net-dhcp/.github/workflows/release.yml@&#39;</span><span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a><span class="w">  </span>--certificate-oidc-issuer<span class="w"> </span>https://token.actions.githubusercontent.com
+<a id="__codelineno-7-6" name="__codelineno-7-6" href="#__codelineno-7-6"></a>tar<span class="w"> </span>-xzf<span class="w"> </span>net-dhcp-plugin-VERSION-linux-amd64.tar.gz
+<a id="__codelineno-7-7" name="__codelineno-7-7" href="#__codelineno-7-7"></a>sha256sum<span class="w"> </span>--ignore-missing<span class="w"> </span>-c<span class="w"> </span>checksums.txt
 </code></pre></div>
+<p><code>--ignore-missing</code> is there so the manifest still checks whichever
+assets you downloaded; drop it once you have all of them <strong>and have
+unpacked the tarball</strong>, and it becomes an exhaustive check. Without the
+<code>tar -xzf</code> the binary's entry has no file to read, so dropping the flag
+turns a good release into an exit 1 and keeping it skips the entry in
+silence. <code>rootfs/usr/sbin/net-dhcp: OK</code> is the line that says the binary
+inside the tarball is the one this release signed, and it is the same
+number your rebuild in step 3 produces.</p>
 <p>Since v1.7.0 each release also ships arm64 binaries under the <code>-arm64</code>
 tags; rebuild them the same way on an arm64 host (the build follows the
-host architecture) and unpack <code>net-dhcp-plugin-VERSION-linux-arm64.tar.gz</code>
-in step 4. For <strong>v1.9.0</strong> (<code>linux/arm64</code>) they are:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>8523f80370e54235c929b8e755c44a3cf10ab33ddf4bde4490e60367dc7ee7b7  net-dhcp
-<a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a>c7ed4037a4a20a686f938a4ef8a239fba7d430d1ebc952997e137d2d6521d3d7  dhcp-handler
-</code></pre></div>
-<p>Note that step 4 needs no separate digest list from us: the binaries you
-are comparing against are the ones inside the signed tarball, and
-<code>checksums.txt</code> already covers that tarball. The chain closes on
-artifacts you have in hand.</p>
+host architecture), unpack <code>net-dhcp-plugin-VERSION-linux-arm64.tar.gz</code>
+in step 4, and check against <code>checksums-arm64.txt</code>, whose fourth entry
+is the arm64 binary at the same path. That is why that unpacking, and
+this whole block, belong in a directory holding only the arm64 assets.
+See <a href="#one-architecture-per-directory">One architecture per directory</a>.</p>
 <h3 id="what-the-determinism-rests-on">What the determinism rests on<a class="headerlink" href="#what-the-determinism-rests-on" title="Permanent link">&para;</a></h3>
 <p>None of this is accidental, and it is worth knowing what to suspect if a
 rebuild ever fails to match:</p>
 <ul>
-<li>base images pinned by digest, not tag — both the Go builder and the
-  Alpine runtime;</li>
+<li>base images pinned by digest and never by tag, both the Go builder and
+  the Alpine runtime;</li>
 <li>Alpine packages pinned to exact versions;</li>
 <li>a fixed build path inside the container, so no host path is embedded;</li>
-<li>no timestamp, VCS revision or build host stamped into the binaries;</li>
+<li>no timestamp and no build host stamped into the binaries. The version
+  and the commit <strong>are</strong> stamped in (<code>-ldflags -X</code>, since 2.0), which is
+  why step 2 passes them: identical inputs include those two. Pass a
+  different <code>COMMIT</code> and you get a different, equally deterministic
+  binary. That is a correct result and never a reproducibility failure,
+  and it is the reason the published digests live in the signed manifest
+  and not in a commit;</li>
 <li>Go's own compiler output, which is deterministic given identical
   inputs.</li>
 </ul>
 <p>A run of the <code>Reproducible build</code> workflow builds the same commit twice
 on two cold builders and fails if the binaries differ, so this is
-checked rather than asserted. It runs weekly, on demand, and on any
+checked and not merely asserted. It runs weekly, on demand, and on any
 pull request touching the Dockerfile, the Go module files, or the
 workflow and gate script that implement the check.</p>
 <h2 id="a-note-on-latest">A note on <code>:latest</code><a class="headerlink" href="#a-note-on-latest" title="Permanent link">&para;</a></h2>
-<p><code>:latest</code> exists and tracks the newest release — it is a retag, sharing
+<p><code>:latest</code> exists and tracks the newest release. It is a retag, sharing
 one digest and therefore one signature with the <code>vX.Y.Z</code> tag it points
 at. It is still worth pinning a version in anything you keep: a Docker
 network remembers the exact driver string it was created with, so a

@@ -365,6 +365,25 @@
   
   
   
+    <li class="md-tabs__item">
+      <a href="../contributing/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Contributing
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
     
     
       <li class="md-tabs__item">
@@ -744,6 +763,33 @@
   
   
   
+    <li class="md-nav__item">
+      <a href="../contributing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Contributing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
     
     
     
@@ -758,10 +804,10 @@
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_8" >
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_9" >
         
           
-          <label class="md-nav__link" for="__nav_8" id="__nav_8_label" tabindex="0">
+          <label class="md-nav__link" for="__nav_9" id="__nav_9_label" tabindex="0">
             
   
   
@@ -779,8 +825,8 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_8">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_9_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_9">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -955,7 +1001,7 @@
 
 <h1 id="parent-attached-modes-macvlan-and-ipvlan">Parent-attached modes (macvlan and ipvlan)<a class="headerlink" href="#parent-attached-modes-macvlan-and-ipvlan" title="Permanent link">&para;</a></h1>
 <p><code>docker-net-dhcp</code> supports three attachment modes:</p>
-<!-- docs-drift-ok: bridge — the table below compares attachment *modes*; the `bridge` driver option is documented in reference.md -->
+<!-- docs-drift-ok: bridge, the table below compares attachment *modes*; the `bridge` driver option is documented in reference.md -->
 
 <table>
 <thead>
@@ -971,19 +1017,19 @@
 <td><code>bridge</code></td>
 <td>a veth pair plugged into a Linux bridge you maintain</td>
 <td>random per veth</td>
-<td>yes — you bring the bridge</td>
+<td>yes, you bring the bridge</td>
 </tr>
 <tr>
 <td><code>macvlan</code></td>
 <td>a per-container macvlan child of one of the host's NICs</td>
 <td><strong>distinct</strong> (kernel-generated)</td>
-<td><strong>none</strong> — the host NIC is untouched</td>
+<td><strong>none</strong>, the host NIC is untouched</td>
 </tr>
 <tr>
 <td><code>ipvlan</code></td>
 <td>a per-container ipvlan child (L2 mode) of one of the host's NICs</td>
 <td><strong>shared with parent</strong></td>
-<td><strong>none</strong> — the host NIC is untouched</td>
+<td><strong>none</strong>, the host NIC is untouched</td>
 </tr>
 </tbody>
 </table>
@@ -1005,18 +1051,18 @@ The difference is at L2: each container's MAC.</p>
 <p>If macvlan works on your LAN, use macvlan. ipvlan is the escape hatch
 for hostile L2.</p>
 <h2 id="quick-start">Quick start<a class="headerlink" href="#quick-start" title="Permanent link">&para;</a></h2>
-<p>Create a network attached to one of the host's NICs (<code>eth0</code> below —
-substitute yours; <code>ip -brief link</code> lists them):</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="c1"># On arm64 use the -arm64 tag — a network stores this exact reference</span>
+<p>Create a network attached to one of the host's NICs (<code>eth0</code> below;
+substitute yours, and <code>ip -brief link</code> lists them):</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="c1"># On arm64 use the -arm64 tag. A network stores this exact reference</span>
 <a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="c1"># as its driver, so it must name the plugin you installed.</span>
 <a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>docker<span class="w"> </span>network<span class="w"> </span>create<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="w">    </span>--driver<span class="o">=</span>ghcr.io/claymore666/docker-net-dhcp:v1.9.0<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="w">    </span>--driver<span class="o">=</span>ghcr.io/claymore666/docker-net-dhcp:v2.0.0<span class="w"> </span><span class="se">\</span>
 <a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="w">    </span>--ipam-driver<span class="o">=</span>null<span class="w"> </span><span class="se">\</span>
 <a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="w">    </span>-o<span class="w"> </span><span class="nv">mode</span><span class="o">=</span>macvlan<span class="w"> </span><span class="se">\</span>
 <a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="w">    </span>-o<span class="w"> </span><span class="nv">parent</span><span class="o">=</span>eth0<span class="w"> </span><span class="se">\</span>
 <a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a><span class="w">    </span>lan-dhcp
 </code></pre></div>
-<p>Then attach any container the usual way — no static IP, no labels, no
+<p>Then attach any container the usual way. No static IP, no labels, no
 sidecar, no <code>cap_add</code>:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="nt">services</span><span class="p">:</span>
 <a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="w">  </span><span class="nt">app</span><span class="p">:</span>
@@ -1037,19 +1083,19 @@ sidecar, no <code>cap_add</code>:</p>
 <li>The plugin creates a macvlan child on the parent NIC (submode = bridge,
    so children on the same parent can talk to each other), still in the
    host netns.</li>
-<li>A one-shot <code>dhcpcd</code> runs on the new link — DHCPDISCOVER → REQUEST →
-   ACK from your LAN's DHCP server. The lease (IP, mask, gateway) is
-   captured.</li>
+<li>A one-shot DHCP acquisition runs on the new link: DHCPDISCOVER →
+   REQUEST → ACK from your LAN's DHCP server. The lease (IP, mask,
+   gateway) is captured.</li>
 <li>The plugin returns the link name to libnetwork via <code>Join</code>. Docker moves
    the link into the container's netns and renames it (typically <code>eth0</code>).</li>
-<li>A persistent <code>dhcpcd</code> runs inside the container netns to renew the
-   lease for the lifetime of the endpoint. It runs observe-only
-   (<code>--noconfigure</code>); the plugin applies lease changes via netlink.</li>
-<li>On <code>docker stop</code>, libnetwork calls <code>Leave</code> → the persistent <code>dhcpcd</code>
-   gets <code>SIGTERM</code> and exits. It does <strong>not</strong> release the lease: the
-   address stays leased until it expires, or until the container comes
-   back and re-claims it, exactly as it would for a physical host that
-   rebooted (v1.9.0+, #800).</li>
+<li>A persistent DHCP client runs inside the container netns to renew the
+   lease for the lifetime of the endpoint. It is a goroutine in the
+   plugin process and never a child process, and it never configures the
+   link itself: the plugin applies every lease change via netlink.</li>
+<li>On <code>docker stop</code>, libnetwork calls <code>Leave</code> → the persistent client is
+   stopped. It does <strong>not</strong> release the lease: the address stays leased
+   until it expires, or until the container comes back and re-claims it,
+   exactly as it would for a physical host that rebooted (v1.9.0+, #800).</li>
 <li>The macvlan link is reaped automatically when the container netns is
    destroyed.</li>
 </ol>
@@ -1061,22 +1107,22 @@ sidecar, no <code>cap_add</code>:</p>
   Ethernet, VLAN sub-interfaces, and bonds work; bridges, macvlans,
   and ipvlans do not (you can't stack these on top of each other).</li>
 <li>The parent NIC must be administratively <code>UP</code> before you create the
-  network — the plugin won't bring it up for you (host config is
-  off-limits).</li>
+  network. The plugin won't bring it up for you, since host config is
+  off-limits.</li>
 <li>Like any macvlan/ipvlan setup: a container on a child interface
   cannot reach the parent NIC's own host IP, and vice-versa. This is a
-  kernel-level rule, not a plugin restriction. For host↔container
+  kernel-level rule and never a plugin restriction. For host↔container
   traffic you'd need bridge mode or a second NIC.</li>
-<li><strong>The parent should carry an address on the leased subnet.</strong> Normally
-  it does — a macvlan/ipvlan parent is the host NIC, holding the host's
-  own DHCP address — and nothing here requires you to add one. It
-  matters because the plugin checks each new lease against the segment
-  (v1.6.0+, #524) by resolving the address from the parent, and a host
-  answers ARP only if it can route a reply back to the sender. On a
-  deliberately address-less parent that check reports
-  <code>conflict_probe_failures</code> and an explicit <em>undetermined</em> instead of a
-  clean result — addressing still works exactly as before, you just lose
-  the detection. See
+<li><strong>The parent no longer needs an address on the leased subnet for
+  conflict detection.</strong> It used to: the plugin checked each new lease
+  against the segment (v1.6.0+, #524) by resolving the address from the
+  parent, and a host answers an ordinary ARP request only if it can route
+  a reply back to the sender, so an address-less parent left the check
+  <em>undetermined</em>. Since 2.0 the DHCP client runs RFC 5227 from
+  inside the container instead, and a §2.1.1 Probe carries an all-zero
+  sender protocol address that Linux answers for any local target without
+  consulting a route. A bare parent is fine. See
+  <a href="../reference/#driver-options-network-level"><code>conflict_check</code></a> and
   <a href="../reference/#pluginhealth"><code>/Plugin.Health</code></a>.</li>
 <li><strong>ipvlan-specific:</strong> custom MAC addresses are unsupported (children
   share the parent's MAC). Passing <code>--mac-address</code> on <code>docker run</code>
@@ -1086,7 +1132,7 @@ sidecar, no <code>cap_add</code>:</p>
   broadcast).</li>
 <li><strong>ipvlan-specific:</strong> if your DHCP server keys reservations solely
   on MAC and ignores DHCP option 61 (client identifier), ipvlan
-  won't work as a stability mechanism — every ipvlan slave shares
+  won't work as a stability mechanism, because every ipvlan slave shares
   the parent's MAC, so the server has no way to tell them apart.
   Use <code>mode=macvlan</code> if your server is MAC-only. (See "DHCP
   identity" below for what the plugin sends.)</li>
@@ -1094,7 +1140,7 @@ sidecar, no <code>cap_add</code>:</p>
   a given parent NIC at a time. The kernel rejects mixing them with
   <code>EBUSY</code>. Use one mode per parent.</li>
 <li>The plugin requires <code>--ipam-driver=null</code> because the LAN's DHCP
-  server is the address source of truth, not Docker's IPAM.</li>
+  server is the address source of truth in place of Docker's IPAM.</li>
 <li>One DHCP-served network per container. If a container also joins a
   bridge or other Docker network, that's its problem to coordinate.</li>
 </ul>
@@ -1108,34 +1154,35 @@ sidecar, no <code>cap_add</code>:</p>
 <a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a>docker<span class="w"> </span>inspect<span class="w"> </span>&lt;container&gt;<span class="w"> </span><span class="p">|</span><span class="w"> </span>jq<span class="w"> </span><span class="s1">&#39;.[0].NetworkSettings.Networks&#39;</span>
 <a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a>
 <a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a><span class="c1"># Upstream DHCP server&#39;s view (Fritz.Box, pfSense, etc.)</span>
-<a id="__codelineno-3-9" name="__codelineno-3-9" href="#__codelineno-3-9"></a><span class="c1"># — check the active leases page in your router&#39;s UI; the container&#39;s</span>
+<a id="__codelineno-3-9" name="__codelineno-3-9" href="#__codelineno-3-9"></a><span class="c1"># Check the active leases page in your router&#39;s UI; the container&#39;s</span>
 <a id="__codelineno-3-10" name="__codelineno-3-10" href="#__codelineno-3-10"></a><span class="c1"># MAC and hostname should appear.</span>
 </code></pre></div>
 <p>A container on a macvlan should be pingable from any other host on the LAN
 on the IP its DHCP server handed it.</p>
 <p>If you also want to confirm the lease is not colliding with something
-already on the segment, read <code>address_conflict_probes</code> before believing
-<code>address_conflicts</code> is zero — with no probes the two readings are
+already on the segment, read <code>acd_probes_sent</code> before believing
+<code>address_conflicts_v4</code> is zero. With no probes the two readings are
 identical, and "the detector never ran" is what the fault behind #524
-looked like. Both are on
-<a href="../reference/#pluginhealth"><code>/Plugin.Health</code></a>.</p>
+looked like. A zero is also the honest answer on a network created with
+<code>-o conflict_check=off</code>, which asks for no probes at all. Both counters
+are on <a href="../reference/#pluginhealth"><code>/Plugin.Health</code></a>.</p>
 <h2 id="troubleshooting">Troubleshooting<a class="headerlink" href="#troubleshooting" title="Permanent link">&para;</a></h2>
-<p><strong>"parent interface is unsuitable for macvlan"</strong> — you passed a bridge,
+<p><strong>"parent interface is unsuitable for macvlan"</strong> means you passed a bridge,
 macvlan, or ipvlan as <code>parent</code>. Use a real NIC, a VLAN sub-interface,
 or a bond.</p>
-<p><strong>"ipvlan does not support a custom MAC address"</strong> — <code>docker run --mac-address</code>
-isn't compatible with <code>mode=ipvlan</code> because ipvlan children share the
+<p><strong>"ipvlan does not support a custom MAC address"</strong> means <code>docker run --mac-address</code>
+is not compatible with <code>mode=ipvlan</code> because ipvlan children share the
 parent's MAC. Drop the <code>--mac-address</code> flag, or switch the network to
 <code>mode=macvlan</code> if you need distinct MACs.</p>
-<p><strong>"parent interface is down"</strong> — <code>ip link set &lt;parent&gt; up</code> and try again.
+<p><strong>"parent interface is down"</strong> is fixed by <code>ip link set &lt;parent&gt; up</code>.
 The plugin won't toggle host link state.</p>
-<p><strong>Container gets no IP</strong> — check that the parent NIC is on the right L2
+<p><strong>Container gets no IP</strong>: check that the parent NIC is on the right L2
 segment, that DHCP traffic isn't being filtered (some managed switches
 have DHCP snooping or storm-control turned on), and that the upstream
 DHCP server has a free lease in its pool. <code>-o validate_dhcp=true</code> catches
 all three at network-create time instead of at the first <code>docker run</code>.</p>
-<p>Everything not specific to these modes — general symptoms, the Compose
-merge trap, health-endpoint problems — is in the
+<p>Everything not specific to these modes (general symptoms, the Compose
+merge trap, health-endpoint problems) is in the
 <a href="../reference/#troubleshooting">driver reference</a>.</p>
 <h2 id="where-the-rest-of-the-documentation-lives">Where the rest of the documentation lives<a class="headerlink" href="#where-the-rest-of-the-documentation-lives" title="Permanent link">&para;</a></h2>
 <p>This page covers <strong>choosing and setting up</strong> macvlan or ipvlan. The
@@ -1144,12 +1191,12 @@ documented once, in the <a href="../reference/">driver reference</a>:</p>
 <ul>
 <li><a href="../reference/#driver-options-network-level">All driver options</a>, including <code>parent</code>, <code>validate_dhcp</code>, and the rest</li>
 <li><a href="../reference/#requesting-a-specific-address">Requesting a specific address</a></li>
-<li><a href="../reference/#restart-stability-mac-and-ip">Restart stability</a> — how MAC and IP survive <code>docker restart</code></li>
-<li><a href="../reference/#dhcp-identity">DHCP identity</a> — what the plugin sends as hostname, vendor class, and client ID</li>
+<li><a href="../reference/#restart-stability-mac-and-ip">Restart stability</a>: how MAC and IP survive <code>docker restart</code></li>
+<li><a href="../reference/#dhcp-identity">DHCP identity</a>: what the plugin sends as hostname, vendor class, and client ID</li>
 <li><a href="../reference/#dhcpv6-ipv6true">DHCPv6</a></li>
 <li><a href="../reference/#recovery-after-a-plugin-restart">Recovery after a plugin restart</a></li>
 <li><a href="../reference/#pluginhealth"><code>/Plugin.Health</code> and the counters</a></li>
-<li><a href="../reference/#plugin-settings">Plugin settings</a> — <code>LOG_LEVEL</code>, <code>AWAIT_TIMEOUT</code>, <code>STATE_DIR</code>, <code>OUTAGE_TICK</code>, <code>OUTAGE_GRACE</code>, <code>METRICS_ADDR</code></li>
+<li><a href="../reference/#plugin-settings">Plugin settings</a>: <code>LOG_LEVEL</code>, <code>AWAIT_TIMEOUT</code>, <code>STATE_DIR</code>, <code>METRICS_ADDR</code></li>
 </ul>
 <p>For how it works under the hood, see <a href="../internals/">How it works</a>.</p>
 

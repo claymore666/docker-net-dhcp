@@ -365,6 +365,25 @@
   
   
   
+    <li class="md-tabs__item">
+      <a href="../contributing/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Contributing
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
     
     
       <li class="md-tabs__item">
@@ -649,6 +668,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#the-2x-releases" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The 2.x releases
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#direction" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -661,10 +691,10 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#1-knowing-when-addressing-is-wrong-not-just-when-it-fails" class="md-nav__link">
+  <a href="#1-quiet-addressing-faults" class="md-nav__link">
     <span class="md-ellipsis">
       
-        1. Knowing when addressing is wrong, not just when it fails
+        1. Quiet addressing faults
       
     </span>
   </a>
@@ -721,10 +751,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#blocked-upstream-not-unplanned" class="md-nav__link">
+  <a href="#blocked-upstream" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Blocked upstream, not unplanned
+        Blocked upstream
       
     </span>
   </a>
@@ -794,6 +824,33 @@
   
   
   
+    <li class="md-nav__item">
+      <a href="../contributing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Contributing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
     
     
     
@@ -808,10 +865,10 @@
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_8" >
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_9" >
         
           
-          <label class="md-nav__link" for="__nav_8" id="__nav_8_label" tabindex="0">
+          <label class="md-nav__link" for="__nav_9" id="__nav_9_label" tabindex="0">
             
   
   
@@ -829,8 +886,8 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_8">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_9_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_9">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -924,6 +981,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#the-2x-releases" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The 2.x releases
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#direction" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -936,10 +1004,10 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#1-knowing-when-addressing-is-wrong-not-just-when-it-fails" class="md-nav__link">
+  <a href="#1-quiet-addressing-faults" class="md-nav__link">
     <span class="md-ellipsis">
       
-        1. Knowing when addressing is wrong, not just when it fails
+        1. Quiet addressing faults
       
     </span>
   </a>
@@ -996,10 +1064,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#blocked-upstream-not-unplanned" class="md-nav__link">
+  <a href="#blocked-upstream" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Blocked upstream, not unplanned
+        Blocked upstream
       
     </span>
   </a>
@@ -1054,88 +1122,136 @@
 
 
 <h1 id="roadmap">Roadmap<a class="headerlink" href="#roadmap" title="Permanent link">&para;</a></h1>
-<p>Where <code>docker-net-dhcp</code> is going over roughly the next year, and — the
-more useful half — where it deliberately is not going.</p>
-<p>This is <strong>direction, not a delivery schedule.</strong> The project is
-solo-maintained, so nothing here carries a date. Milestones remain the
-per-release truth: a milestone says what is going into the next tag, this
-page says what the tags are working towards and which shapes of change
-will be turned down however well they are implemented.</p>
+<p>Where <code>docker-net-dhcp</code> is going over roughly the next year, and, the
+more useful half, where it deliberately is not going.</p>
+<p>This page is <strong>direction</strong>. It is not a delivery schedule. The project
+is solo-maintained, so nothing here carries a date. Milestones remain
+the per-release truth: a milestone says what is going into the next tag,
+this page says what the tags are working towards and which shapes of
+change will be turned down however well they are implemented.</p>
 <h2 id="the-bar-every-feature-is-measured-against">The bar every feature is measured against<a class="headerlink" href="#the-bar-every-feature-is-measured-against" title="Permanent link">&para;</a></h2>
 <p>One <code>docker network create</code> line, then plain <code>networks: [lan-dhcp]</code> in
 any Compose file. No static IPs, no sidecars, no per-container plumbing,
 no entrypoint script that has to know it is running on this network.</p>
 <p>That bar decides most design arguments before they start. A workaround a
 user has to script around the plugin is read here as a <strong>bug report
-against this principle</strong>, not as a solution — see <a href="https://github.com/claymore666/docker-net-dhcp/issues/125">#125</a>, which is open
-for exactly that reason.</p>
+against this principle</strong>. <a href="https://github.com/claymore666/docker-net-dhcp/issues/125">#125</a> is the worked example. Containers
+landed on <code>eth0</code>, <code>eth1</code> and so on in attach order, which left users
+scripting around the name, so the plugin now returns the requested
+interface name to the engine.</p>
 <h2 id="where-the-project-is-today">Where the project is today<a class="headerlink" href="#where-the-project-is-today" title="Permanent link">&para;</a></h2>
+<p>This branch is the 2.0 line.
+The plugin leases through the project's own in-tree DHCP client library
+instead of an external client process, and it does so for both address
+families: <code>ipv6=true</code> gives an endpoint a DHCPv6 lease alongside its
+DHCPv4 one, at parity with the 1.x line (<a href="https://github.com/claymore666/docker-net-dhcp/issues/911">#911</a>). Everything else in
+this section describes the 1.x line 2.0 is replacing, feature for
+feature, and stays true of it.</p>
 <p>Bridge, macvlan and ipvlan attachment; DHCPv4 and DHCPv6; addresses that
 survive <code>docker restart</code>, plugin restart and daemon restart; a
 <code>/Plugin.Health</code> counter surface and the same counters in Prometheus
 form on <code>/metrics</code> (<a href="https://github.com/claymore666/docker-net-dhcp/issues/651">#651</a>); per-network choice of which DHCP server to
 lease from (<a href="https://github.com/claymore666/docker-net-dhcp/issues/111">#111</a>, <a href="https://github.com/claymore666/docker-net-dhcp/issues/669">#669</a>); signed, attested, reproducible releases.</p>
-<p>v1.9.0 is the release that makes IPv6 usable rather than merely present.
-Before it, <code>ipv6=true</code> was accepted and did not work on most segments:
-no container could start at all where the router advertises stateless or
-SLAAC-only configuration (<a href="https://github.com/claymore666/docker-net-dhcp/issues/868">#868</a>), a stateless server's configuration was
-received and discarded (<a href="https://github.com/claymore666/docker-net-dhcp/issues/815">#815</a>), and on a managed segment the leased
-address stopped being refreshed and its default route disappeared
-(<a href="https://github.com/claymore666/docker-net-dhcp/issues/875">#875</a>). The same release stops the plugin sending DHCPRELEASE on any
-path — an address is held until the lease expires, like any other host's
-(<a href="https://github.com/claymore666/docker-net-dhcp/issues/800">#800</a>).</p>
+<p>v1.9.0 is the release that makes IPv6 usable. Before it the option was
+present and did little. Before it, <code>ipv6=true</code> was accepted and did not
+work on most segments: no container could start at all where the router
+advertises stateless or SLAAC-only configuration (<a href="https://github.com/claymore666/docker-net-dhcp/issues/868">#868</a>), a stateless
+server's configuration was received and discarded (<a href="https://github.com/claymore666/docker-net-dhcp/issues/815">#815</a>), and on a
+managed segment the leased address stopped being refreshed and its
+default route disappeared (<a href="https://github.com/claymore666/docker-net-dhcp/issues/875">#875</a>). The same release stops the plugin
+sending DHCPRELEASE on any path: an address is held until the lease
+expires, like any other host's (<a href="https://github.com/claymore666/docker-net-dhcp/issues/800">#800</a>).</p>
 <p>v1.8.0 carried the first human review of the design and its trust
-boundaries (<a href="https://github.com/claymore666/docker-net-dhcp/issues/457">#457</a>, <a href="https://github.com/claymore666/docker-net-dhcp/issues/699">#699</a>) — pulled into that release because it is the
+boundaries (<a href="https://github.com/claymore666/docker-net-dhcp/issues/457">#457</a>, <a href="https://github.com/claymore666/docker-net-dhcp/issues/699">#699</a>), pulled into that release because it is the
 one that opens a TCP port in a process holding <code>CAP_NET_ADMIN</code>. Every
-finding was fixed inside the same cycle rather than carried forward, and
-each one ends in a test or a counter rather than a paragraph. The
-<a href="../reference/">driver reference</a> is the authority on what exists right
-now — if this page and that one disagree, that one is right.</p>
+finding was fixed inside the same cycle, and each one ends in a test or
+a counter instead of a paragraph. The <a href="../reference/">driver reference</a>
+is the authority on what exists right now. If this page and that one
+disagree, that one is right.</p>
+<h2 id="the-2x-releases">The 2.x releases<a class="headerlink" href="#the-2x-releases" title="Permanent link">&para;</a></h2>
+<p>Milestones, read from the tracker and never written here by hand. Each
+release closes its milestone, so the issues below are what that tag is
+working towards.</p>
+<p><strong><a href="https://github.com/claymore666/docker-net-dhcp/milestone/28">v2.0.0</a></strong>
+is parity with 1.9.0 on the project's own DHCP engine, plus the bugs the
+milestone carries: <a href="https://github.com/claymore666/docker-net-dhcp/issues/911">#911</a> tracks the IPv6 half, <a href="https://github.com/claymore666/docker-net-dhcp/issues/895">#895</a> gives every ipvlan
+endpoint its own DHCPv6 identity, and <a href="https://github.com/claymore666/docker-net-dhcp/issues/820">#820</a> settles the path a
+restarted container takes. The rest are test and CI defects:
+<a href="https://github.com/claymore666/docker-net-dhcp/issues/881">#881</a>, <a href="https://github.com/claymore666/docker-net-dhcp/issues/802">#802</a>, <a href="https://github.com/claymore666/docker-net-dhcp/issues/682">#682</a>, <a href="https://github.com/claymore666/docker-net-dhcp/issues/879">#879</a>, <a href="https://github.com/claymore666/docker-net-dhcp/issues/839">#839</a>, <a href="https://github.com/claymore666/docker-net-dhcp/issues/827">#827</a>, and this page's own
+sibling <a href="https://github.com/claymore666/docker-net-dhcp/issues/672">#672</a>.</p>
+<p><strong><a href="https://github.com/claymore666/docker-net-dhcp/milestone/30">v2.1.0</a></strong>
+is addressing Docker can see. <a href="https://github.com/claymore666/docker-net-dhcp/issues/110">#110</a> bundles a DHCP IPAM driver, so
+<code>--ipam-driver null</code> stops being the only supported shape. <a href="https://github.com/claymore666/docker-net-dhcp/issues/218">#218</a>, the
+deterministic MAC, is on it and blocked upstream (below).</p>
+<p><strong><a href="https://github.com/claymore666/docker-net-dhcp/milestone/29">v2.2.0</a></strong>
+is full IPv6. <a href="https://github.com/claymore666/docker-net-dhcp/issues/818">#818</a> and <a href="https://github.com/claymore666/docker-net-dhcp/issues/808">#808</a> acquire an address by SLAAC, <a href="https://github.com/claymore666/docker-net-dhcp/issues/821">#821</a> takes
+the gateway, DNS, MTU and routes from the advertisement, <a href="https://github.com/claymore666/docker-net-dhcp/issues/819">#819</a> handles
+lifetimes, withdrawal and renumbering, <a href="https://github.com/claymore666/docker-net-dhcp/issues/817">#817</a> adds an <code>ipv6_mode</code> option,
+<a href="https://github.com/claymore666/docker-net-dhcp/issues/814">#814</a> parses Router Advertisements into a first-class event, <a href="https://github.com/claymore666/docker-net-dhcp/issues/214">#214</a> is
+prefix delegation, <a href="https://github.com/claymore666/docker-net-dhcp/issues/925">#925</a> accepts a server-initiated Reconfigure, and
+<a href="https://github.com/claymore666/docker-net-dhcp/issues/816">#816</a> stops a v6 acquisition reporting a lease timeout where no
+exchange was possible.</p>
+<p><strong><a href="https://github.com/claymore666/docker-net-dhcp/milestone/31">v2.3.0</a></strong>
+is the host plumbing an operator does by hand today: <a href="https://github.com/claymore666/docker-net-dhcp/issues/902">#902</a> VLAN
+sub-interfaces, <a href="https://github.com/claymore666/docker-net-dhcp/issues/903">#903</a> a bridge the plugin creates and owns, <a href="https://github.com/claymore666/docker-net-dhcp/issues/904">#904</a>
+link-local fallback where no server answers, <a href="https://github.com/claymore666/docker-net-dhcp/issues/905">#905</a> macvlan and ipvlan
+sub-modes. <a href="https://github.com/claymore666/docker-net-dhcp/issues/903">#903</a> sits inside the rule below that the plugin does not
+change interfaces the host already has: the bridge is one the plugin
+creates for its own networks and owns for as long as they exist, and no
+interface the host configured is touched.</p>
+<p><a href="https://github.com/claymore666/docker-net-dhcp/issues/926">#926</a> Rapid Commit and <a href="https://github.com/claymore666/docker-net-dhcp/issues/927">#927</a> temporary addresses (IA_TA) carry no
+milestone and are not scheduled.</p>
 <h2 id="direction">Direction<a class="headerlink" href="#direction" title="Permanent link">&para;</a></h2>
 <p>Five themes, in rough order of how much they change for a user. Issue
-numbers are anchors, not a queue.</p>
-<h3 id="1-knowing-when-addressing-is-wrong-not-just-when-it-fails">1. Knowing when addressing is wrong, not just when it fails<a class="headerlink" href="#1-knowing-when-addressing-is-wrong-not-just-when-it-fails" title="Permanent link">&para;</a></h3>
+numbers are anchors; the order is not a queue.</p>
+<h3 id="1-quiet-addressing-faults">1. Quiet addressing faults<a class="headerlink" href="#1-quiet-addressing-faults" title="Permanent link">&para;</a></h3>
 <p>The hard failures were solved first; the quiet ones are the current
 work. v1.6.0 added conflict detection (<a href="https://github.com/claymore666/docker-net-dhcp/issues/524">#524</a>) because the plugin
 accepted an address a statically-configured host already held and every
-counter stayed at zero — the container came up, Docker reported an
+counter stayed at zero. The container came up, Docker reported an
 address, and nothing anywhere said otherwise.</p>
-<p>The direction that follows from it: <strong>every new failure mode gets a
-counter, not just a log line</strong>, and a counter that can read clean while
-the feature is broken is treated as an unfinished instrument. Expect
-more of the health surface, and more assertions made against what the
-DHCP server saw rather than against what the plugin believes.</p>
+<p>2.0 delivered the next step of this theme. The check moved off the
+parent link and into the DHCP client, as RFC 5227 Address Conflict
+Detection running inside the container's own namespace for the whole
+life of the lease, with <code>conflict_check</code> choosing who pays for it
+(<a href="../reference/#driver-options-network-level"><code>conflict_check</code></a>). The
+theme stays open: <strong>every new failure mode gets a counter as well as a
+log line</strong>, and a counter that can read clean while the feature is
+broken is treated as an unfinished instrument. Expect more of the health
+surface, and more assertions made against what the DHCP server saw
+instead of what the plugin believes.</p>
 <h3 id="2-lease-identity-across-recreates">2. Lease identity across recreates<a class="headerlink" href="#2-lease-identity-across-recreates" title="Permanent link">&para;</a></h3>
 <p>A DHCP server keys on identity, so address stability is an identity
-problem. Two pieces are designed and blocked rather than unplanned —
-<a href="https://github.com/claymore666/docker-net-dhcp/issues/218">#218</a> (deterministic MAC) and <a href="https://github.com/claymore666/docker-net-dhcp/issues/219">#219</a> (client-id for ipvlan, where every
-child shares the parent's MAC). See <em>Blocked upstream</em> below.</p>
+problem. Two pieces are designed, and neither is unplanned. <a href="https://github.com/claymore666/docker-net-dhcp/issues/218">#218</a>, the
+deterministic MAC, is on v2.1.0 and blocked upstream (below). <a href="https://github.com/claymore666/docker-net-dhcp/issues/219">#219</a>, a
+stable client-id for ipvlan where every child shares the parent's MAC,
+carries no milestone. 2.0 settled the DHCPv6 half of the same question:
+an ipvlan endpoint now gets a DUID of its own (<a href="https://github.com/claymore666/docker-net-dhcp/issues/895">#895</a>).</p>
 <h3 id="3-arm64">3. arm64<a class="headerlink" href="#3-arm64" title="Permanent link">&para;</a></h3>
-<p>Users have asked for it and it works — proven on real hardware: a
-native arm64 CI runner executes the full integration suite, timing
-behaviour included, as a release-candidate gate (<a href="https://github.com/claymore666/docker-net-dhcp/issues/531">#531</a>). The shipping
-shape is per-architecture tags (<code>vX.Y.Z-arm64</code>, <code>latest-arm64</code>), first
-published with v1.7.0 (<a href="https://github.com/claymore666/docker-net-dhcp/issues/507">#507</a>) — a Docker <em>plugin</em> cannot be installed
-from a multi-architecture manifest list at all, so the architecture
-lives in the tag rather than in a manifest.</p>
+<p>Users have asked for it and it works, proven on real hardware: a native
+arm64 CI runner executes the full integration suite, timing behaviour
+included, as a release-candidate gate (<a href="https://github.com/claymore666/docker-net-dhcp/issues/531">#531</a>). The shipping shape is
+per-architecture tags (<code>vX.Y.Z-arm64</code>, <code>latest-arm64</code>), first published
+with v1.7.0 (<a href="https://github.com/claymore666/docker-net-dhcp/issues/507">#507</a>). A Docker <em>plugin</em> cannot be installed from a
+multi-architecture manifest list at all, so the architecture lives in
+the tag and not in a manifest.</p>
 <h3 id="4-a-test-substrate-that-cannot-lie">4. A test substrate that cannot lie<a class="headerlink" href="#4-a-test-substrate-that-cannot-lie" title="Permanent link">&para;</a></h3>
 <p>This is infrastructure work with a user-visible reason: on this project,
 every timing crutch removed from CI turned out to be hiding a real
 defect. An opt-out helper added to make a restart test pass hid a
-user-facing <code>docker restart</code> failure for months. So the rule — <strong>a test
-that only passes once you weaken something is a bug report</strong> — is
-enforced by a gate rather than by a paragraph, and the remaining
-soft spots (<a href="https://github.com/claymore666/docker-net-dhcp/issues/682">#682</a>, <a href="https://github.com/claymore666/docker-net-dhcp/issues/403">#403</a>) are on the list for the same reason
-features are.</p>
+user-facing <code>docker restart</code> failure for months. So the rule is enforced
+by a gate and not by a paragraph: <strong>a test that only passes once you
+weaken something is a bug report</strong>. The remaining soft spots (<a href="https://github.com/claymore666/docker-net-dhcp/issues/682">#682</a>,
+<a href="https://github.com/claymore666/docker-net-dhcp/issues/403">#403</a>) are on the list for the same reason features are.</p>
 <h3 id="5-supply-chain-and-documentation">5. Supply chain and documentation<a class="headerlink" href="#5-supply-chain-and-documentation" title="Permanent link">&para;</a></h3>
 <p>Releases are already cosign-signed, provenanced, SBOM'd and
 reproducible. The remaining pull is the OpenSSF Best Practices silver
 and gold criteria, which are tracked as ordinary issues and generally
-translate into something concrete — this page exists because
+translate into something concrete. This page exists because
 <code>documentation_roadmap</code> is one of them (<a href="https://github.com/claymore666/docker-net-dhcp/issues/452">#452</a>).</p>
-<h2 id="blocked-upstream-not-unplanned">Blocked upstream, not unplanned<a class="headerlink" href="#blocked-upstream-not-unplanned" title="Permanent link">&para;</a></h2>
-<p>Two features are implemented or designed here and cannot ship until
-Docker's own engine carries a change. They stay open on purpose:</p>
+<h2 id="blocked-upstream">Blocked upstream<a class="headerlink" href="#blocked-upstream" title="Permanent link">&para;</a></h2>
+<p>One feature is designed here and cannot ship until Docker's own engine
+carries a change. It stays open on purpose:</p>
 <table>
 <thead>
 <tr>
@@ -1146,27 +1262,23 @@ Docker's own engine carries a change. They stay open on purpose:</p>
 </thead>
 <tbody>
 <tr>
-<td><a href="https://github.com/claymore666/docker-net-dhcp/issues/125">#125</a> — Compose <code>interface_name</code></td>
-<td>the remote driver to honour a plugin-returned <code>DstName</code></td>
-<td><a href="https://github.com/moby/moby/issues/52865">moby/moby#52865</a> (issue, closed), <a href="https://github.com/moby/moby/pull/52866">moby/moby#52866</a> (PR, <strong>merged</strong> — ships in engine 29.8.0)</td>
-</tr>
-<tr>
-<td><a href="https://github.com/claymore666/docker-net-dhcp/issues/218">#218</a> — deterministic MAC</td>
+<td><a href="https://github.com/claymore666/docker-net-dhcp/issues/218">#218</a>, the deterministic MAC</td>
 <td>network drivers to receive the endpoint name at <code>CreateEndpoint</code>, as IPAM drivers already do</td>
-<td><a href="https://github.com/moby/moby/issues/52870">moby/moby#52870</a> (issue), <a href="https://github.com/moby/moby/pull/52871">moby/moby#52871</a> (PR)</td>
+<td><a href="https://github.com/moby/moby/issues/52870">moby/moby#52870</a> (issue), <a href="https://github.com/moby/moby/pull/52871">moby/moby#52871</a> (PR, open)</td>
 </tr>
 </tbody>
 </table>
-<p>Both were filed in June 2026. The <code>interface_name</code> pass-through
-(<a href="https://github.com/moby/moby/pull/52866">moby/moby#52866</a>) was <strong>merged</strong> to moby master on 2026-08-26 and is
-milestoned for engine <strong>29.8.0</strong>; <a href="https://github.com/moby/moby/issues/52865">moby/moby#52865</a> closed with it. It
-unblocks <a href="https://github.com/claymore666/docker-net-dhcp/issues/125">#125</a> on the first engine <em>release</em> carrying it — 29.8.0 is
-not out yet (measured 2026-08-28: latest release 29.7.2, with
-29.8.0-rc.1 published as a pre-release that day), so the blocker moved from
-review to a release, not away. The endpoint-name change
-(<a href="https://github.com/moby/moby/pull/52871">moby/moby#52871</a>) is still awaiting review. Neither issue here will be closed as "won't fix" while
-that is the only thing in the way; the fork's own half of each is
-written and waiting.</p>
+<p>Both halves were filed in June 2026. The endpoint-name change
+(<a href="https://github.com/moby/moby/pull/52871">moby/moby#52871</a>) is still awaiting review, and <a href="https://github.com/claymore666/docker-net-dhcp/issues/218">#218</a> will not be
+closed as "won't fix" while that is the only thing in the way. This
+fork's own half is written and waiting.</p>
+<p>The other one has moved. The <code>interface_name</code> pass-through
+(<a href="https://github.com/moby/moby/pull/52866">moby/moby#52866</a>) was merged to moby master on 2026-08-26, milestoned
+for engine <strong>29.8.0</strong>, and that engine was released on 2026-09-03;
+<a href="https://github.com/moby/moby/issues/52865">moby/moby#52865</a> closed with it and <a href="https://github.com/claymore666/docker-net-dhcp/issues/125">#125</a> closed on this side. The
+integration suite has not yet run against an engine carrying the change,
+so the behaviour is unconfirmed and not measured. The tests probe for it
+and turn themselves on, so no change here is waiting on it.</p>
 <h2 id="what-this-project-will-deliberately-not-do">What this project will deliberately not do<a class="headerlink" href="#what-this-project-will-deliberately-not-do" title="Permanent link">&para;</a></h2>
 <p>Turning these down is not a backlog. They are decided, and the reasoning
 is recorded so a contributor can read it before writing the PR.</p>
@@ -1176,51 +1288,70 @@ is recorded so a contributor can read it before writing the PR.</p>
   existing server is the authority; a second one would recreate the
   problem it solves. Interoperating with more than one server is a
   different question, and v1.8.0 answered it: <code>dhcp_servers</code> and
-  <code>dhcp_deny_servers</code> decide which existing server a network leases
-  from (<a href="https://github.com/claymore666/docker-net-dhcp/issues/111">#111</a>). That stays on this side of the line — the plugin picks
-  among authorities, it never becomes one.</li>
-<li><strong>It will not reconfigure the host's networking.</strong> Bridge mode needs a
-  bridge you maintain, and the parent-attached modes will not bring a NIC
-  up, add an address, or edit netplan/<code>systemd-networkd</code>. The plugin
-  reads host configuration; it does not own it.</li>
+  <code>dhcp_deny_servers</code> decide which existing server a network leases from
+  (<a href="https://github.com/claymore666/docker-net-dhcp/issues/111">#111</a>). That stays on this side of the line: the plugin picks among
+  authorities and never becomes one.</li>
+<li><strong>It will not change interfaces the host already has.</strong> Bridge mode
+  today needs a bridge you maintain, and the parent-attached modes will
+  not bring a NIC up, add an address, or edit netplan/<code>systemd-networkd</code>.
+  The plugin reads host configuration; it does not own it. A bridge the
+  plugin creates for its own networks and owns for as long as they exist
+  (<a href="https://github.com/claymore666/docker-net-dhcp/issues/903">#903</a>, v2.3.0) is inside this rule.</li>
 <li><strong>It will not gain a static-IP workflow.</strong> If an address must be
-  fixed, fix it where addresses are decided — a reservation on the DHCP
-  server. A per-container static-IP option would be a second, silently
-  conflicting IPAM.</li>
-<li><strong>It will not ask for more privileges to buy a feature.</strong> Adding a
-  capability to <code>config.json</code> forces <strong>every</strong> operator to re-approve
-  the plugin's privileges on upgrade, and that trade is the default
-  answer, not a one-off. The example this rule used to be illustrated
-  with does not actually hold: proper RFC 5227 conflict detection needs
-  <code>CAP_NET_RAW</code>, and the plugin <strong>already has it</strong> — Docker composes
-  capabilities additively over the OCI defaults, so the effective set is
-  seventeen, not the three <code>config.json</code> requests. Nothing would have to
-  be re-approved. See [#725]; the rule stands, the example was wrong.</li>
-<li><strong>It will not detect a conflicting container on the same host.</strong> The
-  conflict probe's vantage point is the parent link, and the isolation
-  that keeps our own endpoint from answering also hides a sibling. That
-  is excluded by construction rather than pending (<a href="https://github.com/claymore666/docker-net-dhcp/issues/528">#528</a>); a vantage
-  point that could see the sibling would hear our own container and no
-  reply would be informative.</li>
-<li><strong>It will not support ipvlan L3 / L3S.</strong> DHCP needs L2 broadcast.</li>
-<li><strong>It will not run its arm64 verification under qemu-user/binfmt.</strong>
-  Measured, not assumed: <code>dhcpcd</code> opens a <code>NETLINK_GENERIC</code> socket and
-  qemu-user does not translate that family, so the emulated plugin
-  cannot acquire a lease at all. arm64 testing means a full-system VM or
-  real hardware.</li>
-<li><strong>It will not backport security fixes.</strong> Only the latest release is
+  fixed, fix it where addresses are decided, in a reservation on the
+  DHCP server. A per-container static-IP option would be a second,
+  silently conflicting IPAM.</li>
+<li>
+<p><strong>It will not ask for more privileges to buy a feature.</strong> Adding a
+  capability to
+  <a href="https://github.com/claymore666/docker-net-dhcp/blob/main/config.json"><code>config.json</code></a>
+  forces <strong>every</strong> operator to re-approve the plugin's privileges on
+  upgrade. Refusing that trade is the standing answer, applied every
+  time.</p>
+<p>2.0 is what this rule costs when it is met head-on. The 2.0 line
+<strong>does</strong> add <code>CAP_NET_RAW</code> to
+<a href="https://github.com/claymore666/docker-net-dhcp/blob/main/config.json"><code>config.json</code></a>,
+and every operator upgrading onto it re-approves. It buys no
+feature: the DHCP exchange runs on an interface with no address,
+which requires an <code>AF_PACKET</code> socket on the ordinary path for every
+endpoint, with no configuration in which the plugin works without
+it. The <em>power</em> is unchanged, because the capability is in the OCI
+default set and the process always held it, so what the line bought
+is an honest manifest and what it cost is the prompt. Read the rule
+as written: not "never add a capability", but "never add one to buy
+a feature", and pay the re-approval out loud when the plugin
+genuinely needs the grant it is already exercising. See <a href="https://github.com/claymore666/docker-net-dhcp/issues/725">#725</a>,
+whose title says the capability is <em>already granted</em>, which is true
+of the effective set the process runs with, and the reason 2.0's
+addition buys no power, only the prompt.
+- <strong>It will not detect a conflicting container on the same host.</strong> RFC
+  5227 runs on the container's own link, and macvlan's parent/child
+  isolation, the same property that keeps a sibling from disturbing us,
+  also hides a sibling that has taken our address. That is excluded by
+  construction and is not pending work (<a href="https://github.com/claymore666/docker-net-dhcp/issues/528">#528</a>).
+- <strong>It will not support ipvlan L3 / L3S.</strong> DHCP needs L2 broadcast.
+- <strong>It will not run its arm64 verification under qemu-user/binfmt.</strong>
+  This was measured. On the 1.x client, which opened a <code>NETLINK_GENERIC</code>
+  socket qemu-user does not translate, the emulated plugin could not
+  acquire a lease at all. The 2.0 client is a different program and has
+  not been re-measured under emulation; the conclusion is unchanged
+  either way, because arm64 verification runs on real hardware and there
+  is nothing to be gained by finding out which syscall the emulator
+  drops next.
+- <strong>It will not backport security fixes.</strong> Only the latest release is
   supported; upgrading is one <code>docker plugin install</code>. See
-  <a href="https://github.com/claymore666/docker-net-dhcp/blob/main/SECURITY.md">SECURITY.md</a>.</li>
-<li><strong>It will not carry AI-assistant attribution in its history.</strong> Using
+  <a href="https://github.com/claymore666/docker-net-dhcp/blob/main/SECURITY.md">SECURITY.md</a>.
+- <strong>It will not carry AI-assistant attribution in its history.</strong> Using
   an assistant is fine and needs no disclosure; commits and PRs are
-  signed by a person who stands behind them, and a CI check enforces it.</li>
+  signed by a person who stands behind them, and a CI check enforces it.</p>
+</li>
 </ul>
 <h2 id="how-this-page-is-kept-honest">How this page is kept honest<a class="headerlink" href="#how-this-page-is-kept-honest" title="Permanent link">&para;</a></h2>
 <p>The release runbook makes a top-to-bottom documentation review a release
 step, and this page is part of it. If a theme above has gone a year
 without motion, or a "will not do" has quietly become something the
-project does, that review is where it gets corrected — not the next time
-someone asks.</p>
+project does, that review is where it gets corrected. It does not wait
+for the next time someone asks.</p>
 
 
 

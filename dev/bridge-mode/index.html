@@ -365,6 +365,25 @@
   
   
   
+    <li class="md-tabs__item">
+      <a href="../contributing/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Contributing
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
     
     
       <li class="md-tabs__item">
@@ -811,6 +830,33 @@
   
   
   
+    <li class="md-nav__item">
+      <a href="../contributing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Contributing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
     
     
     
@@ -825,10 +871,10 @@
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_8" >
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_9" >
         
           
-          <label class="md-nav__link" for="__nav_8" id="__nav_8_label" tabindex="0">
+          <label class="md-nav__link" for="__nav_9" id="__nav_9_label" tabindex="0">
             
   
   
@@ -846,8 +892,8 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_8">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_9_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_9">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -1090,8 +1136,8 @@
 <h1 id="bridge-mode">Bridge mode<a class="headerlink" href="#bridge-mode" title="Permanent link">&para;</a></h1>
 <p>Bridge mode is <code>docker-net-dhcp</code>'s default. Unlike the parent-attached
 modes (<a href="../parent-attached-modes/">macvlan / ipvlan</a>), bridge mode plugs
-container <code>veth</code>s into <strong>a Linux bridge you maintain</strong> — so it needs a
-small amount of one-time host setup, but works anywhere a bridge can be
+container <code>veth</code>s into <strong>a Linux bridge you maintain</strong>. It needs a small
+amount of one-time host setup, and it works anywhere a bridge can be
 bridged onto the LAN where the DHCP server lives.</p>
 <p>For the full option/observability/troubleshooting matrix see the
 <a href="../reference/">driver reference</a>. This page is the end-to-end
@@ -1105,21 +1151,21 @@ up to.</p>
 <p class="admonition-title">The host's own address moves to the bridge</p>
 <p>Once <code>eth0</code> is enslaved it must be left <strong>address-less</strong>, and DHCP
 has to run on the bridge instead. Applying this over SSH with the
-NIC still configured — or with a typo in the bridge stanza — drops
-the connection and does not give it back.</p>
+NIC still configured, or with a typo in the bridge stanza, drops the
+connection and does not give it back.</p>
 <p>Have console or out-of-band access (IPMI, iDRAC, the hypervisor
 console) before you start. On Ubuntu, <code>sudo netplan try</code> gives you
 an automatic revert if you lose the session; the other stacks have
 no equivalent safety net.</p>
-<p>The bridge normally inherits the NIC's MAC, but not on every
-driver. If your DHCP server pins the host's address by MAC
-reservation, the host may come back on a <strong>different</strong> address —
-set the bridge MAC explicitly if that matters.</p>
+<p>The bridge normally inherits the NIC's MAC, but not on every driver.
+If your DHCP server pins the host's address by MAC reservation, the
+host may come back on a <strong>different</strong> address. Set the bridge MAC
+explicitly if that matters.</p>
 </div>
 <h3 id="try-it-now-does-not-survive-a-reboot">Try it now (does not survive a reboot)<a class="headerlink" href="#try-it-now-does-not-survive-a-reboot" title="Permanent link">&para;</a></h3>
-<p>These manual steps work on most Linux systems and are the fastest way
-to confirm the plugin does what you want. They are lost on the next
-reboot — make them permanent with one of the stanzas below.</p>
+<p>These manual steps work on most Linux systems and are the fastest way to
+confirm the plugin does what you want. They are lost on the next reboot.
+Make them permanent with one of the stanzas below.</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="c1"># Create the bridge</span>
 <a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>sudo<span class="w"> </span>ip<span class="w"> </span>link<span class="w"> </span>add<span class="w"> </span>my-bridge<span class="w"> </span><span class="nb">type</span><span class="w"> </span>bridge
 <a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>sudo<span class="w"> </span>ip<span class="w"> </span>link<span class="w"> </span><span class="nb">set</span><span class="w"> </span>my-bridge<span class="w"> </span>up
@@ -1133,25 +1179,29 @@ reboot — make them permanent with one of the stanzas below.</p>
 <a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>sudo<span class="w"> </span>iptables<span class="w"> </span>-A<span class="w"> </span>FORWARD<span class="w"> </span>-i<span class="w"> </span>my-bridge<span class="w"> </span>-j<span class="w"> </span>ACCEPT
 <a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a>
 <a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a><span class="c1"># Get an IP for the host (goes out to the DHCP server, since eth0 is</span>
-<a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a><span class="c1"># attached to the bridge). Replace with whatever config you used for eth0.</span>
-<a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a>sudo<span class="w"> </span>dhcpcd<span class="w"> </span>my-bridge
+<a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a><span class="c1"># attached to the bridge). This is the HOST&#39;s own DHCP client, whichever</span>
+<a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a><span class="c1"># one your distribution ships -- the plugin is not involved and is not</span>
+<a id="__codelineno-0-16" name="__codelineno-0-16" href="#__codelineno-0-16"></a><span class="c1"># installed yet. Use the same tool you used for eth0, e.g.</span>
+<a id="__codelineno-0-17" name="__codelineno-0-17" href="#__codelineno-0-17"></a>sudo<span class="w"> </span>dhclient<span class="w"> </span>my-bridge
 </code></pre></div>
+<p>Whatever brings addresses up on this host is the right command here;
+the persistent stanzas below hand the same job to the host's network
+manager.</p>
 <h3 id="make-the-bridge-persistent">Make the bridge persistent<a class="headerlink" href="#make-the-bridge-persistent" title="Permanent link">&para;</a></h3>
 <p>Pick the one stanza that matches whatever manages networking on the
 host. In every case the pattern is identical: the NIC carries <strong>no</strong>
 address and is listed as a bridge port, and the bridge is the thing
 that runs DHCP.</p>
-<p>Each recipe disables STP explicitly. That is not cosmetic here — see
+<p>Each recipe disables STP explicitly. That is not cosmetic here. See
 <a href="#leave-stp-off-unless-you-need-it">Leave STP off</a> below.</p>
 <h4 id="debian-ifupdown">Debian / ifupdown<a class="headerlink" href="#debian-ifupdown" title="Permanent link">&para;</a></h4>
 <p>Needs <code>bridge-utils</code> (<code>sudo apt install bridge-utils</code>).</p>
 <p>Note that <code>networking.service</code> runs <code>ifup -a</code> <strong>synchronously</strong>, so the
 boot blocks until the bridge's DHCP request completes or <code>dhclient</code>
-gives up — around a minute if the DHCP server is slow or absent.
-Measured at ~2 minutes to reach a settled state on a bridge whose
-lease was delayed. That is normal for this stack, not a fault; if a
-fast boot matters more than having the address ready at boot, the
-networkd or netplan recipes do not have this property.</p>
+gives up, which is around a minute if the DHCP server is slow or absent.
+That delay is normal for this stack and is not a fault. If a fast boot
+matters more than having the address ready at boot, the networkd or
+netplan recipes do not have this property.</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="c1"># /etc/network/interfaces</span>
 <a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="na">auto lo</span>
 <a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="na">iface lo inet loopback</span>
@@ -1187,7 +1237,7 @@ networkd or netplan recipes do not have this property.</p>
 <a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>sudo<span class="w"> </span>netplan<span class="w"> </span>apply
 </code></pre></div>
 <h4 id="systemd-networkd">systemd-networkd<a class="headerlink" href="#systemd-networkd" title="Permanent link">&para;</a></h4>
-<p>Three files — the bridge device, the port, and the bridge's own
+<p>Three files: the bridge device, the port, and the bridge's own
 addressing:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="c1"># /etc/systemd/network/10-my-bridge.netdev</span>
 <a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="k">[NetDev]</span>
@@ -1216,13 +1266,13 @@ addressing:</p>
 <p><code>ConfigureWithoutCarrier=yes</code> matters at boot: a bridge with no port up
 yet has no carrier, and without it <code>networkd</code> can decline to start DHCP
 on the bridge at all. This is what <code>netplan</code> emits for the equivalent
-bridge, so it is the reference implementation's own answer rather than
-a workaround.</p>
+bridge, so it is the reference implementation's own answer and not a
+workaround.</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>sudo<span class="w"> </span>systemctl<span class="w"> </span><span class="nb">enable</span><span class="w"> </span>--now<span class="w"> </span>systemd-networkd
 </code></pre></div>
 <h4 id="networkmanager-nmcli">NetworkManager (nmcli)<a class="headerlink" href="#networkmanager-nmcli" title="Permanent link">&para;</a></h4>
 <div class="admonition warning">
-<p class="admonition-title">Not on Ubuntu — netplan owns ethernet there</p>
+<p class="admonition-title">Not on Ubuntu: netplan owns ethernet there</p>
 <p>Ubuntu ships NetworkManager restricted to wireless devices:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="c1"># /usr/lib/NetworkManager/conf.d/10-globally-managed-devices.conf</span>
 <a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a><span class="k">[keyfile]</span>
@@ -1232,8 +1282,8 @@ a workaround.</p>
 fails with <em>"No suitable device found for this connection"</em> no
 matter how correct the profile is. Use the netplan recipe above on
 Ubuntu. This recipe is for distributions where NetworkManager
-manages ethernet — Fedora, RHEL and derivatives, and Debian
-installs that chose it.</p>
+manages ethernet: Fedora, RHEL and derivatives, and Debian installs
+that chose it.</p>
 </div>
 <p>The existing standalone profile for the NIC has to stop autoconnecting,
 or it will race the bridge for <code>eth0</code>. Find its name with
@@ -1251,16 +1301,16 @@ or it will race the bridge for <code>eth0</code>. Find its name with
 </code></pre></div>
 <h3 id="leave-stp-off-unless-you-need-it">Leave STP off unless you need it<a class="headerlink" href="#leave-stp-off-unless-you-need-it" title="Permanent link">&para;</a></h3>
 <p>With STP <strong>enabled</strong>, a bridge puts every newly added port through
-listening and learning states before it forwards — two forwarding
-delays, 30 seconds at the stock 15s setting. Container <code>veth</code>s are
-added at attach time, so a bridge with STP on <strong>breaks DHCP for every
-container</strong>: the client broadcasts into a port that is not forwarding
-yet, gets no answer, and the attach fails or falls back.</p>
+listening and learning states before it forwards, which is two
+forwarding delays, 30 seconds at the stock 15s setting. Container
+<code>veth</code>s are added at attach time, so a bridge with STP on <strong>breaks DHCP
+for every container</strong>: the client broadcasts into a port that is not
+forwarding yet, gets no answer, and the attach fails or falls back.</p>
 <p>A bridge created with plain <code>ip link add ... type bridge</code> has STP off
 already, which is why the imperative recipe above works as written.
-Managed stacks are the risk — they apply their own default, and it is
-not always off. That is why every stanza above sets it explicitly
-rather than relying on one.</p>
+Managed stacks are the risk. They apply their own default, and it is not
+always off. That is why every stanza above sets it explicitly instead of
+relying on a default.</p>
 <p>If containers only get addresses when you attach them slowly, or
 <code>leases_obtained</code> sits flat while <code>dhcp_timeouts</code> climbs, check STP
 first:</p>
@@ -1268,8 +1318,8 @@ first:</p>
 <a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a><span class="go">stp_state 0</span>
 </code></pre></div>
 <p><code>stp_state 0</code> is what you want. Note that a non-zero <code>forward_delay</code> in
-the same output is harmless while STP is off — and that it is reported
-in <strong>centiseconds</strong>, so the stock 15 seconds reads as <code>1500</code>.</p>
+the same output is harmless while STP is off, and that it is reported in
+<strong>centiseconds</strong>, so the stock 15 seconds reads as <code>1500</code>.</p>
 <h3 id="persist-the-firewall-rule-too">Persist the firewall rule too<a class="headerlink" href="#persist-the-firewall-rule-too" title="Permanent link">&para;</a></h3>
 <p>The <code>FORWARD -i my-bridge -j ACCEPT</code> rule from the imperative recipe is
 as temporary as the bridge was. Whichever stanza you used above, the
@@ -1300,18 +1350,18 @@ rule needs the distro's own persistence mechanism:</p>
 </tr>
 </tbody>
 </table>
-<p>You only need this if the forwarding policy is <code>DROP</code> — check with
-<code>sudo iptables -S FORWARD | head -1</code>.</p>
+<p>You only need this if the forwarding policy is <code>DROP</code>. Check with <code>sudo
+iptables -S FORWARD | head -1</code>.</p>
 <h2 id="2-create-the-network">2. Create the network<a class="headerlink" href="#2-create-the-network" title="Permanent link">&para;</a></h2>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a><span class="c1"># On arm64 use the -arm64 tag — a network stores this exact reference</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a><span class="c1"># On arm64 use the -arm64 tag. A network stores this exact reference</span>
 <a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a><span class="c1"># as its driver, so it must name the plugin you installed.</span>
-<a id="__codelineno-11-3" name="__codelineno-11-3" href="#__codelineno-11-3"></a>docker<span class="w"> </span>network<span class="w"> </span>create<span class="w"> </span>-d<span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:v1.9.0<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-11-3" name="__codelineno-11-3" href="#__codelineno-11-3"></a>docker<span class="w"> </span>network<span class="w"> </span>create<span class="w"> </span>-d<span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:v2.0.0<span class="w"> </span><span class="se">\</span>
 <a id="__codelineno-11-4" name="__codelineno-11-4" href="#__codelineno-11-4"></a><span class="w">  </span>--ipam-driver<span class="w"> </span>null<span class="w"> </span>-o<span class="w"> </span><span class="nv">bridge</span><span class="o">=</span>my-bridge<span class="w"> </span>my-dhcp-net
 </code></pre></div>
 <p>With IPv6 as well (the <code>docker network create --ipv6</code> flag does <strong>not</strong>
 work with the null IPAM driver; use the <code>ipv6</code> driver option instead):</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a><span class="c1"># arm64: the -arm64 tag here too.</span>
-<a id="__codelineno-12-2" name="__codelineno-12-2" href="#__codelineno-12-2"></a>docker<span class="w"> </span>network<span class="w"> </span>create<span class="w"> </span>-d<span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:v1.9.0<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-12-2" name="__codelineno-12-2" href="#__codelineno-12-2"></a>docker<span class="w"> </span>network<span class="w"> </span>create<span class="w"> </span>-d<span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:v2.0.0<span class="w"> </span><span class="se">\</span>
 <a id="__codelineno-12-3" name="__codelineno-12-3" href="#__codelineno-12-3"></a><span class="w">  </span>--ipam-driver<span class="w"> </span>null<span class="w"> </span>-o<span class="w"> </span><span class="nv">bridge</span><span class="o">=</span>my-bridge<span class="w"> </span>-o<span class="w"> </span><span class="nv">ipv6</span><span class="o">=</span><span class="nb">true</span><span class="w"> </span>my-dhcp-net
 </code></pre></div>
 <blockquote>
@@ -1333,8 +1383,8 @@ for every network-level option (<code>lease_timeout</code>, <code>ignore_conflic
 <a id="__codelineno-13-8" name="__codelineno-13-8" href="#__codelineno-13-8"></a><span class="go">10.255.0.0/24 dev my-bridge0 scope link src 10.255.0.246</span>
 </code></pre></div>
 <p>Or in Docker Compose, against a network created out-of-band (the
-<strong>recommended</strong> approach — the network is shared across compose projects
-and survives <code>compose down</code>):</p>
+<strong>recommended</strong> approach, because the network is shared across compose
+projects and survives <code>compose down</code>):</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a><span class="nt">services</span><span class="p">:</span>
 <a id="__codelineno-14-2" name="__codelineno-14-2" href="#__codelineno-14-2"></a><span class="w">  </span><span class="nt">app</span><span class="p">:</span>
 <a id="__codelineno-14-3" name="__codelineno-14-3" href="#__codelineno-14-3"></a><span class="w">    </span><span class="nt">hostname</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">my-http</span>
@@ -1348,7 +1398,7 @@ and survives <code>compose down</code>):</p>
 <a id="__codelineno-14-11" name="__codelineno-14-11" href="#__codelineno-14-11"></a><span class="w">    </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">my-dhcp-net</span>
 </code></pre></div>
 <p>(The older <code>external:</code> block with a nested <code>name:</code> is deprecated and
-warns on current Compose — the two-key form above is the supported one.)</p>
+warns on current Compose. The two-key form above is the supported one.)</p>
 <p>You can also have Compose manage the network itself (it is then deleted
 on <code>compose down</code>):</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-15-1" name="__codelineno-15-1" href="#__codelineno-15-1"></a><span class="nt">services</span><span class="p">:</span>
@@ -1360,7 +1410,7 @@ on <code>compose down</code>):</p>
 <a id="__codelineno-15-7" name="__codelineno-15-7" href="#__codelineno-15-7"></a><span class="nt">networks</span><span class="p">:</span>
 <a id="__codelineno-15-8" name="__codelineno-15-8" href="#__codelineno-15-8"></a><span class="w">  </span><span class="nt">dhcp</span><span class="p">:</span>
 <a id="__codelineno-15-9" name="__codelineno-15-9" href="#__codelineno-15-9"></a><span class="w">    </span><span class="c1"># arm64: the -arm64 tag, matching the plugin you installed.</span>
-<a id="__codelineno-15-10" name="__codelineno-15-10" href="#__codelineno-15-10"></a><span class="w">    </span><span class="nt">driver</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">ghcr.io/claymore666/docker-net-dhcp:v1.9.0</span>
+<a id="__codelineno-15-10" name="__codelineno-15-10" href="#__codelineno-15-10"></a><span class="w">    </span><span class="nt">driver</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">ghcr.io/claymore666/docker-net-dhcp:v2.0.0</span>
 <a id="__codelineno-15-11" name="__codelineno-15-11" href="#__codelineno-15-11"></a><span class="w">    </span><span class="nt">driver_opts</span><span class="p">:</span>
 <a id="__codelineno-15-12" name="__codelineno-15-12" href="#__codelineno-15-12"></a><span class="w">      </span><span class="nt">bridge</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">my-bridge</span>
 <a id="__codelineno-15-13" name="__codelineno-15-13" href="#__codelineno-15-13"></a><span class="w">      </span><span class="nt">ipv6</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;true&#39;</span>
@@ -1369,11 +1419,12 @@ on <code>compose down</code>):</p>
 </code></pre></div>
 <p>Notes:</p>
 <ul>
-<li>The container takes a little longer than usual to start — a DHCP lease
-  is obtained before it is created.</li>
-<li>A persistent DHCP client renews the lease (and updates the container's
-  default gateway) for the life of the endpoint. <strong>It runs separately
-  from the container.</strong></li>
+<li>The container takes a little longer than usual to start, because a
+  DHCP lease is obtained before it is created.</li>
+<li>The plugin renews the lease, and updates the container's default
+  gateway when the offered gateway changes, for the life of the
+  endpoint. The renewal runs inside the plugin process and never inside
+  the container.</li>
 <li>Use <code>--mac-address</code> / <code>mac_address</code> for MAC-keyed reservations or to
   reuse an old lease; <code>--hostname</code> / <code>hostname</code> is sent as DHCP option 12
   for DHCP-DNS integration. Per-endpoint and per-container knobs are
@@ -1381,9 +1432,12 @@ on <code>compose down</code>):</p>
 </ul>
 <h2 id="see-also">See also<a class="headerlink" href="#see-also" title="Permanent link">&para;</a></h2>
 <ul>
-<li><a href="../reference/">Driver reference</a> — all options, observability, troubleshooting</li>
-<li><a href="../parent-attached-modes/">macvlan / ipvlan modes</a> — attach to a host NIC, no bridge</li>
-<li><a href="../internals/">How it works</a> — the veth + DHCP-client mechanism</li>
+<li><a href="../reference/">Driver reference</a> lists every option, the observability
+  surface and the troubleshooting steps.</li>
+<li><a href="../parent-attached-modes/">macvlan / ipvlan modes</a> attach a container
+  to a host NIC without a bridge.</li>
+<li><a href="../internals/">How it works</a> describes the veth pair and the DHCP
+  client behind both.</li>
 </ul>
 
 
