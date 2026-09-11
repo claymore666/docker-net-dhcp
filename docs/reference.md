@@ -352,9 +352,14 @@ docker plugin rm ghcr.io/claymore666/docker-net-dhcp:vX.Y.Z
 
 All modes share two invariants:
 
-- `--ipam-driver null` is **required**. The LAN's DHCP server is the
-  source of address truth; Docker's own IPAM would allocate from a
-  subnet of its choosing and collide with the LAN.
+- **Docker's own IPAM is never the allocator.** The LAN's DHCP server is
+  the source of address truth, and Docker's default IPAM would allocate
+  from a subnet of its choosing and collide with the LAN. There are two
+  supported ways to say so: `--ipam-driver null`, which is what every
+  example below uses and what 1.x and 2.0 shipped, and
+  `--ipam-driver <this plugin>` (v2.1.0+, #110), which puts the leased
+  address in Docker's own address management. See
+  [Address allocation](#address-allocation).
 - One DHCP-served network per container is the supported shape.
 
 ### bridge (default)
@@ -398,6 +403,57 @@ docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.0.0 \
 Mode-specific constraints (MAC behaviour, parent-NIC rules, kernel
 limitations) are catalogued in
 [`parent-attached-modes.md`](parent-attached-modes.md#constraints).
+
+### Address allocation
+
+Every example above passes `--ipam-driver null`. Since v2.1.0 the plugin
+also serves an IPAM driver of its own (#110), and the line names the
+plugin twice:
+
+```bash
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.1.0 \
+    --ipam-driver ghcr.io/claymore666/docker-net-dhcp:v2.1.0 \
+    -o mode=macvlan -o parent=eth0 \
+    lan-dhcp
+```
+
+Nothing else changes. Compose still says `networks: [lan-dhcp]`, and a
+Compose-managed network writes `ipam: driver: <plugin>` where it wrote
+`driver: null`.
+
+**What the two shapes differ in.** In both, the address comes from the
+LAN's DHCP server and `docker inspect` reports it. `--ipam-driver null`
+tells Docker to allocate nothing, so the daemon has no pool for the
+network: `docker run --ip`, `docker network connect --ip` and Compose's
+`ipv4_address` are all refused before the plugin sees them, and
+`docker network inspect` shows an empty IPAM block. With this plugin as
+the IPAM driver the address is Docker's to hand out, so all three work,
+and the IPAM block shows the subnet and the addresses in use.
+
+**`--subnet` is optional and changes two things.** Without it the driver
+answers the pool `0.0.0.0/0`, which is what `docker network inspect`
+then shows. With it, `--ip` becomes legal, and the driver refuses any
+lease from outside it: a DHCP server handing out an address outside the
+subnet you typed would put a container in Docker's own records outside
+its network's pool, and `docker run` fails instead.
+
+**`--ipam-opt parent=<nic>` or `--ipam-opt bridge=<name>`** is needed
+only for a **second** network in this shape with the same subnet on a
+different parent. Two such networks otherwise derive the same pool
+identity, and the second `docker network create` is refused, naming this
+option. One network needs neither key.
+
+**Not in v2.1.0.** `ipvlan` networks cannot use this plugin as their
+IPAM driver: Docker generates a MAC per endpoint for an IPAM driver that
+asks for one, and ipvlan children share the parent's MAC and refuse a
+supplied one. The network create is refused, and `--ipam-driver null` is
+unchanged and supported for ipvlan (#949). IPv6 pools are refused for
+the same reason of scope, with the message naming v2.2.0; `-o ipv6=true`
+keeps working in both shapes.
+
+**A network's IPAM driver is fixed when it is created.** Upgrading the
+plugin never moves an existing `--ipam-driver null` network into the new
+shape, and switching shapes is a `docker network rm` and a create.
 
 ---
 
@@ -585,6 +641,14 @@ For IPv6 use `--ip6` / `Interface.AddressIPv6`. There is no `ip6`
 driver-opt. It became a real request in v1.2.0: the address is sent as
 the IA_NA preferred address, the v6 counterpart of `--ip`.
 
+On a network created with **this plugin as its IPAM driver** (#110),
+`docker run --ip`, `docker network connect --ip` and Compose's
+`ipv4_address` work as they do on any other Docker network, provided the
+network was created with `--subnet`. Without a subnet the daemon refuses
+`--ip` there too, and the `ip` driver option above is the way to ask.
+The request is still the server's to honour or ignore, exactly as
+described above; what changes is that Docker knows about it.
+
 ### Restart stability (MAC and IP)
 
 Across `docker restart`, the plugin keeps the container's **MAC** stable
@@ -621,6 +685,20 @@ everything).
   plugin writes no tombstone for `ipvlan` at all, for the same reason.
   See [DHCP identity](#dhcp-identity) for what `ipvlan` uses instead and
   why it does not survive a restart (#219).
+
+In **IPAM mode** (#110) the address is Docker's published value rather
+than something only the plugin knows, so its stability is stated
+separately and it is weaker. A container restarted on its own keeps its
+address when no other container on that network was stopped or removed
+in the previous minute; when several restart together (`docker compose
+restart`, a daemon restart without `live-restore`) the DHCP server
+decides, and addresses can change. The reason is that Docker's address
+request carries no hostname and no endpoint id, so with two candidates
+on one network there is nothing to match a request back to a previous
+lease on. Pin with `--ip` (which needs `--subnet`) or `--mac-address`,
+or use `--ipam-driver null`, which keeps addresses by hostname. Every
+such re-bind is logged and counted as `ipam_rebind_ambiguous`, so the
+case is visible in [`/Plugin.Health`](#pluginhealth).
 
 Two things it deliberately does not do. Concurrent restarts of several
 containers on one network inside the 60-second window fall back to fresh

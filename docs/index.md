@@ -95,10 +95,23 @@ docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.0.0 \
 docker run --rm -ti --network lan-dhcp alpine ip address show
 ```
 
-`--ipam-driver null` is **mandatory**: it stops Docker handing out
-addresses that would collide with the real LAN. On arm64 the `-arm64`
-tag goes in this line too, because a network records the tagged reference
-as its driver. Add `-o ipv6=true` for a DHCPv6 lease beside the v4 one.
+`--ipam-driver null` stops Docker handing out addresses that would
+collide with the real LAN. From v2.1.0 there is a second supported
+shape: name the plugin again in place of `null` and the leased address
+goes into Docker's own address management, which makes `--ip` and
+Compose's `ipv4_address` work.
+
+```bash
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.0.0 \
+  --ipam-driver ghcr.io/claymore666/docker-net-dhcp:v2.0.0 \
+  -o mode=macvlan -o parent=eth0 lan-dhcp
+```
+
+One of the two is required. On arm64 the `-arm64` tag goes in these
+lines too, because a network records the tagged reference as its driver.
+Add `-o ipv6=true` for a DHCPv6 lease beside the v4 one. The two shapes
+are set out in
+[the driver reference](reference.md#address-allocation).
 
 After that, plain Compose. No static addresses, no sidecar, nothing per
 container:

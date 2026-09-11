@@ -71,8 +71,15 @@ restarted container takes. The rest are test and CI defects:
 sibling [#672].
 
 **[v2.1.0](https://github.com/claymore666/docker-net-dhcp/milestone/30)**
-is addressing Docker can see. [#110] bundles a DHCP IPAM driver, so
-`--ipam-driver null` stops being the only supported shape.
+puts the leased address into Docker's own address management. [#110]
+bundles a DHCP IPAM driver, so `--ipam-driver null` stops being the only
+supported shape: naming the plugin in its place makes `docker run --ip`,
+`docker network connect --ip` and Compose's `ipv4_address` legal, fills
+the IPAM block `docker network inspect` prints, and drops `null` from
+the create line. `docker inspect` already reports the leased address in
+either shape. `ipvlan` keeps `--ipam-driver null` for now; [#949] tracks
+the rest. [#218], the deterministic MAC, is on the milestone and blocked
+upstream (below).
 
 **[v2.2.0](https://github.com/claymore666/docker-net-dhcp/milestone/29)**
 is full IPv6. [#818] and [#808] acquire an address by SLAAC, [#821] takes
@@ -256,6 +263,7 @@ project does, that review is where it gets corrected. It does not wait
 for the next time someone asks.
 
 [#110]: https://github.com/claymore666/docker-net-dhcp/issues/110
+[#949]: https://github.com/claymore666/docker-net-dhcp/issues/949
 [#214]: https://github.com/claymore666/docker-net-dhcp/issues/214
 [#672]: https://github.com/claymore666/docker-net-dhcp/issues/672
 [#800]: https://github.com/claymore666/docker-net-dhcp/issues/800
