@@ -1116,9 +1116,8 @@ type Plugin struct {
 	// of PoolIDs RequestPool has answered and CreateNetwork has not yet
 	// bound; ipamIndex maps a bound PoolID to its network and is rebuilt
 	// from the state directory at start-up; ipamReserves is the
-	// in-flight and unclaimed reservations, which is what makes a
-	// re-sent RequestAddress join an exchange rather than start a second
-	// one.
+	// in-flight and unclaimed reservations, which is what holds one
+	// hardware address to one DHCP exchange.
 	ipamPools    *issuedPools
 	ipamIndex    *ipamIndex
 	ipamReserves *ipamReserves
@@ -1164,15 +1163,21 @@ type Plugin struct {
 	// --mac-address or by using --ipam-driver null.
 	ipamRebindAmbiguous stampedCounter
 
-	// ipamReserveJoined counts address requests that found an exchange
-	// already running for the same endpoint and waited for it.
+	// ipamReserveDuplicateMAC counts address requests refused because
+	// this network was already leasing an address for that hardware
+	// address.
 	//
-	// Not healthy-affecting: joining is the mechanism working, and the
-	// alternative is two DHCP exchanges and two server leases for one
-	// container.
+	// Not healthy-affecting for the host, and every move is one container
+	// that did not start. Its producer is two ENDPOINTS carrying one MAC:
+	// libnetwork generates a unique MAC per endpoint and copies an
+	// operator-set one through unchanged (moby 28.5.2,
+	// libnetwork/network.go:1222 and :1240), so `docker run
+	// --mac-address X` twice on one network, or a compose file pinning
+	// one MAC on two services, lands both requests on one key. The
+	// remedy is the operator's: give each container its own MAC, or
+	// leave it unset.
 	//
-	// It moves when two RequestAddress calls for the same pool and the
-	// same MAC are in flight at once. It is NOT moved by the daemon's
+	// It is NOT moved by the daemon's
 	// re-send after a plugin-call timeout, which is what an earlier
 	// version of this comment said: moby encodes the call into a
 	// bytes.Buffer and hands the SAME reader to every attempt
@@ -1182,7 +1187,7 @@ type Plugin struct {
 	// failure-1: "IpamDriver.RequestAddress: failed to parse request
 	// body: EOF", and this counter did not move. Raising --timeout is
 	// therefore not the remedy for a rise here.
-	ipamReserveJoined stampedCounter
+	ipamReserveDuplicateMAC stampedCounter
 
 	// ipamReleaseUnknown counts addresses libnetwork released that no
 	// lease record of ours holds. Informational: a release for an

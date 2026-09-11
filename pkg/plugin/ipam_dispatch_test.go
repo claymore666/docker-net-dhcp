@@ -423,16 +423,16 @@ func TestRebuildIPAMIndex_FoldsTheStateDirectory(t *testing.T) {
 // a prefix match would hand the second network's requests to the first.
 func TestIpamIndex_MatchesThePoolIDExactly(t *testing.T) {
 	x := newIPAMIndex()
-	x.bind("dhcp/dhcp-local/192.168.0.0/24", "net-a")
-	if got, ok := x.network("dhcp/dhcp-local/192.168.0.0/24/parent=eth1"); ok {
+	x.bind("dhcp/dhcp-local/192.168.100.0/24", "net-a")
+	if got, ok := x.network("dhcp/dhcp-local/192.168.100.0/24/parent=eth1"); ok {
 		t.Errorf("the suffixed PoolID resolved to %q; the second network would take the "+
 			"first one's binding", got)
 	}
-	if _, taken := x.boundTo("dhcp/dhcp-local/192.168.0.0/24", "net-b"); !taken {
+	if _, taken := x.boundTo("dhcp/dhcp-local/192.168.100.0/24", "net-b"); !taken {
 		t.Error("a PoolID another network holds was not reported as taken, so two networks " +
 			"would bind one pool")
 	}
-	if _, taken := x.boundTo("dhcp/dhcp-local/192.168.0.0/24", "net-a"); taken {
+	if _, taken := x.boundTo("dhcp/dhcp-local/192.168.100.0/24", "net-a"); taken {
 		t.Error("a network's own binding was reported as taken by someone else")
 	}
 }
@@ -549,13 +549,12 @@ func TestIpamMode_DeleteEndpointWritesNoJSONTombstone(t *testing.T) {
 
 // TestIpamReplay_AnAddressHeldByAnotherEndpointIsNotAReplay.
 //
-// The replay branch matches a record by ADDRESS, and three different
+// The replay branch matches a record by ADDRESS, and two different
 // calls arrive carrying one: the daemon's replay of a stored endpoint,
-// a re-sent request body looking for the reservation its first copy
-// made, and `docker run --ip X` for an address someone else already
-// holds. libnetwork injects the endpoint's MAC only in the third, so
-// the MAC is what separates "this endpoint's own address" from "an
-// address that is taken" — and answering the third would hand one
+// which carries no MAC, and `docker run --ip X` for an address someone
+// else already holds, which carries the new endpoint's own. So the MAC
+// is what separates "this endpoint's own address" from "an address that
+// is taken" — and answering the second would hand one
 // address to two endpoints, move ipam_replay_hits for something that is
 // not a replay, and surface the contradiction later at CreateEndpoint
 // wearing a message about a plugin restart that never happened.
@@ -595,7 +594,7 @@ func TestIpamReplay_AnAddressHeldByAnotherEndpointIsNotAReplay(t *testing.T) {
 		}
 	})
 
-	t.Run("the same endpoint's re-sent request still finds its reservation", func(t *testing.T) {
+	t.Run("an endpoint asking again under its own MAC is still a replay", func(t *testing.T) {
 		p, b := seed(t)
 		res, err := p.RequestAddress(context.Background(), RequestAddressRequest{
 			PoolID:  b.PoolID,
@@ -827,4 +826,164 @@ func TestIpamFallback_ARemoteIPAMDriverRefusesUnderAnyName(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestRequestAddress_TwoEndpointsCannotShareOneHardwareAddress.
+//
+// The engine honours an operator-set endpoint MAC and copies it into the
+// IPAM options for a RequiresMACAddress driver (MEASURED against moby
+// 28.5.2, libnetwork/network.go:1222 and :1240; only a nil MAC is
+// generated), so `docker run --mac-address X` twice on one network, or a
+// compose file pinning one MAC on two services, reaches this plugin as
+// two address requests carrying one hardware address on one pool.
+//
+// Answering the second out of the first's reservation hands two
+// endpoints one address. libnetwork publishes both, one container
+// starts, and the other is refused at CreateEndpoint by a message about
+// a plugin restart that did not happen. The DHCP server files its lease
+// per hardware address and would hand them the same one in any case, so
+// the second request is refused here, where the plugin still knows why.
+//
+// Refusing at RequestAddress also closes the rollback: libnetwork
+// registers its release-on-failure defer only AFTER assignAddress
+// returns (MEASURED, network.go:1245-1252), so a refused request
+// produces no ReleaseAddress and cannot reach the winner's reservation,
+// which is still RESERVED until its own CreateEndpoint folds CREATE
+// onto it.
+//
+// Driven through the real entry point with the reservation seeded by
+// hand: the netlink and DHCP half needs a parent NIC and a server, and
+// the collision is decided before either is touched.
+func TestRequestAddress_TwoEndpointsCannotShareOneHardwareAddress(t *testing.T) {
+	mac, _ := net.ParseMAC(ipamTestMAC)
+
+	for _, c := range []struct {
+		name string
+		// finished says whether the first reservation already holds an
+		// answer. Both states are one collision: in flight is two
+		// creates racing, finished is one create that has not reached
+		// CreateEndpoint yet.
+		finished bool
+	}{
+		{"while the first exchange is still running", false},
+		{"after the first exchange answered", true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			p, b := ipamFixture(t)
+			recordID := p.recordReserved(ipamTestNetwork, mac, dhcp.ClientIdentity([]byte{7}))
+			key := ipamReserveKey(b.PoolID, mac)
+			first, mine := p.ipamReserves.begin(key, time.Now())
+			if !mine {
+				t.Fatal("the seeded reservation was not owned; the fixture is not empty")
+			}
+			if c.finished {
+				if err := p.records.Observed(recordID, acquired("192.168.99.10/24", time.Hour), nil); err != nil {
+					t.Fatalf("Observed: %v", err)
+				}
+				p.ipamReserves.finish(key, first, ipamReservation{
+					addr:   netip.MustParsePrefix("192.168.99.10/24"),
+					info:   dhcp.Info{IP: "192.168.99.10/24"},
+					record: recordID,
+				}, nil)
+			}
+
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			res, err := p.RequestAddress(ctx, RequestAddressRequest{
+				PoolID:  b.PoolID,
+				Options: map[string]string{ipamOptMacAddress: mac.String()},
+			})
+			if err == nil {
+				t.Fatalf("a second endpoint carrying %v was answered %q, the address the "+
+					"first endpoint is holding. Docker publishes both and the loser is "+
+					"refused at CreateEndpoint wearing a plugin-restart message.",
+					mac, res.Address)
+			}
+			if errors.Is(err, context.DeadlineExceeded) {
+				t.Fatal("the second request waited on the first instead of being refused; " +
+					"a create that blocks for the whole call budget gives the operator the " +
+					"daemon's timeout, not an answer")
+			}
+			if !errors.Is(err, util.ErrIPAM) {
+				t.Errorf("error %v does not wrap util.ErrIPAM", err)
+			}
+			for _, want := range []string{mac.String(), "--mac-address"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("the refusal is %q; it does not contain %q, which is what "+
+						"tells the operator which container to change", err, want)
+				}
+			}
+			if n := p.ipamReserveDuplicateMAC.Load(); n != 1 {
+				t.Errorf("ipam_reserve_duplicate_mac = %d, want 1", n)
+			}
+
+			// What the winner still has. Its reservation is the one this
+			// process seeded, not a replacement, and its record is still
+			// RESERVED and waiting for CreateEndpoint.
+			got, ok := p.ipamReserves.take(key)
+			if c.finished && (!ok || got != first) {
+				t.Error("the refused request consumed or replaced the first endpoint's " +
+					"reservation; the container that won the race would be refused too")
+			}
+			if !c.finished && ok {
+				t.Error("an unfinished reservation was consumable; CreateEndpoint would " +
+					"bind a link to an exchange that has not answered")
+			}
+			rb, err := p.records.Rebuilt()
+			if err != nil {
+				t.Fatalf("Rebuilt: %v", err)
+			}
+			if rec, live := rb.ByID(recordID); !live || rec.Phase != lease.PhaseReserved {
+				t.Errorf("the first endpoint's record is %v, want %v: the refused request "+
+					"retired the record the winner is still being created against",
+					rec.Phase, lease.PhaseReserved)
+			}
+
+			// The POOL half of the key, which is the reason the key is a
+			// pair: two networks on one host can be handed one generated
+			// MAC by two daemons' bad luck, and a second network's
+			// request under that MAC is a different endpoint on a
+			// different segment. It must reach its own exchange. What it
+			// reaches here is netlink, which this fixture has no parent
+			// NIC for, so the assertion is on the refusal it did NOT
+			// get and on the counter that did not move.
+			second := ipamSecondNetwork(t, p)
+			_, err = p.RequestAddress(ctx, RequestAddressRequest{
+				PoolID:  second,
+				Options: map[string]string{ipamOptMacAddress: mac.String()},
+			})
+			if err != nil && strings.Contains(err.Error(), "already leasing an address") {
+				t.Errorf("a request on a second network carrying the same MAC was refused as "+
+					"a duplicate: %v. The reservation key is the (pool, MAC) pair precisely "+
+					"so that one MAC on two networks is two endpoints, not one.", err)
+			}
+			if n := p.ipamReserveDuplicateMAC.Load(); n != 1 {
+				t.Errorf("ipam_reserve_duplicate_mac = %d after a second network's request, "+
+					"want 1: the pool is not part of the reservation key", n)
+			}
+		})
+	}
+}
+
+// ipamSecondNetwork adds a second IPAM-mode network, on its own subnet
+// and its own pool, and returns its PoolID.
+func ipamSecondNetwork(t *testing.T, p *Plugin) string {
+	t.Helper()
+	const id = "net-ipam-2"
+	const pool = "192.168.100.0/24"
+	poolID, err := ipamPoolID(ipamLocalAddressSpace, pool, nil)
+	if err != nil {
+		t.Fatalf("ipamPoolID: %v", err)
+	}
+	opts := DHCPNetworkOptions{Mode: ModeBridge, Bridge: "br-test-2"}
+	if err := saveNetwork(id, opts, &ipamBinding{
+		PoolID:  poolID,
+		Space:   ipamLocalAddressSpace,
+		Pool:    pool,
+		Gateway: "192.168.100.1",
+	}); err != nil {
+		t.Fatalf("saveNetwork: %v", err)
+	}
+	p.ipamIndex.bind(poolID, id)
+	return poolID
 }

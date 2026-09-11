@@ -1100,3 +1100,78 @@ func TestIPAM_ReplayAfterDaemonRestart(t *testing.T) {
 	newAddr, _ := ipamNetworkAddress(t, ctx, cli2, afterName, netName)
 	t.Logf("a container created after the restart came up at %s", newAddr)
 }
+
+// TestIPAM_TwoEndpointsCannotShareOneHardwareAddress.
+//
+// The engine honours an operator-set endpoint MAC and copies it into the
+// IPAM options for a RequiresMACAddress driver (moby 28.5.2,
+// libnetwork/network.go:1222 and :1240; only a nil MAC is generated), so
+// `docker run --mac-address X` twice on one network arrives at this
+// plugin as two address requests carrying one hardware address on one
+// pool. A DHCP server files its lease per hardware address and would
+// hand both the same address.
+//
+// The outside evidence is Docker's own: the second `docker run` fails,
+// its message names the hardware address, and the FIRST container keeps
+// the address it was given. The failure this is written against is the
+// quiet one -- both endpoints published on one address and the loser
+// refused later with a message about a plugin restart that did not
+// happen -- so "the second container did not start" is not enough on its
+// own, and the first container's address is read again afterwards.
+func TestIPAM_TwoEndpointsCannotShareOneHardwareAddress(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	ipamDumpOnFailure(t)
+
+	const netName = "dh-itest-ipam-dupmac"
+	const firstName = "dh-itest-ipam-dupmac-first"
+	const secondName = "dh-itest-ipam-dupmac-second"
+	// Locally administered and unicast, and deliberately NOT the
+	// fixture's --dhcp-host reservation: this pair must take dynamic
+	// leases, so that what refuses the second is the collision and not a
+	// static reservation the server would decline to hand out twice.
+	const sharedMAC = "02:00:00:00:99:70"
+
+	cli := ipamDockerClient(t)
+	harness.CreateNetworkIPAM(t, ctx, netName, "macvlan", harness.SubnetCIDR, nil, nil)
+
+	if err := ipamRunContainerErr(t, ctx, cli, netName, firstName,
+		&network.EndpointSettings{MacAddress: sharedMAC}); err != nil {
+		t.Fatalf("the first container pinned to %s did not start: %v", sharedMAC, err)
+	}
+	firstAddr, firstMAC := ipamNetworkAddress(t, ctx, cli, firstName, netName)
+	if firstMAC != sharedMAC {
+		t.Fatalf("the first container carries %s, not the pinned %s; the engine did not "+
+			"honour --mac-address and this test drives nothing", firstMAC, sharedMAC)
+	}
+	t.Logf("first container: %s on %s", firstAddr, firstMAC)
+
+	err := ipamRunContainerErr(t, ctx, cli, netName, secondName,
+		&network.EndpointSettings{MacAddress: sharedMAC})
+	if err == nil {
+		second, _ := ipamNetworkAddress(t, ctx, cli, secondName, netName)
+		t.Fatalf("a second container pinned to %s started on %s while the first holds %s. "+
+			"Two endpoints on one hardware address cannot both hold a DHCP lease, and "+
+			"whichever address Docker published for the second is one nothing granted it.",
+			sharedMAC, second, firstAddr)
+	}
+	t.Logf("refused: %v", err)
+	for _, want := range []string{sharedMAC, "--mac-address"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal is %q; it does not contain %q, which is what tells the "+
+				"operator which container to change", err, want)
+		}
+	}
+	if strings.Contains(err.Error(), "restarted") {
+		t.Errorf("the refusal is %q. It blames a plugin restart, which did not happen; "+
+			"the cause is two endpoints on one hardware address", err)
+	}
+
+	// The winner is untouched by the loser's arrival and rollback.
+	againAddr, againMAC := ipamNetworkAddress(t, ctx, cli, firstName, netName)
+	if againAddr != firstAddr || againMAC != firstMAC {
+		t.Errorf("the first container was on %s/%s before the refused second start and is "+
+			"on %s/%s after it; the refusal took the running container's address with it",
+			firstAddr, firstMAC, againAddr, againMAC)
+	}
+}

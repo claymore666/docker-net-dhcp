@@ -262,9 +262,9 @@ net_dhcp_ipam_replay_miss_total 7208309
 # TYPE net_dhcp_ipam_rebind_ambiguous_total counter
 net_dhcp_ipam_rebind_ambiguous_total 6172564
 
-# HELP net_dhcp_ipam_reserve_joined_total Address requests that joined an exchange already running for the same endpoint instead of starting a second one.
-# TYPE net_dhcp_ipam_reserve_joined_total counter
-net_dhcp_ipam_reserve_joined_total 3419087
+# HELP net_dhcp_ipam_reserve_duplicate_mac_total Address requests refused because the network was already leasing an address for that hardware address.
+# TYPE net_dhcp_ipam_reserve_duplicate_mac_total counter
+net_dhcp_ipam_reserve_duplicate_mac_total 1804998
 
 # HELP net_dhcp_ipam_release_unknown_total Addresses libnetwork released that no lease record of ours holds. Not a fault: a release for an address whose record is already retained or closed is the normal ordering.
 # TYPE net_dhcp_ipam_release_unknown_total counter

@@ -26,9 +26,12 @@ import (
 // IT IS THE DAEMON'S BUDGET AND NOT THE NETWORK'S lease_timeout. The
 // IPAM client the daemon builds carries `docker plugin enable --timeout`
 // (default 30s, moby plugin/manager_linux.go SetTimeout); when it
-// expires the daemon has already stopped listening and RE-SENDS the same
-// body after a backoff, so a reserve that overruns produces a second
-// DHCP exchange for one endpoint rather than a late answer. Same
+// expires the daemon has already stopped listening and re-sends the
+// call after a backoff. The re-send carries NO BODY -- moby hands the
+// same, already-drained reader to every attempt (pkg/plugins/client.go,
+// callWithRetry) -- so a reserve that overruns does not produce a late
+// answer: it produces a refusal the operator reads as a parse error,
+// and the container start fails. Same
 // arithmetic and the same two constants as the DHCPv6 half of
 // CreateEndpoint, which is the other call that shares a deadline with a
 // caller it cannot see.
@@ -40,8 +43,8 @@ func ipamReserveBudget() time.Duration { return pluginCallBudget - pluginCallMar
 // the cap is announced. Left uncapped, the default 34s -- which is the
 // conflict-recovery window, a DECLINE plus a second full exchange --
 // runs past the moment the daemon stopped listening, so the operator
-// sees a timeout from Docker while the plugin is still working and the
-// same request arrives again underneath it.
+// sees a timeout from Docker while the plugin is still working, and the
+// daemon's bodiless re-send arrives underneath it and is refused.
 //
 // The cap may not cross the floor CheckLeaseTimeout enforces, because
 // two guards that disagree about one number leave the tighter one
@@ -114,14 +117,22 @@ func ipamReserveKey(poolID string, mac net.HardwareAddr) string {
 // ipamReserves holds every reservation this process has answered and not
 // yet seen a CreateEndpoint for.
 //
-// IT IS WHAT MAKES THE RESERVE IDEMPOTENT, and idempotence is not a
-// nicety here. A plugin enabled with a `--timeout` below the reserve's
-// budget has its RequestAddress re-sent with the SAME body while the
-// first exchange is still running (moby pkg/plugins/client.go's retry
-// loop). Two exchanges for one endpoint means two DISCOVERs, two leases
-// on the server and one container, and the second lease is never
-// released. A second call for a key already in flight waits on the first
-// instead.
+// IT IS WHAT KEEPS ONE HARDWARE ADDRESS TO ONE EXCHANGE, and that is not
+// a nicety here. A DHCP server files its lease per hardware address, so
+// two exchanges under one MAC means two DISCOVERs and two leases at the
+// server for what the host believes is one endpoint, and the second is
+// never released: nothing holds it and no DHCPRELEASE goes on the wire
+// (D-7).
+//
+// The producer of a second call for one key is not the daemon re-sending
+// a RequestAddress, which an earlier version of this comment claimed:
+// that re-send carries no body and is refused before any handler runs
+// (pkg/util's explainRequestBody carries the measurement). It is two
+// ENDPOINTS. libnetwork generates a unique MAC per endpoint and copies
+// an operator-set one through unchanged, so `docker run --mac-address X`
+// twice on one network arrives here as one key. The second call is
+// refused: parking it on the first one's result would give two endpoints
+// one address.
 type ipamReserves struct {
 	mu sync.Mutex
 	m  map[string]*ipamReservation
@@ -237,17 +248,13 @@ func (p *Plugin) ipamReserveAddress(ctx context.Context, networkID string, sn st
 	key := ipamReserveKey(sn.Binding.PoolID, mac)
 	res, mine := p.ipamReserves.begin(key, time.Now())
 	if !mine {
-		p.ipamReserveJoined.Add(1)
+		p.ipamReserveDuplicateMAC.Add(1)
 		log.WithFields(log.Fields{
 			"network": shortID(networkID),
 			"mac":     mac.String(),
-		}).Info("A second address request for this endpoint joined the exchange already running for it")
-		select {
-		case <-res.done:
-			return res, res.err
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		}
+		}).Warn("A second address request arrived for a hardware address this network is already leasing for; refusing it, because answering it would give two endpoints one address")
+		return nil, fmt.Errorf("%w: this network is already leasing an address for the hardware address %v, so a second endpoint cannot be given one. A DHCP server files its lease per hardware address, and both endpoints would end up holding the same address. Give each container its own --mac-address, or leave it unset and Docker generates one per endpoint. If this is one container being started again after a create that never finished, its reservation is retained within %v and the next start claims the same address back",
+			util.ErrIPAM, mac, tombstoneTTL+ipamSweepInterval)
 	}
 
 	out, err := p.runIPAMReserve(ctx, networkID, sn, mac, requestedIP)

@@ -562,12 +562,14 @@ type HealthResponse struct {
 	// it: it is the one signal that addresses moved for a reason the
 	// operator can act on.
 	IPAMRebindAmbiguous int32 `json:"ipam_rebind_ambiguous"`
-	// IPAMReserveJoined counts address requests that found an exchange
-	// already running for the same endpoint and waited for it instead of
-	// starting a second one. NOT healthy-affecting: joining is the
-	// mechanism working. Worth investigating: the daemon re-sends a
-	// request body only when its own call timed out.
-	IPAMReserveJoined int32 `json:"ipam_reserve_joined"`
+	// IPAMReserveDuplicateMAC counts address requests refused because the
+	// network was already leasing an address for that hardware address.
+	// NOT healthy-affecting for the host: refusing is the safe outcome,
+	// and the alternative is two endpoints holding one address. Worth
+	// investigating, because every move is a container that did not
+	// start: two endpoints on one network were pinned to one
+	// --mac-address.
+	IPAMReserveDuplicateMAC int32 `json:"ipam_reserve_duplicate_mac"`
 	// IPAMReleaseUnknown counts addresses libnetwork released that no
 	// lease record of ours holds. NOT healthy-affecting and not a
 	// fault: a release for an address whose record is already retained
@@ -1061,22 +1063,22 @@ func (p *Plugin) apiHealth(w http.ResponseWriter, r *http.Request) {
 // place either is observable at all.
 func (p *Plugin) checkStamps() map[string]time.Time {
 	return map[string]time.Time{
-		"recovery_failed":           p.recoveryFailed.LastMoved(),
-		"join_start_failures":       p.joinStartFailures.LastMoved(),
-		"tombstone_write_failures":  p.tombstoneWriteFailures.LastMoved(),
-		"tombstone_quarantines":     p.tombstones.quarantines.LastMoved(),
-		"address_conflicts":         laterOf(p.addressConflictsV4.LastMoved(), p.addressConflictsV6.LastMoved()),
-		"lease_changed":             laterOf(p.leaseChangedV4.LastMoved(), p.leaseChangedV6.LastMoved()),
-		"acd_arp_send_failures":     p.acdARPSendFailures.LastMoved(),
-		"acd_resumed_unchecked":     p.acdResumedUnchecked.LastMoved(),
-		"restart_link_up_timeouts":  p.restartLinkUpTimeouts.LastMoved(),
-		"parent_link_wait_timeouts": p.parentLinkWaitTimeouts.LastMoved(),
-		"ledger_write_failures":     p.ledgerWriteFailures.LastMoved(),
-		"state_file_chmod_failures": p.stateFileChmodFailures.LastMoved(),
-		"ifname_unsupported":        p.ifnameUnsupported.LastMoved(),
-		"ipam_replay_miss":          p.ipamReplayMiss.LastMoved(),
-		"ipam_rebind_ambiguous":     p.ipamRebindAmbiguous.LastMoved(),
-		"ipam_reserve_joined":       p.ipamReserveJoined.LastMoved(),
+		"recovery_failed":            p.recoveryFailed.LastMoved(),
+		"join_start_failures":        p.joinStartFailures.LastMoved(),
+		"tombstone_write_failures":   p.tombstoneWriteFailures.LastMoved(),
+		"tombstone_quarantines":      p.tombstones.quarantines.LastMoved(),
+		"address_conflicts":          laterOf(p.addressConflictsV4.LastMoved(), p.addressConflictsV6.LastMoved()),
+		"lease_changed":              laterOf(p.leaseChangedV4.LastMoved(), p.leaseChangedV6.LastMoved()),
+		"acd_arp_send_failures":      p.acdARPSendFailures.LastMoved(),
+		"acd_resumed_unchecked":      p.acdResumedUnchecked.LastMoved(),
+		"restart_link_up_timeouts":   p.restartLinkUpTimeouts.LastMoved(),
+		"parent_link_wait_timeouts":  p.parentLinkWaitTimeouts.LastMoved(),
+		"ledger_write_failures":      p.ledgerWriteFailures.LastMoved(),
+		"state_file_chmod_failures":  p.stateFileChmodFailures.LastMoved(),
+		"ifname_unsupported":         p.ifnameUnsupported.LastMoved(),
+		"ipam_replay_miss":           p.ipamReplayMiss.LastMoved(),
+		"ipam_rebind_ambiguous":      p.ipamRebindAmbiguous.LastMoved(),
+		"ipam_reserve_duplicate_mac": p.ipamReserveDuplicateMAC.LastMoved(),
 	}
 }
 
@@ -1203,7 +1205,7 @@ func (p *Plugin) healthSnapshot() HealthResponse {
 		IPAMReplayHits:               p.ipamReplayHits.Load(),
 		IPAMReplayMiss:               p.ipamReplayMiss.Load(),
 		IPAMRebindAmbiguous:          p.ipamRebindAmbiguous.Load(),
-		IPAMReserveJoined:            p.ipamReserveJoined.Load(),
+		IPAMReserveDuplicateMAC:      p.ipamReserveDuplicateMAC.Load(),
 		IPAMReleaseUnknown:           p.ipamReleaseUnknown.Load(),
 		DNSPropagationPIDMismatches:  p.dnsPropagationPIDMismatches.Load(),
 		NetnsPIDMismatches:           p.netnsPIDMismatches.Load(),

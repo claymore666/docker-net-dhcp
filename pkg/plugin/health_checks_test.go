@@ -64,7 +64,7 @@ func checkBumpers() []checkBumper {
 		{"ifname_unsupported", "", func(p *Plugin) { p.ifnameUnsupported.Add(1) }},
 		{"ipam_replay_miss", "", func(p *Plugin) { p.ipamReplayMiss.Add(1) }},
 		{"ipam_rebind_ambiguous", "", func(p *Plugin) { p.ipamRebindAmbiguous.Add(1) }},
-		{"ipam_reserve_joined", "", func(p *Plugin) { p.ipamReserveJoined.Add(1) }},
+		{"ipam_reserve_duplicate_mac", "", func(p *Plugin) { p.ipamReserveDuplicateMAC.Add(1) }},
 	}
 }
 

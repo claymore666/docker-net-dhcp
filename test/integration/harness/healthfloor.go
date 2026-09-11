@@ -397,14 +397,14 @@ type HealthResponse struct {
 	// address no record holds, which libnetwork sends legitimately
 	// after a create it rolled back. The other three are warn-level:
 	// a replay that missed leaves one endpoint to re-lease,
-	// an ambiguous re-bind is the documented N>=2 limit, and a joined
-	// reserve means the daemon re-sent a RequestAddress while the
-	// first exchange was still running.
-	IPAMReplayHits      int32 `json:"ipam_replay_hits"`
-	IPAMReplayMiss      int32 `json:"ipam_replay_miss"`
-	IPAMRebindAmbiguous int32 `json:"ipam_rebind_ambiguous"`
-	IPAMReserveJoined   int32 `json:"ipam_reserve_joined"`
-	IPAMReleaseUnknown  int32 `json:"ipam_release_unknown"`
+	// an ambiguous re-bind is the documented N>=2 limit, and a
+	// duplicate-MAC refusal is a container that did not start because
+	// two endpoints on one network were pinned to one --mac-address.
+	IPAMReplayHits          int32 `json:"ipam_replay_hits"`
+	IPAMReplayMiss          int32 `json:"ipam_replay_miss"`
+	IPAMRebindAmbiguous     int32 `json:"ipam_rebind_ambiguous"`
+	IPAMReserveDuplicateMAC int32 `json:"ipam_reserve_duplicate_mac"`
+	IPAMReleaseUnknown      int32 `json:"ipam_release_unknown"`
 
 	// published is the key set of the payload this value was decoded
 	// from. It exists because an absent JSON field decodes to zero,

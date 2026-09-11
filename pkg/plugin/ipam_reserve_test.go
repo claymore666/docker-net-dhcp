@@ -21,19 +21,25 @@ import (
 	"github.com/claymore666/docker-net-dhcp/pkg/util"
 )
 
-// TestIpamReserve_ASecondRequestJoinsTheFirst is defeat row 14 and the
+// TestIpamReserve_OneExchangePerHardwareAddress is defeat row 14 and the
 // reason ipamReserves exists at all.
 //
-// A plugin enabled with a --timeout below the reserve's budget has its
-// RequestAddress re-sent with the SAME body while the first exchange is
-// still running. Two exchanges for one endpoint means two DISCOVERs, two
-// leases on the server and one container, and the second lease is never
-// released: nothing holds it and no DHCPRELEASE goes on the wire.
+// Two DHCP exchanges under one hardware address means two DISCOVERs and
+// two leases filed against one MAC at the server, of which the second is
+// never released: nothing holds it and no DHCPRELEASE goes on the wire
+// (D-7). So a key already carrying an exchange admits no second one.
+//
+// The loser is REFUSED and not parked on the first one's result. Waiting
+// would hand two endpoints one address, and it is two endpoints that put
+// one key here: libnetwork generates a unique MAC per endpoint and only
+// ever copies an operator-set one through
+// (TestRequestAddress_TwoEndpointsCannotShareOneHardwareAddress carries
+// the measurement).
 //
 // Driven through the real entry point, with the exchange occupied by
 // hand: the netlink and DHCP half needs a parent NIC and a server, and
-// the concurrency half is what this is about.
-func TestIpamReserve_ASecondRequestJoinsTheFirst(t *testing.T) {
+// the key is what this is about.
+func TestIpamReserve_OneExchangePerHardwareAddress(t *testing.T) {
 	p, b := ipamFixture(t)
 	mac, _ := net.ParseMAC(ipamTestMAC)
 	key := ipamReserveKey(b.PoolID, mac)
@@ -48,43 +54,46 @@ func TestIpamReserve_ASecondRequestJoinsTheFirst(t *testing.T) {
 		t.Fatalf("ipamNetwork: %v", err)
 	}
 
-	joined := make(chan *ipamReservation, 1)
+	// No deadline on the context: a refusal that only arrives because the
+	// caller gave up is the failure this test is here to catch, and one
+	// with no deadline cannot be mistaken for it.
+	done := make(chan error, 1)
 	go func() {
-		res, err := p.ipamReserveAddress(context.Background(), ipamTestNetwork, sn, mac, "")
-		if err != nil {
-			joined <- nil
-			return
-		}
-		joined <- res
+		_, err := p.ipamReserveAddress(context.Background(), ipamTestNetwork, sn, mac, "")
+		done <- err
 	}()
 
-	// Let the joiner reach the wait before the result lands, so the test
-	// drives the joining path rather than the already-finished one.
-	deadline := time.Now().Add(2 * time.Second)
-	for p.ipamReserveJoined.Load() == 0 && time.Now().Before(deadline) {
-		time.Sleep(time.Millisecond)
-	}
-	if n := p.ipamReserveJoined.Load(); n != 1 {
-		t.Fatalf("ipam_reserve_joined = %d, want 1 — the second request started its own "+
-			"exchange, which is a second lease for one container", n)
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("a second exchange was started under a hardware address one is already " +
+				"running for; that is two leases at the server for one MAC, and the second " +
+				"is never released")
+		}
+		if !errors.Is(err, util.ErrIPAM) {
+			t.Errorf("error %v does not wrap util.ErrIPAM", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the second request neither ran nor was refused; it is waiting on the first, " +
+			"and the daemon's own call budget is what would end it")
 	}
 
+	if n := p.ipamReserveDuplicateMAC.Load(); n != 1 {
+		t.Errorf("ipam_reserve_duplicate_mac = %d, want 1", n)
+	}
+	if n := p.ipamReserves.len(); n != 1 {
+		t.Errorf("%d reservations held, want 1: the refused request left one behind", n)
+	}
+
+	// The exchange that owns the key still answers its own caller.
 	p.ipamReserves.finish(key, first, ipamReservation{
 		addr:   netip.MustParsePrefix("192.168.99.10/24"),
 		info:   dhcp.Info{IP: "192.168.99.10/24", Gateway: "192.168.99.1"},
 		record: "rec-1",
 	}, nil)
-
-	select {
-	case got := <-joined:
-		if got == nil {
-			t.Fatal("the joining request failed; it must receive the first one's result")
-		}
-		if got.addr.String() != "192.168.99.10/24" {
-			t.Errorf("the joiner got %v, the exchange won 192.168.99.10/24", got.addr)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("the joining request never woke; a re-sent body would hang the daemon's retry")
+	got, ok := p.ipamReserves.take(key)
+	if !ok || got.addr.String() != "192.168.99.10/24" {
+		t.Error("the refused request disturbed the exchange that owns the key")
 	}
 }
 
@@ -743,9 +752,9 @@ func TestIpamReserveBudget_IsSizedToTheDefaultCallBudget(t *testing.T) {
 	got := ipamReserveBudget()
 	if got >= pluginCallBudget {
 		t.Errorf("one reservation may spend %v of a %v call budget, leaving nothing to write "+
-			"the response in. The daemon stops listening first and re-sends a call whose body "+
-			"it has already spent, which is the failure this margin exists to avoid.",
-			got, pluginCallBudget)
+			"the response in. The daemon stops listening first, and the call it re-sends "+
+			"carries no body and is refused, which is the failure this margin exists to "+
+			"avoid.", got, pluginCallBudget)
 	}
 	if got <= 0 {
 		t.Fatalf("the reservation budget is %v, so every reserve is out of time before it "+

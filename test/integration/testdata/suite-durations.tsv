@@ -10,7 +10,7 @@
 #
 # POPULATION: TOP-LEVEL TEST FUNCTIONS, PARENTS ONLY.
 # One row per `func TestX(t *testing.T)` in test/integration/*_test.go —
-# 116 of them, the main suite's 109 and the failure suite's 7. A subtest's
+# 117 of them, the main suite's 110 and the failure suite's 7. A subtest's
 # seconds are inside its parent's figure and are NOT a row of their own.
 # That is stated because the previous edition's header did not state it
 # and the population was read back two ways: 104 rows summing 1804.88s
@@ -72,7 +72,7 @@
 #              counter wait and a log grown over a shard. The first run
 #              that executes it costs it, the way
 #              TestFailure_UnansweredRenewalsCounted was costed.
-#   fifteen    the #110 IPAM-driver rows are INFERRED, not measured: they
+#   sixteen    the #110 IPAM-driver rows are INFERRED, not measured: they
 #   rows       arrive with the feature and no corpus run could have costed
 #              them. Each is derived from the measured row of the test
 #              whose shape it copies -- a golden-path lifecycle at 11.61,
@@ -81,11 +81,17 @@
 #              adds on purpose: a second container, a deliberate outage,
 #              a refusal that waits out the 26s reservation budget. They
 #              are refreshed to the median of three runs at the next
-#              pass, like TestFailure_UnansweredRenewalsCounted was.
-#   samples    3 for every corpus row. NINETEEN rows are not corpus
+#              pass, like TestFailure_UnansweredRenewalsCounted was. The
+#              sixteenth,
+#              TestIPAM_TwoEndpointsCannotShareOneHardwareAddress, is
+#              16.00: the golden-path lifecycle at 11.61 plus a second
+#              container whose start is refused before any DHCP exchange
+#              begins, which costs a create, a failed start and a
+#              removal and no budget at all.
+#   samples    3 for every corpus row. TWENTY rows are not corpus
 #              samples: the four noted individually above -- 73.85,
-#              84.19, 0.05 and 13.00 -- and the fifteen #110 rows.
-#              Seventeen of the nineteen are INFERRED; the two that are
+#              84.19, 0.05 and 13.00 -- and the sixteen #110 rows.
+#              Eighteen of the twenty are INFERRED; the two that are
 #              measured are TestLeaseRenewIPv6_HonorsT1, from three later
 #              head runs, and TestFailure_UnansweredRenewalsCounted, from
 #              a single sample. The previous edition carried four inferred
@@ -95,7 +101,7 @@
 #   corpus     main suite    91 tests   1739.87s   mean 19.12s
 #              failure suite  4 tests    272.31s   mean 68.08s
 #              both          95 tests   2012.18s
-#              (the corpus is unchanged: those nineteen rows are not
+#              (the corpus is unchanged: those twenty rows are not
 #              samples and are not averaged into these means. These
 #              figures are a record of THAT RUN, not a count of this
 #              file: every row added since -- by this branch and by the
@@ -224,6 +230,7 @@ TestIPAM_RestartedTogetherIsTheDocumentedLimit	38.00
 TestIPAM_SingleRestartKeepsTheAddress	22.00
 TestIPAM_StaticIPIsHonouredWithASubnet	24.00
 TestIPAM_StaticIPWithoutASubnetIsStillTheAddressAsked	7.00
+TestIPAM_TwoEndpointsCannotShareOneHardwareAddress	16.00
 TestIPAM_TwoNetworksCannotShareOnePool	40.00
 TestIPv6_AcceptedAtCreate	0.02
 TestIPv6_DNS6Propagation	34.17
