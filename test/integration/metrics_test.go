@@ -200,8 +200,10 @@ func firstLines(s string, n int) string {
 	return strings.Join(lines, "\n")
 }
 
-// buildInfoLine is the exposition's net_dhcp_build_info sample, without
-// its HELP and TYPE comments.
+// identityLine is the exposition's net_dhcp_<family> sample, without its
+// HELP and TYPE comments. The family is a parameter because there are
+// two identity series, build_info and engine_info, and the labels that
+// carry a health field belong to one of them.
 func identityLine(body, family string) (string, bool) {
 	for _, line := range strings.Split(body, "\n") {
 		if strings.HasPrefix(line, "net_dhcp_"+family+"{") {
