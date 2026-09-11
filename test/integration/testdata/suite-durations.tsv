@@ -39,25 +39,28 @@
 #              is the median of the same test on the three head runs
 #              34204413442 / 34205039347 / 34206023827: 74.16, 73.60,
 #              73.85. Same method, three samples, a later corpus.
-#   inferred   TestFailure_UnansweredRenewalsCounted is 105.00 and is
-#              the ONE row here that no run has costed. It arrives with
-#              #940. The figure is derived from what the test must wait
-#              for -- T1 at 12s, RFC 2131 section 4.4.5's 60s
-#              retransmission floor, the chassis's 15s fold tick and
-#              ~20s of container and fixture lifecycle -- and it is the
-#              row a refresh should replace first. What a wrong number
-#              costs is stated at the top: uneven shards, never an
-#              incomplete one.
-#   samples    3 for every measured row; the inferred row above is the
-#              only exception and the previous edition
-#              carried four inferred rows and fourteen v6 rows recovered
-#              from the 1.9.0 corpus; every one of those is now measured
-#              against the client that actually ships here.
+#   one row    TestFailure_UnansweredRenewalsCounted is 84.19, and it
+#              alone is not from the corpus runs above either: it
+#              arrives with #940 and no corpus run could have costed it.
+#              The figure is the `--- PASS` line for that test in run
+#              34585568413, job failure-2-suite. One sample rather than
+#              three, because it is the test's first execution; a
+#              refresh takes it to the median of three like every other
+#              row. It shipped as an inferred 105.00 for exactly one
+#              push and the first run costed it at 84.19, which is the
+#              20 seconds of container and fixture lifecycle the
+#              derivation allowed for and did not need.
+#   samples    3 for every corpus row; the two rows noted above are the
+#              exceptions. The previous edition carried four inferred
+#              rows and fourteen v6 rows recovered from the 1.9.0
+#              corpus; every one of those is now measured against the
+#              client that actually ships here, and no row in this file
+#              is inferred.
 #   corpus     main suite    91 tests   1739.87s   mean 19.12s
 #              failure suite  4 tests    272.31s   mean 68.08s
 #              both          95 tests   2012.18s
-#              (the corpus is unchanged: the inferred row above is not
-#              a sample and is not averaged into these means)
+#              (the corpus is unchanged: the two rows noted above are
+#              not samples and are not averaged into these means)
 #   spread     min and max per test across the three samples are not
 #              stored, but were read: the widest single-test spread was
 #              TestDHCPv6_NoAddressModes_StartTheEndpoint at 75.07-93.94,
@@ -87,18 +90,19 @@
 #           OF=9   196.3s   <- ships
 #           OF=10  177.9s
 #           OF=12  146.8s
-#   failure OF=1   377.3s
-#           OF=2   189.4s   <- ships
+#   failure OF=1   356.5s
+#           OF=2   184.3s   <- ships
 #           OF=3   154.6s   (the floor is one test, TestFailure_LeaseExpiry
 #                            at 154.61s)
 #
 # THE FAILURE SUITE'S PACKING MOVED with #940 and the shard count did
-# not, deliberately. Its fifth test adds 105s, so the longest failure
-# shard goes 154.6s -> 189.4s -- which is still UNDER the main suite's
-# longest shard at 196.3s, and the run window is max() over every job.
-# So the critical path is unchanged, and a third failure shard would buy
-# 35s of a number nothing is waiting on at the price of a whole
-# privileged runner slot. Revisit if the main suite is split further.
+# not, deliberately. Its fifth test adds 84.19s MEASURED, so the longest
+# failure shard goes 154.6s -> 184.3s, which is still UNDER the main
+# suite's longest shard at 196.3s, and the run window is max() over
+# every job. So the critical path is unchanged, and a third failure
+# shard would buy 30s of a number nothing is waiting on at the price of
+# a whole privileged runner slot. Revisit if the main suite is split
+# further.
 #
 # Nine and two. Nine is where the main suite's longest shard first lands
 # far enough under the budget that a fixed cost of ~60s and an ephemeral
@@ -159,7 +163,7 @@ TestFailure_LeaseExpiry	154.61
 TestFailure_LeaseRefusedOnRenewal	29.64
 TestFailure_ServerLossDuringRenewal	33.34
 TestFailure_ServerReturnsBeforeExpiry	54.72
-TestFailure_UnansweredRenewalsCounted	105.00
+TestFailure_UnansweredRenewalsCounted	84.19
 TestHealthCounters_ObtainedAndReleased	12.13
 TestHealthDocument_BuildInfoIsWhatTheLaneBuilt	0.01
 TestHealthDocument_EndpointEntryMatchesTheContainer	12.05

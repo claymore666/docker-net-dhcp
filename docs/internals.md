@@ -82,11 +82,16 @@ knows which client is underneath.
   existed to keep the watchdog's deadline usable.
 
   What has not changed is the physics: a bound endpoint holds a valid
-  address until its lease runs out, so an outage still cannot be
+  address until its lease runs out, so a LOST address still cannot be
   *proven* before then. What changed is who says it and how precisely.
   The 1.x watchdog re-checked on a 30-second tick and then held a
   25-second settling time on top of that before it called an outage.
-  2.0 reports on the client's own schedule.
+  2.0 reports on the client's own schedule. A silent server is visible
+  well before the lease lapses: since v2.1.0 (#940)
+  `renewals_unanswered` moves at the first retransmission of a renewal
+  request, which RFC 2131 section 4.4.5 puts at most one minute after
+  the silence starts. The address is still good at that point, which is
+  why the counter is not healthy-affecting.
 - **A zero lease lifetime is an infinite lease.** The 1.x plugin clamped
   an implausibly long option 51 so its watchdog had a usable deadline,
   and counted the clamp. The library hands the chassis an explicit "no

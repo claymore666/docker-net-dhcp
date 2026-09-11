@@ -1200,8 +1200,16 @@ renewal logs nothing**. It is emitted at `Debug` and the plugin runs at
 problem.
 
 `leases_renewed` on `/Plugin.Health` is the cheap proof. It should be
-non-zero once the first renewal is due, with `naks_received` and
-`dhcp_timeouts` still at zero.
+non-zero once the first renewal is due, with `naks_received`,
+`renewals_unanswered` and `dhcp_timeouts` still at zero.
+
+`renewals_unanswered` is the one to read when `leases_renewed` has not
+moved and the renewal is overdue. It counts renewal requests the server
+did not answer, and it moves at the first retransmission, about a minute
+into the silence, while `dhcp_timeouts` waits for the lease to lapse.
+`renewals_unanswered` rising with `leases_renewed` flat is a server that
+has gone quiet. Both flat with the renewal overdue is a client that has
+not asked yet, so check the lease time rather than the server.
 
 *When* it is due comes from the lease and never from any plugin setting:
 DHCP option 58 (T1), typically half the lease time.
