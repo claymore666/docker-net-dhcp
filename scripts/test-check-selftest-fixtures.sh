@@ -9,6 +9,9 @@
 # A gate that fires on every fixture would be waived on the first run.
 set -u
 
+# shellcheck source=scripts/tmpdir-guard.sh
+. "$(cd "$(dirname "$0")" && pwd)/tmpdir-guard.sh"
+
 GATE="$(cd "$(dirname "$0")" && pwd)/check-selftest-fixtures.sh"
 pass=0
 fail=0
@@ -19,7 +22,7 @@ no() { printf 'FAIL  %s\n' "$1" >&2; fail=$((fail + 1)); }
 run_case() {
     local name="$1" want="$2"; shift 2
     local dir rc out
-    dir=$(mktemp -d)
+    guarded_tmpdir dir
     (
         cd "$dir" || exit 2
         git init -q .
@@ -186,7 +189,7 @@ run_case "a repo where nothing commits at all exits 2" 2 \
 untracked_case() {
     local name="$1" want="$2"; shift 2
     local dir rc out
-    dir=$(mktemp -d)
+    guarded_tmpdir dir
     (
         cd "$dir" || exit 2
         git init -q .
@@ -228,7 +231,7 @@ git commit -qm fixture"
 untracked_case "an UNTRACKED signed fixture reads as clean, not as absent" 0 \
     "scripts/test-x.sh:::$FULL"
 
-dir=$(mktemp -d)
+guarded_tmpdir dir
 if FIXTURE_ROOT="$dir" bash "$GATE" >/dev/null 2>&1; then
     no "a non-git directory should not report clean"
 else

@@ -35,6 +35,9 @@
 # shipped one, because there is no copy.
 set -uo pipefail
 
+# shellcheck source=scripts/tmpdir-guard.sh
+. "$(cd "$(dirname "$0")" && pwd)/tmpdir-guard.sh"
+
 HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO="$(cd "$HERE/.." && pwd)"
 MK="$REPO/Makefile"
@@ -44,8 +47,7 @@ MANIFEST="$REPO/config-cover.json"
 
 command -v jq >/dev/null || { echo "FAIL: this self-test needs jq"; exit 2; }
 
-TMP=$(mktemp -d)
-trap 'rm -rf "$TMP"' EXIT
+guarded_tmpdir TMP
 fails=0
 
 check() {

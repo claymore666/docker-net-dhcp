@@ -27,14 +27,16 @@
 # setting looks.
 set -uo pipefail
 
+# shellcheck source=scripts/tmpdir-guard.sh
+. "$(cd "$(dirname "$0")" && pwd)/tmpdir-guard.sh"
+
 HERE="$(cd "$(dirname "$0")" && pwd)"
 CHECK="$HERE/check-plugin-set-settings.sh"
 pass=0; fail=0
 ok() { printf 'PASS  %s\n' "$1"; pass=$((pass + 1)); }
 no() { printf 'FAIL  %s\n' "$1" >&2; fail=$((fail + 1)); }
 
-ROOT=$(mktemp -d)
-trap 'rm -rf "$ROOT"' EXIT
+guarded_tmpdir ROOT
 
 # Builds a repository from `name=content` pairs and runs the gate in it.
 # The gate is copied in rather than symlinked so that its own `cd
@@ -47,7 +49,7 @@ trap 'rm -rf "$ROOT"' EXIT
 # on inherited fixtures.
 run_case() {
     local d
-    d=$(mktemp -d "$ROOT/caseXXXXXX")
+    guarded_tmpdir d "$ROOT/caseXXXXXX"
     mkdir -p "$d/scripts" "$d/.github/workflows"
     cp "$CHECK" "$d/scripts/"
     local pair

@@ -10,6 +10,9 @@
 # is a gate that can never be green.
 set -u
 
+# shellcheck source=scripts/tmpdir-guard.sh
+. "$(cd "$(dirname "$0")" && pwd)/tmpdir-guard.sh"
+
 GATE="$(cd "$(dirname "$0")" && pwd)/check-pipefail-consumers.sh"
 pass=0
 fail=0
@@ -24,7 +27,7 @@ no() { printf 'FAIL  %s\n' "$1" >&2; fail=$((fail + 1)); }
 run_case() {
     local name="$1" want="$2"; shift 2
     local dir rc out
-    dir=$(mktemp -d)
+    guarded_tmpdir dir
     (
         cd "$dir" || exit 2
         git init -q .
@@ -63,7 +66,8 @@ if git grep -n foo | grep -${Q}E 'bar'; then echo hi; fi"
 # wrong". This is what the pinned-library exemption used to be checked
 # through; the exemption is gone with the in-tree copy and the refusal
 # it protected is not.
-edir=$(mktemp -d)
+edir=            # declared here so a reader (and shellcheck) sees the name
+guarded_tmpdir edir
 (
     cd "$edir" || exit 2
     git init -q .; git config user.email t@t; git config user.name t
@@ -180,7 +184,7 @@ run_case "a repo with no shell scripts exits 2" 2 \
 untracked_case() {
     local name="$1" want="$2"; shift 2
     local dir rc out
-    dir=$(mktemp -d)
+    guarded_tmpdir dir
     (
         cd "$dir" || exit 2
         git init -q .
@@ -329,7 +333,7 @@ run_case "balanced single quotes before the pipe stay arm four's" 1 \
 brip=\$(grep 'foo' /etc/x | ${H} -1)
 echo \"\$brip\""
 
-dir=$(mktemp -d)
+guarded_tmpdir dir
 if PIPE_ROOT="$dir" bash "$GATE" >/dev/null 2>&1; then
     no "a non-git directory should not report clean"
 else
