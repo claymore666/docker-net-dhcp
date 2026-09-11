@@ -1011,7 +1011,11 @@ can merge. Branch protection holds the authoritative list and the checks
 panel on the pull request shows it applied to the branch. At the time of
 writing that list is: unit tests, <code>staticcheck</code>, the live integration
 suite, <code>govulncheck</code>, <code>actionlint</code>, CodeQL (<code>Analyze (go)</code> and
-<code>Analyze (actions)</code>), <code>attribution</code>, and <code>policy-gates</code>.</p>
+<code>Analyze (actions)</code>), <code>attribution</code>, <code>policy-gates</code>, and <code>docs-site</code>.</p>
+<p><code>docs-site</code> builds the documentation site with <code>mkdocs build --strict</code>. It
+runs on every pull request, including one that touches no documentation,
+because a check that is filtered out of a pull request is absent there, and
+an absent required check blocks the merge instead of passing it.</p>
 <p>Documentation-only pull requests, meaning diffs touching nothing but
 <code>*.md</code>, satisfy the integration check through a fast in-job skip. Any
 code, script or workflow change runs the full suite.</p>
