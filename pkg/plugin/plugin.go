@@ -1009,9 +1009,9 @@ type Plugin struct {
 
 	// The four arms of sandboxKeyEntryFailures. They exist because the
 	// aggregate cannot carry a CAUSE, and the cause is what SECURITY.md
-	// asserts: that the refusal an operator sees on a stock engine is
-	// the unpropagated bind mount, not a key this plugin declined to
-	// recognise. Both produce the same aggregate, want opposite
+	// asserts: that the refusal an operator sees on a host whose
+	// sandbox netns mount is private is the unpropagated bind mount,
+	// not a key this plugin declined to recognise. Both produce the same aggregate, want opposite
 	// remedies, and until these existed nothing in the tree could tell
 	// a reader which had happened -- the plugin log carries the reason
 	// and reaches an integration run only when a cell has already

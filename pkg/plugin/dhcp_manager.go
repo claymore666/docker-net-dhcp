@@ -1615,12 +1615,13 @@ func (m *dhcpManager) openSandboxNetNS(ctx context.Context, sandboxKey string, p
 		m.plugin.countSandboxKeyRefusal(keyErr)
 	}
 	// DEBUG, NOT WARN, AND THE LEVEL IS DERIVED FROM WHAT AN OPERATOR
-	// SHOULD DO ABOUT IT: nothing. On a stock engine this fires once per
-	// attach, for every container, forever -- the daemon's per-sandbox
-	// netns mounts are made after the plugin's own /var/run/docker bind
-	// was taken, so the key resolves to the placeholder file and the PID
-	// route carries the attach exactly as it did before the key route
-	// existed. A warning is a request for attention, and a request for
+	// SHOULD DO ABOUT IT: nothing. On a host whose sandbox netns mount is
+	// private (sandbox_netns_propagation=0) this fires once per attach,
+	// for every container, forever -- the daemon's per-sandbox netns
+	// mounts are made after the plugin's own /var/run/docker bind was
+	// taken and a private mount does not deliver them, so the key
+	// resolves to the placeholder file and the PID route carries the
+	// attach exactly as it did before the key route existed. A warning is a request for attention, and a request for
 	// attention that is correct on every attach of a healthy host trains
 	// its reader to ignore the level.
 	//
