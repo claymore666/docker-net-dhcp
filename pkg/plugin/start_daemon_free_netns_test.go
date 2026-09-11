@@ -17,6 +17,8 @@ import (
 	dNetwork "github.com/docker/docker/api/types/network"
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netns"
+
+	"github.com/claymore666/docker-net-dhcp/pkg/util"
 )
 
 // The two drives for #417's delivered property, and its boundary.
@@ -104,7 +106,7 @@ func withNetlinkHandleInThisNamespace(t *testing.T, m *dhcpManager) {
 // names and therefore the one Start will search.
 func anAddressedLink(t *testing.T) net.HardwareAddr {
 	t.Helper()
-	links, err := netlink.LinkList()
+	links, err := util.DumpResult(netlink.LinkList())
 	if err != nil {
 		t.Fatalf("listing links in this namespace: %v", err)
 	}
