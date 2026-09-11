@@ -1190,14 +1190,32 @@ either shape. <code>ipvlan</code> keeps <code>--ipam-driver null</code> for now 
 so does IPv6: the IPAM shape is IPv4 only and refuses both Docker's
 <code>--ipv6</code> and <code>-o ipv6=true</code> (<a href="https://github.com/claymore666/docker-net-dhcp/issues/960">#960</a>). <a href="https://github.com/claymore666/docker-net-dhcp/issues/218">#218</a>, the deterministic MAC, is
 backlog and waits on upstream Docker (below).</p>
+<p>The same milestone carries four things that are not addressing. <a href="https://github.com/claymore666/docker-net-dhcp/issues/940">#940</a>
+counts renewal requests the server did not answer, hours before
+<code>dhcp_timeouts</code> would move on a long lease. <a href="https://github.com/claymore666/docker-net-dhcp/issues/670">#670</a> measures which Docker
+Engine versions the plugin works on, publishes the floor and refuses
+below it. <a href="https://github.com/claymore666/docker-net-dhcp/issues/950">#950</a> makes the refusal an operator reads when a second
+plugin tag cannot take the lease-record lock name its cause and its
+remedy. <a href="https://github.com/claymore666/docker-net-dhcp/issues/417">#417</a> and <a href="https://github.com/claymore666/docker-net-dhcp/issues/403">#403</a> take the attach into the container's network
+namespace and find its link before any Docker call, and publish the
+durations the attach spends in each phase.</p>
+<p>Three more on the milestone change nothing a user sees. <a href="https://github.com/claymore666/docker-net-dhcp/issues/889">#889</a> makes
+the documentation site a required check, so a broken navigation cannot
+merge green. <a href="https://github.com/claymore666/docker-net-dhcp/issues/942">#942</a> takes the hosted cross-check green in the three
+families it ran red in. <a href="https://github.com/claymore666/docker-net-dhcp/issues/963">#963</a> stops a gate self-test from building its
+fixture inside the checkout when its temporary directory is missing.</p>
 <p><strong><a href="https://github.com/claymore666/docker-net-dhcp/milestone/29">v2.2.0</a></strong>
-is full IPv6. <a href="https://github.com/claymore666/docker-net-dhcp/issues/818">#818</a> and <a href="https://github.com/claymore666/docker-net-dhcp/issues/808">#808</a> acquire an address by SLAAC, <a href="https://github.com/claymore666/docker-net-dhcp/issues/821">#821</a> takes
-the gateway, DNS, MTU and routes from the advertisement, <a href="https://github.com/claymore666/docker-net-dhcp/issues/819">#819</a> handles
-lifetimes, withdrawal and renumbering, <a href="https://github.com/claymore666/docker-net-dhcp/issues/817">#817</a> adds an <code>ipv6_mode</code> option,
-<a href="https://github.com/claymore666/docker-net-dhcp/issues/814">#814</a> parses Router Advertisements into a first-class event, <a href="https://github.com/claymore666/docker-net-dhcp/issues/214">#214</a> is
-prefix delegation, <a href="https://github.com/claymore666/docker-net-dhcp/issues/925">#925</a> accepts a server-initiated Reconfigure, and
+is mostly IPv6. <a href="https://github.com/claymore666/docker-net-dhcp/issues/818">#818</a> and <a href="https://github.com/claymore666/docker-net-dhcp/issues/808">#808</a> acquire an address by SLAAC, <a href="https://github.com/claymore666/docker-net-dhcp/issues/821">#821</a>
+takes the gateway, DNS, MTU and routes from the advertisement, <a href="https://github.com/claymore666/docker-net-dhcp/issues/819">#819</a>
+handles lifetimes, withdrawal and renumbering, <a href="https://github.com/claymore666/docker-net-dhcp/issues/817">#817</a> adds an
+<code>ipv6_mode</code> option, <a href="https://github.com/claymore666/docker-net-dhcp/issues/814">#814</a> parses Router Advertisements into a
+first-class event, <a href="https://github.com/claymore666/docker-net-dhcp/issues/925">#925</a> accepts a server-initiated Reconfigure, and
 <a href="https://github.com/claymore666/docker-net-dhcp/issues/816">#816</a> stops a v6 acquisition reporting a lease timeout where no
-exchange was possible.</p>
+exchange was possible. <a href="https://github.com/claymore666/docker-net-dhcp/issues/960">#960</a> gives the IPAM shape a DHCPv6 exchange and
+a stable v6 identity, which v2.1.0 refuses. Two on the milestone are not
+IPv6: <a href="https://github.com/claymore666/docker-net-dhcp/issues/961">#961</a> takes the container hostname to a running client so the
+attach needs no daemon call at all, and <a href="https://github.com/claymore666/docker-net-dhcp/issues/962">#962</a> adds a network option
+that sends DHCPRELEASE when an endpoint is removed or stopped.</p>
 <p><strong><a href="https://github.com/claymore666/docker-net-dhcp/milestone/31">v2.3.0</a></strong>
 is the host plumbing an operator does by hand today: <a href="https://github.com/claymore666/docker-net-dhcp/issues/902">#902</a> VLAN
 sub-interfaces, <a href="https://github.com/claymore666/docker-net-dhcp/issues/903">#903</a> a bridge the plugin creates and owns, <a href="https://github.com/claymore666/docker-net-dhcp/issues/904">#904</a>
@@ -1206,10 +1224,11 @@ sub-modes. <a href="https://github.com/claymore666/docker-net-dhcp/issues/903">#
 change interfaces the host already has: the bridge is one the plugin
 creates for its own networks and owns for as long as they exist, and no
 interface the host configured is touched.</p>
-<p><a href="https://github.com/claymore666/docker-net-dhcp/issues/926">#926</a> Rapid Commit and <a href="https://github.com/claymore666/docker-net-dhcp/issues/927">#927</a> temporary addresses (IA_TA) carry no
-milestone and are not scheduled. <a href="https://github.com/claymore666/docker-net-dhcp/issues/218">#218</a>, the deterministic MAC, is
-backlog: it waits on upstream Docker (<a href="https://github.com/moby/moby/pull/52871">moby/moby#52871</a>, the table
-below) and is scheduled only when that lands.</p>
+<p><a href="https://github.com/claymore666/docker-net-dhcp/issues/926">#926</a> Rapid Commit, <a href="https://github.com/claymore666/docker-net-dhcp/issues/927">#927</a> temporary addresses (IA_TA) and <a href="https://github.com/claymore666/docker-net-dhcp/issues/214">#214</a>
+prefix delegation (IA_PD) carry no milestone and are not scheduled.
+<a href="https://github.com/claymore666/docker-net-dhcp/issues/218">#218</a>, the deterministic MAC, is backlog: it waits on upstream Docker
+(<a href="https://github.com/moby/moby/pull/52871">moby/moby#52871</a>, the table below) and is scheduled only when that
+lands.</p>
 <h2 id="direction">Direction<a class="headerlink" href="#direction" title="Permanent link">&para;</a></h2>
 <p>Five themes, in rough order of how much they change for a user. Issue
 numbers are anchors; the order is not a queue.</p>
@@ -1250,8 +1269,9 @@ every timing crutch removed from CI turned out to be hiding a real
 defect. An opt-out helper added to make a restart test pass hid a
 user-facing <code>docker restart</code> failure for months. So the rule is enforced
 by a gate and not by a paragraph: <strong>a test that only passes once you
-weaken something is a bug report</strong>. The remaining soft spots (<a href="https://github.com/claymore666/docker-net-dhcp/issues/682">#682</a>,
-<a href="https://github.com/claymore666/docker-net-dhcp/issues/403">#403</a>) are on the list for the same reason features are.</p>
+weaken something is a bug report</strong>. The remaining soft spot (<a href="https://github.com/claymore666/docker-net-dhcp/issues/403">#403</a>, how
+a loaded host behaves under a slow Join) is on the list for the same
+reason features are.</p>
 <h3 id="5-supply-chain-and-documentation">5. Supply chain and documentation<a class="headerlink" href="#5-supply-chain-and-documentation" title="Permanent link">&para;</a></h3>
 <p>Releases are already cosign-signed, provenanced, SBOM'd and
 reproducible. The remaining pull is the OpenSSF Best Practices silver
@@ -1281,13 +1301,15 @@ carries a change. It stays open on purpose:</p>
 (<a href="https://github.com/moby/moby/pull/52871">moby/moby#52871</a>) is still awaiting review, and <a href="https://github.com/claymore666/docker-net-dhcp/issues/218">#218</a> will not be
 closed as "won't fix" while that is the only thing in the way. This
 fork's own half is written and waiting.</p>
-<p>The other one has moved. The <code>interface_name</code> pass-through
-(<a href="https://github.com/moby/moby/pull/52866">moby/moby#52866</a>) was merged to moby master on 2026-08-26, milestoned
-for engine <strong>29.8.0</strong>, and that engine was released on 2026-09-03;
-<a href="https://github.com/moby/moby/issues/52865">moby/moby#52865</a> closed with it and <a href="https://github.com/claymore666/docker-net-dhcp/issues/125">#125</a> closed on this side. The
-integration suite has not yet run against an engine carrying the change,
-so the behaviour is unconfirmed and not measured. The tests probe for it
-and turn themselves on, so no change here is waiting on it.</p>
+<p>The other one has moved and is now measured. The <code>interface_name</code>
+pass-through (<a href="https://github.com/moby/moby/pull/52866">moby/moby#52866</a>) was merged to moby master on
+2026-08-26, milestoned for engine <strong>29.8.0</strong>, and that engine was
+released on 2026-09-03; <a href="https://github.com/moby/moby/issues/52865">moby/moby#52865</a> closed with it and <a href="https://github.com/claymore666/docker-net-dhcp/issues/125">#125</a>
+closed on this side. v2.1.0 measured the boundary one engine line at a
+time (<a href="https://github.com/claymore666/docker-net-dhcp/issues/670">#670</a>): 28.5.2 and 29.7.2 ignore a remote driver's requested
+name and 29.8.0 applies it. The integration lane now runs 29.8.0, the
+tests that probe for the behaviour activated themselves, and the plugin
+counts <code>ifname_unsupported</code> on an engine below the boundary.</p>
 <h2 id="what-this-project-will-deliberately-not-do">What this project will deliberately not do<a class="headerlink" href="#what-this-project-will-deliberately-not-do" title="Permanent link">&para;</a></h2>
 <p>Turning these down is not a backlog. They are decided, and the reasoning
 is recorded so a contributor can read it before writing the PR.</p>

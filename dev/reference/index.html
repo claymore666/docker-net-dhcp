@@ -1956,7 +1956,9 @@ service's network attachment:</p>
 </tbody>
 </table>
 <p><strong><a href="#driver-options-per-endpoint">Container-level flags</a></strong> that change
-what the plugin sends: <code>--mac-address</code>, <code>--hostname</code>, <code>--ip6</code>.</p>
+what the plugin sends: <code>--mac-address</code>, <code>--hostname</code>, <code>--ip6</code>, and
+<code>--ip</code> on a network that names this plugin as its IPAM driver
+(<a href="#address-allocation">Address allocation</a>).</p>
 <p><strong><a href="#plugin-settings">Plugin settings</a></strong>, set with <code>docker plugin set
 &lt;plugin&gt; NAME=value</code>:</p>
 <table>
@@ -2279,10 +2281,10 @@ plugin sizes that work to the default budget: one reservation gets 26s
 of it, which leaves room for a DHCP exchange plus the RFC 5227 probe
 that runs before the address is used. The plugin is not told what value
 you enabled it with and cannot follow it, so a <strong>lower</strong> <code>--timeout</code>
-makes every address request on such a network fail — the daemon stops
-listening mid-reservation and re-sends a call whose body it has already
-spent, which the plugin refuses with a message naming this flag — and a
-<strong>higher</strong> one is unused. <code>--ipam-driver null</code> networks are unaffected;
+makes every address request on such a network fail, because the daemon
+stops listening mid-reservation and re-sends a call whose body it has
+already spent, which the plugin refuses with a message naming this flag.
+A <strong>higher</strong> one is unused. <code>--ipam-driver null</code> networks are unaffected;
 they acquire during endpoint creation instead.</p>
 <p><strong><code>--ipam-opt parent=&lt;nic&gt;</code> or <code>--ipam-opt bridge=&lt;name&gt;</code></strong> is needed
 only for a <strong>second</strong> network in this shape with the same subnet on a
@@ -2312,9 +2314,9 @@ one the network names: <code>docker run</code> on it fails with the daemon's own
 says nothing about this plugin. <code>docker network rm</code> still works, and
 re-creating the network with <code>--ipam-driver null</code> is the way back.
 Existing <code>--ipam-driver null</code> networks are unaffected by the downgrade.
-Nothing on disk is damaged either way — the plugin refuses to read a
-state file newer than it understands rather than rewriting it — but the
-file is not what protects you here, the missing driver is, so plan a
+Nothing on disk is damaged either way, because the plugin refuses to
+read a state file newer than it understands instead of rewriting it. The
+file is not what protects you here; the missing driver is, so plan a
 rollback around removing the IPAM-mode networks first.</p>
 <hr />
 <h2 id="driver-options-network-level">Driver options (network-level)<a class="headerlink" href="#driver-options-network-level" title="Permanent link">&para;</a></h2>
@@ -2684,7 +2686,7 @@ than something only the plugin knows, so its stability is stated
 separately and it is weaker.</p>
 <p><strong>The rule.</strong> When a container on such a network stops or is removed,
 the plugin keeps its DHCP identity and address for a minute. The next
-container that starts on that network claims them — <strong>whichever
+container that starts on that network claims them: <strong>whichever
 container that is</strong>, and only while it is the single one being kept. So:</p>
 <ul>
 <li>One container restarted, nothing else happening on the network: it
@@ -2694,9 +2696,9 @@ container that is</strong>, and only while it is the single one being kept. So:<
   the stopped one gets a fresh address when it comes back. Nothing is
   lost and nothing collides, but neither container's address is the one
   you would predict.</li>
-<li>Two or more kept at once — <code>docker compose restart</code>, a daemon restart
+<li>Two or more kept at once (<code>docker compose restart</code>, a daemon restart
   without <code>live-restore</code>, or one container restarting beside a
-  neighbour removed seconds earlier — and none is claimed: every
+  neighbour removed seconds earlier) and none is claimed: every
   container still gets an address, and <strong>which</strong> address is the DHCP
   server's decision. This case is logged and counted as
   <code>ipam_rebind_ambiguous</code>, so it is visible in
@@ -2704,7 +2706,7 @@ container that is</strong>, and only while it is the single one being kept. So:<
   counted, because from the plugin's side nothing ambiguous happened.</li>
 </ul>
 <p>The reason the rule is this blunt is that Docker's address request
-carries no hostname and no endpoint id — the only thing in it that
+carries no hostname and no endpoint id. The only thing in it that
 identifies anything is a hardware address Docker generates fresh for
 every endpoint. There is nothing to match a request back to a
 particular previous container on. The <code>--ipam-driver null</code> shape has a
@@ -2719,10 +2721,10 @@ side has none. Against such a server the binding matches and the
 address comes back.</p>
 <p>A server that <strong>ignores</strong> option 61 and keys on the hardware address
 alone sees an unknown client instead, and hands out a different
-address. That is a real configuration, not a hypothetical — dnsmasq
-spells it <code>--dhcp-ignore-clid</code> — and the integration suite runs a
-container restart against it so the difference is measured rather than
-assumed. Nothing fails there and no counter moves; the property is
+address. That is a real configuration and not a hypothetical; dnsmasq
+spells it <code>--dhcp-ignore-clid</code>, and the integration suite runs a
+container restart against it, so the difference is measured. Nothing
+fails there and no counter moves; the property is
 simply not available. If address stability across restarts matters to
 you and your server is not one you can check, the <code>--ipam-driver null</code>
 shape does not depend on this at all: it restores the previous MAC
@@ -3438,7 +3440,7 @@ already parse it were not told to expect a new type.</p>
 <td><code>dhcp_timeouts</code></td>
 <td>no</td>
 <td>n/a</td>
-<td>DHCP failures reported by the client itself: an acquisition that found no server, or a held lease that ran out without being renewed. <strong>Changed in 2.0.</strong> 1.x had no direct signal and inferred one from a watchdog that compared the granted lifetime against the time since the client was last served, so a bound endpoint's outage surfaced only after its whole lease had elapsed plus one watchdog tick, up to ~24 hours on a 24-hour lease. The in-tree client owns the lease and its own retransmission schedule, so it reports the failure when it happens, at the end of the retransmission budget instead of at the end of the lease. <code>OUTAGE_TICK</code> and <code>OUTAGE_GRACE</code> are gone with the watchdog. v4+v6 aggregate, equal to its <code>_v4</code> half in 2.0.</td>
+<td>DHCP failures reported by the client itself: an acquisition that found no server, or a held lease that ran out without being renewed. <strong>Changed in 2.0.</strong> 1.x had no direct signal and inferred one from a watchdog that compared the granted lifetime against the time since the client was last served, so a bound endpoint's outage surfaced only after its whole lease had elapsed plus one watchdog tick, up to ~24 hours on a 24-hour lease. The in-tree client owns the lease and its own retransmission schedule, so it reports the failure when the schedule runs out instead of one watchdog tick later. <strong>Read that per case.</strong> For an acquisition the schedule is bounded by <code>lease_timeout</code>, so the counter moves at the end of that budget. For a <strong>held</strong> lease the client keeps retransmitting until the lease itself expires, so on a long lease the counter still moves only at the end of it; <code>renewals_unanswered</code> is the earlier signal there (#940), and the two rows are read together. <code>OUTAGE_TICK</code> and <code>OUTAGE_GRACE</code> are gone with the watchdog. v4+v6 aggregate, equal to its <code>_v4</code> half in 2.0.</td>
 </tr>
 <tr>
 <td><code>client_stop_failures</code></td>
@@ -3480,7 +3482,7 @@ already parse it were not told to expect a new type.</p>
 <td><code>parent_link_wait_timeouts</code></td>
 <td>no</td>
 <td>warn</td>
-<td>(v1.6.0+) The same wait giving up after its budget where the holder was attaching the <strong>other</strong> kind of child, or a holder the plugin could no longer identify. The operation asks the kernel anyway and may fail with <code>device or resource busy</code>. The budget is 4s, sized to absorb an ordinary DORA on the <code>validate_dhcp</code> probe, so a holder that wedges degrades to the pre-v1.6.0 behaviour instead of stalling a container start. Not <code>healthy</code>-affecting, but the actionable one of the pair: a non-zero value means a macvlan and an ipvlan operation contended for one parent NIC for longer than a DHCP round trip, and a container start there can fail. Same-kind contention is <strong>not</strong> counted here — it is in <code>parent_link_waits</code> — because the kernel permits it and the operation succeeds.</td>
+<td>(v1.6.0+) The same wait giving up after its budget where the holder was attaching the <strong>other</strong> kind of child, or a holder the plugin could no longer identify. The operation asks the kernel anyway and may fail with <code>device or resource busy</code>. The budget is 4s, sized to absorb an ordinary DORA on the <code>validate_dhcp</code> probe, so a holder that wedges degrades to the pre-v1.6.0 behaviour instead of stalling a container start. Not <code>healthy</code>-affecting, but the actionable one of the pair: a non-zero value means a macvlan and an ipvlan operation contended for one parent NIC for longer than a DHCP round trip, and a container start there can fail. Same-kind contention is <strong>not</strong> counted here; it is in <code>parent_link_waits</code>, because the kernel permits it and the operation succeeds.</td>
 </tr>
 <tr>
 <td><code>unsafe_hostnames_rejected</code></td>
@@ -3720,14 +3722,15 @@ an upgrade.</p>
 </blockquote>
 <h4 id="metric-names-and-the-family-label">Metric names and the <code>family</code> label<a class="headerlink" href="#metric-names-and-the-family-label" title="Permanent link">&para;</a></h4>
 <p>Counters are <code>net_dhcp_&lt;name&gt;_total</code>, gauges are <code>net_dhcp_&lt;name&gt;</code>.</p>
-<p>Seven counters carry a <code>family</code> label: <code>leases_obtained</code>,
+<p>Eight counters carry a <code>family</code> label: <code>leases_obtained</code>,
 <code>leases_renewed</code>, <code>lease_changed</code>, <code>renewals_unanswered</code>,
-<code>dhcp_timeouts</code>, <code>naks_received</code> and <code>client_stop_failures</code>:</p>
+<code>dhcp_timeouts</code>, <code>naks_received</code>, <code>client_stop_failures</code> and
+<code>address_conflicts</code>:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-16-1" name="__codelineno-16-1" href="#__codelineno-16-1"></a>net_dhcp_leases_obtained_total{family=&quot;ipv4&quot;} 42
 <a id="__codelineno-16-2" name="__codelineno-16-2" href="#__codelineno-16-2"></a>net_dhcp_leases_obtained_total{family=&quot;ipv6&quot;} 7
 </code></pre></div>
 <p><strong>Both family series are stored and neither is derived</strong> (v1.8.0+, #730).
-Each of the seven has a <code>_v4</code> and a <code>_v6</code> field in
+Each of the eight has a <code>_v4</code> and a <code>_v6</code> field in
 <code>/Plugin.Health</code>, and the unsuffixed counter is their <strong>sum</strong>. So
 <code>leases_obtained</code> equals <code>leases_obtained_v4 + leases_obtained_v6</code>, and
 the <code>family="ipv4"</code> series is the <code>_v4</code> field read straight out. Every
@@ -4050,7 +4053,7 @@ consumer-side:</p>
 <tr>
 <td>Renewals failing after a server outage</td>
 <td>n/a</td>
-<td>Containers keep their address and the client keeps retrying on its retransmission schedule; <code>dhcp_timeouts</code> climbs when a retransmission budget runs out, which in 2.0 is within the retry window instead of at the end of the lease, and <code>leases_renewed</code> resumes after the server returns</td>
+<td>Containers keep their address and the client keeps retrying on its retransmission schedule; <code>renewals_unanswered</code> climbs from the first retransmission, which is where the outage becomes visible, while <code>dhcp_timeouts</code> waits for the lease to lapse, and <code>leases_renewed</code> resumes after the server returns. How far apart the two are depends on the lease: half the time left to T2, floored at 60 seconds</td>
 </tr>
 </tbody>
 </table>

@@ -1365,9 +1365,20 @@ work with the null IPAM driver; use the <code>ipv6</code> driver option instead)
 <a id="__codelineno-12-3" name="__codelineno-12-3" href="#__codelineno-12-3"></a><span class="w">  </span>--ipam-driver<span class="w"> </span>null<span class="w"> </span>-o<span class="w"> </span><span class="nv">bridge</span><span class="o">=</span>my-bridge<span class="w"> </span>-o<span class="w"> </span><span class="nv">ipv6</span><span class="o">=</span><span class="nb">true</span><span class="w"> </span>my-dhcp-net
 </code></pre></div>
 <blockquote>
-<p><strong>The <code>null</code> IPAM driver is mandatory.</strong> Without it Docker allocates
-addresses from its own pool, which collides with the real LAN the
-bridge is attached to.</p>
+<p><strong>One of the two IPAM shapes is required.</strong> Docker's own IPAM must not
+be the allocator: it hands out addresses from its own pool, which
+collides with the real LAN the bridge is attached to. Pass
+<code>--ipam-driver null</code>, as above, or, from v2.1.0, name this plugin as
+the IPAM driver as well, which puts the leased address into Docker's
+address management and makes <code>--ip</code> and Compose <code>ipv4_address</code> work.
+The exchange is shared across modes; the link it runs on differs.
+Macvlan takes the parent gate and adds a child of the parent
+interface; bridge builds a veth pair, puts the endpoint's hardware
+address on the half the client runs on, and makes the other half a
+bridge port. The integration suite asks for an address on macvlan
+only, so the bridge half of that request carries no arm of its own.
+Both shapes are set out in
+<a href="../reference/#address-allocation">Address allocation</a>.</p>
 </blockquote>
 <p>See the <a href="../reference/#driver-options-network-level">driver reference</a>
 for every network-level option (<code>lease_timeout</code>, <code>ignore_conflicts</code>,

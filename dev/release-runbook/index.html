@@ -1438,20 +1438,36 @@ the <code>vX.Y.Z</code> milestone (the workflow leans on this for the
 "Closes" list in the release PR).</p>
 <p>Pre-flight, second item: re-measure the supported engines before the rc.
 Dispatch
-<a href="https://github.com/claymore666/docker-net-dhcp/blob/main/.github/workflows/engine-matrix.yml"><code>engine-matrix.yml</code></a>
+<code>engine-matrix.yml</code>
 on the release branch and read the <code>floor</code> job:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>gh<span class="w"> </span>workflow<span class="w"> </span>run<span class="w"> </span>engine-matrix.yml<span class="w"> </span>--ref<span class="w"> </span>release/vX.Y.Z
 </code></pre></div>
+<p><strong>That dispatch answers 404 until the workflow is on the default
+branch.</strong> GitHub exposes <code>workflow_dispatch</code> and <code>schedule</code> from the
+default branch only, and the lane is new on <code>dev</code>, so for the v2.1.0
+release itself neither route exists yet:
+<a href="https://github.com/claymore666/docker-net-dhcp/blob/main/.github/dispatch-pending.txt"><code>.github/dispatch-pending.txt</code></a>
+carries the entry and the release PR removes it. Until then the lane
+runs on its <code>push</code> trigger, over
+<code>.github/workflows/engine-matrix.yml</code>,
+<code>.github/engine-rows.txt</code>,
+<code>scripts/engine-baseline.sh</code>,
+<code>scripts/engine-floor.sh</code>
+and
+<code>pkg/plugin/engine_floor.go</code>,
+so the pre-flight for v2.1.0 is the run at the head of one of those
+paths. Read that run instead, and take the dispatch route from v2.2.0.</p>
 <p>One job per engine line in
-<a href="https://github.com/claymore666/docker-net-dhcp/blob/main/.github/engine-rows.txt"><code>.github/engine-rows.txt</code></a>,
+<code>.github/engine-rows.txt</code>,
 each driving the whole baseline against that engine in a nested daemon.
 The <code>floor</code> job reconciles the minimum the plugin refuses below against
 the lowest line that passed. A red <code>floor</code> job blocks the rc: the
 number it disagrees with is published in <code>README.md</code> and
 <code>docs/index.md</code>, and the plugin refuses to start below it. The lane also
-runs weekly, so a moving <code>29</code> tag is usually caught before a release
-asks the question. Read the run rather than the schedule: a release is
-the moment the published number has to be true.</p>
+runs weekly once it is on the default branch, so from v2.2.0 a moving
+<code>29</code> tag is usually caught before a release asks the question. Read the
+run and never the schedule: a release is the moment the published number
+has to be true.</p>
 <ol>
 <li><strong>Branch off <code>dev</code>:</strong> <code>git checkout -b release/vX.Y.Z origin/dev</code></li>
 <li><strong>Bump install pins:</strong> <code>scripts/bump-version.sh vX.Y.Z</code> (#251). It
