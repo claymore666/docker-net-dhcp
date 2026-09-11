@@ -37,6 +37,44 @@ In macvlan and ipvlan mode the shape is the same, with a child interface
 on a host NIC in place of the veth pair and the bridge; the client
 lifecycle, the event plumbing, and everything below are identical.
 
+### Where the IPAM shape changes it
+
+That flow is the `--ipam-driver null` shape, where step 3 runs inside
+`CreateEndpoint`. Since v2.1.0 the same plugin also answers the
+`/IpamDriver.*` paths on the same socket and the same mux
+([`pkg/plugin/routes.go`](https://github.com/claymore666/docker-net-dhcp/blob/main/pkg/plugin/routes.go)),
+and a network can name it twice. What moves is where the address is
+acquired, and nothing below it:
+
+- The acquisition runs at `RequestAddress`, inside the daemon's own IPAM
+  call, before any endpoint exists
+  (`pkg/plugin/ipam_reserve.go`).
+  It builds a throwaway link of its own, runs the exchange on it, and
+  removes it, so the address is Docker's to hand out by the time the
+  endpoint is created.
+- The budget is therefore the daemon's plugin-call budget, which comes
+  from `docker plugin enable --timeout` and which the plugin is never
+  told. A network's `lease_timeout` is capped to it for the reservation,
+  and the cap is logged. That is why the flag has to stay at its 30s
+  default; the reference states the rule for operators under
+  [Address allocation](reference.md#address-allocation).
+- The identity that carries a restarted container's address back is the
+  client identifier of the previous endpoint, taken from the lease
+  record. Docker's request carries no hostname and no endpoint id, so
+  there is nothing narrower to match on; the ambiguous case is counted
+  as `ipam_rebind_ambiguous` instead of guessed.
+- The pool binding lives in the network's own state file, and a file
+  carrying one is stamped schema 2
+  ([`pkg/plugin/state.go`](https://github.com/claymore666/docker-net-dhcp/blob/main/pkg/plugin/state.go)).
+  The IPAM handlers read that file and never call Docker: the daemon
+  replays `RequestPool` and one `RequestAddress` per stored endpoint
+  from inside `libnetwork.New`, which runs before the daemon's own API
+  serves, so a handler that asked Docker anything there would deadlock.
+  `ipam_replay_hits` and `ipam_replay_miss` are what that replay
+  reports.
+- The persistent client at step 5 is unchanged. So is every path in this
+  document below this section.
+
 **The DHCP client is `github.com/claymore666/dhcp-golib`**, the
 project's own library, imported as a Go module and pinned to an exact
 version in
@@ -408,7 +446,7 @@ covering the holder's duration.
 
 The gate excludes more than the kernel does, and since v2.1.0 the
 reporting says so. Mutual exclusion is per parent and takes no notice of
-kind, while the kernel refuses only the cross pair — children of one
+kind, while the kernel refuses only the cross pair: children of one
 kind coexist on a parent happily. So a caller that gives up waiting for
 a holder attaching its OWN kind has spent the budget and protected
 nothing, and it goes on to a `LinkAdd` the kernel accepts. That case is
@@ -721,14 +759,13 @@ probe whether the engine applies a remote driver's `DstName` and skip
 when it does not. The probe (`engineAppliesIfname`, used by
 `TestInterfaceName_MultiNetworkDeterministic`) runs a throwaway
 container and checks the interface the engine actually created. There is
-no version threshold to hit. The probe fails on the engine the suite
-runs against: the upstream fix (moby/moby#52866, stopping the
-remote-driver proxy from dropping `DstName`) merged to moby master on
-2026-08-26, is milestoned for engine 29.8.0, and that engine was
-released on 2026-09-03. The lane's engine is still 29.7.2, read from the
-run's `Fixture engine drift` step. Until a box running an engine that
-carries the change executes the suite, those tests skip in CI and
-locally alike. A skip is expected, and it is not a signal that the run
+no version threshold to hit. The upstream fix (moby/moby#52866,
+stopping the remote-driver proxy from dropping `DstName`) merged to moby
+master on 2026-08-26, is milestoned for engine 29.8.0, and that engine
+was released on 2026-09-03. The lane's engine is 29.8.0, read from the
+run's `Fixture engine drift` step, so the probe now succeeds there and
+the dependent tests run. They still skip on any box whose engine is
+older, and a skip there is expected and is not a signal that the run
 diverged.
 
 ## Request fixtures
@@ -871,7 +908,7 @@ the field, or record why it is ignored.
 
 Issue #218 (stable MAC) is waiting on exactly this signal: it needs
 `netlabel.EndpointName` to arrive at `CreateEndpoint`, and the captures
-confirm that field is absent on engine 29.7. The day a capture from a
+confirm that field is absent on engine 29.8. The day a capture from a
 newer engine carries it, the test names it.
 
 Issue #125 is **not** covered by this signal, and that is worth
