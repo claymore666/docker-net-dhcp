@@ -875,9 +875,11 @@ func TestIPAM_TwoNetworksCannotShareOnePool(t *testing.T) {
 // TestRecovery_DaemonRestart_PreservesContainer has recorded since #386
 // -- the container then comes back through a fresh CreateEndpoint
 // rather than through a restored endpoint. A deleted endpoint is not
-// replayed, so hits stays 0 and the address is preserved by the network
-// driver's tombstone instead. Demanding the hit demands the ungraceful
-// restart, which is #480 and not this fixture.
+// replayed, so hits stays 0 and the address is preserved by the
+// RETAINED LEASE RECORD instead -- not by the JSON tombstone, which
+// #386 was about and which is never written for an IPAM-mode network
+// (see below). Demanding the hit demands the ungraceful restart, which
+// is #480 and not this fixture.
 //
 // The demand here is the #386 shape instead: the address survives, and
 // it survived by a path this test MODELS, because "preserved by a
