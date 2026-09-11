@@ -23,6 +23,7 @@ import (
 	docker "github.com/docker/docker/client"
 	"github.com/vishvananda/netlink"
 
+	"github.com/claymore666/docker-net-dhcp/pkg/util"
 	"github.com/claymore666/docker-net-dhcp/test/integration/harness"
 )
 
@@ -44,7 +45,7 @@ const ipamReserveLinkPrefix = "dh-ipam-"
 // assertion belongs to the failure tests and not to the happy ones.
 func assertNoReserveLinksLeft(t *testing.T, when string) {
 	t.Helper()
-	links, err := netlink.LinkList()
+	links, err := util.DumpResult(netlink.LinkList())
 	if err != nil {
 		t.Fatalf("LinkList: %v", err)
 	}
