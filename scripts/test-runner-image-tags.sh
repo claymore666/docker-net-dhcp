@@ -54,13 +54,14 @@ run "dispatch with promote_latest=true"   0 "abc1234 latest" workflow_dispatch r
 
 # --- the non-promoting cases --------------------------------------------
 run "push to a non-dev branch"            0 "abc1234" push refs/heads/other ""
-# The 2.x integration branch reaches this workflow's push trigger through
-# the `2.*` pattern in runner-image.yml, and it is RENAMED at each
-# milestone boundary (D27) -- so these cases drive the shape rather than
-# whatever the branch is called this month. Whichever name it carries, the
-# pool's :latest must keep pointing at dev's image while the 2.x line
-# builds its own, and neither a 1.x maintenance branch nor a tag whose
-# name starts `2.` may promote it either.
+# The 2.x line ran on its own integration branch, which reached this
+# workflow's push trigger through a `2.*` pattern in runner-image.yml and
+# was renamed at each milestone boundary (D27). v2.0.0 shipped, the branch
+# was deleted and the pattern went with it, so no such push reaches the
+# trigger today. The cases stay, because they drive the SHAPE: only dev
+# promotes the pool's :latest, and a branch whose name starts `2.`, a 1.x
+# maintenance branch and a tag do not, whether or not the workflow is
+# currently triggered by them.
 run "push to the 2.x branch, alpha name" 0 "abc1234" push refs/heads/2.0.0-alpha.1 ""
 run "push to the 2.x branch, 2.0.0"      0 "abc1234" push refs/heads/2.0.0 ""
 run "push to a 1.9.x branch"             0 "abc1234" push refs/heads/1.9.x ""

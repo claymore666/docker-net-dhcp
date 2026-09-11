@@ -863,12 +863,15 @@ rm -rf "$SMUG"
 
 # --- a scope word may be a PATTERN (#874, the 2.x rename) --------------
 #
-# `.github/gate-branch-scope.env` carries `2.*` because the 2.x branch is
-# renamed once per milestone -- `2.x-beta`, `2.0.0-alpha.1`, `2.0.0` -- and
-# a literal there is one more place every rename has to edit. Until somebody
-# did, this gate demanded evidence for a branch that no longer existed and
-# demanded NONE for the one that did: the 2.x line carried a whole milestone
-# of merges with no missing-runs coverage, silently, exiting 0.
+# `.github/gate-branch-scope.env` carried `2.*` while the 2.x line ran on a
+# branch renamed once per milestone -- `2.x-beta`, `2.0.0-alpha.1`, `2.0.0`
+# -- because a literal there is one more place every rename has to edit.
+# Until somebody did, this gate demanded evidence for a branch that no
+# longer existed and demanded NONE for the one that did: the 2.x line
+# carried a whole milestone of merges with no missing-runs coverage,
+# silently, exiting 0. The shipped scope is two literals again since v2.0.0
+# shipped; the pattern cases below keep their own fixture values, so they
+# hold whatever the shipped file happens to carry.
 #
 # A pattern is expanded against the branches the API reports, by the same
 # scripts/branch-glob.sh purge-workflow-runs.sh uses for the same words, so

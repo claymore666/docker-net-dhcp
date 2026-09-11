@@ -97,13 +97,15 @@ GRACE_MIN="${1:-20}"
 # whole failure being closed.
 SCOPE_FILE="${GATE_SCOPE_FILE:-$(dirname "$0")/../.github/gate-branch-scope.env}"
 
-# A WORD IN THAT FILE MAY BE A PATTERN (#907/#912). The 2.x branch is
-# renamed once per milestone -- 2.x-beta, 2.0.0-alpha.1, 2.0.0 -- so a scope
-# written as literal names is one more place every rename has to edit, and
-# in between it demands evidence for a branch that no longer exists while
-# demanding none for the one that does. A word is therefore matched the way
-# the workflow branch filters match, by the ONE matcher all three readers
-# share.
+# A WORD IN THAT FILE MAY BE A PATTERN (#907/#912). The 2.x line ran on a
+# branch that was renamed once per milestone -- 2.x-beta, 2.0.0-alpha.1,
+# 2.0.0 -- so a scope written as literal names was one more place every
+# rename had to edit, and in between it demanded evidence for a branch that
+# no longer existed while demanding none for the one that did. The scope
+# carries only literals today, since v2.0.0 shipped and that branch was
+# deleted, but a word is still matched the way the workflow branch filters
+# match, by the ONE matcher all three readers share: the next line to take
+# its own branch adds a pattern, not a new matcher.
 # shellcheck source=scripts/branch-glob.sh
 . "$(dirname "$0")/branch-glob.sh"
 # `-f` as well as `-r`: a DIRECTORY is readable, and a scope path naming one
