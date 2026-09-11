@@ -65,7 +65,7 @@ var safeDaemonMethods = map[string]bool{
 // is the grant that makes compromise of this plugin equivalent to root
 // on the host (#691): anything that can reach the Docker API can start
 // a privileged container. What makes that grant reducible is that the
-// plugin's entire use of the API is three read calls — and "three read
+// plugin's entire use of the API is four read calls — and "four read
 // calls" is a property of today's call sites, which is to say a
 // property nothing enforces. A future NetworkCreate, a library that
 // retries with POST, a debug helper: each of them is one line, and each

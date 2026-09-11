@@ -906,11 +906,9 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 		return res, err
 	}
 	if ifname != "" {
-		log.WithFields(log.Fields{
-			"network":  shortID(r.NetworkID),
-			"endpoint": shortID(r.EndpointID),
-			"ifname":   ifname,
-		}).Info("[CreateEndpoint] Honoring custom interface name")
+		// The hint rides into Join on every engine; whether the engine
+		// then applies it is what noteIfnameRequest states (#670).
+		p.noteIfnameRequest(r.NetworkID, r.EndpointID, ifname)
 		p.updateJoinHint(r.EndpointID, func(h *joinHint) { h.Ifname = ifname })
 	}
 

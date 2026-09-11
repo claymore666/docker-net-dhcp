@@ -278,6 +278,22 @@ type HealthResponse struct {
 	// degrades nothing the plugin does, and the writer is root either
 	// way.
 	StateFileChmodFailures int32 `json:"state_file_chmod_failures"`
+	// IfnameUnsupported counts endpoints created with a custom
+	// interface name on an engine that does not apply one (#125, #670).
+	// Not healthy-affecting and not in the floor table: the container
+	// comes up on a working network and only the interface name
+	// differs from the request. The suite asserts it against the
+	// engine version `docker version` reports, never against the
+	// plugin's own idea of that version.
+	IfnameUnsupported int32 `json:"ifname_unsupported"`
+	// EngineVersion and APIVersion are what the DAEMON told the plugin
+	// at startup: the engine's version string, and the API version the
+	// client library negotiated with it. Pointers for the reason
+	// Version/Commit/Library are: a plugin that publishes neither and
+	// one that publishes an empty string are different facts, and only
+	// the second is a defect.
+	EngineVersion *string `json:"engine_version"`
+	APIVersion    *string `json:"api_version"`
 	// ParentLinkWaits / ParentLinkWaitTimeouts cover contention on a
 	// shared parent NIC, where a macvlan and an ipvlan child cannot
 	// coexist (#486/#549). Waits means an operation queued and got

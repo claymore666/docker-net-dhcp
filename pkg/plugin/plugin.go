@@ -651,6 +651,14 @@ type Plugin struct {
 	instanceID string
 
 	docker dockerClient
+
+	// engine is what the startup probe learned about the daemon (#670).
+	// A pointer swapped atomically rather than two strings under p.mu:
+	// the two fields are ONE observation and a reader must never see
+	// half of one probe beside half of another. Never nil after
+	// probeEngine; engineSnapshot answers `unknown` for the window
+	// before it.
+	engine atomic.Pointer[engineIdentity]
 	server http.Server
 
 	// metricsServer is the OPTIONAL TCP listener for /metrics, nil
@@ -1005,7 +1013,7 @@ type Plugin struct {
 	// plugin refused to send because their method was not GET.
 	//
 	// It should stay zero for the life of every installation: the
-	// plugin's Docker surface is three read calls, and the refusal is
+	// plugin's Docker surface is four read calls, and the refusal is
 	// what makes that a property of the binary rather than a property
 	// of today's call sites (#691). A non-zero value means code in this
 	// process tried to write to the daemon, and an operator who has put
@@ -1420,6 +1428,15 @@ type Plugin struct {
 	// audit_log should alert on the counter instead.
 	ledger              *leaseLedger
 	ledgerWriteFailures stampedCounter
+
+	// ifnameUnsupported counts endpoints created with a custom
+	// interface name on an engine that does not apply one (#125, #670).
+	// Not Healthy-affecting: the container comes up on a working
+	// network and only the interface's NAME differs from what was
+	// asked for. It is a `warn` check because the condition is
+	// invisible everywhere else — Docker reports the request as
+	// accepted and the container as running.
+	ifnameUnsupported stampedCounter
 
 	// stateFileChmodFailures counts files the startup sweep could not
 	// tighten, plus one for a STATE_DIR that could not be read at all
@@ -1971,7 +1988,20 @@ func (p *Plugin) recoverEndpointsDeferred(ctx context.Context, wait time.Duratio
 	runCtx, cancel := context.WithTimeout(ctx, wait+recoveryBudget)
 	defer cancel()
 
-	if notReady := p.recoverEndpoints(runCtx, wait); notReady {
+	notReady := p.recoverEndpoints(runCtx, wait)
+
+	// The daemon this recovery waited for is the one the startup engine
+	// probe could not reach (#670). Taking the identity here costs one
+	// call at the only moment it is known to be answerable, and turns
+	// the `unknown` in the health document into the version an operator
+	// asked for. Its own context, not runCtx: recovery may have spent
+	// that whole budget, and a probe on an expired context would record
+	// "the daemon did not answer" about a daemon that just answered
+	// every call recovery made. A no-op unless the startup probe came
+	// back empty.
+	p.reprobeEngine(context.Background())
+
+	if notReady {
 		// Budget exhausted with the daemon still unreachable. Now it is
 		// a real failure: nothing else is going to retry, so every
 		// previously-attached endpoint is running without renewal.
@@ -2410,6 +2440,14 @@ func NewPlugin(opts Options) (*Plugin, error) {
 	}
 	p.docker = client
 
+	// The engine identity, and the refusal below the floor (#670). It
+	// runs here, before the state directory and the lease record, so a
+	// refusal is the FIRST thing an unsupported host is told rather than
+	// the last: everything below this point creates files on the host.
+	if err := p.probeEngine(context.Background()); err != nil {
+		return nil, err
+	}
+
 	// prepareStateDir creates the directory and runs the #804 sweep. It
 	// hands back the path the two openers below use, so a version of
 	// this function that skipped it would have nothing to give them.
@@ -2486,6 +2524,12 @@ func NewPlugin(opts Options) (*Plugin, error) {
 		p.recoveryPending = p.recoverEndpoints(ctx, recoverySyncDaemonWait)
 		cancel()
 	}
+
+	// A daemon that came up between the engine probe above and the
+	// recovery just finished leaves the identity `unknown` with nothing
+	// else ever asking again. A no-op unless that happened, which is the
+	// only reason it is cheap enough to sit on the enable path.
+	p.reprobeEngine(context.Background())
 
 	return &p, nil
 }

@@ -197,8 +197,9 @@ func metricDefs() []metricDef {
 		{name: "sandbox_key_wrong_ns_type", counter: true, help: "Key-route refusals because the entry was a namespace of some other type. Not observed on any measured host; published so that \"not observed\" stays a statement a reader can check. An arm of sandbox_key_entry_failures.", field: "sandbox_key_wrong_ns_type"},
 		{name: "sandbox_key_unavailable", counter: true, help: "Key-route refusals that were none of the three named arms — the entry never became openable inside the attach budget, or its directory could not be read. The residual arm, so that the four always sum to sandbox_key_entry_failures rather than nearly doing so.", field: "sandbox_key_unavailable"},
 		{name: "sandbox_pid_fallbacks", counter: true, help: "Endpoints whose network namespace was entered through /proc/<pid>/ns/net after the sandbox key route was refused. That route is why the manifest asks for the host PID namespace and CAP_SYS_PTRACE; a zero here across a host's whole uptime, with sandbox_key_entries non-zero, is the evidence that it was not needed.", field: "sandbox_pid_fallbacks"},
-		{name: "docker_api_non_get_refusals", counter: true, help: "Requests to the Docker API refused before they were sent because their method was not GET. The plugin's whole Docker surface is three read calls, so this stays zero unless code in this process tried to write to the daemon; the socket mount is the grant that makes such a write equivalent to root on the host (#691).", field: "docker_api_non_get_refusals"},
+		{name: "docker_api_non_get_refusals", counter: true, help: "Requests to the Docker API refused before they were sent because their method was not GET. The plugin's whole Docker surface is four read calls, so this stays zero unless code in this process tried to write to the daemon; the socket mount is the grant that makes such a write equivalent to root on the host (#691).", field: "docker_api_non_get_refusals"},
 		{name: "ledger_write_failures", counter: true, warn: true, unit: "writes", action: "Lease-ledger appends are failing, so the audit_log record of who held which address is incomplete. Forensics only; networking is unaffected.", help: "Lease-ledger writes that failed.", field: "ledger_write_failures"},
+		{name: "ifname_unsupported", counter: true, warn: true, unit: "endpoints", action: "A container was asked to name its interface and the engine ignored the request, so the interface carries the driver's prefix and index instead. Upgrade the engine to " + MinEngineIfnameVersion + " or newer, or stop relying on the name.", help: "Endpoints created with a custom interface name (Compose interface_name, endpoint option com.docker.network.endpoint.ifname) on a Docker Engine that does not apply it. Remote drivers' requested names are ignored below " + MinEngineIfnameVersion + ", measured. Not healthy-affecting: the container comes up on a working network and only the interface name differs from the request. It counts nothing on an engine whose version the plugin could not read.", field: "ifname_unsupported"},
 		{name: "state_file_chmod_failures", counter: true, warn: true, unit: "files", action: "A file under STATE_DIR was left with access outside 0600 by the startup sweep. The plugin log names the path; chmod 0600 it by hand. A value of 1 with no file named means STATE_DIR itself could not be read, so no file was examined at all.", help: "Files the startup sweep could not tighten, plus one if STATE_DIR could not be read at all, in which case no file was examined (#804). Not healthy-affecting: nothing the plugin does is degraded by a loose mode on a state file, and the writer is root either way. Zero is the normal reading on every host, including one that has never been upgraded, because a sweep with nothing to tighten does not move it.", field: "state_file_chmod_failures"},
 	}
 }
@@ -213,11 +214,19 @@ func metricDefs() []metricDef {
 // handle, instead of as a counter that silently rewound. That is the same
 // failure #405 found inside our own integration suite, where counters
 // reset three times per run and nothing noticed.
+//
+// engine_version and api_version are labels on a SEPARATE series and not
+// on build_info (#670). build_info describes this build; the engine is
+// the host's, it changes when the operator upgrades Docker and not when
+// they upgrade the plugin, and folding it into build_info would make
+// every existing build_info series break on an engine upgrade.
 var metricLabelOnlyFields = map[string]string{
-	"instance_id": "build_info",
-	"version":     "build_info",
-	"commit":      "build_info",
-	"library":     "build_info",
+	"instance_id":    "build_info",
+	"version":        "build_info",
+	"commit":         "build_info",
+	"library":        "build_info",
+	"engine_version": "engine_info",
+	"api_version":    "engine_info",
 }
 
 // metricNotExposedFields are HealthResponse fields deliberately absent
@@ -270,6 +279,19 @@ func writeExpositionWith(w io.Writer, h HealthResponse, defs []metricDef) error 
 		`",version="` + escapeLabelValue(h.Version) +
 		`",commit="` + escapeLabelValue(h.Commit) +
 		`",library="` + escapeLabelValue(h.Library) + "\"} 1\n")
+
+	// engine_info beside it: the daemon's identity, as the daemon
+	// reported it at startup. engine_version is the version the minimum
+	// is measured and compared on; api_version is what the client
+	// library negotiated, which is min(our maximum, the daemon's), so it
+	// can be below both sides' capability. Both read `unknown` when the
+	// daemon did not answer at startup (#383's window), which is a state
+	// an operator can see and is not the same as an engine that is
+	// missing.
+	b.WriteString("\n# HELP " + metricPrefix + "engine_info The Docker Engine this plugin process is talking to, as the daemon reported it at startup. engine_version is what the minimum supported engine is compared against; api_version is the API version this client negotiated with it, which is the lower of the two maximums. Both read `unknown` when the daemon did not answer at startup.\n")
+	b.WriteString("# TYPE " + metricPrefix + "engine_info gauge\n")
+	b.WriteString(metricPrefix + `engine_info{engine_version="` + escapeLabelValue(h.EngineVersion) +
+		`",api_version="` + escapeLabelValue(h.APIVersion) + "\"} 1\n")
 
 	for _, d := range defs {
 		name := metricPrefix + d.name

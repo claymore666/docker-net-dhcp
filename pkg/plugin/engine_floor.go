@@ -3,6 +3,12 @@
 
 package plugin
 
+import (
+	"errors"
+	"strconv"
+	"strings"
+)
+
 // MinEngineVersion is the lowest Docker Engine release this plugin is
 // measured to run on (#670).
 //
@@ -37,3 +43,83 @@ package plugin
 // Raising it drops support for installs that worked before, which #674
 // asks the maintainer to treat as a major-version question.
 const MinEngineVersion = "20.10"
+
+// errEngineTooOld is what NewPlugin returns when the daemon answered
+// and named a version below MinEngineVersion. It is fatal in main.go,
+// the same shape as a lease record whose lock another process holds:
+// the condition will not improve on its own, and serving through it
+// means failing later at a moment nobody is watching.
+var errEngineTooOld = errors.New("refused: the Docker Engine is below the minimum this plugin is measured on")
+
+// engineIdentity is what one startup probe of the daemon learned. Both
+// fields are what the DAEMON said, not what this process assumed:
+// APIVersion is the version the client library NEGOTIATED, so on an
+// engine older than the library's own default it is the daemon's
+// maximum and not ours.
+type engineIdentity struct {
+	Version    string
+	APIVersion string
+}
+
+// versionKey turns a Docker Engine version into a comparable pair.
+//
+// ENGINE VERSIONS ARE NOT DECIMALS. 20.10 is above 20.9 and below 23.0,
+// so a float comparison orders them wrongly; and "9" sorts above "20"
+// as a string. Comparing the two integers in order is the only reading
+// that gets both right.
+//
+// Anything after major.minor is ignored on purpose. The floor names a
+// LINE, because that is what the matrix measures: a tag that follows
+// its line rather than one frozen build of it.
+//
+// A version this cannot read returns ok=false, and the caller must not
+// turn that into a refusal: an unreadable version is no evidence about
+// the engine, and refusing on no evidence would turn an unparsed
+// vendor suffix into a plugin that will not start.
+func versionKey(v string) (major, minor int, ok bool) {
+	// A vendor build appends to the version ("20.10.24+azure",
+	// "26.1.5+dfsg1"), and a pre-release prepends nothing but adds a
+	// suffix ("29.0.0-rc.1"). Both keep major.minor at the front.
+	fields := strings.SplitN(v, ".", 3)
+	if len(fields) < 2 {
+		return 0, 0, false
+	}
+	major, err := strconv.Atoi(fields[0])
+	if err != nil || major < 0 {
+		return 0, 0, false
+	}
+	// The minor may carry the patch's separator already stripped, but on
+	// a two-field version ("20.10") it can still carry a suffix.
+	minorField := fields[1]
+	for i, r := range minorField {
+		if r < '0' || r > '9' {
+			minorField = minorField[:i]
+			break
+		}
+	}
+	minor, err = strconv.Atoi(minorField)
+	if err != nil || minor < 0 {
+		return 0, 0, false
+	}
+	return major, minor, true
+}
+
+// engineBelowFloor reports whether engineVersion is below floor.
+//
+// THE UNREADABLE CASE IS NOT BELOW THE FLOOR. It returns false with
+// ok=false, and every caller treats that as "no evidence" rather than
+// as a refusal. A guard that fails closed on a string it could not
+// parse would refuse to start on a vendor version string nobody
+// anticipated, which is a worse failure than the one it guards: the
+// engines this floor excludes cannot install the plugin at all.
+func engineBelowFloor(engineVersion, floor string) (below, ok bool) {
+	eMajor, eMinor, eOK := versionKey(engineVersion)
+	fMajor, fMinor, fOK := versionKey(floor)
+	if !eOK || !fOK {
+		return false, false
+	}
+	if eMajor != fMajor {
+		return eMajor < fMajor, true
+	}
+	return eMinor < fMinor, true
+}

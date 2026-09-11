@@ -67,7 +67,7 @@ the effective set is the seventeen above, not these four.
 |---|---|---|
 | `network:host` | The plugin resolves and reads the parent link of every macvlan/ipvlan network, and any `METRICS_ADDR` listener binds, on the host's own network namespace rather than in a namespace of its own. | `pkg/plugin/parent_gate.go`, `cmd/net-dhcp/metrics.go` |
 | `pidhost` | Two consumers, and only one of them is the network namespace: the fallback route into a container's netns via `/proc/<pid>/ns/net`, and every `resolv.conf` write, which enters the container's MOUNT namespace through `/proc/<pid>/ns/mnt` and has no sandbox-key equivalent. | `pkg/plugin/resolvconf.go`, `pkg/plugin/container_netns.go` |
-| `mount:/var/run/docker.sock:bind` | The Docker API, read-only: `NetworkList`, `NetworkInspect` and `ContainerInspect`, which is where a container's hostname for DHCP option 12 comes from. Anything but GET and HEAD is refused before it is sent. | `pkg/plugin/docker_client.go`, `pkg/plugin/docker_transport.go` |
+| `mount:/var/run/docker.sock:bind` | The Docker API, read-only: `NetworkList`, `NetworkInspect` and `ContainerInspect`, which is where a container's hostname for DHCP option 12 comes from, plus `Ping` and `ServerVersion` once at startup for the minimum supported engine check. Anything but GET and HEAD is refused before it is sent. | `pkg/plugin/docker_client.go`, `pkg/plugin/docker_transport.go`, `pkg/plugin/engine_probe.go` |
 | `mount:/var/lib/net-dhcp:rbind,rw` | `STATE_DIR`: the lease record, per-network options, tombstones and the audit ledger, which must survive `docker plugin rm` and upgrade. | `pkg/plugin/state.go` |
 | `mount:/var/run/docker:rbind,ro` | Read-only. The daemon's sandbox netns entries: the route tried first into a container's network namespace, which carries a recovery after a plugin restart, and the evidence that separates "the container went away mid-attach" from a plugin fault. | `pkg/plugin/sandbox_netns.go`, `pkg/plugin/network.go` |
 | `CAP_NET_ADMIN` | Every address, route, MTU and link change the plugin applies inside a container's network namespace, and the parent/child link creation that attaches it. | `pkg/plugin/dhcp_manager.go`, `pkg/plugin/netlink_seam.go` |
@@ -157,7 +157,7 @@ it is recorded rather than assumed.
 
 ### Pointing the plugin at a read-only Docker socket proxy
 
-The plugin's whole use of the Docker API is three read calls plus the
+The plugin's whole use of the Docker API is four read calls plus the
 client library's version ping. `DOCKER_HOST` (empty by default, which
 keeps the mounted socket) lets an operator put a proxy in front of it,
 so a compromise of the plugin cannot reach the API calls that start a
@@ -167,10 +167,17 @@ The proxy must allow exactly:
 
 ```
 GET  /_ping                       and  HEAD /_ping
+GET  /v1.*/version
 GET  /v1.*/networks
 GET  /v1.*/networks/{id}
 GET  /v1.*/containers/{id}/json
 ```
+
+`GET /v1.*/version` is the fourth call. The plugin reads the engine
+version once at startup, refuses to start below the minimum supported
+engine, and publishes what it saw as `engine_version` on
+`/Plugin.Health`. A proxy that blocks it leaves that field `unknown` and
+the minimum unchecked. The plugin still starts.
 
 A worked example. The proxy listens on a **TCP endpoint on the host's
 loopback**, which the plugin reaches because it runs with host
@@ -248,7 +255,10 @@ turns out to be false:
   namespace, not a container's;
 - the exposition carries aggregate counters only. No endpoint IDs,
   container names, addresses or MACs appear in it, so scraping it does
-  not disclose which container holds which lease.
+  not disclose which container holds which lease. The labels it does
+  carry are per-host: the plugin's build identity on
+  `net_dhcp_build_info`, and the host's Docker Engine version and
+  negotiated API version on `net_dhcp_engine_info`.
 
 Read that second property narrowly: it is a statement about `/metrics`,
 not about the plugin. The plugin does have a surface that records which
