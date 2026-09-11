@@ -22,25 +22,50 @@
 # network namespace, so the row cannot disturb the runner, and two rows
 # cannot see each other's veths, bridges or leases.
 #
+# THE CONTROL COMES FIRST, and it is the step that makes the rest of the
+# row mean anything. An engine that cannot start ANY container in this
+# rig — an old runtime on a cgroup v2 host is the case that actually
+# occurs — would otherwise fail the first plugin step and be recorded as
+# "the plugin fails on this engine", which is not what happened and not
+# something this cell measured. So `engine-control` runs one ordinary
+# container with no plugin, no driver and no network of ours, and a row
+# that cannot get past it is `unavailable`: no evidence either way.
+# It runs on EVERY row, not only the old ones, so a red control measures
+# the engine rather than the difficulty of the rig.
+#
 # WHAT THE CELL ASSERTS, and why each of them
 #
-#   plugin-install    the documented install path resolves and enables.
-#                     `docker plugin install` is a different code path
-#                     from the API calls the plugin itself makes, so an
-#                     engine can pass every later step and still fail
-#                     here (#670's second open question).
+#   engine-control    the engine runs an ordinary container at all.
+#   plugin-create     the tree's rootfs becomes a plugin and enables.
+#                     NOT `docker plugin install`: with a rootfs there
+#                     is nothing in a registry to install from, so this
+#                     row does not answer #670's second open question
+#                     (whether the registry install path imposes a
+#                     higher floor). The install branch below is the one
+#                     that does, and only a measurement of a published
+#                     reference reaches it.
 #   network-create    the remote driver is reachable and CreateNetwork
-#                     is answered.
+#                     is answered, once per network mode.
 #   container-lease   a container comes up with an address from the
-#                     fixture's pool.
+#                     fixture's pool, once per network mode.
 #   dnsmasq-ack       that address was ACKed by the DHCP server, read
 #                     from the SERVER's log. The plugin's own report of
 #                     an address is not evidence that a lease exists.
-#   restart-endpoint  the endpoint survives `docker restart` and comes
-#                     back with the same address.
+#   restart-endpoint  the endpoint survives `docker restart`, comes back
+#                     with the SAME address, and the server logs a fresh
+#                     ACK for it. An engine that re-leased the endpoint
+#                     onto a different address would satisfy "it has an
+#                     address" and break every container that was
+#                     addressed by the old one.
+#
+# ALL THREE MODES, because the floor is published for all three. bridge,
+# macvlan and ipvlan take different paths through CreateNetwork and
+# CreateEndpoint, and an engine that breaks one of them breaks the
+# plugin for the users on that mode. They share one L2 segment and one
+# DHCP server here, each on its own netdev (#556).
 #
 # The verdict is the FIRST failing step, by name, because "27 fails" and
-# "27 fails at plugin-install" are different facts and only the second
+# "27 fails at plugin-create" are different facts and only the second
 # one can be acted on.
 #
 # Usage:
@@ -81,8 +106,6 @@ fi
 LOCAL_PLUGIN="net-dhcp-under-test:matrix"
 
 CONTAINER="engine-matrix-${ENGINE_TAG//./-}-$$"
-NETWORK="em-net"
-TEST_CTR="em-ctr"
 
 # The fixture's own names and addresses. Deliberately NOT the
 # integration harness's (dh-itest-*, 192.168.99.0/24 there as well):
@@ -91,8 +114,11 @@ TEST_CTR="em-ctr"
 SEGMENT="em-seg"
 PARENT="em-parent"
 PARENT_PEER="em-parentp"
+IPVLAN_PARENT="em-ipvl"
+IPVLAN_PEER="em-ipvlp"
 SERVER_ADDR="192.168.99.1/24"
 PARENT_ADDR="192.168.99.2/24"
+IPVLAN_ADDR="192.168.99.3/24"
 POOL_START="192.168.99.10"
 POOL_END="192.168.99.99"
 # dnsmasq rounds anything shorter up to two minutes, so a smaller value
@@ -101,10 +127,16 @@ LEASE_TIME="2m"
 FIXTURE_DIR="/var/log/engine-matrix"
 DNSMASQ_LOG="$FIXTURE_DIR/dnsmasq.log"
 
+# The macvlan cell is the one the restart is driven on, and its names
+# are referenced after the mode loop.
+MACVLAN_NET="em-net-macvlan"
+MACVLAN_CTR="em-ctr-macvlan"
+
 STEP=""
 candidate=""
 ENGINE_VERSION=""
 ENGINE_API=""
+MODE_ADDR=""
 
 say() { printf '%s\n' "$*"; }
 
@@ -146,6 +178,20 @@ fail() {
     exit 1
 }
 
+# unavailable ends the row with NO verdict about the plugin. It is for
+# the cases where the rig never got far enough to ask the question: the
+# nested daemon did not come up, or this engine cannot run a container
+# here at all. scripts/engine-floor.sh treats such a row as unmeasured,
+# which is a different thing from a failure and is reported differently.
+unavailable() {
+    local detail="$1"
+    say "UNAVAILABLE at step '$STEP': $detail"
+    say "--- container log ---"
+    docker logs --tail 40 "$CONTAINER" 2>&1 || true
+    verdict unavailable "$detail"
+    exit 2
+}
+
 # plugin_log prints the plugin's own log from inside the nested daemon.
 # The path is the daemon's plugin root, which is where a managed
 # plugin's rootfs lives; a refusal at startup is in here and nowhere
@@ -156,6 +202,49 @@ plugin_log() {
         echo "== $f"
         tail -60 "$f"
     done' 2>/dev/null
+}
+
+# acks counts the server's ACK lines for one address. A count and not a
+# presence test, because the restart has to be shown to produce a NEW
+# lease exchange rather than to have left the first one's line lying in
+# the log.
+acks() {
+    local addr="$1"
+    d sh -c "grep -c 'DHCPACK($SEGMENT) $addr ' $DNSMASQ_LOG 2>/dev/null" | tr -d '\r' | head -1
+}
+
+# lease_in_mode drives one network mode end to end and leaves the
+# address in MODE_ADDR.
+#
+# A GLOBAL AND NOT AN ECHOED RETURN VALUE: `fail` exits, and an exit
+# inside a command substitution ends the subshell, not the cell. A row
+# would then continue past a failed step and report a later verdict.
+lease_in_mode() {
+    local mode="$1" net="$2" ctr="$3"; shift 3
+    MODE_ADDR=""
+
+    STEP="network-create-$mode"
+    d docker network create -d "$PLUGIN_NAME" --ipam-driver null -o mode="$mode" "$@" "$net" >/dev/null \
+        || fail "docker network create -o mode=$mode was refused"
+
+    STEP="container-lease-$mode"
+    d docker run -d --name "$ctr" --network "$net" "$TEST_IMAGE" sleep 600 >/dev/null \
+        || fail "the container did not start on the $mode network"
+
+    local addr=""
+    for _ in $(seq 1 30); do
+        addr="$(d docker inspect -f "{{(index .NetworkSettings.Networks \"$net\").IPAddress}}" "$ctr" 2>/dev/null | tr -d '\r')"
+        [ -n "$addr" ] && break
+        sleep 1
+    done
+    [ -n "$addr" ] || fail "the $mode container never reported an address"
+
+    STEP="dnsmasq-ack-$mode"
+    d sh -c "grep 'DHCPACK($SEGMENT) $addr ' $DNSMASQ_LOG >/dev/null" \
+        || fail "the DHCP server logged no ACK for $addr ($mode)"
+
+    say "== $mode: $addr, ACKed by the DHCP server"
+    MODE_ADDR="$addr"
 }
 
 # ---- step 1: the engine itself ---------------------------------------
@@ -183,10 +272,7 @@ for _ in $(seq 1 60); do
     sleep 2
 done
 if [ -z "$ENGINE_VERSION" ]; then
-    say "--- container log ---"
-    docker logs --tail 40 "$CONTAINER" 2>&1 || true
-    verdict unavailable "the nested daemon never answered"
-    exit 2
+    unavailable "the nested daemon never answered"
 fi
 ENGINE_API="$(d docker version --format '{{.Server.APIVersion}}' 2>/dev/null | tr -d '\r')"
 case "$ENGINE_API" in
@@ -195,7 +281,24 @@ case "$ENGINE_API" in
 esac
 say "== engine $ENGINE_VERSION, API $ENGINE_API"
 
-# ---- step 2: the DHCP fixture ----------------------------------------
+# ---- step 2: the control ---------------------------------------------
+# Nothing of ours runs in this step. It answers one question: can this
+# engine, on this host, start a container and run a process in it. See
+# the header — a row that fails here has measured the rig, not the
+# plugin, and says so in its verdict.
+STEP=engine-control
+say "== control: one ordinary container, no plugin"
+docker pull -q "$TEST_IMAGE" >/dev/null 2>&1 || true
+docker save "$TEST_IMAGE" | docker exec -i "$CONTAINER" docker load >/dev/null 2>&1 \
+    || d docker pull "$TEST_IMAGE" >/dev/null 2>&1 \
+    || unavailable "could not get $TEST_IMAGE into the nested daemon"
+
+if ! d docker run --rm "$TEST_IMAGE" true; then
+    unavailable "this engine cannot start an ordinary container on this host, so nothing here measures the plugin"
+fi
+say "== control passed"
+
+# ---- step 3: the DHCP fixture ----------------------------------------
 STEP=fixture
 say "== fixture"
 d apk add --no-cache dnsmasq iproute2 >/dev/null 2>&1 || fail "could not install dnsmasq and iproute2"
@@ -209,6 +312,11 @@ ip link set $PARENT_PEER master $SEGMENT
 ip link set $PARENT_PEER up
 ip link set $PARENT up
 ip addr add $PARENT_ADDR dev $PARENT
+ip link add $IPVLAN_PARENT type veth peer name $IPVLAN_PEER
+ip link set $IPVLAN_PEER master $SEGMENT
+ip link set $IPVLAN_PEER up
+ip link set $IPVLAN_PARENT up
+ip addr add $IPVLAN_ADDR dev $IPVLAN_PARENT
 mkdir -p $FIXTURE_DIR /var/lib/net-dhcp
 dnsmasq --interface=$SEGMENT --bind-interfaces --except-interface=lo \\
   --dhcp-range=$POOL_START,$POOL_END,$LEASE_TIME --log-dhcp \\
@@ -225,17 +333,15 @@ for _ in $(seq 1 30); do
 done
 d sh -c "[ -f $FIXTURE_DIR/dnsmasq.pid ]" || fail "dnsmasq did not start"
 
-# ---- step 3: the plugin ----------------------------------------------
-STEP=plugin-install
+# ---- step 4: the plugin ----------------------------------------------
 if [ -n "$ROOTFS_DIR" ]; then
+    STEP=plugin-create
     say "== plugin create from the tree's build"
     d docker plugin create "$LOCAL_PLUGIN" /plugin-src \
         || fail "docker plugin create was refused"
     PLUGIN_NAME="$LOCAL_PLUGIN"
-    STEP=plugin-enable
-    d docker plugin enable "$PLUGIN_NAME" \
-        || fail "docker plugin enable was refused"
 else
+    STEP=plugin-install
     [ -n "$PLUGIN_REF" ] || fail "no rootfs directory and no PLUGIN_REF"
     say "== plugin install $PLUGIN_REF"
     d docker plugin install --grant-all-permissions "$PLUGIN_REF" \
@@ -243,59 +349,64 @@ else
     PLUGIN_NAME="$PLUGIN_REF"
 fi
 
+STEP=plugin-enable
+d docker plugin enable "$PLUGIN_NAME" \
+    || fail "docker plugin enable was refused"
+
 STEP=plugin-enabled
 d docker plugin inspect -f '{{.Enabled}}' "$PLUGIN_NAME" 2>/dev/null | grep -x true >/dev/null \
     || fail "the plugin is installed but not enabled"
 
-# ---- step 4: the network ---------------------------------------------
-STEP=network-create
-say "== network create"
-d docker network create -d "$PLUGIN_NAME" --ipam-driver null \
-    -o mode=macvlan -o parent="$PARENT" "$NETWORK" >/dev/null \
-    || fail "docker network create was refused"
+# ---- step 5: a lease in every mode the plugin offers ------------------
+lease_in_mode macvlan "$MACVLAN_NET" "$MACVLAN_CTR" -o parent="$PARENT"
+macvlan_addr="$MODE_ADDR"
 
-# ---- step 5: a container with a lease ---------------------------------
-STEP=container-lease
-say "== container"
-docker pull -q "$TEST_IMAGE" >/dev/null 2>&1 || true
-docker save "$TEST_IMAGE" | docker exec -i "$CONTAINER" docker load >/dev/null 2>&1 \
-    || d docker pull "$TEST_IMAGE" >/dev/null 2>&1 \
-    || fail "could not get $TEST_IMAGE into the nested daemon"
+lease_in_mode bridge "em-net-bridge" "em-ctr-bridge" -o bridge="$SEGMENT"
 
-d docker run -d --name "$TEST_CTR" --network "$NETWORK" "$TEST_IMAGE" sleep 600 >/dev/null \
-    || fail "the container did not start on the plugin's network"
+lease_in_mode ipvlan "em-net-ipvlan" "em-ctr-ipvlan" -o parent="$IPVLAN_PARENT"
 
-ipv4=""
-for _ in $(seq 1 30); do
-    ipv4="$(d docker inspect -f "{{(index .NetworkSettings.Networks \"$NETWORK\").IPAddress}}" "$TEST_CTR" 2>/dev/null | tr -d '\r')"
-    [ -n "$ipv4" ] && break
-    sleep 1
-done
-[ -n "$ipv4" ] || fail "the container never reported an address"
-say "== container address $ipv4"
-
-mac="$(d docker inspect -f "{{(index .NetworkSettings.Networks \"$NETWORK\").MacAddress}}" "$TEST_CTR" 2>/dev/null | tr -d '\r')"
-
-# ---- step 6: the server's own record of that lease --------------------
-STEP=dnsmasq-ack
-d sh -c "grep -q 'DHCPACK($SEGMENT) $ipv4 ' $DNSMASQ_LOG" \
-    || fail "the DHCP server logged no ACK for $ipv4"
-say "== dnsmasq ACKed $ipv4"
-
-# ---- step 7: the endpoint across a restart ----------------------------
+# ---- step 6: the endpoint across a restart ----------------------------
+# Driven on the macvlan network. The restart path is CreateEndpoint and
+# Join again with the stored lease, which is the same code for all three
+# modes; what differs between them is the netdev, and that is what the
+# three cells above measured.
 STEP=restart-endpoint
-d docker restart "$TEST_CTR" >/dev/null || fail "docker restart failed"
+acks_before="$(acks "$macvlan_addr")"
+d docker restart "$MACVLAN_CTR" >/dev/null || fail "docker restart failed"
 after=""
 for _ in $(seq 1 30); do
-    after="$(d docker inspect -f "{{(index .NetworkSettings.Networks \"$NETWORK\").IPAddress}}" "$TEST_CTR" 2>/dev/null | tr -d '\r')"
+    after="$(d docker inspect -f "{{(index .NetworkSettings.Networks \"$MACVLAN_NET\").IPAddress}}" "$MACVLAN_CTR" 2>/dev/null | tr -d '\r')"
     [ -n "$after" ] && break
     sleep 1
 done
 [ -n "$after" ] || fail "the endpoint reported no address after restart"
-d sh -c "docker exec $TEST_CTR ip -4 addr" | grep "$after" >/dev/null \
+
+# THE ADDRESS, not merely an address. A restart that re-leases onto a
+# different address keeps the container running and breaks everything
+# that was addressed by the old one, and all of it passes a test that
+# only asks whether the field is non-empty.
+[ "$after" = "$macvlan_addr" ] \
+    || fail "the endpoint came back on $after, not $macvlan_addr, after restart"
+
+d sh -c "docker exec $MACVLAN_CTR ip -4 addr" | grep "$after" >/dev/null \
     || fail "the container's own interface does not carry $after after restart"
-say "== after restart: $after (was $ipv4, mac $mac)"
+
+# The SERVER's record of the restart, for the reason the first ACK step
+# gives: the engine's own report of an address is not evidence that a
+# lease exists behind it. A fresh ACK line for the same address is.
+acks_after="$acks_before"
+for _ in $(seq 1 30); do
+    acks_after="$(acks "$after")"
+    case "$acks_after" in
+        ''|*[!0-9]*) acks_after=0 ;;
+    esac
+    [ "$acks_after" -gt "$acks_before" ] && break
+    sleep 1
+done
+[ "$acks_after" -gt "$acks_before" ] \
+    || fail "the DHCP server logged no new ACK for $after after the restart (was $acks_before, still $acks_after)"
+say "== after restart: $after, re-ACKed by the DHCP server"
 
 STEP=complete
-verdict pass "address=$ipv4 after_restart=$after"
+verdict pass "macvlan=$macvlan_addr after_restart=$after"
 exit 0

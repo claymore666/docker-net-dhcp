@@ -26,16 +26,21 @@ name: Engine matrix
 # hour; on hosted runners they cost the pool nothing. integration-hosted.yml
 # established that a hosted VM has what a privileged lane needs.
 #
-# WHAT EACH CELL MEASURES is in scripts/engine-baseline.sh. Two facts
+# WHAT EACH CELL MEASURES is in scripts/engine-baseline.sh. Three facts
 # about the shape of the lane belong here:
 #
 #   - Rows run to completion whatever their verdict. A row is EXPECTED
-#     to fail below the floor, and `fail-fast` or a failing step would
-#     delete the rest of the evidence — the same reason integration.yml
-#     gives for its own `fail-fast: false`.
+#     to fail or to be unmeasurable below the floor, and `fail-fast` or
+#     a failing step would delete the rest of the evidence — the same
+#     reason integration.yml gives for its own `fail-fast: false`.
 #   - The verdict of the LANE is the reconciliation job, not the rows.
 #     A row is a measurement; `floor` is the only thing here that can be
 #     wrong.
+#   - The row list is .github/engine-rows.txt, read both by the matrix
+#     below and by the reconciliation. A cell that dies before it
+#     uploads its row therefore turns the lane red instead of silently
+#     shrinking the matrix, which matters most for the lowest row: it is
+#     the one whose absence would leave a clean pass behind.
 #
 # TRIGGERS. `push` on the paths that define the measurement, because a
 # change to the cell, the row list or the floor is exactly when the
@@ -49,6 +54,7 @@ on:
   push:
     paths:
       - '.github/workflows/engine-matrix.yml'
+      - '.github/engine-rows.txt'
       - 'scripts/engine-baseline.sh'
       - 'scripts/engine-floor.sh'
       - 'pkg/plugin/engine_floor.go'
@@ -70,11 +76,30 @@ permissions:
   contents: read
 
 jobs:
+  # The matrix comes from the file the reconciliation reads, so the set
+  # of rows that ran and the set of rows that must be accounted for are
+  # one declaration rather than two lists that agree until someone edits
+  # one of them.
+  rows:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      list: ${{ steps.list.outputs.list }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - id: list
+        run: |
+          set -euo pipefail
+          list="$(bash scripts/engine-floor.sh --rows-json)"
+          echo "rows: $list"
+          echo "list=$list" >> "$GITHUB_OUTPUT"
+
   cell:
+    needs: rows
     runs-on: ubuntu-latest
     # A cell is a pull of a dind image, an apk install, a plugin build
-    # install, a lease and a restart. MEASURED on the author's box at
-    # 2-4 minutes per row with the images cold; the cap is a backstop
+    # install, three leases and a restart. MEASURED on the author's box
+    # at 2-4 minutes per row with the images cold; the cap is a backstop
     # above that, not an estimate of it.
     timeout-minutes: 25
     env:
@@ -85,20 +110,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # THE ROW LIST IS DOWNWARD-OPEN ON PURPOSE. It does not stop at
-        # the engines we expect to pass: 19.03 is here because a matrix
-        # whose every row passes has measured the list, not the floor.
-        # 19.03 is the first release below 20.10 and the last that
-        # predates cgroup v2 support, so it is the row that decides
-        # whether the floor is a property of this plugin or of the list
-        # someone typed.
-        #
-        # Tags, not exact versions: `29` follows 29.x and a row that
-        # named 29.7.2 would measure a frozen engine while the lane's
-        # purpose is to notice the moving one. 20.10 is spelled with its
-        # minor because the 20.10 line is the only one whose major is
-        # ambiguous (there is no `20`).
-        engine: ['29', '28', '27', '26', '25', '24', '23', '20.10', '19.03']
+        engine: ${{ fromJSON(needs.rows.outputs.list) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -145,10 +157,18 @@ jobs:
       # The row line is the artifact, not the job's colour. `cell.log`
       # carries the plugin log and the dnsmasq tail on a failure, which
       # is what turns "27 fails" into a fact somebody can act on.
+      #
+      # `always()`, because a step above this one can die — the rootfs
+      # build pulls, and the workflow's own comment above says what a
+      # spent Hub quota costs. A row that says "this cell produced no
+      # verdict" is a red reconciliation; a row that never arrives is
+      # too, and the difference is whether the log says why.
       - name: Record the row
+        if: always()
         run: |
           set -euo pipefail
           mkdir -p rows
+          touch cell.log
           grep '^ENGINE_MATRIX_ROW ' cell.log > "rows/${ENGINE//./-}.row" || {
             echo "::error::the cell produced no verdict line for ${ENGINE}"
             printf 'ENGINE_MATRIX_ROW tag=%s engine=unknown api=unknown result=no-verdict step=unknown\n' "$ENGINE" \
@@ -159,6 +179,7 @@ jobs:
           ENGINE: ${{ matrix.engine }}
 
       - name: Upload the row
+        if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: engine-row-${{ matrix.engine }}
@@ -181,7 +202,7 @@ jobs:
           done
 
   floor:
-    needs: cell
+    needs: [rows, cell]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -194,4 +215,4 @@ jobs:
           path: downloaded
 
       - name: Reconcile the measured floor against the declared one
-        run: bash scripts/engine-floor.sh --reconcile downloaded
+        run: bash scripts/engine-floor.sh --reconcile downloaded | tee -a "$GITHUB_STEP_SUMMARY"
