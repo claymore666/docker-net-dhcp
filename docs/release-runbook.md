@@ -343,6 +343,26 @@ Pre-flight: every issue / PR going into the release should be on
 the `vX.Y.Z` milestone (the workflow leans on this for the
 "Closes" list in the release PR).
 
+Pre-flight, second item: re-measure the supported engines before the rc.
+Dispatch
+[`engine-matrix.yml`](https://github.com/claymore666/docker-net-dhcp/blob/main/.github/workflows/engine-matrix.yml)
+on the release branch and read the `floor` job:
+
+```sh
+gh workflow run engine-matrix.yml --ref release/vX.Y.Z
+```
+
+One job per engine line in
+[`.github/engine-rows.txt`](https://github.com/claymore666/docker-net-dhcp/blob/main/.github/engine-rows.txt),
+each driving the whole baseline against that engine in a nested daemon.
+The `floor` job reconciles the minimum the plugin refuses below against
+the lowest line that passed. A red `floor` job blocks the rc: the
+number it disagrees with is published in `README.md` and
+`docs/index.md`, and the plugin refuses to start below it. The lane also
+runs weekly, so a moving `29` tag is usually caught before a release
+asks the question. Read the run rather than the schedule: a release is
+the moment the published number has to be true.
+
 1. **Branch off `dev`:** `git checkout -b release/vX.Y.Z origin/dev`
 2. **Bump install pins:** `scripts/bump-version.sh vX.Y.Z` (#251). It
    rewrites every published-image pin
