@@ -117,12 +117,23 @@ func TestDisplacedClient_TheInterfaceNeverCarriesTwoClients(t *testing.T) {
 	// weakens nothing: the count must still be exactly 1, two clients
 	// still fail, and a client that never starts spends the budget and
 	// fails with the same message and the same census.
+	//
+	// THE WAIT IS REPORTED WHETHER OR NOT IT WAS SPENT, because a
+	// budget silently absorbs a regression otherwise. The measurement
+	// that motivated the poll is 358ms (run 34597851110); a socket
+	// arriving at 12s would pass this check and say nothing, and the
+	// next reader would have no way to tell "it was already there" from
+	// "it arrived just inside the budget". The number belongs in the
+	// run, not in the review that noticed it was missing.
+	censusStart := time.Now()
 	n := len(dhcpv4Sockets(t, ctx, id, ifIndex))
-	settle := time.Now().Add(harness.IPAcquisitionBudget)
+	settle := censusStart.Add(harness.IPAcquisitionBudget)
 	for n != 1 && time.Now().Before(settle) {
 		time.Sleep(500 * time.Millisecond)
 		n = len(dhcpv4Sockets(t, ctx, id, ifIndex))
 	}
+	t.Logf("SETTLE: the pre-check census read %d DHCPv4 socket(s) after %s of its %s budget",
+		n, time.Since(censusStart).Round(10*time.Millisecond), harness.IPAcquisitionBudget)
 	if n != 1 {
 		t.Fatalf("the running container's namespace holds %d DHCPv4 client socket(s) %s after "+
 			"the address was reported and before anything was displaced, want exactly 1. This "+
