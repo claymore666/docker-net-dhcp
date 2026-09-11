@@ -101,7 +101,8 @@ namespace mounts the daemon makes afterwards only where the daemon's own
 mount is linked to it. Where it is, the key route carries the attach. Where
 it is private, the key is refused and `/proc/<pid>/ns/net` carries the attach
 exactly as before. Recovery after a plugin restart takes the key route on
-either host, because the sandbox is then older than the plugin process. `pidhost` and `CAP_SYS_PTRACE` therefore stay, and would have
+either host, because the sandbox is then older than the plugin process.
+`pidhost` and `CAP_SYS_PTRACE` therefore stay, and would have
 stayed regardless, because `resolv.conf` propagation enters the container's
 *mount* namespace by PID and a mount namespace has no sandbox key.
 `sandbox_key_entries`, `sandbox_key_entry_failures` and

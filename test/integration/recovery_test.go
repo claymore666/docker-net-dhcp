@@ -166,29 +166,40 @@ func TestRecovery_PluginDisableEnable_PreservesEndpoint(t *testing.T) {
 	// the container, so NetworkSettings.SandboxKey is one always-fresh
 	// source for both. Nothing was added to the durable record.
 	//
-	// WHETHER IT WORKS: HERE, YES — and in sandbox_key_route_test.go's
-	// four cells, no. Same code, opposite results, and the discriminator
-	// is the one fact that makes the whole finding precise:
+	// WHETHER IT WORKS: HERE, YES, and on either host. In
+	// sandbox_key_route_test.go's four cells it depends on the host, and
+	// the two facts together are what make the finding precise:
 	//
 	//   the plugin's read-only /var/run/docker is a bind mount taken when
 	//   the plugin process starts, and a bind mount is a SNAPSHOT, not a
 	//   subscription. libnetwork bind-mounts each netns over an ordinary
-	//   empty file under netns/. Sandboxes that already existed when the
-	//   plugin started are therefore visible through the key; sandboxes
-	//   created afterwards are not, and the key resolves to the empty file
-	//   underneath (which is why openSandboxNetNSByKeyIn checks
-	//   NS_GET_NSTYPE rather than trusting a successful open).
+	//   empty file under netns/. A sandbox that already existed when the
+	//   plugin started is visible through the key on every host. A
+	//   sandbox created afterwards reaches the plugin only where the
+	//   mount the daemon publishes keys on is linked to the plugin's,
+	//   which the plugin reports as sandbox_netns_propagation; where it
+	//   is private the key resolves to the empty file underneath (which
+	//   is why openSandboxNetNSByKeyIn checks NS_GET_NSTYPE rather than
+	//   trusting a successful open).
 	//
 	// Recovery is the case where the sandbox necessarily predates the
 	// plugin process: the container was running before the disable, and
-	// this is a fresh plugin after the enable. So recovery is exactly the
-	// case the key route CAN carry, and it does. MEASURED on the lane
+	// this is a fresh plugin after the enable. So the key route carries
+	// recovery on every host, and it does. MEASURED on the lane
 	// 2026-09-05, run 33927195482: entries 1, failures 0, fallbacks 0
-	// here; entries 0, failures 1, fallbacks 1 in every attach cell.
+	// here; entries 0, failures 1, fallbacks 1 in every attach cell on
+	// that host, whose propagation reads 0.
+	//
+	// Age is SUFFICIENT for the key route and it is not necessary. A
+	// linked host takes the key route for a sandbox younger than the
+	// plugin as well, which is what the attach cells' linked branch
+	// asserts (#417). Reading age as the rule turns the private host's
+	// numbers into the universal case, which is the reading those cells
+	// exist to remove.
 	//
 	// This is also why the manifest cannot lose pidhost or
-	// CAP_SYS_PTRACE: a Join is always for a sandbox younger than the
-	// plugin, so the PID route carries every attach on this engine.
+	// CAP_SYS_PTRACE: on a private host the PID route carries every
+	// attach, and this pool is such a host.
 	//
 	// The reads are ABSOLUTE, not deltas, for the reason stated at the
 	// window above: this is a fresh plugin process and its counters
