@@ -62,11 +62,14 @@ func assertNoReserveLinksLeft(t *testing.T, when string) {
 //
 // With no DHCP server the reserve cannot answer, and WHEN it gives up
 // is the whole test. The daemon's IPAM client stops listening at
-// `docker plugin enable --timeout` (30s by default) and RE-SENDS the
-// same body rather than waiting, so a reserve that ran the network's
-// own lease_timeout -- 34s by default, which is the conflict-recovery
+// `docker plugin enable --timeout` (30s by default) and re-sends the
+// call, and that re-send carries NO BODY and is refused before any
+// handler runs (TestFailure_IPAMResentRequestIsRefusedNotServedTwice
+// below is the measurement). So a reserve that ran the network's own
+// lease_timeout -- 34s by default, which is the conflict-recovery
 // window -- would hand the operator a Docker-side timeout while the
-// plugin was still working, and a second DHCP exchange underneath it.
+// plugin was still working, and a parse error underneath it instead of
+// a late answer.
 // The reserve is therefore capped to the daemon's budget, and this is
 // the test that the cap is real rather than a comment.
 //
@@ -170,9 +173,9 @@ func TestFailure_IPAMServerDownFailsInsideTheBudget(t *testing.T) {
 			}
 			t.Logf("refused after %s: %v", elapsed.Round(time.Millisecond), err)
 			if elapsed > ceiling {
-				t.Errorf("the failure took %s. The daemon stops listening at 30s and re-sends "+
-					"the same request, so a reserve that overruns produces a second DHCP "+
-					"exchange for one endpoint instead of a late answer.", elapsed.Round(time.Second))
+				t.Errorf("the failure took %s. The daemon stops listening at 30s and the call "+
+					"it re-sends carries no body, so a reserve that overruns gives the "+
+					"operator a parse error instead of a late answer.", elapsed.Round(time.Second))
 			}
 			if !strings.Contains(err.Error(), "reserve an address") {
 				t.Errorf("the error is %q; it does not say the address reservation is what "+
@@ -232,7 +235,7 @@ func TestFailure_IPAMServerDownFailsInsideTheBudget(t *testing.T) {
 // is held down for eight so the first exchange is still running when
 // the second body arrives.
 //
-// ipam_reserve_joined is NOT asserted here any more, and cannot be: the
+// ipam_reserve_duplicate_mac is NOT asserted here any more, and cannot be: the
 // empty re-send is refused before any handler sees it, so nothing
 // reaches the join. The counter stays for the concurrency it was
 // written for and the handover records that the daemon's own re-send

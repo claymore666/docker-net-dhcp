@@ -293,9 +293,8 @@ func (p *Plugin) RequestAddress(ctx context.Context, req RequestAddressRequest) 
 			return none, fmt.Errorf("%w: %q is not an address", util.ErrIPAM, req.Address)
 		}
 		if rec, ok := p.ipamRecordFor(networkID, addr); ok {
-			// The replay of a stored endpoint, and also how a re-sent
-			// RequestAddress body finds the reservation the first copy
-			// of it already made.
+			// The replay of a stored endpoint: the address is one this
+			// plugin's own record holds, under the MAC that holds it.
 			if err := ipamRecordAnswersFor(rec, mac, addr); err != nil {
 				return none, err
 			}
