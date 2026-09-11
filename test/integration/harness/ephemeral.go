@@ -1077,39 +1077,66 @@ func (ef *EphemeralFixture) DNSDomain() string { return ef.dnsDomain }
 func (ef *EphemeralFixture) CountLogLines(substrings ...string) int {
 	ef.t.Helper()
 	log := ef.readLog()
-	ackToken := ef.keaACKToken(log)
+	tokens := ef.logTokens(log)
 	count := 0
 	for _, line := range strings.Split(log, "\n") {
-		if lineMatches(line, substrings, ackToken) {
+		if lineMatches(line, substrings, tokens) {
 			count++
 		}
 	}
 	return count
 }
 
-// keaACKToken decides, for one log, which line stands for "the server
-// ACKed a lease": the DHCPACK line where the server writes one, the
-// lease allocation line where it does not. Non-Kea backends always
-// mean the literal token. See CountLogLines for the measurements.
-func (ef *EphemeralFixture) keaACKToken(log string) string {
+// logTokens decides, for one log, which line stands for each DHCP
+// message type a caller can ask about.
+//
+// THE RULE IS PER MESSAGE TYPE, NOT PER VERSION, and that is what this
+// map is for. The first version of this decided the ACK token alone,
+// on the premise that the ACK was the one Kea 2.4.1 spelt differently.
+// It is not: the OFFER is the same split one message to the left --
+// 2.6.3 writes `DHCP4_PACKET_SEND ... DHCPOFFER`, 2.4.1 writes
+// `DHCP4_LEASE_ADVERT ... will be advertised` and no line containing
+// DHCPOFFER at INFO, ever. MEASURED on the hosted cross-check, run
+// 34537348413, against Ubuntu's kea 2.4.1: every DHCPOFFER count in
+// the suite read zero there, and TestConflictCheck_SquattedOfferIsDeclined
+// failed saying the server had offered nothing after the DECLINE when
+// the server's own log showed two allocations (#942).
+//
+// Fixing one spelling and leaving its neighbour is how that happened,
+// so the decision is a table and a new message type is one row.
+//
+// The choice is made FROM THE LOG, not from a version string: a log
+// carrying the literal token is written by a server that writes it and
+// only those lines count; a log carrying none uses the stand-in. On
+// 2.6.3, where a bind writes both the DHCPACK line and the allocation
+// line for one event, that is also what stops the count doubling.
+func (ef *EphemeralFixture) logTokens(log string) map[string]string {
+	tokens := map[string]string{"dhcpack": "dhcpack", "dhcpoffer": "dhcpoffer"}
 	if ef.backend != backendKea {
-		return "dhcpack"
+		return tokens
 	}
-	if strings.Contains(strings.ToLower(log), "dhcpack") {
-		return "dhcpack"
+	lower := strings.ToLower(log)
+	for literal, standIn := range map[string]string{
+		"dhcpack":   "dhcp4_lease_alloc",
+		"dhcpoffer": "dhcp4_lease_advert",
+	} {
+		if !strings.Contains(lower, literal) {
+			tokens[literal] = standIn
+		}
 	}
-	return "dhcp4_lease_alloc"
+	return tokens
 }
 
 // lineMatches is the per-line predicate behind CountLogLines and
 // LastACKAddress: every substring must appear (case-insensitive), with
-// a caller's "DHCPACK" satisfied by ackToken instead.
-func lineMatches(line string, substrings []string, ackToken string) bool {
+// a caller's message-type token satisfied by whatever this log spells
+// it as.
+func lineMatches(line string, substrings []string, tokens map[string]string) bool {
 	l := strings.ToLower(line)
 	for _, s := range substrings {
 		want := strings.ToLower(s)
-		if want == "dhcpack" {
-			want = ackToken
+		if t, ok := tokens[want]; ok {
+			want = t
 		}
 		if !strings.Contains(l, want) {
 			return false
@@ -1146,9 +1173,9 @@ func (ef *EphemeralFixture) LastACKAddress(mac string) string {
 	// Same per-log token choice as CountLogLines, for the same reason:
 	// which line Kea writes for an ACK depends on its version (#612).
 	log := ef.readLog()
-	ackToken := ef.keaACKToken(log)
+	tokens := ef.logTokens(log)
 
-	addr, matched := lastACKAddressFrom(ef.backend, log, ackToken, mac)
+	addr, matched := lastACKAddressFrom(ef.backend, log, tokens["dhcpack"], mac)
 	// The reader cannot silently answer "unknown" for a client the
 	// server demonstrably ACKed: the caller's guard is `acked != ""`,
 	// so returning "" there would DISABLE the divergence assertion
@@ -1167,6 +1194,8 @@ func (ef *EphemeralFixture) LastACKAddress(mac string) string {
 // is what distinguishes "this client was never ACKed" (a legitimate
 // empty answer) from "the parser failed" (a harness defect).
 func lastACKAddressFrom(backend ephemeralBackend, log, ackToken, mac string) (addr string, matched int) {
+	// This reader asks about one message type, so it carries one row.
+	tokens := map[string]string{"dhcpack": ackToken}
 	// ONE ORDERED PASS, because "last" is chronological and the two
 	// line kinds interleave. Preferring the newest allocation line over
 	// the newest ACK line globally would be wrong: a renewal onto a
@@ -1181,8 +1210,8 @@ func lastACKAddressFrom(backend ephemeralBackend, log, ackToken, mac string) (ad
 	// harmless: its destination is refused by ackAddress, so the grant
 	// logged one line earlier — the same event — remains the answer.
 	for _, line := range strings.Split(log, "\n") {
-		isAlloc := lineMatches(line, []string{"has been allocated", mac}, ackToken)
-		isACK := lineMatches(line, []string{"DHCPACK", mac}, ackToken)
+		isAlloc := lineMatches(line, []string{"has been allocated", mac}, tokens)
+		isACK := lineMatches(line, []string{"DHCPACK", mac}, tokens)
 		if !isAlloc && !isACK {
 			continue
 		}
