@@ -59,7 +59,32 @@ trap 'rm -rf "$WORK"' EXIT
 # Not a hand-written list of file names: the names come from the patterns
 # the scope actually carries, so a scope that stops using patterns makes
 # this suite refuse rather than pass on an empty seed.
-scope_value=$(sed -n 's/^[[:space:]]*GATE_SCOPE_BRANCHES=//p' "$SCOPE" | tr -d '"' | tail -1)
+shipped_value=$(sed -n 's/^[[:space:]]*GATE_SCOPE_BRANCHES=//p' "$SCOPE" | tr -d '"' | tail -1)
+
+# THE DOMAIN IS NOT ALLOWED TO EMPTY WITH THE SHIPPED SCOPE. Until 2026-09-11
+# the shipped value carried `2.*`, and the seed came straight from it. v2.0.0
+# shipped, the 2.x branch was deleted and the pattern went with it, leaving a
+# value of two literals -- against which pathname expansion cannot change any
+# answer, so every reader would agree for the wrong reason and this suite
+# would pass having proved nothing. So the readers are driven against a
+# FIXTURE scope file instead: the shipped words plus a pattern word when the
+# shipped value has none. Each reader already takes the scope file from the
+# environment (`BRANCH_REFS_SCOPE`, `GATE_SCOPE_FILE`), so this drives the
+# real splitting sites, not a copy of them. `2.*` is the synthetic pattern
+# because the stub heads below carry `2.0.0`, so it matches one branch and
+# not the other -- the same shape the shipped value used to have.
+scope_value="$shipped_value"
+synthetic=no
+case "$shipped_value" in
+    *[*?]*) ;;
+    *)      scope_value="$shipped_value 2.*"; synthetic=yes ;;
+esac
+
+cat > "$WORK/scope.env" <<SCOPEEOF
+GATE_SCOPE_BRANCHES="$scope_value"
+$(sed -n 's/^[[:space:]]*\(GATE_SCOPE_COMMITS=.*\)$/\1/p' "$SCOPE" | tail -1)
+SCOPEEOF
+
 mkdir -p "$WORK/empty" "$WORK/seeded"
 seeded=0
 patterns=0
@@ -83,7 +108,7 @@ done
 set +f
 
 if [ "$patterns" -eq 0 ]; then
-    no "GATE_SCOPE_BRANCHES carries no pattern word, so nothing here can distinguish a guarded split from an unguarded one. This suite is not allowed to pass on an empty domain."
+    no "the driven scope carries no pattern word, so nothing here can distinguish a guarded split from an unguarded one. This suite is not allowed to pass on an empty domain."
     printf '\n%d passed, %d failed\n' "$pass" "$fail"
     exit 1
 fi
@@ -128,11 +153,11 @@ drive() { # <script> <cwd> -> "<rc>\n<output>"
     case "$(basename "$script")" in
         check-branch-refs.sh)
             out=$( cd "$dir" && BRANCH_REFS_HEADS_FILE="$WORK/heads.txt" \
-                   bash "$script" 2>&1 )
+                   BRANCH_REFS_SCOPE="$WORK/scope.env" bash "$script" 2>&1 )
             rc=$? ;;
         check-missing-runs.sh)
             out=$( cd "$dir" && PATH="$WORK/bin:$PATH" GATE_REPO=claymore666/docker-net-dhcp \
-                   bash "$script" 2>&1 )
+                   GATE_SCOPE_FILE="$WORK/scope.env" bash "$script" 2>&1 )
             rc=$? ;;
         branch-glob.sh)
             # A sourced library, so it is driven by calling the two functions
@@ -154,6 +179,7 @@ drive() { # <script> <cwd> -> "<rc>\n<output>"
             rc=$? ;;
         purge-workflow-runs.sh)
             out=$( cd "$dir" && PATH="$WORK/bin:$PATH" REPO=claymore666/docker-net-dhcp \
+                   GATE_SCOPE_FILE="$WORK/scope.env" \
                    NOW_EPOCH=1767225600 DRY_RUN=1 bash "$script" 2>&1 )
             rc=$? ;;
         *)
@@ -193,6 +219,7 @@ if [ "$reached" -eq 0 ]; then
     no "no reader reached its branch scope under these stubs; the suite proved nothing"
 fi
 
-printf '\n%s\n' "readers discovered: $(printf '%s\n' "$readers" | sed "s|$ROOT/||" | tr '\n' ' ')"
+printf '\n%s\n' "scope driven: ${scope_value} (synthetic pattern: ${synthetic})"
+printf '%s\n' "readers discovered: $(printf '%s\n' "$readers" | sed "s|$ROOT/||" | tr '\n' ' ')"
 printf '%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ] || exit 1
