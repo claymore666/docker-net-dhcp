@@ -13,8 +13,8 @@ forks that have been waiting on review.
 
 ## v2.0.0
 
-Pre-releases of this version: `v2.0.0-rc1` (2026-09-05, IPv4 only) and
-`v2.0.0-rc2` (2026-09-09).
+Pre-releases of this version: `v2.0.0-rc1` (2026-09-05, IPv4 only),
+`v2.0.0-rc2` (2026-09-09) and `v2.0.0-rc3` (2026-09-11).
 
 Version 2.0 replaces the external DHCP client with a library written for this
 plugin, `github.com/claymore666/dhcp-golib`, which handles IPv4 and IPv6. That
