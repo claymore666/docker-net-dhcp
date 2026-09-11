@@ -694,9 +694,23 @@ type HealthResponse struct {
 	// one per request, while the client kept running (#940). Read it
 	// beside LeasesRenewed and ahead of DHCPTimeouts: renewals
 	// completing with this flat is a healthy lease; this climbing with
-	// LeasesRenewed flat is a DHCP server that has gone quiet, minutes
-	// after it went quiet rather than at the end of the lease, which is
-	// when DHCPTimeouts first moves for a held lease.
+	// LeasesRenewed flat is a DHCP server that has gone quiet.
+	//
+	// HOW EARLY IT MOVES IS A PROPERTY OF THE LEASE, not a constant.
+	// It moves at the first retransmission, and RFC 2131 section 4.4.5
+	// has the client "wait one-half of the remaining time until T2 (in
+	// RENEWING state) and one-half of the remaining lease time (in
+	// REBINDING state), down to a minimum of 60 seconds". The 60
+	// seconds is a FLOOR under that wait, which proto.renewalDelay
+	// implements as max(RenewRetransmitFloor, half), so the wait is a
+	// minute only when T2 is about two minutes off and is hours on a
+	// long lease. On the 24 hour lease #940 was reported from, T1 is at
+	// 12h and T2 at 21h, so the first retransmission is ~4h30m after
+	// the client's first renewal request at T1: the MEASURED four
+	// requests across 7h52m are that halving schedule, not a
+	// one-minute one. DHCPTimeouts
+	// first moves for a held lease when the lease ends, at 24h, so what
+	// this buys on that lease is about 7.5 hours of warning.
 	//
 	// NOT Healthy-affecting, and not a `warn` check either. A single
 	// lost datagram moves it on a segment that is working, so non-zero
@@ -706,9 +720,8 @@ type HealthResponse struct {
 	// one.
 	//
 	// The request currently in flight is not counted: one is proven
-	// unanswered by the retransmission after it, or by the
-	// acknowledgement that ends the renewal. A client that has sent N
-	// requests into silence reports N-1.
+	// unanswered only by the retransmission that follows it. A client
+	// that has sent N requests into silence reports N-1.
 	RenewalsUnanswered int32 `json:"renewals_unanswered"`
 	// DHCPServerTierFallbacks counts STEPS DOWN the dhcp_servers
 	// ladder: one per preferred entry that did not answer inside its
