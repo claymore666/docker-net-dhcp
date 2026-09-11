@@ -721,14 +721,13 @@ probe whether the engine applies a remote driver's `DstName` and skip
 when it does not. The probe (`engineAppliesIfname`, used by
 `TestInterfaceName_MultiNetworkDeterministic`) runs a throwaway
 container and checks the interface the engine actually created. There is
-no version threshold to hit. The probe fails on the engine the suite
-runs against: the upstream fix (moby/moby#52866, stopping the
-remote-driver proxy from dropping `DstName`) merged to moby master on
-2026-08-26, is milestoned for engine 29.8.0, and that engine was
-released on 2026-09-03. The lane's engine is still 29.7.2, read from the
-run's `Fixture engine drift` step. Until a box running an engine that
-carries the change executes the suite, those tests skip in CI and
-locally alike. A skip is expected, and it is not a signal that the run
+no version threshold to hit. The upstream fix (moby/moby#52866,
+stopping the remote-driver proxy from dropping `DstName`) merged to moby
+master on 2026-08-26, is milestoned for engine 29.8.0, and that engine
+was released on 2026-09-03. The lane's engine is 29.8.0, read from the
+run's `Fixture engine drift` step, so the probe now succeeds there and
+the dependent tests run. They still skip on any box whose engine is
+older, and a skip there is expected and is not a signal that the run
 diverged.
 
 ## Request fixtures
@@ -871,7 +870,7 @@ the field, or record why it is ignored.
 
 Issue #218 (stable MAC) is waiting on exactly this signal: it needs
 `netlabel.EndpointName` to arrive at `CreateEndpoint`, and the captures
-confirm that field is absent on engine 29.7. The day a capture from a
+confirm that field is absent on engine 29.8. The day a capture from a
 newer engine carries it, the test names it.
 
 Issue #125 is **not** covered by this signal, and that is worth

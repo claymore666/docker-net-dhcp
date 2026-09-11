@@ -33,7 +33,7 @@ The snippets below install the current release.
   because it is unmeasured: on a cgroup v2 host it cannot start a
   container at all, so nothing there tests this plugin.
   Every change is also tested against the engine the integration suite
-  runs on, **29.7.2** today, read from that run's `Fixture engine drift`
+  runs on, **29.8.0** today, read from that run's `Fixture engine drift`
   step.
 - **Plugin interface `docker.networkdriver/1.0`**, which is what the
   plugin manifest declares. The plugin negotiates the Docker API version
