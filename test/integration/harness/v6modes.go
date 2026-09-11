@@ -74,6 +74,26 @@ const (
 	// IFNAMSIZ.
 	V6BridgeName = "dh-itest-br6"
 
+	// V6BridgePortName is a dummy link enslaved to that bridge, and it
+	// is what makes the segment able to carry a frame at all.
+	//
+	// MEASURED on the hosted cross-check, run 34595592138, kernel
+	// 6.17.0-1022-azure: a bridge with no port has no carrier, and
+	// `netif_carrier_off` stops the device's transmit queues. Nothing
+	// this host sends out of it is transmitted, so nothing reaches a
+	// packet tap on it either -- dnsmasq logs `RTR-ADVERT`, which it
+	// writes before the sendto, and the wire stays empty. The fixture
+	// then read a segment that could not speak as a segment in the
+	// wrong mode (#942), and the no-RA mode passed because every
+	// absence assertion was true by construction. Enslaving one link
+	// raised carrier and the same capture took 14 frames including two
+	// advertisements in the same run.
+	//
+	// A real segment always has a port: the container's own link is
+	// one. The fixture asserts the mode BEFORE any container joins, so
+	// it has to bring its own.
+	V6BridgePortName = "dh-itest-br6p"
+
 	// The v4 half. 192.168.99/100/101/102/123 are all spoken for by
 	// other fixtures; this is the next free one.
 	V6BridgeAddr = "192.168.103.1/24"
@@ -346,7 +366,9 @@ func newV6Fixture(t V6FixtureT, name V6Mode, rangeArgs []string) *V6Fixture {
 	if err := netlink.LinkSetUp(link); err != nil {
 		t.Fatalf("LinkSetUp %s: %v", V6BridgeName, err)
 	}
+	attachV6BridgePort(t, link)
 	awaitNoTentativeAddr(t)
+	awaitBridgeCarrier(t)
 
 	if err := installBridgeForward(V6BridgeName); err != nil {
 		t.Fatalf("install FORWARD rules for %s: %v", V6BridgeName, err)
@@ -515,9 +537,9 @@ func (f *V6Fixture) assertMode() {
 	f.t.Helper()
 	ev := f.evidence()
 	if findings := V6ModeFindings(f.mode, ev); len(findings) > 0 {
-		f.t.Fatalf("v6 fixture mode=%s: %s\ncaptured %d router advertisement(s):\n%s\nlog:\n%s",
+		f.t.Fatalf("v6 fixture mode=%s: %s\ncaptured %d router advertisement(s):\n%s\non the wire: %s\nlog:\n%s",
 			f.mode, strings.Join(findings, "; "), len(ev.Frames),
-			formatRAFrames(ev.Frames), f.readLog())
+			formatRAFrames(ev.Frames), f.raCap.SeenTally(), f.readLog())
 	}
 }
 
@@ -852,7 +874,91 @@ func awaitNoTentativeAddr(t V6FixtureT) {
 // cleanupV6Links removes the fixture's bridge, on teardown and
 // defensively at setup.
 func cleanupV6Links() {
-	if link, err := netlink.LinkByName(V6BridgeName); err == nil {
-		_ = netlink.LinkDel(link)
+	// The port first: deleting the bridge leaves an enslaved dummy
+	// behind as an ordinary link, and the next run's LinkAdd would then
+	// fail on the name.
+	for _, name := range []string{V6BridgePortName, V6BridgeName} {
+		if link, err := netlink.LinkByName(name); err == nil {
+			_ = netlink.LinkDel(link)
+		}
+	}
+}
+
+// attachV6BridgePort gives the bridge a port, for V6BridgePortName's
+// reason.
+//
+// A dummy rather than a veth pair: a veth's free end is a second device
+// in this namespace that would take the segment's prefix off the
+// fixture's own advertisement and answer neighbour solicitations on it,
+// which is a host this test did not ask for. IPv6 is turned off on the
+// port so it contributes no duplicate-address or solicitation traffic
+// of its own; bridging is layer 2 and the segment is unaffected.
+func attachV6BridgePort(t V6FixtureT, bridge netlink.Link) {
+	t.Helper()
+	la := netlink.NewLinkAttrs()
+	la.Name = V6BridgePortName
+	if err := netlink.LinkAdd(&netlink.Dummy{LinkAttrs: la}); err != nil {
+		t.Fatalf("LinkAdd %s: %v", V6BridgePortName, err)
+	}
+	port, err := netlink.LinkByName(V6BridgePortName)
+	if err != nil {
+		t.Fatalf("LinkByName %s: %v", V6BridgePortName, err)
+	}
+	disable := filepath.Join("/proc/sys/net/ipv6/conf", V6BridgePortName, "disable_ipv6")
+	if err := os.WriteFile(disable, []byte("1"), 0o644); err != nil {
+		t.Fatalf("disable IPv6 on %s: %v", V6BridgePortName, err)
+	}
+	if err := netlink.LinkSetMaster(port, bridge); err != nil {
+		t.Fatalf("enslave %s to %s: %v", V6BridgePortName, V6BridgeName, err)
+	}
+	if err := netlink.LinkSetUp(port); err != nil {
+		t.Fatalf("LinkSetUp %s: %v", V6BridgePortName, err)
+	}
+}
+
+// carrierBudget bounds awaitBridgeCarrier. The port is up before the
+// wait begins and the bridge's link state follows it through the
+// linkwatch work queue, so this is a scheduling delay and not a
+// protocol one.
+const carrierBudget = 2 * time.Second
+
+// awaitBridgeCarrier refuses to hand back a segment whose transmit
+// queues are stopped.
+//
+// This is the check the fixture did not have. Without it the only
+// symptom of a segment that cannot transmit is "no router
+// advertisement", which is also the symptom of a server in the wrong
+// mode and of a capture bound to the wrong link -- three causes, one
+// message, and the reader has no way to tell them apart. It runs
+// BEFORE dnsmasq starts, so a failure here can only be about the link.
+//
+// It keys on carrier, which is the PROXY: the obligation is that a
+// frame this host transmits out of this bridge reaches the segment, and
+// carrier is what the kernel gates the transmit queues on
+// (netif_carrier_off stops them). If a host is ever found where carrier
+// is up and the wire is still empty, the tally RACapture now prints
+// beside a mode failure is what says so -- "the tap saw nothing at all"
+// and "the tap saw traffic but no advertisement" are different lines.
+func awaitBridgeCarrier(t V6FixtureT) {
+	t.Helper()
+	deadline := time.Now().Add(carrierBudget)
+	for {
+		link, err := netlink.LinkByName(V6BridgeName)
+		if err != nil {
+			t.Fatalf("LinkByName %s: %v", V6BridgeName, err)
+			return
+		}
+		if link.Attrs().RawFlags&unix.IFF_RUNNING != 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%s still has no carrier %s after %s came up. A bridge in this state has "+
+				"its transmit queues stopped, so the server's advertisements never reach the "+
+				"wire and every wire assertion about this segment -- including the ones that "+
+				"assert an ABSENCE -- is about a link nothing can speak on (#942)",
+				V6BridgeName, carrierBudget, V6BridgePortName)
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }

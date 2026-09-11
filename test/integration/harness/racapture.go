@@ -6,7 +6,10 @@
 package harness
 
 import (
+	"encoding/binary"
 	"fmt"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -61,6 +64,14 @@ type RACapture struct {
 	frames []RAFrame
 	done   bool
 	err    error
+	// seen counts every frame the socket delivered, by ethertype,
+	// including the ones ParseRA rejects. Kept because "the capture saw
+	// nothing at all" and "the capture saw the segment's traffic and no
+	// advertisement in it" are different findings that used to produce
+	// the same message: the first is a link that cannot transmit or a
+	// capture on the wrong device, the second is a server in the wrong
+	// mode. Diagnosing #942 from the second message cost a day.
+	seen map[uint16]int
 }
 
 // StartRACapture begins capturing router advertisements on iface until
@@ -119,13 +130,21 @@ func (c *RACapture) run() {
 			return
 		}
 		f, ok := ParseRA(buf[:n])
+		c.mu.Lock()
+		if n >= ethHeaderLen {
+			if c.seen == nil {
+				c.seen = map[uint16]int{}
+			}
+			c.seen[binary.BigEndian.Uint16(buf[12:14])]++
+		}
+		if ok {
+			f.At = time.Now()
+			c.frames = append(c.frames, f)
+		}
+		c.mu.Unlock()
 		if !ok {
 			continue
 		}
-		f.At = time.Now()
-		c.mu.Lock()
-		c.frames = append(c.frames, f)
-		c.mu.Unlock()
 	}
 }
 
@@ -186,10 +205,34 @@ func (c *RACapture) AwaitRAAfter(since time.Time, within time.Duration) ([]RAFra
 	}
 }
 
+// SeenTally renders every frame the capture took, by ethertype, so a
+// failure message can say whether the link was silent or merely
+// advertisement-free.
+func (c *RACapture) SeenTally() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.seen) == 0 {
+		return "no frames of any kind reached the capture"
+	}
+	keys := make([]int, 0, len(c.seen))
+	for k := range c.seen {
+		keys = append(keys, int(k))
+	}
+	sort.Ints(keys)
+	parts := make([]string, 0, len(keys))
+	total := 0
+	for _, k := range keys {
+		n := c.seen[uint16(k)]
+		total += n
+		parts = append(parts, fmt.Sprintf("ethertype %04x: %d", k, n))
+	}
+	return fmt.Sprintf("%d frame(s) reached the capture (%s)", total, strings.Join(parts, ", "))
+}
+
 // Dump writes the whole capture through log, for a failing test.
 func (c *RACapture) Dump(log func(string)) {
 	frames := c.Frames()
-	log(fmt.Sprintf("--- RA capture on %s: %d frame(s) ---", c.iface, len(frames)))
+	log(fmt.Sprintf("--- RA capture on %s: %d advertisement(s); %s ---", c.iface, len(frames), c.SeenTally()))
 	for _, f := range frames {
 		log("  " + f.String())
 	}
