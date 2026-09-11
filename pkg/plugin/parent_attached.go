@@ -395,7 +395,7 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, callStart tim
 	// The orphaned-lease reclaim used to be the holder named here, and
 	// the more demanding one — its link was created from a goroutine
 	// ordered against nothing at all. It was removed in v1.9.0 (#800).
-	guard := p.lockParent(ctx, opts.Parent, "create_endpoint")
+	guard := p.lockParent(ctx, opts.Parent, mode, "create_endpoint")
 	err = addChildLink(guard, link)
 	guard.Unlock()
 	if err != nil {

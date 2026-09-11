@@ -64,10 +64,12 @@
 # none of always-exit-0, always-exit-1 and always-exit-2 survives.
 set -u
 
+# shellcheck source=scripts/tmpdir-guard.sh
+. "$(cd "$(dirname "$0")" && pwd)/tmpdir-guard.sh"
+
 CHECK="$(cd "$(dirname "$0")" && pwd)/check-sparse-checkout-paths.sh"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT
+guarded_tmpdir TMP
 
 failures=0
 n=0

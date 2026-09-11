@@ -456,6 +456,18 @@ mechanism working. `parent_link_wait_timeouts` counts ones that gave up
 and proceeded anyway; they may still succeed, but the budget has stopped
 covering the holder's duration.
 
+The gate excludes more than the kernel does, and since v2.1.0 the
+reporting says so. Mutual exclusion is per parent and takes no notice of
+kind, while the kernel refuses only the cross pair — children of one
+kind coexist on a parent happily. So a caller that gives up waiting for
+a holder attaching its OWN kind has spent the budget and protected
+nothing, and it goes on to a `LinkAdd` the kernel accepts. That case is
+counted as a wait, not as a timeout, which leaves the warning counter
+meaning what its action text says. It stopped being hypothetical with
+the IPAM driver: an address reservation holds a parent across a whole
+DHCP exchange, so two containers starting together on one macvlan
+network reach the give-up branch every time.
+
 The rule is enforced by **two** mechanisms, and it is worth being exact
 about where each one stops, because the guard type exists precisely to
 replace a prose guarantee about a property nothing checked.

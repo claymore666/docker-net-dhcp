@@ -132,8 +132,12 @@ The host's NIC config (IP, routes, netplan/`systemd-networkd`,
 - **ipvlan-specific:** only one of macvlan or ipvlan can be active on
   a given parent NIC at a time. The kernel rejects mixing them with
   `EBUSY`. Use one mode per parent.
-- The plugin requires `--ipam-driver=null` because the LAN's DHCP
-  server is the address source of truth in place of Docker's IPAM.
+- Docker's default IPAM is never the allocator: the LAN's DHCP server
+  is the address source of truth. Pass `--ipam-driver=null`, or, from
+  v2.1.0, this plugin's own IPAM driver
+  ([reference](reference.md#address-allocation)). `ipvlan` takes
+  `--ipam-driver=null` only, because an IPAM driver needs a MAC per
+  endpoint and ipvlan children share the parent's (#949).
 - One DHCP-served network per container. If a container also joins a
   bridge or other Docker network, that's its problem to coordinate.
 

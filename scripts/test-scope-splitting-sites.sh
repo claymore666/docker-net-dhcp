@@ -40,6 +40,9 @@
 # directory does not change the answer, not what the answer is.
 set -u
 
+# shellcheck source=scripts/tmpdir-guard.sh
+. "$(cd "$(dirname "$0")" && pwd)/tmpdir-guard.sh"
+
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(dirname "$HERE")"
 SCOPE="$ROOT/.github/gate-branch-scope.env"
@@ -49,8 +52,7 @@ fail=0
 ok() { printf 'PASS  %s\n' "$1"; pass=$((pass + 1)); }
 no() { printf 'FAIL  %s\n' "$1" >&2; fail=$((fail + 1)); }
 
-WORK=$(mktemp -d)
-trap 'rm -rf "$WORK"' EXIT
+guarded_tmpdir WORK
 
 [ -f "$SCOPE" ] || { echo "FAIL  ${SCOPE} does not exist; there is no value to split" >&2; exit 1; }
 

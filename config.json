@@ -3,7 +3,8 @@
     "interface": {
         "socket": "net-dhcp.sock",
         "types": [
-            "docker.networkdriver/1.0"
+            "docker.networkdriver/1.0",
+            "docker.ipamdriver/1.0"
         ]
     },
     "entrypoint": [

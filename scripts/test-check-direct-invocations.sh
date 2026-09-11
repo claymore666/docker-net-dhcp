@@ -25,6 +25,9 @@
 # happens to carry.
 set -u
 
+# shellcheck source=scripts/tmpdir-guard.sh
+. "$(cd "$(dirname "$0")" && pwd)/tmpdir-guard.sh"
+
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(dirname "$HERE")"
 GATE="$HERE/check-direct-invocations.sh"
@@ -35,18 +38,13 @@ fail=0
 ok() { printf 'PASS  %s\n' "$1"; pass=$((pass + 1)); }
 no() { printf 'FAIL  %s\n' "$1" >&2; fail=$((fail + 1)); }
 
-TMPS=()
-cleanup() { for d in ${TMPS+"${TMPS[@]}"}; do [ -n "$d" ] && rm -rf "$d"; done; }
-trap cleanup EXIT
-
 # A copy of the tracked tree, as a git repository: WORKING-TREE content with
 # INDEX modes, which is the pair the gate reads. Copying the index content
 # instead would test the last commit rather than the change in hand, and
 # copying the filesystem modes would lose the one bit the finding is about.
 mktree() {
     local d line mode rest
-    d=$(mktemp -d) || return 1
-    TMPS+=("$d")
+    guarded_tmpdir d
     while IFS= read -r line; do
         mode=${line%% *}
         rest=${line#*	}
@@ -202,7 +200,7 @@ fi
 
 # A7. The other empty domain: a tree with no direct invocation at all.
 NAME="a tree with no direct invocation refuses"
-t=$(mktemp -d); TMPS+=("$t")
+guarded_tmpdir t
 git -C "$t" init -q
 if planted "$NAME" $?; then
     gate_case "$NAME" 2 "$t" "resolving to a tracked file"
@@ -242,8 +240,7 @@ PY
 # and, optionally, a `git` that records instead of acting.
 mksandbox() { # <notes-content>
     local d
-    d=$(mktemp -d) || return 1
-    TMPS+=("$d")
+    guarded_tmpdir d
     mkdir -p "$d/scripts" "$d/bin"
     git -C "$ROOT" checkout-index --prefix="$d/" -- scripts/release-body.sh >/dev/null 2>&1 || return 1
     printf '%s' "$1" > "$d/RELEASE_NOTES.md"

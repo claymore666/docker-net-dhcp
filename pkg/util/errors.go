@@ -9,8 +9,15 @@ import (
 )
 
 var (
-	// ErrIPAM indicates an unsupported IPAM driver was used
-	ErrIPAM = errors.New("only the null IPAM driver is supported")
+	// ErrIPAM is every refusal about address allocation: an IPAM driver
+	// this plugin will not serve a network for, and the refusals its own
+	// IPAM driver makes about a pool or an address (#110).
+	//
+	// The text no longer names the null driver, and that is the change:
+	// two IPAM drivers are supported now, so a message saying otherwise
+	// would send an operator to recreate a network that is already
+	// correct. Every site that wraps this supplies the specific sentence.
+	ErrIPAM = errors.New("this network's address allocation was refused")
 	// ErrBridgeRequired indicates a network bridge was not provided for network creation
 	ErrBridgeRequired = errors.New("bridge required (mode=bridge)")
 	// ErrNotBridge indicates that the provided network interface is not a bridge

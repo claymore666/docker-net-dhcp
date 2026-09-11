@@ -14,6 +14,9 @@
 # everything.
 set -u
 
+# shellcheck source=scripts/tmpdir-guard.sh
+. "$(cd "$(dirname "$0")" && pwd)/tmpdir-guard.sh"
+
 HERE="$(cd "$(dirname "$0")" && pwd)"
 GATE="$HERE/check-branch-refs.sh"
 pass=0
@@ -31,7 +34,7 @@ HEADS_DEFAULT='1111111111111111111111111111111111111111	refs/heads/main
 run_case() {
     local name="$1" want="$2" wf="$3" dep="$4" scope="$5" expect="${6:-}" heads="${7:-$HEADS_DEFAULT}"
     local dir out rc
-    dir=$(mktemp -d)
+    guarded_tmpdir dir
     mkdir -p "$dir/wf"
     printf '%s\n' "$wf" > "$dir/wf/probe.yml"
     printf '%s\n' "$dep" > "$dir/dependabot.yml"
@@ -211,7 +214,7 @@ jobs:
 updates: []
 ' "" "no branch name was extracted"
 
-dir=$(mktemp -d); mkdir -p "$dir/wf"; printf '%s\n' "$WF_OK" > "$dir/wf/probe.yml"
+guarded_tmpdir dir; mkdir -p "$dir/wf"; printf '%s\n' "$WF_OK" > "$dir/wf/probe.yml"
 printf '%s\n' "$HEADS_DEFAULT" > "$dir/heads"
 printf 'GATE_SCOPE_BRANCHES="dev"\n' > "$dir/scope.env"
 out=$(BRANCH_REFS_WF_DIR="$dir/wf" BRANCH_REFS_DEPENDABOT="$dir/none.yml" \

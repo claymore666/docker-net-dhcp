@@ -116,3 +116,110 @@ func AssertParentFreeOfOtherKind(t *testing.T, parent, mode string) {
 		}
 	}
 }
+
+// CreateNetworkIPAM drives `docker network create` with this plugin as
+// BOTH the network driver and the IPAM driver (#110).
+//
+// It is a second function rather than an option on CreateNetwork
+// because the two shapes are the product's two supported shapes and
+// every existing test belongs to the first one. D19 says the
+// `--ipam-driver null` shape does not change; a shared helper that
+// grew an IPAM branch would make every null-mode test's create depend
+// on an argument no null-mode test passes.
+//
+// subnet is the `--subnet` and may be empty, which is the untyped case
+// the driver answers with 0.0.0.0/0. ipamOpts are `--ipam-opt` pairs.
+func CreateNetworkIPAM(t *testing.T, ctx context.Context, name, mode, subnet string, ipamOpts map[string]string, extraOpts map[string]string) string {
+	t.Helper()
+	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+	if err != nil {
+		t.Fatalf("docker client: %v", err)
+	}
+	t.Cleanup(func() { _ = cli.Close() })
+
+	opts := map[string]string{"mode": mode}
+	switch mode {
+	case "macvlan":
+		opts["parent"] = HostVeth
+	case "ipvlan":
+		opts["parent"] = IpvlanParent
+	case "bridge":
+		opts["bridge"] = BridgeName
+	}
+	for k, v := range extraOpts {
+		opts[k] = v
+	}
+	if parent := opts["parent"]; parent != "" && (mode == "macvlan" || mode == "ipvlan") {
+		AssertParentFreeOfOtherKind(t, parent, mode)
+	}
+
+	ipam := &network.IPAM{Driver: DriverName, Options: ipamOpts}
+	if subnet != "" {
+		ipam.Config = []network.IPAMConfig{{Subnet: subnet}}
+	}
+
+	createStart := time.Now()
+	res, err := cli.NetworkCreate(ctx, name, network.CreateOptions{
+		Driver:  DriverName,
+		IPAM:    ipam,
+		Options: opts,
+	})
+	EndPhase(t, PhaseNetworkCreate, createStart)
+	if err != nil {
+		t.Fatalf("NetworkCreate(%s, mode=%s, ipam-driver=%s, subnet=%q, ipam-opts=%v, opts=%v): %v",
+			name, mode, DriverName, subnet, ipamOpts, opts, err)
+	}
+	t.Cleanup(func() {
+		removeStart := time.Now()
+		err := cli.NetworkRemove(context.Background(), res.ID)
+		EndPhase(t, PhaseNetworkRemove, removeStart)
+		if err != nil && !isNotFound(err) {
+			t.Logf("WARN: NetworkRemove(%s): %v", res.ID, err)
+		}
+	})
+	return res.ID
+}
+
+// CreateNetworkIPAMErr is CreateNetworkIPAM for the cases that must be
+// REFUSED: it returns the daemon's error instead of failing the test,
+// and registers no cleanup for a network that was never created.
+//
+// A refusal asserted by catching a t.Fatalf is not asserted at all, and
+// a refusal test that shares the happy path's helper is one edit away
+// from asserting nothing.
+func CreateNetworkIPAMErr(ctx context.Context, name, mode, subnet string, ipamOpts, extraOpts map[string]string) error {
+	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+	if err != nil {
+		return err
+	}
+	defer func() { _ = cli.Close() }()
+
+	opts := map[string]string{"mode": mode}
+	switch mode {
+	case "macvlan":
+		opts["parent"] = HostVeth
+	case "ipvlan":
+		opts["parent"] = IpvlanParent
+	case "bridge":
+		opts["bridge"] = BridgeName
+	}
+	for k, v := range extraOpts {
+		opts[k] = v
+	}
+	ipam := &network.IPAM{Driver: DriverName, Options: ipamOpts}
+	if subnet != "" {
+		ipam.Config = []network.IPAMConfig{{Subnet: subnet}}
+	}
+	res, err := cli.NetworkCreate(ctx, name, network.CreateOptions{
+		Driver:  DriverName,
+		IPAM:    ipam,
+		Options: opts,
+	})
+	if err == nil {
+		// It was accepted. Remove it so the next test is not run on a
+		// host holding a network this one says cannot exist.
+		_ = cli.NetworkRemove(context.Background(), res.ID)
+		return nil
+	}
+	return err
+}

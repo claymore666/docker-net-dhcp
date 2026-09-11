@@ -671,6 +671,20 @@ func IsInPool(ip net.IP) bool {
 	return bytesGE(v4, start) && bytesLE(v4, end)
 }
 
+// IsInEphemeralPool is IsInPool for the EphemeralFixture's range
+// [EphemeralPoolStart, EphemeralPoolEnd]. Same stricter-than-subnet
+// reason: the fixture's own server address and the parent address sit
+// inside the subnet and outside the pool on purpose.
+func IsInEphemeralPool(ip net.IP) bool {
+	v4 := ip.To4()
+	if v4 == nil {
+		return false
+	}
+	start := net.ParseIP(EphemeralPoolStart).To4()
+	end := net.ParseIP(EphemeralPoolEnd).To4()
+	return bytesGE(v4, start) && bytesLE(v4, end)
+}
+
 func bytesGE(a, b net.IP) bool { return bytes.Compare(a, b) >= 0 }
 func bytesLE(a, b net.IP) bool { return bytes.Compare(a, b) <= 0 }
 

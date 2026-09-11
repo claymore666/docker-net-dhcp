@@ -33,9 +33,11 @@
 # green before this round.
 set -uo pipefail
 
+# shellcheck source=scripts/tmpdir-guard.sh
+. "$(cd "$(dirname "$0")" && pwd)/tmpdir-guard.sh"
+
 CHECK="$(cd "$(dirname "$0")" && pwd)/check-release-digest-fixed-point.sh"
-TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT
+guarded_tmpdir TMP
 
 pass=0; fail=0
 ok() { echo "PASS  $*"; pass=$((pass + 1)); }

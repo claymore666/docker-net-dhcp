@@ -46,10 +46,12 @@
 #   at all is pinned separately, by the JOB_IF buy-back case below.
 set -u
 
+# shellcheck source=scripts/tmpdir-guard.sh
+. "$(cd "$(dirname "$0")" && pwd)/tmpdir-guard.sh"
+
 GATE="$(dirname "$0")/check-test-job-purity.sh"
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
-TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT
+guarded_tmpdir TMP
 failures=0
 # Every verdict below increments this, and the run refuses at the end if
 # it comes in under FLOOR. A suite that reports "all passed" having run

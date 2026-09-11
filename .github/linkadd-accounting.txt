@@ -72,3 +72,22 @@ pkg/plugin/network.go 1
     as the bridge branch above: no parent NIC, nothing to serialise
     against, and adding a gate here would serialise bridge endpoints
     against nothing.
+
+pkg/plugin/ipam_reserve.go 1
+    The bridge-mode veth pair the IPAM driver's RequestAddress runs its
+    DHCP exchange on (#110). No parent NIC, nothing to serialise
+    against, and the same reasoning as the bridge veth in network.go.
+    The macvlan half of that reservation is NOT here, because it goes
+    through addChildLink and the compiler covers it. It is the one site
+    in the plugin that holds the gate across a whole DHCP round trip and
+    then a LinkDel, rather than across the LinkAdd alone: the link is
+    the exchange's only presence on the segment, so the gate opens after
+    the child is detached and not before. The preflight probe in
+    dhcp_probe.go is its only precedent.
+
+pkg/plugin/ipam_endpoint.go 1
+    The bridge-mode veth pair CreateEndpoint builds for an IPAM-mode
+    endpoint (#110). Same bridge reasoning again: no parent NIC. Its
+    macvlan half goes through addChildLink holding lockParent across the
+    LinkAdd, exactly as the null-mode path in parent_attached.go does,
+    and is covered by the compiler rather than by an entry here.

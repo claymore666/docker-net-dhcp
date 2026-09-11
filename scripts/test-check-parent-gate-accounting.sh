@@ -19,10 +19,12 @@
 # and a note in a PR body is prose where an executable check belongs.
 set -u
 
+# shellcheck source=scripts/tmpdir-guard.sh
+. "$(cd "$(dirname "$0")" && pwd)/tmpdir-guard.sh"
+
 GATE="$(dirname "$0")/check-parent-gate-accounting.sh"
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
-TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT
+guarded_tmpdir TMP
 
 failures=0
 

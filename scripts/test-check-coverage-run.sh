@@ -18,6 +18,9 @@
 # green on every remaining case.
 set -uo pipefail
 
+# shellcheck source=scripts/tmpdir-guard.sh
+. "$(cd "$(dirname "$0")" && pwd)/tmpdir-guard.sh"
+
 HERE="$(cd "$(dirname "$0")" && pwd)"
 CHECK="$HERE/check-coverage-run.sh"
 pass=0; fail=0
@@ -57,7 +60,7 @@ STUB
 
 # run_it <runs-tsv> <jobs-map> [wait-minutes] [poll-seconds]
 run_it() {
-    local dir; dir=$(mktemp -d)
+    local dir; guarded_tmpdir dir
     make_gh "$dir"
     printf '%s\n' "$1" > "$dir/runs"
     printf '%s\n' "$2" > "$dir/jobs"
@@ -120,7 +123,7 @@ case "$out" in *EVICTED*) no "an unfinished run was misreported as eviction" ;;
 # --- the wait is real -------------------------------------------------
 # Without this, the poll loop could judge once and the wait would be
 # decorative: a run still queued on the first look would fail forever.
-dir=$(mktemp -d)
+guarded_tmpdir dir
 make_gh "$dir"
 printf '0' > "$dir/step"
 printf '11\tqueued\tnull\n' > "$dir/runs.0"

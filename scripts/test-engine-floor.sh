@@ -21,6 +21,9 @@
 # that differs in one field.
 set -uo pipefail
 
+# shellcheck source=scripts/tmpdir-guard.sh
+. "$(cd "$(dirname "$0")" && pwd)/tmpdir-guard.sh"
+
 GATE="$(cd "$(dirname "$0")" && pwd)/engine-floor.sh"
 
 pass=0
@@ -72,7 +75,7 @@ fixture() {
 check() {
     local name="$1" want_exit="$2" want_sub="$3" body="$4"; shift 4
     local tmp out got ff
-    tmp="$(mktemp -d)"
+    guarded_tmpdir tmp
     ff="$(floor_file "$tmp/src" "$body")"
     fixture "$tmp" "$@"
 
@@ -221,7 +224,7 @@ check "a row reporting an unorderable version is refused" 1 "cannot order" \
 
 # --- vacuity -----------------------------------------------------------
 
-tmp="$(mktemp -d)"
+guarded_tmpdir tmp
 ff="$(floor_file "$tmp/src" "$DECL")"
 fixture "$tmp" "${BASE[@]}"
 rm -rf "$tmp/rows"
@@ -236,7 +239,7 @@ else
 fi
 rm -rf "$tmp"
 
-tmp="$(mktemp -d)"
+guarded_tmpdir tmp
 ff="$(floor_file "$tmp/src" "$DECL")"
 fixture "$tmp" "${BASE[@]}"
 out="$(ENGINE_FLOOR_FILE="$ff" ENGINE_ROWS_FILE="$tmp/rows.txt" bash "$GATE" --reconcile "$tmp/does-not-exist" 2>&1)"; got=$?
@@ -249,7 +252,7 @@ else
 fi
 rm -rf "$tmp"
 
-tmp="$(mktemp -d)"
+guarded_tmpdir tmp
 ff="$(floor_file "$tmp/src" "$DECL")"
 fixture "$tmp" "${BASE[@]}"
 : > "$tmp/rows.txt"

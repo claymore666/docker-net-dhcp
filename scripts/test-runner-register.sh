@@ -16,13 +16,15 @@
 # reads a fixture mountinfo instead of /proc.
 set -uo pipefail
 
+# shellcheck source=scripts/tmpdir-guard.sh
+. "$(cd "$(dirname "$0")" && pwd)/tmpdir-guard.sh"
+
 HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO="$(cd "$HERE/.." && pwd)"
 LIB="$REPO/ci/runner-image/register.sh"
 [ -f "$LIB" ] || { echo "FAIL: $LIB does not exist"; exit 2; }
 
-TMP=$(mktemp -d)
-trap 'rm -rf "$TMP"' EXIT
+guarded_tmpdir TMP
 fails=0
 
 check() {

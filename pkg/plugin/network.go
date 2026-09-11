@@ -11,8 +11,10 @@ import (
 	"io/fs"
 	"math"
 	"net"
+	"net/netip"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -34,15 +36,124 @@ const CLIOptionsKey string = "com.docker.network.generic"
 // Implementations of the endpoints described in
 // https://github.com/moby/libnetwork/blob/master/docs/remote.md
 
-// validateIPAMData enforces the null-IPAM-driver requirement that
-// libnetwork passes us via the IPv4Data slice.
+// validateIPAMData enforces which IPAM driver a DHCP network may use.
+//
+// TWO SHAPES ARE ACCEPTED AND EVERY OTHER ONE IS REFUSED. `--ipam-driver
+// null` sends address space "null" and the pool 0.0.0.0/0, and it is
+// still the product (D19). This plugin's own IPAM driver sends one of its
+// two address spaces and whatever pool the user typed, or 0.0.0.0/0 for
+// none. Docker's built-in IPAM sends "LocalDefault" and a real private
+// subnet, and that is the shape this function exists to refuse: the
+// addresses come from the LAN's DHCP server, and an allocator that
+// believes it owns 172.17.0.0/16 will hand out addresses that are
+// already in use. The refusal of the built-in driver is what widening
+// this function has to keep, so it is driven as its own case.
 func validateIPAMData(ipv4 []*IPAMData) error {
+	refuse := func(d *IPAMData) error {
+		return fmt.Errorf("%w: this network was given the address pool %v from address space %q, and this plugin serves two IPAM drivers and no others. Addresses here come from the LAN's DHCP server, so an allocator that believes it owns a subnet of its own would hand out addresses that are already in use. Create the network with the null IPAM driver (`--ipam-driver null`), or with this plugin itself (`--ipam-driver <this plugin>`)",
+			util.ErrIPAM, d.Pool, d.AddressSpace)
+	}
 	for _, d := range ipv4 {
-		if d.AddressSpace != "null" || d.Pool != "0.0.0.0/0" {
-			return util.ErrIPAM
+		switch d.AddressSpace {
+		case "null":
+			if d.Pool != "0.0.0.0/0" {
+				return refuse(d)
+			}
+		case ipamLocalAddressSpace, ipamGlobalAddressSpace:
+		default:
+			return refuse(d)
 		}
 	}
 	return nil
+}
+
+// ipamDataIsOurs reports whether libnetwork addressed this network with
+// the plugin's own IPAM driver.
+//
+// The ADDRESS SPACE is what says so, and it is the only thing that can:
+// CreateNetwork carries no IPAM driver name. The two spaces are this
+// plugin's alone -- they are the answer to GetDefaultAddressSpaces, which
+// no other driver gives -- so a network whose data names one was
+// allocated by us.
+func ipamDataIsOurs(ipv4 []*IPAMData) bool {
+	for _, d := range ipv4 {
+		if d.AddressSpace == ipamLocalAddressSpace || d.AddressSpace == ipamGlobalAddressSpace {
+			return true
+		}
+	}
+	return false
+}
+
+// ipamBindingFor builds the binding CreateNetwork will persist: the
+// PoolID the driver issued for this space and pool, plus the gateway and
+// auxiliary addresses libnetwork reserved out of it.
+//
+// The gateway and aux set are kept because RequestAddress cannot
+// otherwise tell them from a replayed endpoint address -- the calls are
+// wire-identical -- and answering an aux address out of the record store
+// would refuse a create that is perfectly correct.
+func (p *Plugin) ipamBindingFor(networkID string, ipv4 []*IPAMData, iface string) (*ipamBinding, error) {
+	var d *IPAMData
+	for _, c := range ipv4 {
+		if c != nil && (c.AddressSpace == ipamLocalAddressSpace || c.AddressSpace == ipamGlobalAddressSpace) {
+			if d != nil {
+				return nil, fmt.Errorf("%w: this plugin allocates one IPv4 pool per network and Docker asked for more than one", util.ErrIPAM)
+			}
+			d = c
+		}
+	}
+	if d == nil {
+		return nil, fmt.Errorf("%w: no IPv4 pool from this plugin's IPAM driver", util.ErrIPAM)
+	}
+	pool, err := ipamCanonicalPool(d.Pool)
+	if err != nil {
+		return nil, err
+	}
+	poolID, ok, otherName := p.ipamPools.take(d.AddressSpace, pool, iface, time.Now())
+	if !ok {
+		// THE MISMATCH FIRST, because it is a typo and the message
+		// below sends its author to look at the plugin instead. The
+		// pool identity was minted against the interface named in
+		// `--ipam-opt`, and this network is being created on another
+		// one; there is nothing wrong with either call on its own.
+		if otherName != "" && otherName != iface {
+			return nil, fmt.Errorf("%w: this network's pool identity was built for interface %q (from `--ipam-opt parent=` or `--ipam-opt bridge=`) and the network itself is being created on %q (from `-o parent=` or `-o bridge=`). The two have to name the same interface: the IPAM option exists only to tell two networks with the same subnet apart, and it cannot send the addresses somewhere else. Fix whichever of the two is wrong, or drop the `--ipam-opt` if this network is the only one on this subnet", util.ErrIPAM, otherName, iface)
+		}
+		// Nothing issued for this space and pool. Three ways to get
+		// here and the operator can act on all three, so all three are
+		// named: a plugin restart between the two calls leaves no
+		// in-memory issue to consume; a second `docker network create`
+		// for the same subnet consumed it first, because two
+		// unsuffixed creates derive one pool identity and the later
+		// RequestPool overwrote the earlier issue; and a create that
+		// already failed for another reason has spent it.
+		return nil, fmt.Errorf("%w: this plugin has no issued pool %v in address space %v to bind. Either the plugin restarted between `docker network create` asking for the pool and creating the network, or another `docker network create` for the same subnet is running on this host and consumed it -- two such networks derive one pool identity unless one of them names its interface with `--ipam-opt parent=<nic>` (or `--ipam-opt bridge=<name>`). Re-run `docker network create`, one at a time", util.ErrIPAM, pool, d.AddressSpace)
+	}
+	if other, taken := p.ipamIndex.boundTo(poolID, networkID); taken {
+		return nil, fmt.Errorf("%w: network %v already holds pool %v. Two DHCP networks with the same subnet need one of them to name its interface: add `--ipam-opt parent=<nic>` (or `--ipam-opt bridge=<name>`), or give this one its own `--subnet`", util.ErrIPAM, shortID(other), pool)
+	}
+	b := &ipamBinding{PoolID: poolID, Space: d.AddressSpace, Pool: pool}
+	if d.Gateway != "" {
+		b.Gateway = bareAddress(d.Gateway)
+	}
+	for _, v := range d.AuxAddresses {
+		if s, ok := v.(string); ok && s != "" {
+			b.Aux = append(b.Aux, bareAddress(s))
+		}
+	}
+	sort.Strings(b.Aux)
+	return b, nil
+}
+
+// bareAddress strips a prefix length. libnetwork hands CreateNetwork the
+// gateway and aux addresses in CIDR form and hands RequestAddress the
+// same addresses bare, so one of the two spellings has to be chosen for
+// the comparison and this is it.
+func bareAddress(s string) string {
+	if p, err := netip.ParsePrefix(s); err == nil {
+		return p.Addr().String()
+	}
+	return s
 }
 
 // kernelIfaceName returns the name the KERNEL will act on for a given
@@ -387,6 +498,28 @@ func (p *Plugin) CreateNetwork(r CreateNetworkRequest) error {
 		return err
 	}
 
+	// The pool binding, before anything is written or any link is
+	// touched. A network that fails here leaves no state behind and no
+	// issued pool consumed by mistake.
+	var binding *ipamBinding
+	if ipamDataIsOurs(r.IPv4Data) {
+		if err := ipamRefuseIPvlan(opts.effectiveMode()); err != nil {
+			return err
+		}
+		if err := ipamRefuseIPv6(opts.IPv6); err != nil {
+			return err
+		}
+		iface := opts.Bridge
+		if m := opts.effectiveMode(); m == ModeMacvlan || m == ModeIPvlan {
+			iface = opts.Parent
+		}
+		b, err := p.ipamBindingFor(r.NetworkID, r.IPv4Data, iface)
+		if err != nil {
+			return err
+		}
+		binding = b
+	}
+
 	if mode := opts.effectiveMode(); mode == ModeMacvlan || mode == ModeIPvlan {
 		if _, err := validateParentForChild(opts.Parent); err != nil {
 			return err
@@ -416,9 +549,8 @@ func (p *Plugin) CreateNetwork(r CreateNetworkRequest) error {
 				return err
 			}
 		}
-		if err := saveOptions(r.NetworkID, opts); err != nil {
-			log.WithError(err).WithField("network", r.NetworkID).
-				Warn("Failed to persist options; daemon-restart may need API fallback")
+		if err := p.saveNetworkAndBind(r.NetworkID, opts, binding); err != nil {
+			return err
 		}
 		log.WithFields(log.Fields{
 			"network":       r.NetworkID,
@@ -426,6 +558,7 @@ func (p *Plugin) CreateNetwork(r CreateNetworkRequest) error {
 			"parent":        opts.Parent,
 			"ipv6":          opts.IPv6,
 			"validate_dhcp": opts.ValidateDHCP,
+			"ipam":          binding != nil,
 		}).Info("Network created")
 		return nil
 	}
@@ -475,8 +608,14 @@ func (p *Plugin) CreateNetwork(r CreateNetworkRequest) error {
 					return util.ErrBridgeUsed
 				}
 			}
-			if n.IPAM.Driver == "null" {
-				// Null driver networks will have 0.0.0.0/0 which covers any address range!
+			if n.IPAM.Driver == "null" || IsDHCPPlugin(n.IPAM.Driver) {
+				// A null-driver network carries 0.0.0.0/0, which covers
+				// every address range. A network on THIS plugin's IPAM
+				// driver carries whatever subnet the operator typed --
+				// and that subnet is the LAN, which is exactly where
+				// this bridge's addresses are. Comparing them would have
+				// one DHCP network with a `--subnet` refuse every later
+				// bridge on the same LAN, including plain Docker ones.
 				continue
 			}
 
@@ -499,16 +638,42 @@ func (p *Plugin) CreateNetwork(r CreateNetworkRequest) error {
 		}
 	}
 
-	if err := saveOptions(r.NetworkID, opts); err != nil {
-		log.WithError(err).WithField("network", r.NetworkID).
-			Warn("Failed to persist options; daemon-restart may need API fallback")
+	if err := p.saveNetworkAndBind(r.NetworkID, opts, binding); err != nil {
+		return err
 	}
 	log.WithFields(log.Fields{
 		"network": r.NetworkID,
 		"bridge":  opts.Bridge,
 		"ipv6":    opts.IPv6,
+		"ipam":    binding != nil,
 	}).Info("Network created")
 
+	return nil
+}
+
+// saveNetworkAndBind persists a network's record and, for an IPAM-mode
+// one, publishes its PoolID.
+//
+// A FAILED WRITE IS FATAL FOR AN IPAM NETWORK AND NOT FOR A NULL ONE,
+// which is the one asymmetry in this function and the reason it exists.
+// Null-mode options are recoverable: every field in them is also in
+// Docker's own network record, so a lost file costs an API lookup. The
+// pool binding is not in Docker's record and nothing else holds it, so a
+// network created without one would answer every later address request
+// with a refusal and the operator would have no way to tell why. Failing
+// the create is the outcome they can act on.
+func (p *Plugin) saveNetworkAndBind(networkID string, opts DHCPNetworkOptions, binding *ipamBinding) error {
+	if err := saveNetwork(networkID, opts, binding); err != nil {
+		if binding != nil {
+			return fmt.Errorf("failed to persist this network's address pool: %w", err)
+		}
+		log.WithError(err).WithField("network", networkID).
+			Warn("Failed to persist options; daemon-restart may need API fallback")
+		return nil
+	}
+	if binding != nil {
+		p.ipamIndex.bind(binding.PoolID, networkID)
+	}
 	return nil
 }
 
@@ -521,6 +686,13 @@ func (p *Plugin) CreateNetwork(r CreateNetworkRequest) error {
 // just unblocks the event loop and returns; the client itself may have
 // already stopped because its netns vanished.
 func (p *Plugin) DeleteNetwork(r DeleteNetworkRequest) error {
+	// The binding goes with the network, and it goes HERE rather than in
+	// ReleasePool: libnetwork calls ReleasePool for a create that failed
+	// on a PoolID another network may hold, and again at every delete
+	// before this handler runs. Dropping a binding there would destroy a
+	// live network's state because an unrelated create failed.
+	p.ipamIndex.unbindNetwork(r.NetworkID)
+
 	if err := deleteOptions(r.NetworkID); err != nil {
 		log.WithError(err).WithField("network", r.NetworkID).
 			Warn("Failed to remove persisted options; harmless leftover")
@@ -879,6 +1051,27 @@ func (p *Plugin) netOptionsRaw(ctx context.Context, id string) (DHCPNetworkOptio
 		return dummy, fmt.Errorf("failed to get info from Docker: %w", err)
 	}
 
+	// THE FALLBACK STOPS HERE FOR AN IPAM-MODE NETWORK (D46, as
+	// amended). Docker's record carries this network's driver options
+	// and not its pool binding, because the binding is not Docker's: it
+	// is what CreateNetwork learned about which pool this network holds.
+	// Serving the options alone would put an IPAM-mode network on the
+	// null-mode path, where the endpoint runs a second DHCP exchange,
+	// writes a JSON tombstone this shape does not use, and answers
+	// libnetwork with an address libnetwork already allocated and will
+	// refuse. All three are silent here and arrive at the user as
+	// something else, so the load failure is reported instead.
+	//
+	// `IPAM.Driver` is the discriminator rather than the state file
+	// precisely because the state file is what could not be read. It is
+	// only reachable HERE, on the fallback: the IPAM handlers
+	// themselves never call Docker (ipamNetwork reads disk alone), since
+	// they run inside the daemon's start-up replay before its API
+	// serves.
+	if ipamDriverIsRemote(n.IPAM.Driver) {
+		return dummy, fmt.Errorf("%w: %v: %w", errIPAMBindingLost, id, loadErr)
+	}
+
 	opts, err := decodeOpts(n.Options)
 	if err != nil {
 		return dummy, fmt.Errorf("failed to parse options: %w", err)
@@ -894,6 +1087,39 @@ func (p *Plugin) netOptionsRaw(ctx context.Context, id string) (DHCPNetworkOptio
 		}
 	}
 	return opts, nil
+}
+
+// ipamDriverIsRemote reports whether Docker's record names an IPAM
+// driver that is not one of the daemon's own.
+//
+// NOT IsDHCPPlugin, and the difference is the whole reason this
+// function exists. That predicate matches the PUBLISHED IMAGE
+// REFERENCE (driverRegexp), which is right where it is used -- the
+// bridge-overlap scan, where mistaking a stranger's image for ours is
+// the hazard -- and wrong here. `docker plugin install <ref> --alias
+// lan-dhcp` makes Docker store "lan-dhcp" as the network's IPAM driver,
+// the regexp misses, and the refusal above does not fire: the network
+// the D46 amendment exists to protect goes down the null path after
+// all. A name is not an authenticator.
+//
+// What IS authoritative is the domain closed at CREATE.
+// validateIPAMData admits exactly two shapes, `--ipam-driver null` and
+// this plugin's own two address spaces, and it refused everything else
+// before this feature as well. So a network of this driver whose IPAM
+// driver is neither of the daemon's built-ins cannot have been created
+// with anything but a remote IPAM driver serving it, whatever the name
+// spells -- and serving that on the null path is the degradation row A
+// refuses. The built-in names are listed rather than guessed: "null" is
+// the null driver, "default" is the daemon's own, and an empty string
+// is a record that names no driver at all, which is not evidence of a
+// remote one.
+func ipamDriverIsRemote(name string) bool {
+	switch name {
+	case "", "null", "default":
+		return false
+	default:
+		return true
+	}
 }
 
 // CreateEndpoint creates the per-endpoint host-side network plumbing
@@ -943,6 +1169,13 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 	opts, err := p.netOptions(ctx, r.NetworkID)
 	if err != nil {
 		return res, fmt.Errorf("failed to get network options: %w", err)
+	}
+
+	// BEFORE the mode split, because IPAM mode changes what this call
+	// does and not which link it builds: the address is already leased,
+	// so neither branch below runs its DHCP exchange.
+	if binding := ipamBindingOf(r.NetworkID); binding != nil {
+		return p.createIPAMEndpoint(ctx, r, opts, binding)
 	}
 
 	if m := opts.effectiveMode(); m == ModeMacvlan || m == ModeIPvlan {
@@ -1328,8 +1561,33 @@ func (p *Plugin) DeleteEndpoint(ctx context.Context, r DeleteEndpointRequest) er
 	// stored name it never reads. See netMode's comment.
 	mode, modeKnown, err := p.netMode(ctx, r.NetworkID)
 	if err != nil {
-		return fmt.Errorf("failed to get network options: %w", err)
+		// TEARDOWN IS THE ONE CALLER THAT SURVIVES errIPAMBindingLost.
+		// Everywhere else the refusal exists because serving an
+		// IPAM-mode network on the null path does something wrong and
+		// silent. Here there is nothing to serve: both teardown
+		// branches resolve the same link name (see below), so a delete
+		// that cannot read the mode still removes the link -- and a
+		// delete that refused would wedge `docker network rm` on a
+		// network whose only fault is an unreadable file.
+		if !errors.Is(err, errIPAMBindingLost) {
+			return fmt.Errorf("failed to get network options: %w", err)
+		}
+		mode, modeKnown = "", false
+		log.WithError(err).WithFields(log.Fields{
+			"network":  shortID(r.NetworkID),
+			"endpoint": shortID(r.EndpointID),
+		}).Error("This network's pool binding could not be read; tearing the endpoint down without it")
 	}
+
+	// IPAM mode lays no JSON tombstone (design row 10). The tombstone
+	// answers "which MAC and address may the next container on this
+	// network inherit", and in IPAM mode that question is already
+	// answered, by the RETAINED record below and libnetwork's own
+	// ReleaseAddress. Two answers to it is one too many: the JSON
+	// tombstone is consumed by MAC at CreateEndpoint, where IPAM mode
+	// must use the MAC libnetwork generated, so anything it offered
+	// would either be ignored or contradict Docker's own allocation.
+	ipamMode := ipamBindingOf(r.NetworkID) != nil
 
 	// An unrecognised mode does NOT strand the link, and the reason is
 	// worth writing down because the obvious fear is wrong.
@@ -1378,9 +1636,9 @@ func (p *Plugin) DeleteEndpoint(ctx context.Context, r DeleteEndpointRequest) er
 	// that this one container does not keep its MAC across a restart,
 	// which is the correct price for a hostname the plugin would not
 	// put in a DHCP packet.
-	// A RELEASED ENDPOINT LEAVES NOTHING BEHIND, and it is the third
-	// skip on the same list rather than a new mechanism (#962). The two
-	// above are about whether the next container may INHERIT this MAC;
+	// A RELEASED ENDPOINT LEAVES NOTHING BEHIND, and it is one more
+	// skip on the same list and not a new mechanism (#962). The others
+	// are about whether the next container may INHERIT this MAC;
 	// this one is about whether the addresses beside it are still ours
 	// to hand over. They are not: `release_lease=on_stop` gave them
 	// back, the server has put them in its pool, and a tombstone would
@@ -1405,7 +1663,7 @@ func (p *Plugin) DeleteEndpoint(ctx context.Context, r DeleteEndpointRequest) er
 				"endpoint": shortID(r.EndpointID),
 			}).Info("Endpoint released its lease at Leave; laying no tombstone for it")
 		}
-		if modeKnown && mode != ModeIPvlan && !fp.HostnameRefused && !fp.Released {
+		if modeKnown && mode != ModeIPvlan && !fp.HostnameRefused && !ipamMode && !fp.Released {
 			p.addTombstone(r.NetworkID, fp.Hostname, fp.MAC, fp.IPv4, fp.IPv6)
 		}
 		// RETAINED, on every mode and every hostname decision, which is

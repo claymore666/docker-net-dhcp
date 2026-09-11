@@ -10,10 +10,12 @@
 # half-applied. Everything here is offline — no network, no session.
 set -u
 
+# shellcheck source=scripts/tmpdir-guard.sh
+. "$(cd "$(dirname "$0")" && pwd)/tmpdir-guard.sh"
+
 SYNC="$(dirname "$0")/badge-sync.py"
 REAL="$(dirname "$0")/../.bestpractices.json"
-TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT
+guarded_tmpdir TMP
 
 failures=0
 

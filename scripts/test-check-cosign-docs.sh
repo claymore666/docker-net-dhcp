@@ -7,16 +7,18 @@
 # so its red path is exercised rather than assumed.
 set -u
 
+# shellcheck source=scripts/tmpdir-guard.sh
+. "$(cd "$(dirname "$0")" && pwd)/tmpdir-guard.sh"
+
 CHECK="$(cd "$(dirname "$0")" && pwd)/check-cosign-docs.sh"
-TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT
+guarded_tmpdir TMP
 
 failures=0
 # check NAME WANT_EXIT TOOLING_LINE PAGE_BODY GREP_PATTERN
 check() {
     local name="$1" want_exit="$2" tooling="$3" body="$4" want_grep="$5"
     local root
-    root="$(mktemp -d -p "$TMP")"
+    guarded_tmpdir root -p "$TMP"
     mkdir -p "$root/scripts" "$root/docs"
     printf '%s\n' "$tooling" > "$root/scripts/check-release-tooling.sh"
     printf '%s\n' "$body" > "$root/docs/verifying-releases.md"
@@ -79,7 +81,7 @@ check "no page prints a cosign command => exit 2" 2 \
 # CI never sees this: fresh checkouts have no worktrees. So the gate was
 # broken exactly where a maintainer runs it by hand and green where it is
 # automated, which is the worst way round and the reason this case exists.
-root="$(mktemp -d -p "$TMP")"
+guarded_tmpdir root -p "$TMP"
 mkdir -p "$root/scripts" "$root/docs" "$root/.claude/worktrees/other/docs"
 printf '%s\n' 'COSIGN_MAJOR=3' > "$root/scripts/check-release-tooling.sh"
 printf '%s\n' "$DOC_WITH_VERSION" > "$root/docs/verifying-releases.md"
@@ -96,7 +98,7 @@ else
 fi
 
 # And .git, for the same reason and to keep the walk cheap.
-root="$(mktemp -d -p "$TMP")"
+guarded_tmpdir root -p "$TMP"
 mkdir -p "$root/scripts" "$root/docs" "$root/.git"
 printf '%s\n' 'COSIGN_MAJOR=3' > "$root/scripts/check-release-tooling.sh"
 printf '%s\n' "$DOC_WITH_VERSION" > "$root/docs/verifying-releases.md"

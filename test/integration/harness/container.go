@@ -295,7 +295,34 @@ func AssertIP(t *testing.T, got string) net.IP {
 		t.Fatalf("not an IPv4: %q", got)
 	}
 	if !IsInPool(ip) {
-		t.Fatalf("IP %q outside DHCP pool [%s, %s]", got, DHCPPoolStart, DHCPPoolEnd)
+		t.Fatalf("IP %q outside DHCP pool [%s, %s]. This assert is scoped to the MAIN macvlan "+
+			"fixture; a test on the ephemeral fixture wants AssertEphemeralIP and a bridge test "+
+			"AssertBridgeIP", got, DHCPPoolStart, DHCPPoolEnd)
+	}
+	return ip
+}
+
+// AssertEphemeralIP is the EphemeralFixture's analogue of AssertIP.
+//
+// It exists because the pool check inside AssertIP is FATAL, so it
+// cannot be composed with another fixture's pool predicate: wrapping it
+// in IsInEphemeralPool never reaches the wrapper, and the subtest dies
+// naming the main fixture's range against an address that was never
+// supposed to be in it. That is a defect a reader sees only after
+// reading AssertIP, so the remedy is a second assert rather than a
+// comment.
+func AssertEphemeralIP(t *testing.T, got string) net.IP {
+	t.Helper()
+	ip := net.ParseIP(got)
+	if ip == nil {
+		t.Fatalf("not a valid IP: %q", got)
+	}
+	if ip.To4() == nil {
+		t.Fatalf("not an IPv4: %q", got)
+	}
+	if !IsInEphemeralPool(ip) {
+		t.Fatalf("IP %q outside the ephemeral fixture's DHCP pool [%s, %s]",
+			got, EphemeralPoolStart, EphemeralPoolEnd)
 	}
 	return ip
 }

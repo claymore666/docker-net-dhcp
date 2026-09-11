@@ -79,8 +79,13 @@ func TestSaveOptions_StampsSchemaVersion(t *testing.T) {
 	if !ok {
 		t.Fatalf("options file carries no schema version: %s", data)
 	}
-	if got := v.(float64); int(got) != stateSchemaVersion {
-		t.Errorf(`"v" = %v, want %d`, got, stateSchemaVersion)
+	// THE BASE VERSION AND NOT THE CURRENT ONE, for a network with no
+	// IPAM binding. The version says what a reader must understand to
+	// read this file, and a null-IPAM network's file has not changed a
+	// byte since schema 1 (D19): stamping it 2 would make every v2.0
+	// build refuse a file it reads perfectly. The IPAM half is below.
+	if got := v.(float64); int(got) != stateSchemaVersionBase {
+		t.Errorf(`"v" = %v, want %d`, got, stateSchemaVersionBase)
 	}
 	// The option fields stay at the top level. If this fails, the
 	// version was added as an envelope and older builds can no longer
@@ -495,11 +500,11 @@ func TestStateWritesUseTheRightSyncPolicy(t *testing.T) {
 	// writer that open-codes its own rename is the two-copies problem
 	// the helper exists to end.
 	wantPolicy := map[string]string{
-		"saveOptions":    "syncDurable",
+		"saveNetwork":    "syncDurable",
 		"saveTombstones": "syncEphemeral",
 	}
 	why := map[string]string{
-		"saveOptions":    "the options file is written from CreateNetwork, lives on a host bind mount, survives `docker plugin rm` and upgrade (#440), and is read after every daemon restart including the one following a power cut",
+		"saveNetwork":    "the options file is written from CreateNetwork, lives on a host bind mount, survives `docker plugin rm` and upgrade (#440), and is read after every daemon restart including the one following a power cut",
 		"saveTombstones": "tombstoneTTL is 60 seconds. An fsync only changes what survives power loss or a panic, and no host boots, starts dockerd and reads this file within 60 seconds of losing power — every record in it prunes as stale first. So durability here protects data that is guaranteed worthless by the time anything reads it, and it charges for that on the endpoint path: `add` runs on every DeleteEndpoint and `consume` writes whenever a prune changed something. If you are here because you noticed a missing fsync: it is missing on purpose (#724)",
 	}
 	for name, want := range wantPolicy {

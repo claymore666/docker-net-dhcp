@@ -271,6 +271,45 @@ func (r *Records) Created(id, scope string, chaddr, identity []byte) error {
 	})
 }
 
+// Reserved opens a record for an address answered BEFORE any endpoint
+// exists: the IPAM driver's RequestAddress, which runs before libnetwork
+// has a link to bind to (#110).
+//
+// It is a distinct phase and not an early Created because the two are
+// answerable by different questions. A RESERVED record holds an address
+// and no link, so a restart must be able to tell "Docker was told about
+// this address" from "a container is using it": the first is swept and
+// retained, the second is resumed. The fold admits Create after Reserve,
+// which is how CreateEndpoint later binds the link to THIS record rather
+// than opening a second one for the same address.
+//
+// Identity is written here and once, for the same reason Created writes
+// it: the option-61 value as sent is what the server files the lease
+// under, and the reserve's exchange is the one that put it there.
+func (r *Records) Reserved(id, scope string, chaddr, identity []byte) error {
+	return r.append(lease.RecordEvent{
+		ID:       id,
+		Op:       lease.OpReserve,
+		Scope:    scope,
+		Family:   lease.FamilyV4,
+		CHAddr:   chaddr,
+		Identity: identity,
+	})
+}
+
+// Rebound consumes a tombstone under a new hardware address.
+//
+// The identity is NOT re-sent and must not be: it is write-once in the
+// fold and it is the whole reason a re-bind can keep an address at all.
+// Docker mints a fresh MAC for every endpoint, so the address survives a
+// restart only because the client-id the server files the lease under
+// does not change with it. The CHAddr does change, and the fold accepts
+// that -- it is the one identifying field of the three that is not
+// write-once.
+func (r *Records) Rebound(id string, chaddr []byte) error {
+	return r.append(lease.RecordEvent{ID: id, Op: lease.OpRebind, CHAddr: chaddr})
+}
+
 // Scope6 is the record scope a DHCPv6 endpoint's record lives in: the
 // Docker network id, marked.
 //
