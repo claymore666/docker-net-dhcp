@@ -90,6 +90,7 @@ markdown_extensions:
 
 nav:
   - Home: index.md
+  - Absence probe: absence-probe-889.md
   - Bridge mode: bridge-mode.md
   - macvlan / ipvlan: parent-attached-modes.md
   - Driver reference: reference.md
