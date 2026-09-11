@@ -2039,6 +2039,40 @@ func (m *dhcpManager) stop(leaving bool) error {
 	// Wait for Start to finish so we don't tear down half-initialised
 	// state.
 	<-m.startedCh
+
+	// THE RELEASE, AND THE `leaving` ARM IS THE WHOLE GUARD ON IT
+	// (#962). Plugin.Close, a manager displaced by a newer one for the
+	// same endpoint, and the cleanup that follows `docker network rm`
+	// all arrive here through Stop, with leaving false and their
+	// containers still running: releasing there tells the server an
+	// address is free while a live container holds it, which is the
+	// duplicate assignment #524 added detection for, manufactured by
+	// the plugin. TestReleaseLease_StopDoesNotRelease drives that arm
+	// under a network that DOES release, which is the only shape where
+	// the guard can be seen to do anything.
+	//
+	// ABOVE THE startErr RETURN, and that placement is the whole of
+	// what a failed Join gets. setupClient publishes the client before
+	// Start, so an endpoint whose Start failed still has a client to
+	// ask; it holds no binding, so nothing goes on the wire and the
+	// attempt lands in release_failures. That is the honest reading of
+	// this case: the one-shot acquired an address, the persistent
+	// client never bound, and the address is still leased upstream when
+	// this returns. Below the return it would be silent instead --
+	// neither sent nor failed -- on the one population where an
+	// operator who asked for releases most wants to see that none
+	// happened.
+	//
+	// Before close(m.stopChan) and before the clients are drained,
+	// because a release is something a RUNNING client does: the socket
+	// is open, the machine holds the binding, and the identity on the
+	// wire is the one the server filed the lease under.
+	if leaving && m.opts.releasesOnStop() {
+		releasedV4, releasedV6 := m.releaseHeldLeases()
+		m.releasedV4.Store(releasedV4)
+		m.releasedV6.Store(releasedV6)
+	}
+
 	if m.startErr != nil {
 		// No persistent client ever ran, so there is nothing to stop,
 		// and the CreateEndpoint one-shot's lease is left where
@@ -2071,27 +2105,6 @@ func (m *dhcpManager) stop(leaving bool) error {
 					"other host on the segment")
 		}
 		return nil
-	}
-
-	// THE RELEASE, AND THE `leaving` ARM IS THE WHOLE GUARD ON IT
-	// (#962). Plugin.Close, a manager displaced by a newer one for the
-	// same endpoint, and the cleanup that follows `docker network rm`
-	// all arrive here through Stop, with leaving false and their
-	// containers still running: releasing there tells the server an
-	// address is free while a live container holds it, which is the
-	// duplicate assignment #524 added detection for, manufactured by
-	// the plugin. TestReleaseLease_StopDoesNotRelease drives that arm
-	// under a network that DOES release, which is the only shape where
-	// the guard can be seen to do anything.
-	//
-	// Before close(m.stopChan) and before the clients are drained,
-	// because a release is something a RUNNING client does: the socket
-	// is open, the machine holds the binding, and the identity on the
-	// wire is the one the server filed the lease under.
-	if leaving && m.opts.releasesOnStop() {
-		releasedV4, releasedV6 := m.releaseHeldLeases()
-		m.releasedV4.Store(releasedV4)
-		m.releasedV6.Store(releasedV6)
 	}
 
 	// Guard against zero handles: Stop can be called against a manager

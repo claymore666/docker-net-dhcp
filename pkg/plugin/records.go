@@ -9,6 +9,7 @@ import (
 	"net"
 	"time"
 
+	"github.com/claymore666/dhcp-golib/lease"
 	log "github.com/sirupsen/logrus"
 
 	"github.com/claymore666/docker-net-dhcp/pkg/dhcp"
@@ -249,21 +250,51 @@ func (p *Plugin) settleReleasedRecord(id string, released bool) {
 // only useful for as long as a re-bind may consume it, and a deadline
 // past that would keep answering lookups for an endpoint nothing can
 // claim.
+//
+// IT READS THE NEWEST RECORD PER SCOPE AND NOT `Resume`, and the
+// difference is the released case (#962). `Resume` CONTINUES past a
+// CLOSED record to the next older match on the same scope and MAC and
+// returns that one. After a release the newest record is CLOSED, so
+// Resume would answer with an EARLIER endpoint's record -- which on a
+// network that inherited this MAC through a tombstone carries the
+// address that has just been handed back -- and this function would
+// stamp a fresh tombstone deadline on it. That is the inheritance the
+// release exists to prevent, rebuilt one record deeper.
+//
+// State the bound: skipping on CLOSED also skips a record closed for
+// the OTHER reason, an abandoned CreateEndpoint (closeRecord). That
+// needs a DeleteEndpoint for one endpoint to arrive after a failed
+// CreateEndpoint for the same key, and libnetwork runs Leave and
+// DeleteEndpoint for the old endpoint before it creates the new one, so
+// it is not reachable through the restart path that produces the two
+// records. It is a bound, not a proof.
+//
+// The v6 record is a SECOND record under a second scope (dhcp.Scope6),
+// so it is walked separately: a dual-stack endpoint whose v4 record was
+// retained and whose v6 record was not keeps its IPv4 address across a
+// restart and loses its IPv6 one, which is exactly the asymmetry #820
+// exists to remove.
 func (p *Plugin) retainRecordFor(networkID string, key net.HardwareAddr) {
 	if p.records == nil || len(key) == 0 {
 		return
 	}
-	hw := key
-	if id, _, ok := p.records.Resume(networkID, hw, time.Now()); ok {
-		p.recordRetained(id, time.Now().Add(tombstoneTTL))
+	rb, err := p.records.Rebuilt()
+	if err != nil {
+		log.WithError(err).WithField("network", shortID(networkID)).
+			Warn("Could not read the lease records back; this endpoint's record keeps no tombstone deadline")
+		return
 	}
-	// The v6 record is a SECOND record under a second scope
-	// (dhcp.Scope6), so it needs its own tombstone: a dual-stack
-	// endpoint whose v4 record was retained and whose v6 record was not
-	// keeps its IPv4 address across a restart and loses its IPv6 one,
-	// which is exactly the asymmetry #820 exists to remove.
-	if id, _, _, ok := p.records.Resume6(networkID, hw, time.Now()); ok {
-		p.recordRetained(id, time.Now().Add(tombstoneTTL))
+	deadline := time.Now().Add(tombstoneTTL)
+	for _, scope := range []string{networkID, dhcp.Scope6(networkID)} {
+		matches := rb.ByScopeMAC(scope, key)
+		if len(matches) == 0 {
+			continue
+		}
+		last := matches[len(matches)-1]
+		if last.Phase == lease.PhaseClosed {
+			continue
+		}
+		p.recordRetained(last.ID, deadline)
 	}
 }
 

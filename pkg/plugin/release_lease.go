@@ -31,14 +31,14 @@ const (
 	// running container and every `docker network disconnect`. A
 	// container that restarts asks for a fresh lease.
 	ReleaseOnStop = "on_stop"
-	// ReleaseOnRemove is #962's third value. The name is RESERVED and
-	// the value is refused for now. See releaseOnRemoveRefusal.
+	// ReleaseOnRemove is #962's third value. It arrives in the next
+	// change on this milestone and is refused until then. See
+	// releaseOnRemoveRefusal.
 	ReleaseOnRemove = "on_remove"
 )
 
-// releaseOnRemoveRefusal is why `release_lease=on_remove` is not
-// available in this version, in the words an operator gets back from
-// `docker network create`.
+// releaseOnRemoveRefusal is what an operator gets back from `docker
+// network create` until `on_remove` lands.
 //
 // MEASURED, and it is a fact about libnetwork rather than about this
 // plugin: `DeleteEndpoint` runs when a container STOPS, not when it is
@@ -47,27 +47,25 @@ const (
 // `CreateEndpoint` inside a 60-second TTL (docs/reference.md, "Restart
 // stability"), which is only possible if both run during the restart.
 // So a release hung off `DeleteEndpoint` fires on every `docker stop` --
-// that is this option's `on_stop` -- and a `docker rm` of a container
-// that is already stopped reaches this plugin not at all, because its
-// endpoint was deleted when it stopped.
+// that is this option's `on_stop` -- and `docker rm` of a container
+// that is already stopped reaches this plugin not at all.
 //
-// WHAT THE MESSAGE SAYS AND WHAT IT DOES NOT. It says the value is not
-// available in this version. It does not say the behaviour cannot
-// exist: a release that waits for a stopped container's endpoint to go
-// unclaimed for the tombstone window would be `on_remove` built on
-// something other than `DeleteEndpoint`, and that is a design decision
-// held open, not one closed here. The NAME stays reserved for it, which
-// is why the value is refused by name and never folded into the
-// default.
+// WHICH IS WHY `on_remove` IS A DIFFERENT MECHANISM, NOT A THIRD CALL
+// SITE. It is a TIMED release: the stop keeps the record, and if no
+// container has claimed the address back within a TTL the plugin sends
+// the release itself from the host, off the record's stored identity.
+// That needs a sender that holds no client, so it is the next change on
+// this milestone and not this one.
 //
-// Refusing it now is the fail-closed answer. Accepting it and releasing
-// on every stop would give two names to one behaviour and would make
-// the reference page false for whoever read it.
-const releaseOnRemoveRefusal = "release_lease=on_remove is not available in this version: " +
+// Refusing it until then is the fail-closed answer. Accepting it now
+// and releasing on every stop would give two names to one behaviour and
+// would make the reference page false for whoever read it.
+const releaseOnRemoveRefusal = "release_lease=on_remove is not available yet: " +
+	"it arrives in the next change on this milestone. " +
 	"Docker deletes an endpoint when its container STOPS, not when the container is removed, " +
-	"so a release sent there would fire on every `docker stop` (which is release_lease=on_stop) " +
+	"so a release sent from that handler would fire on every `docker stop` (which is release_lease=on_stop) " +
 	"and would never fire for `docker rm` of an already-stopped container. " +
-	"The name is reserved. Use release_lease=on_stop or release_lease=never. See issue #962."
+	"Use release_lease=never or release_lease=on_stop for now. See issue #962."
 
 // releaseSendBudget is how long releaseHeldLease waits for the release
 // packet to leave the host before writing the attempt off as failed.

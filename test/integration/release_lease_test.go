@@ -75,18 +75,17 @@ func waitLeaseFile(t *testing.T, leaseFile, addr string, want bool) bool {
 // TestReleaseLease_TheOptionIsRefusedAtCreateOrItIsNot pins the
 // option's domain at the only place an operator meets it.
 //
-// `on_remove` is refused BY NAME, and the refusal says the value is not
-// available in this version: libnetwork deletes an endpoint when its
-// container STOPS, not when it is removed -- the tombstone that keeps a
-// MAC across `docker restart` is written at `DeleteEndpoint` and
-// consumed by the next `CreateEndpoint` inside 60 seconds, which is only
-// possible if both run during the restart. A release hung off that
-// handler would fire on every `docker stop`, which is this option's
-// `on_stop`, and would never fire for `docker rm` of an already-stopped
-// container. The NAME stays reserved: a release that waits for a stopped
-// container's endpoint to go unclaimed is a different mechanism and an
-// open design question, so this test asserts the refusal, never that the
-// behaviour is impossible.
+// `on_remove` is refused BY NAME, and the refusal says it is not
+// available yet: libnetwork deletes an endpoint when its container
+// STOPS, not when it is removed -- the tombstone that keeps a MAC across
+// `docker restart` is written at `DeleteEndpoint` and consumed by the
+// next `CreateEndpoint` inside 60 seconds, which is only possible if
+// both run during the restart. A release hung off that handler would
+// fire on every `docker stop`, which is this option's `on_stop`, and
+// would never fire for `docker rm` of an already-stopped container.
+// `on_remove` therefore arrives as a TIMED release in the next change on
+// this milestone, so this test asserts today's refusal and says nothing
+// about whether the behaviour can exist.
 //
 // The accepted rows are the half that stops the refusal from being
 // "refuse everything": a create that fails for both values would pass a

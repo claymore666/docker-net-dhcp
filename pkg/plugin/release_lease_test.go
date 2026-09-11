@@ -99,13 +99,13 @@ func TestReleaseLease_ParseRefusesEveryValueItDoesNotImplement(t *testing.T) {
 		{in: "on_stop", want: ReleaseOnStop},
 		{in: "on_remove", wantErr: true, mentions: []string{
 			// The measured reason, and the two things the wording is
-			// required to do beside it: say this VERSION does not have
-			// the value, and keep the name reserved. A message that
-			// said the behaviour cannot exist would close a design
-			// question this plugin has not closed.
+			// required to do beside it: say the value is not there yet
+			// and say when it arrives. A message that said the value
+			// does not exist would be false about a mechanism already
+			// scoped on this milestone.
 			"STOPS, not when the container is removed",
-			"not available in this version",
-			"The name is reserved",
+			"not available yet",
+			"it arrives in the next change on this milestone",
 		}},
 		{in: "On_Stop", wantErr: true, mentions: []string{"is not one of"}},
 		{in: "on_stpo", wantErr: true, mentions: []string{"is not one of"}},
@@ -765,5 +765,129 @@ func TestReleaseLease_TheClientIsPublishedOnceAndOnlyFromSetupClient(t *testing.
 	if sites[0] != "setupClient" {
 		t.Errorf("setReleaseClient is called from %s; the client that holds this endpoint's lease "+
 			"at Leave is the persistent one, and it is built in setupClient", sites[0])
+	}
+}
+
+// TestReleaseLease_AFailedStartStillAsksAndStillCounts drives the
+// population the call-site test above cannot see: an endpoint whose
+// Join failed.
+//
+// setupClient publishes the client BEFORE Start, on purpose, so a
+// client whose Start failed is still there to be asked. It holds no
+// binding, so nothing goes on the wire and the attempt lands in
+// release_failures. The alternative, which this pins against, is the
+// release sitting below stop's `startErr` return: then a network that
+// asked for releases would be SILENT for exactly this population --
+// neither sent nor failed -- while its one-shot's address stays leased
+// upstream. Silence there reads like a network with no failures.
+func TestReleaseLease_AFailedStartStillAsksAndStillCounts(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		value      string
+		wantCalls  int
+		wantSent   int32
+		wantFailed int32
+	}{
+		{"on_stop: the attempt is made and counted as a failure", ReleaseOnStop, 1, 0, 1},
+		{"never: nothing is asked and nothing is counted", ReleaseNever, 0, 0, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			shortReleaseBudget(t)
+			var ledgerFailures atomic.Int32
+			p := &Plugin{}
+			p.ledger = testLedger(t, &ledgerFailures)
+
+			// sends: 0 is the state of a client whose Start failed. The
+			// machine never bound, so the library has no binding to
+			// relinquish and moves no counter.
+			client := &fakeReleaser{sends: 0}
+			m := releasingManager(t, p, tc.value, client, nil)
+			m.startErr = errors.New("failed to start DHCP client")
+
+			if err := m.StopForLeave(); err != nil {
+				t.Fatalf("StopForLeave: %v", err)
+			}
+
+			if got := client.callCount(); got != tc.wantCalls {
+				t.Errorf("the client's Release() was called %d time(s), want %d", got, tc.wantCalls)
+			}
+			if got := m.releasedV4.Load(); got {
+				t.Error("releasedV4 is true after a release that put nothing on the wire; " +
+					"the tombstone would be skipped for an address still leased upstream")
+			}
+			if got := p.releasesSentV4.Load(); got != tc.wantSent {
+				t.Errorf("releases_sent_v4 = %d, want %d", got, tc.wantSent)
+			}
+			if got := p.releaseFailuresV4.Load(); got != tc.wantFailed {
+				t.Errorf("release_failures_v4 = %d, want %d; an operator who asked for releases "+
+					"reads this counter to find the endpoints that did not get one", got, tc.wantFailed)
+			}
+		})
+	}
+}
+
+// TestReleaseLease_TheRetainedRecordIsNeverAnOlderOne pins which record
+// DeleteEndpoint stamps its tombstone deadline on.
+//
+// Two records can share one scope and MAC: a teardown whose release
+// FAILED leaves its record LEFT and lays a tombstone, so the next
+// container inherits the MAC, and that container's own teardown can
+// then release successfully and close its record. A lookup that walks
+// PAST the closed record answers with the older one, which carries the
+// address that has just been handed back, and stamping a fresh deadline
+// on it keeps it answering lookups for an address in the server's pool.
+// The `never` row is the control: with nothing closed, the newest
+// record is retained exactly as before.
+func TestReleaseLease_TheRetainedRecordIsNeverAnOlderOne(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		closeLast bool
+		wantOlder lease.Phase
+		wantNewer lease.Phase
+	}{
+		{"the newest record was released", true, lease.PhaseLeft, lease.PhaseClosed},
+		{"nothing was released", false, lease.PhaseLeft, lease.PhaseRetained},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := recordingPlugin(t)
+			mac, _ := net.ParseMAC("02:42:ac:11:00:07")
+			identity := dhcp.ClientIdentity([]byte{9, 8, 7})
+
+			older := p.recordCreated("net1", mac, identity)
+			newer := p.recordCreated("net1", mac, identity)
+			if older == "" || newer == "" {
+				t.Fatal("no record was created")
+			}
+			for _, id := range []string{older, newer} {
+				p.recordBound(id, "created")
+				p.recordLeft(id)
+			}
+			if tc.closeLast {
+				p.closeRecord(newer)
+			}
+
+			p.retainRecordFor("net1", mac)
+
+			rb, err := p.records.Rebuilt()
+			if err != nil {
+				t.Fatalf("Rebuilt: %v", err)
+			}
+			for _, f := range []struct {
+				which string
+				id    string
+				want  lease.Phase
+			}{
+				{"older", older, tc.wantOlder},
+				{"newer", newer, tc.wantNewer},
+			} {
+				rec, ok := rb.ByID(f.id)
+				if !ok {
+					t.Fatalf("the %s record is not in the fold", f.which)
+				}
+				if rec.Phase != f.want {
+					t.Errorf("the %s record is %s, want %s", f.which, rec.Phase, f.want)
+				}
+			}
+		})
 	}
 }
