@@ -17,8 +17,16 @@ name: Docs site
 #   - workflow_dispatch         → re-publish docs for an existing tag, or, with
 #                                 no input, the current dev
 #
-# Pull requests touching the docs only get a `mkdocs build --strict` check —
-# they never publish. actionlint gates this file like every other workflow.
+# Every pull request into dev or main gets a `mkdocs build --strict` check
+# under the job name `docs-site`; they never publish. actionlint gates this
+# file like every other workflow.
+#
+# THAT JOB CARRIES NO PATH FILTER, and that is what makes it usable as a
+# required context (#889). A required check that is path-filtered is ABSENT
+# on every pull request the filter excludes, and an absent required check
+# does not pass, it blocks: the merge button stays grey with nothing red to
+# fix. The cost of the other direction is one pip install and one mkdocs
+# build on pull requests that touch no docs, which is under two minutes.
 #
 # One-time setup (maintainer, after the first run creates gh-pages):
 #   Settings → Pages → Build and deployment → Source = "Deploy from a branch",
@@ -28,10 +36,7 @@ on:
     branches: [dev]
     tags: ["v*"]
   pull_request:
-    paths:
-      - docs/**
-      - mkdocs.yml
-      - .github/workflows/pages.yml
+    branches: [dev, main]
   workflow_dispatch:
     inputs:
       tag:
@@ -53,7 +58,12 @@ jobs:
   # Always-on validation: the site must build cleanly (no broken internal
   # links, no bad config) before anything is published. This is the only
   # job that runs on pull requests.
+  #
+  # The NAME is the context string branch protection requires, so it is
+  # spelled once here and must not drift: `build` alone said nothing about
+  # which workflow produced it.
   build:
+    name: docs-site
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:

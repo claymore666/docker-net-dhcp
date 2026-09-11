@@ -629,10 +629,11 @@ the `vX.Y.Z` milestone (the workflow leans on this for the
 5. **PR `release/vX.Y.Z` → `dev`.** Required checks on `dev` are
    `test`, `policy-gates`, `staticcheck`, `integration` (every PR builds
    and exercises its own plugin on the integration runner), `actionlint`,
-   `govulncheck`, `attribution`, and CodeQL's `Analyze (go)` +
-   `Analyze (actions)`. `main` requires those **plus `coverage` and
-   `coverage-present`**, which is why the ratchet first bites at the
-   release PR in the next step and not before. Merge when green.
+   `govulncheck`, `attribution`, `docs-site` (`mkdocs build --strict`,
+   #889), and CodeQL's `Analyze (go)` + `Analyze (actions)`. `main`
+   requires those **plus `coverage` and `coverage-present`**, which is why
+   the ratchet first bites at the release PR in the next step and not
+   before. Merge when green.
 
    **Do not trust the list above. Read the authority.** It carried a
    hand-written total ("eight in total") that was correct when written
@@ -655,6 +656,13 @@ the `vX.Y.Z` milestone (the workflow leans on this for the
    request and blocked nothing. If it is ever missing from the output
    above, that is the state to restore; check before trusting a green
    release PR.
+
+   `docs-site` became required in #889. Until then nothing required built
+   the site, so a pull request could break the nav or a strict-mode link
+   and be green on every other context; the Docs workflow ran and passed,
+   and a red there blocked nothing. It carries no path filter for the
+   reason the workflow's own header gives: a path-filtered required check
+   is absent on the pull requests the filter excludes, and absent blocks.
 
    `coverage-present` became required in #735. It is the detector that
    tells an *absent* coverage run apart from a pending one, and it was

@@ -70,7 +70,12 @@ can merge. Branch protection holds the authoritative list and the checks
 panel on the pull request shows it applied to the branch. At the time of
 writing that list is: unit tests, `staticcheck`, the live integration
 suite, `govulncheck`, `actionlint`, CodeQL (`Analyze (go)` and
-`Analyze (actions)`), `attribution`, and `policy-gates`.
+`Analyze (actions)`), `attribution`, `policy-gates`, and `docs-site`.
+
+`docs-site` builds the documentation site with `mkdocs build --strict`. It
+runs on every pull request, including one that touches no documentation,
+because a check that is filtered out of a pull request is absent there, and
+an absent required check blocks the merge instead of passing it.
 
 Documentation-only pull requests, meaning diffs touching nothing but
 `*.md`, satisfy the integration check through a fast in-job skip. Any
