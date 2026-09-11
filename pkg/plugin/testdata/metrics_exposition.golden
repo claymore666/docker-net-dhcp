@@ -274,7 +274,7 @@ net_dhcp_docker_api_non_get_refusals_total 4050535
 # TYPE net_dhcp_ledger_write_failures_total counter
 net_dhcp_ledger_write_failures_total 8412728
 
-# HELP net_dhcp_ifname_unsupported_total Endpoints created with a custom interface name (Compose interface_name, endpoint option com.docker.network.endpoint.ifname) on a Docker Engine that does not apply it. Remote drivers' requested names are ignored below 29.8, measured. Not healthy-affecting: the container comes up on a working network and only the interface name differs from the request. It counts nothing on an engine whose version the plugin could not read.
+# HELP net_dhcp_ifname_unsupported_total Endpoints created with a custom interface name (Compose interface_name, endpoint option com.docker.network.endpoint.ifname) on an engine below the first version that applies one. The test is the engine's reported version and not what it does: 28.5.2 and 29.7.2 were measured ignoring the name and 29.8.0 applying it, so a vendor build that departs from its version is counted the wrong way. Not healthy-affecting: the container comes up on a working network and only the interface name differs from the request. It counts nothing on an engine whose version the plugin could not read.
 # TYPE net_dhcp_ifname_unsupported_total counter
 net_dhcp_ifname_unsupported_total 5506512
 
