@@ -252,10 +252,6 @@ func (s *ipamReserves) len() int {
 // seen. On macvlan that link is the same child the preflight probe
 // builds; on a bridge it is the same veth pair CreateEndpoint builds.
 func (p *Plugin) ipamReserveAddress(ctx context.Context, networkID string, sn storedNetwork, mac net.HardwareAddr, requestedIP string) (*ipamReservation, error) {
-	if rec, held := p.ipamEndpointHoldingMAC(networkID, mac); held {
-		return nil, p.refuseDuplicateMAC(networkID, mac, "an endpoint of this network already holds it, in phase "+rec.Phase.String())
-	}
-
 	key := ipamReserveKey(sn.Binding.PoolID, mac)
 	res, mine := p.ipamReserves.begin(key, time.Now())
 	if !mine {
@@ -265,30 +261,6 @@ func (p *Plugin) ipamReserveAddress(ctx context.Context, networkID string, sn st
 	out, err := p.runIPAMReserve(ctx, networkID, sn, mac, requestedIP)
 	p.ipamReserves.finish(key, res, out, err)
 	return res, err
-}
-
-// ipamEndpointHoldingMAC asks the RECORD STORE whether this network
-// already has an endpoint under this hardware address.
-//
-// It fails OPEN, and the opposite failure is why. A journal that will
-// not read is a host where every fold is already degraded; refusing here
-// on the read error would turn that into "no container can be started on
-// any IPAM network", which is a far larger outage than the one this
-// guard exists to prevent, and the in-flight half still closes the
-// two-creates-racing shape with no disk at all. What is lost is the
-// settled shape on an unreadable journal, where CreateEndpoint's own
-// record checks are what stands.
-func (p *Plugin) ipamEndpointHoldingMAC(networkID string, mac net.HardwareAddr) (lease.Record, bool) {
-	if p.records == nil {
-		return lease.Record{}, false
-	}
-	rb, err := p.records.Rebuilt()
-	if err != nil {
-		log.WithError(err).WithField("network", shortID(networkID)).
-			Warn("Could not read the lease records; a second endpoint under a hardware address this network already leases for cannot be detected here")
-		return lease.Record{}, false
-	}
-	return ipamLiveRecordForMAC(rb, networkID, mac)
 }
 
 // refuseDuplicateMAC is the ONE refusal both halves return, so that the

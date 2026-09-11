@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/netip"
 	"sync"
+	"time"
 
 	"github.com/claymore666/dhcp-golib/lease"
 	log "github.com/sirupsen/logrus"
@@ -272,12 +273,45 @@ func ipamLiveRecord(rb lease.Rebuilt, networkID string, addr netip.Addr) (lease.
 // deliberate exclusion: a tombstone is the re-bind candidate a restart
 // consumes, and refusing on one would cost every restarted container
 // its address.
-func ipamLiveRecordForMAC(rb lease.Rebuilt, networkID string, mac net.HardwareAddr) (lease.Record, bool) {
+//
+// THE LEASE'S OWN EXPIRY IS THE BOUND, and without it this lookup never
+// lets go. A record can be left in an answering phase with nothing
+// running behind it: retainRecordFor lays the tombstone only when an
+// in-memory endpoint fingerprint exists (network.go), so a
+// DeleteEndpoint that arrives without one -- the plugin restarted and
+// recovery did not re-adopt that endpoint, or the container was removed
+// while the plugin was down and DeleteEndpoint never ran at all --
+// leaves the record JOINED, and nothing afterwards closes it: there is
+// no compaction, and recovery closes no record for an endpoint Docker
+// no longer lists. Keyed on the phase alone, such an orphan would
+// refuse its hardware address on its network for the life of the
+// journal, telling the operator to remove an endpoint that is already
+// gone.
+//
+// The expiry is the honest boundary rather than a timeout picked to
+// feel safe. No DHCPRELEASE is ever sent (D-7), so the server keeps the
+// lease filed against that hardware address until it runs out, and
+// while it is filed a second endpoint under the same address really
+// would be handed the same lease. When it runs out, so does the reason
+// to refuse. A renewal writes every lease event back to the record
+// (pkg/dhcp/chassis.go, the persistent client's event loop), so a
+// running endpoint's expiry keeps moving and only an abandoned record
+// ages out. A record with no expiry recorded yet -- RESERVED before its
+// ACK is the reachable one -- is NOT treated as expired: an exchange is
+// running behind it and the in-flight half owns that window, and a zero
+// is also how the library spells an INFINITE lease, which is a lease
+// that is never given back.
+func ipamLiveRecordForMAC(rb lease.Rebuilt, networkID string, mac net.HardwareAddr, now time.Time) (lease.Record, bool) {
 	matches := rb.ByScopeMAC(networkID, mac)
 	for i := len(matches) - 1; i >= 0; i-- {
-		if ipamPhaseAnswers(matches[i].Phase) {
-			return matches[i], true
+		rec := matches[i]
+		if !ipamPhaseAnswers(rec.Phase) {
+			continue
 		}
+		if !rec.Lease.Expire.IsZero() && !rec.Lease.Expire.After(now) {
+			continue
+		}
+		return rec, true
 	}
 	return lease.Record{}, false
 }

@@ -33,8 +33,17 @@ const (
 // below is that these handlers never reach for one.
 func ipamFixture(t *testing.T) (*Plugin, *ipamBinding) {
 	t.Helper()
+	p, b, _ := ipamFixtureWithJournal(t)
+	return p, b
+}
+
+// ipamFixtureWithJournal is ipamFixture, plus the path of the record
+// journal, for the one test that has to make reading it fail.
+func ipamFixtureWithJournal(t *testing.T) (*Plugin, *ipamBinding, string) {
+	t.Helper()
 	withStateDir(t, t.TempDir())
-	r, err := dhcp.OpenRecords(t.TempDir()+"/"+recordFileName, "test-instance")
+	journal := t.TempDir() + "/" + recordFileName
+	r, err := dhcp.OpenRecords(journal, "test-instance")
 	if err != nil {
 		t.Fatalf("OpenRecords: %v", err)
 	}
@@ -65,7 +74,7 @@ func ipamFixture(t *testing.T) (*Plugin, *ipamBinding) {
 		t.Fatalf("saveNetwork: %v", err)
 	}
 	p.ipamIndex.bind(poolID, ipamTestNetwork)
-	return p, b
+	return p, b, journal
 }
 
 // TestIpamHandlers_CallDockerZeroTimes is the property D46 was amended
@@ -551,13 +560,15 @@ func TestIpamMode_DeleteEndpointWritesNoJSONTombstone(t *testing.T) {
 //
 // The replay branch matches a record by ADDRESS, and two different
 // calls arrive carrying one: the daemon's replay of a stored endpoint,
-// which carries no MAC, and `docker run --ip X` for an address someone
-// else already holds, which carries the new endpoint's own. So the MAC
-// is what separates "this endpoint's own address" from "an address that
-// is taken" — and answering the second would hand one
-// address to two endpoints, move ipam_replay_hits for something that is
-// not a replay, and surface the contradiction later at CreateEndpoint
-// wearing a message about a plugin restart that never happened.
+// which carries NO MAC, and `docker run --ip X` for an address someone
+// else already holds, which carries the new endpoint's own. So the
+// PRESENCE of a MAC is what separates a replay from a create, and its
+// value separates nothing: a create under a hardware address a live
+// record already holds is a second endpoint whether or not the address
+// matches too. Answering either shape hands one address to two
+// endpoints, moves ipam_replay_hits for something that is not a replay,
+// and surfaces the contradiction later at CreateEndpoint wearing a
+// message about a plugin restart that never happened.
 func TestIpamReplay_AnAddressHeldByAnotherEndpointIsNotAReplay(t *testing.T) {
 	holder, _ := net.ParseMAC(ipamTestMAC)
 	other, _ := net.ParseMAC("02:42:c0:a8:63:0b")
@@ -594,21 +605,54 @@ func TestIpamReplay_AnAddressHeldByAnotherEndpointIsNotAReplay(t *testing.T) {
 		}
 	})
 
-	t.Run("an endpoint asking again under its own MAC is still a replay", func(t *testing.T) {
+	// The corrected half of this test. It read "an endpoint asking again
+	// under its own MAC is still a replay", and answered the call.
+	//
+	// NO REPLAY EVER CARRIES A MAC, so that shape has no such producer.
+	// The daemon's start-up replay calls RequestAddress with
+	// ep.ipamOptions loaded from its store (MEASURED, moby 28.5.2
+	// libnetwork/endpoint.go:1330 reached from controller.go:817), and
+	// ipamOptions is not one of the endpoint fields that is persisted
+	// (MEASURED, endpoint.go:109-127 is the whole of MarshalJSON), so a
+	// replayed endpoint arrives with no options at all. libnetwork puts
+	// the hardware address there only while CREATING an endpoint. What
+	// does produce this shape is a second container pinning the same
+	// `--ip` AND the same `--mac-address`: address and MAC both match
+	// the running endpoint's record, and answering it published one
+	// address for two endpoints and sent the loser to CreateEndpoint to
+	// be refused for a plugin restart that never happened.
+	t.Run("a second endpoint pinning the same --ip and MAC is refused, not replayed", func(t *testing.T) {
 		p, b := seed(t)
-		res, err := p.RequestAddress(context.Background(), RequestAddressRequest{
+		_, err := p.RequestAddress(context.Background(), RequestAddressRequest{
 			PoolID:  b.PoolID,
 			Address: "192.168.99.10",
 			Options: map[string]string{ipamOptMacAddress: holder.String()},
 		})
-		if err != nil {
-			t.Fatalf("RequestAddress: %v", err)
+		if err == nil {
+			t.Fatal("a second endpoint pinning both the address and the hardware address a " +
+				"running container holds was answered. Docker publishes both endpoints on " +
+				"one address and the loser fails at CreateEndpoint.")
 		}
-		if res.Address != "192.168.99.10/24" {
-			t.Errorf("address = %q, want 192.168.99.10/24", res.Address)
+		if !errors.Is(err, util.ErrIPAM) {
+			t.Errorf("error %v does not wrap util.ErrIPAM", err)
 		}
-		if n := p.ipamReplayHits.Load(); n != 1 {
-			t.Errorf("ipam_replay_hits = %d, want 1", n)
+		for _, want := range []string{holder.String(), "--mac-address"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("the refusal is %q; it does not contain %q", err, want)
+			}
+		}
+		if strings.Contains(err.Error(), "restart") {
+			t.Errorf("the refusal is %q. It blames a plugin restart, which is the message "+
+				"this path used to reach at CreateEndpoint and the reason the refusal "+
+				"moved here", err)
+		}
+		if n := p.ipamReplayHits.Load(); n != 0 {
+			t.Errorf("ipam_replay_hits = %d, want 0: a second endpoint was counted as a "+
+				"replay, and that counter is the denominator for ipam_replay_miss", n)
+		}
+		if n := p.ipamReserveDuplicateMAC.Load(); n != 1 {
+			t.Errorf("ipam_reserve_duplicate_mac = %d, want 1: nothing counts the second "+
+				"endpoint this entrance admits", n)
 		}
 	})
 
@@ -1062,6 +1106,143 @@ func TestRequestAddress_ARetainedRecordIsNotADuplicate(t *testing.T) {
 	if n := p.ipamReserveDuplicateMAC.Load(); n != 0 {
 		t.Errorf("ipam_reserve_duplicate_mac = %d for a restart under a retained record, "+
 			"want 0: RETAINED is being read as a live endpoint", n)
+	}
+}
+
+// TestRequestAddress_AnOrphanedRecordStopsRefusingWhenItsLeaseRunsOut
+// is the BOUND on the refusal above, and without it the refusal never
+// lets go.
+//
+// A record can be left in an answering phase with nothing behind it.
+// retainRecordFor lays the tombstone only when an in-memory endpoint
+// fingerprint exists, so a DeleteEndpoint arriving without one -- the
+// plugin restarted and recovery did not re-adopt that endpoint, or the
+// container was removed while the plugin was down and DeleteEndpoint
+// never ran at all -- leaves the record JOINED, and nothing afterwards
+// closes it: the journal has no compaction and recovery closes no
+// record for an endpoint Docker no longer lists. Keyed on the phase
+// alone, that orphan would refuse its hardware address on its network
+// for the life of the journal, telling the operator to remove an
+// endpoint that is already gone.
+//
+// The lease's own expiry is the bound because it is the true one. No
+// DHCPRELEASE is ever sent (D-7), so the server holds the lease against
+// that hardware address until it runs out and a second endpoint under
+// it really would be handed the same address; when it runs out, so does
+// the reason to refuse. The live arm is the control: the same record
+// with a lease still running must still refuse, or this test would pass
+// against a guard that had simply been deleted.
+func TestRequestAddress_AnOrphanedRecordStopsRefusingWhenItsLeaseRunsOut(t *testing.T) {
+	mac, _ := net.ParseMAC(ipamTestMAC)
+
+	// The third arm is the INFINITE lease, and it is here because a
+	// zero expiry has two readings and only one of them is "no lease".
+	// RFC 2131's 0xffffffff lease time reaches lease.Lease as a zero
+	// Expire, exactly as an unwritten one does; read as expired, an
+	// endpoint whose server granted it an address for ever would be the
+	// one endpoint this guard never protects, and a lease that is never
+	// given back is the last one two endpoints should share.
+	for _, c := range []struct {
+		name       string
+		expiresIn  time.Duration
+		infinite   bool
+		wantRefuse bool
+	}{
+		{"a lease still running refuses", time.Hour, false, true},
+		{"a lease that has run out does not", -time.Minute, false, false},
+		{"a lease with no end refuses", 0, true, true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			p, b := ipamFixture(t)
+			id := p.recordCreated(ipamTestNetwork, mac, dhcp.ClientIdentity([]byte{7}))
+			ev := acquired("192.168.99.10/24", c.expiresIn)
+			if c.infinite {
+				ev.Lease.Expire = time.Time{}
+			}
+			if err := p.records.Observed(id, ev, nil); err != nil {
+				t.Fatalf("Observed: %v", err)
+			}
+			if err := p.records.Bound(id); err != nil {
+				t.Fatalf("Bound: %v", err)
+			}
+
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			_, err := p.RequestAddress(ctx, RequestAddressRequest{
+				PoolID:  b.PoolID,
+				Options: map[string]string{ipamOptMacAddress: mac.String()},
+			})
+			refused := err != nil && strings.Contains(err.Error(), "already leasing an address")
+			if refused != c.wantRefuse {
+				t.Errorf("refused as a duplicate = %v, want %v (err %v).\n"+
+					"A record stuck in a live phase with an expired lease is an endpoint "+
+					"nothing can remove any more; refusing on it locks that hardware "+
+					"address out of this network for the life of the journal.",
+					refused, c.wantRefuse, err)
+			}
+			want := int32(0)
+			if c.wantRefuse {
+				want = 1
+			}
+			if n := p.ipamReserveDuplicateMAC.Load(); n != want {
+				t.Errorf("ipam_reserve_duplicate_mac = %d, want %d", n, want)
+			}
+		})
+	}
+}
+
+// TestRequestAddress_AnUnreadableJournalDoesNotRefuse drives the
+// DIRECTION of the settled half, which is otherwise unobserved: a fold
+// that will not read must not turn into a refusal.
+//
+// The direction is a choice and the opposite failure is the reason for
+// it. Fail-closed here would refuse every container start on every IPAM
+// network on a host whose journal is unreadable, and the other disk
+// lookup on this path, ipamRecordFor, already fails open on the same
+// error -- two lookups that disagreed about an unreadable fold would
+// have one refusing what the other confirms. What is lost is stated in
+// ipamEndpointHoldingMAC rather than claimed away.
+//
+// The journal is replaced by a DIRECTORY rather than chmod'ed: a run as
+// root ignores the mode bits, and a check that passes for the wrong
+// reason under one uid is not a check.
+func TestRequestAddress_AnUnreadableJournalDoesNotRefuse(t *testing.T) {
+	mac, _ := net.ParseMAC(ipamTestMAC)
+	p, b, journal := ipamFixtureWithJournal(t)
+
+	id := p.recordCreated(ipamTestNetwork, mac, dhcp.ClientIdentity([]byte{7}))
+	if err := p.records.Observed(id, acquired("192.168.99.10/24", time.Hour), nil); err != nil {
+		t.Fatalf("Observed: %v", err)
+	}
+	if _, held := p.ipamEndpointHoldingMAC(ipamTestNetwork, mac); !held {
+		t.Fatal("the seeded record does not answer while the journal reads; this test would " +
+			"pass against a fold it never broke")
+	}
+
+	if err := os.Remove(journal); err != nil {
+		t.Fatalf("remove the journal: %v", err)
+	}
+	if err := os.Mkdir(journal, 0o755); err != nil {
+		t.Fatalf("put a directory where the journal was: %v", err)
+	}
+	if _, err := p.records.Rebuilt(); err == nil {
+		t.Fatal("the fold still reads; nothing here drives the error branch")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_, err := p.RequestAddress(ctx, RequestAddressRequest{
+		PoolID:  b.PoolID,
+		Options: map[string]string{ipamOptMacAddress: mac.String()},
+	})
+	if err != nil && strings.Contains(err.Error(), "already leasing an address") {
+		t.Errorf("an unreadable journal was reported to the operator as a duplicate hardware "+
+			"address: %v.\nEvery container start on every IPAM network on that host would "+
+			"fail, with a message naming a cause that is not the one.", err)
+	}
+	if n := p.ipamReserveDuplicateMAC.Load(); n != 0 {
+		t.Errorf("ipam_reserve_duplicate_mac = %d, want 0: a read error is being counted as "+
+			"a second endpoint, and the counter is what an operator would act on", n)
 	}
 }
 

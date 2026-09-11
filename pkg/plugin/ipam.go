@@ -287,6 +287,26 @@ func (p *Plugin) RequestAddress(ctx context.Context, req RequestAddressRequest) 
 		return none, err
 	}
 
+	// THE SETTLED HALF OF THE ONE-EXCHANGE RULE, and it stands here
+	// rather than inside the reserve because the reserve is not the only
+	// way past. A MAC in the options means libnetwork is CREATING an
+	// endpoint -- it injects one at no other time, which is the fact the
+	// replay branch below is built on -- so a create whose hardware
+	// address a live record on this network already holds is a second
+	// endpoint, whatever else the request carries. Left to the reserve,
+	// a second container that pins `--ip` as well as `--mac-address`
+	// walked past: its address AND its MAC match the running endpoint's
+	// record, ipamRecordAnswersFor reads that as the endpoint's own
+	// replay, and the call is ANSWERED. Docker then published one
+	// address for two endpoints and CreateEndpoint refused the loser
+	// with a message about a plugin restart that never happened, with
+	// this counter never moving.
+	if mac != nil {
+		if rec, held := p.ipamEndpointHoldingMAC(networkID, mac); held {
+			return none, p.refuseDuplicateMAC(networkID, mac, "an endpoint of this network already holds it, in phase "+rec.Phase.String())
+		}
+	}
+
 	if req.Address != "" {
 		addr, err := netip.ParseAddr(req.Address)
 		if err != nil {
@@ -359,6 +379,34 @@ func ipamRecordAnswersFor(rec lease.Record, mac net.HardwareAddr, addr netip.Add
 	}
 	return fmt.Errorf("%w: %v is held by another endpoint on this network (record %v), so it cannot be given to %v as well. Pick a free address, or stop the container holding this one",
 		util.ErrIPAM, addr, rec.ID, mac)
+}
+
+// ipamEndpointHoldingMAC asks the RECORD STORE whether this network
+// already has a live endpoint under this hardware address.
+//
+// It fails OPEN on a read error, and the opposite failure is why. The
+// other disk lookup on this path, ipamRecordFor, already fails open on
+// the same error, so a fold that will not read leaves the two agreeing
+// rather than one refusing what the other confirms; and a fail-CLOSED
+// guard here would refuse every container start on every IPAM network
+// on a host whose journal is unreadable, which is a far larger outage
+// than the one this guard exists to prevent. What is lost on such a
+// host is the settled shape, and nothing downstream recovers it:
+// createIPAMEndpoint reads no record at all, only its own in-memory
+// reservation, and every check it makes passes for the second endpoint
+// because they are all about that endpoint's own reservation. The
+// in-flight half still closes two creates racing, with no disk.
+func (p *Plugin) ipamEndpointHoldingMAC(networkID string, mac net.HardwareAddr) (lease.Record, bool) {
+	if p.records == nil {
+		return lease.Record{}, false
+	}
+	rb, err := p.records.Rebuilt()
+	if err != nil {
+		log.WithError(err).WithField("network", shortID(networkID)).
+			Warn("Could not read the lease records; a second endpoint under a hardware address this network already leases for cannot be detected here")
+		return lease.Record{}, false
+	}
+	return ipamLiveRecordForMAC(rb, networkID, mac, time.Now())
 }
 
 // ipamRecordFor is the phase-filtered lookup, lifted so the dispatch
