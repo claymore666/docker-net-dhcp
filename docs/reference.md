@@ -769,8 +769,8 @@ A server that **ignores** option 61 and keys on the hardware address
 alone sees an unknown client instead, and hands out a different
 address. That is a real configuration and not a hypothetical; dnsmasq
 spells it `--dhcp-ignore-clid`, and the integration suite runs a
-container restart against it so the difference is measured rather than
-assumed. Nothing fails there and no counter moves; the property is
+container restart against it, so the difference is measured. Nothing
+fails there and no counter moves; the property is
 simply not available. If address stability across restarts matters to
 you and your server is not one you can check, the `--ipam-driver null`
 shape does not depend on this at all: it restores the previous MAC

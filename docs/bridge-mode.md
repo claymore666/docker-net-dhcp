@@ -273,7 +273,9 @@ docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.0.0 \
 > `--ipam-driver null`, as above, or, from v2.1.0, name this plugin as
 > the IPAM driver as well, which puts the leased address into Docker's
 > address management and makes `--ip` and Compose `ipv4_address` work.
-> Both shapes are set out in
+> The integration suite measures that address request on macvlan; the
+> bridge path runs the same reservation code and carries no arm of its
+> own. Both shapes are set out in
 > [Address allocation](reference.md#address-allocation).
 
 See the [driver reference](reference.md#driver-options-network-level)
