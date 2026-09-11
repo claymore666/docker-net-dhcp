@@ -344,7 +344,7 @@ func TestIPAM_RestartedTogetherIsTheDocumentedLimit(t *testing.T) {
 	idB, addrB, _ := harness.RunContainer(t, ctx, netName, "dh-itest-ipam-together-b")
 	t.Logf("before: a=%s b=%s", addrA, addrB)
 
-	w := harness.BeginCounterWindow(t, ctx, cli, "ipam_rebind_ambiguous")
+	w := harness.BeginCounterWindow(t, ctx, cli, "ipam_rebind_ambiguous", "parent_link_wait_timeouts")
 
 	// Both down, so two retained records are live at once, then both up.
 	for _, id := range []string{idA, idB} {
@@ -374,6 +374,28 @@ func TestIPAM_RestartedTogetherIsTheDocumentedLimit(t *testing.T) {
 			"two retained records, two address requests, and nothing in the request to tell "+
 			"them apart. A limit nothing counts is a limit nobody can see.",
 			before.IPAMRebindAmbiguous, after.IPAMRebindAmbiguous)
+	}
+
+	// The OTHER counter this sequence could move, and must not. An
+	// address reservation holds the parent NIC across its whole DHCP
+	// exchange, so the second of two simultaneous starts on one macvlan
+	// network queues behind the first and gives up after the 4s gate
+	// budget. That is contention, not a collision: both are macvlan
+	// children, a parent takes any number of those, and the second
+	// start proceeds and succeeds. parent_link_wait_timeouts is a
+	// health WARNING whose action says a start on that NIC may have
+	// been refused, so it moving here would put a warning on the health
+	// endpoint of every host running `docker compose up`, for something
+	// nobody can act on -- and would teach an operator to ignore the
+	// counter that names the collision the gate exists for.
+	if after.ParentLinkWaitTimeouts != before.ParentLinkWaitTimeouts {
+		t.Errorf("parent_link_wait_timeouts moved (%d -> %d) on two containers starting "+
+			"together on one macvlan network.\n"+
+			"Nothing here is the cross-kind pair the kernel refuses: both endpoints attach "+
+			"macvlan children to the same parent, which the kernel permits side by side, and "+
+			"both containers came back with an address above. Same-kind contention belongs in "+
+			"parent_link_waits.",
+			before.ParentLinkWaitTimeouts, after.ParentLinkWaitTimeouts)
 	}
 }
 

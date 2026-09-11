@@ -32,7 +32,7 @@ func TestParentGate_SerialisesOneParent(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			guard := p.lockParent(context.Background(), "eth0", "test")
+			guard := p.lockParent(context.Background(), "eth0", ModeMacvlan, "test")
 			defer guard.Unlock()
 
 			n := inside.Add(1)
@@ -78,7 +78,7 @@ func TestParentGate_DifferentParentsDoNotSerialise(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			guard := p.lockParent(context.Background(), parent, "test")
+			guard := p.lockParent(context.Background(), parent, ModeMacvlan, "test")
 			defer guard.Unlock()
 			arrived <- struct{}{}
 			<-released
@@ -109,14 +109,14 @@ func TestParentGate_BudgetExpiryCountsAndProceeds(t *testing.T) {
 
 	// Take the gate directly and hold it, standing in for a reclaim that
 	// is not going to finish.
-	holder, ok := p.parentGate.acquire(context.Background(), "eth0", time.Second)
+	holder, ok, _ := p.parentGate.acquire(context.Background(), "eth0", ModeIPvlan, time.Second)
 	if !ok {
 		t.Fatal("could not take an uncontended gate")
 	}
 	defer holder()
 
 	start := time.Now()
-	unlock, got := p.parentGate.acquire(context.Background(), "eth0", 50*time.Millisecond)
+	unlock, got, _ := p.parentGate.acquire(context.Background(), "eth0", ModeMacvlan, 50*time.Millisecond)
 	waited := time.Since(start)
 	unlock() // must be safe on the timeout path
 
@@ -137,7 +137,7 @@ func TestParentGate_BudgetExpiryCountsAndProceeds(t *testing.T) {
 func TestLockParent_TimeoutIsCounted(t *testing.T) {
 	p := &Plugin{}
 
-	holder, ok := p.parentGate.acquire(context.Background(), "eth0", time.Second)
+	holder, ok, _ := p.parentGate.acquire(context.Background(), "eth0", ModeIPvlan, time.Second)
 	if !ok {
 		t.Fatal("could not take an uncontended gate")
 	}
@@ -149,7 +149,7 @@ func TestLockParent_TimeoutIsCounted(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	p.lockParent(ctx, "eth0", "test").Unlock()
+	p.lockParent(ctx, "eth0", ModeMacvlan, "test").Unlock()
 
 	if p.parentLinkWaitTimeouts.Load() != 1 {
 		t.Fatalf("parent_link_wait_timeouts = %d, want 1", p.parentLinkWaitTimeouts.Load())
@@ -166,7 +166,7 @@ func TestLockParent_UncontendedIsSilent(t *testing.T) {
 	p := &Plugin{}
 
 	for i := 0; i < 20; i++ {
-		p.lockParent(context.Background(), "eth0", "test").Unlock()
+		p.lockParent(context.Background(), "eth0", ModeMacvlan, "test").Unlock()
 	}
 
 	if got := p.parentLinkWaits.Load(); got != 0 {
@@ -187,7 +187,7 @@ func TestLockParent_NoParentIsANoOp(t *testing.T) {
 	go func() {
 		defer close(done)
 		for i := 0; i < 3; i++ {
-			p.lockParent(context.Background(), "", "test").Unlock()
+			p.lockParent(context.Background(), "", ModeMacvlan, "test").Unlock()
 		}
 	}()
 
@@ -230,7 +230,7 @@ func TestLockParent_GuardIsAlwaysUsable(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			g := tc.p.lockParent(tc.ctx, tc.parent, "test")
+			g := tc.p.lockParent(tc.ctx, tc.parent, ModeMacvlan, "test")
 			if g == nil {
 				t.Fatal("lockParent returned nil; every caller defers Unlock on the result")
 			}
@@ -255,13 +255,13 @@ func TestLockParent_GuardIsAlwaysUsable(t *testing.T) {
 func TestLockParent_GuardIsReleasedNotJustDiscarded(t *testing.T) {
 	p := &Plugin{}
 
-	first := p.lockParent(context.Background(), "eth0", "test")
+	first := p.lockParent(context.Background(), "eth0", ModeMacvlan, "test")
 	first.Unlock()
 
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		p.lockParent(context.Background(), "eth0", "test").Unlock()
+		p.lockParent(context.Background(), "eth0", ModeMacvlan, "test").Unlock()
 	}()
 
 	select {
@@ -274,5 +274,106 @@ func TestLockParent_GuardIsReleasedNotJustDiscarded(t *testing.T) {
 	if got := p.parentLinkWaits.Load(); got != 0 {
 		t.Fatalf("parent_link_waits = %d, want 0 — the second acquisition should not "+
 			"have had to wait at all, so the first was still holding the parent", got)
+	}
+}
+
+// TestLockParent_ASameKindHolderIsNotAHealthWarning.
+//
+// The gate excludes more than the kernel does. A parent NIC registers
+// one rx_handler, so it refuses a macvlan child beside an ipvlan one
+// and permits any number of the same kind. The gate is one mutex per
+// parent and knows none of that, so a caller that gives up waiting for
+// a holder of its OWN kind has lost the budget and protected nothing.
+//
+// It stayed invisible while every holder was brief. An address
+// reservation holds the parent across a whole DHCP exchange, so two
+// containers starting together on one macvlan network -- `docker
+// compose up` -- reach the give-up branch every time. Reported as
+// parent_link_wait_timeouts that is a health warning whose action text
+// says container starts were refused, and nothing was refused: the
+// second start proceeds and the kernel accepts it.
+//
+// The cross-kind arm is what keeps this from being a way to silence the
+// counter. That is the collision the gate exists for, and it must still
+// warn.
+func TestLockParent_ASameKindHolderIsNotAHealthWarning(t *testing.T) {
+	// Cancelled before the wait, so the give-up branch is reached
+	// without spending parentGateBudget in a unit test. acquire treats
+	// the cancellation and the timer as one branch.
+	giveUp := func() context.Context {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		return ctx
+	}
+
+	t.Run("the same kind is an ordinary wait", func(t *testing.T) {
+		p := &Plugin{}
+		holder := p.lockParent(context.Background(), "eth0", ModeMacvlan, "ipam_reserve")
+		defer holder.Unlock()
+
+		p.lockParent(giveUp(), "eth0", ModeMacvlan, "create_endpoint").Unlock()
+
+		if got := p.parentLinkWaitTimeouts.Load(); got != 0 {
+			t.Errorf("parent_link_wait_timeouts = %d, want 0. Both callers attach macvlan "+
+				"children, which the kernel permits on one parent, so the caller that gave "+
+				"up will succeed. A health warning here is one an operator can do nothing "+
+				"about, and it fires on every concurrent start on the network.", got)
+		}
+		if got := p.parentLinkWaits.Load(); got != 1 {
+			t.Errorf("parent_link_waits = %d, want 1. The wait still happened and still cost "+
+				"the budget; making it silent as well would hide the contention entirely.", got)
+		}
+	})
+
+	t.Run("the other kind still warns", func(t *testing.T) {
+		p := &Plugin{}
+		holder := p.lockParent(context.Background(), "eth0", ModeIPvlan, "preflight_probe")
+		defer holder.Unlock()
+
+		p.lockParent(giveUp(), "eth0", ModeMacvlan, "create_endpoint").Unlock()
+
+		if got := p.parentLinkWaitTimeouts.Load(); got != 1 {
+			t.Errorf("parent_link_wait_timeouts = %d, want 1. A macvlan child added while an "+
+				"ipvlan child is being attached to the same parent is the one pair the "+
+				"kernel refuses, and it is the whole reason this gate exists.", got)
+		}
+	})
+
+	t.Run("an unknown holder still warns", func(t *testing.T) {
+		p := &Plugin{}
+		release, ok, _ := p.parentGate.acquire(context.Background(), "eth0", "", time.Second)
+		if !ok {
+			t.Fatal("could not take an uncontended gate")
+		}
+		defer release()
+
+		p.lockParent(giveUp(), "eth0", ModeMacvlan, "create_endpoint").Unlock()
+
+		if got := p.parentLinkWaitTimeouts.Load(); got != 1 {
+			t.Errorf("parent_link_wait_timeouts = %d, want 1. No evidence about the holder is "+
+				"not evidence that it cannot conflict, and a give-up branch that read it the "+
+				"other way would answer \"harmless\" to every case it could not identify.", got)
+		}
+	})
+}
+
+// TestParentGate_TheHolderKindIsCleared. The record of who holds a
+// parent is a map entry written on acquire, and an entry left behind by
+// a release would make the NEXT waiter compare itself against a holder
+// that has been gone for hours -- which reads as "same kind, harmless"
+// for every caller of the kind that last ran.
+func TestParentGate_TheHolderKindIsCleared(t *testing.T) {
+	p := &Plugin{}
+	release, ok, _ := p.parentGate.acquire(context.Background(), "eth0", ModeMacvlan, time.Second)
+	if !ok {
+		t.Fatal("could not take an uncontended gate")
+	}
+	if got := p.parentGate.holderKind("eth0"); got != ModeMacvlan {
+		t.Fatalf("holderKind = %q while the gate is held, want %q", got, ModeMacvlan)
+	}
+	release()
+	if got := p.parentGate.holderKind("eth0"); got != "" {
+		t.Errorf("holderKind = %q after the release, want empty. A stale entry makes every "+
+			"later give-up by a caller of this kind read as harmless.", got)
 	}
 }

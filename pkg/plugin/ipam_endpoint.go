@@ -168,7 +168,7 @@ func (p *Plugin) addIPAMEndpointLink(ctx context.Context, endpointID, mode strin
 		// The gate across the LinkAdd alone, exactly as the null path
 		// takes it: what it waits out is the preflight probe's round
 		// trip, and nothing here holds the parent past the add.
-		guard := p.lockParent(ctx, opts.Parent, "create_endpoint")
+		guard := p.lockParent(ctx, opts.Parent, mode, "create_endpoint")
 		err = addChildLink(guard, link)
 		guard.Unlock()
 		if err != nil {

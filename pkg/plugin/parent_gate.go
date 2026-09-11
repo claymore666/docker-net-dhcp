@@ -69,6 +69,14 @@ const parentGateBudget = 4 * time.Second
 type parentGate struct {
 	mu     sync.Mutex
 	tokens map[string]chan struct{}
+	// holders is the KIND of child the current holder of each parent is
+	// about to attach -- ModeMacvlan or ModeIPvlan -- and it exists for
+	// reporting, not for exclusion. The kernel refuses only the CROSS
+	// pair; two macvlan children on one parent are legal and common.
+	// Without this the gate cannot tell a wait it was right to make
+	// from one that protected nothing, and both arrive at the operator
+	// as the same health warning.
+	holders map[string]string
 }
 
 // tokenFor returns the queue for one parent, creating it on first use.
@@ -91,23 +99,67 @@ func (g *parentGate) tokenFor(parent string) chan struct{} {
 	return tok
 }
 
+// setHolder records, or clears, the kind of child the current holder of
+// one parent is attaching. Clearing passes the empty string.
+func (g *parentGate) setHolder(parent, kind string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.holders == nil {
+		g.holders = make(map[string]string)
+	}
+	if kind == "" {
+		delete(g.holders, parent)
+		return
+	}
+	g.holders[parent] = kind
+}
+
+// holderKind reports the kind the current holder is attaching, or "" if
+// nothing holds this parent right now.
+//
+// It is a SNAPSHOT and is read only after a wait has already been given
+// up on, so the holder may have released between the timeout firing and
+// this read. That is why "" is treated as "unknown" by the caller and
+// not as "nothing conflicts": the conservative reading of no evidence
+// is the one that keeps the warning.
+func (g *parentGate) holderKind(parent string) string {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.holders[parent]
+}
+
 // acquire takes the gate for one parent, waiting up to budget.
+//
+// kind is the child this caller is about to attach (ModeMacvlan or
+// ModeIPvlan). It changes nothing about who waits for whom -- the gate
+// stays a plain mutual exclusion -- and is recorded so that a caller
+// which GAVE UP waiting can find out whether the holder it lost to
+// could ever have conflicted with it.
 //
 // Returns a release func that is ALWAYS safe to call — on the timeout
 // path it is a no-op, so callers can defer it unconditionally without
 // caring whether the wait succeeded. The bool reports whether the gate
-// was actually held, which is what the counters key on.
-func (g *parentGate) acquire(ctx context.Context, parent string, budget time.Duration) (func(), bool) {
+// was actually held, which is what the counters key on. The string is
+// the kind the holder was attaching, and it is meaningful only when the
+// bool is false.
+func (g *parentGate) acquire(ctx context.Context, parent, kind string, budget time.Duration) (func(), bool, string) {
 	if parent == "" {
-		return func() {}, false
+		return func() {}, false, ""
 	}
 	tok := g.tokenFor(parent)
+	take := func() func() {
+		g.setHolder(parent, kind)
+		return func() {
+			g.setHolder(parent, "")
+			<-tok
+		}
+	}
 
 	// The uncontended path, which is nearly all of them: no timer, no
 	// allocation, no wait.
 	select {
 	case tok <- struct{}{}:
-		return func() { <-tok }, true
+		return take(), true, ""
 	default:
 	}
 
@@ -115,11 +167,11 @@ func (g *parentGate) acquire(ctx context.Context, parent string, budget time.Dur
 	defer timer.Stop()
 	select {
 	case tok <- struct{}{}:
-		return func() { <-tok }, true
+		return take(), true, ""
 	case <-ctx.Done():
-		return func() {}, false
+		return func() {}, false, g.holderKind(parent)
 	case <-timer.C:
-		return func() {}, false
+		return func() {}, false, g.holderKind(parent)
 	}
 }
 
@@ -200,13 +252,13 @@ func addChildLink(_ *parentGuard, link netlink.Link) error {
 // is whether this host is contending on a parent at all.
 //
 // Never returns nil, so a caller can always defer Unlock.
-func (p *Plugin) lockParent(ctx context.Context, parent, op string) *parentGuard {
+func (p *Plugin) lockParent(ctx context.Context, parent, kind, op string) *parentGuard {
 	if p == nil || parent == "" {
 		return &parentGuard{}
 	}
 
 	start := time.Now()
-	release, ok := p.parentGate.acquire(ctx, parent, parentGateBudget)
+	release, ok, heldKind := p.parentGate.acquire(ctx, parent, kind, parentGateBudget)
 	waited := time.Since(start)
 
 	switch {
@@ -221,12 +273,37 @@ func (p *Plugin) lockParent(ctx context.Context, parent, op string) *parentGuard
 			"op":     op,
 			"waited": waited.String(),
 		}).Debug("Waited for another operation to finish with the parent interface")
-	default:
-		p.parentLinkWaitTimeouts.Add(1)
+	case heldKind != "" && heldKind == kind:
+		// GAVE UP, AND NOTHING WAS AT STAKE. The gate excludes more
+		// than the kernel does: a parent registers one rx_handler, so
+		// it refuses the CROSS pair, and children of the same kind
+		// coexist. Losing a wait to a holder of one's own kind
+		// therefore costs the budget and protects nothing, and the
+		// caller proceeds to a LinkAdd the kernel will accept.
+		//
+		// It is counted as a wait rather than as a timeout because the
+		// timeout counter is a health warning whose whole meaning is
+		// "a start on this NIC may have been refused". Two containers
+		// starting together on one macvlan network -- which is what
+		// `docker compose up` is -- land here every time once an
+		// address reservation holds a parent across its DHCP exchange,
+		// and reporting that as a warning would teach an operator to
+		// ignore the counter that names the real collision.
+		p.parentLinkWaits.Add(1)
 		log.WithFields(log.Fields{
 			"parent": parent,
 			"op":     op,
+			"kind":   kind,
 			"budget": parentGateBudget.String(),
+		}).Debug("Gave up waiting for the parent interface; the holder is attaching the same kind of child, which the kernel permits alongside this one")
+	default:
+		p.parentLinkWaitTimeouts.Add(1)
+		log.WithFields(log.Fields{
+			"parent":      parent,
+			"op":          op,
+			"kind":        kind,
+			"holder_kind": heldKind,
+			"budget":      parentGateBudget.String(),
 		}).Warn("Gave up waiting for the parent interface; proceeding, the kernel may refuse this")
 	}
 	return &parentGuard{release: release}

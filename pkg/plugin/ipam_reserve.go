@@ -539,7 +539,7 @@ func ipamACKInPool(addr netip.Addr, pool string) error {
 // and then the Unlock, so the gate opens after the child is detached.
 func (p *Plugin) addIPAMReserveLink(ctx context.Context, name, peer, mode string, opts DHCPNetworkOptions, mac net.HardwareAddr) (func(), error) {
 	if mode == ModeMacvlan || mode == ModeIPvlan {
-		guard := p.lockParent(ctx, opts.Parent, "ipam_reserve")
+		guard := p.lockParent(ctx, opts.Parent, mode, "ipam_reserve")
 		parent, err := validateParentForChild(opts.Parent)
 		if err != nil {
 			guard.Unlock()

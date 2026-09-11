@@ -37,7 +37,12 @@ const probeGateParent = "dh-577-nosuch"
 func TestRunDHCPProbe_TakesTheGateForItsParent(t *testing.T) {
 	p := &Plugin{}
 
-	holder := p.lockParent(context.Background(), probeGateParent, "test-holder")
+	// The holder attaches the OTHER kind, which is the pair the kernel
+	// actually refuses. A same-kind holder is now reported as an
+	// ordinary wait, because losing to one costs the budget and
+	// protects nothing -- so this test would read zero here and say
+	// the probe skipped the gate.
+	holder := p.lockParent(context.Background(), probeGateParent, ModeIPvlan, "test-holder")
 	defer holder.Unlock()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -73,7 +78,7 @@ func TestRunDHCPProbe_ReleasesTheGateOnTheErrorPath(t *testing.T) {
 
 	// Budget 0 exercises acquire's non-blocking fast path: this either
 	// takes the gate immediately or reports it still held.
-	release, ok := p.parentGate.acquire(context.Background(), probeGateParent, 0)
+	release, ok, _ := p.parentGate.acquire(context.Background(), probeGateParent, ModeMacvlan, 0)
 	defer release()
 	if !ok {
 		t.Fatalf("the gate for %q is still held after runDHCPProbe returned an error — "+
