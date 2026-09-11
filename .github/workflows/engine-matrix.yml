@@ -1,0 +1,197 @@
+name: Engine matrix
+
+# WHICH DOCKER ENGINES THIS PLUGIN WORKS ON, measured (#670).
+#
+# Until this lane existed the project had evidence about exactly one
+# engine — the one the integration runner image happens to carry — and
+# published no minimum at all. README's Requirements section said so in
+# as many words: "the minimum has never been measured (#670), so the
+# measured number is the honest one to publish".
+#
+# WHY IT IS NOT THE INTEGRATION IMAGE WITH A BUILD ARG. #670 proposed
+# that, on the belief that the DinD runner image already pins its engine
+# through one. It does not: ci/runner-image/Dockerfile installs
+# `docker-ce` from download.docker.com with no version, and that
+# repository's Debian-13 suite starts at 28.1.0. Pinning the arg could
+# therefore never reach below 28, which is above every interesting row
+# here. `docker:<version>-dind` is the mechanism that does carry the old
+# engines, one tag per release back to 17.x, and scripts/engine-baseline.sh
+# drives one.
+#
+# WHY HOSTED RUNNERS. Nothing in a cell needs the `dhcp-ci` image: the
+# engine under test, the DHCP server, the veths and the container all
+# live inside the nested daemon, and the runner only needs to be able to
+# start a privileged container. Ten rows on the self-hosted pool would
+# take ten of its sixteen slots away from the per-PR gate for half an
+# hour; on hosted runners they cost the pool nothing. integration-hosted.yml
+# established that a hosted VM has what a privileged lane needs.
+#
+# WHAT EACH CELL MEASURES is in scripts/engine-baseline.sh. Two facts
+# about the shape of the lane belong here:
+#
+#   - Rows run to completion whatever their verdict. A row is EXPECTED
+#     to fail below the floor, and `fail-fast` or a failing step would
+#     delete the rest of the evidence — the same reason integration.yml
+#     gives for its own `fail-fast: false`.
+#   - The verdict of the LANE is the reconciliation job, not the rows.
+#     A row is a measurement; `floor` is the only thing here that can be
+#     wrong.
+#
+# TRIGGERS. `push` on the paths that define the measurement, because a
+# change to the cell, the row list or the floor is exactly when the
+# measurement has to be retaken, and because a dispatch-only workflow is
+# unreachable until it reaches the default branch
+# (scripts/check-dispatch-reachable.sh, .github/dispatch-pending.txt).
+# Weekly, because the rows drift on their own: `29-dind` is a moving tag
+# and a new engine can break a row with nothing in this repository
+# changing. On demand, for a re-measurement.
+on:
+  push:
+    paths:
+      - '.github/workflows/engine-matrix.yml'
+      - 'scripts/engine-baseline.sh'
+      - 'scripts/engine-floor.sh'
+      - 'pkg/plugin/engine_floor.go'
+  schedule:
+    - cron: '41 5 * * 2'   # weekly Tue 05:41 UTC, off-peak odd minute
+  workflow_dispatch:
+
+# The rows touch nothing outside their own container and nothing on the
+# self-hosted pool, so this lane has its own group and deliberately does
+# NOT share the privileged one integration.yml, coverage.yml and
+# capture-fixtures.yml key on. Same expression as those three, for the
+# #617 reason (a branch push buckets on the commit, so a merge burst
+# cannot evict a commit's own measurement).
+concurrency:
+  group: engine-matrix-${{ github.event_name == 'push' && github.sha || github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  cell:
+    runs-on: ubuntu-latest
+    # A cell is a pull of a dind image, an apk install, a plugin build
+    # install, a lease and a restart. MEASURED on the author's box at
+    # 2-4 minutes per row with the images cold; the cap is a backstop
+    # above that, not an estimate of it.
+    timeout-minutes: 25
+    env:
+      # Same shape as integration.yml and capture-fixtures.yml: a
+      # step-level `if:` cannot read `secrets` directly, so materialize
+      # it at job level and compare against the literal string.
+      HAS_HUB_CREDS: ${{ secrets.DOCKERHUB_USERNAME != '' && secrets.DOCKERHUB_TOKEN != '' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # THE ROW LIST IS DOWNWARD-OPEN ON PURPOSE. It does not stop at
+        # the engines we expect to pass: 19.03 is here because a matrix
+        # whose every row passes has measured the list, not the floor.
+        # 19.03 is the first release below 20.10 and the last that
+        # predates cgroup v2 support, so it is the row that decides
+        # whether the floor is a property of this plugin or of the list
+        # someone typed.
+        #
+        # Tags, not exact versions: `29` follows 29.x and a row that
+        # named 29.7.2 would measure a frozen engine while the lane's
+        # purpose is to notice the moving one. 20.10 is spelled with its
+        # minor because the 20.10 line is the only one whose major is
+        # ambiguous (there is no `20`).
+        engine: ['29', '28', '27', '26', '25', '24', '23', '20.10', '19.03']
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # The dind images and alpine come from Docker Hub. Anonymously
+      # those are billed to a per-address quota shared by every hosted
+      # runner on the planet; #562 is what exhausting one costs.
+      - name: Log in to Docker Hub
+        if: env.HAS_HUB_CREDS == 'true'
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Note anonymous pulls
+        if: env.HAS_HUB_CREDS != 'true'
+        run: echo "::notice::No Docker Hub credentials in this context; base images pull anonymously."
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      # The tree's own plugin, not a published image. A lane measuring a
+      # release tag would answer "which engines did v2.0.0 work on",
+      # which is not the question a branch has to answer before it
+      # publishes a floor. Built as root so the rootfs the nested daemon
+      # unpacks is owned the way a plugin rootfs has to be.
+      # COMMIT is passed explicitly for the reason capture-fixtures.yml
+      # gives: the Makefile's default is evaluated inside a root recipe
+      # against a checkout git may consider dubiously owned, which
+      # yields `unknown` and a rootfs nobody can attribute to a commit.
+      - name: Build the plugin rootfs
+        run: sudo make plugin COMMIT="$(git rev-parse HEAD)"
+
+      - name: Run the baseline against Docker Engine ${{ matrix.engine }}
+        id: cell
+        continue-on-error: true
+        env:
+          ENGINE: ${{ matrix.engine }}
+        run: |
+          set -o pipefail
+          bash scripts/engine-baseline.sh "$ENGINE" "$PWD/plugin" 2>&1 | tee cell.log
+
+      # The row line is the artifact, not the job's colour. `cell.log`
+      # carries the plugin log and the dnsmasq tail on a failure, which
+      # is what turns "27 fails" into a fact somebody can act on.
+      - name: Record the row
+        run: |
+          set -euo pipefail
+          mkdir -p rows
+          grep '^ENGINE_MATRIX_ROW ' cell.log > "rows/${ENGINE//./-}.row" || {
+            echo "::error::the cell produced no verdict line for ${ENGINE}"
+            printf 'ENGINE_MATRIX_ROW tag=%s engine=unknown api=unknown result=no-verdict step=unknown\n' "$ENGINE" \
+              > "rows/${ENGINE//./-}.row"
+          }
+          cat "rows/${ENGINE//./-}.row" >> "$GITHUB_STEP_SUMMARY"
+        env:
+          ENGINE: ${{ matrix.engine }}
+
+      - name: Upload the row
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: engine-row-${{ matrix.engine }}
+          path: |
+            rows/
+            cell.log
+          retention-days: 30
+
+      # A cell leaves a privileged container behind on any path its own
+      # trap did not reach. The runner is ephemeral, so this is for the
+      # local invocation of the same script as much as for CI — and
+      # scripts/check-lane-hygiene.sh wants the teardown either way.
+      - name: Tear down the nested engine
+        if: always()
+        run: |
+          docker ps -aq --filter "name=engine-matrix-" | while read -r c; do
+            if [ -n "$c" ]; then
+              docker rm -f "$c" || true
+            fi
+          done
+
+  floor:
+    needs: cell
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          pattern: engine-row-*
+          path: downloaded
+
+      - name: Reconcile the measured floor against the declared one
+        run: bash scripts/engine-floor.sh --reconcile downloaded
