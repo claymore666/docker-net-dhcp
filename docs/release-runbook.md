@@ -708,6 +708,19 @@ the `vX.Y.Z` milestone (the workflow leans on this for the
    `main`'s floor is information for the raise-or-explain decision the
    baseline file records; the script cannot settle it.
 
+   **A package deleted during the cycle reads `DROPPED`**, not as a
+   number. The floors come from the merge base, so `main`'s baseline
+   still floors a package the branch deleted, and the branch's own
+   baseline is what says the deletion was deliberate: gone from the tree
+   and gone from that file is `DROPPED`, counted as compared, and it does
+   not fail the run. Gone from the tree while the branch's baseline still
+   floors it is a **`FAIL`** naming
+   [`.github/coverage-baseline.txt`](https://github.com/claymore666/docker-net-dhcp/blob/main/.github/coverage-baseline.txt),
+   and the fix is to remove the row in the change that deleted the
+   package. Read a branch's run with `COVREAD_DEV_REF=<that branch>`, or
+   the head floors resolve from `dev` and a package that branch dropped
+   is reported against a floor the run never used.
+
    Coverage shares a concurrency group with the release PR's own
    integration run, so it normally starts once integration finishes, and
    since D41 resharded the lane to nine main shards plus two failure

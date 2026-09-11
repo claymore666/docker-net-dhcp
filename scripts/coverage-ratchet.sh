@@ -32,8 +32,54 @@
 # RATCHET_EPSILON (default 0.5): tolerated drop in percentage points,
 # absorbing run-to-run noise from timing-dependent integration paths.
 #
-# Exit: 0 every baselined package holds, 1 a package regressed or
-# vanished, 2 the ratchet cannot render a verdict.
+# Exit: 0 every baselined package holds (a deliberately deleted one is
+# DROPPED and does not change this), 1 a package regressed or is floored
+# with no coverage and was not deliberately deleted, 2 the ratchet cannot
+# render a verdict.
+#
+# A DELIBERATELY DELETED PACKAGE (2026-09-11). Since #735 the floors come
+# from the MERGE BASE, so a PR cannot lower its own. The same rule made a
+# deliberate deletion unpassable: 2.0 deletes cmd/dhcp-handler and drops
+# its row here, and the row's removal is invisible to a PR whose base
+# still carries it — the base floor is read, no coverage is found, and
+# the release PR's required check fails on a package that is gone on
+# purpose. Measured on run 34541498417 (release PR #937): four packages
+# PASS and cmd/dhcp-handler FAILs "absent from coverage output".
+#
+# A baselined package with no coverage therefore takes one of THREE
+# verdicts, and the two inputs are the package's existence AT HEAD and
+# the HEAD baseline's own rows:
+#
+#   present at head                 -> FAIL, as before. The package is
+#                                      there and the run measured nothing.
+#   gone, still floored at head     -> FAIL. The deletion did not reach
+#                                      the baseline; the row is the thing
+#                                      to remove, in that same change.
+#   gone, row gone from head too    -> DROPPED. Counted as compared, the
+#                                      exit code unaffected.
+#
+# Existence is asked of the toolchain (`go list` of the import path), not
+# of a directory glob: the baseline keys on import paths and a package
+# can be deleted while its directory survives.
+#
+# THE SAME FACT IS DERIVED A SECOND TIME ELSEWHERE, and the two rules are
+# not identical. scripts/check-coverage-floor.sh asks whether a REMOVED
+# row's package is gone, over a git ref with no checkout to run `go list`
+# in, so it looks for .go files under the package's directory at that
+# ref. The answers differ for a directory whose files are all excluded by
+# build tags: present to that gate, absent to this one. Both are red in
+# the safe direction -- that gate would call the removal a lowered floor,
+# this one would DROP a package the tree still carries files for -- and
+# neither can be given the other's input.
+#
+# WHAT THIS DELIBERATELY DOES NOT DO, stated because the arm reads wider
+# than it is. A package deleted to DODGE a floor takes the same DROPPED
+# line. That is not this gate's question: it claims that what the release
+# ships is covered, not that nothing was deleted. A dodge is visible in
+# the two places review actually reads — a DROPPED line in the required
+# check's log, naming the package and the floor it carried, and a deleted
+# directory in the diff. Making the gate refuse it would mean refusing
+# every legitimate deletion, which is the state this replaces.
 #
 # EXIT 2 IS WHY THIS GATE IS TRUSTWORTHY AT ALL (#734). `coverage` is a
 # required context on main and is the one thing between a coverage
@@ -95,6 +141,74 @@ EPSILON="${RATCHET_EPSILON:-0.5}"
 REPORT="${RATCHET_REPORT-$2.report}"
 fail=0
 
+# THE HEAD BASELINE IS FOUND, NOT WIRED. $BASELINE_FILE is the merge
+# base's copy on the release path, so it cannot answer "does the branch
+# still floor this package". The head's copy is located from this
+# script's own path -- the gate ships in the tree it gates -- rather than
+# from a new argument in coverage.yml, for the #791 reason: a second
+# wiring step is a step someone forgets, and the run that would find out
+# is the release PR. RATCHET_HEAD_BASELINE overrides it, which is how the
+# self-test drives the arms without editing the repository's own file.
+SELF_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd) || SELF_DIR=""
+REPO_ROOT=$(dirname -- "${SELF_DIR:-.}")
+HEAD_BASELINE="${RATCHET_HEAD_BASELINE-$REPO_ROOT/.github/coverage-baseline.txt}"
+GO_BIN=$(command -v go 2>/dev/null) || GO_BIN=""
+
+# Does the import path still build at head? Asked of the toolchain, not
+# of the filesystem: the baseline keys on import paths, a directory can
+# outlive its package, and `go list` is the thing that decides what a
+# package is. Rooted at $REPO_ROOT so the answer does not depend on the
+# caller's working directory. GOPROXY=off changes no verdict -- an
+# in-module path resolves or fails locally either way, measured -- it
+# bounds the WAIT, so a proxy outage cannot hold a required check open.
+pkg_at_head() { # 1 = import path; 0 = present, 1 = absent
+    if [ -z "$GO_BIN" ]; then
+        echo "::error title=Cannot classify an absent package::$1 is floored by $BASELINE_FILE and" \
+             "has no coverage in this run, and there is no 'go' on PATH to ask whether the package" \
+             "still exists at head. A deliberate deletion and a package whose coverage vanished are" \
+             "the same shape without that answer." >&2
+        exit 2
+    fi
+    if GOPROXY=off GOWORK=off GOFLAGS=-mod=readonly \
+        "$GO_BIN" list -C "$REPO_ROOT" -- "$1" >/dev/null 2>&1; then
+        return 0
+    fi
+
+    # A FAILED `go list` HAS TWO MEANINGS AND ONLY ONE OF THEM IS "GONE".
+    # It also fails when the toolchain cannot run at all -- an unusable
+    # module cache answers "toolchain not available" for a package that is
+    # right there in the tree (measured by the reviewer with GOMODCACHE
+    # pointed at an empty directory). Folded into "absent", that reads as
+    # a deliberate deletion whenever the head baseline has also dropped
+    # the row, and DROPS a floor for a package the release still ships.
+    #
+    # So the failure is CONTROLLED against the same toolchain, the same
+    # root and the same flags, over a pattern that must resolve in any
+    # working checkout. Control red means the probe cannot answer, which
+    # is a refusal, not a verdict.
+    if ! GOPROXY=off GOWORK=off GOFLAGS=-mod=readonly \
+        "$GO_BIN" list -C "$REPO_ROOT" ./... >/dev/null 2>&1; then
+        echo "::error title=Cannot classify an absent package::$1 is floored by $BASELINE_FILE," \
+             "has no coverage in this run, and 'go list' will not resolve it -- but 'go list ./...'" \
+             "fails in this checkout too, so the toolchain is not answering and the failure says" \
+             "nothing about the package. A deletion and a broken toolchain are the same shape here." >&2
+        exit 2
+    fi
+    return 1
+}
+
+# Same data-line rule as the loop below and as the resolver's: a leading
+# '#' or a blank line is commentary.
+head_floors() { # 1 = import path; 0 = the head baseline carries a row for it
+    awk -v p="$1" '
+        { sub(/^[[:space:]]+/, "") }
+        /^#/ { next }
+        NF == 0 { next }
+        $1 == p { found = 1; exit }
+        END { if (found) exit 0; exit 1 }
+    ' "$HEAD_BASELINE"
+}
+
 for f in "$PERCENT_FILE" "$BASELINE_FILE"; do
     if [ ! -f "$f" ] || [ ! -r "$f" ]; then
         echo "::error title=Nothing to inspect::$f is not a readable file." \
@@ -102,6 +216,21 @@ for f in "$PERCENT_FILE" "$BASELINE_FILE"; do
         exit 2
     fi
 done
+
+# Refused here -- after the two inputs, so a missing handed-in baseline
+# keeps its own refusal -- and not at the point of use, because the use
+# happens only when a baselined package has no coverage: a head baseline
+# resolved to a path that does not exist would answer "the branch does
+# not floor it" for EVERY package, silently turning every vanished
+# package into a DROPPED one. That is the fail-open direction of this whole arm, and it
+# would be invisible on a run where nothing vanished.
+if [ ! -f "$HEAD_BASELINE" ] || [ ! -r "$HEAD_BASELINE" ]; then
+    echo "::error title=No baseline at head::$HEAD_BASELINE is not a readable file." \
+         "The ratchet cannot tell a deliberately deleted package from a vanished one without" \
+         "the baseline as it stands at HEAD, and reading every package as unfloored there" \
+         "would pass every absence." >&2
+    exit 2
+fi
 
 compared=0
 compared_pkgs=""
@@ -167,9 +296,19 @@ while read -r pkg want; do
                       pct = $(i + 2); gsub(/%/, "", pct); print pct; exit
                   }
           }' "$PERCENT_FILE")
+    # THREE VERDICTS, not two -- see the header. The order is existence
+    # first: a package that is still there has not been deleted, whatever
+    # the head baseline says about it.
     if [ -z "$got" ]; then
-        echo "FAIL  $pkg: in baseline but absent from coverage output — deleted/renamed? Update $BASELINE_FILE deliberately."
-        fail=1
+        if pkg_at_head "$pkg"; then
+            echo "FAIL  $pkg: in baseline but absent from coverage output — deleted/renamed? The package still builds at head. Update $BASELINE_FILE deliberately."
+            fail=1
+        elif head_floors "$pkg"; then
+            echo "FAIL  $pkg: deleted at head but still floored in $HEAD_BASELINE — remove its row in the same change that deletes the package."
+            fail=1
+        else
+            echo "DROPPED  $pkg: deleted at head and removed from $HEAD_BASELINE (base floor was ${want})"
+        fi
         continue
     fi
 

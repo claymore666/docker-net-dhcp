@@ -62,9 +62,19 @@ fi
 
 # The ratchet's own verdict lines carry both got and the floor it used.
 key() { awk -F/ '{ if (NF>=2) print $(NF-1)"/"$NF; else print $0 }'; }
-grep -oE '(PASS|FAIL)  [^ ]+: [0-9.]+% ' "$TMP/log" \
-  | sed -E 's/^(PASS|FAIL)  ([^ ]+): ([0-9.]+)% $/\1 \2 \3/' \
-  | while read -r v pkg got; do echo "$v $(echo "$pkg" | key) $got"; done \
+# A THIRD VERDICT, AND IT CARRIES NO NUMBER (2026-09-11). The ratchet
+# prints DROPPED for a package the base floors, that no longer exists at
+# head, and whose row the head's own baseline no longer carries -- and it
+# counts that package as compared. Read a line at a time for `NN%` only,
+# this script saw a baselined package with no verdict and refused the
+# whole reading (`*** INCOMPLETE`, exit 2) at the release read, over the
+# one arm that exists to let a deliberate deletion through.
+{
+  grep -oE '(PASS|FAIL)  [^ ]+: [0-9.]+% ' "$TMP/log" \
+    | sed -E 's/^(PASS|FAIL)  ([^ ]+): ([0-9.]+)% $/\1 \2 \3/'
+  grep -oE 'DROPPED  [^ ]+: deleted at head' "$TMP/log" \
+    | sed -E 's/^DROPPED  ([^ ]+): .*$/DROPPED \1 -/'
+} | while read -r v pkg got; do echo "$v $(echo "$pkg" | key) $got"; done \
   | sort -u > "$TMP/read"
 
 # Floors. dev = the baseline the dispatch used (the ref's working copy);
@@ -107,6 +117,18 @@ while read -r verdict pkg got; do
     short=${pkg##*/}
     d=$(awk -v p="$pkg" '$1==p{print $2}' "$TMP/dev.data")
     m=$(awk -v p="$pkg" '$1==p{print $2}' "$TMP/main.data")
+    # A DROPPED package has no measurement to compare, by construction:
+    # it is not in the tree any more. Against the BASE floors it is a
+    # verdict -- the floor it used to carry is printed beside it, which is
+    # what a release reader needs to see. Against the HEAD floors it is
+    # correctly "not baselined", and that absence is what authorised the
+    # drop rather than a defect.
+    if [ "$verdict" = DROPPED ]; then
+        if [ -n "$d" ]; then devcol="STILL FLOORED"; else devcol="not baselined"; fi
+        printf '%-24s %8s %8s %7s %14s %8s %7s %8s   [ratchet said %s]\n' \
+            "$short" dropped "${d:-none}" n/a "$devcol" "${m:-none}" n/a dropped "$verdict"
+        continue
+    fi
     jd=$(awk -v g="$got" -v w="${d:-}" -v e="${RATCHET_EPSILON:-0.5}" 'BEGIN{if(w==""){print "n/a"}else if(g+e<w){print "RED"}else if(g>w){print "over"}else{print "holds"}}')
     jm=$(awk -v g="$got" -v w="${m:-}" -v e="${RATCHET_EPSILON:-0.5}" 'BEGIN{if(w==""){print "n/a"}else if(g+e<w){print "RED"}else if(g>w){print "over"}else{print "holds"}}')
     dd=$(awk -v g="$got" -v w="${d:-}" 'BEGIN{if(w==""){print "n/a"}else{printf "%+.1f", g-w}}')
@@ -164,6 +186,9 @@ if [ ! -s "$TMP/raw" ]; then
     fi
 else
     while read -r verdict pkg got; do
+        # Nothing to cross-check: a DROPPED package has no raw covdata
+        # line and having none is the reading, not a disagreement.
+        [ "$verdict" = DROPPED ] && continue
         r=$(awk -v p="$pkg" '$1==p{print $2}' "$TMP/raw")
         if [ -z "$r" ]; then
             echo "*** $pkg: ratchet says ${got}%, raw covdata has NO line for it"
@@ -207,7 +232,17 @@ echo "  packages the ratchet reported a verdict on:               $GOTN"
 awk '{print $1}' "$TMP/dev.data" | sort -u > "$TMP/want.keys"
 awk '{print $2}' "$TMP/read"     | sort -u > "$TMP/got.keys"
 comm -23 "$TMP/want.keys" "$TMP/got.keys" > "$TMP/missing.keys"
-comm -13 "$TMP/want.keys" "$TMP/got.keys" > "$TMP/extra.keys"
+comm -13 "$TMP/want.keys" "$TMP/got.keys" > "$TMP/extra.keys.all"
+# A DROPPED package is UNBASELINED AT HEAD ON PURPOSE. It is floored by
+# the base and not by the head, which is exactly the pair the ratchet's
+# DROPPED arm requires, so it arrives here as an "extra" -- a verdict for
+# a package the dev baseline does not floor -- and the refusal built for
+# a substitution would fire on every deliberate deletion. Subtracted by
+# NAME, and named below rather than swallowed.
+awk '$1=="DROPPED"{print $2}' "$TMP/read" | sort -u > "$TMP/dropped.keys"
+comm -23 "$TMP/extra.keys.all" "$TMP/dropped.keys" > "$TMP/extra.keys"
+comm -12 "$TMP/extra.keys.all" "$TMP/dropped.keys" > "$TMP/dropped.extra.keys"
+ndropped=$(wc -l < "$TMP/dropped.extra.keys" | tr -d ' ')
 nmissing=$(wc -l < "$TMP/missing.keys" | tr -d ' ')
 nextra=$(wc -l < "$TMP/extra.keys" | tr -d ' ')
 
@@ -237,11 +272,31 @@ else
         echo "      that any cardinality check would read as completeness."
         rc=2
     fi
+    if [ "$ndropped" -gt 0 ]; then
+        echo "  DROPPED: $ndropped package(s) the base floors, deleted at head and unfloored there:"
+        sed 's/^/      /' "$TMP/dropped.extra.keys"
+        echo "      Each got a DROPPED verdict from the ratchet and was counted as compared."
+        echo "      Read against the base floors above; the head baseline is where the row is gone."
+    fi
     if [ "$nmissing" -eq 0 ] && [ "$nextra" -gt 0 ]; then
         echo "  (every baselined package did get a verdict; the defect above is on the other side.)"
     fi
     if [ "$nmissing" -eq 0 ] && [ "$nextra" -eq 0 ]; then
         echo "  every one of the $WANT baselined package(s) got a verdict. Matched by name."
+    fi
+    # The inverse of the DROPPED pair, and it is a reading fault more
+    # often than a gate fault: this script resolves the head floors from
+    # COVREAD_DEV_REF (default origin/dev), and a run dispatched on
+    # another branch is read against a baseline that is not the one it
+    # used. Said, not counted: making it an exit code would turn every
+    # cross-branch read red.
+    if [ -s "$TMP/dropped.keys" ]; then
+        while read -r k; do
+            awk -v p="$k" '$1==p{found=1} END{exit !found}' "$TMP/dev.data" || continue
+            echo "  NOTE: $k was DROPPED by the ratchet, and the head baseline read here" \
+                 "(${COVREAD_DEV_REF:-origin/dev}) still floors it. Read a branch's run with" \
+                 "COVREAD_DEV_REF=<that branch>."
+        done < "$TMP/dropped.keys"
     fi
 fi
 exit "$rc"

@@ -4,7 +4,10 @@
 
 # Table-driven tests for coverage-ratchet.sh (#127). Synthesizes
 # `go tool covdata percent` outputs and asserts the ratchet's verdicts:
-# hold/improve/within-epsilon pass, regression and vanished packages fail.
+# hold/improve/within-epsilon pass, regression fails, and a package the
+# baseline floors but the output does not carry is split three ways --
+# still in the tree, or gone but still floored at head, both FAIL; gone
+# and unfloored at head, DROPPED (the section at the bottom).
 #
 # The exit-2 cases at the bottom are #734: this suite asserted every
 # verdict the ratchet renders and never that it renders one at all, so
@@ -15,6 +18,20 @@ set -u
 RATCHET="$(dirname "$0")/coverage-ratchet.sh"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
+
+# THE HEAD BASELINE, FOR EVERY CASE WRITTEN BEFORE THE THIRD VERDICT
+# EXISTED. A baselined package with no coverage is now judged against the
+# baseline AS IT STANDS AT HEAD as well: gone from the tree and gone from
+# that file is DROPPED, anything else is FAIL. The cases below were all
+# written when the baseline handed in was the only baseline there was --
+# which is what a push or a dispatch actually does (coverage.yml:362-373,
+# "No pull_request context"), so that is the shape they keep, and the
+# deliberate-deletion arm gets its own cases at the bottom with the two
+# files differing. Without this every fake package in this file would be
+# "deleted at head" AND unfloored at head, which is DROPPED: the vanished
+# package case at line 71 would have gone green against a rule it says
+# nothing about.
+ratchet() { RATCHET_HEAD_BASELINE="${2-}" bash "$RATCHET" "$@"; }
 
 BASELINE="$TMP/baseline.txt"
 cat > "$BASELINE" <<'EOF'
@@ -30,9 +47,9 @@ check() {
     local eps="${4:-}"
     local got_exit
     if [ -n "$eps" ]; then
-        RATCHET_EPSILON="$eps" bash "$RATCHET" "$percent_file" "$BASELINE" > "$TMP/out" 2>&1
+        RATCHET_EPSILON="$eps" ratchet "$percent_file" "$BASELINE" > "$TMP/out" 2>&1
     else
-        bash "$RATCHET" "$percent_file" "$BASELINE" > "$TMP/out" 2>&1
+        ratchet "$percent_file" "$BASELINE" > "$TMP/out" 2>&1
     fi
     got_exit=$?
     if [ "$got_exit" -eq "$want_exit" ]; then
@@ -73,7 +90,7 @@ check "baselined package missing from output fails" 1 "$TMP/gone.txt"
 percent "$TMP/eps.txt" 78.0 50.0
 check "wider RATCHET_EPSILON tolerates the drop" 0 "$TMP/eps.txt" 2.5
 
-if bash "$RATCHET" "$TMP/hold.txt" > /dev/null 2>&1; [ $? -eq 2 ]; then
+if ratchet "$TMP/hold.txt" > /dev/null 2>&1; [ $? -eq 2 ]; then
     echo "PASS: usage error exits 2"
 else
     echo "FAIL: usage error should exit 2"
@@ -85,7 +102,7 @@ fi
 # green required check on main enforcing no floor at all.
 refuses() { # refuses <name> <baseline-file>
     local name="$1" baseline="$2" got_exit
-    bash "$RATCHET" "$TMP/hold.txt" "$baseline" > "$TMP/out" 2>&1
+    ratchet "$TMP/hold.txt" "$baseline" > "$TMP/out" 2>&1
     got_exit=$?
     if [ "$got_exit" -eq 2 ] && grep -q 'Nothing to inspect' "$TMP/out"; then
         echo "PASS: $name"
@@ -108,7 +125,11 @@ refuses "comments-only baseline refuses a verdict" "$TMP/comments-baseline.txt"
 # would report every baselined package "absent from coverage output"
 # and exit 1, which reads as a coverage regression rather than as a
 # harness fault. A wrong diagnosis costs the next person the afternoon.
-bash "$RATCHET" "$TMP/no-such-percent.txt" "$BASELINE" > "$TMP/out" 2>&1
+# Since the deleted-package arm it would be worse than a wrong
+# diagnosis: a percent file that never arrived would read as a tree in
+# which every unfloored-at-head package had been deliberately deleted,
+# and some of those lines would be DROPPED rather than FAIL.
+ratchet "$TMP/no-such-percent.txt" "$BASELINE" > "$TMP/out" 2>&1
 if [ $? -eq 2 ] && grep -q 'Nothing to inspect' "$TMP/out"; then
     echo "PASS: missing percent file refuses a verdict"
 else
@@ -132,9 +153,9 @@ xcheck() { # xcheck <name> <want-exit> <baseline> <report|-> [grep-for]
     local name="$1" want="$2" bl="$3" rep="$4" needle="${5:-}"
     local got
     if [ "$rep" = "-" ]; then
-        RATCHET_REPORT='' bash "$RATCHET" "$TMP/full.txt" "$bl" > "$TMP/out" 2>&1
+        RATCHET_REPORT='' ratchet "$TMP/full.txt" "$bl" > "$TMP/out" 2>&1
     else
-        RATCHET_REPORT="$rep" bash "$RATCHET" "$TMP/full.txt" "$bl" > "$TMP/out" 2>&1
+        RATCHET_REPORT="$rep" ratchet "$TMP/full.txt" "$bl" > "$TMP/out" 2>&1
     fi
     got=$?
     if [ "$got" -ne "$want" ]; then
@@ -203,7 +224,7 @@ xcheck "a report with no count line refuses" 2 "$BASELINE" "$TMP/report-nocount"
 # cross-checked without a second wiring step someone could forget.
 cp "$BASELINE" "$TMP/sidecar-baseline.txt"
 cp "$TMP/report-full" "$TMP/sidecar-baseline.txt.report"
-bash "$RATCHET" "$TMP/full.txt" "$TMP/sidecar-baseline.txt" > "$TMP/out" 2>&1
+ratchet "$TMP/full.txt" "$TMP/sidecar-baseline.txt" > "$TMP/out" 2>&1
 if [ $? -eq 0 ] && grep -F 'Cross-checked' "$TMP/out" > /dev/null; then
     echo "PASS: the report is found beside the baseline with no wiring"
 else
@@ -232,7 +253,7 @@ fi
 floorless() { # floorless <name> <baseline-body> [needle]
     local name="$1" body="$2" needle="${3:-Unreadable baseline floor}" got
     printf '%s' "$body" > "$TMP/floorless.txt"
-    RATCHET_REPORT='' bash "$RATCHET" "$TMP/full.txt" "$TMP/floorless.txt" > "$TMP/out" 2>&1
+    RATCHET_REPORT='' ratchet "$TMP/full.txt" "$TMP/floorless.txt" > "$TMP/out" 2>&1
     got=$?
     if [ "$got" -ne 2 ]; then
         echo "FAIL: $name (want exit 2, got $got)"
@@ -287,7 +308,7 @@ example.com/mod/pkg/b n/a
 # demands exit 1 -- not merely "not 2", which a silent pass would satisfy.
 printf 'example.com/mod/pkg/a 80\n' > "$TMP/intfloor.txt"
 percent "$TMP/under.txt" 70.0
-RATCHET_REPORT='' bash "$RATCHET" "$TMP/under.txt" "$TMP/intfloor.txt" > "$TMP/out" 2>&1
+RATCHET_REPORT='' ratchet "$TMP/under.txt" "$TMP/intfloor.txt" > "$TMP/out" 2>&1
 if [ $? -eq 1 ] && grep -F 'is below baseline 80%' "$TMP/out" > /dev/null; then
     echo "PASS: an integer floor is still read and still enforced"
 else
@@ -328,7 +349,7 @@ fi
 # rather than rediscovering it from a red release check.
 printf 'example.com/mod/pkg/a 80.0 junk\n' > "$TMP/trailing.txt"
 percent "$TMP/under-a.txt" 70.0
-RATCHET_REPORT='' bash "$RATCHET" "$TMP/under-a.txt" "$TMP/trailing.txt" > "$TMP/out" 2>&1
+RATCHET_REPORT='' ratchet "$TMP/under-a.txt" "$TMP/trailing.txt" > "$TMP/out" 2>&1
 got=$?
 if [ "$got" -eq 2 ] && grep -F "got '80.0 junk'" "$TMP/out" > /dev/null; then
     echo "PASS: a data line with a trailing field refuses and quotes what it read"
@@ -372,7 +393,7 @@ fi
 # is the entire assertion.
 printf '\texample.com/mod/pkg/c\t\tcoverage: 42.0%% of statements\n' > "$TMP/third.txt"
 cat "$TMP/full.txt" "$TMP/third.txt" > "$TMP/full-plus-c.txt"
-RATCHET_REPORT="$TMP/report-full" bash "$RATCHET" "$TMP/full-plus-c.txt" "$BASELINE" > "$TMP/out" 2>&1
+RATCHET_REPORT="$TMP/report-full" ratchet "$TMP/full-plus-c.txt" "$BASELINE" > "$TMP/out" 2>&1
 got=$?
 if [ "$got" -eq 0 ] \
    && grep -F 'Measured but not floored' "$TMP/out" > /dev/null \
@@ -387,7 +408,7 @@ fi
 # truncated baseline and a legitimately new package look identical -- so
 # it is only tolerable if it stays silent on a healthy run. A widening
 # that fires on the healthy tree is a gate nobody keeps.
-RATCHET_REPORT="$TMP/report-full" bash "$RATCHET" "$TMP/full.txt" "$BASELINE" > "$TMP/out" 2>&1
+RATCHET_REPORT="$TMP/report-full" ratchet "$TMP/full.txt" "$BASELINE" > "$TMP/out" 2>&1
 got=$?
 if [ "$got" -eq 0 ] && ! grep -F 'Measured but not floored' "$TMP/out" > /dev/null; then
     echo "PASS: and it stays silent when every measured package is floored"
@@ -421,7 +442,7 @@ github.com/claymore666/docker-net-dhcp/pkg/dhcp 89.9
 github.com/claymore666/docker-net-dhcp/cmd/net-dhcp 77.8
 EOF
 
-RATCHET_REPORT='' bash "$RATCHET" "$GLUED" "$REAL_BASELINE" > "$TMP/out" 2>&1
+RATCHET_REPORT='' ratchet "$GLUED" "$REAL_BASELINE" > "$TMP/out" 2>&1
 got=$?
 if [ "$got" -eq 0 ] \
    && grep -F 'pkg/dhcp: 90.5% beats baseline 89.9%' "$TMP/out" > /dev/null; then
@@ -440,7 +461,7 @@ BUILDINFO_BASELINE="$TMP/baseline-buildinfo.txt"
 cat > "$BUILDINFO_BASELINE" <<'EOF'
 github.com/claymore666/docker-net-dhcp/pkg/buildinfo 90.0
 EOF
-RATCHET_REPORT='' bash "$RATCHET" "$GLUED" "$BUILDINFO_BASELINE" > "$TMP/out" 2>&1
+RATCHET_REPORT='' ratchet "$GLUED" "$BUILDINFO_BASELINE" > "$TMP/out" 2>&1
 got=$?
 if [ "$got" -eq 1 ] \
    && grep -F 'pkg/buildinfo: in baseline but absent from coverage output' "$TMP/out" > /dev/null; then
@@ -461,7 +482,7 @@ GONE="$TMP/glued-gone.txt"
     printf '\tgithub.com/claymore666/docker-net-dhcp/pkg/buildinfo\t\t\tgithub.com/claymore666/docker-net-dhcp/pkg/plugin\t\tcoverage: 90.1%% of statements\n'
     printf '\tgithub.com/claymore666/docker-net-dhcp/pkg/util\t\tcoverage: 97.3%% of statements\n'
 } > "$GONE"
-RATCHET_REPORT='' bash "$RATCHET" "$GONE" "$REAL_BASELINE" > "$TMP/out" 2>&1
+RATCHET_REPORT='' ratchet "$GONE" "$REAL_BASELINE" > "$TMP/out" 2>&1
 got=$?
 if [ "$got" -eq 1 ] \
    && grep -F 'pkg/dhcp: in baseline but absent from coverage output' "$TMP/out" > /dev/null; then
@@ -487,7 +508,7 @@ EOF
     echo "package github.com/claymore666/docker-net-dhcp/pkg/plugin"
     echo "package github.com/claymore666/docker-net-dhcp/cmd/net-dhcp"
 } > "$TMP/report-three"
-RATCHET_REPORT="$TMP/report-three" bash "$RATCHET" "$GLUED" "$THREE_BASELINE" > "$TMP/out" 2>&1
+RATCHET_REPORT="$TMP/report-three" ratchet "$GLUED" "$THREE_BASELINE" > "$TMP/out" 2>&1
 got=$?
 if [ "$got" -eq 0 ] \
    && grep -F 'Measured but not floored' "$TMP/out" > /dev/null \
@@ -497,6 +518,232 @@ else
     echo "FAIL: the unfloored warning did not name the swallowed package (exit $got)"
     sed 's/^/    /' "$TMP/out"; failures=$((failures + 1))
 fi
+
+# --- a deliberately deleted package (run 34541498417) --------------------
+# Since #735 the floors come from the MERGE BASE, which is what stops a PR
+# lowering its own. The same rule made a deliberate deletion unpassable:
+# 2.0 deletes cmd/dhcp-handler and removes its row from the baseline, and
+# the row's REMOVAL is invisible to a PR whose base still carries it. The
+# base floor is read, no coverage is found, and the release PR's required
+# `coverage` check fails over a package that is gone on purpose --
+# measured on run 34541498417 (release PR #937).
+#
+# A baselined package with no coverage therefore has three verdicts,
+# decided by two facts: does the import path still build AT HEAD, and does
+# the HEAD baseline still floor it.
+#
+# THE PACKAGES BELOW ARE THIS REPOSITORY'S OWN, deliberately. The
+# existence half is asked of `go list`, so a made-up import path answers
+# "deleted" for the same reason a deleted one does and case (c) could not
+# be written at all. cmd/dhcp-handler is deleted on 2.0.0; pkg/buildinfo
+# is present and contributes no statements.
+SELF=github.com/claymore666/docker-net-dhcp
+GONE_PKG=$SELF/cmd/dhcp-handler
+HERE_PKG=$SELF/pkg/buildinfo
+
+printf '\t%s/pkg/util\t\tcoverage: 97.3%% of statements\n' "$SELF" > "$TMP/drop-pct.txt"
+printf '%s/pkg/util 95.0\n%s 74.0\n' "$SELF" "$GONE_PKG" > "$TMP/drop-base.txt"
+printf '%s/pkg/util 95.0\n' "$SELF"                      > "$TMP/head-without.txt"
+printf '%s/pkg/util 95.0\n%s 74.0\n' "$SELF" "$GONE_PKG" > "$TMP/head-with.txt"
+printf '%s/pkg/util 95.0\n%s 90.0\n' "$SELF" "$HERE_PKG" > "$TMP/base-present.txt"
+
+# THE PRE-FIX SCRIPT IS THE STRONGEST MUTANT, and it is built by putting
+# the old arm back into the REAL script rather than by keeping a copy of
+# the block: a copy stops being the subject the moment the script moves
+# on, and the assertion that the two differ is what says the surgery
+# found anything. Its verdict on all three cases was FAIL, so (a) must
+# flip and (b) and (c) must not -- a case that passes against the pre-fix
+# script is measuring something else.
+python3 - "$RATCHET" "$TMP/prefix.sh" <<'SURGERY'
+import sys
+src = open(sys.argv[1]).read()
+start = src.index('    if [ -z "$got" ]; then\n')
+mark = '        continue\n    fi\n'
+end = src.index(mark, start) + len(mark)
+old = ('    if [ -z "$got" ]; then\n'
+       '        echo "FAIL  $pkg: in baseline but absent from coverage output — '
+       'deleted/renamed? Update $BASELINE_FILE deliberately."\n'
+       '        fail=1\n'
+       '        continue\n'
+       '    fi\n')
+assert src[start:end] != old, "the pre-fix arm is still in the script: this control is inert"
+open(sys.argv[2], "w").write(src[:start] + old + src[end:])
+SURGERY
+
+arm() { # arm <name> <want-exit> <baseline> <head-baseline> <needle> <pre-fix-want-exit>
+    local name="$1" want="$2" bl="$3" hb="$4" needle="$5" pwant="$6" got
+    RATCHET_REPORT='' RATCHET_HEAD_BASELINE="$hb" bash "$RATCHET" \
+        "$TMP/drop-pct.txt" "$bl" > "$TMP/out" 2>&1
+    got=$?
+    if [ "$got" -ne "$want" ] || ! grep -F "$needle" "$TMP/out" > /dev/null; then
+        echo "FAIL: $name (want exit $want and '$needle', got $got)"
+        sed 's/^/    /' "$TMP/out"; failures=$((failures + 1)); return
+    fi
+    echo "PASS: $name"
+    RATCHET_REPORT='' RATCHET_HEAD_BASELINE="$hb" bash "$TMP/prefix.sh" \
+        "$TMP/drop-pct.txt" "$bl" > "$TMP/pre" 2>&1
+    got=$?
+    if [ "$got" -eq "$pwant" ]; then
+        echo "PASS: ...and the pre-fix script exits $pwant on the same input"
+    else
+        echo "FAIL: $name — pre-fix script wanted exit $pwant, got $got"
+        sed 's/^/    /' "$TMP/pre"; failures=$((failures + 1))
+    fi
+}
+
+# (a) gone from the tree AND gone from the head baseline. The deletion is
+# deliberate, and the run is not held to a floor for a package nobody can
+# cover. This is the arm that flips: the pre-fix script fails it.
+arm "a deleted package unfloored at head is DROPPED, not failed" \
+    0 "$TMP/drop-base.txt" "$TMP/head-without.txt" "DROPPED  $GONE_PKG: deleted at head" 1
+if grep -F '(base floor was 74.0)' "$TMP/out" > /dev/null; then
+    echo "PASS: and the DROPPED line names the floor the base was holding it to"
+else
+    echo "FAIL: the DROPPED line does not name the base floor"
+    sed 's/^/    /' "$TMP/out"; failures=$((failures + 1))
+fi
+
+# (b) gone from the tree, still floored at head. The deletion did not
+# reach the baseline; the row is the thing to remove, and until it is this
+# is a red gate rather than a silent pass.
+arm "a deleted package still floored at head fails" \
+    1 "$TMP/drop-base.txt" "$TMP/head-with.txt" "deleted at head but still floored in" 1
+
+# (c) STILL IN THE TREE, and the head baseline does not floor it either,
+# so the existence probe is the only thing between this and a DROPPED
+# line. This is the case that makes (a) a rule about deletion rather than
+# a rule about any absence at all.
+arm "a package that still builds at head fails though head does not floor it" \
+    1 "$TMP/base-present.txt" "$TMP/head-without.txt" \
+    "$HERE_PKG: in baseline but absent from coverage output" 1
+if grep -F 'DROPPED' "$TMP/out" > /dev/null; then
+    echo "FAIL: a package still in the tree was reported as DROPPED"
+    sed 's/^/    /' "$TMP/out"; failures=$((failures + 1))
+else
+    echo "PASS: and it is not reported as DROPPED"
+fi
+
+# THE CROSS-CHECK STILL SEES IT. DROPPED is a verdict, not a skip: the
+# package is counted as compared and named in compared_pkgs, or the
+# completeness check refuses "compared 1 of 2" and the fix trades one red
+# required check for another.
+{ echo "count 2"; echo "package $SELF/pkg/util"; echo "package $GONE_PKG"; } > "$TMP/report-drop"
+RATCHET_REPORT="$TMP/report-drop" RATCHET_HEAD_BASELINE="$TMP/head-without.txt" \
+    bash "$RATCHET" "$TMP/drop-pct.txt" "$TMP/drop-base.txt" > "$TMP/out" 2>&1
+got=$?
+if [ "$got" -eq 0 ] && grep -F 'Cross-checked: compared 2 of 2' "$TMP/out" > /dev/null; then
+    echo "PASS: a DROPPED package is counted as compared by the cross-check"
+else
+    echo "FAIL: the cross-check did not count the DROPPED package (exit $got)"
+    sed 's/^/    /' "$TMP/out"; failures=$((failures + 1))
+fi
+
+# THE HEAD BASELINE IS FOUND WITH NO WIRING, and from the script's own
+# location rather than from the caller's working directory: coverage.yml
+# passes no such argument, and a derivation that needed one would be the
+# step someone forgets on the release path (#791's lesson). Driven from a
+# directory that is not the repository, with RATCHET_HEAD_BASELINE unset
+# -- this branch's real .github/coverage-baseline.txt carries no
+# cmd/dhcp-handler row, so the verdict must still be DROPPED.
+ABS_RATCHET=$(cd "$(dirname "$RATCHET")" && pwd)/coverage-ratchet.sh
+( cd "$TMP" && RATCHET_REPORT='' bash "$ABS_RATCHET" "$TMP/drop-pct.txt" "$TMP/drop-base.txt" ) \
+    > "$TMP/out" 2>&1
+got=$?
+if [ "$got" -eq 0 ] && grep -F "DROPPED  $GONE_PKG" "$TMP/out" > /dev/null; then
+    echo "PASS: the head baseline is found from the script's own path, from any directory"
+else
+    echo "FAIL: the default head baseline was not found from another directory (exit $got)"
+    sed 's/^/    /' "$TMP/out"; failures=$((failures + 1))
+fi
+
+# THE PROBE IS ROOTED AT THE REPOSITORY, NOT AT THE CALLER. The case
+# above cannot see that: a deleted package is unresolvable from anywhere,
+# so it reads DROPPED with or without the rooting, and the mutant that
+# drops it SURVIVED that case (measured). The rooting only decides for a
+# package that DOES exist -- from another directory an unrooted probe
+# calls pkg/buildinfo deleted and DROPS a package the tree still carries.
+( cd "$TMP" && RATCHET_REPORT='' RATCHET_HEAD_BASELINE="$TMP/head-without.txt" \
+    bash "$ABS_RATCHET" "$TMP/drop-pct.txt" "$TMP/base-present.txt" ) > "$TMP/out" 2>&1
+got=$?
+if [ "$got" -eq 1 ] && grep -F "$HERE_PKG: in baseline but absent from coverage output" "$TMP/out" > /dev/null; then
+    echo "PASS: a package that exists is found from another directory too"
+else
+    echo "FAIL: the existence probe followed the caller's directory (exit $got)"
+    sed 's/^/    /' "$TMP/out"; failures=$((failures + 1))
+fi
+
+# AND AN UNREADABLE ONE REFUSES. This is the fail-open direction of the
+# whole arm: a head baseline resolved to a path that does not exist floors
+# nothing, so every vanished package reads as deliberately deleted, on a
+# run where nothing else looks wrong.
+RATCHET_REPORT='' RATCHET_HEAD_BASELINE="$TMP/no-such-head.txt" \
+    bash "$RATCHET" "$TMP/drop-pct.txt" "$TMP/drop-base.txt" > "$TMP/out" 2>&1
+got=$?
+if [ "$got" -eq 2 ] && grep -F 'No baseline at head' "$TMP/out" > /dev/null; then
+    echo "PASS: an unreadable head baseline refuses a verdict"
+else
+    echo "FAIL: an unreadable head baseline did not refuse (exit $got)"
+    sed 's/^/    /' "$TMP/out"; failures=$((failures + 1))
+fi
+
+# THE HEAD-BASELINE LOOKUP IS A FIELD, NOT A SUBSTRING. A row for a
+# LONGER import path that contains the dropped one -- the shape a rename
+# to <pkg>-v2 produces -- must not read as "head still floors it". The
+# real baseline cannot observe this: it carries the dropped path zero
+# times, in a data row or a comment, so a substring lookup passes every
+# other case in this file (measured: `$1 == p` mutated to `$0 ~ p`
+# survived the whole suite before this case existed).
+printf '%s/pkg/util 95.0\n%s-v2 74.0\n' "$SELF" "$GONE_PKG" > "$TMP/head-longer.txt"
+RATCHET_REPORT='' RATCHET_HEAD_BASELINE="$TMP/head-longer.txt" \
+    bash "$RATCHET" "$TMP/drop-pct.txt" "$TMP/drop-base.txt" > "$TMP/out" 2>&1
+got=$?
+if [ "$got" -eq 0 ] && grep -F "DROPPED  $GONE_PKG" "$TMP/out" > /dev/null; then
+    echo "PASS: a longer path containing the dropped one does not count as its row"
+else
+    echo "FAIL: the head-baseline lookup matched a longer path (exit $got)"
+    sed 's/^/    /' "$TMP/out"; failures=$((failures + 1))
+fi
+
+# A FAILED `go list` IS NOT ALWAYS "GONE". A toolchain that cannot run
+# fails for a package that is right there, and folded into "absent" that
+# DROPS a floor for a package the release still ships whenever the head
+# baseline has dropped the row too. The probe's failure is controlled
+# against `go list ./...` through the same toolchain, and a red control
+# is a refusal rather than a verdict.
+#
+# Driven with a `go` on PATH that fails for everything -- the shape an
+# unusable module cache or a missing toolchain produces, without needing
+# either.
+mkdir -p "$TMP/fakebin"
+printf '#!/bin/sh\nexit 1\n' > "$TMP/fakebin/go"
+chmod +x "$TMP/fakebin/go"
+PATH="$TMP/fakebin:$PATH" RATCHET_REPORT='' RATCHET_HEAD_BASELINE="$TMP/head-without.txt" \
+    bash "$RATCHET" "$TMP/drop-pct.txt" "$TMP/drop-base.txt" > "$TMP/out" 2>&1
+got=$?
+if [ "$got" -eq 2 ] && grep -F "fails in this checkout too" "$TMP/out" > /dev/null; then
+    echo "PASS: a toolchain that answers nothing refuses instead of DROPPING the package"
+else
+    echo "FAIL: a broken toolchain was read as a deleted package (exit $got)"
+    sed 's/^/    /' "$TMP/out"; failures=$((failures + 1))
+fi
+
+# PRESERVATION CONTROL for the refusal above, or it measures "any go list
+# failure refuses" and the DROPPED arm is unreachable. Same fake `go`,
+# except that the control pattern resolves: the toolchain works, this one
+# package does not, which is exactly what a deletion looks like.
+printf '#!/bin/sh\nfor a in "$@"; do [ "$a" = "./..." ] && exit 0; done\nexit 1\n' \
+    > "$TMP/fakebin/go"
+chmod +x "$TMP/fakebin/go"
+PATH="$TMP/fakebin:$PATH" RATCHET_REPORT='' RATCHET_HEAD_BASELINE="$TMP/head-without.txt" \
+    bash "$RATCHET" "$TMP/drop-pct.txt" "$TMP/drop-base.txt" > "$TMP/out" 2>&1
+got=$?
+if [ "$got" -eq 0 ] && grep -F "DROPPED  $GONE_PKG" "$TMP/out" > /dev/null; then
+    echo "PASS: and a working toolchain that cannot resolve one package still DROPS it"
+else
+    echo "FAIL: the control probe swallowed a genuine deletion (exit $got)"
+    sed 's/^/    /' "$TMP/out"; failures=$((failures + 1))
+fi
+/bin/rm -f "$TMP/fakebin/go"
 
 if [ "$failures" -ne 0 ]; then
     echo "$failures ratchet test(s) failed"
