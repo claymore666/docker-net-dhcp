@@ -264,15 +264,30 @@ docker plugin install ghcr.io/claymore666/docker-net-dhcp:vNEW
 
 A 2.0 plugin takes an exclusive lock on the lease record in `STATE_DIR`, so a
 second 2.0 tag sharing that directory cannot be enabled while the first one
-is enabled. `docker plugin enable` fails and the daemon log says `the lease
-record file is already open by another writer`, so disable the old tag before
-enabling the new one. The lock lives in the plugin and is advisory, taken on
-a file beside the record, so it needs a filesystem that implements file
-locking. If the host directory behind `STATE_DIR` sits on a mount with no
-working locks, NFS without lockd for example, taking the lock fails and a
-single plugin does not start, with that same message in the daemon log. The
-two cases read alike, so check whether another tag of this plugin is enabled.
-If none is, the mount is the cause and disabling tags will not help.
+is enabled. `docker plugin enable` fails, the CLI prints only a socket error,
+and the daemon log carries the reason: `another tag of this plugin is enabled
+and holds the lease record /var/lib/net-dhcp/lease-records.jsonl; disable it
+before enabling this one`. Disable the old tag, then enable the new one.
+
+The lock is advisory and is taken on a file beside the record, so it needs a
+filesystem that implements file locking. If the host directory behind
+`STATE_DIR` sits on a mount with no working locks, NFS without lockd for
+example, taking the lock fails and a single plugin does not start. That case
+has its own line in the daemon log, `the filesystem under
+/var/lib/net-dhcp/lease-records.jsonl does not support locks; the plugin
+refuses to start rather than risk two writers`. Disabling tags does not clear
+it. Back `/var/lib/net-dhcp` on the host with a filesystem that implements
+file locking. Do not repoint `STATE_DIR`: the bind source is fixed at that
+path, so any other value puts the state back inside the plugin rootfs, where
+the next upgrade wipes it. The `STATE_DIR` row under
+[Plugin settings](#plugin-settings) states the same rule.
+
+An errno the plugin does not recognise keeps the older wording, `the lease
+record file is already open by another writer`, with the errno printed after
+it. A plugin that cannot create the lock file at all never reaches any of the
+three: the log says `lock file for` and then the path and the reason, for
+example `permission denied` on a state directory the plugin may not write.
+Check the owner and the mode of the host directory in that case.
 
 (`docker plugin upgrade` exists but in-place upgrades while networks
 exist risk a driver-reference mismatch; the remove/recreate path is
