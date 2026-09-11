@@ -76,7 +76,24 @@ type parentGate struct {
 	// Without this the gate cannot tell a wait it was right to make
 	// from one that protected nothing, and both arrive at the operator
 	// as the same health warning.
-	holders map[string]string
+	//
+	// Each entry carries the SEQUENCE NUMBER of the take that wrote it,
+	// because the kind alone is a point reading and the question is
+	// about an interval. A waiter that samples a holder when it starts
+	// waiting and again when it gives up learns nothing from two equal
+	// kinds unless it also knows no other holder ran in between, and a
+	// cross-kind holder that releases just as a same-kind one takes the
+	// parent is exactly the case where the kernel may still refuse the
+	// waiter's LinkAdd.
+	holders map[string]parentHold
+	// seq numbers the takes, monotonically for the life of the gate.
+	seq uint64
+}
+
+// parentHold is who holds one parent, and which take it was.
+type parentHold struct {
+	kind string
+	seq  uint64
 }
 
 // tokenFor returns the queue for one parent, creating it on first use.
@@ -105,27 +122,52 @@ func (g *parentGate) setHolder(parent, kind string) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if g.holders == nil {
-		g.holders = make(map[string]string)
+		g.holders = make(map[string]parentHold)
 	}
 	if kind == "" {
 		delete(g.holders, parent)
 		return
 	}
-	g.holders[parent] = kind
+	g.seq++
+	g.holders[parent] = parentHold{kind: kind, seq: g.seq}
 }
 
-// holderKind reports the kind the current holder is attaching, or "" if
-// nothing holds this parent right now.
-//
-// It is a SNAPSHOT and is read only after a wait has already been given
-// up on, so the holder may have released between the timeout firing and
-// this read. That is why "" is treated as "unknown" by the caller and
-// not as "nothing conflicts": the conservative reading of no evidence
-// is the one that keeps the warning.
-func (g *parentGate) holderKind(parent string) string {
+// holder is the current holder of one parent: the kind it is attaching
+// and the take that put it there. A zero kind means nothing holds it.
+func (g *parentGate) holder(parent string) parentHold {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	return g.holders[parent]
+}
+
+// holderKind is holder's kind alone, for callers that only report.
+func (g *parentGate) holderKind(parent string) string {
+	return g.holder(parent).kind
+}
+
+// heldThroughout answers the only question the give-up path may act on:
+// did ONE holder, of this kind, hold the parent for the whole wait?
+//
+// It takes the sample the waiter made before it started waiting and
+// compares it with the holder now. Equal kinds are not enough, because
+// a cross-kind holder that released just as a same-kind one took the
+// parent shows the same kind at both ends and is the one case where the
+// kernel may refuse the waiter's LinkAdd. The take sequence closes
+// that: unchanged means no other holder ran in between, so the holder
+// the waiter lost to is the holder it sees.
+//
+// Everything else answers "" -- nothing holding it now, an unidentified
+// holder, a holder that changed -- because the conservative reading of
+// incomplete evidence is the one that keeps the health warning.
+func (g *parentGate) heldThroughout(parent string, at parentHold) string {
+	if at.kind == "" {
+		return ""
+	}
+	now := g.holder(parent)
+	if now.kind != at.kind || now.seq != at.seq {
+		return ""
+	}
+	return at.kind
 }
 
 // acquire takes the gate for one parent, waiting up to budget.
@@ -140,38 +182,59 @@ func (g *parentGate) holderKind(parent string) string {
 // path it is a no-op, so callers can defer it unconditionally without
 // caring whether the wait succeeded. The bool reports whether the gate
 // was actually held, which is what the counters key on. The string is
-// the kind the holder was attaching, and it is meaningful only when the
+// the kind ONE holder was attaching for the whole wait, empty where
+// that could not be established, and it is meaningful only when the
 // bool is false.
 func (g *parentGate) acquire(ctx context.Context, parent, kind string, budget time.Duration) (func(), bool, string) {
 	if parent == "" {
 		return func() {}, false, ""
 	}
 	tok := g.tokenFor(parent)
-	take := func() func() {
-		g.setHolder(parent, kind)
-		return func() {
-			g.setHolder(parent, "")
-			<-tok
-		}
-	}
 
 	// The uncontended path, which is nearly all of them: no timer, no
 	// allocation, no wait.
 	select {
 	case tok <- struct{}{}:
-		return take(), true, ""
+		return g.take(parent, kind, tok), true, ""
 	default:
 	}
 
+	// Someone holds it. The holder is sampled HERE, before the wait,
+	// and the sample is what the give-up path decides on. A reading
+	// taken after the wait answers a different question -- who holds
+	// the parent now -- and the two differ exactly when the holder
+	// changed, which is the case the decision is about. Passing it as
+	// an argument is what keeps the two apart: the waiting half cannot
+	// reach for a fresher reading without changing its own signature.
+	return g.waitForParent(ctx, parent, kind, budget, g.holder(parent))
+}
+
+// take marks the gate held and returns its release.
+func (g *parentGate) take(parent, kind string, tok chan struct{}) func() {
+	g.setHolder(parent, kind)
+	return func() {
+		g.setHolder(parent, "")
+		<-tok
+	}
+}
+
+// waitForParent is acquire's contended half: wait out the budget, and
+// on giving up report which holder -- if it can be established -- held
+// the parent for the whole wait.
+//
+// at is the holder the caller sampled before it began waiting. It is a
+// parameter and not a fresh read for the reason above.
+func (g *parentGate) waitForParent(ctx context.Context, parent, kind string, budget time.Duration, at parentHold) (func(), bool, string) {
+	tok := g.tokenFor(parent)
 	timer := time.NewTimer(budget)
 	defer timer.Stop()
 	select {
 	case tok <- struct{}{}:
-		return take(), true, ""
+		return g.take(parent, kind, tok), true, ""
 	case <-ctx.Done():
-		return func() {}, false, g.holderKind(parent)
+		return func() {}, false, g.heldThroughout(parent, at)
 	case <-timer.C:
-		return func() {}, false, g.holderKind(parent)
+		return func() {}, false, g.heldThroughout(parent, at)
 	}
 }
 
