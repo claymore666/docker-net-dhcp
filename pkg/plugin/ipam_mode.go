@@ -296,19 +296,34 @@ func ipamLiveRecord(rb lease.Rebuilt, networkID string, addr netip.Addr) (lease.
 // to refuse. A renewal writes every lease event back to the record
 // (pkg/dhcp/chassis.go, the persistent client's event loop), so a
 // running endpoint's expiry keeps moving and only an abandoned record
-// ages out. A record with no expiry recorded yet -- RESERVED before its
-// ACK is the reachable one -- is NOT treated as expired: an exchange is
-// running behind it and the in-flight half owns that window, and a zero
-// is also how the library spells an INFINITE lease, which is a lease
-// that is never given back.
+// ages out.
+//
+// THE PREDICATE IS THE LIBRARY'S OWN, Record.Resume, and it is not
+// re-derived here. The question this guard asks -- does this record
+// still hold a lease the server would honour -- is the question
+// INIT-REBOOT asks, and the library answers it in one place
+// (lease/record.go): the record must be Held, in one of the five live
+// phases, carry a valid address, and its expiry must be unset or in the
+// future. Spelling that out again as a phase test plus an expiry test
+// dropped two of the four clauses, and both are reachable. A lost lease
+// folds to Lease{}, Held=false while the phase stays JOINED, so an
+// endpoint whose lease EXPIRED under it read as an infinite lease and
+// was refused for ever -- the same permanence the bound exists to
+// remove, reached from the other side. A reservation whose process died
+// before its ACK never had a lease either, and the in-flight half that
+// owns that window died with it.
+//
+// A zero expiry still means an INFINITE lease where the record holds
+// one: RFC 2131's 0xffffffff reaches lease.Lease as a zero Expire, and
+// a lease that is never given back is the last one two endpoints should
+// share. Held is what tells that apart from a record with no lease at
+// all, which is why the answer has to come from the predicate that
+// reads both.
 func ipamLiveRecordForMAC(rb lease.Rebuilt, networkID string, mac net.HardwareAddr, now time.Time) (lease.Record, bool) {
 	matches := rb.ByScopeMAC(networkID, mac)
 	for i := len(matches) - 1; i >= 0; i-- {
 		rec := matches[i]
-		if !ipamPhaseAnswers(rec.Phase) {
-			continue
-		}
-		if !rec.Lease.Expire.IsZero() && !rec.Lease.Expire.After(now) {
+		if _, holds := rec.Resume(now); !holds {
 			continue
 		}
 		return rec, true

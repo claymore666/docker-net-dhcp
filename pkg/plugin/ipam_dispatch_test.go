@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/claymore666/dhcp-golib/lease"
+	"github.com/claymore666/dhcp-golib/proto"
 	dNetwork "github.com/docker/docker/api/types/network"
 	"github.com/vishvananda/netlink"
 
@@ -1149,28 +1150,68 @@ func TestRequestAddress_AnOrphanedRecordStopsRefusingWhenItsLeaseRunsOut(t *test
 	// endpoint whose server granted it an address for ever would be the
 	// one endpoint this guard never protects, and a lease that is never
 	// given back is the last one two endpoints should share.
+	// The last two arms are the OTHER two ways a record spells a zero
+	// expiry, and neither of them holds a lease. A lease lost under a
+	// running endpoint folds to Lease{}, Held=false with the phase left
+	// where it was, and a reservation whose process died before its ACK
+	// never had one; read as infinite leases, both refuse their
+	// hardware address for the life of the journal, which is the
+	// permanence this test exists to bound.
 	for _, c := range []struct {
 		name       string
+		shape      string
 		expiresIn  time.Duration
 		infinite   bool
 		wantRefuse bool
 	}{
-		{"a lease still running refuses", time.Hour, false, true},
-		{"a lease that has run out does not", -time.Minute, false, false},
-		{"a lease with no end refuses", 0, true, true},
+		{"a lease still running refuses", "held", time.Hour, false, true},
+		{"a lease that has run out does not", "held", -time.Minute, false, false},
+		{"a lease with no end refuses", "held", 0, true, true},
+		{"a lease lost under a live phase does not", "lost", time.Hour, false, false},
+		{"a reservation that never got its ACK does not", "reserved", 0, false, false},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			p, b := ipamFixture(t)
-			id := p.recordCreated(ipamTestNetwork, mac, dhcp.ClientIdentity([]byte{7}))
-			ev := acquired("192.168.99.10/24", c.expiresIn)
-			if c.infinite {
-				ev.Lease.Expire = time.Time{}
+			if c.shape == "reserved" {
+				if id := p.recordReserved(ipamTestNetwork, mac, dhcp.ClientIdentity([]byte{7})); id == "" {
+					t.Fatal("recordReserved wrote no record")
+				}
+			} else {
+				id := p.recordCreated(ipamTestNetwork, mac, dhcp.ClientIdentity([]byte{7}))
+				ev := acquired("192.168.99.10/24", c.expiresIn)
+				if c.infinite {
+					ev.Lease.Expire = time.Time{}
+				}
+				if err := p.records.Observed(id, ev, nil); err != nil {
+					t.Fatalf("Observed: %v", err)
+				}
+				if err := p.records.Bound(id); err != nil {
+					t.Fatalf("Bound: %v", err)
+				}
+				if c.shape == "lost" {
+					if err := p.records.Observed(id, lease.Event{Kind: lease.Lost, Reason: proto.ReasonExpired}, nil); err != nil {
+						t.Fatalf("Observed(lost): %v", err)
+					}
+				}
 			}
-			if err := p.records.Observed(id, ev, nil); err != nil {
-				t.Fatalf("Observed: %v", err)
-			}
-			if err := p.records.Bound(id); err != nil {
-				t.Fatalf("Bound: %v", err)
+
+			// The premise of the two new arms: they must still be in a
+			// phase the filter ADMITS, or they would pass against a
+			// guard that reads nothing but the phase, and the clause
+			// they exist to drive would be unobserved.
+			if c.shape != "held" {
+				rb, err := p.records.Rebuilt()
+				if err != nil {
+					t.Fatalf("Rebuilt: %v", err)
+				}
+				recs := rb.ByScopeMAC(ipamTestNetwork, mac)
+				if len(recs) != 1 {
+					t.Fatalf("want exactly one record under the hardware address, got %d", len(recs))
+				}
+				if !ipamPhaseAnswers(recs[0].Phase) {
+					t.Fatalf("the %s record sits in phase %v, which the phase filter already excludes: "+
+						"this arm would pass without the clause it exists to drive", c.shape, recs[0].Phase)
+				}
 			}
 
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)

@@ -268,3 +268,34 @@ func TestIpamLiveRecord_NewestWins(t *testing.T) {
 		t.Errorf("answered with record %q; the live one is %q and the other is its tombstone", got.ID, fresh)
 	}
 }
+
+// TestIpamPhaseFilter_TheSetIsTheLibrarysOwn couples the two
+// derivations of one fact, because the looser of the two decides.
+//
+// ipamRecordPhases and lease.Record.Resume answer the same question --
+// which phases can still hold a lease worth claiming -- and the MAC
+// guard now asks the library rather than re-deriving it. That leaves
+// ipamRecordPhases as the address-keyed half's own copy, and a copy
+// that drifts is the defect this test exists for: a phase admitted here
+// and refused there would make an address replay answer from a record
+// the duplicate guard reads as holding nothing.
+func TestIpamPhaseFilter_TheSetIsTheLibrarysOwn(t *testing.T) {
+	now := time.Now()
+	for _, ph := range lease.AllPhases() {
+		rec := lease.Record{
+			Phase: ph,
+			Held:  true,
+			Lease: lease.Lease{
+				Addr:   netip.MustParsePrefix(ipamPhaseAddr),
+				Expire: now.Add(time.Hour),
+			},
+		}
+		_, resumes := rec.Resume(now)
+		if resumes != ipamPhaseAnswers(ph) {
+			t.Errorf("%v: the library resumes it = %v, ipamRecordPhases admits it = %v.\n"+
+				"The two sets are one fact and they have drifted; the address-keyed lookup "+
+				"and the hardware-address guard now disagree about the same record.",
+				ph, resumes, ipamPhaseAnswers(ph))
+		}
+	}
+}
