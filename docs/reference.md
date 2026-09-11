@@ -85,7 +85,9 @@ service's network attachment:
 | `com.docker.network.endpoint.ifname` | engine-assigned |
 
 **[Container-level flags](#driver-options-per-endpoint)** that change
-what the plugin sends: `--mac-address`, `--hostname`, `--ip6`.
+what the plugin sends: `--mac-address`, `--hostname`, `--ip6`, and
+`--ip` on a network that names this plugin as its IPAM driver
+([Address allocation](#address-allocation)).
 
 **[Plugin settings](#plugin-settings)**, set with `docker plugin set
 <plugin> NAME=value`:
@@ -444,10 +446,10 @@ plugin sizes that work to the default budget: one reservation gets 26s
 of it, which leaves room for a DHCP exchange plus the RFC 5227 probe
 that runs before the address is used. The plugin is not told what value
 you enabled it with and cannot follow it, so a **lower** `--timeout`
-makes every address request on such a network fail — the daemon stops
-listening mid-reservation and re-sends a call whose body it has already
-spent, which the plugin refuses with a message naming this flag — and a
-**higher** one is unused. `--ipam-driver null` networks are unaffected;
+makes every address request on such a network fail, because the daemon
+stops listening mid-reservation and re-sends a call whose body it has
+already spent, which the plugin refuses with a message naming this flag.
+A **higher** one is unused. `--ipam-driver null` networks are unaffected;
 they acquire during endpoint creation instead.
 
 **`--ipam-opt parent=<nic>` or `--ipam-opt bridge=<name>`** is needed
@@ -482,9 +484,9 @@ one the network names: `docker run` on it fails with the daemon's own
 says nothing about this plugin. `docker network rm` still works, and
 re-creating the network with `--ipam-driver null` is the way back.
 Existing `--ipam-driver null` networks are unaffected by the downgrade.
-Nothing on disk is damaged either way — the plugin refuses to read a
-state file newer than it understands rather than rewriting it — but the
-file is not what protects you here, the missing driver is, so plan a
+Nothing on disk is damaged either way, because the plugin refuses to
+read a state file newer than it understands instead of rewriting it. The
+file is not what protects you here; the missing driver is, so plan a
 rollback around removing the IPAM-mode networks first.
 
 ---
@@ -728,7 +730,7 @@ separately and it is weaker.
 
 **The rule.** When a container on such a network stops or is removed,
 the plugin keeps its DHCP identity and address for a minute. The next
-container that starts on that network claims them — **whichever
+container that starts on that network claims them: **whichever
 container that is**, and only while it is the single one being kept. So:
 
 - One container restarted, nothing else happening on the network: it
@@ -738,9 +740,9 @@ container that is**, and only while it is the single one being kept. So:
   the stopped one gets a fresh address when it comes back. Nothing is
   lost and nothing collides, but neither container's address is the one
   you would predict.
-- Two or more kept at once — `docker compose restart`, a daemon restart
+- Two or more kept at once (`docker compose restart`, a daemon restart
   without `live-restore`, or one container restarting beside a
-  neighbour removed seconds earlier — and none is claimed: every
+  neighbour removed seconds earlier) and none is claimed: every
   container still gets an address, and **which** address is the DHCP
   server's decision. This case is logged and counted as
   `ipam_rebind_ambiguous`, so it is visible in
@@ -748,7 +750,7 @@ container that is**, and only while it is the single one being kept. So:
   counted, because from the plugin's side nothing ambiguous happened.
 
 The reason the rule is this blunt is that Docker's address request
-carries no hostname and no endpoint id — the only thing in it that
+carries no hostname and no endpoint id. The only thing in it that
 identifies anything is a hardware address Docker generates fresh for
 every endpoint. There is nothing to match a request back to a
 particular previous container on. The `--ipam-driver null` shape has a
@@ -765,8 +767,8 @@ address comes back.
 
 A server that **ignores** option 61 and keys on the hardware address
 alone sees an unknown client instead, and hands out a different
-address. That is a real configuration, not a hypothetical — dnsmasq
-spells it `--dhcp-ignore-clid` — and the integration suite runs a
+address. That is a real configuration and not a hypothetical; dnsmasq
+spells it `--dhcp-ignore-clid`, and the integration suite runs a
 container restart against it so the difference is measured rather than
 assumed. Nothing fails there and no counter moves; the property is
 simply not available. If address stability across restarts matters to
@@ -1230,14 +1232,14 @@ already parse it were not told to expect a new type.
 | `dhcp_server_tier_fallbacks` | no | n/a | (v1.8.0+) Steps **down** the `dhcp_servers` ladder: one per preferred entry that did not answer inside its slice of the acquisition budget and handed on to the next (#111). It counts transitions and never container starts: a single `docker run` against three silent preferred servers adds 2. That is the more useful number (it says how far down the list acquisition had to walk) and it is what the code has always produced; this row and two other copies said "acquisitions" until #731. Not healthy-affecting, because the endpoint still got an address. This is the only outside signal that a preferred server is silently dead: a steady rise while every container still starts fine is exactly the condition that otherwise goes unnoticed until the standby fails too. |
 | `dhcp_server_policy_exhausted` | no | n/a | (v1.8.0+) Initial acquisitions abandoned because **no** server listed in `dhcp_servers` answered (#111). Not healthy-affecting on its own: the acquisition failure it accompanies already fails the operation and is counted. It exists because "the servers you named are all silent" and "DHCP is broken" look identical in a timeout log and call for different action. |
 | `dhcp_server_policy_timeouts` | no | n/a | (v1.8.0+) The renewal half of the same question (#731): `dhcp_timeouts` ticks raised on an endpoint whose **renewal** client is restricted to `dhcp_servers`. `dhcp_server_policy_exhausted` cannot cover this: nothing is exhausted at renewal, because the persistent client has no ladder to walk; it holds one whitelist and simply gets no answers, which looks exactly like the server being down. A **strict subset** of `dhcp_timeouts`, and that is how to read it: the two rising together says the allow-list is the cause (a named server renumbered, retired or firewalled), `dhcp_timeouts` rising alone says it is not. Not healthy-affecting, for that same reason: every tick here is already counted in `dhcp_timeouts`, and counting one outage twice would make a policy-restricted endpoint look worse than an unrestricted one failing identically. v4 only: `dhcp_servers` is not applied to DHCPv6, so this can never rise for a v6-only failure. **Not a check:** the imperative is to read this counter *against* `dhcp_timeouts`, because the pair says which cause, and this counter alone says only that a renewal timed out, which `dhcp_timeouts` already counts and already surfaces. |
-| `dhcp_timeouts` | no | n/a | DHCP failures reported by the client itself: an acquisition that found no server, or a held lease that ran out without being renewed. **Changed in 2.0.** 1.x had no direct signal and inferred one from a watchdog that compared the granted lifetime against the time since the client was last served, so a bound endpoint's outage surfaced only after its whole lease had elapsed plus one watchdog tick, up to ~24 hours on a 24-hour lease. The in-tree client owns the lease and its own retransmission schedule, so it reports the failure when the schedule runs out rather than one watchdog tick later. **Read that per case.** For an acquisition the schedule is bounded by `lease_timeout`, so the counter moves within seconds. For a **held** lease the client keeps retransmitting until the lease itself expires, so on a long lease the counter still moves only at the end of it; `renewals_unanswered` is the earlier signal there (#940), and the two rows are read together. `OUTAGE_TICK` and `OUTAGE_GRACE` are gone with the watchdog. v4+v6 aggregate, equal to its `_v4` half in 2.0. |
+| `dhcp_timeouts` | no | n/a | DHCP failures reported by the client itself: an acquisition that found no server, or a held lease that ran out without being renewed. **Changed in 2.0.** 1.x had no direct signal and inferred one from a watchdog that compared the granted lifetime against the time since the client was last served, so a bound endpoint's outage surfaced only after its whole lease had elapsed plus one watchdog tick, up to ~24 hours on a 24-hour lease. The in-tree client owns the lease and its own retransmission schedule, so it reports the failure when the schedule runs out instead of one watchdog tick later. **Read that per case.** For an acquisition the schedule is bounded by `lease_timeout`, so the counter moves within seconds. For a **held** lease the client keeps retransmitting until the lease itself expires, so on a long lease the counter still moves only at the end of it; `renewals_unanswered` is the earlier signal there (#940), and the two rows are read together. `OUTAGE_TICK` and `OUTAGE_GRACE` are gone with the watchdog. v4+v6 aggregate, equal to its `_v4` half in 2.0. |
 | `client_stop_failures` | no | n/a | (renamed from `lease_release_failures` in v1.9.0, #800) A renewal client did not shut down cleanly when the plugin stopped it at teardown. **What "cleanly" means changed in 2.0:** there is no client process to signal and no exit status to read. The plugin cancels the client's context and waits for its goroutine to return, so a tick here means the run loop came back with an error that was not the cancellation, or did not come back inside the finish timeout at all. It does **not** mean a lease went unreleased: since v1.9.0 nothing this plugin runs sends a DHCPRELEASE on any path, so every stopped container's address is held until it expires whatever this counter reads. A pattern points at clients wedging in their own loop, or at a finish timeout set too tight. |
 | `naks_received` | no | n/a | (v1.0.0+) The server NAKed a renewal, a rebind or an INIT-REBOOT request (v4+v6 aggregate). The client recovers by re-acquiring, so each NAK is typically followed by a `leases_obtained` bump, and by a `lease_changed` bump if the address moved. Climbing alongside `lease_changed` means containers are being re-addressed mid-life. |
 | `displaced_stops` | no | n/a | (v1.3.5+) Attaches that found a manager already registered for the same endpoint and stopped it, which is a container restarting into a plugin that had already recovered it (#338). The displaced client is stopped cleanly and the new one takes over. Stopped is not released: it sends no DHCPRELEASE, so the address stays leased and the incoming client renews it, so a few are normal after a plugin restart. Climbing steadily alongside `recovered_ok` means a container is in a restart loop. |
 | `restart_link_up_waited` | no | n/a | (v1.5.0+) Child links that came up only after waiting out the departing link's hold on the address, i.e. how often a container restart met the #408 window and the fix carried it. Not a fault: this is the repair working, counted so the window is visible instead of inferred. A steady rise means your hosts restart containers fast enough to hit it routinely, which is expected for images that handle `SIGTERM` promptly. |
 | `restart_link_up_timeouts` | no | warn | (v1.5.0+) The same wait outlasting its budget: the restart fails and `docker restart` reports `address already in use`. A real failure, but deliberately not `healthy`-affecting: it surfaces directly to whoever ran the command, and `healthy` is for faults nothing else reports. Any non-zero value here is worth investigating; it means the departing link held the address longer than the budget allows (#422). |
 | `parent_link_waits` | no | n/a | (v1.6.0+) Operations that had to queue for a shared parent interface before attaching their own link. A parent NIC can be a macvlan port or an ipvlan port but never both, so when networks of both kinds share one parent, or when a `validate_dhcp` probe still has its temporary link attached, the plugin serialises them per parent instead of letting the kernel refuse one with `device or resource busy` (#486, #549). Queuing is the mechanism working; a steady rise just means that NIC is busy. Since v2.1.0 this also counts the operations that gave up waiting for a holder attaching the **same** kind of child: a parent takes any number of those side by side, so the wait protected nothing and the operation goes on to succeed. Two containers starting together on one IPAM-mode network land here, because an address reservation holds the parent for its whole DHCP exchange. |
-| `parent_link_wait_timeouts` | no | warn | (v1.6.0+) The same wait giving up after its budget where the holder was attaching the **other** kind of child, or a holder the plugin could no longer identify. The operation asks the kernel anyway and may fail with `device or resource busy`. The budget is 4s, sized to absorb an ordinary DORA on the `validate_dhcp` probe, so a holder that wedges degrades to the pre-v1.6.0 behaviour instead of stalling a container start. Not `healthy`-affecting, but the actionable one of the pair: a non-zero value means a macvlan and an ipvlan operation contended for one parent NIC for longer than a DHCP round trip, and a container start there can fail. Same-kind contention is **not** counted here — it is in `parent_link_waits` — because the kernel permits it and the operation succeeds. |
+| `parent_link_wait_timeouts` | no | warn | (v1.6.0+) The same wait giving up after its budget where the holder was attaching the **other** kind of child, or a holder the plugin could no longer identify. The operation asks the kernel anyway and may fail with `device or resource busy`. The budget is 4s, sized to absorb an ordinary DORA on the `validate_dhcp` probe, so a holder that wedges degrades to the pre-v1.6.0 behaviour instead of stalling a container start. Not `healthy`-affecting, but the actionable one of the pair: a non-zero value means a macvlan and an ipvlan operation contended for one parent NIC for longer than a DHCP round trip, and a container start there can fail. Same-kind contention is **not** counted here; it is in `parent_link_waits`, because the kernel permits it and the operation succeeds. |
 | `unsafe_hostnames_rejected` | no | n/a | (v1.8.0+) Container hostnames dropped because they carried a control character (#692). **What the drop protects changed in 2.0.** Nothing generates a client config any more. `directives_refused`, which counted values kept out of one, is removed for exactly that reason, and the hostname now goes straight into the DHCP parameters the plugin builds and onto the wire, as option 12 and, with `register_dns`, as the option-81 FQDN. The drop is still the safe outcome and the lease proceeds, because the hostname decorates the exchange and the opt-in `register_dns` registration, so this is not `healthy`-affecting. It is not purely cosmetic, though: the hostname is also the key that narrows tombstone matching to the container that wrote the tombstone, where an *empty* hostname means "match any tombstone on this network", so a refusal is deliberately kept distinguishable from an absence instead of collapsed into an empty string. Read it as an intent signal and not as a fault: Docker does not validate `--hostname`, and a legitimate one never contains a control character, so a non-zero value means something sent one on purpose. Underscores and other technically-illegal-but-common hostnames are **not** counted; the rule is about control characters and never about RFC 1123. **Not a check:** the imperative says how to *read* a non-zero value and never what to *do* about one: the same row says the drop is the safe outcome and the lease proceeds, so there is no degraded state for a check to fire on. |
 | `unsafe_option_values_dropped` | no | n/a | (v1.8.0+) Server-chosen DHCP string values refused before use because they carried a control character, plus option-15 domains truncated at their first space. The filter is reflective and covers every string value in the lease, so a new one is covered the day it is added; the ones it exists for are the free-text options 66, 67, 100, 101 and 252, which arrive as bytes the server chose and are carried into a log line, a `resolv.conf` or the audit ledger, none of which share an escaping rule. A space in option 15 additionally turns one search domain into several, with the server's choice first in the order, so that cut is counted here too. The sibling of `unsafe_hostnames_rejected`, for the values the *server* chooses instead of the container. A legitimate server sends none of these, so any rise is deliberate. |
 | `network_options_rejected` | no | n/a | (v1.8.0+) Endpoint operations that met a network's stored options and would not act on them as written: an interface name the kernel would not accept, or a `mode` this plugin does not implement. Name validation runs when a network is *created* (#705); this check runs every time the stored options are *read*, which is where the name actually reaches netlink. Not healthy-affecting: refusing is the safe outcome, the operation already fails visibly to Docker, and one network's record being wrong does not make the plugin unwell, because every other network on the host keeps working. A non-zero value means one network needs recreating: either it was created before name validation existed, or its options were written directly into the state directory. `DeleteEndpoint` is deliberately exempt so a refused network can still be torn down. It counts an unknown mode and proceeds, so a rise here does not mean nothing was torn down. Only the mode: teardown reads no stored name at all (it derives the link from the endpoint ID), so there is no name refusal available to it. |

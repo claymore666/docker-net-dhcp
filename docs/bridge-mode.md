@@ -267,9 +267,14 @@ docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.0.0 \
   --ipam-driver null -o bridge=my-bridge -o ipv6=true my-dhcp-net
 ```
 
-> **The `null` IPAM driver is mandatory.** Without it Docker allocates
-> addresses from its own pool, which collides with the real LAN the
-> bridge is attached to.
+> **One of the two IPAM shapes is required.** Docker's own IPAM must not
+> be the allocator: it hands out addresses from its own pool, which
+> collides with the real LAN the bridge is attached to. Pass
+> `--ipam-driver null`, as above, or, from v2.1.0, name this plugin as
+> the IPAM driver as well, which puts the leased address into Docker's
+> address management and makes `--ip` and Compose `ipv4_address` work.
+> Both shapes are set out in
+> [Address allocation](reference.md#address-allocation).
 
 See the [driver reference](reference.md#driver-options-network-level)
 for every network-level option (`lease_timeout`, `ignore_conflicts`,
