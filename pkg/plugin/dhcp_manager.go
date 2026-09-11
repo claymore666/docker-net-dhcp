@@ -1603,6 +1603,28 @@ func (p *joinPhases) total() time.Duration {
 // refusal from a slow container start, so an operator reads its zero as
 // "did not happen" (#731 review).
 func (m *dhcpManager) openSandboxNetNS(ctx context.Context, sandboxKey string, pid int, ctrID string, interval time.Duration) (netns.NsHandle, error) {
+	return m.openSandboxNetNSLazyPID(ctx, sandboxKey, interval, func() (int, string, error) {
+		return pid, ctrID, nil
+	})
+}
+
+// openSandboxNetNSLazyPID is the same opener with the container's PID
+// obtained only if the key route is refused.
+//
+// THE POINT OF THE LAZINESS IS WHO IS ASKED, NOT WHEN. The PID and the
+// container ID come from the daemon, and the attach runs while the
+// daemon is inside ContainerStart for the very container being attached
+// (#406), so resolving them up front put a call that can block for the
+// length of a container start in front of a route that needs neither.
+// Where the sandbox key resolves, this plugin now enters the namespace
+// with no daemon call at all; where it does not, resolvePID runs and
+// the cost is exactly what it always was (#417).
+//
+// resolvePID's error is reported with the key error beside it, for the
+// same reason the fallback's is: the key refusal is what made the PID
+// necessary, and reporting only the second is how the first became
+// invisible.
+func (m *dhcpManager) openSandboxNetNSLazyPID(ctx context.Context, sandboxKey string, interval time.Duration, resolvePID func() (int, string, error)) (netns.NsHandle, error) {
 	ns, keyErr := awaitSandboxNetNSByKey(ctx, sandboxKey, interval)
 	if keyErr == nil {
 		if m.plugin != nil {
@@ -1630,6 +1652,11 @@ func (m *dhcpManager) openSandboxNetNS(ctx context.Context, sandboxKey string, p
 	// arm counters are on /Plugin.Health and /metrics at every level,
 	// and they are what says which route this host takes. This line is
 	// the detail behind them, and detail is what Debug is for.
+	pid, ctrID, pidErr := resolvePID()
+	if pidErr != nil {
+		return netns.None(), fmt.Errorf("%w (sandbox key route: %w)", pidErr, keyErr)
+	}
+
 	log.WithError(keyErr).WithFields(log.Fields{
 		"sandbox": sandboxKey,
 		"pid":     pid,
@@ -1667,59 +1694,126 @@ func (m *dhcpManager) Start(ctx context.Context) (err error) {
 		m.startTotal = phases.total().Round(10 * time.Millisecond).String()
 		close(m.startedCh)
 	}()
-	var ctrID string
-	if err := util.AwaitCondition(ctx, func() (bool, error) {
-		dockerNet, err := m.docker.NetworkInspect(ctx, m.joinReq.NetworkID, dNetwork.InspectOptions{})
-		if err != nil {
-			return false, fmt.Errorf("failed to get Docker network info: %w", err)
+	// WHAT THIS ORDER DELIVERS, AND WHAT IT DOES NOT (#417).
+	//
+	// Entering the container's network namespace and finding its link
+	// no longer need the daemon. Starting the persistent client still
+	// waits on one ContainerInspect, for the hostname that becomes DHCP
+	// option 12, and that inspect is issued after the link is located
+	// rather than before the namespace is opened. So this is not a
+	// daemon-free attach and nothing here may be described as one; what
+	// it removes is the daemon from the path into the namespace.
+	//
+	// It matters because of what the daemon is doing at the time. The
+	// attach runs in a goroutine Join does not wait for, and the daemon
+	// is inside ContainerStart for this same container while it runs
+	// (#406), so every call made here can block for the length of a
+	// container start. Before this order, a host whose sandbox key
+	// resolves still paid that wait before it opened anything, and a
+	// daemon that never answered meant no namespace, no link and no
+	// client -- on a host where the key alone would have carried all
+	// three.
+	//
+	// The remaining inspect keeps attachDaemonBusyGrace load-bearing: a
+	// busy daemon still delays the client start, and the grace is still
+	// what keeps that from being read as a plugin failure.
+	//
+	// The hostname's own cost of being late is bounded and is stated
+	// where it is paid: a client started without it would never send it
+	// (the library takes the hostname at construction), so the client
+	// is not started until the inspect answers or the attach is
+	// abandoned. A daemon-free attach needs a hostname source that is
+	// not ContainerInspect; #417 stays open for it.
+	var (
+		ctrID         string
+		ctrPID        int
+		ctrHostname   string
+		ctrSandboxKey string
+		inspected     bool
+	)
+	// inspect resolves the container behind this endpoint and reads the
+	// three fields the attach wants from it. Called at most once: both
+	// the PID fallback and the hostname want the same answer, and a
+	// second call on a daemon this busy is a second wait.
+	inspect := func() error {
+		if inspected {
+			return nil
 		}
-
-		for id, info := range dockerNet.Containers {
-			if info.EndpointID == m.joinReq.EndpointID {
-				ctrID = id
-				break
+		if err := util.AwaitCondition(ctx, func() (bool, error) {
+			dockerNet, err := m.docker.NetworkInspect(ctx, m.joinReq.NetworkID, dNetwork.InspectOptions{})
+			if err != nil {
+				return false, fmt.Errorf("failed to get Docker network info: %w", err)
 			}
+
+			for id, info := range dockerNet.Containers {
+				if info.EndpointID == m.joinReq.EndpointID {
+					ctrID = id
+					break
+				}
+			}
+			if ctrID == "" {
+				return false, util.ErrNoContainer
+			}
+
+			// Seems like Docker makes the container ID just the endpoint until it's ready
+			return !strings.HasPrefix(ctrID, "ep-"), nil
+		}, pollTime); err != nil {
+			return err
 		}
-		if ctrID == "" {
-			return false, util.ErrNoContainer
+		phases.mark("resolve_container_id")
+
+		ctr, err := util.AwaitContainerInspect(ctx, m.docker, ctrID, pollTime)
+		if err != nil {
+			return fmt.Errorf("failed to get Docker container info: %w", err)
 		}
 
-		// Seems like Docker makes the container ID just the endpoint until it's ready
-		return !strings.HasPrefix(ctrID, "ep-"), nil
-	}, pollTime); err != nil {
-		return err
+		phases.mark("inspect_container")
+
+		// Field by field, each guarded: an inspect that answers with a
+		// section missing is a daemon disagreeing with its own API, and
+		// a nil dereference there would surface as a plugin crash
+		// rather than as the attach failure it is.
+		if ctr.State != nil {
+			ctrPID = ctr.State.Pid
+		}
+		if ctr.Config != nil {
+			ctrHostname = ctr.Config.Hostname
+		}
+		if ctr.NetworkSettings != nil {
+			ctrSandboxKey = ctr.NetworkSettings.SandboxKey
+		}
+		inspected = true
+		return nil
 	}
-	phases.mark("resolve_container_id")
-
-	ctr, err := util.AwaitContainerInspect(ctx, m.docker, ctrID, pollTime)
-	if err != nil {
-		return fmt.Errorf("failed to get Docker container info: %w", err)
-	}
-
-	phases.mark("inspect_container")
-
-	// Config-only: m.hostname reaches the DHCP hostname option and
-	// nothing that makes an identity decision, so a refusal is just an
-	// omitted option here.
-	m.hostname = m.plugin.safeHostname(ctr.Config.Hostname).name
 
 	// The sandbox key is the primary route (sandbox_netns.go). Join
-	// carries it; recovery does not, and reads it from the inspect it
-	// has already made -- one source for both paths, and always the
-	// daemon's current answer rather than a value this plugin wrote
-	// down earlier and might be wrong about.
+	// carries it in the request; recovery synthesises a request that
+	// carries none and reads it from the inspect, which is why that
+	// path still inspects first -- there is no key to try until the
+	// daemon has answered, and always the daemon's current answer
+	// rather than a value this plugin wrote down earlier and might be
+	// wrong about.
 	sandboxKey := m.joinReq.SandboxKey
-	if sandboxKey == "" && ctr.NetworkSettings != nil {
-		sandboxKey = ctr.NetworkSettings.SandboxKey
+	if sandboxKey != "" {
+		m.nsHandle, err = m.openSandboxNetNSLazyPID(ctx, sandboxKey, pollTime, func() (int, string, error) {
+			if err := inspect(); err != nil {
+				return 0, "", err
+			}
+			return ctrPID, ctrID, nil
+		})
+	} else {
+		if err = inspect(); err != nil {
+			return err
+		}
+		m.nsHandle, err = m.openSandboxNetNS(ctx, ctrSandboxKey, ctrPID, ctrID, pollTime)
 	}
-	m.nsHandle, err = m.openSandboxNetNS(ctx, sandboxKey, ctr.State.Pid, ctrID, pollTime)
 	if err != nil {
 		return fmt.Errorf("failed to get sandbox network namespace: %w", err)
 	}
 
 	phases.mark("open_netns")
 
-	m.netHandle, err = netlink.NewHandleAt(m.nsHandle)
+	m.netHandle, err = nlNewHandleAt(m.nsHandle)
 	if err != nil {
 		closeNsHandle(m.nsHandle)
 		return fmt.Errorf("failed to open netlink handle in sandbox namespace: %w", err)
@@ -1731,6 +1825,16 @@ func (m *dhcpManager) Start(ctx context.Context) (err error) {
 		}
 
 		phases.mark("locate_link")
+
+		// The one daemon call left on this path, and it is here rather
+		// than earlier because the namespace and the link do not need
+		// it. Config-only: m.hostname reaches the DHCP hostname option
+		// and nothing that makes an identity decision, so a refusal is
+		// just an omitted option here.
+		if err := inspect(); err != nil {
+			return err
+		}
+		m.hostname = m.plugin.safeHostname(ctrHostname).name
 
 		if m.errChan, err = m.setupClient(false); err != nil {
 			close(m.stopChan)

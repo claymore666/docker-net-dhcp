@@ -18,6 +18,13 @@ var (
 	nlAddrList          = netlink.AddrList
 	nlRouteListFiltered = netlink.RouteListFiltered
 	nlLinkList          = netlink.LinkList
+
+	// nlNewHandleAt is the one that needs CAP_SYS_ADMIN even for the
+	// caller's OWN namespace: it setns()es to build the socket. Without
+	// the seam, nothing root-free can reach a single line of Start past
+	// the namespace open, which is where #417 moved the work that
+	// matters.
+	nlNewHandleAt = netlink.NewHandleAt
 )
 
 // linkLister is the subset of *netlink.Handle that findLinkByMAC needs.
