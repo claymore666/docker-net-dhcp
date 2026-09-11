@@ -58,10 +58,10 @@ var HealthFieldSeries = map[string]string{
 	"status": "health_status",
 }
 
-// HealthFieldsInBuildInfo are the fields carried as LABELS on
-// net_dhcp_build_info instead of as series of their own, and
-// HealthFieldsNotExposed the ones deliberately absent from /metrics,
-// with the reason.
+// HealthFieldsAsLabels are the fields carried as LABELS on an identity
+// series instead of as series of their own, mapped to the series that
+// carries each one, and HealthFieldsNotExposed the ones deliberately
+// absent from /metrics, with the reason.
 //
 // MIRRORS pkg/plugin's metricLabelOnlyFields and metricNotExposedFields
 // for the reason HealthResponse mirrors HealthResponse: this suite asks
@@ -70,7 +70,20 @@ var HealthFieldSeries = map[string]string{
 // loud in both directions -- TestMetrics_SocketServesTheFullSurface
 // reports a field it can find no series for, and reports a label it was
 // told to expect and did not find on the line.
-var HealthFieldsInBuildInfo = []string{"instance_id", "version", "commit", "library"}
+//
+// IT IS A MAP AND NOT A LIST OF BUILD_INFO FIELDS, because #670 added a
+// second identity series and the list shape could only express the
+// first one. A field named here is checked against the line of the
+// series named here, so a field moving between identity series is a
+// failure and not a silent pass.
+var HealthFieldsAsLabels = map[string]string{
+	"instance_id":    "build_info",
+	"version":        "build_info",
+	"commit":         "build_info",
+	"library":        "build_info",
+	"engine_version": "engine_info",
+	"api_version":    "engine_info",
+}
 
 var HealthFieldsNotExposed = map[string]string{
 	"checks":    "each check's observedValue is the counter's own series, already exposed",
@@ -278,6 +291,22 @@ type HealthResponse struct {
 	// degrades nothing the plugin does, and the writer is root either
 	// way.
 	StateFileChmodFailures int32 `json:"state_file_chmod_failures"`
+	// IfnameUnsupported counts endpoints created with a custom
+	// interface name on an engine that does not apply one (#125, #670).
+	// Not healthy-affecting and not in the floor table: the container
+	// comes up on a working network and only the interface name
+	// differs from the request. The suite asserts it against the
+	// engine version `docker version` reports, never against the
+	// plugin's own idea of that version.
+	IfnameUnsupported int32 `json:"ifname_unsupported"`
+	// EngineVersion and APIVersion are what the DAEMON told the plugin
+	// at startup: the engine's version string, and the API version the
+	// client library negotiated with it. Pointers for the reason
+	// Version/Commit/Library are: a plugin that publishes neither and
+	// one that publishes an empty string are different facts, and only
+	// the second is a defect.
+	EngineVersion *string `json:"engine_version"`
+	APIVersion    *string `json:"api_version"`
 	// ParentLinkWaits / ParentLinkWaitTimeouts cover contention on a
 	// shared parent NIC, where a macvlan and an ipvlan child cannot
 	// coexist (#486/#549). Waits means an operation queued and got

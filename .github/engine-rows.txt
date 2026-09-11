@@ -1,0 +1,28 @@
+# The engine matrix's row list (#670): one Docker Engine line per row,
+# spelled as the `docker:<tag>-dind` tag suffix.
+#
+# ONE DECLARATION, READ TWICE. .github/workflows/engine-matrix.yml builds
+# its matrix from this file, and scripts/engine-floor.sh requires a row
+# for every line in it before it will reconcile a floor. That is what
+# makes a vanished cell a red lane instead of a smaller matrix: a cell
+# that dies before it uploads its row leaves a tag here with no row, and
+# the reconciliation refuses.
+#
+# Tags, not exact versions: `29` follows 29.x, and a row naming 29.7.2
+# would measure a frozen engine while the point of the weekly run is to
+# notice the moving one. 20.10 and 19.03 are spelled with their minors
+# because those lines have no bare-major tag.
+#
+# THE LIST IS DOWNWARD-OPEN ON PURPOSE. It does not stop at the engines
+# we expect to pass: a matrix whose every row passes has measured the
+# list, not the floor. scripts/engine-floor.sh refuses a list whose
+# lowest row is the declared floor for that reason.
+29
+28
+27
+26
+25
+24
+23
+20.10
+19.03

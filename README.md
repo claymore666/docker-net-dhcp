@@ -20,14 +20,26 @@ The snippets below install the current release.
 
 ## Requirements
 
-- **Docker Engine.** Every change is tested against the engine the
-  integration suite runs on, **29.7.2** today, read from that run's
-  `Fixture engine drift` step. It is the version this build is measured
-  on. It is not a floor: the minimum has never been measured (#670), so
-  the measured number is the honest one to publish.
+- **Docker Engine 20.10 or newer.** 20.10 is the lowest version this
+  plugin is measured on. The engine matrix drives the whole baseline on
+  every engine line from 20.10 to the current release: the plugin
+  created from a local build and enabled, `docker network create` in
+  bridge, macvlan and ipvlan mode, a lease confirmed in the DHCP
+  server's own log, and an endpoint that keeps its address across
+  `docker restart`. Pulling the published plugin from a registry is not
+  part of that measurement. It runs weekly and on every change to the
+  measurement. Below 20.10 the plugin refuses to start, and the refusal
+  names the minimum and the engine it saw. 19.03 is `unsupported`
+  because it is unmeasured: on a cgroup v2 host it cannot start a
+  container at all, so nothing there tests this plugin.
+  Every change is also tested against the engine the integration suite
+  runs on, **29.7.2** today, read from that run's `Fixture engine drift`
+  step.
 - **Plugin interface `docker.networkdriver/1.0`**, which is what the
   plugin manifest declares. The plugin negotiates the Docker API version
-  with the daemon, so no API floor is claimed here either.
+  with the daemon. It publishes both numbers on `/Plugin.Health` as
+  `engine_version` and `api_version`. The minimum above is a version of
+  the engine, not of the API, and nothing is refused on the API version.
 - **One directory, created once per host, before `docker plugin install`**
   (the line is in the quick start below). Docker will not create a missing
   bind source, so without it the install fails at start-up and leaves the

@@ -70,8 +70,8 @@ treecopy() { # treecopy <name> -> echoes the path to a fresh tracked-tree copy
 
 # --- the control: the tree as it ships ------------------------------------
 run "the shipping tree covers the roster from both lanes" 0 "$GATE" "" \
-    "integration.yml schedules 11 shard(s) covering all 98 test(s) exactly once" \
-    "integration-hosted.yml schedules 11 shard(s) covering all 98 test(s) exactly once"
+    "integration.yml schedules 11 shard(s) covering all 99 test(s) exactly once" \
+    "integration-hosted.yml schedules 11 shard(s) covering all 99 test(s) exactly once"
 
 # Every mutant below builds its input by EDITING this same tree, so a red control
 # makes their verdicts describe the mutation on top of a tree that already fails.
@@ -92,8 +92,8 @@ sed -i 's/-of-9"/-of-10"/g' "$d/integration-hosted.yml"
 run "MUTANT: OF=9 -> OF=10 with no tenth entry is red on both lanes" 1 "$GATE" "$d" \
     "Tests no scheduled shard runs" \
     "TestClientID_DefaultIsMACDerived" \
-    "integration.yml schedules 11 shard(s), and 9 of the 98" \
-    "integration-hosted.yml schedules 11 shard(s), and 9 of the 98"
+    "integration.yml schedules 11 shard(s), and 9 of the 99" \
+    "integration-hosted.yml schedules 11 shard(s), and 9 of the 99"
 
 # The same edit in ONE file only. The two lanes now disagree, which the
 # lane-agreement case in test-integration-shard.sh sees -- but this gate
@@ -103,7 +103,7 @@ d=$(wfcopy m1a)
 sed -i 's/OF=9 SUITE=main/OF=10 SUITE=main/g' "$d/integration.yml"
 run "MUTANT: the same edit in one file only is red for that lane and green for the other" 1 "$GATE" "$d" \
     "Tests no scheduled shard runs::integration.yml" \
-    "integration-hosted.yml schedules 11 shard(s) covering all 98 test(s) exactly once"
+    "integration-hosted.yml schedules 11 shard(s) covering all 99 test(s) exactly once"
 
 # --- MUTANT 2: one entry dropped, another duplicated ----------------------
 d=$(wfcopy m2)
@@ -143,7 +143,7 @@ open(p, "w").write(s.replace(a, a + a.replace("main-4", "main-4b")))
 PY
 run "a duplicated entry with nothing missing fires the duplicate arm alone" 1 "$GATE" "$d" \
     "Tests more than one scheduled shard runs" \
-    "integration-hosted.yml schedules 11 shard(s) covering all 98 test(s) exactly once"
+    "integration-hosted.yml schedules 11 shard(s) covering all 99 test(s) exactly once"
 d_out=$(SHARD_COVERAGE_WORKFLOWS="$d" bash "$GATE" 2>&1)
 if printf '%s\n' "$d_out" | grep "Tests no scheduled shard runs" > /dev/null; then
     no "and it does not also claim tests are missing"
@@ -232,7 +232,7 @@ d=$(wfcopy inert)
 printf '\n# an added comment mentioning integration-test-shard and main-5-of-9\n' >> "$d/integration.yml"
 printf '\n# an added comment\n' >> "$d/integration-hosted.yml"
 run "PRESERVATION: a comment naming a shard does not schedule one" 0 "$GATE" "$d" \
-    "integration.yml schedules 11 shard(s) covering all 98 test(s) exactly once"
+    "integration.yml schedules 11 shard(s) covering all 99 test(s) exactly once"
 
 # --- wiring: the gate is actually run by the lane and by local-lane.sh ----
 if grep -q "check-shard-coverage.sh" "$ROOT/.github/workflows/test.yaml"; then

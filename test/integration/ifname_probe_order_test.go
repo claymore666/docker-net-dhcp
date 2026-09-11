@@ -242,7 +242,7 @@ func TestInterfaceName_ProbeSkipPrecedesTheEphemeralFixture(t *testing.T) {
 	if skipPos > buildPos {
 		t.Fatalf("%s stands up the ephemeral fixture at %s:%d, BEFORE the engine-capability "+
 			"skip at %s:%d.\n\n"+
-			"On every engine without moby/moby#52866 — all of them today — that fixture is "+
+			"On every engine without moby/moby#52866 — every line below 29.8.0 — that fixture is "+
 			"created and then torn down having served no client, its lease-grant guard "+
 			"(#472) fires, and the run reports FAIL where it must report SKIP. CI cannot "+
 			"catch this: its verdict for this test is SKIP either way. Move the "+

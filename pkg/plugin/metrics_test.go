@@ -912,8 +912,12 @@ func TestMetrics_EveryFamilyIsWellFormed(t *testing.T) {
 			}
 		}
 	}
-	if len(seenHelp) != len(metricDefs())+1 { // +1 for build_info
-		t.Errorf("rendered %d families, table declares %d (+build_info)", len(seenHelp), len(metricDefs()))
+	// +2 for the two families that are not counters and so are not in
+	// metricDefs: build_info (this build's identity) and engine_info
+	// (the daemon's, #670). A third one added without this number
+	// moving is a family nothing here read.
+	if len(seenHelp) != len(metricDefs())+2 {
+		t.Errorf("rendered %d families, table declares %d (+build_info, +engine_info)", len(seenHelp), len(metricDefs()))
 	}
 }
 
@@ -959,9 +963,18 @@ func TestMetricsExposition_NoPerEndpointIdentifiers(t *testing.T) {
 	// library revision, all three the same for every endpoint on the
 	// host and all three already public in the image tag. SECURITY.md
 	// and docs/reference.md name the same five.
+	//
+	// engine_version and api_version (#670) are the HOST's Docker
+	// Engine version and the API version this client negotiated with
+	// it. Both are one per host, identical for every endpoint on it,
+	// and say nothing about any container. They disclose which Docker
+	// release the host runs, which is why SECURITY.md names them in the
+	// same promise instead of leaving a reader to infer that a version
+	// label is harmless.
 	allowed := map[string]bool{
 		"instance_id": true, "family": true,
 		"version": true, "commit": true, "library": true,
+		"engine_version": true, "api_version": true,
 	}
 
 	var buf bytes.Buffer

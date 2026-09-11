@@ -180,12 +180,15 @@ const ifnameOption = "com.docker.network.endpoint.ifname"
 // carried the field for years, but the remote proxy dropped it
 // (drivers/remote/driver.go called `iface.SetNames(SrcName, DstPrefix,
 // "")`) until moby/moby#52866, merged 2026-08-26 and milestoned for
-// engine 29.8.0. Built-in drivers got per-driver interface_name in
-// engine 28; remote drivers were left out until that fix. No released
-// engine carries it yet, so on 29.7.x and older the field is still
-// ignored. We return it either way: it is the documented response
-// shape, costs nothing on engines that ignore it, and activates by
-// itself on the first engine that honours it (#125).
+// engine 29.8.0, where it shipped. Built-in drivers got per-driver
+// interface_name in engine 28; remote drivers were left out until that
+// fix. MEASURED with a nested daemon per line (#670): 28.5.2 and 29.7.2
+// name the interface by DstPrefix and index, 29.8.0 names it as asked.
+// We return it either way: it is the documented response shape, costs
+// nothing on engines that ignore it, and activates by itself on the
+// first engine that honours it (#125). What an engine below 29.8.0
+// costs is said at CreateEndpoint and counted as ifname_unsupported,
+// because a silently different interface name is otherwise invisible.
 type InterfaceName struct {
 	SrcName   string
 	DstPrefix string
@@ -306,7 +309,21 @@ type HealthResponse struct {
 	Version string `json:"version"`
 	Commit  string `json:"commit"`
 	Library string `json:"library"`
-	Healthy bool   `json:"healthy"`
+	// EngineVersion and APIVersion are what the DAEMON said when this
+	// process started, not what this process assumed (#670).
+	// EngineVersion is the engine's own version string and is the value
+	// the minimum is measured and compared on; APIVersion is what the
+	// client library NEGOTIATED with it, which is min(our maximum, the
+	// daemon's maximum) and so can be lower than either side supports.
+	//
+	// Both read `unknown` when the daemon did not answer at startup.
+	// Docker restarts this plugin during its own startup and the socket
+	// is routinely not serving yet at that moment (#383), so `unknown`
+	// is a state an operator can actually see, and it means "this
+	// process never found out" rather than "there is no engine".
+	EngineVersion string `json:"engine_version"`
+	APIVersion    string `json:"api_version"`
+	Healthy       bool   `json:"healthy"`
 	// InstanceID identifies the plugin process that served this
 	// response. Every counter below is in-memory and returns to zero
 	// when the process does, so two reads are only comparable as a
@@ -562,7 +579,7 @@ type HealthResponse struct {
 
 	// DockerAPINonGETRefusals counts requests to the Docker API the
 	// plugin refused to send because their method was not GET. The
-	// plugin's whole Docker surface is three read calls, so this is
+	// plugin's whole Docker surface is four read calls, so this is
 	// expected to stay zero for the life of an installation; a non-zero
 	// value means code in this process tried to write to the daemon
 	// (#691). NOT healthy-affecting: the refusal is the safe outcome.
@@ -792,6 +809,12 @@ type HealthResponse struct {
 	// degrades forensics, not networking; operators using audit_log
 	// alert on this directly.
 	LedgerWriteFailures int32 `json:"ledger_write_failures"`
+	// IfnameUnsupported counts endpoints created with a custom
+	// interface name on an engine that does not apply one (#125, #670).
+	// The request is accepted and the network works; the interface
+	// carries the driver's prefix and index instead of the requested
+	// name. Nothing else reports that, which is why it is counted.
+	IfnameUnsupported int32 `json:"ifname_unsupported"`
 	// StateFileChmodFailures counts files the startup sweep could not
 	// tighten, plus one for a STATE_DIR it could not read at all
 	// (#804). Not Healthy-affecting: nothing the plugin does is
@@ -948,6 +971,7 @@ func (p *Plugin) checkStamps() map[string]time.Time {
 		"parent_link_wait_timeouts": p.parentLinkWaitTimeouts.LastMoved(),
 		"ledger_write_failures":     p.ledgerWriteFailures.LastMoved(),
 		"state_file_chmod_failures": p.stateFileChmodFailures.LastMoved(),
+		"ifname_unsupported":        p.ifnameUnsupported.LastMoved(),
 	}
 }
 
@@ -983,6 +1007,11 @@ func (p *Plugin) healthSnapshot() HealthResponse {
 	// land between them.
 	managers, pending := p.managerSnapshot()
 	endpoints := endpointViewsOf(managers)
+
+	// One load of the engine identity, for both fields. The two are one
+	// observation and are stored as one, so a reader cannot see a
+	// version from before a re-probe beside an API version from after.
+	engine := p.engineSnapshot()
 
 	failed := p.recoveryFailed.Load()
 	joinFails := p.joinStartFailures.Load()
@@ -1024,6 +1053,8 @@ func (p *Plugin) healthSnapshot() HealthResponse {
 		// does not say — in particular that it latches for the life of
 		// the process.
 		Healthy:       failed == 0 && joinFails == 0 && tsFails == 0 && conflicts == 0 && tsQuarantines == 0,
+		EngineVersion: engine.Version,
+		APIVersion:    engine.APIVersion,
 		InstanceID:    p.instanceID,
 		UptimeSeconds: time.Since(p.startTime).Seconds(),
 		// len(endpoints), not a second len(p.persistentDHCP): the count
@@ -1094,6 +1125,7 @@ func (p *Plugin) healthSnapshot() HealthResponse {
 		ParentLinkWaits:              p.parentLinkWaits.Load(),
 		ParentLinkWaitTimeouts:       p.parentLinkWaitTimeouts.Load(),
 		LedgerWriteFailures:          p.ledgerWriteFailures.Load(),
+		IfnameUnsupported:            p.ifnameUnsupported.Load(),
 		StateFileChmodFailures:       p.stateFileChmodFailures.Load(),
 		LeaseChangedV4:               leaseChangedV4,
 		LeasesObtainedV4:             leasesObtainedV4,

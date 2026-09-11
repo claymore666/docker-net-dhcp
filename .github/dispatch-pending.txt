@@ -122,3 +122,13 @@
 #     reached the default branch, so remove the entry. An allowlist
 #     nobody prunes is how a temporary exception becomes permanent.
 #
+.github/workflows/engine-matrix.yml
+  Reason: The engine matrix (#670) measures which Docker Engine versions
+    the plugin works on. It is new on this branch, so neither its weekly
+    cron nor a dispatch can start it until it reaches `main`. Its `push`
+    trigger is what runs it in the meantime, and the floor it publishes
+    was measured through that trigger.
+  Clears: The v2.1.0 release merges `dev` into `main`. Remove this entry
+    in that release PR; this gate fails on it once the workflow is on the
+    default branch.
+  Triggers: schedule workflow_dispatch

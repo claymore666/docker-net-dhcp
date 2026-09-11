@@ -493,7 +493,7 @@ Passed per container via `docker network connect --driver-opt`, or as
 | option | description |
 | ------ | ----------- |
 | `ip` | Request a specific IPv4 address (bare IP, no CIDR; the netmask comes from DHCP). Equivalent to `docker run --ip`; setting both to different values is an error. The address is *requested* from the DHCP server (DHCPREQUEST for it); the server still has final say. |
-| `com.docker.network.endpoint.ifname` | (v1.0.0+) Request a specific interface name inside the container (Compose `interface_name`, engine 28+; or this key under `driver_opts`, any engine). The plugin validates the name (≤15 bytes, kernel charset; invalid names fail the attach with a clear error) and returns it in its Join response. **Engine support:** moby's remote-driver layer discarded the returned name (`drivers/remote/driver.go` passed an empty `DstName`) until [moby/moby#52866](https://github.com/moby/moby/pull/52866), merged to moby master on 2026-08-26 and milestoned for engine **29.8.0**, which was released on 2026-09-03. On 29.7.x and older the name is still not applied for *plugin* drivers: built-in drivers only, and interfaces stay `ethN` in attach order. The integration suite has not yet run on an engine carrying the change, so the pass-through is unconfirmed here and not measured. The plugin side is ready and the rename activates by itself on the first engine that applies the returned name, with no change on this side. |
+| `com.docker.network.endpoint.ifname` | (v1.0.0+) Request a specific interface name inside the container (Compose `interface_name`, engine 28+; or this key under `driver_opts`, any engine). The plugin validates the name (≤15 bytes, kernel charset; invalid names fail the attach with a clear error) and returns it in its Join response. **Engine support:** moby's remote-driver layer discarded the returned name (`drivers/remote/driver.go` passed an empty `DstName`) until [moby/moby#52866](https://github.com/moby/moby/pull/52866), merged to moby master on 2026-08-26 and milestoned for engine **29.8.0**, which was released on 2026-09-03. Before that the name was applied for built-in drivers only, and an interface from a *plugin* driver kept the driver's prefix and an index in attach order. **Measured** (v2.1.0, #670), one engine line at a time in a nested daemon: 28.5.2 and 29.7.2 ignore the requested name, 29.8.0 applies it. Those are the lines that were measured, not every build of them: a vendor engine below 29.8.0 carrying the change applies the name, and the plugin still reports it as ignored, because the plugin compares versions and does not probe the behaviour. The plugin side is ready and the rename activates by itself on the first engine that applies the returned name, with no change on this side. Where the version says the name will not be applied, the plugin says so in its log at `CreateEndpoint`, naming the engine and the version that would apply the name, and counts [`ifname_unsupported`](#pluginhealth). |
 
 A static IPv6 request (`--ip6` / Interface.AddressIPv6) is sent as the
 Solicit's IA Address, which is the DHCPv6 equivalent of option 50 and, like
@@ -1026,6 +1026,8 @@ already parse it were not told to expect a new type.
 | `version` | n/a | n/a | *(2.0-alpha.1+)* The release tag this binary was built for, or `dev` for anything built outside a release. Also a label on `net_dhcp_build_info`. **Never empty**: an empty value would read as "nothing to report" instead of "this build does not know". |
 | `commit` | n/a | n/a | *(2.0-alpha.1+)* The full git revision the tree was at, or `unknown`. Full and not abbreviated, because git shortens to a length that depends on the size of the clone, and [Verifying releases](verifying-releases.md) needs the same string to reproduce the same binary. |
 | `library` | n/a | n/a | *(2.0-alpha.1+)* The version of the `dhcp-golib` DHCP library this build carries, the module version pinned in [`go.mod`](https://github.com/claymore666/docker-net-dhcp/blob/main/go.mod). Read from the source tree at build time (`go list -m`), so it cannot be passed in wrong. |
+| `engine_version` | n/a | n/a | *(v2.1.0+)* The Docker Engine version the daemon reported when this plugin process started. It is the value the minimum supported engine is compared against, and the plugin refuses to start below that minimum. Reads `unknown` when the daemon did not answer at startup, which happens when Docker starts the plugin during its own start-up; the plugin takes the reading again when the daemon answers, and `unknown` that persists means it never did. |
+| `api_version` | n/a | n/a | *(v2.1.0+)* The Docker API version this plugin negotiated with that daemon. It is the lower of the two maximums, so it can be below what either side supports, and a socket proxy that pins an old API shows up here. Nothing is refused on it. Reads `unknown` on the same terms as `engine_version`. |
 | `uptime_seconds` | n/a | n/a | Seconds since the plugin process started. Useful as an age, but see `instance_id` before using it to decide whether a restart happened. |
 | `active_endpoints` | n/a | n/a | DHCP managers currently registered (post-Join, pre-Leave). |
 | `pending_hints` | n/a | n/a | Join hints awaiting consumption; steady-state ~0. |
@@ -1090,6 +1092,7 @@ already parse it were not told to expect a new type.
 | `dhcpv6_no_router_advert` | no | n/a | (v1.9.0+) Endpoints created on an IPv6 network where **no router advertisement arrived at all** inside the acquisition budget (#868). The endpoint starts without a DHCPv6 lease, and the plugin logs a warning: unlike the row above this usually is a fault, because a segment with no IPv6 router gives the container no route either. Not `healthy`-affecting, because the plugin cannot tell a misconfigured segment from a deliberately routerless one. If it rises on a segment that does have a router, the advertisement did not arrive inside RFC 4861's discovery window. The DHCPv6 acquisition budget covers that window by derivation, so the usual cause is something cutting the budget below it: a `lease_timeout` set under 13 seconds, or a DHCPv4 half that took so long that little of the daemon's 30-second call deadline was left for the v6 one. The plugin logs a warning naming both numbers when that happens. |
 | `ipv6_link_enable_failures` | no | n/a | (v1.9.0+) Container links the plugin could not administratively enable IPv6 on (#868). `Join` clears the engine's `disable_ipv6` on the container link before the DHCPv6 client starts. The engine sets that flag on a sandbox interface whose endpoint carries no IPv6 address, which is every endpoint at that moment, and this counter moves when that write fails. Degraded and not fatal, and not `healthy`-affecting: the v4 lease is worth more than the v6 half, so the manager logs and carries on. Reachable at plugin-restart recovery too, which replays the same start. When this rises, **no DHCPv6 exchange on that link was possible at all**, so the v6 counters below it say nothing about the segment. |
 | `router_advert_guard_failures` | no | n/a | (v2.0.0+, #911) Steps of the DHCPv6 Router Advertisement guard that did not take. The guard writes three sysctls on the container's link, `accept_ra=2`, `autoconf=1` and `keep_addr_on_down=1`, and reads each one back, so it is **six steps per IPv6 endpoint** and this counter is bounded by six times the number of them. Only IPv6 endpoints run it, so it cannot move on an IPv4-only host. Not `healthy`-affecting and never fatal: a kernel built without one of these knobs, or a `/proc/sys` the plugin cannot write in, is not a reason to refuse the container an address. It **is** a reason to know, because the container may end up with a DHCPv6 address and no route: DHCPv6 carries no next hop and the address's prefix is not implicitly on-link, so the advertisement is the only thing that supplies one. If this rises, check `ip -6 route` inside the container for a default route via an `fe80::` address. |
+| `ifname_unsupported` | no | warn | *(v2.1.0+, #125)* Endpoints created with a custom interface name on an engine that does not apply one. Docker accepts the request and the container comes up on a working network. Only the name differs: the interface carries the driver's prefix and an index instead of the requested name. Engines below 29.8.0 ignore a remote driver's requested name, measured one engine line at a time; 29.8.0 carries the upstream fix and applies it. Not `healthy`-affecting. Watch it wherever the interface name matters: a non-zero value means someone asked for a name and the engine did not apply it, and nothing else on the host reports that. The remedy is an engine at 29.8.0 or newer, or a configuration that does not depend on the name. It counts nothing on an engine whose version the plugin could not read, so zero on such a host means the question went unasked. The test is the engine's reported version, not what the engine does: a vendor build carrying the change below 29.8.0 is counted here anyway, and a 29.8.0 build with the change removed is not counted at all. |
 | `address_conflicts_v4` | no | n/a | (v2.0.0) The RFC 5227 share of `address_conflicts`: an IPv4 address ARP found in use, §2.1 before it was used or §2.4 afterwards. **This is the half to compare against `acd_probes_sent` and `acd_conflicts_detected`**, because both count ARP and the unsuffixed total carries the v6 share too, so comparing against the total reports a plugin defect for every DHCPv6 conflict. `conflict_check` governs this half. |
 | `address_conflicts_v6` | no | n/a | (v2.0.0) The DHCPv6 share: an address the container's kernel found on the link by Duplicate Address Detection (RFC 4862 §5.4), declined to the server under RFC 9915 §18.2.8. It is **not ARP**: no `acd_*` counter moves for it and `conflict_check` does not govern it, because DAD is the kernel's, runs on every IPv6 address, and cannot be turned off from a network option. The client then acquires a replacement address and the plugin applies it to the container's interface, while **Docker's record of the endpoint keeps the old address**, the same truthfulness gap `lease_changed` describes, so read `lease_changed_v6` beside this. |
 | `lease_changed_v6`, `leases_obtained_v6`, `leases_renewed_v6`, `renewals_unanswered_v6`, `dhcp_timeouts_v6`, `naks_received_v6` | no | n/a | (v1.2.0+) The IPv6-only share of the matching counter above (#212). Each counts only the v6 client's events. On a dual-stack host this isolates the v6-specific NAK/timeout signal the combined number hides. `client_stop_failures_v6` (v1.7.0+, #608) joins the split with the same rule; `ledger_write_failures` has no per-family split. |
@@ -1187,6 +1190,21 @@ as a **new series** instead of as a counter that silently rewound, which
 view is strictly better than reading the JSON, where an operator has to
 compare `instance_id` by hand to know whether two readings are
 comparable at all.
+
+#### Engine identity
+
+*(v2.1.0+)* `net_dhcp_engine_info` carries the daemon's identity as
+labels, in the same shape as `net_dhcp_build_info`:
+
+```
+net_dhcp_engine_info{engine_version="...",api_version="..."} 1
+```
+
+It is a separate series from `net_dhcp_build_info` on purpose. The build
+identity changes when the plugin is upgraded, the engine identity when
+the host's Docker is, and folding both into one series would break every
+`net_dhcp_build_info` time series on an engine upgrade. Both labels read
+`unknown` when the daemon did not answer at start-up.
 
 `net_dhcp_healthy` is `1`/`0`, mirroring the `healthy` field, so the one
 derived judgement the plugin makes stays alertable.
@@ -1341,10 +1359,10 @@ networks:
       driver: 'null'
 ```
 
-Multi-network containers work (one plugin network per container is
-the *supported* shape; multiple attach, but interface naming order is
-engine-determined on any engine without moby's remote-driver
-`interface_name` pass-through. See the
+Multi-network containers work. One plugin network per container is the
+*supported* shape; several attach, but interface naming order is
+engine-determined below engine 29.8.0, which is the measured boundary
+for moby's remote-driver `interface_name` pass-through. See the
 `com.docker.network.endpoint.ifname` row above.
 
 ### The base/override merge trap

@@ -11,9 +11,10 @@
 // `iface.SetNames(SrcName, DstPrefix, "")`, DISCARDING the plugin's
 // DstName. Built-in drivers got per-driver interface_name in engine
 // 28; remote drivers were left out. moby/moby#52866 fixed the proxy
-// (merged 2026-08-26, milestoned for engine 29.8.0); no released
-// engine carries it yet, so the discard is still what a run on 29.7.x
-// or older sees. So:
+// (merged 2026-08-26) and it SHIPPED in engine 29.8.0: measured with a
+// nested daemon per line (#670), 28.5.2 and 29.7.2 name the interface
+// by the driver prefix and 29.8.0 names it as asked. So the discard is
+// what a run on 29.7.x or older sees. So:
 //   - the plugin's side (validate + return DstName) is fully
 //     assertable today, via its own logs and the Join error path;
 //   - whether the ENGINE applies the name is probed at runtime —
@@ -25,6 +26,7 @@ package integration
 
 import (
 	"context"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -113,6 +115,20 @@ func TestInterfaceName_PluginHonorsOption(t *testing.T) {
 
 	harness.CreateNetwork(t, ctx, netName, "macvlan", nil)
 
+	// WHICH STATEMENT IS OWED is decided by the ENGINE, and the engine
+	// is asked here rather than taken from the plugin's own report of
+	// it (#670). Below the boundary the plugin must say the name will
+	// not be applied and count it; at or above it, the plugin must say
+	// it honoured the name. A cell that accepted either sentence would
+	// pass against a plugin that had stopped saying anything.
+	srv, err := cli.ServerVersion(ctx)
+	if err != nil {
+		t.Fatalf("ServerVersion: %v", err)
+	}
+	engineApplies := engineVersionAppliesIfname(srv.Version)
+
+	window := harness.BeginCounterWindow(t, ctx, cli, "ifname_unsupported")
+
 	// Scoped to this attach. "Honoring custom interface name" and lan0
 	// are what the sibling tests in this file log too, so over the
 	// whole log this assertion is satisfied by whichever of them ran
@@ -120,28 +136,80 @@ func TestInterfaceName_PluginHonorsOption(t *testing.T) {
 	logMark := harness.MarkPluginLog(t, ctx)
 	id, ip := runContainerWithIfname(t, ctx, cli, netName, "dh-itest-ifname-ctr", "lan0")
 
-	// The lease itself must be unaffected by the option.
+	// The lease itself must be unaffected by the option, on either
+	// engine. This is the half #125 was always able to assert.
 	if !strings.Contains(harness.ExecOutput(t, ctx, id, "ip", "-4", "addr"), ip+"/") {
 		t.Errorf("leased address %s not present on the container link", ip)
 	}
 
-	// Plugin half: Join logged that it honored the name (the response
-	// DstName). This is the assertable contract on every engine.
+	wantStatement := "Honoring custom interface name"
+	if !engineApplies {
+		wantStatement = "older than the first that applies a remote driver's interface name"
+	}
 	logTxt := harness.AwaitPluginLogSince(t, ctx, logMark, 5*time.Second, func(window string) bool {
-		return strings.Contains(window, "Honoring custom interface name") &&
-			strings.Contains(window, "lan0")
+		return strings.Contains(window, wantStatement) && strings.Contains(window, "lan0")
 	})
-	if !strings.Contains(logTxt, "Honoring custom interface name") || !strings.Contains(logTxt, "lan0") {
-		t.Error("plugin log shows no 'Honoring custom interface name' for lan0 — Join did not consume the ifname option")
+	if !strings.Contains(logTxt, wantStatement) || !strings.Contains(logTxt, "lan0") {
+		t.Errorf("engine %s: the plugin log does not say %q for lan0.\n"+
+			"On an engine that ignores the name, a log line claiming it was honoured is "+
+			"the only thing standing between the operator and an interface named "+
+			"something they did not ask for.", srv.Version, wantStatement)
 	}
 
-	// Engine half: probe and report. Not a failure either way — the
-	// engine-dependent assertions live in the gated tests below.
-	if engineAppliesIfname(t, ctx, id, "lan0") {
-		t.Log("engine APPLIES remote-driver DstName — upstream pass-through is live on this runner")
-	} else {
-		t.Log("engine ignores remote-driver DstName (expected below engine 29.8.0, which carries moby/moby#52866); interface remains ethN")
+	// The engine's own behaviour, read from the container, must agree
+	// with the statement the plugin made about it.
+	applied := engineAppliesIfname(t, ctx, id, "lan0")
+	if applied != engineApplies {
+		t.Errorf("engine %s: the container interface is named lan0 = %v, and this suite expected %v "+
+			"from the version alone. The measured boundary in this file is wrong, or the engine "+
+			"changed behaviour inside a line.", srv.Version, applied, engineApplies)
 	}
+
+	// The counter carries the same fact for an operator who is not
+	// reading logs, and it must NOT move on an engine that applies the
+	// name.
+	before, after := window.End()
+	delta := after.IfnameUnsupported - before.IfnameUnsupported
+	switch {
+	case !engineApplies && delta < 1:
+		t.Errorf("engine %s ignores the requested interface name and ifname_unsupported moved by %d, want at least 1",
+			srv.Version, delta)
+	case engineApplies && delta != 0:
+		t.Errorf("engine %s applies the requested interface name and ifname_unsupported moved by %d, want 0",
+			srv.Version, delta)
+	}
+}
+
+// engineVersionAppliesIfname is this suite's own copy of the boundary,
+// deliberately not imported from pkg/plugin: a cell that took the
+// constant from the code it is checking would agree with it by
+// construction. 29.8.0 is where moby/moby#52866 taught libnetwork's
+// remote proxy to pass DstName through; MEASURED with a nested daemon
+// per line, 28.5.2 and 29.7.2 name the interface by the driver prefix.
+func engineVersionAppliesIfname(version string) bool {
+	fields := strings.SplitN(version, ".", 3)
+	if len(fields) < 2 {
+		return false
+	}
+	major, err := strconv.Atoi(fields[0])
+	if err != nil {
+		return false
+	}
+	minorField := fields[1]
+	for i, r := range minorField {
+		if r < '0' || r > '9' {
+			minorField = minorField[:i]
+			break
+		}
+	}
+	minor, err := strconv.Atoi(minorField)
+	if err != nil {
+		return false
+	}
+	if major != 29 {
+		return major > 29
+	}
+	return minor >= 8
 }
 
 // TestInterfaceName_InvalidRejected: a name the kernel could never
@@ -236,7 +304,7 @@ func TestInterfaceName_MultiNetworkDeterministic(t *testing.T) {
 	// that its DHCP server actually granted a lease (#472). A fixture
 	// created ahead of a skip is torn down having served nobody, so the
 	// guard fires and the run reports FAIL where it should report SKIP
-	// -- on every engine below 29.8.0, which is all of them today.
+	// -- on every engine below 29.8.0.
 	// Measured: it did exactly that before this was reordered.
 	probeNet := "dh-itest-ifprobe"
 	harness.CreateNetwork(t, ctx, probeNet, "macvlan", nil)

@@ -61,6 +61,7 @@ func checkBumpers() []checkBumper {
 		{"parent_link_wait_timeouts", "", func(p *Plugin) { p.parentLinkWaitTimeouts.Add(1) }},
 		{"ledger_write_failures", "", func(p *Plugin) { p.ledgerWriteFailures.Add(1) }},
 		{"state_file_chmod_failures", "", func(p *Plugin) { p.stateFileChmodFailures.Add(1) }},
+		{"ifname_unsupported", "", func(p *Plugin) { p.ifnameUnsupported.Add(1) }},
 	}
 }
 

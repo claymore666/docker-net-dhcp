@@ -215,7 +215,7 @@ func TestReadOnlyTransport_WritesTheRecordToTheLog(t *testing.T) {
 // The transport refuses a write at run time, which is the right
 // backstop and the wrong place to find out. This fails at `go test` the
 // moment the narrow interface grows a method that is not a read — the
-// one edit that turns "the plugin makes three read calls" from true
+// one edit that turns "the plugin makes four read calls" from true
 // into false, and the edit #691's whole proposal rests on not
 // happening.
 //
@@ -227,8 +227,17 @@ func TestDockerClient_InterfaceNamesOnlyReadMethods(t *testing.T) {
 		"NetworkList":      true,
 		"NetworkInspect":   true,
 		"ContainerInspect": true,
-		// Not an API call: closes the local connection pool.
-		"Close": true,
+		// The engine probe (#670). Ping is GET or HEAD /_ping, which
+		// the proxy allowlist in SECURITY.md already carries because
+		// the client library sends it anyway; ServerVersion is GET
+		// /v1.*/version, which that allowlist now names.
+		"Ping":          true,
+		"ServerVersion": true,
+		// Not API calls: Close drops the local connection pool, and
+		// ClientVersion reads the version the last ping NEGOTIATED
+		// without asking the daemon anything.
+		"Close":         true,
+		"ClientVersion": true,
 	}
 
 	iface := reflect.TypeOf((*dockerClient)(nil)).Elem()
