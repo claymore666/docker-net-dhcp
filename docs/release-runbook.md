@@ -377,8 +377,8 @@ number it disagrees with is published in `README.md` and
 `docs/index.md`, and the plugin refuses to start below it. The lane also
 runs weekly once it is on the default branch, so from v2.2.0 a moving
 `29` tag is usually caught before a release asks the question. Read the
-run rather than the schedule: a release is the moment the published
-number has to be true.
+run and never the schedule: a release is the moment the published number
+has to be true.
 
 1. **Branch off `dev`:** `git checkout -b release/vX.Y.Z origin/dev`
 2. **Bump install pins:** `scripts/bump-version.sh vX.Y.Z` (#251). It
