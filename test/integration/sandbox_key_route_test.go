@@ -7,6 +7,7 @@ package integration
 
 import (
 	"context"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -146,6 +147,16 @@ func sandboxKeyCell(t *testing.T, mode, netName, ctrName, user string) {
 	t.Logf("CELL-ARM mode=%s user=%q: sandbox_key_absent +%d, sandbox_key_not_permitted +%d, "+
 		"sandbox_key_not_a_namespace +%d, sandbox_key_wrong_ns_type +%d, sandbox_key_unavailable +%d",
 		mode, user, absent, notPermitted, notANamespace, wrongType, unavailable)
+	// THE HOST, printed beside the route it took. Which route is
+	// available is a property of the mount the daemon publishes sandbox
+	// keys on, not of this plugin: MEASURED on production 2026-09-11, a
+	// systemd host takes the key route for a sandbox created after the
+	// plugin started, and this lane's nested daemon refuses it. Without
+	// these two numbers the cells below read as a claim about the
+	// engine when they are a claim about one mount (#417).
+	t.Logf("CELL-HOST mode=%s user=%q: sandbox_netns_propagation=%s, sandbox_netns_init_mounts=%s, sandbox_netns_visible=%s",
+		mode, user, gaugeString(after.SandboxNetnsPropagation),
+		gaugeString(after.SandboxNetnsInitMounts), gaugeString(after.SandboxNetnsVisible))
 
 	// The domain: exactly one route carried this attach. Without it,
 	// every assertion below is satisfied by a plugin that entered no
@@ -269,4 +280,16 @@ func TestSandboxKeyRoute_Ipvlan(t *testing.T) {
 // is the mechanism #317 was about.
 func TestSandboxKeyRoute_NonRootContainer(t *testing.T) {
 	sandboxKeyCell(t, "macvlan", "dh-itest-skey-nr", "dh-itest-skey-nr-ctr", "65534:65534")
+}
+
+// gaugeString renders a health gauge that may be absent. "absent" and
+// "-1" are different findings: the first is a plugin that does not
+// publish the field, the second is one that published "I could not
+// tell". Folding them would make an old plugin look like a measured
+// unknown.
+func gaugeString(v *int32) string {
+	if v == nil {
+		return "absent"
+	}
+	return strconv.Itoa(int(*v))
 }

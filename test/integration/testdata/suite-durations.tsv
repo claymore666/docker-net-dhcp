@@ -10,7 +10,7 @@
 #
 # POPULATION: TOP-LEVEL TEST FUNCTIONS, PARENTS ONLY.
 # One row per `func TestX(t *testing.T)` in test/integration/*_test.go —
-# 99 of them, the main suite's 94 and the failure suite's 5. A subtest's
+# 100 of them, the main suite's 95 and the failure suite's 5. A subtest's
 # seconds are inside its parent's figure and are NOT a row of their own.
 # That is stated because the previous edition's header did not state it
 # and the population was read back two ways: 104 rows summing 1804.88s
@@ -62,8 +62,18 @@
 #              The next refresh replaces it with a median of three, the
 #              way TestFailure_UnansweredRenewalsCounted's first figure
 #              was replaced.
-#   samples    3 for every corpus row; the three rows noted above are
-#              the exceptions, and one of those three is inferred rather
+#   one row    TestJoinDuration_DistributionInThisShard is 13.00, and it
+#              is INFERRED too: it arrives with #403 and no run has
+#              executed it. It creates one macvlan network and runs one
+#              container, then waits for the attach counter to move and
+#              parses the plugin log. That is the shape of the four
+#              TestSandboxKeyRoute_* rows (11.48 to 12.25), which create
+#              a network and run one container each, plus room for the
+#              counter wait and a log grown over a shard. The first run
+#              that executes it costs it, the way
+#              TestFailure_UnansweredRenewalsCounted was costed.
+#   samples    3 for every corpus row; the four rows noted above are
+#              the exceptions, and two of those four are inferred rather
 #              than measured. The previous edition carried four inferred
 #              rows and fourteen v6 rows recovered from the 1.9.0
 #              corpus; every one of those is now measured against the
@@ -188,6 +198,7 @@ TestInterfaceName_InvalidRejected	0.44
 TestInterfaceName_MultiNetworkDeterministic	12.08
 TestInterfaceName_PluginHonorsOption	12.50
 TestInterfaceName_ProbeSkipPrecedesTheEphemeralFixture	0.00
+TestJoinDuration_DistributionInThisShard	13.00
 TestJoinNoContainer_AddressIsHeldUntilItExpires	26.95
 TestLeaseRenewIPv6_HonorsT1	73.85
 TestLeaseRenew_HonorsT1	27.38

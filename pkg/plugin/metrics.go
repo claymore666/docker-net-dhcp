@@ -118,6 +118,8 @@ func metricDefs() []metricDef {
 		{name: "active_endpoints", help: "Endpoints with a live DHCP renewal client.", field: "active_endpoints"},
 		{name: "pending_hints", help: "CreateEndpoint hints waiting for their Join.", field: "pending_hints"},
 		{name: "sandbox_netns_visible", help: "Sandbox netns entries the plugin can see; -1 means the directory is unreadable and sandbox-liveness answers carry no evidence.", field: "sandbox_netns_visible"},
+		{name: "sandbox_netns_propagation", help: "Whether a mount the daemon makes under the sandbox netns directory after this process started can reach it: 1 linked, 0 private, -1 unreadable or uncovered. Answered before the directory exists, from the mount covering its parent. A 0 means every attach takes the container PID route.", field: "sandbox_netns_propagation"},
+		{name: "sandbox_netns_init_mounts", help: "Sandbox netns mounts in PID 1's mount table: -2 PID 1 shares this process's mount namespace, -1 unreadable, N otherwise. Read it against sandbox_netns_visible.", field: "sandbox_netns_init_mounts"},
 
 		// Lease lifecycle. These seven carry a family label.
 		{name: "leases_obtained", counter: true, help: "Leases obtained from the DHCP server.", field: "leases_obtained", v4field: "leases_obtained_v4", v6field: "leases_obtained_v6"},
@@ -162,6 +164,10 @@ func metricDefs() []metricDef {
 		{name: "join_aborted_no_container", counter: true, help: "Joins abandoned because no container was ever found for the endpoint. Not a fault.", field: "join_aborted_no_container"},
 		{name: "join_aborted_endpoint_left", counter: true, help: "Joins abandoned because a Leave arrived while the attach was in flight. Not a fault.", field: "join_aborted_endpoint_left"},
 		{name: "join_attach_slow", counter: true, help: "Attaches that outran their expected window and needed the daemon-busy grace.", field: "join_attach_slow"},
+		{name: "join_attach_completed", counter: true, help: "Successful attaches. The population the join_attach_* buckets partition.", field: "join_attach_completed"},
+		{name: "join_attach_under_1s", counter: true, help: "Successful attaches that finished in under a second.", field: "join_attach_under_1s"},
+		{name: "join_attach_1s_to_budget", counter: true, help: "Successful attaches that took a second or more but stayed inside AwaitTimeout.", field: "join_attach_1s_to_budget"},
+		{name: "join_attach_ms_max", help: "The longest successful attach, in milliseconds. Read it against AwaitTimeout.", field: "join_attach_ms_max"},
 		{name: "displaced_stops", counter: true, help: "DHCP managers stopped because a Join displaced them. Counts the intent to stop; it is not evidence the client went away.", field: "displaced_stops"},
 		{name: "restart_link_up_waited", counter: true, help: "Container restarts that had to wait for the interface to come back up.", field: "restart_link_up_waited"},
 		{name: "restart_link_up_timeouts", counter: true, warn: true, unit: "restarts", action: "A departing link held its address past the wait budget, so docker restart failed with \"address already in use\". Worth investigating: any non-zero value means a restart was refused.", help: "Container restarts where the interface never came up inside the wait.", field: "restart_link_up_timeouts"},

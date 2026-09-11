@@ -420,6 +420,26 @@ type HealthResponse struct {
 	// successes — but a rising count is the visible form of #406.
 	JoinAttachSlow int32 `json:"join_attach_slow"`
 
+	// JoinAttachCompleted counts successful attaches. It is the
+	// population the three buckets below partition, and without it a
+	// bucket of zero cannot be told from a lane that attached nothing.
+	JoinAttachCompleted int32 `json:"join_attach_completed"`
+	// JoinAttachUnder1s and JoinAttach1sToBudget are the body of the
+	// distribution JoinAttachSlow is the tail of. Under a second, then
+	// a second up to and including AwaitTimeout; above it is
+	// JoinAttachSlow, so the three sum to JoinAttachCompleted.
+	//
+	// They exist because the per-attach timing line is Debug and the
+	// shipped LOG_LEVEL is info: on a host nobody has reconfigured,
+	// these are the only per-attach durations there are (#403).
+	JoinAttachUnder1s    int32 `json:"join_attach_under_1s"`
+	JoinAttach1sToBudget int32 `json:"join_attach_1s_to_budget"`
+	// JoinAttachMsMax is the longest successful attach in
+	// milliseconds, saturating at MaxInt32. Not an average: #403 asks
+	// how close a loaded host comes to AwaitTimeout, and an average
+	// over a quiet host hides exactly the attach that answers it.
+	JoinAttachMsMax int32 `json:"join_attach_ms_max"`
+
 	// RestartLinkUpWaited counts child links brought up only after
 	// waiting out the departing link's hold on the address (#408). Not
 	// healthy-affecting: this is the fix working, and it is counted so
@@ -692,6 +712,45 @@ type HealthResponse struct {
 	// A plain zero with no endpoints attached is neither: there is
 	// genuinely nothing to see.
 	SandboxNetnsVisible int32 `json:"sandbox_netns_visible"`
+
+	// SandboxNetnsPropagation says whether a mount the daemon makes
+	// under the sandbox netns directory AFTER this process started can
+	// reach this process at all.
+	//
+	//    1  the mount carries a propagation link, so it can. An attach
+	//       can then enter the sandbox by its key.
+	//    0  the mount is private. Every attach is for a sandbox younger
+	//       than this process, so every attach is refused with
+	//       sandbox_key_not_a_namespace and carried by the container
+	//       PID, which is what pidhost and CAP_SYS_PTRACE are for.
+	//   -1  mountinfo is unreadable, or no mount covers any permitted
+	//       directory. The directory not existing yet is NOT this
+	//       reading: the daemon creates it inside the mount that
+	//       already covers its parent, so the answer is that mount's.
+	//
+	// It exists because the zero reading is the whole of SECURITY.md's
+	// causal sentence, and until now that sentence was an inference
+	// from a refusal count. A refusal count is equally consistent with
+	// a key shape this plugin declines, which wants the opposite
+	// remedy. See sandboxNetnsPropagationIn for the bound on the 1.
+	SandboxNetnsPropagation int32 `json:"sandbox_netns_propagation"`
+
+	// SandboxNetnsInitMounts is how many sandbox netns mounts exist in
+	// PID 1's mount table.
+	//
+	//   -2  PID 1 shares this process's mount namespace, so reaching
+	//       the sandbox key through /proc/1/root reaches the table
+	//       this process already has.
+	//   -1  PID 1's mount table could not be read.
+	//    0  a different mount namespace that carries none of them.
+	//    N  a different mount namespace that carries N. Read it
+	//       against sandbox_netns_visible.
+	//
+	// Under a nested engine PID 1 is that engine's init and not the
+	// outer host's, so this reads differently on the integration lane
+	// and on a systemd host, and a route judged on one of them alone
+	// is judged on the wrong number.
+	SandboxNetnsInitMounts int32 `json:"sandbox_netns_init_mounts"`
 
 	// DHCP-wire counters (T2-4). Naming intentionally drops the
 	// Prometheus `_total` suffix to stay consistent with the
@@ -1079,6 +1138,10 @@ func (p *Plugin) healthSnapshot() HealthResponse {
 		JoinAbortedContainerGone:     p.joinAbortedContainerGone.Load(),
 		JoinAbortedNoContainer:       p.joinAbortedNoContainer.Load(),
 		JoinAttachSlow:               p.joinAttachSlow.Load(),
+		JoinAttachCompleted:          p.joinAttachCompleted.Load(),
+		JoinAttachUnder1s:            p.joinAttachUnder1s.Load(),
+		JoinAttach1sToBudget:         p.joinAttach1sToBudget.Load(),
+		JoinAttachMsMax:              p.joinAttachMsMax.Load(),
 		RestartLinkUpWaited:          p.restartLinkUpWaited.Load(),
 		RestartLinkUpTimeouts:        p.restartLinkUpTimeouts.Load(),
 		JoinAbortedEndpointLeft:      p.joinAbortedEndpointLeft.Load(),
@@ -1112,6 +1175,8 @@ func (p *Plugin) healthSnapshot() HealthResponse {
 		ACDARPSendFailures:           p.acdARPSendFailures.Load(),
 		ACDResumedUnchecked:          p.acdResumedUnchecked.Load(),
 		SandboxNetnsVisible:          sandboxNetnsVisibleIn(sandboxNetnsDirs),
+		SandboxNetnsPropagation:      sandboxNetnsPropagationIn(sandboxNetnsDirs, selfMountinfo),
+		SandboxNetnsInitMounts:       sandboxNetnsInitMountsIn(sandboxNetnsDirs, selfMountNS, initMountNS, initMountinfo),
 		LeasesObtained:               leasesObtainedV4 + leasesObtainedV6,
 		LeasesRenewed:                leasesRenewedV4 + leasesRenewedV6,
 		RenewalsUnanswered:           renewalsUnansweredV4 + renewalsUnansweredV6,

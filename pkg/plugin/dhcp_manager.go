@@ -284,12 +284,19 @@ type dhcpManager struct {
 	startedCh chan struct{}
 	startErr  error
 
-	// startPhases / startTotal carry the per-phase timing of a FAILED
-	// Start so the caller can log it on the same line as the error.
+	// startPhases / startTotal carry the per-phase timing of Start.
 	// Written once in Start's deferred exit and read only after
 	// startedCh closes, which is the same happens-before startErr
-	// already relies on. Empty on success — timing a Join that worked
-	// belongs in a benchmark, not on an operator's log.
+	// already relies on.
+	//
+	// WRITTEN ON SUCCESS TOO SINCE #403. They used to be empty on a
+	// Start that worked, on the reasoning that timing a Join that
+	// worked belongs in a benchmark. #403 asks what the distribution of
+	// Join durations actually is on a loaded host, against a 10s
+	// budget, and a record that exists only for the Joins that missed
+	// the budget answers that question with the tail and calls it the
+	// distribution. The failure line is unchanged; the success line is
+	// at debug, where the per-attach key refusal already is.
 	startPhases string
 	startTotal  string
 
@@ -1647,18 +1654,16 @@ func (m *dhcpManager) Start(ctx context.Context) (err error) {
 	phases := newJoinPhases()
 	defer func() {
 		m.startErr = err
-		if err != nil {
-			// Recorded on the manager rather than logged from here.
-			// #411 put this on its own Debug line, and the line was
-			// invisible where it mattered: the health floor's evidence
-			// dump prints error and warning lines, so the run that
-			// failed showed six "context deadline exceeded" errors with
-			// no timing anywhere near them. A diagnostic that only
-			// appears somewhere else is not a diagnostic — the caller
-			// now folds these onto the failure line itself (#406).
-			m.startPhases = phases.summary()
-			m.startTotal = phases.total().Round(10 * time.Millisecond).String()
-		}
+		// Recorded on the manager rather than logged from here.
+		// #411 put this on its own Debug line, and the line was
+		// invisible where it mattered: the health floor's evidence
+		// dump prints error and warning lines, so the run that
+		// failed showed six "context deadline exceeded" errors with
+		// no timing anywhere near them. A diagnostic that only
+		// appears somewhere else is not a diagnostic — the caller
+		// now folds these onto the failure line itself (#406).
+		m.startPhases = phases.summary()
+		m.startTotal = phases.total().Round(10 * time.Millisecond).String()
 		close(m.startedCh)
 	}()
 	var ctrID string

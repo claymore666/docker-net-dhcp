@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"math"
 	"net"
 	"os"
 	"path/filepath"
@@ -1649,6 +1650,53 @@ func parseIfnameOption(options map[string]interface{}) (string, error) {
 // Caller must only invoke this for a successful attach. A failed one
 // has its own classification below, and counting it here would put a
 // fault in a counter documented as not healthy-affecting.
+// noteAttachDuration records one successful attach in the counters
+// that carry the distribution at the shipped log level.
+//
+// The timing line beside this call is Debug, and config.json ships
+// LOG_LEVEL=info. A host whose operator has not raised the level and
+// restarted the plugin therefore carries no per-attach duration at all
+// except join_attach_slow, which is the tail (#403). These four
+// readings answer at any level.
+//
+// The buckets are under a second, a second to the budget, and — in
+// joinAttachSlow, which noteSlowAttach owns — over it. Every successful
+// attach lands in exactly one, so the three counts sum to
+// joinAttachCompleted and a reader can tell a missing increment from a
+// quiet lane.
+//
+// THE TAIL IS TESTED FIRST, and that ordering is the partition. One
+// boundary is a literal second and the other is AwaitTimeout, which is
+// settable with no floor (durationEnv in cmd/net-dhcp, and NewPlugin
+// refuses only a non-positive value). With a budget below a second the
+// two orderings disagree: a 700ms attach against a 500ms budget is both
+// under a second and over the budget, and counting it in each made the
+// three sum to more than the population. Asking about the budget first
+// gives the tail the attach whatever the literal says, and leaves the
+// middle bucket empty by construction on such a host.
+func (p *Plugin) noteAttachDuration(elapsed time.Duration) {
+	p.joinAttachCompleted.Add(1)
+	switch {
+	case elapsed > p.awaitTimeout:
+		// noteSlowAttach counts it.
+	case elapsed < time.Second:
+		p.joinAttachUnder1s.Add(1)
+	default:
+		p.joinAttach1sToBudget.Add(1)
+	}
+
+	ms := elapsed.Milliseconds()
+	if ms > math.MaxInt32 {
+		ms = math.MaxInt32
+	}
+	for {
+		old := p.joinAttachMsMax.Load()
+		if int32(ms) <= old || p.joinAttachMsMax.CompareAndSwap(old, int32(ms)) {
+			return
+		}
+	}
+}
+
 func (p *Plugin) noteSlowAttach(r JoinRequest, elapsed time.Duration) bool {
 	// Strictly greater: an attach that finishes exactly on budget did
 	// not need the grace.
@@ -1839,7 +1887,23 @@ func (p *Plugin) Join(ctx context.Context, r JoinRequest) (JoinResponse, error) 
 		attachStart := time.Now()
 		err := m.Start(attachCtx)
 		if err == nil {
-			p.noteSlowAttach(r, time.Since(attachStart))
+			elapsed := time.Since(attachStart)
+			p.noteSlowAttach(r, elapsed)
+			p.noteAttachDuration(elapsed)
+			// The distribution #403 asks for. join_attach_slow counts
+			// only the attaches that outran the budget, so it is the
+			// tail and says nothing about where the body sits; a
+			// budget argued from the tail alone is the #401 mistake in
+			// the other direction. One line per successful attach,
+			// with the same phase names the failure line carries, so a
+			// run's p50 and p99 are a pass over the plugin log.
+			log.WithFields(log.Fields{
+				"network":     shortID(r.NetworkID),
+				"endpoint":    shortID(r.EndpointID),
+				"took":        elapsed.Round(time.Millisecond).String(),
+				"phases":      m.startPhases,
+				"phase_total": m.startTotal,
+			}).Debug("Attach completed")
 		}
 		if err != nil {
 			fields := log.Fields{
