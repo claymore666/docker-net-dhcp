@@ -253,7 +253,17 @@ type HealthResponse struct {
 	// judges against this one, not the sum (#881).
 	LeasesObtainedV4 int32 `json:"leases_obtained_v4"`
 	LeasesRenewed    int32 `json:"leases_renewed"`
-	DHCPTimeouts     int32 `json:"dhcp_timeouts"`
+	// RenewalsUnanswered counts renewal requests the server did not
+	// answer, one per request, WHILE THE CLIENT IS STILL RUNNING and
+	// the lease is still held (#940). It is not an early DHCPTimeouts:
+	// that one moves when a held lease runs out, hours later, and a
+	// single lost datagram moves this one and nothing else. The two
+	// halves are two protocols, as they are for every other family
+	// pair here, and the un-suffixed field is their sum.
+	RenewalsUnanswered   int32 `json:"renewals_unanswered"`
+	RenewalsUnansweredV4 int32 `json:"renewals_unanswered_v4"`
+	RenewalsUnansweredV6 int32 `json:"renewals_unanswered_v6"`
+	DHCPTimeouts         int32 `json:"dhcp_timeouts"`
 	// ClientStopFailures was lease_release_failures until #800. A
 	// renewal client that did not shut down cleanly when signalled — it
 	// says nothing about the lease, which is held to expiry either way

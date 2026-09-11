@@ -128,9 +128,14 @@ fi
 # alternation matches every test, and an empty regex emitted here would
 # be handed straight to it: the shard that was meant to run nothing runs
 # everything, or — with the anchors — nothing at all, and exits 0 either
-# way. Asked past the failure suite's four tests, where it is reachable.
-if bash "$SHARD" 5 5 failure >/dev/null 2>&1; then
-    no "shard 5 of 5 on a four-test suite was accepted — an empty partition emitted a regex"
+# way. Asked past the failure suite's own size, and that size is DERIVED
+# rather than written down: the literal "5 of 5" was an empty partition
+# only while that suite had four tests, and a fifth (#940) turned this
+# case into one that asks for a shard that is not empty and proves
+# nothing. A count that appears twice goes stale in one of them.
+EMPTY_SHARD=$((FAILURE_TESTS + 1))
+if bash "$SHARD" "$EMPTY_SHARD" "$EMPTY_SHARD" failure >/dev/null 2>&1; then
+    no "shard $EMPTY_SHARD of $EMPTY_SHARD on a $FAILURE_TESTS-test suite was accepted — an empty partition emitted a regex"
 else
     ok "a shard with no tests in it refuses instead of emitting an empty regex"
 fi
