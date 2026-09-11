@@ -7,12 +7,9 @@ package harness
 
 import (
 	"fmt"
-	"runtime"
 	"sync"
 	"time"
 
-	"github.com/vishvananda/netlink"
-	"github.com/vishvananda/netns"
 	"golang.org/x/sys/unix"
 )
 
@@ -75,7 +72,7 @@ type RACapture struct {
 // tautology, and those assertions are what the no-RA mode is.
 func StartRACapture(t V6FixtureT, iface string) *RACapture {
 	t.Helper()
-	fd, err := openRASocket(iface)
+	fd, err := openCaptureSocket(iface)
 	if err != nil {
 		t.Fatalf("RA capture on %s: %v\n"+
 			"  The integration lane runs privileged; if this is EPERM the suite is not root "+
@@ -88,78 +85,16 @@ func StartRACapture(t V6FixtureT, iface string) *RACapture {
 }
 
 // StartRACaptureInNetns begins capturing inside the named network
-// namespace. The namespace is entered on a LOCKED thread only for as
-// long as the socket takes to open and bind; an AF_PACKET socket
-// belongs to the namespace it was created in for the rest of its life,
-// so the read loop needs no namespace of its own.
-//
-// The thread is deliberately NOT unlocked on the error paths: a
-// goroutine that failed to restore its namespace must not be handed
-// back to the scheduler.
+// namespace. The namespace dance and the socket options are
+// capturesocket.go's, shared with every other instrument in this
+// package.
 func StartRACaptureInNetns(t V6FixtureT, nsName, iface string) *RACapture {
 	t.Helper()
-
-	runtime.LockOSThread()
-
-	origin, err := netns.Get()
-	if err != nil {
-		t.Fatalf("RA capture: read the current netns: %v", err)
-	}
-	defer func() { _ = origin.Close() }()
-
-	target, err := netns.GetFromName(nsName)
-	if err != nil {
-		t.Fatalf("RA capture: open netns %q: %v", nsName, err)
-	}
-	defer func() { _ = target.Close() }()
-
-	if err := netns.Set(target); err != nil {
-		t.Fatalf("RA capture: enter netns %q: %v", nsName, err)
-	}
-
-	fd, openErr := openRASocket(iface)
-
-	if err := netns.Set(origin); err != nil {
-		if openErr == nil {
-			_ = unix.Close(fd)
-		}
-		t.Fatalf("RA capture: could not return to the original netns: %v", err)
-	}
-	runtime.UnlockOSThread()
-
-	if openErr != nil {
-		t.Fatalf("RA capture in netns %q: %v", nsName, openErr)
-	}
-
+	fd := openCaptureSocketInNetns(t.Fatalf, "RA capture", nsName, iface)
 	c := &RACapture{t: t, iface: iface + " (netns " + nsName + ")", fd: fd}
 	go c.run()
 	t.Cleanup(c.Stop)
 	return c
-}
-
-// openRASocket is the socket half, factored out so the
-// namespace-switching caller runs exactly the same code and a fix to
-// one cannot miss the other.
-func openRASocket(iface string) (int, error) {
-	link, err := netlink.LinkByName(iface)
-	if err != nil {
-		return -1, fmt.Errorf("LinkByName %s: %w", iface, err)
-	}
-	proto := captureEthertypeBE()
-	fd, err := unix.Socket(unix.AF_PACKET, unix.SOCK_RAW|unix.SOCK_CLOEXEC, int(proto))
-	if err != nil {
-		return -1, fmt.Errorf("socket(AF_PACKET): %w", err)
-	}
-	if err := unix.Bind(fd, &unix.SockaddrLinklayer{Protocol: proto, Ifindex: link.Attrs().Index}); err != nil {
-		_ = unix.Close(fd)
-		return -1, fmt.Errorf("bind to %s: %w", iface, err)
-	}
-	tv := unix.Timeval{Usec: 200_000}
-	if err := unix.SetsockoptTimeval(fd, unix.SOL_SOCKET, unix.SO_RCVTIMEO, &tv); err != nil {
-		_ = unix.Close(fd)
-		return -1, fmt.Errorf("SO_RCVTIMEO: %w", err)
-	}
-	return fd, nil
 }
 
 func (c *RACapture) run() {

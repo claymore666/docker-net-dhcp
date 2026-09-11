@@ -599,18 +599,26 @@ jobs:
         #           OF=9   196.3s   <-
         #           OF=10  177.9s
         #           OF=12  146.8s
-        #   failure OF=1   272.3s   (what shipped before D41)
-        #           OF=2   154.6s   <-
-        #           OF=3   154.6s   (no better: one test is the floor)
+        #   failure OF=1   377.3s
+        #           OF=2   189.4s   <-
+        #           OF=3   154.6s   (the floor is one test)
         #
         # Nine and two. Nine is where the main suite's longest shard
         # first lands far enough under the budget that the fixed cost and
         # an ephemeral pool's job-to-job variance both fit inside it.
-        # Two is the failure suite's own floor and nothing past it helps:
-        # TestFailure_LeaseExpiry is 154.61s of a real 20s Kea lease
+        # Two is where the failure suite stops mattering: its longest
+        # shard is 189.4s and the main suite's is 196.3s, and the window
+        # is max() over every job, so a third failure shard would buy
+        # 35s of a number nothing waits on and cost a whole privileged
+        # runner slot. Its own floor is one test --
+        # TestFailure_LeaseExpiry at 154.61s of a real 20s Kea lease
         # lapsing and then the library's real REBOOTING/backoff, and
         # shortening either of those is the one thing this work is not
         # allowed to do.
+        #
+        # The failure suite's numbers moved with #940, which added a
+        # fifth test to it (105s: a held lease, a dead server, and RFC
+        # 2131's 60s retransmission floor). The count did not.
         #
         # WHAT ELEVEN JOBS COST. A whole privileged runner slot each,
         # ci-pool: pool-runners=16 -- and ci-pool: integration-pool-jobs=11

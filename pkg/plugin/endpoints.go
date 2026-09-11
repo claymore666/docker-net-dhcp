@@ -808,7 +808,7 @@ type HealthResponse struct {
 	// RenewalsUnansweredV4 is the IPv4 half of RenewalsUnanswered.
 	RenewalsUnansweredV4 int32 `json:"renewals_unanswered_v4"`
 	DHCPTimeoutsV4       int32 `json:"dhcp_timeouts_v4"`
-	NAKsReceivedV4   int32 `json:"naks_received_v4"`
+	NAKsReceivedV4       int32 `json:"naks_received_v4"`
 	// ClientStopFailuresV4 is the v4 half of ClientStopFailures.
 	ClientStopFailuresV4 int32 `json:"client_stop_failures_v4"`
 	// AddressConflictsV4 is the RFC 5227 half of AddressConflicts, and
@@ -837,7 +837,7 @@ type HealthResponse struct {
 	// answer. A v6-only silence is invisible in the sum.
 	RenewalsUnansweredV6 int32 `json:"renewals_unanswered_v6"`
 	DHCPTimeoutsV6       int32 `json:"dhcp_timeouts_v6"`
-	NAKsReceivedV6   int32 `json:"naks_received_v6"`
+	NAKsReceivedV6       int32 `json:"naks_received_v6"`
 	// AddressConflictsV6 is the DHCPv6 half of AddressConflicts: an
 	// address the kernel's Duplicate Address Detection (RFC 4862
 	// section 5.4) found on the link, declined to the server under RFC

@@ -244,3 +244,49 @@ func TestRenewalPoll_IsDerivedFromTheProtocolFloor(t *testing.T) {
 		t.Fatalf("a client with no override folds every %v, want %v", got, renewalPollInterval)
 	}
 }
+
+// TestTranslate_ALeaseEventFoldsTooKeeps the other fold site honest.
+//
+// The tick is what makes an outage observable while nothing else
+// happens; the event arm is what keeps the reading CURRENT when
+// something does. Without it the counter is up to one tick stale at
+// every moment a lease event is handled -- including the last one
+// before the client stops, whose value is what the deferred final
+// report hands over.
+//
+// Driven with the ticker effectively switched off, so the only thing
+// that can produce a report here is the event arm.
+func TestTranslate_ALeaseEventFoldsToo(t *testing.T) {
+	lib := &fakeLib{src: make(chan lease.Event)}
+
+	reports := make(chan RenewalStats, 8)
+	c := &DHCPClient{
+		iface:  "test0",
+		opts:   DHCPClientOptions{OnRenewalStats: func(s RenewalStats) { reports <- s }},
+		events: newEventChan(),
+		src:    lib.src,
+		runner: lib,
+		// Far longer than this test can run: a report arriving here is
+		// the event arm's or it is nothing.
+		pollEvery: time.Hour,
+	}
+	go c.translate()
+
+	// Two requests, the first of them therefore refused, and no tick
+	// will ever come.
+	lib.send(2)
+	lib.src <- lease.Event{}
+
+	select {
+	case s := <-reports:
+		if s.Unanswered != 1 {
+			t.Fatalf("the event arm reported %d unanswered request(s), want 1", s.Unanswered)
+		}
+	case <-time.After(wedgeBudget):
+		t.Fatalf("a lease event was handled and the counters were not folded within %v; every "+
+			"reading taken between two ticks is then up to one tick stale, including the last one "+
+			"before the client stops", wedgeBudget)
+	}
+
+	close(lib.src)
+}

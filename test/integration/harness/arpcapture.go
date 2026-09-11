@@ -9,13 +9,10 @@ import (
 	"encoding/binary"
 	"fmt"
 	"net"
-	"runtime"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/vishvananda/netlink"
-	"github.com/vishvananda/netns"
 	"golang.org/x/sys/unix"
 )
 
@@ -172,7 +169,7 @@ func startARPCapture(t *testing.T, nsName, iface string) *ARPCapture {
 		return startARPCaptureIn(t, nsName, iface)
 	}
 
-	fd, _, err := openARPSocket(iface)
+	fd, err := openCaptureSocket(iface)
 	if err != nil {
 		t.Fatalf("ARP capture: %v\n"+
 			"  The integration lane runs privileged; if this is EPERM the suite is not root "+
@@ -343,103 +340,19 @@ func (c *ARPCapture) Dump(log func(string)) {
 	}
 }
 
-// startARPCaptureIn opens and binds the socket inside nsName.
-//
-// runtime.LockOSThread is not optional here and the thread is
-// deliberately NOT unlocked on the error paths: a goroutine that failed
-// to restore its namespace must not be handed back to the scheduler,
-// and letting the locked thread die with the goroutine is the only way
-// to guarantee that. On the success path the original namespace is
-// restored and the lock released, in that order.
+// startARPCaptureIn opens the socket inside nsName and starts the
+// read loop. The namespace dance and the socket options are
+// capturesocket.go's, shared with every other instrument in this
+// package.
 func startARPCaptureIn(t *testing.T, nsName, iface string) *ARPCapture {
 	t.Helper()
 
-	runtime.LockOSThread()
+	fd := openCaptureSocketInNetns(t.Fatalf, "ARP capture", nsName, iface)
 
-	origin, err := netns.Get()
-	if err != nil {
-		t.Fatalf("ARP capture: read the current netns: %v", err)
-	}
-	defer func() { _ = origin.Close() }()
-
-	target, err := netns.GetFromName(nsName)
-	if err != nil {
-		t.Fatalf("ARP capture: open netns %q: %v\n"+
-			"  Without it the capture would run in the host namespace, where a macvlan child's\n"+
-			"  transmits are invisible and every absence assertion is vacuous.", nsName, err)
-	}
-	defer func() { _ = target.Close() }()
-
-	if err := netns.Set(target); err != nil {
-		t.Fatalf("ARP capture: enter netns %q: %v", nsName, err)
-	}
-
-	fd, ifname, openErr := openARPSocket(iface)
-
-	if err := netns.Set(origin); err != nil {
-		// The thread stays locked and is never returned to the pool.
-		if openErr == nil {
-			_ = unix.Close(fd)
-		}
-		t.Fatalf("ARP capture: could not return to the original netns: %v", err)
-	}
-	runtime.UnlockOSThread()
-
-	if openErr != nil {
-		t.Fatalf("ARP capture in netns %q: %v", nsName, openErr)
-	}
-
-	c := &ARPCapture{t: t, iface: ifname + " (netns " + nsName + ")", fd: fd}
+	c := &ARPCapture{t: t, iface: iface + " (netns " + nsName + ")", fd: fd}
 	go c.run()
 	t.Cleanup(c.Stop)
 	return c
-}
-
-// openARPSocket is the socket half of StartARPCapture, factored out so
-// the namespace-switching caller runs exactly the same code and a fix
-// to one cannot miss the other.
-func openARPSocket(iface string) (int, string, error) {
-	link, err := netlink.LinkByName(iface)
-	if err != nil {
-		return -1, iface, fmt.Errorf("LinkByName %s: %w", iface, err)
-	}
-	proto := captureEthertypeBE()
-	fd, err := unix.Socket(unix.AF_PACKET, unix.SOCK_RAW|unix.SOCK_CLOEXEC, int(proto))
-	if err != nil {
-		return -1, iface, fmt.Errorf("socket(AF_PACKET): %w", err)
-	}
-	if err := unix.Bind(fd, &unix.SockaddrLinklayer{Protocol: proto, Ifindex: link.Attrs().Index}); err != nil {
-		_ = unix.Close(fd)
-		return -1, iface, fmt.Errorf("bind to %s: %w", iface, err)
-	}
-	tv := unix.Timeval{Usec: 200_000}
-	if err := unix.SetsockoptTimeval(fd, unix.SOL_SOCKET, unix.SO_RCVTIMEO, &tv); err != nil {
-		_ = unix.Close(fd)
-		return -1, iface, fmt.Errorf("SO_RCVTIMEO: %w", err)
-	}
-	return fd, iface, nil
-}
-
-// captureEthertypeBE is htons(ETH_P_ALL), and it is not ETH_P_ARP for a
-// reason worth the extra frames.
-//
-// A packet socket bound to a SPECIFIC protocol is fed from
-// `ptype_base`, which the receive path consults; the TRANSMIT path
-// (`dev_queue_xmit_nit`) delivers only to `ptype_all`. So an ETH_P_ARP
-// socket sees what arrives on the link and nothing the host sends out
-// of it. MEASURED on the 2.x lane 2026-09-04: the squatter's ARP
-// Request was missing from the capture while the reply to it was
-// present -- which would have made the positive control in the
-// conflict_check=off case unsatisfiable, and every absence beneath it
-// unreadable.
-//
-// The cost is that parseARP now has to reject non-ARP frames itself.
-// On a fixture link carrying one DHCP exchange and a ping that is a
-// handful of packets, and the alternative is an instrument that cannot
-// see half the wire.
-func captureEthertypeBE() uint16 {
-	const ethPALL = 0x0003
-	return uint16(ethPALL&0xff)<<8 | uint16(ethPALL>>8)
 }
 
 // StartARPCapture on the fixture is what a test should call: it puts
