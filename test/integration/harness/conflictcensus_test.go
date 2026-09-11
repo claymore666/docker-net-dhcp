@@ -318,6 +318,43 @@ func TestACDCensusFindings(t *testing.T) {
 			want:        []string{"address_conflicts"},
 		},
 		{
+			// The recovered population, MEASURED as run 34600486961's
+			// main-3: a shard whose last test recycled the plugin, so
+			// the only v4 lease on the new process belongs to an
+			// endpoint it RECOVERED. That endpoint has no CreateEndpoint
+			// one-shot to probe for it and its Join client probes
+			// asynchronously, racing the shard's teardown, so a zero
+			// here is not the check having stopped.
+			name: "a lease taken by a recovered endpoint does not demand a probe",
+			h:    &HealthResponse{ACDProbesSent: 0, LeasesObtained: 1, LeasesObtainedV4: 1, RecoveredOK: 1},
+		},
+		{
+			// THE PRESERVATION CONTROL for that subtraction. A shard
+			// that recovered one endpoint and leased two addresses has
+			// one lease left that a one-shot was supposed to probe for,
+			// and a zero there is still the gate's own case.
+			name: "one lease more than the recovered count is still fatal",
+			h:    &HealthResponse{ACDProbesSent: 0, LeasesObtained: 2, LeasesObtainedV4: 2, RecoveredOK: 1},
+			want: []string{"acd_probes_sent"},
+		},
+		{
+			// The subtraction is per PROCESS, like every other operand
+			// here: a recovery that happened before this process started
+			// cannot excuse a lease taken after it.
+			name:     "a recovery from before the baseline excuses nothing",
+			h:        &HealthResponse{ACDProbesSent: 0, LeasesObtained: 4, LeasesObtainedV4: 4, RecoveredOK: 3},
+			baseline: &HealthResponse{ACDProbesSent: 0, LeasesObtained: 3, LeasesObtainedV4: 3, RecoveredOK: 3},
+			want:     []string{"acd_probes_sent"},
+		},
+		{
+			// And the two subtractions compose: an off-mode lease and a
+			// recovered one, declared and counted respectively, leave an
+			// empty domain and nothing to say.
+			name:        "an off-mode lease and a recovered one together empty the domain",
+			h:           &HealthResponse{ACDProbesSent: 0, LeasesObtained: 2, LeasesObtainedV4: 2, RecoveredOK: 1},
+			allowedUnpr: 1,
+		},
+		{
 			// And the counter agreeing with the log is clean whether or
 			// not anything was declared — a declaration is a licence to
 			// under-report, never a requirement to.

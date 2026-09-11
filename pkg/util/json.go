@@ -6,7 +6,9 @@ package util
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 
 	log "github.com/sirupsen/logrus"
@@ -84,8 +86,40 @@ func ParseJSONOrErrorResponse(v interface{}, w http.ResponseWriter, r *http.Requ
 	d := json.NewDecoder(r.Body)
 	d.DisallowUnknownFields()
 	if err := d.Decode(v); err != nil {
-		JSONErrResponse(w, fmt.Errorf("failed to parse request body: %w", err), http.StatusBadRequest)
+		JSONErrResponse(w, explainRequestBody(err), http.StatusBadRequest)
 		return err
 	}
 	return nil
+}
+
+// explainRequestBody names the one thing an EMPTY body means on this
+// socket.
+//
+// The daemon encodes a plugin call into a bytes.Buffer and hands the
+// SAME reader to every attempt of that call (moby pkg/plugins/client.go,
+// callWithRetry). The first attempt drains it, so when the client's
+// timeout fires and the client re-sends, the re-send carries no body at
+// all. io.EOF from the decoder is therefore never a malformed request
+// here: it is a call this plugin took longer to answer than the daemon
+// was willing to wait for, and the operator's lever is the timeout the
+// plugin was enabled with.
+//
+// MEASURED, integration run 34600486961, failure-1: a reservation held
+// past a 5s client timeout came back to the operator as
+// `IpamDriver.RequestAddress: failed to parse request body: EOF`, which
+// names neither the timeout nor the retry and reads like a protocol
+// defect in the plugin.
+//
+// A body that started and stopped (io.ErrUnexpectedEOF) is a different
+// thing -- a connection that broke mid-write -- and keeps the generic
+// text.
+func explainRequestBody(err error) error {
+	if errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
+		return fmt.Errorf("this request arrived with no body. On the plugin socket that means "+
+			"the daemon re-sent a call whose body it had already spent: the first attempt was "+
+			"still running when the plugin call timeout expired (set with `--timeout` when the "+
+			"plugin is enabled, 30s by default), and a re-sent call carries nothing to serve. "+
+			"The work the first call started is unaffected and this one cannot be answered: %w", err)
+	}
+	return fmt.Errorf("failed to parse request body: %w", err)
 }

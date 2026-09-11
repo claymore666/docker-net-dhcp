@@ -445,6 +445,59 @@ func TestIPAM_StaticIPIsHonouredWithASubnet(t *testing.T) {
 	cli := ipamDockerClient(t)
 	harness.CreateNetworkIPAM(t, ctx, netName, "macvlan", harness.SubnetCIDR, nil, nil)
 
+	// The other side of the same pin, and the one nothing else can
+	// reach: the address is asked for by a container the reservation is
+	// NOT for, so dnsmasq -- which takes a --dhcp-host address out of
+	// the dynamic pool entirely -- hands out something else. libnetwork
+	// adopts whatever the driver returns without comparing it to the
+	// address it preferred, so an unchecked ACK publishes an address the
+	// operator never asked for and exits 0. The invariant is written as
+	// the invariant: what Docker publishes is the address that was
+	// demanded, or the run fails.
+	//
+	// IT RUNS BEFORE THE PINNED CONTAINER, and that ordering is the
+	// whole test. With the pinned container already up, its live record
+	// holds .95 and the dispatch refuses this request before any
+	// exchange starts -- a correct refusal, and the "never substituted"
+	// branch, but it reaches none of the reserve's post-ACK decisions.
+	// Nothing holds the address here, so the reserve runs, the server
+	// answers with an address that is not the one asked for, and
+	// ipamACKIsTheOneAsked is what stands between that and a silent
+	// override.
+	t.Run("an --ip the server will not grant is refused, never substituted", func(t *testing.T) {
+		const otherName = "dh-itest-ipam-static-other"
+		other, err := cli.ContainerCreate(ctx,
+			&container.Config{
+				Image:    harness.TestImage,
+				Cmd:      []string{"sleep", "infinity"},
+				Hostname: otherName,
+			},
+			harness.HostConfig(),
+			&network.NetworkingConfig{EndpointsConfig: map[string]*network.EndpointSettings{
+				netName: {IPAMConfig: &network.EndpointIPAMConfig{IPv4Address: harness.StaticTestIP}},
+			}},
+			nil, otherName)
+		if err != nil {
+			t.Fatalf("ContainerCreate: %v", err)
+		}
+		t.Cleanup(func() {
+			bg := context.Background()
+			_ = cli.ContainerStop(bg, other.ID, container.StopOptions{})
+			_ = cli.ContainerRemove(bg, other.ID, container.RemoveOptions{Force: true})
+		})
+		if err := cli.ContainerStart(ctx, other.ID, container.StartOptions{}); err != nil {
+			t.Logf("refused, which is the expected branch: %v", err)
+			return
+		}
+		got, _ := ipamNetworkAddress(t, ctx, cli, other.ID, netName)
+		if got != harness.StaticTestIP {
+			t.Fatalf("this container asked for %s and Docker published %s. The address the "+
+				"operator pinned is not the one the container has, `docker run` exited 0, "+
+				"and nothing anywhere reports the substitution.", harness.StaticTestIP, got)
+		}
+		t.Logf("the server granted %s to this container as well; the demand was met", got)
+	})
+
 	create, err := cli.ContainerCreate(ctx,
 		&container.Config{
 			Image:    harness.TestImage,
@@ -487,74 +540,58 @@ func TestIPAM_StaticIPIsHonouredWithASubnet(t *testing.T) {
 			"segment another.\nACKs for it: %v", harness.StaticTestIP, mac, acks)
 	}
 
-	// The other side of the same pin, and the one nothing else can
-	// reach: the address is asked for by a container the reservation is
-	// NOT for, so the server hands out something else (or nothing).
-	// libnetwork adopts whatever the driver returns without comparing
-	// it to the address it preferred, so an unchecked ACK publishes an
-	// address the operator never asked for and exits 0. The invariant
-	// is written as the invariant: what Docker publishes is the address
-	// that was demanded, or the run fails. It is asserted after the
-	// first container is up and still holding the reservation.
-	t.Run("an --ip the server will not grant is refused, never substituted", func(t *testing.T) {
-		const otherName = "dh-itest-ipam-static-other"
-		other, err := cli.ContainerCreate(ctx,
-			&container.Config{
-				Image:    harness.TestImage,
-				Cmd:      []string{"sleep", "infinity"},
-				Hostname: otherName,
-			},
-			harness.HostConfig(),
-			&network.NetworkingConfig{EndpointsConfig: map[string]*network.EndpointSettings{
-				netName: {IPAMConfig: &network.EndpointIPAMConfig{IPv4Address: harness.StaticTestIP}},
-			}},
-			nil, otherName)
-		if err != nil {
-			t.Fatalf("ContainerCreate: %v", err)
-		}
-		t.Cleanup(func() {
-			bg := context.Background()
-			_ = cli.ContainerStop(bg, other.ID, container.StopOptions{})
-			_ = cli.ContainerRemove(bg, other.ID, container.RemoveOptions{Force: true})
-		})
-		if err := cli.ContainerStart(ctx, other.ID, container.StartOptions{}); err != nil {
-			t.Logf("refused, which is the expected branch: %v", err)
-			return
-		}
-		got, _ := ipamNetworkAddress(t, ctx, cli, other.ID, netName)
-		if got != harness.StaticTestIP {
-			t.Fatalf("this container asked for %s and Docker published %s. The address the "+
-				"operator pinned is not the one the container has, `docker run` exited 0, "+
-				"and nothing anywhere reports the substitution.", harness.StaticTestIP, got)
-		}
-		t.Logf("the server granted %s to this container as well; the demand was met", got)
-	})
 }
 
-// TestIPAM_StaticIPWithoutASubnetIsRefused is the other half of row 4.
+// TestIPAM_StaticIPWithoutASubnetIsStillTheAddressAsked is the other
+// half of row 4, and it asserts the opposite of what that row predicted.
 //
-// `--ip` is only meaningful against a typed pool, and the daemon itself
-// refuses it on a network with none. The assertion belongs here anyway:
-// this is the error a user of the new shape will hit, and the remedy
-// (`--subnet`) is a property of how this driver answers RequestPool.
-func TestIPAM_StaticIPWithoutASubnetIsRefused(t *testing.T) {
+// The row said the daemon refuses `--ip` on a network created without
+// `--subnet`, citing its own validation. It does not, for a driver that
+// answers the any-pool: the check the daemon runs is whether some
+// subnet on the network contains the address, and 0.0.0.0/0 contains
+// every address. MEASURED on CI engine 29.8.0 in integration run
+// 34600486961: the container started, the fixture logged
+// `DHCPDISCOVER ... 192.168.99.71` and `DHCPACK ... 192.168.99.71`, and
+// Docker published .71. So `--ip` reaches RequestAddress here exactly
+// as it does with `--subnet`.
+//
+// That leaves the invariant, which is the one that matters and is the
+// same on both shapes: the address the operator pinned is the address
+// the container gets, or the run fails. A substitution is the failure
+// -- libnetwork adopts whatever the driver returns without comparing it
+// to the preferred address -- and it is what ipamACKIsTheOneAsked
+// refuses. The subnet rule (D50) has nothing to say on the any-pool, so
+// this is the only thing standing between `--ip` and a silent override
+// on a network with no subnet.
+func TestIPAM_StaticIPWithoutASubnetIsStillTheAddressAsked(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 	ipamDumpOnFailure(t)
 
 	const netName = "dh-itest-ipam-nosubnet-ip"
+	const ctrName = "dh-itest-ipam-nosubnet-ip-ctr"
+	// In the fixture's range and pinned to nobody, so the server is
+	// free to grant it and the run is expected to succeed.
+	const wantIP = "192.168.99.71"
 
 	cli := ipamDockerClient(t)
 	harness.CreateNetworkIPAM(t, ctx, netName, "macvlan", "", nil, nil)
 
-	err := ipamRunContainerErr(t, ctx, cli, netName, "dh-itest-ipam-nosubnet-ip-ctr",
-		&network.EndpointSettings{IPAMConfig: &network.EndpointIPAMConfig{IPv4Address: "192.168.99.71"}})
-	if err == nil {
-		t.Fatal("a container took `--ip` on a network created without `--subnet`. Nothing " +
-			"then constrains the address the server may hand back, and Docker's store would " +
-			"be reporting an address that was asked for and not granted.")
+	err := ipamRunContainerErr(t, ctx, cli, netName, ctrName,
+		&network.EndpointSettings{IPAMConfig: &network.EndpointIPAMConfig{IPv4Address: wantIP}})
+	if err != nil {
+		// A refusal is a legitimate outcome -- the server may have that
+		// address out to someone else -- and it is not a substitution.
+		t.Logf("refused rather than substituted, which is the other legal branch: %v", err)
+		return
 	}
-	t.Logf("refused, as it must be: %v", err)
+	got, _ := ipamNetworkAddress(t, ctx, cli, ctrName, netName)
+	if got != wantIP {
+		t.Fatalf("the container asked for %s and Docker published %s. `docker run` exited 0 "+
+			"with an address nobody asked for, and nothing anywhere reports the "+
+			"substitution.", wantIP, got)
+	}
+	t.Logf("the address asked for is the address published: %s", got)
 }
 
 // TestIPAM_AnAddressOutsideTheSubnetIsRefused is D50.
@@ -821,20 +858,46 @@ func TestIPAM_TwoNetworksCannotShareOnePool(t *testing.T) {
 
 // TestIPAM_ReplayAfterDaemonRestart is design row 6.
 //
-// At every daemon start libnetwork replays RequestPool and one
-// RequestAddress per STORED endpoint, from inside libnetwork.New --
-// before the daemon's own API is listening. Two things have to hold
-// there and nowhere else: the PoolID must be the same function of the
-// replayed request as of the create's, or nothing resolves; and the
-// handlers must not ask Docker anything, because there is nobody to
-// ask.
+// At every daemon start libnetwork replays RequestPool for each stored
+// network, and RequestAddress for each stored endpoint, from inside
+// libnetwork.New -- before the daemon's own API is listening. Two
+// things have to hold there and nowhere else: the PoolID must be the
+// same function of the replayed request as of the create's, or nothing
+// resolves; and the handlers must not ask Docker anything, because
+// there is nobody to ask.
 //
-// The evidence is the address in Docker's store after the restart and
-// the replay count on the plugin that came up with the daemon. The
-// counter is read as an ABSOLUTE here, not as a delta: the plugin
-// process is new, so what it has counted since it started IS what the
-// replay did. That is also why this test takes the one reading
-// WaitPluginHealth exists for rather than a window.
+// WHAT THIS TEST DEMANDED AND WHY IT NO LONGER DOES.
+// The first edition demanded ipam_replay_hits >= 1, reasoning that this
+// test's own endpoint would be among the replayed ones. That is not the
+// daemon restart this lane performs. harness.RestartDockerDaemon takes
+// its containerized branch on CI and shuts the daemon down GRACEFULLY,
+// a graceful shutdown drives Leave, and -- as
+// TestRecovery_DaemonRestart_PreservesContainer has recorded since #386
+// -- the container then comes back through a fresh CreateEndpoint
+// rather than through a restored endpoint. A deleted endpoint is not
+// replayed, so hits stays 0 and the address is preserved by the network
+// driver's tombstone instead. Demanding the hit demands the ungraceful
+// restart, which is #480 and not this fixture.
+//
+// The demand here is the #386 shape instead: the address survives, and
+// it survived by a path this test MODELS -- a replay hit or a tombstone
+// -- because "preserved by a mechanism nobody named" reads exactly like
+// success and is how a regression hides. A replay MISS is refused in
+// either case: a miss is an endpoint libnetwork re-allocates an address
+// for.
+//
+// The pool half of the replay gets its own evidence, and it is the half
+// this driver owns: a container created AFTER the restart, on a network
+// created BEFORE it, has to get an address. Its CreateEndpoint resolves
+// the PoolID libnetwork replayed at startup, so an address means the
+// replayed pool and the created pool are the same id. If they were not,
+// the daemon would have no pool to allocate from and the run would fail
+// -- and nothing else in this suite would say so, since every other
+// test creates its network inside its own run.
+//
+// The counters are read as ABSOLUTES, not deltas: the plugin process is
+// replaced with the daemon, so what it has counted since it started IS
+// what the restart did.
 func TestIPAM_ReplayAfterDaemonRestart(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
 	defer cancel()
@@ -842,41 +905,131 @@ func TestIPAM_ReplayAfterDaemonRestart(t *testing.T) {
 
 	const netName = "dh-itest-ipam-replay"
 	const ctrName = "dh-itest-ipam-replay-ctr"
+	const afterName = "dh-itest-ipam-replay-after"
 
 	cli := ipamDockerClient(t)
 	harness.CreateNetworkIPAM(t, ctx, netName, "macvlan", harness.SubnetCIDR, nil, nil)
-	id, before, _ := harness.RunContainer(t, ctx, netName, ctrName)
+
+	// RestartPolicy=always, because the property under test is about an
+	// endpoint that still exists after the restart. Without it the
+	// daemon comes back with the container stopped, Docker publishes no
+	// address for a stopped container, and the comparison below
+	// measures the restart policy rather than the replay. MEASURED:
+	// that is what the first edition did, and it failed on "no address
+	// within the budget" having never reached a replay assertion.
+	//
+	// RunContainer does not take a HostConfig; the create is inlined
+	// the way TestRecovery_DaemonRestart_PreservesContainer inlines it,
+	// and for the same reason.
+	hostCfg := harness.HostConfig()
+	hostCfg.RestartPolicy = container.RestartPolicy{Name: container.RestartPolicyAlways}
+	create, err := cli.ContainerCreate(ctx,
+		&container.Config{Image: harness.TestImage, Cmd: []string{"sleep", "infinity"}, Hostname: ctrName},
+		hostCfg,
+		&network.NetworkingConfig{EndpointsConfig: map[string]*network.EndpointSettings{netName: {}}},
+		nil, ctrName)
+	if err != nil {
+		t.Fatalf("ContainerCreate: %v", err)
+	}
+	id := create.ID
+	t.Cleanup(func() {
+		bg, bgCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer bgCancel()
+		// A fresh client: the one above may already have been closed by
+		// the cleanup chain, and the restart policy has to come off
+		// before the stop or the container comes straight back.
+		bgCli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+		if err != nil {
+			return
+		}
+		defer bgCli.Close()
+		_, _ = bgCli.ContainerUpdate(bg, id, container.UpdateConfig{
+			RestartPolicy: container.RestartPolicy{Name: container.RestartPolicyDisabled},
+		})
+		_ = bgCli.ContainerStop(bg, id, container.StopOptions{})
+		_ = bgCli.ContainerRemove(bg, id, container.RemoveOptions{Force: true})
+	})
+	if err := cli.ContainerStart(ctx, id, container.StartOptions{}); err != nil {
+		t.Fatalf("ContainerStart: %v", err)
+	}
+
+	before, _ := ipamNetworkAddress(t, ctx, cli, id, netName)
 	t.Logf("before the restart: %s", before)
 
+	// The address above appears at CreateEndpoint, before Join has
+	// started the persistent client. Pulling the daemon down inside
+	// that window is a different test; wait for the bind first, the way
+	// TestRecovery_DaemonRestart_PreservesContainer does, and close the
+	// window while the plugin it measured is still the running one.
+	bindW := harness.BeginCounterWindow(t, ctx, cli, "leases_obtained")
+	waitLeaseObtained(t, bindW, 30*time.Second)
+	bindW.End()
+
 	harness.RestartDockerDaemon(t, ctx)
+
+	// Every connection the old daemon held is dead, this test's
+	// included.
+	_ = cli.Close()
+	cli2, err := waitDaemonReady(ctx, 60*time.Second)
+	if err != nil {
+		t.Fatalf("daemon did not return: %v", err)
+	}
+	t.Cleanup(func() { _ = cli2.Close() })
+	if err := waitContainerRunning(ctx, cli2, id, 60*time.Second); err != nil {
+		t.Fatalf("container not running after daemon restart: %v", err)
+	}
 
 	// The daemon is coming back; so is the plugin it starts. Readiness
 	// only -- this makes no claim about a delta, and there is none to
 	// make across a process that was replaced.
-	health := harness.WaitPluginHealth(t, ctx, cli, 90*time.Second)
+	health := harness.WaitPluginHealth(t, ctx, cli2, 90*time.Second)
+	t.Logf("replay: hits=%d miss=%d tombstones_consumed=%d",
+		health.IPAMReplayHits, health.IPAMReplayMiss, health.TombstonesConsumed)
 
-	after, _ := ipamNetworkAddress(t, ctx, cli, id, netName)
+	after, _ := ipamNetworkAddress(t, ctx, cli2, id, netName)
 	if after != before {
 		t.Errorf("the container is at %s after the daemon restart; it was at %s.\n"+
-			"The endpoint was replayed from the daemon's store, so an address that moved "+
-			"means the replay did not resolve to the record that holds it.", after, before)
-	}
-	if health.IPAMReplayHits < 1 {
-		t.Errorf("ipam_replay_hits is %d on the plugin that came up with the daemon.\n"+
-			"At least this test's own endpoint was replayed, so a zero means the replayed "+
-			"RequestAddress did not find the record that holds its address -- which is the "+
-			"failure that looks like nothing until the address changes.", health.IPAMReplayHits)
+			"Whether the endpoint was replayed or rebuilt, the address is this plugin's to "+
+			"keep: one that moved means neither the replayed record nor the tombstone "+
+			"resolved to the lease that holds it.", after, before)
 	}
 	if health.IPAMReplayMiss > 0 {
 		t.Errorf("ipam_replay_miss is %d after a restart in which every endpoint's record was "+
 			"on disk. A miss here is an endpoint libnetwork will re-allocate an address for.",
 			health.IPAMReplayMiss)
 	}
-	t.Logf("replay: hits=%d miss=%d", health.IPAMReplayHits, health.IPAMReplayMiss)
+	switch {
+	case health.IPAMReplayHits >= 1 && health.TombstonesConsumed >= 1:
+		t.Logf("both paths ran (hits=%d, tombstones_consumed=%d)",
+			health.IPAMReplayHits, health.TombstonesConsumed)
+	case health.IPAMReplayHits >= 1:
+		t.Log("the address was confirmed by the replayed RequestAddress finding its record")
+	case health.TombstonesConsumed >= 1:
+		t.Log("the endpoint was rebuilt and the tombstone handed back the same address")
+	default:
+		t.Error("the address above survived the restart by neither modelled path: " +
+			"ipam_replay_hits=0 and tombstones_consumed=0. Either it did not really survive " +
+			"(the comparison above says), or it survived by a mechanism this test does not " +
+			"model -- and an unmodelled mechanism is not something to pass on (#386).")
+	}
 
 	// The container is not merely recorded, it works.
 	out := harness.ExecOutput(t, ctx, id, "ip", "-4", "addr", "show", "eth0")
 	if !strings.Contains(out, after) {
 		t.Errorf("eth0 inside the container does not carry %s after the restart\n%s", after, out)
 	}
+
+	// The pool half: a NEW endpoint on the network that existed before
+	// the restart. Its allocation goes through the PoolID libnetwork
+	// replayed at startup, so an address here is that id resolving.
+	if err := ipamRunContainerErr(t, ctx, cli2, netName, afterName, nil); err != nil {
+		t.Fatalf("a container created after the daemon restart could not start on the "+
+			"pre-existing network: %v\nThe pool libnetwork replayed at startup does not "+
+			"answer to the id this driver derives, so the network survives the restart "+
+			"unusable -- visible to an operator only the next time they start something.", err)
+	}
+	// ContainerInspect takes a name as readily as an id, and the id of
+	// this one is inside the helper that created it.
+	newAddr, _ := ipamNetworkAddress(t, ctx, cli2, afterName, netName)
+	t.Logf("a container created after the restart came up at %s", newAddr)
 }

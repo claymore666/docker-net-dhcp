@@ -194,7 +194,7 @@ TestExtraOptions_NTPAndTFTPLogged	12.12
 TestExtraOptions_SearchListInResolvConf	12.42
 TestExtraOptions_WPADAndTimezoneLogged	11.98
 TestFQDN_RegistersInDNS	11.60
-TestFailure_IPAMResentRequestJoinsTheReserve	60.00
+TestFailure_IPAMResentRequestIsRefusedNotServedTwice	60.00
 TestFailure_IPAMServerDownFailsInsideTheBudget	75.00
 TestFailure_LeaseExpiry	154.61
 TestFailure_LeaseRefusedOnRenewal	29.64
@@ -215,7 +215,7 @@ TestIPAM_ReplayAfterDaemonRestart	45.00
 TestIPAM_RestartedTogetherIsTheDocumentedLimit	38.00
 TestIPAM_SingleRestartKeepsTheAddress	22.00
 TestIPAM_StaticIPIsHonouredWithASubnet	24.00
-TestIPAM_StaticIPWithoutASubnetIsRefused	7.00
+TestIPAM_StaticIPWithoutASubnetIsStillTheAddressAsked	7.00
 TestIPAM_TwoNetworksCannotShareOnePool	40.00
 TestIPv6_AcceptedAtCreate	0.02
 TestIPv6_DNS6Propagation	34.17

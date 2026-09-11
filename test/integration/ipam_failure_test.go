@@ -107,8 +107,18 @@ func TestFailure_IPAMServerDownFailsInsideTheBudget(t *testing.T) {
 	// for its own reasons would tell us nothing about the reserve.
 	harness.CreateNetworkIPAM(t, ctx, "dh-itest-ipam-down", "macvlan", "",
 		nil, map[string]string{"parent": harness.EphemeralHostVeth})
+	// `--ipam-opt parent=` on the second one, and not for decoration:
+	// two subnet-less IPAM networks derive the same PoolID, and the
+	// driver refuses the second create with exactly the remedy this
+	// line is (design row 6). Without it this test's own setup was the
+	// thing that tripped the rule -- MEASURED in integration run
+	// 34600486961, failure-2: `network 0c0f76ccc6e5 already holds pool
+	// 0.0.0.0/0`. The option goes into the pool identity and nowhere
+	// else; the interface the reservation runs on is still the driver
+	// option below.
 	harness.CreateNetworkIPAM(t, ctx, "dh-itest-ipam-down-long", "macvlan", "",
-		nil, map[string]string{"parent": harness.EphemeralHostVeth, "lease_timeout": "40s"})
+		map[string]string{"parent": harness.EphemeralHostVeth},
+		map[string]string{"parent": harness.EphemeralHostVeth, "lease_timeout": "40s"})
 
 	capMark := harness.MarkPluginLog(t, ctx)
 	ef.Stop()
@@ -160,26 +170,45 @@ func TestFailure_IPAMServerDownFailsInsideTheBudget(t *testing.T) {
 	}
 }
 
-// TestFailure_IPAMResentRequestJoinsTheReserve is design row 11, from
-// defeat row 14.
+// TestFailure_IPAMResentRequestIsRefusedNotServedTwice is design row 11,
+// from defeat row 14, and it asserts the opposite of what that row
+// predicted.
 //
-// The daemon's IPAM client does not wait: when its timeout expires it
-// RE-SENDS the same RequestAddress body, after 1s, 2s, 4s, until 30s
-// have passed. A reserve that treated the second body as a new request
-// would run a second DHCP exchange for one endpoint -- two DISCOVERs,
-// two leases on the server, one container, and the second lease never
-// released because nothing knows it exists.
+// The row said the daemon RE-SENDS the same RequestAddress body when
+// its client timeout expires, and that a reserve treating the second
+// body as a new request would run a second DHCP exchange for one
+// endpoint. The first half is true and the second cannot happen: the
+// daemon encodes the call into a bytes.Buffer and hands the SAME
+// reader to every attempt (moby pkg/plugins/client.go, callWithRetry),
+// so the first attempt drains it and the re-send arrives with NO BODY.
+// There is nothing in it to identify an endpoint with, let alone to
+// join an exchange with. MEASURED in integration run 34600486961,
+// failure-1: `IpamDriver.RequestAddress: failed to parse request body:
+// EOF`, and the container did not start.
+//
+// So the reachable invariants are these three, and they are what the
+// daemon's re-send actually costs an operator:
+//
+//   - the run FAILS, with a message that names the timeout and the
+//     re-send rather than a decoder error;
+//   - exactly ONE DHCP client ran for the endpoint, counted as the
+//     number of distinct DISCOVER client MACs on the segment. Two
+//     would be two leases on the server, one container, and the spare
+//     never released;
+//   - the address is not wedged: with the server back, starting the
+//     same container again comes up.
 //
 // The provocation is the real one: the plugin is re-enabled with
 // `--timeout 5` so the daemon gives up at five seconds, and the server
 // is held down for eight so the first exchange is still running when
 // the second body arrives.
 //
-// THE EVIDENCE IS THE WIRE. RFC 2131 section 4.1 requires a client to
-// retransmit under the same 'xid', so the number of distinct
-// transaction ids among the DISCOVERs from this endpoint's MAC is the
-// number of DHCP clients that ran for it. One is the whole assertion.
-func TestFailure_IPAMResentRequestJoinsTheReserve(t *testing.T) {
+// ipam_reserve_joined is NOT asserted here any more, and cannot be: the
+// empty re-send is refused before any handler sees it, so nothing
+// reaches the join. The counter stays for the concurrency it was
+// written for and the handover records that the daemon's own re-send
+// does not reach it.
+func TestFailure_IPAMResentRequestIsRefusedNotServedTwice(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
@@ -242,11 +271,6 @@ func TestFailure_IPAMResentRequestJoinsTheReserve(t *testing.T) {
 	harness.CreateNetworkIPAM(t, ctx, netName, "macvlan", "",
 		nil, map[string]string{"parent": harness.EphemeralHostVeth})
 
-	// The counter window opens on the plugin that will serve the
-	// request, after the recycle, so the delta below belongs to one
-	// process.
-	w := harness.BeginCounterWindow(t, ctx, cli, "ipam_reserve_joined")
-
 	create, err := cli.ContainerCreate(ctx,
 		&container.Config{Image: harness.TestImage, Cmd: []string{"sleep", "infinity"}, Hostname: ctrName},
 		harness.HostConfig(),
@@ -275,49 +299,79 @@ func TestFailure_IPAMResentRequestJoinsTheReserve(t *testing.T) {
 	ef.StartAgain()
 	t.Logf("server back after %s; the daemon has re-sent RequestAddress at least once by now", outage)
 
+	var startFailure error
 	select {
 	case err := <-startErr:
-		if err != nil {
-			t.Fatalf("the container never started: %v\nThe point of this test is a container "+
-				"that comes up DESPITE the re-sent request; a failure here is the feature "+
-				"missing, not the provocation failing.", err)
-		}
+		startFailure = err
 	case <-ctx.Done():
 		t.Fatal("ContainerStart never returned")
 	}
-
-	addr, mac := ipamNetworkAddress(t, ctx, cli, create.ID, netName)
-	t.Logf("container up at %s with MAC %s", addr, mac)
-
-	// --- outside evidence: how many DHCP clients ran for this MAC.
-	frames := wire.FramesFrom(mac)
-	xids := map[uint32]int{}
-	for _, m := range frames {
-		if m.Type == harness.DHCPDiscover {
-			xids[m.XID]++
+	if startFailure == nil {
+		t.Fatalf("the container started. The daemon gave up at %ds and re-sent a call whose "+
+			"body it had already spent, so there was nothing for the plugin to answer; a "+
+			"container that came up anyway holds an address no request in this exchange "+
+			"asked for.", pluginTimeout)
+	}
+	t.Logf("refused, as it must be: %v", startFailure)
+	for _, want := range []string{"no body", "--timeout"} {
+		if !strings.Contains(startFailure.Error(), want) {
+			t.Errorf("the failure the operator sees does not mention %q. The cause is a call "+
+				"that outlived the plugin call timeout; a decoder error in its place reads "+
+				"like a protocol defect in the plugin and points at nothing to change.", want)
 		}
 	}
-	if len(xids) == 0 {
-		wire.Dump(func(s string) { t.Log(s) })
-		t.Fatalf("no DISCOVER from %s reached the wire at all, so this instrument never saw "+
-			"the endpoint under test and the count below would be a statement about nothing. "+
-			"The capture holds %d client message(s).", mac, len(wire.Frames()))
-	}
-	if len(xids) != 1 {
-		wire.Dump(func(s string) { t.Log(s) })
-		t.Errorf("%d distinct DISCOVER transaction ids from %s (%v). RFC 2131 section 4.1 "+
-			"requires retransmissions to carry the same xid, so more than one means more than "+
-			"one DHCP client ran for a single endpoint: two leases on the server, one "+
-			"container, and the spare never released.", len(xids), mac, xids)
-	}
 
-	before, after := w.End()
-	if after.IPAMReserveJoined <= before.IPAMReserveJoined {
-		t.Errorf("ipam_reserve_joined did not move (%d -> %d). With a %ds client timeout and a "+
-			"%s outage the daemon must have re-sent the request, so either the provocation "+
-			"did not happen -- in which case the wire assertion above proved nothing -- or "+
-			"the second body was served without joining the first exchange.",
-			before.IPAMReserveJoined, after.IPAMReserveJoined, pluginTimeout, outage)
+	// --- outside evidence: how many DHCP clients ran for this endpoint.
+	//
+	// The count is of distinct DISCOVER client MACs, not of transaction
+	// ids. A single client legitimately draws a fresh xid when its
+	// retransmission budget runs out and it reverts to INIT (RFC 2131
+	// section 3.1(5), and dhcp-golib proto/machine.go beginAcquisition
+	// on the exhausted branch), and an eight-second outage is long
+	// enough to reach that. The MAC does not move under a client: one
+	// reserve builds one link with the endpoint's MAC on it, and a
+	// reserve driven off the EMPTY re-sent body has no MAC to use and
+	// must invent one -- so a second address served for this endpoint
+	// shows up here as a second MAC, which is the defect this test is
+	// about.
+	frames := wire.Frames()
+	macs := map[string]int{}
+	xids := map[uint32]struct{}{}
+	for _, m := range frames {
+		if m.Type == harness.DHCPDiscover {
+			macs[m.ClientMAC.String()]++
+			xids[m.XID] = struct{}{}
+		}
 	}
-	assertNoReserveLinksLeft(t, "after a reservation that was joined by a re-sent request")
+	if len(macs) == 0 {
+		wire.Dump(func(s string) { t.Log(s) })
+		t.Fatalf("no DISCOVER reached the wire at all, so this instrument never saw the "+
+			"endpoint under test and the count below would be a statement about nothing. "+
+			"The capture holds %d client message(s).", len(frames))
+	}
+	t.Logf("%d DISCOVER MAC(s) %v over %d transaction id(s)", len(macs), macs, len(xids))
+	if len(macs) != 1 {
+		wire.Dump(func(s string) { t.Log(s) })
+		t.Errorf("%d distinct DISCOVER client MACs (%v) for ONE endpoint. Each reserve puts "+
+			"the endpoint's own MAC on its link, so a second MAC is a second reserve: two "+
+			"leases on the server, one container, and the spare never released.",
+			len(macs), macs)
+	}
+	assertNoReserveLinksLeft(t, "after a reservation the daemon stopped waiting for")
+
+	// The address is not wedged. A reservation the daemon abandoned is
+	// retained rather than closed, so the retry inside the tombstone
+	// window claims it back; what is asserted is the user-visible half
+	// -- the same container starts -- because which address the server
+	// hands a returning client is the server's to decide.
+	if err := cli.ContainerStart(ctx, create.ID, container.StartOptions{}); err != nil {
+		t.Fatalf("the container did not start on the retry, with the server back: %v\n"+
+			"A reservation the daemon gave up on has left this endpoint unable to get an "+
+			"address at all, which is worse than the failed run it came from.", err)
+	}
+	addr, mac := ipamNetworkAddress(t, ctx, cli, create.ID, netName)
+	t.Logf("the retry came up at %s with MAC %s", addr, mac)
+	if !strings.HasPrefix(addr, "192.168.101.") {
+		t.Errorf("the retry published %s, which is not from the ephemeral fixture's pool", addr)
+	}
 }

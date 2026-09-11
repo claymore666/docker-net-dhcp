@@ -1126,7 +1126,30 @@ func sortedKeys(m map[string]int) []string {
 //     every run containing the off-mode test, and the fix reached for
 //     under time pressure would be to delete the gate.
 //
-//  4. NEW SINCE THE v6 COUNTERS SPLIT THE ATOM, and the reason this
+//  5. NEW SINCE THE IPAM BRANCH RE-SHARDED THE SUITE (#110), and the
+//     second two-populations defect in this one gate. The domain was
+//     leases_obtained_v4, which counts the PERSISTENT client's bind --
+//     and the probe the gate demands for it is not that client's. A new
+//     endpoint probes in the CreateEndpoint one-shot, roleAcquire under
+//     ConflictWait, which finishes BEFORE the address is reported
+//     (pkg/plugin/conflict.go); the Join client that moves the lease
+//     counter afterwards runs ConflictAsync, beside the address, for
+//     the reason stated there. A RECOVERED endpoint has no
+//     CreateEndpoint one-shot at all: recoverOneEndpoint synthesises
+//     the Join manager directly, so its bind moves the domain while the
+//     only probe it will ever produce is the asynchronous one -- and
+//     that probe races the container's teardown at the end of a shard.
+//     MEASURED, integration run 34600486961 main-3: a shard whose last
+//     test recycled the plugin (recovered_ok=1) read
+//     leases_obtained_v4=1 and acd_probes_sent=0 on a process 1s old,
+//     and the gate called the check broken. Recovered endpoints are
+//     therefore subtracted from the domain the same way conflict_check
+//     =off leases are. They are not left unwatched: an address resumed
+//     from a record whose check had not completed moves
+//     acd_resumed_unchecked, which is the warn row below, and a
+//     conflict found by the async probe still moves address_conflicts.
+//
+//  6. NEW SINCE THE v6 COUNTERS SPLIT THE ATOM, and the reason this
 //     gate failed on a coin toss (#881). The premise that used to end
 //     this block — "leases_obtained is v4-only, so a v6-only shard
 //     cannot trip this" — was true when it was written and is false
@@ -1413,6 +1436,10 @@ func ACDCensusFindings(h *HealthResponse, allowedSendFailures, allowedUnprobed, 
 	// probe was never going to answer for (#881).
 	leases := deltaSincePluginStart(h.LeasesObtainedV4, base(baseline).LeasesObtainedV4)
 	conflicts := deltaSincePluginStart(h.AddressConflicts, base(baseline).AddressConflicts)
+	// The endpoints this process picked up rather than created. See case
+	// 5 above: their lease is in the domain operand and the probe the
+	// gate asks for is not theirs to produce in time.
+	recovered := deltaSincePluginStart(h.RecoveredOK, base(baseline).RecoveredOK)
 
 	if excess := sendFailures - allowedSendFailures; excess > 0 {
 		out = append(out, FloorFinding{
@@ -1436,18 +1463,23 @@ func ACDCensusFindings(h *HealthResponse, allowedSendFailures, allowedUnprobed, 
 	// The declared off-mode leases come out first. What is left is leases
 	// on networks that were supposed to probe, so a zero here is the
 	// check having stopped working rather than an operator's choice.
-	if checked := leases - allowedUnprobed; probes == 0 && sendFailures == 0 && checked > 0 {
+	// Recovered endpoints come out with them, for the different reason
+	// in case 5 of the block above: their bind is counted by a client
+	// that probes asynchronously, with no preceding one-shot, so a zero
+	// here says nothing about whether the check works.
+	if checked := leases - allowedUnprobed - recovered; probes == 0 && sendFailures == 0 && checked > 0 {
 		out = append(out, FloorFinding{
 			Counter: "acd_probes_sent",
 			Value:   0,
 			Fatal:   true,
 			Why: fmt.Sprintf(
-				"%d v4 lease(s) (leases_obtained_v4, not the v4+v6 sum) were obtained on networks "+
-					"that run RFC 5227's check (%d more were declared as conflict_check=off and are "+
-					"not counted here) and not one ARP Probe was sent. The check is opt-out per "+
-					"network, so with the off-mode leases already subtracted this is the check "+
-					"having stopped working rather than a shard with nothing to look at (#551).",
-				checked, allowedUnprobed),
+				"%d v4 lease(s) (leases_obtained_v4, not the v4+v6 sum) were obtained by endpoints "+
+					"that run RFC 5227's check before the address is used (%d more were declared as "+
+					"conflict_check=off, and %d were endpoints this process RECOVERED, whose only "+
+					"probe is the asynchronous one; neither is counted here) and not one ARP Probe "+
+					"was sent. With both populations subtracted this is the check having stopped "+
+					"working rather than a shard with nothing to look at (#551).",
+				checked, allowedUnprobed, recovered),
 		})
 	}
 
