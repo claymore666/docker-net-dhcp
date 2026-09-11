@@ -352,6 +352,22 @@ on the release branch and read the `floor` job:
 gh workflow run engine-matrix.yml --ref release/vX.Y.Z
 ```
 
+**That dispatch answers 404 until the workflow is on the default
+branch.** GitHub exposes `workflow_dispatch` and `schedule` from the
+default branch only, and the lane is new on `dev`, so for the v2.1.0
+release itself neither route exists yet:
+[`.github/dispatch-pending.txt`](https://github.com/claymore666/docker-net-dhcp/blob/main/.github/dispatch-pending.txt)
+carries the entry and the release PR removes it. Until then the lane
+runs on its `push` trigger, over
+[`.github/workflows/engine-matrix.yml`](https://github.com/claymore666/docker-net-dhcp/blob/main/.github/workflows/engine-matrix.yml),
+[`.github/engine-rows.txt`](https://github.com/claymore666/docker-net-dhcp/blob/main/.github/engine-rows.txt),
+[`scripts/engine-baseline.sh`](https://github.com/claymore666/docker-net-dhcp/blob/main/scripts/engine-baseline.sh),
+[`scripts/engine-floor.sh`](https://github.com/claymore666/docker-net-dhcp/blob/main/scripts/engine-floor.sh)
+and
+[`pkg/plugin/engine_floor.go`](https://github.com/claymore666/docker-net-dhcp/blob/main/pkg/plugin/engine_floor.go),
+so the pre-flight for v2.1.0 is the run at the head of one of those
+paths. Read that run instead, and take the dispatch route from v2.2.0.
+
 One job per engine line in
 [`.github/engine-rows.txt`](https://github.com/claymore666/docker-net-dhcp/blob/main/.github/engine-rows.txt),
 each driving the whole baseline against that engine in a nested daemon.
@@ -359,9 +375,10 @@ The `floor` job reconciles the minimum the plugin refuses below against
 the lowest line that passed. A red `floor` job blocks the rc: the
 number it disagrees with is published in `README.md` and
 `docs/index.md`, and the plugin refuses to start below it. The lane also
-runs weekly, so a moving `29` tag is usually caught before a release
-asks the question. Read the run rather than the schedule: a release is
-the moment the published number has to be true.
+runs weekly once it is on the default branch, so from v2.2.0 a moving
+`29` tag is usually caught before a release asks the question. Read the
+run rather than the schedule: a release is the moment the published
+number has to be true.
 
 1. **Branch off `dev`:** `git checkout -b release/vX.Y.Z origin/dev`
 2. **Bump install pins:** `scripts/bump-version.sh vX.Y.Z` (#251). It
