@@ -217,7 +217,7 @@ func TestStart_AsksTheDaemonNothingBeforeTheLinkIsLocated(t *testing.T) {
 // load-bearing for exactly this wait, and the test that would go red on
 // its removal is the one that says the wait is still here.
 func TestStart_DoesNotStartTheClientBeforeTheInspectAnswers(t *testing.T) {
-	m, p := daemonFreeManager(t, &fakeDocker{
+	docker := &fakeDocker{
 		inspectResult: map[string]dNetwork.Inspect{
 			"net-1": {Containers: map[string]dNetwork.EndpointResource{
 				"container-1": {EndpointID: "ep-abcdef"},
@@ -226,7 +226,8 @@ func TestStart_DoesNotStartTheClientBeforeTheInspectAnswers(t *testing.T) {
 		// Accepted, never answered: the daemon is inside ContainerStart
 		// for this container (#406).
 		containerDelay: time.Hour,
-	})
+	}
+	m, p := daemonFreeManager(t, docker)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 400*time.Millisecond)
 	defer cancel()
@@ -247,6 +248,20 @@ func TestStart_DoesNotStartTheClientBeforeTheInspectAnswers(t *testing.T) {
 	if m.errChan != nil {
 		t.Error("a persistent client was started before the inspect answered; its lease would appear " +
 			"in the DHCP server's table with no hostname until the plugin restarts")
+	}
+	// The two above say the client did not start. They do not say WHY,
+	// and "it tried and failed" wears the same face in this lane as "it
+	// waited": an attach that skipped the inspect entirely would satisfy
+	// both, because building a DHCP client needs privileges no unit test
+	// has. These two say the attach spent its budget inside the inspect.
+	if docker.containerCalls != 1 {
+		t.Errorf("the daemon was asked to inspect the container %d times, want exactly 1: the attach "+
+			"must reach the hostname inspect and wait there, and an attach that never asked would "+
+			"have started a client with no hostname for its whole life", docker.containerCalls)
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("Start failed with %v, want the deadline: the budget was spent somewhere other than "+
+			"waiting on the daemon, so this case is not measuring the wait it names", err)
 	}
 	if got := p.sandboxKeyEntries.Load(); got != 1 {
 		t.Errorf("sandbox_key_entries = %d, want 1: the wait must be after the namespace was entered, "+
