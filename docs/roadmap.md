@@ -89,8 +89,8 @@ Engine versions the plugin works on, publishes the floor and refuses
 below it. [#950] makes the refusal an operator reads when a second
 plugin tag cannot take the lease-record lock name its cause and its
 remedy. [#417] and [#403] take the attach into the container's network
-namespace before any daemon call and publish the durations it spends
-there; neither issue closes with this release.
+namespace and find its link before any Docker call, and publish the
+durations the attach spends in each phase.
 
 **[v2.2.0](https://github.com/claymore666/docker-net-dhcp/milestone/29)**
 is mostly IPv6. [#818] and [#808] acquire an address by SLAAC, [#821]
