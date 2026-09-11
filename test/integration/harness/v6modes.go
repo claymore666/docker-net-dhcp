@@ -278,12 +278,39 @@ func NewV6Fixture(t *testing.T, mode V6Mode) *V6Fixture {
 // other's test green.
 func NewV6FixtureWithArgs(t V6FixtureT, name V6Mode, rangeArgs []string) *V6Fixture {
 	t.Helper()
-	f := newV6Fixture(t, name, rangeArgs)
+	f := newV6Fixture(t, name, rangeArgs, portUp)
 	f.assertMode()
 	return f
 }
 
-func newV6Fixture(t V6FixtureT, name V6Mode, rangeArgs []string) *V6Fixture {
+// NewV6FixtureWithADeadBridgePort is NewV6FixtureWithArgs with one
+// thing changed: the port is attached to the bridge and never brought
+// up, so the bridge has no carrier and its transmit queues stay
+// stopped. It is how awaitBridgeCarrier is watched refusing.
+//
+// A port that is attached and down is the state to build rather than no
+// port at all, because "a bridge with no port" is not the same link
+// state on every kernel: on the pool's a portless bridge transmits, on
+// a hosted ubuntu-latest it does not (#942). Once a bridge HAS a port,
+// its carrier follows that port on both, so this construction produces
+// the state the gate exists for wherever the suite runs.
+func NewV6FixtureWithADeadBridgePort(t V6FixtureT, name V6Mode) *V6Fixture {
+	t.Helper()
+	f := newV6Fixture(t, name, name.rangeArgs(), portDown)
+	f.assertMode()
+	return f
+}
+
+// v6PortState says whether the fixture brings its bridge port up. The
+// only caller that passes portDown is the carrier gate's drive.
+type v6PortState bool
+
+const (
+	portUp   v6PortState = true
+	portDown v6PortState = false
+)
+
+func newV6Fixture(t V6FixtureT, name V6Mode, rangeArgs []string, port v6PortState) *V6Fixture {
 	t.Helper()
 	if os.Geteuid() != 0 {
 		t.Fatalf("V6Fixture needs root (got uid=%d)", os.Geteuid())
@@ -366,7 +393,7 @@ func newV6Fixture(t V6FixtureT, name V6Mode, rangeArgs []string) *V6Fixture {
 	if err := netlink.LinkSetUp(link); err != nil {
 		t.Fatalf("LinkSetUp %s: %v", V6BridgeName, err)
 	}
-	attachV6BridgePort(t, link)
+	attachV6BridgePort(t, link, port)
 	awaitNoTentativeAddr(t)
 	awaitBridgeCarrier(t)
 
@@ -893,7 +920,7 @@ func cleanupV6Links() {
 // which is a host this test did not ask for. IPv6 is turned off on the
 // port so it contributes no duplicate-address or solicitation traffic
 // of its own; bridging is layer 2 and the segment is unaffected.
-func attachV6BridgePort(t V6FixtureT, bridge netlink.Link) {
+func attachV6BridgePort(t V6FixtureT, bridge netlink.Link, state v6PortState) {
 	t.Helper()
 	la := netlink.NewLinkAttrs()
 	la.Name = V6BridgePortName
@@ -910,6 +937,9 @@ func attachV6BridgePort(t V6FixtureT, bridge netlink.Link) {
 	}
 	if err := netlink.LinkSetMaster(port, bridge); err != nil {
 		t.Fatalf("enslave %s to %s: %v", V6BridgePortName, V6BridgeName, err)
+	}
+	if state == portDown {
+		return
 	}
 	if err := netlink.LinkSetUp(port); err != nil {
 		t.Fatalf("LinkSetUp %s: %v", V6BridgePortName, err)
@@ -939,6 +969,18 @@ const carrierBudget = 2 * time.Second
 // is up and the wire is still empty, the tally RACapture now prints
 // beside a mode failure is what says so -- "the tap saw nothing at all"
 // and "the tap saw traffic but no advertisement" are different lines.
+//
+// IFF_LOWER_UP IS CARRIER. IFF_RUNNING IS NOT, and the first version of
+// this gate read IFF_RUNNING. dev_get_flags() sets IFF_RUNNING from
+// netif_oper_up(), which is true for IF_OPER_UP and ALSO for
+// IF_OPER_UNKNOWN, and a bridge that has just been brought up reports
+// IF_OPER_UNKNOWN until the linkwatch work queue gets to it. MEASURED,
+// run 34603031325, five modes on one hosted host with the port removed:
+// the gate refused in two of them and in the other three the read
+// landed inside that window and walked past a bridge whose carrier was
+// 0, so /nora -- whose assertion is that NO advertisement arrives --
+// PASSED on a link nothing could speak on, which is #942 itself.
+// IFF_LOWER_UP is netif_carrier_ok() and has no unknown state.
 func awaitBridgeCarrier(t V6FixtureT) {
 	t.Helper()
 	deadline := time.Now().Add(carrierBudget)
@@ -948,14 +990,14 @@ func awaitBridgeCarrier(t V6FixtureT) {
 			t.Fatalf("LinkByName %s: %v", V6BridgeName, err)
 			return
 		}
-		if link.Attrs().RawFlags&unix.IFF_RUNNING != 0 {
+		if link.Attrs().RawFlags&unix.IFF_LOWER_UP != 0 {
 			return
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("%s still has no carrier %s after %s came up. A bridge in this state has "+
-				"its transmit queues stopped, so the server's advertisements never reach the "+
-				"wire and every wire assertion about this segment -- including the ones that "+
-				"assert an ABSENCE -- is about a link nothing can speak on (#942)",
+			t.Fatalf("%s still has no carrier %s after %s was attached to it. A bridge in this "+
+				"state has its transmit queues stopped, so the server's advertisements never "+
+				"reach the wire and every wire assertion about this segment -- including the "+
+				"ones that assert an ABSENCE -- is about a link nothing can speak on (#942)",
 				V6BridgeName, carrierBudget, V6BridgePortName)
 			return
 		}
