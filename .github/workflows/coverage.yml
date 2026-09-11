@@ -341,6 +341,12 @@ jobs:
       # sentence in the script's header, and a sentence is not a check.
       # On a push or a dispatch there is no merge base, so the working
       # copy is the honest answer and is used as-is.
+      #
+      # The ratchet reads the HEAD baseline too, to tell a package
+      # deleted on purpose from one whose coverage vanished, and it
+      # finds that file from its own path rather than from an argument
+      # here: a second wiring step is one someone forgets, and the run
+      # that would find out is the release PR (#791).
       - name: Coverage ratchet
         env:
           BASE_REF: ${{ github.event.pull_request.base.sha }}

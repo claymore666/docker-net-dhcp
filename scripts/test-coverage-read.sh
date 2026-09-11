@@ -342,5 +342,78 @@ O=$(COVREAD_LOG="$D/log.noratchet" COVREAD_BASE_DEV="$D/dev.base" COVREAD_BASE_M
 chk "noratchet: names the step" "$O" "*** NO RATCHET STEP"
 eq  "noratchet: exit 2"         "$X" "2"
 
+
+# --- the DROPPED verdict (run 34541498417) -----------------------------
+# The ratchet prints DROPPED for a package the BASE floors, that no longer
+# exists at head, and whose row the head's own baseline no longer carries;
+# it counts that package as compared. This reader knew two verdicts, both
+# carrying a percentage, so a DROPPED package arrived here as a baselined
+# package with NO verdict -- `*** INCOMPLETE`, exit 2 -- at the release
+# read, over the one arm that exists to let a deliberate deletion through.
+#
+# The fixture is the 2.0 shape: main still floors cmd/dhcp-handler, the
+# branch does not, and the branch deleted the package.
+cat > "$D/d.dev" <<B
+$P/pkg/util 95.0
+$P/pkg/plugin 86.8
+$P/pkg/dhcp 89.9
+$P/cmd/net-dhcp 77.8
+B
+cat > "$D/d.main" <<B
+$P/pkg/util 95.0
+$P/pkg/plugin 86.8
+$P/pkg/dhcp 89.9
+$P/cmd/net-dhcp 77.8
+$P/cmd/dhcp-handler 74.0
+B
+dropverdicts() {
+  cat <<V
+PASS  $P/pkg/util: 97.3% beats baseline 95.0% — raise the floor
+PASS  $P/pkg/plugin: 90.1% beats baseline 86.8% — raise the floor
+PASS  $P/pkg/dhcp: 90.5% beats baseline 89.9% — raise the floor
+PASS  $P/cmd/net-dhcp: 83.3% beats baseline 77.8% — raise the floor
+DROPPED  $P/cmd/dhcp-handler: deleted at head and removed from /x/.github/coverage-baseline.txt (base floor was 74.0)
+V
+}
+droppedraw() {
+  for spec in "pkg/util 97.3" "pkg/plugin 90.1" "pkg/dhcp 90.5" "cmd/net-dhcp 83.3"; do
+    set -- $spec
+    printf '%s/%s\t\tcoverage: %s%% of statements\n' "$P" "$1" "$2"
+  done
+}
+{ echo "$ratchetcmd"; droppedraw; dropverdicts; } | freshgroup "Coverage ratchet" > "$D/log.dropped"
+rdrop() { COVREAD_LOG="$D/log.dropped" COVREAD_BASE_DEV="$D/d.dev" COVREAD_BASE_MAIN="$D/d.main" bash "$READER"; }
+O=$(rdrop); X=$( rdrop >/dev/null 2>&1; echo $? ); echo "--- dropped package ---"; echo "$O"
+chk "drop: the row is printed"        "$(echo "$O" | tr -s ' ')" "dhcp-handler dropped none n/a not baselined 74.0"
+chk "drop: 4 of 4 on the head floors" "$O" "every one of the 4 baselined package(s) got a verdict."
+chk "drop: it is named, not swallowed" "$O" "DROPPED: 1 package(s) the base floors"
+no  "drop: not an UNBASELINED defect"  "$O" "*** UNBASELINED"
+no  "drop: no raw-covdata complaint"   "$O" "raw covdata has NO line for it"
+eq  "drop: exit 0"                     "$X" "0"
+
+# THE CONTROL FOR THE CASE ABOVE: the same log read by the same script
+# with the DROPPED line's package NOT deleted -- it is a plain verdict
+# with a number -- must still be complete and exit 0. Without this the
+# case above measures "the reader tolerates an extra package", not "it
+# reads the third verdict".
+{ echo "$ratchetcmd"; droppedraw
+  printf '%s/cmd/dhcp-handler\t\tcoverage: 75.0%% of statements\n' "$P"
+  dropverdicts | sed -E "s|^DROPPED  .*|PASS  $P/cmd/dhcp-handler: 75.0% holds baseline 74.0%|"
+} | freshgroup "Coverage ratchet" > "$D/log.notdropped"
+O=$(COVREAD_LOG="$D/log.notdropped" COVREAD_BASE_DEV="$D/d.main" COVREAD_BASE_MAIN="$D/d.main" bash "$READER" 2>&1); X=$?
+chk "control: an ordinary fifth verdict still reads 5 of 5" "$O" "every one of the 5 baselined package(s) got a verdict."
+no  "control: and raises no DROPPED line"                   "$O" "DROPPED:"
+eq  "control: exit 0"                                       "$X" "0"
+
+# A PACKAGE THE RATCHET DROPPED THAT THE HEAD BASELINE READ HERE STILL
+# FLOORS. That is the release reader pointed at the wrong branch -- the
+# floors come from COVREAD_DEV_REF, not from the run -- and it is said
+# rather than counted: an exit code here would turn every cross-branch
+# read red.
+O=$(COVREAD_LOG="$D/log.dropped" COVREAD_BASE_DEV="$D/d.main" COVREAD_BASE_MAIN="$D/d.main" bash "$READER" 2>&1); X=$?
+chk "wrongref: the disagreement is named" "$O" "was DROPPED by the ratchet, and the head baseline read here"
+chk "wrongref: the row says so"           "$(echo "$O" | tr -s ' ')" "dhcp-handler dropped 74.0 n/a STILL FLOORED"
+eq  "wrongref: still exit 0"              "$X" "0"
+
 echo; echo "$pass passed, $fail failed"
 [ "$fail" -eq 0 ]
