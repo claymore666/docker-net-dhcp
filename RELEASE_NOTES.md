@@ -24,8 +24,9 @@ could not be observed or tested from inside the plugin. The library carries
 its own tests, many of them driving a real DHCP server. The plugin's
 integration suite runs against real DHCP servers on amd64 in CI and on arm64
 hardware at each release candidate, covering address conflicts, plugin and
-daemon restarts, and lease recovery. The 2.0 line has run in CI and has not
-yet run in production.
+daemon restarts, and lease recovery. The 2.0 line has run in CI, and the
+second release candidate ran on a production host from 2026-09-09 through a
+lease renewal.
 
 The plugin performs the DHCP exchange itself, through the Go library
 `github.com/claymore666/dhcp-golib` v0.1.0, instead of driving an external
