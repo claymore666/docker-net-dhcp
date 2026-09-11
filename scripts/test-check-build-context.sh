@@ -14,8 +14,11 @@
 # Requires: docker (the gate builds a FROM scratch context walk).
 set -u
 
+# shellcheck source=scripts/tmpdir-guard.sh
+. "$(cd "$(dirname "$0")" && pwd)/tmpdir-guard.sh"
+
 CHECK="$(cd "$(dirname "$0")" && pwd)/check-build-context.sh"
-TMP="$(mktemp -d)"
+guarded_tmpdir TMP
 cleanup() {
     find "$TMP" -type d ! -perm -u+rwx -exec chmod 755 {} + 2>/dev/null
     rm -rf "$TMP"
@@ -32,7 +35,7 @@ failures=0
 check() {
     local name="$1" want_exit="$2" ignore="$3" want_grep="$4"
     local ctx
-    ctx="$(mktemp -d -p "$TMP")"
+    guarded_tmpdir ctx -p "$TMP"
     : > "$ctx/go.mod"
     if [ -n "$ignore" ]; then printf '%s\n' "$ignore" > "$ctx/.dockerignore"; fi
 

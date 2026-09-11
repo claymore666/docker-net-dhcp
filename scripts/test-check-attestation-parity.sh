@@ -25,9 +25,11 @@
 # by stubbing `gh` on PATH, each with a per-digest call witness.
 set -u
 
+# shellcheck source=scripts/tmpdir-guard.sh
+. "$(cd "$(dirname "$0")" && pwd)/tmpdir-guard.sh"
+
 CHECK="$(cd "$(dirname "$0")" && pwd)/check-attestation-parity.sh"
-TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT
+guarded_tmpdir TMP
 
 GHCR="sha256:$(printf 'c%.0s' $(seq 1 64))"
 HUB="sha256:$(printf 'e%.0s' $(seq 1 64))"

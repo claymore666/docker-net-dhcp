@@ -19,6 +19,9 @@
 # workflows this branch had just fixed.
 set -uo pipefail
 
+# shellcheck source=scripts/tmpdir-guard.sh
+. "$(cd "$(dirname "$0")" && pwd)/tmpdir-guard.sh"
+
 GATE="$(cd "$(dirname "$0")" && pwd)/check-lane-hygiene.sh"
 pass=0
 fail=0
@@ -47,13 +50,13 @@ mk_install() {
     } > "$d/lane.yml"
 }
 
-d=$(mktemp -d); mk_install "$d" none
+guarded_tmpdir d; mk_install "$d" none
 [ "$(verdict "$d")" = 1 ] \
     && ok "a lane that installs a plugin with no teardown is reported" \
     || no "a lane with no teardown should exit 1"
 rm -rf "$d"
 
-d=$(mktemp -d); mk_install "$d" teardown
+guarded_tmpdir d; mk_install "$d" teardown
 [ "$(verdict "$d")" = 0 ] \
     && ok "the same lane with an if: always() teardown is clean" \
     || no "a lane with a teardown should be clean"
@@ -63,7 +66,7 @@ rm -rf "$d"
 # teardown — it runs before the plugin this job installs exists. That is
 # exactly what integration-arm64.yml had, and the reason a naive
 # whole-file grep for `plugin rm` would have called it clean.
-d=$(mktemp -d)
+guarded_tmpdir d
 {
     printf 'name: lane\non:\n  workflow_dispatch:\njobs:\n  suite:\n'
     printf '    runs-on: ubuntu-latest\n    steps:\n'
@@ -91,13 +94,13 @@ mk_suite() {
     } > "$d/lane.yml"
 }
 
-d=$(mktemp -d); mk_suite "$d" none
+guarded_tmpdir d; mk_suite "$d" none
 [ "$(verdict "$d")" = 1 ] \
     && ok "a failure suite without if: always() is reported" \
     || no "a failure suite without if: always() should exit 1"
 rm -rf "$d"
 
-d=$(mktemp -d); mk_suite "$d" always
+guarded_tmpdir d; mk_suite "$d" always
 [ "$(verdict "$d")" = 0 ] \
     && ok "the same lane with if: always() is clean" \
     || no "a failure suite with if: always() should be clean"
@@ -107,7 +110,7 @@ rm -rf "$d"
 # runs its failure suite as a separate matrix job where `fail-fast: false`
 # keeps the suites independent, and a step-level `if:` there would be
 # wrong rather than missing.
-d=$(mktemp -d)
+guarded_tmpdir d
 {
     printf 'name: lane\non:\n  workflow_dispatch:\njobs:\n  suite:\n'
     printf '    runs-on: ubuntu-latest\n'
@@ -135,7 +138,7 @@ mk_body_gate() {
     } > "$d/t.yaml"
 }
 
-d=$(mktemp -d); mk_body_gate "$d" ""
+guarded_tmpdir d; mk_body_gate "$d" ""
 [ "$(verdict "$d")" = 1 ] \
     && ok "a body-reading gate with the default pull_request types is reported" \
     || no "default types with a body-reading gate should exit 1"
@@ -144,13 +147,13 @@ rm -rf "$d"
 # The default set spelled out explicitly is still the default set. This
 # is the case that separates "checks for edited" from "checks that types
 # is present at all" — and the latter would have called the tree clean.
-d=$(mktemp -d); mk_body_gate "$d" "[opened, synchronize, reopened]"
+guarded_tmpdir d; mk_body_gate "$d" "[opened, synchronize, reopened]"
 [ "$(verdict "$d")" = 1 ] \
     && ok "types listed without 'edited' is still reported" \
     || no "an explicit types list missing 'edited' should exit 1"
 rm -rf "$d"
 
-d=$(mktemp -d); mk_body_gate "$d" "[opened, synchronize, reopened, edited]"
+guarded_tmpdir d; mk_body_gate "$d" "[opened, synchronize, reopened, edited]"
 [ "$(verdict "$d")" = 0 ] \
     && ok "types including 'edited' is clean" \
     || no "types including 'edited' should be clean"
@@ -158,7 +161,7 @@ rm -rf "$d"
 
 # A workflow that runs no body-reading gate is out of scope: demanding
 # `edited` everywhere would fire runs on every typo in every PR body.
-d=$(mktemp -d)
+guarded_tmpdir d
 {
     printf 'name: t\non:\n  pull_request:\njobs:\n  a:\n    runs-on: ubuntu-latest\n    steps:\n'
     printf '      - name: Unit\n        run: go test ./...\n'
@@ -171,7 +174,7 @@ rm -rf "$d"
 # --- prose cannot trip or satisfy any of it -----------------------------
 # These workflows document their own invariants at length, quoting the
 # very strings this gate matches on.
-d=$(mktemp -d)
+guarded_tmpdir d
 {
     printf 'name: lane\non:\n  workflow_dispatch:\n'
     printf '# this lane runs docker plugin create and tears it down with if: always()\n'
@@ -185,7 +188,7 @@ d=$(mktemp -d)
 rm -rf "$d"
 
 # --- inspecting nothing is not a pass -----------------------------------
-d=$(mktemp -d)
+guarded_tmpdir d
 [ "$(verdict "$d")" = 2 ] \
     && ok "an empty workflow directory is rc2, not a pass" \
     || no "an empty directory should exit 2"
@@ -198,7 +201,7 @@ rm -rf "$d"
 # A workflow whose indentation this gate cannot parse must REFUSE. The
 # alternative is the failure mode every gate here was audited for in
 # #743: a clean pass rendered over an input set that came out empty.
-d=$(mktemp -d)
+guarded_tmpdir d
 printf 'name: x\non:\n  workflow_dispatch:\njobs:\n  a:\n    steps:\n      "not a step"\n' > "$d/x.yml"
 [ "$(verdict "$d")" = 2 ] \
     && ok "a 'steps:' block this gate cannot parse is rc2, not a clean pass" \

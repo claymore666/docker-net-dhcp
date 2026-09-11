@@ -17,6 +17,9 @@
 # "never started" unconditionally would still be green on the rest.
 set -uo pipefail
 
+# shellcheck source=scripts/tmpdir-guard.sh
+. "$(cd "$(dirname "$0")" && pwd)/tmpdir-guard.sh"
+
 HERE="$(cd "$(dirname "$0")" && pwd)"
 CHECK="$HERE/check-arm64-lane.sh"
 pass=0; fail=0
@@ -55,7 +58,7 @@ STUB
 
 # run_it <jobs-fixture> [wait-minutes] [extra-fixture-name=value ...]
 run_it() {
-    local dir; dir=$(mktemp -d)
+    local dir; guarded_tmpdir dir
     make_gh "$dir"
     printf '%s\n' "$1" > "$dir/jobs"
     local wait="${2:-0}"

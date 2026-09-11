@@ -17,9 +17,11 @@
 # this gate existed: a settings *table* and a counter *bullet list*.
 set -u
 
+# shellcheck source=scripts/tmpdir-guard.sh
+. "$(cd "$(dirname "$0")" && pwd)/tmpdir-guard.sh"
+
 CHECK="$(dirname "$0")/check-docs-drift.sh"
-TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT
+guarded_tmpdir TMP
 
 PKG="$TMP/pkg"
 DOCS="$TMP/docs"

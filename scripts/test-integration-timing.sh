@@ -8,9 +8,11 @@
 # tolerates missing log files (it runs `if: always()`, after failures).
 set -u
 
+# shellcheck source=scripts/tmpdir-guard.sh
+. "$(cd "$(dirname "$0")" && pwd)/tmpdir-guard.sh"
+
 TOOL="$(dirname "$0")/integration-timing.sh"
-TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT
+guarded_tmpdir TMP
 fail=0
 
 log="$TMP/a.log"

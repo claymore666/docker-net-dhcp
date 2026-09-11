@@ -15,6 +15,9 @@
 # cancelled otherwise.
 set -uo pipefail
 
+# shellcheck source=scripts/tmpdir-guard.sh
+. "$(cd "$(dirname "$0")" && pwd)/tmpdir-guard.sh"
+
 HERE="$(cd "$(dirname "$0")" && pwd)"
 WATCHDOG="$HERE/ci-queue-watchdog.sh"
 pass=0
@@ -101,7 +104,7 @@ cancels() { cat "$CANCEL_LOG" 2>/dev/null; }
 run_watchdog() {
     local json="$1" budget="$2" poll="$3" cancel_fail_n="${4:-0}" cancel_fail_code="${5:-403}"
     local dir
-    dir=$(mktemp -d)
+    guarded_tmpdir dir
     stub_curl "$dir" "$json" "$cancel_fail_n" "$cancel_fail_code"
     # Backoff 0: these cases assert the retry COUNT, and sleeping
     # through the real one would add ~9s per case for nothing.
@@ -117,8 +120,9 @@ run_watchdog() {
 # arm resets the cancel log so each case starts from "nothing cancelled".
 # Called by the parent, never from inside a command substitution.
 arm() {
-    CANCEL_LOG=$(mktemp -u)/cancelled
-    mkdir -p "$(dirname "$CANCEL_LOG")"
+    local logdir
+    guarded_tmpdir logdir
+    CANCEL_LOG="$logdir/cancelled"
 }
 arm
 
@@ -264,7 +268,7 @@ n=$(cancels | wc -l)
 
 # --- the escape hatch is opt-in and says so ---------------------------
 arm
-dir=$(mktemp -d)
+guarded_tmpdir dir
 stub_curl "$dir" '{"jobs":[{"name":"main-suite","status":"queued"}]}'
 PATH="$dir/bin:$PATH" GATE_REPO=o/r GH_TOKEN=x WATCHDOG_NO_CANCEL=1 \
     bash "$WATCHDOG" 12345 2 1 >"$dir/out" 2>&1
@@ -366,7 +370,7 @@ RUNS_JSON='{"workflow_runs":[]}'
 
 # --- the machine-readable outputs -------------------------------------
 arm
-dir=$(mktemp -d)
+guarded_tmpdir dir
 RUNS_JSON="$OTHERS"
 stub_curl "$dir" "$STUCK"
 PATH="$dir/bin:$PATH" GATE_REPO=o/r GH_TOKEN=x \
@@ -404,7 +408,7 @@ out=$(run_watchdog '{"jobs":[{"name":"main-suite","status":"completed"}]}' 2 1)
 [ -z "$(cancels)" ] && ok "a finished run is never cancelled" || no "the watchdog cancelled a finished run"
 
 # --- it must not go quiet when it cannot see -------------------------
-dir=$(mktemp -d)
+guarded_tmpdir dir
 mkdir -p "$dir/bin"
 printf '#!/usr/bin/env bash\nexit 22\n' > "$dir/bin/curl"
 chmod +x "$dir/bin/curl"

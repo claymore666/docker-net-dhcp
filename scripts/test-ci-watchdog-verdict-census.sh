@@ -20,9 +20,11 @@
 # census has the same blind spot the investigation did.
 set -uo pipefail
 
+# shellcheck source=scripts/tmpdir-guard.sh
+. "$(cd "$(dirname "$0")" && pwd)/tmpdir-guard.sh"
+
 CENSUS="$(cd "$(dirname "$0")" && pwd)/ci-watchdog-verdict-census.sh"
-TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT
+guarded_tmpdir TMP
 command -v jq >/dev/null || { echo "FAIL: jq is required for this suite"; exit 1; }
 
 pass=0; fail=0

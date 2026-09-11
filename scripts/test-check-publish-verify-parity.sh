@@ -17,10 +17,12 @@
 # so the fix cannot be undone by someone reaching for the obvious key.
 set -uo pipefail
 
+# shellcheck source=scripts/tmpdir-guard.sh
+. "$(cd "$(dirname "$0")" && pwd)/tmpdir-guard.sh"
+
 GATE="$(cd "$(dirname "$0")" && pwd)/check-publish-verify-parity.sh"
 SRC="$(cd "$(dirname "$0")/.." && pwd)/.github/workflows/release.yml"
-TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT
+guarded_tmpdir TMP
 
 pass=0; fail=0
 

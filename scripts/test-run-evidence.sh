@@ -14,6 +14,9 @@
 # is the precise failure #432 exists to prevent.
 set -uo pipefail
 
+# shellcheck source=scripts/tmpdir-guard.sh
+. "$(cd "$(dirname "$0")" && pwd)/tmpdir-guard.sh"
+
 HERE="$(cd "$(dirname "$0")" && pwd)"
 SCRIPT_UNDER_TEST="$HERE/run-evidence.sh"
 pass=0; fail=0
@@ -48,7 +51,7 @@ EOF
 
 run_it() {
     local wf="$1" all="$2"
-    local dir; dir=$(mktemp -d)
+    local dir; guarded_tmpdir dir
     make_gh "$dir" "$wf" "$all"
     PATH="$dir/bin:$PATH" GATE_REPO=o/r bash "$SCRIPT_UNDER_TEST" "$TREE" 2>&1
     rm -rf "$dir"

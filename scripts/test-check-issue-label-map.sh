@@ -10,9 +10,11 @@
 # verdict.
 set -u
 
+# shellcheck source=scripts/tmpdir-guard.sh
+. "$(cd "$(dirname "$0")" && pwd)/tmpdir-guard.sh"
+
 CHECK="$(dirname "$0")/check-issue-label-map.sh"
-TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT
+guarded_tmpdir TMP
 
 # A workflow stub carrying just the block the gate reads out of it.
 WF="$TMP/workflow.yml"

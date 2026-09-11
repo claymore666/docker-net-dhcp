@@ -10,11 +10,13 @@
 # the prose) and leaves the tree internally consistent.
 set -u
 
+# shellcheck source=scripts/tmpdir-guard.sh
+. "$(cd "$(dirname "$0")" && pwd)/tmpdir-guard.sh"
+
 DIR="$(cd "$(dirname "$0")" && pwd)"
 CHECK="$DIR/check-version-pins.sh"
 BUMP="$DIR/bump-version.sh"
-TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT
+guarded_tmpdir TMP
 
 IMAGE="ghcr.io/claymore666/docker-net-dhcp"
 

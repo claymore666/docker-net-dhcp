@@ -18,9 +18,11 @@
 # silently stops matching turns this suite red instead of green.
 set -u
 
+# shellcheck source=scripts/tmpdir-guard.sh
+. "$(cd "$(dirname "$0")" && pwd)/tmpdir-guard.sh"
+
 CHECK="$(cd "$(dirname "$0")" && pwd)/check-action-pins.sh"
-TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT
+guarded_tmpdir TMP
 
 SHA="$(printf 'a%.0s' $(seq 1 40))"
 failures=0
