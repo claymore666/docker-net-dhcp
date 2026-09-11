@@ -108,6 +108,24 @@ answers `0` and idle on one that answers `1`. The second is
 namespace by PID on every host, and for which no sandbox key exists at
 all.
 
+What the attach asks the daemon, and when. From v2.1.0 the plugin opens
+the container's network namespace and finds its link before it makes any
+Docker call. The sandbox key arrives in the `Join` request and neither
+step needs anything else. One `ContainerInspect` follows, for the
+hostname that becomes DHCP option 12, and the persistent client starts
+when it answers. Where the key route is refused, that same single
+inspect supplies the container's PID for the fallback.
+
+So the attach is not daemon-free, and this section does not claim it is.
+A daemon that never answers still means no persistent client, and
+`attachDaemonBusyGrace` still covers the wait, because the daemon is
+inside `ContainerStart` for this container while it is asked (#406).
+What changed is that the namespace and the link no longer wait on it. A
+hostname source that is not `ContainerInspect` is what a daemon-free
+attach needs, and
+[#417](https://github.com/claymore666/docker-net-dhcp/issues/417) stays
+open for it.
+
 The counters per attach, by host. Where the key route carries it,
 `sandbox_key_entries` rises by one and `sandbox_key_entry_failures` and
 `sandbox_pid_fallbacks` stay flat. Where it does not, those two rise by
