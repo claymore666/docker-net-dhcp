@@ -16,65 +16,124 @@ import (
 	"sync/atomic"
 	"syscall"
 	"testing"
-	"time"
 
 	"github.com/claymore666/dhcp-golib/lease"
+	"github.com/claymore666/dhcp-golib/runtime"
 	log "github.com/sirupsen/logrus"
 	logtest "github.com/sirupsen/logrus/hooks/test"
 	"github.com/vishvananda/netlink"
+	"golang.org/x/sys/unix"
 
 	"github.com/claymore666/docker-net-dhcp/pkg/dhcp"
 	"github.com/claymore666/docker-net-dhcp/pkg/util"
 )
 
-// fakeReleaser is a DHCP client whose SEND is separate from its CALL.
+// fakeSender stands in for the one call that puts a datagram on the
+// wire, which is the only part of the release path a unit test cannot
+// run: runtime.SendRelease opens a socket on the parent.
 //
-// That separation is the whole point of the type. The library's
-// Release() does not block and reports nothing; it bumps ReleasesSent
-// only where the packet actually went out, and it bumps nothing at all
-// when the machine held no binding to give back. A fake that moved the
-// counter inside Release() would make every test below pass against a
-// plugin counter folded from intent, which is the defect this shape
-// exists to catch.
-type fakeReleaser struct {
-	mu sync.Mutex
-	// sends is how many of the next calls put a packet on the wire.
-	// Zero models the states that send nothing: never bound, socket
-	// error, request dropped from a full queue.
-	sends int
-	calls int
-	stats lease.Stats
+// It records what it was handed, so the tests below can assert the
+// RECORD and the SOURCE rather than only the fact of a call. Those two
+// are where a release goes silently wrong: the wrong family's record
+// releases the wrong address, and a source equal to the released
+// address is the violation RFC 9915 section 18.2.7 names.
+type fakeSender struct {
+	mu   sync.Mutex
+	recs []lease.Record
+	cfgs []runtime.ReleaseConfig
+	// err is what the library returns. The typed refusals go here.
+	err error
+	// errFor, when set, is consulted per record instead of err, so a
+	// dual-stack case can fail one family and not the other. That mixed
+	// outcome is the one a single shared flag gets wrong.
+	errFor func(lease.Record) error
 }
 
-func (f *fakeReleaser) Release() {
+func (f *fakeSender) send(rec lease.Record, cfg runtime.ReleaseConfig) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.calls++
-	if f.sends > 0 {
-		f.sends--
-		f.stats.ReleasesSent++
+	f.recs = append(f.recs, rec)
+	f.cfgs = append(f.cfgs, cfg)
+	if f.errFor != nil {
+		return f.errFor(rec)
 	}
+	return f.err
 }
 
-func (f *fakeReleaser) Stats() lease.Stats {
+func (f *fakeSender) callCount() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.stats
+	return len(f.recs)
 }
 
-func (f *fakeReleaser) callCount() int {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.calls
-}
-
-// shortReleaseBudget keeps the wait for a send that never comes from
-// costing a second per case.
-func shortReleaseBudget(t *testing.T) {
+// installSender puts a fake on the wire seam for the test's lifetime.
+func installSender(t *testing.T, f *fakeSender) *fakeSender {
 	t.Helper()
-	prev := releaseSendBudget
-	releaseSendBudget = 20 * time.Millisecond
-	t.Cleanup(func() { releaseSendBudget = prev })
+	if f == nil {
+		f = &fakeSender{}
+	}
+	prev := rtSendRelease
+	rtSendRelease = f.send
+	t.Cleanup(func() { rtSendRelease = prev })
+	return f
+}
+
+// hostParent installs a parent link carrying the given addresses, so
+// hostSourceFor has something to choose from without CAP_NET_ADMIN.
+func hostParent(t *testing.T, addrs ...string) {
+	t.Helper()
+	link := &netlink.Bridge{LinkAttrs: netlink.LinkAttrs{Name: "br0", Index: 7}}
+	prevByName, prevList := nlLinkByName, nlAddrList
+	nlLinkByName = func(name string) (netlink.Link, error) {
+		if name != "br0" {
+			return nil, netlink.LinkNotFoundError{}
+		}
+		return link, nil
+	}
+	nlAddrList = func(_ netlink.Link, family int) ([]netlink.Addr, error) {
+		var out []netlink.Addr
+		for _, a := range addrs {
+			pa, err := netlink.ParseAddr(a)
+			if err != nil {
+				t.Fatalf("ParseAddr %q: %v", a, err)
+			}
+			if (family == unix.AF_INET) != (pa.IP.To4() != nil) {
+				continue
+			}
+			out = append(out, *pa)
+		}
+		return out, nil
+	}
+	t.Cleanup(func() { nlLinkByName, nlAddrList = prevByName, prevList })
+}
+
+// withRecords gives a plugin a durable record store if it has none.
+// Every release is built from one now, so a *Plugin{} with no store
+// releases nothing at all.
+func withRecords(t *testing.T, p *Plugin) *Plugin {
+	t.Helper()
+	if p.records != nil {
+		return p
+	}
+	r, err := dhcp.OpenRecords(filepath.Join(t.TempDir(), recordFileName), "test-instance")
+	if err != nil {
+		t.Fatalf("OpenRecords: %v", err)
+	}
+	t.Cleanup(func() { _ = r.Close() })
+	p.records = r
+	return p
+}
+
+// releaseTestMAC is the endpoint MAC every record below is keyed on.
+var releaseTestMAC = net.HardwareAddr{0x02, 0x42, 0xac, 0x11, 0x00, 0x02}
+
+// releaseTestIdentity6 is a DUID-LL plus the IAID as the record stores
+// it: "the DUID and IAID as sent".
+func releaseTestIdentity6() dhcp.Identity6 {
+	return dhcp.Identity6{
+		DUID: []byte{0, 3, 0, 1, 0x02, 0x42, 0xac, 0x11, 0x00, 0x02},
+		IAID: 0xac110002,
+	}
 }
 
 // TestReleaseLease_ParseRefusesEveryValueItDoesNotImplement pins the
@@ -185,15 +244,18 @@ func TestReleaseLease_TheCreateAndStoredPathsRefuseTheSameSet(t *testing.T) {
 
 // releasingManager is a manager that holds one live client per family
 // and is ready to be stopped.
-func releasingManager(t *testing.T, p *Plugin, value string, v4, v6 *fakeReleaser) *dhcpManager {
+func releasingManager(t *testing.T, p *Plugin, value string, ipv6 bool) *dhcpManager {
 	t.Helper()
-	opts := DHCPNetworkOptions{AuditLog: true, ReleaseLease: value, IPv6: v6 != nil}
+	withRecords(t, p)
+	hostParent(t, "192.168.99.2/24", "fe80::2/64")
+	opts := DHCPNetworkOptions{AuditLog: true, ReleaseLease: value, IPv6: ipv6, Bridge: "br0"}
 	m := stoppingManager(t, p, opts, nil, nil)
-	if v4 != nil {
-		m.setReleaseClient(false, v4)
+	m.recordID = p.recordCreated("net1", releaseTestMAC, dhcp.ClientIdentity([]byte{1, 2, 3}))
+	if ipv6 {
+		m.recordID6 = p.recordCreated6("net1", releaseTestMAC, releaseTestIdentity6())
 	}
-	if v6 != nil {
-		m.setReleaseClient(true, v6)
+	if m.recordID == "" {
+		t.Fatal("no record was created for the releasing manager")
 	}
 	return m
 }
@@ -223,13 +285,12 @@ func TestReleaseLease_OnlyALeaveOnAReleasingNetworkReleases(t *testing.T) {
 		{name: "unset, leaving", value: "", leaving: true, want: 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			shortReleaseBudget(t)
 			var ledgerFailures atomic.Int32
 			p := &Plugin{}
 			p.ledger = testLedger(t, &ledgerFailures)
 
-			client := &fakeReleaser{sends: 1}
-			m := releasingManager(t, p, tc.value, client, nil)
+			sender := installSender(t, nil)
+			m := releasingManager(t, p, tc.value, false)
 
 			var err error
 			if tc.leaving {
@@ -241,8 +302,8 @@ func TestReleaseLease_OnlyALeaveOnAReleasingNetworkReleases(t *testing.T) {
 				t.Fatalf("stop(leaving=%v): %v", tc.leaving, err)
 			}
 
-			if got := client.callCount(); got != tc.want {
-				t.Fatalf("the client's Release() was called %d time(s), want %d", got, tc.want)
+			if got := sender.callCount(); got != tc.want {
+				t.Fatalf("a release was sent %d time(s), want %d", got, tc.want)
 			}
 			if got := m.releasedV4.Load(); got != (tc.want == 1) {
 				t.Errorf("releasedV4 = %v, want %v; the record phase and the tombstone "+
@@ -258,48 +319,52 @@ func TestReleaseLease_OnlyALeaveOnAReleasingNetworkReleases(t *testing.T) {
 	}
 }
 
-// TestReleaseLease_TheCounterFollowsTheSendNotTheCall is the counter's
-// own observer, driven over the three states the library distinguishes.
+// TestReleaseLease_TheCounterFollowsTheSendNotTheIntent is the
+// counter's own observer, driven over the states the sender
+// distinguishes.
 //
-// A plugin counter folded from "we called Release()" would read the
-// same in all three, and an operator alerting on release_failures would
-// see a clean zero on a host that handed nothing back.
-func TestReleaseLease_TheCounterFollowsTheSendNotTheCall(t *testing.T) {
+// A plugin counter folded from "we tried" would read the same in all
+// three, and an operator alerting on release_failures would see a clean
+// zero on a host that handed nothing back. The sender returns every
+// failure precisely so this counter can be honest; a swallowed write
+// error would close the record on an address that stays leased.
+func TestReleaseLease_TheCounterFollowsTheSendNotTheIntent(t *testing.T) {
 	for _, tc := range []struct {
 		name string
-		// client is nil for the family that never started one.
-		client       *fakeReleaser
+		// sendErr is what the library returns; noRecord drops the
+		// record instead, which is refused before any send.
+		sendErr      error
+		noRecord     bool
 		wantSent     int32
 		wantFailures int32
 		wantReleased bool
+		wantCalls    int
 	}{
 		{
-			name:         "the packet went out",
-			client:       &fakeReleaser{sends: 1},
+			name:         "the datagram went out",
 			wantSent:     1,
 			wantReleased: true,
+			wantCalls:    1,
 		},
 		{
-			name: "the client held no binding, or the send failed",
-			// The library counts ReleasesSent on a successful send and
-			// nowhere else; a machine in INIT or SELECTING sends
-			// nothing at all for a release.
-			client:       &fakeReleaser{sends: 0},
+			name:         "the datagram did not leave the host",
+			sendErr:      errors.New("sendto: network is unreachable"),
 			wantFailures: 1,
+			wantCalls:    1,
 		},
 		{
-			name:         "there is no client for this family",
-			client:       nil,
+			name:         "there is no record for this family",
+			noRecord:     true,
 			wantFailures: 1,
+			wantCalls:    0,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			shortReleaseBudget(t)
 			p := &Plugin{}
-			m := newDHCPManager(nil, JoinRequest{NetworkID: "net1", EndpointID: "ep1"},
-				DHCPNetworkOptions{ReleaseLease: ReleaseOnStop}).withPlugin(p)
-			if tc.client != nil {
-				m.setReleaseClient(false, tc.client)
+			sender := installSender(t, &fakeSender{err: tc.sendErr})
+			m := releasingManager(t, p, ReleaseOnStop, false)
+			if tc.noRecord {
+				m.recordID = ""
 			}
 
 			releasedV4, releasedV6 := m.releaseHeldLeases()
@@ -308,6 +373,10 @@ func TestReleaseLease_TheCounterFollowsTheSendNotTheCall(t *testing.T) {
 			}
 			if releasedV6 {
 				t.Errorf("releasedV6 = true on a v4-only network")
+			}
+			if got := sender.callCount(); got != tc.wantCalls {
+				t.Errorf("the wire saw %d datagram(s), want %d: a refusal that still sent one "+
+					"is the one failure no counter can see", got, tc.wantCalls)
 			}
 			if got := p.releasesSentV4.Load(); got != tc.wantSent {
 				t.Errorf("releases_sent_v4 = %d, want %d", got, tc.wantSent)
@@ -318,6 +387,121 @@ func TestReleaseLease_TheCounterFollowsTheSendNotTheCall(t *testing.T) {
 			if got := p.releasesSentV6.Load() + p.releaseFailuresV6.Load(); got != 0 {
 				t.Errorf("the v6 pair moved by %d on a v4-only network; a family that was "+
 					"never asked for has no outcome to count", got)
+			}
+		})
+	}
+}
+
+// TestReleaseLease_TheReleaseIsBuiltFromThisFamilysRecord is the
+// wiring nothing else reads: WHICH record each family's release is
+// built from, and WHICH address it is sent from.
+//
+// Both are silent when wrong. A v6 release built from the v4 record
+// releases an address the container never had, from a source in the
+// wrong family, and every counter and phase in this file still reads
+// correct. The library refuses the mismatched pair, which is the
+// backstop; this is the observer that says the plugin never hands it
+// one.
+func TestReleaseLease_TheReleaseIsBuiltFromThisFamilysRecord(t *testing.T) {
+	p := &Plugin{}
+	sender := installSender(t, nil)
+	m := releasingManager(t, p, ReleaseOnStop, true)
+
+	releasedV4, releasedV6 := m.releaseHeldLeases()
+	if !releasedV4 || !releasedV6 {
+		t.Fatalf("released v4=%v v6=%v, want both", releasedV4, releasedV6)
+	}
+	if got := sender.callCount(); got != 2 {
+		t.Fatalf("the wire saw %d datagram(s), want one per family", got)
+	}
+
+	sender.mu.Lock()
+	recs, cfgs := sender.recs, sender.cfgs
+	sender.mu.Unlock()
+
+	for i, want := range []struct {
+		family string
+		id     string
+		source string
+	}{
+		{"v4", m.recordID, "192.168.99.2"},
+		{"v6", m.recordID6, "fe80::2"},
+	} {
+		if recs[i].ID != want.id {
+			t.Errorf("the %s release was built from record %q, want %q",
+				want.family, recs[i].ID, want.id)
+		}
+		if got := cfgs[i].Source.String(); got != want.source {
+			t.Errorf("the %s release was sent from %s, want %s", want.family, got, want.source)
+		}
+		if cfgs[i].Interface != "br0" {
+			t.Errorf("the %s release left by %q, want the parent br0", want.family, cfgs[i].Interface)
+		}
+	}
+}
+
+// TestReleaseLease_TheSourceIsNeverTheReleasedAddress drives
+// hostSourceFor's rule, per family, including the cases that refuse.
+//
+// The v6 half is RFC 9915 section 18.2.7's second MUST NOT: "The client
+// MUST NOT use any of the addresses it is releasing as the source
+// address in the Release message." The library refuses the violation
+// too, and that is deliberate belt and braces; what it cannot do is
+// pick a legal source, because it does not know which link is the
+// parent or which address is being given back.
+func TestReleaseLease_TheSourceIsNeverTheReleasedAddress(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		v6    bool
+		addrs []string
+		// want is the source, or "" for a refusal.
+		want string
+	}{
+		{"v4 takes the one address there is", false,
+			[]string{"192.168.99.2/24"}, "192.168.99.2"},
+		{"v4 on a parent with several takes the smallest", false,
+			[]string{"192.168.99.9/24", "192.168.99.2/24", "192.168.99.7/24"}, "192.168.99.2"},
+		{"v4 never takes the address being released", false,
+			[]string{"192.168.99.50/24", "192.168.99.60/24"}, "192.168.99.60"},
+		{"v4 skips a link-local", false,
+			[]string{"169.254.1.1/16", "192.168.99.2/24"}, "192.168.99.2"},
+		{"v4 on a parent with no address refuses", false,
+			[]string{"fe80::2/64"}, ""},
+		{"v6 takes the link-local", true,
+			[]string{"fe80::2/64", "fd00::9/64"}, "fe80::2"},
+		{"v6 on a parent with several link-locals takes the smallest", true,
+			[]string{"fe80::9/64", "fe80::2/64"}, "fe80::2"},
+		{"v6 with only a global address refuses", true,
+			[]string{"fd00::9/64"}, ""},
+		{"v6 on a parent with IPv6 disabled refuses", true,
+			[]string{"192.168.99.2/24"}, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := &Plugin{}
+			m := releasingManager(t, p, ReleaseOnStop, true)
+			// stoppingManager puts 192.168.99.50 and fd00::50 on the
+			// endpoint, so the third row's first candidate is exactly
+			// the address being given back.
+			hostParent(t, tc.addrs...)
+
+			got, iface, err := m.hostSourceFor(tc.v6)
+			if tc.want == "" {
+				if err == nil {
+					t.Fatalf("hostSourceFor(v6=%v) = %s, want a refusal", tc.v6, got)
+				}
+				if !errors.Is(err, errNoHostSource) {
+					t.Errorf("hostSourceFor refused with %v, want errNoHostSource", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("hostSourceFor(v6=%v): %v", tc.v6, err)
+			}
+			if got.String() != tc.want {
+				t.Errorf("hostSourceFor(v6=%v) = %s, want %s", tc.v6, got, tc.want)
+			}
+			if iface != "br0" {
+				t.Errorf("hostSourceFor named interface %q, want br0", iface)
 			}
 		})
 	}
@@ -364,30 +548,21 @@ func TestReleaseLease_AFailedV6WithdrawalSendsNothing(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			shortReleaseBudget(t)
 			prev := nlAddrDel
 			nlAddrDel = func(*netlink.Handle, netlink.Link, *netlink.Addr) error { return tc.delErr }
 			t.Cleanup(func() { nlAddrDel = prev })
 
 			p := &Plugin{}
-			m := newDHCPManager(nil, JoinRequest{NetworkID: "net1", EndpointID: "ep1"},
-				DHCPNetworkOptions{ReleaseLease: ReleaseOnStop, IPv6: true}).withPlugin(p)
+			sender := installSender(t, nil)
+			m := releasingManager(t, p, ReleaseOnStop, true)
 			m.netHandle = &netlink.Handle{}
 			m.ctrLink = &netlink.Dummy{LinkAttrs: netlink.LinkAttrs{Name: "eth0"}}
-			v6, err := netlink.ParseAddr("fd00::50/64")
-			if err != nil {
-				t.Fatalf("ParseAddr: %v", err)
-			}
-			m.setLastIP(true, v6)
-
-			client := &fakeReleaser{sends: 1}
-			m.setReleaseClient(true, client)
 
 			if got := m.releaseHeldLease(true); got != tc.wantOutcome {
 				t.Errorf("releaseHeldLease(v6) = %q, want %q", got, tc.wantOutcome)
 			}
-			if got := client.callCount(); got != tc.wantCalls {
-				t.Fatalf("Release() was called %d time(s), want %d: RFC 9915 section 18.2.7 "+
+			if got := sender.callCount(); got != tc.wantCalls {
+				t.Fatalf("the wire saw %d datagram(s), want %d: RFC 9915 section 18.2.7 "+
 					"forbids beginning the exchange while the address is on the link",
 					got, tc.wantCalls)
 			}
@@ -611,21 +786,21 @@ func TestReleaseLease_LeaveSettlesTheWholeEndpoint(t *testing.T) {
 	for _, tc := range []struct {
 		name         string
 		value        string
-		v4Sends      int
-		v6Sends      int
+		v4OK         bool
+		v6OK         bool
 		wantReleased bool
 		wantV4Phase  lease.Phase
 		wantV6Phase  lease.Phase
 	}{
 		{
-			name: "both families released", value: ReleaseOnStop, v4Sends: 1, v6Sends: 1,
+			name: "both families released", value: ReleaseOnStop, v4OK: true, v6OK: true,
 			wantReleased: true, wantV4Phase: lease.PhaseClosed, wantV6Phase: lease.PhaseClosed,
 		},
 		{
 			// The mixed outcome. One shared flag would settle both
 			// records the same way, and the v6 lease this endpoint
 			// still holds would stop being resumable.
-			name: "only v4 got out", value: ReleaseOnStop, v4Sends: 1, v6Sends: 0,
+			name: "only v4 got out", value: ReleaseOnStop, v4OK: true, v6OK: false,
 			wantReleased: true, wantV4Phase: lease.PhaseClosed, wantV6Phase: lease.PhaseLeft,
 		},
 		{
@@ -634,16 +809,15 @@ func TestReleaseLease_LeaveSettlesTheWholeEndpoint(t *testing.T) {
 			// tombstone carries both addresses, so a v6 lease that
 			// went back must suppress it even though the v4 lease
 			// did not move.
-			name: "only v6 got out", value: ReleaseOnStop, v4Sends: 0, v6Sends: 1,
+			name: "only v6 got out", value: ReleaseOnStop, v4OK: false, v6OK: true,
 			wantReleased: true, wantV4Phase: lease.PhaseLeft, wantV6Phase: lease.PhaseClosed,
 		},
 		{
-			name: "nothing was asked for", value: ReleaseNever, v4Sends: 1, v6Sends: 1,
+			name: "nothing was asked for", value: ReleaseNever, v4OK: true, v6OK: true,
 			wantReleased: false, wantV4Phase: lease.PhaseLeft, wantV6Phase: lease.PhaseLeft,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			shortReleaseBudget(t)
 			p := recordingPlugin(t)
 			var ledgerFailures atomic.Int32
 			p.ledger = testLedger(t, &ledgerFailures)
@@ -661,8 +835,17 @@ func TestReleaseLease_LeaveSettlesTheWholeEndpoint(t *testing.T) {
 			p.recordBound(id4, "created")
 			p.recordBound(id6, "created")
 
-			m := releasingManager(t, p, tc.value,
-				&fakeReleaser{sends: tc.v4Sends}, &fakeReleaser{sends: tc.v6Sends})
+			installSender(t, &fakeSender{errFor: func(rec lease.Record) error {
+				ok := tc.v4OK
+				if rec.Family == lease.FamilyV6 {
+					ok = tc.v6OK
+				}
+				if ok {
+					return nil
+				}
+				return errors.New("sendto: network is unreachable")
+			}})
+			m := releasingManager(t, p, tc.value, true)
 			m.recordID, m.recordID6 = id4, id6
 			p.persistentDHCP["ep1"] = m
 			p.rememberEndpoint("ep1", endpointFingerprint{
@@ -709,25 +892,75 @@ func TestReleaseLease_LeaveSettlesTheWholeEndpoint(t *testing.T) {
 	}
 }
 
-// TestReleaseLease_TheClientIsPublishedOnceAndOnlyFromSetupClient is the
-// CALL SITE, and it is a source-level test for the reason
-// TestRenewalWiring_IsCalledOnceAndOnlyFromSetupClient gives: there is
-// no seam between setupClient and a raw socket in a real network
-// namespace, so the tail of setupClient is not reachable from a unit
-// test at all, and what is checkable here is the wiring.
+// TestReleaseLease_AFailedStartStillReleases is the population finding
+// 2 was about, and its expectation is the INVERSE of the one this test
+// carried while the release was asked of a running client.
 //
-// Deleting the call leaves every other test in this file green. The
-// fakes below publish their own client, so the option still parses, the
-// budget still expires, the counters still move and the records still
-// settle -- and on a real host releaseClient would return nil for every
-// endpoint, releaseHeldLease would return false without sending
-// anything, and `release_lease=on_stop` would be a network option that
-// counts a failure per stop and never hands an address back.
+// The shape: a container stopped before its persistent client attached
+// or bound. That is `docker run --rm` and it is what the option exists
+// for. While the release was asked of a client, this endpoint had none
+// to ask, so nothing was sent, the address stayed leased upstream for
+// its whole lease time, and the plugin charged itself a release
+// failure for a release it could never have made.
 //
-// The family argument is checked for the same reason the renewal test
-// checks its own: a literal there publishes both families under one
-// key, and the family that is overwritten is a lease nothing releases.
-func TestReleaseLease_TheClientIsPublishedOnceAndOnlyFromSetupClient(t *testing.T) {
+// Built from the record, the client's state stops mattering. The
+// address the container used came from CreateEndpoint's one-shot, the
+// one-shot wrote it into this same record, and the record is still
+// there after the client that never started is gone. So the release
+// goes out and the counter says sent.
+//
+// The `never` row is the control: the option still decides whether
+// anything is attempted at all.
+func TestReleaseLease_AFailedStartStillReleases(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		value        string
+		wantCalls    int
+		wantSent     int32
+		wantFailed   int32
+		wantReleased bool
+	}{
+		{"on_stop: the record still has the lease, so it goes back", ReleaseOnStop, 1, 1, 0, true},
+		{"never: nothing is attempted and nothing is counted", ReleaseNever, 0, 0, 0, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var ledgerFailures atomic.Int32
+			p := &Plugin{}
+			p.ledger = testLedger(t, &ledgerFailures)
+
+			sender := installSender(t, nil)
+			m := releasingManager(t, p, tc.value, false)
+			m.startErr = errors.New("failed to start DHCP client")
+
+			if err := m.StopForLeave(); err != nil {
+				t.Fatalf("StopForLeave: %v", err)
+			}
+
+			if got := sender.callCount(); got != tc.wantCalls {
+				t.Errorf("the wire saw %d datagram(s), want %d", got, tc.wantCalls)
+			}
+			if got := m.releasedV4.Load(); got != tc.wantReleased {
+				t.Errorf("releasedV4 = %v, want %v", got, tc.wantReleased)
+			}
+			if got := p.releasesSentV4.Load(); got != tc.wantSent {
+				t.Errorf("releases_sent_v4 = %d, want %d", got, tc.wantSent)
+			}
+			if got := p.releaseFailuresV4.Load(); got != tc.wantFailed {
+				t.Errorf("release_failures_v4 = %d, want %d", got, tc.wantFailed)
+			}
+		})
+	}
+}
+
+// TestReleaseLease_TheSenderIsCalledOnceAndOnlyFromTheReleasePath is the
+// CALL SITE, in the shape the retired setReleaseClient test had.
+//
+// rtSendRelease is the one line that puts a datagram on a socket. A
+// second caller anywhere in this package would be a release this file's
+// counters, phases and tombstone logic never see, and the first thing
+// an operator would know about it is an address disappearing from the
+// server while a container is still using it.
+func TestReleaseLease_TheSenderIsCalledOnceAndOnlyFromTheReleasePath(t *testing.T) {
 	fset := token.NewFileSet()
 	files, err := filepath.Glob("*.go")
 	if err != nil {
@@ -749,29 +982,16 @@ func TestReleaseLease_TheClientIsPublishedOnceAndOnlyFromSetupClient(t *testing.
 			if !ok || fn.Body == nil {
 				continue
 			}
-			// The definition is a FuncDecl and not a call, so the
-			// method itself is not one of the sites this counts.
 			ast.Inspect(fn.Body, func(n ast.Node) bool {
 				call, ok := n.(*ast.CallExpr)
 				if !ok {
 					return true
 				}
-				sel, ok := call.Fun.(*ast.SelectorExpr)
-				if !ok || sel.Sel.Name != "setReleaseClient" {
+				id, ok := call.Fun.(*ast.Ident)
+				if !ok || id.Name != "rtSendRelease" {
 					return true
 				}
 				sites = append(sites, fn.Name.Name)
-				if len(call.Args) != 2 {
-					t.Errorf("setReleaseClient in %s takes %d argument(s); this test reads the "+
-						"first one as the family and can no longer do so", fn.Name.Name, len(call.Args))
-					return true
-				}
-				id, ok := call.Args[0].(*ast.Ident)
-				if !ok || id.Name != "v6" {
-					t.Errorf("setReleaseClient in %s is passed %T as its family argument, not the "+
-						"`v6` parameter; a constant there files both families under one key and "+
-						"leaves the other family with no client to release", fn.Name.Name, call.Args[0])
-				}
 				return true
 			})
 		}
@@ -779,73 +999,10 @@ func TestReleaseLease_TheClientIsPublishedOnceAndOnlyFromSetupClient(t *testing.
 	if scanned == 0 {
 		t.Fatal("no production sources parsed; this test would pass vacuously")
 	}
-	if len(sites) != 1 {
-		t.Fatalf("setReleaseClient is called %d time(s), in %v; want exactly one, in setupClient. "+
-			"None means release_lease=on_stop finds no client at Leave, sends nothing, and counts a "+
-			"failure for every stop; more than one means a CreateEndpoint one-shot, which returns "+
-			"before any Leave, is a second writer to the field the teardown path reads.", len(sites), sites)
-	}
-	if sites[0] != "setupClient" {
-		t.Errorf("setReleaseClient is called from %s; the client that holds this endpoint's lease "+
-			"at Leave is the persistent one, and it is built in setupClient", sites[0])
-	}
-}
-
-// TestReleaseLease_AFailedStartStillAsksAndStillCounts drives the
-// population the call-site test above cannot see: an endpoint whose
-// Join failed.
-//
-// setupClient publishes the client BEFORE Start, on purpose, so a
-// client whose Start failed is still there to be asked. It holds no
-// binding, so nothing goes on the wire and the attempt lands in
-// release_failures. The alternative, which this pins against, is the
-// release sitting below stop's `startErr` return: then a network that
-// asked for releases would be SILENT for exactly this population --
-// neither sent nor failed -- while its one-shot's address stays leased
-// upstream. Silence there reads like a network with no failures.
-func TestReleaseLease_AFailedStartStillAsksAndStillCounts(t *testing.T) {
-	for _, tc := range []struct {
-		name       string
-		value      string
-		wantCalls  int
-		wantSent   int32
-		wantFailed int32
-	}{
-		{"on_stop: the attempt is made and counted as a failure", ReleaseOnStop, 1, 0, 1},
-		{"never: nothing is asked and nothing is counted", ReleaseNever, 0, 0, 0},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			shortReleaseBudget(t)
-			var ledgerFailures atomic.Int32
-			p := &Plugin{}
-			p.ledger = testLedger(t, &ledgerFailures)
-
-			// sends: 0 is the state of a client whose Start failed. The
-			// machine never bound, so the library has no binding to
-			// relinquish and moves no counter.
-			client := &fakeReleaser{sends: 0}
-			m := releasingManager(t, p, tc.value, client, nil)
-			m.startErr = errors.New("failed to start DHCP client")
-
-			if err := m.StopForLeave(); err != nil {
-				t.Fatalf("StopForLeave: %v", err)
-			}
-
-			if got := client.callCount(); got != tc.wantCalls {
-				t.Errorf("the client's Release() was called %d time(s), want %d", got, tc.wantCalls)
-			}
-			if got := m.releasedV4.Load(); got {
-				t.Error("releasedV4 is true after a release that put nothing on the wire; " +
-					"the tombstone would be skipped for an address still leased upstream")
-			}
-			if got := p.releasesSentV4.Load(); got != tc.wantSent {
-				t.Errorf("releases_sent_v4 = %d, want %d", got, tc.wantSent)
-			}
-			if got := p.releaseFailuresV4.Load(); got != tc.wantFailed {
-				t.Errorf("release_failures_v4 = %d, want %d; an operator who asked for releases "+
-					"reads this counter to find the endpoints that did not get one", got, tc.wantFailed)
-			}
-		})
+	if len(sites) != 1 || sites[0] != "releaseHeldLease" {
+		t.Fatalf("rtSendRelease is called from %v; want exactly one call, in releaseHeldLease. "+
+			"A second caller sends a release that no counter, no record phase and no tombstone "+
+			"skip in this package knows about.", sites)
 	}
 }
 
@@ -915,62 +1072,42 @@ func TestReleaseLease_TheRetainedRecordIsNeverAnOlderOne(t *testing.T) {
 	}
 }
 
-// TestReleaseLease_EveryReasonForNotSendingIsNamed drives the four
-// outcomes apart.
+// TestReleaseLease_EveryReasonForNotSendingIsNamed drives the outcomes
+// apart.
 //
 // WHY THE REASON IS A TESTED VALUE AND NOT JUST LOG TEXT. A stop on a
-// `release_lease=on_stop` network that hands nothing back has three
-// unrelated causes, and until this change all three returned a bare
-// false: no client to ask, a client that was asked and never sent, and
-// a v6 address that could not come off the link. They are three
-// different operator problems -- a container that stopped before its
-// persistent client attached, a wedged send, and a netlink permission
-// failure -- and the counter pair deliberately does not tell them
-// apart, so the outcome is the only place the difference survives.
-//
-// The no-client arm is the one measured against the product: it is the
-// `docker run --rm` shape the option exists for, where the address in
-// use came from the acquisition at endpoint creation and no persistent
-// client ever attached to be asked.
+// `release_lease=on_stop` network that hands nothing back has several
+// unrelated causes, and they used to share one bare false. The counter
+// pair deliberately does not tell them apart, so the outcome is the
+// only place the difference survives, and each is a different thing for
+// an operator to do: a record that names no server is a server that
+// never sent option 54, no source is a parent with no address in that
+// family, a bad record is a plugin defect, and a send failure is the
+// socket.
 func TestReleaseLease_EveryReasonForNotSendingIsNamed(t *testing.T) {
 	for _, tc := range []struct {
 		name string
-		// hasClient false means nothing was ever published for this
-		// family; sends is how many of the fake's calls reach the wire.
-		hasClient bool
-		sends     int
-		want      releaseOutcome
+		// one of these three shapes the case.
+		sendErr  error
+		noRecord bool
+		noSource bool
+		want     releaseOutcome
 	}{
-		{"no client was ever published", false, 0, releaseNoClient},
-		{"the client was asked and sent nothing", true, 0, releaseBudgetExpired},
-		{"the client sent", true, 1, releaseSent},
+		{name: "the datagram went out", want: releaseSent},
+		{name: "no record for this family", noRecord: true, want: releaseNoRecord},
+		{name: "no address on the parent", noSource: true, want: releaseNoSource},
+		{name: "the record holds no address", sendErr: lease.ErrReleaseNoAddr, want: releaseNoAddress},
+		{name: "the record names no server", sendErr: lease.ErrReleaseNoServer, want: releaseNoServer},
+		{name: "the record is in no known family", sendErr: lease.ErrReleaseFamily, want: releaseBadRecord},
+		{name: "the v6 record carries no DUID and IAID", sendErr: lease.ErrReleaseNoIdentity, want: releaseBadRecord},
+		{name: "the record's two IAIDs disagree", sendErr: lease.ErrReleaseIAIDMismatch, want: releaseBadRecord},
+		{name: "the source is in the other family", sendErr: runtime.ErrReleaseSourceFamily, want: releaseNoSource},
+		{name: "the source is the released address", sendErr: runtime.ErrReleaseSourceIsReleased, want: releaseNoSource},
+		{name: "a v6 release with no interface", sendErr: runtime.ErrReleaseNoInterface, want: releaseNoSource},
+		{name: "the socket refused it", sendErr: errors.New("sendto: network is unreachable"), want: releaseSendFailed},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			shortReleaseBudget(t)
-			client := func() *fakeReleaser {
-				if !tc.hasClient {
-					return nil
-				}
-				return &fakeReleaser{sends: tc.sends}
-			}
-
-			// The reason.
-			c := client()
-			m := releasingManager(t, &Plugin{}, ReleaseOnStop, c, nil)
-			if got := m.releaseHeldLease(false); got != tc.want {
-				t.Errorf("releaseHeldLease(v4) = %q, want %q", got, tc.want)
-			}
-			// The client is asked in every arm that has one; a mutant
-			// answering no_client without looking would pass above.
-			if c != nil && c.callCount() != 1 {
-				t.Errorf("Release() was called %d time(s), want 1", c.callCount())
-			}
-
-			// The counters, on a FRESH manager, because the fake's send
-			// budget is spent by the probe above. They stay a two-way
-			// split: every outcome but the send is one failure.
 			p := &Plugin{}
-			m2 := releasingManager(t, p, ReleaseOnStop, client(), nil)
 
 			prevLevel := log.GetLevel()
 			log.SetLevel(log.DebugLevel)
@@ -978,8 +1115,30 @@ func TestReleaseLease_EveryReasonForNotSendingIsNamed(t *testing.T) {
 			hook := logtest.NewLocal(log.StandardLogger())
 			defer hook.Reset()
 
-			if got := m2.releaseFamily(false); got != (tc.want == releaseSent) {
+			installSender(t, &fakeSender{err: tc.sendErr})
+			m := releasingManager(t, p, ReleaseOnStop, false)
+			if tc.noRecord {
+				m.recordID = ""
+			}
+			if tc.noSource {
+				hostParent(t, "fe80::2/64")
+			}
+
+			if got := m.releaseFamily(false); got != (tc.want == releaseSent) {
 				t.Errorf("releaseFamily(v4) = %v, want %v", got, tc.want == releaseSent)
+			}
+
+			// The counters stay a two-way split: every outcome but the
+			// send is one failure, whatever its reason.
+			wantSent, wantFailed := int32(0), int32(1)
+			if tc.want == releaseSent {
+				wantSent, wantFailed = 1, 0
+			}
+			if got := p.releasesSentV4.Load(); got != wantSent {
+				t.Errorf("releases_sent_v4 = %d, want %d", got, wantSent)
+			}
+			if got := p.releaseFailuresV4.Load(); got != wantFailed {
+				t.Errorf("release_failures_v4 = %d, want %d", got, wantFailed)
 			}
 
 			// THE LINE AN OPERATOR READS. Without this the whole
@@ -994,63 +1153,18 @@ func TestReleaseLease_EveryReasonForNotSendingIsNamed(t *testing.T) {
 				}
 				said = append(said, v.(string))
 				wantLevel := log.WarnLevel
-				if tc.want == releaseSent {
+				if tc.want == releaseSent || tc.want == releaseNoAddress {
 					wantLevel = log.DebugLevel
 				}
 				if e.Level != wantLevel {
 					t.Errorf("the %q line is at %s, want %s: a stop that hands nothing back "+
-						"on a releasing network is a warning", v, e.Level, wantLevel)
+						"on a releasing network is a warning, and a stop that had nothing to "+
+						"hand back is not", v, e.Level, wantLevel)
 				}
 			}
 			if len(said) != 1 || said[0] != string(tc.want) {
 				t.Errorf("the log named outcomes %v, want exactly [%s]", said, tc.want)
 			}
-			wantSent, wantFailed := int32(0), int32(1)
-			if tc.want == releaseSent {
-				wantSent, wantFailed = 1, 0
-			}
-			if got := p.releasesSentV4.Load(); got != wantSent {
-				t.Errorf("releases_sent_v4 = %d, want %d", got, wantSent)
-			}
-			if got := p.releaseFailuresV4.Load(); got != wantFailed {
-				t.Errorf("release_failures_v4 = %d, want %d", got, wantFailed)
-			}
 		})
-	}
-}
-
-// TestReleaseLease_TheShippedSendBudgetIsTheOneInForce closes the gap
-// every other test in this file opens.
-//
-// shortReleaseBudget replaces releaseSendBudget in all of them, so the
-// value that actually ships has never executed: a change to it, to
-// `time.Second`'s units, or to the line that reads it would be caught
-// by nothing here. This case runs the send path with the shipped budget
-// untouched, which costs nothing because a client that sends returns on
-// the first poll.
-//
-// WHAT THIS DOES NOT COVER, stated rather than implied: the EXPIRY arm
-// under the shipped value is still driven only under the short budget.
-// Waiting a real second for it would put a second on every run of this
-// package to observe a `time.Now` comparison that the short-budget
-// cases already drive. The constant below is pinned instead, so a
-// change to the shipped number is a change to this test.
-func TestReleaseLease_TheShippedSendBudgetIsTheOneInForce(t *testing.T) {
-	if releaseSendBudget != time.Second {
-		t.Fatalf("releaseSendBudget = %v, want 1s: the number is documented in docs/reference.md "+
-			"as the per-family cost of a stop that cannot release", releaseSendBudget)
-	}
-
-	p := &Plugin{}
-	client := &fakeReleaser{sends: 1}
-	m := releasingManager(t, p, ReleaseOnStop, client, nil)
-
-	start := time.Now()
-	if got := m.releaseHeldLease(false); got != releaseSent {
-		t.Fatalf("releaseHeldLease(v4) = %q, want %q", got, releaseSent)
-	}
-	if elapsed := time.Since(start); elapsed >= releaseSendBudget {
-		t.Errorf("the send path took %v with a client that sends immediately; "+
-			"it must not wait out the budget", elapsed)
 	}
 }

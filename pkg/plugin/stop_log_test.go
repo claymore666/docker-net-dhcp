@@ -172,11 +172,8 @@ func TestStop_NoStopPathClaimsAReclaimOrRelease(t *testing.T) {
 			releases: true,
 			leaving:  true,
 			mk: func(t *testing.T, p *Plugin) *dhcpManager {
-				m := stoppingManager(t, p, DHCPNetworkOptions{
-					AuditLog: true, ReleaseLease: ReleaseOnStop,
-				}, nil, nil)
-				m.setReleaseClient(false, &fakeReleaser{sends: 1})
-				return m
+				installSender(t, nil)
+				return releasingManager(t, p, ReleaseOnStop, false)
 			},
 		},
 	} {

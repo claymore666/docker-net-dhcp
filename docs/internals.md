@@ -353,12 +353,25 @@ doing so would report one for every container that started
 successfully.
 
 **What `release_lease=on_stop` changes.** At `Leave`, and only there,
-the endpoint's own running client hands its lease back: a `DHCPRELEASE`
-(RFC 2131 section 4.4.6) for IPv4 and a `Release` (RFC 9915 section
-18.2.7) for IPv6. The v6 address comes off the container link first,
-which section 18.2.7 requires before the exchange may begin; if it
-cannot be removed, nothing is sent and the address expires on the
-server's clock instead.
+the endpoint's lease goes back: a `DHCPRELEASE` (RFC 2131 section 4.4.6)
+for IPv4 and a `Release` (RFC 9915 section 18.2.7) for IPv6, one
+datagram per family.
+
+**It is built from the lease record, not from a running client**, and
+that is the difference that makes the option work for the case it
+exists for. A container stopped before the plugin's persistent client
+attached has no client to ask, and the address it was using came from
+the one-shot exchange at `CreateEndpoint` -- which wrote it into the
+same record. So the record holds the address, the identity as sent, the
+chaddr and the server, and the release is assembled from those and sent
+from the host's own address on the parent interface. Nothing needs the
+container's namespace, which may already be gone.
+
+The v6 address comes off the container link first, which section 18.2.7
+requires before the exchange may begin; if it cannot be removed, nothing
+is sent and the address expires on the server's clock instead. The
+source is the parent's link-local address and never the address being
+released, which is the same section's second requirement.
 
 Everything else about that teardown follows from the address being
 gone. The record is `CLOSED` rather than `LEFT`, per family, so the next

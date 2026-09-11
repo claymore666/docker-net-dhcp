@@ -264,8 +264,8 @@ type dhcpManager struct {
 	// one-shot took held upstream until it expired, which since #800 is
 	// what happens to every lease on a `release_lease=never` network.
 	// #962 added the one exception: a Leave on a `release_lease=on_stop`
-	// network asks the running client to hand the address back. Not a
-	// race, the only behaviour. Both flags are now read the same way when the
+	// network hands the address back, built from the record, whether or
+	// not this flag was ever set. Not a race, the only behaviour. Both flags are now read the same way when the
 	// ledger entry for each family is written.
 	boundV6 atomic.Bool
 	// MacAddress is set in macvlan mode so we can re-find the link inside
@@ -359,21 +359,6 @@ type dhcpManager struct {
 	// TestHealthClient_IsPublishedOnlyForV4 holds the guard at the one
 	// call site and docs/reference.md states the bound on the row.
 	clientV4 endpointClient
-
-	// releaseV4 / releaseV6 are the two persistent clients seen through
-	// the only two methods `release_lease=on_stop` needs: ask for the
-	// lease back, and read whether a packet left (#962).
-	//
-	// BOTH FAMILIES, unlike clientV4 beside them. The health document
-	// describes one endpoint and picks the v4 client to describe it
-	// with; a release is owed by whichever family holds a lease, and a
-	// field for one of them is the "v6 half missing" defeat row built
-	// into the type.
-	//
-	// Under ipMu, written in setupClient and read in stop after
-	// startedCh has closed.
-	releaseV4 releasingClient
-	releaseV6 releasingClient
 
 	// releasedV4 / releasedV6 record that this endpoint's lease was
 	// actually handed back, so Leave can close the record instead of
@@ -1451,12 +1436,6 @@ func (m *dhcpManager) setupClient(v6 bool) (chan error, error) {
 	if !v6 {
 		m.setHealthClient(client)
 	}
-	// BOTH FAMILIES, and before Start: a client that fails to start
-	// still has to be asked for its lease back, because the one-shot's
-	// lease is outstanding either way and the attempt is what the
-	// failure counter counts.
-	m.setReleaseClient(v6, client)
-
 	events, err := client.Start()
 	if err != nil {
 		return nil, fmt.Errorf("failed to start DHCP%v client: %w", v6Str, err)
@@ -2065,10 +2044,13 @@ func (m *dhcpManager) stop(leaving bool) error {
 	// operator who asked for releases most wants to see that none
 	// happened.
 	//
-	// Before close(m.stopChan) and before the clients are drained,
-	// because a release is something a RUNNING client does: the socket
-	// is open, the machine holds the binding, and the identity on the
-	// wire is the one the server filed the lease under.
+	// Before close(m.stopChan) and before the clients are drained, and
+	// the reason is no longer the client. The release is built from the
+	// durable record and sent from the host, so it does not need the
+	// client at all; what it does need is the v6 address still on the
+	// container link to be takeable off it (RFC 9915 section 18.2.7),
+	// and the container's namespace still open for that. Both are gone
+	// once the teardown below has run.
 	if leaving && m.opts.releasesOnStop() {
 		releasedV4, releasedV6 := m.releaseHeldLeases()
 		m.releasedV4.Store(releasedV4)
@@ -2102,9 +2084,9 @@ func (m *dhcpManager) stop(leaving bool) error {
 		// A `release_lease=on_stop` network has already had its chance
 		// by the time this runs: the release is attempted at the top of
 		// stop(), above this return, precisely so that a Start failure
-		// does not silently skip it (#962). Reaching here means it
-		// found no client that ever bound and sent nothing, which is
-		// the paragraph above all over again.
+		// does not silently skip it (#962). It is built from the record,
+		// so on that network the one-shot's address has usually gone
+		// back and the paragraph above describes the `never` default.
 		if v4, v6 := m.lastIPs(); v4 != nil || v6 != nil {
 			log.WithFields(m.logFields(false)).
 				WithField("ip", auditIP(v4)).
@@ -2191,10 +2173,11 @@ func (m *dhcpManager) stop(leaving bool) error {
 		// either way: no RELEASE was sent on this path, and writing
 		// "stopped" would be the ledger claiming something the server
 		// never saw, which is the one thing this ledger exists not to
-		// do. `release_lease=on_stop` reaches the same answer here by a
-		// different route: the release runs before this point and finds
-		// no client that ever bound, so it sends nothing and counts a
-		// release failure (#962).
+		// do. `release_lease=on_stop` does NOT reach the same answer: the
+		// release runs before this point, is built from the record
+		// rather than from the client that never bound, and hands the
+		// one-shot's address back (#962). This block is the `never`
+		// network's answer and the answer for a release that failed.
 		log.WithFields(m.logFields(false)).
 			WithField("v4_outstanding", neverBoundV4).
 			WithField("v6_outstanding", neverBoundV6).
@@ -2245,9 +2228,11 @@ func (m *dhcpManager) settleFamily(v6 bool, last *netlink.Addr, exitErr error, l
 		// What is settled here is that nothing is audited as released,
 		// which is the honest record: no RELEASE was sent on this path.
 		// It is "this path" and no longer "any path" since #962, which
-		// gave `release_lease=on_stop` networks a release at Leave; a
-		// client that never bound has no lease to hand back, so that
-		// path arrives here having sent nothing either.
+		// gave `release_lease=on_stop` networks a release at Leave. That
+		// release is built from the record and does not care that this
+		// client never bound, so on such a network the address may well
+		// have gone back before this line runs; what stays true here is
+		// that nothing the LEDGER writes claims it.
 		// TestStop_NoStopPathClaimsAReclaimOrRelease keeps it honest,
 		// because prose cannot — and this comment is the proof of that:
 		// it named the test's pre-rename spelling long after the rename,

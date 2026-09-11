@@ -767,7 +767,6 @@ type libClient interface {
 	Events() <-chan lease.Event
 	Lease() (lease.Lease, bool)
 	Stats() lease.Stats
-	Release()
 }
 
 // translate turns the library's lease events into the plugin's.
@@ -1086,31 +1085,6 @@ func (c *DHCPClient) ACDPhase() proto.ACDPhase {
 // the address is used, the library performs it, and DADPhase is where
 // that is reported. Read this beside V6, never alone.
 func (c *DHCPClient) ConflictMode() proto.ConflictMode { return c.params.Conflict }
-
-// Release hands this client's lease back to the server and stops the
-// client: a DHCPRELEASE for v4 (RFC 2131 section 4.4.6) or a Release
-// message for v6 (RFC 9915 section 18.2.7).
-//
-// IT REPORTS NOTHING AND IT DOES NOT BLOCK, because the library's call
-// does neither: RFC 2131 section 4.4.6 is "the client sends a
-// DHCPRELEASE message to the server" with no answer defined, so there
-// is nothing to wait for, and the library's request queue is bounded,
-// so a call made while it is full is dropped and counted in
-// Stats.RequestsDropped. A caller that needs to know whether a packet
-// LEFT reads Stats().ReleasesSent, which the library bumps where the
-// send succeeded and nowhere else. releaseHeldLease is that caller.
-//
-// A client that holds no binding sends nothing and still stops, which
-// the library states for INIT, SELECTING, REQUESTING and REBOOTING:
-// there is no lease to relinquish. That case is a release FAILURE to
-// this plugin, not a success, for the same reason -- the address is
-// still leased upstream when it returns.
-func (c *DHCPClient) Release() {
-	if c.runner == nil {
-		return
-	}
-	c.runner.Release()
-}
 
 // Stats is the manager's counters, which are the per-endpoint half of
 // the health surface (P-7).

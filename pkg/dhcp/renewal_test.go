@@ -250,10 +250,9 @@ func TestRenewalWatch_DoesNotCountAcquisition(t *testing.T) {
 // for the library client at the seam the chassis already declares, so
 // the translate goroutine can be driven with no socket and no wire.
 type fakeLib struct {
-	mu       sync.Mutex
-	stats    lease.Stats
-	src      chan lease.Event
-	releases int
+	mu    sync.Mutex
+	stats lease.Stats
+	src   chan lease.Event
 }
 
 func (f *fakeLib) Run(ctx context.Context) error { return nil }
@@ -263,11 +262,6 @@ func (f *fakeLib) Lease() (lease.Lease, bool)    { return lease.Lease{}, false }
 // Release is the seam's fourth method. This fake counts the call and
 // moves no counter, which is the shape releaseHeldLease must read as a
 // FAILED release: a library that was asked and put nothing on the wire.
-func (f *fakeLib) Release() {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.releases++
-}
 
 func (f *fakeLib) Stats() lease.Stats {
 	f.mu.Lock()
@@ -460,36 +454,4 @@ func TestTranslate_ANakTerminatedCycleReportsNothing(t *testing.T) {
 	}
 
 	close(lib.src)
-}
-
-// TestDHCPClientRelease_ForwardsToTheRunnerOrDoesNothing drives the
-// chassis method the plugin's `release_lease=on_stop` calls.
-//
-// It is here and not in pkg/plugin because this is where the seam is:
-// the plugin's release path can only see a client that already exists,
-// and the two states that matter to it -- a client with a running
-// machine behind it and a client whose Start never got that far -- are
-// states of this struct. A forward that went missing would leave
-// `release_lease=on_stop` calling a method that returns quietly, which
-// reads at every layer above exactly like a server that ignored the
-// packet.
-func TestDHCPClientRelease_ForwardsToTheRunnerOrDoesNothing(t *testing.T) {
-	f := &fakeLib{}
-	c := &DHCPClient{runner: f}
-	c.Release()
-	c.Release()
-
-	f.mu.Lock()
-	got := f.releases
-	f.mu.Unlock()
-	if got != 2 {
-		t.Errorf("the runner saw %d release call(s), want 2; a chassis that swallows the call makes "+
-			"release_lease=on_stop a no-op that still logs a release", got)
-	}
-
-	// A client whose Start failed before the machine existed. The
-	// plugin publishes it to the teardown path anyway, on purpose, so
-	// this call happens and must not take the daemon down with it.
-	var never DHCPClient
-	never.Release()
 }

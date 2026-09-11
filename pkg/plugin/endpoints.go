@@ -411,7 +411,8 @@ type HealthResponse struct {
 	// address is LEFT TO EXPIRE. It was released here until #800
 	// removed that path, and `release_lease=on_stop` does not restore
 	// it: a release happens at Leave, and an endpoint no container
-	// claimed reaches no Leave (#962).
+	// claimed reaches no Leave at all, whatever the release is built
+	// from (#962).
 	// Not Healthy-affecting: nothing is running without a renewal
 	// client, because nothing is running. A rise means endpoints are
 	// being created for containers that never attach.

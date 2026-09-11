@@ -193,6 +193,17 @@ func TestReleaseLease_OnStopHandsTheAddressBack(t *testing.T) {
 	// The precondition and the positive control in one: an address the
 	// server never recorded cannot be seen to go back, and a lease file
 	// this test cannot read would produce the same "gone" as a release.
+	//
+	// IT WAITS FOR THE LEASE AND DELIBERATELY NOT FOR THE CLIENT. The
+	// lease this finds is the one CreateEndpoint's one-shot won, and
+	// the stop below may well arrive before the persistent client has
+	// attached or bound. That is not a flaw in the test, it is the
+	// case the option exists for, meaning `docker run --rm` and
+	// anything else short-lived, and while the release was asked of a
+	// running client it was also the case that could not work: this
+	// test went red because the client that was asked did not exist
+	// yet. The release is built from the lease record now, so the
+	// client's state does not enter into it.
 	if !waitLeaseFile(t, fixture.LeaseFile(), ip, true) {
 		t.Fatalf("dnsmasq's lease DB has no entry for %s, so the assertion below cannot "+
 			"tell a release from a lease that was never recorded", ip)
@@ -426,6 +437,10 @@ func TestReleaseLease_OnStopHandsTheV6AddressBackToo(t *testing.T) {
 	t.Logf("container %s holds ip=%s v6=%s", ctrName, ip, v6)
 
 	for _, addr := range []string{ip, v6} {
+		// Same as the v4 test: this waits for the LEASE and not for the
+		// v6 client. A persistent DHCPv6 client that never bound inside
+		// the endpoint's life is exactly the shape this test used to go
+		// red on, and the release no longer needs one.
 		if !waitLeaseFile(t, fixture.LeaseFile(), addr, true) {
 			t.Fatalf("dnsmasq's lease DB has no entry for %s; a release for it could not "+
 				"be told from a lease that was never recorded", addr)
