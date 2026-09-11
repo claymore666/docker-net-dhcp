@@ -345,3 +345,39 @@ func TestStart_AsksTheDaemonOnceForTheWholeAttach(t *testing.T) {
 			"DHCP hostname option comes from", m.hostname, "ctr-1")
 	}
 }
+
+// TestStart_ARefusedKeyAndNoDaemonNamesBothCauses is the error-path
+// half of the split opener.
+//
+// Where the key is refused the PID comes from the daemon, so a daemon
+// that will not answer means there is no second route to try. What the
+// attach must not do is carry on with the PID it did not get: polling
+// /proc/0/ns/net to the deadline turns a known cause into an unknown
+// one, spends the budget that is left, and reports a failure about a
+// process that does not exist rather than about the daemon.
+//
+// Both causes are named because either alone is misleading. The key
+// refusal is why the PID was needed at all; the daemon failure is why
+// there was none.
+func TestStart_ARefusedKeyAndNoDaemonNamesBothCauses(t *testing.T) {
+	daemonDown := errors.New("daemon is not answering anything")
+	m, _ := daemonFreeManager(t, &fakeDocker{
+		listErr: daemonDown, inspectErr: daemonDown, containerErr: daemonDown,
+	})
+	m.joinReq.SandboxKey = "/tmp/not-a-sandbox-key"
+
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	err := m.Start(ctx)
+	if err == nil {
+		t.Fatal("Start succeeded with a refused key and a daemon that answers nothing")
+	}
+	if !strings.Contains(err.Error(), daemonDown.Error()) {
+		t.Errorf("err = %v: it does not name the daemon failure that left the PID route without a "+
+			"PID, so a reader is told about a namespace rather than about the daemon", err)
+	}
+	if !strings.Contains(err.Error(), "sandbox key route") {
+		t.Errorf("err = %v: it does not name the key refusal that made the PID necessary, and the "+
+			"refusal is what says which route this host takes", err)
+	}
+}
