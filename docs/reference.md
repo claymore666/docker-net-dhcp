@@ -262,11 +262,15 @@ docker plugin install ghcr.io/claymore666/docker-net-dhcp:vNEW
 # 4. Recreate networks against vNEW, restart containers
 ```
 
-A 2.0 plugin holds the lease record in `STATE_DIR` open exclusively, so a
+A 2.0 plugin takes an exclusive lock on the lease record in `STATE_DIR`, so a
 second 2.0 tag sharing that directory cannot be enabled while the first one
 is enabled. `docker plugin enable` fails and the daemon log says `the lease
 record file is already open by another writer`, so disable the old tag before
-enabling the new one.
+enabling the new one. The lock lives in the plugin and is advisory, taken on
+a file beside the record, so it holds only where the filesystem implements
+file locking. If the host directory behind `STATE_DIR` sits on a mount with
+no working locks, NFS without lockd for example, both plugins open the record
+and nothing reports the overlap.
 
 (`docker plugin upgrade` exists but in-place upgrades while networks
 exist risk a driver-reference mismatch; the remove/recreate path is
