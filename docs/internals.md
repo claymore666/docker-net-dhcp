@@ -48,7 +48,7 @@ acquired, and nothing below it:
 
 - The acquisition runs at `RequestAddress`, inside the daemon's own IPAM
   call, before any endpoint exists
-  ([`pkg/plugin/ipam_reserve.go`](https://github.com/claymore666/docker-net-dhcp/blob/main/pkg/plugin/ipam_reserve.go)).
+  (`pkg/plugin/ipam_reserve.go`).
   It builds a throwaway link of its own, runs the exchange on it, and
   removes it, so the address is Docker's to hand out by the time the
   endpoint is created.
