@@ -250,6 +250,26 @@ net_dhcp_unsafe_option_values_dropped_total 9536334
 # TYPE net_dhcp_network_options_rejected_total counter
 net_dhcp_network_options_rejected_total 5605255
 
+# HELP net_dhcp_ipam_replay_hits_total Stored endpoint addresses confirmed at a daemon restart from this plugin's own lease record. The mechanism working: it is how an IPAM-mode endpoint keeps its address across a restart. Read it as the denominator for ipam_replay_miss.
+# TYPE net_dhcp_ipam_replay_hits_total counter
+net_dhcp_ipam_replay_hits_total 3406087
+
+# HELP net_dhcp_ipam_replay_miss_total Stored endpoint addresses this plugin would not confirm at a daemon restart because no lease record in that network holds them.
+# TYPE net_dhcp_ipam_replay_miss_total counter
+net_dhcp_ipam_replay_miss_total 7208309
+
+# HELP net_dhcp_ipam_rebind_ambiguous_total Address requests that met more than one recently-removed endpoint on the network and so could not tell which address to ask for.
+# TYPE net_dhcp_ipam_rebind_ambiguous_total counter
+net_dhcp_ipam_rebind_ambiguous_total 6172564
+
+# HELP net_dhcp_ipam_reserve_joined_total Address requests that joined an exchange already running for the same endpoint instead of starting a second one.
+# TYPE net_dhcp_ipam_reserve_joined_total counter
+net_dhcp_ipam_reserve_joined_total 3419087
+
+# HELP net_dhcp_ipam_release_unknown_total Addresses libnetwork released that no lease record of ours holds. Not a fault: a release for an address whose record is already retained or closed is the normal ordering.
+# TYPE net_dhcp_ipam_release_unknown_total counter
+net_dhcp_ipam_release_unknown_total 2671279
+
 # HELP net_dhcp_dns_propagation_pid_mismatches_total DNS propagations refused because the container PID resolved through Docker no longer belonged to that container. The plugin shares the host PID namespace, so each one is a resolv.conf write that would otherwise have landed in an unrelated host process (#688).
 # TYPE net_dhcp_dns_propagation_pid_mismatches_total counter
 net_dhcp_dns_propagation_pid_mismatches_total 9341279
