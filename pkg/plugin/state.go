@@ -719,9 +719,19 @@ func loadNetwork(networkID string) (storedNetwork, error) {
 // lifetime, and the lifetimes are what the pool binding got wrong in
 // design round 1.
 //
-// A name that is not a valid network id is skipped rather than refused:
-// tombstones.json lives in this directory, so does a request-capture
-// subdirectory, and neither is a network.
+// The plugin's OWN files in this directory are skipped by name, not by
+// shape. This comment used to say that a name which is not a valid
+// network id is skipped and that tombstones.json is such a name; the
+// second half was false. validNetworkID is `^[a-zA-Z0-9_-]+$`, which
+// "tombstones" satisfies, so the store the plugin writes beside the
+// network files was listed as a network, failed to parse as one, and
+// left the IPAM index marked incomplete on every host that had ever
+// laid a tombstone -- a null-mode host included. The skip is keyed on
+// tombstoneFilePath so a rename of that file cannot reopen this.
+//
+// A name that is not a valid network id is still skipped rather than
+// refused, and the request-capture subdirectory is skipped above as a
+// directory.
 func listStateNetworks() ([]string, error) {
 	entries, err := os.ReadDir(stateDir)
 	if err != nil {
@@ -734,6 +744,9 @@ func listStateNetworks() ([]string, error) {
 		}
 		name := e.Name()
 		if !strings.HasSuffix(name, ".json") {
+			continue
+		}
+		if filepath.Join(stateDir, name) == tombstoneFilePath() {
 			continue
 		}
 		id := strings.TrimSuffix(name, ".json")

@@ -63,14 +63,30 @@ func (p *Plugin) ipamLeaseTimeout(opts DHCPNetworkOptions, poolID string) time.D
 	return budget
 }
 
-// ipamReserveLinkName is the temporary link one reservation runs on.
-// "dh-ipam-" plus 3 random bytes is 14 characters, inside IFNAMSIZ.
-func ipamReserveLinkName() (string, error) {
+// ipamReserveLinkNames names BOTH halves of the temporary link one
+// reservation runs on: the link itself, and the veth peer the bridge
+// mode needs.
+//
+// Both come from here rather than the peer being spelled where the veth
+// is built, because IFNAMSIZ is 16 including the terminator and 15
+// printable characters is therefore the ceiling. The first edition
+// named only the link -- "dh-ipam-" plus 3 random bytes, 14 characters,
+// and the comment stopped there -- and glued a "-p" on at the
+// LinkAdd, which is 16. Every bridge-mode reservation died with a bare
+// ERANGE from netlink ("numerical result out of range"), and the
+// function's own test could not see the length that failed because the
+// function never produced it.
+//
+// The shape is vethPairNames': the prefix marks the host half, the same
+// token suffixed marks the peer. 3 random bytes is the probe link's
+// 16M space, and both names are 14 characters.
+func ipamReserveLinkNames() (name, peer string, err error) {
 	var b [3]byte
 	if _, err := rand.Read(b[:]); err != nil {
-		return "", err
+		return "", "", err
 	}
-	return "dh-ipam-" + hex.EncodeToString(b[:]), nil
+	h := hex.EncodeToString(b[:])
+	return "dh-ipam-" + h, h + "-ipam-dh", nil
 }
 
 // ipamReservation is one (PoolID, MAC) reservation: the exchange in
@@ -251,12 +267,12 @@ func (p *Plugin) runIPAMReserve(ctx context.Context, networkID string, sn stored
 	ctx, cancel := context.WithTimeout(ctx, ipamReserveBudget())
 	defer cancel()
 
-	name, err := ipamReserveLinkName()
+	name, peer, err := ipamReserveLinkNames()
 	if err != nil {
 		return none, fmt.Errorf("failed to name a reservation link: %w", err)
 	}
 
-	remove, err := p.addIPAMReserveLink(ctx, name, mode, opts, mac)
+	remove, err := p.addIPAMReserveLink(ctx, name, peer, mode, opts, mac)
 	if err != nil {
 		return none, err
 	}
@@ -273,9 +289,10 @@ func (p *Plugin) runIPAMReserve(ctx context.Context, networkID string, sn stored
 	// MAC. More than one candidate and there is nothing to choose on:
 	// RequestAddress carries no hostname and no endpoint id, so the
 	// server decides and the ambiguity is counted rather than guessed.
-	recordID, rebindAddr := p.ipamRebindCandidate(networkID, mac)
+	recordID, rebindAddr, rebindIdentity := p.ipamRebindCandidate(networkID, mac)
 	rebound := recordID != ""
 	requestedIP, demanded := ipamExchangeAddresses(requestedIP, rebindAddr)
+	clientID = ipamExchangeClientID(clientID, rebindIdentity)
 	if recordID == "" {
 		recordID = p.recordReserved(networkID, mac, identity)
 	}
@@ -338,6 +355,36 @@ func ipamExchangeAddresses(requestedIP, rebindAddr string) (ask, demand string) 
 		return requestedIP, requestedIP
 	}
 	return rebindAddr, ""
+}
+
+// ipamExchangeClientID is the option-61 payload ONE exchange sends, and
+// on a re-bind it is not the one the MAC derives.
+//
+// THE RECORD'S IDENTITY IS THE ONLY THING THE SERVER RECOGNISES. In
+// IPAM mode Docker mints a fresh MAC for every endpoint, including the
+// one a restarted container comes back on, so the client-id derived
+// from that MAC is a client the server has never seen: it asks for the
+// tombstone's address as a stranger, the server declines to hand over
+// another client's lease, and the container comes back on a different
+// address with nothing logged. That is exactly what the lane measured
+// -- came back on .54, held .82 -- while the re-bind comment claimed
+// the write-once identity in the fold delivered this. The fold protects
+// what the RECORD says; it puts nothing on the wire.
+//
+// An identity this chassis did not write (ClientIDPayload says so)
+// leaves the fresh one in place rather than sending a shape no record
+// describes.
+//
+// The network's own client_id option, if the operator changed it since
+// the record was written, loses here. The record's identity is where
+// the address it is offering actually lives; the new setting takes
+// effect on the next fresh reservation, which is at most a tombstone
+// TTL away.
+func ipamExchangeClientID(fresh, rebindIdentity []byte) []byte {
+	if payload, ok := dhcp.ClientIDPayload(rebindIdentity); ok {
+		return payload
+	}
+	return fresh
 }
 
 // ipamGiveUpRecord is what a failed reserve does to its record, and the
@@ -436,7 +483,7 @@ func ipamACKInPool(addr netip.Addr, pool string) error {
 // as the preflight probe's does. The ordering of the two closures below
 // is what gives that -- the caller's deferred remove() runs the LinkDel
 // and then the Unlock, so the gate opens after the child is detached.
-func (p *Plugin) addIPAMReserveLink(ctx context.Context, name, mode string, opts DHCPNetworkOptions, mac net.HardwareAddr) (func(), error) {
+func (p *Plugin) addIPAMReserveLink(ctx context.Context, name, peer, mode string, opts DHCPNetworkOptions, mac net.HardwareAddr) (func(), error) {
 	if mode == ModeMacvlan || mode == ModeIPvlan {
 		guard := p.lockParent(ctx, opts.Parent, "ipam_reserve")
 		parent, err := validateParentForChild(opts.Parent)
@@ -468,7 +515,7 @@ func (p *Plugin) addIPAMReserveLink(ctx context.Context, name, mode string, opts
 	}
 	la := netlink.NewLinkAttrs()
 	la.Name = name
-	veth := &netlink.Veth{LinkAttrs: la, PeerName: name + "-p", PeerHardwareAddr: mac}
+	veth := &netlink.Veth{LinkAttrs: la, PeerName: peer, PeerHardwareAddr: mac}
 	if err := netlink.LinkAdd(veth); err != nil {
 		return nil, fmt.Errorf("failed to create the reservation veth pair: %w", err)
 	}
@@ -477,12 +524,12 @@ func (p *Plugin) addIPAMReserveLink(ctx context.Context, name, mode string, opts
 			log.WithError(err).WithField("link", name).Warn("Reservation link cleanup failed; remove it with `ip link del`")
 		}
 	}
-	peer, err := netlink.LinkByName(name + "-p")
+	peerLink, err := netlink.LinkByName(peer)
 	if err != nil {
 		remove()
 		return nil, fmt.Errorf("failed to find the reservation veth peer: %w", err)
 	}
-	for _, l := range []netlink.Link{veth, peer} {
+	for _, l := range []netlink.Link{veth, peerLink} {
 		if err := netlink.LinkSetUp(l); err != nil {
 			remove()
 			return nil, fmt.Errorf("failed to bring the reservation link up: %w", err)
@@ -521,18 +568,18 @@ func (p *Plugin) recordReserved(networkID string, mac net.HardwareAddr, identity
 // carries no hostname and no endpoint id, so there is nothing to narrow
 // two candidates on, and picking one would hand an address to whichever
 // container asked first. The documented limit is exactly this.
-func (p *Plugin) ipamRebindCandidate(networkID string, mac net.HardwareAddr) (string, string) {
+func (p *Plugin) ipamRebindCandidate(networkID string, mac net.HardwareAddr) (string, string, []byte) {
 	if p.records == nil {
-		return "", ""
+		return "", "", nil
 	}
 	rb, err := p.records.Rebuilt()
 	if err != nil {
 		log.WithError(err).WithField("network", shortID(networkID)).Warn("Could not read the lease records; this reservation gets a fresh identity")
-		return "", ""
+		return "", "", nil
 	}
 	candidates := rb.Tombstones(networkID, time.Now())
 	if len(candidates) == 0 {
-		return "", ""
+		return "", "", nil
 	}
 	if len(candidates) > 1 {
 		p.ipamRebindAmbiguous.Add(1)
@@ -540,18 +587,18 @@ func (p *Plugin) ipamRebindCandidate(networkID string, mac net.HardwareAddr) (st
 			"network":    shortID(networkID),
 			"candidates": len(candidates),
 		}).Info("More than one recently-removed endpoint on this network could claim this address request; the DHCP server decides and the address can change")
-		return "", ""
+		return "", "", nil
 	}
 	rec := candidates[0]
 	addr, ok := rec.Addr()
 	if !ok {
-		return "", ""
+		return "", "", nil
 	}
 	if err := p.records.Rebound(rec.ID, mac); err != nil {
 		log.WithError(err).WithField("record", rec.ID).Warn("Could not re-bind the recently-removed endpoint's record; this reservation gets a fresh identity")
-		return "", ""
+		return "", "", nil
 	}
-	return rec.ID, addr.String()
+	return rec.ID, addr.String(), rec.Identity
 }
 
 // ipamSweepInterval is how often orphaned reservations are looked for.

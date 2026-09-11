@@ -4,6 +4,7 @@
 package plugin
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -226,12 +227,18 @@ func TestIpamRebindCandidate_AmbiguityIsCountedNotGuessed(t *testing.T) {
 		p, _ := ipamFixture(t)
 		id := tombstone(t, p, "192.168.99.10/24")
 		newMAC, _ := net.ParseMAC("02:42:c0:a8:63:0b")
-		gotID, gotAddr := p.ipamRebindCandidate(ipamTestNetwork, newMAC)
+		gotID, gotAddr, gotIdent := p.ipamRebindCandidate(ipamTestNetwork, newMAC)
 		if gotID != id {
 			t.Errorf("re-bound record %q, want %q", gotID, id)
 		}
 		if gotAddr != "192.168.99.10" {
 			t.Errorf("asking for %q, the tombstone holds 192.168.99.10", gotAddr)
+		}
+		if !bytes.Equal(gotIdent, ident) {
+			t.Errorf("the candidate came back with identity %x, want %x. The exchange goes "+
+				"out under this value: the MAC is a fresh one Docker minted, so an identity "+
+				"derived from it asks the server as a client it has never seen and the "+
+				"tombstone's address is handed to nobody.", gotIdent, ident)
 		}
 		if n := p.ipamRebindAmbiguous.Load(); n != 0 {
 			t.Errorf("ipam_rebind_ambiguous = %d with one candidate", n)
@@ -243,10 +250,11 @@ func TestIpamRebindCandidate_AmbiguityIsCountedNotGuessed(t *testing.T) {
 		tombstone(t, p, "192.168.99.10/24")
 		tombstone(t, p, "192.168.99.11/24")
 		newMAC, _ := net.ParseMAC("02:42:c0:a8:63:0b")
-		gotID, gotAddr := p.ipamRebindCandidate(ipamTestNetwork, newMAC)
-		if gotID != "" || gotAddr != "" {
+		gotID, gotAddr, gotIdent := p.ipamRebindCandidate(ipamTestNetwork, newMAC)
+		if gotID != "" || gotAddr != "" || gotIdent != nil {
 			t.Errorf("chose (%q, %q) between two candidates; there is nothing to choose on, "+
 				"so one container would take another's address", gotID, gotAddr)
+			_ = gotIdent
 		}
 		if n := p.ipamRebindAmbiguous.Load(); n != 1 {
 			t.Errorf("ipam_rebind_ambiguous = %d, want 1 — the documented limit is only a "+
@@ -374,7 +382,7 @@ func TestIpamGiveUpRecord_AFailedExchangeLeavesTheCandidate(t *testing.T) {
 			t.Fatalf("Retained: %v", err)
 		}
 		restarted, _ := net.ParseMAC("02:42:c0:a8:63:0b")
-		gotID, gotAddr := p.ipamRebindCandidate(ipamTestNetwork, restarted)
+		gotID, gotAddr, _ := p.ipamRebindCandidate(ipamTestNetwork, restarted)
 		if gotID != id || gotAddr != "192.168.99.10" {
 			t.Fatalf("the candidate was not taken: (%q, %q)", gotID, gotAddr)
 		}
@@ -384,7 +392,7 @@ func TestIpamGiveUpRecord_AFailedExchangeLeavesTheCandidate(t *testing.T) {
 		p.ipamGiveUpRecord(id, true)
 
 		// The retry, well inside the window.
-		againID, againAddr := p.ipamRebindCandidate(ipamTestNetwork, restarted)
+		againID, againAddr, _ := p.ipamRebindCandidate(ipamTestNetwork, restarted)
 		if againID != id {
 			t.Errorf("the retry found candidate %q, want %q. The failed attempt consumed the "+
 				"tombstone, so this container takes a fresh address and the documented "+
@@ -436,5 +444,88 @@ func TestIpamExchangeAddresses(t *testing.T) {
 					"container refused when the server hands it a different one.", demand, c.demand)
 			}
 		})
+	}
+}
+
+// TestIpamExchangeClientID is the fix for the address a restarted
+// container lost.
+//
+// The lane measured it end to end: a container re-bound the tombstone
+// that held 192.168.99.82 and came back on 192.168.99.54, because the
+// exchange went out under a client-id derived from the MAC Docker had
+// just minted for the new endpoint. The server had the lease filed
+// under the old identity and had no reason to hand it to a client it
+// had never heard of.
+func TestIpamExchangeClientID(t *testing.T) {
+	fresh := []byte("fresh-from-the-mac")
+
+	t.Run("a re-bind goes out under the record's identity", func(t *testing.T) {
+		got := ipamExchangeClientID(fresh, dhcp.ClientIdentity([]byte{9, 9, 9}))
+		if !bytes.Equal(got, []byte{9, 9, 9}) {
+			t.Errorf("the exchange sends %x; the record's payload is 090909. A re-bind under "+
+				"any other identity asks the server as a new client, and the address the "+
+				"tombstone promised goes to nobody.", got)
+		}
+	})
+
+	t.Run("no candidate leaves the fresh identity alone", func(t *testing.T) {
+		if got := ipamExchangeClientID(fresh, nil); !bytes.Equal(got, fresh) {
+			t.Errorf("a reservation with no tombstone sent %x, want the MAC-derived %x", got, fresh)
+		}
+	})
+
+	t.Run("an identity this chassis did not write is refused, not truncated", func(t *testing.T) {
+		// A DUID-shaped value: a type byte that is not the opaque one.
+		if got := ipamExchangeClientID(fresh, []byte{0xff, 1, 2, 3}); !bytes.Equal(got, fresh) {
+			t.Errorf("sent %x, derived from an identity in a shape no record here writes. "+
+				"Trimming its first byte would put a value on the wire that nothing describes.", got)
+		}
+		if got := ipamExchangeClientID(fresh, []byte{0x00}); !bytes.Equal(got, fresh) {
+			t.Errorf("sent %x for a type byte with no payload behind it", got)
+		}
+	})
+}
+
+// TestIpamReserveLinkNames is the fix for every bridge-mode reservation.
+//
+// IFNAMSIZ is 16 including the terminator. The first edition named the
+// link (14 characters) and glued "-p" on at the LinkAdd, which is 16,
+// and netlink answered a bare ERANGE -- "numerical result out of range"
+// -- for every bridge reservation the lane ran. Both names come from
+// one function so that one test measures the pair.
+func TestIpamReserveLinkNames(t *testing.T) {
+	const maxIfname = 15 // IFNAMSIZ - 1
+
+	name, peer, err := ipamReserveLinkNames()
+	if err != nil {
+		t.Fatalf("ipamReserveLinkNames: %v", err)
+	}
+	for what, n := range map[string]string{"link": name, "peer": peer} {
+		if len(n) > maxIfname {
+			t.Errorf("the %s name %q is %d characters; the kernel refuses anything over %d "+
+				"with ERANGE, which arrives at the operator as `numerical result out of range`",
+				what, n, len(n), maxIfname)
+		}
+		if n == "" {
+			t.Errorf("the %s half was not named", what)
+		}
+	}
+	if name == peer {
+		t.Errorf("both halves are called %q; a veth pair needs two names", name)
+	}
+	if !strings.HasPrefix(name, "dh-ipam-") {
+		t.Errorf("link name %q does not carry the dh-ipam- prefix an operator greps for", name)
+	}
+	if !strings.HasSuffix(peer, "-ipam-dh") {
+		t.Errorf("peer name %q does not carry the -ipam-dh suffix an operator greps for", peer)
+	}
+
+	other, otherPeer, err := ipamReserveLinkNames()
+	if err != nil {
+		t.Fatalf("ipamReserveLinkNames: %v", err)
+	}
+	if other == name || otherPeer == peer {
+		t.Errorf("two reservations were named the same (%q/%q); concurrent reserves would "+
+			"collide on EEXIST", name, peer)
 	}
 }

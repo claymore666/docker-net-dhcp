@@ -721,6 +721,33 @@ func TestRebuildIPAMIndex_ReportsWhatItCouldNotRead(t *testing.T) {
 		_ = p
 	})
 
+	t.Run("the plugin's own files in the directory are not networks", func(t *testing.T) {
+		p, _ := ipamFixture(t)
+
+		// What every host that has ever deleted an endpoint has --
+		// null mode included, since the tombstone store is the network
+		// driver's. It sits in the state directory beside the network
+		// files and its name, "tombstones", satisfies validNetworkID.
+		if err := p.tombstones.add(ipamTestNetwork, "", ipamTestMAC, "192.168.99.10", ""); err != nil {
+			t.Fatalf("laying a tombstone: %v", err)
+		}
+		if _, err := os.Stat(tombstoneFilePath()); err != nil {
+			t.Fatalf("the tombstone store was not written: %v", err)
+		}
+
+		x := newIPAMIndex()
+		rebuildIPAMIndex(x)
+		if x.isIncomplete() {
+			t.Error("the tombstone store was folded as a network and failed to parse as one, " +
+				"so the index is incomplete on a host where nothing is wrong. Every " +
+				"RequestAddress for a pool no network holds yet is then refused, and the " +
+				"refusal tells the operator to repair or remove a file that is not corrupt.")
+		}
+		if x.len() != 1 {
+			t.Errorf("the fold bound %d pool(s), want 1", x.len())
+		}
+	})
+
 	t.Run("a file that will not read is reported", func(t *testing.T) {
 		p, _ := ipamFixture(t)
 		path, err := stateFilePath(ipamTestNetwork)
