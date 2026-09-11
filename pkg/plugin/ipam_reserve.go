@@ -117,12 +117,19 @@ func ipamReserveKey(poolID string, mac net.HardwareAddr) string {
 // ipamReserves holds every reservation this process has answered and not
 // yet seen a CreateEndpoint for.
 //
-// IT IS WHAT KEEPS ONE HARDWARE ADDRESS TO ONE EXCHANGE, and that is not
-// a nicety here. A DHCP server files its lease per hardware address, so
-// two exchanges under one MAC means two DISCOVERs and two leases at the
-// server for what the host believes is one endpoint, and the second is
-// never released: nothing holds it and no DHCPRELEASE goes on the wire
-// (D-7).
+// IT IS THE IN-FLIGHT HALF of keeping one hardware address to one
+// exchange, and only that half. A key lives here from the moment
+// RequestAddress owns an exchange until CreateEndpoint takes it, so what
+// it sees is two creates racing and a create that has stalled. The
+// SETTLED half -- a first container already up, a second started later
+// under the same pinned MAC -- is a key this map no longer has, and
+// ipamLiveRecordForMAC is what answers there.
+//
+// Why either half exists: a DHCP server files its lease per hardware
+// address, so two exchanges under one MAC means two DISCOVERs and two
+// leases at the server for what the host believes is one endpoint, and
+// the second is never released -- nothing holds it and no DHCPRELEASE
+// goes on the wire (D-7).
 //
 // The producer of a second call for one key is not the daemon re-sending
 // a RequestAddress, which an earlier version of this comment claimed:
@@ -245,21 +252,66 @@ func (s *ipamReserves) len() int {
 // seen. On macvlan that link is the same child the preflight probe
 // builds; on a bridge it is the same veth pair CreateEndpoint builds.
 func (p *Plugin) ipamReserveAddress(ctx context.Context, networkID string, sn storedNetwork, mac net.HardwareAddr, requestedIP string) (*ipamReservation, error) {
+	if rec, held := p.ipamEndpointHoldingMAC(networkID, mac); held {
+		return nil, p.refuseDuplicateMAC(networkID, mac, "an endpoint of this network already holds it, in phase "+rec.Phase.String())
+	}
+
 	key := ipamReserveKey(sn.Binding.PoolID, mac)
 	res, mine := p.ipamReserves.begin(key, time.Now())
 	if !mine {
-		p.ipamReserveDuplicateMAC.Add(1)
-		log.WithFields(log.Fields{
-			"network": shortID(networkID),
-			"mac":     mac.String(),
-		}).Warn("A second address request arrived for a hardware address this network is already leasing for; refusing it, because answering it would give two endpoints one address")
-		return nil, fmt.Errorf("%w: this network is already leasing an address for the hardware address %v, so a second endpoint cannot be given one. A DHCP server files its lease per hardware address, and both endpoints would end up holding the same address. Give each container its own --mac-address, or leave it unset and Docker generates one per endpoint. If this is one container being started again after a create that never finished, its reservation is retained within %v and the next start claims the same address back",
-			util.ErrIPAM, mac, tombstoneTTL+ipamSweepInterval)
+		return nil, p.refuseDuplicateMAC(networkID, mac, "an address request under it is still running")
 	}
 
 	out, err := p.runIPAMReserve(ctx, networkID, sn, mac, requestedIP)
 	p.ipamReserves.finish(key, res, out, err)
 	return res, err
+}
+
+// ipamEndpointHoldingMAC asks the RECORD STORE whether this network
+// already has an endpoint under this hardware address.
+//
+// It fails OPEN, and the opposite failure is why. A journal that will
+// not read is a host where every fold is already degraded; refusing here
+// on the read error would turn that into "no container can be started on
+// any IPAM network", which is a far larger outage than the one this
+// guard exists to prevent, and the in-flight half still closes the
+// two-creates-racing shape with no disk at all. What is lost is the
+// settled shape on an unreadable journal, where CreateEndpoint's own
+// record checks are what stands.
+func (p *Plugin) ipamEndpointHoldingMAC(networkID string, mac net.HardwareAddr) (lease.Record, bool) {
+	if p.records == nil {
+		return lease.Record{}, false
+	}
+	rb, err := p.records.Rebuilt()
+	if err != nil {
+		log.WithError(err).WithField("network", shortID(networkID)).
+			Warn("Could not read the lease records; a second endpoint under a hardware address this network already leases for cannot be detected here")
+		return lease.Record{}, false
+	}
+	return ipamLiveRecordForMAC(rb, networkID, mac)
+}
+
+// refuseDuplicateMAC is the ONE refusal both halves return, so that the
+// operator reads the same sentence whichever half caught it and neither
+// can drift from the other.
+//
+// The two boundaries are in the text on purpose. The address of a
+// PREVIOUS endpoint comes back only while its tombstone is the single
+// re-bind candidate on the network (ipamRebindCandidate), and a
+// reservation Docker never turned into an endpoint is not freed until
+// the sweeper reaps it, which is tombstoneTTL plus at most one
+// ipamSweepInterval. A refusal that promised the address back without
+// either boundary would send an operator into a retry loop that cannot
+// succeed yet.
+func (p *Plugin) refuseDuplicateMAC(networkID string, mac net.HardwareAddr, held string) error {
+	p.ipamReserveDuplicateMAC.Add(1)
+	log.WithFields(log.Fields{
+		"network": shortID(networkID),
+		"mac":     mac.String(),
+		"held":    held,
+	}).Warn("A second address request arrived for a hardware address this network is already leasing for; refusing it, because answering it would give two endpoints one address")
+	return fmt.Errorf("%w: this network is already leasing an address for the hardware address %v, so a second endpoint cannot be given one (%v). A DHCP server files its lease per hardware address, and both endpoints would end up holding the same address. Give each container its own --mac-address, or leave it unset and Docker generates one per endpoint. If this is one container being started again, remove its previous endpoint first: the address comes back to it only while that endpoint is the one recently-removed endpoint on this network. An address request that was answered and never became an endpoint is not freed for as long as %v",
+		util.ErrIPAM, mac, held, tombstoneTTL+ipamSweepInterval)
 }
 
 // runIPAMReserve is the exchange. Separated from the idempotence above

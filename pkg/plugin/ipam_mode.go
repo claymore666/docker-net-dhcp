@@ -6,6 +6,7 @@ package plugin
 import (
 	"errors"
 	"fmt"
+	"net"
 	"net/netip"
 	"sync"
 
@@ -248,6 +249,31 @@ func ipamPhaseAnswers(p lease.Phase) bool {
 // order, so the last match is the current one.
 func ipamLiveRecord(rb lease.Rebuilt, networkID string, addr netip.Addr) (lease.Record, bool) {
 	matches := rb.ByScopeAddr(networkID, addr)
+	for i := len(matches) - 1; i >= 0; i-- {
+		if ipamPhaseAnswers(matches[i].Phase) {
+			return matches[i], true
+		}
+	}
+	return lease.Record{}, false
+}
+
+// ipamLiveRecordForMAC is ipamLiveRecord keyed on the hardware address:
+// the record of an endpoint this network already holds under mac, or
+// none.
+//
+// IT IS THE SETTLED HALF OF THE ONE-EXCHANGE RULE, and the in-memory
+// reserve set cannot be it. That set holds a reservation only until
+// CreateEndpoint takes it (ipam_endpoint.go, take), so by the time a
+// first container is up its key is gone and a second `docker run
+// --mac-address X` on the same network would reach an empty map, own
+// the exchange, and lease a second address under a hardware address the
+// server already has a lease filed against. The phases are the same
+// ones an address replay answers from, which is what makes RETAINED the
+// deliberate exclusion: a tombstone is the re-bind candidate a restart
+// consumes, and refusing on one would cost every restarted container
+// its address.
+func ipamLiveRecordForMAC(rb lease.Rebuilt, networkID string, mac net.HardwareAddr) (lease.Record, bool) {
+	matches := rb.ByScopeMAC(networkID, mac)
 	for i := len(matches) - 1; i >= 0; i-- {
 		if ipamPhaseAnswers(matches[i].Phase) {
 			return matches[i], true

@@ -844,42 +844,68 @@ func TestIpamFallback_ARemoteIPAMDriverRefusesUnderAnyName(t *testing.T) {
 // per hardware address and would hand them the same one in any case, so
 // the second request is refused here, where the plugin still knows why.
 //
+// THE THIRD CASE IS THE COMMON ONE AND IT IS NOT IN THE RESERVE MAP.
+// CreateEndpoint takes the reservation (ipam_endpoint.go, take), so once
+// the first container is up its key is gone; a guard that only read the
+// map would let the second `docker run` own a fresh exchange under a
+// hardware address the server already has a lease filed against. The
+// record store is what still knows, and the phase filter is what keeps
+// the restart path out of it -- TestRequestAddress_ARetainedRecordIsNot
+// ADuplicate drives that side.
+//
 // Refusing at RequestAddress also closes the rollback: libnetwork
 // registers its release-on-failure defer only AFTER assignAddress
 // returns (MEASURED, network.go:1245-1252), so a refused request
-// produces no ReleaseAddress and cannot reach the winner's reservation,
-// which is still RESERVED until its own CreateEndpoint folds CREATE
-// onto it.
+// produces no ReleaseAddress and cannot reach the winner's reservation.
 //
-// Driven through the real entry point with the reservation seeded by
-// hand: the netlink and DHCP half needs a parent NIC and a server, and
-// the collision is decided before either is touched.
+// Driven through the real entry point with the first endpoint's state
+// seeded by hand: the netlink and DHCP half needs a parent NIC and a
+// server, and the collision is decided before either is touched.
 func TestRequestAddress_TwoEndpointsCannotShareOneHardwareAddress(t *testing.T) {
 	mac, _ := net.ParseMAC(ipamTestMAC)
 
 	for _, c := range []struct {
 		name string
-		// finished says whether the first reservation already holds an
-		// answer. Both states are one collision: in flight is two
-		// creates racing, finished is one create that has not reached
-		// CreateEndpoint yet.
-		finished bool
+		// The first endpoint's state. seedReserve is a key in the
+		// reserve map; phase is the record's phase, PhaseUnset for the
+		// window before any record exists.
+		seedReserve bool
+		finished    bool
+		phase       lease.Phase
 	}{
-		{"while the first exchange is still running", false},
-		{"after the first exchange answered", true},
+		{"while the first exchange is still running, before its record exists", true, false, lease.PhaseUnset},
+		{"after the first exchange answered and nothing claimed it", true, true, lease.PhaseReserved},
+		{"after the first endpoint was created and joined", false, false, lease.PhaseJoined},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			p, b := ipamFixture(t)
-			recordID := p.recordReserved(ipamTestNetwork, mac, dhcp.ClientIdentity([]byte{7}))
 			key := ipamReserveKey(b.PoolID, mac)
-			first, mine := p.ipamReserves.begin(key, time.Now())
-			if !mine {
-				t.Fatal("the seeded reservation was not owned; the fixture is not empty")
-			}
-			if c.finished {
+
+			var recordID string
+			if c.phase != lease.PhaseUnset {
+				recordID = p.recordReserved(ipamTestNetwork, mac, dhcp.ClientIdentity([]byte{7}))
 				if err := p.records.Observed(recordID, acquired("192.168.99.10/24", time.Hour), nil); err != nil {
 					t.Fatalf("Observed: %v", err)
 				}
+			}
+			if c.phase == lease.PhaseJoined {
+				if err := p.records.Created(recordID, ipamTestNetwork, mac, dhcp.ClientIdentity([]byte{7})); err != nil {
+					t.Fatalf("Created: %v", err)
+				}
+				if err := p.records.Bound(recordID); err != nil {
+					t.Fatalf("Bound: %v", err)
+				}
+			}
+
+			var first *ipamReservation
+			if c.seedReserve {
+				var mine bool
+				first, mine = p.ipamReserves.begin(key, time.Now())
+				if !mine {
+					t.Fatal("the seeded reservation was not owned; the fixture is not empty")
+				}
+			}
+			if c.finished {
 				p.ipamReserves.finish(key, first, ipamReservation{
 					addr:   netip.MustParsePrefix("192.168.99.10/24"),
 					info:   dhcp.Info{IP: "192.168.99.10/24"},
@@ -907,36 +933,63 @@ func TestRequestAddress_TwoEndpointsCannotShareOneHardwareAddress(t *testing.T) 
 			if !errors.Is(err, util.ErrIPAM) {
 				t.Errorf("error %v does not wrap util.ErrIPAM", err)
 			}
-			for _, want := range []string{mac.String(), "--mac-address"} {
+			// The last two are the refusal's BOUNDARIES, and they are
+			// asserted because without them the sentence promises the
+			// address back unconditionally: it comes back only while the
+			// previous endpoint is the single re-bind candidate, and an
+			// unclaimed reservation is not freed before the sweeper
+			// reaps it.
+			for _, want := range []string{
+				mac.String(),
+				"--mac-address",
+				"one recently-removed endpoint",
+				(tombstoneTTL + ipamSweepInterval).String(),
+			} {
 				if !strings.Contains(err.Error(), want) {
 					t.Errorf("the refusal is %q; it does not contain %q, which is what "+
-						"tells the operator which container to change", err, want)
+						"tells the operator what to change and when a retry can work", err, want)
 				}
 			}
 			if n := p.ipamReserveDuplicateMAC.Load(); n != 1 {
 				t.Errorf("ipam_reserve_duplicate_mac = %d, want 1", n)
 			}
 
+			// The refusal leaves the reserve map exactly as it found
+			// it. A refusal taken AFTER begin would leave a key nothing
+			// ever finishes and nothing ever sweeps -- stale() only
+			// offers completed ones -- and that key outlives the
+			// endpoint it was never for.
+			want := 0
+			if c.seedReserve {
+				want = 1
+			}
+			if n := p.ipamReserves.len(); n != want {
+				t.Errorf("the reserve set holds %d reservations after the refusal, want %d: "+
+					"the refused request left a key behind, and a key that is never "+
+					"finished is never swept either", n, want)
+			}
+
 			// What the winner still has. Its reservation is the one this
-			// process seeded, not a replacement, and its record is still
-			// RESERVED and waiting for CreateEndpoint.
+			// process seeded, not a replacement, and its record is in
+			// the phase the refused request found it in.
 			got, ok := p.ipamReserves.take(key)
 			if c.finished && (!ok || got != first) {
 				t.Error("the refused request consumed or replaced the first endpoint's " +
 					"reservation; the container that won the race would be refused too")
 			}
 			if !c.finished && ok {
-				t.Error("an unfinished reservation was consumable; CreateEndpoint would " +
-					"bind a link to an exchange that has not answered")
+				t.Error("an unfinished or absent reservation was consumable; CreateEndpoint " +
+					"would bind a link to an exchange that has not answered")
 			}
-			rb, err := p.records.Rebuilt()
-			if err != nil {
-				t.Fatalf("Rebuilt: %v", err)
-			}
-			if rec, live := rb.ByID(recordID); !live || rec.Phase != lease.PhaseReserved {
-				t.Errorf("the first endpoint's record is %v, want %v: the refused request "+
-					"retired the record the winner is still being created against",
-					rec.Phase, lease.PhaseReserved)
+			if recordID != "" {
+				rb, err := p.records.Rebuilt()
+				if err != nil {
+					t.Fatalf("Rebuilt: %v", err)
+				}
+				if rec, live := rb.ByID(recordID); !live || rec.Phase != c.phase {
+					t.Errorf("the first endpoint's record is %v, want %v: the refused request "+
+						"moved the record the winner is holding", rec.Phase, c.phase)
+				}
 			}
 
 			// The POOL half of the key, which is the reason the key is a
@@ -962,6 +1015,53 @@ func TestRequestAddress_TwoEndpointsCannotShareOneHardwareAddress(t *testing.T) 
 					"want 1: the pool is not part of the reservation key", n)
 			}
 		})
+	}
+}
+
+// TestRequestAddress_ARetainedRecordIsNotADuplicate is the preservation
+// control for the widening above.
+//
+// The refusal reads the record store, and the record store is also where
+// a restart's re-bind candidate lives. A container that stops and starts
+// again under a PINNED MAC leaves a RETAINED record carrying that exact
+// hardware address, so a guard that refused on any record at all would
+// refuse every such restart -- and it would do it wearing the message
+// that tells the operator to change their --mac-address, for a shape
+// where the address is supposed to come straight back. RETAINED is
+// therefore outside ipamRecordPhases, and this is the assertion that it
+// stays outside.
+//
+// The request is not expected to SUCCEED here: it goes on to netlink,
+// which this fixture has no parent NIC for. What is asserted is the
+// refusal it must not be, and the counter that must not move.
+func TestRequestAddress_ARetainedRecordIsNotADuplicate(t *testing.T) {
+	mac, _ := net.ParseMAC(ipamTestMAC)
+	p, b := ipamFixture(t)
+
+	recordID := p.recordReserved(ipamTestNetwork, mac, dhcp.ClientIdentity([]byte{7}))
+	if err := p.records.Observed(recordID, acquired("192.168.99.10/24", time.Hour), nil); err != nil {
+		t.Fatalf("Observed: %v", err)
+	}
+	if err := p.records.Created(recordID, ipamTestNetwork, mac, dhcp.ClientIdentity([]byte{7})); err != nil {
+		t.Fatalf("Created: %v", err)
+	}
+	p.recordRetained(recordID, time.Now().Add(tombstoneTTL))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_, err := p.RequestAddress(ctx, RequestAddressRequest{
+		PoolID:  b.PoolID,
+		Options: map[string]string{ipamOptMacAddress: mac.String()},
+	})
+	if err != nil && strings.Contains(err.Error(), "already leasing an address") {
+		t.Errorf("a container restarting under its own pinned hardware address was refused "+
+			"as a second endpoint: %v.\nThe record it collides with is its OWN tombstone, "+
+			"which is the re-bind candidate that gives it its address back. Refusing here "+
+			"costs every pinned-MAC container its address on every restart.", err)
+	}
+	if n := p.ipamReserveDuplicateMAC.Load(); n != 0 {
+		t.Errorf("ipam_reserve_duplicate_mac = %d for a restart under a retained record, "+
+			"want 0: RETAINED is being read as a live endpoint", n)
 	}
 }
 

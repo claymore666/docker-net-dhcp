@@ -1173,9 +1173,11 @@ type Plugin struct {
 	// operator-set one through unchanged (moby 28.5.2,
 	// libnetwork/network.go:1222 and :1240), so `docker run
 	// --mac-address X` twice on one network, or a compose file pinning
-	// one MAC on two services, lands both requests on one key. The
-	// remedy is the operator's: give each container its own MAC, or
-	// leave it unset.
+	// one MAC on two services, puts two endpoints on one hardware
+	// address. Both halves of the guard move it: the reserve still in
+	// flight, and the endpoint already created, which the record store
+	// is what still knows about. The remedy is the operator's: give each
+	// container its own MAC, or leave it unset.
 	//
 	// It is NOT moved by the daemon's
 	// re-send after a plugin-call timeout, which is what an earlier
