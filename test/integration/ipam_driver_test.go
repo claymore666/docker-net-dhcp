@@ -1238,10 +1238,13 @@ func TestIPAM_AContainerStartedInsideTheWindowTakesTheTombstone(t *testing.T) {
 
 	w := harness.BeginCounterWindow(t, ctx, cli, "ipam_rebind_ambiguous")
 
-	stopped := time.Now()
 	if err := cli.ContainerStop(ctx, idA, container.StopOptions{}); err != nil {
 		t.Fatalf("ContainerStop(a): %v", err)
 	}
+	// After the stop returns, not before it. The tombstone is laid when
+	// the endpoint delete completes, which happens inside the stop, so
+	// this instant is at or after the thing being timed.
+	stopped := time.Now()
 
 	// A brand-new container, inside A's retention window. Nothing about
 	// it has ever been on this network.
@@ -1250,17 +1253,27 @@ func TestIPAM_AContainerStartedInsideTheWindowTakesTheTombstone(t *testing.T) {
 	t.Logf("b started on %s, %s after a stopped", addrB, claimed.Round(time.Second))
 
 	// retentionWindow mirrors the plugin's tombstoneTTL, and it decides
-	// which MESSAGE a failure carries, never whether this test passes.
-	// Past it there is no tombstone left to claim, so the rule below
-	// has nothing to act on and the run says nothing about it. If the
-	// plugin's value ever changes, the cost here is a misleading
-	// sentence on an already-red row and never a green one.
+	// which MESSAGE a failure carries and nothing else. It is read ONLY
+	// where the comparison below has already failed: past the window
+	// there was no tombstone left to claim, so a different address is
+	// not evidence against the rule, and saying so is more use than
+	// naming a rule change that may not have happened. A run where the
+	// addresses match needs no window at all -- that outcome is the
+	// rule -- so this can never turn a green row red.
+	//
+	// The interval is not exact and does not have to be. It starts
+	// after the stop, which is at or after the tombstone, and ends
+	// after b's start returns, which is after the request that consumes
+	// it. So it can read as lapsed on a request that landed inside the
+	// window, which costs the wording of an already-red row, and it
+	// cannot read as inside on one that landed outside.
 	const retentionWindow = 60 * time.Second
-	if claimed >= retentionWindow {
-		t.Fatalf("b's address request landed %s after a stopped, past the %s the plugin keeps a "+
-			"stopped endpoint's identity for. There was no tombstone left to claim, so this run "+
-			"cannot decide the rule in either direction.",
-			claimed.Round(time.Second), retentionWindow)
+	if addrB != addrA && claimed >= retentionWindow {
+		t.Fatalf("b came up on %s and a held %s, but b's address request landed %s after a "+
+			"stopped, past the %s the plugin keeps a stopped endpoint's identity for. There "+
+			"was no tombstone left to claim, so this run cannot decide the rule in either "+
+			"direction -- it is not evidence that the rule changed.",
+			addrB, addrA, claimed.Round(time.Second), retentionWindow)
 	}
 
 	if err := cli.ContainerStart(ctx, idA, container.StartOptions{}); err != nil {
