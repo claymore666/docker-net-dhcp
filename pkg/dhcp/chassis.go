@@ -835,8 +835,18 @@ func (c *DHCPClient) translate() {
 		// deliberately — the coalesced Changed and the stop — neither
 		// of which the record may lose.
 		c.opts.record(ev)
-		c.opts.acdReport(c.Stats())
-		c.renewals.report(c.Stats(), c.opts.OnRenewalStats)
+		// ONE SNAPSHOT FOR BOTH, and the renewal watch is told the
+		// cycle ended after it has folded that snapshot. A lease event
+		// is the chassis's evidence that the renewal request in flight
+		// is no longer waiting for an answer -- including the endings
+		// that never bump RenewalsCompleted, which renewalWatch's
+		// comment names. Folding after the reset would forget what the
+		// cycle proved; resetting from a second, later reading would
+		// forget a request that left the host in between.
+		stats := c.Stats()
+		c.opts.acdReport(stats)
+		c.renewals.report(stats, c.opts.OnRenewalStats)
+		c.renewals.cycleEnded(stats)
 		c.opts.conflict(ev)
 
 		out, emit, at := translateOne(ev, now, renewedAt)

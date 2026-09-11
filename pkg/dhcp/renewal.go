@@ -43,47 +43,90 @@ func (c *DHCPClient) renewalPoll() time.Duration {
 	return renewalPollInterval
 }
 
-// renewalWatch turns the library's two monotonic renewal counters into
-// one monotonic count of renewal requests that went unanswered.
+// renewalWatch turns the library's renewal counters into one monotonic
+// count of renewal requests that went unanswered.
 //
-// THE ARITHMETIC, AND WHY IT IS NOT A SUBTRACTION. RenewalsSent counts
-// every DHCPREQUEST sent to extend a held lease, retransmissions
-// included; RenewalsCompleted counts the DHCPACKs that ended one. Their
-// difference is not the answer: one request is legitimately outstanding
-// for as long as the server is being waited on, so a plain
-// Sent-minus-Completed moves for a renewal that is answered a
-// millisecond later, and the counter then reports an outage on a
-// perfectly healthy network. Subtracting the outstanding request gives
-// the requests actually proven unanswered, and taking the RUNNING
-// MAXIMUM of that is what keeps the result monotonic: the difference
-// itself falls when an acknowledgement lands, and a counter that falls
-// is a reset to Prometheus.
+// WHAT PROVES A REQUEST UNANSWERED. Exactly one renewal request is in
+// flight at a time: the library sends one and arms a retransmission
+// timer. So a request is proven unanswered by the NEXT request leaving
+// the host, and by nothing else. The count owed within a renewal cycle
+// is therefore the number of requests it has sent, less the one still
+// waiting for an answer, and base is where the cycle started.
 //
-// The maximum is reached at a send -- that is the only moment the count
-// of proven-unanswered requests rises -- and a fold that lands between
-// that send and the acknowledgement ending it reads the peak. A fold
-// that misses the peak reads one low until the next retransmission, and
-// that is the direction the error is wanted in: the counter may lag the
-// wire, and it may never claim a request the server answered.
+// WHY THE CYCLE'S END IS TAKEN FROM THE EVENT STREAM AND NOT FROM
+// RenewalsCompleted. The obvious arithmetic is
+// RenewalsSent - RenewalsCompleted - 1, and it is wrong, because a
+// renewal cycle the server ANSWERS can end without RenewalsCompleted
+// moving. A DHCPNAK in RENEWING or REBINDING drops the lease with
+// ReasonNak (proto/machine.go:603-617) and never reaches enterBound,
+// which is the only producer of ActLeaseRenewed and so the only thing
+// that bumps RenewalsCompleted (lease/manager.go:1065); its v6 twin is
+// a Reply carrying NotOnLink, which ends the lease the same way
+// (proto/machine6.go:1283-1286). The request was already counted sent.
+// After either, Sent stays permanently one ahead of Completed, and the
+// subtraction then reports one unanswered renewal at the instant the
+// NEXT request leaves the host -- while that request is still in
+// flight, on a network where the server answered every single one.
+// That is the one direction this counter may never err in.
+//
+// Every one of those endings reaches the chassis as a lease event:
+// ActLeaseLost emits Lost, ActLeaseRenewed emits Renewed
+// (lease/manager.go:1067, :1092). So the end of a cycle is read off the
+// event stream, where "the caller was told something happened to this
+// lease" is the property, rather than off a list of the library's
+// internal paths, which is the thing that was wrong. An event that did
+// not in fact end a renewal cycle costs at most the requests proven
+// unanswered before it, so an event kind this loop has not thought
+// about makes the counter read LOW.
+//
+// The residual error is one request in every direction: the request in
+// flight is never counted, so a client that has sent N requests into
+// silence reports N-1, and a fold that lands between a send and the
+// answer that ends it is the only one that sees the peak. Both err low,
+// and low is the direction wanted: the counter may lag the wire, and it
+// may never claim a request the server answered.
 type renewalWatch struct {
-	// max is the highest proven-unanswered count seen so far, and
-	// reported is how much of it the caller has already been told
-	// about. Both are touched from the translate goroutine only.
-	max      uint64
-	reported uint64
+	// base is RenewalsSent as it stood when the current renewal cycle
+	// began, and counted is how many of that cycle's requests the
+	// caller has already been told went unanswered. Both are touched
+	// from the translate goroutine only.
+	base    uint64
+	counted uint64
 }
 
 // fold reads one counter snapshot and returns what the caller has not
 // been told about yet.
 func (w *renewalWatch) fold(s lease.Stats) uint64 {
-	if s.RenewalsSent > s.RenewalsCompleted+1 {
-		if proven := s.RenewalsSent - s.RenewalsCompleted - 1; proven > w.max {
-			w.max = proven
-		}
+	// A counter that went backwards is a manager that was replaced
+	// under this watch, not a renewal: start the cycle again there.
+	if s.RenewalsSent < w.base {
+		w.base, w.counted = s.RenewalsSent, 0
+		return 0
 	}
-	delta := w.max - w.reported
-	w.reported = w.max
-	return delta
+	var proven uint64
+	if s.RenewalsSent > w.base+1 {
+		proven = s.RenewalsSent - w.base - 1
+	}
+	if proven <= w.counted {
+		return 0
+	}
+	gain := proven - w.counted
+	w.counted = proven
+	return gain
+}
+
+// cycleEnded is called when a lease event arrives. Whatever the event
+// says, the request that was in flight is no longer waiting for an
+// answer, so the next renewal cycle starts from the requests sent so
+// far and owes nothing.
+//
+// Call it AFTER folding the same snapshot, or the requests that cycle
+// proved unanswered are forgotten instead of reported.
+func (w *renewalWatch) cycleEnded(s lease.Stats) {
+	if s.RenewalsSent > w.base {
+		w.base = s.RenewalsSent
+	}
+	w.counted = 0
 }
 
 // report folds one snapshot and hands the gain to the caller, if there
