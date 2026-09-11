@@ -123,7 +123,7 @@ func TestFailure_IPAMServerDownFailsInsideTheBudget(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			start := time.Now()
-			err := ipamRunContainerErr(t, ctx, cli, tc.netName, tc.netName+"-ctr", nil, "")
+			err := ipamRunContainerErr(t, ctx, cli, tc.netName, tc.netName+"-ctr", nil)
 			elapsed := time.Since(start)
 			if err == nil {
 				t.Fatal("a container started on a network whose DHCP server is dead. Docker's " +

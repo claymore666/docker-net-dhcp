@@ -89,17 +89,16 @@ func ipamNetworkAddress(t *testing.T, ctx context.Context, cli *docker.Client, c
 // Separate from harness.RunContainer for the reason
 // CreateNetworkIPAMErr is separate from CreateNetworkIPAM: a refusal
 // asserted by catching a t.Fatalf is not asserted at all.
-func ipamRunContainerErr(t *testing.T, ctx context.Context, cli *docker.Client, netName, ctrName string, ep *network.EndpointSettings, mac string) error {
+func ipamRunContainerErr(t *testing.T, ctx context.Context, cli *docker.Client, netName, ctrName string, ep *network.EndpointSettings) error {
 	t.Helper()
 	if ep == nil {
 		ep = &network.EndpointSettings{}
 	}
 	create, err := cli.ContainerCreate(ctx,
 		&container.Config{
-			Image:      harness.TestImage,
-			Cmd:        []string{"sleep", "infinity"},
-			Hostname:   ctrName,
-			MacAddress: mac,
+			Image:    harness.TestImage,
+			Cmd:      []string{"sleep", "infinity"},
+			Hostname: ctrName,
 		},
 		harness.HostConfig(),
 		&network.NetworkingConfig{EndpointsConfig: map[string]*network.EndpointSettings{netName: ep}},
@@ -448,14 +447,18 @@ func TestIPAM_StaticIPIsHonouredWithASubnet(t *testing.T) {
 
 	create, err := cli.ContainerCreate(ctx,
 		&container.Config{
-			Image:      harness.TestImage,
-			Cmd:        []string{"sleep", "infinity"},
-			Hostname:   ctrName,
-			MacAddress: harness.StaticTestMAC,
+			Image:    harness.TestImage,
+			Cmd:      []string{"sleep", "infinity"},
+			Hostname: ctrName,
 		},
 		harness.HostConfig(),
 		&network.NetworkingConfig{EndpointsConfig: map[string]*network.EndpointSettings{
-			netName: {IPAMConfig: &network.EndpointIPAMConfig{IPv4Address: harness.StaticTestIP}},
+			netName: {
+				IPAMConfig: &network.EndpointIPAMConfig{IPv4Address: harness.StaticTestIP},
+				// Must match the fixture's --dhcp-host reservation, so
+				// the address asked for is one the server will grant.
+				MacAddress: harness.StaticTestMAC,
+			},
 		}},
 		nil, ctrName)
 	if err != nil {
@@ -545,7 +548,7 @@ func TestIPAM_StaticIPWithoutASubnetIsRefused(t *testing.T) {
 	harness.CreateNetworkIPAM(t, ctx, netName, "macvlan", "", nil, nil)
 
 	err := ipamRunContainerErr(t, ctx, cli, netName, "dh-itest-ipam-nosubnet-ip-ctr",
-		&network.EndpointSettings{IPAMConfig: &network.EndpointIPAMConfig{IPv4Address: "192.168.99.71"}}, "")
+		&network.EndpointSettings{IPAMConfig: &network.EndpointIPAMConfig{IPv4Address: "192.168.99.71"}})
 	if err == nil {
 		t.Fatal("a container took `--ip` on a network created without `--subnet`. Nothing " +
 			"then constrains the address the server may hand back, and Docker's store would " +
@@ -578,7 +581,7 @@ func TestIPAM_AnAddressOutsideTheSubnetIsRefused(t *testing.T) {
 	cli := ipamDockerClient(t)
 	harness.CreateNetworkIPAM(t, ctx, netName, "macvlan", foreignSubnet, nil, nil)
 
-	err := ipamRunContainerErr(t, ctx, cli, netName, "dh-itest-ipam-outside-ctr", nil, "")
+	err := ipamRunContainerErr(t, ctx, cli, netName, "dh-itest-ipam-outside-ctr", nil)
 	if err == nil {
 		t.Fatal("a container was accepted on an address outside its own network's --subnet. " +
 			"libnetwork does not check, so Docker's store would carry a container outside its " +
