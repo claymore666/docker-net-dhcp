@@ -1181,8 +1181,7 @@ restarted container takes. The rest are test and CI defects:
 sibling <a href="https://github.com/claymore666/docker-net-dhcp/issues/672">#672</a>.</p>
 <p><strong><a href="https://github.com/claymore666/docker-net-dhcp/milestone/30">v2.1.0</a></strong>
 is addressing Docker can see. <a href="https://github.com/claymore666/docker-net-dhcp/issues/110">#110</a> bundles a DHCP IPAM driver, so
-<code>--ipam-driver null</code> stops being the only supported shape. <a href="https://github.com/claymore666/docker-net-dhcp/issues/218">#218</a>, the
-deterministic MAC, is on it and blocked upstream (below).</p>
+<code>--ipam-driver null</code> stops being the only supported shape.</p>
 <p><strong><a href="https://github.com/claymore666/docker-net-dhcp/milestone/29">v2.2.0</a></strong>
 is full IPv6. <a href="https://github.com/claymore666/docker-net-dhcp/issues/818">#818</a> and <a href="https://github.com/claymore666/docker-net-dhcp/issues/808">#808</a> acquire an address by SLAAC, <a href="https://github.com/claymore666/docker-net-dhcp/issues/821">#821</a> takes
 the gateway, DNS, MTU and routes from the advertisement, <a href="https://github.com/claymore666/docker-net-dhcp/issues/819">#819</a> handles
@@ -1200,7 +1199,9 @@ change interfaces the host already has: the bridge is one the plugin
 creates for its own networks and owns for as long as they exist, and no
 interface the host configured is touched.</p>
 <p><a href="https://github.com/claymore666/docker-net-dhcp/issues/926">#926</a> Rapid Commit and <a href="https://github.com/claymore666/docker-net-dhcp/issues/927">#927</a> temporary addresses (IA_TA) carry no
-milestone and are not scheduled.</p>
+milestone and are not scheduled. <a href="https://github.com/claymore666/docker-net-dhcp/issues/218">#218</a>, the deterministic MAC, is
+backlog: it waits on upstream Docker (<a href="https://github.com/moby/moby/pull/52871">moby/moby#52871</a>, the table
+below) and is scheduled only when that lands.</p>
 <h2 id="direction">Direction<a class="headerlink" href="#direction" title="Permanent link">&para;</a></h2>
 <p>Five themes, in rough order of how much they change for a user. Issue
 numbers are anchors; the order is not a queue.</p>
@@ -1223,7 +1224,7 @@ instead of what the plugin believes.</p>
 <h3 id="2-lease-identity-across-recreates">2. Lease identity across recreates<a class="headerlink" href="#2-lease-identity-across-recreates" title="Permanent link">&para;</a></h3>
 <p>A DHCP server keys on identity, so address stability is an identity
 problem. Two pieces are designed, and neither is unplanned. <a href="https://github.com/claymore666/docker-net-dhcp/issues/218">#218</a>, the
-deterministic MAC, is on v2.1.0 and blocked upstream (below). <a href="https://github.com/claymore666/docker-net-dhcp/issues/219">#219</a>, a
+deterministic MAC, is backlog and blocked upstream (below). <a href="https://github.com/claymore666/docker-net-dhcp/issues/219">#219</a>, a
 stable client-id for ipvlan where every child shares the parent's MAC,
 carries no milestone. 2.0 settled the DHCPv6 half of the same question:
 an ipvlan endpoint now gets a DUID of its own (<a href="https://github.com/claymore666/docker-net-dhcp/issues/895">#895</a>).</p>
