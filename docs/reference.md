@@ -724,19 +724,61 @@ everything).
 
 In **IPAM mode** (#110) the address is Docker's published value rather
 than something only the plugin knows, so its stability is stated
-separately and it is weaker. A container restarted on its own keeps its
-address when no other container on that network was stopped or removed
-in the previous minute; when several restart together (`docker compose
-restart`, a daemon restart without `live-restore`) the DHCP server
-decides, and addresses can change. The reason is that Docker's address
-request carries no hostname and no endpoint id, so with two candidates
-on one network there is nothing to match a request back to a previous
-lease on. Pin with `--ip` or `--mac-address`,
-or use `--ipam-driver null`, which keeps addresses by hostname. Every
-such re-bind is logged and counted as `ipam_rebind_ambiguous`, so the
-case is visible in [`/Plugin.Health`](#pluginhealth).
+separately and it is weaker.
 
-Two things it deliberately does not do. Concurrent restarts of several
+**The rule.** When a container on such a network stops or is removed,
+the plugin keeps its DHCP identity and address for a minute. The next
+container that starts on that network claims them — **whichever
+container that is**, and only while it is the single one being kept. So:
+
+- One container restarted, nothing else happening on the network: it
+  claims its own, and keeps its address. This is the normal case.
+- A **different** container started inside that minute claims them
+  first. The new container comes up on the stopped one's address, and
+  the stopped one gets a fresh address when it comes back. Nothing is
+  lost and nothing collides, but neither container's address is the one
+  you would predict.
+- Two or more kept at once — `docker compose restart`, a daemon restart
+  without `live-restore`, or one container restarting beside a
+  neighbour removed seconds earlier — and none is claimed: every
+  container still gets an address, and **which** address is the DHCP
+  server's decision. This case is logged and counted as
+  `ipam_rebind_ambiguous`, so it is visible in
+  [`/Plugin.Health`](#pluginhealth). The two cases above are not
+  counted, because from the plugin's side nothing ambiguous happened.
+
+The reason the rule is this blunt is that Docker's address request
+carries no hostname and no endpoint id — the only thing in it that
+identifies anything is a hardware address Docker generates fresh for
+every endpoint. There is nothing to match a request back to a
+particular previous container on. The `--ipam-driver null` shape has a
+hostname at that point and narrows by it.
+
+**It also depends on the DHCP server.** A restarted container comes back
+under a new hardware address, so what recovers its lease is the client
+identifier (DHCP option 61) that the plugin re-sends from the previous
+endpoint. RFC 2131 §4.2 requires a server to use that identifier where
+the client sends one, and dnsmasq does: it looks a lease up by client
+identifier first and falls back to the hardware address only when one
+side has none. Against such a server the binding matches and the
+address comes back.
+
+A server that **ignores** option 61 and keys on the hardware address
+alone sees an unknown client instead, and hands out a different
+address. That is a real configuration, not a hypothetical — dnsmasq
+spells it `--dhcp-ignore-clid` — and the integration suite runs a
+container restart against it so the difference is measured rather than
+assumed. Nothing fails there and no counter moves; the property is
+simply not available. If address stability across restarts matters to
+you and your server is not one you can check, the `--ipam-driver null`
+shape does not depend on this at all: it restores the previous MAC
+itself, so a MAC-keyed server is enough.
+
+To pin an address regardless of any of the above, use `--ip` or
+`--mac-address`, or use `--ipam-driver null`.
+
+Back in the `--ipam-driver null` shape, two things it deliberately does
+not do. Concurrent restarts of several
 containers on one network inside the 60-second window fall back to fresh
 MACs instead of risking swapped identities between containers.
 Tombstones carry the container hostname so restarts in flight can be
@@ -768,7 +810,13 @@ in every mode:
   `hostname:`, `docker run --hostname`). Servers that auto-update DNS
   publish the container under that name. Best-effort on the initial
   DISCOVER (the plugin waits up to 2s for libnetwork to bind the
-  endpoint to a container ID); the renewal client always sends it.
+  endpoint to a container ID); the renewal client always sends it. In
+  **IPAM mode** the first exchange carries no hostname at all: Docker
+  asks for the address before the endpoint exists, so there is no
+  container to read a name from, and the name first reaches the server
+  on the request the plugin sends when the container starts. A server
+  that lists its clients by name shows that container unnamed for the
+  few seconds in between.
 - **Vendor class (option 60)** is the literal `docker-net-dhcp`, so a
   server can gate behaviour on "this is a plugin-managed container"
   without parsing hostname conventions. v4 only; override with
@@ -1166,7 +1214,7 @@ already parse it were not told to expect a new type.
 | `tombstone_write_failures` | yes | fail | Failed tombstone saves (disk full, EROFS). The next restart of some container will pick a fresh MAC/IP instead of inheriting. Since v1.8.0 it also moves when the tombstone file could not be **read** for a transient reason (EIO, a read racing a writer): the plugin refuses to rewrite the file from nothing instead of destroying contents that may be perfectly good, and the consequence for that endpoint is identical to a failed write. The name is narrower than the meaning; the meaning is "an endpoint will not keep its address across a restart" (#724). |
 | `tombstone_quarantines` | yes | fail | (v1.8.0+) Times the tombstone file was found **unparseable** and moved aside as `tombstones.json.corrupt-<timestamp>` in [`STATE_DIR`](#plugin-settings) (#724). Strictly worse than `tombstone_write_failures`: that costs one container its MAC and address, this costs every one of them, because the whole live tombstone set went with the file, so any container restarting for the next 60 seconds comes back with a new identity. Kept separate from the write counter on purpose, since the two call for different action. **The quarantined file is never reaped.** Read it before deleting it: it is the only record of what was lost, and its contents say whether this was a truncated write, a filesystem fault, or something else writing to that path. |
 | `tombstones_consumed` | no | n/a | (v1.5.0+) Recreated containers that got their previous MAC/IP back by replaying a fresh tombstone. Not a fault: this is the address-stability mechanism working. It is the counterpart to `recovered_ok`: after a restart an address is preserved either by recovery re-adopting a still-attached endpoint (`recovered_ok`) or by a tombstone being replayed (this). Reported so the two can be told apart, which is what makes "the address survived, but via neither path" observable instead of silent (#386). |
-| `lease_changed` | no | warn | Renewals that returned a different IP than last recorded (v4+v6 aggregate). Docker's `inspect` view does **not** update on lease change (libnetwork has no in-place endpoint-IP swap), so this is the stale-inspect-window signal. Alert on it for long-running containers. |
+| `lease_changed` | no | warn | Renewals that returned a different IP than last recorded (v4+v6 aggregate). Docker's `inspect` view does **not** update on lease change (libnetwork has no in-place endpoint-IP swap), so this is the stale-inspect-window signal. Alert on it for long-running containers. **In IPAM mode the gap is wider**, because the address is also Docker's own allocation: the container moves to the new address, Docker's IPAM still holds the old one as allocated, and after a daemon restart the plugin is asked to replay an address it no longer has a record for and refuses (`ipam_replay_miss`, and a warning in the daemon log). The usual cause is a server that lost its lease file and NAKed the request, so fix it at the server; the container itself keeps working until the daemon restarts. |
 | `address_conflicts` | **yes** | fail | (v1.6.0+; RFC 5227 since v2.0.0) Leased addresses found to be already in use by another device on the segment, in **both families**: it is the sum of `address_conflicts_v4` and `address_conflicts_v6` and nothing increments it directly. Only the v4 half is RFC 5227; the v6 half is Duplicate Address Detection and has its own row below. The DHCP client runs RFC 5227 Address Conflict Detection from inside the container's network namespace: §2.1 ARP-probes the offered address **before it is used**, and §2.4 keeps listening for the whole life of the lease. Either way the address is DHCPDECLINEd to the server (RFC 2131 §3.1(5)) and another one is requested, so the counter moving means the plugin found a conflict *and acted on it*, and never that a container is sitting on a contested address. **A conflict found after the address is in use changes the container's address**, which `docker inspect` does not update; watch `lease_changed` too. Under `conflict_check=off` the IPv4 client neither probes nor listens, so nothing inside it can find an IPv4 conflict; `address_conflicts_v4` can then move only for a conflict **reported to the client from outside it**, and no code path in the plugin does that today, so on an `off` network the v4 half does not move. The same rule governs `acd_conflicts_detected`. **It does not hold for this total.** `conflict_check` is a DHCPv4 client parameter with no DHCPv6 counterpart, so the v6 half keeps counting Duplicate Address Detection on an `off` network and carries the total with it. This is the only signal for the condition from the plugin's side, since from the DHCP server's point of view the lease was issued normally, though since 2.0 the server also learns about it, because the DECLINE is on the wire and in its log. The usual cause is a **statically configured** host inside the DHCP pool range: it never asks the server for anything, so the server cannot know the address is taken. Fix it at the server (reserve or exclude the address) and never at the plugin. **What it does not cover:** another container on the *same host* sharing the same parent NIC. macvlan isolates a parent from its own children, so a sibling's answer never reaches the probe. Excluded by construction and never pending work (#528). |
 | `acd_probes_sent` | no | n/a | (v2.0.0) RFC 5227 §2.1.1 ARP Probes sent. Read this **before** believing `address_conflicts_v4` is 0: with no probes the two readings are identical, and "the detector never ran" is what #524 looked like for months. A healthy segment is `acd_probes_sent` climbing with `address_conflicts_v4` at 0. It says nothing about `address_conflicts_v6`, which is Duplicate Address Detection and sends no ARP frame. Moves in `conflict_check=wait` and `=async`, never in `=off`, so a zero here on a host whose networks are all `off` is the configuration working and never a fault. **Not a check:** the imperative above is to read this counter *against* `address_conflicts_v4`, and its own normal reading is non-zero and climbing, so a `warn` check here would fire on every healthy host, which is the second clause of the rule above. What is worth alerting on is this counter staying **flat**, and a check fires on a value and never on the absence of movement. |
 | `acd_announcements_sent` | no | n/a | (v2.0.0) RFC 5227 §2.3 ARP Announcements sent, two per address that passed its probe, telling the segment the address is now in use. A live scrape can be one behind. The first announcement is sent at the bind and the second from a timer 2s later (§2.3 ANNOUNCE\_INTERVAL), and the plugin folds the DHCP library's count on client events, so an address that has just been bound reads 1 until the next event on that endpoint. On a quiet endpoint that is until the T1 renewal. Read against `acd_probes_sent`: probes climbing with announcements flat means addresses are being checked and none is coming back clean. Moves in `wait` and `async`, never in `off`. **Not a check:** both clauses fail. The imperative is to read this counter *against* `acd_probes_sent`, because flat announcements are a signal only while probes climb, and its own normal reading is non-zero and climbing, so a check firing on non-zero would fire on every healthy host. |
@@ -1188,8 +1236,8 @@ already parse it were not told to expect a new type.
 | `displaced_stops` | no | n/a | (v1.3.5+) Attaches that found a manager already registered for the same endpoint and stopped it, which is a container restarting into a plugin that had already recovered it (#338). The displaced client is stopped cleanly and the new one takes over. Stopped is not released: it sends no DHCPRELEASE, so the address stays leased and the incoming client renews it, so a few are normal after a plugin restart. Climbing steadily alongside `recovered_ok` means a container is in a restart loop. |
 | `restart_link_up_waited` | no | n/a | (v1.5.0+) Child links that came up only after waiting out the departing link's hold on the address, i.e. how often a container restart met the #408 window and the fix carried it. Not a fault: this is the repair working, counted so the window is visible instead of inferred. A steady rise means your hosts restart containers fast enough to hit it routinely, which is expected for images that handle `SIGTERM` promptly. |
 | `restart_link_up_timeouts` | no | warn | (v1.5.0+) The same wait outlasting its budget: the restart fails and `docker restart` reports `address already in use`. A real failure, but deliberately not `healthy`-affecting: it surfaces directly to whoever ran the command, and `healthy` is for faults nothing else reports. Any non-zero value here is worth investigating; it means the departing link held the address longer than the budget allows (#422). |
-| `parent_link_waits` | no | n/a | (v1.6.0+) Operations that had to queue for a shared parent interface before attaching their own link. A parent NIC can be a macvlan port or an ipvlan port but never both, so when networks of both kinds share one parent, or when a `validate_dhcp` probe still has its temporary link attached, the plugin serialises them per parent instead of letting the kernel refuse one with `device or resource busy` (#486, #549). Queuing is the mechanism working; a steady rise just means that NIC is busy. |
-| `parent_link_wait_timeouts` | no | warn | (v1.6.0+) The same wait giving up after its budget, after which the operation asks the kernel anyway and may fail with `device or resource busy`. The budget is 4s, sized to absorb an ordinary DORA on the `validate_dhcp` probe, so a holder that wedges degrades to the pre-v1.6.0 behaviour instead of stalling a container start. Not `healthy`-affecting, but the actionable one of the pair: any non-zero value means something held a parent far longer than a DHCP round trip should take, and container starts on that NIC were refused as a result. |
+| `parent_link_waits` | no | n/a | (v1.6.0+) Operations that had to queue for a shared parent interface before attaching their own link. A parent NIC can be a macvlan port or an ipvlan port but never both, so when networks of both kinds share one parent, or when a `validate_dhcp` probe still has its temporary link attached, the plugin serialises them per parent instead of letting the kernel refuse one with `device or resource busy` (#486, #549). Queuing is the mechanism working; a steady rise just means that NIC is busy. Since v2.1.0 this also counts the operations that gave up waiting for a holder attaching the **same** kind of child: a parent takes any number of those side by side, so the wait protected nothing and the operation goes on to succeed. Two containers starting together on one IPAM-mode network land here, because an address reservation holds the parent for its whole DHCP exchange. |
+| `parent_link_wait_timeouts` | no | warn | (v1.6.0+) The same wait giving up after its budget where the holder was attaching the **other** kind of child, or a holder the plugin could no longer identify. The operation asks the kernel anyway and may fail with `device or resource busy`. The budget is 4s, sized to absorb an ordinary DORA on the `validate_dhcp` probe, so a holder that wedges degrades to the pre-v1.6.0 behaviour instead of stalling a container start. Not `healthy`-affecting, but the actionable one of the pair: a non-zero value means a macvlan and an ipvlan operation contended for one parent NIC for longer than a DHCP round trip, and a container start there can fail. Same-kind contention is **not** counted here — it is in `parent_link_waits` — because the kernel permits it and the operation succeeds. |
 | `unsafe_hostnames_rejected` | no | n/a | (v1.8.0+) Container hostnames dropped because they carried a control character (#692). **What the drop protects changed in 2.0.** Nothing generates a client config any more. `directives_refused`, which counted values kept out of one, is removed for exactly that reason, and the hostname now goes straight into the DHCP parameters the plugin builds and onto the wire, as option 12 and, with `register_dns`, as the option-81 FQDN. The drop is still the safe outcome and the lease proceeds, because the hostname decorates the exchange and the opt-in `register_dns` registration, so this is not `healthy`-affecting. It is not purely cosmetic, though: the hostname is also the key that narrows tombstone matching to the container that wrote the tombstone, where an *empty* hostname means "match any tombstone on this network", so a refusal is deliberately kept distinguishable from an absence instead of collapsed into an empty string. Read it as an intent signal and not as a fault: Docker does not validate `--hostname`, and a legitimate one never contains a control character, so a non-zero value means something sent one on purpose. Underscores and other technically-illegal-but-common hostnames are **not** counted; the rule is about control characters and never about RFC 1123. **Not a check:** the imperative says how to *read* a non-zero value and never what to *do* about one: the same row says the drop is the safe outcome and the lease proceeds, so there is no degraded state for a check to fire on. |
 | `unsafe_option_values_dropped` | no | n/a | (v1.8.0+) Server-chosen DHCP string values refused before use because they carried a control character, plus option-15 domains truncated at their first space. The filter is reflective and covers every string value in the lease, so a new one is covered the day it is added; the ones it exists for are the free-text options 66, 67, 100, 101 and 252, which arrive as bytes the server chose and are carried into a log line, a `resolv.conf` or the audit ledger, none of which share an escaping rule. A space in option 15 additionally turns one search domain into several, with the server's choice first in the order, so that cut is counted here too. The sibling of `unsafe_hostnames_rejected`, for the values the *server* chooses instead of the container. A legitimate server sends none of these, so any rise is deliberate. |
 | `network_options_rejected` | no | n/a | (v1.8.0+) Endpoint operations that met a network's stored options and would not act on them as written: an interface name the kernel would not accept, or a `mode` this plugin does not implement. Name validation runs when a network is *created* (#705); this check runs every time the stored options are *read*, which is where the name actually reaches netlink. Not healthy-affecting: refusing is the safe outcome, the operation already fails visibly to Docker, and one network's record being wrong does not make the plugin unwell, because every other network on the host keeps working. A non-zero value means one network needs recreating: either it was created before name validation existed, or its options were written directly into the state directory. `DeleteEndpoint` is deliberately exempt so a refused network can still be torn down. It counts an unknown mode and proceeds, so a rise here does not mean nothing was torn down. Only the mode: teardown reads no stored name at all (it derives the link from the endpoint ID), so there is no name refusal available to it. |
