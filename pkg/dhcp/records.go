@@ -55,9 +55,11 @@ import (
 //     reason.
 //
 // What neither closes is a file on a filesystem with no working flock —
-// an NFS mount without lockd. The plugin's state directory is local by
-// construction (it is inside the plugin's own rootfs), which is why this
-// is a bound and not a defect; it is written here rather than assumed.
+// an NFS mount without lockd. Since v1.5.0 the state directory is a bind
+// of a fixed host path, not the plugin's own rootfs, so whether the lock
+// holds is the host's choice of filesystem and not ours. That is why this
+// is a bound and not a defect; it is written here rather than assumed,
+// and docs/reference.md states it where an operator picks the mount.
 type Records struct {
 	path string
 
