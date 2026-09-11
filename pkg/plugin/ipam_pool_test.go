@@ -30,12 +30,12 @@ import (
 // hundred is the cheapest thing that does.
 func TestIpamPoolID_IsAFunctionOfItsInputs(t *testing.T) {
 	opts := map[string]string{"parent": "eth0", "bridge": "br-lan"}
-	first, err := ipamPoolID(ipamLocalAddressSpace, "192.168.0.0/24", opts)
+	first, err := ipamPoolID(ipamLocalAddressSpace, "192.168.100.0/24", opts)
 	if err != nil {
 		t.Fatalf("ipamPoolID: %v", err)
 	}
 	for i := 0; i < 100; i++ {
-		got, err := ipamPoolID(ipamLocalAddressSpace, "192.168.0.0/24", opts)
+		got, err := ipamPoolID(ipamLocalAddressSpace, "192.168.100.0/24", opts)
 		if err != nil {
 			t.Fatalf("ipamPoolID (run %d): %v", i, err)
 		}
@@ -68,8 +68,8 @@ func TestIpamPoolID_CreateAndReplayDeriveOneIdentity(t *testing.T) {
 	// would be the same wrong function. This column is the independent
 	// half, and it is what makes the masking observable.
 	cases := []struct{ name, typed, canonical string }{
-		{"host bits set", "192.168.0.7/24", "192.168.0.0/24"},
-		{"already masked", "192.168.0.0/24", "192.168.0.0/24"},
+		{"host bits set", "192.168.100.7/24", "192.168.100.0/24"},
+		{"already masked", "192.168.100.0/24", "192.168.100.0/24"},
 		{"no subnet typed", "", ipamAnyPool},
 	}
 	for _, c := range cases {
@@ -114,12 +114,12 @@ func TestIpamPoolID_RefusesWhatItCannotTellApart(t *testing.T) {
 		pool  string
 		opts  map[string]string
 	}{
-		{"an address space that is not ours", "LocalDefault", "192.168.0.0/24", nil},
-		{"an unknown ipam-opt", ipamLocalAddressSpace, "192.168.0.0/24", map[string]string{"vlan": "7"}},
-		{"an ipam-opt with no value", ipamLocalAddressSpace, "192.168.0.0/24", map[string]string{"parent": ""}},
-		{"a value carrying the separator", ipamLocalAddressSpace, "192.168.0.0/24", map[string]string{"parent": "eth0/1"}},
-		{"a value carrying the assignment", ipamLocalAddressSpace, "192.168.0.0/24", map[string]string{"parent": "a=b"}},
-		{"a pool that is not a prefix", ipamLocalAddressSpace, "192.168.0.1", nil},
+		{"an address space that is not ours", "LocalDefault", "192.168.100.0/24", nil},
+		{"an unknown ipam-opt", ipamLocalAddressSpace, "192.168.100.0/24", map[string]string{"vlan": "7"}},
+		{"an ipam-opt with no value", ipamLocalAddressSpace, "192.168.100.0/24", map[string]string{"parent": ""}},
+		{"a value carrying the separator", ipamLocalAddressSpace, "192.168.100.0/24", map[string]string{"parent": "eth0/1"}},
+		{"a value carrying the assignment", ipamLocalAddressSpace, "192.168.100.0/24", map[string]string{"parent": "a=b"}},
+		{"a pool that is not a prefix", ipamLocalAddressSpace, "192.168.100.1", nil},
 		{"an IPv6 pool", ipamLocalAddressSpace, "2001:db8::/64", nil},
 	}
 	for _, c := range cases {
@@ -165,21 +165,21 @@ func TestIssuedPoolTTLClearsTheProbeBudget(t *testing.T) {
 func TestIssuedPools_TakePrefersTheSuffixedIssue(t *testing.T) {
 	now := time.Now()
 	s := newIssuedPools()
-	s.add("dhcp/dhcp-local/192.168.0.0/24", ipamLocalAddressSpace, "192.168.0.0/24", "", now)
-	s.add("dhcp/dhcp-local/192.168.0.0/24/parent=eth1", ipamLocalAddressSpace, "192.168.0.0/24", "eth1", now)
+	s.add("dhcp/dhcp-local/192.168.100.0/24", ipamLocalAddressSpace, "192.168.100.0/24", "", now)
+	s.add("dhcp/dhcp-local/192.168.100.0/24/parent=eth1", ipamLocalAddressSpace, "192.168.100.0/24", "eth1", now)
 
-	got, ok := s.take(ipamLocalAddressSpace, "192.168.0.0/24", "eth1", now)
+	got, ok := s.take(ipamLocalAddressSpace, "192.168.100.0/24", "eth1", now)
 	if !ok {
 		t.Fatal("no issue taken for a network on eth1")
 	}
-	if got != "dhcp/dhcp-local/192.168.0.0/24/parent=eth1" {
+	if got != "dhcp/dhcp-local/192.168.100.0/24/parent=eth1" {
 		t.Errorf("took %q; the eth1 network must take the issue whose suffix names eth1, or "+
 			"the two networks swap bindings", got)
 	}
 	// The unsuffixed one is still there for the network that typed no
 	// interface, and it is taken by a create on a different parent.
-	got, ok = s.take(ipamLocalAddressSpace, "192.168.0.0/24", "eth0", now)
-	if !ok || got != "dhcp/dhcp-local/192.168.0.0/24" {
+	got, ok = s.take(ipamLocalAddressSpace, "192.168.100.0/24", "eth0", now)
+	if !ok || got != "dhcp/dhcp-local/192.168.100.0/24" {
 		t.Errorf("second take = (%q, %v), want the unsuffixed issue", got, ok)
 	}
 	if n := s.len(); n != 0 {
