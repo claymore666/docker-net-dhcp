@@ -8,7 +8,7 @@
 # the digest is what Docker enforces and the tag is what a reader — or
 # scripts/check-go-pins.sh — can compare against the other Go pins in
 # this tree. A `1.26-alpine` tag hid go1.26.5 here through v1.5.0 (#525).
-FROM golang:1.27.0-alpine@sha256:4c9fe60190a2a3350ddc51de80d0224b8a6698d12bdfc999fee45ea9d6c46dbc AS builder
+FROM golang:1.27.1-alpine@sha256:cf6fca6641884b8433441b2b0652976f975e1d0fdd26d177eaaf8596087f3125 AS builder
 
 # COVER_FLAGS is empty for the production build and `-cover -coverpkg=./...`
 # for the instrumented build used by the coverage workflow. Keeping the
