@@ -6,7 +6,7 @@
       <meta charset="utf-8">
       <meta name="viewport" content="width=device-width,initial-scale=1">
       
-        <meta name="description" content="Docker network plugin that leases container IPs from an existing DHCP server — bridge, macvlan, and ipvlan modes.">
+        <meta name="description" content="Docker network plugin that leases container IPs from the DHCP server a LAN already runs, in bridge, macvlan and ipvlan modes, as Docker's network driver and, for bridge and macvlan from v2.1.0, as its IPAM driver as well.">
       
       
         <meta name="author" content="claymore666">
@@ -1140,7 +1140,7 @@ landed on <code>eth0</code>, <code>eth1</code> and so on in attach order, which 
 scripting around the name, so the plugin now returns the requested
 interface name to the engine.</p>
 <h2 id="where-the-project-is-today">Where the project is today<a class="headerlink" href="#where-the-project-is-today" title="Permanent link">&para;</a></h2>
-<p>This branch is the 2.0 line.
+<p>This branch is the 2.x line.
 The plugin leases through the project's own in-tree DHCP client library
 instead of an external client process, and it does so for both address
 families: <code>ipv6=true</code> gives an endpoint a DHCPv6 lease alongside its

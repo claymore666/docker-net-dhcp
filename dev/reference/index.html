@@ -6,7 +6,7 @@
       <meta charset="utf-8">
       <meta name="viewport" content="width=device-width,initial-scale=1">
       
-        <meta name="description" content="Docker network plugin that leases container IPs from an existing DHCP server — bridge, macvlan, and ipvlan modes.">
+        <meta name="description" content="Docker network plugin that leases container IPs from the DHCP server a LAN already runs, in bridge, macvlan and ipvlan modes, as Docker's network driver and, for bridge and macvlan from v2.1.0, as its IPAM driver as well.">
       
       
         <meta name="author" content="claymore666">
@@ -2209,14 +2209,15 @@ address is stable across every future upgrade.</p>
 <h2 id="creating-networks">Creating networks<a class="headerlink" href="#creating-networks" title="Permanent link">&para;</a></h2>
 <p>All modes share two invariants:</p>
 <ul>
-<li><strong>Docker's own IPAM is never the allocator.</strong> The LAN's DHCP server is
-  the source of address truth, and Docker's default IPAM would allocate
-  from a subnet of its choosing and collide with the LAN. There are two
+<li><strong>Docker's built-in IPAM is never the allocator.</strong> The LAN's DHCP
+  server is the source of address truth, and Docker's default IPAM would
+  allocate from a subnet of its choosing and collide with the LAN. There are two
   supported ways to say so: <code>--ipam-driver null</code>, which is what every
-  example below uses and what 1.x and 2.0 shipped, and
-  <code>--ipam-driver &lt;this plugin&gt;</code> (v2.1.0+, #110), which puts the leased
-  address in Docker's own address management. See
-  <a href="#address-allocation">Address allocation</a>.</li>
+  example below uses, what 1.x and 2.0 shipped, and what all three modes
+  take, and <code>--ipam-driver &lt;this plugin&gt;</code> (v2.1.0+, #110), which puts the
+  leased address in Docker's own address management and covers <code>bridge</code>
+  and <code>macvlan</code> for IPv4. <code>ipvlan</code> is refused in that shape (#949) and so
+  is IPv6 (#960). See <a href="#address-allocation">Address allocation</a>.</li>
 <li>One DHCP-served network per container is the supported shape.</li>
 </ul>
 <h3 id="bridge-default">bridge (default)<a class="headerlink" href="#bridge-default" title="Permanent link">&para;</a></h3>

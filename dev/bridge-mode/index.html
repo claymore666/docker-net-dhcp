@@ -6,7 +6,7 @@
       <meta charset="utf-8">
       <meta name="viewport" content="width=device-width,initial-scale=1">
       
-        <meta name="description" content="Docker network plugin that leases container IPs from an existing DHCP server — bridge, macvlan, and ipvlan modes.">
+        <meta name="description" content="Docker network plugin that leases container IPs from the DHCP server a LAN already runs, in bridge, macvlan and ipvlan modes, as Docker's network driver and, for bridge and macvlan from v2.1.0, as its IPAM driver as well.">
       
       
         <meta name="author" content="claymore666">
@@ -1365,8 +1365,8 @@ work with the null IPAM driver; use the <code>ipv6</code> driver option instead)
 <a id="__codelineno-12-3" name="__codelineno-12-3" href="#__codelineno-12-3"></a><span class="w">  </span>--ipam-driver<span class="w"> </span>null<span class="w"> </span>-o<span class="w"> </span><span class="nv">bridge</span><span class="o">=</span>my-bridge<span class="w"> </span>-o<span class="w"> </span><span class="nv">ipv6</span><span class="o">=</span><span class="nb">true</span><span class="w"> </span>my-dhcp-net
 </code></pre></div>
 <blockquote>
-<p><strong>One of the two IPAM shapes is required.</strong> Docker's own IPAM must not
-be the allocator: it hands out addresses from its own pool, which
+<p><strong>One of the two IPAM shapes is required.</strong> Docker's built-in IPAM must
+not be the allocator: it hands out addresses from its own pool, which
 collides with the real LAN the bridge is attached to. Pass
 <code>--ipam-driver null</code>, as above, or, from v2.1.0, name this plugin as
 the IPAM driver as well, which puts the leased address into Docker's
