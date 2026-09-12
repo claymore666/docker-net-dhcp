@@ -358,10 +358,11 @@ All modes share two invariants:
   server is the source of address truth, and Docker's default IPAM would
   allocate from a subnet of its choosing and collide with the LAN. There are two
   supported ways to say so: `--ipam-driver null`, which is what every
-  example below uses and what 1.x and 2.0 shipped, and
-  `--ipam-driver <this plugin>` (v2.1.0+, #110), which puts the leased
-  address in Docker's own address management. See
-  [Address allocation](#address-allocation).
+  example below uses, what 1.x and 2.0 shipped, and what all three modes
+  take, and `--ipam-driver <this plugin>` (v2.1.0+, #110), which puts the
+  leased address in Docker's own address management and covers `bridge`
+  and `macvlan` for IPv4. `ipvlan` is refused in that shape (#949) and so
+  is IPv6 (#960). See [Address allocation](#address-allocation).
 - One DHCP-served network per container is the supported shape.
 
 ### bridge (default)

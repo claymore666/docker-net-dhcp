@@ -1,5 +1,5 @@
 {
-    "description": "Docker DHCP networking (bridge, macvlan, ipvlan; network and IPAM driver), coverage-instrumented build",
+    "description": "Docker DHCP networking (bridge, macvlan, ipvlan; IPAM driver for bridge and macvlan), coverage-instrumented build",
     "interface": {
         "socket": "net-dhcp.sock",
         "types": [

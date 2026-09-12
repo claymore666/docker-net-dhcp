@@ -11,10 +11,12 @@
 A Docker network plugin that gives every container an address from the
 DHCP server your LAN already runs (your router, a Fritz!Box, dnsmasq),
 over `bridge`, `macvlan` or `ipvlan`, for IPv4 and IPv6. It runs in two
-shapes: as the network driver beside `--ipam-driver null`, or, from
-v2.1.0, as the network driver and Docker's IPAM driver at once, which
-puts the leased address into Docker's own address management and makes
-`docker run --ip` and Compose `ipv4_address` work (IPv4 only, [#960]).
+shapes: as the network driver beside `--ipam-driver null`, which is all
+three modes, or, from v2.1.0, as the network driver and Docker's IPAM
+driver at once, which puts the leased address into Docker's own address
+management and makes `docker run --ip` and Compose `ipv4_address` work.
+The second shape covers `bridge` and `macvlan` for IPv4: `ipvlan` takes
+`--ipam-driver null` ([#949]) and so does IPv6 ([#960]).
 The DHCP exchange runs inside the plugin on the project's own engine,
 the [dhcp-golib][dhcp-golib] library: there is no external DHCP client
 to install and no client process per container.
@@ -123,6 +125,7 @@ Add `-o ipv6=true` for a DHCPv6 lease beside the v4 one; it needs the
 the combination ([#960]). The two shapes are set out in
 [the driver reference](docs/reference.md#address-allocation).
 
+[#949]: https://github.com/claymore666/docker-net-dhcp/issues/949
 [#960]: https://github.com/claymore666/docker-net-dhcp/issues/960
 
 After that, plain Compose. No static addresses, no sidecar, nothing per
