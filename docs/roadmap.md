@@ -24,7 +24,7 @@ interface name to the engine.
 
 ## Where the project is today
 
-This branch is the 2.0 line.
+This branch is the 2.x line.
 The plugin leases through the project's own in-tree DHCP client library
 instead of an external client process, and it does so for both address
 families: `ipv6=true` gives an endpoint a DHCPv6 lease alongside its

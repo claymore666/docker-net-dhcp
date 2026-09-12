@@ -354,9 +354,9 @@ docker plugin rm ghcr.io/claymore666/docker-net-dhcp:vX.Y.Z
 
 All modes share two invariants:
 
-- **Docker's own IPAM is never the allocator.** The LAN's DHCP server is
-  the source of address truth, and Docker's default IPAM would allocate
-  from a subnet of its choosing and collide with the LAN. There are two
+- **Docker's built-in IPAM is never the allocator.** The LAN's DHCP
+  server is the source of address truth, and Docker's default IPAM would
+  allocate from a subnet of its choosing and collide with the LAN. There are two
   supported ways to say so: `--ipam-driver null`, which is what every
   example below uses and what 1.x and 2.0 shipped, and
   `--ipam-driver <this plugin>` (v2.1.0+, #110), which puts the leased
