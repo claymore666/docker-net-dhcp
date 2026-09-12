@@ -420,8 +420,9 @@ families' addresses, so either family releasing suppresses it, while the
 record of a family whose release did not happen is retained exactly as
 under `never` and stays resumable. `releases_sent` counts what left the host and
 `release_failures` counts attempts that put nothing on the wire, both
-split per family; `release_failures` is folded from the library's own
-send counter, never from the decision to release.
+split per family and both moved by the plugin from the outcome of its
+own attempt, which is the only place that knows a release was asked for
+and did not happen.
 
 `Leave` is the only path that releases. `Plugin.Close`, a manager
 displaced by a newer one for the same endpoint, and the cleanup after

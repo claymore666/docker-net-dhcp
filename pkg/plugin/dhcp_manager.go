@@ -2033,16 +2033,13 @@ func (m *dhcpManager) stop(leaving bool) error {
 	// the guard can be seen to do anything.
 	//
 	// ABOVE THE startErr RETURN, and that placement is the whole of
-	// what a failed Join gets. setupClient publishes the client before
-	// Start, so an endpoint whose Start failed still has a client to
-	// ask; it holds no binding, so nothing goes on the wire and the
-	// attempt lands in release_failures. That is the honest reading of
-	// this case: the one-shot acquired an address, the persistent
-	// client never bound, and the address is still leased upstream when
-	// this returns. Below the return it would be silent instead --
-	// neither sent nor failed -- on the one population where an
-	// operator who asked for releases most wants to see that none
-	// happened.
+	// what a failed Join gets. The release is built from the durable
+	// record, so a persistent client that never started takes nothing
+	// away from it: the one-shot at CreateEndpoint acquired an address
+	// and wrote it into the record, and that address is what goes back.
+	// Below this return the endpoint would be silent instead -- neither
+	// sent nor failed -- on the one population where an operator who
+	// asked for releases most wants to see what happened.
 	//
 	// Before close(m.stopChan) and before the clients are drained, and
 	// the reason is no longer the client. The release is built from the
