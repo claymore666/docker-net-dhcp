@@ -14,6 +14,7 @@ import (
 	log "github.com/sirupsen/logrus"
 	"golang.org/x/sys/unix"
 
+	"github.com/claymore666/docker-net-dhcp/pkg/dhcp"
 	"github.com/claymore666/docker-net-dhcp/pkg/util"
 )
 
@@ -275,12 +276,46 @@ var rtSendRelease = runtime.SendRelease
 
 // releaseRecord reads back the durable record this family's release is
 // built from.
+//
+// THE ID IS NOT ALWAYS THERE AND THE INDEX IS WHY THIS STILL WORKS.
+// m.recordID and m.recordID6 are assigned in setupClient, and an attach
+// that was cancelled because the endpoint is already leaving returns
+// before setupClient runs (Plugin.Join, "Attach cancelled because the
+// endpoint is leaving"). That manager reaches Stop with both ids empty
+// and a record sitting in the store, written by CreateEndpoint with the
+// address the one-shot exchange took -- so an id-only lookup answers
+// "no record" for an endpoint that plainly has one, and the address is
+// left leased on a network that asked for it back. MEASURED on CI
+// before this existed: zero datagrams, release_failures_v4 +1, dnsmasq
+// still holding the address.
+//
+// The fallback is the SAME (scope, MAC) index resumeFromRecord uses on
+// every Join, keyed with recordKey() so the create side and this side
+// cannot disagree about what the record was filed under.
+//
+// IT REFUSES A TOMBSTONE, and that is the direction this must not fail
+// in. The index answers with the newest record under the key; a
+// RETAINED one belongs to an endpoint that has already gone and is what
+// the next CreateEndpoint inherits an address from (#820). Releasing it
+// would hand back an address the plugin is about to promise to a
+// restarting container -- the inheritance a release exists to prevent,
+// run backwards. A CLOSED one is a record already settled, by an
+// earlier release or an abandoned CreateEndpoint, and has nothing left
+// to hand back.
+//
+// The id found this way is written back onto the manager, because Leave
+// settles the record through that field (settleReleasedRecord) and a
+// release built off a record the manager does not name is a release
+// whose record is never closed.
+//
+// The empty-key refusal below is a NO-OP TODAY and is kept anyway:
+// Rebuilt.ByScopeMAC carries `len(mac) > 0` in its own predicate, so
+// nothing can be reached through an empty key (MEASURED, lease/rebuild.go).
+// The premise is stated at both levels because only the one here
+// survives a change to the library, and the two sibling lookups
+// (retainRecordFor, recordResume) state it the same way.
 func (m *dhcpManager) releaseRecord(v6 bool) (lease.Record, bool) {
-	id := m.recordID
-	if v6 {
-		id = m.recordID6
-	}
-	if id == "" || m.plugin == nil || m.plugin.records == nil {
+	if m.plugin == nil || m.plugin.records == nil {
 		return lease.Record{}, false
 	}
 	rb, err := m.plugin.records.Rebuilt()
@@ -289,11 +324,42 @@ func (m *dhcpManager) releaseRecord(v6 bool) (lease.Record, bool) {
 			Warn("Could not read the lease records back, so this endpoint's lease cannot be released")
 		return lease.Record{}, false
 	}
-	rec, found := rb.ByID(id)
-	if !found {
+
+	if id := m.recordID; !v6 && id != "" {
+		return rb.ByID(id)
+	}
+	if id := m.recordID6; v6 && id != "" {
+		return rb.ByID(id)
+	}
+
+	key := m.recordKey()
+	if len(key) == 0 {
 		return lease.Record{}, false
 	}
+	scope := m.joinReq.NetworkID
+	if v6 {
+		scope = dhcp.Scope6(scope)
+	}
+	matches := rb.ByScopeMAC(scope, key)
+	if len(matches) == 0 {
+		return lease.Record{}, false
+	}
+	rec := matches[len(matches)-1]
+	if rec.Phase == lease.PhaseRetained || rec.Phase == lease.PhaseClosed {
+		return lease.Record{}, false
+	}
+	m.adoptRecordID(v6, rec.ID)
 	return rec, true
+}
+
+// adoptRecordID names the record this manager is releasing, for the
+// teardown that follows the send.
+func (m *dhcpManager) adoptRecordID(v6 bool, id string) {
+	if v6 {
+		m.recordID6 = id
+		return
+	}
+	m.recordID = id
 }
 
 // classifyReleaseError maps the library's typed refusals onto the
@@ -403,9 +469,11 @@ func (m *dhcpManager) releaseHeldLeases() (releasedV4, releasedV6 bool) {
 
 // countRelease moves the per-family pair. Sent is a packet the library
 // saw leave; failed is an attempt that produced none, whatever the
-// reason -- a client that held no binding, a send that failed, a
-// request dropped from a full queue, or a v6 address that could not be
-// taken off the link.
+// reason -- and the reasons are the releaseOutcome values above, which
+// is why both halves are moved from this plugin's own outcome and not
+// from any counter the library keeps. Only the plugin knows a release
+// was asked for and did not happen: a record it could not find puts
+// nothing into the library at all.
 func (m *dhcpManager) countRelease(v6 bool, sent bool) {
 	if m.plugin == nil {
 		return

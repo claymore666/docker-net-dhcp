@@ -16,6 +16,7 @@ import (
 	"sync/atomic"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/claymore666/dhcp-golib/lease"
 	"github.com/claymore666/dhcp-golib/runtime"
@@ -722,7 +723,7 @@ func TestReleaseLease_AReleasedEndpointLeavesNothingBehind(t *testing.T) {
 			p.recordBound(id6, "created")
 
 			p.rememberEndpoint("ep-1", endpointFingerprint{
-				MAC: mac.String(), IPv4: "192.168.0.50",
+				MAC: mac.String(), IPv4: "192.168.99.50",
 			}, dhcpHostname{name: "web"})
 			// The fact, not the option: Leave settles each family's
 			// record from what actually left the host, and marks the
@@ -949,6 +950,141 @@ func TestReleaseLease_AFailedStartStillReleases(t *testing.T) {
 				t.Errorf("release_failures_v4 = %d, want %d", got, tc.wantFailed)
 			}
 		})
+	}
+}
+
+// TestReleaseLease_ACancelledAttachStillReleases drives the one state
+// where the record exists and the manager holds no id for it.
+//
+// MEASURED on CI (main-7-suite, PR #966 round 2): an endpoint whose
+// attach was cancelled because it was already leaving reaches Stop with
+// both record ids empty, because they are assigned in setupClient and
+// the cancelled attach returns before it runs. The release then found
+// no record, sent no datagram, bumped release_failures_v4 and left the
+// address leased on the server, on a network that had asked for it
+// back. The record was in the store the whole time: CreateEndpoint's
+// one-shot wrote the lease into it.
+//
+// The second case is the direction this must NOT fail in. The index
+// answers with the newest record under the key, and a TOMBSTONE is a
+// record under that key belonging to an endpoint that has already gone
+// — the thing a restart inherits its address from. Releasing that would
+// hand back an address the next CreateEndpoint is about to promise.
+func TestReleaseLease_ACancelledAttachStillReleases(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// settle, when set, is the phase the record is moved to before
+		// the stop: a tombstone or a record already ended.
+		settle string
+		// older adds a CLOSED record under the same key AHEAD of the
+		// live one, which is the shape a restart leaves behind.
+		older      bool
+		wantCalls  int
+		wantSent   int32
+		wantFailed int32
+		// wantID is whether the manager ends up naming the record it
+		// released. Leave settles the record through that field
+		// (Plugin.Leave, settleReleasedRecord), so a release built off
+		// a record the manager does not name is a release whose record
+		// is never closed.
+		wantID bool
+	}{
+		{name: "no id on the manager, the record is in the store", wantCalls: 1, wantSent: 1, wantID: true},
+		{name: "the newest record under the key is a tombstone", settle: "retained", wantFailed: 1},
+		{name: "the newest record under the key is already closed", settle: "closed", wantFailed: 1},
+		{name: "an earlier closed record sits under the same key", older: true, wantCalls: 1, wantSent: 1, wantID: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var ledgerFailures atomic.Int32
+			p := &Plugin{}
+			p.ledger = testLedger(t, &ledgerFailures)
+
+			sender := installSender(t, nil)
+			if tc.older {
+				withRecords(t, p)
+				p.closeRecord(p.recordCreated("net1", releaseTestMAC,
+					dhcp.ClientIdentity([]byte{9, 9, 9})))
+			}
+			m := releasingManager(t, p, ReleaseOnStop, false)
+
+			id := m.recordID
+			switch tc.settle {
+			case "retained":
+				p.recordRetained(id, time.Now().Add(tombstoneTTL))
+			case "closed":
+				p.closeRecord(id)
+			}
+			// The state the cancelled attach leaves: the MAC arrived on
+			// the join hint (Plugin.Join sets it in every mode) and
+			// setupClient never ran, so there is no id.
+			m.MacAddress = releaseTestMAC
+			m.recordID = ""
+
+			if err := m.StopForLeave(); err != nil {
+				t.Fatalf("StopForLeave: %v", err)
+			}
+
+			if got := sender.callCount(); got != tc.wantCalls {
+				t.Errorf("the wire saw %d datagram(s), want %d", got, tc.wantCalls)
+			}
+			if got := p.releasesSentV4.Load(); got != tc.wantSent {
+				t.Errorf("releases_sent_v4 = %d, want %d", got, tc.wantSent)
+			}
+			if got := p.releaseFailuresV4.Load(); got != tc.wantFailed {
+				t.Errorf("release_failures_v4 = %d, want %d", got, tc.wantFailed)
+			}
+			if got := m.recordID == id; got != tc.wantID {
+				t.Errorf("the manager names the record it released = %v, want %v "+
+					"(recordID %q, the record in the store %q)", got, tc.wantID, m.recordID, id)
+			}
+			if tc.wantCalls > 0 && sender.callCount() > 0 {
+				if got := sender.recs[0].ID; got != id {
+					t.Errorf("the datagram was built from record %q, want %q", got, id)
+				}
+			}
+		})
+	}
+}
+
+// TestReleaseLease_TheFallbackReadsEachFamilysOwnScope is the same
+// cancelled-attach state on a dual-stack endpoint.
+//
+// The v6 record is a SECOND record under a SECOND scope (dhcp.Scope6),
+// so a fallback that looked both families up under the network id would
+// build the v6 Release from the v4 record. The library refuses that as
+// a family mismatch, which makes the mistake visible; a fallback that
+// refused nothing would hand the wrong address back.
+func TestReleaseLease_TheFallbackReadsEachFamilysOwnScope(t *testing.T) {
+	var ledgerFailures atomic.Int32
+	p := &Plugin{}
+	p.ledger = testLedger(t, &ledgerFailures)
+
+	sender := installSender(t, nil)
+	m := releasingManager(t, p, ReleaseOnStop, true)
+	id4, id6 := m.recordID, m.recordID6
+	if id4 == id6 {
+		t.Fatal("the two families share a record id; this test cannot tell the scopes apart")
+	}
+	m.MacAddress = releaseTestMAC
+	m.recordID, m.recordID6 = "", ""
+
+	if err := m.StopForLeave(); err != nil {
+		t.Fatalf("StopForLeave: %v", err)
+	}
+
+	if got := sender.callCount(); got != 2 {
+		t.Fatalf("the wire saw %d datagram(s), want 2 (one per family)", got)
+	}
+	if got := sender.recs[0].ID; got != id4 {
+		t.Errorf("the v4 datagram was built from record %q, want the v4 record %q", got, id4)
+	}
+	if got := sender.recs[1].ID; got != id6 {
+		t.Errorf("the v6 datagram was built from record %q, want the v6 record %q", got, id6)
+	}
+	if m.recordID != id4 || m.recordID6 != id6 {
+		t.Errorf("the manager names records %q/%q after the release, want %q/%q: "+
+			"Leave settles each family through its own field",
+			m.recordID, m.recordID6, id4, id6)
 	}
 }
 
