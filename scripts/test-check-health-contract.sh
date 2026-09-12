@@ -67,6 +67,19 @@ mkdoc() {
         printf '| `pending_hints` | no | — | not a fault. |\n'
         for n in ${DOC_STRAY_BELOW-}; do printf '| `%s` | — | — | a structure. |\n' "$n"; done
         for n in ${DOC_FAMILY_BELOW-}; do printf '| `%s_x`, `%s_y` | — | — | a structure. |\n' "$n" "$n"; done
+        # Section 7's subject: the family-label paragraph and the
+        # second sentence that carries the same count. Overridable so a
+        # case can perturb the list, either count word, or drop them.
+        if [ "${DOC_FAMILY_PARA-1}" = 1 ]; then
+            printf '\n#### Metric names and the `family` label\n\n'
+            printf '%s counters carry a `family` label:' "${DOC_FAMILY_COUNT-One}"
+            for n in ${DOC_FAMILY_LIST-family_counter}; do printf ' `%s`,' "$n"; done
+            printf ':\n\n```\nnet_dhcp_family_counter_total{family="ipv4"} 1\n```\n\n'
+        fi
+        if [ "${DOC_FAMILY_EACH-1}" = 1 ]; then
+            printf 'Each of the %s has a `_v4` and a `_v6` field in `/Plugin.Health`.\n' \
+                "$(printf '%s' "${DOC_FAMILY_EACH_COUNT-one}" | tr '[:upper:]' '[:lower:]')"
+        fi
         printf '\n## Troubleshooting\n\n| symptom | likely cause | fix |\n| --- | --- | --- |\n'
         printf '| `healthy: false` on `/Plugin.Health` | Exactly %s counters flip it:' "$(printf '%s' "$tword" | tr '[:upper:]' '[:lower:]')"
         for n in $trouble; do printf ' `%s`,' "$n"; done
@@ -104,6 +117,9 @@ mkmetrics_opposed() {
         for n in ${METRICS_WARN_LIST-lease_changed}; do
             printf '\t{name: "%s", counter: true, warn: true, unit: "renewals", action: "watch it.", help: "watch it.", field: "%s"},\n' "$n" "$n"
         done
+        for n in ${METRICS_FAMILY_LIST-family_counter}; do
+            printf '\t{name: "%s", counter: true, help: "not a fault.", field: "%s", v4field: "%s_v4", v6field: "%s_v6"},\n' "$n" "$n" "$n" "$n"
+        done
         for t in "$@"; do
             nm="${t%%=*}"; hy="${t#*=}"; hl="${hy#*=}"; hy="${hy%%=*}"
             if [ "$hy" = "yes" ]; then
@@ -135,6 +151,9 @@ mkmetrics() {
         done
         for n in ${METRICS_WARN_LIST-lease_changed}; do
             printf '\t{name: "%s", counter: true, warn: true, unit: "renewals", action: "watch it.", help: "watch it.", field: "%s"},\n' "$n" "$n"
+        done
+        for n in ${METRICS_FAMILY_LIST-family_counter}; do
+            printf '\t{name: "%s", counter: true, help: "not a fault.", field: "%s", v4field: "%s_v4", v6field: "%s_v6"},\n' "$n" "$n" "$n" "$n"
         done
         for n in $extra; do
             printf '\t{name: "%s", counter: true, healthy: true, help: "not a fault. Healthy-affecting.", field: "%s"},\n' "$n" "$n"
@@ -255,7 +274,7 @@ mkdoc "$DIR/five5.md" Five "$FIVE_" "$FIVE_" "$FIVE_" "$FIVE_" Five Five Five Fi
 out=$(bash "$CHECK" "$DIR/five5.md" "$DIR/five5.go" "$M5" "$F5" 2>&1); rc=$?
 [ $rc -eq 0 ] && ok "five counters with all five count words moved pass" \
                || no "a correct fifth counter is blocked (rc=$rc: $out)"
-case "$out" in *"5 doc count-word(s)"*) ok "the PASS line reports how many count words it read" ;;
+case "$out" in *"7 doc count-word(s)"*) ok "the PASS line reports how many count words it read" ;;
   *) no "the PASS line does not tally the count words: $out" ;; esac
 
 # --- the /metrics help strings -----------------------------------------
@@ -741,6 +760,65 @@ fi
 out=$(bash "$CHECK" "$DIR/cls-ok.md" "$DIR/cls-ok.go" "$M4B" "$F4" 2>&1); rc=$?
 [ $rc -eq 0 ] && ok "an unclassified row with no imperative needs no reason" \
                || no "a plain informational row returned $rc (: $out)"
+
+# --- section 7: the family-label paragraph -----------------------------
+#
+# The hole this closes, MEASURED on #966 before the section existed:
+# deleting the reference's family-label paragraph outright left both
+# this gate and check-docs-drift.sh at rc 0, because the drift gate
+# reconciles the SET OF FIELDS and every `_v4`/`_v6` field stays
+# documented in the counter table either way. A claim ABOUT the
+# counters, in a place nothing read -- the same shape as #638, one
+# heading further down the same file.
+
+DOC_FAMILY_PARA=0 mkdoc "$DIR/fam-nopara.md" Four "$FOUR" "$FOUR" "$FOUR"; mkgo "$DIR/fam-nopara.go" 4
+out=$(bash "$CHECK" "$DIR/fam-nopara.md" "$DIR/fam-nopara.go" "$M4" "$F4" 2>&1); rc=$?
+[ $rc -eq 2 ] && ok "a deleted family-label paragraph refuses instead of passing" \
+               || no "a deleted family-label paragraph returned $rc (: $out)"
+
+DOC_FAMILY_EACH=0 mkdoc "$DIR/fam-noeach.md" Four "$FOUR" "$FOUR" "$FOUR"; mkgo "$DIR/fam-noeach.go" 4
+out=$(bash "$CHECK" "$DIR/fam-noeach.md" "$DIR/fam-noeach.go" "$M4" "$F4" 2>&1); rc=$?
+[ $rc -eq 2 ] && ok "a deleted \`_v4\`/\`_v6\` sentence refuses instead of passing" \
+               || no "a deleted _v4/_v6 sentence returned $rc (: $out)"
+
+# The paragraph names a counter the code does not split, and the other
+# direction: the code splits one the paragraph does not name. Both are
+# one of the two being wrong and the gate says so without deciding which.
+DOC_FAMILY_LIST="family_counter other_counter" DOC_FAMILY_COUNT=Two DOC_FAMILY_EACH_COUNT=two \
+    mkdoc "$DIR/fam-extra.md" Four "$FOUR" "$FOUR" "$FOUR"; mkgo "$DIR/fam-extra.go" 4
+out=$(bash "$CHECK" "$DIR/fam-extra.md" "$DIR/fam-extra.go" "$M4" "$F4" 2>&1); rc=$?
+[ $rc -eq 1 ] && ok "a family name the code does not split fails" \
+               || no "an unbacked family name returned $rc (: $out)"
+case "$out" in *other_counter*) ok "the failure names the counter the code does not split" ;;
+  *) no "the family failure does not name the counter: $out" ;; esac
+
+METRICS_FAMILY_LIST="family_counter other_counter" mkmetrics "$DIR/fam-two.metrics.go" "$FOUR"
+mkdoc "$DIR/fam-missing.md" Four "$FOUR" "$FOUR" "$FOUR"; mkgo "$DIR/fam-missing.go" 4
+out=$(bash "$CHECK" "$DIR/fam-missing.md" "$DIR/fam-missing.go" "$DIR/fam-two.metrics.go" "$F4" 2>&1); rc=$?
+[ $rc -eq 1 ] && ok "a family counter the paragraph omits fails" \
+               || no "an omitted family counter returned $rc (: $out)"
+case "$out" in *other_counter*) ok "the failure names the counter the paragraph omits" ;;
+  *) no "the omission failure does not name the counter: $out" ;; esac
+
+# Each count word on its own, because a stale one is exactly what
+# survives adding a counter to the list beside it.
+DOC_FAMILY_COUNT=Two mkdoc "$DIR/fam-word1.md" Four "$FOUR" "$FOUR" "$FOUR"; mkgo "$DIR/fam-word1.go" 4
+out=$(bash "$CHECK" "$DIR/fam-word1.md" "$DIR/fam-word1.go" "$M4" "$F4" 2>&1); rc=$?
+[ $rc -eq 1 ] && ok "a stale count word in the family paragraph fails" \
+               || no "a stale family count word returned $rc (: $out)"
+
+DOC_FAMILY_EACH_COUNT=two mkdoc "$DIR/fam-word2.md" Four "$FOUR" "$FOUR" "$FOUR"; mkgo "$DIR/fam-word2.go" 4
+out=$(bash "$CHECK" "$DIR/fam-word2.md" "$DIR/fam-word2.go" "$M4" "$F4" 2>&1); rc=$?
+[ $rc -eq 1 ] && ok "a stale count word in the \`_v4\`/\`_v6\` sentence fails" \
+               || no "a stale _v4/_v6 count word returned $rc (: $out)"
+
+# The set growing correctly must PASS, or the section has pinned the
+# document to today's ten and the next family counter cannot be added.
+DOC_FAMILY_LIST="family_counter other_counter" DOC_FAMILY_COUNT=Two DOC_FAMILY_EACH_COUNT=two \
+    mkdoc "$DIR/fam-grow.md" Four "$FOUR" "$FOUR" "$FOUR"; mkgo "$DIR/fam-grow.go" 4
+out=$(bash "$CHECK" "$DIR/fam-grow.md" "$DIR/fam-grow.go" "$DIR/fam-two.metrics.go" "$F4" 2>&1); rc=$?
+[ $rc -eq 0 ] && ok "a second family counter agreed in both places passes" \
+               || no "a correct second family counter is blocked (rc=$rc: $out)"
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
