@@ -68,10 +68,20 @@ net_dhcp_dhcp_timeouts_total{family="ipv6"} 4983918
 net_dhcp_naks_received_total{family="ipv4"} 7664967
 net_dhcp_naks_received_total{family="ipv6"} 5220205
 
-# HELP net_dhcp_client_stop_failures_total Renewal clients that did not shut down cleanly when the plugin signalled them. Not a lease release: nothing this plugin runs sends a DHCPRELEASE.
+# HELP net_dhcp_client_stop_failures_total Renewal clients that did not shut down cleanly when the plugin signalled them. Not a lease release: whether a lease goes back at teardown is release_lease's question, and this counter is about the client's own shutdown either way.
 # TYPE net_dhcp_client_stop_failures_total counter
 net_dhcp_client_stop_failures_total{family="ipv4"} 9607807
 net_dhcp_client_stop_failures_total{family="ipv6"} 7163045
+
+# HELP net_dhcp_releases_sent_total Leases handed back to the server: a DHCPRELEASE (RFC 2131 section 4.4.6) or a DHCPv6 Release (RFC 9915 section 18.2.7) that left this host. Zero on a network that does not set release_lease, which is the default. Counted from the send and not from the decision to release, so it does not move for a release the host could not put on the wire.
+# TYPE net_dhcp_releases_sent_total counter
+net_dhcp_releases_sent_total{family="ipv4"} 8298147
+net_dhcp_releases_sent_total{family="ipv6"} 3886089
+
+# HELP net_dhcp_release_failures_total Attempts to hand a lease back that put no message on the wire: no lease record for the endpoint, no address or no server on the record, a record the sender refuses, no address on the parent to send from, the send itself failing, or a DHCPv6 address that could not be taken off the link first (RFC 9915 section 18.2.7 requires that before the exchange). The address is left to expire on the server's clock, which is what a release_lease=never network does on every teardown.
+# TYPE net_dhcp_release_failures_total counter
+net_dhcp_release_failures_total{family="ipv4"} 5241287
+net_dhcp_release_failures_total{family="ipv6"} 2796525
 
 # HELP net_dhcp_dhcpv6_config_only_total DHCPv6 information replies received: address-less configuration from a network advertising the RA other-config flag. Counts replies received, not configuration applied.
 # TYPE net_dhcp_dhcpv6_config_only_total counter

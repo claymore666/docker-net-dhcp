@@ -202,7 +202,9 @@ they prove:
 - `join_no_container_test.go` — an attach that fails because no
   container ever claimed the endpoint leaves the address leased
   upstream until it expires, and sends no DHCPRELEASE (#800; the file
-  covered the opposite behaviour for #566 before that). The Join is
+  covered the opposite behaviour for #566 before that). No `Leave`
+  runs for such an endpoint, so `release_lease` cannot reach it either
+  (#962). The Join is
   issued against a genuinely live sandbox, so "nobody holds this
   endpoint" is the only branch that can answer. It also asserts no
   `dh-rel-*` link is on the host — the removed reclaim's fingerprint,
@@ -311,7 +313,9 @@ they prove:
   server: the returned container holds a lease the server actually
   granted, and the pre-death lease was **not** released — since #800
   the address is held until it expires, the same as for a machine
-  powered off abruptly. The ACK is checked first and is the positive
+  powered off abruptly. The network under test is the default
+  `release_lease=never`; a daemon that dies reaches no `Leave`, so an
+  `on_stop` network would hold the address here too (#962). The ACK is checked first and is the positive
   control; the absence after it would otherwise read as a pass against
   a log that had gone missing or stale.
 - `preflight_probe_test.go` — `validate_dhcp=true` probe accept/

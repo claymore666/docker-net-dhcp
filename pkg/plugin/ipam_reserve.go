@@ -128,8 +128,10 @@ func ipamReserveKey(poolID string, mac net.HardwareAddr) string {
 // Why either half exists: a DHCP server files its lease per hardware
 // address, so two exchanges under one MAC means two DISCOVERs and two
 // leases at the server for what the host believes is one endpoint, and
-// the second is never released -- nothing holds it and no DHCPRELEASE
-// goes on the wire (D-7).
+// the second is never released -- nothing holds it, and no DHCPRELEASE
+// goes on the wire for it on any value of `release_lease` (D-7, #962),
+// because `on_stop` releases at Leave from the endpoint's own lease
+// record and a spare exchange nothing holds has neither.
 //
 // The producer of a second call for one key is not the daemon re-sending
 // a RequestAddress, which an earlier version of this comment claimed:

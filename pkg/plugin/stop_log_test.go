@@ -88,16 +88,30 @@ import (
 // wrong once: one arm, two observables, two mutants — a composite
 // deletion yields the union of the killers and names none of them
 // correctly.
+//
+// # The claim is now CONDITIONAL, and on the network's option (#962)
+//
+// `release_lease=on_stop` makes the release a thing this plugin does,
+// and a log line saying so on that network is true. The scan is
+// therefore keyed on the option rather than dropped: every row that
+// does not set it is still held to the absolute, which is the default
+// and every network that existed before the option. The releasing row
+// exists so that the keying is not a way to switch the guard off — it
+// requires the claim to be PRESENT, so a mutant that stops releasing
+// while the option asks for it fails here too.
 func TestStop_NoStopPathClaimsAReclaimOrRelease(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		// anchor identifies the report this path is expected to emit,
 		// by the CONDITION it describes rather than by the clause under
 		// test. Empty means the path logs nothing and none is required.
-		anchor  string
-		leaving bool
-		wantErr bool
-		mk      func(t *testing.T, p *Plugin) *dhcpManager
+		anchor string
+		// releases is the one network shape where a stop MAY say it
+		// handed a lease back.
+		releases bool
+		leaving  bool
+		wantErr  bool
+		mk       func(t *testing.T, p *Plugin) *dhcpManager
 	}{
 		{
 			name:    "never_bound_leaving",
@@ -148,6 +162,19 @@ func TestStop_NoStopPathClaimsAReclaimOrRelease(t *testing.T) {
 			anchor:  "outstanding",
 			leaving: true,
 			mk:      failedStartManager,
+		},
+		{
+			// The one network that asks for a release. The line an
+			// operator reads here must say the lease went back, and the
+			// claim scan below is off for exactly this row.
+			name:     "release_lease_on_stop_leaving",
+			anchor:   "handing this endpoint's lease back",
+			releases: true,
+			leaving:  true,
+			mk: func(t *testing.T, p *Plugin) *dhcpManager {
+				installSender(t, nil)
+				return releasingManager(t, p, ReleaseOnStop, false)
+			},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -204,14 +231,23 @@ func TestStop_NoStopPathClaimsAReclaimOrRelease(t *testing.T) {
 				}
 			}
 
+			if tc.releases {
+				// The anchor above already required the line, and it
+				// carries the claim by construction. Scanning for the
+				// word here would fail this row for saying the true
+				// thing.
+				return
+			}
+
 			for _, r := range rendered {
 				lower := strings.ToLower(r)
 				for _, claim := range []string{"reclaim", "releas"} {
 					if strings.Contains(lower, claim) {
 						t.Errorf("a stop logged %q, which tells an operator the lease was "+
-							"%sed. Since #800 nothing this plugin runs reclaims or releases "+
-							"a lease, on any path — the address is left to expire on the "+
-							"server's clock", r, claim)
+							"%sed. On a network that does not set release_lease — the "+
+							"default, and every network before #962 — nothing this plugin "+
+							"runs reclaims or releases a lease on any path, and the address "+
+							"is left to expire on the server's clock (#800)", r, claim)
 					}
 				}
 			}

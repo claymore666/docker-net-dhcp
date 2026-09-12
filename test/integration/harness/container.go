@@ -53,9 +53,11 @@ const (
 // (SIGKILL), so the graceful Leave -> dhcpManager.Stop path that
 // health_counters and audit_log assert on is preserved rather than
 // bypassed. Faster and more faithful, not faster instead of faithful.
-// (That path stopped ending in a DHCPRELEASE in #800; what it still
-// drives, and what those tests still read, is the client shutdown and
-// the ledger entry it writes.)
+// (That path stopped ending in a DHCPRELEASE in #800 for every network
+// that does not set release_lease, which is all of them here bar the
+// one TestReleaseLease drives; what it still drives, and what those
+// tests still read, is the client shutdown and the ledger entry it
+// writes.)
 //
 // Everything is freshly allocated per call — including the *bool —
 // because callers needing extra fields (a restart policy, say) mutate

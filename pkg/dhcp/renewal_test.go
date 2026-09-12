@@ -259,6 +259,10 @@ func (f *fakeLib) Run(ctx context.Context) error { return nil }
 func (f *fakeLib) Events() <-chan lease.Event    { return f.src }
 func (f *fakeLib) Lease() (lease.Lease, bool)    { return lease.Lease{}, false }
 
+// Release is the seam's fourth method. This fake counts the call and
+// moves no counter, which is the shape releaseHeldLease must read as a
+// FAILED release: a library that was asked and put nothing on the wire.
+
 func (f *fakeLib) Stats() lease.Stats {
 	f.mu.Lock()
 	defer f.mu.Unlock()
