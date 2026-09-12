@@ -226,14 +226,22 @@ func TestReleaseLease_OnStopHandsTheAddressBack(t *testing.T) {
 			"release_lease=on_stop asks for the address back at Leave, and the server "+
 			"has not given it up.", ip)
 	}
-	if got := fixture.CountLogLines("DHCPRELEASE", ip) - releasesBefore; got < 1 {
+	releaseLines := fixture.CountLogLines("DHCPRELEASE", ip) - releasesBefore
+	t.Logf("across the stop dnsmasq logged %d DHCPRELEASE line(s) naming %s", releaseLines, ip)
+	if releaseLines < 1 {
 		t.Errorf("dnsmasq logged %d DHCPRELEASE line(s) for %s across the stop, want at "+
-			"least 1", got, ip)
+			"least 1", releaseLines, ip)
 	}
 
 	// The operator's view of the same event, read after the outside
 	// evidence and never instead of it.
 	before, after := w.End()
+	t.Logf("across the stop the counters moved: releases_sent_v4 by %d, "+
+		"release_failures_v4 by %d, releases_sent_v6 by %d, release_failures_v6 by %d",
+		after.ReleasesSentV4-before.ReleasesSentV4,
+		after.ReleaseFailuresV4-before.ReleaseFailuresV4,
+		after.ReleasesSentV6-before.ReleasesSentV6,
+		after.ReleaseFailuresV6-before.ReleaseFailuresV6)
 	if got := after.ReleasesSentV4 - before.ReleasesSentV4; got < 1 {
 		t.Errorf("releases_sent_v4 moved by %d across the stop, want at least 1: the "+
 			"server gave the address up and the plugin did not count it", got)
@@ -450,6 +458,15 @@ func TestReleaseLease_OnStopHandsTheV6AddressBackToo(t *testing.T) {
 	w := harness.BeginCounterWindow(t, ctx, cli,
 		"releases_sent_v4", "releases_sent_v6", "release_failures")
 
+	// Per family, because a bare `DHCPRELEASE` count cannot say which
+	// arm printed the line. The address makes the count specific, and
+	// these are read out on a green run so the lane states what the
+	// server was asked for and not only that the lease went away.
+	releasesBefore := map[string]int{
+		ip: fixture.CountLogLines("DHCPRELEASE", ip),
+		v6: fixture.CountLogLines("DHCPRELEASE", v6),
+	}
+
 	if err := cli.ContainerStop(ctx, id, container.StopOptions{}); err != nil {
 		t.Fatalf("ContainerStop: %v", err)
 	}
@@ -462,7 +479,16 @@ func TestReleaseLease_OnStopHandsTheV6AddressBackToo(t *testing.T) {
 		}
 	}
 
+	t.Logf("across the stop dnsmasq logged %d DHCPRELEASE line(s) naming %s and %d naming %s",
+		fixture.CountLogLines("DHCPRELEASE", ip)-releasesBefore[ip], ip,
+		fixture.CountLogLines("DHCPRELEASE", v6)-releasesBefore[v6], v6)
+
 	before, after := w.End()
+	t.Logf("across the stop the counters moved: releases_sent_v4 by %d, "+
+		"releases_sent_v6 by %d, release_failures by %d",
+		after.ReleasesSentV4-before.ReleasesSentV4,
+		after.ReleasesSentV6-before.ReleasesSentV6,
+		after.ReleaseFailures-before.ReleaseFailures)
 	for _, c := range []struct {
 		name        string
 		before, now int32
