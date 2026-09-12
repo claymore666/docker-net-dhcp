@@ -118,7 +118,7 @@
   "test_branch_coverage80_status": "Unmet",
   "test_branch_coverage80_justification": "Branch coverage is not measured. The Go toolchain's coverage support reports statement coverage, which is what the project's ratchet gate enforces; no branch-coverage figure is available to substantiate this criterion.",
   "description_good_status": "Met",
-  "description_good_justification": "The README's opening line states what the software does: a Docker network plugin that gives containers real DHCP leases from the LAN's DHCP server instead of Docker's self-managed IPAM, in bridge, macvlan and ipvlan modes. See https://github.com/claymore666/docker-net-dhcp#docker-net-dhcp",
+  "description_good_justification": "The README's opening line states what the software does: a Docker network plugin that gives containers real DHCP leases from the DHCP server the LAN already runs, in bridge, macvlan and ipvlan modes, as Docker's network driver and, for bridge and macvlan, as Docker's IPAM driver as well. See https://github.com/claymore666/docker-net-dhcp#docker-net-dhcp",
   "interact_status": "Met",
   "interact_justification": "https://github.com/claymore666/docker-net-dhcp/issues",
   "contribution_status": "Met",
