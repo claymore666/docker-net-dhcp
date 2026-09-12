@@ -45,6 +45,30 @@ func ClientIdentity(clientID []byte) []byte {
 	return append([]byte{clientIDTypeOpaque}, clientID...)
 }
 
+// ClientIDPayload is ClientIdentity's inverse: the option-61 value with
+// the chassis's type byte taken back off.
+//
+// A re-bind is what needs it. The identity a record carries is what
+// went on the wire, and an exchange that re-claims that record's
+// address has to go back out under the same value -- the server filed
+// the lease under it, and anything else asks as a new client and is
+// handed a new address. DHCPClientOptions.ClientID is the payload
+// WITHOUT the type byte (buildParams puts it back), so the record's
+// bytes cannot be handed to it unchanged and one of the two forms has
+// to be derived from the other.
+//
+// ok is false for an identity this chassis did not write: shorter than
+// a type byte plus one, or a first byte that is not the opaque type. A
+// DUID or any other shape is refused rather than truncated, because
+// re-sending its tail would put a value on the wire that no record
+// says.
+func ClientIDPayload(identity []byte) ([]byte, bool) {
+	if len(identity) < 2 || identity[0] != clientIDTypeOpaque {
+		return nil, false
+	}
+	return append([]byte(nil), identity[1:]...), true
+}
+
 // buildParams turns one endpoint's options into the protocol parameter
 // set for one manager instance.
 //

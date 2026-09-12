@@ -6,9 +6,11 @@
 # a privilege field silently differing between the two plugin manifests.
 set -euo pipefail
 
+# shellcheck source=scripts/tmpdir-guard.sh
+. "$(cd "$(dirname "$0")" && pwd)/tmpdir-guard.sh"
+
 CHECK="$(dirname "$0")/check-manifest-parity.sh"
-TMP=$(mktemp -d)
-trap 'rm -rf "$TMP"' EXIT
+guarded_tmpdir TMP
 fails=0
 
 check() {

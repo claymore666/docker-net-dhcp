@@ -10,7 +10,7 @@
 #
 # POPULATION: TOP-LEVEL TEST FUNCTIONS, PARENTS ONLY.
 # One row per `func TestX(t *testing.T)` in test/integration/*_test.go —
-# 97 of them, the main suite's 93 and the failure suite's 4. A subtest's
+# 119 of them, the main suite's 112 and the failure suite's 7. A subtest's
 # seconds are inside its parent's figure and are NOT a row of their own.
 # That is stated because the previous edition's header did not state it
 # and the population was read back two ways: 104 rows summing 1804.88s
@@ -39,13 +39,85 @@
 #              is the median of the same test on the three head runs
 #              34204413442 / 34205039347 / 34206023827: 74.16, 73.60,
 #              73.85. Same method, three samples, a later corpus.
-#   samples    3 for all 95. No row is inferred. The previous edition
-#              carried four inferred rows and fourteen v6 rows recovered
-#              from the 1.9.0 corpus; every one of those is now measured
-#              against the client that actually ships here.
+#   one row    TestFailure_UnansweredRenewalsCounted is 84.19, and it
+#              alone is not from the corpus runs above either: it
+#              arrives with #940 and no corpus run could have costed it.
+#              The figure is the `--- PASS` line for that test in run
+#              34585568413, job failure-2-suite. One sample rather than
+#              three, because it is the test's first execution; a
+#              refresh takes it to the median of three like every other
+#              row. It shipped as an inferred 105.00 for exactly one
+#              push and the first run costed it at 84.19, which is the
+#              20 seconds of container and fixture lifecycle the
+#              derivation allowed for and did not need.
+#   one row    TestEngineIdentity_HealthMatchesTheDaemonsOwnAnswer is 0.05
+#              and is INFERRED, not measured: it arrives with #670 and
+#              no corpus run could have costed it. It starts no
+#              container and creates no network; it reads the health
+#              document and the metrics surface once each, which is the
+#              shape of TestHealthDocument_BuildInfoIsWhatTheLaneBuilt
+#              (0.01) and TestMetrics_SocketServesTheFullSurface (0.01).
+#              0.05 is those two plus room, deliberately above the
+#              derivation so a slow read cannot make the row optimistic.
+#              The next refresh replaces it with a median of three, the
+#              way TestFailure_UnansweredRenewalsCounted's first figure
+#              was replaced.
+#   one row    TestJoinDuration_DistributionInThisShard is 13.00, and it
+#              is INFERRED too: it arrives with #403 and no run has
+#              executed it. It creates one macvlan network and runs one
+#              container, then waits for the attach counter to move and
+#              parses the plugin log. That is the shape of the four
+#              TestSandboxKeyRoute_* rows (11.48 to 12.25), which create
+#              a network and run one container each, plus room for the
+#              counter wait and a log grown over a shard. The first run
+#              that executes it costs it, the way
+#              TestFailure_UnansweredRenewalsCounted was costed.
+#   eighteen   the #110 IPAM-driver rows are INFERRED, not measured: they
+#   rows       arrive with the feature and no corpus run could have costed
+#              them. Each is derived from the measured row of the test
+#              whose shape it copies -- a golden-path lifecycle at 11.61,
+#              a container restart at 20.39, a daemon restart at 30.00,
+#              a plugin recycle at 12.86 -- plus the seconds this test
+#              adds on purpose: a second container, a deliberate outage,
+#              a refusal that waits out the 26s reservation budget. They
+#              are refreshed to the median of three runs at the next
+#              pass, like TestFailure_UnansweredRenewalsCounted was. The
+#              sixteenth,
+#              TestIPAM_TwoEndpointsCannotShareOneHardwareAddress, is
+#              16.00: the golden-path lifecycle at 11.61 plus a second
+#              container whose start is refused before any DHCP exchange
+#              begins, which costs a create, a failed start and a
+#              removal and no budget at all. The seventeenth,
+#              TestIPAM_AContainerStartedInsideTheWindowTakesTheTombstone,
+#              is 38.00: the same shape as
+#              TestIPAM_ARemovedNeighbourMakesTheRebindAmbiguous at 34.00
+#              -- a network, two container starts and a stop -- plus the
+#              seconds its third start adds. The eighteenth,
+#              TestIPAM_SingleRestartNeedsAServerThatKeepsClientIDBindings,
+#              is 50.00: two arms, each one TestIPAM_SingleRestartKeeps-
+#              TheAddress at 22.00 on its own ephemeral fixture, plus
+#              that fixture's setup and teardown twice.
+#   samples    3 for every corpus row. TWENTY-TWO rows are not corpus
+#              samples: the four noted individually above -- 73.85,
+#              84.19, 0.05 and 13.00 -- and the eighteen #110 rows.
+#              Twenty of the twenty-two are INFERRED; the two that are
+#              measured are TestLeaseRenewIPv6_HonorsT1, from three later
+#              head runs, and TestFailure_UnansweredRenewalsCounted, from
+#              a single sample. The previous edition carried four inferred
+#              rows and fourteen v6 rows recovered from the 1.9.0
+#              corpus; every one of those is now measured against the
+#              client that actually ships here.
 #   corpus     main suite    91 tests   1739.87s   mean 19.12s
 #              failure suite  4 tests    272.31s   mean 68.08s
 #              both          95 tests   2012.18s
+#              (the corpus is unchanged: those twenty-two rows are not
+#              samples and are not averaged into these means. These
+#              figures are a record of THAT RUN, not a count of this
+#              file: every row added since -- by this branch and by the
+#              changes it rebased onto -- is outside them, which is why
+#              95 plus the exceptions does not reach the population
+#              above. The next refresh re-measures the whole file and
+#              the two numbers close again.)
 #   spread     min and max per test across the three samples are not
 #              stored, but were read: the widest single-test spread was
 #              TestDHCPv6_NoAddressModes_StartTheEndpoint at 75.07-93.94,
@@ -75,9 +147,19 @@
 #           OF=9   196.3s   <- ships
 #           OF=10  177.9s
 #           OF=12  146.8s
-#   failure OF=1   272.3s  (what shipped before D41)
-#           OF=2   154.6s   <- ships; the floor is one test,
-#                            TestFailure_LeaseExpiry at 154.61s
+#   failure OF=1   356.5s
+#           OF=2   184.3s   <- ships
+#           OF=3   154.6s   (the floor is one test, TestFailure_LeaseExpiry
+#                            at 154.61s)
+#
+# THE FAILURE SUITE'S PACKING MOVED with #940 and the shard count did
+# not, deliberately. Its fifth test adds 84.19s MEASURED, so the longest
+# failure shard goes 154.6s -> 184.3s, which is still UNDER the main
+# suite's longest shard at 196.3s, and the run window is max() over
+# every job. So the critical path is unchanged, and a third failure
+# shard would buy 30s of a number nothing is waiting on at the price of
+# a whole privileged runner slot. Revisit if the main suite is split
+# further.
 #
 # Nine and two. Nine is where the main suite's longest shard first lands
 # far enough under the budget that a fixed cost of ~60s and an ephemeral
@@ -126,6 +208,7 @@ TestDNSPropagate_OptInWritesResolvConf	12.62
 TestDUID_PersistsAcrossPluginRestart	17.79
 TestDisplacedClient_TheInterfaceNeverCarriesTwoClients	30.00
 TestDockerAPI_OnlySafeMethodsReachTheDaemon	11.41
+TestEngineIdentity_HealthMatchesTheDaemonsOwnAnswer	0.05
 TestErrors_DriverOptIPMalformed	0.40
 TestErrors_NetworkCreateValidation	0.04
 TestErrors_ParentDown	0.01
@@ -134,13 +217,32 @@ TestExtraOptions_NTPAndTFTPLogged	12.12
 TestExtraOptions_SearchListInResolvConf	12.42
 TestExtraOptions_WPADAndTimezoneLogged	11.98
 TestFQDN_RegistersInDNS	11.60
+TestFailure_IPAMResentRequestIsRefusedNotServedTwice	60.00
+TestFailure_IPAMServerDownFailsInsideTheBudget	75.00
 TestFailure_LeaseExpiry	154.61
 TestFailure_LeaseRefusedOnRenewal	29.64
 TestFailure_ServerLossDuringRenewal	33.34
 TestFailure_ServerReturnsBeforeExpiry	54.72
+TestFailure_UnansweredRenewalsCounted	84.19
 TestHealthCounters_ObtainedAndReleased	12.13
 TestHealthDocument_BuildInfoIsWhatTheLaneBuilt	0.01
 TestHealthDocument_EndpointEntryMatchesTheContainer	12.05
+TestIPAM_AContainerStartedInsideTheWindowTakesTheTombstone	38.00
+TestIPAM_ARemovedNeighbourMakesTheRebindAmbiguous	34.00
+TestIPAM_AddressIsTheServersACK	13.00
+TestIPAM_AnAddressOutsideTheSubnetIsRefused	16.00
+TestIPAM_BothShapesOnOneDaemon	26.00
+TestIPAM_GatewayAndAuxNeverLease	9.00
+TestIPAM_IpvlanIsRefusedAtCreate	15.00
+TestIPAM_NoSubnetAnswersTheAnyPool	14.00
+TestIPAM_ReplayAfterDaemonRestart	45.00
+TestIPAM_RestartedTogetherIsTheDocumentedLimit	38.00
+TestIPAM_SingleRestartKeepsTheAddress	22.00
+TestIPAM_SingleRestartNeedsAServerThatKeepsClientIDBindings	50.00
+TestIPAM_StaticIPIsHonouredWithASubnet	24.00
+TestIPAM_StaticIPWithoutASubnetIsStillTheAddressAsked	7.00
+TestIPAM_TwoEndpointsCannotShareOneHardwareAddress	16.00
+TestIPAM_TwoNetworksCannotShareOnePool	40.00
 TestIPv6_AcceptedAtCreate	0.02
 TestIPv6_DNS6Propagation	34.17
 TestIPv6_TheV4OnlyPathIsUnchanged	11.57
@@ -149,6 +251,7 @@ TestInterfaceName_InvalidRejected	0.44
 TestInterfaceName_MultiNetworkDeterministic	12.08
 TestInterfaceName_PluginHonorsOption	12.50
 TestInterfaceName_ProbeSkipPrecedesTheEphemeralFixture	0.00
+TestJoinDuration_DistributionInThisShard	13.00
 TestJoinNoContainer_AddressIsHeldUntilItExpires	26.95
 TestLeaseRenewIPv6_HonorsT1	73.85
 TestLeaseRenew_HonorsT1	27.38
@@ -193,6 +296,7 @@ TestV6Fixture_AssertExchangeRefusesASegmentNoClientEverUsed	2.34
 TestV6Fixture_AwaitRAAfterAndItsNegative	48.13
 TestV6Fixture_ModesComeUpAsRequested	17.89
 TestV6Fixture_RefusesASegmentInAnotherModesShape	65.36
+TestV6Fixture_RefusesASegmentThatCannotTransmit	10.15
 TestV6RACapture_SeesTheAdvertisementOnTheBridgeAndNotOnAQuietLink	1.46
 TestVendorClass_DefaultUsesUntaggedGateway	12.02
 TestVendorClass_NonMatchingValueUsesDefaultGateway	12.23

@@ -58,10 +58,10 @@ var HealthFieldSeries = map[string]string{
 	"status": "health_status",
 }
 
-// HealthFieldsInBuildInfo are the fields carried as LABELS on
-// net_dhcp_build_info instead of as series of their own, and
-// HealthFieldsNotExposed the ones deliberately absent from /metrics,
-// with the reason.
+// HealthFieldsAsLabels are the fields carried as LABELS on an identity
+// series instead of as series of their own, mapped to the series that
+// carries each one, and HealthFieldsNotExposed the ones deliberately
+// absent from /metrics, with the reason.
 //
 // MIRRORS pkg/plugin's metricLabelOnlyFields and metricNotExposedFields
 // for the reason HealthResponse mirrors HealthResponse: this suite asks
@@ -70,7 +70,20 @@ var HealthFieldSeries = map[string]string{
 // loud in both directions -- TestMetrics_SocketServesTheFullSurface
 // reports a field it can find no series for, and reports a label it was
 // told to expect and did not find on the line.
-var HealthFieldsInBuildInfo = []string{"instance_id", "version", "commit", "library"}
+//
+// IT IS A MAP AND NOT A LIST OF BUILD_INFO FIELDS, because #670 added a
+// second identity series and the list shape could only express the
+// first one. A field named here is checked against the line of the
+// series named here, so a field moving between identity series is a
+// failure and not a silent pass.
+var HealthFieldsAsLabels = map[string]string{
+	"instance_id":    "build_info",
+	"version":        "build_info",
+	"commit":         "build_info",
+	"library":        "build_info",
+	"engine_version": "engine_info",
+	"api_version":    "engine_info",
+}
 
 var HealthFieldsNotExposed = map[string]string{
 	"checks":    "each check's observedValue is the counter's own series, already exposed",
@@ -158,6 +171,14 @@ type HealthResponse struct {
 	// to expire (#566).
 	JoinAbortedNoContainer int32 `json:"join_aborted_no_container"`
 	JoinAttachSlow         int32 `json:"join_attach_slow"`
+	// The body of the distribution join_attach_slow is the tail of
+	// (#403). Plain int32: these ship with this change, so a zero from
+	// an older plugin and a zero from a quiet lane are the same
+	// reading here, and JoinAttachCompleted tells them apart.
+	JoinAttachCompleted  int32 `json:"join_attach_completed"`
+	JoinAttachUnder1s    int32 `json:"join_attach_under_1s"`
+	JoinAttach1sToBudget int32 `json:"join_attach_1s_to_budget"`
+	JoinAttachMsMax      int32 `json:"join_attach_ms_max"`
 
 	// RestartLinkUpWaited / RestartLinkUpTimeouts mirror the #408
 	// window: a child link that came up only after the departing link
@@ -220,6 +241,19 @@ type HealthResponse struct {
 	// not publish it is distinguishable from one reporting -1 — absent
 	// data is not a value.
 	SandboxNetnsVisible *int32 `json:"sandbox_netns_visible"`
+	// SandboxNetnsPropagation says whether a mount the daemon makes
+	// under the sandbox netns directory after the plugin started can
+	// reach the plugin: 1 linked, 0 private, -1 no covering mount.
+	// It is what tells a cell which host it is running on, so a cell
+	// can assert the route this host can actually take instead of the
+	// route the lane happened to have when it was written. A pointer
+	// for the same reason as its neighbours.
+	SandboxNetnsPropagation *int32 `json:"sandbox_netns_propagation"`
+	// SandboxNetnsInitMounts is the sandbox netns mount count in PID 1's
+	// mount table: -2 PID 1 shares the plugin's mount namespace, -1
+	// unreadable, N otherwise. Under a nested engine PID 1 is that
+	// engine's init, so this says which world the lane is.
+	SandboxNetnsInitMounts *int32 `json:"sandbox_netns_init_mounts"`
 	// SandboxKeyEntries / SandboxKeyEntryFailures / SandboxPIDFallbacks
 	// say which route the plugin took into each container's network
 	// namespace. Pointers, all three: a plugin that does not publish
@@ -231,7 +265,7 @@ type HealthResponse struct {
 	// The five arms SandboxKeyEntryFailures folds together. They are
 	// what lets a cell assert WHICH refusal happened rather than only
 	// that one did: an unpropagated bind mount (NotANamespace, the
-	// expected arm on a stock engine) and a daemon publishing keys
+	// expected arm where the sandbox netns mount is private) and a daemon publishing keys
 	// under a non-default --exec-root (NotPermitted) produce identical
 	// aggregate counts and want opposite remedies. Pointers for the
 	// same reason as the three above.
@@ -253,7 +287,17 @@ type HealthResponse struct {
 	// judges against this one, not the sum (#881).
 	LeasesObtainedV4 int32 `json:"leases_obtained_v4"`
 	LeasesRenewed    int32 `json:"leases_renewed"`
-	DHCPTimeouts     int32 `json:"dhcp_timeouts"`
+	// RenewalsUnanswered counts renewal requests the server did not
+	// answer, one per request, WHILE THE CLIENT IS STILL RUNNING and
+	// the lease is still held (#940). It is not an early DHCPTimeouts:
+	// that one moves when a held lease runs out, hours later, and a
+	// single lost datagram moves this one and nothing else. The two
+	// halves are two protocols, as they are for every other family
+	// pair here, and the un-suffixed field is their sum.
+	RenewalsUnanswered   int32 `json:"renewals_unanswered"`
+	RenewalsUnansweredV4 int32 `json:"renewals_unanswered_v4"`
+	RenewalsUnansweredV6 int32 `json:"renewals_unanswered_v6"`
+	DHCPTimeouts         int32 `json:"dhcp_timeouts"`
 	// ClientStopFailures was lease_release_failures until #800. A
 	// renewal client that did not shut down cleanly when signalled — it
 	// says nothing about the lease, which is held to expiry either way
@@ -268,6 +312,22 @@ type HealthResponse struct {
 	// degrades nothing the plugin does, and the writer is root either
 	// way.
 	StateFileChmodFailures int32 `json:"state_file_chmod_failures"`
+	// IfnameUnsupported counts endpoints created with a custom
+	// interface name on an engine that does not apply one (#125, #670).
+	// Not healthy-affecting and not in the floor table: the container
+	// comes up on a working network and only the interface name
+	// differs from the request. The suite asserts it against the
+	// engine version `docker version` reports, never against the
+	// plugin's own idea of that version.
+	IfnameUnsupported int32 `json:"ifname_unsupported"`
+	// EngineVersion and APIVersion are what the DAEMON told the plugin
+	// at startup: the engine's version string, and the API version the
+	// client library negotiated with it. Pointers for the reason
+	// Version/Commit/Library are: a plugin that publishes neither and
+	// one that publishes an empty string are different facts, and only
+	// the second is a defect.
+	EngineVersion *string `json:"engine_version"`
+	APIVersion    *string `json:"api_version"`
 	// ParentLinkWaits / ParentLinkWaitTimeouts cover contention on a
 	// shared parent NIC, where a macvlan and an ipvlan child cannot
 	// coexist (#486/#549). Waits means an operation queued and got
@@ -325,6 +385,26 @@ type HealthResponse struct {
 	// inside the container can then read the guard's own account of
 	// itself; a zero on its own means "held" and "never ran" equally.
 	RouterAdvertGuardFailures int32 `json:"router_advert_guard_failures"`
+
+	// The five IPAM-driver counters (#110). None is healthy-affecting
+	// and none is in the floor table: an IPAM-mode network is one of
+	// the product's two shapes, and every one of these describes what
+	// the DHCP server or the daemon did, not a plugin fault.
+	//
+	// IPAMReplayHits and IPAMReleaseUnknown are not checks at all --
+	// the first counts the daemon-start replay working, which is the
+	// normal path, and the second counts a ReleaseAddress for an
+	// address no record holds, which libnetwork sends legitimately
+	// after a create it rolled back. The other three are warn-level:
+	// a replay that missed leaves one endpoint to re-lease,
+	// an ambiguous re-bind is the documented N>=2 limit, and a
+	// duplicate-MAC refusal is a container that did not start because
+	// two endpoints on one network were pinned to one --mac-address.
+	IPAMReplayHits          int32 `json:"ipam_replay_hits"`
+	IPAMReplayMiss          int32 `json:"ipam_replay_miss"`
+	IPAMRebindAmbiguous     int32 `json:"ipam_rebind_ambiguous"`
+	IPAMReserveDuplicateMAC int32 `json:"ipam_reserve_duplicate_mac"`
+	IPAMReleaseUnknown      int32 `json:"ipam_release_unknown"`
 
 	// published is the key set of the payload this value was decoded
 	// from. It exists because an absent JSON field decodes to zero,
@@ -1040,13 +1120,46 @@ func sortedKeys(m map[string]int) []string {
 //     NOT opt-in, checkAddressConflict runs for every endpoint that
 //     received a v4 address" — was load-bearing for case 2's gate and
 //     is now false. A shard that leases addresses on conflict_check=off
-//     networks reaches zero probes legitimately, so those leases are
+//     networks — or resumes an endpoint, whose probe is asynchronous —
+//     reaches zero probes legitimately, so those leases are
 //     declared with AllowUnprobedLeases and subtracted before the gate
 //     asks its question. Without that subtraction this gate would fail
 //     every run containing the off-mode test, and the fix reached for
 //     under time pressure would be to delete the gate.
 //
-//  4. NEW SINCE THE v6 COUNTERS SPLIT THE ATOM, and the reason this
+//  5. NEW SINCE THE IPAM BRANCH RE-SHARDED THE SUITE (#110), and the
+//     second two-populations defect in this one gate. The domain is
+//     leases_obtained_v4, which counts the PERSISTENT client's bind --
+//     and the probe the gate demands for it is not that client's. A new
+//     endpoint probes in the CreateEndpoint one-shot, roleAcquire under
+//     ConflictWait, which finishes BEFORE the address is reported
+//     (pkg/plugin/conflict.go); the Join client that moves the lease
+//     counter afterwards runs ConflictAsync, beside the address, for
+//     the reason stated there. A RECOVERED endpoint has no
+//     CreateEndpoint one-shot at all: recoverOneEndpoint synthesises
+//     the Join manager directly, so its bind moves the domain while the
+//     only probe it will ever produce is the asynchronous one -- and
+//     that probe races the container's teardown at the end of a shard.
+//     MEASURED, integration run 34600486961 main-3: a shard whose last
+//     test recycled the plugin (recovered_ok=1) read
+//     leases_obtained_v4=1 and acd_probes_sent=0 on a process 1s old,
+//     and the gate called the check broken.
+//
+//     Such a lease is declared by the test that causes it, with
+//     AllowUnprobedLeases, exactly as an off-mode lease is. It is NOT
+//     subtracted here from recovered_ok, which is what this gate did
+//     first: recovered_ok counts ENDPOINTS OF EITHER FAMILY and this
+//     gate's domain is v4 leases, so a recovered v6-only endpoint would
+//     have silently cancelled a real v4 miss -- a gate quietly emptying
+//     its own domain, which is the failure this whole block exists
+//     against. A declaration is per test, bounded, and sits next to its
+//     cause where the reader can check it against the shard.
+//     Recovered endpoints are not left unwatched either way: an address
+//     resumed from a record whose check had not completed moves
+//     acd_resumed_unchecked, which is the warn row below, and a
+//     conflict found by the async probe still moves address_conflicts.
+//
+//  6. NEW SINCE THE v6 COUNTERS SPLIT THE ATOM, and the reason this
 //     gate failed on a coin toss (#881). The premise that used to end
 //     this block — "leases_obtained is v4-only, so a v6-only shard
 //     cannot trip this" — was true when it was written and is false
@@ -1097,15 +1210,29 @@ func AllowedARPSendFailures() int32 {
 	return acdAllowance.sendFail
 }
 
-// AllowUnprobedLeases declares that n v4 leases in this shard were taken
-// on networks running conflict_check=off, so no ARP Probe was ever going
-// to be sent for them.
+// AllowUnprobedLeases declares that n v4 leases in this shard will never
+// be covered by an ARP Probe. Two causes produce such a lease:
+//
+//   - conflict_check=off on the network. No probe is sent at all, by the
+//     operator's instruction.
+//   - a RESUMED endpoint. The probe RFC 5227 asks for runs in the
+//     CreateEndpoint one-shot, before the address is used (roleAcquire
+//     under ConflictWait). Recovery never goes through CreateEndpoint:
+//     it synthesises the Join manager from Docker's view, and the Join
+//     client probes asynchronously, beside the address. So the resumed
+//     bind moves leases_obtained_v4 while the only probe it will ever
+//     produce races the test that caused it.
 //
 // This is the declaration that keeps the zero-probes gate alive after
-// the check became per-network. Call it in the test that creates the
-// off-mode network, once per lease it expects to take there. Declaring
-// MORE than the shard actually takes weakens the gate silently, so
-// declare the leases, not the containers.
+// the check became per-network. Call it in the test that causes the
+// unprobed lease, next to the cause, once per lease. Declaring MORE
+// than the shard actually takes weakens the gate silently, so declare
+// the leases, not the containers.
+//
+// It is deliberately a per-test declaration rather than a subtraction
+// inside the gate: recovered_ok counts endpoints of either family while
+// this gate's domain is v4 leases, so subtracting it there would let a
+// recovered v6-only endpoint cancel a real v4 miss.
 func AllowUnprobedLeases(n int32) {
 	acdAllowance.mu.Lock()
 	defer acdAllowance.mu.Unlock()
@@ -1353,20 +1480,23 @@ func ACDCensusFindings(h *HealthResponse, allowedSendFailures, allowedUnprobed, 
 	// it to check. Distinct from the case above: there, probes went out
 	// and some sends were refused; here nothing was attempted at all.
 	//
-	// The declared off-mode leases come out first. What is left is leases
-	// on networks that were supposed to probe, so a zero here is the
-	// check having stopped working rather than an operator's choice.
+	// The declared leases come out first -- an off-mode network's, and a
+	// resumed endpoint's, both declared by the test that causes them
+	// (case 5 above). What is left is leases taken by endpoints that
+	// were supposed to probe before using the address, so a zero here
+	// is the check having stopped working rather than an operator's
+	// choice or a shard shape.
 	if checked := leases - allowedUnprobed; probes == 0 && sendFailures == 0 && checked > 0 {
 		out = append(out, FloorFinding{
 			Counter: "acd_probes_sent",
 			Value:   0,
 			Fatal:   true,
 			Why: fmt.Sprintf(
-				"%d v4 lease(s) (leases_obtained_v4, not the v4+v6 sum) were obtained on networks "+
-					"that run RFC 5227's check (%d more were declared as conflict_check=off and are "+
-					"not counted here) and not one ARP Probe was sent. The check is opt-out per "+
-					"network, so with the off-mode leases already subtracted this is the check "+
-					"having stopped working rather than a shard with nothing to look at (#551).",
+				"%d v4 lease(s) (leases_obtained_v4, not the v4+v6 sum) were obtained by endpoints "+
+					"that run RFC 5227's check before the address is used (%d more were declared "+
+					"with AllowUnprobedLeases and are not counted here) and not one ARP Probe "+
+					"was sent. With the declared population subtracted this is the check having "+
+					"stopped working rather than a shard with nothing to look at (#551).",
 				checked, allowedUnprobed),
 		})
 	}

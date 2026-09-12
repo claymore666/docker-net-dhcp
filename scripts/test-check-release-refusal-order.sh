@@ -15,6 +15,9 @@
 # and `needs:` written as a scalar.
 set -u
 
+# shellcheck source=scripts/tmpdir-guard.sh
+. "$(cd "$(dirname "$0")" && pwd)/tmpdir-guard.sh"
+
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(dirname "$HERE")"
 GATE="$HERE/check-release-refusal-order.sh"
@@ -25,8 +28,7 @@ fail=0
 ok() { printf 'PASS  %s\n' "$1"; pass=$((pass + 1)); }
 no() { printf 'FAIL  %s\n' "$1" >&2; fail=$((fail + 1)); }
 
-WORK=$(mktemp -d)
-trap 'rm -rf "$WORK"' EXIT
+guarded_tmpdir WORK
 
 # <name> <want-exit> <file> [<expect>]
 gate_case() {

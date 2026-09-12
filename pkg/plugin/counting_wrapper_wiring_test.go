@@ -63,6 +63,13 @@ import (
 // and no meta-test of its own, because it IS its own meta-test. Add a
 // second call site to any row and it goes red, which is the entire
 // property. There is no hand-kept list to drift.
+// The two netns rows name openSandboxNetNSLazyPID and not
+// openSandboxNetNS. #417 split the opener so the container's PID is
+// resolved only where the sandbox key route is refused, and the counted
+// body went with the fallback it counts; openSandboxNetNS is now a thin
+// caller that hands it a PID it already has. The property is unchanged
+// and so is its subject: one caller of the open, one place the counter
+// moves.
 func TestCountingWrappers_AreTheOnlyCallers(t *testing.T) {
 	tests := []struct {
 		callee  string
@@ -71,7 +78,7 @@ func TestCountingWrappers_AreTheOnlyCallers(t *testing.T) {
 	}{
 		{
 			callee:  "awaitContainerNetNS",
-			wrapper: "openSandboxNetNS",
+			wrapper: "openSandboxNetNSLazyPID",
 			why: "netns_pid_mismatches is counted around the open, so a second caller would obtain the " +
 				"container's network namespace without counting a PID-reuse refusal -- and " +
 				"docs/reference.md tells operators that counter is the only thing distinguishing that " +
@@ -86,7 +93,7 @@ func TestCountingWrappers_AreTheOnlyCallers(t *testing.T) {
 		// its wrapper and its counter are all deleted.
 		{
 			callee:  "netnsPIDMismatches",
-			wrapper: "openSandboxNetNS",
+			wrapper: "openSandboxNetNSLazyPID",
 			why: "the counter is the refusal itself -- a PID that no longer belongs to the container is " +
 				"not opened and IS counted, in one place, so a second increment site would mean a " +
 				"second refusal path and operators reading netns_pid_mismatches could no longer tell " +

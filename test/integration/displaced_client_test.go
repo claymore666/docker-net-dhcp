@@ -98,11 +98,47 @@ func TestDisplacedClient_TheInterfaceNeverCarriesTwoClients(t *testing.T) {
 	// opened its socket, a /proc/net/packet this kernel does not fill —
 	// and every "exactly one" below would then pass over a plugin that
 	// left two clients running.
-	if n := len(dhcpv4Sockets(t, ctx, id, ifIndex)); n != 1 {
-		t.Fatalf("the running container's namespace holds %d DHCPv4 client socket(s) before "+
-			"anything was displaced, want exactly 1. This observer cannot judge the "+
-			"displacement until it can see the ordinary case:\n  %s",
-			n, harness.DescribePacketSockets(allSockets(t, ctx, id)))
+	//
+	// Polled, for the same reason the primary check below is polled,
+	// and it is the same asynchrony: Join returns once the interface is
+	// in the sandbox, and the persistent client is started afterwards
+	// by a goroutine that first resolves the container id through the
+	// Docker API (pkg/plugin/dhcp_manager.go). The socket is the
+	// settled state of an attach, not an instant of it. Read once, this
+	// was the first of the two reds this test showed on the hosted
+	// cross-check: MEASURED on run 34597851110, the socket appeared
+	// 358ms after RunContainer returned, and the failure message's own
+	// second read on run 34537348413 already listed the socket it had
+	// just called absent.
+	//
+	// The budget is harness.IPAcquisitionBudget, the one this suite
+	// already gives a single attach to produce an address, used again
+	// for the step of that same attach which follows it. Waiting
+	// weakens nothing: the count must still be exactly 1, two clients
+	// still fail, and a client that never starts spends the budget and
+	// fails with the same message and the same census.
+	//
+	// THE WAIT IS REPORTED WHETHER OR NOT IT WAS SPENT, because a
+	// budget silently absorbs a regression otherwise. The measurement
+	// that motivated the poll is 358ms (run 34597851110); a socket
+	// arriving at 12s would pass this check and say nothing, and the
+	// next reader would have no way to tell "it was already there" from
+	// "it arrived just inside the budget". The number belongs in the
+	// run, not in the review that noticed it was missing.
+	censusStart := time.Now()
+	n := len(dhcpv4Sockets(t, ctx, id, ifIndex))
+	settle := censusStart.Add(harness.IPAcquisitionBudget)
+	for n != 1 && time.Now().Before(settle) {
+		time.Sleep(500 * time.Millisecond)
+		n = len(dhcpv4Sockets(t, ctx, id, ifIndex))
+	}
+	t.Logf("SETTLE: the pre-check census read %d DHCPv4 socket(s) after %s of its %s budget",
+		n, time.Since(censusStart).Round(10*time.Millisecond), harness.IPAcquisitionBudget)
+	if n != 1 {
+		t.Fatalf("the running container's namespace holds %d DHCPv4 client socket(s) %s after "+
+			"the address was reported and before anything was displaced, want exactly 1. This "+
+			"observer cannot judge the displacement until it can see the ordinary case:\n  %s",
+			n, harness.IPAcquisitionBudget, harness.DescribePacketSockets(allSockets(t, ctx, id)))
 	}
 
 	w := harness.BeginCounterWindow(t, ctx, cli, "recovered_ok", "displaced_stops").ExpectRecycle()

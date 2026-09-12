@@ -10,6 +10,9 @@
 # useless in the same way a week later.
 set -u
 
+# shellcheck source=scripts/tmpdir-guard.sh
+. "$(cd "$(dirname "$0")" && pwd)/tmpdir-guard.sh"
+
 GATE="$(cd "$(dirname "$0")" && pwd)/check-python-deps.sh"
 pass=0
 fail=0
@@ -24,7 +27,7 @@ no() { printf 'FAIL  %s\n' "$1" >&2; fail=$((fail + 1)); }
 run_case() {
     local name="$1" want="$2"; shift 2
     local dir rc out
-    dir=$(mktemp -d)
+    guarded_tmpdir dir
     (
         cd "$dir" || exit 2
         git init -q .
@@ -170,7 +173,7 @@ echo hi" \
 untracked_case() {
     local name="$1" want="$2"; shift 2
     local dir rc out
-    dir=$(mktemp -d)
+    guarded_tmpdir dir
     (
         cd "$dir" || exit 2
         git init -q .
@@ -206,7 +209,7 @@ untracked_case "an UNTRACKED wired-up pair reads as clean, not as absent" 0 \
     "scripts/use.py:::import common" \
     "scripts/run.sh:::python3 scripts/use.py"
 
-dir=$(mktemp -d)
+guarded_tmpdir dir
 if PYDEPS_ROOT="$dir" bash "$GATE" >/dev/null 2>&1; then
     no "a non-git directory should not report clean"
 else

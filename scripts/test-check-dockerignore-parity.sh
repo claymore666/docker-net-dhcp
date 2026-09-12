@@ -11,9 +11,11 @@
 # not see.
 set -euo pipefail
 
+# shellcheck source=scripts/tmpdir-guard.sh
+. "$(cd "$(dirname "$0")" && pwd)/tmpdir-guard.sh"
+
 CHECK="$(dirname "$0")/check-dockerignore-parity.sh"
-TMP=$(mktemp -d)
-trap 'rm -rf "$TMP"' EXIT
+guarded_tmpdir TMP
 fails=0
 
 check() {

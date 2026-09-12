@@ -162,6 +162,64 @@ func TestParseJSONOrErrorResponse_UnknownFieldRejected(t *testing.T) {
 	}
 }
 
+// TestParseJSONOrErrorResponse_AnEmptyBodyNamesTheResend.
+//
+// An empty body on the plugin socket has one cause: the daemon re-sent
+// a call whose body its own client had already drained, because the
+// first attempt outlived the plugin call timeout. The operator sees
+// this text as the reason `docker run` failed, so it has to name the
+// timeout rather than the decoder.
+func TestParseJSONOrErrorResponse_AnEmptyBodyNamesTheResend(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(""))
+	rec := httptest.NewRecorder()
+
+	var v struct{}
+	if err := ParseJSONOrErrorResponse(&v, rec, req); err == nil {
+		t.Fatal("expected an error from an empty body")
+	}
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status: got %d want 400", rec.Code)
+	}
+	body := rec.Body.String()
+	// "30s" and "BELOW" are the DIRECTION of the lever, not decoration.
+	// The plugin is never told what --timeout the operator enabled it
+	// with, so every budget on this side is sized to the default: a
+	// lower value breaks these calls every time rather than making them
+	// fail sooner, and a higher one is unused. A message that names the
+	// flag without naming that sends the reader to raise a number that
+	// cannot help -- and on an IPAM-mode network, where the address is
+	// acquired inside this call, "cannot help" means the network never
+	// starts a container again.
+	for _, want := range []string{"no body", "--timeout", "30s", "BELOW"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the response does not mention %q. The operator reads this text as the "+
+				"reason the container did not start:\n%s", want, body)
+		}
+	}
+	if strings.Contains(body, "failed to parse request body") {
+		t.Errorf("an empty body still answers with the generic parse error, which names "+
+			"neither the timeout nor the re-send:\n%s", body)
+	}
+}
+
+// TestParseJSONOrErrorResponse_ATruncatedBodyIsNotTheResend is the other
+// direction: a body that started and stopped is a broken connection, not
+// a re-sent call, and must not be explained as one.
+func TestParseJSONOrErrorResponse_ATruncatedBodyIsNotTheResend(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"name":`))
+	rec := httptest.NewRecorder()
+
+	var v struct {
+		Name string `json:"name"`
+	}
+	if err := ParseJSONOrErrorResponse(&v, rec, req); err == nil {
+		t.Fatal("expected an error from a truncated body")
+	}
+	if body := rec.Body.String(); strings.Contains(body, "--timeout") {
+		t.Errorf("a truncated body was explained as a re-sent call:\n%s", body)
+	}
+}
+
 func TestAwaitCondition_OkImmediately(t *testing.T) {
 	calls := 0
 	err := AwaitCondition(context.Background(), func() (bool, error) {

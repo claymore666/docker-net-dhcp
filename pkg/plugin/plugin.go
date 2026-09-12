@@ -651,6 +651,14 @@ type Plugin struct {
 	instanceID string
 
 	docker dockerClient
+
+	// engine is what the startup probe learned about the daemon (#670).
+	// A pointer swapped atomically rather than two strings under p.mu:
+	// the two fields are ONE observation and a reader must never see
+	// half of one probe beside half of another. Never nil after
+	// probeEngine; engineSnapshot answers `unknown` for the window
+	// before it.
+	engine atomic.Pointer[engineIdentity]
 	server http.Server
 
 	// metricsServer is the OPTIONAL TCP listener for /metrics, nil
@@ -850,6 +858,29 @@ type Plugin struct {
 	// the work and the fix needs re-examining.
 	joinAttachSlow atomic.Int32
 
+	// joinAttachCompleted, joinAttachUnder1s, joinAttach1sToBudget and
+	// joinAttachMsMax are the body of the distribution joinAttachSlow
+	// is the tail of, carried where the operator of a shipped plugin
+	// can reach it (#403).
+	//
+	// The per-attach timing line is Debug and the shipped LOG_LEVEL is
+	// info, so on a host nobody has reconfigured and restarted, the
+	// log answers nothing. These do, at any level: the count gives the
+	// population, the two buckets bound the body against the one
+	// threshold #403 is about, and the maximum says how close the
+	// worst attach came to it. Together with joinAttachSlow the four
+	// buckets partition every successful attach.
+	//
+	// Not healthy-affecting. All four are readings of successes.
+	// netnsSrc redirects the three sandbox-netns readings at fixtures.
+	// Zero in production; see netnsSources.
+	netnsSrc netnsSources
+
+	joinAttachCompleted  atomic.Int32
+	joinAttachUnder1s    atomic.Int32
+	joinAttach1sToBudget atomic.Int32
+	joinAttachMsMax      atomic.Int32
+
 	// dhcpServerTierFallbacks counts initial acquisitions where a
 	// preferred DHCP server did not answer inside its slice of the
 	// budget and the next entry in dhcp_servers was tried (#111).
@@ -978,9 +1009,9 @@ type Plugin struct {
 
 	// The four arms of sandboxKeyEntryFailures. They exist because the
 	// aggregate cannot carry a CAUSE, and the cause is what SECURITY.md
-	// asserts: that the refusal an operator sees on a stock engine is
-	// the unpropagated bind mount, not a key this plugin declined to
-	// recognise. Both produce the same aggregate, want opposite
+	// asserts: that the refusal an operator sees on a host whose
+	// sandbox netns mount is private is the unpropagated bind mount,
+	// not a key this plugin declined to recognise. Both produce the same aggregate, want opposite
 	// remedies, and until these existed nothing in the tree could tell
 	// a reader which had happened -- the plugin log carries the reason
 	// and reaches an integration run only when a cell has already
@@ -1005,7 +1036,7 @@ type Plugin struct {
 	// plugin refused to send because their method was not GET.
 	//
 	// It should stay zero for the life of every installation: the
-	// plugin's Docker surface is three read calls, and the refusal is
+	// plugin's Docker surface is four read calls, and the refusal is
 	// what makes that a property of the binary rather than a property
 	// of today's call sites (#691). A non-zero value means code in this
 	// process tried to write to the daemon, and an operator who has put
@@ -1080,6 +1111,91 @@ type Plugin struct {
 	// options written before name validation existed, or somebody
 	// writing the state directory directly.
 	networkOptionsRejected atomic.Int32
+
+	// The IPAM driver's state and counters (#110). ipamPools is the set
+	// of PoolIDs RequestPool has answered and CreateNetwork has not yet
+	// bound; ipamIndex maps a bound PoolID to its network and is rebuilt
+	// from the state directory at start-up; ipamReserves is the
+	// in-flight and unclaimed reservations, which is what holds one
+	// hardware address to one DHCP exchange.
+	ipamPools    *issuedPools
+	ipamIndex    *ipamIndex
+	ipamReserves *ipamReserves
+	// ipamSweepStop ends the reservation sweeper. Closed by Close and
+	// never written to, so a double Close is the one thing it must not
+	// tolerate -- Close already refuses to run twice.
+	ipamSweepStop chan struct{}
+
+	// ipamReplayHits counts stored endpoint addresses this plugin
+	// confirmed at a daemon restart from its own lease record.
+	//
+	// Not healthy-affecting: it is the mechanism working. It is
+	// reported because it is the only outside evidence that an
+	// IPAM-mode network survived a restart by replay rather than by
+	// luck -- the container keeps its address either way, and only this
+	// number says which path delivered it.
+	ipamReplayHits atomic.Int32
+
+	// ipamReplayMiss counts stored endpoint addresses this plugin
+	// refused to confirm because no lease record in that network holds
+	// them.
+	//
+	// Not healthy-affecting, and the refusal is the safe outcome: the
+	// daemon keeps the address it stored, logs the refusal, and the
+	// network driver's own recovery adopts the endpoint from Docker's
+	// view. Worth investigating rather than alerting on -- a rise means
+	// the lease record and Docker's store have drifted apart, which is a
+	// lost or hand-edited record file rather than a fault this process
+	// can fix.
+	ipamReplayMiss stampedCounter
+
+	// ipamRebindAmbiguous counts address requests that met more than one
+	// recently-removed endpoint on the network and so could not tell
+	// which address to ask for.
+	//
+	// THIS IS THE DOCUMENTED LIMIT, COUNTED. A RequestAddress carries no
+	// hostname and no endpoint id, so when several containers on one
+	// network restart together there is nothing to match a request to a
+	// previous lease on, and the DHCP server decides. Not
+	// healthy-affecting: every container still gets an address. Watch
+	// it: a rise is the one signal that addresses on this host moved for
+	// a reason the operator can act on, by pinning with --ip or
+	// --mac-address or by using --ipam-driver null.
+	ipamRebindAmbiguous stampedCounter
+
+	// ipamReserveDuplicateMAC counts address requests refused because
+	// this network was already leasing an address for that hardware
+	// address.
+	//
+	// Not healthy-affecting for the host, and every move is one container
+	// that did not start. Its producer is two ENDPOINTS carrying one MAC:
+	// libnetwork generates a unique MAC per endpoint and copies an
+	// operator-set one through unchanged (moby 28.5.2,
+	// libnetwork/network.go:1222 and :1240), so `docker run
+	// --mac-address X` twice on one network, or a compose file pinning
+	// one MAC on two services, puts two endpoints on one hardware
+	// address. Both halves of the guard move it: the reserve still in
+	// flight, and the endpoint already created, which the record store
+	// is what still knows about. The remedy is the operator's: give each
+	// container its own MAC, or leave it unset.
+	//
+	// It is NOT moved by the daemon's
+	// re-send after a plugin-call timeout, which is what an earlier
+	// version of this comment said: moby encodes the call into a
+	// bytes.Buffer and hands the SAME reader to every attempt
+	// (pkg/plugins/client.go, callWithRetry), so the first attempt
+	// drains it and the re-send arrives with no body and is refused
+	// before any handler runs. MEASURED, integration run 34600486961
+	// failure-1: "IpamDriver.RequestAddress: failed to parse request
+	// body: EOF", and this counter did not move. Raising --timeout is
+	// therefore not the remedy for a rise here.
+	ipamReserveDuplicateMAC stampedCounter
+
+	// ipamReleaseUnknown counts addresses libnetwork released that no
+	// lease record of ours holds. Informational: a release for an
+	// address whose record is already retained or closed is the normal
+	// ordering, not a fault.
+	ipamReleaseUnknown atomic.Int32
 
 	// tombstoneWriteFailures counts saveTombstones failures (disk full,
 	// EROFS) from addTombstone. Reported on /Plugin.Health so operators
@@ -1227,6 +1343,40 @@ type Plugin struct {
 	dhcpTimeoutsV4       atomic.Int32
 	clientStopFailuresV4 atomic.Int32
 
+	// renewalsUnansweredV4 counts renewal requests this host sent to
+	// extend a held lease and got no answer to, one per request, while
+	// the client was still running (#940).
+	//
+	// IT IS NOT AN EARLY dhcpTimeouts AND THE PAIR IS THE READING.
+	// dhcpTimeouts moves when an attempt runs out of retransmissions,
+	// which for a held lease is at the lease's end; this moves at the
+	// first retransmission.
+	//
+	// HOW EARLY THAT IS COMES FROM THE LEASE, not from a constant. RFC
+	// 2131 section 4.4.5 has the client "wait one-half of the remaining
+	// time until T2 (in RENEWING state) and one-half of the remaining
+	// lease time (in REBINDING state), down to a minimum of 60
+	// seconds", which proto.renewalDelay implements as that max, so the
+	// 60 seconds is a floor under the wait and never a bound on it. On
+	// the 24 hour lease #940 was reported from, T1 falls at 12h and T2
+	// at 21h, so the first retransmission is about 4h30m after the
+	// renewal starts: seeing the outage at 16:30 into the lease instead
+	// of at 24:00, which is about 7.5 hours of warning and not a day.
+	//
+	// A request is counted when a LATER REQUEST proves it went
+	// unanswered, and by nothing else. An acknowledgement proves the
+	// opposite: it ends the renewal, and the request in flight when it
+	// arrives was answered. That request is never counted, so a client
+	// that has sent N requests into silence reports N-1 -- see
+	// renewalWatch, which owns the arithmetic, reads the end of a
+	// renewal from the event stream, and gives the reason the value is
+	// a running maximum rather than a subtraction.
+	//
+	// Fed as a DELTA from every persistent client, on the same rule as
+	// the RFC 5227 counters: summing the live managers would make the
+	// number fall when a container stops.
+	renewalsUnansweredV4 atomic.Int32
+
 	// parentGate serialises child-link creation per parent NIC, so the
 	// validate_dhcp preflight probe cannot hold a parent in one
 	// attachment mode while an endpoint asks for the other. See
@@ -1278,6 +1428,13 @@ type Plugin struct {
 	// dual-stack operator alerting on client_stop_failures could not
 	// tell which family's client had failed to hand its lease back.
 	clientStopFailuresV6 atomic.Int32
+	// renewalsUnansweredV6 is the DHCPv6 half. The library counts a
+	// Renew and a Rebind as renewal requests (RFC 9915 sections 18.2.4
+	// and 18.2.5) exactly as it counts a v4 DHCPREQUEST with a
+	// non-zero ciaddr, and the event that ends one is the same lease
+	// event in both families, so the arithmetic is the arithmetic. A
+	// v6-only silence is invisible in the sum.
+	renewalsUnansweredV6 atomic.Int32
 
 	// dhcpv6ConfigOnly counts DHCPv6 information replies: the server
 	// advertised "other configuration available" and answered with
@@ -1379,6 +1536,15 @@ type Plugin struct {
 	// audit_log should alert on the counter instead.
 	ledger              *leaseLedger
 	ledgerWriteFailures stampedCounter
+
+	// ifnameUnsupported counts endpoints created with a custom
+	// interface name on an engine that does not apply one (#125, #670).
+	// Not Healthy-affecting: the container comes up on a working
+	// network and only the interface's NAME differs from what was
+	// asked for. It is a `warn` check because the condition is
+	// invisible everywhere else — Docker reports the request as
+	// accepted and the container as running.
+	ifnameUnsupported stampedCounter
 
 	// stateFileChmodFailures counts files the startup sweep could not
 	// tighten, plus one for a STATE_DIR that could not be read at all
@@ -1930,7 +2096,20 @@ func (p *Plugin) recoverEndpointsDeferred(ctx context.Context, wait time.Duratio
 	runCtx, cancel := context.WithTimeout(ctx, wait+recoveryBudget)
 	defer cancel()
 
-	if notReady := p.recoverEndpoints(runCtx, wait); notReady {
+	notReady := p.recoverEndpoints(runCtx, wait)
+
+	// The daemon this recovery waited for is the one the startup engine
+	// probe could not reach (#670). Taking the identity here costs one
+	// call at the only moment it is known to be answerable, and turns
+	// the `unknown` in the health document into the version an operator
+	// asked for. Its own context, not runCtx: recovery may have spent
+	// that whole budget, and a probe on an expired context would record
+	// "the daemon did not answer" about a daemon that just answered
+	// every call recovery made. A no-op unless the startup probe came
+	// back empty.
+	p.reprobeEngine(context.Background())
+
+	if notReady {
 		// Budget exhausted with the daemon still unreachable. Now it is
 		// a real failure: nothing else is going to retry, so every
 		// previously-attached endpoint is running without renewal.
@@ -2357,6 +2536,10 @@ func NewPlugin(opts Options) (*Plugin, error) {
 		joinHints:            make(map[string]joinHint),
 		persistentDHCP:       make(map[string]*dhcpManager),
 		endpointFingerprints: make(map[string]endpointFingerprint),
+
+		ipamPools:    newIssuedPools(),
+		ipamIndex:    newIPAMIndex(),
+		ipamReserves: newIPAMReserves(),
 	}
 
 	// The Docker client is built AFTER p exists because the GET-only
@@ -2368,6 +2551,14 @@ func NewPlugin(opts Options) (*Plugin, error) {
 		return nil, err
 	}
 	p.docker = client
+
+	// The engine identity, and the refusal below the floor (#670). It
+	// runs here, before the state directory and the lease record, so a
+	// refusal is the FIRST thing an unsupported host is told rather than
+	// the last: everything below this point creates files on the host.
+	if err := p.probeEngine(context.Background()); err != nil {
+		return nil, err
+	}
 
 	// prepareStateDir creates the directory and runs the #804 sweep. It
 	// hands back the path the two openers below use, so a version of
@@ -2396,6 +2587,14 @@ func NewPlugin(opts Options) (*Plugin, error) {
 		log.WithFields(log.Fields{"torn_tail": d.TornTail, "skipped": d.Skipped}).
 			Warn("The lease record has unreadable lines; endpoints they described will be recovered from Docker instead of resumed")
 	}
+
+	// BOTH OF THESE RUN BEFORE THE SOCKET LISTENS, and that is what the
+	// order is for. The daemon replays RequestPool and one
+	// RequestAddress per stored endpoint from inside libnetwork.New,
+	// before it serves its own API, so the answer to those calls has to
+	// be on disk and already folded by the time the first one arrives.
+	rebuildIPAMIndex(p.ipamIndex)
+	retainOrphanedReservations(p.records, time.Now())
 
 	// Routing table, and the RPCs deliberately left off it: routes.go.
 	mux := p.newServeMux()
@@ -2445,6 +2644,18 @@ func NewPlugin(opts Options) (*Plugin, error) {
 		p.recoveryPending = p.recoverEndpoints(ctx, recoverySyncDaemonWait)
 		cancel()
 	}
+
+	// A daemon that came up between the engine probe above and the
+	// recovery just finished leaves the identity `unknown` with nothing
+	// else ever asking again. A no-op unless that happened, which is the
+	// only reason it is cheap enough to sit on the enable path.
+	p.reprobeEngine(context.Background())
+	// The reservation sweeper, last, so nothing above can return an
+	// error with it already running. It is the in-memory half of what
+	// retainOrphanedReservations does across a restart: an address
+	// Docker asked for and never created an endpoint for.
+	p.ipamSweepStop = make(chan struct{})
+	go p.ipamSweeper(p.ipamSweepStop)
 
 	return &p, nil
 }
@@ -2595,6 +2806,10 @@ func (p *Plugin) Close() error {
 	// server-first shutdown is written to prevent.
 	if p.recoveryCancel != nil {
 		p.recoveryCancel()
+	}
+	if p.ipamSweepStop != nil {
+		close(p.ipamSweepStop)
+		p.ipamSweepStop = nil
 	}
 
 	// One deadline for every phase below; see pluginShutdownTimeout.

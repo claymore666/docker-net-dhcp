@@ -15,10 +15,12 @@
 # gate exists to reject and requires exit 1.
 set -uo pipefail
 
+# shellcheck source=scripts/tmpdir-guard.sh
+. "$(cd "$(dirname "$0")" && pwd)/tmpdir-guard.sh"
+
 GATE="$(cd "$(dirname "$0")" && pwd)/check-golden-fixture-name-keyed.sh"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT
+guarded_tmpdir TMP
 
 failures=0
 check() {

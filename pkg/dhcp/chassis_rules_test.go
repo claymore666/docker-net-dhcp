@@ -448,6 +448,42 @@ func TestClientIdentity_CarriesTheTypeByte(t *testing.T) {
 	}
 }
 
+// TestClientIDPayload_IsClientIdentitysInverse.
+//
+// A re-bind reads the identity a record carries and has to put it back
+// on the wire; DHCPClientOptions.ClientID is the payload without the
+// type byte, so one form has to be derived from the other and a
+// derivation that drifts sends a client-id no record describes.
+func TestClientIDPayload_IsClientIdentitysInverse(t *testing.T) {
+	payload := []byte{0xde, 0xad, 0xbe, 0xef}
+	got, ok := ClientIDPayload(ClientIdentity(payload))
+	if !ok {
+		t.Fatal("the chassis's own identity was refused by the inverse of the function that built it")
+	}
+	if len(got) != len(payload) {
+		t.Fatalf("round trip gave %v, want %v", got, payload)
+	}
+	for i := range payload {
+		if got[i] != payload[i] {
+			t.Fatalf("round trip gave %v, want %v", got, payload)
+		}
+	}
+
+	for _, c := range []struct {
+		name     string
+		identity []byte
+	}{
+		{"nothing", nil},
+		{"a type byte with no payload", []byte{0x00}},
+		{"a shape this chassis does not write", []byte{0xff, 1, 2}},
+	} {
+		if _, ok := ClientIDPayload(c.identity); ok {
+			t.Errorf("%s was accepted; trimming its first byte would put a value on the wire "+
+				"that no record says, which is the failure the type byte exists to prevent", c.name)
+		}
+	}
+}
+
 // TestBuildParams_TheBroadcastFlagReachesTheWire is the fifth seam rule,
 // and the only one of the five that was already broken when it was
 // written.

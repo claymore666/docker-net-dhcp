@@ -9,6 +9,9 @@
 # so this cannot pass over a rewritten check.
 set -euo pipefail
 
+# shellcheck source=scripts/tmpdir-guard.sh
+. "$(cd "$(dirname "$0")" && pwd)/tmpdir-guard.sh"
+
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 GATE=scripts/check-plugin-bind-sources.sh
 
@@ -17,7 +20,7 @@ pass=0; fail=0
 # Build a throwaway repo root holding the gate plus the files it reads.
 mkws() {
     local ws
-    ws=$(mktemp -d)
+    guarded_tmpdir ws
     mkdir -p "$ws/scripts" "$ws/.github/workflows"
     cp "$REPO/$GATE" "$ws/scripts/"
     cp "$REPO/Makefile" "$REPO/config.json" "$REPO/config-cover.json" "$ws/"

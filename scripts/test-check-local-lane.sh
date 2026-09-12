@@ -22,14 +22,16 @@
 # force every gate into one lane and one spelling.
 set -uo pipefail
 
+# shellcheck source=scripts/tmpdir-guard.sh
+. "$(cd "$(dirname "$0")" && pwd)/tmpdir-guard.sh"
+
 HERE="$(cd "$(dirname "$0")" && pwd)"
 CHECK="$HERE/check-local-lane.sh"
 pass=0; fail=0
 ok() { printf 'PASS  %s\n' "$1"; pass=$((pass + 1)); }
 no() { printf 'FAIL  %s\n' "$1" >&2; fail=$((fail + 1)); }
 
-DIR=$(mktemp -d)
-trap 'rm -rf "$DIR"' EXIT
+guarded_tmpdir DIR
 
 # mkgates <name>...
 #   Plant fixture gate scripts so rule 4 (no orphan gates) has a

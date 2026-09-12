@@ -51,15 +51,21 @@
 //     retransmission budget: renewalDelay is half the time remaining
 //     to Rebind, floored, and every attempt re-arms the retransmit
 //     timer with it, so RENEWING has exactly two exits, Rebind and
-//     expiry (dhcp-golib v0.1.0 proto/machine.go:1214-1234). Nothing
-//     counts or logs an unanswered renewal, so the first visible sign
-//     of a silent server is Lost{ReasonExpired} translated to
-//     "leasefail" (pkg/dhcp/chassis.go:877-878). The rise therefore
-//     lands at the expiry of the lease that was live when the server
-//     died, which is the lifetime remaining at the kill and at most
-//     one whole lease. MEASURED on the production host 2026-09-10: a
-//     renewal went unanswered for 7h52m past T1 and moved no counter
-//     and wrote no log line at any level.
+//     expiry (dhcp-golib v0.1.0 proto/machine.go:1214-1234). The first
+//     sign of a silent server in THIS counter is still
+//     Lost{ReasonExpired} translated to "leasefail"
+//     (pkg/dhcp/chassis.go:877-878), so the rise lands at the expiry of
+//     the lease that was live when the server died, which is the
+//     lifetime remaining at the kill and at most one whole lease.
+//     MEASURED on the production host 2026-09-10, on v2.0.0: a renewal
+//     went unanswered for 7h52m past T1 and moved no counter and wrote
+//     no log line at any level. That measurement is history. Since
+//     v2.1.0 (#940) renewals_unanswered moves at the first
+//     retransmission and the plugin logs a warning naming the endpoint,
+//     so dhcp_timeouts is no longer the earliest sign of a silent
+//     server, only the earliest sign in this counter. The two are read
+//     together: renewals_unanswered rising with dhcp_timeouts flat is a
+//     server that has gone quiet under a lease that still holds.
 //     Failed{ReasonNoServer} does reach the counter, but only on the
 //     acquisition path, where the container's deadline bounds the
 //     attempt.

@@ -16,6 +16,9 @@
 # case: inspecting nothing must be an error, not a pass.
 set -uo pipefail
 
+# shellcheck source=scripts/tmpdir-guard.sh
+. "$(cd "$(dirname "$0")" && pwd)/tmpdir-guard.sh"
+
 HERE="$(cd "$(dirname "$0")" && pwd)"
 CHECK="$HERE/check-dockerfile-pins.sh"
 pass=0; fail=0
@@ -24,7 +27,7 @@ no() { printf 'FAIL  %s\n' "$1" >&2; fail=$((fail + 1)); }
 
 # run_with <file-content>
 run_with() {
-    local dir; dir=$(mktemp -d)
+    local dir; guarded_tmpdir dir
     printf '%s\n' "$1" > "$dir/Dockerfile"
     PIN_GATE_FILES="$dir/Dockerfile" bash "$CHECK" "$dir" >"$dir/o" 2>&1
     local rc=$?; cat "$dir/o"; rm -rf "$dir"; return $rc
@@ -73,7 +76,7 @@ FROM builder AS final"); rc=$?
 
 # ...but only within its own file. A stage name is not a global licence
 # to skip a digest, which is what makes the exemption safe.
-dir=$(mktemp -d)
+guarded_tmpdir dir
 printf 'FROM debian:trixie-slim@%s AS builder\n' "$D" > "$dir/a.Dockerfile"
 printf 'FROM builder\n' > "$dir/b.Dockerfile"
 out=$(PIN_GATE_FILES="$dir/a.Dockerfile
@@ -84,7 +87,7 @@ rm -rf "$dir"
 
 # --- inspecting nothing is not a pass ----------------------------------
 
-dir=$(mktemp -d)
+guarded_tmpdir dir
 out=$(bash "$CHECK" "$dir" 2>&1); rc=$?
 rm -rf "$dir"
 [ $rc -eq 2 ] && ok "a tree with no Dockerfiles exits 2, not 0" \
@@ -106,7 +109,7 @@ out=$(bash "$CHECK" /nonexistent-path-for-the-gate-test 2>&1); rc=$?
 # ignored files must not turn into skipping everything.
 
 mk_repo() {
-    local dir; dir=$(mktemp -d)
+    local dir; guarded_tmpdir dir
     git -C "$dir" init -q
     printf 'ignored/\n' > "$dir/.gitignore"
     mkdir -p "$dir/ignored"
@@ -131,7 +134,7 @@ rm -rf "$dir"
 
 # Outside a checkout — a release tarball — there is no index to ask, and
 # the filesystem walk is the only answer available.
-dir=$(mktemp -d)
+guarded_tmpdir dir
 printf 'FROM debian:trixie-slim\n' > "$dir/Dockerfile"
 out=$(bash "$CHECK" "$dir" 2>&1); rc=$?
 [ $rc -eq 1 ] && ok "outside a checkout the filesystem walk still discovers" \

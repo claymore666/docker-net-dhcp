@@ -11,6 +11,116 @@ forks that have been waiting on review.
 
 [upstream]: https://github.com/devplayer0/docker-net-dhcp
 
+## v2.1.0
+
+The plugin now serves a DHCP IPAM driver beside its network driver, so a pinned
+address works on a DHCP network and `docker network inspect` reports a populated
+IPAM block. It also publishes which Docker Engine it runs on and refuses to
+start below the measured minimum. The attach path reaches the container's
+network namespace before it makes any Docker call.
+
+Everything below is a change against v2.0.0.
+
+### Upgrade notes
+
+Required on every host before `docker plugin install`, unchanged since v1.5.0:
+
+```bash
+sudo mkdir -p /var/lib/net-dhcp
+```
+
+**The privilege prompt does not change.** No field `docker plugin upgrade`
+prompts on has moved since v2.0.0, so the manifest-delta table in the v2.0.0
+section below is still the list the daemon shows you. The manifest declares one
+new interface type, `docker.ipamdriver/1.0`, which is what lets a network name
+this plugin as its IPAM driver. The daemon does not prompt on it.
+
+| what changed | what it does to you |
+| --- | --- |
+| An IPAM driver is served beside the network driver | `docker run --ip`, `docker network connect --ip` and Compose `ipv4_address` work on a network created with `--ipam-driver` naming this plugin, with or without `--subnet` |
+| `--ipam-driver null` is unchanged | Existing networks keep working, their state files are byte-identical, and a v2.0 build still reads them |
+| `ipvlan` is refused at `docker network create` in IPAM mode | Create ipvlan networks with `--ipam-driver null` (#949) |
+| `-o ipv6=true` is refused at `docker network create` in IPAM mode | The IPAM endpoint path runs no DHCPv6 exchange (#960) |
+| Two endpoints pinned to one `--mac-address` are refused at the second | A server files its lease per hardware address, so both endpoints would otherwise hold one address |
+| The supported engine range is published and enforced | Docker Engine 20.10 or newer, measured; the plugin refuses to start below it |
+| New Health and `/metrics` readings | `renewals_unanswered` with its `_v4` and `_v6` halves, `join_attach_completed`, `join_attach_under_1s`, `join_attach_1s_to_budget`, `join_attach_ms_max`, `sandbox_netns_propagation`, `sandbox_netns_init_mounts`, `engine_version`, `api_version`, `ifname_unsupported` |
+| The lease-record lock refusal names its cause | A held lock and a filesystem without working locks read differently and have different remedies |
+
+### New
+
+- A DHCP IPAM driver beside the network driver. PoolID is address space plus
+  masked prefix plus a fixed-order `--ipam-opt` suffix, so `docker network
+  create` and the daemon-start replay derive one identity, and the binding
+  lives in the network's state file at schema 2. An ACK for an address other
+  than the one asked for fails the run, because libnetwork adopts whatever the
+  driver returns (#110, PR #956).
+- The supported Docker Engine range is measured and published. 20.10.24,
+  23.0.6, 24.0.9, 25.0.5, 26.1.4, 27.5.1, 28.5.2 and 29.8.0 each pass the whole
+  baseline in bridge, macvlan and ipvlan, and a weekly matrix re-measures it.
+  Health and `/metrics` report `engine_version` and `api_version`, and
+  `ifname_unsupported` counts the attaches where the engine ignored a requested
+  interface name (#670, PR #954).
+- `renewals_unanswered`, with its `_v4` and `_v6` halves: renewal requests the
+  server did not answer while the client is still running and the lease is
+  still held. On a 24-hour lease it moves about 7.5 hours before
+  `dhcp_timeouts` does. Not healthy-affecting and not a check (#940, PR #948).
+- The attach path is measurable. One `Attach completed` line per attach at
+  `debug` with its phase breakdown, the four `join_attach_*` counters, and the
+  `sandbox_netns_propagation` and `sandbox_netns_init_mounts` gauges that say
+  which namespace route this host takes (#403, #417, PR #957).
+
+### Fixed
+
+- The attach made two Docker calls before it opened the container's network
+  namespace. The attach runs in a goroutine `Join` does not wait for, and the
+  daemon is inside `ContainerStart` for that same container while it runs, so
+  every one of those calls could block for the length of a container start. The
+  namespace and the link no longer need the daemon; one `ContainerInspect`
+  follows, for the hostname (#417, PR #959).
+- The lease-record lock refusal used one text for every errno. A held lock is
+  cleared by disabling the tag that holds it and a mount without working locks
+  is not cleared by disabling anything, so the message now reads the errno and
+  names the action (#950, PR #953).
+- The 2.0 suite ran red in three families on a stock GitHub-hosted runner while
+  the same tree was green on the project's own pool (#942, PR #955).
+- No required check built the documentation site, so a pull request could break
+  the nav or a strict-mode link and stay green (#889, PR #951).
+- A gate self-test took its temporary directory from `mktemp -d` without
+  checking it, and `cd ""` succeeds, so a full filesystem made the self-test
+  build its fixture in the checkout (#963, PR #964).
+- The CI runner's root mount was private, so the nested daemon's per-sandbox
+  mounts did not reach a plugin and every attach on the pool fell back to the
+  container PID route (#417, PR #958).
+- The documentation review against this milestone, page by page. The roadmap
+  names every issue on each milestone, the pages printing engine 29.7.2 print
+  the measured 29.8.0, and the count of counters carrying a `family` label
+  reads eight where the text said seven (PR #967).
+- Three further documentation corrections: the 2.0 line has run on a production
+  host (PR #945), Dependabot targets `dev` (PR #946), and the roadmap no longer
+  puts #218 on this milestone (PR #965).
+
+### Deferred to v2.2.0
+
+- IPv6 in IPAM mode: no v6 exchange, no v6 record, and a DUID that changes at
+  every restart (#960).
+- An attach that makes no Docker call at all. One `ContainerInspect` stays,
+  because the DHCP client takes the hostname when it is constructed (#961).
+- A network option to send DHCPRELEASE on remove or on stop (#962).
+- IPv6 work on the v2.2.0 milestone, beyond the IPAM item above. Where a
+  segment advertises managed DHCPv6 and the exchange yields no address, one
+  verdict and one message cover both an offer that never arrived and a server
+  refusal (#816); a segment advertising no managed DHCPv6 is not a failure and
+  has had its own counter and message since v1.9.0. The gateway, DNS, MTU and
+  routes are not taken from the advertisement (#821), and the advertisement is
+  not parsed into a first-class event (#814): the plugin reads its three flags
+  and nothing else. SLAAC is not something the plugin acquires (#818, #808),
+  and there is no `ipv6_mode` option to choose between it and DHCPv6 (#817).
+  Address lifetimes, withdrawal and renumbering (#819) and a server-initiated
+  Reconfigure (#925) are not handled.
+
+Two items these notes name carry no milestone: ipvlan in IPAM mode (#949), and
+the opt-in deterministic MAC, which waits on moby/moby#52871 (#218).
+
 ## v2.0.0
 
 Pre-releases of this version: `v2.0.0-rc1` (2026-09-05, IPv4 only),
@@ -24,8 +134,9 @@ could not be observed or tested from inside the plugin. The library carries
 its own tests, many of them driving a real DHCP server. The plugin's
 integration suite runs against real DHCP servers on amd64 in CI and on arm64
 hardware at each release candidate, covering address conflicts, plugin and
-daemon restarts, and lease recovery. The 2.0 line has run in CI and has not
-yet run in production.
+daemon restarts, and lease recovery. The 2.0 line has run in CI, and the
+second release candidate ran on a production host from 2026-09-09 through a
+lease renewal.
 
 The plugin performs the DHCP exchange itself, through the Go library
 `github.com/claymore666/dhcp-golib` v0.1.0, instead of driving an external
@@ -93,13 +204,15 @@ OUTAGE_TICK=…` is refused by the daemon rather than accepted and ignored.
 
 Nothing was dropped, and the measurement says why. 2.0 asks first
 for the sandbox key the daemon publishes, so that a host where that works
-can attach without the container's PID at all. For an attach it does not
-work: the plugin's read-only `/var/run/docker` is a bind mount taken when
-the plugin starts, so it never receives the per-sandbox namespace mounts the
-daemon makes afterwards, the key is refused, and `/proc/<pid>/ns/net` carries
-the attach exactly as before. Recovery after a plugin restart is the
-exception: the sandbox is older than the plugin process, so the key route
-carries it. `pidhost` and `CAP_SYS_PTRACE` therefore stay, and would have
+can attach without the container's PID at all. Whether it works for an
+attach depends on the host: the plugin's read-only `/var/run/docker` is a
+bind mount taken when the plugin starts, so it receives the per-sandbox
+namespace mounts the daemon makes afterwards only where the daemon's own
+mount is linked to it. Where it is, the key route carries the attach. Where
+it is private, the key is refused and `/proc/<pid>/ns/net` carries the attach
+exactly as before. Recovery after a plugin restart takes the key route on
+either host, because the sandbox is then older than the plugin process.
+`pidhost` and `CAP_SYS_PTRACE` therefore stay, and would have
 stayed regardless, because `resolv.conf` propagation enters the container's
 *mount* namespace by PID and a mount namespace has no sandbox key.
 `sandbox_key_entries`, `sandbox_key_entry_failures` and
@@ -107,10 +220,10 @@ stayed regardless, because `resolv.conf` propagation enters the container's
 `sandbox_key_absent`, `sandbox_key_not_permitted`,
 `sandbox_key_not_a_namespace`, `sandbox_key_wrong_ns_type` and
 `sandbox_key_unavailable` say which
-refusal it was, and the arms sum to `sandbox_key_entry_failures`. On a stock
-engine the one that rises is `sandbox_key_not_a_namespace`, once per
-attach, and that is the expected state: nothing is degraded, the log line
-that accompanies it is at `debug`, and no action is indicated. A rise in
+refusal it was, and the arms sum to `sandbox_key_entry_failures`. Where the
+key route is refused the arm that rises is `sandbox_key_not_a_namespace`,
+once per attach, and that is the expected state there: nothing is degraded,
+the log line that accompanies it is at `debug`, and no action is indicated. A rise in
 `sandbox_key_not_permitted` is the one to look at. It means the daemon
 publishes sandbox keys somewhere this plugin does not accept, which a
 non-default `--exec-root` does. It means a key that exists and was

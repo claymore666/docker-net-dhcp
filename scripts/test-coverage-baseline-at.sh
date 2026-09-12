@@ -14,6 +14,9 @@
 # this branch is exactly what the merge-base read exists to defeat.
 set -u
 
+# shellcheck source=scripts/tmpdir-guard.sh
+. "$(cd "$(dirname "$0")" && pwd)/tmpdir-guard.sh"
+
 GATE="$(cd "$(dirname "$0")" && pwd)/coverage-baseline-at.sh"
 pass=0
 fail=0
@@ -47,7 +50,7 @@ build_repo() {
     ) >/dev/null 2>&1
 }
 
-dir=$(mktemp -d)
+guarded_tmpdir dir
 build_repo "$dir"
 
 got=$(cd "$dir" && bash "$GATE" dev "$dir/out.txt" >/dev/null 2>&1; echo $?)
@@ -72,7 +75,7 @@ rm -rf "$dir"
 
 # An unresolvable base ref must refuse, never fall back to the working
 # copy — a fallback restores the defect silently, which is worse than red.
-dir=$(mktemp -d)
+guarded_tmpdir dir
 build_repo "$dir"
 got=$(cd "$dir" && bash "$GATE" no-such-ref "$dir/out.txt" >/dev/null 2>&1; echo $?)
 if [ "$got" = "2" ]; then ok "an unresolvable base ref refuses"; else no "an unresolvable base ref refuses (exit $got)"; fi
@@ -88,7 +91,7 @@ if [ ! -e "$dir/out.txt" ]; then ok "an unresolvable ref never creates the outpu
 rm -rf "$dir"
 
 # A merge base that carries no baseline at all: the file was added later.
-dir=$(mktemp -d)
+guarded_tmpdir dir
 (
     cd "$dir" || exit 2
     git init -q -b dev .
@@ -136,7 +139,7 @@ fi
 # coverage-ratchet.sh cannot tell a complete baseline from a truncated one:
 # its `compared` count is derived from the file it was handed, so the
 # count has to come from whoever resolved the blob. That is this script.
-dir=$(mktemp -d)
+guarded_tmpdir dir
 build_repo "$dir"
 (cd "$dir" && bash "$GATE" dev "$dir/out.txt" >/dev/null 2>&1)
 
@@ -203,7 +206,7 @@ rm -rf "$dir"
 # ratchet's refusal one step later, naming a temp file instead of the
 # merge base that actually produced it — and, before #791, the ratchet's
 # guard was the ONLY thing that would have caught it at all.
-dir=$(mktemp -d)
+guarded_tmpdir dir
 (
     cd "$dir" || exit 2
     git init -q -b dev .

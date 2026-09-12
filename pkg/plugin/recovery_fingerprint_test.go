@@ -9,6 +9,7 @@ import (
 	"sync"
 	"testing"
 
+	dTypes "github.com/docker/docker/api/types"
 	dContainer "github.com/docker/docker/api/types/container"
 	dNetwork "github.com/docker/docker/api/types/network"
 )
@@ -43,6 +44,20 @@ func (d *lockedDocker) ContainerInspect(_ context.Context, id string) (dContaine
 }
 
 func (d *lockedDocker) Close() error { return nil }
+
+// The engine probe never runs in these fixtures — they build a Plugin
+// directly rather than through NewPlugin — so these answer the way an
+// unreachable daemon does, which keeps the fake from implying a version
+// no test here asserted on.
+func (d *lockedDocker) Ping(context.Context) (dTypes.Ping, error) {
+	return dTypes.Ping{}, errors.New("no daemon in this fixture")
+}
+
+func (d *lockedDocker) ServerVersion(context.Context) (dTypes.Version, error) {
+	return dTypes.Version{}, errors.New("no daemon in this fixture")
+}
+
+func (d *lockedDocker) ClientVersion() string { return "" }
 
 // withHostname builds the ContainerInspect answer recovery reads: a
 // running container whose Config carries the hostname.

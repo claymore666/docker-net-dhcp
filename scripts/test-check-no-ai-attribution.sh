@@ -7,9 +7,11 @@
 # against real git metadata rather than synthetic text.
 set -u
 
+# shellcheck source=scripts/tmpdir-guard.sh
+. "$(cd "$(dirname "$0")" && pwd)/tmpdir-guard.sh"
+
 GATE="$(cd "$(dirname "$0")" && pwd)/check-no-ai-attribution.sh"
-TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT
+guarded_tmpdir TMP
 
 REPO="$TMP/repo"
 mkdir -p "$REPO"

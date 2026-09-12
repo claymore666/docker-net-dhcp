@@ -33,6 +33,9 @@
 #     a skipped member looks exactly like a compliant one in the output.
 set -uo pipefail
 
+# shellcheck source=scripts/tmpdir-guard.sh
+. "$(cd "$(dirname "$0")" && pwd)/tmpdir-guard.sh"
+
 HERE="$(cd "$(dirname "$0")" && pwd)"
 GATE="$HERE/check-one-process-itest-budget.sh"
 REPO="$(cd "$HERE/.." && pwd)"
@@ -42,8 +45,7 @@ fail=0
 ok() { printf 'PASS  %s\n' "$1"; pass=$((pass + 1)); }
 no() { printf 'FAIL  %s\n' "$1" >&2; fail=$((fail + 1)); }
 
-TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT
+guarded_tmpdir TMP
 
 # fixture <name> -> prints the fixture root, a fresh copy of the tree
 fixture() {

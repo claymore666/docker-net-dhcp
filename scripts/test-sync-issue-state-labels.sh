@@ -18,9 +18,11 @@
 # gh, no repository state.
 set -u
 
+# shellcheck source=scripts/tmpdir-guard.sh
+. "$(cd "$(dirname "$0")" && pwd)/tmpdir-guard.sh"
+
 SYNC="$(dirname "$0")/sync-issue-state-labels.sh"
-TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT
+guarded_tmpdir TMP
 
 failures=0
 
@@ -529,7 +531,7 @@ SYNC_ABS="$(cd "$(dirname "$SYNC")" && pwd)/$(basename "$SYNC")"
 hop_case() { # hop_case <name> <pulls-status> <want-exit> <want-not-in-output>
     local name="$1" status="$2" want_exit="$3" forbid="$4"
     local dir got_exit
-    dir=$(mktemp -d)
+    guarded_tmpdir dir
     mkdir -p "$dir/bin" "$dir/repo"
 
     # The stub answers the three calls the script makes, and gives the

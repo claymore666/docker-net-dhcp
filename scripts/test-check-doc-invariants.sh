@@ -21,10 +21,12 @@
 # sit green for a project's entire life with its input missing.
 set -u
 
+# shellcheck source=scripts/tmpdir-guard.sh
+. "$(cd "$(dirname "$0")" && pwd)/tmpdir-guard.sh"
+
 GATE="$(dirname "$0")/check-doc-invariants.sh"
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
-TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT
+guarded_tmpdir TMP
 
 failures=0
 

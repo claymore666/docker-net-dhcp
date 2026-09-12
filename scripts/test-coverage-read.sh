@@ -28,9 +28,12 @@
 #    set fixed, so a bug in the frozen one cannot show. The verdict-space
 #    fixture below varies both, including main's floor ABOVE dev's.
 set -uo pipefail
+
+# shellcheck source=scripts/tmpdir-guard.sh
+. "$(cd "$(dirname "$0")" && pwd)/tmpdir-guard.sh"
 HERE=$(cd "$(dirname "$0")" && pwd)
 READER=$HERE/coverage-read.sh
-D=$(mktemp -d); trap 'rm -rf "$D"' EXIT
+guarded_tmpdir D
 P=github.com/devplayer0/docker-net-dhcp
 
 pass=0; fail=0

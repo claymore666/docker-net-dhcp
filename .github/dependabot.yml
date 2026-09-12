@@ -1,20 +1,16 @@
-# Weekly grouped dependency updates (#127). PRs target the 2.x
-# integration branch, which is where development happens until v2.0.0
-# ships — nothing lands on main except via release PRs.
-# Grouping keeps the noise at one PR per ecosystem per week.
+# Weekly grouped dependency updates (#127). PRs target `dev`, which is
+# where development happens; releases ship from `main` through release
+# PRs. Grouping keeps the noise at one PR per ecosystem per week.
 #
-# THIS IS THE ONE PLACE THAT SPELLS THE BRANCH OUT. The branch is named
-# after the milestone it works toward and is renamed at each milestone
-# boundary (D27); the workflow triggers follow it through the `2.*`
-# pattern, but `target-branch` takes a branch NAME and no pattern, so a
-# rename must edit the four values below. Dependabot does not fail on an
-# unknown branch — it falls back to the default branch — so a stale value
+# `target-branch` takes a branch NAME and no pattern, so the branch is
+# spelled out in the four values below. Dependabot does not fail on an
+# unknown branch, it falls back to the default branch, so a stale value
 # here is silent.
 version: 2
 updates:
   - package-ecosystem: gomod
     directory: /
-    target-branch: "2.0.0"
+    target-branch: "dev"
     schedule:
       interval: weekly
       day: sunday
@@ -25,7 +21,7 @@ updates:
 
   - package-ecosystem: github-actions
     directory: /
-    target-branch: "2.0.0"
+    target-branch: "dev"
     schedule:
       interval: weekly
       day: sunday
@@ -49,7 +45,7 @@ updates:
     directories:
       - /
       - /ci/runner-image
-    target-branch: "2.0.0"
+    target-branch: "dev"
     schedule:
       interval: weekly
       day: sunday
@@ -65,7 +61,7 @@ updates:
   # indistinguishable from one with nothing to update.
   - package-ecosystem: pip
     directory: /docs
-    target-branch: "2.0.0"
+    target-branch: "dev"
     schedule:
       interval: weekly
       day: sunday

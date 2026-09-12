@@ -13,6 +13,9 @@
 # two blobs through `git show`, so a fake would be testing the fake.
 set -u
 
+# shellcheck source=scripts/tmpdir-guard.sh
+. "$(cd "$(dirname "$0")" && pwd)/tmpdir-guard.sh"
+
 GATE="$(cd "$(dirname "$0")" && pwd)/check-coverage-floor.sh"
 pass=0
 fail=0
@@ -31,7 +34,7 @@ example.com/mod/pkg/b 50.0'
 run_case() {
     local name="$1" base="$2" head="$3" msg="$4" body="$5" want="$6"
     local dir rc
-    dir=$(mktemp -d)
+    guarded_tmpdir dir
     (
         cd "$dir" || exit 2
         git init -q .
@@ -160,7 +163,8 @@ run_case "deleting the baseline outright trips the gate" "$BASE_BASELINE" "DELET
     "chore: remove the baseline" "" 1
 
 # A range whose base does not resolve must refuse, not pass.
-tmp=$(mktemp -d)
+tmp=            # declared here so a reader (and shellcheck) sees the name
+guarded_tmpdir tmp
 (
     cd "$tmp" || exit 2
     git init -q .
@@ -202,7 +206,7 @@ run_pkg_case() {
     local name="$1" base="$2" head="$3" gomod="$4" basepkgs="$5" headpkgs="$6"
     local want="$7" want_grep="${8-}"
     local dir rc out
-    dir=$(mktemp -d)
+    guarded_tmpdir dir
     (
         cd "$dir" || exit 2
         git init -q .

@@ -61,6 +61,10 @@ func checkBumpers() []checkBumper {
 		{"parent_link_wait_timeouts", "", func(p *Plugin) { p.parentLinkWaitTimeouts.Add(1) }},
 		{"ledger_write_failures", "", func(p *Plugin) { p.ledgerWriteFailures.Add(1) }},
 		{"state_file_chmod_failures", "", func(p *Plugin) { p.stateFileChmodFailures.Add(1) }},
+		{"ifname_unsupported", "", func(p *Plugin) { p.ifnameUnsupported.Add(1) }},
+		{"ipam_replay_miss", "", func(p *Plugin) { p.ipamReplayMiss.Add(1) }},
+		{"ipam_rebind_ambiguous", "", func(p *Plugin) { p.ipamRebindAmbiguous.Add(1) }},
+		{"ipam_reserve_duplicate_mac", "", func(p *Plugin) { p.ipamReserveDuplicateMAC.Add(1) }},
 	}
 }
 

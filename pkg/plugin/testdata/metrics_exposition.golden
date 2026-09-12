@@ -2,6 +2,10 @@
 # TYPE net_dhcp_build_info gauge
 net_dhcp_build_info{instance_id="fixture-instanceid",version="fixture-version",commit="fixture-commit",library="fixture-library"} 1
 
+# HELP net_dhcp_engine_info The Docker Engine this plugin process is talking to, as the daemon reported it at startup. engine_version is what the minimum supported engine is compared against; api_version is the API version this client negotiated with it, which is the lower of the two maximums. Both read `unknown` when the daemon did not answer at startup.
+# TYPE net_dhcp_engine_info gauge
+net_dhcp_engine_info{engine_version="fixture-engineversion",api_version="fixture-apiversion"} 1
+
 # HELP net_dhcp_health_status The health document's overall status, ordered so that worse is higher: 0 pass, 1 warn, 2 fail. `> 0` is the alerting expression; `>= 2` is the subset net_dhcp_healthy already carried. Like net_dhcp_healthy it LATCHES for the life of the process -- read net_dhcp_build_info's instance_id to tell a fault this process recorded earlier from a new one.
 # TYPE net_dhcp_health_status gauge
 net_dhcp_health_status 1
@@ -26,6 +30,14 @@ net_dhcp_pending_hints 1152834
 # TYPE net_dhcp_sandbox_netns_visible gauge
 net_dhcp_sandbox_netns_visible 1679618
 
+# HELP net_dhcp_sandbox_netns_propagation Whether a mount the daemon makes under the sandbox netns directory after this process started can reach it: 1 linked, 0 private, -1 unreadable or uncovered. Answered before the directory exists, from the mount covering its parent. A 0 means every attach takes the container PID route, a 1 means every attach takes the sandbox key route, and both are ordinary.
+# TYPE net_dhcp_sandbox_netns_propagation gauge
+net_dhcp_sandbox_netns_propagation 7661678
+
+# HELP net_dhcp_sandbox_netns_init_mounts Sandbox netns mounts in PID 1's mount table: -2 PID 1 shares this process's mount namespace, -1 unreadable, N otherwise. Read it against sandbox_netns_visible.
+# TYPE net_dhcp_sandbox_netns_init_mounts gauge
+net_dhcp_sandbox_netns_init_mounts 4231040
+
 # HELP net_dhcp_leases_obtained_total Leases obtained from the DHCP server.
 # TYPE net_dhcp_leases_obtained_total counter
 net_dhcp_leases_obtained_total{family="ipv4"} 4587864
@@ -40,6 +52,11 @@ net_dhcp_leases_renewed_total{family="ipv6"} 8205822
 # TYPE net_dhcp_lease_changed_total counter
 net_dhcp_lease_changed_total{family="ipv4"} 7219253
 net_dhcp_lease_changed_total{family="ipv6"} 9664015
+
+# HELP net_dhcp_renewals_unanswered_total Renewal requests the server did not answer, one per request, counted while the client is still running. Read it against leases_renewed: renewals completing with this flat is a healthy lease, and this climbing with leases_renewed flat is a DHCP server that has gone quiet. It moves at the first retransmission, and RFC 2131 section 4.4.5 puts that wait at half the time left to T2 with 60 seconds as a floor under it, so it is a minute on a short lease and about 4.5 hours on the 24-hour lease #940 was reported from, where dhcp_timeouts first moves for a held lease only when that lease ends. The request currently in flight is not counted, so a client that has sent N requests into silence reports N-1.
+# TYPE net_dhcp_renewals_unanswered_total counter
+net_dhcp_renewals_unanswered_total{family="ipv4"} 2359982
+net_dhcp_renewals_unanswered_total{family="ipv6"} 4804744
 
 # HELP net_dhcp_dhcp_timeouts_total Acquisitions or renewals that expired without an answer.
 # TYPE net_dhcp_dhcp_timeouts_total counter
@@ -148,6 +165,22 @@ net_dhcp_join_aborted_endpoint_left_total 2013096
 # TYPE net_dhcp_join_attach_slow_total counter
 net_dhcp_join_attach_slow_total 6508941
 
+# HELP net_dhcp_join_attach_completed_total Successful attaches. The population the join_attach_* buckets partition.
+# TYPE net_dhcp_join_attach_completed_total counter
+net_dhcp_join_attach_completed_total 2129137
+
+# HELP net_dhcp_join_attach_under_1s_total Successful attaches that finished in under a second.
+# TYPE net_dhcp_join_attach_under_1s_total counter
+net_dhcp_join_attach_under_1s_total 1843802
+
+# HELP net_dhcp_join_attach_1s_to_budget_total Successful attaches that took a second or more but stayed inside AwaitTimeout.
+# TYPE net_dhcp_join_attach_1s_to_budget_total counter
+net_dhcp_join_attach_1s_to_budget_total 3013612
+
+# HELP net_dhcp_join_attach_ms_max The longest successful attach, in milliseconds. Read it against AwaitTimeout.
+# TYPE net_dhcp_join_attach_ms_max gauge
+net_dhcp_join_attach_ms_max 9967410
+
 # HELP net_dhcp_displaced_stops_total DHCP managers stopped because a Join displaced them. Counts the intent to stop; it is not evidence the client went away.
 # TYPE net_dhcp_displaced_stops_total counter
 net_dhcp_displaced_stops_total 2730967
@@ -185,11 +218,11 @@ net_dhcp_acd_arp_send_failures_total 6209145
 # TYPE net_dhcp_acd_resumed_unchecked_total counter
 net_dhcp_acd_resumed_unchecked_total 6930712
 
-# HELP net_dhcp_parent_link_waits_total Endpoint creations that waited for their parent interface to appear.
+# HELP net_dhcp_parent_link_waits_total Operations that queued for a parent interface another operation was using, and got it. Includes the ones that gave up waiting for a holder attaching the SAME kind of child (macvlan beside macvlan, ipvlan beside ipvlan), because a parent accepts those side by side and the wait protected nothing -- the operation proceeds and succeeds. Two containers starting together on one parent-attached network land here, since an address reservation holds the parent across its DHCP exchange. Not healthy-affecting: it is contention, not failure.
 # TYPE net_dhcp_parent_link_waits_total counter
 net_dhcp_parent_link_waits_total 5247821
 
-# HELP net_dhcp_parent_link_wait_timeouts_total Endpoint creations where the parent interface never appeared inside the wait.
+# HELP net_dhcp_parent_link_wait_timeouts_total Operations that gave up waiting for a parent interface held for the other kind of child, or held by something this plugin could no longer identify. They proceed anyway and the kernel is the authority; this counts the times that gamble was taken. Same-kind contention is NOT counted here -- see parent_link_waits -- because the kernel permits it and a warning nobody can act on is worse than none.
 # TYPE net_dhcp_parent_link_wait_timeouts_total counter
 net_dhcp_parent_link_wait_timeouts_total 8552828
 
@@ -217,6 +250,26 @@ net_dhcp_unsafe_option_values_dropped_total 9536334
 # TYPE net_dhcp_network_options_rejected_total counter
 net_dhcp_network_options_rejected_total 5605255
 
+# HELP net_dhcp_ipam_replay_hits_total Stored endpoint addresses confirmed at a daemon restart from this plugin's own lease record. The mechanism working: it is how an IPAM-mode endpoint keeps its address across a restart. Read it as the denominator for ipam_replay_miss.
+# TYPE net_dhcp_ipam_replay_hits_total counter
+net_dhcp_ipam_replay_hits_total 3406087
+
+# HELP net_dhcp_ipam_replay_miss_total Stored endpoint addresses this plugin would not confirm at a daemon restart because no lease record in that network holds them.
+# TYPE net_dhcp_ipam_replay_miss_total counter
+net_dhcp_ipam_replay_miss_total 7208309
+
+# HELP net_dhcp_ipam_rebind_ambiguous_total Address requests that met more than one recently-removed endpoint on the network and so could not tell which address to ask for.
+# TYPE net_dhcp_ipam_rebind_ambiguous_total counter
+net_dhcp_ipam_rebind_ambiguous_total 6172564
+
+# HELP net_dhcp_ipam_reserve_duplicate_mac_total Address requests refused because the network was already leasing an address for that hardware address.
+# TYPE net_dhcp_ipam_reserve_duplicate_mac_total counter
+net_dhcp_ipam_reserve_duplicate_mac_total 1804998
+
+# HELP net_dhcp_ipam_release_unknown_total Addresses libnetwork released that no lease record of ours holds. Not a fault: a release for an address whose record is already retained or closed is the normal ordering.
+# TYPE net_dhcp_ipam_release_unknown_total counter
+net_dhcp_ipam_release_unknown_total 2671279
+
 # HELP net_dhcp_dns_propagation_pid_mismatches_total DNS propagations refused because the container PID resolved through Docker no longer belonged to that container. The plugin shares the host PID namespace, so each one is a resolv.conf write that would otherwise have landed in an unrelated host process (#688).
 # TYPE net_dhcp_dns_propagation_pid_mismatches_total counter
 net_dhcp_dns_propagation_pid_mismatches_total 9341279
@@ -225,11 +278,11 @@ net_dhcp_dns_propagation_pid_mismatches_total 9341279
 # TYPE net_dhcp_netns_pid_mismatches_total counter
 net_dhcp_netns_pid_mismatches_total 9479108
 
-# HELP net_dhcp_sandbox_key_entries_total Container network namespaces entered through the sandbox key the daemon publishes at /var/run/docker/netns/<key>. This is the denominator for sandbox_pid_fallbacks: zero fallbacks with zero entries here means nothing was opened, not that the key route works.
+# HELP net_dhcp_sandbox_key_entries_total Container network namespaces entered through the sandbox key the daemon publishes at /var/run/docker/netns/<key>. Every attach counts here on a host whose sandbox_netns_propagation is 1, and every recovery after a plugin restart counts here on any host. This is the denominator for sandbox_pid_fallbacks: zero fallbacks with zero entries here means nothing was opened, not that the key route works.
 # TYPE net_dhcp_sandbox_key_entries_total counter
 net_dhcp_sandbox_key_entries_total 9128177
 
-# HELP net_dhcp_sandbox_key_entry_failures_total Attempts to enter a container network namespace through the sandbox key that were refused. EXPECTED, once per container attach, on a stock engine: the daemon bind-mounts each sandbox netns after the plugin's own /var/run/docker mount was taken, so the key resolves to the placeholder file underneath and the container PID route carries the attach. Nothing is degraded and no action is indicated. Read sandbox_key_absent, sandbox_key_not_permitted, sandbox_key_not_a_namespace, sandbox_key_wrong_ns_type and sandbox_key_unavailable to see which refusal this was; they sum to this counter.
+# HELP net_dhcp_sandbox_key_entry_failures_total Attempts to enter a container network namespace through the sandbox key that were refused. EXPECTED, once per container attach, on a host whose sandbox_netns_propagation is 0: the daemon bind-mounts each sandbox netns after the plugin's own /var/run/docker mount was taken and that mount is private, so the key resolves to the placeholder file underneath and the container PID route carries the attach. Nothing is degraded and no action is indicated. On a host answering 1 this stays flat and sandbox_key_entries rises instead. Read sandbox_key_absent, sandbox_key_not_permitted, sandbox_key_not_a_namespace, sandbox_key_wrong_ns_type and sandbox_key_unavailable to see which refusal this was; they sum to this counter.
 # TYPE net_dhcp_sandbox_key_entry_failures_total counter
 net_dhcp_sandbox_key_entry_failures_total 3507070
 
@@ -241,7 +294,7 @@ net_dhcp_sandbox_key_absent_total 5837378
 # TYPE net_dhcp_sandbox_key_not_permitted_total counter
 net_dhcp_sandbox_key_not_permitted_total 5326664
 
-# HELP net_dhcp_sandbox_key_not_a_namespace_total Key-route refusals because the entry opened and was not a namespace — the placeholder file libnetwork creates before it bind-mounts the sandbox netns over it. EXPECTED, once per container attach, on a stock engine, and it is the evidence for SECURITY.md's reason that the host PID namespace and CAP_SYS_PTRACE stay. An arm of sandbox_key_entry_failures.
+# HELP net_dhcp_sandbox_key_not_a_namespace_total Key-route refusals because the entry opened and was not a namespace — the placeholder file libnetwork creates before it bind-mounts the sandbox netns over it. EXPECTED, once per container attach, on a host whose sandbox_netns_propagation is 0, and it is the evidence for SECURITY.md's reason that the host PID namespace and CAP_SYS_PTRACE stay on such a host. An arm of sandbox_key_entry_failures.
 # TYPE net_dhcp_sandbox_key_not_a_namespace_total counter
 net_dhcp_sandbox_key_not_a_namespace_total 9354322
 
@@ -253,17 +306,21 @@ net_dhcp_sandbox_key_wrong_ns_type_total 8781143
 # TYPE net_dhcp_sandbox_key_unavailable_total counter
 net_dhcp_sandbox_key_unavailable_total 6849095
 
-# HELP net_dhcp_sandbox_pid_fallbacks_total Endpoints whose network namespace was entered through /proc/<pid>/ns/net after the sandbox key route was refused. That route is why the manifest asks for the host PID namespace and CAP_SYS_PTRACE; a zero here across a host's whole uptime, with sandbox_key_entries non-zero, is the evidence that it was not needed.
+# HELP net_dhcp_sandbox_pid_fallbacks_total Endpoints whose network namespace was entered through /proc/<pid>/ns/net after the sandbox key route was refused. Every attach counts here on a host whose sandbox_netns_propagation is 0. That route is why the manifest asks for the host PID namespace and CAP_SYS_PTRACE; a zero here across a host's whole uptime, with sandbox_key_entries non-zero, is the evidence that it was not needed.
 # TYPE net_dhcp_sandbox_pid_fallbacks_total counter
 net_dhcp_sandbox_pid_fallbacks_total 5585284
 
-# HELP net_dhcp_docker_api_non_get_refusals_total Requests to the Docker API refused before they were sent because their method was not GET. The plugin's whole Docker surface is three read calls, so this stays zero unless code in this process tried to write to the daemon; the socket mount is the grant that makes such a write equivalent to root on the host (#691).
+# HELP net_dhcp_docker_api_non_get_refusals_total Requests to the Docker API refused before they were sent because their method was not GET. The plugin's whole Docker surface is four read calls, so this stays zero unless code in this process tried to write to the daemon; the socket mount is the grant that makes such a write equivalent to root on the host (#691).
 # TYPE net_dhcp_docker_api_non_get_refusals_total counter
 net_dhcp_docker_api_non_get_refusals_total 4050535
 
 # HELP net_dhcp_ledger_write_failures_total Lease-ledger writes that failed.
 # TYPE net_dhcp_ledger_write_failures_total counter
 net_dhcp_ledger_write_failures_total 8412728
+
+# HELP net_dhcp_ifname_unsupported_total Endpoints created with a custom interface name (Compose interface_name, endpoint option com.docker.network.endpoint.ifname) on an engine below the first version that applies one. The test is the engine's reported version and not what it does: 28.5.2 and 29.7.2 were measured ignoring the name and 29.8.0 applying it, so a vendor build that departs from its version is counted the wrong way. Not healthy-affecting: the container comes up on a working network and only the interface name differs from the request. It counts nothing on an engine whose version the plugin could not read.
+# TYPE net_dhcp_ifname_unsupported_total counter
+net_dhcp_ifname_unsupported_total 5506512
 
 # HELP net_dhcp_state_file_chmod_failures_total Files the startup sweep could not tighten, plus one if STATE_DIR could not be read at all, in which case no file was examined (#804). Not healthy-affecting: nothing the plugin does is degraded by a loose mode on a state file, and the writer is root either way. Zero is the normal reading on every host, including one that has never been upgraded, because a sweep with nothing to tighten does not move it.
 # TYPE net_dhcp_state_file_chmod_failures_total counter

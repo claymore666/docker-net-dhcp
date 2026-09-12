@@ -22,9 +22,11 @@
 # STOP agreeing the moment the manifest grows one.
 set -u
 
+# shellcheck source=scripts/tmpdir-guard.sh
+. "$(cd "$(dirname "$0")" && pwd)/tmpdir-guard.sh"
+
 CHECK="$(cd "$(dirname "$0")" && pwd)/check-manifest-delta-table.sh"
-TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT
+guarded_tmpdir TMP
 
 fails=0
 

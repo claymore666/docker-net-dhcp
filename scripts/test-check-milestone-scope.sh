@@ -18,10 +18,12 @@
 # only the exit code.
 set -uo pipefail
 
+# shellcheck source=scripts/tmpdir-guard.sh
+. "$(cd "$(dirname "$0")" && pwd)/tmpdir-guard.sh"
+
 HERE="$(cd "$(dirname "$0")" && pwd)"
 GATE="$HERE/check-milestone-scope.sh"
-TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT
+guarded_tmpdir TMP
 
 pass=0; fail=0
 ok() { printf 'PASS  %s\n' "$1"; pass=$((pass + 1)); }

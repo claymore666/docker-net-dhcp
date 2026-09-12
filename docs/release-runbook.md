@@ -343,6 +343,43 @@ Pre-flight: every issue / PR going into the release should be on
 the `vX.Y.Z` milestone (the workflow leans on this for the
 "Closes" list in the release PR).
 
+Pre-flight, second item: re-measure the supported engines before the rc.
+Dispatch
+`engine-matrix.yml`
+on the release branch and read the `floor` job:
+
+```sh
+gh workflow run engine-matrix.yml --ref release/vX.Y.Z
+```
+
+**That dispatch answers 404 until the workflow is on the default
+branch.** GitHub exposes `workflow_dispatch` and `schedule` from the
+default branch only, and the lane is new on `dev`, so for the v2.1.0
+release itself neither route exists yet:
+[`.github/dispatch-pending.txt`](https://github.com/claymore666/docker-net-dhcp/blob/main/.github/dispatch-pending.txt)
+carries the entry and the release PR removes it. Until then the lane
+runs on its `push` trigger, over
+`.github/workflows/engine-matrix.yml`,
+`.github/engine-rows.txt`,
+`scripts/engine-baseline.sh`,
+`scripts/engine-floor.sh`
+and
+`pkg/plugin/engine_floor.go`,
+so the pre-flight for v2.1.0 is the run at the head of one of those
+paths. Read that run instead, and take the dispatch route from v2.2.0.
+
+One job per engine line in
+`.github/engine-rows.txt`,
+each driving the whole baseline against that engine in a nested daemon.
+The `floor` job reconciles the minimum the plugin refuses below against
+the lowest line that passed. A red `floor` job blocks the rc: the
+number it disagrees with is published in `README.md` and
+`docs/index.md`, and the plugin refuses to start below it. The lane also
+runs weekly once it is on the default branch, so from v2.2.0 a moving
+`29` tag is usually caught before a release asks the question. Read the
+run and never the schedule: a release is the moment the published number
+has to be true.
+
 1. **Branch off `dev`:** `git checkout -b release/vX.Y.Z origin/dev`
 2. **Bump install pins:** `scripts/bump-version.sh vX.Y.Z` (#251). It
    rewrites every published-image pin
@@ -629,10 +666,11 @@ the `vX.Y.Z` milestone (the workflow leans on this for the
 5. **PR `release/vX.Y.Z` → `dev`.** Required checks on `dev` are
    `test`, `policy-gates`, `staticcheck`, `integration` (every PR builds
    and exercises its own plugin on the integration runner), `actionlint`,
-   `govulncheck`, `attribution`, and CodeQL's `Analyze (go)` +
-   `Analyze (actions)`. `main` requires those **plus `coverage` and
-   `coverage-present`**, which is why the ratchet first bites at the
-   release PR in the next step and not before. Merge when green.
+   `govulncheck`, `attribution`, `docs-site` (`mkdocs build --strict`,
+   #889), and CodeQL's `Analyze (go)` + `Analyze (actions)`. `main`
+   requires those **plus `coverage` and `coverage-present`**, which is why
+   the ratchet first bites at the release PR in the next step and not
+   before. Merge when green.
 
    **Do not trust the list above. Read the authority.** It carried a
    hand-written total ("eight in total") that was correct when written
@@ -655,6 +693,13 @@ the `vX.Y.Z` milestone (the workflow leans on this for the
    request and blocked nothing. If it is ever missing from the output
    above, that is the state to restore; check before trusting a green
    release PR.
+
+   `docs-site` became required in #889. Until then nothing required built
+   the site, so a pull request could break the nav or a strict-mode link
+   and be green on every other context; the Docs workflow ran and passed,
+   and a red there blocked nothing. It carries no path filter for the
+   reason the workflow's own header gives: a path-filtered required check
+   is absent on the pull requests the filter excludes, and absent blocks.
 
    `coverage-present` became required in #735. It is the detector that
    tells an *absent* coverage run apart from a pending one, and it was

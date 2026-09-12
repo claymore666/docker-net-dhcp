@@ -19,9 +19,11 @@
 # refusal, or worse, as a pass.
 set -u
 
+# shellcheck source=scripts/tmpdir-guard.sh
+. "$(cd "$(dirname "$0")" && pwd)/tmpdir-guard.sh"
+
 SCRIPT="$(cd "$(dirname "$0")" && pwd)/assert-newest-release-tag.sh"
-TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT
+guarded_tmpdir TMP
 
 # The fixtures must not inherit whoever runs this. A developer with
 # `tag.gpgsign = true` in ~/.gitconfig gets `git tag` demanding a
@@ -56,7 +58,7 @@ n=0
 # against a fixture nobody wrote. Found exactly that way.
 mkrepo() {
     local d t
-    d="$(mktemp -d "$TMP/repoXXXXXX")"
+    guarded_tmpdir d "$TMP/repoXXXXXX"
     git -C "$d" init -q
     git -C "$d" "${FIXTURE_CFG[@]}" commit -q --allow-empty -m x
     for t in "$@"; do

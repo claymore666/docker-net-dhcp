@@ -22,9 +22,12 @@
 # of these cases pass with the stub inert.
 
 set -uo pipefail
+
+# shellcheck source=scripts/tmpdir-guard.sh
+. "$(cd "$(dirname "$0")" && pwd)/tmpdir-guard.sh"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 GATE="$HERE/purge-workflow-runs.sh"
-TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
+guarded_tmpdir TMP
 pass=0; fail=0
 ok()  { echo "  ok   - $1"; pass=$((pass+1)); }
 no()  { echo "  FAIL - $1"; fail=$((fail+1)); }
@@ -791,7 +794,7 @@ esac
 
 # DRIVE THE ABSENCE: the scan has to go off on each shape, or the clean
 # verdict above proves only that the pattern matches nothing.
-RESTATE=$(mktemp -d)
+guarded_tmpdir RESTATE
 # Each helper asserts ITS OWN ARM, never merely "the scan said something".
 # A widening needs a preservation control: if these cases only tested for a
 # non-empty result, deleting the `named` pattern outright would leave every
@@ -1049,14 +1052,17 @@ drive "$D" env GATE_SCOPE_COMMITS=15 RETENTION_DAYS=0 KEEP_GROUPS=1 DRY_RUN=0
 # resolving the shipped words here with branch_glob_expand_list would make
 # this case agree with itself whatever the matcher does. The fixture branch
 # list is fixed (dev, main, 2.0.0, 1.9.x), so the shipped scope's reach is
-# a statement, and dropping 2.x coverage from the shipped file turns this
-# red rather than quietly narrowing the population.
+# a statement, and narrowing the shipped file turns this red rather than
+# quietly shrinking the population. It did exactly that on 2026-09-11: the
+# shipped scope carried `2.*` until v2.0.0 shipped and the 2.x branch was
+# deleted, and the expectation below moved from [dev main 2.0.0] to
+# [dev main] in the same change that removed the pattern.
 D="$TMP/shippedscope"; mkfix "$D"; runs_json "$NOW" 20 30 > "$D/runs.json"
 drive "$D" env GATE_SCOPE_FILE="$SHIPPED" RETENTION_DAYS=0 KEEP_GROUPS=1
 [ "$RC" != 2 ] \
-  && grep -qF "protected across [dev main 2.0.0]" <<<"$OUT" \
+  && grep -qF "protected across [dev main]" <<<"$OUT" \
   && ! grep -qF "1.9.x" <<<"$OUT" \
-  && ok "the purge runs against the SHIPPED scope file and arms keep rule 5 on dev, main and the 2.x branch" \
+  && ok "the purge runs against the SHIPPED scope file and arms keep rule 5 on dev and main" \
   || no "the shipped scope file is not usable by this script: rc=$RC: $OUT"
 
 # --- 19b. the degenerate scope values, each driven ALONE (#874) ---------
@@ -1158,10 +1164,12 @@ drive "$D" env RETENTION_DAYS=0 KEEP_GROUPS=1 DRY_RUN=1 GATE_BRANCHES="dev"
 # file called `dev` walked `dev`, exited 0, and printed "protected across
 # [*]". They were pins on a defect, not a contract, and they said so.
 #
-# The scope file now carries `2.*` -- the 2.x branch is renamed once per
-# milestone -- so both globbing sites carry `set -f` and a pattern is
-# resolved against the BRANCHES THAT EXIST, by the matcher
-# check-missing-runs.sh uses for the same words.
+# The scope file carried `2.*` while the 2.x line had its own branch, which
+# was renamed once per milestone, so both globbing sites carry `set -f` and
+# a pattern is resolved against the BRANCHES THAT EXIST, by the matcher
+# check-missing-runs.sh uses for the same words. The cases below supply
+# their own scope values, so they keep driving pattern words now that the
+# shipped file is two literals.
 #
 # THIS FIRST CASE IS THE CONTROL that the working directory is no longer
 # consulted: it plants a file named after a real branch and one named after

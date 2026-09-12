@@ -6,9 +6,11 @@
 # govulncheck outputs against a synthetic allowlist.
 set -u
 
+# shellcheck source=scripts/tmpdir-guard.sh
+. "$(cd "$(dirname "$0")" && pwd)/tmpdir-guard.sh"
+
 GATE="$(dirname "$0")/govulncheck-gate.sh"
-TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT
+guarded_tmpdir TMP
 
 ALLOW="$TMP/allow.txt"
 cat > "$ALLOW" <<'EOF'

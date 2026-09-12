@@ -8,6 +8,9 @@
 # come out "run" (fail-open).
 set -euo pipefail
 
+# shellcheck source=scripts/tmpdir-guard.sh
+. "$(cd "$(dirname "$0")" && pwd)/tmpdir-guard.sh"
+
 GATE="$(dirname "$0")/integration-run-gate.sh"
 fails=0
 
@@ -46,8 +49,7 @@ check ".mdx does not sneak past the .md match" not "$got"
 # CLI). The stub keys off the request URL in "$*"; real jq parses the
 # canned JSON, so the stub output must be valid API-shaped JSON.
 
-STUB_DIR=$(mktemp -d)
-trap 'rm -rf "$STUB_DIR"' EXIT
+guarded_tmpdir STUB_DIR
 export GATE_REPO="owner/repo"
 
 make_curl() { # $1 = stub body

@@ -32,7 +32,8 @@ explicit goal — see "Becoming a maintainer" below.
   branch and must pass the required CI checks before merge. Branch
   protection is what enforces them, and is therefore the authoritative
   list; today it covers unit tests, `staticcheck`, the integration
-  suite, `govulncheck`, `actionlint`, CodeQL, and `attribution`.
+  suite, `govulncheck`, `actionlint`, CodeQL, `attribution`,
+  `policy-gates`, and `docs-site`.
   Release pull requests into `main` additionally carry the per-package
   coverage ratchet and the check that asserts the ratchet actually
   ran — two contexts, not one, because a ratchet that silently fails to

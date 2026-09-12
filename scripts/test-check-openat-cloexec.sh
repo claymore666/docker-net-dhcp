@@ -28,12 +28,14 @@
 # not testing the gate, it is testing that bash runs.
 set -uo pipefail
 
+# shellcheck source=scripts/tmpdir-guard.sh
+. "$(cd "$(dirname "$0")" && pwd)/tmpdir-guard.sh"
+
 HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO="$(cd "$HERE/.." && pwd)"
 GATE="$HERE/check-openat-cloexec.sh"
 
-TMP=$(mktemp -d)
-trap 'rm -rf "$TMP"' EXIT
+guarded_tmpdir TMP
 pass=0
 fail=0
 
@@ -208,7 +210,7 @@ CASES=(
 verdict() {
     local gate="$1" builder="$2"
     local d
-    d=$(mktemp -d "$TMP/fx.XXXXXX")
+    guarded_tmpdir d "$TMP/fx.XXXXXX"
     "$builder" "$d"
     bash "$gate" "$d" >/dev/null 2>&1
     local rc=$?
@@ -271,7 +273,7 @@ rm -f "$narrowed"
 # The two lines the issue named, by file and line, in the tree as it was
 # before the fix. "It would have caught it" is a claim; this is the
 # claim executed.
-d=$(mktemp -d "$TMP/fx.XXXXXX")
+guarded_tmpdir d "$TMP/fx.XXXXXX"
 fx_flag_removed "$d"
 out=$(bash "$GATE" "$d" 2>&1)
 # grep without -q, redirected: under pipefail a -q exits at the first

@@ -81,3 +81,34 @@ state-dir-bind-source
     docs/reference.md; the failure it warns about is unchanged, so the
     marker moved to the words that state it, which all three pages
     carry. Re-pointed, never dropped.
+
+ipam-restart-stability-rule
+    file: docs/reference.md
+    marker: **It also depends on the DHCP server.**
+    marker: --dhcp-ignore-clid
+    In IPAM mode (#110) the address a container keeps across a restart
+    is Docker's published value, and two properties of that are not
+    reference material that a later release restates: WHICH container
+    claims a kept identity, and the fact that keeping it at all needs a
+    DHCP server that honours option 61.
+    The first is counter-intuitive and the docs stated the opposite
+    until v2.1.0 — they said a container keeps its address when no
+    other container was stopped in the previous minute, when what the
+    code does is give the kept record to the next container that
+    starts, whoever that is. Docker's address request carries no
+    hostname and no endpoint id, so the plugin cannot narrow it; the
+    rule is pinned as a test case, not as a defect to fix, so the prose
+    is the only place an operator learns it.
+    The second is a dependency on something outside this repository. A
+    server keyed on the hardware address alone hands a restarted
+    container a different address, nothing fails and no counter moves,
+    and the property is simply absent. The integration suite drives
+    both arms against dnsmasq with and without `--dhcp-ignore-clid`,
+    and both tests tell the reader that this section is the other half
+    of what they measure.
+    Both markers are required. The rule without the server dependence
+    promises stability the operator's own network may not give; the
+    dependence without the rule leaves the surprise it exists to
+    explain. This entry exists because that is exactly what happened
+    once: the code and the tests landed and the prose did not, and both
+    documentation gates stayed green.

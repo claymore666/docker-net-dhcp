@@ -9,25 +9,43 @@
 [![Docs](https://img.shields.io/badge/docs-claymore666.github.io-blue?logo=materialformkdocs&logoColor=white)](https://claymore666.github.io/docker-net-dhcp/)
 
 A Docker network plugin that gives every container an address from the
-DHCP server your LAN already runs (your router, a Fritz!Box, dnsmasq)
-instead of from Docker's own IPAM, over `bridge`, `macvlan` or `ipvlan`,
-for IPv4 and IPv6. The DHCP exchange runs inside the plugin on the
-project's own engine, the [dhcp-golib][dhcp-golib] library: there is no
-external DHCP client to install and no client process per container.
+DHCP server your LAN already runs (your router, a Fritz!Box, dnsmasq),
+over `bridge`, `macvlan` or `ipvlan`, for IPv4 and IPv6. It runs in two
+shapes: as the network driver beside `--ipam-driver null`, which is all
+three modes, or, from v2.1.0, as the network driver and Docker's IPAM
+driver at once, which puts the leased address into Docker's own address
+management and makes `docker run --ip` and Compose `ipv4_address` work.
+The second shape covers `bridge` and `macvlan` for IPv4: `ipvlan` takes
+`--ipam-driver null` ([#949]) and so does IPv6 ([#960]).
+The DHCP exchange runs inside the plugin on the project's own engine,
+the [dhcp-golib][dhcp-golib] library: there is no external DHCP client
+to install and no client process per container.
 
-This branch is the 2.0 line and every page on it describes that build.
+This branch is the 2.x line and every page on it describes that build.
 The snippets below install the current release.
 
 ## Requirements
 
-- **Docker Engine.** Every change is tested against the engine the
-  integration suite runs on, **29.7.2** today, read from that run's
-  `Fixture engine drift` step. It is the version this build is measured
-  on. It is not a floor: the minimum has never been measured (#670), so
-  the measured number is the honest one to publish.
+- **Docker Engine 20.10 or newer.** 20.10 is the lowest version this
+  plugin is measured on. The engine matrix drives the whole baseline on
+  every engine line from 20.10 to the current release: the plugin
+  created from a local build and enabled, `docker network create` in
+  bridge, macvlan and ipvlan mode, a lease confirmed in the DHCP
+  server's own log, and an endpoint that keeps its address across
+  `docker restart`. Pulling the published plugin from a registry is not
+  part of that measurement. It runs weekly and on every change to the
+  measurement. Below 20.10 the plugin refuses to start, and the refusal
+  names the minimum and the engine it saw. 19.03 is `unsupported`
+  because it is unmeasured: on a cgroup v2 host it cannot start a
+  container at all, so nothing there tests this plugin.
+  Every change is also tested against the engine the integration suite
+  runs on, **29.8.0** today, read from that run's `Fixture engine drift`
+  step.
 - **Plugin interface `docker.networkdriver/1.0`**, which is what the
   plugin manifest declares. The plugin negotiates the Docker API version
-  with the daemon, so no API floor is claimed here either.
+  with the daemon. It publishes both numbers on `/Plugin.Health` as
+  `engine_version` and `api_version`. The minimum above is a version of
+  the engine, not of the API, and nothing is refused on the API version.
 - **One directory, created once per host, before `docker plugin install`**
   (the line is in the quick start below). Docker will not create a missing
   bind source, so without it the install fails at start-up and leaves the
@@ -73,25 +91,42 @@ The snippets below install the current release.
 sudo mkdir -p /var/lib/net-dhcp
 
 # amd64
-docker plugin install ghcr.io/claymore666/docker-net-dhcp:v2.0.0
+docker plugin install ghcr.io/claymore666/docker-net-dhcp:v2.1.0
 # arm64
-docker plugin install ghcr.io/claymore666/docker-net-dhcp:v2.0.0-arm64
+docker plugin install ghcr.io/claymore666/docker-net-dhcp:v2.1.0-arm64
 ```
 
 One network, created once. `macvlan` needs only a host NIC; `bridge`
 wants a bridge you bring yourself ([bridge mode](docs/bridge-mode.md)):
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.0.0 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.1.0 \
   --ipam-driver null -o mode=macvlan -o parent=eth0 lan-dhcp
 
 docker run --rm -ti --network lan-dhcp alpine ip address show
 ```
 
-`--ipam-driver null` is **mandatory**: it stops Docker handing out
-addresses that would collide with the real LAN. On arm64 the `-arm64`
-tag goes in this line too, because a network records the tagged reference
-as its driver. Add `-o ipv6=true` for a DHCPv6 lease beside the v4 one.
+`--ipam-driver null` stops Docker handing out addresses that would
+collide with the real LAN. From v2.1.0 there is a second supported
+shape: name the plugin again in place of `null` and the leased address
+goes into Docker's own address management, which makes `--ip` and
+Compose's `ipv4_address` work.
+
+```bash
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.1.0 \
+  --ipam-driver ghcr.io/claymore666/docker-net-dhcp:v2.1.0 \
+  -o mode=macvlan -o parent=eth0 lan-dhcp
+```
+
+One of the two is required. On arm64 the `-arm64` tag goes in these
+lines too, because a network records the tagged reference as its driver.
+Add `-o ipv6=true` for a DHCPv6 lease beside the v4 one; it needs the
+`null` line, because the IPAM shape is IPv4 only in v2.1.0 and refuses
+the combination ([#960]). The two shapes are set out in
+[the driver reference](docs/reference.md#address-allocation).
+
+[#949]: https://github.com/claymore666/docker-net-dhcp/issues/949
+[#960]: https://github.com/claymore666/docker-net-dhcp/issues/960
 
 After that, plain Compose. No static addresses, no sidecar, nothing per
 container:
@@ -119,6 +154,8 @@ networks:
   external DHCP client to install, supervise or reap.
 - **IPv6 is the same one line.** `-o ipv6=true` adds a DHCPv6 lease with
   its own timers, its own counters and a DUID that survives a restart.
+  On `--ipam-driver null` networks; the IPAM shape is IPv4 only in
+  v2.1.0.
 - **A restart keeps the address.** In `bridge` and `macvlan` the MAC is
   carried across `docker restart`, so a server-side reservation still
   matches and the old address is re-requested; a plugin restart or upgrade

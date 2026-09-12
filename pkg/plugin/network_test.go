@@ -11,7 +11,6 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"strings"
 	"syscall"
 	"testing"
 
@@ -857,25 +856,6 @@ func readPluginManifest(t *testing.T, name string) []manifestMount {
 		t.Fatalf("%s declares no mounts; the guards below would pass on an empty list", name)
 	}
 	return manifest.Mounts
-}
-
-// mountCovers reports whether a mount at dest makes dir readable inside
-// the plugin, which is true when dest IS dir or an ancestor of it.
-//
-// An ancestor counts because a bind mount shares the source's directory
-// tree: entries created under it afterwards are visible through the
-// mount without any propagation, since creating a directory is not
-// creating a mount. That is not a technicality here, it is the fix for
-// #588 — /var/run/docker/netns does not exist until the daemon's first
-// sandbox, so the manifest mounts the parent and the netns directory
-// appears inside the plugin when libnetwork creates it. Verified with a
-// plugin enabled before the directory existed: sandbox_netns_visible
-// went -1 -> 1 on the same process, matching the host's entry.
-func mountCovers(dest, dir string) bool {
-	if dest == dir {
-		return true
-	}
-	return strings.HasPrefix(dir, strings.TrimSuffix(dest, "/")+"/")
 }
 
 // enableTimeMountSources are the only bind sources config.json may name,

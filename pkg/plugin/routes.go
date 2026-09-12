@@ -38,14 +38,26 @@ type apiRoute struct {
 // exactly this.
 //
 // The other RPCs the remote driver can emit — AllocateNetwork,
-// FreeNetwork, DiscoverNew, DiscoverDelete, GwAllocCheck — carry no
-// such tolerance; a 404 from those propagates as a real error. They
-// are unreachable for us rather than tolerated: the first four are
-// swarm / node-discovery paths, and GwAllocCheck is only called when
-// GetCapabilities advertises gwAllocChecker, which ours does not.
+// FreeNetwork, DiscoverNew, DiscoverDelete — carry no such tolerance; a
+// 404 from those propagates as a real error. They are unreachable for
+// us rather than tolerated: all four are swarm / node-discovery paths.
+//
+// GwAllocCheck WAS in that list and is now served, and the sentence it
+// used to be covered by is the reason this paragraph changed with the
+// route rather than after it. A 404 from GwAllocCheck propagates as a
+// real error, and the call is made exactly when GetCapabilities
+// advertises gwAllocChecker — which ours now does, so the route and the
+// capability are one change and neither is safe alone (#110).
+//
+// The /IpamDriver.* paths below are the same socket and the same mux.
+// A managed plugin declares its interface types in config.json and the
+// daemon selects it by capability, so one process answers both contracts
+// and request capture files the new paths under their real names
+// because capturablePaths is built from this table.
 func (p *Plugin) routes() []apiRoute {
 	return []apiRoute{
 		{"/NetworkDriver.GetCapabilities", p.apiGetCapabilities},
+		{"/NetworkDriver.GwAllocCheck", p.apiGwAllocCheck},
 
 		{"/NetworkDriver.CreateNetwork", p.apiCreateNetwork},
 		{"/NetworkDriver.DeleteNetwork", p.apiDeleteNetwork},
@@ -56,6 +68,14 @@ func (p *Plugin) routes() []apiRoute {
 
 		{"/NetworkDriver.Join", p.apiJoin},
 		{"/NetworkDriver.Leave", p.apiLeave},
+
+		// The bundled DHCP IPAM driver (#110).
+		{"/IpamDriver.GetCapabilities", p.apiIpamGetCapabilities},
+		{"/IpamDriver.GetDefaultAddressSpaces", p.apiIpamGetDefaultAddressSpaces},
+		{"/IpamDriver.RequestPool", p.apiRequestPool},
+		{"/IpamDriver.ReleasePool", p.apiReleasePool},
+		{"/IpamDriver.RequestAddress", p.apiRequestAddress},
+		{"/IpamDriver.ReleaseAddress", p.apiReleaseAddress},
 
 		// Plugin observability — not part of the libnetwork RPC
 		// contract, but lives on the same socket so anything that can

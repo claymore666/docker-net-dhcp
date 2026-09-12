@@ -11,6 +11,9 @@
 # directions are exercised here.
 set -uo pipefail
 
+# shellcheck source=scripts/tmpdir-guard.sh
+. "$(cd "$(dirname "$0")" && pwd)/tmpdir-guard.sh"
+
 GATE="$(cd "$(dirname "$0")" && pwd)/check-fixture-engine-drift.sh"
 
 pass=0
@@ -50,7 +53,7 @@ no_docker_path() {
 check() {
     local name="$1" want_exit="$2" want_sub="$3" running="$4"; shift 4
     local tmp out got
-    tmp="$(mktemp -d)"
+    guarded_tmpdir tmp
     make_fixtures "$tmp/requests" "$@"
 
     if [ "$running" = "-" ]; then
@@ -126,7 +129,7 @@ check "unparseable running version fails" 2 "could not read a major.minor" \
 
 # An empty fixture tree is the shape a botched regeneration leaves
 # behind. "Nothing to compare" must not be reported as "no drift".
-tmp="$(mktemp -d)"
+guarded_tmpdir tmp
 mkdir -p "$tmp/requests"
 out="$(FIXTURE_ROOT="$tmp/requests" FIXTURE_ENGINE_VERSION="26.1.5" bash "$GATE" 2>&1)"; got=$?
 rm -rf "$tmp"
@@ -139,7 +142,7 @@ else
     fail=$((fail + 1))
 fi
 
-tmp="$(mktemp -d)"
+guarded_tmpdir tmp
 out="$(FIXTURE_ROOT="$tmp/gone" FIXTURE_ENGINE_VERSION="26.1.5" bash "$GATE" 2>&1)"; got=$?
 rm -rf "$tmp"
 if [ "$got" -eq 2 ] && printf '%s' "$out" | grep -F "does not exist" >/dev/null; then
@@ -156,7 +159,7 @@ fi
 check "no daemon reports NOT INSPECTED, not a pass" 0 "NOT INSPECTED" \
     "-" "macvlan-run=26.1.5"
 
-tmp="$(mktemp -d)"
+guarded_tmpdir tmp
 make_fixtures "$tmp/requests" "macvlan-run=26.1.5"
 out="$(FIXTURE_ROOT="$tmp/requests" FIXTURE_ENGINE_VERSION="" \
        PATH="$(no_docker_path "$tmp")" bash "$GATE" 2>&1)"

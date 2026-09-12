@@ -18,11 +18,13 @@
 # the thing it guards.
 set -u
 
+# shellcheck source=scripts/tmpdir-guard.sh
+. "$(cd "$(dirname "$0")" && pwd)/tmpdir-guard.sh"
+
 HERE="$(cd "$(dirname "$0")" && pwd)"
 GATE="$HERE/check-durations-table.sh"
 REPO="$(cd "$HERE/.." && pwd)"
-TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT
+guarded_tmpdir TMP
 failures=0
 
 # A synthetic tree: three main-suite tests, one failure-suite test, the

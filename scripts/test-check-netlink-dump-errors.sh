@@ -17,11 +17,13 @@
 # would not say the gate works on the thing it guards.
 set -u
 
+# shellcheck source=scripts/tmpdir-guard.sh
+. "$(cd "$(dirname "$0")" && pwd)/tmpdir-guard.sh"
+
 HERE="$(cd "$(dirname "$0")" && pwd)"
 GATE="$HERE/check-netlink-dump-errors.sh"
 REPO="$(cd "$HERE/.." && pwd)"
-TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT
+guarded_tmpdir TMP
 failures=0
 
 # A synthetic tracked tree. The helper file is created because the gate

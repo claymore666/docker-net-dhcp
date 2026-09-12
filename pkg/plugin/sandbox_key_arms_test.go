@@ -175,8 +175,8 @@ func TestSandboxKeyRefusal_ClassificationIsTotal(t *testing.T) {
 
 // TestSandboxKeyFallback_IsNotAWarning is finding 3.
 //
-// On a stock engine this fallback happens on EVERY attach, of every
-// container, forever. A warning asks its reader to do something, and
+// On a host whose sandbox netns mount is private this fallback happens
+// on EVERY attach, of every container, forever. A warning asks its reader to do something, and
 // there is nothing to do — so a line that is correct and unactionable
 // on every attach of a healthy host is training an operator to filter
 // the level. The counters carry the signal at every log level; the line
@@ -203,7 +203,8 @@ func TestSandboxKeyFallback_IsNotAWarning(t *testing.T) {
 	})
 	if len(warned) != 0 {
 		t.Errorf("the ordinary key-route fallback logged %d WARN-or-above line(s):\n%s\n"+
-			"This happens once per attach on a stock engine and there is nothing an operator "+
+			"This happens once per attach on a host whose sandbox netns mount is private, and "+
+			"there is nothing an operator "+
 			"should do about it. sandbox_key_entry_failures and its arms are the record; the "+
 			"level is what says whether to look.", len(warned), strings.Join(warned, "\n"))
 	}
@@ -248,7 +249,8 @@ func TestSandboxKeyFallback_IsNotAWarning(t *testing.T) {
 // The counter's help used to say a sustained rise "means the
 // /var/run/docker mount is not carrying the daemon's sandbox netns
 // entries on this host" — true, and phrased as a diagnosis of a fault,
-// for a state that is normal on every stock engine. The prose is not
+// for a state that is normal on every host whose sandbox netns mount
+// is private. The prose is not
 // checkable in general; that it does not call the normal state abnormal
 // without saying so is.
 func TestMetricHelp_NamesTheExpectedStateAsExpected(t *testing.T) {
@@ -264,7 +266,8 @@ func TestMetricHelp_NamesTheExpectedStateAsExpected(t *testing.T) {
 		}
 		if !strings.Contains(h, "EXPECTED") {
 			t.Errorf("the /metrics help for %s does not say the state it counts is expected:\n%s\n"+
-				"On a stock engine it rises once per container attach forever. docs/reference.md "+
+				"Where the sandbox netns mount is private it rises once per container attach "+
+				"forever. docs/reference.md "+
 				"says so; an operator reading a dashboard sees this string instead.", name, h)
 		}
 	}

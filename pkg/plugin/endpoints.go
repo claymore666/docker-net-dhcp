@@ -17,12 +17,23 @@ import (
 type CapabilitiesResponse struct {
 	Scope             string
 	ConnectivityScope string
+	// GwAllocChecker tells libnetwork it may ask this driver whether a
+	// network needs a gateway address allocated. It is what stops every
+	// `docker network create` in IPAM mode from running a DHCP exchange
+	// for an address no container uses.
+	//
+	// DECLARING IT MAKES /NetworkDriver.GwAllocCheck REQUIRED. libnetwork
+	// calls that RPC only when this field is true, and a 404 from it is a
+	// real error rather than the tolerated one the unrouted RPCs get. The
+	// route and this field are one change; see routes().
+	GwAllocChecker bool
 }
 
 func (p *Plugin) apiGetCapabilities(w http.ResponseWriter, r *http.Request) {
 	util.JSONResponse(w, CapabilitiesResponse{
 		Scope:             "local",
 		ConnectivityScope: "global",
+		GwAllocChecker:    true,
 	}, http.StatusOK)
 }
 
@@ -180,12 +191,15 @@ const ifnameOption = "com.docker.network.endpoint.ifname"
 // carried the field for years, but the remote proxy dropped it
 // (drivers/remote/driver.go called `iface.SetNames(SrcName, DstPrefix,
 // "")`) until moby/moby#52866, merged 2026-08-26 and milestoned for
-// engine 29.8.0. Built-in drivers got per-driver interface_name in
-// engine 28; remote drivers were left out until that fix. No released
-// engine carries it yet, so on 29.7.x and older the field is still
-// ignored. We return it either way: it is the documented response
-// shape, costs nothing on engines that ignore it, and activates by
-// itself on the first engine that honours it (#125).
+// engine 29.8.0, where it shipped. Built-in drivers got per-driver
+// interface_name in engine 28; remote drivers were left out until that
+// fix. MEASURED with a nested daemon per line (#670): 28.5.2 and 29.7.2
+// name the interface by DstPrefix and index, 29.8.0 names it as asked.
+// We return it either way: it is the documented response shape, costs
+// nothing on engines that ignore it, and activates by itself on the
+// first engine that honours it (#125). What an engine below 29.8.0
+// costs is said at CreateEndpoint and counted as ifname_unsupported,
+// because a silently different interface name is otherwise invisible.
 type InterfaceName struct {
 	SrcName   string
 	DstPrefix string
@@ -306,7 +320,21 @@ type HealthResponse struct {
 	Version string `json:"version"`
 	Commit  string `json:"commit"`
 	Library string `json:"library"`
-	Healthy bool   `json:"healthy"`
+	// EngineVersion and APIVersion are what the DAEMON said when this
+	// process started, not what this process assumed (#670).
+	// EngineVersion is the engine's own version string and is the value
+	// the minimum is measured and compared on; APIVersion is what the
+	// client library NEGOTIATED with it, which is min(our maximum, the
+	// daemon's maximum) and so can be lower than either side supports.
+	//
+	// Both read `unknown` when the daemon did not answer at startup.
+	// Docker restarts this plugin during its own startup and the socket
+	// is routinely not serving yet at that moment (#383), so `unknown`
+	// is a state an operator can actually see, and it means "this
+	// process never found out" rather than "there is no engine".
+	EngineVersion string `json:"engine_version"`
+	APIVersion    string `json:"api_version"`
+	Healthy       bool   `json:"healthy"`
 	// InstanceID identifies the plugin process that served this
 	// response. Every counter below is in-memory and returns to zero
 	// when the process does, so two reads are only comparable as a
@@ -403,6 +431,26 @@ type HealthResponse struct {
 	// successes — but a rising count is the visible form of #406.
 	JoinAttachSlow int32 `json:"join_attach_slow"`
 
+	// JoinAttachCompleted counts successful attaches. It is the
+	// population the three buckets below partition, and without it a
+	// bucket of zero cannot be told from a lane that attached nothing.
+	JoinAttachCompleted int32 `json:"join_attach_completed"`
+	// JoinAttachUnder1s and JoinAttach1sToBudget are the body of the
+	// distribution JoinAttachSlow is the tail of. Under a second, then
+	// a second up to and including AwaitTimeout; above it is
+	// JoinAttachSlow, so the three sum to JoinAttachCompleted.
+	//
+	// They exist because the per-attach timing line is Debug and the
+	// shipped LOG_LEVEL is info: on a host nobody has reconfigured,
+	// these are the only per-attach durations there are (#403).
+	JoinAttachUnder1s    int32 `json:"join_attach_under_1s"`
+	JoinAttach1sToBudget int32 `json:"join_attach_1s_to_budget"`
+	// JoinAttachMsMax is the longest successful attach in
+	// milliseconds, saturating at MaxInt32. Not an average: #403 asks
+	// how close a loaded host comes to AwaitTimeout, and an average
+	// over a quiet host hides exactly the attach that answers it.
+	JoinAttachMsMax int32 `json:"join_attach_ms_max"`
+
 	// RestartLinkUpWaited counts child links brought up only after
 	// waiting out the departing link's hold on the address (#408). Not
 	// healthy-affecting: this is the fix working, and it is counted so
@@ -494,6 +542,39 @@ type HealthResponse struct {
 	// written before name validation existed (#705), or a hand-edited
 	// state directory.
 	NetworkOptionsRejected int32 `json:"network_options_rejected"`
+	// IPAMReplayHits counts stored endpoint addresses this plugin
+	// confirmed at a daemon restart from its own lease record (#110).
+	// Only moves on networks created with this plugin as their IPAM
+	// driver. NOT healthy-affecting: it is the mechanism working. It is
+	// the denominator for the counter below.
+	IPAMReplayHits int32 `json:"ipam_replay_hits"`
+	// IPAMReplayMiss counts stored endpoint addresses this plugin
+	// refused to confirm because no lease record in that network holds
+	// them. NOT healthy-affecting: the refusal is the safe outcome and
+	// the network driver's own recovery adopts the endpoint from
+	// Docker's view. Worth investigating: the lease record and Docker's
+	// store have drifted apart.
+	IPAMReplayMiss int32 `json:"ipam_replay_miss"`
+	// IPAMRebindAmbiguous counts address requests that met more than one
+	// recently-removed endpoint on the network, so nothing said which
+	// address to ask for and the DHCP server decided. NOT
+	// healthy-affecting: every container still gets an address. Watch
+	// it: it is the one signal that addresses moved for a reason the
+	// operator can act on.
+	IPAMRebindAmbiguous int32 `json:"ipam_rebind_ambiguous"`
+	// IPAMReserveDuplicateMAC counts address requests refused because the
+	// network was already leasing an address for that hardware address.
+	// NOT healthy-affecting for the host: refusing is the safe outcome,
+	// and the alternative is two endpoints holding one address. Worth
+	// investigating, because every move is a container that did not
+	// start: two endpoints on one network were pinned to one
+	// --mac-address.
+	IPAMReserveDuplicateMAC int32 `json:"ipam_reserve_duplicate_mac"`
+	// IPAMReleaseUnknown counts addresses libnetwork released that no
+	// lease record of ours holds. NOT healthy-affecting and not a
+	// fault: a release for an address whose record is already retained
+	// or closed is the normal ordering.
+	IPAMReleaseUnknown int32 `json:"ipam_release_unknown"`
 	// DNSPropagationPIDMismatches counts DNS propagations refused
 	// because the container PID resolved through Docker no longer
 	// belonged to that container by the time the plugin acted on it
@@ -530,7 +611,8 @@ type HealthResponse struct {
 	// separately because the aggregate cannot say WHICH refusal
 	// happened and the two most likely ones want opposite remedies.
 	//
-	// SandboxKeyNotANamespace is the expected one on a stock engine:
+	// SandboxKeyNotANamespace is the expected one where the sandbox
+	// netns mount is private (sandbox_netns_propagation=0):
 	// the entry is the placeholder file libnetwork creates before it
 	// bind-mounts the namespace over it, and the plugin's own
 	// /var/run/docker bind was taken before that mount existed. Nothing
@@ -562,7 +644,7 @@ type HealthResponse struct {
 
 	// DockerAPINonGETRefusals counts requests to the Docker API the
 	// plugin refused to send because their method was not GET. The
-	// plugin's whole Docker surface is three read calls, so this is
+	// plugin's whole Docker surface is four read calls, so this is
 	// expected to stay zero for the life of an installation; a non-zero
 	// value means code in this process tried to write to the daemon
 	// (#691). NOT healthy-affecting: the refusal is the safe outcome.
@@ -676,6 +758,45 @@ type HealthResponse struct {
 	// genuinely nothing to see.
 	SandboxNetnsVisible int32 `json:"sandbox_netns_visible"`
 
+	// SandboxNetnsPropagation says whether a mount the daemon makes
+	// under the sandbox netns directory AFTER this process started can
+	// reach this process at all.
+	//
+	//    1  the mount carries a propagation link, so it can. An attach
+	//       can then enter the sandbox by its key.
+	//    0  the mount is private. Every attach is for a sandbox younger
+	//       than this process, so every attach is refused with
+	//       sandbox_key_not_a_namespace and carried by the container
+	//       PID, which is what pidhost and CAP_SYS_PTRACE are for.
+	//   -1  mountinfo is unreadable, or no mount covers any permitted
+	//       directory. The directory not existing yet is NOT this
+	//       reading: the daemon creates it inside the mount that
+	//       already covers its parent, so the answer is that mount's.
+	//
+	// It exists because the zero reading is the whole of SECURITY.md's
+	// causal sentence, and until now that sentence was an inference
+	// from a refusal count. A refusal count is equally consistent with
+	// a key shape this plugin declines, which wants the opposite
+	// remedy. See sandboxNetnsPropagationIn for the bound on the 1.
+	SandboxNetnsPropagation int32 `json:"sandbox_netns_propagation"`
+
+	// SandboxNetnsInitMounts is how many sandbox netns mounts exist in
+	// PID 1's mount table.
+	//
+	//   -2  PID 1 shares this process's mount namespace, so reaching
+	//       the sandbox key through /proc/1/root reaches the table
+	//       this process already has.
+	//   -1  PID 1's mount table could not be read.
+	//    0  a different mount namespace that carries none of them.
+	//    N  a different mount namespace that carries N. Read it
+	//       against sandbox_netns_visible.
+	//
+	// Under a nested engine PID 1 is that engine's init and not the
+	// outer host's, so this reads differently on the integration lane
+	// and on a systemd host, and a route judged on one of them alone
+	// is judged on the wrong number.
+	SandboxNetnsInitMounts int32 `json:"sandbox_netns_init_mounts"`
+
 	// DHCP-wire counters (T2-4). Naming intentionally drops the
 	// Prometheus `_total` suffix to stay consistent with the
 	// existing fields above; the issue's proposal listed them with
@@ -690,6 +811,39 @@ type HealthResponse struct {
 	// halves being derived from it.
 	LeasesObtained int32 `json:"leases_obtained"`
 	LeasesRenewed  int32 `json:"leases_renewed"`
+	// RenewalsUnanswered counts renewal requests that got no answer,
+	// one per request, while the client kept running (#940). Read it
+	// beside LeasesRenewed and ahead of DHCPTimeouts: renewals
+	// completing with this flat is a healthy lease; this climbing with
+	// LeasesRenewed flat is a DHCP server that has gone quiet.
+	//
+	// HOW EARLY IT MOVES IS A PROPERTY OF THE LEASE, not a constant.
+	// It moves at the first retransmission, and RFC 2131 section 4.4.5
+	// has the client "wait one-half of the remaining time until T2 (in
+	// RENEWING state) and one-half of the remaining lease time (in
+	// REBINDING state), down to a minimum of 60 seconds". The 60
+	// seconds is a FLOOR under that wait, which proto.renewalDelay
+	// implements as max(RenewRetransmitFloor, half), so the wait is a
+	// minute only when T2 is about two minutes off and is hours on a
+	// long lease. On the 24 hour lease #940 was reported from, T1 is at
+	// 12h and T2 at 21h, so the first retransmission is ~4h30m after
+	// the client's first renewal request at T1: the MEASURED four
+	// requests across 7h52m are that halving schedule, not a
+	// one-minute one. DHCPTimeouts
+	// first moves for a held lease when the lease ends, at 24h, so what
+	// this buys on that lease is about 7.5 hours of warning.
+	//
+	// NOT Healthy-affecting, and not a `warn` check either. A single
+	// lost datagram moves it on a segment that is working, so non-zero
+	// is not by itself the abnormal state a check can fire on; what is
+	// actionable is a rise with no renewals completing beside it, which
+	// is a relationship between two counters and not a threshold on
+	// one.
+	//
+	// The request currently in flight is not counted: one is proven
+	// unanswered only by the retransmission that follows it. A client
+	// that has sent N requests into silence reports N-1.
+	RenewalsUnanswered int32 `json:"renewals_unanswered"`
 	// DHCPServerTierFallbacks counts STEPS DOWN the dhcp_servers
 	// ladder: one per preferred entry that did not answer inside its
 	// slice of the budget and handed on to the next (#111). One
@@ -759,6 +913,12 @@ type HealthResponse struct {
 	// degrades forensics, not networking; operators using audit_log
 	// alert on this directly.
 	LedgerWriteFailures int32 `json:"ledger_write_failures"`
+	// IfnameUnsupported counts endpoints created with a custom
+	// interface name on an engine that does not apply one (#125, #670).
+	// The request is accepted and the network works; the interface
+	// carries the driver's prefix and index instead of the requested
+	// name. Nothing else reports that, which is why it is counted.
+	IfnameUnsupported int32 `json:"ifname_unsupported"`
 	// StateFileChmodFailures counts files the startup sweep could not
 	// tighten, plus one for a STATE_DIR it could not read at all
 	// (#804). Not Healthy-affecting: nothing the plugin does is
@@ -785,8 +945,10 @@ type HealthResponse struct {
 	LeaseChangedV4   int32 `json:"lease_changed_v4"`
 	LeasesObtainedV4 int32 `json:"leases_obtained_v4"`
 	LeasesRenewedV4  int32 `json:"leases_renewed_v4"`
-	DHCPTimeoutsV4   int32 `json:"dhcp_timeouts_v4"`
-	NAKsReceivedV4   int32 `json:"naks_received_v4"`
+	// RenewalsUnansweredV4 is the IPv4 half of RenewalsUnanswered.
+	RenewalsUnansweredV4 int32 `json:"renewals_unanswered_v4"`
+	DHCPTimeoutsV4       int32 `json:"dhcp_timeouts_v4"`
+	NAKsReceivedV4       int32 `json:"naks_received_v4"`
 	// ClientStopFailuresV4 is the v4 half of ClientStopFailures.
 	ClientStopFailuresV4 int32 `json:"client_stop_failures_v4"`
 	// AddressConflictsV4 is the RFC 5227 half of AddressConflicts, and
@@ -810,8 +972,12 @@ type HealthResponse struct {
 	LeaseChangedV6   int32 `json:"lease_changed_v6"`
 	LeasesObtainedV6 int32 `json:"leases_obtained_v6"`
 	LeasesRenewedV6  int32 `json:"leases_renewed_v6"`
-	DHCPTimeoutsV6   int32 `json:"dhcp_timeouts_v6"`
-	NAKsReceivedV6   int32 `json:"naks_received_v6"`
+	// RenewalsUnansweredV6 is the DHCPv6 half: Renew and Rebind
+	// messages (RFC 9915 sections 18.2.4 and 18.2.5) the server did not
+	// answer. A v6-only silence is invisible in the sum.
+	RenewalsUnansweredV6 int32 `json:"renewals_unanswered_v6"`
+	DHCPTimeoutsV6       int32 `json:"dhcp_timeouts_v6"`
+	NAKsReceivedV6       int32 `json:"naks_received_v6"`
 	// AddressConflictsV6 is the DHCPv6 half of AddressConflicts: an
 	// address the kernel's Duplicate Address Detection (RFC 4862
 	// section 5.4) found on the link, declined to the server under RFC
@@ -897,18 +1063,22 @@ func (p *Plugin) apiHealth(w http.ResponseWriter, r *http.Request) {
 // place either is observable at all.
 func (p *Plugin) checkStamps() map[string]time.Time {
 	return map[string]time.Time{
-		"recovery_failed":           p.recoveryFailed.LastMoved(),
-		"join_start_failures":       p.joinStartFailures.LastMoved(),
-		"tombstone_write_failures":  p.tombstoneWriteFailures.LastMoved(),
-		"tombstone_quarantines":     p.tombstones.quarantines.LastMoved(),
-		"address_conflicts":         laterOf(p.addressConflictsV4.LastMoved(), p.addressConflictsV6.LastMoved()),
-		"lease_changed":             laterOf(p.leaseChangedV4.LastMoved(), p.leaseChangedV6.LastMoved()),
-		"acd_arp_send_failures":     p.acdARPSendFailures.LastMoved(),
-		"acd_resumed_unchecked":     p.acdResumedUnchecked.LastMoved(),
-		"restart_link_up_timeouts":  p.restartLinkUpTimeouts.LastMoved(),
-		"parent_link_wait_timeouts": p.parentLinkWaitTimeouts.LastMoved(),
-		"ledger_write_failures":     p.ledgerWriteFailures.LastMoved(),
-		"state_file_chmod_failures": p.stateFileChmodFailures.LastMoved(),
+		"recovery_failed":            p.recoveryFailed.LastMoved(),
+		"join_start_failures":        p.joinStartFailures.LastMoved(),
+		"tombstone_write_failures":   p.tombstoneWriteFailures.LastMoved(),
+		"tombstone_quarantines":      p.tombstones.quarantines.LastMoved(),
+		"address_conflicts":          laterOf(p.addressConflictsV4.LastMoved(), p.addressConflictsV6.LastMoved()),
+		"lease_changed":              laterOf(p.leaseChangedV4.LastMoved(), p.leaseChangedV6.LastMoved()),
+		"acd_arp_send_failures":      p.acdARPSendFailures.LastMoved(),
+		"acd_resumed_unchecked":      p.acdResumedUnchecked.LastMoved(),
+		"restart_link_up_timeouts":   p.restartLinkUpTimeouts.LastMoved(),
+		"parent_link_wait_timeouts":  p.parentLinkWaitTimeouts.LastMoved(),
+		"ledger_write_failures":      p.ledgerWriteFailures.LastMoved(),
+		"state_file_chmod_failures":  p.stateFileChmodFailures.LastMoved(),
+		"ifname_unsupported":         p.ifnameUnsupported.LastMoved(),
+		"ipam_replay_miss":           p.ipamReplayMiss.LastMoved(),
+		"ipam_rebind_ambiguous":      p.ipamRebindAmbiguous.LastMoved(),
+		"ipam_reserve_duplicate_mac": p.ipamReserveDuplicateMAC.LastMoved(),
 	}
 }
 
@@ -945,6 +1115,15 @@ func (p *Plugin) healthSnapshot() HealthResponse {
 	managers, pending := p.managerSnapshot()
 	endpoints := endpointViewsOf(managers)
 
+	// One load of the engine identity, for both fields. The two are one
+	// observation and are stored as one, so a reader cannot see a
+	// version from before a re-probe beside an API version from after.
+	engine := p.engineSnapshot()
+
+	// ONE resolution of the three sandbox-netns readings' sources, so the
+	// three fields below describe the same directory set.
+	netns := p.netnsReadingSources()
+
 	failed := p.recoveryFailed.Load()
 	joinFails := p.joinStartFailures.Load()
 	tsFails := p.tombstoneWriteFailures.Load()
@@ -960,6 +1139,8 @@ func (p *Plugin) healthSnapshot() HealthResponse {
 	leasesObtainedV6 := p.leasesObtainedV6.Load()
 	leasesRenewedV4 := p.leasesRenewedV4.Load()
 	leasesRenewedV6 := p.leasesRenewedV6.Load()
+	renewalsUnansweredV4 := p.renewalsUnansweredV4.Load()
+	renewalsUnansweredV6 := p.renewalsUnansweredV6.Load()
 	dhcpTimeoutsV4 := p.dhcpTimeoutsV4.Load()
 	dhcpTimeoutsV6 := p.dhcpTimeoutsV6.Load()
 	naksReceivedV4 := p.naksReceivedV4.Load()
@@ -983,6 +1164,8 @@ func (p *Plugin) healthSnapshot() HealthResponse {
 		// does not say — in particular that it latches for the life of
 		// the process.
 		Healthy:       failed == 0 && joinFails == 0 && tsFails == 0 && conflicts == 0 && tsQuarantines == 0,
+		EngineVersion: engine.Version,
+		APIVersion:    engine.APIVersion,
 		InstanceID:    p.instanceID,
 		UptimeSeconds: time.Since(p.startTime).Seconds(),
 		// len(endpoints), not a second len(p.persistentDHCP): the count
@@ -1007,6 +1190,10 @@ func (p *Plugin) healthSnapshot() HealthResponse {
 		JoinAbortedContainerGone:     p.joinAbortedContainerGone.Load(),
 		JoinAbortedNoContainer:       p.joinAbortedNoContainer.Load(),
 		JoinAttachSlow:               p.joinAttachSlow.Load(),
+		JoinAttachCompleted:          p.joinAttachCompleted.Load(),
+		JoinAttachUnder1s:            p.joinAttachUnder1s.Load(),
+		JoinAttach1sToBudget:         p.joinAttach1sToBudget.Load(),
+		JoinAttachMsMax:              p.joinAttachMsMax.Load(),
 		RestartLinkUpWaited:          p.restartLinkUpWaited.Load(),
 		RestartLinkUpTimeouts:        p.restartLinkUpTimeouts.Load(),
 		JoinAbortedEndpointLeft:      p.joinAbortedEndpointLeft.Load(),
@@ -1015,6 +1202,11 @@ func (p *Plugin) healthSnapshot() HealthResponse {
 		UnsafeHostnamesRejected:      p.unsafeHostnamesRejected.Load(),
 		UnsafeOptionValuesDropped:    p.unsafeOptionValuesDropped.Load(),
 		NetworkOptionsRejected:       p.networkOptionsRejected.Load(),
+		IPAMReplayHits:               p.ipamReplayHits.Load(),
+		IPAMReplayMiss:               p.ipamReplayMiss.Load(),
+		IPAMRebindAmbiguous:          p.ipamRebindAmbiguous.Load(),
+		IPAMReserveDuplicateMAC:      p.ipamReserveDuplicateMAC.Load(),
+		IPAMReleaseUnknown:           p.ipamReleaseUnknown.Load(),
 		DNSPropagationPIDMismatches:  p.dnsPropagationPIDMismatches.Load(),
 		NetnsPIDMismatches:           p.netnsPIDMismatches.Load(),
 		SandboxKeyEntries:            p.sandboxKeyEntries.Load(),
@@ -1039,9 +1231,12 @@ func (p *Plugin) healthSnapshot() HealthResponse {
 		ACDConflictsDetected:         p.acdConflictsDetected.Load(),
 		ACDARPSendFailures:           p.acdARPSendFailures.Load(),
 		ACDResumedUnchecked:          p.acdResumedUnchecked.Load(),
-		SandboxNetnsVisible:          sandboxNetnsVisibleIn(sandboxNetnsDirs),
+		SandboxNetnsVisible:          sandboxNetnsVisibleIn(netns.dirs),
+		SandboxNetnsPropagation:      sandboxNetnsPropagationIn(netns.dirs, netns.mountinfo),
+		SandboxNetnsInitMounts:       sandboxNetnsInitMountsIn(netns.dirs, netns.selfNS, netns.initNS, netns.initMountinfo),
 		LeasesObtained:               leasesObtainedV4 + leasesObtainedV6,
 		LeasesRenewed:                leasesRenewedV4 + leasesRenewedV6,
+		RenewalsUnanswered:           renewalsUnansweredV4 + renewalsUnansweredV6,
 		DHCPServerTierFallbacks:      p.dhcpServerTierFallbacks.Load(),
 		DHCPServerPolicyExhausted:    p.dhcpServerPolicyExhausted.Load(),
 		DHCPServerPolicyTimeouts:     p.dhcpServerPolicyTimeouts.Load(),
@@ -1052,16 +1247,19 @@ func (p *Plugin) healthSnapshot() HealthResponse {
 		ParentLinkWaits:              p.parentLinkWaits.Load(),
 		ParentLinkWaitTimeouts:       p.parentLinkWaitTimeouts.Load(),
 		LedgerWriteFailures:          p.ledgerWriteFailures.Load(),
+		IfnameUnsupported:            p.ifnameUnsupported.Load(),
 		StateFileChmodFailures:       p.stateFileChmodFailures.Load(),
 		LeaseChangedV4:               leaseChangedV4,
 		LeasesObtainedV4:             leasesObtainedV4,
 		LeasesRenewedV4:              leasesRenewedV4,
+		RenewalsUnansweredV4:         renewalsUnansweredV4,
 		DHCPTimeoutsV4:               dhcpTimeoutsV4,
 		NAKsReceivedV4:               naksReceivedV4,
 		ClientStopFailuresV4:         clientStopFailuresV4,
 		LeaseChangedV6:               leaseChangedV6,
 		LeasesObtainedV6:             leasesObtainedV6,
 		LeasesRenewedV6:              leasesRenewedV6,
+		RenewalsUnansweredV6:         renewalsUnansweredV6,
 		DHCPTimeoutsV6:               dhcpTimeoutsV6,
 		NAKsReceivedV6:               naksReceivedV6,
 		ClientStopFailuresV6:         clientStopFailuresV6,

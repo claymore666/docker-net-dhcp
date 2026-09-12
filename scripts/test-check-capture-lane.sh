@@ -16,9 +16,11 @@
 # pass. Both are cases.
 set -euo pipefail
 
+# shellcheck source=scripts/tmpdir-guard.sh
+. "$(cd "$(dirname "$0")" && pwd)/tmpdir-guard.sh"
+
 CHECK="$(dirname "$0")/check-capture-lane.sh"
-TMP=$(mktemp -d)
-trap 'rm -rf "$TMP"' EXIT
+guarded_tmpdir TMP
 fails=0
 
 # Every case runs against a STUB scripts dir holding the drift gate the

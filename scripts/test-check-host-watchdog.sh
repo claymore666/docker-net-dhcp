@@ -22,11 +22,13 @@
 # the pristine case passes for the same reasons the real board does.
 set -uo pipefail
 
+# shellcheck source=scripts/tmpdir-guard.sh
+. "$(cd "$(dirname "$0")" && pwd)/tmpdir-guard.sh"
+
 HERE="$(cd "$(dirname "$0")" && pwd)"
 CHECK="$HERE/check-host-watchdog.sh"
 
-TMP=$(mktemp -d)
-trap 'rm -rf "$TMP"' EXIT
+guarded_tmpdir TMP
 fails=0
 
 check() {

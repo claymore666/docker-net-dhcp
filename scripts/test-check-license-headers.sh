@@ -17,12 +17,14 @@
 # way the header itself did not.
 set -u
 
+# shellcheck source=scripts/tmpdir-guard.sh
+. "$(cd "$(dirname "$0")" && pwd)/tmpdir-guard.sh"
+
 # Absolute: the cases below run from inside $TMP so the file list can be
 # relative, and a relative path here would silently resolve to nothing —
 # every assertion would then "pass" against exit 127.
 CHECK="$(cd "$(dirname "$0")" && pwd)/check-license-headers.sh"
-TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT
+guarded_tmpdir TMP
 
 COPY='Copyright the docker-net-dhcp contributors.'
 SPDX='SPDX-License-Identifier: GPL-3.0-only'

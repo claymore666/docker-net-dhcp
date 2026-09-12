@@ -15,6 +15,7 @@ import (
 
 	cerrdefs "github.com/containerd/errdefs"
 
+	dTypes "github.com/docker/docker/api/types"
 	dContainer "github.com/docker/docker/api/types/container"
 	dNetwork "github.com/docker/docker/api/types/network"
 )
@@ -51,10 +52,42 @@ type fakeDocker struct {
 
 	closeErr error
 
+	// The engine probe's half of the client (#670). The zero value is
+	// a daemon that answers the ping and reports nothing, which is not
+	// a shape any real daemon has; a test that cares sets these.
+	pingErr       error
+	versionResult dTypes.Version
+	versionErr    error
+	clientVersion string
+
 	listCalls      int
 	inspectCalls   int
 	containerCalls int
+	pingCalls      int
+	versionCalls   int
 }
+
+func (f *fakeDocker) Ping(_ context.Context) (dTypes.Ping, error) {
+	f.pingCalls++
+	if f.pingErr != nil {
+		return dTypes.Ping{}, f.pingErr
+	}
+	return dTypes.Ping{APIVersion: f.clientVersion}, nil
+}
+
+func (f *fakeDocker) ServerVersion(_ context.Context) (dTypes.Version, error) {
+	f.versionCalls++
+	if f.versionErr != nil {
+		return dTypes.Version{}, f.versionErr
+	}
+	return f.versionResult, nil
+}
+
+// ClientVersion is the NEGOTIATED version in the real client, which is
+// why the fake reports one value for it and lets ServerVersion carry a
+// different one: the two disagreeing is a case the floor has to have an
+// answer for, not an impossible state.
+func (f *fakeDocker) ClientVersion() string { return f.clientVersion }
 
 func (f *fakeDocker) NetworkList(_ context.Context, _ dNetwork.ListOptions) ([]dNetwork.Summary, error) {
 	f.listCalls++

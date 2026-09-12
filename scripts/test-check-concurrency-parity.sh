@@ -10,6 +10,9 @@
 # concurrency group is evaluated by GitHub and never by us.
 set -uo pipefail
 
+# shellcheck source=scripts/tmpdir-guard.sh
+. "$(cd "$(dirname "$0")" && pwd)/tmpdir-guard.sh"
+
 GATE="$(cd "$(dirname "$0")" && pwd)/check-concurrency-parity.sh"
 pass=0
 fail=0
@@ -27,7 +30,7 @@ OLD='selfhosted-privileged-${{ github.ref }}'
 run_case() {
     local name="$1" want="$2"; shift 2
     local dir rc out
-    dir=$(mktemp -d)
+    guarded_tmpdir dir
     printf 'name: test\non:\n  pull_request:\nconcurrency:\n  group: test-${{ github.ref }}\n' \
         > "$dir/test.yaml"
     while [ "$#" -gt 0 ]; do
@@ -101,7 +104,7 @@ priv3() {
     printf 'name: x\non:\n  workflow_dispatch:\nconcurrency:\n  group: %s\n' "$NEW" > "$d/capture-fixtures.yml"
 }
 
-dir=$(mktemp -d)
+guarded_tmpdir dir
 priv3 "$dir"
 printf 'name: test\non:\n  pull_request:\njobs:\n  a:\n    runs-on: ubuntu-latest\n    steps: [{run: "true"}]\n' \
     > "$dir/test.yaml"
@@ -114,7 +117,7 @@ rm -rf "$dir"
 
 # ...and a commented-out block does not count as having one, for the
 # same reason the key comparison strips comments.
-dir=$(mktemp -d)
+guarded_tmpdir dir
 priv3 "$dir"
 printf 'name: test\non:\n  pull_request:\n# concurrency:\n#   group: test-x\n' > "$dir/test.yaml"
 bash "$GATE" "$dir" >/dev/null 2>&1
@@ -127,7 +130,7 @@ rm -rf "$dir"
 # A lane outside the privileged group needs A group, not THEIR group —
 # otherwise the presence check would quietly become a demand that
 # test.yaml join a self-hosted exclusion it has no business in.
-dir=$(mktemp -d)
+guarded_tmpdir dir
 priv3 "$dir"
 printf 'name: test\non:\n  pull_request:\nconcurrency:\n  group: test-${{ github.ref }}\n' > "$dir/test.yaml"
 bash "$GATE" "$dir" >/dev/null 2>&1
@@ -142,7 +145,7 @@ rm -rf "$dir"
 # If the gate read comments, the drifted file would describe itself into
 # compliance — the shape that made check-python-deps.sh satisfy itself
 # from its own header (#743).
-dir=$(mktemp -d)
+guarded_tmpdir dir
 printf 'name: x\non:\n  workflow_dispatch:\nconcurrency:\n  group: %s\n' "$NEW" > "$dir/integration.yml"
 printf 'name: x\non:\n  workflow_dispatch:\nconcurrency:\n  group: %s\n' "$NEW" > "$dir/coverage.yml"
 printf 'name: test\non:\n  pull_request:\nconcurrency:\n  group: test-${{ github.ref }}\n' > "$dir/test.yaml"
@@ -159,7 +162,7 @@ rm -rf "$dir"
     || no "a comment quoting the correct key satisfied the gate (exit $rc, want 1)"
 
 # --- cannot-check is distinct from broken -------------------------------
-dir=$(mktemp -d)
+guarded_tmpdir dir
 printf 'name: x\n' > "$dir/integration.yml"
 bash "$GATE" "$dir" >/dev/null 2>&1
 rc=$?

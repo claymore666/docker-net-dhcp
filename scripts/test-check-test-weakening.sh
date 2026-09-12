@@ -11,6 +11,9 @@
 # nearby diff that must not.
 set -u
 
+# shellcheck source=scripts/tmpdir-guard.sh
+. "$(cd "$(dirname "$0")" && pwd)/tmpdir-guard.sh"
+
 GATE="$(cd "$(dirname "$0")" && pwd)/check-test-weakening.sh"
 pass=0
 fail=0
@@ -29,7 +32,7 @@ run_file_case() { # NAME FILE BASE NEW BODY WANT_RC [WANT_GREP]
     local name="$1" file="$2" base_content="$3" new_content="$4"
     local body="${5-}" want="$6" want_grep="${7-}"
     local dir rc out
-    dir=$(mktemp -d)
+    guarded_tmpdir dir
     (
         cd "$dir" || exit 2
         git init -q .
@@ -816,7 +819,7 @@ func main() {
 run_diverged() {
     local name="$1" base_content="$2" dev_content="$3" branch_content="$4" want="$5"
     local dir
-    dir=$(mktemp -d)
+    guarded_tmpdir dir
     (
         cd "$dir" || exit 2
         git init -q -b dev .
@@ -949,7 +952,7 @@ func TestThing(t *testing.T) {
 run_dirty() {
     local name="$1" setup="$2" want_present="$3" want_absent="$4" want_rc="$5"
     local dir out rc
-    dir=$(mktemp -d)
+    guarded_tmpdir dir
     out=$(
         cd "$dir" || exit 2
         git init -q .

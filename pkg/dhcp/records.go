@@ -54,10 +54,16 @@ import (
 //     TestRecords_SecondOpenIsRefused drives it in-process for that
 //     reason.
 //
-// What neither closes is a file on a filesystem with no working flock —
-// an NFS mount without lockd. The plugin's state directory is local by
-// construction (it is inside the plugin's own rootfs), which is why this
-// is a bound and not a defect; it is written here rather than assumed.
+// The filesystem can refuse to lock at all — an NFS mount without lockd.
+// That does not leave either hazard open: flock failing for ANY reason is
+// refused as ErrRecordsLocked and NewPlugin gives up on it (D51), so the
+// FIRST opener does not start and the guarantee is kept by refusing to
+// run. Since v1.5.0 the state directory is a bind of a fixed host path,
+// not the plugin's own rootfs, so which filesystem sits under the lock is
+// the host's choice. The bound is on where the plugin can run, not on
+// whether two writers can overlap; docs/reference.md states it where an
+// operator picks the mount. Which of the two the operator is looking at
+// is read off the errno and said in the refusal — lockRefused.
 type Records struct {
 	path string
 
@@ -77,8 +83,62 @@ type Records struct {
 	managers atomic.Uint64
 }
 
-// ErrRecordsLocked is a second writer refused.
+// ErrRecordsLocked is a refused start: the exclusive lock on the lease
+// record was not taken. Every reading lockRefused produces matches it,
+// including the ones that are not a second writer.
 var ErrRecordsLocked = errors.New("dhcp: the lease record file is already open by another writer")
+
+// lockRefusal is one reading of a failed flock. Error prints the
+// reading; Unwrap hands back both ErrRecordsLocked, which is what a
+// caller matches a refused start on, and the errno the reading was
+// derived from.
+type lockRefusal struct {
+	msg   string
+	errno error
+}
+
+func (e *lockRefusal) Error() string   { return e.msg }
+func (e *lockRefusal) Unwrap() []error { return []error{ErrRecordsLocked, e.errno} }
+
+// lockRefused turns the errno flock returned into the sentence an
+// operator can act on (#950).
+//
+// THE TWO READINGS LEAD TO OPPOSITE ACTIONS, which is why one text for
+// both was a defect rather than a wording preference: a held lock is
+// cleared by disabling whatever holds it, and a mount that cannot lock
+// is not cleared by disabling anything. The errno is the only evidence
+// that separates them at the moment of the refusal.
+//
+// EAGAIN and EOPNOTSUPP each stand for a PAIR: EWOULDBLOCK is the same
+// value as the first on Linux and ENOTSUP the same as the second, so
+// spelling both members is a duplicate case. The test table names all
+// four and goes red on a build that splits a pair.
+//
+// An errno in neither list keeps the generic text and prints the number
+// beside it. Guessing a remedy from an errno we have not thought about
+// is how one text came to cover two causes.
+func lockRefused(path string, err error) error {
+	switch {
+	case errors.Is(err, unix.EAGAIN):
+		return &lockRefusal{
+			msg: fmt.Sprintf("dhcp: another tag of this plugin is enabled and holds the lease record %s; "+
+				"disable it before enabling this one", path),
+			errno: err,
+		}
+	case errors.Is(err, unix.ENOLCK), errors.Is(err, unix.EOPNOTSUPP),
+		errors.Is(err, unix.EINVAL), errors.Is(err, unix.ENOSYS):
+		return &lockRefusal{
+			msg: fmt.Sprintf("dhcp: the filesystem under %s does not support locks; "+
+				"the plugin refuses to start rather than risk two writers", path),
+			errno: err,
+		}
+	default:
+		return &lockRefusal{
+			msg:   fmt.Sprintf("%v (%s): %v", ErrRecordsLocked, path, err),
+			errno: err,
+		}
+	}
+}
 
 // OpenRecords opens or creates the record file at path.
 //
@@ -99,7 +159,7 @@ func OpenRecords(path, instance string) (*Records, error) {
 	}
 	if err := unix.Flock(int(lock.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
 		_ = lock.Close()
-		return nil, fmt.Errorf("%w (%s): %v", ErrRecordsLocked, path, err)
+		return nil, lockRefused(path, err)
 	}
 
 	store, err := dhcpruntime.OpenRecordStore(path)
@@ -209,6 +269,45 @@ func (r *Records) Created(id, scope string, chaddr, identity []byte) error {
 		CHAddr:   chaddr,
 		Identity: identity,
 	})
+}
+
+// Reserved opens a record for an address answered BEFORE any endpoint
+// exists: the IPAM driver's RequestAddress, which runs before libnetwork
+// has a link to bind to (#110).
+//
+// It is a distinct phase and not an early Created because the two are
+// answerable by different questions. A RESERVED record holds an address
+// and no link, so a restart must be able to tell "Docker was told about
+// this address" from "a container is using it": the first is swept and
+// retained, the second is resumed. The fold admits Create after Reserve,
+// which is how CreateEndpoint later binds the link to THIS record rather
+// than opening a second one for the same address.
+//
+// Identity is written here and once, for the same reason Created writes
+// it: the option-61 value as sent is what the server files the lease
+// under, and the reserve's exchange is the one that put it there.
+func (r *Records) Reserved(id, scope string, chaddr, identity []byte) error {
+	return r.append(lease.RecordEvent{
+		ID:       id,
+		Op:       lease.OpReserve,
+		Scope:    scope,
+		Family:   lease.FamilyV4,
+		CHAddr:   chaddr,
+		Identity: identity,
+	})
+}
+
+// Rebound consumes a tombstone under a new hardware address.
+//
+// The identity is NOT re-sent and must not be: it is write-once in the
+// fold and it is the whole reason a re-bind can keep an address at all.
+// Docker mints a fresh MAC for every endpoint, so the address survives a
+// restart only because the client-id the server files the lease under
+// does not change with it. The CHAddr does change, and the fold accepts
+// that -- it is the one identifying field of the three that is not
+// write-once.
+func (r *Records) Rebound(id string, chaddr []byte) error {
+	return r.append(lease.RecordEvent{ID: id, Op: lease.OpRebind, CHAddr: chaddr})
 }
 
 // Scope6 is the record scope a DHCPv6 endpoint's record lives in: the

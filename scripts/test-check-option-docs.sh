@@ -9,9 +9,11 @@
 # ignored, and a vanished struct is an explicit failure.
 set -u
 
+# shellcheck source=scripts/tmpdir-guard.sh
+. "$(cd "$(dirname "$0")" && pwd)/tmpdir-guard.sh"
+
 CHECK="$(dirname "$0")/check-option-docs.sh"
-TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT
+guarded_tmpdir TMP
 
 PKG="$TMP/pkg"
 mkdir -p "$PKG"

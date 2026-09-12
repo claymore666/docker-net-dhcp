@@ -113,6 +113,71 @@ func TestV6Fixture_ModesComeUpAsRequested(t *testing.T) {
 	}
 }
 
+// TestV6Fixture_RefusesASegmentThatCannotTransmit watches the carrier
+// gate refuse, in every mode.
+//
+// It is the other half of the test above: that one says each mode comes
+// up, this one says a segment that cannot carry a frame never reaches a
+// consumer's body at all. The two failures it separates look identical
+// from a consumer -- "no router advertisement" is what a wrong mode, a
+// capture on the wrong link and a link with stopped transmit queues all
+// look like -- and one mode makes the third of those invisible: /nora's
+// assertion is that NO advertisement arrives, so a dead link PASSES it.
+//
+// MEASURED, run 34603031325: with the bridge's port removed on a hosted
+// runner, the first version of the gate refused in two modes of five,
+// walked past the other three, and /nora passed on a bridge whose
+// carrier was 0 and whose capture took no frame of any kind. The gate
+// was reading IFF_RUNNING, which a freshly created bridge reports while
+// its operstate is still unknown. This is the run that would have said
+// so, and it runs in every mode because that is where the difference
+// was.
+//
+// The state is built by attaching the port and leaving it down rather
+// than by leaving the bridge portless: a portless bridge is not the
+// same link on every kernel -- the pool's transmits, hosted's does not
+// -- and a drive that only reproduces on one host is not a drive the
+// lane runs.
+func TestV6Fixture_RefusesASegmentThatCannotTransmit(t *testing.T) {
+	for _, mode := range harness.V6Modes() {
+		t.Run(mode.String(), func(t *testing.T) {
+			refused, msg := startWithADeadBridgePort(t, mode)
+			if !refused {
+				t.Fatalf("the fixture accepted a %s segment on a bridge with no carrier; every "+
+					"wire assertion about it is then about a link nothing can speak on, and in "+
+					"%s, whose assertion is that no advertisement arrives, it PASSES (#942)",
+					mode, harness.V6NoRA)
+			}
+			if !strings.Contains(msg, "no carrier") {
+				t.Errorf("the fixture refused the %s segment for another reason than the link: "+
+					"%s. A refusal that arrives later, from the mode assertion, is the "+
+					"three-causes-one-message state the gate exists to prevent", mode, msg)
+			}
+		})
+	}
+}
+
+// startWithADeadBridgePort constructs a segment whose bridge port is
+// attached and never brought up, and reports whether the fixture
+// refused it. It goes through the fixture's own constructor, so what it
+// watches is the path a consumer takes.
+func startWithADeadBridgePort(t *testing.T, mode harness.V6Mode) (refused bool, msg string) {
+	c := &capturedT{T: t}
+	defer func() {
+		r := recover()
+		if r == nil {
+			return
+		}
+		err, ok := r.(error)
+		if !ok || !errors.Is(err, errCapturedFatal) {
+			panic(r)
+		}
+		refused, msg = c.failed, c.msg
+	}()
+	harness.NewV6FixtureWithADeadBridgePort(c, mode)
+	return false, ""
+}
+
 // --- observing the fixture's own refusal --------------------------------
 
 // errCapturedFatal unwinds a captured Fatalf. It is a sentinel rather
