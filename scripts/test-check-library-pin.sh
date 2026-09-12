@@ -21,7 +21,20 @@ set -u
 
 CHECK="$(cd "$(dirname "$0")" && pwd)/check-library-pin.sh"
 MODULE="github.com/claymore666/dhcp-golib"
-VERSION="v0.1.0"
+
+# THE VERSION IS READ OUT OF THE TREE AND IS NOT WRITTEN DOWN HERE.
+# The fixture builds against whatever the module cache holds, and the
+# cache holds what this tree's own `go mod download` put there. A
+# literal version is therefore a claim that the tree is pinned to it,
+# and the day the pin moves the claim goes false: the copy below finds
+# nothing, this file exits 1, and the failure names a gate that is
+# working perfectly. MEASURED on #966, where the pin moved to a
+# pseudo-version and this line still said v0.1.0.
+VERSION="$(cd "$(dirname "$0")/.." && go list -m -f '{{.Version}}' "$MODULE" 2>/dev/null)"
+if [ -z "$VERSION" ]; then
+    echo "FAIL: cannot read the pinned version of $MODULE out of this tree's go.mod" >&2
+    exit 1
+fi
 
 guarded_tmpdir TMP
 
@@ -102,7 +115,7 @@ run_case() { # run_case <name> <want_exit> <tree> <binary-or-empty>
 CLEAN="$TMP/clean"
 make_module "$CLEAN"
 build_into "$CLEAN" "$TMP/bin-clean" || { echo "FAIL: could not build the clean fixture" >&2; exit 1; }
-run_case "the tag pinned, no replacement, is accepted" 0 "$CLEAN" "$TMP/bin-clean"
+run_case "the pinned version, no replacement, is accepted" 0 "$CLEAN" "$TMP/bin-clean"
 
 # The gate compiles nothing, so a call with no binary has nothing to
 # judge with -- and half 1 passing on its own would be the emptied-domain
