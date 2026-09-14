@@ -103,6 +103,16 @@
 #     pins differ, however long that is. What the ledger's "written
 #     expiry" buys here is a bounded SHAPE, and that is the whole of
 #     it: two steps apart is refused, a year one step apart is not.
+#   - ONE STEP, AND ONLY AHEAD, so three release shapes fall outside
+#     the suspension: a release that skips a version, a release cut on
+#     an older line, and a tree that is simply behind. On those the
+#     #977 deadlock is back -- the release pull request needs the
+#     entry, and the pull request that removes it is red -- because
+#     "a release moves the version one step" is a convention of this
+#     project, not an invariant this gate can rely on. It is loud
+#     rather than silent: every run where the pins differ and the
+#     suspension did not apply says so, names both pins and names the
+#     ledger entry as the way through.
 #   - The STALE rule is never suspended, on any route. That is the half
 #     that keeps the default branch green after the merge.
 #
@@ -286,6 +296,11 @@ BASE_VERSION=$(pin_version "$(git show "${BASE_REF}:${VERSION_PIN_FILE}" 2>/dev/
 # mean inventing a parameter this file cannot measure, which is the
 # other way to get a sentence wider than the code. So the bound is
 # stated as what it is, in the four places that state it.
+#
+# The refusal is also narrower than "not a release": a release that
+# skips a version and a release cut on an older line are both outside
+# the successor set. Both are refused, and the NOTE at the end says
+# which readings the two pins allow rather than picking one.
 successors() {
     local v="${1#v}" maj min pat
     IFS=. read -r maj min pat <<< "$v"
@@ -294,14 +309,28 @@ successors() {
         "$maj" "$min" "$((pat + 1))" "$maj" "$((min + 1))" "$((maj + 1))"
 }
 
+# The reason is keyed on the PROPERTY -- the pins differ and it is not
+# one step -- and not on the one mechanism that used to set it. Keyed on
+# "strictly newer" it was silent on the older-line direction, which is
+# the arm a hotfix release lands in.
+#
+# Each arm carries its OWN readings, because the readings differ: only
+# the ahead arm can have been left by a release that never landed, and
+# only the behind arm by a branch nobody back-merged. One shared list
+# would be wider than the code on both arms.
 RELEASE_IN_FLIGHT=0
-PINS_EXPIRED=""
+PINS_NOT_ONE_STEP=""
+PINS_READINGS=""
 if [ -n "$TREE_VERSION" ] && [ -n "$BASE_VERSION" ] \
    && [ "$TREE_VERSION" != "$BASE_VERSION" ]; then
     if successors "$BASE_VERSION" | grep -Fx "$TREE_VERSION" >/dev/null; then
         RELEASE_IN_FLIGHT=1
     elif [ "$(printf '%s\n%s\n' "$TREE_VERSION" "$BASE_VERSION" | sort -V | tail -n1)" = "$TREE_VERSION" ]; then
-        PINS_EXPIRED="this tree pins ${TREE_VERSION} and ${BASE_REF} pins ${BASE_VERSION}, which is more than one release step"
+        PINS_NOT_ONE_STEP="more than one release step ahead of it"
+        PINS_READINGS="an earlier release that never landed, or a release that skips a version"
+    else
+        PINS_NOT_ONE_STEP="behind it"
+        PINS_READINGS="a branch nobody back-merged, or a release cut on an older line"
     fi
 fi
 
@@ -522,7 +551,7 @@ done <<< "$declared"
 pending=""
 merging=""
 travelling=""
-expired=""
+unsuspended=""
 inspected=0
 for f in "${WF_FILES[@]}"; do
     [ -e "$f" ] || continue
@@ -587,7 +616,7 @@ for f in "${WF_FILES[@]}"; do
             travelling="$travelling $rel"
             continue
         fi
-        [ -z "$PINS_EXPIRED" ] || expired="$expired $rel"
+        [ -z "$PINS_NOT_ONE_STEP" ] || unsuspended="$unsuspended $rel"
         note "'$rel' declares workflow_dispatch but is not on ${BASE_REF}."
         echo "  GitHub only exposes a dispatchable workflow from the DEFAULT" >&2
         echo "  branch, so 'gh workflow run $(basename "$rel")' answers 404 today —" >&2
@@ -618,15 +647,25 @@ if [ -n "$travelling" ]; then
     echo "      until they agree again. The stale rule is not suspended."
 fi
 
-# THE EXPIRY, SAID OUT LOUD WHEN IT BITES. Without this the refusal above
-# reads as "add an entry" to someone who has a bumped pin and believes
-# the suspension applies.
-if [ -n "$expired" ]; then
-    echo "NOTE  the pin suspension did NOT apply:${expired}" >&2
-    echo "      ${PINS_EXPIRED} ahead. A release moves the version exactly one step," >&2
-    echo "      so two steps means the first release never landed and this" >&2
-    echo "      suspension has expired. Finish or unwind that release, or declare" >&2
-    echo "      the workflow in ${ALLOWLIST} as any other pending workflow." >&2
+# THE PINS DIFFER AND THE SUSPENSION DID NOT APPLY, SAID OUT LOUD.
+# Without this the refusal above reads as "add an entry" to someone who
+# has a bumped pin and believes the suspension covers it.
+#
+# It states the readings rather than choosing one (#977 round 3). Two
+# pins more than one step apart are produced by a release that never
+# landed, by a release that skips a version, and by a release cut on an
+# older line, and this gate cannot tell those apart. Naming only the
+# first one is the wider-than-the-code sentence in the evidence trail
+# that the top of this file refuses. The way through is the same in all
+# of them, and it is the last line.
+if [ -n "$unsuspended" ]; then
+    echo "NOTE  the pin suspension did NOT apply:${unsuspended}" >&2
+    echo "      this tree pins ${TREE_VERSION}, ${BASE_REF} pins ${BASE_VERSION}, and that is ${PINS_NOT_ONE_STEP}." >&2
+    echo "      The suspension covers ONE shape: this tree pinning the immediate" >&2
+    echo "      successor of ${BASE_REF}. This is not that shape, and two pins are not" >&2
+    echo "      enough to say which of its readings holds -- ${PINS_READINGS}." >&2
+    echo "      Bring the two pins to one step apart or equal, or declare the" >&2
+    echo "      workflow in ${ALLOWLIST} as any other pending workflow." >&2
 fi
 
 if [ "$fail" -ne 0 ]; then

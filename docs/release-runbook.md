@@ -426,7 +426,12 @@ has to be true.
    steps apart is refused. Nothing in the gate reads a clock, a tag or
    the state of a release, so a release parked after step 5 sits
    exactly one step ahead and stays accepted until somebody finishes or
-   unwinds it.
+   unwinds it. One step, and only ahead: a release that skips a version
+   and a release cut on an older line are both outside it, and on those
+   the #977 deadlock is back, because the release PR needs the entry
+   and the PR that removes it is red. Every run where the pins differ
+   and the acceptance did not apply says so, names both pins, and names
+   a ledger entry as the way through.
 3. **Documentation review, PR-driven against the milestone.** Don't
    review from memory; review from the change set. List every PR on the
    `vX.Y.Z` milestone and reconcile each one's user-visible change

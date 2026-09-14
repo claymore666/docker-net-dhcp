@@ -1397,6 +1397,21 @@ grep -F 'more than one release step' "$TMP/out10" >/dev/null \
     && echo "PASS: and the run says the suspension did not apply, and by how much" \
     || { echo "FAIL: the refusal is not explained where it bites"; fails=1; }
 
+# AND IT NAMES BOTH READINGS, NOT ONE (#977 round 3). Two pins this far
+# apart are left by a release that never landed AND by a release that
+# skips a version -- this project has dropped a planned version before --
+# and the gate cannot tell those apart. Asserting the stale one as the
+# reason is the sentence wider than the code that this whole PR is about,
+# and on the skipped-release reading the way through is the ledger entry,
+# which the run has to name.
+grep -F 'a release that skips a version' "$TMP/out10" >/dev/null \
+    && echo "PASS: and the skipped-release reading is named beside the stale one" \
+    || { echo "FAIL: the run offers only the stale-tree reading of two pins"; fails=1; }
+grep -F '.github/dispatch-pending.txt as any other pending workflow' "$TMP/out10" >/dev/null \
+    && echo "PASS: and the ledger entry is named as the way through" \
+    || { echo "FAIL: the run does not say what to do on the reading it cannot exclude"
+         fails=1; }
+
 # ...and the preservation control, because a red that only measures
 # "hard" proves nothing: ONE step ahead on the same fixture, same
 # workflow, same ledger, passes. Without it the case above would be
@@ -1456,6 +1471,32 @@ check "and still suspended 40 commits later: the bound is a distance, not a dura
 check "the duration-bounded copy refuses it, so the case above can go red" \
     rc1 "$(timed_verdict)"
 rm -f "$timed"
+
+# F4c. ONLY AHEAD, AND THE OTHER ARM IS LOUD TOO (#977 round 3). A
+# release cut on an older line -- a hotfix off an older tag while the
+# default branch has moved on -- pins a version BEHIND the default
+# branch. It is not suspended, which is correct, and the run used to say
+# nothing at all about why: the reason was keyed on the one mechanism
+# that sets the newer arm. The readings it prints are this arm's own;
+# a release that never landed cannot produce it.
+git -C "$REPO10" checkout -q main
+git -C "$REPO10" checkout -q -b hotfix10 main
+rm -f "$REPO10/.github/workflows/parked10wf.yml" "$REPO10/.github/workflows/bumped10.yml"
+dispatchable hotfix10wf > "$REPO10/.github/workflows/hotfix10wf.yml"
+sed -i 's/v9\.9\.0/v9.8.1/' "$REPO10/README.md"
+check "a release cut on an older line is not suspended" \
+    rc1 "$(verdict10 pull_request dev)"
+grep -F 'pin suspension did NOT apply' "$TMP/out10" >/dev/null \
+    && echo "PASS: and this arm says the suspension did not apply as well" \
+    || { echo "FAIL: the behind arm is silent about why the suspension missed it"
+         fails=1; }
+grep -F 'a release cut on an older line' "$TMP/out10" >/dev/null \
+    && echo "PASS: and it names the reading this arm actually has" \
+    || { echo "FAIL: the behind arm does not name the older-line reading"; fails=1; }
+grep -F 'a release that skips a version' "$TMP/out10" >/dev/null \
+    && { echo "FAIL: the behind arm offers a reading only the ahead arm can have"
+         fails=1; } \
+    || echo "PASS: and it does not offer the ahead arm's readings"
 
 # --- the real repository ------------------------------------------------
 # The shipped state must satisfy its own gate.

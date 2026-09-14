@@ -133,7 +133,7 @@
 #     the default branch. The gate reads that state from the version
 #     pins, and from nothing else: while this tree pins the immediate
 #     successor of what the default branch pins, a missing entry is
-#     taken as the removal in transit. Three bounds come with that, and
+#     taken as the removal in transit. Four bounds come with that, and
 #     they are the written expiry this ledger demands of its own
 #     entries:
 #     FIRST, the gate cannot tell a release from a bare pin bump. It
@@ -150,5 +150,14 @@
 #     a clock, a tag or the state of a release, so a release parked
 #     after runbook step 5 sits exactly one step ahead and stays
 #     suspended for as long as nobody finishes or unwinds it.
+#     FOURTH, one step and only ahead. A release that skips a version, a
+#     release cut on an older line, and a tree that is simply behind are
+#     all outside it, and on those the #977 deadlock is back: the
+#     release pull request needs the entry, and the pull request that
+#     removes it is red. "A release moves the version one step" is a
+#     convention of this project, not an invariant. Every run where the
+#     pins differ and the suspension did not apply says so, names both
+#     pins and the readings that arm allows, and names an entry here as
+#     the way through.
 #     The stale rule is never suspended.
 #
