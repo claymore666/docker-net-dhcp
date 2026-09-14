@@ -1093,9 +1093,12 @@ sidecar, no <code>cap_add</code>:</p>
    plugin process and never a child process, and it never configures the
    link itself: the plugin applies every lease change via netlink.</li>
 <li>On <code>docker stop</code>, libnetwork calls <code>Leave</code> → the persistent client is
-   stopped. It does <strong>not</strong> release the lease: the address stays leased
-   until it expires, or until the container comes back and re-claims it,
-   exactly as it would for a physical host that rebooted (v1.9.0+, #800).</li>
+   stopped. By default it does <strong>not</strong> release the lease: the address
+   stays leased until it expires, or until the container comes back and
+   re-claims it, exactly as it would for a physical host that rebooted
+   (v1.9.0+, #800). A network created with <code>release_lease=on_stop</code> hands
+   it back here instead, and gives up the stable MAC and address across
+   a restart to do so (v2.2.0+, #962).</li>
 <li>The macvlan link is reaped automatically when the container netns is
    destroyed.</li>
 </ol>

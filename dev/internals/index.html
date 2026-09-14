@@ -1687,23 +1687,60 @@ this is the mechanism.</p>
   a container holding an address nothing ever finished checking.</li>
 </ul>
 <h2 id="how-a-lease-gets-handed-back">How a lease gets handed back<a class="headerlink" href="#how-a-lease-gets-handed-back" title="Permanent link">&para;</a></h2>
-<p>It does not. Nothing this plugin runs ever sends a <code>DHCPRELEASE</code>, and
-that is deliberate as of v1.9.0 (#800).</p>
+<p>By default it does not, and that is deliberate as of v1.9.0 (#800). A
+network that says <code>release_lease=on_stop</code> is the exception, and the
+whole of it (#962).</p>
 <p>A lease is a lease. When a container stops, its address stays leased
 until the lease expires, and if the container comes back before then it
 asks for the same address and gets it. That is the ordinary DHCP path,
 and exactly what happens when a physical host on the segment reboots or
 loses power. A container is a host on this segment and costs the server
 what one costs.</p>
-<p>Neither client releases. The <code>CreateEndpoint</code> one-shot ends by
-cancelling its own manager, which drops the lease locally with
-<code>ReasonStopped</code> and sends nothing. The record carries the lease to the
-persistent client that takes over moments later, which resumes it as
-INIT-REBOOT instead of discovering afresh. The persistent client is
-stopped at <code>Leave</code> and keeps the address for the container that may be
-about to restart. A stop is this process's own shutdown reported back to
-it, which is why nothing counts it as a lease loss: doing so would
-report one for every container that started successfully.</p>
+<p>On a default network neither client releases. The <code>CreateEndpoint</code>
+one-shot ends by cancelling its own manager, which drops the lease
+locally with <code>ReasonStopped</code> and sends nothing. The record carries the
+lease to the persistent client that takes over moments later, which
+resumes it as INIT-REBOOT instead of discovering afresh. The persistent
+client is stopped at <code>Leave</code> and keeps the address for the container
+that may be about to restart. A stop is this process's own shutdown
+reported back to it, which is why nothing counts it as a lease loss:
+doing so would report one for every container that started
+successfully.</p>
+<p><strong>What <code>release_lease=on_stop</code> changes.</strong> At <code>Leave</code>, and only there,
+the endpoint's lease goes back: a <code>DHCPRELEASE</code> (RFC 2131 section 4.4.6)
+for IPv4 and a <code>Release</code> (RFC 9915 section 18.2.7) for IPv6, one
+datagram per family.</p>
+<p><strong>It is built from the lease record, not from a running client</strong>, and
+that is the difference that makes the option work for the case it
+exists for. A container stopped before the plugin's persistent client
+attached has no client to ask, and the address it was using came from
+the one-shot exchange at <code>CreateEndpoint</code> -- which wrote it into the
+same record. So the record holds the address, the identity as sent, the
+chaddr and the server, and the release is assembled from those and sent
+from the host's own address on the parent interface. Nothing needs the
+container's namespace, which may already be gone.</p>
+<p>The v6 address comes off the container link first, which section 18.2.7
+requires before the exchange may begin; if it cannot be removed, nothing
+is sent and the address expires on the server's clock instead. The
+source is the parent's link-local address and never the address being
+released, which is the same section's second requirement.</p>
+<p>Everything else about that teardown follows from the address being
+gone. The record is <code>CLOSED</code> rather than <code>LEFT</code>, per family, so the next
+start cannot resume an address the server has already put back in its
+pool. No tombstone is laid, so no other container inherits the MAC and
+the addresses beside it. The tombstone is one object carrying both
+families' addresses, so either family releasing suppresses it, while the
+record of a family whose release did not happen is retained exactly as
+under <code>never</code> and stays resumable. <code>releases_sent</code> counts what left the host and
+<code>release_failures</code> counts attempts that put nothing on the wire, both
+split per family and both moved by the plugin from the outcome of its
+own attempt, which is the only place that knows a release was asked for
+and did not happen.</p>
+<p><code>Leave</code> is the only path that releases. <code>Plugin.Close</code>, a manager
+displaced by a newer one for the same endpoint, and the cleanup after
+<code>docker network rm</code> all stop clients whose containers are still
+running, and a release there would tell the server an address is free
+while a live container holds it.</p>
 <p><strong>Why this changed.</strong> Up to v1.8.x the plugin released aggressively. The
 external client emitted a <code>RELEASE</code> on a graceful stop, and a background
 <em>reclaim</em> handed back the one-shot's address whenever no persistent
@@ -1724,12 +1761,20 @@ manufactured by the plugin itself. Waiting for expiry has no such
 failure mode, so the whole mechanism went: the release itself, the
 reclaim, and the <code>orphaned_leases_released</code> and
 <code>orphaned_lease_release_failures</code> counters that measured it.</p>
+<p><code>release_lease=on_stop</code> does not bring that mechanism back. What it
+sends comes from the endpoint's own live client, inside the container's
+sandbox, before anything is torn down, and the tombstone it would have
+raced is not written at all for an endpoint that released. The
+background reclaim and its synthesised link stay gone.</p>
 <p>The surviving teardown counter was renamed to match: what was
 <code>lease_release_failures</code> is now <code>client_stop_failures</code>, because a client
 that exits badly is all it can still mean.</p>
-<p>The cost is that a short-lived container's address is unavailable for
-one lease time. Size the server's pool and lease time for the churn,
-the same way you would for any other population of hosts.</p>
+<p>The cost on a <code>release_lease=never</code> network, the default, is that a
+short-lived container's address is unavailable for one lease time. Size
+the server's pool and lease time for the churn, the same way you would
+for any other population of hosts. <code>release_lease=on_stop</code> is the
+setting that buys the address back sooner, at the price of the stop-time
+cost above and of the cases where the release cannot be sent.</p>
 <h2 id="how-operations-on-one-parent-nic-are-serialised">How operations on one parent NIC are serialised<a class="headerlink" href="#how-operations-on-one-parent-nic-are-serialised" title="Permanent link">&para;</a></h2>
 <p>A parent NIC registers one <code>rx_handler</code>, so it is a macvlan port or an
 ipvlan port and never both. Whichever kind asks second gets <code>EBUSY</code>.

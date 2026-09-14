@@ -1160,7 +1160,9 @@ server's configuration was received and discarded (<a href="https://github.com/c
 managed segment the leased address stopped being refreshed and its
 default route disappeared (<a href="https://github.com/claymore666/docker-net-dhcp/issues/875">#875</a>). The same release stops the plugin
 sending DHCPRELEASE on any path: an address is held until the lease
-expires, like any other host's (<a href="https://github.com/claymore666/docker-net-dhcp/issues/800">#800</a>).</p>
+expires, like any other host's (<a href="https://github.com/claymore666/docker-net-dhcp/issues/800">#800</a>). v2.2.0 puts that back under
+the operator's control with <code>release_lease</code>, per network and off by
+default (<a href="https://github.com/claymore666/docker-net-dhcp/issues/962">#962</a>).</p>
 <p>v1.8.0 carried the first human review of the design and its trust
 boundaries (<a href="https://github.com/claymore666/docker-net-dhcp/issues/457">#457</a>, <a href="https://github.com/claymore666/docker-net-dhcp/issues/699">#699</a>), pulled into that release because it is the
 one that opens a TCP port in a process holding <code>CAP_NET_ADMIN</code>. Every

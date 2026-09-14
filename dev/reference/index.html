@@ -1932,6 +1932,11 @@ network create -o key=value</code>, or <code>driver_opts:</code> in Compose:</p>
 <td>all</td>
 <td><code>false</code></td>
 </tr>
+<tr>
+<td><code>release_lease</code></td>
+<td>all</td>
+<td><code>never</code></td>
+</tr>
 </tbody>
 </table>
 <p><strong><a href="#driver-options-per-endpoint">Per-endpoint options</a></strong>, set with
@@ -2117,22 +2122,23 @@ surprise.</p>
 so the safe sequence for moving from <code>vOLD</code> to <code>vNEW</code> is:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="c1"># 1. Stop containers using plugin networks</span>
 <a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="c1"># 2. Remove the networks (they&#39;re cheap to recreate; the addresses stay</span>
-<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="c1">#    leased until they expire; nothing sends a DHCPRELEASE, #800)</span>
-<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a>docker<span class="w"> </span>network<span class="w"> </span>rm<span class="w"> </span>my-dhcp-net
-<a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a><span class="c1"># 3. Swap the plugin (STATE_DIR on the host is left alone, so the</span>
-<a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a><span class="c1">#    tombstone and audit ledger carry across; v1.5.0+)</span>
-<a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a>docker<span class="w"> </span>plugin<span class="w"> </span>disable<span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:vOLD
-<a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a>docker<span class="w"> </span>plugin<span class="w"> </span>rm<span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:vOLD
-<a id="__codelineno-3-9" name="__codelineno-3-9" href="#__codelineno-3-9"></a><span class="c1"># Upgrading ONTO v1.5.0 or later from an earlier version: create the</span>
-<a id="__codelineno-3-10" name="__codelineno-3-10" href="#__codelineno-3-10"></a><span class="c1"># bind source first. v1.5.0 is the release whose manifest started</span>
-<a id="__codelineno-3-11" name="__codelineno-3-11" href="#__codelineno-3-11"></a><span class="c1"># mounting STATE_DIR from the host, and Docker will not create a</span>
-<a id="__codelineno-3-12" name="__codelineno-3-12" href="#__codelineno-3-12"></a><span class="c1"># missing bind source, so the install below fails at start-up and leaves the</span>
-<a id="__codelineno-3-13" name="__codelineno-3-13" href="#__codelineno-3-13"></a><span class="c1"># plugin disabled. vOLD is already gone at this point, so the host has</span>
-<a id="__codelineno-3-14" name="__codelineno-3-14" href="#__codelineno-3-14"></a><span class="c1"># no working driver until you `docker plugin enable` the new one. See</span>
-<a id="__codelineno-3-15" name="__codelineno-3-15" href="#__codelineno-3-15"></a><span class="c1"># &quot;If the directory is missing&quot; above. Harmless to repeat later.</span>
-<a id="__codelineno-3-16" name="__codelineno-3-16" href="#__codelineno-3-16"></a>sudo<span class="w"> </span>mkdir<span class="w"> </span>-p<span class="w"> </span>/var/lib/net-dhcp
-<a id="__codelineno-3-17" name="__codelineno-3-17" href="#__codelineno-3-17"></a>docker<span class="w"> </span>plugin<span class="w"> </span>install<span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:vNEW
-<a id="__codelineno-3-18" name="__codelineno-3-18" href="#__codelineno-3-18"></a><span class="c1"># 4. Recreate networks against vNEW, restart containers</span>
+<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="c1">#    leased until they expire unless the network set release_lease,</span>
+<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="c1">#    which is off by default, #800/#962)</span>
+<a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a>docker<span class="w"> </span>network<span class="w"> </span>rm<span class="w"> </span>my-dhcp-net
+<a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a><span class="c1"># 3. Swap the plugin (STATE_DIR on the host is left alone, so the</span>
+<a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a><span class="c1">#    tombstone and audit ledger carry across; v1.5.0+)</span>
+<a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a>docker<span class="w"> </span>plugin<span class="w"> </span>disable<span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:vOLD
+<a id="__codelineno-3-9" name="__codelineno-3-9" href="#__codelineno-3-9"></a>docker<span class="w"> </span>plugin<span class="w"> </span>rm<span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:vOLD
+<a id="__codelineno-3-10" name="__codelineno-3-10" href="#__codelineno-3-10"></a><span class="c1"># Upgrading ONTO v1.5.0 or later from an earlier version: create the</span>
+<a id="__codelineno-3-11" name="__codelineno-3-11" href="#__codelineno-3-11"></a><span class="c1"># bind source first. v1.5.0 is the release whose manifest started</span>
+<a id="__codelineno-3-12" name="__codelineno-3-12" href="#__codelineno-3-12"></a><span class="c1"># mounting STATE_DIR from the host, and Docker will not create a</span>
+<a id="__codelineno-3-13" name="__codelineno-3-13" href="#__codelineno-3-13"></a><span class="c1"># missing bind source, so the install below fails at start-up and leaves the</span>
+<a id="__codelineno-3-14" name="__codelineno-3-14" href="#__codelineno-3-14"></a><span class="c1"># plugin disabled. vOLD is already gone at this point, so the host has</span>
+<a id="__codelineno-3-15" name="__codelineno-3-15" href="#__codelineno-3-15"></a><span class="c1"># no working driver until you `docker plugin enable` the new one. See</span>
+<a id="__codelineno-3-16" name="__codelineno-3-16" href="#__codelineno-3-16"></a><span class="c1"># &quot;If the directory is missing&quot; above. Harmless to repeat later.</span>
+<a id="__codelineno-3-17" name="__codelineno-3-17" href="#__codelineno-3-17"></a>sudo<span class="w"> </span>mkdir<span class="w"> </span>-p<span class="w"> </span>/var/lib/net-dhcp
+<a id="__codelineno-3-18" name="__codelineno-3-18" href="#__codelineno-3-18"></a>docker<span class="w"> </span>plugin<span class="w"> </span>install<span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:vNEW
+<a id="__codelineno-3-19" name="__codelineno-3-19" href="#__codelineno-3-19"></a><span class="c1"># 4. Recreate networks against vNEW, restart containers</span>
 </code></pre></div>
 <p>A 2.0 plugin takes an exclusive lock on the lease record in <code>STATE_DIR</code>, so a
 second 2.0 tag sharing that directory cannot be enabled while the first one
@@ -2461,6 +2467,13 @@ rollback around removing the IPAM-mode networks first.</p>
 <td>v1.0.0</td>
 <td>Append every lease-lifecycle event (<code>bound</code> / <code>renew</code> / <code>stopped</code> / <code>stop_failed</code>) to <code>STATE_DIR/leases.jsonl</code>, one JSON object per line with timestamp, network, endpoint, container, hostname, IP, MAC. Rotated at 16 MB or 30 days (one rotated generation kept, ≤ ~32 MB total). Append failures bump <code>ledger_write_failures</code> on <code>/Plugin.Health</code>, never affecting lease handling. Off by default: per-event disk write, and container↔IP correlation on disk is privacy-relevant in some environments.</td>
 </tr>
+<tr>
+<td><code>release_lease</code></td>
+<td>all</td>
+<td><code>never</code></td>
+<td><strong>v2.2.0</strong></td>
+<td>Whether an endpoint hands its DHCP lease back when it leaves its sandbox, which is every <code>docker stop</code>, every <code>docker rm</code> of a running container and every <code>docker network disconnect</code>. <strong><code>never</code></strong> (default) sends nothing: the address stays leased until it expires, and a container that restarts before then asks for it again and gets it, exactly as a physical host on the segment does after a reboot (#800). <strong><code>on_stop</code></strong> sends a DHCPRELEASE (RFC 2131 section 4.4.6) for IPv4 and a Release (RFC 9915 section 18.2.7) for IPv6, one datagram per family, built from the endpoint's own lease record and sent from the host's address on the parent interface. The address goes back to the server's pool at once, and the container's next start is a fresh acquisition that may land on a different address. <strong>It does not need a running DHCP client</strong>, which matters for the shape the option is most used for: a container that stops before the plugin's persistent client has attached still hands its address back, because the address it used came from the acquisition at endpoint creation and that acquisition wrote it into the same record. Two things follow and are not configurable: the endpoint lays <strong>no tombstone</strong>, so it does not keep its MAC across a restart, and the lease record of each family whose address actually went back is closed rather than kept resumable. Both are the same rule, that nothing may hand on an address the server has already taken back. <code>releases_sent</code> and <code>release_failures</code> report what happened, per family. <code>on_stop</code> costs <code>docker stop</code> one datagram per family, sent synchronously and not retransmitted, with no reply read and no retry. Nothing waits on the server. A release the host cannot send at all fails immediately and is counted, and the address is then left to expire exactly as under <code>never</code>. The reason is in the plugin log beside the counter: no record, no leased address on it, no server named on it, no address on the parent to send from, or the socket. <strong><code>on_remove</code> is not available yet</strong> and is refused at <code>docker network create</code>, with the reason in the message. It arrives in the next change on this milestone, as a timed release: Docker deletes an endpoint when its container <strong>stops</strong>, not when it is removed, so a release sent from that handler would fire on every <code>docker stop</code> (which is <code>on_stop</code>) and would never fire for <code>docker rm</code> of an already-stopped container. Any other value is refused the same way. Networks created before this option existed read as <code>never</code>.</td>
+</tr>
 </tbody>
 </table>
 <h3 id="dhcp-classless-static-routes-option-121">DHCP classless static routes (option 121)<a class="headerlink" href="#dhcp-classless-static-routes-option-121" title="Permanent link">&para;</a></h3>
@@ -2749,6 +2762,13 @@ matches network-wide, which is the v0.5.0 behaviour above and is correct
 for it. Writing one for a <em>refused</em> hostname would make the value the
 plugin declined to trust for a narrow match into a match against every
 container on the network.</p>
+<p>An endpoint on a <code>release_lease=on_stop</code> network gets no tombstone
+either, and for a different reason again: it handed its addresses back
+when it stopped, so they are in the server's pool and may already
+belong to somebody else. Inheriting the MAC beside them would have the
+next container ask for an address that is no longer free. A network
+that asks for prompt returns is asking to give up restart stability,
+and that is the whole of the trade (#962).</p>
 <p>And the tombstone is keyed by <strong>network ID</strong>, so it survives a container
 restart but not the removal of the network itself, which is why a plugin
 upgrade changes the address (see the callout under
@@ -2801,9 +2821,11 @@ in every mode:</p>
   returning container and renews the same address. It is what makes IPv4
   restart-stable without depending on a <code>DHCPRELEASE</code> being sent on the
   way out, which is not always possible (<code>SIGKILL</code>, OOM, power loss).
-  Since v1.9.0 the plugin never sends one at all (#800), so this
-  identity is the whole mechanism: a restarting container gets its
-  address back by asking again and being recognised.</p>
+  Since v1.9.0 the plugin sends none by default (#800), so this identity
+  is the whole mechanism: a restarting container gets its address back
+  by asking again and being recognised. A network that sets
+  <code>release_lease=on_stop</code> opts out of that, deliberately: it hands the
+  address back and its next start is a fresh acquisition (#962).</p>
 <p><code>ipvlan</code> is the exception: its L2 slaves all inherit the parent's MAC,
   so a MAC-derived id could not tell containers apart. Those keep the
   endpoint-derived id, which is unique but <strong>not</strong> stable across a
@@ -2844,8 +2866,10 @@ container's mount namespace on every renewal.</p>
 alongside its DHCPv4 one</strong>. Docker reports it as <code>GlobalIPv6Address</code>,
 and it behaves like the v4 address in every way the protocol allows: it
 is requested back after a restart, renewed on its own timers, counted in
-its own <code>*_v6</code> counters, and released to nobody (this plugin sends no
-RELEASE on either family).</p>
+its own <code>*_v6</code> counters, and handed back on exactly the same rule as the
+v4 address: no Release at all on a <code>release_lease=never</code> network, which
+is the default, and one per family at Leave on a <code>release_lease=on_stop</code>
+network (#962).</p>
 <p>What the option does, concretely:</p>
 <ul>
 <li><strong>A second persistent client</strong>, in the container's own network
@@ -3273,7 +3297,7 @@ already parse it were not told to expect a new type.</p>
 <td><code>join_start_failures</code></td>
 <td>yes</td>
 <td>fail</td>
-<td>(v1.3.3+) Persistent-client start failures at attach time <strong>for a container that is still running</strong>. It got its initial lease but runs without renewal, and the lease is never released on disconnect (#317). The plugin log carries the cause; fix it and restart the container. A container that <em>exited</em> mid-attach is counted separately and is not a fault; see below (#373).</td>
+<td>(v1.3.3+) Persistent-client start failures at attach time <strong>for a container that is still running</strong>. It got its initial lease but runs without renewal, and on a <code>release_lease=never</code> network, the default, the lease is not released on disconnect (#317). <strong><code>release_lease=on_stop</code> does release it</strong>, and this counter is exactly the case that change was made for: the release is built from the endpoint's lease record and needs no running client, so an endpoint that never got one still hands its address back at <code>Leave</code> (#962). The plugin log carries the cause; fix it and restart the container. A container that <em>exited</em> mid-attach is counted separately and is not a fault; see below (#373).</td>
 </tr>
 <tr>
 <td><code>join_aborted_container_gone</code></td>
@@ -3285,7 +3309,7 @@ already parse it were not told to expect a new type.</p>
 <td><code>join_aborted_no_container</code></td>
 <td>no</td>
 <td>n/a</td>
-<td>(v1.6.0+) Attaches abandoned because no container ever claimed the endpoint on the network. Since v1.9.0 the leased address is <strong>left to expire</strong> and not released (#800); before then it was released here, which is why the counter's name says nothing about either. Not a fault: nothing is running without a renewal client, because nothing is running, so this never flips <code>healthy</code>. Distinct from <code>join_aborted_container_gone</code>, which needs the daemon to say "no such container" or the sandbox netns to be visibly gone; this one covers the case where the endpoint is simply unclaimed after the attach budget, which previously fell through to <code>join_start_failures</code> and leaked the address (#566).</td>
+<td>(v1.6.0+) Attaches abandoned because no container ever claimed the endpoint on the network. Since v1.9.0 the leased address is <strong>left to expire</strong> and not released (#800); before then it was released here, which is why the counter's name says nothing about either. <code>release_lease=on_stop</code> does not change this row: a release happens at Leave, and an endpoint no container ever claimed reaches no Leave (#962). Not a fault: nothing is running without a renewal client, because nothing is running, so this never flips <code>healthy</code>. Distinct from <code>join_aborted_container_gone</code>, which needs the daemon to say "no such container" or the sandbox netns to be visibly gone; this one covers the case where the endpoint is simply unclaimed after the attach budget, which previously fell through to <code>join_start_failures</code> and leaked the address (#566).</td>
 </tr>
 <tr>
 <td><code>join_attach_slow</code></td>
@@ -3450,6 +3474,18 @@ already parse it were not told to expect a new type.</p>
 <td>(renamed from <code>lease_release_failures</code> in v1.9.0, #800) A renewal client did not shut down cleanly when the plugin stopped it at teardown. <strong>What "cleanly" means changed in 2.0:</strong> there is no client process to signal and no exit status to read. The plugin cancels the client's context and waits for its goroutine to return, so a tick here means the run loop came back with an error that was not the cancellation, or did not come back inside the finish timeout at all. It does <strong>not</strong> mean a lease went unreleased: since v1.9.0 nothing this plugin runs sends a DHCPRELEASE on any path, so every stopped container's address is held until it expires whatever this counter reads. A pattern points at clients wedging in their own loop, or at a finish timeout set too tight.</td>
 </tr>
 <tr>
+<td><code>releases_sent</code></td>
+<td>no</td>
+<td>n/a</td>
+<td><strong>(v2.2.0)</strong> Leases handed back to the server: a DHCPRELEASE (RFC 2131 section 4.4.6) or a DHCPv6 Release (RFC 9915 section 18.2.7) that left this host. Zero on every network that does not set <code>release_lease</code>, which is the default and every network created before v2.2.0. Counted <strong>from the send</strong> and never from the decision to release: it moves where the datagram left the host, so a release the host could not put on the wire moves <code>release_failures</code> instead. Split per family, because a dual-stack endpoint can hand one address back and keep the other. Expect roughly one per family per <code>docker stop</code> on a releasing network.</td>
+</tr>
+<tr>
+<td><code>release_failures</code></td>
+<td>no</td>
+<td>warn</td>
+<td><strong>(v2.2.0)</strong> Attempts to hand a lease back that put no message on the wire. The plugin log names which of them it was, beside the counter: this endpoint and family have no lease record to build from, the record holds no address or no server identity, the record is one the sender refuses, the parent interface carries no address to send from, the send itself failed, or a DHCPv6 address could not be taken off the container link first, which RFC 9915 section 18.2.7 requires before the exchange may begin. Not healthy-affecting, because nothing on this host is broken by it: the container is stopping either way and the address is simply left to expire on the server's clock, which is what a <code>release_lease=never</code> network does on every teardown. <strong>Worth investigating</strong> all the same, because a network that asked for its addresses back is not getting them back, and a pool sized for prompt returns will run short. Stays at zero on a <code>never</code> network, which has nothing to attempt.</td>
+</tr>
+<tr>
 <td><code>naks_received</code></td>
 <td>no</td>
 <td>n/a</td>
@@ -3459,7 +3495,7 @@ already parse it were not told to expect a new type.</p>
 <td><code>displaced_stops</code></td>
 <td>no</td>
 <td>n/a</td>
-<td>(v1.3.5+) Attaches that found a manager already registered for the same endpoint and stopped it, which is a container restarting into a plugin that had already recovered it (#338). The displaced client is stopped cleanly and the new one takes over. Stopped is not released: it sends no DHCPRELEASE, so the address stays leased and the incoming client renews it, so a few are normal after a plugin restart. Climbing steadily alongside <code>recovered_ok</code> means a container is in a restart loop.</td>
+<td>(v1.3.5+) Attaches that found a manager already registered for the same endpoint and stopped it, which is a container restarting into a plugin that had already recovered it (#338). The displaced client is stopped cleanly and the new one takes over. Stopped is not released: a displacement is not an endpoint leaving its sandbox, so it sends no DHCPRELEASE even on a <code>release_lease=on_stop</code> network, and the address stays leased for the incoming client to renew. A few are normal after a plugin restart. Climbing steadily alongside <code>recovered_ok</code> means a container is in a restart loop.</td>
 </tr>
 <tr>
 <td><code>restart_link_up_waited</code></td>
@@ -3689,6 +3725,12 @@ already parse it were not told to expect a new type.</p>
 <td>n/a</td>
 <td>(v1.8.0+, #730) The IPv4-only share, on the same rule. Both halves are now stored and the unsuffixed counter is their <strong>sum</strong>. It is not a counter in its own right and nothing increments it. Before v1.8.0 the v4 share was not stored: it was recovered as <code>aggregate − *_v6</code> at render time, which could read one lower than the previous scrape and make Prometheus treat the whole counter as reset. Use <code>*_v4</code> instead of doing that subtraction yourself.</td>
 </tr>
+<tr>
+<td><code>releases_sent_v4</code>, <code>releases_sent_v6</code>, <code>release_failures_v4</code>, <code>release_failures_v6</code></td>
+<td>no</td>
+<td>n/a (<code>release_failures</code>: warn)</td>
+<td><strong>(v2.2.0, #962)</strong> The per-family shares of the two <code>release_lease</code> counters above, on the same rule: both halves are stored and the unsuffixed counter is their sum. Read them separately, because the two families release differently. IPv4 keeps its address on the link and names the binding in <code>ciaddr</code> (RFC 2131 section 3.1(6)); IPv6 must take the address off the link before the exchange may begin (RFC 9915 section 18.2.7), so a dual-stack endpoint can hand one address back and fail to hand the other back in the same teardown. All four stay at zero on a network that does not set <code>release_lease</code>.</td>
+</tr>
 </tbody>
 </table>
 <h3 id="metrics"><code>/metrics</code><a class="headerlink" href="#metrics" title="Permanent link">&para;</a></h3>
@@ -3723,15 +3765,15 @@ an upgrade.</p>
 </blockquote>
 <h4 id="metric-names-and-the-family-label">Metric names and the <code>family</code> label<a class="headerlink" href="#metric-names-and-the-family-label" title="Permanent link">&para;</a></h4>
 <p>Counters are <code>net_dhcp_&lt;name&gt;_total</code>, gauges are <code>net_dhcp_&lt;name&gt;</code>.</p>
-<p>Eight counters carry a <code>family</code> label: <code>leases_obtained</code>,
+<p>Ten counters carry a <code>family</code> label: <code>leases_obtained</code>,
 <code>leases_renewed</code>, <code>lease_changed</code>, <code>renewals_unanswered</code>,
-<code>dhcp_timeouts</code>, <code>naks_received</code>, <code>client_stop_failures</code> and
-<code>address_conflicts</code>:</p>
+<code>dhcp_timeouts</code>, <code>naks_received</code>, <code>client_stop_failures</code>,
+<code>address_conflicts</code>, <code>releases_sent</code> and <code>release_failures</code>:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-16-1" name="__codelineno-16-1" href="#__codelineno-16-1"></a>net_dhcp_leases_obtained_total{family=&quot;ipv4&quot;} 42
 <a id="__codelineno-16-2" name="__codelineno-16-2" href="#__codelineno-16-2"></a>net_dhcp_leases_obtained_total{family=&quot;ipv6&quot;} 7
 </code></pre></div>
 <p><strong>Both family series are stored and neither is derived</strong> (v1.8.0+, #730).
-Each of the eight has a <code>_v4</code> and a <code>_v6</code> field in
+Each of the ten has a <code>_v4</code> and a <code>_v6</code> field in
 <code>/Plugin.Health</code>, and the unsuffixed counter is their <strong>sum</strong>. So
 <code>leases_obtained</code> equals <code>leases_obtained_v4 + leases_obtained_v6</code>, and
 the <code>family="ipv4"</code> series is the <code>_v4</code> field read straight out. Every
@@ -3863,9 +3905,13 @@ point at best and, more usually, nothing at all:</p>
 <code>stop_failed</code>. <code>stopped</code> means the renewal client was asked to stop and
 its goroutine returned; <code>stop_failed</code> means it returned an error other
 than the cancellation, or did not return inside the finish timeout.
-Neither says anything about the lease, because since v1.9.0 the plugin
-never releases one, and the address is held until it expires (#800). The
-kinds were <code>release</code> and <code>release_failed</code> before that, and were renamed
+Neither says anything about the lease. On a <code>release_lease=never</code>
+network, which is the default, the plugin sends no DHCPRELEASE at all
+and the address is held until it expires (#800). On a
+<code>release_lease=on_stop</code> network the release is attempted at Leave,
+before the client is stopped, and it is reported in <code>releases_sent_v4</code>,
+<code>releases_sent_v6</code> and their failure pair, never here (#962). The kinds
+were <code>release</code> and <code>release_failed</code> before v1.9.0, and were renamed
 instead of kept: the ledger must never assert something the server did
 not see.</p>
 <hr />
@@ -4014,7 +4060,7 @@ consumer-side:</p>
 <tr>
 <td>One container on two plugin networks fails to start with <code>cannot program address ... conflicts with existing route</code></td>
 <td>The two networks lease from <strong>overlapping</strong> subnets, and libnetwork refuses to program a second sandbox address in a subnet the container already routes. Overlapping and never identical: the upstream check is containment in either direction, so <code>10.0.0.0/8</code> on one network and <code>10.1.2.0/24</code> on another are different subnets and still collide. <strong>Which modes reach this.</strong> In <code>mode=macvlan</code> and <code>mode=ipvlan</code> nothing stands in the way: two networks on one parent NIC are one LAN with one DHCP server, which is exactly this case. In <strong>bridge mode</strong>, the default when <code>mode</code> is unset, two networks on the <em>same</em> bridge are refused earlier and with a different message, at <code>docker network create</code> (see the <code>Bridge already in use</code> row above), so you never get as far as starting a container. If you are seeing <em>this</em> error in bridge mode, it is one of two things: the two networks sit on <em>different</em> bridges whose subnets overlap (the create-time guard keys on the bridge <strong>name</strong> and never on the subnet), or you set <code>-o ignore_conflicts=true</code>, which skips that guard and is what allowed the pair to be created. Measured identical on two daemons differing only in <a href="https://github.com/moby/moby/pull/52866">moby/moby#52866</a>, each with and without the endpoint interface-name option, so four cells and one error. That is the sample; it is not a claim about engines nobody has run, and the integration test pins it so a future engine that behaves differently shows up as a failure here instead of as a stale sentence</td>
-<td>Not a plugin setting and not fixable here. Put the two networks on <strong>non-overlapping</strong> subnets, different <em>and</em> with neither one containing the other (different parent NICs / VLANs, each with its own DHCP scope); "different subnets" alone is not enough, since a supernet and a range carved out of it are different and still conflict. Or attach the container to one network only. In bridge mode, if you reached this through <code>-o ignore_conflicts=true</code>, drop that option and let the create-time guard refuse the pair up front, where the message names the real problem. Note the container <strong>takes a real lease per network before it fails</strong>, because the plugin leases in <code>CreateEndpoint</code>, before libnetwork gets as far as refusing, and <strong>nothing releases them</strong>: this plugin never sends a DHCPRELEASE on any path (see <a href="../internals/#how-a-lease-gets-handed-back">How a lease gets handed back</a>, which it does not, #800), so those addresses stay leased until the server expires them. A repeatedly retried start therefore consumes the pool at one address per network per attempt. If addresses are scarce, shorten the lease time on the server or reserve the range, and do not wait for the plugin to hand them back</td>
+<td>Not a plugin setting and not fixable here. Put the two networks on <strong>non-overlapping</strong> subnets, different <em>and</em> with neither one containing the other (different parent NICs / VLANs, each with its own DHCP scope); "different subnets" alone is not enough, since a supernet and a range carved out of it are different and still conflict. Or attach the container to one network only. In bridge mode, if you reached this through <code>-o ignore_conflicts=true</code>, drop that option and let the create-time guard refuse the pair up front, where the message names the real problem. Note the container <strong>takes a real lease per network before it fails</strong>, because the plugin leases in <code>CreateEndpoint</code>, before libnetwork gets as far as refusing, and <strong>nothing releases them</strong>: the addresses are leased before the endpoint exists, so no <code>Leave</code> ever runs for them and <code>release_lease</code> cannot reach them (see <a href="../internals/#how-a-lease-gets-handed-back">How a lease gets handed back</a>, #800, #962), so those addresses stay leased until the server expires them. A repeatedly retried start therefore consumes the pool at one address per network per attempt. If addresses are scarce, shorten the lease time on the server or reserve the range, and do not wait for the plugin to hand them back</td>
 </tr>
 <tr>
 <td>Container can't reach the Docker host (or vice versa)</td>
