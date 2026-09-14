@@ -14,7 +14,7 @@ import (
 
 	docker "github.com/docker/docker/client"
 
-	"github.com/claymore666/docker-net-dhcp/test/integration/harness"
+	"github.com/claymore666/docker-net-dhcp/v2/test/integration/harness"
 )
 
 // The route an attach takes into a container's network namespace is a

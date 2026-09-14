@@ -21,6 +21,13 @@ set -u
 RATCHET="$(dirname "$0")/coverage-ratchet.sh"
 guarded_tmpdir TMP
 
+# The working tree as this suite found it. Compared again at the end:
+# a self-test that writes into the checkout, even for a moment, makes
+# `go build`'s vcs.modified stamp flip under whatever else the parallel
+# self-test run is building at the time.
+REPO_UNDER_TEST=$(cd "$(dirname "$RATCHET")/.." && pwd)
+TREE_BEFORE=$(git -C "$REPO_UNDER_TEST" status --porcelain 2>/dev/null)
+
 # THE HEAD BASELINE, FOR EVERY CASE WRITTEN BEFORE THE THIRD VERDICT
 # EXISTED. A baselined package with no coverage is now judged against the
 # baseline AS IT STANDS AT HEAD as well: gone from the tree and gone from
@@ -430,18 +437,18 @@ fi
 # there.
 GLUED="$TMP/glued.txt"
 {
-    printf '\tgithub.com/claymore666/docker-net-dhcp/cmd/net-dhcp\t\tcoverage: 83.3%% of statements\n'
-    printf '\tgithub.com/claymore666/docker-net-dhcp/pkg/buildinfo\t\t\tgithub.com/claymore666/docker-net-dhcp/pkg/dhcp\t\tcoverage: 90.5%% of statements\n'
-    printf '\tgithub.com/claymore666/docker-net-dhcp/pkg/plugin\t\tcoverage: 90.1%% of statements\n'
-    printf '\tgithub.com/claymore666/docker-net-dhcp/pkg/util\t\tcoverage: 97.3%% of statements\n'
+    printf '\tgithub.com/claymore666/docker-net-dhcp/v2/cmd/net-dhcp\t\tcoverage: 83.3%% of statements\n'
+    printf '\tgithub.com/claymore666/docker-net-dhcp/v2/pkg/buildinfo\t\t\tgithub.com/claymore666/docker-net-dhcp/v2/pkg/dhcp\t\tcoverage: 90.5%% of statements\n'
+    printf '\tgithub.com/claymore666/docker-net-dhcp/v2/pkg/plugin\t\tcoverage: 90.1%% of statements\n'
+    printf '\tgithub.com/claymore666/docker-net-dhcp/v2/pkg/util\t\tcoverage: 97.3%% of statements\n'
 } > "$GLUED"
 
 REAL_BASELINE="$TMP/baseline-2x.txt"
 cat > "$REAL_BASELINE" <<'EOF'
-github.com/claymore666/docker-net-dhcp/pkg/util 95.0
-github.com/claymore666/docker-net-dhcp/pkg/plugin 86.8
-github.com/claymore666/docker-net-dhcp/pkg/dhcp 89.9
-github.com/claymore666/docker-net-dhcp/cmd/net-dhcp 77.8
+github.com/claymore666/docker-net-dhcp/v2/pkg/util 95.0
+github.com/claymore666/docker-net-dhcp/v2/pkg/plugin 86.8
+github.com/claymore666/docker-net-dhcp/v2/pkg/dhcp 89.9
+github.com/claymore666/docker-net-dhcp/v2/cmd/net-dhcp 77.8
 EOF
 
 RATCHET_REPORT='' ratchet "$GLUED" "$REAL_BASELINE" > "$TMP/out" 2>&1
@@ -461,7 +468,7 @@ fi
 # with pkg/dhcp's 90.5 and pass this baseline.
 BUILDINFO_BASELINE="$TMP/baseline-buildinfo.txt"
 cat > "$BUILDINFO_BASELINE" <<'EOF'
-github.com/claymore666/docker-net-dhcp/pkg/buildinfo 90.0
+github.com/claymore666/docker-net-dhcp/v2/pkg/buildinfo 90.0
 EOF
 RATCHET_REPORT='' ratchet "$GLUED" "$BUILDINFO_BASELINE" > "$TMP/out" 2>&1
 got=$?
@@ -480,9 +487,9 @@ fi
 # mentioning nothing in particular" would find 90.1 or 97.3 and pass.
 GONE="$TMP/glued-gone.txt"
 {
-    printf '\tgithub.com/claymore666/docker-net-dhcp/cmd/net-dhcp\t\tcoverage: 83.3%% of statements\n'
-    printf '\tgithub.com/claymore666/docker-net-dhcp/pkg/buildinfo\t\t\tgithub.com/claymore666/docker-net-dhcp/pkg/plugin\t\tcoverage: 90.1%% of statements\n'
-    printf '\tgithub.com/claymore666/docker-net-dhcp/pkg/util\t\tcoverage: 97.3%% of statements\n'
+    printf '\tgithub.com/claymore666/docker-net-dhcp/v2/cmd/net-dhcp\t\tcoverage: 83.3%% of statements\n'
+    printf '\tgithub.com/claymore666/docker-net-dhcp/v2/pkg/buildinfo\t\t\tgithub.com/claymore666/docker-net-dhcp/v2/pkg/plugin\t\tcoverage: 90.1%% of statements\n'
+    printf '\tgithub.com/claymore666/docker-net-dhcp/v2/pkg/util\t\tcoverage: 97.3%% of statements\n'
 } > "$GONE"
 RATCHET_REPORT='' ratchet "$GONE" "$REAL_BASELINE" > "$TMP/out" 2>&1
 got=$?
@@ -500,15 +507,15 @@ fi
 # package this run measured and this baseline does not floor.
 THREE_BASELINE="$TMP/baseline-three.txt"
 cat > "$THREE_BASELINE" <<'EOF'
-github.com/claymore666/docker-net-dhcp/pkg/util 95.0
-github.com/claymore666/docker-net-dhcp/pkg/plugin 86.8
-github.com/claymore666/docker-net-dhcp/cmd/net-dhcp 77.8
+github.com/claymore666/docker-net-dhcp/v2/pkg/util 95.0
+github.com/claymore666/docker-net-dhcp/v2/pkg/plugin 86.8
+github.com/claymore666/docker-net-dhcp/v2/cmd/net-dhcp 77.8
 EOF
 {
     echo "count 3"
-    echo "package github.com/claymore666/docker-net-dhcp/pkg/util"
-    echo "package github.com/claymore666/docker-net-dhcp/pkg/plugin"
-    echo "package github.com/claymore666/docker-net-dhcp/cmd/net-dhcp"
+    echo "package github.com/claymore666/docker-net-dhcp/v2/pkg/util"
+    echo "package github.com/claymore666/docker-net-dhcp/v2/pkg/plugin"
+    echo "package github.com/claymore666/docker-net-dhcp/v2/cmd/net-dhcp"
 } > "$TMP/report-three"
 RATCHET_REPORT="$TMP/report-three" ratchet "$GLUED" "$THREE_BASELINE" > "$TMP/out" 2>&1
 got=$?
@@ -539,7 +546,7 @@ fi
 # "deleted" for the same reason a deleted one does and case (c) could not
 # be written at all. cmd/dhcp-handler is deleted on 2.0.0; pkg/buildinfo
 # is present and contributes no statements.
-SELF=github.com/claymore666/docker-net-dhcp
+SELF=github.com/claymore666/docker-net-dhcp/v2
 GONE_PKG=$SELF/cmd/dhcp-handler
 HERE_PKG=$SELF/pkg/buildinfo
 
@@ -746,6 +753,333 @@ else
     sed 's/^/    /' "$TMP/out"; failures=$((failures + 1))
 fi
 /bin/rm -f "$TMP/fakebin/go"
+
+# --- THE RELEASE PR AFTER A MAJOR-VERSION RENAME (#979) ------------------
+#
+# The dev->main release PR carrying a module rename is the shape that
+# turns this gate off. The merge-base blob is MAIN's baseline, spelled
+# without the major; the run's covdata output and the head baseline both
+# carry it. Read a row at a time under its own name, every base row is
+# "gone at head, and gone from the head baseline too": the DROPPED arm,
+# counted as compared, cross-check agreeing, exit 0 over packages nobody
+# compared to any floor. Measured on this repository's own rename before
+# the fix: four DROPPED, "compared 4 of 4", packages at 10.0% against
+# floors of 82.8 to 96.8.
+#
+# BOTH SPELLINGS ARE WRITTEN OUT HERE, deliberately. The script derives
+# the old one by stripping its own major suffix; a test that derived it
+# the same way could not tell a wrong derivation from a right one.
+SELF_OLD=github.com/claymore666/docker-net-dhcp
+SELF_NEW=github.com/claymore666/docker-net-dhcp/v2
+
+RENAME_BASE="$TMP/rename-base.txt"      # main's baseline: the OLD spelling
+RENAME_HEAD="$TMP/rename-head.txt"      # this branch's: the NEW spelling
+cat > "$RENAME_BASE" <<EOF
+$SELF_OLD/pkg/util 96.8
+$SELF_OLD/pkg/plugin 89.6
+EOF
+cat > "$RENAME_HEAD" <<EOF
+$SELF_NEW/pkg/util 96.8
+$SELF_NEW/pkg/plugin 89.6
+EOF
+
+RENAME_LOW="$TMP/rename-low.txt"        # the release measured almost nothing
+RENAME_OK="$TMP/rename-ok.txt"          # the release held its floors
+printf '\t%s/pkg/util\t\tcoverage: 10.0%% of statements\n\t%s/pkg/plugin\t\tcoverage: 10.0%% of statements\n' \
+    "$SELF_NEW" "$SELF_NEW" > "$RENAME_LOW"
+printf '\t%s/pkg/util\t\tcoverage: 97.3%% of statements\n\t%s/pkg/plugin\t\tcoverage: 90.1%% of statements\n' \
+    "$SELF_NEW" "$SELF_NEW" > "$RENAME_OK"
+
+# rename_run <script> <percent-file>
+rename_run() {
+    RATCHET_REPORT='' RATCHET_HEAD_BASELINE="$RENAME_HEAD" \
+        bash "$1" "$2" "$RENAME_BASE" > "$TMP/out" 2>&1
+}
+
+rename_run "$RATCHET" "$RENAME_LOW"; got=$?
+if [ "$got" -eq 1 ] \
+   && grep -F "FAIL  $SELF_NEW/pkg/util: 10.0% is below baseline 96.8%" "$TMP/out" > /dev/null \
+   && grep -F "FAIL  $SELF_NEW/pkg/plugin: 10.0% is below baseline 89.6%" "$TMP/out" > /dev/null; then
+    echo "PASS: a renamed module's floors are compared under the new names"
+else
+    echo "FAIL: the release PR's floors were not compared after the rename (exit $got)"
+    sed 's/^/    /' "$TMP/out"; failures=$((failures + 1))
+fi
+
+# The other direction, so the arm is not simply "fail a renamed release".
+rename_run "$RATCHET" "$RENAME_OK"; got=$?
+if [ "$got" -eq 0 ] \
+   && grep -F "PASS  $SELF_NEW/pkg/util: 97.3% beats baseline 96.8%" "$TMP/out" > /dev/null; then
+    echo "PASS: a renamed module that held its floors still passes"
+else
+    echo "FAIL: a renamed release that held its floors did not pass (exit $got)"
+    sed 's/^/    /' "$TMP/out"; failures=$((failures + 1))
+fi
+
+# The pairing line is what a reader of the log matches an old row to a
+# new one by, and a summary count is true of any two rows.
+if grep -F "RENAMED  $SELF_OLD/pkg/util is $SELF_NEW/pkg/util at head" "$TMP/out" > /dev/null; then
+    echo "PASS: the log names which row moved to which path"
+else
+    echo "FAIL: the rename pairing was not named in the log"
+    sed 's/^/    /' "$TMP/out"; failures=$((failures + 1))
+fi
+
+# A package the rename does not reach is still classified as before:
+# already under the head module, so nothing is re-spelled, and it is
+# genuinely absent. Driven beside the two above so the retry cannot have
+# become "match everything".
+DROP_BASE="$TMP/rename-drop-base.txt"
+DROP_HEAD="$TMP/rename-drop-head.txt"
+cat > "$DROP_BASE" <<EOF
+$SELF_NEW/pkg/util 96.8
+$SELF_NEW/cmd/dhcp-handler 74.0
+EOF
+printf '%s/pkg/util 96.8\n' "$SELF_NEW" > "$DROP_HEAD"
+RATCHET_REPORT='' RATCHET_HEAD_BASELINE="$DROP_HEAD" \
+    bash "$RATCHET" "$RENAME_OK" "$DROP_BASE" > "$TMP/out" 2>&1
+got=$?
+if [ "$got" -eq 0 ] \
+   && grep -F "DROPPED  $SELF_NEW/cmd/dhcp-handler" "$TMP/out" > /dev/null \
+   && ! grep -F "RENAMED  $SELF_NEW/cmd/dhcp-handler" "$TMP/out" > /dev/null; then
+    echo "PASS: a row already under the head module is not re-spelled"
+else
+    echo "FAIL: the retry reached a row it must not (exit $got)"
+    sed 's/^/    /' "$TMP/out"; failures=$((failures + 1))
+fi
+
+# --- A RUN IN WHICH EVERY ROW DROPPED IS NOT A PASS (#979) ---------------
+#
+# DROPPED counts as compared, so "compared N of N" is true whether the
+# floors were held or discharged. One deliberate deletion must not fail a
+# release; a whole baseline going at once is the gate having lost its
+# subject.
+ALLGONE_BASE="$TMP/allgone-base.txt"
+ALLGONE_HEAD="$TMP/allgone-head.txt"
+cat > "$ALLGONE_BASE" <<EOF
+$SELF_NEW/cmd/dhcp-handler 74.0
+$SELF_NEW/pkg/gone-as-well 61.0
+EOF
+printf '# every row went\n' > "$ALLGONE_HEAD"
+RATCHET_REPORT='' RATCHET_HEAD_BASELINE="$ALLGONE_HEAD" \
+    bash "$RATCHET" "$RENAME_OK" "$ALLGONE_BASE" > "$TMP/out" 2>&1
+got=$?
+if [ "$got" -eq 2 ] && grep -F 'Nothing left to ratchet' "$TMP/out" > /dev/null; then
+    echo "PASS: a run in which every row DROPPED is refused"
+else
+    echo "FAIL: an all-dropped run was not refused (exit $got)"
+    sed 's/^/    /' "$TMP/out"; failures=$((failures + 1))
+fi
+
+# AT THE THRESHOLD, and the escape named in the script's comment: one row
+# surviving is one comparison, and that run still passes. Driven so the
+# refusal cannot quietly widen into "any deletion fails a release", which
+# is the state the DROPPED arm exists to replace.
+NEARLY_BASE="$TMP/nearly-base.txt"
+NEARLY_HEAD="$TMP/nearly-head.txt"
+cat > "$NEARLY_BASE" <<EOF
+$SELF_NEW/cmd/dhcp-handler 74.0
+$SELF_NEW/pkg/util 96.8
+EOF
+printf '%s/pkg/util 96.8\n' "$SELF_NEW" > "$NEARLY_HEAD"
+RATCHET_REPORT='' RATCHET_HEAD_BASELINE="$NEARLY_HEAD" \
+    bash "$RATCHET" "$RENAME_OK" "$NEARLY_BASE" > "$TMP/out" 2>&1
+got=$?
+if [ "$got" -eq 0 ] && grep -F "PASS  $SELF_NEW/pkg/util: 97.3%" "$TMP/out" > /dev/null; then
+    echo "PASS: one surviving comparison is still a ratchet"
+else
+    echo "FAIL: the all-dropped refusal fired on a single deletion (exit $got)"
+    sed 's/^/    /' "$TMP/out"; failures=$((failures + 1))
+fi
+
+# --- THE PRE-FIX SCRIPTS, CUT OUT OF THE REAL ONE ------------------------
+#
+# Two surgeries, one per arm, so each is shown to be load-bearing on its
+# own rather than as a pair. Built from $RATCHET itself; a kept copy of
+# the block stops being the subject the moment the script moves on, and
+# each surgery asserts it removed something.
+#
+# THEY RUN IN A STAND-IN MODULE ROOT UNDER $TMP. NOTHING IS WRITTEN INTO
+# THE CHECKOUT, and that is not tidiness.
+#
+# coverage-ratchet.sh derives REPO_ROOT from its own path and both arms
+# below reach `go list` in that root, so round 2 put the controls in
+# scripts/ and deleted them afterwards. The suite then created and
+# removed an untracked file inside the working tree, while
+# run-gate-selftests.sh runs the suites in PARALLEL and
+# check-release-digest-fixed-point.sh builds ./cmd/net-dhcp twice with
+# the default -buildvcs. `vcs.modified` is stamped from `git status`, so
+# a file that appears between those two builds makes two builds of
+# identical inputs differ, and the digest gate refuses to measure.
+# Measured on this tree: two builds with nothing touched are identical,
+# the same two with an untracked file created between them differ
+# (vcs.modified false, then true), and the real digest gate refused in
+# two of three runs under churn in scripts/ while refusing in none idle
+# and none under the same churn OUTSIDE the tree.
+#
+# So the root moves to $TMP instead. A stand-in is only usable if it
+# answers `go list` the way the checkout does for the paths these
+# fixtures name, and that is asserted below rather than assumed.
+STANDIN="$TMP/standin"
+mkdir -p "$STANDIN/scripts" "$STANDIN/pkg/util" "$STANDIN/pkg/plugin"
+# The language version is READ from the module under test: a hard-coded
+# one drifts, and a stand-in the toolchain rejects would refuse every
+# classification, leaving the controls measuring the refusal.
+{
+    printf 'module %s\n\n' "$SELF_NEW"
+    awk '$1 == "go" { print "go " $2; exit }' "$REPO_UNDER_TEST/go.mod"
+} > "$STANDIN/go.mod"
+printf 'package util\n'   > "$STANDIN/pkg/util/util.go"
+printf 'package plugin\n' > "$STANDIN/pkg/plugin/plugin.go"
+cp "$ABS_RATCHET" "$STANDIN/scripts/coverage-ratchet.sh"
+
+# IS THE STAND-IN FAITHFUL? The shipped script, unmodified, is run from
+# both roots and must say the same thing. If the stand-in resolved
+# packages differently, a control's exit 0 would be a property of the
+# root and not of the arm it is supposed to be missing.
+#
+# TWO FIXTURES, because the thing that could differ is `go list`, and the
+# first fixture never asks it: every row it names is in the percent file,
+# so no row reaches pkg_at_head. The second holds a floor for a package
+# the run did NOT measure, which is the only shape that asks the
+# toolchain whether a package is still there. Without it a stand-in
+# missing the package entirely passes this check, measured.
+STANDIN_RATCHET="$STANDIN/scripts/coverage-ratchet.sh"
+PRESENT_BASE="$TMP/present-base.txt"    # pkg/util is floored and unmeasured
+printf '%s/pkg/util 96.8\n%s/pkg/plugin 89.6\n' "$SELF_NEW" "$SELF_NEW" > "$PRESENT_BASE"
+PRESENT_PCT="$TMP/present-pct.txt"      # ...and only pkg/plugin was measured
+printf '\t%s/pkg/plugin\t\tcoverage: 90.1%% of statements\n' "$SELF_NEW" > "$PRESENT_PCT"
+
+standin_faithful=yes
+for fixture in "$RENAME_LOW|$RENAME_BASE|$RENAME_HEAD" "$PRESENT_PCT|$PRESENT_BASE|$PRESENT_BASE"; do
+    f_pct="${fixture%%|*}"; f_rest="${fixture#*|}"
+    f_base="${f_rest%%|*}"; f_head="${f_rest#*|}"
+    RATCHET_REPORT='' RATCHET_HEAD_BASELINE="$f_head" \
+        bash "$STANDIN_RATCHET" "$f_pct" "$f_base" > "$TMP/out.standin" 2>&1
+    standin_rc=$?
+    RATCHET_REPORT='' RATCHET_HEAD_BASELINE="$f_head" \
+        bash "$RATCHET" "$f_pct" "$f_base" > "$TMP/out" 2>&1
+    real_rc=$?
+    if [ "$standin_rc" -ne "$real_rc" ] || ! cmp -s "$TMP/out" "$TMP/out.standin"; then
+        standin_faithful=no
+        echo "FAIL: the stand-in root is not a faithful stand-in on $(basename "$f_pct")" \
+             "(checkout exit $real_rc, stand-in exit $standin_rc)"
+        diff "$TMP/out" "$TMP/out.standin" | sed 's/^/    /'; failures=$((failures + 1))
+    fi
+done
+# An inert pair of runs would pass this by agreeing on nothing: the
+# second fixture has to have reached the arm that asks `go list`.
+if ! grep -F "$SELF_NEW/pkg/util" "$TMP/out" > /dev/null; then
+    echo "FAIL: the faithfulness fixture never reached a verdict on the unmeasured package"
+    sed 's/^/    /' "$TMP/out"; failures=$((failures + 1))
+elif [ "$standin_faithful" = yes ]; then
+    echo "PASS: the stand-in module root answers exactly as the checkout does, resolution included"
+fi
+
+# THE MAJOR SUFFIX IS DIGITS ONLY, AND THE COST OF FORGETTING THAT IS A
+# FOREIGN MODULE'S FLOOR. `unversioned` strips a trailing /vN only when N
+# is all digits, so `v2beta` is an ordinary last segment. Loosened to
+# strip any trailing `v*`, a module at example.com/mod/v2beta would
+# report the same stripped prefix as the UNRELATED module example.com/mod
+# and re-spell that module's rows into its own tree: a floor compared
+# against a package it does not describe.
+#
+# Driven in a stand-in root of its own, because the rule reads the module
+# path out of go.mod at REPO_ROOT and this checkout's is not v2beta. The
+# sibling copy of the rule in check-coverage-floor.sh is cased in
+# scripts/test-check-coverage-floor.sh; this one had no case at all, and
+# the loosened mutant passed the whole suite.
+BETA="$TMP/standin-beta"
+mkdir -p "$BETA/scripts" "$BETA/pkg/a"
+{
+    printf 'module example.com/mod/v2beta\n\n'
+    awk '$1 == "go" { print "go " $2; exit }' "$REPO_UNDER_TEST/go.mod"
+} > "$BETA/go.mod"
+printf 'package a\n' > "$BETA/pkg/a/a.go"
+cp "$ABS_RATCHET" "$BETA/scripts/coverage-ratchet.sh"
+
+BETA_BASE="$TMP/beta-base.txt"          # a DIFFERENT module, sharing the stripped prefix
+BETA_HEAD="$TMP/beta-head.txt"
+printf 'example.com/mod/pkg/a 90.0\n' > "$BETA_BASE"
+printf '# the foreign row is not floored here\n' > "$BETA_HEAD"
+BETA_PCT="$TMP/beta-pct.txt"            # measured under the v2beta module, well below
+printf '\texample.com/mod/v2beta/pkg/a\t\tcoverage: 10.0%% of statements\n' > "$BETA_PCT"
+
+RATCHET_REPORT='' RATCHET_HEAD_BASELINE="$BETA_HEAD" \
+    bash "$BETA/scripts/coverage-ratchet.sh" "$BETA_PCT" "$BETA_BASE" > "$TMP/out" 2>&1
+got=$?
+if [ "$got" -eq 2 ] \
+   && grep -F 'Nothing left to ratchet' "$TMP/out" > /dev/null \
+   && ! grep -F 'RENAMED' "$TMP/out" > /dev/null; then
+    echo "PASS: a v2beta suffix is not a major-version suffix, so a foreign module's row is not re-spelled"
+else
+    echo "FAIL: the digits-only rule did not hold for v2beta (exit $got)"
+    sed 's/^/    /' "$TMP/out"; failures=$((failures + 1))
+fi
+
+PRE_ALL="$STANDIN/scripts/prefix-all.sh"        # neither arm: the script as it stood
+PRE_NOREF="$STANDIN/scripts/prefix-norefusal.sh" # the retry, without the refusal
+python3 - "$RATCHET" "$PRE_ALL" "$PRE_NOREF" <<'SURGERY'
+import sys
+src = open(sys.argv[1]).read()
+
+retry_start = src.index('    # Missing under its own name is not the same as missing.')
+retry_end = src.index("    # The row's identity at head is the renamed one where a rename", retry_start)
+no_retry = src[:retry_start] + src[retry_end:]
+assert no_retry != src, "the retry block is gone from the script: this control is inert"
+no_retry, n = no_retry.replace('    at_head="${renamed:-$pkg}"\n',
+                               '    at_head="$pkg"\n'), None
+assert '${renamed:-$pkg}' not in no_retry, "the renamed identity survived the cut"
+
+ref_start = src.index('if [ "$dropped" -ne 0 ] && [ "$dropped" -eq "$compared" ]; then')
+ref_end = src.index('\nfi\n', ref_start) + len('\nfi\n')
+refusal = src[ref_start:ref_end]
+assert 'Nothing left to ratchet' in refusal, "the surgery cut the wrong block"
+
+open(sys.argv[2], "w").write(no_retry.replace(refusal, ''))
+open(sys.argv[3], "w").write(src.replace(refusal, ''))
+SURGERY
+prefix_built=$?
+
+if [ "$prefix_built" -ne 0 ]; then
+    echo "FAIL: the pre-fix controls could not be built from the real script"
+    failures=$((failures + 1))
+else
+    rename_run "$PRE_ALL" "$RENAME_LOW"; got=$?
+    if [ "$got" -eq 0 ] && grep -F "DROPPED  $SELF_OLD/pkg/util" "$TMP/out" > /dev/null; then
+        echo "PASS: ...and the pre-fix script EXITS 0 on the same release PR (the defect)"
+    else
+        echo "FAIL: the pre-fix control did not reproduce the defect (exit $got)"
+        sed 's/^/    /' "$TMP/out"; failures=$((failures + 1))
+    fi
+
+    RATCHET_REPORT='' RATCHET_HEAD_BASELINE="$ALLGONE_HEAD" \
+        bash "$PRE_NOREF" "$RENAME_OK" "$ALLGONE_BASE" > "$TMP/out" 2>&1
+    got=$?
+    if [ "$got" -eq 0 ]; then
+        echo "PASS: ...and without the refusal an all-dropped run exits 0"
+    else
+        echo "FAIL: the all-dropped pre-fix control did not exit 0 (exit $got)"
+        sed 's/^/    /' "$TMP/out"; failures=$((failures + 1))
+    fi
+fi
+# No cleanup in the checkout to do: every file this block wrote is under
+# $TMP, which the tmpdir guard removes. That the suite touched nothing in
+# the working tree is ASSERTED, because the cost of writing there is not
+# a leftover file. It is a transient one: the file only has to exist
+# across another suite's two builds to make them differ.
+#
+# Compared against the state this suite STARTED in, taken at the top of
+# the file, so a developer's own edits are not findings and there is no
+# switch to turn the check off with.
+tree_after=$(git -C "$REPO_UNDER_TEST" status --porcelain 2>/dev/null)
+if [ "$tree_after" = "$TREE_BEFORE" ]; then
+    echo "PASS: the suite wrote nothing into the working tree"
+else
+    echo "FAIL: this suite changed the working tree; a self-test must not write into it"
+    diff <(printf '%s\n' "$TREE_BEFORE") <(printf '%s\n' "$tree_after") | sed 's/^/    /'
+    failures=$((failures + 1))
+fi
 
 if [ "$failures" -ne 0 ]; then
     echo "$failures ratchet test(s) failed"

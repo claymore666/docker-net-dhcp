@@ -15,7 +15,7 @@ import (
 	docker "github.com/docker/docker/client"
 	"github.com/vishvananda/netlink"
 
-	"github.com/claymore666/docker-net-dhcp/pkg/util"
+	"github.com/claymore666/docker-net-dhcp/v2/pkg/util"
 )
 
 // CreateNetwork drives `docker network create` with the plugin and

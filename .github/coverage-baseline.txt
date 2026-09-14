@@ -292,7 +292,7 @@
 # margin is taken from the lower reading and not from the most recent
 # one. pkg/buildinfo contributes no statements, gets no percentage out of
 # `go tool covdata` and is deliberately not floored.
-github.com/claymore666/docker-net-dhcp/pkg/util 96.8
-github.com/claymore666/docker-net-dhcp/pkg/plugin 89.6
-github.com/claymore666/docker-net-dhcp/pkg/dhcp 90.0
-github.com/claymore666/docker-net-dhcp/cmd/net-dhcp 82.8
+github.com/claymore666/docker-net-dhcp/v2/pkg/util 96.8
+github.com/claymore666/docker-net-dhcp/v2/pkg/plugin 89.6
+github.com/claymore666/docker-net-dhcp/v2/pkg/dhcp 90.0
+github.com/claymore666/docker-net-dhcp/v2/cmd/net-dhcp 82.8

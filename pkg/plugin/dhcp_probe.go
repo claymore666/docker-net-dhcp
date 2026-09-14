@@ -16,8 +16,8 @@ import (
 	log "github.com/sirupsen/logrus"
 	"github.com/vishvananda/netlink"
 
-	"github.com/claymore666/docker-net-dhcp/pkg/dhcp"
-	"github.com/claymore666/docker-net-dhcp/pkg/util"
+	"github.com/claymore666/docker-net-dhcp/v2/pkg/dhcp"
+	"github.com/claymore666/docker-net-dhcp/v2/pkg/util"
 )
 
 // preflightProbeBudget caps how long the validate_dhcp probe waits

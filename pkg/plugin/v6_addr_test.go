@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/claymore666/docker-net-dhcp/pkg/dhcp"
+	"github.com/claymore666/docker-net-dhcp/v2/pkg/dhcp"
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
 )
