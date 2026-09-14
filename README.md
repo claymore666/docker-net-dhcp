@@ -161,6 +161,10 @@ networks:
   matches and the old address is re-requested; a plugin restart or upgrade
   re-adopts running containers, so their leases do not lapse
   ([how](docs/reference.md#restart-stability-mac-and-ip)).
+- **The lease can go back when the container stops.** `-o
+  release_lease=on_stop` hands the address to the server at `docker
+  stop`, per network and off by default
+  ([reference](docs/reference.md#driver-options-network-level)).
 - **No host plumbing per container.** `macvlan` and `ipvlan` attach to a
   NIC that is already there: no bridge to build, no route to add, nothing
   on the host to undo afterwards.
