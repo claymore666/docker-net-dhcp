@@ -34,8 +34,9 @@ const (
 	// running container and every `docker network disconnect`. A
 	// container that restarts asks for a fresh lease.
 	ReleaseOnStop = "on_stop"
-	// ReleaseOnRemove is #962's third value. It arrives in the next
-	// change on this milestone and is refused until then. See
+	// ReleaseOnRemove is #962's third value. It is refused until it
+	// lands, which is the v2.2.0 milestone: #962 itself ships in
+	// v2.1.1 and carries only the two values above. See
 	// releaseOnRemoveRefusal.
 	ReleaseOnRemove = "on_remove"
 )
@@ -59,13 +60,13 @@ const (
 // the release itself from the host, off the record's stored identity.
 // The sender that does that is HERE, because `on_stop` needs it too:
 // what `on_remove` still owes is the TTL and the timer that fires it.
-// That is the next change on this milestone and not this one.
+// That is a later change, on the v2.2.0 milestone, and not this one.
 //
 // Refusing it until then is the fail-closed answer. Accepting it now
 // and releasing on every stop would give two names to one behaviour and
 // would make the reference page false for whoever read it.
 const releaseOnRemoveRefusal = "release_lease=on_remove is not available yet: " +
-	"it arrives in the next change on this milestone. " +
+	"it arrives in a later release. " +
 	"Docker deletes an endpoint when its container STOPS, not when the container is removed, " +
 	"so a release sent from that handler would fire on every `docker stop` (which is release_lease=on_stop) " +
 	"and would never fire for `docker rm` of an already-stopped container. " +

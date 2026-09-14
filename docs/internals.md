@@ -624,7 +624,7 @@ nothing else.
   therefore loaded exactly once into a local, and the aggregate is the
   sum of those two locals, and never a second `.Load()` of a half that
   was already read.
-- **Both family series are stored; neither is derived.** Six counters
+- **Both family series are stored; neither is derived.** Ten counters
   carry a `family` label. `bumpFamily` increments **exactly one** of a
   pair, the v4 half or the v6 half, never both and never a third
   aggregate, so `_v4` and `_v6` are peers, and the unsuffixed counter an

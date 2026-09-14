@@ -291,7 +291,7 @@ func TestReleaseLease_OnStopHandsTheAddressBack(t *testing.T) {
 // that decided its shape.
 //
 // Two things are asserted about a network that does not set
-// `release_lease`, which is every network created before v2.2.0:
+// `release_lease`, which is every network created before v2.1.1:
 //
 //   - neither release counter moves across a full stop/start cycle. A
 //     release folded from intent, or an option read with the wrong

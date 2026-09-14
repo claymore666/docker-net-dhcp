@@ -167,7 +167,7 @@ func TestReleaseLease_ParseRefusesEveryValueItDoesNotImplement(t *testing.T) {
 			// scoped on this milestone.
 			"STOPS, not when the container is removed",
 			"not available yet",
-			"it arrives in the next change on this milestone",
+			"it arrives in a later release",
 		}},
 		{in: "On_Stop", wantErr: true, mentions: []string{"is not one of"}},
 		{in: "on_stpo", wantErr: true, mentions: []string{"is not one of"}},
