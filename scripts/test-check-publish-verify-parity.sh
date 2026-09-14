@@ -315,8 +315,15 @@ no_copy_left() {
     ! cmds "$1" | grep -E 'oras cp ' >/dev/null &&
         cmds "$1" | grep -E 'make .*push' >/dev/null
 }
-run "dropping the copy leaves verifiers for a cell nothing publishes" \
-    1 drop_alias_copy "HUB_ALIAS" no_copy_left
+#    TWO REPORTS, ASSERTED SEPARATELY. The same fixture orphans an
+#    install verifier AND a promotion, so a single case naming only
+#    "HUB_ALIAS" is satisfied by either one: disabling either reverse
+#    comparison left this case green, measured with both mutants. Each
+#    direction is now named in its own assertion.
+run "dropping the copy leaves an install verifier for a cell nothing publishes" \
+    1 drop_alias_copy "has an install verifier, but nothing publishes it" no_copy_left
+run "dropping the copy leaves a promotion for a cell nothing publishes" \
+    1 drop_alias_copy "has a promotion to :latest, but nothing publishes it" no_copy_left
 
 # 2. An ADVERTISED copy is not a copy. The line still carries the words
 #    and still ends in a quoted destination, so the pattern matches; the

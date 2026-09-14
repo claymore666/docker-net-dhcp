@@ -313,14 +313,15 @@ report "promotes it to :latest"  "promotion to :latest"  "$promoted"
 # decides what users can pull, so anything claiming to cover a cell
 # outside it is claiming to cover an object this workflow does not make.
 orphan() { # noun set
-    local noun="$1" have="$2" extra
+    local noun="$1" have="$2" extra art="a"
+    case "$noun" in [aeiou]*) art="an" ;; esac
     extra=$(comm -13 <(printf '%s\n' "$published") <(printf '%s\n' "$have"))
     [ -n "$extra" ] || return 0
     rc=1
     while IFS= read -r c; do
         [ -n "$c" ] || continue
-        echo "::error title=A ${noun} for a cell nothing publishes::${c} has a ${noun} in $WORKFLOW, but no step in this workflow publishes that cell. It would keep passing over whatever is already in that repository." >&2
-        echo "FAIL: $c has a ${noun}, but nothing publishes it" >&2
+        echo "::error title=${art^} ${noun} for a cell nothing publishes::${c} has ${art} ${noun} in $WORKFLOW, but no step in this workflow publishes that cell. It would keep passing over whatever is already in that repository." >&2
+        echo "FAIL: $c has ${art} ${noun}, but nothing publishes it" >&2
     done <<< "$extra"
 }
 orphan "install verifier"     "$verified"
