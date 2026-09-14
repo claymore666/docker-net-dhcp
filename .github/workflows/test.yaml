@@ -752,6 +752,28 @@ jobs:
       - name: Publish/verify parity
         run: bash scripts/check-publish-verify-parity.sh
 
+      # The published registry names are bound once, at the top of
+      # release.yml, and everything that has to mean the same name
+      # derives from that binding (#972). They were transcribed into
+      # five job-level env: blocks, where two jobs could bind one
+      # variable to two strings while every cell-keyed gate went on
+      # reporting parity between a push and a verification of something
+      # else. This refuses a rebinding, a literal written anywhere else,
+      # and a Hub name that is published but never signed, described or
+      # named on the release page.
+      - name: Registry name list
+        run: bash scripts/check-registry-name-list.sh
+
+      # The runbook walks the release run step by step, and nothing
+      # compared it to the workflow (#972): the alias added three steps,
+      # two install proofs and moved two needs: counts from six to
+      # eight, and the page said none of it for a release and a half.
+      # The page declares which jobs it walks; this holds it to every
+      # step those jobs run, to the install proofs in both directions,
+      # and to the counts the workflow derives.
+      - name: Runbook release walkthrough
+        run: bash scripts/check-runbook-release-steps.sh
+
       # Every page that prints a cosign command must state which cosign
       # major it needs (#522). Verifying a signature is the one moment a
       # user is deciding whether to trust the artifact, and cosign v2's

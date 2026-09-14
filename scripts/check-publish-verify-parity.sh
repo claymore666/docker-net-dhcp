@@ -29,8 +29,9 @@
 # one layer up. So all three sets come out of the workflow itself:
 #
 #   publish  `make PLUGIN_NAME="${N}" PLUGIN_TAG="${T}" ... push`
-#            or `oras cp ... "<host>/${N}:${T}"` -- the DESTINATION of a
-#            copy publishes a name just as a build does
+#            or a command whose LAST operand is `"<host>/${N}:${T}"` --
+#            the DESTINATION of a copy publishes a name just as a build
+#            does
 #   verify   `REF="${N}:${T}"` in a job that really installs
 #   promote  `crane tag "${N}:${T}" ...`
 #
@@ -44,9 +45,29 @@
 # already in that repository.
 #
 # The destination is the LAST reference on the line, which is what the
-# anchor at the end of the pattern picks out, and the copy command
-# itself has to sit outside shell quoting for the same reason an
-# install does. An echoed copy is an advertisement.
+# anchor at the end of the pattern picks out, and the line itself has to
+# sit outside shell quoting for the same reason an install does. An
+# echoed copy is an advertisement.
+#
+# THE COPY IS NOT KEYED ON THE TOOL. It was `oras cp` for one round,
+# and then the copy moved into `scripts/publish-hub-alias.sh` so its
+# refusal branch could be driven with the transport stubbed -- at which
+# point a gate keyed on the tool name reported the alias verified and
+# promoted but never published, which is exactly the reverse-direction
+# failure a few paragraphs down. The tool is the mechanism; the property
+# is that an EXECUTED command line ends in a registry reference it is
+# writing to, and `copies()` reads that in three parts: the reference is
+# a separate final operand, the line's first word is outside quoting,
+# and that first word is not `echo` or `printf`. The last condition is
+# where the advertisement is excluded, because `echo "oras cp src"
+# "dst"` satisfies the other two and publishes nothing -- exactly as the
+# install detection excludes an advertisement by insisting the command
+# word is executed.
+#
+# It follows that the argument order in the caller is load-bearing, and
+# `scripts/publish-hub-alias.sh` says so in its own header: put the
+# destination anywhere but last and the alias silently leaves the
+# published set here.
 #
 # THE SETS ARE COMPARED IN BOTH DIRECTIONS. A published cell with no
 # verifier was the #833 failure; a verifier or a promotion for a cell
@@ -160,7 +181,8 @@ TOP   = re.compile(r"^[A-Za-z]")
 ENVKV = re.compile(r"^\s+([A-Za-z_][A-Za-z0-9_]*):\s*(\S.*?)\s*$")
 
 PUBLISH = re.compile(r'PLUGIN_NAME="\$\{(\w+)\}".*PLUGIN_TAG="\$\{(\w+)\}"')
-COPY    = re.compile(r'oras cp\b.*"(?:[A-Za-z0-9.:-]+/)?\$\{(\w+)\}:\$\{(\w+)\}"\s*$')
+COPY    = re.compile(r'\s"(?:[A-Za-z0-9.:-]+/)?\$\{(\w+)\}:\$\{(\w+)\}"\s*$')
+PRINTER = re.compile(r'(?:echo|printf)$')
 VERIFY  = re.compile(r'REF="\$\{(\w+)\}:\$\{(\w+)\}"')
 PROMOTE = re.compile(r'crane tag\s+"\$\{(\w+)\}:\$\{(\w+)\}"')
 INSTALL = re.compile(r"docker plugin install\b.*--grant-all-permissions")
@@ -216,6 +238,42 @@ def is_install(text):
     """True when `text` runs an install rather than printing one."""
     return runs(text, INSTALL) is not None
 
+
+def copies(text):
+    """The match when `text` is a command line PUBLISHING its last operand.
+
+    Three conditions, none of them the name of a tool (#972):
+
+      1. the line ends in a quoted `<host>/${N}:${T}` operand, preceded
+         by whitespace that is itself outside quoting -- so the
+         reference is a separate argument and `REF="${N}:${T}"`, which
+         has no space before its quote, stays an assignment;
+      2. the line's first word is EXECUTED, not quoted. An advertised
+         copy has its command inside the quotes;
+      3. that first word is not a printing builtin. `echo "cmd ..."
+         "<dest>"` satisfies (1) and (2) and publishes nothing, and
+         nothing about the reference itself can tell the two apart --
+         what differs is whether the process started writes to a
+         registry or to stdout.
+
+    (3) is the same judgement the install detection makes when it
+    insists on an unquoted command, one word further left.
+    """
+    m = COPY.search(text)
+    if m is None:
+        return None
+    free = unquoted_offsets(text)
+    if m.start() not in free:
+        return None
+    body = text.lstrip()
+    if not body:
+        return None
+    if (len(text) - len(body)) not in free:
+        return None
+    if PRINTER.match(body.split()[0]):
+        return None
+    return m
+
 jobs, cur, in_jobs = [], None, False
 for line in open(sys.argv[1], encoding="utf-8"):
     line = line.rstrip("\n")
@@ -237,7 +295,7 @@ for line in open(sys.argv[1], encoding="utf-8"):
     for role, rx in (("publish", PUBLISH), ("verify", VERIFY), ("promote", PROMOTE)):
         for n, t in rx.findall(stripped):
             cur["hits"].append((role, n, t))
-    copied = runs(stripped, COPY)
+    copied = copies(stripped)
     if copied is not None:
         cur["hits"].append(("publish", copied.group(1), copied.group(2)))
     if is_install(stripped):

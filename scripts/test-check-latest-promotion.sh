@@ -207,6 +207,49 @@ fi
 check "nohub: :latest moves without the Docker Hub install proof" 1 \
       "$TMP/nohub.yml" "verify-install-hub"
 
+# --- THE PRINTED REMEDY IS DERIVED, NOT TRANSCRIBED --------------------
+#
+# The remedy block used to carry a hand-written six-job `needs:` list.
+# When the Hub alias added two more install proofs (#972), the list was
+# not updated, so on exactly the failure above the gate printed the
+# shape it had just rejected: a reader who pasted it got the same
+# finding back. The remedy now prints the jobs THIS RUN derived.
+#
+# DRIVEN ON THE REAL WORKFLOW, not on the four-proof fixture above. The
+# transcribed list happened to name the fixture's four proofs exactly,
+# so a case built on it passed either way and measured nothing. This
+# fixture is the shipping release.yml with promote-latest's `needs:`
+# cut back to the two build jobs: the gate fails, and the remedy it
+# prints has to name all eight proofs the workflow actually has.
+sed 's|^\(    needs: \[release, release-arm64\), [^]]*\]|\1]|' \
+    "$ROOT/.github/workflows/release.yml" > "$TMP/remedy.yml"
+n=$((n + 1))
+if ! grep -q '^    needs: \[release, release-arm64\]$' "$TMP/remedy.yml"; then
+    echo "FAIL: the remedy fixture's needs: was not cut back; the case would measure nothing"
+    failures=$((failures + 1))
+elif [ "$(sed -n 's/^  \(verify-install[A-Za-z0-9_-]*\):$/\1/p' "$TMP/remedy.yml" | wc -l)" -lt 5 ]; then
+    echo "FAIL: the remedy fixture has fewer install proofs than the transcribed list held,"
+    echo "      so it cannot tell a derived remedy from a hand-written one"
+    failures=$((failures + 1))
+else
+    echo "PASS: the remedy fixture fails with more install proofs than any transcribed list"
+fi
+n=$((n + 1))
+remedy=$(bash "$CHECK" "$TMP/remedy.yml" 2>&1 || true)
+remedy_shape=$(printf '%s\n' "$remedy" | sed -n '/The shape this expects/,/steps:/p')
+missing=""
+for g in $(sed -n 's/^  \(verify-install[A-Za-z0-9_-]*\):$/\1/p' "$TMP/remedy.yml"); do
+    printf '%s\n' "$remedy_shape" | grep -F -- "$g" >/dev/null || missing="$missing $g"
+done
+if [ -n "$missing" ]; then
+    echo "FAIL: the printed remedy omits install proof(s):$missing"
+    echo "      A reader who copies it gets the finding the gate just reported."
+    printf '%s\n' "$remedy_shape" | sed 's/^/    /'
+    failures=$((failures + 1))
+else
+    echo "PASS: the printed remedy names every install proof the run derived"
+fi
+
 # --- transitive reach counts ------------------------------------------
 # promote-latest needs a job that needs verify-install*. A failed gate
 # skips everything downstream of it however many hops away, so this must

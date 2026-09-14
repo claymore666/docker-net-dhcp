@@ -35,6 +35,19 @@ pass=0; fail=0
 # documentation.
 cmds() { grep -v '^[[:space:]]*#' "$1"; }
 
+# A COPY LINE IS KEYED ON ITS SHAPE, NOT ON ITS TOOL. The alias copy was
+# `oras cp -r SRC DST` and is now `scripts/publish-hub-alias.sh
+# --expect-digest D SRC DST`; the gate reads neither tool name, only
+# that the line ENDS in a quoted registry reference it is writing to.
+# Every mutator and census below keys on the same shape, so changing the
+# tool again moves the gate and this suite together instead of leaving
+# one of them anchored on a word that no longer appears.
+copy_lines() {
+    cmds "$1" \
+        | grep -E '[[:space:]]"[^"]*\$\{[A-Z_]+\}:\$\{[A-Z_]+\}"[[:space:]]*$' \
+        | grep -Ev '^[[:space:]]*(echo|printf)[[:space:]]'
+}
+
 # run NAME WANT_RC MUTATOR [NEEDLE [POSTCONDITION]]
 #
 # THE MUTATION IS CHECKED, NOT ASSUMED. Four mutators here are `sed`
@@ -130,8 +143,9 @@ no_crane_tag() { ! cmds "$1" | grep -E 'crane tag ' >/dev/null; }
 # variable, not by deleting the jobs.
 no_publish_name() {
     ! cmds "$1" | grep -F 'PLUGIN_NAME=' >/dev/null &&
-        ! cmds "$1" | grep -E 'oras cp ' >/dev/null &&
-        [ "$(cmds "$1" | grep -Ec 'make .*push' || true)" -eq "$(cmds "$SRC" | grep -Ec 'make .*push' || true)" ]
+        [ "$(copy_lines "$1" | wc -l)" -eq 0 ] &&
+        [ "$(cmds "$1" | grep -Ec 'make .*push' || true)" -eq "$(cmds "$SRC" | grep -Ec 'make .*push' || true)" ] &&
+        [ "$(cmds "$1" | grep -Ec 'publish-hub-alias\.sh' || true)" -eq "$(cmds "$SRC" | grep -Ec 'publish-hub-alias\.sh' || true)" ]
 }
 
 # --- the anchors cover the whole population ----------------------------
@@ -167,11 +181,17 @@ census "every crane retag names a registry variable" \
     "$(cmds "$SRC" | grep -E 'crane tag ' | grep -Ec 'crane tag "\$\{[A-Z_]+\}' || true)"
 
 # The copy form is a publish too, and it has to be present for the
-# cases below to mean anything. Both halves: every oras copy names a
-# variable destination, and there is at least one.
-census "every oras copy destination names a registry variable" \
-    "$(cmds "$SRC" | grep -Ec 'oras cp ' || true)" \
-    "$(cmds "$SRC" | grep -E 'oras cp ' | grep -Ec '"[^"]*\$\{[A-Z_]+\}:\$\{[A-Z_]+\}"\s*$' || true)"
+# cases below to mean anything. Both halves, both derived: every
+# invocation of the alias publisher ends in its destination reference,
+# which is the shape the gate reads and the argument order the
+# publisher's own header says is load-bearing; and at least one copy
+# line exists, or every case below mutates nothing.
+census "every alias publish invocation ends in its destination reference" \
+    "$(cmds "$SRC" | grep -Ec 'publish-hub-alias\.sh' || true)" \
+    "$(cmds "$SRC" | grep -E 'publish-hub-alias\.sh' | grep -Ec '[[:space:]]"[^"]*\$\{[A-Z_]+\}:\$\{[A-Z_]+\}"[[:space:]]*$' || true)"
+
+census "the workflow carries at least one copy publish for the cases below" \
+    "$(if [ "$(copy_lines "$SRC" | wc -l)" -gt 0 ]; then echo 1; else echo 0; fi)" "1"
 
 # --- the control -------------------------------------------------------
 # If this fails every mutant below is noise: a gate that refuses the real
@@ -310,9 +330,9 @@ fi
 #    covering a cell nothing publishes. This is what a dropped publish
 #    step looks like from here, and before this change it read as a
 #    clean pass: the gate only ever compared in the other direction.
-drop_alias_copy() { sed -i '/oras cp /d' "$1"; }
+drop_alias_copy() { sed -i '/publish-hub-alias\.sh/d' "$1"; }
 no_copy_left() {
-    ! cmds "$1" | grep -E 'oras cp ' >/dev/null &&
+    [ "$(copy_lines "$1" | wc -l)" -eq 0 ] &&
         cmds "$1" | grep -E 'make .*push' >/dev/null
 }
 #    TWO REPORTS, ASSERTED SEPARATELY. The same fixture orphans an
@@ -331,15 +351,50 @@ run "dropping the copy leaves a promotion for a cell nothing publishes" \
 #    the echoed install above (#858), keyed on position and not on
 #    vocabulary.
 echoed_copy() {
-    sed -i 's|^\( *\)oras cp -r "\(.*\)" "\(.*\)"$|\1echo "oras cp -r \2" "\3"|' "$1"
+    sed -i 's|^\( *\)\(scripts/publish-hub-alias\.sh .*\) \("[^"]*"\)$|\1echo "\2" \3|' "$1"
 }
+# The destination is still the last operand on the line -- that is the
+# whole point of the case. `copy_lines` excludes a printer-led line the
+# way the gate does, so the shape is asserted on the raw text here: what
+# has to survive is the REFERENCE, and what has to change is who runs.
 copy_only_echoed() {
-    cmds "$1" | grep -F 'echo "oras cp' >/dev/null &&
-        ! cmds "$1" | grep -E '^[[:space:]]*oras cp ' >/dev/null &&
-        cmds "$1" | grep -E '\$\{[A-Z_]+\}:\$\{[A-Z_]+\}"[[:space:]]*$' >/dev/null
+    cmds "$1" | grep -F 'echo "scripts/publish-hub-alias.sh' >/dev/null &&
+        ! cmds "$1" | grep -E '^[[:space:]]*scripts/publish-hub-alias\.sh ' >/dev/null &&
+        cmds "$1" | grep -E '[[:space:]]"[^"]*\$\{HUB_ALIAS\}:\$\{[A-Z_]+\}"[[:space:]]*$' >/dev/null
 }
 run "an echoed copy publishes nothing" \
     1 echoed_copy "HUB_ALIAS" copy_only_echoed
+
+# 2b. THE ARGUMENT ORDER IS THE CLAIM. `scripts/publish-hub-alias.sh`
+#     takes the destination LAST because that is what this gate reads,
+#     and its own header says so. Move the destination out of the final
+#     position and the alias leaves the published set while every
+#     verifier and promotion for it stays -- the same reverse-direction
+#     report as a deleted copy, which is the point: a reordering is a
+#     dropped publish as far as anything downstream can tell.
+reorder_copy_args() {
+    sed -i 's|^\( *\)\(scripts/publish-hub-alias\.sh --expect-digest "[^"]*"\) \("[^"]*"\) \("[^"]*"\)$|\1\2 \4 \3|' "$1"
+}
+copy_dest_not_last() {
+    cmds "$1" | grep -E '^[[:space:]]*scripts/publish-hub-alias\.sh ' >/dev/null &&
+        [ "$(copy_lines "$1" | grep -Ec '\$\{HUB_ALIAS\}:\$\{[A-Z_]+\}"[[:space:]]*$' || true)" -eq 0 ]
+}
+run "a copy whose destination is not the last operand publishes nothing" \
+    1 reorder_copy_args "has an install verifier, but nothing publishes it" copy_dest_not_last
+
+# 2c. PRESERVATION. The rule is keyed on the shape of the line and not
+#     on the tool, so the tool this used to be -- a bare `oras cp -r` --
+#     must still read as a copy. Without this, re-keying the gate could
+#     have narrowed it to one script name and nobody would notice until
+#     someone wrote a copy some other way.
+back_to_oras() {
+    sed -i 's|^\( *\)scripts/publish-hub-alias\.sh --expect-digest "[^"]*" \("[^"]*"\) \("[^"]*"\)$|\1oras cp -r \2 \3|' "$1"
+}
+oras_form_only() {
+    cmds "$1" | grep -E '^[[:space:]]*oras cp -r ' >/dev/null &&
+        ! cmds "$1" | grep -E '^[[:space:]]*scripts/publish-hub-alias\.sh ' >/dev/null
+}
+run "a bare oras copy is still a publish" 0 back_to_oras "6 published cell(s)" oras_form_only
 
 # 3. The other side of the same claim: the copied cells ARE in the
 #    published set, so removing their install proofs fails. Without the
@@ -358,13 +413,14 @@ PY
 no_alias_verify() {
     ! cmds "$1" | grep -F 'REF="${HUB_ALIAS}' >/dev/null &&
         cmds "$1" | grep -F 'REF="${HUB_NAME}' >/dev/null &&
-        cmds "$1" | grep -E 'oras cp ' >/dev/null
+        [ "$(copy_lines "$1" | wc -l)" -gt 0 ]
 }
 run "a copied cell with no install verifier fails" \
     1 drop_alias_verify "HUB_ALIAS" no_alias_verify
 
 break_publish() {
-    sed -i -e 's/PLUGIN_NAME=/PLUGIN_NOM=/g' -e 's/oras cp /oras kopieer /g' "$1"
+    sed -i -e 's/PLUGIN_NAME=/PLUGIN_NOM=/g' \
+           -e 's|^\( *\)\(scripts/publish-hub-alias\.sh .*\) \("[^"]*"\)$|\1\2 \3 --then-some|' "$1"
 }
 run "zero derived publish cells is a refusal" 2 break_publish "ZERO published cells" no_publish_name
 

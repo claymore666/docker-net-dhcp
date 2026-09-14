@@ -25,7 +25,9 @@ links here instead of repeating them.
 The plugin image itself lives at
 `ghcr.io/claymore666/docker-net-dhcp:vX.Y.Z`, mirrored to Docker Hub
 under two names, `claymore666/net-dhcp` and
-`claymore666/docker-net-dhcp` (the second from v2.2.0 onward). It is
+`claymore666/docker-net-dhcp`. The second carries every release from
+v2.0.0: v2.0.0 and v2.1.0 were copied by hand and the release workflow
+publishes it from v2.2.0 onward. It is
 cosign-signed on both registries, and carries SLSA build provenance **on
 GHCR only**. The Docker Hub mirror is signed but not
 provenance-attested, and GHCR and Docker Hub carry different digests.

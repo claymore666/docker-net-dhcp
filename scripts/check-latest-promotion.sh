@@ -385,11 +385,18 @@ if [ "${#findings[@]}" -ne 0 ]; then
     echo "re-tars the rootfs non-reproducibly, so a bad promotion can only be" >&2
     echo "overwritten with a new digest, orphaning the old signature." >&2
     echo >&2
+    # THE REMEDY IS DERIVED, NOT TRANSCRIBED. It used to print a
+    # hand-written six-job `needs:` list. The alias added two install
+    # proofs (#972) and the list was not updated, so the gate printed
+    # the very shape it had just reported as a finding: a reader who
+    # copied it got the failure back. The names below are the ones this
+    # run derived from the workflow's own install-verifying jobs, so
+    # the advice cannot drift from the check again.
     echo "The shape this expects:" >&2
     echo >&2
     echo "  promote-latest:" >&2
-    echo "    needs: [release, release-arm64, verify-install, verify-install-arm64," >&2
-    echo "            verify-install-hub, verify-install-hub-arm64]" >&2
+    printf '    needs: [release, release-arm64, %s]\n' \
+           "$(printf '%s, ' "${REQUIRED_GATES[@]}" | sed 's/, $//')" >&2
     echo "    steps:" >&2
     echo "      - run: bash scripts/assert-newest-release-tag.sh \"\${TAG}\"" >&2
     echo "      - run: crane tag \"\${GHCR_NAME}:\${TAG}\" \"\${LATEST}\"" >&2

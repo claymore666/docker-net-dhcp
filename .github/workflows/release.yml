@@ -47,6 +47,42 @@ on:
 permissions:
   contents: read
 
+# THE PUBLISHED NAMES, ONCE (#972).
+#
+# These three strings decide what users can pull, and every job that
+# pushes, signs, copies, install-verifies, promotes a floating tag,
+# syncs a Hub description or writes an install line into the release
+# notes has to mean the SAME string by each of them. They were
+# transcribed into five job-level `env:` blocks, so "the same string"
+# was a property of nobody's job to maintain: two jobs could bind one
+# name to two values and every gate downstream keys on the VARIABLE,
+# which would go on reporting parity between a push and a verification
+# of something else.
+#
+# A workflow-level `env:` is inherited by every job and every step in
+# this file, so there is one binding and divergence is not expressible.
+# scripts/check-registry-name-list.sh holds it to that: it refuses a
+# rebinding in a job or a step, refuses a repository literal written
+# anywhere else in the file, and requires each Hub name here to be
+# reached by each consumer that would otherwise be a transcription.
+#
+# GHCR is always pushed; the Hub names are pushed when the credential
+# secrets are set. Hub uses the shorter `net-dhcp` (upstream's
+# convention there) and GHCR keeps `docker-net-dhcp` to match the
+# existing tag history.
+#
+# HUB_ALIAS is the same manifest under a second name. Every external
+# reference to this project uses the string `docker-net-dhcp` and Hub
+# search ranks on the repository name, so the name people type has to
+# exist there too. It is COPIED from HUB_NAME after signing and never
+# built a second time: a second `docker plugin create` re-tars the
+# rootfs and yields a different digest the signature does not cover
+# (#267).
+env:
+  GHCR_NAME: ghcr.io/claymore666/docker-net-dhcp
+  HUB_NAME: claymore666/net-dhcp
+  HUB_ALIAS: claymore666/docker-net-dhcp
+
 jobs:
   # Tag resolution is arch-independent and derives from the tag that
   # triggered the run, so it is its own job and both build jobs depend
@@ -268,21 +304,9 @@ jobs:
       hub_pushed: ${{ steps.hub-push.outputs.pushed }}
 
     env:
-      # GHCR is always pushed. Hub repo only pushed when secrets are set.
-      # Hub uses the shorter `net-dhcp` name (matching upstream's
-      # convention there); GHCR keeps `docker-net-dhcp` to align with
-      # the existing tag history.
-      GHCR_NAME: ghcr.io/claymore666/docker-net-dhcp
-      HUB_NAME: claymore666/net-dhcp
-      # The Hub alias (#972). Every external reference to this project
-      # uses the string `docker-net-dhcp`, and Hub search ranks on the
-      # repository name, so the name people type has to exist there too.
-      # It is the SAME manifest under a second name: copied from
-      # HUB_NAME after signing, never built a second time, because a
-      # second `docker plugin create` re-tars the rootfs and yields a
-      # different digest that the signature does not cover (#267).
-      HUB_ALIAS: claymore666/docker-net-dhcp
-      # Materialize the Docker Hub secrets-presence check at job level
+      # GHCR_NAME, HUB_NAME and HUB_ALIAS come from the workflow-level
+      # `env:` at the top of this file, which is the one place they are
+      # bound. Materialize the Docker Hub secrets-presence check at job level
       # so steps can gate on env (allowed) rather than on the secrets
       # context directly (rejected at parse time inside step-level
       # `if:` expressions). Resolves to the literal string "true" or
@@ -565,37 +589,30 @@ jobs:
           go install oras.land/oras/cmd/oras@v1.3.4
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
 
-      # WHAT GOES RED IF THIS SILENTLY DOES NOTHING. The two assertions
-      # below are in this step on purpose: the digest the alias serves
-      # must be the digest that was just signed, and the signature must
-      # verify THROUGH the alias name. A copy that lost the referrer, a
-      # copy that landed on a rebuilt manifest, and a copy that never
-      # happened are three different failures and each one fails here.
+      # WHAT GOES RED IF THIS SILENTLY DOES NOTHING. The copy, the
+      # digest-equality refusal and the verify through the alias name
+      # are `scripts/publish-hub-alias.sh`, and the script's header says
+      # what each one catches. It is a script and not a `run:` block for
+      # two reasons: this logic used to be transcribed once per
+      # architecture, and the refusal branch -- the one that stops a
+      # rebuilt manifest from shipping -- cannot be reached inline
+      # without a registry serving the wrong manifest, so it had never
+      # executed. `scripts/test-publish-hub-alias.sh` stubs oras, docker
+      # and cosign and drives every outcome on each lane run.
       #
-      # The install proofs are the second half and they are gated on
-      # `hub_pushed`, NOT on an output written by this step: a proof
-      # keyed on this step's own output would report "nothing to verify"
-      # exactly when this step was skipped.
+      # This step writes NO OUTPUT. The install proofs are the second
+      # half and they are gated on `hub_pushed`: a proof keyed on this
+      # step's own output would report "nothing to verify" exactly when
+      # this step was skipped. An output nothing may gate on is an
+      # invitation to gate on it, so there is none to take.
       - name: Publish the same manifest under the Hub alias
-        id: hub-alias
         if: env.HAS_HUB_CREDS == 'true'
         env:
           TAG: ${{ needs.resolve.outputs.tag }}
           HUB_DIGEST: ${{ steps.signimg.outputs.hub_digest }}
         run: |
           set -euo pipefail
-          oras cp -r "docker.io/${HUB_NAME}:${TAG}" "docker.io/${HUB_ALIAS}:${TAG}"
-          ALIAS_DIGEST=$(docker buildx imagetools inspect "${HUB_ALIAS}:${TAG}" --format '{{.Manifest.Digest}}')
-          if [ "${ALIAS_DIGEST}" != "${HUB_DIGEST}" ]; then
-            echo "::error::${HUB_ALIAS}:${TAG} is ${ALIAS_DIGEST}, but ${HUB_NAME}:${TAG} was signed as ${HUB_DIGEST}. The alias must be the same manifest, so this is a rebuild and not a copy."
-            exit 1
-          fi
-          cosign verify \
-            --certificate-identity-regexp '^https://github.com/claymore666/docker-net-dhcp/.github/workflows/release.yml@' \
-            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-            "${HUB_ALIAS}@${ALIAS_DIGEST}" > /dev/null
-          echo "Alias ${HUB_ALIAS}@${ALIAS_DIGEST} carries the signature made above."
-          echo "pushed=true" >> "$GITHUB_OUTPUT"
+          scripts/publish-hub-alias.sh --expect-digest "${HUB_DIGEST}" "docker.io/${HUB_NAME}:${TAG}" "docker.io/${HUB_ALIAS}:${TAG}"
 
       # SBOM over the plugin rootfs make already built (#174). syft emits
       # SPDX and CycloneDX in one pass; both are attached to the release
@@ -832,11 +849,6 @@ jobs:
       attestations: write   # actions/attest-build-provenance attestations
 
     env:
-      GHCR_NAME: ghcr.io/claymore666/docker-net-dhcp
-      HUB_NAME: claymore666/net-dhcp
-      # The Hub alias, same manifest under the name people type (#972).
-      # The reason is written once, in the amd64 job's env block.
-      HUB_ALIAS: claymore666/docker-net-dhcp
       HAS_HUB_CREDS: ${{ secrets.DOCKERHUB_USERNAME != '' && secrets.DOCKERHUB_TOKEN != '' }}
       TAG: ${{ needs.resolve.outputs.tag }}
       ARM_TAG: ${{ needs.resolve.outputs.tag }}-arm64
@@ -916,9 +928,10 @@ jobs:
             echo "Signed ${HUB_NAME}@${HUB_DIGEST}"
           fi
 
-      # The arm64 half of the alias (#972). Same copy, same two
-      # assertions, same reason; the paragraphs are in the amd64 job so
-      # there is one place to correct them.
+      # The arm64 half of the alias (#972). It runs the same script as
+      # the amd64 job, which is the point: the decisions used to be
+      # transcribed here and a correction to one copy did not reach the
+      # other. The paragraphs are in the amd64 job and the script.
       - name: Install oras
         if: env.HAS_HUB_CREDS == 'true'
         run: |
@@ -926,24 +939,12 @@ jobs:
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
 
       - name: Publish the same manifest under the Hub alias
-        id: hub-alias-arm
         if: env.HAS_HUB_CREDS == 'true'
         env:
           HUB_DIGEST: ${{ steps.signimg.outputs.hub_digest }}
         run: |
           set -euo pipefail
-          oras cp -r "docker.io/${HUB_NAME}:${ARM_TAG}" "docker.io/${HUB_ALIAS}:${ARM_TAG}"
-          ALIAS_DIGEST=$(docker buildx imagetools inspect "${HUB_ALIAS}:${ARM_TAG}" --format '{{.Manifest.Digest}}')
-          if [ "${ALIAS_DIGEST}" != "${HUB_DIGEST}" ]; then
-            echo "::error::${HUB_ALIAS}:${ARM_TAG} is ${ALIAS_DIGEST}, but ${HUB_NAME}:${ARM_TAG} was signed as ${HUB_DIGEST}. The alias must be the same manifest, so this is a rebuild and not a copy."
-            exit 1
-          fi
-          cosign verify \
-            --certificate-identity-regexp '^https://github.com/claymore666/docker-net-dhcp/.github/workflows/release.yml@' \
-            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-            "${HUB_ALIAS}@${ALIAS_DIGEST}" > /dev/null
-          echo "Alias ${HUB_ALIAS}@${ALIAS_DIGEST} carries the signature made above."
-          echo "pushed=true" >> "$GITHUB_OUTPUT"
+          scripts/publish-hub-alias.sh --expect-digest "${HUB_DIGEST}" "docker.io/${HUB_NAME}:${ARM_TAG}" "docker.io/${HUB_ALIAS}:${ARM_TAG}"
 
       - name: Install syft
         uses: anchore/sbom-action/download-syft@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
@@ -1047,7 +1048,6 @@ jobs:
       # for rate limits, not access.
       packages: read   # pulls the just-published plugin from GHCR
     env:
-      GHCR_NAME: ghcr.io/claymore666/docker-net-dhcp
       TAG: ${{ needs.release.outputs.tag }}
     steps:
       - name: Log in to GHCR
@@ -1099,7 +1099,6 @@ jobs:
       contents: read
       packages: read
     env:
-      GHCR_NAME: ghcr.io/claymore666/docker-net-dhcp
       TAG: ${{ needs.release.outputs.tag }}-arm64
     steps:
       - name: Log in to GHCR
@@ -1169,7 +1168,6 @@ jobs:
       # repository is public and needs no GitHub permission at all — the
       # login below is for rate limits, not access.
     env:
-      HUB_NAME: claymore666/net-dhcp
       TAG: ${{ needs.release.outputs.tag }}
       HUB_PUSHED: ${{ needs.release.outputs.hub_pushed }}
       HAS_HUB_CREDS: ${{ secrets.DOCKERHUB_USERNAME != '' && secrets.DOCKERHUB_TOKEN != '' }}
@@ -1227,7 +1225,6 @@ jobs:
     permissions:
       contents: read
     env:
-      HUB_NAME: claymore666/net-dhcp
       TAG: ${{ needs.release.outputs.tag }}-arm64
       # From release-arm64, not from release: the arm64 Hub image is a
       # separate push and a separate tag, and the amd64 job's answer says
@@ -1323,7 +1320,6 @@ jobs:
     permissions:
       contents: read
     env:
-      HUB_ALIAS: claymore666/docker-net-dhcp
       TAG: ${{ needs.release.outputs.tag }}
       HUB_PUSHED: ${{ needs.release.outputs.hub_pushed }}
       HAS_HUB_CREDS: ${{ secrets.DOCKERHUB_USERNAME != '' && secrets.DOCKERHUB_TOKEN != '' }}
@@ -1374,7 +1370,6 @@ jobs:
     permissions:
       contents: read
     env:
-      HUB_ALIAS: claymore666/docker-net-dhcp
       TAG: ${{ needs.release.outputs.tag }}-arm64
       HUB_PUSHED: ${{ needs['release-arm64'].outputs.hub_pushed }}
       HAS_HUB_CREDS: ${{ secrets.DOCKERHUB_USERNAME != '' && secrets.DOCKERHUB_TOKEN != '' }}
@@ -1463,13 +1458,10 @@ jobs:
       packages: write   # retagging in GHCR is a registry write
 
     env:
-      GHCR_NAME: ghcr.io/claymore666/docker-net-dhcp
-      HUB_NAME: claymore666/net-dhcp
-      # The Hub alias (#972). The floating tags move on it too: a name
-      # that serves `:vX.Y.Z` beside a stale `:latest` is worse than a
-      # name that serves neither, because an unpinned install resolves
-      # to the stale one.
-      HUB_ALIAS: claymore666/docker-net-dhcp
+      # The floating tags move on the alias too: a name that serves
+      # `:vX.Y.Z` beside a stale `:latest` is worse than a name that
+      # serves neither, because an unpinned install resolves to the
+      # stale one. The names themselves are bound once, at the top.
       HAS_HUB_CREDS: ${{ secrets.DOCKERHUB_USERNAME != '' && secrets.DOCKERHUB_TOKEN != '' }}
       TAG: ${{ needs.release.outputs.tag }}
       ARM_TAG: ${{ needs.release.outputs.tag }}-arm64
@@ -1784,7 +1776,14 @@ jobs:
             echo
             echo "## Downloads"
             echo
-            echo "\`linux/amd64\` and \`linux/arm64\`. Plugin images: \`ghcr.io/claymore666/docker-net-dhcp:${TAG}\` (amd64) and \`:${TAG}-arm64\` (mirrored to Docker Hub as \`claymore666/net-dhcp\` and \`claymore666/docker-net-dhcp\`, the same digest under both names). Plugins cannot use manifest lists, so the arch is in the tag."
+            # THE NAMES COME FROM THE LIST AT THE TOP OF THIS FILE, not
+            # from three literals typed here. This sentence is the one
+            # place a reader learns which repositories serve the
+            # release, and it was transcribed: adding the alias to the
+            # publish path and forgetting this line would have left the
+            # release page naming a mirror nobody could pull from, with
+            # nothing to notice it.
+            echo "\`linux/amd64\` and \`linux/arm64\`. Plugin images: \`${GHCR_NAME}:${TAG}\` (amd64) and \`:${TAG}-arm64\` (mirrored to Docker Hub as \`${HUB_NAME}\` and \`${HUB_ALIAS}\`, the same digest under both names). Plugins cannot use manifest lists, so the arch is in the tag."
             echo
             echo "| file | what it is |"
             echo "| --- | --- |"
