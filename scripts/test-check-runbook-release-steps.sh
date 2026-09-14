@@ -62,22 +62,81 @@ run() {
 # --- the control -------------------------------------------------------
 run "the shipped runbook matches the shipped workflow" 0 none none "walks release promote-latest"
 
-# --- 1. the declaration ------------------------------------------------
-drop_declaration() { sed -i '/^<!-- release-walkthrough:/d' "$1"; }
-run "a runbook with no walkthrough declaration is a refusal" \
-    2 drop_declaration none "having compared nothing"
+# --- 1. the declaration, which is no longer in the page ----------------
+#
+# It used to be a `<!-- release-walkthrough: ... -->` comment in the
+# runbook, and the three cases here drove that comment: absent, empty,
+# naming a job the workflow does not have. They are replaced, not
+# dropped, because the thing they drove is gone: the set now lives on
+# the jobs in the workflow.
+#
+# WHY IT MOVED, measured. Narrow the page's declaration from `release,
+# promote-latest` to `release` and delete the alias promotion from the
+# prose, and the gate printed "walks release step for step" and exited
+# 0. Rules 3 and 4 are unconditional, so the proofs and the counts
+# stayed covered; the step lists did not. The page decided what it
+# would be judged on.
+drop_markers() { sed -i '/^    # runbook-walkthrough:/d' "$1"; }
+run "a workflow where no job carries the marker is a refusal" \
+    2 none drop_markers "having compared no step lists"
 
-empty_declaration() {
-    sed -i 's|^<!-- release-walkthrough:.*|<!-- release-walkthrough: -->|' "$1"
+# A marker on a job with no named steps is the ghost case's successor:
+# a job cannot be declared that does not exist, because the marker
+# lives inside the job, but it can be put on one there is nothing to
+# walk. That has to be a finding and not a silent pass.
+mark_a_stepless_job() {
+    python3 - "$1" <<'PY'
+import re, sys
+p = sys.argv[1]
+lines = open(p, encoding="utf-8").read().split("\n")
+out = []
+for ln in lines:
+    out.append(ln)
+    if ln == "  resolve:":
+        out.append("    # runbook-walkthrough: marker on a job with nothing to walk")
+open(p, "w", encoding="utf-8").write("\n".join(out))
+PY
+    # `resolve` has steps, so strip them: what this case is about is a
+    # marked job the gate can read no step list from.
+    python3 - "$1" <<'PY'
+import re, sys
+p = sys.argv[1]
+s = open(p, encoding="utf-8").read()
+s = re.sub(r"\n  resolve:.*?(?=\n  [a-z0-9_-]+:\n)",
+           "\n  resolve:\n    # runbook-walkthrough: marker on a job with nothing to walk\n"
+           "    runs-on: ubuntu-latest\n    steps:\n"
+           "      - run: echo nothing named here\n", s, count=1, flags=re.S)
+open(p, "w", encoding="utf-8").write(s)
+PY
 }
-run "an empty walkthrough declaration is a refusal" \
-    2 empty_declaration none "declaration in"
+run "a marker on a job with no named steps fails" \
+    1 none mark_a_stepless_job "has no named steps"
 
-declare_a_ghost() {
-    sed -i 's|^<!-- release-walkthrough: release, promote-latest -->|<!-- release-walkthrough: release, promote-latest, publish-to-the-moon -->|' "$1"
+# And the page may not carry a second declaration of the same set. Two
+# declarations disagree the day one of them is edited, and the one in
+# the page is the one a page edit can reach.
+stale_page_declaration() {
+    sed -i '1a <!-- release-walkthrough: release -->' "$1"
 }
-run "a declared job the workflow does not have fails" \
-    1 declare_a_ghost none "publish-to-the-moon"
+run "a page that still declares the walked set is a refusal" \
+    2 stale_page_declaration none "two declarations of one set"
+
+# 1b. THE MUTANT THIS MOVE EXISTS FOR. A step of a walked job deleted
+#     from the page, with no declaration in the page to narrow. Under
+#     the old mechanism this passed as long as the page also stopped
+#     declaring the job.
+drop_promotion_step_from_page() {
+    python3 - "$1" <<'PY'
+import sys
+p = sys.argv[1]
+s = open(p, encoding="utf-8").read()
+old = "*Promote the Hub alias floating tags*"
+assert s.count(old) >= 1, "the alias promotion is named in the page"
+open(p, "w", encoding="utf-8").write(s.replace(old, "*Promote the floating tags*"))
+PY
+}
+run "a walked job's step deleted from the page fails, with no way to narrow" \
+    1 drop_promotion_step_from_page none "Promote the Hub alias floating tags"
 
 # --- 2. a step the page never mentions ---------------------------------
 # THE SHAPE THIS GATE EXISTS FOR. This is the alias copy step, removed

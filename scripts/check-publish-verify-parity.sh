@@ -182,6 +182,7 @@ ENVKV = re.compile(r"^\s+([A-Za-z_][A-Za-z0-9_]*):\s*(\S.*?)\s*$")
 
 PUBLISH = re.compile(r'PLUGIN_NAME="\$\{(\w+)\}".*PLUGIN_TAG="\$\{(\w+)\}"')
 COPY    = re.compile(r'\s"(?:[A-Za-z0-9.:-]+/)?\$\{(\w+)\}:\$\{(\w+)\}"\s*$')
+OPERAND = re.compile(r'"(?:[A-Za-z0-9.:-]+/)?\$\{(\w+)\}:\$\{(\w+)\}"')
 PRINTER = re.compile(r'(?:echo|printf)$')
 VERIFY  = re.compile(r'REF="\$\{(\w+)\}:\$\{(\w+)\}"')
 PROMOTE = re.compile(r'crane tag\s+"\$\{(\w+)\}:\$\{(\w+)\}"')
@@ -242,7 +243,7 @@ def is_install(text):
 def copies(text):
     """The match when `text` is a command line PUBLISHING its last operand.
 
-    Two conditions, neither of them the name of a tool (#972):
+    Three conditions, none of them the name of a tool (#972):
 
       1. the line ends in a quoted `<host>/${N}:${T}` operand, preceded
          by whitespace that is itself outside quoting -- so the
@@ -252,12 +253,33 @@ def copies(text):
          "<dest>"` satisfies (1) and publishes nothing, and nothing
          about the reference itself can tell the two apart -- what
          differs is whether the process started writes to a registry or
-         to stdout.
+         to stdout;
+      3. the line names a SECOND registry reference. A copy reads a
+         source and writes a destination, so it carries two; a command
+         that carries one and ends in a reference is reading it.
 
-    A quoted command word is deliberately NOT a third condition. A
-    quoted word still executes, so excluding it would only have
-    dropped the continuation lines of a wrapped command, whose last
-    operand is published all the same.
+    (3) is here because (1) and (2) alone could not tell a write from a
+    read, and that was measured, not argued: replacing both copy calls
+    with `crane digest "docker.io/${HUB_ALIAS}:${TAG}"` -- a pure read
+    of the same reference -- left this gate reporting its strongest
+    pass while nothing published the alias at all, and the two install
+    proofs and the promotion ran over whatever that repository already
+    held. The version this replaced caught that by naming `oras cp -r`,
+    and could not survive the tool changing; keying on the operand
+    count catches it without naming a tool.
+
+    THE BOUND. This reads arity, not intent. A two-operand READ would
+    still be taken for a copy, and no property of the step line
+    distinguishes one; what carries that is the copy step's own script
+    and the self-test that drives its refusals. In the other direction
+    a one-operand WRITE -- a direct `docker plugin push "<ref>"` -- is
+    not a copy and not the `make push` shape either, so it is invisible
+    to both publish rules.
+
+    A quoted command word is deliberately NOT a condition. A quoted
+    word still executes, so excluding it would only have dropped the
+    continuation lines of a wrapped command, whose last operand is
+    published all the same.
     """
     m = COPY.search(text)
     if m is None:
@@ -267,6 +289,8 @@ def copies(text):
         return None
     body = text.split()
     if body and PRINTER.match(body[0]):
+        return None
+    if len(OPERAND.findall(text)) < 2:
         return None
     return m
 

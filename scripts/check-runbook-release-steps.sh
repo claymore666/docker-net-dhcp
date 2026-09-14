@@ -73,9 +73,21 @@ wf_lines = open(workflow_path, encoding="utf-8").read().split("\n")
 JOB   = re.compile(r"^  ([A-Za-z0-9_-]+):\s*$")
 STEP  = re.compile(r"^      - name:\s*(.+?)\s*$")
 NEEDS = re.compile(r"^    needs:\s*\[(.*)\]\s*$")
-DECL  = re.compile(r"<!--\s*release-walkthrough:\s*([^>]*?)\s*-->")
+MARK  = re.compile(r"^\s*#\s*runbook-walkthrough:")
+STALE = re.compile(r"<!--\s*release-walkthrough:")
 
-jobs, steps, needs, cur = [], {}, {}, None
+# THE WALKED SET IS DECLARED IN THE WORKFLOW, NOT IN THE PAGE.
+#
+# It used to be a `<!-- release-walkthrough: ... -->` comment in the
+# runbook, and that made the subject of the comparison the thing being
+# compared. Measured: narrow the declaration from `release,
+# promote-latest` to `release` and delete the alias promotion from the
+# prose, and this gate printed "walks release step for step" and exited
+# 0. Rules 3 and 4 are unconditional, so the proofs and the counts
+# stayed covered; the step lists did not. A page that stops describing
+# a job stopped being judged on it, which is the direction the gate
+# exists to close.
+jobs, steps, needs, walked, cur = [], {}, {}, [], None
 for line in wf_lines:
     m = JOB.match(line)
     if m:
@@ -86,6 +98,8 @@ for line in wf_lines:
     if cur is None:
         continue
     if line.lstrip().startswith("#"):
+        if MARK.match(line) and cur not in walked:
+            walked.append(cur)
         continue
     m = STEP.match(line)
     if m:
@@ -105,18 +119,18 @@ def flat(text):
 
 rb_flat = flat(rb)
 
-decl = DECL.search(rb)
-if decl is None:
-    print("REFUSE\t%s carries no `<!-- release-walkthrough: job, job -->` "
-          "declaration. Rules 2 and 3 range over the jobs it names, so "
-          "without it this gate reports a clean walkthrough having compared "
-          "nothing." % runbook_path)
+if STALE.search(rb):
+    print("REFUSE\t%s still carries a `<!-- release-walkthrough: ... -->` "
+          "declaration. The walked set now lives in %s, on the jobs "
+          "themselves, and two declarations of one set would disagree the "
+          "day one of them was edited." % (runbook_path, workflow_path))
     raise SystemExit(0)
 
-walked = [j.strip() for j in decl.group(1).split(",") if j.strip()]
 if not walked:
-    print("REFUSE\tthe release-walkthrough declaration in %s is empty."
-          % runbook_path)
+    print("REFUSE\tno job in %s carries a `# runbook-walkthrough:` marker. "
+          "Rule 2 ranges over the jobs that carry it, so without one this "
+          "gate reports a clean walkthrough having compared no step lists "
+          "at all." % workflow_path)
     raise SystemExit(0)
 
 findings = []

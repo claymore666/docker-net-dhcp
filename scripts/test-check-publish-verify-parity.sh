@@ -412,6 +412,39 @@ copy_is_wrapped() {
 }
 run "a copy wrapped over two lines is still a publish" 0 wrap_copy "6 published cell(s)" copy_is_wrapped
 
+# 2e. A READ IS NOT A PUBLISH. The rule had been widened to "a line
+#     ending in a registry reference", and a line can end in a
+#     reference because it is READING it. Measured: replace both copy
+#     calls with `crane digest "docker.io/${HUB_ALIAS}:${TAG}"` -- one
+#     operand, no source, nothing written -- and the gate reported its
+#     strongest pass while nothing published the alias, with the two
+#     install proofs and the promotion running over whatever that
+#     repository already held. The version this replaced killed it by
+#     naming `oras cp -r`, and could not have survived the tool
+#     changing. A copy reads a source and writes a destination, so it
+#     carries TWO references; that is what separates the two without
+#     naming either tool.
+read_only_alias() {
+    python3 - "$1" <<'PY'
+import re, sys
+p = sys.argv[1]
+s = open(p, encoding="utf-8").read()
+pat = re.compile(r'scripts/publish-hub-alias\.sh --expect-digest "\$\{HUB_DIGEST\}" '
+                 r'"docker\.io/\$\{HUB_NAME\}:\$\{(\w+)\}" "docker\.io/\$\{HUB_ALIAS\}:\$\{\1\}"')
+assert len(pat.findall(s)) == 2, "both copy call sites"
+open(p, "w", encoding="utf-8").write(
+    pat.sub(lambda m: 'crane digest "docker.io/${HUB_ALIAS}:${%s}"' % m.group(1), s))
+PY
+}
+read_only_present() {
+    [ "$(cmds "$1" | grep -Ec '^[[:space:]]*crane digest "docker\.io/\$\{HUB_ALIAS\}')" -eq 2 ] &&
+        ! cmds "$1" | grep -F 'publish-hub-alias.sh' >/dev/null
+}
+run "a one-operand read that ends in the reference publishes nothing" \
+    1 read_only_alias "has an install verifier, but nothing publishes it" read_only_present
+run "and its promotion is reported as unpublished too" \
+    1 read_only_alias "has a promotion to :latest, but nothing publishes it" read_only_present
+
 # 3. The other side of the same claim: the copied cells ARE in the
 #    published set, so removing their install proofs fails. Without the
 #    copy being read as a publish this case would pass, because an

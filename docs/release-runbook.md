@@ -857,16 +857,7 @@ has to be true.
    vX.Y.Z` (or the green "Verified" on the tag page). The workflow fires
    on `tags: v*`. Watch it at
    <https://github.com/claymore666/docker-net-dhcp/actions/workflows/release.yml>.
-   Expected steps, under the names the run shows.
-
-<!-- release-walkthrough: release, promote-latest -->
-<!-- The two jobs this page walks step for step.
-     scripts/check-runbook-release-steps.sh reads this line and holds
-     the text below to every step those jobs actually run, names every
-     install proof in both directions, and checks the two "waits on N
-     jobs" sentences against the workflow's own needs: lists. Add a job
-     here when this page starts walking it. -->
- Tag resolution is its
+   Expected steps, under the names the run shows. Tag resolution is its
    own job: **resolve** runs first and has one step, *Resolve release
    tag*; a releaser watching the run sees two job rows. The **release**
    job then runs, in this order: checkout → setup-go → Log in to GHCR →

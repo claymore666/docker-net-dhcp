@@ -60,6 +60,12 @@
 #                           signature must carry. Defaults to this
 #                           repository's release workflow; the self-test
 #                           is the only other caller.
+#   COSIGN_OIDC_ISSUER      override for the OIDC issuer the certificate
+#                           must come from. Defaults to GitHub Actions.
+#                           Both are verification parameters, so both
+#                           are named here: an override that is read and
+#                           not documented is a way to weaken the check
+#                           that no reader of this header would see.
 #
 # Exit: 0 the alias is the signed manifest and verifies under its own name
 #       1 the copy failed, the digests differ, or the signature does not

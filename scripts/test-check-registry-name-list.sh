@@ -219,6 +219,135 @@ else
     echo "FAIL: a missing workflow is a refusal — got exit $got"; fail=$((fail + 1))
 fi
 
+# --- 5. A NAME CAN LEAVE THE LIST (#972 round 3) -----------------------
+#
+# Every rule up to here ranges over the list, so every one of them is
+# satisfied by taking a name OUT of it. That is not a contrived shape:
+# it is exactly what this workflow looked like before this change, and
+# it was measured to pass the gate written to forbid it.
+
+# 5a. The round-1 shape, restored: HUB_ALIAS leaves the workflow-level
+#     block and is transcribed into the jobs that used it. Measured
+#     against the gate as it stood: exit 0, printing OK over the two
+#     names left, as if nothing were missing.
+delist_into_jobs() {
+    python3 - "$1" <<'PY'
+import re, sys
+p = sys.argv[1]
+s = open(p, encoding="utf-8").read()
+s = s.replace("  HUB_ALIAS: claymore666/docker-net-dhcp\n", "", 1)
+lines, cur, uses = s.split("\n"), None, set()
+for ln in lines:
+    m = re.match(r"^  ([A-Za-z0-9_-]+):\s*$", ln)
+    if m:
+        cur = m.group(1)
+    if cur and "HUB_ALIAS" in ln:
+        uses.add(cur)
+out, cur = [], None
+for ln in lines:
+    m = re.match(r"^  ([A-Za-z0-9_-]+):\s*$", ln)
+    if m:
+        cur = m.group(1)
+    out.append(ln)
+    if ln == "    env:" and cur in uses:
+        out.append("      HUB_ALIAS: claymore666/docker-net-dhcp")
+open(p, "w", encoding="utf-8").write("\n".join(out))
+PY
+}
+alias_left_the_list() {
+    ! grep -q '^  HUB_ALIAS:' "$1" && grep -q '^      HUB_ALIAS:' "$1"
+}
+run "a listed name transcribed into the jobs that used it fails" \
+    1 delist_into_jobs "outside the workflow-level list" alias_left_the_list
+
+# 5b. The reason it matters, one step further along: with the name out
+#     of the list, one job's copy can point somewhere else entirely and
+#     the install proof proves a different repository. The finding has
+#     to NAME the repository, because the whole defect is that two
+#     strings are wearing one variable.
+delist_and_diverge() {
+    delist_into_jobs "$1"
+    python3 - "$1" <<'PY'
+import re, sys
+p = sys.argv[1]
+lines, cur = open(p, encoding="utf-8").read().split("\n"), None
+for i, ln in enumerate(lines):
+    m = re.match(r"^  ([A-Za-z0-9_-]+):\s*$", ln)
+    if m:
+        cur = m.group(1)
+    if cur == "verify-install-hub-alias" and ln.strip() == "HUB_ALIAS: claymore666/docker-net-dhcp":
+        lines[i] = "      HUB_ALIAS: claymore666/some-other-repo"
+open(p, "w", encoding="utf-8").write("\n".join(lines))
+PY
+}
+diverged() { grep -q 'claymore666/some-other-repo' "$1"; }
+run "a de-listed name bound to two repositories fails, naming both" \
+    1 delist_and_diverge "claymore666/some-other-repo" diverged
+
+# 5c. THE POPULATION RULE ON ITS OWN. 5a and 5b are also caught by the
+#     binding rule, and a case that two rules answer cannot say which
+#     one is alive. Here the name simply leaves the list and reaches
+#     the steps from outside the file, so there is no second binding to
+#     find: only the reconciliation against the step lines is left.
+delist_only() { sed -i '/^  HUB_ALIAS: claymore666\/docker-net-dhcp$/d' "$1"; }
+no_alias_binding() { ! grep -qE '^\s+HUB_ALIAS:' "$1"; }
+run "a name used by the steps and bound nowhere in the file fails" \
+    1 delist_only "uses \${HUB_ALIAS} as a registry name" no_alias_binding
+
+# 5d. And its non-vacuity guard, driven the way every other one here is:
+#     a workflow whose step lines use no variable as a registry
+#     reference gives rule 3b nothing to range over, which is a refusal
+#     and not a pass.
+no_reference_uses() {
+    sed -i 's/\${\(GHCR_NAME\|HUB_NAME\|HUB_ALIAS\)}[:@]/PLACEHOLDER/g' "$1"
+}
+# `${REF}` and `${reg}` are LOCAL shell variables the file assigns, so
+# they are not in the population either way; what this case has to
+# achieve is that none of the LISTED names is used as a reference.
+no_refs_left() { ! grep -qE '\$\{(GHCR_NAME|HUB_NAME|HUB_ALIAS)\}[:@]' "$1"; }
+run "a workflow whose steps use no name as a reference refuses" \
+    2 no_reference_uses "has nothing to be the list OF" no_refs_left
+
+# --- 6. THE LITERAL RULE MUST NOT MISDIRECT (#972 round 3) -------------
+#
+# It was a plain substring test, and a substring test on a repository
+# name is wrong twice over.
+
+# 6a. A project URL contains the repository name and is not a registry
+#     reference. The advice the old rule printed here -- write
+#     ${HUB_ALIAS} instead -- would have broken the link.
+project_url() {
+    sed -i '0,/^          set -euo pipefail$/s||          set -euo pipefail\n          echo "Source: https://github.com/claymore666/docker-net-dhcp/releases"|' "$1"
+}
+url_present() { grep -q 'github.com/claymore666/docker-net-dhcp/releases' "$1"; }
+run "a project URL carrying the repository name is not a transcription" \
+    0 project_url "one binding for each published name" url_present
+
+# 6b. GHCR_NAME's value CONTAINS HUB_ALIAS's value, so one legitimate
+#     GHCR literal used to produce TWO findings, the second of them
+#     telling the author to write the Hub variable into a GHCR
+#     reference. The occurrence belongs to the longest name that
+#     matches, and it is reported once.
+ghcr_literal() {
+    sed -i '0,/^          set -euo pipefail$/s||          set -euo pipefail\n          echo "ghcr.io/claymore666/docker-net-dhcp:v1.0.0"|' "$1"
+}
+ghcr_literal_present() { grep -q 'echo "ghcr.io/claymore666/docker-net-dhcp:v1.0.0"' "$1"; }
+run "a GHCR literal is one finding, against the GHCR name" \
+    1 ghcr_literal "instead of \${GHCR_NAME}" ghcr_literal_present
+
+literal_finding_count() {
+    bash "$GATE" "$1" 2>&1 | grep -c "^FAIL: .*writes the literal"
+}
+f="$TMP/one.yml"; cp "$SRC" "$f"; ghcr_literal "$f"
+n=$(literal_finding_count "$f")
+if [ "$n" -eq 1 ]; then
+    echo "ok: and exactly one, not one per name whose value is a substring"
+    pass=$((pass + 1))
+else
+    echo "FAIL: a single GHCR literal produced $n literal findings, want 1"
+    fail=$((fail + 1))
+fi
+
 echo
 echo "passed: $pass  failed: $fail"
 [ "$fail" -eq 0 ]

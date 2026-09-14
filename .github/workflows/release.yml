@@ -275,6 +275,10 @@ jobs:
           echo "Release notes for $TAG assemble; nothing has been published yet."
 
   release:
+    # runbook-walkthrough: docs/release-runbook.md walks this job step
+    # for step. scripts/check-runbook-release-steps.sh reads THIS line,
+    # not a declaration in the page, so the page cannot drop a job from
+    # the comparison by no longer describing it.
     needs: resolve
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -1450,6 +1454,10 @@ jobs:
   # green -- which is why this is a comment and not a change to the
   # checker -- but the red names the wrong problem and costs an evening.
   promote-latest:
+    # runbook-walkthrough: docs/release-runbook.md walks this job step
+    # for step. scripts/check-runbook-release-steps.sh reads THIS line,
+    # not a declaration in the page, so the page cannot drop a job from
+    # the comparison by no longer describing it.
     needs: [release, release-arm64, verify-install, verify-install-arm64, verify-install-hub, verify-install-hub-arm64, verify-install-hub-alias, verify-install-hub-alias-arm64]
     runs-on: ubuntu-latest
     timeout-minutes: 10

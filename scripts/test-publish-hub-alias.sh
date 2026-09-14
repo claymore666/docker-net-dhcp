@@ -25,10 +25,10 @@
 # the referrers stay behind, the signature does not travel, and the only
 # thing that notices is the verify at the end of the script.
 #
-# ORDER IS A CLAIM TOO. `verify_not_called` asserts that a mismatched
-# digest stops BEFORE cosign runs. A script that verified first and
-# compared afterwards would pass every exit-code assertion here while
-# reporting a rebuilt manifest as verified.
+# ORDER IS A CLAIM TOO. The rebuild case asserts `not_logged cosign.args`:
+# a mismatched digest stops BEFORE cosign runs. A script that verified
+# first and compared afterwards would pass every exit-code assertion here
+# while reporting a rebuilt manifest as verified.
 set -u
 
 # shellcheck source=scripts/tmpdir-guard.sh
@@ -184,14 +184,44 @@ run "an unknown option is a refusal" 2 "unknown option" \
 #
 # A self-test that only ever calls the script the way the script's own
 # author would is bounded by that author. The two release jobs are the
-# only production callers, so their argument order is asserted here
-# against the workflow text: the alias must be the LAST operand, which
-# is what puts it in check-publish-verify-parity.sh's published set.
+# only production callers, so their call is asserted here against the
+# workflow text.
+#
+# THE ARGUMENT THE REFUSAL DEPENDS ON IS PART OF THE CALL. The first
+# version of this block counted alias-last lines only, and measured:
+# strip `--expect-digest "${HUB_DIGEST}"` from both call sites and every
+# assertion here still passed, all four gates still exited 0, and the
+# script then refuses at release time -- after both registries hold
+# :vX.Y.Z and after the signature, which is the half-published point
+# the runbook documents. An expectation the caller never states is an
+# expectation that cannot be violated.
+#
+# The digest is matched as a VARIABLE, not as the name HUB_DIGEST: what
+# the script needs is the digest this run signed, and the step binds it
+# from the signing step's output. The two shapes are asserted
+# separately so a failure says which half is missing.
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 WF="$ROOT/.github/workflows/release.yml"
 calls=$(grep -c 'publish-hub-alias\.sh .*"docker\.io/\${HUB_ALIAS}:\${[A-Z_]*}"$' "$WF" || true)
 assert "both release jobs call it with the alias reference last" \
     "$(if [ "$calls" -eq 2 ]; then echo 1; else echo 0; fi)"
+
+expects=$(grep -c 'publish-hub-alias\.sh --expect-digest "\${[A-Z_]*}"' "$WF" || true)
+assert "both release jobs hand it the digest to expect" \
+    "$(if [ "$expects" -eq 2 ]; then echo 1; else echo 0; fi)"
+
+# And that the digest they hand it is the one the signing step output,
+# not some other variable that happens to be in scope. Scoped to the
+# calling STEP: that binding also appears in steps this script never
+# runs in, so a file-wide count would be answered by the wrong step.
+signed=$(awk '
+    /^      - name:/ { env_ok = 0 }
+    /HUB_DIGEST: \$\{\{ steps\.signimg\.outputs\.hub_digest \}\}/ { env_ok = 1 }
+    /publish-hub-alias\.sh --expect-digest/ { if (env_ok) n++ }
+    END { print n + 0 }
+' "$WF")
+assert "the digest they hand it is the digest the signing step published" \
+    "$(if [ "$signed" -eq 2 ]; then echo 1; else echo 0; fi)"
 
 echo
 if [ "$failures" -eq 0 ]; then
