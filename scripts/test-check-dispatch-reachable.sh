@@ -1468,6 +1468,10 @@ for i in $(seq 1 40); do
 done
 check "and still suspended 40 commits later: the bound is a distance, not a duration" \
     pass "$(verdict10 pull_request dev)"
+grep -F 'pin suspension did NOT apply' "$TMP/out10" >/dev/null \
+    && { echo "FAIL: the parked one-step window reports the suspension as not applied"
+         fails=1; } \
+    || echo "PASS: and nothing in that run reports the suspension as lapsed"
 check "the duration-bounded copy refuses it, so the case above can go red" \
     rc1 "$(timed_verdict)"
 rm -f "$timed"
@@ -1497,6 +1501,52 @@ grep -F 'a release that skips a version' "$TMP/out10" >/dev/null \
     && { echo "FAIL: the behind arm offers a reading only the ahead arm can have"
          fails=1; } \
     || echo "PASS: and it does not offer the ahead arm's readings"
+
+# F4d. AND THE NOTE IS ABSENT WHEN THE PINS AGREE (#977 round 3).
+# Deleting the equality guard left the whole suite green: the suspension
+# still never applied, because a version is not its own successor, but
+# the newest-of-the-two fallback is true for two EQUAL pins, so every
+# ordinary mid-cycle failure printed "this tree pins v9.9.0, main pins
+# v9.9.0, and that is more than one release step ahead of it". A false
+# sentence in the evidence trail, on the most common failure there is.
+git -C "$REPO10" checkout -q main
+git -C "$REPO10" checkout -q -- README.md
+git -C "$REPO10" checkout -q -b equal10 main
+rm -f "$REPO10/.github/workflows/hotfix10wf.yml"
+dispatchable equal10wf > "$REPO10/.github/workflows/equal10wf.yml"
+check "an ordinary mid-cycle failure with the pins equal still fails" \
+    rc1 "$(verdict10 pull_request dev)"
+grep -F 'pin suspension did NOT apply' "$TMP/out10" >/dev/null \
+    && { echo "FAIL: equal pins are reported as a suspension that did not apply"
+         fails=1; } \
+    || echo "PASS: and no suspension is reported on a run whose pins agree"
+
+# ORTHOGONALITY: the guard-deleted copy prints it on this same fixture,
+# so the absence asserted above is the guard's doing and not the
+# fixture's.
+noeq="$TMP/noeq.sh"
+guard='\[ "\$TREE_VERSION" != "\$BASE_VERSION" \]'
+sed -e 's@^   && \[ "\$TREE_VERSION" != "\$BASE_VERSION" \]; then$@   ; then@' "$CHECK" > "$noeq"
+# Same rule as the copy above: the guard has to have been there once and
+# be gone exactly once, and what is left has to still run.
+if [ "$(grep -c -- "$guard" "$CHECK")" = 1 ] \
+   && [ "$(grep -c -- "$guard" "$noeq")" = 0 ] \
+   && bash -n "$noeq" 2>/dev/null; then
+    echo "PASS: the guard-deleted copy has the one equality guard removed and parses"
+else
+    echo "FAIL: the guard-deleted copy did not land, so the assertion below measures"
+    echo "      nothing"
+    fails=1
+fi
+( cd "$REPO10" \
+  && GITHUB_EVENT_NAME=pull_request GITHUB_BASE_REF=dev \
+     GITHUB_EVENT_PATH="$EVENT_MAIN" BASE_REF=main \
+     bash "$noeq" >"$TMP/outnoeq" 2>&1 )
+grep -F 'pin suspension did NOT apply' "$TMP/outnoeq" >/dev/null \
+    && echo "PASS: without the equality guard the same run prints the false sentence" \
+    || { echo "FAIL: the guard-deleted copy prints nothing, so the case above would"
+         echo "      pass against a gate with no guard at all"; fails=1; }
+rm -f "$noeq"
 
 # --- the real repository ------------------------------------------------
 # The shipped state must satisfy its own gate.
