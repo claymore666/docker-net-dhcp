@@ -404,11 +404,27 @@ has to be true.
    merges, and
    [`scripts/check-dispatch-reachable.sh`](https://github.com/claymore666/docker-net-dhcp/blob/main/scripts/check-dispatch-reachable.sh)
    fails the release PR while one is still there (#977). Pruning here,
-   beside the version bump, is what lets that gate read the missing
-   entries as a release in flight for the rest of the route: it compares
-   the pin this tree carries against the one on `main`. Prune without
-   bumping and the gate is right to fail; that is an ordinary mid-cycle
-   removal of a live entry.
+   beside the version bump, is what lets that gate accept the missing
+   entries for the rest of the route: it compares the pin this tree
+   carries against the one on `main`, and while this tree pins the next
+   version it treats a missing entry as the removal in transit. Prune
+   without bumping and the gate is right to fail; that is an ordinary
+   mid-cycle removal of a live entry.
+
+   **What that comparison does not know**, because the release depends
+   on it and so does anyone reading a green run. The gate reads two
+   version pins. It does not look for a release branch, a pruned entry
+   or a release pull request, so a bare `scripts/bump-version.sh vNEXT`
+   on any branch buys the same acceptance, and
+   [`scripts/check-version-pins.sh`](https://github.com/claymore666/docker-net-dhcp/blob/main/scripts/check-version-pins.sh)
+   permits a tree to lead the latest tag. While the pins differ the
+   undeclared-workflow finding is off for **every** dispatchable
+   workflow, not only the ones being released, so one merged undeclared
+   during the release window is not caught until the pins agree again.
+   The acceptance lasts **one** version step: a release moves the
+   version once, so a tree two steps ahead of `main` means an earlier
+   release never landed, and the gate reports the acceptance as expired
+   and fails. Finish or unwind that release before starting this one.
 3. **Documentation review, PR-driven against the milestone.** Don't
    review from memory; review from the change set. List every PR on the
    `vX.Y.Z` milestone and reconcile each one's user-visible change
@@ -1115,11 +1131,12 @@ After the workflow succeeds:
   [`scripts/check-dispatch-reachable.sh`](https://github.com/claymore666/docker-net-dhcp/blob/main/scripts/check-dispatch-reachable.sh)
   counts a workflow that the release PR merges into the default branch
   as reachable and its entry as stale (#977). While the release branch
-  and `dev` pin a newer version than `main` does, that gate reads the
-  release as in flight and accepts the missing entry, so step 5 and
-  every other pull request into `dev` during the release window stay
-  green. Dropping the entry after the release instead is what turned
-  the gate red on `main` at v2.1.0.
+  and `dev` pin the next version and `main` pins the current one, that
+  gate accepts the missing entry, so step 5 and every other pull
+  request into `dev` during the release window stay green. It is
+  reading the two pins and nothing else; the bounds that come with that
+  are in step 2. Dropping the entry after the release instead is what
+  turned the gate red on `main` at v2.1.0.
 
 ## Troubleshooting
 

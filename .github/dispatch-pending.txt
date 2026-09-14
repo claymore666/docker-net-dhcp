@@ -131,10 +131,22 @@
 #     branch into `dev` first, so for the length of the release the
 #     entry is GONE from `dev` while the workflow is still absent from
 #     the default branch. The gate reads that state from the version
-#     pins: while this tree pins a newer published-image version than
-#     the default branch does, a release is in flight and a missing
-#     entry is the removal in transit, not an undeclared workflow. The
-#     suspension covers every dispatchable workflow for the length of
-#     the release and is printed on every run it applies to. The stale
-#     rule is never suspended.
+#     pins, and from nothing else: while this tree pins the immediate
+#     successor of what the default branch pins, a missing entry is
+#     taken as the removal in transit. Three bounds come with that, and
+#     they are the written expiry this ledger demands of its own
+#     entries:
+#     FIRST, the gate cannot tell a release from a bare pin bump. It
+#     never looks for a release branch, a pruned entry or a release
+#     pull request, and check-version-pins.sh permits a tree to lead
+#     the latest tag, so a bump on any branch suspends the finding the
+#     same way. Every run it applies to says so in its own output.
+#     SECOND, while suspended the finding is off for EVERY dispatchable
+#     workflow, so one merged undeclared in that window is not caught
+#     until the pins agree again.
+#     THIRD, the suspension lasts ONE release step. A release moves the
+#     version one step; two steps means the first release never landed,
+#     and the gate reports the suspension as expired instead of
+#     widening it.
+#     The stale rule is never suspended.
 #

@@ -1189,12 +1189,28 @@ printf '# pending\n' > "$REPO9/.github/dispatch-pending.txt"
 git -C "$REPO9" add -A && git -C "$REPO9" commit -qm "release v9.9.0: bump pins, prune the ledger"
 check "hop 3: the release branch into dev, carrying the removal, passes" \
     pass "$(verdict9 pull_request dev)"
-grep -F 'a release is in flight' "$TMP/out9" >/dev/null \
-    && echo "PASS: and it says why, naming both versions" \
-    || { echo "FAIL: hop 3 passed without saying a release is in flight"; fails=1; }
+grep -F 'one release step behind it' "$TMP/out9" >/dev/null \
+    && echo "PASS: and it says what it compared, naming the step" \
+    || { echo "FAIL: hop 3 passed without naming the pin comparison"; fails=1; }
 grep -F 'v9.9.0' "$TMP/out9" >/dev/null && grep -F 'v9.8.0' "$TMP/out9" >/dev/null \
     && echo "PASS: and both pinned versions are printed" \
-    || { echo "FAIL: the in-flight note does not name the two versions"; fails=1; }
+    || { echo "FAIL: the pin note does not name the two versions"; fails=1; }
+
+# EVERY LINE THE RUN PRINTS MUST BE TRUE OF WHAT IT DERIVED. The same
+# bargain as the merging line's negative assertion above: the summary
+# must not describe a suspended workflow with the sentence written for a
+# declared one, and the ledger here holds no entry at all.
+grep -F 'declared in .github/dispatch-pending.txt' "$TMP/out9" >/dev/null \
+    && { echo "FAIL: a suspended workflow is reported as declared, with an empty ledger"
+         fails=1; } \
+    || echo "PASS: and a suspended workflow is not reported as declared"
+grep -F 'reachable on' "$TMP/out9" >/dev/null \
+    && { echo "FAIL: the summary claims a suspended workflow is reachable on the default branch"
+         fails=1; } \
+    || echo "PASS: and it does not claim the suspended workflow is reachable"
+grep -F 'suspended by the pin comparison above' "$TMP/out9" >/dev/null \
+    && echo "PASS: and the summary names the suspension as the reason" \
+    || { echo "FAIL: the summary does not say why the workflow is not a finding"; fails=1; }
 
 # HOP 4: that merges to dev. Nothing is a pull request now, and the push
 # lane on dev has to stay green for the length of the release.
@@ -1236,9 +1252,26 @@ git -C "$REPO9" checkout -q main
 git -C "$REPO9" merge -q --ff-only dev
 check "hop 7: the default branch is green one commit after the merge" \
     pass "$(verdict9 push '')"
-grep -F 'a release is in flight' "$TMP/out9" >/dev/null \
+grep -F 'is suspended for' "$TMP/out9" >/dev/null \
     && { echo "FAIL: the suspension is still on after the release merged"; fails=1; } \
     || echo "PASS: and the suspension is over, because the two versions agree again"
+
+# HOP 7b AND 7c: THE GAP BETWEEN RUNBOOK STEPS 8 AND 11 (#977 round 2,
+# F5). The release pull request merging is step 8; `dev` is
+# fast-forwarded to `main` at step 11, and the two are not the same
+# moment. In between, the default branch carries the merge commit and
+# `dev` does not, with identical trees. Collapsing the two into one
+# fast-forward, as the route above did, means no run is ever measured in
+# that gap.
+git -C "$REPO9" checkout -q main
+git -C "$REPO9" commit -q --allow-empty -m "Merge pull request #999 from claymore666/dev"
+git -C "$REPO9" checkout -q dev
+check "hop 7b: a push on dev in the gap between the merge and the fast-forward" \
+    pass "$(verdict9 push '')"
+git -C "$REPO9" merge -q --ff-only main
+check "hop 7c: and after the fast-forward at step 11" \
+    pass "$(verdict9 push '')"
+git -C "$REPO9" checkout -q main
 
 # BEHIND IS NOT IN FLIGHT. The comparison is strictly newer, not
 # different: a branch that has not been back-merged pins an OLDER
@@ -1279,6 +1312,99 @@ printf 'docker plugin install ghcr.io/claymore666/docker-net-dhcp:v10.0.0\n' \
 dispatchable later10 > "$REPO9/.github/workflows/later10.yml"
 check "a default branch pinning two different versions gives no suspension either" \
     rc1 "$(verdict9 pull_request dev)"
+
+# --- WHAT THE PIN COMPARISON DOES NOT KNOW (#977 round 2) --------------
+#
+# The suspension is derived from two version pins and nothing else. Three
+# things follow, and each of them was true and unobserved: the gate
+# cannot tell a release from a bare pin bump (F2), a workflow merged
+# undeclared while the pins differ is missed for as long as they differ
+# (F3), and a release that is parked leaves the pins differing forever
+# (F4). Its own fixture, because each of the three has to be driven with
+# the window held in a state the composed route never sits in.
+REPO10="$TMP/repo10"
+mkdir -p "$REPO10/.github/workflows"
+git -C "$REPO10" init -q -b main
+git -C "$REPO10" config user.email t@example.com
+git -C "$REPO10" config user.name t
+git -C "$REPO10" config commit.gpgsign false
+printf 'docker plugin install ghcr.io/claymore666/docker-net-dhcp:v9.8.0\n' \
+    > "$REPO10/README.md"
+dispatchable onmain10 > "$REPO10/.github/workflows/onmain10.yml"
+printf '# pending\n' > "$REPO10/.github/dispatch-pending.txt"
+git -C "$REPO10" add -A && git -C "$REPO10" commit -qm "v9.8.0, released"
+
+verdict10() {
+    ( cd "$REPO10" \
+      && GITHUB_EVENT_NAME="$1" GITHUB_BASE_REF="$2" \
+         GITHUB_EVENT_PATH="$EVENT_MAIN" BASE_REF=main \
+         bash "$CHECK" >"$TMP/out10" 2>&1 ) \
+        && echo pass || echo "rc$?"
+}
+
+# F2. A BARE PIN BUMP IS NOT A RELEASE, and this run has no way to know
+# the difference: no release branch, no ledger entry was ever removed
+# here, and no release pull request exists. The suspension still applies,
+# because the pins are what it reads. What must NOT happen is the run
+# asserting the rest of that story as though it had checked it.
+git -C "$REPO10" checkout -q -b bump10 main
+sed -i 's/v9\.8\.0/v9.9.0/' "$REPO10/README.md"
+dispatchable bumped10 > "$REPO10/.github/workflows/bumped10.yml"
+check "a bare pin bump with no release suspends the finding" \
+    pass "$(verdict10 pull_request dev)"
+grep -F 'WHAT THIS RUN CHECKED IS THE TWO PINS, AND NOTHING ELSE' "$TMP/out10" >/dev/null \
+    && echo "PASS: and the run says the pins are all it checked" \
+    || { echo "FAIL: the suspension does not say what it was derived from"; fails=1; }
+for claim in \
+    'Their ledger entries were removed on the release branch' \
+    'a release is in flight'
+do
+    grep -F "$claim" "$TMP/out10" >/dev/null \
+        && { echo "FAIL: the run asserts '$claim', which it never derived"; fails=1; } \
+        || echo "PASS: and it does not assert '$claim'"
+done
+grep -F 'cannot tell a release from a bare pin bump' "$TMP/out10" >/dev/null \
+    && echo "PASS: and the false-positive direction is named in the output" \
+    || { echo "FAIL: the bump-without-a-release direction is not stated"; fails=1; }
+
+# F3. THE STATED BOUND, CARRIED BY A REAL WORKFLOW. `bumped10` is a
+# dispatchable workflow that was never declared, and while the pins
+# differ it is not a finding. The bound says it is missed until they
+# agree again, so the same workflow is put through the closing of the
+# window.
+git -C "$REPO10" checkout -q main
+git -C "$REPO10" merge -q --no-ff -m "the release lands without bumped10" \
+    --strategy=ours bump10
+sed -i 's/v9\.8\.0/v9.9.0/' "$REPO10/README.md"
+git -C "$REPO10" commit -q -am "v9.9.0, released"
+git -C "$REPO10" checkout -q bump10
+check "the same undeclared workflow is caught once the pins agree again" \
+    rc1 "$(verdict10 pull_request dev)"
+grep -F 'bumped10.yml' "$TMP/out10" >/dev/null \
+    && echo "PASS: and the finding names the workflow the window was hiding" \
+    || { echo "FAIL: the workflow carried through the window is not named"; fails=1; }
+
+# F4. THE SUSPENSION EXPIRES. A release parked after runbook step 5
+# leaves the pins differing with nothing finishing it, and a suspension
+# that lasts as long as that is the bare entry the ledger's own header
+# forbids. A release moves the version one step, so two steps is the
+# measurement that says the first one never landed.
+git -C "$REPO10" checkout -q -b parked10 main
+dispatchable parked10wf > "$REPO10/.github/workflows/parked10wf.yml"
+sed -i 's/v9\.9\.0/v9.11.0/' "$REPO10/README.md"
+check "a tree two release steps ahead has an expired suspension, not a wider one" \
+    rc1 "$(verdict10 pull_request dev)"
+grep -F 'more than one release step' "$TMP/out10" >/dev/null \
+    && echo "PASS: and the run says the suspension expired rather than never applying" \
+    || { echo "FAIL: the expiry is not explained where it bites"; fails=1; }
+
+# ...and the preservation control, because a red that only measures
+# "hard" proves nothing: ONE step ahead on the same fixture, same
+# workflow, same ledger, passes. Without it the case above would be
+# satisfied by a gate that had stopped suspending anything.
+sed -i 's/v9\.11\.0/v9.10.0/' "$REPO10/README.md"
+check "one step ahead on the same fixture is still suspended (control)" \
+    pass "$(verdict10 pull_request dev)"
 
 # --- the real repository ------------------------------------------------
 # The shipped state must satisfy its own gate.
