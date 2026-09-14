@@ -26,8 +26,11 @@ import (
 //
 // Two DHCP exchanges under one hardware address means two DISCOVERs and
 // two leases filed against one MAC at the server, of which the second is
-// never released: nothing holds it and no DHCPRELEASE goes on the wire
-// (D-7). So a key already carrying an exchange admits no second one.
+// never released: nothing holds it, and no DHCPRELEASE goes on the wire
+// for it on any value of `release_lease` (D-7, #962). `on_stop` releases
+// at Leave from the endpoint's lease record, and a second exchange
+// nothing holds has no endpoint and no record of its own to be found
+// there. So a key already carrying an exchange admits no second one.
 //
 // The loser is REFUSED and not parked on the first one's result. Waiting
 // would hand two endpoints one address, and it is two endpoints that put

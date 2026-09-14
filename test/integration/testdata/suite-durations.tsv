@@ -10,7 +10,7 @@
 #
 # POPULATION: TOP-LEVEL TEST FUNCTIONS, PARENTS ONLY.
 # One row per `func TestX(t *testing.T)` in test/integration/*_test.go —
-# 119 of them, the main suite's 112 and the failure suite's 7. A subtest's
+# 123 of them, the main suite's 116 and the failure suite's 7. A subtest's
 # seconds are inside its parent's figure and are NOT a row of their own.
 # That is stated because the previous edition's header did not state it
 # and the population was read back two ways: 104 rows summing 1804.88s
@@ -97,11 +97,32 @@
 #              is 50.00: two arms, each one TestIPAM_SingleRestartKeeps-
 #              TheAddress at 22.00 on its own ephemeral fixture, plus
 #              that fixture's setup and teardown twice.
-#   samples    3 for every corpus row. TWENTY-TWO rows are not corpus
+#   four rows  The four TestReleaseLease_* rows are INFERRED, not
+#              measured: #962 adds them and no run has executed them.
+#              TestReleaseLease_TheOptionIsRefusedAtCreateOrItIsNot is
+#              0.10 -- four network creates and no container, which is
+#              the shape of TestIPv6_AcceptedAtCreate (0.02) four times
+#              over, rounded up for the two that are refused after the
+#              option is parsed. TestReleaseLease_OnStopHandsTheAddressBack
+#              is 24.00: one network, one container, a stop that waits
+#              for the server's lease DB to drop the entry, and a start
+#              that waits for a fresh address -- the shape of
+#              TestTombstoneRestart_PreservesMACAndIP (20.39) plus room
+#              for the release wait.
+#              TestReleaseLease_DefaultNetworksStillKeepTheirAddresses
+#              is 26.00: the same walk plus the 5s settle it spends
+#              proving an absence. TestReleaseLease_OnStopHandsTheV6AddressBackToo
+#              is 32.00, the dual-stack version of the first, sized off
+#              TestTombstoneRestart_PreservesIPv6 (27.17) the way that
+#              row sits above its v4 twin. The first run that executes
+#              each costs it, the way TestFailure_UnansweredRenewalsCounted
+#              was costed.
+#   samples    3 for every corpus row. TWENTY-SIX rows are not corpus
 #              samples: the four noted individually above -- 73.85,
-#              84.19, 0.05 and 13.00 -- and the eighteen #110 rows.
-#              Twenty of the twenty-two are INFERRED; the two that are
-#              measured are TestLeaseRenewIPv6_HonorsT1, from three later
+#              84.19, 0.05 and 13.00 -- the eighteen #110 rows, and the
+#              four #962 TestReleaseLease_* rows. Twenty-four of the
+#              twenty-six are INFERRED; the two that are measured are
+#              TestLeaseRenewIPv6_HonorsT1, from three later
 #              head runs, and TestFailure_UnansweredRenewalsCounted, from
 #              a single sample. The previous edition carried four inferred
 #              rows and fourteen v6 rows recovered from the 1.9.0
@@ -275,6 +296,10 @@ TestPreflightProbe_RejectedInBridgeMode	0.01
 TestRecovery_DaemonKilled_LeaseIsHeldUntilItExpires	31.98
 TestRecovery_DaemonRestart_PreservesContainer	30.00
 TestRecovery_PluginDisableEnable_PreservesEndpoint	12.86
+TestReleaseLease_DefaultNetworksStillKeepTheirAddresses	26.00
+TestReleaseLease_OnStopHandsTheAddressBack	24.00
+TestReleaseLease_OnStopHandsTheV6AddressBackToo	32.00
+TestReleaseLease_TheOptionIsRefusedAtCreateOrItIsNot	0.10
 TestSandboxKeyRoute_Bridge	11.89
 TestSandboxKeyRoute_Ipvlan	11.60
 TestSandboxKeyRoute_Macvlan	12.25

@@ -297,6 +297,39 @@ type Fixture struct {
 	chal *bridgeChallenger
 }
 
+// acceptLocal lets the server end of this fixture receive a datagram
+// whose source address this same host holds on another interface.
+//
+// IT IS A PROPERTY OF THE RIG AND NOT OF THE SUBJECT, which is the
+// whole reason it is written down here rather than worked around in the
+// plugin. Every link in this fixture lives in ONE network namespace:
+// the host holds HostVethAddr on the macvlan parent and DHCPServerAddr
+// on this segment. A DHCPRELEASE built from a lease record is sent from
+// the host's own address on the parent, bound to that link, so it
+// really goes out on the wire and arrives here carrying a source
+// address the receiving host owns -- and Linux discards that as a
+// martian source unless accept_local is set. In production the parent
+// and the DHCP server are two machines and the question does not arise.
+//
+// MEASURED in dhcp-golib's own dnsmasq fixture, which has the same
+// shape: without this, dnsmasq logs nothing at all for a release sent
+// with the device binding set, while the identical release sent without
+// it is logged. INFERRED here, from that measurement and from this
+// fixture's topology, as the reason #966's first lane saw one
+// DHCPRELEASE per endpoint instead of two: the v6 Release is multicast
+// to a link-scoped address and has no such rule, so it arrived while
+// the v4 one did not.
+//
+// It needs no teardown: the sysctl belongs to a device this fixture
+// creates and deletes.
+func acceptLocal(ifName string) error {
+	p := filepath.Join("/proc/sys/net/ipv4/conf", ifName, "accept_local")
+	if err := os.WriteFile(p, []byte("1\n"), 0o644); err != nil {
+		return fmt.Errorf("writing %s: %w", p, err)
+	}
+	return nil
+}
+
 // New builds the parent-attached segment — the DHCPSegment bridge, one
 // veth pair per parent kind with the far end enslaved to it — addresses
 // the server end, and starts dnsmasq. Returns an error if any step
@@ -325,6 +358,9 @@ func New() (*Fixture, error) {
 	// is a bridge now, and br_netfilter would otherwise run frames
 	// between its two ports through docker's DROP policy.
 	if err := installBridgeForward(DHCPSegment); err != nil {
+		return nil, wrapTeardown(err)
+	}
+	if err := acceptLocal(DHCPSegment); err != nil {
 		return nil, wrapTeardown(err)
 	}
 

@@ -545,6 +545,18 @@ type DHCPNetworkOptions struct {
 	// DHCPServers rather than competing with it. See serverPolicy for
 	// how the two are composed before either reaches the client.
 	DenyServers string `mapstructure:"dhcp_deny_servers"`
+	// ReleaseLease decides whether this network hands a lease back
+	// instead of letting it expire (#962). `never` (the default) is
+	// v1.9.0's rule: no path sends a DHCPRELEASE, and a stopped
+	// container's address stays leased until it expires, so a restart
+	// re-claims it. `on_stop` sends the release when the endpoint
+	// leaves its sandbox, which frees the address at once and costs the
+	// restarted container its address.
+	//
+	// The value is validated at CreateNetwork against the list in
+	// parseReleaseLease, so a typo fails the create rather than
+	// silently selecting the default.
+	ReleaseLease string `mapstructure:"release_lease"`
 }
 
 // effectiveMode returns Mode with the empty default normalized to ModeBridge.
@@ -804,7 +816,11 @@ type Plugin struct {
 	// joinStartFailures counts persistent-DHCP-client Start failures
 	// at Join time (#317). Each bump is a running container that got
 	// its initial lease but has NO renewal client: the lease silently
-	// ages toward expiry and is never released on disconnect. The
+	// ages toward expiry, and on a `release_lease=never` network, the
+	// default, it is not released on disconnect. On `release_lease=on_stop`
+	// it IS: the release is built from the endpoint's lease record and
+	// needs no client, so this counter is the case that change was made
+	// for rather than a case it cannot reach (#962). The
 	// canonical cause was the missing CAP_SYS_PTRACE (netns open on a
 	// non-root container's /proc/<pid>/ns/net); the counter exists so
 	// the next cause is visible on /Plugin.Health instead of only in
@@ -1329,11 +1345,12 @@ type Plugin struct {
 	//
 	//     Called leaseReleaseFailures until v1.9.0, when the plugin
 	//     stopped releasing leases altogether (#800). The old name said
-	//     a DHCPRELEASE had not completed; there is no DHCPRELEASE on
-	//     any path now, and what is left is a client that did not exit
-	//     cleanly when asked. Renamed rather than kept, because a
-	//     counter whose name describes something the plugin no longer
-	//     does is read as the thing it is named after.
+	//     a DHCPRELEASE had not completed, and what is left is a client
+	//     that did not exit cleanly when asked. Renamed rather than
+	//     kept, because a counter whose name describes something the
+	//     plugin does elsewhere is read as the thing it is named after:
+	//     since #962 a release IS sent on a `release_lease=on_stop`
+	//     network, and releaseFailuresV4 is the counter for it.
 	//
 	// Each counts the v4 client only. The unsuffixed JSON field an
 	// operator alerts on (`leases_obtained`) is this atom PLUS its *V6
@@ -1436,6 +1453,32 @@ type Plugin struct {
 	// v6-only silence is invisible in the sum.
 	renewalsUnansweredV6 atomic.Int32
 
+	// The `release_lease` pair, per family (#962).
+	//
+	// releasesSent* counts the messages that LEFT THE HOST -- folded
+	// from the library's own ReleasesSent, which it bumps where the
+	// send succeeded -- and releaseFailures* counts the attempts that
+	// produced none. The split is the whole point: the library's call
+	// is fire-and-forget and reports nothing, so a counter fed from the
+	// plugin's decision to release would read the same on a network
+	// whose releases all reach the server and on one whose releases all
+	// die in a full request queue.
+	//
+	// Both stay at zero on a `release_lease=never` network, which is
+	// the default and every network that existed before this option.
+	// A non-zero releaseFailures means those addresses are still leased
+	// upstream and will expire on the server's clock -- the `never`
+	// outcome, arrived at by accident -- so it is worth alerting on and
+	// is not healthy-affecting: nothing on this host is broken by it.
+	releasesSentV4 atomic.Int32
+	releasesSentV6 atomic.Int32
+	// releaseFailures is a WARN check and therefore a stampedCounter:
+	// the health document renders the time the fault last moved, and a
+	// plain atomic would render the time of the reading -- a latched
+	// failure that reads as a fresh one (checkStamps).
+	releaseFailuresV4 stampedCounter
+	releaseFailuresV6 stampedCounter
+
 	// dhcpv6ConfigOnly counts DHCPv6 information replies: the server
 	// advertised "other configuration available" and answered with
 	// options and no address (#815). Deliberately NOT part of the
@@ -1514,9 +1557,11 @@ type Plugin struct {
 
 	// displacedStops tracks the goroutines Join spawns to Stop a
 	// manager it displaced (#338). Join must not block on the displaced
-	// client's stop, but Close must not exit while one is mid-release
-	// either — an interrupted Stop means no DHCPRELEASE, and the
-	// upstream server holds the lease until it expires on its own.
+	// client's stop, but Close must not exit while one is mid-stop
+	// either. A displacement is not an endpoint leaving its sandbox, so
+	// it sends no DHCPRELEASE even on a `release_lease=on_stop` network
+	// (#962), and the upstream server holds the lease until the
+	// incoming client renews it or it expires on its own.
 	// Tracked rather than bounded on purpose: a semaphore here would
 	// put head-of-line blocking back into Join, which is the exact
 	// thing the goroutine exists to avoid.
@@ -1737,6 +1782,18 @@ type endpointFingerprint struct {
 	// Leave -> Join cycle of a container restart, where the join hint
 	// is gone and libnetwork does not re-send endpoint options.
 	Ifname string
+	// Released records that this endpoint's lease was handed back at
+	// Leave under `release_lease=on_stop` (#962), which is what stops
+	// DeleteEndpoint from promising the MAC and the address to the next
+	// container on this network.
+	//
+	// THE FACT AND NOT THE OPTION. A tombstone carries an address, and
+	// the question it has to answer is whether that address is still
+	// this endpoint's to offer. Under a network set to release whose
+	// release did not leave the host, it is -- and a flag set from the
+	// option would have thrown restart stability away for an endpoint
+	// that released nothing.
+	Released bool
 }
 
 // dhcpHostname is a container hostname TOGETHER WITH whether the plugin
@@ -1840,6 +1897,24 @@ func (p *Plugin) updateEndpointIPs(endpointID, ipv4, ipv6 string) {
 	if ipv6 != "" {
 		fp.IPv6 = ipv6
 	}
+	p.endpointFingerprints[endpointID] = fp
+}
+
+// markEndpointReleased records that this endpoint's lease went back to
+// the server, so DeleteEndpoint lays no tombstone for it (#962).
+//
+// A no-op for an endpoint with no fingerprint, which is the same
+// treatment updateEndpointIPs gives: without a fingerprint there is
+// nothing for DeleteEndpoint to turn into a tombstone either, so there
+// is nothing to suppress.
+func (p *Plugin) markEndpointReleased(endpointID string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	fp, ok := p.endpointFingerprints[endpointID]
+	if !ok {
+		return
+	}
+	fp.Released = true
 	p.endpointFingerprints[endpointID] = fp
 }
 
@@ -2747,12 +2822,15 @@ func waitBounded(wg *sync.WaitGroup, d time.Duration) bool {
 // a plugin upgrade or `docker plugin disable` does not leave clients
 // renewing leases for endpoints this plugin no longer manages.
 //
-// Since #800 this is NOT about releasing anything: no path sends a
-// DHCPRELEASE, and a stopped client's address stays leased until it
-// expires, which is the intended behaviour. What must not survive the
-// shutdown is the CLIENT — a stray renewer keeps an address alive that
-// nothing is using, and collides with the client a restarted plugin
-// builds for the same endpoint.
+// Since #800 this is NOT about releasing anything. Close arrives
+// through Stop and not StopForLeave, so it releases nothing even on a
+// `release_lease=on_stop` network (#962) — the containers are still
+// running, and telling the server their addresses are free is the
+// duplicate assignment #524 detects. A stopped client's address stays
+// leased until it expires, which is the intended behaviour. What must
+// not survive the shutdown is the CLIENT — a stray renewer keeps an
+// address alive that nothing is using, and collides with the client a
+// restarted plugin builds for the same endpoint.
 // ListenMetrics starts the optional TCP listener for /metrics.
 //
 // Off unless METRICS_ADDR is set, and that default is deliberate. The

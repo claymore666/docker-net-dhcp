@@ -172,11 +172,14 @@ func TestJoinNoContainer_AddressIsHeldUntilItExpires(t *testing.T) {
 
 	// Ground truth. The address stays leased: no client ever held it to
 	// release, and the plugin no longer synthesises one to do it (#800).
+	// release_lease cannot reach this case either -- there is no Leave
+	// for an endpoint no container ever joined (#962).
 	time.Sleep(leaseRetentionSettle)
 	if got := fixture.CountLogLines("DHCPRELEASE", ip) - releasesBefore; got != 0 {
-		t.Errorf("dnsmasq logged %d DHCPRELEASE line(s) for %s, want 0. Nothing this "+
-			"plugin runs releases a lease — the address is held until it expires, the "+
-			"same as for any host that leaves the segment without releasing (#800)",
+		t.Errorf("dnsmasq logged %d DHCPRELEASE line(s) for %s, want 0. Nothing releases "+
+			"a lease here — the address is held until it expires, the same as for any "+
+			"host that leaves the segment without releasing (#800), and no Leave ever "+
+			"runs for this endpoint for release_lease to act on (#962)",
 			got, ip)
 	}
 
