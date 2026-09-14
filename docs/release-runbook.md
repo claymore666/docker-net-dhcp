@@ -1090,16 +1090,19 @@ After the workflow succeeds:
   release PR's `Closes` list). Verify with
   `gh issue list --milestone vX.Y.Z --state open`; should be
   empty.
-- **Anything listed in
+- **Anything that was listed in
   [`.github/dispatch-pending.txt`](https://github.com/claymore666/docker-net-dhcp/blob/main/.github/dispatch-pending.txt)
-  is now dispatchable. Exercise it once and remove the entry.** A
-  `workflow_dispatch` workflow is only exposed from the default branch,
-  so one that merged to `dev` during this cycle has never run, and this
-  release is the first moment it can. Dispatch it, confirm it does what
-  its documentation claims, then drop the entry;
+  is now dispatchable. Exercise it once.** A `workflow_dispatch`
+  workflow is only exposed from the default branch, so one that merged
+  to `dev` during this cycle has never run, and this release is the
+  first moment it can. Dispatch it and confirm it does what its
+  documentation claims. The entry itself is already gone: the release
+  PR removes it, because
   [`scripts/check-dispatch-reachable.sh`](https://github.com/claymore666/docker-net-dhcp/blob/main/scripts/check-dispatch-reachable.sh)
-  fails on a declaration that has stopped being true, so the next PR
-  surfaces a forgotten one.
+  counts a workflow that this pull request merges into the default
+  branch as reachable and its entry as stale (#977). Dropping the entry
+  after the release instead is what turned the gate red on `main` at
+  v2.1.0.
 
 ## Troubleshooting
 

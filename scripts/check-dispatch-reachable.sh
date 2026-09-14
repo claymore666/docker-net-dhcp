@@ -35,8 +35,31 @@
 # branch the entry has stopped meaning anything, and an allowlist nobody
 # prunes is how a temporary exception becomes permanent.
 #
+# A PULL REQUEST INTO THE DEFAULT BRANCH IS A THIRD STATE (#977). The two
+# verdicts above are each right on their own, and on a release PR no
+# commit satisfies both: the workflow is not on the default branch yet,
+# so the entry is required, and one commit later — after the merge — the
+# same entry is stale. The v2.1.0 release merge turned this gate red on
+# the default branch for exactly that reason, and the runbook sentence
+# "the release PR removes it" could not be followed by anyone.
+#
+# So on a pull request whose base IS the default branch, a dispatchable
+# workflow in the tree counts as REACHABLE: merging this pull request is
+# what puts it there. Its entry is then stale ON THE PULL REQUEST, which
+# is what makes the runbook step executable — the release PR removes the
+# entry, and the PR and the default branch are both green. Pushes, and
+# pull requests into any other branch, keep today's verdicts.
+#
+# The base is read from the event and compared against a DERIVED default
+# branch, never against a literal `main`. A gate that hard-codes the name
+# exempts every pull request into `dev` on the day the default branch
+# moves, which is the #665 failure reintroduced by the fix for this one.
+#
 # Usage: bash scripts/check-dispatch-reachable.sh [workflow-dir] [allowlist]
 # Env:   BASE_REF (default origin/main) — the default branch to test against.
+#        GITHUB_EVENT_NAME, GITHUB_BASE_REF, GITHUB_EVENT_PATH — read, never
+#          required. They are what identifies a pull request into the default
+#          branch; with none of them set the verdict is the pre-#977 one.
 # Exit:  0 reachable or declared (also when the default branch cannot be
 #          read — reported as NOT INSPECTED, never a silent pass),
 #        1 an undeclared or stale entry,
@@ -46,6 +69,12 @@ set -uo pipefail
 WF_DIR="${1:-.github/workflows}"
 ALLOWLIST="${2:-.github/dispatch-pending.txt}"
 BASE_REF="${BASE_REF:-origin/main}"
+# The fetch fallback below REWRITES BASE_REF to FETCH_HEAD, and a hosted
+# runner takes that path on every run: actions/checkout fetches one ref,
+# so `origin/main` is not present. The #977 exemption has to compare the
+# branch the operator NAMED, not what the fallback left behind, or it is
+# inert in the only place it matters.
+BASE_REF_SPEC="$BASE_REF"
 
 [ -d "$WF_DIR" ] || { echo "FAIL  no workflow directory '$WF_DIR'" >&2; exit 2; }
 
@@ -82,6 +111,78 @@ if ! git rev-parse --verify --quiet "$BASE_REF" >/dev/null; then
     echo "  This is the one thing this check needs; CI fetches it, so the"
     echo "  verdict there is the authoritative one."
     exit 0
+fi
+
+# THE #977 EXEMPTION, DECIDED ONCE, HERE.
+#
+# Three things have to hold, and each one is a separate way the fix
+# could be wrong rather than a belt-and-braces list:
+#
+#   - the run is a PULL REQUEST. `GITHUB_BASE_REF` is set on a pull
+#     request and empty on a push, but an environment can carry a stale
+#     one, and "a push was exempted" is silent in both directions. The
+#     event name is what says which kind of run this is.
+#   - its base IS the default branch, DERIVED. Comparing against the
+#     string `main` would exempt every pull request into `dev` the day
+#     the default branch is renamed, which is the #665 failure produced
+#     by the fix for #977.
+#   - the ref this gate compares against is that same branch. Otherwise
+#     the exemption would report "reachable" about a branch nobody asked
+#     about.
+#
+# Two derivations, because neither is available everywhere: a hosted
+# runner has the event payload and no `origin/HEAD`; a clone has
+# `origin/HEAD` and no event payload. Where BOTH answer and they
+# DISAGREE, the exemption is refused rather than letting the looser one
+# decide.
+#
+# Declining is printed. A fix that silently does nothing on the one run
+# it was written for is indistinguishable from a fix that works, until
+# the release it was supposed to unblock.
+branch_name() {
+    local r="${1#refs/heads/}"
+    r="${r#refs/remotes/}"
+    printf '%s' "${r#origin/}"
+}
+
+DEF_FROM_EVENT=""
+if [ -n "${GITHUB_EVENT_PATH:-}" ] && [ -r "${GITHUB_EVENT_PATH:-}" ] \
+   && command -v jq >/dev/null 2>&1; then
+    DEF_FROM_EVENT=$(jq -r '.repository.default_branch // empty' \
+        "${GITHUB_EVENT_PATH}" 2>/dev/null)
+fi
+DEF_FROM_HEAD=$(git symbolic-ref --short --quiet refs/remotes/origin/HEAD 2>/dev/null)
+[ -z "$DEF_FROM_HEAD" ] || DEF_FROM_HEAD=$(branch_name "$DEF_FROM_HEAD")
+
+DEFAULT_BRANCH=""
+MERGES_INTO_DEFAULT=0
+PR_BASE=""
+case "${GITHUB_EVENT_NAME:-}" in
+    pull_request|pull_request_target) PR_BASE=$(branch_name "${GITHUB_BASE_REF:-}") ;;
+esac
+
+if [ -n "$PR_BASE" ]; then
+    decline=""
+    if [ -n "$DEF_FROM_EVENT" ] && [ -n "$DEF_FROM_HEAD" ] \
+       && [ "$DEF_FROM_EVENT" != "$DEF_FROM_HEAD" ]; then
+        decline="the event payload says the default branch is '$DEF_FROM_EVENT' and origin/HEAD says '$DEF_FROM_HEAD'"
+    else
+        DEFAULT_BRANCH="${DEF_FROM_EVENT:-$DEF_FROM_HEAD}"
+        if [ -z "$DEFAULT_BRANCH" ]; then
+            decline="the default branch could not be derived — no readable event payload and no origin/HEAD"
+        elif [ "$PR_BASE" = "$DEFAULT_BRANCH" ]; then
+            if [ "$(branch_name "$BASE_REF_SPEC")" = "$DEFAULT_BRANCH" ]; then
+                MERGES_INTO_DEFAULT=1
+            else
+                decline="this gate was pointed at '$BASE_REF_SPEC', which is not the default branch '$DEFAULT_BRANCH'"
+            fi
+        fi
+    fi
+    if [ "$MERGES_INTO_DEFAULT" -eq 0 ] && [ -n "$decline" ]; then
+        echo "NOTE  this is a pull request into '$PR_BASE' and the merge-reaches-the-default-branch"
+        echo "      exemption (#977) was NOT applied: ${decline}."
+        echo "      The verdict below is the one a push would get."
+    fi
 fi
 
 # THE LEDGER'S OWN RULES WERE ENFORCED BY NOTHING (#849). Its header says
@@ -299,6 +400,7 @@ while IFS= read -r rel; do
 done <<< "$declared"
 
 pending=""
+merging=""
 inspected=0
 for f in "${WF_FILES[@]}"; do
     [ -e "$f" ] || continue
@@ -320,12 +422,27 @@ for f in "${WF_FILES[@]}"; do
     inspected=$((inspected + 1))
 
     rel="${f#./}"
-    if git cat-file -e "${BASE_REF}:${rel}" 2>/dev/null; then
-        # On the default branch: dispatchable. A declaration for it is stale.
+    on_default=0
+    git cat-file -e "${BASE_REF}:${rel}" 2>/dev/null && on_default=1
+
+    # Reachable, by either route: it is on the default branch already, or
+    # this pull request is what puts it there (#977). The stale rule is
+    # NOT suspended by the second route — that is the half that keeps the
+    # default branch green after the merge, and the reason the release PR
+    # is where the entry gets removed.
+    if [ "$on_default" -eq 1 ] || [ "$MERGES_INTO_DEFAULT" -eq 1 ]; then
+        [ "$on_default" -eq 1 ] || merging="$merging $rel"
         if printf '%s\n' "$declared" | grep -Fx "$rel" >/dev/null; then
-            note "'$rel' is on ${BASE_REF} but still declared in ${ALLOWLIST}."
-            echo "  It is dispatchable now; the entry has stopped meaning anything." >&2
-            echo "  Remove it." >&2
+            if [ "$on_default" -eq 1 ]; then
+                note "'$rel' is on ${BASE_REF} but still declared in ${ALLOWLIST}."
+                echo "  It is dispatchable now; the entry has stopped meaning anything." >&2
+                echo "  Remove it." >&2
+            else
+                note "'$rel' is still declared in ${ALLOWLIST} and merging this pull request puts it on ${DEFAULT_BRANCH}."
+                echo "  The entry is stale the moment this merges, and this same gate then" >&2
+                echo "  goes red on ${DEFAULT_BRANCH} one commit later (#977). Remove it here," >&2
+                echo "  in this pull request." >&2
+            fi
         fi
         continue
     fi
@@ -357,7 +474,13 @@ if [ "$inspected" -eq 0 ]; then
     exit 2
 fi
 
-if [ -n "$pending" ]; then
+if [ -n "$merging" ]; then
+    # Never the "are on ${BASE_REF}" line here: they are not, and a false
+    # sentence in the evidence trail of a release is worth more than the
+    # one branch it saves.
+    echo "PASS  ${inspected} dispatch target(s) reachable; merging this pull request into" \
+         "${DEFAULT_BRANCH} is what puts these there:$merging"
+elif [ -n "$pending" ]; then
     echo "PASS  ${inspected} dispatch target(s) reachable on ${BASE_REF}; declared pending:$pending"
 else
     echo "PASS  all ${inspected} workflow_dispatch workflow(s) are on ${BASE_REF}"

@@ -838,6 +838,260 @@ else
     fails=1
 fi
 
+# --- A PULL REQUEST INTO THE DEFAULT BRANCH (#977) -----------------------
+#
+# The release PR could not be green and leave the default branch green.
+# The workflow is not on the default branch yet, so its entry is
+# required; the merge puts it there, so the same entry is stale one
+# commit later. The v2.1.0 release merge turned this gate red on the
+# default branch for exactly that reason.
+#
+# On a pull request whose base IS the default branch the merge is what
+# makes the workflow reachable, so no entry is required — and an entry
+# that IS there is stale, which is what keeps the default branch green
+# after the merge and puts the pruning in the release PR where the
+# runbook says it is.
+#
+# Its own fixture, and a second one that is a REAL CLONE. The two
+# derivations of "which branch is the default" are available in
+# different places — a hosted runner has the event payload and no
+# `origin/HEAD`, a clone has `origin/HEAD` and no event payload — so
+# each is driven where it exists rather than through a test-only
+# override. The clone also runs with NO `BASE_REF` set at all, which is
+# how the gate runs in CI.
+REPO6="$TMP/repo6"
+mkdir -p "$REPO6/.github/workflows"
+git -C "$REPO6" init -q -b main
+git -C "$REPO6" config user.email t@example.com
+git -C "$REPO6" config user.name t
+git -C "$REPO6" config commit.gpgsign false
+dispatchable onmain6 > "$REPO6/.github/workflows/onmain6.yml"
+git -C "$REPO6" add -A && git -C "$REPO6" commit -qm base
+git -C "$REPO6" checkout -q -b work
+dispatchable new6 > "$REPO6/.github/workflows/new6.yml"
+
+EVENT_MAIN="$TMP/event-main.json"
+printf '{"repository":{"default_branch":"main"}}\n' > "$EVENT_MAIN"
+EVENT_OTHER="$TMP/event-other.json"
+printf '{"repository":{"default_branch":"release"}}\n' > "$EVENT_OTHER"
+
+# <event-name> <pr base> [event payload] [BASE_REF]
+verdict6() {
+    ( cd "$REPO6" \
+      && GITHUB_EVENT_NAME="$1" GITHUB_BASE_REF="$2" \
+         GITHUB_EVENT_PATH="${3:-}" BASE_REF="${4:-main}" \
+         bash "$CHECK" >"$TMP/out6" 2>&1 ) \
+        && echo pass || echo "rc$?"
+}
+
+# The pre-#977 verdict, with no event environment at all. Every case
+# below is one variable away from this line, so it is the control that
+# says what the exemption actually changed.
+check "with no event environment an absent workflow still fails" \
+    rc1 "$(verdict6 '' '')"
+
+check "a pull request into the default branch does not need an entry (#977)" \
+    pass "$(verdict6 pull_request main "$EVENT_MAIN")"
+grep -F 'merging this pull request into main' "$TMP/out6" >/dev/null \
+    && echo "PASS: and the PASS line says the merge is what makes it reachable" \
+    || { echo "FAIL: the exemption's PASS line does not name the merge"; fails=1; }
+grep -F 'are on main' "$TMP/out6" >/dev/null \
+    && { echo "FAIL: the PASS line claims the workflow is already on the default branch"
+         fails=1; } \
+    || echo "PASS: and it does not claim the workflow is already there"
+
+# ORTHOGONALITY, the same bargain the *.yml scan and the comment strip
+# above make: a case that merely passes proves nothing unless the gate
+# WITHOUT the exemption is shown to reject this fixture. `cmp` is what
+# says the sed matched — an edit that matched nothing would leave a copy
+# that passes its own assertion while testing the unmodified gate.
+noexempt="$TMP/noexempt.sh"
+sed -e 's/ || \[ "\$MERGES_INTO_DEFAULT" -eq 1 \]//' "$CHECK" > "$noexempt"
+if cmp -s "$CHECK" "$noexempt"; then
+    echo "FAIL: the exemption could not be removed from the copy, so the case above"
+    echo "      would be green whether or not the exemption exists"
+    fails=1
+elif ( cd "$REPO6" && GITHUB_EVENT_NAME=pull_request GITHUB_BASE_REF=main \
+        GITHUB_EVENT_PATH="$EVENT_MAIN" BASE_REF=main bash "$noexempt" \
+        >/dev/null 2>&1 ); then
+    echo "FAIL: the gate without the exemption also passed the release-PR fixture"
+    fails=1
+else
+    echo "PASS: the gate without the exemption rejects the same fixture (orthogonality confirmed)"
+fi
+rm -f "$TMP/noexempt.sh"
+
+# THE CONTROLS. Each one is the exemption's own condition, removed.
+check "a pull request into dev keeps today's verdict" \
+    rc1 "$(verdict6 pull_request dev "$EVENT_MAIN")"
+check "a push keeps today's verdict even with a base ref in the environment" \
+    rc1 "$(verdict6 push main "$EVENT_MAIN")"
+
+# ...and the base is compared against a DERIVED default branch, never
+# the string `main`. Here the repository's default branch is `release`,
+# so a pull request into `main` is an ordinary pull request.
+check "a pull request into main is NOT exempt when main is not the default branch" \
+    rc1 "$(verdict6 pull_request main "$EVENT_OTHER")"
+
+# AN ENTRY IS STALE ON THE PULL REQUEST, and that is the half that keeps
+# the default branch green after the merge. Without it the release PR
+# passes while carrying the entry that turns the gate red one commit
+# later, which is #977 in the other direction.
+{ printf '# pending\n'; entry .github/workflows/new6.yml; } \
+    > "$REPO6/.github/dispatch-pending.txt"
+check "an entry for a workflow this pull request merges to the default branch fails" \
+    rc1 "$(verdict6 pull_request main "$EVENT_MAIN")"
+grep -F 'merging this pull request puts it on main' "$TMP/out6" >/dev/null \
+    && echo "PASS: and the message says the merge is what makes the entry stale" \
+    || { echo "FAIL: the stale-on-merge message is missing"; fails=1; }
+
+# The same entry on a pull request into dev is the legitimate case it
+# has always been. One variable moved: the base.
+check "the same entry on a pull request into dev passes (control)" \
+    pass "$(verdict6 pull_request dev "$EVENT_MAIN")"
+
+# The pre-existing stale rule is not suspended by the exemption: a
+# workflow that IS on the default branch and declared still fails, with
+# the message it has always had.
+{ printf '# pending\n'; entry .github/workflows/onmain6.yml; } \
+    > "$REPO6/.github/dispatch-pending.txt"
+check "an entry for a workflow already on the default branch still fails under the exemption" \
+    rc1 "$(verdict6 pull_request main "$EVENT_MAIN")"
+grep -F 'stopped meaning anything' "$TMP/out6" >/dev/null \
+    && echo "PASS: and it is the stale message, not the merge one" \
+    || { echo "FAIL: the stale-entry message was replaced under the exemption"; fails=1; }
+rm -f "$REPO6/.github/dispatch-pending.txt"
+
+# THE COMPARISON REF IS THE THIRD CONDITION. Pointed at a branch that is
+# not the default one, the gate must not answer "reachable" about a
+# branch nobody asked about -- and it must say why it declined, because
+# a fix that silently does nothing on the one run it was written for
+# looks exactly like a fix that works.
+check "the exemption is refused when the gate is pointed at another branch" \
+    rc1 "$(verdict6 pull_request main "$EVENT_MAIN" work)"
+grep -F 'was NOT applied' "$TMP/out6" >/dev/null \
+    && echo "PASS: and declining is printed rather than silent" \
+    || { echo "FAIL: the exemption was declined silently"; fails=1; }
+
+# --- the second derivation, in a REAL CLONE, with no BASE_REF ----------
+#
+# A clone has `origin/HEAD` and no event payload; a hosted runner has the
+# event payload and no `origin/HEAD`. Driving only the first would leave
+# the route CI actually takes unmeasured, and vice versa. This fixture
+# also runs with no `BASE_REF` set at all, so the default spelling
+# `origin/main` is the one being compared with the derived branch name --
+# the comparison that makes the exemption inert if it is written against
+# the wrong spelling.
+REPO7="$TMP/repo7"
+git clone -q "$REPO6" "$REPO7"
+# repo6 is checked out on its work branch, so the clone's origin/HEAD
+# follows THAT, not the default branch. Set it to what a clone of a
+# repository sitting on its default branch would have -- otherwise this
+# fixture derives `work` as the default branch and the case below fails
+# for a reason that has nothing to do with the gate.
+git -C "$REPO7" remote set-head origin main
+git -C "$REPO7" config user.email t@example.com
+git -C "$REPO7" config user.name t
+git -C "$REPO7" config commit.gpgsign false
+git -C "$REPO7" checkout -q -b work7
+dispatchable new7 > "$REPO7/.github/workflows/new7.yml"
+
+verdict7() {
+    ( cd "$REPO7" && GITHUB_EVENT_NAME="$1" GITHUB_BASE_REF="$2" \
+        GITHUB_EVENT_PATH="${3:-}" bash "$CHECK" >"$TMP/out7" 2>&1 ) \
+        && echo pass || echo "rc$?"
+}
+
+check "a clone with no event payload still fails an absent workflow" \
+    rc1 "$(verdict7 '' '')"
+check "origin/HEAD is enough to derive the default branch (#977)" \
+    pass "$(verdict7 pull_request main)"
+check "and a pull request into dev is still refused in the clone" \
+    rc1 "$(verdict7 pull_request dev)"
+
+# The control FIRST: the same clone with an event payload that AGREES
+# with origin/HEAD is exempt. Without it the disagreement case below
+# could be failing on the mere presence of a payload.
+check "an event payload that agrees with origin/HEAD is exempt (control)" \
+    pass "$(verdict7 pull_request main "$EVENT_MAIN")"
+
+# BOTH SOURCES PRESENT AND DISAGREEING. One fact derived twice with two
+# answers: the exemption is refused rather than letting whichever
+# derivation answers first decide. Driven where it CHANGES THE VERDICT
+# rather than only the message -- origin/HEAD is moved off the branch
+# the payload names, and everything else in the run is left exactly as
+# the passing control above. The dangling target is deliberate: this is
+# about which answer the gate trusts, not about what the ref resolves
+# to.
+git -C "$REPO7" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/elsewhere
+check "two sources that disagree about the default branch refuse the exemption" \
+    rc1 "$(verdict7 pull_request main "$EVENT_MAIN")"
+grep -F 'origin/HEAD says' "$TMP/out7" >/dev/null \
+    && echo "PASS: and both answers are named" \
+    || { echo "FAIL: the disagreement is not reported"; fails=1; }
+
+# ...and putting it back restores the control, so the case above turned
+# on the disagreement and nothing else.
+git -C "$REPO7" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main
+check "restoring origin/HEAD restores the exemption (control)" \
+    pass "$(verdict7 pull_request main "$EVENT_MAIN")"
+
+# --- THE SHAPE A HOSTED RUNNER IS IN (#977) -----------------------------
+#
+# Neither fixture above is what CI looks like. actions/checkout fetches
+# ONE ref, so `origin/main` is not present and `origin/HEAD` does not
+# exist; the gate's own fallback then fetches the default branch and
+# REWRITES `BASE_REF` to `FETCH_HEAD` before any of this is decided. An
+# exemption written against the rewritten value is inert on every hosted
+# run — green suite, green fixtures, and the release PR red exactly as
+# before, discovered at the next release.
+#
+# So: a clone with `origin/main` and `origin/HEAD` removed, the event
+# payload as the only derivation, and no `BASE_REF` override. The remote
+# is a path, so the gate's fetch succeeds the way it does in CI.
+REPO8="$TMP/repo8"
+git clone -q "$REPO6" "$REPO8"
+git -C "$REPO8" config user.email t@example.com
+git -C "$REPO8" config user.name t
+git -C "$REPO8" config commit.gpgsign false
+git -C "$REPO8" checkout -q -b work8
+git -C "$REPO8" symbolic-ref --delete refs/remotes/origin/HEAD
+git -C "$REPO8" update-ref -d refs/remotes/origin/main
+dispatchable new8 > "$REPO8/.github/workflows/new8.yml"
+
+# THE PROPERTY SURVIVES EXACTLY ONE RUN UNLESS IT IS RESTORED. The
+# gate's fallback fetches the branch from a configured remote, and git
+# opportunistically re-creates `refs/remotes/origin/main` while doing
+# it. The first case below therefore left the fixture identical to the
+# two above, and the mutant that reads BASE_REF after the rewrite
+# SURVIVED against it -- measured, not foreseen. So the ref is removed
+# before every case and its absence is a verdict of its own.
+verdict8() {
+    git -C "$REPO8" update-ref -d refs/remotes/origin/main
+    if ( cd "$REPO8" && git rev-parse --verify --quiet origin/main >/dev/null ); then
+        echo "fixture-has-origin-main"
+        return
+    fi
+    ( cd "$REPO8" && GITHUB_EVENT_NAME="$1" GITHUB_BASE_REF="$2" \
+        GITHUB_EVENT_PATH="${3:-}" bash "$CHECK" >"$TMP/out8" 2>&1 ) \
+        && echo pass || echo "rc$?"
+}
+
+check "the fetched default branch still fails an absent workflow on a push" \
+    rc1 "$(verdict8 push '')"
+# ...and that run is the proof the rewrite happened: the gate names the
+# ref it ended up comparing against. Without this the whole block could
+# be running against `origin/main` and testing nothing new.
+grep -F 'is not on FETCH_HEAD' "$TMP/out8" >/dev/null \
+    && echo "PASS: and the comparison ref was rewritten to FETCH_HEAD, as on a runner" \
+    || { echo "FAIL: BASE_REF was not rewritten, so this fixture is not the CI shape"
+         fails=1; }
+
+check "a release PR is exempt on a runner that has to fetch the default branch" \
+    pass "$(verdict8 pull_request main "$EVENT_MAIN")"
+check "and a pull request into dev is still refused there" \
+    rc1 "$(verdict8 pull_request dev "$EVENT_MAIN")"
+
 # --- the real repository ------------------------------------------------
 # The shipped state must satisfy its own gate.
 real=$( cd "$(dirname "$CHECK")/.." && bash "$CHECK" >/dev/null 2>&1 && echo pass || echo "rc$?" )

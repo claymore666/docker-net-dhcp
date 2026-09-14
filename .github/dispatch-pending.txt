@@ -121,4 +121,10 @@
 #     The gate fails when an entry stops being needed — the workflow
 #     reached the default branch, so remove the entry. An allowlist
 #     nobody prunes is how a temporary exception becomes permanent.
+#     A pull request INTO the default branch counts as reaching it
+#     (#977): merging that pull request is what puts the workflow
+#     there, so the entry is stale ON the pull request, and the release
+#     PR is where it gets removed. Removing it after the release
+#     instead is what turned this gate red on the default branch at
+#     v2.1.0, one commit after the merge.
 #
