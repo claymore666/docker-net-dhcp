@@ -32,7 +32,7 @@ documented command are unaffected.
   Those six tags stay unpublished: they carry cosign signatures and SLSA
   provenance for the commits they name, and a published tag is not
   moved. This release is the earliest version the module ecosystem can
-  serve (#979).
+  serve (#979, PR #981).
 
 ## v2.1.0
 
