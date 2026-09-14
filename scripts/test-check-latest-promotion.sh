@@ -83,12 +83,12 @@ jobs:
     needs: release
     runs-on: ubuntu-latest
     steps:
-      - run: docker plugin install "$REF"
+      - run: docker plugin install --grant-all-permissions "$REF"
   verify-install-arm64:
     needs: release
     runs-on: ubuntu-24.04-arm
     steps:
-      - run: docker plugin install "$REF"
+      - run: docker plugin install --grant-all-permissions "$REF"
 YAML
 check "pre-#736: retag inside the publishing job" 1 "$TMP/prefix.yml" \
       "without depending on 'verify-install'"
@@ -118,22 +118,22 @@ jobs:
     needs: release
     runs-on: ubuntu-latest
     steps:
-      - run: docker plugin install "$REF"
+      - run: docker plugin install --grant-all-permissions "$REF"
   verify-install-arm64:
     needs: [release, release-arm64]
     runs-on: ubuntu-24.04-arm
     steps:
-      - run: docker plugin install "$REF"
+      - run: docker plugin install --grant-all-permissions "$REF"
   verify-install-hub:
     needs: release
     runs-on: ubuntu-latest
     steps:
-      - run: docker plugin install "$HUB_REF"
+      - run: docker plugin install --grant-all-permissions "$HUB_REF"
   verify-install-hub-arm64:
     needs: release
     runs-on: ubuntu-24.04-arm
     steps:
-      - run: docker plugin install "$HUB_REF"
+      - run: docker plugin install --grant-all-permissions "$HUB_REF"
   promote-latest:
     needs: [release, release-arm64, verify-install, verify-install-arm64, verify-install-hub, verify-install-hub-arm64]
     runs-on: ubuntu-latest
@@ -226,22 +226,22 @@ jobs:
     needs: release
     runs-on: ubuntu-latest
     steps:
-      - run: docker plugin install "$REF"
+      - run: docker plugin install --grant-all-permissions "$REF"
   verify-install-arm64:
     needs: release
     runs-on: ubuntu-24.04-arm
     steps:
-      - run: docker plugin install "$REF"
+      - run: docker plugin install --grant-all-permissions "$REF"
   verify-install-hub:
     needs: release
     runs-on: ubuntu-latest
     steps:
-      - run: docker plugin install "$HUB_REF"
+      - run: docker plugin install --grant-all-permissions "$HUB_REF"
   verify-install-hub-arm64:
     needs: release
     runs-on: ubuntu-24.04-arm
     steps:
-      - run: docker plugin install "$HUB_REF"
+      - run: docker plugin install --grant-all-permissions "$HUB_REF"
   collect:
     needs: [verify-install, verify-install-arm64, verify-install-hub, verify-install-hub-arm64]
     runs-on: ubuntu-latest
@@ -282,22 +282,22 @@ jobs:
     needs: release
     runs-on: ubuntu-latest
     steps:
-      - run: docker plugin install "$REF"
+      - run: docker plugin install --grant-all-permissions "$REF"
   verify-install-arm64:
     needs: release
     runs-on: ubuntu-24.04-arm
     steps:
-      - run: docker plugin install "$REF"
+      - run: docker plugin install --grant-all-permissions "$REF"
   verify-install-hub:
     needs: release
     runs-on: ubuntu-latest
     steps:
-      - run: docker plugin install "$HUB_REF"
+      - run: docker plugin install --grant-all-permissions "$HUB_REF"
   verify-install-hub-arm64:
     needs: release
     runs-on: ubuntu-24.04-arm
     steps:
-      - run: docker plugin install "$HUB_REF"
+      - run: docker plugin install --grant-all-permissions "$HUB_REF"
   promote-latest:
     needs: [verify-install, verify-install-arm64, verify-install-hub, verify-install-hub-arm64]
     runs-on: ubuntu-latest
@@ -337,6 +337,142 @@ on:
       - "v*"
 YAML
 check "no jobs exits 2" 2 "$TMP/nojobs.yml" "yielded no jobs"
+
+# --- the required gate list is DERIVED, not transcribed ---------------
+# #972 adds a fifth and sixth install proof (the Hub alias). A checker
+# carrying a hard-coded list of four job names passes this fixture,
+# because the name it has never heard of is not on its list. The list is
+# derived from the jobs that really install the published plugin, so an
+# install proof the promotion does not wait on is a finding whatever it
+# is called.
+cat > "$TMP/newgate.yml" <<'YAML'
+name: Release
+on:
+  push:
+    tags:
+      - "v*"
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - run: make push
+  verify-install:
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - run: docker plugin install --grant-all-permissions "$REF"
+  verify-install-arm64:
+    needs: release
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - run: docker plugin install --grant-all-permissions "$REF"
+  verify-install-hub:
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - run: docker plugin install --grant-all-permissions "$HUB_REF"
+  verify-install-hub-arm64:
+    needs: release
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - run: docker plugin install --grant-all-permissions "$HUB_REF"
+  verify-install-hub-alias:
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - run: docker plugin install --grant-all-permissions "$ALIAS_REF"
+  promote-latest:
+    needs: [verify-install, verify-install-arm64, verify-install-hub, verify-install-hub-arm64]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Refuse to promote a floating tag backwards
+        run: bash scripts/assert-newest-release-tag.sh "${TAG}"
+      - run: crane tag "${GHCR_NAME}:${TAG}" "${LATEST}"
+      - name: Assert a pre-release did not move :latest
+        if: needs.release.outputs.prerelease == 'true'
+        run: crane digest "${GHCR_NAME}:latest"
+YAML
+check "a new install proof the promotion does not wait on is a finding" 1 \
+      "$TMP/newgate.yml" "verify-install-hub-alias"
+
+# The preservation control for the case above: the same fixture with the
+# new proof wired into the promotion passes. Without it the case above
+# only measures "hard", not "derived".
+sed 's/^\( *needs: \[verify-install, .*\)\]$/\1, verify-install-hub-alias]/' \
+    "$TMP/newgate.yml" > "$TMP/newgate-wired.yml"
+if cmp -s "$TMP/newgate.yml" "$TMP/newgate-wired.yml"; then
+    echo "FAIL: the wiring control did not change the fixture; it proves nothing"
+    failures=$((failures + 1))
+fi
+check "the same new proof, wired in, passes" 0 "$TMP/newgate-wired.yml" \
+      "all behind"
+
+# --- an advertised install is not an install --------------------------
+# A job that echoes the install command publishes nothing and proves
+# nothing. If the derivation counted it, this fixture would be red for a
+# job the promotion has no reason to wait on.
+cat > "$TMP/echoedinstall.yml" <<'YAML'
+name: Release
+on:
+  push:
+    tags:
+      - "v*"
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - run: make push
+  verify-install:
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - run: docker plugin install --grant-all-permissions "$REF"
+  verify-install-arm64:
+    needs: release
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - run: docker plugin install --grant-all-permissions "$REF"
+  verify-install-hub:
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - run: docker plugin install --grant-all-permissions "$HUB_REF"
+  verify-install-hub-arm64:
+    needs: release
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - run: docker plugin install --grant-all-permissions "$HUB_REF"
+  advertise-install:
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "docker plugin install --grant-all-permissions $ALIAS_REF"
+  promote-latest:
+    needs: [verify-install, verify-install-arm64, verify-install-hub, verify-install-hub-arm64]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Refuse to promote a floating tag backwards
+        run: bash scripts/assert-newest-release-tag.sh "${TAG}"
+      - run: crane tag "${GHCR_NAME}:${TAG}" "${LATEST}"
+      - name: Assert a pre-release did not move :latest
+        if: needs.release.outputs.prerelease == 'true'
+        run: crane digest "${GHCR_NAME}:latest"
+YAML
+check "an echoed install does not manufacture a required gate" 0 \
+      "$TMP/echoedinstall.yml" "all behind"
+
+# --- emptying the domain is a refusal, not a pass ---------------------
+# Every requirement this check makes is quantified over the derived
+# gates, so a file with none of them satisfies all of them. That is a
+# universal gate satisfied by emptying its domain, and it exits 2.
+sed 's/docker plugin install --grant-all-permissions/docker plugin ls #/' \
+    "$TMP/transitive.yml" > "$TMP/noinstall.yml"
+if grep -q 'docker plugin install' "$TMP/noinstall.yml"; then
+    echo "FAIL: noinstall fixture still contains an install; the mutation did not apply"
+    failures=$((failures + 1))
+fi
+check "zero derived install proofs exits 2" 2 "$TMP/noinstall.yml" \
+      "No install proofs found"
 
 # --- the real workflow -------------------------------------------------
 check "the real release.yml" 0 "$ROOT/.github/workflows/release.yml" \

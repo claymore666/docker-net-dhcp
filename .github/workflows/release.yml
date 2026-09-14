@@ -1784,7 +1784,7 @@ jobs:
             echo
             echo "## Downloads"
             echo
-            echo "\`linux/amd64\` and \`linux/arm64\`. Plugin images: \`ghcr.io/claymore666/docker-net-dhcp:${TAG}\` (amd64) and \`:${TAG}-arm64\` (mirrored to Docker Hub as \`claymore666/net-dhcp\`). Plugins cannot use manifest lists, so the arch is in the tag."
+            echo "\`linux/amd64\` and \`linux/arm64\`. Plugin images: \`ghcr.io/claymore666/docker-net-dhcp:${TAG}\` (amd64) and \`:${TAG}-arm64\` (mirrored to Docker Hub as \`claymore666/net-dhcp\` and \`claymore666/docker-net-dhcp\`, the same digest under both names). Plugins cannot use manifest lists, so the arch is in the tag."
             echo
             echo "| file | what it is |"
             echo "| --- | --- |"

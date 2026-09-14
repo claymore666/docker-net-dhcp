@@ -73,8 +73,73 @@ FILE="${1:-$ROOT/.github/workflows/release.yml}"
 # not named here is a proof somebody can quietly drop from `needs:` with
 # nothing going red, which is the exact failure mode rule (1) exists for.
 # `:latest` resolves for Docker Hub users too.
-REQUIRED_GATES=(verify-install verify-install-arm64
-                verify-install-hub verify-install-hub-arm64)
+# THE REQUIRED GATES ARE DERIVED, NOT LISTED (#972).
+#
+# This was four job names typed into this file. The Hub alias added two
+# more install proofs, and a transcribed list is exactly the failure
+# #833 was about, one layer up: the promotion would have been allowed
+# to move `:latest` on a name whose install proof it did not wait for,
+# and this gate would have reported that every required gate was
+# satisfied.
+#
+# Keyed on the PROPERTY -- a job that really installs the published
+# plugin -- and not on the job's name. `verify-install*` as a pattern
+# would be a spelling, and a proof job named anything else would sit
+# outside the requirement in silence.
+#
+# The same discrimination as check-publish-verify-parity.sh: the step
+# summary prints `docker plugin install ...` for the reader, and an
+# advertisement counted as a proof would let the promotion wait on a
+# job that installs nothing.
+#
+# THE BOUND, STATED HERE. That rule now exists in two files. Nothing
+# compares them, so a change to one leaves the other answering the
+# question it was asked yesterday. Both refuse when they derive
+# nothing, which is what keeps the failure loud rather than silent, and
+# neither can be made to pass by emptying its domain.
+derive_gates() {
+    python3 - "$1" <<'PY'
+import re, sys
+JOB = re.compile(r"^  ([A-Za-z0-9_-]+):\s*$")
+TOP = re.compile(r"^[A-Za-z]")
+INSTALL = re.compile(r"docker plugin install\b.*--grant-all-permissions")
+
+def unquoted_offsets(text):
+    out, q, i = set(), None, 0
+    while i < len(text):
+        c = text[i]
+        if q is None:
+            if c in "'\"":
+                q = c
+            else:
+                out.add(i)
+        elif c == q:
+            q = None
+        elif q == '"' and c == "\\":
+            i += 1
+        i += 1
+    return out
+
+names, cur, in_jobs = [], None, False
+for line in open(sys.argv[1], encoding="utf-8"):
+    line = line.rstrip("\n")
+    if TOP.match(line):
+        in_jobs = line.startswith("jobs:")
+        continue
+    if in_jobs:
+        m = JOB.match(line)
+        if m:
+            cur = m.group(1)
+            continue
+    if cur is None or line.lstrip().startswith("#"):
+        continue
+    free = unquoted_offsets(line)
+    for m in INSTALL.finditer(line):
+        if m.start() in free and cur not in names:
+            names.append(cur)
+print("\n".join(names))
+PY
+}
 
 if [ ! -f "$FILE" ]; then
     echo "::error title=Release workflow missing::$FILE is not a file." \
@@ -215,6 +280,26 @@ if [ "${#crane_records[@]}" -eq 0 ]; then
     echo "::error title=No floating-tag promotion found::no 'crane tag' step in" \
          "$(basename "$FILE"). Either the promotion moved to a tool this check" \
          "does not know about, or it was dropped — both need a human." >&2
+    exit 2
+fi
+
+REQUIRED_GATES=()
+while IFS= read -r _g; do
+    [ -n "$_g" ] && REQUIRED_GATES+=("$_g")
+done < <(derive_gates "$FILE")
+
+# NON-VACUITY. Every finding below is quantified over this list, so an
+# empty one satisfies all of them while requiring nothing -- a universal
+# gate satisfied by emptying its domain. Zero install proofs in a
+# release workflow is either a catastrophe or a detector that stopped
+# matching, and both need a person.
+if [ "${#REQUIRED_GATES[@]}" -eq 0 ]; then
+    echo "::error title=No install proofs found::derived ZERO install-verifying" \
+         "jobs from $(basename "$FILE"). Every requirement this check makes is" \
+         "about those jobs, so it would report a clean pass having required" \
+         "nothing. Either the install proofs are gone, or the" \
+         "'docker plugin install --grant-all-permissions' pattern no longer" \
+         "matches the form in use." >&2
     exit 2
 fi
 

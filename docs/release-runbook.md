@@ -1076,16 +1076,24 @@ After the workflow succeeds:
 
 - `curl -sI
   https://hub.docker.com/v2/repositories/claymore666/net-dhcp/tags/vX.Y.Z/`
-  returns `HTTP/2 200`.
+  returns `HTTP/2 200`, and so does the same call for
+  `claymore666/docker-net-dhcp`. Both Hub names are published by the
+  release run; a 200 on one and a 404 on the other means the alias copy
+  did not happen and the run should have been red.
 - `curl -sI https://ghcr.io/v2/claymore666/docker-net-dhcp/manifests/vX.Y.Z`
   returns `HTTP/2 401` (auth required). The manifest IS there,
   GHCR just won't expose it anonymously. To confirm presence
   authenticated: `gh auth token | docker login ghcr.io -u <you>
   --password-stdin && docker plugin install
   ghcr.io/claymore666/docker-net-dhcp:vX.Y.Z`.
-- The Docker Hub page (<https://hub.docker.com/r/claymore666/net-dhcp>)
-  shows the new tag in the Tags tab and the README content
-  matches GitHub.
+- Both Docker Hub pages
+  (<https://hub.docker.com/r/claymore666/net-dhcp> and
+  <https://hub.docker.com/r/claymore666/docker-net-dhcp>) show the new
+  tag in the Tags tab and the README content matches GitHub. The
+  workflow syncs the description per repository, so both are covered.
+  Hub **categories** are set in the web UI only, with no API behind
+  them, so a new Hub repository keeps whatever categories a person gave
+  it and no run will fix them.
 - The milestone is closed (every issue moved to Done by the
   release PR's `Closes` list). Verify with
   `gh issue list --milestone vX.Y.Z --state open`; should be

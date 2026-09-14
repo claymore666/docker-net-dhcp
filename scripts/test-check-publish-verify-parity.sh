@@ -130,6 +130,7 @@ no_crane_tag() { ! cmds "$1" | grep -E 'crane tag ' >/dev/null; }
 # variable, not by deleting the jobs.
 no_publish_name() {
     ! cmds "$1" | grep -F 'PLUGIN_NAME=' >/dev/null &&
+        ! cmds "$1" | grep -E 'oras cp ' >/dev/null &&
         [ "$(cmds "$1" | grep -Ec 'make .*push' || true)" -eq "$(cmds "$SRC" | grep -Ec 'make .*push' || true)" ]
 }
 
@@ -156,14 +157,26 @@ census "every make push invocation carries PLUGIN_NAME=" \
     "$(cmds "$SRC" | grep -Ec 'make .*push' || true)" \
     "$(cmds "$SRC" | grep -E 'make .*push' | grep -Fc 'PLUGIN_NAME=' || true)"
 
-census "every crane retag names HUB_NAME or GHCR_NAME" \
+# Keyed on "a crane retag names a VARIABLE", not on which two names
+# exist today. The literal alternation was two names when it was
+# written; the alias made it three (#972), and a census that has to be
+# edited every time a registry is added is a census that will be edited
+# to match rather than consulted.
+census "every crane retag names a registry variable" \
     "$(cmds "$SRC" | grep -Ec 'crane tag ' || true)" \
-    "$(cmds "$SRC" | grep -E 'crane tag ' | grep -Ec 'crane tag "\$\{(HUB|GHCR)_NAME\}' || true)"
+    "$(cmds "$SRC" | grep -E 'crane tag ' | grep -Ec 'crane tag "\$\{[A-Z_]+\}' || true)"
+
+# The copy form is a publish too, and it has to be present for the
+# cases below to mean anything. Both halves: every oras copy names a
+# variable destination, and there is at least one.
+census "every oras copy destination names a registry variable" \
+    "$(cmds "$SRC" | grep -Ec 'oras cp ' || true)" \
+    "$(cmds "$SRC" | grep -E 'oras cp ' | grep -Ec '"[^"]*\$\{[A-Z_]+\}:\$\{[A-Z_]+\}"\s*$' || true)"
 
 # --- the control -------------------------------------------------------
 # If this fails every mutant below is noise: a gate that refuses the real
 # workflow would "catch" every mutation for the wrong reason.
-run "the release workflow as it stands is in parity" 0 none "4 published cell(s)"
+run "the release workflow as it stands is in parity" 0 none "6 published cell(s)"
 
 # --- the defect the issue is about -------------------------------------
 # 20 tags shipped a Hub artifact nothing proved installable. Drop the Hub
@@ -261,7 +274,7 @@ s = re.sub(r"(\n  promote-latest:\n(?:.*\n)*?    runs-on: )ubuntu-latest",
 open(p, "w").write(s)
 PY
 }
-run "the promote runner's arch is not the cell's arch" 0 promote_on_arm "4 published cell(s)"
+run "the promote runner's arch is not the cell's arch" 0 promote_on_arm "6 published cell(s)"
 
 # And the same claim from the other side: keying on the runner is what
 # the gate must NOT do, so prove a runner-keyed reading disagrees here.
@@ -283,7 +296,69 @@ fi
 # --- non-vacuity: a universal is true over an empty domain -------------
 # Each of these breaks one detector. The gate must refuse, not report
 # the strongest possible pass.
-break_publish() { sed -i 's/PLUGIN_NAME=/PLUGIN_NOM=/g' "$1"; }
+# BOTH PUBLISH FORMS, or this case stops being about an empty publish
+# set: with only `make ... push` broken, the copied cells remain and the
+# gate renders an ordinary verdict over two cells instead of refusing.
+# --- THE COPY IS A PUBLISH, DRIVEN THREE WAYS (#972) --------------------
+#
+# The Hub alias is published by copying the signed manifest, not by a
+# second build. Three cases, because "the gate sees the copy" and "the
+# gate sees it as a publish" and "the gate does not see an advertisement
+# of one" are three different claims.
+
+# 1. Remove the copy and the alias verifiers and promotions are left
+#    covering a cell nothing publishes. This is what a dropped publish
+#    step looks like from here, and before this change it read as a
+#    clean pass: the gate only ever compared in the other direction.
+drop_alias_copy() { sed -i '/oras cp /d' "$1"; }
+no_copy_left() {
+    ! cmds "$1" | grep -E 'oras cp ' >/dev/null &&
+        cmds "$1" | grep -E 'make .*push' >/dev/null
+}
+run "dropping the copy leaves verifiers for a cell nothing publishes" \
+    1 drop_alias_copy "HUB_ALIAS" no_copy_left
+
+# 2. An ADVERTISED copy is not a copy. The line still carries the words
+#    and still ends in a quoted destination, so the pattern matches; the
+#    command sits inside quotes, so nothing runs. Same discrimination as
+#    the echoed install above (#858), keyed on position and not on
+#    vocabulary.
+echoed_copy() {
+    sed -i 's|^\( *\)oras cp -r "\(.*\)" "\(.*\)"$|\1echo "oras cp -r \2" "\3"|' "$1"
+}
+copy_only_echoed() {
+    cmds "$1" | grep -F 'echo "oras cp' >/dev/null &&
+        ! cmds "$1" | grep -E '^[[:space:]]*oras cp ' >/dev/null &&
+        cmds "$1" | grep -E '\$\{[A-Z_]+\}:\$\{[A-Z_]+\}"[[:space:]]*$' >/dev/null
+}
+run "an echoed copy publishes nothing" \
+    1 echoed_copy "HUB_ALIAS" copy_only_echoed
+
+# 3. The other side of the same claim: the copied cells ARE in the
+#    published set, so removing their install proofs fails. Without the
+#    copy being read as a publish this case would pass, because an
+#    unpublished cell with no verifier is nothing to report.
+drop_alias_verify() {
+    python3 - "$1" <<'PY'
+import re, sys
+p = sys.argv[1]; s = open(p).read()
+for _ in range(2):
+    s = re.sub(r"\n  verify-install-hub-alias(?:-arm64)?:.*?(?=\n  [a-z0-9_-]+:\n)",
+               "\n", s, count=1, flags=re.S)
+open(p, "w").write(s)
+PY
+}
+no_alias_verify() {
+    ! cmds "$1" | grep -F 'REF="${HUB_ALIAS}' >/dev/null &&
+        cmds "$1" | grep -F 'REF="${HUB_NAME}' >/dev/null &&
+        cmds "$1" | grep -E 'oras cp ' >/dev/null
+}
+run "a copied cell with no install verifier fails" \
+    1 drop_alias_verify "HUB_ALIAS" no_alias_verify
+
+break_publish() {
+    sed -i -e 's/PLUGIN_NAME=/PLUGIN_NOM=/g' -e 's/oras cp /oras kopieer /g' "$1"
+}
 run "zero derived publish cells is a refusal" 2 break_publish "ZERO published cells" no_publish_name
 
 break_promote() { sed -i 's/crane tag/crane retag/g' "$1"; }

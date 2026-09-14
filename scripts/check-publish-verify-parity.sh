@@ -29,8 +29,29 @@
 # one layer up. So all three sets come out of the workflow itself:
 #
 #   publish  `make PLUGIN_NAME="${N}" PLUGIN_TAG="${T}" ... push`
+#            or `oras cp ... "<host>/${N}:${T}"` -- the DESTINATION of a
+#            copy publishes a name just as a build does
 #   verify   `REF="${N}:${T}"` in a job that really installs
 #   promote  `crane tag "${N}:${T}" ...`
+#
+# A COPY PUBLISHES (#972). The Hub alias is the same manifest under a
+# second name, copied after signing instead of built again, because a
+# second `docker plugin create` re-tars the rootfs and changes the
+# digest (#267). Keyed only on `make ... push`, this gate would have
+# seen an install verifier and a promotion for a name it did not think
+# was published, and said nothing: the alias could have stopped being
+# published and the proofs would have gone on verifying whatever was
+# already in that repository.
+#
+# The destination is the LAST reference on the line, which is what the
+# anchor at the end of the pattern picks out, and the copy command
+# itself has to sit outside shell quoting for the same reason an
+# install does. An echoed copy is an advertisement.
+#
+# THE SETS ARE COMPARED IN BOTH DIRECTIONS. A published cell with no
+# verifier was the #833 failure; a verifier or a promotion for a cell
+# nothing publishes is the same defect approached from the other side,
+# and it is what a dropped copy looks like. Both are failures here.
 #
 # Add a registry and its publish cell appears here with no verifier;
 # this fails and names the cell.
@@ -139,6 +160,7 @@ TOP   = re.compile(r"^[A-Za-z]")
 ENVKV = re.compile(r"^\s+([A-Za-z_][A-Za-z0-9_]*):\s*(\S.*?)\s*$")
 
 PUBLISH = re.compile(r'PLUGIN_NAME="\$\{(\w+)\}".*PLUGIN_TAG="\$\{(\w+)\}"')
+COPY    = re.compile(r'oras cp\b.*"(?:[A-Za-z0-9.:-]+/)?\$\{(\w+)\}:\$\{(\w+)\}"\s*$')
 VERIFY  = re.compile(r'REF="\$\{(\w+)\}:\$\{(\w+)\}"')
 PROMOTE = re.compile(r'crane tag\s+"\$\{(\w+)\}:\$\{(\w+)\}"')
 INSTALL = re.compile(r"docker plugin install\b.*--grant-all-permissions")
@@ -178,13 +200,21 @@ def unquoted_offsets(text):
     return out
 
 
+def runs(text, rx):
+    """The first match of `rx` that a shell would EXECUTE.
+    An occurrence inside quotes is text the step prints, not a command
+    it runs. Used for the install detection (#858) and for the copy
+    that publishes the alias (#972): an echoed copy publishes nothing.
+    """
+    free = unquoted_offsets(text)
+    for m in rx.finditer(text):
+        if m.start() in free:
+            return m
+    return None
+
 def is_install(text):
     """True when `text` runs an install rather than printing one."""
-    free = unquoted_offsets(text)
-    for m in INSTALL.finditer(text):
-        if m.start() in free:
-            return True
-    return False
+    return runs(text, INSTALL) is not None
 
 jobs, cur, in_jobs = [], None, False
 for line in open(sys.argv[1], encoding="utf-8"):
@@ -207,6 +237,9 @@ for line in open(sys.argv[1], encoding="utf-8"):
     for role, rx in (("publish", PUBLISH), ("verify", VERIFY), ("promote", PROMOTE)):
         for n, t in rx.findall(stripped):
             cur["hits"].append((role, n, t))
+    copied = runs(stripped, COPY)
+    if copied is not None:
+        cur["hits"].append(("publish", copied.group(1), copied.group(2)))
     if is_install(stripped):
         cur["install"] = True
 
@@ -272,8 +305,29 @@ report() { # verb noun set
 report "install-verifies it"      "install verifier"      "$verified"
 report "promotes it to :latest"  "promotion to :latest"  "$promoted"
 
+# THE OTHER DIRECTION (#972). A verifier or a promotion for a cell that
+# nothing publishes is not a harmless extra: it is what a dropped
+# publish step looks like from here. The proof goes on installing, and
+# the tag goes on moving, over whatever was already in that repository
+# -- which is the previous release. The publish set is the one that
+# decides what users can pull, so anything claiming to cover a cell
+# outside it is claiming to cover an object this workflow does not make.
+orphan() { # noun set
+    local noun="$1" have="$2" extra
+    extra=$(comm -13 <(printf '%s\n' "$published") <(printf '%s\n' "$have"))
+    [ -n "$extra" ] || return 0
+    rc=1
+    while IFS= read -r c; do
+        [ -n "$c" ] || continue
+        echo "::error title=A ${noun} for a cell nothing publishes::${c} has a ${noun} in $WORKFLOW, but no step in this workflow publishes that cell. It would keep passing over whatever is already in that repository." >&2
+        echo "FAIL: $c has a ${noun}, but nothing publishes it" >&2
+    done <<< "$extra"
+}
+orphan "install verifier"     "$verified"
+orphan "promotion to :latest" "$promoted"
+
 if [ "$rc" -eq 0 ]; then
-    echo "OK: $(printf '%s\n' "$published" | wc -l) published cell(s), each install-verified and promoted:"
+    echo "OK: $(printf '%s\n' "$published" | wc -l) published cell(s), each install-verified and promoted, and nothing verified or promoted that is not published:"
     printf '%s\n' "$published" | sed 's/^/  /'
 fi
 exit "$rc"

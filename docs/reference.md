@@ -123,6 +123,9 @@ The plugin publishes to two registries; GHCR is primary:
 
 - `ghcr.io/claymore666/docker-net-dhcp:vX.Y.Z` (primary)
 - `claymore666/net-dhcp:vX.Y.Z` (Docker Hub mirror)
+- `claymore666/docker-net-dhcp:vX.Y.Z` (Docker Hub mirror, the same
+  image at the same digest as `claymore666/net-dhcp`, published from
+  v2.2.0 onward)
 
 Published builds: **`linux/amd64`** on the bare tag and
 **`linux/arm64`** as `:vX.Y.Z-arm64` / `:latest-arm64` (v1.7.0 onward).

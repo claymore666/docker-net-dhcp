@@ -201,7 +201,10 @@ version per release; the same pages live in [`docs/`](docs).
 - **[Changelog](RELEASE_NOTES.md)** · **[Release runbook](docs/release-runbook.md)**
 
 Images go to GHCR (`ghcr.io/claymore666/docker-net-dhcp:vX.Y.Z`, primary)
-and are mirrored to Docker Hub (`claymore666/net-dhcp:vX.Y.Z`).
+and are mirrored to Docker Hub under two names,
+`claymore666/net-dhcp:vX.Y.Z` and
+`claymore666/docker-net-dhcp:vX.Y.Z`. The two Hub names are the same
+image at the same digest; install from either.
 
 ## Verifying releases
 
