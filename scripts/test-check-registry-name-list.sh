@@ -169,6 +169,23 @@ comment_carries_literal() {
 run "a repository name inside a comment is prose, not a binding" \
     0 literal_in_a_comment "one binding for each published name" comment_carries_literal
 
+# ...and the same thing OUTSIDE the name list, which is the case that
+# actually drives the comment guard. The fixture above puts its literal
+# in the block's own header comment, and rule 3 skips that whole region
+# by line number, so deleting the comment guard leaves it passing for a
+# reason that has nothing to do with comments. A mutant answered by a
+# different guard measures the other guard.
+literal_in_a_job_comment() {
+    sed -i '0,/^      # OUR copy of the resolver, checked out before the tag the input$/s||      # OUR copy of the resolver. It publishes claymore666/net-dhcp one day|' "$1"
+}
+job_comment_carries_literal() {
+    nocomment "$1" | grep -F 'It publishes claymore666/net-dhcp one day' >/dev/null && return 1
+    grep -F '# OUR copy of the resolver. It publishes claymore666/net-dhcp one day' "$1" >/dev/null
+}
+run "a repository name in a job comment is prose too" \
+    0 literal_in_a_job_comment "one binding for each published name" \
+    job_comment_carries_literal
+
 # --- 4. the consumers with no other observer ---------------------------
 drop_alias_description() {
     python3 - "$1" <<'PY'

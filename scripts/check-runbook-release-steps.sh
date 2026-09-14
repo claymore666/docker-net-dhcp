@@ -135,13 +135,13 @@ if not walked:
 
 findings = []
 
+# `walked` is built from the jobs of this file as they are walked, so
+# every name in it is a key of `steps` by construction. The version
+# that read the set out of the page needed a "declares a job that does
+# not exist" finding here; this one cannot express that state, and a
+# branch with one possible verdict is worse than no branch -- it reads
+# as coverage and measures nothing.
 for job in walked:
-    if job not in steps:
-        findings.append("the walkthrough declares it walks '%s', which is not "
-                        "a job in %s. Either the job was renamed and the page "
-                        "was not, or the declaration is describing a workflow "
-                        "that no longer exists." % (job, workflow_path))
-        continue
     if not steps[job]:
         findings.append("job '%s' is declared walked but has no named steps in "
                         "%s, so rule 2 would pass over nothing for it."
