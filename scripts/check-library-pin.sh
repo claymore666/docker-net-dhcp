@@ -15,7 +15,7 @@
 #
 # It reports the REQUIRED version. A `replace` to a local directory
 # leaves that answer completely unchanged: `.Version` still says
-# v0.1.0, `.Replace.Version` is empty, and the build takes its bytes
+# v1.0.0, `.Replace.Version` is empty, and the build takes its bytes
 # from the directory. So the image gets labelled with a tag it was not
 # built from. The integration lane's health cell derives its expectation
 # with the same command, so it agrees with the wrong answer and stays

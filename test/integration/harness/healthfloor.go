@@ -300,9 +300,21 @@ type HealthResponse struct {
 	DHCPTimeouts         int32 `json:"dhcp_timeouts"`
 	// ClientStopFailures was lease_release_failures until #800. A
 	// renewal client that did not shut down cleanly when signalled — it
-	// says nothing about the lease, which is held to expiry either way
-	// because nothing this plugin runs sends a DHCPRELEASE.
-	ClientStopFailures  int32 `json:"client_stop_failures"`
+	// says nothing about the lease, and whether the lease went back is
+	// release_lease's question, answered by the pair below (#962).
+	ClientStopFailures int32 `json:"client_stop_failures"`
+	// ReleasesSent / ReleaseFailures are the release_lease pair: a
+	// release that left the host, and an attempt that put nothing on
+	// the wire. Both stay at zero on a network that does not set the
+	// option, which is every network in this suite except the one
+	// TestReleaseLease drives. Read the per-family halves: a dual-stack
+	// endpoint can hand one address back and keep the other.
+	ReleasesSent        int32 `json:"releases_sent"`
+	ReleasesSentV4      int32 `json:"releases_sent_v4"`
+	ReleasesSentV6      int32 `json:"releases_sent_v6"`
+	ReleaseFailures     int32 `json:"release_failures"`
+	ReleaseFailuresV4   int32 `json:"release_failures_v4"`
+	ReleaseFailuresV6   int32 `json:"release_failures_v6"`
 	NAKsReceived        int32 `json:"naks_received"`
 	LedgerWriteFailures int32 `json:"ledger_write_failures"`
 	// StateFileChmodFailures counts files the startup sweep could not

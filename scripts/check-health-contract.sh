@@ -212,7 +212,7 @@ word_to_n() {
     case "$1" in
         one) echo 1 ;; two) echo 2 ;; three) echo 3 ;; four) echo 4 ;;
         five) echo 5 ;; six) echo 6 ;; seven) echo 7 ;; eight) echo 8 ;;
-        nine) echo 9 ;;
+        nine) echo 9 ;; ten) echo 10 ;; eleven) echo 11 ;; twelve) echo 12 ;;
         *) echo "" ;;
     esac
 }
@@ -221,7 +221,7 @@ word_to_n() {
 # out of it. A line that matches nothing is exit 2, never a pass — a
 # gate that cannot see must not report clean.
 check_word() {
-    label=$1; line=$2; pattern=$3
+    label=$1; line=$2; pattern=$3; want=${4:-$n_doc}; subject=${5:-are marked healthy-affecting}
     w=$(printf '%s' "$line" | grep -oE "$pattern" | head -1 | grep -oE '^[A-Za-z]+' | tr '[:upper:]' '[:lower:]')
     n=$(word_to_n "$w")
     if [ -z "$n" ]; then
@@ -229,7 +229,7 @@ check_word() {
         exit 2
     fi
     n_words=$((n_words + 1))
-    [ "$n" = "$n_doc" ] || note "the $label says '$w' but $n_doc counters are marked healthy-affecting"
+    [ "$n" = "$want" ] || note "the $label says '$w' but $want counters $subject"
 }
 
 check_word "At a glance summary" "$glance" '[A-Za-z]+ flip `healthy`'
@@ -631,6 +631,66 @@ if [ "$n_fatal" != "$n_floor" ]; then
     note "floorCounters has $n_floor entr(ies) but only $n_fatal marked fatal — a healthy-affecting counter the floor does not fail on is watched and waved through"
 fi
 
+# --- 7. the family-label statement -------------------------------------
+#
+# The reference names every counter that carries a `family` label in one
+# paragraph, under "Metric names and the `family` label", and states the
+# count in words twice around it. NOTHING READ THAT PARAGRAPH: MEASURED
+# on #966, deleting it outright left this gate and check-docs-drift.sh
+# both at rc 0, because the drift gate reconciles the SET OF FIELDS and
+# every `_v4`/`_v6` field stays documented in the counter table either
+# way. What was unguarded is again a claim ABOUT the counters, which is
+# this gate's whole subject, one heading further down the same file.
+#
+# The code side is metricDefs, where a def that declares `v4field` IS a
+# family-split metric: that declaration is what renders the label, so it
+# is the fact and the paragraph is the restatement.
+family_code=$(grep -E 'v4field:[[:space:]]*"' "$METRICS" \
+    | grep -oE '[^a-z0-9_]field:[[:space:]]*"[a-z0-9_]+"' \
+    | sed -E 's/.*"([a-z0-9_]+)".*/\1/' | sort -u)
+if [ -z "$family_code" ]; then
+    echo "check-health-contract: no metricDef in $METRICS declares a v4field" >&2
+    echo "  Teach this check the new shape rather than letting it pass unread." >&2
+    exit 2
+fi
+n_family=$(printf '%s\n' "$family_code" | grep -c .)
+
+# The paragraph runs from the claim to the colon that introduces the
+# exposition sample. Absence is exit 2 and never a pass: a removed or
+# reworded paragraph is the edit this section exists for.
+family_stmt=$(awk '
+    /counters carry a `family` label/ { grab = 1 }
+    grab { print; if (/:[[:space:]]*$/) exit }
+' "$DOC")
+if [ -z "$family_stmt" ]; then
+    echo "check-health-contract: $DOC states no 'counters carry a \`family\` label' paragraph" >&2
+    echo "  Either it was removed or it was reworded. Both are changes to a" >&2
+    echo "  statement about which counters carry the label, and both want a" >&2
+    echo "  human rather than a green run." >&2
+    exit 2
+fi
+family_doc=$(printf '%s' "$family_stmt" | grep -oE '`[a-z0-9_]+`' | tr -d '`' \
+    | grep -Fxv family | sort -u)
+if [ "$family_doc" != "$family_code" ]; then
+    note "the family-label paragraph and metricDefs disagree about which counters carry the label:"
+    diff <(printf '%s\n' "$family_doc") <(printf '%s\n' "$family_code") \
+        | sed 's|^<|  named in the paragraph, no v4field in the code -- one of the two is wrong: |; s|^>|  declares a v4field in the code, not named in the paragraph -- one of the two is wrong: |' >&2
+fi
+n_lists=$((n_lists + 1))
+
+check_word "family-label paragraph" "$(printf '%s' "$family_stmt" | head -1)" \
+    '[A-Za-z]+ counters carry a `family` label' "$n_family" "carry a family label"
+
+family_each=$(grep -E 'Each of the [a-z]+ has a `_v4`' "$DOC" | head -1)
+if [ -z "$family_each" ]; then
+    echo "check-health-contract: $DOC states no 'Each of the N has a \`_v4\`' sentence" >&2
+    echo "  It carries the same count a second time; a reword wants a human." >&2
+    exit 2
+fi
+check_word "family \`_v4\`/\`_v6\` field sentence" \
+    "$(printf '%s' "$family_each" | sed -E 's/.*Each of the //')" \
+    '[A-Za-z]+ has a `_v4`' "$n_family" "carry a family label"
+
 if [ "$fail" -ne 0 ]; then
     echo >&2
     echo "\`healthy\` is the one boolean operators alert on. Every doc" >&2
@@ -640,5 +700,5 @@ if [ "$fail" -ne 0 ]; then
     exit 1
 fi
 
-echo "PASS  healthy contract agrees in ${n_lists} doc counter-list(s), ${n_words} doc count-word(s), ${n_code} code term(s), ${n_metrics} /metrics healthy declaration(s), ${n_floor} integration floor entr(ies) and ${n_checks} check classification(s) over ${n_judged} judged counter row(s): $(printf '%s' "$column_set" | tr '\n' ' ')"
+echo "PASS  healthy contract agrees in ${n_lists} doc counter-list(s), ${n_words} doc count-word(s), ${n_code} code term(s), ${n_metrics} /metrics healthy declaration(s), ${n_floor} integration floor entr(ies), ${n_family} family-label counter(s) and ${n_checks} check classification(s) over ${n_judged} judged counter row(s): $(printf '%s' "$column_set" | tr '\n' ' ')"
 exit 0

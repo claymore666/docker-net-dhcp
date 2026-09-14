@@ -556,6 +556,18 @@ func familyPairs() []familyPair {
 			func(h HealthResponse) (int32, int32, int32) {
 				return h.ClientStopFailures, h.ClientStopFailuresV4, h.ClientStopFailuresV6
 			}},
+		{"net_dhcp_releases_sent_total",
+			func(p *Plugin) (intCounter, intCounter) { return &p.releasesSentV4, &p.releasesSentV6 },
+			func(h HealthResponse) (int32, int32, int32) {
+				return h.ReleasesSent, h.ReleasesSentV4, h.ReleasesSentV6
+			}},
+		{"net_dhcp_release_failures_total",
+			func(p *Plugin) (intCounter, intCounter) {
+				return &p.releaseFailuresV4, &p.releaseFailuresV6
+			},
+			func(h HealthResponse) (int32, int32, int32) {
+				return h.ReleaseFailures, h.ReleaseFailuresV4, h.ReleaseFailuresV6
+			}},
 	}
 }
 
