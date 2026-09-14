@@ -21,6 +21,13 @@ set -u
 RATCHET="$(dirname "$0")/coverage-ratchet.sh"
 guarded_tmpdir TMP
 
+# The working tree as this suite found it. Compared again at the end:
+# a self-test that writes into the checkout, even for a moment, makes
+# `go build`'s vcs.modified stamp flip under whatever else the parallel
+# self-test run is building at the time.
+REPO_UNDER_TEST=$(cd "$(dirname "$RATCHET")/.." && pwd)
+TREE_BEFORE=$(git -C "$REPO_UNDER_TEST" status --porcelain 2>/dev/null)
+
 # THE HEAD BASELINE, FOR EVERY CASE WRITTEN BEFORE THE THIRD VERDICT
 # EXISTED. A baselined package with no coverage is now judged against the
 # baseline AS IT STANDS AT HEAD as well: gone from the tree and gone from
@@ -892,16 +899,97 @@ fi
 # the block stops being the subject the moment the script moves on, and
 # each surgery asserts it removed something.
 #
-# THEY LIVE BESIDE THE REAL SCRIPT, not in $TMP, and that is forced.
-# coverage-ratchet.sh derives REPO_ROOT from its own path, and both arms
-# below reach `go list` in that root; run from a temp directory the
-# control probe refuses every classification and the cases measure the
-# refusal instead of the arm. Dot-prefixed so the `test-*.sh` glob in
-# run-gate-selftests.sh cannot pick them up, PID-suffixed so two runs do
-# not collide, and removed by absolute path below.
-SCRIPTS_DIR="$(cd "$(dirname "$RATCHET")" && pwd)"
-PRE_ALL="$SCRIPTS_DIR/.prefix-all-$$.sh"        # neither arm: the script as it stood
-PRE_NOREF="$SCRIPTS_DIR/.prefix-norefusal-$$.sh" # the retry, without the refusal
+# THEY RUN IN A STAND-IN MODULE ROOT UNDER $TMP. NOTHING IS WRITTEN INTO
+# THE CHECKOUT, and that is not tidiness.
+#
+# coverage-ratchet.sh derives REPO_ROOT from its own path and both arms
+# below reach `go list` in that root, so round 2 put the controls in
+# scripts/ and deleted them afterwards. The suite then created and
+# removed an untracked file inside the working tree, while
+# run-gate-selftests.sh runs the suites in PARALLEL and
+# check-release-digest-fixed-point.sh builds ./cmd/net-dhcp twice with
+# the default -buildvcs. `vcs.modified` is stamped from `git status`, so
+# a file that appears between those two builds makes two builds of
+# identical inputs differ, and the digest gate refuses to measure.
+# Measured on this tree: two builds with nothing touched are identical,
+# the same two with an untracked file created between them differ
+# (vcs.modified false, then true), and the real digest gate refused in
+# two of three runs under churn in scripts/ while refusing in none idle
+# and none under the same churn OUTSIDE the tree.
+#
+# So the root moves to $TMP instead. A stand-in is only usable if it
+# answers `go list` the way the checkout does for the paths these
+# fixtures name, and that is asserted below rather than assumed.
+STANDIN="$TMP/standin"
+mkdir -p "$STANDIN/scripts" "$STANDIN/pkg/util" "$STANDIN/pkg/plugin"
+# The language version is READ from the module under test: a hard-coded
+# one drifts, and a stand-in the toolchain rejects would refuse every
+# classification, leaving the controls measuring the refusal.
+{
+    printf 'module %s\n\n' "$SELF_NEW"
+    awk '$1 == "go" { print "go " $2; exit }' "$REPO_UNDER_TEST/go.mod"
+} > "$STANDIN/go.mod"
+printf 'package util\n'   > "$STANDIN/pkg/util/util.go"
+printf 'package plugin\n' > "$STANDIN/pkg/plugin/plugin.go"
+cp "$ABS_RATCHET" "$STANDIN/scripts/coverage-ratchet.sh"
+
+# IS THE STAND-IN FAITHFUL? The shipped script, unmodified, is run from
+# both roots over the same fixture and must say the same thing. If the
+# stand-in resolved packages differently, a control's exit 0 would be a
+# property of the root and not of the arm it is supposed to be missing.
+rename_run "$STANDIN/scripts/coverage-ratchet.sh" "$RENAME_LOW"; standin_rc=$?
+cp "$TMP/out" "$TMP/out.standin"
+rename_run "$RATCHET" "$RENAME_LOW"; real_rc=$?
+if [ "$standin_rc" -eq "$real_rc" ] && cmp -s "$TMP/out" "$TMP/out.standin"; then
+    echo "PASS: the stand-in module root answers exactly as the checkout does"
+else
+    echo "FAIL: the stand-in root is not a faithful stand-in (checkout exit $real_rc, stand-in exit $standin_rc)"
+    diff "$TMP/out" "$TMP/out.standin" | sed 's/^/    /'; failures=$((failures + 1))
+fi
+
+# THE MAJOR SUFFIX IS DIGITS ONLY, AND THE COST OF FORGETTING THAT IS A
+# FOREIGN MODULE'S FLOOR. `unversioned` strips a trailing /vN only when N
+# is all digits, so `v2beta` is an ordinary last segment. Loosened to
+# strip any trailing `v*`, a module at example.com/mod/v2beta would
+# report the same stripped prefix as the UNRELATED module example.com/mod
+# and re-spell that module's rows into its own tree: a floor compared
+# against a package it does not describe.
+#
+# Driven in a stand-in root of its own, because the rule reads the module
+# path out of go.mod at REPO_ROOT and this checkout's is not v2beta. The
+# sibling copy of the rule in check-coverage-floor.sh is cased in
+# scripts/test-check-coverage-floor.sh; this one had no case at all, and
+# the loosened mutant passed the whole suite.
+BETA="$TMP/standin-beta"
+mkdir -p "$BETA/scripts" "$BETA/pkg/a"
+{
+    printf 'module example.com/mod/v2beta\n\n'
+    awk '$1 == "go" { print "go " $2; exit }' "$REPO_UNDER_TEST/go.mod"
+} > "$BETA/go.mod"
+printf 'package a\n' > "$BETA/pkg/a/a.go"
+cp "$ABS_RATCHET" "$BETA/scripts/coverage-ratchet.sh"
+
+BETA_BASE="$TMP/beta-base.txt"          # a DIFFERENT module, sharing the stripped prefix
+BETA_HEAD="$TMP/beta-head.txt"
+printf 'example.com/mod/pkg/a 90.0\n' > "$BETA_BASE"
+printf '# the foreign row is not floored here\n' > "$BETA_HEAD"
+BETA_PCT="$TMP/beta-pct.txt"            # measured under the v2beta module, well below
+printf '\texample.com/mod/v2beta/pkg/a\t\tcoverage: 10.0%% of statements\n' > "$BETA_PCT"
+
+RATCHET_REPORT='' RATCHET_HEAD_BASELINE="$BETA_HEAD" \
+    bash "$BETA/scripts/coverage-ratchet.sh" "$BETA_PCT" "$BETA_BASE" > "$TMP/out" 2>&1
+got=$?
+if [ "$got" -eq 2 ] \
+   && grep -F 'Nothing left to ratchet' "$TMP/out" > /dev/null \
+   && ! grep -F 'RENAMED' "$TMP/out" > /dev/null; then
+    echo "PASS: a v2beta suffix is not a major-version suffix, so a foreign module's row is not re-spelled"
+else
+    echo "FAIL: the digits-only rule did not hold for v2beta (exit $got)"
+    sed 's/^/    /' "$TMP/out"; failures=$((failures + 1))
+fi
+
+PRE_ALL="$STANDIN/scripts/prefix-all.sh"        # neither arm: the script as it stood
+PRE_NOREF="$STANDIN/scripts/prefix-norefusal.sh" # the retry, without the refusal
 python3 - "$RATCHET" "$PRE_ALL" "$PRE_NOREF" <<'SURGERY'
 import sys
 src = open(sys.argv[1]).read()
@@ -946,7 +1034,23 @@ else
         sed 's/^/    /' "$TMP/out"; failures=$((failures + 1))
     fi
 fi
-/bin/rm -f "$PRE_ALL" "$PRE_NOREF"
+# No cleanup in the checkout to do: every file this block wrote is under
+# $TMP, which the tmpdir guard removes. That the suite touched nothing in
+# the working tree is ASSERTED, because the cost of writing there is not
+# a leftover file. It is a transient one: the file only has to exist
+# across another suite's two builds to make them differ.
+#
+# Compared against the state this suite STARTED in, taken at the top of
+# the file, so a developer's own edits are not findings and there is no
+# switch to turn the check off with.
+tree_after=$(git -C "$REPO_UNDER_TEST" status --porcelain 2>/dev/null)
+if [ "$tree_after" = "$TREE_BEFORE" ]; then
+    echo "PASS: the suite wrote nothing into the working tree"
+else
+    echo "FAIL: this suite changed the working tree; a self-test must not write into it"
+    diff <(printf '%s\n' "$TREE_BEFORE") <(printf '%s\n' "$tree_after") | sed 's/^/    /'
+    failures=$((failures + 1))
+fi
 
 if [ "$failures" -ne 0 ]; then
     echo "$failures ratchet test(s) failed"
