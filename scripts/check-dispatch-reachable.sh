@@ -55,11 +55,43 @@
 # exempts every pull request into `dev` on the day the default branch
 # moves, which is the #665 failure reintroduced by the fix for this one.
 #
+# THAT EXEMPTION ALONE MOVES THE DEADLOCK FROM `main` TO `dev` (#977,
+# review round 1). The release pull request is `dev` -> `main`, so a
+# commit is only in it by being on `dev` first, and the runbook's route
+# onto `dev` is step 5, `release/vX.Y.Z` -> `dev`. That pull request has
+# base `dev`, gets no exemption, and the entry it removes is the entry
+# keeping it green. Measured on a fixture ledger: the release PR says
+# "remove it here", and the only pull request that can put the removal
+# there is red. Every pull request into `dev` between the two merges is
+# red for the same reason, because they are tested as the merge product
+# and `dev` already carries the removal.
+#
+# So the removal is IN TRANSIT for the length of the release, and this
+# gate has to say so. A RELEASE IS IN FLIGHT when the tree pins a NEWER
+# published-image version than the default branch does, read from the
+# same `ghcr.io/<ns>/docker-net-dhcp:vX.Y.Z` pin in README.md that
+# scripts/bump-version.sh rewrites at runbook step 2 and
+# scripts/check-version-pins.sh keeps consistent. Mid-cycle the two
+# sides are equal and nothing is exempted. While they differ, a
+# dispatchable workflow the default branch lacks does not need an entry:
+# the entry has been pruned and is travelling with the workflow.
+#
+# THE BOUND, stated beside the claim. While a release is in flight this
+# suspends the undeclared-workflow finding for EVERY dispatchable
+# workflow, not only the one being released, so a workflow merged
+# undeclared during the release window is not caught until the window
+# closes. The window is one release; the suspension is printed on every
+# run it applies to, naming the two versions, so it is not silent. The
+# STALE rule is never suspended, on any route -- that is the half that
+# keeps the default branch green after the merge.
+#
 # Usage: bash scripts/check-dispatch-reachable.sh [workflow-dir] [allowlist]
 # Env:   BASE_REF (default origin/main) — the default branch to test against.
 #        GITHUB_EVENT_NAME, GITHUB_BASE_REF, GITHUB_EVENT_PATH — read, never
 #          required. They are what identifies a pull request into the default
 #          branch; with none of them set the verdict is the pre-#977 one.
+#        VERSION_PIN_FILE (default README.md) — the file the release-in-flight
+#          comparison reads the published-image pin from, on both sides.
 # Exit:  0 reachable or declared (also when the default branch cannot be
 #          read — reported as NOT INSPECTED, never a silent pass),
 #        1 an undeclared or stale entry,
@@ -183,6 +215,39 @@ if [ -n "$PR_BASE" ]; then
         echo "      exemption (#977) was NOT applied: ${decline}."
         echo "      The verdict below is the one a push would get."
     fi
+fi
+
+# IS A RELEASE IN FLIGHT? (#977 round 1.)
+#
+# One fact, derived the same way on both sides, from the pin
+# scripts/bump-version.sh rewrites on the release branch at runbook
+# step 2. Reading it from one file on each side and requiring exactly
+# one distinct version there is what keeps this from being a second,
+# looser idea of "the version": zero pins and two different pins both
+# mean "cannot tell", and cannot-tell is NOT in flight, so the default
+# is the strict pre-existing verdict.
+VERSION_PIN_FILE="${VERSION_PIN_FILE:-README.md}"
+
+# pin_version <text> -> the single vX.Y.Z pinned in it, or nothing
+pin_version() {
+    local vs
+    vs=$(printf '%s' "$1" \
+        | grep -oE 'ghcr\.io/[^/[:space:]]+/docker-net-dhcp:v[0-9]+\.[0-9]+\.[0-9]+' \
+        | sed 's/.*://' | sort -u)
+    [ "$(printf '%s' "$vs" | grep -c .)" -eq 1 ] || return 0
+    printf '%s' "$vs"
+}
+
+TREE_VERSION=""
+BASE_VERSION=""
+[ -f "$VERSION_PIN_FILE" ] && TREE_VERSION=$(pin_version "$(cat "$VERSION_PIN_FILE")")
+BASE_VERSION=$(pin_version "$(git show "${BASE_REF}:${VERSION_PIN_FILE}" 2>/dev/null)")
+
+RELEASE_IN_FLIGHT=0
+if [ -n "$TREE_VERSION" ] && [ -n "$BASE_VERSION" ] \
+   && [ "$TREE_VERSION" != "$BASE_VERSION" ] \
+   && [ "$(printf '%s\n%s\n' "$TREE_VERSION" "$BASE_VERSION" | sort -V | tail -n1)" = "$TREE_VERSION" ]; then
+    RELEASE_IN_FLIGHT=1
 fi
 
 # THE LEDGER'S OWN RULES WERE ENFORCED BY NOTHING (#849). Its header says
@@ -401,6 +466,7 @@ done <<< "$declared"
 
 pending=""
 merging=""
+travelling=""
 inspected=0
 for f in "${WF_FILES[@]}"; do
     [ -e "$f" ] || continue
@@ -449,6 +515,14 @@ for f in "${WF_FILES[@]}"; do
 
     pending="$pending $rel"
     if ! printf '%s\n' "$declared" | grep -Fx "$rel" >/dev/null; then
+        # The removal is in transit (#977 round 1). It was authored on
+        # the release branch, it is on this tree, and it reaches the
+        # default branch with the workflow when the release PR merges.
+        # Failing here is what made the runbook step unexecutable.
+        if [ "$RELEASE_IN_FLIGHT" -eq 1 ]; then
+            travelling="$travelling $rel"
+            continue
+        fi
         note "'$rel' declares workflow_dispatch but is not on ${BASE_REF}."
         echo "  GitHub only exposes a dispatchable workflow from the DEFAULT" >&2
         echo "  branch, so 'gh workflow run $(basename "$rel")' answers 404 today —" >&2
@@ -459,6 +533,16 @@ for f in "${WF_FILES[@]}"; do
         echo "  present it as a route yet." >&2
     fi
 done
+
+if [ -n "$travelling" ]; then
+    echo "NOTE  a release is in flight: this tree pins ${TREE_VERSION} and ${BASE_REF} pins ${BASE_VERSION}."
+    echo "      The undeclared-workflow finding is suspended for:${travelling}"
+    echo "      Their ledger entries were removed on the release branch and reach"
+    echo "      ${BASE_REF} with the workflows when the release pull request merges."
+    echo "      This suspension covers EVERY dispatchable workflow for the length of"
+    echo "      the release, so one merged undeclared during the window is not caught"
+    echo "      until the two versions agree again. The stale rule is not suspended."
+fi
 
 if [ "$fail" -ne 0 ]; then
     exit 1

@@ -396,6 +396,19 @@ has to be true.
    (the same gate `test.yaml` runs: every pin must agree on one
    version). The gate also fails CI if a future hand-edit leaves the
    pins inconsistent.
+
+   **On the same commit, empty
+   [`.github/dispatch-pending.txt`](https://github.com/claymore666/docker-net-dhcp/blob/main/.github/dispatch-pending.txt)
+   of entries.** Every workflow it lists reaches the default branch with
+   this release, so every entry is stale the moment the release PR
+   merges, and
+   [`scripts/check-dispatch-reachable.sh`](https://github.com/claymore666/docker-net-dhcp/blob/main/scripts/check-dispatch-reachable.sh)
+   fails the release PR while one is still there (#977). Pruning here,
+   beside the version bump, is what lets that gate read the missing
+   entries as a release in flight for the rest of the route: it compares
+   the pin this tree carries against the one on `main`. Prune without
+   bumping and the gate is right to fail; that is an ordinary mid-cycle
+   removal of a live entry.
 3. **Documentation review, PR-driven against the milestone.** Don't
    review from memory; review from the change set. List every PR on the
    `vX.Y.Z` milestone and reconcile each one's user-visible change
@@ -1096,13 +1109,17 @@ After the workflow succeeds:
   workflow is only exposed from the default branch, so one that merged
   to `dev` during this cycle has never run, and this release is the
   first moment it can. Dispatch it and confirm it does what its
-  documentation claims. The entry itself is already gone: the release
-  PR removes it, because
+  documentation claims. The entry itself is already gone: it is removed
+  on the release branch at step 2, travels into `dev` at step 5 and
+  into `main` with the release PR, because
   [`scripts/check-dispatch-reachable.sh`](https://github.com/claymore666/docker-net-dhcp/blob/main/scripts/check-dispatch-reachable.sh)
-  counts a workflow that this pull request merges into the default
-  branch as reachable and its entry as stale (#977). Dropping the entry
-  after the release instead is what turned the gate red on `main` at
-  v2.1.0.
+  counts a workflow that the release PR merges into the default branch
+  as reachable and its entry as stale (#977). While the release branch
+  and `dev` pin a newer version than `main` does, that gate reads the
+  release as in flight and accepts the missing entry, so step 5 and
+  every other pull request into `dev` during the release window stay
+  green. Dropping the entry after the release instead is what turned
+  the gate red on `main` at v2.1.0.
 
 ## Troubleshooting
 

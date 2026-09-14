@@ -1092,6 +1092,194 @@ check "a release PR is exempt on a runner that has to fetch the default branch" 
 check "and a pull request into dev is still refused there" \
     rc1 "$(verdict8 pull_request dev "$EVENT_MAIN")"
 
+# --- THE TWO ARMS THE #977 CASES LEFT UNDRIVEN --------------------------
+#
+# Both were correct when driven by hand and asserted by nothing, so
+# deleting either left the suite green.
+#
+# ARM ONE: a pull request into the default branch where NEITHER
+# derivation answers. REPO8 has no `origin/HEAD`; run it with no event
+# payload either and the gate has nothing to derive the default branch
+# from. It must decline in words and fall back to the push verdict.
+check "a pull request with neither derivation available is not exempted" \
+    rc1 "$(verdict8 pull_request main '')"
+grep -F 'could not be derived' "$TMP/out8" >/dev/null \
+    && echo "PASS: and the reason names the missing derivations" \
+    || { echo "FAIL: the no-derivation decline printed no reason"; fails=1; }
+
+# ARM TWO: `pull_request_target` is in the exemption's domain beside
+# `pull_request`. Inert in this repository today, and a second event
+# class that nothing drove: removing it from the case list left the
+# suite green.
+check "pull_request_target into the default branch is exempt too" \
+    pass "$(verdict6 pull_request_target main "$EVENT_MAIN")"
+check "pull_request_target into dev keeps today's verdict (control)" \
+    rc1 "$(verdict6 pull_request_target dev "$EVENT_MAIN")"
+
+# --- THE RELEASE ROUTE, COMPOSED ON ONE LEDGER (#977 round 1) -----------
+#
+# Each half of the release route passed in isolation while the route as
+# a whole was impassable. The exemption is keyed on a pull request into
+# the DEFAULT branch, but a commit only reaches the release pull request
+# by being on `dev` first, and the runbook's route onto `dev` is step 5,
+# `release/vX.Y.Z` -> `dev`. That pull request removes the entry, gets
+# no exemption, and goes red; so does every pull request into `dev`
+# until the release merges, because they are tested as the merge product
+# and `dev` already carries the removal.
+#
+# So this walks ONE ledger through the whole runbook route and asserts
+# the verdict at every hop. A fixture per hop cannot see this: the
+# failure is the composition.
+REPO9="$TMP/repo9"
+mkdir -p "$REPO9/.github/workflows"
+git -C "$REPO9" init -q -b main
+git -C "$REPO9" config user.email t@example.com
+git -C "$REPO9" config user.name t
+git -C "$REPO9" config commit.gpgsign false
+
+# The published-image pin is the one fact that says which version a tree
+# is, read the same way on both sides (scripts/bump-version.sh rewrites
+# it at runbook step 2).
+printf 'docker plugin install ghcr.io/claymore666/docker-net-dhcp:v9.8.0\n' \
+    > "$REPO9/README.md"
+dispatchable onmain9 > "$REPO9/.github/workflows/onmain9.yml"
+git -C "$REPO9" add -A && git -C "$REPO9" commit -qm "v9.8.0, released"
+
+# Mid-cycle: a new dispatchable workflow merges to dev, declared.
+git -C "$REPO9" checkout -q -b dev
+dispatchable new9 > "$REPO9/.github/workflows/new9.yml"
+{ printf '# pending\n'; entry .github/workflows/new9.yml; } \
+    > "$REPO9/.github/dispatch-pending.txt"
+git -C "$REPO9" add -A && git -C "$REPO9" commit -qm "new9, declared"
+
+# <event-name> <pr base>
+verdict9() {
+    ( cd "$REPO9" \
+      && GITHUB_EVENT_NAME="$1" GITHUB_BASE_REF="$2" \
+         GITHUB_EVENT_PATH="$EVENT_MAIN" BASE_REF=main \
+         bash "$CHECK" >"$TMP/out9" 2>&1 ) \
+        && echo pass || echo "rc$?"
+}
+
+check "hop 1: mid-cycle push to dev with the entry present passes" \
+    pass "$(verdict9 push '')"
+
+check "hop 2: the release PR into main with the entry still present is stale" \
+    rc1 "$(verdict9 pull_request main)"
+grep -F 'Remove it here' "$TMP/out9" >/dev/null \
+    && echo "PASS: and it says to remove the entry in that pull request" \
+    || { echo "FAIL: hop 2 did not name the pull request as the place to remove it"
+         fails=1; }
+
+# THE CONTROL FOR HOP 3, TAKEN FIRST. The removal alone, with no version
+# bump, is an ordinary mid-cycle prune of a live entry and must still
+# fail. Without this line hop 3 would only measure "a PR into dev with
+# no entry passes", which would be the gate deleted.
+git -C "$REPO9" checkout -q -b nobump9 dev
+printf '# pending\n' > "$REPO9/.github/dispatch-pending.txt"
+check "hop 3 control: removing the entry with no release in flight still fails" \
+    rc1 "$(verdict9 pull_request dev)"
+git -C "$REPO9" checkout -q -- .github/dispatch-pending.txt
+
+# HOP 3, runbook step 5: `release/v9.9.0` -> `dev`, carrying the version
+# bump and the removal. This is the pull request that was red.
+git -C "$REPO9" checkout -q -b release/v9.9.0 dev
+sed -i 's/v9\.8\.0/v9.9.0/' "$REPO9/README.md"
+printf '# pending\n' > "$REPO9/.github/dispatch-pending.txt"
+git -C "$REPO9" add -A && git -C "$REPO9" commit -qm "release v9.9.0: bump pins, prune the ledger"
+check "hop 3: the release branch into dev, carrying the removal, passes" \
+    pass "$(verdict9 pull_request dev)"
+grep -F 'a release is in flight' "$TMP/out9" >/dev/null \
+    && echo "PASS: and it says why, naming both versions" \
+    || { echo "FAIL: hop 3 passed without saying a release is in flight"; fails=1; }
+grep -F 'v9.9.0' "$TMP/out9" >/dev/null && grep -F 'v9.8.0' "$TMP/out9" >/dev/null \
+    && echo "PASS: and both pinned versions are printed" \
+    || { echo "FAIL: the in-flight note does not name the two versions"; fails=1; }
+
+# HOP 4: that merges to dev. Nothing is a pull request now, and the push
+# lane on dev has to stay green for the length of the release.
+git -C "$REPO9" checkout -q dev
+git -C "$REPO9" merge -q --ff-only release/v9.9.0
+check "hop 4: the push lane on dev stays green while the release is in flight" \
+    pass "$(verdict9 push '')"
+
+# HOP 5: an ordinary pull request into dev during the release window. It
+# is tested as the merge product, so it carries dev's removal without
+# having made it. This is the one that blocks other people's work.
+git -C "$REPO9" checkout -q -b feat9 dev
+printf 'unrelated\n' > "$REPO9/feature.txt"
+git -C "$REPO9" add -A && git -C "$REPO9" commit -qm "an unrelated change"
+check "hop 5: an unrelated pull request into dev during the window passes" \
+    pass "$(verdict9 pull_request dev)"
+git -C "$REPO9" checkout -q dev
+
+# TWO PINS ARE NOT A VERSION. The suspension turns on ONE fact read the
+# same way on both sides, so a tree that pins two different versions has
+# not said which it is, and cannot-tell is not in flight. Without this
+# case the uniqueness requirement can be dropped and the suite stays
+# green, which would let a half-bumped tree buy the suspension.
+git -C "$REPO9" checkout -q -b twopins9 dev
+printf 'docker plugin install ghcr.io/claymore666/docker-net-dhcp:v9.9.0\nand ghcr.io/other/docker-net-dhcp:v9.7.0\n' \
+    > "$REPO9/README.md"
+check "a tree pinning two different versions gets no suspension" \
+    rc1 "$(verdict9 pull_request dev)"
+git -C "$REPO9" checkout -q dev
+git -C "$REPO9" checkout -q -- README.md
+
+# HOP 6: runbook step 6, the release pull request itself, at that head.
+check "hop 6: the release pull request into main passes with the entry gone" \
+    pass "$(verdict9 pull_request main)"
+
+# HOP 7: it merges. The default branch now has the workflow and the two
+# versions agree, so the suspension is OVER and the gate is live again.
+git -C "$REPO9" checkout -q main
+git -C "$REPO9" merge -q --ff-only dev
+check "hop 7: the default branch is green one commit after the merge" \
+    pass "$(verdict9 push '')"
+grep -F 'a release is in flight' "$TMP/out9" >/dev/null \
+    && { echo "FAIL: the suspension is still on after the release merged"; fails=1; } \
+    || echo "PASS: and the suspension is over, because the two versions agree again"
+
+# BEHIND IS NOT IN FLIGHT. The comparison is strictly newer, not
+# different: a branch that has not been back-merged pins an OLDER
+# version than the default branch, and reading that as a release in
+# flight would hand the suspension to every stale branch in the
+# repository, permanently.
+git -C "$REPO9" checkout -q -b behind9 main
+sed -i 's/v9\.9\.0/v9.8.0/' "$REPO9/README.md"
+dispatchable behindnew9 > "$REPO9/.github/workflows/behindnew9.yml"
+check "a branch pinning an OLDER version than the default branch is not in flight" \
+    rc1 "$(verdict9 pull_request dev)"
+git -C "$REPO9" checkout -q main
+git -C "$REPO9" checkout -q -- README.md
+rm -f "$REPO9/.github/workflows/behindnew9.yml"
+
+# ...and the gate is not merely quiet: a new undeclared workflow on the
+# post-release tree fails again. A suspension that never lifts is the
+# gate deleted, and nothing above would have noticed.
+git -C "$REPO9" checkout -q -b after9 main
+dispatchable later9 > "$REPO9/.github/workflows/later9.yml"
+check "hop 8: an undeclared workflow after the release fails again" \
+    rc1 "$(verdict9 pull_request dev)"
+
+# CANNOT TELL ON THE OTHER SIDE EITHER. The uniqueness requirement is
+# read on BOTH sides, and only the default-branch side discriminates:
+# with two pins in the tree the newest-of-both comparison already fails,
+# so a fixture that half-bumps the TREE cannot tell the requirement from
+# its absence. Half-bump the DEFAULT BRANCH instead and the difference
+# is visible -- the tree pins one newer version, and without the
+# requirement that reads as a release in flight.
+git -C "$REPO9" checkout -q main
+printf 'docker plugin install ghcr.io/claymore666/docker-net-dhcp:v9.9.0\nand ghcr.io/other/docker-net-dhcp:v9.7.0\n' \
+    > "$REPO9/README.md"
+git -C "$REPO9" commit -q -am "main: two disagreeing pins"
+git -C "$REPO9" checkout -q -b halfbumped9 main
+printf 'docker plugin install ghcr.io/claymore666/docker-net-dhcp:v10.0.0\n' \
+    > "$REPO9/README.md"
+dispatchable later10 > "$REPO9/.github/workflows/later10.yml"
+check "a default branch pinning two different versions gives no suspension either" \
+    rc1 "$(verdict9 pull_request dev)"
+
 # --- the real repository ------------------------------------------------
 # The shipped state must satisfy its own gate.
 real=$( cd "$(dirname "$CHECK")/.." && bash "$CHECK" >/dev/null 2>&1 && echo pass || echo "rc$?" )

@@ -127,4 +127,14 @@
 #     PR is where it gets removed. Removing it after the release
 #     instead is what turned this gate red on the default branch at
 #     v2.1.0, one commit after the merge.
+#     The removal reaches that pull request by riding the release
+#     branch into `dev` first, so for the length of the release the
+#     entry is GONE from `dev` while the workflow is still absent from
+#     the default branch. The gate reads that state from the version
+#     pins: while this tree pins a newer published-image version than
+#     the default branch does, a release is in flight and a missing
+#     entry is the removal in transit, not an undeclared workflow. The
+#     suspension covers every dispatchable workflow for the length of
+#     the release and is printed on every run it applies to. The stale
+#     rule is never suspended.
 #
