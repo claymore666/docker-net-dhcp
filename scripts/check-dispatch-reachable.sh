@@ -47,8 +47,9 @@
 # workflow in the tree counts as REACHABLE: merging this pull request is
 # what puts it there. Its entry is then stale ON THE PULL REQUEST, which
 # is what makes the runbook step executable — the release PR removes the
-# entry, and the PR and the default branch are both green. Pushes, and
-# pull requests into any other branch, keep today's verdicts.
+# entry, and the PR and the default branch are both green. Outside a
+# release, pushes and pull requests into any other branch keep today's
+# verdicts; the paragraph after next says what a release changes.
 #
 # The base is read from the event and compared against a DERIVED default
 # branch, never against a literal `main`. A gate that hard-codes the name
