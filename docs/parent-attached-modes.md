@@ -87,7 +87,7 @@ docker inspect app | jq '.[0].NetworkSettings.Networks'
    re-claims it, exactly as it would for a physical host that rebooted
    (v1.9.0+, #800). A network created with `release_lease=on_stop` hands
    it back here instead, and gives up the stable MAC and address across
-   a restart to do so (v2.2.0+, #962).
+   a restart to do so (v2.1.1+, #962).
 7. The macvlan link is reaped automatically when the container netns is
    destroyed.
 
