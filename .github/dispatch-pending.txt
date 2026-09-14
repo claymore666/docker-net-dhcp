@@ -144,9 +144,11 @@
 #     SECOND, while suspended the finding is off for EVERY dispatchable
 #     workflow, so one merged undeclared in that window is not caught
 #     until the pins agree again.
-#     THIRD, the suspension lasts ONE release step. A release moves the
-#     version one step; two steps means the first release never landed,
-#     and the gate reports the suspension as expired instead of
-#     widening it.
+#     THIRD, the bound is a DISTANCE, not a duration. The suspension
+#     holds while this tree pins the immediate successor of the default
+#     branch, and two steps apart is refused. Nothing in the gate reads
+#     a clock, a tag or the state of a release, so a release parked
+#     after runbook step 5 sits exactly one step ahead and stays
+#     suspended for as long as nobody finishes or unwinds it.
 #     The stale rule is never suspended.
 #

@@ -1384,19 +1384,18 @@ grep -F 'bumped10.yml' "$TMP/out10" >/dev/null \
     && echo "PASS: and the finding names the workflow the window was hiding" \
     || { echo "FAIL: the workflow carried through the window is not named"; fails=1; }
 
-# F4. THE SUSPENSION EXPIRES. A release parked after runbook step 5
-# leaves the pins differing with nothing finishing it, and a suspension
-# that lasts as long as that is the bare entry the ledger's own header
-# forbids. A release moves the version one step, so two steps is the
-# measurement that says the first one never landed.
+# F4. THE SUSPENSION IS BOUNDED BY THE DISTANCE BETWEEN THE TWO PINS.
+# Two steps apart is refused, and the run says so where it bites: the
+# refusal above otherwise reads as "add an entry" to someone who has a
+# bumped pin and believes the suspension covers it.
 git -C "$REPO10" checkout -q -b parked10 main
 dispatchable parked10wf > "$REPO10/.github/workflows/parked10wf.yml"
 sed -i 's/v9\.9\.0/v9.11.0/' "$REPO10/README.md"
-check "a tree two release steps ahead has an expired suspension, not a wider one" \
+check "a tree two release steps ahead is not suspended" \
     rc1 "$(verdict10 pull_request dev)"
 grep -F 'more than one release step' "$TMP/out10" >/dev/null \
-    && echo "PASS: and the run says the suspension expired rather than never applying" \
-    || { echo "FAIL: the expiry is not explained where it bites"; fails=1; }
+    && echo "PASS: and the run says the suspension did not apply, and by how much" \
+    || { echo "FAIL: the refusal is not explained where it bites"; fails=1; }
 
 # ...and the preservation control, because a red that only measures
 # "hard" proves nothing: ONE step ahead on the same fixture, same
@@ -1405,6 +1404,58 @@ grep -F 'more than one release step' "$TMP/out10" >/dev/null \
 sed -i 's/v9\.11\.0/v9.10.0/' "$REPO10/README.md"
 check "one step ahead on the same fixture is still suspended (control)" \
     pass "$(verdict10 pull_request dev)"
+
+# F4b. THE BOUND IS A DISTANCE, NOT A DURATION (#977 round 3), and this
+# case pins that escape rather than leaving it to be discovered. A
+# release parked after runbook step 5 sits exactly ONE step ahead, which
+# is the shape the suspension accepts, so it stays suspended for as long
+# as nobody finishes or unwinds it. The script header, the ledger, the
+# runbook and the pull request body all say so now; if anyone gives the
+# suspension a time bound, this case goes red and those four texts have
+# to change with it.
+git -C "$REPO10" add -A
+git -C "$REPO10" commit -qm "release/v9.10.0 reaches dev at step 5, and is then parked"
+check "a parked release one step ahead is suspended on the day it parks" \
+    pass "$(verdict10 pull_request dev)"
+
+# ORTHOGONALITY, taken before the commits pile up: a copy of the gate
+# WITH a duration bound accepts this same fixture today. Without that,
+# the assertion after the commits is satisfied by any copy that refuses
+# nothing, and an inert edit would pass its own case.
+timed="$TMP/timed.sh"
+sed -e 's@^        RELEASE_IN_FLIGHT=1$@        RELEASE_IN_FLIGHT=1\n        [ "$(git rev-list --count "${BASE_REF}"..HEAD 2>/dev/null || echo 0)" -le 10 ] || RELEASE_IN_FLIGHT=0@' \
+    "$CHECK" > "$timed"
+# The copy is required to be a WORKING gate with exactly one injected
+# bound, not merely a file that differs: an empty file differs too, and
+# it would pass every assertion below by doing nothing at all.
+if [ "$(grep -c -- '-le 10 \] || RELEASE_IN_FLIGHT=0' "$timed")" = 1 ] \
+   && bash -n "$timed" 2>/dev/null; then
+    echo "PASS: the duration-bounded copy carries exactly one time bound and parses"
+else
+    echo "FAIL: the duration-bounded copy did not land, so the two assertions below"
+    echo "      measure nothing"
+    fails=1
+fi
+timed_verdict() {
+    ( cd "$REPO10" \
+      && GITHUB_EVENT_NAME=pull_request GITHUB_BASE_REF=dev \
+         GITHUB_EVENT_PATH="$EVENT_MAIN" BASE_REF=main \
+         bash "$timed" >/dev/null 2>&1 ) \
+        && echo pass || echo "rc$?"
+}
+check "the duration-bounded copy accepts the parked release on day one (control)" \
+    pass "$(timed_verdict)"
+
+for i in $(seq 1 40); do
+    printf 'while the release sits parked: %s\n' "$i" >> "$REPO10/parked.log"
+    git -C "$REPO10" add -A
+    git -C "$REPO10" commit -qm "ordinary work, release still parked ($i)"
+done
+check "and still suspended 40 commits later: the bound is a distance, not a duration" \
+    pass "$(verdict10 pull_request dev)"
+check "the duration-bounded copy refuses it, so the case above can go red" \
+    rc1 "$(timed_verdict)"
+rm -f "$timed"
 
 # --- the real repository ------------------------------------------------
 # The shipped state must satisfy its own gate.

@@ -94,13 +94,15 @@
 #     workflow, not only the one being released, so a workflow merged
 #     undeclared in that window is not caught until the pins agree
 #     again.
-#   - The expiry is measured, not assumed. A release moves the version
-#     exactly one step, so the suspension holds for ONE step only. Two
-#     steps means the first release never landed, and the gate says the
-#     suspension expired rather than widening it. Without that, a
-#     release parked after step 5 would suspend the finding for as long
-#     as nobody finished it -- the bare entry with no written expiry
-#     that the top of this file refuses of the ledger.
+#   - THE BOUND IS A DISTANCE, NOT A DURATION (#977 round 3). What is
+#     measured is how far apart the two pins are: the suspension holds
+#     only while this tree pins the IMMEDIATE SUCCESSOR of what the
+#     default branch pins. Nothing here reads a clock, a tag or the
+#     state of a release, so a release parked after runbook step 5 sits
+#     exactly one step ahead and stays suspended for as long as the
+#     pins differ, however long that is. What the ledger's "written
+#     expiry" buys here is a bounded SHAPE, and that is the whole of
+#     it: two steps apart is refused, a year one step apart is not.
 #   - The STALE rule is never suspended, on any route. That is the half
 #     that keeps the default branch green after the merge.
 #
@@ -262,20 +264,28 @@ BASE_VERSION=""
 [ -f "$VERSION_PIN_FILE" ] && TREE_VERSION=$(pin_version "$(cat "$VERSION_PIN_FILE")")
 BASE_VERSION=$(pin_version "$(git show "${BASE_REF}:${VERSION_PIN_FILE}" 2>/dev/null)")
 
-# THE SUSPENSION HAS AN EXPIRY, BECAUSE THE LEDGER IT SERVES DEMANDS ONE
-# (#977 round 2). "An accepted condition with a written expiry, never a
-# bare entry" is the bargain at the top of this file, and a suspension
-# that lasts as long as two pins happen to differ is a bare entry: a
-# release parked after runbook step 5 leaves `dev` pinning a newer
-# version for as long as nobody finishes it, with the undeclared-workflow
-# finding off the whole time.
+# THE SUSPENSION IS BOUNDED BY SHAPE, BECAUSE THE LEDGER IT SERVES
+# DEMANDS A BOUND (#977 round 2) AND SHAPE IS THE ONLY BOUND TWO PINS CAN
+# CARRY (#977 round 3). "An accepted condition with a written expiry,
+# never a bare entry" is the bargain at the top of this file, and a
+# suspension that applies to any pair of differing pins is a bare entry.
 #
-# The expiry is measured from the two pins alone. A release moves the
-# version exactly ONE step -- the next patch, the next minor, or the next
-# major -- so the suspension holds only while the tree pins the immediate
-# successor of what the default branch pins. Two steps means the first
-# release never landed, and the suspension has expired rather than
-# widened.
+# What is measured is the DISTANCE between the two pins, from the two
+# pins alone. A release moves the version one step -- the next patch,
+# the next minor, or the next major -- so the suspension holds only
+# while the tree pins the immediate successor of what the default branch
+# pins, and two steps is refused.
+#
+# THAT IS NOT A BOUND ON HOW LONG, and the first version of this comment
+# said it was. A release parked after runbook step 5 leaves `dev` pinning
+# exactly ONE version more than `main`, which is the shape this accepts,
+# so the finding stays suspended for as long as nobody finishes or
+# unwinds that release -- measured: 51 commits later, still suspended.
+# Nothing here reads a clock, a tag or the state of a release, and no
+# duration is derivable from two version strings. Bounding time would
+# mean inventing a parameter this file cannot measure, which is the
+# other way to get a sentence wider than the code. So the bound is
+# stated as what it is, in the four places that state it.
 successors() {
     local v="${1#v}" maj min pat
     IFS=. read -r maj min pat <<< "$v"

@@ -421,10 +421,12 @@ has to be true.
    undeclared-workflow finding is off for **every** dispatchable
    workflow, not only the ones being released, so one merged undeclared
    during the release window is not caught until the pins agree again.
-   The acceptance lasts **one** version step: a release moves the
-   version once, so a tree two steps ahead of `main` means an earlier
-   release never landed, and the gate reports the acceptance as expired
-   and fails. Finish or unwind that release before starting this one.
+   The acceptance is bounded by **distance, not by time**: it holds
+   while this tree pins the immediate successor of `main`, and two
+   steps apart is refused. Nothing in the gate reads a clock, a tag or
+   the state of a release, so a release parked after step 5 sits
+   exactly one step ahead and stays accepted until somebody finishes or
+   unwinds it.
 3. **Documentation review, PR-driven against the milestone.** Don't
    review from memory; review from the change set. List every PR on the
    `vX.Y.Z` milestone and reconcile each one's user-visible change
