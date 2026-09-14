@@ -46,8 +46,11 @@ const (
 //
 // The rule: a container is a host on this segment, and a host does not
 // hand its address back when it stops. The lease expires on the server's
-// clock, or the container comes back before then and re-claims it.
-// Nothing this plugin runs sends a DHCPRELEASE, on any path.
+// clock, or the container comes back before then and re-claims it. On a
+// network that does not set release_lease -- the default, which this
+// network is -- no path sends a DHCPRELEASE (#962). The opposite
+// network is driven by TestReleaseLease_OnStopHandsTheAddressBack in
+// release_lease_test.go, against this same log.
 //
 // # Why the assertion is the server's log
 //
@@ -134,7 +137,8 @@ func TestLeaseRetention_NothingEverReleases(t *testing.T) {
 	}
 
 	// Phase 1: a graceful stop. This is what the client's `release`
-	// directive fired on, and the one an operator sees most.
+	// directive fired on, the one an operator sees most, and the one a
+	// release_lease=on_stop network DOES release on.
 	if err := cli.ContainerStop(ctx, id, container.StopOptions{}); err != nil {
 		t.Fatalf("ContainerStop: %v", err)
 	}

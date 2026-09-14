@@ -54,7 +54,10 @@ const dhcpClientReapTimeout = 5 * time.Second
 // client to unwind and return.
 //
 // Two things it no longer covers, in the order they went. Before #800 it
-// covered a DHCPRELEASE round trip; the client has nothing to send. And
+// covered a DHCPRELEASE round trip; a release now happens before this
+// wait begins, on its own budget, and only on a `release_lease=on_stop`
+// network (#962), so by the time Stop waits the client has nothing to
+// send. And
 // it once bounded a SIGTERM to a dhcpcd child and that child's own
 // teardown — dropping the address, closing its lease file, reaping its
 // own children. There is no child: the client is a goroutine and a
@@ -259,8 +262,10 @@ type dhcpManager struct {
 	// release of an address the server had never been asked to free,
 	// and the reclaim — v4-only until then — left the IA_NA address the
 	// one-shot took held upstream until it expired, which since #800 is
-	// what happens to every lease. Not a race, the
-	// only behaviour. Both flags are now read the same way when the
+	// what happens to every lease on a `release_lease=never` network.
+	// #962 added the one exception: a Leave on a `release_lease=on_stop`
+	// network hands the address back, built from the record, whether or
+	// not this flag was ever set. Not a race, the only behaviour. Both flags are now read the same way when the
 	// ledger entry for each family is written.
 	boundV6 atomic.Bool
 	// MacAddress is set in macvlan mode so we can re-find the link inside
@@ -354,6 +359,19 @@ type dhcpManager struct {
 	// TestHealthClient_IsPublishedOnlyForV4 holds the guard at the one
 	// call site and docs/reference.md states the bound on the row.
 	clientV4 endpointClient
+
+	// releasedV4 / releasedV6 record that this endpoint's lease was
+	// actually handed back, so Leave can close the record instead of
+	// leaving it re-bindable and DeleteEndpoint can decline to lay a
+	// tombstone for an address that is no longer ours.
+	//
+	// WRITTEN FROM THE OUTCOME, NOT FROM THE OPTION. A network set to
+	// release whose release did not leave the host still holds its
+	// lease upstream, and a tombstone skipped on the option alone would
+	// throw away restart stability for an endpoint that released
+	// nothing.
+	releasedV4 atomic.Bool
+	releasedV6 atomic.Bool
 }
 
 func newDHCPManager(docker dockerClient, r JoinRequest, opts DHCPNetworkOptions) *dhcpManager {
@@ -1418,7 +1436,6 @@ func (m *dhcpManager) setupClient(v6 bool) (chan error, error) {
 	if !v6 {
 		m.setHealthClient(client)
 	}
-
 	events, err := client.Start()
 	if err != nil {
 		return nil, fmt.Errorf("failed to start DHCP%v client: %w", v6Str, err)
@@ -2003,6 +2020,40 @@ func (m *dhcpManager) stop(leaving bool) error {
 	// Wait for Start to finish so we don't tear down half-initialised
 	// state.
 	<-m.startedCh
+
+	// THE RELEASE, AND THE `leaving` ARM IS THE WHOLE GUARD ON IT
+	// (#962). Plugin.Close, a manager displaced by a newer one for the
+	// same endpoint, and the cleanup that follows `docker network rm`
+	// all arrive here through Stop, with leaving false and their
+	// containers still running: releasing there tells the server an
+	// address is free while a live container holds it, which is the
+	// duplicate assignment #524 added detection for, manufactured by
+	// the plugin. TestReleaseLease_StopDoesNotRelease drives that arm
+	// under a network that DOES release, which is the only shape where
+	// the guard can be seen to do anything.
+	//
+	// ABOVE THE startErr RETURN, and that placement is the whole of
+	// what a failed Join gets. The release is built from the durable
+	// record, so a persistent client that never started takes nothing
+	// away from it: the one-shot at CreateEndpoint acquired an address
+	// and wrote it into the record, and that address is what goes back.
+	// Below this return the endpoint would be silent instead -- neither
+	// sent nor failed -- on the one population where an operator who
+	// asked for releases most wants to see what happened.
+	//
+	// Before close(m.stopChan) and before the clients are drained, and
+	// the reason is no longer the client. The release is built from the
+	// durable record and sent from the host, so it does not need the
+	// client at all; what it does need is the v6 address still on the
+	// container link to be takeable off it (RFC 9915 section 18.2.7),
+	// and the container's namespace still open for that. Both are gone
+	// once the teardown below has run.
+	if leaving && m.opts.releasesOnStop() {
+		releasedV4, releasedV6 := m.releaseHeldLeases()
+		m.releasedV4.Store(releasedV4)
+		m.releasedV6.Store(releasedV6)
+	}
+
 	if m.startErr != nil {
 		// No persistent client ever ran, so there is nothing to stop,
 		// and the CreateEndpoint one-shot's lease is left where
@@ -2026,6 +2077,13 @@ func (m *dhcpManager) stop(leaving bool) error {
 		// server holds its address for the lease time and hands it back
 		// when the host returns. A container is a host on this segment
 		// and now costs the server exactly what one costs.
+		//
+		// A `release_lease=on_stop` network has already had its chance
+		// by the time this runs: the release is attempted at the top of
+		// stop(), above this return, precisely so that a Start failure
+		// does not silently skip it (#962). It is built from the record,
+		// so on that network the one-shot's address has usually gone
+		// back and the paragraph above describes the `never` default.
 		if v4, v6 := m.lastIPs(); v4 != nil || v6 != nil {
 			log.WithFields(m.logFields(false)).
 				WithField("ip", auditIP(v4)).
@@ -2109,9 +2167,14 @@ func (m *dhcpManager) stop(leaving bool) error {
 		// family. It stays outstanding and expires on the server's
 		// clock (#800) — the reclaim that used to run here was removed
 		// because it raced the tombstone for the same address. Nothing is audited
-		// either way: no RELEASE was sent, and writing "stopped" would
-		// be the ledger claiming something the server never saw, which
-		// is the one thing this ledger exists not to do.
+		// either way: no RELEASE was sent on this path, and writing
+		// "stopped" would be the ledger claiming something the server
+		// never saw, which is the one thing this ledger exists not to
+		// do. `release_lease=on_stop` does NOT reach the same answer: the
+		// release runs before this point, is built from the record
+		// rather than from the client that never bound, and hands the
+		// one-shot's address back (#962). This block is the `never`
+		// network's answer and the answer for a release that failed.
 		log.WithFields(m.logFields(false)).
 			WithField("v4_outstanding", neverBoundV4).
 			WithField("v6_outstanding", neverBoundV6).
@@ -2160,7 +2223,13 @@ func (m *dhcpManager) settleFamily(v6 bool, last *netlink.Addr, exitErr error, l
 		// referred to had been deleted. An operator reading it would
 		// have been told the lease was handed back when it was not.
 		// What is settled here is that nothing is audited as released,
-		// which is the honest record: no RELEASE was sent, on any path.
+		// which is the honest record: no RELEASE was sent on this path.
+		// It is "this path" and no longer "any path" since #962, which
+		// gave `release_lease=on_stop` networks a release at Leave. That
+		// release is built from the record and does not care that this
+		// client never bound, so on such a network the address may well
+		// have gone back before this line runs; what stays true here is
+		// that nothing the LEDGER writes claims it.
 		// TestStop_NoStopPathClaimsAReclaimOrRelease keeps it honest,
 		// because prose cannot — and this comment is the proof of that:
 		// it named the test's pre-rename spelling long after the rename,

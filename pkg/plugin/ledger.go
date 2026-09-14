@@ -33,10 +33,14 @@ const (
 //
 // Neither of the last two says anything about the LEASE. They were
 // "release" and "release_failed" until #800, and that was a claim about
-// what the DHCP server saw; nothing this plugin runs sends a
-// DHCPRELEASE, so the address is held until it expires whichever of the
-// two is written. The rename is breaking for anyone parsing this file
-// and is tabled in RELEASE_NOTES.md.
+// what the DHCP server saw; what a stop records is the CLIENT's
+// shutdown, and whether the lease went back is `release_lease`'s
+// question and answered by the releases_sent / release_failures pair
+// (#962). On the default `never` the address is held until it expires
+// whichever of the two kinds is written; on `on_stop` the release is
+// built from the lease record and sent whatever this file says about
+// the client, which is why the two never agreed to be one entry. The rename is breaking for
+// anyone parsing this file and is tabled in RELEASE_NOTES.md.
 type ledgerEntry struct {
 	TS        string `json:"ts"`
 	Kind      string `json:"kind"`

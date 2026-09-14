@@ -596,11 +596,15 @@ func TestStop_AuditsAStopWithoutClaimingARelease(t *testing.T) {
 				t.Errorf("ledger kinds = %v, want %v — %s", kinds, tc.wantKinds, tc.why)
 			}
 			// Whatever else it writes, it must never claim the server
-			// saw a DHCPRELEASE. Nothing this plugin runs sends one.
+			// saw a DHCPRELEASE. None of the rows here sets
+			// release_lease, so nothing in them sends one; a release is
+			// also not a ledger kind on a network that does set it,
+			// which is what the counters are for (#962).
 			for _, k := range kinds {
 				if strings.Contains(k, "release") {
-					t.Errorf("ledger kind %q names a release; no client this plugin "+
-						"runs releases a lease (#800)", k)
+					t.Errorf("ledger kind %q names a release; no client releases a "+
+						"lease on a network that does not set release_lease, and none "+
+						"of these does (#800, #962)", k)
 				}
 			}
 		})
