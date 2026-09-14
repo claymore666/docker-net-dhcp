@@ -396,6 +396,22 @@ oras_form_only() {
 }
 run "a bare oras copy is still a publish" 0 back_to_oras "6 published cell(s)" oras_form_only
 
+# 2d. A WRAPPED COPY IS STILL A COPY. `copies()` once also required the
+#     line's FIRST word to be outside quoting. A mutant showed it had no
+#     case, and writing one showed it was wrong: a quoted command word
+#     still executes, so the only lines it excluded were continuation
+#     lines of a wrapped command, whose destination really is published.
+#     This case holds the line that argument: rewrapping the copy over
+#     two lines must not turn the alias into a cell nothing publishes.
+wrap_copy() {
+    sed -i 's|^\( *\)\(scripts/publish-hub-alias\.sh --expect-digest "[^"]*"\) \("[^"]*"\) \("[^"]*"\)$|\1\2 \\\n\1  \3 \4|' "$1"
+}
+copy_is_wrapped() {
+    cmds "$1" | grep -E '^[[:space:]]*scripts/publish-hub-alias\.sh --expect-digest "[^"]*" \\$' >/dev/null &&
+        [ "$(copy_lines "$1" | wc -l)" -gt 0 ]
+}
+run "a copy wrapped over two lines is still a publish" 0 wrap_copy "6 published cell(s)" copy_is_wrapped
+
 # 3. The other side of the same claim: the copied cells ARE in the
 #    published set, so removing their install proofs fails. Without the
 #    copy being read as a publish this case would pass, because an

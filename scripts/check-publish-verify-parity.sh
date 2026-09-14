@@ -242,22 +242,22 @@ def is_install(text):
 def copies(text):
     """The match when `text` is a command line PUBLISHING its last operand.
 
-    Three conditions, none of them the name of a tool (#972):
+    Two conditions, neither of them the name of a tool (#972):
 
       1. the line ends in a quoted `<host>/${N}:${T}` operand, preceded
          by whitespace that is itself outside quoting -- so the
          reference is a separate argument and `REF="${N}:${T}"`, which
          has no space before its quote, stays an assignment;
-      2. the line's first word is EXECUTED, not quoted. An advertised
-         copy has its command inside the quotes;
-      3. that first word is not a printing builtin. `echo "cmd ..."
-         "<dest>"` satisfies (1) and (2) and publishes nothing, and
-         nothing about the reference itself can tell the two apart --
-         what differs is whether the process started writes to a
-         registry or to stdout.
+      2. the first word is not a printing builtin. `echo "cmd ..."
+         "<dest>"` satisfies (1) and publishes nothing, and nothing
+         about the reference itself can tell the two apart -- what
+         differs is whether the process started writes to a registry or
+         to stdout.
 
-    (3) is the same judgement the install detection makes when it
-    insists on an unquoted command, one word further left.
+    A quoted command word is deliberately NOT a third condition. A
+    quoted word still executes, so excluding it would only have
+    dropped the continuation lines of a wrapped command, whose last
+    operand is published all the same.
     """
     m = COPY.search(text)
     if m is None:
@@ -265,12 +265,8 @@ def copies(text):
     free = unquoted_offsets(text)
     if m.start() not in free:
         return None
-    body = text.lstrip()
-    if not body:
-        return None
-    if (len(text) - len(body)) not in free:
-        return None
-    if PRINTER.match(body.split()[0]):
+    body = text.split()
+    if body and PRINTER.match(body[0]):
         return None
     return m
 

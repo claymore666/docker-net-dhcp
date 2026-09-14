@@ -150,6 +150,22 @@ stale_release_count() {
 run "a stale github-release count fails" \
     1 stale_release_count none "has 8"
 
+# A page that states NO count is not a page that agrees with the
+# workflow. Deleting the sentence is the obvious way to answer a stale
+# count, and it takes with it the one thing that tells a releaser when
+# the run is complete.
+drop_promote_count() {
+    sed -i 's|only after all eight of the above are green|only after the jobs above are green|' "$1"
+}
+run "a page that states no promote-latest count fails" \
+    1 drop_promote_count none "states no count"
+
+drop_release_count() {
+    sed -i 's|needs the same eight jobs|needs the same jobs|' "$1"
+}
+run "a page that states no github-release count fails" \
+    1 drop_release_count none "states no count"
+
 # The count moves with the workflow, not with the page: adding a proof
 # to promote-latest's needs: makes the page's correct-today number
 # wrong, with no runbook edit.
