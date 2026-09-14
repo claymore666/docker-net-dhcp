@@ -51,8 +51,9 @@ import (
 // own". That reasoning is now rejected at the product level: a machine
 // that is powered off abruptly does not hand its address back either,
 // and the address staying leased until it expires is what a lease IS.
-// The plugin sends no DHCPRELEASE on any path, so what is asserted here
-// is the absence of one.
+// This network does not set release_lease, so the plugin sends no
+// DHCPRELEASE on any path for it (#962), and what is asserted here is
+// the absence of one.
 //
 // The old assertion's premise was not wrong about the cost — the
 // address really is held for the remainder of the lease, and the
@@ -236,8 +237,9 @@ func TestRecovery_DaemonKilled_LeaseIsHeldUntilItExpires(t *testing.T) {
 	// treats as a bug report, not a fix.
 	if got := fixture.CountBridgeLogLines("DHCPRELEASE", macBefore) - releasesBefore; got != 0 {
 		t.Errorf("%d DHCPRELEASE(s) for %s after the daemon was killed, want 0: since #800 "+
-			"nothing this plugin runs releases a lease on any path. The address %s must stay "+
-			"leased until it expires, the same as a machine that was powered off abruptly",
+			"nothing releases a lease on a network that does not set release_lease, and this "+
+			"one does not. The address %s must stay leased until it expires, the same as a "+
+			"machine that was powered off abruptly",
 			got, macBefore, ipBefore)
 	}
 }

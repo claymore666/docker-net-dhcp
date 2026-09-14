@@ -289,8 +289,12 @@ func ipamLiveRecord(rb lease.Rebuilt, networkID string, addr netip.Addr) (lease.
 // gone.
 //
 // The expiry is the honest boundary rather than a timeout picked to
-// feel safe. No DHCPRELEASE is ever sent (D-7), so the server keeps the
-// lease filed against that hardware address until it runs out, and
+// feel safe. No DHCPRELEASE is sent for an ORPHAN (D-7, #962), which is
+// what this paragraph is about: `release_lease=on_stop` releases at
+// Leave and CLOSES the record it released, and a record that reached
+// Leave is by definition not one of the records above. So the server
+// keeps an orphan's lease filed against that hardware address until it
+// runs out, and
 // while it is filed a second endpoint under the same address really
 // would be handed the same lease. When it runs out, so does the reason
 // to refuse. A renewal writes every lease event back to the record
