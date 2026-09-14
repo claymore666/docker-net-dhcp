@@ -934,17 +934,46 @@ printf 'package plugin\n' > "$STANDIN/pkg/plugin/plugin.go"
 cp "$ABS_RATCHET" "$STANDIN/scripts/coverage-ratchet.sh"
 
 # IS THE STAND-IN FAITHFUL? The shipped script, unmodified, is run from
-# both roots over the same fixture and must say the same thing. If the
-# stand-in resolved packages differently, a control's exit 0 would be a
-# property of the root and not of the arm it is supposed to be missing.
-rename_run "$STANDIN/scripts/coverage-ratchet.sh" "$RENAME_LOW"; standin_rc=$?
-cp "$TMP/out" "$TMP/out.standin"
-rename_run "$RATCHET" "$RENAME_LOW"; real_rc=$?
-if [ "$standin_rc" -eq "$real_rc" ] && cmp -s "$TMP/out" "$TMP/out.standin"; then
-    echo "PASS: the stand-in module root answers exactly as the checkout does"
-else
-    echo "FAIL: the stand-in root is not a faithful stand-in (checkout exit $real_rc, stand-in exit $standin_rc)"
-    diff "$TMP/out" "$TMP/out.standin" | sed 's/^/    /'; failures=$((failures + 1))
+# both roots and must say the same thing. If the stand-in resolved
+# packages differently, a control's exit 0 would be a property of the
+# root and not of the arm it is supposed to be missing.
+#
+# TWO FIXTURES, because the thing that could differ is `go list`, and the
+# first fixture never asks it: every row it names is in the percent file,
+# so no row reaches pkg_at_head. The second holds a floor for a package
+# the run did NOT measure, which is the only shape that asks the
+# toolchain whether a package is still there. Without it a stand-in
+# missing the package entirely passes this check, measured.
+STANDIN_RATCHET="$STANDIN/scripts/coverage-ratchet.sh"
+PRESENT_BASE="$TMP/present-base.txt"    # pkg/util is floored and unmeasured
+printf '%s/pkg/util 96.8\n%s/pkg/plugin 89.6\n' "$SELF_NEW" "$SELF_NEW" > "$PRESENT_BASE"
+PRESENT_PCT="$TMP/present-pct.txt"      # ...and only pkg/plugin was measured
+printf '\t%s/pkg/plugin\t\tcoverage: 90.1%% of statements\n' "$SELF_NEW" > "$PRESENT_PCT"
+
+standin_faithful=yes
+for fixture in "$RENAME_LOW|$RENAME_BASE|$RENAME_HEAD" "$PRESENT_PCT|$PRESENT_BASE|$PRESENT_BASE"; do
+    f_pct="${fixture%%|*}"; f_rest="${fixture#*|}"
+    f_base="${f_rest%%|*}"; f_head="${f_rest#*|}"
+    RATCHET_REPORT='' RATCHET_HEAD_BASELINE="$f_head" \
+        bash "$STANDIN_RATCHET" "$f_pct" "$f_base" > "$TMP/out.standin" 2>&1
+    standin_rc=$?
+    RATCHET_REPORT='' RATCHET_HEAD_BASELINE="$f_head" \
+        bash "$RATCHET" "$f_pct" "$f_base" > "$TMP/out" 2>&1
+    real_rc=$?
+    if [ "$standin_rc" -ne "$real_rc" ] || ! cmp -s "$TMP/out" "$TMP/out.standin"; then
+        standin_faithful=no
+        echo "FAIL: the stand-in root is not a faithful stand-in on $(basename "$f_pct")" \
+             "(checkout exit $real_rc, stand-in exit $standin_rc)"
+        diff "$TMP/out" "$TMP/out.standin" | sed 's/^/    /'; failures=$((failures + 1))
+    fi
+done
+# An inert pair of runs would pass this by agreeing on nothing: the
+# second fixture has to have reached the arm that asks `go list`.
+if ! grep -F "$SELF_NEW/pkg/util" "$TMP/out" > /dev/null; then
+    echo "FAIL: the faithfulness fixture never reached a verdict on the unmeasured package"
+    sed 's/^/    /' "$TMP/out"; failures=$((failures + 1))
+elif [ "$standin_faithful" = yes ]; then
+    echo "PASS: the stand-in module root answers exactly as the checkout does, resolution included"
 fi
 
 # THE MAJOR SUFFIX IS DIGITS ONLY, AND THE COST OF FORGETTING THAT IS A
