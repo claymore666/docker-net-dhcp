@@ -1,15 +1,23 @@
 # docker-net-dhcp
 
 A Docker network plugin that gives every container an address from the
-DHCP server your LAN already runs (your router, a Fritz!Box, dnsmasq)
-instead of from Docker's own IPAM, over `bridge`, `macvlan` or `ipvlan`,
-for IPv4 and IPv6. The DHCP exchange runs inside the plugin on the
-project's own engine, the
+DHCP server your LAN already runs (your router, a Fritz!Box, dnsmasq),
+over `bridge`, `macvlan` or `ipvlan`, for IPv4 and IPv6. It runs in two
+shapes: as the network driver beside `--ipam-driver null`, which is all
+three modes, or, from v2.1.0, as the network driver and Docker's IPAM
+driver at once, which puts the leased address into Docker's own address
+management and makes `docker run --ip` and Compose `ipv4_address` work.
+The second shape covers `bridge` and `macvlan` for IPv4: `ipvlan` takes
+`--ipam-driver null`
+([#949](https://github.com/claymore666/docker-net-dhcp/issues/949)) and
+so does IPv6
+([#960](https://github.com/claymore666/docker-net-dhcp/issues/960)). The
+DHCP exchange runs inside the plugin on the project's own engine, the
 [dhcp-golib](https://github.com/claymore666/dhcp-golib) library: there is
 no external DHCP client to install and no client process per container.
 
-!!! note "This documentation is the 2.0 line's"
-    These pages describe the 2.0 build. The snippets below install the
+!!! note "This documentation is the 2.x line's"
+    These pages describe the 2.x build. The snippets below install the
     current release. Pick a v1.x version from the selector for the 1.x
     manual.
 

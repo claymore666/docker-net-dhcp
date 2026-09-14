@@ -1492,9 +1492,9 @@ jobs:
           #    to open with — for v1.4.0, a sentence about the integration
           #    suite's wall clock, with the project unnamed.
           cat > notes.md <<EOF
-          **docker-net-dhcp ${TAG}** — a Docker network plugin that leases
-          container IPs from your LAN's real DHCP server instead of Docker's
-          own IPAM. Bridge, macvlan and ipvlan modes.
+          **docker-net-dhcp ${TAG}**: a Docker network plugin that leases
+          container IPs from the DHCP server your LAN runs. Bridge, macvlan
+          and ipvlan modes, plus an IPAM driver for bridge and macvlan.
 
           EOF
 

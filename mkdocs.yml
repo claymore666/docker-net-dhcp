@@ -1,7 +1,9 @@
 site_name: docker-net-dhcp
 site_description: >-
-  Docker network plugin that leases container IPs from an existing DHCP
-  server — bridge, macvlan, and ipvlan modes.
+  Docker network plugin that leases container IPs from the DHCP server a
+  LAN already runs, in bridge, macvlan and ipvlan modes, as Docker's
+  network driver and, for bridge and macvlan from v2.1.0, as its IPAM
+  driver as well.
 site_url: https://claymore666.github.io/docker-net-dhcp/
 site_author: claymore666
 
