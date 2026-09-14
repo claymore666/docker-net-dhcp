@@ -747,6 +747,207 @@ else
 fi
 /bin/rm -f "$TMP/fakebin/go"
 
+# --- THE RELEASE PR AFTER A MAJOR-VERSION RENAME (#979) ------------------
+#
+# The dev->main release PR carrying a module rename is the shape that
+# turns this gate off. The merge-base blob is MAIN's baseline, spelled
+# without the major; the run's covdata output and the head baseline both
+# carry it. Read a row at a time under its own name, every base row is
+# "gone at head, and gone from the head baseline too": the DROPPED arm,
+# counted as compared, cross-check agreeing, exit 0 over packages nobody
+# compared to any floor. Measured on this repository's own rename before
+# the fix: four DROPPED, "compared 4 of 4", packages at 10.0% against
+# floors of 82.8 to 96.8.
+#
+# BOTH SPELLINGS ARE WRITTEN OUT HERE, deliberately. The script derives
+# the old one by stripping its own major suffix; a test that derived it
+# the same way could not tell a wrong derivation from a right one.
+SELF_OLD=github.com/claymore666/docker-net-dhcp
+SELF_NEW=github.com/claymore666/docker-net-dhcp/v2
+
+RENAME_BASE="$TMP/rename-base.txt"      # main's baseline: the OLD spelling
+RENAME_HEAD="$TMP/rename-head.txt"      # this branch's: the NEW spelling
+cat > "$RENAME_BASE" <<EOF
+$SELF_OLD/pkg/util 96.8
+$SELF_OLD/pkg/plugin 89.6
+EOF
+cat > "$RENAME_HEAD" <<EOF
+$SELF_NEW/pkg/util 96.8
+$SELF_NEW/pkg/plugin 89.6
+EOF
+
+RENAME_LOW="$TMP/rename-low.txt"        # the release measured almost nothing
+RENAME_OK="$TMP/rename-ok.txt"          # the release held its floors
+printf '\t%s/pkg/util\t\tcoverage: 10.0%% of statements\n\t%s/pkg/plugin\t\tcoverage: 10.0%% of statements\n' \
+    "$SELF_NEW" "$SELF_NEW" > "$RENAME_LOW"
+printf '\t%s/pkg/util\t\tcoverage: 97.3%% of statements\n\t%s/pkg/plugin\t\tcoverage: 90.1%% of statements\n' \
+    "$SELF_NEW" "$SELF_NEW" > "$RENAME_OK"
+
+# rename_run <script> <percent-file>
+rename_run() {
+    RATCHET_REPORT='' RATCHET_HEAD_BASELINE="$RENAME_HEAD" \
+        bash "$1" "$2" "$RENAME_BASE" > "$TMP/out" 2>&1
+}
+
+rename_run "$RATCHET" "$RENAME_LOW"; got=$?
+if [ "$got" -eq 1 ] \
+   && grep -F "FAIL  $SELF_NEW/pkg/util: 10.0% is below baseline 96.8%" "$TMP/out" > /dev/null \
+   && grep -F "FAIL  $SELF_NEW/pkg/plugin: 10.0% is below baseline 89.6%" "$TMP/out" > /dev/null; then
+    echo "PASS: a renamed module's floors are compared under the new names"
+else
+    echo "FAIL: the release PR's floors were not compared after the rename (exit $got)"
+    sed 's/^/    /' "$TMP/out"; failures=$((failures + 1))
+fi
+
+# The other direction, so the arm is not simply "fail a renamed release".
+rename_run "$RATCHET" "$RENAME_OK"; got=$?
+if [ "$got" -eq 0 ] \
+   && grep -F "PASS  $SELF_NEW/pkg/util: 97.3% beats baseline 96.8%" "$TMP/out" > /dev/null; then
+    echo "PASS: a renamed module that held its floors still passes"
+else
+    echo "FAIL: a renamed release that held its floors did not pass (exit $got)"
+    sed 's/^/    /' "$TMP/out"; failures=$((failures + 1))
+fi
+
+# The pairing line is what a reader of the log matches an old row to a
+# new one by, and a summary count is true of any two rows.
+if grep -F "RENAMED  $SELF_OLD/pkg/util is $SELF_NEW/pkg/util at head" "$TMP/out" > /dev/null; then
+    echo "PASS: the log names which row moved to which path"
+else
+    echo "FAIL: the rename pairing was not named in the log"
+    sed 's/^/    /' "$TMP/out"; failures=$((failures + 1))
+fi
+
+# A package the rename does not reach is still classified as before:
+# already under the head module, so nothing is re-spelled, and it is
+# genuinely absent. Driven beside the two above so the retry cannot have
+# become "match everything".
+DROP_BASE="$TMP/rename-drop-base.txt"
+DROP_HEAD="$TMP/rename-drop-head.txt"
+cat > "$DROP_BASE" <<EOF
+$SELF_NEW/pkg/util 96.8
+$SELF_NEW/cmd/dhcp-handler 74.0
+EOF
+printf '%s/pkg/util 96.8\n' "$SELF_NEW" > "$DROP_HEAD"
+RATCHET_REPORT='' RATCHET_HEAD_BASELINE="$DROP_HEAD" \
+    bash "$RATCHET" "$RENAME_OK" "$DROP_BASE" > "$TMP/out" 2>&1
+got=$?
+if [ "$got" -eq 0 ] \
+   && grep -F "DROPPED  $SELF_NEW/cmd/dhcp-handler" "$TMP/out" > /dev/null \
+   && ! grep -F "RENAMED  $SELF_NEW/cmd/dhcp-handler" "$TMP/out" > /dev/null; then
+    echo "PASS: a row already under the head module is not re-spelled"
+else
+    echo "FAIL: the retry reached a row it must not (exit $got)"
+    sed 's/^/    /' "$TMP/out"; failures=$((failures + 1))
+fi
+
+# --- A RUN IN WHICH EVERY ROW DROPPED IS NOT A PASS (#979) ---------------
+#
+# DROPPED counts as compared, so "compared N of N" is true whether the
+# floors were held or discharged. One deliberate deletion must not fail a
+# release; a whole baseline going at once is the gate having lost its
+# subject.
+ALLGONE_BASE="$TMP/allgone-base.txt"
+ALLGONE_HEAD="$TMP/allgone-head.txt"
+cat > "$ALLGONE_BASE" <<EOF
+$SELF_NEW/cmd/dhcp-handler 74.0
+$SELF_NEW/pkg/gone-as-well 61.0
+EOF
+printf '# every row went\n' > "$ALLGONE_HEAD"
+RATCHET_REPORT='' RATCHET_HEAD_BASELINE="$ALLGONE_HEAD" \
+    bash "$RATCHET" "$RENAME_OK" "$ALLGONE_BASE" > "$TMP/out" 2>&1
+got=$?
+if [ "$got" -eq 2 ] && grep -F 'Nothing left to ratchet' "$TMP/out" > /dev/null; then
+    echo "PASS: a run in which every row DROPPED is refused"
+else
+    echo "FAIL: an all-dropped run was not refused (exit $got)"
+    sed 's/^/    /' "$TMP/out"; failures=$((failures + 1))
+fi
+
+# AT THE THRESHOLD, and the escape named in the script's comment: one row
+# surviving is one comparison, and that run still passes. Driven so the
+# refusal cannot quietly widen into "any deletion fails a release", which
+# is the state the DROPPED arm exists to replace.
+NEARLY_BASE="$TMP/nearly-base.txt"
+NEARLY_HEAD="$TMP/nearly-head.txt"
+cat > "$NEARLY_BASE" <<EOF
+$SELF_NEW/cmd/dhcp-handler 74.0
+$SELF_NEW/pkg/util 96.8
+EOF
+printf '%s/pkg/util 96.8\n' "$SELF_NEW" > "$NEARLY_HEAD"
+RATCHET_REPORT='' RATCHET_HEAD_BASELINE="$NEARLY_HEAD" \
+    bash "$RATCHET" "$RENAME_OK" "$NEARLY_BASE" > "$TMP/out" 2>&1
+got=$?
+if [ "$got" -eq 0 ] && grep -F "PASS  $SELF_NEW/pkg/util: 97.3%" "$TMP/out" > /dev/null; then
+    echo "PASS: one surviving comparison is still a ratchet"
+else
+    echo "FAIL: the all-dropped refusal fired on a single deletion (exit $got)"
+    sed 's/^/    /' "$TMP/out"; failures=$((failures + 1))
+fi
+
+# --- THE PRE-FIX SCRIPTS, CUT OUT OF THE REAL ONE ------------------------
+#
+# Two surgeries, one per arm, so each is shown to be load-bearing on its
+# own rather than as a pair. Built from $RATCHET itself; a kept copy of
+# the block stops being the subject the moment the script moves on, and
+# each surgery asserts it removed something.
+#
+# THEY LIVE BESIDE THE REAL SCRIPT, not in $TMP, and that is forced.
+# coverage-ratchet.sh derives REPO_ROOT from its own path, and both arms
+# below reach `go list` in that root; run from a temp directory the
+# control probe refuses every classification and the cases measure the
+# refusal instead of the arm. Dot-prefixed so the `test-*.sh` glob in
+# run-gate-selftests.sh cannot pick them up, PID-suffixed so two runs do
+# not collide, and removed by absolute path below.
+SCRIPTS_DIR="$(cd "$(dirname "$RATCHET")" && pwd)"
+PRE_ALL="$SCRIPTS_DIR/.prefix-all-$$.sh"        # neither arm: the script as it stood
+PRE_NOREF="$SCRIPTS_DIR/.prefix-norefusal-$$.sh" # the retry, without the refusal
+python3 - "$RATCHET" "$PRE_ALL" "$PRE_NOREF" <<'SURGERY'
+import sys
+src = open(sys.argv[1]).read()
+
+retry_start = src.index('    # Missing under its own name is not the same as missing.')
+retry_end = src.index("    # The row's identity at head is the renamed one where a rename", retry_start)
+no_retry = src[:retry_start] + src[retry_end:]
+assert no_retry != src, "the retry block is gone from the script: this control is inert"
+no_retry, n = no_retry.replace('    at_head="${renamed:-$pkg}"\n',
+                               '    at_head="$pkg"\n'), None
+assert '${renamed:-$pkg}' not in no_retry, "the renamed identity survived the cut"
+
+ref_start = src.index('if [ "$dropped" -ne 0 ] && [ "$dropped" -eq "$compared" ]; then')
+ref_end = src.index('\nfi\n', ref_start) + len('\nfi\n')
+refusal = src[ref_start:ref_end]
+assert 'Nothing left to ratchet' in refusal, "the surgery cut the wrong block"
+
+open(sys.argv[2], "w").write(no_retry.replace(refusal, ''))
+open(sys.argv[3], "w").write(src.replace(refusal, ''))
+SURGERY
+prefix_built=$?
+
+if [ "$prefix_built" -ne 0 ]; then
+    echo "FAIL: the pre-fix controls could not be built from the real script"
+    failures=$((failures + 1))
+else
+    rename_run "$PRE_ALL" "$RENAME_LOW"; got=$?
+    if [ "$got" -eq 0 ] && grep -F "DROPPED  $SELF_OLD/pkg/util" "$TMP/out" > /dev/null; then
+        echo "PASS: ...and the pre-fix script EXITS 0 on the same release PR (the defect)"
+    else
+        echo "FAIL: the pre-fix control did not reproduce the defect (exit $got)"
+        sed 's/^/    /' "$TMP/out"; failures=$((failures + 1))
+    fi
+
+    RATCHET_REPORT='' RATCHET_HEAD_BASELINE="$ALLGONE_HEAD" \
+        bash "$PRE_NOREF" "$RENAME_OK" "$ALLGONE_BASE" > "$TMP/out" 2>&1
+    got=$?
+    if [ "$got" -eq 0 ]; then
+        echo "PASS: ...and without the refusal an all-dropped run exits 0"
+    else
+        echo "FAIL: the all-dropped pre-fix control did not exit 0 (exit $got)"
+        sed 's/^/    /' "$TMP/out"; failures=$((failures + 1))
+    fi
+fi
+/bin/rm -f "$PRE_ALL" "$PRE_NOREF"
+
 if [ "$failures" -ne 0 ]; then
     echo "$failures ratchet test(s) failed"
     exit 1
