@@ -838,6 +838,574 @@ else
     fails=1
 fi
 
+# --- A PULL REQUEST INTO THE DEFAULT BRANCH (#977) -----------------------
+#
+# The release PR could not be green and leave the default branch green.
+# The workflow is not on the default branch yet, so its entry is
+# required; the merge puts it there, so the same entry is stale one
+# commit later. The v2.1.0 release merge turned this gate red on the
+# default branch for exactly that reason.
+#
+# On a pull request whose base IS the default branch the merge is what
+# makes the workflow reachable, so no entry is required — and an entry
+# that IS there is stale, which is what keeps the default branch green
+# after the merge and puts the pruning in the release PR where the
+# runbook says it is.
+#
+# Its own fixture, and a second one that is a REAL CLONE. The two
+# derivations of "which branch is the default" are available in
+# different places — a hosted runner has the event payload and no
+# `origin/HEAD`, a clone has `origin/HEAD` and no event payload — so
+# each is driven where it exists rather than through a test-only
+# override. The clone also runs with NO `BASE_REF` set at all, which is
+# how the gate runs in CI.
+REPO6="$TMP/repo6"
+mkdir -p "$REPO6/.github/workflows"
+git -C "$REPO6" init -q -b main
+git -C "$REPO6" config user.email t@example.com
+git -C "$REPO6" config user.name t
+git -C "$REPO6" config commit.gpgsign false
+dispatchable onmain6 > "$REPO6/.github/workflows/onmain6.yml"
+git -C "$REPO6" add -A && git -C "$REPO6" commit -qm base
+git -C "$REPO6" checkout -q -b work
+dispatchable new6 > "$REPO6/.github/workflows/new6.yml"
+
+EVENT_MAIN="$TMP/event-main.json"
+printf '{"repository":{"default_branch":"main"}}\n' > "$EVENT_MAIN"
+EVENT_OTHER="$TMP/event-other.json"
+printf '{"repository":{"default_branch":"release"}}\n' > "$EVENT_OTHER"
+
+# <event-name> <pr base> [event payload] [BASE_REF]
+verdict6() {
+    ( cd "$REPO6" \
+      && GITHUB_EVENT_NAME="$1" GITHUB_BASE_REF="$2" \
+         GITHUB_EVENT_PATH="${3:-}" BASE_REF="${4:-main}" \
+         bash "$CHECK" >"$TMP/out6" 2>&1 ) \
+        && echo pass || echo "rc$?"
+}
+
+# The pre-#977 verdict, with no event environment at all. Every case
+# below is one variable away from this line, so it is the control that
+# says what the exemption actually changed.
+check "with no event environment an absent workflow still fails" \
+    rc1 "$(verdict6 '' '')"
+
+check "a pull request into the default branch does not need an entry (#977)" \
+    pass "$(verdict6 pull_request main "$EVENT_MAIN")"
+grep -F 'merging this pull request into main' "$TMP/out6" >/dev/null \
+    && echo "PASS: and the PASS line says the merge is what makes it reachable" \
+    || { echo "FAIL: the exemption's PASS line does not name the merge"; fails=1; }
+grep -F 'are on main' "$TMP/out6" >/dev/null \
+    && { echo "FAIL: the PASS line claims the workflow is already on the default branch"
+         fails=1; } \
+    || echo "PASS: and it does not claim the workflow is already there"
+
+# ORTHOGONALITY, the same bargain the *.yml scan and the comment strip
+# above make: a case that merely passes proves nothing unless the gate
+# WITHOUT the exemption is shown to reject this fixture. `cmp` is what
+# says the sed matched — an edit that matched nothing would leave a copy
+# that passes its own assertion while testing the unmodified gate.
+noexempt="$TMP/noexempt.sh"
+sed -e 's/ || \[ "\$MERGES_INTO_DEFAULT" -eq 1 \]//' "$CHECK" > "$noexempt"
+if cmp -s "$CHECK" "$noexempt"; then
+    echo "FAIL: the exemption could not be removed from the copy, so the case above"
+    echo "      would be green whether or not the exemption exists"
+    fails=1
+elif ( cd "$REPO6" && GITHUB_EVENT_NAME=pull_request GITHUB_BASE_REF=main \
+        GITHUB_EVENT_PATH="$EVENT_MAIN" BASE_REF=main bash "$noexempt" \
+        >/dev/null 2>&1 ); then
+    echo "FAIL: the gate without the exemption also passed the release-PR fixture"
+    fails=1
+else
+    echo "PASS: the gate without the exemption rejects the same fixture (orthogonality confirmed)"
+fi
+rm -f "$TMP/noexempt.sh"
+
+# THE CONTROLS. Each one is the exemption's own condition, removed.
+check "a pull request into dev keeps today's verdict" \
+    rc1 "$(verdict6 pull_request dev "$EVENT_MAIN")"
+check "a push keeps today's verdict even with a base ref in the environment" \
+    rc1 "$(verdict6 push main "$EVENT_MAIN")"
+
+# ...and the base is compared against a DERIVED default branch, never
+# the string `main`. Here the repository's default branch is `release`,
+# so a pull request into `main` is an ordinary pull request.
+check "a pull request into main is NOT exempt when main is not the default branch" \
+    rc1 "$(verdict6 pull_request main "$EVENT_OTHER")"
+
+# AN ENTRY IS STALE ON THE PULL REQUEST, and that is the half that keeps
+# the default branch green after the merge. Without it the release PR
+# passes while carrying the entry that turns the gate red one commit
+# later, which is #977 in the other direction.
+{ printf '# pending\n'; entry .github/workflows/new6.yml; } \
+    > "$REPO6/.github/dispatch-pending.txt"
+check "an entry for a workflow this pull request merges to the default branch fails" \
+    rc1 "$(verdict6 pull_request main "$EVENT_MAIN")"
+grep -F 'merging this pull request puts it on main' "$TMP/out6" >/dev/null \
+    && echo "PASS: and the message says the merge is what makes the entry stale" \
+    || { echo "FAIL: the stale-on-merge message is missing"; fails=1; }
+
+# The same entry on a pull request into dev is the legitimate case it
+# has always been. One variable moved: the base.
+check "the same entry on a pull request into dev passes (control)" \
+    pass "$(verdict6 pull_request dev "$EVENT_MAIN")"
+
+# The pre-existing stale rule is not suspended by the exemption: a
+# workflow that IS on the default branch and declared still fails, with
+# the message it has always had.
+{ printf '# pending\n'; entry .github/workflows/onmain6.yml; } \
+    > "$REPO6/.github/dispatch-pending.txt"
+check "an entry for a workflow already on the default branch still fails under the exemption" \
+    rc1 "$(verdict6 pull_request main "$EVENT_MAIN")"
+grep -F 'stopped meaning anything' "$TMP/out6" >/dev/null \
+    && echo "PASS: and it is the stale message, not the merge one" \
+    || { echo "FAIL: the stale-entry message was replaced under the exemption"; fails=1; }
+rm -f "$REPO6/.github/dispatch-pending.txt"
+
+# THE COMPARISON REF IS THE THIRD CONDITION. Pointed at a branch that is
+# not the default one, the gate must not answer "reachable" about a
+# branch nobody asked about -- and it must say why it declined, because
+# a fix that silently does nothing on the one run it was written for
+# looks exactly like a fix that works.
+check "the exemption is refused when the gate is pointed at another branch" \
+    rc1 "$(verdict6 pull_request main "$EVENT_MAIN" work)"
+grep -F 'was NOT applied' "$TMP/out6" >/dev/null \
+    && echo "PASS: and declining is printed rather than silent" \
+    || { echo "FAIL: the exemption was declined silently"; fails=1; }
+
+# --- the second derivation, in a REAL CLONE, with no BASE_REF ----------
+#
+# A clone has `origin/HEAD` and no event payload; a hosted runner has the
+# event payload and no `origin/HEAD`. Driving only the first would leave
+# the route CI actually takes unmeasured, and vice versa. This fixture
+# also runs with no `BASE_REF` set at all, so the default spelling
+# `origin/main` is the one being compared with the derived branch name --
+# the comparison that makes the exemption inert if it is written against
+# the wrong spelling.
+REPO7="$TMP/repo7"
+git clone -q "$REPO6" "$REPO7"
+# repo6 is checked out on its work branch, so the clone's origin/HEAD
+# follows THAT, not the default branch. Set it to what a clone of a
+# repository sitting on its default branch would have -- otherwise this
+# fixture derives `work` as the default branch and the case below fails
+# for a reason that has nothing to do with the gate.
+git -C "$REPO7" remote set-head origin main
+git -C "$REPO7" config user.email t@example.com
+git -C "$REPO7" config user.name t
+git -C "$REPO7" config commit.gpgsign false
+git -C "$REPO7" checkout -q -b work7
+dispatchable new7 > "$REPO7/.github/workflows/new7.yml"
+
+verdict7() {
+    ( cd "$REPO7" && GITHUB_EVENT_NAME="$1" GITHUB_BASE_REF="$2" \
+        GITHUB_EVENT_PATH="${3:-}" bash "$CHECK" >"$TMP/out7" 2>&1 ) \
+        && echo pass || echo "rc$?"
+}
+
+check "a clone with no event payload still fails an absent workflow" \
+    rc1 "$(verdict7 '' '')"
+check "origin/HEAD is enough to derive the default branch (#977)" \
+    pass "$(verdict7 pull_request main)"
+check "and a pull request into dev is still refused in the clone" \
+    rc1 "$(verdict7 pull_request dev)"
+
+# The control FIRST: the same clone with an event payload that AGREES
+# with origin/HEAD is exempt. Without it the disagreement case below
+# could be failing on the mere presence of a payload.
+check "an event payload that agrees with origin/HEAD is exempt (control)" \
+    pass "$(verdict7 pull_request main "$EVENT_MAIN")"
+
+# BOTH SOURCES PRESENT AND DISAGREEING. One fact derived twice with two
+# answers: the exemption is refused rather than letting whichever
+# derivation answers first decide. Driven where it CHANGES THE VERDICT
+# rather than only the message -- origin/HEAD is moved off the branch
+# the payload names, and everything else in the run is left exactly as
+# the passing control above. The dangling target is deliberate: this is
+# about which answer the gate trusts, not about what the ref resolves
+# to.
+git -C "$REPO7" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/elsewhere
+check "two sources that disagree about the default branch refuse the exemption" \
+    rc1 "$(verdict7 pull_request main "$EVENT_MAIN")"
+grep -F 'origin/HEAD says' "$TMP/out7" >/dev/null \
+    && echo "PASS: and both answers are named" \
+    || { echo "FAIL: the disagreement is not reported"; fails=1; }
+
+# ...and putting it back restores the control, so the case above turned
+# on the disagreement and nothing else.
+git -C "$REPO7" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main
+check "restoring origin/HEAD restores the exemption (control)" \
+    pass "$(verdict7 pull_request main "$EVENT_MAIN")"
+
+# --- THE SHAPE A HOSTED RUNNER IS IN (#977) -----------------------------
+#
+# Neither fixture above is what CI looks like. actions/checkout fetches
+# ONE ref, so `origin/main` is not present and `origin/HEAD` does not
+# exist; the gate's own fallback then fetches the default branch and
+# REWRITES `BASE_REF` to `FETCH_HEAD` before any of this is decided. An
+# exemption written against the rewritten value is inert on every hosted
+# run — green suite, green fixtures, and the release PR red exactly as
+# before, discovered at the next release.
+#
+# So: a clone with `origin/main` and `origin/HEAD` removed, the event
+# payload as the only derivation, and no `BASE_REF` override. The remote
+# is a path, so the gate's fetch succeeds the way it does in CI.
+REPO8="$TMP/repo8"
+git clone -q "$REPO6" "$REPO8"
+git -C "$REPO8" config user.email t@example.com
+git -C "$REPO8" config user.name t
+git -C "$REPO8" config commit.gpgsign false
+git -C "$REPO8" checkout -q -b work8
+git -C "$REPO8" symbolic-ref --delete refs/remotes/origin/HEAD
+git -C "$REPO8" update-ref -d refs/remotes/origin/main
+dispatchable new8 > "$REPO8/.github/workflows/new8.yml"
+
+# THE PROPERTY SURVIVES EXACTLY ONE RUN UNLESS IT IS RESTORED. The
+# gate's fallback fetches the branch from a configured remote, and git
+# opportunistically re-creates `refs/remotes/origin/main` while doing
+# it. The first case below therefore left the fixture identical to the
+# two above, and the mutant that reads BASE_REF after the rewrite
+# SURVIVED against it -- measured, not foreseen. So the ref is removed
+# before every case and its absence is a verdict of its own.
+verdict8() {
+    git -C "$REPO8" update-ref -d refs/remotes/origin/main
+    if ( cd "$REPO8" && git rev-parse --verify --quiet origin/main >/dev/null ); then
+        echo "fixture-has-origin-main"
+        return
+    fi
+    ( cd "$REPO8" && GITHUB_EVENT_NAME="$1" GITHUB_BASE_REF="$2" \
+        GITHUB_EVENT_PATH="${3:-}" bash "$CHECK" >"$TMP/out8" 2>&1 ) \
+        && echo pass || echo "rc$?"
+}
+
+check "the fetched default branch still fails an absent workflow on a push" \
+    rc1 "$(verdict8 push '')"
+# ...and that run is the proof the rewrite happened: the gate names the
+# ref it ended up comparing against. Without this the whole block could
+# be running against `origin/main` and testing nothing new.
+grep -F 'is not on FETCH_HEAD' "$TMP/out8" >/dev/null \
+    && echo "PASS: and the comparison ref was rewritten to FETCH_HEAD, as on a runner" \
+    || { echo "FAIL: BASE_REF was not rewritten, so this fixture is not the CI shape"
+         fails=1; }
+
+check "a release PR is exempt on a runner that has to fetch the default branch" \
+    pass "$(verdict8 pull_request main "$EVENT_MAIN")"
+check "and a pull request into dev is still refused there" \
+    rc1 "$(verdict8 pull_request dev "$EVENT_MAIN")"
+
+# --- THE TWO ARMS THE #977 CASES LEFT UNDRIVEN --------------------------
+#
+# Both were correct when driven by hand and asserted by nothing, so
+# deleting either left the suite green.
+#
+# ARM ONE: a pull request into the default branch where NEITHER
+# derivation answers. REPO8 has no `origin/HEAD`; run it with no event
+# payload either and the gate has nothing to derive the default branch
+# from. It must decline in words and fall back to the push verdict.
+check "a pull request with neither derivation available is not exempted" \
+    rc1 "$(verdict8 pull_request main '')"
+grep -F 'could not be derived' "$TMP/out8" >/dev/null \
+    && echo "PASS: and the reason names the missing derivations" \
+    || { echo "FAIL: the no-derivation decline printed no reason"; fails=1; }
+
+# ARM TWO: `pull_request_target` is in the exemption's domain beside
+# `pull_request`. Inert in this repository today, and a second event
+# class that nothing drove: removing it from the case list left the
+# suite green.
+check "pull_request_target into the default branch is exempt too" \
+    pass "$(verdict6 pull_request_target main "$EVENT_MAIN")"
+check "pull_request_target into dev keeps today's verdict (control)" \
+    rc1 "$(verdict6 pull_request_target dev "$EVENT_MAIN")"
+
+# --- THE RELEASE ROUTE, COMPOSED ON ONE LEDGER (#977 round 1) -----------
+#
+# Each half of the release route passed in isolation while the route as
+# a whole was impassable. The exemption is keyed on a pull request into
+# the DEFAULT branch, but a commit only reaches the release pull request
+# by being on `dev` first, and the runbook's route onto `dev` is step 5,
+# `release/vX.Y.Z` -> `dev`. That pull request removes the entry, gets
+# no exemption, and goes red; so does every pull request into `dev`
+# until the release merges, because they are tested as the merge product
+# and `dev` already carries the removal.
+#
+# So this walks ONE ledger through the whole runbook route and asserts
+# the verdict at every hop. A fixture per hop cannot see this: the
+# failure is the composition.
+REPO9="$TMP/repo9"
+mkdir -p "$REPO9/.github/workflows"
+git -C "$REPO9" init -q -b main
+git -C "$REPO9" config user.email t@example.com
+git -C "$REPO9" config user.name t
+git -C "$REPO9" config commit.gpgsign false
+
+# The published-image pin is the one fact that says which version a tree
+# is, read the same way on both sides (scripts/bump-version.sh rewrites
+# it at runbook step 2).
+printf 'docker plugin install ghcr.io/claymore666/docker-net-dhcp:v9.8.0\n' \
+    > "$REPO9/README.md"
+dispatchable onmain9 > "$REPO9/.github/workflows/onmain9.yml"
+git -C "$REPO9" add -A && git -C "$REPO9" commit -qm "v9.8.0, released"
+
+# Mid-cycle: a new dispatchable workflow merges to dev, declared.
+git -C "$REPO9" checkout -q -b dev
+dispatchable new9 > "$REPO9/.github/workflows/new9.yml"
+{ printf '# pending\n'; entry .github/workflows/new9.yml; } \
+    > "$REPO9/.github/dispatch-pending.txt"
+git -C "$REPO9" add -A && git -C "$REPO9" commit -qm "new9, declared"
+
+# <event-name> <pr base>
+verdict9() {
+    ( cd "$REPO9" \
+      && GITHUB_EVENT_NAME="$1" GITHUB_BASE_REF="$2" \
+         GITHUB_EVENT_PATH="$EVENT_MAIN" BASE_REF=main \
+         bash "$CHECK" >"$TMP/out9" 2>&1 ) \
+        && echo pass || echo "rc$?"
+}
+
+check "hop 1: mid-cycle push to dev with the entry present passes" \
+    pass "$(verdict9 push '')"
+
+check "hop 2: the release PR into main with the entry still present is stale" \
+    rc1 "$(verdict9 pull_request main)"
+grep -F 'Remove it here' "$TMP/out9" >/dev/null \
+    && echo "PASS: and it says to remove the entry in that pull request" \
+    || { echo "FAIL: hop 2 did not name the pull request as the place to remove it"
+         fails=1; }
+
+# THE CONTROL FOR HOP 3, TAKEN FIRST. The removal alone, with no version
+# bump, is an ordinary mid-cycle prune of a live entry and must still
+# fail. Without this line hop 3 would only measure "a PR into dev with
+# no entry passes", which would be the gate deleted.
+git -C "$REPO9" checkout -q -b nobump9 dev
+printf '# pending\n' > "$REPO9/.github/dispatch-pending.txt"
+check "hop 3 control: removing the entry with no release in flight still fails" \
+    rc1 "$(verdict9 pull_request dev)"
+git -C "$REPO9" checkout -q -- .github/dispatch-pending.txt
+
+# HOP 3, runbook step 5: `release/v9.9.0` -> `dev`, carrying the version
+# bump and the removal. This is the pull request that was red.
+git -C "$REPO9" checkout -q -b release/v9.9.0 dev
+sed -i 's/v9\.8\.0/v9.9.0/' "$REPO9/README.md"
+printf '# pending\n' > "$REPO9/.github/dispatch-pending.txt"
+git -C "$REPO9" add -A && git -C "$REPO9" commit -qm "release v9.9.0: bump pins, prune the ledger"
+check "hop 3: the release branch into dev, carrying the removal, passes" \
+    pass "$(verdict9 pull_request dev)"
+grep -F 'one release step behind it' "$TMP/out9" >/dev/null \
+    && echo "PASS: and it says what it compared, naming the step" \
+    || { echo "FAIL: hop 3 passed without naming the pin comparison"; fails=1; }
+grep -F 'v9.9.0' "$TMP/out9" >/dev/null && grep -F 'v9.8.0' "$TMP/out9" >/dev/null \
+    && echo "PASS: and both pinned versions are printed" \
+    || { echo "FAIL: the pin note does not name the two versions"; fails=1; }
+
+# EVERY LINE THE RUN PRINTS MUST BE TRUE OF WHAT IT DERIVED. The same
+# bargain as the merging line's negative assertion above: the summary
+# must not describe a suspended workflow with the sentence written for a
+# declared one, and the ledger here holds no entry at all.
+grep -F 'declared in .github/dispatch-pending.txt' "$TMP/out9" >/dev/null \
+    && { echo "FAIL: a suspended workflow is reported as declared, with an empty ledger"
+         fails=1; } \
+    || echo "PASS: and a suspended workflow is not reported as declared"
+grep -F 'reachable on' "$TMP/out9" >/dev/null \
+    && { echo "FAIL: the summary claims a suspended workflow is reachable on the default branch"
+         fails=1; } \
+    || echo "PASS: and it does not claim the suspended workflow is reachable"
+grep -F 'suspended by the pin comparison above' "$TMP/out9" >/dev/null \
+    && echo "PASS: and the summary names the suspension as the reason" \
+    || { echo "FAIL: the summary does not say why the workflow is not a finding"; fails=1; }
+
+# HOP 4: that merges to dev. Nothing is a pull request now, and the push
+# lane on dev has to stay green for the length of the release.
+git -C "$REPO9" checkout -q dev
+git -C "$REPO9" merge -q --ff-only release/v9.9.0
+check "hop 4: the push lane on dev stays green while the release is in flight" \
+    pass "$(verdict9 push '')"
+
+# HOP 5: an ordinary pull request into dev during the release window. It
+# is tested as the merge product, so it carries dev's removal without
+# having made it. This is the one that blocks other people's work.
+git -C "$REPO9" checkout -q -b feat9 dev
+printf 'unrelated\n' > "$REPO9/feature.txt"
+git -C "$REPO9" add -A && git -C "$REPO9" commit -qm "an unrelated change"
+check "hop 5: an unrelated pull request into dev during the window passes" \
+    pass "$(verdict9 pull_request dev)"
+git -C "$REPO9" checkout -q dev
+
+# TWO PINS ARE NOT A VERSION. The suspension turns on ONE fact read the
+# same way on both sides, so a tree that pins two different versions has
+# not said which it is, and cannot-tell is not in flight. Without this
+# case the uniqueness requirement can be dropped and the suite stays
+# green, which would let a half-bumped tree buy the suspension.
+git -C "$REPO9" checkout -q -b twopins9 dev
+printf 'docker plugin install ghcr.io/claymore666/docker-net-dhcp:v9.9.0\nand ghcr.io/other/docker-net-dhcp:v9.7.0\n' \
+    > "$REPO9/README.md"
+check "a tree pinning two different versions gets no suspension" \
+    rc1 "$(verdict9 pull_request dev)"
+git -C "$REPO9" checkout -q dev
+git -C "$REPO9" checkout -q -- README.md
+
+# HOP 6: runbook step 6, the release pull request itself, at that head.
+check "hop 6: the release pull request into main passes with the entry gone" \
+    pass "$(verdict9 pull_request main)"
+
+# HOP 7: it merges. The default branch now has the workflow and the two
+# versions agree, so the suspension is OVER and the gate is live again.
+git -C "$REPO9" checkout -q main
+git -C "$REPO9" merge -q --ff-only dev
+check "hop 7: the default branch is green one commit after the merge" \
+    pass "$(verdict9 push '')"
+grep -F 'is suspended for' "$TMP/out9" >/dev/null \
+    && { echo "FAIL: the suspension is still on after the release merged"; fails=1; } \
+    || echo "PASS: and the suspension is over, because the two versions agree again"
+
+# HOP 7b AND 7c: THE GAP BETWEEN RUNBOOK STEPS 8 AND 11 (#977 round 2,
+# F5). The release pull request merging is step 8; `dev` is
+# fast-forwarded to `main` at step 11, and the two are not the same
+# moment. In between, the default branch carries the merge commit and
+# `dev` does not, with identical trees. Collapsing the two into one
+# fast-forward, as the route above did, means no run is ever measured in
+# that gap.
+git -C "$REPO9" checkout -q main
+git -C "$REPO9" commit -q --allow-empty -m "Merge pull request #999 from claymore666/dev"
+git -C "$REPO9" checkout -q dev
+check "hop 7b: a push on dev in the gap between the merge and the fast-forward" \
+    pass "$(verdict9 push '')"
+git -C "$REPO9" merge -q --ff-only main
+check "hop 7c: and after the fast-forward at step 11" \
+    pass "$(verdict9 push '')"
+git -C "$REPO9" checkout -q main
+
+# BEHIND IS NOT IN FLIGHT. The comparison is strictly newer, not
+# different: a branch that has not been back-merged pins an OLDER
+# version than the default branch, and reading that as a release in
+# flight would hand the suspension to every stale branch in the
+# repository, permanently.
+git -C "$REPO9" checkout -q -b behind9 main
+sed -i 's/v9\.9\.0/v9.8.0/' "$REPO9/README.md"
+dispatchable behindnew9 > "$REPO9/.github/workflows/behindnew9.yml"
+check "a branch pinning an OLDER version than the default branch is not in flight" \
+    rc1 "$(verdict9 pull_request dev)"
+git -C "$REPO9" checkout -q main
+git -C "$REPO9" checkout -q -- README.md
+rm -f "$REPO9/.github/workflows/behindnew9.yml"
+
+# ...and the gate is not merely quiet: a new undeclared workflow on the
+# post-release tree fails again. A suspension that never lifts is the
+# gate deleted, and nothing above would have noticed.
+git -C "$REPO9" checkout -q -b after9 main
+dispatchable later9 > "$REPO9/.github/workflows/later9.yml"
+check "hop 8: an undeclared workflow after the release fails again" \
+    rc1 "$(verdict9 pull_request dev)"
+
+# CANNOT TELL ON THE OTHER SIDE EITHER. The uniqueness requirement is
+# read on BOTH sides, and only the default-branch side discriminates:
+# with two pins in the tree the newest-of-both comparison already fails,
+# so a fixture that half-bumps the TREE cannot tell the requirement from
+# its absence. Half-bump the DEFAULT BRANCH instead and the difference
+# is visible -- the tree pins one newer version, and without the
+# requirement that reads as a release in flight.
+git -C "$REPO9" checkout -q main
+printf 'docker plugin install ghcr.io/claymore666/docker-net-dhcp:v9.9.0\nand ghcr.io/other/docker-net-dhcp:v9.7.0\n' \
+    > "$REPO9/README.md"
+git -C "$REPO9" commit -q -am "main: two disagreeing pins"
+git -C "$REPO9" checkout -q -b halfbumped9 main
+printf 'docker plugin install ghcr.io/claymore666/docker-net-dhcp:v10.0.0\n' \
+    > "$REPO9/README.md"
+dispatchable later10 > "$REPO9/.github/workflows/later10.yml"
+check "a default branch pinning two different versions gives no suspension either" \
+    rc1 "$(verdict9 pull_request dev)"
+
+# --- WHAT THE PIN COMPARISON DOES NOT KNOW (#977 round 2) --------------
+#
+# The suspension is derived from two version pins and nothing else. Three
+# things follow, and each of them was true and unobserved: the gate
+# cannot tell a release from a bare pin bump (F2), a workflow merged
+# undeclared while the pins differ is missed for as long as they differ
+# (F3), and a release that is parked leaves the pins differing forever
+# (F4). Its own fixture, because each of the three has to be driven with
+# the window held in a state the composed route never sits in.
+REPO10="$TMP/repo10"
+mkdir -p "$REPO10/.github/workflows"
+git -C "$REPO10" init -q -b main
+git -C "$REPO10" config user.email t@example.com
+git -C "$REPO10" config user.name t
+git -C "$REPO10" config commit.gpgsign false
+printf 'docker plugin install ghcr.io/claymore666/docker-net-dhcp:v9.8.0\n' \
+    > "$REPO10/README.md"
+dispatchable onmain10 > "$REPO10/.github/workflows/onmain10.yml"
+printf '# pending\n' > "$REPO10/.github/dispatch-pending.txt"
+git -C "$REPO10" add -A && git -C "$REPO10" commit -qm "v9.8.0, released"
+
+verdict10() {
+    ( cd "$REPO10" \
+      && GITHUB_EVENT_NAME="$1" GITHUB_BASE_REF="$2" \
+         GITHUB_EVENT_PATH="$EVENT_MAIN" BASE_REF=main \
+         bash "$CHECK" >"$TMP/out10" 2>&1 ) \
+        && echo pass || echo "rc$?"
+}
+
+# F2. A BARE PIN BUMP IS NOT A RELEASE, and this run has no way to know
+# the difference: no release branch, no ledger entry was ever removed
+# here, and no release pull request exists. The suspension still applies,
+# because the pins are what it reads. What must NOT happen is the run
+# asserting the rest of that story as though it had checked it.
+git -C "$REPO10" checkout -q -b bump10 main
+sed -i 's/v9\.8\.0/v9.9.0/' "$REPO10/README.md"
+dispatchable bumped10 > "$REPO10/.github/workflows/bumped10.yml"
+check "a bare pin bump with no release suspends the finding" \
+    pass "$(verdict10 pull_request dev)"
+grep -F 'WHAT THIS RUN CHECKED IS THE TWO PINS, AND NOTHING ELSE' "$TMP/out10" >/dev/null \
+    && echo "PASS: and the run says the pins are all it checked" \
+    || { echo "FAIL: the suspension does not say what it was derived from"; fails=1; }
+for claim in \
+    'Their ledger entries were removed on the release branch' \
+    'a release is in flight'
+do
+    grep -F "$claim" "$TMP/out10" >/dev/null \
+        && { echo "FAIL: the run asserts '$claim', which it never derived"; fails=1; } \
+        || echo "PASS: and it does not assert '$claim'"
+done
+grep -F 'cannot tell a release from a bare pin bump' "$TMP/out10" >/dev/null \
+    && echo "PASS: and the false-positive direction is named in the output" \
+    || { echo "FAIL: the bump-without-a-release direction is not stated"; fails=1; }
+
+# F3. THE STATED BOUND, CARRIED BY A REAL WORKFLOW. `bumped10` is a
+# dispatchable workflow that was never declared, and while the pins
+# differ it is not a finding. The bound says it is missed until they
+# agree again, so the same workflow is put through the closing of the
+# window.
+git -C "$REPO10" checkout -q main
+git -C "$REPO10" merge -q --no-ff -m "the release lands without bumped10" \
+    --strategy=ours bump10
+sed -i 's/v9\.8\.0/v9.9.0/' "$REPO10/README.md"
+git -C "$REPO10" commit -q -am "v9.9.0, released"
+git -C "$REPO10" checkout -q bump10
+check "the same undeclared workflow is caught once the pins agree again" \
+    rc1 "$(verdict10 pull_request dev)"
+grep -F 'bumped10.yml' "$TMP/out10" >/dev/null \
+    && echo "PASS: and the finding names the workflow the window was hiding" \
+    || { echo "FAIL: the workflow carried through the window is not named"; fails=1; }
+
+# F4. THE SUSPENSION EXPIRES. A release parked after runbook step 5
+# leaves the pins differing with nothing finishing it, and a suspension
+# that lasts as long as that is the bare entry the ledger's own header
+# forbids. A release moves the version one step, so two steps is the
+# measurement that says the first one never landed.
+git -C "$REPO10" checkout -q -b parked10 main
+dispatchable parked10wf > "$REPO10/.github/workflows/parked10wf.yml"
+sed -i 's/v9\.9\.0/v9.11.0/' "$REPO10/README.md"
+check "a tree two release steps ahead has an expired suspension, not a wider one" \
+    rc1 "$(verdict10 pull_request dev)"
+grep -F 'more than one release step' "$TMP/out10" >/dev/null \
+    && echo "PASS: and the run says the suspension expired rather than never applying" \
+    || { echo "FAIL: the expiry is not explained where it bites"; fails=1; }
+
+# ...and the preservation control, because a red that only measures
+# "hard" proves nothing: ONE step ahead on the same fixture, same
+# workflow, same ledger, passes. Without it the case above would be
+# satisfied by a gate that had stopped suspending anything.
+sed -i 's/v9\.11\.0/v9.10.0/' "$REPO10/README.md"
+check "one step ahead on the same fixture is still suspended (control)" \
+    pass "$(verdict10 pull_request dev)"
+
 # --- the real repository ------------------------------------------------
 # The shipped state must satisfy its own gate.
 real=$( cd "$(dirname "$CHECK")/.." && bash "$CHECK" >/dev/null 2>&1 && echo pass || echo "rc$?" )
