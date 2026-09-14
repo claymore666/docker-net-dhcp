@@ -851,88 +851,88 @@ has to be true.
    git tag -s vX.Y.Z -m "vX.Y.Z: <one-liner>" &&   # signed (#175)
    git push origin vX.Y.Z
    ```
-   Use `-s` (signed) so the release tag shows **Verified** on GitHub;
-   the dev box has `tag.gpgsign=true` so `-a` would also sign, but spell
-   it out so it holds from any checkout. Confirm with `git tag -v
-   vX.Y.Z` (or the green "Verified" on the tag page). The workflow fires
-   on `tags: v*`. Watch it at
-   <https://github.com/claymore666/docker-net-dhcp/actions/workflows/release.yml>.
-   Expected steps, under the names the run shows. Tag resolution is its
-   own job: **resolve** runs first and has one step, *Resolve release
-   tag*; a releaser watching the run sees two job rows. The **release**
-   job then runs, in this order: checkout → setup-go → Log in to GHCR →
-   Log in to Docker Hub → **Both registries, or say why not** → Push to
-   GHCR → Push to Docker Hub (or skip) → Sync Docker Hub description
-   from README (or skip) → **Sync the Hub alias description from
-   README** (or skip) → Install cosign → **Record and gate the cosign
-   version** → **Sign published images (cosign keyless)** → Install oras
-   → **Publish the same manifest under the Hub alias** (or skip) →
-   Install syft → **Generate SBOM (SPDX + CycloneDX)** → **Package and
-   sign release artifact** → **Attest release-artifact provenance** →
-   **Attest image provenance (GHCR)** → **Check attestation parity
-   across registries** → **Upload signed artifacts for the release
-   job** → Workflow summary.
+    Use `-s` (signed) so the release tag shows **Verified** on GitHub;
+    the dev box has `tag.gpgsign=true` so `-a` would also sign, but spell
+    it out so it holds from any checkout. Confirm with `git tag -v
+    vX.Y.Z` (or the green "Verified" on the tag page). The workflow fires
+    on `tags: v*`. Watch it at
+    <https://github.com/claymore666/docker-net-dhcp/actions/workflows/release.yml>.
+    Expected steps, under the names the run shows. Tag resolution is its
+    own job: **resolve** runs first and has one step, *Resolve release
+    tag*; a releaser watching the run sees two job rows. The **release**
+    job then runs, in this order: checkout → setup-go → Log in to GHCR →
+    Log in to Docker Hub → **Both registries, or say why not** → Push to
+    GHCR → Push to Docker Hub (or skip) → Sync Docker Hub description
+    from README (or skip) → **Sync the Hub alias description from
+    README** (or skip) → Install cosign → **Record and gate the cosign
+    version** → **Sign published images (cosign keyless)** → Install oras
+    → **Publish the same manifest under the Hub alias** (or skip) →
+    Install syft → **Generate SBOM (SPDX + CycloneDX)** → **Package and
+    sign release artifact** → **Attest release-artifact provenance** →
+    **Attest image provenance (GHCR)** → **Check attestation parity
+    across registries** → **Upload signed artifacts for the release
+    job** → Workflow summary.
 
-   *Publish the same manifest under the Hub alias* runs
-   [`scripts/publish-hub-alias.sh`](https://github.com/claymore666/docker-net-dhcp/blob/main/scripts/publish-hub-alias.sh),
-   which copies the signed manifest and its referrers with `oras cp -r`,
-   re-reads the digest through the alias name, refuses anything that is
-   not the digest just signed, and verifies the signature under the
-   alias. It comes **after** signing on purpose: the alias is the same
-   manifest, not a second build (#267). The two Hub description steps
-   are separate because the action PATCHes one repository at a time.
+    *Publish the same manifest under the Hub alias* runs
+    [`scripts/publish-hub-alias.sh`](https://github.com/claymore666/docker-net-dhcp/blob/main/scripts/publish-hub-alias.sh),
+    which copies the signed manifest and its referrers with `oras cp -r`,
+    re-reads the digest through the alias name, refuses anything that is
+    not the digest just signed, and verifies the signature under the
+    alias. It comes **after** signing on purpose: the alias is the same
+    manifest, not a second build (#267). The two Hub description steps
+    are separate because the action PATCHes one repository at a time.
 
-   Since v1.7.0 the run carries a parallel arm64 chain (#507):
-   **release-arm64** (native `ubuntu-24.04-arm` build, pushes
-   `vX.Y.Z-arm64`; per-arch tags, because a Docker plugin cannot
-   install from a manifest list) and **verify-install-arm64**.
+    Since v1.7.0 the run carries a parallel arm64 chain (#507):
+    **release-arm64** (native `ubuntu-24.04-arm` build, pushes
+    `vX.Y.Z-arm64`; per-arch tags, because a Docker plugin cannot
+    install from a manifest list) and **verify-install-arm64**.
 
-   Then, as separate jobs:
+    Then, as separate jobs:
 
-   - **verify-install** / **verify-install-arm64**: install the
-     just-published plugin from GHCR on a clean hosted runner and
-     assert it enables. A red verify-install means users can't install
-     what we just shipped.
-   - **verify-install-hub** / **verify-install-hub-arm64**, and since
-     #972 **verify-install-hub-alias** /
-     **verify-install-hub-alias-arm64**: the same proof for Docker Hub
-     under each of its two names, which is the other place a user
-     installs from (#776). The alias proofs are gated on the same
-     `hub_pushed` output as the other two, not on the copy step's own
-     result, so a skipped copy does not also skip its own proof. Each is its **own job on its own runner** and that is
-     deliberate: the value of these jobs is a daemon that has never
-     created a network sandbox, which is how v1.6.0-rc2 caught a bind
-     source the daemon creates lazily (#588). A second install appended
-     to `verify-install` would run after that property was already
-     spent, and `docker plugin rm` does not give it back. When a run
-     published no Hub image the steps are skipped and the job records
-     `⚠️ Docker Hub install not verified` in the summary, so a
-     GHCR-only run cannot be mistaken for a both-registries one.
-   - **promote-latest**: since #736 this is where every floating tag
-     moves, for both arches and all three published names, and it runs
-     only after all eight of the above are green.
-     [`scripts/check-latest-promotion.sh`](https://github.com/claymore666/docker-net-dhcp/blob/main/scripts/check-latest-promotion.sh)
-     asserts that dependency. It does not carry a list of proof names:
-     it derives them from the workflow's own install-verifying jobs, so
-     a ninth proof is required the moment it exists. Steps: *Refuse to
-     promote a floating tag backwards* → Install crane → the two logins
-     → *Record what :latest resolves to before promotion* → *Promote the
-     GHCR floating tags* → *Promote the Docker Hub floating tags* →
-     *Promote the Hub alias floating tags* → *Verify the floating tags
-     resolve to the signed digests* → *Assert a pre-release did not move
-     :latest*.
+    - **verify-install** / **verify-install-arm64**: install the
+        just-published plugin from GHCR on a clean hosted runner and
+        assert it enables. A red verify-install means users can't install
+        what we just shipped.
+    - **verify-install-hub** / **verify-install-hub-arm64**, and since
+        #972 **verify-install-hub-alias** /
+        **verify-install-hub-alias-arm64**: the same proof for Docker Hub
+        under each of its two names, which is the other place a user
+        installs from (#776). The alias proofs are gated on the same
+        `hub_pushed` output as the other two, not on the copy step's own
+        result, so a skipped copy does not also skip its own proof. Each is its **own job on its own runner** and that is
+        deliberate: the value of these jobs is a daemon that has never
+        created a network sandbox, which is how v1.6.0-rc2 caught a bind
+        source the daemon creates lazily (#588). A second install appended
+        to `verify-install` would run after that property was already
+        spent, and `docker plugin rm` does not give it back. When a run
+        published no Hub image the steps are skipped and the job records
+        `⚠️ Docker Hub install not verified` in the summary, so a
+        GHCR-only run cannot be mistaken for a both-registries one.
+    - **promote-latest**: since #736 this is where every floating tag
+        moves, for both arches and all three published names, and it runs
+        only after all eight of the above are green.
+        [`scripts/check-latest-promotion.sh`](https://github.com/claymore666/docker-net-dhcp/blob/main/scripts/check-latest-promotion.sh)
+        asserts that dependency. It does not carry a list of proof names:
+        it derives them from the workflow's own install-verifying jobs, so
+        a ninth proof is required the moment it exists. Steps: *Refuse to
+        promote a floating tag backwards* → Install crane → the two logins
+        → *Record what :latest resolves to before promotion* → *Promote the
+        GHCR floating tags* → *Promote the Docker Hub floating tags* →
+        *Promote the Hub alias floating tags* → *Verify the floating tags
+        resolve to the signed digests* → *Assert a pre-release did not move
+        :latest*.
 
-     Two of those are guards whose evidence comes from the registry, and
-     they check different things. *Verify the floating tags resolve to
-     the signed digests* compares the floating tag against the version
-     tag by digest. That is the #267 guard, that retagging preserved the
-     digest the signature covers. *Assert a pre-release did not move
-     :latest* re-reads `:latest` and compares it to what the *Record*
-     step saw before anything was touched; it runs only on an rc, and it
-     is the one that proves the rc contract from outside.
-   - **github-release**: does **not** wait for `promote-latest`; it
-     needs the same eight jobs. Promotion and the Releases page are
-     siblings, so a refused promotion does not suppress the release.
+        Two of those are guards whose evidence comes from the registry, and
+        they check different things. *Verify the floating tags resolve to
+        the signed digests* compares the floating tag against the version
+        tag by digest. That is the #267 guard, that retagging preserved the
+        digest the signature covers. *Assert a pre-release did not move
+        :latest* re-reads `:latest` and compares it to what the *Record*
+        step saw before anything was touched; it runs only on an rc, and it
+        is the one that proves the rc contract from outside.
+    - **github-release**: does **not** wait for `promote-latest`; it
+        needs the same eight jobs. Promotion and the Releases page are
+        siblings, so a refused promotion does not suppress the release.
 
    Every green checklist below includes the arm64 jobs.
 10. **Confirm the GitHub Release**. The `github-release` job now cuts it
