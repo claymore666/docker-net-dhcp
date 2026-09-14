@@ -25,8 +25,8 @@ import (
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
 
-	"github.com/claymore666/docker-net-dhcp/pkg/dhcp"
-	"github.com/claymore666/docker-net-dhcp/pkg/util"
+	"github.com/claymore666/docker-net-dhcp/v2/pkg/dhcp"
+	"github.com/claymore666/docker-net-dhcp/v2/pkg/util"
 )
 
 // fakeSender stands in for the one call that puts a datagram on the

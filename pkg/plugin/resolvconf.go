@@ -14,7 +14,7 @@ import (
 	log "github.com/sirupsen/logrus"
 	"golang.org/x/sys/unix"
 
-	"github.com/claymore666/docker-net-dhcp/pkg/dhcp"
+	"github.com/claymore666/docker-net-dhcp/v2/pkg/dhcp"
 )
 
 // errPIDNotContainer is returned when the PID handed to

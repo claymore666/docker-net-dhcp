@@ -11,7 +11,7 @@ import (
 
 	"github.com/claymore666/dhcp-golib/lease"
 
-	"github.com/claymore666/docker-net-dhcp/pkg/dhcp"
+	"github.com/claymore666/docker-net-dhcp/v2/pkg/dhcp"
 )
 
 // ipamPhaseCase is one record in one phase, all holding the same

@@ -15,7 +15,7 @@ import (
 	log "github.com/sirupsen/logrus"
 	logtest "github.com/sirupsen/logrus/hooks/test"
 
-	"github.com/claymore666/docker-net-dhcp/pkg/dhcp"
+	"github.com/claymore666/docker-net-dhcp/v2/pkg/dhcp"
 )
 
 // TestRenewalsUnanswered_TheOperatorCanREADIt drives the reporter and

@@ -15,7 +15,7 @@ import (
 	"github.com/claymore666/dhcp-golib/lease"
 	log "github.com/sirupsen/logrus"
 
-	"github.com/claymore666/docker-net-dhcp/pkg/util"
+	"github.com/claymore666/docker-net-dhcp/v2/pkg/util"
 )
 
 // The option keys libnetwork puts in a RequestAddress. Spelled out here

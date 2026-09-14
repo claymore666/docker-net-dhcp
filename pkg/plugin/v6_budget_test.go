@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/claymore666/dhcp-golib/proto"
-	"github.com/claymore666/docker-net-dhcp/pkg/dhcp"
+	"github.com/claymore666/docker-net-dhcp/v2/pkg/dhcp"
 )
 
 // TestV6AcquisitionDeadline_LeavesTheV4HalfRoomAndStillFitsTheDaemon is

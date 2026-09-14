@@ -10,7 +10,7 @@ import (
 	"github.com/claymore666/dhcp-golib/proto"
 	log "github.com/sirupsen/logrus"
 
-	"github.com/claymore666/docker-net-dhcp/pkg/dhcp"
+	"github.com/claymore666/docker-net-dhcp/v2/pkg/dhcp"
 )
 
 // clientRole is which of this plugin's two kinds of DHCP client is

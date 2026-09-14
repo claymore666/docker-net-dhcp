@@ -14,7 +14,7 @@ import (
 	"github.com/claymore666/dhcp-golib/lease"
 	log "github.com/sirupsen/logrus"
 
-	"github.com/claymore666/docker-net-dhcp/pkg/util"
+	"github.com/claymore666/docker-net-dhcp/v2/pkg/util"
 )
 
 // errIPAMBindingLost is an IPAM-mode network whose pool binding this

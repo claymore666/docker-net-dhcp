@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/claymore666/docker-net-dhcp/pkg/buildinfo"
+	"github.com/claymore666/docker-net-dhcp/v2/pkg/buildinfo"
 )
 
 // withBuildInfo injects the three values for one test and restores

@@ -29,8 +29,8 @@ import (
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
 
-	"github.com/claymore666/docker-net-dhcp/pkg/dhcp"
-	"github.com/claymore666/docker-net-dhcp/pkg/util"
+	"github.com/claymore666/docker-net-dhcp/v2/pkg/dhcp"
+	"github.com/claymore666/docker-net-dhcp/v2/pkg/util"
 )
 
 // subLinkName returns the host-side child link name for an endpoint.
