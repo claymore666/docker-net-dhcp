@@ -12,7 +12,7 @@ import (
 	dContainer "github.com/docker/docker/api/types/container"
 	dNetwork "github.com/docker/docker/api/types/network"
 
-	"github.com/claymore666/docker-net-dhcp/pkg/dhcp"
+	"github.com/claymore666/docker-net-dhcp/v2/pkg/dhcp"
 )
 
 // Two counters that were incremented in exactly one place each, exposed

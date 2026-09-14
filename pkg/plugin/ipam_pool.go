@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/claymore666/docker-net-dhcp/pkg/util"
+	"github.com/claymore666/docker-net-dhcp/v2/pkg/util"
 )
 
 // The two address spaces this driver answers with. They are public:

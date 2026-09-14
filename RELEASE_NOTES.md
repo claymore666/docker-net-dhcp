@@ -11,6 +11,29 @@ forks that have been waiting on review.
 
 [upstream]: https://github.com/devplayer0/docker-net-dhcp
 
+## v2.1.1
+
+The Go module path now carries its major version:
+`github.com/claymore666/docker-net-dhcp/v2`, which Go has required since
+v2. Without it the module proxy rejected every 2.x tag, so `go get` and
+pkg.go.dev answered with v1.9.0. Nothing operator-facing changes: the
+image reference, the driver name, `config.json`, the socket and every
+documented command are unaffected.
+
+### Fixed
+
+- `go.mod` declared `github.com/claymore666/docker-net-dhcp` with no
+  `/v2`, so proxy.golang.org refused `v2.0.0-rc1`, `v2.0.0-rc2`,
+  `v2.0.0-rc3`, `v2.0.0`, `v2.1.0-rc1` and `v2.1.0` with *module path
+  must match major version*. `go get` and `go install` on the old path
+  resolved v1.9.0. The module, its imports, the `-ldflags`
+  build-identity target in the Makefile and the Dockerfile, and the
+  coverage baseline now spell the `/v2` path.
+  Those six tags stay unpublished: they carry cosign signatures and SLSA
+  provenance for the commits they name, and a published tag is not
+  moved. This release is the earliest version the module ecosystem can
+  serve (#979, PR #981).
+
 ## v2.1.0
 
 The plugin now serves a DHCP IPAM driver beside its network driver, so a pinned

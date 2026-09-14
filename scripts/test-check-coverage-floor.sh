@@ -17,6 +17,7 @@ set -u
 . "$(cd "$(dirname "$0")" && pwd)/tmpdir-guard.sh"
 
 GATE="$(cd "$(dirname "$0")" && pwd)/check-coverage-floor.sh"
+GATE_BIN="$GATE"
 pass=0
 fail=0
 
@@ -201,10 +202,15 @@ fi
 # "dropping a package" case still trips the gate — it cannot resolve
 # the module path and says so rather than assuming.
 #
-# run_pkg_case <name> <base-baseline> <head-baseline> <gomod> <base-pkgs> <head-pkgs> <want-exit> [want-grep]
+# run_pkg_case <name> <base-baseline> <head-baseline> <gomod> <base-pkgs> <head-pkgs> <want-exit> [want-grep] [head-gomod]
+#
+# [head-gomod] rewrites go.mod in the HEAD commit, which is what a
+# major-version rename does and what the base-only $gomod cannot
+# express. $GATE_BIN, not $GATE, so a case can drive the pre-fix script
+# through the identical fixture.
 run_pkg_case() {
     local name="$1" base="$2" head="$3" gomod="$4" basepkgs="$5" headpkgs="$6"
-    local want="$7" want_grep="${8-}"
+    local want="$7" want_grep="${8-}" headgomod="${9-}"
     local dir rc out
     guarded_tmpdir dir
     (
@@ -219,11 +225,12 @@ run_pkg_case() {
         printf 'base\n' > sentinel.txt
         git add -A; git commit -qm base
         printf '%s\n' "$head" > .github/coverage-baseline.txt
+        [ -n "$headgomod" ] && printf '%s\n' "$headgomod" > go.mod
         for d in $basepkgs; do rm -rf "$d"; done
         for d in $headpkgs; do mkdir -p "$d"; printf 'package p\n' > "$d/p.go"; done
         printf 'head\n' > sentinel.txt
         git add -A; git commit -qm "drop a package"
-        bash "$GATE" HEAD~1..HEAD > "$dir/out" 2>&1
+        bash "$GATE_BIN" HEAD~1..HEAD > "$dir/out" 2>&1
         echo $? > "$dir/rc"
     ) >/dev/null 2>&1
     rc=$(cat "$dir/rc" 2>/dev/null)
@@ -281,6 +288,121 @@ run_pkg_case "dropping every floor with every package is refused, not passed" \
 # 6. The other direction, so the note is not printed on every run.
 run_pkg_case "an untouched baseline prints no dropped-package note" \
     "$TWO" "$TWO" "$GOMOD" "pkg/a pkg/b" "pkg/a pkg/b" 0 ""
+
+# --- a major-version rename of the module (#979) ----------------------
+#
+# From v2 onward Go puts the major in the module path, so the bump
+# moves every baseline row one segment at once. Before the retry the
+# gate reported one finding per floor for a change in which no floor
+# moved: measured on the real v2 rename, four findings, four floors,
+# none lowered.
+#
+# The pair that matters is (1) and (2). A re-spelling that made the
+# rename pass would also make a floor LOWERED under the new name pass,
+# and one case alone cannot tell those apart.
+GOMOD_V2='module example.com/mod/v2
+
+go 1.24'
+
+TWO_V2='example.com/mod/v2/pkg/a 80.0
+example.com/mod/v2/pkg/b 50.0'
+
+# 1. Every floor carried over to the new path. No floor moved, so the
+#    gate must pass AND must say the rows were matched by rename --
+#    otherwise a clean pass here is indistinguishable from a clean pass
+#    over rows that never moved.
+run_pkg_case "a major-version rename with every floor carried over passes" \
+    "$TWO" "$TWO_V2" "$GOMOD" "pkg/a pkg/b" "pkg/a pkg/b" 0 \
+    "compared under the module's renamed path" "$GOMOD_V2"
+
+# 1b. THE PER-ROW NOTE, asserted on its own. Case 1 above reads the
+#     SUMMARY line, and a summary count is true of any four rows: the
+#     sentence naming WHICH row moved WHERE was observed by nothing, so
+#     deleting it, or degrading it to "SOMETHING is floored SOMEWHERE",
+#     left the self-test green. The row a reader of a red or green log
+#     goes looking for is this one.
+run_pkg_case "the rename note names the row it matched and its new path" \
+    "$TWO" "$TWO_V2" "$GOMOD" "pkg/a pkg/b" "pkg/a pkg/b" 0 \
+    "example.com/mod/pkg/a is floored at example.com/mod/v2/pkg/a" "$GOMOD_V2"
+
+# 2. THE CASE THAT PROVES THE RETRY IS NOT A BYPASS. Same rename, one
+#    floor lower under the new name. If this ever passes, the rename
+#    has become a way to lower a floor without saying so.
+run_pkg_case "a floor lowered under the renamed path still trips the gate" \
+    "$TWO" 'example.com/mod/v2/pkg/a 71.0
+example.com/mod/v2/pkg/b 50.0' "$GOMOD" "pkg/a pkg/b" "pkg/a pkg/b" 1 \
+    "example.com/mod/v2/pkg/a (was example.com/mod/pkg/a" "$GOMOD_V2"
+
+# 3. A row DROPPED during the rename is not re-spelled into existence.
+#    pkg/b moves nowhere: the retry finds no head row for it, so it
+#    falls back to its original name and the existing arm reports that
+#    it cannot resolve it. A finding, never a silent pass.
+run_pkg_case "a floor dropped during the rename is still reported" \
+    "$TWO" 'example.com/mod/v2/pkg/a 80.0' "$GOMOD" "pkg/a pkg/b" "pkg/a pkg/b" 1 \
+    "cannot tell" "$GOMOD_V2"
+
+# 4. The retry is keyed on the two go.mod files naming the SAME module
+#    at different majors. A head module that is a different module
+#    entirely must not re-spell anything, or the gate would match rows
+#    across unrelated trees.
+run_pkg_case "a different module at a new major does not re-spell the rows" \
+    "$TWO" 'example.com/other/v2/pkg/a 80.0
+example.com/other/v2/pkg/b 50.0' "$GOMOD" "pkg/a pkg/b" "pkg/a pkg/b" 1 \
+    "cannot tell" 'module example.com/other/v2
+
+go 1.24'
+
+# 5. `/vN` is digits after the v. A last segment like `v2beta` is an
+#    ordinary directory, and stripping it would make two unrelated
+#    modules compare equal.
+run_pkg_case "a v2beta suffix is not a major-version suffix" \
+    "$TWO" 'example.com/mod/v2beta/pkg/a 80.0
+example.com/mod/v2beta/pkg/b 50.0' "$GOMOD" "pkg/a pkg/b" "pkg/a pkg/b" 1 \
+    "cannot tell" 'module example.com/mod/v2beta
+
+go 1.24'
+
+# 6. The preservation control for the rows the retry must never touch:
+#    no rename in the range at all, and the existing gone/present arms
+#    answer exactly as before. Driven here as well as above so a change
+#    to the retry cannot quietly move them.
+run_pkg_case "with no rename, a deleted package's floor is still not a decrease" \
+    "$TWO" "$ONE" "$GOMOD" "pkg/a pkg/b" "pkg/a" 0 "The package is gone"
+run_pkg_case "with no rename, a dropped floor on a live package is still a decrease" \
+    "$TWO" "$ONE" "$GOMOD" "pkg/a pkg/b" "pkg/a pkg/b" 1 "the ratchet no longer judges"
+
+# --- THE PREVIOUS VERSION IS THE STRONGEST MUTANT ---------------------
+#
+# The pre-fix gate is built by cutting the retry out of the REAL
+# script, not by keeping a copy of the block: a copy stops being the
+# subject the moment the script moves on. The surgery asserts it found
+# something, so a control that has quietly gone inert fails instead of
+# passing.
+PREFIX_DIR=
+guarded_tmpdir PREFIX_DIR
+PREFIX="$PREFIX_DIR/check-coverage-floor-prefix.sh"
+if python3 - "$GATE" "$PREFIX" <<'SURGERY'
+import sys
+src = open(sys.argv[1]).read()
+start = src.index('    renamed=""\n')
+end = src.index('    if [ -z "$now" ]; then\n        case "$(package_state "$pkg")" in\n', start)
+assert start < end, "the retry block is not where this surgery expects it"
+cut = src[:start] + src[end:]
+assert cut != src, "the surgery removed nothing: this control is inert"
+assert 'renamed_path "$pkg"' not in cut, "the retry survived the cut"
+open(sys.argv[2], "w").write(cut)
+SURGERY
+then
+    GATE_BIN="$PREFIX"
+    run_pkg_case "the pre-fix gate reports the rename as findings (control)" \
+        "$TWO" "$TWO_V2" "$GOMOD" "pkg/a pkg/b" "pkg/a pkg/b" 1 \
+        "cannot tell" "$GOMOD_V2"
+    GATE_BIN="$GATE"
+else
+    no "the pre-fix control could not be built from the real script"
+fi
+rm -rf "$PREFIX_DIR"
+
 
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"

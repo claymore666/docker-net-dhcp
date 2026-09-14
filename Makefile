@@ -26,7 +26,7 @@ SUITE ?= main
 VERSION ?= dev
 COMMIT ?= $(shell git rev-parse HEAD 2>/dev/null || echo unknown)
 LIBRARY := $(shell go list -m -f '{{.Version}}' github.com/claymore666/dhcp-golib 2>/dev/null || echo unknown)
-BUILDINFO_PKG = github.com/claymore666/docker-net-dhcp/pkg/buildinfo
+BUILDINFO_PKG = github.com/claymore666/docker-net-dhcp/v2/pkg/buildinfo
 GO_LDFLAGS = -X $(BUILDINFO_PKG).Version=$(VERSION) -X $(BUILDINFO_PKG).Commit=$(COMMIT) -X $(BUILDINFO_PKG).Library=$(LIBRARY)
 BUILD_ARGS = --build-arg VERSION=$(VERSION) --build-arg COMMIT=$(COMMIT)
 

@@ -23,8 +23,8 @@ import (
 	docker "github.com/docker/docker/client"
 	"github.com/vishvananda/netlink"
 
-	"github.com/claymore666/docker-net-dhcp/pkg/util"
-	"github.com/claymore666/docker-net-dhcp/test/integration/harness"
+	"github.com/claymore666/docker-net-dhcp/v2/pkg/util"
+	"github.com/claymore666/docker-net-dhcp/v2/test/integration/harness"
 )
 
 // ipamReserveLinkPrefix is the name the reserve gives its temporary

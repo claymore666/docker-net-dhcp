@@ -51,14 +51,14 @@ func TestNothingLinkedIntoThePluginExecsAnything(t *testing.T) {
 	// in it, a client started from inside it would be a client on this
 	// link.
 	ours := []string{
-		"github.com/claymore666/docker-net-dhcp/",
+		"github.com/claymore666/docker-net-dhcp/v2/",
 		"github.com/claymore666/dhcp-golib/",
 	}
 
 	// The FULL import path, not "./cmd/net-dhcp": a test runs with its
 	// own package directory as the working directory, so the relative
 	// form resolves to pkg/dhcp/cmd/net-dhcp and go list exits 1.
-	const mainPkg = "github.com/claymore666/docker-net-dhcp/cmd/net-dhcp"
+	const mainPkg = "github.com/claymore666/docker-net-dhcp/v2/cmd/net-dhcp"
 	cmd := exec.Command("go", "list", "-deps",
 		"-f", "{{.ImportPath}} {{join .Imports \" \"}}", mainPkg)
 	var stderr strings.Builder

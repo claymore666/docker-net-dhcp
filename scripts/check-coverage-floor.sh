@@ -157,10 +157,86 @@ package_state() { # <import path> -> prints gone | present | unknown
     fi
 }
 
+# --- A MAJOR-VERSION RENAME MOVES EVERY ROW ONE SEGMENT (#979) -------
+#
+# From v2 onward Go requires the major version in the module path, so
+# the bump rewrites `module M` to `module M/vN` and every import with
+# it. The baseline keys on import paths, so all of its rows move at
+# once -- and each one then matches neither $MODULE nor $MODULE/*,
+# lands in the "cannot tell" arm above, and the gate reports a finding
+# per floor for a change in which no floor moved at all. Measured on
+# the v2 rename: four findings, four floors, none of them lowered.
+#
+# THE RETRY IS NOT A BYPASS, and the shape is what keeps it from
+# becoming one. It only re-SPELLS the row; the floor comparison that
+# follows is the same one every other row gets, so a floor lowered
+# under the new name still fails (self-test case 2). It fires only when
+# the two go.mod files name the same module at different majors --
+# both sides read, both stripped of a trailing /vN, and required to be
+# equal -- so a row from some other module is untouched, and so is one
+# from a tree that did not rename.
+#
+# The base module is read for the same reason the head one is: the row
+# carries no marker saying which module it came from, and DERIVING the
+# old prefix by stripping whatever the row happens to start with would
+# match paths this tree never published.
+BASE_MODULE=$(git show "$BASE_REF:go.mod" 2>/dev/null | awk '$1 == "module" { print $2; exit }')
+
+unversioned() { # <module path> -> the path with a trailing /vN removed
+    local last rest
+    last="${1##*/}"
+    case "$last" in
+        v[0-9]*)
+            # DIGITS ONLY. `v2beta` and `vendor` are ordinary last
+            # segments; treating them as a major suffix would strip a
+            # real directory off the module path.
+            rest="${last#v}"
+            case "$rest" in
+                *[!0-9]*) printf '%s\n' "$1" ;;
+                *)        printf '%s\n' "${1%/*}" ;;
+            esac
+            ;;
+        *) printf '%s\n' "$1" ;;
+    esac
+}
+
+renamed_path() { # <base import path> -> its head spelling, or nothing
+    local tail
+    [ -n "$MODULE" ] && [ -n "$BASE_MODULE" ] || return 0
+    [ "$MODULE" != "$BASE_MODULE" ] || return 0
+    [ "$(unversioned "$MODULE")" = "$(unversioned "$BASE_MODULE")" ] || return 0
+    case "$1" in
+        "$BASE_MODULE")   printf '%s\n' "$MODULE" ;;
+        "$BASE_MODULE"/*) tail="${1#"$BASE_MODULE"/}"; printf '%s\n' "$MODULE/$tail" ;;
+    esac
+}
+
 gone_count=0
+renamed_count=0
 
 while read -r pkg was; do
     now=$(awk -v p="$pkg" '$1 == p { print $2; exit }' "$TMP/head.floors")
+    # The row may be present under the renamed module rather than
+    # absent. Asked only after the row missed under its own name, so a
+    # tree that did not rename runs exactly the code it ran before.
+    renamed=""
+    if [ -z "$now" ]; then
+        renamed=$(renamed_path "$pkg")
+        if [ -n "$renamed" ]; then
+            now=$(awk -v p="$renamed" '$1 == p { print $2; exit }' "$TMP/head.floors")
+            if [ -n "$now" ]; then
+                renamed_count=$((renamed_count + 1))
+                echo "note: $pkg is floored at $renamed after the module's major-version rename." \
+                     "The floor is compared under the new name."
+            else
+                # A row that moved AND lost its floor is not something
+                # this re-spelling can speak to: it falls through to
+                # the arms below under its ORIGINAL name, where an
+                # unresolvable path is reported rather than assumed.
+                renamed=""
+            fi
+        fi
+    fi
     if [ -z "$now" ]; then
         case "$(package_state "$pkg")" in
             gone)
@@ -180,7 +256,11 @@ while read -r pkg was; do
     fi
     lowered=$(awk -v a="$was" -v b="$now" 'BEGIN { print (b + 0 < a + 0) ? "yes" : "no" }')
     if [ "$lowered" = "yes" ]; then
-        report "$pkg: floor lowered ${was}% → ${now}%"
+        if [ -n "$renamed" ]; then
+            report "$renamed (was $pkg before the module's major-version rename): floor lowered ${was}% → ${now}%"
+        else
+            report "$pkg: floor lowered ${was}% → ${now}%"
+        fi
     fi
 done < "$TMP/base.floors"
 
@@ -199,9 +279,18 @@ if [ "$gone_count" -ne 0 ] && [ "$gone_count" -eq "${base_rows:-0}" ]; then
 fi
 
 if [ "$findings" -eq 0 ]; then
-    if [ "$gone_count" -ne 0 ]; then
-        echo "coverage-floor gate: no floor lowered or removed against $BASE_REF" \
-             "($gone_count floor(s) dropped with their package)"
+    # The counts are printed because a clean pass over rows that all
+    # MOVED and a clean pass over rows that never moved are different
+    # runs, and one sentence for both would make the re-spelling
+    # invisible in the only output anyone reads when the gate is green.
+    detail=""
+    [ "$gone_count" -ne 0 ] && detail="$gone_count floor(s) dropped with their package"
+    if [ "$renamed_count" -ne 0 ]; then
+        [ -n "$detail" ] && detail="$detail; "
+        detail="$detail$renamed_count floor(s) compared under the module's renamed path"
+    fi
+    if [ -n "$detail" ]; then
+        echo "coverage-floor gate: no floor lowered or removed against $BASE_REF ($detail)"
         exit 0
     fi
     echo "coverage-floor gate: no floor lowered or removed against $BASE_REF"

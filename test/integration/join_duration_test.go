@@ -13,7 +13,7 @@ import (
 
 	docker "github.com/docker/docker/client"
 
-	"github.com/claymore666/docker-net-dhcp/test/integration/harness"
+	"github.com/claymore666/docker-net-dhcp/v2/test/integration/harness"
 )
 
 // attachObservationBudget bounds the wait for the attach counter to

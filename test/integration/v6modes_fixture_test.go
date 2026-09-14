@@ -15,7 +15,7 @@ import (
 
 	"github.com/vishvananda/netlink"
 
-	"github.com/claymore666/docker-net-dhcp/test/integration/harness"
+	"github.com/claymore666/docker-net-dhcp/v2/test/integration/harness"
 )
 
 // TestV6Fixture_ModesComeUpAsRequested is the v6-modes fixture's own

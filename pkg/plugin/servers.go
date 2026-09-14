@@ -12,8 +12,8 @@ import (
 
 	log "github.com/sirupsen/logrus"
 
-	"github.com/claymore666/docker-net-dhcp/pkg/dhcp"
-	"github.com/claymore666/docker-net-dhcp/pkg/util"
+	"github.com/claymore666/docker-net-dhcp/v2/pkg/dhcp"
+	"github.com/claymore666/docker-net-dhcp/v2/pkg/util"
 )
 
 // serverPolicy is the validated form of the dhcp_servers (#111) and

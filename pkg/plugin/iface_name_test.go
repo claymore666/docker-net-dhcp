@@ -7,7 +7,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/claymore666/docker-net-dhcp/pkg/util"
+	"github.com/claymore666/docker-net-dhcp/v2/pkg/util"
 )
 
 // TestValidateModeOptions_RejectsUnusableInterfaceNames closes the

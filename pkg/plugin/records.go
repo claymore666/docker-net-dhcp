@@ -12,7 +12,7 @@ import (
 	"github.com/claymore666/dhcp-golib/lease"
 	log "github.com/sirupsen/logrus"
 
-	"github.com/claymore666/docker-net-dhcp/pkg/dhcp"
+	"github.com/claymore666/docker-net-dhcp/v2/pkg/dhcp"
 )
 
 // recordFileName is the durable lease record inside STATE_DIR: one
