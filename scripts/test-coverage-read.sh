@@ -180,11 +180,11 @@ chk "no-raw: flagged"        "$O" "*** NO RAW covdata LINES"
 # the baseline carried at that commit so the case does not drift when a
 # floor moves.
 cat > "$D/r.dev" <<B
-github.com/claymore666/docker-net-dhcp/pkg/util 95.0
-github.com/claymore666/docker-net-dhcp/pkg/plugin 86.8
-github.com/claymore666/docker-net-dhcp/pkg/dhcp 89.9
-github.com/claymore666/docker-net-dhcp/cmd/net-dhcp 77.8
-github.com/claymore666/docker-net-dhcp/cmd/dhcp-handler 74.0
+github.com/claymore666/docker-net-dhcp/v2/pkg/util 95.0
+github.com/claymore666/docker-net-dhcp/v2/pkg/plugin 86.8
+github.com/claymore666/docker-net-dhcp/v2/pkg/dhcp 89.9
+github.com/claymore666/docker-net-dhcp/v2/cmd/net-dhcp 77.8
+github.com/claymore666/docker-net-dhcp/v2/cmd/dhcp-handler 74.0
 B
 cp "$D/r.dev" "$D/r.main"
 REAL=$HERE/testdata/coverage-run-32623575563.log

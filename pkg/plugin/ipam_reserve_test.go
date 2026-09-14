@@ -17,8 +17,8 @@ import (
 
 	"github.com/claymore666/dhcp-golib/lease"
 
-	"github.com/claymore666/docker-net-dhcp/pkg/dhcp"
-	"github.com/claymore666/docker-net-dhcp/pkg/util"
+	"github.com/claymore666/docker-net-dhcp/v2/pkg/dhcp"
+	"github.com/claymore666/docker-net-dhcp/v2/pkg/util"
 )
 
 // TestIpamReserve_OneExchangePerHardwareAddress is defeat row 14 and the

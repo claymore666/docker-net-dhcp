@@ -430,18 +430,18 @@ fi
 # there.
 GLUED="$TMP/glued.txt"
 {
-    printf '\tgithub.com/claymore666/docker-net-dhcp/cmd/net-dhcp\t\tcoverage: 83.3%% of statements\n'
-    printf '\tgithub.com/claymore666/docker-net-dhcp/pkg/buildinfo\t\t\tgithub.com/claymore666/docker-net-dhcp/pkg/dhcp\t\tcoverage: 90.5%% of statements\n'
-    printf '\tgithub.com/claymore666/docker-net-dhcp/pkg/plugin\t\tcoverage: 90.1%% of statements\n'
-    printf '\tgithub.com/claymore666/docker-net-dhcp/pkg/util\t\tcoverage: 97.3%% of statements\n'
+    printf '\tgithub.com/claymore666/docker-net-dhcp/v2/cmd/net-dhcp\t\tcoverage: 83.3%% of statements\n'
+    printf '\tgithub.com/claymore666/docker-net-dhcp/v2/pkg/buildinfo\t\t\tgithub.com/claymore666/docker-net-dhcp/v2/pkg/dhcp\t\tcoverage: 90.5%% of statements\n'
+    printf '\tgithub.com/claymore666/docker-net-dhcp/v2/pkg/plugin\t\tcoverage: 90.1%% of statements\n'
+    printf '\tgithub.com/claymore666/docker-net-dhcp/v2/pkg/util\t\tcoverage: 97.3%% of statements\n'
 } > "$GLUED"
 
 REAL_BASELINE="$TMP/baseline-2x.txt"
 cat > "$REAL_BASELINE" <<'EOF'
-github.com/claymore666/docker-net-dhcp/pkg/util 95.0
-github.com/claymore666/docker-net-dhcp/pkg/plugin 86.8
-github.com/claymore666/docker-net-dhcp/pkg/dhcp 89.9
-github.com/claymore666/docker-net-dhcp/cmd/net-dhcp 77.8
+github.com/claymore666/docker-net-dhcp/v2/pkg/util 95.0
+github.com/claymore666/docker-net-dhcp/v2/pkg/plugin 86.8
+github.com/claymore666/docker-net-dhcp/v2/pkg/dhcp 89.9
+github.com/claymore666/docker-net-dhcp/v2/cmd/net-dhcp 77.8
 EOF
 
 RATCHET_REPORT='' ratchet "$GLUED" "$REAL_BASELINE" > "$TMP/out" 2>&1
@@ -461,7 +461,7 @@ fi
 # with pkg/dhcp's 90.5 and pass this baseline.
 BUILDINFO_BASELINE="$TMP/baseline-buildinfo.txt"
 cat > "$BUILDINFO_BASELINE" <<'EOF'
-github.com/claymore666/docker-net-dhcp/pkg/buildinfo 90.0
+github.com/claymore666/docker-net-dhcp/v2/pkg/buildinfo 90.0
 EOF
 RATCHET_REPORT='' ratchet "$GLUED" "$BUILDINFO_BASELINE" > "$TMP/out" 2>&1
 got=$?
@@ -480,9 +480,9 @@ fi
 # mentioning nothing in particular" would find 90.1 or 97.3 and pass.
 GONE="$TMP/glued-gone.txt"
 {
-    printf '\tgithub.com/claymore666/docker-net-dhcp/cmd/net-dhcp\t\tcoverage: 83.3%% of statements\n'
-    printf '\tgithub.com/claymore666/docker-net-dhcp/pkg/buildinfo\t\t\tgithub.com/claymore666/docker-net-dhcp/pkg/plugin\t\tcoverage: 90.1%% of statements\n'
-    printf '\tgithub.com/claymore666/docker-net-dhcp/pkg/util\t\tcoverage: 97.3%% of statements\n'
+    printf '\tgithub.com/claymore666/docker-net-dhcp/v2/cmd/net-dhcp\t\tcoverage: 83.3%% of statements\n'
+    printf '\tgithub.com/claymore666/docker-net-dhcp/v2/pkg/buildinfo\t\t\tgithub.com/claymore666/docker-net-dhcp/v2/pkg/plugin\t\tcoverage: 90.1%% of statements\n'
+    printf '\tgithub.com/claymore666/docker-net-dhcp/v2/pkg/util\t\tcoverage: 97.3%% of statements\n'
 } > "$GONE"
 RATCHET_REPORT='' ratchet "$GONE" "$REAL_BASELINE" > "$TMP/out" 2>&1
 got=$?
@@ -500,15 +500,15 @@ fi
 # package this run measured and this baseline does not floor.
 THREE_BASELINE="$TMP/baseline-three.txt"
 cat > "$THREE_BASELINE" <<'EOF'
-github.com/claymore666/docker-net-dhcp/pkg/util 95.0
-github.com/claymore666/docker-net-dhcp/pkg/plugin 86.8
-github.com/claymore666/docker-net-dhcp/cmd/net-dhcp 77.8
+github.com/claymore666/docker-net-dhcp/v2/pkg/util 95.0
+github.com/claymore666/docker-net-dhcp/v2/pkg/plugin 86.8
+github.com/claymore666/docker-net-dhcp/v2/cmd/net-dhcp 77.8
 EOF
 {
     echo "count 3"
-    echo "package github.com/claymore666/docker-net-dhcp/pkg/util"
-    echo "package github.com/claymore666/docker-net-dhcp/pkg/plugin"
-    echo "package github.com/claymore666/docker-net-dhcp/cmd/net-dhcp"
+    echo "package github.com/claymore666/docker-net-dhcp/v2/pkg/util"
+    echo "package github.com/claymore666/docker-net-dhcp/v2/pkg/plugin"
+    echo "package github.com/claymore666/docker-net-dhcp/v2/cmd/net-dhcp"
 } > "$TMP/report-three"
 RATCHET_REPORT="$TMP/report-three" ratchet "$GLUED" "$THREE_BASELINE" > "$TMP/out" 2>&1
 got=$?
@@ -539,7 +539,7 @@ fi
 # "deleted" for the same reason a deleted one does and case (c) could not
 # be written at all. cmd/dhcp-handler is deleted on 2.0.0; pkg/buildinfo
 # is present and contributes no statements.
-SELF=github.com/claymore666/docker-net-dhcp
+SELF=github.com/claymore666/docker-net-dhcp/v2
 GONE_PKG=$SELF/cmd/dhcp-handler
 HERE_PKG=$SELF/pkg/buildinfo
 

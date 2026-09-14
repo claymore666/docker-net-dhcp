@@ -1,4 +1,4 @@
-module github.com/claymore666/docker-net-dhcp
+module github.com/claymore666/docker-net-dhcp/v2
 
 go 1.27.0
 

@@ -14,7 +14,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/claymore666/docker-net-dhcp/pkg/util"
+	"github.com/claymore666/docker-net-dhcp/v2/pkg/util"
 )
 
 // Replay of captured libnetwork requests (#644).

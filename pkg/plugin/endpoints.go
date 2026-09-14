@@ -7,8 +7,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/claymore666/docker-net-dhcp/pkg/buildinfo"
-	"github.com/claymore666/docker-net-dhcp/pkg/util"
+	"github.com/claymore666/docker-net-dhcp/v2/pkg/buildinfo"
+	"github.com/claymore666/docker-net-dhcp/v2/pkg/util"
 )
 
 // Payloads are based on https://github.com/docker/go-plugins-helpers/blob/master/network/api.go
