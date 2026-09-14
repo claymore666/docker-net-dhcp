@@ -315,6 +315,16 @@ run_pkg_case "a major-version rename with every floor carried over passes" \
     "$TWO" "$TWO_V2" "$GOMOD" "pkg/a pkg/b" "pkg/a pkg/b" 0 \
     "compared under the module's renamed path" "$GOMOD_V2"
 
+# 1b. THE PER-ROW NOTE, asserted on its own. Case 1 above reads the
+#     SUMMARY line, and a summary count is true of any four rows: the
+#     sentence naming WHICH row moved WHERE was observed by nothing, so
+#     deleting it, or degrading it to "SOMETHING is floored SOMEWHERE",
+#     left the self-test green. The row a reader of a red or green log
+#     goes looking for is this one.
+run_pkg_case "the rename note names the row it matched and its new path" \
+    "$TWO" "$TWO_V2" "$GOMOD" "pkg/a pkg/b" "pkg/a pkg/b" 0 \
+    "example.com/mod/pkg/a is floored at example.com/mod/v2/pkg/a" "$GOMOD_V2"
+
 # 2. THE CASE THAT PROVES THE RETRY IS NOT A BYPASS. Same rename, one
 #    floor lower under the new name. If this ever passes, the rename
 #    has become a way to lower a floor without saying so.
