@@ -418,5 +418,72 @@ chk "wrongref: the disagreement is named" "$O" "was DROPPED by the ratchet, and 
 chk "wrongref: the row says so"           "$(echo "$O" | tr -s ' ')" "dhcp-handler dropped 74.0 n/a STILL FLOORED"
 eq  "wrongref: still exit 0"              "$X" "0"
 
+# --- EVERY VERDICT DROPPED: THE RELEASE PR AFTER A MODULE RENAME (#979) --
+#
+# The runbook's manual read is the second reader of the ratchet's log, and
+# it agreed with the ratchet's silence. On the dev->main release PR
+# carrying a major-version rename every base row took the DROPPED arm, so
+# the log held DROPPED verdicts and nothing else. GOTN was 4, not 0, so
+# the VACUOUS arm did not fire; the keys are the last two path segments,
+# so `…/pkg/util` and `…/v2/pkg/util` key alike and nothing read as
+# missing; and the read printed "every one of the … baselined package(s)
+# got a verdict. Matched by name." and exited 0 over a run that compared
+# no package to any floor.
+#
+# BOTH SPELLINGS ARE WRITTEN OUT, the head baseline under the new path and
+# the ratchet's verdicts under the old, which is the pair the release PR
+# produces.
+cat > "$D/renamed.base" <<B
+$P/v2/pkg/util 95.0
+$P/v2/pkg/plugin 86.8
+$P/v2/pkg/dhcp 89.9
+B
+alldropped() {
+  cat <<V
+DROPPED  $P/pkg/util: deleted at head and removed from baseline (base floor was 95.0)
+DROPPED  $P/pkg/plugin: deleted at head and removed from baseline (base floor was 86.8)
+DROPPED  $P/pkg/dhcp: deleted at head and removed from baseline (base floor was 89.9)
+V
+}
+{ echo "$ratchetcmd"; alldropped; } | freshgroup "Coverage ratchet" > "$D/log.alldropped"
+
+runren() { COVREAD_LOG="$D/log.alldropped" COVREAD_BASE_DEV="$D/renamed.base" \
+           COVREAD_BASE_MAIN="$D/renamed.base" bash "$1" 2>&1; }
+
+O=$(runren "$READER"); X=$( { runren "$READER" >/dev/null; } ; echo $?)
+chk "all-dropped: vacuous"            "$O" "*** VACUOUS: all 3 verdict(s) are DROPPED"
+chk "all-dropped: names the remedy"   "$O" "the rows move with it and are read under the new name"
+eq  "all-dropped: exit 2"             "$X" "2"
+
+# THE OTHER DIRECTION. One DROPPED verdict beside real ones is the
+# deliberate deletion this reader already handles, and it must stay a
+# reading, not a refusal, or every legitimate deletion turns the release
+# read red.
+O=$(run "$D/log.dropped"); X=$(runx "$D/log.dropped")
+no  "one-dropped: not vacuous"        "$O" "verdict(s) are DROPPED, so no package"
+eq  "one-dropped: exit 0"             "$X" "0"
+
+# THE PRE-FIX READER, cut out of the real one. A kept copy of the block
+# stops being the subject the moment the script moves on, so the arm is
+# removed from $READER itself and the surgery asserts it found it.
+PRE_READER="$D/coverage-read-prefix.sh"
+if python3 - "$READER" "$PRE_READER" <<'SURGERY'
+import sys
+src = open(sys.argv[1]).read()
+start = src.index('    if [ "$ndroppedall" -eq "$GOTN" ]; then')
+end = src.index('        rc=2\n    fi\n', start) + len('        rc=2\n    fi\n')
+cut = src[:start] + src[end:]
+assert cut != src, "the all-dropped arm is gone from the reader: this control is inert"
+assert 'verdict(s) are DROPPED' not in cut, "the arm survived the cut"
+open(sys.argv[2], "w").write(cut)
+SURGERY
+then
+  O=$(runren "$PRE_READER"); X=$( { runren "$PRE_READER" >/dev/null; } ; echo $?)
+  chk "all-dropped: the pre-fix reader calls it complete" "$O" "every one of the 3 baselined package(s) got a verdict"
+  eq  "all-dropped: ...and exits 0 (the defect)"          "$X" "0"
+else
+  echo "FAIL the pre-fix reader could not be built from the real script"; fail=$((fail+1))
+fi
+
 echo; echo "$pass passed, $fail failed"
 [ "$fail" -eq 0 ]
