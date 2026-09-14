@@ -93,6 +93,7 @@
 #
 # Usage: check-health-contract.sh [<reference-doc>] [<endpoints.go>]
 #                                 [<metrics.go>] [<healthfloor.go>]
+#                                 [<other-pages-dir>]
 # Exit:  0 they all agree, 1 they disagree, 2 cannot check.
 set -uo pipefail
 
@@ -100,10 +101,16 @@ DOC="${1:-docs/reference.md}"
 SRC="${2:-pkg/plugin/endpoints.go}"
 METRICS="${3:-pkg/plugin/metrics.go}"
 FLOOR="${4:-test/integration/harness/healthfloor.go}"
+# The other published pages section 7b sweeps. It defaults to the
+# directory $DOC sits in, which is the site, and is an argument only so
+# a caller can point it somewhere else; a path that is not a directory
+# is a caller error and refuses rather than sweeping nothing.
+PAGES="${5:-$(dirname "$DOC")}"
 
 for f in "$DOC" "$SRC" "$METRICS" "$FLOOR"; do
     [ -f "$f" ] || { echo "check-health-contract: $f does not exist" >&2; exit 2; }
 done
+[ -d "$PAGES" ] || { echo "check-health-contract: $PAGES is not a directory" >&2; exit 2; }
 
 fail=0
 note() { echo "FAIL  $*" >&2; fail=1; }
@@ -691,6 +698,40 @@ check_word "family \`_v4\`/\`_v6\` field sentence" \
     "$(printf '%s' "$family_each" | sed -E 's/.*Each of the //')" \
     '[A-Za-z]+ has a `_v4`' "$n_family" "carry a family label"
 
+# --- 7b. the same sentence on every other published page ---------------
+#
+# Section 7 reads ONE file, and this file's header says what that costs:
+# a statement on another page is invisible and reads as covered. It was
+# not hypothetical. internals.md states the same count in its own words,
+# under "Both family series are stored; neither is derived", and it said
+# SIX while the reference said EIGHT at v2.1.0 and TEN here. The gate
+# was green for both releases because internals.md is not $DOC.
+#
+# Two properties make this a class fix and not a third hardcoded copy.
+# It is keyed on the SENTENCE and not on a file list, so a page that
+# states it tomorrow is judged the day it is written. And it reads the
+# page FLATTENED, because the drift hid across a line break: the count
+# and the words it counts sat on different lines, so every line-keyed
+# grep in this gate walks straight past it.
+#
+# The set is derived from $DOC: the pages the site publishes beside it,
+# plus the README one level up, which is the other page an operator
+# reads. Zero other pages stating it is a legitimate state and not a
+# finding, so absence here is silence, never exit 2 -- which is also why
+# the set must not be quietly empty, and why an unusable $PAGES refuses
+# at the top of this file instead of passing with nothing read.
+n_family_pages=0
+for page in "$PAGES"/*.md "$(dirname "$PAGES")/README.md"; do
+    [ -f "$page" ] || continue
+    [ "$page" = "$DOC" ] && continue
+    page_stmt=$(tr '\n' ' ' < "$page" | tr -s ' ' \
+        | grep -oE '[A-Za-z]+ counters carry a `family` label' | head -1)
+    [ -n "$page_stmt" ] || continue
+    n_family_pages=$((n_family_pages + 1))
+    check_word "family-label statement in $page" "$page_stmt" \
+        '[A-Za-z]+ counters carry a `family` label' "$n_family" "carry a family label"
+done
+
 if [ "$fail" -ne 0 ]; then
     echo >&2
     echo "\`healthy\` is the one boolean operators alert on. Every doc" >&2
@@ -700,5 +741,5 @@ if [ "$fail" -ne 0 ]; then
     exit 1
 fi
 
-echo "PASS  healthy contract agrees in ${n_lists} doc counter-list(s), ${n_words} doc count-word(s), ${n_code} code term(s), ${n_metrics} /metrics healthy declaration(s), ${n_floor} integration floor entr(ies), ${n_family} family-label counter(s) and ${n_checks} check classification(s) over ${n_judged} judged counter row(s): $(printf '%s' "$column_set" | tr '\n' ' ')"
+echo "PASS  healthy contract agrees in ${n_lists} doc counter-list(s), ${n_words} doc count-word(s), ${n_code} code term(s), ${n_metrics} /metrics healthy declaration(s), ${n_floor} integration floor entr(ies), ${n_family} family-label counter(s) over ${n_family_pages} further page(s) and ${n_checks} check classification(s) over ${n_judged} judged counter row(s): $(printf '%s' "$column_set" | tr '\n' ' ')"
 exit 0
