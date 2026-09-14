@@ -103,16 +103,18 @@
 #     pins differ, however long that is. What the ledger's "written
 #     expiry" buys here is a bounded SHAPE, and that is the whole of
 #     it: two steps apart is refused, a year one step apart is not.
-#   - ONE STEP, AND ONLY AHEAD, so three release shapes fall outside
-#     the suspension: a release that skips a version, a release cut on
-#     an older line, and a tree that is simply behind. On those the
+#   - ONE STEP, AND ONLY AHEAD, so three shapes fall outside the
+#     suspension: a release that skips a version, a release cut on an
+#     older line, and a tree that is simply behind. On those the
 #     #977 deadlock is back -- the release pull request needs the
 #     entry, and the pull request that removes it is red -- because
 #     "a release moves the version one step" is a convention of this
 #     project, not an invariant this gate can rely on. It is loud
-#     rather than silent: every run where the pins differ and the
-#     suspension did not apply says so, names both pins and names the
-#     ledger entry as the way through.
+#     rather than silent, on the runs that can act on it: every run
+#     that REPORTS an undeclared workflow while the pins differ says
+#     the suspension did not apply, names both pins and the readings
+#     that arm allows, and names a ledger entry as the way through. A
+#     run with nothing to report stays quiet, pins or no pins.
 #   - The STALE rule is never suspended, on any route. That is the half
 #     that keeps the default branch green after the merge.
 #
@@ -651,13 +653,15 @@ fi
 # Without this the refusal above reads as "add an entry" to someone who
 # has a bumped pin and believes the suspension covers it.
 #
-# It states the readings rather than choosing one (#977 round 3). Two
-# pins more than one step apart are produced by a release that never
-# landed, by a release that skips a version, and by a release cut on an
-# older line, and this gate cannot tell those apart. Naming only the
-# first one is the wider-than-the-code sentence in the evidence trail
-# that the top of this file refuses. The way through is the same in all
-# of them, and it is the last line.
+# It states the readings rather than choosing one (#977 round 3). Pins
+# that are not one step apart in the accepting direction are left behind
+# by an earlier release that never landed, by a release that skips a
+# version, by a branch nobody back-merged and by a release cut on an
+# older line, and this gate cannot tell those apart. Naming one of them
+# as the reason is the wider-than-the-code sentence in the evidence
+# trail that the top of this file refuses, so each arm prints the
+# readings that arm can actually have. The way through is the same in
+# all of them, and it is the last line.
 if [ -n "$unsuspended" ]; then
     echo "NOTE  the pin suspension did NOT apply:${unsuspended}" >&2
     echo "      this tree pins ${TREE_VERSION}, ${BASE_REF} pins ${BASE_VERSION}, and that is ${PINS_NOT_ONE_STEP}." >&2

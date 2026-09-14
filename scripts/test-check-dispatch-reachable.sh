@@ -1412,6 +1412,24 @@ grep -F '.github/dispatch-pending.txt as any other pending workflow' "$TMP/out10
     || { echo "FAIL: the run does not say what to do on the reading it cannot exclude"
          fails=1; }
 
+# AND THE OTHER HALF OF THAT SENTENCE: a run with nothing to REPORT
+# stays quiet, pins or no pins. The four texts say the refusal is loud
+# on the runs that can act on it, which is narrower than "every run
+# where the pins differ" -- the pins are not news on their own, and a
+# green run that announced a lapsed suspension would be the same kind
+# of sentence this whole change is about. Same two-step tree, nothing
+# undeclared left in it.
+rm -f "$REPO10/.github/workflows/parked10wf.yml" \
+      "$REPO10/.github/workflows/bumped10.yml"
+check "the same two-step tree with nothing to report passes" \
+    pass "$(verdict10 pull_request dev)"
+grep -F 'pin suspension did NOT apply' "$TMP/out10" >/dev/null \
+    && { echo "FAIL: a run with no finding still announces a suspension"; fails=1; } \
+    || echo "PASS: and it says nothing about a suspension nothing needed"
+dispatchable parked10wf > "$REPO10/.github/workflows/parked10wf.yml"
+check "restoring the undeclared workflow restores the refusal (control)" \
+    rc1 "$(verdict10 pull_request dev)"
+
 # ...and the preservation control, because a red that only measures
 # "hard" proves nothing: ONE step ahead on the same fixture, same
 # workflow, same ledger, passes. Without it the case above would be

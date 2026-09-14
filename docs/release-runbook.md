@@ -427,11 +427,13 @@ has to be true.
    the state of a release, so a release parked after step 5 sits
    exactly one step ahead and stays accepted until somebody finishes or
    unwinds it. One step, and only ahead: a release that skips a version
-   and a release cut on an older line are both outside it, and on those
-   the #977 deadlock is back, because the release PR needs the entry
-   and the PR that removes it is red. Every run where the pins differ
-   and the acceptance did not apply says so, names both pins, and names
-   a ledger entry as the way through.
+   and a release cut on an older line are both outside it, as is any
+   tree simply behind `main`, and on those the #977 deadlock is back,
+   because the release PR needs the entry and the PR that removes it is
+   red. Every run that **reports** an undeclared workflow while the
+   pins differ says the acceptance did not apply, names both pins and
+   the readings that case allows, and names a ledger entry as the way
+   through; a run with nothing to report stays quiet.
 3. **Documentation review, PR-driven against the milestone.** Don't
    review from memory; review from the change set. List every PR on the
    `vX.Y.Z` milestone and reconcile each one's user-visible change

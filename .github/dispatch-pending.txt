@@ -155,9 +155,10 @@
 #     all outside it, and on those the #977 deadlock is back: the
 #     release pull request needs the entry, and the pull request that
 #     removes it is red. "A release moves the version one step" is a
-#     convention of this project, not an invariant. Every run where the
-#     pins differ and the suspension did not apply says so, names both
-#     pins and the readings that arm allows, and names an entry here as
-#     the way through.
+#     convention of this project, not an invariant. Every run that
+#     REPORTS an undeclared workflow while the pins differ says the
+#     suspension did not apply, names both pins and the readings that
+#     arm allows, and names an entry here as the way through. A run
+#     with nothing to report stays quiet, pins or no pins.
 #     The stale rule is never suspended.
 #
