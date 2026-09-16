@@ -254,15 +254,39 @@ func (m *dhcpManager) releaseHeldLease(v6 bool) releaseOutcome {
 		}
 	}
 
-	src, iface, err := m.hostSourceFor(v6)
+	held, _ := m.releasedAddr(v6)
+	return releaseFromRecord(rec, m.opts, v6, held, m.logFields(v6))
+}
+
+// releaseFromRecord is the release itself, with no manager in it: pick
+// the source on the parent, put one datagram on the wire, say why it
+// did not go.
+//
+// IT TAKES THE RECORD AND THE NETWORK'S OPTIONS AND NOTHING ELSE,
+// because the second caller has nothing else. The deferred release
+// (#984) runs on a ticker long after the endpoint, its manager, its
+// namespace and its container are gone, and it holds exactly these
+// three things: a record read back off the file, the network's
+// persisted options, and which family it is looking at. A step that
+// needs the manager stays in the manager -- the DHCPv6 address has to
+// come off the container link before the exchange may begin (RFC 9915
+// section 18.2.7) and only the teardown path has a link to take it off,
+// which is why that step is above this call and not inside it.
+//
+// `held` is the address being given back, as the caller knows it, and
+// it is only used to keep the source off it. An invalid one means "the
+// caller does not know", which is honest rather than defensive: the
+// library refuses a source that is the released address anyway.
+func releaseFromRecord(rec lease.Record, opts DHCPNetworkOptions, v6 bool, held netip.Addr, fields log.Fields) releaseOutcome {
+	src, iface, err := hostSourceFor(opts, v6, held)
 	if err != nil {
-		log.WithError(err).WithFields(m.logFields(v6)).
+		log.WithError(err).WithFields(fields).
 			Warn("Not releasing: no address on the parent for this family to send the release from")
 		return releaseNoSource
 	}
 
 	if err := rtSendRelease(rec, runtime.ReleaseConfig{Interface: iface, Source: src}); err != nil {
-		log.WithError(err).WithFields(m.logFields(v6)).
+		log.WithError(err).WithFields(fields).
 			WithField("source", src.String()).
 			Debug("The release was refused or could not be sent")
 		return classifyReleaseError(err)
@@ -504,6 +528,14 @@ func (o DHCPNetworkOptions) hostLink() string {
 // release could come from, in this family".
 var errNoHostSource = errors.New("no usable source address on the parent for this family")
 
+// hostSourceFor is the manager's own source, for the family it is
+// tearing down: the network's options and the address this endpoint
+// last held.
+func (m *dhcpManager) hostSourceFor(v6 bool) (netip.Addr, string, error) {
+	held, _ := m.releasedAddr(v6)
+	return hostSourceFor(m.opts, v6, held)
+}
+
 // hostSourceFor picks the address the release is sent FROM.
 //
 // THE CALLER PICKS IT AND THE LIBRARY REFUSES TO. runtime.ReleaseConfig
@@ -540,8 +572,8 @@ var errNoHostSource = errors.New("no usable source address on the parent for thi
 // practice, on a parent whose IPv6 is disabled (`disable_ipv6=1`), and
 // the answer is honest -- a host with no IPv6 on the segment has no way
 // to tell a DHCPv6 server anything.
-func (m *dhcpManager) hostSourceFor(v6 bool) (netip.Addr, string, error) {
-	name := m.opts.hostLink()
+func hostSourceFor(opts DHCPNetworkOptions, v6 bool, held netip.Addr) (netip.Addr, string, error) {
+	name := opts.hostLink()
 	if name == "" {
 		return netip.Addr{}, "", fmt.Errorf("%w: this network names no parent interface", errNoHostSource)
 	}
@@ -558,7 +590,6 @@ func (m *dhcpManager) hostSourceFor(v6 bool) (netip.Addr, string, error) {
 		return netip.Addr{}, "", fmt.Errorf("%w: parent %q: %w", errNoHostSource, name, err)
 	}
 
-	released, _ := m.releasedAddr(v6)
 	var best netip.Addr
 	for _, a := range addrs {
 		if a.IP == nil {
@@ -576,7 +607,7 @@ func (m *dhcpManager) hostSourceFor(v6 bool) (netip.Addr, string, error) {
 			// v6 takes link-local only; v4 takes anything but.
 			continue
 		}
-		if released.IsValid() && cand == released {
+		if held.IsValid() && cand == held {
 			continue
 		}
 		if !best.IsValid() || cand.Less(best) {

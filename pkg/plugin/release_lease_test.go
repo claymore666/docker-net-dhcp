@@ -1135,8 +1135,8 @@ func TestReleaseLease_TheSenderIsCalledOnceAndOnlyFromTheReleasePath(t *testing.
 	if scanned == 0 {
 		t.Fatal("no production sources parsed; this test would pass vacuously")
 	}
-	if len(sites) != 1 || sites[0] != "releaseHeldLease" {
-		t.Fatalf("rtSendRelease is called from %v; want exactly one call, in releaseHeldLease. "+
+	if len(sites) != 1 || sites[0] != "releaseFromRecord" {
+		t.Fatalf("rtSendRelease is called from %v; want exactly one call, in releaseFromRecord. "+
 			"A second caller sends a release that no counter, no record phase and no tombstone "+
 			"skip in this package knows about.", sites)
 	}
