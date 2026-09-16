@@ -472,6 +472,15 @@ func TestSLAAC_TheAddressComesBackAfterAPluginRestart(t *testing.T) {
 	prefix := v6SegmentPrefix(t)
 	addrBefore, _ := awaitContainerV6(t, ctx, id, prefix, slaacAddrBudget())
 
+	// The resumed endpoint re-binds its v4 lease without going through
+	// CreateEndpoint, so the RFC 5227 probe that bind would have run is
+	// the asynchronous one beside the address, and it races this test's
+	// own teardown. One lease, because one container is attached;
+	// declaring more than the shard takes weakens the zero-probes gate
+	// silently. Same cause and same declaration as
+	// TestRecovery_PluginDisableEnable_PreservesEndpoint.
+	harness.AllowUnprobedLeases(1)
+
 	t.Cleanup(func() {
 		bg, bgCancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer bgCancel()
