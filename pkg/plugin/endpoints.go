@@ -1125,6 +1125,32 @@ type HealthResponse struct {
 	// §5.5.3) (#816, #817). NOT healthy-affecting: the prefixes are the
 	// router's.
 	DHCPv6SLAACNoPrefix int32 `json:"dhcpv6_slaac_no_prefix"`
+
+	// DHCPv6SLAACNoAddress counts endpoints that FAILED on a network
+	// whose ipv6_mode forms the address from a router advertisement,
+	// where a router advertised and no address formed inside the
+	// acquisition budget. Its sibling above is the case where the
+	// library named the reason.
+	DHCPv6SLAACNoAddress int32 `json:"dhcpv6_slaac_no_address"`
+
+	// IPv6SLAACAddresses counts addresses formed from a router
+	// advertisement and installed on a container link, and
+	// IPv6AddressesWithdrawn the ones removed again when the lease
+	// stopped holding them. They count ADDRESSES, not endpoints: one
+	// container on a link with two autonomous prefixes raises the first
+	// by two.
+	IPv6SLAACAddresses     int32 `json:"ipv6_slaac_addresses"`
+	IPv6AddressesWithdrawn int32 `json:"ipv6_addresses_withdrawn"`
+
+	// IPv6SLAACPrefixesIgnored counts advertised prefixes no address
+	// was formed from, for any of RFC 4862 section 5.5.3's reasons and
+	// including this client's cap of eight addresses per endpoint.
+	IPv6SLAACPrefixesIgnored int32 `json:"ipv6_slaac_prefixes_ignored"`
+
+	// IPv6MainPrefixUnmatched counts endpoints whose network named an
+	// ipv6_main_prefix that none of the endpoint's addresses fell
+	// inside, so the first advertised prefix went to Docker instead.
+	IPv6MainPrefixUnmatched int32 `json:"ipv6_main_prefix_unmatched"`
 	// DHCPv6AutoFallbacks counts endpoints on an `ipv6_mode=auto`
 	// network whose address was formed from a router's advertised
 	// prefix after the segment advertised DHCPv6 and no server answered
@@ -1416,6 +1442,11 @@ func (p *Plugin) healthSnapshot() HealthResponse {
 		DHCPv6Refused:                p.dhcpv6Refused.Load(),
 		DHCPv6NoServer:               p.dhcpv6NoServer.Load(),
 		DHCPv6SLAACNoPrefix:          p.dhcpv6SLAACNoPrefix.Load(),
+		DHCPv6SLAACNoAddress:         p.dhcpv6SLAACNoAddress.Load(),
+		IPv6SLAACAddresses:           p.ipv6SLAACAddresses.Load(),
+		IPv6AddressesWithdrawn:       p.ipv6AddressesWithdrawn.Load(),
+		IPv6SLAACPrefixesIgnored:     p.ipv6SLAACPrefixesIgnored.Load(),
+		IPv6MainPrefixUnmatched:      p.ipv6MainPrefixUnmatched.Load(),
 		DHCPv6AutoFallbacks:          p.dhcpv6AutoFallbacks.Load(),
 		IPv6LinkEnableFailures:       p.ipv6LinkEnableFailures.Load(),
 		RouterAdvertGuardFailures:    p.routerAdvertGuardFailures.Load(),

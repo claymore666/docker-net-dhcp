@@ -5,6 +5,7 @@ package plugin
 
 import (
 	"fmt"
+	"net/netip"
 
 	log "github.com/sirupsen/logrus"
 
@@ -131,7 +132,61 @@ func validateIPv6Options(opts DHCPNetworkOptions, set map[string]bool) error {
 			util.ErrModeMismatch, mode)
 	}
 
+	// `ipv6_main_prefix` ON A MODE THAT DOES NOT FORM ADDRESSES IS
+	// REFUSED. The option picks which of several formed addresses
+	// Docker is told about; a DHCPv6 lease holds the one address the
+	// server granted, so on `dhcp` the option can only ever do nothing
+	// and an operator who set it is asking for something this network
+	// cannot give. Refused rather than ignored on the rule the mode
+	// contradictions are refused by: a setting that reads as honoured
+	// at every layer and changes nothing is the silent half.
+	if opts.IPv6MainPrefix != "" && !dhcp.IPv6ModeFormsAddresses(mode) {
+		return fmt.Errorf("%w: ipv6_main_prefix needs an ipv6_mode that forms addresses from a "+
+			"router advertisement, and this network is ipv6_mode=%s: it names which of several "+
+			"advertised prefixes Docker reports as the endpoint's address, and a DHCPv6 lease "+
+			"carries the one address the server granted. Use ipv6_mode=slaac or ipv6_mode=auto, "+
+			"or drop ipv6_main_prefix. See issue #818", util.ErrIPAM, mode)
+	}
+	if _, err := opts.ipv6MainPrefix(); err != nil {
+		return err
+	}
+
 	return nil
+}
+
+// ipv6MainPrefix parses the `ipv6_main_prefix` option.
+//
+// AN UNSET OPTION IS THE ZERO PREFIX AND NOT AN ERROR, which is what
+// every network that never set it gets and is what infoFromLease reads
+// as "the first prefix the router advertised".
+//
+// A VALUE THAT IS NOT THE NETWORK ADDRESS OF ITS OWN PREFIX IS REFUSED.
+// netip.ParsePrefix accepts `2001:db8::5/64`, and netip.Prefix.Contains
+// masks the prefix before comparing, so such a value would work
+// perfectly and read to anyone looking at `docker network inspect` as
+// naming one address rather than a prefix. Refusing it is a guard in
+// one direction and the other direction is named: it refuses nothing an
+// operator can mean, because the only reading of the host bits is the
+// one Contains discards.
+func (o DHCPNetworkOptions) ipv6MainPrefix() (netip.Prefix, error) {
+	if o.IPv6MainPrefix == "" {
+		return netip.Prefix{}, nil
+	}
+	p, err := netip.ParsePrefix(o.IPv6MainPrefix)
+	if err != nil {
+		return netip.Prefix{}, fmt.Errorf("%w: ipv6_main_prefix %q is not a prefix in CIDR form "+
+			"(want something like 2001:db8:1::/64): %v", util.ErrIPAM, o.IPv6MainPrefix, err)
+	}
+	if !p.Addr().Is6() || p.Addr().Is4In6() {
+		return netip.Prefix{}, fmt.Errorf("%w: ipv6_main_prefix %q is not an IPv6 prefix",
+			util.ErrIPAM, o.IPv6MainPrefix)
+	}
+	if p.Masked() != p {
+		return netip.Prefix{}, fmt.Errorf("%w: ipv6_main_prefix %q has bits set below its prefix "+
+			"length: it names a prefix and not an address, so write %s",
+			util.ErrIPAM, o.IPv6MainPrefix, p.Masked())
+	}
+	return p, nil
 }
 
 // v6Wiring fills in everything a DHCPv6 client needs and a DHCPv4
@@ -170,6 +225,11 @@ func (p *Plugin) v6Wiring(base *dhcp.DHCPClientOptions, opts DHCPNetworkOptions,
 	base.PreferredV6 = preferredV6
 	base.Mode6 = mode
 	base.StrictAuto6 = opts.IPv6AutoStrict
+	main, err := opts.ipv6MainPrefix()
+	if err != nil {
+		return err
+	}
+	base.MainPrefix6 = main
 	// The fields above reach the wire even with no plugin behind them,
 	// and the callback does not, on conflictWiring's rule: a manager
 	// built for a unit test carries a nil plugin, and a counter has
@@ -177,6 +237,14 @@ func (p *Plugin) v6Wiring(base *dhcp.DHCPClientOptions, opts DHCPNetworkOptions,
 	// testing a configuration no call site can produce.
 	if p == nil {
 		return nil
+	}
+	if dhcp.IPv6ModeFormsAddresses(mode) {
+		// IN BOTH FORMING MODES, and not only in auto: `slaac` sees
+		// the same refused prefixes and has the same question about
+		// them. See OnV6PrefixesIgnored for why it is NOT set in
+		// `dhcp`, where the same library counter counts every
+		// autonomous prefix on every advertisement.
+		base.OnV6PrefixesIgnored = p.v6PrefixesIgnoredReporter(endpointID)
 	}
 	if mode == proto.Mode6Auto {
 		// ONLY IN auto, because only auto can fall back. The library
@@ -219,5 +287,31 @@ func (p *Plugin) v6FallbackReporter(endpointID string) func(uint64) {
 			"fallbacks": n,
 		}).Warn("ipv6_mode=auto fell back to the router's advertised prefix: the segment advertised DHCPv6 and no server answered inside the fallback window. " +
 			"Set ipv6_auto_strict=true to fail the endpoint instead")
+	}
+}
+
+// v6PrefixesIgnoredReporter turns the library's count of advertised
+// prefixes that formed no address into this plugin's counter.
+//
+// AT INFO AND NOT AT WARNING, which is the opposite choice from the
+// fallback reporter beside it, and the difference is what an operator
+// has to do. A refused prefix is the ordinary state of a link that
+// advertises one autonomous prefix and one that is not: nothing is
+// degraded and no configuration is being second-guessed. What makes
+// the number worth having is the two readings it separates -- an
+// endpoint holding this client's eight addresses on a link advertising
+// nine, and an endpoint that formed nothing at all -- and both of those
+// are read off the counter, not off a log line.
+func (p *Plugin) v6PrefixesIgnoredReporter(endpointID string) func(uint64) {
+	return func(n uint64) {
+		if n == 0 {
+			return
+		}
+		p.ipv6SLAACPrefixesIgnored.Add(int32(n))
+		log.WithFields(log.Fields{
+			"endpoint": shortID(endpointID),
+			"prefixes": n,
+		}).Info("Advertised prefixes this endpoint formed no address from (RFC 4862 section 5.5.3, " +
+			"or this client's cap of eight addresses per endpoint)")
 	}
 }

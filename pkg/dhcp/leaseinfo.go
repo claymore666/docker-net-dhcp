@@ -30,34 +30,35 @@ import (
 // is not a property of the lease and has nowhere in it to live. Taking
 // it here rather than adding it to the result afterwards is what keeps
 // it inside sanitizeInfo's single boundary pass at the bottom.
-func infoFromLease(l lease.Lease, r proto.RouterObservation, now time.Time) (Info, int) {
+//
+// IT TAKES THE NETWORK'S MAIN PREFIX for the same kind of reason: which
+// of several formed addresses Docker is told about is a property of the
+// network's configuration, not of the lease, and choosing here is what
+// keeps the choice and the address list in one place.
+func infoFromLease(l lease.Lease, r proto.RouterObservation, now time.Time, main netip.Prefix) (Info, int) {
 	info := Info{
 		MTU:          l.MTU,
 		SearchList:   append([]string(nil), l.DomainSearch...),
 		LeaseSeconds: leaseSeconds(l, now),
-	}
-	// RFC 9915 section 7.1's preferred lifetime, on a v6 lease only.
-	//
-	// THE INFINITE CASE IS NOT ZERO SECONDS, and folding the two would
-	// deprecate every address on an infinite lease the moment it was
-	// installed. The library spells an infinite lifetime as the zero
-	// Time, exactly as it does for Expire, and an infinite preferred
-	// lifetime cannot be shorter than the valid one -- so it IS the
-	// valid one, which is what the kernel is told. A preferred deadline
-	// that is set and already past is a genuinely deprecated address
-	// and comes out of secondsUntil as 0, which is what RFC 4862
-	// section 5.5.4 asks for and is the case this branch keeps
-	// distinguishable.
-	if l.Addr.IsValid() && l.Addr.Addr().Is6() {
-		if l.Preferred.IsZero() {
-			info.PreferredSeconds = info.LeaseSeconds
-		} else {
-			info.PreferredSeconds = secondsUntil(l.Preferred, now)
-		}
+		SLAAC:        l.SLAAC,
 	}
 	if l.Addr.IsValid() {
 		info.IP = l.Addr.String()
 	}
+	// Every v6 number -- the address, both its lifetimes and the rest
+	// of the set -- comes from here and from nowhere else. THE
+	// LEASE-WIDE PAIR IS NEVER READ FOR AN ADDRESS, for the reason
+	// fillV6Addrs gives and for one more that is not visible from
+	// this side of the module boundary: proto.Lease6.PreferredUntil
+	// refuses a preferred lifetime of zero, so a DEPRECATED address
+	// leaves Lease.Preferred at the zero Time -- which is also how the
+	// library spells an INFINITE preferred lifetime. Read from the
+	// aggregate, an address whose preferred lifetime had just run out
+	// was therefore installed with PreferedLft equal to its valid
+	// lifetime, and the kernel never marked it deprecated at all
+	// (RFC 4862 section 5.5.4). Lease.Addrs[i].Preferred carries the
+	// two cases apart, and it is what this reads.
+	fillV6Addrs(&info, l, now, main)
 	if l.Gateway.IsValid() && !l.Gateway.IsUnspecified() {
 		info.Gateway = l.Gateway.String()
 	}
@@ -233,6 +234,104 @@ func containsString(in []string, s string) bool {
 		}
 	}
 	return false
+}
+
+// fillV6Addrs renders every address of a v6 lease with its own pair of
+// lifetimes and chooses which of them this network reports to Docker.
+//
+// WHY EVERY ADDRESS AND NOT THE FIRST. RFC 4862 section 5.5.3 is written
+// per Prefix Information option -- "For each Prefix-Information option in
+// the Router Advertisement:" -- so a link advertising a unique-local
+// prefix and a global one gives this client two addresses, each with its
+// own deadlines and its own expiry. The library holds them all
+// (lease.Lease.Addrs, cap proto.MaxSLAACAddresses = 8, at which point a
+// further prefix is refused and the held ones keep their places). A
+// chassis that installed Lease.Addr alone would leave the rest of them
+// unconfigured while the library kept refreshing them, and nothing
+// anywhere would say so.
+//
+// WHY THE LIFETIMES COME FROM THE ENTRY AND NEVER FROM THE LEASE. The
+// lease's own pair is an AGGREGATE over the set: Lease.Expire is the
+// LONGEST valid lifetime it holds and Lease.Preferred the SHORTEST
+// preferred one (proto.Lease6.Deadlines and PreferredUntil in the pinned
+// library). Installing each address with the aggregate would give a
+// prefix advertised for five minutes the expiry of one advertised for a
+// day, and the container would hold an address whose router stopped
+// naming it.
+//
+// WHICH ONE DOCKER IS TOLD. Docker's endpoint carries exactly one
+// AddressIPv6, so one of the set is the one `docker inspect` shows and
+// the one libnetwork installs before the plugin ever runs. `main` is the
+// network's `ipv6_main_prefix`; when it is unset, or when no address
+// falls inside it, the choice is the first address the lease holds,
+// which is the first prefix the router advertised. The second case is
+// reported on Info.MainAddrFallback rather than silently resolved,
+// because an operator who named a prefix and got a different one has a
+// router to look at.
+func fillV6Addrs(info *Info, l lease.Lease, now time.Time, main netip.Prefix) {
+	entries := l.Addrs
+	if len(entries) == 0 {
+		// A v4 lease has no list and wants none. A v6 lease with an
+		// address always has one -- the library builds Lease.Addr out
+		// of Lease.Addrs[0] -- so the synthesised entry below is
+		// unreachable from the pinned library and exists because this
+		// function has to be total over every Info a caller can hand
+		// it, a unit test's included. It carries the lease-wide pair,
+		// which for a single address is that address's own.
+		if !l.Addr.IsValid() || !l.Addr.Addr().Is6() {
+			return
+		}
+		entries = []lease.Addr6{{Addr: l.Addr, Preferred: l.Preferred, Valid: l.Expire}}
+	}
+	info.Addrs = make([]V6Addr, 0, len(entries))
+	kept := make([]lease.Addr6, 0, len(entries))
+	for _, a := range entries {
+		if !a.Addr.IsValid() {
+			continue
+		}
+		kept = append(kept, a)
+		info.Addrs = append(info.Addrs, V6Addr{
+			IP:               a.Addr.String(),
+			ValidSeconds:     secondsUntil(a.Valid, now),
+			PreferredSeconds: v6PreferredSeconds(a, now),
+		})
+	}
+	if len(info.Addrs) == 0 {
+		return
+	}
+
+	chosen := 0
+	if main.IsValid() {
+		chosen = -1
+		for i, a := range kept {
+			if a.Addr.IsValid() && main.Contains(a.Addr.Addr()) {
+				chosen = i
+				break
+			}
+		}
+		if chosen < 0 {
+			chosen, info.MainAddrFallback = 0, true
+		}
+	}
+	info.IP = info.Addrs[chosen].IP
+	info.LeaseSeconds = info.Addrs[chosen].ValidSeconds
+	info.PreferredSeconds = info.Addrs[chosen].PreferredSeconds
+}
+
+// v6PreferredSeconds is one address's preferred lifetime on Info's
+// convention, and it carries the same infinite rule the lease-wide field
+// above carries, for the same reason: a zero deadline is an INFINITE
+// preferred lifetime, and an infinite preferred lifetime cannot be
+// shorter than the valid one, so it IS the valid one. Folding the two
+// would install every address on an infinite advertisement with
+// preferred_lft 0, which is the kernel's spelling of `deprecated` -- the
+// container would never open a new connection on an address that is
+// perfectly current.
+func v6PreferredSeconds(a lease.Addr6, now time.Time) int {
+	if a.Preferred.IsZero() {
+		return secondsUntil(a.Valid, now)
+	}
+	return secondsUntil(a.Preferred, now)
 }
 
 func routeGateway(r wire.Route) string {

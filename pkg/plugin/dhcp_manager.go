@@ -196,6 +196,18 @@ type dhcpManager struct {
 	ipMu     sync.Mutex
 	lastIP   *netlink.Addr
 	lastIPv6 *netlink.Addr
+	// v6Installed is EVERY IPv6 address this manager has put on the
+	// container link, keyed by the address's own string, and lastIPv6
+	// above is the one of them Docker was told about.
+	//
+	// A SET AND NOT A LAST VALUE, because RFC 4862 section 5.5.3 forms
+	// one address per autonomous prefix and a lease holds all of them.
+	// The change path for a single value can only ever delete the one
+	// address it remembers: on a link that advertised two prefixes and
+	// then withdrew one, it would delete whichever address the lease
+	// happened to name first and leave the withdrawn one on the link
+	// for as long as the container ran.
+	v6Installed map[string]*netlink.Addr
 	// lastEvent / lastEventAt are the most recent lifecycle event this
 	// manager saw and when it saw it, for the per-endpoint half of
 	// /Plugin.Health. Under ipMu with the addresses beside them
@@ -570,6 +582,17 @@ func (m *dhcpManager) setLastIP(v6 bool, addr *netlink.Addr) {
 // affect lease handling. ip is the bare address ("192.168.0.10"),
 // derived by the caller from whatever form it has at hand.
 func (m *dhcpManager) audit(kind, ip string) {
+	m.auditFrom(kind, ip, "")
+}
+
+// auditFrom is audit with the address's source, for the rows where
+// "where did this address come from" is not answered by the kind.
+//
+// A FORMED ADDRESS AND A GRANTED ONE ARE THE SAME `bound` ROW OTHERWISE,
+// and they are not the same event to anyone reading the ledger back: no
+// DHCP server was involved in the first, so there is no lease on any
+// server to correlate it with and no server log it appears in.
+func (m *dhcpManager) auditFrom(kind, ip, source string) {
 	if m.plugin == nil || m.plugin.ledger == nil || !m.opts.AuditLog {
 		return
 	}
@@ -580,8 +603,17 @@ func (m *dhcpManager) audit(kind, ip string) {
 		Container: m.containerID(),
 		Hostname:  m.hostnameOnTheWire(),
 		IP:        ip,
+		Source:    source,
 		MAC:       m.macString(),
 	})
+}
+
+// auditSource is the ledger's `source` column for one lease.
+func auditSource(info dhcp.Info) string {
+	if info.SLAAC {
+		return "slaac"
+	}
+	return ""
 }
 
 // containerID resolves (once, then caches) the ID of the container
@@ -714,12 +746,12 @@ func (m *dhcpManager) renew(v6 bool, info dhcp.Info) error {
 		return fmt.Errorf("failed to parse IP address: %w", err)
 	}
 	if v6 {
-		v6AddrAttrs(ip, info)
+		v6AddrAttrs(ip, info.LeaseSeconds, info.PreferredSeconds)
 	}
 
 	// Address first, routes after — the ordering the kernel itself
 	// requires (see applyAddressChange).
-	if err := m.applyAddressChange(v6, ip); err != nil {
+	if err := m.applyAddressChange(v6, ip, info); err != nil {
 		return err
 	}
 
@@ -764,7 +796,7 @@ func (m *dhcpManager) renew(v6 bool, info dhcp.Info) error {
 // applyAddressChange re-applies the lease to the link when the server
 // handed back a different address than the one currently recorded. A
 // no-op on the steady-state renewal path, which is the common case.
-func (m *dhcpManager) applyAddressChange(v6 bool, ip *netlink.Addr) error {
+func (m *dhcpManager) applyAddressChange(v6 bool, ip *netlink.Addr, info dhcp.Info) error {
 	v4, v6Last := m.lastIPs()
 	lastIP := v4
 	if v6 {
@@ -772,7 +804,7 @@ func (m *dhcpManager) applyAddressChange(v6 bool, ip *netlink.Addr) error {
 	}
 	changed := lastIP != nil && !ip.Equal(*lastIP)
 	if v6 {
-		return m.installV6Address(ip, lastIP, changed)
+		return m.installV6Address(ip, lastIP, changed, info)
 	}
 	if !changed {
 		return nil
@@ -877,11 +909,33 @@ func (m *dhcpManager) applyAddressChange(v6 bool, ip *netlink.Addr) error {
 //
 // Both lifetimes zero means an infinite lease and sends no
 // IFA_CACHEINFO at all, which is the kernel's "forever".
-func v6AddrAttrs(addr *netlink.Addr, info dhcp.Info) {
+func v6AddrAttrs(addr *netlink.Addr, valid, preferred int) {
 	addr.Flags |= unix.IFA_F_NODAD
-	addr.ValidLft = info.LeaseSeconds
-	addr.PreferedLft = info.PreferredSeconds
+	addr.ValidLft = valid
+	addr.PreferedLft = preferred
+	// AN INFINITE VALID LIFETIME BESIDE A FINITE PREFERRED ONE CANNOT
+	// BE SENT AS A ZERO, and it is a shape a router may legally
+	// advertise: RFC 4862 section 5.5.3 takes the two lifetimes from
+	// the Prefix Information option independently and only requires
+	// preferred <= valid. The netlink library attaches IFA_CACHEINFO
+	// when EITHER lifetime is non-zero and puts both numbers in it, so
+	// the pair (0, 1800) reaches the kernel as a valid lifetime of zero
+	// seconds and the address is refused with EINVAL -- the container
+	// then has no address at all, which is the opposite of what an
+	// unbounded advertisement asked for. The kernel's own spelling of
+	// "forever" in that structure is 0xFFFFFFFF, so that is what is
+	// sent once the pair has to be sent at all. Both zero still sends
+	// no IFA_CACHEINFO, which is the permanent address this plugin
+	// installed before there was anything to choose.
+	if addr.ValidLft == 0 && addr.PreferedLft > 0 {
+		addr.ValidLft = infiniteLft
+	}
 }
+
+// infiniteLft is the kernel's IFA_CACHEINFO spelling of "no expiry",
+// which is not the same value as this plugin's own (Info's zero). See
+// v6AddrAttrs for the one case where the two have to be translated.
+const infiniteLft = 0xFFFFFFFF
 
 // installV6Address applies the DHCPv6 lease to the container link.
 //
@@ -902,7 +956,7 @@ func v6AddrAttrs(addr *netlink.Addr, info dhcp.Info) {
 //
 // AddrReplace and not AddrAdd for both reasons: it is the one operation
 // that is correct whether or not the address is already there.
-func (m *dhcpManager) installV6Address(ip, lastIP *netlink.Addr, changed bool) error {
+func (m *dhcpManager) installV6Address(ip, lastIP *netlink.Addr, changed bool, info dhcp.Info) error {
 	if changed {
 		// Same counter and the same warning as the v4 path: Docker's
 		// NetworkSettings still reports the previous address, because
@@ -923,21 +977,151 @@ func (m *dhcpManager) installV6Address(ip, lastIP *netlink.Addr, changed bool) e
 	if m.netHandle == nil || m.ctrLink == nil {
 		return nil
 	}
-	if err := nlHandleAddrReplace(m.netHandle, m.ctrLink, ip); err != nil {
-		return fmt.Errorf("failed to apply the DHCPv6 address %v: %w", ip, err)
+	want, err := v6WantedAddrs(ip, info)
+	if err != nil {
+		return err
 	}
-	if changed && lastIP != nil {
-		if err := m.netHandle.AddrDel(m.ctrLink, lastIP); err != nil {
-			// Non-fatal: a lingering stale address is strictly better
-			// than failing the bind on cleanup.
+	// Read the installed set BEFORE the loop: withdrawV6AddrsNotIn
+	// writes it, and a renewal re-applies every address it already
+	// holds, so a counter derived from the set afterwards would count
+	// each refresh as a new address.
+	had := m.installedV6()
+	for _, a := range want {
+		if err := nlHandleAddrReplace(m.netHandle, m.ctrLink, a.addr); err != nil {
+			return fmt.Errorf("failed to apply the IPv6 address %v: %w", a.addr, err)
+		}
+		if _, seen := had[a.key]; !seen && info.SLAAC && m.plugin != nil {
+			m.plugin.ipv6SLAACAddresses.Add(1)
+		}
+	}
+	m.withdrawV6AddrsNotIn(want, auditSource(info))
+	return nil
+}
+
+// One address this lease wants on the link, keyed the same way the
+// installed set is.
+type wantedV6Addr struct {
+	addr *netlink.Addr
+	key  string
+}
+
+// v6WantedAddrs is every address this lease says the container should
+// hold, each carrying its OWN pair of lifetimes.
+//
+// THE ORDER PUTS THE MAIN ADDRESS FIRST, which matters only for the
+// error path: if one of several AddrReplace calls is going to fail, the
+// one Docker already told the container about is the one worth applying
+// before any of the others.
+//
+// A LEASE THAT CARRIES NO LIST STILL PRODUCES ONE ENTRY. Info.Addrs is
+// empty for a DHCPv4 lease and for any v6 lease the library built
+// before it held per-address lifetimes, so the single address and the
+// lease-wide pair are the fallback rather than a case with no
+// behaviour. That keeps this function total over every Info a caller
+// can hand it, including the ones a unit test writes by hand.
+func v6WantedAddrs(main *netlink.Addr, info dhcp.Info) ([]wantedV6Addr, error) {
+	if len(info.Addrs) == 0 {
+		return []wantedV6Addr{{addr: main, key: main.String()}}, nil
+	}
+	out := make([]wantedV6Addr, 0, len(info.Addrs))
+	mainKey := main.String()
+	for _, a := range info.Addrs {
+		addr := main
+		if a.IP != info.IP {
+			parsed, err := netlink.ParseAddr(a.IP)
+			if err != nil {
+				return nil, fmt.Errorf("failed to parse the IPv6 address %q: %w", a.IP, err)
+			}
+			addr = parsed
+		}
+		v6AddrAttrs(addr, a.ValidSeconds, a.PreferredSeconds)
+		w := wantedV6Addr{addr: addr, key: addr.String()}
+		if w.key == mainKey {
+			out = append([]wantedV6Addr{w}, out...)
+			continue
+		}
+		out = append(out, w)
+	}
+	return out, nil
+}
+
+// withdrawV6AddrsNotIn removes from the container link every address
+// this manager installed that the current lease no longer holds, and
+// records each one.
+//
+// WHY A SET DIFFERENCE AND NOT A COMPARISON WITH THE LAST ADDRESS. Two
+// things take an address out of a lease and neither is a renewal onto a
+// different address: a valid lifetime that ran out (RFC 4862 section
+// 5.5.4's second phase), and a router that stopped advertising the
+// prefix it was formed from. On a link with two autonomous prefixes
+// either can happen to either address while the other is untouched, so
+// "the address changed" is not a question with one answer, and the
+// container keeping an address whose prefix is no longer routed is
+// worse than a stale one: it is chosen as a source address for new
+// connections that then go nowhere.
+//
+// EVERY FAILURE HERE IS NON-FATAL AND EVERY ONE IS COUNTED. The address
+// is out of the lease whatever the kernel says, so a manager that
+// returned an error here would fail a renewal over an address it was
+// trying to clean up.
+func (m *dhcpManager) withdrawV6AddrsNotIn(want []wantedV6Addr, source string) {
+	keep := make(map[string]bool, len(want))
+	for _, w := range want {
+		keep[w.key] = true
+	}
+	for key, addr := range m.installedV6() {
+		if keep[key] {
+			continue
+		}
+		m.forgetV6Addr(key)
+		if err := m.netHandle.AddrDel(m.ctrLink, addr); err != nil {
 			log.
 				WithError(err).
 				WithFields(m.logFields(true)).
-				WithField("stale_ip", lastIP).
-				Warn("Failed to remove stale address after lease change")
+				WithField("withdrawn_ip", key).
+				Warn("Failed to remove an IPv6 address the lease no longer holds")
+			continue
 		}
+		if m.plugin != nil {
+			m.plugin.ipv6AddressesWithdrawn.Add(1)
+		}
+		m.auditFrom("withdrawn", bareIP(key), source)
+		log.
+			WithFields(m.logFields(true)).
+			WithField("withdrawn_ip", key).
+			WithField("source", source).
+			Info("An IPv6 address left this endpoint's lease and was removed from the link")
 	}
-	return nil
+	for _, w := range want {
+		m.rememberV6Addr(w.key, w.addr)
+	}
+}
+
+// installedV6 is a copy of the installed set, taken under ipMu so the
+// caller can walk it while the map is being written.
+func (m *dhcpManager) installedV6() map[string]*netlink.Addr {
+	m.ipMu.Lock()
+	defer m.ipMu.Unlock()
+	out := make(map[string]*netlink.Addr, len(m.v6Installed))
+	for k, v := range m.v6Installed {
+		out[k] = v
+	}
+	return out
+}
+
+func (m *dhcpManager) rememberV6Addr(key string, addr *netlink.Addr) {
+	m.ipMu.Lock()
+	defer m.ipMu.Unlock()
+	if m.v6Installed == nil {
+		m.v6Installed = make(map[string]*netlink.Addr, 2)
+	}
+	m.v6Installed[key] = addr
+}
+
+func (m *dhcpManager) forgetV6Addr(key string) {
+	m.ipMu.Lock()
+	defer m.ipMu.Unlock()
+	delete(m.v6Installed, key)
 }
 
 // logObservedOptions surfaces DHCP options the plugin captures but
@@ -1717,7 +1901,7 @@ func (m *dhcpManager) handleEvent(event dhcp.Event, v6 bool) {
 		if m.plugin != nil {
 			bumpFamily(&m.plugin.leasesObtainedV4, &m.plugin.leasesObtainedV6, v6)
 		}
-		m.audit("bound", bareIP(event.Data.IP))
+		m.auditFrom("bound", bareIP(event.Data.IP), auditSource(event.Data))
 		if err := m.renew(v6, event.Data); err != nil {
 			log.
 				WithError(err).
@@ -1737,7 +1921,7 @@ func (m *dhcpManager) handleEvent(event dhcp.Event, v6 bool) {
 		if m.plugin != nil {
 			bumpFamily(&m.plugin.leasesRenewedV4, &m.plugin.leasesRenewedV6, v6)
 		}
-		m.audit("renew", bareIP(event.Data.IP))
+		m.auditFrom("renew", bareIP(event.Data.IP), auditSource(event.Data))
 		if err := m.renew(v6, event.Data); err != nil {
 			log.
 				WithError(err).
@@ -1794,6 +1978,25 @@ func (m *dhcpManager) handleEvent(event dhcp.Event, v6 bool) {
 			WithField("dns", event.Data.DNSServers).
 			WithField("routes", event.Data.Routes).
 			Info("Router Advertisement changed; re-applying the container's IPv6 configuration")
+	case "slaac_lost":
+		// EVERY FORMED ADDRESS COMES OFF THE LINK, and nothing here
+		// touches the outage counters. The lease held addresses formed
+		// from advertised prefixes and holds none now, so the set the
+		// container should have is empty; withdrawV6AddrsNotIn removes
+		// what is left, counts each one and writes its ledger row. The
+		// kernel would eventually drop them on their own valid
+		// lifetimes, which is the belt v6AddrAttrs installs, but "when
+		// each address's own advertisement runs out" is not the same
+		// moment as "the client no longer holds this prefix", and the
+		// gap is time the container spends choosing a source address on
+		// a prefix that is not routed any more.
+		if m.netHandle != nil && m.ctrLink != nil {
+			m.withdrawV6AddrsNotIn(nil, auditSource(event.Data))
+		}
+		log.
+			WithFields(m.logFields(v6)).
+			WithField("ip", event.Data.IP).
+			Warn("This endpoint's IPv6 addresses were formed from a router advertisement and the client no longer holds them")
 	case "leasefail":
 		// dhcp_timeouts, from the library's Failed{ReasonNoServer}
 		// rather than from a ticker. Through countOutageTick, because

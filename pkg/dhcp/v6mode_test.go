@@ -343,44 +343,124 @@ func TestV6FailureCause(t *testing.T) {
 	}
 }
 
-// THE BOUNDARY OF THIS CHANGE, PINNED AS A CASE RATHER THAN DESCRIBED.
+// THE CASE #989 PINNED, REWRITTEN TO THE ANSWER #818 GIVES.
 //
-// `ipv6_mode=slaac` reaches the library, and the library forms an
-// address from an autonomous prefix and stamps it as an acquired lease
-// (proto/machine6_slaac.go:302), which acquireStep6 would turn into an
-// installed /128 like any other. It does not get that far, because the
-// chassis concludes the acquisition the moment an advertisement says
-// M=0 O=0 (ErrNoDHCPv6OnSegment, chassis6.go:155) -- which is the
-// ordinary SLAAC segment, and therefore exactly the segment `slaac`
-// exists for. That early conclusion is #868's fix and is not
-// mode-aware.
+// Up to v2.1.x this test asserted the opposite: `ipv6_mode=slaac`
+// reached the library, the library formed an address from an autonomous
+// prefix and stamped it as an acquired lease, and the chassis threw the
+// acquisition away the moment an advertisement said M=0 O=0
+// (ErrNoDHCPv6OnSegment) -- which is the ordinary SLAAC segment, and
+// therefore exactly the segment `slaac` exists for. The endpoint
+// started with no address. That early conclusion is #868's fix for
+// containers hanging on stateless networks and it was not mode-aware.
 //
-// SO THE ENDPOINT STARTS WITHOUT A SLAAC ADDRESS TODAY, and this test
-// asserts that, deliberately, as the record of where this change stops.
-// The reference row and the release note say the same thing in words;
-// this is the copy that goes red when #818 makes the conclusion
-// mode-aware, which is the point at which those words have to change.
-// Without it "address formation lands in later work" is a sentence
-// nothing checks, and the two halves of the documentation could drift
-// apart again with nothing failing.
-func TestRunAcquisition6_SLAACStillEndsOnAnAdvertisedAbsence(t *testing.T) {
-	for _, m := range []proto.Mode6{proto.Mode6SLAAC, proto.Mode6Auto} {
-		t.Run(m.String(), func(t *testing.T) {
+// It is mode-aware now (concludesOnAdvertisedAbsence), so the two rows
+// below are the whole rule and they run in one table deliberately: the
+// `dhcp` row is what #868 bought and the thing this change must not
+// take back. A container start on the ordinary SLAAC home network still
+// ends in about two seconds there, and widening the change to every
+// mode would charge every network that never asked for address
+// formation the full acquisition budget with nothing failing.
+//
+// The reference row, the DHCPv6 verdict table and RELEASE_NOTES.md say
+// the same thing in words and move with this test.
+func TestRunAcquisition6_OnlyAModeThatFormsAddressesOutlivesAnAdvertisedAbsence(t *testing.T) {
+	cases := []struct {
+		mode      proto.Mode6
+		concludes bool
+	}{
+		{proto.Mode6DHCP, true},
+		{proto.Mode6SLAAC, false},
+		{proto.Mode6Auto, false},
+	}
+	for _, c := range cases {
+		t.Run(c.mode.String(), func(t *testing.T) {
 			client := &fakeV6Client{
 				events: make(chan lease.Event),
 				router: proto.RouterObservation{Seen: true},
 			}
 			_, _, err := acquisition6Result(t, context.Background(), client,
-				&DHCPClientOptions{V6: true, Mode6: m}, netip.Addr{}, 3*time.Second, 10*time.Second)
+				&DHCPClientOptions{V6: true, Mode6: c.mode}, netip.Addr{}, 3*time.Second, 10*time.Second)
 
-			if !errors.Is(err, ErrNoDHCPv6OnSegment) {
-				t.Fatalf("runAcquisition6 in ipv6_mode=%s returned %v, want "+
-					"ErrNoDHCPv6OnSegment.\nIf this is #818 landing, that is the intended "+
-					"change: update docs/reference.md's ipv6_mode row, the DHCPv6 verdict "+
-					"table and RELEASE_NOTES.md's \"Not in this release\" entry in the same "+
-					"commit, because all three say the endpoint gets no address here.", m, err)
+			if got := errors.Is(err, ErrNoDHCPv6OnSegment); got != c.concludes {
+				if c.concludes {
+					t.Fatalf("runAcquisition6 in ipv6_mode=%s returned %v, want ErrNoDHCPv6OnSegment.\n"+
+						"This is #868's early conclusion: an advertisement with neither the managed "+
+						"nor the other-configuration flag ends the acquisition in about two seconds "+
+						"instead of the whole budget, and a mode that does not form its own address "+
+						"has nothing to wait for.", c.mode, err)
+				}
+				t.Fatalf("runAcquisition6 in ipv6_mode=%s returned %v, and an advertisement with "+
+					"neither flag must NOT end the acquisition in a mode that forms its own "+
+					"address (#818): that advertisement is where the address comes from. The "+
+					"acquisition ends on what the library says instead -- Acquired once the "+
+					"formed address passes duplicate address detection, or ErrNoSLAACPrefix.", c.mode, err)
 			}
 		})
+	}
+}
+
+// The deadline is what ends a forming mode's acquisition when the
+// library says nothing at all, and the error the plugin classifies has
+// to be the deadline's rather than an advertised absence.
+//
+// IT IS THE OTHER HALF OF THE TABLE ABOVE AND NOT A RESTATEMENT. That
+// one asserts which error comes back; this one asserts that the
+// acquisition RAN to the window instead of returning early, which is
+// what gives duplicate address detection its time. A change that
+// dropped the early conclusion for forming modes AND returned
+// immediately with a nil error would pass the row above.
+func TestRunAcquisition6_AFormingModeRunsToItsWindow(t *testing.T) {
+	client := &fakeV6Client{
+		events: make(chan lease.Event),
+		router: proto.RouterObservation{Seen: true},
+	}
+	start := time.Now()
+	_, _, err := acquisition6Result(t, context.Background(), client,
+		&DHCPClientOptions{V6: true, Mode6: proto.Mode6SLAAC}, netip.Addr{}, 600*time.Millisecond, 10*time.Second)
+	elapsed := time.Since(start)
+
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("runAcquisition6 in ipv6_mode=slaac returned %v, want the acquisition window's "+
+			"own deadline: nothing else ended it", err)
+	}
+	if elapsed < 500*time.Millisecond {
+		t.Fatalf("runAcquisition6 in ipv6_mode=slaac returned after %v, want about the 600ms "+
+			"window: it returned early, so the formed address had no time to pass duplicate "+
+			"address detection", elapsed)
+	}
+}
+
+// A formed address ends the acquisition exactly as a granted one does,
+// and it arrives carrying the whole set.
+func TestRunAcquisition6_AFormedAddressEndsTheAcquisition(t *testing.T) {
+	events := make(chan lease.Event, 1)
+	events <- lease.Event{Kind: lease.Acquired, Lease: lease.Lease{
+		SLAAC: true,
+		Addr:  netip.MustParsePrefix("2001:db8:1::42/64"),
+		Addrs: []lease.Addr6{
+			{Addr: netip.MustParsePrefix("2001:db8:1::42/64"), Valid: time.Now().Add(time.Hour), Preferred: time.Now().Add(30 * time.Minute)},
+			{Addr: netip.MustParsePrefix("fd00:9::42/64"), Valid: time.Now().Add(2 * time.Hour), Preferred: time.Now().Add(time.Hour)},
+		},
+	}}
+	client := &fakeV6Client{events: events, router: proto.RouterObservation{Seen: true}}
+
+	info, _, err := acquisition6Result(t, context.Background(), client,
+		&DHCPClientOptions{V6: true, Mode6: proto.Mode6SLAAC}, netip.Addr{}, 3*time.Second, 10*time.Second)
+	if err != nil {
+		t.Fatalf("runAcquisition6 returned %v, want the formed address", err)
+	}
+	if info.IP != "2001:db8:1::42/64" {
+		t.Errorf("Info.IP = %q, want the first advertised prefix's address", info.IP)
+	}
+	if !info.SLAAC {
+		t.Error("Info.SLAAC is false for a lease the library marked as formed from an advertisement; " +
+			"the ledger row and the outage rules both read it")
+	}
+	if len(info.Addrs) != 2 {
+		t.Fatalf("Info.Addrs has %d entries, want both advertised prefixes: a chassis that installs "+
+			"Info.IP alone leaves the second prefix unconfigured while the library keeps refreshing it",
+			len(info.Addrs))
 	}
 }
 

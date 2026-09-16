@@ -39,7 +39,7 @@ func TestV6AddrAttrs_TurnsOffDuplicateAddressDetection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseAddr: %v", err)
 	}
-	v6AddrAttrs(addr, dhcp.Info{LeaseSeconds: 3600, PreferredSeconds: 1800})
+	v6AddrAttrs(addr, 3600, 1800)
 
 	if addr.Flags&unix.IFA_F_NODAD == 0 {
 		t.Error("IFA_F_NODAD is not set: the kernel re-runs a check the library already " +
@@ -62,7 +62,7 @@ func TestV6AddrAttrs_KeepsFlagsItDidNotSet(t *testing.T) {
 		t.Fatalf("ParseAddr: %v", err)
 	}
 	addr.Flags |= unix.IFA_F_NOPREFIXROUTE
-	v6AddrAttrs(addr, dhcp.Info{})
+	v6AddrAttrs(addr, 0, 0)
 	if addr.Flags&unix.IFA_F_NOPREFIXROUTE == 0 {
 		t.Error("v6AddrAttrs cleared a flag it did not set")
 	}
@@ -83,14 +83,14 @@ func TestV6AddrAttrs_InfiniteLeaseSendsNoLifetimes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseAddr: %v", err)
 	}
-	v6AddrAttrs(addr, dhcp.Info{})
+	v6AddrAttrs(addr, 0, 0)
 	if addr.ValidLft != 0 || addr.PreferedLft != 0 {
 		t.Errorf("an infinite lease gave ValidLft=%d PreferedLft=%d, want both zero",
 			addr.ValidLft, addr.PreferedLft)
 	}
 	// And a finite one does send them, or the assertion above is
 	// satisfied by a function that never sets anything.
-	v6AddrAttrs(addr, dhcp.Info{LeaseSeconds: 10, PreferredSeconds: 5})
+	v6AddrAttrs(addr, 10, 5)
 	if addr.ValidLft == 0 || addr.PreferedLft == 0 {
 		t.Error("a finite lease produced no lifetimes")
 	}
@@ -118,7 +118,7 @@ func TestV6AddrAttrs_PreferredNeverExceedsValid(t *testing.T) {
 		{LeaseSeconds: 3600, PreferredSeconds: 3600},
 		{},
 	} {
-		v6AddrAttrs(addr, info)
+		v6AddrAttrs(addr, info.LeaseSeconds, info.PreferredSeconds)
 		if addr.ValidLft != 0 && addr.PreferedLft > addr.ValidLft {
 			t.Errorf("%+v gave PreferedLft=%d above ValidLft=%d",
 				info, addr.PreferedLft, addr.ValidLft)
@@ -181,53 +181,271 @@ func TestNODAD_IsSetOnlyOnTheV6Path(t *testing.T) {
 // unconditionally would put NODAD and a pair of lifetimes on every IPv4
 // address the plugin installs. The lifetimes are the loud half -- a v4
 // address would start expiring -- and NODAD is the silent one.
+//
+// THE RULE IS "REACHED ONLY FROM THE V6 ARM", NOT "WRITTEN INSIDE IT".
+// The apply path installs a LIST of addresses (#818), each carrying its
+// own lifetimes, so the call that stamps them sits one frame below the
+// `if v6` that decides the family. A rule keyed on the neighbouring
+// text would be satisfied by moving the call back up and would refuse a
+// helper that cannot be reached from the v4 path at all, so it is keyed
+// on the call graph instead: a call is allowed where it is lexically
+// under `if v6`, or inside a function EVERY call site of which is
+// itself allowed. A function nothing in the package calls is not
+// allowed, so the rule cannot be satisfied by making its subject
+// unreachable.
+//
+// WHAT IT CANNOT SEE, stated rather than hidden: a function value. A
+// closure written under `if v6` and called from somewhere else reads as
+// guarded, and a call made through a variable of function type has no
+// callee name to follow. Both are refused by TestNODAD_IsSetOnlyOnTheV6Path
+// only insofar as they name the flag themselves; a second helper that
+// took v6AddrAttrs as a parameter would pass both. The package has no
+// such call today and the analyser is driven against a synthetic one in
+// TestV6AttrGuard_RefusesACallThatEscapesTheV6Arm.
 func TestV6AddrAttrs_IsCalledUnderTheFamilySwitch(t *testing.T) {
-	fset := token.NewFileSet()
-	f, err := parser.ParseFile(fset, "dhcp_manager.go", nil, 0)
+	names, err := filepath.Glob("*.go")
 	if err != nil {
-		t.Fatalf("parse: %v", err)
+		t.Fatalf("glob: %v", err)
 	}
-	calls := 0
-	guarded := 0
-	ast.Inspect(f, func(n ast.Node) bool {
-		ifs, ok := n.(*ast.IfStmt)
-		if !ok {
-			return true
+	fset := token.NewFileSet()
+	var files []*ast.File
+	for _, name := range names {
+		if strings.HasSuffix(name, "_test.go") {
+			continue
 		}
-		cond, ok := ifs.Cond.(*ast.Ident)
-		if !ok || cond.Name != "v6" || ifs.Init != nil {
-			return true
+		f, err := parser.ParseFile(fset, name, nil, 0)
+		if err != nil {
+			t.Fatalf("parse %s: %v", name, err)
 		}
-		ast.Inspect(ifs.Body, func(n ast.Node) bool {
-			call, ok := n.(*ast.CallExpr)
-			if !ok {
-				return true
-			}
-			if id, ok := call.Fun.(*ast.Ident); ok && id.Name == "v6AddrAttrs" {
-				guarded++
-			}
-			return true
-		})
-		return true
-	})
-	ast.Inspect(f, func(n ast.Node) bool {
-		call, ok := n.(*ast.CallExpr)
-		if !ok {
-			return true
-		}
-		if id, ok := call.Fun.(*ast.Ident); ok && id.Name == "v6AddrAttrs" {
-			calls++
-		}
-		return true
-	})
-	if calls == 0 {
+		files = append(files, f)
+	}
+	if len(files) == 0 {
+		t.Fatal("parsed no files: the search has an empty domain")
+	}
+	g := v6AttrGuardOf(fset, files)
+	if len(g.sites) == 0 {
 		t.Fatal("v6AddrAttrs is never called: the address goes to the kernel without " +
 			"NODAD or lifetimes and this test's domain is empty")
 	}
-	if guarded != calls {
-		t.Errorf("v6AddrAttrs is called %d times and only %d of those are under `if v6`; "+
-			"an unguarded call puts NODAD and a countdown on every IPv4 address",
-			calls, guarded)
+	for _, name := range g.ambiguous {
+		t.Errorf("%q names more than one function in this package, so the call graph "+
+			"this rule walks is not the one the compiler resolves", name)
+	}
+	for _, site := range g.unguarded {
+		t.Errorf("v6AddrAttrs is called at %s, which the v4 path can reach; "+
+			"an unguarded call puts NODAD and a countdown on every IPv4 address", site)
+	}
+}
+
+// v6AttrGuardOf answers, for one parsed package, which calls to
+// v6AddrAttrs are reachable only from a family switch that has already
+// chosen v6.
+//
+// `if v6 { ... }` with no init statement is the only guard it reads,
+// because it is the only one the apply path writes: the family is a
+// bool parameter threaded through renew, applyAddressChange and the
+// phases below them. An `else` branch is outside the body's braces and
+// so is not guarded, which is the direction that matters.
+type v6AttrGuard struct {
+	sites     []string
+	unguarded []string
+	v6Only    map[string]bool
+	ambiguous []string
+}
+
+type v6AttrCall struct {
+	callee  string
+	caller  string
+	guarded bool
+	pos     string
+}
+
+func v6AttrGuardOf(fset *token.FileSet, files []*ast.File) v6AttrGuard {
+	type span struct {
+		lo, hi token.Pos
+	}
+	var guards []span
+	decls := map[string]int{}
+	for _, f := range files {
+		ast.Inspect(f, func(n ast.Node) bool {
+			ifs, ok := n.(*ast.IfStmt)
+			if !ok || ifs.Init != nil {
+				return true
+			}
+			if cond, ok := ifs.Cond.(*ast.Ident); ok && cond.Name == "v6" {
+				guards = append(guards, span{ifs.Body.Lbrace, ifs.Body.Rbrace})
+			}
+			return true
+		})
+	}
+	inGuard := func(p token.Pos) bool {
+		for _, g := range guards {
+			if p > g.lo && p < g.hi {
+				return true
+			}
+		}
+		return false
+	}
+
+	var calls []v6AttrCall
+	for _, f := range files {
+		for _, d := range f.Decls {
+			fn, ok := d.(*ast.FuncDecl)
+			if !ok || fn.Body == nil {
+				continue
+			}
+			decls[fn.Name.Name]++
+			ast.Inspect(fn.Body, func(n ast.Node) bool {
+				call, ok := n.(*ast.CallExpr)
+				if !ok {
+					return true
+				}
+				name := ""
+				switch fun := call.Fun.(type) {
+				case *ast.Ident:
+					name = fun.Name
+				case *ast.SelectorExpr:
+					name = fun.Sel.Name
+				}
+				if name == "" {
+					return true
+				}
+				calls = append(calls, v6AttrCall{
+					callee:  name,
+					caller:  fn.Name.Name,
+					guarded: inGuard(call.Pos()),
+					pos:     fset.Position(call.Pos()).String(),
+				})
+				return true
+			})
+		}
+	}
+
+	byCallee := map[string][]v6AttrCall{}
+	for _, c := range calls {
+		byCallee[c.callee] = append(byCallee[c.callee], c)
+	}
+	// Ascending fixed point from the lexically guarded calls. A
+	// function with no call site in this package never enters the set,
+	// so "nothing calls it" is not an answer.
+	v6Only := map[string]bool{}
+	for changed := true; changed; {
+		changed = false
+		for callee, sites := range byCallee {
+			if v6Only[callee] || callee == "v6AddrAttrs" {
+				continue
+			}
+			ok := true
+			for _, s := range sites {
+				if !s.guarded && !v6Only[s.caller] {
+					ok = false
+					break
+				}
+			}
+			if ok {
+				v6Only[callee] = true
+				changed = true
+			}
+		}
+	}
+
+	out := v6AttrGuard{v6Only: v6Only}
+	for _, c := range calls {
+		if c.callee != "v6AddrAttrs" {
+			continue
+		}
+		out.sites = append(out.sites, c.pos)
+		if c.guarded || v6Only[c.caller] {
+			if !c.guarded && decls[c.caller] > 1 {
+				out.ambiguous = append(out.ambiguous, c.caller)
+			}
+			continue
+		}
+		out.unguarded = append(out.unguarded, c.pos)
+	}
+	return out
+}
+
+// The analyser is driven against sources that are wrong in each of the
+// ways it exists to catch, and against the shape it must keep allowing.
+//
+// Without this, the rule above is a rule with one possible verdict:
+// every widening of a guard rule has to show that the widened rule
+// still goes red, and that the narrow case it used to cover is still
+// covered.
+func TestV6AttrGuard_RefusesACallThatEscapesTheV6Arm(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		src  string
+		want int
+	}{
+		{
+			name: "lexically under the switch",
+			src: `package p
+func renew(v6 bool) { if v6 { v6AddrAttrs() } }
+func v6AddrAttrs() {}`,
+			want: 0,
+		},
+		{
+			name: "one frame below a guarded call",
+			src: `package p
+func renew(v6 bool) { if v6 { install() } }
+func install() { v6AddrAttrs() }
+func v6AddrAttrs() {}`,
+			want: 0,
+		},
+		{
+			name: "unguarded at the top",
+			src: `package p
+func renew(v6 bool) { v6AddrAttrs() }
+func v6AddrAttrs() {}`,
+			want: 1,
+		},
+		{
+			name: "a helper the v4 path also calls",
+			src: `package p
+func renew(v6 bool) { if v6 { install() } }
+func bind() { install() }
+func install() { v6AddrAttrs() }
+func v6AddrAttrs() {}`,
+			want: 1,
+		},
+		{
+			name: "the else branch is not the guard",
+			src: `package p
+func renew(v6 bool) { if v6 { } else { v6AddrAttrs() } }
+func v6AddrAttrs() {}`,
+			want: 1,
+		},
+		{
+			name: "a helper nothing calls",
+			src: `package p
+func install() { v6AddrAttrs() }
+func v6AddrAttrs() {}`,
+			want: 1,
+		},
+		{
+			name: "a guard on some other bool",
+			src: `package p
+func renew(v4 bool) { if v4 { v6AddrAttrs() } }
+func v6AddrAttrs() {}`,
+			want: 1,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fset := token.NewFileSet()
+			f, err := parser.ParseFile(fset, "p.go", tc.src, 0)
+			if err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			g := v6AttrGuardOf(fset, []*ast.File{f})
+			if len(g.sites) != 1 {
+				t.Fatalf("found %d call sites in a source with one", len(g.sites))
+			}
+			if len(g.unguarded) != tc.want {
+				t.Errorf("refused %d calls, want %d (%v)", len(g.unguarded), tc.want, g.unguarded)
+			}
+		})
 	}
 }
 

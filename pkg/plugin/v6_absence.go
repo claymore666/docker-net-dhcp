@@ -8,6 +8,8 @@ import (
 
 	log "github.com/sirupsen/logrus"
 
+	"github.com/claymore666/dhcp-golib/proto"
+
 	"github.com/claymore666/docker-net-dhcp/v2/pkg/dhcp"
 )
 
@@ -107,6 +109,27 @@ const (
 	// every mode that does not form addresses
 	// (proto/machine6_slaac.go:28).
 	v6SLAACNoPrefix
+	// v6SLAACNoAddress: a router WAS heard, this network's ipv6_mode
+	// forms the address from the advertisement, and no address was
+	// formed inside the acquisition budget -- without the library
+	// naming a reason, which is what separates this from
+	// v6SLAACNoPrefix.
+	//
+	// FATAL, and it is the row that did not exist while `slaac` could
+	// not give a container an address at all. Two things produce it and
+	// both are worth being able to see: duplicate address detection
+	// found the formed address in use (RFC 4862 section 5.4.5, and a
+	// modified EUI-64 identifier gets no retry), or the advertisement
+	// arrived too late in the budget for detection to finish. The
+	// router's prefix configuration is not what to look at; the other
+	// node holding that address is.
+	//
+	// IT IS ALSO THE VERDICT THAT KEEPS `slaac` OFF v6Fatal's MESSAGE.
+	// proto.Mode6SLAAC "sends no Solicit ever, whatever the M flag
+	// says", so on a managed segment the pre-#818 answer for a
+	// `slaac` endpoint with no address was "no DHCPv6 server answered
+	// within N s" -- about an exchange that never happened.
+	v6SLAACNoAddress
 )
 
 // classifyV6Absence turns what the acquisition observed about the
@@ -136,7 +159,7 @@ const (
 //   - anything else -- O=1 alone, or neither bit -- is a segment with
 //     no DHCPv6 addresses on it, which is a configuration and not a
 //     fault.
-func classifyV6Absence(ra dhcp.RAObservation, cause error) v6Verdict {
+func classifyV6Absence(ra dhcp.RAObservation, cause error, mode proto.Mode6) v6Verdict {
 	if errors.Is(cause, dhcp.ErrNoV6Address) {
 		return v6NotOffered
 	}
@@ -184,8 +207,22 @@ func classifyV6Absence(ra dhcp.RAObservation, cause error) v6Verdict {
 	switch {
 	case !ra.Seen:
 		return v6NoRouter
+	case mode == proto.Mode6SLAAC:
+		// `slaac` NEVER SOLICITS, so no reading of the M flag can make
+		// a silent DHCPv6 server this endpoint's problem: there was no
+		// exchange. A router was heard and the one mechanism this
+		// network is configured for produced nothing.
+		return v6SLAACNoAddress
 	case ra.Managed:
 		return v6Fatal
+	case mode == proto.Mode6Auto:
+		// `auto` on an advertisement without M resolved to forming an
+		// address (proto.Mode6Auto decides once, on the first
+		// advertisement), so this is the slaac row with the mode
+		// spelled differently. It is NOT v6NotOffered: that verdict
+		// tolerates the endpoint, and an `auto` network that was told
+		// to form an address and did not has lost its only mechanism.
+		return v6SLAACNoAddress
 	default:
 		return v6NotOffered
 	}
@@ -197,10 +234,10 @@ func classifyV6Absence(ra dhcp.RAObservation, cause error) v6Verdict {
 // Counting is the caller's evidence of intent; it is NOT evidence of
 // effect. What proves the fix is a container starting and the address
 // it ends up with, which is what the integration cases assert.
-func (p *Plugin) noteV6Absence(ra dhcp.RAObservation, iface, endpointID string, cause error) bool {
+func (p *Plugin) noteV6Absence(ra dhcp.RAObservation, iface, endpointID string, cause error, mode proto.Mode6) bool {
 	fields := log.Fields{"endpoint": shortID(endpointID), "iface": iface}
 
-	switch classifyV6Absence(ra, cause) {
+	switch classifyV6Absence(ra, cause, mode) {
 	case v6Refused:
 		// COUNTED AND LOGGED ON THE WAY TO FAILING. The endpoint still
 		// fails -- the caller turns this false into the error Docker
@@ -218,6 +255,13 @@ func (p *Plugin) noteV6Absence(ra dhcp.RAObservation, iface, endpointID string, 
 		log.WithFields(fields).WithError(cause).
 			Error("A router advertises on this segment and none of its prefixes formed an address; " +
 				"this network's ipv6_mode takes its addresses from the advertisement")
+		return false
+	case v6SLAACNoAddress:
+		p.dhcpv6SLAACNoAddress.Add(1)
+		log.WithFields(fields).WithField("ipv6_mode", mode.String()).WithError(cause).
+			Error("A router advertises on this segment and no address formed from it inside the " +
+				"acquisition budget; another node may hold the address this endpoint's prefix and " +
+				"MAC address form, and no DHCPv6 exchange took place")
 		return false
 	case v6NotOffered:
 		p.dhcpv6NotOffered.Add(1)

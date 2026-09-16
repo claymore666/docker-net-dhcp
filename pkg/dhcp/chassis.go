@@ -17,6 +17,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"runtime"
 	"sync/atomic"
 	"time"
@@ -155,6 +156,43 @@ type DHCPClientOptions struct {
 	// strictAutoFallback, so no call site can set a delay and switch it
 	// off in the same value.
 	StrictAuto6 bool
+
+	// MainPrefix6 is the network's `ipv6_main_prefix`: which of the
+	// addresses a forming mode ends up with is the one Docker is told
+	// about and `docker inspect` shows. The zero value means "the first
+	// prefix the router advertised", which is what a network that never
+	// set the option gets.
+	//
+	// IT IS READ AT THE LEASE SEAM AND NOWHERE ELSE. infoFromLease is
+	// the one point every lease crosses into the plugin, and the
+	// selection has to be the same one on both sides of the endpoint's
+	// life: CreateEndpoint answers Docker with an address, and the
+	// persistent client re-applies the same lease minutes later. Two
+	// derivations of "which address is the main one" would disagree the
+	// first time a router reordered its prefixes, and Docker's view and
+	// the link's would then name different addresses with nothing
+	// failing.
+	//
+	// It is refused at CreateNetwork on a mode that does not form
+	// addresses: a DHCPv6 lease holds the address the server granted,
+	// and a prefix filter over one address can only ever do nothing.
+	MainPrefix6 netip.Prefix
+
+	// OnV6PrefixesIgnored is called with the GAIN in the library's
+	// count of advertised Prefix Information options this client formed
+	// no address from, for any of RFC 4862 section 5.5.3's rules and
+	// including the library's own cap of proto.MaxSLAACAddresses.
+	//
+	// IT IS SET ONLY IN A MODE THAT FORMS ADDRESSES, and that is not
+	// tidiness: on an `ipv6_mode=dhcp` network the library counts every
+	// autonomous prefix it sees under SLAACIgnoreModeDHCP -- correctly,
+	// since the address comes from the server -- and a router
+	// readvertises every few seconds (RFC 4861 section 6.2.1). A
+	// counter wired up there would climb forever on every healthy
+	// dual-stack network and mean nothing. In `slaac` and `auto` the
+	// same number answers a question an operator has: a prefix was
+	// advertised and this endpoint has no address from it.
+	OnV6PrefixesIgnored func(uint64)
 
 	// OnV6Fallback is called with the GAIN in the library's count of
 	// Mode6Auto fallbacks -- an `auto` endpoint that gave up on a
@@ -313,8 +351,10 @@ type DHCPClientOptions struct {
 	// which is what makes that callback a delta rather than a total.
 	acdSeen ACDStats
 
-	// fallbacksSeen is the same thing for OnV6Fallback.
-	fallbacksSeen uint64
+	// fallbacksSeen is the same thing for OnV6Fallback, and
+	// prefixesIgnoredSeen for OnV6PrefixesIgnored.
+	fallbacksSeen       uint64
+	prefixesIgnoredSeen uint64
 }
 
 // record writes one manager event, if this manager has a record.
@@ -463,6 +503,27 @@ func (o *DHCPClientOptions) v6ModeReport(s lease.Stats) {
 	o.OnV6Fallback(delta)
 }
 
+// v6PrefixReport hands the caller the advertised prefixes the library
+// formed no address from since the last call.
+//
+// SAME SHAPE AND SAME GUARD AS v6ModeReport, and separate from it
+// because the two callbacks are set in different modes: the fallback
+// exists only in `auto` and this exists in `auto` and `slaac` alike. A
+// single callback carrying both numbers would have to be set in every
+// forming mode and then report a fallback count that cannot move in one
+// of them.
+func (o *DHCPClientOptions) v6PrefixReport(s lease.Stats) {
+	if o.OnV6PrefixesIgnored == nil {
+		return
+	}
+	if s.SLAACPrefixesIgnored <= o.prefixesIgnoredSeen {
+		return
+	}
+	delta := s.SLAACPrefixesIgnored - o.prefixesIgnoredSeen
+	o.prefixesIgnoredSeen = s.SLAACPrefixesIgnored
+	o.OnV6PrefixesIgnored(delta)
+}
+
 // RAObservation is what this segment's router advertisements said, as
 // much of RFC 4861 section 4.2 as a caller with no address needs.
 //
@@ -547,7 +608,10 @@ type acquireOutcome struct {
 func acquireStep(ev lease.Event, conflicted bool, now time.Time) acquireOutcome {
 	switch ev.Kind {
 	case lease.Acquired:
-		info, _ := infoFromLease(ev.Lease, ev.Router, now)
+		// No main prefix: this is the v4 acquisition, and a v4 lease
+		// carries no Addrs list to choose from (lease.Lease.Addrs is
+		// "empty for v4").
+		info, _ := infoFromLease(ev.Lease, ev.Router, now, netip.Prefix{})
 		return acquireOutcome{Info: info, Done: true}
 	case lease.Failed:
 		if conflicted {
@@ -896,6 +960,7 @@ func (c *DHCPClient) translate() {
 		final := c.Stats()
 		c.opts.acdReport(final)
 		c.opts.v6ModeReport(final)
+		c.opts.v6PrefixReport(final)
 		c.renewals.report(final, c.opts.OnRenewalStats)
 		c.opts.count(c.manager, final)
 	}()
@@ -968,11 +1033,12 @@ func (c *DHCPClient) translate() {
 		stats := c.Stats()
 		c.opts.acdReport(stats)
 		c.opts.v6ModeReport(stats)
+		c.opts.v6PrefixReport(stats)
 		c.renewals.report(stats, c.opts.OnRenewalStats)
 		c.renewals.cycleEnded(stats)
 		c.opts.conflict(ev)
 
-		out, emit, at := translateOne(ev, now, renewedAt)
+		out, emit, at := translateOne(ev, now, renewedAt, c.opts.MainPrefix6)
 		renewedAt = at
 		if !emit {
 			continue
@@ -1120,7 +1186,12 @@ func (c *DHCPClient) takeAdvertChange(now time.Time) (Event, bool) {
 	if !ok {
 		return Event{}, false
 	}
-	info, dropped := infoFromLease(l, c.advertRouterView(), now)
+	// The network's main prefix, the same one the bound and renew
+	// events are rendered with: this Info is compared against the last
+	// one this client reported, and rendering the two through different
+	// choices of reported address would make a change out of the
+	// choice.
+	info, dropped := infoFromLease(l, c.advertRouterView(), now, c.opts.MainPrefix6)
 	first := !c.advertKnown
 	same := c.advertKnown && !advertisedDiffers(c.advert, info)
 	c.advert, c.advertKnown = info, true
@@ -1181,8 +1252,8 @@ func sameRoutes(a, b []Route) bool {
 // "last renewal" mark. NOTHING here reads a socket or a clock: `now` is
 // supplied, which is what lets a test place a Changed inside and
 // outside the coalesce window without sleeping.
-func translateOne(ev lease.Event, now, renewedAt time.Time) (Event, bool, time.Time) {
-	info, dropped := infoFromLease(ev.Lease, ev.Router, now)
+func translateOne(ev lease.Event, now, renewedAt time.Time, main netip.Prefix) (Event, bool, time.Time) {
+	info, dropped := infoFromLease(ev.Lease, ev.Router, now, main)
 
 	var out Event
 	switch ev.Kind {
@@ -1238,6 +1309,21 @@ func translateOne(ev lease.Event, now, renewedAt time.Time) (Event, bool, time.T
 		// existing Lost -> re-acquire path is the whole handling.
 		if ev.Reason == proto.ReasonConflict {
 			return Event{}, false, renewedAt
+		}
+		// A FORMED ADDRESS GOING AWAY IS NOT A DHCP OUTAGE. "leasefail"
+		// is what feeds dhcp_timeouts through countOutageTick, and that
+		// counter means one thing: the DHCP server stopped serving this
+		// client. A SLAAC lease was granted by nobody -- RFC 4862
+		// section 5.5.3 forms it from an advertised prefix -- so its
+		// end is a router that stopped advertising or a valid lifetime
+		// that ran out, and an operator alerting on a dead DHCP server
+		// would be paged for a working segment being renumbered. It is
+		// its own type so the plugin can take the addresses off the
+		// link and say which ones, which "leasefail" carries no data
+		// for.
+		if ev.Lease.SLAAC {
+			out = Event{Type: "slaac_lost", Data: info}
+			break
 		}
 		if ev.Reason == proto.ReasonNak {
 			out = Event{Type: "nak"}

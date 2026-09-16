@@ -58,7 +58,7 @@ func TestInfoFromLease_NoDefaultRouteInRoutes(t *testing.T) {
 		}, "2001:db8::/48"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			info, _ := infoFromLease(lease.Lease{Routes: tc.routes}, proto.RouterObservation{}, now)
+			info, _ := infoFromLease(lease.Lease{Routes: tc.routes}, proto.RouterObservation{}, now, netip.Prefix{})
 			if len(info.Routes) != 1 || info.Routes[0].Destination != tc.keep {
 				t.Fatalf("Routes = %v, want only %v", info.Routes, tc.keep)
 			}
@@ -321,7 +321,7 @@ func TestInfoFromLease_TheAdvertisedMTUIsTheOnlyMTUIPv6Has(t *testing.T) {
 
 	t.Run("a DHCPv6 lease takes its MTU from the advertisement", func(t *testing.T) {
 		l := lease.Lease{Addr: pfx(t, "2001:db8::5/64")}
-		got, _ := infoFromLease(l, proto.RouterObservation{Seen: true, MTU: 1280}, now)
+		got, _ := infoFromLease(l, proto.RouterObservation{Seen: true, MTU: 1280}, now, netip.Prefix{})
 		if got.MTU != 1280 {
 			t.Errorf("MTU = %d, want the advertised 1280. A DHCPv6 lease has no MTU of "+
 				"its own, so a zero here is the container keeping the link MTU Docker "+
@@ -341,7 +341,7 @@ func TestInfoFromLease_TheAdvertisedMTUIsTheOnlyMTUIPv6Has(t *testing.T) {
 	// what separates "has not spoken" from "stopped saying".
 	t.Run("an event stamped before the first advertisement says so", func(t *testing.T) {
 		l := lease.Lease{Addr: pfx(t, "2001:db8::5/64")}
-		got, _ := infoFromLease(l, proto.RouterObservation{}, now)
+		got, _ := infoFromLease(l, proto.RouterObservation{}, now, netip.Prefix{})
 		if got.RouterSeen {
 			t.Error("RouterSeen is true with no advertisement observed")
 		}
@@ -354,7 +354,7 @@ func TestInfoFromLease_TheAdvertisedMTUIsTheOnlyMTUIPv6Has(t *testing.T) {
 	// overwritten by a router on the same link.
 	t.Run("option 26 wins on its own family", func(t *testing.T) {
 		l := lease.Lease{Addr: pfx(t, "192.0.2.5/24"), MTU: 9000}
-		got, _ := infoFromLease(l, proto.RouterObservation{Seen: true, MTU: 1280}, now)
+		got, _ := infoFromLease(l, proto.RouterObservation{Seen: true, MTU: 1280}, now, netip.Prefix{})
 		if got.MTU != 9000 {
 			t.Errorf("MTU = %d, want the lease's own 9000", got.MTU)
 		}
@@ -365,7 +365,7 @@ func TestInfoFromLease_TheAdvertisedMTUIsTheOnlyMTUIPv6Has(t *testing.T) {
 	// may be invented for it.
 	t.Run("no advertisement seen, no MTU", func(t *testing.T) {
 		l := lease.Lease{Addr: pfx(t, "192.0.2.5/24")}
-		got, _ := infoFromLease(l, proto.RouterObservation{MTU: 1280}, now)
+		got, _ := infoFromLease(l, proto.RouterObservation{MTU: 1280}, now, netip.Prefix{})
 		if got.MTU != 0 {
 			t.Errorf("MTU = %d, want 0: nothing advertised one", got.MTU)
 		}

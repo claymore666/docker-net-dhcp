@@ -61,7 +61,7 @@ func TestTranslate_AStopIsNotALeaseLoss(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			out, emit, _ := translateOne(
-				lease.Event{Kind: lease.Lost, Reason: tc.reason}, now, time.Time{})
+				lease.Event{Kind: lease.Lost, Reason: tc.reason}, now, time.Time{}, netip.Prefix{})
 			if emit != tc.wantEmit {
 				t.Fatalf("Lost{%v}: emit=%v, want %v. A stop reported as a loss makes every "+
 					"successful container start look like a lease failure; a real loss "+
@@ -91,20 +91,20 @@ func TestTranslate_ARenewalIsNotCountedTwice(t *testing.T) {
 	now := time.Now()
 	l := lease.Lease{Addr: netip.MustParsePrefix("192.168.99.7/24")}
 
-	_, emit, renewedAt := translateOne(lease.Event{Kind: lease.Renewed, Lease: l}, now, time.Time{})
+	_, emit, renewedAt := translateOne(lease.Event{Kind: lease.Renewed, Lease: l}, now, time.Time{}, netip.Prefix{})
 	if !emit {
 		t.Fatal("a Renewed emitted nothing; the plugin would never see a renewal at all")
 	}
 
 	if _, emit, _ := translateOne(
 		lease.Event{Kind: lease.Changed, Lease: l},
-		now.Add(coalesceWindow/2), renewedAt); emit {
+		now.Add(coalesceWindow/2), renewedAt, netip.Prefix{}); emit {
 		t.Error("the Changed that accompanied the same DHCPACK was emitted as a second renewal")
 	}
 
 	if _, emit, _ := translateOne(
 		lease.Event{Kind: lease.Changed, Lease: l},
-		now.Add(10*coalesceWindow), renewedAt); !emit {
+		now.Add(10*coalesceWindow), renewedAt, netip.Prefix{}); !emit {
 		t.Error("a Changed well outside the window was swallowed. That is a re-acquisition on a " +
 			"different address — a NAK and a new lease — and the container is left configured " +
 			"with the old one.")

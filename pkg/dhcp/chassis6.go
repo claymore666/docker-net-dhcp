@@ -160,6 +160,39 @@ func advertisedNoDHCPv6(r RAObservation) bool {
 	return r.Seen && !r.Managed && !r.Other
 }
 
+// concludesOnAdvertisedAbsence is the early conclusion above, read in
+// the network's ipv6_mode (#818).
+//
+// IN A MODE THAT FORMS ITS OWN ADDRESS, AN ADVERTISEMENT WITH NEITHER
+// FLAG IS THE START OF AN ACQUISITION AND NOT THE END OF ONE. RFC 4861
+// section 4.2's M=0 O=0 says DHCPv6 has nothing for this client, which
+// is the whole of what ErrNoDHCPv6OnSegment means -- and on an
+// `ipv6_mode=slaac` network DHCPv6 was never going to be asked. What
+// carries the address there is the Prefix Information option on that
+// same advertisement (RFC 4862 section 5.5.3), the library forms an
+// address from it, runs duplicate address detection and emits Acquired,
+// and concluding on the advertisement ended the acquisition before any
+// of that could arrive. That is why an `ipv6_mode=slaac` network gave
+// its containers no address up to v2.1.x: the conclusion is #868's fix
+// for containers hanging on stateless networks, and it was not
+// mode-aware.
+//
+// THE `dhcp` ROW IS THE ONE TO PROTECT, and it is why this is a
+// predicate rather than a condition deleted. #868's whole benefit is
+// that a `docker run` on the ordinary SLAAC home network takes about
+// two seconds instead of the full acquisition budget. Widening the
+// change to every mode would take that back for every network that
+// never asked for address formation, and nothing would fail -- the
+// containers would simply start twenty seconds later.
+//
+// A forming mode's acquisition ends on what the library says instead:
+// Acquired once the formed address passes detection, Failed with
+// ErrNoSLAACPrefix when the advertisement carried no prefix an address
+// could be formed from, or the budget.
+func concludesOnAdvertisedAbsence(mode proto.Mode6, r RAObservation) bool {
+	return !IPv6ModeFormsAddresses(mode) && advertisedNoDHCPv6(r)
+}
+
 // checkRouterAdvertGuardShape refuses HonorRouterAdverts on every shape
 // it does not belong on, and refuses a persistent v6 client that does
 // not carry it.
@@ -386,6 +419,7 @@ func acquireOnce6(ctx context.Context, iface string, params proto.Params6, opts 
 	stats := client.Stats()
 	opts.count(manager, stats)
 	opts.v6ModeReport(stats)
+	opts.v6PrefixReport(stats)
 
 	out, err := acquisitionResult6(info, lastE)
 	return out, ra, err
@@ -528,8 +562,8 @@ func runAcquisition6(ctx context.Context, iface string, client v6AcquisitionClie
 		case <-poll.C:
 			// The segment answered the question with an
 			// advertisement rather than with a lease event; see
-			// ErrNoDHCPv6OnSegment.
-			if advertisedNoDHCPv6(raObservation(client.Router())) {
+			// ErrNoDHCPv6OnSegment and concludesOnAdvertisedAbsence.
+			if concludesOnAdvertisedAbsence(opts.Mode6, raObservation(client.Router())) {
 				lastE = ErrNoDHCPv6OnSegment
 				got = true
 			}
@@ -544,7 +578,7 @@ func runAcquisition6(ctx context.Context, iface string, client v6AcquisitionClie
 			// the persistent client's loop does it there.
 			opts.carryResumedConfig6(&ev)
 			opts.record(ev)
-			out := acquireStep6(ev, hint.IsValid())
+			out := acquireStep6(ev, hint.IsValid(), opts.MainPrefix6)
 			if out.Err != nil {
 				lastE = out.Err
 			}
@@ -596,10 +630,10 @@ func runAcquisition6(ctx context.Context, iface string, client v6AcquisitionClie
 // a server-chosen address is left to the library, which restarts
 // discovery and is handed a different address the next time round --
 // the loop that arm would break does not exist without a hint.
-func acquireStep6(ev lease.Event, hinted bool) acquireOutcome {
+func acquireStep6(ev lease.Event, hinted bool, main netip.Prefix) acquireOutcome {
 	switch ev.Kind {
 	case lease.Acquired:
-		info, _ := infoFromLease(ev.Lease, ev.Router, time.Now())
+		info, _ := infoFromLease(ev.Lease, ev.Router, time.Now(), main)
 		return acquireOutcome{Info: info, Done: true}
 	case lease.Configured:
 		return acquireOutcome{Done: true, Err: ErrNoV6Address}

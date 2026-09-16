@@ -11,6 +11,8 @@ import (
 	log "github.com/sirupsen/logrus"
 	logtest "github.com/sirupsen/logrus/hooks/test"
 
+	"github.com/claymore666/dhcp-golib/proto"
+
 	"github.com/claymore666/docker-net-dhcp/v2/pkg/dhcp"
 )
 
@@ -88,7 +90,7 @@ func TestClassifyV6Absence(t *testing.T) {
 	// row would still pass.
 	overruled := false
 	for _, tc := range cases {
-		if errors.Is(tc.cause, dhcp.ErrNoV6Address) && classifyV6Absence(tc.ra, timeout) != tc.want {
+		if errors.Is(tc.cause, dhcp.ErrNoV6Address) && classifyV6Absence(tc.ra, timeout, proto.Mode6DHCP) != tc.want {
 			overruled = true
 		}
 	}
@@ -100,8 +102,8 @@ func TestClassifyV6Absence(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := classifyV6Absence(tc.ra, tc.cause); got != tc.want {
-				t.Errorf("classifyV6Absence(%+v, %v) = %v, want %v", tc.ra, tc.cause, got, tc.want)
+			if got := classifyV6Absence(tc.ra, tc.cause, proto.Mode6DHCP); got != tc.want {
+				t.Errorf("classifyV6Absence(%+v, %v, proto.Mode6DHCP) = %v, want %v", tc.ra, tc.cause, got, tc.want)
 			}
 		})
 	}
@@ -163,9 +165,9 @@ func TestNoteV6Absence_TolerancePolarity(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			p := &Plugin{}
-			got := p.noteV6Absence(tc.ra, "eth0", "abcdef0123456789", errors.New("timed out"))
+			got := p.noteV6Absence(tc.ra, "eth0", "abcdef0123456789", errors.New("timed out"), proto.Mode6DHCP)
 			if got != tc.wantTolerated {
-				t.Errorf("noteV6Absence(%+v) = %v, want %v", tc.ra, got, tc.wantTolerated)
+				t.Errorf("noteV6Absence(%+v, proto.Mode6DHCP) = %v, want %v", tc.ra, got, tc.wantTolerated)
 			}
 			if n := p.dhcpv6NotOffered.Load(); n != tc.wantNotOffer {
 				t.Errorf("dhcpv6_not_offered = %d, want %d", n, tc.wantNotOffer)
@@ -188,8 +190,8 @@ func TestNoteV6Absence_TolerancePolarity(t *testing.T) {
 // sends them looking on every stateless network in the estate.
 func TestNoteV6Absence_CountersAreNotOneCounter(t *testing.T) {
 	p := &Plugin{}
-	p.noteV6Absence(dhcp.RAObservation{Seen: true}, "eth0", "aaaa", nil)
-	p.noteV6Absence(dhcp.RAObservation{}, "eth0", "bbbb", nil)
+	p.noteV6Absence(dhcp.RAObservation{Seen: true}, "eth0", "aaaa", nil, proto.Mode6DHCP)
+	p.noteV6Absence(dhcp.RAObservation{}, "eth0", "bbbb", nil, proto.Mode6DHCP)
 
 	if got := p.dhcpv6NotOffered.Load(); got != 1 {
 		t.Errorf("dhcpv6_not_offered = %d after one stateless and one absent-router "+
@@ -216,7 +218,7 @@ func TestNoteV6Absence_TheAbsentRouterCaseCarriesTheCause(t *testing.T) {
 
 	cause := errors.New("no DHCPv6 lease within the budget")
 	p := &Plugin{}
-	p.noteV6Absence(dhcp.RAObservation{}, "eth7", "0123456789abcdef", cause)
+	p.noteV6Absence(dhcp.RAObservation{}, "eth7", "0123456789abcdef", cause, proto.Mode6DHCP)
 
 	entries := hook.AllEntries()
 	if len(entries) != 1 {
@@ -238,7 +240,7 @@ func TestNoteV6Absence_TheAbsentRouterCaseCarriesTheCause(t *testing.T) {
 	}
 
 	hook.Reset()
-	p.noteV6Absence(dhcp.RAObservation{Seen: true}, "eth7", "0123456789abcdef", cause)
+	p.noteV6Absence(dhcp.RAObservation{Seen: true}, "eth7", "0123456789abcdef", cause, proto.Mode6DHCP)
 	entries = hook.AllEntries()
 	if len(entries) != 1 {
 		t.Fatalf("want exactly one log entry, got %d: %v", len(entries), messagesOf(entries))

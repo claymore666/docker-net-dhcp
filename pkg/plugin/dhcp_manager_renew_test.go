@@ -137,7 +137,7 @@ func TestApplyAddressChange_NoOpWithoutAChange(t *testing.T) {
 
 	t.Run("first bind has no previous address", func(t *testing.T) {
 		m := &dhcpManager{}
-		if err := m.applyAddressChange(false, addr); err != nil {
+		if err := m.applyAddressChange(false, addr, dhcp.Info{}); err != nil {
 			t.Fatalf("applyAddressChange: %v", err)
 		}
 	})
@@ -145,7 +145,7 @@ func TestApplyAddressChange_NoOpWithoutAChange(t *testing.T) {
 	t.Run("renewal of the same address", func(t *testing.T) {
 		m := &dhcpManager{}
 		m.setLastIP(false, addr)
-		if err := m.applyAddressChange(false, addr); err != nil {
+		if err := m.applyAddressChange(false, addr, dhcp.Info{}); err != nil {
 			t.Fatalf("applyAddressChange: %v", err)
 		}
 	})
@@ -161,7 +161,7 @@ func TestApplyAddressChange_NoOpWithoutAChange(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ParseAddr: %v", err)
 		}
-		if err := m.applyAddressChange(true, other); err != nil {
+		if err := m.applyAddressChange(true, other, dhcp.Info{}); err != nil {
 			t.Fatalf("applyAddressChange: %v", err)
 		}
 		if got := m.plugin.leaseChangedV4.Load(); got != 0 {
