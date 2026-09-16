@@ -70,8 +70,13 @@
 #              is the shape of TestSandboxKeyRoute_Macvlan (12.25), which
 #              creates a macvlan network and runs one container, plus the
 #              renewal round trip the name rides on and the counter read
-#              after it. The first run that executes it costs it, the way
-#              TestFailure_UnansweredRenewalsCounted was costed.
+#              after it. Its first execution, run 35127912707 job
+#              104901808558, is NOT taken as the figure: it cost 27.05s
+#              and failed, and 15 of those seconds were a wait for a
+#              counter that cannot move on this pool, which the cell no
+#              longer takes here. The next run that executes it green
+#              costs it, the way TestFailure_UnansweredRenewalsCounted
+#              was costed.
 #   one row    TestJoinDuration_DistributionInThisShard is 13.00, and it
 #              is INFERRED too: it arrives with #403 and no run has
 #              executed it. It creates one macvlan network and runs one

@@ -175,7 +175,11 @@ type HealthResponse struct {
 	// client is already leasing (#961). HostnamesAppliedLate is the
 	// domain the other two are read against: a suite where it stays at
 	// zero has not exercised the late path at all, and their zeros then
-	// say nothing. v4 only; this plugin sends no name option for
+	// say nothing. Which is the normal reading on THIS pool: the late
+	// path runs only where the attach entered through the sandbox key,
+	// and sandbox_netns_propagation reads 0 here, so the PID route
+	// carries every attach and puts the name in the client's opening
+	// parameters instead. v4 only; this plugin sends no name option for
 	// DHCPv6.
 	HostnamesAppliedLate   int32 `json:"hostnames_applied_late"`
 	HostnameLookupFailures int32 `json:"hostname_lookup_failures"`
