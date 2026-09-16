@@ -131,28 +131,32 @@ func TestFailure_UnansweredRenewalsCounted(t *testing.T) {
 	awaitBoundPersistentClient(t, bindW)
 	ep := harness.EndpointShortID(t, ctx, cli, id, netName)
 
+	// EVERY BASELINE IN THIS CELL IS TAKEN AT THE KILL, the wire's and
+	// the health document's alike, because the outage is the subject
+	// and nothing before it is (#961). Since #961 a container whose
+	// attach entered through the sandbox key starts its DHCP client
+	// with no name and renews AT ONCE to carry the one the daemon
+	// answers with, which is RFC 2131 section 4.4.5's early renewal and
+	// is ANSWERED. It reaches the wire about two milliseconds after the
+	// bind, so a baseline taken at the bind can fall on either side of
+	// it: counted from the start of the capture it makes the wire wait
+	// below return one renewal early, before the client has gone into
+	// silence twice, which is what the counter needs; and a counter
+	// window opened in the same two milliseconds would see its answer
+	// as a leases_renewed the outage did not cause. On a host that
+	// takes the container PID route there is no such renewal, which is
+	// why the gating lane never saw either shape and the hosted
+	// cross-check saw the first.
+	beforeKill := len(wire.RenewalRequestsFrom(mac))
+
+	killed := time.Now()
+	ef.Stop()
+
 	w := harness.BeginCounterWindow(t, ctx, cli,
 		"renewals_unanswered", "dhcp_timeouts", "leases_renewed",
 		"recovery_failed", "join_start_failures", "tombstone_write_failures")
 	base := w.Before()
 	baseWarn := harness.CountPluginLogLines(t, ctx, renewalWarnMarker, ep)
-
-	// THE RENEWALS THIS CELL IS ABOUT ARE THE ONES AFTER THE KILL, so
-	// they are counted from a baseline taken here rather than from the
-	// start of the capture (#961). Since that change a container whose
-	// attach entered through the sandbox key starts its DHCP client
-	// with no name and renews AT ONCE to carry the one the daemon
-	// answers with (RFC 2131 section 4.4.5). That renewal is answered,
-	// it happens milliseconds after the bind, and counted from zero it
-	// makes the wait below return one renewal early -- before the
-	// client has gone into silence twice, which is what the counter
-	// needs. On a host that takes the container PID route there is no
-	// such renewal and this baseline is zero, which is why the gating
-	// lane never saw it and the hosted cross-check did.
-	beforeKill := len(wire.RenewalRequestsFrom(mac))
-
-	killed := time.Now()
-	ef.Stop()
 	t.Logf("server killed with a %ds lease held; T1=%ds, so the first renewal request goes into "+
 		"silence at t+%ds and the retransmission at t+%ds",
 		leaseSeconds, renewT1, renewT1, renewT1+60)
