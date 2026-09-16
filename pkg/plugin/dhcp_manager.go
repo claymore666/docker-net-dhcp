@@ -334,6 +334,20 @@ type dhcpManager struct {
 	netHandle *netlink.Handle
 	ctrLink   netlink.Link
 
+	// v6Addrs is the transport the IPv6 address set is applied
+	// through. It is nil on every production path, where
+	// v6AddrTransport falls back to netHandle -- the handle Start
+	// opened inside the container's namespace.
+	//
+	// It exists because the seam v6LinkAddrs already provides is one
+	// level too low. That one is entered with the handle passed in, so
+	// everything deciding WHETHER to apply an address set at all -- the
+	// event dispatch, installV6Address's "the first bind is not a
+	// no-op" rule, the netHandle guard itself -- sat above every test
+	// in this package, and the only observer of it was an integration
+	// arm.
+	v6Addrs v6LinkAddrs
+
 	stopChan  chan struct{}
 	errChan   chan error
 	errChanV6 chan error
@@ -966,10 +980,14 @@ const infiniteLft = 0xFFFFFFFF
 //
 //   - THE FIRST BIND IS NOT A NO-OP HERE. libnetwork installed
 //     AddressIPv6 itself when it built the sandbox, from the value
-//     CreateEndpoint returned -- with no NODAD flag and no lifetimes,
-//     because libnetwork knows nothing about either. So the address on
-//     the link is the right address with the wrong attributes until
-//     this re-applies it. The v4 path has nothing equivalent to fix.
+//     CreateEndpoint returned -- permanent and with no lifetimes,
+//     because libnetwork has none to set. MEASURED on engine 29.8.0:
+//     that address is on the link as `flags 02 valid_lft forever
+//     preferred_lft forever`, so the engine sets IFA_F_NODAD too and
+//     the flag does not tell the two installs apart; the LIFETIMES do.
+//     The address on the link is the right address with the wrong
+//     attributes until this re-applies it, and the v4 path has nothing
+//     equivalent to fix.
 //   - A RENEWAL MUST REFRESH THE LIFETIMES. The address is unchanged
 //     and the DEADLINES are not; skipping the re-apply would leave the
 //     kernel counting down the lifetimes of the previous Reply, and the
@@ -993,13 +1011,31 @@ func (m *dhcpManager) installV6Address(ip, lastIP *netlink.Addr, changed bool, i
 			Warn("dhcp renew with changed IP — Docker's view is now stale")
 	}
 
-	// netHandle/ctrLink are always live on the production path (renew
-	// runs from the event loop, post-Start); the guard keeps pre-Start
-	// unit tests of the counter semantics valid.
-	if m.netHandle == nil || m.ctrLink == nil {
+	// The transport and the link are always live on the production path
+	// (renew runs from the event loop, post-Start); the guard keeps
+	// pre-Start unit tests of the counter semantics valid.
+	h := m.v6AddrTransport()
+	if h == nil || m.ctrLink == nil {
 		return nil
 	}
-	return m.applyV6Addrs(handleV6Addrs{m.netHandle}, ip, info)
+	return m.applyV6Addrs(h, ip, info)
+}
+
+// v6AddrTransport is the handle the v6 address set is applied through:
+// the test seam when one is set, the namespace handle wrapped in
+// handleV6Addrs otherwise, and nil when there is no handle at all.
+//
+// The nil is returned as an untyped nil and not as a nil *netlink.Handle
+// inside an interface, because the caller's guard is `h == nil` and the
+// second one is not.
+func (m *dhcpManager) v6AddrTransport() v6LinkAddrs {
+	if m.v6Addrs != nil {
+		return m.v6Addrs
+	}
+	if m.netHandle == nil {
+		return nil
+	}
+	return handleV6Addrs{m.netHandle}
 }
 
 // v6LinkAddrs is the two netlink calls the v6 address set is applied
@@ -2077,8 +2113,8 @@ func (m *dhcpManager) handleEvent(event dhcp.Event, v6 bool) {
 		// moment as "the client no longer holds this prefix", and the
 		// gap is time the container spends choosing a source address on
 		// a prefix that is not routed any more.
-		if m.netHandle != nil && m.ctrLink != nil {
-			m.withdrawV6AddrsNotIn(handleV6Addrs{m.netHandle}, nil, auditSource(event.Data))
+		if h := m.v6AddrTransport(); h != nil && m.ctrLink != nil {
+			m.withdrawV6AddrsNotIn(h, nil, auditSource(event.Data))
 		}
 		log.
 			WithFields(m.logFields(v6)).

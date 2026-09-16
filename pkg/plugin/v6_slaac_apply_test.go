@@ -632,3 +632,82 @@ func TestV6WantedAddrs_ADeprecatedMemberKeepsItsDeprecation(t *testing.T) {
 			keep.ValidLft, keep.PreferedLft)
 	}
 }
+
+// THE CHAIN FROM A LEASE EVENT TO NETLINK, which nothing below the
+// integration lane could see.
+//
+// Every test above enters at applyV6Addrs with a transport handed in,
+// so all of them stayed green against a manager whose dispatch never
+// reached the apply path at all: `case "bound"` not calling renew,
+// installV6Address returning early, the netHandle guard widened. The
+// only observer of that stretch was an integration arm, and an
+// integration arm is a poor one here -- the engine installs the address
+// CreateEndpoint reported when it builds the sandbox, so the container's
+// link holds the right address, with IFA_F_NODAD, before this plugin
+// has applied anything (MEASURED, engine 29.8.0, run 35153680517:
+// `flags 02 valid_lft forever preferred_lft forever`).
+//
+// So this drives the whole chain from the event the persistent client
+// emits, and asserts the two things that install is NOT: the lease's
+// own lifetimes on the wire to netlink, and the counter an operator
+// reads moving for each address.
+func TestHandleEvent_ABoundSLAACLeaseReachesTheLink(t *testing.T) {
+	m, p := applyManager(t)
+	h := &fakeV6LinkAddrs{}
+	m.v6Addrs = h
+
+	m.handleEvent(dhcp.Event{
+		Type: "bound",
+		Data: dhcp.Info{
+			IP:               "2001:db8:1::a/64",
+			SLAAC:            true,
+			LeaseSeconds:     3600,
+			PreferredSeconds: 1800,
+			Addrs: []dhcp.V6Addr{
+				{IP: "2001:db8:1::a/64", ValidSeconds: 3600, PreferredSeconds: 1800},
+				{IP: "fd00:9::a/64", ValidSeconds: 300, PreferredSeconds: 120},
+			},
+		},
+	}, true)
+
+	if len(h.replaced) != 2 {
+		t.Fatalf("a bound SLAAC lease holding two formed addresses made %d AddrReplace "+
+			"call(s): %v.\nThe address the container ends up with is whatever the engine "+
+			"installed when it built the sandbox unless this path runs, so a dispatch that "+
+			"never reaches it leaves a container holding a permanent address on a prefix "+
+			"the router can withdraw", len(h.replaced), h.replaced)
+	}
+	if got := p.ipv6SLAACAddresses.Load(); got != 2 {
+		t.Errorf("ipv6_slaac_addresses = %d after a bound lease holding two formed "+
+			"addresses, want 2", got)
+	}
+	if got := p.leasesObtainedV6.Load(); got != 1 {
+		t.Errorf("leases_obtained_v6 = %d after one bound event, want 1", got)
+	}
+
+	// The lifetimes, because the address alone is the one thing the
+	// engine's install already got right.
+	_, last := m.lastIPs()
+	if last == nil {
+		t.Fatal("the bound event recorded no IPv6 address")
+	}
+	if last.ValidLft != 3600 || last.PreferedLft != 1800 {
+		t.Errorf("the address was applied with ValidLft=%d PreferedLft=%d, want 3600 and "+
+			"1800: the advertised lifetimes are the whole difference between this install "+
+			"and the engine's, which carries none and is therefore permanent",
+			last.ValidLft, last.PreferedLft)
+	}
+
+	// The other direction. Without it, a dispatch that applied the
+	// address set on every event whatsoever would satisfy everything
+	// above: `config` is a DHCPv6 information reply, it carries no
+	// address, and it must not touch the link.
+	other, _ := applyManager(t)
+	oh := &fakeV6LinkAddrs{}
+	other.v6Addrs = oh
+	other.handleEvent(dhcp.Event{Type: "config", Data: dhcp.Info{DNSServers: []string{"2001:db8::53"}}}, true)
+	if len(oh.replaced) != 0 || len(oh.deleted) != 0 {
+		t.Errorf("an information reply touched the link: replaced=%v deleted=%v",
+			oh.replaced, oh.deleted)
+	}
+}

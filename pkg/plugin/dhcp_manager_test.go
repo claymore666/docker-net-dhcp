@@ -1243,4 +1243,29 @@ func TestRenew_ADeprecatedV6LeaseWithNoAddressListKeepsItsDeprecation(t *testing
 		t.Errorf("an infinite lease gave ValidLft=%d PreferedLft=%d, want both zero",
 			kept.ValidLft, kept.PreferedLft)
 	}
+
+	// THE NUMBERS THEMSELVES. Both cases above carry zero in both
+	// fields, so neither can see a renewal that passes the kernel
+	// lifetimes it invented instead of the ones the lease holds. A
+	// lease that holds an address list has them re-derived per address
+	// in v6WantedAddrs, which is why this shape -- the lease-wide pair,
+	// no list -- is the only one where this call decides anything.
+	finite := &dhcpManager{plugin: &Plugin{}}
+	if err := finite.renew(true, dhcp.Info{
+		IP:               "2001:db8:1::a/64",
+		LeaseSeconds:     7200,
+		PreferredSeconds: 3600,
+	}); err != nil {
+		t.Fatalf("renew: %v", err)
+	}
+	_, timed := finite.lastIPs()
+	if timed == nil {
+		t.Fatal("the timed renewal recorded no IPv6 address")
+	}
+	if timed.ValidLft != 7200 || timed.PreferedLft != 3600 {
+		t.Errorf("a lease of 7200s preferred 3600s was applied as ValidLft=%d "+
+			"PreferedLft=%d: the kernel counts down what it was given, so a number this "+
+			"path invents is the deadline the address really has",
+			timed.ValidLft, timed.PreferedLft)
+	}
 }
