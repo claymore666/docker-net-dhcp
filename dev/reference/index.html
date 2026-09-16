@@ -2563,6 +2563,21 @@ depends on the server being configured for dynamic DNS. The plugin's
 contract is "send the option when asked". It is never "the name will
 resolve." Off by default because DDNS registration is a deliberate
 network-policy choice.</p>
+<p><strong>It costs the attach one wait that a default network no longer pays</strong>
+(v2.2.0+, #961). Option 81 is built from the name the DHCP client is
+constructed with and there is no way to set it on a client that is
+already running, so an endpoint on a <code>register_dns</code> network waits for
+the container inspect before its client starts. Every other network
+starts the client first, on a container start, and hands the name over
+afterwards, which is what <a href="#pluginhealth"><code>hostnames_applied_late</code></a>
+counts. A container <strong>restart</strong> is not that shape: Docker drives it as a
+detach and a re-attach with no endpoint creation between them, so the
+plugin rebuilds the endpoint first and that rebuild asks the daemon, on
+every network. On a busy daemon
+that difference is the length of a <code>docker run</code>: the daemon does not
+answer questions about a container while it is still starting it, so a
+<code>register_dns</code> endpoint has no address for that whole time and a default
+one is already leasing.</p>
 <h2 id="driver-options-per-endpoint">Driver options (per-endpoint)<a class="headerlink" href="#driver-options-per-endpoint" title="Permanent link">&para;</a></h2>
 <p>Passed per container via <code>docker network connect --driver-opt</code>, or as
 <code>driver_opts:</code> under a service's network attachment in Compose:</p>
@@ -3508,7 +3523,7 @@ already parse it were not told to expect a new type.</p>
 <td><code>leases_renewed</code></td>
 <td>no</td>
 <td>n/a</td>
-<td>Client renewal events, including the case where the renewal returned a different address. v4+v6 aggregate, equal to its <code>_v4</code> half in 2.0.</td>
+<td>Client renewal events, including the case where the renewal returned a different address. v4+v6 aggregate, equal to its <code>_v4</code> half in 2.0. Since v2.2.0 an endpoint that takes its name after its client is already leasing renews <strong>once immediately</strong> to carry it, so on a host where that path runs this counter reads one higher per attach than the lease timers alone would put it (#961). <a href="#pluginhealth"><code>hostnames_applied_late</code></a> counts those, so the two can be read together.</td>
 </tr>
 <tr>
 <td><code>renewals_unanswered</code></td>
@@ -3605,6 +3620,24 @@ already parse it were not told to expect a new type.</p>
 <td>no</td>
 <td>n/a</td>
 <td>(v1.8.0+) Container hostnames dropped because they carried a control character (#692). <strong>What the drop protects changed in 2.0.</strong> Nothing generates a client config any more. <code>directives_refused</code>, which counted values kept out of one, is removed for exactly that reason, and the hostname now goes straight into the DHCP parameters the plugin builds and onto the wire, as option 12 and, with <code>register_dns</code>, as the option-81 FQDN. The drop is still the safe outcome and the lease proceeds, because the hostname decorates the exchange and the opt-in <code>register_dns</code> registration, so this is not <code>healthy</code>-affecting. It is not purely cosmetic, though: the hostname is also the key that narrows tombstone matching to the container that wrote the tombstone, where an <em>empty</em> hostname means "match any tombstone on this network", so a refusal is deliberately kept distinguishable from an absence instead of collapsed into an empty string. Read it as an intent signal and not as a fault: Docker does not validate <code>--hostname</code>, and a legitimate one never contains a control character, so a non-zero value means something sent one on purpose. Underscores and other technically-illegal-but-common hostnames are <strong>not</strong> counted; the rule is about control characters and never about RFC 1123. <strong>Not a check:</strong> the imperative says how to <em>read</em> a non-zero value and never what to <em>do</em> about one: the same row says the drop is the safe outcome and the lease proceeds, so there is no degraded state for a check to fire on.</td>
+</tr>
+<tr>
+<td><code>hostnames_applied_late</code></td>
+<td>no</td>
+<td>n/a</td>
+<td><em>(v2.2.0+)</em> Container names given to a DHCP client that was already leasing (#961). Since v2.2.0 the attach starts the persistent client <strong>before</strong> it asks the daemon for the container's name, so a container leases at the speed of the segment instead of at the speed of a daemon that is busy starting it; the name is handed to the running client when the answer comes, and the client renews early to carry it (RFC 2131 section 4.4.5), so the server's table has it within one exchange. This counter is the mechanism working, and it <strong>narrows</strong> the two rows below without deciding them: zero on all three is also what a host reads when its containers were started without <code>--hostname</code>, and what it reads when every attach took the name before the client started. A non-zero value here is the only reading that says the late path ran and worked; a zero is three states and the plugin log tells them apart. It counts non-empty names only, because a container started without <code>--hostname</code> has nothing to hand over and is not an event. <strong>v4 only</strong>, and that is the DHCP library's boundary: it sends no name option for DHCPv6 at all. Two populations are deliberately <strong>not</strong> counted here, because on both the name was already in the client's opening parameters: a network with <code>register_dns</code>, which needs the name at construction for option 81, and a host whose sandbox key is refused, where the container inspect the PID fallback made has already answered. <strong>Not a check:</strong> it is the normal reading on a working host and its normal value is not zero.</td>
+</tr>
+<tr>
+<td><code>hostname_lookup_failures</code></td>
+<td>no</td>
+<td>warn</td>
+<td><em>(v2.2.0+)</em> Attaches whose container inspect never answered, so the endpoint leases with no name in the DHCP server's table (#961). <strong>No</strong> because the endpoint is working: it has its address and its renewal client, which is the whole point of starting the client first, and what it lacks is its name upstream until something attaches it again. The lookup runs on the attach's own context and is abandoned with it, so this is the same <code>awaitTimeout</code> + 60s window <code>join_attach_slow</code> reports on, and the two rise together when a daemon is slow. Watch it rather than page on it: a sustained rise is a daemon that is not answering, which affects a great deal more than names.</td>
+</tr>
+<tr>
+<td><code>hostname_apply_failures</code></td>
+<td>no</td>
+<td>warn</td>
+<td><em>(v2.2.0+)</em> Container names the running DHCP client would not take, so the endpoint leases with no name in the DHCP server's table (#961). The daemon answered here; the client refused the handover. Three causes, all from the library: a name it will not put on the wire, a request queue that was full, and no running client left to give it to. Separate from <code>hostname_lookup_failures</code> because the two describe the same endpoint and their remedies are at opposite ends of the host. Watch it: a rise with no lookup failures beside it is this side of the host and not the daemon, and the names of the containers involved are in the plugin's log at <code>warn</code>.</td>
 </tr>
 <tr>
 <td><code>unsafe_option_values_dropped</code></td>
