@@ -88,16 +88,16 @@ no external DHCP client to install and no client process per container.
 sudo mkdir -p /var/lib/net-dhcp
 
 # amd64
-docker plugin install ghcr.io/claymore666/docker-net-dhcp:v2.1.0
+docker plugin install ghcr.io/claymore666/docker-net-dhcp:v2.1.1
 # arm64
-docker plugin install ghcr.io/claymore666/docker-net-dhcp:v2.1.0-arm64
+docker plugin install ghcr.io/claymore666/docker-net-dhcp:v2.1.1-arm64
 ```
 
 One network, created once. `macvlan` needs only a host NIC; `bridge`
 wants a bridge you bring yourself ([Bridge mode](bridge-mode.md)):
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.1.0 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.1.1 \
   --ipam-driver null -o mode=macvlan -o parent=eth0 lan-dhcp
 
 docker run --rm -ti --network lan-dhcp alpine ip address show
@@ -110,8 +110,8 @@ goes into Docker's own address management, which makes `--ip` and
 Compose's `ipv4_address` work.
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.1.0 \
-  --ipam-driver ghcr.io/claymore666/docker-net-dhcp:v2.1.0 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.1.1 \
+  --ipam-driver ghcr.io/claymore666/docker-net-dhcp:v2.1.1 \
   -o mode=macvlan -o parent=eth0 lan-dhcp
 ```
 

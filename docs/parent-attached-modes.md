@@ -39,7 +39,7 @@ substitute yours, and `ip -brief link` lists them):
 # On arm64 use the -arm64 tag. A network stores this exact reference
 # as its driver, so it must name the plugin you installed.
 docker network create \
-    --driver=ghcr.io/claymore666/docker-net-dhcp:v2.1.0 \
+    --driver=ghcr.io/claymore666/docker-net-dhcp:v2.1.1 \
     --ipam-driver=null \
     -o mode=macvlan \
     -o parent=eth0 \
@@ -87,7 +87,7 @@ docker inspect app | jq '.[0].NetworkSettings.Networks'
    re-claims it, exactly as it would for a physical host that rebooted
    (v1.9.0+, #800). A network created with `release_lease=on_stop` hands
    it back here instead, and gives up the stable MAC and address across
-   a restart to do so (v2.2.0+, #962).
+   a restart to do so (v2.1.1+, #962).
 7. The macvlan link is reaped automatically when the container netns is
    destroyed.
 

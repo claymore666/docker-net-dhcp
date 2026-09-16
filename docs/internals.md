@@ -430,6 +430,19 @@ displaced by a newer one for the same endpoint, and the cleanup after
 running, and a release there would tell the server an address is free
 while a live container holds it.
 
+**And one address never reaches `Leave` at all.** In IPAM mode an
+address reserved for an endpoint whose `CreateEndpoint` then failed is
+retained by `ReleaseAddress` and never released, on every value of
+`release_lease` including `on_stop`. Retaining it is what lets a restart
+policy's next attempt claim the same address back instead of burning a
+second lease on the server, and a reservation with no endpoint reaches
+no `Leave`, so nothing on the release path can see it. No DHCPRELEASE
+goes on the wire for it and the address is left to expire, exactly as
+any other host on the segment leaves one. On an `on_stop` network that
+is a real lease the server granted that nothing hands back, held by the
+retention deadline until it expires, and which of the two wins is a
+decision and not a fold.
+
 **Why this changed.** Up to v1.8.x the plugin released aggressively. The
 external client emitted a `RELEASE` on a graceful stop, and a background
 *reclaim* handed back the one-shot's address whenever no persistent
@@ -624,7 +637,7 @@ nothing else.
   therefore loaded exactly once into a local, and the aggregate is the
   sum of those two locals, and never a second `.Load()` of a half that
   was already read.
-- **Both family series are stored; neither is derived.** Six counters
+- **Both family series are stored; neither is derived.** Ten counters
   carry a `family` label. `bumpFamily` increments **exactly one** of a
   pair, the v4 half or the v6 half, never both and never a third
   aggregate, so `_v4` and `_v6` are peers, and the unsuffixed counter an
