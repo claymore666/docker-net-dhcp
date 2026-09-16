@@ -117,6 +117,8 @@ LANE=(
   "dockerignore parity|-|bash scripts/check-dockerignore-parity.sh"
   "registry login|-|bash scripts/check-registry-login.sh"
   "publish/verify parity|-|bash scripts/check-publish-verify-parity.sh"
+  "registry name list|-|bash scripts/check-registry-name-list.sh"
+  "runbook walkthrough|-|bash scripts/check-runbook-release-steps.sh"
   "cosign docs|-|bash scripts/check-cosign-docs.sh"
   "dispatch-ref guard|-|bash scripts/check-dispatch-ref-guard.sh"
   "latest promotion order|-|bash scripts/check-latest-promotion.sh"

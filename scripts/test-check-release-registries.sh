@@ -62,6 +62,10 @@ want_in "$CANON"
 check "the canonical repo with Hub credentials passes" 0 \
     "REPO=$CANON" HAS_HUB_CREDS=true
 want_in "both registries"
+# One credential pair reaches both Docker Hub names (#972). The success
+# line says so, because "both registries" was true before the alias and
+# is now the smaller half of what the run covers.
+want_in "under both Docker Hub names"
 check "a fork with Hub credentials passes" 0 \
     REPO=someone/docker-net-dhcp HAS_HUB_CREDS=true
 
