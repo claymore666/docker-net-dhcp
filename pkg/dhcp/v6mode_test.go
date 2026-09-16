@@ -464,6 +464,74 @@ func TestRunAcquisition6_AFormedAddressEndsTheAcquisition(t *testing.T) {
 	}
 }
 
+// The network's `ipv6_main_prefix` reaches the address Docker is told
+// about, and does it through the acquisition rather than through
+// infoFromLease alone.
+//
+// THAT SEAM IS THE WHOLE POINT OF THE TEST. infoFromLease's own table
+// drives the selection with the prefix handed straight to it, so a
+// chassis that parsed the option, stored it and passed a zero Prefix
+// down would pass every one of those rows while `docker inspect` showed
+// whichever prefix the router happened to advertise first. The option
+// is silent when it is dropped: there is no error, no counter and no
+// log line, and the address it names is on the container's link either
+// way.
+//
+// Both directions, because the fallback is the half that cannot be seen
+// from outside: a prefix no advertisement carries must still produce an
+// address, and must say so on Info.MainAddrFallback for the counter and
+// the log line the plugin writes from it.
+func TestRunAcquisition6_TheNetworksMainPrefixChoosesTheReportedAddress(t *testing.T) {
+	cases := []struct {
+		name     string
+		main     netip.Prefix
+		wantIP   string
+		wantBack bool
+	}{
+		{"unset selects the first advertised prefix", netip.Prefix{}, "2001:db8:1::42/64", false},
+		{"names the second advertised prefix", netip.MustParsePrefix("fd00:9::/64"), "fd00:9::42/64", false},
+		{"names the first advertised prefix", netip.MustParsePrefix("2001:db8:1::/64"), "2001:db8:1::42/64", false},
+		{"names a prefix nothing advertised", netip.MustParsePrefix("2001:db8:ffff::/64"), "2001:db8:1::42/64", true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			events := make(chan lease.Event, 1)
+			events <- lease.Event{Kind: lease.Acquired, Lease: lease.Lease{
+				SLAAC: true,
+				Addr:  netip.MustParsePrefix("2001:db8:1::42/64"),
+				Addrs: []lease.Addr6{
+					{Addr: netip.MustParsePrefix("2001:db8:1::42/64"), Valid: time.Now().Add(time.Hour)},
+					{Addr: netip.MustParsePrefix("fd00:9::42/64"), Valid: time.Now().Add(2 * time.Hour)},
+				},
+			}}
+			client := &fakeV6Client{events: events, router: proto.RouterObservation{Seen: true}}
+
+			info, _, err := acquisition6Result(t, context.Background(), client,
+				&DHCPClientOptions{V6: true, Mode6: proto.Mode6SLAAC, MainPrefix6: c.main},
+				netip.Addr{}, 3*time.Second, 10*time.Second)
+			if err != nil {
+				t.Fatalf("runAcquisition6 returned %v, want the formed addresses", err)
+			}
+			if info.IP != c.wantIP {
+				t.Errorf("Info.IP = %q, want %q. That is the one address Docker is told about and "+
+					"the one an operator reads out of `docker inspect`; the option that names it "+
+					"reached no further than the option struct (#818).", info.IP, c.wantIP)
+			}
+			if info.MainAddrFallback != c.wantBack {
+				t.Errorf("Info.MainAddrFallback = %v, want %v. It is the only evidence that the "+
+					"prefix an operator named matched nothing the router advertised; the plugin "+
+					"counts ipv6_main_prefix_unmatched and names both prefixes from it.",
+					info.MainAddrFallback, c.wantBack)
+			}
+			if len(info.Addrs) != 2 {
+				t.Errorf("Info.Addrs has %d entries, want 2: which address is REPORTED is a "+
+					"separate question from which are installed, and choosing one must not drop "+
+					"the other from the link", len(info.Addrs))
+			}
+		})
+	}
+}
+
 // The chain that makes dhcpv6_auto_fallbacks mean anything: the
 // library's running total, this chassis's delta, the plugin's counter.
 //

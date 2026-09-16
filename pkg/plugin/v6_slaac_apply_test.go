@@ -376,3 +376,199 @@ func TestNoteMainPrefixFallback_CountsEndpointsAndNamesBothPrefixes(t *testing.T
 			"for nothing; a counter that moves on every endpoint says nothing about any", got)
 	}
 }
+
+// fakeV6LinkAddrs records the netlink calls the v6 apply path makes and
+// makes none of them. It is the TRANSPORT and not the verdict: it
+// returns whatever error a case asks for and decides nothing else.
+type fakeV6LinkAddrs struct {
+	replaced []string
+	deleted  []string
+	replErr  map[string]error
+	delErr   map[string]error
+}
+
+func (f *fakeV6LinkAddrs) AddrReplace(_ netlink.Link, a *netlink.Addr) error {
+	f.replaced = append(f.replaced, a.String())
+	return f.replErr[a.String()]
+}
+
+func (f *fakeV6LinkAddrs) AddrDel(_ netlink.Link, a *netlink.Addr) error {
+	f.deleted = append(f.deleted, a.String())
+	return f.delErr[a.String()]
+}
+
+// applyManager is a manager wired for the apply path and nothing else:
+// a link that is never dialled, a plugin for the counters, a ledger.
+func applyManager(t *testing.T) (*dhcpManager, *Plugin) {
+	t.Helper()
+	var failures atomic.Int32
+	p := &Plugin{}
+	p.ledger = newLeaseLedger(filepath.Join(t.TempDir(), ledgerFileName), &failures)
+	m := newDHCPManager(nil, JoinRequest{NetworkID: "net1", EndpointID: "ep1"},
+		DHCPNetworkOptions{AuditLog: true}).withPlugin(p)
+	m.ctrLink = &netlink.Device{}
+	return m, p
+}
+
+// THE LOOP, NOT THE ARITHMETIC. Defeat rows 3 and 4.
+//
+// v6WantedAddrs and v6AddrsToWithdraw have their own tables above, and
+// both of them stayed green against a manager that installed the first
+// address of the set and never removed anything: the helpers were
+// tested and the code that calls them was observed by nothing. That is
+// this test's whole subject, which is why it asserts on the netlink
+// calls that were made and in what order.
+//
+// The three phases are one sequence on one manager because that is what
+// makes them a renumbering. Asserting each from a fresh manager would
+// test three first binds.
+func TestApplyV6Addrs_InstallsEveryAddressAndRemovesWhatLeftTheLease(t *testing.T) {
+	m, p := applyManager(t)
+	h := &fakeV6LinkAddrs{}
+
+	// Phase 1: a lease holding two advertised prefixes.
+	two := dhcp.Info{
+		IP:    "2001:db8:1::a/64",
+		SLAAC: true,
+		Addrs: []dhcp.V6Addr{
+			{IP: "2001:db8:1::a/64", ValidSeconds: 3600, PreferredSeconds: 1800},
+			{IP: "fd00:9::a/64", ValidSeconds: 300, PreferredSeconds: 120},
+		},
+	}
+	if err := m.applyV6Addrs(h, mustParseAddr(t, two.IP), two); err != nil {
+		t.Fatalf("applying a two-address lease: %v", err)
+	}
+	if len(h.replaced) != 2 {
+		t.Fatalf("AddrReplace was called %d time(s) for a lease holding two advertised "+
+			"prefixes: %v.\nRFC 4862 section 5.5.3 forms one address per autonomous "+
+			"prefix and the library holds and refreshes all of them, so a container "+
+			"given only the first has an address its own client believes it has too.",
+			len(h.replaced), h.replaced)
+	}
+	if h.replaced[0] != "2001:db8:1::a/64" {
+		t.Errorf("the first AddrReplace was %q, want the address Docker was told about: "+
+			"if one of several calls is going to fail, that is the one worth making "+
+			"first", h.replaced[0])
+	}
+	if len(h.deleted) != 0 {
+		t.Errorf("a first bind deleted %v; nothing had left a lease that had not existed",
+			h.deleted)
+	}
+	if got := p.ipv6SLAACAddresses.Load(); got != 2 {
+		t.Errorf("ipv6_slaac_addresses = %d after two formed addresses were installed, want 2", got)
+	}
+
+	// Phase 2: the same lease again, which is what a renewal is. No
+	// address arrived and none left.
+	if err := m.applyV6Addrs(h, mustParseAddr(t, two.IP), two); err != nil {
+		t.Fatalf("re-applying the same lease: %v", err)
+	}
+	if len(h.replaced) != 4 {
+		t.Errorf("a renewal made %d AddrReplace calls in total, want 4: every address has "+
+			"to be re-applied or the kernel keeps counting down the previous "+
+			"advertisement's lifetimes", len(h.replaced))
+	}
+	if len(h.deleted) != 0 {
+		t.Errorf("a renewal onto the same addresses deleted %v", h.deleted)
+	}
+	if got := p.ipv6SLAACAddresses.Load(); got != 2 {
+		t.Errorf("ipv6_slaac_addresses = %d after a renewal onto the same two addresses, "+
+			"want 2: the counter's population is addresses formed, and one that counts "+
+			"refreshes reports how often the router advertised", got)
+	}
+
+	// Phase 3: the router stops advertising the second prefix.
+	one := dhcp.Info{
+		IP:    "2001:db8:1::a/64",
+		SLAAC: true,
+		Addrs: []dhcp.V6Addr{{IP: "2001:db8:1::a/64", ValidSeconds: 3600, PreferredSeconds: 1800}},
+	}
+	if err := m.applyV6Addrs(h, mustParseAddr(t, one.IP), one); err != nil {
+		t.Fatalf("applying the renumbered lease: %v", err)
+	}
+	if len(h.deleted) != 1 || h.deleted[0] != "fd00:9::a/64" {
+		t.Fatalf("the renumbering deleted %v, want exactly the withdrawn prefix's address.\n"+
+			"A valid lifetime that the router keeps refreshing never expires on its own, "+
+			"so an address nothing removes is one the container holds for as long as it "+
+			"runs -- and chooses as a source address for connections that go nowhere.",
+			h.deleted)
+	}
+	if got := p.ipv6AddressesWithdrawn.Load(); got != 1 {
+		t.Errorf("ipv6_addresses_withdrawn = %d, want 1", got)
+	}
+
+	rows := readLedgerLines(t, p.ledger.path)
+	if len(rows) != 1 || rows[0].Kind != "withdrawn" || rows[0].IP != "fd00:9::a" {
+		t.Fatalf("the ledger holds %+v; the one row this sequence writes is the withdrawal, "+
+			"naming the address that left", rows)
+	}
+	if rows[0].Source != "slaac" {
+		t.Errorf("the withdrawal row's source is %q, want \"slaac\": no DHCP server was "+
+			"involved and there is no lease anywhere to correlate the row with",
+			rows[0].Source)
+	}
+}
+
+// A kernel that refuses one address does not silently drop the rest.
+//
+// The error direction, because the loop above returns on the first
+// failure: what must not happen is a refusal being swallowed and the
+// endpoint coming up holding an address set nobody checked.
+func TestApplyV6Addrs_AKernelRefusalIsReturnedAndNamesTheAddress(t *testing.T) {
+	m, _ := applyManager(t)
+	h := &fakeV6LinkAddrs{replErr: map[string]error{"2001:db8:1::a/64": unix.EINVAL}}
+
+	err := m.applyV6Addrs(h, mustParseAddr(t, "2001:db8:1::a/64"), dhcp.Info{
+		IP:    "2001:db8:1::a/64",
+		SLAAC: true,
+		Addrs: []dhcp.V6Addr{{IP: "2001:db8:1::a/64", ValidSeconds: 3600, PreferredSeconds: 1800}},
+	})
+	if err == nil {
+		t.Fatal("the kernel refused the address and applyV6Addrs returned nil; the endpoint " +
+			"would come up reporting an address the container does not have")
+	}
+	if !strings.Contains(err.Error(), "2001:db8:1::a/64") {
+		t.Errorf("the error is %q and does not name the address that was refused", err)
+	}
+}
+
+// A withdrawal the kernel refuses is a warning and not a failed renewal,
+// and the address is out of the manager's set either way.
+//
+// The opposite direction of the row above, and they are different on
+// purpose: an address that is arriving is the lease, and an address that
+// is leaving is already gone. A manager that returned an error here
+// would fail a renewal over cleanup it no longer has any use for.
+func TestApplyV6Addrs_AFailedWithdrawalDoesNotFailTheRenewal(t *testing.T) {
+	m, p := applyManager(t)
+	h := &fakeV6LinkAddrs{delErr: map[string]error{"fd00:9::a/64": unix.ENODEV}}
+
+	two := dhcp.Info{
+		IP:    "2001:db8:1::a/64",
+		SLAAC: true,
+		Addrs: []dhcp.V6Addr{
+			{IP: "2001:db8:1::a/64", ValidSeconds: 3600, PreferredSeconds: 1800},
+			{IP: "fd00:9::a/64", ValidSeconds: 300, PreferredSeconds: 120},
+		},
+	}
+	if err := m.applyV6Addrs(h, mustParseAddr(t, two.IP), two); err != nil {
+		t.Fatalf("applying a two-address lease: %v", err)
+	}
+	one := dhcp.Info{
+		IP:    "2001:db8:1::a/64",
+		SLAAC: true,
+		Addrs: []dhcp.V6Addr{{IP: "2001:db8:1::a/64", ValidSeconds: 3600, PreferredSeconds: 1800}},
+	}
+	if err := m.applyV6Addrs(h, mustParseAddr(t, one.IP), one); err != nil {
+		t.Fatalf("a renewal failed over an address that was being removed: %v", err)
+	}
+	if got := p.ipv6AddressesWithdrawn.Load(); got != 0 {
+		t.Errorf("ipv6_addresses_withdrawn = %d for a removal the kernel refused, want 0: "+
+			"the counter's population is addresses that came off the link", got)
+	}
+	if _, still := m.installedV6()["fd00:9::a/64"]; still {
+		t.Error("the manager still holds an address that left the lease, so the next " +
+			"renewal tries to remove it again and writes a second ledger row for one " +
+			"withdrawal")
+	}
+}

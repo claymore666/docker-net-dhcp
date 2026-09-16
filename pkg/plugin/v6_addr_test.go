@@ -96,6 +96,55 @@ func TestV6AddrAttrs_InfiniteLeaseSendsNoLifetimes(t *testing.T) {
 	}
 }
 
+// AN INFINITE VALID LIFETIME BESIDE A FINITE PREFERRED ONE.
+//
+// RFC 4861 section 4.6.2 gives the Prefix Information option two
+// independent lifetimes and spells infinity 0xFFFFFFFF, and RFC 4862
+// section 5.5.3 only requires preferred <= valid -- so a router may
+// legally advertise a prefix that never expires and stops being
+// preferred in half an hour, and a deprecated prefix is exactly that
+// shape with the preferred half at zero. This plugin's own spelling of
+// infinity is Info's zero, and the two cannot both travel in one
+// IFA_CACHEINFO: the netlink library attaches that structure whenever
+// EITHER lifetime is non-zero and puts both numbers in it, so the pair
+// (0, 1800) reaches the kernel as a valid lifetime of zero seconds and
+// the address is refused with EINVAL. The container then has no address
+// at all, which is the opposite of what an unbounded advertisement
+// asked for, and it is silent from this side: the error arrives at a
+// renewal, on one address of a set.
+func TestV6AddrAttrs_AnInfiniteValidLifetimeIsTranslatedNotSentAsZero(t *testing.T) {
+	addr, err := netlink.ParseAddr("2001:db8::5/128")
+	if err != nil {
+		t.Fatalf("ParseAddr: %v", err)
+	}
+	v6AddrAttrs(addr, 0, 1800)
+	if addr.ValidLft != infiniteLft {
+		t.Errorf("ValidLft = %d for an infinite valid lifetime beside a finite preferred "+
+			"one, want the kernel's own infinity %d. A zero here is sent as a valid "+
+			"lifetime of zero seconds and the kernel refuses the address.",
+			addr.ValidLft, infiniteLft)
+	}
+	if addr.PreferedLft != 1800 {
+		t.Errorf("PreferedLft = %d, want the advertised 1800: the translation is of the "+
+			"valid half alone", addr.PreferedLft)
+	}
+
+	// The deprecated shape, which is the same branch with the preferred
+	// half at zero -- and it must NOT take the translation, because
+	// both lifetimes zero is this plugin's permanent address and sends
+	// no IFA_CACHEINFO at all.
+	addr2, err := netlink.ParseAddr("2001:db8::6/128")
+	if err != nil {
+		t.Fatalf("ParseAddr: %v", err)
+	}
+	v6AddrAttrs(addr2, 0, 0)
+	if addr2.ValidLft != 0 || addr2.PreferedLft != 0 {
+		t.Errorf("an infinite lease gave ValidLft=%d PreferedLft=%d, want both zero: a "+
+			"permanent address is the one shape that carries no lifetimes",
+			addr2.ValidLft, addr2.PreferedLft)
+	}
+}
+
 // The preferred lifetime never outlives the valid one.
 //
 // RFC 4862 section 5.5.3 e) treats a preferred lifetime longer than the

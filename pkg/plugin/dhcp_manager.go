@@ -978,6 +978,54 @@ func (m *dhcpManager) installV6Address(ip, lastIP *netlink.Addr, changed bool, i
 	if m.netHandle == nil || m.ctrLink == nil {
 		return nil
 	}
+	return m.applyV6Addrs(handleV6Addrs{m.netHandle}, ip, info)
+}
+
+// v6LinkAddrs is the two netlink calls the v6 address set is applied
+// with, named as an interface so the set arithmetic can be driven
+// without a link.
+//
+// IT IS THE TRANSPORT AND NOT THE VERDICT. What a test substitutes here
+// is the socket; every decision -- which addresses are wanted, which
+// have gone, which are new, what each is counted and recorded as --
+// stays in the code under test. Before this existed there was no seam
+// below installV6Address at all, so the set-difference helpers had unit
+// tests and the loop that calls them had none: installing only the
+// first address of the set, or never removing what left it, changed
+// nothing any test in this package could see.
+//
+// The production implementation is handleV6Addrs below.
+type v6LinkAddrs interface {
+	AddrReplace(link netlink.Link, addr *netlink.Addr) error
+	AddrDel(link netlink.Link, addr *netlink.Addr) error
+}
+
+// handleV6Addrs is the netns handle as a v6LinkAddrs, and it is a type
+// and not the handle itself so that the address write keeps going
+// through nlHandleAddrReplace.
+//
+// That seam is the one thing a unit test can inject a netlink failure
+// into without CAP_NET_ADMIN (see netlink_seam.go), and it is renew's
+// FIRST kernel call, so everything renew does afterwards is unreachable
+// root-free without it. Handing *netlink.Handle straight to the
+// interface would have taken every address write on the v6 path off it
+// silently, with nothing to say so.
+//
+// AddrDel stays on the handle, which is where nlAddrDel's own comment
+// leaves the renewal path's deletions.
+type handleV6Addrs struct{ h *netlink.Handle }
+
+func (a handleV6Addrs) AddrReplace(link netlink.Link, addr *netlink.Addr) error {
+	return nlHandleAddrReplace(a.h, link, addr)
+}
+
+func (a handleV6Addrs) AddrDel(link netlink.Link, addr *netlink.Addr) error {
+	return a.h.AddrDel(link, addr)
+}
+
+// applyV6Addrs puts every address this lease holds on the link and takes
+// off every address it no longer holds.
+func (m *dhcpManager) applyV6Addrs(h v6LinkAddrs, ip *netlink.Addr, info dhcp.Info) error {
 	want, err := v6WantedAddrs(ip, info)
 	if err != nil {
 		return err
@@ -988,14 +1036,14 @@ func (m *dhcpManager) installV6Address(ip, lastIP *netlink.Addr, changed bool, i
 	// each refresh as a new address.
 	had := m.installedV6()
 	for _, a := range want {
-		if err := nlHandleAddrReplace(m.netHandle, m.ctrLink, a.addr); err != nil {
+		if err := h.AddrReplace(m.ctrLink, a.addr); err != nil {
 			return fmt.Errorf("failed to apply the IPv6 address %v: %w", a.addr, err)
 		}
 		if _, seen := had[a.key]; !seen && info.SLAAC && m.plugin != nil {
 			m.plugin.ipv6SLAACAddresses.Add(1)
 		}
 	}
-	m.withdrawV6AddrsNotIn(want, auditSource(info))
+	m.withdrawV6AddrsNotIn(h, want, auditSource(info))
 	return nil
 }
 
@@ -1065,11 +1113,11 @@ func v6WantedAddrs(main *netlink.Addr, info dhcp.Info) ([]wantedV6Addr, error) {
 // is out of the lease whatever the kernel says, so a manager that
 // returned an error here would fail a renewal over an address it was
 // trying to clean up.
-func (m *dhcpManager) withdrawV6AddrsNotIn(want []wantedV6Addr, source string) {
+func (m *dhcpManager) withdrawV6AddrsNotIn(h v6LinkAddrs, want []wantedV6Addr, source string) {
 	for _, gone := range v6AddrsToWithdraw(m.installedV6(), want) {
 		key, addr := gone.key, gone.addr
 		m.forgetV6Addr(key)
-		if err := m.netHandle.AddrDel(m.ctrLink, addr); err != nil {
+		if err := h.AddrDel(m.ctrLink, addr); err != nil {
 			log.
 				WithError(err).
 				WithFields(m.logFields(true)).
@@ -2009,7 +2057,7 @@ func (m *dhcpManager) handleEvent(event dhcp.Event, v6 bool) {
 		// gap is time the container spends choosing a source address on
 		// a prefix that is not routed any more.
 		if m.netHandle != nil && m.ctrLink != nil {
-			m.withdrawV6AddrsNotIn(nil, auditSource(event.Data))
+			m.withdrawV6AddrsNotIn(handleV6Addrs{m.netHandle}, nil, auditSource(event.Data))
 		}
 		log.
 			WithFields(m.logFields(v6)).
