@@ -303,6 +303,7 @@ func fillV6Addrs(info *Info, l lease.Lease, now time.Time, main netip.Prefix) {
 			IP:               a.Addr.String(),
 			ValidSeconds:     secondsUntil(a.Valid, now),
 			PreferredSeconds: v6PreferredSeconds(a, now),
+			Deprecated:       v6Deprecated(a, now),
 		})
 	}
 	if len(info.Addrs) == 0 {
@@ -325,6 +326,7 @@ func fillV6Addrs(info *Info, l lease.Lease, now time.Time, main netip.Prefix) {
 	info.IP = info.Addrs[chosen].IP
 	info.LeaseSeconds = info.Addrs[chosen].ValidSeconds
 	info.PreferredSeconds = info.Addrs[chosen].PreferredSeconds
+	info.IPDeprecated = info.Addrs[chosen].Deprecated
 }
 
 // v6PreferredSeconds is one address's preferred lifetime on Info's
@@ -341,6 +343,21 @@ func v6PreferredSeconds(a lease.Addr6, now time.Time) int {
 		return secondsUntil(a.Valid, now)
 	}
 	return secondsUntil(a.Preferred, now)
+}
+
+// v6Deprecated is RFC 4862 section 5.5.4's second phase: a preferred
+// lifetime that is SET and has run out.
+//
+// IT IS NOT "PreferredSeconds == 0", and that is the whole reason it
+// exists. A zero deadline is an INFINITE preferred lifetime here, and
+// v6PreferredSeconds renders it as the valid lifetime -- which is
+// itself zero when the valid lifetime is infinite too. So the pair
+// (0, 0) is produced by a current permanent address and by a deprecated
+// unbounded one alike, and the numbers cannot tell them apart. This
+// reads the deadline instead, where the zero Time and an elapsed
+// instant are different values.
+func v6Deprecated(a lease.Addr6, now time.Time) bool {
+	return !a.Preferred.IsZero() && !a.Preferred.After(now)
 }
 
 func routeGateway(r wire.Route) string {

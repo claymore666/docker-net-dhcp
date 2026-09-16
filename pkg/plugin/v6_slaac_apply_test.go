@@ -572,3 +572,63 @@ func TestApplyV6Addrs_AFailedWithdrawalDoesNotFailTheRenewal(t *testing.T) {
 			"withdrawal")
 	}
 }
+
+// THE DEPRECATION CARRIED BY ONE MEMBER OF THE SET REACHES THE KERNEL.
+//
+// The pair of lifetimes cannot say it: an address deprecated on a
+// prefix advertised forever renders as (0, 0), and so does an address
+// advertised with no deadlines at all. This walks the set-building loop
+// with one of each, so the flag has to travel per address and not per
+// lease. A version that passed the same answer for every member would
+// either install the deprecated address preferred, or deprecate the one
+// the router is still telling the host to prefer -- and both are
+// silent, because RFC 4862 section 5.5.4 leaves a deprecated address on
+// the link and reachable.
+func TestV6WantedAddrs_ADeprecatedMemberKeepsItsDeprecation(t *testing.T) {
+	main := mustParseAddr(t, "2001:db8:1::a/64")
+	info := dhcp.Info{
+		IP:    "2001:db8:1::a/64",
+		SLAAC: true,
+		Addrs: []dhcp.V6Addr{
+			// Advertised forever and still preferred.
+			{IP: "2001:db8:1::a/64"},
+			// Advertised forever, preferred lifetime spent.
+			{IP: "fd00:db8:2::a/64", Deprecated: true},
+		},
+	}
+
+	want, err := v6WantedAddrs(main, info)
+	if err != nil {
+		t.Fatalf("v6WantedAddrs: %v", err)
+	}
+	if len(want) != 2 {
+		t.Fatalf("a two-prefix lease produced %d addresses: %v", len(want), want)
+	}
+	byKey := map[string]*netlink.Addr{}
+	for _, w := range want {
+		byKey[w.key] = w.addr
+	}
+
+	dep, ok := byKey["fd00:db8:2::a/64"]
+	if !ok {
+		t.Fatalf("the deprecated address is not in the set: %v", byKey)
+	}
+	if dep.ValidLft != infiniteLft || dep.PreferedLft != 0 {
+		t.Errorf("the deprecated address goes to the kernel as ValidLft=%d PreferedLft=%d, "+
+			"want %d and 0. Both lifetimes zero attaches no IFA_CACHEINFO at all and the "+
+			"kernel installs it permanent and preferred, which is the opposite of what the "+
+			"router advertised", dep.ValidLft, dep.PreferedLft, infiniteLft)
+	}
+
+	// The preservation control: the member that is NOT deprecated still
+	// carries no lifetimes, which is this plugin's permanent address.
+	keep, ok := byKey["2001:db8:1::a/64"]
+	if !ok {
+		t.Fatalf("the main address is not in the set: %v", byKey)
+	}
+	if keep.ValidLft != 0 || keep.PreferedLft != 0 {
+		t.Errorf("the address advertised with no deadlines gave ValidLft=%d PreferedLft=%d, "+
+			"want both zero: one member's deprecation must not reach the other",
+			keep.ValidLft, keep.PreferedLft)
+	}
+}

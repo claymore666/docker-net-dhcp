@@ -39,7 +39,7 @@ func TestV6AddrAttrs_TurnsOffDuplicateAddressDetection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseAddr: %v", err)
 	}
-	v6AddrAttrs(addr, 3600, 1800)
+	v6AddrAttrs(addr, 3600, 1800, false)
 
 	if addr.Flags&unix.IFA_F_NODAD == 0 {
 		t.Error("IFA_F_NODAD is not set: the kernel re-runs a check the library already " +
@@ -62,7 +62,7 @@ func TestV6AddrAttrs_KeepsFlagsItDidNotSet(t *testing.T) {
 		t.Fatalf("ParseAddr: %v", err)
 	}
 	addr.Flags |= unix.IFA_F_NOPREFIXROUTE
-	v6AddrAttrs(addr, 0, 0)
+	v6AddrAttrs(addr, 0, 0, false)
 	if addr.Flags&unix.IFA_F_NOPREFIXROUTE == 0 {
 		t.Error("v6AddrAttrs cleared a flag it did not set")
 	}
@@ -83,14 +83,14 @@ func TestV6AddrAttrs_InfiniteLeaseSendsNoLifetimes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseAddr: %v", err)
 	}
-	v6AddrAttrs(addr, 0, 0)
+	v6AddrAttrs(addr, 0, 0, false)
 	if addr.ValidLft != 0 || addr.PreferedLft != 0 {
 		t.Errorf("an infinite lease gave ValidLft=%d PreferedLft=%d, want both zero",
 			addr.ValidLft, addr.PreferedLft)
 	}
 	// And a finite one does send them, or the assertion above is
 	// satisfied by a function that never sets anything.
-	v6AddrAttrs(addr, 10, 5)
+	v6AddrAttrs(addr, 10, 5, false)
 	if addr.ValidLft == 0 || addr.PreferedLft == 0 {
 		t.Error("a finite lease produced no lifetimes")
 	}
@@ -117,7 +117,7 @@ func TestV6AddrAttrs_AnInfiniteValidLifetimeIsTranslatedNotSentAsZero(t *testing
 	if err != nil {
 		t.Fatalf("ParseAddr: %v", err)
 	}
-	v6AddrAttrs(addr, 0, 1800)
+	v6AddrAttrs(addr, 0, 1800, false)
 	if addr.ValidLft != infiniteLft {
 		t.Errorf("ValidLft = %d for an infinite valid lifetime beside a finite preferred "+
 			"one, want the kernel's own infinity %d. A zero here is sent as a valid "+
@@ -137,11 +137,64 @@ func TestV6AddrAttrs_AnInfiniteValidLifetimeIsTranslatedNotSentAsZero(t *testing
 	if err != nil {
 		t.Fatalf("ParseAddr: %v", err)
 	}
-	v6AddrAttrs(addr2, 0, 0)
+	v6AddrAttrs(addr2, 0, 0, false)
 	if addr2.ValidLft != 0 || addr2.PreferedLft != 0 {
 		t.Errorf("an infinite lease gave ValidLft=%d PreferedLft=%d, want both zero: a "+
 			"permanent address is the one shape that carries no lifetimes",
 			addr2.ValidLft, addr2.PreferedLft)
+	}
+}
+
+// A deprecated address is not sent to the kernel as a permanent one.
+//
+// MEASURED 2026-09-16 on this box, in unshare -Urn on a dummy link:
+// "ip -6 addr add ... valid_lft forever preferred_lft 0" installs the
+// address WITH the kernel's deprecated flag and preferred_lft 0sec, and
+// an address added with preferred_lft 3 is deprecated by the kernel's
+// own timer at t=6 although it is also permanent. So the pair below is
+// the state RFC 4862 section 5.5.4 asks for, and the kernel runs the
+// preferred timer on it.
+//
+// The pair (valid 0, preferred 0) reaches this function from two
+// different advertisements: an address with no deadlines at all, which
+// is permanent and preferred, and an address deprecated on a prefix
+// advertised forever, which is permanent and NOT preferred. The numbers
+// alone cannot tell them apart, so the fourth argument carries the
+// answer and the translation to the kernel's infinity fires on it. A
+// version that keyed only on a non-zero preferred lifetime sends no
+// IFA_CACHEINFO for the deprecated shape, and the kernel installs an
+// address the router has asked the host to stop using for new
+// connections as its most preferred one.
+func TestV6AddrAttrs_ADeprecatedInfiniteAddressIsNotSentAsPermanent(t *testing.T) {
+	addr, err := netlink.ParseAddr("2001:db8::7/128")
+	if err != nil {
+		t.Fatalf("ParseAddr: %v", err)
+	}
+	v6AddrAttrs(addr, 0, 0, true)
+	if addr.ValidLft != infiniteLft {
+		t.Errorf("ValidLft = %d for a deprecated address on a prefix advertised forever, "+
+			"want the kernel's own infinity %d. A zero here attaches no IFA_CACHEINFO at "+
+			"all and the address goes on the link permanent and preferred",
+			addr.ValidLft, infiniteLft)
+	}
+	if addr.PreferedLft != 0 {
+		t.Errorf("PreferedLft = %d, want 0: preferred_lft 0 is what makes the kernel mark "+
+			"the address deprecated, and it is the only thing that does",
+			addr.PreferedLft)
+	}
+
+	// The preservation control. Same two numbers, not deprecated: this
+	// is every permanent address on the link, and it must still send no
+	// lifetimes at all.
+	keep, err := netlink.ParseAddr("2001:db8::8/128")
+	if err != nil {
+		t.Fatalf("ParseAddr: %v", err)
+	}
+	v6AddrAttrs(keep, 0, 0, false)
+	if keep.ValidLft != 0 || keep.PreferedLft != 0 {
+		t.Errorf("an address advertised with no deadlines gave ValidLft=%d PreferedLft=%d, "+
+			"want both zero: widening the translation must not reach the permanent shape",
+			keep.ValidLft, keep.PreferedLft)
 	}
 }
 
@@ -167,7 +220,7 @@ func TestV6AddrAttrs_PreferredNeverExceedsValid(t *testing.T) {
 		{LeaseSeconds: 3600, PreferredSeconds: 3600},
 		{},
 	} {
-		v6AddrAttrs(addr, info.LeaseSeconds, info.PreferredSeconds)
+		v6AddrAttrs(addr, info.LeaseSeconds, info.PreferredSeconds, info.IPDeprecated)
 		if addr.ValidLft != 0 && addr.PreferedLft > addr.ValidLft {
 			t.Errorf("%+v gave PreferedLft=%d above ValidLft=%d",
 				info, addr.PreferedLft, addr.ValidLft)

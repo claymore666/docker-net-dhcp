@@ -747,7 +747,7 @@ func (m *dhcpManager) renew(v6 bool, info dhcp.Info) error {
 		return fmt.Errorf("failed to parse IP address: %w", err)
 	}
 	if v6 {
-		v6AddrAttrs(ip, info.LeaseSeconds, info.PreferredSeconds)
+		v6AddrAttrs(ip, info.LeaseSeconds, info.PreferredSeconds, info.IPDeprecated)
 	}
 
 	// Address first, routes after — the ordering the kernel itself
@@ -910,25 +910,46 @@ func (m *dhcpManager) applyAddressChange(v6 bool, ip *netlink.Addr, info dhcp.In
 //
 // Both lifetimes zero means an infinite lease and sends no
 // IFA_CACHEINFO at all, which is the kernel's "forever".
-func v6AddrAttrs(addr *netlink.Addr, valid, preferred int) {
+func v6AddrAttrs(addr *netlink.Addr, valid, preferred int, deprecated bool) {
 	addr.Flags |= unix.IFA_F_NODAD
 	addr.ValidLft = valid
 	addr.PreferedLft = preferred
-	// AN INFINITE VALID LIFETIME BESIDE A FINITE PREFERRED ONE CANNOT
-	// BE SENT AS A ZERO, and it is a shape a router may legally
-	// advertise: RFC 4862 section 5.5.3 takes the two lifetimes from
-	// the Prefix Information option independently and only requires
-	// preferred <= valid. The netlink library attaches IFA_CACHEINFO
-	// when EITHER lifetime is non-zero and puts both numbers in it, so
-	// the pair (0, 1800) reaches the kernel as a valid lifetime of zero
-	// seconds and the address is refused with EINVAL -- the container
-	// then has no address at all, which is the opposite of what an
-	// unbounded advertisement asked for. The kernel's own spelling of
-	// "forever" in that structure is 0xFFFFFFFF, so that is what is
-	// sent once the pair has to be sent at all. Both zero still sends
-	// no IFA_CACHEINFO, which is the permanent address this plugin
+	// AN INFINITE VALID LIFETIME CANNOT BE SENT AS A ZERO ONCE THE PAIR
+	// HAS TO BE SENT AT ALL, and RFC 4862 section 5.5.3 takes the two
+	// lifetimes from the Prefix Information option independently and
+	// only requires preferred <= valid, so both shapes below are ones a
+	// router may legally advertise. The netlink library attaches
+	// IFA_CACHEINFO when EITHER lifetime is non-zero and puts both
+	// numbers in it; the kernel's own spelling of "forever" in that
+	// structure is 0xFFFFFFFF.
+	//
+	//   - (valid 0, preferred 1800). Sent as it stands, the kernel gets
+	//     a valid lifetime of zero seconds and refuses the address with
+	//     EINVAL: the container then has no address at all, which is
+	//     the opposite of what an unbounded advertisement asked for.
+	//   - (valid 0, DEPRECATED). This one carries no non-zero lifetime
+	//     to trigger the structure, so without the `deprecated` term
+	//     below NO IFA_CACHEINFO is attached and the kernel reads the
+	//     address as permanent and PREFERRED -- the exact opposite of
+	//     deprecated, and silently, because the address is on the link
+	//     and looks right. That is why the caller passes the property
+	//     instead of this function inferring it: on Info's convention a
+	//     zero preferred lifetime is an INFINITE one, so the numbers
+	//     alone cannot tell a deprecated unbounded address from a
+	//     current permanent one.
+	//
+	// Both lifetimes zero AND not deprecated still sends no
+	// IFA_CACHEINFO, which is the permanent address this plugin
 	// installed before there was anything to choose.
-	if addr.ValidLft == 0 && addr.PreferedLft > 0 {
+	//
+	// MEASURED 2026-09-16, this kernel, a dummy link in a user
+	// namespace: (forever, 0) installs with the kernel's `deprecated`
+	// flag set and preferred_lft 0sec, and (forever, 3) is deprecated
+	// by the kernel's own timer three seconds later -- so the pair the
+	// translation produces does reach the state RFC 4862 section 5.5.4
+	// describes, and the finite half of it is still enforced by the
+	// kernel on an address it also marks permanent.
+	if addr.ValidLft == 0 && (addr.PreferedLft > 0 || deprecated) {
 		addr.ValidLft = infiniteLft
 	}
 }
@@ -1083,7 +1104,7 @@ func v6WantedAddrs(main *netlink.Addr, info dhcp.Info) ([]wantedV6Addr, error) {
 			}
 			addr = parsed
 		}
-		v6AddrAttrs(addr, a.ValidSeconds, a.PreferredSeconds)
+		v6AddrAttrs(addr, a.ValidSeconds, a.PreferredSeconds, a.Deprecated)
 		w := wantedV6Addr{addr: addr, key: addr.String()}
 		if w.key == mainKey {
 			out = append([]wantedV6Addr{w}, out...)

@@ -167,6 +167,11 @@ type Info struct {
 	// on a deprecated address for the whole of the gap.
 	PreferredSeconds int `json:",omitempty"`
 
+	// IPDeprecated is the Deprecated flag of the address in IP, carried
+	// here for the same reason V6Addr carries its own: the pair of
+	// numbers above cannot express it. See V6Addr.Deprecated.
+	IPDeprecated bool `json:",omitempty"`
+
 	// Addrs is EVERY address a DHCPv6 or SLAAC lease holds, each with
 	// its own two lifetimes, and IP is the one of them this network
 	// reports to Docker. It is empty for a v4 lease.
@@ -230,6 +235,25 @@ type V6Addr struct {
 	// ValidSeconds and PreferredSeconds are this address's own pair.
 	ValidSeconds     int `json:",omitempty"`
 	PreferredSeconds int `json:",omitempty"`
+	// Deprecated says this address's preferred lifetime has ELAPSED:
+	// RFC 4862 section 5.5.4's second phase, "SHOULD continue to be
+	// used as a source address in existing communications, but SHOULD
+	// NOT be used to initiate new communications".
+	//
+	// IT IS CARRIED BECAUSE THE PAIR OF NUMBERS CANNOT SAY IT. On this
+	// struct's convention a zero lifetime means the lease carried no
+	// deadline, so a router that deprecates a prefix by advertising a
+	// preferred lifetime of zero while leaving the valid lifetime
+	// unbounded -- which RFC 4861 section 4.6.2 lets it do, and which
+	// is how a prefix is withdrawn gently -- produces the pair (0, 0).
+	// That is indistinguishable from an address that is current and
+	// never expires, and the two install as opposite things: one is
+	// deprecated, the other is permanent and preferred.
+	//
+	// So the property travels beside the numbers instead of being
+	// inferred from them, and v6AddrAttrs takes it as an argument it
+	// cannot be called without.
+	Deprecated bool `json:",omitempty"`
 }
 
 // Route is a single classless static route from DHCP option 121.

@@ -239,3 +239,80 @@ func TestInfoFromLease_AV4LeaseGetsNoV6Rendering(t *testing.T) {
 		t.Error("a v4 lease reported an ipv6_main_prefix fallback")
 	}
 }
+
+// A deprecated address whose valid lifetime never ends.
+//
+// RFC 4861 section 4.6.2 lets a Prefix Information option carry a
+// preferred lifetime of 0 beside a valid lifetime of 0xFFFFFFFF, and
+// RFC 4862 section 5.5.3 e) accepts it: the prefix is autonomous, the
+// address is formed, and it is deprecated from the moment it exists.
+// Rendered as the pair of numbers alone that arrives as (0, 0), which
+// is the SAME spelling this seam gives an address advertised forever
+// and preferred forever. Two facts derived from one pair, and the
+// permanent reading is the one the apply path takes: the container
+// would get a preferred address on a prefix the router has already
+// told it to stop using for new connections, and nothing on either
+// side says so. The flag is the address's own answer, carried instead
+// of derived.
+func TestInfoFromLease_ADeprecatedAddressWithNoValidDeadlineIsNotAPermanentOne(t *testing.T) {
+	now := time.Date(2026, 9, 16, 12, 0, 0, 0, time.UTC)
+	a := netip.MustParsePrefix("2001:db8:1::42/64")
+
+	t.Run("deprecated and infinite", func(t *testing.T) {
+		info, _ := infoFromLease(lease.Lease{SLAAC: true, Addr: a, Addrs: []lease.Addr6{
+			// Preferred in the past, Valid zero: the library's
+			// spelling of "no deadline".
+			{Addr: a, Preferred: now.Add(-time.Minute)},
+		}}, proto.RouterObservation{}, now, netip.Prefix{})
+		if len(info.Addrs) != 1 {
+			t.Fatalf("Info.Addrs = %+v, want the one deprecated address: an infinite valid "+
+				"lifetime does not expire", info.Addrs)
+		}
+		if got := info.Addrs[0]; got.ValidSeconds != 0 || got.PreferredSeconds != 0 {
+			t.Fatalf("Info.Addrs[0] = %+v, want both lifetimes zero. The pair is the premise "+
+				"of this test: it is why the flag has to exist", got)
+		}
+		if !info.Addrs[0].Deprecated {
+			t.Errorf("Deprecated = false on an address whose preferred lifetime ran out and " +
+				"whose valid lifetime never will. The pair of numbers cannot say it, so a " +
+				"reader of the numbers alone installs it preferred and permanent")
+		}
+		if !info.IPDeprecated {
+			t.Errorf("Info.IPDeprecated = false while Info.IP is that address: the apply path " +
+				"reads the scalar for the address Docker was told about")
+		}
+	})
+
+	// The preservation control for the widening above: the same two
+	// zeros, reached the other way. An address with neither deadline is
+	// preferred forever, and a flag that answered yes here would
+	// deprecate every permanent address on the link.
+	t.Run("infinite and preferred", func(t *testing.T) {
+		info, _ := infoFromLease(lease.Lease{SLAAC: true, Addr: a, Addrs: []lease.Addr6{
+			{Addr: a},
+		}}, proto.RouterObservation{}, now, netip.Prefix{})
+		if len(info.Addrs) != 1 {
+			t.Fatalf("Info.Addrs = %+v, want one address", info.Addrs)
+		}
+		if info.Addrs[0].Deprecated || info.IPDeprecated {
+			t.Errorf("an address advertised with no deadlines at all came back deprecated "+
+				"(%+v, Info.IPDeprecated=%v): its preferred lifetime is infinite, not spent",
+				info.Addrs[0], info.IPDeprecated)
+		}
+	})
+
+	// And the third way to reach a zero preferred lifetime: a deadline
+	// that has not arrived yet is not a spent one.
+	t.Run("preferred in the future", func(t *testing.T) {
+		info, _ := infoFromLease(lease.Lease{SLAAC: true, Addr: a, Addrs: []lease.Addr6{
+			{Addr: a, Preferred: now.Add(time.Minute), Valid: now.Add(time.Hour)},
+		}}, proto.RouterObservation{}, now, netip.Prefix{})
+		if len(info.Addrs) != 1 {
+			t.Fatalf("Info.Addrs = %+v, want one address", info.Addrs)
+		}
+		if info.Addrs[0].Deprecated {
+			t.Errorf("an address preferred for another minute came back deprecated: %+v",
+				info.Addrs[0])
+		}
+	})
+}

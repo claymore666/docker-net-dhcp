@@ -1197,3 +1197,50 @@ func TestStop_BoundV6StopFailureIsCountedPerFamily(t *testing.T) {
 		})
 	}
 }
+
+// A lease that carries no per-address list still deprecates.
+//
+// v6WantedAddrs is total over every Info a caller can hand it, and its
+// no-list branch hands the main address straight through with whatever
+// attributes it already has. That is the one path on which renew's own
+// call to v6AddrAttrs decides what reaches the kernel: for every Info
+// the chassis renders today the list is non-empty and the set-building
+// loop sets the attributes again, so this pins the fallback's own
+// answer, not a shape the chassis produces. A renewal that dropped the
+// flag here would install a deprecated address permanent and preferred.
+//
+// The observer is the address the manager recorded, which is the same
+// object it handed to the apply path. m.netHandle is nil, so the apply
+// path returns before it touches the kernel.
+func TestRenew_ADeprecatedV6LeaseWithNoAddressListKeepsItsDeprecation(t *testing.T) {
+	m := &dhcpManager{plugin: &Plugin{}}
+
+	if err := m.renew(true, dhcp.Info{IP: "2001:db8:1::a/64", IPDeprecated: true}); err != nil {
+		t.Fatalf("renew: %v", err)
+	}
+
+	_, got := m.lastIPs()
+	if got == nil {
+		t.Fatal("the renewal recorded no IPv6 address")
+	}
+	if got.ValidLft != infiniteLft || got.PreferedLft != 0 {
+		t.Errorf("the deprecated address was applied as ValidLft=%d PreferedLft=%d, want %d "+
+			"and 0: both lifetimes zero sends no IFA_CACHEINFO and the kernel makes the "+
+			"address permanent and preferred", got.ValidLft, got.PreferedLft, infiniteLft)
+	}
+
+	// The preservation control: the same lease without the flag is an
+	// address advertised forever, and it carries no lifetimes at all.
+	keep := &dhcpManager{plugin: &Plugin{}}
+	if err := keep.renew(true, dhcp.Info{IP: "2001:db8:1::a/64"}); err != nil {
+		t.Fatalf("renew: %v", err)
+	}
+	_, kept := keep.lastIPs()
+	if kept == nil {
+		t.Fatal("the control renewal recorded no IPv6 address")
+	}
+	if kept.ValidLft != 0 || kept.PreferedLft != 0 {
+		t.Errorf("an infinite lease gave ValidLft=%d PreferedLft=%d, want both zero",
+			kept.ValidLft, kept.PreferedLft)
+	}
+}
