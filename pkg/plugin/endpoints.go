@@ -537,6 +537,16 @@ type HealthResponse struct {
 	HostnamesAppliedLate   int32 `json:"hostnames_applied_late"`
 	HostnameLookupFailures int32 `json:"hostname_lookup_failures"`
 	HostnameApplyFailures  int32 `json:"hostname_apply_failures"`
+
+	// HostIfnamesApplied, HostIfnameConflicts and HostIfnameFailures
+	// are the three outcomes of naming a host-side link after its
+	// container (#978). Read them together: the first is the domain the
+	// other two are zero against, and all three stay at zero on a host
+	// with no network that asked for it. Bridge mode only, because it
+	// is the only mode that leaves a link on the host.
+	HostIfnamesApplied  int32 `json:"host_ifnames_applied"`
+	HostIfnameConflicts int32 `json:"host_ifname_conflicts"`
+	HostIfnameFailures  int32 `json:"host_ifname_failures"`
 	// UnsafeOptionValuesDropped counts server-chosen DHCP string
 	// values refused before use because they carried a control
 	// character, plus option-15 domains truncated at their first space.
@@ -1184,6 +1194,8 @@ func (p *Plugin) checkStamps() map[string]time.Time {
 		"ipam_reserve_duplicate_mac": p.ipamReserveDuplicateMAC.LastMoved(),
 		"hostname_lookup_failures":   p.hostnameLookupFailures.LastMoved(),
 		"hostname_apply_failures":    p.hostnameApplyFailures.LastMoved(),
+		"host_ifname_conflicts":      p.hostIfnameConflicts.LastMoved(),
+		"host_ifname_failures":       p.hostIfnameFailures.LastMoved(),
 		"release_failures":           laterOf(p.releaseFailuresV4.LastMoved(), p.releaseFailuresV6.LastMoved()),
 	}
 }
@@ -1315,6 +1327,9 @@ func (p *Plugin) healthSnapshot() HealthResponse {
 		HostnamesAppliedLate:         p.hostnamesAppliedLate.Load(),
 		HostnameLookupFailures:       p.hostnameLookupFailures.Load(),
 		HostnameApplyFailures:        p.hostnameApplyFailures.Load(),
+		HostIfnamesApplied:           p.hostIfnamesApplied.Load(),
+		HostIfnameConflicts:          p.hostIfnameConflicts.Load(),
+		HostIfnameFailures:           p.hostIfnameFailures.Load(),
 		UnsafeOptionValuesDropped:    p.unsafeOptionValuesDropped.Load(),
 		NetworkOptionsRejected:       p.networkOptionsRejected.Load(),
 		IPAMReplayHits:               p.ipamReplayHits.Load(),

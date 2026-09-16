@@ -1878,6 +1878,7 @@ func (m *dhcpManager) Start(ctx context.Context) (err error) {
 	var (
 		ctrID         string
 		ctrPID        int
+		ctrName       string
 		ctrHostname   string
 		ctrSandboxKey string
 		inspected     bool
@@ -1927,6 +1928,7 @@ func (m *dhcpManager) Start(ctx context.Context) (err error) {
 		if ctr.State != nil {
 			ctrPID = ctr.State.Pid
 		}
+		ctrName = ctr.Name
 		if ctr.Config != nil {
 			ctrHostname = ctr.Config.Hostname
 		}
@@ -2078,12 +2080,11 @@ func (m *dhcpManager) Start(ctx context.Context) (err error) {
 	}
 
 	// AFTER THE ATTACH HAS SUCCEEDED, AND ITS FAILURE IS NOT THE
-	// ATTACH'S (#961). The container is leasing; what is missing is a
-	// name in the server's table, which is worth a counter and a log
-	// line and is not worth tearing a working endpoint down for.
-	if !inspected {
-		m.nameTheRunningClient(phases, inspect, &ctrHostname)
-	}
+	// ATTACH'S (#961, #978). The container is leasing; what is missing
+	// is a name, in the server's table and on the host-side link, which
+	// is worth a counter and a log line and is not worth tearing a
+	// working endpoint down for.
+	m.afterAttach(phases, inspected, inspect, ctrName, &ctrHostname)
 
 	return nil
 }
@@ -2095,17 +2096,25 @@ func (m *dhcpManager) Start(ctx context.Context) (err error) {
 // daemon call: where the name was already in hand the caller does not
 // come here at all. name points at the field that closure fills.
 //
+// It reports whether the daemon answered, which is a different
+// question from whether the name was handed over: a refused or absent
+// hostname still means the inspect succeeded and the rest of the
+// attach has the container's fields. #978 renames the host-side link
+// on that answer, so it is returned rather than read back out of the
+// closure's captured variable, where a reordering would take it
+// silently.
+//
 // NOTHING HERE FAILS THE ATTACH. Every arm is counted instead, because
 // each one leaves a different thing true: the daemon never answered,
 // the client would not take the name, or the name was refused before it
 // got that far. docs/reference.md carries the three rows.
-func (m *dhcpManager) nameTheRunningClient(phases *joinPhases, lookup func() error, name *string) {
+func (m *dhcpManager) nameTheRunningClient(phases *joinPhases, lookup func() error, name *string) bool {
 	if err := lookup(); err != nil {
 		m.plugin.hostnameLookupFailures.Add(1)
 		log.WithError(err).
 			WithFields(m.logFields(false)).
 			Warn("The container's name could not be read from the daemon; this endpoint holds its lease but the DHCP server's table has no name for it")
-		return
+		return false
 	}
 	phases.mark("hostname")
 
@@ -2117,7 +2126,7 @@ func (m *dhcpManager) nameTheRunningClient(phases *joinPhases, lookup func() err
 	// started without --hostname.
 	safe := m.plugin.safeHostname(*name)
 	if safe.name == "" {
-		return
+		return true
 	}
 
 	client := m.healthClient()
@@ -2125,14 +2134,14 @@ func (m *dhcpManager) nameTheRunningClient(phases *joinPhases, lookup func() err
 		m.plugin.hostnameApplyFailures.Add(1)
 		log.WithFields(m.logFields(false)).
 			Warn("No running DHCP client to give the container's name to; the DHCP server's table has no name for this endpoint")
-		return
+		return true
 	}
 	if err := client.SetHostname(safe.name); err != nil {
 		m.plugin.hostnameApplyFailures.Add(1)
 		log.WithError(err).
 			WithFields(m.logFields(false)).
 			Warn("The running DHCP client would not take the container's name; the DHCP server's table has no name for this endpoint")
-		return
+		return true
 	}
 	// AFTER THE HANDOVER, NOT BEFORE IT. audit() reads this field for
 	// every ledger row on an audit_log network and the accessor is
@@ -2145,6 +2154,7 @@ func (m *dhcpManager) nameTheRunningClient(phases *joinPhases, lookup func() err
 	log.WithFields(m.logFields(false)).
 		WithField("hostname", safe.name).
 		Info("The container's name was given to the running DHCP client, which asks the server to record it at once")
+	return true
 }
 
 // Stop shuts the persistent clients down WITHOUT assuming the endpoint

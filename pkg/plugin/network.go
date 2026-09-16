@@ -247,10 +247,28 @@ func validateModeOptions(opts DHCPNetworkOptions) error {
 		return err
 	}
 
+	// What the host-side link is called (#978). The VALUE is
+	// mode-independent and the OPTION is not: an unknown value is a
+	// typo in any mode, and the mode refusal is below, beside the
+	// other things a mode does not have.
+	if _, err := parseHostIfname(opts.HostIfname); err != nil {
+		return err
+	}
+
 	switch opts.effectiveMode() {
 	case ModeMacvlan, ModeIPvlan:
 		if opts.Parent == "" {
 			return util.ErrParentRequired
+		}
+		// Nothing of this endpoint stays on the host to name: the child
+		// link is created here and moved into the container's
+		// namespace, which is also why teardown in these modes is
+		// best-effort. Refuse loudly so an operator who set the option
+		// learns it does not apply, instead of reading `ip link` and
+		// finding the generated names still there (#978).
+		if opts.HostIfname != HostIfnameOff {
+			return fmt.Errorf("%w: host_ifname cannot be set in mode=%v: the host-side link is moved into the container and leaves nothing on the host to name",
+				util.ErrModeMismatch, opts.effectiveMode())
 		}
 		if opts.Bridge != "" {
 			return fmt.Errorf("%w: bridge cannot be set in mode=%v", util.ErrModeMismatch, opts.effectiveMode())
@@ -1592,14 +1610,22 @@ func (p *Plugin) EndpointOperInfo(ctx context.Context, r InfoRequest) (InfoRespo
 	}
 
 	hostName, _ := vethPairNames(r.EndpointID)
-	hostLink, err := netlink.LinkByName(hostName)
+	// Through the seam so the name this publishes can be driven: the
+	// link it reads is renamed by CAP_NET_ADMIN work no unit lane has.
+	hostLink, err := nlLinkByName(hostName)
 	if err != nil {
 		return res, fmt.Errorf("failed to find host side of veth pair: %w", err)
 	}
 
 	info := operInfo{
-		Bridge:      opts.Bridge,
-		HostVEth:    hostName,
+		Bridge: opts.Bridge,
+		// THE LINK'S OWN NAME, not the one it was looked up by (#978).
+		// A `host_ifname` network renames this link after its container
+		// and keeps the generated name on it as an altname, which is
+		// what the lookup above resolves through. Publishing the
+		// derived name would tell `docker network inspect --verbose` a
+		// name that `ip link` does not print.
+		HostVEth:    hostLink.Attrs().Name,
 		HostVEthMAC: hostLink.Attrs().HardwareAddr.String(),
 	}
 	if err := mapstructure.Decode(info, &res.Value); err != nil {

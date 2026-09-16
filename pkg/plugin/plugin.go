@@ -592,6 +592,30 @@ type DHCPNetworkOptions struct {
 	// parseReleaseLease, so a typo fails the create rather than
 	// silently selecting the default.
 	ReleaseLease string `mapstructure:"release_lease"`
+	// HostIfname decides what the host-side interface this network
+	// creates is called (#978). Empty (the default) is every release
+	// before v2.2.0: `dh-` plus the endpoint ID's first 12 hex, which
+	// is unique and says nothing. `container_name` and `hostname` name
+	// it after the container instead, so `ip link` and `brctl show`
+	// read like the compose file.
+	//
+	// BRIDGE MODE ONLY, and the create refuses it elsewhere rather than
+	// accepting it and doing nothing: a macvlan or ipvlan child is moved
+	// into the container's namespace and leaves nothing on the host to
+	// name.
+	//
+	// The name is a REQUEST. It is derived once per attach by
+	// deriveHostIfname, from the daemon's answer and never from
+	// anything written down, and the kernel is what decides whether it
+	// can be taken -- interface names are unique across the whole host
+	// namespace, which this plugin shares with every other network on
+	// the box. A name that is taken, or that nothing legal is left of,
+	// leaves the link with its generated name and moves a counter.
+	//
+	// The value is validated at CreateNetwork against the list in
+	// parseHostIfname, so a typo fails the create rather than silently
+	// selecting the default.
+	HostIfname string `mapstructure:"host_ifname"`
 }
 
 // effectiveMode returns Mode with the empty default normalized to ModeBridge.
@@ -1167,6 +1191,35 @@ type Plugin struct {
 	hostnamesAppliedLate   atomic.Int32
 	hostnameLookupFailures stampedCounter
 	hostnameApplyFailures  stampedCounter
+
+	// THE THREE OUTCOMES OF NAMING A HOST-SIDE LINK AFTER ITS
+	// CONTAINER (#978). The rename runs after the attach has already
+	// succeeded and never fails one, so without these the whole step is
+	// silent.
+	//
+	// hostIfnamesApplied is the mechanism working, and it is also the
+	// DOMAIN: a zero on the two failure counters is satisfied by a host
+	// with no network that asked for this at all, and only the positive
+	// counter beside them says otherwise.
+	//
+	// hostIfnameConflicts is the one an operator can act on: the name
+	// the container asked for is already on this host, which is one
+	// namespace shared with every other network and every physical NIC.
+	// Separate from the row below because it is the only refusal whose
+	// remedy is to rename something.
+	//
+	// hostIfnameFailures is every other refusal: a container name with
+	// no character an interface name may carry, a host-side link that
+	// was not there to rename, a kernel that would not take the rename,
+	// or one that took it and would not keep the old name on the link
+	// as an altname. The last is undone rather than left, because the
+	// old name is what DeleteEndpoint looks the link up by.
+	//
+	// Neither failure is healthy-affecting: an ugly interface name is a
+	// working container.
+	hostIfnamesApplied  atomic.Int32
+	hostIfnameConflicts stampedCounter
+	hostIfnameFailures  stampedCounter
 
 	// dnsPropagationPIDMismatches counts DNS propagations refused
 	// because the PID resolved through Docker no longer belonged to the

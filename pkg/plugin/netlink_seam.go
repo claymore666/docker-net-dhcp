@@ -19,6 +19,13 @@ var (
 	nlRouteListFiltered = netlink.RouteListFiltered
 	nlLinkList          = netlink.LinkList
 
+	// The two halves of the #978 rename, and they are seams for the
+	// same reason nlLinkByIndex is: renaming a link needs CAP_NET_ADMIN
+	// and a live namespace, so nothing root-free reaches the arm where
+	// the kernel refuses one.
+	nlLinkSetName    = netlink.LinkSetName
+	nlLinkAddAltName = netlink.LinkAddAltName
+
 	// nlNewHandleAt is the one that needs CAP_SYS_ADMIN even for the
 	// caller's OWN namespace: it setns()es to build the socket. Without
 	// the seam, nothing root-free can reach a single line of Start past
