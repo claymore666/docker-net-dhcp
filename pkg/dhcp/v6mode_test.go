@@ -514,3 +514,55 @@ func TestV6ModeReport_ReportsTheGainAndNeverTheTotal(t *testing.T) {
 	// one-shot acquisition builds these options without a plugin.
 	(&DHCPClientOptions{V6: true}).v6ModeReport(lease.Stats{SLAACFallbacks: 5})
 }
+
+// The same delta rule for the refused-prefix counter, and it is not a
+// restatement of the one above: the two reporters keep SEPARATE
+// running totals on the same options struct, and a copy-paste that read
+// one seen-value for both would make each reading of either counter
+// suppress the other.
+//
+// The number this one carries is also larger and noisier -- a router
+// readvertises every few seconds (RFC 4861 section 6.2.1) and every
+// advertisement can refuse prefixes again -- which is exactly why it is
+// reported as a gain.
+func TestV6PrefixReport_ReportsTheGainAndNeverTheTotal(t *testing.T) {
+	var prefixes, fallbacks []uint64
+	o := &DHCPClientOptions{
+		V6:                  true,
+		Mode6:               proto.Mode6Auto,
+		OnV6Fallback:        func(n uint64) { fallbacks = append(fallbacks, n) },
+		OnV6PrefixesIgnored: func(n uint64) { prefixes = append(prefixes, n) },
+	}
+
+	o.v6PrefixReport(lease.Stats{SLAACPrefixesIgnored: 0})
+	o.v6PrefixReport(lease.Stats{SLAACPrefixesIgnored: 2})
+	o.v6PrefixReport(lease.Stats{SLAACPrefixesIgnored: 2})
+	o.v6PrefixReport(lease.Stats{SLAACPrefixesIgnored: 5})
+
+	want := []uint64{2, 3}
+	if len(prefixes) != len(want) {
+		t.Fatalf("the callback was called %d time(s) with %v, want %v", len(prefixes), prefixes, want)
+	}
+	for i := range want {
+		if prefixes[i] != want[i] {
+			t.Errorf("call %d carried %d, want %d", i, prefixes[i], want[i])
+		}
+	}
+	if len(fallbacks) != 0 {
+		t.Errorf("reporting refused prefixes also reported %v fallbacks; the two reporters "+
+			"share a struct and must not share a seen-value", fallbacks)
+	}
+
+	// And the fallback reporter still works after this one has run, in
+	// the same direction: one seen-value for both would leave the
+	// second reporter silent.
+	o.v6ModeReport(lease.Stats{SLAACFallbacks: 1})
+	if len(fallbacks) != 1 || fallbacks[0] != 1 {
+		t.Errorf("the fallback reporter carried %v after the prefix reporter ran, want [1]", fallbacks)
+	}
+
+	// A chassis with no reporter behind it does not panic: the
+	// one-shot acquisition builds these options without a plugin, and
+	// `dhcp` networks never arm this one at all.
+	(&DHCPClientOptions{V6: true}).v6PrefixReport(lease.Stats{SLAACPrefixesIgnored: 5})
+}

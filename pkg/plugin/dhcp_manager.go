@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1065,14 +1066,8 @@ func v6WantedAddrs(main *netlink.Addr, info dhcp.Info) ([]wantedV6Addr, error) {
 // returned an error here would fail a renewal over an address it was
 // trying to clean up.
 func (m *dhcpManager) withdrawV6AddrsNotIn(want []wantedV6Addr, source string) {
-	keep := make(map[string]bool, len(want))
-	for _, w := range want {
-		keep[w.key] = true
-	}
-	for key, addr := range m.installedV6() {
-		if keep[key] {
-			continue
-		}
+	for _, gone := range v6AddrsToWithdraw(m.installedV6(), want) {
+		key, addr := gone.key, gone.addr
 		m.forgetV6Addr(key)
 		if err := m.netHandle.AddrDel(m.ctrLink, addr); err != nil {
 			log.
@@ -1095,6 +1090,29 @@ func (m *dhcpManager) withdrawV6AddrsNotIn(want []wantedV6Addr, source string) {
 	for _, w := range want {
 		m.rememberV6Addr(w.key, w.addr)
 	}
+}
+
+// v6AddrsToWithdraw is the set difference itself, kept apart from the
+// netlink calls so the arithmetic can be driven without a link: what
+// this manager installed, minus what the lease still holds.
+//
+// The result is ordered by address so that a renumbering that drops two
+// addresses at once writes its ledger rows and its log lines in the
+// same order every time.
+func v6AddrsToWithdraw(installed map[string]*netlink.Addr, want []wantedV6Addr) []wantedV6Addr {
+	keep := make(map[string]bool, len(want))
+	for _, w := range want {
+		keep[w.key] = true
+	}
+	out := make([]wantedV6Addr, 0, len(installed))
+	for key, addr := range installed {
+		if keep[key] {
+			continue
+		}
+		out = append(out, wantedV6Addr{addr: addr, key: key})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].key < out[j].key })
+	return out
 }
 
 // installedV6 is a copy of the installed set, taken under ipMu so the

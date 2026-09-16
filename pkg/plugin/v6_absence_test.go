@@ -251,3 +251,138 @@ func TestNoteV6Absence_TheAbsentRouterCaseCarriesTheCause(t *testing.T) {
 			"ignore this counter's warnings", lvl)
 	}
 }
+
+// WHAT A SEEN ROUTER AND NO ADDRESS MEANS DEPENDS ON THE MODE (#818).
+//
+// The table above is the mode the plugin had before `ipv6_mode`:
+// addresses come from a server, so an advertisement without the managed
+// flag means there are none here and the endpoint starts without one.
+// In a mode that forms its own address from the advertisement, that
+// same observation is the opposite statement -- the advertisement IS
+// the address source, it arrived, and nothing was formed from it -- and
+// the endpoint must not start, because its only mechanism produced
+// nothing.
+//
+// THE M=1 ROW IS THE ONE THAT WAS ACTIVELY WRONG. proto.Mode6SLAAC
+// sends no Solicit whatever the M flag says, so the answer a `slaac`
+// endpoint got on a managed segment was "no DHCPv6 server answered
+// within N s" -- about an exchange that never happened, pointing an
+// operator at a server this network does not use.
+//
+// `auto` keeps v6Fatal there and that is not an inconsistency: auto on
+// an M=1 advertisement DID solicit, and the fallback that follows a
+// silent server either forms an address (in which case this function is
+// not reached) or ends the acquisition with the library's own reason.
+//
+// Both halves of the (observation x mode) domain are enumerated, so a
+// verdict that stopped reading the mode fails on the forming rows and a
+// verdict that read ONLY the mode fails on the `dhcp` rows.
+func TestClassifyV6Absence_TheModeDecidesWhatASeenRouterMeans(t *testing.T) {
+	timeout := errors.New("timed out")
+	modes := []proto.Mode6{proto.Mode6DHCP, proto.Mode6SLAAC, proto.Mode6Auto, proto.Mode6Off}
+
+	// Written out rather than derived from the function: seen and
+	// managed decide, `other` never does, and every mode is here so a
+	// new one cannot arrive without a row.
+	want := map[proto.Mode6]map[[2]bool]v6Verdict{
+		proto.Mode6DHCP: {
+			{false, false}: v6NoRouter, {false, true}: v6NoRouter,
+			{true, false}: v6NotOffered, {true, true}: v6Fatal,
+		},
+		proto.Mode6SLAAC: {
+			{false, false}: v6NoRouter, {false, true}: v6NoRouter,
+			{true, false}: v6SLAACNoAddress, {true, true}: v6SLAACNoAddress,
+		},
+		proto.Mode6Auto: {
+			{false, false}: v6NoRouter, {false, true}: v6NoRouter,
+			{true, false}: v6SLAACNoAddress, {true, true}: v6Fatal,
+		},
+		proto.Mode6Off: {
+			{false, false}: v6NoRouter, {false, true}: v6NoRouter,
+			{true, false}: v6NotOffered, {true, true}: v6Fatal,
+		},
+	}
+	for _, m := range proto.AllModes6() {
+		if _, ok := want[m]; !ok {
+			t.Fatalf("the library declares ipv6_mode=%s and this table has no row for it, "+
+				"so the endings that mode produces are judged by whatever the switch's "+
+				"default arm happens to be", m)
+		}
+	}
+
+	for _, mode := range modes {
+		for _, seen := range []bool{false, true} {
+			for _, managed := range []bool{false, true} {
+				for _, other := range []bool{false, true} {
+					ra := dhcp.RAObservation{Seen: seen, Managed: managed, Other: other}
+					got := classifyV6Absence(ra, timeout, mode)
+					if got != want[mode][[2]bool{seen, managed}] {
+						t.Errorf("classifyV6Absence(%+v, timeout, %s) = %v, want %v",
+							ra, mode, got, want[mode][[2]bool{seen, managed}])
+					}
+				}
+			}
+		}
+	}
+
+	// The wire still beats the mode, the way it beats the observation:
+	// a router that advertised prefixes this client refused names the
+	// thing to fix, and a forming mode must not overwrite it with the
+	// vaguer ending.
+	if got := classifyV6Absence(dhcp.RAObservation{Seen: true},
+		fmt.Errorf("wrapped: %w", dhcp.ErrNoSLAACPrefix), proto.Mode6SLAAC); got != v6SLAACNoPrefix {
+		t.Errorf("a refused-prefix cause in slaac classified as %v, want v6SLAACNoPrefix", got)
+	}
+}
+
+// The new ending has its own counter and its own tolerance, and both
+// directions are asserted in one place.
+//
+// A verdict that was counted on an existing counter would be invisible
+// on /metrics -- an operator would read dhcpv6_no_server and go looking
+// for a DHCPv6 server on a network that never speaks to one. A verdict
+// that TOLERATED the endpoint would be worse: `ipv6_mode=slaac` says
+// the advertisement is where this network's addresses come from, so an
+// endpoint with none has nothing left, and starting it hides that in a
+// container that simply has no IPv6.
+func TestNoteV6Absence_AFormingModeWithNoAddressIsItsOwnEnding(t *testing.T) {
+	p := &Plugin{}
+	tolerated := p.noteV6Absence(dhcp.RAObservation{Seen: true, Managed: true},
+		"eth0", "abcdef0123456789", errors.New("timed out"), proto.Mode6SLAAC)
+
+	if tolerated {
+		t.Error("an ipv6_mode=slaac endpoint with a router heard and no address was started " +
+			"anyway; the one mechanism this network is configured for produced nothing")
+	}
+	if got := p.dhcpv6SLAACNoAddress.Load(); got != 1 {
+		t.Errorf("dhcpv6_slaac_no_address = %d, want 1", got)
+	}
+	for _, other := range []struct {
+		name string
+		got  int32
+	}{
+		{"dhcpv6_no_server", p.dhcpv6NoServer.Load()},
+		{"dhcpv6_not_offered", p.dhcpv6NotOffered.Load()},
+		{"dhcpv6_no_router_advert", p.dhcpv6NoRouterAdvert.Load()},
+		{"dhcpv6_slaac_no_prefix", p.dhcpv6SLAACNoPrefix.Load()},
+		{"dhcpv6_refused", p.dhcpv6Refused.Load()},
+	} {
+		if other.got != 0 {
+			t.Errorf("%s = %d for an ending that is none of them", other.name, other.got)
+		}
+	}
+
+	// The preservation control: the same observation on a `dhcp`
+	// network is still the pre-#818 answer, counter included.
+	q := &Plugin{}
+	if q.noteV6Absence(dhcp.RAObservation{Seen: true, Managed: true}, "eth0", "abcdef0123456789",
+		errors.New("timed out"), proto.Mode6DHCP) {
+		t.Error("a managed segment that went silent became tolerated on a dhcp network")
+	}
+	if got := q.dhcpv6NoServer.Load(); got != 1 {
+		t.Errorf("dhcpv6_no_server = %d on a dhcp network, want 1", got)
+	}
+	if got := q.dhcpv6SLAACNoAddress.Load(); got != 0 {
+		t.Errorf("dhcpv6_slaac_no_address = %d on a dhcp network, want 0", got)
+	}
+}

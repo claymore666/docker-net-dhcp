@@ -286,7 +286,16 @@ func fillV6Addrs(info *Info, l lease.Lease, now time.Time, main netip.Prefix) {
 	info.Addrs = make([]V6Addr, 0, len(entries))
 	kept := make([]lease.Addr6, 0, len(entries))
 	for _, a := range entries {
-		if !a.Addr.IsValid() {
+		// AN ADDRESS WHOSE VALID LIFETIME HAS RUN OUT IS NOT PART OF
+		// THE SET, and dropping it here is what keeps it from being
+		// installed FOREVER. Info carries a remaining lifetime in
+		// whole seconds and its zero is netlink's infinity (no
+		// IFA_CACHEINFO at all), so an address that is one second past
+		// its deadline renders identically to one advertised with an
+		// infinite lifetime. The library drops expired addresses
+		// itself, which is what makes this unreachable from it; a
+		// deadline that passes between the event and this call is not.
+		if !a.Addr.IsValid() || (!a.Valid.IsZero() && !a.Valid.After(now)) {
 			continue
 		}
 		kept = append(kept, a)

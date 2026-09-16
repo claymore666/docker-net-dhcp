@@ -251,6 +251,28 @@ func TestIPv6Mode_TheCreateAndStoredPathsRefuseTheSameSet(t *testing.T) {
 		// hand-edited state file both produce one.
 		{"slaac on ipvlan", DHCPNetworkOptions{Mode: "ipvlan", Parent: "eth0", IPv6Mode: "slaac"}, true},
 		{"auto on ipvlan", DHCPNetworkOptions{Mode: "ipvlan", Parent: "eth0", IPv6Mode: "auto"}, true},
+
+		// `ipv6_main_prefix` (#818): accepted in the two modes that
+		// form several addresses, refused where it could only ever do
+		// nothing, and refused when it is not a prefix. The accepted
+		// rows are what keep the refusals from being a rule against
+		// the option itself.
+		{"a main prefix in slaac", DHCPNetworkOptions{Bridge: "br0", IPv6Mode: "slaac",
+			IPv6MainPrefix: "2001:db8:1::/64"}, false},
+		{"a main prefix in auto", DHCPNetworkOptions{Bridge: "br0", IPv6Mode: "auto",
+			IPv6MainPrefix: "2001:db8:1::/64"}, false},
+		{"a main prefix in dhcp", DHCPNetworkOptions{Bridge: "br0", IPv6Mode: "dhcp",
+			IPv6MainPrefix: "2001:db8:1::/64"}, true},
+		{"a main prefix with no mode at all", DHCPNetworkOptions{Bridge: "br0", IPv6: true,
+			IPv6MainPrefix: "2001:db8:1::/64"}, true},
+		{"a main prefix in off", DHCPNetworkOptions{Bridge: "br0", IPv6Mode: "off",
+			IPv6MainPrefix: "2001:db8:1::/64"}, true},
+		{"a main prefix that is an address", DHCPNetworkOptions{Bridge: "br0", IPv6Mode: "slaac",
+			IPv6MainPrefix: "2001:db8:1::5"}, true},
+		{"a main prefix with host bits", DHCPNetworkOptions{Bridge: "br0", IPv6Mode: "slaac",
+			IPv6MainPrefix: "2001:db8:1::5/64"}, true},
+		{"a v4 main prefix", DHCPNetworkOptions{Bridge: "br0", IPv6Mode: "slaac",
+			IPv6MainPrefix: "192.168.99.0/24"}, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -295,23 +317,29 @@ func TestV6Wiring_CarriesEveryFieldTheV6ClientNeeds(t *testing.T) {
 	id6 := dhcp.Identity6{DUID: []byte{0, 4, 1, 2, 3, 4}, IAID: 0x11223344}
 
 	cases := []struct {
-		name       string
-		opts       DHCPNetworkOptions
-		wantMode   proto.Mode6
-		wantStrict bool
-		wantCB     bool
+		name        string
+		opts        DHCPNetworkOptions
+		wantMode    proto.Mode6
+		wantStrict  bool
+		wantCB      bool
+		wantIgnored bool
+		wantMain    string
 	}{
-		{"dhcp", DHCPNetworkOptions{Bridge: "br0", IPv6Mode: "dhcp"}, proto.Mode6DHCP, false, false},
-		{"ipv6=true alone", DHCPNetworkOptions{Bridge: "br0", IPv6: true}, proto.Mode6DHCP, false, false},
-		{"slaac", DHCPNetworkOptions{Bridge: "br0", IPv6Mode: "slaac"}, proto.Mode6SLAAC, false, false},
-		{"auto", DHCPNetworkOptions{Bridge: "br0", IPv6Mode: "auto"}, proto.Mode6Auto, false, true},
-		{"auto and strict", DHCPNetworkOptions{Bridge: "br0", IPv6Mode: "auto", IPv6AutoStrict: true}, proto.Mode6Auto, true, true},
+		{"dhcp", DHCPNetworkOptions{Bridge: "br0", IPv6Mode: "dhcp"}, proto.Mode6DHCP, false, false, false, ""},
+		{"ipv6=true alone", DHCPNetworkOptions{Bridge: "br0", IPv6: true}, proto.Mode6DHCP, false, false, false, ""},
+		{"slaac", DHCPNetworkOptions{Bridge: "br0", IPv6Mode: "slaac"}, proto.Mode6SLAAC, false, false, true, ""},
+		{"auto", DHCPNetworkOptions{Bridge: "br0", IPv6Mode: "auto"}, proto.Mode6Auto, false, true, true, ""},
+		{"auto and strict", DHCPNetworkOptions{Bridge: "br0", IPv6Mode: "auto", IPv6AutoStrict: true}, proto.Mode6Auto, true, true, true, ""},
+		// The prefix Docker reports for an endpoint that holds
+		// several, carried the same way (#818).
+		{"slaac with a main prefix", DHCPNetworkOptions{Bridge: "br0", IPv6Mode: "slaac",
+			IPv6MainPrefix: "2001:db8:1::/64"}, proto.Mode6SLAAC, false, false, true, "2001:db8:1::/64"},
 		// The option is carried in every mode and read by one. A
 		// helper that only carried it in `auto` would be right today
 		// and wrong the moment the library gives another mode a
 		// fallback, and the stored option would then be silently
 		// ignored rather than refused.
-		{"strict in dhcp", DHCPNetworkOptions{Bridge: "br0", IPv6Mode: "dhcp", IPv6AutoStrict: true}, proto.Mode6DHCP, true, false},
+		{"strict in dhcp", DHCPNetworkOptions{Bridge: "br0", IPv6Mode: "dhcp", IPv6AutoStrict: true}, proto.Mode6DHCP, true, false, false, ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -326,6 +354,23 @@ func TestV6Wiring_CarriesEveryFieldTheV6ClientNeeds(t *testing.T) {
 			if base.StrictAuto6 != tc.wantStrict {
 				t.Errorf("StrictAuto6 = %v, want %v: the option an operator set would be "+
 					"stored, documented and never read", base.StrictAuto6, tc.wantStrict)
+			}
+			// THE IGNORED-PREFIX CALLBACK IS ARMED IN BOTH FORMING
+			// MODES AND IN NEITHER OTHER ONE. On `dhcp` the library
+			// refuses every autonomous prefix on every advertisement,
+			// correctly, and a router readvertises every few seconds
+			// (RFC 4861 section 6.2.1): a counter armed there would
+			// climb forever on a network where nothing is wrong.
+			if (base.OnV6PrefixesIgnored != nil) != tc.wantIgnored {
+				t.Errorf("OnV6PrefixesIgnored set = %v, want %v",
+					base.OnV6PrefixesIgnored != nil, tc.wantIgnored)
+			}
+			switch {
+			case tc.wantMain == "" && base.MainPrefix6.IsValid():
+				t.Errorf("MainPrefix6 = %v on a network that named none", base.MainPrefix6)
+			case tc.wantMain != "" && base.MainPrefix6.String() != tc.wantMain:
+				t.Errorf("MainPrefix6 = %v, want %s: the option would be stored, documented "+
+					"and never read", base.MainPrefix6, tc.wantMain)
 			}
 			if (base.OnV6Fallback != nil) != tc.wantCB {
 				t.Errorf("OnV6Fallback set = %v, want %v: only auto can fall back, and a "+
@@ -372,7 +417,7 @@ func TestV6Wiring_CarriesEveryFieldTheV6ClientNeeds(t *testing.T) {
 	if noPlugin.Mode6 != proto.Mode6Auto || noPlugin.Identity6.IAID != id6.IAID {
 		t.Error("a manager with no plugin behind it would run a client in the wrong mode")
 	}
-	if noPlugin.OnV6Fallback != nil {
+	if noPlugin.OnV6Fallback != nil || noPlugin.OnV6PrefixesIgnored != nil {
 		t.Error("a nil plugin armed a callback that would dereference it")
 	}
 }

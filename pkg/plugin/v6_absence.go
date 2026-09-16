@@ -38,14 +38,19 @@ const (
 	// there are no DHCPv6 addresses here. This is the NORMAL state, not
 	// a degraded one, and the endpoint is created without a v6 address.
 	//
-	// The endpoint then starts with no global IPv6 address at all. Since
-	// #821 the RA guard (pkg/dhcp/ra_guard.go) writes autoconf=0 on the
-	// interface, so the kernel forms no address from the advertised
-	// prefix whatever its A flag says (RFC 4862 section 5.5.3) -- the
-	// plugin holds the lease for the address a container uses, and two
-	// sources of global address on one link is not a state anything
-	// downstream is written for. SLAAC address formation under the
-	// plugin's own control is #818 and is not on this build.
+	// The endpoint then starts with no global IPv6 address FROM THIS
+	// PLUGIN -- there is no lease to be had -- and none from the kernel
+	// either. Since #821 the RA guard (pkg/dhcp/ra_guard.go) writes
+	// autoconf=0 on the interface, so the kernel forms no address from
+	// the advertised prefix whatever its A flag says (RFC 4862 section
+	// 5.5.3): the plugin holds the lease for the address a container
+	// uses, and two sources of global address on one link is not a
+	// state anything downstream is written for.
+	//
+	// A NETWORK WHOSE ipv6_mode FORMS ADDRESSES DOES NOT REACH THIS
+	// VERDICT on a seen advertisement. There the plugin forms the
+	// address itself and installs it (#818), and the two endings for
+	// that mode are v6SLAACNoPrefix and v6SLAACNoAddress below.
 	//
 	// THE ENDPOINT THEREFORE GETS NO IPv6 ROUTE either, and that is a
 	// fact about the engine rather than a choice (#821, MEASURED on the
