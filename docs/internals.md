@@ -932,6 +932,53 @@ the dependent tests run. They still skip on any box whose engine is
 older, and a skip there is expected and is not a signal that the run
 diverged.
 
+### The attach budget under load
+
+`AWAIT_TIMEOUT` caps the attach that follows a Join. When it runs out
+with the container still running, the plugin counts
+`join_start_failures` and the container keeps an address nothing
+renews. Whether a small, loaded host reaches that state is a
+measurement, not a reading of the code, and
+[`scripts/vm-load-test.sh`](https://github.com/claymore666/docker-net-dhcp/blob/main/scripts/vm-load-test.sh)
+takes it
+([#969](https://github.com/claymore666/docker-net-dhcp/issues/969),
+under
+[#403](https://github.com/claymore666/docker-net-dhcp/issues/403)).
+
+It builds a throwaway VM on the developer's own machine: 2 vCPU, 2 GB,
+plain qemu with KVM as an ordinary user, user-mode networking with ssh
+forwarded to loopback, nothing on the LAN and no root on the host. Inside
+it, the engine, this tree's plugin, and the bridge fixture shape the
+integration suite uses: a Linux bridge with dnsmasq bound to it. It then
+starts bursts of 10, 20 and 50 containers at once, three times each,
+at idle and under three levels of stress-ng pressure, and prints per
+burst the deltas
+of the attach buckets from `/Plugin.Health` beside what the DHCP server's
+lease file says, with the VM's steal and iowait over the burst so a row
+taken while the host had other tenants is marked as such. When an
+endpoint is not bound after the burst settled, the address on the
+container's link is read from inside the container and checked against
+the lease file, and the entry counts as the container's lease only
+under its own id: that is the difference between a stale address, an
+address leased to somebody else, and no address. A burst that attached nothing and a counter that went
+backwards are refused, not printed as a row; a loaded level whose load
+average never left the floor is printed marked refused, the table says
+which bursts those were, and the run exits non-zero. The lease column
+counts leases whose hostname is the container id the persistent client
+sends at Join, beside the size of the lease file, and it is evidence
+only once one burst has proven that key.
+
+| what | command | needs |
+| --- | --- | --- |
+| its own logic | `scripts/vm-load-test.sh --self-test` | nothing; seconds |
+| the matrix | `scripts/vm-load-test.sh` | `/dev/kvm` readable and writable, qemu, mtools, Docker for the rootfs build; about three hours of bursts at three repeats, before provisioning and the holds between bursts; `VMLT_LEVELS`, `VMLT_BURSTS` and `VMLT_REPEATS` shrink it |
+
+The matrix is not part of CI and not a gate, while its self-test and
+the gate test run in CI like every gate self-test: a load measurement
+varies from run
+to run and would cry wolf as a red check. It is run by hand when the
+Join path changes, and the measured table lives on the issue.
+
 ## Request fixtures
 
 [`pkg/plugin/testdata/requests/`](https://github.com/claymore666/docker-net-dhcp/tree/main/pkg/plugin/testdata/requests)
