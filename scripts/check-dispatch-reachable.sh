@@ -35,8 +35,96 @@
 # branch the entry has stopped meaning anything, and an allowlist nobody
 # prunes is how a temporary exception becomes permanent.
 #
+# A PULL REQUEST INTO THE DEFAULT BRANCH IS A THIRD STATE (#977). The two
+# verdicts above are each right on their own, and on a release PR no
+# commit satisfies both: the workflow is not on the default branch yet,
+# so the entry is required, and one commit later — after the merge — the
+# same entry is stale. The v2.1.0 release merge turned this gate red on
+# the default branch for exactly that reason, and the runbook sentence
+# "the release PR removes it" could not be followed by anyone.
+#
+# So on a pull request whose base IS the default branch, a dispatchable
+# workflow in the tree counts as REACHABLE: merging this pull request is
+# what puts it there. Its entry is then stale ON THE PULL REQUEST, which
+# is what makes the runbook step executable — the release PR removes the
+# entry, and the PR and the default branch are both green. Outside a
+# release, pushes and pull requests into any other branch keep today's
+# verdicts; the paragraph after next says what a release changes.
+#
+# The base is read from the event and compared against a DERIVED default
+# branch, never against a literal `main`. A gate that hard-codes the name
+# exempts every pull request into `dev` on the day the default branch
+# moves, which is the #665 failure reintroduced by the fix for this one.
+#
+# THAT EXEMPTION ALONE MOVES THE DEADLOCK FROM `main` TO `dev` (#977,
+# review round 1). The release pull request is `dev` -> `main`, so a
+# commit is only in it by being on `dev` first, and the runbook's route
+# onto `dev` is step 5, `release/vX.Y.Z` -> `dev`. That pull request has
+# base `dev`, gets no exemption, and the entry it removes is the entry
+# keeping it green. Measured on a fixture ledger: the release PR says
+# "remove it here", and the only pull request that can put the removal
+# there is red. Every pull request into `dev` between the two merges is
+# red for the same reason, because they are tested as the merge product
+# and `dev` already carries the removal.
+#
+# So the removal is IN TRANSIT for the length of the release, and this
+# gate has to say so. WHAT IT ACTUALLY DERIVES IS TWO VERSION PINS: the
+# `ghcr.io/<ns>/docker-net-dhcp:vX.Y.Z` pin in README.md, read the same
+# way from this tree and from the default branch, the pin
+# scripts/bump-version.sh rewrites at runbook step 2 and
+# scripts/check-version-pins.sh keeps consistent. While the tree pins the
+# IMMEDIATE SUCCESSOR of what the default branch pins, a dispatchable
+# workflow the default branch lacks does not need an entry. Mid-cycle the
+# two sides are equal and nothing is suspended.
+#
+# THAT IS NOT A DERIVATION OF "A RELEASE IS HAPPENING", and neither this
+# comment nor anything this gate prints may pretend otherwise (#977 round
+# 2). It does not look for a release branch, a pruned ledger entry or a
+# release pull request. A bare `scripts/bump-version.sh vNEXT` on any
+# branch produces the same state, and check-version-pins.sh deliberately
+# permits a tree to lead the latest tag, so that is a false positive this
+# gate cannot exclude. It is named in the output of every run the
+# suspension applies to, and it is the first bound below.
+#
+# THE BOUNDS, stated beside the claim.
+#
+#   - A pin bump that is not a release suspends the finding just the
+#     same, repo-wide, and travels to `dev` when it merges.
+#   - While suspended, the finding is off for EVERY dispatchable
+#     workflow, not only the one being released, so a workflow merged
+#     undeclared in that window is not caught until the pins agree
+#     again.
+#   - THE BOUND IS A DISTANCE, NOT A DURATION (#977 round 3). What is
+#     measured is how far apart the two pins are: the suspension holds
+#     only while this tree pins the IMMEDIATE SUCCESSOR of what the
+#     default branch pins. Nothing here reads a clock, a tag or the
+#     state of a release, so a release parked after runbook step 5 sits
+#     exactly one step ahead and stays suspended for as long as the
+#     pins differ, however long that is. What the ledger's "written
+#     expiry" buys here is a bounded SHAPE, and that is the whole of
+#     it: two steps apart is refused, a year one step apart is not.
+#   - ONE STEP, AND ONLY AHEAD, so three shapes fall outside the
+#     suspension: a release that skips a version, a release cut on an
+#     older line, and a tree that is simply behind. On those the
+#     #977 deadlock is back -- the release pull request needs the
+#     entry, and the pull request that removes it is red -- because
+#     "a release moves the version one step" is a convention of this
+#     project, not an invariant this gate can rely on. It is loud
+#     rather than silent, on the runs that can act on it: every run
+#     that REPORTS an undeclared workflow while the pins differ says
+#     the suspension did not apply, names both pins and the readings
+#     that arm allows, and names a ledger entry as the way through. A
+#     run with nothing to report stays quiet, pins or no pins.
+#   - The STALE rule is never suspended, on any route. That is the half
+#     that keeps the default branch green after the merge.
+#
 # Usage: bash scripts/check-dispatch-reachable.sh [workflow-dir] [allowlist]
 # Env:   BASE_REF (default origin/main) — the default branch to test against.
+#        GITHUB_EVENT_NAME, GITHUB_BASE_REF, GITHUB_EVENT_PATH — read, never
+#          required. They are what identifies a pull request into the default
+#          branch; with none of them set the verdict is the pre-#977 one.
+#        VERSION_PIN_FILE (default README.md) — the file the release-in-flight
+#          comparison reads the published-image pin from, on both sides.
 # Exit:  0 reachable or declared (also when the default branch cannot be
 #          read — reported as NOT INSPECTED, never a silent pass),
 #        1 an undeclared or stale entry,
@@ -46,6 +134,12 @@ set -uo pipefail
 WF_DIR="${1:-.github/workflows}"
 ALLOWLIST="${2:-.github/dispatch-pending.txt}"
 BASE_REF="${BASE_REF:-origin/main}"
+# The fetch fallback below REWRITES BASE_REF to FETCH_HEAD, and a hosted
+# runner takes that path on every run: actions/checkout fetches one ref,
+# so `origin/main` is not present. The #977 exemption has to compare the
+# branch the operator NAMED, not what the fallback left behind, or it is
+# inert in the only place it matters.
+BASE_REF_SPEC="$BASE_REF"
 
 [ -d "$WF_DIR" ] || { echo "FAIL  no workflow directory '$WF_DIR'" >&2; exit 2; }
 
@@ -82,6 +176,164 @@ if ! git rev-parse --verify --quiet "$BASE_REF" >/dev/null; then
     echo "  This is the one thing this check needs; CI fetches it, so the"
     echo "  verdict there is the authoritative one."
     exit 0
+fi
+
+# THE #977 EXEMPTION, DECIDED ONCE, HERE.
+#
+# Three things have to hold, and each one is a separate way the fix
+# could be wrong rather than a belt-and-braces list:
+#
+#   - the run is a PULL REQUEST. `GITHUB_BASE_REF` is set on a pull
+#     request and empty on a push, but an environment can carry a stale
+#     one, and "a push was exempted" is silent in both directions. The
+#     event name is what says which kind of run this is.
+#   - its base IS the default branch, DERIVED. Comparing against the
+#     string `main` would exempt every pull request into `dev` the day
+#     the default branch is renamed, which is the #665 failure produced
+#     by the fix for #977.
+#   - the ref this gate compares against is that same branch. Otherwise
+#     the exemption would report "reachable" about a branch nobody asked
+#     about.
+#
+# Two derivations, because neither is available everywhere: a hosted
+# runner has the event payload and no `origin/HEAD`; a clone has
+# `origin/HEAD` and no event payload. Where BOTH answer and they
+# DISAGREE, the exemption is refused rather than letting the looser one
+# decide.
+#
+# Declining is printed. A fix that silently does nothing on the one run
+# it was written for is indistinguishable from a fix that works, until
+# the release it was supposed to unblock.
+branch_name() {
+    local r="${1#refs/heads/}"
+    r="${r#refs/remotes/}"
+    printf '%s' "${r#origin/}"
+}
+
+DEF_FROM_EVENT=""
+if [ -n "${GITHUB_EVENT_PATH:-}" ] && [ -r "${GITHUB_EVENT_PATH:-}" ] \
+   && command -v jq >/dev/null 2>&1; then
+    DEF_FROM_EVENT=$(jq -r '.repository.default_branch // empty' \
+        "${GITHUB_EVENT_PATH}" 2>/dev/null)
+fi
+DEF_FROM_HEAD=$(git symbolic-ref --short --quiet refs/remotes/origin/HEAD 2>/dev/null)
+[ -z "$DEF_FROM_HEAD" ] || DEF_FROM_HEAD=$(branch_name "$DEF_FROM_HEAD")
+
+DEFAULT_BRANCH=""
+MERGES_INTO_DEFAULT=0
+PR_BASE=""
+case "${GITHUB_EVENT_NAME:-}" in
+    pull_request|pull_request_target) PR_BASE=$(branch_name "${GITHUB_BASE_REF:-}") ;;
+esac
+
+if [ -n "$PR_BASE" ]; then
+    decline=""
+    if [ -n "$DEF_FROM_EVENT" ] && [ -n "$DEF_FROM_HEAD" ] \
+       && [ "$DEF_FROM_EVENT" != "$DEF_FROM_HEAD" ]; then
+        decline="the event payload says the default branch is '$DEF_FROM_EVENT' and origin/HEAD says '$DEF_FROM_HEAD'"
+    else
+        DEFAULT_BRANCH="${DEF_FROM_EVENT:-$DEF_FROM_HEAD}"
+        if [ -z "$DEFAULT_BRANCH" ]; then
+            decline="the default branch could not be derived — no readable event payload and no origin/HEAD"
+        elif [ "$PR_BASE" = "$DEFAULT_BRANCH" ]; then
+            if [ "$(branch_name "$BASE_REF_SPEC")" = "$DEFAULT_BRANCH" ]; then
+                MERGES_INTO_DEFAULT=1
+            else
+                decline="this gate was pointed at '$BASE_REF_SPEC', which is not the default branch '$DEFAULT_BRANCH'"
+            fi
+        fi
+    fi
+    if [ "$MERGES_INTO_DEFAULT" -eq 0 ] && [ -n "$decline" ]; then
+        echo "NOTE  this is a pull request into '$PR_BASE' and the merge-reaches-the-default-branch"
+        echo "      exemption (#977) was NOT applied: ${decline}."
+        echo "      The verdict below is the one a push would get."
+    fi
+fi
+
+# IS A RELEASE IN FLIGHT? (#977 round 1.)
+#
+# One fact, derived the same way on both sides, from the pin
+# scripts/bump-version.sh rewrites on the release branch at runbook
+# step 2. Reading it from one file on each side and requiring exactly
+# one distinct version there is what keeps this from being a second,
+# looser idea of "the version": zero pins and two different pins both
+# mean "cannot tell", and cannot-tell is NOT in flight, so the default
+# is the strict pre-existing verdict.
+VERSION_PIN_FILE="${VERSION_PIN_FILE:-README.md}"
+
+# pin_version <text> -> the single vX.Y.Z pinned in it, or nothing
+pin_version() {
+    local vs
+    vs=$(printf '%s' "$1" \
+        | grep -oE 'ghcr\.io/[^/[:space:]]+/docker-net-dhcp:v[0-9]+\.[0-9]+\.[0-9]+' \
+        | sed 's/.*://' | sort -u)
+    [ "$(printf '%s' "$vs" | grep -c .)" -eq 1 ] || return 0
+    printf '%s' "$vs"
+}
+
+TREE_VERSION=""
+BASE_VERSION=""
+[ -f "$VERSION_PIN_FILE" ] && TREE_VERSION=$(pin_version "$(cat "$VERSION_PIN_FILE")")
+BASE_VERSION=$(pin_version "$(git show "${BASE_REF}:${VERSION_PIN_FILE}" 2>/dev/null)")
+
+# THE SUSPENSION IS BOUNDED BY SHAPE, BECAUSE THE LEDGER IT SERVES
+# DEMANDS A BOUND (#977 round 2) AND SHAPE IS THE ONLY BOUND TWO PINS CAN
+# CARRY (#977 round 3). "An accepted condition with a written expiry,
+# never a bare entry" is the bargain at the top of this file, and a
+# suspension that applies to any pair of differing pins is a bare entry.
+#
+# What is measured is the DISTANCE between the two pins, from the two
+# pins alone. A release moves the version one step -- the next patch,
+# the next minor, or the next major -- so the suspension holds only
+# while the tree pins the immediate successor of what the default branch
+# pins, and two steps is refused.
+#
+# THAT IS NOT A BOUND ON HOW LONG, and the first version of this comment
+# said it was. A release parked after runbook step 5 leaves `dev` pinning
+# exactly ONE version more than `main`, which is the shape this accepts,
+# so the finding stays suspended for as long as nobody finishes or
+# unwinds that release -- measured: 51 commits later, still suspended.
+# Nothing here reads a clock, a tag or the state of a release, and no
+# duration is derivable from two version strings. Bounding time would
+# mean inventing a parameter this file cannot measure, which is the
+# other way to get a sentence wider than the code. So the bound is
+# stated as what it is, in the four places that state it.
+#
+# The refusal is also narrower than "not a release": a release that
+# skips a version and a release cut on an older line are both outside
+# the successor set. Both are refused, and the NOTE at the end says
+# which readings the two pins allow rather than picking one.
+successors() {
+    local v="${1#v}" maj min pat
+    IFS=. read -r maj min pat <<< "$v"
+    case "${maj}${min}${pat}" in *[!0-9]*|'') return 0 ;; esac
+    printf 'v%d.%d.%d\nv%d.%d.0\nv%d.0.0\n' \
+        "$maj" "$min" "$((pat + 1))" "$maj" "$((min + 1))" "$((maj + 1))"
+}
+
+# The reason is keyed on the PROPERTY -- the pins differ and it is not
+# one step -- and not on the one mechanism that used to set it. Keyed on
+# "strictly newer" it was silent on the older-line direction, which is
+# the arm a hotfix release lands in.
+#
+# Each arm carries its OWN readings, because the readings differ: only
+# the ahead arm can have been left by a release that never landed, and
+# only the behind arm by a branch nobody back-merged. One shared list
+# would be wider than the code on both arms.
+RELEASE_IN_FLIGHT=0
+PINS_NOT_ONE_STEP=""
+PINS_READINGS=""
+if [ -n "$TREE_VERSION" ] && [ -n "$BASE_VERSION" ] \
+   && [ "$TREE_VERSION" != "$BASE_VERSION" ]; then
+    if successors "$BASE_VERSION" | grep -Fx "$TREE_VERSION" >/dev/null; then
+        RELEASE_IN_FLIGHT=1
+    elif [ "$(printf '%s\n%s\n' "$TREE_VERSION" "$BASE_VERSION" | sort -V | tail -n1)" = "$TREE_VERSION" ]; then
+        PINS_NOT_ONE_STEP="more than one release step ahead of it"
+        PINS_READINGS="an earlier release that never landed, or a release that skips a version"
+    else
+        PINS_NOT_ONE_STEP="behind it"
+        PINS_READINGS="a branch nobody back-merged, or a release cut on an older line"
+    fi
 fi
 
 # THE LEDGER'S OWN RULES WERE ENFORCED BY NOTHING (#849). Its header says
@@ -299,6 +551,9 @@ while IFS= read -r rel; do
 done <<< "$declared"
 
 pending=""
+merging=""
+travelling=""
+unsuspended=""
 inspected=0
 for f in "${WF_FILES[@]}"; do
     [ -e "$f" ] || continue
@@ -320,18 +575,50 @@ for f in "${WF_FILES[@]}"; do
     inspected=$((inspected + 1))
 
     rel="${f#./}"
-    if git cat-file -e "${BASE_REF}:${rel}" 2>/dev/null; then
-        # On the default branch: dispatchable. A declaration for it is stale.
+    on_default=0
+    git cat-file -e "${BASE_REF}:${rel}" 2>/dev/null && on_default=1
+
+    # Reachable, by either route: it is on the default branch already, or
+    # this pull request is what puts it there (#977). The stale rule is
+    # NOT suspended by the second route — that is the half that keeps the
+    # default branch green after the merge, and the reason the release PR
+    # is where the entry gets removed.
+    if [ "$on_default" -eq 1 ] || [ "$MERGES_INTO_DEFAULT" -eq 1 ]; then
+        [ "$on_default" -eq 1 ] || merging="$merging $rel"
         if printf '%s\n' "$declared" | grep -Fx "$rel" >/dev/null; then
-            note "'$rel' is on ${BASE_REF} but still declared in ${ALLOWLIST}."
-            echo "  It is dispatchable now; the entry has stopped meaning anything." >&2
-            echo "  Remove it." >&2
+            if [ "$on_default" -eq 1 ]; then
+                note "'$rel' is on ${BASE_REF} but still declared in ${ALLOWLIST}."
+                echo "  It is dispatchable now; the entry has stopped meaning anything." >&2
+                echo "  Remove it." >&2
+            else
+                note "'$rel' is still declared in ${ALLOWLIST} and merging this pull request puts it on ${DEFAULT_BRANCH}."
+                echo "  The entry is stale the moment this merges, and this same gate then" >&2
+                echo "  goes red on ${DEFAULT_BRANCH} one commit later (#977). Remove it here," >&2
+                echo "  in this pull request." >&2
+            fi
         fi
         continue
     fi
 
-    pending="$pending $rel"
-    if ! printf '%s\n' "$declared" | grep -Fx "$rel" >/dev/null; then
+    if printf '%s\n' "$declared" | grep -Fx "$rel" >/dev/null; then
+        # DECLARED pending, and that is the only list this word may
+        # name. It used to collect every workflow that reached this
+        # point, suspended ones included, and the summary then reported
+        # a workflow as "declared pending" with an empty ledger (#977
+        # round 2, F1).
+        pending="$pending $rel"
+    else
+        # The finding is suspended while the pins differ by one release
+        # step (#977 round 1). In a release that is the removal in
+        # transit: the runbook prunes the ledger beside the pin bump, so
+        # the entry is gone here and reaches the default branch with the
+        # workflow. This gate does not check that a release is
+        # happening; see the bound in the header.
+        if [ "$RELEASE_IN_FLIGHT" -eq 1 ]; then
+            travelling="$travelling $rel"
+            continue
+        fi
+        [ -z "$PINS_NOT_ONE_STEP" ] || unsuspended="$unsuspended $rel"
         note "'$rel' declares workflow_dispatch but is not on ${BASE_REF}."
         echo "  GitHub only exposes a dispatchable workflow from the DEFAULT" >&2
         echo "  branch, so 'gh workflow run $(basename "$rel")' answers 404 today —" >&2
@@ -342,6 +629,48 @@ for f in "${WF_FILES[@]}"; do
         echo "  present it as a route yet." >&2
     fi
 done
+
+# EVERY LINE HERE IS A FACT THIS RUN DERIVED, and the one thing it did
+# NOT derive is labelled as such (#977 round 2, F2). The first version
+# of this block announced a release, a release branch, a pruned entry
+# and a release pull request, none of which this gate ever looks for.
+if [ -n "$travelling" ]; then
+    echo "NOTE  this tree pins ${TREE_VERSION} and ${BASE_REF} pins ${BASE_VERSION}, one release step behind it."
+    echo "      The undeclared-workflow finding is suspended for:${travelling}"
+    echo "      WHAT THIS RUN CHECKED IS THE TWO PINS, AND NOTHING ELSE. It did not"
+    echo "      look for a release branch, a pruned ledger entry or a release pull"
+    echo "      request, and it cannot tell a release from a bare pin bump on any"
+    echo "      branch, which scripts/check-version-pins.sh permits. In a release"
+    echo "      this state is the removal in transit: the runbook prunes the ledger"
+    echo "      beside the pin bump at step 2, so the entries are gone here and"
+    echo "      reach ${BASE_REF} with the workflows when the release merges."
+    echo "      While the pins differ this suspends the finding for EVERY"
+    echo "      dispatchable workflow, so one merged undeclared here is not caught"
+    echo "      until they agree again. The stale rule is not suspended."
+fi
+
+# THE PINS DIFFER AND THE SUSPENSION DID NOT APPLY, SAID OUT LOUD.
+# Without this the refusal above reads as "add an entry" to someone who
+# has a bumped pin and believes the suspension covers it.
+#
+# It states the readings rather than choosing one (#977 round 3). Pins
+# that are not one step apart in the accepting direction are left behind
+# by an earlier release that never landed, by a release that skips a
+# version, by a branch nobody back-merged and by a release cut on an
+# older line, and this gate cannot tell those apart. Naming one of them
+# as the reason is the wider-than-the-code sentence in the evidence
+# trail that the top of this file refuses, so each arm prints the
+# readings that arm can actually have. The way through is the same in
+# all of them, and it is the last line.
+if [ -n "$unsuspended" ]; then
+    echo "NOTE  the pin suspension did NOT apply:${unsuspended}" >&2
+    echo "      this tree pins ${TREE_VERSION}, ${BASE_REF} pins ${BASE_VERSION}, and that is ${PINS_NOT_ONE_STEP}." >&2
+    echo "      The suspension covers ONE shape: this tree pinning the immediate" >&2
+    echo "      successor of ${BASE_REF}. This is not that shape, and two pins are not" >&2
+    echo "      enough to say which of its readings holds -- ${PINS_READINGS}." >&2
+    echo "      Bring the two pins to one step apart or equal, or declare the" >&2
+    echo "      workflow in ${ALLOWLIST} as any other pending workflow." >&2
+fi
 
 if [ "$fail" -ne 0 ]; then
     exit 1
@@ -357,8 +686,22 @@ if [ "$inspected" -eq 0 ]; then
     exit 2
 fi
 
-if [ -n "$pending" ]; then
-    echo "PASS  ${inspected} dispatch target(s) reachable on ${BASE_REF}; declared pending:$pending"
+if [ -n "$merging" ]; then
+    # Never the "are on ${BASE_REF}" line here: they are not, and a false
+    # sentence in the evidence trail of a release is worth more than the
+    # one branch it saves.
+    echo "PASS  ${inspected} dispatch target(s) reachable; merging this pull request into" \
+         "${DEFAULT_BRANCH} is what puts these there:$merging"
+elif [ -n "$pending" ] || [ -n "$travelling" ]; then
+    # NEVER "reachable on ${BASE_REF}" for either list: neither kind is
+    # there, which is the whole reason it is being reported. Same rule as
+    # the merging line above, and F1 of #977 round 2 is what happens when
+    # one of the two lists is folded into a sentence written for the
+    # other.
+    line="PASS  ${inspected} dispatch target(s) inspected"
+    [ -z "$pending" ] || line="$line; not on ${BASE_REF} and declared in ${ALLOWLIST}:$pending"
+    [ -z "$travelling" ] || line="$line; not on ${BASE_REF}, not declared, and suspended by the pin comparison above:$travelling"
+    echo "$line"
 else
     echo "PASS  all ${inspected} workflow_dispatch workflow(s) are on ${BASE_REF}"
 fi
