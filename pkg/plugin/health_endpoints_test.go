@@ -15,19 +15,36 @@ import (
 	"github.com/claymore666/dhcp-golib/proto"
 )
 
-// fakeEndpointClient is a DHCP client in a state this package cannot
-// build a real one into. Its three methods are the whole of what the
-// health document asks a client.
-type fakeEndpointClient struct {
-	mode  proto.ConflictMode
-	phase proto.ACDPhase
-	l     lease.Lease
-	bound bool
+// fakeJoinClient is a DHCP client in a state this package cannot build
+// a real one into: the three readers the health document asks a client,
+// and the one call the attach makes into a running one.
+//
+// names RECORDS EVERY CALL rather than keeping the last, because the
+// question #961 asks is how many times the server was told, not what it
+// was told last: the library renews early for each one, and a caller
+// that re-applied a name on every event would be paying for exchanges
+// nothing here would notice.
+type fakeJoinClient struct {
+	mode   proto.ConflictMode
+	phase  proto.ACDPhase
+	l      lease.Lease
+	bound  bool
+	names  []string
+	setErr error
+	onSet  func()
 }
 
-func (f *fakeEndpointClient) ConflictMode() proto.ConflictMode { return f.mode }
-func (f *fakeEndpointClient) ACDPhase() proto.ACDPhase         { return f.phase }
-func (f *fakeEndpointClient) Lease() (lease.Lease, bool)       { return f.l, f.bound }
+func (f *fakeJoinClient) ConflictMode() proto.ConflictMode { return f.mode }
+func (f *fakeJoinClient) ACDPhase() proto.ACDPhase         { return f.phase }
+func (f *fakeJoinClient) Lease() (lease.Lease, bool)       { return f.l, f.bound }
+
+func (f *fakeJoinClient) SetHostname(name string) error {
+	f.names = append(f.names, name)
+	if f.onSet != nil {
+		f.onSet()
+	}
+	return f.setErr
+}
 
 func mustTime(t *testing.T, s string) time.Time {
 	t.Helper()
@@ -50,7 +67,7 @@ func mustTime(t *testing.T, s string) time.Time {
 func TestEndpointViews_TwoEndpointsRenderTheirOwnFields(t *testing.T) {
 	p := newHealthPlugin()
 
-	bound := &fakeEndpointClient{
+	bound := &fakeJoinClient{
 		mode:  proto.ConflictWait,
 		phase: proto.ACDDefending,
 		bound: true,
@@ -62,7 +79,7 @@ func TestEndpointViews_TwoEndpointsRenderTheirOwnFields(t *testing.T) {
 			Expire:   mustTime(t, "2026-09-05T11:00:00Z"),
 		},
 	}
-	acquiring := &fakeEndpointClient{mode: proto.ConflictAsync, phase: proto.ACDProbing}
+	acquiring := &fakeJoinClient{mode: proto.ConflictAsync, phase: proto.ACDProbing}
 
 	// Endpoint ids are longer than shortID's 12 so the trim is driven
 	// too: a document that leaked the full id would differ here.

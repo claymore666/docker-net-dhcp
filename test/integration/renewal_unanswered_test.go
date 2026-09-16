@@ -131,29 +131,47 @@ func TestFailure_UnansweredRenewalsCounted(t *testing.T) {
 	awaitBoundPersistentClient(t, bindW)
 	ep := harness.EndpointShortID(t, ctx, cli, id, netName)
 
+	// EVERY BASELINE IN THIS CELL IS TAKEN AT THE KILL, the wire's and
+	// the health document's alike, because the outage is the subject
+	// and nothing before it is (#961). Since #961 a container whose
+	// attach entered through the sandbox key starts its DHCP client
+	// with no name and renews AT ONCE to carry the one the daemon
+	// answers with, which is RFC 2131 section 4.4.5's early renewal and
+	// is ANSWERED. It reaches the wire about two milliseconds after the
+	// bind, so a baseline taken at the bind can fall on either side of
+	// it: counted from the start of the capture it makes the wire wait
+	// below return one renewal early, before the client has gone into
+	// silence twice, which is what the counter needs; and a counter
+	// window opened in the same two milliseconds would see its answer
+	// as a leases_renewed the outage did not cause. On a host that
+	// takes the container PID route there is no such renewal, which is
+	// why the gating lane never saw either shape and the hosted
+	// cross-check saw the first.
+	beforeKill := len(wire.RenewalRequestsFrom(mac))
+
+	killed := time.Now()
+	ef.Stop()
+
 	w := harness.BeginCounterWindow(t, ctx, cli,
 		"renewals_unanswered", "dhcp_timeouts", "leases_renewed",
 		"recovery_failed", "join_start_failures", "tombstone_write_failures")
 	base := w.Before()
 	baseWarn := harness.CountPluginLogLines(t, ctx, renewalWarnMarker, ep)
-
-	killed := time.Now()
-	ef.Stop()
 	t.Logf("server killed with a %ds lease held; T1=%ds, so the first renewal request goes into "+
 		"silence at t+%ds and the retransmission at t+%ds",
 		leaseSeconds, renewT1, renewT1, renewT1+60)
 
 	// --- outside evidence, part one: the requests are really on the wire.
-	requests, ok := wire.AwaitRenewalRequestsFrom(mac, 2, wireBudget)
+	requests, ok := wire.AwaitRenewalRequestsFrom(mac, beforeKill+2, wireBudget)
 	if !ok {
-		t.Fatalf("only %d renewal request(s) from %s reached the wire within %s of the kill; "+
-			"the capture holds %d client message(s) in total. With none at all the instrument "+
-			"never saw this client and every count below would be a statement about nothing; "+
-			"with one, the client stopped asking after its first try.",
-			len(requests), mac, wireBudget, len(wire.Frames()))
+		t.Fatalf("only %d renewal request(s) from %s reached the wire within %s of the kill "+
+			"(%d before it); the capture holds %d client message(s) in total. With none at all "+
+			"the instrument never saw this client and every count below would be a statement "+
+			"about nothing; with one, the client stopped asking after its first try.",
+			len(requests)-beforeKill, mac, wireBudget, beforeKill, len(wire.Frames()))
 	}
-	t.Logf("%d renewal request(s) on the wire by t+%.0fs after the kill: %s",
-		len(requests), time.Since(killed).Seconds(), requests[len(requests)-1])
+	t.Logf("%d renewal request(s) on the wire by t+%.0fs after the kill (%d before it): %s",
+		len(requests)-beforeKill, time.Since(killed).Seconds(), beforeKill, requests[len(requests)-1])
 
 	// --- the plugin's reading, taken BEFORE the wire is counted.
 	if _, ok := w.Await(healthBudget, func(now, before *harness.HealthResponse) bool {
@@ -169,7 +187,7 @@ func TestFailure_UnansweredRenewalsCounted(t *testing.T) {
 
 	// --- outside evidence, part two: counted after every health read,
 	// so a request arriving in between can only widen the bound.
-	onWire := len(wire.RenewalRequestsFrom(mac))
+	onWire := len(wire.RenewalRequestsFrom(mac)) - beforeKill
 	gain := after.RenewalsUnanswered - before.RenewalsUnanswered
 	t.Logf("renewals_unanswered %d -> %d (+%d) against %d renewal request(s) on the wire",
 		before.RenewalsUnanswered, after.RenewalsUnanswered, gain, onWire)

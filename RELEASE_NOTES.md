@@ -51,6 +51,7 @@ prompts on has moved since v2.0.0.
 | `docker network rm` on an `on_remove` network hands back the addresses it still holds | The removal does not wait for those deadlines. On `never` and `on_stop` nothing changes. |
 | `releases_reclaimed` is a new counter on `/Plugin.Health` and `/metrics`, split `_v4` and `_v6` | Addresses a running container is using again when the window ends, so nothing was sent. It is narrower than "nothing was sent": an address stopped a second time and an acquisition in flight also send nothing and are not counted. Zero on `never` and `on_stop`. It does not flip `healthy`. |
 | Eleven counters now carry a `family` label on `/metrics`, not ten | One new series pair, `net_dhcp_releases_reclaimed_total` with `family="ipv4"` and `family="ipv6"`. Existing series are unchanged. |
+| A container start no longer waits for the Docker daemon to answer before its DHCP client starts | Nothing to configure. An endpoint reaches its address sooner on a busy host, and the container's name reaches the DHCP server a moment after the lease instead of before it. A network with `register_dns` keeps the old order. |
 
 ### New
 
@@ -114,6 +115,29 @@ prompts on has moved since v2.0.0.
   here, an address stopped a second time and an acquisition in flight
   under the same endpoint key, so the two counters do not add up to the
   number of windows that ended (#984).
+- `hostnames_applied_late`, `hostname_lookup_failures` and
+  `hostname_apply_failures` on `/Plugin.Health` and `/metrics`: the name
+  reached the running client, the daemon never answered, or the client would
+  not take it. The first is the one that says the other two are zero because
+  nothing went wrong rather than because nothing happened. The endpoint keeps
+  its lease in all three cases, so none of them affects `healthy` (#961).
+
+### Changed
+
+- A container gets its address on start without waiting for the Docker daemon.
+  The attach starts the persistent DHCP client first and asks the daemon for
+  the container's name afterwards, then hands that name to the running client,
+  which renews early to carry it. Before, the client was not started until the
+  daemon had answered, and the daemon does not answer questions about a
+  container while it is still starting it, so an endpoint could be without an
+  address for the length of a `docker run`. A name that arrives late, or not at
+  all, no longer holds up the lease. A container **restart** still asks the
+  daemon first: Docker drives a restart as a detach and a re-attach with no
+  endpoint creation between them, so the plugin rebuilds the endpoint before
+  the attach begins (#961).
+- A network with `register_dns` keeps the old order. Its name goes in the DHCP
+  FQDN option, which is built when the client is constructed and cannot be set
+  afterwards, so that network still waits for the name before it leases (#961).
 
 ### Not in this release
 

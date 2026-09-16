@@ -527,6 +527,16 @@ type HealthResponse struct {
 	// legitimate hostname never contains one, so a rising value is
 	// somebody probing rather than background noise.
 	UnsafeHostnamesRejected int32 `json:"unsafe_hostnames_rejected"`
+
+	// HostnamesAppliedLate, HostnameLookupFailures and
+	// HostnameApplyFailures are the three outcomes of the container's
+	// name arriving after its DHCP client is already leasing (#961).
+	// Read them together: the first is the domain the other two are
+	// zero against. v4 only, because this plugin's DHCP library sends
+	// no name option for DHCPv6 at all.
+	HostnamesAppliedLate   int32 `json:"hostnames_applied_late"`
+	HostnameLookupFailures int32 `json:"hostname_lookup_failures"`
+	HostnameApplyFailures  int32 `json:"hostname_apply_failures"`
 	// UnsafeOptionValuesDropped counts server-chosen DHCP string
 	// values refused before use because they carried a control
 	// character, plus option-15 domains truncated at their first space.
@@ -1172,6 +1182,8 @@ func (p *Plugin) checkStamps() map[string]time.Time {
 		"ipam_replay_miss":           p.ipamReplayMiss.LastMoved(),
 		"ipam_rebind_ambiguous":      p.ipamRebindAmbiguous.LastMoved(),
 		"ipam_reserve_duplicate_mac": p.ipamReserveDuplicateMAC.LastMoved(),
+		"hostname_lookup_failures":   p.hostnameLookupFailures.LastMoved(),
+		"hostname_apply_failures":    p.hostnameApplyFailures.LastMoved(),
 		"release_failures":           laterOf(p.releaseFailuresV4.LastMoved(), p.releaseFailuresV6.LastMoved()),
 	}
 }
@@ -1300,6 +1312,9 @@ func (p *Plugin) healthSnapshot() HealthResponse {
 		TombstoneWriteFailures:       tsFails,
 		TombstoneQuarantines:         tsQuarantines,
 		UnsafeHostnamesRejected:      p.unsafeHostnamesRejected.Load(),
+		HostnamesAppliedLate:         p.hostnamesAppliedLate.Load(),
+		HostnameLookupFailures:       p.hostnameLookupFailures.Load(),
+		HostnameApplyFailures:        p.hostnameApplyFailures.Load(),
 		UnsafeOptionValuesDropped:    p.unsafeOptionValuesDropped.Load(),
 		NetworkOptionsRejected:       p.networkOptionsRejected.Load(),
 		IPAMReplayHits:               p.ipamReplayHits.Load(),

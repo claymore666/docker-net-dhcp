@@ -171,6 +171,19 @@ type HealthResponse struct {
 	// to expire (#566).
 	JoinAbortedNoContainer int32 `json:"join_aborted_no_container"`
 	JoinAttachSlow         int32 `json:"join_attach_slow"`
+	// The three outcomes of a container's name arriving after its DHCP
+	// client is already leasing (#961). HostnamesAppliedLate is the
+	// domain the other two are read against: a suite where it stays at
+	// zero has not exercised the late path at all, and their zeros then
+	// say nothing. Which is the normal reading on THIS pool: the late
+	// path runs only where the attach entered through the sandbox key,
+	// and sandbox_netns_propagation reads 0 here, so the PID route
+	// carries every attach and puts the name in the client's opening
+	// parameters instead. v4 only; this plugin sends no name option for
+	// DHCPv6.
+	HostnamesAppliedLate   int32 `json:"hostnames_applied_late"`
+	HostnameLookupFailures int32 `json:"hostname_lookup_failures"`
+	HostnameApplyFailures  int32 `json:"hostname_apply_failures"`
 	// The body of the distribution join_attach_slow is the tail of
 	// (#403). Plain int32: these ship with this change, so a zero from
 	// an older plugin and a zero from a quiet lane are the same

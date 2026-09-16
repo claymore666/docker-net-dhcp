@@ -108,13 +108,15 @@ check "a large prefix above the allow marker does not discard it" 0 "$got"
 # beside the hostname assignment it shipped beside.
 #
 # THE ANCHOR IS A LINE OF THE SOURCE, so it moves when the source does.
-# #417 reordered Start and the hostname now comes from a field the
-# inspect filled rather than from the response struct, so the anchor is
-# the current spelling and the check below is what proves the plant
-# landed: a sed that matches nothing plants nothing, and a fixture that
-# changed nothing passes a gate that reads it.
+# #417 reordered Start and the hostname came from a field the inspect
+# filled rather than from the response struct; #961 moved that
+# assignment again, into the branch that still takes the name before the
+# client starts, and behind a setter. The anchor is the current spelling
+# and the check below is what proves the plant landed: a sed that
+# matches nothing plants nothing, and a fixture that changed nothing
+# passes a gate that reads it.
 reintroduce_688() {
-    sed -i 's|^\t\tm.hostname = m.plugin.safeHostname(ctrHostname).name$|\t\tm.nsPath = fmt.Sprintf("/proc/%v/ns/net", ctrPID)\n\t\tm.hostname = m.plugin.safeHostname(ctrHostname).name|' \
+    sed -i 's|^\t\t\tm.setHostname(m.plugin.safeHostname(ctrHostname).name)$|\t\t\tm.nsPath = fmt.Sprintf("/proc/%v/ns/net", ctrPID)\n\t\t\tm.setHostname(m.plugin.safeHostname(ctrHostname).name)|' \
         "$1/pkg/plugin/dhcp_manager.go"
 }
 got=$(fixture reintroduced reintroduce_688)

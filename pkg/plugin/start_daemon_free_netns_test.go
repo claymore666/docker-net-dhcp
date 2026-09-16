@@ -18,21 +18,26 @@ import (
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netns"
 
+	"github.com/claymore666/docker-net-dhcp/v2/pkg/dhcp"
 	"github.com/claymore666/docker-net-dhcp/v2/pkg/util"
 )
 
-// The two drives for #417's delivered property, and its boundary.
+// The drives for #417's and #961's delivered property, and its bounds.
 //
-// DELIVERED: the container's network namespace is entered and its link
-// is located with no call to the daemon, where the sandbox key the Join
-// request carries resolves.
+// DELIVERED: where the sandbox key the Join request carries resolves,
+// the container's network namespace is entered, its link is located AND
+// the persistent client is started with no call to the daemon. The
+// inspect that supplies DHCP option 12 runs afterwards, on a container
+// that is already leasing, and the name is given to the running client
+// (#961).
 //
-// NOT DELIVERED, and asserted here so the claim cannot quietly grow:
-// the persistent client is NOT started without the daemon. It waits on
-// one ContainerInspect for the hostname that becomes DHCP option 12,
-// because the library takes the hostname when the client is
-// constructed, so a client started before the answer would never send
-// it. #961 is open for a hostname source that is not the daemon.
+// THE BOUNDS, asserted here so the claim cannot quietly grow. A network
+// with register_dns still waits for the name before the client starts:
+// the name goes in RFC 4702's option 81 there, which the library takes
+// at construction and has no setter for. And where the sandbox key is
+// refused the PID fallback has already asked the daemon on the way in,
+// so the name is in hand before the client starts and costs no second
+// call.
 //
 // The fixture is the package's own network namespace, reached through a
 // sandbox-key entry that names it, and a link inside it found by MAC in
@@ -151,10 +156,11 @@ func TestStart_EntersTheNamespaceAndLocatesTheLinkWithoutTheDaemon(t *testing.T)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 400*time.Millisecond)
 	defer cancel()
-	err := m.Start(ctx)
-	if err == nil {
-		t.Fatal("Start succeeded against a daemon that fails every call; the hostname inspect cannot have happened")
-	}
+	// Start goes on to open a DHCP socket, which this lane cannot do,
+	// so it fails for that reason and not for the daemon's. The phases
+	// and the counters below are what this drive reads, and they are
+	// recorded either way.
+	_ = m.Start(ctx)
 
 	if !strings.Contains(m.startPhases, "open_netns=") {
 		t.Errorf("phase summary %q has no open_netns: the namespace was not entered against a daemon "+
@@ -177,17 +183,28 @@ func TestStart_EntersTheNamespaceAndLocatesTheLinkWithoutTheDaemon(t *testing.T)
 	}
 }
 
-// TestStart_AsksTheDaemonNothingBeforeTheLinkIsLocated is the same
-// property read from the other side, and it is the one a reordering
-// mutant cannot survive.
+// TestStart_AsksTheDaemonNothingBeforeThePersistentClientStarts is the
+// whole of what #961 delivers, read at the instant it is about.
 //
-// The phases above say the namespace and the link were reached. They do
-// not say the daemon was not asked on the way: a Start that inspected
-// first and then opened both would print the same two phases. So this
-// counts the calls. The fake fails every one, and the failure this
-// leaves is the link's, at a point where the daemon has been asked
-// nothing at all.
-func TestStart_AsksTheDaemonNothingBeforeTheLinkIsLocated(t *testing.T) {
+// The phases say the namespace, the link and the clients were reached.
+// They do not say the daemon was not asked on the way: a Start that
+// inspected first and then did all three would print the same phases,
+// and so would every total taken when Start returns. So this samples
+// the call count INSIDE the client start, through the one seam that
+// runs there, and then reads the same counter afterwards: zero at the
+// socket, non-zero at the end, and the container's name in hand.
+//
+// The three assertions are one property and none of them is redundant.
+// Zero-at-the-socket alone is satisfied by an attach that never asks
+// at all, which would leave every container nameless. Non-zero-at-the-
+// end alone is the old order. The name is what says the answer was
+// used.
+// ITS WINDOW OPENS AT Start, NOT AT Join. A Join that carries no hint
+// rebuilds the endpoint before any attach begins and asks the daemon
+// while doing it; that route is
+// TestReacquireEndpoint_AsksTheDaemonBeforeTheAttachBegins, and the
+// reference page and release notes both name it beside the claim.
+func TestStart_AsksTheDaemonNothingBeforeThePersistentClientStarts(t *testing.T) {
 	docker := &fakeDocker{
 		inspectResult: map[string]dNetwork.Inspect{
 			"net-1": {Containers: map[string]dNetwork.EndpointResource{
@@ -201,7 +218,7 @@ func TestStart_AsksTheDaemonNothingBeforeTheLinkIsLocated(t *testing.T) {
 			},
 		},
 	}
-	m, _ := daemonFreeManager(t, docker)
+	m, plug := daemonFreeManager(t, docker)
 
 	// The observer sits IN the client, so the order is read at the
 	// moment of the call and not inferred from what is left at the end.
@@ -211,25 +228,87 @@ func TestStart_AsksTheDaemonNothingBeforeTheLinkIsLocated(t *testing.T) {
 	watch := &firstCallWatcher{dockerClient: docker, m: m}
 	m.docker = watch
 
+	starts, callsAtSocket := 0, -1
+	withStartedClient(t, func() {
+		if starts == 0 {
+			callsAtSocket = watch.calls
+		}
+		starts++
+	})
+
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	// Start goes on to build a DHCP client, which this lane cannot do.
-	_ = m.Start(ctx)
+	if err := m.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
 
 	if !strings.Contains(m.startPhases, "open_netns=") {
 		t.Errorf("phase summary %q has no open_netns: the namespace was not entered", m.startPhases)
 	}
+	if starts != 1 {
+		t.Fatalf("the attach opened %d persistent client sockets, want 1: the sample below is taken at the "+
+			"first one, and an attach that opened none never reached the instant this drive is about", starts)
+	}
+	if callsAtSocket != 0 {
+		t.Errorf("the daemon had been asked %d times when the persistent client's socket was opened, want 0 "+
+			"(list %d, network inspect %d, container inspect %d). Every daemon call can block for the "+
+			"length of a ContainerStart (#406), and a container that waits for one before it leases is a "+
+			"container with no address for the length of its own start (#961)",
+			callsAtSocket, docker.listCalls, docker.inspectCalls, docker.containerCalls)
+	}
 	if watch.calls == 0 {
-		t.Fatal("the daemon was never called at all, so there is no first call to order against the " +
-			"link and this drive asserts nothing")
+		t.Fatal("the daemon was never asked anything for the whole attach, so the container's name was " +
+			"never looked up and no DHCP server will ever have a name for it")
 	}
 	if !watch.linkAtFirstCall {
-		t.Errorf("the daemon's first call (list %d, network inspect %d, container inspect %d) was made "+
-			"while m.ctrLink was still nil, so the link had not been located yet. Every daemon call can "+
-			"block for the length of a ContainerStart (#406), which is the whole reason the namespace "+
-			"is entered through the sandbox key and the link found before anything is asked (#417)",
+		t.Errorf("the daemon's first call was made while m.ctrLink was still nil, so the link had not been "+
+			"located yet and the namespace route still depends on the daemon (#417). list %d, network "+
+			"inspect %d, container inspect %d",
 			docker.listCalls, docker.inspectCalls, docker.containerCalls)
 	}
+	// The name is READ here and cannot be DELIVERED here: this lane
+	// substitutes the socket open, so the manager still holds the
+	// library client that never started, and the handover ends in
+	// ErrNoRunningClient. Which is the assertion: the lookup ran and
+	// answered after the client started (no lookup failure), and the
+	// only thing that stopped the name was the absent socket (one apply
+	// failure). The delivery itself is
+	// TestStart_TheDefaultNetworkTakesTheNameAfterTheClientStarts,
+	// which publishes a client that can be asked what it was told.
+	if got := plug.hostnameLookupFailures.Load(); got != 0 {
+		t.Errorf("hostname_lookup_failures = %d, want 0: the daemon answered, and an attach that never "+
+			"asked for the name is not the attach this drive is about", got)
+	}
+	if got := plug.hostnameApplyFailures.Load(); got != 1 {
+		t.Errorf("hostname_apply_failures = %d, want 1: the name was read after the client started and "+
+			"had nowhere to go in this lane, which is the only reason it did not reach the wire", got)
+	}
+	if got := m.hostnameOnTheWire(); got != "" {
+		t.Errorf("m.hostname = %q, want empty: the field is the name the endpoint puts on the wire, and "+
+			"no client here ever took one", got)
+	}
+}
+
+// withStartedClient substitutes the socket-opening seam with one that
+// succeeds and calls at, so that an attach can be driven past the point
+// this lane's privileges stop at.
+//
+// The event channel is the attach's own: the consumer goroutine ranges
+// over it and is closed out at cleanup, so the substitute leaves the
+// manager in the shape a real client start leaves it in rather than in
+// a shape only this file produces.
+func withStartedClient(t *testing.T, at func()) {
+	t.Helper()
+	events := make(chan dhcp.Event)
+	prev := startDHCPClient
+	startDHCPClient = func(*dhcp.DHCPClient) (chan dhcp.Event, error) {
+		at()
+		return events, nil
+	}
+	t.Cleanup(func() {
+		startDHCPClient = prev
+		close(events)
+	})
 }
 
 // firstCallWatcher records the manager's state at the moment the daemon
@@ -280,26 +359,29 @@ func (w *firstCallWatcher) ContainerInspect(ctx context.Context, containerID str
 }
 
 // TestStart_TheClientOpensOnTheNameTheLinkHasAtOpenTime drives the gap
-// the reorder opened between finding the link and using it.
+// between finding the link and using it.
 //
 // The engine moves the link into the sandbox and then renames it, and
 // the macvlan branch of locateContainerLink takes the link the moment
-// its MAC appears, which can be before that rename. What made that
-// harmless was adjacency: the client was opened on the next line. The
-// reorder put the hostname inspect in between, so the name can go stale
-// while the daemon is answering -- and on a daemon inside ContainerStart
-// for this very container, #406's case, that wait is most of the attach
-// budget. Hosted run 34624582681 opened a client on a name the kernel
-// had already replaced; the endpoint got no renewal client, and the
-// address it had just declined was never replaced either.
+// its MAC appears, which can be before that rename. Nothing orders the
+// two, so the snapshot the locate leaves can carry a name the kernel no
+// longer has, and a client opened on it fails: hosted run 34624582681
+// opened one on a name that had already been replaced; the endpoint got
+// no renewal client, and the address it had just declined was never
+// replaced either. The index survives a rename, so re-reading by it is
+// what makes the name current.
 //
-// THE RENAME IS TIED TO THE INSPECT, and that is what makes this a
-// drive for the gap and not for a re-read. Renaming a link needs
-// CAP_NET_ADMIN, so the rename arrives through the seam the re-read
-// goes through; the seam reports the new name only once the daemon has
-// been asked. A re-read placed anywhere before that call sees the old
-// name and fails here, which is the mutant that moves the fix back to
-// the locate.
+// THE FIXTURE RENAMES AT THE RE-READ ITSELF, which is what makes this a
+// drive for the re-read and not for the locate: the located link's name
+// is real and is asserted to be the other one, so a client opening on
+// the renamed name can only be opening on the re-read's value.
+//
+// THE DAEMON IS ASSERTED NOT TO HAVE BEEN ASKED YET, and that is #961's
+// half of this. It used to be the opposite -- the re-read had to follow
+// the inspect, because the inspect sat between the locate and the open
+// and was the interval the name went stale in. The inspect has moved to
+// the far side of the client start, so a re-read that waits for the
+// daemon is a socket that waits for the daemon.
 //
 // WHAT THIS CANNOT CATCH: a Start that re-reads the link and then opens
 // the client on some other copy of it. It asserts the field, and the
@@ -340,22 +422,20 @@ func TestStart_TheClientOpensOnTheNameTheLinkHasAtOpenTime(t *testing.T) {
 			locatedName = m.ctrLink.Attrs().Name
 			locatedIndex = m.ctrLink.Attrs().Index
 		}
-		name := locatedName
-		if gate.inspected {
-			name = renamed
-		}
 		return &netlink.Device{LinkAttrs: netlink.LinkAttrs{
 			Index:        index,
-			Name:         name,
+			Name:         renamed,
 			HardwareAddr: m.MacAddress,
 		}}, nil
 	}
 	t.Cleanup(func() { nlLinkByIndex = prev })
+	withStartedClient(t, func() {})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	// Start goes on to open the client, which this lane cannot do.
-	_ = m.Start(ctx)
+	if err := m.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
 
 	if refreshes == 0 {
 		t.Fatal("the link was never re-read before the client was opened, so the name handed to the " +
@@ -365,16 +445,17 @@ func TestStart_TheClientOpensOnTheNameTheLinkHasAtOpenTime(t *testing.T) {
 		t.Fatal("the located link already carried the renamed name, so this drive would pass without " +
 			"the re-read: the fixture is not measuring anything")
 	}
-	if !sawInspect {
-		t.Error("the link was re-read before the daemon was asked anything, which is not where the " +
-			"name goes stale: the rename lands while the inspect is outstanding (#417)")
+	if sawInspect {
+		t.Error("the link was re-read after the daemon had been asked for the container, so the socket " +
+			"that re-read precedes was waiting on the daemon too. The inspect belongs on the far side " +
+			"of the client start (#961)")
 	}
 	if m.ctrLink == nil {
 		t.Fatal("no link on the manager after Start: the re-read cannot be judged")
 	}
 	if got := m.ctrLink.Attrs().Name; got != renamed {
 		t.Errorf("the client was opened on %q, but the link had been renamed to %q by then: a name read "+
-			"before the hostname inspect is a name the kernel may no longer have (#417)", got, renamed)
+			"when the link was located is a name the kernel may no longer have (#417)", got, renamed)
 	}
 	if askedIndex != locatedIndex {
 		t.Errorf("the re-read asked for index %d and the located link is index %d: an index that is not "+
@@ -397,20 +478,23 @@ func (r *renameOnInspect) ContainerInspect(ctx context.Context, id string) (dCon
 	return r.dockerClient.ContainerInspect(ctx, id)
 }
 
-// TestStart_DoesNotStartTheClientBeforeTheInspectAnswers is the other
-// half, and it is the BOUNDARY rather than the feature.
+// TestStart_LeasesWhileTheDaemonIsStillInsideContainerStart is the case
+// #961 exists for, and it is the exact inversion of what this file
+// asserted until #961: the same daemon, the same wait, and the opposite
+// verdict on the client.
 //
 // The daemon here is the #406 daemon: it accepts the connection and
 // never answers, because it is inside ContainerStart for this very
-// container. The namespace opens and the link is found regardless --
-// that is the property above -- and then the attach waits, and is
-// abandoned at its budget with no persistent client started.
+// container. The namespace opens, the link is found, AND THE PERSISTENT
+// CLIENT STARTS -- all of it while that call is outstanding. Then the
+// attach waits for the name and is abandoned at its budget, and that
+// abandonment is not a failure: the container is leasing and what it
+// lacks is its name in the server's table, which hostname_lookup_failures
+// is the record of.
 //
-// Without this, "the attach no longer needs the daemon" would be a
-// sentence nothing in the tree contradicts. attachDaemonBusyGrace is
-// load-bearing for exactly this wait, and the test that would go red on
-// its removal is the one that says the wait is still here.
-func TestStart_DoesNotStartTheClientBeforeTheInspectAnswers(t *testing.T) {
+// attachDaemonBusyGrace stays load-bearing and the wait is still here;
+// what changed is what the container holds while it waits.
+func TestStart_LeasesWhileTheDaemonIsStillInsideContainerStart(t *testing.T) {
 	docker := &fakeDocker{
 		inspectResult: map[string]dNetwork.Inspect{
 			"net-1": {Containers: map[string]dNetwork.EndpointResource{
@@ -422,40 +506,50 @@ func TestStart_DoesNotStartTheClientBeforeTheInspectAnswers(t *testing.T) {
 		containerDelay: time.Hour,
 	}
 	m, p := daemonFreeManager(t, docker)
+	withStartedClient(t, func() {})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 400*time.Millisecond)
 	defer cancel()
-	err := m.Start(ctx)
-	if err == nil {
-		t.Fatal("Start succeeded while the daemon never answered ContainerInspect")
+	if err := m.Start(ctx); err != nil {
+		t.Fatalf("Start failed with %v while the daemon never answered ContainerInspect. The name is "+
+			"the only thing that inspect supplies, and an endpoint without one is a working endpoint "+
+			"(#961)", err)
 	}
 
 	if !strings.Contains(m.startPhases, "open_netns=") || !strings.Contains(m.startPhases, "locate_link=") {
 		t.Errorf("phase summary %q: the namespace and the link must be reached before the wait, "+
 			"or this test is measuring a failure that happened earlier", m.startPhases)
 	}
-	if strings.Contains(m.startPhases, "start_clients=") {
-		t.Errorf("phase summary %q says the clients started while the hostname inspect never "+
-			"answered. The library takes the hostname when the client is constructed, so a client "+
-			"started here would send no hostname for its whole life (#417)", m.startPhases)
+	if !strings.Contains(m.startPhases, "start_clients=") {
+		t.Errorf("phase summary %q has no start_clients, so the client did not start while the daemon "+
+			"was unanswering. That wait is the whole of #406: the daemon does not answer until the "+
+			"container start it is inside is finished, and a client that waits for it is a container "+
+			"with no address for that whole time (#961)", m.startPhases)
 	}
-	if m.errChan != nil {
-		t.Error("a persistent client was started before the inspect answered; its lease would appear " +
-			"in the DHCP server's table with no hostname until the plugin restarts")
+	if m.errChan == nil {
+		t.Error("no persistent client on the manager: nothing is renewing this endpoint's lease")
 	}
-	// The two above say the client did not start. They do not say WHY,
-	// and "it tried and failed" wears the same face in this lane as "it
-	// waited": an attach that skipped the inspect entirely would satisfy
-	// both, because building a DHCP client needs privileges no unit test
-	// has. These two say the attach spent its budget inside the inspect.
+	if strings.Contains(m.startPhases, "hostname=") {
+		t.Errorf("phase summary %q records a completed hostname phase, but the daemon never answered: "+
+			"the phase is marked on the answer, so this one is being marked on the wait", m.startPhases)
+	}
+	// The assertions above say the client started. They do not say the
+	// attach reached the name at all, and an attach that skipped the
+	// lookup would satisfy every one of them while leaving every
+	// container on this host nameless. These three say it was reached,
+	// waited out, and recorded.
 	if docker.containerCalls != 1 {
 		t.Errorf("the daemon was asked to inspect the container %d times, want exactly 1: the attach "+
-			"must reach the hostname inspect and wait there, and an attach that never asked would "+
-			"have started a client with no hostname for its whole life", docker.containerCalls)
+			"must reach the name lookup and wait there", docker.containerCalls)
 	}
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Errorf("Start failed with %v, want the deadline: the budget was spent somewhere other than "+
-			"waiting on the daemon, so this case is not measuring the wait it names", err)
+	if got := p.hostnameLookupFailures.Load(); got != 1 {
+		t.Errorf("hostname_lookup_failures = %d, want 1: an endpoint leasing with no name in the DHCP "+
+			"server's table is the one thing this outcome leaves behind, and without the counter it is "+
+			"indistinguishable from an endpoint that was named", got)
+	}
+	if got := m.hostnameOnTheWire(); got != "" {
+		t.Errorf("m.hostname = %q after a lookup that never answered: the name can only have come from "+
+			"somewhere that did not decide it", got)
 	}
 	if got := p.sandboxKeyEntries.Load(); got != 1 {
 		t.Errorf("sandbox_key_entries = %d, want 1: the wait must be after the namespace was entered, "+
@@ -504,12 +598,25 @@ func TestStart_AsksTheDaemonOnceForTheWholeAttach(t *testing.T) {
 	// sight, once, and the PID route carries it from there.
 	m.joinReq.SandboxKey = "/tmp/not-a-sandbox-key"
 
+	inspectsAtSocket := -1
+	withStartedClient(t, func() {
+		if inspectsAtSocket < 0 {
+			inspectsAtSocket = docker.containerCalls
+		}
+	})
+
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	// Start goes on to build a DHCP client, which this lane cannot do;
-	// the phases and the counters below are what this drive reads, and
-	// they are recorded either way.
-	_ = m.Start(ctx)
+	if err := m.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	if inspectsAtSocket != 1 {
+		t.Errorf("the container had been inspected %d times when the client's socket was opened, want 1. "+
+			"This is #961's bound and not a violation of it: the PID route needed that answer to open "+
+			"the namespace at all, so the name is already in hand and deferring it would put it on the "+
+			"wire later for nothing", inspectsAtSocket)
+	}
 
 	if !strings.Contains(m.startPhases, "locate_link=") {
 		t.Errorf("phase summary %q: the PID route did not carry this attach as far as the link, so "+
@@ -534,9 +641,14 @@ func TestStart_AsksTheDaemonOnceForTheWholeAttach(t *testing.T) {
 			"ContainerStart for this container while both are wanted (#406), so the second call is a "+
 			"second wait of the same length", docker.containerCalls)
 	}
-	if m.hostname != "ctr-1" {
+	if got := m.hostnameOnTheWire(); got != "ctr-1" {
 		t.Errorf("m.hostname = %q, want %q: the inspect the fallback made must also be the one the "+
-			"DHCP hostname option comes from", m.hostname, "ctr-1")
+			"DHCP hostname option comes from", got, "ctr-1")
+	}
+	if got := p.hostnamesAppliedLate.Load(); got != 0 {
+		t.Errorf("hostnames_applied_late = %d, want 0: the name was in the client's parameters from "+
+			"construction on this route, and telling a client a name it is already sending is an "+
+			"exchange nobody asked for", got)
 	}
 }
 
