@@ -52,8 +52,16 @@ section below is still the list the daemon shows you.
   families release, IPv4 by `ciaddr` (RFC 2131 section 3.1(6)) and IPv6
   after taking the address off the link (RFC 9915 section 18.2.7). A
   record whose address went back is closed and not kept resumable. Both
-  the network driver and the parent-attached modes send it, and IPAM
-  mode's `ReleaseAddress` follows the same rule (#962, PR #966).
+  the network driver and the parent-attached modes send it (#962, PR
+  #966).
+  **One path is not covered, on every value including `on_stop`.** In
+  IPAM mode, an address reserved for an endpoint whose `CreateEndpoint`
+  then failed is retained and never released: retaining it is what lets
+  a restart policy's next attempt claim the same address back instead of
+  burning a second lease on the server, and a reservation with no
+  endpoint reaches no `Leave`, which is the only path that releases. No
+  DHCPRELEASE goes on the wire for it and the address is left to expire,
+  exactly as any other host on the segment leaves one.
 - `releases_sent` and `release_failures`, each stored per family and
   summed for the unsuffixed series. A release that put no message on the
   wire counts as a failure and names its reason in the plugin log; the
@@ -86,7 +94,7 @@ section below is still the list the daemon shows you.
   container stops, not when it is removed, so the value needs a timed
   release with its own TTL and timer instead of a third call site. It is
   refused at `docker network create` until then, with the reason in the
-  message (#962).
+  message (#984).
 
 ## v2.1.0
 

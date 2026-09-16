@@ -118,16 +118,19 @@ handles lifetimes, withdrawal and renumbering, [#817] adds an
 `ipv6_mode` option, [#814] parses Router Advertisements into a
 first-class event, [#925] accepts a server-initiated Reconfigure, and
 [#816] stops a v6 acquisition reporting a lease timeout where no
-exchange was possible. [#960] gives the IPAM shape a DHCPv6 exchange and
-a stable v6 identity, which v2.1.0 refuses. One on the milestone is not
-IPv6: [#961] takes the container hostname to a running client so the
-attach needs no daemon call at all.
+exchange was possible. The milestone also carries work that is not
+IPv6: [#961] takes the container hostname to a running client, so the
+attach needs no daemon call at all, and [#984] adds
+`release_lease=on_remove`, the timed release that v2.1.1 refuses. The
+milestone link above is the list that decides what is on it.
 
 **[v2.3.0](https://github.com/claymore666/docker-net-dhcp/milestone/31)**
 is the host plumbing an operator does by hand today: [#902] VLAN
 sub-interfaces, [#903] a bridge the plugin creates and owns, [#904]
 link-local fallback where no server answers, [#905] macvlan and ipvlan
-sub-modes. [#903] sits inside the rule below that the plugin does not
+sub-modes. It also carries [#960], which gives the IPAM shape a DHCPv6
+exchange and a stable v6 identity, both of which v2.1.0 refuses.
+[#903] sits inside the rule below that the plugin does not
 change interfaces the host already has: the bridge is one the plugin
 creates for its own networks and owns for as long as they exist, and no
 interface the host configured is touched.
@@ -310,6 +313,7 @@ for the next time someone asks.
 [#942]: https://github.com/claymore666/docker-net-dhcp/issues/942
 [#963]: https://github.com/claymore666/docker-net-dhcp/issues/963
 [#979]: https://github.com/claymore666/docker-net-dhcp/issues/979
+[#984]: https://github.com/claymore666/docker-net-dhcp/issues/984
 [#975]: https://github.com/claymore666/docker-net-dhcp/pull/975
 [#950]: https://github.com/claymore666/docker-net-dhcp/issues/950
 [#417]: https://github.com/claymore666/docker-net-dhcp/issues/417

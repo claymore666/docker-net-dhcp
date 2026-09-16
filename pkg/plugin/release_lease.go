@@ -35,8 +35,8 @@ const (
 	// container that restarts asks for a fresh lease.
 	ReleaseOnStop = "on_stop"
 	// ReleaseOnRemove is #962's third value. It is refused until it
-	// lands, which is the v2.2.0 milestone: #962 itself ships in
-	// v2.1.1 and carries only the two values above. See
+	// lands, which is #984 on the v2.2.0 milestone: #962 itself ships
+	// in v2.1.1 and carries only the two values above. See
 	// releaseOnRemoveRefusal.
 	ReleaseOnRemove = "on_remove"
 )

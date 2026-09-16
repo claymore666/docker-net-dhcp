@@ -430,6 +430,19 @@ displaced by a newer one for the same endpoint, and the cleanup after
 running, and a release there would tell the server an address is free
 while a live container holds it.
 
+**And one address never reaches `Leave` at all.** In IPAM mode an
+address reserved for an endpoint whose `CreateEndpoint` then failed is
+retained by `ReleaseAddress` and never released, on every value of
+`release_lease` including `on_stop`. Retaining it is what lets a restart
+policy's next attempt claim the same address back instead of burning a
+second lease on the server, and a reservation with no endpoint reaches
+no `Leave`, so nothing on the release path can see it. No DHCPRELEASE
+goes on the wire for it and the address is left to expire, exactly as
+any other host on the segment leaves one. On an `on_stop` network that
+is a real lease the server granted that nothing hands back, held by the
+retention deadline until it expires, and which of the two wins is a
+decision and not a fold.
+
 **Why this changed.** Up to v1.8.x the plugin released aggressively. The
 external client emitted a `RELEASE` on a graceful stop, and a background
 *reclaim* handed back the one-shot's address whenever no persistent
