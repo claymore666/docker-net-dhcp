@@ -1951,6 +1951,11 @@ network create -o key=value</code>, or <code>driver_opts:</code> in Compose:</p>
 <td><code>off</code></td>
 </tr>
 <tr>
+<td><code>ipv6_main_prefix</code></td>
+<td>all</td>
+<td>(first advertised)</td>
+</tr>
+<tr>
 <td><code>ipv6_auto_strict</code></td>
 <td>all</td>
 <td><code>false</code></td>
@@ -2486,7 +2491,14 @@ value as an invalid duration.</p>
 <td>all</td>
 <td><code>off</code></td>
 <td><strong>v2.2.0</strong></td>
-<td>Where an endpoint's IPv6 address comes from. <code>off</code> (the default) is no IPv6 from this plugin. <code>dhcp</code> leases it over DHCPv6, which is what <code>ipv6=true</code> has always meant and still means. <code>slaac</code> forms it from a router advertisement's autonomous prefix (RFC 4862 §5.5.3) and sends no Solicit. <code>auto</code> reads the router advertisement and does what it says: the managed-address flag means DHCPv6 (RFC 4861 §4.2, "When set, it indicates that addresses are available via Dynamic Host Configuration Protocol"), and a clear flag means the prefix. Any other value is refused at <code>docker network create</code> with the accepted set in the message, rather than resolved to a default, because the default is <code>off</code> and a typo would silently switch IPv6 off on a network created to have it.<br><br><strong><code>auto</code> on a link whose router says DHCPv6 and whose server then says nothing</strong> falls back to the advertised prefix after half the router-discovery window, counts it in <code>dhcpv6_auto_fallbacks</code> and logs the fallback (the address itself is subject to the boundary at the end of this row). <strong><code>-o ipv6_auto_strict=true</code> turns that off</strong> and fails the endpoint instead; the row below is that option.<br><br><strong><code>slaac</code> and <code>auto</code> are refused in <code>mode=ipvlan</code>.</strong> An ipvlan L2 slave inherits the parent link's MAC, an address formed from an advertisement is derived from that MAC (RFC 4291 appendix A), and RFC 4862 gives a node with a fixed interface identifier no retry after duplicate address detection fails, so every container on such a network would form one address and the second one onwards would sit in a conflict it cannot recover from. Use <code>ipv6_mode=dhcp</code> on ipvlan, which gives each endpoint its own DUID.<br><br><strong>In <code>slaac</code> a stored preferred address is not asked for.</strong> <code>-o ipv6=...</code>'s per-endpoint preferred address (<code>preferred_ipv6</code>) is still validated and still refused if malformed, and the plugin logs the address it is not requesting; there is no server to ask, because the address comes from the prefix.<br><br><strong><code>slaac</code> and <code>auto</code> do not give a container an address yet, and this is the boundary of the option's first release.</strong> The mode reaches the DHCP client and the client can form an address from the prefix, but the plugin still concludes the IPv6 half of <code>docker run</code> the moment a router advertisement carries neither the managed nor the other-configuration flag, which is the ordinary SLAAC segment and therefore the one <code>slaac</code> is for. That early conclusion is <a href="https://github.com/claymore666/docker-net-dhcp/issues/868">#868</a>'s fix for containers hanging on stateless networks and it does not yet read <code>ipv6_mode</code>. So on such a segment the endpoint starts with no address from this plugin, exactly as it does with <code>ipv6_mode=dhcp</code> -- and since v2.2.0 with no global IPv6 address at all, because the Router Advertisement guard writes <code>autoconf=0</code> and the container's kernel forms none either, and with no IPv6 route, because the daemon refuses one on a link carrying no IPv6 address (#821). <a href="https://github.com/claymore666/docker-net-dhcp/issues/818">#818</a> installs the formed address, <a href="https://github.com/claymore666/docker-net-dhcp/issues/819">#819</a> gives it lifetimes and renumbering, and <a href="https://github.com/claymore666/docker-net-dhcp/issues/808">#808</a> is the request all three answer. What <code>slaac</code> and <code>auto</code> are useful for in this release is stating the network's intent and reporting what the segment did, through the counters in the table below.</td>
+<td>Where an endpoint's IPv6 address comes from. <code>off</code> (the default) is no IPv6 from this plugin. <code>dhcp</code> leases it over DHCPv6, which is what <code>ipv6=true</code> has always meant and still means. <code>slaac</code> forms it from a router advertisement's autonomous prefix (RFC 4862 §5.5.3) and sends no Solicit. <code>auto</code> reads the router advertisement and does what it says: the managed-address flag means DHCPv6 (RFC 4861 §4.2, "When set, it indicates that addresses are available via Dynamic Host Configuration Protocol"), and a clear flag means the prefix. Any other value is refused at <code>docker network create</code> with the accepted set in the message, rather than resolved to a default, because the default is <code>off</code> and a typo would silently switch IPv6 off on a network created to have it.<br><br><strong><code>auto</code> on a link whose router says DHCPv6 and whose server then says nothing</strong> falls back to the advertised prefix after half the router-discovery window, counts it in <code>dhcpv6_auto_fallbacks</code> and logs the fallback (the address itself is subject to the boundary at the end of this row). <strong><code>-o ipv6_auto_strict=true</code> turns that off</strong> and fails the endpoint instead; the row below is that option.<br><br><strong><code>slaac</code> and <code>auto</code> are refused in <code>mode=ipvlan</code>.</strong> An ipvlan L2 slave inherits the parent link's MAC, an address formed from an advertisement is derived from that MAC (RFC 4291 appendix A), and RFC 4862 gives a node with a fixed interface identifier no retry after duplicate address detection fails, so every container on such a network would form one address and the second one onwards would sit in a conflict it cannot recover from. Use <code>ipv6_mode=dhcp</code> on ipvlan, which gives each endpoint its own DUID.<br><br><strong>In <code>slaac</code> a stored preferred address is not asked for.</strong> <code>-o ipv6=...</code>'s per-endpoint preferred address (<code>preferred_ipv6</code>) is still validated and still refused if malformed, and the plugin logs the address it is not requesting; there is no server to ask, because the address comes from the prefix.<br><br><strong>In <code>slaac</code> and <code>auto</code> the plugin installs every address the advertisement forms, on the container's link.</strong> RFC 4862 §5.5.3 forms one address per advertised autonomous prefix, so a link advertising a unique-local prefix and a global one gives the container two, and the client caps an endpoint at eight. Each address is installed with its own preferred and valid lifetimes, taken from the Prefix Information option that formed it and refreshed by every later advertisement (RFC 4861 §6.2.1). An address whose preferred lifetime runs out is left on the link and marked deprecated (<code>preferred_lft 0</code>, RFC 4862 §5.5.4: "SHOULD continue to be used as a source address in existing communications, but SHOULD NOT be used to initiate new communications"); one whose valid lifetime runs out, or whose prefix the router stops advertising, is removed. <code>ip -6 addr show</code> inside the container is where an operator reads all of this. <strong>The lifetimes arrive a moment after the container does.</strong> The engine installs the address <code>CreateEndpoint</code> reported while it builds the container's sandbox, and it has no lifetimes to install, so that address is on the link as <code>valid_lft forever preferred_lft forever</code> until the endpoint's own client binds and the plugin applies the advertised numbers. <code>ipv6_slaac_addresses</code> moves on that second install, which is what makes the two visible apart. Counters: <code>ipv6_slaac_addresses</code>, <code>ipv6_addresses_withdrawn</code>, <code>ipv6_slaac_prefixes_ignored</code>.<br><br><strong>Docker is told one address, and <code>ipv6_main_prefix</code> chooses which.</strong> <code>CreateEndpoint</code> returns a single <code>AddressIPv6</code> and the engine has no way to change it afterwards, so <code>docker inspect</code> and the engine's own records show the first advertised prefix's address by default, whatever else the container holds. The row below is the option that names another. The addresses the container actually has are the whole set either way. <a href="https://github.com/claymore666/docker-net-dhcp/issues/818">#818</a>, <a href="https://github.com/claymore666/docker-net-dhcp/issues/819">#819</a> and <a href="https://github.com/claymore666/docker-net-dhcp/issues/808">#808</a> are the three issues this answers.</td>
+</tr>
+<tr>
+<td><code>ipv6_main_prefix</code></td>
+<td>all</td>
+<td>(first advertised)</td>
+<td><strong>v2.2.0</strong></td>
+<td>Which of an endpoint's IPv6 addresses is the one Docker is told about. A prefix in CIDR form with no host bits set, for example <code>2001:db8:1::/64</code>. The endpoint's address inside that prefix becomes the <code>AddressIPv6</code> <code>docker inspect</code> shows and the one the engine records; the container keeps every address the advertisement formed regardless. Use it on a link that advertises both a unique-local and a global prefix, where the address other hosts reach the container on is the global one and the plugin would otherwise report whichever prefix the router lists first. If no address falls inside the named prefix, the first advertised one is reported instead, <code>ipv6_main_prefix_unmatched</code> moves once for the endpoint, and the log line names both prefixes; the endpoint is not failed, because the container's addresses are correct and only the name Docker shows is not the one asked for. <strong>Accepted only where the addresses are formed from advertisements</strong>, <code>ipv6_mode=slaac</code> and <code>ipv6_mode=auto</code>. On <code>ipv6_mode=dhcp</code> there is one server-granted address and the option could only ever do nothing, so it is refused at <code>docker network create</code> rather than accepted and ignored.</td>
 </tr>
 <tr>
 <td><code>ipv6_auto_strict</code></td>
@@ -3285,8 +3297,13 @@ than failing:</p>
 <td><code>dhcpv6_not_offered</code></td>
 </tr>
 <tr>
-<td>Advertised nothing at all</td>
-<td>Starts the endpoint without a DHCPv6 address, and logs a warning. <strong>In every <code>ipv6_mode</code>, including <code>slaac</code> and <code>auto</code></strong>, where a segment with no router leaves those modes no source of an address at all: they are tolerated here rather than failed because the address they would form is not installed yet (see the last paragraph of the <code>ipv6_mode</code> row), so failing the endpoint would refuse a container for the absence of something this release does not deliver. That changes with <a href="https://github.com/claymore666/docker-net-dhcp/issues/818">#818</a></td>
+<td>Advertised nothing at all, on <code>ipv6_mode=dhcp</code> or <code>ipv6_mode=off</code></td>
+<td>Starts the endpoint without a DHCPv6 address, and logs a warning. Refusing the container buys nothing: the address would have come from a DHCPv6 server, and a server that is there answers a Solicit whether or not a router advertises</td>
+<td><code>dhcpv6_no_router_advert</code></td>
+</tr>
+<tr>
+<td>Advertised nothing at all, on <code>ipv6_mode=slaac</code> or <code>ipv6_mode=auto</code></td>
+<td><strong>Fails the endpoint</strong>, and the log line is an error naming the mode. Those modes form the address from the advertisement's Prefix Information option, so no advertisement is no address by any route. Up to v2.1.x this row started the endpoint in every mode, because the formed address was not installed yet and failing would have refused a container for the absence of something the release did not deliver (<a href="https://github.com/claymore666/docker-net-dhcp/issues/818">#818</a>)</td>
 <td><code>dhcpv6_no_router_advert</code></td>
 </tr>
 <tr>
@@ -3304,6 +3321,11 @@ than failing:</p>
 <td><strong>Fails the endpoint.</strong> The only configured source of an address produced none; RFC 4862 §5.5.3 lists the reasons a prefix forms nothing</td>
 <td><code>dhcpv6_slaac_no_prefix</code></td>
 </tr>
+<tr>
+<td>Advertised, and no address formed inside the acquisition budget, on an <code>ipv6_mode</code> that takes the address from the advertisement</td>
+<td><strong>Fails the endpoint.</strong> Two things produce it: another node already holds the address this endpoint's prefix and MAC form, and RFC 4862 §5.4.5 gives a node with a fixed interface identifier no second try after duplicate address detection fails; or the advertisement arrived too late in the budget for detection to finish. It is not <code>dhcpv6_no_server</code>, which needs a DHCPv6 exchange, and <code>ipv6_mode=slaac</code> sends no Solicit at all</td>
+<td><code>dhcpv6_slaac_no_address</code></td>
+</tr>
 </tbody>
 </table>
 <p><strong>On these rows the container gets no IPv6 route and no global IPv6
@@ -3311,7 +3333,7 @@ address</strong> (v2.2.0+). It has a link-local address, its IPv4, and the
 stateless DHCPv6 configuration where the segment offers it. Before
 v2.2.0 its own kernel read the advertisement and gave it both; the
 guard's <code>accept_ra=0</code> and <code>autoconf=0</code> stop that, and on these segments
-the plugin does not yet supply the replacement.</p>
+the plugin does not supply the replacement.</p>
 <p><strong>Why not, exactly.</strong> The Docker daemon disables IPv6 on a container
 link that carries no global IPv6 address, and the kernel then refuses
 every IPv6 route on such a link. An endpoint answer carrying the
@@ -3321,11 +3343,15 @@ whole sandbox with <code>error setting interface "&lt;host-if&gt;" routes to
 all, losing its IPv4 with it. The plugin cannot enable IPv6 on the link
 first either, because that happens after the daemon has already moved
 the link and applied the answer. The route is not installable until
-there is a global address to install it beside, which is
-<a href="https://github.com/claymore666/docker-net-dhcp/issues/818">#818</a> on
-this same milestone: it forms the address under the plugin's own
-control, and the route and the address arrive together.
-Before v2.2.0 the container's kernel formed it.</p>
+there is a global address to install it beside.</p>
+<p><strong>Where there is one, these rows do not apply.</strong> On <code>ipv6_mode=slaac</code>
+and <code>ipv6_mode=auto</code> the plugin forms the address from the
+advertisement and installs it
+(<a href="https://github.com/claymore666/docker-net-dhcp/issues/818">#818</a>), so
+such an endpoint either holds a global address or fails outright, and
+the rows above that start an endpoint with none are the DHCPv6 ones:
+<code>ipv6=true</code> and <code>ipv6_mode=dhcp</code> on a segment that hands out no
+address.</p>
 <h4 id="if-you-upgrade-onto-20-with-an-ipv6-network-already-created">If you upgrade onto 2.0 with an IPv6 network already created<a class="headerlink" href="#if-you-upgrade-onto-20-with-an-ipv6-network-already-created" title="Permanent link">&para;</a></h4>
 <p>Nothing to do. A network record written by a 1.x build carries
 <code>ipv6=true</code>, that option means the same thing here, and endpoints on it
@@ -4053,7 +4079,7 @@ already parse it were not told to expect a new type.</p>
 <td><code>dhcpv6_not_offered</code></td>
 <td>no</td>
 <td>n/a</td>
-<td>(v1.9.0+) Endpoints created on an IPv6 network that offers no DHCPv6 address (#868): the segment answered with configuration and no address, or advertised with the managed flag clear. The endpoint starts without a DHCPv6 lease. Since v2.2.0 it also gets no IPv6 route and no global IPv6 address: the guard writes <code>accept_ra=0</code> and <code>autoconf=0</code>, so its kernel no longer supplies either, and the daemon refuses an IPv6 route on a link with no IPv6 address, so the plugin cannot supply them until #818 forms the address. Not <code>healthy</code>-affecting: this is a description of the segment and never a fault. Read it against <code>dhcpv6_no_router_advert</code>: the two exist to tell an advertised absence from an absent advertisement, and their sum would not. <strong>Not a check:</strong> both clauses fail. Its own value carries no verdict, because the same number is correct behaviour on a stateless or SLAAC network and a misconfiguration on one meant to be managed, and on a stateless or SLAAC network its normal reading is one per endpoint, so a check on non-zero would fire on every healthy container there.</td>
+<td>(v1.9.0+) Endpoints created on an IPv6 network that offers no DHCPv6 address (#868): the segment answered with configuration and no address, or advertised with the managed flag clear. The endpoint starts without a DHCPv6 lease. Since v2.2.0 it also gets no IPv6 route and no global IPv6 address: the guard writes <code>accept_ra=0</code> and <code>autoconf=0</code>, so its kernel no longer supplies either, and the daemon refuses an IPv6 route on a link with no IPv6 address, so the plugin cannot supply them either. This is the ending for an <code>ipv6_mode</code> that takes its address from a DHCPv6 server, which is <code>ipv6=true</code> and <code>ipv6_mode=dhcp</code>: on <code>slaac</code> and <code>auto</code> the address is formed from the advertisement, and the route and the gateway arrive with it. Not <code>healthy</code>-affecting: this is a description of the segment and never a fault. Read it against <code>dhcpv6_no_router_advert</code>: the two exist to tell an advertised absence from an absent advertisement, and their sum would not. <strong>Not a check:</strong> both clauses fail. Its own value carries no verdict, because the same number is correct behaviour on a stateless or SLAAC network and a misconfiguration on one meant to be managed, and on a stateless or SLAAC network its normal reading is one per endpoint, so a check on non-zero would fire on every healthy container there.</td>
 </tr>
 <tr>
 <td><code>dhcpv6_no_router_advert</code></td>
@@ -4084,6 +4110,36 @@ already parse it were not told to expect a new type.</p>
 <td>no</td>
 <td>n/a</td>
 <td>(v2.2.0+) Endpoints on an <code>ipv6_mode=auto</code> network whose address was formed from a router's advertised prefix because the segment advertised DHCPv6 and no server answered inside the fallback window (#817). The window is half the router-discovery window unless the network sets <code>ipv6_auto_strict=true</code>, which fails those endpoints instead. It counts addresses that <strong>formed</strong>, never fallbacks attempted: a fallback that found no usable prefix fails the endpoint and moves <code>dhcpv6_slaac_no_prefix</code>. Not <code>healthy</code>-affecting: the endpoint has an address, and what to look at is the segment's DHCPv6 server. A steady climb on a network you believe is managed means it is not answering.</td>
+</tr>
+<tr>
+<td><code>dhcpv6_slaac_no_address</code></td>
+<td>no</td>
+<td>n/a</td>
+<td>(v2.2.0+) Endpoints that <strong>failed</strong> on a network whose <code>ipv6_mode</code> takes the address from a router advertisement, where a router advertised and no address formed inside the acquisition budget (#818). Two things produce it: another node already holds the address this endpoint's prefix and MAC address form, and RFC 4862 §5.4.5 gives a node with a fixed interface identifier no second try after duplicate address detection fails; or the advertisement arrived too late in the budget for detection to finish. Not <code>healthy</code>-affecting: the endpoint's failure is already reported to Docker. Read it against <code>dhcpv6_slaac_no_prefix</code>, which is the ending where the advertised prefixes themselves formed nothing, and against <code>dhcpv6_no_server</code>, which needs a DHCPv6 exchange that <code>ipv6_mode=slaac</code> never has. A steady rise on one segment is worth an <code>ip -6 neigh</code> on the node that holds the address. <strong>Not a check:</strong> its own value carries no verdict. Every endpoint it counts has already failed with an error Docker shows, so a <code>warn</code> here would report the same event a second time, and on a segment where another node deliberately holds the address a container's prefix and MAC form, the normal reading is one per attempt.</td>
+</tr>
+<tr>
+<td><code>ipv6_slaac_addresses</code></td>
+<td>no</td>
+<td>n/a</td>
+<td>(v2.2.0+) IPv6 addresses formed from a router's advertised prefix and <strong>installed on a container link</strong> (#818). It counts addresses and not endpoints: RFC 4862 §5.5.3 forms one per autonomous prefix, so a single container on a link advertising a unique-local prefix and a global one raises it by two. It moves on the netlink call and not on the client forming an address, so it cannot report an address the container does not have. Not <code>healthy</code>-affecting: it is the success path. On an <code>ipv6_mode=slaac</code> or <code>auto</code> network it staying at 0 while containers start is the thing to look at, and the counters above say which ending they took instead.</td>
+</tr>
+<tr>
+<td><code>ipv6_addresses_withdrawn</code></td>
+<td>no</td>
+<td>n/a</td>
+<td>(v2.2.0+) IPv6 addresses <strong>removed</strong> from a container link because the lease stopped holding them (#819): a valid lifetime that ran out, or a prefix the router stopped advertising. The other half of <code>ipv6_slaac_addresses</code>; counting only arrivals reads as a container collecting addresses forever, and a renumbering is one of each. Not <code>healthy</code>-affecting: an address leaving at the end of its advertised lifetime is the protocol working. With <code>audit_log=true</code> the ledger's <code>withdrawn</code> row names which address and when.</td>
+</tr>
+<tr>
+<td><code>ipv6_slaac_prefixes_ignored</code></td>
+<td>no</td>
+<td>n/a</td>
+<td>(v2.2.0+) Advertised Prefix Information options <strong>no address was formed from</strong> (#818). RFC 4862 §5.5.3 gives the reasons: no Autonomous flag, the link-local prefix, a preferred lifetime past the valid one, a prefix length that with the interface identifier does not total 128 bits, a zero valid lifetime on a prefix not already held, and an address already found in use. The client's own cap of eight addresses per endpoint is counted here too, which is what separates an endpoint holding eight on a link advertising nine from one that found nothing to form from. Counted only where the <code>ipv6_mode</code> forms addresses: on <code>ipv6_mode=dhcp</code> the same rule refuses every autonomous prefix on every advertisement, correctly, and a router readvertises every few seconds (RFC 4861 §6.2.1), so the number would climb forever and mean nothing. Not <code>healthy</code>-affecting: a link advertising one prefix for DHCPv6 and one for autoconfiguration raises it on every advertisement and is configured exactly as intended.</td>
+</tr>
+<tr>
+<td><code>ipv6_main_prefix_unmatched</code></td>
+<td>no</td>
+<td>n/a</td>
+<td>(v2.2.0+) Endpoints whose network named an <a href="#driver-options-network-level"><code>ipv6_main_prefix</code></a> that none of the endpoint's addresses fell inside, so the first advertised prefix was reported to Docker instead (#819). One per endpoint, not one per advertisement. Not <code>healthy</code>-affecting and not a failure: the container holds every address the advertisement formed, and what differs is the single address <code>docker inspect</code> shows. The log line names the prefix asked for and the prefixes the endpoint has, which is usually enough to see that the router's list changed.</td>
 </tr>
 <tr>
 <td><code>ipv6_link_enable_failures</code></td>
@@ -4455,7 +4511,7 @@ consumer-side:</p>
 <tr>
 <td>Container on an <code>ipv6=true</code> network starts, but has no <code>GlobalIPv6Address</code></td>
 <td>The segment offers no DHCPv6 address, which is normal on a stateless or SLAAC network and is not an error. Which of the two it is: <code>dhcpv6_not_offered</code> means a router advertised and offered none, <code>dhcpv6_no_router_advert</code> means nothing advertised at all</td>
-<td>Read the two counters on <code>/Plugin.Health</code> before changing anything. <code>dhcpv6_not_offered</code> on a segment you believe is managed means the router's advertisement has the managed flag clear. Fix it at the router. <code>dhcpv6_no_router_advert</code> on a segment that does have a router means the DHCPv6 budget was cut below RFC 4861's router-discovery window (about 13 seconds), either by a <code>lease_timeout</code> set under it, or by a slow DHCPv4 half leaving too little of the daemon's 30-second call deadline behind; the plugin logs a warning naming both numbers. In both cases the container has no IPv6 route and no global IPv6 address since v2.2.0: <code>accept_ra=0</code> and <code>autoconf=0</code> mean its kernel supplies neither, and the daemon refuses an IPv6 route on a link carrying no IPv6 address, so the plugin cannot supply one until #818 forms the address (#821, #818)</td>
+<td>Read the two counters on <code>/Plugin.Health</code> before changing anything. <code>dhcpv6_not_offered</code> on a segment you believe is managed means the router's advertisement has the managed flag clear. Fix it at the router. <code>dhcpv6_no_router_advert</code> on a segment that does have a router means the DHCPv6 budget was cut below RFC 4861's router-discovery window (about 13 seconds), either by a <code>lease_timeout</code> set under it, or by a slow DHCPv4 half leaving too little of the daemon's 30-second call deadline behind; the plugin logs a warning naming both numbers. In both cases the container has no IPv6 route and no global IPv6 address since v2.2.0: <code>accept_ra=0</code> and <code>autoconf=0</code> mean its kernel supplies neither, and the daemon refuses an IPv6 route on a link carrying no IPv6 address, so the plugin cannot supply one either. That is this row's <code>ipv6=true</code> network: on <code>ipv6_mode=slaac</code> and <code>ipv6_mode=auto</code> the address comes from the advertisement and the route comes with it (#821, #818)</td>
 </tr>
 <tr>
 <td>Container on an <code>ipv6=true</code> network has an IPv6 address but cannot reach anything off-link</td>
