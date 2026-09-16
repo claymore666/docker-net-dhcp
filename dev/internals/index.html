@@ -1520,31 +1520,51 @@ is the same argument from the standards side. The address also carries
 RFC 9915 §7.1's two lifetimes, so the kernel can deprecate instead of
 deleting (RFC 4862 §5.5.4); expiry itself is still the library's job and
 the lifetimes are a belt for a plugin that dies inside the window.</p>
-<p><strong>The Router-Advertisement guard is back, and it is a precondition.</strong>
-DHCPv6 carries no next hop, because RFC 9915 §21 defines no router
-option, and RFC 5942 §4 rule 1 forbids treating the assigned address's
-prefix as on-link, so an endpoint whose kernel is not processing Router
-Advertisements ends up with an address and no route.
-<code>ApplyRouterAdvertGuard</code> writes <code>accept_ra=2</code>, <code>autoconf=1</code> and
-<code>keep_addr_on_down=1</code> and reads each back; <code>DHCPClientOptions</code> refuses a
-persistent v6 client that does not claim it, and refuses every other
-shape that does. What changed from 1.9.0 is the <em>mechanism</em> and never
-the obligation: on 1.9.0 the external client cleared <code>accept_ra</code> and
-<code>autoconf</code> on every carrier acquisition, so the guard wrote the knobs
-and then remounted <code>/proc/sys</code> read-only to keep them from being
-overwritten. Nothing in 2.0 rewrites them, so there is no shield to
-maintain. <code>accept_ra=2</code> and not <code>1</code> because the engine turns on
-forwarding on the container's link in bridge mode and <code>1</code> means "accept
-only while forwarding is off".</p>
-<p>It runs in <code>prepareIPv6Link</code>, in the same namespace entry as the
-<code>disable_ipv6</code> clear that precedes it. That placement is a deviation
-from where the design put it, inside the client's own setup, and the
-reason is mechanical: <code>/proc/sys</code> is read-only in the managed plugin's
-rootfs, <code>v6_link.go</code> already owns the mount-namespace unshare that makes
-it writable, and doing it in the client would mean a second one. The
-ORDER the design fixed is preserved exactly: <code>disable_ipv6</code> cleared
-first, then the guard, then the client, which waits for a non-tentative
-link-local of its own before it sends anything.</p>
+<p><strong>The Router-Advertisement guard is a precondition, and since v2.2.0 it
+turns the kernel's own processing OFF.</strong> DHCPv6 carries no next hop,
+because RFC 9915 §21 defines no router option, and RFC 5942 §4 rule 1
+forbids treating the assigned address's prefix as on-link, so somebody
+has to process Router Advertisements or the endpoint has an address and
+no route. Until v2.2.0 that somebody was the container's kernel. It is
+now the plugin's own DHCPv6 client, which reads advertisements off its
+socket and reports the gateway, MTU, routes and DNS through
+<code>dhcp.Info</code>; the Join answer carries the gateway and the routes, and the
+manager rewrites them when a later advertisement changes them (#821).</p>
+<p>That answer only reaches an endpoint that HAS a DHCPv6 address. The
+daemon disables IPv6 on a container link carrying no global IPv6
+address, and the kernel refuses every IPv6 route on such a link, so an
+answer with an IPv6 half fails the sandbox outright rather than
+degrading -- and the plugin cannot clear <code>disable_ipv6</code> first, because
+that runs in the manager goroutine <code>Join</code> spawns, after the daemon has
+moved the link and applied the answer. A stateless or SLAAC segment
+therefore gets its MTU and resolvers and no route; #818 forms the
+address, and the route becomes installable in the same change.</p>
+<p><code>ApplyRouterAdvertGuard</code> therefore writes <code>accept_ra=0</code>, <code>autoconf=0</code>
+and <code>keep_addr_on_down=1</code> and reads each back; <code>DHCPClientOptions</code>
+refuses a persistent v6 client that does not claim it, and refuses every
+other shape that does. <code>accept_ra=0</code> because a kernel acting on the same
+frames would install a second default route beside the plugin's, and
+which of the two wins is a metric comparison nobody chose. <code>autoconf=0</code>
+because the plugin holds the lease for the address the container uses.</p>
+<p><strong>Writing <code>accept_ra=0</code> purges nothing</strong>, which is the part that is easy
+to miss. It stops the kernel processing the NEXT advertisement; a route
+an earlier one installed stays until its own lifetime runs out, and RFC
+4861 §4.2 allows that to be 65535 seconds. The engine brings the link up
+in the sandbox at the kernel default before the guard runs, so the
+window is real. <code>purgeRouterAdvertRoutes</code> closes it: after the knobs
+take, every <code>RTPROT_RA</code> route on the link is deleted. Failures there
+fold into <code>router_advert_guard_failures</code> beside the sysctl ones, because
+they are one obligation seen twice. The address the kernel may have
+formed in the same window is NOT touched; that is #818's.</p>
+<p>It all runs in <code>prepareIPv6Link</code>, in one namespace entry. That placement
+is a deviation from where the design put it, inside the client's own
+setup, and the reason is mechanical: <code>/proc/sys</code> is read-only in the
+managed plugin's rootfs, <code>v6_link.go</code> already owns the mount-namespace
+unshare that makes it writable, and doing it in the client would mean a
+second one. The ORDER the design fixed is preserved exactly:
+<code>disable_ipv6</code> cleared first, then the guard, then the purge, then the
+client, which waits for a non-tentative link-local of its own before it
+sends anything.</p>
 <p><strong>An absent v6 lease is classified.</strong> On a stateless or SLAAC segment
 there is no DHCPv6 address by definition, and refusing the endpoint
 there means no container can start on those networks at all (#868).

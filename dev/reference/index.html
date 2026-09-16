@@ -2486,7 +2486,7 @@ value as an invalid duration.</p>
 <td>all</td>
 <td><code>off</code></td>
 <td><strong>v2.2.0</strong></td>
-<td>Where an endpoint's IPv6 address comes from. <code>off</code> (the default) is no IPv6 from this plugin. <code>dhcp</code> leases it over DHCPv6, which is what <code>ipv6=true</code> has always meant and still means. <code>slaac</code> forms it from a router advertisement's autonomous prefix (RFC 4862 §5.5.3) and sends no Solicit. <code>auto</code> reads the router advertisement and does what it says: the managed-address flag means DHCPv6 (RFC 4861 §4.2, "When set, it indicates that addresses are available via Dynamic Host Configuration Protocol"), and a clear flag means the prefix. Any other value is refused at <code>docker network create</code> with the accepted set in the message, rather than resolved to a default, because the default is <code>off</code> and a typo would silently switch IPv6 off on a network created to have it.<br><br><strong><code>auto</code> on a link whose router says DHCPv6 and whose server then says nothing</strong> falls back to the advertised prefix after half the router-discovery window, counts it in <code>dhcpv6_auto_fallbacks</code> and logs the fallback (the address itself is subject to the boundary at the end of this row). <strong><code>-o ipv6_auto_strict=true</code> turns that off</strong> and fails the endpoint instead; the row below is that option.<br><br><strong><code>slaac</code> and <code>auto</code> are refused in <code>mode=ipvlan</code>.</strong> An ipvlan L2 slave inherits the parent link's MAC, an address formed from an advertisement is derived from that MAC (RFC 4291 appendix A), and RFC 4862 gives a node with a fixed interface identifier no retry after duplicate address detection fails, so every container on such a network would form one address and the second one onwards would sit in a conflict it cannot recover from. Use <code>ipv6_mode=dhcp</code> on ipvlan, which gives each endpoint its own DUID.<br><br><strong>In <code>slaac</code> a stored preferred address is not asked for.</strong> <code>-o ipv6=...</code>'s per-endpoint preferred address (<code>preferred_ipv6</code>) is still validated and still refused if malformed, and the plugin logs the address it is not requesting; there is no server to ask, because the address comes from the prefix.<br><br><strong><code>slaac</code> and <code>auto</code> do not give a container an address yet, and this is the boundary of the option's first release.</strong> The mode reaches the DHCP client and the client can form an address from the prefix, but the plugin still concludes the IPv6 half of <code>docker run</code> the moment a router advertisement carries neither the managed nor the other-configuration flag, which is the ordinary SLAAC segment and therefore the one <code>slaac</code> is for. That early conclusion is <a href="https://github.com/claymore666/docker-net-dhcp/issues/868">#868</a>'s fix for containers hanging on stateless networks and it does not yet read <code>ipv6_mode</code>. So on such a segment the endpoint starts with no address from this plugin, exactly as it does with <code>ipv6_mode=dhcp</code>, and any global IPv6 the container has is the kernel's own autoconfiguration. <a href="https://github.com/claymore666/docker-net-dhcp/issues/818">#818</a> installs the formed address, <a href="https://github.com/claymore666/docker-net-dhcp/issues/819">#819</a> gives it lifetimes and renumbering, and <a href="https://github.com/claymore666/docker-net-dhcp/issues/808">#808</a> is the request all three answer. What <code>slaac</code> and <code>auto</code> are useful for in this release is stating the network's intent and reporting what the segment did, through the counters in the table below.</td>
+<td>Where an endpoint's IPv6 address comes from. <code>off</code> (the default) is no IPv6 from this plugin. <code>dhcp</code> leases it over DHCPv6, which is what <code>ipv6=true</code> has always meant and still means. <code>slaac</code> forms it from a router advertisement's autonomous prefix (RFC 4862 §5.5.3) and sends no Solicit. <code>auto</code> reads the router advertisement and does what it says: the managed-address flag means DHCPv6 (RFC 4861 §4.2, "When set, it indicates that addresses are available via Dynamic Host Configuration Protocol"), and a clear flag means the prefix. Any other value is refused at <code>docker network create</code> with the accepted set in the message, rather than resolved to a default, because the default is <code>off</code> and a typo would silently switch IPv6 off on a network created to have it.<br><br><strong><code>auto</code> on a link whose router says DHCPv6 and whose server then says nothing</strong> falls back to the advertised prefix after half the router-discovery window, counts it in <code>dhcpv6_auto_fallbacks</code> and logs the fallback (the address itself is subject to the boundary at the end of this row). <strong><code>-o ipv6_auto_strict=true</code> turns that off</strong> and fails the endpoint instead; the row below is that option.<br><br><strong><code>slaac</code> and <code>auto</code> are refused in <code>mode=ipvlan</code>.</strong> An ipvlan L2 slave inherits the parent link's MAC, an address formed from an advertisement is derived from that MAC (RFC 4291 appendix A), and RFC 4862 gives a node with a fixed interface identifier no retry after duplicate address detection fails, so every container on such a network would form one address and the second one onwards would sit in a conflict it cannot recover from. Use <code>ipv6_mode=dhcp</code> on ipvlan, which gives each endpoint its own DUID.<br><br><strong>In <code>slaac</code> a stored preferred address is not asked for.</strong> <code>-o ipv6=...</code>'s per-endpoint preferred address (<code>preferred_ipv6</code>) is still validated and still refused if malformed, and the plugin logs the address it is not requesting; there is no server to ask, because the address comes from the prefix.<br><br><strong><code>slaac</code> and <code>auto</code> do not give a container an address yet, and this is the boundary of the option's first release.</strong> The mode reaches the DHCP client and the client can form an address from the prefix, but the plugin still concludes the IPv6 half of <code>docker run</code> the moment a router advertisement carries neither the managed nor the other-configuration flag, which is the ordinary SLAAC segment and therefore the one <code>slaac</code> is for. That early conclusion is <a href="https://github.com/claymore666/docker-net-dhcp/issues/868">#868</a>'s fix for containers hanging on stateless networks and it does not yet read <code>ipv6_mode</code>. So on such a segment the endpoint starts with no address from this plugin, exactly as it does with <code>ipv6_mode=dhcp</code> -- and since v2.2.0 with no global IPv6 address at all, because the Router Advertisement guard writes <code>autoconf=0</code> and the container's kernel forms none either, and with no IPv6 route, because the daemon refuses one on a link carrying no IPv6 address (#821). <a href="https://github.com/claymore666/docker-net-dhcp/issues/818">#818</a> installs the formed address, <a href="https://github.com/claymore666/docker-net-dhcp/issues/819">#819</a> gives it lifetimes and renumbering, and <a href="https://github.com/claymore666/docker-net-dhcp/issues/808">#808</a> is the request all three answer. What <code>slaac</code> and <code>auto</code> are useful for in this release is stating the network's intent and reporting what the segment did, through the counters in the table below.</td>
 </tr>
 <tr>
 <td><code>ipv6_auto_strict</code></td>
@@ -2521,21 +2521,21 @@ value as an invalid duration.</p>
 <td>all</td>
 <td><code>false</code></td>
 <td>upstream; all modes since v0.9.0</td>
-<td>Don't copy non-default static routes from the parent (bridge or NIC) into containers, <strong>and</strong> don't apply DHCP-supplied classless static routes (option 121, see below). v0.9.0 extended parent route-copying from bridge-only to all modes (#102); set <code>true</code> to restore the old macvlan/ipvlan no-copy behaviour. The default gateway is unaffected either way.</td>
+<td>Don't copy non-default static routes from the parent (bridge or NIC) into containers, <strong>and</strong> don't apply DHCP-supplied classless static routes (option 121, see below), <strong>and</strong> (v2.2.0+, #821) don't apply the routes an IPv6 Router Advertisement asks for. v0.9.0 extended parent route-copying from bridge-only to all modes (#102); set <code>true</code> to restore the old macvlan/ipvlan no-copy behaviour. Neither default gateway is affected either way.</td>
 </tr>
 <tr>
 <td><code>propagate_dns</code></td>
 <td>all</td>
 <td><code>false</code></td>
 <td>v0.9.0</td>
-<td>Write the DHCP-supplied DNS server list (option 6 / v6 option 23) into the container's <code>/etc/resolv.conf</code> on every bind/renew. Overrides Docker's embedded resolver for this network; the <code>search</code> line uses option 119 with fallback to option 15 on v4, and DHCPv6 option 24 on v6 (v1.9.0+, #815).</td>
+<td>Write the DHCP-supplied DNS server list (option 6 / v6 option 23) into the container's <code>/etc/resolv.conf</code> on every bind/renew. Overrides Docker's embedded resolver for this network; the <code>search</code> line uses option 119 with fallback to option 15 on v4, and DHCPv6 option 24 on v6 (v1.9.0+, #815). Since v2.2.0 (#821) the v6 list also carries RFC 8106 RDNSS and DNSSL from the Router Advertisement, with DHCPv6's own options taking precedence (RFC 8106 §5.3.1), and it is rewritten when a later advertisement changes it. A resolver at a link-local address is written with its interface as an RFC 4007 §11 scope zone, <code>nameserver fe80::1%eth0</code>; musl does not parse that form. An empty list is never written: the container keeps the resolvers it had.</td>
 </tr>
 <tr>
 <td><code>propagate_mtu</code></td>
 <td>all</td>
 <td><code>false</code></td>
 <td>v0.9.0</td>
-<td>Apply DHCP option 26 (Interface MTU) to the container link on bind/renew. For jumbo-frame (9000) and VPN-reduced (~1450) networks. Since v1.8.0 an MTU outside <code>[576, 65535]</code> is refused and the link keeps the MTU it had, counted by <code>mtu_refused</code>. Nothing below this plugin holds the bottom of that range, so a server-supplied 68 used to be applied verbatim.</td>
+<td>Apply DHCP option 26 (Interface MTU) to the container link on bind/renew. For jumbo-frame (9000) and VPN-reduced (~1450) networks. Since v1.8.0 an MTU outside <code>[576, 65535]</code> is refused and the link keeps the MTU it had, counted by <code>mtu_refused</code>. Nothing below this plugin holds the bottom of that range, so a server-supplied 68 used to be applied verbatim. <strong>This option governs IPv4 only.</strong> The MTU an IPv6 Router Advertisement carries (RFC 4861 §4.6.4) is applied whatever it says, because until v2.2.0 the container's kernel applied it on every IPv6 network and an option defaulting to <code>false</code> would have taken it away; it is applied to the link, so it bounds IPv4 as well, and the refusal range still holds. On a dual-stack network where both families supply an MTU, the link takes the <strong>smaller</strong> of the two: the larger is a promise the link cannot keep for the family that asked for the smaller one (#821).</td>
 </tr>
 <tr>
 <td><code>client_id</code></td>
@@ -3200,15 +3200,36 @@ router is one <code>docker network create</code> line and not a contradiction.</
   client to the server. Server-side reservations keyed on DUID stick.</li>
 <li><strong><code>propagate_dns</code> covers DHCPv6 options 23 and 24</strong> (DNS servers and
   the domain search list) as well as the v4 options.</li>
-<li><strong>The Router Advertisement guard</strong>: <code>accept_ra=2</code>, <code>autoconf=1</code> and
-  <code>keep_addr_on_down=1</code> on the container's link. This is not optional
-  and there is no option to turn it off. DHCPv6 carries no router,
-  because RFC 9915 §21 defines no next-hop option, and RFC 5942 §4
-  forbids treating the leased address's prefix as on-link, so a
-  container whose kernel is not processing Router Advertisements would
-  have an address and no route. <code>accept_ra=2</code> and not <code>1</code>, because the
-  engine turns on forwarding on the container's link in bridge mode, and
-  <code>1</code> means "accept only while forwarding is off".</li>
+<li><strong>The plugin reads the Router Advertisement, and the container's
+  kernel does not</strong> (v2.2.0+, #821). DHCPv6 carries no router, because
+  RFC 9915 §21 defines no next-hop option, and RFC 5942 §4 forbids
+  treating the leased address's prefix as on-link, so the advertisement
+  is the only thing that supplies a route. The plugin's own DHCPv6
+  client reads it and puts four things into the container: the <strong>IPv6
+  gateway</strong> (the advertisement's link-local source address) as the Join
+  answer's gateway, the <strong>routes</strong> it asks for (RFC 4191 Route
+  Information options as next-hop routes, prefixes with the on-link flag
+  as on-link routes), the <strong>MTU</strong> (RFC 4861 §4.6.4) on the container's
+  link, and the <strong>DNS servers and search list</strong> (RFC 8106 RDNSS and
+  DNSSL) into <code>/etc/resolv.conf</code> when <code>propagate_dns=true</code>. All four are
+  rewritten when a later advertisement changes them, without restarting
+  the container. The gateway and the routes need the endpoint to have a
+  DHCPv6 address: see <em>Networks where DHCPv6 offers no address</em> below
+  for what a segment without one gets, and why.</li>
+<li><strong>The Router Advertisement guard</strong>: <code>accept_ra=0</code>, <code>autoconf=0</code> and
+  <code>keep_addr_on_down=1</code> on the container's link, and any route the
+  kernel had already installed from an advertisement removed. This is
+  not optional and there is no option to turn it off. <code>accept_ra=0</code>
+  because a kernel acting on the same advertisement would install a
+  second default route beside the plugin's, and which of the two wins is
+  decided by a metric comparison nobody chose. <code>autoconf=0</code> because the
+  plugin holds the lease for the address the container uses; the kernel
+  forms no SLAAC address of its own. On a segment that runs stateful
+  DHCPv6 <strong>and</strong> advertises its prefix as autonomous, that is a change:
+  such a container used to carry the lease, a kernel-formed address and
+  any privacy addresses beside it, and an outbound connection selected
+  among them per RFC 6724 rather than necessarily using the address
+  <code>docker inspect</code> reports. It now carries the lease alone.</li>
 <li><strong>Prefix delegation is out of scope.</strong> The client asks for an IA_NA;
   there is no IA_PD, and none is planned for 2.0.</li>
 </ul>
@@ -3285,9 +3306,26 @@ than failing:</p>
 </tr>
 </tbody>
 </table>
-<p>The container's IPv6 connectivity on the first three rows comes from
-SLAAC and the advertised router, which is why the Router Advertisement
-guard above is not optional even for an endpoint with no DHCPv6 lease.</p>
+<p><strong>On these rows the container gets no IPv6 route and no global IPv6
+address</strong> (v2.2.0+). It has a link-local address, its IPv4, and the
+stateless DHCPv6 configuration where the segment offers it. Before
+v2.2.0 its own kernel read the advertisement and gave it both; the
+guard's <code>accept_ra=0</code> and <code>autoconf=0</code> stop that, and on these segments
+the plugin does not yet supply the replacement.</p>
+<p><strong>Why not, exactly.</strong> The Docker daemon disables IPv6 on a container
+link that carries no global IPv6 address, and the kernel then refuses
+every IPv6 route on such a link. An endpoint answer carrying the
+advertised gateway or on-link prefix does not degrade: it fails the
+whole sandbox with <code>error setting interface "&lt;host-if&gt;" routes to
+["&lt;prefix&gt;"]: permission denied</code>, and the container does not start at
+all, losing its IPv4 with it. The plugin cannot enable IPv6 on the link
+first either, because that happens after the daemon has already moved
+the link and applied the answer. The route is not installable until
+there is a global address to install it beside, which is
+<a href="https://github.com/claymore666/docker-net-dhcp/issues/818">#818</a> on
+this same milestone: it forms the address under the plugin's own
+control, and the route and the address arrive together.
+Before v2.2.0 the container's kernel formed it.</p>
 <h4 id="if-you-upgrade-onto-20-with-an-ipv6-network-already-created">If you upgrade onto 2.0 with an IPv6 network already created<a class="headerlink" href="#if-you-upgrade-onto-20-with-an-ipv6-network-already-created" title="Permanent link">&para;</a></h4>
 <p>Nothing to do. A network record written by a 1.x build carries
 <code>ipv6=true</code>, that option means the same thing here, and endpoints on it
@@ -3925,7 +3963,7 @@ already parse it were not told to expect a new type.</p>
 <td><code>dhcp_routes_applied</code></td>
 <td>no</td>
 <td>n/a</td>
-<td>(v1.8.0+) DHCP option-121 classless static routes handed to Docker at Join, counted as routes and never as Joins. <code>skip_routes=true</code> opts out and then this never moves. Read it as the denominator for the row below. <strong>Not a check:</strong> the imperative is to read it as the denominator for <code>dhcp_default_route_superseded</code>, while its own value is a count of work done, carrying no verdict either way, and on a network whose server sends option 121 its normal reading is non-zero and climbing.</td>
+<td>(v1.8.0+) Routes handed to Docker at Join, counted as routes and never as Joins: DHCP option-121 classless static routes, and since v2.2.0 the routes an IPv6 Router Advertisement asks for (#821). <code>skip_routes=true</code> opts out and then this never moves. Read it as the denominator for the row below. <strong>Not a check:</strong> the imperative is to read it as the denominator for <code>dhcp_default_route_superseded</code>, while its own value is a count of work done, carrying no verdict either way, and on a network whose server sends option 121 its normal reading is non-zero and climbing.</td>
 </tr>
 <tr>
 <td><code>dhcp_default_route_superseded</code></td>
@@ -3937,7 +3975,7 @@ already parse it were not told to expect a new type.</p>
 <td><code>mtu_refused</code></td>
 <td>no</td>
 <td>n/a</td>
-<td>(v1.8.0+) Option-26 MTUs outside <code>[576, 65535]</code>, refused with the container link left at the MTU it had. Only moves with <code>propagate_mtu=true</code>. Nothing below the plugin holds the bottom of that range: a server-supplied 68 is carried through verbatim and would be accepted, and the result is destroyed throughput plus black-holed path MTU discovery, re-applied on every renewal, which looks like a slow network instead of a misconfiguration.</td>
+<td>(v1.8.0+) MTUs outside <code>[576, 65535]</code>, refused with the container link left at the MTU it had. Each family is counted separately, and a refused value does not vote on the link MTU. Option 26 on the IPv4 path, which moves only with <code>propagate_mtu=true</code>, and since v2.2.0 the Router Advertisement's MTU option on the IPv6 path, which is not gated on it (#821). Nothing below the plugin holds the bottom of that range: a server-supplied 68 is carried through verbatim and would be accepted, and the result is destroyed throughput plus black-holed path MTU discovery, re-applied on every renewal, which looks like a slow network instead of a misconfiguration.</td>
 </tr>
 <tr>
 <td><code>sandbox_key_entries</code></td>
@@ -4015,7 +4053,7 @@ already parse it were not told to expect a new type.</p>
 <td><code>dhcpv6_not_offered</code></td>
 <td>no</td>
 <td>n/a</td>
-<td>(v1.9.0+) Endpoints created on an IPv6 network that offers no DHCPv6 address (#868): the segment answered with configuration and no address, or advertised with the managed flag clear. The endpoint starts without a DHCPv6 lease and gets its address from SLAAC. Not <code>healthy</code>-affecting: this is a description of the segment and never a fault. Read it against <code>dhcpv6_no_router_advert</code>: the two exist to tell an advertised absence from an absent advertisement, and their sum would not. <strong>Not a check:</strong> both clauses fail. Its own value carries no verdict, because the same number is correct behaviour on a stateless or SLAAC network and a misconfiguration on one meant to be managed, and on a stateless or SLAAC network its normal reading is one per endpoint, so a check on non-zero would fire on every healthy container there.</td>
+<td>(v1.9.0+) Endpoints created on an IPv6 network that offers no DHCPv6 address (#868): the segment answered with configuration and no address, or advertised with the managed flag clear. The endpoint starts without a DHCPv6 lease. Since v2.2.0 it also gets no IPv6 route and no global IPv6 address: the guard writes <code>accept_ra=0</code> and <code>autoconf=0</code>, so its kernel no longer supplies either, and the daemon refuses an IPv6 route on a link with no IPv6 address, so the plugin cannot supply them until #818 forms the address. Not <code>healthy</code>-affecting: this is a description of the segment and never a fault. Read it against <code>dhcpv6_no_router_advert</code>: the two exist to tell an advertised absence from an absent advertisement, and their sum would not. <strong>Not a check:</strong> both clauses fail. Its own value carries no verdict, because the same number is correct behaviour on a stateless or SLAAC network and a misconfiguration on one meant to be managed, and on a stateless or SLAAC network its normal reading is one per endpoint, so a check on non-zero would fire on every healthy container there.</td>
 </tr>
 <tr>
 <td><code>dhcpv6_no_router_advert</code></td>
@@ -4057,7 +4095,13 @@ already parse it were not told to expect a new type.</p>
 <td><code>router_advert_guard_failures</code></td>
 <td>no</td>
 <td>n/a</td>
-<td>(v2.0.0+, #911) Steps of the DHCPv6 Router Advertisement guard that did not take. The guard writes three sysctls on the container's link, <code>accept_ra=2</code>, <code>autoconf=1</code> and <code>keep_addr_on_down=1</code>, and reads each one back, so it is <strong>six steps per IPv6 endpoint</strong> and this counter is bounded by six times the number of them. Only IPv6 endpoints run it, so it cannot move on an IPv4-only host. Not <code>healthy</code>-affecting and never fatal: a kernel built without one of these knobs, or a <code>/proc/sys</code> the plugin cannot write in, is not a reason to refuse the container an address. It <strong>is</strong> a reason to know, because the container may end up with a DHCPv6 address and no route: DHCPv6 carries no next hop and the address's prefix is not implicitly on-link, so the advertisement is the only thing that supplies one. If this rises, check <code>ip -6 route</code> inside the container for a default route via an <code>fe80::</code> address.</td>
+<td>(v2.0.0+, #911; widened in v2.2.0, #821) Steps of the DHCPv6 Router Advertisement guard that did not take. The guard writes three sysctls on the container's link, <code>accept_ra=0</code>, <code>autoconf=0</code> and <code>keep_addr_on_down=1</code>, reads each one back, and then removes any route the kernel had already installed from an advertisement, so it is <strong>six steps plus the route purge per IPv6 endpoint</strong> and this counter is bounded by seven times the number of them. Only IPv6 endpoints run it, so it cannot move on an IPv4-only host. Not <code>healthy</code>-affecting and never fatal: a kernel built without one of these knobs, or a <code>/proc/sys</code> the plugin cannot write in, is not a reason to refuse the container an address. It <strong>is</strong> a reason to know, because the plugin puts the IPv6 gateway into the Join answer itself and a kernel still acting on advertisements adds a second default route beside it. If this rises, check <code>ip -6 route</code> inside the container: there should be exactly one default route, via an <code>fe80::</code> address, and none with <code>proto ra</code>.</td>
+</tr>
+<tr>
+<td><code>ipv6_router_withdrawn</code></td>
+<td>no</td>
+<td>n/a</td>
+<td>(v2.2.0+, #821) Container IPv6 default routes removed because the router that advertised itself set its Router Lifetime to 0. RFC 4861 §4.2 defines that lifetime as "the lifetime associated with the default router" and §6.3.4 reads 0 as "no longer to be used as a default router". Counts <strong>routes removed, not advertisements received</strong>, so a router sending several on its way down moves this once per container. Not <code>healthy</code>-affecting and not a fault: the containers on that segment are correctly left with no default route rather than one pointing at a router that is gone. If this moves unexpectedly, the segment's router restarted or was reconfigured; <code>ip -6 route show default</code> inside a container on it will be empty until a router advertises itself again.</td>
 </tr>
 <tr>
 <td><code>ifname_unsupported</code></td>
@@ -4411,12 +4455,32 @@ consumer-side:</p>
 <tr>
 <td>Container on an <code>ipv6=true</code> network starts, but has no <code>GlobalIPv6Address</code></td>
 <td>The segment offers no DHCPv6 address, which is normal on a stateless or SLAAC network and is not an error. Which of the two it is: <code>dhcpv6_not_offered</code> means a router advertised and offered none, <code>dhcpv6_no_router_advert</code> means nothing advertised at all</td>
-<td>Read the two counters on <code>/Plugin.Health</code> before changing anything. <code>dhcpv6_not_offered</code> on a segment you believe is managed means the router's advertisement has the managed flag clear. Fix it at the router. <code>dhcpv6_no_router_advert</code> on a segment that does have a router means the DHCPv6 budget was cut below RFC 4861's router-discovery window (about 13 seconds), either by a <code>lease_timeout</code> set under it, or by a slow DHCPv4 half leaving too little of the daemon's 30-second call deadline behind; the plugin logs a warning naming both numbers. The container's IPv6 connectivity in both cases comes from SLAAC</td>
+<td>Read the two counters on <code>/Plugin.Health</code> before changing anything. <code>dhcpv6_not_offered</code> on a segment you believe is managed means the router's advertisement has the managed flag clear. Fix it at the router. <code>dhcpv6_no_router_advert</code> on a segment that does have a router means the DHCPv6 budget was cut below RFC 4861's router-discovery window (about 13 seconds), either by a <code>lease_timeout</code> set under it, or by a slow DHCPv4 half leaving too little of the daemon's 30-second call deadline behind; the plugin logs a warning naming both numbers. In both cases the container has no IPv6 route and no global IPv6 address since v2.2.0: <code>accept_ra=0</code> and <code>autoconf=0</code> mean its kernel supplies neither, and the daemon refuses an IPv6 route on a link carrying no IPv6 address, so the plugin cannot supply one until #818 forms the address (#821, #818)</td>
 </tr>
 <tr>
 <td>Container on an <code>ipv6=true</code> network has an IPv6 address but cannot reach anything off-link</td>
-<td>No default route. DHCPv6 carries no next hop, so the route comes from a Router Advertisement, and the container's kernel has to be accepting them</td>
-<td>Check <code>router_advert_guard_failures</code> on <code>/Plugin.Health</code>, then <code>ip -6 route show default</code> inside the container. A route <code>via</code> an <code>fe80::</code> address is what should be there. A non-zero counter means the plugin could not set <code>accept_ra</code>, <code>autoconf</code> or <code>keep_addr_on_down</code> on the link; a zero counter with no route means nothing advertised</td>
+<td>No default route. DHCPv6 carries no next hop, so the route comes from a Router Advertisement, which the plugin reads and puts into the Join answer (v2.2.0+, #821)</td>
+<td><code>ip -6 route show default</code> inside the container: a route <code>via</code> an <code>fe80::</code> address is what should be there. If it is empty, check <code>ipv6_router_withdrawn</code> on <code>/Plugin.Health</code> (the segment's router withdrew itself) and then <code>router_advert_guard_failures</code>. A zero for both with no route means nothing advertised</td>
+</tr>
+<tr>
+<td>Container on an <code>ipv6=true</code> network has TWO IPv6 default routes</td>
+<td>The guard did not take, so the container's kernel installed one from the advertisement beside the plugin's (v2.2.0+, #821)</td>
+<td><code>ip -6 route show default</code> inside the container: one of them carries <code>proto ra</code>, which is the kernel's. Check <code>router_advert_guard_failures</code> on <code>/Plugin.Health</code>; non-zero means the plugin could not write <code>accept_ra</code>, <code>autoconf</code> or <code>keep_addr_on_down</code> on the link, or could not remove a route the kernel had already installed</td>
+</tr>
+<tr>
+<td>Container on an <code>ipv6=true</code> network cannot resolve names through a <code>fe80::</code> resolver</td>
+<td>The resolver line carries an RFC 4007 §11 scope zone, <code>nameserver fe80::1%eth0</code>, which musl (Alpine) does not parse</td>
+<td>Use an image built against glibc, or configure the segment to advertise a global-scope resolver. The plugin writes the zone because without it the address does not work under either C library</td>
+</tr>
+<tr>
+<td>Container on a dual-stack network has an MTU smaller than either server asked for</td>
+<td>Both families write the same link MTU, and since v2.2.0 the link takes the smaller of the two (#821). The larger value is a promise the link cannot keep for the family that asked for the smaller one</td>
+<td><code>ip link show</code> inside the container against the DHCPv4 option-26 value and the advertised MTU. Before v2.2.0 the two flipped the link back and forth, once per renewal of either family</td>
+</tr>
+<tr>
+<td>Container on an <code>ipv6=true</code> network has a smaller MTU than expected on <strong>IPv4</strong> too</td>
+<td>The segment's advertisement carried an MTU option, and the plugin applies it to the container's link, which bounds both families (v2.2.0+, #821)</td>
+<td><code>ip link show</code> inside the container against the advertised value. This is not governed by <code>propagate_mtu</code>: until v2.2.0 the container's kernel applied the advertised MTU on every IPv6 network and the plugin keeps that behaviour</td>
 </tr>
 <tr>
 <td>Container on an <strong>ipvlan</strong> network got a new IPv6 address after upgrading from 1.x</td>
