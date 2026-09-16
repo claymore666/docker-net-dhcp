@@ -390,15 +390,28 @@ func TestClearDisableIPv6_IsTheObserver(t *testing.T) {
 	}
 }
 
+// notTheContractValue is a value for one guard knob that the guard
+// itself would never leave there.
+//
+// IT IS DERIVED FROM THE CONTRACT, NOT WRITTEN DOWN, and that is the
+// whole of it. This fixture used to seed every knob with "0", which was
+// discriminating while the contract read accept_ra=2/autoconf=1 and
+// stopped being so the moment #821 flipped two of them to 0: a knob
+// seeded at the value the guard writes cannot tell "the guard wrote it"
+// from "nobody touched it", and both assertions below would have gone
+// quietly vacuous with no test going red. Deriving the seed means the
+// next change to the contract cannot do that either.
+func notTheContractValue(want string) string {
+	if want == "0" {
+		return "1"
+	}
+	return "0"
+}
+
 // v6LinkSysctlDir builds a stand-in for /proc/sys/net/ipv6/conf with
 // one interface directory holding disable_ipv6 and the guard's three
 // knobs, all at values a real sandbox link starts from: IPv6 off, and
-// the guard's knobs at the kernel defaults the guard has to move.
-//
-// Starting them at the defaults rather than at the guard's own values
-// is what makes the second assertion below discriminating: knobs that
-// already read the right value would be indistinguishable from knobs
-// the guard wrote.
+// every guard knob at something the guard has to move.
 func v6LinkSysctlDir(t *testing.T, iface string) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -412,8 +425,13 @@ func v6LinkSysctlDir(t *testing.T, iface string) string {
 		}
 	}
 	write("disable_ipv6", "1")
-	for knob := range dhcp.RouterAdvertGuardContract() {
-		write(knob, "0")
+	for knob, want := range dhcp.RouterAdvertGuardContract() {
+		seed := notTheContractValue(want)
+		if seed == want {
+			t.Fatalf("the seed for %s equals the value the guard writes (%q), so every "+
+				"assertion keyed on it is vacuous", knob, want)
+		}
+		write(knob, seed)
 	}
 	return dir
 }
@@ -453,7 +471,7 @@ func TestPrepareV6LinkUnder_GuardRunsOnlyAfterIPv6IsOn(t *testing.T) {
 	t.Run("IPv6 can be enabled: the guard runs after it", func(t *testing.T) {
 		dir := v6LinkSysctlDir(t, iface)
 
-		changed, res, err := prepareV6LinkUnder(dir, iface)
+		changed, res, err := prepareV6LinkUnder(dir, iface, 0)
 		if err != nil {
 			t.Fatalf("prepareV6LinkUnder: %v", err)
 		}
@@ -489,7 +507,7 @@ func TestPrepareV6LinkUnder_GuardRunsOnlyAfterIPv6IsOn(t *testing.T) {
 			t.Fatalf("mkdir over the sysctl: %v", err)
 		}
 
-		changed, res, err := prepareV6LinkUnder(dir, iface)
+		changed, res, err := prepareV6LinkUnder(dir, iface, 0)
 		if err == nil {
 			t.Fatal("prepareV6LinkUnder succeeded with no readable disable_ipv6")
 		}
@@ -500,8 +518,8 @@ func TestPrepareV6LinkUnder_GuardRunsOnlyAfterIPv6IsOn(t *testing.T) {
 			t.Errorf("the guard produced a result (%d failure(s), %v) on a link whose "+
 				"IPv6 could not be turned on", res.Failures, res.Err)
 		}
-		for knob := range contract {
-			if got := v6LinkKnob(t, dir, iface, knob); got != "0" {
+		for knob, want := range contract {
+			if got := v6LinkKnob(t, dir, iface, knob); got != notTheContractValue(want) {
 				t.Errorf("%s reads %q — the guard wrote its knobs on a link with IPv6 "+
 					"administratively off. They write and read back truthfully there, so "+
 					"router_advert_guard_failures reports zero for an endpoint that can "+

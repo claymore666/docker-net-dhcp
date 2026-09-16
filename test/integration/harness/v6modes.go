@@ -591,9 +591,100 @@ func (f *V6Fixture) evidence() V6Evidence {
 //
 // The verdict itself is V6ModeFindings, which is pure and lives in the
 // fast lane, so both directions of it are driven without a bridge.
+// assertOwnsTheSegment is the fixture's PRECONDITION: this bridge
+// carries this fixture's advertisements and nobody else's.
+//
+// WHY IT IS SEPARATE FROM THE FLAG CHECK. assertMode compares the
+// observed signature against the mode's, which answers "are these the
+// right flags" and cannot answer "whose flags are these". Two things
+// slip past it. Frames captured BEFORE this fixture's dnsmasq started
+// are dropped on the floor -- evidence() reads FramesAfter(startedAt)
+// -- so a router still advertising from a previous fixture is invisible
+// to every assertion in this file. And a second source that agrees with
+// the mode's flags changes nothing about the signature while making the
+// segment's mode "whichever advertisement arrived last", which is the
+// property RAFrame.SourceMAC was carried for.
+//
+// V6BridgeName is one constant for every mode, so "one mode at a time"
+// rests entirely on the previous fixture's teardown having completed.
+// That is a state to ASSERT at the start of a run, not to infer from
+// having called teardown: a contaminated-but-lucky run is otherwise
+// indistinguishable from a clean one, because the capture prints only
+// when something else has already failed (#821, run 35141032546).
+func (f *V6Fixture) assertOwnsTheSegment() {
+	f.t.Helper()
+
+	var findings []string
+
+	// Anything on this bridge before our own server started belongs to
+	// someone else, by construction: the capture is opened moments
+	// before dnsmasq and nothing of ours can predate it.
+	var foreign []RAFrame
+	for _, fr := range f.raCap.Frames() {
+		if fr.At.Before(f.startedAt) {
+			foreign = append(foreign, fr)
+		}
+	}
+	if len(foreign) > 0 {
+		findings = append(findings, fmt.Sprintf(
+			"%d advertisement(s) reached this bridge BEFORE this fixture's dnsmasq started, "+
+				"so another router is live on %s and this segment's mode is not this "+
+				"fixture's to decide:\n%s",
+			len(foreign), V6BridgeName, formatRAFrames(foreign)))
+	}
+
+	// One segment, one router. Counted over our own window, so a
+	// foreign frame is reported once by the check above and not twice.
+	mine := f.raCap.FramesAfter(f.startedAt)
+	srcs := make(map[string]int)
+	var order []string
+	for _, fr := range mine {
+		k := fr.SourceMAC.String()
+		if _, seen := srcs[k]; !seen {
+			order = append(order, k)
+		}
+		srcs[k]++
+	}
+	// REPORTED, NOT FAILED, and the reason is a property of Linux
+	// bridges rather than a judgement about how likely contamination
+	// is. A bridge takes the lowest-addressed of its ports as its own
+	// MAC, so attaching a container's veth CHANGES the source address
+	// of the advertisements dnsmasq sends from it, mid-fixture and with
+	// no second router anywhere. A run of this fixture therefore has
+	// two distinct sources as a matter of course, and failing on the
+	// count would redden every mode on ordinary behaviour.
+	//
+	// Which leaves the count as a diagnostic: it is printed where the
+	// next reader of a confusing v6 failure will see it WITHOUT having
+	// to fail first, so "was there a second router" stops being a
+	// question answered by re-reading a capture that only prints on
+	// failure. Distinguishing a bridge that changed its MAC from a
+	// genuine second router needs the port timeline beside the frames
+	// and is not decided here (#821).
+	if len(order) > 1 {
+		var parts []string
+		for _, k := range order {
+			parts = append(parts, fmt.Sprintf("%s x%d", k, srcs[k]))
+		}
+		f.t.Logf("v6 fixture mode=%s: advertisements from %d source address(es) on %s (%s). "+
+			"Expected when a port joins the bridge and it adopts a new MAC; a second "+
+			"ROUTER would also look like this.",
+			f.mode, len(order), V6BridgeName, strings.Join(parts, ", "))
+	}
+
+	if len(findings) > 0 {
+		f.t.Fatalf("v6 fixture mode=%s does not own its segment: %s\non the wire: %s\nlog:\n%s",
+			f.mode, strings.Join(findings, "; "), f.raCap.SeenTally(), f.readLog())
+	}
+}
+
 func (f *V6Fixture) assertMode() {
 	f.t.Helper()
 	ev := f.evidence()
+	// After evidence(), so the advertisements have had their budget to
+	// arrive; before the flag comparison, because "whose segment is
+	// this" is the question the flag comparison assumes an answer to.
+	f.assertOwnsTheSegment()
 	if findings := V6ModeFindings(f.mode, ev); len(findings) > 0 {
 		f.t.Fatalf("v6 fixture mode=%s: %s\ncaptured %d router advertisement(s):\n%s\non the wire: %s\nlog:\n%s",
 			f.mode, strings.Join(findings, "; "), len(ev.Frames),
@@ -823,21 +914,57 @@ func (f *V6Fixture) DumpLogs(write func(string)) {
 	}
 }
 
+// Reannounce replaces the running dnsmasq with one started under
+// different range arguments, on the SAME bridge and the same addresses,
+// and returns once the new one is serving.
+//
+// WHY IT EXISTS (#821). Half of what this plugin now does with a Router
+// Advertisement has no other way to be driven from outside: a router
+// that renumbers itself, lowers its MTU, stops offering a route
+// (Router Lifetime 0, RFC 4861 section 4.2) or changes its resolver
+// list is a CHANGE, and a fixture that can only start one way can only
+// ever show the steady state. A container keeps running across this, so
+// what is measured afterwards is the plugin rewriting a live
+// container's configuration rather than a fresh Join doing it.
+//
+// The bridge, its addresses and the RA capture are left alone: only the
+// server process is replaced, which is what a router being reconfigured
+// looks like from the segment.
+//
+// The log is TRUNCATED by the restart, because start() creates the log
+// file afresh. Callers that count log lines across a Reannounce must
+// take their counts before it.
+func (f *V6Fixture) Reannounce(rangeArgs []string) {
+	f.t.Helper()
+	f.stopServer()
+	f.start(rangeArgs)
+}
+
+// stopServer ends the dnsmasq process and nothing else. Split out of
+// teardown so Reannounce cannot drift from it: a restart that forgot
+// to wait for the old process would leave two servers answering on one
+// bridge, and the second one's answers would look like the first one's.
+func (f *V6Fixture) stopServer() {
+	if f.cmd == nil || f.cmd.Process == nil {
+		return
+	}
+	_ = f.cmd.Process.Signal(syscall.SIGTERM)
+	done := make(chan struct{})
+	go func() { _ = f.cmd.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		_ = f.cmd.Process.Kill()
+		<-done
+	}
+	f.cmd = nil
+}
+
 func (f *V6Fixture) teardown() {
 	if f.raCap != nil {
 		f.raCap.Stop()
 	}
-	if f.cmd != nil && f.cmd.Process != nil {
-		_ = f.cmd.Process.Signal(syscall.SIGTERM)
-		done := make(chan struct{})
-		go func() { _ = f.cmd.Wait(); close(done) }()
-		select {
-		case <-done:
-		case <-time.After(2 * time.Second):
-			_ = f.cmd.Process.Kill()
-			<-done
-		}
-	}
+	f.stopServer()
 	if f.tmpDir != "" {
 		_ = os.RemoveAll(f.tmpDir)
 	}

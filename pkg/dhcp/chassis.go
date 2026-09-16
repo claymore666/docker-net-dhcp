@@ -77,19 +77,27 @@ type DHCPClientOptions struct {
 	Identity6 Identity6
 
 	// HonorRouterAdverts asserts that this endpoint's link is under the
-	// Router-Advertisement guard: accept_ra=2, autoconf=1 and
+	// Router-Advertisement guard: accept_ra=0, autoconf=0 and
 	// keep_addr_on_down=1 written and read back inside the container's
-	// network namespace (#875, ra_guard.go).
+	// network namespace, and the routes the kernel had already installed
+	// from an advertisement taken off it (#875, #821, ra_guard.go).
 	//
-	// IT IS NOT AN OPERATOR OPTION AND THERE IS NO WAY TO TURN IT OFF
-	// (D30 Q3). DHCPv6 carries no router -- RFC 9915 section 21's option
+	// THE FIRST TWO VALUES ARE THE OPPOSITE OF WHAT 2.0 SHIPPED, and the
+	// reason is that the answer moved rather than that the argument
+	// changed. DHCPv6 carries no router -- RFC 9915 section 21's option
 	// catalogue has no next hop -- and RFC 5942 section 4 rule 1 forbids
 	// deriving an on-link prefix from an assigned address, so router
-	// discovery is RFC 4861 section 6.3.4 and advertisement processing is
-	// mandatory on the managed path too. A persistent v6 client built
-	// without it is REFUSED rather than started, because a v6 endpoint
-	// whose kernel ignores advertisements has an address and no route and
-	// looks completely healthy for the length of one router lifetime.
+	// discovery is RFC 4861 section 6.3.4 and somebody has to do it.
+	// Until #821 that somebody was the container's kernel; it is now
+	// THIS client, which reads advertisements off its own socket and
+	// hands the gateway, MTU, routes and DNS to the plugin. A kernel
+	// still acting on the same frames would install a second default
+	// route beside the plugin's.
+	//
+	// IT IS NOT AN OPERATOR OPTION AND THERE IS NO WAY TO TURN IT OFF
+	// (D30 Q3). A persistent v6 client built without it is REFUSED
+	// rather than started, because a v6 endpoint with two default
+	// routes, or with none, looks completely healthy from the outside.
 	//
 	// It is refused on every other shape -- v4, no namespace, the
 	// CreateEndpoint one-shot -- because the values are host
@@ -539,7 +547,7 @@ type acquireOutcome struct {
 func acquireStep(ev lease.Event, conflicted bool, now time.Time) acquireOutcome {
 	switch ev.Kind {
 	case lease.Acquired:
-		info, _ := infoFromLease(ev.Lease, now)
+		info, _ := infoFromLease(ev.Lease, ev.Router, now)
 		return acquireOutcome{Info: info, Done: true}
 	case lease.Failed:
 		if conflicted {
@@ -731,6 +739,24 @@ type DHCPClient struct {
 	// dropped counts emits this client could not hand to the plugin
 	// because nothing was reading. See translate.
 	dropped atomic.Uint64
+
+	// view is what the advertisement watch reads, defaulting to
+	// c.Lease. It is a seam for the reason src is one: the watch's
+	// whole job is to notice a change that arrives with NO library
+	// event behind it, and a test that had to produce one on a wire
+	// could not drive it at all.
+	view func() (lease.Lease, bool)
+
+	// routerView is what the advertisement watch reads about the
+	// ROUTERS, defaulting to the library client's own observation. A
+	// seam for the same reason view is one.
+	routerView func() proto.RouterObservation
+
+	// advert is the advertised configuration this client last reported,
+	// and advertKnown says whether it has reported any. Touched from
+	// the translate goroutine and from nowhere else.
+	advert      Info
+	advertKnown bool
 }
 
 // eventBuffer is the depth of the channel translate emits on.
@@ -893,12 +919,28 @@ func (c *DHCPClient) translate() {
 	poll := time.NewTicker(c.renewalPoll())
 	defer poll.Stop()
 
+	// The advertisement watch runs on the v6 path only: RFC 4861
+	// advertisements are the only source of the five fields it follows,
+	// and a v4 client's merged lease cannot change without a DHCPACK,
+	// which arrives here as an event. Armed for both families would be
+	// a ticker that can never fire on one of them.
+	raWatch := newStoppedTicker()
+	if c.opts.V6 {
+		raWatch = time.NewTicker(raWatchInterval)
+	}
+	defer raWatch.Stop()
+
 	renewedAt := time.Time{}
 	for {
 		var ev lease.Event
 		select {
 		case <-poll.C:
 			c.renewals.report(c.Stats(), c.opts.OnRenewalStats)
+			continue
+		case <-raWatch.C:
+			if out, ok := c.takeAdvertChange(time.Now()); ok {
+				c.deliver(out)
+			}
 			continue
 		case e, ok := <-c.src:
 			if !ok {
@@ -936,55 +978,199 @@ func (c *DHCPClient) translate() {
 			continue
 		}
 
-		// THE SEND MUST NOT BLOCK, AND THE LOOP MUST NOT STOP (X-34).
-		//
-		// The only reader is the per-family goroutine in
-		// pkg/plugin/dhcp_manager.go, and its other arm returns on
-		// stopChan and never reads this channel again. A bare send here
-		// parks this goroutine forever on the first event that arrives
-		// in that window — a Leave while a renewal is in flight, a
-		// plugin Close over every live endpoint, or the legacy
-		// dual-stack path where the v6 client refuses and closes
-		// stopChan under a live v4 client.
-		//
-		// WHICH LOSS THIS CHOOSES, AND WHY. A wedge loses far more than
-		// the event that caused it: the range never advances, so every
-		// LATER event is lost from the durable record too; deferred
-		// close(c.events) never runs, so the reader's own "stream
-		// closed" arm never fires; deferred count() never runs, and it
-		// is the only writer of this manager's wire counters (P-7's
-		// per-endpoint half), so a TICKED parity row silently produces
-		// nothing for the endpoint; and the goroutine and its client
-		// leak for the life of the daemon. A drop loses exactly one
-		// plugin-side event — one ledger row and its counter bumps —
-		// and nothing else: c.opts.record(ev) above has ALREADY written
-		// this event to the durable record, unconditionally, before the
-		// translation, so the record's tail is complete either way. The
-		// drop is strictly the smaller loss, and it is the loss the
-		// base chose too.
-		//
-		// WHAT THIS REPLACES. Base pkg/dhcp/client.go:819 made the
-		// channel `make(chan Event, 16)` and :839-840 sent through a
-		// select/default commented "A full channel drops events rather
-		// than blocking the DHCP exchange." The swap deleted both
-		// halves and named no replacement. This is that guard,
-		// restored, plus the half it never had: the base dropped
-		// SILENTLY, so a drop and a wedge were indistinguishable from
-		// outside. Every drop is counted on DroppedEvents() and logged
-		// at Warn.
-		select {
-		case c.events <- out:
-		default:
-			c.dropped.Add(1)
-			log.
-				WithField("record", c.opts.RecordID).
-				WithField("event", out.Type).
-				WithField("dropped_total", c.dropped.Load()).
-				Warn("The plugin stopped reading this endpoint's DHCP events; the event was " +
-					"dropped. The durable record still has it; the ledger row and counters for " +
-					"it are lost.")
+		// The baseline the advertisement watch compares against is
+		// taken HERE, from the two kinds whose handling applies the
+		// advertised configuration to the container. Taking it on
+		// every event would let a nak or a timeout, which applies
+		// nothing, mark a change as delivered.
+		if out.Type == "bound" || out.Type == "renew" {
+			c.baselineAdvert(now)
+		}
+		c.deliver(out)
+	}
+}
+
+// deliver hands one translated event to the plugin, or drops it.
+//
+// THE SEND MUST NOT BLOCK, AND THE LOOP MUST NOT STOP (X-34).
+//
+// The only reader is the per-family goroutine in
+// pkg/plugin/dhcp_manager.go, and its other arm returns on stopChan and
+// never reads this channel again. A bare send here parks this goroutine
+// forever on the first event that arrives in that window -- a Leave
+// while a renewal is in flight, a plugin Close over every live endpoint,
+// or the legacy dual-stack path where the v6 client refuses and closes
+// stopChan under a live v4 client.
+//
+// WHICH LOSS THIS CHOOSES, AND WHY. A wedge loses far more than the
+// event that caused it: the range never advances, so every LATER event
+// is lost from the durable record too; deferred close(c.events) never
+// runs, so the reader's own "stream closed" arm never fires; deferred
+// count() never runs, and it is the only writer of this manager's wire
+// counters (P-7's per-endpoint half), so a TICKED parity row silently
+// produces nothing for the endpoint; and the goroutine and its client
+// leak for the life of the daemon. A drop loses exactly one plugin-side
+// event -- one ledger row and its counter bumps -- and nothing else:
+// c.opts.record(ev) has ALREADY written the library's event to the
+// durable record, unconditionally, before the translation, so the
+// record's tail is complete either way. The drop is strictly the
+// smaller loss, and it is the loss the base chose too.
+//
+// WHAT THIS REPLACES. Base pkg/dhcp/client.go:819 made the channel
+// `make(chan Event, 16)` and :839-840 sent through a select/default
+// commented "A full channel drops events rather than blocking the DHCP
+// exchange." The swap deleted both halves and named no replacement.
+// This is that guard, restored, plus the half it never had: the base
+// dropped SILENTLY, so a drop and a wedge were indistinguishable from
+// outside. Every drop is counted on DroppedEvents() and logged at Warn.
+func (c *DHCPClient) deliver(out Event) {
+	select {
+	case c.events <- out:
+	default:
+		c.dropped.Add(1)
+		log.
+			WithField("record", c.opts.RecordID).
+			WithField("event", out.Type).
+			WithField("dropped_total", c.dropped.Load()).
+			Warn("The plugin stopped reading this endpoint's DHCP events; the event was " +
+				"dropped. The durable record still has it; the ledger row and counters for " +
+				"it are lost.")
+	}
+}
+
+// newStoppedTicker is a ticker that never fires, for the family that
+// has no advertisement to watch. A nil *time.Ticker cannot be used: the
+// select reads its C, and Stop would dereference nil.
+func newStoppedTicker() *time.Ticker {
+	t := time.NewTicker(time.Hour)
+	t.Stop()
+	return t
+}
+
+// leaseView is what the advertisement watch reads.
+func (c *DHCPClient) leaseView() (lease.Lease, bool) {
+	if c.view != nil {
+		return c.view()
+	}
+	return c.Lease()
+}
+
+// advertRouterView is the router observation the advertisement watch
+// reads, carrying ONLY what is safe to follow live.
+//
+// THE MTU IS THE ONE THING THE LEASE CANNOT CARRY. DHCPv6 has no MTU
+// option at all -- option 26 is DHCPv4's (RFC 2132 section 5.1) -- so
+// the advertised link MTU of RFC 4861 section 4.6.4 reaches the plugin
+// through the router observation or not at all, and lease.Lease.MTU is
+// zero on every DHCPv6 lease ever issued.
+//
+// The prefixes are left out, which is what keeps the on-link rule at
+// Join: see takeAdvertChange for why following them live would take a
+// route away from a container because one advertisement happened to be
+// shorter. THE BOUND THAT BUYS: an advertisement whose ONLY change is
+// its set of on-link prefixes produces no event at all, so
+// Info.OnLinkPrefixes is a Join-time answer with no live update, on an
+// endpoint that has an address as much as on one that does not. A
+// segment that starts or stops advertising a prefix as on-link reaches
+// a running container's routing table when the container is recreated
+// and not before.
+//
+// The MTU has no such problem. A router that stops advertising an MTU
+// is saying nothing about the MTU, zero is how that is spelled, and a
+// zero is the withdrawal propagateMTU acts on.
+func (c *DHCPClient) advertRouterView() proto.RouterObservation {
+	var r proto.RouterObservation
+	if c.routerView != nil {
+		r = c.routerView()
+	} else if c.client6 != nil {
+		r = c.client6.Router()
+	}
+	return proto.RouterObservation{Seen: r.Seen, MTU: r.MTU}
+}
+
+// baselineAdvert records what the routers are advertising WITHOUT
+// reporting it, for the caller that has just applied it by another
+// route.
+func (c *DHCPClient) baselineAdvert(now time.Time) {
+	c.takeAdvertChange(now)
+}
+
+// takeAdvertChange reports what the routers on this link advertise when
+// it differs from the last view this client reported, and nothing when
+// it does not.
+//
+// IT REPORTS A CHANGE AND NEVER A FIRST SIGHT. The first reading is the
+// baseline: on the path that matters the lease has just been applied
+// through bound, so reporting it again would re-apply a configuration
+// the container already has and write a second ledger row for one
+// event. A client that somehow reaches its first reading here instead
+// is followed from that reading on, which is the same rule seen from
+// the other end.
+//
+// THE VIEW CARRIES NO ON-LINK DETERMINATION, deliberately: the
+// RouterObservation passed in carries the advertised MTU and nothing
+// else (see advertRouterView), so Info.OnLinkPrefixes is empty on every
+// event this produces. On-link determination is
+// applied once, at Join, out of the advertisement the acquisition saw;
+// the library reports the prefixes of the most recent frame rather than
+// a union, so following it live would take a route away from a
+// container because one advertisement happened to be shorter.
+func (c *DHCPClient) takeAdvertChange(now time.Time) (Event, bool) {
+	l, ok := c.leaseView()
+	if !ok {
+		return Event{}, false
+	}
+	info, dropped := infoFromLease(l, c.advertRouterView(), now)
+	first := !c.advertKnown
+	same := c.advertKnown && !advertisedDiffers(c.advert, info)
+	c.advert, c.advertKnown = info, true
+	if first || same {
+		return Event{}, false
+	}
+	return Event{
+		Type:                "routeradvert",
+		Data:                info,
+		UnsafeValuesDropped: dropped,
+		RouterFlags:         raFlags(c.RA()),
+	}, true
+}
+
+// advertisedDiffers compares the five fields a Router Advertisement can
+// change and NOTHING ELSE.
+//
+// The address and its lifetimes are deliberately outside it: they move
+// on every renewal, and a watch that read them would report a change
+// the renewal had already applied, once per lease, forever.
+func advertisedDiffers(a, b Info) bool {
+	return a.Gateway != b.Gateway ||
+		a.MTU != b.MTU ||
+		!sameStrings(a.DNSServers, b.DNSServers) ||
+		!sameStrings(a.SearchList, b.SearchList) ||
+		!sameRoutes(a.Routes, b.Routes)
+}
+
+func sameStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
 		}
 	}
+	return true
+}
+
+func sameRoutes(a, b []Route) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // translateOne is the whole of the event translation, split out from
@@ -996,7 +1182,7 @@ func (c *DHCPClient) translate() {
 // supplied, which is what lets a test place a Changed inside and
 // outside the coalesce window without sleeping.
 func translateOne(ev lease.Event, now, renewedAt time.Time) (Event, bool, time.Time) {
-	info, dropped := infoFromLease(ev.Lease, now)
+	info, dropped := infoFromLease(ev.Lease, ev.Router, now)
 
 	var out Event
 	switch ev.Kind {
@@ -1082,7 +1268,11 @@ func translateOne(ev lease.Event, now, renewedAt time.Time) (Event, bool, time.T
 // It is "" for a v4 event too, and the two are not distinguishable here
 // on purpose: this string is for a human, and the machine-readable form
 // is RAObservation, which has a Seen of its own.
-func routerFlags(r proto.RouterObservation) string {
+func routerFlags(r proto.RouterObservation) string { return raFlags(raObservation(r)) }
+
+// raFlags is routerFlags over the chassis's own spelling of the
+// observation, which is what a caller holding an RAObservation has.
+func raFlags(r RAObservation) string {
 	if !r.Seen {
 		return ""
 	}
@@ -1105,6 +1295,28 @@ func routerFlags(r proto.RouterObservation) string {
 // duplicated audit row and being early costs a lost re-acquisition
 // event, and only one of those is a lease the container is not using.
 const coalesceWindow = 100 * time.Millisecond
+
+// raWatchInterval is how often a v6 client re-reads what the routers on
+// its link are advertising.
+//
+// IT EXISTS BECAUSE AN ADVERTISEMENT THAT CHANGES NOTHING ABOUT THE
+// LEASE PRODUCES NO LEASE EVENT. MEASURED against dhcp-golib v1.0.0: a
+// Changed is stamped from the bound state and from the SLAAC lifetime
+// path, both of which compare the DHCPv6 binding; a router that
+// withdraws its lifetime, changes its MTU, adds a Route Information
+// Option or drops a resolver moves the library's router table and the
+// merged lease it hands back, and emits nothing. Waiting for the next
+// renewal to carry it would mean a container following its segment at
+// the lease's pace -- hours -- which is the whole of what Q4 refused.
+//
+// DERIVED from the shortest gap the WIRE can produce, the same way
+// renewalPollInterval is derived from RFC 2131's renewal floor. RFC
+// 4861 section 10's router constants: "MIN_DELAY_BETWEEN_RAS 3
+// seconds". A quarter of it places three reads in the shortest gap
+// between two advertisements, so the view survives two missed ticks.
+const minDelayBetweenRAs = 3 * time.Second
+
+const raWatchInterval = minDelayBetweenRAs / 4
 
 // Finish stops the client and waits for it to return.
 func (c *DHCPClient) Finish(ctx context.Context) error {

@@ -229,6 +229,18 @@ func TestInfoFromConfig(t *testing.T) {
 		t.Errorf("a Configured event produced IP %q gateway %q", info.IP, info.Gateway)
 	}
 
+	// AND IT SAYS NOTHING ABOUT THE ROUTER, which is what keeps it from
+	// withdrawing the link's MTU. This is the second constructor of a v6
+	// Info, and an Information-request Reply (RFC 9915 section 18.2.6)
+	// carries no router information at all: MTU 0 here is the reply not
+	// mentioning it, never a router that stopped advertising one. With
+	// RouterSeen set, every stateless event would drop the v6 MTU vote
+	// and hand the link to the v4 number.
+	if info.RouterSeen || info.MTU != 0 {
+		t.Errorf("a Configured event claimed to carry router information "+
+			"(RouterSeen=%v MTU=%d)", info.RouterSeen, info.MTU)
+	}
+
 	poisoned := lease.Configuration{Search: []string{"ok.test", "bad\nnameserver 10.0.0.1"}}
 	info, dropped = infoFromConfig(poisoned)
 	if dropped == 0 {
@@ -273,7 +285,7 @@ func TestInfoFromLease_PreferredSecondsIsV6Only(t *testing.T) {
 		Preferred: now.Add(30 * time.Minute),
 		Expire:    now.Add(time.Hour),
 	}
-	info, _ := infoFromLease(v6, now)
+	info, _ := infoFromLease(v6, proto.RouterObservation{}, now)
 	if info.LeaseSeconds != 3600 {
 		t.Errorf("LeaseSeconds = %d, want 3600", info.LeaseSeconds)
 	}
@@ -285,7 +297,7 @@ func TestInfoFromLease_PreferredSecondsIsV6Only(t *testing.T) {
 	// convention -- not "zero seconds", which would deprecate the
 	// address the instant it was installed.
 	v6.Preferred = time.Time{}
-	info, _ = infoFromLease(v6, now)
+	info, _ = infoFromLease(v6, proto.RouterObservation{}, now)
 	if info.PreferredSeconds != info.LeaseSeconds {
 		t.Errorf("an infinite preferred lifetime gave PreferredSeconds = %d with "+
 			"LeaseSeconds = %d; a zero here deprecates the address on arrival",
@@ -297,7 +309,7 @@ func TestInfoFromLease_PreferredSecondsIsV6Only(t *testing.T) {
 		Preferred: now.Add(30 * time.Minute),
 		Expire:    now.Add(time.Hour),
 	}
-	if info, _ := infoFromLease(v4, now); info.PreferredSeconds != 0 {
+	if info, _ := infoFromLease(v4, proto.RouterObservation{}, now); info.PreferredSeconds != 0 {
 		t.Errorf("a v4 lease produced PreferredSeconds = %d; DHCPv4 has one lifetime "+
 			"and the field is omitempty", info.PreferredSeconds)
 	}

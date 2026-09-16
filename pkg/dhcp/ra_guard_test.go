@@ -20,15 +20,42 @@ func fakeSysctlTree(t *testing.T, iface string) string {
 		t.Fatalf("mkdir: %v", err)
 	}
 	// The kernel's defaults on a fresh link, and all three are wrong for
-	// this plugin: accept_ra 1 stops accepting once forwarding is on,
-	// autoconf 1 is right but is written anyway because accept_ra alone
-	// does not imply it, keep_addr_on_down 0 drops the address on a
-	// carrier flap.
-	for knob, def := range map[string]string{
+	// this plugin: accept_ra 1 has the kernel act on advertisements the
+	// plugin's own client is already reading, autoconf 1 has it form an
+	// address beside the one the plugin holds a lease for,
+	// keep_addr_on_down 0 drops the address on a carrier flap.
+	seed := map[string]string{
 		"accept_ra":         "1",
 		"autoconf":          "1",
 		"keep_addr_on_down": "0",
-	} {
+	}
+	// EVERY SEED DIFFERS FROM THE VALUE THE GUARD WILL WRITE, and that is
+	// the whole property this fixture exists for: a seed that already
+	// equals the contract makes the read-back below pass whether the
+	// guard wrote anything or not. Today the kernel's default is the
+	// complement of the contract for all three knobs, which is why the
+	// literals above read as defaults rather than as "not the contract".
+	// It is asserted rather than left to a reader, because the two lists
+	// move independently -- change the contract to accept_ra 1 and this
+	// goes red here, at the fixture, instead of going quietly vacuous in
+	// three tests.
+	contract := RouterAdvertGuardContract()
+	if len(seed) != len(contract) {
+		t.Fatalf("the fixture seeds %d knobs and the contract has %d: %v vs %v",
+			len(seed), len(contract), seed, contract)
+	}
+	for knob, want := range contract {
+		def, ok := seed[knob]
+		if !ok {
+			t.Fatalf("the contract sets %v and the fixture never seeds it, so "+
+				"a guard that skipped %v would still read back correctly", knob, knob)
+		}
+		if def == want {
+			t.Fatalf("%v is seeded %q and the guard writes %q: the read-back "+
+				"cannot tell a write from the seed", knob, def, want)
+		}
+	}
+	for knob, def := range seed {
 		if err := os.WriteFile(filepath.Join(dir, iface, knob), []byte(def+"\n"), 0o644); err != nil {
 			t.Fatalf("seed %v: %v", knob, err)
 		}
@@ -70,12 +97,19 @@ func TestApplyRouterAdvertGuard_WritesTheContract(t *testing.T) {
 		}
 	}
 
-	// The contract itself, spelled out. accept_ra 2 and not 1: the
-	// engine turns on forwarding on the container's link for bridge
-	// mode, and net.ipv6.conf.<if>.accept_ra=1 means "accept only while
-	// forwarding is off". 2 is "accept even as a router", which is the
-	// only value that survives what the engine does to the link.
-	want := map[string]string{"accept_ra": "2", "autoconf": "1", "keep_addr_on_down": "1"}
+	// The contract itself, spelled out. accept_ra 0, and not 1 or 2:
+	// the plugin's own client reads the advertisement off a raw socket
+	// and puts the gateway, MTU, routes and DNS into the Join answer,
+	// so a kernel that acted on the same advertisement would install a
+	// second default route beside the one the engine installs from that
+	// answer. autoconf 0 is the same statement on the address side: the
+	// plugin holds a lease for the address the container uses.
+	//
+	// This pins the value, not the direction. Flipping accept_ra back to
+	// 2 here keeps this test green only if the guard is flipped with it,
+	// and the container-side observer for the flip is "ip -6 route"
+	// inside the container in the integration suite, not this map.
+	want := map[string]string{"accept_ra": "0", "autoconf": "0", "keep_addr_on_down": "1"}
 	if len(contract) != len(want) {
 		t.Errorf("the contract has %d knobs, want %d: %v", len(contract), len(want), contract)
 	}

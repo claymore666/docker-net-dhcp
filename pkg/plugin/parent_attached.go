@@ -589,6 +589,12 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, callStart tim
 				if v6 {
 					res.Interface.AddressIPv6 = info.IP
 					hint.IPv6 = addr
+					// Same as the bridge copy in network.go, and for
+					// the same reason: DHCPv6 has no gateway option,
+					// so the IPv6 gateway is the advertisement's
+					// link-local source address the library saw during
+					// this acquisition (#821).
+					fillV6Hint(hint, info)
 				} else {
 					res.Interface.Address = info.IP
 					hint.IPv4 = addr

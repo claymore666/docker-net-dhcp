@@ -4,21 +4,33 @@
 package dhcp
 
 import (
+	"net/netip"
 	"strconv"
 	"time"
 
 	"github.com/claymore666/dhcp-golib/lease"
+	"github.com/claymore666/dhcp-golib/proto"
 	"github.com/claymore666/dhcp-golib/wire"
 )
 
-// infoFromLease renders one library lease as the Info the plugin
-// applies to a container.
+// infoFromLease renders one library lease, and what the routers on its
+// link advertised, as the Info the plugin applies to a container.
 //
 // Everything the plugin does with a lease — the address, the default
-// route, resolv.conf, the MTU, the classless routes, the audit line —
-// reads this struct, so this function is the whole of the seam's
+// route, resolv.conf, the MTU, the more-specific routes, the audit line
+// — reads this struct, so this function is the whole of the seam's
 // data direction. The two rules that are not a field copy are marked.
-func infoFromLease(l lease.Lease, now time.Time) (Info, int) {
+//
+// IT TAKES THE ROUTER OBSERVATION RATHER THAN ONLY THE LEASE, and that
+// is not a convenience. The library has already merged the
+// advertisement's gateway, MTU, resolvers, search list and
+// more-specific routes into the lease it hands over (RFC 4861 section
+// 6.3.4's union, RFC 8106 section 5.3.1's DHCP-first precedence), so
+// those arrive as ordinary fields. On-link determination does not: it
+// is not a property of the lease and has nowhere in it to live. Taking
+// it here rather than adding it to the result afterwards is what keeps
+// it inside sanitizeInfo's single boundary pass at the bottom.
+func infoFromLease(l lease.Lease, r proto.RouterObservation, now time.Time) (Info, int) {
 	info := Info{
 		MTU:          l.MTU,
 		SearchList:   append([]string(nil), l.DomainSearch...),
@@ -56,18 +68,37 @@ func infoFromLease(l lease.Lease, now time.Time) (Info, int) {
 	// RFC 3442: a 0.0.0.0/0 entry in option 121 supersedes option 3,
 	// and the library has already folded it into Lease.Gateway. What is
 	// left here is the non-default remainder, which is what the plugin
-	// installs as StaticRoutes. Filtering on IsDefault rather than
-	// trusting the library to have removed it keeps the two sides
-	// independent: if it ever stopped folding, the default route would
-	// arrive twice rather than the plugin installing a second one.
-	for _, r := range l.Routes {
-		if r.IsDefault() {
+	// installs as StaticRoutes. Filtering rather than trusting the
+	// library to have removed it keeps the two sides independent: if it
+	// ever stopped folding, the default route would arrive twice rather
+	// than the plugin installing a second one.
+	for _, rt := range l.Routes {
+		if defaultDestination(rt) {
 			continue
 		}
 		info.Routes = append(info.Routes, Route{
-			Destination: r.Dest.String(),
-			Gateway:     routeGateway(r),
+			Destination: rt.Dest.String(),
+			Gateway:     routeGateway(rt),
 		})
+	}
+	info.OnLinkPrefixes = onLinkPrefixes(r)
+
+	// THE ADVERTISED MTU IS THE ONLY MTU IPv6 HAS. DHCPv6 carries no
+	// MTU option -- option 26 is DHCPv4's (RFC 2132 section 5.1) and
+	// the library only ever fills Lease.MTU from it -- so RFC 4861
+	// section 4.6.4's MTU option is where a v6 link's MTU comes from,
+	// and without this line info.MTU is zero on every DHCPv6 lease and
+	// the plugin has nothing to apply. Until #821 that did not show:
+	// the container's kernel was at accept_ra=2 and copied the
+	// advertised MTU itself.
+	//
+	// Guarded on Seen so it cannot reach a DHCPv4 lease, whose client
+	// never looks at a router advertisement and whose observation is
+	// therefore the zero value; and placed after the lease's own value
+	// so a server that did send option 26 still wins on its own family.
+	info.RouterSeen = r.Seen
+	if info.MTU == 0 && r.Seen {
+		info.MTU = int(r.MTU)
 	}
 
 	info.NTPServers = addrStrings(l.Options, wire.OptNTPServer)
@@ -140,6 +171,68 @@ func secondsUntil(deadline, now time.Time) int {
 		return 0
 	}
 	return int(d / time.Second)
+}
+
+// defaultDestination reports whether a route's destination is the whole
+// address space, in EITHER family.
+//
+// wire.Route.IsDefault answers it for v4 only — it is
+// `Dest.Bits() == 0 && Dest.Addr().Is4()`, which is RFC 3442's question
+// about option 121 and is false for ::/0. RFC 4191 section 2.3 allows a
+// Route Information Option with a prefix length of zero, and the
+// library's router table carries it through like any other, so a v6
+// endpoint on such a segment would otherwise be handed ::/0 as a static
+// route beside the default route Docker installs from the same router.
+func defaultDestination(r wire.Route) bool { return r.Dest.Bits() == 0 }
+
+// onLinkPrefixes is the advertisement's on-link determination: RFC 4861
+// section 4.6.2's Prefix Information options with the L flag set,
+// rendered as CIDR.
+//
+// STANDARD RFC 4861 section 4.6.2 on the L flag: "When set, indicates
+// that this prefix can be used for on-link determination. When not set
+// the advertisement makes no statement about on-link or off-link
+// properties of the prefix." So an option with L clear is not a prefix
+// this is silent about by accident.
+//
+// STANDARD RFC 4861 section 6.3.4 on the lifetime: a prefix is entered
+// in the Prefix List only when "the Prefix Information option's Valid
+// Lifetime field is non-zero", and a zero valid lifetime on a prefix
+// already there means to "time out the prefix immediately". Zero is
+// therefore a withdrawal and not a prefix with no time left.
+//
+// The link-local prefix is skipped for the reason section 5.5.3 b skips
+// it on the other path: the kernel owns fe80::/64 on every interface
+// that has an address at all, and installing a second route for it
+// would be this plugin claiming a prefix it did not configure.
+func onLinkPrefixes(r proto.RouterObservation) []string {
+	var out []string
+	for _, p := range r.Prefixes {
+		if !p.OnLink || p.ValidLifetime == 0 {
+			continue
+		}
+		if !p.Prefix.Is6() || p.Prefix.Is4In6() || p.Prefix.IsLinkLocalUnicast() {
+			continue
+		}
+		pfx := netip.PrefixFrom(p.Prefix, int(p.PrefixLen))
+		if !pfx.IsValid() || pfx.Bits() == 0 {
+			continue
+		}
+		s := pfx.Masked().String()
+		if !containsString(out, s) {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+func containsString(in []string, s string) bool {
+	for _, v := range in {
+		if v == s {
+			return true
+		}
+	}
+	return false
 }
 
 func routeGateway(r wire.Route) string {

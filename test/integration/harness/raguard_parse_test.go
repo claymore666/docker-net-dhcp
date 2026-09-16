@@ -42,9 +42,12 @@ func TestV6IfaceFromAddrShow(t *testing.T) {
 	}
 	// A PREFIX of a present address is not that address (#875, third
 	// round). The fixture prefixes make this impossible to hit today,
-	// which is why a substring match survived — and `autoconf=1` is
-	// what makes a second global address on one link possible at all,
-	// so this is the case that would arrive without a test naming it.
+	// which is why a substring match survived. A second global address
+	// on one link is what makes it reachable, and #821 takes the
+	// kernel's route to that away again (autoconf=0) without closing
+	// it: a multi-network container, a SLAAC address once #818 lands,
+	// or an operator adding one by hand all put two there. So this is
+	// the case that would arrive without a test naming it.
 	// Driven on the REAL fixture output, then on a two-address line so
 	// the wrong answer would be a real interface name rather than "".
 	if got := V6IfaceFromAddrShow(busyboxAddrShow, "fd00:6470:6864::4"); got != "" {
@@ -261,5 +264,45 @@ func TestLastDHCPv6BindAt_ADifferentMACIsNotTheAnchor(t *testing.T) {
 	}
 	if got.Minute() != 57 {
 		t.Errorf("anchored on another client's reply: got %s, want the 13:57:33 one", got)
+	}
+}
+
+// CountDefaultRoutes is the observer for "exactly one default route",
+// which is the claim #821 made checkable. Its two failure directions
+// are the two this plugin can produce.
+func TestCountDefaultRoutes(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		out  string
+		want int
+	}{
+		{"empty table", "", 0},
+		{"trailing newline only", "\n\n", 0},
+		{"one route", "default via fe80::1 dev eth0 metric 1024\n", 1},
+		{"two routes: the failure the guard prevents",
+			"default via fe80::1 dev eth0 metric 1024\ndefault via fe80::2 dev eth0 proto ra metric 1024\n", 2},
+		{"a non-default line does not count",
+			"2001:db8::/64 dev eth0 metric 256\n", 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := CountDefaultRoutes(tc.out); got != tc.want {
+				t.Errorf("CountDefaultRoutes = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
+// ResolvNameservers keeps the scope zone, because the zone is the thing
+// under test on a link-local resolver (RFC 4007 section 11).
+func TestResolvNameservers(t *testing.T) {
+	got := ResolvNameservers("# generated\nsearch corp.example\nnameserver fe80::1%eth0\nnameserver 2001:db8::53\n")
+	want := []string{"fe80::1%eth0", "2001:db8::53"}
+	if len(got) != len(want) {
+		t.Fatalf("ResolvNameservers = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("ResolvNameservers = %v, want %v", got, want)
+		}
 	}
 }

@@ -49,52 +49,71 @@ import (
 // container can set these back, and this guard neither prevents that nor
 // counts it.
 //
-// # WHY accept_ra=2 AND NOT 1
+// # WHY accept_ra=0 (#821), WHICH IS THE OPPOSITE OF WHAT 2.0 SHIPPED
 //
-// A KERNEL-BEHAVIOUR argument, not a standards one: no RFC assigns
-// meanings to the values of a Linux sysctl.
+// Because the plugin now supplies everything the kernel was reading out
+// of the advertisement, and two writers on one interface is the defect,
+// not the belt.
 //
-// Linux ties advertisement processing to forwarding. At accept_ra=1 the
-// kernel refuses advertisements once forwarding is enabled on the
-// interface, and rt6_purge_dflt_routers() removes the default routes it
-// had already learned from them. accept_ra=2 is the only value that
-// overrules the forwarding check. Containers enable forwarding
-// routinely -- VPN, NAT, router and docker-in-docker images all do --
-// and at accept_ra=1 doing so silently reproduces the #875 symptom the
-// guard exists to prevent.
+// Until #821 the kernel owned the v6 default route, the on-link prefix
+// route and the link MTU, all learned from the advertisement, while the
+// plugin owned the address. That split has no owner for the question an
+// operator actually asks -- `docker inspect` showed no IPv6 gateway at
+// all, because libnetwork only knows what the driver returns at Join and
+// the driver had nothing to return. The library reads the same
+// advertisements on an AF_PACKET socket and hands the router, the MTU,
+// the advertised resolvers, the search list and RFC 4191's more-specific
+// routes over as an ordinary lease, so the plugin can answer Join with a
+// gateway and apply the rest itself.
 //
-// MEASURED at 1.9.0, precondition-gated so the treatment was only
-// applied to a container that had actually received an advertisement
-// first, three trials per arm:
+// With one side able to answer, leaving the kernel switched on is not
+// redundancy. It is a second writer installing its own `proto ra`
+// default route beside Docker's, expiring on the router's schedule
+// rather than on the plugin's, and a container whose routing table
+// changes under it for reasons nothing in this plugin can report.
 //
-//	accept_ra=1: default route purged 3/3 when forwarding was enabled
-//	accept_ra=2: default route survived 3/3
+// accept_ra=0 IS NOT A RETREAT TO 1.9.0's SHAPE. 1.9.0 wrote the same
+// value and had nothing that supplied a route, which is #875: the
+// container ended up with an address and no way off the link. The value
+// is the same and the reason is its opposite -- the route comes from the
+// Join answer now, and the RFC 4861 section 6.3.4 processing that
+// produces it happens in the library rather than in the kernel.
 //
-// # WHY autoconf=1, WHICH LOOKS WRONG FOR A MANAGED ENDPOINT
+// WHAT THE VALUE DOES NOT DO: it does not purge. MEASURED (see
+// pkg/plugin/v6_link.go): a route the kernel installed from an
+// advertisement before this write survives it and expires on the
+// router's lifetime. The link is live in the sandbox at the kernel
+// default before this guard can reach it, so purging what it left is
+// part of the guard's job and lives at the one caller, which has the
+// netlink handle this package does not.
 //
-// Because the ROUTER decides, not us. RFC 4862 section 5.5.3(a) gates
-// address formation on the prefix option's A flag -- a host processes
-// the prefix for autoconfiguration only if that flag is set; `autoconf`
-// is the host-side veto on top of it. Setting it to 0 overrides the
-// router; setting it to 1 defers to the router, which is what a host is
-// supposed to do.
+// # WHY autoconf=0
 //
-// Deferring is also what keeps the two mechanisms from being read as
-// alternatives. RFC 4861 section 6.3.4 has a host apply the
-// advertisement's contents as a UNION with whatever else configured it.
-// A managed endpoint that vetoed autoconf would be deciding, on the
-// router's behalf, that its segment is stateful-only.
+// One writer, read for addresses rather than for routes. The plugin
+// installs the address it holds a lease for; a kernel forming a second
+// one from the same advertisement gives the container an address
+// nothing in this plugin knows about, that `docker inspect` cannot
+// show and that no record can release.
 //
-// MEASURED at 1.9.0 against the shape the integration fixture calls
-// "managed" (a dnsmasq DHCPv6 pool plus --enable-ra): with autoconf=1
-// the container formed NO autoconfigured address, because that server
-// advertises the prefix with A=0. So this costs a managed endpoint
-// nothing, and it is what lets a stateless or SLAAC segment -- where
-// the address is SUPPOSED to come from the advertisement -- have an
-// address at all. Where a segment really does advertise A=1 alongside
-// stateful DHCPv6 the container ends up with both addresses; that is
-// what any other host on that segment does, and it is the bound on this
-// paragraph rather than a case that has been ruled out.
+// It is also inert at accept_ra=0, which is the point worth stating
+// rather than leaving to be rediscovered: `autoconf` is the host-side
+// veto on a prefix the kernel has already decided to process, and at
+// accept_ra=0 it processes none. MEASURED on this box, kernel
+// 6.12.107+deb13-amd64, in an unprivileged user namespace: with
+// accept_ra=0 and autoconf=0 the link keeps its link-local, forms no
+// global address, installs no default route and no on-link route, and
+// keeps its own MTU, through twelve seconds of advertisements. Writing
+// it is what makes the intent a value a reader can check instead of a
+// consequence of another knob.
+//
+// The 1.9.0 reasoning this replaces said the opposite -- defer to the
+// router's A flag, because a host that vetoed autoconf would be
+// deciding on the router's behalf that its segment is stateful-only.
+// That argument was right for a plugin that formed no addresses of its
+// own. Forming them from the advertisement is #818, in the library,
+// under the plugin's ownership; until it lands a SLAAC-only segment
+// gets no global address from this plugin, which is what
+// dhcpv6_not_offered has always counted.
 //
 // # WHY keep_addr_on_down
 //
@@ -103,9 +122,13 @@ import (
 // default keep_addr_on_down=0) while the IPv4 address on the same link
 // survives. The DHCPv6 address is applied once and nothing re-applies
 // it, so one carrier flap costs the container its IPv6 address
-// permanently with the lease still valid on the server. The routes come
-// back on the next advertisement once the two knobs above are in force;
-// the applied address cannot, because nothing re-advertises it.
+// permanently with the lease still valid on the server.
+//
+// Its bound is stated rather than implied (design note finding (a),
+// 2026-09-11): keep_addr_on_down=1 keeps a PERMANENT address, and the
+// plugin installs its DHCPv6 address with finite lifetimes, so the
+// address is gone after a flap until the library's next renewal
+// re-installs it. The knob costs nothing and is not the fix.
 //
 // # THE RESIDUAL: addr_gen_mode
 //
@@ -118,15 +141,14 @@ import (
 //
 // # THE BOUND ON ALL OF THIS
 //
-// The guard changes what the container's kernel is allowed to do about
-// advertisements. It does not make anything re-apply an address; it
+// The guard decides who configures the container's link from an
+// advertisement. It does not make anything re-apply an address; it
 // cannot help a segment with no advertising router at all (RFC 4861
-// section 6.3.4 has no other source of a default route); and after a
-// carrier flap the recovery time is a property of the SEGMENT, bounded
-// by the router's MaxRtrAdvInterval, whose RFC 4861 section 6.2.1
-// default is 600 s and whose permitted maximum is 1800 s. The
-// integration fixture recovers in seconds only because its dnsmasq
-// advertises far more often than that.
+// section 6.3.4 has no other source of a default route, and with
+// accept_ra=0 neither has the kernel); and a container whose routes now
+// come from the Join answer depends on the plugin's own client for
+// every later change, which is what the ipv6_router_withdrawn counter
+// and the live route path exist to make visible.
 const (
 	// sysctlIPv6ConfDir is the per-interface IPv6 configuration tree.
 	// /proc/sys/net is per-NETWORK-NAMESPACE: the same path names a
@@ -134,12 +156,12 @@ const (
 	// this is only ever used from inside the client's own netns.
 	sysctlIPv6ConfDir = "/proc/sys/net/ipv6/conf"
 
-	// raAcceptValue overrules forwarding: accept advertisements whether
-	// or not the container routes. See the block comment.
-	raAcceptValue = "2"
-	// raAutoconfValue defers address formation to the advertisement's A
-	// flag rather than vetoing it host-side.
-	raAutoconfValue = "1"
+	// raAcceptValue leaves advertisement processing to the plugin's own
+	// client. See the block comment.
+	raAcceptValue = "0"
+	// raAutoconfValue keeps the kernel from forming an address beside
+	// the one the plugin holds a lease for.
+	raAutoconfValue = "0"
 	// raKeepAddrValue keeps configured addresses across a carrier loss.
 	raKeepAddrValue = "1"
 )
@@ -233,10 +255,10 @@ type RouterAdvertGuardResult struct {
 // better than a container with no address at all, so every failure is
 // counted and the endpoint proceeds. What matters is that a failure is
 // LOUD, because a container whose guard did not take looks completely
-// healthy: it keeps the address and route the kernel accepted in the
-// first seconds and loses everything through the router at the end of
-// that advertisement's router lifetime, minutes or hours later, with no
-// error anywhere.
+// healthy: the kernel keeps processing advertisements beside the
+// plugin, so the container carries a second default route that expires
+// on the router's schedule and an address nothing here can report,
+// minutes or hours before anybody notices.
 func ApplyRouterAdvertGuard(dir, iface string) RouterAdvertGuardResult {
 	var (
 		res  RouterAdvertGuardResult

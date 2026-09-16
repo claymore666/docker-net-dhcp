@@ -169,11 +169,11 @@ func advertisedNoDHCPv6(r RAObservation) bool {
 // makes both "set on the wrong client" and "missing on the right one"
 // wiring mistakes of the same kind. A dropped flag is a wiring mistake
 // that looks like a working plugin, and neither of its failures is one
-// anything downstream would report -- accept_ra=2 on a link still in
-// the HOST namespace changes the host's router discovery, and a v6
-// endpoint whose kernel ignores advertisements has an address, no
-// route, and a completely healthy look for the length of one router
-// lifetime (#875).
+// anything downstream would report -- accept_ra=0 on a link still in
+// the HOST namespace turns the host's own router discovery off, and a
+// v6 endpoint whose link was never guarded carries whatever route its
+// kernel made of the advertisement beside the one the plugin installed,
+// with a completely healthy look either way (#875, #821).
 //
 // oneShot is the CreateEndpoint acquisition. Its link is still in the
 // host's network namespace when it runs, which is why the guard is
@@ -387,13 +387,42 @@ func acquireOnce6(ctx context.Context, iface string, params proto.Params6, opts 
 	opts.count(manager, stats)
 	opts.v6ModeReport(stats)
 
-	if info.IP == "" {
-		if lastE == nil {
-			lastE = ErrNoLease
-		}
-		return Info{}, ra, lastE
+	out, err := acquisitionResult6(info, lastE)
+	return out, ra, err
+}
+
+// acquisitionResult6 is the DHCPv6 acquisition's verdict: the lease if
+// there is one, and otherwise the zero Info beside the reason there is
+// not.
+//
+// THE ADVERTISEMENT IS DELIBERATELY NOT CARRIED OUT OF HERE, and the
+// reason is a fact about the engine rather than a choice (#821,
+// MEASURED on the lane 2026-09-16, run 35131643324, four shards). An
+// endpoint with no DHCPv6 address gets no global IPv6 address on its
+// link; the engine disables IPv6 on a link that carries none; the
+// kernel then refuses every IPv6 route on it. Putting the
+// advertisement's gateway and routes into the Join answer for such a
+// segment made the daemon fail the whole sandbox with
+//
+//	error setting interface "<host-if>" routes to ["fd00:...::/64"]: permission denied
+//
+// so NO container started on the segment at all -- taking its IPv4 with
+// it, and #868's guarantee with that. The plugin cannot order its own
+// disable_ipv6 clear in front of the engine either: the clear happens
+// in the manager goroutine Join spawns, after the engine has moved the
+// link and applied the answer.
+//
+// So on a segment that hands out no DHCPv6 address the advertisement
+// stays unusable until the container has a global IPv6 address to use
+// it with, which is #818. This function is where that changes.
+func acquisitionResult6(info Info, lastE error) (Info, error) {
+	if info.IP != "" {
+		return info, nil
 	}
-	return info, ra, nil
+	if lastE == nil {
+		lastE = ErrNoLease
+	}
+	return Info{}, lastE
 }
 
 // errV6HintInUse is a conflict found by the client's own duplicate
@@ -570,7 +599,7 @@ func runAcquisition6(ctx context.Context, iface string, client v6AcquisitionClie
 func acquireStep6(ev lease.Event, hinted bool) acquireOutcome {
 	switch ev.Kind {
 	case lease.Acquired:
-		info, _ := infoFromLease(ev.Lease, time.Now())
+		info, _ := infoFromLease(ev.Lease, ev.Router, time.Now())
 		return acquireOutcome{Info: info, Done: true}
 	case lease.Configured:
 		return acquireOutcome{Done: true, Err: ErrNoV6Address}

@@ -1094,9 +1094,10 @@ type HealthResponse struct {
 	// stateless or SLAAC (#868). NOT healthy-affecting: on those
 	// networks it is the correct outcome, there being no DHCPv6
 	// address on them to be had. The endpoint has no global IPv6
-	// address FROM THIS PLUGIN; whether the kernel forms one from the
-	// advertised prefix is the segment's decision since #875, which
-	// leaves accept_ra=2/autoconf=1 on the interface. See v6_absence.go
+	// address at all: since #821 the guard writes autoconf=0, so the
+	// kernel forms none from the advertised prefix either. The endpoint
+	// still gets its IPv6 gateway, MTU, routes and DNS from the
+	// advertisement, read by the plugin's own client. See v6_absence.go
 	// and docs/reference.md.
 	DHCPv6NotOffered int32 `json:"dhcpv6_not_offered"`
 	// DHCPv6NoRouterAdvert counts endpoints created without a DHCPv6
@@ -1145,6 +1146,13 @@ type HealthResponse struct {
 	// expires. It does not count a privileged process inside the
 	// container undoing the settings; see docs/reference.md.
 	RouterAdvertGuardFailures int32 `json:"router_advert_guard_failures"`
+	// IPv6RouterWithdrawn counts container IPv6 default routes removed
+	// because the advertising router set its Router Lifetime to 0
+	// (#821). Counts routes removed, not advertisements seen. Not
+	// healthy-affecting: a router withdrawing itself is deliberate, and
+	// the containers on that segment are correctly left with no default
+	// route rather than one pointing at a router that is gone.
+	IPv6RouterWithdrawn int32 `json:"ipv6_router_withdrawn"`
 
 	// Checks is one entry per named check, keyed by the counter behind
 	// it. Each value is a SINGLE-ELEMENT ARRAY because section 4 says
@@ -1411,6 +1419,7 @@ func (p *Plugin) healthSnapshot() HealthResponse {
 		DHCPv6AutoFallbacks:          p.dhcpv6AutoFallbacks.Load(),
 		IPv6LinkEnableFailures:       p.ipv6LinkEnableFailures.Load(),
 		RouterAdvertGuardFailures:    p.routerAdvertGuardFailures.Load(),
+		IPv6RouterWithdrawn:          p.ipv6RouterWithdrawn.Load(),
 		Version:                      buildinfo.Version,
 		Commit:                       buildinfo.Commit,
 		Library:                      buildinfo.Library,

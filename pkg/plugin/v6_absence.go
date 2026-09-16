@@ -36,19 +36,32 @@ const (
 	// there are no DHCPv6 addresses here. This is the NORMAL state, not
 	// a degraded one, and the endpoint is created without a v6 address.
 	//
-	// The endpoint then starts with no global IPv6 address FROM THIS
-	// PLUGIN -- there is no lease to be had -- and the distinction in
-	// that sentence is the whole of it: the KERNEL may well form one.
-	// The RA guard (#875, pkg/dhcp/ra_guard.go) leaves the interface at
-	// accept_ra=2 and autoconf=1, so whether an address forms is
-	// decided by the A flag on the advertised prefix (RFC 4862 section
-	// 5.5.3) and not by this plugin. Any address that does form is the
-	// kernel's, is not a lease, and is not reported in docker inspect.
+	// The endpoint then starts with no global IPv6 address at all. Since
+	// #821 the RA guard (pkg/dhcp/ra_guard.go) writes autoconf=0 on the
+	// interface, so the kernel forms no address from the advertised
+	// prefix whatever its A flag says (RFC 4862 section 5.5.3) -- the
+	// plugin holds the lease for the address a container uses, and two
+	// sources of global address on one link is not a state anything
+	// downstream is written for. SLAAC address formation under the
+	// plugin's own control is #818 and is not on this build.
 	//
-	// (2.0 removed the other half of this note along with dhcpcd. In
-	// 1.x the client wrote accept_ra=0 and autoconf=0 on every carrier
-	// acquisition and the guard had to shield the sysctls from it; this
-	// build execs nothing, so the writes stand on their own -- D30 Q3.)
+	// THE ENDPOINT THEREFORE GETS NO IPv6 ROUTE either, and that is a
+	// fact about the engine rather than a choice (#821, MEASURED on the
+	// lane 2026-09-16, run 35131643324). The engine disables IPv6 on a
+	// container link that carries no global IPv6 address, and the
+	// kernel then refuses every IPv6 route on such a link: a Join
+	// answer carrying the advertisement's gateway or routes fails the
+	// whole sandbox with `error setting interface routes to
+	// ["fd00:...::/64"]: permission denied`, and no container starts on
+	// the segment at all -- losing its IPv4 with it. The plugin cannot
+	// clear disable_ipv6 ahead of the engine either: that clear runs in
+	// the manager goroutine Join spawns, after the engine has moved the
+	// link and applied the answer.
+	//
+	// So before #821 the container's own kernel gave it a default route
+	// here and now nothing does. #818 gives the container a global IPv6
+	// address, and the route becomes both installable and useful in the
+	// same change; #821 and #818 merge together for that reason.
 	//
 	// What the container gets regardless is IPv4 from DHCP, an IPv6
 	// link-local, and the stateless DHCPv6 configuration (#815) where
@@ -133,6 +146,36 @@ func classifyV6Absence(ra dhcp.RAObservation, cause error) v6Verdict {
 	// advertised, so each is a stronger statement than any reading of
 	// the flags -- and each names a different thing to go and fix.
 	if _, refused := dhcp.V6RefusalStatus(cause); refused {
+		// A REFUSAL IS A FAULT ONLY WHERE AN ADDRESS WAS PROMISED.
+		//
+		// MEASURED (#821, run 35141032546, shard main-4): on a
+		// stateless segment dnsmasq answers the Solicit with Status
+		// Code 2, NoAddrsAvail, four times inside the budget, and the
+		// advertisement on that same segment carries O=1 and M=0. The
+		// server is agreeing with its own advertisement -- "this
+		// segment hands out no DHCPv6 addresses" -- said twice, once
+		// in the flags and once on the wire. Reading the second
+		// statement as a refusal made CreateEndpoint fail with
+		// "failed to get initial IPv6 address via DHCPv6", so no
+		// container started on a correctly configured stateless
+		// network and it lost its IPv4 with it.
+		//
+		// That is the rule below this switch, applied one branch too
+		// late: "anything else -- O=1 alone, or neither bit -- is a
+		// segment with no DHCPv6 addresses on it, which is a
+		// configuration and not a fault". The wire IS the stronger
+		// statement, and where it AGREES with an M=0 advertisement
+		// what the two agree on is that no address is coming.
+		//
+		// M=1 keeps the old verdict, which is the case the refusal
+		// was written for: the segment promised addresses over
+		// DHCPv6, a server answered, and it had none. An unseen
+		// advertisement keeps it too -- with nothing on the wire
+		// saying otherwise, a server that answers and refuses is the
+		// only evidence there is, and it is evidence of a fault.
+		if ra.Seen && !ra.Managed {
+			return v6NotOffered
+		}
 		return v6Refused
 	}
 	if errors.Is(cause, dhcp.ErrNoSLAACPrefix) {

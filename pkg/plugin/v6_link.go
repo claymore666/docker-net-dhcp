@@ -11,10 +11,12 @@ import (
 	"strings"
 
 	log "github.com/sirupsen/logrus"
+	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netns"
 	"golang.org/x/sys/unix"
 
 	"github.com/claymore666/docker-net-dhcp/v2/pkg/dhcp"
+	"github.com/claymore666/docker-net-dhcp/v2/pkg/util"
 )
 
 // The engine turns IPv6 OFF on a container interface that carries no
@@ -176,43 +178,72 @@ func clearDisableIPv6(path string) (bool, error) {
 // them back truthfully, so router_advert_guard_failures would report
 // zero for an endpoint on which no advertisement can be processed at
 // all. One failure, one counter.
-func prepareV6LinkUnder(dir, iface string) (bool, dhcp.RouterAdvertGuardResult, error) {
+//
+// linkIndex is the third obligation's operand: the purge deletes routes
+// on a link and there is no path for it, only an index. A zero index
+// SKIPS the purge, which is the pre-Start case and not a production
+// one; every production caller has located the link first.
+func prepareV6LinkUnder(dir, iface string, linkIndex int) (bool, dhcp.RouterAdvertGuardResult, error) {
 	var noGuard dhcp.RouterAdvertGuardResult
 	changed, err := clearDisableIPv6(ipv6DisablePath(dir, iface))
 	if err != nil {
 		return changed, noGuard, err
 	}
-	return changed, dhcp.ApplyRouterAdvertGuard(dir, iface), nil
+
+	guard := dhcp.ApplyRouterAdvertGuard(dir, iface)
+	if linkIndex == 0 {
+		return changed, guard, nil
+	}
+
+	// AFTER the guard, in the same function, for the same reason the
+	// guard is after the disable_ipv6 clear: the order is the claim.
+	// Purging first would delete routes that the very next
+	// advertisement puts straight back, because the kernel would still
+	// be at accept_ra=1 while it happened.
+	failed, perr := purgeRouterAdvertRoutes(linkIndex)
+	guard.Failures += failed
+	if perr != nil {
+		guard.Err = joinGuardErrors(guard.Err, perr)
+	}
+	return changed, guard, nil
 }
 
 // prepareIPv6Link puts the container side of this endpoint's link into
 // the state a DHCPv6 client needs, inside the sandbox network
-// namespace: IPv6 administratively on, and the Router-Advertisement
-// guard's three sysctls written and read back.
+// namespace: IPv6 administratively on, the Router-Advertisement
+// guard's three sysctls written and read back, and whatever the kernel
+// already installed from an advertisement taken off the link.
 //
-// TWO OBLIGATIONS AND ONE NAMESPACE ENTRY, deliberately. Both write
-// per-interface sysctls under /proc/sys/net/ipv6/conf/<if>/ and both
-// therefore need the same two namespaces for the same two reasons --
-// the NETWORK namespace decides which link the path names, the MOUNT
-// namespace decides whether it can be written at all. Doing them
-// separately would mean two thread locks, two mount unshares and two
-// setns pairs to write four values in one directory, and would put a
-// window between them in which the link is IPv6-enabled and
-// unguarded.
+// THREE OBLIGATIONS AND ONE NAMESPACE ENTRY, deliberately. Two write
+// per-interface sysctls under /proc/sys/net/ipv6/conf/<if>/ and the
+// third deletes routes on the same link, so all three need the same
+// namespaces for the same reasons -- the NETWORK namespace decides
+// which link the path and the index name, the MOUNT namespace decides
+// whether the sysctls can be written at all. Doing them separately
+// would mean three thread locks, three mount unshares and three setns
+// pairs over one interface, and would put a window between them in
+// which the link is IPv6-enabled and unguarded.
 //
-// THE ORDER IS FIXED: disable_ipv6 first. On a link with IPv6
-// administratively off the guard's knobs still exist and still accept
-// writes, but nothing they govern can happen, and a guard applied
-// before the link is on would be read as healthy on a link that never
-// receives an advertisement. Both run before the client is opened,
-// which is the order pkg/dhcp/chassis6.go's newLibClient6 states from
-// the other side.
+// THE ORDER IS FIXED: disable_ipv6, then the guard, then the purge.
+// On a link with IPv6 administratively off the guard's knobs still
+// exist and still accept writes, but nothing they govern can happen,
+// and a guard applied before the link is on would be read as healthy
+// on a link that never receives an advertisement. The purge comes last
+// because accept_ra=0 is what stops the next advertisement putting
+// back what it just removed; purging first would leave a race the
+// length of one advertisement interval. All three run before the
+// client is opened, which is the order pkg/dhcp/chassis6.go's
+// newLibClient6 states from the other side.
 //
-// The two halves report SEPARATELY. They are different failures with
-// different consequences -- no IPv6 at all versus IPv6 with the
-// kernel ignoring advertisements -- and they have different counters
-// (ipv6_link_enable_failures, router_advert_guard_failures). Folding
-// them would make an operator unable to tell which one they have.
+// The link-enable half reports SEPARATELY from the other two. It is a
+// different failure with a different consequence -- no IPv6 at all
+// versus IPv6 with the kernel's own idea of the route still on the
+// link -- and it has a counter of its own (ipv6_link_enable_failures
+// against router_advert_guard_failures). Folding it would make an
+// operator unable to tell which one they have. The guard and the purge
+// DO share a counter, because they are one obligation seen twice: the
+// kernel must not be the thing that decides this container's IPv6
+// route. The log line distinguishes them.
 //
 // Concurrency contract is pkg/dhcp.inNetNS's, for the same reason and
 // with the same failure handling: the goroutine is locked to its OS
@@ -302,7 +333,94 @@ func (m *dhcpManager) prepareIPv6Link() (bool, dhcp.RouterAdvertGuardResult, err
 		}
 	}()
 
-	return prepareV6LinkUnder(ipv6DisableSysctlDir, iface)
+	// The index and not a path, and read here rather than passed down
+	// from the caller: inside this namespace entry it names the
+	// container's link, which is the only place that is true.
+	return prepareV6LinkUnder(ipv6DisableSysctlDir, iface, m.ctrLink.Attrs().Index)
+}
+
+// joinGuardErrors keeps both reasons the guard is unhappy in one error,
+// because the counter they share is one number and an operator reading
+// it has only the log to tell "the sysctls would not write" from "the
+// kernel's own routes would not come off".
+func joinGuardErrors(a, b error) error {
+	switch {
+	case a == nil:
+		return b
+	case b == nil:
+		return a
+	}
+	return fmt.Errorf("%v; %w", a, b)
+}
+
+// purgeRouterAdvertRoutes deletes every route the kernel installed on
+// this link from a Router Advertisement, and reports how many deletions
+// failed.
+//
+// WHY IT EXISTS: WRITING accept_ra=0 PURGES NOTHING. It stops the
+// kernel processing the NEXT advertisement; the default route, and any
+// more specific route, that an earlier one already installed stay in
+// the table until their own router lifetime runs out, which RFC 4861
+// section 4.2 allows to be up to 65535 seconds. That window is real and
+// not theoretical: the engine creates the link in the sandbox and
+// brings it up at the kernel default accept_ra=1, and this guard runs
+// from the manager's Start afterwards, so an advertisement arriving in
+// between is processed in full. The container would then carry the
+// kernel's default route beside the one the engine installs from the
+// Join answer, and which of the two wins is a metric comparison nobody
+// wrote down.
+//
+// RTPROT_RA (9) is what the kernel stamps on them, and it stamps it on
+// nothing else, so the filter is the definition of the population
+// rather than a heuristic about it. The address the kernel may have
+// formed from the same advertisement is NOT touched here: removing an
+// address the container may already be using is a different decision
+// with a different failure, and it is #818's.
+//
+// The link index and not the name: the engine renames the link after
+// moving it, and the index is what survives that.
+func purgeRouterAdvertRoutes(linkIndex int) (int, error) {
+	routes, err := util.DumpResult(nlRouteListFiltered(unix.AF_INET6, &netlink.Route{
+		LinkIndex: linkIndex,
+		Protocol:  unix.RTPROT_RA,
+	}, netlink.RT_FILTER_OIF|netlink.RT_FILTER_PROTOCOL))
+	if err != nil {
+		// One failure, not one per route: the list is the whole of
+		// this step and there is nothing after it to attempt.
+		return 1, fmt.Errorf("list kernel router-advertisement routes: %w", err)
+	}
+
+	failed := 0
+	var firstErr error
+	for i := range routes {
+		if err := nlRouteDel(&routes[i]); err != nil {
+			failed++
+			if firstErr == nil {
+				firstErr = fmt.Errorf("delete kernel router-advertisement route %v: %w",
+					describeRoute(routes[i]), err)
+			}
+			// KEEP GOING. One route that will not come off is not a
+			// reason to leave the rest, and the default route is not
+			// reliably first in the list.
+			continue
+		}
+		log.WithField("route", describeRoute(routes[i])).
+			Info("Removed a route the kernel installed from a Router Advertisement before the guard took")
+	}
+	return failed, firstErr
+}
+
+// describeRoute renders one route for a log field as "dest via gw", so
+// the record says which route was taken away rather than how many.
+func describeRoute(r netlink.Route) string {
+	dst := "default"
+	if r.Dst != nil {
+		dst = r.Dst.String()
+	}
+	if r.Gw == nil {
+		return dst
+	}
+	return dst + " via " + r.Gw.String()
 }
 
 // ensureIPv6Enabled is the call site's view: put the link in shape for
@@ -312,10 +430,10 @@ func (m *dhcpManager) prepareIPv6Link() (bool, dhcp.RouterAdvertGuardResult, err
 // keeping the container's IPv4 lease is worth more than refusing the
 // endpoint over the v6 half. Both failures are visible without reading
 // the log -- a link with IPv6 off produces no link-local and every
-// DHCPv6 exchange fails; a link with the guard not in force gets an
-// address and loses its route at the end of one advertisement's router
-// lifetime -- and each has a counter of its own so the cause is
-// distinguishable from a segment that is merely quiet.
+// DHCPv6 exchange fails; a link with the guard not in force carries a
+// second default route, the kernel's, beside the one the engine
+// installed from the Join answer -- and each has a counter of its own
+// so the cause is distinguishable from a segment that is merely quiet.
 func (m *dhcpManager) ensureIPv6Enabled() {
 	changed, guard, err := m.prepareIPv6Link()
 	if err != nil {
@@ -338,14 +456,15 @@ func (m *dhcpManager) ensureIPv6Enabled() {
 			m.plugin.routerAdvertGuardFailures.Add(int32(guard.Failures))
 		}
 		// LOUD, because this is the failure that looks like success.
-		// The container keeps whatever address and route the kernel
-		// accepted in the first seconds and loses them at the end of
-		// that advertisement's router lifetime -- RFC 4861 section
-		// 6.2.1 puts MaxRtrAdvInterval's default at 600 s and its
-		// maximum at 1800 s -- with no error anywhere.
+		// The container keeps whatever route the kernel accepted in
+		// the window before the guard ran, beside the route the engine
+		// installed from the Join answer, and which of the two wins is
+		// a metric comparison nobody chose. RFC 4861 section 4.2 lets
+		// a Router Lifetime run to 65535 seconds, so "it will sort
+		// itself out" is not a bound worth having.
 		log.WithError(guard.Err).WithFields(m.logFields(true)).
 			WithField("failed_steps", guard.Failures).
 			Warn("The Router Advertisement guard did not take on the container link; " +
-				"the container may lose its IPv6 route when the advertisement it has expires")
+				"the container may carry a second IPv6 default route the kernel installed")
 	}
 }
