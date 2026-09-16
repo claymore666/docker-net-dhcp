@@ -19,7 +19,10 @@ the short spelling of `ipv6_mode=dhcp`, unchanged in meaning. A DHCPv6
 acquisition that produces no address is also reported by what actually
 happened: a server that answered and refused the client, a server that
 never answered, and a router whose prefixes formed nothing are three
-counters and three messages instead of one.
+counters and three messages instead of one. A network can also ask
+for its addresses back a minute after a container stops:
+`release_lease=on_remove` holds them for the restart window and hands
+back whatever nothing has claimed.
 
 ### Upgrade notes
 
@@ -43,6 +46,11 @@ prompts on has moved since v2.0.0.
 | A DHCPv6 endpoint that fails because the server refused it logs a different sentence | The message names the status code the server sent, such as NoAddrsAvail for an exhausted pool or NotOnLink for an address outside the range it serves (RFC 9915 section 21.13's registry, not a name in this repository). The ending where nothing answered keeps the sentence it had. |
 | `dhcp_servers` and `dhcp_deny_servers` are unchanged | They are DHCPv4-only and keep applying in every `ipv6_mode`. |
 | An option written with no value is read as unset | `-o lease_timeout=`, and `driver_opts: {lease_timeout: "${VAR}"}` with `VAR` unset, now take the default instead of failing the create with `invalid duration`. Every other option already behaved this way. |
+| `release_lease=on_remove` is accepted at `docker network create` | A create naming it succeeds. In v2.1.1 it was refused. Nothing changes for a network that does not set it. |
+| `on_remove` holds an endpoint's addresses for 60 seconds after `docker stop`, then hands back whatever nothing has claimed | An address is free about a minute after the stop instead of at the stop (`on_stop`) or at the server's lease expiry (`never`, the default). A container that restarts inside that minute keeps its address and its MAC. |
+| `docker network rm` on an `on_remove` network hands back the addresses it still holds | The removal does not wait for those deadlines. On `never` and `on_stop` nothing changes. |
+| `releases_reclaimed` is a new counter on `/Plugin.Health` and `/metrics`, split `_v4` and `_v6` | Addresses a running container is using again when the window ends, so nothing was sent. It is narrower than "nothing was sent": an address stopped a second time and an acquisition in flight also send nothing and are not counted. Zero on `never` and `on_stop`. It does not flip `healthy`. |
+| Eleven counters now carry a `family` label on `/metrics`, not ten | One new series pair, `net_dhcp_releases_reclaimed_total` with `family="ipv4"` and `family="ipv6"`. Existing series are unchanged. |
 
 ### New
 
@@ -73,6 +81,39 @@ prompts on has moved since v2.0.0.
 - `dhcpv6_auto_fallbacks`, the number of endpoints whose address was
   formed from an advertised prefix because `ipv6_mode=auto` fell back.
   It counts addresses that formed, never fallbacks attempted (#817).
+- `release_lease=on_remove`, the third value of the per-network option
+  (#984). The endpoint is torn down exactly as under `never`, tombstone
+  and all, and the addresses are handed back when the restart window
+  runs out and nothing has claimed them. The window is the tombstone
+  TTL, 60 seconds, which is the same value that decides how long a
+  stopped container keeps its MAC, so there is no second option to set
+  and the two cannot disagree. The sweep that sends runs every 15
+  seconds and waits 5 seconds past the deadline, so the wall clock from
+  `docker stop` to the datagram is 65 to 80 seconds. One attempt is made
+  and the record is closed either way; a failed attempt leaves the
+  address to expire, which is what `never` does with every address.
+  What counts as a claim is the address, not the MAC: a container pinned
+  to a MAC that comes back on a different address does not hold the old
+  one, and the old one goes back.
+- The deadline lives in the durable lease record, so a plugin that
+  restarts inside the window still releases at the right moment, and
+  `docker network rm` hands back the network's still-held addresses at
+  once instead of leaving them for deadlines on a network that no longer
+  exists (#984).
+- In IPAM mode, `on_remove` reaches the address reserved for an endpoint
+  Docker never created. That address was retained and never released on
+  every value before this one, which is the escape the v2.1.1 notes
+  state; it is now handed back at the end of the same window, after the
+  retry it was retained for has had its chance (#984).
+- `releases_reclaimed`, stored per family and summed for the unsuffixed
+  series: held addresses a running container is using again when the
+  window ends, so the record was closed and nothing went on the wire.
+  With `releases_sent` climbing and this flat, nothing is restarting
+  inside the window; with this climbing, the window is doing what it
+  exists for. Two other outcomes also send nothing and are not counted
+  here, an address stopped a second time and an acquisition in flight
+  under the same endpoint key, so the two counters do not add up to the
+  number of windows that ended (#984).
 
 ### Not in this release
 
@@ -90,8 +131,6 @@ prompts on has moved since v2.0.0.
   renumbering, and #808 is the request all three answer. In this release
   `slaac` and `auto` state the network's intent and report what the
   segment did.
-- `release_lease=on_remove`, deferred from v2.1.1, is still refused at
-  `docker network create` with the reason in the message (#984).
 
 ## v2.1.1
 
@@ -120,7 +159,7 @@ section below is still the list the daemon shows you.
 | `release_lease` is a new network option, default `never` | Nothing, until a network sets it. An existing network, and any network created without the option, behaves as it did in v2.1.0. |
 | `release_lease=on_stop` releases at `Leave`, per family | The address returns to the server's pool at `docker stop`, and the container's next start is a fresh acquisition that may land on a different address. |
 | An endpoint on an `on_stop` network gets no tombstone | That endpoint does not keep its MAC across a restart. The two are the same rule: nothing may hand on an address the server has taken back. |
-| `release_lease=on_remove` is refused at `docker network create` | A create naming it fails with the reason in the message. Use `never` or `on_stop`. |
+| `release_lease=on_remove` is refused at `docker network create` | A create naming it fails with the reason in the message. Use `never` or `on_stop`. It is accepted in v2.2.0. |
 | Four counters are new on `/Plugin.Health` and `/metrics` | `releases_sent` and `release_failures`, each split `_v4` and `_v6`. `release_failures` is worth investigating and does not flip `healthy`. |
 | The plugin is on Docker Hub under a second name | Install from `claymore666/docker-net-dhcp` or from `claymore666/net-dhcp`; both are the same digest. Nothing already installed changes, and GHCR is unaffected. |
 | The Go module path is `github.com/claymore666/docker-net-dhcp/v2` | Nothing for an image user. `go get`, `go install` and pkg.go.dev resolve this repository's 2.x releases instead of v1.9.0. |
@@ -137,14 +176,16 @@ section below is still the list the daemon shows you.
   record whose address went back is closed and not kept resumable. Both
   the network driver and the parent-attached modes send it (#962, PR
   #966).
-  **One path is not covered, on every value including `on_stop`.** In
+  **One path is not covered by either value in this release.** In
   IPAM mode, an address reserved for an endpoint whose `CreateEndpoint`
-  then failed is retained and never released: retaining it is what lets
+  then failed is retained and not released: retaining it is what lets
   a restart policy's next attempt claim the same address back instead of
   burning a second lease on the server, and a reservation with no
-  endpoint reaches no `Leave`, which is the only path that releases. No
-  DHCPRELEASE goes on the wire for it and the address is left to expire,
-  exactly as any other host on the segment leaves one.
+  endpoint reaches no `Leave`, which is the only path `on_stop`
+  releases from. No DHCPRELEASE goes on the wire for it and the address
+  is left to expire, exactly as any other host on the segment leaves
+  one. `release_lease=on_remove` covers it in v2.2.0, by releasing from
+  the retained record instead of from `Leave` (#984).
 - `releases_sent` and `release_failures`, each stored per family and
   summed for the unsuffixed series. A release that put no message on the
   wire counts as a failure and names its reason in the plugin log; the
@@ -181,9 +222,10 @@ section below is still the list the daemon shows you.
 
 - `release_lease=on_remove`. Docker deletes an endpoint when its
   container stops, not when it is removed, so the value needs a timed
-  release with its own TTL and timer instead of a third call site. It is
-  refused at `docker network create` until then, with the reason in the
-  message (#984).
+  release instead of a third call site. It is refused at `docker network
+  create` in this release, with the reason in the message. It ships in
+  v2.2.0, timed off the deadline already written into each lease record
+  (#984).
 
 ## v2.1.0
 

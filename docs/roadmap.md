@@ -123,7 +123,10 @@ first-class event, [#925] accepts a server-initiated Reconfigure, and
 exchange was possible. The milestone also carries work that is not
 IPv6: [#961] takes the container hostname to a running client, so the
 attach needs no daemon call at all, and [#984] adds
-`release_lease=on_remove`, the timed release that v2.1.1 refuses. The
+`release_lease=on_remove`, the timed release that v2.1.1 refuses: the
+addresses are held for the restart window and handed back at the end of
+it, so a restart keeps its address and a stop that is not followed by
+one gives it up about a minute later. The
 milestone link above is the list that decides what is on it.
 
 **[v2.3.0](https://github.com/claymore666/docker-net-dhcp/milestone/31)**

@@ -163,7 +163,9 @@ networks:
   ([how](docs/reference.md#restart-stability-mac-and-ip)).
 - **The lease can go back when the container stops.** `-o
   release_lease=on_stop` hands the address to the server at `docker
-  stop`, per network and off by default
+  stop`; `-o release_lease=on_remove` holds it for the restart window
+  first, so a container that comes straight back keeps it. Per network
+  and off by default
   ([reference](docs/reference.md#driver-options-network-level)).
 - **No host plumbing per container.** `macvlan` and `ipvlan` attach to a
   NIC that is already there: no bridge to build, no route to add, nothing

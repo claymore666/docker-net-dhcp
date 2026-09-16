@@ -368,9 +368,10 @@ this is the mechanism.
 
 ## How a lease gets handed back
 
-By default it does not, and that is deliberate as of v1.9.0 (#800). A
-network that says `release_lease=on_stop` is the exception, and the
-whole of it (#962).
+By default it does not, and that is deliberate as of v1.9.0 (#800). Two
+values are the exceptions: `release_lease=on_stop`, which releases at
+the stop (#962), and `release_lease=on_remove`, which holds the address
+for the restart window first and releases at the end of it (#984).
 
 A lease is a lease. When a container stops, its address stays leased
 until the lease expires, and if the container comes back before then it
@@ -424,24 +425,80 @@ split per family and both moved by the plugin from the outcome of its
 own attempt, which is the only place that knows a release was asked for
 and did not happen.
 
-`Leave` is the only path that releases. `Plugin.Close`, a manager
-displaced by a newer one for the same endpoint, and the cleanup after
-`docker network rm` all stop clients whose containers are still
+`Leave` is the only path `on_stop` releases from. `Plugin.Close`, a
+manager displaced by a newer one for the same endpoint, and the cleanup
+after `docker network rm` all stop clients whose containers are still
 running, and a release there would tell the server an address is free
 while a live container holds it.
 
+**What `release_lease=on_remove` changes.** Nothing at `Leave`: the
+endpoint is torn down exactly as under `never`, tombstone and all, and
+one line goes in the log saying the addresses are being kept for the
+window. What releases is the **record**, later, and from a different
+place.
+
+Every `DeleteEndpoint` already retains the endpoint's record with a
+deadline one tombstone TTL away, because that is how long a restarting
+container may inherit the MAC and address. On an `on_remove` network
+that deadline is also when the address stops being the container's. A
+sweeper ticks every 15 seconds, and a retained record whose deadline has
+passed by 5 seconds is handed back with the same sender `on_stop` uses,
+built from the same record, and then closed. So the wall clock from
+`docker stop` to the datagram is 65 to 80 seconds, and the window an
+operator reasons about is the one they already know from `docker
+restart`. There is no second option, and there is nothing to keep in
+step.
+
+Three consequences follow from the deadline living in the record rather
+than in a timer:
+
+- A plugin that restarts inside the window still releases at the right
+  moment. The deadline was written to the file; the new process rebuilds
+  it and the first sweep after it passes hands the address back. A timer
+  would have died with the process.
+- `docker network rm` hands back every address the network still holds,
+  at once, without waiting for deadlines on a network that will not
+  exist. That release runs **before** the network's stored options are
+  deleted, because it reads `release_lease` and the parent interface out
+  of them.
+- The address reserved for an endpoint Docker never created is reached
+  too, which is the paragraph below.
+
+**What decides that an address was claimed back** is the address, not
+the MAC. The sweep looks for another record on the same scope holding
+the same address: one in a live phase, or simply a newer one that is not
+closed. A container pinned with `--mac-address` that comes back on a
+*different* address does not hold the old one, and the old one goes
+back; a MAC-keyed check would have closed it unsent and leaked it. The
+one deliberate exception is an acquisition still in flight under the
+same MAC with no address yet: that is treated as a claim, because the
+address it is about to be given may be this one. The cost of the
+exception is one-sided by design. An in-flight acquisition that lands
+somewhere else leaves one address to expire on the server's clock, which
+is what `never` does with every address; the opposite mistake would hand
+an address away from under a container that is starting, which is the
+duplicate assignment of #524.
+
 **And one address never reaches `Leave` at all.** In IPAM mode an
 address reserved for an endpoint whose `CreateEndpoint` then failed is
-retained by `ReleaseAddress` and never released, on every value of
-`release_lease` including `on_stop`. Retaining it is what lets a restart
-policy's next attempt claim the same address back instead of burning a
-second lease on the server, and a reservation with no endpoint reaches
-no `Leave`, so nothing on the release path can see it. No DHCPRELEASE
-goes on the wire for it and the address is left to expire, exactly as
-any other host on the segment leaves one. On an `on_stop` network that
-is a real lease the server granted that nothing hands back, held by the
-retention deadline until it expires, and which of the two wins is a
-decision and not a fold.
+retained by `ReleaseAddress` rather than released. Retaining it is what
+lets a restart policy's next attempt claim the same address back instead
+of burning a second lease on the server, and a reservation with no
+endpoint reaches no `Leave`, so nothing on the `on_stop` path can see
+it. On `never` and on `on_stop` no DHCPRELEASE goes on the wire for it
+and the address is left to expire, exactly as any other host on the
+segment leaves one: on an `on_stop` network that is a real lease the
+server granted that nothing hands back, held by the retention deadline
+until it expires.
+
+**`on_remove` is what closes that** (#984), and it closes it without
+touching `ReleaseAddress` at all. The retention that handler writes
+already carries a deadline, and the sweep hands back every retained
+record whose deadline has passed. So the retry still gets its window and
+its address, and the address is given up afterwards instead of waiting
+for the server's clock. Which of the two wins is still a decision: the
+retention wins while the window is open, the release wins when it
+closes.
 
 **Why this changed.** Up to v1.8.x the plugin released aggressively. The
 external client emitted a `RELEASE` on a graceful stop, and a background
@@ -472,6 +529,21 @@ sandbox, before anything is torn down, and the tombstone it would have
 raced is not written at all for an endpoint that released. The
 background reclaim and its synthesised link stay gone.
 
+**`release_lease=on_remove` does send from a background sweep, and it is
+the one value that has to answer this paragraph.** What the reclaim got
+wrong was not that it ran in the background; it was that it could not
+tell "this endpoint is gone" from "this endpoint is coming straight
+back", because it ran at the moment those two look identical. The
+deadline is what tells them apart. Nothing is sent until the window the
+tombstone itself promises has run out, so by the time the sweep looks,
+a container that was coming back has come back. And the sweep does look:
+before sending it re-reads the records and skips any address another
+record now holds, which is the restart it would otherwise have raced.
+An acquisition in flight under the same MAC with no address yet counts
+as a claim for the same reason. What was removed was a release with no
+way to see the restart; what is here is a release that waits for it and
+then checks.
+
 The surviving teardown counter was renamed to match: what was
 `lease_release_failures` is now `client_stop_failures`, because a client
 that exits badly is all it can still mean.
@@ -481,7 +553,12 @@ short-lived container's address is unavailable for one lease time. Size
 the server's pool and lease time for the churn, the same way you would
 for any other population of hosts. `release_lease=on_stop` is the
 setting that buys the address back sooner, at the price of the stop-time
-cost above and of the cases where the release cannot be sent.
+cost above and of the cases where the release cannot be sent, and of
+restart stability: an endpoint that released lays no tombstone.
+`release_lease=on_remove` is the setting that buys it back a minute
+later and keeps restart stability, at the price of a pool that has to
+carry one window's worth of stopped containers, and of a release that is
+attempted once and not retried.
 
 ## How operations on one parent NIC are serialised
 
@@ -637,7 +714,7 @@ nothing else.
   therefore loaded exactly once into a local, and the aggregate is the
   sum of those two locals, and never a second `.Load()` of a half that
   was already read.
-- **Both family series are stored; neither is derived.** Ten counters
+- **Both family series are stored; neither is derived.** Eleven counters
   carry a `family` label. `bumpFamily` increments **exactly one** of a
   pair, the v4 half or the v6 half, never both and never a third
   aggregate, so `_v4` and `_v6` are peers, and the unsuffixed counter an
