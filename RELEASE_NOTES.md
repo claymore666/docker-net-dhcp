@@ -11,6 +11,98 @@ forks that have been waiting on review.
 
 [upstream]: https://github.com/devplayer0/docker-net-dhcp
 
+## v2.1.1
+
+A network can now ask for its DHCP leases back. `release_lease=on_stop`
+sends a DHCPRELEASE for IPv4 and a Release for IPv6 when an endpoint
+leaves its sandbox, which is every `docker stop`, every `docker rm` of a
+running container and every `docker network disconnect`. The default is
+`never`, which is the v1.9.0 behaviour and what every existing network
+reads as. The Go module path also gains its `/v2` suffix, without which
+every 2.x tag was unpublished.
+
+### Upgrade notes
+
+Required on every host before `docker plugin install`, unchanged since v1.5.0:
+
+```bash
+sudo mkdir -p /var/lib/net-dhcp
+```
+
+**The privilege prompt does not change.** No field `docker plugin upgrade`
+prompts on has moved since v2.0.0, so the manifest-delta table in the v2.0.0
+section below is still the list the daemon shows you.
+
+| What changed | What it does to you |
+| --- | --- |
+| `release_lease` is a new network option, default `never` | Nothing, until a network sets it. An existing network, and any network created without the option, behaves as it did in v2.1.0. |
+| `release_lease=on_stop` releases at `Leave`, per family | The address returns to the server's pool at `docker stop`, and the container's next start is a fresh acquisition that may land on a different address. |
+| An endpoint on an `on_stop` network gets no tombstone | That endpoint does not keep its MAC across a restart. The two are the same rule: nothing may hand on an address the server has taken back. |
+| `release_lease=on_remove` is refused at `docker network create` | A create naming it fails with the reason in the message. Use `never` or `on_stop`. |
+| Four counters are new on `/Plugin.Health` and `/metrics` | `releases_sent` and `release_failures`, each split `_v4` and `_v6`. `release_failures` is worth investigating and does not flip `healthy`. |
+| The plugin is on Docker Hub under a second name | Install from `claymore666/docker-net-dhcp` or from `claymore666/net-dhcp`; both are the same digest. Nothing already installed changes, and GHCR is unaffected. |
+| The Go module path is `github.com/claymore666/docker-net-dhcp/v2` | Nothing for an image user. `go get`, `go install` and pkg.go.dev resolve this repository's 2.x releases instead of v1.9.0. |
+
+### New
+
+- `release_lease`, a per-network option with values `never` (default) and
+  `on_stop`. The release is built from the endpoint's own durable lease
+  record and sent from the host's address on the parent interface, so it
+  needs no running DHCP client: a container that stops before the
+  persistent client has attached still hands its address back. Both
+  families release, IPv4 by `ciaddr` (RFC 2131 section 3.1(6)) and IPv6
+  after taking the address off the link (RFC 9915 section 18.2.7). A
+  record whose address went back is closed and not kept resumable. Both
+  the network driver and the parent-attached modes send it (#962, PR
+  #966).
+  **One path is not covered, on every value including `on_stop`.** In
+  IPAM mode, an address reserved for an endpoint whose `CreateEndpoint`
+  then failed is retained and never released: retaining it is what lets
+  a restart policy's next attempt claim the same address back instead of
+  burning a second lease on the server, and a reservation with no
+  endpoint reaches no `Leave`, which is the only path that releases. No
+  DHCPRELEASE goes on the wire for it and the address is left to expire,
+  exactly as any other host on the segment leaves one.
+- `releases_sent` and `release_failures`, each stored per family and
+  summed for the unsuffixed series. A release that put no message on the
+  wire counts as a failure and names its reason in the plugin log; the
+  address is then left to expire, which is what a `never` network does on
+  every teardown (#962, PR #966).
+- The DHCP library moves to its first tagged version, `dhcp-golib`
+  v1.0.0, carrying the release-by-record support the option is built on
+  (#962, PR #966).
+- The release publishes the plugin to Docker Hub under a second name,
+  `claymore666/docker-net-dhcp`, beside `claymore666/net-dhcp`. The
+  signed manifest is copied into it, so the two Hub names carry one
+  digest and one signature and a `cosign verify` against either is the
+  same check. v2.0.0 and v2.1.0 were copied by hand; v2.1.1 is the
+  first release the workflow publishes (#972, PR #982).
+
+### Fixed
+
+- `go.mod` declared `github.com/claymore666/docker-net-dhcp` with no
+  `/v2`, so proxy.golang.org refused `v2.0.0-rc1`, `v2.0.0-rc2`,
+  `v2.0.0-rc3`, `v2.0.0`, `v2.1.0-rc1` and `v2.1.0` with *module path
+  must match major version*. `go get` and `go install` on the old path
+  resolved v1.9.0. The module, its imports, the `-ldflags`
+  build-identity target in the Makefile and the Dockerfile, and the
+  coverage baseline now spell the `/v2` path.
+  Those six tags stay unpublished: they carry cosign signatures and SLSA
+  provenance for the commits they name, and a published tag is not
+  moved. This release is the earliest version the module ecosystem can
+  serve (#979, PR #981).
+- Six GitHub Actions used by the release, CodeQL, Scorecard, Trivy and
+  issue-labeller workflows move to their current pinned commits
+  (PR #975).
+
+### Deferred to v2.2.0
+
+- `release_lease=on_remove`. Docker deletes an endpoint when its
+  container stops, not when it is removed, so the value needs a timed
+  release with its own TTL and timer instead of a third call site. It is
+  refused at `docker network create` until then, with the reason in the
+  message (#984).
+
 ## v2.1.0
 
 The plugin now serves a DHCP IPAM driver beside its network driver, so a pinned

@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/claymore666/docker-net-dhcp/pkg/util"
+	"github.com/claymore666/docker-net-dhcp/v2/pkg/util"
 )
 
 func TestParseServerList(t *testing.T) {

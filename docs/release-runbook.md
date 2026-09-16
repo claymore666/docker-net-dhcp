@@ -117,11 +117,20 @@ deferred.
 
 When you **do** want Hub published:
 
-1. Create the repo on Hub (free) at
-   <https://hub.docker.com/repository/create>, with name `net-dhcp`,
-   namespace `claymore666` and visibility **Public**. The Hub UI
-   doesn't auto-create plugin repos on first push the way it does for
-   image repos; create it manually first.
+1. Create **both** repos on Hub (free) at
+   <https://hub.docker.com/repository/create>, namespace `claymore666`
+   and visibility **Public**:
+   - `net-dhcp` — the name the workflow pushes and signs.
+   - `docker-net-dhcp` — the alias, the name every external reference
+     to this project uses (#972). The release copies the signed
+     manifest into it; it is not a second build.
+
+   The Hub UI doesn't auto-create plugin repos on first push the way it
+   does for image repos; create both manually first. A missing alias
+   repo fails the copy step **after** GHCR and `net-dhcp` already hold
+   `:vX.Y.Z` and after the signature is made, which leaves a
+   half-published release with no SBOM, no attestation and no release
+   page.
 2. Generate an access token at
    <https://app.docker.com/settings/personal-access-tokens>:
    - Description: something descriptive (`docker-net-dhcp release CI`).
@@ -130,6 +139,9 @@ When you **do** want Hub published:
      alone gets `401` on description PATCH. Picking "Read, Write &
      Delete" (the broadest permission level Hub offers personal tokens)
      covers both image push and description sync.
+   - The scope has to cover **both** repositories. A token regenerated
+     against `net-dhcp` alone fails the alias copy at the same point a
+     missing repository does.
 3. Add two repo secrets at
    <https://github.com/claymore666/docker-net-dhcp/settings/secrets/actions>:
    - `DOCKERHUB_USERNAME` = `claymore666`
@@ -270,9 +282,10 @@ git tag -s v1.0.0-rc1 -m "v1.0.0-rc1" && git push origin v1.0.0-rc1
 ```
 
 Watch the run; every step including **verify-install**, since v1.7.0
-**release-arm64** / **verify-install-arm64**, and since #776
-**verify-install-hub** / **verify-install-hub-arm64** must be green, and
-since #736 **promote-latest**, which an rc now reaches. Its last step,
+**release-arm64** / **verify-install-arm64**, since #776
+**verify-install-hub** / **verify-install-hub-arm64**, and since #972
+**verify-install-hub-alias** / **verify-install-hub-alias-arm64** must
+be green, and since #736 **promote-latest**, which an rc now reaches. Its last step,
 *Assert a pre-release did not move :latest*, is the one that proves the
 dry-run stayed a dry-run.
 
@@ -352,21 +365,32 @@ on the release branch and read the `floor` job:
 gh workflow run engine-matrix.yml --ref release/vX.Y.Z
 ```
 
-**That dispatch answers 404 until the workflow is on the default
-branch.** GitHub exposes `workflow_dispatch` and `schedule` from the
-default branch only, and the lane is new on `dev`, so for the v2.1.0
-release itself neither route exists yet:
-[`.github/dispatch-pending.txt`](https://github.com/claymore666/docker-net-dhcp/blob/main/.github/dispatch-pending.txt)
-carries the entry and the release PR removes it. Until then the lane
-runs on its `push` trigger, over
+**A `workflow_dispatch` answers 404 until the workflow is on the
+default branch.** GitHub exposes `workflow_dispatch` and `schedule`
+from the default branch only. The lane was new on `dev` for v2.1.0, so
+neither route existed for that release; v2.1.0 carried the workflow to
+`main` and dropped its entry from
+[`.github/dispatch-pending.txt`](https://github.com/claymore666/docker-net-dhcp/blob/main/.github/dispatch-pending.txt),
+and the dispatch above works from v2.1.1 onward. Confirm before
+relying on it: an entry naming this workflow means the route is not
+there yet. **An empty file does not prove the opposite during a
+release.** Since #977 the entry is pruned on the release branch at
+step 2 and reaches `main` only with the release pull request, so while
+this tree pins a later version than `main` the file is already silent
+about a workflow that has not landed. Whether
+`.github/workflows/engine-matrix.yml` is on `main` is the direct
+answer.
+
+The lane also runs on its own `push` trigger, over
 `.github/workflows/engine-matrix.yml`,
 `.github/engine-rows.txt`,
 `scripts/engine-baseline.sh`,
 `scripts/engine-floor.sh`
 and
-`pkg/plugin/engine_floor.go`,
-so the pre-flight for v2.1.0 is the run at the head of one of those
-paths. Read that run instead, and take the dispatch route from v2.2.0.
+`pkg/plugin/engine_floor.go`.
+That run is the measurement for any tree in which none of those paths
+has changed since, which is the ordinary case for a patch release: read
+it and dispatch nothing.
 
 One job per engine line in
 `.github/engine-rows.txt`,
@@ -374,11 +398,11 @@ each driving the whole baseline against that engine in a nested daemon.
 The `floor` job reconciles the minimum the plugin refuses below against
 the lowest line that passed. A red `floor` job blocks the rc: the
 number it disagrees with is published in `README.md` and
-`docs/index.md`, and the plugin refuses to start below it. The lane also
-runs weekly once it is on the default branch, so from v2.2.0 a moving
-`29` tag is usually caught before a release asks the question. Read the
-run and never the schedule: a release is the moment the published number
-has to be true.
+`docs/index.md`, and the plugin refuses to start below it. The lane
+runs weekly now that it is on the default branch, so a moving `29` tag
+is usually caught before a release asks the question. Read the run and
+never the schedule: a release is the moment the published number has to
+be true.
 
 1. **Branch off `dev`:** `git checkout -b release/vX.Y.Z origin/dev`
 2. **Bump install pins:** `scripts/bump-version.sh vX.Y.Z` (#251). It
@@ -396,6 +420,44 @@ has to be true.
    (the same gate `test.yaml` runs: every pin must agree on one
    version). The gate also fails CI if a future hand-edit leaves the
    pins inconsistent.
+
+   **On the same commit, empty
+   [`.github/dispatch-pending.txt`](https://github.com/claymore666/docker-net-dhcp/blob/main/.github/dispatch-pending.txt)
+   of entries.** Every workflow it lists reaches the default branch with
+   this release, so every entry is stale the moment the release PR
+   merges, and
+   [`scripts/check-dispatch-reachable.sh`](https://github.com/claymore666/docker-net-dhcp/blob/main/scripts/check-dispatch-reachable.sh)
+   fails the release PR while one is still there (#977). Pruning here,
+   beside the version bump, is what lets that gate accept the missing
+   entries for the rest of the route: it compares the pin this tree
+   carries against the one on `main`, and while this tree pins the next
+   version it treats a missing entry as the removal in transit. Prune
+   without bumping and the gate is right to fail; that is an ordinary
+   mid-cycle removal of a live entry.
+
+   **What that comparison does not know**, because the release depends
+   on it and so does anyone reading a green run. The gate reads two
+   version pins. It does not look for a release branch, a pruned entry
+   or a release pull request, so a bare `scripts/bump-version.sh vNEXT`
+   on any branch buys the same acceptance, and
+   [`scripts/check-version-pins.sh`](https://github.com/claymore666/docker-net-dhcp/blob/main/scripts/check-version-pins.sh)
+   permits a tree to lead the latest tag. While the pins differ the
+   undeclared-workflow finding is off for **every** dispatchable
+   workflow, not only the ones being released, so one merged undeclared
+   during the release window is not caught until the pins agree again.
+   The acceptance is bounded by **distance, not by time**: it holds
+   while this tree pins the immediate successor of `main`, and two
+   steps apart is refused. Nothing in the gate reads a clock, a tag or
+   the state of a release, so a release parked after step 5 sits
+   exactly one step ahead and stays accepted until somebody finishes or
+   unwinds it. One step, and only ahead: a release that skips a version
+   and a release cut on an older line are both outside it, as is any
+   tree simply behind `main`, and on those the #977 deadlock is back,
+   because the release PR needs the entry and the PR that removes it is
+   red. Every run that **reports** an undeclared workflow while the
+   pins differ says the acceptance did not apply, names both pins and
+   the readings that case allows, and names a ledger entry as the way
+   through; a run with nothing to report stays quiet.
 3. **Documentation review, PR-driven against the milestone.** Don't
    review from memory; review from the change set. List every PR on the
    `vX.Y.Z` milestone and reconcile each one's user-visible change
@@ -838,69 +900,88 @@ has to be true.
    git tag -s vX.Y.Z -m "vX.Y.Z: <one-liner>" &&   # signed (#175)
    git push origin vX.Y.Z
    ```
-   Use `-s` (signed) so the release tag shows **Verified** on GitHub;
-   the dev box has `tag.gpgsign=true` so `-a` would also sign, but spell
-   it out so it holds from any checkout. Confirm with `git tag -v
-   vX.Y.Z` (or the green "Verified" on the tag page). The workflow fires
-   on `tags: v*`. Watch it at
-   <https://github.com/claymore666/docker-net-dhcp/actions/workflows/release.yml>.
-   Expected steps, under the names the run shows. Tag resolution is its
-   own job: **resolve** runs first and has one step, *Resolve release
-   tag*; a releaser watching the run sees two job rows. The **release**
-   job then runs, in this order: checkout → setup-go → Log in to GHCR →
-   Log in to Docker Hub → **Both registries, or say why not** → Push to
-   GHCR → Push to Docker Hub (or skip) → Sync Docker Hub description
-   from README (or skip) → Install cosign → **Record and gate the cosign
-   version** → **Sign published images (cosign keyless)** → Install syft
-   → **Generate SBOM (SPDX + CycloneDX)** → **Package and sign release
-   artifact** → **Attest release-artifact provenance** → **Attest image
-   provenance (GHCR)** → **Check attestation parity across registries**
-   → **Upload signed artifacts for the release job** → Workflow summary.
+    Use `-s` (signed) so the release tag shows **Verified** on GitHub;
+    the dev box has `tag.gpgsign=true` so `-a` would also sign, but spell
+    it out so it holds from any checkout. Confirm with `git tag -v
+    vX.Y.Z` (or the green "Verified" on the tag page). The workflow fires
+    on `tags: v*`. Watch it at
+    <https://github.com/claymore666/docker-net-dhcp/actions/workflows/release.yml>.
+    Expected steps, under the names the run shows. Tag resolution is its
+    own job: **resolve** runs first and has one step, *Resolve release
+    tag*; a releaser watching the run sees two job rows. The **release**
+    job then runs, in this order: checkout → setup-go → Log in to GHCR →
+    Log in to Docker Hub → **Both registries, or say why not** → Push to
+    GHCR → Push to Docker Hub (or skip) → Sync Docker Hub description
+    from README (or skip) → **Sync the Hub alias description from
+    README** (or skip) → Install cosign → **Record and gate the cosign
+    version** → **Sign published images (cosign keyless)** → Install oras
+    → **Publish the same manifest under the Hub alias** (or skip) →
+    Install syft → **Generate SBOM (SPDX + CycloneDX)** → **Package and
+    sign release artifact** → **Attest release-artifact provenance** →
+    **Attest image provenance (GHCR)** → **Check attestation parity
+    across registries** → **Upload signed artifacts for the release
+    job** → Workflow summary.
 
-   Since v1.7.0 the run carries a parallel arm64 chain (#507):
-   **release-arm64** (native `ubuntu-24.04-arm` build, pushes
-   `vX.Y.Z-arm64`; per-arch tags, because a Docker plugin cannot
-   install from a manifest list) and **verify-install-arm64**.
+    *Publish the same manifest under the Hub alias* runs
+    [`scripts/publish-hub-alias.sh`](https://github.com/claymore666/docker-net-dhcp/blob/main/scripts/publish-hub-alias.sh),
+    which copies the signed manifest and its referrers with `oras cp -r`,
+    re-reads the digest through the alias name, refuses anything that is
+    not the digest just signed, and verifies the signature under the
+    alias. It comes **after** signing on purpose: the alias is the same
+    manifest, not a second build (#267). The two Hub description steps
+    are separate because the action PATCHes one repository at a time.
 
-   Then, as separate jobs:
+    Since v1.7.0 the run carries a parallel arm64 chain (#507):
+    **release-arm64** (native `ubuntu-24.04-arm` build, pushes
+    `vX.Y.Z-arm64`; per-arch tags, because a Docker plugin cannot
+    install from a manifest list) and **verify-install-arm64**.
 
-   - **verify-install** / **verify-install-arm64**: install the
-     just-published plugin from GHCR on a clean hosted runner and
-     assert it enables. A red verify-install means users can't install
-     what we just shipped.
-   - **verify-install-hub** / **verify-install-hub-arm64**: the same
-     proof for Docker Hub, which is the other place a user installs
-     from (#776). Each is its **own job on its own runner** and that is
-     deliberate: the value of these jobs is a daemon that has never
-     created a network sandbox, which is how v1.6.0-rc2 caught a bind
-     source the daemon creates lazily (#588). A second install appended
-     to `verify-install` would run after that property was already
-     spent, and `docker plugin rm` does not give it back. When a run
-     published no Hub image the steps are skipped and the job records
-     `⚠️ Docker Hub install not verified` in the summary, so a
-     GHCR-only run cannot be mistaken for a both-registries one.
-   - **promote-latest**: since #736 this is where every floating tag
-     moves, for both arches and both registries, and it runs only after
-     all six of the above are green.
-     [`scripts/check-latest-promotion.sh`](https://github.com/claymore666/docker-net-dhcp/blob/main/scripts/check-latest-promotion.sh)
-     asserts that dependency, naming all four install proofs. Steps:
-     *Refuse to promote a floating tag backwards* → Install crane → the
-     two logins → *Record what :latest resolves to before promotion* →
-     *Promote the GHCR floating tags* → *Promote the Docker Hub floating
-     tags* → *Verify the floating tags resolve to the signed digests* →
-     *Assert a pre-release did not move :latest*.
+    Then, as separate jobs:
 
-     Two of those are guards whose evidence comes from the registry, and
-     they check different things. *Verify the floating tags resolve to
-     the signed digests* compares the floating tag against the version
-     tag by digest. That is the #267 guard, that retagging preserved the
-     digest the signature covers. *Assert a pre-release did not move
-     :latest* re-reads `:latest` and compares it to what the *Record*
-     step saw before anything was touched; it runs only on an rc, and it
-     is the one that proves the rc contract from outside.
-   - **github-release**: does **not** wait for `promote-latest`; it
-     needs the same six jobs. Promotion and the Releases page are
-     siblings, so a refused promotion does not suppress the release.
+    - **verify-install** / **verify-install-arm64**: install the
+        just-published plugin from GHCR on a clean hosted runner and
+        assert it enables. A red verify-install means users can't install
+        what we just shipped.
+    - **verify-install-hub** / **verify-install-hub-arm64**, and since
+        #972 **verify-install-hub-alias** /
+        **verify-install-hub-alias-arm64**: the same proof for Docker Hub
+        under each of its two names, which is the other place a user
+        installs from (#776). The alias proofs are gated on the same
+        `hub_pushed` output as the other two, not on the copy step's own
+        result, so a skipped copy does not also skip its own proof. Each is its **own job on its own runner** and that is
+        deliberate: the value of these jobs is a daemon that has never
+        created a network sandbox, which is how v1.6.0-rc2 caught a bind
+        source the daemon creates lazily (#588). A second install appended
+        to `verify-install` would run after that property was already
+        spent, and `docker plugin rm` does not give it back. When a run
+        published no Hub image the steps are skipped and the job records
+        `⚠️ Docker Hub install not verified` in the summary, so a
+        GHCR-only run cannot be mistaken for a both-registries one.
+    - **promote-latest**: since #736 this is where every floating tag
+        moves, for both arches and all three published names, and it runs
+        only after all eight of the above are green.
+        [`scripts/check-latest-promotion.sh`](https://github.com/claymore666/docker-net-dhcp/blob/main/scripts/check-latest-promotion.sh)
+        asserts that dependency. It does not carry a list of proof names:
+        it derives them from the workflow's own install-verifying jobs, so
+        a ninth proof is required the moment it exists. Steps: *Refuse to
+        promote a floating tag backwards* → Install crane → the two logins
+        → *Record what :latest resolves to before promotion* → *Promote the
+        GHCR floating tags* → *Promote the Docker Hub floating tags* →
+        *Promote the Hub alias floating tags* → *Verify the floating tags
+        resolve to the signed digests* → *Assert a pre-release did not move
+        :latest*.
+
+        Two of those are guards whose evidence comes from the registry, and
+        they check different things. *Verify the floating tags resolve to
+        the signed digests* compares the floating tag against the version
+        tag by digest. That is the #267 guard, that retagging preserved the
+        digest the signature covers. *Assert a pre-release did not move
+        :latest* re-reads `:latest` and compares it to what the *Record*
+        step saw before anything was touched; it runs only on an rc, and it
+        is the one that proves the rc contract from outside.
+    - **github-release**: does **not** wait for `promote-latest`; it
+        needs the same eight jobs. Promotion and the Releases page are
+        siblings, so a refused promotion does not suppress the release.
 
    Every green checklist below includes the arm64 jobs.
 10. **Confirm the GitHub Release**. The `github-release` job now cuts it
@@ -1076,30 +1157,46 @@ After the workflow succeeds:
 
 - `curl -sI
   https://hub.docker.com/v2/repositories/claymore666/net-dhcp/tags/vX.Y.Z/`
-  returns `HTTP/2 200`.
+  returns `HTTP/2 200`, and so does the same call for
+  `claymore666/docker-net-dhcp`. Both Hub names are published by the
+  release run; a 200 on one and a 404 on the other means the alias copy
+  did not happen and the run should have been red.
 - `curl -sI https://ghcr.io/v2/claymore666/docker-net-dhcp/manifests/vX.Y.Z`
   returns `HTTP/2 401` (auth required). The manifest IS there,
   GHCR just won't expose it anonymously. To confirm presence
   authenticated: `gh auth token | docker login ghcr.io -u <you>
   --password-stdin && docker plugin install
   ghcr.io/claymore666/docker-net-dhcp:vX.Y.Z`.
-- The Docker Hub page (<https://hub.docker.com/r/claymore666/net-dhcp>)
-  shows the new tag in the Tags tab and the README content
-  matches GitHub.
+- Both Docker Hub pages
+  (<https://hub.docker.com/r/claymore666/net-dhcp> and
+  <https://hub.docker.com/r/claymore666/docker-net-dhcp>) show the new
+  tag in the Tags tab and the README content matches GitHub. The
+  workflow syncs the description per repository, so both are covered.
+  Hub **categories** are set in the web UI only, with no API behind
+  them, so a new Hub repository keeps whatever categories a person gave
+  it and no run will fix them.
 - The milestone is closed (every issue moved to Done by the
   release PR's `Closes` list). Verify with
   `gh issue list --milestone vX.Y.Z --state open`; should be
   empty.
-- **Anything listed in
+- **Anything that was listed in
   [`.github/dispatch-pending.txt`](https://github.com/claymore666/docker-net-dhcp/blob/main/.github/dispatch-pending.txt)
-  is now dispatchable. Exercise it once and remove the entry.** A
-  `workflow_dispatch` workflow is only exposed from the default branch,
-  so one that merged to `dev` during this cycle has never run, and this
-  release is the first moment it can. Dispatch it, confirm it does what
-  its documentation claims, then drop the entry;
+  is now dispatchable. Exercise it once.** A `workflow_dispatch`
+  workflow is only exposed from the default branch, so one that merged
+  to `dev` during this cycle has never run, and this release is the
+  first moment it can. Dispatch it and confirm it does what its
+  documentation claims. The entry itself is already gone: it is removed
+  on the release branch at step 2, travels into `dev` at step 5 and
+  into `main` with the release PR, because
   [`scripts/check-dispatch-reachable.sh`](https://github.com/claymore666/docker-net-dhcp/blob/main/scripts/check-dispatch-reachable.sh)
-  fails on a declaration that has stopped being true, so the next PR
-  surfaces a forgotten one.
+  counts a workflow that the release PR merges into the default branch
+  as reachable and its entry as stale (#977). While the release branch
+  and `dev` pin the next version and `main` pins the current one, that
+  gate accepts the missing entry, so step 5 and every other pull
+  request into `dev` during the release window stay green. It is
+  reading the two pins and nothing else; the bounds that come with that
+  are in step 2. Dropping the entry after the release instead is what
+  turned the gate red on `main` at v2.1.0.
 
 ## Troubleshooting
 

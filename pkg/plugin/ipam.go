@@ -15,7 +15,7 @@ import (
 	"github.com/claymore666/dhcp-golib/lease"
 	log "github.com/sirupsen/logrus"
 
-	"github.com/claymore666/docker-net-dhcp/pkg/util"
+	"github.com/claymore666/docker-net-dhcp/v2/pkg/util"
 )
 
 // The option keys libnetwork puts in a RequestAddress. Spelled out here
@@ -503,6 +503,16 @@ func (p *Plugin) apiReleaseAddress(w http.ResponseWriter, r *http.Request) {
 // burning a second lease on the server. No DHCPRELEASE goes on the wire
 // (D-7): the address is left to expire exactly as any other host on the
 // segment leaves one.
+//
+// THAT HOLDS ON EVERY VALUE OF `release_lease`, INCLUDING `on_stop`, and
+// it is the one place the option does not reach (#962). A release happens
+// at Leave, built from the endpoint's lease record; a reservation whose
+// CreateEndpoint failed has no endpoint and reaches no Leave, so nothing
+// on that path can see it. What it leaves behind on an `on_stop` network
+// is a real lease the server granted that nothing will ever hand back,
+// held only by the retention above until it expires. Giving it back here
+// instead is a decision about which of the two wins, retention or
+// release, and it is the follow-on this issue names and not a fold.
 func (p *Plugin) ReleaseAddress(req ReleaseAddressRequest) error {
 	networkID, bound := p.ipamIndex.network(req.PoolID)
 	if !bound {

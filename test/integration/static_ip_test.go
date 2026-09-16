@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/claymore666/docker-net-dhcp/test/integration/harness"
+	"github.com/claymore666/docker-net-dhcp/v2/test/integration/harness"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/network"
 	docker "github.com/docker/docker/client"

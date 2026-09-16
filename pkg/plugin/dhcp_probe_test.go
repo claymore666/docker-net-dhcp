@@ -12,7 +12,7 @@ import (
 
 	"github.com/claymore666/dhcp-golib/proto"
 
-	"github.com/claymore666/docker-net-dhcp/pkg/dhcp"
+	"github.com/claymore666/docker-net-dhcp/v2/pkg/dhcp"
 )
 
 // TestNewProbeMAC pins the LAA + unicast bit semantics. Stable

@@ -415,8 +415,9 @@ func TestRemoveDHCPManagerIfSame(t *testing.T) {
 // ordering fix. Close must shut the HTTP listener BEFORE draining the
 // manager registry: with the old ordering a Join dispatched during the
 // up-to-5s stop fan-out registered a manager into the freshly emptied
-// map that nobody ever stopped, orphaning its lease (no DHCPRELEASE)
-// and its dhcpcd.
+// map that nobody ever stopped, orphaning its lease and its dhcpcd.
+// Close releases nothing even on a release_lease=on_stop network: it
+// arrives through Stop, whose containers are still running (#962).
 //
 // The registry is seeded with short-circuiting stub managers (startErr
 // set) so the fan-out completes without a live dhcpcd; what's under

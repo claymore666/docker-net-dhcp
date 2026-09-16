@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/claymore666/docker-net-dhcp/test/integration/harness"
+	"github.com/claymore666/docker-net-dhcp/v2/test/integration/harness"
 )
 
 var fixture *harness.Fixture
@@ -84,8 +84,9 @@ func TestMain(m *testing.M) {
 // This single test exercises CreateNetwork (mode=macvlan branch),
 // validateParentForChild, createParentAttachedEndpoint,
 // dhcpManager.Start (initial lease via one-shot dhcpcd), Join (move link
-// into netns), Leave (Stop the manager; no DHCPRELEASE since #800 — the
-// address is left to expire), DeleteEndpoint
+// into netns), Leave (Stop the manager; no DHCPRELEASE, because this
+// network does not set release_lease and the default is never — the
+// address is left to expire, #800/#962), DeleteEndpoint
 // (parent-attached cleanup branch), and DeleteNetwork — covering
 // the macvlan path end-to-end.
 func TestLifecycleMacvlan_GoldenPath(t *testing.T) {

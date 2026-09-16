@@ -88,16 +88,16 @@ no external DHCP client to install and no client process per container.
 sudo mkdir -p /var/lib/net-dhcp
 
 # amd64
-docker plugin install ghcr.io/claymore666/docker-net-dhcp:v2.1.0
+docker plugin install ghcr.io/claymore666/docker-net-dhcp:v2.1.1
 # arm64
-docker plugin install ghcr.io/claymore666/docker-net-dhcp:v2.1.0-arm64
+docker plugin install ghcr.io/claymore666/docker-net-dhcp:v2.1.1-arm64
 ```
 
 One network, created once. `macvlan` needs only a host NIC; `bridge`
 wants a bridge you bring yourself ([Bridge mode](bridge-mode.md)):
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.1.0 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.1.1 \
   --ipam-driver null -o mode=macvlan -o parent=eth0 lan-dhcp
 
 docker run --rm -ti --network lan-dhcp alpine ip address show
@@ -110,8 +110,8 @@ goes into Docker's own address management, which makes `--ip` and
 Compose's `ipv4_address` work.
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.1.0 \
-  --ipam-driver ghcr.io/claymore666/docker-net-dhcp:v2.1.0 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.1.1 \
+  --ipam-driver ghcr.io/claymore666/docker-net-dhcp:v2.1.1 \
   -o mode=macvlan -o parent=eth0 lan-dhcp
 ```
 
@@ -199,8 +199,11 @@ documentation matching the plugin version you have installed.
 ## Images and releases
 
 Images go to GHCR (`ghcr.io/claymore666/docker-net-dhcp:vX.Y.Z`, primary)
-and are mirrored to Docker Hub (`claymore666/net-dhcp:vX.Y.Z`). Pin a
-version for reproducibility.
+and are mirrored to Docker Hub under two names,
+`claymore666/net-dhcp:vX.Y.Z` and
+`claymore666/docker-net-dhcp:vX.Y.Z`. The two Hub names are the same
+image at the same digest; install from either. Pin a version for
+reproducibility.
 
 Published builds are **`linux/amd64`** on the bare tag and
 **`linux/arm64`** as `:vX.Y.Z-arm64` / `:latest-arm64` (v1.7.0 onward).

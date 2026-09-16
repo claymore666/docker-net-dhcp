@@ -52,7 +52,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     mkdir bin/ && \
     LIBRARY="$(go list -m -f '{{.Version}}' github.com/claymore666/dhcp-golib 2>/dev/null || echo unknown)" && \
     go build $COVER_FLAGS \
-      -ldflags "-X github.com/claymore666/docker-net-dhcp/pkg/buildinfo.Version=${VERSION} -X github.com/claymore666/docker-net-dhcp/pkg/buildinfo.Commit=${COMMIT} -X github.com/claymore666/docker-net-dhcp/pkg/buildinfo.Library=${LIBRARY}" \
+      -ldflags "-X github.com/claymore666/docker-net-dhcp/v2/pkg/buildinfo.Version=${VERSION} -X github.com/claymore666/docker-net-dhcp/v2/pkg/buildinfo.Commit=${COMMIT} -X github.com/claymore666/docker-net-dhcp/v2/pkg/buildinfo.Library=${LIBRARY}" \
       -o bin/ ./cmd/...
 
 

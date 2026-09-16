@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/claymore666/docker-net-dhcp/test/integration/harness"
+	"github.com/claymore666/docker-net-dhcp/v2/test/integration/harness"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/network"
 	docker "github.com/docker/docker/client"
@@ -160,8 +160,9 @@ func TestMultiNetwork_SameSubnetRefused(t *testing.T) {
 	//
 	// THE ROW USED TO SAY "SHORT-LIVED ALLOCATION" AND THIS TEST USED TO
 	// ASSERT IT, and both were wrong in the direction that costs an
-	// operator something. Nothing this plugin runs sends a DHCPRELEASE, on
-	// any path -- that is #800, and TestLeaseRetention_NothingEverReleases
+	// operator something. Nothing sends a DHCPRELEASE on a network that
+	// does not set release_lease, and this one does not: that is #800 and
+	// #962's default, and TestLeaseRetention_NothingEverReleases
 	// pins it at this same server log. So the leases taken here are HELD
 	// until the server expires them, and a reader told to expect a
 	// transient allocation will not go and reclaim two addresses per
@@ -237,7 +238,8 @@ func TestMultiNetwork_SameSubnetRefused(t *testing.T) {
 	time.Sleep(leaseRetentionSettle)
 	if releases := fixture.CountLogLines("DHCPRELEASE") - releasesBefore; releases != 0 {
 		t.Errorf("dnsmasq logged %d DHCPRELEASE line(s) for the refused container, want 0.\n"+
-			"A lease is a lease (#800): nothing this plugin runs releases, on any path, "+
+			"A lease is a lease (#800): nothing releases on a network that does not set "+
+			"release_lease, and this one does not, "+
 			"and TestLeaseRetention_NothingEverReleases asserts the same thing at this "+
 			"same log. A release appearing HERE means the refused-endpoint path grew one "+
 			"that the other test's paths do not cover -- which is exactly the regression "+

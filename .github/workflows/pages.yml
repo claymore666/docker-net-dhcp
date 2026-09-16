@@ -88,6 +88,25 @@ jobs:
       - name: Install doc toolchain
         run: pip install --require-hashes -r docs/requirements.txt
 
+      # `mkdocs build --strict` proves the site BUILDS. It does not prove
+      # any page renders the way its author read it, and the two are not
+      # the same question: a continuation block indented to three spaces
+      # closes the list item it was written inside, and the build is
+      # perfectly happy with the result (#972).
+      #
+      # These two run here and nowhere else because this is the only job
+      # that installs python-markdown, pymdown-extensions and PyYAML, and
+      # the gate renders with the site's own extension set read out of
+      # mkdocs.yml. The self-test declares the delegation in its own
+      # header, and scripts/run-gate-selftests.sh requires the file to be
+      # RUN by a workflow before it will honour that declaration, so the
+      # `run:` line below is what keeps it from being skipped everywhere.
+      - name: Runbook renders inside its numbered step
+        run: bash scripts/check-runbook-render.sh
+
+      - name: Runbook render gate self-test
+        run: bash scripts/test-check-runbook-render.sh
+
       - name: Build site (strict)
         run: mkdocs build --strict
 

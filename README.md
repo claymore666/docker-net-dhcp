@@ -91,16 +91,16 @@ The snippets below install the current release.
 sudo mkdir -p /var/lib/net-dhcp
 
 # amd64
-docker plugin install ghcr.io/claymore666/docker-net-dhcp:v2.1.0
+docker plugin install ghcr.io/claymore666/docker-net-dhcp:v2.1.1
 # arm64
-docker plugin install ghcr.io/claymore666/docker-net-dhcp:v2.1.0-arm64
+docker plugin install ghcr.io/claymore666/docker-net-dhcp:v2.1.1-arm64
 ```
 
 One network, created once. `macvlan` needs only a host NIC; `bridge`
 wants a bridge you bring yourself ([bridge mode](docs/bridge-mode.md)):
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.1.0 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.1.1 \
   --ipam-driver null -o mode=macvlan -o parent=eth0 lan-dhcp
 
 docker run --rm -ti --network lan-dhcp alpine ip address show
@@ -113,8 +113,8 @@ goes into Docker's own address management, which makes `--ip` and
 Compose's `ipv4_address` work.
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.1.0 \
-  --ipam-driver ghcr.io/claymore666/docker-net-dhcp:v2.1.0 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.1.1 \
+  --ipam-driver ghcr.io/claymore666/docker-net-dhcp:v2.1.1 \
   -o mode=macvlan -o parent=eth0 lan-dhcp
 ```
 
@@ -161,6 +161,10 @@ networks:
   matches and the old address is re-requested; a plugin restart or upgrade
   re-adopts running containers, so their leases do not lapse
   ([how](docs/reference.md#restart-stability-mac-and-ip)).
+- **The lease can go back when the container stops.** `-o
+  release_lease=on_stop` hands the address to the server at `docker
+  stop`, per network and off by default
+  ([reference](docs/reference.md#driver-options-network-level)).
 - **No host plumbing per container.** `macvlan` and `ipvlan` attach to a
   NIC that is already there: no bridge to build, no route to add, nothing
   on the host to undo afterwards.
@@ -201,7 +205,10 @@ version per release; the same pages live in [`docs/`](docs).
 - **[Changelog](RELEASE_NOTES.md)** · **[Release runbook](docs/release-runbook.md)**
 
 Images go to GHCR (`ghcr.io/claymore666/docker-net-dhcp:vX.Y.Z`, primary)
-and are mirrored to Docker Hub (`claymore666/net-dhcp:vX.Y.Z`).
+and are mirrored to Docker Hub under two names,
+`claymore666/net-dhcp:vX.Y.Z` and
+`claymore666/docker-net-dhcp:vX.Y.Z`. The two Hub names are the same
+image at the same digest; install from either.
 
 ## Verifying releases
 

@@ -209,6 +209,71 @@ head_floors() { # 1 = import path; 0 = the head baseline carries a row for it
     ' "$HEAD_BASELINE"
 }
 
+# --- A MAJOR-VERSION RENAME MOVES EVERY BASE ROW AT ONCE (#979) -------
+#
+# THIS IS THE RELEASE PR's SHAPE, and left alone it is the fail-open
+# direction of the DROPPED arm applied to the whole baseline. From v2
+# onward Go puts the major in the module path, so the bump rewrites
+# every import and every baseline row. On the dev->main release PR the
+# merge-base blob is MAIN's baseline, spelled without the major; the
+# run's covdata output and the head baseline both carry it. Every base
+# row then reads as "gone at head, gone from the head baseline too",
+# takes the DROPPED arm, is counted as compared, and the completeness
+# cross-check agrees -- so `coverage`, a required context on main,
+# exits 0 having compared no floor at all. Measured on this repository's
+# own rename: four rows DROPPED, "compared 4 of 4", packages at 10%
+# against floors of 82.8 to 96.8.
+#
+# A row that misses under its own name is therefore looked up again
+# under the renamed one, and everything asked about that row -- the
+# percentage, whether the package exists at head, whether the head
+# baseline still floors it -- is asked about the name it now has.
+#
+# THE OLD PREFIX IS DERIVED FROM THE HEAD MODULE, and that is a bound
+# worth stating: the merge-base blob is a baseline, not a tree, so
+# there is no base go.mod here to read (scripts/check-coverage-floor.sh
+# has one and uses it). Stripping this module's own major suffix is
+# what the derivation has. A row is re-spelled only when it sits under
+# THIS module's unversioned path, so a row naming any other module is
+# untouched, and so is every row when the module carries no major
+# suffix at all.
+MODULE_AT_HEAD=$(awk '$1 == "module" { print $2; exit }' "$REPO_ROOT/go.mod" 2>/dev/null)
+
+unversioned() { # <module path> -> the path with a trailing /vN removed
+    local last rest
+    last="${1##*/}"
+    case "$last" in
+        v[0-9]*)
+            # DIGITS ONLY. `v2beta` and `vendor` are ordinary last
+            # segments; treating one as a major suffix would strip a
+            # real directory off the module path.
+            rest="${last#v}"
+            case "$rest" in
+                *[!0-9]*) printf '%s\n' "$1" ;;
+                *)        printf '%s\n' "${1%/*}" ;;
+            esac
+            ;;
+        *) printf '%s\n' "$1" ;;
+    esac
+}
+
+MODULE_UNVERSIONED=$(unversioned "${MODULE_AT_HEAD:-}")
+
+renamed_path() { # <base import path> -> its head spelling, or nothing
+    [ -n "$MODULE_AT_HEAD" ] || return 0
+    [ "$MODULE_AT_HEAD" != "$MODULE_UNVERSIONED" ] || return 0
+    # A row ALREADY under the head module is not re-spelled. Without
+    # this it would match the unversioned prefix too and grow a second
+    # major segment.
+    case "$1" in
+        "$MODULE_AT_HEAD"|"$MODULE_AT_HEAD"/*) return 0 ;;
+    esac
+    case "$1" in
+        "$MODULE_UNVERSIONED")   printf '%s\n' "$MODULE_AT_HEAD" ;;
+        "$MODULE_UNVERSIONED"/*) printf '%s\n' "$MODULE_AT_HEAD/${1#"$MODULE_UNVERSIONED"/}" ;;
+    esac
+}
+
 for f in "$PERCENT_FILE" "$BASELINE_FILE"; do
     if [ ! -f "$f" ] || [ ! -r "$f" ]; then
         echo "::error title=Nothing to inspect::$f is not a readable file." \
@@ -235,6 +300,8 @@ fi
 compared=0
 compared_pkgs=""
 floor_bad=0
+dropped=0
+renamed_rows=0
 
 while read -r pkg want; do
     [ -z "$pkg" ] && continue
@@ -296,18 +363,47 @@ while read -r pkg want; do
                       pct = $(i + 2); gsub(/%/, "", pct); print pct; exit
                   }
           }' "$PERCENT_FILE")
+    # Missing under its own name is not the same as missing. Asked only
+    # after the first lookup came back empty, so a tree that did not
+    # rename runs exactly the code it ran before.
+    renamed=""
+    if [ -z "$got" ]; then
+        renamed=$(renamed_path "$pkg")
+        if [ -n "$renamed" ]; then
+            renamed_rows=$((renamed_rows + 1))
+            echo "RENAMED  $pkg is $renamed at head after the module's major-version rename; the floor is read under the new name"
+            got=$(awk -v p="$renamed" '{
+                      for (i = 1; i + 2 <= NF; i++)
+                          if ($i == p && $(i + 1) == "coverage:") {
+                              pct = $(i + 2); gsub(/%/, "", pct); print pct; exit
+                          }
+                  }' "$PERCENT_FILE")
+        fi
+    fi
+    # The row's identity at head is the renamed one where a rename
+    # applies, so existence and the head baseline are asked about THAT
+    # name. Asking about the old one would answer "gone, and unfloored
+    # too" for every row of a renamed module, which is the DROPPED arm
+    # over the whole baseline.
+    # ONE TOKEN, always. scripts/coverage-read.sh parses these lines with
+    # `(PASS|FAIL)  [^ ]+: [0-9.]+%` and `DROPPED  [^ ]+: deleted at
+    # head`, so a verdict line carrying "new (was old)" would match
+    # neither and the manual read would lose the verdict entirely. The
+    # pairing is on the RENAMED line above, which nothing parses.
+    at_head="${renamed:-$pkg}"
     # THREE VERDICTS, not two -- see the header. The order is existence
     # first: a package that is still there has not been deleted, whatever
     # the head baseline says about it.
     if [ -z "$got" ]; then
-        if pkg_at_head "$pkg"; then
-            echo "FAIL  $pkg: in baseline but absent from coverage output — deleted/renamed? The package still builds at head. Update $BASELINE_FILE deliberately."
+        if pkg_at_head "$at_head"; then
+            echo "FAIL  $at_head: in baseline but absent from coverage output — deleted/renamed? The package still builds at head. Update $BASELINE_FILE deliberately."
             fail=1
-        elif head_floors "$pkg"; then
-            echo "FAIL  $pkg: deleted at head but still floored in $HEAD_BASELINE — remove its row in the same change that deletes the package."
+        elif head_floors "$at_head"; then
+            echo "FAIL  $at_head: deleted at head but still floored in $HEAD_BASELINE — remove its row in the same change that deletes the package."
             fail=1
         else
-            echo "DROPPED  $pkg: deleted at head and removed from $HEAD_BASELINE (base floor was ${want})"
+            dropped=$((dropped + 1))
+            echo "DROPPED  $at_head: deleted at head and removed from $HEAD_BASELINE (base floor was ${want})"
         fi
         continue
     fi
@@ -319,14 +415,14 @@ while read -r pkg want; do
     }')
     case "$verdict" in
         regressed)
-            echo "FAIL  $pkg: ${got}% is below baseline ${want}% (epsilon ${EPSILON})"
+            echo "FAIL  $at_head: ${got}% is below baseline ${want}% (epsilon ${EPSILON})"
             fail=1
             ;;
         improved)
-            echo "PASS  $pkg: ${got}% beats baseline ${want}% — raise the floor in $BASELINE_FILE"
+            echo "PASS  $at_head: ${got}% beats baseline ${want}% — raise the floor in $BASELINE_FILE"
             ;;
         held)
-            echo "PASS  $pkg: ${got}% holds baseline ${want}%"
+            echo "PASS  $at_head: ${got}% holds baseline ${want}%"
             ;;
     esac
 done < "$BASELINE_FILE"
@@ -347,6 +443,31 @@ fi
 if [ "$compared" -eq 0 ]; then
     echo "::error title=Nothing to inspect::$BASELINE_FILE holds no <package> <percent> lines." \
          "The ratchet would otherwise report a clean pass having compared nothing." >&2
+    exit 2
+fi
+
+# NEITHER IS A RUN IN WHICH EVERY ROW WAS DROPPED (#979). DROPPED is
+# counted as compared on purpose -- one deliberate deletion must not
+# fail a release -- but the count is then the only thing left saying
+# this run enforced anything, and "compared 4 of 4" reads as a clean
+# ratchet whether four floors were held or four were discharged. A
+# whole baseline dropping at once is not a deletion; it is the gate
+# having lost its subject, and the shape that produced it here was a
+# module rename, not a `git rm`. Same refusal as
+# scripts/check-coverage-floor.sh makes for the same reason.
+#
+# AT THE THRESHOLD ONLY, and the escape is worth naming: a run that
+# drops every row but one still exits 0 on that one comparison. The
+# rename arm above is what keeps this from being the only thing between
+# a renamed release and an unenforced ratchet; this is the backstop for
+# the shapes it does not reach.
+if [ "$dropped" -ne 0 ] && [ "$dropped" -eq "$compared" ]; then
+    echo "::error title=Nothing left to ratchet::every one of the ${compared} floor(s) in" \
+         "$BASELINE_FILE took the DROPPED arm, so this run compared no package against any" \
+         "floor and would otherwise report a clean ratchet. A whole baseline going at once is" \
+         "not a deliberate deletion. If the module path changed, the rows move with it and are" \
+         "read under the new name; if the packages really are all gone, there is no ratchet" \
+         "left to speak for this release. This is a refusal." >&2
     exit 2
 fi
 
@@ -431,8 +552,23 @@ else
     # floor.
     measured=$(awk '{ for (i = 1; i < NF; i++) if ($(i + 1) == "coverage:") print $i }' \
                    "$PERCENT_FILE" | sort -u)
-    unfloored=$(comm -13 <(sed -n 's/^package //p' "$REPORT" | sort -u) \
+    # The report names the BASE spellings. Under a rename every measured
+    # package would otherwise read as unfloored, and the warning would
+    # name all of them on the very run whose PASS lines just compared
+    # them. Mapped through the same re-spelling the loop used.
+    resolved_at_head="$BASELINE_FILE.athead.$$"
+    : > "$resolved_at_head"
+    # Read to EOF, never `head`/`grep -q`: a short-circuiting consumer
+    # SIGPIPEs its producer, which scripts/check-pipefail-consumers.sh
+    # gates repo-wide.
+    sed -n 's/^package //p' "$REPORT" | while read -r rp; do
+        [ -z "$rp" ] && continue
+        rn=$(renamed_path "$rp")
+        printf '%s\n' "${rn:-$rp}" >> "$resolved_at_head"
+    done
+    unfloored=$(comm -13 <(sort -u "$resolved_at_head") \
                          <(printf '%s\n' "$measured" | grep .) | paste -sd, - | sed 's/,/, /g')
+    rm -f "$resolved_at_head"
     if [ -n "$unfloored" ]; then
         echo "::warning title=Measured but not floored::the run measured package(s) the baseline" \
              "does not floor: ${unfloored}. If those are new packages, add floors. If they are" \

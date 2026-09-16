@@ -24,6 +24,16 @@ no() { printf 'FAIL  %s\n' "$1" >&2; fail=$((fail + 1)); }
 
 guarded_tmpdir DIR
 
+# Section 7b sweeps the pages beside $DOC, and every fixture in this
+# suite is a reference doc living in one directory, so the default
+# derivation would have each case judge every other case's document.
+# The cases below therefore name an empty directory, and the cases that
+# are ABOUT 7b build their own directory per case. The default
+# derivation is exercised by the first of them, which passes no fifth
+# argument at all.
+NOPAGES="$DIR/nopages"
+mkdir -p "$NOPAGES"
+
 # mkdoc <file> <count-word> <summary-list> <row-list> <yes-list> \
 #       [<trouble-list>] [<trouble-word>] [<preamble-word>] \
 #       [<row-word>] [<remedy-word>]
@@ -67,6 +77,19 @@ mkdoc() {
         printf '| `pending_hints` | no | — | not a fault. |\n'
         for n in ${DOC_STRAY_BELOW-}; do printf '| `%s` | — | — | a structure. |\n' "$n"; done
         for n in ${DOC_FAMILY_BELOW-}; do printf '| `%s_x`, `%s_y` | — | — | a structure. |\n' "$n" "$n"; done
+        # Section 7's subject: the family-label paragraph and the
+        # second sentence that carries the same count. Overridable so a
+        # case can perturb the list, either count word, or drop them.
+        if [ "${DOC_FAMILY_PARA-1}" = 1 ]; then
+            printf '\n#### Metric names and the `family` label\n\n'
+            printf '%s counters carry a `family` label:' "${DOC_FAMILY_COUNT-One}"
+            for n in ${DOC_FAMILY_LIST-family_counter}; do printf ' `%s`,' "$n"; done
+            printf ':\n\n```\nnet_dhcp_family_counter_total{family="ipv4"} 1\n```\n\n'
+        fi
+        if [ "${DOC_FAMILY_EACH-1}" = 1 ]; then
+            printf 'Each of the %s has a `_v4` and a `_v6` field in `/Plugin.Health`.\n' \
+                "$(printf '%s' "${DOC_FAMILY_EACH_COUNT-one}" | tr '[:upper:]' '[:lower:]')"
+        fi
         printf '\n## Troubleshooting\n\n| symptom | likely cause | fix |\n| --- | --- | --- |\n'
         printf '| `healthy: false` on `/Plugin.Health` | Exactly %s counters flip it:' "$(printf '%s' "$tword" | tr '[:upper:]' '[:lower:]')"
         for n in $trouble; do printf ' `%s`,' "$n"; done
@@ -104,6 +127,9 @@ mkmetrics_opposed() {
         for n in ${METRICS_WARN_LIST-lease_changed}; do
             printf '\t{name: "%s", counter: true, warn: true, unit: "renewals", action: "watch it.", help: "watch it.", field: "%s"},\n' "$n" "$n"
         done
+        for n in ${METRICS_FAMILY_LIST-family_counter}; do
+            printf '\t{name: "%s", counter: true, help: "not a fault.", field: "%s", v4field: "%s_v4", v6field: "%s_v6"},\n' "$n" "$n" "$n" "$n"
+        done
         for t in "$@"; do
             nm="${t%%=*}"; hy="${t#*=}"; hl="${hy#*=}"; hy="${hy%%=*}"
             if [ "$hy" = "yes" ]; then
@@ -135,6 +161,9 @@ mkmetrics() {
         done
         for n in ${METRICS_WARN_LIST-lease_changed}; do
             printf '\t{name: "%s", counter: true, warn: true, unit: "renewals", action: "watch it.", help: "watch it.", field: "%s"},\n' "$n" "$n"
+        done
+        for n in ${METRICS_FAMILY_LIST-family_counter}; do
+            printf '\t{name: "%s", counter: true, help: "not a fault.", field: "%s", v4field: "%s_v4", v6field: "%s_v6"},\n' "$n" "$n" "$n" "$n"
         done
         for n in $extra; do
             printf '\t{name: "%s", counter: true, healthy: true, help: "not a fault. Healthy-affecting.", field: "%s"},\n' "$n" "$n"
@@ -183,14 +212,14 @@ mkmetrics "$M5" "$FIVE_"; mkfloor "$F5" "$FIVE_"
 
 # --- agreement ---------------------------------------------------------
 mkdoc "$DIR/ok.md" Four "$FOUR" "$FOUR" "$FOUR"; mkgo "$DIR/ok.go" 4
-out=$(bash "$CHECK" "$DIR/ok.md" "$DIR/ok.go" "$M4" "$F4" 2>&1); rc=$?
+out=$(bash "$CHECK" "$DIR/ok.md" "$DIR/ok.go" "$M4" "$F4" "$NOPAGES" 2>&1); rc=$?
 [ $rc -eq 0 ] && ok "four agreeing statements and a matching expression pass" \
                || no "agreement failed (rc=$rc: $out)"
 
 # --- the #638 shape: the row went a counter stale ----------------------
 THREE="recovery_failed join_start_failures tombstone_write_failures"
 mkdoc "$DIR/stale.md" Four "$FOUR" "$THREE" "$FOUR"; mkgo "$DIR/stale.go" 4
-out=$(bash "$CHECK" "$DIR/stale.md" "$DIR/stale.go" "$M4" "$F4" 2>&1); rc=$?
+out=$(bash "$CHECK" "$DIR/stale.md" "$DIR/stale.go" "$M4" "$F4" "$NOPAGES" 2>&1); rc=$?
 [ $rc -eq 1 ] && ok "a healthy row that lost a counter fails" \
                || no "the shipped bug's shape returned $rc (: $out)"
 case "$out" in *address_conflicts*) ok "the failure names the missing counter" ;;
@@ -198,13 +227,13 @@ case "$out" in *address_conflicts*) ok "the failure names the missing counter" ;
 
 # --- the summary drifting the other way --------------------------------
 mkdoc "$DIR/sum.md" Four "$THREE" "$FOUR" "$FOUR"; mkgo "$DIR/sum.go" 4
-out=$(bash "$CHECK" "$DIR/sum.md" "$DIR/sum.go" "$M4" "$F4" 2>&1); rc=$?
+out=$(bash "$CHECK" "$DIR/sum.md" "$DIR/sum.go" "$M4" "$F4" "$NOPAGES" 2>&1); rc=$?
 [ $rc -eq 1 ] && ok "an At-a-glance summary missing a counter fails" \
                || no "a stale summary returned $rc (: $out)"
 
 # --- the count word left behind ----------------------------------------
 mkdoc "$DIR/word.md" Three "$FOUR" "$FOUR" "$FOUR"; mkgo "$DIR/word.go" 4
-out=$(bash "$CHECK" "$DIR/word.md" "$DIR/word.go" "$M4" "$F4" 2>&1); rc=$?
+out=$(bash "$CHECK" "$DIR/word.md" "$DIR/word.go" "$M4" "$F4" "$NOPAGES" 2>&1); rc=$?
 [ $rc -eq 1 ] && ok "a stale count word fails even when the list is right" \
                || no "the count word is not judged (rc=$rc: $out)"
 
@@ -214,14 +243,14 @@ out=$(bash "$CHECK" "$DIR/word.md" "$DIR/word.go" "$M4" "$F4" 2>&1); rc=$?
 # being the one an operator reaches after they have already seen
 # `healthy: false`, which is the exact reader #638 was about (#724).
 mkdoc "$DIR/tword.md" Four "$FOUR" "$FOUR" "$FOUR" "$FOUR" Three; mkgo "$DIR/tword.go" 4
-out=$(bash "$CHECK" "$DIR/tword.md" "$DIR/tword.go" "$M4" "$F4" 2>&1); rc=$?
+out=$(bash "$CHECK" "$DIR/tword.md" "$DIR/tword.go" "$M4" "$F4" "$NOPAGES" 2>&1); rc=$?
 [ $rc -eq 1 ] && ok "a stale count word in the troubleshooting row fails" \
                || no "the troubleshooting row's count word is not judged (rc=$rc: $out)"
 case "$out" in *Troubleshooting*three*) ok "the failure names the row and the word it found" ;;
   *) no "the failure does not identify the troubleshooting word: $out" ;; esac
 
 mkdoc "$DIR/pword.md" Four "$FOUR" "$FOUR" "$FOUR" "$FOUR" Four Three; mkgo "$DIR/pword.go" 4
-out=$(bash "$CHECK" "$DIR/pword.md" "$DIR/pword.go" "$M4" "$F4" 2>&1); rc=$?
+out=$(bash "$CHECK" "$DIR/pword.md" "$DIR/pword.go" "$M4" "$F4" "$NOPAGES" 2>&1); rc=$?
 [ $rc -eq 1 ] && ok "a stale count word in the preamble fails" \
                || no "the preamble's count word is not judged (rc=$rc: $out)"
 case "$out" in *preamble*three*) ok "the failure names the preamble and the word it found" ;;
@@ -232,7 +261,7 @@ case "$out" in *preamble*three*) ok "the failure names the preamble and the word
 # four, and only those" contradicts itself inside one cell, and the
 # list check passes it because the list is right.
 mkdoc "$DIR/rword.md" Four "$FOUR" "$FOUR" "$FOUR" "$FOUR" Four Four Three; mkgo "$DIR/rword.go" 4
-out=$(bash "$CHECK" "$DIR/rword.md" "$DIR/rword.go" "$M4" "$F4" 2>&1); rc=$?
+out=$(bash "$CHECK" "$DIR/rword.md" "$DIR/rword.go" "$M4" "$F4" "$NOPAGES" 2>&1); rc=$?
 [ $rc -eq 1 ] && ok "a stale count word inside the healthy row fails" \
                || no "the healthy row's own count word is not judged (rc=$rc: $out)"
 case "$out" in *"\`healthy\` row"*three*) ok "the failure names the healthy row and the word it found" ;;
@@ -242,7 +271,7 @@ case "$out" in *"\`healthy\` row"*three*) ok "the failure names the healthy row 
 # operator DOES: "read the four in the field table above" over a list
 # of five stops them after the fourth.
 mkdoc "$DIR/mword.md" Four "$FOUR" "$FOUR" "$FOUR" "$FOUR" Four Four Four Three; mkgo "$DIR/mword.go" 4
-out=$(bash "$CHECK" "$DIR/mword.md" "$DIR/mword.go" "$M4" "$F4" 2>&1); rc=$?
+out=$(bash "$CHECK" "$DIR/mword.md" "$DIR/mword.go" "$M4" "$F4" "$NOPAGES" 2>&1); rc=$?
 [ $rc -eq 1 ] && ok "a stale count word in the troubleshooting remedy sentence fails" \
                || no "the remedy sentence's count word is not judged (rc=$rc: $out)"
 case "$out" in *remedy*three*) ok "the failure names the remedy sentence and the word it found" ;;
@@ -252,10 +281,10 @@ case "$out" in *remedy*three*) ok "the failure names the remedy sentence and the
 # everywhere, must pass -- otherwise these five checks have pinned the
 # doc to today's four and the next counter cannot be added at all.
 mkdoc "$DIR/five5.md" Five "$FIVE_" "$FIVE_" "$FIVE_" "$FIVE_" Five Five Five Five; mkgo "$DIR/five5.go" 5
-out=$(bash "$CHECK" "$DIR/five5.md" "$DIR/five5.go" "$M5" "$F5" 2>&1); rc=$?
+out=$(bash "$CHECK" "$DIR/five5.md" "$DIR/five5.go" "$M5" "$F5" "$NOPAGES" 2>&1); rc=$?
 [ $rc -eq 0 ] && ok "five counters with all five count words moved pass" \
                || no "a correct fifth counter is blocked (rc=$rc: $out)"
-case "$out" in *"5 doc count-word(s)"*) ok "the PASS line reports how many count words it read" ;;
+case "$out" in *"7 doc count-word(s)"*) ok "the PASS line reports how many count words it read" ;;
   *) no "the PASS line does not tally the count words: $out" ;; esac
 
 # --- the /metrics help strings -----------------------------------------
@@ -264,7 +293,7 @@ case "$out" in *"5 doc count-word(s)"*) ok "the PASS line reports how many count
 # with whatever they say; check-docs-drift.sh reconciles the set of
 # field NAMES, not the sentence (#724).
 mkmetrics "$DIR/m1.metrics.go" "recovery_failed join_start_failures tombstone_write_failures"
-out=$(bash "$CHECK" "$DIR/ok.md" "$DIR/ok.go" "$DIR/m1.metrics.go" "$F4" 2>&1); rc=$?
+out=$(bash "$CHECK" "$DIR/ok.md" "$DIR/ok.go" "$DIR/m1.metrics.go" "$F4" "$NOPAGES" 2>&1); rc=$?
 [ $rc -eq 1 ] && ok "a counter whose help string forgot \"Healthy-affecting.\" fails" \
                || no "the help strings are not judged (rc=$rc: $out)"
 case "$out" in *address_conflicts*) ok "the failure names the counter whose help string is short" ;;
@@ -273,7 +302,7 @@ case "$out" in *address_conflicts*) ok "the failure names the counter whose help
 # And the other direction, which is the #709 shape: prose promising a
 # property the counter does not have.
 mkmetrics "$DIR/m2.metrics.go" "$FOUR" "leases_renewed"
-out=$(bash "$CHECK" "$DIR/ok.md" "$DIR/ok.go" "$DIR/m2.metrics.go" "$F4" 2>&1); rc=$?
+out=$(bash "$CHECK" "$DIR/ok.md" "$DIR/ok.go" "$DIR/m2.metrics.go" "$F4" "$NOPAGES" 2>&1); rc=$?
 [ $rc -eq 1 ] && ok "a help string claiming \"Healthy-affecting.\" on a counter the doc does not mark fails" \
                || no "the reverse drift is not judged (rc=$rc: $out)"
 
@@ -302,7 +331,7 @@ out=$(bash "$CHECK" "$DIR/ok.md" "$DIR/ok.go" "$DIR/m2.metrics.go" "$F4" 2>&1); 
 # a human to write that counter into the operator-facing table as yes.
 mkmetrics_opposed "$DIR/m826a.metrics.go" "$FOUR" \
     "leases_renewed=no=a fault. Healthy-affecting."
-out=$(bash "$CHECK" "$DIR/ok.md" "$DIR/ok.go" "$DIR/m826a.metrics.go" "$F4" 2>&1); rc=$?
+out=$(bash "$CHECK" "$DIR/ok.md" "$DIR/ok.go" "$DIR/m826a.metrics.go" "$F4" "$NOPAGES" 2>&1); rc=$?
 [ $rc -eq 0 ] && ok "prose asserting the property does not override healthy: false (#854)" \
                || no "the help string overrode the declaration (rc=$rc: $out)"
 
@@ -315,7 +344,7 @@ out=$(bash "$CHECK" "$DIR/ok.md" "$DIR/ok.go" "$DIR/m826a.metrics.go" "$F4" 2>&1
 # documented as not affecting health.
 mkmetrics_opposed "$DIR/m826b.metrics.go" "$FOUR" \
     "leases_renewed=yes=Not healthy-affecting: expected, no operator action."
-out=$(bash "$CHECK" "$DIR/ok.md" "$DIR/ok.go" "$DIR/m826b.metrics.go" "$F4" 2>&1); rc=$?
+out=$(bash "$CHECK" "$DIR/ok.md" "$DIR/ok.go" "$DIR/m826b.metrics.go" "$F4" "$NOPAGES" 2>&1); rc=$?
 [ $rc -eq 1 ] && ok "prose denying the property does not override healthy: true (#854)" \
                || no "a negated help string suppressed the declaration (rc=$rc: $out)"
 case "$out" in *leases_renewed*) ok "the failure names the counter whose declaration the doc does not carry" ;;
@@ -347,7 +376,7 @@ esac
 mkmetrics_opposed "$DIR/m854.metrics.go" "$FOUR" \
     "leases_renewed=no=Not a healthy-affecting counter." \
     "pending_hints=no=No longer healthy-affecting."
-out=$(bash "$CHECK" "$DIR/ok.md" "$DIR/ok.go" "$DIR/m854.metrics.go" "$F4" 2>&1); rc=$?
+out=$(bash "$CHECK" "$DIR/ok.md" "$DIR/ok.go" "$DIR/m854.metrics.go" "$F4" "$NOPAGES" 2>&1); rc=$?
 [ $rc -eq 0 ] && ok "phrasings that defeated the negation stripper are inert against a declaration (#854)" \
                || no "a help-string phrasing still moved the verdict (rc=$rc: $out)"
 
@@ -355,7 +384,7 @@ out=$(bash "$CHECK" "$DIR/ok.md" "$DIR/ok.go" "$DIR/m854.metrics.go" "$F4" 2>&1)
 # metricDefs stops putting name and `healthy:` on one line, the set comes
 # back empty and an empty set must not compare clean against anything.
 mkmetrics "$DIR/m3.metrics.go" ""
-out=$(bash "$CHECK" "$DIR/ok.md" "$DIR/ok.go" "$DIR/m3.metrics.go" "$F4" 2>&1); rc=$?
+out=$(bash "$CHECK" "$DIR/ok.md" "$DIR/ok.go" "$DIR/m3.metrics.go" "$F4" "$NOPAGES" 2>&1); rc=$?
 [ $rc -eq 2 ] && ok "a metrics file with no healthy: true at all exits 2, not clean" \
                || no "an unreadable metrics file returned $rc (: $out)"
 
@@ -364,7 +393,7 @@ out=$(bash "$CHECK" "$DIR/ok.md" "$DIR/ok.go" "$DIR/m3.metrics.go" "$F4" 2>&1); 
 # is a subset with nothing saying so: a new healthy-affecting counter
 # can ship with no run watching it while every other file agrees.
 mkfloor "$DIR/f1.floor.go" "recovery_failed join_start_failures tombstone_write_failures"
-out=$(bash "$CHECK" "$DIR/ok.md" "$DIR/ok.go" "$M4" "$DIR/f1.floor.go" 2>&1); rc=$?
+out=$(bash "$CHECK" "$DIR/ok.md" "$DIR/ok.go" "$M4" "$DIR/f1.floor.go" "$NOPAGES" 2>&1); rc=$?
 [ $rc -eq 1 ] && ok "a healthy-affecting counter missing from the integration floor fails" \
                || no "the floor is not judged (rc=$rc: $out)"
 case "$out" in *"no integration run watches it"*) ok "the failure says what the absence costs" ;;
@@ -372,21 +401,21 @@ case "$out" in *"no integration run watches it"*) ok "the failure says what the 
 
 # Present but non-fatal is worse than absent, because it reads greener.
 mkfloor "$DIR/f2.floor.go" "recovery_failed join_start_failures tombstone_write_failures" "address_conflicts"
-out=$(bash "$CHECK" "$DIR/ok.md" "$DIR/ok.go" "$M4" "$DIR/f2.floor.go" 2>&1); rc=$?
+out=$(bash "$CHECK" "$DIR/ok.md" "$DIR/ok.go" "$M4" "$DIR/f2.floor.go" "$NOPAGES" 2>&1); rc=$?
 [ $rc -eq 1 ] && ok "a floor entry that is present but not fatal fails" \
                || no "a non-fatal floor entry passed (rc=$rc: $out)"
 
 # An unrecognised floorCounters block reads nothing, and nothing must
 # not compare clean.
 printf 'package harness\n\nvar somethingElse = []floorCounter{}\n' > "$DIR/f3.floor.go"
-out=$(bash "$CHECK" "$DIR/ok.md" "$DIR/ok.go" "$M4" "$DIR/f3.floor.go" 2>&1); rc=$?
+out=$(bash "$CHECK" "$DIR/ok.md" "$DIR/ok.go" "$M4" "$DIR/f3.floor.go" "$NOPAGES" 2>&1); rc=$?
 [ $rc -eq 2 ] && ok "a floor file whose var block is not found exits 2, not clean" \
                || no "an unreadable floor file returned $rc (: $out)"
 
 # The positive that keeps all five rails honest: a fifth counter agreed
 # in the doc, the code, the help strings AND the floor must pass, or
 # these checks have pinned the contract to today's four.
-out=$(bash "$CHECK" "$DIR/five5.md" "$DIR/five5.go" "$M5" "$F5" 2>&1); rc=$?
+out=$(bash "$CHECK" "$DIR/five5.md" "$DIR/five5.go" "$M5" "$F5" "$NOPAGES" 2>&1); rc=$?
 [ $rc -eq 0 ] && ok "a fifth counter agreed across all five surfaces passes" \
                || no "a correct fifth counter is blocked by the code rails (rc=$rc: $out)"
 case "$out" in *"/metrics healthy declaration(s)"*"integration floor entr(ies)"*)
@@ -396,7 +425,7 @@ case "$out" in *"/metrics healthy declaration(s)"*"integration floor entr(ies)"*
 # All three words move together on a real edit: that must pass, or the
 # gate blocks the next counter instead of guarding it.
 mkdoc "$DIR/allwords.md" Five "$FIVE_" "$FIVE_" "$FIVE_" "$FIVE_" Five Five; mkgo "$DIR/allwords.go" 5
-out=$(bash "$CHECK" "$DIR/allwords.md" "$DIR/allwords.go" "$M5" "$F5" 2>&1); rc=$?
+out=$(bash "$CHECK" "$DIR/allwords.md" "$DIR/allwords.go" "$M5" "$F5" "$NOPAGES" 2>&1); rc=$?
 [ $rc -eq 0 ] && ok "a fifth counter with all three count words moved passes" \
                || no "the gate blocks a correct five-counter edit (rc=$rc: $out)"
 
@@ -404,19 +433,19 @@ out=$(bash "$CHECK" "$DIR/allwords.md" "$DIR/allwords.go" "$M5" "$F5" 2>&1); rc=
 # pass: the gate must never judge a line it failed to parse as clean.
 mkdoc "$DIR/nopre.md" Four "$FOUR" "$FOUR" "$FOUR"
 grep -v 'flip `healthy` —' "$DIR/nopre.md" > "$DIR/nopre2.md"
-out=$(bash "$CHECK" "$DIR/nopre2.md" "$DIR/ok.go" "$M4" "$F4" 2>&1); rc=$?
+out=$(bash "$CHECK" "$DIR/nopre2.md" "$DIR/ok.go" "$M4" "$F4" "$NOPAGES" 2>&1); rc=$?
 [ $rc -eq 2 ] && ok "a missing preamble exits 2" \
                || no "a missing preamble returned $rc (: $out)"
 
 mkdoc "$DIR/notword.md" Four "$FOUR" "$FOUR" "$FOUR"
 sed -i 's/Exactly four counters flip it:/several counters flip it:/' "$DIR/notword.md"
-out=$(bash "$CHECK" "$DIR/notword.md" "$DIR/ok.go" "$M4" "$F4" 2>&1); rc=$?
+out=$(bash "$CHECK" "$DIR/notword.md" "$DIR/ok.go" "$M4" "$F4" "$NOPAGES" 2>&1); rc=$?
 [ $rc -eq 2 ] && ok "a troubleshooting row with no readable count exits 2" \
                || no "an unreadable count word returned $rc (: $out)"
 
 # --- the code moving without the docs ----------------------------------
 mkdoc "$DIR/code.md" Four "$FOUR" "$FOUR" "$FOUR"; mkgo "$DIR/code.go" 5
-out=$(bash "$CHECK" "$DIR/code.md" "$DIR/code.go" "$M4" "$F4" 2>&1); rc=$?
+out=$(bash "$CHECK" "$DIR/code.md" "$DIR/code.go" "$M4" "$F4" "$NOPAGES" 2>&1); rc=$?
 [ $rc -eq 1 ] && ok "a fifth term in the code with no doc change fails" \
                || no "the code side is not judged (rc=$rc: $out)"
 
@@ -426,7 +455,7 @@ out=$(bash "$CHECK" "$DIR/code.md" "$DIR/code.go" "$M4" "$F4" 2>&1); rc=$?
 # three copies could not see it.
 TWO="recovery_failed tombstone_write_failures"
 mkdoc "$DIR/trouble.md" Four "$FOUR" "$FOUR" "$FOUR" "$TWO"; mkgo "$DIR/trouble.go" 4
-out=$(bash "$CHECK" "$DIR/trouble.md" "$DIR/trouble.go" "$M4" "$F4" 2>&1); rc=$?
+out=$(bash "$CHECK" "$DIR/trouble.md" "$DIR/trouble.go" "$M4" "$F4" "$NOPAGES" 2>&1); rc=$?
 [ $rc -eq 1 ] && ok "a troubleshooting row naming 2 of 4 counters fails" \
                || no "the troubleshooting row is not judged (rc=$rc: $out)"
 case "$out" in *join_start_failures*) ok "the failure names a counter the row omits" ;;
@@ -434,7 +463,7 @@ case "$out" in *join_start_failures*) ok "the failure names a counter the row om
 
 # The shipped shape exactly: prose that names no counter at all.
 mkdoc "$DIR/trouble0.md" Four "$FOUR" "$FOUR" "$FOUR" ""; mkgo "$DIR/trouble0.go" 4
-out=$(bash "$CHECK" "$DIR/trouble0.md" "$DIR/trouble0.go" "$M4" "$F4" 2>&1); rc=$?
+out=$(bash "$CHECK" "$DIR/trouble0.md" "$DIR/trouble0.go" "$M4" "$F4" "$NOPAGES" 2>&1); rc=$?
 [ $rc -eq 1 ] && ok "a troubleshooting row naming no counter fails" \
                || no "an unbackticked cause cell passed (rc=$rc: $out)"
 
@@ -442,28 +471,28 @@ out=$(bash "$CHECK" "$DIR/trouble0.md" "$DIR/trouble0.go" "$M4" "$F4" 2>&1); rc=
 # naming one — `STATE_DIR` is a setting, and the shipped row cited it.
 mkdoc "$DIR/troubleset.md" Four "$FOUR" "$FOUR" "$FOUR" ""; mkgo "$DIR/troubleset.go" 4
 sed -i 's/counters flip it: |/counters flip it: check `STATE_DIR` |/' "$DIR/troubleset.md"
-out=$(bash "$CHECK" "$DIR/troubleset.md" "$DIR/troubleset.go" "$M4" "$F4" 2>&1); rc=$?
+out=$(bash "$CHECK" "$DIR/troubleset.md" "$DIR/troubleset.go" "$M4" "$F4" "$NOPAGES" 2>&1); rc=$?
 [ $rc -eq 1 ] && ok "a cause cell citing a setting rather than a counter still fails" \
                || no "a non-counter backtick satisfied the row (rc=$rc: $out)"
 
 # --- growth must be possible -------------------------------------------
 # The gate must not encode today's four. Add a fifth everywhere: pass.
 mkdoc "$DIR/five.md" Five "$FIVE_" "$FIVE_" "$FIVE_"; mkgo "$DIR/five.go" 5
-out=$(bash "$CHECK" "$DIR/five.md" "$DIR/five.go" "$M5" "$F5" 2>&1); rc=$?
+out=$(bash "$CHECK" "$DIR/five.md" "$DIR/five.go" "$M5" "$F5" "$NOPAGES" 2>&1); rc=$?
 [ $rc -eq 0 ] && ok "a fifth counter agreed everywhere passes" \
                || no "the gate blocks a legitimate new counter (rc=$rc: $out)"
 
 # A missing troubleshooting row is "cannot see", not "nothing to check".
 mkdoc "$DIR/notrouble.md" Four "$FOUR" "$FOUR" "$FOUR"
 grep -v '^| `healthy: false`' "$DIR/notrouble.md" > "$DIR/notrouble2.md"
-out=$(bash "$CHECK" "$DIR/notrouble2.md" "$DIR/ok.go" "$M4" "$F4" 2>&1); rc=$?
+out=$(bash "$CHECK" "$DIR/notrouble2.md" "$DIR/ok.go" "$M4" "$F4" "$NOPAGES" 2>&1); rc=$?
 [ $rc -eq 2 ] && ok "a missing troubleshooting row exits 2" \
                || no "a missing troubleshooting row returned $rc (: $out)"
 
 # --- cannot see: every one of these must be loud -----------------------
 mkdoc "$DIR/shape.md" Four "$FOUR" "$FOUR" "$FOUR"
 printf 'package plugin\n\n\t\tHealthy:           a == 0 || b != 3,\n' > "$DIR/shape.go"
-out=$(bash "$CHECK" "$DIR/shape.md" "$DIR/shape.go" "$M4" "$F4" 2>&1); rc=$?
+out=$(bash "$CHECK" "$DIR/shape.md" "$DIR/shape.go" "$M4" "$F4" "$NOPAGES" 2>&1); rc=$?
 [ $rc -eq 2 ] && ok "an expression shape it cannot parse exits 2, not clean" \
                || no "an unparseable Healthy expression returned $rc (: $out)"
 
@@ -480,24 +509,24 @@ mkdoc "$DIR/two.md" Four "$FOUR" "$FOUR" "$FOUR"; mkgo "$DIR/two.go" 4
     printf '\t\tHealthy:           a == 0 && b == 0 && c == 0 && d == 0,\n\t}\n}\n'
     grep -v '^package plugin$' "$DIR/two.go"
 } > "$DIR/twohealth.go"
-out=$(bash "$CHECK" "$DIR/two.md" "$DIR/twohealth.go" "$M4" "$F4" 2>&1); rc=$?
+out=$(bash "$CHECK" "$DIR/two.md" "$DIR/twohealth.go" "$M4" "$F4" "$NOPAGES" 2>&1); rc=$?
 [ $rc -eq 2 ] && ok "two Healthy assignments exit 2 rather than judging the first" \
                || no "a second Healthy assignment was read as the only one (rc=$rc: $out)"
 
 printf 'package plugin\n' > "$DIR/nohealth.go"
-out=$(bash "$CHECK" "$DIR/shape.md" "$DIR/nohealth.go" "$M4" "$F4" 2>&1); rc=$?
+out=$(bash "$CHECK" "$DIR/shape.md" "$DIR/nohealth.go" "$M4" "$F4" "$NOPAGES" 2>&1); rc=$?
 [ $rc -eq 2 ] && ok "no Healthy assignment at all exits 2" || no "a missing Healthy returned $rc"
 
 printf '# nothing here\n' > "$DIR/empty.md"
-out=$(bash "$CHECK" "$DIR/empty.md" "$DIR/ok.go" "$M4" "$F4" 2>&1); rc=$?
+out=$(bash "$CHECK" "$DIR/empty.md" "$DIR/ok.go" "$M4" "$F4" "$NOPAGES" 2>&1); rc=$?
 [ $rc -eq 2 ] && ok "a doc with no counter table exits 2" || no "an empty doc returned $rc"
 
 mkdoc "$DIR/norow.md" Four "$FOUR" "$FOUR" "$FOUR"
 grep -v '^| `healthy` |' "$DIR/norow.md" > "$DIR/norow2.md"
-out=$(bash "$CHECK" "$DIR/norow2.md" "$DIR/ok.go" "$M4" "$F4" 2>&1); rc=$?
+out=$(bash "$CHECK" "$DIR/norow2.md" "$DIR/ok.go" "$M4" "$F4" "$NOPAGES" 2>&1); rc=$?
 [ $rc -eq 2 ] && ok "a missing healthy row exits 2" || no "a missing healthy row returned $rc"
 
-out=$(bash "$CHECK" "$DIR/does-not-exist.md" "$DIR/ok.go" "$M4" "$F4" 2>&1); rc=$?
+out=$(bash "$CHECK" "$DIR/does-not-exist.md" "$DIR/ok.go" "$M4" "$F4" "$NOPAGES" 2>&1); rc=$?
 [ $rc -eq 2 ] && ok "a missing doc exits 2" || no "a missing doc returned $rc"
 
 # --- the check classification column (O-1) -----------------------------
@@ -510,7 +539,7 @@ out=$(bash "$CHECK" "$DIR/does-not-exist.md" "$DIR/ok.go" "$M4" "$F4" 2>&1); rc=
 # it, and quietly tell an operator that the thing that flips `healthy`
 # is only worth watching.
 DOC_YES_CLASS=warn mkdoc "$DIR/cls-down.md" Four "$FOUR" "$FOUR" "$FOUR"; mkgo "$DIR/cls-down.go" 4
-out=$(bash "$CHECK" "$DIR/cls-down.md" "$DIR/cls-down.go" "$M4" "$F4" 2>&1); rc=$?
+out=$(bash "$CHECK" "$DIR/cls-down.md" "$DIR/cls-down.go" "$M4" "$F4" "$NOPAGES" 2>&1); rc=$?
 [ $rc -eq 1 ] && ok "a fail check downgraded to warn in the doc fails" \
                || no "a downgraded classification returned $rc (: $out)"
 case "$out" in *"not declared warn: true"*) ok "the downgrade names the direction of the disagreement" ;;
@@ -521,7 +550,7 @@ case "$out" in *"not declared warn: true"*) ok "the downgrade names the directio
 # never appear in the document.
 DOC_WARN_LIST="lease_changed parent_link_wait_timeouts" \
     mkdoc "$DIR/cls-extra.md" Four "$FOUR" "$FOUR" "$FOUR"; mkgo "$DIR/cls-extra.go" 4
-out=$(bash "$CHECK" "$DIR/cls-extra.md" "$DIR/cls-extra.go" "$M4" "$F4" 2>&1); rc=$?
+out=$(bash "$CHECK" "$DIR/cls-extra.md" "$DIR/cls-extra.go" "$M4" "$F4" "$NOPAGES" 2>&1); rc=$?
 [ $rc -eq 1 ] && ok "a warn row the code does not declare fails" \
                || no "an undeclared warn row returned $rc (: $out)"
 case "$out" in *parent_link_wait_timeouts*) ok "the failure names the undeclared warn counter" ;;
@@ -533,7 +562,7 @@ case "$out" in *parent_link_wait_timeouts*) ok "the failure names the undeclared
 M4W="$DIR/rail4warn.metrics.go"
 METRICS_WARN_LIST="lease_changed ledger_write_failures" mkmetrics "$M4W" "$FOUR"
 mkdoc "$DIR/cls-missing.md" Four "$FOUR" "$FOUR" "$FOUR"; mkgo "$DIR/cls-missing.go" 4
-out=$(bash "$CHECK" "$DIR/cls-missing.md" "$DIR/cls-missing.go" "$M4W" "$F4" 2>&1); rc=$?
+out=$(bash "$CHECK" "$DIR/cls-missing.md" "$DIR/cls-missing.go" "$M4W" "$F4" "$NOPAGES" 2>&1); rc=$?
 [ $rc -eq 1 ] && ok "a warn declaration missing from the column fails" \
                || no "an undocumented warn declaration returned $rc (: $out)"
 
@@ -542,13 +571,13 @@ out=$(bash "$CHECK" "$DIR/cls-missing.md" "$DIR/cls-missing.go" "$M4W" "$F4" 2>&
 # read nothing" rather than "everything agrees". A gate that cannot see
 # must not report clean.
 DOC_WARN_LIST="" mkdoc "$DIR/cls-none.md" Four "$FOUR" "$FOUR" "$FOUR"; mkgo "$DIR/cls-none.go" 4
-out=$(bash "$CHECK" "$DIR/cls-none.md" "$DIR/cls-none.go" "$M4" "$F4" 2>&1); rc=$?
+out=$(bash "$CHECK" "$DIR/cls-none.md" "$DIR/cls-none.go" "$M4" "$F4" "$NOPAGES" 2>&1); rc=$?
 [ $rc -eq 2 ] && ok "a doc with no warn classification at all exits 2" \
                || no "an empty check column returned $rc (: $out)"
 
 M4N="$DIR/rail4nowarn.metrics.go"
 METRICS_WARN_LIST="" mkmetrics "$M4N" "$FOUR"
-out=$(bash "$CHECK" "$DIR/ok.md" "$DIR/ok.go" "$M4N" "$F4" 2>&1); rc=$?
+out=$(bash "$CHECK" "$DIR/ok.md" "$DIR/ok.go" "$M4N" "$F4" "$NOPAGES" 2>&1); rc=$?
 [ $rc -eq 2 ] && ok "metricDefs with no warn declaration at all exits 2" \
                || no "an empty warn declaration set returned $rc (: $out)"
 
@@ -561,7 +590,7 @@ out=$(bash "$CHECK" "$DIR/ok.md" "$DIR/ok.go" "$M4N" "$F4" 2>&1); rc=$?
 # can see.
 DOC_FAIL_EXTRA="leases_renewed" \
     mkdoc "$DIR/cls-failextra.md" Four "$FOUR" "$FOUR" "$FOUR"; mkgo "$DIR/cls-failextra.go" 4
-out=$(bash "$CHECK" "$DIR/cls-failextra.md" "$DIR/cls-failextra.go" "$M4" "$F4" 2>&1); rc=$?
+out=$(bash "$CHECK" "$DIR/cls-failextra.md" "$DIR/cls-failextra.go" "$M4" "$F4" "$NOPAGES" 2>&1); rc=$?
 [ $rc -eq 1 ] && ok "a fail row the code does not declare healthy fails" \
                || no "an undeclared fail row returned $rc (: $out)"
 case "$out" in *"not declared healthy: true"*) ok "the fail-half failure names the direction" ;;
@@ -574,13 +603,13 @@ DOC_WARN_LIST="lease_changed acd_arp_send_failures" \
     mkdoc "$DIR/cls-ok.md" Four "$FOUR" "$FOUR" "$FOUR"; mkgo "$DIR/cls-ok.go" 4
 M4B="$DIR/rail4both.metrics.go"
 METRICS_WARN_LIST="lease_changed acd_arp_send_failures" mkmetrics "$M4B" "$FOUR"
-out=$(bash "$CHECK" "$DIR/cls-ok.md" "$DIR/cls-ok.go" "$M4B" "$F4" 2>&1); rc=$?
+out=$(bash "$CHECK" "$DIR/cls-ok.md" "$DIR/cls-ok.go" "$M4B" "$F4" "$NOPAGES" 2>&1); rc=$?
 [ $rc -eq 0 ] && ok "a new warn check agreed on both sides passes" \
                || no "an agreeing warn classification failed (rc=$rc: $out)"
 
 # --- the repository itself ---------------------------------------------
 out=$(bash "$CHECK" "$HERE/../docs/reference.md" "$HERE/../pkg/plugin/endpoints.go" \
-    "$HERE/../pkg/plugin/metrics.go" "$HERE/../test/integration/harness/healthfloor.go" 2>&1); rc=$?
+    "$HERE/../pkg/plugin/metrics.go" "$HERE/../test/integration/harness/healthfloor.go" "$NOPAGES" 2>&1); rc=$?
 [ $rc -eq 0 ] && ok "the repository's own healthy contract agrees" \
                || no "the repo's healthy contract disagrees (rc=$rc: $out)"
 
@@ -596,7 +625,7 @@ out=$(bash "$CHECK" "$HERE/../docs/reference.md" "$HERE/../pkg/plugin/endpoints.
 # (a) a warn row that tells the operator nothing about its own value.
 DOC_WARN_TEXT="a renewal returned a different address." \
     mkdoc "$DIR/4c-warn-silent.md" Four "$FOUR" "$FOUR" "$FOUR"; mkgo "$DIR/4c-warn-silent.go" 4
-out=$(bash "$CHECK" "$DIR/4c-warn-silent.md" "$DIR/4c-warn-silent.go" "$M4" "$F4" 2>&1); rc=$?
+out=$(bash "$CHECK" "$DIR/4c-warn-silent.md" "$DIR/4c-warn-silent.go" "$M4" "$F4" "$NOPAGES" 2>&1); rc=$?
 [ $rc -eq 1 ] && ok "a warn row with no imperative about its own value fails" \
                || no "a warn row with no imperative returned $rc (: $out)"
 case "$out" in *"tells the operator nothing to do"*) ok "the warn-half failure says what is missing" ;;
@@ -606,7 +635,7 @@ case "$out" in *"tells the operator nothing to do"*) ok "the warn-half failure s
 # is exactly the shape the two rows shipped in.
 DOC_DASH_TEXT="worth investigating whenever it moves." \
     mkdoc "$DIR/4c-dash-bare.md" Four "$FOUR" "$FOUR" "$FOUR"; mkgo "$DIR/4c-dash-bare.go" 4
-out=$(bash "$CHECK" "$DIR/4c-dash-bare.md" "$DIR/4c-dash-bare.go" "$M4" "$F4" 2>&1); rc=$?
+out=$(bash "$CHECK" "$DIR/4c-dash-bare.md" "$DIR/4c-dash-bare.go" "$M4" "$F4" "$NOPAGES" 2>&1); rc=$?
 [ $rc -eq 1 ] && ok "an unclassified row carrying an imperative and no reason fails" \
                || no "a bare near-miss row returned $rc (: $out)"
 case "$out" in *"clause excluded it"*) ok "the near-miss failure names the two clauses" ;;
@@ -618,7 +647,7 @@ case "$out" in *"clause excluded it"*) ok "the near-miss failure names the two c
 # at all.
 DOC_DASH_TEXT="worth investigating whenever it moves. Not a check: its normal reading is non-zero." \
     mkdoc "$DIR/4c-dash-said.md" Four "$FOUR" "$FOUR" "$FOUR"; mkgo "$DIR/4c-dash-said.go" 4
-out=$(bash "$CHECK" "$DIR/4c-dash-said.md" "$DIR/4c-dash-said.go" "$M4" "$F4" 2>&1); rc=$?
+out=$(bash "$CHECK" "$DIR/4c-dash-said.md" "$DIR/4c-dash-said.go" "$M4" "$F4" "$NOPAGES" 2>&1); rc=$?
 [ $rc -eq 0 ] && ok "the same row with its near-miss reason passes" \
                || no "a near-miss row with its reason returned $rc (: $out)"
 
@@ -637,13 +666,13 @@ for phrasing in "read against \`leases_obtained\`, not alone." \
     tag=$(printf '%s' "$phrasing" | tr -cd 'a-z' | cut -c1-12)
     DOC_DASH_TEXT="$phrasing" \
         mkdoc "$DIR/4c-$tag-bare.md" Four "$FOUR" "$FOUR" "$FOUR"; mkgo "$DIR/4c-$tag-bare.go" 4
-    out=$(bash "$CHECK" "$DIR/4c-$tag-bare.md" "$DIR/4c-$tag-bare.go" "$M4" "$F4" 2>&1); rc=$?
+    out=$(bash "$CHECK" "$DIR/4c-$tag-bare.md" "$DIR/4c-$tag-bare.go" "$M4" "$F4" "$NOPAGES" 2>&1); rc=$?
     [ $rc -eq 1 ] && ok "a '-' row saying '$phrasing' with no reason fails" \
                    || no "'$phrasing' bare returned $rc (: $out)"
 
     DOC_DASH_TEXT="$phrasing Not a check: its own value carries no verdict." \
         mkdoc "$DIR/4c-$tag-said.md" Four "$FOUR" "$FOUR" "$FOUR"; mkgo "$DIR/4c-$tag-said.go" 4
-    out=$(bash "$CHECK" "$DIR/4c-$tag-said.md" "$DIR/4c-$tag-said.go" "$M4" "$F4" 2>&1); rc=$?
+    out=$(bash "$CHECK" "$DIR/4c-$tag-said.md" "$DIR/4c-$tag-said.go" "$M4" "$F4" "$NOPAGES" 2>&1); rc=$?
     [ $rc -eq 0 ] && ok "the same row with its near-miss reason passes" \
                    || no "'$phrasing' with its reason returned $rc (: $out)"
 done
@@ -658,7 +687,7 @@ done
 # row, which is every field the health document has.
 DOC_STRAY_BELOW=stray_counter \
     mkdoc "$DIR/4c-stray-below.md" Four "$FOUR" "$FOUR" "$FOUR"; mkgo "$DIR/4c-stray-below.go" 4
-out=$(bash "$CHECK" "$DIR/4c-stray-below.md" "$DIR/4c-stray-below.go" "$M4" "$F4" 2>&1); rc=$?
+out=$(bash "$CHECK" "$DIR/4c-stray-below.md" "$DIR/4c-stray-below.go" "$M4" "$F4" "$NOPAGES" 2>&1); rc=$?
 [ $rc -eq 1 ] && ok "a row after the counters with no yes/no healthy-affecting value fails" \
                || no "a stray row after the counters returned $rc (: $out)"
 case "$out" in *"stray_counter"*) ok "the domain failure names the row it cannot judge" ;;
@@ -666,7 +695,7 @@ case "$out" in *"stray_counter"*) ok "the domain failure names the row it cannot
 
 DOC_STRAY_ABOVE=stray_counter \
     mkdoc "$DIR/4c-stray-above.md" Four "$FOUR" "$FOUR" "$FOUR"; mkgo "$DIR/4c-stray-above.go" 4
-out=$(bash "$CHECK" "$DIR/4c-stray-above.md" "$DIR/4c-stray-above.go" "$M4" "$F4" 2>&1); rc=$?
+out=$(bash "$CHECK" "$DIR/4c-stray-above.md" "$DIR/4c-stray-above.go" "$M4" "$F4" "$NOPAGES" 2>&1); rc=$?
 [ $rc -eq 0 ] && ok "the same row ahead of the counters is a field and passes" \
                || no "a field row before the counters returned $rc (: $out)"
 
@@ -680,7 +709,7 @@ out=$(bash "$CHECK" "$DIR/4c-stray-above.md" "$DIR/4c-stray-above.go" "$M4" "$F4
 # reports it, the last-judged anchor cannot see it.
 DOC_STRAY_MID=stray_counter \
     mkdoc "$DIR/4c-stray-mid.md" Four "$FOUR" "$FOUR" "$FOUR"; mkgo "$DIR/4c-stray-mid.go" 4
-out=$(bash "$CHECK" "$DIR/4c-stray-mid.md" "$DIR/4c-stray-mid.go" "$M4" "$F4" 2>&1); rc=$?
+out=$(bash "$CHECK" "$DIR/4c-stray-mid.md" "$DIR/4c-stray-mid.go" "$M4" "$F4" "$NOPAGES" 2>&1); rc=$?
 [ $rc -eq 1 ] && ok "a row BETWEEN two counters with no yes/no value fails" \
                || no "a stray row between counters returned $rc (: $out)"
 case "$out" in *"stray_counter"*) ok "the between-counters failure names the row" ;;
@@ -695,7 +724,7 @@ case "$out" in *"stray_counter"*) ok "the between-counters failure names the row
 # family row inside it is judged rather than dropped.
 DOC_FAMILY_BELOW=toy_counter \
     mkdoc "$DIR/4c-family-below.md" Four "$FOUR" "$FOUR" "$FOUR"; mkgo "$DIR/4c-family-below.go" 4
-out=$(bash "$CHECK" "$DIR/4c-family-below.md" "$DIR/4c-family-below.go" "$M4" "$F4" 2>&1); rc=$?
+out=$(bash "$CHECK" "$DIR/4c-family-below.md" "$DIR/4c-family-below.go" "$M4" "$F4" "$NOPAGES" 2>&1); rc=$?
 [ $rc -eq 1 ] && ok "a comma-separated family row after the counters fails" \
                || no "a family stray row returned $rc (: $out)"
 case "$out" in *"\`toy_counter_x\`, \`toy_counter_y\`"*) ok "the family failure names the row it cannot judge" ;;
@@ -703,7 +732,7 @@ case "$out" in *"\`toy_counter_x\`, \`toy_counter_y\`"*) ok "the family failure 
 
 DOC_FAMILY_MID=toy_counter DOC_FAMILY_TEXT="worth investigating whenever it moves." \
     mkdoc "$DIR/4c-family-bare.md" Four "$FOUR" "$FOUR" "$FOUR"; mkgo "$DIR/4c-family-bare.go" 4
-out=$(bash "$CHECK" "$DIR/4c-family-bare.md" "$DIR/4c-family-bare.go" "$M4" "$F4" 2>&1); rc=$?
+out=$(bash "$CHECK" "$DIR/4c-family-bare.md" "$DIR/4c-family-bare.go" "$M4" "$F4" "$NOPAGES" 2>&1); rc=$?
 [ $rc -eq 1 ] && ok "a family row inside the domain is JUDGED, not dropped" \
                || no "a family near-miss row returned $rc (: $out)"
 case "$out" in *"\`toy_counter_x\`, \`toy_counter_y\`"*) ok "the family near-miss names the whole cell" ;;
@@ -711,7 +740,7 @@ case "$out" in *"\`toy_counter_x\`, \`toy_counter_y\`"*) ok "the family near-mis
 
 DOC_FAMILY_MID=toy_counter \
     mkdoc "$DIR/4c-family-ok.md" Four "$FOUR" "$FOUR" "$FOUR"; mkgo "$DIR/4c-family-ok.go" 4
-out=$(bash "$CHECK" "$DIR/4c-family-ok.md" "$DIR/4c-family-ok.go" "$M4" "$F4" 2>&1); rc=$?
+out=$(bash "$CHECK" "$DIR/4c-family-ok.md" "$DIR/4c-family-ok.go" "$M4" "$F4" "$NOPAGES" 2>&1); rc=$?
 [ $rc -eq 0 ] && ok "a family row with a yes/no value and no imperative passes" \
                || no "a plain family row returned $rc (: $out)"
 
@@ -738,9 +767,132 @@ fi
 # (a), the other direction, and the vocabulary's own positive control: a
 # `-` row with NO imperative needs no sentence. A gate demanding one
 # from every unclassified row would flag most of the table.
-out=$(bash "$CHECK" "$DIR/cls-ok.md" "$DIR/cls-ok.go" "$M4B" "$F4" 2>&1); rc=$?
+out=$(bash "$CHECK" "$DIR/cls-ok.md" "$DIR/cls-ok.go" "$M4B" "$F4" "$NOPAGES" 2>&1); rc=$?
 [ $rc -eq 0 ] && ok "an unclassified row with no imperative needs no reason" \
                || no "a plain informational row returned $rc (: $out)"
+
+# --- section 7: the family-label paragraph -----------------------------
+#
+# The hole this closes, MEASURED on #966 before the section existed:
+# deleting the reference's family-label paragraph outright left both
+# this gate and check-docs-drift.sh at rc 0, because the drift gate
+# reconciles the SET OF FIELDS and every `_v4`/`_v6` field stays
+# documented in the counter table either way. A claim ABOUT the
+# counters, in a place nothing read -- the same shape as #638, one
+# heading further down the same file.
+
+DOC_FAMILY_PARA=0 mkdoc "$DIR/fam-nopara.md" Four "$FOUR" "$FOUR" "$FOUR"; mkgo "$DIR/fam-nopara.go" 4
+out=$(bash "$CHECK" "$DIR/fam-nopara.md" "$DIR/fam-nopara.go" "$M4" "$F4" "$NOPAGES" 2>&1); rc=$?
+[ $rc -eq 2 ] && ok "a deleted family-label paragraph refuses instead of passing" \
+               || no "a deleted family-label paragraph returned $rc (: $out)"
+
+DOC_FAMILY_EACH=0 mkdoc "$DIR/fam-noeach.md" Four "$FOUR" "$FOUR" "$FOUR"; mkgo "$DIR/fam-noeach.go" 4
+out=$(bash "$CHECK" "$DIR/fam-noeach.md" "$DIR/fam-noeach.go" "$M4" "$F4" "$NOPAGES" 2>&1); rc=$?
+[ $rc -eq 2 ] && ok "a deleted \`_v4\`/\`_v6\` sentence refuses instead of passing" \
+               || no "a deleted _v4/_v6 sentence returned $rc (: $out)"
+
+# The paragraph names a counter the code does not split, and the other
+# direction: the code splits one the paragraph does not name. Both are
+# one of the two being wrong and the gate says so without deciding which.
+DOC_FAMILY_LIST="family_counter other_counter" DOC_FAMILY_COUNT=Two DOC_FAMILY_EACH_COUNT=two \
+    mkdoc "$DIR/fam-extra.md" Four "$FOUR" "$FOUR" "$FOUR"; mkgo "$DIR/fam-extra.go" 4
+out=$(bash "$CHECK" "$DIR/fam-extra.md" "$DIR/fam-extra.go" "$M4" "$F4" "$NOPAGES" 2>&1); rc=$?
+[ $rc -eq 1 ] && ok "a family name the code does not split fails" \
+               || no "an unbacked family name returned $rc (: $out)"
+case "$out" in *other_counter*) ok "the failure names the counter the code does not split" ;;
+  *) no "the family failure does not name the counter: $out" ;; esac
+
+METRICS_FAMILY_LIST="family_counter other_counter" mkmetrics "$DIR/fam-two.metrics.go" "$FOUR"
+mkdoc "$DIR/fam-missing.md" Four "$FOUR" "$FOUR" "$FOUR"; mkgo "$DIR/fam-missing.go" 4
+out=$(bash "$CHECK" "$DIR/fam-missing.md" "$DIR/fam-missing.go" "$DIR/fam-two.metrics.go" "$F4" "$NOPAGES" 2>&1); rc=$?
+[ $rc -eq 1 ] && ok "a family counter the paragraph omits fails" \
+               || no "an omitted family counter returned $rc (: $out)"
+case "$out" in *other_counter*) ok "the failure names the counter the paragraph omits" ;;
+  *) no "the omission failure does not name the counter: $out" ;; esac
+
+# Each count word on its own, because a stale one is exactly what
+# survives adding a counter to the list beside it.
+DOC_FAMILY_COUNT=Two mkdoc "$DIR/fam-word1.md" Four "$FOUR" "$FOUR" "$FOUR"; mkgo "$DIR/fam-word1.go" 4
+out=$(bash "$CHECK" "$DIR/fam-word1.md" "$DIR/fam-word1.go" "$M4" "$F4" "$NOPAGES" 2>&1); rc=$?
+[ $rc -eq 1 ] && ok "a stale count word in the family paragraph fails" \
+               || no "a stale family count word returned $rc (: $out)"
+
+DOC_FAMILY_EACH_COUNT=two mkdoc "$DIR/fam-word2.md" Four "$FOUR" "$FOUR" "$FOUR"; mkgo "$DIR/fam-word2.go" 4
+out=$(bash "$CHECK" "$DIR/fam-word2.md" "$DIR/fam-word2.go" "$M4" "$F4" "$NOPAGES" 2>&1); rc=$?
+[ $rc -eq 1 ] && ok "a stale count word in the \`_v4\`/\`_v6\` sentence fails" \
+               || no "a stale _v4/_v6 count word returned $rc (: $out)"
+
+# The set growing correctly must PASS, or the section has pinned the
+# document to today's ten and the next family counter cannot be added.
+DOC_FAMILY_LIST="family_counter other_counter" DOC_FAMILY_COUNT=Two DOC_FAMILY_EACH_COUNT=two \
+    mkdoc "$DIR/fam-grow.md" Four "$FOUR" "$FOUR" "$FOUR"; mkgo "$DIR/fam-grow.go" 4
+out=$(bash "$CHECK" "$DIR/fam-grow.md" "$DIR/fam-grow.go" "$DIR/fam-two.metrics.go" "$F4" "$NOPAGES" 2>&1); rc=$?
+[ $rc -eq 0 ] && ok "a second family counter agreed in both places passes" \
+               || no "a correct second family counter is blocked (rc=$rc: $out)"
+
+# --- 7b: the same sentence on another published page -------------------
+#
+# MEASURED on the v2.1.1 release review: docs/internals.md states the
+# family-label count in its own words and said SIX while the reference
+# said EIGHT at v2.1.0 and TEN at this release. The gate was green
+# through both, because internals.md is not the file it was given. The
+# first case passes NO fifth argument, so it drives the derivation the
+# lane actually runs.
+
+mkdir -p "$DIR/pg1"
+mkdoc "$DIR/pg1/ref.md" Four "$FOUR" "$FOUR" "$FOUR"; mkgo "$DIR/pg1/ref.go" 4
+printf '# Internals\n\nTwo counters carry a `family` label.\n' > "$DIR/pg1/other.md"
+out=$(bash "$CHECK" "$DIR/pg1/ref.md" "$DIR/pg1/ref.go" "$M4" "$F4" 2>&1); rc=$?
+[ $rc -eq 1 ] && ok "a stale family count on a page beside the reference fails" \
+               || no "a stale sibling page returned $rc (: $out)"
+case "$out" in *other.md*) ok "the failure names the page that carries the stale count" ;;
+  *) no "the sibling failure does not name the page: $out" ;; esac
+
+# The count and the words it counts on DIFFERENT LINES, which is the
+# shape the real drift had: every line-keyed grep in the gate walks
+# past it, so this case is the one that fails if the flattening goes.
+mkdir -p "$DIR/pg2"
+mkdoc "$DIR/pg2/ref.md" Four "$FOUR" "$FOUR" "$FOUR"; mkgo "$DIR/pg2/ref.go" 4
+printf '# Internals\n\n- **Both series are stored.** Two counters\n  carry a `family` label.\n' \
+    > "$DIR/pg2/other.md"
+out=$(bash "$CHECK" "$DIR/pg2/ref.md" "$DIR/pg2/ref.go" "$M4" "$F4" 2>&1); rc=$?
+[ $rc -eq 1 ] && ok "a stale family count wrapped across a line break fails" \
+               || no "a wrapped stale count returned $rc (: $out)"
+
+# The README one level up is a published page too.
+mkdir -p "$DIR/pg3/docs"
+mkdoc "$DIR/pg3/docs/ref.md" Four "$FOUR" "$FOUR" "$FOUR"; mkgo "$DIR/pg3/ref.go" 4
+printf '# Plugin\n\nTwo counters carry a `family` label.\n' > "$DIR/pg3/README.md"
+out=$(bash "$CHECK" "$DIR/pg3/docs/ref.md" "$DIR/pg3/ref.go" "$M4" "$F4" 2>&1); rc=$?
+[ $rc -eq 1 ] && ok "a stale family count in the README one level up fails" \
+               || no "a stale README count returned $rc (: $out)"
+
+# An agreeing page must PASS, or the sweep has pinned every other page
+# to silence and the sentence can only be written in one file.
+mkdir -p "$DIR/pg4"
+DOC_FAMILY_LIST="family_counter other_counter" DOC_FAMILY_COUNT=Two DOC_FAMILY_EACH_COUNT=two \
+    mkdoc "$DIR/pg4/ref.md" Four "$FOUR" "$FOUR" "$FOUR"; mkgo "$DIR/pg4/ref.go" 4
+printf '# Internals\n\nTwo counters carry a `family` label.\n' > "$DIR/pg4/other.md"
+out=$(bash "$CHECK" "$DIR/pg4/ref.md" "$DIR/pg4/ref.go" "$DIR/fam-two.metrics.go" "$F4" 2>&1); rc=$?
+[ $rc -eq 0 ] && ok "a page that agrees with the reference passes" \
+               || no "an agreeing sibling page is blocked (rc=$rc: $out)"
+
+# No other page stating it at all is a legitimate state: the sweep is
+# silent, not a finding. Without this the section would force every
+# tree to carry a second copy of the sentence.
+mkdir -p "$DIR/pg5"
+mkdoc "$DIR/pg5/ref.md" Four "$FOUR" "$FOUR" "$FOUR"; mkgo "$DIR/pg5/ref.go" 4
+out=$(bash "$CHECK" "$DIR/pg5/ref.md" "$DIR/pg5/ref.go" "$M4" "$F4" 2>&1); rc=$?
+[ $rc -eq 0 ] && ok "no other page stating the count is silence, not a failure" \
+               || no "an absent sibling statement returned $rc (: $out)"
+case "$out" in *"over 0 further page(s)"*) ok "the receipt states how many further pages it read" ;;
+  *) no "the receipt does not state the further-page count: $out" ;; esac
+
+# A pages directory that is not one refuses. An unreadable sweep set
+# must not read as a clean sweep.
+out=$(bash "$CHECK" "$DIR/pg5/ref.md" "$DIR/pg5/ref.go" "$M4" "$F4" "$DIR/pg5/ref.md" 2>&1); rc=$?
+[ $rc -eq 2 ] && ok "a pages argument that is not a directory refuses" \
+               || no "an unusable pages argument returned $rc (: $out)"
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

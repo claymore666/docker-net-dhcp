@@ -246,10 +246,28 @@ ndropped=$(wc -l < "$TMP/dropped.extra.keys" | tr -d ' ')
 nmissing=$(wc -l < "$TMP/missing.keys" | tr -d ' ')
 nextra=$(wc -l < "$TMP/extra.keys" | tr -d ' ')
 
+# A VERDICT THAT COMPARED NOTHING IS NOT A VERDICT, and DROPPED is the
+# shape that says so while counting (#979). Four DROPPED lines are four
+# verdicts, so GOTN is 4 and the arm below never fires; the release PR
+# carrying a module rename produced exactly that, and this read called it
+# "every one of the 4 baselined package(s) got a verdict. Matched by
+# name." The ratchet refuses that run at source now; this is the second
+# reader of the same log and it must not disagree with the first.
+ndroppedall=$(awk '$1=="DROPPED"' "$TMP/read" | wc -l | tr -d ' ')
+
 if [ "$GOTN" -eq 0 ]; then
     echo "  *** VACUOUS: the ratchet compared nothing. A ratchet that compares nothing reports a clean pass."
     rc=2
 else
+    # Named separately from the arm above because the remedies differ: no
+    # verdicts at all is a run that did not happen, and all-DROPPED is a
+    # run whose subject went away.
+    if [ "$ndroppedall" -eq "$GOTN" ]; then
+        echo "  *** VACUOUS: all $GOTN verdict(s) are DROPPED, so no package was compared against any floor."
+        echo "      A whole baseline dropping at once is not a deliberate deletion. If the module"
+        echo "      path changed, the rows move with it and are read under the new name."
+        rc=2
+    fi
     if [ "$nmissing" -gt 0 ]; then
         echo "  *** INCOMPLETE: $((WANT - nmissing)) of $WANT. Missing:"
         # Resolved back to the FULL baseline path, not the last-two-segment

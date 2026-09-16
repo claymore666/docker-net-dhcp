@@ -51,7 +51,8 @@
 //     retransmission budget: renewalDelay is half the time remaining
 //     to Rebind, floored, and every attempt re-arms the retransmit
 //     timer with it, so RENEWING has exactly two exits, Rebind and
-//     expiry (dhcp-golib v0.1.0 proto/machine.go:1214-1234). The first
+//     expiry (dhcp-golib v1.0.0 proto/machine.go:1281-1301, re-armed
+//     by sendRenewal at :1349). The first
 //     sign of a silent server in THIS counter is still
 //     Lost{ReasonExpired} translated to "leasefail"
 //     (pkg/dhcp/chassis.go:877-878), so the rise lands at the expiry of
@@ -131,7 +132,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/claymore666/docker-net-dhcp/test/integration/harness"
+	"github.com/claymore666/docker-net-dhcp/v2/test/integration/harness"
 	docker "github.com/docker/docker/client"
 )
 
