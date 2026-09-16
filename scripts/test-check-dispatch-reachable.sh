@@ -13,10 +13,55 @@
 # git ref" — a mock would test the mock.
 set -uo pipefail
 
+# NO EVENT ENVIRONMENT REACHES THE FIXTURES (#977).
+#
+# The gate reads GITHUB_EVENT_NAME, GITHUB_BASE_REF and
+# GITHUB_EVENT_PATH, and on a pull request whose base is the default
+# branch it applies the merge-reaches-the-default-branch exemption. The
+# release pull request is that shape, so the exemption fired inside
+# every fixture repository here and seventeen cases that assert a
+# refusal got a pass: green on every push to dev and on every pull
+# request into dev, red on the one run a release cannot spend on its
+# own harness.
+#
+# Scrubbed once, here, and by PREFIX rather than by the three names the
+# gate reads today: a case added tomorrow cannot forget to do it, and a
+# gate that starts reading a fourth GITHUB_ variable does not reopen
+# this. The cases that DO drive an event environment set it on the
+# command that needs it, which survives the scrub.
+# Captured by NAME before the scrub, never by value: the re-entrant case
+# at the bottom asserts that the run it spawned really was handed the
+# lane's environment, and a case that drives nothing passes quietly.
+INHERITED_GITHUB=""
+for v in ${!GITHUB_@}; do INHERITED_GITHUB="$INHERITED_GITHUB $v"; done
+INHERITED_GITHUB="${INHERITED_GITHUB# }"
+
+unset -v "${!GITHUB_@}"
+
+# READ LIVE, NEVER SNAPSHOT. The first version of this recorded the
+# namespace here, one line after the unset, and asserted the recording
+# ninety lines later under a description that named the whole suite. A
+# case that exported a GITHUB_ variable into this shell -- which is the
+# population the prefix scrub exists for -- reached every fixture run
+# after it while the recorded value still said the namespace was empty.
+# So it is a function, called at the two moments whose names it is
+# allowed to carry: after the scrub, and after the last case.
+#
+# ITS BOUND: a case that exports a variable and unsets it again before
+# the end is seen by neither call.
+github_namespace() {
+    local v out=""
+    for v in ${!GITHUB_@}; do out="$out $v"; done
+    printf '%s' "${out# }"
+}
+
 # shellcheck source=scripts/tmpdir-guard.sh
 . "$(cd "$(dirname "$0")" && pwd)/tmpdir-guard.sh"
 
 CHECK="$(cd "$(dirname "$0")" && pwd)/check-dispatch-reachable.sh"
+SELF="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
+REENTRANT_FLAG=--reentrant
+SPAWNED_REENTRANT=0
 guarded_tmpdir TMP
 fails=0
 
@@ -94,6 +139,24 @@ verdict() {
 
 # --- the baseline ------------------------------------------------------
 check "a workflow present on the default branch passes" pass "$(verdict)"
+
+# The scrub's own postcondition, keyed on the PREFIX and not on the
+# three names the gate reads today. Vacuous in a bare shell and not
+# vacuous in the re-entrant run at the bottom of this file, which is
+# started with seven of them set.
+check "the scrub emptied the GITHUB_ namespace" "" "$(github_namespace)"
+
+if [ "${1:-}" = "$REENTRANT_FLAG" ]; then
+    missing=""
+    for v in GITHUB_ACTIONS GITHUB_BASE_REF GITHUB_EVENT_NAME \
+             GITHUB_EVENT_PATH GITHUB_HEAD_REF GITHUB_REF GITHUB_REPOSITORY; do
+        case " $INHERITED_GITHUB " in
+            *" $v "*) ;;
+            *) missing="$missing $v" ;;
+        esac
+    done
+    check "the re-entrant run was handed the lane's environment" "" "${missing# }"
+fi
 
 # --- the directory scan is part of the check (#832) --------------------
 # The gate reads `*.yml` AND `*.yaml`, but every fixture in this file is
@@ -1566,9 +1629,98 @@ grep -F 'pin suspension did NOT apply' "$TMP/outnoeq" >/dev/null \
          echo "      pass against a gate with no guard at all"; fails=1; }
 rm -f "$noeq"
 
+# --- THE LANE'S OWN ENVIRONMENT, DRIVEN AT THE SUITE (#977) -------------
+#
+# The scrub at the top of this file is worth exactly as much as the case
+# that drives it. Without this block the seventeen refusals above are
+# green on every push to dev and on every pull request into dev, and the
+# release pull request is the first run that ever sees the environment
+# they inherit -- the one run where a red harness costs a release.
+#
+# So the suite hands ITSELF the release pull request's environment and
+# asserts the verdict does not move. Re-entrant, on an argument rather
+# than a variable, because an argument cannot be inherited: no ambient
+# value can empty this case's domain by making the outer run think it is
+# already the inner one.
+if [ "${1:-}" != "$REENTRANT_FLAG" ]; then
+
+REPO11="$TMP/repo11"
+mkdir -p "$REPO11/.github/workflows"
+git -C "$REPO11" init -q -b main
+git -C "$REPO11" config user.email t@example.com
+git -C "$REPO11" config user.name t
+git -C "$REPO11" config commit.gpgsign false
+dispatchable onmain11 > "$REPO11/.github/workflows/onmain11.yml"
+git -C "$REPO11" add -A && git -C "$REPO11" commit -qm base
+git -C "$REPO11" checkout -q -b work
+dispatchable new11 > "$REPO11/.github/workflows/new11.yml"
+
+LANE_EVENT="$TMP/event-lane.json"
+printf '{"repository":{"default_branch":"main"}}\n' > "$LANE_EVENT"
+
+# ORTHOGONALITY FIRST, the same bargain every copy-and-compare above
+# makes: the environment has to MOVE a verdict at the gate, or the
+# assertion below is satisfied by an environment nothing reads.
+check "an absent workflow fails at the gate with no event environment (control)" \
+    rc1 "$( cd "$REPO11" && BASE_REF=main bash "$CHECK" >/dev/null 2>&1 \
+            && echo pass || echo "rc$?" )"
+check "and the release pull request's environment turns that same fixture into a pass" \
+    pass "$( cd "$REPO11" \
+             && GITHUB_EVENT_NAME=pull_request GITHUB_BASE_REF=main \
+                GITHUB_EVENT_PATH="$LANE_EVENT" BASE_REF=main \
+                bash "$CHECK" >/dev/null 2>&1 \
+             && echo pass || echo "rc$?" )"
+
+# The whole suite, under that environment. More than the three the gate
+# reads: what the lane hands a step is a namespace, not a list.
+inner_out="$TMP/inner.out"
+( GITHUB_EVENT_NAME=pull_request GITHUB_BASE_REF=main \
+  GITHUB_EVENT_PATH="$LANE_EVENT" GITHUB_REF=refs/pull/1/merge \
+  GITHUB_HEAD_REF=dev GITHUB_ACTIONS=true GITHUB_REPOSITORY=owner/repo \
+  bash "$SELF" "$REENTRANT_FLAG" >"$inner_out" 2>&1 ) \
+    && inner=pass || inner="rc$?"
+SPAWNED_REENTRANT=1
+check "this suite's verdict does not move under the release pull request's environment" \
+    pass "$inner"
+[ "$inner" = pass ] || sed -n 's/^FAIL: /      inner FAIL: /p' "$inner_out"
+
+# ...and that run has to have EXECUTED the cases this environment moves.
+# A re-entrant run that died on line one, or that skipped its way to an
+# empty domain, would exit 0 and satisfy the line above.
+grep -F 'PASS: a dispatchable workflow absent from the default branch fails' \
+    "$inner_out" >/dev/null \
+    && echo "PASS: and the case that this environment flips ran, and refused, inside it" \
+    || { echo "FAIL: the re-entrant run never reported the absent-workflow case, so its"
+         echo "      exit code says nothing about the cases this environment moves"
+         fails=1; }
+
+fi
+
+# THE DOMAIN CANNOT BE EMPTIED QUIETLY. The block above is skipped in
+# the run it spawns, and a guard that decides whether a case runs is one
+# edit away from deciding that it never runs. This reads the same fact
+# from the argument list rather than from `$1`, so a single edit to
+# either spelling goes red here.
+case " $* " in
+    *" $REENTRANT_FLAG "*) ;;
+    *)
+        if [ "$SPAWNED_REENTRANT" = 1 ]; then
+            echo "PASS: this run spawned the re-entrant run that drives the lane's environment"
+        else
+            echo "FAIL: this run spawned no re-entrant run, so nothing in it drove the"
+            echo "      environment the release pull request hands this suite"
+            fails=1
+        fi ;;
+esac
+
 # --- the real repository ------------------------------------------------
 # The shipped state must satisfy its own gate.
 real=$( cd "$(dirname "$CHECK")/.." && bash "$CHECK" >/dev/null 2>&1 && echo pass || echo "rc$?" )
 check "this repository passes its own dispatch-reachability gate" pass "$real"
+
+# The other end of the window the scrub is supposed to cover: nothing
+# above put a GITHUB_ variable back into this shell, where every fixture
+# run would have inherited it.
+check "no case put a GITHUB_ variable back into the harness" "" "$(github_namespace)"
 
 exit "$fails"
