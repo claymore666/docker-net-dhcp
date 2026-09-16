@@ -86,6 +86,7 @@ LANE=(
   "starter-task claims|-|bash scripts/check-good-first-issues.sh --static"
   "docs drift|-|bash scripts/check-docs-drift.sh"
   "retired words|-|bash scripts/check-retired-words.sh"
+  "conflict markers|-|bash scripts/check-conflict-markers.sh"
   "health contract|-|bash scripts/check-health-contract.sh"
   "plugin-set order|-|bash scripts/check-plugin-set-order.sh"
   "plugin-set settings declared|-|bash scripts/check-plugin-set-settings.sh"
