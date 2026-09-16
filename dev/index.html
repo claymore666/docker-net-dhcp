@@ -1198,8 +1198,11 @@ licence.</p>
 documentation matching the plugin version you have installed.</p>
 <h2 id="images-and-releases">Images and releases<a class="headerlink" href="#images-and-releases" title="Permanent link">&para;</a></h2>
 <p>Images go to GHCR (<code>ghcr.io/claymore666/docker-net-dhcp:vX.Y.Z</code>, primary)
-and are mirrored to Docker Hub (<code>claymore666/net-dhcp:vX.Y.Z</code>). Pin a
-version for reproducibility.</p>
+and are mirrored to Docker Hub under two names,
+<code>claymore666/net-dhcp:vX.Y.Z</code> and
+<code>claymore666/docker-net-dhcp:vX.Y.Z</code>. The two Hub names are the same
+image at the same digest; install from either. Pin a version for
+reproducibility.</p>
 <p>Published builds are <strong><code>linux/amd64</code></strong> on the bare tag and
 <strong><code>linux/arm64</code></strong> as <code>:vX.Y.Z-arm64</code> / <code>:latest-arm64</code> (v1.7.0 onward).
 Those two are the whole set: <strong>32-bit ARM is not built</strong>, so there is no

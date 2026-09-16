@@ -2014,6 +2014,10 @@ plugin <strong>installed but disabled</strong>, with a retry that reports only
 <ul>
 <li><code>ghcr.io/claymore666/docker-net-dhcp:vX.Y.Z</code> (primary)</li>
 <li><code>claymore666/net-dhcp:vX.Y.Z</code> (Docker Hub mirror)</li>
+<li><code>claymore666/docker-net-dhcp:vX.Y.Z</code> (Docker Hub mirror, the same
+  image at the same digest as <code>claymore666/net-dhcp</code>. It carries every
+  release from v2.0.0; v2.0.0 and v2.1.0 were copied by hand, and the
+  release workflow publishes it from v2.2.0 onward)</li>
 </ul>
 <p>Published builds: <strong><code>linux/amd64</code></strong> on the bare tag and
 <strong><code>linux/arm64</code></strong> as <code>:vX.Y.Z-arm64</code> / <code>:latest-arm64</code> (v1.7.0 onward).
