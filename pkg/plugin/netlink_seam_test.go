@@ -175,7 +175,22 @@ func TestAddRoutes_DefaultGatewayV4(t *testing.T) {
 	}
 }
 
-func TestAddRoutes_DefaultGatewayV6(t *testing.T) {
+// The host's own IPv6 default route is NOT the container's (#821).
+//
+// THIS TEST IS THE INVERSE OF THE ONE IT REPLACES, deliberately, and
+// the inversion is the change: addRoutes used to copy the host's v6
+// default into res.GatewayIPv6 and now must not. The host's default
+// route is what the HOST's kernel made of an advertisement sent to the
+// host, on a link the container is not on in bridge mode; the
+// container's gateway is what the advertisement on the container's own
+// segment said, which arrives on the hint and is set in Join before
+// this function runs.
+//
+// The v4 sibling above is the preservation control: the same route
+// shape, the other family, still copied. Without it this assertion
+// would also pass against an addRoutes that had stopped reading the
+// default route at all.
+func TestAddRoutes_DoesNotTakeTheV6DefaultFromTheHost(t *testing.T) {
 	stubRouteList(t, []netlink.Route{
 		{Dst: nil, Gw: net.ParseIP("fe80::1")},
 	}, nil)
@@ -184,8 +199,48 @@ func TestAddRoutes_DefaultGatewayV6(t *testing.T) {
 	if err := p.addRoutes(&DHCPNetworkOptions{}, true, &fakeLink{}, JoinRequest{}, joinHint{}, res); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
+	if res.GatewayIPv6 != "" {
+		t.Fatalf("v6 gateway: got %q, want it left empty for the hint to fill", res.GatewayIPv6)
+	}
+	if len(res.StaticRoutes) != 0 {
+		t.Fatalf("a default route became a static route: %v", describeStaticRoutes(res.StaticRoutes))
+	}
+}
+
+// And the value that IS set is the one from the hint, all the way
+// through Join's own copy. Asserting the field on a JoinResponse built
+// by hand would pass against a Join that never reads the hint, so this
+// drives the assignment in Join itself.
+func TestJoin_SetsTheV6GatewayFromTheHint(t *testing.T) {
+	res := JoinResponse{}
+	hint := joinHint{GatewayIPv6: "fe80::1", RoutesIPv6: []*StaticRoute{
+		{Destination: "2001:db8::/64", RouteType: RouteTypeOnLink},
+	}}
+	p := &Plugin{}
+	p.applyV6JoinHint(DHCPNetworkOptions{IPv6: true}, JoinRequest{}, hint, &res)
 	if res.GatewayIPv6 != "fe80::1" {
 		t.Fatalf("v6 gateway: got %q want fe80::1", res.GatewayIPv6)
+	}
+	if len(res.StaticRoutes) != 1 || res.StaticRoutes[0].Destination != "2001:db8::/64" {
+		t.Fatalf("advertised routes: got %v", describeStaticRoutes(res.StaticRoutes))
+	}
+}
+
+// skip_routes takes the advertised routes away and leaves the gateway,
+// which is the same split the v4 path has: the option governs static
+// routes, not the default route.
+func TestJoin_SkipRoutesKeepsTheV6Gateway(t *testing.T) {
+	res := JoinResponse{}
+	hint := joinHint{GatewayIPv6: "fe80::1", RoutesIPv6: []*StaticRoute{
+		{Destination: "2001:db8::/64", RouteType: RouteTypeOnLink},
+	}}
+	p := &Plugin{}
+	p.applyV6JoinHint(DHCPNetworkOptions{IPv6: true, SkipRoutes: true}, JoinRequest{}, hint, &res)
+	if res.GatewayIPv6 != "fe80::1" {
+		t.Fatalf("skip_routes took the gateway away: %q", res.GatewayIPv6)
+	}
+	if len(res.StaticRoutes) != 0 {
+		t.Fatalf("skip_routes left %v", describeStaticRoutes(res.StaticRoutes))
 	}
 }
 

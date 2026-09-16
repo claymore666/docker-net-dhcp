@@ -196,32 +196,45 @@ RFC 9915 §7.1's two lifetimes, so the kernel can deprecate instead of
 deleting (RFC 4862 §5.5.4); expiry itself is still the library's job and
 the lifetimes are a belt for a plugin that dies inside the window.
 
-**The Router-Advertisement guard is back, and it is a precondition.**
-DHCPv6 carries no next hop, because RFC 9915 §21 defines no router
-option, and RFC 5942 §4 rule 1 forbids treating the assigned address's
-prefix as on-link, so an endpoint whose kernel is not processing Router
-Advertisements ends up with an address and no route.
-`ApplyRouterAdvertGuard` writes `accept_ra=2`, `autoconf=1` and
-`keep_addr_on_down=1` and reads each back; `DHCPClientOptions` refuses a
-persistent v6 client that does not claim it, and refuses every other
-shape that does. What changed from 1.9.0 is the *mechanism* and never
-the obligation: on 1.9.0 the external client cleared `accept_ra` and
-`autoconf` on every carrier acquisition, so the guard wrote the knobs
-and then remounted `/proc/sys` read-only to keep them from being
-overwritten. Nothing in 2.0 rewrites them, so there is no shield to
-maintain. `accept_ra=2` and not `1` because the engine turns on
-forwarding on the container's link in bridge mode and `1` means "accept
-only while forwarding is off".
+**The Router-Advertisement guard is a precondition, and since v2.2.0 it
+turns the kernel's own processing OFF.** DHCPv6 carries no next hop,
+because RFC 9915 §21 defines no router option, and RFC 5942 §4 rule 1
+forbids treating the assigned address's prefix as on-link, so somebody
+has to process Router Advertisements or the endpoint has an address and
+no route. Until v2.2.0 that somebody was the container's kernel. It is
+now the plugin's own DHCPv6 client, which reads advertisements off its
+socket and reports the gateway, MTU, routes and DNS through
+`dhcp.Info`; the Join answer carries the gateway and the routes, and the
+manager rewrites them when a later advertisement changes them (#821).
 
-It runs in `prepareIPv6Link`, in the same namespace entry as the
-`disable_ipv6` clear that precedes it. That placement is a deviation
-from where the design put it, inside the client's own setup, and the
-reason is mechanical: `/proc/sys` is read-only in the managed plugin's
-rootfs, `v6_link.go` already owns the mount-namespace unshare that makes
-it writable, and doing it in the client would mean a second one. The
-ORDER the design fixed is preserved exactly: `disable_ipv6` cleared
-first, then the guard, then the client, which waits for a non-tentative
-link-local of its own before it sends anything.
+`ApplyRouterAdvertGuard` therefore writes `accept_ra=0`, `autoconf=0`
+and `keep_addr_on_down=1` and reads each back; `DHCPClientOptions`
+refuses a persistent v6 client that does not claim it, and refuses every
+other shape that does. `accept_ra=0` because a kernel acting on the same
+frames would install a second default route beside the plugin's, and
+which of the two wins is a metric comparison nobody chose. `autoconf=0`
+because the plugin holds the lease for the address the container uses.
+
+**Writing `accept_ra=0` purges nothing**, which is the part that is easy
+to miss. It stops the kernel processing the NEXT advertisement; a route
+an earlier one installed stays until its own lifetime runs out, and RFC
+4861 §4.2 allows that to be 65535 seconds. The engine brings the link up
+in the sandbox at the kernel default before the guard runs, so the
+window is real. `purgeRouterAdvertRoutes` closes it: after the knobs
+take, every `RTPROT_RA` route on the link is deleted. Failures there
+fold into `router_advert_guard_failures` beside the sysctl ones, because
+they are one obligation seen twice. The address the kernel may have
+formed in the same window is NOT touched; that is #818's.
+
+It all runs in `prepareIPv6Link`, in one namespace entry. That placement
+is a deviation from where the design put it, inside the client's own
+setup, and the reason is mechanical: `/proc/sys` is read-only in the
+managed plugin's rootfs, `v6_link.go` already owns the mount-namespace
+unshare that makes it writable, and doing it in the client would mean a
+second one. The ORDER the design fixed is preserved exactly:
+`disable_ipv6` cleared first, then the guard, then the purge, then the
+client, which waits for a non-tentative link-local of its own before it
+sends anything.
 
 **An absent v6 lease is classified.** On a stateless or SLAAC segment
 there is no DHCPv6 address by definition, and refusing the endpoint

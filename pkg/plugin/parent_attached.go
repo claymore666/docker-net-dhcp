@@ -574,7 +574,7 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, callStart tim
 				// segment ADVERTISED decides, not how long we waited --
 				// a segment offering managed DHCPv6 that then goes
 				// quiet is still fatal, here as before.
-				if v6 && p.noteV6Absence(ra, la.Name, r.EndpointID, err) {
+				if v6 && p.noteV6AbsenceAndConfigure(ra, info, la.Name, r.EndpointID, err) {
 					return nil
 				}
 				return fmt.Errorf("failed to get initial IP%v address via DHCP%v: %w", v6str, v6str, err)
@@ -589,6 +589,12 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, callStart tim
 				if v6 {
 					res.Interface.AddressIPv6 = info.IP
 					hint.IPv6 = addr
+					// Same as the bridge copy in network.go, and for
+					// the same reason: DHCPv6 has no gateway option,
+					// so the IPv6 gateway is the advertisement's
+					// link-local source address the library saw during
+					// this acquisition (#821).
+					fillV6Hint(hint, info)
 				} else {
 					res.Interface.Address = info.IP
 					hint.IPv4 = addr

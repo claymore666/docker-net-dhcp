@@ -26,6 +26,13 @@ back whatever nothing has claimed.
 In bridge mode a network can also name its host-side interfaces after
 the containers they belong to, so `ip link` reads like the compose file.
 
+The plugin now reads the IPv6 Router Advertisement itself and puts what
+it says into the container: the default route, the routes the router
+asks for, the MTU, and the DNS servers and search list. The container's
+own kernel no longer processes advertisements, so there is one IPv6
+default route on the link instead of two possible ones, and a change on
+the segment reaches a running container without restarting it.
+
 ### Upgrade notes
 
 Required on every host before `docker plugin install`, unchanged since v1.5.0:
@@ -35,7 +42,8 @@ sudo mkdir -p /var/lib/net-dhcp
 ```
 
 **The privilege prompt does not change.** No field `docker plugin upgrade`
-prompts on has moved since v2.0.0.
+prompts on has moved since v2.0.0, so the manifest-delta table in the v2.0.0
+section below is still the list the daemon shows you.
 
 | What changed | What it does to you |
 | --- | --- |
@@ -58,6 +66,16 @@ prompts on has moved since v2.0.0.
 | A `host_ifname` network names its host-side links after their containers | `ip link` and `brctl show` read like the compose file. The generated `dh-` name stays on the link as an altname, so anything that looks that name up still finds it, including teardown and restart recovery. A name over 15 characters is truncated to its first 9 plus the endpoint's first 5 hex, and a name already in use on the host leaves that link with its generated name. |
 | `host_ifname` is refused at `docker network create` in `mode=macvlan` and `mode=ipvlan` | A create naming it there fails with the reason in the message. Those modes move the link into the container and leave nothing on the host to name. |
 | Three more counters are new on `/Plugin.Health` and `/metrics` | `host_ifnames_applied`, `host_ifname_conflicts` and `host_ifname_failures`. None of them flips `healthy`. |
+| The container's IPv6 default route comes from the plugin, not its kernel | `ip -6 route show default` inside a container on an `ipv6=true` network shows one route via an `fe80::` address, as before. It is now installed by Docker from the plugin's Join answer, so it appears with the endpoint rather than a moment later. |
+| The container's link is set to `accept_ra=0` and `autoconf=0` | The container's kernel installs nothing from an advertisement and forms no SLAAC address. A container that was relying on a kernel-formed SLAAC address loses it. **On a stateless or SLAAC network, where there is no DHCPv6 address either, that leaves the container with a link-local address and no global IPv6 address.** It still gets its route, MTU, routes and resolvers from the advertisement, read by the plugin. A global address on those networks comes back when the plugin forms one itself ([#818](https://github.com/claymore666/docker-net-dhcp/issues/818)). |
+| Routes the router advertises reach the container | An RFC 4191 Route Information option becomes a route via the router, and a prefix advertised as on-link becomes an on-link route. `skip_routes=true` opts out, as it does for the IPv4 option-121 routes. The default route is not governed by it. |
+| The advertised MTU is applied to the container's link | It was applied by the container's kernel before, to IPv6 only. It is now applied to the link, which bounds IPv4 as well. `propagate_mtu` does not govern it: an option defaulting to false would have taken the advertised MTU away from every existing IPv6 network. Where both families supply an MTU the link takes the smaller of the two. The MTU refusal range is unchanged. |
+| RDNSS and DNSSL reach `/etc/resolv.conf` on a `propagate_dns=true` network | DHCPv6's own DNS options still win where a server supplies both (RFC 8106 section 5.3.1). A resolver at a link-local address is written with its interface as an RFC 4007 scope zone, `nameserver fe80::1%eth0`; musl, the C library in Alpine images, does not parse that form. |
+| A segment that offers no DHCPv6 address still configures the container | On a stateless or SLAAC network the advertisement is the only source of configuration there is. Its gateway, MTU, routes and resolvers now reach the container through the plugin. Because there is no lease to watch on such a segment, this is applied when the container starts and a later change is applied when it is recreated. |
+| A change on the segment is applied to a running container | A router that renumbers itself, changes its MTU, changes the routes it offers or changes its resolvers moves the container with it, with no restart. |
+| A router that withdraws itself takes the container's default route with it | RFC 4861 reads a Router Lifetime of 0 as "no longer to be used as a default router". The container is left with no IPv6 default route, which is correct, rather than one pointing at a router that is gone. The new `ipv6_router_withdrawn` counter records it. Resolvers are kept: RFC 8106 section 6.1 says the DNS options need not be dropped when the router lifetime expires. |
+| New health counter `ipv6_router_withdrawn` | Counts container IPv6 default routes removed because the router withdrew itself. Counts routes removed, not advertisements received. Not `healthy`-affecting. |
+| `router_advert_guard_failures` counts one more thing | The guard now also removes routes the container's kernel installed from an advertisement before the guard ran. A failure there is counted beside the sysctl failures, so the bound per IPv6 endpoint goes from six steps to seven. |
 
 ### New
 
@@ -172,9 +190,14 @@ prompts on has moved since v2.0.0.
   containers hanging on stateless networks, it does not read
   `ipv6_mode`, and it fires on the ordinary SLAAC segment, which is the
   one `slaac` is for. So on such a segment the endpoint starts with no
-  address from the plugin, as it does today with `ipv6=true`, and any
-  global IPv6 the container has is the kernel's own autoconfiguration.
-  #818 installs the formed address, #819 gives it lifetimes and
+  address from the plugin, as it does today with `ipv6=true` -- and in
+  this release it has no global IPv6 address at all, because the Router
+  Advertisement guard now writes `autoconf=0` and the container's kernel
+  forms none either. It has no IPv6 default route either: the daemon
+  disables IPv6 on a link carrying no IPv6 address and the kernel then
+  refuses every IPv6 route on it, so the plugin cannot supply one until
+  there is an address to supply it beside. #818 installs the formed
+  address, and the route comes back with it; #819 gives it lifetimes and
   renumbering, and #808 is the request all three answer. In this release
   `slaac` and `auto` state the network's intent and report what the
   segment did.

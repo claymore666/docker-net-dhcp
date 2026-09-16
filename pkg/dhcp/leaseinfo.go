@@ -4,21 +4,33 @@
 package dhcp
 
 import (
+	"net/netip"
 	"strconv"
 	"time"
 
 	"github.com/claymore666/dhcp-golib/lease"
+	"github.com/claymore666/dhcp-golib/proto"
 	"github.com/claymore666/dhcp-golib/wire"
 )
 
-// infoFromLease renders one library lease as the Info the plugin
-// applies to a container.
+// infoFromLease renders one library lease, and what the routers on its
+// link advertised, as the Info the plugin applies to a container.
 //
 // Everything the plugin does with a lease — the address, the default
-// route, resolv.conf, the MTU, the classless routes, the audit line —
-// reads this struct, so this function is the whole of the seam's
+// route, resolv.conf, the MTU, the more-specific routes, the audit line
+// — reads this struct, so this function is the whole of the seam's
 // data direction. The two rules that are not a field copy are marked.
-func infoFromLease(l lease.Lease, now time.Time) (Info, int) {
+//
+// IT TAKES THE ROUTER OBSERVATION RATHER THAN ONLY THE LEASE, and that
+// is not a convenience. The library has already merged the
+// advertisement's gateway, MTU, resolvers, search list and
+// more-specific routes into the lease it hands over (RFC 4861 section
+// 6.3.4's union, RFC 8106 section 5.3.1's DHCP-first precedence), so
+// those arrive as ordinary fields. On-link determination does not: it
+// is not a property of the lease and has nowhere in it to live. Taking
+// it here rather than adding it to the result afterwards is what keeps
+// it inside sanitizeInfo's single boundary pass at the bottom.
+func infoFromLease(l lease.Lease, r proto.RouterObservation, now time.Time) (Info, int) {
 	info := Info{
 		MTU:          l.MTU,
 		SearchList:   append([]string(nil), l.DomainSearch...),
@@ -56,19 +68,20 @@ func infoFromLease(l lease.Lease, now time.Time) (Info, int) {
 	// RFC 3442: a 0.0.0.0/0 entry in option 121 supersedes option 3,
 	// and the library has already folded it into Lease.Gateway. What is
 	// left here is the non-default remainder, which is what the plugin
-	// installs as StaticRoutes. Filtering on IsDefault rather than
-	// trusting the library to have removed it keeps the two sides
-	// independent: if it ever stopped folding, the default route would
-	// arrive twice rather than the plugin installing a second one.
-	for _, r := range l.Routes {
-		if r.IsDefault() {
+	// installs as StaticRoutes. Filtering rather than trusting the
+	// library to have removed it keeps the two sides independent: if it
+	// ever stopped folding, the default route would arrive twice rather
+	// than the plugin installing a second one.
+	for _, rt := range l.Routes {
+		if defaultDestination(rt) {
 			continue
 		}
 		info.Routes = append(info.Routes, Route{
-			Destination: r.Dest.String(),
-			Gateway:     routeGateway(r),
+			Destination: rt.Dest.String(),
+			Gateway:     routeGateway(rt),
 		})
 	}
+	info.OnLinkPrefixes = onLinkPrefixes(r)
 
 	info.NTPServers = addrStrings(l.Options, wire.OptNTPServer)
 	info.TFTPServer = optText(l.Options, wire.OptTFTPServer)
@@ -140,6 +153,122 @@ func secondsUntil(deadline, now time.Time) int {
 		return 0
 	}
 	return int(d / time.Second)
+}
+
+// infoFromRouter builds an Info from the Router Advertisement ALONE,
+// with no DHCPv6 lease behind it.
+//
+// WHY IT EXISTS. infoFromLease reads Gateway, MTU, DNS, DomainSearch
+// and Routes off the lease, because the library folds the router table
+// into the lease it hands back. On a segment that advertises M=0 there
+// is no lease to fold anything into, and that segment is precisely the
+// one where the advertisement is the ONLY source of configuration: no
+// DHCPv6 address, no DHCPv6 options, one router saying what the link
+// is. Before #821 the container's kernel read it. #821 turns the kernel
+// off, so something has to read it here or the container gets nothing.
+//
+// NO ADDRESS AND NO LIFETIMES, deliberately. Info.IP stays empty and
+// the caller can still ask "did this produce an address" the way it
+// always has. Forming an address from the advertised prefix is SLAAC
+// and belongs to #818; this function is about the other four things an
+// advertisement carries.
+//
+// THE GATEWAY COMES FROM Routers AND NOT FROM Router. Router is "who
+// last spoke" and never expires; Routers is RFC 4861 section 6.3.4's
+// Default Router List, which a Router Lifetime of 0 empties. Reading
+// Router here would give a withdrawn router back as a gateway forever.
+func infoFromRouter(r proto.RouterObservation) (Info, int) {
+	info := Info{
+		MTU:            int(r.MTU),
+		SearchList:     append([]string(nil), r.Search...),
+		OnLinkPrefixes: onLinkPrefixes(r),
+	}
+	if len(r.Routers) > 0 {
+		info.Gateway = r.Routers[0].String()
+	}
+	for _, d := range r.DNS {
+		info.DNSServers = append(info.DNSServers, d.String())
+	}
+	// Same filter as the lease path and for the same reason: ::/0 in a
+	// Route Information option IS the default route (RFC 4191 allows
+	// it), and exporting it as a static route as well would install the
+	// default twice.
+	for _, rt := range r.Routes {
+		if defaultDestination(rt) {
+			continue
+		}
+		info.Routes = append(info.Routes, Route{
+			Destination: rt.Dest.String(),
+			Gateway:     routeGateway(rt),
+		})
+	}
+	// The router chose every string above, so it gets the same
+	// treatment a server's do. The count is returned rather than
+	// counted here; the caller decides whether it has an event to carry
+	// it on.
+	return info, sanitizeInfo(&info)
+}
+
+// defaultDestination reports whether a route's destination is the whole
+// address space, in EITHER family.
+//
+// wire.Route.IsDefault answers it for v4 only — it is
+// `Dest.Bits() == 0 && Dest.Addr().Is4()`, which is RFC 3442's question
+// about option 121 and is false for ::/0. RFC 4191 section 2.3 allows a
+// Route Information Option with a prefix length of zero, and the
+// library's router table carries it through like any other, so a v6
+// endpoint on such a segment would otherwise be handed ::/0 as a static
+// route beside the default route Docker installs from the same router.
+func defaultDestination(r wire.Route) bool { return r.Dest.Bits() == 0 }
+
+// onLinkPrefixes is the advertisement's on-link determination: RFC 4861
+// section 4.6.2's Prefix Information options with the L flag set,
+// rendered as CIDR.
+//
+// STANDARD RFC 4861 section 4.6.2 on the L flag: "When set, indicates
+// that this prefix can be used for on-link determination. When not set
+// the advertisement makes no statement about on-link or off-link
+// properties of the prefix." So an option with L clear is not a prefix
+// this is silent about by accident.
+//
+// STANDARD RFC 4861 section 6.3.4 on the lifetime: a prefix is entered
+// in the Prefix List only when "the Prefix Information option's Valid
+// Lifetime field is non-zero", and a zero valid lifetime on a prefix
+// already there means to "time out the prefix immediately". Zero is
+// therefore a withdrawal and not a prefix with no time left.
+//
+// The link-local prefix is skipped for the reason section 5.5.3 b skips
+// it on the other path: the kernel owns fe80::/64 on every interface
+// that has an address at all, and installing a second route for it
+// would be this plugin claiming a prefix it did not configure.
+func onLinkPrefixes(r proto.RouterObservation) []string {
+	var out []string
+	for _, p := range r.Prefixes {
+		if !p.OnLink || p.ValidLifetime == 0 {
+			continue
+		}
+		if !p.Prefix.Is6() || p.Prefix.Is4In6() || p.Prefix.IsLinkLocalUnicast() {
+			continue
+		}
+		pfx := netip.PrefixFrom(p.Prefix, int(p.PrefixLen))
+		if !pfx.IsValid() || pfx.Bits() == 0 {
+			continue
+		}
+		s := pfx.Masked().String()
+		if !containsString(out, s) {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+func containsString(in []string, s string) bool {
+	for _, v := range in {
+		if v == s {
+			return true
+		}
+	}
+	return false
 }
 
 func routeGateway(r wire.Route) string {

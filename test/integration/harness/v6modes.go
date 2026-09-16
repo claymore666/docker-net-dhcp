@@ -823,21 +823,57 @@ func (f *V6Fixture) DumpLogs(write func(string)) {
 	}
 }
 
+// Reannounce replaces the running dnsmasq with one started under
+// different range arguments, on the SAME bridge and the same addresses,
+// and returns once the new one is serving.
+//
+// WHY IT EXISTS (#821). Half of what this plugin now does with a Router
+// Advertisement has no other way to be driven from outside: a router
+// that renumbers itself, lowers its MTU, stops offering a route
+// (Router Lifetime 0, RFC 4861 section 4.2) or changes its resolver
+// list is a CHANGE, and a fixture that can only start one way can only
+// ever show the steady state. A container keeps running across this, so
+// what is measured afterwards is the plugin rewriting a live
+// container's configuration rather than a fresh Join doing it.
+//
+// The bridge, its addresses and the RA capture are left alone: only the
+// server process is replaced, which is what a router being reconfigured
+// looks like from the segment.
+//
+// The log is TRUNCATED by the restart, because start() creates the log
+// file afresh. Callers that count log lines across a Reannounce must
+// take their counts before it.
+func (f *V6Fixture) Reannounce(rangeArgs []string) {
+	f.t.Helper()
+	f.stopServer()
+	f.start(rangeArgs)
+}
+
+// stopServer ends the dnsmasq process and nothing else. Split out of
+// teardown so Reannounce cannot drift from it: a restart that forgot
+// to wait for the old process would leave two servers answering on one
+// bridge, and the second one's answers would look like the first one's.
+func (f *V6Fixture) stopServer() {
+	if f.cmd == nil || f.cmd.Process == nil {
+		return
+	}
+	_ = f.cmd.Process.Signal(syscall.SIGTERM)
+	done := make(chan struct{})
+	go func() { _ = f.cmd.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		_ = f.cmd.Process.Kill()
+		<-done
+	}
+	f.cmd = nil
+}
+
 func (f *V6Fixture) teardown() {
 	if f.raCap != nil {
 		f.raCap.Stop()
 	}
-	if f.cmd != nil && f.cmd.Process != nil {
-		_ = f.cmd.Process.Signal(syscall.SIGTERM)
-		done := make(chan struct{})
-		go func() { _ = f.cmd.Wait(); close(done) }()
-		select {
-		case <-done:
-		case <-time.After(2 * time.Second):
-			_ = f.cmd.Process.Kill()
-			<-done
-		}
-	}
+	f.stopServer()
 	if f.tmpDir != "" {
 		_ = os.RemoveAll(f.tmpDir)
 	}

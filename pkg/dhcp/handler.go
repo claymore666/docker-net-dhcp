@@ -60,14 +60,43 @@ type Info struct {
 	TZDBTimezone  string `json:",omitempty"`
 	TimeOffset    string `json:",omitempty"`
 
-	// Routes are the classless static routes from DHCP option 121
-	// (RFC 3442, dhcpcd env var `new_classless_static_routes`). v4 only —
-	// DHCPv6 carries no route option (routes come from RAs). Empty when
-	// the server didn't supply the option. A 0.0.0.0/0 entry is NOT
-	// included here: per RFC 3442 its gateway supersedes option 3 and is
-	// folded into Gateway during parsing. Applied at Join as additional
-	// container StaticRoutes; `skip_routes=true` opts out.
+	// Routes are the more-specific routes this endpoint was told about:
+	// DHCP option 121's classless static routes on the v4 path (RFC
+	// 3442), and RFC 4191's Route Information Options on the v6 one,
+	// where DHCPv6 has no route option of its own and the advertisement
+	// is the only source. Empty when neither supplied any.
+	//
+	// A DEFAULT ROUTE IS NEVER IN HERE, in either family. RFC 3442 folds
+	// option 121's 0.0.0.0/0 into Gateway during parsing and RFC 4191
+	// section 2.3 allows a ::/0 Route Information Option that means the
+	// same thing; both are Gateway's business, and a copy of one here
+	// would be a second default route racing the one Docker installs.
+	//
+	// Applied at Join as container StaticRoutes, and on the v6 path
+	// re-applied when a later advertisement changes them (#821).
+	// `skip_routes=true` opts out of both.
 	Routes []Route `json:",omitempty"`
+
+	// OnLinkPrefixes are the prefixes the advertisement said are
+	// reachable without a router: RFC 4861 section 4.6.2's Prefix
+	// Information options with the L flag set. v6 only, empty when none
+	// were advertised.
+	//
+	// SEPARATE FROM Routes BECAUSE THEY ARE A DIFFERENT QUESTION AND
+	// HAVE A DIFFERENT LIFETIME. Routes is a routing table the plugin
+	// keeps in step with the advertisement for the life of the endpoint;
+	// this is on-link determination, applied once at Join, and it exists
+	// because the plugin took the link off accept_ra (#821): the kernel
+	// used to install the on-link route from the same option, and the
+	// DHCPv6 address is a /128 that RFC 5942 section 4 forbids deriving
+	// a prefix from. Without it a container on a segment whose router
+	// advertises Router Lifetime 0 has no IPv6 route of any kind.
+	//
+	// THE BOUND: the library reports the prefixes of the MOST RECENT
+	// advertisement rather than a union, so this is what one frame said.
+	// On a segment with one router every advertisement carries the same
+	// Prefix Information option and the two are the same thing.
+	OnLinkPrefixes []string `json:",omitempty"`
 
 	// LeaseSeconds is the lease lifetime the server granted, in seconds
 	// (v4 `new_dhcp_lease_time`; v6 the IA_NA valid lifetime

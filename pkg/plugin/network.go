@@ -1497,7 +1497,7 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 				// segment ADVERTISED decides, not how long we waited --
 				// a segment offering managed DHCPv6 that then goes
 				// quiet is still fatal, here as before.
-				if v6 && p.noteV6Absence(ra, ctrName, r.EndpointID, err) {
+				if v6 && p.noteV6AbsenceAndConfigure(ra, info, ctrName, r.EndpointID, err) {
 					return nil
 				}
 				return fmt.Errorf("failed to get initial IP%v address via DHCP%v: %w", v6str, v6str, err)
@@ -1511,7 +1511,22 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 				if v6 {
 					res.Interface.AddressIPv6 = info.IP
 					hint.IPv6 = ip
-					// No gateways in DHCPv6!
+					// DHCPv6 carries no gateway option. The IPv6
+					// gateway is the Router Advertisement's source
+					// address, which the library's own client read off
+					// the same link during this acquisition, and which
+					// reaches us here on info.Gateway (#821). It is a
+					// link-local address by definition: RFC 4861
+					// section 4.2 requires the Source Address of an
+					// advertisement to be the link-local address of
+					// the interface it went out of.
+					//
+					// The operator's `-o gateway=` override is NOT
+					// consulted. It is a single value and this is the
+					// other family; giving it two meanings would make
+					// one network's v4 override silently decide its v6
+					// route as well.
+					fillV6Hint(hint, info)
 				} else {
 					res.Interface.Address = info.IP
 					hint.IPv4 = ip
@@ -1832,6 +1847,76 @@ func dhcpStaticRoutes(routes []dhcp.Route) []*StaticRoute {
 	return out
 }
 
+// v6AdvertisedRoutes converts what the Router Advertisement said about
+// reachability, beyond the default route, into libnetwork
+// StaticRoutes.
+//
+// TWO SOURCES, ONE LIST, and they are different kinds of statement:
+//
+//   - info.OnLinkPrefixes are RFC 4861 section 4.6.2 Prefix Information
+//     options with the L flag set: "this prefix is reachable without a
+//     router". They become on-link routes. They are needed because the
+//     kernel is no longer the one acting on the advertisement and
+//     because the DHCPv6 address is installed as a /128 (RFC 9915
+//     section 18.2.10.1), so nothing else in the container's table says
+//     the segment's own prefix is on-link. RFC 5942 section 4 is the
+//     reason a /128 address cannot be made to imply it.
+//   - info.Routes on a v6 lease are RFC 4191 Route Information options:
+//     "this prefix is reachable through me". They become next-hop
+//     routes pointed at the advertising router. pkg/dhcp already
+//     filtered a ::/0 entry out of them, which RFC 4191 section 2.3
+//     explicitly permits a router to send and which would otherwise
+//     install a second default route beside GatewayIPv6.
+//
+// On-link first, then next-hop, and a destination seen twice keeps its
+// first form: an on-link statement about a prefix is the stronger one,
+// since a router that says "reachable through me" about a prefix the
+// same advertisement says is on-link would otherwise cost every packet
+// an extra hop.
+func v6AdvertisedRoutes(info dhcp.Info) []*StaticRoute {
+	out := make([]*StaticRoute, 0, len(info.OnLinkPrefixes)+len(info.Routes))
+	seen := map[string]bool{}
+	for _, p := range info.OnLinkPrefixes {
+		if seen[p] {
+			continue
+		}
+		seen[p] = true
+		out = append(out, &StaticRoute{Destination: p, RouteType: RouteTypeOnLink})
+	}
+	for _, r := range info.Routes {
+		if seen[r.Destination] {
+			continue
+		}
+		seen[r.Destination] = true
+		sr := &StaticRoute{Destination: r.Destination, RouteType: RouteTypeOnLink}
+		if r.Gateway != "" {
+			sr.RouteType = RouteTypeNextHop
+			sr.NextHop = r.Gateway
+		}
+		out = append(out, sr)
+	}
+	if len(out) == 0 {
+		// nil and not an empty slice, so "the advertisement asked for
+		// no extra routes" and "there was no advertisement" are the
+		// same value at every reader. len() is what every caller tests.
+		return nil
+	}
+	return out
+}
+
+// fillV6Hint writes the IPv6 half of the Join hint from what the
+// acquisition's Router Advertisement said.
+//
+// ONE FUNCTION, TWO CALL SITES. The bridge path (CreateEndpoint here)
+// and the parent-attached path (parent_attached.go) are separate copies
+// of the same acquisition loop, and a rule written twice is a rule that
+// gets changed once. The v4 fields beside these have that shape today
+// and #821 did not add a third copy.
+func fillV6Hint(hint *joinHint, info dhcp.Info) {
+	hint.GatewayIPv6 = info.Gateway
+	hint.RoutesIPv6 = v6AdvertisedRoutes(info)
+}
+
 // appendDHCPStaticRoutes hands Docker the DHCP option-121 classless
 // static routes (RFC 3442) captured from the initial v4 exchange in
 // CreateEndpoint. These ride the hint alongside the gateway;
@@ -1866,6 +1951,46 @@ func (p *Plugin) appendDHCPStaticRoutes(opts DHCPNetworkOptions, r JoinRequest, 
 		return
 	}
 	log.WithFields(fields).Info("[Join] Adding DHCP classless static routes (option 121)")
+}
+
+// applyV6JoinHint puts the IPv6 half of the routing answer into the
+// Join response: the gateway the Router Advertisement came from, and
+// the routes it asked for. Both were captured by the library's own
+// client during CreateEndpoint and rode here on the hint (#821).
+//
+// ONE FUNCTION FOR BOTH, because the split between them is the part
+// worth being able to drive: `skip_routes=true` takes the routes away
+// and MUST leave the gateway, which is the same rule the v4 path has
+// (the option governs static routes, not the default route), and a
+// rule that lives in two functions is a rule that gets half-changed.
+//
+// Nothing here consults the host's routing table. That is the change
+// #821 made: see the default-route branch of addRoutes.
+func (p *Plugin) applyV6JoinHint(opts DHCPNetworkOptions, r JoinRequest, hint joinHint, res *JoinResponse) {
+	if hint.GatewayIPv6 != "" {
+		log.WithFields(log.Fields{
+			"network":  shortID(r.NetworkID),
+			"endpoint": shortID(r.EndpointID),
+			"sandbox":  r.SandboxKey,
+			"gateway":  hint.GatewayIPv6,
+		}).Info("[Join] Setting IPv6 gateway from the Router Advertisement seen in CreateEndpoint")
+		res.GatewayIPv6 = hint.GatewayIPv6
+	}
+
+	if opts.SkipRoutes || len(hint.RoutesIPv6) == 0 {
+		return
+	}
+
+	res.StaticRoutes = append(res.StaticRoutes, hint.RoutesIPv6...)
+	p.dhcpRoutesApplied.Add(int32(len(hint.RoutesIPv6)))
+
+	log.WithFields(log.Fields{
+		"network":  shortID(r.NetworkID),
+		"endpoint": shortID(r.EndpointID),
+		"sandbox":  r.SandboxKey,
+		"routes":   describeStaticRoutes(hint.RoutesIPv6),
+		"gateway":  res.GatewayIPv6,
+	}).Info("[Join] Adding IPv6 routes from the Router Advertisement")
 }
 
 // describeStaticRoutes renders routes for a log field as
@@ -1919,24 +2044,25 @@ func (p *Plugin) addRoutes(opts *DHCPNetworkOptions, v6 bool, link netlink.Link,
 	}
 	for _, route := range routes {
 		if route.Dst == nil {
-			// Default route
-			switch family {
-			case unix.AF_INET:
-				if res.Gateway == "" {
-					res.Gateway = route.Gw.String()
-					log.
-						WithFields(logFields).
-						WithField("gateway", res.Gateway).
-						Info("[Join] Setting IPv4 gateway retrieved from host parent interface routing table")
-				}
-			case unix.AF_INET6:
-				if res.GatewayIPv6 == "" {
-					res.GatewayIPv6 = route.Gw.String()
-					log.
-						WithFields(logFields).
-						WithField("gateway", res.GatewayIPv6).
-						Info("[Join] Setting IPv6 gateway retrieved from host parent interface routing table")
-				}
+			// Default route.
+			//
+			// ONLY IPv4 IS TAKEN FROM THE HOST TABLE. The v6 default
+			// used to be read here too, and reading it was wrong in
+			// both directions (#821): the host's own default route is
+			// whatever the host's kernel made of an advertisement sent
+			// to the HOST, on a link the container is not on in bridge
+			// mode, and on a host with no IPv6 default of its own the
+			// container got none even though the segment had a router.
+			// The container's IPv6 gateway is what the advertisement
+			// on the container's segment said, which the library's
+			// client read during CreateEndpoint and which arrives on
+			// the hint. Set before this function is called.
+			if family == unix.AF_INET && res.Gateway == "" {
+				res.Gateway = route.Gw.String()
+				log.
+					WithFields(logFields).
+					WithField("gateway", res.Gateway).
+					Info("[Join] Setting IPv4 gateway retrieved from host parent interface routing table")
 			}
 
 			continue
@@ -2214,6 +2340,9 @@ func (p *Plugin) Join(ctx context.Context, r JoinRequest) (JoinResponse, error) 
 	}
 
 	p.appendDHCPStaticRoutes(opts, r, hint, &res)
+	if opts.IPv6 {
+		p.applyV6JoinHint(opts, r, hint, &res)
+	}
 
 	// Register the manager BEFORE spawning the start goroutine so that a
 	// fast Leave can find it. Stop blocks until Start has completed

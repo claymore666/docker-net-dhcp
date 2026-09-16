@@ -10,7 +10,7 @@
 #
 # POPULATION: TOP-LEVEL TEST FUNCTIONS, PARENTS ONLY.
 # One row per `func TestX(t *testing.T)` in test/integration/*_test.go —
-# 134 of them, the main suite's 127 and the failure suite's 7. A subtest's
+# 137 of them, the main suite's 130 and the failure suite's 7. A subtest's
 # seconds are inside its parent's figure and are NOT a row of their own.
 # That is stated because the previous edition's header did not state it
 # and the population was read back two ways: 104 rows summing 1804.88s
@@ -74,6 +74,33 @@
 #              it cost 27.05s and failed, and 15 of those seconds were a
 #              wait for a counter that cannot move on this pool, which
 #              the cell no longer takes here.
+#   one row    TestDHCPv6_NoAddressSegmentStillGetsItsRouteFromTheAdvertisement
+#              is 170.00 and is INFERRED, not measured: it arrives with
+#              #821 and no corpus run could have costed it. It is two
+#              arms, each one V6Fixture plus one network plus one
+#              container plus one route read, which is the per-arm shape
+#              of TestDHCPv6_NoAddressModes_StartTheEndpoint (80.63 for
+#              three such arms, so about 27 each) plus this test's own
+#              poll for the route. 170.00 is deliberately well above
+#              that derivation: the two modes it uses are the two slowest
+#              in that test, because each waits out router discovery
+#              before the acquisition gives up. The first run that
+#              executes it costs it.
+#   two rows   TestDHCPv6_AdvertisedMTUReachesTheContainer (30.00) and
+#              TestDHCPv6_RouterWithdrawalAndReturn (55.00) are INFERRED,
+#              not measured: they arrive with #821 and no corpus run
+#              could have costed them. The first builds one V6Fixture,
+#              creates one network, runs one container and reads its
+#              link MTU, which is the shape of
+#              TestDHCPv6_Stateless_ConfigurationReachesTheContainer
+#              (30.44). The second is that shape plus TWO server
+#              reconfigurations, each followed by a poll for the
+#              container's routing table to follow -- one advertisement
+#              interval (4 s) plus the plugin's own watch, twice, with
+#              room for a loaded runner. Both are deliberately above
+#              their derivations so a slow runner cannot make the rows
+#              optimistic. The first run that executes them costs them,
+#              the way TestFailure_UnansweredRenewalsCounted was costed.
 #   one row    TestJoinDuration_DistributionInThisShard is 13.00, and it
 #              is INFERRED too: it arrives with #403 and no run has
 #              executed it. It creates one macvlan network and runs one
@@ -303,11 +330,14 @@ TestConflictCheck_SquattedOfferIsDeclined	37.00
 TestConflictCheck_SquatterAfterTheFact	36.71
 TestConflictCheck_WaitAcquisitionIsTimed	9.15
 TestDHCPv6_ADuplicateOnTheSegmentIsRefused	30.08
+TestDHCPv6_AdvertisedMTUReachesTheContainer	30.00
 TestDHCPv6_ASquatOnARunningContainerIsCountedAndTheAddressChanges	38.00
 TestDHCPv6_Managed_ServerSilent_IsStillFatal	27.95
 TestDHCPv6_Managed_StillRequiresALease	16.39
 TestDHCPv6_NoAddressModes_StartTheEndpoint	80.63
+TestDHCPv6_NoAddressSegmentStillGetsItsRouteFromTheAdvertisement	170.00
 TestDHCPv6_RefusedAndSilentAreTwoRows	56.00
+TestDHCPv6_RouterWithdrawalAndReturn	55.00
 TestDHCPv6_Stateless_ConfigurationReachesTheContainer	30.44
 TestDNSPropagate_BridgeModeWritesResolvConfToo	11.60
 TestDNSPropagate_DefaultIsUnchanged	11.72

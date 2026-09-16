@@ -36,19 +36,22 @@ const (
 	// there are no DHCPv6 addresses here. This is the NORMAL state, not
 	// a degraded one, and the endpoint is created without a v6 address.
 	//
-	// The endpoint then starts with no global IPv6 address FROM THIS
-	// PLUGIN -- there is no lease to be had -- and the distinction in
-	// that sentence is the whole of it: the KERNEL may well form one.
-	// The RA guard (#875, pkg/dhcp/ra_guard.go) leaves the interface at
-	// accept_ra=2 and autoconf=1, so whether an address forms is
-	// decided by the A flag on the advertised prefix (RFC 4862 section
-	// 5.5.3) and not by this plugin. Any address that does form is the
-	// kernel's, is not a lease, and is not reported in docker inspect.
+	// The endpoint then starts with no global IPv6 address at all. Since
+	// #821 the RA guard (pkg/dhcp/ra_guard.go) writes autoconf=0 on the
+	// interface, so the kernel forms no address from the advertised
+	// prefix whatever its A flag says (RFC 4862 section 5.5.3) -- the
+	// plugin holds the lease for the address a container uses, and two
+	// sources of global address on one link is not a state anything
+	// downstream is written for. SLAAC address formation under the
+	// plugin's own control is #818 and is not on this build.
 	//
-	// (2.0 removed the other half of this note along with dhcpcd. In
-	// 1.x the client wrote accept_ra=0 and autoconf=0 on every carrier
-	// acquisition and the guard had to shield the sysctls from it; this
-	// build execs nothing, so the writes stand on their own -- D30 Q3.)
+	// The advertisement is still processed, by the plugin's own client
+	// instead of by the kernel, and noteV6AbsenceAndConfigure puts its
+	// gateway, MTU, routes and DNS into the Join answer. That is a
+	// Join-time answer only: the chassis synthesises its live
+	// routeradvert event from the library's lease view and there is no
+	// lease here, so a later advertisement on such a segment is not
+	// followed until the next container start.
 	//
 	// What the container gets regardless is IPv4 from DHCP, an IPv6
 	// link-local, and the stateless DHCPv6 configuration (#815) where
@@ -154,6 +157,37 @@ func classifyV6Absence(ra dhcp.RAObservation, cause error) v6Verdict {
 // Counting is the caller's evidence of intent; it is NOT evidence of
 // effect. What proves the fix is a container starting and the address
 // it ends up with, which is what the integration cases assert.
+// noteV6AbsenceAndConfigure is noteV6Absence plus the one thing an
+// endpoint with no DHCPv6 address still needs: whatever the Router
+// Advertisement said.
+//
+// NO ADDRESS IS NOT NO CONFIGURATION (#821). On a segment advertising
+// M=0 the advertisement is the only source of configuration there is,
+// and since the guard turns the container's kernel off it is this
+// plugin that reads it or nobody. info carries what the router said
+// even though the acquisition produced no address; see
+// dhcp.acquisitionResult6.
+//
+// ONE FUNCTION, TWO CALL SITES, the same reason fillV6Hint is one:
+// network.go and parent_attached.go are separate copies of this
+// acquisition loop.
+//
+// WHAT IT DOES NOT DO. There is no live update on such a segment. The
+// chassis synthesises its routeradvert event from the library's lease
+// view, and the library holds no lease here, so a later advertisement
+// on a segment with no DHCPv6 is not followed until the next container
+// start. Address formation from the advertised prefix is SLAAC and is
+// #818.
+func (p *Plugin) noteV6AbsenceAndConfigure(ra dhcp.RAObservation, info dhcp.Info, iface, endpointID string, cause error) bool {
+	if !p.noteV6Absence(ra, iface, endpointID, cause) {
+		return false
+	}
+	p.updateJoinHint(endpointID, func(hint *joinHint) {
+		fillV6Hint(hint, info)
+	})
+	return true
+}
+
 func (p *Plugin) noteV6Absence(ra dhcp.RAObservation, iface, endpointID string, cause error) bool {
 	fields := log.Fields{"endpoint": shortID(endpointID), "iface": iface}
 

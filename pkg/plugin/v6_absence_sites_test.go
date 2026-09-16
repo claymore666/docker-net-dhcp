@@ -38,7 +38,14 @@ import (
 // because it renamed one variable.
 const (
 	v6AbsenceAcquireCall = "p.acquireWithPolicy("
-	v6AbsenceConsult     = "p.noteV6Absence("
+	// THE CONSULT IS THE CLASSIFY-AND-CONFIGURE CALL, not the bare
+	// classifier. Since #821 the container's kernel no longer reads the
+	// advertisement, so a site that classifies the absence as normal
+	// and then returns without putting the advertisement into the Join
+	// hint creates an endpoint with a link-local address and no route
+	// at all. Classifying is half the obligation; keying on the half
+	// would let the other half go missing from one attach path.
+	v6AbsenceConsult = "p.noteV6AbsenceAndConfigure("
 	// Lines to read after the call before concluding the site does not
 	// consult the classifier. The two real sites answer within six; the
 	// margin is for a reworded error, not for a different structure.
@@ -137,7 +144,8 @@ func TestV6Absence_EveryAcquisitionSiteConsultsTheClassifier(t *testing.T) {
 			if !strings.Contains(window, v6AbsenceConsult) {
 				t.Errorf("%s:%d acquires a lease and does not consult %s within %d lines.\n"+
 					"On a stateless or SLAAC IPv6 segment this site fails the endpoint and "+
-					"no container starts on it — the defect #868 is about, still present on "+
+					"no container starts on it — the defect #868 is about — or it creates "+
+					"one with no IPv6 route, which is #821's half, still present on "+
 					"whichever attach mode this file serves.\n%s",
 					name, i+1, v6AbsenceConsult, v6AbsenceWindow, window)
 			}

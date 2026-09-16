@@ -169,11 +169,11 @@ func advertisedNoDHCPv6(r RAObservation) bool {
 // makes both "set on the wrong client" and "missing on the right one"
 // wiring mistakes of the same kind. A dropped flag is a wiring mistake
 // that looks like a working plugin, and neither of its failures is one
-// anything downstream would report -- accept_ra=2 on a link still in
-// the HOST namespace changes the host's router discovery, and a v6
-// endpoint whose kernel ignores advertisements has an address, no
-// route, and a completely healthy look for the length of one router
-// lifetime (#875).
+// anything downstream would report -- accept_ra=0 on a link still in
+// the HOST namespace turns the host's own router discovery off, and a
+// v6 endpoint whose link was never guarded carries whatever route its
+// kernel made of the advertisement beside the one the plugin installed,
+// with a completely healthy look either way (#875, #821).
 //
 // oneShot is the CreateEndpoint acquisition. Its link is still in the
 // host's network namespace when it runs, which is why the guard is
@@ -387,13 +387,41 @@ func acquireOnce6(ctx context.Context, iface string, params proto.Params6, opts 
 	opts.count(manager, stats)
 	opts.v6ModeReport(stats)
 
-	if info.IP == "" {
-		if lastE == nil {
-			lastE = ErrNoLease
-		}
-		return Info{}, ra, lastE
+	out, err := acquisitionResult6(info, client.Router(), lastE)
+	return out, ra, err
+}
+
+// acquisitionResult6 decides what one DHCPv6 acquisition hands back.
+//
+// THE ERROR PATH STILL CARRIES WHAT THE ROUTER SAID (#821). "No DHCPv6
+// address" is not "no configuration": on a segment advertising M=0 it
+// is the NORMAL answer, and the advertisement that arrived during this
+// acquisition is then the only thing that can tell the container its
+// gateway, MTU, routes and resolvers. Returning the zero Info here --
+// which is what this did -- threw that away, and with #821 turning the
+// container's kernel off (accept_ra=0) nothing else was going to read
+// it: the container ended up with a link-local and nothing else, where
+// before #821 its kernel had given it a route.
+//
+// Info.IP is still empty on that path, so every caller's "did this
+// produce an address" test is unchanged, and so is the error.
+//
+// It is a function of its own because acquireOnce6 builds its own
+// client against a real socket in a real namespace, so this decision
+// was not reachable from a unit test where it sat.
+//
+// The sanitizer's drop count is not carried: there is no event on this
+// path to put it on, and the values themselves have already been
+// dropped, which is the part that protects the container.
+func acquisitionResult6(info Info, r proto.RouterObservation, lastE error) (Info, error) {
+	if info.IP != "" {
+		return info, nil
 	}
-	return info, ra, nil
+	if lastE == nil {
+		lastE = ErrNoLease
+	}
+	advertised, _ := infoFromRouter(r)
+	return advertised, lastE
 }
 
 // errV6HintInUse is a conflict found by the client's own duplicate
@@ -570,7 +598,7 @@ func runAcquisition6(ctx context.Context, iface string, client v6AcquisitionClie
 func acquireStep6(ev lease.Event, hinted bool) acquireOutcome {
 	switch ev.Kind {
 	case lease.Acquired:
-		info, _ := infoFromLease(ev.Lease, time.Now())
+		info, _ := infoFromLease(ev.Lease, ev.Router, time.Now())
 		return acquireOutcome{Info: info, Done: true}
 	case lease.Configured:
 		return acquireOutcome{Done: true, Err: ErrNoV6Address}

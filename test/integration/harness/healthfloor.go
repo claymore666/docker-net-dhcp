@@ -429,6 +429,16 @@ type HealthResponse struct {
 	// itself; a zero on its own means "held" and "never ran" equally.
 	RouterAdvertGuardFailures int32 `json:"router_advert_guard_failures"`
 
+	// IPv6RouterWithdrawn counts container IPv6 default routes removed
+	// because the advertising router set its Router Lifetime to 0 (RFC
+	// 4861 section 4.2, #821). NOT healthy-affecting and NOT in the
+	// floor table: a router withdrawing itself is deliberate, and the
+	// containers on that segment are correctly left with no default
+	// route rather than one pointing at a router that is gone. It is
+	// here so a test that has SEEN the route disappear from inside the
+	// container can then read the plugin's own account of why.
+	IPv6RouterWithdrawn int32 `json:"ipv6_router_withdrawn"`
+
 	// The five IPAM-driver counters (#110). None is healthy-affecting
 	// and none is in the floor table: an IPAM-mode network is one of
 	// the product's two shapes, and every one of these describes what

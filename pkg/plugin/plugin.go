@@ -788,6 +788,24 @@ type joinHint struct {
 	// Gateway, they only arrive in CreateEndpoint, so they ride the hint
 	// to be appended to the Join response's StaticRoutes.
 	Routes []*StaticRoute
+	// GatewayIPv6 is the IPv6 router this segment advertised, as the
+	// library's own client saw it in CreateEndpoint: a Router
+	// Advertisement's source address, which is a link-local one.
+	//
+	// It rides the hint for the same reason Gateway does, and for one
+	// more. DHCPv6 carries no gateway at all (RFC 9915 has no such
+	// option), so before #821 the Join answer had no IPv6 gateway in it
+	// and the container's route came from the kernel acting on the same
+	// advertisement. The plugin now owns that route, which means it has
+	// to be in the answer, which means it has to come from the exchange
+	// that happened in CreateEndpoint.
+	GatewayIPv6 string
+	// RoutesIPv6 are the more-specific IPv6 routes the advertisement
+	// asked for: RFC 4191 Route Information options as next-hop routes,
+	// and RFC 4861 section 4.6.2 Prefix Information options with the L
+	// flag as on-link routes. The default route is NOT among them; it
+	// is GatewayIPv6 above.
+	RoutesIPv6 []*StaticRoute
 	// MacAddress is the MAC CreateEndpoint ran its one-shot DHCP
 	// exchange under, and so the one this endpoint's DHCP identity is
 	// keyed to (dhcpManager.clientID, #371). Set in every mode.
@@ -1876,6 +1894,27 @@ type Plugin struct {
 	// stated on docs/reference.md's DHCPv6 row instead of being
 	// pretended away here.
 	routerAdvertGuardFailures atomic.Int32
+
+	// ipv6RouterWithdrawn counts container default routes removed
+	// because the router that advertised itself stopped doing so
+	// (#821). RFC 4861 section 4.2's Router Lifetime is "the lifetime
+	// associated with the default router", and section 6.3.4: "a
+	// Lifetime of 0 indicates that the router is no longer to be used
+	// as a default router".
+	//
+	// IT COUNTS ROUTES REMOVED, NOT ADVERTISEMENTS RECEIVED. A router
+	// shutting down sends several such advertisements (RFC 4861 section
+	// 6.2.5), and a counter that moved on each of them would report how
+	// talkative the router was rather than how many containers lost
+	// their route. The plugin owns this route since #821 -- the
+	// container's kernel is at accept_ra=0 and will not expire it --
+	// so this is the only thing that takes it away.
+	//
+	// It is NOT healthy-affecting. A router withdrawing itself is a
+	// thing routers do, on purpose, and the containers on that segment
+	// are correctly left without a default route rather than pointed at
+	// one that is gone.
+	ipv6RouterWithdrawn atomic.Int32
 
 	// displacedStops tracks the goroutines Join spawns to Stop a
 	// manager it displaced (#338). Join must not block on the displaced

@@ -273,7 +273,7 @@ func TestInfoFromLease_PreferredSecondsIsV6Only(t *testing.T) {
 		Preferred: now.Add(30 * time.Minute),
 		Expire:    now.Add(time.Hour),
 	}
-	info, _ := infoFromLease(v6, now)
+	info, _ := infoFromLease(v6, proto.RouterObservation{}, now)
 	if info.LeaseSeconds != 3600 {
 		t.Errorf("LeaseSeconds = %d, want 3600", info.LeaseSeconds)
 	}
@@ -285,7 +285,7 @@ func TestInfoFromLease_PreferredSecondsIsV6Only(t *testing.T) {
 	// convention -- not "zero seconds", which would deprecate the
 	// address the instant it was installed.
 	v6.Preferred = time.Time{}
-	info, _ = infoFromLease(v6, now)
+	info, _ = infoFromLease(v6, proto.RouterObservation{}, now)
 	if info.PreferredSeconds != info.LeaseSeconds {
 		t.Errorf("an infinite preferred lifetime gave PreferredSeconds = %d with "+
 			"LeaseSeconds = %d; a zero here deprecates the address on arrival",
@@ -297,7 +297,7 @@ func TestInfoFromLease_PreferredSecondsIsV6Only(t *testing.T) {
 		Preferred: now.Add(30 * time.Minute),
 		Expire:    now.Add(time.Hour),
 	}
-	if info, _ := infoFromLease(v4, now); info.PreferredSeconds != 0 {
+	if info, _ := infoFromLease(v4, proto.RouterObservation{}, now); info.PreferredSeconds != 0 {
 		t.Errorf("a v4 lease produced PreferredSeconds = %d; DHCPv4 has one lifetime "+
 			"and the field is omitempty", info.PreferredSeconds)
 	}
