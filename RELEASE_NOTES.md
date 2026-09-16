@@ -40,6 +40,7 @@ section below is still the list the daemon shows you.
 | An endpoint on an `on_stop` network gets no tombstone | That endpoint does not keep its MAC across a restart. The two are the same rule: nothing may hand on an address the server has taken back. |
 | `release_lease=on_remove` is refused at `docker network create` | A create naming it fails with the reason in the message. Use `never` or `on_stop`. |
 | Four counters are new on `/Plugin.Health` and `/metrics` | `releases_sent` and `release_failures`, each split `_v4` and `_v6`. `release_failures` is worth investigating and does not flip `healthy`. |
+| The plugin is on Docker Hub under a second name | Install from `claymore666/docker-net-dhcp` or from `claymore666/net-dhcp`; both are the same digest. Nothing already installed changes, and GHCR is unaffected. |
 | The Go module path is `github.com/claymore666/docker-net-dhcp/v2` | Nothing for an image user. `go get`, `go install` and pkg.go.dev resolve this repository's 2.x releases instead of v1.9.0. |
 
 ### New
@@ -70,6 +71,12 @@ section below is still the list the daemon shows you.
 - The DHCP library moves to its first tagged version, `dhcp-golib`
   v1.0.0, carrying the release-by-record support the option is built on
   (#962, PR #966).
+- The release publishes the plugin to Docker Hub under a second name,
+  `claymore666/docker-net-dhcp`, beside `claymore666/net-dhcp`. The
+  signed manifest is copied into it, so the two Hub names carry one
+  digest and one signature and a `cosign verify` against either is the
+  same check. v2.0.0 and v2.1.0 were copied by hand; v2.1.1 is the
+  first release the workflow publishes (#972, PR #982).
 
 ### Fixed
 

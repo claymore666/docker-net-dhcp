@@ -108,8 +108,10 @@ behaviour and is what every network created before this release reads
 as. [#979] gives the Go module path its `/v2` suffix, which the module
 proxy has required since 2.0 and without which every 2.x tag was
 unpublished and `go get` answered with v1.9.0. The release also carries
-a workflow action bump ([#975]) and the DHCP library's first tagged
-version, v1.0.0.
+a workflow action bump ([#975]), the DHCP library's first tagged
+version, v1.0.0, and the Docker Hub alias publish ([#972]): from this
+release the workflow puts the plugin on Hub under
+`claymore666/docker-net-dhcp` as well as `claymore666/net-dhcp`.
 
 **[v2.2.0](https://github.com/claymore666/docker-net-dhcp/milestone/29)**
 is mostly IPv6. [#818] and [#808] acquire an address by SLAAC, [#821]
@@ -315,6 +317,7 @@ for the next time someone asks.
 [#979]: https://github.com/claymore666/docker-net-dhcp/issues/979
 [#984]: https://github.com/claymore666/docker-net-dhcp/issues/984
 [#975]: https://github.com/claymore666/docker-net-dhcp/pull/975
+[#972]: https://github.com/claymore666/docker-net-dhcp/issues/972
 [#950]: https://github.com/claymore666/docker-net-dhcp/issues/950
 [#417]: https://github.com/claymore666/docker-net-dhcp/issues/417
 [#214]: https://github.com/claymore666/docker-net-dhcp/issues/214
