@@ -334,6 +334,16 @@ jobs:
       - name: Pool-facts check
         run: bash scripts/check-pool-facts.sh
 
+      # The `release_lease=on_remove` window is three constants added up
+      # and six documents state the sum in prose (#984). Nothing reached
+      # those sentences: a rename does not touch them, a refactor does
+      # not touch them, and the only thing that falsifies them is one of
+      # the three constants moving, in a file none of them live in. The
+      # band is derived from the constants and never from any prose, so
+      # the sentence that was true a moment ago is the one that goes red.
+      - name: Window-constants check
+        run: bash scripts/check-window-constants.sh
+
       # Everything about the partition was checked except what the lane
       # does with it. The shard count is a literal repeated eleven times
       # in integration.yml and eleven more in integration-hosted.yml, and
