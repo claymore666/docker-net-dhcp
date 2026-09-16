@@ -1161,7 +1161,12 @@ What the option does, concretely:
   second default route beside the plugin's, and which of the two wins is
   decided by a metric comparison nobody chose. `autoconf=0` because the
   plugin holds the lease for the address the container uses; the kernel
-  forms no SLAAC address of its own.
+  forms no SLAAC address of its own. On a segment that runs stateful
+  DHCPv6 **and** advertises its prefix as autonomous, that is a change:
+  such a container used to carry the lease, a kernel-formed address and
+  any privacy addresses beside it, and an outbound connection selected
+  among them per RFC 6724 rather than necessarily using the address
+  `docker inspect` reports. It now carries the lease alone.
 - **Prefix delegation is out of scope.** The client asks for an IA_NA;
   there is no IA_PD, and none is planned for 2.0.
 
