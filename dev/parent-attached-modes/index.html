@@ -1098,7 +1098,10 @@ sidecar, no <code>cap_add</code>:</p>
    re-claims it, exactly as it would for a physical host that rebooted
    (v1.9.0+, #800). A network created with <code>release_lease=on_stop</code> hands
    it back here instead, and gives up the stable MAC and address across
-   a restart to do so (v2.1.1+, #962).</li>
+   a restart to do so (v2.1.1+, #962). A network created with
+   <code>release_lease=on_remove</code> keeps both, and a sweep hands the addresses
+   back about a minute later if no container has claimed them (v2.2.0+,
+   #984).</li>
 <li>The macvlan link is reaped automatically when the container netns is
    destroyed.</li>
 </ol>

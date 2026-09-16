@@ -1228,7 +1228,10 @@ first-class event, <a href="https://github.com/claymore666/docker-net-dhcp/issue
 exchange was possible. The milestone also carries work that is not
 IPv6: <a href="https://github.com/claymore666/docker-net-dhcp/issues/961">#961</a> takes the container hostname to a running client, so the
 attach needs no daemon call at all, and <a href="https://github.com/claymore666/docker-net-dhcp/issues/984">#984</a> adds
-<code>release_lease=on_remove</code>, the timed release that v2.1.1 refuses. The
+<code>release_lease=on_remove</code>, the timed release that v2.1.1 refuses: the
+addresses are held for the restart window and handed back at the end of
+it, so a restart keeps its address and a stop that is not followed by
+one gives it up about a minute later. The
 milestone link above is the list that decides what is on it.</p>
 <p><strong><a href="https://github.com/claymore666/docker-net-dhcp/milestone/31">v2.3.0</a></strong>
 is the host plumbing an operator does by hand today: <a href="https://github.com/claymore666/docker-net-dhcp/issues/902">#902</a> VLAN
