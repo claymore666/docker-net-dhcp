@@ -295,6 +295,10 @@ type dhcpManager struct {
 	mtuMu sync.Mutex
 	mtuV4 int
 	mtuV6 int
+	// mtuBase is the link's own MTU before this manager wrote to it,
+	// which is where the link goes back to when both families stop
+	// supplying one.
+	mtuBase int
 
 	// MacAddress is set in macvlan mode so we can re-find the link inside
 	// the container netns after Docker has moved and renamed it. Empty in
@@ -1071,19 +1075,27 @@ func (m *dhcpManager) propagateDNS(v6 bool, info dhcp.Info) {
 // applies, so the value cannot go below minPropagatedMTU whichever
 // family supplied it.
 func (m *dhcpManager) propagateMTU(v6 bool, info dhcp.Info) {
-	if info.MTU <= 0 {
-		return
-	}
+	// The option gate first, because a family the operator switched off
+	// does not get a vote either way: not to raise the link and not to
+	// withdraw a value the other family supplied.
 	if !v6 && !m.opts.PropagateMTU {
 		return
 	}
 
-	// Neither the library nor the kernel holds the bottom of this range: a
-	// server-supplied 68 was exported verbatim and accepted by the
-	// kernel, which destroys throughput and black-holes path MTU
-	// discovery for the container, re-applied on every renewal. Refuse
-	// and keep the MTU the link has (#702).
-	if !mtuAcceptable(info.MTU) {
+	// A ZERO IS A WITHDRAWAL AND NOT "NOTHING TO DO". This used to
+	// return here, which meant a family that STOPPED supplying an MTU
+	// kept its last vote for the life of the endpoint: a router that
+	// drops its MTU option left mtuV6 holding the old number and the
+	// link clamped to a value nothing on the segment was asking for any
+	// more. The change does reach this function -- advertisedDiffers
+	// compares MTU, so the routeradvert event fires -- and it was
+	// discarded at the door.
+	//
+	// It is recorded BELOW the refusal, not here, so the two stay
+	// distinct: a refused value leaves the previous vote standing,
+	// because "the server said something impossible" is not "the
+	// server stopped asking".
+	if info.MTU > 0 && !mtuAcceptable(info.MTU) {
 		if m.plugin != nil {
 			m.plugin.mtuRefused.Add(1)
 		}
@@ -1093,6 +1105,9 @@ func (m *dhcpManager) propagateMTU(v6 bool, info dhcp.Info) {
 			WithField("min", minPropagatedMTU).
 			WithField("max", maxPropagatedMTU).
 			Warn("Refusing DHCP-supplied MTU outside the acceptable range; container link MTU unchanged")
+		return
+	}
+	if m.netHandle == nil || m.ctrLink == nil {
 		return
 	}
 
@@ -1113,8 +1128,20 @@ func (m *dhcpManager) propagateMTU(v6 bool, info dhcp.Info) {
 	// that asked for the smaller one, while the smaller one costs the
 	// other family throughput and nothing else. A family that supplied
 	// nothing does not vote.
-	m.rememberMTU(v6, info.MTU)
+	m.rememberMTU(v6, info.MTU, m.ctrLink.Attrs().MTU)
 	want := m.wantedMTU()
+	if want == 0 {
+		// BOTH FAMILIES HAVE STOPPED ASKING. The link goes back to what
+		// it had before this manager first touched it, which is what
+		// Docker gave it. Leaving it clamped would keep a number no
+		// server and no router is asking for any more, and there is no
+		// later event that would clear it: the next thing that moves
+		// this link is another supplied MTU.
+		want = m.baseMTU()
+	}
+	if want <= 0 {
+		return
+	}
 
 	current := m.ctrLink.Attrs().MTU
 	if current == want {
@@ -1143,15 +1170,31 @@ func (m *dhcpManager) propagateMTU(v6 bool, info dhcp.Info) {
 		Info("Applied DHCP-supplied MTU")
 }
 
-// rememberMTU records the value one family just accepted.
-func (m *dhcpManager) rememberMTU(v6 bool, mtu int) {
+// rememberMTU records the value one family just supplied, where zero
+// means it has stopped supplying one, and records the link's own MTU
+// the first time this manager looks at it.
+//
+// base is read from the caller rather than taken here because it must
+// be the value the link had BEFORE this manager wrote to it, and the
+// first call is the only moment that is still true.
+func (m *dhcpManager) rememberMTU(v6 bool, mtu, base int) {
 	m.mtuMu.Lock()
 	defer m.mtuMu.Unlock()
+	if m.mtuBase == 0 {
+		m.mtuBase = base
+	}
 	if v6 {
 		m.mtuV6 = mtu
 		return
 	}
 	m.mtuV4 = mtu
+}
+
+// baseMTU is what the link had before this manager first wrote to it.
+func (m *dhcpManager) baseMTU() int {
+	m.mtuMu.Lock()
+	defer m.mtuMu.Unlock()
+	return m.mtuBase
 }
 
 // wantedMTU is the smaller of the values the two families supplied,

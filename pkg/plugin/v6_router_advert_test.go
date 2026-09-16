@@ -733,60 +733,42 @@ func TestReconcileV6DefaultRoute_TheReplacementIsNotStampedAsTheKernels(t *testi
 	}
 }
 
-// A segment that offers no DHCPv6 address still configures the
-// container, and this is where that is decided.
+// CASE, NOT RULE (#821 -> #818). A segment that offers no DHCPv6
+// address leaves the Join answer's IPv6 half EMPTY, and this test pins
+// that wrong-but-required answer.
 //
-// THIS IS THE REGRESSION #821 WOULD OTHERWISE HAVE SHIPPED. Before it,
-// the container's own kernel read the advertisement on such a segment
-// and installed a default route from it. The guard turns that off. If
-// the plugin returns from the absence path without filling the hint,
-// the endpoint ends with a link-local address and no route at all, on a
-// configuration docs/reference.md calls normal.
-func TestNoteV6AbsenceAndConfigure(t *testing.T) {
-	advertised := dhcp.Info{
-		Gateway:        "fe80::1",
-		MTU:            1400,
-		OnLinkPrefixes: []string{"2001:db8::/64"},
-		Routes:         []dhcp.Route{{Destination: "2001:db8:1::/48", Gateway: "fe80::1"}},
+// The right answer is the advertisement's gateway and routes: the
+// #821 guard writes accept_ra=0, so the container's own kernel no
+// longer installs the default route it used to install here. The
+// answer is not reachable yet. An endpoint with no global IPv6 address
+// has IPv6 disabled on its link by the engine, and the kernel then
+// refuses every IPv6 route on it, so a Join answer carrying one fails
+// the whole sandbox:
+//
+//	error setting interface "<host-if>" routes to ["fd00:...::/64"]: permission denied
+//
+// and no container starts on the segment at all, losing its IPv4 too
+// (MEASURED, lane run 35131643324, four shards). The plugin cannot
+// clear disable_ipv6 first: that clear runs in the manager goroutine
+// Join spawns, after the engine has already applied the answer.
+//
+// #818 gives the container a global address; it is the change that
+// makes this test change.
+func TestNoteV6Absence_LeavesTheJoinAnswersIPv6HalfEmpty(t *testing.T) {
+	p := &Plugin{joinHints: map[string]joinHint{}}
+	// Seen, not Managed: the segment said there are no DHCPv6
+	// addresses here, which is v6NotOffered and the normal case.
+	ok := p.noteV6Absence(dhcp.RAObservation{Seen: true}, "eth0", "ep-1", errors.New("no lease"))
+	if !ok {
+		t.Fatal("the absence was treated as fatal; the endpoint would not have been created")
 	}
-
-	t.Run("no managed DHCPv6: the advertisement reaches the Join hint", func(t *testing.T) {
-		p := &Plugin{joinHints: map[string]joinHint{}}
-		// Seen, not Managed: the segment said there are no DHCPv6
-		// addresses here, which is v6NotOffered and the normal case.
-		ok := p.noteV6AbsenceAndConfigure(dhcp.RAObservation{Seen: true}, advertised,
-			"eth0", "ep-1", errors.New("no lease"))
-		if !ok {
-			t.Fatal("the absence was treated as fatal; the endpoint would not have been created")
-		}
-		h := p.joinHints["ep-1"]
-		if h.GatewayIPv6 != "fe80::1" {
-			t.Errorf("GatewayIPv6 = %q, want the advertised router. Without it the container "+
-				"has a link-local and no route, because the guard stopped its kernel "+
-				"installing one", h.GatewayIPv6)
-		}
-		if len(h.RoutesIPv6) != 2 {
-			t.Errorf("RoutesIPv6 = %v, want the on-link prefix and the advertised route",
-				describeStaticRoutes(h.RoutesIPv6))
-		}
-	})
-
-	// The preservation control. A segment that DOES offer managed
-	// DHCPv6 and then goes quiet is still a failure, and a fill here
-	// would be this plugin answering a question the segment did not
-	// answer.
-	t.Run("managed DHCPv6 that went quiet: still fatal, nothing written", func(t *testing.T) {
-		p := &Plugin{joinHints: map[string]joinHint{}}
-		ok := p.noteV6AbsenceAndConfigure(dhcp.RAObservation{Seen: true, Managed: true}, advertised,
-			"eth0", "ep-1", errors.New("no lease"))
-		if ok {
-			t.Fatal("a managed segment that went quiet was treated as normal")
-		}
-		if h := p.joinHints["ep-1"]; h.GatewayIPv6 != "" || h.RoutesIPv6 != nil {
-			t.Errorf("the fatal path wrote a hint: gateway=%q routes=%v",
-				h.GatewayIPv6, describeStaticRoutes(h.RoutesIPv6))
-		}
-	})
+	h := p.joinHints["ep-1"]
+	if h.GatewayIPv6 != "" || h.RoutesIPv6 != nil {
+		t.Errorf("the absence path put an IPv6 half into the Join answer "+
+			"(gateway=%q routes=%v). The engine has disabled IPv6 on that link and "+
+			"refuses it, and NO container starts on the segment",
+			h.GatewayIPv6, describeStaticRoutes(h.RoutesIPv6))
+	}
 }
 
 // ONE LINK, TWO FAMILIES, ONE NUMBER.
@@ -876,4 +858,86 @@ func TestRenew_SeedsTheAdvertisedRouteDiffBase(t *testing.T) {
 		t.Errorf("deleted %v, want the withdrawn route. A route installed at Join can "+
 			"never be withdrawn if the diff base is not seeded", got)
 	}
+}
+
+// A FAMILY THAT STOPS SUPPLYING AN MTU STOPS VOTING.
+//
+// propagateMTU used to return on a zero before it recorded anything, so
+// a router that dropped its MTU option left its old number in place for
+// the life of the endpoint and the link stayed clamped to a value
+// nothing on the segment was asking for. The change does reach the
+// manager -- advertisedDiffers compares MTU, so the routeradvert event
+// fires -- and it was discarded at the door.
+func TestPropagateMTU_AWithdrawnMTUStopsVoting(t *testing.T) {
+	newManager := func(t *testing.T) (*dhcpManager, *fakeLink) {
+		t.Helper()
+		m, _, _ := v6Manager(t)
+		m.opts.PropagateMTU = true
+		link := m.ctrLink.(*fakeLink)
+		link.Attrs().MTU = 1500
+		prev := nlHandleLinkSetMTU
+		nlHandleLinkSetMTU = func(_ *netlink.Handle, l netlink.Link, mtu int) error {
+			l.Attrs().MTU = mtu
+			return nil
+		}
+		t.Cleanup(func() { nlHandleLinkSetMTU = prev })
+		return m, link
+	}
+
+	t.Run("the other family's value takes over", func(t *testing.T) {
+		m, link := newManager(t)
+		m.propagateMTU(false, dhcp.Info{MTU: 9000})
+		m.propagateMTU(true, dhcp.Info{MTU: 1400})
+		if got := link.Attrs().MTU; got != 1400 {
+			t.Fatalf("link MTU = %d before the withdrawal, want the smaller of the two", got)
+		}
+		m.propagateMTU(true, dhcp.Info{MTU: 0})
+		if got := link.Attrs().MTU; got != 9000 {
+			t.Errorf("link MTU = %d after the router dropped its MTU option, want the v4 "+
+				"value 9000. A withdrawn vote that is never cleared keeps the link "+
+				"clamped to a number nothing on the segment asks for", got)
+		}
+	})
+
+	t.Run("both silent: the link goes back to what Docker gave it", func(t *testing.T) {
+		m, link := newManager(t)
+		m.propagateMTU(true, dhcp.Info{MTU: 1400})
+		if got := link.Attrs().MTU; got != 1400 {
+			t.Fatalf("link MTU = %d, want 1400", got)
+		}
+		m.propagateMTU(true, dhcp.Info{MTU: 0})
+		if got := link.Attrs().MTU; got != 1500 {
+			t.Errorf("link MTU = %d with nothing supplying one, want the 1500 the link "+
+				"had before this manager touched it", got)
+		}
+	})
+
+	// PRESERVATION CONTROL, and the distinction the fix rests on: a
+	// REFUSED value is not a withdrawal. "The server said something
+	// impossible" leaves the previous vote standing; only "the server
+	// stopped asking" clears it.
+	t.Run("a refused value is not a withdrawal", func(t *testing.T) {
+		m, link := newManager(t)
+		m.propagateMTU(true, dhcp.Info{MTU: 1400})
+		m.propagateMTU(true, dhcp.Info{MTU: 68})
+		if got := link.Attrs().MTU; got != 1400 {
+			t.Errorf("link MTU = %d after a refused 68, want the last accepted 1400", got)
+		}
+		if m.plugin.mtuRefused.Load() != 1 {
+			t.Errorf("mtu_refused = %d, want 1", m.plugin.mtuRefused.Load())
+		}
+	})
+
+	// A family the operator switched off never votes, so it cannot
+	// withdraw the other family's value either.
+	t.Run("propagate_mtu off: the v4 half cannot withdraw the v6 value", func(t *testing.T) {
+		m, link := newManager(t)
+		m.opts.PropagateMTU = false
+		m.propagateMTU(true, dhcp.Info{MTU: 1400})
+		m.propagateMTU(false, dhcp.Info{MTU: 0})
+		if got := link.Attrs().MTU; got != 1400 {
+			t.Errorf("link MTU = %d, want 1400: a family gated off by the operator has "+
+				"no vote to cast and none to withdraw", got)
+		}
+	})
 }

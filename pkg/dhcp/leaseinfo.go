@@ -83,6 +83,23 @@ func infoFromLease(l lease.Lease, r proto.RouterObservation, now time.Time) (Inf
 	}
 	info.OnLinkPrefixes = onLinkPrefixes(r)
 
+	// THE ADVERTISED MTU IS THE ONLY MTU IPv6 HAS. DHCPv6 carries no
+	// MTU option -- option 26 is DHCPv4's (RFC 2132 section 5.1) and
+	// the library only ever fills Lease.MTU from it -- so RFC 4861
+	// section 4.6.4's MTU option is where a v6 link's MTU comes from,
+	// and without this line info.MTU is zero on every DHCPv6 lease and
+	// the plugin has nothing to apply. Until #821 that did not show:
+	// the container's kernel was at accept_ra=2 and copied the
+	// advertised MTU itself.
+	//
+	// Guarded on Seen so it cannot reach a DHCPv4 lease, whose client
+	// never looks at a router advertisement and whose observation is
+	// therefore the zero value; and placed after the lease's own value
+	// so a server that did send option 26 still wins on its own family.
+	if info.MTU == 0 && r.Seen {
+		info.MTU = int(r.MTU)
+	}
+
 	info.NTPServers = addrStrings(l.Options, wire.OptNTPServer)
 	info.TFTPServer = optText(l.Options, wire.OptTFTPServer)
 	info.BootFile = optText(l.Options, wire.OptBootfileName)
@@ -153,60 +170,6 @@ func secondsUntil(deadline, now time.Time) int {
 		return 0
 	}
 	return int(d / time.Second)
-}
-
-// infoFromRouter builds an Info from the Router Advertisement ALONE,
-// with no DHCPv6 lease behind it.
-//
-// WHY IT EXISTS. infoFromLease reads Gateway, MTU, DNS, DomainSearch
-// and Routes off the lease, because the library folds the router table
-// into the lease it hands back. On a segment that advertises M=0 there
-// is no lease to fold anything into, and that segment is precisely the
-// one where the advertisement is the ONLY source of configuration: no
-// DHCPv6 address, no DHCPv6 options, one router saying what the link
-// is. Before #821 the container's kernel read it. #821 turns the kernel
-// off, so something has to read it here or the container gets nothing.
-//
-// NO ADDRESS AND NO LIFETIMES, deliberately. Info.IP stays empty and
-// the caller can still ask "did this produce an address" the way it
-// always has. Forming an address from the advertised prefix is SLAAC
-// and belongs to #818; this function is about the other four things an
-// advertisement carries.
-//
-// THE GATEWAY COMES FROM Routers AND NOT FROM Router. Router is "who
-// last spoke" and never expires; Routers is RFC 4861 section 6.3.4's
-// Default Router List, which a Router Lifetime of 0 empties. Reading
-// Router here would give a withdrawn router back as a gateway forever.
-func infoFromRouter(r proto.RouterObservation) (Info, int) {
-	info := Info{
-		MTU:            int(r.MTU),
-		SearchList:     append([]string(nil), r.Search...),
-		OnLinkPrefixes: onLinkPrefixes(r),
-	}
-	if len(r.Routers) > 0 {
-		info.Gateway = r.Routers[0].String()
-	}
-	for _, d := range r.DNS {
-		info.DNSServers = append(info.DNSServers, d.String())
-	}
-	// Same filter as the lease path and for the same reason: ::/0 in a
-	// Route Information option IS the default route (RFC 4191 allows
-	// it), and exporting it as a static route as well would install the
-	// default twice.
-	for _, rt := range r.Routes {
-		if defaultDestination(rt) {
-			continue
-		}
-		info.Routes = append(info.Routes, Route{
-			Destination: rt.Dest.String(),
-			Gateway:     routeGateway(rt),
-		})
-	}
-	// The router chose every string above, so it gets the same
-	// treatment a server's do. The count is returned rather than
-	// counted here; the caller decides whether it has an event to carry
-	// it on.
-	return info, sanitizeInfo(&info)
 }
 
 // defaultDestination reports whether a route's destination is the whole

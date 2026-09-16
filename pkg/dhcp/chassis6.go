@@ -387,41 +387,42 @@ func acquireOnce6(ctx context.Context, iface string, params proto.Params6, opts 
 	opts.count(manager, stats)
 	opts.v6ModeReport(stats)
 
-	out, err := acquisitionResult6(info, client.Router(), lastE)
+	out, err := acquisitionResult6(info, lastE)
 	return out, ra, err
 }
 
-// acquisitionResult6 decides what one DHCPv6 acquisition hands back.
+// acquisitionResult6 is the DHCPv6 acquisition's verdict: the lease if
+// there is one, and otherwise the zero Info beside the reason there is
+// not.
 //
-// THE ERROR PATH STILL CARRIES WHAT THE ROUTER SAID (#821). "No DHCPv6
-// address" is not "no configuration": on a segment advertising M=0 it
-// is the NORMAL answer, and the advertisement that arrived during this
-// acquisition is then the only thing that can tell the container its
-// gateway, MTU, routes and resolvers. Returning the zero Info here --
-// which is what this did -- threw that away, and with #821 turning the
-// container's kernel off (accept_ra=0) nothing else was going to read
-// it: the container ended up with a link-local and nothing else, where
-// before #821 its kernel had given it a route.
+// THE ADVERTISEMENT IS DELIBERATELY NOT CARRIED OUT OF HERE, and the
+// reason is a fact about the engine rather than a choice (#821,
+// MEASURED on the lane 2026-09-16, run 35131643324, four shards). An
+// endpoint with no DHCPv6 address gets no global IPv6 address on its
+// link; the engine disables IPv6 on a link that carries none; the
+// kernel then refuses every IPv6 route on it. Putting the
+// advertisement's gateway and routes into the Join answer for such a
+// segment made the daemon fail the whole sandbox with
 //
-// Info.IP is still empty on that path, so every caller's "did this
-// produce an address" test is unchanged, and so is the error.
+//	error setting interface "<host-if>" routes to ["fd00:...::/64"]: permission denied
 //
-// It is a function of its own because acquireOnce6 builds its own
-// client against a real socket in a real namespace, so this decision
-// was not reachable from a unit test where it sat.
+// so NO container started on the segment at all -- taking its IPv4 with
+// it, and #868's guarantee with that. The plugin cannot order its own
+// disable_ipv6 clear in front of the engine either: the clear happens
+// in the manager goroutine Join spawns, after the engine has moved the
+// link and applied the answer.
 //
-// The sanitizer's drop count is not carried: there is no event on this
-// path to put it on, and the values themselves have already been
-// dropped, which is the part that protects the container.
-func acquisitionResult6(info Info, r proto.RouterObservation, lastE error) (Info, error) {
+// So on a segment that hands out no DHCPv6 address the advertisement
+// stays unusable until the container has a global IPv6 address to use
+// it with, which is #818. This function is where that changes.
+func acquisitionResult6(info Info, lastE error) (Info, error) {
 	if info.IP != "" {
 		return info, nil
 	}
 	if lastE == nil {
 		lastE = ErrNoLease
 	}
-	advertised, _ := infoFromRouter(r)
-	return advertised, lastE
+	return Info{}, lastE
 }
 
 // errV6HintInUse is a conflict found by the client's own duplicate

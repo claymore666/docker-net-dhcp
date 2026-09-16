@@ -747,6 +747,11 @@ type DHCPClient struct {
 	// could not drive it at all.
 	view func() (lease.Lease, bool)
 
+	// routerView is what the advertisement watch reads about the
+	// ROUTERS, defaulting to the library client's own observation. A
+	// seam for the same reason view is one.
+	routerView func() proto.RouterObservation
+
 	// advert is the advertised configuration this client last reported,
 	// and advertKnown says whether it has reported any. Touched from
 	// the translate goroutine and from nowhere else.
@@ -1050,6 +1055,39 @@ func (c *DHCPClient) leaseView() (lease.Lease, bool) {
 	return c.Lease()
 }
 
+// advertRouterView is the router observation the advertisement watch
+// reads, carrying ONLY what is safe to follow live.
+//
+// THE MTU IS THE ONE THING THE LEASE CANNOT CARRY. DHCPv6 has no MTU
+// option at all -- option 26 is DHCPv4's (RFC 2132 section 5.1) -- so
+// the advertised link MTU of RFC 4861 section 4.6.4 reaches the plugin
+// through the router observation or not at all, and lease.Lease.MTU is
+// zero on every DHCPv6 lease ever issued.
+//
+// The prefixes are left out, which is what keeps the on-link rule at
+// Join: see takeAdvertChange for why following them live would take a
+// route away from a container because one advertisement happened to be
+// shorter. THE BOUND THAT BUYS: an advertisement whose ONLY change is
+// its set of on-link prefixes produces no event at all, so
+// Info.OnLinkPrefixes is a Join-time answer with no live update, on an
+// endpoint that has an address as much as on one that does not. A
+// segment that starts or stops advertising a prefix as on-link reaches
+// a running container's routing table when the container is recreated
+// and not before.
+//
+// The MTU has no such problem. A router that stops advertising an MTU
+// is saying nothing about the MTU, zero is how that is spelled, and a
+// zero is the withdrawal propagateMTU acts on.
+func (c *DHCPClient) advertRouterView() proto.RouterObservation {
+	var r proto.RouterObservation
+	if c.routerView != nil {
+		r = c.routerView()
+	} else if c.client6 != nil {
+		r = c.client6.Router()
+	}
+	return proto.RouterObservation{Seen: r.Seen, MTU: r.MTU}
+}
+
 // baselineAdvert records what the routers are advertising WITHOUT
 // reporting it, for the caller that has just applied it by another
 // route.
@@ -1070,8 +1108,9 @@ func (c *DHCPClient) baselineAdvert(now time.Time) {
 // the other end.
 //
 // THE VIEW CARRIES NO ON-LINK DETERMINATION, deliberately: the
-// RouterObservation passed in is the zero value, so Info.OnLinkPrefixes
-// is empty on every event this produces. On-link determination is
+// RouterObservation passed in carries the advertised MTU and nothing
+// else (see advertRouterView), so Info.OnLinkPrefixes is empty on every
+// event this produces. On-link determination is
 // applied once, at Join, out of the advertisement the acquisition saw;
 // the library reports the prefixes of the most recent frame rather than
 // a union, so following it live would take a route away from a
@@ -1081,7 +1120,7 @@ func (c *DHCPClient) takeAdvertChange(now time.Time) (Event, bool) {
 	if !ok {
 		return Event{}, false
 	}
-	info, dropped := infoFromLease(l, proto.RouterObservation{}, now)
+	info, dropped := infoFromLease(l, c.advertRouterView(), now)
 	first := !c.advertKnown
 	same := c.advertKnown && !advertisedDiffers(c.advert, info)
 	c.advert, c.advertKnown = info, true

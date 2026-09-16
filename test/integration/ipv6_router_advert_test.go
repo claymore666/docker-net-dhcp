@@ -100,6 +100,20 @@ func containerV6Link(t *testing.T, ctx context.Context, id, addr string) (string
 	return iface, mtu
 }
 
+// awaitContainerV6LinkMTU polls the container's own link MTU until it
+// reads want, and returns the last value either way.
+func awaitContainerV6LinkMTU(t *testing.T, ctx context.Context, id, addr string, want int, budget time.Duration) (string, int) {
+	t.Helper()
+	deadline := time.Now().Add(budget)
+	for {
+		iface, mtu := containerV6Link(t, ctx, id, addr)
+		if mtu == want || !time.Now().Before(deadline) {
+			return iface, mtu
+		}
+		time.Sleep(time.Second)
+	}
+}
+
 // defaultRoutes is `ip -6 route show default` inside the container.
 func defaultRoutes(t *testing.T, ctx context.Context, id string) string {
 	t.Helper()
@@ -158,7 +172,13 @@ func TestDHCPv6_AdvertisedMTUReachesTheContainer(t *testing.T) {
 		t.Fatal("no global IPv6 appeared on the container link")
 	}
 
-	iface, mtu := containerV6Link(t, ctx, id, addr)
+	// A DEADLINE, NOT A SINGLE READ. The MTU does not arrive with the
+	// Join answer: the plugin writes it from the manager goroutine Join
+	// spawns, on the first bound event, which lands after the address
+	// the poll above waited for. Reading once raced that and measured
+	// the link Docker had just created (MEASURED, lane run 35131643324,
+	// where the read landed 2 s after the DHCPv6 REPLY and saw 1500).
+	iface, mtu := awaitContainerV6LinkMTU(t, ctx, id, addr, advertisedMTU, raChangeBudget)
 	if mtu != advertisedMTU {
 		t.Errorf("%s inside the container has MTU %d, want the advertised %d. The "+
 			"container's kernel is at accept_ra=0 and no longer copies the advertised "+
@@ -295,29 +315,43 @@ func TestDHCPv6_RouterWithdrawalAndReturn(t *testing.T) {
 	}
 }
 
-// A segment that hands out no DHCPv6 address still configures the
-// container, and this is the arm where #821 could most easily have made
-// things worse than it found them.
+// TestDHCPv6_NoAddressSegmentGetsNoIPv6RouteYet PINS THE WRONG ANSWER
+// ON PURPOSE (#821 -> #818), on the two segments where it is wrong.
 //
-// WHAT IT WOULD CATCH. On a stateless or SLAAC segment there is no
-// DHCPv6 lease by definition, so every path in this plugin that hangs
-// configuration off a lease supplies nothing here. Before #821 that did
-// not matter, because the container's own kernel read the advertisement
-// and installed a default route from it. #821 turns that kernel off.
-// If the plugin does not supply the replacement, the container ends
-// with a link-local address and no route at all, on a configuration
-// docs/reference.md calls normal.
+// A segment that advertises a router and hands out no DHCPv6 address
+// gives the container nothing on IPv6 but a link-local. Before #821 its
+// own kernel read the advertisement and gave it a default route and a
+// SLAAC address; the #821 guard writes accept_ra=0 and autoconf=0, so
+// neither happens now, and the plugin does not supply them either.
 //
-// The observer is `ip -6 route show default` inside the container. It
-// cannot be a counter: the counter that moves on this path
-// (dhcpv6_not_offered) moved before #821 as well, and it moves whether
-// or not a route was installed.
+// IT IS NOT A CHOICE. An endpoint with no global IPv6 address has IPv6
+// disabled on its link by the engine, and the kernel then refuses every
+// IPv6 route on such a link. A Join answer carrying the advertised
+// gateway or on-link prefix fails the WHOLE sandbox:
+//
+//	error setting interface "<host-if>" routes to ["fd00:...::/64"]: permission denied
+//
+// and the container does not start at all -- losing its IPv4 with it
+// (MEASURED, lane run 35131643324, four shards). Nor can the plugin
+// clear disable_ipv6 first: that clear runs in the manager goroutine
+// Join spawns, after the engine has moved the link and applied the
+// answer. So the route is not installable until there is a global
+// address to install it beside, which is #818 on this milestone.
+//
+// THIS TEST GOES RED WHEN #818 LANDS, which is the point: the container
+// gets a global address, both pinned assertions stop being true at
+// once, and whoever lands #818 inverts them here instead of discovering
+// that the gap closed silently. Asserting nothing would have let the
+// suite pass identically on the intended end state and on this one.
+//
+// What it asserts POSITIVELY is the guarantee #868 bought and #821 must
+// not spend: the container STARTS on these segments, and has its IPv4.
 //
 // BOTH MODES, not one. Stateless (O=1) and SLAAC (O=0) reach the
 // absence path through different classifications, and a fix that
 // reached only one of them is exactly the shape this repository has
 // shipped before.
-func TestDHCPv6_NoAddressSegmentStillGetsItsRouteFromTheAdvertisement(t *testing.T) {
+func TestDHCPv6_NoAddressSegmentGetsNoIPv6RouteYet(t *testing.T) {
 	cases := []struct {
 		name string
 		mode harness.V6Mode
@@ -352,26 +386,41 @@ func TestDHCPv6_NoAddressSegmentStillGetsItsRouteFromTheAdvertisement(t *testing
 				t.Fatalf("the container did not start on a %s segment: %v", tc.mode, err)
 			}
 
-			// A DEADLINE, not a skip: Join installs the route, so it is
-			// there when the container is, and the poll only absorbs
-			// the engine's own startup.
-			out, ok := awaitDefaultRouteCount(t, ctx, id, 1, raChangeBudget)
-			if !ok {
-				t.Fatalf("the container on a %s segment has %d IPv6 default routes, want "+
-					"exactly 1. The segment advertises a router and hands out no DHCPv6 "+
-					"address, so the advertisement is the only source of a route there is, "+
-					"and the guard has already stopped the container's kernel installing "+
-					"one. `ip -6 route show default` said:\n%s",
-					tc.mode, harness.CountDefaultRoutes(out), out)
+			// THE POSITIVE HALF FIRST: the endpoint exists and
+			// carries its IPv4. This is what went red when the
+			// advertised route was put into the Join answer -- not
+			// an IPv6 assertion but every container on the segment.
+			v4 := harness.ExecOutput(t, ctx, id, "ip", "-4", "-o", "addr", "show", "scope", "global")
+			if !strings.Contains(v4, "inet ") {
+				t.Errorf("the container on a %s segment has no IPv4 address, so the "+
+					"endpoint's IPv6 half took its IPv4 with it:\n%s", tc.mode, v4)
 			}
-			// VIA A LINK-LOCAL ADDRESS. RFC 4861 section 4.2 requires
-			// the Source Address of an advertisement to be the
-			// link-local address of the interface it went out of, so a
-			// route learned from the advertisement has a link-local
-			// next hop and a route learned from anywhere else does not.
-			if !strings.Contains(strings.ToLower(out), "fe80:") {
-				t.Errorf("the default route on a %s segment does not go via a link-local "+
-					"address, so it did not come from the advertisement:\n%s", tc.mode, out)
+
+			// THE PINNED HALF. Exactly zero IPv6 default routes, and
+			// still zero after the plugin's advertisement watch has
+			// had ticks to run, so a route that arrives late is not
+			// missed by reading too early.
+			for _, when := range []string{"as soon as the container is running", "after the advertisement watch had run"} {
+				out := defaultRoutes(t, ctx, id)
+				if n := harness.CountDefaultRoutes(out); n != 0 {
+					t.Fatalf("the container on a %s segment has %d IPv6 default routes %s, "+
+						"want 0. If #818 has landed, invert this: the route is now both "+
+						"installable and useful, and it is required here. "+
+						"`ip -6 route show default` said:\n%s", tc.mode, n, when, out)
+				}
+				time.Sleep(2 * raIntervalSeconds * time.Second)
+			}
+
+			// A link-local address cannot leave the link (RFC 4291
+			// section 2.5.6), so the absent route is not the only
+			// thing missing: there is no global address either, and
+			// the two only become useful together.
+			global := harness.ExecOutput(t, ctx, id, "ip", "-6", "addr", "show", "scope", "global")
+			if strings.TrimSpace(global) != "" {
+				t.Errorf("the container on a %s segment HAS a global IPv6 address:\n%s\n"+
+					"That is the state #818 is meant to produce and this tree is not "+
+					"supposed to be in it yet. If #818 has landed, invert this "+
+					"assertion and the route assertion above together.", tc.mode, global)
 			}
 		})
 	}

@@ -261,108 +261,34 @@ func TestRAWatchInterval_FitsInsideTheMinimumDelayBetweenAdvertisements(t *testi
 	}
 }
 
-// infoFromRouter is the only reader of an advertisement on a segment
-// that hands out no DHCPv6 address, so everything an advertisement
-// carries has to come through it.
-func TestInfoFromRouter(t *testing.T) {
-	got, dropped := infoFromRouter(proto.RouterObservation{
-		Seen:    true,
-		Router:  netip.MustParseAddr("fe80::dead"),
-		Routers: []netip.Addr{netip.MustParseAddr("fe80::1"), netip.MustParseAddr("fe80::2")},
-		MTU:     1400,
-		DNS:     []netip.Addr{netip.MustParseAddr("2001:db8::53")},
-		Search:  []string{"example.test"},
-		Routes: []wire.Route{
-			{Dest: netip.MustParsePrefix("::/0"), Router: netip.MustParseAddr("fe80::1")},
-			{Dest: netip.MustParsePrefix("2001:db8:1::/48"), Router: netip.MustParseAddr("fe80::1")},
-		},
-		Prefixes: []wire.PrefixInfo{{
-			Prefix: netip.MustParseAddr("2001:db8::"), PrefixLen: 64,
-			OnLink: true, ValidLifetime: 3600,
-		}},
-	})
-	if dropped != 0 {
-		t.Errorf("dropped %d values from an advertisement carrying none", dropped)
-	}
-	if got.IP != "" {
-		t.Errorf("IP = %q, want empty: forming an address from the prefix is SLAAC (#818), "+
-			"and a caller's \"did this produce an address\" test reads this field", got.IP)
-	}
-	// THE GATEWAY IS Routers[0] AND NOT Router. Router is "who last
-	// spoke" and never expires; Routers is the Default Router List,
-	// which a Router Lifetime of 0 empties. Reading Router would hand
-	// back a withdrawn router as a gateway forever, and the fixture
-	// makes the two different so the wrong one cannot pass.
-	if got.Gateway != "fe80::1" {
-		t.Errorf("Gateway = %q, want fe80::1 (the first default router, not fe80::dead, "+
-			"which is only the last speaker)", got.Gateway)
-	}
-	if got.MTU != 1400 {
-		t.Errorf("MTU = %d, want 1400", got.MTU)
-	}
-	if len(got.DNSServers) != 1 || got.DNSServers[0] != "2001:db8::53" {
-		t.Errorf("DNSServers = %v", got.DNSServers)
-	}
-	if len(got.SearchList) != 1 || got.SearchList[0] != "example.test" {
-		t.Errorf("SearchList = %v", got.SearchList)
-	}
-	// ::/0 IS the default route (RFC 4191 allows it in a Route
-	// Information option), so exporting it here as well would install
-	// the default twice.
-	if len(got.Routes) != 1 || got.Routes[0].Destination != "2001:db8:1::/48" {
-		t.Errorf("Routes = %v, want only the non-default one", got.Routes)
-	}
-	if len(got.OnLinkPrefixes) != 1 || got.OnLinkPrefixes[0] != "2001:db8::/64" {
-		t.Errorf("OnLinkPrefixes = %v", got.OnLinkPrefixes)
-	}
-}
-
-// A router that withdrew itself leaves no gateway, which is what makes
-// the withdrawal reach the container on a segment with no lease.
-func TestInfoFromRouter_AWithdrawnRouterIsNoGateway(t *testing.T) {
-	got, _ := infoFromRouter(proto.RouterObservation{
-		Seen:   true,
-		Router: netip.MustParseAddr("fe80::dead"),
-		MTU:    1400,
-	})
-	if got.Gateway != "" {
-		t.Errorf("Gateway = %q with an empty default router list, want empty", got.Gateway)
-	}
-	if got.MTU != 1400 {
-		t.Errorf("MTU = %d: a withdrawn router does not un-say the link's MTU", got.MTU)
-	}
-}
-
-// An acquisition that produced no address still hands back what the
-// router said, and an acquisition that produced one is untouched.
+// CASE, NOT RULE (#821 -> #818). On a segment that hands out no
+// DHCPv6 address the acquisition returns NOTHING, not the router's
+// advertisement, and this test pins that wrong-but-required answer so
+// it cannot be changed back by accident.
 //
-// This is the whole of the #821 regression on a stateless or SLAAC
-// segment: the guard turns the container's kernel off, so if this
-// function returns the zero Info the container ends with a link-local
-// and nothing else, where its kernel used to give it a route.
+// The right answer is the advertisement's gateway, MTU and routes. It
+// is not reachable yet: an endpoint with no global IPv6 address has
+// IPv6 disabled on its link by the engine, and the kernel refuses
+// every IPv6 route on such a link, so a Join answer carrying one fails
+// the whole sandbox and the container does not start (MEASURED, lane
+// run 35131643324). #818 gives the container a global address; when it
+// does, this test is the one that changes.
 func TestAcquisitionResult6(t *testing.T) {
-	ra := proto.RouterObservation{
-		Seen:    true,
-		Routers: []netip.Addr{netip.MustParseAddr("fe80::1")},
-		MTU:     1400,
-	}
-
-	t.Run("no address: the advertisement comes through, with the error", func(t *testing.T) {
-		got, err := acquisitionResult6(Info{}, ra, nil)
+	t.Run("no address: nothing comes through, with the reason", func(t *testing.T) {
+		got, err := acquisitionResult6(Info{}, nil)
 		if !errors.Is(err, ErrNoLease) {
 			t.Errorf("err = %v, want ErrNoLease: the caller's absence verdict reads it", err)
 		}
-		if got.IP != "" {
-			t.Errorf("IP = %q, want empty", got.IP)
-		}
-		if got.Gateway != "fe80::1" || got.MTU != 1400 {
-			t.Errorf("the advertisement was dropped: gateway=%q mtu=%d", got.Gateway, got.MTU)
+		if got.IP != "" || got.Gateway != "" || got.MTU != 0 ||
+			len(got.Routes) != 0 || len(got.OnLinkPrefixes) != 0 || len(got.DNSServers) != 0 {
+			t.Errorf("the Join answer would carry an IPv6 half on a link the engine has "+
+				"disabled IPv6 on, and no container starts on the segment: %+v", got)
 		}
 	})
 
 	t.Run("no address and a real cause: the cause is kept", func(t *testing.T) {
 		cause := errors.New("the segment went quiet")
-		_, err := acquisitionResult6(Info{}, ra, cause)
+		_, err := acquisitionResult6(Info{}, cause)
 		if !errors.Is(err, cause) {
 			t.Errorf("err = %v, want the cause: a segment that offers managed DHCPv6 and "+
 				"then goes quiet is still fatal, and the verdict is made from this error", err)
@@ -371,12 +297,107 @@ func TestAcquisitionResult6(t *testing.T) {
 
 	t.Run("an address: nothing is rewritten", func(t *testing.T) {
 		lease := Info{IP: "2001:db8::5/64", Gateway: "fe80::9", MTU: 9000}
-		got, err := acquisitionResult6(lease, ra, nil)
+		got, err := acquisitionResult6(lease, nil)
 		if err != nil {
 			t.Fatalf("err = %v", err)
 		}
 		if got.IP != lease.IP || got.Gateway != lease.Gateway || got.MTU != lease.MTU {
-			t.Errorf("the lease path was rewritten from the router table: %+v", got)
+			t.Errorf("the lease path was rewritten: %+v", got)
 		}
 	})
+}
+
+// THE ADVERTISED MTU IS THE ONLY MTU IPv6 HAS, and this is where it
+// enters the plugin.
+//
+// DHCPv6 has no MTU option: option 26 is DHCPv4's (RFC 2132 section
+// 5.1) and the library fills Lease.MTU from it alone, so a DHCPv6 lease
+// carries MTU 0 forever. RFC 4861 section 4.6.4's MTU option is the
+// only source, and until #821 nothing here read it because the
+// container's kernel was at accept_ra=2 and applied it itself. With
+// accept_ra=0 a zero here is an MTU the container never gets.
+func TestInfoFromLease_TheAdvertisedMTUIsTheOnlyMTUIPv6Has(t *testing.T) {
+	now := time.Now()
+
+	t.Run("a DHCPv6 lease takes its MTU from the advertisement", func(t *testing.T) {
+		l := lease.Lease{Addr: pfx(t, "2001:db8::5/64")}
+		got, _ := infoFromLease(l, proto.RouterObservation{Seen: true, MTU: 1280}, now)
+		if got.MTU != 1280 {
+			t.Errorf("MTU = %d, want the advertised 1280. A DHCPv6 lease has no MTU of "+
+				"its own, so a zero here is the container keeping the link MTU Docker "+
+				"gave it while the segment asks for another", got.MTU)
+		}
+	})
+
+	// PRESERVATION CONTROL ONE: a DHCPv4 lease's own option 26 is not
+	// overwritten by a router on the same link.
+	t.Run("option 26 wins on its own family", func(t *testing.T) {
+		l := lease.Lease{Addr: pfx(t, "192.0.2.5/24"), MTU: 9000}
+		got, _ := infoFromLease(l, proto.RouterObservation{Seen: true, MTU: 1280}, now)
+		if got.MTU != 9000 {
+			t.Errorf("MTU = %d, want the lease's own 9000", got.MTU)
+		}
+	})
+
+	// PRESERVATION CONTROL TWO: a DHCPv4 client never looks at a router
+	// advertisement, so its observation is the zero value and no MTU
+	// may be invented for it.
+	t.Run("no advertisement seen, no MTU", func(t *testing.T) {
+		l := lease.Lease{Addr: pfx(t, "192.0.2.5/24")}
+		got, _ := infoFromLease(l, proto.RouterObservation{MTU: 1280}, now)
+		if got.MTU != 0 {
+			t.Errorf("MTU = %d, want 0: nothing advertised one", got.MTU)
+		}
+	})
+}
+
+// The live half of the same fact: a router that changes ONLY its MTU
+// has changed the container's configuration, and the watch is the only
+// thing that can notice -- no lease event happens, because the address
+// did not move.
+func TestTakeAdvertChange_AnMTUChangeIsAChange(t *testing.T) {
+	c := &DHCPClient{}
+	l := lease.Lease{Addr: pfx(t, "2001:db8::5/64"), Gateway: addr(t, "fe80::1")}
+	c.view = func() (lease.Lease, bool) { return l, true }
+	// The prefixes are in the fixture precisely so their EXCLUSION is
+	// driven: a view that passed the whole observation through would
+	// carry them, and the last assertion below is what catches it.
+	ra := proto.RouterObservation{
+		Seen: true, MTU: 1400,
+		Prefixes: []wire.PrefixInfo{{
+			Prefix: addr(t, "2001:db8::"), PrefixLen: 64,
+			OnLink: true, ValidLifetime: 3600,
+		}},
+	}
+	c.routerView = func() proto.RouterObservation { return ra }
+
+	c.takeAdvertChange(time.Now()) // the baseline
+	ra.MTU = 1280
+	ev, ok := c.takeAdvertChange(time.Now())
+	if !ok {
+		t.Fatal("a router that lowered its advertised MTU was not reported; the " +
+			"container keeps the old one for the life of the endpoint")
+	}
+	if ev.Data.MTU != 1280 {
+		t.Errorf("event MTU = %d, want 1280", ev.Data.MTU)
+	}
+
+	// The withdrawal, which is the case propagateMTU's zero branch
+	// exists for: a router that stops advertising an MTU is saying
+	// nothing about it any more.
+	ra.MTU = 0
+	ev, ok = c.takeAdvertChange(time.Now())
+	if !ok {
+		t.Fatal("a router that stopped advertising an MTU was not reported")
+	}
+	if ev.Data.MTU != 0 {
+		t.Errorf("event MTU = %d, want 0", ev.Data.MTU)
+	}
+
+	// THE PREFIXES STILL DO NOT FOLLOW. The router view carries the MTU
+	// and nothing else, so on-link determination stays where it is
+	// decided once, at Join.
+	if len(ev.Data.OnLinkPrefixes) != 0 {
+		t.Errorf("OnLinkPrefixes = %v, want none from the live watch", ev.Data.OnLinkPrefixes)
+	}
 }

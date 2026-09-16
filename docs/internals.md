@@ -207,6 +207,16 @@ socket and reports the gateway, MTU, routes and DNS through
 `dhcp.Info`; the Join answer carries the gateway and the routes, and the
 manager rewrites them when a later advertisement changes them (#821).
 
+That answer only reaches an endpoint that HAS a DHCPv6 address. The
+daemon disables IPv6 on a container link carrying no global IPv6
+address, and the kernel refuses every IPv6 route on such a link, so an
+answer with an IPv6 half fails the sandbox outright rather than
+degrading -- and the plugin cannot clear `disable_ipv6` first, because
+that runs in the manager goroutine `Join` spawns, after the daemon has
+moved the link and applied the answer. A stateless or SLAAC segment
+therefore gets its MTU and resolvers and no route; #818 forms the
+address, and the route becomes installable in the same change.
+
 `ApplyRouterAdvertGuard` therefore writes `accept_ra=0`, `autoconf=0`
 and `keep_addr_on_down=1` and reads each back; `DHCPClientOptions`
 refuses a persistent v6 client that does not claim it, and refuses every
