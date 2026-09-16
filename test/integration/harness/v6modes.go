@@ -249,6 +249,25 @@ func (m V6Mode) rangeArgs() []string {
 			"--dhcp-range=" + V6StaticOnlyAddrV6 + ",static," + LeaseTime,
 			"--enable-ra",
 		}
+	case V6AutoFallback:
+		// ONE RANGE CARRYING BOTH HALVES, which is what makes this mode
+		// possible at all. The two address fields set CONTEXT_DHCP and
+		// the `slaac` keyword adds CONTEXT_RA (option.c:3823-3830), so
+		// dnsmasq advertises M and O from the DHCP half (radv.c:627-644)
+		// and the autonomous bit from the RA half (radv.c:748) on one
+		// prefix. Two separate ranges cannot do it: they would be two
+		// contexts on two prefixes, and a client would form an address
+		// from a prefix nobody offers DHCPv6 for, which is the stateless
+		// segment and not this one.
+		//
+		// --enable-ra is deliberately absent: CONTEXT_RA sets doing_ra on
+		// its own (dnsmasq.c:281-295), and adding the flag changes
+		// nothing here. The ignore is V6ManagedSilent's, for the reason
+		// written there.
+		return []string{
+			"--dhcp-range=" + V6PoolStartV6 + "," + V6PoolEndV6 + ",slaac," + LeaseTime,
+			"--dhcp-ignore=tag:dhcpv6",
+		}
 	}
 	return nil
 }

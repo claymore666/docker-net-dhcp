@@ -76,6 +76,19 @@ const raSLAACHex = "3333000000018ad3401f959486dd6c04fa6700703afffe80000000000000
 	"401f95941f030000000007080676366d6f6465076578616d706c65001903000000000708fd00" +
 	"6470686500000000000000000053"
 
+// mode=auto-fallback: M and O set AND the prefix advertised as
+// autonomous, which no other mode in this file does. Captured
+// 2026-09-16 on the session box, dnsmasq 2.91 in `unshare -Urn`, one
+// veth pair, the same run as logAutoFallback below; tcpdump rather
+// than racapture.go, because the mode did not exist yet when it was
+// measured. Flags byte 0xc0 at ICMPv6 offset 5, prefix option
+// `03 04 40 c0` -- length 64, L and A.
+const raAutoFallbackHex = "33330000000176a66e95a4e486dd6c0ba59100703afffe8000000000000074a66efffe95a4e4" +
+	"ff02000000000000000000000000000186003d5c40c007080000000000000000030440c00000" +
+	"07080000070800000000fd00647068650000000000000000000005010000000005dc010176a6" +
+	"6e95a4e41f030000000007080676366d6f6465076578616d706c65001903000000000708fd00" +
+	"6470686500000000000000000053"
+
 // mode=managed-silent: byte-for-byte the managed signature. --dhcp-ignore
 // changes what the server ANSWERS, not what it advertises.
 const raManagedSilentHex = "33330000000162bb4b8d99c986dd6c066d8800703afffe8000000000000060bb4bfffe8d99c9" +
@@ -121,6 +134,7 @@ func TestParseRA_ReadsTheFlagsFromTheByteAfterCurHopLimit(t *testing.T) {
 		{V6SLAAC, raSLAACHex, false, false, true},
 		{V6ManagedSilent, raManagedSilentHex, true, true, false},
 		{V6ManagedExhausted, raManagedExhaustedHex, true, true, false},
+		{V6AutoFallback, raAutoFallbackHex, true, true, true},
 	}
 	for _, c := range cases {
 		t.Run(c.mode.String(), func(t *testing.T) {
@@ -260,6 +274,30 @@ Sep 16 18:44:18 dnsmasq-dhcp[4182581]: 8008303 DHCPADVERTISE(s0) 00:03:00:01:02:
 Sep 16 18:44:18 dnsmasq-dhcp[4182581]: 8008303 sent size: 24 option: 13 status  2 no addresses available
 `
 
+	// Captured 2026-09-16, dnsmasq 2.91 in `unshare -Urn`, LC_ALL=C, the
+	// library's own client in proto.Mode6Auto on the peer end of the
+	// veth pair; the same run as raAutoFallbackHex. The client solicited
+	// three times, was ignored three times, gave up on DHCPv6 and formed
+	// fd00:6470:6865:0:bc1b:12ff:fe5b:c905/64 from the advertised
+	// prefix, reporting SLAACFallbacks 1 and SLAACAddressesFormed 1.
+	//
+	// THE `available DHCP range` LINES ARE PART OF THE CAPTURE AND ARE
+	// KEPT. --log-dhcp prints them for a request the server then
+	// ignores, so a reader who sees them in a lane log is looking at a
+	// segment that refused, not at one that served.
+	logAutoFallback = `Sep 16 20:52:29 dnsmasq-dhcp[474848]: DHCP, IP range 192.168.103.10 -- 192.168.103.99, lease time 2m
+Sep 16 20:52:29 dnsmasq-dhcp[474848]: DHCPv6, IP range fd00:6470:6865::10 -- fd00:6470:6865::99, lease time 2m
+Sep 16 20:52:29 dnsmasq-dhcp[474848]: router advertisement on fd00:6470:6865::
+Sep 16 20:52:30 dnsmasq-dhcp[474848]: RTR-ADVERT(s0) fd00:6470:6865::
+Sep 16 20:52:33 dnsmasq-dhcp[474848]: RTR-SOLICIT(s0) be:1b:12:5b:c9:05
+Sep 16 20:52:33 dnsmasq-dhcp[474848]: RTR-ADVERT(s0) fd00:6470:6865::
+Sep 16 20:52:33 dnsmasq-dhcp[474848]: 1100156 available DHCP range: fd00:6470:6865::10 -- fd00:6470:6865::99
+Sep 16 20:52:33 dnsmasq-dhcp[474848]: 1100156 client MAC address: be:1b:12:5b:c9:05
+Sep 16 20:52:33 dnsmasq-dhcp[474848]: 1100156 DHCPSOLICIT(s0) 00:03:00:01:be:1b:12:5b:c9:05 ignored
+Sep 16 20:52:34 dnsmasq-dhcp[474848]: 1100156 DHCPSOLICIT(s0) 00:03:00:01:be:1b:12:5b:c9:05 ignored
+Sep 16 20:52:36 dnsmasq-dhcp[474848]: 1100156 DHCPSOLICIT(s0) 00:03:00:01:be:1b:12:5b:c9:05 ignored
+`
+
 	logManagedSilent = `Sep  5 23:33:27 dnsmasq-dhcp[747851]: DHCP, IP range 192.168.103.10 -- 192.168.103.99, lease time 2m
 Sep  5 23:33:27 dnsmasq-dhcp[747851]: DHCPv6, IP range fd00:6470:6865::10 -- fd00:6470:6865::99, lease time 2m
 Sep  5 23:33:28 dnsmasq-dhcp[747851]: RTR-ADVERT(br0) fd00:6470:6865::
@@ -281,6 +319,8 @@ func logFor(m V6Mode) string {
 		return logManagedSilent
 	case V6ManagedExhausted:
 		return logManagedExhausted
+	case V6AutoFallback:
+		return logAutoFallback
 	}
 	return ""
 }
@@ -310,8 +350,17 @@ func TestV6ExchangeFindings_EachModesOwnLogPassesAndTheOthersDoNot(t *testing.T)
 		// directions because the property is symmetric, and a row that
 		// named only one direction would be claiming a discrimination
 		// the log cannot carry.
-		V6NoRA:          {V6NoRA: true, V6ManagedSilent: true},
-		V6ManagedSilent: {V6ManagedSilent: true, V6NoRA: true},
+		V6NoRA:          {V6NoRA: true, V6ManagedSilent: true, V6AutoFallback: true},
+		V6ManagedSilent: {V6ManagedSilent: true, V6NoRA: true, V6AutoFallback: true},
+		// auto-fallback's DHCP log is a third copy of that same ignored
+		// SOLICIT, so it joins the pair above in all three directions.
+		// The three modes are separated on the WIRE and nowhere else:
+		// no-RA advertises nothing, managed-silent advertises no
+		// autonomous prefix, auto-fallback advertises one. All three
+		// differences are in V6Signature and are asserted at fixture
+		// construction, which is why the drift matrix can tell the three
+		// apart while this table cannot.
+		V6AutoFallback: {V6AutoFallback: true, V6NoRA: true, V6ManagedSilent: true},
 	}
 
 	for _, mode := range V6Modes() {
@@ -676,6 +725,7 @@ func evidenceFor(t *testing.T, mode V6Mode) V6Evidence {
 		V6SLAAC:            raSLAACHex,
 		V6ManagedSilent:    raManagedSilentHex,
 		V6ManagedExhausted: raManagedExhaustedHex,
+		V6AutoFallback:     raAutoFallbackHex,
 	}
 	ev := V6Evidence{PoolLogged: mode.Signature().Pool}
 	if h, ok := hexes[mode]; ok {
