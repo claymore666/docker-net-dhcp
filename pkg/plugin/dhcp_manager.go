@@ -1851,6 +1851,17 @@ func (m *dhcpManager) Start(ctx context.Context) (err error) {
 	// grace is still what keeps that from being read as a plugin
 	// failure. What changed is what the container has while it waits.
 	//
+	// THE CLAIM IS ABOUT THIS FUNCTION, AND JOIN DOES NOT ALWAYS REACH
+	// IT FIRST. A Join carrying no hint rebuilds the endpoint before
+	// any attach begins: on `docker restart` libnetwork sends Leave
+	// then Join on the same endpoint with no CreateEndpoint between
+	// them, so reacquireEndpoint recovers the MAC from the daemon and
+	// replays CreateEndpoint, whose own hostname lookup and one-shot
+	// exchange run against the same busy daemon. That route still pays
+	// the wait, in Join and not here, and
+	// TestReacquireEndpoint_AsksTheDaemonBeforeTheAttachBegins pins it.
+	// What this order delivers is a container START that does not wait.
+	//
 	// TWO SHAPES STILL TAKE THE NAME BEFORE THE START, and both are
 	// below rather than here:
 	//
@@ -2105,7 +2116,6 @@ func (m *dhcpManager) nameTheRunningClient(phases *joinPhases, lookup func() err
 	// no-op that made hostnames_applied_late rise on every container
 	// started without --hostname.
 	safe := m.plugin.safeHostname(*name)
-	m.setHostname(safe.name)
 	if safe.name == "" {
 		return
 	}
@@ -2124,6 +2134,13 @@ func (m *dhcpManager) nameTheRunningClient(phases *joinPhases, lookup func() err
 			Warn("The running DHCP client would not take the container's name; the DHCP server's table has no name for this endpoint")
 		return
 	}
+	// AFTER THE HANDOVER, NOT BEFORE IT. audit() reads this field for
+	// every ledger row on an audit_log network and the accessor is
+	// named for what it means: the name this endpoint puts on the
+	// wire. Recording it on the way past would make the ledger name an
+	// endpoint the server was never told about, on both arms above,
+	// while hostname_apply_failures said the opposite.
+	m.setHostname(safe.name)
 	m.plugin.hostnamesAppliedLate.Add(1)
 	log.WithFields(m.logFields(false)).
 		WithField("hostname", safe.name).

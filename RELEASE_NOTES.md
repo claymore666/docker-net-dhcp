@@ -124,14 +124,17 @@ prompts on has moved since v2.0.0.
 
 ### Changed
 
-- A container gets its address without waiting for the Docker daemon. The
-  attach starts the persistent DHCP client first and asks the daemon for the
-  container's name afterwards, then hands that name to the running client,
+- A container gets its address on start without waiting for the Docker daemon.
+  The attach starts the persistent DHCP client first and asks the daemon for
+  the container's name afterwards, then hands that name to the running client,
   which renews early to carry it. Before, the client was not started until the
   daemon had answered, and the daemon does not answer questions about a
   container while it is still starting it, so an endpoint could be without an
   address for the length of a `docker run`. A name that arrives late, or not at
-  all, no longer holds up the lease (#961).
+  all, no longer holds up the lease. A container **restart** still asks the
+  daemon first: Docker drives a restart as a detach and a re-attach with no
+  endpoint creation between them, so the plugin rebuilds the endpoint before
+  the attach begins (#961).
 - A network with `register_dns` keeps the old order. Its name goes in the DHCP
   FQDN option, which is built when the client is constructed and cannot be set
   afterwards, so that network still waits for the name before it leases (#961).

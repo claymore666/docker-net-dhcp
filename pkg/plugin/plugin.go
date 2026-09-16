@@ -1140,11 +1140,16 @@ type Plugin struct {
 	//
 	// THREE AND NOT ONE, because each leaves a different thing true and
 	// wants a different answer. hostnamesAppliedLate is the mechanism
-	// working, and it is also the DOMAIN: a zero on the two failure
-	// counters is satisfied by a host that never attached anything, and
-	// only the positive counter beside them says otherwise. It counts
-	// non-empty names only; a container started without --hostname is
-	// not a failure and nothing is handed over for it.
+	// working, and it NARROWS the two failure counters' zeros without
+	// deciding them: a zero on all three is satisfied by a host that
+	// never attached anything, by one whose containers were all started
+	// without --hostname, and by one where every attach took the name
+	// before the client started (register_dns, or the PID fallback).
+	// Non-zero here is the only reading that says the late path ran and
+	// worked; zero is three states and needs the plugin log to tell
+	// them apart. It counts non-empty names only; a container started
+	// without --hostname is not a failure and nothing is handed over
+	// for it.
 	//
 	// hostnameLookupFailures is the daemon: the container inspect did
 	// not answer inside the attach window. The endpoint keeps its lease

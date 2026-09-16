@@ -199,6 +199,11 @@ func TestStart_EntersTheNamespaceAndLocatesTheLinkWithoutTheDaemon(t *testing.T)
 // at all, which would leave every container nameless. Non-zero-at-the-
 // end alone is the old order. The name is what says the answer was
 // used.
+// ITS WINDOW OPENS AT Start, NOT AT Join. A Join that carries no hint
+// rebuilds the endpoint before any attach begins and asks the daemon
+// while doing it; that route is
+// TestReacquireEndpoint_AsksTheDaemonBeforeTheAttachBegins, and the
+// reference page and release notes both name it beside the claim.
 func TestStart_AsksTheDaemonNothingBeforeThePersistentClientStarts(t *testing.T) {
 	docker := &fakeDocker{
 		inspectResult: map[string]dNetwork.Inspect{
@@ -213,7 +218,7 @@ func TestStart_AsksTheDaemonNothingBeforeThePersistentClientStarts(t *testing.T)
 			},
 		},
 	}
-	m, _ := daemonFreeManager(t, docker)
+	m, plug := daemonFreeManager(t, docker)
 
 	// The observer sits IN the client, so the order is read at the
 	// moment of the call and not inferred from what is left at the end.
@@ -261,9 +266,26 @@ func TestStart_AsksTheDaemonNothingBeforeThePersistentClientStarts(t *testing.T)
 			"inspect %d, container inspect %d",
 			docker.listCalls, docker.inspectCalls, docker.containerCalls)
 	}
-	if got := m.hostnameOnTheWire(); got != "ctr-1" {
-		t.Errorf("m.hostname = %q, want %q: the inspect made after the client started is the one the DHCP "+
-			"hostname option comes from", got, "ctr-1")
+	// The name is READ here and cannot be DELIVERED here: this lane
+	// substitutes the socket open, so the manager still holds the
+	// library client that never started, and the handover ends in
+	// ErrNoRunningClient. Which is the assertion: the lookup ran and
+	// answered after the client started (no lookup failure), and the
+	// only thing that stopped the name was the absent socket (one apply
+	// failure). The delivery itself is
+	// TestStart_TheDefaultNetworkTakesTheNameAfterTheClientStarts,
+	// which publishes a client that can be asked what it was told.
+	if got := plug.hostnameLookupFailures.Load(); got != 0 {
+		t.Errorf("hostname_lookup_failures = %d, want 0: the daemon answered, and an attach that never "+
+			"asked for the name is not the attach this drive is about", got)
+	}
+	if got := plug.hostnameApplyFailures.Load(); got != 1 {
+		t.Errorf("hostname_apply_failures = %d, want 1: the name was read after the client started and "+
+			"had nowhere to go in this lane, which is the only reason it did not reach the wire", got)
+	}
+	if got := m.hostnameOnTheWire(); got != "" {
+		t.Errorf("m.hostname = %q, want empty: the field is the name the endpoint puts on the wire, and "+
+			"no client here ever took one", got)
 	}
 }
 

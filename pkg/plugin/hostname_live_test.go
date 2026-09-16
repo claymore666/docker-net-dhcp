@@ -8,6 +8,7 @@ import (
 	"errors"
 	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -204,6 +205,111 @@ func TestNameTheRunningClient_NoClientIsAnApplyFailure(t *testing.T) {
 //
 // The sample is taken at the socket, because "it waited" and "it did not
 // wait" leave the same totals when Start returns.
+// TestNameTheRunningClient_ZeroOnAllThreeIsNotOnlyAnIdleHost pins what a
+// zero reading means, because three documents state it in prose:
+// docs/reference.md's hostnames_applied_late row, the help string in
+// metrics.go, and the field comment in plugin.go.
+//
+// hostnames_applied_late narrows the two failure counters; it does not
+// decide them. Five attaches here do real work and leave all three at
+// zero, because none of the containers was started with --hostname and
+// an empty name is not handed over. So "zero everywhere" is not "this
+// host has attached nothing", and the three documents may not say it
+// is. The named attach at the end is the other direction: the same
+// plugin, one container with a name, and only then does the positive
+// counter move.
+func TestNameTheRunningClient_ZeroOnAllThreeIsNotOnlyAnIdleHost(t *testing.T) {
+	p := &Plugin{}
+	attaches := 0
+	for i := 0; i < 5; i++ {
+		m := newDHCPManager(nil, JoinRequest{NetworkID: "net-1", EndpointID: "ep-1"},
+			DHCPNetworkOptions{}).withPlugin(p)
+		client := &fakeJoinClient{}
+		m.setHealthClient(client)
+
+		name := "not-read-yet"
+		m.nameTheRunningClient(newJoinPhases(), func() error { name = ""; return nil }, &name)
+		attaches++
+
+		if len(client.names) != 0 {
+			t.Fatalf("attach %d handed the client %v: a container with no name has nothing to hand "+
+				"over, and an empty handover asks the server to stop recording a name that was "+
+				"never sent", i, client.names)
+		}
+	}
+
+	if got := p.hostnamesAppliedLate.Load(); got != 0 {
+		t.Errorf("hostnames_applied_late = %d after %d unnamed attaches, want 0", got, attaches)
+	}
+	if got := p.hostnameLookupFailures.Load(); got != 0 {
+		t.Errorf("hostname_lookup_failures = %d, want 0: every lookup answered", got)
+	}
+	if got := p.hostnameApplyFailures.Load(); got != 0 {
+		t.Errorf("hostname_apply_failures = %d, want 0: there was nothing to apply", got)
+	}
+
+	m := newDHCPManager(nil, JoinRequest{NetworkID: "net-1", EndpointID: "ep-2"},
+		DHCPNetworkOptions{}).withPlugin(p)
+	m.setHealthClient(&fakeJoinClient{})
+	name := ""
+	m.nameTheRunningClient(newJoinPhases(), func() error { name = "web1"; return nil }, &name)
+	if got := p.hostnamesAppliedLate.Load(); got != 1 {
+		t.Errorf("hostnames_applied_late = %d after one NAMED attach on the same plugin, want 1: if this "+
+			"does not move, the zeros above measure the counter and not the host", got)
+	}
+}
+
+// TestNameTheRunningClient_TheLedgerNamesOnlyWhatTheClientTook reads the
+// AUDIT LEDGER instead of a counter, because the ledger is what
+// docs/reference.md sells as the lease-lifecycle record and it carries a
+// hostname column.
+//
+// m.hostname is what audit() writes into that column, and the accessor
+// is named for what the field means: the name this endpoint puts on the
+// wire. So the field may only be written once the running client has
+// taken the name. Written on the way past, it would name an endpoint the
+// DHCP server was never told about, on exactly the attaches where
+// hostname_apply_failures says the opposite -- two records of one fact,
+// disagreeing, with the counter loud and the ledger silent.
+//
+// Both directions, because a field that is never written is trivially
+// never wrong: the arm that succeeds must still reach the ledger.
+func TestNameTheRunningClient_TheLedgerNamesOnlyWhatTheClientTook(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		setErr  error
+		wantLog string
+	}{
+		{name: "the client refuses the handover", setErr: errors.New("the request queue is full"), wantLog: ""},
+		{name: "the client takes it", setErr: nil, wantLog: "web1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var ledgerFailures atomic.Int32
+			p := &Plugin{}
+			p.ledger = testLedger(t, &ledgerFailures)
+			m := newDHCPManager(nil, JoinRequest{NetworkID: "net-1", EndpointID: "ep-1"},
+				DHCPNetworkOptions{AuditLog: true}).withPlugin(p)
+			client := &fakeJoinClient{setErr: tc.setErr}
+			m.setHealthClient(client)
+
+			name := ""
+			m.nameTheRunningClient(newJoinPhases(), func() error { name = "web1"; return nil }, &name)
+			m.audit("bound", "192.168.0.10")
+
+			rows := readLedgerLines(t, p.ledger.path)
+			if len(rows) != 1 {
+				t.Fatalf("the ledger has %d rows, want 1", len(rows))
+			}
+			if got := rows[0].Hostname; got != tc.wantLog {
+				t.Errorf("the ledger's bound row names %q, want %q. The ledger and "+
+					"hostname_apply_failures (%d) describe the same endpoint, and a name in "+
+					"this column the client never took makes them disagree (#961)",
+					got, tc.wantLog, p.hostnameApplyFailures.Load())
+			}
+		})
+	}
+}
+
 func TestStart_ARegisterDNSNetworkTakesTheNameBeforeTheClientStarts(t *testing.T) {
 	docker := &fakeDocker{
 		inspectResult: map[string]dNetwork.Inspect{
@@ -312,5 +418,62 @@ func TestStart_TheDefaultNetworkTakesTheNameAfterTheClientStarts(t *testing.T) {
 	if got := p.hostnamesAppliedLate.Load(); got != 1 {
 		t.Errorf("hostnames_applied_late = %d, want 1: the name arrived after the client and was given "+
 			"to it, which is the whole of #961", got)
+	}
+}
+
+// TestReacquireEndpoint_AsksTheDaemonBeforeTheAttachBegins is the bound
+// on #961's window claim, pinned so it cannot quietly widen again.
+//
+// The window this change empties is measured from dhcpManager.Start,
+// and Join does not always reach Start first. On `docker restart`
+// libnetwork sends Leave then Join on the same endpoint with no
+// CreateEndpoint between them, so Join finds no hint and rebuilds the
+// endpoint before any attach begins: a NetworkInspect to recover the
+// MAC, then a CreateEndpoint replay whose own hostname lookup is a
+// second NetworkInspect and a ContainerInspect, and then a one-shot
+// DHCP exchange. All of it against the daemon that is inside
+// ContainerStart for the container being restarted, which is #406's own
+// case.
+//
+// So the property is "a container start does not wait for the daemon",
+// and a restart still does. docs/reference.md and RELEASE_NOTES.md say
+// which one they mean; this drive is what makes the sentence false if
+// the route ever stops asking.
+//
+// The replay fails in this lane, which is not what is measured: the
+// daemon has already been asked by then. MEASURED on this fixture, an
+// unmutated macvlan run reaches the failure having made two
+// NetworkInspect calls, one from the MAC lookup and one from the replay
+// itself. Both modes are driven because the documents say "on every
+// network", and ipvlan is the mode that skips the MAC lookup.
+//
+// The property is over-determined, and that is stated rather than
+// hidden: removing the MAC lookup leaves the replay asking, so no
+// one-line change to this route can make it daemon-free and no mutant
+// of that shape can go red here.
+func TestReacquireEndpoint_AsksTheDaemonBeforeTheAttachBegins(t *testing.T) {
+	for _, mode := range []string{ModeMacvlan, ModeIPvlan} {
+		t.Run(mode, func(t *testing.T) {
+			docker := &fakeDocker{
+				inspectResult: map[string]dNetwork.Inspect{
+					"net-1": {Containers: map[string]dNetwork.EndpointResource{
+						"ctr-1": {EndpointID: "ep-abcdef", MacAddress: "02:42:ac:11:00:02"},
+					}},
+				},
+			}
+			p := &Plugin{docker: docker}
+
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			_ = p.reacquireEndpoint(ctx, JoinRequest{NetworkID: "net-1", EndpointID: "ep-abcdef"},
+				DHCPNetworkOptions{Mode: mode})
+
+			if docker.inspectCalls == 0 {
+				t.Error("the restart route rebuilt the endpoint without asking the daemon anything. " +
+					"If that is so then #961's window claim covers this route too and the " +
+					"documents that exclude it are wrong; if it is not, this drive has stopped " +
+					"measuring the route")
+			}
+		})
 	}
 }
