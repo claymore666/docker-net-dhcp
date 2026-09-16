@@ -386,3 +386,130 @@ func TestNoteV6Absence_AFormingModeWithNoAddressIsItsOwnEnding(t *testing.T) {
 		t.Errorf("dhcpv6_slaac_no_address = %d on a dhcp network, want 0", got)
 	}
 }
+
+// The verdict enumeration is the domain every table below runs over,
+// so it is itself checked against the declaration rather than against a
+// reader's memory. v6VerdictCount sits at the end of the const block,
+// so a verdict added above it and forgotten here fails this test and
+// every table that iterates allV6Verdicts stops being a claim about the
+// population.
+func TestAllV6Verdicts_IsEveryDeclaredVerdict(t *testing.T) {
+	all := allV6Verdicts()
+	if len(all) != int(v6VerdictCount) {
+		t.Fatalf("allV6Verdicts has %d entries and %d verdicts are declared; a verdict missing "+
+			"from the slice is one no table test ever judges", len(all), int(v6VerdictCount))
+	}
+	seen := map[v6Verdict]bool{}
+	for _, v := range all {
+		if v >= v6VerdictCount {
+			t.Errorf("allV6Verdicts contains %d, which is past the end of the enumeration", int(v))
+		}
+		if seen[v] {
+			t.Errorf("allV6Verdicts lists verdict %d twice, so the count above can be right "+
+				"while a verdict is still missing", int(v))
+		}
+		seen[v] = true
+	}
+}
+
+// TestV6AbsenceTolerated_OnlyTheNoRouterRowReadsTheMode is #818's
+// change to the ending #989 documented as temporary.
+//
+// docs/reference.md's DHCPv6 verdict table said, for "advertised
+// nothing at all": tolerated "in every ipv6_mode, including slaac and
+// auto ... because the address they would form is not installed yet",
+// and "that changes with #818". This is that change, stated as a table
+// so both halves of it are executable: the forming modes fail, and
+// every other mode and every other verdict answer exactly what they
+// answered before.
+//
+// The expectation is written out per (verdict, mode) rather than
+// derived, and every pair is required to have a row. A predicate that
+// stopped reading the mode passes the dhcp column and fails the slaac
+// and auto cells of one row; a predicate that read only the mode fails
+// four rows.
+func TestV6AbsenceTolerated_OnlyTheNoRouterRowReadsTheMode(t *testing.T) {
+	want := map[v6Verdict]map[proto.Mode6]bool{
+		v6Fatal:          {proto.Mode6DHCP: false, proto.Mode6SLAAC: false, proto.Mode6Auto: false, proto.Mode6Off: false},
+		v6NotOffered:     {proto.Mode6DHCP: true, proto.Mode6SLAAC: true, proto.Mode6Auto: true, proto.Mode6Off: true},
+		v6NoRouter:       {proto.Mode6DHCP: true, proto.Mode6SLAAC: false, proto.Mode6Auto: false, proto.Mode6Off: true},
+		v6Refused:        {proto.Mode6DHCP: false, proto.Mode6SLAAC: false, proto.Mode6Auto: false, proto.Mode6Off: false},
+		v6SLAACNoPrefix:  {proto.Mode6DHCP: false, proto.Mode6SLAAC: false, proto.Mode6Auto: false, proto.Mode6Off: false},
+		v6SLAACNoAddress: {proto.Mode6DHCP: false, proto.Mode6SLAAC: false, proto.Mode6Auto: false, proto.Mode6Off: false},
+	}
+
+	for _, v := range allV6Verdicts() {
+		row, ok := want[v]
+		if !ok {
+			t.Fatalf("verdict %d has no row here, so whether an endpoint it ends starts or "+
+				"fails is decided by the predicate's default arm and asserted nowhere", int(v))
+		}
+		for _, mode := range proto.AllModes6() {
+			got, ok := row[mode]
+			if !ok {
+				t.Fatalf("verdict %d has no cell for ipv6_mode=%s", int(v), mode)
+			}
+			if v6AbsenceTolerated(v, mode) != got {
+				t.Errorf("v6AbsenceTolerated(%d, %s) = %v, want %v",
+					int(v), mode, !got, got)
+			}
+		}
+	}
+}
+
+// The same rule at the level an operator sees it: one counter for both
+// endings, two different endpoint outcomes, and the counter moves in
+// every mode because the population it counts is "saw no router".
+//
+// THE COUNTER IS THE PRESERVATION CONTROL. A change that made the
+// forming modes fatal by routing them to a different verdict would pass
+// the outcome assertion and quietly empty dhcpv6_no_router_advert for
+// the two modes most likely to produce it.
+func TestNoteV6Absence_ASegmentWithNoRouterEndsAFormingEndpoint(t *testing.T) {
+	cases := []struct {
+		mode      proto.Mode6
+		tolerated bool
+	}{
+		{proto.Mode6DHCP, true},
+		{proto.Mode6Off, true},
+		{proto.Mode6SLAAC, false},
+		{proto.Mode6Auto, false},
+	}
+	for _, c := range cases {
+		t.Run(c.mode.String(), func(t *testing.T) {
+			p := &Plugin{}
+			got := p.noteV6Absence(dhcp.RAObservation{}, "eth0", "abcdef0123456789",
+				errors.New("timed out"), c.mode)
+			if got != c.tolerated {
+				if c.tolerated {
+					t.Errorf("an ipv6_mode=%s endpoint was refused for a segment with no router "+
+						"advertisement; that mode takes its address from DHCPv6 or from nothing, "+
+						"and refusing the container buys nothing (#868)", c.mode)
+				} else {
+					t.Errorf("an ipv6_mode=%s endpoint started on a segment with no router "+
+						"advertisement; RFC 4862 section 5.5.3 forms an address from the Prefix "+
+						"Information option and there was no advertisement to carry one, so the "+
+						"container has no IPv6 and nothing said so (#818)", c.mode)
+				}
+			}
+			if n := p.dhcpv6NoRouterAdvert.Load(); n != 1 {
+				t.Errorf("dhcpv6_no_router_advert = %d in ipv6_mode=%s, want 1: the counter's "+
+					"population is every endpoint that saw no advertisement, in every mode", n, c.mode)
+			}
+			for _, other := range []struct {
+				name string
+				got  int32
+			}{
+				{"dhcpv6_no_server", p.dhcpv6NoServer.Load()},
+				{"dhcpv6_not_offered", p.dhcpv6NotOffered.Load()},
+				{"dhcpv6_slaac_no_address", p.dhcpv6SLAACNoAddress.Load()},
+				{"dhcpv6_slaac_no_prefix", p.dhcpv6SLAACNoPrefix.Load()},
+				{"dhcpv6_refused", p.dhcpv6Refused.Load()},
+			} {
+				if other.got != 0 {
+					t.Errorf("%s = %d for a segment with no router advertisement", other.name, other.got)
+				}
+			}
+		})
+	}
+}
