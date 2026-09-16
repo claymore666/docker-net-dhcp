@@ -44,14 +44,45 @@ func TestAddRouterStats_EachDeltaReachesItsOwnCounter(t *testing.T) {
 	}
 }
 
-// Deltas accumulate, which is what makes these process-wide counters
-// rather than a reading of whichever manager reported last.
-func TestAddRouterStats_DeltasAccumulate(t *testing.T) {
+// Deltas accumulate, and ALL SIX do.
+//
+// A counter that stored its argument instead of adding it would read as
+// the last manager's delta rather than as the process's total, and on a
+// host with more than one IPv6 container it would go DOWN -- the one
+// direction these may not move. Every field is driven here rather than
+// one of them: six lines with the same shape are six places the wrong
+// operator can be written, and a test that drives one of them leaves
+// the other five to a reading of the diff. MEASURED: with only
+// AdvertsSeen driven, a mutant storing SolicitsSent survived.
+func TestAddRouterStats_EverySixDeltasAccumulate(t *testing.T) {
 	p := &Plugin{}
-	p.addRouterStats(dhcp.RouterStats{AdvertsSeen: 4})
-	p.addRouterStats(dhcp.RouterStats{AdvertsSeen: 7})
-	if got := p.routerAdvertsSeen.Load(); got != 11 {
-		t.Errorf("two managers reporting 4 and 7 left the counter at %d, want 11", got)
+	first := dhcp.RouterStats{
+		SolicitsSent: 1, AdvertsSeen: 2, AdvertsRefused: 3,
+		OptionsIgnored: 4, EntriesDropped: 5, EntriesEvicted: 6,
+	}
+	second := dhcp.RouterStats{
+		SolicitsSent: 10, AdvertsSeen: 20, AdvertsRefused: 30,
+		OptionsIgnored: 40, EntriesDropped: 50, EntriesEvicted: 60,
+	}
+	p.addRouterStats(first)
+	p.addRouterStats(second)
+	for _, tc := range []struct {
+		name string
+		got  int32
+		want int32
+	}{
+		{"router_solicits_sent", p.routerSolicitsSent.Load(), 11},
+		{"router_adverts_seen", p.routerAdvertsSeen.Load(), 22},
+		{"router_adverts_refused", p.routerAdvertsRefused.Load(), 33},
+		{"router_advert_options_ignored", p.routerAdvertOptionsIgnored.Load(), 44},
+		{"router_table_entries_dropped", p.routerTableEntriesDropped.Load(), 55},
+		{"router_table_entries_evicted", p.routerTableEntriesEvicted.Load(), 66},
+	} {
+		if tc.got != tc.want {
+			t.Errorf("%s = %d after two managers reported into it, want %d; a counter that "+
+				"takes the last delta instead of the sum falls when a container stops",
+				tc.name, tc.got, tc.want)
+		}
 	}
 }
 
