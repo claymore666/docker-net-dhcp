@@ -708,6 +708,45 @@
   
 </li>
         
+          <li class="md-nav__item">
+  <a href="#host-side-interface-names-host_ifname" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Host-side interface names (host_ifname)
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Host-side interface names (host_ifname)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#the-name-the-plugin-derives" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The name the plugin derives
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#when-the-name-does-not-happen" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        When the name does not happen
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
       </ul>
     </nav>
   
@@ -1398,6 +1437,45 @@
   
 </li>
         
+          <li class="md-nav__item">
+  <a href="#host-side-interface-names-host_ifname" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Host-side interface names (host_ifname)
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Host-side interface names (host_ifname)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#the-name-the-plugin-derives" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The name the plugin derives
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#when-the-name-does-not-happen" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        When the name does not happen
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
       </ul>
     </nav>
   
@@ -1946,6 +2024,11 @@ network create -o key=value</code>, or <code>driver_opts:</code> in Compose:</p>
 <td><code>release_lease</code></td>
 <td>all</td>
 <td><code>never</code></td>
+</tr>
+<tr>
+<td><code>host_ifname</code></td>
+<td>bridge</td>
+<td><em>(off)</em></td>
 </tr>
 </tbody>
 </table>
@@ -2510,6 +2593,13 @@ value as an invalid duration.</p>
 <td><strong>v2.1.1</strong> (<code>on_remove</code>: <strong>v2.2.0</strong>)</td>
 <td>Whether, and when, an endpoint hands its DHCP lease back. It leaves its sandbox at every <code>docker stop</code>, every <code>docker rm</code> of a running container and every <code>docker network disconnect</code>. <strong><code>never</code></strong> (default) sends nothing: the address stays leased until it expires, and a container that restarts before then asks for it again and gets it, exactly as a physical host on the segment does after a reboot (#800). <strong><code>on_stop</code></strong> sends a DHCPRELEASE (RFC 2131 section 4.4.6) for IPv4 and a Release (RFC 9915 section 18.2.7) for IPv6, one datagram per family, built from the endpoint's own lease record and sent from the host's address on the parent interface. The address goes back to the server's pool at once, and the container's next start is a fresh acquisition that may land on a different address. <strong>It does not need a running DHCP client</strong>, which matters for the shape the option is most used for: a container that stops before the plugin's persistent client has attached still hands its address back, because the address it used came from the acquisition at endpoint creation and that acquisition wrote it into the same record. Two things follow and are not configurable: the endpoint lays <strong>no tombstone</strong>, so it does not keep its MAC across a restart, and the lease record of each family whose address actually went back is closed rather than kept resumable. Both are the same rule, that nothing may hand on an address the server has already taken back. <strong>One path is not covered on <code>never</code> or <code>on_stop</code>, and is covered on <code>on_remove</code>.</strong> In IPAM mode an address reserved for an endpoint whose <code>CreateEndpoint</code> then failed is retained: retaining it is what lets a restart policy's next attempt claim the same address back instead of burning a second lease on the server, and a reservation with no endpoint reaches no <code>Leave</code>, which is the only path <code>on_stop</code> releases from. On those two values no DHCPRELEASE goes on the wire for it and the address is left to expire, exactly as any other host on the segment leaves one. On <code>on_remove</code> the retention carries a deadline like any other, so the address goes back when the window runs out and no retry has claimed it (#984). <code>releases_sent</code> and <code>release_failures</code> report what happened, per family. <code>on_stop</code> costs <code>docker stop</code> one datagram per family, sent synchronously and not retransmitted, with no reply read and no retry. Nothing waits on the server. A release the host cannot send at all fails immediately and is counted, and the address is then left to expire exactly as under <code>never</code>. The reason is in the plugin log beside the counter: no record, no leased address on it, no server named on it, no address on the parent to send from, or the socket. <strong><code>on_remove</code></strong> (v2.2.0, #984) holds the addresses for the restart window and hands back whatever nothing has claimed when the window runs out. It is a <strong>timed</strong> release and not a handler on removal, because there is no removal handler to hang it on: Docker deletes an endpoint when its container <strong>stops</strong>, not when it is removed, so a release sent from that handler would fire on every <code>docker stop</code> (which is <code>on_stop</code>) and would never fire for <code>docker rm</code> of an already-stopped container. The window is the <strong>tombstone TTL, 60 seconds</strong>, the same value that decides how long a stopped container keeps its MAC, so the two can never disagree and there is no second option to set. The release goes out on the sweep that follows the deadline: the sweep runs every 15 seconds and waits 5 seconds past the deadline, so the wall clock from <code>docker stop</code> to the datagram is <strong>65 to 80 seconds</strong>. One attempt is made and the record is closed either way; there is no retry, and a failed attempt leaves the address to expire exactly as under <code>never</code>. A container that comes back inside the window keeps its address <strong>and</strong> its MAC, exactly as under <code>never</code>, and <code>releases_reclaimed</code> counts it. What decides that is the <strong>address</strong>: a newer record on the same network holding the same address. A container pinned to a MAC that comes back on a different address does not hold the old one, and the old one goes back. Two further cases also send nothing and do <strong>not</strong> move <code>releases_reclaimed</code>, because neither is a container running on the address: the same address stopped a second time, where the newer record carries its own deadline and decides the address itself, and an address acquisition in flight under the same endpoint key, where the address is left to expire so it is not taken from under an exchange that may be about to be given it. The deadline is written into the lease record, so a plugin that restarts inside the window still releases at the right moment, and <code>docker network rm</code> hands the network's still-held addresses back at once instead of leaving them for deadlines on a network that no longer exists. Everything <code>on_stop</code> does at the moment of the release, <code>on_remove</code> does at the deadline: one datagram per family, built from the endpoint's own record, no running DHCP client needed, nothing waited on, and the record closed rather than kept resumable. The one difference before the deadline is that the endpoint <strong>does</strong> lay a tombstone, because until the window runs out the address is still the container's. <strong>What the log says on <code>on_remove</code></strong>, at <code>info</code> unless noted: at the stop, one line per endpoint, <code>release_lease=on_remove: keeping this endpoint's addresses for the restart window</code>, carrying the window and the addresses; at the deadline, one line per address, <code>No container claimed this address back inside the restart window, so release_lease=on_remove is handing it back</code>, followed by the same outcome lines <code>on_stop</code> prints; at <code>debug</code>, one line per address that is not handed back, one sentence per reason, <code>A container is running on this address, so it was claimed back inside the restart window and nothing is handed back</code> (the only one that moves <code>releases_reclaimed</code>), <code>A newer record holds this same address with its own deadline, so this record is closed and the newer one decides when the address goes back</code>, and <code>An address acquisition is in flight under this endpoint's key, so this address is left to expire instead of being handed back from under it</code>, each naming the holding record; at <code>debug</code> again, <code>A held address belongs to a network whose options cannot be read; leaving the record as it is</code>, which leaves the record alone so a later pass can still decide; at <code>docker network rm</code>, one line naming how many of the network's addresses went back, and, at <code>warning</code>, <code>This network's stored options could not be read while it was being removed, so its held addresses could not be handed back</code> when the removal cannot read what it needs, which is the one case no later pass can repair, because the options and the tombstones go with the network. <strong>What it does not cover.</strong> If the plugin is not running at the moment a container stops, Docker's endpoint deletion never reaches it, no window opens for that endpoint, and its address is left to expire. <code>on_stop</code> misses the same stop for the same reason. The sweep deliberately does not repair it: a record the plugin still believes a container is using is never released from the background, because a pass that released those would hand back every address on the host after a restart. Any other value is refused at <code>docker network create</code>, with the reason in the message. Networks created before v2.1.1 read as <code>never</code>.</td>
 </tr>
+<tr>
+<td><code>host_ifname</code></td>
+<td>bridge</td>
+<td><em>(off)</em></td>
+<td><strong>v2.2.0</strong></td>
+<td>What the host-side interface this network creates is called, so <code>ip link</code> and <code>brctl show</code> read like the compose file (#978). Off by default, which is every release before v2.2.0: the link is <code>dh-</code> plus the endpoint ID's first 12 hex, unique and meaningless. <strong><code>container_name</code></strong> names it after the container, the name <code>docker ps</code> prints. <strong><code>hostname</code></strong> names it after the container's hostname (<code>docker run --hostname</code>), which defaults to the short container ID and is <strong>not unique on a host</strong>. Any other value is refused at <code>docker network create</code>. <strong>Bridge mode only</strong>, and refused in <code>macvlan</code> and <code>ipvlan</code> rather than ignored there: those children are moved into the container's namespace and leave nothing on the host to name. The name is derived and applied once per attach, from the same daemon answer the DHCP hostname comes from, and nothing about it is written down, so a restart re-derives it. See <a href="#host-side-interface-names-host_ifname">Host-side interface names</a> for the derivation rule, what happens when the name is taken, and what an operator reads when it does not happen.</td>
+</tr>
 </tbody>
 </table>
 <h3 id="dhcp-classless-static-routes-option-121">DHCP classless static routes (option 121)<a class="headerlink" href="#dhcp-classless-static-routes-option-121" title="Permanent link">&para;</a></h3>
@@ -2578,6 +2668,126 @@ that difference is the length of a <code>docker run</code>: the daemon does not
 answer questions about a container while it is still starting it, so a
 <code>register_dns</code> endpoint has no address for that whole time and a default
 one is already leasing.</p>
+<h3 id="host-side-interface-names-host_ifname">Host-side interface names (<code>host_ifname</code>)<a class="headerlink" href="#host-side-interface-names-host_ifname" title="Permanent link">&para;</a></h3>
+<p>In bridge mode every endpoint gets a veth pair: one half goes into the
+container, the other stays on the host and is plugged into the bridge.
+That host half is what <code>ip link</code> and <code>brctl show</code> list, and by default it
+is called <code>dh-</code> plus the first 12 hex of the endpoint ID:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a>$ brctl show br-lan
+<a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a>bridge name     bridge id               STP     interfaces
+<a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a>br-lan          8000.0242ac110002       no      dh-3b1d3b0061fd
+<a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a>                                                dh-8c2e41aa9007
+</code></pre></div>
+<p><code>-o host_ifname=container_name</code> names it after the container instead:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a>bridge name     bridge id               STP     interfaces
+<a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a>br-lan          8000.0242ac110002       no      web
+<a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a>                                                db
+</code></pre></div>
+<p><strong>The container's name is not available when the link is created.</strong>
+libnetwork does not send it to <code>CreateEndpoint</code>
+(<a href="https://github.com/moby/moby/pull/52871">moby/moby#52871</a> is open for
+that), so the link is created with the <code>dh-</code> name and <strong>renamed</strong> when
+the plugin asks the daemon for the container, which is the same question
+the DHCP hostname comes from and costs no extra call. The rename happens
+after the attach has already succeeded, so nothing it does can fail a
+container start.</p>
+<p><strong>The old name stays on the link as an altname.</strong> <code>ip link</code> prints it
+under the new one and every lookup still resolves through it, which is
+what keeps <code>docker network inspect</code>, teardown and the plugin's own
+restart recovery working:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a>7: web@if6: &lt;BROADCAST,MULTICAST,UP,LOWER_UP&gt; mtu 1500 master br-lan
+<a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a>    link/ether 4e:e1:3a:10:36:dc brd ff:ff:ff:ff:ff:ff
+<a id="__codelineno-11-3" name="__codelineno-11-3" href="#__codelineno-11-3"></a>    altname dh-3b1d3b0061fd
+</code></pre></div>
+<h4 id="the-name-the-plugin-derives">The name the plugin derives<a class="headerlink" href="#the-name-the-plugin-derives" title="Permanent link">&para;</a></h4>
+<p>The rule is fixed, so the name is predictable from the container's:</p>
+<ol>
+<li>every character outside <code>a-z A-Z 0-9 . - _</code> becomes <code>-</code></li>
+<li>leading characters that are not a letter or a digit are dropped,
+   because a kernel-legal interface name starts with one</li>
+<li>a name longer than <strong>15 characters</strong> (the kernel's limit, <code>IFNAMSIZ</code>
+   minus the terminator) keeps its first 9 and ends in <code>-</code> plus the
+   endpoint ID's first 5 hex, which are the same 5 the <code>dh-</code> name
+   carried, so a truncated name still points back at <code>docker network
+   inspect</code></li>
+</ol>
+<table>
+<thead>
+<tr>
+<th>container</th>
+<th>host-side link</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>web</code></td>
+<td><code>web</code></td>
+</tr>
+<tr>
+<td><code>myproj-web-1</code></td>
+<td><code>myproj-web-1</code></td>
+</tr>
+<tr>
+<td><code>myproject-frontend-1</code></td>
+<td><code>myproject-a1b2c</code></td>
+</tr>
+<tr>
+<td><code>web@host:1</code></td>
+<td><code>web-host-1</code></td>
+</tr>
+</tbody>
+</table>
+<p>The endpoint's 5 hex, and not a hash of the name, because two containers
+may share a <code>--hostname</code>: keyed on the name, both would derive one
+interface name and the second container would lose its rename to a
+collision an operator could not see in either name.</p>
+<h4 id="when-the-name-does-not-happen">When the name does not happen<a class="headerlink" href="#when-the-name-does-not-happen" title="Permanent link">&para;</a></h4>
+<p>Interface names are unique per network namespace, and the host's is one
+namespace shared with every Docker network, every physical NIC and
+everything else on the box. So the derived name is a <strong>request</strong>:</p>
+<ul>
+<li><strong>the name is already taken</strong> — the link keeps its <code>dh-</code> name and
+  <a href="#pluginhealth"><code>host_ifname_conflicts</code></a> counts it. Rename the
+  container, rename the other interface, or use the other <code>host_ifname</code>
+  value.</li>
+<li><strong>the container's name has nothing kernel-legal in it</strong>, the kernel
+  refuses the rename for any other reason, or the old name could not be
+  kept on the link as an altname (in which case the rename is undone) —
+  the link keeps its <code>dh-</code> name and
+  <a href="#pluginhealth"><code>host_ifname_failures</code></a> counts it. The plugin log names
+  which of them it was.</li>
+<li><strong>the daemon never answered</strong>, so the plugin never learned the
+  container's name. Nothing is renamed and
+  <a href="#pluginhealth"><code>hostname_lookup_failures</code></a> has already reported it;
+  this option adds no second counter for one event.</li>
+<li><strong><code>host_ifname=hostname</code> and the container's <code>--hostname</code> carries a
+  control character.</strong> The plugin refuses to send such a value as the
+  DHCP hostname option (<a href="#pluginhealth"><code>unsafe_hostnames_rejected</code></a>) and
+  refuses it here for the same reason, so the link keeps its <code>dh-</code> name
+  and <a href="#pluginhealth"><code>host_ifname_failures</code></a> counts it. Use
+  <code>container_name</code>, which Docker validates.</li>
+</ul>
+<p>In every case the container has its address, its lease and its renewal
+client. An interface name is cosmetic and nothing here fails an attach.</p>
+<p><strong>One bound, stated rather than guarded.</strong> The rename and the altname are
+two kernel calls, and a plugin killed between them leaves a link that
+carries only the derived name. Nothing then finds it by the <code>dh-</code> name,
+including teardown, so it stays on the bridge until <code>ip link del &lt;name&gt;</code>
+removes it. The window is one netlink round trip wide.</p>
+<p><strong>A restart re-derives the name.</strong> Docker drives a restart as a detach
+and a re-attach, the plugin rebuilds the host-side link with its <code>dh-</code>
+name and renames it again from the daemon's current answer. Nothing about
+the name is persisted, so a container renamed between two starts comes
+back under the new name.</p>
+<p><strong>A plugin restart leaves an already named link alone.</strong> Recovery
+rebuilds every endpoint the containers still hold, which runs the naming
+step again over links that already carry both names. The plugin reads the
+link's current name back from the kernel and stops there, so a recycle
+moves <code>host_ifnames_applied</code> and neither failure counter. A container
+renamed with <code>docker rename</code> while it was running comes back under its
+new name at that point, keeping the same <code>dh-</code> altname, and is no
+different: the rename is the only thing that happens and neither failure
+counter moves.</p>
 <h2 id="driver-options-per-endpoint">Driver options (per-endpoint)<a class="headerlink" href="#driver-options-per-endpoint" title="Permanent link">&para;</a></h2>
 <p>Passed per container via <code>docker network connect --driver-opt</code>, or as
 <code>driver_opts:</code> under a service's network attachment in Compose:</p>
@@ -2678,20 +2888,20 @@ to <strong>every</strong> attachment mode unless a paragraph says otherwise.</p>
 before it ever reaches the plugin. Pin an address with the per-endpoint
 driver option instead; the plugin hands it to the DHCP client as the
 requested address (DHCP option 50) on the initial DISCOVER:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a>docker<span class="w"> </span>create<span class="w"> </span>--name<span class="w"> </span>app<span class="w"> </span>alpine<span class="w"> </span>sleep<span class="w"> </span><span class="m">600</span>
-<a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a>docker<span class="w"> </span>network<span class="w"> </span>connect<span class="w"> </span>--driver-opt<span class="w"> </span><span class="nv">ip</span><span class="o">=</span><span class="m">192</span>.168.0.55<span class="w"> </span>lan-dhcp<span class="w"> </span>app
-<a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a>docker<span class="w"> </span>start<span class="w"> </span>app
+<div class="highlight"><pre><span></span><code><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a>docker<span class="w"> </span>create<span class="w"> </span>--name<span class="w"> </span>app<span class="w"> </span>alpine<span class="w"> </span>sleep<span class="w"> </span><span class="m">600</span>
+<a id="__codelineno-12-2" name="__codelineno-12-2" href="#__codelineno-12-2"></a>docker<span class="w"> </span>network<span class="w"> </span>connect<span class="w"> </span>--driver-opt<span class="w"> </span><span class="nv">ip</span><span class="o">=</span><span class="m">192</span>.168.0.55<span class="w"> </span>lan-dhcp<span class="w"> </span>app
+<a id="__codelineno-12-3" name="__codelineno-12-3" href="#__codelineno-12-3"></a>docker<span class="w"> </span>start<span class="w"> </span>app
 </code></pre></div>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="nt">services</span><span class="p">:</span>
-<a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a><span class="w">  </span><span class="nt">app</span><span class="p">:</span>
-<a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a><span class="w">    </span><span class="nt">image</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">alpine</span>
-<a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a><span class="w">    </span><span class="nt">networks</span><span class="p">:</span>
-<a id="__codelineno-10-5" name="__codelineno-10-5" href="#__codelineno-10-5"></a><span class="w">      </span><span class="nt">lan-dhcp</span><span class="p">:</span>
-<a id="__codelineno-10-6" name="__codelineno-10-6" href="#__codelineno-10-6"></a><span class="w">        </span><span class="nt">driver_opts</span><span class="p">:</span>
-<a id="__codelineno-10-7" name="__codelineno-10-7" href="#__codelineno-10-7"></a><span class="w">          </span><span class="nt">ip</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">192.168.0.55</span>
-<a id="__codelineno-10-8" name="__codelineno-10-8" href="#__codelineno-10-8"></a><span class="nt">networks</span><span class="p">:</span>
-<a id="__codelineno-10-9" name="__codelineno-10-9" href="#__codelineno-10-9"></a><span class="w">  </span><span class="nt">lan-dhcp</span><span class="p">:</span>
-<a id="__codelineno-10-10" name="__codelineno-10-10" href="#__codelineno-10-10"></a><span class="w">    </span><span class="nt">external</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a><span class="nt">services</span><span class="p">:</span>
+<a id="__codelineno-13-2" name="__codelineno-13-2" href="#__codelineno-13-2"></a><span class="w">  </span><span class="nt">app</span><span class="p">:</span>
+<a id="__codelineno-13-3" name="__codelineno-13-3" href="#__codelineno-13-3"></a><span class="w">    </span><span class="nt">image</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">alpine</span>
+<a id="__codelineno-13-4" name="__codelineno-13-4" href="#__codelineno-13-4"></a><span class="w">    </span><span class="nt">networks</span><span class="p">:</span>
+<a id="__codelineno-13-5" name="__codelineno-13-5" href="#__codelineno-13-5"></a><span class="w">      </span><span class="nt">lan-dhcp</span><span class="p">:</span>
+<a id="__codelineno-13-6" name="__codelineno-13-6" href="#__codelineno-13-6"></a><span class="w">        </span><span class="nt">driver_opts</span><span class="p">:</span>
+<a id="__codelineno-13-7" name="__codelineno-13-7" href="#__codelineno-13-7"></a><span class="w">          </span><span class="nt">ip</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">192.168.0.55</span>
+<a id="__codelineno-13-8" name="__codelineno-13-8" href="#__codelineno-13-8"></a><span class="nt">networks</span><span class="p">:</span>
+<a id="__codelineno-13-9" name="__codelineno-13-9" href="#__codelineno-13-9"></a><span class="w">  </span><span class="nt">lan-dhcp</span><span class="p">:</span>
+<a id="__codelineno-13-10" name="__codelineno-13-10" href="#__codelineno-13-10"></a><span class="w">    </span><span class="nt">external</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
 </code></pre></div>
 <p>Whether the request is honoured is the <strong>server's</strong> decision. Most
 enterprise servers (ISC, dnsmasq, Windows DHCP) respect option 50; many
@@ -2915,11 +3125,11 @@ Information-request reply that carries no address at all.</p>
 one is present, so plain LANs get no extra noise: option 42 (NTP), 66
 (TFTP server), 67 (boot file), 119 (when <code>propagate_dns</code> is off), 252
 (WPAD), 100/101 (RFC 4833 timezone) and 2 (legacy time offset):</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a>level=info msg=&quot;DHCP options received&quot; ntp=[192.168.0.123]
-<a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a>  tftp=tftp.example.test bootfile=pxelinux.0
-<a id="__codelineno-11-3" name="__codelineno-11-3" href="#__codelineno-11-3"></a>  search=[corp.example internal.example]
-<a id="__codelineno-11-4" name="__codelineno-11-4" href="#__codelineno-11-4"></a>  wpad=http://wpad.example/wpad.dat posix_tz=PST8PDT
-<a id="__codelineno-11-5" name="__codelineno-11-5" href="#__codelineno-11-5"></a>  tzdb_tz=Europe/Berlin time_offset=3600 ...
+<div class="highlight"><pre><span></span><code><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a>level=info msg=&quot;DHCP options received&quot; ntp=[192.168.0.123]
+<a id="__codelineno-14-2" name="__codelineno-14-2" href="#__codelineno-14-2"></a>  tftp=tftp.example.test bootfile=pxelinux.0
+<a id="__codelineno-14-3" name="__codelineno-14-3" href="#__codelineno-14-3"></a>  search=[corp.example internal.example]
+<a id="__codelineno-14-4" name="__codelineno-14-4" href="#__codelineno-14-4"></a>  wpad=http://wpad.example/wpad.dat posix_tz=PST8PDT
+<a id="__codelineno-14-5" name="__codelineno-14-5" href="#__codelineno-14-5"></a>  tzdb_tz=Europe/Berlin time_offset=3600 ...
 </code></pre></div>
 <p>These are not auto-applied because the consuming application owns those
 config files, and writing into them would mean another setns into the
@@ -3174,7 +3384,7 @@ file</strong>, so an upgrade did not tighten what it found. <code>tombstones.jso
 is rewritten only when a tombstone is laid or consumed, so on a host
 with stable containers it could keep its old <code>0644</code> for as long as the
 host ran. On a plugin older than v2.0.0, tighten them once by hand:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a>sudo<span class="w"> </span>chmod<span class="w"> </span><span class="m">0600</span><span class="w"> </span>/var/lib/net-dhcp/*.json<span class="w"> </span>/var/lib/net-dhcp/leases.jsonl
+<div class="highlight"><pre><span></span><code><a id="__codelineno-15-1" name="__codelineno-15-1" href="#__codelineno-15-1"></a>sudo<span class="w"> </span>chmod<span class="w"> </span><span class="m">0600</span><span class="w"> </span>/var/lib/net-dhcp/*.json<span class="w"> </span>/var/lib/net-dhcp/leases.jsonl
 </code></pre></div>
 <hr />
 <h2 id="observability">Observability<a class="headerlink" href="#observability" title="Permanent link">&para;</a></h2>
@@ -3184,9 +3394,9 @@ required</strong>, because <code>/run/docker/plugins</code> is <code>drwx------ 
 Without it <code>curl -s</code> prints nothing and exits 7, which is what an absent
 socket also gives, so a permission problem looks exactly like a dead
 endpoint:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a><span class="nv">PLUGIN_ID</span><span class="o">=</span><span class="k">$(</span>docker<span class="w"> </span>plugin<span class="w"> </span>inspect<span class="w"> </span>-f<span class="w"> </span><span class="s1">&#39;{{.Id}}&#39;</span><span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:v2.1.1<span class="k">)</span>
-<a id="__codelineno-13-2" name="__codelineno-13-2" href="#__codelineno-13-2"></a>sudo<span class="w"> </span>curl<span class="w"> </span>-s<span class="w"> </span>--unix-socket<span class="w"> </span>/run/docker/plugins/<span class="nv">$PLUGIN_ID</span>/net-dhcp.sock<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-13-3" name="__codelineno-13-3" href="#__codelineno-13-3"></a><span class="w">    </span>http://localhost/Plugin.Health<span class="w"> </span><span class="p">|</span><span class="w"> </span>jq<span class="w"> </span>.
+<div class="highlight"><pre><span></span><code><a id="__codelineno-16-1" name="__codelineno-16-1" href="#__codelineno-16-1"></a><span class="nv">PLUGIN_ID</span><span class="o">=</span><span class="k">$(</span>docker<span class="w"> </span>plugin<span class="w"> </span>inspect<span class="w"> </span>-f<span class="w"> </span><span class="s1">&#39;{{.Id}}&#39;</span><span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:v2.1.1<span class="k">)</span>
+<a id="__codelineno-16-2" name="__codelineno-16-2" href="#__codelineno-16-2"></a>sudo<span class="w"> </span>curl<span class="w"> </span>-s<span class="w"> </span>--unix-socket<span class="w"> </span>/run/docker/plugins/<span class="nv">$PLUGIN_ID</span>/net-dhcp.sock<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-16-3" name="__codelineno-16-3" href="#__codelineno-16-3"></a><span class="w">    </span>http://localhost/Plugin.Health<span class="w"> </span><span class="p">|</span><span class="w"> </span>jq<span class="w"> </span>.
 </code></pre></div>
 <p>A plain <code>GET</code> is correct; no request body or method override is needed.
 Anything that can reach the socket can poll this as a liveness check.</p>
@@ -3640,6 +3850,24 @@ already parse it were not told to expect a new type.</p>
 <td><em>(v2.2.0+)</em> Container names the running DHCP client would not take, so the endpoint leases with no name in the DHCP server's table (#961). The daemon answered here; the client refused the handover. Three causes, all from the library: a name it will not put on the wire, a request queue that was full, and no running client left to give it to. Separate from <code>hostname_lookup_failures</code> because the two describe the same endpoint and their remedies are at opposite ends of the host. Watch it: a rise with no lookup failures beside it is this side of the host and not the daemon, and the names of the containers involved are in the plugin's log at <code>warn</code>.</td>
 </tr>
 <tr>
+<td><code>host_ifnames_applied</code></td>
+<td>no</td>
+<td>n/a</td>
+<td><em>(v2.2.0+)</em> Host-side links renamed after the container they belong to, on a network that set <code>host_ifname</code> (#978). The mechanism working, and the <strong>denominator</strong> for the two rows below: all three stay at zero on a host where no network asked for named links, so their zeros mean nothing without this one beside them. <strong>Bridge mode only</strong>, because it is the only mode that leaves a link on the host; <code>macvlan</code> and <code>ipvlan</code> children are moved into the container and the option is refused there at <code>docker network create</code>. One per attach that renamed a link, so a container restart counts again -- the name is re-derived every time and never persisted. <strong>Not a check:</strong> its own value is a count of work done and carries no verdict, and on a host that set the option its normal reading is non-zero and climbing.</td>
+</tr>
+<tr>
+<td><code>host_ifname_conflicts</code></td>
+<td>no</td>
+<td>warn</td>
+<td><em>(v2.2.0+)</em> Renames refused because another interface on this host already had the name the container asked for (#978). Interface names are unique per network namespace, and the host's is one namespace shared with every Docker network, every physical NIC and every tunnel on the box, so the name a container asks for is a request and not a reservation. The endpoint keeps its lease, its renewal client and its <code>dh-</code> link name; what it loses is the readable name. <strong>Actionable</strong>, which is why it is separate from the row below: it is the only refusal whose remedy is to rename something. Rename the container, rename the interface that already holds the name, or switch that network's <code>host_ifname</code> to the other value. Read it against <code>host_ifnames_applied</code>.</td>
+</tr>
+<tr>
+<td><code>host_ifname_failures</code></td>
+<td>no</td>
+<td>warn</td>
+<td><em>(v2.2.0+)</em> Renames that did not happen for any reason other than the name being taken (#978). Four causes and the plugin log names which: the container's name had no character an interface name may carry, the host-side link was not there to rename, the kernel refused the rename, or it took the rename and would not keep the old name on the link as an altname -- in which case the rename is undone, because the old name is what teardown looks the link up by. The endpoint keeps its lease and its <code>dh-</code> link name in all four. <strong>Watch it</strong> rather than page on it: an unreadable interface name breaks nothing, but a steady rise means the option is doing nothing on this host and the log says why. Read it against <code>host_ifnames_applied</code>, whose zero would otherwise make this one's zero meaningless.</td>
+</tr>
+<tr>
 <td><code>unsafe_option_values_dropped</code></td>
 <td>no</td>
 <td>n/a</td>
@@ -3882,16 +4110,16 @@ disagree, and a unit test asserts by reflection that <strong>every</strong>
 <code>/Plugin.Health</code> field is exposed here, so a counter added later cannot
 quietly go missing from your dashboards.</p>
 <p>On the plugin socket, always:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a><span class="nv">PLUGIN_ID</span><span class="o">=</span><span class="k">$(</span>docker<span class="w"> </span>plugin<span class="w"> </span>inspect<span class="w"> </span>-f<span class="w"> </span><span class="s1">&#39;{{.Id}}&#39;</span><span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:v2.1.1<span class="k">)</span>
-<a id="__codelineno-14-2" name="__codelineno-14-2" href="#__codelineno-14-2"></a>sudo<span class="w"> </span>curl<span class="w"> </span>-s<span class="w"> </span>--unix-socket<span class="w"> </span>/run/docker/plugins/<span class="nv">$PLUGIN_ID</span>/net-dhcp.sock<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-14-3" name="__codelineno-14-3" href="#__codelineno-14-3"></a><span class="w">    </span>http://localhost/metrics
+<div class="highlight"><pre><span></span><code><a id="__codelineno-17-1" name="__codelineno-17-1" href="#__codelineno-17-1"></a><span class="nv">PLUGIN_ID</span><span class="o">=</span><span class="k">$(</span>docker<span class="w"> </span>plugin<span class="w"> </span>inspect<span class="w"> </span>-f<span class="w"> </span><span class="s1">&#39;{{.Id}}&#39;</span><span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:v2.1.1<span class="k">)</span>
+<a id="__codelineno-17-2" name="__codelineno-17-2" href="#__codelineno-17-2"></a>sudo<span class="w"> </span>curl<span class="w"> </span>-s<span class="w"> </span>--unix-socket<span class="w"> </span>/run/docker/plugins/<span class="nv">$PLUGIN_ID</span>/net-dhcp.sock<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-17-3" name="__codelineno-17-3" href="#__codelineno-17-3"></a><span class="w">    </span>http://localhost/metrics
 </code></pre></div>
 <p>Prometheus cannot scrape a UNIX socket, so for an actual scrape target
 set <code>METRICS_ADDR</code>:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-15-1" name="__codelineno-15-1" href="#__codelineno-15-1"></a><span class="nv">PLUGIN</span><span class="o">=</span>ghcr.io/claymore666/docker-net-dhcp:v2.1.1
-<a id="__codelineno-15-2" name="__codelineno-15-2" href="#__codelineno-15-2"></a>docker<span class="w"> </span>plugin<span class="w"> </span>disable<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$PLUGIN</span><span class="s2">&quot;</span>
-<a id="__codelineno-15-3" name="__codelineno-15-3" href="#__codelineno-15-3"></a>docker<span class="w"> </span>plugin<span class="w"> </span><span class="nb">set</span><span class="w"> </span><span class="s2">&quot;</span><span class="nv">$PLUGIN</span><span class="s2">&quot;</span><span class="w"> </span><span class="nv">METRICS_ADDR</span><span class="o">=</span><span class="m">127</span>.0.0.1:9099
-<a id="__codelineno-15-4" name="__codelineno-15-4" href="#__codelineno-15-4"></a>docker<span class="w"> </span>plugin<span class="w"> </span><span class="nb">enable</span><span class="w"> </span><span class="s2">&quot;</span><span class="nv">$PLUGIN</span><span class="s2">&quot;</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-18-1" name="__codelineno-18-1" href="#__codelineno-18-1"></a><span class="nv">PLUGIN</span><span class="o">=</span>ghcr.io/claymore666/docker-net-dhcp:v2.1.1
+<a id="__codelineno-18-2" name="__codelineno-18-2" href="#__codelineno-18-2"></a>docker<span class="w"> </span>plugin<span class="w"> </span>disable<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$PLUGIN</span><span class="s2">&quot;</span>
+<a id="__codelineno-18-3" name="__codelineno-18-3" href="#__codelineno-18-3"></a>docker<span class="w"> </span>plugin<span class="w"> </span><span class="nb">set</span><span class="w"> </span><span class="s2">&quot;</span><span class="nv">$PLUGIN</span><span class="s2">&quot;</span><span class="w"> </span><span class="nv">METRICS_ADDR</span><span class="o">=</span><span class="m">127</span>.0.0.1:9099
+<a id="__codelineno-18-4" name="__codelineno-18-4" href="#__codelineno-18-4"></a>docker<span class="w"> </span>plugin<span class="w"> </span><span class="nb">enable</span><span class="w"> </span><span class="s2">&quot;</span><span class="nv">$PLUGIN</span><span class="s2">&quot;</span>
 </code></pre></div>
 <blockquote>
 <p><strong>This opens a port in the host's network namespace.</strong> The plugin runs
@@ -3912,8 +4140,8 @@ an upgrade.</p>
 <code>dhcp_timeouts</code>, <code>naks_received</code>, <code>client_stop_failures</code>,
 <code>address_conflicts</code>, <code>releases_sent</code>, <code>release_failures</code> and
 <code>releases_reclaimed</code>:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-16-1" name="__codelineno-16-1" href="#__codelineno-16-1"></a>net_dhcp_leases_obtained_total{family=&quot;ipv4&quot;} 42
-<a id="__codelineno-16-2" name="__codelineno-16-2" href="#__codelineno-16-2"></a>net_dhcp_leases_obtained_total{family=&quot;ipv6&quot;} 7
+<div class="highlight"><pre><span></span><code><a id="__codelineno-19-1" name="__codelineno-19-1" href="#__codelineno-19-1"></a>net_dhcp_leases_obtained_total{family=&quot;ipv4&quot;} 42
+<a id="__codelineno-19-2" name="__codelineno-19-2" href="#__codelineno-19-2"></a>net_dhcp_leases_obtained_total{family=&quot;ipv6&quot;} 7
 </code></pre></div>
 <p><strong>Both family series are stored and neither is derived</strong> (v1.8.0+, #730).
 Each of the eleven has a <code>_v4</code> and a <code>_v6</code> field in
@@ -3936,7 +4164,7 @@ change removed, and doing it in the query reintroduces it.</p>
 <h4 id="counter-resets">Counter resets<a class="headerlink" href="#counter-resets" title="Permanent link">&para;</a></h4>
 <p><code>net_dhcp_build_info</code> carries the plugin's <code>instance_id</code> as a label,
 and since 2.0-alpha.1 the build identity beside it:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-17-1" name="__codelineno-17-1" href="#__codelineno-17-1"></a>net_dhcp_build_info{instance_id=&quot;...&quot;,version=&quot;...&quot;,commit=&quot;...&quot;,library=&quot;...&quot;} 1
+<div class="highlight"><pre><span></span><code><a id="__codelineno-20-1" name="__codelineno-20-1" href="#__codelineno-20-1"></a>net_dhcp_build_info{instance_id=&quot;...&quot;,version=&quot;...&quot;,commit=&quot;...&quot;,library=&quot;...&quot;} 1
 </code></pre></div>
 <p>None of the four is ever empty. <code>dev</code> and <code>unknown</code> are what a build
 that does not know says, because an empty label reads as "nothing to
@@ -3952,7 +4180,7 @@ comparable at all.</p>
 <h4 id="engine-identity">Engine identity<a class="headerlink" href="#engine-identity" title="Permanent link">&para;</a></h4>
 <p><em>(v2.1.0+)</em> <code>net_dhcp_engine_info</code> carries the daemon's identity as
 labels, in the same shape as <code>net_dhcp_build_info</code>:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-18-1" name="__codelineno-18-1" href="#__codelineno-18-1"></a>net_dhcp_engine_info{engine_version=&quot;...&quot;,api_version=&quot;...&quot;} 1
+<div class="highlight"><pre><span></span><code><a id="__codelineno-21-1" name="__codelineno-21-1" href="#__codelineno-21-1"></a>net_dhcp_engine_info{engine_version=&quot;...&quot;,api_version=&quot;...&quot;} 1
 </code></pre></div>
 <p>It is a separate series from <code>net_dhcp_build_info</code> on purpose. The build
 identity changes when the plugin is upgraded, the engine identity when
@@ -4012,14 +4240,14 @@ available:</p>
   granted and is the only place the number itself is readable.</li>
 </ul>
 <h3 id="plugin-log">Plugin log<a class="headerlink" href="#plugin-log" title="Permanent link">&para;</a></h3>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-19-1" name="__codelineno-19-1" href="#__codelineno-19-1"></a>sudo<span class="w"> </span>cat<span class="w"> </span>/var/lib/docker/plugins/*/rootfs/var/log/net-dhcp.log
+<div class="highlight"><pre><span></span><code><a id="__codelineno-22-1" name="__codelineno-22-1" href="#__codelineno-22-1"></a>sudo<span class="w"> </span>cat<span class="w"> </span>/var/lib/docker/plugins/*/rootfs/var/log/net-dhcp.log
 </code></pre></div>
 <p>Raise verbosity with a disable, a set, and an enable, in that order,
 because <code>docker plugin set</code> is refused while the plugin is running:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-20-1" name="__codelineno-20-1" href="#__codelineno-20-1"></a><span class="nv">PLUGIN</span><span class="o">=</span>ghcr.io/claymore666/docker-net-dhcp:v2.1.1
-<a id="__codelineno-20-2" name="__codelineno-20-2" href="#__codelineno-20-2"></a>docker<span class="w"> </span>plugin<span class="w"> </span>disable<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$PLUGIN</span><span class="s2">&quot;</span>
-<a id="__codelineno-20-3" name="__codelineno-20-3" href="#__codelineno-20-3"></a>docker<span class="w"> </span>plugin<span class="w"> </span><span class="nb">set</span><span class="w"> </span><span class="s2">&quot;</span><span class="nv">$PLUGIN</span><span class="s2">&quot;</span><span class="w"> </span><span class="nv">LOG_LEVEL</span><span class="o">=</span>trace
-<a id="__codelineno-20-4" name="__codelineno-20-4" href="#__codelineno-20-4"></a>docker<span class="w"> </span>plugin<span class="w"> </span><span class="nb">enable</span><span class="w"> </span><span class="s2">&quot;</span><span class="nv">$PLUGIN</span><span class="s2">&quot;</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-23-1" name="__codelineno-23-1" href="#__codelineno-23-1"></a><span class="nv">PLUGIN</span><span class="o">=</span>ghcr.io/claymore666/docker-net-dhcp:v2.1.1
+<a id="__codelineno-23-2" name="__codelineno-23-2" href="#__codelineno-23-2"></a>docker<span class="w"> </span>plugin<span class="w"> </span>disable<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$PLUGIN</span><span class="s2">&quot;</span>
+<a id="__codelineno-23-3" name="__codelineno-23-3" href="#__codelineno-23-3"></a>docker<span class="w"> </span>plugin<span class="w"> </span><span class="nb">set</span><span class="w"> </span><span class="s2">&quot;</span><span class="nv">$PLUGIN</span><span class="s2">&quot;</span><span class="w"> </span><span class="nv">LOG_LEVEL</span><span class="o">=</span>trace
+<a id="__codelineno-23-4" name="__codelineno-23-4" href="#__codelineno-23-4"></a>docker<span class="w"> </span>plugin<span class="w"> </span><span class="nb">enable</span><span class="w"> </span><span class="s2">&quot;</span><span class="nv">$PLUGIN</span><span class="s2">&quot;</span>
 </code></pre></div>
 <p><strong>That file does not survive an upgrade.</strong> It lives in the plugin
 rootfs, which Docker destroys and recreates on <code>docker plugin rm</code> /
@@ -4028,10 +4256,10 @@ is gone at exactly the point you are most likely to want it.</p>
 <p>Since v1.5.0 every line also goes to the plugin's stdout, which dockerd
 captures into the <strong>daemon</strong> log on the host filesystem. That copy
 outlives the plugin:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-21-1" name="__codelineno-21-1" href="#__codelineno-21-1"></a><span class="c1"># systemd hosts</span>
-<a id="__codelineno-21-2" name="__codelineno-21-2" href="#__codelineno-21-2"></a>sudo<span class="w"> </span>journalctl<span class="w"> </span>-u<span class="w"> </span>docker<span class="w"> </span>--since<span class="w"> </span><span class="s2">&quot;2 hours ago&quot;</span><span class="w"> </span><span class="p">|</span><span class="w"> </span>grep<span class="w"> </span>net-dhcp
-<a id="__codelineno-21-3" name="__codelineno-21-3" href="#__codelineno-21-3"></a><span class="c1"># or, where dockerd logs to a file</span>
-<a id="__codelineno-21-4" name="__codelineno-21-4" href="#__codelineno-21-4"></a>sudo<span class="w"> </span>grep<span class="w"> </span>net-dhcp<span class="w"> </span>/var/log/docker.log
+<div class="highlight"><pre><span></span><code><a id="__codelineno-24-1" name="__codelineno-24-1" href="#__codelineno-24-1"></a><span class="c1"># systemd hosts</span>
+<a id="__codelineno-24-2" name="__codelineno-24-2" href="#__codelineno-24-2"></a>sudo<span class="w"> </span>journalctl<span class="w"> </span>-u<span class="w"> </span>docker<span class="w"> </span>--since<span class="w"> </span><span class="s2">&quot;2 hours ago&quot;</span><span class="w"> </span><span class="p">|</span><span class="w"> </span>grep<span class="w"> </span>net-dhcp
+<a id="__codelineno-24-3" name="__codelineno-24-3" href="#__codelineno-24-3"></a><span class="c1"># or, where dockerd logs to a file</span>
+<a id="__codelineno-24-4" name="__codelineno-24-4" href="#__codelineno-24-4"></a>sudo<span class="w"> </span>grep<span class="w"> </span>net-dhcp<span class="w"> </span>/var/log/docker.log
 </code></pre></div>
 <p>Take the in-rootfs copy for a focused read of the running plugin, and
 the daemon log when you need history across an upgrade or the plugin is
@@ -4042,7 +4270,7 @@ the host, so read it there. The old path under the plugin rootfs is not
 where the ledger lands any more. The mount is applied in the plugin's
 own mount namespace, so following that path from the host finds a mount
 point at best and, more usually, nothing at all:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-22-1" name="__codelineno-22-1" href="#__codelineno-22-1"></a>sudo<span class="w"> </span>cat<span class="w"> </span>/var/lib/net-dhcp/leases.jsonl<span class="w"> </span><span class="p">|</span><span class="w"> </span>jq<span class="w"> </span>.
+<div class="highlight"><pre><span></span><code><a id="__codelineno-25-1" name="__codelineno-25-1" href="#__codelineno-25-1"></a>sudo<span class="w"> </span>cat<span class="w"> </span>/var/lib/net-dhcp/leases.jsonl<span class="w"> </span><span class="p">|</span><span class="w"> </span>jq<span class="w"> </span>.
 </code></pre></div>
 <p>One JSON object per line; kinds <code>bound</code>, <code>renew</code>, <code>stopped</code>,
 <code>stop_failed</code>. <code>stopped</code> means the renewal client was asked to stop and
@@ -4066,28 +4294,28 @@ not see.</p>
 <h2 id="compose-usage">Compose usage<a class="headerlink" href="#compose-usage" title="Permanent link">&para;</a></h2>
 <p>Recommended shape: network created once out-of-band, referenced as
 external (shareable across projects, survives <code>compose down</code>):</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-23-1" name="__codelineno-23-1" href="#__codelineno-23-1"></a><span class="nt">services</span><span class="p">:</span>
-<a id="__codelineno-23-2" name="__codelineno-23-2" href="#__codelineno-23-2"></a><span class="w">  </span><span class="nt">app</span><span class="p">:</span>
-<a id="__codelineno-23-3" name="__codelineno-23-3" href="#__codelineno-23-3"></a><span class="w">    </span><span class="nt">image</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">nginx</span>
-<a id="__codelineno-23-4" name="__codelineno-23-4" href="#__codelineno-23-4"></a><span class="w">    </span><span class="nt">hostname</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">my-server</span><span class="w">          </span><span class="c1"># → DHCP option 12 → DHCP-DNS name</span>
-<a id="__codelineno-23-5" name="__codelineno-23-5" href="#__codelineno-23-5"></a><span class="w">    </span><span class="nt">mac_address</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">02:42:ac:00:00:01</span><span class="w">  </span><span class="c1"># match a server-side reservation</span>
-<a id="__codelineno-23-6" name="__codelineno-23-6" href="#__codelineno-23-6"></a><span class="w">    </span><span class="nt">networks</span><span class="p">:</span>
-<a id="__codelineno-23-7" name="__codelineno-23-7" href="#__codelineno-23-7"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">lan</span>
-<a id="__codelineno-23-8" name="__codelineno-23-8" href="#__codelineno-23-8"></a><span class="nt">networks</span><span class="p">:</span>
-<a id="__codelineno-23-9" name="__codelineno-23-9" href="#__codelineno-23-9"></a><span class="w">  </span><span class="nt">lan</span><span class="p">:</span>
-<a id="__codelineno-23-10" name="__codelineno-23-10" href="#__codelineno-23-10"></a><span class="w">    </span><span class="nt">external</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
-<a id="__codelineno-23-11" name="__codelineno-23-11" href="#__codelineno-23-11"></a><span class="w">    </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">lan-dhcp</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-26-1" name="__codelineno-26-1" href="#__codelineno-26-1"></a><span class="nt">services</span><span class="p">:</span>
+<a id="__codelineno-26-2" name="__codelineno-26-2" href="#__codelineno-26-2"></a><span class="w">  </span><span class="nt">app</span><span class="p">:</span>
+<a id="__codelineno-26-3" name="__codelineno-26-3" href="#__codelineno-26-3"></a><span class="w">    </span><span class="nt">image</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">nginx</span>
+<a id="__codelineno-26-4" name="__codelineno-26-4" href="#__codelineno-26-4"></a><span class="w">    </span><span class="nt">hostname</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">my-server</span><span class="w">          </span><span class="c1"># → DHCP option 12 → DHCP-DNS name</span>
+<a id="__codelineno-26-5" name="__codelineno-26-5" href="#__codelineno-26-5"></a><span class="w">    </span><span class="nt">mac_address</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">02:42:ac:00:00:01</span><span class="w">  </span><span class="c1"># match a server-side reservation</span>
+<a id="__codelineno-26-6" name="__codelineno-26-6" href="#__codelineno-26-6"></a><span class="w">    </span><span class="nt">networks</span><span class="p">:</span>
+<a id="__codelineno-26-7" name="__codelineno-26-7" href="#__codelineno-26-7"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">lan</span>
+<a id="__codelineno-26-8" name="__codelineno-26-8" href="#__codelineno-26-8"></a><span class="nt">networks</span><span class="p">:</span>
+<a id="__codelineno-26-9" name="__codelineno-26-9" href="#__codelineno-26-9"></a><span class="w">  </span><span class="nt">lan</span><span class="p">:</span>
+<a id="__codelineno-26-10" name="__codelineno-26-10" href="#__codelineno-26-10"></a><span class="w">    </span><span class="nt">external</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
+<a id="__codelineno-26-11" name="__codelineno-26-11" href="#__codelineno-26-11"></a><span class="w">    </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">lan-dhcp</span>
 </code></pre></div>
 <p>Compose-managed alternative (network lifecycle tied to the project):</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-24-1" name="__codelineno-24-1" href="#__codelineno-24-1"></a><span class="nt">networks</span><span class="p">:</span>
-<a id="__codelineno-24-2" name="__codelineno-24-2" href="#__codelineno-24-2"></a><span class="w">  </span><span class="nt">lan</span><span class="p">:</span>
-<a id="__codelineno-24-3" name="__codelineno-24-3" href="#__codelineno-24-3"></a><span class="w">    </span><span class="nt">driver</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">ghcr.io/claymore666/docker-net-dhcp:v2.1.1</span>
-<a id="__codelineno-24-4" name="__codelineno-24-4" href="#__codelineno-24-4"></a><span class="w">    </span><span class="nt">driver_opts</span><span class="p">:</span>
-<a id="__codelineno-24-5" name="__codelineno-24-5" href="#__codelineno-24-5"></a><span class="w">      </span><span class="nt">mode</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">macvlan</span>
-<a id="__codelineno-24-6" name="__codelineno-24-6" href="#__codelineno-24-6"></a><span class="w">      </span><span class="nt">parent</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">eth0</span>
-<a id="__codelineno-24-7" name="__codelineno-24-7" href="#__codelineno-24-7"></a><span class="w">      </span><span class="nt">propagate_dns</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;true&#39;</span>
-<a id="__codelineno-24-8" name="__codelineno-24-8" href="#__codelineno-24-8"></a><span class="w">    </span><span class="nt">ipam</span><span class="p">:</span>
-<a id="__codelineno-24-9" name="__codelineno-24-9" href="#__codelineno-24-9"></a><span class="w">      </span><span class="nt">driver</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;null&#39;</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-27-1" name="__codelineno-27-1" href="#__codelineno-27-1"></a><span class="nt">networks</span><span class="p">:</span>
+<a id="__codelineno-27-2" name="__codelineno-27-2" href="#__codelineno-27-2"></a><span class="w">  </span><span class="nt">lan</span><span class="p">:</span>
+<a id="__codelineno-27-3" name="__codelineno-27-3" href="#__codelineno-27-3"></a><span class="w">    </span><span class="nt">driver</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">ghcr.io/claymore666/docker-net-dhcp:v2.1.1</span>
+<a id="__codelineno-27-4" name="__codelineno-27-4" href="#__codelineno-27-4"></a><span class="w">    </span><span class="nt">driver_opts</span><span class="p">:</span>
+<a id="__codelineno-27-5" name="__codelineno-27-5" href="#__codelineno-27-5"></a><span class="w">      </span><span class="nt">mode</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">macvlan</span>
+<a id="__codelineno-27-6" name="__codelineno-27-6" href="#__codelineno-27-6"></a><span class="w">      </span><span class="nt">parent</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">eth0</span>
+<a id="__codelineno-27-7" name="__codelineno-27-7" href="#__codelineno-27-7"></a><span class="w">      </span><span class="nt">propagate_dns</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;true&#39;</span>
+<a id="__codelineno-27-8" name="__codelineno-27-8" href="#__codelineno-27-8"></a><span class="w">    </span><span class="nt">ipam</span><span class="p">:</span>
+<a id="__codelineno-27-9" name="__codelineno-27-9" href="#__codelineno-27-9"></a><span class="w">      </span><span class="nt">driver</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;null&#39;</span>
 </code></pre></div>
 <p>Multi-network containers work. One plugin network per container is the
 <em>supported</em> shape; several attach, but interface naming order is
@@ -4098,21 +4326,21 @@ for moby's remote-driver <code>interface_name</code> pass-through. See the
 <p>Compose merges the top-level <code>networks:</code> map <strong>key by key</strong> and never
 file by file, and this bites a common deployment shape: built-in macvlan
 in dev, an external pre-created DHCP network in prod.</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-25-1" name="__codelineno-25-1" href="#__codelineno-25-1"></a><span class="c1"># docker-compose.yml (base)</span>
-<a id="__codelineno-25-2" name="__codelineno-25-2" href="#__codelineno-25-2"></a><span class="nt">networks</span><span class="p">:</span>
-<a id="__codelineno-25-3" name="__codelineno-25-3" href="#__codelineno-25-3"></a><span class="w">  </span><span class="nt">lan</span><span class="p">:</span>
-<a id="__codelineno-25-4" name="__codelineno-25-4" href="#__codelineno-25-4"></a><span class="w">    </span><span class="nt">driver</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">macvlan</span>
-<a id="__codelineno-25-5" name="__codelineno-25-5" href="#__codelineno-25-5"></a><span class="w">    </span><span class="nt">driver_opts</span><span class="p">:</span>
-<a id="__codelineno-25-6" name="__codelineno-25-6" href="#__codelineno-25-6"></a><span class="w">      </span><span class="nt">parent</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">${LAN_INTERFACE:-eth0}</span>
-<a id="__codelineno-25-7" name="__codelineno-25-7" href="#__codelineno-25-7"></a><span class="w">    </span><span class="nt">ipam</span><span class="p">:</span>
-<a id="__codelineno-25-8" name="__codelineno-25-8" href="#__codelineno-25-8"></a><span class="w">      </span><span class="nt">config</span><span class="p">:</span>
-<a id="__codelineno-25-9" name="__codelineno-25-9" href="#__codelineno-25-9"></a><span class="w">        </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">subnet</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">192.168.0.0/24</span>
-<a id="__codelineno-25-10" name="__codelineno-25-10" href="#__codelineno-25-10"></a>
-<a id="__codelineno-25-11" name="__codelineno-25-11" href="#__codelineno-25-11"></a><span class="c1"># docker-compose.prod.yml (override)</span>
-<a id="__codelineno-25-12" name="__codelineno-25-12" href="#__codelineno-25-12"></a><span class="nt">networks</span><span class="p">:</span>
-<a id="__codelineno-25-13" name="__codelineno-25-13" href="#__codelineno-25-13"></a><span class="w">  </span><span class="nt">lan</span><span class="p">:</span>
-<a id="__codelineno-25-14" name="__codelineno-25-14" href="#__codelineno-25-14"></a><span class="w">    </span><span class="nt">external</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
-<a id="__codelineno-25-15" name="__codelineno-25-15" href="#__codelineno-25-15"></a><span class="w">    </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">lan-shared</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-28-1" name="__codelineno-28-1" href="#__codelineno-28-1"></a><span class="c1"># docker-compose.yml (base)</span>
+<a id="__codelineno-28-2" name="__codelineno-28-2" href="#__codelineno-28-2"></a><span class="nt">networks</span><span class="p">:</span>
+<a id="__codelineno-28-3" name="__codelineno-28-3" href="#__codelineno-28-3"></a><span class="w">  </span><span class="nt">lan</span><span class="p">:</span>
+<a id="__codelineno-28-4" name="__codelineno-28-4" href="#__codelineno-28-4"></a><span class="w">    </span><span class="nt">driver</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">macvlan</span>
+<a id="__codelineno-28-5" name="__codelineno-28-5" href="#__codelineno-28-5"></a><span class="w">    </span><span class="nt">driver_opts</span><span class="p">:</span>
+<a id="__codelineno-28-6" name="__codelineno-28-6" href="#__codelineno-28-6"></a><span class="w">      </span><span class="nt">parent</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">${LAN_INTERFACE:-eth0}</span>
+<a id="__codelineno-28-7" name="__codelineno-28-7" href="#__codelineno-28-7"></a><span class="w">    </span><span class="nt">ipam</span><span class="p">:</span>
+<a id="__codelineno-28-8" name="__codelineno-28-8" href="#__codelineno-28-8"></a><span class="w">      </span><span class="nt">config</span><span class="p">:</span>
+<a id="__codelineno-28-9" name="__codelineno-28-9" href="#__codelineno-28-9"></a><span class="w">        </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">subnet</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">192.168.0.0/24</span>
+<a id="__codelineno-28-10" name="__codelineno-28-10" href="#__codelineno-28-10"></a>
+<a id="__codelineno-28-11" name="__codelineno-28-11" href="#__codelineno-28-11"></a><span class="c1"># docker-compose.prod.yml (override)</span>
+<a id="__codelineno-28-12" name="__codelineno-28-12" href="#__codelineno-28-12"></a><span class="nt">networks</span><span class="p">:</span>
+<a id="__codelineno-28-13" name="__codelineno-28-13" href="#__codelineno-28-13"></a><span class="w">  </span><span class="nt">lan</span><span class="p">:</span>
+<a id="__codelineno-28-14" name="__codelineno-28-14" href="#__codelineno-28-14"></a><span class="w">    </span><span class="nt">external</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
+<a id="__codelineno-28-15" name="__codelineno-28-15" href="#__codelineno-28-15"></a><span class="w">    </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">lan-shared</span>
 </code></pre></div>
 <p>The merged result is a hybrid, <code>external: true</code> <strong>and</strong> <code>driver:
 macvlan</code> <strong>and</strong> <code>ipam.config</code>, matching neither the pure-external
