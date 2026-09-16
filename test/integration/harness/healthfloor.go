@@ -171,6 +171,15 @@ type HealthResponse struct {
 	// to expire (#566).
 	JoinAbortedNoContainer int32 `json:"join_aborted_no_container"`
 	JoinAttachSlow         int32 `json:"join_attach_slow"`
+	// The three outcomes of a container's name arriving after its DHCP
+	// client is already leasing (#961). HostnamesAppliedLate is the
+	// domain the other two are read against: a suite where it stays at
+	// zero has not exercised the late path at all, and their zeros then
+	// say nothing. v4 only; this plugin sends no name option for
+	// DHCPv6.
+	HostnamesAppliedLate   int32 `json:"hostnames_applied_late"`
+	HostnameLookupFailures int32 `json:"hostname_lookup_failures"`
+	HostnameApplyFailures  int32 `json:"hostname_apply_failures"`
 	// The body of the distribution join_attach_slow is the tail of
 	// (#403). Plain int32: these ship with this change, so a zero from
 	// an older plugin and a zero from a quiet lane are the same

@@ -273,6 +273,18 @@ net_dhcp_tombstones_consumed_total 5670747
 # TYPE net_dhcp_unsafe_hostnames_rejected_total counter
 net_dhcp_unsafe_hostnames_rejected_total 5543185
 
+# HELP net_dhcp_hostnames_applied_late_total Container names given to a DHCP client that was already leasing, which is how an endpoint is named without the attach waiting for the daemon (#961). The mechanism working, and the denominator for hostname_lookup_failures and hostname_apply_failures: a host that attached nothing has zeros everywhere. Counts non-empty names only, and v4 only, because this plugin sends no name option for DHCPv6.
+# TYPE net_dhcp_hostnames_applied_late_total counter
+net_dhcp_hostnames_applied_late_total 3937102
+
+# HELP net_dhcp_hostname_lookup_failures_total Attaches whose container inspect did not answer, so the endpoint leases with no name in the DHCP server's table.
+# TYPE net_dhcp_hostname_lookup_failures_total counter
+net_dhcp_hostname_lookup_failures_total 3487321
+
+# HELP net_dhcp_hostname_apply_failures_total Container names the running DHCP client refused, so the endpoint leases with no name in the DHCP server's table.
+# TYPE net_dhcp_hostname_apply_failures_total counter
+net_dhcp_hostname_apply_failures_total 6487795
+
 # HELP net_dhcp_unsafe_option_values_dropped_total Server-chosen DHCP string values refused before use because they carried a control character, plus option-15 domains truncated at their first space. The DHCP library validates domain-typed options; string-typed ones can carry anything the server put on the wire (#703, #704).
 # TYPE net_dhcp_unsafe_option_values_dropped_total counter
 net_dhcp_unsafe_option_values_dropped_total 9536334

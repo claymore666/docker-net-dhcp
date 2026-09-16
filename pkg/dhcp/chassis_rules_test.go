@@ -4,6 +4,7 @@
 package dhcp
 
 import (
+	"errors"
 	"net"
 	"net/netip"
 	"testing"
@@ -12,6 +13,7 @@ import (
 	"github.com/claymore666/dhcp-golib/lease"
 	"github.com/claymore666/dhcp-golib/proto"
 	"github.com/claymore666/dhcp-golib/wire"
+	"github.com/vishvananda/netns"
 )
 
 func testMAC(t *testing.T) net.HardwareAddr {
@@ -572,5 +574,85 @@ func TestBuildParams_TheBroadcastFlagReachesTheWire(t *testing.T) {
 			"The one-shot's desync is zero and the DISCOVER is supposed to go out in this " +
 			"same step; a test that passes here having sent nothing is the failure this " +
 			"repository keeps meeting.")
+	}
+}
+
+// TestBuildParams_Option81NeedsTheNameAtConstruction is the reason the
+// attach still waits for the name on a register_dns network (#961).
+//
+// register_dns asks the server to register the container in DNS, which
+// RFC 4702 encodes as option 81, and option 81 is built HERE from the
+// name the client is constructed with. There is no setter for it: a
+// client started with no name carries no option 81 for its whole life,
+// and the late SetHostname that #961 added would put the name in option
+// 12 instead -- a different option, which section 3.1 forbids beside
+// option 81 and which asks the server for nothing at all. Nothing in
+// the tree reads option 81, so the swap would be invisible.
+//
+// The second half is the drive. Without it this is a test that
+// register_dns works, which it was before #961 too.
+func TestBuildParams_Option81NeedsTheNameAtConstruction(t *testing.T) {
+	mac := testMAC(t)
+
+	p, err := buildParams(&DHCPClientOptions{MAC: mac, Hostname: "web1", FQDN: "both"}, false)
+	if err != nil {
+		t.Fatalf("buildParams: %v", err)
+	}
+	if p.FQDN.Name != "web1" {
+		t.Errorf("option 81 carries %q, want %q: register_dns is the opt-in to a DNS registration and "+
+			"this is the only place the name reaches it", p.FQDN.Name, "web1")
+	}
+
+	p, err = buildParams(&DHCPClientOptions{MAC: mac, FQDN: "both"}, false)
+	if err != nil {
+		t.Fatalf("buildParams: %v", err)
+	}
+	if p.FQDN.Name != "" {
+		t.Errorf("option 81 carries %q for a client built with no name, want it absent. If this ever "+
+			"became a name the attach could fill in afterwards, the pre-start wait on a register_dns "+
+			"network in pkg/plugin could go away with it", p.FQDN.Name)
+	}
+}
+
+// TestSetHostname_RefusesWhatItCannotSend covers the two answers this
+// chassis gives without asking the library (#961).
+//
+// Both are silent if they are not refusals. A v6 client sends no name
+// option at all in this library, and a client whose socket was never
+// opened has no manager to queue the request on; either one returning
+// nil would tell the attach the server had been told, and the attach
+// counts that as a name delivered.
+func TestSetHostname_RefusesWhatItCannotSend(t *testing.T) {
+	mac := testMAC(t)
+
+	ns, err := netns.Get()
+	if err != nil {
+		t.Fatalf("netns.Get: %v", err)
+	}
+	defer func() { _ = ns.Close() }()
+
+	v6, err := NewDHCPClient("eth0", &DHCPClientOptions{
+		MAC:                mac,
+		V6:                 true,
+		NetNS:              &ns,
+		HonorRouterAdverts: true,
+		Identity6:          Identity6{DUID: []byte{0, 3, 0, 1, 0x02, 0x42, 0xc0, 0xa8, 0x63, 0x07}, IAID: 0xc0a86307},
+	})
+	if err != nil {
+		t.Fatalf("NewDHCPClient v6: %v", err)
+	}
+	err = v6.SetHostname("web1")
+	if !errors.Is(err, lease.ErrHostnameV6) {
+		t.Errorf("SetHostname on a v6 client = %v, want lease.ErrHostnameV6: this library sends no name "+
+			"option for DHCPv6, so a nil here is a name the caller believes went out", err)
+	}
+
+	v4, err := NewDHCPClient("eth0", &DHCPClientOptions{MAC: mac})
+	if err != nil {
+		t.Fatalf("NewDHCPClient v4: %v", err)
+	}
+	if err := v4.SetHostname("web1"); !errors.Is(err, ErrNoRunningClient) {
+		t.Errorf("SetHostname before Start = %v, want ErrNoRunningClient: nothing is opened until "+
+			"Start, so the name would be dropped by a client that does not exist yet", err)
 	}
 }

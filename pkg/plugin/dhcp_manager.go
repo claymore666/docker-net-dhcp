@@ -186,7 +186,8 @@ type dhcpManager struct {
 	// every production path goes through Plugin.Join.
 	plugin *Plugin
 
-	// ipMu guards lastIP / lastIPv6. Writes happen from the lease-event
+	// ipMu guards lastIP / lastIPv6, the two lastEvent fields, clientV4
+	// and hostname. Writes happen from the lease-event
 	// goroutine (renew); reads happen from Leave after Stop has
 	// drained that goroutine. The drain establishes happens-before in
 	// practice, but the race detector doesn't always see the channel
@@ -273,6 +274,17 @@ type dhcpManager struct {
 	// bridge mode.
 	MacAddress net.HardwareAddr
 
+	// hostname is the container's name as this endpoint puts it on the
+	// wire, and it is EMPTY FOR TWO OPPOSITE REASONS: the container has
+	// no name, or safeHostname refused the one it has. See the field
+	// comment on unsafeHostnamesRejected.
+	//
+	// UNDER ipMu SINCE #961, and that is not tidiness. The attach used
+	// to write it before any client existed; it now writes it after the
+	// v4 client is already leasing, and audit() reads it from the
+	// lease-event goroutine for every ledger row. Read it through
+	// hostnameOnTheWire and write it through setHostname; audit is
+	// never called with ipMu held.
 	hostname  string
 	nsHandle  netns.NsHandle
 	netHandle *netlink.Handle
@@ -352,13 +364,24 @@ type dhcpManager struct {
 	// Under ipMu, which is released before the client is asked
 	// anything; see healthView.
 	//
+	// SINCE #961 IT IS ALSO THE ONE THING THE ATTACH WRITES THROUGH,
+	// and that is why the type is joinClient and not endpointClient:
+	// the container's name arrives from the daemon after this client is
+	// already leasing, and SetHostname is what puts it on the wire. One
+	// field and one publisher for both directions, so a future path
+	// cannot publish the client the health document reads without also
+	// publishing the one the name goes to.
+	//
 	// v6 has no counterpart BY CHOICE, not by absence. A dual-stack
 	// endpoint runs two clients and the endpoints array has one entry
 	// per endpoint, so one of them is the one it describes; it is this
 	// one, because the array's RFC 5227 pair has no v6 meaning at all.
-	// TestHealthClient_IsPublishedOnlyForV4 holds the guard at the one
-	// call site and docs/reference.md states the bound on the row.
-	clientV4 endpointClient
+	// The name has the same answer for a different reason: this library
+	// sends no name option for DHCPv6 at all, and lease.Manager
+	// refuses the call on that family. TestHealthClient_IsPublishedOnlyForV4
+	// holds the guard at the one call site and docs/reference.md states
+	// the bound on the row.
+	clientV4 joinClient
 
 	// releasedV4 / releasedV6 record that this endpoint's lease was
 	// actually handed back, so Leave can close the record instead of
@@ -402,8 +425,26 @@ func (m *dhcpManager) logFields(v6 bool) log.Fields {
 	}
 }
 
-// setHealthClient publishes the client the health document reads.
-func (m *dhcpManager) setHealthClient(c endpointClient) {
+// joinClient is the persistent v4 client as the ATTACH holds it: the
+// health document's read-only view plus the one call the attach makes
+// into a client that is already running.
+//
+// It is declared here and not beside endpointClient because it is the
+// attach's demand and not the health document's. Widening
+// endpointClient instead would tell every reader of the health surface
+// that the document writes to the client, which it does not.
+type joinClient interface {
+	endpointClient
+
+	// SetHostname gives the running client the container's name for
+	// DHCP option 12 and makes it tell the server at once (#961). See
+	// dhcp.DHCPClient.SetHostname for what the error is about.
+	SetHostname(name string) error
+}
+
+// setHealthClient publishes the client the health document reads and
+// the attach names.
+func (m *dhcpManager) setHealthClient(c joinClient) {
 	m.ipMu.Lock()
 	defer m.ipMu.Unlock()
 	m.clientV4 = c
@@ -411,10 +452,26 @@ func (m *dhcpManager) setHealthClient(c endpointClient) {
 
 // healthClient is the published client, or nil. The lock is dropped
 // before the caller asks the client anything.
-func (m *dhcpManager) healthClient() endpointClient {
+func (m *dhcpManager) healthClient() joinClient {
 	m.ipMu.Lock()
 	defer m.ipMu.Unlock()
 	return m.clientV4
+}
+
+// setHostname records the name this endpoint puts on the wire.
+func (m *dhcpManager) setHostname(h string) {
+	m.ipMu.Lock()
+	defer m.ipMu.Unlock()
+	m.hostname = h
+}
+
+// hostnameOnTheWire is the name this endpoint is currently sending, or
+// the empty string for a container with no name and for one whose name
+// safeHostname refused.
+func (m *dhcpManager) hostnameOnTheWire() string {
+	m.ipMu.Lock()
+	defer m.ipMu.Unlock()
+	return m.hostname
 }
 
 // noteResumedACD reports an address picked up from a durable record
@@ -490,7 +547,7 @@ func (m *dhcpManager) audit(kind, ip string) {
 		Network:   m.joinReq.NetworkID,
 		Endpoint:  m.joinReq.EndpointID,
 		Container: m.containerID(),
-		Hostname:  m.hostname,
+		Hostname:  m.hostnameOnTheWire(),
 		IP:        ip,
 		MAC:       m.macString(),
 	})
@@ -1240,6 +1297,19 @@ func (m *dhcpManager) handleEvent(event dhcp.Event, v6 bool) {
 	}
 }
 
+// startDHCPClient opens the persistent client's socket. A seam, and
+// the only one in this file that is not netlink's.
+//
+// THE ORDER THIS ATTACH DELIVERS IS UNOBSERVABLE WITHOUT IT (#961).
+// "No daemon call between Join arriving and the persistent client
+// starting" is a statement about an INSTANT, and a count taken when
+// Start returns cannot see one: an attach that inspected first leaves
+// the same totals. The instant is here. Opening the socket needs
+// CAP_NET_ADMIN and a live namespace, which the unit lane has neither
+// of, so without a seam the only drive available is the count at the
+// end -- which is the measurement that cannot fail.
+var startDHCPClient = func(c *dhcp.DHCPClient) (chan dhcp.Event, error) { return c.Start() }
+
 func (m *dhcpManager) setupClient(v6 bool) (chan error, error) {
 	v6Str := ""
 	if v6 {
@@ -1371,7 +1441,7 @@ func (m *dhcpManager) setupClient(v6 bool) (chan error, error) {
 	m.policyRestricted = len(allowServers) > 0
 
 	clientOpts := dhcp.DHCPClientOptions{
-		Hostname:     m.hostname,
+		Hostname:     m.hostnameOnTheWire(),
 		AllowServers: allowServers,
 		DenyServers:  denyServers,
 		FQDN:         m.opts.fqdnMode(),
@@ -1445,7 +1515,7 @@ func (m *dhcpManager) setupClient(v6 bool) (chan error, error) {
 	if !v6 {
 		m.setHealthClient(client)
 	}
-	events, err := client.Start()
+	events, err := startDHCPClient(client)
 	if err != nil {
 		return nil, fmt.Errorf("failed to start DHCP%v client: %w", v6Str, err)
 	}
@@ -1754,15 +1824,15 @@ func (m *dhcpManager) Start(ctx context.Context) (err error) {
 		m.startTotal = phases.total().Round(10 * time.Millisecond).String()
 		close(m.startedCh)
 	}()
-	// WHAT THIS ORDER DELIVERS, AND WHAT IT DOES NOT (#417).
+	// WHAT THIS ORDER DELIVERS, AND WHAT IT DOES NOT (#417, #961).
 	//
-	// Entering the container's network namespace and finding its link
-	// no longer need the daemon. Starting the persistent client still
-	// waits on one ContainerInspect, for the hostname that becomes DHCP
-	// option 12, and that inspect is issued after the link is located
-	// rather than before the namespace is opened. So this is not a
-	// daemon-free attach and nothing here may be described as one; what
-	// it removes is the daemon from the path into the namespace.
+	// Entering the container's network namespace, finding its link and
+	// STARTING THE PERSISTENT CLIENT no longer need the daemon. The
+	// container inspect that supplies DHCP option 12 has moved to the
+	// far side of the client start: the library takes a name on a
+	// RUNNING client and renews early to carry it (RFC 2131 section
+	// 4.4.5), so the name no longer has to be in hand before the socket
+	// is opened.
 	//
 	// It matters because of what the daemon is doing at the time. The
 	// attach runs in a goroutine Join does not wait for, and the daemon
@@ -1772,18 +1842,28 @@ func (m *dhcpManager) Start(ctx context.Context) (err error) {
 	// resolves still paid that wait before it opened anything, and a
 	// daemon that never answered meant no namespace, no link and no
 	// client -- on a host where the key alone would have carried all
-	// three.
+	// three. Now it means a container that leases on time and is named
+	// when the daemon gets round to answering.
 	//
-	// The remaining inspect keeps attachDaemonBusyGrace load-bearing: a
-	// busy daemon still delays the client start, and the grace is still
-	// what keeps that from being read as a plugin failure.
+	// THE WAIT IS NOT GONE, IT IS AFTER THE CLIENT, so
+	// attachDaemonBusyGrace stays load-bearing: a busy daemon still
+	// stretches the attach, joinAttachSlow still counts it, and the
+	// grace is still what keeps that from being read as a plugin
+	// failure. What changed is what the container has while it waits.
 	//
-	// The hostname's own cost of being late is bounded and is stated
-	// where it is paid: a client started without it would never send it
-	// (the library takes the hostname at construction), so the client
-	// is not started until the inspect answers or the attach is
-	// abandoned. A daemon-free attach needs a hostname source that is
-	// not ContainerInspect; #961 is open for it.
+	// TWO SHAPES STILL TAKE THE NAME BEFORE THE START, and both are
+	// below rather than here:
+	//
+	//   - the routes that have already inspected. Where the sandbox key
+	//     is refused, the PID fallback asked the daemon on the way in,
+	//     so the name is already in hand and deferring it would buy
+	//     nothing and delay it for no reason.
+	//   - register_dns. That option puts the name in RFC 4702's option
+	//     81, which section 3.1 forbids the Host Name option beside,
+	//     and the library takes option 81 at construction and offers no
+	//     setter for it. Such a network pays the wait the default
+	//     network no longer pays; docs/reference.md says so on the
+	//     register_dns row.
 	var (
 		ctrID         string
 		ctrPID        int
@@ -1915,15 +1995,25 @@ func (m *dhcpManager) Start(ctx context.Context) (err error) {
 
 		phases.mark("locate_link")
 
-		// The one daemon call left on this path, and it is here rather
-		// than earlier because the namespace and the link do not need
-		// it. Config-only: m.hostname reaches the DHCP hostname option
-		// and nothing that makes an identity decision, so a refusal is
-		// just an omitted option here.
-		if err := inspect(); err != nil {
-			return err
+		// THE NAME BEFORE THE START, IN THE TWO CASES THAT WANT IT
+		// THERE (#961). Everything else takes it afterwards, from
+		// nameTheRunningClient below.
+		//
+		// `inspected` is the route that already asked: the daemon has
+		// answered, so the name costs nothing here and deferring it
+		// would only put it on the wire later than it needs to be.
+		// fqdnMode is register_dns, whose option 81 the library takes
+		// at construction and has no setter for.
+		//
+		// Config-only either way: the name reaches the DHCP hostname
+		// option and nothing that makes an identity decision, so a
+		// refusal is just an omitted option here.
+		if inspected || m.opts.fqdnMode() != "" {
+			if err := inspect(); err != nil {
+				return err
+			}
+			m.setHostname(m.plugin.safeHostname(ctrHostname).name)
 		}
-		m.hostname = m.plugin.safeHostname(ctrHostname).name
 
 		if m.errChan, err = m.setupClient(false); err != nil {
 			close(m.stopChan)
@@ -1976,7 +2066,68 @@ func (m *dhcpManager) Start(ctx context.Context) (err error) {
 		return err
 	}
 
+	// AFTER THE ATTACH HAS SUCCEEDED, AND ITS FAILURE IS NOT THE
+	// ATTACH'S (#961). The container is leasing; what is missing is a
+	// name in the server's table, which is worth a counter and a log
+	// line and is not worth tearing a working endpoint down for.
+	if !inspected {
+		m.nameTheRunningClient(phases, inspect, &ctrHostname)
+	}
+
 	return nil
+}
+
+// nameTheRunningClient obtains the container's name and gives it to the
+// v4 client that is already leasing (#961).
+//
+// lookup is the attach's own inspect closure, so this makes no second
+// daemon call: where the name was already in hand the caller does not
+// come here at all. name points at the field that closure fills.
+//
+// NOTHING HERE FAILS THE ATTACH. Every arm is counted instead, because
+// each one leaves a different thing true: the daemon never answered,
+// the client would not take the name, or the name was refused before it
+// got that far. docs/reference.md carries the three rows.
+func (m *dhcpManager) nameTheRunningClient(phases *joinPhases, lookup func() error, name *string) {
+	if err := lookup(); err != nil {
+		m.plugin.hostnameLookupFailures.Add(1)
+		log.WithError(err).
+			WithFields(m.logFields(false)).
+			Warn("The container's name could not be read from the daemon; this endpoint holds its lease but the DHCP server's table has no name for it")
+		return
+	}
+	phases.mark("hostname")
+
+	// safeHostname REFUSES as well as reporting absent, and both
+	// arrive here as an empty string. Neither is handed over: the
+	// library treats an empty name as "stop sending option 12", which
+	// is what this client is already doing, so the call would be a
+	// no-op that made hostnames_applied_late rise on every container
+	// started without --hostname.
+	safe := m.plugin.safeHostname(*name)
+	m.setHostname(safe.name)
+	if safe.name == "" {
+		return
+	}
+
+	client := m.healthClient()
+	if client == nil {
+		m.plugin.hostnameApplyFailures.Add(1)
+		log.WithFields(m.logFields(false)).
+			Warn("No running DHCP client to give the container's name to; the DHCP server's table has no name for this endpoint")
+		return
+	}
+	if err := client.SetHostname(safe.name); err != nil {
+		m.plugin.hostnameApplyFailures.Add(1)
+		log.WithError(err).
+			WithFields(m.logFields(false)).
+			Warn("The running DHCP client would not take the container's name; the DHCP server's table has no name for this endpoint")
+		return
+	}
+	m.plugin.hostnamesAppliedLate.Add(1)
+	log.WithFields(m.logFields(false)).
+		WithField("hostname", safe.name).
+		Info("The container's name was given to the running DHCP client, which asks the server to record it at once")
 }
 
 // Stop shuts the persistent clients down WITHOUT assuming the endpoint

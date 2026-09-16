@@ -1132,6 +1132,37 @@ type Plugin struct {
 	// which is exactly why it would otherwise be invisible.
 	unsafeHostnamesRejected atomic.Int32
 
+	// THE THREE OUTCOMES OF A NAME THAT ARRIVES AFTER THE CLIENT IS
+	// RUNNING (#961). The attach starts the persistent v4 client before
+	// it asks the daemon for the container's name, and gives the name
+	// to the running client afterwards; none of the three arms fails
+	// the attach, so without these the whole step is silent.
+	//
+	// THREE AND NOT ONE, because each leaves a different thing true and
+	// wants a different answer. hostnamesAppliedLate is the mechanism
+	// working, and it is also the DOMAIN: a zero on the two failure
+	// counters is satisfied by a host that never attached anything, and
+	// only the positive counter beside them says otherwise. It counts
+	// non-empty names only; a container started without --hostname is
+	// not a failure and nothing is handed over for it.
+	//
+	// hostnameLookupFailures is the daemon: the container inspect did
+	// not answer inside the attach window. The endpoint keeps its lease
+	// and its renewal client -- that is the whole point of the reorder
+	// -- and what it loses is its name in the DHCP server's table until
+	// something re-attaches it.
+	//
+	// hostnameApplyFailures is the client refusing the handover: an
+	// unsendable name, a full request queue, or no running client to
+	// give it to. Distinguished from the lookup because the remedies
+	// are opposite ends of the host.
+	//
+	// None is healthy-affecting: a lease without a name is a working
+	// container.
+	hostnamesAppliedLate   atomic.Int32
+	hostnameLookupFailures stampedCounter
+	hostnameApplyFailures  stampedCounter
+
 	// dnsPropagationPIDMismatches counts DNS propagations refused
 	// because the PID resolved through Docker no longer belonged to the
 	// container it came from (#688).

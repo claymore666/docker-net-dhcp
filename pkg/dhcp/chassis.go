@@ -1156,6 +1156,45 @@ func (c *DHCPClient) ACDPhase() proto.ACDPhase {
 	return c.client.ACDPhase()
 }
 
+// ErrNoRunningClient is returned by SetHostname when there is no
+// started client to hand the name to.
+//
+// It is its own error rather than a silent no-op because the whole
+// point of the call is that a name arrives AFTER the client is
+// running: a caller that reaches this has the order wrong, and the
+// name would never be sent at all.
+var ErrNoRunningClient = errors.New("dhcp: no running client to give a hostname to")
+
+// SetHostname gives the running client the name to put in option 12 and
+// makes it tell the server at once (#961).
+//
+// THE NAME IS SENT, NOT STORED: the library renews early to carry it
+// (RFC 2131 section 4.4.5, "A client MAY choose to renew or extend its
+// lease prior to T1"), so the server's table has it within one exchange
+// instead of at T1. Repeating the same name sends nothing.
+//
+// A nil error means the name was validated and handed over, and NOT
+// that the server answered; see lease.Manager.SetHostname. The failure
+// modes belong to the caller: an unsendable name, a client already
+// sending option 81 (RFC 4702 section 3.1 forbids option 12 beside it,
+// and the library takes option 81 at construction), or a full request
+// queue, which is the one a caller may retry.
+//
+// V6 IS REFUSED HERE RATHER THAN FORWARDED. This library sends no name
+// option for DHCPv6 -- proto.Params6 has no hostname field -- so the
+// call has nothing to do on that family, and the refusal is what keeps
+// a dual-stack caller from reading a nil error as "the name went out
+// on both".
+func (c *DHCPClient) SetHostname(name string) error {
+	if c.opts.V6 {
+		return fmt.Errorf("dhcp: %w", lease.ErrHostnameV6)
+	}
+	if c.client == nil {
+		return ErrNoRunningClient
+	}
+	return c.client.SetHostname(name)
+}
+
 // ConflictMode is the RFC 5227 mode this client was started in (D23).
 // Read from the params the client was built with rather than from the
 // network's stored options, so it is the mode in force and not the
