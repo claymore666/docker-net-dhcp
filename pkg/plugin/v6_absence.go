@@ -146,6 +146,36 @@ func classifyV6Absence(ra dhcp.RAObservation, cause error) v6Verdict {
 	// advertised, so each is a stronger statement than any reading of
 	// the flags -- and each names a different thing to go and fix.
 	if _, refused := dhcp.V6RefusalStatus(cause); refused {
+		// A REFUSAL IS A FAULT ONLY WHERE AN ADDRESS WAS PROMISED.
+		//
+		// MEASURED (#821, run 35141032546, shard main-4): on a
+		// stateless segment dnsmasq answers the Solicit with Status
+		// Code 2, NoAddrsAvail, four times inside the budget, and the
+		// advertisement on that same segment carries O=1 and M=0. The
+		// server is agreeing with its own advertisement -- "this
+		// segment hands out no DHCPv6 addresses" -- said twice, once
+		// in the flags and once on the wire. Reading the second
+		// statement as a refusal made CreateEndpoint fail with
+		// "failed to get initial IPv6 address via DHCPv6", so no
+		// container started on a correctly configured stateless
+		// network and it lost its IPv4 with it.
+		//
+		// That is the rule below this switch, applied one branch too
+		// late: "anything else -- O=1 alone, or neither bit -- is a
+		// segment with no DHCPv6 addresses on it, which is a
+		// configuration and not a fault". The wire IS the stronger
+		// statement, and where it AGREES with an M=0 advertisement
+		// what the two agree on is that no address is coming.
+		//
+		// M=1 keeps the old verdict, which is the case the refusal
+		// was written for: the segment promised addresses over
+		// DHCPv6, a server answered, and it had none. An unseen
+		// advertisement keeps it too -- with nothing on the wire
+		// saying otherwise, a server that answers and refuses is the
+		// only evidence there is, and it is evidence of a fault.
+		if ra.Seen && !ra.Managed {
+			return v6NotOffered
+		}
 		return v6Refused
 	}
 	if errors.Is(cause, dhcp.ErrNoSLAACPrefix) {

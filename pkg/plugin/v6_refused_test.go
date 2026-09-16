@@ -27,6 +27,75 @@ import (
 // observation alone reads as "no DHCPv6 here, carry on" -- tolerated,
 // so the container would start with no IPv6 address at all on a network
 // whose whole configuration is that the address comes from the router.
+// A REFUSAL THAT AGREES WITH THE ADVERTISEMENT IS NOT A FAULT.
+//
+// The table above is about the wire OVERRULING the observation, and its
+// own guard refuses a row where the cause changes nothing. This is the
+// opposite property and so it cannot live there: here the wire and the
+// flags SAY THE SAME THING, and the verdict has to be the one they
+// agree on.
+//
+// MEASURED (#821, run 35141032546, shard main-4): a stateless segment
+// advertises O=1 M=0 and its dnsmasq answers the Solicit with Status
+// Code 2 NoAddrsAvail. Read as a refusal, CreateEndpoint failed and no
+// container started on a correctly configured network -- losing its
+// IPv4 too, since the endpoint never came up at all.
+//
+// The managed row is the preservation control: the same status code on
+// a segment that DID promise addresses must stay fatal, or this fix
+// would turn every real refusal into a silent start with no address.
+func TestClassifyV6Absence_ARefusalThatAgreesWithTheAdvertisementIsNotAFault(t *testing.T) {
+	refused := dhcp.V6Refusal("NoAddrsAvail", "no addresses available")
+
+	cases := []struct {
+		name string
+		ra   dhcp.RAObservation
+		want v6Verdict
+		why  string
+	}{
+		{"stateless: O=1, M=0", dhcp.RAObservation{Seen: true, Other: true}, v6NotOffered,
+			"the segment said it hands out no addresses, and then the server said the same"},
+		{"neither bit set", dhcp.RAObservation{Seen: true}, v6NotOffered,
+			"an advertisement promising no addresses, confirmed on the wire"},
+		{"managed: M=1", dhcp.RAObservation{Seen: true, Managed: true}, v6Refused,
+			"the segment promised addresses over DHCPv6 and the server had none: still a fault"},
+		{"no advertisement seen at all", dhcp.RAObservation{}, v6Refused,
+			"nothing on the wire says otherwise, so the refusal is the only evidence there is"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := classifyV6Absence(tc.ra, refused); got != tc.want {
+				t.Errorf("classifyV6Absence(%+v, NoAddrsAvail) = %v, want %v -- %s",
+					tc.ra, got, tc.want, tc.why)
+			}
+		})
+	}
+}
+
+// The endpoint PROCEEDS on a stateless segment whose server refused it,
+// which is the half the classifier alone cannot show: noteV6Absence
+// turns the verdict into the boolean CreateEndpoint acts on, and it was
+// this boolean that was false in run 35141032546.
+func TestNoteV6Absence_AStatelessRefusalStillCreatesTheEndpoint(t *testing.T) {
+	p := newTestPlugin(t)
+	refused := dhcp.V6Refusal("NoAddrsAvail", "no addresses available")
+	ra := dhcp.RAObservation{Seen: true, Other: true}
+
+	if !p.noteV6Absence(ra, "eth0", "ep-stateless", refused) {
+		t.Error("the endpoint was refused on a stateless segment whose advertisement " +
+			"says M=0. The server answering \"no addresses available\" there is the " +
+			"segment agreeing with itself, and failing the endpoint takes the " +
+			"container's IPv4 down with it (#821)")
+	}
+	if n := p.dhcpv6NotOffered.Load(); n != 1 {
+		t.Errorf("dhcpv6_not_offered = %d, want 1: this ending has to be visible on /metrics", n)
+	}
+	if n := p.dhcpv6Refused.Load(); n != 0 {
+		t.Errorf("dhcpv6_refused = %d, want 0: it was not a refusal", n)
+	}
+}
+
 func TestClassifyV6Absence_TheWireCausesOverruleTheObservation(t *testing.T) {
 	refused := dhcp.V6Refusal("NoAddrsAvail", "no addresses available")
 	noPrefix := fmt.Errorf("%w: 2 option(s) refused", dhcp.ErrNoSLAACPrefix)
