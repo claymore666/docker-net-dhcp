@@ -131,13 +131,17 @@ const formedAddrReadFloor = 5 * time.Second
 // engine's install of one. Nothing in this suite calls t.Parallel and
 // each of these arms runs one container, so a move inside the window is
 // this endpoint's.
+//
+// WHICH QUESTION TO ASK OF THE COUNTER is the cond argument, and there
+// are two. v6InstalledSinceBaseline is the ordinary one. A plugin that
+// has just been restarted needs the other, for the reason
+// v6InstalledByThisProcess gives.
 func awaitPluginAppliedV6(t *testing.T, ctx context.Context, w *harness.CounterWindow, id string,
-	prefix netip.Prefix, budget time.Duration) (string, harness.V6AddrFlags) {
+	prefix netip.Prefix, budget time.Duration,
+	cond func(now, before *harness.HealthResponse) bool) (string, harness.V6AddrFlags) {
 	t.Helper()
 	start := time.Now()
-	if _, ok := w.Await(budget, func(now, before *harness.HealthResponse) bool {
-		return now.IPv6SLAACAddresses > before.IPv6SLAACAddresses
-	}); !ok {
+	if _, ok := w.Await(budget, cond); !ok {
 		out := harness.ExecOutput(t, ctx, id, "ip", "-6", "-o", "addr", "show", "scope", "global")
 		if addr, there := v6InPrefix(out, prefix); there {
 			t.Fatalf("the container holds %s and ipv6_slaac_addresses did not move in %s. "+
@@ -155,11 +159,39 @@ func awaitPluginAppliedV6(t *testing.T, ctx context.Context, w *harness.CounterW
 			"comes from.\n"+
 			"`ip -6 -o addr show scope global` said:\n%s", prefix, budget, out)
 	}
+	// The window between the engine's install and this plugin's, which
+	// is how long a container holds the formed address permanent and
+	// preferred. It is logged and not asserted on: it is the acquisition
+	// this endpoint's own client has to finish, and a bound on it would
+	// be a bound on a DHCPv6 or router-discovery exchange. Reading it
+	// off the runs is how it becomes a number at all.
+	t.Logf("the plugin's own install landed %s after the container started",
+		time.Since(start).Round(100*time.Millisecond))
+
 	read := budget - time.Since(start)
 	if read < formedAddrReadFloor {
 		read = formedAddrReadFloor
 	}
 	return awaitContainerV6(t, ctx, id, prefix, read)
+}
+
+// v6InstalledSinceBaseline is the ordinary condition: this plugin
+// installed a formed address after the window opened.
+func v6InstalledSinceBaseline(now, before *harness.HealthResponse) bool {
+	return now.IPv6SLAACAddresses > before.IPv6SLAACAddresses
+}
+
+// v6InstalledByThisProcess is the same question asked of a plugin that
+// has just been restarted, where a delta cannot ask it.
+//
+// The counters are in-memory and start at zero with the process, so any
+// value at all is an install this process made. A baseline read taken
+// after the restart is a race the test would lose silently: the resumed
+// endpoint can install its address before the first health read
+// succeeds, and a delta against that baseline would then wait for a
+// second install that is never coming.
+func v6InstalledByThisProcess(now, _ *harness.HealthResponse) bool {
+	return now.IPv6SLAACAddresses >= 1
 }
 
 // v6SegmentPrefix is the /64 every v6 fixture in this suite advertises.
@@ -238,7 +270,7 @@ func TestSLAAC_AnAdvertisedPrefixReachesTheContainer(t *testing.T) {
 	}
 
 	prefix := v6SegmentPrefix(t)
-	addr, flags := awaitPluginAppliedV6(t, ctx, w, id, prefix, slaacAddrBudget())
+	addr, flags := awaitPluginAppliedV6(t, ctx, w, id, prefix, slaacAddrBudget(), v6InstalledSinceBaseline)
 	t.Logf("formed address inside the container: %q", flags.Line)
 	assertHealthyFormedAddress(t, addr, flags)
 
@@ -380,7 +412,7 @@ func TestSLAAC_ADeprecatedPrefixArrivesDeprecated(t *testing.T) {
 			"over: %v", err)
 	}
 
-	addr, flags := awaitPluginAppliedV6(t, ctx, w, id, v6SegmentPrefix(t), slaacAddrBudget())
+	addr, flags := awaitPluginAppliedV6(t, ctx, w, id, v6SegmentPrefix(t), slaacAddrBudget(), v6InstalledSinceBaseline)
 	t.Logf("deprecated address inside the container: %q", flags.Line)
 	assertHealthyFormedAddress(t, addr, flags)
 
@@ -441,7 +473,7 @@ func TestSLAAC_AutoFallsBackOntoTheAdvertisedPrefix(t *testing.T) {
 			"is exactly what the fallback exists for: %v", err)
 	}
 
-	addr, flags := awaitPluginAppliedV6(t, ctx, w, id, v6SegmentPrefix(t), slaacAddrBudget())
+	addr, flags := awaitPluginAppliedV6(t, ctx, w, id, v6SegmentPrefix(t), slaacAddrBudget(), v6InstalledSinceBaseline)
 	t.Logf("address formed by the auto fallback: %q", flags.Line)
 	assertHealthyFormedAddress(t, addr, flags)
 
@@ -565,13 +597,30 @@ func TestSLAAC_TheAddressComesBackAfterAPluginRestart(t *testing.T) {
 	f := harness.NewV6Fixture(t, harness.V6SLAAC)
 	dumpOnFailure(t, f)
 
+	// BOTH READS ARE OF THIS PLUGIN'S INSTALL, and that is what makes
+	// the arm about this plugin. The engine put the reported address on
+	// the link when it built the sandbox, permanent and with
+	// IFA_F_NODAD, and a plugin restart does nothing to an address the
+	// engine installed: presence, the address being the same one, the
+	// flags and the lifetimes printed are all satisfied by a copy this
+	// plugin never touched, which would answer the arm's own question
+	// with the thing it exists to exclude.
+	w := harness.BeginCounterWindow(t, ctx, cli, "ipv6_slaac_addresses")
+
 	id, err := startOnV6SegmentWithOpts(t, ctx, cli, f, "dh-itest-slaacrs",
 		map[string]string{"ipv6": "", "ipv6_mode": "slaac"})
 	if err != nil {
 		t.Fatalf("the container did not start on an ipv6_mode=slaac segment: %v", err)
 	}
 	prefix := v6SegmentPrefix(t)
-	addrBefore, _ := awaitContainerV6(t, ctx, id, prefix, slaacAddrBudget())
+	addrBefore, _ := awaitPluginAppliedV6(t, ctx, w, id, prefix, slaacAddrBudget(), v6InstalledSinceBaseline)
+
+	// Closed before the restart, because a window that spans one is
+	// measuring across a counter reset and CounterWindow refuses it.
+	if before, after := w.End(); after.IPv6SLAACAddresses-before.IPv6SLAACAddresses != 1 {
+		t.Errorf("ipv6_slaac_addresses moved by %d before the restart, want 1",
+			after.IPv6SLAACAddresses-before.IPv6SLAACAddresses)
+	}
 
 	// The resumed endpoint re-binds its v4 lease without going through
 	// CreateEndpoint, so the RFC 5227 probe that bind would have run is
@@ -606,7 +655,15 @@ func TestSLAAC_TheAddressComesBackAfterAPluginRestart(t *testing.T) {
 	}
 	harness.WaitPluginHealth(t, ctx, cli, 15*time.Second)
 
-	addrAfter, flags := awaitContainerV6(t, ctx, id, prefix, slaacAddrBudget())
+	// A SECOND WINDOW, on the process that came back. Its counters
+	// started at zero with it, so v6InstalledByThisProcess asks the
+	// question a delta cannot ask here: did THIS plugin process install
+	// a formed address for this endpoint, or is the address on the link
+	// only the copy the engine made at container start, which no
+	// restart could have removed.
+	w2 := harness.BeginCounterWindow(t, ctx, cli, "ipv6_slaac_addresses")
+
+	addrAfter, flags := awaitPluginAppliedV6(t, ctx, w2, id, prefix, slaacAddrBudget(), v6InstalledByThisProcess)
 	t.Logf("address after the restart: %q", flags.Line)
 	if addrAfter != addrBefore {
 		t.Errorf("the container held %s before the plugin restart and %s after it. The "+
@@ -622,4 +679,10 @@ func TestSLAAC_TheAddressComesBackAfterAPluginRestart(t *testing.T) {
 			"section 5.4.5). Line: %q", flags.Line)
 	}
 	assertHealthyFormedAddress(t, addrAfter, flags)
+
+	if _, after := w2.End(); after.IPv6SLAACAddresses < 1 {
+		t.Errorf("ipv6_slaac_addresses = %d on the plugin process that came back, want at "+
+			"least 1: the resumed endpoint's address is on the link and this process "+
+			"installed none of it", after.IPv6SLAACAddresses)
+	}
 }
