@@ -372,8 +372,14 @@ neither route existed for that release; v2.1.0 carried the workflow to
 `main` and dropped its entry from
 [`.github/dispatch-pending.txt`](https://github.com/claymore666/docker-net-dhcp/blob/main/.github/dispatch-pending.txt),
 and the dispatch above works from v2.1.1 onward. Confirm before
-relying on it: the file is the record of what is still pending, and an
-entry naming this workflow means the route is not there yet.
+relying on it: an entry naming this workflow means the route is not
+there yet. **An empty file does not prove the opposite during a
+release.** Since #977 the entry is pruned on the release branch at
+step 2 and reaches `main` only with the release pull request, so while
+this tree pins a later version than `main` the file is already silent
+about a workflow that has not landed. Whether
+`.github/workflows/engine-matrix.yml` is on `main` is the direct
+answer.
 
 The lane also runs on its own `push` trigger, over
 `.github/workflows/engine-matrix.yml`,
