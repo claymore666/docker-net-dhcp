@@ -485,7 +485,10 @@ func splitSandboxKeyIn(dirs []string, sandboxKey string) (dir, name string) {
 func (p *Plugin) CreateNetwork(r CreateNetworkRequest) error {
 	log.WithField("options", r.Options).Debug("CreateNetwork options")
 
-	opts, err := decodeOpts(r.Options[util.OptionsKeyGeneric])
+	// decodeOptsSet rather than decodeOpts: the IPv6 refusals need to
+	// know which fields the operator actually wrote, and this is the
+	// only handler where that is still knowable. See ipv6Mode.
+	opts, optsSet, err := decodeOptsSet(r.Options[util.OptionsKeyGeneric])
 	if err != nil {
 		return fmt.Errorf("failed to decode network options: %w", err)
 	}
@@ -498,6 +501,10 @@ func (p *Plugin) CreateNetwork(r CreateNetworkRequest) error {
 		return err
 	}
 
+	if err := validateIPv6Options(opts, optsSet); err != nil {
+		return err
+	}
+
 	// The pool binding, before anything is written or any link is
 	// touched. A network that fails here leaves no state behind and no
 	// issued pool consumed by mistake.
@@ -506,7 +513,7 @@ func (p *Plugin) CreateNetwork(r CreateNetworkRequest) error {
 		if err := ipamRefuseIPvlan(opts.effectiveMode()); err != nil {
 			return err
 		}
-		if err := ipamRefuseIPv6(opts.IPv6); err != nil {
+		if err := ipamRefuseIPv6(opts.ipv6Enabled()); err != nil {
 			return err
 		}
 		iface := opts.Bridge
@@ -556,7 +563,8 @@ func (p *Plugin) CreateNetwork(r CreateNetworkRequest) error {
 			"network":       r.NetworkID,
 			"mode":          mode,
 			"parent":        opts.Parent,
-			"ipv6":          opts.IPv6,
+			"ipv6":          opts.ipv6Enabled(),
+			"ipv6_mode":     opts.IPv6Mode,
 			"validate_dhcp": opts.ValidateDHCP,
 			"ipam":          binding != nil,
 		}).Info("Network created")
@@ -642,10 +650,11 @@ func (p *Plugin) CreateNetwork(r CreateNetworkRequest) error {
 		return err
 	}
 	log.WithFields(log.Fields{
-		"network": r.NetworkID,
-		"bridge":  opts.Bridge,
-		"ipv6":    opts.IPv6,
-		"ipam":    binding != nil,
+		"network":   r.NetworkID,
+		"bridge":    opts.Bridge,
+		"ipv6":      opts.ipv6Enabled(),
+		"ipv6_mode": opts.IPv6Mode,
+		"ipam":      binding != nil,
 	}).Info("Network created")
 
 	return nil
@@ -973,6 +982,34 @@ func (p *Plugin) checkStoredOptions(id string, opts DHCPNetworkOptions) error {
 			"network": shortID(id),
 			"value":   fmt.Sprintf("%q", opts.ReleaseLease),
 		}).Error("Refusing stored network options: release_lease is not a value this plugin implements")
+		return err
+	}
+
+	// The stored IPv6 options, on the read path for the reason
+	// release_lease is on it, and with one more: a network served by
+	// the NetworkInspect fallback never went through CreateNetwork's
+	// validation at all, so an `ipv6_mode` value this build does not
+	// implement, a pair that contradicts itself, or slaac on an ipvlan
+	// network reaches the endpoint handlers unexamined. Resolving any
+	// of them to "no IPv6" by accident is the silent answer, and on a
+	// network whose whole configuration is ipv6_mode it is the wrong
+	// one.
+	//
+	// IT IS THE SAME FUNCTION CreateNetwork CALLS, with no set of
+	// written keys, because a stored record cannot carry which keys the
+	// operator typed. Everything it refuses without that set is refused
+	// on both paths, which is the property
+	// TestIPv6Mode_TheCreateAndStoredPathsRefuseTheSameSet drives: a
+	// pair refused at create and accepted here is a validation an
+	// operator gets past by restarting the plugin.
+	if err := validateIPv6Options(opts, nil); err != nil {
+		p.networkOptionsRejected.Add(1)
+		log.WithFields(log.Fields{
+			"network":   shortID(id),
+			"mode":      opts.effectiveMode(),
+			"ipv6":      opts.IPv6,
+			"ipv6_mode": fmt.Sprintf("%q", opts.IPv6Mode),
+		}).Error("Refusing stored network options: this plugin cannot act on the IPv6 options as stored")
 		return err
 	}
 
@@ -1341,7 +1378,7 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 		// every start from the plumbing in hand is one that changes
 		// whenever the plumbing does, and the server then files a
 		// second binding and hands out a second address.
-		if opts.IPv6 {
+		if opts.ipv6Enabled() {
 			id6, err := resolveIdentity6(opts, r.EndpointID, ctrLink.Attrs().HardwareAddr)
 			if err != nil {
 				return err
@@ -1381,11 +1418,14 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 				RecordID: recordID,
 			}
 			if v6 {
-				// The v6 one-shot writes to the v6 record and speaks
-				// as the v6 identity. Both are per-family and neither
-				// has a v4 analogue that could stand in.
-				base.Identity6 = identity6
-				base.RecordID = recordID6
+				// The v6 one-shot writes to the v6 record, speaks as
+				// the v6 identity, and runs in the network's
+				// ipv6_mode. All three are per-family and none has a
+				// v4 analogue that could stand in; v6Wiring says why
+				// they travel together.
+				if err := p.v6Wiring(&base, opts, identity6, recordID6, requestedV6, r.EndpointID); err != nil {
+					return err
+				}
 			}
 			// Conflict detection, from the network's stored
 			// conflict_check (D23). Set on the BASE, so every attempt
@@ -1396,9 +1436,9 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 			// Hint the preferred address per family: `request ADDR`
 			// for v4, `ia_na / ADDR` for v6 (#213). Empty values omit
 			// the directive, so an unhinted endpoint behaves as before.
-			if v6 {
-				base.PreferredV6 = requestedV6
-			} else {
+			// The v6 hint travelled with the rest of the v6 wiring
+			// above.
+			if !v6 {
 				base.RequestedIP = requestedIP
 			}
 
@@ -1462,7 +1502,7 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 		if err := initialIP(false); err != nil {
 			return err
 		}
-		if opts.IPv6 {
+		if opts.ipv6Enabled() {
 			if err := initialIP(true); err != nil {
 				return err
 			}
@@ -2124,7 +2164,7 @@ func (p *Plugin) Join(ctx context.Context, r JoinRequest) (JoinResponse, error) 
 	if err := p.addRoutes(&opts, false, routeSrc, r, hint, &res); err != nil {
 		return res, err
 	}
-	if opts.IPv6 {
+	if opts.ipv6Enabled() {
 		if err := p.addRoutes(&opts, true, routeSrc, r, hint, &res); err != nil {
 			return res, err
 		}

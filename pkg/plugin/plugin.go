@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"strings"
 	"sync"
@@ -407,9 +408,43 @@ type DHCPNetworkOptions struct {
 	// upstream DHCP server. Useful for split-horizon LANs where
 	// containers should egress via a different router than the one
 	// the DHCP server advertises (e.g. VPN gateway).
-	Gateway      string
-	IPv6         bool
-	LeaseTimeout time.Duration `mapstructure:"lease_timeout"`
+	Gateway string
+	// IPv6 switches DHCPv6 on for every endpoint on this network. It
+	// is the option that has always existed and it keeps its exact
+	// meaning: `ipv6=true` alone is `ipv6_mode=dhcp` (#817).
+	//
+	// READ IT THROUGH ipv6Enabled AND NEVER ON ITS OWN. Since #817
+	// there are two options saying where an endpoint's IPv6 address
+	// comes from, and the answer is a function of the pair. A site that
+	// reads this field alone serves an `ipv6_mode=slaac` network as a
+	// network with no IPv6 at all.
+	IPv6 bool
+	// IPv6Mode is where an endpoint's IPv6 address comes from: `off`
+	// (the default), `dhcp`, `slaac` or `auto` (#817). The values are
+	// the library's proto.Mode6 spellings, so the option a user writes
+	// and the value the DHCPv6 state machine switches on are one
+	// enumeration; dhcp.ParseIPv6Mode is the only thing that reads the
+	// string.
+	//
+	// Setting it to anything but `off` switches IPv6 on, so a network
+	// says `ipv6_mode=slaac` and nothing else. Setting it beside an
+	// `ipv6` that disagrees is REFUSED at CreateNetwork rather than
+	// resolved by a precedence rule nobody could guess.
+	IPv6Mode string `mapstructure:"ipv6_mode"`
+	// IPv6AutoStrict decides what `ipv6_mode=auto` does when the
+	// router said addresses come from DHCPv6 and no server then
+	// answers (design Q3).
+	//
+	// Default false: after half the router-discovery window the client
+	// forms an address from an advertised prefix instead, counts
+	// `dhcpv6_auto_fallbacks` and logs the fallback. True is STRICT --
+	// a silent server fails the endpoint, which is what `dhcp` does and
+	// what an operator who meant "managed or nothing" is asking for.
+	//
+	// It is read only in `auto`. In `dhcp` there is no fallback to
+	// suppress and in `slaac` there is no server to wait for.
+	IPv6AutoStrict bool          `mapstructure:"ipv6_auto_strict"`
+	LeaseTimeout   time.Duration `mapstructure:"lease_timeout"`
 	// IgnoreConflicts skips the BRIDGE OVERLAP check at CreateNetwork:
 	// whether some other Docker network already has this bridge, or an
 	// address range covering it. It is a question about this host's own
@@ -579,24 +614,145 @@ func (o DHCPNetworkOptions) fqdnMode() string {
 }
 
 func decodeOpts(input interface{}) (DHCPNetworkOptions, error) {
+	opts, _, err := decodeOptsSet(input)
+	return opts, err
+}
+
+// decodeOptsSet is decodeOpts plus the set of fields the input actually
+// carried.
+//
+// WHY ANYTHING NEEDS THAT. Every field here has a zero value, and for
+// `ipv6` the zero is also a value an operator can write: `-o
+// ipv6=false`. #817 has to refuse `ipv6=false` beside `ipv6_mode=slaac`
+// -- the pair contradicts itself -- while ACCEPTING `ipv6_mode=slaac`
+// on its own, which is the documented way to turn IPv6 on. Those two
+// inputs decode to the same struct, so a refusal written against the
+// struct alone either never fires or fires on the documented spelling.
+// mapstructure records which fields it filled, and that is the one
+// place the difference exists.
+//
+// THE NAMES IN THE SET ARE GO FIELD NAMES ("IPv6", "IPv6Mode"), never
+// option keys, and they are normalised here because mapstructure's own
+// metadata is not consistent about it: Metadata.Keys carries the
+// mapstructure TAG for a tagged field ("ipv6_mode") and the field name
+// for an untagged one ("IPv6"). A caller asking `set["IPv6Mode"]`
+// against the raw metadata would get false for an option that WAS
+// written, which is a check that reports the opposite of the truth and
+// does it silently. A caller asks with a field name so that a renamed
+// field is a compile error rather than a check that quietly stops
+// matching; normaliseOptionKeys is what makes that promise true.
+//
+// AN OPTION WRITTEN WITH AN EMPTY VALUE IS NOT AN OPTION THE OPERATOR
+// WROTE, and dropEmptyOptionValues is what makes that true. Read its
+// comment: without it the very first refusal built on this set fires on
+// input nobody typed a value into, and it names the one option whose
+// behaviour the uniform rule changes.
+func decodeOptsSet(input interface{}) (DHCPNetworkOptions, map[string]bool, error) {
+	input = dropEmptyOptionValues(input)
+
 	var opts DHCPNetworkOptions
+	var md mapstructure.Metadata
 	optsDecoder, err := mapstructure.NewDecoder(&mapstructure.DecoderConfig{
 		Result:           &opts,
 		ErrorUnused:      true,
 		WeaklyTypedInput: true,
+		Metadata:         &md,
 		DecodeHook: mapstructure.ComposeDecodeHookFunc(
 			mapstructure.StringToTimeDurationHookFunc(),
 		),
 	})
 	if err != nil {
-		return opts, fmt.Errorf("failed to create options decoder: %w", err)
+		return opts, nil, fmt.Errorf("failed to create options decoder: %w", err)
 	}
 
 	if err := optsDecoder.Decode(input); err != nil {
-		return opts, err
+		return opts, nil, err
 	}
 
-	return opts, nil
+	return opts, normaliseOptionKeys(md.Keys), nil
+}
+
+// normaliseOptionKeys turns mapstructure's mixed bag of tags and field
+// names into Go field names.
+//
+// A key that matches no field is kept as it is. That cannot happen
+// today -- the decoder runs with ErrorUnused, so an unknown key fails
+// the decode before this is reached -- and dropping it would be the
+// worse of the two ways to be wrong if it ever could.
+func normaliseOptionKeys(keys []string) map[string]bool {
+	byTag := map[string]string{}
+	t := reflect.TypeOf(DHCPNetworkOptions{})
+	for i := 0; i < t.NumField(); i++ {
+		f := t.Field(i)
+		if tag := f.Tag.Get("mapstructure"); tag != "" {
+			byTag[tag] = f.Name
+		}
+	}
+	set := make(map[string]bool, len(keys))
+	for _, k := range keys {
+		if name, ok := byTag[k]; ok {
+			set[name] = true
+			continue
+		}
+		set[k] = true
+	}
+	return set
+}
+
+// dropEmptyOptionValues removes options written with no value at all,
+// so that `-o ipv6=` is the same input as no `-o ipv6` and not the same
+// input as `-o ipv6=false`.
+//
+// MEASURED against the pinned mapstructure: `{"ipv6": "", "ipv6_mode":
+// "dhcp"}` decodes to IPv6=false with Metadata.Keys naming IPv6, so
+// without this the pair reads as the written-out contradiction
+// validateIPv6Options refuses -- and `docker network create ... -o
+// ipv6= -o ipv6_mode=dhcp`, or `driver_opts: {ipv6: ""}` in Compose,
+// would fail with a message about a `false` the operator never typed.
+//
+// IT IS ONE RULE FOR EVERY OPTION, and the rule is about the INPUT and
+// not about one field: an option written with no value is an option the
+// operator did not set. Doing it before the decode is what makes the
+// struct and the key set agree; a set filtered afterwards would still
+// describe a struct the decoder had already written into, and for a
+// typed field it would have failed the decode first.
+//
+// THIS CHANGES ONE OPTION'S BEHAVIOUR AND THE REFERENCE SAYS SO.
+// Every string-valued option here already read an empty value as unset,
+// because each one's parser maps "" to its default. A DURATION does
+// not: `-o lease_timeout=` was refused with `time: invalid duration ""`
+// before this and is accepted as unset after it, taking the derived
+// default. That is the uniform rule applied to the one option that did
+// not follow it, it is stated in docs/reference.md where the options
+// are introduced, and TestDecodeOptsSet_AnEmptyValueIsNotAValue pins it
+// so the sentence above cannot become false in silence. `driver_opts:
+// {lease_timeout: "${VAR}"}` with VAR unset is the shape that produces
+// it, and "the operator did not set a timeout" is what that input
+// means.
+//
+// A non-map input is handed back untouched: the decoder's own error is
+// a better report of it than anything this could say.
+func dropEmptyOptionValues(input interface{}) interface{} {
+	m, ok := input.(map[string]interface{})
+	if !ok {
+		return input
+	}
+	var out map[string]interface{}
+	for k, v := range m {
+		if s, isStr := v.(string); isStr && s == "" {
+			if out == nil {
+				out = make(map[string]interface{}, len(m))
+				for k2, v2 := range m {
+					out[k2] = v2
+				}
+			}
+			delete(out, k)
+		}
+	}
+	if out == nil {
+		return input
+	}
+	return out
 }
 
 type joinHint struct {
@@ -1515,6 +1671,59 @@ type Plugin struct {
 	// segment with no router, which may be a misconfiguration. Folding
 	// them into one counter would hide the second inside the first.
 	dhcpv6NoRouterAdvert atomic.Int32
+
+	// dhcpv6Refused counts endpoints that FAILED because a DHCPv6
+	// server answered and turned the client down: RFC 9915 section
+	// 21.13's Status Code option carrying something other than Success
+	// (#816).
+	//
+	// THE COUNTER THAT SAYS THE SERVER WAS THERE. The two counters
+	// above are healthy outcomes; this one and dhcpv6NoServer are the
+	// two failures, and they are apart because the operator action has
+	// nothing in common. A refusal means a reachable, configured server
+	// that has no address for this client -- an exhausted pool, a host
+	// outside the range it serves -- and a silence means the server is
+	// unreachable or gone.
+	dhcpv6Refused atomic.Int32
+
+	// dhcpv6NoServer counts endpoints that FAILED because the segment
+	// advertised the managed-address flag and no DHCPv6 server answered
+	// within the acquisition budget (#816).
+	//
+	// This ending is the one that shipped and its message is unchanged.
+	// What it did not have was a counter, so "the server refused us"
+	// and "nobody answered" were one row on /metrics -- which is #816
+	// one level up from the log line.
+	dhcpv6NoServer atomic.Int32
+
+	// dhcpv6SLAACNoPrefix counts endpoints that FAILED because a router
+	// advertises on the segment and none of its prefixes formed an
+	// address, on a network whose ipv6_mode takes its addresses from
+	// the advertisement (#816, #817).
+	//
+	// RFC 4862 section 5.5.3 is the list of reasons a Prefix
+	// Information option forms nothing: no Autonomous flag, a zero
+	// valid lifetime, a preferred lifetime past the valid one, a prefix
+	// whose length plus the interface identifier is not 128 bits, or
+	// the link-local prefix. The thing to go and fix is the router, and
+	// that is why this is not folded into dhcpv6NoServer.
+	dhcpv6SLAACNoPrefix atomic.Int32
+
+	// dhcpv6AutoFallbacks counts endpoints on an `ipv6_mode=auto`
+	// network whose address came from a router's advertised prefix
+	// after the segment advertised DHCPv6 and no server answered
+	// (#817).
+	//
+	// IT COUNTS EFFECT. The number is the gain in the library's
+	// lease.Stats.SLAACFallbacks, whose own contract is a fallback that
+	// FORMED an address: a fallback deadline that passed with no usable
+	// prefix ends the acquisition and leaves this where it was. So a
+	// non-zero value means containers are running on an address from a
+	// different source than the one the network's router nominally
+	// offers, which is what an operator who believed the segment was
+	// managed needs to see. `ipv6_auto_strict=true` fails those
+	// endpoints instead.
+	dhcpv6AutoFallbacks atomic.Int32
 
 	// ipv6LinkEnableFailures counts container links the plugin could not
 	// administratively enable IPv6 on before starting a DHCPv6 client

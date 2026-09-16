@@ -118,6 +118,50 @@ type DHCPClientOptions struct {
 	// for `--ip` and for a tombstone's address.
 	RequestedIP string
 
+	// Mode6 is where this endpoint's IPv6 address comes from: DHCPv6,
+	// an advertised prefix, or whichever of the two the router names
+	// (#817). It is the `ipv6_mode` option's value, parsed once at
+	// CreateNetwork by ParseIPv6Mode, and it is read only when V6 is
+	// set.
+	//
+	// IT IS SET ON THE SAME ASSIGNMENT AS Identity6 AND THAT IS THE
+	// GUARD. proto.Mode6's zero value is Mode6DHCP, so a v6 call site
+	// that forgot this field would get a working client in the mode the
+	// plugin had before the option existed -- the silent half of defeat
+	// row 1. Identity6 has no usable zero (buildParams6 refuses an
+	// empty DUID), so the two travel through one helper and a site that
+	// skips it fails at the refusal rather than running in the wrong
+	// mode. pkg/plugin's v6 wiring helper is that one helper.
+	Mode6 proto.Mode6
+
+	// StrictAuto6 is the `ipv6_auto_strict` option: in Mode6Auto, a
+	// router that said M=1 and a DHCPv6 server that then answers
+	// nothing FAILS the endpoint instead of forming an address from an
+	// advertised prefix.
+	//
+	// A BOOLEAN HERE AND A DURATION ON THE WIRE. The library's switch
+	// is proto.Params6.AutoFallback, whose zero means "the caller did
+	// not say" and whose NEGATIVE means strict; the operator's question
+	// is "does a silent server fail my container", which has two
+	// answers. buildParams6 is where the two meet, through
+	// strictAutoFallback, so no call site can set a delay and switch it
+	// off in the same value.
+	StrictAuto6 bool
+
+	// OnV6Fallback is called with the GAIN in the library's count of
+	// Mode6Auto fallbacks -- an `auto` endpoint that gave up on a
+	// silent DHCPv6 server and formed an address from an advertised
+	// prefix instead.
+	//
+	// A GAIN and not a total, for the reason OnACDStats gives. It
+	// counts EFFECT and not intent, because the library's counter does:
+	// lease.Stats.SLAACFallbacks "counts the fallback that FORMED
+	// something: a deadline that passed with no usable prefix ends the
+	// acquisition and leaves this where it was".
+	//
+	// nil is the unit-test and probe shape.
+	OnV6Fallback func(uint64)
+
 	// PreferredV6, when non-empty, is the address this endpoint would
 	// like: RFC 9915 section 21.6's IA Address option inside the
 	// Solicit's IA_NA. A preference and not a claim -- section 18.3.2
@@ -260,6 +304,9 @@ type DHCPClientOptions struct {
 	// acdSeen is the last ACD counter snapshot handed to OnACDStats,
 	// which is what makes that callback a delta rather than a total.
 	acdSeen ACDStats
+
+	// fallbacksSeen is the same thing for OnV6Fallback.
+	fallbacksSeen uint64
 }
 
 // record writes one manager event, if this manager has a record.
@@ -374,6 +421,38 @@ func (o *DHCPClientOptions) acdReport(s lease.Stats) {
 		return
 	}
 	o.OnACDStats(delta)
+}
+
+// v6ModeReport hands the caller the Mode6Auto fallbacks the library has
+// counted since the last call.
+//
+// Called beside acdReport wherever a DHCPv6 client's statistics are
+// read: the persistent client's fold and its final defer, and the v6
+// one-shot acquisition. It is NOT beside acdReport's other two sites,
+// which are the DHCPv4 acquisition loop, where there is no Mode6 to
+// fall back in; a count of "the same places" would be wrong, and the
+// number is not the point.
+//
+// It is read on a timer's schedule and not only on a lease event, for
+// the reason acdReport is: the fallback is armed on a TIMER inside the
+// machine, so the Step that fires it need not be one that produces a
+// lease event this chassis would otherwise look at.
+func (o *DHCPClientOptions) v6ModeReport(s lease.Stats) {
+	if o.OnV6Fallback == nil {
+		return
+	}
+	// A GUARD IN ONE DIRECTION ONLY, and the other direction is named:
+	// this subtracts a remembered total from a later one, so it can
+	// only under-report if the library's counter ever went DOWN. It is
+	// monotonic per manager (lease.Stats is a running total), and a new
+	// manager starts a new DHCPClientOptions, so there is no path on
+	// which the remembered value belongs to a different counter.
+	if s.SLAACFallbacks <= o.fallbacksSeen {
+		return
+	}
+	delta := s.SLAACFallbacks - o.fallbacksSeen
+	o.fallbacksSeen = s.SLAACFallbacks
+	o.OnV6Fallback(delta)
 }
 
 // RAObservation is what this segment's router advertisements said, as
@@ -790,6 +869,7 @@ func (c *DHCPClient) translate() {
 	defer func() {
 		final := c.Stats()
 		c.opts.acdReport(final)
+		c.opts.v6ModeReport(final)
 		c.renewals.report(final, c.opts.OnRenewalStats)
 		c.opts.count(c.manager, final)
 	}()
@@ -845,6 +925,7 @@ func (c *DHCPClient) translate() {
 		// forget a request that left the host in between.
 		stats := c.Stats()
 		c.opts.acdReport(stats)
+		c.opts.v6ModeReport(stats)
 		c.renewals.report(stats, c.opts.OnRenewalStats)
 		c.renewals.cycleEnded(stats)
 		c.opts.conflict(ev)

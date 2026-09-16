@@ -59,6 +59,32 @@ const (
 	// carry on" rather than "the advertisement said no DHCPv6, carry
 	// on" passes every other mode in this file and fails only this one.
 	V6ManagedSilent
+	// V6ManagedExhausted is managed DHCPv6 whose server ANSWERS and has
+	// nothing to give: RAs carry the M flag, every Solicit is answered
+	// with an Advertise carrying RFC 9915 section 21.13's Status Code
+	// NoAddrsAvail, and no address is ever allocated.
+	//
+	// IT IS THE OTHER HALF OF #816. managed-silent and this mode end
+	// the same way for the container -- no DHCPv6 address, endpoint
+	// refused -- and they are two entirely different faults: there is
+	// no server on that segment, against there is a server whose pool
+	// has nothing for this client. A plugin that reports one number for
+	// both cannot tell an operator which one they have, which is the
+	// complaint #816 is.
+	//
+	// dnsmasq's spelling of it is a static-only range: a v6
+	// --dhcp-range whose second field is `static` carries
+	// CONTEXT_STATIC, and address_allocate skips every static context
+	// (dhcp6.c:497), so a client with no matching --dhcp-host gets
+	// nothing. MEASURED 2026-09-16 on the session box, dnsmasq 2.91,
+	// `unshare -Urn`, the library's own client on the peer end of a
+	// veth pair: "DHCPADVERTISE(s0) 00:03:... no addresses available",
+	// message-level "option: 13 status 2", and the client reporting
+	// Failed{reason=nak, status=2 NoAddrsAvail} on every Solicit. The
+	// advertisement on the wire carried Flags [managed, other
+	// stateful] and a prefix option with Flags [onlink] and no
+	// autonomous bit.
+	V6ManagedExhausted
 )
 
 // V6Modes is every mode, in declaration order. It exists so a table
@@ -66,7 +92,7 @@ const (
 // beside it: a mode added without a row here is a mode the drift
 // matrix silently stops covering.
 func V6Modes() []V6Mode {
-	return []V6Mode{V6Managed, V6Stateless, V6SLAAC, V6NoRA, V6ManagedSilent}
+	return []V6Mode{V6Managed, V6Stateless, V6SLAAC, V6NoRA, V6ManagedSilent, V6ManagedExhausted}
 }
 
 func (m V6Mode) String() string {
@@ -81,6 +107,8 @@ func (m V6Mode) String() string {
 		return "nora"
 	case V6ManagedSilent:
 		return "managed-silent"
+	case V6ManagedExhausted:
+		return "managed-exhausted"
 	}
 	return fmt.Sprintf("V6Mode(%d)", int(m))
 }
@@ -100,6 +128,7 @@ func (m V6Mode) String() string {
 //	slaac           no    yes  0  0  yes     /64    1800s
 //	nora            yes   no   -  -  -       -      -
 //	managed-silent  yes   yes  1  1  no      /120   1800s
+//	managed-exhausted no  yes  1  1  no      /64    1800s
 //
 // The wire half is derived from dnsmasq's own source and then measured,
 // which is why the two "to be measured" cells of the M7 design table
@@ -159,6 +188,16 @@ func (m V6Mode) Signature() V6Signature {
 		return V6Signature{Pool: false, RA: true, Managed: false, OtherConfig: false, AutoPrefix: true}
 	case V6NoRA:
 		return V6Signature{Pool: true, RA: false}
+	case V6ManagedExhausted:
+		// POOL IS FALSE AND THAT IS THE MODE, not an accident of which
+		// address the range names. A static-only range allocates
+		// nothing, so dnsmasq logs "static leases only on <addr>"
+		// where a pool would have been -- and the pool's start address
+		// never appears, because there is no pool. That one column is
+		// what separates this mode's signature from managed's and
+		// managed-silent's, which is why the drift matrix can tell it
+		// from both at fixture time and is exempted from neither.
+		return V6Signature{Pool: false, RA: true, Managed: true, OtherConfig: true, AutoPrefix: false}
 	}
 	return V6Signature{}
 }
@@ -904,6 +943,18 @@ var v6ExchangeContract = map[V6Mode]v6ExchangeRule{
 	V6ManagedSilent: {
 		mustLine: []string{"DHCPSOLICIT", "ignored"},
 		mustNot:  []string{"DHCPADVERTISE", "DHCPREPLY"},
+	},
+	V6ManagedExhausted: {
+		// THE REFUSAL ITSELF IS NOT A NEEDLE. dnsmasq's "no addresses
+		// available" is passed through gettext (rfc3315.c:809) and
+		// comes back as "keine Adressen verfügbar" under the locale
+		// this project's own runner speaks -- MEASURED 2026-09-16,
+		// same run as the mode's own capture. What is locale-proof is
+		// the message type: an Advertise the server sent and a Reply
+		// it never sent, because a client that is refused at the
+		// Advertise never Requests.
+		must:    []string{"DHCPSOLICIT", "DHCPADVERTISE"},
+		mustNot: []string{"DHCPREPLY"},
 	},
 }
 

@@ -65,6 +65,35 @@ const (
 	// segment, so it gets its own counter and a warning naming the
 	// interface rather than passing as an ordinary success.
 	v6NoRouter
+	// v6Refused: a DHCPv6 server ANSWERED this client and turned it
+	// down -- RFC 9915 section 21.13's Status Code option carrying
+	// something other than Success, "NoAddrsAvail" being the one an
+	// exhausted pool produces (#816).
+	//
+	// FATAL, like v6Fatal, AND COUNTED APART FROM IT. That is the whole
+	// of #816: both endings look like "no DHCPv6 address arrived", and
+	// what an operator has to do about them has nothing in common. A
+	// server that refuses is reachable, configured and out of addresses
+	// for this client; a server that says nothing is unreachable or
+	// gone. One counter for both meant the difference could not be seen
+	// on /metrics at all.
+	v6Refused
+	// v6SLAACNoPrefix: a router WAS heard, and in a mode that forms its
+	// own address it advertised no prefix this client could form one
+	// from -- no Prefix Information option with the Autonomous flag, or
+	// only ones RFC 4862 section 5.5.3 refuses.
+	//
+	// FATAL. `ipv6_mode=slaac` says the advertisement is where this
+	// network's addresses come from, so an advertisement that carries
+	// none is the failure of the only mechanism configured. It is its
+	// own verdict rather than v6Fatal's because the thing to go and fix
+	// is the router's prefix configuration and not a DHCPv6 server.
+	//
+	// It cannot arise on an `ipv6_mode=dhcp` network: the library
+	// reports this reason only while awaitingAddress, which is false in
+	// every mode that does not form addresses
+	// (proto/machine6_slaac.go:28).
+	v6SLAACNoPrefix
 )
 
 // classifyV6Absence turns what the acquisition observed about the
@@ -98,6 +127,17 @@ func classifyV6Absence(ra dhcp.RAObservation, cause error) v6Verdict {
 	if errors.Is(cause, dhcp.ErrNoV6Address) {
 		return v6NotOffered
 	}
+	// The two verdicts the WIRE settles, on the same rule and before
+	// the observation is read at all. A Status Code came from a server
+	// that answered and a refused prefix came from a router that
+	// advertised, so each is a stronger statement than any reading of
+	// the flags -- and each names a different thing to go and fix.
+	if _, refused := dhcp.V6RefusalStatus(cause); refused {
+		return v6Refused
+	}
+	if errors.Is(cause, dhcp.ErrNoSLAACPrefix) {
+		return v6SLAACNoPrefix
+	}
 	switch {
 	case !ra.Seen:
 		return v6NoRouter
@@ -118,6 +158,24 @@ func (p *Plugin) noteV6Absence(ra dhcp.RAObservation, iface, endpointID string, 
 	fields := log.Fields{"endpoint": shortID(endpointID), "iface": iface}
 
 	switch classifyV6Absence(ra, cause) {
+	case v6Refused:
+		// COUNTED AND LOGGED ON THE WAY TO FAILING. The endpoint still
+		// fails -- the caller turns this false into the error Docker
+		// shows -- and the counter and the code are what separate this
+		// ending from a silent one afterwards, on /metrics and in the
+		// log. The code's name is printed and nothing branches on it:
+		// what a status code means is the library's to decide.
+		p.dhcpv6Refused.Add(1)
+		status, _ := dhcp.V6RefusalStatus(cause)
+		log.WithFields(fields).WithField("status_code", status).WithError(cause).
+			Error("The DHCPv6 server refused this client; it answered and has no address for it")
+		return false
+	case v6SLAACNoPrefix:
+		p.dhcpv6SLAACNoPrefix.Add(1)
+		log.WithFields(fields).WithError(cause).
+			Error("A router advertises on this segment and none of its prefixes formed an address; " +
+				"this network's ipv6_mode takes its addresses from the advertisement")
+		return false
 	case v6NotOffered:
 		p.dhcpv6NotOffered.Add(1)
 		log.WithFields(fields).
@@ -129,6 +187,12 @@ func (p *Plugin) noteV6Absence(ra dhcp.RAObservation, iface, endpointID string, 
 			Warn("No IPv6 router advertisement on this segment; creating the endpoint without a DHCPv6 address")
 		return true
 	default:
+		// v6Fatal: the segment advertised M=1 and nothing usable came
+		// back inside the budget. The message stays the caller's, word
+		// for word, because it is the one that shipped and the one
+		// #868's tolerance is measured against; what is added here is
+		// the counter that makes it a different row from a refusal.
+		p.dhcpv6NoServer.Add(1)
 		return false
 	}
 }

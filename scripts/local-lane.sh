@@ -73,7 +73,13 @@ LANE=(
   "build|go|go build ./..."
   "vet|go|go vet ./..."
   "format|gofmt|test -z \"\$(gofmt -l .)\" || { echo 'gofmt -l found unformatted files:'; gofmt -l .; false; }"
-  "staticcheck|staticcheck|staticcheck ./..."
+  "staticcheck (default view)|staticcheck|staticcheck ./..."
+  # THE SECOND VIEW IS NOT A DUPLICATE (#871). `staticcheck ./...`
+  # never compiles the integration-tagged files, so it never parses
+  # them, and test.yaml runs both views as one required check. The
+  # lane ran only the first, so an S1038 in test/integration/ passed
+  # locally and failed on the pull request -- MEASURED on PR #989.
+  "staticcheck (integration view)|staticcheck|staticcheck -tags integration ./..."
   "shellcheck (scripts+runner+netboot)|shellcheck|shellcheck -S warning scripts/*.sh ci/runner-image/*.sh test/arm64-netboot/*.sh"
   "actionlint|actionlint|actionlint"
   "option-docs drift|-|bash scripts/check-option-docs.sh"

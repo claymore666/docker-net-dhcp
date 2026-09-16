@@ -1053,6 +1053,33 @@ type HealthResponse struct {
 	// Kept apart from DHCPv6NotOffered because "no DHCPv6 here" and
 	// "nothing said anything" call for different operator action.
 	DHCPv6NoRouterAdvert int32 `json:"dhcpv6_no_router_advert"`
+	// DHCPv6Refused counts endpoints that FAILED because a DHCPv6
+	// server answered and refused the client -- RFC 9915 §21.13's
+	// Status Code option carrying something other than Success (#816).
+	// NOT healthy-affecting: the endpoint's failure is reported to
+	// Docker, and the segment's DHCPv6 pool is not this plugin's
+	// health. Read it against dhcpv6_no_server: a refusal means a
+	// reachable server with no address for this client, a silence
+	// means no server answered at all.
+	DHCPv6Refused int32 `json:"dhcpv6_refused"`
+	// DHCPv6NoServer counts endpoints that FAILED because the segment
+	// advertised the managed flag and no DHCPv6 server answered inside
+	// the acquisition budget (#816). NOT healthy-affecting, for the
+	// same reason as the row above.
+	DHCPv6NoServer int32 `json:"dhcpv6_no_server"`
+	// DHCPv6SLAACNoPrefix counts endpoints that FAILED on a network
+	// whose `ipv6_mode` forms its own address, because a router
+	// advertised and none of its prefixes could form one (RFC 4862
+	// §5.5.3) (#816, #817). NOT healthy-affecting: the prefixes are the
+	// router's.
+	DHCPv6SLAACNoPrefix int32 `json:"dhcpv6_slaac_no_prefix"`
+	// DHCPv6AutoFallbacks counts endpoints on an `ipv6_mode=auto`
+	// network whose address was formed from a router's advertised
+	// prefix after the segment advertised DHCPv6 and no server answered
+	// (#817). NOT healthy-affecting: the endpoint has an address and
+	// the segment is the thing to look at. It counts addresses that
+	// really formed, never fallbacks attempted.
+	DHCPv6AutoFallbacks int32 `json:"dhcpv6_auto_fallbacks"`
 	// IPv6LinkEnableFailures counts container links IPv6 could not be
 	// enabled on before a DHCPv6 client was started. Distinguishes a
 	// quiet segment from one the plugin could never have heard.
@@ -1312,6 +1339,10 @@ func (p *Plugin) healthSnapshot() HealthResponse {
 		DHCPv6ConfigOnly:             p.dhcpv6ConfigOnly.Load(),
 		DHCPv6NotOffered:             p.dhcpv6NotOffered.Load(),
 		DHCPv6NoRouterAdvert:         p.dhcpv6NoRouterAdvert.Load(),
+		DHCPv6Refused:                p.dhcpv6Refused.Load(),
+		DHCPv6NoServer:               p.dhcpv6NoServer.Load(),
+		DHCPv6SLAACNoPrefix:          p.dhcpv6SLAACNoPrefix.Load(),
+		DHCPv6AutoFallbacks:          p.dhcpv6AutoFallbacks.Load(),
 		IPv6LinkEnableFailures:       p.ipv6LinkEnableFailures.Load(),
 		RouterAdvertGuardFailures:    p.routerAdvertGuardFailures.Load(),
 		Version:                      buildinfo.Version,

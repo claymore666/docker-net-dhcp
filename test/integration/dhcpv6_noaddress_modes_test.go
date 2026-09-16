@@ -27,11 +27,29 @@ import (
 // id so callers that expect a running container can look inside it.
 func startOnV6Segment(t *testing.T, ctx context.Context, cli *docker.Client, f *harness.V6Fixture, netName string) (string, error) {
 	t.Helper()
-	harness.CreateNetwork(t, ctx, netName, "bridge", map[string]string{
+	return startOnV6SegmentWithOpts(t, ctx, cli, f, netName, nil)
+}
+
+// startOnV6SegmentWithOpts is startOnV6Segment with extra driver
+// options, which #817's arms need: they create the network with
+// `ipv6_mode` instead of `ipv6` and have to reach the same segment.
+// Anything passed here REPLACES the default of the same name, so an
+// arm can state `ipv6_mode=dhcp` and nothing else about IPv6.
+func startOnV6SegmentWithOpts(t *testing.T, ctx context.Context, cli *docker.Client, f *harness.V6Fixture, netName string, extra map[string]string) (string, error) {
+	t.Helper()
+	opts := map[string]string{
 		"bridge":        f.Bridge(),
 		"ipv6":          "true",
 		"propagate_dns": "true",
-	})
+	}
+	for k, v := range extra {
+		if v == "" {
+			delete(opts, k)
+			continue
+		}
+		opts[k] = v
+	}
+	harness.CreateNetwork(t, ctx, netName, "bridge", opts)
 	ctrName := netName + "-ctr"
 	create, err := cli.ContainerCreate(ctx,
 		&container.Config{Image: harness.TestImage, Cmd: []string{"sleep", "infinity"}, Hostname: ctrName},

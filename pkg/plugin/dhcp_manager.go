@@ -1383,7 +1383,6 @@ func (m *dhcpManager) setupClient(v6 bool) (chan error, error) {
 		// Docker was told about (#152).
 		MAC:         m.ctrLink.Attrs().HardwareAddr,
 		RequestedIP: requestedIP,
-		PreferredV6: preferredV6,
 		// The record's unexpired lease, which makes the first packet an
 		// INIT-REBOOT rather than a DISCOVER. nil is the ordinary
 		// CreateEndpoint -> Join path having found nothing to resume.
@@ -1403,14 +1402,24 @@ func (m *dhcpManager) setupClient(v6 bool) (chan error, error) {
 		// in hand (#371). Honours the operator's client_id override.
 		ClientID:    m.clientID(),
 		VendorClass: m.opts.VendorClass,
-		// The DHCPv6 halves. Identity6 is empty for a v4 client and
-		// buildParams6 is the only thing that reads it;
 		// HonorRouterAdverts is REQUIRED on a persistent v6 client and
 		// refused on every other shape, which is what makes "the v6
 		// endpoint's kernel is processing Router Advertisements" a
 		// precondition the client cannot start without (#875, D30 Q3).
-		Identity6:          identity6,
+		// The rest of the v6 halves -- identity, record, preferred
+		// address and mode -- arrive together just below.
 		HonorRouterAdverts: v6,
+	}
+	if v6 {
+		// The third and last client this plugin starts. The manager
+		// already holds the v6 record id in recordID, so this call
+		// re-states it rather than changing it; what it adds is the
+		// mode, which the persistent client needs for the same reason
+		// the one-shots do -- a renewal or a rebind runs the machine
+		// the mode selected, not the one its zero value names.
+		if err := m.plugin.v6Wiring(&clientOpts, m.opts, identity6, recordID, preferredV6, m.joinReq.EndpointID); err != nil {
+			return nil, err
+		}
 	}
 	if err := m.plugin.conflictWiring(&clientOpts, m.opts, roleJoin, m.joinReq.NetworkID, m.joinReq.EndpointID, v6); err != nil {
 		return nil, err
@@ -1921,7 +1930,7 @@ func (m *dhcpManager) Start(ctx context.Context) (err error) {
 			return err
 		}
 
-		if m.opts.IPv6 {
+		if m.opts.ipv6Enabled() {
 			// The engine disables IPv6 outright on a sandbox interface
 			// whose endpoint carries no IPv6 address, which is now a
 			// reachable state (#868). Clear that BEFORE the link-local
@@ -2121,7 +2130,7 @@ func (m *dhcpManager) stop(leaving bool) error {
 	lastIP, lastIPv6 := m.lastIPs()
 	errV4 := <-m.errChan
 	var errV6 error
-	if m.opts.IPv6 {
+	if m.opts.ipv6Enabled() {
 		errV6 = <-m.errChanV6
 	}
 
@@ -2159,7 +2168,7 @@ func (m *dhcpManager) stop(leaving bool) error {
 	// reclaim covers whichever of them is owed.
 	neverBoundV4 := m.settleFamily(false, lastIP, errV4, leaving)
 	neverBoundV6 := false
-	if m.opts.IPv6 {
+	if m.opts.ipv6Enabled() {
 		neverBoundV6 = m.settleFamily(true, lastIPv6, errV6, leaving)
 	}
 	if neverBoundV4 || neverBoundV6 {

@@ -491,7 +491,7 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, callStart tim
 		// resolveIdentity6 matters: an ipvlan slave inherits the
 		// parent's MAC, so the MAC-derived DUID would be identical for
 		// every container on the network (#895).
-		if opts.IPv6 {
+		if opts.ipv6Enabled() {
 			id6, err := resolveIdentity6(opts, r.EndpointID, mac)
 			if err != nil {
 				return err
@@ -534,8 +534,15 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, callStart tim
 				RecordID: recordID,
 			}
 			if v6 {
-				base.Identity6 = identity6
-				base.RecordID = recordID6
+				// The v6 record, the v6 identity and the network's
+				// ipv6_mode, set together. This is the second copy of
+				// the attach path and the reason v6Wiring exists: the
+				// mode's zero value is a working client, so a copy
+				// that set two of the three would be silently `dhcp`
+				// on every macvlan network.
+				if err := p.v6Wiring(&base, opts, identity6, recordID6, requestedV6, r.EndpointID); err != nil {
+					return err
+				}
 			}
 			// Conflict detection, from the network's stored
 			// conflict_check (D23). Set on the BASE, so every attempt
@@ -543,9 +550,7 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, callStart tim
 			if err := p.conflictWiring(&base, opts, roleAcquire, r.NetworkID, r.EndpointID, v6); err != nil {
 				return err
 			}
-			if v6 {
-				base.PreferredV6 = requestedV6
-			} else {
+			if !v6 {
 				base.RequestedIP = requestedIP
 			}
 
@@ -603,7 +608,7 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, callStart tim
 		if err := runDHCP(false); err != nil {
 			return err
 		}
-		if opts.IPv6 {
+		if opts.ipv6Enabled() {
 			if err := runDHCP(true); err != nil {
 				return err
 			}

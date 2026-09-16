@@ -11,6 +11,88 @@ forks that have been waiting on review.
 
 [upstream]: https://github.com/devplayer0/docker-net-dhcp
 
+## v2.2.0
+
+A network now says where its IPv6 address comes from. `ipv6_mode` takes
+`off` (the default), `dhcp`, `slaac` and `auto`, and `-o ipv6=true` is
+the short spelling of `ipv6_mode=dhcp`, unchanged in meaning. A DHCPv6
+acquisition that produces no address is also reported by what actually
+happened: a server that answered and refused the client, a server that
+never answered, and a router whose prefixes formed nothing are three
+counters and three messages instead of one.
+
+### Upgrade notes
+
+Required on every host before `docker plugin install`, unchanged since v1.5.0:
+
+```bash
+sudo mkdir -p /var/lib/net-dhcp
+```
+
+**The privilege prompt does not change.** No field `docker plugin upgrade`
+prompts on has moved since v2.0.0.
+
+| What changed | What it does to you |
+| --- | --- |
+| `ipv6_mode` is a new network option, default `off` | Nothing, until a network sets it. An existing network, with or without `ipv6=true`, behaves as it did in v2.1.1. |
+| `ipv6=true` is now `ipv6_mode=dhcp` | Nothing. It is the same behaviour under a name that has three siblings. |
+| `ipv6=true` with `ipv6_mode=off`, and `ipv6=false` written out beside a mode that switches IPv6 on, are refused at `docker network create` | A create naming either pair fails with the reason in the message. State it once: `ipv6_mode` alone switches IPv6 on. |
+| `ipv6_mode=slaac` and `ipv6_mode=auto` are refused in `mode=ipvlan` | Use `ipv6_mode=dhcp` there. ipvlan slaves share the parent link's MAC, so every container would form the same address from an advertised prefix. |
+| `ipv6_auto_strict` is a new network option, default `false` | Nothing, until an `ipv6_mode=auto` network sets it. It decides what `auto` does when the router advertises DHCPv6 and no server answers. |
+| Four counters are new on `/Plugin.Health` and `/metrics` | `dhcpv6_refused`, `dhcpv6_no_server`, `dhcpv6_slaac_no_prefix` and `dhcpv6_auto_fallbacks`. None of them flips `healthy`. |
+| A DHCPv6 endpoint that fails because the server refused it logs a different sentence | The message names the status code the server sent, such as NoAddrsAvail for an exhausted pool or NotOnLink for an address outside the range it serves (RFC 9915 section 21.13's registry, not a name in this repository). The ending where nothing answered keeps the sentence it had. |
+| `dhcp_servers` and `dhcp_deny_servers` are unchanged | They are DHCPv4-only and keep applying in every `ipv6_mode`. |
+| An option written with no value is read as unset | `-o lease_timeout=`, and `driver_opts: {lease_timeout: "${VAR}"}` with `VAR` unset, now take the default instead of failing the create with `invalid duration`. Every other option already behaved this way. |
+
+### New
+
+- `ipv6_mode`, a per-network option with values `off` (default),
+  `dhcp`, `slaac` and `auto`. `dhcp` is what `ipv6=true` has always
+  meant. `slaac` takes the address from a router advertisement's
+  autonomous prefix and sends no Solicit. `auto` reads the
+  advertisement's managed-address flag and does what it says (RFC 4861
+  section 4.2). The option switches IPv6 on by itself, so a network
+  states its IPv6 configuration once, and the value reaches the DHCPv6
+  client on every path that starts one, including the one the plugin
+  starts again after a restart (#817).
+- `ipv6_auto_strict`, a per-network option, default `false`. In
+  `ipv6_mode=auto` on a link whose router advertises DHCPv6 and whose
+  server stays silent, the default forms an address from the advertised
+  prefix after half the router-discovery window, counts it in
+  `dhcpv6_auto_fallbacks` and logs a line naming the fallback.
+  `ipv6_auto_strict=true` fails the endpoint instead, which is what a
+  segment wants when the DHCPv6 address is the one its firewall rules
+  name (#817).
+- `dhcpv6_refused`, `dhcpv6_no_server` and `dhcpv6_slaac_no_prefix`,
+  three counters for three endings that used to be one. A server that
+  answers and refuses the client carries a Status Code option (RFC 9915
+  section 21.13) and the plugin now reports the code's name in the log
+  line and counts it apart from a server that never answered. A router
+  that advertises and offers no prefix an address can be formed from
+  (RFC 4862 section 5.5.3) is its own row again (#816).
+- `dhcpv6_auto_fallbacks`, the number of endpoints whose address was
+  formed from an advertised prefix because `ipv6_mode=auto` fell back.
+  It counts addresses that formed, never fallbacks attempted (#817).
+
+### Not in this release
+
+- **`slaac` and `auto` do not give a container an address yet.** The mode
+  reaches the DHCP client, and the client can form an address from an
+  advertised prefix, but the plugin still concludes the IPv6 half of
+  `docker run` as soon as a router advertisement carries neither the
+  managed nor the other-configuration flag. That is #868's fix for
+  containers hanging on stateless networks, it does not read
+  `ipv6_mode`, and it fires on the ordinary SLAAC segment, which is the
+  one `slaac` is for. So on such a segment the endpoint starts with no
+  address from the plugin, as it does today with `ipv6=true`, and any
+  global IPv6 the container has is the kernel's own autoconfiguration.
+  #818 installs the formed address, #819 gives it lifetimes and
+  renumbering, and #808 is the request all three answer. In this release
+  `slaac` and `auto` state the network's intent and report what the
+  segment did.
+- `release_lease=on_remove`, deferred from v2.1.1, is still refused at
+  `docker network create` with the reason in the message (#984).
+
 ## v2.1.1
 
 A network can now ask for its DHCP leases back. `release_lease=on_stop`
