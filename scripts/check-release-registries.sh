@@ -31,6 +31,19 @@
 # that they are present. An expired token that is still set reads as
 # present here and fails at the push, which is the right place for it.
 #
+# SINCE #972 DOCKER HUB IS TWO NAMES, and this check is unchanged by
+# that on purpose. It enumerates CREDENTIALS, not repositories: one
+# username and one token reach both `net-dhcp` and its alias, both
+# pushes are gated on the same HAS_HUB_CREDS expression, and there is
+# no third secret to be absent. What this cannot see is a token whose
+# SCOPE covers one of the two repositories, or an alias repository that
+# was never created -- both of which are present-and-set here and fail
+# at the copy step, which is again the right place, and both of which
+# the runbook's Hub prerequisite now provisions for explicitly. The
+# names themselves are held to one binding by
+# scripts/check-registry-name-list.sh; naming them here as well would be
+# a second derivation of one fact, and the looser one would decide.
+#
 # Inputs, all via the environment so the workflow passes them explicitly
 # rather than this reaching for the GitHub context:
 #
@@ -64,12 +77,12 @@ case "$HAS_HUB_CREDS" in
 esac
 
 if [ "$HAS_HUB_CREDS" = "true" ]; then
-    echo "Docker Hub credentials present; the release publishes to both registries."
+    echo "Docker Hub credentials present; the release publishes to both registries, under both Docker Hub names."
     exit 0
 fi
 
 if [ "$REPO" = "$CANONICAL_REPO" ]; then
-    echo "::error::Docker Hub credentials are missing on ${REPO}. A release from this repository must reach BOTH registries: publishing to GHCR alone leaves every user who installs from Docker Hub on the previous version, and a green run is indistinguishable from a complete one. Set DOCKERHUB_USERNAME and DOCKERHUB_TOKEN, or -- if the Hub repository is being retired deliberately -- remove the Hub push and this check together, in one change that says so."
+    echo "::error::Docker Hub credentials are missing on ${REPO}. A release from this repository must reach BOTH registries, and on Docker Hub both published names: publishing to GHCR alone leaves every user who installs from Docker Hub on the previous version, and a green run is indistinguishable from a complete one. Set DOCKERHUB_USERNAME and DOCKERHUB_TOKEN, or -- if the Hub repository is being retired deliberately -- remove the Hub push and this check together, in one change that says so."
     exit 1
 fi
 
