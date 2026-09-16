@@ -1454,32 +1454,42 @@ Dispatch
 on the release branch and read the <code>floor</code> job:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>gh<span class="w"> </span>workflow<span class="w"> </span>run<span class="w"> </span>engine-matrix.yml<span class="w"> </span>--ref<span class="w"> </span>release/vX.Y.Z
 </code></pre></div>
-<p><strong>That dispatch answers 404 until the workflow is on the default
-branch.</strong> GitHub exposes <code>workflow_dispatch</code> and <code>schedule</code> from the
-default branch only, and the lane is new on <code>dev</code>, so for the v2.1.0
-release itself neither route exists yet:
-<a href="https://github.com/claymore666/docker-net-dhcp/blob/main/.github/dispatch-pending.txt"><code>.github/dispatch-pending.txt</code></a>
-carries the entry and the release PR removes it. Until then the lane
-runs on its <code>push</code> trigger, over
+<p><strong>A <code>workflow_dispatch</code> answers 404 until the workflow is on the
+default branch.</strong> GitHub exposes <code>workflow_dispatch</code> and <code>schedule</code>
+from the default branch only. The lane was new on <code>dev</code> for v2.1.0, so
+neither route existed for that release; v2.1.0 carried the workflow to
+<code>main</code> and dropped its entry from
+<a href="https://github.com/claymore666/docker-net-dhcp/blob/main/.github/dispatch-pending.txt"><code>.github/dispatch-pending.txt</code></a>,
+and the dispatch above works from v2.1.1 onward. Confirm before
+relying on it: an entry naming this workflow means the route is not
+there yet. <strong>An empty file does not prove the opposite during a
+release.</strong> Since #977 the entry is pruned on the release branch at
+step 2 and reaches <code>main</code> only with the release pull request, so while
+this tree pins a later version than <code>main</code> the file is already silent
+about a workflow that has not landed. Whether
+<code>.github/workflows/engine-matrix.yml</code> is on <code>main</code> is the direct
+answer.</p>
+<p>The lane also runs on its own <code>push</code> trigger, over
 <code>.github/workflows/engine-matrix.yml</code>,
 <code>.github/engine-rows.txt</code>,
 <code>scripts/engine-baseline.sh</code>,
 <code>scripts/engine-floor.sh</code>
 and
-<code>pkg/plugin/engine_floor.go</code>,
-so the pre-flight for v2.1.0 is the run at the head of one of those
-paths. Read that run instead, and take the dispatch route from v2.2.0.</p>
+<code>pkg/plugin/engine_floor.go</code>.
+That run is the measurement for any tree in which none of those paths
+has changed since, which is the ordinary case for a patch release: read
+it and dispatch nothing.</p>
 <p>One job per engine line in
 <code>.github/engine-rows.txt</code>,
 each driving the whole baseline against that engine in a nested daemon.
 The <code>floor</code> job reconciles the minimum the plugin refuses below against
 the lowest line that passed. A red <code>floor</code> job blocks the rc: the
 number it disagrees with is published in <code>README.md</code> and
-<code>docs/index.md</code>, and the plugin refuses to start below it. The lane also
-runs weekly once it is on the default branch, so from v2.2.0 a moving
-<code>29</code> tag is usually caught before a release asks the question. Read the
-run and never the schedule: a release is the moment the published number
-has to be true.</p>
+<code>docs/index.md</code>, and the plugin refuses to start below it. The lane
+runs weekly now that it is on the default branch, so a moving <code>29</code> tag
+is usually caught before a release asks the question. Read the run and
+never the schedule: a release is the moment the published number has to
+be true.</p>
 <ol>
 <li><strong>Branch off <code>dev</code>:</strong> <code>git checkout -b release/vX.Y.Z origin/dev</code></li>
 <li><strong>Bump install pins:</strong> <code>scripts/bump-version.sh vX.Y.Z</code> (#251). It

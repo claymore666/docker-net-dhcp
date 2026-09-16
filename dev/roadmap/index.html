@@ -1160,7 +1160,7 @@ server's configuration was received and discarded (<a href="https://github.com/c
 managed segment the leased address stopped being refreshed and its
 default route disappeared (<a href="https://github.com/claymore666/docker-net-dhcp/issues/875">#875</a>). The same release stops the plugin
 sending DHCPRELEASE on any path: an address is held until the lease
-expires, like any other host's (<a href="https://github.com/claymore666/docker-net-dhcp/issues/800">#800</a>). v2.2.0 puts that back under
+expires, like any other host's (<a href="https://github.com/claymore666/docker-net-dhcp/issues/800">#800</a>). v2.1.1 puts that back under
 the operator's control with <code>release_lease</code>, per network and off by
 default (<a href="https://github.com/claymore666/docker-net-dhcp/issues/962">#962</a>).</p>
 <p>v1.8.0 carried the first human review of the design and its trust
@@ -1206,6 +1206,18 @@ the documentation site a required check, so a broken navigation cannot
 merge green. <a href="https://github.com/claymore666/docker-net-dhcp/issues/942">#942</a> takes the hosted cross-check green in the three
 families it ran red in. <a href="https://github.com/claymore666/docker-net-dhcp/issues/963">#963</a> stops a gate self-test from building its
 fixture inside the checkout when its temporary directory is missing.</p>
+<p><strong><a href="https://github.com/claymore666/docker-net-dhcp/milestone/32">v2.1.1</a></strong>
+is a patch release with one user-visible feature. <a href="https://github.com/claymore666/docker-net-dhcp/issues/962">#962</a> adds
+<code>release_lease</code>, a per-network option, off by default, that hands the
+lease back when an endpoint leaves its sandbox; <code>never</code> keeps the v1.9.0
+behaviour and is what every network created before this release reads
+as. <a href="https://github.com/claymore666/docker-net-dhcp/issues/979">#979</a> gives the Go module path its <code>/v2</code> suffix, which the module
+proxy has required since 2.0 and without which every 2.x tag was
+unpublished and <code>go get</code> answered with v1.9.0. The release also carries
+a workflow action bump (<a href="https://github.com/claymore666/docker-net-dhcp/pull/975">#975</a>), the DHCP library's first tagged
+version, v1.0.0, and the Docker Hub alias publish (<a href="https://github.com/claymore666/docker-net-dhcp/issues/972">#972</a>): from this
+release the workflow puts the plugin on Hub under
+<code>claymore666/docker-net-dhcp</code> as well as <code>claymore666/net-dhcp</code>.</p>
 <p><strong><a href="https://github.com/claymore666/docker-net-dhcp/milestone/29">v2.2.0</a></strong>
 is mostly IPv6. <a href="https://github.com/claymore666/docker-net-dhcp/issues/818">#818</a> and <a href="https://github.com/claymore666/docker-net-dhcp/issues/808">#808</a> acquire an address by SLAAC, <a href="https://github.com/claymore666/docker-net-dhcp/issues/821">#821</a>
 takes the gateway, DNS, MTU and routes from the advertisement, <a href="https://github.com/claymore666/docker-net-dhcp/issues/819">#819</a>
@@ -1213,16 +1225,18 @@ handles lifetimes, withdrawal and renumbering, <a href="https://github.com/claym
 <code>ipv6_mode</code> option, <a href="https://github.com/claymore666/docker-net-dhcp/issues/814">#814</a> parses Router Advertisements into a
 first-class event, <a href="https://github.com/claymore666/docker-net-dhcp/issues/925">#925</a> accepts a server-initiated Reconfigure, and
 <a href="https://github.com/claymore666/docker-net-dhcp/issues/816">#816</a> stops a v6 acquisition reporting a lease timeout where no
-exchange was possible. <a href="https://github.com/claymore666/docker-net-dhcp/issues/960">#960</a> gives the IPAM shape a DHCPv6 exchange and
-a stable v6 identity, which v2.1.0 refuses. Two on the milestone are not
-IPv6: <a href="https://github.com/claymore666/docker-net-dhcp/issues/961">#961</a> takes the container hostname to a running client so the
-attach needs no daemon call at all, and <a href="https://github.com/claymore666/docker-net-dhcp/issues/962">#962</a> adds a network option
-that sends DHCPRELEASE when an endpoint is removed or stopped.</p>
+exchange was possible. The milestone also carries work that is not
+IPv6: <a href="https://github.com/claymore666/docker-net-dhcp/issues/961">#961</a> takes the container hostname to a running client, so the
+attach needs no daemon call at all, and <a href="https://github.com/claymore666/docker-net-dhcp/issues/984">#984</a> adds
+<code>release_lease=on_remove</code>, the timed release that v2.1.1 refuses. The
+milestone link above is the list that decides what is on it.</p>
 <p><strong><a href="https://github.com/claymore666/docker-net-dhcp/milestone/31">v2.3.0</a></strong>
 is the host plumbing an operator does by hand today: <a href="https://github.com/claymore666/docker-net-dhcp/issues/902">#902</a> VLAN
 sub-interfaces, <a href="https://github.com/claymore666/docker-net-dhcp/issues/903">#903</a> a bridge the plugin creates and owns, <a href="https://github.com/claymore666/docker-net-dhcp/issues/904">#904</a>
 link-local fallback where no server answers, <a href="https://github.com/claymore666/docker-net-dhcp/issues/905">#905</a> macvlan and ipvlan
-sub-modes. <a href="https://github.com/claymore666/docker-net-dhcp/issues/903">#903</a> sits inside the rule below that the plugin does not
+sub-modes. It also carries <a href="https://github.com/claymore666/docker-net-dhcp/issues/960">#960</a>, which gives the IPAM shape a DHCPv6
+exchange and a stable v6 identity, both of which v2.1.0 refuses.
+<a href="https://github.com/claymore666/docker-net-dhcp/issues/903">#903</a> sits inside the rule below that the plugin does not
 change interfaces the host already has: the bridge is one the plugin
 creates for its own networks and owns for as long as they exist, and no
 interface the host configured is touched.</p>
