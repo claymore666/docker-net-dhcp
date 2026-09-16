@@ -1082,6 +1082,31 @@ func (m *dhcpManager) propagateMTU(v6 bool, info dhcp.Info) {
 		return
 	}
 
+	// SILENCE IS NOT A WITHDRAWAL, and on IPv6 the two look identical
+	// in Info.MTU alone.
+	//
+	// RFC 9915 section 18.2.1's Solicit goes out WITHOUT waiting for
+	// router discovery, so a DHCPv6 lease event can be stamped before
+	// the first advertisement arrives on a link that does have a
+	// router; the library documents its own field that way, "the zero
+	// value means it had seen none WHEN THIS EVENT WAS STAMPED". The
+	// first bound event, which is the one that brings the MTU, is
+	// exactly the one that can be stamped that early.
+	//
+	// Without this the zero from such an event reaches rememberMTU as a
+	// withdrawal: the v6 vote is dropped, wantedMTU falls back to the
+	// v4 number, the link moves, the next event carries the
+	// advertisement and the link moves back. That is the flip the
+	// smaller-of-two rule below exists to prevent, arriving through the
+	// withdrawal path instead of through last-writer-wins.
+	//
+	// A router that HAS spoken and carried no MTU option sets
+	// RouterSeen with MTU 0, and that one is a withdrawal and is acted
+	// on.
+	if v6 && !info.RouterSeen {
+		return
+	}
+
 	// A ZERO IS A WITHDRAWAL AND NOT "NOTHING TO DO". This used to
 	// return here, which meant a family that STOPPED supplying an MTU
 	// kept its last vote for the life of the endpoint: a router that

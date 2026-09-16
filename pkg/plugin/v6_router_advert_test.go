@@ -382,7 +382,11 @@ func TestPropagateMTU_V6IsNotGatedOnTheOption(t *testing.T) {
 			// MTU, and mtuRefused is the observable that says it got
 			// past the gate. 68 is inside option 26's legal range and
 			// outside the range this plugin will apply (#702).
-			m.propagateMTU(tc.v6, dhcp.Info{MTU: 68})
+			//
+			// RouterSeen follows the family because it is not free to
+			// choose: on v6 an MTU can only have come from an
+			// advertisement, and a v4 client never sees one.
+			m.propagateMTU(tc.v6, dhcp.Info{RouterSeen: tc.v6, MTU: 68})
 			got := p.mtuRefused.Load() == 1
 			if got != tc.expect {
 				t.Errorf("reached the MTU decision = %v, want %v", got, tc.expect)
@@ -795,7 +799,7 @@ func TestPropagateMTU_TheTwoFamiliesDoNotFightOverTheLink(t *testing.T) {
 	if got := link.Attrs().MTU; got != 9000 {
 		t.Fatalf("link MTU = %d after the v4 option alone, want 9000", got)
 	}
-	m.propagateMTU(true, dhcp.Info{MTU: 1400})
+	m.propagateMTU(true, dhcp.Info{RouterSeen: true, MTU: 1400})
 	if got := link.Attrs().MTU; got != 1400 {
 		t.Fatalf("link MTU = %d, want the smaller of the two: 9000 is a promise the link "+
 			"cannot keep for the family that asked for 1400", got)
@@ -816,7 +820,7 @@ func TestPropagateMTU_TheTwoFamiliesDoNotFightOverTheLink(t *testing.T) {
 
 	// A family that stops supplying one does not keep voting: the v6
 	// half going to zero leaves the v4 number.
-	m.propagateMTU(true, dhcp.Info{MTU: 1500})
+	m.propagateMTU(true, dhcp.Info{RouterSeen: true, MTU: 1500})
 	if got := link.Attrs().MTU; got != 1500 {
 		t.Errorf("link MTU = %d after the advertisement raised its own value, want 1500", got)
 	}
@@ -887,11 +891,11 @@ func TestPropagateMTU_AWithdrawnMTUStopsVoting(t *testing.T) {
 	t.Run("the other family's value takes over", func(t *testing.T) {
 		m, link := newManager(t)
 		m.propagateMTU(false, dhcp.Info{MTU: 9000})
-		m.propagateMTU(true, dhcp.Info{MTU: 1400})
+		m.propagateMTU(true, dhcp.Info{RouterSeen: true, MTU: 1400})
 		if got := link.Attrs().MTU; got != 1400 {
 			t.Fatalf("link MTU = %d before the withdrawal, want the smaller of the two", got)
 		}
-		m.propagateMTU(true, dhcp.Info{MTU: 0})
+		m.propagateMTU(true, dhcp.Info{RouterSeen: true, MTU: 0})
 		if got := link.Attrs().MTU; got != 9000 {
 			t.Errorf("link MTU = %d after the router dropped its MTU option, want the v4 "+
 				"value 9000. A withdrawn vote that is never cleared keeps the link "+
@@ -901,11 +905,11 @@ func TestPropagateMTU_AWithdrawnMTUStopsVoting(t *testing.T) {
 
 	t.Run("both silent: the link goes back to what Docker gave it", func(t *testing.T) {
 		m, link := newManager(t)
-		m.propagateMTU(true, dhcp.Info{MTU: 1400})
+		m.propagateMTU(true, dhcp.Info{RouterSeen: true, MTU: 1400})
 		if got := link.Attrs().MTU; got != 1400 {
 			t.Fatalf("link MTU = %d, want 1400", got)
 		}
-		m.propagateMTU(true, dhcp.Info{MTU: 0})
+		m.propagateMTU(true, dhcp.Info{RouterSeen: true, MTU: 0})
 		if got := link.Attrs().MTU; got != 1500 {
 			t.Errorf("link MTU = %d with nothing supplying one, want the 1500 the link "+
 				"had before this manager touched it", got)
@@ -918,8 +922,8 @@ func TestPropagateMTU_AWithdrawnMTUStopsVoting(t *testing.T) {
 	// stopped asking" clears it.
 	t.Run("a refused value is not a withdrawal", func(t *testing.T) {
 		m, link := newManager(t)
-		m.propagateMTU(true, dhcp.Info{MTU: 1400})
-		m.propagateMTU(true, dhcp.Info{MTU: 68})
+		m.propagateMTU(true, dhcp.Info{RouterSeen: true, MTU: 1400})
+		m.propagateMTU(true, dhcp.Info{RouterSeen: true, MTU: 68})
 		if got := link.Attrs().MTU; got != 1400 {
 			t.Errorf("link MTU = %d after a refused 68, want the last accepted 1400", got)
 		}
@@ -928,12 +932,54 @@ func TestPropagateMTU_AWithdrawnMTUStopsVoting(t *testing.T) {
 		}
 	})
 
+	// THE CONTROL THAT BOUNDS THE WITHDRAWAL, and the reason every v6
+	// fixture above carries RouterSeen: a zero from an event stamped
+	// BEFORE the first advertisement is silence, not a withdrawal.
+	//
+	// RFC 9915 section 18.2.1's Solicit goes out without waiting for
+	// router discovery, so the first bound event -- the one that
+	// carries the MTU -- can be stamped on a link whose router has not
+	// spoken yet, and the library documents its observation that way:
+	// "the zero value means it had seen none WHEN THIS EVENT WAS
+	// STAMPED". Treating that as a withdrawal drops the v6 vote, lets
+	// the v4 number take the link, and hands it back when the next
+	// event carries the advertisement -- the same flip the
+	// smaller-of-two rule exists to prevent, through the other door.
+	//
+	// The assertion is across BOTH transitions and not only the final
+	// value, because a test that reads the link once at the end passes
+	// on a link that flapped.
+	t.Run("an event stamped before the first advertisement does not withdraw", func(t *testing.T) {
+		m, link := newManager(t)
+		m.opts.PropagateMTU = true
+		m.propagateMTU(false, dhcp.Info{MTU: 9000})
+		m.propagateMTU(true, dhcp.Info{RouterSeen: true, MTU: 1400})
+		if got := link.Attrs().MTU; got != 1400 {
+			t.Fatalf("link MTU = %d, want the smaller 1400", got)
+		}
+
+		// The early-stamped event: no router seen yet, so no MTU.
+		m.propagateMTU(true, dhcp.Info{MTU: 0})
+		if got := link.Attrs().MTU; got != 1400 {
+			t.Errorf("link MTU = %d after an event stamped before the first "+
+				"advertisement, want the advertised 1400 still. The router had not "+
+				"spoken yet; it had not stopped speaking", got)
+		}
+
+		// And the genuine withdrawal still is one.
+		m.propagateMTU(true, dhcp.Info{RouterSeen: true, MTU: 0})
+		if got := link.Attrs().MTU; got != 9000 {
+			t.Errorf("link MTU = %d after the router advertised without an MTU option, "+
+				"want the v4 value 9000: that one IS a withdrawal", got)
+		}
+	})
+
 	// A family the operator switched off never votes, so it cannot
 	// withdraw the other family's value either.
 	t.Run("propagate_mtu off: the v4 half cannot withdraw the v6 value", func(t *testing.T) {
 		m, link := newManager(t)
 		m.opts.PropagateMTU = false
-		m.propagateMTU(true, dhcp.Info{MTU: 1400})
+		m.propagateMTU(true, dhcp.Info{RouterSeen: true, MTU: 1400})
 		m.propagateMTU(false, dhcp.Info{MTU: 0})
 		if got := link.Attrs().MTU; got != 1400 {
 			t.Errorf("link MTU = %d, want 1400: a family gated off by the operator has "+

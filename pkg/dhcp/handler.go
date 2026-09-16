@@ -98,6 +98,24 @@ type Info struct {
 	// Prefix Information option and the two are the same thing.
 	OnLinkPrefixes []string `json:",omitempty"`
 
+	// RouterSeen says whether a Router Advertisement had been seen on
+	// this link when this Info was built. v6 only; always false on a
+	// DHCPv4 path, whose client never looks.
+	//
+	// IT IS THE DIFFERENCE BETWEEN SILENCE AND A WITHDRAWAL, and only
+	// the MTU needs it so far. RFC 9915 section 18.2.1's Solicit goes
+	// out WITHOUT waiting for router discovery, so a lease event can be
+	// stamped before the first advertisement arrives on a link that
+	// does have a router -- the library says so of its own field, in as
+	// many words: "the zero value means it had seen none WHEN THIS
+	// EVENT WAS STAMPED". An MTU of 0 on such an event is the router
+	// not having spoken yet. An MTU of 0 with this flag set is the
+	// router having spoken and said nothing about the MTU, which IS a
+	// withdrawal. Folding the two makes the link MTU flip between the
+	// two families once per event, which is the thing propagateMTU's
+	// smaller-of-two rule exists to prevent.
+	RouterSeen bool `json:",omitempty"`
+
 	// LeaseSeconds is the lease lifetime the server granted, in seconds
 	// (v4 `new_dhcp_lease_time`; v6 the IA_NA valid lifetime
 	// `new_dhcp6_ia_na1_ia_addr1_vltime`). 0 when the server didn't

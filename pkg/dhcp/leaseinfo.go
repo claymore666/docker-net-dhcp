@@ -96,6 +96,7 @@ func infoFromLease(l lease.Lease, r proto.RouterObservation, now time.Time) (Inf
 	// never looks at a router advertisement and whose observation is
 	// therefore the zero value; and placed after the lease's own value
 	// so a server that did send option 26 still wins on its own family.
+	info.RouterSeen = r.Seen
 	if info.MTU == 0 && r.Seen {
 		info.MTU = int(r.MTU)
 	}

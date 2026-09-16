@@ -327,6 +327,27 @@ func TestInfoFromLease_TheAdvertisedMTUIsTheOnlyMTUIPv6Has(t *testing.T) {
 				"its own, so a zero here is the container keeping the link MTU Docker "+
 				"gave it while the segment asks for another", got.MTU)
 		}
+		if !got.RouterSeen {
+			t.Error("RouterSeen is false on an event that carried an advertisement; " +
+				"the plugin cannot then tell a router that went quiet about its MTU " +
+				"from one that has not spoken yet")
+		}
+	})
+
+	// THE DISTINCTION THE WITHDRAWAL RESTS ON. RFC 9915 section 18.2.1's
+	// Solicit goes out without waiting for router discovery, so an event
+	// can be stamped before the first advertisement arrives on a link
+	// that does have a router. The MTU is 0 either way; this flag is
+	// what separates "has not spoken" from "stopped saying".
+	t.Run("an event stamped before the first advertisement says so", func(t *testing.T) {
+		l := lease.Lease{Addr: pfx(t, "2001:db8::5/64")}
+		got, _ := infoFromLease(l, proto.RouterObservation{}, now)
+		if got.RouterSeen {
+			t.Error("RouterSeen is true with no advertisement observed")
+		}
+		if got.MTU != 0 {
+			t.Errorf("MTU = %d, want 0", got.MTU)
+		}
 	})
 
 	// PRESERVATION CONTROL ONE: a DHCPv4 lease's own option 26 is not
