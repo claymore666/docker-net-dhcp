@@ -10,7 +10,7 @@
 #
 # POPULATION: TOP-LEVEL TEST FUNCTIONS, PARENTS ONLY.
 # One row per `func TestX(t *testing.T)` in test/integration/*_test.go —
-# 129 of them, the main suite's 122 and the failure suite's 7. A subtest's
+# 130 of them, the main suite's 123 and the failure suite's 7. A subtest's
 # seconds are inside its parent's figure and are NOT a row of their own.
 # That is stated because the previous edition's header did not state it
 # and the population was read back two ways: 104 rows summing 1804.88s
@@ -62,6 +62,16 @@
 #              The next refresh replaces it with a median of three, the
 #              way TestFailure_UnansweredRenewalsCounted's first figure
 #              was replaced.
+#   one row    TestHostname_ReachesTheServersTableAfterTheClientStarts is
+#              14.00 and is INFERRED, not measured: it arrives with #961
+#              and no run has executed it. It creates one macvlan network
+#              and runs one container, then waits for the server's lease
+#              line to carry the name and for one counter to move. That
+#              is the shape of TestSandboxKeyRoute_Macvlan (12.25), which
+#              creates a macvlan network and runs one container, plus the
+#              renewal round trip the name rides on and the counter read
+#              after it. The first run that executes it costs it, the way
+#              TestFailure_UnansweredRenewalsCounted was costed.
 #   one row    TestJoinDuration_DistributionInThisShard is 13.00, and it
 #              is INFERRED too: it arrives with #403 and no run has
 #              executed it. It creates one macvlan network and runs one
@@ -161,13 +171,13 @@
 #              lower makes the shards more even and not less. The first
 #              run that executes each costs it, the way
 #              TestFailure_UnansweredRenewalsCounted was costed.
-#   samples    3 for every corpus row. THIRTY-TWO rows are not corpus
-#              samples: the four noted individually above -- 73.85,
-#              84.19, 0.05 and 13.00 -- the eighteen #110 rows, the
-#              four #962 TestReleaseLease_* rows, the two #816/#817
+#   samples    3 for every corpus row. THIRTY-THREE rows are not corpus
+#              samples: the five noted individually above -- 73.85,
+#              84.19, 0.05, 13.00 and 14.00 -- the eighteen #110 rows,
+#              the four #962 TestReleaseLease_* rows, the two #816/#817
 #              rows and the four #984 TestReleaseLease_OnRemove* rows.
-#              Thirty of the
-#              thirty-two are INFERRED; the two that are measured are
+#              Thirty-one of the
+#              thirty-three are INFERRED; the two that are measured are
 #              TestLeaseRenewIPv6_HonorsT1, from three later
 #              head runs, and TestFailure_UnansweredRenewalsCounted, from
 #              a single sample. The previous edition carried four inferred
@@ -295,6 +305,7 @@ TestFailure_UnansweredRenewalsCounted	84.19
 TestHealthCounters_ObtainedAndReleased	12.13
 TestHealthDocument_BuildInfoIsWhatTheLaneBuilt	0.01
 TestHealthDocument_EndpointEntryMatchesTheContainer	12.05
+TestHostname_ReachesTheServersTableAfterTheClientStarts	14.00
 TestIPAM_AContainerStartedInsideTheWindowTakesTheTombstone	38.00
 TestIPAM_ARemovedNeighbourMakesTheRebindAmbiguous	34.00
 TestIPAM_AddressIsTheServersACK	13.00
