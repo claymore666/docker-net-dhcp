@@ -34,51 +34,36 @@ const (
 	// running container and every `docker network disconnect`. A
 	// container that restarts asks for a fresh lease.
 	ReleaseOnStop = "on_stop"
-	// ReleaseOnRemove is #962's third value. It is refused until it
-	// lands, which is #984 on the v2.2.0 milestone: #962 itself ships
-	// in v2.1.1 and carries only the two values above. See
-	// releaseOnRemoveRefusal.
+	// ReleaseOnRemove is `never` for the length of the restart window
+	// and `on_stop` after it (#984).
+	//
+	// IT IS A TIMED RELEASE AND NOT A THIRD CALL SITE, and the reason
+	// is a fact about libnetwork rather than about this plugin:
+	// `DeleteEndpoint` runs when a container STOPS, not when it is
+	// removed, and `docker rm` of a container that is already stopped
+	// reaches this plugin not at all. The tombstone that keeps a MAC
+	// stable across `docker restart` is written at `DeleteEndpoint` and
+	// consumed by the next `CreateEndpoint` inside its TTL, which is
+	// only possible if both run during the restart. So a release hung
+	// off that handler would fire on every `docker stop` -- which is
+	// ReleaseOnStop under a second name.
+	//
+	// What this value does instead: the stop keeps the lease and the
+	// record, exactly as ReleaseNever does, and a sweep hands the
+	// address back at the record's own deadline unless something has
+	// claimed it back by then. The window IS the tombstone TTL, because
+	// after it nothing can claim the address back: the tombstone is
+	// pruned and a restart comes up under a new MAC.
 	ReleaseOnRemove = "on_remove"
 )
-
-// releaseOnRemoveRefusal is what an operator gets back from `docker
-// network create` until `on_remove` lands.
-//
-// MEASURED, and it is a fact about libnetwork rather than about this
-// plugin: `DeleteEndpoint` runs when a container STOPS, not when it is
-// removed. The tombstone that keeps a MAC stable across `docker
-// restart` is written at `DeleteEndpoint` and consumed at the next
-// `CreateEndpoint` inside a 60-second TTL (docs/reference.md, "Restart
-// stability"), which is only possible if both run during the restart.
-// So a release hung off `DeleteEndpoint` fires on every `docker stop` --
-// that is this option's `on_stop` -- and `docker rm` of a container
-// that is already stopped reaches this plugin not at all.
-//
-// WHICH IS WHY `on_remove` IS A DIFFERENT MECHANISM, NOT A THIRD CALL
-// SITE. It is a TIMED release: the stop keeps the record, and if no
-// container has claimed the address back within a TTL the plugin sends
-// the release itself from the host, off the record's stored identity.
-// The sender that does that is HERE, because `on_stop` needs it too:
-// what `on_remove` still owes is the TTL and the timer that fires it.
-// That is a later change, on the v2.2.0 milestone, and not this one.
-//
-// Refusing it until then is the fail-closed answer. Accepting it now
-// and releasing on every stop would give two names to one behaviour and
-// would make the reference page false for whoever read it.
-const releaseOnRemoveRefusal = "release_lease=on_remove is not available yet: " +
-	"it arrives in a later release. " +
-	"Docker deletes an endpoint when its container STOPS, not when the container is removed, " +
-	"so a release sent from that handler would fire on every `docker stop` (which is release_lease=on_stop) " +
-	"and would never fire for `docker rm` of an already-stopped container. " +
-	"Use release_lease=never or release_lease=on_stop for now. See issue #962."
 
 // parseReleaseLease normalises and validates the `release_lease`
 // option. Empty is ReleaseNever.
 //
 // The refusal happens once, at CreateNetwork, so that everything after
-// it deals in a value with two inhabitants -- the same rule
-// conflict_check follows. A typo that silently selected the default
-// would be a network an operator believes releases and that never does.
+// it deals in a value this file names -- the same rule conflict_check
+// follows. A typo that silently selected the default would be a network
+// an operator believes releases and that never does.
 func parseReleaseLease(v string) (string, error) {
 	switch v {
 	case "", ReleaseNever:
@@ -86,10 +71,10 @@ func parseReleaseLease(v string) (string, error) {
 	case ReleaseOnStop:
 		return ReleaseOnStop, nil
 	case ReleaseOnRemove:
-		return "", fmt.Errorf("%w: %s", util.ErrIPAM, releaseOnRemoveRefusal)
+		return ReleaseOnRemove, nil
 	default:
-		return "", fmt.Errorf("%w: release_lease %q is not one of %s, %s",
-			util.ErrIPAM, v, ReleaseNever, ReleaseOnStop)
+		return "", fmt.Errorf("%w: release_lease %q is not one of %s, %s, %s",
+			util.ErrIPAM, v, ReleaseNever, ReleaseOnStop, ReleaseOnRemove)
 	}
 }
 
@@ -102,6 +87,16 @@ func parseReleaseLease(v string) (string, error) {
 // them to disagree about what the network asked for.
 func (o DHCPNetworkOptions) releasesOnStop() bool {
 	return o.ReleaseLease == ReleaseOnStop
+}
+
+// releasesOnRemove reports whether this network hands an address back
+// at the record's deadline when nothing has claimed it back.
+//
+// The same rule as releasesOnStop above, for the same reason: the
+// sweep, the DeleteNetwork drain and the teardown log line are three
+// consequences of one answer.
+func (o DHCPNetworkOptions) releasesOnRemove() bool {
+	return o.ReleaseLease == ReleaseOnRemove
 }
 
 // releasedAny reports whether either family's lease was handed back.
@@ -254,15 +249,39 @@ func (m *dhcpManager) releaseHeldLease(v6 bool) releaseOutcome {
 		}
 	}
 
-	src, iface, err := m.hostSourceFor(v6)
+	held, _ := m.releasedAddr(v6)
+	return releaseFromRecord(rec, m.opts, v6, held, m.logFields(v6))
+}
+
+// releaseFromRecord is the release itself, with no manager in it: pick
+// the source on the parent, put one datagram on the wire, say why it
+// did not go.
+//
+// IT TAKES THE RECORD AND THE NETWORK'S OPTIONS AND NOTHING ELSE,
+// because the second caller has nothing else. The deferred release
+// (#984) runs on a ticker long after the endpoint, its manager, its
+// namespace and its container are gone, and it holds exactly these
+// three things: a record read back off the file, the network's
+// persisted options, and which family it is looking at. A step that
+// needs the manager stays in the manager -- the DHCPv6 address has to
+// come off the container link before the exchange may begin (RFC 9915
+// section 18.2.7) and only the teardown path has a link to take it off,
+// which is why that step is above this call and not inside it.
+//
+// `held` is the address being given back, as the caller knows it, and
+// it is only used to keep the source off it. An invalid one means "the
+// caller does not know", which is honest rather than defensive: the
+// library refuses a source that is the released address anyway.
+func releaseFromRecord(rec lease.Record, opts DHCPNetworkOptions, v6 bool, held netip.Addr, fields log.Fields) releaseOutcome {
+	src, iface, err := hostSourceFor(opts, v6, held)
 	if err != nil {
-		log.WithError(err).WithFields(m.logFields(v6)).
+		log.WithError(err).WithFields(fields).
 			Warn("Not releasing: no address on the parent for this family to send the release from")
 		return releaseNoSource
 	}
 
 	if err := rtSendRelease(rec, runtime.ReleaseConfig{Interface: iface, Source: src}); err != nil {
-		log.WithError(err).WithFields(m.logFields(v6)).
+		log.WithError(err).WithFields(fields).
 			WithField("source", src.String()).
 			Debug("The release was refused or could not be sent")
 		return classifyReleaseError(err)
@@ -403,7 +422,14 @@ func classifyReleaseError(err error) releaseOutcome {
 // address. A record with no address is an endpoint that never got a
 // lease, which is not a failure to release; there was nothing there.
 func (m *dhcpManager) announceRelease(v6 bool, out releaseOutcome) {
-	entry := log.WithFields(m.logFields(v6)).WithField("outcome", string(out))
+	announceReleaseOutcome(log.WithFields(m.logFields(v6)).WithField("outcome", string(out)), out)
+}
+
+// announceReleaseOutcome is announceRelease with the entry supplied,
+// because the deferred release has no manager to build one from (#984)
+// and the sentences are the same sentences: the reason an address did
+// not go back does not depend on which path asked for it.
+func announceReleaseOutcome(entry *log.Entry, out releaseOutcome) {
 	switch out {
 	case releaseSent:
 		entry.Debug("The lease was handed back before the client stopped")
@@ -468,6 +494,30 @@ func (m *dhcpManager) releaseHeldLeases() (releasedV4, releasedV6 bool) {
 	return releasedV4, releasedV6
 }
 
+// announceDeferredRelease is what an operator reads at the stop on a
+// `release_lease=on_remove` network: nothing went back, and when it
+// will (#984).
+//
+// AT THE STOP AND NOT AT THE SEND, because the send is up to a minute
+// and a half later and in another goroutine. An operator watching a
+// container stop on a network configured to hand its addresses back
+// sees no release here, and without this line the only honest reading
+// of that silence is that the option does nothing.
+//
+// The window is stated as the value the deadline is actually computed
+// from, so the sentence cannot drift away from the constant.
+func (m *dhcpManager) announceDeferredRelease() {
+	entry := log.WithFields(m.logFields(false)).WithField("window", tombstoneTTL.String())
+	if v4, v6 := m.lastIPs(); v4 != nil && v4.IP != nil {
+		entry = entry.WithField("ip", v4.IP.String())
+		if v6 != nil && v6.IP != nil {
+			entry = entry.WithField("ipv6", v6.IP.String())
+		}
+	}
+	entry.Info("release_lease=on_remove: keeping this endpoint's addresses for the restart window; " +
+		"they go back to the server at the record's deadline unless a container claims them back first")
+}
+
 // countRelease moves the per-family pair. Sent is a packet the library
 // saw leave; failed is an attempt that produced none, whatever the
 // reason -- and the reasons are the releaseOutcome values above, which
@@ -479,11 +529,18 @@ func (m *dhcpManager) countRelease(v6 bool, sent bool) {
 	if m.plugin == nil {
 		return
 	}
+	m.plugin.countRelease(v6, sent)
+}
+
+// countRelease is the pair itself, on the plugin, because the deferred
+// release (#984) moves the same two counters with no manager in the
+// picture. One release is one release however it was decided on.
+func (p *Plugin) countRelease(v6 bool, sent bool) {
 	if sent {
-		bumpFamily(&m.plugin.releasesSentV4, &m.plugin.releasesSentV6, v6)
+		bumpFamily(&p.releasesSentV4, &p.releasesSentV6, v6)
 		return
 	}
-	bumpFamily(&m.plugin.releaseFailuresV4, &m.plugin.releaseFailuresV6, v6)
+	bumpFamily(&p.releaseFailuresV4, &p.releaseFailuresV6, v6)
 }
 
 // hostLink is the interface a release leaves the host by: the bridge in
@@ -503,6 +560,14 @@ func (o DHCPNetworkOptions) hostLink() string {
 // errNoHostSource is "this host has no address on the parent that a
 // release could come from, in this family".
 var errNoHostSource = errors.New("no usable source address on the parent for this family")
+
+// hostSourceFor is the manager's own source, for the family it is
+// tearing down: the network's options and the address this endpoint
+// last held.
+func (m *dhcpManager) hostSourceFor(v6 bool) (netip.Addr, string, error) {
+	held, _ := m.releasedAddr(v6)
+	return hostSourceFor(m.opts, v6, held)
+}
 
 // hostSourceFor picks the address the release is sent FROM.
 //
@@ -540,8 +605,8 @@ var errNoHostSource = errors.New("no usable source address on the parent for thi
 // practice, on a parent whose IPv6 is disabled (`disable_ipv6=1`), and
 // the answer is honest -- a host with no IPv6 on the segment has no way
 // to tell a DHCPv6 server anything.
-func (m *dhcpManager) hostSourceFor(v6 bool) (netip.Addr, string, error) {
-	name := m.opts.hostLink()
+func hostSourceFor(opts DHCPNetworkOptions, v6 bool, held netip.Addr) (netip.Addr, string, error) {
+	name := opts.hostLink()
 	if name == "" {
 		return netip.Addr{}, "", fmt.Errorf("%w: this network names no parent interface", errNoHostSource)
 	}
@@ -558,7 +623,6 @@ func (m *dhcpManager) hostSourceFor(v6 bool) (netip.Addr, string, error) {
 		return netip.Addr{}, "", fmt.Errorf("%w: parent %q: %w", errNoHostSource, name, err)
 	}
 
-	released, _ := m.releasedAddr(v6)
 	var best netip.Addr
 	for _, a := range addrs {
 		if a.IP == nil {
@@ -576,7 +640,7 @@ func (m *dhcpManager) hostSourceFor(v6 bool) (netip.Addr, string, error) {
 			// v6 takes link-local only; v4 takes anything but.
 			continue
 		}
-		if released.IsValid() && cand == released {
+		if held.IsValid() && cand == held {
 			continue
 		}
 		if !best.IsValid() || cand.Less(best) {

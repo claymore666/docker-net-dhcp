@@ -309,12 +309,22 @@ type HealthResponse struct {
 	// option, which is every network in this suite except the one
 	// TestReleaseLease drives. Read the per-family halves: a dual-stack
 	// endpoint can hand one address back and keep the other.
-	ReleasesSent        int32 `json:"releases_sent"`
-	ReleasesSentV4      int32 `json:"releases_sent_v4"`
-	ReleasesSentV6      int32 `json:"releases_sent_v6"`
-	ReleaseFailures     int32 `json:"release_failures"`
-	ReleaseFailuresV4   int32 `json:"release_failures_v4"`
-	ReleaseFailuresV6   int32 `json:"release_failures_v6"`
+	ReleasesSent      int32 `json:"releases_sent"`
+	ReleasesSentV4    int32 `json:"releases_sent_v4"`
+	ReleasesSentV6    int32 `json:"releases_sent_v6"`
+	ReleaseFailures   int32 `json:"release_failures"`
+	ReleaseFailuresV4 int32 `json:"release_failures_v4"`
+	ReleaseFailuresV6 int32 `json:"release_failures_v6"`
+	// ReleasesReclaimed is the `on_remove` window's own counter (#984):
+	// a held address a RUNNING container is using again at the end of
+	// the window, so nothing went on the wire. Zero on `never` and
+	// `on_stop`, which have no window. A test that reads it as "no
+	// datagram left the host" reads it too widely: an address stopped
+	// twice and an acquisition in flight also send nothing and do not
+	// move it. Assert on the lease file for that question.
+	ReleasesReclaimed   int32 `json:"releases_reclaimed"`
+	ReleasesReclaimedV4 int32 `json:"releases_reclaimed_v4"`
+	ReleasesReclaimedV6 int32 `json:"releases_reclaimed_v6"`
 	NAKsReceived        int32 `json:"naks_received"`
 	LedgerWriteFailures int32 `json:"ledger_write_failures"`
 	// StateFileChmodFailures counts files the startup sweep could not

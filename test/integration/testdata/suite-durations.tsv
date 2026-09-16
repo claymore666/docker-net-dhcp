@@ -10,7 +10,7 @@
 #
 # POPULATION: TOP-LEVEL TEST FUNCTIONS, PARENTS ONLY.
 # One row per `func TestX(t *testing.T)` in test/integration/*_test.go —
-# 123 of them, the main suite's 116 and the failure suite's 7. A subtest's
+# 129 of them, the main suite's 122 and the failure suite's 7. A subtest's
 # seconds are inside its parent's figure and are NOT a row of their own.
 # That is stated because the previous edition's header did not state it
 # and the population was read back two ways: 104 rows summing 1804.88s
@@ -130,12 +130,44 @@
 #              comparison, with the extra second for the network create
 #              that now carries an option. The first run that executes
 #              each costs it.
-#   samples    3 for every corpus row. TWENTY-EIGHT rows are not corpus
+#   four rows  The four TestReleaseLease_OnRemove* rows are INFERRED
+#              too: #984 adds them and no run has executed them. They
+#              are the heaviest rows in the file after the failure
+#              suite's, and the seconds are the feature rather than the
+#              harness: the restart window `on_remove` holds an address
+#              for is the tombstone TTL, 60s, and the release goes out
+#              at the deadline plus a 5s settle, found by a sweep that
+#              ticks every 15s. So 80s of the wall clock is fixed before
+#              a container is started, and no product knob shortens it.
+#              TestReleaseLease_OnRemoveHoldsTheAddressThenHandsItBack
+#              is 100.00: TestReleaseLease_OnStopHandsTheAddressBack's
+#              walk (24.00) without its second container start, plus
+#              that 80s and the 20s it spends first proving the address
+#              is STILL held. The 20s is inside the 80, not added to it.
+#              TestReleaseLease_OnRemoveKeepsTheAddressForARestartInsideTheWindow
+#              is 105.00: the same setup, a stop, an immediate start,
+#              and then a wait to 90s past the stop, which is the
+#              window plus the settle plus a whole tick, because what it
+#              asserts is that nothing went on the wire.
+#              TestReleaseLease_OnRemoveHandsTheV6AddressBackToo is
+#              108.00, the dual-stack version of the first, sized off
+#              the 8s TestReleaseLease_OnStopHandsTheV6AddressBackToo
+#              (32.00) sits above its v4 twin (24.00).
+#              TestReleaseLease_OnRemoveHandsAnIPAMAddressBackToo is
+#              100.00: the first one's shape on an IPAM-mode network,
+#              whose own setup (TestIPAM_SingleRestartKeepsTheAddress,
+#              22.00) is within seconds of the null-IPAM one. Every
+#              figure is rounded UP, so a first run that costs them
+#              lower makes the shards more even and not less. The first
+#              run that executes each costs it, the way
+#              TestFailure_UnansweredRenewalsCounted was costed.
+#   samples    3 for every corpus row. THIRTY-TWO rows are not corpus
 #              samples: the four noted individually above -- 73.85,
 #              84.19, 0.05 and 13.00 -- the eighteen #110 rows, the
-#              four #962 TestReleaseLease_* rows, and the two #816/#817
-#              rows. Twenty-six of the
-#              twenty-eight are INFERRED; the two that are measured are
+#              four #962 TestReleaseLease_* rows, the two #816/#817
+#              rows and the four #984 TestReleaseLease_OnRemove* rows.
+#              Thirty of the
+#              thirty-two are INFERRED; the two that are measured are
 #              TestLeaseRenewIPv6_HonorsT1, from three later
 #              head runs, and TestFailure_UnansweredRenewalsCounted, from
 #              a single sample. The previous edition carried four inferred
@@ -145,7 +177,7 @@
 #   corpus     main suite    91 tests   1739.87s   mean 19.12s
 #              failure suite  4 tests    272.31s   mean 68.08s
 #              both          95 tests   2012.18s
-#              (the corpus is unchanged: those twenty-two rows are not
+#              (the corpus is unchanged: those thirty-two rows are not
 #              samples and are not averaged into these means. These
 #              figures are a record of THAT RUN, not a count of this
 #              file: every row added since -- by this branch and by the
@@ -313,6 +345,10 @@ TestRecovery_DaemonKilled_LeaseIsHeldUntilItExpires	31.98
 TestRecovery_DaemonRestart_PreservesContainer	30.00
 TestRecovery_PluginDisableEnable_PreservesEndpoint	12.86
 TestReleaseLease_DefaultNetworksStillKeepTheirAddresses	26.00
+TestReleaseLease_OnRemoveHandsAnIPAMAddressBackToo	100.00
+TestReleaseLease_OnRemoveHandsTheV6AddressBackToo	108.00
+TestReleaseLease_OnRemoveHoldsTheAddressThenHandsItBack	100.00
+TestReleaseLease_OnRemoveKeepsTheAddressForARestartInsideTheWindow	105.00
 TestReleaseLease_OnStopHandsTheAddressBack	24.00
 TestReleaseLease_OnStopHandsTheV6AddressBackToo	32.00
 TestReleaseLease_TheOptionIsRefusedAtCreateOrItIsNot	0.10

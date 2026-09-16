@@ -194,3 +194,38 @@ func TestRecords6_NoRecordIsNotTheV4Record(t *testing.T) {
 			id, ident)
 	}
 }
+
+// TestNetworkOfScope_IsScope6Backwards pins the pair that lets a caller
+// go from a record's scope to the network whose options it must read.
+//
+// THE FAILURE IT CLOSES IS SILENT AT EVERY LEVEL. A v6 scope handed to
+// a caller that wants a network id reads a state file whose name
+// carries a '#', which the path check refuses -- so the caller gets an
+// error it treats as "this network says nothing", does nothing, and
+// reports nothing. Every DHCPv6 address on the host would then be held
+// forever by a plugin that believed it was releasing them (#984).
+//
+// The v4 direction is asserted too: a network id is its own v4 scope
+// and must come back unchanged, or every v4 record would be filed for a
+// network that does not exist.
+func TestNetworkOfScope_IsScope6Backwards(t *testing.T) {
+	for _, network := range []string{
+		"0123456789abcdef",
+		"n1",
+		// A network id can end in a digit and a letter; nothing here
+		// may key on the last characters rather than on the marker.
+		"abcv6",
+		"v6",
+	} {
+		t.Run(network, func(t *testing.T) {
+			if got, v6 := NetworkOfScope(Scope6(network)); got != network || !v6 {
+				t.Errorf("NetworkOfScope(Scope6(%q)) = (%q, %v), want (%q, true)",
+					network, got, v6, network)
+			}
+			if got, v6 := NetworkOfScope(network); got != network || v6 {
+				t.Errorf("NetworkOfScope(%q) = (%q, %v), want (%q, false): a network id is "+
+					"its own v4 scope", network, got, v6, network)
+			}
+		})
+	}
+}

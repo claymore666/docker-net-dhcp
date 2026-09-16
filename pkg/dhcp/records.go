@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -330,7 +331,29 @@ func (r *Records) Rebound(id string, chaddr []byte) error {
 // It is applied INSIDE Created6 and Resume6 rather than by the caller,
 // which is what makes "a v6 record cannot be filed under the v4 scope"
 // a property of this file instead of a rule every call site remembers.
-func Scope6(networkID string) string { return networkID + "#v6" }
+func Scope6(networkID string) string { return networkID + scope6Marker }
+
+// scope6Marker is the suffix that makes a v6 scope. '#' is not in a
+// Docker network id, which is what lets the two halves round-trip.
+const scope6Marker = "#v6"
+
+// NetworkOfScope is Scope6 backwards: the network id a scope belongs to,
+// and whether it is the v6 half.
+//
+// IT IS HERE AND NOT AT THE CALLER because the caller that needs it
+// needs the network's OPTIONS, which are filed under the network id and
+// nothing else: the state file's name is validated against a flat token
+// and '#' is not one, so a scope passed where a network id is wanted
+// does not read the wrong file, it reads none and the caller silently
+// does nothing (#984). A second copy of the marker at that call site is
+// the same fact written twice; Scope6 and this share the constant, and
+// the round trip is a test.
+func NetworkOfScope(scope string) (networkID string, v6 bool) {
+	if id, found := strings.CutSuffix(scope, scope6Marker); found {
+		return id, true
+	}
+	return scope, false
+}
 
 // Created6 is Created for a DHCPv6 endpoint.
 //

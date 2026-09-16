@@ -897,6 +897,25 @@ type HealthResponse struct {
 	// on every teardown.
 	ReleasesSent    int32 `json:"releases_sent"`
 	ReleaseFailures int32 `json:"release_failures"`
+	// ReleasesReclaimed is the sum of its per-family halves: held
+	// addresses a RUNNING container is using again at the end of the
+	// restart window on a `release_lease=on_remove` network, so the
+	// record was closed and no datagram was sent (#984). It is what
+	// the option's quiet half looks like from outside: with it at zero
+	// and `releases_sent` climbing, nothing is restarting inside the
+	// window; with it climbing, the window is doing the job it exists
+	// for. Zero on `never` and on `on_stop`, which have no window.
+	//
+	// IT IS NARROWER THAN "NOTHING WAS SENT". Two other outcomes also
+	// send nothing and are deliberately not counted here: the same
+	// address stopped a second time, where a newer record carries its
+	// own deadline and decides the address itself, and an address
+	// acquisition in flight under the same endpoint key, where the
+	// address is left to expire so it is not taken from under an
+	// exchange that may be about to be given it. Each has its own
+	// sentence in the log at `debug`. Counting either here would
+	// report a restart that did not happen.
+	ReleasesReclaimed int32 `json:"releases_reclaimed"`
 	// NAKsReceived counts server NAKs on renewal/rebind. Not
 	// Healthy-affecting on its own — the client recovers by
 	// re-DISCOVERing — but each NAK-triggered re-bind widens the
@@ -975,6 +994,12 @@ type HealthResponse struct {
 	// that does not set the option, which is every network by default.
 	ReleasesSentV4    int32 `json:"releases_sent_v4"`
 	ReleaseFailuresV4 int32 `json:"release_failures_v4"`
+	// ReleasesReclaimedV4 is the IPv4 half of ReleasesReclaimed: held
+	// addresses a running container is using again at the end of the
+	// restart window on a `release_lease=on_remove` network, so nothing
+	// was sent (#984). Like the sum, it does not count the other two
+	// reasons a held address is not handed back.
+	ReleasesReclaimedV4 int32 `json:"releases_reclaimed_v4"`
 	// AddressConflictsV4 is the RFC 5227 half of AddressConflicts, and
 	// it is the ONLY half that may be compared against ACDProbesSent
 	// and ACDConflictsDetected: those two count ARP, which no DHCPv6
@@ -1031,6 +1056,12 @@ type HealthResponse struct {
 	// the split exists to make visible.
 	ReleasesSentV6    int32 `json:"releases_sent_v6"`
 	ReleaseFailuresV6 int32 `json:"release_failures_v6"`
+	// ReleasesReclaimedV6 is the DHCPv6 half of ReleasesReclaimed: the
+	// v6 record of a dual-stack endpoint is a second record with its
+	// own deadline, so one family's address can be in use again while
+	// the other's goes back to the server (#984). Like the sum, it
+	// counts a running container's address and nothing else.
+	ReleasesReclaimedV6 int32 `json:"releases_reclaimed_v6"`
 	// DHCPv6ConfigOnly counts DHCPv6 information replies -- address-less
 	// configuration from a network advertising the RA "other config"
 	// flag (#815). NOT healthy-affecting: it is a normal exchange on a
@@ -1214,6 +1245,8 @@ func (p *Plugin) healthSnapshot() HealthResponse {
 	releasesSentV6 := p.releasesSentV6.Load()
 	releaseFailuresV4 := p.releaseFailuresV4.Load()
 	releaseFailuresV6 := p.releaseFailuresV6.Load()
+	releasesReclaimedV4 := p.releasesReclaimedV4.Load()
+	releasesReclaimedV6 := p.releasesReclaimedV6.Load()
 
 	now := time.Now()
 	h := HealthResponse{
@@ -1311,6 +1344,7 @@ func (p *Plugin) healthSnapshot() HealthResponse {
 		ClientStopFailures:           clientStopFailuresV4 + clientStopFailuresV6,
 		ReleasesSent:                 releasesSentV4 + releasesSentV6,
 		ReleaseFailures:              releaseFailuresV4 + releaseFailuresV6,
+		ReleasesReclaimed:            releasesReclaimedV4 + releasesReclaimedV6,
 		NAKsReceived:                 naksReceivedV4 + naksReceivedV6,
 		DisplacedStops:               p.displacedStopsTotal.Load(),
 		ParentLinkWaits:              p.parentLinkWaits.Load(),
@@ -1327,6 +1361,7 @@ func (p *Plugin) healthSnapshot() HealthResponse {
 		ClientStopFailuresV4:         clientStopFailuresV4,
 		ReleasesSentV4:               releasesSentV4,
 		ReleaseFailuresV4:            releaseFailuresV4,
+		ReleasesReclaimedV4:          releasesReclaimedV4,
 		LeaseChangedV6:               leaseChangedV6,
 		LeasesObtainedV6:             leasesObtainedV6,
 		LeasesRenewedV6:              leasesRenewedV6,
@@ -1336,6 +1371,7 @@ func (p *Plugin) healthSnapshot() HealthResponse {
 		ClientStopFailuresV6:         clientStopFailuresV6,
 		ReleasesSentV6:               releasesSentV6,
 		ReleaseFailuresV6:            releaseFailuresV6,
+		ReleasesReclaimedV6:          releasesReclaimedV6,
 		DHCPv6ConfigOnly:             p.dhcpv6ConfigOnly.Load(),
 		DHCPv6NotOffered:             p.dhcpv6NotOffered.Load(),
 		DHCPv6NoRouterAdvert:         p.dhcpv6NoRouterAdvert.Load(),
