@@ -184,6 +184,14 @@ type HealthResponse struct {
 	HostnamesAppliedLate   int32 `json:"hostnames_applied_late"`
 	HostnameLookupFailures int32 `json:"hostname_lookup_failures"`
 	HostnameApplyFailures  int32 `json:"hostname_apply_failures"`
+	// The three outcomes of naming a host-side link after its container
+	// (#978). HostIfnamesApplied is the domain the other two are read
+	// against: a suite where it stays at zero has created no network
+	// that asked for named links, and their zeros then say nothing.
+	// Bridge mode only.
+	HostIfnamesApplied  int32 `json:"host_ifnames_applied"`
+	HostIfnameConflicts int32 `json:"host_ifname_conflicts"`
+	HostIfnameFailures  int32 `json:"host_ifname_failures"`
 	// The body of the distribution join_attach_slow is the tail of
 	// (#403). Plain int32: these ship with this change, so a zero from
 	// an older plugin and a zero from a quiet lane are the same

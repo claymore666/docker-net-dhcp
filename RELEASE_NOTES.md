@@ -23,6 +23,8 @@ counters and three messages instead of one. A network can also ask
 for its addresses back a minute after a container stops:
 `release_lease=on_remove` holds them for the restart window and hands
 back whatever nothing has claimed.
+In bridge mode a network can also name its host-side interfaces after
+the containers they belong to, so `ip link` reads like the compose file.
 
 ### Upgrade notes
 
@@ -52,9 +54,30 @@ prompts on has moved since v2.0.0.
 | `releases_reclaimed` is a new counter on `/Plugin.Health` and `/metrics`, split `_v4` and `_v6` | Addresses a running container is using again when the window ends, so nothing was sent. It is narrower than "nothing was sent": an address stopped a second time and an acquisition in flight also send nothing and are not counted. Zero on `never` and `on_stop`. It does not flip `healthy`. |
 | Eleven counters now carry a `family` label on `/metrics`, not ten | One new series pair, `net_dhcp_releases_reclaimed_total` with `family="ipv4"` and `family="ipv6"`. Existing series are unchanged. |
 | A container start no longer waits for the Docker daemon to answer before its DHCP client starts | Nothing to configure. An endpoint reaches its address sooner on a busy host, and the container's name reaches the DHCP server a moment after the lease instead of before it. A network with `register_dns` keeps the old order. |
+| `host_ifname` is a new bridge-mode network option, default off | Nothing, until a network sets it. Host-side links keep the `dh-<12 hex>` name every earlier release gave them. |
+| A `host_ifname` network names its host-side links after their containers | `ip link` and `brctl show` read like the compose file. The generated `dh-` name stays on the link as an altname, so anything that looks that name up still finds it, including teardown and restart recovery. A name over 15 characters is truncated to its first 9 plus the endpoint's first 5 hex, and a name already in use on the host leaves that link with its generated name. |
+| `host_ifname` is refused at `docker network create` in `mode=macvlan` and `mode=ipvlan` | A create naming it there fails with the reason in the message. Those modes move the link into the container and leave nothing on the host to name. |
+| Three more counters are new on `/Plugin.Health` and `/metrics` | `host_ifnames_applied`, `host_ifname_conflicts` and `host_ifname_failures`. None of them flips `healthy`. |
 
 ### New
 
+- `host_ifname`, a bridge-mode network option that names the host-side
+  interface after the container instead of after the endpoint, so `ip link`
+  and `brctl show` read like the compose file. `container_name` uses the name
+  `docker ps` prints, `hostname` uses the container's hostname. Off by
+  default, which is the `dh-<12 hex>` name every earlier release used, and
+  refused at `docker network create` in `macvlan` and `ipvlan`, where the link
+  is moved into the container and leaves nothing on the host to name. The old
+  name stays on the link as an altname, so `docker network inspect`, teardown
+  and restart recovery are unchanged. A name over 15 characters is truncated
+  to its first 9 plus the endpoint's first 5 hex; a name already in use on the
+  host leaves the link with its generated name. `docs/reference.md` states the
+  rule (#978).
+- `host_ifnames_applied`, `host_ifname_conflicts` and `host_ifname_failures`
+  on `/Plugin.Health` and `/metrics`: the link took the container's name, the
+  name was already on this host, or the rename was refused for another reason.
+  The endpoint keeps its lease and its generated link name in all three, so
+  none of them affects `healthy` (#978).
 - `ipv6_mode`, a per-network option with values `off` (default),
   `dhcp`, `slaac` and `auto`. `dhcp` is what `ipv6=true` has always
   meant. `slaac` takes the address from a router advertisement's

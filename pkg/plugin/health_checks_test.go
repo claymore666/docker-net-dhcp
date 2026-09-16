@@ -67,6 +67,8 @@ func checkBumpers() []checkBumper {
 		{"ipam_reserve_duplicate_mac", "", func(p *Plugin) { p.ipamReserveDuplicateMAC.Add(1) }},
 		{"hostname_lookup_failures", "", func(p *Plugin) { p.hostnameLookupFailures.Add(1) }},
 		{"hostname_apply_failures", "", func(p *Plugin) { p.hostnameApplyFailures.Add(1) }},
+		{"host_ifname_conflicts", "", func(p *Plugin) { p.hostIfnameConflicts.Add(1) }},
+		{"host_ifname_failures", "", func(p *Plugin) { p.hostIfnameFailures.Add(1) }},
 		{"release_failures", "ipv4", func(p *Plugin) { p.releaseFailuresV4.Add(1) }},
 		{"release_failures", "ipv6", func(p *Plugin) { p.releaseFailuresV6.Add(1) }},
 	}

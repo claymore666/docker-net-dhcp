@@ -285,6 +285,18 @@ net_dhcp_hostname_lookup_failures_total 3487321
 # TYPE net_dhcp_hostname_apply_failures_total counter
 net_dhcp_hostname_apply_failures_total 6487795
 
+# HELP net_dhcp_host_ifnames_applied_total Host-side links renamed after the container they belong to, on a network that asked for it with host_ifname (#978). The mechanism working, and the denominator for host_ifname_conflicts and host_ifname_failures: a host with no such network has zeros everywhere. Bridge mode only, because it is the only mode that leaves a link on the host.
+# TYPE net_dhcp_host_ifnames_applied_total counter
+net_dhcp_host_ifnames_applied_total 2671665
+
+# HELP net_dhcp_host_ifname_conflicts_total Renames refused because another interface on the host already had the name, so the endpoint's host-side link kept its generated name.
+# TYPE net_dhcp_host_ifname_conflicts_total counter
+net_dhcp_host_ifname_conflicts_total 5170802
+
+# HELP net_dhcp_host_ifname_failures_total Renames that did not happen for any reason other than the name being taken, so the endpoint's host-side link kept its generated name.
+# TYPE net_dhcp_host_ifname_failures_total counter
+net_dhcp_host_ifname_failures_total 5246516
+
 # HELP net_dhcp_unsafe_option_values_dropped_total Server-chosen DHCP string values refused before use because they carried a control character, plus option-15 domains truncated at their first space. The DHCP library validates domain-typed options; string-typed ones can carry anything the server put on the wire (#703, #704).
 # TYPE net_dhcp_unsafe_option_values_dropped_total counter
 net_dhcp_unsafe_option_values_dropped_total 9536334

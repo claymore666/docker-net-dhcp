@@ -77,6 +77,7 @@ network create -o key=value`, or `driver_opts:` in Compose:
 | `register_dns` | all | `false` |
 | `audit_log` | all | `false` |
 | `release_lease` | all | `never` |
+| `host_ifname` | bridge | *(off)* |
 
 **[Per-endpoint options](#driver-options-per-endpoint)**, set with
 `docker network connect --driver-opt`, or `driver_opts:` under a
@@ -538,6 +539,7 @@ value as an invalid duration.
 | `register_dns` | all | `false` | v1.3.0 | Send the DHCP FQDN option (81) built from the container's hostname, asking the DHCP server to register that name in DNS (forward A/AAAA + reverse PTR). Reuses the same hostname already sent as the option-12 hint. Best-effort and advisory, because many consumer routers ignore option 81, so this *requests* registration, it does not guarantee resolution. Off by default: dynamic-DNS registration is a network-policy decision. See below. |
 | `audit_log` | all | `false` | v1.0.0 | Append every lease-lifecycle event (`bound` / `renew` / `stopped` / `stop_failed`) to `STATE_DIR/leases.jsonl`, one JSON object per line with timestamp, network, endpoint, container, hostname, IP, MAC. Rotated at 16 MB or 30 days (one rotated generation kept, ≤ ~32 MB total). Append failures bump `ledger_write_failures` on `/Plugin.Health`, never affecting lease handling. Off by default: per-event disk write, and container↔IP correlation on disk is privacy-relevant in some environments. |
 | `release_lease` | all | `never` | **v2.1.1** (`on_remove`: **v2.2.0**) | Whether, and when, an endpoint hands its DHCP lease back. It leaves its sandbox at every `docker stop`, every `docker rm` of a running container and every `docker network disconnect`. **`never`** (default) sends nothing: the address stays leased until it expires, and a container that restarts before then asks for it again and gets it, exactly as a physical host on the segment does after a reboot (#800). **`on_stop`** sends a DHCPRELEASE (RFC 2131 section 4.4.6) for IPv4 and a Release (RFC 9915 section 18.2.7) for IPv6, one datagram per family, built from the endpoint's own lease record and sent from the host's address on the parent interface. The address goes back to the server's pool at once, and the container's next start is a fresh acquisition that may land on a different address. **It does not need a running DHCP client**, which matters for the shape the option is most used for: a container that stops before the plugin's persistent client has attached still hands its address back, because the address it used came from the acquisition at endpoint creation and that acquisition wrote it into the same record. Two things follow and are not configurable: the endpoint lays **no tombstone**, so it does not keep its MAC across a restart, and the lease record of each family whose address actually went back is closed rather than kept resumable. Both are the same rule, that nothing may hand on an address the server has already taken back. **One path is not covered on `never` or `on_stop`, and is covered on `on_remove`.** In IPAM mode an address reserved for an endpoint whose `CreateEndpoint` then failed is retained: retaining it is what lets a restart policy's next attempt claim the same address back instead of burning a second lease on the server, and a reservation with no endpoint reaches no `Leave`, which is the only path `on_stop` releases from. On those two values no DHCPRELEASE goes on the wire for it and the address is left to expire, exactly as any other host on the segment leaves one. On `on_remove` the retention carries a deadline like any other, so the address goes back when the window runs out and no retry has claimed it (#984). `releases_sent` and `release_failures` report what happened, per family. `on_stop` costs `docker stop` one datagram per family, sent synchronously and not retransmitted, with no reply read and no retry. Nothing waits on the server. A release the host cannot send at all fails immediately and is counted, and the address is then left to expire exactly as under `never`. The reason is in the plugin log beside the counter: no record, no leased address on it, no server named on it, no address on the parent to send from, or the socket. **`on_remove`** (v2.2.0, #984) holds the addresses for the restart window and hands back whatever nothing has claimed when the window runs out. It is a **timed** release and not a handler on removal, because there is no removal handler to hang it on: Docker deletes an endpoint when its container **stops**, not when it is removed, so a release sent from that handler would fire on every `docker stop` (which is `on_stop`) and would never fire for `docker rm` of an already-stopped container. The window is the **tombstone TTL, 60 seconds**, the same value that decides how long a stopped container keeps its MAC, so the two can never disagree and there is no second option to set. The release goes out on the sweep that follows the deadline: the sweep runs every 15 seconds and waits 5 seconds past the deadline, so the wall clock from `docker stop` to the datagram is **65 to 80 seconds**. One attempt is made and the record is closed either way; there is no retry, and a failed attempt leaves the address to expire exactly as under `never`. A container that comes back inside the window keeps its address **and** its MAC, exactly as under `never`, and `releases_reclaimed` counts it. What decides that is the **address**: a newer record on the same network holding the same address. A container pinned to a MAC that comes back on a different address does not hold the old one, and the old one goes back. Two further cases also send nothing and do **not** move `releases_reclaimed`, because neither is a container running on the address: the same address stopped a second time, where the newer record carries its own deadline and decides the address itself, and an address acquisition in flight under the same endpoint key, where the address is left to expire so it is not taken from under an exchange that may be about to be given it. The deadline is written into the lease record, so a plugin that restarts inside the window still releases at the right moment, and `docker network rm` hands the network's still-held addresses back at once instead of leaving them for deadlines on a network that no longer exists. Everything `on_stop` does at the moment of the release, `on_remove` does at the deadline: one datagram per family, built from the endpoint's own record, no running DHCP client needed, nothing waited on, and the record closed rather than kept resumable. The one difference before the deadline is that the endpoint **does** lay a tombstone, because until the window runs out the address is still the container's. **What the log says on `on_remove`**, at `info` unless noted: at the stop, one line per endpoint, `release_lease=on_remove: keeping this endpoint's addresses for the restart window`, carrying the window and the addresses; at the deadline, one line per address, `No container claimed this address back inside the restart window, so release_lease=on_remove is handing it back`, followed by the same outcome lines `on_stop` prints; at `debug`, one line per address that is not handed back, one sentence per reason, `A container is running on this address, so it was claimed back inside the restart window and nothing is handed back` (the only one that moves `releases_reclaimed`), `A newer record holds this same address with its own deadline, so this record is closed and the newer one decides when the address goes back`, and `An address acquisition is in flight under this endpoint's key, so this address is left to expire instead of being handed back from under it`, each naming the holding record; at `debug` again, `A held address belongs to a network whose options cannot be read; leaving the record as it is`, which leaves the record alone so a later pass can still decide; at `docker network rm`, one line naming how many of the network's addresses went back, and, at `warning`, `This network's stored options could not be read while it was being removed, so its held addresses could not be handed back` when the removal cannot read what it needs, which is the one case no later pass can repair, because the options and the tombstones go with the network. **What it does not cover.** If the plugin is not running at the moment a container stops, Docker's endpoint deletion never reaches it, no window opens for that endpoint, and its address is left to expire. `on_stop` misses the same stop for the same reason. The sweep deliberately does not repair it: a record the plugin still believes a container is using is never released from the background, because a pass that released those would hand back every address on the host after a restart. Any other value is refused at `docker network create`, with the reason in the message. Networks created before v2.1.1 read as `never`. |
+| `host_ifname` | bridge | *(off)* | **v2.2.0** | What the host-side interface this network creates is called, so `ip link` and `brctl show` read like the compose file (#978). Off by default, which is every release before v2.2.0: the link is `dh-` plus the endpoint ID's first 12 hex, unique and meaningless. **`container_name`** names it after the container, the name `docker ps` prints. **`hostname`** names it after the container's hostname (`docker run --hostname`), which defaults to the short container ID and is **not unique on a host**. Any other value is refused at `docker network create`. **Bridge mode only**, and refused in `macvlan` and `ipvlan` rather than ignored there: those children are moved into the container's namespace and leave nothing on the host to name. The name is derived and applied once per attach, from the same daemon answer the DHCP hostname comes from, and nothing about it is written down, so a restart re-derives it. See [Host-side interface names](#host-side-interface-names-host_ifname) for the derivation rule, what happens when the name is taken, and what an operator reads when it does not happen. |
 
 ### DHCP classless static routes (option 121)
 
@@ -613,6 +615,126 @@ that difference is the length of a `docker run`: the daemon does not
 answer questions about a container while it is still starting it, so a
 `register_dns` endpoint has no address for that whole time and a default
 one is already leasing.
+
+### Host-side interface names (`host_ifname`)
+
+In bridge mode every endpoint gets a veth pair: one half goes into the
+container, the other stays on the host and is plugged into the bridge.
+That host half is what `ip link` and `brctl show` list, and by default it
+is called `dh-` plus the first 12 hex of the endpoint ID:
+
+```
+$ brctl show br-lan
+bridge name     bridge id               STP     interfaces
+br-lan          8000.0242ac110002       no      dh-3b1d3b0061fd
+                                                dh-8c2e41aa9007
+```
+
+`-o host_ifname=container_name` names it after the container instead:
+
+```
+bridge name     bridge id               STP     interfaces
+br-lan          8000.0242ac110002       no      web
+                                                db
+```
+
+**The container's name is not available when the link is created.**
+libnetwork does not send it to `CreateEndpoint`
+([moby/moby#52871](https://github.com/moby/moby/pull/52871) is open for
+that), so the link is created with the `dh-` name and **renamed** when
+the plugin asks the daemon for the container, which is the same question
+the DHCP hostname comes from and costs no extra call. The rename happens
+after the attach has already succeeded, so nothing it does can fail a
+container start.
+
+**The old name stays on the link as an altname.** `ip link` prints it
+under the new one and every lookup still resolves through it, which is
+what keeps `docker network inspect`, teardown and the plugin's own
+restart recovery working:
+
+```
+7: web@if6: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 master br-lan
+    link/ether 4e:e1:3a:10:36:dc brd ff:ff:ff:ff:ff:ff
+    altname dh-3b1d3b0061fd
+```
+
+#### The name the plugin derives
+
+The rule is fixed, so the name is predictable from the container's:
+
+1. every character outside `a-z A-Z 0-9 . - _` becomes `-`
+2. leading characters that are not a letter or a digit are dropped,
+   because a kernel-legal interface name starts with one
+3. a name longer than **15 characters** (the kernel's limit, `IFNAMSIZ`
+   minus the terminator) keeps its first 9 and ends in `-` plus the
+   endpoint ID's first 5 hex, which are the same 5 the `dh-` name
+   carried, so a truncated name still points back at `docker network
+   inspect`
+
+| container | host-side link |
+| --------- | -------------- |
+| `web` | `web` |
+| `myproj-web-1` | `myproj-web-1` |
+| `myproject-frontend-1` | `myproject-a1b2c` |
+| `web@host:1` | `web-host-1` |
+
+The endpoint's 5 hex, and not a hash of the name, because two containers
+may share a `--hostname`: keyed on the name, both would derive one
+interface name and the second container would lose its rename to a
+collision an operator could not see in either name.
+
+#### When the name does not happen
+
+Interface names are unique per network namespace, and the host's is one
+namespace shared with every Docker network, every physical NIC and
+everything else on the box. So the derived name is a **request**:
+
+- **the name is already taken** — the link keeps its `dh-` name and
+  [`host_ifname_conflicts`](#pluginhealth) counts it. Rename the
+  container, rename the other interface, or use the other `host_ifname`
+  value.
+- **the container's name has nothing kernel-legal in it**, the kernel
+  refuses the rename for any other reason, or the old name could not be
+  kept on the link as an altname (in which case the rename is undone) —
+  the link keeps its `dh-` name and
+  [`host_ifname_failures`](#pluginhealth) counts it. The plugin log names
+  which of them it was.
+- **the daemon never answered**, so the plugin never learned the
+  container's name. Nothing is renamed and
+  [`hostname_lookup_failures`](#pluginhealth) has already reported it;
+  this option adds no second counter for one event.
+- **`host_ifname=hostname` and the container's `--hostname` carries a
+  control character.** The plugin refuses to send such a value as the
+  DHCP hostname option ([`unsafe_hostnames_rejected`](#pluginhealth)) and
+  refuses it here for the same reason, so the link keeps its `dh-` name
+  and [`host_ifname_failures`](#pluginhealth) counts it. Use
+  `container_name`, which Docker validates.
+
+In every case the container has its address, its lease and its renewal
+client. An interface name is cosmetic and nothing here fails an attach.
+
+**One bound, stated rather than guarded.** The rename and the altname are
+two kernel calls, and a plugin killed between them leaves a link that
+carries only the derived name. Nothing then finds it by the `dh-` name,
+including teardown, so it stays on the bridge until `ip link del <name>`
+removes it. The window is one netlink round trip wide.
+
+**A restart re-derives the name.** Docker drives a restart as a detach
+and a re-attach, the plugin rebuilds the host-side link with its `dh-`
+name and renames it again from the daemon's current answer. Nothing about
+the name is persisted, so a container renamed between two starts comes
+back under the new name.
+
+**A plugin restart leaves an already named link alone.** Recovery
+rebuilds every endpoint the containers still hold, which runs the naming
+step again over links that already carry both names. The plugin reads the
+link's current name back from the kernel and stops there, so a recycle
+moves `host_ifnames_applied` and neither failure counter. A container
+renamed with `docker rename` while it was running comes back under its
+new name at that point, keeping the same `dh-` altname, and is no
+different: the rename is the only thing that happens and neither failure
+counter moves.
+
 
 ## Driver options (per-endpoint)
 
@@ -1328,6 +1450,9 @@ already parse it were not told to expect a new type.
 | `hostnames_applied_late` | no | n/a | *(v2.2.0+)* Container names given to a DHCP client that was already leasing (#961). Since v2.2.0 the attach starts the persistent client **before** it asks the daemon for the container's name, so a container leases at the speed of the segment instead of at the speed of a daemon that is busy starting it; the name is handed to the running client when the answer comes, and the client renews early to carry it (RFC 2131 section 4.4.5), so the server's table has it within one exchange. This counter is the mechanism working, and it **narrows** the two rows below without deciding them: zero on all three is also what a host reads when its containers were started without `--hostname`, and what it reads when every attach took the name before the client started. A non-zero value here is the only reading that says the late path ran and worked; a zero is three states and the plugin log tells them apart. It counts non-empty names only, because a container started without `--hostname` has nothing to hand over and is not an event. **v4 only**, and that is the DHCP library's boundary: it sends no name option for DHCPv6 at all. Two populations are deliberately **not** counted here, because on both the name was already in the client's opening parameters: a network with `register_dns`, which needs the name at construction for option 81, and a host whose sandbox key is refused, where the container inspect the PID fallback made has already answered. **Not a check:** it is the normal reading on a working host and its normal value is not zero. |
 | `hostname_lookup_failures` | no | warn | *(v2.2.0+)* Attaches whose container inspect never answered, so the endpoint leases with no name in the DHCP server's table (#961). **No** because the endpoint is working: it has its address and its renewal client, which is the whole point of starting the client first, and what it lacks is its name upstream until something attaches it again. The lookup runs on the attach's own context and is abandoned with it, so this is the same `awaitTimeout` + 60s window `join_attach_slow` reports on, and the two rise together when a daemon is slow. Watch it rather than page on it: a sustained rise is a daemon that is not answering, which affects a great deal more than names. |
 | `hostname_apply_failures` | no | warn | *(v2.2.0+)* Container names the running DHCP client would not take, so the endpoint leases with no name in the DHCP server's table (#961). The daemon answered here; the client refused the handover. Three causes, all from the library: a name it will not put on the wire, a request queue that was full, and no running client left to give it to. Separate from `hostname_lookup_failures` because the two describe the same endpoint and their remedies are at opposite ends of the host. Watch it: a rise with no lookup failures beside it is this side of the host and not the daemon, and the names of the containers involved are in the plugin's log at `warn`. |
+| `host_ifnames_applied` | no | n/a | *(v2.2.0+)* Host-side links renamed after the container they belong to, on a network that set `host_ifname` (#978). The mechanism working, and the **denominator** for the two rows below: all three stay at zero on a host where no network asked for named links, so their zeros mean nothing without this one beside them. **Bridge mode only**, because it is the only mode that leaves a link on the host; `macvlan` and `ipvlan` children are moved into the container and the option is refused there at `docker network create`. One per attach that renamed a link, so a container restart counts again -- the name is re-derived every time and never persisted. **Not a check:** its own value is a count of work done and carries no verdict, and on a host that set the option its normal reading is non-zero and climbing. |
+| `host_ifname_conflicts` | no | warn | *(v2.2.0+)* Renames refused because another interface on this host already had the name the container asked for (#978). Interface names are unique per network namespace, and the host's is one namespace shared with every Docker network, every physical NIC and every tunnel on the box, so the name a container asks for is a request and not a reservation. The endpoint keeps its lease, its renewal client and its `dh-` link name; what it loses is the readable name. **Actionable**, which is why it is separate from the row below: it is the only refusal whose remedy is to rename something. Rename the container, rename the interface that already holds the name, or switch that network's `host_ifname` to the other value. Read it against `host_ifnames_applied`. |
+| `host_ifname_failures` | no | warn | *(v2.2.0+)* Renames that did not happen for any reason other than the name being taken (#978). Four causes and the plugin log names which: the container's name had no character an interface name may carry, the host-side link was not there to rename, the kernel refused the rename, or it took the rename and would not keep the old name on the link as an altname -- in which case the rename is undone, because the old name is what teardown looks the link up by. The endpoint keeps its lease and its `dh-` link name in all four. **Watch it** rather than page on it: an unreadable interface name breaks nothing, but a steady rise means the option is doing nothing on this host and the log says why. Read it against `host_ifnames_applied`, whose zero would otherwise make this one's zero meaningless. |
 | `unsafe_option_values_dropped` | no | n/a | (v1.8.0+) Server-chosen DHCP string values refused before use because they carried a control character, plus option-15 domains truncated at their first space. The filter is reflective and covers every string value in the lease, so a new one is covered the day it is added; the ones it exists for are the free-text options 66, 67, 100, 101 and 252, which arrive as bytes the server chose and are carried into a log line, a `resolv.conf` or the audit ledger, none of which share an escaping rule. A space in option 15 additionally turns one search domain into several, with the server's choice first in the order, so that cut is counted here too. The sibling of `unsafe_hostnames_rejected`, for the values the *server* chooses instead of the container. A legitimate server sends none of these, so any rise is deliberate. |
 | `network_options_rejected` | no | n/a | (v1.8.0+) Endpoint operations that met a network's stored options and would not act on them as written: an interface name the kernel would not accept, or a `mode` this plugin does not implement. Name validation runs when a network is *created* (#705); this check runs every time the stored options are *read*, which is where the name actually reaches netlink. Not healthy-affecting: refusing is the safe outcome, the operation already fails visibly to Docker, and one network's record being wrong does not make the plugin unwell, because every other network on the host keeps working. A non-zero value means one network needs recreating: either it was created before name validation existed, or its options were written directly into the state directory. `DeleteEndpoint` is deliberately exempt so a refused network can still be torn down. It counts an unknown mode and proceeds, so a rise here does not mean nothing was torn down. Only the mode: teardown reads no stored name at all (it derives the link from the endpoint ID), so there is no name refusal available to it. |
 | `ipam_replay_hits` | no | n/a | *(v2.1.0+)* Stored endpoint addresses confirmed at a daemon restart from the plugin's own lease record. Only moves on a network created with this plugin as its IPAM driver (`--ipam-driver <plugin>`); with `--ipam-driver null` it stays zero for the life of the process, which is what makes a zero here ambiguous on a mixed host. The mechanism working: when Docker restarts it asks the IPAM driver to confirm every address it already stored, and each confirmation is one container that keeps its address. Read it as the denominator for the row below, which is the only way to tell "no misses because everything matched" from "no misses because nothing was asked". **Not a check:** its own value is a count of work done and carries no verdict, and on a host that restarts Docker its normal reading is non-zero and climbing. |

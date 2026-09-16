@@ -10,7 +10,7 @@
 #
 # POPULATION: TOP-LEVEL TEST FUNCTIONS, PARENTS ONLY.
 # One row per `func TestX(t *testing.T)` in test/integration/*_test.go —
-# 130 of them, the main suite's 123 and the failure suite's 7. A subtest's
+# 134 of them, the main suite's 127 and the failure suite's 7. A subtest's
 # seconds are inside its parent's figure and are NOT a row of their own.
 # That is stated because the previous edition's header did not state it
 # and the population was read back two ways: 104 rows summing 1804.88s
@@ -173,13 +173,39 @@
 #              lower makes the shards more even and not less. The first
 #              run that executes each costs it, the way
 #              TestFailure_UnansweredRenewalsCounted was costed.
-#   samples    3 for every corpus row. THIRTY-THREE rows are not corpus
-#              samples: the five noted individually above -- 73.85,
-#              84.19, 0.05, 13.00 and 12.08 -- the eighteen #110 rows,
-#              the four #962 TestReleaseLease_* rows, the two #816/#817
-#              rows and the four #984 TestReleaseLease_OnRemove* rows.
-#              Thirty of the
-#              thirty-three are INFERRED; the three that are measured are
+#   four rows  the #978 TestHostIfname_* rows are INFERRED, not measured:
+#              they arrive with the feature and no run has executed them.
+#              TestHostIfname_TheHostLinkTakesTheContainersName is 14.50:
+#              one bridge network and one container, which is
+#              TestLifecycleBridge_GoldenPath (12.19), plus a counter
+#              window and a forced container remove followed by a poll of
+#              the host's link table.
+#              TestHostIfname_ALongNameIsTruncatedAndATakenOneIsRefused
+#              is 24.00: the same walk with a SECOND container on the
+#              same network, so 12.19 plus a container's share of it,
+#              plus the counter window.
+#              TestHostIfname_IsRederivedOnRestart is 22.00: one network,
+#              one container and one docker restart, which is
+#              TestTombstoneRestart_PreservesMACAndIP (20.39), plus the
+#              two link-table polls.
+#              TestHostIfname_APluginRecycleLeavesTheNamedLinkAlone is
+#              26.00: TestRecovery_PluginDisableEnable_PreservesEndpoint
+#              (12.86, MEASURED) is the same disable/enable walk, and this
+#              one adds a bridge network and container in place of that
+#              cell's macvlan one (12.19 against 8.53, so about 3.7 more),
+#              a counter window, a docker rename, and five link-table
+#              reads. The first run
+#              that executes each costs it, the way
+#              TestFailure_UnansweredRenewalsCounted was costed.
+#   samples    3 for every corpus row. THIRTY-SEVEN rows are not corpus
+#              samples, and the six groups below are disjoint and
+#              exhaust them: the five `one row` notes above -- 73.85,
+#              84.19, 0.05, 12.08 and 13.00 -- the eighteen #110 rows,
+#              the four #962 TestReleaseLease_* rows, the two
+#              #816/#817 rows, the four #984 TestReleaseLease_OnRemove*
+#              rows, and the four #978 TestHostIfname_* rows.
+#              Thirty-four of the
+#              thirty-seven are INFERRED; the three that are measured are
 #              TestLeaseRenewIPv6_HonorsT1, from three later head runs,
 #              and TestFailure_UnansweredRenewalsCounted and
 #              TestHostname_ReachesTheServersTableAfterTheClientStarts,
@@ -308,6 +334,10 @@ TestFailure_UnansweredRenewalsCounted	84.19
 TestHealthCounters_ObtainedAndReleased	12.13
 TestHealthDocument_BuildInfoIsWhatTheLaneBuilt	0.01
 TestHealthDocument_EndpointEntryMatchesTheContainer	12.05
+TestHostIfname_APluginRecycleLeavesTheNamedLinkAlone	26.00
+TestHostIfname_ALongNameIsTruncatedAndATakenOneIsRefused	24.00
+TestHostIfname_IsRederivedOnRestart	22.00
+TestHostIfname_TheHostLinkTakesTheContainersName	14.50
 TestHostname_ReachesTheServersTableAfterTheClientStarts	12.08
 TestIPAM_AContainerStartedInsideTheWindowTakesTheTombstone	38.00
 TestIPAM_ARemovedNeighbourMakesTheRebindAmbiguous	34.00
