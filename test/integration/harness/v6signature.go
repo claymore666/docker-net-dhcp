@@ -495,7 +495,27 @@ type RAPrefix struct {
 	// OnLink is the L bit, Autonomous the A bit.
 	OnLink     bool
 	Autonomous bool
+	// ValidLifetime and PreferredLifetime are the option's two
+	// lifetimes IN SECONDS, exactly as they sit on the wire, and
+	// RAInfiniteLifetime is the value that means "never expires".
+	//
+	// SECONDS AND NOT time.Duration, which is what RouterLifetime next
+	// door uses. RFC 4861 section 4.6.2 spells infinity as
+	// 0xFFFFFFFF, and a Duration cannot hold that as anything but a
+	// number of years indistinguishable from a router that really
+	// advertised 136 of them. The distinction is the whole of what a
+	// deprecation test reads: a preferred lifetime of 0 and a valid
+	// lifetime of infinity are the two ends of the same field, and an
+	// address carrying them is deprecated and permanent at once.
+	ValidLifetime     uint32
+	PreferredLifetime uint32
 }
+
+// RAInfiniteLifetime is RFC 4861 section 4.6.2's "infinity" in both
+// lifetime fields of a Prefix Information option. The kernel spells the
+// same thing as a zero lifetime in IFA_CACHEINFO, which is why the two
+// are never compared without one of them being converted.
+const RAInfiniteLifetime uint32 = 0xFFFFFFFF
 
 func (f RAFrame) String() string {
 	flags := []string{}
@@ -517,11 +537,20 @@ func (f RAFrame) String() string {
 		if p.Autonomous {
 			pf = append(pf, "auto")
 		}
-		parts = append(parts, fmt.Sprintf("%s/%d [%s]", p.Prefix, p.PrefixLen, strings.Join(pf, ", ")))
+		parts = append(parts, fmt.Sprintf("%s/%d [%s] valid=%s preferred=%s",
+			p.Prefix, p.PrefixLen, strings.Join(pf, ", "),
+			raLifetimeString(p.ValidLifetime), raLifetimeString(p.PreferredLifetime)))
 	}
 	return fmt.Sprintf("%s RA src=%s flags=[%s] lifetime=%s hoplimit=%d prefixes=%s",
 		f.At.Format("15:04:05.000"), f.SourceMAC, strings.Join(flags, ", "),
 		f.RouterLifetime, f.CurHopLimit, strings.Join(parts, " "))
+}
+
+func raLifetimeString(secs uint32) string {
+	if secs == RAInfiniteLifetime {
+		return "infinite"
+	}
+	return fmt.Sprintf("%ds", secs)
 }
 
 // The offsets ParseRA reads, spelled out because getting one of them
@@ -558,6 +587,13 @@ const (
 	raOptPrefixInfo     = 3
 	raPrefixFlagOnLink  = 0x80
 	raPrefixFlagAutonom = 0x40
+	// RFC 4861 section 4.6.2 lays the Prefix Information option out as
+	// type, length, prefix length, flags, then the two 32-bit
+	// lifetimes, then 4 reserved bytes, then the prefix. So valid is
+	// at offset 4 and preferred at 8, and the prefix at 16, which is
+	// where the decoder already reads it.
+	raPrefixValidOffset     = 4
+	raPrefixPreferredOffset = 8
 )
 
 // ParseRA decodes an ethernet frame carrying an ICMPv6 Router
@@ -607,10 +643,12 @@ func ParseRA(b []byte) (RAFrame, bool) {
 		}
 		if o[0] == raOptPrefixInfo && optLen >= 32 {
 			f.Prefixes = append(f.Prefixes, RAPrefix{
-				Prefix:     net.IP(append([]byte(nil), o[16:32]...)),
-				PrefixLen:  o[2],
-				OnLink:     o[3]&raPrefixFlagOnLink != 0,
-				Autonomous: o[3]&raPrefixFlagAutonom != 0,
+				Prefix:            net.IP(append([]byte(nil), o[16:32]...)),
+				PrefixLen:         o[2],
+				OnLink:            o[3]&raPrefixFlagOnLink != 0,
+				Autonomous:        o[3]&raPrefixFlagAutonom != 0,
+				ValidLifetime:     binary.BigEndian.Uint32(o[raPrefixValidOffset : raPrefixValidOffset+4]),
+				PreferredLifetime: binary.BigEndian.Uint32(o[raPrefixPreferredOffset : raPrefixPreferredOffset+4]),
 			})
 		}
 		o = o[optLen:]

@@ -97,6 +97,31 @@ const raManagedSilentHex = "33330000000162bb4b8d99c986dd6c066d8800703afffe800000
 	"4b8d99c91f030000000007080676366d6f6465076578616d706c65001903000000000708fd00" +
 	"6470686500000000000000000053"
 
+// A SLAAC segment whose one prefix is advertised DEPRECATED: the
+// autonomous bit is set, the valid lifetime is RFC 4861 section
+// 4.6.2's infinity and the preferred lifetime is zero, so a node forms
+// the address and the kernel marks it deprecated the moment it does.
+//
+// MEASURED 2026-09-16 on the session box, dnsmasq 2.91 under
+// `unshare -Urn`, one veth pair, `--dhcp-range=fd00:6470:6865::,ra-only,deprecated`
+// plus --enable-ra: the prefix option reads `03 04 40 c0 ffffffff
+// 00000000`, and the library's own client formed
+// fd00:6470:6865:0:b8be:26ff:fe2d:babd/64 from it in one second with
+// its preferred instant already past and its valid instant the zero
+// time, which is that seam's spelling of "never expires".
+//
+// It is the wire half of #819's deprecation arm. No mode of this
+// fixture advertises it, because its five-field signature is SLAAC's
+// exactly -- the difference is in the option's lifetimes, which the
+// signature deliberately does not read -- so the segment is started
+// through NewV6FixtureWithArgs under the slaac name and the test that
+// wants it reads these two lifetimes itself.
+const raDeprecatedPrefixHex = "33330000000182a66511995286dd6c0da1e400703afffe8000000000000080a665fffe119952" +
+	"ff02000000000000000000000000000186006c68400007080000000000000000030440c0ffff" +
+	"ffff0000000000000000fd00647068650000000000000000000005010000000005dc010182a6" +
+	"651199521f030000ffffffff0676366d6f6465076578616d706c650019030000fffffffffd00" +
+	"6470686500000000000000000053"
+
 func mustFrame(t *testing.T, s string) []byte {
 	t.Helper()
 	b, err := hex.DecodeString(strings.ReplaceAll(s, " ", ""))
@@ -124,20 +149,29 @@ func mustFrame(t *testing.T, s string) []byte {
 // them able to tell those two readings apart at all.
 func TestParseRA_ReadsTheFlagsFromTheByteAfterCurHopLimit(t *testing.T) {
 	cases := []struct {
+		name           string
 		mode           V6Mode
 		hexFrame       string
 		managed, other bool
 		autonomous     bool
+		// The prefix option's two lifetimes, in seconds. Every mode of
+		// this fixture advertises 1800 for both, which is dnsmasq's
+		// own default and not the fixture's 2m lease time; the
+		// deprecated capture is the row that carries anything else,
+		// and it is here so the two fields are read from a frame that
+		// distinguishes them rather than from five that agree.
+		wantValid, wantPreferred uint32
 	}{
-		{V6Managed, raManagedHex, true, true, false},
-		{V6Stateless, raStatelessHex, false, true, true},
-		{V6SLAAC, raSLAACHex, false, false, true},
-		{V6ManagedSilent, raManagedSilentHex, true, true, false},
-		{V6ManagedExhausted, raManagedExhaustedHex, true, true, false},
-		{V6AutoFallback, raAutoFallbackHex, true, true, true},
+		{"managed", V6Managed, raManagedHex, true, true, false, 1800, 1800},
+		{"stateless", V6Stateless, raStatelessHex, false, true, true, 1800, 1800},
+		{"slaac", V6SLAAC, raSLAACHex, false, false, true, 1800, 1800},
+		{"managed-silent", V6ManagedSilent, raManagedSilentHex, true, true, false, 1800, 1800},
+		{"managed-exhausted", V6ManagedExhausted, raManagedExhaustedHex, true, true, false, 1800, 1800},
+		{"auto-fallback", V6AutoFallback, raAutoFallbackHex, true, true, true, 1800, 1800},
+		{"slaac with a deprecated prefix", V6SLAAC, raDeprecatedPrefixHex, false, false, true, RAInfiniteLifetime, 0},
 	}
 	for _, c := range cases {
-		t.Run(c.mode.String(), func(t *testing.T) {
+		t.Run(c.name, func(t *testing.T) {
 			f, ok := ParseRA(mustFrame(t, c.hexFrame))
 			if !ok {
 				t.Fatalf("ParseRA refused a captured router advertisement")
@@ -178,6 +212,17 @@ func TestParseRA_ReadsTheFlagsFromTheByteAfterCurHopLimit(t *testing.T) {
 			}
 			if f.RouterLifetime != 1800*time.Second {
 				t.Errorf("router lifetime = %s, want 30m", f.RouterLifetime)
+			}
+			// The prefix option's own lifetimes, which are a
+			// different field from the router lifetime above and sit
+			// twelve bytes further into a different option. Reading
+			// one for the other is the same class of mistake as
+			// reading Cur Hop Limit for the flags, and it is just as
+			// plausible: five of these seven frames carry 1800 in all
+			// three places.
+			if p.ValidLifetime != c.wantValid || p.PreferredLifetime != c.wantPreferred {
+				t.Errorf("prefix valid=%d preferred=%d, want valid=%d preferred=%d",
+					p.ValidLifetime, p.PreferredLifetime, c.wantValid, c.wantPreferred)
 			}
 			if f.SourceMAC == nil || len(f.SourceMAC) != 6 {
 				t.Errorf("source MAC = %v, want six bytes", f.SourceMAC)

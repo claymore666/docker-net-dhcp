@@ -272,6 +272,36 @@ func (m V6Mode) rangeArgs() []string {
 	return nil
 }
 
+// V6DeprecatedPrefixArgs is V6SLAAC's segment with its one prefix
+// advertised DEPRECATED: the autonomous bit set, the valid lifetime
+// RFC 4861 section 4.6.2's infinity, and the preferred lifetime zero.
+// A node forms the address and the kernel marks it deprecated the
+// moment it does, which is RFC 4862 section 5.5.4's state without
+// waiting for a lifetime to run out.
+//
+// IT IS ARGV AND NOT A V6Mode, deliberately. Its five-field signature
+// is V6SLAAC's exactly -- same flags, same autonomous bit -- because
+// what separates the two is inside the prefix option's lifetimes, and
+// V6Signature does not read those. Adding it as a mode would therefore
+// add a pair to V6IndistinguishableModes, exempt that pair from the
+// drift matrix in both directions, and grow the matrix by thirteen
+// segments to say nothing new. The test that wants this segment starts
+// it under the slaac name, where every assertion the fixture makes
+// still holds, and reads the two lifetimes off the captured frame
+// itself (RAPrefix.PreferredLifetime).
+//
+// dnsmasq's spelling is the `deprecated` keyword in the lease-time
+// field of a v6 --dhcp-range (option.c:3919). MEASURED 2026-09-16,
+// dnsmasq 2.91 under `unshare -Urn`: the option comes out
+// `03 04 40 c0 ffffffff 00000000`, which is radv.c:707 setting the
+// ceiling to zero after the valid lifetime has already been clamped.
+func V6DeprecatedPrefixArgs() []string {
+	return []string{
+		"--dhcp-range=" + V6Prefix + ",ra-only,deprecated",
+		"--enable-ra",
+	}
+}
+
 // RangeArgsFor is rangeArgs, exported for the drift matrix: the contract
 // test needs to start one mode's flags under another mode's name, and
 // doing that through the same function production uses is what makes
