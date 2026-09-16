@@ -229,6 +229,18 @@ func TestInfoFromConfig(t *testing.T) {
 		t.Errorf("a Configured event produced IP %q gateway %q", info.IP, info.Gateway)
 	}
 
+	// AND IT SAYS NOTHING ABOUT THE ROUTER, which is what keeps it from
+	// withdrawing the link's MTU. This is the second constructor of a v6
+	// Info, and an Information-request Reply (RFC 9915 section 18.2.6)
+	// carries no router information at all: MTU 0 here is the reply not
+	// mentioning it, never a router that stopped advertising one. With
+	// RouterSeen set, every stateless event would drop the v6 MTU vote
+	// and hand the link to the v4 number.
+	if info.RouterSeen || info.MTU != 0 {
+		t.Errorf("a Configured event claimed to carry router information "+
+			"(RouterSeen=%v MTU=%d)", info.RouterSeen, info.MTU)
+	}
+
 	poisoned := lease.Configuration{Search: []string{"ok.test", "bad\nnameserver 10.0.0.1"}}
 	info, dropped = infoFromConfig(poisoned)
 	if dropped == 0 {
