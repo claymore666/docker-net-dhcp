@@ -23,11 +23,17 @@ links here instead of repeating them.
 | `sbom-arm64.spdx.json`, `sbom-arm64.cdx.json` | the arm64 SBOMs |
 
 The plugin image itself lives at
-`ghcr.io/claymore666/docker-net-dhcp:vX.Y.Z` (mirrored to Docker Hub as
-`claymore666/net-dhcp`), is cosign-signed on both registries, and
-carries SLSA build provenance **on GHCR only**. The Docker Hub mirror is
-signed but not provenance-attested, and the two registries carry
-different digests. Verify provenance against the `ghcr.io` reference.
+`ghcr.io/claymore666/docker-net-dhcp:vX.Y.Z`, mirrored to Docker Hub
+under two names, `claymore666/net-dhcp` and
+`claymore666/docker-net-dhcp`. The second carries every release from
+v2.0.0: v2.0.0 and v2.1.0 were copied by hand and the release workflow
+publishes it from v2.2.0 onward. It is
+cosign-signed on both registries, and carries SLSA build provenance **on
+GHCR only**. The Docker Hub mirror is signed but not
+provenance-attested, and GHCR and Docker Hub carry different digests.
+The two Docker Hub names carry the same digest and the same signature,
+so a `cosign verify` against either one is the same check. Verify
+provenance against the `ghcr.io` reference.
 The arm64 image is the same at `:vX.Y.Z-arm64`; every verification step
 below applies to it with the `-arm64` tag and the `-arm64` artifact
 names substituted, in a directory of its own. See [One architecture per
@@ -149,6 +155,11 @@ cosign verify ghcr.io/claymore666/docker-net-dhcp:VERSION \
   --certificate-identity-regexp '^https://github.com/claymore666/docker-net-dhcp/.github/workflows/release.yml@' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```
+
+If you installed from Docker Hub, put the reference you installed from
+in place of the `ghcr.io` one: `claymore666/net-dhcp:VERSION` or
+`claymore666/docker-net-dhcp:VERSION`. Those two resolve to one digest
+and one signature, so verifying either verifies the image you have.
 
 ## Verifying build provenance
 

@@ -29,8 +29,50 @@
 # one layer up. So all three sets come out of the workflow itself:
 #
 #   publish  `make PLUGIN_NAME="${N}" PLUGIN_TAG="${T}" ... push`
+#            or a command whose LAST operand is `"<host>/${N}:${T}"` --
+#            the DESTINATION of a copy publishes a name just as a build
+#            does
 #   verify   `REF="${N}:${T}"` in a job that really installs
 #   promote  `crane tag "${N}:${T}" ...`
+#
+# A COPY PUBLISHES (#972). The Hub alias is the same manifest under a
+# second name, copied after signing instead of built again, because a
+# second `docker plugin create` re-tars the rootfs and changes the
+# digest (#267). Keyed only on `make ... push`, this gate would have
+# seen an install verifier and a promotion for a name it did not think
+# was published, and said nothing: the alias could have stopped being
+# published and the proofs would have gone on verifying whatever was
+# already in that repository.
+#
+# The destination is the LAST reference on the line, which is what the
+# anchor at the end of the pattern picks out, and the line itself has to
+# sit outside shell quoting for the same reason an install does. An
+# echoed copy is an advertisement.
+#
+# THE COPY IS NOT KEYED ON THE TOOL. It was `oras cp` for one round,
+# and then the copy moved into `scripts/publish-hub-alias.sh` so its
+# refusal branch could be driven with the transport stubbed -- at which
+# point a gate keyed on the tool name reported the alias verified and
+# promoted but never published, which is exactly the reverse-direction
+# failure a few paragraphs down. The tool is the mechanism; the property
+# is that an EXECUTED command line ends in a registry reference it is
+# writing to, and `copies()` reads that in three parts: the reference is
+# a separate final operand, the line's first word is outside quoting,
+# and that first word is not `echo` or `printf`. The last condition is
+# where the advertisement is excluded, because `echo "oras cp src"
+# "dst"` satisfies the other two and publishes nothing -- exactly as the
+# install detection excludes an advertisement by insisting the command
+# word is executed.
+#
+# It follows that the argument order in the caller is load-bearing, and
+# `scripts/publish-hub-alias.sh` says so in its own header: put the
+# destination anywhere but last and the alias silently leaves the
+# published set here.
+#
+# THE SETS ARE COMPARED IN BOTH DIRECTIONS. A published cell with no
+# verifier was the #833 failure; a verifier or a promotion for a cell
+# nothing publishes is the same defect approached from the other side,
+# and it is what a dropped copy looks like. Both are failures here.
 #
 # Add a registry and its publish cell appears here with no verifier;
 # this fails and names the cell.
@@ -139,6 +181,9 @@ TOP   = re.compile(r"^[A-Za-z]")
 ENVKV = re.compile(r"^\s+([A-Za-z_][A-Za-z0-9_]*):\s*(\S.*?)\s*$")
 
 PUBLISH = re.compile(r'PLUGIN_NAME="\$\{(\w+)\}".*PLUGIN_TAG="\$\{(\w+)\}"')
+COPY    = re.compile(r'\s"(?:[A-Za-z0-9.:-]+/)?\$\{(\w+)\}:\$\{(\w+)\}"\s*$')
+OPERAND = re.compile(r'"(?:[A-Za-z0-9.:-]+/)?\$\{(\w+)\}:\$\{(\w+)\}"')
+PRINTER = re.compile(r'(?:echo|printf)$')
 VERIFY  = re.compile(r'REF="\$\{(\w+)\}:\$\{(\w+)\}"')
 PROMOTE = re.compile(r'crane tag\s+"\$\{(\w+)\}:\$\{(\w+)\}"')
 INSTALL = re.compile(r"docker plugin install\b.*--grant-all-permissions")
@@ -178,13 +223,76 @@ def unquoted_offsets(text):
     return out
 
 
+def runs(text, rx):
+    """The first match of `rx` that a shell would EXECUTE.
+    An occurrence inside quotes is text the step prints, not a command
+    it runs. Used for the install detection (#858) and for the copy
+    that publishes the alias (#972): an echoed copy publishes nothing.
+    """
+    free = unquoted_offsets(text)
+    for m in rx.finditer(text):
+        if m.start() in free:
+            return m
+    return None
+
 def is_install(text):
     """True when `text` runs an install rather than printing one."""
+    return runs(text, INSTALL) is not None
+
+
+def copies(text):
+    """The match when `text` is a command line PUBLISHING its last operand.
+
+    Three conditions, none of them the name of a tool (#972):
+
+      1. the line ends in a quoted `<host>/${N}:${T}` operand, preceded
+         by whitespace that is itself outside quoting -- so the
+         reference is a separate argument and `REF="${N}:${T}"`, which
+         has no space before its quote, stays an assignment;
+      2. the first word is not a printing builtin. `echo "cmd ..."
+         "<dest>"` satisfies (1) and publishes nothing, and nothing
+         about the reference itself can tell the two apart -- what
+         differs is whether the process started writes to a registry or
+         to stdout;
+      3. the line names a SECOND registry reference. A copy reads a
+         source and writes a destination, so it carries two; a command
+         that carries one and ends in a reference is reading it.
+
+    (3) is here because (1) and (2) alone could not tell a write from a
+    read, and that was measured, not argued: replacing both copy calls
+    with `crane digest "docker.io/${HUB_ALIAS}:${TAG}"` -- a pure read
+    of the same reference -- left this gate reporting its strongest
+    pass while nothing published the alias at all, and the two install
+    proofs and the promotion ran over whatever that repository already
+    held. The version this replaced caught that by naming `oras cp -r`,
+    and could not survive the tool changing; keying on the operand
+    count catches it without naming a tool.
+
+    THE BOUND. This reads arity, not intent. A two-operand READ would
+    still be taken for a copy, and no property of the step line
+    distinguishes one; what carries that is the copy step's own script
+    and the self-test that drives its refusals. In the other direction
+    a one-operand WRITE -- a direct `docker plugin push "<ref>"` -- is
+    not a copy and not the `make push` shape either, so it is invisible
+    to both publish rules.
+
+    A quoted command word is deliberately NOT a condition. A quoted
+    word still executes, so excluding it would only have dropped the
+    continuation lines of a wrapped command, whose last operand is
+    published all the same.
+    """
+    m = COPY.search(text)
+    if m is None:
+        return None
     free = unquoted_offsets(text)
-    for m in INSTALL.finditer(text):
-        if m.start() in free:
-            return True
-    return False
+    if m.start() not in free:
+        return None
+    body = text.split()
+    if body and PRINTER.match(body[0]):
+        return None
+    if len(OPERAND.findall(text)) < 2:
+        return None
+    return m
 
 jobs, cur, in_jobs = [], None, False
 for line in open(sys.argv[1], encoding="utf-8"):
@@ -207,6 +315,9 @@ for line in open(sys.argv[1], encoding="utf-8"):
     for role, rx in (("publish", PUBLISH), ("verify", VERIFY), ("promote", PROMOTE)):
         for n, t in rx.findall(stripped):
             cur["hits"].append((role, n, t))
+    copied = copies(stripped)
+    if copied is not None:
+        cur["hits"].append(("publish", copied.group(1), copied.group(2)))
     if is_install(stripped):
         cur["install"] = True
 
@@ -272,8 +383,30 @@ report() { # verb noun set
 report "install-verifies it"      "install verifier"      "$verified"
 report "promotes it to :latest"  "promotion to :latest"  "$promoted"
 
+# THE OTHER DIRECTION (#972). A verifier or a promotion for a cell that
+# nothing publishes is not a harmless extra: it is what a dropped
+# publish step looks like from here. The proof goes on installing, and
+# the tag goes on moving, over whatever was already in that repository
+# -- which is the previous release. The publish set is the one that
+# decides what users can pull, so anything claiming to cover a cell
+# outside it is claiming to cover an object this workflow does not make.
+orphan() { # noun set
+    local noun="$1" have="$2" extra art="a"
+    case "$noun" in [aeiou]*) art="an" ;; esac
+    extra=$(comm -13 <(printf '%s\n' "$published") <(printf '%s\n' "$have"))
+    [ -n "$extra" ] || return 0
+    rc=1
+    while IFS= read -r c; do
+        [ -n "$c" ] || continue
+        echo "::error title=${art^} ${noun} for a cell nothing publishes::${c} has ${art} ${noun} in $WORKFLOW, but no step in this workflow publishes that cell. It would keep passing over whatever is already in that repository." >&2
+        echo "FAIL: $c has ${art} ${noun}, but nothing publishes it" >&2
+    done <<< "$extra"
+}
+orphan "install verifier"     "$verified"
+orphan "promotion to :latest" "$promoted"
+
 if [ "$rc" -eq 0 ]; then
-    echo "OK: $(printf '%s\n' "$published" | wc -l) published cell(s), each install-verified and promoted:"
+    echo "OK: $(printf '%s\n' "$published" | wc -l) published cell(s), each install-verified and promoted, and nothing verified or promoted that is not published:"
     printf '%s\n' "$published" | sed 's/^/  /'
 fi
 exit "$rc"
