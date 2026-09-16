@@ -143,9 +143,9 @@ func releaseTestIdentity6() dhcp.Identity6 {
 // A typo that fell through to the default would be the worst available
 // outcome: an operator who wrote `release_lease=on_stpo` gets a network
 // that looks configured and never releases, and nothing anywhere says
-// so. `on_remove` is refused BY NAME and with its own sentence, because
-// it is #962's own third value and "not a value this plugin implements"
-// would read as a typo rather than as a decision.
+// so. The three values this plugin implements resolve and everything
+// else is refused with all three named, so the message tells an
+// operator what they may have meant.
 func TestReleaseLease_ParseRefusesEveryValueItDoesNotImplement(t *testing.T) {
 	for _, tc := range []struct {
 		in      string
@@ -159,19 +159,14 @@ func TestReleaseLease_ParseRefusesEveryValueItDoesNotImplement(t *testing.T) {
 		{in: "", want: ReleaseNever},
 		{in: "never", want: ReleaseNever},
 		{in: "on_stop", want: ReleaseOnStop},
-		{in: "on_remove", wantErr: true, mentions: []string{
-			// The measured reason, and the two things the wording is
-			// required to do beside it: say the value is not there yet
-			// and say when it arrives. A message that said the value
-			// does not exist would be false about a mechanism already
-			// scoped on this milestone.
-			"STOPS, not when the container is removed",
-			"not available yet",
-			"it arrives in a later release",
-		}},
-		{in: "On_Stop", wantErr: true, mentions: []string{"is not one of"}},
-		{in: "on_stpo", wantErr: true, mentions: []string{"is not one of"}},
-		{in: "ON_REMOVE", wantErr: true, mentions: []string{"is not one of"}},
+		{in: "on_remove", want: ReleaseOnRemove},
+		// The refusal names every value, and `on_remove` is the row
+		// that proves it: a message listing the two values that
+		// existed before #984 would send an operator who mistyped the
+		// third one looking for a value the plugin has.
+		{in: "On_Stop", wantErr: true, mentions: []string{"is not one of", "on_remove"}},
+		{in: "on_stpo", wantErr: true, mentions: []string{"is not one of", "on_remove"}},
+		{in: "ON_REMOVE", wantErr: true, mentions: []string{"is not one of", "on_remove"}},
 		{in: "always", wantErr: true, mentions: []string{"is not one of"}},
 		{in: " on_stop", wantErr: true, mentions: []string{"is not one of"}},
 		{in: "true", wantErr: true, mentions: []string{"is not one of"}},

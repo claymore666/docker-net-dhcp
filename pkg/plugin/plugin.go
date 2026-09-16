@@ -1293,10 +1293,10 @@ type Plugin struct {
 	ipamPools    *issuedPools
 	ipamIndex    *ipamIndex
 	ipamReserves *ipamReserves
-	// ipamSweepStop ends the reservation sweeper. Closed by Close and
+	// recordSweepStop ends the record sweeper. Closed by Close and
 	// never written to, so a double Close is the one thing it must not
 	// tolerate -- Close already refuses to run twice.
-	ipamSweepStop chan struct{}
+	recordSweepStop chan struct{}
 
 	// ipamReplayHits counts stored endpoint addresses this plugin
 	// confirmed at a daemon restart from its own lease record.
@@ -1634,6 +1634,30 @@ type Plugin struct {
 	// failure that reads as a fresh one (checkStamps).
 	releaseFailuresV4 stampedCounter
 	releaseFailuresV6 stampedCounter
+
+	// releasesReclaimed* is the other half of `release_lease=on_remove`
+	// working (#984): a held address that a RUNNING container is using
+	// again at the end of the restart window, so the plugin closed the
+	// record and sent nothing.
+	//
+	// ONE OF THE THREE WAYS A HELD ADDRESS IS NOT HANDED BACK, not all
+	// three. claimNewerHold and claimInFlight in deferred_release.go
+	// also send nothing and are not counted: neither is a container
+	// running on the address, which is what an operator reads this
+	// number as.
+	//
+	// IT IS THE ONLY OUTSIDE SIGN THAT THE WINDOW DID ITS JOB. A
+	// release that is not sent leaves no trace anywhere else: the
+	// server sees nothing, the log line is a Debug, and
+	// `releases_sent` staying flat reads exactly like an option that
+	// is not working. An operator asking why an address was not handed
+	// back reads this counter.
+	//
+	// Not healthy-affecting and not a warning: a reclaim is the option
+	// behaving as documented, and on a host whose containers restart
+	// often it is the commonest outcome.
+	releasesReclaimedV4 atomic.Int32
+	releasesReclaimedV6 atomic.Int32
 
 	// dhcpv6ConfigOnly counts DHCPv6 information replies: the server
 	// advertised "other configuration available" and answered with
@@ -2934,12 +2958,16 @@ func NewPlugin(opts Options) (*Plugin, error) {
 	// else ever asking again. A no-op unless that happened, which is the
 	// only reason it is cheap enough to sit on the enable path.
 	p.reprobeEngine(context.Background())
-	// The reservation sweeper, last, so nothing above can return an
-	// error with it already running. It is the in-memory half of what
-	// retainOrphanedReservations does across a restart: an address
-	// Docker asked for and never created an endpoint for.
-	p.ipamSweepStop = make(chan struct{})
-	go p.ipamSweeper(p.ipamSweepStop)
+	// The record sweeper, last, so nothing above can return an error
+	// with it already running, and so that it cannot look at the
+	// records before the recovery above has adopted the containers that
+	// are still running. It carries two passes: the in-memory half of
+	// what retainOrphanedReservations does across a restart, an address
+	// Docker asked for and never created an endpoint for; and the
+	// deferred release of an address whose restart window has run out
+	// on a `release_lease=on_remove` network (#984).
+	p.recordSweepStop = make(chan struct{})
+	go p.recordSweeper(p.recordSweepStop)
 
 	return &p, nil
 }
@@ -3094,9 +3122,9 @@ func (p *Plugin) Close() error {
 	if p.recoveryCancel != nil {
 		p.recoveryCancel()
 	}
-	if p.ipamSweepStop != nil {
-		close(p.ipamSweepStop)
-		p.ipamSweepStop = nil
+	if p.recordSweepStop != nil {
+		close(p.recordSweepStop)
+		p.recordSweepStop = nil
 	}
 
 	// One deadline for every phase below; see pluginShutdownTimeout.

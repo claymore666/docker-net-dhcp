@@ -695,6 +695,23 @@ func (p *Plugin) saveNetworkAndBind(networkID string, opts DHCPNetworkOptions, b
 // just unblocks the event loop and returns; the client itself may have
 // already stopped because its netns vanished.
 func (p *Plugin) DeleteNetwork(r DeleteNetworkRequest) error {
+	// FIRST, AND THE ORDER IS THE WHOLE OF IT (#984). On a
+	// `release_lease=on_remove` network every address this network is
+	// still holding goes back here, and both halves of that -- whether
+	// the network releases at all, and which interface the datagram
+	// leaves by -- are read from the stored options that deleteOptions
+	// below removes. A release placed after it would read no options,
+	// decide nothing and report nothing, and the addresses would leak
+	// in silence. The tombstones that could otherwise hand one to a
+	// restarting container are keyed by this network id and die with
+	// it, so this is the last moment anything can be done with them.
+	if released := p.releaseNetworkRecords(r.NetworkID); released > 0 {
+		log.WithFields(log.Fields{
+			"network":  r.NetworkID,
+			"released": released,
+		}).Info("release_lease=on_remove: handed this network's still-held addresses back before removing it")
+	}
+
 	// The binding goes with the network, and it goes HERE rather than in
 	// ReleasePool: libnetwork calls ReleasePool for a create that failed
 	// on a PoolID another network may hold, and again at every delete

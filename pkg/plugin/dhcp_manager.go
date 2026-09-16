@@ -2063,6 +2063,16 @@ func (m *dhcpManager) stop(leaving bool) error {
 		m.releasedV6.Store(releasedV6)
 	}
 
+	// `on_remove` releases NOTHING here, and that is the value working
+	// rather than the value missing (#984). Its release is timed: the
+	// record keeps its lease and its deadline, exactly as under
+	// `never`, and the sweep hands the address back when the restart
+	// window has run out. All that happens at the stop is the line
+	// that says so.
+	if leaving && m.opts.releasesOnRemove() {
+		m.announceDeferredRelease()
+	}
+
 	if m.startErr != nil {
 		// No persistent client ever ran, so there is nothing to stop,
 		// and the CreateEndpoint one-shot's lease is left where
