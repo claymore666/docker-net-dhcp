@@ -457,7 +457,7 @@ func (m *dhcpManager) releaseFamily(v6 bool) bool {
 // lease this endpoint may still resume.
 func (m *dhcpManager) releaseHeldLeases() (releasedV4, releasedV6 bool) {
 	releasedV4 = m.releaseFamily(false)
-	if m.opts.IPv6 {
+	if m.opts.ipv6Enabled() {
 		releasedV6 = m.releaseFamily(true)
 	}
 

@@ -91,6 +91,22 @@ net_dhcp_dhcpv6_config_only_total 5338778
 # TYPE net_dhcp_dhcpv6_not_offered_total counter
 net_dhcp_dhcpv6_not_offered_total 8785870
 
+# HELP net_dhcp_dhcpv6_refused_total Endpoints that failed because a DHCPv6 server answered and refused the client, carrying a Status Code other than Success (RFC 9915 section 21.13). The code's name is in the log line beside the endpoint. The server is reachable and configured and has no address for this client: an exhausted pool answers NoAddrsAvail, and a client asking for an address outside the range the server serves gets NotOnLink. Kept apart from dhcpv6_no_server, which is the ending where nothing answered at all.
+# TYPE net_dhcp_dhcpv6_refused_total counter
+net_dhcp_dhcpv6_refused_total 8005990
+
+# HELP net_dhcp_dhcpv6_no_server_total Endpoints that failed because the segment's router advertisement carried the managed-address flag and no DHCPv6 server answered inside the acquisition budget. The segment said addresses are available over DHCPv6 and none arrived. Kept apart from dhcpv6_refused, which is the ending where a server answered and said no.
+# TYPE net_dhcp_dhcpv6_no_server_total counter
+net_dhcp_dhcpv6_no_server_total 9239098
+
+# HELP net_dhcp_dhcpv6_slaac_no_prefix_total Endpoints that failed on a network whose ipv6_mode forms the address from a router advertisement, because a router advertised and none of its prefixes formed one. RFC 4862 section 5.5.3 lists the reasons a Prefix Information option forms nothing: no Autonomous flag, a zero valid lifetime, a preferred lifetime past the valid one, a prefix length that with the interface identifier does not total 128 bits, or the link-local prefix. The router's prefix configuration is what to look at.
+# TYPE net_dhcp_dhcpv6_slaac_no_prefix_total counter
+net_dhcp_dhcpv6_slaac_no_prefix_total 6989731
+
+# HELP net_dhcp_dhcpv6_auto_fallbacks_total Endpoints on an ipv6_mode=auto network whose IPv6 address was formed from a router's advertised prefix after the segment advertised DHCPv6 and no server answered inside the fallback window, which is half the router-discovery window by default. It counts addresses that really formed and never fallbacks attempted. Set ipv6_auto_strict=true on the network to fail those endpoints instead of forming an address.
+# TYPE net_dhcp_dhcpv6_auto_fallbacks_total counter
+net_dhcp_dhcpv6_auto_fallbacks_total 1307764
+
 # HELP net_dhcp_dhcpv6_no_router_advert_total Endpoints started on an IPv6 network where no router advertisement arrived inside the acquisition budget. The endpoint keeps running with no IPv6 address. Usually a missing or misconfigured router rather than a plugin fault, but unlike dhcpv6_not_offered it is not a configuration the operator chose.
 # TYPE net_dhcp_dhcpv6_no_router_advert_total counter
 net_dhcp_dhcpv6_no_router_advert_total 2266478

@@ -383,7 +383,9 @@ func acquireOnce6(ctx context.Context, iface string, params proto.Params6, opts 
 	// AFTER the drain: the last advertisement can arrive on the same
 	// pass as the event that ended the loop.
 	ra = raObservation(client.Router())
-	opts.count(manager, client.Stats())
+	stats := client.Stats()
+	opts.count(manager, stats)
+	opts.v6ModeReport(stats)
 
 	if info.IP == "" {
 		if lastE == nil {
@@ -477,7 +479,21 @@ func runAcquisition6(ctx context.Context, iface string, client v6AcquisitionClie
 	for !got {
 		select {
 		case <-acqCtx.Done():
-			lastE = acqCtx.Err()
+			// THE CAUSE ALREADY IN HAND IS KEPT AND THE DEADLINE IS
+			// ADDED TO IT (#816). A DHCPv6 server that refuses this
+			// client answers and the machine goes back to discovery
+			// (RFC 9915 section 18.2.10.1), so the refusal arrives
+			// early and the window still runs out; an assignment here
+			// overwrote it, and the verdict pkg/plugin draws would
+			// have read "nobody answered" for a segment whose server
+			// said NoAddrsAvail. Both errors stay in the chain, so a
+			// caller testing for context.DeadlineExceeded still finds
+			// it.
+			if lastE == nil {
+				lastE = acqCtx.Err()
+			} else {
+				lastE = fmt.Errorf("%w; the DHCPv6 acquisition budget then ran out: %w", lastE, acqCtx.Err())
+			}
 			got = true
 
 		case <-poll.C:
@@ -561,6 +577,9 @@ func acquireStep6(ev lease.Event, hinted bool) acquireOutcome {
 	case lease.Failed:
 		if hinted && ev.Reason == proto.ReasonConflict {
 			return acquireOutcome{Done: true, Err: fmt.Errorf("dhcp: %w: %v", errV6HintInUse, ev.Note)}
+		}
+		if err := v6FailureCause(ev); err != nil {
+			return acquireOutcome{Err: err}
 		}
 		return acquireOutcome{Err: fmt.Errorf("dhcp: DHCPv6 acquisition failed: %v", ev.Reason)}
 	}

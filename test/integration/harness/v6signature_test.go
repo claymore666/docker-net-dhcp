@@ -51,6 +51,17 @@ const raManagedHex = "333300000001d66740dba1e886dd6c04517e00703afffe800000000000
 	"40dba1e81f030000000007080676366d6f6465076578616d706c65001903000000000708fd00" +
 	"6470686500000000000000000053"
 
+// mode=managed-exhausted: M and O set, prefix advertised WITHOUT the
+// autonomous bit, exactly as managed -- the two differ in what the
+// server does with an address and not in what it advertises. Captured
+// 2026-09-16 on the session box, dnsmasq 2.91 in `unshare -Urn`, the
+// same run as logManagedExhausted below.
+const raManagedExhaustedHex = "333300000001f25f24640dca86dd6c02e82100703afffe80000000000000f05f24fffe640dca" +
+	"ff020000000000000000000000000001860008c140c007080000000000000000030440800000" +
+	"07080000070800000000fd00647068650000000000000000000005010000000005dc0101f25f" +
+	"24640dca1f030000000007080676366d6f6465076578616d706c65001903000000000708fd00" +
+	"6470686500000000000000000053"
+
 // mode=stateless: O set, M clear, prefix advertised as autonomous.
 const raStatelessHex = "33330000000146a1584be82e86dd6c0eca0100703afffe8000000000000044a158fffe4be82e" +
 	"ff020000000000000000000000000001860043e6404007080000000000000000030440c00000" +
@@ -109,6 +120,7 @@ func TestParseRA_ReadsTheFlagsFromTheByteAfterCurHopLimit(t *testing.T) {
 		{V6Stateless, raStatelessHex, false, true, true},
 		{V6SLAAC, raSLAACHex, false, false, true},
 		{V6ManagedSilent, raManagedSilentHex, true, true, false},
+		{V6ManagedExhausted, raManagedExhaustedHex, true, true, false},
 	}
 	for _, c := range cases {
 		t.Run(c.mode.String(), func(t *testing.T) {
@@ -234,6 +246,20 @@ Sep  5 23:33:22 dnsmasq-dhcp[747748]: DHCPv6, IP range fd00:6470:6865::10 -- fd0
 Sep  5 23:33:24 dnsmasq-dhcp[747748]: 658188 DHCPSOLICIT(br0) 00:03:00:01:ce:41:ae:6d:50:36 ignored
 `
 
+	// Captured 2026-09-16 in the same shape: dnsmasq 2.91 on one end of
+	// a veth pair in `unshare -Urn`, the library's own DHCPv6 client on
+	// the other, LC_ALL=C. The static-only range is what makes the
+	// server answer and refuse; the Advertise carries a message-level
+	// Status Code 2 and the client reported Failed{nak, NoAddrsAvail}
+	// on every Solicit.
+	logManagedExhausted = `Sep 16 18:44:16 dnsmasq-dhcp[4182581]: DHCP, IP range 192.168.103.10 -- 192.168.103.99, lease time 2m
+Sep 16 18:44:16 dnsmasq-dhcp[4182581]: DHCPv6, static leases only on fd00:6470:6865::ff, lease time 2m
+Sep 16 18:44:17 dnsmasq-dhcp[4182581]: RTR-ADVERT(s0) fd00:6470:6865::
+Sep 16 18:44:18 dnsmasq-dhcp[4182581]: 8008303 DHCPSOLICIT(s0) 00:03:00:01:02:42:ac:11:00:02 
+Sep 16 18:44:18 dnsmasq-dhcp[4182581]: 8008303 DHCPADVERTISE(s0) 00:03:00:01:02:42:ac:11:00:02 no addresses available
+Sep 16 18:44:18 dnsmasq-dhcp[4182581]: 8008303 sent size: 24 option: 13 status  2 no addresses available
+`
+
 	logManagedSilent = `Sep  5 23:33:27 dnsmasq-dhcp[747851]: DHCP, IP range 192.168.103.10 -- 192.168.103.99, lease time 2m
 Sep  5 23:33:27 dnsmasq-dhcp[747851]: DHCPv6, IP range fd00:6470:6865::10 -- fd00:6470:6865::99, lease time 2m
 Sep  5 23:33:28 dnsmasq-dhcp[747851]: RTR-ADVERT(br0) fd00:6470:6865::
@@ -253,6 +279,8 @@ func logFor(m V6Mode) string {
 		return logNoRA
 	case V6ManagedSilent:
 		return logManagedSilent
+	case V6ManagedExhausted:
+		return logManagedExhausted
 	}
 	return ""
 }
@@ -643,10 +671,11 @@ func TestV6ExchangeFindings_TheMustLineIsPerLineNotWholeLog(t *testing.T) {
 func evidenceFor(t *testing.T, mode V6Mode) V6Evidence {
 	t.Helper()
 	hexes := map[V6Mode]string{
-		V6Managed:       raManagedHex,
-		V6Stateless:     raStatelessHex,
-		V6SLAAC:         raSLAACHex,
-		V6ManagedSilent: raManagedSilentHex,
+		V6Managed:          raManagedHex,
+		V6Stateless:        raStatelessHex,
+		V6SLAAC:            raSLAACHex,
+		V6ManagedSilent:    raManagedSilentHex,
+		V6ManagedExhausted: raManagedExhaustedHex,
 	}
 	ev := V6Evidence{PoolLogged: mode.Signature().Pool}
 	if h, ok := hexes[mode]; ok {

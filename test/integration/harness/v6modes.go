@@ -121,6 +121,15 @@ const (
 	// reply, stateful ones included, and the plugin dropped it in
 	// both paths. Measured reaching the client as
 	// new_dhcp6_domain_search on INFORM6 and on BOUND6 alike.
+	// V6StaticOnlyAddrV6 is the single address V6ManagedExhausted's
+	// static-only range names, and it is deliberately NOT V6PoolStartV6.
+	// dnsmasq logs the address of a static-only range, so naming the
+	// pool's start here would put that string in the log and make this
+	// mode's signature identical to managed's -- which would exempt
+	// the pair from the drift matrix and leave the fixture unable to
+	// tell a segment that allocates from one that cannot.
+	V6StaticOnlyAddrV6 = "fd00:6470:6865::ff"
+
 	V6DNSServer    = "fd00:6470:6865::53"
 	V6SearchDomain = "v6mode.example"
 
@@ -217,6 +226,28 @@ func (m V6Mode) rangeArgs() []string {
 			"--dhcp-range=" + V6PoolStartV6 + "," + V6PoolEndV6 + "," + LeaseTime,
 			"--enable-ra",
 			"--dhcp-ignore=tag:dhcpv6",
+		}
+	case V6ManagedExhausted:
+		// A static-only v6 range: dnsmasq parses `static` into
+		// CONTEXT_STATIC|CONTEXT_DHCP (option.c:3822), address_allocate
+		// skips every static context (dhcp6.c:497), and a Solicit from
+		// a client with no matching --dhcp-host is answered with an
+		// Advertise carrying a message-level Status Code NoAddrsAvail
+		// (rfc3315.c:805-819). --enable-ra is what puts the M flag on
+		// the advertisement: a context with CONTEXT_DHCP and no
+		// CONTEXT_RA sets managed and other only when --enable-ra is
+		// given (radv.c:368-377).
+		//
+		// AN EXHAUSTED POOL AND A STATIC-ONLY ONE ARE THE SAME THING
+		// ON THE WIRE, and that is why the fixture is spelled this
+		// way: both reach rfc3315.c's "no address, return error" with
+		// the same option. Exhausting a real pool would need a second
+		// client holding the only address, a lease that must not
+		// expire inside the test, and an ordering between the two
+		// containers; this needs one directive and cannot flake.
+		return []string{
+			"--dhcp-range=" + V6StaticOnlyAddrV6 + ",static," + LeaseTime,
+			"--enable-ra",
 		}
 	}
 	return nil
