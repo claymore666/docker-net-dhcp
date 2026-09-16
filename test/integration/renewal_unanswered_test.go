@@ -137,6 +137,20 @@ func TestFailure_UnansweredRenewalsCounted(t *testing.T) {
 	base := w.Before()
 	baseWarn := harness.CountPluginLogLines(t, ctx, renewalWarnMarker, ep)
 
+	// THE RENEWALS THIS CELL IS ABOUT ARE THE ONES AFTER THE KILL, so
+	// they are counted from a baseline taken here rather than from the
+	// start of the capture (#961). Since that change a container whose
+	// attach entered through the sandbox key starts its DHCP client
+	// with no name and renews AT ONCE to carry the one the daemon
+	// answers with (RFC 2131 section 4.4.5). That renewal is answered,
+	// it happens milliseconds after the bind, and counted from zero it
+	// makes the wait below return one renewal early -- before the
+	// client has gone into silence twice, which is what the counter
+	// needs. On a host that takes the container PID route there is no
+	// such renewal and this baseline is zero, which is why the gating
+	// lane never saw it and the hosted cross-check did.
+	beforeKill := len(wire.RenewalRequestsFrom(mac))
+
 	killed := time.Now()
 	ef.Stop()
 	t.Logf("server killed with a %ds lease held; T1=%ds, so the first renewal request goes into "+
@@ -144,16 +158,16 @@ func TestFailure_UnansweredRenewalsCounted(t *testing.T) {
 		leaseSeconds, renewT1, renewT1, renewT1+60)
 
 	// --- outside evidence, part one: the requests are really on the wire.
-	requests, ok := wire.AwaitRenewalRequestsFrom(mac, 2, wireBudget)
+	requests, ok := wire.AwaitRenewalRequestsFrom(mac, beforeKill+2, wireBudget)
 	if !ok {
-		t.Fatalf("only %d renewal request(s) from %s reached the wire within %s of the kill; "+
-			"the capture holds %d client message(s) in total. With none at all the instrument "+
-			"never saw this client and every count below would be a statement about nothing; "+
-			"with one, the client stopped asking after its first try.",
-			len(requests), mac, wireBudget, len(wire.Frames()))
+		t.Fatalf("only %d renewal request(s) from %s reached the wire within %s of the kill "+
+			"(%d before it); the capture holds %d client message(s) in total. With none at all "+
+			"the instrument never saw this client and every count below would be a statement "+
+			"about nothing; with one, the client stopped asking after its first try.",
+			len(requests)-beforeKill, mac, wireBudget, beforeKill, len(wire.Frames()))
 	}
-	t.Logf("%d renewal request(s) on the wire by t+%.0fs after the kill: %s",
-		len(requests), time.Since(killed).Seconds(), requests[len(requests)-1])
+	t.Logf("%d renewal request(s) on the wire by t+%.0fs after the kill (%d before it): %s",
+		len(requests)-beforeKill, time.Since(killed).Seconds(), beforeKill, requests[len(requests)-1])
 
 	// --- the plugin's reading, taken BEFORE the wire is counted.
 	if _, ok := w.Await(healthBudget, func(now, before *harness.HealthResponse) bool {
@@ -169,7 +183,7 @@ func TestFailure_UnansweredRenewalsCounted(t *testing.T) {
 
 	// --- outside evidence, part two: counted after every health read,
 	// so a request arriving in between can only widen the bound.
-	onWire := len(wire.RenewalRequestsFrom(mac))
+	onWire := len(wire.RenewalRequestsFrom(mac)) - beforeKill
 	gain := after.RenewalsUnanswered - before.RenewalsUnanswered
 	t.Logf("renewals_unanswered %d -> %d (+%d) against %d renewal request(s) on the wire",
 		before.RenewalsUnanswered, after.RenewalsUnanswered, gain, onWire)
