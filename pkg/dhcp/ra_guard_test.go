@@ -24,11 +24,38 @@ func fakeSysctlTree(t *testing.T, iface string) string {
 	// plugin's own client is already reading, autoconf 1 has it form an
 	// address beside the one the plugin holds a lease for,
 	// keep_addr_on_down 0 drops the address on a carrier flap.
-	for knob, def := range map[string]string{
+	seed := map[string]string{
 		"accept_ra":         "1",
 		"autoconf":          "1",
 		"keep_addr_on_down": "0",
-	} {
+	}
+	// EVERY SEED DIFFERS FROM THE VALUE THE GUARD WILL WRITE, and that is
+	// the whole property this fixture exists for: a seed that already
+	// equals the contract makes the read-back below pass whether the
+	// guard wrote anything or not. Today the kernel's default is the
+	// complement of the contract for all three knobs, which is why the
+	// literals above read as defaults rather than as "not the contract".
+	// It is asserted rather than left to a reader, because the two lists
+	// move independently -- change the contract to accept_ra 1 and this
+	// goes red here, at the fixture, instead of going quietly vacuous in
+	// three tests.
+	contract := RouterAdvertGuardContract()
+	if len(seed) != len(contract) {
+		t.Fatalf("the fixture seeds %d knobs and the contract has %d: %v vs %v",
+			len(seed), len(contract), seed, contract)
+	}
+	for knob, want := range contract {
+		def, ok := seed[knob]
+		if !ok {
+			t.Fatalf("the contract sets %v and the fixture never seeds it, so "+
+				"a guard that skipped %v would still read back correctly", knob, knob)
+		}
+		if def == want {
+			t.Fatalf("%v is seeded %q and the guard writes %q: the read-back "+
+				"cannot tell a write from the seed", knob, def, want)
+		}
+	}
+	for knob, def := range seed {
 		if err := os.WriteFile(filepath.Join(dir, iface, knob), []byte(def+"\n"), 0o644); err != nil {
 			t.Fatalf("seed %v: %v", knob, err)
 		}
