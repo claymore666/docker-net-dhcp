@@ -15,14 +15,19 @@ forks that have been waiting on review.
 
 A network now says where its IPv6 address comes from. `ipv6_mode` takes
 `off` (the default), `dhcp`, `slaac` and `auto`, and `-o ipv6=true` is
-the short spelling of `ipv6_mode=dhcp`, unchanged in meaning. A DHCPv6
-acquisition that produces no address is also reported by what actually
-happened: a server that answered and refused the client, a server that
-never answered, and a router whose prefixes formed nothing are three
-counters and three messages instead of one. A network can also ask
-for its addresses back a minute after a container stops:
-`release_lease=on_remove` holds them for the restart window and hands
-back whatever nothing has claimed.
+the short spelling of `ipv6_mode=dhcp`, unchanged in meaning. On a
+`slaac` or `auto` network the container gets the address: the plugin
+installs every address the router's advertisement forms, with the
+advertised lifetimes, deprecates it when its preferred lifetime ends
+and removes it when its valid lifetime does. A segment with a router
+and no DHCPv6 server at all is now a segment containers get IPv6 on. A
+DHCPv6 acquisition that produces no address is reported by what
+actually happened: a server that answered and refused the client, a
+server that never answered, a router whose prefixes formed nothing and
+a router whose prefix formed nothing in time are four counters and four
+messages instead of one. A network can also ask for its addresses back
+a minute after a container stops: `release_lease=on_remove` holds them
+for the restart window and hands back whatever nothing has claimed.
 In bridge mode a network can also name its host-side interfaces after
 the containers they belong to, so `ip link` reads like the compose file.
 
@@ -51,8 +56,10 @@ section below is still the list the daemon shows you.
 | `ipv6=true` is now `ipv6_mode=dhcp` | Nothing. It is the same behaviour under a name that has three siblings. |
 | `ipv6=true` with `ipv6_mode=off`, and `ipv6=false` written out beside a mode that switches IPv6 on, are refused at `docker network create` | A create naming either pair fails with the reason in the message. State it once: `ipv6_mode` alone switches IPv6 on. |
 | `ipv6_mode=slaac` and `ipv6_mode=auto` are refused in `mode=ipvlan` | Use `ipv6_mode=dhcp` there. ipvlan slaves share the parent link's MAC, so every container would form the same address from an advertised prefix. |
+| `ipv6_main_prefix` is a new network option, with no default | Nothing, until a network sets it. On a link advertising more than one prefix it picks which address `docker inspect` shows; the container holds every address either way. It is accepted only where `ipv6_mode` forms addresses. |
+| On `ipv6_mode=slaac` and `ipv6_mode=auto`, a segment with no router advertisement at all now fails the endpoint | Those modes take the address from the advertisement, so nothing else can provide one. On `ipv6_mode=dhcp` and `ipv6_mode=off` the endpoint still starts and still logs a warning, unchanged. `dhcpv6_no_router_advert` counts both. |
 | `ipv6_auto_strict` is a new network option, default `false` | Nothing, until an `ipv6_mode=auto` network sets it. It decides what `auto` does when the router advertises DHCPv6 and no server answers. |
-| Four counters are new on `/Plugin.Health` and `/metrics` | `dhcpv6_refused`, `dhcpv6_no_server`, `dhcpv6_slaac_no_prefix` and `dhcpv6_auto_fallbacks`. None of them flips `healthy`. |
+| Nine counters are new on `/Plugin.Health` and `/metrics` | `dhcpv6_refused`, `dhcpv6_no_server`, `dhcpv6_slaac_no_prefix`, `dhcpv6_slaac_no_address`, `dhcpv6_auto_fallbacks`, `ipv6_slaac_addresses`, `ipv6_addresses_withdrawn`, `ipv6_slaac_prefixes_ignored` and `ipv6_main_prefix_unmatched`. None of them flips `healthy`. |
 | A DHCPv6 endpoint that fails because the server refused it logs a different sentence | The message names the status code the server sent, such as NoAddrsAvail for an exhausted pool or NotOnLink for an address outside the range it serves (RFC 9915 section 21.13's registry, not a name in this repository). The ending where nothing answered keeps the sentence it had. |
 | `dhcp_servers` and `dhcp_deny_servers` are unchanged | They are DHCPv4-only and keep applying in every `ipv6_mode`. |
 | An option written with no value is read as unset | `-o lease_timeout=`, and `driver_opts: {lease_timeout: "${VAR}"}` with `VAR` unset, now take the default instead of failing the create with `invalid duration`. Every other option already behaved this way. |
@@ -124,6 +131,46 @@ section below is still the list the daemon shows you.
 - `dhcpv6_auto_fallbacks`, the number of endpoints whose address was
   formed from an advertised prefix because `ipv6_mode=auto` fell back.
   It counts addresses that formed, never fallbacks attempted (#817).
+- **An `ipv6_mode=slaac` or `ipv6_mode=auto` endpoint gets its address
+  on the container's link.** One address per advertised autonomous
+  prefix (RFC 4862 section 5.5.3), up to eight, each with the preferred
+  and valid lifetimes the advertisement carried and each refreshed by
+  later advertisements. `ip -6 addr show` inside the container is where
+  an operator reads them. A network whose segment has a router and no
+  DHCPv6 server leases IPv4 from DHCP and forms IPv6 from the
+  advertisement alone (#818, #808).
+- **Lifetimes are the router's.** An address whose preferred lifetime
+  ends is left on the link and marked deprecated, which is
+  `preferred_lft 0` in `ip -6 addr` and means the container keeps using
+  it for connections it already has and stops opening new ones with it
+  (RFC 4862 section 5.5.4). An address whose valid lifetime ends, or
+  whose prefix the router stops advertising, is removed from the link.
+  A renumbering is therefore one address arriving and one leaving,
+  rather than a container that collects prefixes (#819).
+- `ipv6_main_prefix`, a per-network option naming which prefix's
+  address Docker is told about. `CreateEndpoint` returns one
+  `AddressIPv6` and the engine has no way to change it afterwards, so
+  on a link advertising a unique-local and a global prefix the default
+  is whichever the router lists first. A prefix no address falls inside
+  falls back to that default, counts `ipv6_main_prefix_unmatched` once
+  for the endpoint and logs both prefixes; the endpoint is not failed,
+  because the container's addresses are right and only the reported one
+  is not the one asked for (#819).
+- `ipv6_slaac_addresses`, `ipv6_addresses_withdrawn` and
+  `ipv6_slaac_prefixes_ignored`: addresses installed on container
+  links, addresses removed from them, and advertised prefixes no
+  address was formed from. With `audit_log=true` the ledger gains a
+  `withdrawn` kind and a `source` field, which reads `slaac` on a row
+  for an address that came from an advertisement and is absent on every
+  row a DHCP lease writes (#818, #819).
+- `dhcpv6_slaac_no_address`, the ending where a router advertised and
+  no address formed inside the acquisition budget: another node holds
+  the address this endpoint's prefix and MAC form, and RFC 4862 section
+  5.4.5 gives a fixed interface identifier no second try after
+  duplicate address detection fails; or the advertisement arrived too
+  late for detection to finish. It is kept apart from
+  `dhcpv6_no_server`, which needs a DHCPv6 exchange that
+  `ipv6_mode=slaac` never has (#818).
 - `release_lease=on_remove`, the third value of the per-network option
   (#984). The endpoint is torn down exactly as under `never`, tombstone
   and all, and the addresses are handed back when the restart window
@@ -183,25 +230,22 @@ section below is still the list the daemon shows you.
 
 ### Not in this release
 
-- **`slaac` and `auto` do not give a container an address yet.** The mode
-  reaches the DHCP client, and the client can form an address from an
-  advertised prefix, but the plugin still concludes the IPv6 half of
-  `docker run` as soon as a router advertisement carries neither the
-  managed nor the other-configuration flag. That is #868's fix for
-  containers hanging on stateless networks, it does not read
-  `ipv6_mode`, and it fires on the ordinary SLAAC segment, which is the
-  one `slaac` is for. So on such a segment the endpoint starts with no
-  address from the plugin, as it does today with `ipv6=true` -- and in
-  this release it has no global IPv6 address at all, because the Router
-  Advertisement guard now writes `autoconf=0` and the container's kernel
-  forms none either. It has no IPv6 default route either: the daemon
-  disables IPv6 on a link carrying no IPv6 address and the kernel then
-  refuses every IPv6 route on it, so the plugin cannot supply one until
-  there is an address to supply it beside. #818 installs the formed
-  address, and the route comes back with it; #819 gives it lifetimes and
-  renumbering, and #808 is the request all three answer. In this release
-  `slaac` and `auto` state the network's intent and report what the
-  segment did.
+- **`slaac` and `auto` on `mode=ipvlan`.** They are refused at
+  `docker network create`, and that does not change here. An ipvlan L2
+  slave inherits the parent link's MAC, an address formed from an
+  advertisement is derived from that MAC (RFC 4291 appendix A), and RFC
+  4862 gives a node with a fixed interface identifier no second try
+  after duplicate address detection fails, so every container on such a
+  network would form one address and the second one onwards would sit
+  in a conflict it cannot recover from. Giving each container its own
+  identifier is a DHCP-client change, not a plugin one. Use
+  `ipv6_mode=dhcp` on ipvlan, which gives each endpoint its own DUID.
+- **Docker still shows one IPv6 address per endpoint.** A container on
+  a link advertising two prefixes has both addresses, and
+  `docker inspect` shows the one `ipv6_main_prefix` names or the first
+  advertised. libnetwork has no way to change an endpoint's address
+  after `CreateEndpoint`, so this is the engine's shape and not a
+  setting.
 
 ## v2.1.1
 
