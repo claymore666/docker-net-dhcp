@@ -166,6 +166,94 @@ type Info struct {
 	// valid lifetime would have the container opening new connections
 	// on a deprecated address for the whole of the gap.
 	PreferredSeconds int `json:",omitempty"`
+
+	// IPDeprecated is the Deprecated flag of the address in IP, carried
+	// here for the same reason V6Addr carries its own: the pair of
+	// numbers above cannot express it. See V6Addr.Deprecated.
+	IPDeprecated bool `json:",omitempty"`
+
+	// Addrs is EVERY address a DHCPv6 or SLAAC lease holds, each with
+	// its own two lifetimes, and IP is the one of them this network
+	// reports to Docker. It is empty for a v4 lease.
+	//
+	// IT IS A LIST BECAUSE RFC 4862 SECTION 5.5.3 FORMS ONE ADDRESS PER
+	// AUTONOMOUS PREFIX. A link that advertises a unique-local prefix
+	// and a global one is an ordinary link, and the library holds an
+	// address for each (lease.Lease.Addrs, cap proto.MaxSLAACAddresses
+	// = 8). A chassis reading IP alone would install one of them and
+	// leave the rest unconfigured with nothing anywhere saying so.
+	//
+	// EACH CARRIES ITS OWN PAIR AND THE LEASE'S PAIR IS AN AGGREGATE.
+	// LeaseSeconds and PreferredSeconds above are the CHOSEN address's,
+	// and the library's own Lease.Expire is the LONGEST valid lifetime
+	// across the set while Lease.Preferred is the SHORTEST preferred
+	// (proto/lease6.go Deadlines, PreferredUntil). Installing every
+	// address with the aggregate would give a short-lived prefix the
+	// long-lived one's expiry, and the container would hold an address
+	// its router stopped advertising.
+	Addrs []V6Addr `json:",omitempty"`
+
+	// SLAAC says the addresses were FORMED from a router advertisement
+	// (RFC 4862 section 5.5.3) rather than granted by a DHCPv6 server.
+	//
+	// It is carried and not derived. "No server DUID" and "no renewal
+	// deadline" are both true of things that are not this, and the two
+	// endings differ in what an operator does about them: a formed
+	// address that goes away is a router that stopped advertising a
+	// prefix, and no DHCP server was involved at any point.
+	SLAAC bool `json:",omitempty"`
+
+	// MainAddrFallback says the network named an `ipv6_main_prefix`,
+	// no address of this lease falls inside it, and IP is therefore the
+	// first address the lease holds.
+	//
+	// It rides the event rather than being recomputed by the counter,
+	// because the prefix and the lease are both here and neither is
+	// anywhere else: the plugin would otherwise have to parse the
+	// option a second time to find out whether the selection it was
+	// handed was the one the operator asked for.
+	MainAddrFallback bool `json:",omitempty"`
+}
+
+// V6Addr is one address of a v6 lease with its own two RFC 9915 section
+// 7.1 lifetimes, in seconds, on Info's convention: 0 means the lease
+// carried no deadline, which for the valid lifetime is the kernel's
+// "forever".
+//
+// A SLAAC ADDRESS CARRIES THE ADVERTISED PREFIX LENGTH AND A GRANTED
+// ONE CARRIES /128. That is the library's rule, not a choice here
+// (lease/event.go: "A granted address has no prefix length of its own,
+// so it is a host address. Only RFC 4862 section 5.5.3's option carries
+// one."), and it is what puts the on-link route for a formed prefix on
+// the container link: with the kernel's own router-advertisement
+// processing off, the address's own prefix length is the only thing
+// that makes the segment on-link.
+type V6Addr struct {
+	// IP is the address with its prefix length, e.g.
+	// "2001:db8::1c:42ff:fe00:2/64".
+	IP string
+	// ValidSeconds and PreferredSeconds are this address's own pair.
+	ValidSeconds     int `json:",omitempty"`
+	PreferredSeconds int `json:",omitempty"`
+	// Deprecated says this address's preferred lifetime has ELAPSED:
+	// RFC 4862 section 5.5.4's second phase, "SHOULD continue to be
+	// used as a source address in existing communications, but SHOULD
+	// NOT be used to initiate new communications".
+	//
+	// IT IS CARRIED BECAUSE THE PAIR OF NUMBERS CANNOT SAY IT. On this
+	// struct's convention a zero lifetime means the lease carried no
+	// deadline, so a router that deprecates a prefix by advertising a
+	// preferred lifetime of zero while leaving the valid lifetime
+	// unbounded -- which RFC 4861 section 4.6.2 lets it do, and which
+	// is how a prefix is withdrawn gently -- produces the pair (0, 0).
+	// That is indistinguishable from an address that is current and
+	// never expires, and the two install as opposite things: one is
+	// deprecated, the other is permanent and preferred.
+	//
+	// So the property travels beside the numbers instead of being
+	// inferred from them, and v6AddrAttrs takes it as an argument it
+	// cannot be called without.
+	Deprecated bool `json:",omitempty"`
 }
 
 // Route is a single classless static route from DHCP option 121.

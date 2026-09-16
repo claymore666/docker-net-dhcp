@@ -76,12 +76,50 @@ const raSLAACHex = "3333000000018ad3401f959486dd6c04fa6700703afffe80000000000000
 	"401f95941f030000000007080676366d6f6465076578616d706c65001903000000000708fd00" +
 	"6470686500000000000000000053"
 
+// mode=auto-fallback: M and O set AND the prefix advertised as
+// autonomous, which no other mode in this file does. Captured
+// 2026-09-16 on the session box, dnsmasq 2.91 in `unshare -Urn`, one
+// veth pair, the same run as logAutoFallback below; tcpdump rather
+// than racapture.go, because the mode did not exist yet when it was
+// measured. Flags byte 0xc0 at ICMPv6 offset 5, prefix option
+// `03 04 40 c0` -- length 64, L and A.
+const raAutoFallbackHex = "33330000000176a66e95a4e486dd6c0ba59100703afffe8000000000000074a66efffe95a4e4" +
+	"ff02000000000000000000000000000186003d5c40c007080000000000000000030440c00000" +
+	"07080000070800000000fd00647068650000000000000000000005010000000005dc010176a6" +
+	"6e95a4e41f030000000007080676366d6f6465076578616d706c65001903000000000708fd00" +
+	"6470686500000000000000000053"
+
 // mode=managed-silent: byte-for-byte the managed signature. --dhcp-ignore
 // changes what the server ANSWERS, not what it advertises.
 const raManagedSilentHex = "33330000000162bb4b8d99c986dd6c066d8800703afffe8000000000000060bb4bfffe8d99c9" +
 	"ff0200000000000000000000000000018600c1b840c007080000000000000000030440800000" +
 	"07080000070800000000fd00647068650000000000000000000005010000000005dc010162bb" +
 	"4b8d99c91f030000000007080676366d6f6465076578616d706c65001903000000000708fd00" +
+	"6470686500000000000000000053"
+
+// A SLAAC segment whose one prefix is advertised DEPRECATED: the
+// autonomous bit is set, the valid lifetime is RFC 4861 section
+// 4.6.2's infinity and the preferred lifetime is zero, so a node forms
+// the address and the kernel marks it deprecated the moment it does.
+//
+// MEASURED 2026-09-16 on the session box, dnsmasq 2.91 under
+// `unshare -Urn`, one veth pair, `--dhcp-range=fd00:6470:6865::,ra-only,deprecated`
+// plus --enable-ra: the prefix option reads `03 04 40 c0 ffffffff
+// 00000000`, and the library's own client formed
+// fd00:6470:6865:0:b8be:26ff:fe2d:babd/64 from it in one second with
+// its preferred instant already past and its valid instant the zero
+// time, which is that seam's spelling of "never expires".
+//
+// It is the wire half of #819's deprecation arm. No mode of this
+// fixture advertises it, because its five-field signature is SLAAC's
+// exactly -- the difference is in the option's lifetimes, which the
+// signature deliberately does not read -- so the segment is started
+// through NewV6FixtureWithArgs under the slaac name and the test that
+// wants it reads these two lifetimes itself.
+const raDeprecatedPrefixHex = "33330000000182a66511995286dd6c0da1e400703afffe8000000000000080a665fffe119952" +
+	"ff02000000000000000000000000000186006c68400007080000000000000000030440c0ffff" +
+	"ffff0000000000000000fd00647068650000000000000000000005010000000005dc010182a6" +
+	"651199521f030000ffffffff0676366d6f6465076578616d706c650019030000fffffffffd00" +
 	"6470686500000000000000000053"
 
 func mustFrame(t *testing.T, s string) []byte {
@@ -111,19 +149,29 @@ func mustFrame(t *testing.T, s string) []byte {
 // them able to tell those two readings apart at all.
 func TestParseRA_ReadsTheFlagsFromTheByteAfterCurHopLimit(t *testing.T) {
 	cases := []struct {
+		name           string
 		mode           V6Mode
 		hexFrame       string
 		managed, other bool
 		autonomous     bool
+		// The prefix option's two lifetimes, in seconds. Every mode of
+		// this fixture advertises 1800 for both, which is dnsmasq's
+		// own default and not the fixture's 2m lease time; the
+		// deprecated capture is the row that carries anything else,
+		// and it is here so the two fields are read from a frame that
+		// distinguishes them rather than from five that agree.
+		wantValid, wantPreferred uint32
 	}{
-		{V6Managed, raManagedHex, true, true, false},
-		{V6Stateless, raStatelessHex, false, true, true},
-		{V6SLAAC, raSLAACHex, false, false, true},
-		{V6ManagedSilent, raManagedSilentHex, true, true, false},
-		{V6ManagedExhausted, raManagedExhaustedHex, true, true, false},
+		{"managed", V6Managed, raManagedHex, true, true, false, 1800, 1800},
+		{"stateless", V6Stateless, raStatelessHex, false, true, true, 1800, 1800},
+		{"slaac", V6SLAAC, raSLAACHex, false, false, true, 1800, 1800},
+		{"managed-silent", V6ManagedSilent, raManagedSilentHex, true, true, false, 1800, 1800},
+		{"managed-exhausted", V6ManagedExhausted, raManagedExhaustedHex, true, true, false, 1800, 1800},
+		{"auto-fallback", V6AutoFallback, raAutoFallbackHex, true, true, true, 1800, 1800},
+		{"slaac with a deprecated prefix", V6SLAAC, raDeprecatedPrefixHex, false, false, true, RAInfiniteLifetime, 0},
 	}
 	for _, c := range cases {
-		t.Run(c.mode.String(), func(t *testing.T) {
+		t.Run(c.name, func(t *testing.T) {
 			f, ok := ParseRA(mustFrame(t, c.hexFrame))
 			if !ok {
 				t.Fatalf("ParseRA refused a captured router advertisement")
@@ -164,6 +212,17 @@ func TestParseRA_ReadsTheFlagsFromTheByteAfterCurHopLimit(t *testing.T) {
 			}
 			if f.RouterLifetime != 1800*time.Second {
 				t.Errorf("router lifetime = %s, want 30m", f.RouterLifetime)
+			}
+			// The prefix option's own lifetimes, which are a
+			// different field from the router lifetime above and sit
+			// twelve bytes further into a different option. Reading
+			// one for the other is the same class of mistake as
+			// reading Cur Hop Limit for the flags, and it is just as
+			// plausible: five of these seven frames carry 1800 in all
+			// three places.
+			if p.ValidLifetime != c.wantValid || p.PreferredLifetime != c.wantPreferred {
+				t.Errorf("prefix valid=%d preferred=%d, want valid=%d preferred=%d",
+					p.ValidLifetime, p.PreferredLifetime, c.wantValid, c.wantPreferred)
 			}
 			if f.SourceMAC == nil || len(f.SourceMAC) != 6 {
 				t.Errorf("source MAC = %v, want six bytes", f.SourceMAC)
@@ -260,6 +319,30 @@ Sep 16 18:44:18 dnsmasq-dhcp[4182581]: 8008303 DHCPADVERTISE(s0) 00:03:00:01:02:
 Sep 16 18:44:18 dnsmasq-dhcp[4182581]: 8008303 sent size: 24 option: 13 status  2 no addresses available
 `
 
+	// Captured 2026-09-16, dnsmasq 2.91 in `unshare -Urn`, LC_ALL=C, the
+	// library's own client in proto.Mode6Auto on the peer end of the
+	// veth pair; the same run as raAutoFallbackHex. The client solicited
+	// three times, was ignored three times, gave up on DHCPv6 and formed
+	// fd00:6470:6865:0:bc1b:12ff:fe5b:c905/64 from the advertised
+	// prefix, reporting SLAACFallbacks 1 and SLAACAddressesFormed 1.
+	//
+	// THE `available DHCP range` LINES ARE PART OF THE CAPTURE AND ARE
+	// KEPT. --log-dhcp prints them for a request the server then
+	// ignores, so a reader who sees them in a lane log is looking at a
+	// segment that refused, not at one that served.
+	logAutoFallback = `Sep 16 20:52:29 dnsmasq-dhcp[474848]: DHCP, IP range 192.168.103.10 -- 192.168.103.99, lease time 2m
+Sep 16 20:52:29 dnsmasq-dhcp[474848]: DHCPv6, IP range fd00:6470:6865::10 -- fd00:6470:6865::99, lease time 2m
+Sep 16 20:52:29 dnsmasq-dhcp[474848]: router advertisement on fd00:6470:6865::
+Sep 16 20:52:30 dnsmasq-dhcp[474848]: RTR-ADVERT(s0) fd00:6470:6865::
+Sep 16 20:52:33 dnsmasq-dhcp[474848]: RTR-SOLICIT(s0) be:1b:12:5b:c9:05
+Sep 16 20:52:33 dnsmasq-dhcp[474848]: RTR-ADVERT(s0) fd00:6470:6865::
+Sep 16 20:52:33 dnsmasq-dhcp[474848]: 1100156 available DHCP range: fd00:6470:6865::10 -- fd00:6470:6865::99
+Sep 16 20:52:33 dnsmasq-dhcp[474848]: 1100156 client MAC address: be:1b:12:5b:c9:05
+Sep 16 20:52:33 dnsmasq-dhcp[474848]: 1100156 DHCPSOLICIT(s0) 00:03:00:01:be:1b:12:5b:c9:05 ignored
+Sep 16 20:52:34 dnsmasq-dhcp[474848]: 1100156 DHCPSOLICIT(s0) 00:03:00:01:be:1b:12:5b:c9:05 ignored
+Sep 16 20:52:36 dnsmasq-dhcp[474848]: 1100156 DHCPSOLICIT(s0) 00:03:00:01:be:1b:12:5b:c9:05 ignored
+`
+
 	logManagedSilent = `Sep  5 23:33:27 dnsmasq-dhcp[747851]: DHCP, IP range 192.168.103.10 -- 192.168.103.99, lease time 2m
 Sep  5 23:33:27 dnsmasq-dhcp[747851]: DHCPv6, IP range fd00:6470:6865::10 -- fd00:6470:6865::99, lease time 2m
 Sep  5 23:33:28 dnsmasq-dhcp[747851]: RTR-ADVERT(br0) fd00:6470:6865::
@@ -281,6 +364,8 @@ func logFor(m V6Mode) string {
 		return logManagedSilent
 	case V6ManagedExhausted:
 		return logManagedExhausted
+	case V6AutoFallback:
+		return logAutoFallback
 	}
 	return ""
 }
@@ -310,8 +395,17 @@ func TestV6ExchangeFindings_EachModesOwnLogPassesAndTheOthersDoNot(t *testing.T)
 		// directions because the property is symmetric, and a row that
 		// named only one direction would be claiming a discrimination
 		// the log cannot carry.
-		V6NoRA:          {V6NoRA: true, V6ManagedSilent: true},
-		V6ManagedSilent: {V6ManagedSilent: true, V6NoRA: true},
+		V6NoRA:          {V6NoRA: true, V6ManagedSilent: true, V6AutoFallback: true},
+		V6ManagedSilent: {V6ManagedSilent: true, V6NoRA: true, V6AutoFallback: true},
+		// auto-fallback's DHCP log is a third copy of that same ignored
+		// SOLICIT, so it joins the pair above in all three directions.
+		// The three modes are separated on the WIRE and nowhere else:
+		// no-RA advertises nothing, managed-silent advertises no
+		// autonomous prefix, auto-fallback advertises one. All three
+		// differences are in V6Signature and are asserted at fixture
+		// construction, which is why the drift matrix can tell the three
+		// apart while this table cannot.
+		V6AutoFallback: {V6AutoFallback: true, V6NoRA: true, V6ManagedSilent: true},
 	}
 
 	for _, mode := range V6Modes() {
@@ -676,6 +770,7 @@ func evidenceFor(t *testing.T, mode V6Mode) V6Evidence {
 		V6SLAAC:            raSLAACHex,
 		V6ManagedSilent:    raManagedSilentHex,
 		V6ManagedExhausted: raManagedExhaustedHex,
+		V6AutoFallback:     raAutoFallbackHex,
 	}
 	ev := V6Evidence{PoolLogged: mode.Signature().Pool}
 	if h, ok := hexes[mode]; ok {

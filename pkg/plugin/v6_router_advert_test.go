@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/claymore666/dhcp-golib/proto"
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
 
@@ -762,7 +763,14 @@ func TestNoteV6Absence_LeavesTheJoinAnswersIPv6HalfEmpty(t *testing.T) {
 	p := &Plugin{joinHints: map[string]joinHint{}}
 	// Seen, not Managed: the segment said there are no DHCPv6
 	// addresses here, which is v6NotOffered and the normal case.
-	ok := p.noteV6Absence(dhcp.RAObservation{Seen: true}, "eth0", "ep-1", errors.New("no lease"))
+	// Mode6DHCP, and that is what keeps this case a case. #818 gives a
+	// container a global address where the ipv6_mode FORMS one, which
+	// is slaac and auto; an `ipv6=true` endpoint on a segment that
+	// hands out no DHCPv6 address still has no global address, so the
+	// engine still disables IPv6 on its link and the Join answer's
+	// IPv6 half still has nowhere to go. The answer this pins changes
+	// when the route becomes installable for THIS mode.
+	ok := p.noteV6Absence(dhcp.RAObservation{Seen: true}, "eth0", "ep-1", errors.New("no lease"), proto.Mode6DHCP)
 	if !ok {
 		t.Fatal("the absence was treated as fatal; the endpoint would not have been created")
 	}

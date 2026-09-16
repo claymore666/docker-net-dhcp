@@ -155,7 +155,7 @@ func TestInfoFromLease_FiltersStringOptions(t *testing.T) {
 		},
 	}
 
-	info, dropped := infoFromLease(l, proto.RouterObservation{}, time.Now())
+	info, dropped := infoFromLease(l, proto.RouterObservation{}, time.Now(), netip.Prefix{})
 
 	if dropped != 5 {
 		t.Errorf("dropped = %d, want 5", dropped)
@@ -240,7 +240,7 @@ func TestInfoFromLease_TruncatesMultiDomain(t *testing.T) {
 		Addr:   netip.MustParsePrefix("192.168.99.10/24"),
 		Domain: "a.attacker.test b.attacker.test corp.example",
 	}
-	info, dropped := infoFromLease(l, proto.RouterObservation{}, time.Now())
+	info, dropped := infoFromLease(l, proto.RouterObservation{}, time.Now(), netip.Prefix{})
 	if info.Domain != "a.attacker.test" {
 		t.Errorf("Info.Domain = %q, want only the first domain", info.Domain)
 	}

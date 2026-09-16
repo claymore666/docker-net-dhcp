@@ -8,6 +8,7 @@
 package harness
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
 
@@ -29,6 +30,23 @@ type V6AddrFlags struct {
 	NoDAD     bool
 	Tentative bool
 	DADFailed bool
+	// Deprecated is IFA_F_DEPRECATED: the address's preferred lifetime
+	// has run out and its valid lifetime has not. RFC 4862 section
+	// 5.5.4 -- "SHOULD continue to be used as a source address in
+	// existing communications, but SHOULD NOT be used to initiate new
+	// communications". It is the KERNEL's word for it, which is why
+	// #819's deprecation arm reads this and never the plugin's own
+	// number: a change that stopped passing the preferred lifetime to
+	// netlink leaves the plugin's number right and this bit clear.
+	Deprecated bool
+	// Valid and Preferred are the address's two lifetimes as the
+	// kernel reports them, and Lifetimes says whether they were read
+	// at all. A tool that printed no lifetime pair leaves them zero,
+	// which is not the same as an address with zero left -- and a
+	// caller asserting "preferred is zero" would be satisfied by it.
+	Lifetimes bool
+	Valid     V6Lifetime
+	Preferred V6Lifetime
 	// Line is the verbatim line the flags were read from, for the
 	// failure message. Empty when Found is false.
 	Line string
@@ -90,7 +108,10 @@ func V6AddrFlagsFromAddrShow(out, addr string) V6AddrFlags {
 		for i := at + 1; i < len(fields); i++ {
 			switch fields[i] {
 			case `\`:
+				f.Valid, f.Preferred, f.Lifetimes = v6LifetimesFrom(fields[i+1:])
 				i = len(fields)
+			case "deprecated":
+				f.Deprecated = true
 			case "nodad":
 				f.NoDAD = true
 			case "tentative":
@@ -115,7 +136,68 @@ func V6AddrFlagsFromAddrShow(out, addr string) V6AddrFlags {
 		f.NoDAD = f.NoDAD || residual&unix.IFA_F_NODAD != 0
 		f.Tentative = f.Tentative || residual&unix.IFA_F_TENTATIVE != 0
 		f.DADFailed = f.DADFailed || residual&unix.IFA_F_DADFAILED != 0
+		f.Deprecated = f.Deprecated || residual&unix.IFA_F_DEPRECATED != 0
 		return f
 	}
 	return V6AddrFlags{}
+}
+
+// V6Lifetime is one of an address's two lifetimes as `ip addr` prints
+// it: a number of seconds, or the kernel's infinity.
+//
+// Forever is a field and not a magic number, because the two readings
+// an address can carry -- "0 seconds left" and "never expires" -- are
+// the ends of the same axis and a caller that stored infinity as 0 or
+// as the largest uint32 would have exactly one of them wrong. The
+// kernel's own encoding has the same trap: 0xFFFFFFFF on the wire is
+// infinity and 0 is expiry, and the plugin's netlink attributes carry
+// both.
+type V6Lifetime struct {
+	Seconds int
+	Forever bool
+}
+
+func (l V6Lifetime) String() string {
+	if l.Forever {
+		return "forever"
+	}
+	return fmt.Sprintf("%dsec", l.Seconds)
+}
+
+// v6LifetimesFrom reads the `valid_lft X preferred_lft Y` pair both
+// tools print after the backslash.
+//
+// IT IS KEYED ON THE KEYWORD AND NOT ON POSITION. iproute2 and busybox
+// agree on the two keywords and on the `<n>sec` spelling (MEASURED, the
+// verbatim pairs in v6addrflags_test.go), and neither promises the
+// order or that nothing else sits between them. A reader that took
+// fields 1 and 3 would be reading a position two tools happen to share
+// today.
+//
+// The pair counts as READ only when both keywords carried a value this
+// function understood. Half a pair is not a lifetime: a caller
+// asserting that a preferred lifetime reached zero must not be handed a
+// zero that means "not printed".
+func v6LifetimesFrom(tail []string) (valid, preferred V6Lifetime, ok bool) {
+	var gotValid, gotPreferred bool
+	for i := 0; i+1 < len(tail); i++ {
+		switch tail[i] {
+		case "valid_lft":
+			valid, gotValid = parseV6Lifetime(tail[i+1])
+		case "preferred_lft":
+			preferred, gotPreferred = parseV6Lifetime(tail[i+1])
+		}
+	}
+	return valid, preferred, gotValid && gotPreferred
+}
+
+func parseV6Lifetime(s string) (V6Lifetime, bool) {
+	if s == "forever" {
+		return V6Lifetime{Forever: true}, true
+	}
+	n, err := strconv.Atoi(strings.TrimSuffix(s, "sec"))
+	if err != nil || n < 0 {
+		return V6Lifetime{}, false
+	}
+	return V6Lifetime{Seconds: n}, true
 }

@@ -3,7 +3,11 @@
 
 package harness
 
-import "testing"
+import (
+	"testing"
+
+	"golang.org/x/sys/unix"
+)
 
 // Every string below is VERBATIM `ip -6 -o addr show` output, MEASURED
 // 2026-09-06 in a user+network namespace on the session box: the same
@@ -157,5 +161,110 @@ func TestV6AddrFlagsFromAddrShow_StopsAtTheBackslash(t *testing.T) {
 	}
 	if f.NoDAD {
 		t.Errorf("read a flag from behind the backslash: %q", f.Line)
+	}
+}
+
+// The three lifetime shapes an address on a container link can be in,
+// MEASURED 2026-09-16 on the session box under `unshare -Urn`, one
+// dummy link, iproute2-6.15.0, LC_ALL=C: an address deprecated by
+// `preferred_lft 0`, an ordinary leased one, and one with no lifetimes
+// at all. The kernel's own renderings, in one capture, in this order.
+//
+// THE DEPRECATED ROW IS #819's ORACLE. The plugin's own preferred
+// number says what it meant to install; this line says what the kernel
+// holds. A change that stopped passing the preferred lifetime to
+// netlink leaves the first right and the second clear.
+const lifetimesIproute2 = `2: v0    inet6 fd00:beef::9/64 scope global nodad \       valid_lft forever preferred_lft forever
+2: v0    inet6 fd00:beef::8/64 scope global nodad dynamic \       valid_lft 299sec preferred_lft 199sec
+2: v0    inet6 fd00:beef::7/64 scope global nodad deprecated dynamic \       valid_lft 399sec preferred_lft 0sec`
+
+// The same deprecated address as a tool that has no NAME for
+// IFA_F_DEPRECATED would print it.
+//
+// IT IS NOT A CAPTURE and it is not labelled as one. busybox 1.36.1
+// names `deprecated` (MEASURED 2026-09-06, recorded in the header of
+// v6addrflags.go with the rest of that pass), so no tool this suite
+// meets prints the line below today. It is here because the parser
+// reads the residual `flags <hex>` word as well as the name, that path
+// is the one that survives a tool which stops naming the flag, and
+// nothing else in this file drives it for IFA_F_DEPRECATED. 0x20 is
+// unix.IFA_F_DEPRECATED, and the assertion below reads the constant
+// rather than trusting the hex written here.
+const deprecatedResidual = `2: v0    inet6 fd00:beef::7/64 scope global dynamic flags 22 \       valid_lft 399sec preferred_lft 0sec`
+
+func TestV6AddrFlagsFromAddrShow_ReadsBothLifetimesAndTheDeprecatedBit(t *testing.T) {
+	cases := []struct {
+		name           string
+		out, addr      string
+		wantDeprecated bool
+		wantValid      V6Lifetime
+		wantPreferred  V6Lifetime
+		wantNoDAD      bool
+	}{
+		{
+			name: "deprecated by a zero preferred lifetime", out: lifetimesIproute2,
+			addr: "fd00:beef::7", wantDeprecated: true, wantNoDAD: true,
+			wantValid: V6Lifetime{Seconds: 399}, wantPreferred: V6Lifetime{Seconds: 0},
+		},
+		{
+			name: "an ordinary leased address", out: lifetimesIproute2,
+			addr: "fd00:beef::8", wantDeprecated: false, wantNoDAD: true,
+			wantValid: V6Lifetime{Seconds: 299}, wantPreferred: V6Lifetime{Seconds: 199},
+		},
+		{
+			name: "no lifetimes at all", out: lifetimesIproute2,
+			addr: "fd00:beef::9", wantDeprecated: false, wantNoDAD: true,
+			wantValid: V6Lifetime{Forever: true}, wantPreferred: V6Lifetime{Forever: true},
+		},
+		{
+			name: "deprecated under a tool that does not name the flag", out: deprecatedResidual,
+			addr: "fd00:beef::7", wantDeprecated: true, wantNoDAD: true,
+			wantValid: V6Lifetime{Seconds: 399}, wantPreferred: V6Lifetime{Seconds: 0},
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			f := V6AddrFlagsFromAddrShow(c.out, c.addr)
+			if !f.Found {
+				t.Fatalf("address %s not found in:\n%s", c.addr, c.out)
+			}
+			if !f.Lifetimes {
+				t.Fatalf("the lifetimes were not read from %q. A caller asserting that a "+
+					"preferred lifetime reached zero would be handed a zero that means "+
+					"'not printed', which is the reading that cannot fail", f.Line)
+			}
+			if f.Deprecated != c.wantDeprecated {
+				t.Errorf("Deprecated = %v, want %v. RFC 4862 section 5.5.4's state is the "+
+					"KERNEL's to report, and this is where #819's deprecation arm reads it: %q",
+					f.Deprecated, c.wantDeprecated, f.Line)
+			}
+			if f.Valid != c.wantValid || f.Preferred != c.wantPreferred {
+				t.Errorf("valid=%s preferred=%s, want valid=%s preferred=%s: %q",
+					f.Valid, f.Preferred, c.wantValid, c.wantPreferred, f.Line)
+			}
+			if f.NoDAD != c.wantNoDAD {
+				t.Errorf("NoDAD = %v, want %v: %q", f.NoDAD, c.wantNoDAD, f.Line)
+			}
+		})
+	}
+
+	// The residual rendering above claims 0x22 is NODAD plus
+	// DEPRECATED. That is a claim about the kernel's headers, so it is
+	// read from them rather than asserted by a passing parse: a typo in
+	// the hex would otherwise show up as a parser defect somewhere else
+	// entirely, or not at all.
+	if unix.IFA_F_NODAD|unix.IFA_F_DEPRECATED != 0x22 {
+		t.Fatalf("IFA_F_NODAD|IFA_F_DEPRECATED = %#x, and the residual rendering above is "+
+			"written as `flags 22`; the two have to be the same bits or that case drives "+
+			"a flag combination no kernel produces",
+			unix.IFA_F_NODAD|unix.IFA_F_DEPRECATED)
+	}
+
+	// The other direction: an address the output does not carry reads
+	// as no lifetimes, never as zero ones.
+	if f := V6AddrFlagsFromAddrShow(lifetimesIproute2, "fd00:beef::99"); f.Found || f.Lifetimes {
+		t.Errorf("an absent address read as Found=%v Lifetimes=%v; both must be false, or "+
+			"'preferred lifetime is 0' is satisfied by an address that is not on the link",
+			f.Found, f.Lifetimes)
 	}
 }

@@ -50,6 +50,32 @@
 #              push and the first run costed it at 84.19, which is the
 #              20 seconds of container and fixture lifecycle the
 #              derivation allowed for and did not need.
+#   five rows  the TestSLAAC_* rows are INFERRED, not measured: they
+#              arrive with #818/#819/#808 and no corpus run could have
+#              costed them. Each is derived from a shipped row of the
+#              same shape plus the wait it adds, and every one is
+#              deliberately above the derivation so a first run costs
+#              less than the table says instead of more:
+#                AnAdvertisedPrefixReachesTheContainer  45.00
+#                  = TestDHCPv6_Stateless_ConfigurationReachesTheContainer
+#                    (30.44, one v6 fixture, one container, one exec)
+#                    plus the advertisement wait.
+#                ADeprecatedPrefixArrivesDeprecated     45.00
+#                  = the same shape; the frame it also reads is already
+#                    captured by the fixture it starts.
+#                AutoFallsBackOntoTheAdvertisedPrefix   50.00
+#                  = the same plus the fallback's own delay, MEASURED at
+#                    7.9s outside the suite on 2026-09-16.
+#                ASegmentWithNoRouterEndsAFormingEndpoint 110.00
+#                  = three fixtures and three container starts, two of
+#                    which spend the acquisition budget before failing;
+#                    TestDHCPv6_NoAddressModes_StartTheEndpoint (80.63)
+#                    is the same three-fixture shape with no failing arm.
+#                TheAddressComesBackAfterAPluginRestart  60.00
+#                  = TestIPv6Mode_SurvivesAPluginRestart (28.00) plus the
+#                    first row's start-and-read.
+#              A refresh takes all five to the median of three like every
+#              other row.
 #   one row    TestEngineIdentity_HealthMatchesTheDaemonsOwnAnswer is 0.05
 #              and is INFERRED, not measured: it arrives with #670 and
 #              no corpus run could have costed it. It starts no
@@ -426,6 +452,11 @@ TestReleaseLease_OnRemoveKeepsTheAddressForARestartInsideTheWindow	105.00
 TestReleaseLease_OnStopHandsTheAddressBack	24.00
 TestReleaseLease_OnStopHandsTheV6AddressBackToo	32.00
 TestReleaseLease_TheOptionIsRefusedAtCreateOrItIsNot	0.10
+TestSLAAC_ADeprecatedPrefixArrivesDeprecated	45.00
+TestSLAAC_ASegmentWithNoRouterEndsAFormingEndpoint	110.00
+TestSLAAC_AnAdvertisedPrefixReachesTheContainer	45.00
+TestSLAAC_AutoFallsBackOntoTheAdvertisedPrefix	50.00
+TestSLAAC_TheAddressComesBackAfterAPluginRestart	60.00
 TestSandboxKeyRoute_Bridge	11.89
 TestSandboxKeyRoute_Ipvlan	11.60
 TestSandboxKeyRoute_Macvlan	12.25

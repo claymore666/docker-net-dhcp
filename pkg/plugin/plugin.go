@@ -443,7 +443,28 @@ type DHCPNetworkOptions struct {
 	//
 	// It is read only in `auto`. In `dhcp` there is no fallback to
 	// suppress and in `slaac` there is no server to wait for.
-	IPv6AutoStrict bool          `mapstructure:"ipv6_auto_strict"`
+	IPv6AutoStrict bool `mapstructure:"ipv6_auto_strict"`
+	// IPv6MainPrefix names which of an endpoint's IPv6 addresses is the
+	// one Docker is told about (#818, design question Q2).
+	//
+	// WHY THERE IS MORE THAN ONE TO CHOOSE FROM. RFC 4862 section 5.5.3
+	// forms one address per autonomous prefix, so a link advertising a
+	// unique-local prefix and a global one gives every container two
+	// addresses and both are installed. Docker's endpoint carries
+	// exactly one AddressIPv6, which is what `docker inspect` shows and
+	// what other containers are told by name resolution, and the first
+	// prefix a router happens to list is not a choice an operator made.
+	//
+	// A prefix in CIDR form, e.g. `2001:db8:1::/64`. Unset means the
+	// first advertised prefix. A value that no address falls inside
+	// falls back to the first advertised, counts
+	// `ipv6_main_prefix_unmatched` and logs a line naming both, rather
+	// than failing an endpoint over which of its working addresses is
+	// the headline one. It is REFUSED at CreateNetwork on an
+	// `ipv6_mode` that does not form addresses: a DHCPv6 lease holds
+	// the address the server granted, and a filter over one address can
+	// only ever do nothing.
+	IPv6MainPrefix string        `mapstructure:"ipv6_main_prefix"`
 	LeaseTimeout   time.Duration `mapstructure:"lease_timeout"`
 	// IgnoreConflicts skips the BRIDGE OVERLAP check at CreateNetwork:
 	// whether some other Docker network already has this bridge, or an
@@ -1869,6 +1890,62 @@ type Plugin struct {
 	// timeouts, which is why this gets a counter rather than only the
 	// warning beside it.
 	ipv6LinkEnableFailures atomic.Int32
+
+	// dhcpv6SLAACNoAddress counts endpoints that FAILED on a network
+	// whose ipv6_mode forms the address from a router advertisement,
+	// where a router advertised and no address formed inside the
+	// acquisition budget without the library naming a reason. Its
+	// sibling dhcpv6SLAACNoPrefix is the case where the library DID
+	// name one; see v6SLAACNoAddress for what separates them and why
+	// `slaac` must not land on the "no DHCPv6 server answered" row.
+	dhcpv6SLAACNoAddress atomic.Int32
+
+	// ipv6SLAACAddresses counts ADDRESSES formed from a router
+	// advertisement and installed on a container link, over the whole
+	// life of every endpoint -- not endpoints, and not leases. RFC 4862
+	// section 5.5.3 forms one address per autonomous prefix, so a
+	// container on a link advertising a unique-local prefix and a
+	// global one raises it by two.
+	//
+	// IT COUNTS THE NETLINK CALL AND NOT THE LIBRARY'S OPINION. The
+	// library has a count of the addresses it formed; what an operator
+	// asking "did #818 reach my containers" needs is the number that
+	// went onto a link, and those two are the same number only while
+	// this plugin's apply path works.
+	ipv6SLAACAddresses atomic.Int32
+
+	// ipv6AddressesWithdrawn counts IPv6 addresses this plugin REMOVED
+	// from a container link because the lease stopped holding them:
+	// a valid lifetime that ran out, or a prefix the router stopped
+	// advertising. It is the other half of ipv6SLAACAddresses and it is
+	// what makes a renumbering visible from outside -- an address
+	// arriving and an address leaving are two events, and a counter for
+	// only the first reads as a container collecting addresses forever.
+	ipv6AddressesWithdrawn atomic.Int32
+
+	// ipv6SLAACPrefixesIgnored counts advertised Prefix Information
+	// options this client formed no address from, for any of RFC 4862
+	// section 5.5.3's reasons, INCLUDING the library's own cap of
+	// proto.MaxSLAACAddresses addresses per endpoint.
+	//
+	// IT IS THE ONLY THING THAT SEPARATES "AT THE CAP" FROM "NOTHING
+	// HERE TO FORM FROM". An endpoint on a link advertising nine
+	// autonomous prefixes holds eight addresses and is perfectly
+	// healthy; without this counter the ninth prefix is refused in
+	// silence, and a link whose prefixes are ALL refused reaches
+	// dhcpv6_slaac_no_prefix with no way to tell which rule refused
+	// them. The library's per-reason breakdown is not flattened here
+	// out of taste: it is one number because /metrics carries one
+	// series, and the log line the library journals names the rule.
+	ipv6SLAACPrefixesIgnored atomic.Int32
+
+	// ipv6MainPrefixUnmatched counts endpoints whose network named an
+	// `ipv6_main_prefix` that no address of the endpoint's lease fell
+	// inside, so the first advertised prefix was reported to Docker
+	// instead. It is a configuration counter, not a fault: the endpoint
+	// has addresses and the one `docker inspect` shows is not the one
+	// the operator asked for, which is a router to look at.
+	ipv6MainPrefixUnmatched atomic.Int32
 
 	// routerAdvertGuardFailures counts STEPS of the Router-Advertisement
 	// guard that did not take (#875): a sysctl write that failed, or a

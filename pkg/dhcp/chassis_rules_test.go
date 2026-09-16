@@ -45,23 +45,52 @@ func testMAC(t *testing.T) net.HardwareAddr {
 // The three other Lost reasons are driven beside it, because "drop
 // every Lost" satisfies the first assertion on its own and is the
 // mutation this test most needs to catch.
+//
+// THE SLAAC ROWS ARE THE SAME RULE ONE FIELD FURTHER IN (#818, #819).
+// A lease formed from a router advertisement was granted by nobody, so
+// its ending is a prefix that stopped being advertised or a valid
+// lifetime that ran out, and "leasefail" is the event the plugin turns
+// into dhcp_timeouts -- the counter an operator alerts on to mean the
+// DHCP SERVER went quiet. It gets its own type instead, which is also
+// the only way the plugin can be told WHICH addresses to take off the
+// link: "leasefail" carries no lease data at all.
 func TestTranslate_AStopIsNotALeaseLoss(t *testing.T) {
 	now := time.Now()
+	v4 := netip.MustParsePrefix("192.168.99.7/24")
+	v6 := netip.MustParsePrefix("2001:db8:1::42/64")
 
 	for _, tc := range []struct {
 		name     string
 		reason   proto.Reason
+		slaac    bool
 		wantEmit bool
 		wantType string
 	}{
-		{"the chassis cancelling its own manager", proto.ReasonStopped, false, ""},
-		{"a server NAK", proto.ReasonNak, true, "nak"},
-		{"the lease expiring", proto.ReasonExpired, true, "leasefail"},
-		{"the link going down", proto.ReasonLinkDown, true, "leasefail"},
+		{"the chassis cancelling its own manager", proto.ReasonStopped, false, false, ""},
+		{"a server NAK", proto.ReasonNak, false, true, "nak"},
+		{"the lease expiring", proto.ReasonExpired, false, true, "leasefail"},
+		{"the link going down", proto.ReasonLinkDown, false, true, "leasefail"},
+
+		{"a formed address expiring", proto.ReasonExpired, true, true, "slaac_lost"},
+		{"a formed address on a link that went down", proto.ReasonLinkDown, true, true, "slaac_lost"},
+		// The stop rule still comes first: a formed lease dropped
+		// because this process cancelled its own manager is every
+		// successful CreateEndpoint on a slaac network.
+		{"a stop on a formed lease", proto.ReasonStopped, true, false, ""},
+		// Unreachable and pinned, the way the impossible row in
+		// classifyV6Absence's table is: no server NAKs an address it
+		// never granted. It states which field decides, and a
+		// reordering that read the reason first would send a formed
+		// lease's ending to the DHCP counters.
+		{"a NAK naming a formed lease", proto.ReasonNak, true, true, "slaac_lost"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			l := lease.Lease{Addr: v4}
+			if tc.slaac {
+				l = lease.Lease{SLAAC: true, Addr: v6, Addrs: []lease.Addr6{{Addr: v6}}}
+			}
 			out, emit, _ := translateOne(
-				lease.Event{Kind: lease.Lost, Reason: tc.reason}, now, time.Time{})
+				lease.Event{Kind: lease.Lost, Reason: tc.reason, Lease: l}, now, time.Time{}, netip.Prefix{})
 			if emit != tc.wantEmit {
 				t.Fatalf("Lost{%v}: emit=%v, want %v. A stop reported as a loss makes every "+
 					"successful container start look like a lease failure; a real loss "+
@@ -70,6 +99,13 @@ func TestTranslate_AStopIsNotALeaseLoss(t *testing.T) {
 			}
 			if emit && out.Type != tc.wantType {
 				t.Errorf("Lost{%v}: emitted %q, want %q", tc.reason, out.Type, tc.wantType)
+			}
+			if tc.wantType == "slaac_lost" {
+				if !out.Data.SLAAC || out.Data.IP != v6.String() {
+					t.Errorf("the event carries %+v; the plugin takes the addresses off the "+
+						"link from this data and has no other source for them",
+						out.Data.Addrs)
+				}
 			}
 		})
 	}
@@ -91,20 +127,20 @@ func TestTranslate_ARenewalIsNotCountedTwice(t *testing.T) {
 	now := time.Now()
 	l := lease.Lease{Addr: netip.MustParsePrefix("192.168.99.7/24")}
 
-	_, emit, renewedAt := translateOne(lease.Event{Kind: lease.Renewed, Lease: l}, now, time.Time{})
+	_, emit, renewedAt := translateOne(lease.Event{Kind: lease.Renewed, Lease: l}, now, time.Time{}, netip.Prefix{})
 	if !emit {
 		t.Fatal("a Renewed emitted nothing; the plugin would never see a renewal at all")
 	}
 
 	if _, emit, _ := translateOne(
 		lease.Event{Kind: lease.Changed, Lease: l},
-		now.Add(coalesceWindow/2), renewedAt); emit {
+		now.Add(coalesceWindow/2), renewedAt, netip.Prefix{}); emit {
 		t.Error("the Changed that accompanied the same DHCPACK was emitted as a second renewal")
 	}
 
 	if _, emit, _ := translateOne(
 		lease.Event{Kind: lease.Changed, Lease: l},
-		now.Add(10*coalesceWindow), renewedAt); !emit {
+		now.Add(10*coalesceWindow), renewedAt, netip.Prefix{}); !emit {
 		t.Error("a Changed well outside the window was swallowed. That is a re-acquisition on a " +
 			"different address — a NAK and a new lease — and the container is left configured " +
 			"with the old one.")

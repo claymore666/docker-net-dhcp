@@ -12,6 +12,8 @@ import (
 	log "github.com/sirupsen/logrus"
 	logtest "github.com/sirupsen/logrus/hooks/test"
 
+	"github.com/claymore666/dhcp-golib/proto"
+
 	"github.com/claymore666/docker-net-dhcp/v2/pkg/dhcp"
 )
 
@@ -65,7 +67,7 @@ func TestClassifyV6Absence_ARefusalThatAgreesWithTheAdvertisementIsNotAFault(t *
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := classifyV6Absence(tc.ra, refused); got != tc.want {
+			if got := classifyV6Absence(tc.ra, refused, proto.Mode6DHCP); got != tc.want {
 				t.Errorf("classifyV6Absence(%+v, NoAddrsAvail) = %v, want %v -- %s",
 					tc.ra, got, tc.want, tc.why)
 			}
@@ -82,7 +84,7 @@ func TestNoteV6Absence_AStatelessRefusalStillCreatesTheEndpoint(t *testing.T) {
 	refused := dhcp.V6Refusal("NoAddrsAvail", "no addresses available")
 	ra := dhcp.RAObservation{Seen: true, Other: true}
 
-	if !p.noteV6Absence(ra, "eth0", "ep-stateless", refused) {
+	if !p.noteV6Absence(ra, "eth0", "ep-stateless", refused, proto.Mode6DHCP) {
 		t.Error("the endpoint was refused on a stateless segment whose advertisement " +
 			"says M=0. The server answering \"no addresses available\" there is the " +
 			"segment agreeing with itself, and failing the endpoint takes the " +
@@ -128,10 +130,10 @@ func TestClassifyV6Absence_TheWireCausesOverruleTheObservation(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := classifyV6Absence(tc.ra, tc.cause); got != tc.want {
-				t.Errorf("classifyV6Absence(%+v, %v) = %v, want %v", tc.ra, tc.cause, got, tc.want)
+			if got := classifyV6Absence(tc.ra, tc.cause, proto.Mode6DHCP); got != tc.want {
+				t.Errorf("classifyV6Absence(%+v, %v, proto.Mode6DHCP) = %v, want %v", tc.ra, tc.cause, got, tc.want)
 			}
-			if got := classifyV6Absence(tc.ra, errors.New("timed out")); got != tc.alone {
+			if got := classifyV6Absence(tc.ra, errors.New("timed out"), proto.Mode6DHCP); got != tc.alone {
 				t.Fatalf("the same observation under an ordinary timeout = %v, want %v. "+
 					"This row is here to show the cause CHANGING the verdict, and if the "+
 					"observation already gave the same answer it shows nothing.", got, tc.alone)
@@ -143,11 +145,11 @@ func TestClassifyV6Absence_TheWireCausesOverruleTheObservation(t *testing.T) {
 	// were tolerated before #816 are still tolerated. A refusal arm
 	// written as "any failure with a cause is fatal" passes every row
 	// above and fails here.
-	if got := classifyV6Absence(dhcp.RAObservation{Seen: true, Other: true}, dhcp.ErrNoV6Address); got != v6NotOffered {
+	if got := classifyV6Absence(dhcp.RAObservation{Seen: true, Other: true}, dhcp.ErrNoV6Address, proto.Mode6DHCP); got != v6NotOffered {
 		t.Errorf("a stateless segment now classifies as %v; #868's tolerance is what the "+
 			"new verdicts must not eat", got)
 	}
-	if got := classifyV6Absence(dhcp.RAObservation{}, fmt.Errorf("%w: 3 solicitations", dhcp.ErrNoV6Router)); got != v6NoRouter {
+	if got := classifyV6Absence(dhcp.RAObservation{}, fmt.Errorf("%w: 3 solicitations", dhcp.ErrNoV6Router), proto.Mode6DHCP); got != v6NoRouter {
 		t.Errorf("a segment with no router classifies as %v, want v6NoRouter — the "+
 			"answerless endings keep the verdict the observation gives them", got)
 	}
@@ -196,7 +198,7 @@ func TestNoteV6Absence_EachFailureIsItsOwnRow(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			p := &Plugin{}
-			if p.noteV6Absence(tc.ra, "eth0", "abcdef0123456789", tc.cause) {
+			if p.noteV6Absence(tc.ra, "eth0", "abcdef0123456789", tc.cause, proto.Mode6DHCP) {
 				t.Error("the endpoint was tolerated. All three of these endings leave the " +
 					"container with no IPv6 address on a network configured to have one, " +
 					"and the caller turns a false into the error Docker shows.")
@@ -227,7 +229,8 @@ func TestNoteV6Absence_TheRefusalNamesTheStatusCode(t *testing.T) {
 
 	p := &Plugin{}
 	p.noteV6Absence(dhcp.RAObservation{Seen: true, Managed: true}, "eth7", "0123456789abcdef",
-		fmt.Errorf("acquisition failed: %w", dhcp.V6Refusal("NoAddrsAvail", "no addresses available")))
+		fmt.Errorf("acquisition failed: %w", dhcp.V6Refusal("NoAddrsAvail", "no addresses available")),
+		proto.Mode6DHCP)
 
 	entries := hook.AllEntries()
 	if len(entries) != 1 {

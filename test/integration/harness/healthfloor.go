@@ -411,6 +411,28 @@ type HealthResponse struct {
 	DHCPv6NoRouterAdvert   int32 `json:"dhcpv6_no_router_advert"`
 	IPv6LinkEnableFailures int32 `json:"ipv6_link_enable_failures"`
 
+	// The v6 no-address endings and the SLAAC address counters, mirrored
+	// here for the same reason the two above are: a test that wants a
+	// delta over one of them wants it through CounterWindow, which is
+	// the only reader that checks the plugin did not restart underneath
+	// the pair (#405). Reading them off /metrics instead is equally
+	// valid and dhcpv6_refused_test.go does exactly that; what is not
+	// valid is subtracting two numbers by hand with nothing watching
+	// the instance they came from.
+	//
+	// None of them is healthy-affecting and none belongs in the floor
+	// table. Each is zero on every segment that is not the one it
+	// describes, so a floor entry would be a threshold on a number that
+	// is normally absent, which is the shape that cries wolf.
+	DHCPv6NoServer           int32 `json:"dhcpv6_no_server"`
+	DHCPv6SLAACNoPrefix      int32 `json:"dhcpv6_slaac_no_prefix"`
+	DHCPv6SLAACNoAddress     int32 `json:"dhcpv6_slaac_no_address"`
+	DHCPv6AutoFallbacks      int32 `json:"dhcpv6_auto_fallbacks"`
+	IPv6SLAACAddresses       int32 `json:"ipv6_slaac_addresses"`
+	IPv6AddressesWithdrawn   int32 `json:"ipv6_addresses_withdrawn"`
+	IPv6SLAACPrefixesIgnored int32 `json:"ipv6_slaac_prefixes_ignored"`
+	IPv6MainPrefixUnmatched  int32 `json:"ipv6_main_prefix_unmatched"`
+
 	// RouterAdvertGuardFailures counts steps of the DHCPv6 Router
 	// Advertisement guard that did not take (#911). DHCPv6 carries no
 	// next hop -- RFC 9915 section 21 defines no router option -- and

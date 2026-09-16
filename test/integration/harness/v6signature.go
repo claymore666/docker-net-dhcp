@@ -85,6 +85,34 @@ const (
 	// stateful] and a prefix option with Flags [onlink] and no
 	// autonomous bit.
 	V6ManagedExhausted
+	// V6AutoFallback is a segment that tells a client to ask DHCPv6 and
+	// then answers nothing, while advertising a prefix the client can
+	// form an address from on its own: the RA carries M and O, every
+	// Solicit is ignored, and the Prefix Information option carries the
+	// A bit.
+	//
+	// IT IS THE ONLY MODE IN WHICH proto.Mode6Auto's FALLBACK CAN RUN.
+	// managed-silent is silent, but dnsmasq clears the A bit on a prefix
+	// it serves addresses for (radv.c:748), so a client that gives up on
+	// DHCPv6 there has nothing to fall back TO. #817 could therefore
+	// drive the fallback only at the plugin's own arithmetic, and said
+	// so as a stated bound. This mode is what drives it end to end.
+	//
+	// dnsmasq's spelling is a v6 --dhcp-range whose third field is
+	// `slaac`: option.c:3823-3830 turns that keyword into CONTEXT_RA
+	// while the range's two address fields have already set
+	// CONTEXT_DHCP, so radv.c:627-644 sets the M and O flags and
+	// radv.c:748 sets the A bit, from one range. --dhcp-ignore=tag:dhcpv6
+	// silences the server half, exactly as it does in managed-silent.
+	//
+	// MEASURED 2026-09-16 on the session box, dnsmasq 2.91 under
+	// `unshare -Urn`, the library's own client in proto.Mode6Auto on the
+	// peer end of a veth pair: the advertisement carried Flags [managed,
+	// other stateful] and a prefix option with Flags [onlink, auto] on
+	// /64, the server logged three ignored DHCPSOLICITs, and the client
+	// reported acquired at 7.9 s with slaac=true, SLAACFallbacks 1 and
+	// SLAACAddressesFormed 1.
+	V6AutoFallback
 )
 
 // V6Modes is every mode, in declaration order. It exists so a table
@@ -92,7 +120,7 @@ const (
 // beside it: a mode added without a row here is a mode the drift
 // matrix silently stops covering.
 func V6Modes() []V6Mode {
-	return []V6Mode{V6Managed, V6Stateless, V6SLAAC, V6NoRA, V6ManagedSilent, V6ManagedExhausted}
+	return []V6Mode{V6Managed, V6Stateless, V6SLAAC, V6NoRA, V6ManagedSilent, V6ManagedExhausted, V6AutoFallback}
 }
 
 func (m V6Mode) String() string {
@@ -109,6 +137,8 @@ func (m V6Mode) String() string {
 		return "managed-silent"
 	case V6ManagedExhausted:
 		return "managed-exhausted"
+	case V6AutoFallback:
+		return "auto-fallback"
 	}
 	return fmt.Sprintf("V6Mode(%d)", int(m))
 }
@@ -129,6 +159,13 @@ func (m V6Mode) String() string {
 //	nora            yes   no   -  -  -       -      -
 //	managed-silent  yes   yes  1  1  no      /120   1800s
 //	managed-exhausted no  yes  1  1  no      /64    1800s
+//	auto-fallback   yes   yes  1  1  yes     /64    1800s
+//
+// The last row was measured on 2026-09-16 with tcpdump on one end of
+// a veth pair instead of with racapture.go, because it was measured
+// before the mode existed in this file. The frame it produced is
+// pinned verbatim in v6signature_test.go and is decoded there by the
+// same ParseRA every other row uses.
 //
 // The wire half is derived from dnsmasq's own source and then measured,
 // which is why the two "to be measured" cells of the M7 design table
@@ -198,6 +235,11 @@ func (m V6Mode) Signature() V6Signature {
 		// managed-silent's, which is why the drift matrix can tell it
 		// from both at fixture time and is exempted from neither.
 		return V6Signature{Pool: false, RA: true, Managed: true, OtherConfig: true, AutoPrefix: false}
+	case V6AutoFallback:
+		// THE ONLY SIGNATURE WITH BOTH M AND THE A BIT, and that is the
+		// mode: a segment that offers DHCPv6 and also offers a prefix to
+		// form from. Every other RA mode carries one or the other.
+		return V6Signature{Pool: true, RA: true, Managed: true, OtherConfig: true, AutoPrefix: true}
 	}
 	return V6Signature{}
 }
@@ -453,7 +495,27 @@ type RAPrefix struct {
 	// OnLink is the L bit, Autonomous the A bit.
 	OnLink     bool
 	Autonomous bool
+	// ValidLifetime and PreferredLifetime are the option's two
+	// lifetimes IN SECONDS, exactly as they sit on the wire, and
+	// RAInfiniteLifetime is the value that means "never expires".
+	//
+	// SECONDS AND NOT time.Duration, which is what RouterLifetime next
+	// door uses. RFC 4861 section 4.6.2 spells infinity as
+	// 0xFFFFFFFF, and a Duration cannot hold that as anything but a
+	// number of years indistinguishable from a router that really
+	// advertised 136 of them. The distinction is the whole of what a
+	// deprecation test reads: a preferred lifetime of 0 and a valid
+	// lifetime of infinity are the two ends of the same field, and an
+	// address carrying them is deprecated and permanent at once.
+	ValidLifetime     uint32
+	PreferredLifetime uint32
 }
+
+// RAInfiniteLifetime is RFC 4861 section 4.6.2's "infinity" in both
+// lifetime fields of a Prefix Information option. The kernel spells the
+// same thing as a zero lifetime in IFA_CACHEINFO, which is why the two
+// are never compared without one of them being converted.
+const RAInfiniteLifetime uint32 = 0xFFFFFFFF
 
 func (f RAFrame) String() string {
 	flags := []string{}
@@ -475,11 +537,20 @@ func (f RAFrame) String() string {
 		if p.Autonomous {
 			pf = append(pf, "auto")
 		}
-		parts = append(parts, fmt.Sprintf("%s/%d [%s]", p.Prefix, p.PrefixLen, strings.Join(pf, ", ")))
+		parts = append(parts, fmt.Sprintf("%s/%d [%s] valid=%s preferred=%s",
+			p.Prefix, p.PrefixLen, strings.Join(pf, ", "),
+			raLifetimeString(p.ValidLifetime), raLifetimeString(p.PreferredLifetime)))
 	}
 	return fmt.Sprintf("%s RA src=%s flags=[%s] lifetime=%s hoplimit=%d prefixes=%s",
 		f.At.Format("15:04:05.000"), f.SourceMAC, strings.Join(flags, ", "),
 		f.RouterLifetime, f.CurHopLimit, strings.Join(parts, " "))
+}
+
+func raLifetimeString(secs uint32) string {
+	if secs == RAInfiniteLifetime {
+		return "infinite"
+	}
+	return fmt.Sprintf("%ds", secs)
 }
 
 // The offsets ParseRA reads, spelled out because getting one of them
@@ -516,6 +587,13 @@ const (
 	raOptPrefixInfo     = 3
 	raPrefixFlagOnLink  = 0x80
 	raPrefixFlagAutonom = 0x40
+	// RFC 4861 section 4.6.2 lays the Prefix Information option out as
+	// type, length, prefix length, flags, then the two 32-bit
+	// lifetimes, then 4 reserved bytes, then the prefix. So valid is
+	// at offset 4 and preferred at 8, and the prefix at 16, which is
+	// where the decoder already reads it.
+	raPrefixValidOffset     = 4
+	raPrefixPreferredOffset = 8
 )
 
 // ParseRA decodes an ethernet frame carrying an ICMPv6 Router
@@ -565,10 +643,12 @@ func ParseRA(b []byte) (RAFrame, bool) {
 		}
 		if o[0] == raOptPrefixInfo && optLen >= 32 {
 			f.Prefixes = append(f.Prefixes, RAPrefix{
-				Prefix:     net.IP(append([]byte(nil), o[16:32]...)),
-				PrefixLen:  o[2],
-				OnLink:     o[3]&raPrefixFlagOnLink != 0,
-				Autonomous: o[3]&raPrefixFlagAutonom != 0,
+				Prefix:            net.IP(append([]byte(nil), o[16:32]...)),
+				PrefixLen:         o[2],
+				OnLink:            o[3]&raPrefixFlagOnLink != 0,
+				Autonomous:        o[3]&raPrefixFlagAutonom != 0,
+				ValidLifetime:     binary.BigEndian.Uint32(o[raPrefixValidOffset : raPrefixValidOffset+4]),
+				PreferredLifetime: binary.BigEndian.Uint32(o[raPrefixPreferredOffset : raPrefixPreferredOffset+4]),
 			})
 		}
 		o = o[optLen:]
@@ -955,6 +1035,15 @@ var v6ExchangeContract = map[V6Mode]v6ExchangeRule{
 		// Advertise never Requests.
 		must:    []string{"DHCPSOLICIT", "DHCPADVERTISE"},
 		mustNot: []string{"DHCPREPLY"},
+	},
+	V6AutoFallback: {
+		// The same pair managed-silent uses, and for the same reason:
+		// the client has to have SPOKEN and the server has to have said
+		// nothing back. What separates the two modes is the wire, not
+		// the log -- see the foreign-log exemptions in
+		// v6signature_test.go, which say so rather than hide it.
+		mustLine: []string{"DHCPSOLICIT", "ignored"},
+		mustNot:  []string{"DHCPADVERTISE", "DHCPREPLY"},
 	},
 }
 

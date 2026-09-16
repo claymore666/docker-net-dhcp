@@ -394,6 +394,15 @@ jobs:
       - name: No retired word on this branch
         run: bash scripts/check-retired-words.sh
 
+      # A hand-resolved rebase can leave a conflict block in a file no
+      # compiler reads. Two of them reached a branch tip in
+      # RELEASE_NOTES.md, which release.yml feeds to the release body,
+      # and every gate here stayed green: each one reads Go, YAML,
+      # health fields or a table it knows the shape of, and a marker is
+      # none of those.
+      - name: No merge-conflict marker in the tree
+        run: bash scripts/check-conflict-markers.sh
+
       # RELEASE_NOTES.md merges last and describes code that is still
       # moving, so it is the one document whose claims can go stale
       # between being written and being true (#732). Three of the file's

@@ -8,6 +8,8 @@ import (
 
 	log "github.com/sirupsen/logrus"
 
+	"github.com/claymore666/dhcp-golib/proto"
+
 	"github.com/claymore666/docker-net-dhcp/v2/pkg/dhcp"
 )
 
@@ -36,14 +38,19 @@ const (
 	// there are no DHCPv6 addresses here. This is the NORMAL state, not
 	// a degraded one, and the endpoint is created without a v6 address.
 	//
-	// The endpoint then starts with no global IPv6 address at all. Since
-	// #821 the RA guard (pkg/dhcp/ra_guard.go) writes autoconf=0 on the
-	// interface, so the kernel forms no address from the advertised
-	// prefix whatever its A flag says (RFC 4862 section 5.5.3) -- the
-	// plugin holds the lease for the address a container uses, and two
-	// sources of global address on one link is not a state anything
-	// downstream is written for. SLAAC address formation under the
-	// plugin's own control is #818 and is not on this build.
+	// The endpoint then starts with no global IPv6 address FROM THIS
+	// PLUGIN -- there is no lease to be had -- and none from the kernel
+	// either. Since #821 the RA guard (pkg/dhcp/ra_guard.go) writes
+	// autoconf=0 on the interface, so the kernel forms no address from
+	// the advertised prefix whatever its A flag says (RFC 4862 section
+	// 5.5.3): the plugin holds the lease for the address a container
+	// uses, and two sources of global address on one link is not a
+	// state anything downstream is written for.
+	//
+	// A NETWORK WHOSE ipv6_mode FORMS ADDRESSES DOES NOT REACH THIS
+	// VERDICT on a seen advertisement. There the plugin forms the
+	// address itself and installs it (#818), and the two endings for
+	// that mode are v6SLAACNoPrefix and v6SLAACNoAddress below.
 	//
 	// THE ENDPOINT THEREFORE GETS NO IPv6 ROUTE either, and that is a
 	// fact about the engine rather than a choice (#821, MEASURED on the
@@ -107,7 +114,80 @@ const (
 	// every mode that does not form addresses
 	// (proto/machine6_slaac.go:28).
 	v6SLAACNoPrefix
+	// v6SLAACNoAddress: a router WAS heard, this network's ipv6_mode
+	// forms the address from the advertisement, and no address was
+	// formed inside the acquisition budget -- without the library
+	// naming a reason, which is what separates this from
+	// v6SLAACNoPrefix.
+	//
+	// FATAL, and it is the row that did not exist while `slaac` could
+	// not give a container an address at all. Two things produce it and
+	// both are worth being able to see: duplicate address detection
+	// found the formed address in use (RFC 4862 section 5.4.5, and a
+	// modified EUI-64 identifier gets no retry), or the advertisement
+	// arrived too late in the budget for detection to finish. The
+	// router's prefix configuration is not what to look at; the other
+	// node holding that address is.
+	//
+	// IT IS ALSO THE VERDICT THAT KEEPS `slaac` OFF v6Fatal's MESSAGE.
+	// proto.Mode6SLAAC "sends no Solicit ever, whatever the M flag
+	// says", so on a managed segment the pre-#818 answer for a
+	// `slaac` endpoint with no address was "no DHCPv6 server answered
+	// within N s" -- about an exchange that never happened.
+	v6SLAACNoAddress
+	// v6VerdictCount is not a verdict. It is the end of the
+	// enumeration, so allV6Verdicts cannot silently go short: a verdict
+	// added above this line and not added to that slice fails
+	// TestAllV6Verdicts_IsEveryDeclaredVerdict, and the tolerance table
+	// that iterates the slice is a table over the population rather
+	// than over whichever verdicts somebody remembered.
+	v6VerdictCount
 )
+
+// allV6Verdicts is every verdict, in declaration order.
+func allV6Verdicts() []v6Verdict {
+	return []v6Verdict{
+		v6Fatal, v6NotOffered, v6NoRouter, v6Refused, v6SLAACNoPrefix, v6SLAACNoAddress,
+	}
+}
+
+// v6AbsenceTolerated says whether an endpoint with no DHCPv6 address
+// may still be created, given the verdict and the network's ipv6_mode.
+//
+// IT IS A SECOND FUNCTION AND NOT A `return` INSIDE noteV6Absence's
+// SWITCH, because the endpoint outcome and the counter are two claims
+// and only one of them used to be testable without a Plugin. The
+// switch below still owns the counter and the log line; this owns what
+// Docker is told, and the table test drives it over every verdict and
+// every mode.
+//
+// THE MODE TERM IS ON ONE ROW. A segment with no router advertisement
+// at all gives a mode that forms its own address no source of one: RFC
+// 4862 section 5.5.3 forms addresses from the Prefix Information
+// option, and there is no advertisement to carry it. Up to v2.1.x that
+// row was tolerated in every mode, and docs/reference.md said why --
+// the address those modes would form was not installed yet, so failing
+// the endpoint would have refused a container for the absence of
+// something the release did not deliver. It is delivered here (#818),
+// so the reason is gone and the row goes with it.
+//
+// v6NotOffered stays tolerated in EVERY mode, including the two that
+// form addresses, and that is deliberate rather than an oversight. It
+// is reached only through dhcp.ErrNoV6Address, which is RFC 9915
+// section 18.2.6's Information-request answered with configuration and
+// no address -- an exchange the library performs on an O=1 M=0 link,
+// having already decided what to do about addresses. The endpoint has
+// the configuration it asked for.
+func v6AbsenceTolerated(v v6Verdict, mode proto.Mode6) bool {
+	switch v {
+	case v6NotOffered:
+		return true
+	case v6NoRouter:
+		return !dhcp.IPv6ModeFormsAddresses(mode)
+	default:
+		return false
+	}
+}
 
 // classifyV6Absence turns what the acquisition observed about the
 // segment's router advertisements, and what came back on the wire, into
@@ -136,7 +216,7 @@ const (
 //   - anything else -- O=1 alone, or neither bit -- is a segment with
 //     no DHCPv6 addresses on it, which is a configuration and not a
 //     fault.
-func classifyV6Absence(ra dhcp.RAObservation, cause error) v6Verdict {
+func classifyV6Absence(ra dhcp.RAObservation, cause error, mode proto.Mode6) v6Verdict {
 	if errors.Is(cause, dhcp.ErrNoV6Address) {
 		return v6NotOffered
 	}
@@ -184,8 +264,22 @@ func classifyV6Absence(ra dhcp.RAObservation, cause error) v6Verdict {
 	switch {
 	case !ra.Seen:
 		return v6NoRouter
+	case mode == proto.Mode6SLAAC:
+		// `slaac` NEVER SOLICITS, so no reading of the M flag can make
+		// a silent DHCPv6 server this endpoint's problem: there was no
+		// exchange. A router was heard and the one mechanism this
+		// network is configured for produced nothing.
+		return v6SLAACNoAddress
 	case ra.Managed:
 		return v6Fatal
+	case mode == proto.Mode6Auto:
+		// `auto` on an advertisement without M resolved to forming an
+		// address (proto.Mode6Auto decides once, on the first
+		// advertisement), so this is the slaac row with the mode
+		// spelled differently. It is NOT v6NotOffered: that verdict
+		// tolerates the endpoint, and an `auto` network that was told
+		// to form an address and did not has lost its only mechanism.
+		return v6SLAACNoAddress
 	default:
 		return v6NotOffered
 	}
@@ -197,10 +291,11 @@ func classifyV6Absence(ra dhcp.RAObservation, cause error) v6Verdict {
 // Counting is the caller's evidence of intent; it is NOT evidence of
 // effect. What proves the fix is a container starting and the address
 // it ends up with, which is what the integration cases assert.
-func (p *Plugin) noteV6Absence(ra dhcp.RAObservation, iface, endpointID string, cause error) bool {
+func (p *Plugin) noteV6Absence(ra dhcp.RAObservation, iface, endpointID string, cause error, mode proto.Mode6) bool {
 	fields := log.Fields{"endpoint": shortID(endpointID), "iface": iface}
 
-	switch classifyV6Absence(ra, cause) {
+	verdict := classifyV6Absence(ra, cause, mode)
+	switch verdict {
 	case v6Refused:
 		// COUNTED AND LOGGED ON THE WAY TO FAILING. The endpoint still
 		// fails -- the caller turns this false into the error Docker
@@ -212,23 +307,37 @@ func (p *Plugin) noteV6Absence(ra dhcp.RAObservation, iface, endpointID string, 
 		status, _ := dhcp.V6RefusalStatus(cause)
 		log.WithFields(fields).WithField("status_code", status).WithError(cause).
 			Error("The DHCPv6 server refused this client; it answered and has no address for it")
-		return false
 	case v6SLAACNoPrefix:
 		p.dhcpv6SLAACNoPrefix.Add(1)
 		log.WithFields(fields).WithError(cause).
 			Error("A router advertises on this segment and none of its prefixes formed an address; " +
 				"this network's ipv6_mode takes its addresses from the advertisement")
-		return false
+	case v6SLAACNoAddress:
+		p.dhcpv6SLAACNoAddress.Add(1)
+		log.WithFields(fields).WithField("ipv6_mode", mode.String()).WithError(cause).
+			Error("A router advertises on this segment and no address formed from it inside the " +
+				"acquisition budget; another node may hold the address this endpoint's prefix and " +
+				"MAC address form, and no DHCPv6 exchange took place")
 	case v6NotOffered:
 		p.dhcpv6NotOffered.Add(1)
 		log.WithFields(fields).
 			Info("Segment advertises no managed DHCPv6; creating the endpoint without a DHCPv6 address")
-		return true
 	case v6NoRouter:
+		// ONE COUNTER FOR BOTH ENDINGS, because the population it
+		// counts is "endpoints that saw no router advertisement" and
+		// that is the same population whichever mode the network is
+		// in. What the mode changes is the endpoint's outcome and the
+		// level the line is written at, and an operator reading a
+		// WARN beside a started container and an ERROR beside a
+		// refused one is reading the difference.
 		p.dhcpv6NoRouterAdvert.Add(1)
-		log.WithFields(fields).WithError(cause).
-			Warn("No IPv6 router advertisement on this segment; creating the endpoint without a DHCPv6 address")
-		return true
+		entry := log.WithFields(fields).WithField("ipv6_mode", mode.String()).WithError(cause)
+		if dhcp.IPv6ModeFormsAddresses(mode) {
+			entry.Error("No IPv6 router advertisement on this segment; this network's ipv6_mode " +
+				"takes its addresses from the advertisement, so nothing else can provide one")
+			break
+		}
+		entry.Warn("No IPv6 router advertisement on this segment; creating the endpoint without a DHCPv6 address")
 	default:
 		// v6Fatal: the segment advertised M=1 and nothing usable came
 		// back inside the budget. The message stays the caller's, word
@@ -236,6 +345,6 @@ func (p *Plugin) noteV6Absence(ra dhcp.RAObservation, iface, endpointID string, 
 		// #868's tolerance is measured against; what is added here is
 		// the counter that makes it a different row from a refusal.
 		p.dhcpv6NoServer.Add(1)
-		return false
 	}
+	return v6AbsenceTolerated(verdict, mode)
 }

@@ -574,7 +574,7 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, callStart tim
 				// segment ADVERTISED decides, not how long we waited --
 				// a segment offering managed DHCPv6 that then goes
 				// quiet is still fatal, here as before.
-				if v6 && p.noteV6Absence(ra, la.Name, r.EndpointID, err) {
+				if v6 && p.noteV6Absence(ra, la.Name, r.EndpointID, err, base.Mode6) {
 					return nil
 				}
 				return fmt.Errorf("failed to get initial IP%v address via DHCP%v: %w", v6str, v6str, err)
