@@ -302,6 +302,31 @@ type DHCPClientOptions struct {
 	// nil is the unit-test and probe shape.
 	OnRenewalStats func(RenewalStats)
 
+	// OnRouterStats is called with the DELTA in the library's RFC 4861
+	// router-discovery counters since the previous call.
+	//
+	// A DELTA, for OnACDStats' reason: the plugin's counters are
+	// monotonic across every manager that ever ran.
+	//
+	// WIRED ON THE v6 PATH ONLY. A DHCPv4 client opens no Neighbor
+	// Discovery socket and never looks at an advertisement, so every
+	// counter this carries is zero for its whole life; a callback
+	// there could only add a writer that writes nothing and a reader
+	// that cannot tell a v4-only host from a segment with no router.
+	//
+	// IT IS READ ON THE ADVERTISEMENT WATCH'S TICK AS WELL AS ON THE
+	// EVENTS, and that is the whole reason it is not folded into
+	// acdReport's sites. An advertisement arrives from the LINK: a
+	// router that is advertising every few seconds produces no lease
+	// event at all, so a counter folded on events alone reads zero for
+	// the entire life of a quiet lease. acdReport carries that defect
+	// in the other direction and says so — a probe run with no later
+	// event stayed unreported for 19h52m, MEASURED on a production
+	// host.
+	//
+	// nil is the unit-test and probe shape.
+	OnRouterStats func(RouterStats)
+
 	// Resume is a lease this identity held in a previous run of the
 	// plugin. Supplying it makes the first message on the wire an
 	// INIT-REBOOT DHCPREQUEST (RFC 2131 section 4.4.2) instead of a
@@ -355,6 +380,9 @@ type DHCPClientOptions struct {
 	// prefixesIgnoredSeen for OnV6PrefixesIgnored.
 	fallbacksSeen       uint64
 	prefixesIgnoredSeen uint64
+
+	// routerSeen is the same thing for OnRouterStats.
+	routerSeen RouterStats
 }
 
 // record writes one manager event, if this manager has a record.
@@ -469,6 +497,30 @@ func (o *DHCPClientOptions) acdReport(s lease.Stats) {
 		return
 	}
 	o.OnACDStats(delta)
+}
+
+// routerReport hands the caller everything the library's RFC 4861
+// router-discovery counters have gained since the last call.
+//
+// Called wherever a DHCPv6 client's statistics are read AND on the
+// advertisement watch's tick, which is the site the other reporters do
+// not have and the one that makes these counters move. See
+// OnRouterStats: a link whose routers advertise every few seconds
+// produces no lease event, and a fold on the event arm alone would
+// leave every counter here at zero for the whole life of a quiet
+// lease — the reading an operator would take for a segment with no
+// router on it.
+func (o *DHCPClientOptions) routerReport(s lease.Stats) {
+	if o.OnRouterStats == nil {
+		return
+	}
+	cur := routerStats(s)
+	delta := cur.Sub(o.routerSeen)
+	o.routerSeen = cur
+	if delta.IsZero() {
+		return
+	}
+	o.OnRouterStats(delta)
 }
 
 // v6ModeReport hands the caller the Mode6Auto fallbacks the library has
@@ -961,6 +1013,7 @@ func (c *DHCPClient) translate() {
 		c.opts.acdReport(final)
 		c.opts.v6ModeReport(final)
 		c.opts.v6PrefixReport(final)
+		c.opts.routerReport(final)
 		c.renewals.report(final, c.opts.OnRenewalStats)
 		c.opts.count(c.manager, final)
 	}()
@@ -1003,6 +1056,14 @@ func (c *DHCPClient) translate() {
 			c.renewals.report(c.Stats(), c.opts.OnRenewalStats)
 			continue
 		case <-raWatch.C:
+			// BEFORE the change is taken and unconditionally, not
+			// inside the `ok`. An advertisement that repeats what
+			// the last one said is the ordinary case on a healthy
+			// link and produces no change at all; a fold behind
+			// the `ok` would count only the advertisements that
+			// altered something, which is the number
+			// leases_changed already is.
+			c.opts.routerReport(c.Stats())
 			if out, ok := c.takeAdvertChange(time.Now()); ok {
 				c.deliver(out)
 			}
@@ -1034,6 +1095,7 @@ func (c *DHCPClient) translate() {
 		c.opts.acdReport(stats)
 		c.opts.v6ModeReport(stats)
 		c.opts.v6PrefixReport(stats)
+		c.opts.routerReport(stats)
 		c.renewals.report(stats, c.opts.OnRenewalStats)
 		c.renewals.cycleEnded(stats)
 		c.opts.conflict(ev)

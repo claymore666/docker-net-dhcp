@@ -246,6 +246,18 @@ func (p *Plugin) v6Wiring(base *dhcp.DHCPClientOptions, opts DHCPNetworkOptions,
 		// autonomous prefix on every advertisement.
 		base.OnV6PrefixesIgnored = p.v6PrefixesIgnoredReporter(endpointID)
 	}
+	// IN EVERY MODE, which is what makes it unlike the two reporters
+	// beside it. Router discovery is not a mode's business: a `dhcp`
+	// segment's client solicits and listens for the M and O flags
+	// exactly as a `slaac` one does, and what these counters describe is
+	// the segment and not what the plugin decided to do with it (#814).
+	//
+	// HERE AND NOT IN conflictWiring, because this is where the three
+	// v6 client sites meet -- the two attach paths and the persistent
+	// client -- and ipv6_mode_sites_test.go is already the population
+	// that says so. conflictWiring runs on the v4 paths as well, and a
+	// v4 client has no Neighbor Discovery socket and nothing to count.
+	base.OnRouterStats = p.addRouterStats
 	if mode == proto.Mode6Auto {
 		// ONLY IN auto, because only auto can fall back. The library
 		// raises lease.Stats.SLAACFallbacks from the timer

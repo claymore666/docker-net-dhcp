@@ -10,7 +10,20 @@
 #
 # POPULATION: TOP-LEVEL TEST FUNCTIONS, PARENTS ONLY.
 # One row per `func TestX(t *testing.T)` in test/integration/*_test.go —
-# 137 of them, the main suite's 130 and the failure suite's 7. A subtest's
+# 145 of them, the main suite's 138 and the failure suite's 7. MEASURED
+# on this table: 145 data rows, and 145 `func TestX(t *testing.T)` in
+# test/integration/*_test.go counted independently of them.
+#
+# THIS NUMBER HAS NOW BEEN WRONG TWICE, and the second time is the
+# instructive one. It said 137 / 130 / 7 and was stale by five before
+# #814 added the sixth. #814 corrected it to 143 / 136 / 7; #925 then
+# added two rows, and because the sentence is a line neither change
+# edited, it merged CLEANLY and came out false. A diff cannot show a
+# collision with text neither side touched. The gate derives the
+# population from the sharder and never reads this sentence, so nothing
+# goes red when it drifts: re-measure it against the table beside it
+# rather than adding your rows to the number already written here.
+# Recounted 2026-09-17. A subtest's
 # seconds are inside its parent's figure and are NOT a row of their own.
 # That is stated because the previous edition's header did not state it
 # and the population was read back two ways: 104 rows summing 1804.88s
@@ -135,6 +148,16 @@
 #              that test, because each waits out router discovery before
 #              the acquisition gives up. The first run that executes it
 #              costs it.
+#   one row    TestDHCPv6_RouterDiscoveryCountersRise (35.00) is INFERRED,
+#              not measured: it arrives with #814 and no corpus run could
+#              have costed it. It builds one V6Fixture in managed mode,
+#              creates one network, runs one container, polls for the
+#              container's default route to appear and then reads
+#              /health. That is the shape of
+#              TestDHCPv6_AdvertisedMTUReachesTheContainer (30.00) plus
+#              one route poll on an advertisement interval, so 35.00, and
+#              like the two rows above it is deliberately above the shape
+#              it copies. The first run that executes it costs it.
 #   two rows   TestDHCPv6_AdvertisedMTUReachesTheContainer (30.00) and
 #              TestDHCPv6_RouterWithdrawalAndReturn (55.00) are INFERRED,
 #              not measured: they arrive with #821 and no corpus run
@@ -386,6 +409,7 @@ TestDHCPv6_Managed_StillRequiresALease	16.39
 TestDHCPv6_NoAddressModes_StartTheEndpoint	80.63
 TestDHCPv6_NoAddressSegmentGetsNoIPv6RouteYet	170.00
 TestDHCPv6_RefusedAndSilentAreTwoRows	56.00
+TestDHCPv6_RouterDiscoveryCountersRise	35.00
 TestDHCPv6_RouterWithdrawalAndReturn	55.00
 TestDHCPv6_Stateless_ConfigurationReachesTheContainer	30.44
 TestDHCPv6_Stateless_TheClientAnnouncesReconfigureAcceptOnTheWire	50.00

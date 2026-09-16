@@ -1972,6 +1972,35 @@ type Plugin struct {
 	// pretended away here.
 	routerAdvertGuardFailures atomic.Int32
 
+	// The library's own RFC 4861 router-discovery counters, folded
+	// process-wide across every DHCPv6 manager that ever ran, the
+	// CreateEndpoint one-shots included (#814).
+	//
+	// THEY ARE ABOUT THE SEGMENT AND NOT ABOUT THIS PLUGIN, which is
+	// what makes them worth publishing beside the guard counter above.
+	// Every IPv6 field the plugin puts into a container -- the
+	// gateway, the MTU, the on-link prefixes, the more-specific routes
+	// and, on a stateless segment, the resolvers -- comes out of an
+	// advertisement. When a container comes up with none of them there
+	// is no counter today that distinguishes a link whose routers are
+	// silent from one whose router is advertising something this
+	// client refuses, and those are two different things to go and do.
+	//
+	// READ routerAdvertsSeen AGAINST routerSolicitsSent, on
+	// acd_probes_sent's rule: a zero sighting count beside a zero
+	// solicitation count is a client that never asked.
+	//
+	// routerTableEntriesDropped and routerTableEntriesEvicted are the
+	// library's two full-list outcomes. Either above zero means the
+	// router table's caps are in force, which on an ordinary segment
+	// means something is advertising more than a link has.
+	routerSolicitsSent         atomic.Int32
+	routerAdvertsSeen          atomic.Int32
+	routerAdvertsRefused       atomic.Int32
+	routerAdvertOptionsIgnored atomic.Int32
+	routerTableEntriesDropped  atomic.Int32
+	routerTableEntriesEvicted  atomic.Int32
+
 	// ipv6RouterWithdrawn counts container default routes removed
 	// because the router that advertised itself stopped doing so
 	// (#821). RFC 4861 section 4.2's Router Lifetime is "the lifetime
