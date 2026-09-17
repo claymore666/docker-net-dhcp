@@ -159,15 +159,19 @@ ITEST_LOG_DIR ?= logs
 # The per-BINARY deadline `go test -timeout` enforces. One variable, used
 # at every go test site below, because the number is a property of the
 # LANE and not of the suite: the amd64 lane runs the main suite as nine
-# shards and the arm64 lane runs all of it in one process, so the same
-# suite needs two different ceilings and a literal can only carry one.
+# shards, and the arm64, coverage and hosted lanes each run all of it in
+# one process, so the same suite needs two different ceilings and a
+# literal can only carry one.
 #
 # 20m is the amd64 default and is unchanged. It was sized for a whole
 # unsharded suite (#146: 15m raised to 20m when the suite measured 558s),
 # so every shard now sits far inside it.
 #
-# The arm64 lane raises it on its main-suite step; the derivation is in
-# .github/workflows/integration-arm64.yml beside the value.
+# Each of the three one-process lanes raises it on its main-suite step,
+# with the derivation beside the value in integration-arm64.yml,
+# coverage.yml and integration-hosted.yml. They carry the same number and
+# scripts/check-one-process-itest-budget.sh derives that population from
+# the workflows rather than from this list.
 ITEST_TIMEOUT ?= 20m
 ITEST_STAMP := $(shell date +%Y%m%d-%H%M%S)
 ITEST_MAIN_LOG = $(ITEST_LOG_DIR)/integration-main-$(ITEST_STAMP).log
