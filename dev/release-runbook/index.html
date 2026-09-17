@@ -1954,9 +1954,26 @@ be true.</p>
     → <strong>Publish the same manifest under the Hub alias</strong> (or skip) →
     Install syft → <strong>Generate SBOM (SPDX + CycloneDX)</strong> → <strong>Package and
     sign release artifact</strong> → <strong>Attest release-artifact provenance</strong> →
-    <strong>Attest image provenance (GHCR)</strong> → <strong>Check attestation parity
-    across registries</strong> → <strong>Upload signed artifacts for the release
-    job</strong> → Workflow summary.</p>
+    <strong>Publish and verify the release provenance bundle</strong> → <strong>Attest
+    image provenance (GHCR)</strong> → <strong>Check attestation parity across
+    registries</strong> → <strong>Upload signed artifacts for the release job</strong> →
+    Workflow summary.</p>
+<p><em>Publish and verify the release provenance bundle</em> runs
+<a href="https://github.com/claymore666/docker-net-dhcp/blob/main/scripts/publish-provenance-asset.sh"><code>scripts/publish-provenance-asset.sh</code></a>,
+which attaches the attestation the step before it produced to the
+release page as <code>provenance.intoto.jsonl</code>
+(<code>provenance-arm64.intoto.jsonl</code> in the arm64 job), so provenance is
+readable from the page and not only from GitHub's attestation store
+(#1011). It refuses an asset name Scorecard's provenance check would
+not count, re-reads the subject list out of the bundle it is about
+to publish, refuses a bundle that does not name the tarball, and
+runs <code>gh attestation verify --bundle</code> over every subject, which is
+the command
+<a href="https://claymore666.github.io/docker-net-dhcp/verifying-releases/">Verifying releases</a>
+gives users. A red here means the published bundle does not verify
+the published bytes, and the release stops before the page exists.
+Every one of those refusals is driven offline on each lane run by
+<code>scripts/test-publish-provenance-asset.sh</code>, with <code>gh</code> stubbed.</p>
 <p><em>Publish the same manifest under the Hub alias</em> runs
 <a href="https://github.com/claymore666/docker-net-dhcp/blob/main/scripts/publish-hub-alias.sh"><code>scripts/publish-hub-alias.sh</code></a>,
 which copies the signed manifest and its referrers with <code>oras cp -r</code>,
@@ -2039,16 +2056,24 @@ siblings, so a refused promotion does not suppress the release.</p>
 <a id="__codelineno-15-3" name="__codelineno-15-3" href="#__codelineno-15-3"></a><span class="w">                         </span><span class="c1">#   net-dhcp-plugin-vX.Y.Z-linux-arm64.tar.gz</span>
 <a id="__codelineno-15-4" name="__codelineno-15-4" href="#__codelineno-15-4"></a><span class="w">                         </span><span class="c1">#   checksums.txt + checksums.txt.sigstore.json</span>
 <a id="__codelineno-15-5" name="__codelineno-15-5" href="#__codelineno-15-5"></a><span class="w">                         </span><span class="c1">#   checksums-arm64.txt + checksums-arm64.txt.sigstore.json</span>
-<a id="__codelineno-15-6" name="__codelineno-15-6" href="#__codelineno-15-6"></a><span class="c1"># Re-verify the signature the way a downstream consumer would:</span>
-<a id="__codelineno-15-7" name="__codelineno-15-7" href="#__codelineno-15-7"></a>cosign<span class="w"> </span>verify-blob<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-15-8" name="__codelineno-15-8" href="#__codelineno-15-8"></a><span class="w">  </span>--bundle<span class="w"> </span>checksums.txt.sigstore.json<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-15-9" name="__codelineno-15-9" href="#__codelineno-15-9"></a><span class="w">  </span>--certificate-identity-regexp<span class="w"> </span><span class="s1">&#39;^https://github.com/claymore666/docker-net-dhcp/.github/workflows/release.yml@&#39;</span><span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-15-10" name="__codelineno-15-10" href="#__codelineno-15-10"></a><span class="w">  </span>--certificate-oidc-issuer<span class="w"> </span>https://token.actions.githubusercontent.com<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-15-11" name="__codelineno-15-11" href="#__codelineno-15-11"></a><span class="w">  </span>checksums.txt
+<a id="__codelineno-15-6" name="__codelineno-15-6" href="#__codelineno-15-6"></a><span class="w">                         </span><span class="c1">#   provenance.intoto.jsonl + provenance-arm64.intoto.jsonl</span>
+<a id="__codelineno-15-7" name="__codelineno-15-7" href="#__codelineno-15-7"></a><span class="c1"># Re-verify the signature the way a downstream consumer would:</span>
+<a id="__codelineno-15-8" name="__codelineno-15-8" href="#__codelineno-15-8"></a>cosign<span class="w"> </span>verify-blob<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-15-9" name="__codelineno-15-9" href="#__codelineno-15-9"></a><span class="w">  </span>--bundle<span class="w"> </span>checksums.txt.sigstore.json<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-15-10" name="__codelineno-15-10" href="#__codelineno-15-10"></a><span class="w">  </span>--certificate-identity-regexp<span class="w"> </span><span class="s1">&#39;^https://github.com/claymore666/docker-net-dhcp/.github/workflows/release.yml@&#39;</span><span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-15-11" name="__codelineno-15-11" href="#__codelineno-15-11"></a><span class="w">  </span>--certificate-oidc-issuer<span class="w"> </span>https://token.actions.githubusercontent.com<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-15-12" name="__codelineno-15-12" href="#__codelineno-15-12"></a><span class="w">  </span>checksums.txt
+<a id="__codelineno-15-13" name="__codelineno-15-13" href="#__codelineno-15-13"></a><span class="c1"># And the provenance, taken from the page, with no API call:</span>
+<a id="__codelineno-15-14" name="__codelineno-15-14" href="#__codelineno-15-14"></a>gh<span class="w"> </span>attestation<span class="w"> </span>verify<span class="w"> </span>net-dhcp-plugin-vX.Y.Z-linux-amd64.tar.gz<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-15-15" name="__codelineno-15-15" href="#__codelineno-15-15"></a><span class="w">  </span>--bundle<span class="w"> </span>provenance.intoto.jsonl<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-15-16" name="__codelineno-15-16" href="#__codelineno-15-16"></a><span class="w">  </span>--repo<span class="w"> </span>claymore666/docker-net-dhcp
 </code></pre></div>
    Adjust the title/notes in the UI if the one-liner needs polish.
    The job is idempotent on a tag re-dispatch (re-uploads assets with
-   <code>--clobber</code>). This satisfies OpenSSF Scorecard <strong>Signed-Releases</strong>;
+   <code>--clobber</code>). This satisfies OpenSSF Scorecard <strong>Signed-Releases</strong>,
+   whose provenance half reads the asset NAME and counts only a
+   <code>.intoto.jsonl</code> suffix, which is what the two provenance assets are
+   named for (#1011);
    an rc dry-run produces an equivalent <strong>pre-release</strong> with the same
    signed assets, which is how this path is exercised before the real
    tag (rc releases never move <code>:latest</code> and are marked pre-release).

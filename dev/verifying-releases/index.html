@@ -1116,6 +1116,10 @@ links here instead of repeating them.</p>
 <td><code>sbom-arm64.spdx.json</code>, <code>sbom-arm64.cdx.json</code></td>
 <td>the arm64 SBOMs</td>
 </tr>
+<tr>
+<td><code>provenance.intoto.jsonl</code>, <code>provenance-arm64.intoto.jsonl</code></td>
+<td>SLSA build provenance for the tarball and the SBOMs of each architecture, as a Sigstore bundle (v2.2.1 onward)</td>
+</tr>
 </tbody>
 </table>
 <p>The plugin image itself lives at
@@ -1241,6 +1245,25 @@ even if you installed from Docker Hub.</p>
 <a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>gh<span class="w"> </span>attestation<span class="w"> </span>verify<span class="w"> </span>net-dhcp-plugin-VERSION-linux-amd64.tar.gz<span class="w"> </span><span class="se">\</span>
 <a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a><span class="w">  </span>--repo<span class="w"> </span>claymore666/docker-net-dhcp
 </code></pre></div>
+<p>Both commands ask GitHub's attestation store for the provenance. From
+v2.2.1 the same attestation is attached to the release page as
+<code>provenance.intoto.jsonl</code> (<code>provenance-arm64.intoto.jsonl</code> for arm64), so
+the provenance travels with the files you downloaded and is read from
+disk:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>gh<span class="w"> </span>attestation<span class="w"> </span>verify<span class="w"> </span>net-dhcp-plugin-VERSION-linux-amd64.tar.gz<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="w">  </span>--bundle<span class="w"> </span>provenance.intoto.jsonl<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="w">  </span>--repo<span class="w"> </span>claymore666/docker-net-dhcp
+</code></pre></div>
+<p>One bundle covers the tarball and both SBOMs of that architecture, so the
+same file verifies <code>sbom.spdx.json</code> and <code>sbom.cdx.json</code> as well. It is not
+listed in <code>checksums.txt</code>: the attestation is produced after that manifest
+is signed, and it carries its own certificate chain and transparency-log
+entry, so it authenticates itself.</p>
+<p><code>--bundle</code> needs no GitHub credentials and makes no call to the
+attestation store. It is <strong>not</strong> an offline command: <code>gh</code> still refreshes
+Sigstore's trusted root over the network, from a cache a machine that has
+verified before already holds. On a host with no egress and no such
+cache, the command fails on that refresh and not on your artifact.</p>
 <h2 id="rebuilding-the-binaries-yourself">Rebuilding the binaries yourself<a class="headerlink" href="#rebuilding-the-binaries-yourself" title="Permanent link">&para;</a></h2>
 <p>A signature tells you <em>who</em> built an artifact. Rebuilding tells you
 <em>what</em> they built. The build here is reproducible: the same commit,
@@ -1255,33 +1278,33 @@ and step 2 below does. The library revision is read out of the source
 tree and needs no argument.</p>
 <p>You need Docker with <code>buildx</code>, and the release tarball you already
 downloaded above.</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="c1"># 1. The source, exactly as tagged.</span>
-<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>git<span class="w"> </span>clone<span class="w"> </span>https://github.com/claymore666/docker-net-dhcp
-<a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="nb">cd</span><span class="w"> </span>docker-net-dhcp
-<a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a>git<span class="w"> </span>checkout<span class="w"> </span>VERSION
-<a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a>
-<a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a><span class="c1"># 2. Build on a builder with no caches. --no-cache alone is not enough:</span>
-<a id="__codelineno-6-7" name="__codelineno-6-7" href="#__codelineno-6-7"></a><span class="c1">#    the Dockerfile mounts BuildKit caches for Go&#39;s module and build</span>
-<a id="__codelineno-6-8" name="__codelineno-6-8" href="#__codelineno-6-8"></a><span class="c1">#    caches, and those survive it. A fresh docker-container builder has</span>
-<a id="__codelineno-6-9" name="__codelineno-6-9" href="#__codelineno-6-9"></a><span class="c1">#    neither.</span>
-<a id="__codelineno-6-10" name="__codelineno-6-10" href="#__codelineno-6-10"></a><span class="c1">#</span>
-<a id="__codelineno-6-11" name="__codelineno-6-11" href="#__codelineno-6-11"></a><span class="c1">#    VERSION is the tag you checked out; COMMIT is the FULL revision of</span>
-<a id="__codelineno-6-12" name="__codelineno-6-12" href="#__codelineno-6-12"></a><span class="c1">#    it, never the abbreviated one. Git shortens to a length that</span>
-<a id="__codelineno-6-13" name="__codelineno-6-13" href="#__codelineno-6-13"></a><span class="c1">#    depends on the size of your clone, and a different string is a</span>
-<a id="__codelineno-6-14" name="__codelineno-6-14" href="#__codelineno-6-14"></a><span class="c1">#    different binary.</span>
-<a id="__codelineno-6-15" name="__codelineno-6-15" href="#__codelineno-6-15"></a>docker<span class="w"> </span>buildx<span class="w"> </span>create<span class="w"> </span>--name<span class="w"> </span>repro<span class="w"> </span>--driver<span class="w"> </span>docker-container
-<a id="__codelineno-6-16" name="__codelineno-6-16" href="#__codelineno-6-16"></a>docker<span class="w"> </span>buildx<span class="w"> </span>build<span class="w"> </span>--builder<span class="w"> </span>repro<span class="w"> </span>--no-cache<span class="w"> </span>--target<span class="w"> </span>builder<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-6-17" name="__codelineno-6-17" href="#__codelineno-6-17"></a><span class="w">  </span>--build-arg<span class="w"> </span><span class="nv">VERSION</span><span class="o">=</span>VERSION<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-6-18" name="__codelineno-6-18" href="#__codelineno-6-18"></a><span class="w">  </span>--build-arg<span class="w"> </span><span class="nv">COMMIT</span><span class="o">=</span><span class="s2">&quot;</span><span class="k">$(</span>git<span class="w"> </span>rev-parse<span class="w"> </span>HEAD<span class="k">)</span><span class="s2">&quot;</span><span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-6-19" name="__codelineno-6-19" href="#__codelineno-6-19"></a><span class="w">  </span>--output<span class="w"> </span><span class="nv">type</span><span class="o">=</span>local,dest<span class="o">=</span>out<span class="w"> </span>.
-<a id="__codelineno-6-20" name="__codelineno-6-20" href="#__codelineno-6-20"></a>docker<span class="w"> </span>buildx<span class="w"> </span>rm<span class="w"> </span>repro
-<a id="__codelineno-6-21" name="__codelineno-6-21" href="#__codelineno-6-21"></a>
-<a id="__codelineno-6-22" name="__codelineno-6-22" href="#__codelineno-6-22"></a><span class="c1"># 3. Your binary.</span>
-<a id="__codelineno-6-23" name="__codelineno-6-23" href="#__codelineno-6-23"></a>sha256sum<span class="w"> </span>out/usr/local/src/docker-net-dhcp/bin/net-dhcp
-<a id="__codelineno-6-24" name="__codelineno-6-24" href="#__codelineno-6-24"></a>
-<a id="__codelineno-6-25" name="__codelineno-6-25" href="#__codelineno-6-25"></a><span class="c1"># 4. The published one, from the release tarball.</span>
-<a id="__codelineno-6-26" name="__codelineno-6-26" href="#__codelineno-6-26"></a>tar<span class="w"> </span>-xzf<span class="w"> </span>net-dhcp-plugin-VERSION-linux-amd64.tar.gz
-<a id="__codelineno-6-27" name="__codelineno-6-27" href="#__codelineno-6-27"></a>sha256sum<span class="w"> </span>rootfs/usr/sbin/net-dhcp
+<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="c1"># 1. The source, exactly as tagged.</span>
+<a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a>git<span class="w"> </span>clone<span class="w"> </span>https://github.com/claymore666/docker-net-dhcp
+<a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="nb">cd</span><span class="w"> </span>docker-net-dhcp
+<a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a>git<span class="w"> </span>checkout<span class="w"> </span>VERSION
+<a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a>
+<a id="__codelineno-7-6" name="__codelineno-7-6" href="#__codelineno-7-6"></a><span class="c1"># 2. Build on a builder with no caches. --no-cache alone is not enough:</span>
+<a id="__codelineno-7-7" name="__codelineno-7-7" href="#__codelineno-7-7"></a><span class="c1">#    the Dockerfile mounts BuildKit caches for Go&#39;s module and build</span>
+<a id="__codelineno-7-8" name="__codelineno-7-8" href="#__codelineno-7-8"></a><span class="c1">#    caches, and those survive it. A fresh docker-container builder has</span>
+<a id="__codelineno-7-9" name="__codelineno-7-9" href="#__codelineno-7-9"></a><span class="c1">#    neither.</span>
+<a id="__codelineno-7-10" name="__codelineno-7-10" href="#__codelineno-7-10"></a><span class="c1">#</span>
+<a id="__codelineno-7-11" name="__codelineno-7-11" href="#__codelineno-7-11"></a><span class="c1">#    VERSION is the tag you checked out; COMMIT is the FULL revision of</span>
+<a id="__codelineno-7-12" name="__codelineno-7-12" href="#__codelineno-7-12"></a><span class="c1">#    it, never the abbreviated one. Git shortens to a length that</span>
+<a id="__codelineno-7-13" name="__codelineno-7-13" href="#__codelineno-7-13"></a><span class="c1">#    depends on the size of your clone, and a different string is a</span>
+<a id="__codelineno-7-14" name="__codelineno-7-14" href="#__codelineno-7-14"></a><span class="c1">#    different binary.</span>
+<a id="__codelineno-7-15" name="__codelineno-7-15" href="#__codelineno-7-15"></a>docker<span class="w"> </span>buildx<span class="w"> </span>create<span class="w"> </span>--name<span class="w"> </span>repro<span class="w"> </span>--driver<span class="w"> </span>docker-container
+<a id="__codelineno-7-16" name="__codelineno-7-16" href="#__codelineno-7-16"></a>docker<span class="w"> </span>buildx<span class="w"> </span>build<span class="w"> </span>--builder<span class="w"> </span>repro<span class="w"> </span>--no-cache<span class="w"> </span>--target<span class="w"> </span>builder<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-7-17" name="__codelineno-7-17" href="#__codelineno-7-17"></a><span class="w">  </span>--build-arg<span class="w"> </span><span class="nv">VERSION</span><span class="o">=</span>VERSION<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-7-18" name="__codelineno-7-18" href="#__codelineno-7-18"></a><span class="w">  </span>--build-arg<span class="w"> </span><span class="nv">COMMIT</span><span class="o">=</span><span class="s2">&quot;</span><span class="k">$(</span>git<span class="w"> </span>rev-parse<span class="w"> </span>HEAD<span class="k">)</span><span class="s2">&quot;</span><span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-7-19" name="__codelineno-7-19" href="#__codelineno-7-19"></a><span class="w">  </span>--output<span class="w"> </span><span class="nv">type</span><span class="o">=</span>local,dest<span class="o">=</span>out<span class="w"> </span>.
+<a id="__codelineno-7-20" name="__codelineno-7-20" href="#__codelineno-7-20"></a>docker<span class="w"> </span>buildx<span class="w"> </span>rm<span class="w"> </span>repro
+<a id="__codelineno-7-21" name="__codelineno-7-21" href="#__codelineno-7-21"></a>
+<a id="__codelineno-7-22" name="__codelineno-7-22" href="#__codelineno-7-22"></a><span class="c1"># 3. Your binary.</span>
+<a id="__codelineno-7-23" name="__codelineno-7-23" href="#__codelineno-7-23"></a>sha256sum<span class="w"> </span>out/usr/local/src/docker-net-dhcp/bin/net-dhcp
+<a id="__codelineno-7-24" name="__codelineno-7-24" href="#__codelineno-7-24"></a>
+<a id="__codelineno-7-25" name="__codelineno-7-25" href="#__codelineno-7-25"></a><span class="c1"># 4. The published one, from the release tarball.</span>
+<a id="__codelineno-7-26" name="__codelineno-7-26" href="#__codelineno-7-26"></a>tar<span class="w"> </span>-xzf<span class="w"> </span>net-dhcp-plugin-VERSION-linux-amd64.tar.gz
+<a id="__codelineno-7-27" name="__codelineno-7-27" href="#__codelineno-7-27"></a>sha256sum<span class="w"> </span>rootfs/usr/sbin/net-dhcp
 </code></pre></div>
 <p><strong>One binary is the 2.0 shape; a 1.x tarball carries two.</strong> The second
 was <code>dhcp-handler</code>, the helper the external DHCP client execed for each
@@ -1306,13 +1329,13 @@ arm64) covers the tarball, both SBOMs, <strong>and the binary inside the
 tarball</strong>, recorded under the path it has once extracted, the fourth
 entry described above. So step 4 has a signed reference without needing
 one from a commit:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="c1"># In the directory holding the downloaded assets:</span>
-<a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a>cosign<span class="w"> </span>verify-blob<span class="w"> </span>checksums.txt<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="w">  </span>--bundle<span class="w"> </span>checksums.txt.sigstore.json<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a><span class="w">  </span>--certificate-identity-regexp<span class="w"> </span><span class="s1">&#39;^https://github.com/claymore666/docker-net-dhcp/.github/workflows/release.yml@&#39;</span><span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a><span class="w">  </span>--certificate-oidc-issuer<span class="w"> </span>https://token.actions.githubusercontent.com
-<a id="__codelineno-7-6" name="__codelineno-7-6" href="#__codelineno-7-6"></a>tar<span class="w"> </span>-xzf<span class="w"> </span>net-dhcp-plugin-VERSION-linux-amd64.tar.gz
-<a id="__codelineno-7-7" name="__codelineno-7-7" href="#__codelineno-7-7"></a>sha256sum<span class="w"> </span>--ignore-missing<span class="w"> </span>-c<span class="w"> </span>checksums.txt
+<div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="c1"># In the directory holding the downloaded assets:</span>
+<a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a>cosign<span class="w"> </span>verify-blob<span class="w"> </span>checksums.txt<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a><span class="w">  </span>--bundle<span class="w"> </span>checksums.txt.sigstore.json<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a><span class="w">  </span>--certificate-identity-regexp<span class="w"> </span><span class="s1">&#39;^https://github.com/claymore666/docker-net-dhcp/.github/workflows/release.yml@&#39;</span><span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a><span class="w">  </span>--certificate-oidc-issuer<span class="w"> </span>https://token.actions.githubusercontent.com
+<a id="__codelineno-8-6" name="__codelineno-8-6" href="#__codelineno-8-6"></a>tar<span class="w"> </span>-xzf<span class="w"> </span>net-dhcp-plugin-VERSION-linux-amd64.tar.gz
+<a id="__codelineno-8-7" name="__codelineno-8-7" href="#__codelineno-8-7"></a>sha256sum<span class="w"> </span>--ignore-missing<span class="w"> </span>-c<span class="w"> </span>checksums.txt
 </code></pre></div>
 <p><code>--ignore-missing</code> is there so the manifest still checks whichever
 assets you downloaded; drop it once you have all of them <strong>and have
