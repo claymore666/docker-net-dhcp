@@ -491,6 +491,12 @@ different parent. Two such networks otherwise derive the same pool
 identity, and the second `docker network create` is refused, naming this
 option. One network needs neither key.
 
+The two keys are exclusive. A pool names one interface, so giving both
+is refused at `docker network create`, and the message names the key to
+keep: the one matching this network's own `-o parent=` or `-o bridge=`
+(#1010). Before that refusal the second key was accepted and dropped,
+and the pool identity was built from the first key alone.
+
 **Not supported.** `ipvlan` networks cannot use this plugin as their
 IPAM driver: Docker generates a MAC per endpoint for an IPAM driver that
 asks for one, and ipvlan children share the parent's MAC and refuse a

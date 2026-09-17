@@ -28,8 +28,22 @@ import (
 // every endpoint on the network fails its address replay. Go randomises
 // map iteration order per range, so one derivation proves nothing and a
 // hundred is the cheapest thing that does.
+//
+// THE TWO-KEY INPUT THIS USED TO DRIVE IS NOW REFUSED, and the refusal
+// is asserted here rather than the case being dropped. A suffix could
+// carry `parent` and `bridge` at once while ipamPoolIDNames reads only
+// one of them back (#1010), so the pair was an identity two different
+// requests shared. Refusing it is what makes map order unobservable
+// instead of merely fixed, which is the stronger answer -- so the loop
+// below keeps running, over the input that is still legal, and the case
+// that stopped being legal is driven as the refusal it became.
 func TestIpamPoolID_IsAFunctionOfItsInputs(t *testing.T) {
-	opts := map[string]string{"parent": "eth0", "bridge": "br-lan"}
+	both := map[string]string{"parent": "eth0", "bridge": "br-lan"}
+	if _, err := ipamPoolID(ipamLocalAddressSpace, "192.168.100.0/24", both); !errors.Is(err, util.ErrIPAM) {
+		t.Fatalf("--ipam-opt parent and bridge together: got %v, want a %v refusal -- two keys in one suffix are two requests with one identity", err, util.ErrIPAM)
+	}
+
+	opts := map[string]string{"parent": "eth0"}
 	first, err := ipamPoolID(ipamLocalAddressSpace, "192.168.100.0/24", opts)
 	if err != nil {
 		t.Fatalf("ipamPoolID: %v", err)
