@@ -158,10 +158,10 @@ for unattended):
 sudo mkdir -p /var/lib/net-dhcp
 
 # amd64
-docker plugin install ghcr.io/claymore666/docker-net-dhcp:v2.1.1
+docker plugin install ghcr.io/claymore666/docker-net-dhcp:v2.2.0
 
 # arm64 (v1.7.0 onward). The architecture is in the tag, see below
-docker plugin install ghcr.io/claymore666/docker-net-dhcp:v2.1.1-arm64
+docker plugin install ghcr.io/claymore666/docker-net-dhcp:v2.2.0-arm64
 ```
 
 **If the directory is missing**, the install pulls the plugin, then
@@ -175,7 +175,7 @@ plugin that is already there:
 
 ```bash
 sudo mkdir -p /var/lib/net-dhcp
-docker plugin enable ghcr.io/claymore666/docker-net-dhcp:v2.1.1
+docker plugin enable ghcr.io/claymore666/docker-net-dhcp:v2.2.0
 ```
 
 On arm64 that second line takes the `-arm64` tag, like every other
@@ -383,7 +383,7 @@ You bring an existing Linux bridge that is L2-connected to the LAN
 (see [`bridge-mode.md`](bridge-mode.md) for the bridge setup itself):
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.1.1 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.2.0 \
     --ipam-driver null \
     -o bridge=my-bridge \
     my-dhcp-net
@@ -395,7 +395,7 @@ No host changes are needed. Containers get per-container
 kernel-generated MACs as macvlan children of a host NIC:
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.1.1 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.2.0 \
     --ipam-driver null \
     -o mode=macvlan -o parent=eth0 \
     lan-dhcp
@@ -409,7 +409,7 @@ security, hostile vSwitches, some Wi-Fi APs). The DHCP server must key
 reservations on DHCP option 61 (client identifier) and never on MAC:
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.1.1 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.2.0 \
     --ipam-driver null \
     -o mode=ipvlan -o parent=eth0 \
     lan-dhcp
@@ -426,8 +426,8 @@ also serves an IPAM driver of its own (#110), and the line names the
 plugin twice:
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.1.1 \
-    --ipam-driver ghcr.io/claymore666/docker-net-dhcp:v2.1.1 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.2.0 \
+    --ipam-driver ghcr.io/claymore666/docker-net-dhcp:v2.2.0 \
     -o mode=macvlan -o parent=eth0 \
     lan-dhcp
 ```
@@ -471,7 +471,7 @@ different parent. Two such networks otherwise derive the same pool
 identity, and the second `docker network create` is refused, naming this
 option. One network needs neither key.
 
-**Not in v2.1.0.** `ipvlan` networks cannot use this plugin as their
+**Not supported.** `ipvlan` networks cannot use this plugin as their
 IPAM driver: Docker generates a MAC per endpoint for an IPAM driver that
 asks for one, and ipvlan children share the parent's MAC and refuse a
 supplied one. The network create is refused, and `--ipam-driver null` is
@@ -1155,9 +1155,9 @@ What the option does, concretely:
   link, and the **DNS servers and search list** (RFC 8106 RDNSS and
   DNSSL) into `/etc/resolv.conf` when `propagate_dns=true`. All four are
   rewritten when a later advertisement changes them, without restarting
-  the container. The gateway and the routes need the endpoint to have a
-  DHCPv6 address: see *Networks where DHCPv6 offers no address* below
-  for what a segment without one gets, and why.
+  the container. The gateway and the routes need the endpoint to have
+  a global IPv6 address: see *Networks where DHCPv6 offers no address*
+  below for what a segment without one gets, and why.
 - **The Router Advertisement guard**: `accept_ra=0`, `autoconf=0` and
   `keep_addr_on_down=1` on the container's link, and any route the
   kernel had already installed from an advertisement removed. This is
@@ -1224,14 +1224,16 @@ first either, because that happens after the daemon has already moved
 the link and applied the answer. The route is not installable until
 there is a global address to install it beside.
 
-**Where there is one, these rows do not apply.** On `ipv6_mode=slaac`
-and `ipv6_mode=auto` the plugin forms the address from the
-advertisement and installs it
+**Where there is one, most of these rows do not apply.** On
+`ipv6_mode=slaac` and `ipv6_mode=auto` the plugin forms the address
+from the advertisement and installs it
 ([#818](https://github.com/claymore666/docker-net-dhcp/issues/818)), so
-such an endpoint either holds a global address or fails outright, and
-the rows above that start an endpoint with none are the DHCPv6 ones:
-`ipv6=true` and `ipv6_mode=dhcp` on a segment that hands out no
-address.
+on every row above but the two carrying `dhcpv6_not_offered` such an
+endpoint holds a global address or fails outright. Those two are
+tolerated in **every** mode, this pair included: neither segment ever
+said a DHCPv6 address was to be had, so there is none the endpoint
+lost. Every other row that starts an endpoint with no global address
+names `ipv6_mode=dhcp` or `ipv6_mode=off` in its own first column.
 
 #### Server-initiated reconfiguration
 
@@ -1399,7 +1401,7 @@ socket also gives, so a permission problem looks exactly like a dead
 endpoint:
 
 ```bash
-PLUGIN_ID=$(docker plugin inspect -f '{{.Id}}' ghcr.io/claymore666/docker-net-dhcp:v2.1.1)
+PLUGIN_ID=$(docker plugin inspect -f '{{.Id}}' ghcr.io/claymore666/docker-net-dhcp:v2.2.0)
 sudo curl -s --unix-socket /run/docker/plugins/$PLUGIN_ID/net-dhcp.sock \
     http://localhost/Plugin.Health | jq .
 ```
@@ -1603,7 +1605,7 @@ quietly go missing from your dashboards.
 On the plugin socket, always:
 
 ```bash
-PLUGIN_ID=$(docker plugin inspect -f '{{.Id}}' ghcr.io/claymore666/docker-net-dhcp:v2.1.1)
+PLUGIN_ID=$(docker plugin inspect -f '{{.Id}}' ghcr.io/claymore666/docker-net-dhcp:v2.2.0)
 sudo curl -s --unix-socket /run/docker/plugins/$PLUGIN_ID/net-dhcp.sock \
     http://localhost/metrics
 ```
@@ -1612,7 +1614,7 @@ Prometheus cannot scrape a UNIX socket, so for an actual scrape target
 set `METRICS_ADDR`:
 
 ```bash
-PLUGIN=ghcr.io/claymore666/docker-net-dhcp:v2.1.1
+PLUGIN=ghcr.io/claymore666/docker-net-dhcp:v2.2.0
 docker plugin disable "$PLUGIN"
 docker plugin set "$PLUGIN" METRICS_ADDR=127.0.0.1:9099
 docker plugin enable "$PLUGIN"
@@ -1772,7 +1774,7 @@ Raise verbosity with a disable, a set, and an enable, in that order,
 because `docker plugin set` is refused while the plugin is running:
 
 ```bash
-PLUGIN=ghcr.io/claymore666/docker-net-dhcp:v2.1.1
+PLUGIN=ghcr.io/claymore666/docker-net-dhcp:v2.2.0
 docker plugin disable "$PLUGIN"
 docker plugin set "$PLUGIN" LOG_LEVEL=trace
 docker plugin enable "$PLUGIN"
@@ -1855,7 +1857,7 @@ Compose-managed alternative (network lifecycle tied to the project):
 ```yaml
 networks:
   lan:
-    driver: ghcr.io/claymore666/docker-net-dhcp:v2.1.1
+    driver: ghcr.io/claymore666/docker-net-dhcp:v2.2.0
     driver_opts:
       mode: macvlan
       parent: eth0

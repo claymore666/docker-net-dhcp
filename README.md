@@ -91,16 +91,16 @@ The snippets below install the current release.
 sudo mkdir -p /var/lib/net-dhcp
 
 # amd64
-docker plugin install ghcr.io/claymore666/docker-net-dhcp:v2.1.1
+docker plugin install ghcr.io/claymore666/docker-net-dhcp:v2.2.0
 # arm64
-docker plugin install ghcr.io/claymore666/docker-net-dhcp:v2.1.1-arm64
+docker plugin install ghcr.io/claymore666/docker-net-dhcp:v2.2.0-arm64
 ```
 
 One network, created once. `macvlan` needs only a host NIC; `bridge`
 wants a bridge you bring yourself ([bridge mode](docs/bridge-mode.md)):
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.1.1 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.2.0 \
   --ipam-driver null -o mode=macvlan -o parent=eth0 lan-dhcp
 
 docker run --rm -ti --network lan-dhcp alpine ip address show
@@ -113,17 +113,23 @@ goes into Docker's own address management, which makes `--ip` and
 Compose's `ipv4_address` work.
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.1.1 \
-  --ipam-driver ghcr.io/claymore666/docker-net-dhcp:v2.1.1 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.2.0 \
+  --ipam-driver ghcr.io/claymore666/docker-net-dhcp:v2.2.0 \
   -o mode=macvlan -o parent=eth0 lan-dhcp
 ```
 
 One of the two is required. On arm64 the `-arm64` tag goes in these
 lines too, because a network records the tagged reference as its driver.
-Add `-o ipv6=true` for a DHCPv6 lease beside the v4 one; it needs the
-`null` line, because the IPAM shape is IPv4 only in v2.1.0 and refuses
-the combination ([#960]). The two shapes are set out in
-[the driver reference](docs/reference.md#address-allocation).
+Add `-o ipv6_mode=dhcp` for a DHCPv6 lease beside the v4 one, or
+`-o ipv6_mode=slaac` to take the address from the router's
+advertisement; `auto` reads the advertisement and does what it says,
+DHCPv6 where it asks for DHCPv6 and the prefix where it does not. `-o
+ipv6=true` is the short spelling of `dhcp`. All of them need the `null`
+line, because the IPAM shape serves IPv4 only and refuses the
+combination ([#960]). The modes are set out in
+[the driver reference](docs/reference.md#driver-options-network-level),
+and the two shapes in
+[the same page](docs/reference.md#address-allocation).
 
 [#949]: https://github.com/claymore666/docker-net-dhcp/issues/949
 [#960]: https://github.com/claymore666/docker-net-dhcp/issues/960
@@ -152,10 +158,18 @@ networks:
   run in the plugin, one client per endpoint, and the lifecycle is visible
   on [the health endpoint](docs/reference.md#pluginhealth). There is no
   external DHCP client to install, supervise or reap.
-- **IPv6 is the same one line.** `-o ipv6=true` adds a DHCPv6 lease with
-  its own timers, its own counters and a DUID that survives a restart.
-  On `--ipam-driver null` networks; the IPAM shape is IPv4 only in
-  v2.1.0.
+- **IPv6 is one line, and the network says where the address comes
+  from.** `-o ipv6_mode=` takes `off` (the default), `dhcp`, `slaac` or
+  `auto`. A `dhcp` network leases the address over DHCPv6 with its own
+  timers, its own counters and a DUID that survives a restart; a `slaac`
+  network forms it from the router's advertisement instead and holds it
+  for the advertised lifetimes; `auto` reads the advertisement and does
+  what it says. In all three the default route and the MTU come from
+  the advertisement and not from the container's own kernel, and on a
+  `propagate_dns` network its resolvers reach the container too, behind
+  any a DHCPv6 server supplies. On
+  `--ipam-driver null` networks; the IPAM shape serves IPv4 only
+  ([reference](docs/reference.md#driver-options-network-level)).
 - **A restart keeps the address.** In `bridge` and `macvlan` the MAC is
   carried across `docker restart`, so a server-side reservation still
   matches and the old address is re-requested; a plugin restart or upgrade
