@@ -871,6 +871,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#server-initiated-reconfiguration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Server-initiated reconfiguration
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#if-you-upgrade-onto-20-with-an-ipv6-network-already-created" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1593,6 +1604,17 @@
     <span class="md-ellipsis">
       
         Networks where DHCPv6 offers no address
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#server-initiated-reconfiguration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Server-initiated reconfiguration
       
     </span>
   </a>
@@ -3355,6 +3377,57 @@ such an endpoint either holds a global address or fails outright, and
 the rows above that start an endpoint with none are the DHCPv6 ones:
 <code>ipv6=true</code> and <code>ipv6_mode=dhcp</code> on a segment that hands out no
 address.</p>
+<h4 id="server-initiated-reconfiguration">Server-initiated reconfiguration<a class="headerlink" href="#server-initiated-reconfiguration" title="Permanent link">&para;</a></h4>
+<p>A DHCPv6 server can start a renewal itself instead of waiting for the
+client's T1, by sending a Reconfigure message (RFC 9915 §18.2.11). The
+plugin's client accepts one, and has since v2.1.1's DHCP library pin
+(<a href="https://github.com/claymore666/docker-net-dhcp/issues/925">#925</a>).</p>
+<table>
+<thead>
+<tr>
+<th>What the client does</th>
+<th>Where it comes from</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Announces that it is willing to be reconfigured, in its Solicit, Request and Information-request (§21.20's Reconfigure Accept option)</td>
+<td>Always on. §21.20: "In the absence of this option, the default behavior is that the client is unwilling to accept Reconfigure messages", so a client that does not announce is never sent one</td>
+</tr>
+<tr>
+<td>Accepts a Reconfigure only when it is authenticated with the reconfigure key that server gave it (§20.4's Reconfiguration Key Authentication Protocol), and only when the replay detection value is one it has not seen from that server (§20.3)</td>
+<td>The DHCP library</td>
+</tr>
+<tr>
+<td>Discards everything else: an unauthenticated Reconfigure, a wrong key, a replayed value, one that names no server or names another client, one that arrives while an exchange is already in flight</td>
+<td>The DHCP library</td>
+</tr>
+<tr>
+<td>Answers an accepted Reconfigure with the Renew, Rebind or Information-request its Reconfigure Message option names, and applies the result</td>
+<td>The DHCP library; the result reaches the container on the same path a renewal with new parameters uses</td>
+</tr>
+</tbody>
+</table>
+<p><strong>There is no counter for this yet.</strong> A Reconfigure the client accepted
+and one it discarded are both invisible on <code>/Plugin.Health</code> and on
+<code>/metrics</code>: the DHCP library records them in its own journal and exports
+no number, so the plugin has nothing to publish. The counters are part
+of <a href="https://github.com/claymore666/docker-net-dhcp/issues/925">#925</a> and
+land when the library exports them.</p>
+<p><strong>Two bounds worth knowing.</strong> A reconfigure key does not survive a
+plugin restart. §20.4.2 has a server choose one "during the
+Request/Reply, Solicit/Reply, or Information-request/Reply message
+exchange", and a restarted endpoint resumes its held lease with a
+Confirm, which carries no announcement and receives no key. It
+discards every Reconfigure from that server, and falls back on its own
+T1, until it accepts a Reply that carries a key. Which Reply that is
+belongs to the server: §20.4.2 gives it the choice of exchange, and
+this client records a key from <strong>any</strong> Reply it accepts that carries
+one, a renewal's Reply included. A server that sends the key only in
+the exchanges §20.4.2 names leaves the endpoint deaf until its next
+full acquisition. And an Information-request the server asks for on a
+<strong>managed</strong> segment is counted as <code>dhcpv6_config_only</code>, the same as a
+stateless answer, because it is the same message.</p>
 <h4 id="if-you-upgrade-onto-20-with-an-ipv6-network-already-created">If you upgrade onto 2.0 with an IPv6 network already created<a class="headerlink" href="#if-you-upgrade-onto-20-with-an-ipv6-network-already-created" title="Permanent link">&para;</a></h4>
 <p>Nothing to do. A network record written by a 1.x build carries
 <code>ipv6=true</code>, that option means the same thing here, and endpoints on it
@@ -4076,7 +4149,7 @@ already parse it were not told to expect a new type.</p>
 <td><code>dhcpv6_config_only</code></td>
 <td>no</td>
 <td>n/a</td>
-<td>(v1.9.0+) DHCPv6 replies that carried configuration and no address, such as a stateless network answering an Information-request with DNS servers and a search list (#815). On a stateless segment this rising is the feature working; on a managed or IPv4-only one it stays at zero on its own. Not <code>healthy</code>-affecting.</td>
+<td>(v1.9.0+) DHCPv6 replies that carried configuration and no address, such as a stateless network answering an Information-request with DNS servers and a search list (#815). On a stateless segment this rising is the feature working. On an IPv4-only one it stays at zero. On a <strong>managed</strong> segment it is not necessarily zero either, and has not been since v2.1.1's library pin: where a server sends a Reconfigure naming Information-request, the bound client answers with one and its reply is counted here (#925). No fixture in this repository's test suite sends such a Reconfigure, so that arm is stated from the code and has not been observed on a segment. Not <code>healthy</code>-affecting.</td>
 </tr>
 <tr>
 <td><code>dhcpv6_not_offered</code></td>
