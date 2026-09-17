@@ -520,3 +520,36 @@ func TestReconfigureAcceptFindings_ASilentInformationRequestIsAFinding(t *testin
 			"would be red on a client that did everything right: %v", f)
 	}
 }
+
+// A second client that never announces does NOT take the verdict away.
+//
+// THE REFUSAL HAS A DOMAIN AND THIS IS IT. The set that decides whether
+// the subject is ambiguous is the ANNOUNCING messages, not every client
+// datagram on the link: a stranger renewing its own lease says nothing
+// about section 21.20 and leaves this endpoint's Solicit unambiguous.
+// Counting every client message instead would withhold a verdict the
+// capture can give, and on a shared bridge it would do so on every run.
+func TestReconfigureAcceptFindings_AStrangerThatNeverAnnouncesLeavesTheVerdictStanding(t *testing.T) {
+	const strangerMAC = "02:42:ac:11:00:09"
+
+	silent, ok := ParseDHCPv6(buildDHCPv6Frame(t, dhcpv6ClientPort, dhcpv6ServerPort,
+		DHCPv6Solicit, 0x555555, clientIDOption()))
+	if !ok {
+		t.Fatal("ParseDHCPv6 refused this endpoint's Solicit")
+	}
+	strangerRenew, ok := ParseDHCPv6(buildDHCPv6FrameFrom(t, strangerMAC, dhcpv6ClientPort,
+		dhcpv6ServerPort, DHCPv6Renew, 0x666666, clientIDOption()))
+	if !ok {
+		t.Fatal("ParseDHCPv6 refused the stranger's Renew")
+	}
+
+	findings := ReconfigureAcceptFindings([]DHCPv6Message{silent, strangerRenew}, DHCPv6Solicit)
+	if len(findings) != 1 {
+		t.Fatalf("a silent SOLICIT beside a stranger's RENEW produced %d finding(s), want the one "+
+			"about the SOLICIT: %v", len(findings), findings)
+	}
+	if !strings.Contains(findings[0], "carried no Reconfigure Accept option") {
+		t.Errorf("the verdict was withheld because another client sent a RENEW, which announces "+
+			"nothing and leaves this endpoint's SOLICIT unambiguous: %s", findings[0])
+	}
+}

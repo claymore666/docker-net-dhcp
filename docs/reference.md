@@ -1260,13 +1260,14 @@ Request/Reply, Solicit/Reply, or Information-request/Reply message
 exchange", and a restarted endpoint resumes its held lease with a
 Confirm, which carries no announcement and receives no key. It
 discards every Reconfigure from that server, and falls back on its own
-T1, until it accepts a Reply that carries a key. **Any** accepted Reply
-records one, a renewal's Reply included, so the window usually closes
-at the next renewal; it lasts until the next full acquisition only
-where the server puts the key in none of them. And an
-Information-request the server asks for on a **managed** segment is
-counted as `dhcpv6_config_only`, the same as a stateless answer,
-because it is the same message.
+T1, until it accepts a Reply that carries a key. Which Reply that is
+belongs to the server: §20.4.2 gives it the choice of exchange, and
+this client records a key from **any** Reply it accepts that carries
+one, a renewal's Reply included. A server that sends the key only in
+the exchanges §20.4.2 names leaves the endpoint deaf until its next
+full acquisition. And an Information-request the server asks for on a
+**managed** segment is counted as `dhcpv6_config_only`, the same as a
+stateless answer, because it is the same message.
 
 #### If you upgrade onto 2.0 with an IPv6 network already created
 

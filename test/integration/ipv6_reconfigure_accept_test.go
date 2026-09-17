@@ -177,6 +177,15 @@ func TestDHCPv6_Stateless_TheClientAnnouncesReconfigureAcceptOnTheWire(t *testin
 			cap6.SeenTally())
 	}
 
+	// CLOSING THE WINDOW IS PART OF READING IT. End is what runs the
+	// plugin-instance check: a counter that moved because the plugin
+	// restarted underneath this test, and reset, would satisfy the
+	// Await above and mean nothing. It also reports a window that was
+	// opened and never closed, which is how this test first went red
+	// (MEASURED, Integration 35169552839) with every DHCPv6 assertion
+	// below already passing.
+	w.End()
+
 	want := []uint8{harness.DHCPv6InformationRequest}
 	msgs, ok := cap6.AwaitClientMessages(want, reconfigureAcceptBudget())
 	if !ok {

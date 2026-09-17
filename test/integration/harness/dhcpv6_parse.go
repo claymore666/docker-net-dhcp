@@ -353,10 +353,18 @@ func ReconfigureAcceptFindings(msgs []DHCPv6Message, required ...uint8) []string
 			continue
 		}
 		fromClient++
-		speakers[m.SourceMAC.String()]++
 		if !announcesReconfigure(m.Type) {
 			continue
 		}
+		// COUNTED HERE AND NOT ONE LINE HIGHER, and the difference is
+		// a direction. The question this set answers is whose
+		// ANNOUNCEMENTS are being judged, so a second client that
+		// sends no announcing message -- a Renew, a Rebind, a Release
+		// -- does not take the verdict away from an endpoint whose
+		// Solicit and Request are unambiguous. Counting every client
+		// message instead would withhold a verdict this capture can
+		// give, which is a gate that cries wolf on any shared link.
+		speakers[m.SourceMAC.String()]++
 		seen[m.Type]++
 		if !m.AnnouncesReconfigureAccept() {
 			missing[m.Type] = append(missing[m.Type], m)
@@ -388,10 +396,10 @@ func ReconfigureAcceptFindings(msgs []DHCPv6Message, required ...uint8) []string
 			parts = append(parts, fmt.Sprintf("%s (%d message(s))", mac, speakers[mac]))
 		}
 		findings = append(findings, fmt.Sprintf(
-			"client messages came from %d different ethernet sources -- %s -- so more than one "+
-				"DHCPv6 client spoke on this link and nothing here can say which of them is the "+
-				"endpoint under test. Every verdict about what \"the client\" announced is "+
-				"withheld for this run; capture on a link this endpoint has to itself",
+			"announcing messages came from %d different ethernet sources -- %s -- so more than "+
+				"one DHCPv6 client announced on this link and nothing here can say which of them "+
+				"is the endpoint under test. Every verdict about what \"the client\" announced "+
+				"is withheld for this run; capture on a link this endpoint has to itself",
 			len(speakers), strings.Join(parts, ", ")))
 		return findings
 	}
