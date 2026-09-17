@@ -4236,6 +4236,42 @@ already parse it were not told to expect a new type.</p>
 <td>(v2.2.0+, #821) Container IPv6 default routes removed because the router that advertised itself set its Router Lifetime to 0. RFC 4861 §4.2 defines that lifetime as "the lifetime associated with the default router" and §6.3.4 reads 0 as "no longer to be used as a default router". Counts <strong>routes removed, not advertisements received</strong>, so a router sending several on its way down moves this once per container. Not <code>healthy</code>-affecting and not a fault: the containers on that segment are correctly left with no default route rather than one pointing at a router that is gone. If this moves unexpectedly, the segment's router restarted or was reconfigured; <code>ip -6 route show default</code> inside a container on it will be empty until a router advertises itself again.</td>
 </tr>
 <tr>
+<td><code>router_solicits_sent</code></td>
+<td>no</td>
+<td>n/a</td>
+<td><em>(v2.2.0+, #814)</em> RFC 4861 §6.3.7 Router Solicitations sent from container links by the DHCPv6 client. Only IPv6 endpoints solicit, so it cannot move on an IPv4-only host. <strong>Read <code>router_adverts_seen</code> against it:</strong> a zero sighting count beside a zero solicitation count is a client that never asked, which is a different thing from a link whose routers are silent, and only one of the two is a segment to go and look at.</td>
+</tr>
+<tr>
+<td><code>router_adverts_seen</code></td>
+<td>no</td>
+<td>n/a</td>
+<td><em>(v2.2.0+, #814)</em> Router Advertisements that decoded and reached the DHCPv6 client. This is the number that says an IPv6 segment is answering at all: the gateway, the MTU, the on-link prefixes, the more-specific routes and, on a stateless segment, the resolvers all come out of these frames, so a container that came up with none of them on a host reading zero here was on a link nothing advertised on. Not <code>healthy</code>-affecting: on a segment that is deliberately IPv4-only there is nothing to advertise. <strong>The bound:</strong> it counts frames that reached the client. A frame the kernel or the socket filter dropped before that is in none of these six counters. Counted across every DHCPv6 client this process ran, the <code>CreateEndpoint</code> one-shots included, so it does not fall when a container stops.</td>
+</tr>
+<tr>
+<td><code>router_adverts_refused</code></td>
+<td>no</td>
+<td>n/a</td>
+<td><em>(v2.2.0+, #814)</em> Frames whose ICMPv6 type said Router Advertisement and which would not decode: a zero-length option, an option running past the end of the frame, a non-zero ICMP Code. Separate from <code>router_adverts_seen</code> because <strong>their difference is the diagnostic</strong>. A link with no router and a link whose router is advertising something this client refuses read the same in a total holding both, and the operator's next step differs: one is a router to find, the other is a router to fix. Not <code>healthy</code>-affecting: the plugin cannot tell a broken router from a frame something on the path corrupted, and containers on that segment may be getting everything they need from a second router that is fine. If it rises, capture on the segment and look at what the router is sending.</td>
+</tr>
+<tr>
+<td><code>router_advert_options_ignored</code></td>
+<td>no</td>
+<td>n/a</td>
+<td><em>(v2.2.0+, #814)</em> Options inside an advertisement refused by that option's own standard, while the rest of the advertisement was read. It counts <strong>options and not frames</strong>, and it rises on advertisements that are otherwise fine, so it is not part of <code>router_adverts_refused</code>. Two things put entries in it: an option the decoder cannot read by its own rule (a Route Information Option whose length and prefix length contradict each other, RFC 4191 §2.3; a malformed RDNSS or DNSSL, RFC 8106 §5.1 and §5.2), and a value the client read and may not use, which today is a link MTU outside the range RFC 4861 §6.3.4 lets a host copy. Not <code>healthy</code>-affecting: a router offering one option nobody can use still supplies everything else in the same frame.</td>
+</tr>
+<tr>
+<td><code>router_table_entries_dropped</code></td>
+<td>no</td>
+<td>n/a</td>
+<td><em>(v2.2.0+, #814)</em> Advertised entries a full list in the client's router table would not take: a ninth router, or a seventeenth more-specific route. Non-zero means <strong>the table's caps are in force</strong>, which on a segment carrying one link's worth of routers means something is advertising more than a link has. A refusal holds what was heard first, so what is lost is the newest arrival: RFC 4861 §6.3.4 says how many routers a host must be able to store and nothing about what it does when it will not store another, so this list refuses rather than evicting. Not <code>healthy</code>-affecting: the caps exist so that a link cannot spend this plugin's memory, and a refusal is them working. Read it with <code>router_table_entries_evicted</code>.</td>
+</tr>
+<tr>
+<td><code>router_table_entries_evicted</code></td>
+<td>no</td>
+<td>n/a</td>
+<td><em>(v2.2.0+, #814)</em> Held entries a full resolver or search list threw out to take an arrival, which is what RFC 8106 §6.2 (d) asks of those two lists: "delete from the DNS Server List the entry with the shortest Expiration-time". The pair of <code>router_table_entries_dropped</code>, and the other way round: an eviction holds what expires <strong>last</strong>, so what is lost is something the client already had, and it comes back on its own router's next advertisement. Either counter above zero means the caps are in force. Not <code>healthy</code>-affecting.</td>
+</tr>
+<tr>
 <td><code>ifname_unsupported</code></td>
 <td>no</td>
 <td>warn</td>
