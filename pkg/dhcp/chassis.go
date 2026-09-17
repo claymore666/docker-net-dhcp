@@ -523,6 +523,36 @@ func (o *DHCPClientOptions) routerReport(s lease.Stats) {
 	o.OnRouterStats(delta)
 }
 
+// managerStarted forgets every delta snapshot on this options value.
+//
+// A snapshot is a memory of ONE manager's running totals, and it is
+// subtracted from the next reading to turn a total into a gain. That
+// arithmetic holds only while both readings come from the same
+// manager's counters.
+//
+// getIP6 breaks that on its own retry path: it runs acquireOnce6 up to
+// twice through ONE *DHCPClientOptions, and each pass builds its own
+// client and mints its own manager id, so the second pass's library
+// counters start at zero while the snapshot still holds the first
+// pass's totals. sub saturates, so everything up to those totals is
+// subtracted away and never reported at all. MEASURED: two passes of
+// three solicitations and two advertisements each reported three of
+// the six that left the host and two of the four that came back --
+// exactly half, and silently, because a saturating subtraction has no
+// direction to complain in.
+//
+// ALL FOUR SNAPSHOTS AND NOT ONLY THE ROUTER ONE. Three of them are
+// read on this same path (v6ModeReport, v6PrefixReport, routerReport)
+// and the fourth is the same construction one call site away; a fix
+// that reached one of the copies would leave a defect of the same
+// shape in the others, which is how there came to be copies.
+func (o *DHCPClientOptions) managerStarted() {
+	o.acdSeen = ACDStats{}
+	o.fallbacksSeen = 0
+	o.prefixesIgnoredSeen = 0
+	o.routerSeen = RouterStats{}
+}
+
 // v6ModeReport hands the caller the Mode6Auto fallbacks the library has
 // counted since the last call.
 //

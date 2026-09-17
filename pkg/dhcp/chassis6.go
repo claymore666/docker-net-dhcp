@@ -410,6 +410,13 @@ func acquireOnce6(ctx context.Context, iface string, params proto.Params6, opts 
 	if opts.Records != nil {
 		manager = opts.Records.NewManagerID()
 	}
+	// A NEW MANAGER'S COUNTERS START AT ZERO, so the snapshots the
+	// delta reporters below subtract from have to start there too.
+	// getIP6 runs this function twice through one options value on the
+	// errV6HintInUse retry, and without this the second pass reports
+	// nothing until it passes what the first pass had already counted.
+	// See managerStarted.
+	opts.managerStarted()
 
 	info, lastE := runAcquisition6(ctx, iface, client, opts, params.Hint, V6AcquisitionWindow(params))
 

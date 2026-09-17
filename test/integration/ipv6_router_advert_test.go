@@ -499,11 +499,23 @@ func TestDHCPv6_RouterDiscoveryCountersRise(t *testing.T) {
 		t.Fatal("could not read the plugin health surface after the container had its route")
 	}
 
+	// THE RED HAS TWO READINGS AND THE MESSAGE NAMES BOTH. The
+	// precondition proves an advertisement reached the SEGMENT, which
+	// it can do by two routes: the plugin's client read it, or the RA
+	// guard did not take and the container's own kernel did. Only the
+	// first is what this counter claims, so the guard-failure count is
+	// printed beside the sighting count and the reader is not left to
+	// guess which of the two happened.
 	if after.RouterAdvertsSeen <= before.RouterAdvertsSeen {
 		t.Errorf("router_adverts_seen stayed at %d while a container on this segment "+
-			"demonstrably took its IPv6 default route from an advertisement. The frames "+
-			"reached the client and the operator has no number saying so (#814)",
-			after.RouterAdvertsSeen)
+			"demonstrably took its IPv6 default route from an advertisement. Two things "+
+			"produce that: the frames reached the client and no number says so, which is "+
+			"what this test is for; or the RA guard did not take and the route came from "+
+			"the container's own kernel, in which case the plugin's client may have seen "+
+			"nothing and the defect is the guard. router_advert_guard_failures went from "+
+			"%d to %d, which separates them (#814)",
+			after.RouterAdvertsSeen,
+			before.RouterAdvertGuardFailures, after.RouterAdvertGuardFailures)
 	}
 	if after.RouterSolicitsSent <= before.RouterSolicitsSent {
 		t.Errorf("router_solicits_sent stayed at %d, so the sighting count beside it "+
@@ -525,6 +537,14 @@ func TestDHCPv6_RouterDiscoveryCountersRise(t *testing.T) {
 
 	// The fixture's dnsmasq is well formed, so a refusal here is a
 	// finding about the decoder and not about the segment.
+	//
+	// THE BOUND, considered rather than missed: this is a PROCESS-WIDE
+	// counter read across a window, so anything else soliciting on any
+	// segment during that window is inside the difference. MEASURED:
+	// there is no t.Parallel() anywhere in test/integration, so within
+	// a shard nothing else runs here. What the bound does not exclude
+	// is an earlier test in the same shard leaving a container running
+	// and still soliciting.
 	if d := after.RouterAdvertsRefused - before.RouterAdvertsRefused; d != 0 {
 		t.Errorf("router_adverts_refused rose by %d against a dnsmasq fixture whose "+
 			"advertisements are well formed. Either the decoder refused something it "+
