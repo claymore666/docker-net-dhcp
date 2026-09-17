@@ -11,6 +11,98 @@ forks that have been waiting on review.
 
 [upstream]: https://github.com/devplayer0/docker-net-dhcp
 
+## v2.2.1
+
+A network that names this plugin as its IPAM driver can now be created on a
+Docker Engine below 28, where every such `docker network create` failed
+allocating the gateway. The engine matrix now creates the networks
+`docs/reference.md` documents, on every engine line, which is what had been
+missing for that defect to be visible here. The release page also carries the
+build provenance as a downloadable asset.
+
+### Upgrade notes
+
+Required on every host before `docker plugin install`, unchanged since v1.5.0:
+
+```bash
+sudo mkdir -p /var/lib/net-dhcp
+```
+
+**The privilege prompt does not change.** No field `docker plugin upgrade`
+prompts on has moved since v2.0.0, so the manifest-delta table in the v2.0.0
+section below is still the list the daemon shows you.
+
+| What changed | What it does to you |
+| --- | --- |
+| `docker network create --ipam-driver <plugin>` succeeds on a Docker Engine below 28 | The create failed in every earlier 2.x release, with and without `--subnet`, ending in `failed to allocate gateway (): IpamDriver.RequestAddress`. Nothing to configure. Engine 28 and later never sent that request and is unchanged (#1012). |
+| On an engine below 28, such a network records the pool's network address as its gateway | `docker network inspect` shows it in the gateway field, and `Gateway 0.0.0.0` on a network created without `--subnet`. It is not a host address (RFC 1122 section 3.2.1.3), so no DHCP server hands it to a container, and no container is given it. Engine 28 and later asks for no gateway and the field stays empty, as before (#1012). |
+| On an engine below 28, a `/31` or a `/32` pool in that shape is refused at `docker network create` | Both addresses of a `/31` are host addresses (RFC 3021 section 2.1) and a `/32` has only its one, so there is no address to record as the gateway that the DHCP server could not also lease to a container. The message names the two ways through: pass `--gateway`, or use a shorter prefix. Engine 28 and later creates those networks with neither (#1012). |
+| The release page carries two more assets, `provenance.intoto.jsonl` and `provenance-arm64.intoto.jsonl` | The build provenance was already produced and signed, and lived only in GitHub's attestation store, where it is found by a digest you already hold. The same bundle is now downloadable and is read from disk by `gh attestation verify --bundle`, which needs no GitHub credentials and makes no call to the attestation store. It is not an offline command: `gh` still refreshes Sigstore's trusted root over the network. [`docs/verifying-releases.md`](docs/verifying-releases.md) has the command. Nothing about the images, their signatures or the SBOMs changes (#1011). |
+| `--ipam-opt parent=` and `--ipam-opt bridge=` written together are refused at `docker network create` | A create naming both keys fails. A pool names one interface, and the pool is requested before the network's own `-o` options reach the driver, so the message names both spellings against the modes that own them, `-o bridge=` on a bridge network and `-o parent=` on a macvlan or ipvlan one, and you keep the one your mode owns. Before this release the second key was accepted and dropped and the pool identity was built from the first alone, so two networks differing only in that key derived one identity (#1010). |
+
+### New
+
+- The build provenance is attached to each release as
+  `provenance.intoto.jsonl` and `provenance-arm64.intoto.jsonl`. The published
+  file is a copy of the bundle the release run already signed under this
+  repository's keyless identity, so no new signing identity and no new secret
+  is involved, and the publishing step verifies every subject in the bundle
+  against the published file with the same `gh attestation verify --bundle`
+  command [`docs/verifying-releases.md`](docs/verifying-releases.md) gives
+  users, where that page also states what the flag does and does not avoid
+  (#1011, PR #1018).
+- Four native Go fuzz targets with seed corpora on the parsers this
+  repository still owns: `FuzzBuildResolvConf`, `FuzzDeriveHostIfname`,
+  `FuzzIdentity6RoundTrip` and `FuzzIPAMPoolIDRoundTrip`. Each asserts what
+  the code must produce and not only that it does not panic, and the seeds
+  carry the shapes of #689, #703 and #704 and run as ordinary tests. The fuzz
+  step named two targets that had been deleted with the 1.x lease parsers,
+  and `go test -fuzz` over a package with no matching target prints PASS and
+  exits 0, so the step had one possible verdict; a name that resolves to no
+  target is now refused (#1010, PR #1020).
+
+### Fixed
+
+- A DHCP-supplied `/etc/resolv.conf` value carrying whitespace was written
+  out whole and read back as more than one entry. A search-list entry of
+  `a.test b.test` rendered as `search a.test b.test`, two search domains
+  where the lease carried one. Such a value is now dropped, with the reason
+  and the value in the plugin log, the way a value carrying a control
+  character already was. The filter that ran before this one rejects every
+  character below `0x20`, and the space is `0x20` itself (#689, #704,
+  PR #1020).
+- `docker network create -d <plugin> --ipam-driver <plugin>` failed on every
+  Docker Engine below 28, with and without `--subnet`, with `failed to
+  allocate gateway ()`, carrying the IPAM driver's refusal of a request on a
+  pool nothing is bound to. Engine 28 asks the network driver whether the
+  network needs a gateway address of its own and this plugin answers no;
+  earlier engines have no such call and request a gateway from the IPAM
+  driver at create time, with no
+  address in the request, on a pool `CreateNetwork` has not bound yet. That
+  request now gets the pool's network address, and every other request on an
+  unbound pool is refused as before (#1012, PR #1019).
+- The engine matrix created every network with `--ipam-driver null`, so the
+  documented `--ipam-driver <plugin>` shape had run on no engine since it was
+  published, and the defect above was invisible there. The matrix now derives
+  the networks it drives from the `docker network create` blocks in
+  [`docs/reference.md`](docs/reference.md), one network with a container and
+  an address read back per distinct shape, and a documented
+  block it cannot turn into a network fails the row.
+  `scripts/check-engine-matrix-shapes.sh` runs that derivation on every pull
+  request, where the matrix lane does not run (#1013, PR #1019).
+- Three code-scanning alerts (94, 122 and 123) on
+  `.github/workflows/integration.yml`, all
+  `actions/cache-poisoning/poisonable-step`. The workflow's
+  `workflow_dispatch` ref input let a dispatch check out one tree and run the
+  workflow file from
+  another, in a job that can write the default branch's Actions cache. The
+  input is gone and every checkout in the workflow takes the ref the workflow
+  file came from. `gh workflow run integration.yml --ref <branch-or-tag>`
+  replaces it; a bare commit SHA is no longer dispatchable (#1009, PR #1017).
+- `go.opentelemetry.io/otel`, an indirect dependency, moves to 1.44.0 for
+  GO-2026-5158 (CVE-2026-41178, GHSA-5wrp-cwcj-q835), a baggage header length
+  defect. The OTLP trace exporter stays at 1.43.0 (#1011, PR #1018).
+
 ## v2.2.0
 
 A network now says where its IPv6 address comes from: `ipv6_mode`

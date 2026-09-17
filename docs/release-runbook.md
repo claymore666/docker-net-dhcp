@@ -219,6 +219,16 @@ a refusal, or deciding whether to dispatch anyway:
 - **Re-running the tag currently being released is allowed** by the
   guard. It still rebuilds, so it still drifts the digest; the guard
   covers `:latest` moving backwards and says nothing about the rebuild.
+  **Since #1008 it also cancels the run that is publishing.**
+  `release.yml` groups on `release-${{ github.ref }}` with
+  `cancel-in-progress: true`, and a `workflow_dispatch` against a tag
+  carries that tag as its ref, so the dispatch joins the group and the
+  in-flight run for that tag is cancelled wherever it had got to, images
+  and signatures included. The dispatched run publishes every one of them
+  again, so the end state is one consistent set and the intermediate state
+  is a tag whose registries and release page are mid-replacement.
+  `integration-arm64.yml` groups the same way, on
+  `integration-arm64-${{ github.ref }}`.
 - **Dispatching an older release is refused,** with a non-zero exit
   and nothing published. This is the case that used to succeed
   quietly and move `:latest` back with it.
