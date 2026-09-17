@@ -57,6 +57,7 @@
 # Usage:
 #   scripts/engine-floor.sh --print
 #   scripts/engine-floor.sh --rows-json
+#   scripts/engine-floor.sh --production-row
 #   scripts/engine-floor.sh --reconcile <dir-of-row-files>
 # Exit: 0 declared / reconciled, 1 a rule was broken, 2 cannot check.
 
@@ -96,6 +97,59 @@ read_floor() {
         return 2
     fi
     printf '%s\n' "$line" | sed -E "s/$FLOOR_PATTERN/\1/"
+}
+
+# The production engine declaration. THREE fields, where the floor has
+# two, and the difference is what each of them names. The floor names a
+# LINE, because the matrix drives tags that follow their line. This one
+# names the BUILD a real host runs, because the question it answers is
+# whether that host's engine is measured at all.
+PROD_PATTERN='^const[[:space:]]+ProductionEngineVersion[[:space:]]*=[[:space:]]*"([0-9]+\.[0-9]+\.[0-9]+)"$'
+
+# read_production prints the declared production engine version, or
+# refuses. Same shape as read_floor and for the same reason: a renamed
+# or reformatted declaration is a refusal here, never an empty answer
+# that every rule below would then be satisfied by.
+read_production() {
+    local line n
+    [ -r "$FLOOR_FILE" ] || {
+        echo "FAIL  $FLOOR_FILE is not readable — nothing declares the production engine." >&2
+        return 2
+    }
+    line="$(grep -E "$PROD_PATTERN" "$FLOOR_FILE")"
+    if [ -z "$line" ]; then
+        echo "FAIL  no ProductionEngineVersion declaration in $FLOOR_FILE." >&2
+        echo "  Expected exactly: const ProductionEngineVersion = \"<major>.<minor>.<patch>\"" >&2
+        return 2
+    fi
+    n="$(printf '%s\n' "$line" | grep -c .)"
+    if [ "$n" -ne 1 ]; then
+        echo "FAIL  $FLOOR_FILE declares ProductionEngineVersion more than once." >&2
+        return 2
+    fi
+    printf '%s\n' "$line" | sed -E "s/$PROD_PATTERN/\1/"
+}
+
+# covers reports whether declared row $1 measures production version $2.
+#
+# A ROW MEASURES A LINE, NOT A BUILD. `26` pulls docker:26-dind, which
+# is the newest 26.x image there is; `20.10` pulls the newest 20.10.x.
+# So a bare-major row covers every build of that major, and a
+# major.minor row covers every build of that minor — and nothing else.
+# The nothing-else is the point: when the production host moves to an
+# engine line no row drives, this must say so rather than quietly
+# picking the nearest row below it, which would answer the question
+# "which row is closest" when the question asked was "which row
+# measured the engine we run".
+covers() {
+    local row="$1" prod="$2" rmaj rmin pmaj pmin
+    rmaj="${row%%.*}"
+    pmaj="${prod%%.*}"
+    [ "$rmaj" = "$pmaj" ] || return 1
+    [ "$row" = "$rmaj" ] && return 0
+    rmin="${row#*.}"; rmin="${rmin%%.*}"
+    pmin="${prod#*.}"; pmin="${pmin%%.*}"
+    [ "$rmin" = "$pmin" ]
 }
 
 # read_rows prints the declared row tags, one per line. An empty list is
@@ -175,9 +229,48 @@ case "${1:-}" in
         printf ']\n'
         exit 0
         ;;
+    --production-row)
+        # Which declared row measures the engine the production host
+        # runs. Printed for the release lane, which drives that row's
+        # engine before it publishes anything.
+        prod="$(read_production)" || exit 2
+        declared="$(read_floor)" || exit 2
+        prod_key="$(key "$prod")"
+        floor_key="$(key "$declared")"
+        if [ "$prod_key" = "-1" ] || [ "$floor_key" = "-1" ]; then
+            echo "FAIL  the declared production engine '$prod' cannot be ordered." >&2
+            exit 1
+        fi
+        if [ "$prod_key" -lt "$floor_key" ]; then
+            echo "FAIL  the production engine $prod is below the declared floor $declared." >&2
+            echo "  The plugin refuses to start on an engine below the floor, so this" >&2
+            echo "  declares a production host the shipped plugin would not run on." >&2
+            exit 1
+        fi
+        rows="$(read_rows)" || exit 2
+        found=""
+        while IFS= read -r tag; do
+            covers "$tag" "$prod" || continue
+            if [ -n "$found" ]; then
+                echo "FAIL  rows $found and $tag both measure $prod." >&2
+                echo "  Two rows on one engine line leave it ambiguous which one the" >&2
+                echo "  release lane drove. Declare one." >&2
+                exit 1
+            fi
+            found="$tag"
+        done <<< "$rows"
+        if [ -z "$found" ]; then
+            echo "FAIL  no declared row measures the production engine $prod." >&2
+            echo "  $ROWS_FILE has no row on that engine line, so nothing in this" >&2
+            echo "  project has run the plugin on the engine production runs." >&2
+            exit 1
+        fi
+        printf '%s\n' "$found"
+        exit 0
+        ;;
     --reconcile) ;;
     *)
-        echo "usage: $0 --print | --rows-json | --reconcile <dir>" >&2
+        echo "usage: $0 --print | --rows-json | --production-row | --reconcile <dir>" >&2
         exit 2
         ;;
 esac

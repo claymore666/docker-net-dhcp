@@ -201,6 +201,16 @@ registries, and there is no rollback: `docker plugin create`
 re-tars the rootfs non-reproducibly, so undoing it means publishing
 yet another digest and orphaning the previous signature.
 
+**The engine evidence ages out.** Publishing is gated on the engine
+matrix row recorded for the tag's own commit, and those rows are kept for
+30 days. Dispatching a tag older than that refuses, and so does
+dispatching a tag cut before that gate existed, because nothing recorded
+a row for it. The two refuse differently and say so: a tag nobody
+measured is refused for having no matrix run at all, and a tag whose rows
+have gone names the run that measured it and reports that it keeps no
+rows any more. Re-running the matrix on the tag records a fresh row and
+clears the second.
+
 **Use an rc tag instead.** [The rc dry-run](#pre-release-dry-run-rc-tags)
 runs the identical chain and touches no bare release tag and no
 `:latest`, which is what every recovery step in this file now points

@@ -283,12 +283,186 @@ jobs:
           bash .resolver/scripts/release-body.sh "$TAG" notes-under-judgement.md >/dev/null
           echo "Release notes for $TAG assemble; nothing has been published yet."
 
+  # THE ENGINE THE DEPLOYMENT RUNS, BEFORE THE IMAGES GO OUT (#1014).
+  #
+  # v2.2.0 passed the integration suite, the arm64 suite and the engine
+  # matrix, and then failed at the first `docker network create` on the
+  # engine the deployment runs, because no lane created the documented
+  # IPAM-mode network on an engine below 28 (#1012, #1013). The matrix
+  # does run at a tag, since a `paths:` filter is not applied to a tag
+  # push, but nothing here ever read its verdict, so a tag could be
+  # signed and pushed to both registries while its own matrix was red or
+  # still running.
+  #
+  # THIS JOB READS THAT VERDICT AND BUILDS NOTHING. An earlier shape ran
+  # the cell here, which meant checking out the tag and executing it in
+  # a job that holds no credential. CodeQL reports exactly that as cache
+  # poisoning in the context of the default branch, and no access
+  # control closes the rule for a dispatched workflow: its control
+  # checks cover only events where the actor can be the attacker, which
+  # is the same finding #1009 recorded. So nothing here materialises the
+  # tag's tree. The evidence already exists, because the matrix ran on
+  # the tag push, and this job locates that run and reads the row.
+  #
+  # WHAT MAKES READING ANOTHER LANE SOUND. A matrix run at a commit
+  # measured THAT COMMIT'S tree: the row list, scripts/engine-baseline.sh
+  # and the matrix workflow all come from the commit under test. So a
+  # run at the tag's commit cannot have measured a different row set or
+  # different assertions, and its row line is a statement about this
+  # tree and no other.
+  #
+  # THE READING CODE COMES FROM THIS RUN'S OWN REF. No checkout in this
+  # job names a `ref:`, so the scripts that pick the run and read the row
+  # are the ones the triggering ref carries, and no job input can choose
+  # them. On a dispatch that ref is the default branch while the tag
+  # under judgement is only data; on a tag push it is that tag's own
+  # tree, which is the tree the run was triggered for. Either way it is
+  # the same reading rule 4 gives the release-notes extractor: our
+  # script, their data. It costs something, and the cost is a refusal
+  # instead of a wrong answer: if this tree names a row the evidence run
+  # never carried, the release stops and says so.
+  #
+  # A CELL'S COLOUR IS STILL NOT A VERDICT. The matrix runs its cells
+  # under `continue-on-error`, so this job reads the recorded row line
+  # and never a job conclusion. A run whose jobs all concluded success
+  # still refuses the release if its production row says otherwise.
+  #
+  # EVERY `v*` TAG, not release candidates only: the final tag is the
+  # one that ships. The shapes come from docs/reference.md through
+  # scripts/engine-baseline.sh, so this gate adds no network shape of
+  # its own and cannot drift from the document.
+  production-shape:
+    needs: resolve
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      actions: read         # list another workflow's runs, download its rows
+
+    steps:
+      # NO `ref:`, deliberately and load-bearing. This job runs THIS
+      # run's own tree and never the tag's, which is what keeps a
+      # trigger-named tree out of a credential-free job.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Which engine row measures the deployed engine
+        id: row
+        run: |
+          set -euo pipefail
+          row="$(bash scripts/engine-floor.sh --production-row)"
+          echo "row=$row" >> "$GITHUB_OUTPUT"
+          echo "The deployed engine is measured by engine-matrix row $row." >> "$GITHUB_STEP_SUMMARY"
+
+      # The tag's commit, as DATA. The ref never reaches a checkout.
+      - name: Which commit the tag names
+        id: commit
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REF: ${{ needs.resolve.outputs.ref }}
+        run: |
+          set -euo pipefail
+          sha="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${REF}" --jq '.sha')"
+          if [ -z "$sha" ]; then
+            echo "::error title=The tag names no commit::'${REF}' did not resolve to a commit, so there is nothing to look for evidence about." >&2
+            exit 1
+          fi
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      # BOUNDED, and a timeout is a refusal that says which one it is.
+      # The matrix lane takes about two and a half minutes when it is
+      # not queued; the bound is for pool contention, not for the lane.
+      # "Still running" and "never ran" are different refusals on
+      # purpose: one is a rerun of this job, the other is a tag nobody
+      # measured.
+      - name: Find the engine-matrix run that measured this commit
+        id: run
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SHA: ${{ steps.commit.outputs.sha }}
+        run: |
+          set -euo pipefail
+          deadline=$(( $(date +%s) + 1800 ))
+          while : ; do
+            # ASKED FOR BY COMMIT, not filtered out of a page. Listing
+            # the workflow's newest hundred runs would be a window of
+            # about a month at the present rate, which is not wider than
+            # the 30 days the rows are kept, so a commit whose rows still
+            # exist could fall off the page and be reported as one
+            # nothing ever measured. This endpoint selects on the commit
+            # server-side, so the only runs in the answer are that
+            # commit's own and no page boundary can hide one.
+            #
+            # An API failure must not read like an absence: `gh` failing
+            # leaves stdin empty, and the picker calls an empty read a
+            # cannot-check rather than "no run".
+            if ! runs="$(gh api \
+                  "repos/${GITHUB_REPOSITORY}/actions/workflows/engine-matrix.yml/runs?head_sha=${SHA}&per_page=100" \
+                  --jq '[.workflow_runs[] | {id: .id, headSha: .head_sha, status, conclusion, createdAt: .created_at}]')"; then
+              echo "::error title=The run list could not be read::Reading the engine-matrix runs failed. That is a cannot-check and never a pass." >&2
+              exit 1
+            fi
+            chosen="$(printf '%s' "$runs" | bash scripts/pick-engine-matrix-run.sh "$SHA")" || exit 1
+            id="${chosen%% *}"
+            status="$(printf '%s' "$chosen" | cut -d' ' -f2)"
+            if [ "$status" = "completed" ]; then
+              echo "id=$id" >> "$GITHUB_OUTPUT"
+              echo "The engine-matrix run measuring this commit is $id." >> "$GITHUB_STEP_SUMMARY"
+              break
+            fi
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "::error title=The engine-matrix run has not finished::Run $id measured this commit but was still $status when this gate gave up waiting. Nothing is wrong with the tag; rerun this job once that lane reports." >&2
+              exit 1
+            fi
+            sleep 30
+          done
+
+      # The artefact is named for the row. A run that never carried this
+      # row has no such artefact, and that download failing IS the
+      # answer: this tree names a row the evidence does not cover.
+      #
+      # THE REFUSAL NAMES WHICH ABSENCE IT IS, because the two call for
+      # different actions. Rows that aged out are recovered by re-running
+      # the matrix on the tag; a run that carries other rows and not this
+      # one means this tree asks for a row that lane does not produce,
+      # which no re-run fixes. The artefact listing separates them, and
+      # when the listing itself cannot be read the refusal says that
+      # instead of guessing.
+      - name: Fetch the recorded row for that engine
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN_ID: ${{ steps.run.outputs.id }}
+          ENGINE: ${{ steps.row.outputs.row }}
+        run: |
+          set -euo pipefail
+          if ! gh run download "$RUN_ID" -n "engine-row-${ENGINE}" -D evidence; then
+            if have="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}/artifacts?per_page=100" \
+                  --jq '[.artifacts[] | select(.expired | not) | .name] | join(", ")')"; then
+              if [ -z "$have" ]; then
+                echo "::error title=The recorded rows have aged out::Run $RUN_ID measured this commit but keeps no rows any more, so there is nothing left to read. Re-run the engine matrix on this tag and the rows come back." >&2
+              else
+                echo "::error title=No recorded row for the deployed engine::Run $RUN_ID carries ${have}, and none of those is engine-row-${ENGINE}. That lane never measured the engine line this tree asks for, so re-running it changes nothing." >&2
+              fi
+            else
+              echo "::error title=No recorded row for the deployed engine::Run $RUN_ID has no row for engine ${ENGINE}, and its artefact listing could not be read, so which of the two absences this is cannot be named here." >&2
+            fi
+            exit 1
+          fi
+          find evidence -type f | sed 's/^/  /' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Read the verdict
+        env:
+          ENGINE: ${{ steps.row.outputs.row }}
+        run: |
+          set -euo pipefail
+          bash scripts/production-shape-verdict.sh \
+            "evidence/rows/${ENGINE//./-}.row" "$ENGINE" | tee -a "$GITHUB_STEP_SUMMARY"
+
   release:
     # runbook-walkthrough: docs/release-runbook.md walks this job step
     # for step. scripts/check-runbook-release-steps.sh reads THIS line,
     # not a declaration in the page, so the page cannot drop a job from
     # the comparison by no longer describing it.
-    needs: resolve
+    needs: [resolve, production-shape]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -873,7 +1047,7 @@ jobs:
   # release: a skipped `release-arm64` never reached its own steps, so
   # an amd64 failure hid whatever arm64 would have said.
   release-arm64:
-    needs: resolve
+    needs: [resolve, production-shape]
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 20
     outputs:

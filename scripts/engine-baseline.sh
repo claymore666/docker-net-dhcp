@@ -57,6 +57,13 @@
 #                     onto a different address would satisfy "it has an
 #                     address" and break every container that was
 #                     addressed by the old one.
+#   endpoint-release  the endpoint comes OFF the network and the network
+#                     is removed, once per documented shape. A shape
+#                     that leases correctly and cannot be dismantled is
+#                     one a user meets the second time they run the
+#                     documented commands, and until #1014 nothing here
+#                     reached it: the only removals in this file were
+#                     `docker rm -f` of the nested daemon's container.
 #
 # THE SHAPES ARE DERIVED FROM THE DOCUMENTATION, not listed here.
 # bridge, macvlan and ipvlan take different paths through CreateNetwork
@@ -498,6 +505,7 @@ shapes="$(derive_shapes shapes)" \
 # The loop reads from a REDIRECT and not a pipe: `fail` exits, and an
 # exit inside a pipeline ends a subshell while the row walks on.
 macvlan_addr=""
+DRIVEN=""
 while IFS='|' read -r shape_ipam shape_mode shape_ifk; do
     [ -n "$shape_ipam" ] || continue
     net="em-net-$shape_ipam-$shape_mode"
@@ -510,6 +518,8 @@ while IFS='|' read -r shape_ipam shape_mode shape_ifk; do
         *) fail "a documented shape asks for mode=$shape_mode on -o $shape_ifk=, and this fixture has no netdev for that pair" ;;
     esac
     lease_in_shape "$shape_ipam" "$shape_mode" "$net" "$ctr" "${dev_opt[@]}"
+    DRIVEN="$DRIVEN$net|$ctr|$shape_ipam-$shape_mode
+"
     if [ "$shape_ipam-$shape_mode" = "null-macvlan" ]; then
         MACVLAN_NET="$net"
         MACVLAN_CTR="$ctr"
@@ -568,6 +578,41 @@ done
 [ "$acks_after" -gt "$acks_before" ] \
     || fail "the DHCP server logged no new ACK for $after after the restart (was $acks_before, still $acks_after)"
 say "== after restart: $after, re-ACKed by the DHCP server"
+
+# ---- step 7: the endpoint comes off, and the network goes away -------
+# AFTER the restart, not inside lease_in_shape, because step 6 restarts
+# one of these containers on one of these networks: dismantling a shape
+# as soon as it leased would delete the subject the restart measures.
+#
+# The loop reads from a REDIRECT for the reason the drive loop gives:
+# `fail` exits, and an exit inside a pipeline ends a subshell while the
+# row walks on.
+while IFS='|' read -r net ctr label; do
+    [ -n "$net" ] || continue
+
+    STEP="endpoint-release-$label"
+    d docker network disconnect "$net" "$ctr" \
+        || fail "docker network disconnect was refused on the $label network"
+
+    # THE ENDPOINT IS GONE, not merely the command exited 0. A
+    # disconnect that leaves the network on the container leaves a lease
+    # nobody will renew and an address the DHCP server still believes
+    # is taken. The network's own key is what is read, because an empty
+    # address field is also what a template error prints.
+    still="$(d docker inspect -f '{{json .NetworkSettings.Networks}}' "$ctr" 2>/dev/null | tr -d '\r')"
+    case "$still" in
+        *"\"$net\""*) fail "the $label endpoint is still attached to $net after disconnect" ;;
+    esac
+
+    d docker rm -f "$ctr" >/dev/null 2>&1 || true
+
+    d docker network rm "$net" >/dev/null \
+        || fail "docker network rm was refused on the $label network"
+
+    say "== $label: disconnected and removed"
+done <<EOF
+$DRIVEN
+EOF
 
 STEP=complete
 verdict pass "macvlan=$macvlan_addr after_restart=$after"
