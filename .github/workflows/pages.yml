@@ -127,8 +127,7 @@ jobs:
       # OUR copy of the resolver, checked out first. The workflow's own
       # ref is the trusted one; the resolver must not come from the tree
       # the input names, or the value would be validated by code the
-      # value chose — the same reason integration.yml checks itself out
-      # before running its dispatch-ref guard (#593).
+      # value chose (#593).
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # ITS OWN PATH, and that is load-bearing. actions/checkout does

@@ -10,12 +10,23 @@
 # still protect nothing the moment a new job — or a new matrix leg, or a
 # copy-pasted checkout — takes a dispatch input without depending on it.
 #
-# WHY IT WAS REWRITTEN. The first version matched the literal string
-# `inputs.ref`. That is the input name integration.yml happens to use.
-# Two other workflows take a dispatch input into a checkout under a
-# different name:
+# SHAPE (a) HAS NO SCRIPT IN THE TREE RIGHT NOW. This check recognises
+# two proofs: a gate job running check-dispatch-ref.sh, and an inline
+# resolve-dispatch-ref.sh. #1009 deleted integration.yml's free-text
+# `ref` input, which was the only thing check-dispatch-ref.sh could
+# judge, and the script with it, because a gate no workflow runs is an
+# orphan this repo's lane refuses (scripts/check-local-lane.sh). The
+# NAME is still what this check looks for, deliberately: a workflow
+# that names it without the script being written back fails closed at
+# the step, and shape (a) remains expressible for the next input that
+# needs a reachability answer instead of a shape answer.
 #
-#   integration.yml        inputs.ref     ← was seen
+# WHY IT WAS REWRITTEN. The first version matched the literal string
+# `inputs.ref`. That was the input name integration.yml used at the
+# time. Two other workflows take a dispatch input into a checkout under
+# a different name:
+#
+#   integration.yml        inputs.ref     ← was seen (deleted, #1009)
 #   release.yml            inputs.tag     ← was NOT seen
 #   pages.yml              inputs.tag     ← was NOT seen
 #
@@ -364,7 +375,10 @@ if [ "${#findings[@]}" -ne 0 ]; then
     echo >&2
     echo "Constrain it one of two ways." >&2
     echo >&2
-    echo "  (a) a gate job the consumer needs:" >&2
+    echo "  (a) a gate job the consumer needs. scripts/$GUARD_SCRIPT was" >&2
+    echo "      deleted with the last input that used it (#1009); write it" >&2
+    echo "      back, answering 'is this commit reachable from one of our" >&2
+    echo "      branches or tags', and run it here:" >&2
     echo >&2
     echo "      dispatch-ref:" >&2
     echo "        steps:" >&2
