@@ -222,6 +222,102 @@ check "a row reporting an unorderable version is refused" 1 "cannot order" \
     "$DECL" \
     19.03:19.03.15:fail 20.10:OCI-runtime-exec-failed:pass
 
+# --- the deployed engine, and which row measures it (#1014) -----------
+
+# check_prod <name> <want_exit> <want_substring> <floor-body> <row tag>...
+# The rows here are a LIST only: --production-row reads the declaration
+# and the list, never a verdict, so a spec carrying results would say
+# this mode sees more than it does.
+check_prod() {
+    local name="$1" want_exit="$2" want_sub="$3" body="$4"; shift 4
+    local tmp out got ff tag
+    guarded_tmpdir tmp
+    ff="$(floor_file "$tmp/src" "$body")"
+    : > "$tmp/rows.txt"
+    for tag in "$@"; do printf '%s\n' "$tag" >> "$tmp/rows.txt"; done
+
+    out="$(ENGINE_FLOOR_FILE="$ff" ENGINE_ROWS_FILE="$tmp/rows.txt" \
+        bash "$GATE" --production-row 2>&1)"
+    got=$?
+
+    if [ "$got" -ne "$want_exit" ]; then
+        echo "FAIL  $name: exit $got, want $want_exit"
+        printf '%s\n' "$out" | sed 's/^/      /'
+        fail=$((fail + 1))
+    elif [ -n "$want_sub" ] && ! printf '%s' "$out" | grep -F -- "$want_sub" >/dev/null; then
+        echo "FAIL  $name: output does not mention '$want_sub'"
+        printf '%s\n' "$out" | sed 's/^/      /'
+        fail=$((fail + 1))
+    else
+        echo "ok    $name"
+        pass=$((pass + 1))
+    fi
+    rm -rf "$tmp"
+}
+
+BOTH="$(printf 'const MinEngineVersion = "20.10"\nconst ProductionEngineVersion = "26.1.5"')"
+LIST=(29 28 27 26 25 24 23 20.10 19.03)
+
+# --production-row is what the release lane asks before it publishes, so
+# it is checked against the real tree as well as against fixtures.
+out="$(bash "$GATE" --production-row 2>&1)"; got=$?
+if [ "$got" -eq 0 ] && printf '%s' "$out" | grep -E '^[0-9]+(\.[0-9]+)?$' >/dev/null; then
+    echo "ok    --production-row answers a declared row from the tree ($out)"
+    pass=$((pass + 1))
+else
+    echo "FAIL  --production-row: exit $got, output '$out'"
+    fail=$((fail + 1))
+fi
+
+check_prod "the covering row is the row on the deployed engine's line" 0 "26" \
+    "$BOTH" "${LIST[@]}"
+
+check_prod "a major.minor row covers a build of that minor" 0 "20.10" \
+    "$(printf 'const MinEngineVersion = "20.10"\nconst ProductionEngineVersion = "20.10.24"')" \
+    "${LIST[@]}"
+
+check_prod "a renamed production constant is refused, not read as empty" 2 "no ProductionEngineVersion declaration" \
+    "$(printf 'const MinEngineVersion = "20.10"\nconst ProdEngine = "26.1.5"')" \
+    "${LIST[@]}"
+
+check_prod "a production declaration in a comment does not count" 2 "no ProductionEngineVersion declaration" \
+    "$(printf 'const MinEngineVersion = "20.10"\n// const ProductionEngineVersion = "26.1.5"')" \
+    "${LIST[@]}"
+
+# The floor names a line and this names a build; a two-field spelling
+# here would claim the row measures the whole line, which is the claim
+# the third field exists to avoid making.
+check_prod "a two-field production version is refused" 2 "no ProductionEngineVersion declaration" \
+    "$(printf 'const MinEngineVersion = "20.10"\nconst ProductionEngineVersion = "26.1"')" \
+    "${LIST[@]}"
+
+check_prod "two production declarations are refused" 2 "more than once" \
+    "$(printf 'const MinEngineVersion = "20.10"\nconst ProductionEngineVersion = "26.1.5"\nconst ProductionEngineVersion = "28.0.1"')" \
+    "${LIST[@]}"
+
+check_prod "a deployed engine no row measures is refused" 1 "no declared row measures" \
+    "$(printf 'const MinEngineVersion = "20.10"\nconst ProductionEngineVersion = "30.0.1"')" \
+    "${LIST[@]}"
+
+check_prod "a deployed engine below the floor is refused" 1 "below the declared floor" \
+    "$(printf 'const MinEngineVersion = "20.10"\nconst ProductionEngineVersion = "19.03.15"')" \
+    "${LIST[@]}"
+
+# The floor rule is checked first, so this case declares a floor below
+# the deployed engine: what it pins is the MINOR comparison, not the
+# ordering. Its first spelling declared 20.9.1 against a floor of 20.10
+# and was refused for being below the floor, which would have left the
+# minor comparison unmeasured behind a red case that looked right.
+check_prod "a minor row that is not the deployed minor does not cover it" 1 "no declared row measures" \
+    "$(printf 'const MinEngineVersion = "19.03"\nconst ProductionEngineVersion = "20.9.1"')" \
+    20.10 19.03
+
+check_prod "two rows on the deployed engine's line are refused as ambiguous" 1 "both measure" \
+    "$BOTH" 29 26 26.1 20.10 19.03
+
+check_prod "an empty row list is refused, not read as covered" 2 "declares no engine rows" \
+    "$BOTH"
+
 # --- vacuity -----------------------------------------------------------
 
 guarded_tmpdir tmp

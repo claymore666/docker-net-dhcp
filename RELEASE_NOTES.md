@@ -60,6 +60,16 @@ section below is still the list the daemon shows you.
   and `go test -fuzz` over a package with no matching target prints PASS and
   exits 0, so the step had one possible verdict; a name that resolves to no
   target is now refused (#1010, PR #1020).
+- A release tag cannot publish its images until the documented network
+  shapes have been created on the engine line the deployment runs. The
+  engine matrix already measured every line on each tag push, and the
+  release workflow now reads the row recorded for that tag's own commit
+  and refuses to publish unless it passed. A row that is missing, still
+  running past the wait, or reporting that the rig never got far enough
+  to ask about the plugin refuses the release as a failing row does,
+  because an absence of evidence is not a pass. The matrix also asserts
+  now that each network it creates can be disconnected and removed
+  (#1014).
 
 ### Fixed
 

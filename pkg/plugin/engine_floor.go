@@ -44,6 +44,30 @@ import (
 // asks the maintainer to treat as a major-version question.
 const MinEngineVersion = "20.10"
 
+// ProductionEngineVersion is the Docker Engine build the maintained
+// deployment of this plugin runs on (#1014).
+//
+// WHY THE PRODUCT CARRIES IT. The release lane drives the documented
+// network shapes on this engine before it publishes anything, and the
+// engine it drives has to come from the same place the floor does, or
+// the two numbers drift and the lane measures an engine nobody runs.
+// scripts/engine-floor.sh --production-row reads this declaration and
+// answers with the matrix row that measures it, so a change of
+// deployed engine is this line and nothing else.
+//
+// THREE FIELDS, WHERE THE FLOOR HAS TWO, and the difference is what
+// each of them names. MinEngineVersion names a LINE, because the matrix
+// drives tags that follow their line. This one names a BUILD, because
+// the question it answers is which engine a real host runs.
+//
+// WHAT IS MEASURED IS THE LINE, NOT THIS BUILD. The row that covers
+// this version pulls the newest image of its line, and for 26.1.x that
+// image is 26.1.4: the 26 line's last image predates this build, which
+// comes from a distribution package never published as an image. So
+// the lane measures the newest 26.1 build that can be run, one patch
+// below this one, and nothing here claims more than that.
+const ProductionEngineVersion = "26.1.5"
+
 // errEngineTooOld is what NewPlugin returns when the daemon answered
 // and named a version below MinEngineVersion. It is fatal in main.go,
 // the same shape as a lease record whose lock another process holds:

@@ -113,6 +113,29 @@ func engineFake(version, api string) *fakeDocker {
 // THE REFUSAL NAMES BOTH NUMBERS. An operator who sees only "unsupported
 // engine" has to go and find out what the minimum is and what they are
 // running; the message is the one place both are already known.
+// The deployed engine is a declaration, and the one thing a test can
+// hold it to is that the shipped plugin would start there: a version
+// below MinEngineVersion names a host NewPlugin refuses. The format is
+// held too, because scripts/engine-floor.sh maps this constant onto a
+// matrix row by reading it.
+func TestProductionEngineVersion_IsABuildTheFloorAdmits(t *testing.T) {
+	if _, _, ok := versionKey(ProductionEngineVersion); !ok {
+		t.Fatalf("ProductionEngineVersion %q does not parse as a version", ProductionEngineVersion)
+	}
+	if strings.Count(ProductionEngineVersion, ".") != 2 {
+		t.Errorf("ProductionEngineVersion %q is not major.minor.patch; it names a build, not a line", ProductionEngineVersion)
+	}
+	below, ok := engineBelowFloor(ProductionEngineVersion, MinEngineVersion)
+	if !ok {
+		t.Fatalf("ProductionEngineVersion %q and MinEngineVersion %q cannot be ordered against each other",
+			ProductionEngineVersion, MinEngineVersion)
+	}
+	if below {
+		t.Errorf("ProductionEngineVersion %q is below MinEngineVersion %q: the shipped plugin refuses to start there",
+			ProductionEngineVersion, MinEngineVersion)
+	}
+}
+
 func TestProbeEngine_RefusesBelowTheFloorNamingBoth(t *testing.T) {
 	p := &Plugin{docker: engineFake("19.03.15", "1.40")}
 
