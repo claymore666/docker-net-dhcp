@@ -224,6 +224,126 @@ wf_mention "      - run: bash scripts/test-b.sh"
 SELFTEST_WORKFLOWS="$TMP/wf" \
     check "the unmutated runner still passes the control fixture" 0 "$TMP/deleg" "test-b.sh -> somejob"
 
+# --- THE JOB ENVIRONMENT DOES NOT REACH A SUITE (#977) -------------------
+#
+# The runner hands every suite an environment with no GITHUB_ names in
+# it. Two things were measured on this repository and are pinned here:
+# a gate that reads GITHUB_EVENT_NAME decided a fixture's verdict from
+# the job's own event, and three suites handed GITHUB_OUTPUT and
+# GITHUB_STEP_SUMMARY to the tool under test, which appended to the
+# real job's files.
+#
+# The planted suite reports BOTH: it writes to the two sinks if it can
+# see them, and it fails if it can see GITHUB_ACTIONS.
+mkdir -p "$TMP/env"
+cat > "$TMP/env/test-env.sh" <<'PLANT'
+#!/usr/bin/env bash
+[ -z "${GITHUB_OUTPUT:-}" ] || echo "the suite reached GITHUB_OUTPUT" >> "$GITHUB_OUTPUT"
+[ -z "${GITHUB_STEP_SUMMARY:-}" ] || echo "the suite reached GITHUB_STEP_SUMMARY" >> "$GITHUB_STEP_SUMMARY"
+if [ -n "${GITHUB_ACTIONS:-}" ]; then
+    echo "GITHUB_ACTIONS reached the suite"
+    exit 1
+fi
+echo "no job environment reached the suite"
+PLANT
+
+env_sinks() { printf '%s' "$(cat "$TMP/gho" "$TMP/ghs" 2>/dev/null)"; }
+
+# ORTHOGONALITY FIRST. Run the planted suite with nothing between it and
+# the environment. If it cannot fail and cannot write here, the two
+# assertions below are satisfied by a suite that does nothing.
+rm -f "$TMP/gho" "$TMP/ghs"
+( GITHUB_ACTIONS=true GITHUB_OUTPUT="$TMP/gho" GITHUB_STEP_SUMMARY="$TMP/ghs" \
+    bash "$TMP/env/test-env.sh" >/dev/null 2>&1 )
+plain_rc=$?
+if [ "$plain_rc" -eq 1 ] && [ -n "$(env_sinks)" ]; then
+    echo "PASS: run directly, the planted suite fails and writes to both sinks (control)"
+else
+    echo "FAIL: the planted suite cannot fail or cannot write (rc=$plain_rc), so the"
+    echo "      two cases below measure nothing"
+    failures=$((failures + 1))
+fi
+
+# THE VERDICT AND THE WRITE, both gone, in one run.
+rm -f "$TMP/gho" "$TMP/ghs"
+( SELFTEST_DIR="$TMP/env" SELFTEST_WORKFLOWS="$TMP/wf-default" \
+  GITHUB_ACTIONS=true GITHUB_OUTPUT="$TMP/gho" GITHUB_STEP_SUMMARY="$TMP/ghs" \
+    bash "$RUNNER" > "$TMP/envout" 2>&1 )
+env_rc=$?
+if [ "$env_rc" -eq 0 ] && grep -q "no job environment reached the suite" "$TMP/envout"; then
+    echo "PASS: through the runner the same suite sees no GITHUB_ACTIONS and passes"
+else
+    echo "FAIL: the scrubbed suite did not pass (rc=$env_rc)"
+    sed 's/^/    /' "$TMP/envout"
+    failures=$((failures + 1))
+fi
+if [ -z "$(env_sinks)" ]; then
+    echo "PASS: and it wrote to neither GITHUB_OUTPUT nor GITHUB_STEP_SUMMARY"
+else
+    echo "FAIL: the suite still wrote into the job's sinks: $(env_sinks)"
+    failures=$((failures + 1))
+fi
+
+# THE ALLOWLIST IS LIVE, driven the other way. Its shipped value is
+# empty, so without this the keep branch never executes and a scrub that
+# ignored the list entirely would pass every case above.
+rm -f "$TMP/gho" "$TMP/ghs"
+( SELFTEST_DIR="$TMP/env" SELFTEST_WORKFLOWS="$TMP/wf-default" \
+  SELFTEST_ENV_ALLOW=GITHUB_ACTIONS \
+  GITHUB_ACTIONS=true GITHUB_OUTPUT="$TMP/gho" GITHUB_STEP_SUMMARY="$TMP/ghs" \
+    bash "$RUNNER" > "$TMP/allowout" 2>&1 )
+allow_rc=$?
+if [ "$allow_rc" -eq 1 ] && grep -q "GITHUB_ACTIONS reached the suite" "$TMP/allowout"; then
+    echo "PASS: an allowed name reaches the suite, so the list decides and not the run"
+else
+    echo "FAIL: allowing GITHUB_ACTIONS changed nothing (rc=$allow_rc); the list is dead code"
+    sed 's/^/    /' "$TMP/allowout"
+    failures=$((failures + 1))
+fi
+if [ -z "$(env_sinks)" ]; then
+    echo "PASS: and the two sinks stay scrubbed, so the list admits one name and not all"
+else
+    echo "FAIL: allowing one name admitted the sinks too: $(env_sinks)"
+    failures=$((failures + 1))
+fi
+
+# --- THE GO PROBLEM MATCHER DOES NOT READ SUITE PROSE (#977) -------------
+#
+# actions/setup-go registers a matcher for `<path>.go: <message>`, and a
+# suite that names a Go path in a result line had that line turned into
+# a failure annotation on a job that passed. The runner removes the
+# matcher for its own output. Driven in both directions, because a line
+# printed unconditionally would be noise in every local run.
+if grep -q "::remove-matcher owner=go::" "$TMP/envout"; then
+    echo "PASS: with GITHUB_ACTIONS set the runner removes the Go problem matcher"
+else
+    echo "FAIL: the Go problem matcher was not removed, so suite prose is still read"
+    echo "      as compiler output"
+    failures=$((failures + 1))
+fi
+# WHERE the line is printed decides whether it does anything. A matcher
+# applies to output as it streams, so a removal printed after the group
+# replay leaves every annotation in place while every case above still
+# passes.
+matcher_line="$(grep -n '::remove-matcher owner=go::' "$TMP/envout" | head -1 | cut -d: -f1)"
+first_group="$(grep -n '::group::' "$TMP/envout" | head -1 | cut -d: -f1)"
+if [ -n "$matcher_line" ] && [ -n "$first_group" ] && [ "$matcher_line" -lt "$first_group" ]; then
+    echo "PASS: and it removes the matcher before the first suite line is replayed"
+else
+    echo "FAIL: the removal is printed at line ${matcher_line:-none} and the first"
+    echo "      replayed suite output at line ${first_group:-none}, so the matcher"
+    echo "      already read the suite prose"
+    failures=$((failures + 1))
+fi
+( SELFTEST_DIR="$TMP/env" SELFTEST_WORKFLOWS="$TMP/wf-default" \
+    env -u GITHUB_ACTIONS bash "$RUNNER" > "$TMP/localout" 2>&1 )
+if grep -q "::remove-matcher" "$TMP/localout"; then
+    echo "FAIL: the runner emits a workflow command outside a job"
+    failures=$((failures + 1))
+else
+    echo "PASS: and outside a job it emits no workflow command at all"
+fi
+
 # The real directory must be discoverable and non-trivial. This is the
 # guard against the runner being wired to a path that happens to be
 # empty in CI — the exact way this class of check goes quietly green.
