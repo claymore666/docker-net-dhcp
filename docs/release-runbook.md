@@ -918,9 +918,27 @@ be true.
     → **Publish the same manifest under the Hub alias** (or skip) →
     Install syft → **Generate SBOM (SPDX + CycloneDX)** → **Package and
     sign release artifact** → **Attest release-artifact provenance** →
-    **Attest image provenance (GHCR)** → **Check attestation parity
-    across registries** → **Upload signed artifacts for the release
-    job** → Workflow summary.
+    **Publish and verify the release provenance bundle** → **Attest
+    image provenance (GHCR)** → **Check attestation parity across
+    registries** → **Upload signed artifacts for the release job** →
+    Workflow summary.
+
+    *Publish and verify the release provenance bundle* runs
+    [`scripts/publish-provenance-asset.sh`](https://github.com/claymore666/docker-net-dhcp/blob/main/scripts/publish-provenance-asset.sh),
+    which attaches the attestation the step before it produced to the
+    release page as `provenance.intoto.jsonl`
+    (`provenance-arm64.intoto.jsonl` in the arm64 job), so provenance is
+    readable from the page and not only from GitHub's attestation store
+    (#1011). It refuses an asset name Scorecard's provenance check would
+    not count, re-reads the subject list out of the bundle it is about
+    to publish, refuses a bundle that does not name the tarball, and
+    runs `gh attestation verify --bundle` over every subject, which is
+    the command
+    [Verifying releases](https://claymore666.github.io/docker-net-dhcp/verifying-releases/)
+    gives users. A red here means the published bundle does not verify
+    the published bytes, and the release stops before the page exists.
+    Every one of those refusals is driven offline on each lane run by
+    `scripts/test-publish-provenance-asset.sh`, with `gh` stubbed.
 
     *Publish the same manifest under the Hub alias* runs
     [`scripts/publish-hub-alias.sh`](https://github.com/claymore666/docker-net-dhcp/blob/main/scripts/publish-hub-alias.sh),
@@ -1004,16 +1022,24 @@ be true.
                             #   net-dhcp-plugin-vX.Y.Z-linux-arm64.tar.gz
                             #   checksums.txt + checksums.txt.sigstore.json
                             #   checksums-arm64.txt + checksums-arm64.txt.sigstore.json
+                            #   provenance.intoto.jsonl + provenance-arm64.intoto.jsonl
    # Re-verify the signature the way a downstream consumer would:
    cosign verify-blob \
      --bundle checksums.txt.sigstore.json \
      --certificate-identity-regexp '^https://github.com/claymore666/docker-net-dhcp/.github/workflows/release.yml@' \
      --certificate-oidc-issuer https://token.actions.githubusercontent.com \
      checksums.txt
+   # And the provenance, taken from the page, with no API call:
+   gh attestation verify net-dhcp-plugin-vX.Y.Z-linux-amd64.tar.gz \
+     --bundle provenance.intoto.jsonl \
+     --repo claymore666/docker-net-dhcp
    ```
    Adjust the title/notes in the UI if the one-liner needs polish.
    The job is idempotent on a tag re-dispatch (re-uploads assets with
-   `--clobber`). This satisfies OpenSSF Scorecard **Signed-Releases**;
+   `--clobber`). This satisfies OpenSSF Scorecard **Signed-Releases**,
+   whose provenance half reads the asset NAME and counts only a
+   `.intoto.jsonl` suffix, which is what the two provenance assets are
+   named for (#1011);
    an rc dry-run produces an equivalent **pre-release** with the same
    signed assets, which is how this path is exercised before the real
    tag (rc releases never move `:latest` and are marked pre-release).

@@ -21,6 +21,7 @@ links here instead of repeating them.
 | `net-dhcp-plugin-vX.Y.Z-linux-arm64.tar.gz` | the same for `linux/arm64` (v1.7.0 onward) |
 | `checksums-arm64.txt`, `checksums-arm64.txt.sigstore.json` | the arm64 checksum manifest, in the same shape, and its cosign bundle |
 | `sbom-arm64.spdx.json`, `sbom-arm64.cdx.json` | the arm64 SBOMs |
+| `provenance.intoto.jsonl`, `provenance-arm64.intoto.jsonl` | SLSA build provenance for the tarball and the SBOMs of each architecture, as a Sigstore bundle (v2.2.1 onward) |
 
 The plugin image itself lives at
 `ghcr.io/claymore666/docker-net-dhcp:vX.Y.Z`, mirrored to Docker Hub
@@ -175,6 +176,30 @@ gh attestation verify oci://ghcr.io/claymore666/docker-net-dhcp:VERSION \
 gh attestation verify net-dhcp-plugin-VERSION-linux-amd64.tar.gz \
   --repo claymore666/docker-net-dhcp
 ```
+
+Both commands ask GitHub's attestation store for the provenance. From
+v2.2.1 the same attestation is attached to the release page as
+`provenance.intoto.jsonl` (`provenance-arm64.intoto.jsonl` for arm64), so
+the provenance travels with the files you downloaded and is read from
+disk:
+
+```sh
+gh attestation verify net-dhcp-plugin-VERSION-linux-amd64.tar.gz \
+  --bundle provenance.intoto.jsonl \
+  --repo claymore666/docker-net-dhcp
+```
+
+One bundle covers the tarball and both SBOMs of that architecture, so the
+same file verifies `sbom.spdx.json` and `sbom.cdx.json` as well. It is not
+listed in `checksums.txt`: the attestation is produced after that manifest
+is signed, and it carries its own certificate chain and transparency-log
+entry, so it authenticates itself.
+
+`--bundle` needs no GitHub credentials and makes no call to the
+attestation store. It is **not** an offline command: `gh` still refreshes
+Sigstore's trusted root over the network, from a cache a machine that has
+verified before already holds. On a host with no egress and no such
+cache, the command fails on that refresh and not on your artifact.
 
 ## Rebuilding the binaries yourself
 
