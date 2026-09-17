@@ -6,6 +6,7 @@ package plugin
 import (
 	"context"
 	"errors"
+	"net"
 	"os"
 	"strings"
 	"sync/atomic"
@@ -14,6 +15,7 @@ import (
 
 	dContainer "github.com/docker/docker/api/types/container"
 	dNetwork "github.com/docker/docker/api/types/network"
+	"github.com/vishvananda/netlink"
 )
 
 // The four outcomes of a name that arrives after its client is already
@@ -440,28 +442,62 @@ func TestStart_TheDefaultNetworkTakesTheNameAfterTheClientStarts(t *testing.T) {
 // which one they mean; this drive is what makes the sentence false if
 // the route ever stops asking.
 //
-// The replay fails in this lane, which is not what is measured: the
-// daemon has already been asked by then. MEASURED on this fixture, an
-// unmutated macvlan run reaches the failure having made two
-// NetworkInspect calls, one from the MAC lookup and one from the replay
-// itself. Both modes are driven because the documents say "on every
-// network", and ipvlan is the mode that skips the MAC lookup.
+// WHY THE OPTIONS ARE ON DISK BEFORE THE ROUTE RUNS. netOptionsRaw
+// serves a network it cannot find on disk by asking the daemon and then
+// backfilling the answer. That fallback is a NetworkInspect, so on an
+// empty state directory this test counted a call the RESTART ROUTE
+// never made, and passed for a reason unrelated to its own sentence.
+// It also made the fixture order-dependent: the first subtest's
+// backfill persisted net-1.json and the second subtest then read it, so
+// the second went daemon-free and the drive went red wherever the state
+// directory was writable, which is to say wherever the suite ran as
+// root. Seeding the record closes both at once -- the fallback is
+// unreachable, so every call counted here is the route's own.
+//
+// The parent is stubbed because the assertion is about which calls the
+// route makes, not about the host it runs on: without a parent that
+// resolves, validateParentForChild returns before the hostname lookup,
+// and a green would mean only that the box had no such interface. The stub's link carries ifindex 0, so the child-link
+// creation below the lookup is refused by the kernel and this test
+// cannot build anything on the host that runs it.
+//
+// The ContainerInspect is asserted alongside the NetworkInspect because
+// it is the one that names a place: initialDHCPHostname is the only
+// caller of it on this route, so a non-zero containerCalls says the
+// route reached the hostname lookup in createParentAttachedEndpoint.
+// inspectCalls alone is satisfied by any daemon call anywhere on the
+// route, including a fallback that comes back.
 //
 // The property is over-determined, and that is stated rather than
-// hidden: removing the MAC lookup leaves the replay asking, so no
-// one-line change to this route can make it daemon-free and no mutant
-// of that shape can go red here.
+// hidden: in macvlan the MAC lookup asks the daemon before the replay
+// does, so removing the hostname lookup leaves the MAC lookup asking
+// and no mutant of that shape can go red on inspectCalls. The
+// containerCalls assertion is what it does go red on.
 func TestReacquireEndpoint_AsksTheDaemonBeforeTheAttachBegins(t *testing.T) {
 	for _, mode := range []string{ModeMacvlan, ModeIPvlan} {
 		t.Run(mode, func(t *testing.T) {
+			p := newTestPlugin(t)
+			if err := saveOptions("net-1", DHCPNetworkOptions{Mode: mode, Parent: "par0"}); err != nil {
+				t.Fatalf("saveOptions: %v", err)
+			}
+			stubLinkByName(t, func(string) (netlink.Link, error) {
+				return &fakeLink{
+					typ:   "device",
+					attrs: netlink.LinkAttrs{Name: "par0", Flags: net.FlagUp},
+				}, nil
+			})
+
 			docker := &fakeDocker{
 				inspectResult: map[string]dNetwork.Inspect{
 					"net-1": {Containers: map[string]dNetwork.EndpointResource{
 						"ctr-1": {EndpointID: "ep-abcdef", MacAddress: "02:42:ac:11:00:02"},
 					}},
 				},
+				containerResult: map[string]dContainer.InspectResponse{
+					"ctr-1": {Config: &dContainer.Config{Hostname: "web1"}},
+				},
 			}
-			p := &Plugin{docker: docker}
+			p.docker = docker
 
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			defer cancel()
@@ -473,6 +509,15 @@ func TestReacquireEndpoint_AsksTheDaemonBeforeTheAttachBegins(t *testing.T) {
 					"If that is so then #961's window claim covers this route too and the " +
 					"documents that exclude it are wrong; if it is not, this drive has stopped " +
 					"measuring the route")
+			}
+			if docker.containerCalls == 0 {
+				t.Error("the restart route never reached the hostname lookup, so nothing here " +
+					"measured the replay: with the network's options already on disk the only " +
+					"daemon call this route can make is the lookup's, and it did not make it. " +
+					"Either the replay stopped asking the daemon before the attach begins, which " +
+					"is what #961's documents say it still does, or the route now returns before " +
+					"createParentAttachedEndpoint's hostname lookup and this drive is measuring " +
+					"the return")
 			}
 		})
 	}
