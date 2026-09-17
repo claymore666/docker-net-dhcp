@@ -51,11 +51,6 @@ section below is still the list the daemon shows you.
   command [`docs/verifying-releases.md`](docs/verifying-releases.md) gives
   users, where that page also states what the flag does and does not avoid
   (#1011, PR #1018).
-- Every `v*` tag runs the production network shape, macvlan on a parent with
-  this plugin as the network driver and as the IPAM driver, on the engine
-  version the production host runs, and reads a container's address back from
-  `docker inspect`. That engine version is declared in one place beside the
-  engine floor. The release jobs wait for it (#1014).
 - Four native Go fuzz targets with seed corpora on the parsers this
   repository still owns: `FuzzBuildResolvConf`, `FuzzDeriveHostIfname`,
   `FuzzIdentity6RoundTrip` and `FuzzIPAMPoolIDRoundTrip`. Each asserts what
