@@ -2442,6 +2442,11 @@ only for a <strong>second</strong> network in this shape with the same subnet on
 different parent. Two such networks otherwise derive the same pool
 identity, and the second <code>docker network create</code> is refused, naming this
 option. One network needs neither key.</p>
+<p>The two keys are exclusive. A pool names one interface, so giving both
+is refused at <code>docker network create</code>, and the message names the key to
+keep: the one matching this network's own <code>-o parent=</code> or <code>-o bridge=</code>
+(#1010). Before that refusal the second key was accepted and dropped,
+and the pool identity was built from the first key alone.</p>
 <p><strong>Not supported.</strong> <code>ipvlan</code> networks cannot use this plugin as their
 IPAM driver: Docker generates a MAC per endpoint for an IPAM driver that
 asks for one, and ipvlan children share the parent's MAC and refuse a
