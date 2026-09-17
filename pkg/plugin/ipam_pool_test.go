@@ -65,6 +65,81 @@ func TestIpamPoolID_IsAFunctionOfItsInputs(t *testing.T) {
 	}
 }
 
+// TestIpamPoolID_TheTwoKeyRefusalNamesTheOptionEachModeOwns holds the
+// refusal to the sentence docs/reference.md writes about it: the message
+// names the key to keep, the one matching this network's own `-o
+// parent=` or `-o bridge=`.
+//
+// The first version named one key and picked it by position, printing
+// the first of ipamPoolOptKeys that was present. That slice is fixed as
+// {parent, bridge} for a reason nothing to do with this message, so the
+// answer was always `-o parent=`, and a bridge-mode network was told to
+// keep an option it does not have. The page said one thing and the
+// binary said another.
+//
+// This driver cannot do better than naming both. RequestPool runs while
+// the create is still in flight and the network's own `-o` options
+// reach CreateNetwork afterwards, so there is no mode here to read. The
+// test is therefore written from the operator's side: for each mode
+// this plugin has, the message must carry the option THAT mode owns, so
+// whoever reads it finds their own network in it.
+//
+// The pair is also asserted to read the same whichever way the map was
+// built. Go randomises map iteration, and a message assembled by
+// ranging over opts would be two different messages for one mistake.
+func TestIpamPoolID_TheTwoKeyRefusalNamesTheOptionEachModeOwns(t *testing.T) {
+	// The mapping is written out here and not derived from the subject:
+	// a table that asked the code which option a mode owns would agree
+	// with it however the code changed.
+	// Each row carries the pairing and not only the spelling. A message
+	// that named both options while attaching them to the wrong modes
+	// would satisfy a contains-check on the spellings alone and still
+	// send a bridge operator to `-o parent=`, which is the same defect
+	// in a different sentence.
+	owns := []struct{ mode, option, phrase string }{
+		{ModeBridge, "`-o bridge=`", "`-o bridge=` on a bridge network"},
+		{ModeMacvlan, "`-o parent=`", "`-o parent=` on a macvlan or ipvlan one"},
+		{ModeIPvlan, "`-o parent=`", "`-o parent=` on a macvlan or ipvlan one"},
+	}
+
+	// Two maps with the same content, built in the two orders. Go gives
+	// no insertion order, which is the point: whatever it does, one
+	// mistake has one message.
+	parentFirst := map[string]string{}
+	parentFirst["parent"] = "eth0"
+	parentFirst["bridge"] = "br-lan"
+	bridgeFirst := map[string]string{}
+	bridgeFirst["bridge"] = "br-lan"
+	bridgeFirst["parent"] = "eth0"
+
+	var seen string
+	for i, opts := range []map[string]string{parentFirst, bridgeFirst} {
+		_, err := ipamPoolID(ipamLocalAddressSpace, "192.168.100.0/24", opts)
+		if !errors.Is(err, util.ErrIPAM) {
+			t.Fatalf("both keys (map %d): got %v, want a %v refusal", i, err, util.ErrIPAM)
+		}
+		for _, o := range owns {
+			if !strings.Contains(err.Error(), o.option) {
+				t.Errorf("mode %q owns %s and the refusal does not name it, so an operator on such a "+
+					"network is pointed at an option it does not have. Message: %q", o.mode, o.option, err)
+				continue
+			}
+			if !strings.Contains(err.Error(), o.phrase) {
+				t.Errorf("mode %q owns %s, and the refusal names that option without attaching it to "+
+					"this mode (%q). An operator cannot tell from it which half is theirs. Message: %q",
+					o.mode, o.option, o.phrase, err)
+			}
+		}
+		if i == 0 {
+			seen = err.Error()
+			continue
+		}
+		if err.Error() != seen {
+			t.Errorf("the same mistake produced two messages:\n  %q\n  %q", seen, err.Error())
+		}
+	}
+}
+
 // TestIpamPoolID_TheTwoKeyRefusalDoesNotShadowThePrefixRefusal drives
 // the two refusals that arrived on this file from different branches
 // against each other.

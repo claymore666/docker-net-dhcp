@@ -131,9 +131,18 @@ func ipamPoolIDSuffix(opts map[string]string) (string, error) {
 			given = append(given, k)
 		}
 	}
+	// BOTH SPELLINGS ARE NAMED, because this driver cannot see which one
+	// the network owns. libnetwork allocates the pool while the create
+	// is still running and hands the network's own `-o` options to
+	// CreateNetwork afterwards, so at this point there is no mode to
+	// read: the only thing here is the --ipam-opt map the operator
+	// typed. Naming one key is then a guess, and the first version of
+	// this message guessed by position -- it printed the first of
+	// ipamPoolOptKeys that was present, which is always `parent`, so a
+	// bridge network was told to keep an option it does not have.
 	if len(given) > 1 {
-		return "", fmt.Errorf("--ipam-opt %s were given together and a pool names one interface. Keep the one that matches this network's `-o %s=`: %w",
-			strings.Join(given, " and "), given[0], util.ErrIPAM)
+		return "", fmt.Errorf("--ipam-opt %s were given together and a pool names one interface. Keep the one this network's mode owns: `-o bridge=` on a bridge network, `-o parent=` on a macvlan or ipvlan one. Both are named because the pool is requested before this network's own `-o` options reach this driver, which cannot tell from here which of the two your network is: %w",
+			strings.Join(given, " and "), util.ErrIPAM)
 	}
 
 	var parts []string
