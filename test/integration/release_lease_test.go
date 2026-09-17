@@ -75,21 +75,20 @@ func waitLeaseFile(t *testing.T, leaseFile, addr string, want bool) bool {
 // TestReleaseLease_TheOptionIsRefusedAtCreateOrItIsNot pins the
 // option's domain at the only place an operator meets it.
 //
-// `on_remove` is refused BY NAME, and the refusal says it is not
-// available yet: libnetwork deletes an endpoint when its container
-// STOPS, not when it is removed -- the tombstone that keeps a MAC across
-// `docker restart` is written at `DeleteEndpoint` and consumed by the
-// next `CreateEndpoint` inside 60 seconds, which is only possible if
-// both run during the restart. A release hung off that handler would
-// fire on every `docker stop`, which is this option's `on_stop`, and
-// would never fire for `docker rm` of an already-stopped container.
-// `on_remove` therefore arrives as a TIMED release in the next change on
-// this milestone, so this test asserts today's refusal and says nothing
-// about whether the behaviour can exist.
+// `on_remove` is accepted since #984, and it is accepted as a TIMED
+// release and not as a handler on `docker rm`: libnetwork deletes an
+// endpoint when its container STOPS, not when it is removed, so there
+// is no remove-time call to hang a release on. The value holds the
+// address for the restart window and hands it back at the deadline if
+// nothing claimed it, which is what
+// TestReleaseLease_OnRemoveHoldsTheAddressThenHandsItBack reads off the
+// server. Here it is only the domain: the value spells, and the network
+// exists afterwards.
 //
-// The accepted rows are the half that stops the refusal from being
-// "refuse everything": a create that fails for both values would pass a
-// test written only in the refusing direction.
+// The refusing rows are the half that stops the acceptance from being
+// "accept everything": a create that succeeds for every string would
+// pass a test written only in the accepting direction, and an operator
+// would get a network that looks configured and behaves as `never`.
 func TestReleaseLease_TheOptionIsRefusedAtCreateOrItIsNot(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
@@ -108,8 +107,12 @@ func TestReleaseLease_TheOptionIsRefusedAtCreateOrItIsNot(t *testing.T) {
 	}{
 		{name: "on_stop is implemented", value: "on_stop"},
 		{name: "never is the default and is spellable", value: "never"},
-		{name: "on_remove is refused by name", value: "on_remove", wantErr: true, mentions: "on_remove"},
+		{name: "on_remove is implemented", value: "on_remove"},
 		{name: "a typo is refused", value: "on_stpo", wantErr: true, mentions: "release_lease"},
+		// The near-miss #984 invites, and the one an operator reaches
+		// for after reading the option's name: the refusal has to name
+		// the value it did not take, not just the option.
+		{name: "a near miss of the new value is refused", value: "on_delete", wantErr: true, mentions: "on_remove"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			netName := "dhcptest-rl-" + strings.ReplaceAll(tc.value, "_", "-")
@@ -300,9 +303,9 @@ func TestReleaseLease_OnStopHandsTheAddressBack(t *testing.T) {
 //     is DELETE-ENDPOINT-RUNS-ON-STOP stated as a check: Docker tears
 //     the endpoint down when the container stops, and the tombstone
 //     written there is what the next start consumes. `docker rm` is
-//     never called in this test. It is why `on_remove` cannot be built
-//     on `DeleteEndpoint`, and it is measured here rather than asserted
-//     in a comment.
+//     never called in this test. It is why `on_remove` is a TIMED
+//     release (#984) and not a handler on `DeleteEndpoint`, and it is
+//     measured here rather than asserted in a comment.
 func TestReleaseLease_DefaultNetworksStillKeepTheirAddresses(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
@@ -378,7 +381,8 @@ func TestReleaseLease_DefaultNetworksStillKeepTheirAddresses(t *testing.T) {
 	if got := after.TombstonesConsumed - before.TombstonesConsumed; got < 1 {
 		t.Errorf("tombstones_consumed moved by %d across a stop/start with no `docker rm`, "+
 			"want at least 1. Docker deletes an endpoint when its container STOPS, which "+
-			"is why release_lease=on_remove cannot be built on DeleteEndpoint", got)
+			"is why release_lease=on_remove is a timed release and not a DeleteEndpoint "+
+			"handler", got)
 	}
 	for _, c := range []struct {
 		name        string

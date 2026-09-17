@@ -166,7 +166,7 @@ func (p *Plugin) apiRequestPool(w http.ResponseWriter, r *http.Request) {
 // that wrote state here, would unbind every network at every restart.
 func (p *Plugin) RequestPool(req RequestPoolRequest) (RequestPoolResponse, error) {
 	if req.V6 {
-		return RequestPoolResponse{}, fmt.Errorf("%w: this plugin does not allocate IPv6 pools. In this shape it serves IPv4 only: `-o ipv6=true` is refused on such a network too, because no DHCPv6 exchange runs on the IPAM endpoint path. For IPv6 today, create the network with --ipam-driver null and `-o ipv6=true`, which is unchanged and supported. Progress on IPv6 in IPAM mode is tracked in issue #960", util.ErrIPAM)
+		return RequestPoolResponse{}, fmt.Errorf("%w: this plugin does not allocate IPv6 pools. In this shape it serves IPv4 only: `-o ipv6=true`, and `-o ipv6_mode=` with any mode but off, are refused on such a network too, because no DHCPv6 exchange runs on the IPAM endpoint path. For IPv6 today, create the network with --ipam-driver null, where every ipv6_mode is unchanged and supported. Progress on IPv6 in IPAM mode is tracked in issue #960", util.ErrIPAM)
 	}
 	if req.SubPool != "" {
 		return RequestPoolResponse{}, fmt.Errorf("%w: --ip-range is not supported: addresses come from the LAN's DHCP server, which this plugin does not narrow", util.ErrIPAM)
@@ -504,15 +504,22 @@ func (p *Plugin) apiReleaseAddress(w http.ResponseWriter, r *http.Request) {
 // (D-7): the address is left to expire exactly as any other host on the
 // segment leaves one.
 //
-// THAT HOLDS ON EVERY VALUE OF `release_lease`, INCLUDING `on_stop`, and
-// it is the one place the option does not reach (#962). A release happens
-// at Leave, built from the endpoint's lease record; a reservation whose
-// CreateEndpoint failed has no endpoint and reaches no Leave, so nothing
-// on that path can see it. What it leaves behind on an `on_stop` network
-// is a real lease the server granted that nothing will ever hand back,
-// held only by the retention above until it expires. Giving it back here
-// instead is a decision about which of the two wins, retention or
-// release, and it is the follow-on this issue names and not a fold.
+// THAT STILL HOLDS ON `never` AND ON `on_stop` (#962). A release on
+// those two values happens at Leave, built from the endpoint's lease
+// record; a reservation whose CreateEndpoint failed has no endpoint and
+// reaches no Leave, so nothing on that path can see it. What it leaves
+// behind is a real lease the server granted that nothing will ever hand
+// back, held only by the retention above until it expires.
+//
+// `on_remove` is the value that reaches it (#984), and it reaches it
+// from somewhere else: the retention this handler writes carries a
+// deadline, and the record sweeper hands every retained record on an
+// `on_remove` network back when its deadline passes. So this handler
+// keeps doing exactly what it does here on all three values, and the
+// difference is what happens at the end of the window rather than what
+// happens now. Nothing releases from inside this function: a release
+// here would race the retry the retention exists for, which is the
+// whole reason retention wins at this point in the life of the address.
 func (p *Plugin) ReleaseAddress(req ReleaseAddressRequest) error {
 	networkID, bound := p.ipamIndex.network(req.PoolID)
 	if !bound {

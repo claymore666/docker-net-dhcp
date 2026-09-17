@@ -18,7 +18,11 @@ namespace to it. Two things differ:
 
 1. A container-creation request is made.
 2. A `veth` pair is created and the host end is connected to the bridge
-   (both interfaces are still in the host namespace at this point).
+   (both interfaces are still in the host namespace at this point). The
+   host end is named `dh-` plus twelve hex digits here, whatever the
+   network asked for: the container's name is not known at this point,
+   so a network that set `host_ifname` gets its rename at step 7, where
+   the daemon's answer already is.
 3. A one-shot DHCP acquisition runs on the container end (still in the
    host namespace). The plugin provides the initial IP address to Docker.
 4. Docker moves the container end of the `veth` pair into the
@@ -30,7 +34,33 @@ namespace to it. Two things differ:
    library running inside the plugin, so there is nothing for the
    container to see and nothing to exec. It never configures the link
    either. The plugin applies the lease via netlink.
-6. The client keeps running, renewing the lease when required, until the
+6. The container's name is asked of the daemon once that client is
+   already leasing, and handed to it when the answer comes; the client
+   then renews once immediately so the server's table carries the name
+   within one exchange. The order is this way round because a daemon
+   that is still starting a container does not answer questions about
+   it, and the lease does not have to wait for that answer. Two routes
+   have the name before the client starts and do not take this one: a
+   `register_dns` network, whose option 81 is built when the client is
+   constructed and has no setter for it; and any attach that had to ask
+   the daemon anyway to find the container's namespace, which is the
+   fallback to the container's process where the sandbox key is refused,
+   and the path that re-adopts a running container after a plugin
+   restart. A container **restart** is a different
+   thing and is not one of these: Docker drives it as a detach and a
+   re-attach, and the endpoint is rebuilt before the attach begins.
+7. On a network that set `host_ifname` the host-side link is renamed
+   now, after the container or after its hostname, at the point the
+   daemon's answer is already in hand and the attach can no longer
+   fail. The generated `dh-` name stays on the link as an altname,
+   because the plugin re-derives that name and looks the link up by it
+   in several places without ever reading a name back from the kernel,
+   and `DeleteEndpoint` is one of them: a miss there is the normal end
+   of a forced teardown, so a rename with no altname would leave the
+   veth on the bridge for the life of the host, silently. A rename the
+   kernel takes but will not keep the altname on is undone for the same
+   reason.
+8. The client keeps running, renewing the lease when required, until the
    container shuts down.
 
 In macvlan and ipvlan mode the shape is the same, with a child interface
@@ -156,11 +186,25 @@ knows which client is underneath.
   retired and never reused, since a thread left in a container's
   namespace would silently give the next caller the wrong one.
 
-## How IPv6 is handled in 2.0
+## How IPv6 is handled
 
-`ipv6=true` gives an endpoint a **second DHCP client**, in the same
-shape as its first: one `dhcpManager`, one library client, one record.
-Nothing about the v4 path changes, which is the whole design. The
+Any `ipv6_mode` but `off` gives an endpoint a **second DHCP client**,
+in the same shape as its first: one `dhcpManager`, one library client,
+one record. What differs between the modes is what that client does on
+the wire. In `dhcp` it leases the address over DHCPv6, which is what
+`-o ipv6=true` has always meant. In `slaac` it sends no Solicit and
+forms the address from an advertised prefix. In `auto` it reads the
+advertisement and does what it says: the managed-address flag means
+DHCPv6, a clear flag means the prefix. It solicits routers and reads
+advertisements in all three, which is where the container's IPv6
+default route and its link MTU come from. The routes the advertisement
+asks for arrive the same way and `skip_routes` opts out of those; the
+default route is not governed by it. Resolvers are a union and not a
+choice: the library merges the advertisement's RDNSS and DNSSL into the
+same lists a DHCPv6 server's options 23 and 24 fill, with the server's
+taking precedence (RFC 8106 section 5.3.1), and `propagate_dns` decides
+whether the result is written into the container at all. Nothing about
+the v4 path changes in any of them, which is the whole design. The
 maintainer's rule for this milestone was that IPv6 takes the same shape
 as IPv4 unless the v4 shape was itself a hack.
 
@@ -196,32 +240,63 @@ RFC 9915 §7.1's two lifetimes, so the kernel can deprecate instead of
 deleting (RFC 4862 §5.5.4); expiry itself is still the library's job and
 the lifetimes are a belt for a plugin that dies inside the window.
 
-**The Router-Advertisement guard is back, and it is a precondition.**
-DHCPv6 carries no next hop, because RFC 9915 §21 defines no router
-option, and RFC 5942 §4 rule 1 forbids treating the assigned address's
-prefix as on-link, so an endpoint whose kernel is not processing Router
-Advertisements ends up with an address and no route.
-`ApplyRouterAdvertGuard` writes `accept_ra=2`, `autoconf=1` and
-`keep_addr_on_down=1` and reads each back; `DHCPClientOptions` refuses a
-persistent v6 client that does not claim it, and refuses every other
-shape that does. What changed from 1.9.0 is the *mechanism* and never
-the obligation: on 1.9.0 the external client cleared `accept_ra` and
-`autoconf` on every carrier acquisition, so the guard wrote the knobs
-and then remounted `/proc/sys` read-only to keep them from being
-overwritten. Nothing in 2.0 rewrites them, so there is no shield to
-maintain. `accept_ra=2` and not `1` because the engine turns on
-forwarding on the container's link in bridge mode and `1` means "accept
-only while forwarding is off".
+**The Router-Advertisement guard is a precondition, and since v2.2.0 it
+turns the kernel's own processing OFF.** DHCPv6 carries no next hop,
+because RFC 9915 §21 defines no router option, and RFC 5942 §4 rule 1
+forbids treating the assigned address's prefix as on-link, so somebody
+has to process Router Advertisements or the endpoint has an address and
+no route. Until v2.2.0 that somebody was the container's kernel. It is
+now the plugin's own DHCPv6 client, which reads advertisements off its
+socket and reports the gateway, MTU, routes and DNS through
+`dhcp.Info`; the Join answer carries the gateway and the routes, and the
+manager rewrites them when a later advertisement changes them (#821).
 
-It runs in `prepareIPv6Link`, in the same namespace entry as the
-`disable_ipv6` clear that precedes it. That placement is a deviation
-from where the design put it, inside the client's own setup, and the
-reason is mechanical: `/proc/sys` is read-only in the managed plugin's
-rootfs, `v6_link.go` already owns the mount-namespace unshare that makes
-it writable, and doing it in the client would mean a second one. The
-ORDER the design fixed is preserved exactly: `disable_ipv6` cleared
-first, then the guard, then the client, which waits for a non-tentative
-link-local of its own before it sends anything.
+That answer only reaches an endpoint that HAS a global IPv6 address.
+The daemon disables IPv6 on a container link carrying no global IPv6
+address, and the kernel refuses every IPv6 route on such a link, so an
+answer with an IPv6 half fails the sandbox outright rather than
+degrading -- and the plugin cannot clear `disable_ipv6` first, because
+that runs in the manager goroutine `Join` spawns, after the daemon has
+moved the link and applied the answer. A segment that hands out no
+DHCPv6 address therefore gets its MTU, its resolvers on a
+`propagate_dns` network, and no route. On `ipv6_mode=slaac` and
+`ipv6_mode=auto` the plugin forms the address from the advertisement
+and installs it (#818), so where a prefix forms one the link carries a
+global address and the route installs beside it. One ending starts an
+endpoint without a global address in every mode, those two included:
+`dhcpv6_not_offered`, the verdict for an acquisition that produced no
+DHCPv6 address on a segment that never said one was to be had. The
+*Networks where DHCPv6 offers no address* section of
+`docs/reference.md` carries its rows.
+
+`ApplyRouterAdvertGuard` therefore writes `accept_ra=0`, `autoconf=0`
+and `keep_addr_on_down=1` and reads each back; `DHCPClientOptions`
+refuses a persistent v6 client that does not claim it, and refuses every
+other shape that does. `accept_ra=0` because a kernel acting on the same
+frames would install a second default route beside the plugin's, and
+which of the two wins is a metric comparison nobody chose. `autoconf=0`
+because the plugin holds the lease for the address the container uses.
+
+**Writing `accept_ra=0` purges nothing**, which is the part that is easy
+to miss. It stops the kernel processing the NEXT advertisement; a route
+an earlier one installed stays until its own lifetime runs out, and RFC
+4861 §4.2 allows that to be 65535 seconds. The engine brings the link up
+in the sandbox at the kernel default before the guard runs, so the
+window is real. `purgeRouterAdvertRoutes` closes it: after the knobs
+take, every `RTPROT_RA` route on the link is deleted. Failures there
+fold into `router_advert_guard_failures` beside the sysctl ones, because
+they are one obligation seen twice. The address the kernel may have
+formed in the same window is NOT touched; that is #818's.
+
+It all runs in `prepareIPv6Link`, in one namespace entry. That placement
+is a deviation from where the design put it, inside the client's own
+setup, and the reason is mechanical: `/proc/sys` is read-only in the
+managed plugin's rootfs, `v6_link.go` already owns the mount-namespace
+unshare that makes it writable, and doing it in the client would mean a
+second one. The ORDER the design fixed is preserved exactly:
+`disable_ipv6` cleared first, then the guard, then the purge, then the
+client, which waits for a non-tentative link-local of its own before it
+sends anything.
 
 **An absent v6 lease is classified.** On a stateless or SLAAC segment
 there is no DHCPv6 address by definition, and refusing the endpoint
@@ -368,9 +443,10 @@ this is the mechanism.
 
 ## How a lease gets handed back
 
-By default it does not, and that is deliberate as of v1.9.0 (#800). A
-network that says `release_lease=on_stop` is the exception, and the
-whole of it (#962).
+By default it does not, and that is deliberate as of v1.9.0 (#800). Two
+values are the exceptions: `release_lease=on_stop`, which releases at
+the stop (#962), and `release_lease=on_remove`, which holds the address
+for the restart window first and releases at the end of it (#984).
 
 A lease is a lease. When a container stops, its address stays leased
 until the lease expires, and if the container comes back before then it
@@ -424,24 +500,80 @@ split per family and both moved by the plugin from the outcome of its
 own attempt, which is the only place that knows a release was asked for
 and did not happen.
 
-`Leave` is the only path that releases. `Plugin.Close`, a manager
-displaced by a newer one for the same endpoint, and the cleanup after
-`docker network rm` all stop clients whose containers are still
+`Leave` is the only path `on_stop` releases from. `Plugin.Close`, a
+manager displaced by a newer one for the same endpoint, and the cleanup
+after `docker network rm` all stop clients whose containers are still
 running, and a release there would tell the server an address is free
 while a live container holds it.
 
+**What `release_lease=on_remove` changes.** Nothing at `Leave`: the
+endpoint is torn down exactly as under `never`, tombstone and all, and
+one line goes in the log saying the addresses are being kept for the
+window. What releases is the **record**, later, and from a different
+place.
+
+Every `DeleteEndpoint` already retains the endpoint's record with a
+deadline one tombstone TTL away, because that is how long a restarting
+container may inherit the MAC and address. On an `on_remove` network
+that deadline is also when the address stops being the container's. A
+sweeper ticks every 15 seconds, and a retained record whose deadline has
+passed by 5 seconds is handed back with the same sender `on_stop` uses,
+built from the same record, and then closed. So the wall clock from
+`docker stop` to the datagram is 65 to 80 seconds, and the window an
+operator reasons about is the one they already know from `docker
+restart`. There is no second option, and there is nothing to keep in
+step.
+
+Three consequences follow from the deadline living in the record rather
+than in a timer:
+
+- A plugin that restarts inside the window still releases at the right
+  moment. The deadline was written to the file; the new process rebuilds
+  it and the first sweep after it passes hands the address back. A timer
+  would have died with the process.
+- `docker network rm` hands back every address the network still holds,
+  at once, without waiting for deadlines on a network that will not
+  exist. That release runs **before** the network's stored options are
+  deleted, because it reads `release_lease` and the parent interface out
+  of them.
+- The address reserved for an endpoint Docker never created is reached
+  too, which is the paragraph below.
+
+**What decides that an address was claimed back** is the address, not
+the MAC. The sweep looks for another record on the same scope holding
+the same address: one in a live phase, or simply a newer one that is not
+closed. A container pinned with `--mac-address` that comes back on a
+*different* address does not hold the old one, and the old one goes
+back; a MAC-keyed check would have closed it unsent and leaked it. The
+one deliberate exception is an acquisition still in flight under the
+same MAC with no address yet: that is treated as a claim, because the
+address it is about to be given may be this one. The cost of the
+exception is one-sided by design. An in-flight acquisition that lands
+somewhere else leaves one address to expire on the server's clock, which
+is what `never` does with every address; the opposite mistake would hand
+an address away from under a container that is starting, which is the
+duplicate assignment of #524.
+
 **And one address never reaches `Leave` at all.** In IPAM mode an
 address reserved for an endpoint whose `CreateEndpoint` then failed is
-retained by `ReleaseAddress` and never released, on every value of
-`release_lease` including `on_stop`. Retaining it is what lets a restart
-policy's next attempt claim the same address back instead of burning a
-second lease on the server, and a reservation with no endpoint reaches
-no `Leave`, so nothing on the release path can see it. No DHCPRELEASE
-goes on the wire for it and the address is left to expire, exactly as
-any other host on the segment leaves one. On an `on_stop` network that
-is a real lease the server granted that nothing hands back, held by the
-retention deadline until it expires, and which of the two wins is a
-decision and not a fold.
+retained by `ReleaseAddress` rather than released. Retaining it is what
+lets a restart policy's next attempt claim the same address back instead
+of burning a second lease on the server, and a reservation with no
+endpoint reaches no `Leave`, so nothing on the `on_stop` path can see
+it. On `never` and on `on_stop` no DHCPRELEASE goes on the wire for it
+and the address is left to expire, exactly as any other host on the
+segment leaves one: on an `on_stop` network that is a real lease the
+server granted that nothing hands back, held by the retention deadline
+until it expires.
+
+**`on_remove` is what closes that** (#984), and it closes it without
+touching `ReleaseAddress` at all. The retention that handler writes
+already carries a deadline, and the sweep hands back every retained
+record whose deadline has passed. So the retry still gets its window and
+its address, and the address is given up afterwards instead of waiting
+for the server's clock. Which of the two wins is still a decision: the
+retention wins while the window is open, the release wins when it
+closes.
 
 **Why this changed.** Up to v1.8.x the plugin released aggressively. The
 external client emitted a `RELEASE` on a graceful stop, and a background
@@ -472,6 +604,21 @@ sandbox, before anything is torn down, and the tombstone it would have
 raced is not written at all for an endpoint that released. The
 background reclaim and its synthesised link stay gone.
 
+**`release_lease=on_remove` does send from a background sweep, and it is
+the one value that has to answer this paragraph.** What the reclaim got
+wrong was not that it ran in the background; it was that it could not
+tell "this endpoint is gone" from "this endpoint is coming straight
+back", because it ran at the moment those two look identical. The
+deadline is what tells them apart. Nothing is sent until the window the
+tombstone itself promises has run out, so by the time the sweep looks,
+a container that was coming back has come back. And the sweep does look:
+before sending it re-reads the records and skips any address another
+record now holds, which is the restart it would otherwise have raced.
+An acquisition in flight under the same MAC with no address yet counts
+as a claim for the same reason. What was removed was a release with no
+way to see the restart; what is here is a release that waits for it and
+then checks.
+
 The surviving teardown counter was renamed to match: what was
 `lease_release_failures` is now `client_stop_failures`, because a client
 that exits badly is all it can still mean.
@@ -481,7 +628,12 @@ short-lived container's address is unavailable for one lease time. Size
 the server's pool and lease time for the churn, the same way you would
 for any other population of hosts. `release_lease=on_stop` is the
 setting that buys the address back sooner, at the price of the stop-time
-cost above and of the cases where the release cannot be sent.
+cost above and of the cases where the release cannot be sent, and of
+restart stability: an endpoint that released lays no tombstone.
+`release_lease=on_remove` is the setting that buys it back a minute
+later and keeps restart stability, at the price of a pool that has to
+carry one window's worth of stopped containers, and of a release that is
+attempted once and not retried.
 
 ## How operations on one parent NIC are serialised
 
@@ -637,7 +789,7 @@ nothing else.
   therefore loaded exactly once into a local, and the aggregate is the
   sum of those two locals, and never a second `.Load()` of a half that
   was already read.
-- **Both family series are stored; neither is derived.** Ten counters
+- **Both family series are stored; neither is derived.** Eleven counters
   carry a `family` label. `bumpFamily` increments **exactly one** of a
   pair, the v4 half or the v6 half, never both and never a third
   aggregate, so `_v4` and `_v6` are peers, and the unsuffixed counter an
@@ -831,6 +983,53 @@ run's `Fixture engine drift` step, so the probe now succeeds there and
 the dependent tests run. They still skip on any box whose engine is
 older, and a skip there is expected and is not a signal that the run
 diverged.
+
+### The attach budget under load
+
+`AWAIT_TIMEOUT` caps the attach that follows a Join. When it runs out
+with the container still running, the plugin counts
+`join_start_failures` and the container keeps an address nothing
+renews. Whether a small, loaded host reaches that state is a
+measurement, not a reading of the code, and
+[`scripts/vm-load-test.sh`](https://github.com/claymore666/docker-net-dhcp/blob/main/scripts/vm-load-test.sh)
+takes it
+([#969](https://github.com/claymore666/docker-net-dhcp/issues/969),
+under
+[#403](https://github.com/claymore666/docker-net-dhcp/issues/403)).
+
+It builds a throwaway VM on the developer's own machine: 2 vCPU, 2 GB,
+plain qemu with KVM as an ordinary user, user-mode networking with ssh
+forwarded to loopback, nothing on the LAN and no root on the host. Inside
+it, the engine, this tree's plugin, and the bridge fixture shape the
+integration suite uses: a Linux bridge with dnsmasq bound to it. It then
+starts bursts of 10, 20 and 50 containers at once, three times each,
+at idle and under three levels of stress-ng pressure, and prints per
+burst the deltas
+of the attach buckets from `/Plugin.Health` beside what the DHCP server's
+lease file says, with the VM's steal and iowait over the burst so a row
+taken while the host had other tenants is marked as such. When an
+endpoint is not bound after the burst settled, the address on the
+container's link is read from inside the container and checked against
+the lease file, and the entry counts as the container's lease only
+under its own id: that is the difference between a stale address, an
+address leased to somebody else, and no address. A burst that attached nothing and a counter that went
+backwards are refused, not printed as a row; a loaded level whose load
+average never left the floor is printed marked refused, the table says
+which bursts those were, and the run exits non-zero. The lease column
+counts leases whose hostname is the container id the persistent client
+sends at Join, beside the size of the lease file, and it is evidence
+only once one burst has proven that key.
+
+| what | command | needs |
+| --- | --- | --- |
+| its own logic | `scripts/vm-load-test.sh --self-test` | nothing; seconds |
+| the matrix | `scripts/vm-load-test.sh` | `/dev/kvm` readable and writable, qemu, mtools, Docker for the rootfs build; about three hours of bursts at three repeats, before provisioning and the holds between bursts; `VMLT_LEVELS`, `VMLT_BURSTS` and `VMLT_REPEATS` shrink it |
+
+The matrix is not part of CI and not a gate, while its self-test and
+the gate test run in CI like every gate self-test: a load measurement
+varies from run
+to run and would cry wolf as a red check. It is run by hand when the
+Join path changes, and the measured table lives on the issue.
 
 ## Request fixtures
 

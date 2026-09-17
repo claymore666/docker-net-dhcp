@@ -491,7 +491,7 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, callStart tim
 		// resolveIdentity6 matters: an ipvlan slave inherits the
 		// parent's MAC, so the MAC-derived DUID would be identical for
 		// every container on the network (#895).
-		if opts.IPv6 {
+		if opts.ipv6Enabled() {
 			id6, err := resolveIdentity6(opts, r.EndpointID, mac)
 			if err != nil {
 				return err
@@ -534,8 +534,15 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, callStart tim
 				RecordID: recordID,
 			}
 			if v6 {
-				base.Identity6 = identity6
-				base.RecordID = recordID6
+				// The v6 record, the v6 identity and the network's
+				// ipv6_mode, set together. This is the second copy of
+				// the attach path and the reason v6Wiring exists: the
+				// mode's zero value is a working client, so a copy
+				// that set two of the three would be silently `dhcp`
+				// on every macvlan network.
+				if err := p.v6Wiring(&base, opts, identity6, recordID6, requestedV6, r.EndpointID); err != nil {
+					return err
+				}
 			}
 			// Conflict detection, from the network's stored
 			// conflict_check (D23). Set on the BASE, so every attempt
@@ -543,9 +550,7 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, callStart tim
 			if err := p.conflictWiring(&base, opts, roleAcquire, r.NetworkID, r.EndpointID, v6); err != nil {
 				return err
 			}
-			if v6 {
-				base.PreferredV6 = requestedV6
-			} else {
+			if !v6 {
 				base.RequestedIP = requestedIP
 			}
 
@@ -569,7 +574,7 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, callStart tim
 				// segment ADVERTISED decides, not how long we waited --
 				// a segment offering managed DHCPv6 that then goes
 				// quiet is still fatal, here as before.
-				if v6 && p.noteV6Absence(ra, la.Name, r.EndpointID, err) {
+				if v6 && p.noteV6Absence(ra, la.Name, r.EndpointID, err, base.Mode6) {
 					return nil
 				}
 				return fmt.Errorf("failed to get initial IP%v address via DHCP%v: %w", v6str, v6str, err)
@@ -584,6 +589,12 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, callStart tim
 				if v6 {
 					res.Interface.AddressIPv6 = info.IP
 					hint.IPv6 = addr
+					// Same as the bridge copy in network.go, and for
+					// the same reason: DHCPv6 has no gateway option,
+					// so the IPv6 gateway is the advertisement's
+					// link-local source address the library saw during
+					// this acquisition (#821).
+					fillV6Hint(hint, info)
 				} else {
 					res.Interface.Address = info.IP
 					hint.IPv4 = addr
@@ -603,7 +614,7 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, callStart tim
 		if err := runDHCP(false); err != nil {
 			return err
 		}
-		if opts.IPv6 {
+		if opts.ipv6Enabled() {
 			if err := runDHCP(true); err != nil {
 				return err
 			}

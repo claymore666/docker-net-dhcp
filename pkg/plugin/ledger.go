@@ -49,7 +49,13 @@ type ledgerEntry struct {
 	Container string `json:"container,omitempty"`
 	Hostname  string `json:"hostname,omitempty"`
 	IP        string `json:"ip,omitempty"`
-	MAC       string `json:"mac,omitempty"`
+	// Source says where the address came from when it was not a DHCP
+	// server: `slaac` for an address formed from a router's advertised
+	// prefix (RFC 4862 section 5.5.3). Absent on every row this ledger
+	// carried before, which is what keeps a reader written against the
+	// old shape working: a DHCPv4 or DHCPv6 lease writes no Source.
+	Source string `json:"source,omitempty"`
+	MAC    string `json:"mac,omitempty"`
 }
 
 // leaseLedger appends lease events to a JSONL file with size- and

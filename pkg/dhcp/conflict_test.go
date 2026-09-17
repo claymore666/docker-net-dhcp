@@ -432,7 +432,7 @@ func TestTranslateOne_AConflictIsNotALeaseFailure(t *testing.T) {
 		{Kind: lease.Failed, Reason: proto.ReasonConflict},
 		{Kind: lease.Lost, Reason: proto.ReasonConflict},
 	} {
-		out, emit, _ := translateOne(ev, now, time.Time{})
+		out, emit, _ := translateOne(ev, now, time.Time{}, netip.Prefix{})
 		if emit {
 			t.Errorf("%v was emitted as %q; it must not reach the outage counter", ev.Kind, out.Type)
 		}
@@ -449,7 +449,7 @@ func TestTranslateOne_AConflictIsNotALeaseFailure(t *testing.T) {
 		{lease.Event{Kind: lease.Failed, Reason: proto.ReasonNak}, "nak"},
 		{lease.Event{Kind: lease.Lost, Reason: proto.ReasonNak}, "nak"},
 	} {
-		out, emit, _ := translateOne(c.ev, now, time.Time{})
+		out, emit, _ := translateOne(c.ev, now, time.Time{}, netip.Prefix{})
 		if !emit || out.Type != c.want {
 			t.Errorf("%v/%v translated to %q (emit=%v), want %q", c.ev.Kind, c.ev.Reason, out.Type, emit, c.want)
 		}

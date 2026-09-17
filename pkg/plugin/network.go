@@ -247,10 +247,28 @@ func validateModeOptions(opts DHCPNetworkOptions) error {
 		return err
 	}
 
+	// What the host-side link is called (#978). The VALUE is
+	// mode-independent and the OPTION is not: an unknown value is a
+	// typo in any mode, and the mode refusal is below, beside the
+	// other things a mode does not have.
+	if _, err := parseHostIfname(opts.HostIfname); err != nil {
+		return err
+	}
+
 	switch opts.effectiveMode() {
 	case ModeMacvlan, ModeIPvlan:
 		if opts.Parent == "" {
 			return util.ErrParentRequired
+		}
+		// Nothing of this endpoint stays on the host to name: the child
+		// link is created here and moved into the container's
+		// namespace, which is also why teardown in these modes is
+		// best-effort. Refuse loudly so an operator who set the option
+		// learns it does not apply, instead of reading `ip link` and
+		// finding the generated names still there (#978).
+		if opts.HostIfname != HostIfnameOff {
+			return fmt.Errorf("%w: host_ifname cannot be set in mode=%v: the host-side link is moved into the container and leaves nothing on the host to name",
+				util.ErrModeMismatch, opts.effectiveMode())
 		}
 		if opts.Bridge != "" {
 			return fmt.Errorf("%w: bridge cannot be set in mode=%v", util.ErrModeMismatch, opts.effectiveMode())
@@ -485,7 +503,10 @@ func splitSandboxKeyIn(dirs []string, sandboxKey string) (dir, name string) {
 func (p *Plugin) CreateNetwork(r CreateNetworkRequest) error {
 	log.WithField("options", r.Options).Debug("CreateNetwork options")
 
-	opts, err := decodeOpts(r.Options[util.OptionsKeyGeneric])
+	// decodeOptsSet rather than decodeOpts: the IPv6 refusals need to
+	// know which fields the operator actually wrote, and this is the
+	// only handler where that is still knowable. See ipv6Mode.
+	opts, optsSet, err := decodeOptsSet(r.Options[util.OptionsKeyGeneric])
 	if err != nil {
 		return fmt.Errorf("failed to decode network options: %w", err)
 	}
@@ -498,6 +519,10 @@ func (p *Plugin) CreateNetwork(r CreateNetworkRequest) error {
 		return err
 	}
 
+	if err := validateIPv6Options(opts, optsSet); err != nil {
+		return err
+	}
+
 	// The pool binding, before anything is written or any link is
 	// touched. A network that fails here leaves no state behind and no
 	// issued pool consumed by mistake.
@@ -506,7 +531,19 @@ func (p *Plugin) CreateNetwork(r CreateNetworkRequest) error {
 		if err := ipamRefuseIPvlan(opts.effectiveMode()); err != nil {
 			return err
 		}
-		if err := ipamRefuseIPv6(opts.IPv6); err != nil {
+		// THE RESOLVE CANNOT FAIL HERE TODAY, and the branch stays
+		// anyway. validateIPv6Options two statements above already
+		// resolved this pair and returned its error, so nothing
+		// reaches this line with a pair ipv6Mode refuses. That is a
+		// fact about the ORDER of two calls and not about either of
+		// them, and folding the error into a bool to save the branch
+		// is what made the old refusal read a resolved-off mode as
+		// "this network has no IPv6".
+		mode6, err := opts.ipv6Mode()
+		if err != nil {
+			return err
+		}
+		if err := ipamRefuseIPv6(mode6); err != nil {
 			return err
 		}
 		iface := opts.Bridge
@@ -556,7 +593,8 @@ func (p *Plugin) CreateNetwork(r CreateNetworkRequest) error {
 			"network":       r.NetworkID,
 			"mode":          mode,
 			"parent":        opts.Parent,
-			"ipv6":          opts.IPv6,
+			"ipv6":          opts.ipv6Enabled(),
+			"ipv6_mode":     opts.IPv6Mode,
 			"validate_dhcp": opts.ValidateDHCP,
 			"ipam":          binding != nil,
 		}).Info("Network created")
@@ -642,10 +680,11 @@ func (p *Plugin) CreateNetwork(r CreateNetworkRequest) error {
 		return err
 	}
 	log.WithFields(log.Fields{
-		"network": r.NetworkID,
-		"bridge":  opts.Bridge,
-		"ipv6":    opts.IPv6,
-		"ipam":    binding != nil,
+		"network":   r.NetworkID,
+		"bridge":    opts.Bridge,
+		"ipv6":      opts.ipv6Enabled(),
+		"ipv6_mode": opts.IPv6Mode,
+		"ipam":      binding != nil,
 	}).Info("Network created")
 
 	return nil
@@ -686,6 +725,23 @@ func (p *Plugin) saveNetworkAndBind(networkID string, opts DHCPNetworkOptions, b
 // just unblocks the event loop and returns; the client itself may have
 // already stopped because its netns vanished.
 func (p *Plugin) DeleteNetwork(r DeleteNetworkRequest) error {
+	// FIRST, AND THE ORDER IS THE WHOLE OF IT (#984). On a
+	// `release_lease=on_remove` network every address this network is
+	// still holding goes back here, and both halves of that -- whether
+	// the network releases at all, and which interface the datagram
+	// leaves by -- are read from the stored options that deleteOptions
+	// below removes. A release placed after it would read no options,
+	// decide nothing and report nothing, and the addresses would leak
+	// in silence. The tombstones that could otherwise hand one to a
+	// restarting container are keyed by this network id and die with
+	// it, so this is the last moment anything can be done with them.
+	if released := p.releaseNetworkRecords(r.NetworkID); released > 0 {
+		log.WithFields(log.Fields{
+			"network":  r.NetworkID,
+			"released": released,
+		}).Info("release_lease=on_remove: handed this network's still-held addresses back before removing it")
+	}
+
 	// The binding goes with the network, and it goes HERE rather than in
 	// ReleasePool: libnetwork calls ReleasePool for a create that failed
 	// on a PoolID another network may hold, and again at every delete
@@ -973,6 +1029,34 @@ func (p *Plugin) checkStoredOptions(id string, opts DHCPNetworkOptions) error {
 			"network": shortID(id),
 			"value":   fmt.Sprintf("%q", opts.ReleaseLease),
 		}).Error("Refusing stored network options: release_lease is not a value this plugin implements")
+		return err
+	}
+
+	// The stored IPv6 options, on the read path for the reason
+	// release_lease is on it, and with one more: a network served by
+	// the NetworkInspect fallback never went through CreateNetwork's
+	// validation at all, so an `ipv6_mode` value this build does not
+	// implement, a pair that contradicts itself, or slaac on an ipvlan
+	// network reaches the endpoint handlers unexamined. Resolving any
+	// of them to "no IPv6" by accident is the silent answer, and on a
+	// network whose whole configuration is ipv6_mode it is the wrong
+	// one.
+	//
+	// IT IS THE SAME FUNCTION CreateNetwork CALLS, with no set of
+	// written keys, because a stored record cannot carry which keys the
+	// operator typed. Everything it refuses without that set is refused
+	// on both paths, which is the property
+	// TestIPv6Mode_TheCreateAndStoredPathsRefuseTheSameSet drives: a
+	// pair refused at create and accepted here is a validation an
+	// operator gets past by restarting the plugin.
+	if err := validateIPv6Options(opts, nil); err != nil {
+		p.networkOptionsRejected.Add(1)
+		log.WithFields(log.Fields{
+			"network":   shortID(id),
+			"mode":      opts.effectiveMode(),
+			"ipv6":      opts.IPv6,
+			"ipv6_mode": fmt.Sprintf("%q", opts.IPv6Mode),
+		}).Error("Refusing stored network options: this plugin cannot act on the IPv6 options as stored")
 		return err
 	}
 
@@ -1341,7 +1425,7 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 		// every start from the plumbing in hand is one that changes
 		// whenever the plumbing does, and the server then files a
 		// second binding and hands out a second address.
-		if opts.IPv6 {
+		if opts.ipv6Enabled() {
 			id6, err := resolveIdentity6(opts, r.EndpointID, ctrLink.Attrs().HardwareAddr)
 			if err != nil {
 				return err
@@ -1381,11 +1465,14 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 				RecordID: recordID,
 			}
 			if v6 {
-				// The v6 one-shot writes to the v6 record and speaks
-				// as the v6 identity. Both are per-family and neither
-				// has a v4 analogue that could stand in.
-				base.Identity6 = identity6
-				base.RecordID = recordID6
+				// The v6 one-shot writes to the v6 record, speaks as
+				// the v6 identity, and runs in the network's
+				// ipv6_mode. All three are per-family and none has a
+				// v4 analogue that could stand in; v6Wiring says why
+				// they travel together.
+				if err := p.v6Wiring(&base, opts, identity6, recordID6, requestedV6, r.EndpointID); err != nil {
+					return err
+				}
 			}
 			// Conflict detection, from the network's stored
 			// conflict_check (D23). Set on the BASE, so every attempt
@@ -1396,9 +1483,9 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 			// Hint the preferred address per family: `request ADDR`
 			// for v4, `ia_na / ADDR` for v6 (#213). Empty values omit
 			// the directive, so an unhinted endpoint behaves as before.
-			if v6 {
-				base.PreferredV6 = requestedV6
-			} else {
+			// The v6 hint travelled with the rest of the v6 wiring
+			// above.
+			if !v6 {
 				base.RequestedIP = requestedIP
 			}
 
@@ -1422,7 +1509,7 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 				// segment ADVERTISED decides, not how long we waited --
 				// a segment offering managed DHCPv6 that then goes
 				// quiet is still fatal, here as before.
-				if v6 && p.noteV6Absence(ra, ctrName, r.EndpointID, err) {
+				if v6 && p.noteV6Absence(ra, ctrName, r.EndpointID, err, base.Mode6) {
 					return nil
 				}
 				return fmt.Errorf("failed to get initial IP%v address via DHCP%v: %w", v6str, v6str, err)
@@ -1436,7 +1523,22 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 				if v6 {
 					res.Interface.AddressIPv6 = info.IP
 					hint.IPv6 = ip
-					// No gateways in DHCPv6!
+					// DHCPv6 carries no gateway option. The IPv6
+					// gateway is the Router Advertisement's source
+					// address, which the library's own client read off
+					// the same link during this acquisition, and which
+					// reaches us here on info.Gateway (#821). It is a
+					// link-local address by definition: RFC 4861
+					// section 4.2 requires the Source Address of an
+					// advertisement to be the link-local address of
+					// the interface it went out of.
+					//
+					// The operator's `-o gateway=` override is NOT
+					// consulted. It is a single value and this is the
+					// other family; giving it two meanings would make
+					// one network's v4 override silently decide its v6
+					// route as well.
+					fillV6Hint(hint, info)
 				} else {
 					res.Interface.Address = info.IP
 					hint.IPv4 = ip
@@ -1462,7 +1564,7 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 		if err := initialIP(false); err != nil {
 			return err
 		}
-		if opts.IPv6 {
+		if opts.ipv6Enabled() {
 			if err := initialIP(true); err != nil {
 				return err
 			}
@@ -1535,14 +1637,22 @@ func (p *Plugin) EndpointOperInfo(ctx context.Context, r InfoRequest) (InfoRespo
 	}
 
 	hostName, _ := vethPairNames(r.EndpointID)
-	hostLink, err := netlink.LinkByName(hostName)
+	// Through the seam so the name this publishes can be driven: the
+	// link it reads is renamed by CAP_NET_ADMIN work no unit lane has.
+	hostLink, err := nlLinkByName(hostName)
 	if err != nil {
 		return res, fmt.Errorf("failed to find host side of veth pair: %w", err)
 	}
 
 	info := operInfo{
-		Bridge:      opts.Bridge,
-		HostVEth:    hostName,
+		Bridge: opts.Bridge,
+		// THE LINK'S OWN NAME, not the one it was looked up by (#978).
+		// A `host_ifname` network renames this link after its container
+		// and keeps the generated name on it as an altname, which is
+		// what the lookup above resolves through. Publishing the
+		// derived name would tell `docker network inspect --verbose` a
+		// name that `ip link` does not print.
+		HostVEth:    hostLink.Attrs().Name,
 		HostVEthMAC: hostLink.Attrs().HardwareAddr.String(),
 	}
 	if err := mapstructure.Decode(info, &res.Value); err != nil {
@@ -1749,6 +1859,76 @@ func dhcpStaticRoutes(routes []dhcp.Route) []*StaticRoute {
 	return out
 }
 
+// v6AdvertisedRoutes converts what the Router Advertisement said about
+// reachability, beyond the default route, into libnetwork
+// StaticRoutes.
+//
+// TWO SOURCES, ONE LIST, and they are different kinds of statement:
+//
+//   - info.OnLinkPrefixes are RFC 4861 section 4.6.2 Prefix Information
+//     options with the L flag set: "this prefix is reachable without a
+//     router". They become on-link routes. They are needed because the
+//     kernel is no longer the one acting on the advertisement and
+//     because the DHCPv6 address is installed as a /128 (RFC 9915
+//     section 18.2.10.1), so nothing else in the container's table says
+//     the segment's own prefix is on-link. RFC 5942 section 4 is the
+//     reason a /128 address cannot be made to imply it.
+//   - info.Routes on a v6 lease are RFC 4191 Route Information options:
+//     "this prefix is reachable through me". They become next-hop
+//     routes pointed at the advertising router. pkg/dhcp already
+//     filtered a ::/0 entry out of them, which RFC 4191 section 2.3
+//     explicitly permits a router to send and which would otherwise
+//     install a second default route beside GatewayIPv6.
+//
+// On-link first, then next-hop, and a destination seen twice keeps its
+// first form: an on-link statement about a prefix is the stronger one,
+// since a router that says "reachable through me" about a prefix the
+// same advertisement says is on-link would otherwise cost every packet
+// an extra hop.
+func v6AdvertisedRoutes(info dhcp.Info) []*StaticRoute {
+	out := make([]*StaticRoute, 0, len(info.OnLinkPrefixes)+len(info.Routes))
+	seen := map[string]bool{}
+	for _, p := range info.OnLinkPrefixes {
+		if seen[p] {
+			continue
+		}
+		seen[p] = true
+		out = append(out, &StaticRoute{Destination: p, RouteType: RouteTypeOnLink})
+	}
+	for _, r := range info.Routes {
+		if seen[r.Destination] {
+			continue
+		}
+		seen[r.Destination] = true
+		sr := &StaticRoute{Destination: r.Destination, RouteType: RouteTypeOnLink}
+		if r.Gateway != "" {
+			sr.RouteType = RouteTypeNextHop
+			sr.NextHop = r.Gateway
+		}
+		out = append(out, sr)
+	}
+	if len(out) == 0 {
+		// nil and not an empty slice, so "the advertisement asked for
+		// no extra routes" and "there was no advertisement" are the
+		// same value at every reader. len() is what every caller tests.
+		return nil
+	}
+	return out
+}
+
+// fillV6Hint writes the IPv6 half of the Join hint from what the
+// acquisition's Router Advertisement said.
+//
+// ONE FUNCTION, TWO CALL SITES. The bridge path (CreateEndpoint here)
+// and the parent-attached path (parent_attached.go) are separate copies
+// of the same acquisition loop, and a rule written twice is a rule that
+// gets changed once. The v4 fields beside these have that shape today
+// and #821 did not add a third copy.
+func fillV6Hint(hint *joinHint, info dhcp.Info) {
+	hint.GatewayIPv6 = info.Gateway
+	hint.RoutesIPv6 = v6AdvertisedRoutes(info)
+}
+
 // appendDHCPStaticRoutes hands Docker the DHCP option-121 classless
 // static routes (RFC 3442) captured from the initial v4 exchange in
 // CreateEndpoint. These ride the hint alongside the gateway;
@@ -1783,6 +1963,46 @@ func (p *Plugin) appendDHCPStaticRoutes(opts DHCPNetworkOptions, r JoinRequest, 
 		return
 	}
 	log.WithFields(fields).Info("[Join] Adding DHCP classless static routes (option 121)")
+}
+
+// applyV6JoinHint puts the IPv6 half of the routing answer into the
+// Join response: the gateway the Router Advertisement came from, and
+// the routes it asked for. Both were captured by the library's own
+// client during CreateEndpoint and rode here on the hint (#821).
+//
+// ONE FUNCTION FOR BOTH, because the split between them is the part
+// worth being able to drive: `skip_routes=true` takes the routes away
+// and MUST leave the gateway, which is the same rule the v4 path has
+// (the option governs static routes, not the default route), and a
+// rule that lives in two functions is a rule that gets half-changed.
+//
+// Nothing here consults the host's routing table. That is the change
+// #821 made: see the default-route branch of addRoutes.
+func (p *Plugin) applyV6JoinHint(opts DHCPNetworkOptions, r JoinRequest, hint joinHint, res *JoinResponse) {
+	if hint.GatewayIPv6 != "" {
+		log.WithFields(log.Fields{
+			"network":  shortID(r.NetworkID),
+			"endpoint": shortID(r.EndpointID),
+			"sandbox":  r.SandboxKey,
+			"gateway":  hint.GatewayIPv6,
+		}).Info("[Join] Setting IPv6 gateway from the Router Advertisement seen in CreateEndpoint")
+		res.GatewayIPv6 = hint.GatewayIPv6
+	}
+
+	if opts.SkipRoutes || len(hint.RoutesIPv6) == 0 {
+		return
+	}
+
+	res.StaticRoutes = append(res.StaticRoutes, hint.RoutesIPv6...)
+	p.dhcpRoutesApplied.Add(int32(len(hint.RoutesIPv6)))
+
+	log.WithFields(log.Fields{
+		"network":  shortID(r.NetworkID),
+		"endpoint": shortID(r.EndpointID),
+		"sandbox":  r.SandboxKey,
+		"routes":   describeStaticRoutes(hint.RoutesIPv6),
+		"gateway":  res.GatewayIPv6,
+	}).Info("[Join] Adding IPv6 routes from the Router Advertisement")
 }
 
 // describeStaticRoutes renders routes for a log field as
@@ -1836,24 +2056,25 @@ func (p *Plugin) addRoutes(opts *DHCPNetworkOptions, v6 bool, link netlink.Link,
 	}
 	for _, route := range routes {
 		if route.Dst == nil {
-			// Default route
-			switch family {
-			case unix.AF_INET:
-				if res.Gateway == "" {
-					res.Gateway = route.Gw.String()
-					log.
-						WithFields(logFields).
-						WithField("gateway", res.Gateway).
-						Info("[Join] Setting IPv4 gateway retrieved from host parent interface routing table")
-				}
-			case unix.AF_INET6:
-				if res.GatewayIPv6 == "" {
-					res.GatewayIPv6 = route.Gw.String()
-					log.
-						WithFields(logFields).
-						WithField("gateway", res.GatewayIPv6).
-						Info("[Join] Setting IPv6 gateway retrieved from host parent interface routing table")
-				}
+			// Default route.
+			//
+			// ONLY IPv4 IS TAKEN FROM THE HOST TABLE. The v6 default
+			// used to be read here too, and reading it was wrong in
+			// both directions (#821): the host's own default route is
+			// whatever the host's kernel made of an advertisement sent
+			// to the HOST, on a link the container is not on in bridge
+			// mode, and on a host with no IPv6 default of its own the
+			// container got none even though the segment had a router.
+			// The container's IPv6 gateway is what the advertisement
+			// on the container's segment said, which the library's
+			// client read during CreateEndpoint and which arrives on
+			// the hint. Set before this function is called.
+			if family == unix.AF_INET && res.Gateway == "" {
+				res.Gateway = route.Gw.String()
+				log.
+					WithFields(logFields).
+					WithField("gateway", res.Gateway).
+					Info("[Join] Setting IPv4 gateway retrieved from host parent interface routing table")
 			}
 
 			continue
@@ -1935,32 +2156,6 @@ func parseIfnameOption(options map[string]interface{}) (string, error) {
 	return s, nil
 }
 
-// Join hands the per-endpoint host-side link to Docker (so it can move it
-// into the container netns) along with route information, then starts a
-// persistent DHCP client to keep the lease alive for the life of the
-// endpoint.
-//
-// Bridge mode also copies static routes from the host bridge — those
-// routes are how the upstream propagates LAN topology when the bridge is
-// the host's L3 gateway. Macvlan mode skips that: the parent NIC's host
-// routes belong to the host, not the container, and the DHCP gateway is
-// the only route the container needs.
-// noteSlowAttach records an attach that succeeded, but only after
-// outlasting AwaitTimeout — i.e. one the #406 grace is carrying.
-// Reports whether it counted.
-//
-// Split out of Join's attach goroutine so it can be exercised
-// directly (#431). The counter existed for a release without a single
-// test asserting it ever moves, which made its constant zero
-// uninterpretable: "the daemon-busy window never arose" and "the
-// increment cannot fire" produce identical readings, and the v1.4.0
-// evidence needed to tell them apart. Reaching this code in the
-// goroutine requires a *successful* Start, which needs a real network
-// namespace, so no unit test can get here through Join.
-//
-// Caller must only invoke this for a successful attach. A failed one
-// has its own classification below, and counting it here would put a
-// fault in a counter documented as not healthy-affecting.
 // noteAttachDuration records one successful attach in the counters
 // that carry the distribution at the shipped log level.
 //
@@ -2008,6 +2203,22 @@ func (p *Plugin) noteAttachDuration(elapsed time.Duration) {
 	}
 }
 
+// noteSlowAttach records an attach that succeeded, but only after
+// outlasting AwaitTimeout — i.e. one the #406 grace is carrying.
+// Reports whether it counted.
+//
+// Split out of Join's attach goroutine so it can be exercised
+// directly (#431). The counter existed for a release without a single
+// test asserting it ever moves, which made its constant zero
+// uninterpretable: "the daemon-busy window never arose" and "the
+// increment cannot fire" produce identical readings, and the v1.4.0
+// evidence needed to tell them apart. Reaching this code in the
+// goroutine requires a *successful* Start, which needs a real network
+// namespace, so no unit test can get here through Join.
+//
+// Caller must only invoke this for a successful attach. A failed one
+// has its own classification below, and counting it here would put a
+// fault in a counter documented as not healthy-affecting.
 func (p *Plugin) noteSlowAttach(r JoinRequest, elapsed time.Duration) bool {
 	// Strictly greater: an attach that finishes exactly on budget did
 	// not need the grace.
@@ -2024,6 +2235,16 @@ func (p *Plugin) noteSlowAttach(r JoinRequest, elapsed time.Duration) bool {
 	return true
 }
 
+// Join hands the per-endpoint host-side link to Docker (so it can move it
+// into the container netns) along with route information, then starts a
+// persistent DHCP client to keep the lease alive for the life of the
+// endpoint.
+//
+// Bridge mode also copies static routes from the host bridge — those
+// routes are how the upstream propagates LAN topology when the bridge is
+// the host's L3 gateway. Macvlan mode skips that: the parent NIC's host
+// routes belong to the host, not the container, and the DHCP gateway is
+// the only route the container needs.
 func (p *Plugin) Join(ctx context.Context, r JoinRequest) (JoinResponse, error) {
 	log.WithField("options", r.Options).Debug("Join options")
 	res := JoinResponse{}
@@ -2124,13 +2345,16 @@ func (p *Plugin) Join(ctx context.Context, r JoinRequest) (JoinResponse, error) 
 	if err := p.addRoutes(&opts, false, routeSrc, r, hint, &res); err != nil {
 		return res, err
 	}
-	if opts.IPv6 {
+	if opts.ipv6Enabled() {
 		if err := p.addRoutes(&opts, true, routeSrc, r, hint, &res); err != nil {
 			return res, err
 		}
 	}
 
 	p.appendDHCPStaticRoutes(opts, r, hint, &res)
+	if opts.IPv6 {
+		p.applyV6JoinHint(opts, r, hint, &res)
+	}
 
 	// Register the manager BEFORE spawning the start goroutine so that a
 	// fast Leave can find it. Stop blocks until Start has completed

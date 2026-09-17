@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -186,7 +187,8 @@ type dhcpManager struct {
 	// every production path goes through Plugin.Join.
 	plugin *Plugin
 
-	// ipMu guards lastIP / lastIPv6. Writes happen from the lease-event
+	// ipMu guards lastIP / lastIPv6, the two lastEvent fields, clientV4
+	// and hostname. Writes happen from the lease-event
 	// goroutine (renew); reads happen from Leave after Stop has
 	// drained that goroutine. The drain establishes happens-before in
 	// practice, but the race detector doesn't always see the channel
@@ -195,6 +197,18 @@ type dhcpManager struct {
 	ipMu     sync.Mutex
 	lastIP   *netlink.Addr
 	lastIPv6 *netlink.Addr
+	// v6Installed is EVERY IPv6 address this manager has put on the
+	// container link, keyed by the address's own string, and lastIPv6
+	// above is the one of them Docker was told about.
+	//
+	// A SET AND NOT A LAST VALUE, because RFC 4862 section 5.5.3 forms
+	// one address per autonomous prefix and a lease holds all of them.
+	// The change path for a single value can only ever delete the one
+	// address it remembers: on a link that advertised two prefixes and
+	// then withdrew one, it would delete whichever address the lease
+	// happened to name first and leave the withdrawn one on the link
+	// for as long as the container ran.
+	v6Installed map[string]*netlink.Addr
 	// lastEvent / lastEventAt are the most recent lifecycle event this
 	// manager saw and when it saw it, for the per-endpoint half of
 	// /Plugin.Health. Under ipMu with the addresses beside them
@@ -268,15 +282,71 @@ type dhcpManager struct {
 	// not this flag was ever set. Not a race, the only behaviour. Both flags are now read the same way when the
 	// ledger entry for each family is written.
 	boundV6 atomic.Bool
+
+	// lastAdvertRoutes is the set of more-specific IPv6 routes this
+	// endpoint currently has because a Router Advertisement asked for
+	// them, keyed destination -> next hop.
+	//
+	// IT IS A DIFF BASE AND NOTHING ELSE. An advertisement that stops
+	// mentioning a prefix is asking for that route to go away (RFC 4191
+	// section 2.3 spells the withdrawal as a Route Information option
+	// with a lifetime of 0, and RFC 4861 section 6.3.4 keeps the router
+	// list per-router rather than cumulative), and "which routes did we
+	// put there" is not a question the kernel's table can answer: the
+	// container also carries routes Join copied off the host bridge,
+	// and deleting those would be this plugin taking away something an
+	// operator configured.
+	//
+	// Written and read only from the v6 consumer goroutine, which is
+	// the one goroutine that runs handleEvent with v6 true.
+	lastAdvertRoutes map[string]string
+
+	// mtuMu guards the two numbers below, which are the only state in
+	// this manager written by BOTH family goroutines: each family's
+	// most recently accepted MTU, zero when that family has supplied
+	// none. See propagateMTU for why the link takes the smaller.
+	mtuMu sync.Mutex
+	mtuV4 int
+	mtuV6 int
+	// mtuBase is the link's own MTU before this manager wrote to it,
+	// which is where the link goes back to when both families stop
+	// supplying one.
+	mtuBase int
+
 	// MacAddress is set in macvlan mode so we can re-find the link inside
 	// the container netns after Docker has moved and renamed it. Empty in
 	// bridge mode.
 	MacAddress net.HardwareAddr
 
+	// hostname is the container's name as this endpoint puts it on the
+	// wire, and it is EMPTY FOR TWO OPPOSITE REASONS: the container has
+	// no name, or safeHostname refused the one it has. See the field
+	// comment on unsafeHostnamesRejected.
+	//
+	// UNDER ipMu SINCE #961, and that is not tidiness. The attach used
+	// to write it before any client existed; it now writes it after the
+	// v4 client is already leasing, and audit() reads it from the
+	// lease-event goroutine for every ledger row. Read it through
+	// hostnameOnTheWire and write it through setHostname; audit is
+	// never called with ipMu held.
 	hostname  string
 	nsHandle  netns.NsHandle
 	netHandle *netlink.Handle
 	ctrLink   netlink.Link
+
+	// v6Addrs is the transport the IPv6 address set is applied
+	// through. It is nil on every production path, where
+	// v6AddrTransport falls back to netHandle -- the handle Start
+	// opened inside the container's namespace.
+	//
+	// It exists because the seam v6LinkAddrs already provides is one
+	// level too low. That one is entered with the handle passed in, so
+	// everything deciding WHETHER to apply an address set at all -- the
+	// event dispatch, installV6Address's "the first bind is not a
+	// no-op" rule, the netHandle guard itself -- sat above every test
+	// in this package, and the only observer of it was an integration
+	// arm.
+	v6Addrs v6LinkAddrs
 
 	stopChan  chan struct{}
 	errChan   chan error
@@ -352,13 +422,24 @@ type dhcpManager struct {
 	// Under ipMu, which is released before the client is asked
 	// anything; see healthView.
 	//
+	// SINCE #961 IT IS ALSO THE ONE THING THE ATTACH WRITES THROUGH,
+	// and that is why the type is joinClient and not endpointClient:
+	// the container's name arrives from the daemon after this client is
+	// already leasing, and SetHostname is what puts it on the wire. One
+	// field and one publisher for both directions, so a future path
+	// cannot publish the client the health document reads without also
+	// publishing the one the name goes to.
+	//
 	// v6 has no counterpart BY CHOICE, not by absence. A dual-stack
 	// endpoint runs two clients and the endpoints array has one entry
 	// per endpoint, so one of them is the one it describes; it is this
 	// one, because the array's RFC 5227 pair has no v6 meaning at all.
-	// TestHealthClient_IsPublishedOnlyForV4 holds the guard at the one
-	// call site and docs/reference.md states the bound on the row.
-	clientV4 endpointClient
+	// The name has the same answer for a different reason: this library
+	// sends no name option for DHCPv6 at all, and lease.Manager
+	// refuses the call on that family. TestHealthClient_IsPublishedOnlyForV4
+	// holds the guard at the one call site and docs/reference.md states
+	// the bound on the row.
+	clientV4 joinClient
 
 	// releasedV4 / releasedV6 record that this endpoint's lease was
 	// actually handed back, so Leave can close the record instead of
@@ -402,8 +483,26 @@ func (m *dhcpManager) logFields(v6 bool) log.Fields {
 	}
 }
 
-// setHealthClient publishes the client the health document reads.
-func (m *dhcpManager) setHealthClient(c endpointClient) {
+// joinClient is the persistent v4 client as the ATTACH holds it: the
+// health document's read-only view plus the one call the attach makes
+// into a client that is already running.
+//
+// It is declared here and not beside endpointClient because it is the
+// attach's demand and not the health document's. Widening
+// endpointClient instead would tell every reader of the health surface
+// that the document writes to the client, which it does not.
+type joinClient interface {
+	endpointClient
+
+	// SetHostname gives the running client the container's name for
+	// DHCP option 12 and makes it tell the server at once (#961). See
+	// dhcp.DHCPClient.SetHostname for what the error is about.
+	SetHostname(name string) error
+}
+
+// setHealthClient publishes the client the health document reads and
+// the attach names.
+func (m *dhcpManager) setHealthClient(c joinClient) {
 	m.ipMu.Lock()
 	defer m.ipMu.Unlock()
 	m.clientV4 = c
@@ -411,10 +510,26 @@ func (m *dhcpManager) setHealthClient(c endpointClient) {
 
 // healthClient is the published client, or nil. The lock is dropped
 // before the caller asks the client anything.
-func (m *dhcpManager) healthClient() endpointClient {
+func (m *dhcpManager) healthClient() joinClient {
 	m.ipMu.Lock()
 	defer m.ipMu.Unlock()
 	return m.clientV4
+}
+
+// setHostname records the name this endpoint puts on the wire.
+func (m *dhcpManager) setHostname(h string) {
+	m.ipMu.Lock()
+	defer m.ipMu.Unlock()
+	m.hostname = h
+}
+
+// hostnameOnTheWire is the name this endpoint is currently sending, or
+// the empty string for a container with no name and for one whose name
+// safeHostname refused.
+func (m *dhcpManager) hostnameOnTheWire() string {
+	m.ipMu.Lock()
+	defer m.ipMu.Unlock()
+	return m.hostname
 }
 
 // noteResumedACD reports an address picked up from a durable record
@@ -482,6 +597,17 @@ func (m *dhcpManager) setLastIP(v6 bool, addr *netlink.Addr) {
 // affect lease handling. ip is the bare address ("192.168.0.10"),
 // derived by the caller from whatever form it has at hand.
 func (m *dhcpManager) audit(kind, ip string) {
+	m.auditFrom(kind, ip, "")
+}
+
+// auditFrom is audit with the address's source, for the rows where
+// "where did this address come from" is not answered by the kind.
+//
+// A FORMED ADDRESS AND A GRANTED ONE ARE THE SAME `bound` ROW OTHERWISE,
+// and they are not the same event to anyone reading the ledger back: no
+// DHCP server was involved in the first, so there is no lease on any
+// server to correlate it with and no server log it appears in.
+func (m *dhcpManager) auditFrom(kind, ip, source string) {
 	if m.plugin == nil || m.plugin.ledger == nil || !m.opts.AuditLog {
 		return
 	}
@@ -490,10 +616,19 @@ func (m *dhcpManager) audit(kind, ip string) {
 		Network:   m.joinReq.NetworkID,
 		Endpoint:  m.joinReq.EndpointID,
 		Container: m.containerID(),
-		Hostname:  m.hostname,
+		Hostname:  m.hostnameOnTheWire(),
 		IP:        ip,
+		Source:    source,
 		MAC:       m.macString(),
 	})
+}
+
+// auditSource is the ledger's `source` column for one lease.
+func auditSource(info dhcp.Info) string {
+	if info.SLAAC {
+		return "slaac"
+	}
+	return ""
 }
 
 // containerID resolves (once, then caches) the ID of the container
@@ -626,12 +761,12 @@ func (m *dhcpManager) renew(v6 bool, info dhcp.Info) error {
 		return fmt.Errorf("failed to parse IP address: %w", err)
 	}
 	if v6 {
-		v6AddrAttrs(ip, info)
+		v6AddrAttrs(ip, info.LeaseSeconds, info.PreferredSeconds, info.IPDeprecated)
 	}
 
 	// Address first, routes after — the ordering the kernel itself
 	// requires (see applyAddressChange).
-	if err := m.applyAddressChange(v6, ip); err != nil {
+	if err := m.applyAddressChange(v6, ip, info); err != nil {
 		return err
 	}
 
@@ -648,13 +783,35 @@ func (m *dhcpManager) renew(v6 bool, info dhcp.Info) error {
 	m.propagateDNS(v6, info)
 	m.propagateMTU(v6, info)
 
+	// THE DIFF BASE HAS TO BE SEEDED HERE, not left to the first live
+	// advertisement. Docker installs the routes from the Join answer
+	// (network.go's v6AdvertisedRoutes), so by the time this manager
+	// starts the container ALREADY has them, and lastAdvertRoutes is
+	// nil. A later advertisement that drops one of them would then diff
+	// against an empty record, find nothing to withdraw, and leave the
+	// container routing over a prefix the segment stopped offering --
+	// which is the ordinary case, not an edge one, because the first
+	// change to any route is always a change to a route installed at
+	// Join.
+	//
+	// It is a reconcile and not an assignment because the two can
+	// already disagree: Join ran before this manager existed, the
+	// advertisement may have moved in between, and RouteReplace against
+	// what Docker installed is a no-op when they agree.
+	if v6 {
+		if err := m.reconcileAdvertisedRoutes(info); err != nil {
+			log.WithError(err).WithFields(m.logFields(v6)).
+				Warn("Failed to reconcile the routes the Router Advertisement asked for")
+		}
+	}
+
 	return m.reconcileDefaultRoute(v6, info)
 }
 
 // applyAddressChange re-applies the lease to the link when the server
 // handed back a different address than the one currently recorded. A
 // no-op on the steady-state renewal path, which is the common case.
-func (m *dhcpManager) applyAddressChange(v6 bool, ip *netlink.Addr) error {
+func (m *dhcpManager) applyAddressChange(v6 bool, ip *netlink.Addr, info dhcp.Info) error {
 	v4, v6Last := m.lastIPs()
 	lastIP := v4
 	if v6 {
@@ -662,7 +819,7 @@ func (m *dhcpManager) applyAddressChange(v6 bool, ip *netlink.Addr) error {
 	}
 	changed := lastIP != nil && !ip.Equal(*lastIP)
 	if v6 {
-		return m.installV6Address(ip, lastIP, changed)
+		return m.installV6Address(ip, lastIP, changed, info)
 	}
 	if !changed {
 		return nil
@@ -707,7 +864,7 @@ func (m *dhcpManager) applyAddressChange(v6 bool, ip *netlink.Addr) error {
 	if m.netHandle == nil || m.ctrLink == nil {
 		return nil
 	}
-	if err := m.netHandle.AddrReplace(m.ctrLink, ip); err != nil {
+	if err := nlHandleAddrReplace(m.netHandle, m.ctrLink, ip); err != nil {
 		return fmt.Errorf("failed to apply re-acquired address %v: %w", ip, err)
 	}
 	if err := m.netHandle.AddrDel(m.ctrLink, lastIP); err != nil {
@@ -767,11 +924,54 @@ func (m *dhcpManager) applyAddressChange(v6 bool, ip *netlink.Addr) error {
 //
 // Both lifetimes zero means an infinite lease and sends no
 // IFA_CACHEINFO at all, which is the kernel's "forever".
-func v6AddrAttrs(addr *netlink.Addr, info dhcp.Info) {
+func v6AddrAttrs(addr *netlink.Addr, valid, preferred int, deprecated bool) {
 	addr.Flags |= unix.IFA_F_NODAD
-	addr.ValidLft = info.LeaseSeconds
-	addr.PreferedLft = info.PreferredSeconds
+	addr.ValidLft = valid
+	addr.PreferedLft = preferred
+	// AN INFINITE VALID LIFETIME CANNOT BE SENT AS A ZERO ONCE THE PAIR
+	// HAS TO BE SENT AT ALL, and RFC 4862 section 5.5.3 takes the two
+	// lifetimes from the Prefix Information option independently and
+	// only requires preferred <= valid, so both shapes below are ones a
+	// router may legally advertise. The netlink library attaches
+	// IFA_CACHEINFO when EITHER lifetime is non-zero and puts both
+	// numbers in it; the kernel's own spelling of "forever" in that
+	// structure is 0xFFFFFFFF.
+	//
+	//   - (valid 0, preferred 1800). Sent as it stands, the kernel gets
+	//     a valid lifetime of zero seconds and refuses the address with
+	//     EINVAL: the container then has no address at all, which is
+	//     the opposite of what an unbounded advertisement asked for.
+	//   - (valid 0, DEPRECATED). This one carries no non-zero lifetime
+	//     to trigger the structure, so without the `deprecated` term
+	//     below NO IFA_CACHEINFO is attached and the kernel reads the
+	//     address as permanent and PREFERRED -- the exact opposite of
+	//     deprecated, and silently, because the address is on the link
+	//     and looks right. That is why the caller passes the property
+	//     instead of this function inferring it: on Info's convention a
+	//     zero preferred lifetime is an INFINITE one, so the numbers
+	//     alone cannot tell a deprecated unbounded address from a
+	//     current permanent one.
+	//
+	// Both lifetimes zero AND not deprecated still sends no
+	// IFA_CACHEINFO, which is the permanent address this plugin
+	// installed before there was anything to choose.
+	//
+	// MEASURED 2026-09-16, this kernel, a dummy link in a user
+	// namespace: (forever, 0) installs with the kernel's `deprecated`
+	// flag set and preferred_lft 0sec, and (forever, 3) is deprecated
+	// by the kernel's own timer three seconds later -- so the pair the
+	// translation produces does reach the state RFC 4862 section 5.5.4
+	// describes, and the finite half of it is still enforced by the
+	// kernel on an address it also marks permanent.
+	if addr.ValidLft == 0 && (addr.PreferedLft > 0 || deprecated) {
+		addr.ValidLft = infiniteLft
+	}
 }
+
+// infiniteLft is the kernel's IFA_CACHEINFO spelling of "no expiry",
+// which is not the same value as this plugin's own (Info's zero). See
+// v6AddrAttrs for the one case where the two have to be translated.
+const infiniteLft = 0xFFFFFFFF
 
 // installV6Address applies the DHCPv6 lease to the container link.
 //
@@ -780,10 +980,14 @@ func v6AddrAttrs(addr *netlink.Addr, info dhcp.Info) {
 //
 //   - THE FIRST BIND IS NOT A NO-OP HERE. libnetwork installed
 //     AddressIPv6 itself when it built the sandbox, from the value
-//     CreateEndpoint returned -- with no NODAD flag and no lifetimes,
-//     because libnetwork knows nothing about either. So the address on
-//     the link is the right address with the wrong attributes until
-//     this re-applies it. The v4 path has nothing equivalent to fix.
+//     CreateEndpoint returned -- permanent and with no lifetimes,
+//     because libnetwork has none to set. MEASURED on engine 29.8.0:
+//     that address is on the link as `flags 02 valid_lft forever
+//     preferred_lft forever`, so the engine sets IFA_F_NODAD too and
+//     the flag does not tell the two installs apart; the LIFETIMES do.
+//     The address on the link is the right address with the wrong
+//     attributes until this re-applies it, and the v4 path has nothing
+//     equivalent to fix.
 //   - A RENEWAL MUST REFRESH THE LIFETIMES. The address is unchanged
 //     and the DEADLINES are not; skipping the re-apply would leave the
 //     kernel counting down the lifetimes of the previous Reply, and the
@@ -792,7 +996,7 @@ func v6AddrAttrs(addr *netlink.Addr, info dhcp.Info) {
 //
 // AddrReplace and not AddrAdd for both reasons: it is the one operation
 // that is correct whether or not the address is already there.
-func (m *dhcpManager) installV6Address(ip, lastIP *netlink.Addr, changed bool) error {
+func (m *dhcpManager) installV6Address(ip, lastIP *netlink.Addr, changed bool, info dhcp.Info) error {
 	if changed {
 		// Same counter and the same warning as the v4 path: Docker's
 		// NetworkSettings still reports the previous address, because
@@ -807,27 +1011,240 @@ func (m *dhcpManager) installV6Address(ip, lastIP *netlink.Addr, changed bool) e
 			Warn("dhcp renew with changed IP — Docker's view is now stale")
 	}
 
-	// netHandle/ctrLink are always live on the production path (renew
-	// runs from the event loop, post-Start); the guard keeps pre-Start
-	// unit tests of the counter semantics valid.
-	if m.netHandle == nil || m.ctrLink == nil {
+	// The transport and the link are always live on the production path
+	// (renew runs from the event loop, post-Start); the guard keeps
+	// pre-Start unit tests of the counter semantics valid.
+	h := m.v6AddrTransport()
+	if h == nil || m.ctrLink == nil {
 		return nil
 	}
-	if err := m.netHandle.AddrReplace(m.ctrLink, ip); err != nil {
-		return fmt.Errorf("failed to apply the DHCPv6 address %v: %w", ip, err)
+	return m.applyV6Addrs(h, ip, info)
+}
+
+// v6AddrTransport is the handle the v6 address set is applied through:
+// the test seam when one is set, the namespace handle wrapped in
+// handleV6Addrs otherwise, and nil when there is no handle at all.
+//
+// The nil is returned as an untyped nil and not as a nil *netlink.Handle
+// inside an interface, because the caller's guard is `h == nil` and the
+// second one is not.
+func (m *dhcpManager) v6AddrTransport() v6LinkAddrs {
+	if m.v6Addrs != nil {
+		return m.v6Addrs
 	}
-	if changed && lastIP != nil {
-		if err := m.netHandle.AddrDel(m.ctrLink, lastIP); err != nil {
-			// Non-fatal: a lingering stale address is strictly better
-			// than failing the bind on cleanup.
+	if m.netHandle == nil {
+		return nil
+	}
+	return handleV6Addrs{m.netHandle}
+}
+
+// v6LinkAddrs is the two netlink calls the v6 address set is applied
+// with, named as an interface so the set arithmetic can be driven
+// without a link.
+//
+// IT IS THE TRANSPORT AND NOT THE VERDICT. What a test substitutes here
+// is the socket; every decision -- which addresses are wanted, which
+// have gone, which are new, what each is counted and recorded as --
+// stays in the code under test. Before this existed there was no seam
+// below installV6Address at all, so the set-difference helpers had unit
+// tests and the loop that calls them had none: installing only the
+// first address of the set, or never removing what left it, changed
+// nothing any test in this package could see.
+//
+// The production implementation is handleV6Addrs below.
+type v6LinkAddrs interface {
+	AddrReplace(link netlink.Link, addr *netlink.Addr) error
+	AddrDel(link netlink.Link, addr *netlink.Addr) error
+}
+
+// handleV6Addrs is the netns handle as a v6LinkAddrs, and it is a type
+// and not the handle itself so that the address write keeps going
+// through nlHandleAddrReplace.
+//
+// That seam is the one thing a unit test can inject a netlink failure
+// into without CAP_NET_ADMIN (see netlink_seam.go), and it is renew's
+// FIRST kernel call, so everything renew does afterwards is unreachable
+// root-free without it. Handing *netlink.Handle straight to the
+// interface would have taken every address write on the v6 path off it
+// silently, with nothing to say so.
+//
+// AddrDel stays on the handle, which is where nlAddrDel's own comment
+// leaves the renewal path's deletions.
+type handleV6Addrs struct{ h *netlink.Handle }
+
+func (a handleV6Addrs) AddrReplace(link netlink.Link, addr *netlink.Addr) error {
+	return nlHandleAddrReplace(a.h, link, addr)
+}
+
+func (a handleV6Addrs) AddrDel(link netlink.Link, addr *netlink.Addr) error {
+	return a.h.AddrDel(link, addr)
+}
+
+// applyV6Addrs puts every address this lease holds on the link and takes
+// off every address it no longer holds.
+func (m *dhcpManager) applyV6Addrs(h v6LinkAddrs, ip *netlink.Addr, info dhcp.Info) error {
+	want, err := v6WantedAddrs(ip, info)
+	if err != nil {
+		return err
+	}
+	// Read the installed set BEFORE the loop: withdrawV6AddrsNotIn
+	// writes it, and a renewal re-applies every address it already
+	// holds, so a counter derived from the set afterwards would count
+	// each refresh as a new address.
+	had := m.installedV6()
+	for _, a := range want {
+		if err := h.AddrReplace(m.ctrLink, a.addr); err != nil {
+			return fmt.Errorf("failed to apply the IPv6 address %v: %w", a.addr, err)
+		}
+		if _, seen := had[a.key]; !seen && info.SLAAC && m.plugin != nil {
+			m.plugin.ipv6SLAACAddresses.Add(1)
+		}
+	}
+	m.withdrawV6AddrsNotIn(h, want, auditSource(info))
+	return nil
+}
+
+// One address this lease wants on the link, keyed the same way the
+// installed set is.
+type wantedV6Addr struct {
+	addr *netlink.Addr
+	key  string
+}
+
+// v6WantedAddrs is every address this lease says the container should
+// hold, each carrying its OWN pair of lifetimes.
+//
+// THE ORDER PUTS THE MAIN ADDRESS FIRST, which matters only for the
+// error path: if one of several AddrReplace calls is going to fail, the
+// one Docker already told the container about is the one worth applying
+// before any of the others.
+//
+// A LEASE THAT CARRIES NO LIST STILL PRODUCES ONE ENTRY. Info.Addrs is
+// empty for a DHCPv4 lease and for any v6 lease the library built
+// before it held per-address lifetimes, so the single address and the
+// lease-wide pair are the fallback rather than a case with no
+// behaviour. That keeps this function total over every Info a caller
+// can hand it, including the ones a unit test writes by hand.
+func v6WantedAddrs(main *netlink.Addr, info dhcp.Info) ([]wantedV6Addr, error) {
+	if len(info.Addrs) == 0 {
+		return []wantedV6Addr{{addr: main, key: main.String()}}, nil
+	}
+	out := make([]wantedV6Addr, 0, len(info.Addrs))
+	mainKey := main.String()
+	for _, a := range info.Addrs {
+		addr := main
+		if a.IP != info.IP {
+			parsed, err := netlink.ParseAddr(a.IP)
+			if err != nil {
+				return nil, fmt.Errorf("failed to parse the IPv6 address %q: %w", a.IP, err)
+			}
+			addr = parsed
+		}
+		v6AddrAttrs(addr, a.ValidSeconds, a.PreferredSeconds, a.Deprecated)
+		w := wantedV6Addr{addr: addr, key: addr.String()}
+		if w.key == mainKey {
+			out = append([]wantedV6Addr{w}, out...)
+			continue
+		}
+		out = append(out, w)
+	}
+	return out, nil
+}
+
+// withdrawV6AddrsNotIn removes from the container link every address
+// this manager installed that the current lease no longer holds, and
+// records each one.
+//
+// WHY A SET DIFFERENCE AND NOT A COMPARISON WITH THE LAST ADDRESS. Two
+// things take an address out of a lease and neither is a renewal onto a
+// different address: a valid lifetime that ran out (RFC 4862 section
+// 5.5.4's second phase), and a router that stopped advertising the
+// prefix it was formed from. On a link with two autonomous prefixes
+// either can happen to either address while the other is untouched, so
+// "the address changed" is not a question with one answer, and the
+// container keeping an address whose prefix is no longer routed is
+// worse than a stale one: it is chosen as a source address for new
+// connections that then go nowhere.
+//
+// EVERY FAILURE HERE IS NON-FATAL AND EVERY ONE IS COUNTED. The address
+// is out of the lease whatever the kernel says, so a manager that
+// returned an error here would fail a renewal over an address it was
+// trying to clean up.
+func (m *dhcpManager) withdrawV6AddrsNotIn(h v6LinkAddrs, want []wantedV6Addr, source string) {
+	for _, gone := range v6AddrsToWithdraw(m.installedV6(), want) {
+		key, addr := gone.key, gone.addr
+		m.forgetV6Addr(key)
+		if err := h.AddrDel(m.ctrLink, addr); err != nil {
 			log.
 				WithError(err).
 				WithFields(m.logFields(true)).
-				WithField("stale_ip", lastIP).
-				Warn("Failed to remove stale address after lease change")
+				WithField("withdrawn_ip", key).
+				Warn("Failed to remove an IPv6 address the lease no longer holds")
+			continue
 		}
+		if m.plugin != nil {
+			m.plugin.ipv6AddressesWithdrawn.Add(1)
+		}
+		m.auditFrom("withdrawn", bareIP(key), source)
+		log.
+			WithFields(m.logFields(true)).
+			WithField("withdrawn_ip", key).
+			WithField("source", source).
+			Info("An IPv6 address left this endpoint's lease and was removed from the link")
 	}
-	return nil
+	for _, w := range want {
+		m.rememberV6Addr(w.key, w.addr)
+	}
+}
+
+// v6AddrsToWithdraw is the set difference itself, kept apart from the
+// netlink calls so the arithmetic can be driven without a link: what
+// this manager installed, minus what the lease still holds.
+//
+// The result is ordered by address so that a renumbering that drops two
+// addresses at once writes its ledger rows and its log lines in the
+// same order every time.
+func v6AddrsToWithdraw(installed map[string]*netlink.Addr, want []wantedV6Addr) []wantedV6Addr {
+	keep := make(map[string]bool, len(want))
+	for _, w := range want {
+		keep[w.key] = true
+	}
+	out := make([]wantedV6Addr, 0, len(installed))
+	for key, addr := range installed {
+		if keep[key] {
+			continue
+		}
+		out = append(out, wantedV6Addr{addr: addr, key: key})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].key < out[j].key })
+	return out
+}
+
+// installedV6 is a copy of the installed set, taken under ipMu so the
+// caller can walk it while the map is being written.
+func (m *dhcpManager) installedV6() map[string]*netlink.Addr {
+	m.ipMu.Lock()
+	defer m.ipMu.Unlock()
+	out := make(map[string]*netlink.Addr, len(m.v6Installed))
+	for k, v := range m.v6Installed {
+		out[k] = v
+	}
+	return out
+}
+
+func (m *dhcpManager) rememberV6Addr(key string, addr *netlink.Addr) {
+	m.ipMu.Lock()
+	defer m.ipMu.Unlock()
+	if m.v6Installed == nil {
+		m.v6Installed = make(map[string]*netlink.Addr, 2)
+	}
+	m.v6Installed[key] = addr
+}
+
+func (m *dhcpManager) forgetV6Addr(key string) {
+	m.ipMu.Lock()
+	defer m.ipMu.Unlock()
+	delete(m.v6Installed, key)
 }
 
 // logObservedOptions surfaces DHCP options the plugin captures but
@@ -871,12 +1288,31 @@ func (m *dhcpManager) logObservedOptions(v6 bool, info dhcp.Info) {
 	log.WithFields(fields).Info("DHCP options received")
 }
 
-// propagateDNS applies DHCP option 6 / 23 (DNS server list) when opt-in
-// and the server actually supplied servers. Empty list is a no-op rather
-// than a clobber — see resolvconf.go for the rationale. v6 path
-// uses DHCPv6 option 23, populated by the chassis into the
-// same DNSServers slice. Never fails the renewal: name resolution is
-// recoverable, the lease is not.
+// propagateDNS applies the resolvers the segment supplied when opt-in
+// and there is something to apply: DHCP option 6 on the v4 path, and on
+// the v6 one DHCPv6 option 23 and RFC 8106's RDNSS and DNSSL from the
+// Router Advertisement, which the library has already merged into the
+// same two slices with DHCPv6 taking precedence (RFC 8106 section
+// 5.3.1). Never fails the renewal: name resolution is recoverable, the
+// lease is not.
+//
+// AN EMPTY LIST IS A NO-OP AND NOT A CLOBBER, and on the v6 path that
+// is not only the defensive choice, it is what the RFC asks for. RFC
+// 8106 section 6.1: the DNS options "need not be dropped if the expiry
+// of the RA router lifetime happens". A router that withdraws itself is
+// telling the container not to route through it, not to stop resolving
+// names -- so the default route goes (see withdrawV6DefaultRoute) and
+// resolv.conf stays.
+//
+// THE BOUND, since an empty list is how a withdrawal would have to
+// arrive: a segment that shrinks its RDNSS list to nothing cannot take
+// the last resolver away through this path. writeContainerResolvConf
+// refuses to write a file with no nameserver line in it -- an empty
+// resolv.conf silently breaks every lookup in the container -- so the
+// container keeps the resolvers it had. A list that shrinks to a
+// SHORTER non-empty list is applied in full, which is the case that
+// matters: RFC 4861 section 6.3.4 makes the answer per-advertisement,
+// so dropping one of two resolvers does reach the container.
 func (m *dhcpManager) propagateDNS(v6 bool, info dhcp.Info) {
 	if !m.opts.PropagateDNS || len(info.DNSServers) == 0 {
 		return
@@ -893,7 +1329,17 @@ func (m *dhcpManager) propagateDNS(v6 bool, info dhcp.Info) {
 		return
 	}
 
-	if err := writeContainerResolvConf(pid, ctrID, info.DNSServers, info.SearchList, info.Domain); err != nil {
+	// The container's own name for the link, read off the link this
+	// manager located inside the sandbox. It is the scope zone a
+	// link-local resolver needs; see zonedNameserver. Empty before the
+	// link is located, which is the pre-Start unit-test case and not a
+	// production one.
+	iface := ""
+	if m.ctrLink != nil {
+		iface = m.ctrLink.Attrs().Name
+	}
+
+	if err := writeContainerResolvConf(pid, ctrID, info.DNSServers, info.SearchList, info.Domain, iface); err != nil {
 		m.noteDNSPropagationPIDMismatch(err)
 		log.
 			WithError(err).
@@ -909,21 +1355,79 @@ func (m *dhcpManager) propagateDNS(v6 bool, info dhcp.Info) {
 		Debug("Propagated DHCP DNS servers to container resolv.conf")
 }
 
-// propagateMTU applies DHCP option 26 (Interface MTU) when both opt-in
-// and non-zero. Skipping zero is mandatory: dhcp-handler emits 0
-// when the server didn't supply the option, and forcing MTU 0
-// on a kernel link is undefined / disallowed.
+// propagateMTU applies the MTU the segment supplied: DHCP option 26 on
+// the v4 path, and RFC 4861 section 4.6.4's MTU option on the v6 one.
+// Skipping zero is mandatory: the library reports 0 when neither was
+// supplied, and forcing MTU 0 on a kernel link is undefined.
+//
+// # THE v6 MTU IS NOT GATED ON propagate_mtu (#821)
+//
+// It is not an opt-in on that path because it was never an opt-in on
+// that path. Until #821 the KERNEL applied the advertised MTU, on
+// every v6 network, whatever propagate_mtu said, because
+// accept_ra was on and RFC 4861 section 6.3.4 tells a host to use it.
+// #821 turns accept_ra off so the plugin owns the IPv6 route, and an
+// option that defaults to false would then have silently taken the
+// advertised MTU away from every existing v6 network. Keeping the
+// behaviour is the conservative choice; making it opt-in would be the
+// change.
+//
+// WHAT IS DIFFERENT FROM THE KERNEL'S VERSION, and it is worth saying
+// because it is visible: the kernel wrote the per-interface IPv6 MTU,
+// which bounds IPv6 only. This writes the LINK MTU, which bounds both
+// families, because the link MTU is the mechanism this plugin already
+// has and adding a second one would put two writers on one link. On a
+// dual-stack network whose advertised MTU is below the link's, IPv4
+// packets are now bounded by it too. The refusal range below still
+// applies, so the value cannot go below minPropagatedMTU whichever
+// family supplied it.
 func (m *dhcpManager) propagateMTU(v6 bool, info dhcp.Info) {
-	if !m.opts.PropagateMTU || info.MTU <= 0 {
+	// The option gate first, because a family the operator switched off
+	// does not get a vote either way: not to raise the link and not to
+	// withdraw a value the other family supplied.
+	if !v6 && !m.opts.PropagateMTU {
 		return
 	}
 
-	// Neither the library nor the kernel holds the bottom of this range: a
-	// server-supplied 68 was exported verbatim and accepted by the
-	// kernel, which destroys throughput and black-holes path MTU
-	// discovery for the container, re-applied on every renewal. Refuse
-	// and keep the MTU the link has (#702).
-	if !mtuAcceptable(info.MTU) {
+	// SILENCE IS NOT A WITHDRAWAL, and on IPv6 the two look identical
+	// in Info.MTU alone.
+	//
+	// RFC 9915 section 18.2.1's Solicit goes out WITHOUT waiting for
+	// router discovery, so a DHCPv6 lease event can be stamped before
+	// the first advertisement arrives on a link that does have a
+	// router; the library documents its own field that way, "the zero
+	// value means it had seen none WHEN THIS EVENT WAS STAMPED". The
+	// first bound event, which is the one that brings the MTU, is
+	// exactly the one that can be stamped that early.
+	//
+	// Without this the zero from such an event reaches rememberMTU as a
+	// withdrawal: the v6 vote is dropped, wantedMTU falls back to the
+	// v4 number, the link moves, the next event carries the
+	// advertisement and the link moves back. That is the flip the
+	// smaller-of-two rule below exists to prevent, arriving through the
+	// withdrawal path instead of through last-writer-wins.
+	//
+	// A router that HAS spoken and carried no MTU option sets
+	// RouterSeen with MTU 0, and that one is a withdrawal and is acted
+	// on.
+	if v6 && !info.RouterSeen {
+		return
+	}
+
+	// A ZERO IS A WITHDRAWAL AND NOT "NOTHING TO DO". This used to
+	// return here, which meant a family that STOPPED supplying an MTU
+	// kept its last vote for the life of the endpoint: a router that
+	// drops its MTU option left mtuV6 holding the old number and the
+	// link clamped to a value nothing on the segment was asking for any
+	// more. The change does reach this function -- advertisedDiffers
+	// compares MTU, so the routeradvert event fires -- and it was
+	// discarded at the door.
+	//
+	// It is recorded BELOW the refusal, not here, so the two stay
+	// distinct: a refused value leaves the previous vote standing,
+	// because "the server said something impossible" is not "the
+	// server stopped asking".
+	if info.MTU > 0 && !mtuAcceptable(info.MTU) {
 		if m.plugin != nil {
 			m.plugin.mtuRefused.Add(1)
 		}
@@ -935,13 +1439,48 @@ func (m *dhcpManager) propagateMTU(v6 bool, info dhcp.Info) {
 			Warn("Refusing DHCP-supplied MTU outside the acceptable range; container link MTU unchanged")
 		return
 	}
-
-	current := m.ctrLink.Attrs().MTU
-	if current == info.MTU {
+	if m.netHandle == nil || m.ctrLink == nil {
 		return
 	}
 
-	if err := m.netHandle.LinkSetMTU(m.ctrLink, info.MTU); err != nil {
+	// ONE LINK, TWO FAMILIES, ONE NUMBER.
+	//
+	// Both families write the SAME link MTU, so last writer wins unless
+	// something decides between them. On a dual-stack network with
+	// propagate_mtu=true whose DHCPv4 option 26 says X and whose
+	// advertisement says Y, last-writer-wins flips the link between X
+	// and Y once per renewal of either family, forever, and neither
+	// value is ever stable. netlink caches the value it set on
+	// Attrs().MTU, so the "nothing to do" test above cannot catch it
+	// either: each family sees the other's number and moves it back.
+	//
+	// The smaller of the two is the only answer that is correct for
+	// both. An MTU is an upper bound on what the link will carry, so
+	// the larger value is a promise the link cannot keep for the family
+	// that asked for the smaller one, while the smaller one costs the
+	// other family throughput and nothing else. A family that supplied
+	// nothing does not vote.
+	m.rememberMTU(v6, info.MTU, m.ctrLink.Attrs().MTU)
+	want := m.wantedMTU()
+	if want == 0 {
+		// BOTH FAMILIES HAVE STOPPED ASKING. The link goes back to what
+		// it had before this manager first touched it, which is what
+		// Docker gave it. Leaving it clamped would keep a number no
+		// server and no router is asking for any more, and there is no
+		// later event that would clear it: the next thing that moves
+		// this link is another supplied MTU.
+		want = m.baseMTU()
+	}
+	if want <= 0 {
+		return
+	}
+
+	current := m.ctrLink.Attrs().MTU
+	if current == want {
+		return
+	}
+
+	if err := nlHandleLinkSetMTU(m.netHandle, m.ctrLink, want); err != nil {
 		// Don't fail the renewal — IP/gateway are usable; MTU
 		// is a perf-correctness knob. Log loudly so operators
 		// notice; a surprise small MTU under a never-applied
@@ -950,7 +1489,7 @@ func (m *dhcpManager) propagateMTU(v6 bool, info dhcp.Info) {
 		log.
 			WithError(err).
 			WithFields(m.logFields(v6)).
-			WithField("mtu", info.MTU).
+			WithField("mtu", want).
 			Error("Failed to apply DHCP-supplied MTU; container link MTU unchanged")
 		return
 	}
@@ -958,16 +1497,65 @@ func (m *dhcpManager) propagateMTU(v6 bool, info dhcp.Info) {
 	log.
 		WithFields(m.logFields(v6)).
 		WithField("old_mtu", current).
-		WithField("new_mtu", info.MTU).
+		WithField("new_mtu", want).
+		WithField("supplied_mtu", info.MTU).
 		Info("Applied DHCP-supplied MTU")
 }
 
+// rememberMTU records the value one family just supplied, where zero
+// means it has stopped supplying one, and records the link's own MTU
+// the first time this manager looks at it.
+//
+// base is read from the caller rather than taken here because it must
+// be the value the link had BEFORE this manager wrote to it, and the
+// first call is the only moment that is still true.
+func (m *dhcpManager) rememberMTU(v6 bool, mtu, base int) {
+	m.mtuMu.Lock()
+	defer m.mtuMu.Unlock()
+	if m.mtuBase == 0 {
+		m.mtuBase = base
+	}
+	if v6 {
+		m.mtuV6 = mtu
+		return
+	}
+	m.mtuV4 = mtu
+}
+
+// baseMTU is what the link had before this manager first wrote to it.
+func (m *dhcpManager) baseMTU() int {
+	m.mtuMu.Lock()
+	defer m.mtuMu.Unlock()
+	return m.mtuBase
+}
+
+// wantedMTU is the smaller of the values the two families supplied,
+// ignoring a family that supplied none.
+func (m *dhcpManager) wantedMTU() int {
+	m.mtuMu.Lock()
+	defer m.mtuMu.Unlock()
+	switch {
+	case m.mtuV4 == 0:
+		return m.mtuV6
+	case m.mtuV6 == 0:
+		return m.mtuV4
+	case m.mtuV4 < m.mtuV6:
+		return m.mtuV4
+	default:
+		return m.mtuV6
+	}
+}
+
 // reconcileDefaultRoute points the container's default route at the
-// gateway the server just supplied. Skipped when the operator pinned a
-// gateway override on the network — leave their override in place — and
-// on the v6 path, where the router advertises itself.
+// gateway the segment just supplied. On the v4 path it is skipped when
+// the operator pinned a gateway override on the network -- leave their
+// override in place. The v6 path is a different function below,
+// because the shape of the answer is different: it has a withdrawal.
 func (m *dhcpManager) reconcileDefaultRoute(v6 bool, info dhcp.Info) error {
-	if v6 || info.Gateway == "" || m.opts.Gateway != "" {
+	if v6 {
+		return m.reconcileV6DefaultRoute(info)
+	}
+	if info.Gateway == "" || m.opts.Gateway != "" {
 		return nil
 	}
 
@@ -1030,6 +1618,276 @@ func (m *dhcpManager) reconcileDefaultRoute(v6 bool, info dhcp.Info) error {
 	}
 
 	return nil
+}
+
+// isDefaultRoute reports whether a route in the kernel's table is a
+// default route. The kernel spells it two ways -- a nil destination,
+// and ::/0 or 0.0.0.0/0 written out -- and which one comes back
+// depends on the family and the netlink library's parsing, so both are
+// asked rather than one assumed.
+func isDefaultRoute(r netlink.Route) bool {
+	if r.Dst == nil {
+		return true
+	}
+	ones, _ := r.Dst.Mask.Size()
+	return ones == 0
+}
+
+// reconcileV6DefaultRoute makes the container's IPv6 default route
+// match what the routers on its segment currently advertise.
+//
+// THE PLUGIN OWNS THIS ROUTE NOW (#821, design note Q1). Before it, the
+// container's kernel installed it from the advertisement and expired it
+// on the Router Lifetime; accept_ra=0 means nothing does that any more,
+// so both halves have to be here: the install, and the withdrawal.
+//
+// THE WITHDRAWAL IS THE HALF THAT IS EASY TO LEAVE OUT. RFC 4861
+// section 4.2 gives Router Lifetime as "the lifetime associated with
+// the default router", and section 6.3.4: "a Lifetime of 0 indicates
+// that the router is no longer to be used as a default router". A
+// container left pointing at a router that said that has a default
+// route to a black hole, and nothing in the DHCPv6 exchange would ever
+// tell it so -- a DHCPv6 server and a router are not the same box and
+// the lease keeps renewing. That is what ipv6_router_withdrawn counts.
+//
+// WHAT IS DELETED IS BOUNDED. Only default routes, only on this
+// endpoint's link, and never one the kernel installed itself
+// (RTPROT_KERNEL): a container can be on more than one network, and
+// this manager answers for one of them.
+func (m *dhcpManager) reconcileV6DefaultRoute(info dhcp.Info) error {
+	// netHandle/ctrLink are always live on the production path (this
+	// runs from the event loop, post-Start); the guard keeps pre-Start
+	// unit tests of the surrounding semantics valid, the same way
+	// applyAddressChange's does.
+	if m.netHandle == nil || m.ctrLink == nil {
+		return nil
+	}
+	idx := m.ctrLink.Attrs().Index
+
+	// RT_FILTER_OIF alone, and the default-route test in Go. Asking
+	// netlink to match a nil Dst is what the v4 sibling does and it is
+	// right there, but the two families do not agree on how a default
+	// route's destination comes back, and a filter that silently
+	// matched nothing would read as "this container has no default
+	// route" -- which is the answer that makes the withdrawal below a
+	// no-op forever.
+	routes, err := nlHandleRouteListFiltered(m.netHandle, unix.AF_INET6, &netlink.Route{
+		LinkIndex: idx,
+	}, netlink.RT_FILTER_OIF)
+	if err != nil {
+		return fmt.Errorf("failed to list IPv6 routes: %w", err)
+	}
+
+	var existing []netlink.Route
+	for _, r := range routes {
+		if isDefaultRoute(r) && r.Protocol != unix.RTPROT_KERNEL {
+			existing = append(existing, r)
+		}
+	}
+
+	if info.Gateway == "" {
+		return m.withdrawV6DefaultRoute(existing)
+	}
+
+	gw := net.ParseIP(info.Gateway)
+	if gw == nil || gw.To4() != nil {
+		// Same reasoning as the v4 sibling's nil check, and one more:
+		// an IPv4 address here would install a default route for the
+		// wrong family. `Gw: nil` is not "no change" to netlink, it is
+		// an on-link default route.
+		log.WithFields(m.logFields(true)).
+			WithField("gateway", info.Gateway).
+			Warn("Advertised IPv6 gateway is not an IPv6 address; leaving the existing default route alone")
+		return nil
+	}
+
+	if len(existing) == 0 {
+		log.WithFields(m.logFields(true)).
+			WithField("gateway", gw).
+			Info("Adding the IPv6 default route the Router Advertisement asked for")
+		if err := nlHandleRouteAdd(m.netHandle, &netlink.Route{LinkIndex: idx, Gw: gw}); err != nil {
+			return fmt.Errorf("failed to add IPv6 default route: %w", err)
+		}
+		return nil
+	}
+
+	if gw.Equal(existing[0].Gw) && len(existing) == 1 {
+		return nil
+	}
+
+	log.WithFields(m.logFields(true)).
+		WithField("old_gateway", existing[0].Gw).
+		WithField("new_gateway", gw).
+		Info("Replacing the IPv6 default route: the Router Advertisement names a different router")
+	existing[0].Gw = gw
+	// The protocol comes off with it. A route this plugin installs is
+	// not a route the kernel learned from an advertisement, and leaving
+	// RTPROT_RA on it would make `ip -6 route` say "proto ra" about a
+	// route the kernel had nothing to do with. That is the exact
+	// reading the troubleshooting row for two default routes asks an
+	// operator to make, and a wrong answer there sends them looking for
+	// a guard failure that did not happen. Zero means the kernel stamps
+	// it RTPROT_BOOT, which is what every other route this plugin adds
+	// carries.
+	existing[0].Protocol = 0
+	if err := nlHandleRouteReplace(m.netHandle, &existing[0]); err != nil {
+		return fmt.Errorf("failed to replace IPv6 default route: %w", err)
+	}
+	// A second default route on the same link is a leftover, not a
+	// choice: two of them make the winner a metric comparison nobody
+	// wrote down. RouteReplace fixed the first; the rest go.
+	for i := 1; i < len(existing); i++ {
+		if err := nlHandleRouteDel(m.netHandle, &existing[i]); err != nil {
+			log.WithError(err).WithFields(m.logFields(true)).
+				WithField("gateway", existing[i].Gw).
+				Warn("Failed to remove a second IPv6 default route")
+		}
+	}
+	return nil
+}
+
+// withdrawV6DefaultRoute takes the container's IPv6 default route away
+// because no router on the segment claims to be one any more.
+//
+// THE COUNTER MOVES ONLY WHEN A ROUTE CAME OFF, which is the whole
+// point of counting it: an advertisement with Router Lifetime 0 arrives
+// repeatedly -- RFC 4861 section 6.2.5 has a router send several as it
+// shuts down -- and a counter that moved on each of them would report
+// a number of withdrawals rather than a number of containers that lost
+// their route. It is also why the count is taken from the delete and
+// not from the advertisement.
+func (m *dhcpManager) withdrawV6DefaultRoute(existing []netlink.Route) error {
+	if len(existing) == 0 {
+		return nil
+	}
+	removed := 0
+	var firstErr error
+	for i := range existing {
+		if err := nlHandleRouteDel(m.netHandle, &existing[i]); err != nil {
+			if firstErr == nil {
+				firstErr = fmt.Errorf("failed to remove the withdrawn IPv6 default route: %w", err)
+			}
+			continue
+		}
+		removed++
+		log.WithFields(m.logFields(true)).
+			WithField("gateway", existing[i].Gw).
+			Warn("The IPv6 router withdrew itself (Router Lifetime 0); removed the container's default route")
+	}
+	if removed > 0 && m.plugin != nil {
+		m.plugin.ipv6RouterWithdrawn.Add(int32(removed))
+	}
+	return firstErr
+}
+
+// reconcileAdvertisedRoutes makes the more-specific IPv6 routes on the
+// container's link match the Route Information options (RFC 4191) the
+// segment currently advertises.
+//
+// IT IS A DIFF AGAINST WHAT THIS MANAGER INSTALLED, not against the
+// table: see lastAdvertRoutes. A prefix that stops being advertised has
+// its route removed, which is the direction that has no other
+// mechanism now that accept_ra is 0.
+//
+// ON-LINK PREFIXES ARE NOT REVISITED HERE. They are applied once, in
+// the Join answer, out of the advertisement the acquisition saw, and
+// pkg/dhcp deliberately reports none on this path: the library's router
+// table carries the prefixes of the most recent frame, so following
+// them live would take the segment's own prefix away from a container
+// because one advertisement happened to omit it.
+func (m *dhcpManager) reconcileAdvertisedRoutes(info dhcp.Info) error {
+	if m.netHandle == nil || m.ctrLink == nil {
+		return nil
+	}
+	idx := m.ctrLink.Attrs().Index
+
+	want := make(map[string]string, len(info.Routes))
+	for _, r := range info.Routes {
+		want[r.Destination] = r.Gateway
+	}
+
+	var firstErr error
+	for dest, gw := range m.lastAdvertRoutes {
+		if _, still := want[dest]; still {
+			continue
+		}
+		_, dst, err := net.ParseCIDR(dest)
+		if err != nil {
+			continue
+		}
+		route := &netlink.Route{LinkIndex: idx, Dst: dst}
+		if gw != "" {
+			route.Gw = net.ParseIP(gw)
+		}
+		if err := nlHandleRouteDel(m.netHandle, route); err != nil {
+			if firstErr == nil {
+				firstErr = fmt.Errorf("failed to remove withdrawn route %v: %w", dest, err)
+			}
+			continue
+		}
+		log.WithFields(m.logFields(true)).WithField("route", dest).
+			Info("The Router Advertisement stopped offering this route; removed it from the container")
+	}
+
+	for dest, gw := range want {
+		if m.lastAdvertRoutes[dest] == gw {
+			continue
+		}
+		_, dst, err := net.ParseCIDR(dest)
+		if err != nil {
+			log.WithFields(m.logFields(true)).WithField("route", dest).
+				Warn("Advertised route destination is not a prefix; skipping it")
+			delete(want, dest)
+			continue
+		}
+		route := &netlink.Route{LinkIndex: idx, Dst: dst}
+		if gw != "" {
+			route.Gw = net.ParseIP(gw)
+		}
+		if err := nlHandleRouteReplace(m.netHandle, route); err != nil {
+			if firstErr == nil {
+				firstErr = fmt.Errorf("failed to apply advertised route %v: %w", dest, err)
+			}
+			continue
+		}
+		log.WithFields(m.logFields(true)).WithField("route", dest).WithField("gateway", gw).
+			Info("Applied a route the Router Advertisement asked for")
+	}
+
+	// Recorded even when some write failed: the record is "what this
+	// manager has asked the kernel for", and a retry on the next
+	// advertisement is what the next diff gives anyway.
+	m.lastAdvertRoutes = want
+	return firstErr
+}
+
+// applyRouterAdvert re-applies everything a Router Advertisement can
+// change, on a link whose lease has not moved.
+//
+// WHY IT EXISTS AT ALL: there is no lease event here. The library's v6
+// state machine emits Acquired and Renewed for the ADDRESS; an
+// advertisement that changes the router, the MTU, the routes or the DNS
+// servers and nothing else produces no lease transition, so the chassis
+// watches the router table and synthesises this one (see
+// pkg/dhcp/chassis.go's raWatchInterval). Without it, a segment that
+// renumbers its router keeps every running container pointed at the old
+// one until that container is restarted.
+//
+// THE ADDRESS IS NOT TOUCHED, deliberately: nothing in an advertisement
+// changes a DHCPv6 lease, and routing this through renew() would re-run
+// the address state machine on every advertisement for no reason.
+func (m *dhcpManager) applyRouterAdvert(info dhcp.Info) {
+	m.propagateDNS(true, info)
+	m.propagateMTU(true, info)
+	if err := m.reconcileV6DefaultRoute(info); err != nil {
+		log.WithError(err).WithFields(m.logFields(true)).
+			WithField("gateway", info.Gateway).
+			Error("Failed to apply the IPv6 default route from the Router Advertisement")
+	}
+	if err := m.reconcileAdvertisedRoutes(info); err != nil {
+		log.WithError(err).WithFields(m.logFields(true)).
+			Error("Failed to apply the routes from the Router Advertisement")
+	}
 }
 
 // markBound records that the persistent client of one family holds
@@ -1166,7 +2024,7 @@ func (m *dhcpManager) handleEvent(event dhcp.Event, v6 bool) {
 		if m.plugin != nil {
 			bumpFamily(&m.plugin.leasesObtainedV4, &m.plugin.leasesObtainedV6, v6)
 		}
-		m.audit("bound", bareIP(event.Data.IP))
+		m.auditFrom("bound", bareIP(event.Data.IP), auditSource(event.Data))
 		if err := m.renew(v6, event.Data); err != nil {
 			log.
 				WithError(err).
@@ -1186,7 +2044,7 @@ func (m *dhcpManager) handleEvent(event dhcp.Event, v6 bool) {
 		if m.plugin != nil {
 			bumpFamily(&m.plugin.leasesRenewedV4, &m.plugin.leasesRenewedV6, v6)
 		}
-		m.audit("renew", bareIP(event.Data.IP))
+		m.auditFrom("renew", bareIP(event.Data.IP), auditSource(event.Data))
 		if err := m.renew(v6, event.Data); err != nil {
 			log.
 				WithError(err).
@@ -1221,6 +2079,47 @@ func (m *dhcpManager) handleEvent(event dhcp.Event, v6 bool) {
 			WithField("dns", event.Data.DNSServers).
 			WithField("search", event.Data.SearchList).
 			Info("DHCPv6 configuration received without an address")
+	case "routeradvert":
+		// The routers on this segment changed what they advertise and
+		// the lease did not move (#821). There is no lease event for
+		// this -- the chassis watches the library's router table and
+		// synthesises it -- and without it a container keeps pointing
+		// at a router that has gone, keeps an MTU the segment no longer
+		// uses, and keeps resolvers that have been replaced, until
+		// somebody restarts it.
+		//
+		// NO markBound AND NO setLastIP, for the same reason the
+		// "config" case above has neither: this carries no address and
+		// is not proof of a lease.
+		m.audit("routeradvert", "")
+		m.logObservedOptions(v6, event.Data)
+		m.applyRouterAdvert(event.Data)
+		log.
+			WithFields(m.logFields(v6)).
+			WithField("gateway", event.Data.Gateway).
+			WithField("mtu", event.Data.MTU).
+			WithField("dns", event.Data.DNSServers).
+			WithField("routes", event.Data.Routes).
+			Info("Router Advertisement changed; re-applying the container's IPv6 configuration")
+	case "slaac_lost":
+		// EVERY FORMED ADDRESS COMES OFF THE LINK, and nothing here
+		// touches the outage counters. The lease held addresses formed
+		// from advertised prefixes and holds none now, so the set the
+		// container should have is empty; withdrawV6AddrsNotIn removes
+		// what is left, counts each one and writes its ledger row. The
+		// kernel would eventually drop them on their own valid
+		// lifetimes, which is the belt v6AddrAttrs installs, but "when
+		// each address's own advertisement runs out" is not the same
+		// moment as "the client no longer holds this prefix", and the
+		// gap is time the container spends choosing a source address on
+		// a prefix that is not routed any more.
+		if h := m.v6AddrTransport(); h != nil && m.ctrLink != nil {
+			m.withdrawV6AddrsNotIn(h, nil, auditSource(event.Data))
+		}
+		log.
+			WithFields(m.logFields(v6)).
+			WithField("ip", event.Data.IP).
+			Warn("This endpoint's IPv6 addresses were formed from a router advertisement and the client no longer holds them")
 	case "leasefail":
 		// dhcp_timeouts, from the library's Failed{ReasonNoServer}
 		// rather than from a ticker. Through countOutageTick, because
@@ -1239,6 +2138,19 @@ func (m *dhcpManager) handleEvent(event dhcp.Event, v6 bool) {
 		log.WithFields(m.logFields(v6)).Warn("dhcp client received NAK")
 	}
 }
+
+// startDHCPClient opens the persistent client's socket. A seam, and
+// the only one in this file that is not netlink's.
+//
+// THE ORDER THIS ATTACH DELIVERS IS UNOBSERVABLE WITHOUT IT (#961).
+// "No daemon call between Join arriving and the persistent client
+// starting" is a statement about an INSTANT, and a count taken when
+// Start returns cannot see one: an attach that inspected first leaves
+// the same totals. The instant is here. Opening the socket needs
+// CAP_NET_ADMIN and a live namespace, which the unit lane has neither
+// of, so without a seam the only drive available is the count at the
+// end -- which is the measurement that cannot fail.
+var startDHCPClient = func(c *dhcp.DHCPClient) (chan dhcp.Event, error) { return c.Start() }
 
 func (m *dhcpManager) setupClient(v6 bool) (chan error, error) {
 	v6Str := ""
@@ -1371,7 +2283,7 @@ func (m *dhcpManager) setupClient(v6 bool) (chan error, error) {
 	m.policyRestricted = len(allowServers) > 0
 
 	clientOpts := dhcp.DHCPClientOptions{
-		Hostname:     m.hostname,
+		Hostname:     m.hostnameOnTheWire(),
 		AllowServers: allowServers,
 		DenyServers:  denyServers,
 		FQDN:         m.opts.fqdnMode(),
@@ -1383,7 +2295,6 @@ func (m *dhcpManager) setupClient(v6 bool) (chan error, error) {
 		// Docker was told about (#152).
 		MAC:         m.ctrLink.Attrs().HardwareAddr,
 		RequestedIP: requestedIP,
-		PreferredV6: preferredV6,
 		// The record's unexpired lease, which makes the first packet an
 		// INIT-REBOOT rather than a DISCOVER. nil is the ordinary
 		// CreateEndpoint -> Join path having found nothing to resume.
@@ -1403,14 +2314,24 @@ func (m *dhcpManager) setupClient(v6 bool) (chan error, error) {
 		// in hand (#371). Honours the operator's client_id override.
 		ClientID:    m.clientID(),
 		VendorClass: m.opts.VendorClass,
-		// The DHCPv6 halves. Identity6 is empty for a v4 client and
-		// buildParams6 is the only thing that reads it;
 		// HonorRouterAdverts is REQUIRED on a persistent v6 client and
 		// refused on every other shape, which is what makes "the v6
 		// endpoint's kernel is processing Router Advertisements" a
 		// precondition the client cannot start without (#875, D30 Q3).
-		Identity6:          identity6,
+		// The rest of the v6 halves -- identity, record, preferred
+		// address and mode -- arrive together just below.
 		HonorRouterAdverts: v6,
+	}
+	if v6 {
+		// The third and last client this plugin starts. The manager
+		// already holds the v6 record id in recordID, so this call
+		// re-states it rather than changing it; what it adds is the
+		// mode, which the persistent client needs for the same reason
+		// the one-shots do -- a renewal or a rebind runs the machine
+		// the mode selected, not the one its zero value names.
+		if err := m.plugin.v6Wiring(&clientOpts, m.opts, identity6, recordID, preferredV6, m.joinReq.EndpointID); err != nil {
+			return nil, err
+		}
 	}
 	if err := m.plugin.conflictWiring(&clientOpts, m.opts, roleJoin, m.joinReq.NetworkID, m.joinReq.EndpointID, v6); err != nil {
 		return nil, err
@@ -1436,7 +2357,7 @@ func (m *dhcpManager) setupClient(v6 bool) (chan error, error) {
 	if !v6 {
 		m.setHealthClient(client)
 	}
-	events, err := client.Start()
+	events, err := startDHCPClient(client)
 	if err != nil {
 		return nil, fmt.Errorf("failed to start DHCP%v client: %w", v6Str, err)
 	}
@@ -1745,15 +2666,15 @@ func (m *dhcpManager) Start(ctx context.Context) (err error) {
 		m.startTotal = phases.total().Round(10 * time.Millisecond).String()
 		close(m.startedCh)
 	}()
-	// WHAT THIS ORDER DELIVERS, AND WHAT IT DOES NOT (#417).
+	// WHAT THIS ORDER DELIVERS, AND WHAT IT DOES NOT (#417, #961).
 	//
-	// Entering the container's network namespace and finding its link
-	// no longer need the daemon. Starting the persistent client still
-	// waits on one ContainerInspect, for the hostname that becomes DHCP
-	// option 12, and that inspect is issued after the link is located
-	// rather than before the namespace is opened. So this is not a
-	// daemon-free attach and nothing here may be described as one; what
-	// it removes is the daemon from the path into the namespace.
+	// Entering the container's network namespace, finding its link and
+	// STARTING THE PERSISTENT CLIENT no longer need the daemon. The
+	// container inspect that supplies DHCP option 12 has moved to the
+	// far side of the client start: the library takes a name on a
+	// RUNNING client and renews early to carry it (RFC 2131 section
+	// 4.4.5), so the name no longer has to be in hand before the socket
+	// is opened.
 	//
 	// It matters because of what the daemon is doing at the time. The
 	// attach runs in a goroutine Join does not wait for, and the daemon
@@ -1763,21 +2684,43 @@ func (m *dhcpManager) Start(ctx context.Context) (err error) {
 	// resolves still paid that wait before it opened anything, and a
 	// daemon that never answered meant no namespace, no link and no
 	// client -- on a host where the key alone would have carried all
-	// three.
+	// three. Now it means a container that leases on time and is named
+	// when the daemon gets round to answering.
 	//
-	// The remaining inspect keeps attachDaemonBusyGrace load-bearing: a
-	// busy daemon still delays the client start, and the grace is still
-	// what keeps that from being read as a plugin failure.
+	// THE WAIT IS NOT GONE, IT IS AFTER THE CLIENT, so
+	// attachDaemonBusyGrace stays load-bearing: a busy daemon still
+	// stretches the attach, joinAttachSlow still counts it, and the
+	// grace is still what keeps that from being read as a plugin
+	// failure. What changed is what the container has while it waits.
 	//
-	// The hostname's own cost of being late is bounded and is stated
-	// where it is paid: a client started without it would never send it
-	// (the library takes the hostname at construction), so the client
-	// is not started until the inspect answers or the attach is
-	// abandoned. A daemon-free attach needs a hostname source that is
-	// not ContainerInspect; #961 is open for it.
+	// THE CLAIM IS ABOUT THIS FUNCTION, AND JOIN DOES NOT ALWAYS REACH
+	// IT FIRST. A Join carrying no hint rebuilds the endpoint before
+	// any attach begins: on `docker restart` libnetwork sends Leave
+	// then Join on the same endpoint with no CreateEndpoint between
+	// them, so reacquireEndpoint recovers the MAC from the daemon and
+	// replays CreateEndpoint, whose own hostname lookup and one-shot
+	// exchange run against the same busy daemon. That route still pays
+	// the wait, in Join and not here, and
+	// TestReacquireEndpoint_AsksTheDaemonBeforeTheAttachBegins pins it.
+	// What this order delivers is a container START that does not wait.
+	//
+	// TWO SHAPES STILL TAKE THE NAME BEFORE THE START, and both are
+	// below rather than here:
+	//
+	//   - the routes that have already inspected. Where the sandbox key
+	//     is refused, the PID fallback asked the daemon on the way in,
+	//     so the name is already in hand and deferring it would buy
+	//     nothing and delay it for no reason.
+	//   - register_dns. That option puts the name in RFC 4702's option
+	//     81, which section 3.1 forbids the Host Name option beside,
+	//     and the library takes option 81 at construction and offers no
+	//     setter for it. Such a network pays the wait the default
+	//     network no longer pays; docs/reference.md says so on the
+	//     register_dns row.
 	var (
 		ctrID         string
 		ctrPID        int
+		ctrName       string
 		ctrHostname   string
 		ctrSandboxKey string
 		inspected     bool
@@ -1827,6 +2770,7 @@ func (m *dhcpManager) Start(ctx context.Context) (err error) {
 		if ctr.State != nil {
 			ctrPID = ctr.State.Pid
 		}
+		ctrName = ctr.Name
 		if ctr.Config != nil {
 			ctrHostname = ctr.Config.Hostname
 		}
@@ -1906,22 +2850,32 @@ func (m *dhcpManager) Start(ctx context.Context) (err error) {
 
 		phases.mark("locate_link")
 
-		// The one daemon call left on this path, and it is here rather
-		// than earlier because the namespace and the link do not need
-		// it. Config-only: m.hostname reaches the DHCP hostname option
-		// and nothing that makes an identity decision, so a refusal is
-		// just an omitted option here.
-		if err := inspect(); err != nil {
-			return err
+		// THE NAME BEFORE THE START, IN THE TWO CASES THAT WANT IT
+		// THERE (#961). Everything else takes it afterwards, from
+		// nameTheRunningClient below.
+		//
+		// `inspected` is the route that already asked: the daemon has
+		// answered, so the name costs nothing here and deferring it
+		// would only put it on the wire later than it needs to be.
+		// fqdnMode is register_dns, whose option 81 the library takes
+		// at construction and has no setter for.
+		//
+		// Config-only either way: the name reaches the DHCP hostname
+		// option and nothing that makes an identity decision, so a
+		// refusal is just an omitted option here.
+		if inspected || m.opts.fqdnMode() != "" {
+			if err := inspect(); err != nil {
+				return err
+			}
+			m.setHostname(m.plugin.safeHostname(ctrHostname).name)
 		}
-		m.hostname = m.plugin.safeHostname(ctrHostname).name
 
 		if m.errChan, err = m.setupClient(false); err != nil {
 			close(m.stopChan)
 			return err
 		}
 
-		if m.opts.IPv6 {
+		if m.opts.ipv6Enabled() {
 			// The engine disables IPv6 outright on a sandbox interface
 			// whose endpoint carries no IPv6 address, which is now a
 			// reachable state (#868). Clear that BEFORE the link-local
@@ -1967,7 +2921,82 @@ func (m *dhcpManager) Start(ctx context.Context) (err error) {
 		return err
 	}
 
+	// AFTER THE ATTACH HAS SUCCEEDED, AND ITS FAILURE IS NOT THE
+	// ATTACH'S (#961, #978). The container is leasing; what is missing
+	// is a name, in the server's table and on the host-side link, which
+	// is worth a counter and a log line and is not worth tearing a
+	// working endpoint down for.
+	m.afterAttach(phases, inspected, inspect, ctrName, &ctrHostname)
+
 	return nil
+}
+
+// nameTheRunningClient obtains the container's name and gives it to the
+// v4 client that is already leasing (#961).
+//
+// lookup is the attach's own inspect closure, so this makes no second
+// daemon call: where the name was already in hand the caller does not
+// come here at all. name points at the field that closure fills.
+//
+// It reports whether the daemon answered, which is a different
+// question from whether the name was handed over: a refused or absent
+// hostname still means the inspect succeeded and the rest of the
+// attach has the container's fields. #978 renames the host-side link
+// on that answer, so it is returned rather than read back out of the
+// closure's captured variable, where a reordering would take it
+// silently.
+//
+// NOTHING HERE FAILS THE ATTACH. Every arm is counted instead, because
+// each one leaves a different thing true: the daemon never answered,
+// the client would not take the name, or the name was refused before it
+// got that far. docs/reference.md carries the three rows.
+func (m *dhcpManager) nameTheRunningClient(phases *joinPhases, lookup func() error, name *string) bool {
+	if err := lookup(); err != nil {
+		m.plugin.hostnameLookupFailures.Add(1)
+		log.WithError(err).
+			WithFields(m.logFields(false)).
+			Warn("The container's name could not be read from the daemon; this endpoint holds its lease but the DHCP server's table has no name for it")
+		return false
+	}
+	phases.mark("hostname")
+
+	// safeHostname REFUSES as well as reporting absent, and both
+	// arrive here as an empty string. Neither is handed over: the
+	// library treats an empty name as "stop sending option 12", which
+	// is what this client is already doing, so the call would be a
+	// no-op that made hostnames_applied_late rise on every container
+	// started without --hostname.
+	safe := m.plugin.safeHostname(*name)
+	if safe.name == "" {
+		return true
+	}
+
+	client := m.healthClient()
+	if client == nil {
+		m.plugin.hostnameApplyFailures.Add(1)
+		log.WithFields(m.logFields(false)).
+			Warn("No running DHCP client to give the container's name to; the DHCP server's table has no name for this endpoint")
+		return true
+	}
+	if err := client.SetHostname(safe.name); err != nil {
+		m.plugin.hostnameApplyFailures.Add(1)
+		log.WithError(err).
+			WithFields(m.logFields(false)).
+			Warn("The running DHCP client would not take the container's name; the DHCP server's table has no name for this endpoint")
+		return true
+	}
+	// AFTER THE HANDOVER, NOT BEFORE IT. audit() reads this field for
+	// every ledger row on an audit_log network and the accessor is
+	// named for what it means: the name this endpoint puts on the
+	// wire. Recording it on the way past would make the ledger name an
+	// endpoint the server was never told about, on both arms above,
+	// while hostname_apply_failures said the opposite.
+	m.setHostname(safe.name)
+	m.plugin.hostnamesAppliedLate.Add(1)
+	log.WithFields(m.logFields(false)).
+		WithField("hostname", safe.name).
+		Info("The container's name was given to the running DHCP client, which asks the server to record it at once")
+	return true
 }
 
 // Stop shuts the persistent clients down WITHOUT assuming the endpoint
@@ -2054,6 +3083,16 @@ func (m *dhcpManager) stop(leaving bool) error {
 		m.releasedV6.Store(releasedV6)
 	}
 
+	// `on_remove` releases NOTHING here, and that is the value working
+	// rather than the value missing (#984). Its release is timed: the
+	// record keeps its lease and its deadline, exactly as under
+	// `never`, and the sweep hands the address back when the restart
+	// window has run out. All that happens at the stop is the line
+	// that says so.
+	if leaving && m.opts.releasesOnRemove() {
+		m.announceDeferredRelease()
+	}
+
 	if m.startErr != nil {
 		// No persistent client ever ran, so there is nothing to stop,
 		// and the CreateEndpoint one-shot's lease is left where
@@ -2121,7 +3160,7 @@ func (m *dhcpManager) stop(leaving bool) error {
 	lastIP, lastIPv6 := m.lastIPs()
 	errV4 := <-m.errChan
 	var errV6 error
-	if m.opts.IPv6 {
+	if m.opts.ipv6Enabled() {
 		errV6 = <-m.errChanV6
 	}
 
@@ -2159,7 +3198,7 @@ func (m *dhcpManager) stop(leaving bool) error {
 	// reclaim covers whichever of them is owed.
 	neverBoundV4 := m.settleFamily(false, lastIP, errV4, leaving)
 	neverBoundV6 := false
-	if m.opts.IPv6 {
+	if m.opts.ipv6Enabled() {
 		neverBoundV6 = m.settleFamily(true, lastIPv6, errV6, leaving)
 	}
 	if neverBoundV4 || neverBoundV6 {

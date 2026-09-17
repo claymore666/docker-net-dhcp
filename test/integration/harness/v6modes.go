@@ -121,6 +121,15 @@ const (
 	// reply, stateful ones included, and the plugin dropped it in
 	// both paths. Measured reaching the client as
 	// new_dhcp6_domain_search on INFORM6 and on BOUND6 alike.
+	// V6StaticOnlyAddrV6 is the single address V6ManagedExhausted's
+	// static-only range names, and it is deliberately NOT V6PoolStartV6.
+	// dnsmasq logs the address of a static-only range, so naming the
+	// pool's start here would put that string in the log and make this
+	// mode's signature identical to managed's -- which would exempt
+	// the pair from the drift matrix and leave the fixture unable to
+	// tell a segment that allocates from one that cannot.
+	V6StaticOnlyAddrV6 = "fd00:6470:6865::ff"
+
 	V6DNSServer    = "fd00:6470:6865::53"
 	V6SearchDomain = "v6mode.example"
 
@@ -218,8 +227,79 @@ func (m V6Mode) rangeArgs() []string {
 			"--enable-ra",
 			"--dhcp-ignore=tag:dhcpv6",
 		}
+	case V6ManagedExhausted:
+		// A static-only v6 range: dnsmasq parses `static` into
+		// CONTEXT_STATIC|CONTEXT_DHCP (option.c:3822), address_allocate
+		// skips every static context (dhcp6.c:497), and a Solicit from
+		// a client with no matching --dhcp-host is answered with an
+		// Advertise carrying a message-level Status Code NoAddrsAvail
+		// (rfc3315.c:805-819). --enable-ra is what puts the M flag on
+		// the advertisement: a context with CONTEXT_DHCP and no
+		// CONTEXT_RA sets managed and other only when --enable-ra is
+		// given (radv.c:368-377).
+		//
+		// AN EXHAUSTED POOL AND A STATIC-ONLY ONE ARE THE SAME THING
+		// ON THE WIRE, and that is why the fixture is spelled this
+		// way: both reach rfc3315.c's "no address, return error" with
+		// the same option. Exhausting a real pool would need a second
+		// client holding the only address, a lease that must not
+		// expire inside the test, and an ordering between the two
+		// containers; this needs one directive and cannot flake.
+		return []string{
+			"--dhcp-range=" + V6StaticOnlyAddrV6 + ",static," + LeaseTime,
+			"--enable-ra",
+		}
+	case V6AutoFallback:
+		// ONE RANGE CARRYING BOTH HALVES, which is what makes this mode
+		// possible at all. The two address fields set CONTEXT_DHCP and
+		// the `slaac` keyword adds CONTEXT_RA (option.c:3823-3830), so
+		// dnsmasq advertises M and O from the DHCP half (radv.c:627-644)
+		// and the autonomous bit from the RA half (radv.c:748) on one
+		// prefix. Two separate ranges cannot do it: they would be two
+		// contexts on two prefixes, and a client would form an address
+		// from a prefix nobody offers DHCPv6 for, which is the stateless
+		// segment and not this one.
+		//
+		// --enable-ra is deliberately absent: CONTEXT_RA sets doing_ra on
+		// its own (dnsmasq.c:281-295), and adding the flag changes
+		// nothing here. The ignore is V6ManagedSilent's, for the reason
+		// written there.
+		return []string{
+			"--dhcp-range=" + V6PoolStartV6 + "," + V6PoolEndV6 + ",slaac," + LeaseTime,
+			"--dhcp-ignore=tag:dhcpv6",
+		}
 	}
 	return nil
+}
+
+// V6DeprecatedPrefixArgs is V6SLAAC's segment with its one prefix
+// advertised DEPRECATED: the autonomous bit set, the valid lifetime
+// RFC 4861 section 4.6.2's infinity, and the preferred lifetime zero.
+// A node forms the address and the kernel marks it deprecated the
+// moment it does, which is RFC 4862 section 5.5.4's state without
+// waiting for a lifetime to run out.
+//
+// IT IS ARGV AND NOT A V6Mode, deliberately. Its five-field signature
+// is V6SLAAC's exactly -- same flags, same autonomous bit -- because
+// what separates the two is inside the prefix option's lifetimes, and
+// V6Signature does not read those. Adding it as a mode would therefore
+// add a pair to V6IndistinguishableModes, exempt that pair from the
+// drift matrix in both directions, and grow the matrix by thirteen
+// segments to say nothing new. The test that wants this segment starts
+// it under the slaac name, where every assertion the fixture makes
+// still holds, and reads the two lifetimes off the captured frame
+// itself (RAPrefix.PreferredLifetime).
+//
+// dnsmasq's spelling is the `deprecated` keyword in the lease-time
+// field of a v6 --dhcp-range (option.c:3919). MEASURED 2026-09-16,
+// dnsmasq 2.91 under `unshare -Urn`: the option comes out
+// `03 04 40 c0 ffffffff 00000000`, which is radv.c:707 setting the
+// ceiling to zero after the valid lifetime has already been clamped.
+func V6DeprecatedPrefixArgs() []string {
+	return []string{
+		"--dhcp-range=" + V6Prefix + ",ra-only,deprecated",
+		"--enable-ra",
+	}
 }
 
 // RangeArgsFor is rangeArgs, exported for the drift matrix: the contract
@@ -553,6 +633,93 @@ func (f *V6Fixture) evidence() V6Evidence {
 	}
 }
 
+// assertOwnsTheSegment is the fixture's PRECONDITION: this bridge
+// carries this fixture's advertisements and nobody else's.
+//
+// WHY IT IS SEPARATE FROM THE FLAG CHECK. assertMode compares the
+// observed signature against the mode's, which answers "are these the
+// right flags" and cannot answer "whose flags are these". Two things
+// slip past it. Frames captured BEFORE this fixture's dnsmasq started
+// are dropped on the floor -- evidence() reads FramesAfter(startedAt)
+// -- so a router still advertising from a previous fixture is invisible
+// to every assertion in this file. And a second source that agrees with
+// the mode's flags changes nothing about the signature while making the
+// segment's mode "whichever advertisement arrived last", which is the
+// property RAFrame.SourceMAC was carried for.
+//
+// V6BridgeName is one constant for every mode, so "one mode at a time"
+// rests entirely on the previous fixture's teardown having completed.
+// That is a state to ASSERT at the start of a run, not to infer from
+// having called teardown: a contaminated-but-lucky run is otherwise
+// indistinguishable from a clean one, because the capture prints only
+// when something else has already failed (#821, run 35141032546).
+func (f *V6Fixture) assertOwnsTheSegment() {
+	f.t.Helper()
+
+	var findings []string
+
+	// Anything on this bridge before our own server started belongs to
+	// someone else, by construction: the capture is opened moments
+	// before dnsmasq and nothing of ours can predate it.
+	var foreign []RAFrame
+	for _, fr := range f.raCap.Frames() {
+		if fr.At.Before(f.startedAt) {
+			foreign = append(foreign, fr)
+		}
+	}
+	if len(foreign) > 0 {
+		findings = append(findings, fmt.Sprintf(
+			"%d advertisement(s) reached this bridge BEFORE this fixture's dnsmasq started, "+
+				"so another router is live on %s and this segment's mode is not this "+
+				"fixture's to decide:\n%s",
+			len(foreign), V6BridgeName, formatRAFrames(foreign)))
+	}
+
+	// One segment, one router. Counted over our own window, so a
+	// foreign frame is reported once by the check above and not twice.
+	mine := f.raCap.FramesAfter(f.startedAt)
+	srcs := make(map[string]int)
+	var order []string
+	for _, fr := range mine {
+		k := fr.SourceMAC.String()
+		if _, seen := srcs[k]; !seen {
+			order = append(order, k)
+		}
+		srcs[k]++
+	}
+	// REPORTED, NOT FAILED, and the reason is a property of Linux
+	// bridges rather than a judgement about how likely contamination
+	// is. A bridge takes the lowest-addressed of its ports as its own
+	// MAC, so attaching a container's veth CHANGES the source address
+	// of the advertisements dnsmasq sends from it, mid-fixture and with
+	// no second router anywhere. A run of this fixture therefore has
+	// two distinct sources as a matter of course, and failing on the
+	// count would redden every mode on ordinary behaviour.
+	//
+	// Which leaves the count as a diagnostic: it is printed where the
+	// next reader of a confusing v6 failure will see it WITHOUT having
+	// to fail first, so "was there a second router" stops being a
+	// question answered by re-reading a capture that only prints on
+	// failure. Distinguishing a bridge that changed its MAC from a
+	// genuine second router needs the port timeline beside the frames
+	// and is not decided here (#821).
+	if len(order) > 1 {
+		var parts []string
+		for _, k := range order {
+			parts = append(parts, fmt.Sprintf("%s x%d", k, srcs[k]))
+		}
+		f.t.Logf("v6 fixture mode=%s: advertisements from %d source address(es) on %s (%s). "+
+			"Expected when a port joins the bridge and it adopts a new MAC; a second "+
+			"ROUTER would also look like this.",
+			f.mode, len(order), V6BridgeName, strings.Join(parts, ", "))
+	}
+
+	if len(findings) > 0 {
+		f.t.Fatalf("v6 fixture mode=%s does not own its segment: %s\non the wire: %s\nlog:\n%s",
+			f.mode, strings.Join(findings, "; "), f.raCap.SeenTally(), f.readLog())
+	}
+}
+
 // assertMode checks the segment is in the mode the test asked for,
 // rather than assuming the flags did what they did the day they were
 // measured. It is the fixture's reason to exist and the single place
@@ -563,6 +730,10 @@ func (f *V6Fixture) evidence() V6Evidence {
 func (f *V6Fixture) assertMode() {
 	f.t.Helper()
 	ev := f.evidence()
+	// After evidence(), so the advertisements have had their budget to
+	// arrive; before the flag comparison, because "whose segment is
+	// this" is the question the flag comparison assumes an answer to.
+	f.assertOwnsTheSegment()
 	if findings := V6ModeFindings(f.mode, ev); len(findings) > 0 {
 		f.t.Fatalf("v6 fixture mode=%s: %s\ncaptured %d router advertisement(s):\n%s\non the wire: %s\nlog:\n%s",
 			f.mode, strings.Join(findings, "; "), len(ev.Frames),
@@ -792,21 +963,57 @@ func (f *V6Fixture) DumpLogs(write func(string)) {
 	}
 }
 
+// Reannounce replaces the running dnsmasq with one started under
+// different range arguments, on the SAME bridge and the same addresses,
+// and returns once the new one is serving.
+//
+// WHY IT EXISTS (#821). Half of what this plugin now does with a Router
+// Advertisement has no other way to be driven from outside: a router
+// that renumbers itself, lowers its MTU, stops offering a route
+// (Router Lifetime 0, RFC 4861 section 4.2) or changes its resolver
+// list is a CHANGE, and a fixture that can only start one way can only
+// ever show the steady state. A container keeps running across this, so
+// what is measured afterwards is the plugin rewriting a live
+// container's configuration rather than a fresh Join doing it.
+//
+// The bridge, its addresses and the RA capture are left alone: only the
+// server process is replaced, which is what a router being reconfigured
+// looks like from the segment.
+//
+// The log is TRUNCATED by the restart, because start() creates the log
+// file afresh. Callers that count log lines across a Reannounce must
+// take their counts before it.
+func (f *V6Fixture) Reannounce(rangeArgs []string) {
+	f.t.Helper()
+	f.stopServer()
+	f.start(rangeArgs)
+}
+
+// stopServer ends the dnsmasq process and nothing else. Split out of
+// teardown so Reannounce cannot drift from it: a restart that forgot
+// to wait for the old process would leave two servers answering on one
+// bridge, and the second one's answers would look like the first one's.
+func (f *V6Fixture) stopServer() {
+	if f.cmd == nil || f.cmd.Process == nil {
+		return
+	}
+	_ = f.cmd.Process.Signal(syscall.SIGTERM)
+	done := make(chan struct{})
+	go func() { _ = f.cmd.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		_ = f.cmd.Process.Kill()
+		<-done
+	}
+	f.cmd = nil
+}
+
 func (f *V6Fixture) teardown() {
 	if f.raCap != nil {
 		f.raCap.Stop()
 	}
-	if f.cmd != nil && f.cmd.Process != nil {
-		_ = f.cmd.Process.Signal(syscall.SIGTERM)
-		done := make(chan struct{})
-		go func() { _ = f.cmd.Wait(); close(done) }()
-		select {
-		case <-done:
-		case <-time.After(2 * time.Second):
-			_ = f.cmd.Process.Kill()
-			<-done
-		}
-	}
+	f.stopServer()
 	if f.tmpDir != "" {
 		_ = os.RemoveAll(f.tmpDir)
 	}

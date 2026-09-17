@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"runtime"
 	"strings"
@@ -179,7 +180,7 @@ func openContainerProc(pid int, ctrID string) (*os.File, error) {
 //     single-entry option 15 (`domain`) when option 119
 //     isn't supplied. RFC 3397 specifies option 119 supersedes option
 //     15 when both are present.
-func writeContainerResolvConf(pid int, ctrID string, dns []string, searchList []string, searchDomain string) error {
+func writeContainerResolvConf(pid int, ctrID string, dns []string, searchList []string, searchDomain, iface string) error {
 	// Drop anything that would restructure the file before the emptiness
 	// guard below, so "every nameserver the server sent was unusable"
 	// lands on that guard rather than producing a resolv.conf with no
@@ -255,7 +256,7 @@ func writeContainerResolvConf(pid int, ctrID string, dns []string, searchList []
 		return fmt.Errorf("setns into container mnt ns: %w", err)
 	}
 
-	writeErr := os.WriteFile("/etc/resolv.conf", buildResolvConf(dns, searchList, searchDomain), 0644)
+	writeErr := os.WriteFile("/etc/resolv.conf", buildResolvConf(dns, searchList, searchDomain, iface), 0644)
 
 	if err := unix.Setns(int(origMnt.Fd()), unix.CLONE_NEWNS); err != nil {
 		// Thread is now stuck in the container's mnt ns. Don't
@@ -274,7 +275,7 @@ func writeContainerResolvConf(pid int, ctrID string, dns []string, searchList []
 // option 119 wins over the single-domain searchDomain from option 15.
 // When both are absent no `search` line is emitted — resolv.conf is
 // then equivalent to a no-search-domain configuration.
-func buildResolvConf(dns []string, searchList []string, searchDomain string) []byte {
+func buildResolvConf(dns []string, searchList []string, searchDomain, iface string) []byte {
 	// Backstop. writeContainerResolvConf already filtered; doing it here
 	// too means the renderer itself cannot emit a line it was not asked
 	// for, whoever calls it. Same reasoning as dhcp.directive on the
@@ -296,9 +297,45 @@ func buildResolvConf(dns []string, searchList []string, searchDomain string) []b
 		fmt.Fprintf(&b, "search %s\n", searchDomain)
 	}
 	for _, ns := range dns {
-		fmt.Fprintf(&b, "nameserver %s\n", ns)
+		fmt.Fprintf(&b, "nameserver %s\n", zonedNameserver(ns, iface))
 	}
 	return []byte(b.String())
+}
+
+// zonedNameserver appends the container-side interface as a scope zone
+// to a link-local resolver address, and leaves everything else alone.
+//
+// WHY IT IS NEEDED (#821): RFC 8106 section 5.1 lets a Router
+// Advertisement carry link-local addresses as RDNSS entries, and
+// routers do -- a segment whose router is also its resolver has no
+// other address to give. A link-local address is ambiguous on a host
+// with more than one interface, so RFC 4007 section 11 spells the zone
+// after a '%'. glibc's resolver passes the zone through to the socket;
+// WITHOUT it, a `nameserver fe80::1` line is unusable and every lookup
+// fails with "Invalid argument".
+//
+// THE ZONE IS THE CONTAINER'S NAME FOR THE LINK, not the host's. The
+// file is read inside the container, where the interface is `eth0` or
+// whatever the endpoint's interface_name asked for, and the host-side
+// veth name means nothing there. The caller reads it off the link it
+// located inside the sandbox.
+//
+// THE BOUND, stated rather than pretended away: musl (the C library in
+// the alpine images this project tests against) parses resolv.conf with
+// inet_pton and does not accept a zone at all, so a musl container
+// silently drops such a line. There is nothing the plugin can write
+// that works for both, and writing the glibc-correct form is the choice
+// that loses nothing: without the zone the address does not work under
+// either library.
+func zonedNameserver(ns, iface string) string {
+	if iface == "" || strings.Contains(ns, "%") {
+		return ns
+	}
+	ip := net.ParseIP(ns)
+	if ip == nil || ip.To4() != nil || !ip.IsLinkLocalUnicast() {
+		return ns
+	}
+	return ns + "%" + iface
 }
 
 // resolvSafe drops entries that cannot be written to /etc/resolv.conf as

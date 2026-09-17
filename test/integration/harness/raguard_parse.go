@@ -35,9 +35,10 @@ import (
 // it would then return that OTHER interface — after which the observer
 // reads its sysctls from the wrong path and reports whatever it finds
 // there. The fixture prefixes make a collision impossible today, which
-// is exactly why nothing would have caught it; and this PR is what
-// makes a second global address on one link possible at all
-// (`autoconf=1`), so the bound is closed here rather than written down.
+// is exactly why nothing would have caught it. A second global address
+// on one link is what makes it reachable -- a multi-network container,
+// an operator adding one by hand, or SLAAC once #818 lands -- so the
+// bound is closed here rather than written down.
 // CountDHCPv6Binds keeps the substring behaviour deliberately and has
 // it pinned as such.
 //
@@ -77,6 +78,43 @@ func HasLinkLocalDefaultRoute(out string) bool {
 		}
 	}
 	return false
+}
+
+// CountDefaultRoutes counts the default routes in `ip -6 route show
+// default` output.
+//
+// WHY THE COUNT AND NOT THE PRESENCE (#821). Since the plugin owns the
+// IPv6 gateway and writes accept_ra=0 on the container's link, ONE
+// default route is the whole claim: none means the advertisement never
+// reached the plugin's client, and two means the container's kernel
+// installed one of its own beside it, which is the failure the guard
+// exists to prevent and which a presence test cannot see.
+//
+// Blank lines do not count. Busybox prints a trailing newline, and a
+// helper that counted it would report one route on an empty table.
+func CountDefaultRoutes(out string) int {
+	n := 0
+	for _, line := range strings.Split(out, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "default") {
+			n++
+		}
+	}
+	return n
+}
+
+// ResolvNameservers returns the nameserver values in a resolv.conf, in
+// file order, with the RFC 4007 section 11 scope zone left ON: the zone
+// is part of what the plugin writes and a helper that stripped it would
+// make the assertion that checks for it impossible.
+func ResolvNameservers(out string) []string {
+	var got []string
+	for _, line := range strings.Split(out, "\n") {
+		f := strings.Fields(line)
+		if len(f) >= 2 && f[0] == "nameserver" {
+			got = append(got, f[1])
+		}
+	}
+	return got
 }
 
 // SysctlReadFailed reports whether out is a failed read rather than a

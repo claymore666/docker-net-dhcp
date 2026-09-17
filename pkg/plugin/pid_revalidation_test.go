@@ -219,7 +219,7 @@ func selfCgroup(t *testing.T, pid int) cgroupFileContents {
 // the named container -- the test process itself -- and asserts it is
 // refused before any namespace is touched.
 func TestWriteContainerResolvConf_RefusesAPIDThatIsNotTheContainer(t *testing.T) {
-	err := writeContainerResolvConf(os.Getpid(), foreignCtrID, []string{"192.0.2.53"}, nil, "")
+	err := writeContainerResolvConf(os.Getpid(), foreignCtrID, []string{"192.0.2.53"}, nil, "", "")
 	if err == nil {
 		t.Fatal("expected a refusal: the plugin would have written resolv.conf into a process that is not the container")
 	}

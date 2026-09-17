@@ -171,6 +171,27 @@ type HealthResponse struct {
 	// to expire (#566).
 	JoinAbortedNoContainer int32 `json:"join_aborted_no_container"`
 	JoinAttachSlow         int32 `json:"join_attach_slow"`
+	// The three outcomes of a container's name arriving after its DHCP
+	// client is already leasing (#961). HostnamesAppliedLate is the
+	// domain the other two are read against: a suite where it stays at
+	// zero has not exercised the late path at all, and their zeros then
+	// say nothing. Which is the normal reading on THIS pool: the late
+	// path runs only where the attach entered through the sandbox key,
+	// and sandbox_netns_propagation reads 0 here, so the PID route
+	// carries every attach and puts the name in the client's opening
+	// parameters instead. v4 only; this plugin sends no name option for
+	// DHCPv6.
+	HostnamesAppliedLate   int32 `json:"hostnames_applied_late"`
+	HostnameLookupFailures int32 `json:"hostname_lookup_failures"`
+	HostnameApplyFailures  int32 `json:"hostname_apply_failures"`
+	// The three outcomes of naming a host-side link after its container
+	// (#978). HostIfnamesApplied is the domain the other two are read
+	// against: a suite where it stays at zero has created no network
+	// that asked for named links, and their zeros then say nothing.
+	// Bridge mode only.
+	HostIfnamesApplied  int32 `json:"host_ifnames_applied"`
+	HostIfnameConflicts int32 `json:"host_ifname_conflicts"`
+	HostIfnameFailures  int32 `json:"host_ifname_failures"`
 	// The body of the distribution join_attach_slow is the tail of
 	// (#403). Plain int32: these ship with this change, so a zero from
 	// an older plugin and a zero from a quiet lane are the same
@@ -309,12 +330,22 @@ type HealthResponse struct {
 	// option, which is every network in this suite except the one
 	// TestReleaseLease drives. Read the per-family halves: a dual-stack
 	// endpoint can hand one address back and keep the other.
-	ReleasesSent        int32 `json:"releases_sent"`
-	ReleasesSentV4      int32 `json:"releases_sent_v4"`
-	ReleasesSentV6      int32 `json:"releases_sent_v6"`
-	ReleaseFailures     int32 `json:"release_failures"`
-	ReleaseFailuresV4   int32 `json:"release_failures_v4"`
-	ReleaseFailuresV6   int32 `json:"release_failures_v6"`
+	ReleasesSent      int32 `json:"releases_sent"`
+	ReleasesSentV4    int32 `json:"releases_sent_v4"`
+	ReleasesSentV6    int32 `json:"releases_sent_v6"`
+	ReleaseFailures   int32 `json:"release_failures"`
+	ReleaseFailuresV4 int32 `json:"release_failures_v4"`
+	ReleaseFailuresV6 int32 `json:"release_failures_v6"`
+	// ReleasesReclaimed is the `on_remove` window's own counter (#984):
+	// a held address a RUNNING container is using again at the end of
+	// the window, so nothing went on the wire. Zero on `never` and
+	// `on_stop`, which have no window. A test that reads it as "no
+	// datagram left the host" reads it too widely: an address stopped
+	// twice and an acquisition in flight also send nothing and do not
+	// move it. Assert on the lease file for that question.
+	ReleasesReclaimed   int32 `json:"releases_reclaimed"`
+	ReleasesReclaimedV4 int32 `json:"releases_reclaimed_v4"`
+	ReleasesReclaimedV6 int32 `json:"releases_reclaimed_v6"`
 	NAKsReceived        int32 `json:"naks_received"`
 	LedgerWriteFailures int32 `json:"ledger_write_failures"`
 	// StateFileChmodFailures counts files the startup sweep could not
@@ -380,6 +411,28 @@ type HealthResponse struct {
 	DHCPv6NoRouterAdvert   int32 `json:"dhcpv6_no_router_advert"`
 	IPv6LinkEnableFailures int32 `json:"ipv6_link_enable_failures"`
 
+	// The v6 no-address endings and the SLAAC address counters, mirrored
+	// here for the same reason the two above are: a test that wants a
+	// delta over one of them wants it through CounterWindow, which is
+	// the only reader that checks the plugin did not restart underneath
+	// the pair (#405). Reading them off /metrics instead is equally
+	// valid and dhcpv6_refused_test.go does exactly that; what is not
+	// valid is subtracting two numbers by hand with nothing watching
+	// the instance they came from.
+	//
+	// None of them is healthy-affecting and none belongs in the floor
+	// table. Each is zero on every segment that is not the one it
+	// describes, so a floor entry would be a threshold on a number that
+	// is normally absent, which is the shape that cries wolf.
+	DHCPv6NoServer           int32 `json:"dhcpv6_no_server"`
+	DHCPv6SLAACNoPrefix      int32 `json:"dhcpv6_slaac_no_prefix"`
+	DHCPv6SLAACNoAddress     int32 `json:"dhcpv6_slaac_no_address"`
+	DHCPv6AutoFallbacks      int32 `json:"dhcpv6_auto_fallbacks"`
+	IPv6SLAACAddresses       int32 `json:"ipv6_slaac_addresses"`
+	IPv6AddressesWithdrawn   int32 `json:"ipv6_addresses_withdrawn"`
+	IPv6SLAACPrefixesIgnored int32 `json:"ipv6_slaac_prefixes_ignored"`
+	IPv6MainPrefixUnmatched  int32 `json:"ipv6_main_prefix_unmatched"`
+
 	// RouterAdvertGuardFailures counts steps of the DHCPv6 Router
 	// Advertisement guard that did not take (#911). DHCPv6 carries no
 	// next hop -- RFC 9915 section 21 defines no router option -- and
@@ -397,6 +450,33 @@ type HealthResponse struct {
 	// inside the container can then read the guard's own account of
 	// itself; a zero on its own means "held" and "never ran" equally.
 	RouterAdvertGuardFailures int32 `json:"router_advert_guard_failures"`
+
+	// IPv6RouterWithdrawn counts container IPv6 default routes removed
+	// because the advertising router set its Router Lifetime to 0 (RFC
+	// 4861 section 4.2, #821). NOT healthy-affecting and NOT in the
+	// floor table: a router withdrawing itself is deliberate, and the
+	// containers on that segment are correctly left with no default
+	// route rather than one pointing at a router that is gone. It is
+	// here so a test that has SEEN the route disappear from inside the
+	// container can then read the plugin's own account of why.
+	IPv6RouterWithdrawn int32 `json:"ipv6_router_withdrawn"`
+
+	// The library's own RFC 4861 router-discovery counters (#814).
+	// None is healthy-affecting and none is in the floor table: every
+	// one of them describes what the SEGMENT sent, not a plugin fault,
+	// and a run on an IPv4-only fixture moves none of them.
+	//
+	// RouterAdvertsSeen is the one a v6 test asserts on. It is the
+	// plugin's evidence that a link it attached a container to was
+	// advertising at all, and the counter #814 asks a v6 integration
+	// run to watch rise. Read it against RouterSolicitsSent: a zero
+	// beside a zero is a client that never asked.
+	RouterSolicitsSent         int32 `json:"router_solicits_sent"`
+	RouterAdvertsSeen          int32 `json:"router_adverts_seen"`
+	RouterAdvertsRefused       int32 `json:"router_adverts_refused"`
+	RouterAdvertOptionsIgnored int32 `json:"router_advert_options_ignored"`
+	RouterTableEntriesDropped  int32 `json:"router_table_entries_dropped"`
+	RouterTableEntriesEvicted  int32 `json:"router_table_entries_evicted"`
 
 	// The five IPAM-driver counters (#110). None is healthy-affecting
 	// and none is in the floor table: an IPAM-mode network is one of

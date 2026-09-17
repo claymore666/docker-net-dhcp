@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"strings"
 	"sync"
@@ -407,9 +408,64 @@ type DHCPNetworkOptions struct {
 	// upstream DHCP server. Useful for split-horizon LANs where
 	// containers should egress via a different router than the one
 	// the DHCP server advertises (e.g. VPN gateway).
-	Gateway      string
-	IPv6         bool
-	LeaseTimeout time.Duration `mapstructure:"lease_timeout"`
+	Gateway string
+	// IPv6 switches DHCPv6 on for every endpoint on this network. It
+	// is the option that has always existed and it keeps its exact
+	// meaning: `ipv6=true` alone is `ipv6_mode=dhcp` (#817).
+	//
+	// READ IT THROUGH ipv6Enabled AND NEVER ON ITS OWN. Since #817
+	// there are two options saying where an endpoint's IPv6 address
+	// comes from, and the answer is a function of the pair. A site that
+	// reads this field alone serves an `ipv6_mode=slaac` network as a
+	// network with no IPv6 at all.
+	IPv6 bool
+	// IPv6Mode is where an endpoint's IPv6 address comes from: `off`
+	// (the default), `dhcp`, `slaac` or `auto` (#817). The values are
+	// the library's proto.Mode6 spellings, so the option a user writes
+	// and the value the DHCPv6 state machine switches on are one
+	// enumeration; dhcp.ParseIPv6Mode is the only thing that reads the
+	// string.
+	//
+	// Setting it to anything but `off` switches IPv6 on, so a network
+	// says `ipv6_mode=slaac` and nothing else. Setting it beside an
+	// `ipv6` that disagrees is REFUSED at CreateNetwork rather than
+	// resolved by a precedence rule nobody could guess.
+	IPv6Mode string `mapstructure:"ipv6_mode"`
+	// IPv6AutoStrict decides what `ipv6_mode=auto` does when the
+	// router said addresses come from DHCPv6 and no server then
+	// answers (design Q3).
+	//
+	// Default false: after half the router-discovery window the client
+	// forms an address from an advertised prefix instead, counts
+	// `dhcpv6_auto_fallbacks` and logs the fallback. True is STRICT --
+	// a silent server fails the endpoint, which is what `dhcp` does and
+	// what an operator who meant "managed or nothing" is asking for.
+	//
+	// It is read only in `auto`. In `dhcp` there is no fallback to
+	// suppress and in `slaac` there is no server to wait for.
+	IPv6AutoStrict bool `mapstructure:"ipv6_auto_strict"`
+	// IPv6MainPrefix names which of an endpoint's IPv6 addresses is the
+	// one Docker is told about (#818, design question Q2).
+	//
+	// WHY THERE IS MORE THAN ONE TO CHOOSE FROM. RFC 4862 section 5.5.3
+	// forms one address per autonomous prefix, so a link advertising a
+	// unique-local prefix and a global one gives every container two
+	// addresses and both are installed. Docker's endpoint carries
+	// exactly one AddressIPv6, which is what `docker inspect` shows and
+	// what other containers are told by name resolution, and the first
+	// prefix a router happens to list is not a choice an operator made.
+	//
+	// A prefix in CIDR form, e.g. `2001:db8:1::/64`. Unset means the
+	// first advertised prefix. A value that no address falls inside
+	// falls back to the first advertised, counts
+	// `ipv6_main_prefix_unmatched` and logs a line naming both, rather
+	// than failing an endpoint over which of its working addresses is
+	// the headline one. It is REFUSED at CreateNetwork on an
+	// `ipv6_mode` that does not form addresses: a DHCPv6 lease holds
+	// the address the server granted, and a filter over one address can
+	// only ever do nothing.
+	IPv6MainPrefix string        `mapstructure:"ipv6_main_prefix"`
+	LeaseTimeout   time.Duration `mapstructure:"lease_timeout"`
 	// IgnoreConflicts skips the BRIDGE OVERLAP check at CreateNetwork:
 	// whether some other Docker network already has this bridge, or an
 	// address range covering it. It is a question about this host's own
@@ -557,6 +613,30 @@ type DHCPNetworkOptions struct {
 	// parseReleaseLease, so a typo fails the create rather than
 	// silently selecting the default.
 	ReleaseLease string `mapstructure:"release_lease"`
+	// HostIfname decides what the host-side interface this network
+	// creates is called (#978). Empty (the default) is every release
+	// before v2.2.0: `dh-` plus the endpoint ID's first 12 hex, which
+	// is unique and says nothing. `container_name` and `hostname` name
+	// it after the container instead, so `ip link` and `brctl show`
+	// read like the compose file.
+	//
+	// BRIDGE MODE ONLY, and the create refuses it elsewhere rather than
+	// accepting it and doing nothing: a macvlan or ipvlan child is moved
+	// into the container's namespace and leaves nothing on the host to
+	// name.
+	//
+	// The name is a REQUEST. It is derived once per attach by
+	// deriveHostIfname, from the daemon's answer and never from
+	// anything written down, and the kernel is what decides whether it
+	// can be taken -- interface names are unique across the whole host
+	// namespace, which this plugin shares with every other network on
+	// the box. A name that is taken, or that nothing legal is left of,
+	// leaves the link with its generated name and moves a counter.
+	//
+	// The value is validated at CreateNetwork against the list in
+	// parseHostIfname, so a typo fails the create rather than silently
+	// selecting the default.
+	HostIfname string `mapstructure:"host_ifname"`
 }
 
 // effectiveMode returns Mode with the empty default normalized to ModeBridge.
@@ -579,24 +659,145 @@ func (o DHCPNetworkOptions) fqdnMode() string {
 }
 
 func decodeOpts(input interface{}) (DHCPNetworkOptions, error) {
+	opts, _, err := decodeOptsSet(input)
+	return opts, err
+}
+
+// decodeOptsSet is decodeOpts plus the set of fields the input actually
+// carried.
+//
+// WHY ANYTHING NEEDS THAT. Every field here has a zero value, and for
+// `ipv6` the zero is also a value an operator can write: `-o
+// ipv6=false`. #817 has to refuse `ipv6=false` beside `ipv6_mode=slaac`
+// -- the pair contradicts itself -- while ACCEPTING `ipv6_mode=slaac`
+// on its own, which is the documented way to turn IPv6 on. Those two
+// inputs decode to the same struct, so a refusal written against the
+// struct alone either never fires or fires on the documented spelling.
+// mapstructure records which fields it filled, and that is the one
+// place the difference exists.
+//
+// THE NAMES IN THE SET ARE GO FIELD NAMES ("IPv6", "IPv6Mode"), never
+// option keys, and they are normalised here because mapstructure's own
+// metadata is not consistent about it: Metadata.Keys carries the
+// mapstructure TAG for a tagged field ("ipv6_mode") and the field name
+// for an untagged one ("IPv6"). A caller asking `set["IPv6Mode"]`
+// against the raw metadata would get false for an option that WAS
+// written, which is a check that reports the opposite of the truth and
+// does it silently. A caller asks with a field name so that a renamed
+// field is a compile error rather than a check that quietly stops
+// matching; normaliseOptionKeys is what makes that promise true.
+//
+// AN OPTION WRITTEN WITH AN EMPTY VALUE IS NOT AN OPTION THE OPERATOR
+// WROTE, and dropEmptyOptionValues is what makes that true. Read its
+// comment: without it the very first refusal built on this set fires on
+// input nobody typed a value into, and it names the one option whose
+// behaviour the uniform rule changes.
+func decodeOptsSet(input interface{}) (DHCPNetworkOptions, map[string]bool, error) {
+	input = dropEmptyOptionValues(input)
+
 	var opts DHCPNetworkOptions
+	var md mapstructure.Metadata
 	optsDecoder, err := mapstructure.NewDecoder(&mapstructure.DecoderConfig{
 		Result:           &opts,
 		ErrorUnused:      true,
 		WeaklyTypedInput: true,
+		Metadata:         &md,
 		DecodeHook: mapstructure.ComposeDecodeHookFunc(
 			mapstructure.StringToTimeDurationHookFunc(),
 		),
 	})
 	if err != nil {
-		return opts, fmt.Errorf("failed to create options decoder: %w", err)
+		return opts, nil, fmt.Errorf("failed to create options decoder: %w", err)
 	}
 
 	if err := optsDecoder.Decode(input); err != nil {
-		return opts, err
+		return opts, nil, err
 	}
 
-	return opts, nil
+	return opts, normaliseOptionKeys(md.Keys), nil
+}
+
+// normaliseOptionKeys turns mapstructure's mixed bag of tags and field
+// names into Go field names.
+//
+// A key that matches no field is kept as it is. That cannot happen
+// today -- the decoder runs with ErrorUnused, so an unknown key fails
+// the decode before this is reached -- and dropping it would be the
+// worse of the two ways to be wrong if it ever could.
+func normaliseOptionKeys(keys []string) map[string]bool {
+	byTag := map[string]string{}
+	t := reflect.TypeOf(DHCPNetworkOptions{})
+	for i := 0; i < t.NumField(); i++ {
+		f := t.Field(i)
+		if tag := f.Tag.Get("mapstructure"); tag != "" {
+			byTag[tag] = f.Name
+		}
+	}
+	set := make(map[string]bool, len(keys))
+	for _, k := range keys {
+		if name, ok := byTag[k]; ok {
+			set[name] = true
+			continue
+		}
+		set[k] = true
+	}
+	return set
+}
+
+// dropEmptyOptionValues removes options written with no value at all,
+// so that `-o ipv6=` is the same input as no `-o ipv6` and not the same
+// input as `-o ipv6=false`.
+//
+// MEASURED against the pinned mapstructure: `{"ipv6": "", "ipv6_mode":
+// "dhcp"}` decodes to IPv6=false with Metadata.Keys naming IPv6, so
+// without this the pair reads as the written-out contradiction
+// validateIPv6Options refuses -- and `docker network create ... -o
+// ipv6= -o ipv6_mode=dhcp`, or `driver_opts: {ipv6: ""}` in Compose,
+// would fail with a message about a `false` the operator never typed.
+//
+// IT IS ONE RULE FOR EVERY OPTION, and the rule is about the INPUT and
+// not about one field: an option written with no value is an option the
+// operator did not set. Doing it before the decode is what makes the
+// struct and the key set agree; a set filtered afterwards would still
+// describe a struct the decoder had already written into, and for a
+// typed field it would have failed the decode first.
+//
+// THIS CHANGES ONE OPTION'S BEHAVIOUR AND THE REFERENCE SAYS SO.
+// Every string-valued option here already read an empty value as unset,
+// because each one's parser maps "" to its default. A DURATION does
+// not: `-o lease_timeout=` was refused with `time: invalid duration ""`
+// before this and is accepted as unset after it, taking the derived
+// default. That is the uniform rule applied to the one option that did
+// not follow it, it is stated in docs/reference.md where the options
+// are introduced, and TestDecodeOptsSet_AnEmptyValueIsNotAValue pins it
+// so the sentence above cannot become false in silence. `driver_opts:
+// {lease_timeout: "${VAR}"}` with VAR unset is the shape that produces
+// it, and "the operator did not set a timeout" is what that input
+// means.
+//
+// A non-map input is handed back untouched: the decoder's own error is
+// a better report of it than anything this could say.
+func dropEmptyOptionValues(input interface{}) interface{} {
+	m, ok := input.(map[string]interface{})
+	if !ok {
+		return input
+	}
+	var out map[string]interface{}
+	for k, v := range m {
+		if s, isStr := v.(string); isStr && s == "" {
+			if out == nil {
+				out = make(map[string]interface{}, len(m))
+				for k2, v2 := range m {
+					out[k2] = v2
+				}
+			}
+			delete(out, k)
+		}
+	}
+	if out == nil {
+		return input
+	}
+	return out
 }
 
 type joinHint struct {
@@ -608,6 +809,24 @@ type joinHint struct {
 	// Gateway, they only arrive in CreateEndpoint, so they ride the hint
 	// to be appended to the Join response's StaticRoutes.
 	Routes []*StaticRoute
+	// GatewayIPv6 is the IPv6 router this segment advertised, as the
+	// library's own client saw it in CreateEndpoint: a Router
+	// Advertisement's source address, which is a link-local one.
+	//
+	// It rides the hint for the same reason Gateway does, and for one
+	// more. DHCPv6 carries no gateway at all (RFC 9915 has no such
+	// option), so before #821 the Join answer had no IPv6 gateway in it
+	// and the container's route came from the kernel acting on the same
+	// advertisement. The plugin now owns that route, which means it has
+	// to be in the answer, which means it has to come from the exchange
+	// that happened in CreateEndpoint.
+	GatewayIPv6 string
+	// RoutesIPv6 are the more-specific IPv6 routes the advertisement
+	// asked for: RFC 4191 Route Information options as next-hop routes,
+	// and RFC 4861 section 4.6.2 Prefix Information options with the L
+	// flag as on-link routes. The default route is NOT among them; it
+	// is GatewayIPv6 above.
+	RoutesIPv6 []*StaticRoute
 	// MacAddress is the MAC CreateEndpoint ran its one-shot DHCP
 	// exchange under, and so the one this endpoint's DHCP identity is
 	// keyed to (dhcpManager.clientID, #371). Set in every mode.
@@ -976,6 +1195,71 @@ type Plugin struct {
 	// which is exactly why it would otherwise be invisible.
 	unsafeHostnamesRejected atomic.Int32
 
+	// THE THREE OUTCOMES OF A NAME THAT ARRIVES AFTER THE CLIENT IS
+	// RUNNING (#961). The attach starts the persistent v4 client before
+	// it asks the daemon for the container's name, and gives the name
+	// to the running client afterwards; none of the three arms fails
+	// the attach, so without these the whole step is silent.
+	//
+	// THREE AND NOT ONE, because each leaves a different thing true and
+	// wants a different answer. hostnamesAppliedLate is the mechanism
+	// working, and it NARROWS the two failure counters' zeros without
+	// deciding them: a zero on all three is satisfied by a host that
+	// never attached anything, by one whose containers were all started
+	// without --hostname, and by one where every attach took the name
+	// before the client started (register_dns, or the PID fallback).
+	// Non-zero here is the only reading that says the late path ran and
+	// worked; zero is three states and needs the plugin log to tell
+	// them apart. It counts non-empty names only; a container started
+	// without --hostname is not a failure and nothing is handed over
+	// for it.
+	//
+	// hostnameLookupFailures is the daemon: the container inspect did
+	// not answer inside the attach window. The endpoint keeps its lease
+	// and its renewal client -- that is the whole point of the reorder
+	// -- and what it loses is its name in the DHCP server's table until
+	// something re-attaches it.
+	//
+	// hostnameApplyFailures is the client refusing the handover: an
+	// unsendable name, a full request queue, or no running client to
+	// give it to. Distinguished from the lookup because the remedies
+	// are opposite ends of the host.
+	//
+	// None is healthy-affecting: a lease without a name is a working
+	// container.
+	hostnamesAppliedLate   atomic.Int32
+	hostnameLookupFailures stampedCounter
+	hostnameApplyFailures  stampedCounter
+
+	// THE THREE OUTCOMES OF NAMING A HOST-SIDE LINK AFTER ITS
+	// CONTAINER (#978). The rename runs after the attach has already
+	// succeeded and never fails one, so without these the whole step is
+	// silent.
+	//
+	// hostIfnamesApplied is the mechanism working, and it is also the
+	// DOMAIN: a zero on the two failure counters is satisfied by a host
+	// with no network that asked for this at all, and only the positive
+	// counter beside them says otherwise.
+	//
+	// hostIfnameConflicts is the one an operator can act on: the name
+	// the container asked for is already on this host, which is one
+	// namespace shared with every other network and every physical NIC.
+	// Separate from the row below because it is the only refusal whose
+	// remedy is to rename something.
+	//
+	// hostIfnameFailures is every other refusal: a container name with
+	// no character an interface name may carry, a host-side link that
+	// was not there to rename, a kernel that would not take the rename,
+	// or one that took it and would not keep the old name on the link
+	// as an altname. The last is undone rather than left, because the
+	// old name is what DeleteEndpoint looks the link up by.
+	//
+	// Neither failure is healthy-affecting: an ugly interface name is a
+	// working container.
+	hostIfnamesApplied  atomic.Int32
+	hostIfnameConflicts stampedCounter
+	hostIfnameFailures  stampedCounter
+
 	// dnsPropagationPIDMismatches counts DNS propagations refused
 	// because the PID resolved through Docker no longer belonged to the
 	// container it came from (#688).
@@ -1137,10 +1421,10 @@ type Plugin struct {
 	ipamPools    *issuedPools
 	ipamIndex    *ipamIndex
 	ipamReserves *ipamReserves
-	// ipamSweepStop ends the reservation sweeper. Closed by Close and
+	// recordSweepStop ends the record sweeper. Closed by Close and
 	// never written to, so a double Close is the one thing it must not
 	// tolerate -- Close already refuses to run twice.
-	ipamSweepStop chan struct{}
+	recordSweepStop chan struct{}
 
 	// ipamReplayHits counts stored endpoint addresses this plugin
 	// confirmed at a daemon restart from its own lease record.
@@ -1479,6 +1763,30 @@ type Plugin struct {
 	releaseFailuresV4 stampedCounter
 	releaseFailuresV6 stampedCounter
 
+	// releasesReclaimed* is the other half of `release_lease=on_remove`
+	// working (#984): a held address that a RUNNING container is using
+	// again at the end of the restart window, so the plugin closed the
+	// record and sent nothing.
+	//
+	// ONE OF THE THREE WAYS A HELD ADDRESS IS NOT HANDED BACK, not all
+	// three. claimNewerHold and claimInFlight in deferred_release.go
+	// also send nothing and are not counted: neither is a container
+	// running on the address, which is what an operator reads this
+	// number as.
+	//
+	// IT IS THE ONLY OUTSIDE SIGN THAT THE WINDOW DID ITS JOB. A
+	// release that is not sent leaves no trace anywhere else: the
+	// server sees nothing, the log line is a Debug, and
+	// `releases_sent` staying flat reads exactly like an option that
+	// is not working. An operator asking why an address was not handed
+	// back reads this counter.
+	//
+	// Not healthy-affecting and not a warning: a reclaim is the option
+	// behaving as documented, and on a host whose containers restart
+	// often it is the commonest outcome.
+	releasesReclaimedV4 atomic.Int32
+	releasesReclaimedV6 atomic.Int32
+
 	// dhcpv6ConfigOnly counts DHCPv6 information replies: the server
 	// advertised "other configuration available" and answered with
 	// options and no address (#815). Deliberately NOT part of the
@@ -1516,6 +1824,59 @@ type Plugin struct {
 	// them into one counter would hide the second inside the first.
 	dhcpv6NoRouterAdvert atomic.Int32
 
+	// dhcpv6Refused counts endpoints that FAILED because a DHCPv6
+	// server answered and turned the client down: RFC 9915 section
+	// 21.13's Status Code option carrying something other than Success
+	// (#816).
+	//
+	// THE COUNTER THAT SAYS THE SERVER WAS THERE. The two counters
+	// above are healthy outcomes; this one and dhcpv6NoServer are the
+	// two failures, and they are apart because the operator action has
+	// nothing in common. A refusal means a reachable, configured server
+	// that has no address for this client -- an exhausted pool, a host
+	// outside the range it serves -- and a silence means the server is
+	// unreachable or gone.
+	dhcpv6Refused atomic.Int32
+
+	// dhcpv6NoServer counts endpoints that FAILED because the segment
+	// advertised the managed-address flag and no DHCPv6 server answered
+	// within the acquisition budget (#816).
+	//
+	// This ending is the one that shipped and its message is unchanged.
+	// What it did not have was a counter, so "the server refused us"
+	// and "nobody answered" were one row on /metrics -- which is #816
+	// one level up from the log line.
+	dhcpv6NoServer atomic.Int32
+
+	// dhcpv6SLAACNoPrefix counts endpoints that FAILED because a router
+	// advertises on the segment and none of its prefixes formed an
+	// address, on a network whose ipv6_mode takes its addresses from
+	// the advertisement (#816, #817).
+	//
+	// RFC 4862 section 5.5.3 is the list of reasons a Prefix
+	// Information option forms nothing: no Autonomous flag, a zero
+	// valid lifetime, a preferred lifetime past the valid one, a prefix
+	// whose length plus the interface identifier is not 128 bits, or
+	// the link-local prefix. The thing to go and fix is the router, and
+	// that is why this is not folded into dhcpv6NoServer.
+	dhcpv6SLAACNoPrefix atomic.Int32
+
+	// dhcpv6AutoFallbacks counts endpoints on an `ipv6_mode=auto`
+	// network whose address came from a router's advertised prefix
+	// after the segment advertised DHCPv6 and no server answered
+	// (#817).
+	//
+	// IT COUNTS EFFECT. The number is the gain in the library's
+	// lease.Stats.SLAACFallbacks, whose own contract is a fallback that
+	// FORMED an address: a fallback deadline that passed with no usable
+	// prefix ends the acquisition and leaves this where it was. So a
+	// non-zero value means containers are running on an address from a
+	// different source than the one the network's router nominally
+	// offers, which is what an operator who believed the segment was
+	// managed needs to see. `ipv6_auto_strict=true` fails those
+	// endpoints instead.
+	dhcpv6AutoFallbacks atomic.Int32
+
 	// ipv6LinkEnableFailures counts container links the plugin could not
 	// administratively enable IPv6 on before starting a DHCPv6 client
 	// (#868).
@@ -1529,6 +1890,62 @@ type Plugin struct {
 	// timeouts, which is why this gets a counter rather than only the
 	// warning beside it.
 	ipv6LinkEnableFailures atomic.Int32
+
+	// dhcpv6SLAACNoAddress counts endpoints that FAILED on a network
+	// whose ipv6_mode forms the address from a router advertisement,
+	// where a router advertised and no address formed inside the
+	// acquisition budget without the library naming a reason. Its
+	// sibling dhcpv6SLAACNoPrefix is the case where the library DID
+	// name one; see v6SLAACNoAddress for what separates them and why
+	// `slaac` must not land on the "no DHCPv6 server answered" row.
+	dhcpv6SLAACNoAddress atomic.Int32
+
+	// ipv6SLAACAddresses counts ADDRESSES formed from a router
+	// advertisement and installed on a container link, over the whole
+	// life of every endpoint -- not endpoints, and not leases. RFC 4862
+	// section 5.5.3 forms one address per autonomous prefix, so a
+	// container on a link advertising a unique-local prefix and a
+	// global one raises it by two.
+	//
+	// IT COUNTS THE NETLINK CALL AND NOT THE LIBRARY'S OPINION. The
+	// library has a count of the addresses it formed; what an operator
+	// asking "did #818 reach my containers" needs is the number that
+	// went onto a link, and those two are the same number only while
+	// this plugin's apply path works.
+	ipv6SLAACAddresses atomic.Int32
+
+	// ipv6AddressesWithdrawn counts IPv6 addresses this plugin REMOVED
+	// from a container link because the lease stopped holding them:
+	// a valid lifetime that ran out, or a prefix the router stopped
+	// advertising. It is the other half of ipv6SLAACAddresses and it is
+	// what makes a renumbering visible from outside -- an address
+	// arriving and an address leaving are two events, and a counter for
+	// only the first reads as a container collecting addresses forever.
+	ipv6AddressesWithdrawn atomic.Int32
+
+	// ipv6SLAACPrefixesIgnored counts advertised Prefix Information
+	// options this client formed no address from, for any of RFC 4862
+	// section 5.5.3's reasons, INCLUDING the library's own cap of
+	// proto.MaxSLAACAddresses addresses per endpoint.
+	//
+	// IT IS THE ONLY THING THAT SEPARATES "AT THE CAP" FROM "NOTHING
+	// HERE TO FORM FROM". An endpoint on a link advertising nine
+	// autonomous prefixes holds eight addresses and is perfectly
+	// healthy; without this counter the ninth prefix is refused in
+	// silence, and a link whose prefixes are ALL refused reaches
+	// dhcpv6_slaac_no_prefix with no way to tell which rule refused
+	// them. The library's per-reason breakdown is not flattened here
+	// out of taste: it is one number because /metrics carries one
+	// series, and the log line the library journals names the rule.
+	ipv6SLAACPrefixesIgnored atomic.Int32
+
+	// ipv6MainPrefixUnmatched counts endpoints whose network named an
+	// `ipv6_main_prefix` that no address of the endpoint's lease fell
+	// inside, so the first advertised prefix was reported to Docker
+	// instead. It is a configuration counter, not a fault: the endpoint
+	// has addresses and the one `docker inspect` shows is not the one
+	// the operator asked for, which is a router to look at.
+	ipv6MainPrefixUnmatched atomic.Int32
 
 	// routerAdvertGuardFailures counts STEPS of the Router-Advertisement
 	// guard that did not take (#875): a sysctl write that failed, or a
@@ -1554,6 +1971,56 @@ type Plugin struct {
 	// stated on docs/reference.md's DHCPv6 row instead of being
 	// pretended away here.
 	routerAdvertGuardFailures atomic.Int32
+
+	// The library's own RFC 4861 router-discovery counters, folded
+	// process-wide across every DHCPv6 manager that ever ran, the
+	// CreateEndpoint one-shots included (#814).
+	//
+	// THEY ARE ABOUT THE SEGMENT AND NOT ABOUT THIS PLUGIN, which is
+	// what makes them worth publishing beside the guard counter above.
+	// Every IPv6 field the plugin puts into a container -- the
+	// gateway, the MTU, the on-link prefixes, the more-specific routes
+	// and, on a stateless segment, the resolvers -- comes out of an
+	// advertisement. When a container comes up with none of them there
+	// is no counter today that distinguishes a link whose routers are
+	// silent from one whose router is advertising something this
+	// client refuses, and those are two different things to go and do.
+	//
+	// READ routerAdvertsSeen AGAINST routerSolicitsSent, on
+	// acd_probes_sent's rule: a zero sighting count beside a zero
+	// solicitation count is a client that never asked.
+	//
+	// routerTableEntriesDropped and routerTableEntriesEvicted are the
+	// library's two full-list outcomes. Either above zero means the
+	// router table's caps are in force, which on an ordinary segment
+	// means something is advertising more than a link has.
+	routerSolicitsSent         atomic.Int32
+	routerAdvertsSeen          atomic.Int32
+	routerAdvertsRefused       atomic.Int32
+	routerAdvertOptionsIgnored atomic.Int32
+	routerTableEntriesDropped  atomic.Int32
+	routerTableEntriesEvicted  atomic.Int32
+
+	// ipv6RouterWithdrawn counts container default routes removed
+	// because the router that advertised itself stopped doing so
+	// (#821). RFC 4861 section 4.2's Router Lifetime is "the lifetime
+	// associated with the default router", and section 6.3.4: "a
+	// Lifetime of 0 indicates that the router is no longer to be used
+	// as a default router".
+	//
+	// IT COUNTS ROUTES REMOVED, NOT ADVERTISEMENTS RECEIVED. A router
+	// shutting down sends several such advertisements (RFC 4861 section
+	// 6.2.5), and a counter that moved on each of them would report how
+	// talkative the router was rather than how many containers lost
+	// their route. The plugin owns this route since #821 -- the
+	// container's kernel is at accept_ra=0 and will not expire it --
+	// so this is the only thing that takes it away.
+	//
+	// It is NOT healthy-affecting. A router withdrawing itself is a
+	// thing routers do, on purpose, and the containers on that segment
+	// are correctly left without a default route rather than pointed at
+	// one that is gone.
+	ipv6RouterWithdrawn atomic.Int32
 
 	// displacedStops tracks the goroutines Join spawns to Stop a
 	// manager it displaced (#338). Join must not block on the displaced
@@ -2004,19 +2471,6 @@ func (p *Plugin) consumeTombstone(networkID string, h dhcpHostname) (mac, ipv4, 
 	return mac, ipv4, ipv6, true
 }
 
-// recoverEndpoints walks Docker's networks, finds the ones served by
-// this plugin, and rebuilds an in-memory dhcpManager for each attached
-// endpoint. This restores the lease-renewal goroutines after a plugin
-// process restart (e.g. `docker plugin disable` + `enable`, or after
-// the plugin container has crashed and been restarted by Docker).
-//
-// Recovery sources state from Docker rather than persisting our own
-// per-endpoint files: NetworkInspect gives us the MAC and IP of each
-// attached endpoint, ContainerInspect gives the hostname and the
-// container's PID for netns access. That IP is requested as DHCP
-// option 50 so the upstream DHCP
-// server can ACK the lease the container is already using rather than
-// handing out a fresh one.
 // listNetworksWhenReady is recovery's entry gate. It retries NetworkList
 // until the daemon answers or ctx expires.
 //
@@ -2042,6 +2496,20 @@ func (p *Plugin) listNetworksWhenReady(ctx context.Context) ([]dNetwork.Summary,
 	}
 }
 
+// recoverEndpoints walks Docker's networks, finds the ones served by
+// this plugin, and rebuilds an in-memory dhcpManager for each attached
+// endpoint. This restores the lease-renewal goroutines after a plugin
+// process restart (e.g. `docker plugin disable` + `enable`, or after
+// the plugin container has crashed and been restarted by Docker).
+//
+// Recovery sources state from Docker rather than persisting our own
+// per-endpoint files: NetworkInspect gives us the MAC and IP of each
+// attached endpoint, ContainerInspect gives the hostname and the
+// container's PID for netns access. That IP is requested as DHCP
+// option 50 so the upstream DHCP
+// server can ACK the lease the container is already using rather than
+// handing out a fresh one.
+//
 // ctx bounds the whole of recovery; daemonWait is the slice of it the
 // entry gate may spend waiting for the daemon to answer. They are
 // separate on purpose — time spent waiting must not come out of the
@@ -2725,12 +3193,16 @@ func NewPlugin(opts Options) (*Plugin, error) {
 	// else ever asking again. A no-op unless that happened, which is the
 	// only reason it is cheap enough to sit on the enable path.
 	p.reprobeEngine(context.Background())
-	// The reservation sweeper, last, so nothing above can return an
-	// error with it already running. It is the in-memory half of what
-	// retainOrphanedReservations does across a restart: an address
-	// Docker asked for and never created an endpoint for.
-	p.ipamSweepStop = make(chan struct{})
-	go p.ipamSweeper(p.ipamSweepStop)
+	// The record sweeper, last, so nothing above can return an error
+	// with it already running, and so that it cannot look at the
+	// records before the recovery above has adopted the containers that
+	// are still running. It carries two passes: the in-memory half of
+	// what retainOrphanedReservations does across a restart, an address
+	// Docker asked for and never created an endpoint for; and the
+	// deferred release of an address whose restart window has run out
+	// on a `release_lease=on_remove` network (#984).
+	p.recordSweepStop = make(chan struct{})
+	go p.recordSweeper(p.recordSweepStop)
 
 	return &p, nil
 }
@@ -2813,24 +3285,6 @@ func waitBounded(wg *sync.WaitGroup, d time.Duration) bool {
 	}
 }
 
-// Close stops the plugin. The HTTP server is shut down FIRST so no new
-// Join can register a manager while (or after) we stop the existing
-// ones — with the old ordering a Join dispatched during the stop
-// fan-out installed a manager into the fresh registry that nobody ever
-// stopped, leaking its DHCP client.
-// Persistent DHCP clients are then stopped before process exit, so that
-// a plugin upgrade or `docker plugin disable` does not leave clients
-// renewing leases for endpoints this plugin no longer manages.
-//
-// Since #800 this is NOT about releasing anything. Close arrives
-// through Stop and not StopForLeave, so it releases nothing even on a
-// `release_lease=on_stop` network (#962) — the containers are still
-// running, and telling the server their addresses are free is the
-// duplicate assignment #524 detects. A stopped client's address stays
-// leased until it expires, which is the intended behaviour. What must
-// not survive the shutdown is the CLIENT — a stray renewer keeps an
-// address alive that nothing is using, and collides with the client a
-// restarted plugin builds for the same endpoint.
 // ListenMetrics starts the optional TCP listener for /metrics.
 //
 // Off unless METRICS_ADDR is set, and that default is deliberate. The
@@ -2876,6 +3330,24 @@ func (p *Plugin) ListenMetrics(addr string) error {
 	return nil
 }
 
+// Close stops the plugin. The HTTP server is shut down FIRST so no new
+// Join can register a manager while (or after) we stop the existing
+// ones — with the old ordering a Join dispatched during the stop
+// fan-out installed a manager into the fresh registry that nobody ever
+// stopped, leaking its DHCP client.
+// Persistent DHCP clients are then stopped before process exit, so that
+// a plugin upgrade or `docker plugin disable` does not leave clients
+// renewing leases for endpoints this plugin no longer manages.
+//
+// Since #800 this is NOT about releasing anything. Close arrives
+// through Stop and not StopForLeave, so it releases nothing even on a
+// `release_lease=on_stop` network (#962) — the containers are still
+// running, and telling the server their addresses are free is the
+// duplicate assignment #524 detects. A stopped client's address stays
+// leased until it expires, which is the intended behaviour. What must
+// not survive the shutdown is the CLIENT — a stray renewer keeps an
+// address alive that nothing is using, and collides with the client a
+// restarted plugin builds for the same endpoint.
 func (p *Plugin) Close() error {
 	// Stop the deferred-recovery retry first (#383). It can be sitting
 	// in a 60s wait for a daemon that is going away with us, and a
@@ -2885,9 +3357,9 @@ func (p *Plugin) Close() error {
 	if p.recoveryCancel != nil {
 		p.recoveryCancel()
 	}
-	if p.ipamSweepStop != nil {
-		close(p.ipamSweepStop)
-		p.ipamSweepStop = nil
+	if p.recordSweepStop != nil {
+		close(p.recordSweepStop)
+		p.recordSweepStop = nil
 	}
 
 	// One deadline for every phase below; see pluginShutdownTimeout.

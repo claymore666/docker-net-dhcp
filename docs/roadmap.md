@@ -90,8 +90,8 @@ counts renewal requests the server did not answer, hours before
 Engine versions the plugin works on, publishes the floor and refuses
 below it. [#950] makes the refusal an operator reads when a second
 plugin tag cannot take the lease-record lock name its cause and its
-remedy. [#417] and [#403] take the attach into the container's network
-namespace and find its link before any Docker call, and publish the
+remedy. [#417] takes the attach into the container's network
+namespace and finds its link before any Docker call, and publishes the
 durations the attach spends in each phase.
 
 Three more on the milestone change nothing a user sees. [#889] makes
@@ -114,16 +114,40 @@ release the workflow puts the plugin on Hub under
 `claymore666/docker-net-dhcp` as well as `claymore666/net-dhcp`.
 
 **[v2.2.0](https://github.com/claymore666/docker-net-dhcp/milestone/29)**
-is mostly IPv6. [#818] and [#808] acquire an address by SLAAC, [#821]
-takes the gateway, DNS, MTU and routes from the advertisement, [#819]
-handles lifetimes, withdrawal and renumbering, [#817] adds an
-`ipv6_mode` option, [#814] parses Router Advertisements into a
-first-class event, [#925] accepts a server-initiated Reconfigure, and
-[#816] stops a v6 acquisition reporting a lease timeout where no
-exchange was possible. The milestone also carries work that is not
-IPv6: [#961] takes the container hostname to a running client, so the
-attach needs no daemon call at all, and [#984] adds
-`release_lease=on_remove`, the timed release that v2.1.1 refuses. The
+is mostly IPv6, and a network now says where its IPv6 address comes
+from. [#817] adds the `ipv6_mode` option, with `off`, `dhcp`, `slaac`
+and `auto`, and makes `-o ipv6=true` its short spelling for `dhcp`.
+[#818] and [#808] form the address from an advertised prefix, so a
+segment with a router and no DHCPv6 server is one containers get IPv6
+on. [#821] takes the default route, the routes and the MTU from the
+advertisement and puts them in the container in place of the
+container's own kernel, and the resolvers too on a `propagate_dns`
+network. [#819] handles lifetimes, withdrawal and renumbering, and
+adds `ipv6_main_prefix` for which address Docker is told about. [#814]
+parses Router Advertisements into a first-class event and publishes
+six counters for router discovery. [#925] accepts a server-initiated
+Reconfigure, authenticated with the server's reconfigure key. [#816]
+stops a v6 acquisition reporting a lease timeout where no exchange was
+possible: a refusal, a silent server and an advertisement whose
+prefixes form no address each get their own counter and their own
+message. [#818] adds a fourth, for an advertisement that formed no
+address inside the budget, which is another node already holding the
+one this endpoint's prefix and MAC form, or an advertisement too late
+for duplicate address detection to finish.
+
+The milestone also carries work that is not IPv6. [#961] takes the
+container hostname to a client that is already leasing, so an attach
+needs no daemon call before its address. [#984] adds
+`release_lease=on_remove`, the timed release that v2.1.1 refuses: the
+addresses are held for the restart window and handed back at the end of
+it, so a restart keeps its address and a stop that is not followed by
+one gives it up about a minute later. [#978] lets a bridge network name
+its host-side interfaces after the containers they belong to, so
+`ip link` reads like the compose file. [#403] asks whether a loaded
+production host can hit the Join timeout CI does and leave a container
+without a renewal client; [#969] gives that question a measurement, a
+load test on a throwaway local VM that reads the attach buckets off the
+health endpoint against what the DHCP server's lease file says. The
 milestone link above is the list that decides what is on it.
 
 **[v2.3.0](https://github.com/claymore666/docker-net-dhcp/milestone/31)**
@@ -131,7 +155,9 @@ is the host plumbing an operator does by hand today: [#902] VLAN
 sub-interfaces, [#903] a bridge the plugin creates and owns, [#904]
 link-local fallback where no server answers, [#905] macvlan and ipvlan
 sub-modes. It also carries [#960], which gives the IPAM shape a DHCPv6
-exchange and a stable v6 identity, both of which v2.1.0 refuses.
+exchange and a stable v6 identity, both of which that shape refuses
+today: it serves IPv4 only, and every option that switches IPv6 on is
+refused there at `docker network create`.
 [#903] sits inside the rule below that the plugin does not
 change interfaces the host already has: the bridge is one the plugin
 creates for its own networks and owns for as long as they exist, and no
@@ -316,6 +342,8 @@ for the next time someone asks.
 [#963]: https://github.com/claymore666/docker-net-dhcp/issues/963
 [#979]: https://github.com/claymore666/docker-net-dhcp/issues/979
 [#984]: https://github.com/claymore666/docker-net-dhcp/issues/984
+[#978]: https://github.com/claymore666/docker-net-dhcp/issues/978
+[#969]: https://github.com/claymore666/docker-net-dhcp/issues/969
 [#975]: https://github.com/claymore666/docker-net-dhcp/pull/975
 [#972]: https://github.com/claymore666/docker-net-dhcp/issues/972
 [#950]: https://github.com/claymore666/docker-net-dhcp/issues/950

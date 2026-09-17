@@ -78,6 +78,11 @@ net_dhcp_client_stop_failures_total{family="ipv6"} 7163045
 net_dhcp_releases_sent_total{family="ipv4"} 8298147
 net_dhcp_releases_sent_total{family="ipv6"} 3886089
 
+# HELP net_dhcp_releases_reclaimed_total Held addresses a running container is using again at the end of the restart window on a release_lease=on_remove network, so the record was closed and nothing was sent. Narrower than nothing-was-sent: an address stopped a second time and an acquisition in flight under the same key also send nothing and are not counted here. Zero on release_lease=never and on release_lease=on_stop, which have no window. It is the option's quiet half: with releases_sent climbing and this flat, nothing is restarting inside the window, and with this climbing the window is doing what it exists for.
+# TYPE net_dhcp_releases_reclaimed_total counter
+net_dhcp_releases_reclaimed_total{family="ipv4"} 5172289
+net_dhcp_releases_reclaimed_total{family="ipv6"} 7617051
+
 # HELP net_dhcp_release_failures_total Attempts to hand a lease back that put no message on the wire: no lease record for the endpoint, no address or no server on the record, a record the sender refuses, no address on the parent to send from, the send itself failing, or a DHCPv6 address that could not be taken off the link first (RFC 9915 section 18.2.7 requires that before the exchange). The address is left to expire on the server's clock, which is what a release_lease=never network does on every teardown.
 # TYPE net_dhcp_release_failures_total counter
 net_dhcp_release_failures_total{family="ipv4"} 5241287
@@ -87,21 +92,85 @@ net_dhcp_release_failures_total{family="ipv6"} 2796525
 # TYPE net_dhcp_dhcpv6_config_only_total counter
 net_dhcp_dhcpv6_config_only_total 5338778
 
-# HELP net_dhcp_dhcpv6_not_offered_total Endpoints started on an IPv6 network whose router advertisement offered no DHCPv6 address (stateless or SLAAC). Not a fault: the network is working as configured and there is no DHCPv6 address on it to be had. The container comes up with IPv4, an IPv6 link-local and DHCPv6 configuration where the segment offers it, and no global IPv6 address from this plugin. Since v1.9.0 the interface is left at accept_ra=2/autoconf=1, so the kernel may still form a SLAAC address if the advertised prefix sets the A flag; that address is not a lease and is not reported in docker inspect. Kept apart from dhcpv6_no_router_advert because that one means no router answered at all.
+# HELP net_dhcp_dhcpv6_not_offered_total Endpoints started on an IPv6 network whose router advertisement offered no DHCPv6 address (stateless or SLAAC). Not a fault: the network is working as configured and there is no DHCPv6 address on it to be had. The container comes up with IPv4, an IPv6 link-local and DHCPv6 configuration where the segment offers it, and no global IPv6 address from this plugin. Since v2.2.0 the interface is at accept_ra=0/autoconf=0, so the kernel forms no SLAAC address and installs no route from the advertisement either, and the daemon refuses an IPv6 route on a link carrying no IPv6 address, so the plugin cannot supply one here; the container has a link-local address and no IPv6 route until a global address is formed for it (#818). Kept apart from dhcpv6_no_router_advert because that one means no router answered at all.
 # TYPE net_dhcp_dhcpv6_not_offered_total counter
 net_dhcp_dhcpv6_not_offered_total 8785870
+
+# HELP net_dhcp_dhcpv6_refused_total Endpoints that failed because a DHCPv6 server answered and refused the client, carrying a Status Code other than Success (RFC 9915 section 21.13). The code's name is in the log line beside the endpoint. The server is reachable and configured and has no address for this client: an exhausted pool answers NoAddrsAvail, and a client asking for an address outside the range the server serves gets NotOnLink. Kept apart from dhcpv6_no_server, which is the ending where nothing answered at all.
+# TYPE net_dhcp_dhcpv6_refused_total counter
+net_dhcp_dhcpv6_refused_total 8005990
+
+# HELP net_dhcp_dhcpv6_no_server_total Endpoints that failed because the segment's router advertisement carried the managed-address flag and no DHCPv6 server answered inside the acquisition budget. The segment said addresses are available over DHCPv6 and none arrived. Kept apart from dhcpv6_refused, which is the ending where a server answered and said no.
+# TYPE net_dhcp_dhcpv6_no_server_total counter
+net_dhcp_dhcpv6_no_server_total 9239098
+
+# HELP net_dhcp_dhcpv6_slaac_no_prefix_total Endpoints that failed on a network whose ipv6_mode forms the address from a router advertisement, because a router advertised and none of its prefixes formed one. RFC 4862 section 5.5.3 lists the reasons a Prefix Information option forms nothing: no Autonomous flag, a zero valid lifetime, a preferred lifetime past the valid one, a prefix length that with the interface identifier does not total 128 bits, or the link-local prefix. The router's prefix configuration is what to look at.
+# TYPE net_dhcp_dhcpv6_slaac_no_prefix_total counter
+net_dhcp_dhcpv6_slaac_no_prefix_total 6989731
+
+# HELP net_dhcp_dhcpv6_auto_fallbacks_total Endpoints on an ipv6_mode=auto network whose IPv6 address was formed from a router's advertised prefix after the segment advertised DHCPv6 and no server answered inside the fallback window, which is half the router-discovery window by default. It counts addresses that really formed and never fallbacks attempted. Set ipv6_auto_strict=true on the network to fail those endpoints instead of forming an address.
+# TYPE net_dhcp_dhcpv6_auto_fallbacks_total counter
+net_dhcp_dhcpv6_auto_fallbacks_total 1307764
 
 # HELP net_dhcp_dhcpv6_no_router_advert_total Endpoints started on an IPv6 network where no router advertisement arrived inside the acquisition budget. The endpoint keeps running with no IPv6 address. Usually a missing or misconfigured router rather than a plugin fault, but unlike dhcpv6_not_offered it is not a configuration the operator chose.
 # TYPE net_dhcp_dhcpv6_no_router_advert_total counter
 net_dhcp_dhcpv6_no_router_advert_total 2266478
 
+# HELP net_dhcp_dhcpv6_slaac_no_address_total Endpoints that failed on a network whose ipv6_mode forms the address from a router advertisement, where a router advertised and no address formed inside the acquisition budget. Two things produce it: another node already holds the address this endpoint's prefix and MAC address form, and a modified EUI-64 interface identifier gets no second try after duplicate address detection fails (RFC 4862 section 5.4.5); or the advertisement arrived too late in the budget for detection to finish. Kept apart from dhcpv6_slaac_no_prefix, which is the ending where the advertised prefixes themselves formed nothing, and from dhcpv6_no_server, which needs a DHCPv6 exchange -- ipv6_mode=slaac sends no Solicit at all.
+# TYPE net_dhcp_dhcpv6_slaac_no_address_total counter
+net_dhcp_dhcpv6_slaac_no_address_total 2899117
+
+# HELP net_dhcp_ipv6_slaac_addresses_total IPv6 addresses formed from a router's advertised prefix and installed on a container link. It counts ADDRESSES, not endpoints and not leases: RFC 4862 section 5.5.3 forms one address per autonomous prefix, so one container on a link advertising a unique-local prefix and a global one raises this by two. It is the counter that says ipv6_mode=slaac and ipv6_mode=auto are reaching containers, and it moves on the netlink call rather than on the client forming an address, so it cannot report addresses the container does not have.
+# TYPE net_dhcp_ipv6_slaac_addresses_total counter
+net_dhcp_ipv6_slaac_addresses_total 3858638
+
+# HELP net_dhcp_ipv6_addresses_withdrawn_total IPv6 addresses removed from a container link because the lease stopped holding them: a valid lifetime that ran out, or a prefix the router stopped advertising. The other half of ipv6_slaac_addresses, and what makes a renumbering visible: an address arriving and an address leaving are two events, and counting only arrivals reads as a container collecting addresses forever. The audit ledger's withdrawn row names which address, when audit_log is on.
+# TYPE net_dhcp_ipv6_addresses_withdrawn_total counter
+net_dhcp_ipv6_addresses_withdrawn_total 7112696
+
+# HELP net_dhcp_ipv6_slaac_prefixes_ignored_total Advertised Prefix Information options no address was formed from. RFC 4862 section 5.5.3 gives the reasons: no Autonomous flag, the link-local prefix, a preferred lifetime past the valid one, a prefix length that with the interface identifier does not total 128 bits, a zero valid lifetime on a prefix not already held, and an address already found in use. This client's own cap of eight addresses per endpoint is counted here too, which is what separates an endpoint holding eight addresses on a link advertising nine from one that found nothing to form from at all. It is counted only on a network whose ipv6_mode forms addresses: on ipv6_mode=dhcp the same rule refuses every autonomous prefix on every advertisement, correctly, since the address comes from the server, and a router readvertises every few seconds (RFC 4861 section 6.2.1).
+# TYPE net_dhcp_ipv6_slaac_prefixes_ignored_total counter
+net_dhcp_ipv6_slaac_prefixes_ignored_total 8815616
+
+# HELP net_dhcp_ipv6_main_prefix_unmatched_total Endpoints whose network named an ipv6_main_prefix that none of the endpoint's addresses fell inside, so the first advertised prefix was reported to Docker as the endpoint's address instead. Not a fault: the container has its addresses and docker inspect shows a different one than the option asked for, which is the router's prefix list to look at.
+# TYPE net_dhcp_ipv6_main_prefix_unmatched_total counter
+net_dhcp_ipv6_main_prefix_unmatched_total 2818998
+
 # HELP net_dhcp_ipv6_link_enable_failures_total Container links the plugin could not administratively enable IPv6 on before starting a DHCPv6 client. The engine disables IPv6 on a sandbox interface whose endpoint has no IPv6 address, so on such a link nothing IPv6 can arrive at all; without this counter that is indistinguishable from a segment that is merely quiet.
 # TYPE net_dhcp_ipv6_link_enable_failures_total counter
 net_dhcp_ipv6_link_enable_failures_total 1992100
 
-# HELP net_dhcp_router_advert_guard_failures_total Steps of the DHCPv6 Router Advertisement guard that did not take: a sysctl write that failed, or a read-back holding something other than what was written. Three knobs (accept_ra=2, autoconf=1, keep_addr_on_down=1), two steps each. DHCPv6 carries no route of its own, so a container whose kernel is not processing advertisements looks healthy and then loses its route when the advertisement it already has expires. It does not count a privileged process inside the container writing the settings back.
+# HELP net_dhcp_router_advert_guard_failures_total Steps of the DHCPv6 Router Advertisement guard that did not take: a sysctl write that failed, a read-back holding something other than what was written, or a route the kernel had already installed from an advertisement that could not be removed. Three knobs (accept_ra=0, autoconf=0, keep_addr_on_down=1), two steps each, plus the route purge. The plugin puts the IPv6 gateway, MTU, routes and DNS into the Join answer itself, so a container whose kernel is also acting on advertisements carries a second default route beside the plugin's and which one wins is a metric comparison nobody chose. It does not count a privileged process inside the container writing the settings back.
 # TYPE net_dhcp_router_advert_guard_failures_total counter
 net_dhcp_router_advert_guard_failures_total 7077324
+
+# HELP net_dhcp_ipv6_router_withdrawn_total Container IPv6 default routes removed because the router that advertised itself set its Router Lifetime to 0 (RFC 4861 section 4.2). Counts routes removed, not advertisements received, so a router sending several on its way down moves this once per container. Not a fault: the containers on that segment are correctly left with no default route rather than one pointing at a router that is gone.
+# TYPE net_dhcp_ipv6_router_withdrawn_total counter
+net_dhcp_ipv6_router_withdrawn_total 3245771
+
+# HELP net_dhcp_router_solicits_sent_total RFC 4861 section 6.3.7 Router Solicitations sent from container links by the DHCPv6 client. READ router_adverts_seen_total AGAINST THIS ONE: a zero sighting count beside a zero solicitation count is a client that never asked, which is not the same reading as a link whose routers are silent. Only IPv6 endpoints solicit, so it cannot move on an IPv4-only host.
+# TYPE net_dhcp_router_solicits_sent_total counter
+net_dhcp_router_solicits_sent_total 2355602
+
+# HELP net_dhcp_router_adverts_seen_total Router Advertisements that decoded and reached the DHCPv6 state machine. This is the number that says an IPv6 segment is answering at all: the gateway, the MTU, the on-link prefixes, the more-specific routes and a stateless segment's resolvers all come out of these frames, and a container that came up with none of them on a host reading zero here was on a link nothing advertised on. Frames dropped before the client saw them are in none of these series.
+# TYPE net_dhcp_router_adverts_seen_total counter
+net_dhcp_router_adverts_seen_total 7241860
+
+# HELP net_dhcp_router_adverts_refused_total Frames whose ICMPv6 type said Router Advertisement and which would not decode: a zero-length option, an option running past the end of the frame, a non-zero ICMP Code. Separate from router_adverts_seen_total because their difference is the diagnostic. A link with no router and a link whose router is advertising something this client refuses read the same in a total holding both, and one of them is a router to find while the other is a router to fix. Not healthy-affecting: the plugin cannot tell a broken router from a frame something on the path corrupted.
+# TYPE net_dhcp_router_adverts_refused_total counter
+net_dhcp_router_adverts_refused_total 2262229
+
+# HELP net_dhcp_router_advert_options_ignored_total Options inside an advertisement refused by that option's own standard, while the rest of the advertisement was read. It counts OPTIONS and not frames, and it rises on advertisements that are otherwise fine, so it is not part of router_adverts_refused_total. Two things put entries in it: an option the decoder cannot read by its own rule, and a value the state machine read and may not use, which today is a link MTU outside the range RFC 4861 section 6.3.4 lets a host copy. Not healthy-affecting: a router offering one option nobody can use still supplies everything else.
+# TYPE net_dhcp_router_advert_options_ignored_total counter
+net_dhcp_router_advert_options_ignored_total 6299770
+
+# HELP net_dhcp_router_table_entries_dropped_total Advertised entries a full list in the client's router table would not take: a ninth router, or a seventeenth more-specific route. Non-zero means the table's caps are in force, which on a segment carrying one link's worth of routers means something is advertising more than a link has. A refusal holds what was heard first, so what is lost is the newest arrival. Not healthy-affecting: the caps exist so that a link cannot spend this plugin's memory, and they are doing that.
+# TYPE net_dhcp_router_table_entries_dropped_total counter
+net_dhcp_router_table_entries_dropped_total 6046670
+
+# HELP net_dhcp_router_table_entries_evicted_total Held entries a full resolver or search list threw out to take an arrival, which is what RFC 8106 section 6.2 (d) asks of those two lists. The pair of router_table_entries_dropped_total, and the other way round: an eviction holds what expires last, so what is lost is something the client already had. Read the two together; either above zero means the caps are in force. Not healthy-affecting: the caps exist so that a link cannot spend this plugin's memory, and an eviction is them working.
+# TYPE net_dhcp_router_table_entries_evicted_total counter
+net_dhcp_router_table_entries_evicted_total 2018064
 
 # HELP net_dhcp_dhcp_routes_applied_total DHCP option-121 classless static routes handed to Docker. Counts routes, not Joins.
 # TYPE net_dhcp_dhcp_routes_applied_total counter
@@ -251,6 +320,30 @@ net_dhcp_tombstones_consumed_total 5670747
 # HELP net_dhcp_unsafe_hostnames_rejected_total Container hostnames dropped before reaching the DHCP request because they carried a control character. A legitimate hostname never does, so any rise is deliberate (#692).
 # TYPE net_dhcp_unsafe_hostnames_rejected_total counter
 net_dhcp_unsafe_hostnames_rejected_total 5543185
+
+# HELP net_dhcp_hostnames_applied_late_total Container names given to a DHCP client that was already leasing, which is how an endpoint is named without the attach waiting for the daemon (#961). The mechanism working. It narrows the zeros on hostname_lookup_failures and hostname_apply_failures without deciding them: zero on all three is also a host whose containers were started without --hostname, or one where every attach took the name before the client started. Counts non-empty names only, and v4 only, because this plugin sends no name option for DHCPv6.
+# TYPE net_dhcp_hostnames_applied_late_total counter
+net_dhcp_hostnames_applied_late_total 3937102
+
+# HELP net_dhcp_hostname_lookup_failures_total Attaches whose container inspect did not answer, so the endpoint leases with no name in the DHCP server's table.
+# TYPE net_dhcp_hostname_lookup_failures_total counter
+net_dhcp_hostname_lookup_failures_total 3487321
+
+# HELP net_dhcp_hostname_apply_failures_total Container names the running DHCP client refused, so the endpoint leases with no name in the DHCP server's table.
+# TYPE net_dhcp_hostname_apply_failures_total counter
+net_dhcp_hostname_apply_failures_total 6487795
+
+# HELP net_dhcp_host_ifnames_applied_total Host-side links renamed after the container they belong to, on a network that asked for it with host_ifname (#978). The mechanism working, and the denominator for host_ifname_conflicts and host_ifname_failures: a host with no such network has zeros everywhere. Bridge mode only, because it is the only mode that leaves a link on the host.
+# TYPE net_dhcp_host_ifnames_applied_total counter
+net_dhcp_host_ifnames_applied_total 2671665
+
+# HELP net_dhcp_host_ifname_conflicts_total Renames refused because another interface on the host already had the name, so the endpoint's host-side link kept its generated name.
+# TYPE net_dhcp_host_ifname_conflicts_total counter
+net_dhcp_host_ifname_conflicts_total 5170802
+
+# HELP net_dhcp_host_ifname_failures_total Renames that did not happen for any reason other than the name being taken, so the endpoint's host-side link kept its generated name.
+# TYPE net_dhcp_host_ifname_failures_total counter
+net_dhcp_host_ifname_failures_total 5246516
 
 # HELP net_dhcp_unsafe_option_values_dropped_total Server-chosen DHCP string values refused before use because they carried a control character, plus option-15 domains truncated at their first space. The DHCP library validates domain-typed options; string-typed ones can carry anything the server put on the wire (#703, #704).
 # TYPE net_dhcp_unsafe_option_values_dropped_total counter

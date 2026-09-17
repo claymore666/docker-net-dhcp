@@ -527,6 +527,26 @@ type HealthResponse struct {
 	// legitimate hostname never contains one, so a rising value is
 	// somebody probing rather than background noise.
 	UnsafeHostnamesRejected int32 `json:"unsafe_hostnames_rejected"`
+
+	// HostnamesAppliedLate, HostnameLookupFailures and
+	// HostnameApplyFailures are the three outcomes of the container's
+	// name arriving after its DHCP client is already leasing (#961).
+	// Read them together: the first is the domain the other two are
+	// zero against. v4 only, because this plugin's DHCP library sends
+	// no name option for DHCPv6 at all.
+	HostnamesAppliedLate   int32 `json:"hostnames_applied_late"`
+	HostnameLookupFailures int32 `json:"hostname_lookup_failures"`
+	HostnameApplyFailures  int32 `json:"hostname_apply_failures"`
+
+	// HostIfnamesApplied, HostIfnameConflicts and HostIfnameFailures
+	// are the three outcomes of naming a host-side link after its
+	// container (#978). Read them together: the first is the domain the
+	// other two are zero against, and all three stay at zero on a host
+	// with no network that asked for it. Bridge mode only, because it
+	// is the only mode that leaves a link on the host.
+	HostIfnamesApplied  int32 `json:"host_ifnames_applied"`
+	HostIfnameConflicts int32 `json:"host_ifname_conflicts"`
+	HostIfnameFailures  int32 `json:"host_ifname_failures"`
 	// UnsafeOptionValuesDropped counts server-chosen DHCP string
 	// values refused before use because they carried a control
 	// character, plus option-15 domains truncated at their first space.
@@ -897,6 +917,25 @@ type HealthResponse struct {
 	// on every teardown.
 	ReleasesSent    int32 `json:"releases_sent"`
 	ReleaseFailures int32 `json:"release_failures"`
+	// ReleasesReclaimed is the sum of its per-family halves: held
+	// addresses a RUNNING container is using again at the end of the
+	// restart window on a `release_lease=on_remove` network, so the
+	// record was closed and no datagram was sent (#984). It is what
+	// the option's quiet half looks like from outside: with it at zero
+	// and `releases_sent` climbing, nothing is restarting inside the
+	// window; with it climbing, the window is doing the job it exists
+	// for. Zero on `never` and on `on_stop`, which have no window.
+	//
+	// IT IS NARROWER THAN "NOTHING WAS SENT". Two other outcomes also
+	// send nothing and are deliberately not counted here: the same
+	// address stopped a second time, where a newer record carries its
+	// own deadline and decides the address itself, and an address
+	// acquisition in flight under the same endpoint key, where the
+	// address is left to expire so it is not taken from under an
+	// exchange that may be about to be given it. Each has its own
+	// sentence in the log at `debug`. Counting either here would
+	// report a restart that did not happen.
+	ReleasesReclaimed int32 `json:"releases_reclaimed"`
 	// NAKsReceived counts server NAKs on renewal/rebind. Not
 	// Healthy-affecting on its own — the client recovers by
 	// re-DISCOVERing — but each NAK-triggered re-bind widens the
@@ -975,6 +1014,12 @@ type HealthResponse struct {
 	// that does not set the option, which is every network by default.
 	ReleasesSentV4    int32 `json:"releases_sent_v4"`
 	ReleaseFailuresV4 int32 `json:"release_failures_v4"`
+	// ReleasesReclaimedV4 is the IPv4 half of ReleasesReclaimed: held
+	// addresses a running container is using again at the end of the
+	// restart window on a `release_lease=on_remove` network, so nothing
+	// was sent (#984). Like the sum, it does not count the other two
+	// reasons a held address is not handed back.
+	ReleasesReclaimedV4 int32 `json:"releases_reclaimed_v4"`
 	// AddressConflictsV4 is the RFC 5227 half of AddressConflicts, and
 	// it is the ONLY half that may be compared against ACDProbesSent
 	// and ACDConflictsDetected: those two count ARP, which no DHCPv6
@@ -1031,6 +1076,12 @@ type HealthResponse struct {
 	// the split exists to make visible.
 	ReleasesSentV6    int32 `json:"releases_sent_v6"`
 	ReleaseFailuresV6 int32 `json:"release_failures_v6"`
+	// ReleasesReclaimedV6 is the DHCPv6 half of ReleasesReclaimed: the
+	// v6 record of a dual-stack endpoint is a second record with its
+	// own deadline, so one family's address can be in use again while
+	// the other's goes back to the server (#984). Like the sum, it
+	// counts a running container's address and nothing else.
+	ReleasesReclaimedV6 int32 `json:"releases_reclaimed_v6"`
 	// DHCPv6ConfigOnly counts DHCPv6 information replies -- address-less
 	// configuration from a network advertising the RA "other config"
 	// flag (#815). NOT healthy-affecting: it is a normal exchange on a
@@ -1043,9 +1094,10 @@ type HealthResponse struct {
 	// stateless or SLAAC (#868). NOT healthy-affecting: on those
 	// networks it is the correct outcome, there being no DHCPv6
 	// address on them to be had. The endpoint has no global IPv6
-	// address FROM THIS PLUGIN; whether the kernel forms one from the
-	// advertised prefix is the segment's decision since #875, which
-	// leaves accept_ra=2/autoconf=1 on the interface. See v6_absence.go
+	// address at all: since #821 the guard writes autoconf=0, so the
+	// kernel forms none from the advertised prefix either. The endpoint
+	// still gets its IPv6 gateway, MTU, routes and DNS from the
+	// advertisement, read by the plugin's own client. See v6_absence.go
 	// and docs/reference.md.
 	DHCPv6NotOffered int32 `json:"dhcpv6_not_offered"`
 	// DHCPv6NoRouterAdvert counts endpoints created without a DHCPv6
@@ -1053,6 +1105,59 @@ type HealthResponse struct {
 	// Kept apart from DHCPv6NotOffered because "no DHCPv6 here" and
 	// "nothing said anything" call for different operator action.
 	DHCPv6NoRouterAdvert int32 `json:"dhcpv6_no_router_advert"`
+	// DHCPv6Refused counts endpoints that FAILED because a DHCPv6
+	// server answered and refused the client -- RFC 9915 §21.13's
+	// Status Code option carrying something other than Success (#816).
+	// NOT healthy-affecting: the endpoint's failure is reported to
+	// Docker, and the segment's DHCPv6 pool is not this plugin's
+	// health. Read it against dhcpv6_no_server: a refusal means a
+	// reachable server with no address for this client, a silence
+	// means no server answered at all.
+	DHCPv6Refused int32 `json:"dhcpv6_refused"`
+	// DHCPv6NoServer counts endpoints that FAILED because the segment
+	// advertised the managed flag and no DHCPv6 server answered inside
+	// the acquisition budget (#816). NOT healthy-affecting, for the
+	// same reason as the row above.
+	DHCPv6NoServer int32 `json:"dhcpv6_no_server"`
+	// DHCPv6SLAACNoPrefix counts endpoints that FAILED on a network
+	// whose `ipv6_mode` forms its own address, because a router
+	// advertised and none of its prefixes could form one (RFC 4862
+	// §5.5.3) (#816, #817). NOT healthy-affecting: the prefixes are the
+	// router's.
+	DHCPv6SLAACNoPrefix int32 `json:"dhcpv6_slaac_no_prefix"`
+
+	// DHCPv6SLAACNoAddress counts endpoints that FAILED on a network
+	// whose ipv6_mode forms the address from a router advertisement,
+	// where a router advertised and no address formed inside the
+	// acquisition budget. Its sibling above is the case where the
+	// library named the reason.
+	DHCPv6SLAACNoAddress int32 `json:"dhcpv6_slaac_no_address"`
+
+	// IPv6SLAACAddresses counts addresses formed from a router
+	// advertisement and installed on a container link, and
+	// IPv6AddressesWithdrawn the ones removed again when the lease
+	// stopped holding them. They count ADDRESSES, not endpoints: one
+	// container on a link with two autonomous prefixes raises the first
+	// by two.
+	IPv6SLAACAddresses     int32 `json:"ipv6_slaac_addresses"`
+	IPv6AddressesWithdrawn int32 `json:"ipv6_addresses_withdrawn"`
+
+	// IPv6SLAACPrefixesIgnored counts advertised prefixes no address
+	// was formed from, for any of RFC 4862 section 5.5.3's reasons and
+	// including this client's cap of eight addresses per endpoint.
+	IPv6SLAACPrefixesIgnored int32 `json:"ipv6_slaac_prefixes_ignored"`
+
+	// IPv6MainPrefixUnmatched counts endpoints whose network named an
+	// ipv6_main_prefix that none of the endpoint's addresses fell
+	// inside, so the first advertised prefix went to Docker instead.
+	IPv6MainPrefixUnmatched int32 `json:"ipv6_main_prefix_unmatched"`
+	// DHCPv6AutoFallbacks counts endpoints on an `ipv6_mode=auto`
+	// network whose address was formed from a router's advertised
+	// prefix after the segment advertised DHCPv6 and no server answered
+	// (#817). NOT healthy-affecting: the endpoint has an address and
+	// the segment is the thing to look at. It counts addresses that
+	// really formed, never fallbacks attempted.
+	DHCPv6AutoFallbacks int32 `json:"dhcpv6_auto_fallbacks"`
 	// IPv6LinkEnableFailures counts container links IPv6 could not be
 	// enabled on before a DHCPv6 client was started. Distinguishes a
 	// quiet segment from one the plugin could never have heard.
@@ -1067,6 +1172,49 @@ type HealthResponse struct {
 	// expires. It does not count a privileged process inside the
 	// container undoing the settings; see docs/reference.md.
 	RouterAdvertGuardFailures int32 `json:"router_advert_guard_failures"`
+	// IPv6RouterWithdrawn counts container IPv6 default routes removed
+	// because the advertising router set its Router Lifetime to 0
+	// (#821). Counts routes removed, not advertisements seen. Not
+	// healthy-affecting: a router withdrawing itself is deliberate, and
+	// the containers on that segment are correctly left with no default
+	// route rather than one pointing at a router that is gone.
+	IPv6RouterWithdrawn int32 `json:"ipv6_router_withdrawn"`
+
+	// The library's RFC 4861 router-discovery counters, folded across
+	// every DHCPv6 manager this process ever ran (#814). They describe
+	// the SEGMENT, and they are the numbers to read when a container
+	// comes up with no IPv6 gateway, no MTU and no resolver: every one
+	// of those fields comes out of an advertisement.
+	//
+	// RouterSolicitsSent is RFC 4861 section 6.3.7's solicitations that
+	// left a container's link. READ RouterAdvertsSeen AGAINST IT: a
+	// zero sighting count beside a zero solicitation count is a client
+	// that never asked, which is not the same reading as a link whose
+	// routers are silent.
+	RouterSolicitsSent int32 `json:"router_solicits_sent"`
+	// RouterAdvertsSeen counts advertisements that decoded and reached
+	// the state machine; RouterAdvertsRefused frames whose ICMPv6 type
+	// said Router Advertisement and which would not decode. Their
+	// difference is the diagnostic: a link with no router and a link
+	// whose router is advertising something this client refuses are one
+	// number in a total holding both, and one of them is a router to
+	// find while the other is a router to fix.
+	RouterAdvertsSeen    int32 `json:"router_adverts_seen"`
+	RouterAdvertsRefused int32 `json:"router_adverts_refused"`
+	// RouterAdvertOptionsIgnored counts OPTIONS and not frames: one
+	// option refused by its own standard's validity rule out of an
+	// advertisement the rest of which was read. It rises on
+	// advertisements that are otherwise fine, so it is not part of
+	// RouterAdvertsRefused.
+	RouterAdvertOptionsIgnored int32 `json:"router_advert_options_ignored"`
+	// RouterTableEntriesDropped counts arrivals a full list in the
+	// library's router table would not take, RouterTableEntriesEvicted
+	// entries a full list threw out to take an arrival (RFC 8106
+	// section 6.2 (d)). Either above zero means the table's caps are in
+	// force, which on an ordinary segment means something is
+	// advertising more than a link has.
+	RouterTableEntriesDropped int32 `json:"router_table_entries_dropped"`
+	RouterTableEntriesEvicted int32 `json:"router_table_entries_evicted"`
 
 	// Checks is one entry per named check, keyed by the counter behind
 	// it. Each value is a SINGLE-ELEMENT ARRAY because section 4 says
@@ -1114,6 +1262,10 @@ func (p *Plugin) checkStamps() map[string]time.Time {
 		"ipam_replay_miss":           p.ipamReplayMiss.LastMoved(),
 		"ipam_rebind_ambiguous":      p.ipamRebindAmbiguous.LastMoved(),
 		"ipam_reserve_duplicate_mac": p.ipamReserveDuplicateMAC.LastMoved(),
+		"hostname_lookup_failures":   p.hostnameLookupFailures.LastMoved(),
+		"hostname_apply_failures":    p.hostnameApplyFailures.LastMoved(),
+		"host_ifname_conflicts":      p.hostIfnameConflicts.LastMoved(),
+		"host_ifname_failures":       p.hostIfnameFailures.LastMoved(),
 		"release_failures":           laterOf(p.releaseFailuresV4.LastMoved(), p.releaseFailuresV6.LastMoved()),
 	}
 }
@@ -1187,6 +1339,8 @@ func (p *Plugin) healthSnapshot() HealthResponse {
 	releasesSentV6 := p.releasesSentV6.Load()
 	releaseFailuresV4 := p.releaseFailuresV4.Load()
 	releaseFailuresV6 := p.releaseFailuresV6.Load()
+	releasesReclaimedV4 := p.releasesReclaimedV4.Load()
+	releasesReclaimedV6 := p.releasesReclaimedV6.Load()
 
 	now := time.Now()
 	h := HealthResponse{
@@ -1240,6 +1394,12 @@ func (p *Plugin) healthSnapshot() HealthResponse {
 		TombstoneWriteFailures:       tsFails,
 		TombstoneQuarantines:         tsQuarantines,
 		UnsafeHostnamesRejected:      p.unsafeHostnamesRejected.Load(),
+		HostnamesAppliedLate:         p.hostnamesAppliedLate.Load(),
+		HostnameLookupFailures:       p.hostnameLookupFailures.Load(),
+		HostnameApplyFailures:        p.hostnameApplyFailures.Load(),
+		HostIfnamesApplied:           p.hostIfnamesApplied.Load(),
+		HostIfnameConflicts:          p.hostIfnameConflicts.Load(),
+		HostIfnameFailures:           p.hostIfnameFailures.Load(),
 		UnsafeOptionValuesDropped:    p.unsafeOptionValuesDropped.Load(),
 		NetworkOptionsRejected:       p.networkOptionsRejected.Load(),
 		IPAMReplayHits:               p.ipamReplayHits.Load(),
@@ -1284,6 +1444,7 @@ func (p *Plugin) healthSnapshot() HealthResponse {
 		ClientStopFailures:           clientStopFailuresV4 + clientStopFailuresV6,
 		ReleasesSent:                 releasesSentV4 + releasesSentV6,
 		ReleaseFailures:              releaseFailuresV4 + releaseFailuresV6,
+		ReleasesReclaimed:            releasesReclaimedV4 + releasesReclaimedV6,
 		NAKsReceived:                 naksReceivedV4 + naksReceivedV6,
 		DisplacedStops:               p.displacedStopsTotal.Load(),
 		ParentLinkWaits:              p.parentLinkWaits.Load(),
@@ -1300,6 +1461,7 @@ func (p *Plugin) healthSnapshot() HealthResponse {
 		ClientStopFailuresV4:         clientStopFailuresV4,
 		ReleasesSentV4:               releasesSentV4,
 		ReleaseFailuresV4:            releaseFailuresV4,
+		ReleasesReclaimedV4:          releasesReclaimedV4,
 		LeaseChangedV6:               leaseChangedV6,
 		LeasesObtainedV6:             leasesObtainedV6,
 		LeasesRenewedV6:              leasesRenewedV6,
@@ -1309,11 +1471,28 @@ func (p *Plugin) healthSnapshot() HealthResponse {
 		ClientStopFailuresV6:         clientStopFailuresV6,
 		ReleasesSentV6:               releasesSentV6,
 		ReleaseFailuresV6:            releaseFailuresV6,
+		ReleasesReclaimedV6:          releasesReclaimedV6,
 		DHCPv6ConfigOnly:             p.dhcpv6ConfigOnly.Load(),
 		DHCPv6NotOffered:             p.dhcpv6NotOffered.Load(),
 		DHCPv6NoRouterAdvert:         p.dhcpv6NoRouterAdvert.Load(),
+		DHCPv6Refused:                p.dhcpv6Refused.Load(),
+		DHCPv6NoServer:               p.dhcpv6NoServer.Load(),
+		DHCPv6SLAACNoPrefix:          p.dhcpv6SLAACNoPrefix.Load(),
+		DHCPv6SLAACNoAddress:         p.dhcpv6SLAACNoAddress.Load(),
+		IPv6SLAACAddresses:           p.ipv6SLAACAddresses.Load(),
+		IPv6AddressesWithdrawn:       p.ipv6AddressesWithdrawn.Load(),
+		IPv6SLAACPrefixesIgnored:     p.ipv6SLAACPrefixesIgnored.Load(),
+		IPv6MainPrefixUnmatched:      p.ipv6MainPrefixUnmatched.Load(),
+		DHCPv6AutoFallbacks:          p.dhcpv6AutoFallbacks.Load(),
 		IPv6LinkEnableFailures:       p.ipv6LinkEnableFailures.Load(),
 		RouterAdvertGuardFailures:    p.routerAdvertGuardFailures.Load(),
+		IPv6RouterWithdrawn:          p.ipv6RouterWithdrawn.Load(),
+		RouterSolicitsSent:           p.routerSolicitsSent.Load(),
+		RouterAdvertsSeen:            p.routerAdvertsSeen.Load(),
+		RouterAdvertsRefused:         p.routerAdvertsRefused.Load(),
+		RouterAdvertOptionsIgnored:   p.routerAdvertOptionsIgnored.Load(),
+		RouterTableEntriesDropped:    p.routerTableEntriesDropped.Load(),
+		RouterTableEntriesEvicted:    p.routerTableEntriesEvicted.Load(),
 		Version:                      buildinfo.Version,
 		Commit:                       buildinfo.Commit,
 		Library:                      buildinfo.Library,

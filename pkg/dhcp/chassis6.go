@@ -160,6 +160,39 @@ func advertisedNoDHCPv6(r RAObservation) bool {
 	return r.Seen && !r.Managed && !r.Other
 }
 
+// concludesOnAdvertisedAbsence is the early conclusion above, read in
+// the network's ipv6_mode (#818).
+//
+// IN A MODE THAT FORMS ITS OWN ADDRESS, AN ADVERTISEMENT WITH NEITHER
+// FLAG IS THE START OF AN ACQUISITION AND NOT THE END OF ONE. RFC 4861
+// section 4.2's M=0 O=0 says DHCPv6 has nothing for this client, which
+// is the whole of what ErrNoDHCPv6OnSegment means -- and on an
+// `ipv6_mode=slaac` network DHCPv6 was never going to be asked. What
+// carries the address there is the Prefix Information option on that
+// same advertisement (RFC 4862 section 5.5.3), the library forms an
+// address from it, runs duplicate address detection and emits Acquired,
+// and concluding on the advertisement ended the acquisition before any
+// of that could arrive. That is why an `ipv6_mode=slaac` network gave
+// its containers no address up to v2.1.x: the conclusion is #868's fix
+// for containers hanging on stateless networks, and it was not
+// mode-aware.
+//
+// THE `dhcp` ROW IS THE ONE TO PROTECT, and it is why this is a
+// predicate rather than a condition deleted. #868's whole benefit is
+// that a `docker run` on the ordinary SLAAC home network takes about
+// two seconds instead of the full acquisition budget. Widening the
+// change to every mode would take that back for every network that
+// never asked for address formation, and nothing would fail -- the
+// containers would simply start twenty seconds later.
+//
+// A forming mode's acquisition ends on what the library says instead:
+// Acquired once the formed address passes detection, Failed with
+// ErrNoSLAACPrefix when the advertisement carried no prefix an address
+// could be formed from, or the budget.
+func concludesOnAdvertisedAbsence(mode proto.Mode6, r RAObservation) bool {
+	return !IPv6ModeFormsAddresses(mode) && advertisedNoDHCPv6(r)
+}
+
 // checkRouterAdvertGuardShape refuses HonorRouterAdverts on every shape
 // it does not belong on, and refuses a persistent v6 client that does
 // not carry it.
@@ -169,11 +202,11 @@ func advertisedNoDHCPv6(r RAObservation) bool {
 // makes both "set on the wrong client" and "missing on the right one"
 // wiring mistakes of the same kind. A dropped flag is a wiring mistake
 // that looks like a working plugin, and neither of its failures is one
-// anything downstream would report -- accept_ra=2 on a link still in
-// the HOST namespace changes the host's router discovery, and a v6
-// endpoint whose kernel ignores advertisements has an address, no
-// route, and a completely healthy look for the length of one router
-// lifetime (#875).
+// anything downstream would report -- accept_ra=0 on a link still in
+// the HOST namespace turns the host's own router discovery off, and a
+// v6 endpoint whose link was never guarded carries whatever route its
+// kernel made of the advertisement beside the one the plugin installed,
+// with a completely healthy look either way (#875, #821).
 //
 // oneShot is the CreateEndpoint acquisition. Its link is still in the
 // host's network namespace when it runs, which is why the guard is
@@ -377,21 +410,67 @@ func acquireOnce6(ctx context.Context, iface string, params proto.Params6, opts 
 	if opts.Records != nil {
 		manager = opts.Records.NewManagerID()
 	}
+	// A NEW MANAGER'S COUNTERS START AT ZERO, so the snapshots the
+	// delta reporters below subtract from have to start there too.
+	// getIP6 runs this function twice through one options value on the
+	// errV6HintInUse retry, and without this the second pass reports
+	// nothing until it passes what the first pass had already counted.
+	// See managerStarted.
+	opts.managerStarted()
 
 	info, lastE := runAcquisition6(ctx, iface, client, opts, params.Hint, V6AcquisitionWindow(params))
 
 	// AFTER the drain: the last advertisement can arrive on the same
 	// pass as the event that ended the loop.
 	ra = raObservation(client.Router())
-	opts.count(manager, client.Stats())
+	stats := client.Stats()
+	opts.count(manager, stats)
+	opts.v6ModeReport(stats)
+	opts.v6PrefixReport(stats)
+	// The acquisition's own advertisements. This one-shot runs for the
+	// whole of RFC 4861 section 6.3.7's discovery window and then ends,
+	// so the solicitations it sent and the advertisements they brought
+	// back are counted here or nowhere: no persistent client exists yet
+	// on CreateEndpoint, and the one Join starts later has a manager,
+	// and therefore a set of counters, of its own.
+	opts.routerReport(stats)
 
-	if info.IP == "" {
-		if lastE == nil {
-			lastE = ErrNoLease
-		}
-		return Info{}, ra, lastE
+	out, err := acquisitionResult6(info, lastE)
+	return out, ra, err
+}
+
+// acquisitionResult6 is the DHCPv6 acquisition's verdict: the lease if
+// there is one, and otherwise the zero Info beside the reason there is
+// not.
+//
+// THE ADVERTISEMENT IS DELIBERATELY NOT CARRIED OUT OF HERE, and the
+// reason is a fact about the engine rather than a choice (#821,
+// MEASURED on the lane 2026-09-16, run 35131643324, four shards). An
+// endpoint with no DHCPv6 address gets no global IPv6 address on its
+// link; the engine disables IPv6 on a link that carries none; the
+// kernel then refuses every IPv6 route on it. Putting the
+// advertisement's gateway and routes into the Join answer for such a
+// segment made the daemon fail the whole sandbox with
+//
+//	error setting interface "<host-if>" routes to ["fd00:...::/64"]: permission denied
+//
+// so NO container started on the segment at all -- taking its IPv4 with
+// it, and #868's guarantee with that. The plugin cannot order its own
+// disable_ipv6 clear in front of the engine either: the clear happens
+// in the manager goroutine Join spawns, after the engine has moved the
+// link and applied the answer.
+//
+// So on a segment that hands out no DHCPv6 address the advertisement
+// stays unusable until the container has a global IPv6 address to use
+// it with, which is #818. This function is where that changes.
+func acquisitionResult6(info Info, lastE error) (Info, error) {
+	if info.IP != "" {
+		return info, nil
 	}
-	return info, ra, nil
+	if lastE == nil {
+		lastE = ErrNoLease
+	}
+	return Info{}, lastE
 }
 
 // errV6HintInUse is a conflict found by the client's own duplicate
@@ -477,14 +556,28 @@ func runAcquisition6(ctx context.Context, iface string, client v6AcquisitionClie
 	for !got {
 		select {
 		case <-acqCtx.Done():
-			lastE = acqCtx.Err()
+			// THE CAUSE ALREADY IN HAND IS KEPT AND THE DEADLINE IS
+			// ADDED TO IT (#816). A DHCPv6 server that refuses this
+			// client answers and the machine goes back to discovery
+			// (RFC 9915 section 18.2.10.1), so the refusal arrives
+			// early and the window still runs out; an assignment here
+			// overwrote it, and the verdict pkg/plugin draws would
+			// have read "nobody answered" for a segment whose server
+			// said NoAddrsAvail. Both errors stay in the chain, so a
+			// caller testing for context.DeadlineExceeded still finds
+			// it.
+			if lastE == nil {
+				lastE = acqCtx.Err()
+			} else {
+				lastE = fmt.Errorf("%w; the DHCPv6 acquisition budget then ran out: %w", lastE, acqCtx.Err())
+			}
 			got = true
 
 		case <-poll.C:
 			// The segment answered the question with an
 			// advertisement rather than with a lease event; see
-			// ErrNoDHCPv6OnSegment.
-			if advertisedNoDHCPv6(raObservation(client.Router())) {
+			// ErrNoDHCPv6OnSegment and concludesOnAdvertisedAbsence.
+			if concludesOnAdvertisedAbsence(opts.Mode6, raObservation(client.Router())) {
 				lastE = ErrNoDHCPv6OnSegment
 				got = true
 			}
@@ -499,7 +592,7 @@ func runAcquisition6(ctx context.Context, iface string, client v6AcquisitionClie
 			// the persistent client's loop does it there.
 			opts.carryResumedConfig6(&ev)
 			opts.record(ev)
-			out := acquireStep6(ev, hint.IsValid())
+			out := acquireStep6(ev, hint.IsValid(), opts.MainPrefix6)
 			if out.Err != nil {
 				lastE = out.Err
 			}
@@ -551,16 +644,19 @@ func runAcquisition6(ctx context.Context, iface string, client v6AcquisitionClie
 // a server-chosen address is left to the library, which restarts
 // discovery and is handed a different address the next time round --
 // the loop that arm would break does not exist without a hint.
-func acquireStep6(ev lease.Event, hinted bool) acquireOutcome {
+func acquireStep6(ev lease.Event, hinted bool, main netip.Prefix) acquireOutcome {
 	switch ev.Kind {
 	case lease.Acquired:
-		info, _ := infoFromLease(ev.Lease, time.Now())
+		info, _ := infoFromLease(ev.Lease, ev.Router, time.Now(), main)
 		return acquireOutcome{Info: info, Done: true}
 	case lease.Configured:
 		return acquireOutcome{Done: true, Err: ErrNoV6Address}
 	case lease.Failed:
 		if hinted && ev.Reason == proto.ReasonConflict {
 			return acquireOutcome{Done: true, Err: fmt.Errorf("dhcp: %w: %v", errV6HintInUse, ev.Note)}
+		}
+		if err := v6FailureCause(ev); err != nil {
+			return acquireOutcome{Err: err}
 		}
 		return acquireOutcome{Err: fmt.Errorf("dhcp: DHCPv6 acquisition failed: %v", ev.Reason)}
 	}

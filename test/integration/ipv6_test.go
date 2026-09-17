@@ -28,17 +28,17 @@
 //     section 5.4 a second time on an address that has just passed
 //     (D30 Q1). TestDHCPv6_ADuplicateOnTheSegmentIsRefused is the
 //     outside evidence that the first half of that actually happens.
-//   - THE ROUTER-ADVERTISEMENT GUARD IS A WRITE, NOT A SHIELD. 1.9.0
-//     had to fight dhcpcd, which cleared accept_ra and autoconf on
-//     every carrier acquisition, so the guard wrote the knobs and then
-//     remounted /proc/sys read-only to keep them. Nothing in 2.0
-//     rewrites them, so the guard writes and reads back and that is
-//     all; there is no shield and there are no `-writable` markers.
-//     The obligation it discharges is the same one and it is not
-//     optional: DHCPv6 carries no next hop (RFC 9915 section 21) and
-//     RFC 5942 section 4 rule 1 forbids inferring an on-link prefix
-//     from the assigned address, so an endpoint whose kernel is not
-//     processing advertisements has an address and no route.
+//   - THE ROUTER-ADVERTISEMENT GUARD TURNS THE KERNEL OFF (#821). The
+//     obligation has not moved: DHCPv6 carries no next hop (RFC 9915
+//     section 21) and RFC 5942 section 4 rule 1 forbids inferring an
+//     on-link prefix from the assigned address, so somebody has to
+//     process advertisements or the endpoint has an address and no
+//     route. Since v2.2.0 that somebody is the plugin's own DHCPv6
+//     client, and the guard writes accept_ra=0 and autoconf=0 so the
+//     container's kernel does not do it a second time. It also removes
+//     the routes the kernel installed in the window between the engine
+//     bringing the link up and the guard running, because writing
+//     accept_ra=0 purges nothing.
 //
 // What 1.9.0 could not observe and 2.0 can: the container's own kernel
 // is free to solicit. dhcpcd set addr_gen_mode to NONE on the link,
@@ -1204,7 +1204,7 @@ func assertRAGuardReportedNoFailure(t *testing.T, ctx context.Context, verified,
 	// TestApplyRouterAdvertGuard_ReadsBackWhatItWrote.
 	//
 	// What the loop above DOES rule out is the guard as a whole never
-	// executing: accept_ra=2 and keep_addr_on_down=1 are non-default and
+	// executing: accept_ra=0 and keep_addr_on_down=1 are non-default and
 	// nothing but the guard writes them. That is a narrower claim than
 	// "every step ran", and the difference is the point.
 	if h := harness.PluginHealthOrNil(ctx); h == nil {
@@ -1268,14 +1268,18 @@ const persistentV6BindBudget = 45 * time.Second
 // It did, on 1.9.0. MEASURED, macvlan shard, one-second log resolution:
 //
 //	13:57:31  one-shot binds the address (host ns, link pre-rename)
-//	13:57:34.180  test reads eth0/accept_ra          -> 1
+//	13:57:34.180  test reads eth0/accept_ra          -> 1 (the kernel default)
 //	13:57:34.456  test reads eth0/keep_addr_on_down  -> 0
 //	13:57:35  the guard runs on eth0, then the client solicits
 //
 // Every value read was a kernel default. The test read the right file,
 // in the right namespace, one second before anything wrote to it.
-// `autoconf` could never have caught this, its default and its target
-// both being 1.
+// `autoconf` could never have caught it either, its default and its
+// target both being 1 at the time. Since #821 the guard writes
+// autoconf=0, so that knob has become a discriminator too -- which is
+// a reason the ordering anchor below is still needed and not a reason
+// to drop it: two discriminators read one second early are still two
+// kernel defaults.
 //
 // Why THIS anchor. It is outside evidence -- the DHCP server's own
 // record, not the plugin's opinion of itself. It is strictly downstream
@@ -1449,23 +1453,35 @@ func assertLeasedV6IsInstalledWithNODAD(t *testing.T, ctx context.Context, id, a
 // Two independent claims, because each one alone can pass while the
 // wiring is broken:
 //
-//  1. The knobs read the values the guard writes. accept_ra=2 and
+//  1. The knobs read the values the guard writes. accept_ra=0 and
 //     keep_addr_on_down=1 are not kernel defaults and nothing else
 //     writes them, so reading them back is evidence the guard ran.
-//  2. A default route via a LINK-LOCAL address is present. DHCPv6
-//     carries no router -- the option catalogue is RFC 9915 section 21
-//     and nothing in it has a next hop -- and this plugin sets no IPv6
-//     gateway of its own, so a default route via fe80::/10 can only
-//     have been learned from a Router Advertisement. The knobs being
-//     right is the plugin's doing; this is the KERNEL's, and it can
-//     only happen if an advertisement was actually accepted off the
-//     wire.
+//
+//  2. EXACTLY ONE default route, via a LINK-LOCAL address, is present.
+//     Both halves of that are load-bearing since #821, and they fail in
+//     opposite directions:
+//
+//     ONE, and not zero, is the proof that the plugin's own DHCPv6
+//     client still sees Router Advertisements with the container's
+//     kernel at accept_ra=0. DHCPv6 carries no router -- the option
+//     catalogue is RFC 9915 section 21 and nothing in it has a next hop
+//     -- and the kernel is no longer allowed to install one, so a
+//     default route via fe80::/10 can only have arrived through
+//     Lease.Gateway, the Join answer, and the engine. That is the whole
+//     chain #821 built, observed from outside it.
+//
+//     ONE, and not two, is the proof that accept_ra=0 took AND that the
+//     route the kernel may have installed in the window before the
+//     guard ran was purged. A container with two default routes has
+//     working IPv6 today and picks its next hop by a metric comparison
+//     nobody chose; a presence test cannot see it.
 //
 // Claim 2 was first written as a match on `proto ra`, which is a string
 // the container's `ip` PROVABLY NEVER PRINTS: the test image's busybox
-// route output carries no `proto` field at all. Keying on the
-// via-address instead makes the assertion a property of the protocol
-// rather than of one tool's formatting.
+// route output carries no `proto` field at all. That is also why the
+// second route cannot be identified as the kernel's from in here --
+// only counted. Keying on the via-address makes the assertion a
+// property of the protocol rather than of one tool's formatting.
 //
 // The bound: this does not observe REFRESH. The fixture's dnsmasq runs
 // with --enable-ra and no --ra-param, so its unsolicited interval is
@@ -1508,10 +1524,11 @@ func assertRouterAdvertsAreBeingProcessed(t *testing.T, ctx context.Context, id,
 		}
 		if got != want {
 			t.Errorf("%s = %q, want %q — the Router-Advertisement guard did not hold "+
-				"this knob inside the shipped image. An endpoint whose kernel is not "+
-				"processing advertisements has an address and no route: DHCPv6 carries "+
-				"no next hop (RFC 9915 section 21) and RFC 5942 section 4 forbids "+
-				"inferring one from the address (#911)", p, got, want)
+				"this knob inside the shipped image. Since #821 the plugin reads the "+
+				"advertisement itself and puts the gateway into the Join answer, so a "+
+				"kernel still acting on the same frames adds a SECOND default route "+
+				"beside it and the container's next hop is decided by a metric "+
+				"comparison nobody chose (#911, #821)", p, got, want)
 			continue
 		}
 		verified++
@@ -1539,12 +1556,29 @@ func assertRouterAdvertsAreBeingProcessed(t *testing.T, ctx context.Context, id,
 	for time.Now().Before(deadline) {
 		routes = harness.ExecOutput(t, ctx, id, "ip", "-6", "route", "show", "default")
 		if harness.HasLinkLocalDefaultRoute(routes) {
-			return
+			break
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
-	t.Errorf("no default route via a link-local address on %s after %s. DHCPv6 carries no "+
-		"router (RFC 9915 section 21) and the plugin sets no IPv6 gateway, so the absence "+
-		"of one means the kernel never accepted a Router Advertisement. "+
-		"`ip -6 route show default` says:\n%s", iface, harness.IPAcquisitionBudget, routes)
+	if !harness.HasLinkLocalDefaultRoute(routes) {
+		t.Errorf("no default route via a link-local address on %s after %s. DHCPv6 carries no "+
+			"router (RFC 9915 section 21), and since #821 the container's kernel is at "+
+			"accept_ra=0, so the only way one arrives is the plugin's own client reading "+
+			"the advertisement and the Join answer carrying it. Its absence means that "+
+			"chain is broken. `ip -6 route show default` says:\n%s",
+			iface, harness.IPAcquisitionBudget, routes)
+		return
+	}
+
+	// THE OTHER DIRECTION, and it does not get a poll: a second default
+	// route is not something that appears late and then goes away. This
+	// is read from the same output the presence check just accepted, so
+	// the two cannot disagree about what the table held.
+	if n := harness.CountDefaultRoutes(routes); n != 1 {
+		t.Errorf("%d IPv6 default routes on %s, want exactly 1. Two means the container's "+
+			"kernel installed one of its own beside the plugin's -- either accept_ra=0 did "+
+			"not take, or the route it had already installed before the guard ran was not "+
+			"purged (#821). Which of the two the container uses is a metric comparison "+
+			"nobody chose. `ip -6 route show default` says:\n%s", n, iface, routes)
+	}
 }

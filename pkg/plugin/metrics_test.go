@@ -568,6 +568,13 @@ func familyPairs() []familyPair {
 			func(h HealthResponse) (int32, int32, int32) {
 				return h.ReleaseFailures, h.ReleaseFailuresV4, h.ReleaseFailuresV6
 			}},
+		{"net_dhcp_releases_reclaimed_total",
+			func(p *Plugin) (intCounter, intCounter) {
+				return &p.releasesReclaimedV4, &p.releasesReclaimedV6
+			},
+			func(h HealthResponse) (int32, int32, int32) {
+				return h.ReleasesReclaimed, h.ReleasesReclaimedV4, h.ReleasesReclaimedV6
+			}},
 	}
 }
 

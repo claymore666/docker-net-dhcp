@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
-	"time"
 
 	log "github.com/sirupsen/logrus"
 	"github.com/vishvananda/netlink"
@@ -242,18 +241,4 @@ func (p *Plugin) recordCreatedOn(recordID, networkID string, mac net.HardwareAdd
 		return fmt.Errorf("failed to bind this endpoint to the address reserved for it: %w", err)
 	}
 	return nil
-}
-
-// ipamSweeper runs the orphan sweep until the plugin shuts down.
-func (p *Plugin) ipamSweeper(stop <-chan struct{}) {
-	t := time.NewTicker(ipamSweepInterval)
-	defer t.Stop()
-	for {
-		select {
-		case <-stop:
-			return
-		case now := <-t.C:
-			p.sweepIPAMReservations(now)
-		}
-	}
 }

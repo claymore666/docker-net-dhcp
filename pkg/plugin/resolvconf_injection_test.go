@@ -35,6 +35,7 @@ func TestBuildResolvConf_ServerSuppliedDomainCannotAddALine(t *testing.T) {
 		[]string{"192.0.2.53"},
 		nil,
 		"example.com\nnameserver 203.0.113.9",
+		"",
 	)
 	for _, line := range resolvLines(got) {
 		if strings.Contains(line, "203.0.113.9") {
@@ -58,7 +59,7 @@ func TestBuildResolvConf_EveryFieldIsFiltered(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := buildResolvConf(tc.dns, tc.search, tc.domain)
+			got := buildResolvConf(tc.dns, tc.search, tc.domain, "")
 			if strings.Contains(string(got), "203.0.113.9") {
 				t.Errorf("%s reached the file:\n%s", tc.name, got)
 			}
@@ -75,7 +76,7 @@ func TestWriteContainerResolvConf_RefusesWhenFilteringEmptiesTheList(t *testing.
 	// The container ID is irrelevant here: the emptiness guard fires
 	// before the PID is ever looked at, which is itself part of the
 	// contract -- filtering must not be reachable only via /proc.
-	err := writeContainerResolvConf(1, "0123456789abcdef", []string{"bad\nnameserver 203.0.113.9"}, nil, "")
+	err := writeContainerResolvConf(1, "0123456789abcdef", []string{"bad\nnameserver 203.0.113.9"}, nil, "", "")
 	if err == nil {
 		t.Fatal("expected a refusal, got nil — an empty resolv.conf would have been written")
 	}
@@ -90,6 +91,7 @@ func TestBuildResolvConf_KeepsOrdinaryValues(t *testing.T) {
 		[]string{"192.0.2.53", "2001:db8::53"},
 		[]string{"corp.example", "example.com"},
 		"fallback.example",
+		"",
 	))
 	for _, want := range []string{
 		"nameserver 192.0.2.53", "nameserver 2001:db8::53", "search corp.example example.com",
@@ -108,7 +110,7 @@ func TestBuildResolvConf_KeepsOrdinaryValues(t *testing.T) {
 //
 // Removing the FirstSearchDomain call in buildResolvConf turns this red.
 func TestBuildResolvConf_DomainYieldsOneSearchDomain(t *testing.T) {
-	out := string(buildResolvConf([]string{"10.99.0.53"}, nil, "a.attacker.test b.attacker.test corp.example"))
+	out := string(buildResolvConf([]string{"10.99.0.53"}, nil, "a.attacker.test b.attacker.test corp.example", ""))
 
 	var search string
 	for _, line := range strings.Split(out, "\n") {

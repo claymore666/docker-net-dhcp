@@ -11,6 +11,254 @@ forks that have been waiting on review.
 
 [upstream]: https://github.com/devplayer0/docker-net-dhcp
 
+## v2.2.0
+
+A network now says where its IPv6 address comes from: `ipv6_mode`
+takes `off` (the default), `dhcp`, `slaac` and `auto`, `-o ipv6=true`
+is the short spelling of `dhcp`, and on a mode that forms its own
+address a segment with a router and no DHCPv6 server at all is now a
+segment containers get IPv6 on. The plugin reads the router's
+advertisement itself and puts the default route, the routes and the
+MTU into the container, and its resolvers too on a `propagate_dns`
+network, so a change on the segment reaches a running container
+without a restart. Two smaller network options arrive beside them,
+`release_lease=on_remove` and, in bridge mode, `host_ifname`, and
+`/Plugin.Health` and `/metrics` gain the counters for all of it.
+
+### Upgrade notes
+
+Required on every host before `docker plugin install`, unchanged since v1.5.0:
+
+```bash
+sudo mkdir -p /var/lib/net-dhcp
+```
+
+**The privilege prompt does not change.** No field `docker plugin upgrade`
+prompts on has moved since v2.0.0, so the manifest-delta table in the v2.0.0
+section below is still the list the daemon shows you.
+
+| What changed | What it does to you |
+| --- | --- |
+| `ipv6_mode` is a new network option, default `off` | Nothing, until a network sets it. An existing network, with or without `ipv6=true`, behaves as it did in v2.1.1. |
+| `ipv6=true` is now `ipv6_mode=dhcp` | Nothing. It is the same behaviour under a name that has three siblings. |
+| `ipv6=true` with `ipv6_mode=off`, and `ipv6=false` written out beside a mode that switches IPv6 on, are refused at `docker network create` | A create naming either pair fails with the reason in the message. State it once: `ipv6_mode` alone switches IPv6 on. |
+| `ipv6_mode=slaac` and `ipv6_mode=auto` are refused in `mode=ipvlan` | Use `ipv6_mode=dhcp` there, which gives each endpoint its own DUID. An ipvlan L2 slave inherits the parent link's MAC, an address formed from an advertisement is derived from that MAC (RFC 4291 appendix A), and RFC 4862 gives a node with a fixed interface identifier no second try after duplicate address detection fails, so every container on such a network would form one address and the second one onwards would sit in a conflict it cannot recover from. Giving each container its own identifier is a DHCP-client change and not a plugin one. |
+| `ipv6_main_prefix` is a new network option, with no default | Nothing, until a network sets it. On a link advertising more than one prefix it picks which address `docker inspect` shows; the container holds every address either way. It is accepted only where `ipv6_mode` forms addresses. |
+| On `ipv6_mode=slaac` and `ipv6_mode=auto`, a segment with no router advertisement at all now fails the endpoint | Those modes take the address from the advertisement, so nothing else can provide one. On `ipv6_mode=dhcp` and `ipv6_mode=off` the endpoint still starts and still logs a warning, unchanged. `dhcpv6_no_router_advert` counts both. |
+| `ipv6_auto_strict` is a new network option, default `false` | Nothing, until an `ipv6_mode=auto` network sets it. It decides what `auto` does when the router advertises DHCPv6 and no server answers. |
+| Nine counters are new on `/Plugin.Health` and `/metrics` | `dhcpv6_refused`, `dhcpv6_no_server`, `dhcpv6_slaac_no_prefix`, `dhcpv6_slaac_no_address`, `dhcpv6_auto_fallbacks`, `ipv6_slaac_addresses`, `ipv6_addresses_withdrawn`, `ipv6_slaac_prefixes_ignored` and `ipv6_main_prefix_unmatched`. None of them flips `healthy`. |
+| A DHCPv6 endpoint that fails because the server refused it logs a different sentence | The message names the status code the server sent, such as NoAddrsAvail for an exhausted pool or NotOnLink for an address outside the range it serves (RFC 9915 section 21.13's registry, not a name in this repository). The ending where nothing answered keeps the sentence it had. |
+| `dhcp_servers` and `dhcp_deny_servers` are unchanged | They are DHCPv4-only and keep applying in every `ipv6_mode`. |
+| An option written with no value is read as unset | `-o lease_timeout=`, and `driver_opts: {lease_timeout: "${VAR}"}` with `VAR` unset, now take the default instead of failing the create with `invalid duration`. Every other option already behaved this way. |
+| `release_lease=on_remove` is accepted at `docker network create` | A create naming it succeeds. In v2.1.1 it was refused. Nothing changes for a network that does not set it. |
+| `on_remove` holds an endpoint's addresses for 60 seconds after `docker stop`, then hands back whatever nothing has claimed | An address is free about a minute after the stop instead of at the stop (`on_stop`) or at the server's lease expiry (`never`, the default). A container that restarts inside that minute keeps its address and its MAC. |
+| `docker network rm` on an `on_remove` network hands back the addresses it still holds | The removal does not wait for those deadlines. On `never` and `on_stop` nothing changes. |
+| `releases_reclaimed` is a new counter on `/Plugin.Health` and `/metrics`, split `_v4` and `_v6` | Addresses a running container is using again when the window ends, so nothing was sent. It is narrower than "nothing was sent": an address stopped a second time and an acquisition in flight also send nothing and are not counted. Zero on `never` and `on_stop`. It does not flip `healthy`. |
+| Eleven counters now carry a `family` label on `/metrics`, not ten | One new series pair, `net_dhcp_releases_reclaimed_total` with `family="ipv4"` and `family="ipv6"`. Existing series are unchanged. |
+| A container start no longer waits for the Docker daemon to answer before its DHCP client starts | Nothing to configure. An endpoint reaches its address sooner on a busy host, and the container's name reaches the DHCP server a moment after the lease instead of before it. A network with `register_dns` keeps the old order. |
+| `host_ifname` is a new bridge-mode network option, default off | Nothing, until a network sets it. Host-side links keep the `dh-<12 hex>` name every earlier release gave them. |
+| A `host_ifname` network names its host-side links after their containers | `ip link` and `brctl show` read like the compose file. The generated `dh-` name stays on the link as an altname, so anything that looks that name up still finds it, including teardown and restart recovery. A name over 15 characters is truncated to its first 9 plus the endpoint's first 5 hex, and a name already in use on the host leaves that link with its generated name. |
+| `host_ifname` is refused at `docker network create` in `mode=macvlan` and `mode=ipvlan` | A create naming it there fails with the reason in the message. Those modes move the link into the container and leave nothing on the host to name. |
+| Three more counters are new on `/Plugin.Health` and `/metrics` | `host_ifnames_applied`, `host_ifname_conflicts` and `host_ifname_failures`. None of them flips `healthy`. |
+| Three counters for the container's name are new on `/Plugin.Health` and `/metrics` | `hostnames_applied_late`, `hostname_lookup_failures` and `hostname_apply_failures`: the name reached a client that was already leasing, the daemon never answered, or the client would not take it. The first narrows the other two without deciding them: their zeros are also what a host reads when its containers were started without `--hostname`, and the plugin log tells those apart. The endpoint keeps its lease in all three, so none of them flips `healthy`. |
+| Six counters for IPv6 router discovery are new on `/Plugin.Health` and `/metrics` | `router_solicits_sent`, `router_adverts_seen`, `router_adverts_refused`, `router_advert_options_ignored`, `router_table_entries_dropped` and `router_table_entries_evicted`. They say whether anything advertised on the link at all and whether what advertised was readable, which an IPv6 container that came up with no gateway, no MTU and no resolver used to leave nothing behind to look at. Read the sightings against the solicitations: zero on both is a client that never asked, which is not the same as a link whose routers are silent. All six stay at zero on a host with no IPv6 endpoint, and none of them flips `healthy`. |
+| Docker still shows one IPv6 address per endpoint | A container on a link advertising two prefixes holds both addresses, and `docker inspect` shows the one `ipv6_main_prefix` names or the first advertised. libnetwork has no way to change an endpoint's address after `CreateEndpoint`, so this is the engine's shape and not a setting. |
+| The container's IPv6 default route comes from the plugin, not its kernel | `ip -6 route show default` inside a container on an `ipv6=true` network shows one route via an `fe80::` address, as before. It is now installed by Docker from the plugin's Join answer, so it appears with the endpoint and not a moment later. |
+| The container's link is set to `accept_ra=0` and `autoconf=0` | The container's kernel installs nothing from an advertisement and forms no SLAAC address. A container that was relying on a kernel-formed SLAAC address loses it. **On `ipv6_mode=slaac` and `ipv6_mode=auto` the plugin forms that address itself and installs it with the advertised lifetimes ([#818](https://github.com/claymore666/docker-net-dhcp/issues/818)), so the container holds a global address and takes its IPv6 default route from the plugin.** Where the plugin has no address either, which is `ipv6=true` and `ipv6_mode=dhcp` on a segment that hands out none, the container is left with a link-local address, no global IPv6 address and no IPv6 default route: the daemon disables IPv6 on a container link that carries no IPv6 address and the kernel then refuses every IPv6 route on it, so an answer carrying one fails the whole endpoint instead of degrading. |
+| Routes the router advertises reach the container | An RFC 4191 Route Information option becomes a route via the router, and a prefix advertised as on-link becomes an on-link route. `skip_routes=true` opts out, as it does for the IPv4 option-121 routes. The default route is not governed by it. |
+| The advertised MTU is applied to the container's link | It was applied by the container's kernel before, to IPv6 only. It is now applied to the link, which bounds IPv4 as well. `propagate_mtu` does not govern it: an option defaulting to false would have taken the advertised MTU away from every existing IPv6 network. Where both families supply an MTU the link takes the smaller of the two. The MTU refusal range is unchanged. |
+| RDNSS and DNSSL reach `/etc/resolv.conf` on a `propagate_dns=true` network | DHCPv6's own DNS options still win where a server supplies both (RFC 8106 section 5.3.1). A resolver at a link-local address is written with its interface as an RFC 4007 scope zone, `nameserver fe80::1%eth0`; musl, the C library in Alpine images, does not parse that form. |
+| A `dhcp` segment that offers no DHCPv6 address gets no IPv6 route | On `ipv6=true` and `ipv6_mode=dhcp` the DHCPv6 server is the only source of an address, and with no address the plugin cannot pass its gateway or routes on: the daemon disables IPv6 on a container link carrying no IPv6 address and the kernel then refuses every IPv6 route on it, so an endpoint answer carrying one fails the container outright instead of degrading. The container keeps its IPv4, its link-local address and the stateless DHCPv6 configuration. **On `ipv6_mode=slaac` and `ipv6_mode=auto` this row does not apply.** The plugin forms the address from the advertisement and installs it ([#818](https://github.com/claymore666/docker-net-dhcp/issues/818)), and the IPv6 default route arrives beside it. |
+| A change on the segment is applied to a running container | A router that renumbers itself, changes its MTU, changes the routes it offers or changes the resolvers a `propagate_dns` network passes on moves the container with it, with no restart. |
+| A router that withdraws itself takes the container's default route with it | RFC 4861 reads a Router Lifetime of 0 as "no longer to be used as a default router". The container is left with no IPv6 default route, which is correct, and not one pointing at a router that is gone. The new `ipv6_router_withdrawn` counter records it. Resolvers are kept where the container has them: RFC 8106 section 6.1 says the DNS options need not be dropped when the router lifetime expires, and a network without `propagate_dns` never had them to drop. |
+| New health counter `ipv6_router_withdrawn` | Counts container IPv6 default routes removed because the router withdrew itself. Counts routes removed, not advertisements received. Not `healthy`-affecting. |
+| A managed segment that also advertises its prefix as autonomous gives one address, not several | Such a container used to hold the DHCPv6 lease, an address its kernel formed from the prefix, and privacy addresses where the image enabled them; an outbound connection picked among them per RFC 6724 and need not have picked the leased one. `autoconf=0` leaves the lease alone, so what `docker inspect` reports is what the container uses. A workload that depended on a kernel-formed address on such a segment loses it. |
+| `router_advert_guard_failures` counts one more thing | The guard now also removes routes the container's kernel installed from an advertisement before the guard ran. A failure there is counted beside the sysctl failures, so the bound per IPv6 endpoint goes from six steps to seven. |
+| A DHCPv6 server can start a renewal itself | Since v2.1.1's DHCP library pin, and stated here because that release did not say so. The plugin's DHCPv6 client announces RFC 9915 section 21.20's Reconfigure Accept option in its Solicit, Request and Information-request, and answers a Reconfigure that is authenticated with that server's reconfigure key (section 20.4) with the Renew, Rebind or Information-request the message names. The new configuration reaches the container on the path a renewal with new parameters already used. An unauthenticated Reconfigure, a wrong key and a replayed one are discarded. **Nothing counts any of this**: the DHCP library records it in its journal and exports no number, so `/Plugin.Health` and `/metrics` show neither an accepted nor a discarded Reconfigure, and the counters are still open on [#925](https://github.com/claymore666/docker-net-dhcp/issues/925). Two bounds: an endpoint that resumed its lease after a plugin restart holds no key and discards every Reconfigure, falling back on its own T1, until it accepts a Reply carrying a new key. The client records one from any Reply it accepts that carries it, a renewal's Reply included, and section 20.4.2 leaves the server the choice of which exchange it sends the key in; and an Information-request a server asks for on a managed segment is counted as `dhcpv6_config_only`, the same as a stateless answer. |
+
+### New
+
+- `host_ifname`, a bridge-mode network option that names the host-side
+  interface after the container instead of after the endpoint, so `ip link`
+  and `brctl show` read like the compose file. `container_name` uses the name
+  `docker ps` prints, `hostname` uses the container's hostname. Off by
+  default, which is the `dh-<12 hex>` name every earlier release used, and
+  refused at `docker network create` in `macvlan` and `ipvlan`, where the link
+  is moved into the container and leaves nothing on the host to name. The old
+  name stays on the link as an altname, so `docker network inspect`, teardown
+  and restart recovery are unchanged. A name over 15 characters is truncated
+  to its first 9 plus the endpoint's first 5 hex; a name already in use on the
+  host leaves the link with its generated name. `docs/reference.md` states the
+  rule (#978).
+- `host_ifnames_applied`, `host_ifname_conflicts` and `host_ifname_failures`
+  on `/Plugin.Health` and `/metrics`: the link took the container's name, the
+  name was already on this host, or the rename was refused for another reason.
+  The endpoint keeps its lease and its generated link name in all three, so
+  none of them affects `healthy` (#978).
+- `ipv6_mode`, a per-network option with values `off` (default),
+  `dhcp`, `slaac` and `auto`. `dhcp` is what `ipv6=true` has always
+  meant. `slaac` takes the address from a router advertisement's
+  autonomous prefix and sends no Solicit. `auto` reads the
+  advertisement's managed-address flag and does what it says (RFC 4861
+  section 4.2). The option switches IPv6 on by itself, so a network
+  states its IPv6 configuration once, and the value reaches the DHCPv6
+  client on every path that starts one, including the one the plugin
+  starts again after a restart (#817).
+- `ipv6_auto_strict`, a per-network option, default `false`. In
+  `ipv6_mode=auto` on a link whose router advertises DHCPv6 and whose
+  server stays silent, the default forms an address from the advertised
+  prefix after half the router-discovery window, counts it in
+  `dhcpv6_auto_fallbacks` and logs a line naming the fallback.
+  `ipv6_auto_strict=true` fails the endpoint instead, which is what a
+  segment wants when the DHCPv6 address is the one its firewall rules
+  name (#817).
+- `dhcpv6_refused`, `dhcpv6_no_server` and `dhcpv6_slaac_no_prefix`,
+  three counters for three endings that used to be one. A server that
+  answers and refuses the client carries a Status Code option (RFC 9915
+  section 21.13) and the plugin now reports the code's name in the log
+  line and counts it apart from a server that never answered. A router
+  that advertises and offers no prefix an address can be formed from
+  (RFC 4862 section 5.5.3) is its own row again (#816).
+- `dhcpv6_auto_fallbacks`, the number of endpoints whose address was
+  formed from an advertised prefix because `ipv6_mode=auto` fell back.
+  It counts addresses that formed, never fallbacks attempted (#817).
+- **An `ipv6_mode=slaac` or `ipv6_mode=auto` endpoint gets its address
+  on the container's link.** One address per advertised autonomous
+  prefix (RFC 4862 section 5.5.3), up to eight, each with the preferred
+  and valid lifetimes the advertisement carried and each refreshed by
+  later advertisements. `ip -6 addr show` inside the container is where
+  an operator reads them. A network whose segment has a router and no
+  DHCPv6 server leases IPv4 from DHCP and forms IPv6 from the
+  advertisement alone (#818, #808).
+- **Lifetimes are the router's.** An address whose preferred lifetime
+  ends is left on the link and marked deprecated, which is
+  `preferred_lft 0` in `ip -6 addr` and means the container keeps using
+  it for connections it already has and stops opening new ones with it
+  (RFC 4862 section 5.5.4). An address whose valid lifetime ends, or
+  whose prefix the router stops advertising, is removed from the link.
+  A renumbering is therefore one address arriving and one leaving,
+  and not a container that collects prefixes (#819).
+- `ipv6_main_prefix`, a per-network option naming which prefix's
+  address Docker is told about. `CreateEndpoint` returns one
+  `AddressIPv6` and the engine has no way to change it afterwards, so
+  on a link advertising a unique-local and a global prefix the default
+  is whichever the router lists first. A prefix no address falls inside
+  falls back to that default, counts `ipv6_main_prefix_unmatched` once
+  for the endpoint and logs both prefixes; the endpoint is not failed,
+  because the container's addresses are right and only the reported one
+  is not the one asked for (#819).
+- `ipv6_slaac_addresses`, `ipv6_addresses_withdrawn` and
+  `ipv6_slaac_prefixes_ignored`: addresses installed on container
+  links, addresses removed from them, and advertised prefixes no
+  address was formed from. With `audit_log=true` the ledger gains a
+  `withdrawn` kind and a `source` field, which reads `slaac` on a row
+  for an address that came from an advertisement and is absent on every
+  row a DHCP lease writes (#818, #819).
+- `dhcpv6_slaac_no_address`, the ending where a router advertised and
+  no address formed inside the acquisition budget: another node holds
+  the address this endpoint's prefix and MAC form, and RFC 4862 section
+  5.4.5 gives a fixed interface identifier no second try after
+  duplicate address detection fails; or the advertisement arrived too
+  late for detection to finish. It is kept apart from
+  `dhcpv6_no_server`, which needs a DHCPv6 exchange that
+  `ipv6_mode=slaac` never has (#818).
+- `release_lease=on_remove`, the third value of the per-network option
+  (#984). The endpoint is torn down exactly as under `never`, tombstone
+  and all, and the addresses are handed back when the restart window
+  runs out and nothing has claimed them. The window is the tombstone
+  TTL, 60 seconds, which is the same value that decides how long a
+  stopped container keeps its MAC, so there is no second option to set
+  and the two cannot disagree. The sweep that sends runs every 15
+  seconds and waits 5 seconds past the deadline, so the wall clock from
+  `docker stop` to the datagram is 65 to 80 seconds. One attempt is made
+  and the record is closed either way; a failed attempt leaves the
+  address to expire, which is what `never` does with every address.
+  What counts as a claim is the address, not the MAC: a container pinned
+  to a MAC that comes back on a different address does not hold the old
+  one, and the old one goes back.
+- The deadline lives in the durable lease record, so a plugin that
+  restarts inside the window still releases at the right moment, and
+  `docker network rm` hands back the network's still-held addresses at
+  once instead of leaving them for deadlines on a network that no longer
+  exists (#984).
+- In IPAM mode, `on_remove` reaches the address reserved for an endpoint
+  Docker never created. That address was retained and never released on
+  every value before this one, which is the escape the v2.1.1 notes
+  state; it is now handed back at the end of the same window, after the
+  retry it was retained for has had its chance (#984).
+- `releases_reclaimed`, stored per family and summed for the unsuffixed
+  series: held addresses a running container is using again when the
+  window ends, so the record was closed and nothing went on the wire.
+  With `releases_sent` climbing and this flat, nothing is restarting
+  inside the window; with this climbing, the window is doing what it
+  exists for. Two other outcomes also send nothing and are not counted
+  here, an address stopped a second time and an acquisition in flight
+  under the same endpoint key, so the two counters do not add up to the
+  number of windows that ended (#984).
+- `hostnames_applied_late`, `hostname_lookup_failures` and
+  `hostname_apply_failures` on `/Plugin.Health` and `/metrics`: the name
+  reached the running client, the daemon never answered, or the client would
+  not take it. The first is the one that says the other two are zero because
+  nothing went wrong and not because nothing happened. The endpoint keeps
+  its lease in all three cases, so none of them affects `healthy` (#961).
+- `router_solicits_sent`, `router_adverts_seen`,
+  `router_adverts_refused`, `router_advert_options_ignored`,
+  `router_table_entries_dropped` and `router_table_entries_evicted` on
+  `/Plugin.Health` and `/metrics`: the solicitations the plugin's DHCPv6
+  clients sent from container links, the advertisements that decoded and
+  reached them, frames whose ICMPv6 type said advertisement and which
+  would not decode, options refused by their own standard while the rest
+  of the frame was read, entries a full router or route list refused,
+  and entries a full resolver or search list threw out to take an
+  arrival. The last two are opposite rules: a refusal keeps what was
+  heard first, an eviction keeps what expires last, and either above
+  zero means the client's table caps are in force. The refusals of
+  whole frames are apart from the sightings
+  because their difference is the diagnostic: a link with no router and
+  a link whose router sends something this client refuses read the same
+  in one total, and one of the two is a router to find while the other
+  is a router to fix. The bound is what reached the client, so a frame
+  the kernel or the socket filter dropped first is in none of the six.
+  None of them affects `healthy` (#814).
+
+### Fixed
+
+- An option written with no value failed the create instead of taking
+  the default. `-o lease_timeout=`, and `driver_opts: {lease_timeout:
+  "${VAR}"}` in Compose with `VAR` unset, ended `docker network create`
+  with `invalid duration`, while every other option already read an
+  empty value as leaving the option out. An empty value is now an unset
+  option for every option on the network, `lease_timeout` included
+  ([#989](https://github.com/claymore666/docker-net-dhcp/pull/989)).
+- A container waited for the Docker daemon before its DHCP client
+  started. The attach now starts the persistent client first and asks
+  the daemon for the container's name afterwards, then hands that name
+  to the running client, which renews early to carry it. Before, the
+  client was not started until the daemon had answered, and the daemon
+  does not answer questions about a container while it is still starting
+  it, so an endpoint could be without an address for the length of a
+  `docker run`. A name that arrives late, or not at all, no longer holds
+  up the lease. A container **restart** still asks the daemon first:
+  Docker drives a restart as a detach and a re-attach with no endpoint
+  creation between them, so the plugin rebuilds the endpoint before the
+  attach begins (#961).
+- A network with `register_dns` keeps the old order. Its name goes in
+  the DHCP FQDN option, which is built when the client is constructed
+  and cannot be set afterwards, so that network still waits for the name
+  before it leases (#961).
+
+### Deferred to v2.3.0
+
+- IPv6 on a network that names this plugin as its IPAM driver. That
+  shape serves IPv4 only: Docker's `--ipv6`, `-o ipv6=true` and
+  `-o ipv6_mode=` with any mode but `off` are refused at `docker network
+  create` there, with the reason in the message, and `--ipam-driver
+  null` is unchanged and supported in every mode. The IPAM endpoint path
+  runs no DHCPv6 exchange at all, and the identity a v6 client would
+  fall back to on it is derived from an endpoint MAC that Docker
+  regenerates at every restart, so the work is a v6 record on that path
+  and an identity that survives one (#960).
+
 ## v2.1.1
 
 A network can now ask for its DHCP leases back. `release_lease=on_stop`
@@ -38,7 +286,7 @@ section below is still the list the daemon shows you.
 | `release_lease` is a new network option, default `never` | Nothing, until a network sets it. An existing network, and any network created without the option, behaves as it did in v2.1.0. |
 | `release_lease=on_stop` releases at `Leave`, per family | The address returns to the server's pool at `docker stop`, and the container's next start is a fresh acquisition that may land on a different address. |
 | An endpoint on an `on_stop` network gets no tombstone | That endpoint does not keep its MAC across a restart. The two are the same rule: nothing may hand on an address the server has taken back. |
-| `release_lease=on_remove` is refused at `docker network create` | A create naming it fails with the reason in the message. Use `never` or `on_stop`. |
+| `release_lease=on_remove` is refused at `docker network create` | A create naming it fails with the reason in the message. Use `never` or `on_stop`. It is accepted in v2.2.0. |
 | Four counters are new on `/Plugin.Health` and `/metrics` | `releases_sent` and `release_failures`, each split `_v4` and `_v6`. `release_failures` is worth investigating and does not flip `healthy`. |
 | The plugin is on Docker Hub under a second name | Install from `claymore666/docker-net-dhcp` or from `claymore666/net-dhcp`; both are the same digest. Nothing already installed changes, and GHCR is unaffected. |
 | The Go module path is `github.com/claymore666/docker-net-dhcp/v2` | Nothing for an image user. `go get`, `go install` and pkg.go.dev resolve this repository's 2.x releases instead of v1.9.0. |
@@ -55,14 +303,16 @@ section below is still the list the daemon shows you.
   record whose address went back is closed and not kept resumable. Both
   the network driver and the parent-attached modes send it (#962, PR
   #966).
-  **One path is not covered, on every value including `on_stop`.** In
+  **One path is not covered by either value in this release.** In
   IPAM mode, an address reserved for an endpoint whose `CreateEndpoint`
-  then failed is retained and never released: retaining it is what lets
+  then failed is retained and not released: retaining it is what lets
   a restart policy's next attempt claim the same address back instead of
   burning a second lease on the server, and a reservation with no
-  endpoint reaches no `Leave`, which is the only path that releases. No
-  DHCPRELEASE goes on the wire for it and the address is left to expire,
-  exactly as any other host on the segment leaves one.
+  endpoint reaches no `Leave`, which is the only path `on_stop`
+  releases from. No DHCPRELEASE goes on the wire for it and the address
+  is left to expire, exactly as any other host on the segment leaves
+  one. `release_lease=on_remove` covers it in v2.2.0, by releasing from
+  the retained record instead of from `Leave` (#984).
 - `releases_sent` and `release_failures`, each stored per family and
   summed for the unsuffixed series. A release that put no message on the
   wire counts as a failure and names its reason in the plugin log; the
@@ -99,9 +349,10 @@ section below is still the list the daemon shows you.
 
 - `release_lease=on_remove`. Docker deletes an endpoint when its
   container stops, not when it is removed, so the value needs a timed
-  release with its own TTL and timer instead of a third call site. It is
-  refused at `docker network create` until then, with the reason in the
-  message (#984).
+  release instead of a third call site. It is refused at `docker network
+  create` in this release, with the reason in the message. It ships in
+  v2.2.0, timed off the deadline already written into each lease record
+  (#984).
 
 ## v2.1.0
 
@@ -616,8 +867,8 @@ sudo mkdir -p /var/lib/net-dhcp
 | A container's address on stop, restart or removal | **Held until the lease expires.** No DHCPRELEASE is sent on any path, and the orphaned-lease sweep is gone (#800) |
 | Log line for a client signalled before it ever bound | Was `Persistent client stopped before it ever held the lease; reclaiming it`. Now ends `the one-shot's lease is left to expire on the server`. Log alerts matching the old wording stop matching (#800) |
 | `ipv6=true` on a segment offering no DHCPv6 address | **Containers start.** Endpoints on a stateless segment (RA "other configuration" flag only) or a SLAAC-only segment previously failed: no DHCPv6 address exists there by definition, the acquisition always timed out, and the timeout was fatal. The endpoint is now created without a v6 lease. The discriminator is the advertised managed-address flag, not how long the plugin waited — a segment advertising managed-address whose server then goes quiet is still a fatal error (#868) |
-| Router Advertisements inside the container | **Processed by the container's kernel.** `dhcpcd` set `accept_ra=0` and `autoconf=0` on the interface it manages, and re-did it on every carrier acquisition, so no router discovery ran. DHCPv6 carries no router option, so the IPv6 default route lapsed and the address stopped being refreshed while on-link traffic kept working. The DHCPv6 client now runs with `accept_ra=2`, `autoconf=1` and `keep_addr_on_down=1` (#875) |
-| A segment advertising a prefix with the A flag **and** running stateful DHCPv6 | **More than one global IPv6 address per container**: the DHCPv6 lease, plus one the kernel forms from the prefix, plus privacy addresses where the image's kernel enables them. An outbound connection that does not bind explicitly selects its source per RFC 6724, which need not be the leased address `docker inspect` reports; a firewall, ACL or allowlist keyed on the leased address can see traffic from another. Mitigation: advertise the prefix with A=0, or bind explicitly (#875) |
+| Router Advertisements inside the container | **Processed by the container's kernel.** (Superseded in v2.2.0: the plugin reads them and the container's kernel is at `accept_ra=0`.) `dhcpcd` set `accept_ra=0` and `autoconf=0` on the interface it manages, and re-did it on every carrier acquisition, so no router discovery ran. DHCPv6 carries no router option, so the IPv6 default route lapsed and the address stopped being refreshed while on-link traffic kept working. The DHCPv6 client now runs with `accept_ra=2`, `autoconf=1` and `keep_addr_on_down=1` (#875) |
+| A segment advertising a prefix with the A flag **and** running stateful DHCPv6 | **More than one global IPv6 address per container**: the DHCPv6 lease, plus one the kernel forms from the prefix, plus privacy addresses where the image's kernel enables them. (Superseded in v2.2.0: `autoconf=0` leaves such a container with the lease alone, which is the address `docker inspect` reports.) An outbound connection that does not bind explicitly selects its source per RFC 6724, which need not be the leased address `docker inspect` reports; a firewall, ACL or allowlist keyed on the leased address can see traffic from another. Mitigation: advertise the prefix with A=0, or bind explicitly (#875) |
 | Stateless DHCPv6 replies | **Applied, not dropped.** A segment advertising "other configuration available" answers an information request with options and no address; those replies were discarded at two points. With `propagate_dns`, option 23 nameservers and option 24 search domain now reach the container (#815) |
 | The `search` line in `resolv.conf` on a DHCPv6 lease | **Written.** The v6 branch mapped nameservers and not the search list, so a DHCPv6-only lease produced no `search` line. It now comes from option 24 (#815) |
 | How a DHCP outage is first noticed | **The DHCP client reports it.** Dropping the `release` directive changed the event `dhcpcd` fires on a lapsed lease from `RELEASE` to `EXPIRE`, which the plugin counts. `dhcp_timeouts` rises at the lease deadline instead of one watchdog grace later, and the log carries a lease-failure record where it previously carried only a watchdog line. `dhcp_timeouts` is otherwise unchanged — same name, same labels. The deadline watchdog stays as the backstop; whether it still earns its place is #855 (#800) |

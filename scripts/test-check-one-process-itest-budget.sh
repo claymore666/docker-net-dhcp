@@ -31,6 +31,16 @@
 #   * A CEILING IT CANNOT READ IS A REFUSAL. An expression-valued
 #     ITEST_TIMEOUT exits 2 rather than being silently skipped, because
 #     a skipped member looks exactly like a compliant one in the output.
+#
+# NO CASE SPELLS A CEILING OR A CAP. Mutating today's tree means every
+# case needs an anchor in it, and an anchor that quotes the current value
+# stops matching the day that value moves -- the edit then changes
+# nothing, the case asserts the UNMUTATED tree's verdict, and it prints
+# PASS. Nine cases here were exactly that, anchored on `45m` and
+# `timeout-minutes: 70`, and all nine went quiet when the one-process
+# ceiling was raised (#934, 2026-09-17). So the values are read out of
+# the tree, every edit states how many occurrences it must change, and
+# `mutated` refuses a fixture that came out identical to its source.
 set -uo pipefail
 
 # shellcheck source=scripts/tmpdir-guard.sh
@@ -75,6 +85,91 @@ says() {
     printf '%s' "$out" | grep -- "$2" >/dev/null
 }
 
+# subst <file> <regex> <replacement> <count> -- a multiline regex
+# substitution that must change exactly <count> occurrences, or the case
+# aborts. An edit that matched nothing is an INERT CONTROL: it passes its
+# own assertion having mutated nothing, and the gate then agrees with a
+# tree nobody changed. Every `sed -i` here used to be that shape, anchored
+# on the literal ceiling the lanes carried, and all nine of those cases
+# went quiet the day the ceiling moved (#934, 2026-09-17).
+subst() {
+    python3 - "$@" <<'SUBST'
+import re
+import sys
+
+path, pat, rep, want = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4])
+text = open(path, encoding="utf-8").read()
+out, n = re.subn(pat, rep, text, flags=re.M)
+if n != want:
+    sys.stderr.write(
+        "MUTATION INERT: %s changed %d occurrence(s) of %r, wanted %d. "
+        "The tree no longer has the shape this case mutates.\n" % (path, n, pat, want))
+    sys.exit(1)
+open(path, "w", encoding="utf-8").write(out)
+SUBST
+}
+
+# mutated <root> <label> -- the fixture must DIFFER from the tree it was
+# copied from. Without this a case whose anchor stopped matching asserts
+# the unmutated tree's verdict and passes, which is indistinguishable in
+# the output from a gate that works.
+mutated() {
+    if diff -r -q "$REPO/.github/workflows" "$1/workflows" >/dev/null 2>&1 &&
+       cmp -s "$REPO/Makefile" "$1/Makefile"; then
+        no "INERT: $2 left the fixture identical to the tree"
+        return 1
+    fi
+    return 0
+}
+
+# read_one <file> <regex with one group> -- the value, or a loud failure
+# if the file does not have exactly one of them.
+read_one() {
+    python3 - "$1" "$2" <<'READ'
+import re
+import sys
+
+text = open(sys.argv[1], encoding="utf-8").read()
+hits = re.findall(sys.argv[2], text, flags=re.M)
+if len(hits) != 1:
+    sys.stderr.write("expected one match for %r in %s, found %d\n"
+                     % (sys.argv[2], sys.argv[1], len(hits)))
+    sys.exit(1)
+print(hits[0])
+READ
+}
+
+WF="$REPO/.github/workflows"
+
+# THE NUMBERS THESE CASES USE ARE READ OUT OF THE TREE, never restated. A
+# case that spells today's ceiling stops being a case the moment the
+# ceiling moves, which is the defect the gate itself exists to close.
+#
+# The hosted `full` job's two whole-suite ceilings are summed here by
+# reading the file, not by asking the gate: a case that took its expected
+# value from its own subject could not fail.
+HOSTED_SUM="$(python3 - "$WF/integration-hosted.yml" <<'SUM'
+import re
+import sys
+
+text = open(sys.argv[1], encoding="utf-8").read()
+vals = re.findall(r"^ *ITEST_TIMEOUT: (\d+)m$", text, flags=re.M)
+assert len(vals) == 2, "the hosted lane no longer states exactly two ceilings"
+print(sum(int(v) for v in vals))
+SUM
+)" || exit 1
+COVERAGE_CAP="$(read_one "$WF/coverage.yml" '^    timeout-minutes: (\d+)$')" || exit 1
+
+# The coverage lane's MAIN-suite ceiling, keyed on the step's own `run:`
+# line rather than on its value, because the failure step's ceiling sits
+# at the same indentation two steps below.
+COVERAGE_MAIN_RE='^          ITEST_TIMEOUT: \S+$\n        run: make integration-test$'
+
+# coverage_main_ceiling <value> -- that step rewritten with a new ceiling.
+coverage_main_ceiling() {
+    printf '          ITEST_TIMEOUT: %s\n        run: make integration-test' "$1"
+}
+
 # ---------------------------------------------------------------- control
 root="$(fixture control)"
 if [ "$(verdict "$root")" = "0" ]; then
@@ -93,22 +188,9 @@ fi
 
 # ------------------------------------------------- A: the ceiling is stated
 root="$(fixture no_main_ceiling)"
-python3 - "$root/workflows/coverage.yml" <<'PY'
-import sys
-p = sys.argv[1]
-s = open(p).read()
-old = """        env:
-          INTEGRATION_PLUGIN_REF: ${{ env.COVER_PLUGIN_REF }}
-          ITEST_TIMEOUT: 45m
-        run: make integration-test
-"""
-new = """        env:
-          INTEGRATION_PLUGIN_REF: ${{ env.COVER_PLUGIN_REF }}
-        run: make integration-test
-"""
-assert s.count(old) == 1, "the coverage main step is not the shape this case mutates"
-open(p, "w").write(s.replace(old, new))
-PY
+subst "$root/workflows/coverage.yml" "$COVERAGE_MAIN_RE" \
+      '        run: make integration-test' 1 || fail=$((fail + 1))
+mutated "$root" "no_main_ceiling"
 if [ "$(verdict "$root")" = "1" ]; then
     ok "a main-suite step with no ITEST_TIMEOUT is a finding (property A)"
 else
@@ -123,7 +205,7 @@ fi
 # A, the other direction: the FAILURE suite may take the default, because
 # there the default is the whole-suite budget. Remove it and stay clean.
 root="$(fixture failure_takes_default)"
-python3 - "$root/workflows/integration-hosted.yml" <<'PY'
+if ! python3 - "$root/workflows/integration-hosted.yml" <<'PY'
 import sys
 p = sys.argv[1]
 s = open(p).read()
@@ -136,6 +218,10 @@ new = """        run: sudo env "PATH=$PATH" "INTEGRATION_PLUGIN_REF=$INTEGRATION
 assert s.count(old) == 1, "the hosted failure step is not the shape this case mutates"
 open(p, "w").write(s.replace(old, new))
 PY
+then
+    fail=$((fail + 1))
+fi
+mutated "$root" "failure_takes_default"
 if [ "$(verdict "$root")" = "0" ]; then
     ok "a failure-suite step taking the Makefile default is not a finding"
 else
@@ -144,7 +230,7 @@ fi
 
 # ------------------------------------------------ B: the value survives sudo
 root="$(fixture sudo_not_forwarded)"
-python3 - "$root/workflows/integration-hosted.yml" <<'PY'
+if ! python3 - "$root/workflows/integration-hosted.yml" <<'PY'
 import sys
 p = sys.argv[1]
 s = open(p).read()
@@ -152,6 +238,10 @@ old = ' "ITEST_TIMEOUT=$ITEST_TIMEOUT" make integration-test\n'
 assert s.count(old) == 1, "the hosted main step's forward is not the shape this case mutates"
 open(p, "w").write(s.replace(old, " make integration-test\n"))
 PY
+then
+    fail=$((fail + 1))
+fi
+mutated "$root" "sudo_not_forwarded"
 if [ "$(verdict "$root")" = "1" ]; then
     ok "an env: value not forwarded through sudo is a finding (property B)"
 else
@@ -167,7 +257,7 @@ fi
 # forward (integration-arm64.yml's main step is exactly that, and the
 # control already covers it), and `sudo -E` is a forward too.
 root="$(fixture sudo_preserve_env)"
-python3 - "$root/workflows/integration-hosted.yml" <<'PY'
+if ! python3 - "$root/workflows/integration-hosted.yml" <<'PY'
 import sys
 p = sys.argv[1]
 s = open(p).read()
@@ -176,6 +266,10 @@ new = 'run: sudo -E env "PATH=$PATH" "INTEGRATION_PLUGIN_REF=$INTEGRATION_PLUGIN
 assert s.count(old) == 1
 open(p, "w").write(s.replace(old, new))
 PY
+then
+    fail=$((fail + 1))
+fi
+mutated "$root" "sudo_preserve_env"
 if [ "$(verdict "$root")" = "0" ]; then
     ok "sudo -E is a forward: the gate reads the mechanism, not one spelling"
 else
@@ -184,7 +278,9 @@ fi
 
 # ------------------------------------------- C: the job cap holds the ceilings
 root="$(fixture cap_below_ceilings)"
-sed -i 's/^    timeout-minutes: 70$/    timeout-minutes: 60/' "$root/workflows/integration-hosted.yml"
+subst "$root/workflows/integration-hosted.yml" \
+      '^    timeout-minutes: \d+$' "    timeout-minutes: $((HOSTED_SUM - 5))" 1 || fail=$((fail + 1))
+mutated "$root" "cap_below_ceilings"
 if [ "$(verdict "$root")" = "1" ]; then
     ok "a job cap under the sum of its step ceilings is a finding (property C)"
 else
@@ -198,7 +294,9 @@ fi
 
 # C from the other side: raise a STEP ceiling under an unchanged cap.
 root="$(fixture ceiling_above_cap)"
-sed -i 's/^          ITEST_TIMEOUT: 45m$/          ITEST_TIMEOUT: 60m/' "$root/workflows/coverage.yml"
+subst "$root/workflows/coverage.yml" "$COVERAGE_MAIN_RE" \
+      "$(coverage_main_ceiling "$((COVERAGE_CAP + 1))m")" 1 || fail=$((fail + 1))
+mutated "$root" "ceiling_above_cap"
 if [ "$(verdict "$root")" = "1" ]; then
     ok "raising a step ceiling past its job cap is the same finding, driven from the other side"
 else
@@ -207,14 +305,18 @@ fi
 
 # C's margin: exactly the sum is not enough, sum + 1 is.
 root="$(fixture cap_equals_sum)"
-sed -i 's/^    timeout-minutes: 70$/    timeout-minutes: 65/' "$root/workflows/integration-hosted.yml"
+subst "$root/workflows/integration-hosted.yml" \
+      '^    timeout-minutes: \d+$' "    timeout-minutes: ${HOSTED_SUM}" 1 || fail=$((fail + 1))
+mutated "$root" "cap_equals_sum"
 if [ "$(verdict "$root")" = "1" ]; then
     ok "a cap set exactly equal to the sum leaves nothing for setup and is a finding"
 else
     no "a cap with zero margin over its ceilings passed"
 fi
 root="$(fixture cap_sum_plus_one)"
-sed -i 's/^    timeout-minutes: 70$/    timeout-minutes: 66/' "$root/workflows/integration-hosted.yml"
+subst "$root/workflows/integration-hosted.yml" \
+      '^    timeout-minutes: \d+$' "    timeout-minutes: $((HOSTED_SUM + 1))" 1 || fail=$((fail + 1))
+mutated "$root" "cap_sum_plus_one"
 if [ "$(verdict "$root")" = "0" ]; then
     ok "the required margin is one minute, not an invented setup estimate"
 else
@@ -223,7 +325,8 @@ fi
 
 # C: no cap at all.
 root="$(fixture no_cap)"
-sed -i '/^    timeout-minutes: 70$/d' "$root/workflows/integration-hosted.yml"
+subst "$root/workflows/integration-hosted.yml" '^    timeout-minutes: \d+\n' "" 1 || fail=$((fail + 1))
+mutated "$root" "no_cap"
 if [ "$(verdict "$root")" = "1" ]; then
     ok "a whole-suite job with no timeout-minutes is a finding"
 else
@@ -232,7 +335,8 @@ fi
 
 # ------------------------------------------------- the default is READ, not 20
 root="$(fixture default_moves)"
-sed -i 's/^ITEST_TIMEOUT ?= 20m$/ITEST_TIMEOUT ?= 90m/' "$root/Makefile"
+subst "$root/Makefile" '^ITEST_TIMEOUT \?= \S+$' 'ITEST_TIMEOUT ?= 90m' 1 || fail=$((fail + 1))
+mutated "$root" "default_moves"
 if [ "$(verdict "$root")" = "1" ]; then
     ok "moving the Makefile default moves what an unset step costs (90m blows the caps)"
 else
@@ -245,7 +349,8 @@ else
 fi
 
 root="$(fixture default_missing)"
-sed -i '/^ITEST_TIMEOUT ?= /d' "$root/Makefile"
+subst "$root/Makefile" '^ITEST_TIMEOUT \?= \S+\n' '' 1 || fail=$((fail + 1))
+mutated "$root" "default_missing"
 if [ "$(verdict "$root")" = "2" ]; then
     ok "a Makefile with no ITEST_TIMEOUT default is a refusal, not a pass"
 else
@@ -302,7 +407,11 @@ fi
 
 # ------------------------------------- a ceiling the gate cannot read is a refusal
 root="$(fixture expression_ceiling)"
-sed -i 's/^          ITEST_TIMEOUT: 45m$/          ITEST_TIMEOUT: ${{ inputs.budget }}/' "$root/workflows/coverage.yml"
+# shellcheck disable=SC2016  # the literal ${{ }} is the case: an
+# unexpanded workflow expression is exactly what the gate must refuse.
+subst "$root/workflows/coverage.yml" "$COVERAGE_MAIN_RE" \
+      "$(coverage_main_ceiling '${{ inputs.budget }}')" 1 || fail=$((fail + 1))
+mutated "$root" "expression_ceiling"
 if [ "$(verdict "$root")" = "2" ]; then
     ok "an expression-valued ceiling is a refusal, not a silently skipped member"
 else
@@ -310,11 +419,33 @@ else
 fi
 
 root="$(fixture nonsense_ceiling)"
-sed -i 's/^          ITEST_TIMEOUT: 45m$/          ITEST_TIMEOUT: soon/' "$root/workflows/coverage.yml"
+subst "$root/workflows/coverage.yml" "$COVERAGE_MAIN_RE" \
+      "$(coverage_main_ceiling 'soon')" 1 || fail=$((fail + 1))
+mutated "$root" "nonsense_ceiling"
 if [ "$(verdict "$root")" = "2" ]; then
     ok "a ceiling that is not a Go duration is a refusal"
 else
     no "the gate accepted a value make cannot parse either"
+fi
+
+# --------------------------------------------- the inertness guard, driven
+# The guard that makes every case above worth reading, checked the only
+# way a guard can be: by feeding it an anchor that matches nothing. Nine
+# cases here were `sed -i` on the ceiling the lanes happened to carry, and
+# the day that ceiling moved each of them mutated nothing, asserted the
+# unmutated tree's verdict and printed PASS.
+root="$(fixture inert_guard)"
+if subst "$root/workflows/coverage.yml" \
+         '^          ITEST_TIMEOUT: no-ceiling-is-ever-spelled-this-way$' \
+         '          ITEST_TIMEOUT: 60m' 1 2>/dev/null; then
+    no "a mutation that matched nothing was accepted as an edit"
+else
+    ok "a mutation whose anchor no longer matches aborts the case instead of passing"
+fi
+if diff -r -q "$REPO/.github/workflows" "$root/workflows" >/dev/null 2>&1; then
+    ok "and the fixture is provably identical to the tree, which is what it detected"
+else
+    no "the inertness case changed the fixture, so it proves nothing about inert edits"
 fi
 
 # ------------------------------------------------------------------ verdict

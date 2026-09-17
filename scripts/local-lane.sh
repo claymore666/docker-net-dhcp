@@ -73,13 +73,20 @@ LANE=(
   "build|go|go build ./..."
   "vet|go|go vet ./..."
   "format|gofmt|test -z \"\$(gofmt -l .)\" || { echo 'gofmt -l found unformatted files:'; gofmt -l .; false; }"
-  "staticcheck|staticcheck|staticcheck ./..."
+  "staticcheck (default view)|staticcheck|staticcheck ./..."
+  # THE SECOND VIEW IS NOT A DUPLICATE (#871). `staticcheck ./...`
+  # never compiles the integration-tagged files, so it never parses
+  # them, and test.yaml runs both views as one required check. The
+  # lane ran only the first, so an S1038 in test/integration/ passed
+  # locally and failed on the pull request -- MEASURED on PR #989.
+  "staticcheck (integration view)|staticcheck|staticcheck -tags integration ./..."
   "shellcheck (scripts+runner+netboot)|shellcheck|shellcheck -S warning scripts/*.sh ci/runner-image/*.sh test/arm64-netboot/*.sh"
   "actionlint|actionlint|actionlint"
   "option-docs drift|-|bash scripts/check-option-docs.sh"
   "starter-task claims|-|bash scripts/check-good-first-issues.sh --static"
   "docs drift|-|bash scripts/check-docs-drift.sh"
   "retired words|-|bash scripts/check-retired-words.sh"
+  "conflict markers|-|bash scripts/check-conflict-markers.sh"
   "health contract|-|bash scripts/check-health-contract.sh"
   "plugin-set order|-|bash scripts/check-plugin-set-order.sh"
   "plugin-set settings declared|-|bash scripts/check-plugin-set-settings.sh"
@@ -159,6 +166,9 @@ LANE=(
   # the lane's does not have, and a gate that refuses on a credential
   # the lane cannot supply would be red every run.
   "pool facts|-|bash scripts/check-pool-facts.sh"
+  # The on_remove window's prose against the three constants it is made
+  # of, derived from the Go source and never from the prose (#984).
+  "window constants|-|bash scripts/check-window-constants.sh"
   "scheduled shard coverage|-|bash scripts/check-shard-coverage.sh"
   "golden fixture keying|go|bash scripts/check-golden-fixture-name-keyed.sh"
   "test/policy-gates split|-|bash scripts/check-test-job-purity.sh"

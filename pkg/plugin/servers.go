@@ -436,6 +436,7 @@ func (p *Plugin) acquireWithPolicy(
 		ra = ra.Merge(attemptRA)
 		cancel()
 		if lastErr == nil {
+			p.noteMainPrefixFallback(v6, info, base.MainPrefix6, endpointID)
 			return info, ra, nil
 		}
 		if i < len(attempts)-1 {
@@ -463,4 +464,27 @@ func (p *Plugin) acquireWithPolicy(
 		p.dhcpServerPolicyExhausted.Add(1)
 	}
 	return info, ra, lastErr
+}
+
+// noteMainPrefixFallback counts and names an `ipv6_main_prefix` that no
+// address of the endpoint's lease fell inside.
+//
+// ONCE PER ENDPOINT, AND THIS IS WHERE THAT IS TRUE. The selection
+// itself happens at the lease seam, which every renewal crosses, so a
+// counter bumped there would count how often the client renewed rather
+// than how many endpoints were affected -- the population an operator
+// reads it as. This is the acquisition both attach paths share, it runs
+// once per endpoint, and it is the same site the tier-fallback counter
+// above is bumped from for the same reason.
+func (p *Plugin) noteMainPrefixFallback(v6 bool, info dhcp.Info, main netip.Prefix, endpointID string) {
+	if p == nil || !v6 || !info.MainAddrFallback {
+		return
+	}
+	p.ipv6MainPrefixUnmatched.Add(1)
+	log.WithFields(log.Fields{
+		"endpoint":         shortID(endpointID),
+		"ipv6_main_prefix": main,
+		"address":          info.IP,
+	}).Warn("No address of this endpoint falls inside the network's ipv6_main_prefix; " +
+		"Docker is being told the first advertised prefix's address instead")
 }

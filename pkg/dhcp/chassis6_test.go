@@ -160,7 +160,7 @@ func TestAcquireStep6(t *testing.T) {
 		Expire: now.Add(time.Hour),
 	}}
 
-	got := acquireStep6(acquired, false)
+	got := acquireStep6(acquired, false, netip.Prefix{})
 	if !got.Done {
 		t.Error("Acquired did not end the acquisition")
 	}
@@ -171,7 +171,7 @@ func TestAcquireStep6(t *testing.T) {
 		t.Error("Acquired produced no address")
 	}
 
-	got = acquireStep6(lease.Event{Kind: lease.Configured}, false)
+	got = acquireStep6(lease.Event{Kind: lease.Configured}, false, netip.Prefix{})
 	if !got.Done {
 		t.Error("Configured did not end the acquisition; the endpoint would wait out " +
 			"the whole lease_timeout for an address the segment has already declined to offer")
@@ -184,7 +184,7 @@ func TestAcquireStep6(t *testing.T) {
 		t.Errorf("Configured produced an address %q", got.Info.IP)
 	}
 
-	got = acquireStep6(lease.Event{Kind: lease.Failed, Reason: proto.ReasonNoServer}, false)
+	got = acquireStep6(lease.Event{Kind: lease.Failed, Reason: proto.ReasonNoServer}, false, netip.Prefix{})
 	if got.Done {
 		t.Error("Failed ended the acquisition; the ladder's next attempt is the caller's " +
 			"decision and the deadline is what ends it")
@@ -195,7 +195,7 @@ func TestAcquireStep6(t *testing.T) {
 
 	// An event that says nothing about the outcome leaves the loop
 	// running: Bound, Renewed and the rest arrive on this channel too.
-	if got := acquireStep6(lease.Event{Kind: lease.Renewed}, false); got.Done || got.Err != nil {
+	if got := acquireStep6(lease.Event{Kind: lease.Renewed}, false, netip.Prefix{}); got.Done || got.Err != nil {
 		t.Errorf("Renewed ended the acquisition or carried an error: %+v", got)
 	}
 }
@@ -227,6 +227,18 @@ func TestInfoFromConfig(t *testing.T) {
 	// one here would be the chassis inventing it.
 	if info.IP != "" || info.Gateway != "" {
 		t.Errorf("a Configured event produced IP %q gateway %q", info.IP, info.Gateway)
+	}
+
+	// AND IT SAYS NOTHING ABOUT THE ROUTER, which is what keeps it from
+	// withdrawing the link's MTU. This is the second constructor of a v6
+	// Info, and an Information-request Reply (RFC 9915 section 18.2.6)
+	// carries no router information at all: MTU 0 here is the reply not
+	// mentioning it, never a router that stopped advertising one. With
+	// RouterSeen set, every stateless event would drop the v6 MTU vote
+	// and hand the link to the v4 number.
+	if info.RouterSeen || info.MTU != 0 {
+		t.Errorf("a Configured event claimed to carry router information "+
+			"(RouterSeen=%v MTU=%d)", info.RouterSeen, info.MTU)
 	}
 
 	poisoned := lease.Configuration{Search: []string{"ok.test", "bad\nnameserver 10.0.0.1"}}
@@ -273,7 +285,7 @@ func TestInfoFromLease_PreferredSecondsIsV6Only(t *testing.T) {
 		Preferred: now.Add(30 * time.Minute),
 		Expire:    now.Add(time.Hour),
 	}
-	info, _ := infoFromLease(v6, now)
+	info, _ := infoFromLease(v6, proto.RouterObservation{}, now, netip.Prefix{})
 	if info.LeaseSeconds != 3600 {
 		t.Errorf("LeaseSeconds = %d, want 3600", info.LeaseSeconds)
 	}
@@ -285,7 +297,7 @@ func TestInfoFromLease_PreferredSecondsIsV6Only(t *testing.T) {
 	// convention -- not "zero seconds", which would deprecate the
 	// address the instant it was installed.
 	v6.Preferred = time.Time{}
-	info, _ = infoFromLease(v6, now)
+	info, _ = infoFromLease(v6, proto.RouterObservation{}, now, netip.Prefix{})
 	if info.PreferredSeconds != info.LeaseSeconds {
 		t.Errorf("an infinite preferred lifetime gave PreferredSeconds = %d with "+
 			"LeaseSeconds = %d; a zero here deprecates the address on arrival",
@@ -297,7 +309,7 @@ func TestInfoFromLease_PreferredSecondsIsV6Only(t *testing.T) {
 		Preferred: now.Add(30 * time.Minute),
 		Expire:    now.Add(time.Hour),
 	}
-	if info, _ := infoFromLease(v4, now); info.PreferredSeconds != 0 {
+	if info, _ := infoFromLease(v4, proto.RouterObservation{}, now, netip.Prefix{}); info.PreferredSeconds != 0 {
 		t.Errorf("a v4 lease produced PreferredSeconds = %d; DHCPv4 has one lifetime "+
 			"and the field is omitempty", info.PreferredSeconds)
 	}
@@ -722,7 +734,7 @@ func TestRunAcquisition6_HasItsOwnWindow(t *testing.T) {
 func TestAcquireStep6_AConflictOnAHintedAddressEndsTheAttempt(t *testing.T) {
 	conflict := lease.Event{Kind: lease.Failed, Reason: proto.ReasonConflict, Note: "in use"}
 
-	got := acquireStep6(conflict, true)
+	got := acquireStep6(conflict, true, netip.Prefix{})
 	if !got.Done {
 		t.Error("a conflict on the address this attempt ASKED for did not end it; the " +
 			"library restarts discovery with the same hint, the server hands back the " +
@@ -733,12 +745,12 @@ func TestAcquireStep6_AConflictOnAHintedAddressEndsTheAttempt(t *testing.T) {
 			"sentinel whether a second attempt is worth running", got.Err)
 	}
 
-	if got := acquireStep6(conflict, false); got.Done {
+	if got := acquireStep6(conflict, false, netip.Prefix{}); got.Done {
 		t.Error("a conflict on a SERVER-CHOSEN address ended the attempt; there is no " +
 			"loop to break there -- the library asks again and is given a different " +
 			"address -- and ending it costs the endpoint a whole second acquisition")
 	}
-	if got := acquireStep6(lease.Event{Kind: lease.Failed, Reason: proto.ReasonNoServer}, true); got.Done {
+	if got := acquireStep6(lease.Event{Kind: lease.Failed, Reason: proto.ReasonNoServer}, true, netip.Prefix{}); got.Done {
 		t.Error("a Failed that is not a conflict ended the attempt on a hinted " +
 			"acquisition; the ladder's next attempt is the caller's decision")
 	}
