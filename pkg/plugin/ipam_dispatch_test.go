@@ -10,6 +10,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -247,7 +248,7 @@ func TestRequestPool_RefusesWhatV2_1DoesNotDo(t *testing.T) {
 		// this network that sends the operator to a second dead end:
 		// the IPAM endpoint path runs no DHCPv6 exchange either, so
 		// both doors are closed and only --ipam-driver null is open.
-		{"an IPv6 pool", RequestPoolRequest{AddressSpace: ipamLocalAddressSpace, V6: true}, []string{"#960", "--ipam-driver null"}},
+		{"an IPv6 pool", RequestPoolRequest{AddressSpace: ipamLocalAddressSpace, V6: true}, []string{"#960", "--ipam-driver null", "ipv6_mode"}},
 		{"an --ip-range", RequestPoolRequest{AddressSpace: ipamLocalAddressSpace, Pool: ipamTestPool, SubPool: "192.168.99.128/25"}, []string{"--ip-range"}},
 	}
 	for _, c := range cases {
@@ -1328,9 +1329,41 @@ func ipamSecondNetwork(t *testing.T, p *Plugin) string {
 // would report a pass for the wrong reason.
 func createIPAMBridgeNetwork(t *testing.T, ipv6 bool, space string) error {
 	t.Helper()
+	return createIPAMBridgeNetworkOpts(t, map[string]interface{}{"ipv6": ipv6}, space)
+}
+
+// createIPAMBridgeNetworkOpts is createIPAMBridgeNetwork with the
+// operator's generic options written out.
+//
+// THE POINT IS THE KEYS THAT ARE ABSENT. `ipv6_mode=slaac` has to reach
+// ipamRefuseIPv6, and an `ipv6` key carrying false alongside it is the
+// written-out contradiction validateIPv6Options refuses two statements
+// earlier -- so a fixture that always spells `ipv6` would test the
+// wrong guard and report it as coverage.
+func createIPAMBridgeNetworkOpts(t *testing.T, generic map[string]interface{}, space string) error {
+	t.Helper()
 	const bridge = "br-ipam6"
-	withStateDir(t, t.TempDir())
 	withFakeBridge(t, bridge)
+	opts := map[string]interface{}{"bridge": bridge}
+	for k, v := range generic {
+		opts[k] = v
+	}
+	return createIPAMNetworkOptsExact(t, opts, space)
+}
+
+// createIPAMNetworkOptsExact writes the operator's generic options and
+// NOTHING ELSE.
+//
+// A FIXTURE THAT ALWAYS ADDS A KEY DECIDES WHICH GUARD ANSWERS. The
+// bridge key above is right for every bridge-mode case and wrong for
+// one: `mode=ipvlan` on top of it is turned away by validateModeOptions
+// with "bridge cannot be set in mode=ipvlan", so a case that means to
+// read the ipvlan IPAM refusal reads a different sentence and passes on
+// it. Found by a reviewer inside the test this change added, which is
+// the defect class the change is about.
+func createIPAMNetworkOptsExact(t *testing.T, generic map[string]interface{}, space string) error {
+	t.Helper()
+	withStateDir(t, t.TempDir())
 
 	p := newPluginForTest()
 	p.ipamPools = newIssuedPools()
@@ -1349,10 +1382,7 @@ func createIPAMBridgeNetwork(t *testing.T, ipv6 bool, space string) error {
 	return p.CreateNetwork(CreateNetworkRequest{
 		NetworkID: ipamTestNetwork,
 		Options: map[string]interface{}{
-			util.OptionsKeyGeneric: map[string]interface{}{
-				"bridge": bridge,
-				"ipv6":   ipv6,
-			},
+			util.OptionsKeyGeneric: generic,
 		},
 		IPv4Data: []*IPAMData{data},
 	})
@@ -1392,6 +1422,245 @@ func TestCreateNetwork_IPAMModeRefusesIPv6(t *testing.T) {
 				t.Errorf("the refusal is %q and does not mention %q", err, want)
 			}
 		}
+		// `-o ipv6=true` is the short spelling of ipv6_mode=dhcp, so
+		// the mode the refusal names is the resolved one and not the
+		// option the operator typed.
+		// ASSERTED AS `ipv6_mode=<value>`, NOT AS THE BARE WORDS. The
+		// message names the option in its remedy clause and the word
+		// "dhcp" in the sentence about the short spelling, so either
+		// substring on its own is satisfied by prose that never says
+		// what this network is set to. The pair is what an operator
+		// acts on and it is the only part the resolved mode produces.
+		if want := "ipv6_mode=" + proto.Mode6DHCP.String(); !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal is %q and does not carry %q, the mode `-o ipv6=true` "+
+				"resolves to. The mode is what tells an operator which of their "+
+				"options switched IPv6 on", err, want)
+		}
+	})
+
+	// TestCreateNetwork_IPAMModeRefusesIPv6 used to drive `-o ipv6=true`
+	// and nothing else, and the refusal named that spelling alone. An
+	// operator who wrote `-o ipv6_mode=slaac` reached the same refusal
+	// and was told to remove an option they had not typed (#817).
+	//
+	// THE MODES ARE DERIVED, NOT LISTED, and they are derived through
+	// the route an operator's string really takes: dhcp.IPv6Modes() is
+	// the accepted set the option is parsed against, and
+	// dhcp.ParseIPv6Mode is the parser CreateNetwork calls. A mode
+	// added to the library reaches this loop without an edit, which is
+	// the property the message itself has -- it formats the resolved
+	// mode instead of branching on a literal per mode.
+	t.Run("every ipv6_mode that switches IPv6 on is refused and named", func(t *testing.T) {
+		spellings := dhcp.IPv6Modes()
+		if len(spellings) < 2 {
+			t.Fatalf("dhcp.IPv6Modes() is %v. A loop over fewer than two modes cannot tell a "+
+				"message that names the resolved mode from one that names a literal",
+				spellings)
+		}
+		drove := 0
+		for _, spelling := range spellings {
+			mode, set, perr := dhcp.ParseIPv6Mode(spelling)
+			if perr != nil || !set {
+				t.Fatalf("dhcp.ParseIPv6Mode(%q) did not accept a value dhcp.IPv6Modes() "+
+					"published: mode=%v set=%v err=%v", spelling, mode, set, perr)
+			}
+			if mode == proto.Mode6Off {
+				continue
+			}
+			drove++
+			t.Run(spelling, func(t *testing.T) {
+				err := createIPAMBridgeNetworkOpts(t,
+					map[string]interface{}{"ipv6_mode": spelling}, ipamLocalAddressSpace)
+				if err == nil {
+					t.Fatalf("`-o ipv6_mode=%s` was accepted on a network this plugin is the "+
+						"IPAM driver for. It switches IPv6 on exactly as `-o ipv6=true` "+
+						"does, and the IPAM endpoint path runs no DHCPv6 exchange either "+
+						"way", mode)
+				}
+				if !errors.Is(err, util.ErrIPAM) {
+					t.Errorf("the refusal %v is not a util.ErrIPAM, so it does not map to the "+
+						"status code the other IPAM refusals use", err)
+				}
+				// The option AND its value, for the reason the
+				// ipv6=true case above gives: the message mentions
+				// `ipv6_mode` in its remedy whatever this network is
+				// set to, so the bare option name is not evidence that
+				// the operator's own value reached the sentence.
+				if want := "ipv6_mode=" + mode.String(); !strings.Contains(err.Error(), want) {
+					t.Errorf("the refusal is %q and does not carry %q. That is the whole "+
+						"finding: the operator is told about an option they did not "+
+						"write, and not about the one they did", err, want)
+				}
+				// WHICH GUARD ANSWERED. `ipv6_mode=slaac` reaches
+				// several refusals -- the written-out `ipv6=false`
+				// contradiction, and the ipvlan one -- and a fixture
+				// that tripped either would report this arm as covered
+				// while ipamRefuseIPv6 was never reached.
+				//
+				// THE PHRASE IS CHECKED FOR UNIQUENESS, NOT ASSUMED TO
+				// BE UNIQUE. An earlier comment here claimed `#960` was
+				// on this refusal and on no other; it is on three, and
+				// the arm was sound only because the other two are
+				// reached from RequestPool and never from
+				// CreateNetwork. A discriminator that has to be true of
+				// the whole package is measured over the whole package.
+				const want = "Two spellings reach this refusal"
+				if n := errorConstructionsNaming(t, want); n != 1 {
+					t.Fatalf("%q occurs in %d error construction(s) in this module, so it "+
+						"does not say which guard answered. Pick a phrase that occurs "+
+						"in exactly one", want, n)
+				}
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("the refusal is %q and does not carry %q, so it did not come "+
+						"from ipamRefuseIPv6. This case is measuring a different "+
+						"guard", err, want)
+				}
+			})
+		}
+		if drove == 0 {
+			t.Fatal("no mode switched IPv6 on, so every assertion in this loop was skipped " +
+				"and the arm passed by having an empty domain")
+		}
+	})
+
+	// The refusal is about a combination this tree does not serve, and
+	// that is true of every release carrying it. A version in the
+	// sentence dates the refusal to the release it was written in and
+	// reads, on a later one, as a statement about something older.
+	//
+	// DRIVEN, so the three messages are the ones the plugin really
+	// produces and not three source lines that might be unreachable.
+	// The static rule over every refusal is
+	// TestRefusals_NameNoReleaseVersion.
+	t.Run("no refusal on this path dates itself to a release", func(t *testing.T) {
+		// EVERY ARM CARRIES A DISCRIMINATOR, because "an error came
+		// back" says nothing about which guard produced it. The ipvlan
+		// arm below was answered by validateModeOptions and not by the
+		// IPAM guard it names: the fixture wrote a `bridge` key, and
+		// `bridge` beside `mode=ipvlan` is refused before the IPAM
+		// question is asked, so the count check was satisfied by a
+		// stranger.
+		//
+		// EACH want IS CHECKED TO OCCUR IN EXACTLY ONE ERROR
+		// CONSTRUCTION in the module, below, because the first version
+		// of this comment asserted that and was wrong about `#960`.
+		type arm struct {
+			where string
+			want  string
+			run   func(t *testing.T) error
+		}
+		arms := []arm{
+			{
+				where: "ipv6=true at CreateNetwork",
+				want:  "Two spellings reach this refusal",
+				run: func(t *testing.T) error {
+					return createIPAMBridgeNetworkOpts(t,
+						map[string]interface{}{"ipv6": true}, ipamLocalAddressSpace)
+				},
+			},
+			{
+				where: "ipv6_mode=slaac at CreateNetwork",
+				want:  "Two spellings reach this refusal",
+				run: func(t *testing.T) error {
+					return createIPAMBridgeNetworkOpts(t,
+						map[string]interface{}{"ipv6_mode": proto.Mode6SLAAC.String()},
+						ipamLocalAddressSpace)
+				},
+			},
+			{
+				where: "ipvlan at CreateNetwork",
+				want:  "#949",
+				run: func(t *testing.T) error {
+					// No bridge key. That is the whole point of
+					// createIPAMNetworkOptsExact.
+					return createIPAMNetworkOptsExact(t,
+						map[string]interface{}{"mode": "ipvlan", "parent": "eth0"},
+						ipamLocalAddressSpace)
+				},
+			},
+			{
+				where: "an IPv6 pool at RequestPool",
+				want:  "does not allocate IPv6 pools",
+				run: func(t *testing.T) error {
+					p := newPluginForTest()
+					_, err := p.RequestPool(RequestPoolRequest{
+						AddressSpace: ipamLocalAddressSpace, V6: true})
+					return err
+				},
+			},
+		}
+		for _, a := range arms {
+			if n := errorConstructionsNaming(t, a.want); n != 1 {
+				t.Errorf("the discriminator %q for %s occurs in %d error construction(s), "+
+					"so a message carrying it does not say which guard answered",
+					a.want, a.where, n)
+				continue
+			}
+			err := a.run(t)
+			if err == nil {
+				t.Errorf("%s was accepted, so its refusal was never produced and cannot be "+
+					"checked for a version", a.where)
+				continue
+			}
+			msg := err.Error()
+			if !strings.Contains(msg, a.want) {
+				t.Errorf("%s was refused by a different guard: the message is %q and does "+
+					"not carry %q. A version check over the wrong sentence reports "+
+					"the right answer about nothing", a.where, msg, a.want)
+				continue
+			}
+			if v := releaseVersionIn(msg); v != "" {
+				t.Errorf("the refusal for %s names the release %s: %q. The combination is "+
+					"refused in every release that carries this code, so the version "+
+					"tells the operator nothing and goes stale at the next tag",
+					a.where, v, msg)
+			}
+		}
+	})
+
+	// THE SENTENCE MAKES A COMPLETENESS CLAIM AND NOTHING WATCHED IT.
+	// "Two spellings reach this refusal" is a statement about the
+	// OPTIONS an operator can write, and the loop above derives MODES.
+	// A later option that resolves to a non-off mode the way `ipv6`
+	// does would make the shipped sentence false with nothing red.
+	// Raised by a reviewer; this is the observer.
+	t.Run("the message names every option that reaches it", func(t *testing.T) {
+		spellings := ipv6SwitchingOptions(t)
+		if len(spellings) < 2 {
+			t.Fatalf("only %v can switch IPv6 on, so a message naming one option would "+
+				"satisfy this arm and the count word below would carry no claim",
+				spellings)
+		}
+		err := createIPAMBridgeNetworkOpts(t,
+			map[string]interface{}{"ipv6_mode": proto.Mode6SLAAC.String()}, ipamLocalAddressSpace)
+		if err == nil {
+			t.Fatal("the refusal did not fire, so there is no message to read")
+		}
+		msg := err.Error()
+		for _, spelling := range spellings {
+			// `-o ipv6=` and not a bare `ipv6`: the bare option name
+			// is a substring of `ipv6_mode`, so a message that named
+			// only the longer option would satisfy the shorter one's
+			// arm. That is the same weakness a surviving mutant found
+			// in the mode loop above.
+			want := "-o " + spelling + "="
+			if !strings.Contains(msg, want) {
+				t.Errorf("`%s` can switch IPv6 on and reaches this refusal, and the "+
+					"message does not name it: %q. An operator who wrote it is told "+
+					"to remove an option they never typed", want, msg)
+			}
+		}
+		t.Logf("PASS  the refusal names %v, derived by driving ipv6Mode over "+
+			"%d DHCPNetworkOptions field(s)", spellings,
+			reflect.TypeOf(DHCPNetworkOptions{}).NumField())
+		// The count word, so the sentence cannot go on saying "Two"
+		// once a third option reaches the refusal.
+		want := englishCount(t, len(spellings)) + " spellings reach this refusal"
+		if !strings.Contains(msg, want) {
+			t.Errorf("the message does not carry %q: %q. %d option(s) reach this refusal, "+
+				"and a count in a shipped sentence is a claim like any other",
+				want, msg, len(spellings))
+		}
 	})
 
 	t.Run("an IPAM network without ipv6 is created", func(t *testing.T) {
@@ -1407,4 +1676,117 @@ func TestCreateNetwork_IPAMModeRefusesIPv6(t *testing.T) {
 				"the shipping product since v1.x and nothing in this issue touches it", err)
 		}
 	})
+
+	// The opposite direction for the mode arm: naming the option is not
+	// the same as setting it, and a refusal keyed on the option's
+	// presence would take the IPAM shape away from anyone who spells
+	// out the default.
+	t.Run("an IPAM network with ipv6_mode=off is created", func(t *testing.T) {
+		if err := createIPAMBridgeNetworkOpts(t,
+			map[string]interface{}{"ipv6_mode": proto.Mode6Off.String()}, ipamLocalAddressSpace); err != nil {
+			t.Fatalf("`-o ipv6_mode=off` was refused on an IPAM network: %v. It switches "+
+				"nothing on, so it is the ordinary shape written out", err)
+		}
+	})
+
+	t.Run("a null-IPAM network with ipv6_mode=slaac is created", func(t *testing.T) {
+		if err := createIPAMBridgeNetworkOpts(t,
+			map[string]interface{}{"ipv6_mode": proto.Mode6SLAAC.String()}, "null"); err != nil {
+			t.Fatalf("`-o ipv6_mode=slaac` was refused on a --ipam-driver null network: %v. "+
+				"The refusal is about the IPAM shape and must not reach the shape that "+
+				"serves every mode", err)
+		}
+	})
+}
+
+// ipv6SwitchingOptions is the operator spelling of every
+// DHCPNetworkOptions field that can make ipv6Mode() answer with a mode
+// that is not off.
+//
+// DERIVED BY DRIVING THE RESOLVER, not read off a list beside it. The
+// question the refusal's sentence answers is "which options bring an
+// operator here", and the only thing that knows is ipv6Mode itself: one
+// field at a time is set on an otherwise-zero option set, and the
+// spelling is kept when the resolver answers with IPv6 switched on. A
+// field added later is driven the same way with no edit here.
+func ipv6SwitchingOptions(t *testing.T) []string {
+	t.Helper()
+	typ := reflect.TypeOf(DHCPNetworkOptions{})
+	var out []string
+	for i := 0; i < typ.NumField(); i++ {
+		field := typ.Field(i)
+		values := candidateOptionValues(t, field)
+		for _, v := range values {
+			opts := DHCPNetworkOptions{}
+			reflect.ValueOf(&opts).Elem().Field(i).Set(v)
+			mode, err := opts.ipv6Mode()
+			if err == nil && mode != proto.Mode6Off {
+				out = append(out, optionSpelling(field))
+				break
+			}
+		}
+	}
+	return out
+}
+
+// optionSpelling is what an operator writes after `-o`.
+func optionSpelling(field reflect.StructField) string {
+	if tag := field.Tag.Get("mapstructure"); tag != "" {
+		return strings.Split(tag, ",")[0]
+	}
+	return strings.ToLower(field.Name)
+}
+
+// candidateOptionValues is the set of values worth trying for one
+// field.
+//
+// AN UNDRIVEN KIND IS A SILENT HOLE, so a field whose type this does not
+// know fails the test by name instead of being skipped. That is the
+// difference between "no other option switches IPv6 on" and "no other
+// option of a type I happened to handle switches IPv6 on".
+//
+// THE BOUND THAT REMAINS, and it runs the other way. For a string field
+// the values tried are the library's IPv6 modes plus a few spellings of
+// "on", so a future string option that switches IPv6 on with some other
+// word is not found, and the derivation is a LOWER bound on the option
+// set. The message naming too few options would then pass, because the
+// count word is compared against the same short list. Closing it needs
+// the resolver to publish which fields it reads, which it does not
+// today; until then this is stated and not implied.
+func candidateOptionValues(t *testing.T, field reflect.StructField) []reflect.Value {
+	t.Helper()
+	switch field.Type.Kind() {
+	case reflect.Bool:
+		return []reflect.Value{reflect.ValueOf(true)}
+	case reflect.String:
+		var out []reflect.Value
+		for _, m := range dhcp.IPv6Modes() {
+			out = append(out, reflect.ValueOf(m))
+		}
+		for _, extra := range []string{"true", "1", "on"} {
+			out = append(out, reflect.ValueOf(extra))
+		}
+		return out
+	case reflect.Int64:
+		// time.Duration and friends: a non-zero of the field's own type.
+		v := reflect.New(field.Type).Elem()
+		v.SetInt(int64(time.Second))
+		return []reflect.Value{v}
+	default:
+		t.Errorf("DHCPNetworkOptions.%s is a %s, which this derivation does not know how to "+
+			"drive. Add it, or the question \"which options switch IPv6 on\" is answered "+
+			"over the fields that happen to be driveable", field.Name, field.Type.Kind())
+		return nil
+	}
+}
+
+// englishCount is the number word a shipped sentence uses.
+func englishCount(t *testing.T, n int) string {
+	t.Helper()
+	words := []string{"Zero", "One", "Two", "Three", "Four", "Five", "Six"}
+	if n < 0 || n >= len(words) {
+		t.Fatalf("%d has no word here, so the count in the shipped sentence cannot be "+
+			"checked. Extend the list", n)
+	}
+	return words[n]
 }

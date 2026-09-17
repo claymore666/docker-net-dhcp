@@ -531,7 +531,19 @@ func (p *Plugin) CreateNetwork(r CreateNetworkRequest) error {
 		if err := ipamRefuseIPvlan(opts.effectiveMode()); err != nil {
 			return err
 		}
-		if err := ipamRefuseIPv6(opts.ipv6Enabled()); err != nil {
+		// THE RESOLVE CANNOT FAIL HERE TODAY, and the branch stays
+		// anyway. validateIPv6Options two statements above already
+		// resolved this pair and returned its error, so nothing
+		// reaches this line with a pair ipv6Mode refuses. That is a
+		// fact about the ORDER of two calls and not about either of
+		// them, and folding the error into a bool to save the branch
+		// is what made the old refusal read a resolved-off mode as
+		// "this network has no IPv6".
+		mode6, err := opts.ipv6Mode()
+		if err != nil {
+			return err
+		}
+		if err := ipamRefuseIPv6(mode6); err != nil {
 			return err
 		}
 		iface := opts.Bridge
