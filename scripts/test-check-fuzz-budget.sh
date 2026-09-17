@@ -46,12 +46,21 @@ SEED
 export FUZZ_LIST_CMD="$TMP/list-stub"
 export FUZZ_TREE_ROOT="$TMP/tree"
 
+# THE SECOND FILE THAT FUZZES. The gate reads the workflow and the local
+# lane, because a name that resolves to nothing is the same defect in
+# either, and only one of them was covered when this table was first
+# written. Cases that say nothing about the lane get one that agrees
+# with the default stub tree, so a case still measures the thing it
+# names; the lane's own cases pass their own fifth argument.
+LANE_DEFAULT='          go test ./pkg/dhcp/ -run "^$" -fuzz "^FuzzX$" -fuzztime 200000x -timeout 5m'
+
 failures=0
-# check NAME WANT_EXIT WORKFLOW_BODY GREP_PATTERN
+# check NAME WANT_EXIT WORKFLOW_BODY GREP_PATTERN [LANE_BODY]
 check() {
-    local name="$1" want_exit="$2" body="$3" want_grep="$4"
+    local name="$1" want_exit="$2" body="$3" want_grep="$4" lane="${5:-$LANE_DEFAULT}"
     printf '%s\n' "$body" > "$TMP/wf.yaml"
-    FUZZ_WORKFLOW="$TMP/wf.yaml" bash "$CHECK" > "$TMP/out" 2>&1
+    printf '%s\n' "$lane" > "$TMP/lane.sh"
+    FUZZ_WORKFLOW="$TMP/wf.yaml" FUZZ_LANE="$TMP/lane.sh" bash "$CHECK" > "$TMP/out" 2>&1
     local got_exit=$?
     local ok=1
     [ "$got_exit" -eq "$want_exit" ] || ok=0
@@ -102,7 +111,7 @@ check "a comment mentioning -fuzztime neither passes nor fails the gate" 2 \
 check "a comment alongside a real invocation does not double-report" 0 \
 "          # -fuzztime 20s used to be the shape here
           go test ./pkg/dhcp/ -fuzz '^FuzzX$' -fuzztime 200000x -timeout 5m" \
-"1 fuzz invocation"
+"2 fuzz invocation(s) across 2 file(s)"
 
 # Several invocations: every one is judged, not just the first.
 check "a second, bad invocation is caught behind a good one" 1 \
@@ -117,7 +126,7 @@ check "a second, bad invocation is caught behind a good one" 1 \
 # reaches.
 check "a -fuzz name that resolves passes" 0 \
 "          go test ./pkg/dhcp/ -fuzz '^FuzzX$' -fuzztime 200000x -timeout 5m" \
-"all of them smoked"
+"each smoked by every file"
 
 check "a -fuzz name that resolves to nothing is refused" 1 \
 "          go test ./pkg/dhcp/ -fuzz '^FuzzGone$' -fuzztime 200000x -timeout 5m
@@ -164,7 +173,37 @@ FUZZ_TREE_ROOT="$TMP/testdata-tree" check "a target under testdata/ does not cou
 "          go test ./pkg/dhcp/ -fuzz '^FuzzX$' -fuzztime 200000x -timeout 5m" \
 "Scorecard can see"
 
-FUZZ_WORKFLOW="$TMP/does-not-exist.yaml" bash "$CHECK" > "$TMP/out" 2>&1
+# THE COPY THAT WAS UNCOVERED. Every judgement above is asked of the
+# workflow; these four ask it of the lane, with the workflow held
+# correct, because a gate that reads one of two files reproduces in the
+# other exactly the silence it was built to end.
+check "a lane -fuzz name that resolves passes" 0 \
+"          go test ./pkg/dhcp/ -fuzz '^FuzzX$' -fuzztime 200000x -timeout 5m" \
+"across 2 file(s)" \
+"          \"fuzz (short)|go|go test ./pkg/dhcp/ -fuzz '^FuzzX$' -fuzztime 200000x -timeout 5m\""
+
+check "a lane -fuzz name that resolves to nothing is refused" 1 \
+"          go test ./pkg/dhcp/ -fuzz '^FuzzX$' -fuzztime 200000x -timeout 5m" \
+"lane.sh:1: -fuzz names FuzzGone" \
+"          \"fuzz (short)|go|go test ./pkg/dhcp/ -fuzz '^FuzzGone$' -fuzztime 200000x -timeout 5m\""
+
+check "a tree target the lane alone never fuzzes is refused" 1 \
+"          go test ./pkg/dhcp/ -fuzz '^FuzzX$' -fuzztime 200000x -timeout 5m" \
+"FuzzX exists in the tree and $TMP/lane.sh never fuzzes it" \
+"          \"fuzz (short)|go|go test ./pkg/dhcp/ -fuzz '^FuzzA$' -fuzztime 200000x -timeout 5m\""
+
+check "a lane with no fuzz invocation at all exits 2" 2 \
+"          go test ./pkg/dhcp/ -fuzz '^FuzzX$' -fuzztime 200000x -timeout 5m" \
+"watching nothing" \
+"          \"unit tests|go|go test ./...\""
+
+# A wall-clock budget is the gate's original subject, asked of the lane.
+check "a wall-clock budget in the lane is rejected" 1 \
+"          go test ./pkg/dhcp/ -fuzz '^FuzzX$' -fuzztime 200000x -timeout 5m" \
+"wall-clock budget" \
+"          \"fuzz (short)|go|go test ./pkg/dhcp/ -fuzz '^FuzzX$' -fuzztime 20s -timeout 5m\""
+
+FUZZ_WORKFLOW="$TMP/does-not-exist.yaml" FUZZ_LANE="$TMP/lane.sh" bash "$CHECK" > "$TMP/out" 2>&1
 if [ $? -eq 2 ] && grep -q "does not exist" "$TMP/out"; then
     echo "PASS: a missing workflow file exits 2"
 else
@@ -172,11 +211,20 @@ else
     failures=$((failures + 1))
 fi
 
-# The real workflow must satisfy its own gate.
+FUZZ_WORKFLOW="$TMP/wf.yaml" FUZZ_LANE="$TMP/no-such-lane.sh" bash "$CHECK" > "$TMP/out" 2>&1
+if [ $? -eq 2 ] && grep -q "no-such-lane.sh does not exist" "$TMP/out"; then
+    echo "PASS: a missing lane file exits 2"
+else
+    echo "FAIL: a missing lane file exits 2"
+    sed 's/^/    /' "$TMP/out"
+    failures=$((failures + 1))
+fi
+
+# The real workflow AND the real lane must satisfy their own gate.
 # The seams are dropped here on purpose: this case is the one that runs
 # the gate against the real workflow and the real tree, which is what
 # the whole table is a model of.
-if (cd "$(dirname "$0")/.." && env -u FUZZ_LIST_CMD -u FUZZ_TREE_ROOT bash scripts/check-fuzz-budget.sh > "$TMP/real" 2>&1); then
+if (cd "$(dirname "$0")/.." && env -u FUZZ_LIST_CMD -u FUZZ_TREE_ROOT -u FUZZ_LANE bash scripts/check-fuzz-budget.sh > "$TMP/real" 2>&1); then
     echo "PASS: the committed workflow passes the gate"
 else
     echo "FAIL: the committed workflow does not pass the gate"

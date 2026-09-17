@@ -183,8 +183,10 @@ LANE=(
   # One entry per target and every name spelled out, the same shape as
   # test.yaml and for the same reason: the loop this replaces fuzzed two
   # targets that no longer existed, and `go test -fuzz` over a package
-  # with no matching target exits 0 (#1010). Kept in step with the
-  # workflow by scripts/check-fuzz-budget.sh, which resolves both.
+  # with no matching target exits 0 (#1010). scripts/check-fuzz-budget.sh
+  # reads THIS file as well as the workflow: it resolves every name below
+  # against the package beside it and requires both files to name every
+  # target in the tree, so a rename here alone goes red.
   "fuzz (short)|go|go test ./pkg/dhcp/ -run '^\$' -fuzz '^FuzzIdentity6RoundTrip\$' -fuzztime 200000x -parallel 2 -timeout 5m"
   "fuzz (short)|go|go test ./pkg/plugin/ -run '^\$' -fuzz '^FuzzBuildResolvConf\$' -fuzztime 200000x -parallel 2 -timeout 5m"
   "fuzz (short)|go|go test ./pkg/plugin/ -run '^\$' -fuzz '^FuzzDeriveHostIfname\$' -fuzztime 200000x -parallel 2 -timeout 5m"

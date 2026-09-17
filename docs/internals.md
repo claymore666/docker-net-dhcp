@@ -875,8 +875,11 @@ check ran for weeks with one possible verdict.
 [`scripts/check-fuzz-budget.sh`](https://github.com/claymore666/docker-net-dhcp/blob/main/scripts/check-fuzz-budget.sh)
 now resolves every name in the step against the package beside it, and
 refuses a target in the tree that the step never fuzzes. That is why the
-step is four spelled-out invocations rather than a loop: a name assembled
-at run time is a name the gate cannot resolve.
+step is four spelled-out invocations and not a loop: a name assembled at
+run time is a name the gate cannot resolve. It asks both questions of
+`scripts/local-lane.sh` as well, because the lane carries the same four
+invocations and this page tells you it gives the answer CI will give: a
+rename in one file alone goes red.
 
 The lane's contents live in
 [`scripts/local-lane.sh`](https://github.com/claymore666/docker-net-dhcp/blob/main/scripts/local-lane.sh),
