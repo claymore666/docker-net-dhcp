@@ -24,6 +24,7 @@ import (
 type fakeRecovery struct {
 	flipAt   time.Duration // when recovered_ok becomes 1; negative means never
 	failAt   time.Duration // when recovery_failed becomes 1; negative means never
+	abortAt  time.Duration // when recovery_aborted_container_gone becomes 1; negative means never
 	deferred int32
 	// unreachableFrom is when the plugin stops answering; negative means
 	// it always answers.
@@ -35,13 +36,17 @@ type fakeRecovery struct {
 }
 
 func newFakeRecovery() *fakeRecovery {
-	return &fakeRecovery{flipAt: -1, failAt: -1, unreachableFrom: -1}
+	return &fakeRecovery{flipAt: -1, failAt: -1, abortAt: -1, unreachableFrom: -1}
 }
 
-// succeedsAt and failsAt are the two arms of one rebuild, named so a case
-// cannot accidentally describe a plugin that does both.
+// succeedsAt, failsAt and abortsAt are the three ends one rebuild can
+// reach, named so a case cannot accidentally describe a plugin that does
+// two of them. failsAt and abortsAt are the classifier's two arms
+// (pkg/plugin/plugin.go:2936, 2941) and they mean opposite things to a
+// reader, so each is driven on its own.
 func (f *fakeRecovery) succeedsAt(d time.Duration) *fakeRecovery { f.flipAt = d; return f }
 func (f *fakeRecovery) failsAt(d time.Duration) *fakeRecovery    { f.failAt = d; return f }
+func (f *fakeRecovery) abortsAt(d time.Duration) *fakeRecovery   { f.abortAt = d; return f }
 
 func (f *fakeRecovery) read() *HealthResponse {
 	if f.unreachableFrom >= 0 && f.elapsed >= f.unreachableFrom {
@@ -53,6 +58,9 @@ func (f *fakeRecovery) read() *HealthResponse {
 	}
 	if f.failAt >= 0 && f.elapsed >= f.failAt {
 		h.RecoveryFailed = 1
+	}
+	if f.abortAt >= 0 && f.elapsed >= f.abortAt {
+		h.RecoveryAbortedContainerGone = 1
 	}
 	return h
 }
@@ -218,6 +226,28 @@ func TestRecoveryRebuildFailure_SaysStillInFlightWhenNothingWasClassified(t *tes
 	}
 }
 
+// A plugin that answers, records a failure and then stops answering
+// inside one poll. CounterWindow.Await keeps the last successful read
+// across failed ones (counterwindow_live.go:139-152), so the fake must
+// too: a fake that let a failed read erase the good one would report
+// "no counter could be read" for a wait that had read the classifier,
+// and this case would then be the one place the difference showed.
+func TestAwaitRecoveryRebuild_KeepsTheLastReadWhenThePluginGoesAway(t *testing.T) {
+	f := newFakeRecovery().failsAt(2 * time.Second)
+	f.unreachableFrom = 5 * time.Second
+
+	h, ok := awaitRecoveryRebuild(discardf, "a rebuild", f.poll)
+	if ok {
+		t.Fatal("the wait reported a rebuild from a plugin that recorded a failure and went away")
+	}
+	if h == nil || h.RecoveryFailed != 1 {
+		t.Fatalf("the failed reads erased the classifier's own read: %s", RecoveryRoutes(h))
+	}
+	if f.polls != 1 {
+		t.Errorf("polls=%d, want 1: this plugin never deferred", f.polls)
+	}
+}
+
 // A plugin that stops answering during the extension leaves the
 // extension with no read of its own. Discarding the first poll's read
 // there would quote the normal route's budget for a wait that took the
@@ -280,6 +310,97 @@ func TestRecoveryRoutes_NamesEveryRoute(t *testing.T) {
 	}
 	if RecoveryRoutes(nil) == "" {
 		t.Error("a nil read renders as nothing, which reads as a document with every counter at zero")
+	}
+}
+
+// The classifier's OTHER arm, driven on its own. A recycle whose
+// container had already exited records recovery_aborted_container_gone
+// and nothing else: no rebuild was attempted and none is pending. A
+// verdict keyed on recovery_failed alone reports that as a rebuild still
+// in flight, which sends its reader looking for a hang that is not
+// there — and the counters printed beside it say nothing, because the
+// reader has just been told which sentence to believe.
+func TestAwaitRecoveryRebuild_NamesTheContainerGoneArm(t *testing.T) {
+	f := newFakeRecovery().abortsAt(awaitTimeoutDefault + recoveryPerNetworkTimeoutDefault)
+	h, ok := awaitRecoveryRebuild(discardf, "a rebuild", f.poll)
+	if ok {
+		t.Fatal("the wait reported a rebuild for a plugin whose container had already exited")
+	}
+	if h == nil || h.RecoveryAbortedContainerGone != 1 {
+		t.Fatalf("the wait gave up before the classifier moved: %s", RecoveryRoutes(h))
+	}
+	if h.RecoveryFailed != 0 {
+		t.Fatalf("the fake moved both arms, so this case cannot show what the second one adds: %s",
+			RecoveryRoutes(h))
+	}
+	got := RecoveryRebuildFailure("a rebuild", h)
+	if !strings.Contains(got, "recovery_aborted_container_gone=1") {
+		t.Errorf("the verdict does not name the arm that fired:\n%s", got)
+	}
+	if !strings.Contains(got, "container had already exited") {
+		t.Errorf("the verdict names the counter but not what it means, and this arm is the benign "+
+			"one — the reader needs the difference:\n%s", got)
+	}
+	if strings.Contains(got, "still in flight") {
+		t.Errorf("the verdict calls an endpoint whose container had already exited a rebuild that "+
+			"is still running:\n%s", got)
+	}
+}
+
+// The deferred route needs the classifier term too. A Start that fails
+// by exhausting AWAIT_TIMEOUT records nothing at that instant whichever
+// route reached it, so a deferred budget written out longhand without
+// that term gives up inside exactly the gap the normal route's budget
+// was widened to cover: the same defect, fixed on one route and left
+// standing on the other.
+func TestAwaitRecoveryRebuild_WaitsForTheClassifierOnTheDeferredRouteToo(t *testing.T) {
+	// The far end of what the deferred route permits: the wait for the
+	// daemon, then the walk's own budget, then a Start that burns
+	// AWAIT_TIMEOUT, then the classifier on its fresh context.
+	latest := recoveryDeferredDaemonWaitDefault + recoveryBudgetDefault +
+		awaitTimeoutDefault + recoveryPerNetworkTimeoutDefault
+	f := newFakeRecovery().failsAt(latest)
+	f.deferred = 1
+
+	h, ok := awaitRecoveryRebuild(discardf, "a rebuild", f.poll)
+	if ok {
+		t.Fatal("the wait reported a rebuild for a plugin that only ever recorded a failure")
+	}
+	if h == nil || h.RecoveryFailed != 1 {
+		t.Fatalf("the deferred budget gave up before the classifier could speak at %s: %s. The "+
+			"recovery_failed == 0 assertion that follows would then read a document taken before "+
+			"the counter could move", latest, RecoveryRoutes(h))
+	}
+	if f.polls != 2 {
+		t.Errorf("polls=%d, want 2: this rebuild is only reachable through the extension", f.polls)
+	}
+	if got := RecoveryRebuildFailure("a rebuild", h); strings.Contains(got, "still in flight") {
+		t.Errorf("the verdict calls a classified failure on the deferred route a rebuild still in "+
+			"flight:\n%s", got)
+	}
+}
+
+// A wait whose every read failed holds no document at all, and it is the
+// wait most likely to be read by someone who has just lost the plugin.
+// Both halves of that path are load-bearing: RecoveryRebuildFailure
+// reads recovery_deferred off the document to pick the budget it quotes,
+// and the verdict reads the counters back to choose its sentence. Either
+// one taken on nothing is a crash in the failure path of another test,
+// which is where a crash is least legible.
+func TestRecoveryRebuildFailure_SaysSoWhenNoReadEverSucceeded(t *testing.T) {
+	got := RecoveryRebuildFailure("a rebuild", nil)
+	if !strings.Contains(got, "No counter could be read") {
+		t.Errorf("a wait that never got a health read does not say so, so its absent counters read "+
+			"as measured zeroes:\n%s", got)
+	}
+	for _, unwanted := range []string{"still in flight", "FAILED"} {
+		if strings.Contains(got, unwanted) {
+			t.Errorf("a wait that never got a health read claims %q about counters it never read:"+
+				"\n%s", unwanted, got)
+		}
+	}
+	if !strings.Contains(got, RecoveryRebuildBudget.String()) {
+		t.Errorf("the failure text quotes no budget, so it does not say how long it waited:\n%s", got)
 	}
 }
 

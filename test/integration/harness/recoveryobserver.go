@@ -198,7 +198,10 @@ func recoveryVerdict(h *HealthResponse) string {
 	case h.RecoveryFailed > 0 || h.RecoveryAbortedContainerGone > 0:
 		return fmt.Sprintf("The classifier recorded this endpoint: recovery_failed=%d, "+
 			"recovery_aborted_container_gone=%d (pkg/plugin/plugin.go:2936, 2941). The rebuild "+
-			"FAILED — it was not still running when the budget ran out.",
+			"FAILED, it was not still running when the budget ran out. The two arms want "+
+			"different next steps: recovery_failed is the Start itself failing, while "+
+			"recovery_aborted_container_gone says the container had already exited, so there was "+
+			"nothing left to rebuild.",
 			h.RecoveryFailed, h.RecoveryAbortedContainerGone)
 	default:
 		return "recovered_ok is incremented only after the recovered endpoint's client has " +

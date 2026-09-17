@@ -484,6 +484,17 @@ func TestHostIfname_APluginRecycleLeavesTheNamedLinkAlone(t *testing.T) {
 			"not rebuilt, so the rename counters below describe some other endpoint. %s",
 			after.RecoveryFailed, harness.RecoveryRoutes(after))
 	}
+	// The classifier's other arm, for the same reason. This test's
+	// container runs from before the recycle to after it, so
+	// recovery_aborted_container_gone means the plugin could not find a
+	// container that was there, and the rename it was going to redo
+	// never ran.
+	if after.RecoveryAbortedContainerGone != 0 {
+		t.Errorf("recovery_aborted_container_gone=%d after the recycle, although this test's container "+
+			"was running throughout: recovery gave up on the endpoint whose link this test renames, "+
+			"so the rename counters below describe some other endpoint. %s",
+			after.RecoveryAbortedContainerGone, harness.RecoveryRoutes(after))
+	}
 	if after.HostIfnameFailures != 0 {
 		t.Errorf("host_ifname_failures=%d after a recycle over a link that is named, on its bridge and "+
 			"found by teardown. That counter is a warn check, so this puts the health document in "+
