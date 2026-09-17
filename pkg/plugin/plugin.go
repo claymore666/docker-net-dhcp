@@ -2471,19 +2471,6 @@ func (p *Plugin) consumeTombstone(networkID string, h dhcpHostname) (mac, ipv4, 
 	return mac, ipv4, ipv6, true
 }
 
-// recoverEndpoints walks Docker's networks, finds the ones served by
-// this plugin, and rebuilds an in-memory dhcpManager for each attached
-// endpoint. This restores the lease-renewal goroutines after a plugin
-// process restart (e.g. `docker plugin disable` + `enable`, or after
-// the plugin container has crashed and been restarted by Docker).
-//
-// Recovery sources state from Docker rather than persisting our own
-// per-endpoint files: NetworkInspect gives us the MAC and IP of each
-// attached endpoint, ContainerInspect gives the hostname and the
-// container's PID for netns access. That IP is requested as DHCP
-// option 50 so the upstream DHCP
-// server can ACK the lease the container is already using rather than
-// handing out a fresh one.
 // listNetworksWhenReady is recovery's entry gate. It retries NetworkList
 // until the daemon answers or ctx expires.
 //
@@ -2509,6 +2496,20 @@ func (p *Plugin) listNetworksWhenReady(ctx context.Context) ([]dNetwork.Summary,
 	}
 }
 
+// recoverEndpoints walks Docker's networks, finds the ones served by
+// this plugin, and rebuilds an in-memory dhcpManager for each attached
+// endpoint. This restores the lease-renewal goroutines after a plugin
+// process restart (e.g. `docker plugin disable` + `enable`, or after
+// the plugin container has crashed and been restarted by Docker).
+//
+// Recovery sources state from Docker rather than persisting our own
+// per-endpoint files: NetworkInspect gives us the MAC and IP of each
+// attached endpoint, ContainerInspect gives the hostname and the
+// container's PID for netns access. That IP is requested as DHCP
+// option 50 so the upstream DHCP
+// server can ACK the lease the container is already using rather than
+// handing out a fresh one.
+//
 // ctx bounds the whole of recovery; daemonWait is the slice of it the
 // entry gate may spend waiting for the daemon to answer. They are
 // separate on purpose — time spent waiting must not come out of the
@@ -3284,24 +3285,6 @@ func waitBounded(wg *sync.WaitGroup, d time.Duration) bool {
 	}
 }
 
-// Close stops the plugin. The HTTP server is shut down FIRST so no new
-// Join can register a manager while (or after) we stop the existing
-// ones — with the old ordering a Join dispatched during the stop
-// fan-out installed a manager into the fresh registry that nobody ever
-// stopped, leaking its DHCP client.
-// Persistent DHCP clients are then stopped before process exit, so that
-// a plugin upgrade or `docker plugin disable` does not leave clients
-// renewing leases for endpoints this plugin no longer manages.
-//
-// Since #800 this is NOT about releasing anything. Close arrives
-// through Stop and not StopForLeave, so it releases nothing even on a
-// `release_lease=on_stop` network (#962) — the containers are still
-// running, and telling the server their addresses are free is the
-// duplicate assignment #524 detects. A stopped client's address stays
-// leased until it expires, which is the intended behaviour. What must
-// not survive the shutdown is the CLIENT — a stray renewer keeps an
-// address alive that nothing is using, and collides with the client a
-// restarted plugin builds for the same endpoint.
 // ListenMetrics starts the optional TCP listener for /metrics.
 //
 // Off unless METRICS_ADDR is set, and that default is deliberate. The
@@ -3347,6 +3330,24 @@ func (p *Plugin) ListenMetrics(addr string) error {
 	return nil
 }
 
+// Close stops the plugin. The HTTP server is shut down FIRST so no new
+// Join can register a manager while (or after) we stop the existing
+// ones — with the old ordering a Join dispatched during the stop
+// fan-out installed a manager into the fresh registry that nobody ever
+// stopped, leaking its DHCP client.
+// Persistent DHCP clients are then stopped before process exit, so that
+// a plugin upgrade or `docker plugin disable` does not leave clients
+// renewing leases for endpoints this plugin no longer manages.
+//
+// Since #800 this is NOT about releasing anything. Close arrives
+// through Stop and not StopForLeave, so it releases nothing even on a
+// `release_lease=on_stop` network (#962) — the containers are still
+// running, and telling the server their addresses are free is the
+// duplicate assignment #524 detects. A stopped client's address stays
+// leased until it expires, which is the intended behaviour. What must
+// not survive the shutdown is the CLIENT — a stray renewer keeps an
+// address alive that nothing is using, and collides with the client a
+// restarted plugin builds for the same endpoint.
 func (p *Plugin) Close() error {
 	// Stop the deferred-recovery retry first (#383). It can be sitting
 	// in a 60s wait for a daemon that is going away with us, and a

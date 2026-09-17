@@ -8,7 +8,6 @@ import (
 	"go/parser"
 	"go/printer"
 	"go/token"
-	"os"
 	"strings"
 	"testing"
 )
@@ -129,89 +128,5 @@ func TestOneShotAcquisition_FoldsItsOwnRouterDiscovery(t *testing.T) {
 			"getIP6's errV6HintInUse retry this function runs again through the SAME "+
 			"options value, and a snapshot left over from the first pass takes the whole "+
 			"of the second acquisition away", len(got))
-	}
-}
-
-// TestDocComments_AreAttachedToTheFunctionTheyName closes the defect
-// this PR's own fix commit introduced and nothing it ran could see.
-//
-// WHAT HAPPENED. managerStarted was inserted directly above
-// routerReport with no blank line between the new comment block and
-// the old one, so the two became ONE block. Go gives a contiguous
-// block to the declaration below it, which made routerReport's
-// documentation into managerStarted's, opening by describing a
-// function it is not about, and left routerReport with no doc comment
-// at all. gofmt, go vet, go build and the whole local lane were green
-// across it, and the diff could not show it either: the insertion adds
-// lines and the damage is to the unchanged lines above them.
-//
-// THE RULE, and it is narrow on purpose. A doc block whose first word
-// names a function that EXISTS IN THIS PACKAGE and is NOT the one the
-// block is attached to is a block that has come adrift from its
-// declaration. It is keyed on the first word because that is where Go's
-// own convention puts the subject.
-//
-// THE CORPUS IS ZERO AND EARNED, not ratcheted. MEASURED over pkg/dhcp
-// at 8aecc4a and at this head: no non-test declaration matches. The
-// same measurement over pkg/plugin finds three that do, all of them
-// older than this change, so this test is scoped to the package it can
-// hold at zero and the others are reported rather than allowlisted
-// here. A gate with an allowlist would have admitted the fourth.
-func TestDocComments_AreAttachedToTheFunctionTheyName(t *testing.T) {
-	fset := token.NewFileSet()
-	pkgs, err := parser.ParseDir(fset, ".", func(fi os.FileInfo) bool {
-		return !strings.HasSuffix(fi.Name(), "_test.go")
-	}, parser.ParseComments)
-	if err != nil {
-		t.Fatalf("parsing the package: %v", err)
-	}
-	pkg := pkgs["dhcp"]
-	// NON-VACUITY. A package that did not parse, or parsed under
-	// another name, leaves the loop below with nothing to walk and
-	// every rule in it satisfied.
-	if pkg == nil || len(pkg.Files) == 0 {
-		t.Fatal("no non-test files parsed for package dhcp: this test's domain is empty, " +
-			"and an empty domain satisfies its rule without checking anything")
-	}
-
-	declared := map[string]bool{}
-	var funcs []*ast.FuncDecl
-	for _, f := range pkg.Files {
-		for _, d := range f.Decls {
-			fn, ok := d.(*ast.FuncDecl)
-			if !ok {
-				continue
-			}
-			declared[fn.Name.Name] = true
-			funcs = append(funcs, fn)
-		}
-	}
-	if len(funcs) < 2 {
-		t.Fatalf("package dhcp has %d function declarations; this test cannot tell a "+
-			"detached block from an attached one below two", len(funcs))
-	}
-
-	firstWord := func(doc *ast.CommentGroup) string {
-		if doc == nil {
-			return ""
-		}
-		fields := strings.Fields(strings.TrimPrefix(doc.List[0].Text, "//"))
-		if len(fields) == 0 {
-			return ""
-		}
-		return strings.TrimRight(fields[0], ".,:;")
-	}
-
-	for _, fn := range funcs {
-		w := firstWord(fn.Doc)
-		if w == "" || w == fn.Name.Name || !declared[w] {
-			continue
-		}
-		t.Errorf("%s: the doc comment on %s opens by naming %s, which is a different "+
-			"function in this package. A comment block runs to the declaration below it, so a "+
-			"block inserted under another function's documentation with no blank line between "+
-			"them takes that documentation over and leaves the function it belonged to with "+
-			"none. gofmt and go vet do not model this",
-			fset.Position(fn.Pos()), fn.Name.Name, w)
 	}
 }

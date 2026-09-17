@@ -633,13 +633,6 @@ func (f *V6Fixture) evidence() V6Evidence {
 	}
 }
 
-// assertMode checks the segment is in the mode the test asked for,
-// rather than assuming the flags did what they did the day they were
-// measured. It is the fixture's reason to exist and the single place
-// the verdict is turned into a failure.
-//
-// The verdict itself is V6ModeFindings, which is pure and lives in the
-// fast lane, so both directions of it are driven without a bridge.
 // assertOwnsTheSegment is the fixture's PRECONDITION: this bridge
 // carries this fixture's advertisements and nobody else's.
 //
@@ -727,6 +720,13 @@ func (f *V6Fixture) assertOwnsTheSegment() {
 	}
 }
 
+// assertMode checks the segment is in the mode the test asked for,
+// rather than assuming the flags did what they did the day they were
+// measured. It is the fixture's reason to exist and the single place
+// the verdict is turned into a failure.
+//
+// The verdict itself is V6ModeFindings, which is pure and lives in the
+// fast lane, so both directions of it are driven without a bridge.
 func (f *V6Fixture) assertMode() {
 	f.t.Helper()
 	ev := f.evidence()
