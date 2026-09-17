@@ -234,15 +234,29 @@ func (p *Plugin) RequestAddress(ctx context.Context, req RequestAddressRequest) 
 	if !bound {
 		// No network holds this pool. The calls that legally arrive are
 		// the gateway and aux ones libnetwork makes while a create is
-		// still in flight, before CreateNetwork has bound anything;
-		// both carry an address and want it back unchanged.
+		// still in flight, before CreateNetwork has bound anything.
+		//
+		// THE GATEWAY COMES FIRST, and an empty address is one of its
+		// shapes. A gateway says so on the wire and is never an
+		// endpoint's address, so it is answered whatever the index
+		// knows; and an engine that does not ask GwAllocCheck asks for
+		// the gateway with no address at all, at `docker network
+		// create`, on this very pool. That is every engine below 28
+		// (moby libnetwork/drivers/remote/driver.go has no such call
+		// at v26.1.5 or v27.0.0, and network.go requests the gateway
+		// whenever the pool carried no gateway of its own). Refusing
+		// it here, which is what the empty-address refusal below did,
+		// failed `docker network create` on all of them with "failed
+		// to allocate gateway ()" and made IPAM mode unusable there
+		// (#1012).
+		if req.Options[ipamOptRequestAddressType] == ipamOptGateway {
+			if req.Address == "" {
+				return ipamPoolNetworkAddress(req.PoolID)
+			}
+			return ipamEchoAddress(req.Address, ipamAnyPool)
+		}
 		if req.Address == "" {
 			return none, fmt.Errorf("%w: no network is bound to pool %v, so there is nothing to lease from", util.ErrIPAM, req.PoolID)
-		}
-		// A gateway says so on the wire and is never an endpoint's
-		// address, so it is answered whatever the index knows.
-		if req.Options[ipamOptRequestAddressType] == ipamOptGateway {
-			return ipamEchoAddress(req.Address, ipamAnyPool)
 		}
 		// The aux shape and a stored endpoint's replay are otherwise
 		// wire-identical, and one more thing can make a pool unbound:
