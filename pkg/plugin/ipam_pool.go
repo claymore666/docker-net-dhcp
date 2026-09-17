@@ -168,6 +168,17 @@ func ipamPoolIDSuffix(opts map[string]string) (string, error) {
 
 // ipamPoolIDNames reports the interface name a PoolID's suffix carries,
 // and which option named it. Both empty when the PoolID has no suffix.
+//
+// IT RETURNS THE FIRST MARKER IT FINDS, AND ITS PREMISE IS THE REFUSAL
+// ABOVE. A suffix carries at most one key only because
+// ipamPoolIDSuffix refuses the pair, and what this returns becomes the
+// issued pool's interface name at ipam.go, which is an identity and not
+// a message. Relax that refusal and this silently picks by position
+// again, on the half of the input the operator cannot see. Nothing here
+// could say so, so the premise is driven instead:
+// TestIpamPoolIDNames_ItsOneMarkerPremiseIsTheTwoKeyRefusal mints every
+// combination of the accepted keys and fails if any id this package
+// produces carries two markers.
 func ipamPoolIDNames(poolID string) (key, name string) {
 	for _, k := range ipamPoolOptKeys {
 		marker := "/" + k + "="

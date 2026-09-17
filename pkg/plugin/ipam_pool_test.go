@@ -9,6 +9,8 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -130,6 +132,22 @@ func TestIpamPoolID_TheTwoKeyRefusalNamesTheOptionEachModeOwns(t *testing.T) {
 					o.mode, o.option, o.phrase, err)
 			}
 		}
+		// THE OTHER DIRECTION, because the rows above assert presence
+		// and a guard that only asserts presence fails in one
+		// direction. A message carrying every pairing correctly and
+		// one more sentence, "if in doubt, keep `-o parent=`", passes
+		// every row above and puts a bridge operator back on an option
+		// their network does not have. So each spelling is named
+		// exactly once: once is the pairing, twice is a pairing plus a
+		// directive, and the operator has to be left to pick.
+		for _, o := range owns {
+			if n := strings.Count(err.Error(), o.option); n != 1 {
+				t.Errorf("%s is named %d times in the refusal and must be named once, as one half "+
+					"of the pair. A second mention is this driver answering a question it cannot "+
+					"answer, since it has no mode to read here. Message: %q", o.option, n, err)
+			}
+		}
+
 		if i == 0 {
 			seen = err.Error()
 			continue
@@ -137,6 +155,111 @@ func TestIpamPoolID_TheTwoKeyRefusalNamesTheOptionEachModeOwns(t *testing.T) {
 		if err.Error() != seen {
 			t.Errorf("the same mistake produced two messages:\n  %q\n  %q", seen, err.Error())
 		}
+	}
+}
+
+// TestIpamPoolIDNames_ItsOneMarkerPremiseIsTheTwoKeyRefusal drives the
+// assumption ipamPoolIDNames rests on and cannot state.
+//
+// That function returns the FIRST of ipamPoolOptKeys whose marker is in
+// the PoolID, and what it returns becomes the issued pool's interface
+// name, so the positional choice reaches an identity and not only a
+// sentence. It is right today only because the two-key refusal
+// guarantees at most one marker can be there. Nothing at the function
+// says so and nothing went red if the refusal were relaxed, which is
+// the same shape as the defect this branch is fixing: a value picked by
+// position from an ordered list of equally valid candidates.
+//
+// So the premise is asserted over every combination of the keys this
+// driver accepts, on the ids this package actually mints. A relaxed
+// refusal fails here.
+func TestIpamPoolIDNames_ItsOneMarkerPremiseIsTheTwoKeyRefusal(t *testing.T) {
+	values := map[string]string{"parent": "eth0", "bridge": "br-lan"}
+
+	// Every subset of the accepted keys, built from the accepted keys
+	// so a third one added later is covered without touching this.
+	var subsets []map[string]string
+	for mask := 0; mask < 1<<len(ipamPoolOptKeys); mask++ {
+		opts := map[string]string{}
+		for i, k := range ipamPoolOptKeys {
+			if mask&(1<<i) != 0 {
+				opts[k] = values[k]
+			}
+		}
+		subsets = append(subsets, opts)
+	}
+
+	for _, opts := range subsets {
+		id, err := ipamPoolID(ipamLocalAddressSpace, "192.168.100.0/24", opts)
+		if err != nil {
+			// Refused is the other legal answer, and the refusal is
+			// asserted on its own elsewhere. What matters here is that
+			// nothing this package MINTS breaks the premise.
+			continue
+		}
+		var markers []string
+		for _, k := range ipamPoolOptKeys {
+			if strings.Contains(id, "/"+k+"=") {
+				markers = append(markers, k)
+			}
+		}
+		if len(markers) > 1 {
+			t.Errorf("opts %v minted PoolID %q carrying %v. ipamPoolIDNames returns the first of "+
+				"those by position and that answer becomes the issued pool's interface name, so "+
+				"the other one names nothing and two networks differing only in it share an "+
+				"identity", opts, id, markers)
+		}
+		key, name := ipamPoolIDNames(id)
+		if len(markers) == 1 {
+			if key != markers[0] || name != values[markers[0]] {
+				t.Errorf("PoolID %q carries %s=%s and ipamPoolIDNames read %s=%s",
+					id, markers[0], values[markers[0]], key, name)
+			}
+		} else if key != "" || name != "" {
+			t.Errorf("PoolID %q carries no marker and ipamPoolIDNames read %s=%s", id, key, name)
+		}
+	}
+}
+
+// TestReferenceDocAndTheTwoKeyRefusalShareOneSentence holds the page to
+// the binary, in the place the two have already disagreed once.
+//
+// docs/reference.md used to say the refusal "names the key to keep: the
+// one matching this network's own `-o parent=` or `-o bridge=`". That
+// promised a selection, and the driver cannot make one: the pool is
+// requested before the network's own `-o` options reach it. The old
+// message did name one key, always `parent`, which is not the one
+// matching anything. So the page has been wrong in one direction and
+// would have been wrong in the other the moment the message stopped
+// choosing. A page that describes a message is a claim about a string,
+// and the cheapest way to hold a claim to a string is to share it.
+//
+// The pairing clause is quoted VERBATIM in both, and this test asserts
+// the page carries what the refusal carries. Whitespace is normalised
+// because Markdown wraps and Go does not; nothing else is relaxed.
+func TestReferenceDocAndTheTwoKeyRefusalShareOneSentence(t *testing.T) {
+	_, err := ipamPoolID(ipamLocalAddressSpace, "192.168.100.0/24",
+		map[string]string{"parent": "eth0", "bridge": "br-lan"})
+	if err == nil {
+		t.Fatal("both keys were accepted, so there is no refusal for the page to describe")
+	}
+
+	// The clause the two share. Written here so a change to either side
+	// alone fails this test instead of travelling with one of them.
+	const clause = "`-o bridge=` on a bridge network, `-o parent=` on a macvlan or ipvlan one"
+
+	if !strings.Contains(err.Error(), clause) {
+		t.Errorf("the refusal no longer carries the clause the page quotes.\n  clause: %q\n  message: %q", clause, err)
+	}
+
+	page := filepath.Join(moduleRoot(t), "docs", "reference.md")
+	raw, rerr := os.ReadFile(page)
+	if rerr != nil {
+		t.Fatalf("reading %s: %v", page, rerr)
+	}
+	if !strings.Contains(strings.Join(strings.Fields(string(raw)), " "), clause) {
+		t.Errorf("docs/reference.md does not carry the clause the refusal prints, so the page and "+
+			"the binary describe two different messages again.\n  clause: %q", clause)
 	}
 }
 
