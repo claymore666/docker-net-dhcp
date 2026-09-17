@@ -2443,10 +2443,13 @@ different parent. Two such networks otherwise derive the same pool
 identity, and the second <code>docker network create</code> is refused, naming this
 option. One network needs neither key.</p>
 <p>The two keys are exclusive. A pool names one interface, so giving both
-is refused at <code>docker network create</code>, and the message names the key to
-keep: the one matching this network's own <code>-o parent=</code> or <code>-o bridge=</code>
-(#1010). Before that refusal the second key was accepted and dropped,
-and the pool identity was built from the first key alone.</p>
+is refused at <code>docker network create</code>. The pool is requested before this
+network's own <code>-o</code> options reach the driver, so the refusal cannot tell
+which of the two your network is and does not pretend to: it names both,
+<code>-o bridge=</code> on a bridge network, <code>-o parent=</code> on a macvlan or ipvlan
+one, and you keep the one your mode owns (#1010). Before that refusal
+the second key was accepted and dropped, and the pool identity was built
+from the first key alone.</p>
 <p><strong>Not supported.</strong> <code>ipvlan</code> networks cannot use this plugin as their
 IPAM driver: Docker generates a MAC per endpoint for an IPAM driver that
 asks for one, and ipvlan children share the parent's MAC and refuse a
