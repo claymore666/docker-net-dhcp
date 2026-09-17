@@ -32,12 +32,33 @@
 # flake that has twice landed on a release PR. Hence a check that goes
 # red rather than a paragraph someone has to remember.
 #
+# THE SECOND HALF OF THIS GATE EXISTS BECAUSE THE FIRST HALF CERTIFIED A
+# DEAD STEP (#1010). From 1c2e0ae until now the step fuzzed
+# FuzzBuildEvent and FuzzEventUnmarshal, two targets deleted with the
+# 1.x lease parsers. `go test -fuzz '^FuzzBuildEvent$'` over a package
+# with no such target prints PASS and exits 0 — measured, 0.002s — so a
+# required check ran for weeks with one possible verdict. This gate saw
+# nothing wrong the whole time: it read the -fuzztime value and never
+# asked whether the name beside it named anything. A gate keyed on the
+# shape of a command cannot see that the command is addressed to
+# nobody.
+#
+# So every name the step fuzzes is RESOLVED against the package it names
+# (`go test -list`), every target in the tree is required to appear in
+# the step, and the tree is required to hold at least one target that
+# Scorecard's own pattern can see.
+#
 # Usage: bash scripts/check-fuzz-budget.sh
-# Exit:  0 ok, 1 a budget is wall-clock or unbounded, 2 cannot see.
+# Exit:  0 ok, 1 a budget is wall-clock or unbounded, or a name resolves
+#        to no target, or a target is not smoked; 2 cannot see.
 
 set -uo pipefail
 
 WORKFLOW="${FUZZ_WORKFLOW:-.github/workflows/test.yaml}"
+# Seams, so the self-test drives this script rather than a copy of its
+# logic: the tree it enumerates and the command that resolves a name.
+TREE_ROOT="${FUZZ_TREE_ROOT:-.}"
+LIST_CMD="${FUZZ_LIST_CMD:-go test -list}"
 
 if [ ! -f "$WORKFLOW" ]; then
     echo "check-fuzz-budget: $WORKFLOW does not exist" >&2
@@ -106,7 +127,83 @@ for entry in "${LINES[@]}"; do
     fi
 done
 
+# Scorecard's Go rule, copied from ossf/scorecard checks/raw/fuzzing.go
+# line 53 and applied the way it applies it: per LINE, to files matching
+# *_test.go, excluding anything under testdata/ (checks/fileparser/
+# listing.go, isMatchingPath and isTestdataFile). Copied rather than
+# paraphrased — a paraphrase that drifts would report a check we do not
+# pass. The one deviation is the '.' before F, escaped here and literal
+# upstream, which only makes this stricter.
+SCORECARD_FUZZ_RE='func[[:space:]]+Fuzz[_[:alnum:]]+[[:space:]]*\([_[:alnum:]]+[[:space:]]+\*testing\.F\)'
+
+mapfile -t TREE_TARGETS < <(
+    find "$TREE_ROOT" -name '*_test.go' -not -path '*/.git/*' -not -path '*/testdata/*' -print0 |
+        xargs -0 -r grep -hoE -- "$SCORECARD_FUZZ_RE" 2>/dev/null |
+        sed -E 's/^func[[:space:]]+(Fuzz[_[:alnum:]]+).*/\1/' |
+        sort -u
+)
+
+if [ "${#TREE_TARGETS[@]}" -eq 0 ]; then
+    echo "check-fuzz-budget: no *_test.go under $TREE_ROOT holds a target Scorecard can see." >&2
+    echo "  The pattern is ossf/scorecard checks/raw/fuzzing.go:53, matched per line:" >&2
+    echo "    func Fuzz<Name>(<arg> *testing.F)" >&2
+    echo "  A signature split across two lines, a bare 'Fuzz', a second parameter, or a" >&2
+    echo "  file under testdata/ is invisible to it, and the Fuzzing check reads 0." >&2
+    exit 2
+fi
+
+# Every name the step fuzzes must name a target in the package the same
+# command names. A target pattern that is not a literal (a shell
+# variable, say) is refused: a name this gate cannot resolve is a name
+# nothing resolves until the run is already green.
+declare -A SMOKED=()
+for entry in "${LINES[@]}"; do
+    lineno="${entry%%:*}"
+    line="${entry#*:}"
+
+    pkg=$(printf '%s\n' "$line" | grep -oE -- '\./[^ "'"'"']*' | head -1)
+    target=$(printf '%s\n' "$line" | grep -oE -- "-fuzz[= ]+['\"]?\^?Fuzz[_[:alnum:]]*" |
+        sed -E "s/^-fuzz[= ]+['\"]?\^?//")
+
+    if [ -z "$pkg" ] || [ -z "$target" ]; then
+        echo "$WORKFLOW:$lineno: cannot read a package and a literal -fuzz target from this line." >&2
+        echo "  Write one invocation per target, with both spelled out, e.g." >&2
+        echo "    go test ./pkg/dhcp/ -run '^\$' -fuzz '^FuzzX\$' -fuzztime 200000x -timeout 5m" >&2
+        echo "  A name assembled at run time is a name this gate cannot resolve, and an" >&2
+        echo "  unresolvable name is how a step comes to fuzz nothing (#1010)." >&2
+        rc=1
+        continue
+    fi
+
+    if ! listed=$($LIST_CMD '^Fuzz' "$pkg" 2>&1); then
+        echo "$WORKFLOW:$lineno: could not list fuzz targets in $pkg:" >&2
+        printf '%s\n' "$listed" | sed 's/^/    /' >&2
+        rc=1
+        continue
+    fi
+
+    if ! printf '%s\n' "$listed" | grep -qxF -- "$target"; then
+        echo "$WORKFLOW:$lineno: -fuzz names $target, and $pkg has no such target." >&2
+        echo "  go test would print PASS and exit 0 having fuzzed nothing. Targets there:" >&2
+        printf '%s\n' "$listed" | grep -E '^Fuzz' | sed 's/^/    /' >&2
+        rc=1
+        continue
+    fi
+    SMOKED["$target"]=1
+done
+
+# The other direction: a target nobody runs is a target that rots.
+for t in "${TREE_TARGETS[@]}"; do
+    if [ -z "${SMOKED[$t]:-}" ]; then
+        echo "check-fuzz-budget: $t exists in the tree and $WORKFLOW never fuzzes it." >&2
+        echo "  Its seed corpus runs under 'go test ./...', which is not the same thing:" >&2
+        echo "  seeds cannot find an input nobody has generated yet." >&2
+        rc=1
+    fi
+done
+
 if [ "$rc" -eq 0 ]; then
     echo "check-fuzz-budget: ${#LINES[@]} fuzz invocation(s) use a bounded execution budget"
+    echo "check-fuzz-budget: ${#TREE_TARGETS[@]} target(s) visible to Scorecard, all of them smoked"
 fi
 exit "$rc"

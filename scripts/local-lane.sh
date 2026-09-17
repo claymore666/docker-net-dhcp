@@ -180,7 +180,15 @@ LANE=(
   "local-lane coverage|-|bash scripts/check-local-lane.sh"
   "gate self-tests|-|bash scripts/run-gate-selftests.sh"
   "unit tests (race)|go|go test -race -count=1 ./..."
-  "fuzz (short)|go|for t in FuzzBuildEvent FuzzEventUnmarshal; do go test ./pkg/dhcp/ -run '^\$' -fuzz \"^\${t}\\\$\" -fuzztime 200000x -parallel 2 -timeout 5m || exit 1; done"
+  # One entry per target and every name spelled out, the same shape as
+  # test.yaml and for the same reason: the loop this replaces fuzzed two
+  # targets that no longer existed, and `go test -fuzz` over a package
+  # with no matching target exits 0 (#1010). Kept in step with the
+  # workflow by scripts/check-fuzz-budget.sh, which resolves both.
+  "fuzz (short)|go|go test ./pkg/dhcp/ -run '^\$' -fuzz '^FuzzIdentity6RoundTrip\$' -fuzztime 200000x -parallel 2 -timeout 5m"
+  "fuzz (short)|go|go test ./pkg/plugin/ -run '^\$' -fuzz '^FuzzBuildResolvConf\$' -fuzztime 200000x -parallel 2 -timeout 5m"
+  "fuzz (short)|go|go test ./pkg/plugin/ -run '^\$' -fuzz '^FuzzDeriveHostIfname\$' -fuzztime 200000x -parallel 2 -timeout 5m"
+  "fuzz (short)|go|go test ./pkg/plugin/ -run '^\$' -fuzz '^FuzzIPAMPoolIDRoundTrip\$' -fuzztime 200000x -parallel 2 -timeout 5m"
 )
 
 # --- declared out of lane ---------------------------------------------

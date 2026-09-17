@@ -17,6 +17,35 @@ set -u
 CHECK="$(dirname "$0")/check-fuzz-budget.sh"
 guarded_tmpdir TMP
 
+# THE TRANSPORT IS STUBBED, NOT THE VERDICT. The gate now resolves every
+# -fuzz name against its package with `go test -list`, which would tie
+# these synthetic workflows to the real tree and make the table describe
+# pkg/dhcp instead of the gate. So the two things that reach outside are
+# seams: the lister, and the tree the gate enumerates targets from. Every
+# judgement below is still the gate's own.
+cat > "$TMP/list-stub" <<'STUB'
+#!/usr/bin/env bash
+# Args: <pattern> <pkg>. The package decides what exists, so a case can
+# ask for a name that is not there.
+case "${2:-}" in
+    ./pkg/empty/) : ;;
+    *) printf 'FuzzX
+FuzzA
+FuzzB
+' ;;
+esac
+echo "ok   stub 0.001s"
+STUB
+chmod +x "$TMP/list-stub"
+mkdir -p "$TMP/tree"
+cat > "$TMP/tree/stub_test.go" <<'SEED'
+package stub
+
+func FuzzX(f *testing.F) {}
+SEED
+export FUZZ_LIST_CMD="$TMP/list-stub"
+export FUZZ_TREE_ROOT="$TMP/tree"
+
 failures=0
 # check NAME WANT_EXIT WORKFLOW_BODY GREP_PATTERN
 check() {
@@ -37,27 +66,27 @@ check() {
 }
 
 check "execution budget with a timeout passes" 0 \
-"          go test ./pkg/dhcp/ -fuzz X -fuzztime 200000x -timeout 5m" \
+"          go test ./pkg/dhcp/ -fuzz '^FuzzX$' -fuzztime 200000x -timeout 5m" \
 "bounded execution budget"
 
 check "wall-clock budget is rejected" 1 \
-"          go test ./pkg/dhcp/ -fuzz X -fuzztime 20s -timeout 5m" \
+"          go test ./pkg/dhcp/ -fuzz '^FuzzX$' -fuzztime 20s -timeout 5m" \
 "wall-clock budget"
 
 check "wall-clock in minutes is rejected too" 1 \
-"          go test ./pkg/dhcp/ -fuzz X -fuzztime 2m -timeout 5m" \
+"          go test ./pkg/dhcp/ -fuzz '^FuzzX$' -fuzztime 2m -timeout 5m" \
 "wall-clock budget"
 
 check "execution budget without a -timeout is rejected" 1 \
-"          go test ./pkg/dhcp/ -fuzz X -fuzztime 200000x" \
+"          go test ./pkg/dhcp/ -fuzz '^FuzzX$' -fuzztime 200000x" \
 "no -timeout"
 
 check "a non-numeric count is judged, not waved through" 1 \
-"          go test ./pkg/dhcp/ -fuzz X -fuzztime abcx -timeout 5m" \
+"          go test ./pkg/dhcp/ -fuzz '^FuzzX$' -fuzztime abcx -timeout 5m" \
 "not a valid execution count"
 
 check "-fuzztime= spelling is understood" 0 \
-"          go test ./pkg/dhcp/ -fuzz X -fuzztime=200000x -timeout=5m" \
+"          go test ./pkg/dhcp/ -fuzz '^FuzzX$' -fuzztime=200000x -timeout=5m" \
 "bounded execution budget"
 
 # Blindness guard 1: the step is gone entirely.
@@ -72,14 +101,68 @@ check "a comment mentioning -fuzztime neither passes nor fails the gate" 2 \
 
 check "a comment alongside a real invocation does not double-report" 0 \
 "          # -fuzztime 20s used to be the shape here
-          go test ./pkg/dhcp/ -fuzz X -fuzztime 200000x -timeout 5m" \
+          go test ./pkg/dhcp/ -fuzz '^FuzzX$' -fuzztime 200000x -timeout 5m" \
 "1 fuzz invocation"
 
 # Several invocations: every one is judged, not just the first.
 check "a second, bad invocation is caught behind a good one" 1 \
-"          go test ./pkg/dhcp/ -fuzz A -fuzztime 200000x -timeout 5m
-          go test ./pkg/dhcp/ -fuzz B -fuzztime 30s -timeout 5m" \
+"          go test ./pkg/dhcp/ -fuzz '^FuzzA$' -fuzztime 200000x -timeout 5m
+          go test ./pkg/dhcp/ -fuzz '^FuzzB$' -fuzztime 30s -timeout 5m" \
 "wall-clock budget"
+
+# THE DEFECT THIS GATE MISSED FOR WEEKS (#1010), both directions.
+#
+# A name that resolves is the control: without it the case below proves
+# only that the gate can say no, which is a verdict a broken gate also
+# reaches.
+check "a -fuzz name that resolves passes" 0 \
+"          go test ./pkg/dhcp/ -fuzz '^FuzzX$' -fuzztime 200000x -timeout 5m" \
+"all of them smoked"
+
+check "a -fuzz name that resolves to nothing is refused" 1 \
+"          go test ./pkg/dhcp/ -fuzz '^FuzzGone$' -fuzztime 200000x -timeout 5m
+          go test ./pkg/dhcp/ -fuzz '^FuzzX$' -fuzztime 200000x -timeout 5m" \
+"has no such target"
+
+check "a package with no targets at all is refused" 1 \
+"          go test ./pkg/empty/ -fuzz '^FuzzX$' -fuzztime 200000x -timeout 5m" \
+"has no such target"
+
+# A name assembled at run time is the exact spelling that went unseen:
+# the dead step fuzzed \"^\${target}\$\" from a shell loop.
+check "a -fuzz target that is not a literal is refused" 1 \
+"          go test ./pkg/dhcp/ -fuzz \"^\${target}\$\" -fuzztime 200000x -timeout 5m" \
+"cannot read a package and a literal"
+
+# The other direction: a target the workflow never runs. A second target
+# in the tree, and a workflow that still smokes only the first.
+mkdir -p "$TMP/two-tree"
+printf 'package stub\n\nfunc FuzzX(f *testing.F) {}\nfunc FuzzA(f *testing.F) {}\n' > "$TMP/two-tree/two_test.go"
+FUZZ_TREE_ROOT="$TMP/two-tree" check "a target in the tree that nothing fuzzes is refused" 1 \
+"          go test ./pkg/dhcp/ -fuzz '^FuzzX$' -fuzztime 200000x -timeout 5m" \
+"never fuzzes it"
+
+# Vacuity: the gate must not pass a tree Scorecard reads as unfuzzed.
+mkdir -p "$TMP/empty-tree"
+FUZZ_TREE_ROOT="$TMP/empty-tree" check "a tree with no target Scorecard can see exits 2" 2 \
+"          go test ./pkg/dhcp/ -fuzz '^FuzzX$' -fuzztime 200000x -timeout 5m" \
+"Scorecard can see"
+
+# Scorecard matches per LINE, so a signature that wraps is invisible to
+# it even though Go compiles it. The gate has to agree with Scorecard,
+# not with the compiler.
+mkdir -p "$TMP/wrapped-tree"
+printf 'package stub\n\nfunc FuzzX(\n\tf *testing.F,\n) {}\n' > "$TMP/wrapped-tree/w_test.go"
+FUZZ_TREE_ROOT="$TMP/wrapped-tree" check "a signature split across lines is invisible to Scorecard" 2 \
+"          go test ./pkg/dhcp/ -fuzz '^FuzzX$' -fuzztime 200000x -timeout 5m" \
+"Scorecard can see"
+
+# A target under testdata/ is skipped by Scorecard (listing.go:53-59).
+mkdir -p "$TMP/testdata-tree/testdata"
+printf 'package stub\n\nfunc FuzzX(f *testing.F) {}\n' > "$TMP/testdata-tree/testdata/t_test.go"
+FUZZ_TREE_ROOT="$TMP/testdata-tree" check "a target under testdata/ does not count" 2 \
+"          go test ./pkg/dhcp/ -fuzz '^FuzzX$' -fuzztime 200000x -timeout 5m" \
+"Scorecard can see"
 
 FUZZ_WORKFLOW="$TMP/does-not-exist.yaml" bash "$CHECK" > "$TMP/out" 2>&1
 if [ $? -eq 2 ] && grep -q "does not exist" "$TMP/out"; then
@@ -90,7 +173,10 @@ else
 fi
 
 # The real workflow must satisfy its own gate.
-if (cd "$(dirname "$0")/.." && bash scripts/check-fuzz-budget.sh > "$TMP/real" 2>&1); then
+# The seams are dropped here on purpose: this case is the one that runs
+# the gate against the real workflow and the real tree, which is what
+# the whole table is a model of.
+if (cd "$(dirname "$0")/.." && env -u FUZZ_LIST_CMD -u FUZZ_TREE_ROOT bash scripts/check-fuzz-budget.sh > "$TMP/real" 2>&1); then
     echo "PASS: the committed workflow passes the gate"
 else
     echo "FAIL: the committed workflow does not pass the gate"
