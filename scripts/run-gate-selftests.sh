@@ -44,6 +44,10 @@
 # Env:   SELFTEST_DIR   directory to discover in (default: the scripts/
 #                       directory this file lives in) — the seam the
 #                       self-test drives.
+#        SELFTEST_ENV_ALLOW  space-separated GITHUB_ names a suite is
+#                       allowed to keep. Default EMPTY: every GITHUB_
+#                       variable is removed. This is the seam the
+#                       self-test drives; the shipped list is below.
 #        SELFTEST_JOBS  how many self-tests run at once (default:
 #                       `nproc`, floor 1). SELFTEST_JOBS=1 is the serial
 #                       walk, and the self-test drives both.
@@ -123,6 +127,71 @@ case "$jobs" in
     ''|*[!0-9]*|0) jobs=1 ;;
 esac
 
+# NO JOB ENVIRONMENT REACHES A SUITE (#977).
+#
+# A gate self-test builds a fixture and runs the real gate inside it, so
+# whatever the job exported is what the gate reads. Two things followed
+# from that, both measured on this repository:
+#
+#   THE VERDICT. check-dispatch-reachable.sh reads GITHUB_EVENT_NAME,
+#   GITHUB_BASE_REF and GITHUB_EVENT_PATH, and on a pull request whose
+#   base is the default branch it exempts the workflow it is asked
+#   about. On the release pull request that environment reached every
+#   fixture, and the cases that assert a refusal got a pass. Green on
+#   every push to dev, red on the one run a release cannot spend on its
+#   own harness (#987 fixed that suite and counted them; this is the
+#   second line, and the first one stays).
+#
+#   THE WRITE. GITHUB_OUTPUT and GITHUB_STEP_SUMMARY are file paths.
+#   Run directly with a job-shaped environment, test-ci-queue-watchdog.sh
+#   and test-purge-workflow-runs.sh hand the inherited paths straight to
+#   the tool under test, which appends to the real job's step outputs and
+#   job summary. No verdict moves and the job summary is not the
+#   suite's to write.
+#
+# Scrubbed by PREFIX, not by the names read today, so a gate that
+# starts reading a fourth GITHUB_ variable does not reopen this. It is
+# applied to the SUITE, never to this runner, which still needs its own
+# environment to group and annotate.
+#
+# THE ALLOWLIST IS EMPTY, and that is a measurement and not an
+# oversight: with every GITHUB_ name removed, all of the suites that run
+# here pass. A name added to it must carry the reason beside it on the
+# same line.
+read -r -a env_allow <<< "${SELFTEST_ENV_ALLOW:-}"
+
+scrub_github_env() {
+    local v a keep
+    for v in ${!GITHUB_@}; do
+        keep=0
+        for a in ${env_allow[@]+"${env_allow[@]}"}; do
+            if [ "$v" = "$a" ]; then keep=1; break; fi
+        done
+        [ "$keep" -eq 1 ] || unset -v "$v"
+    done
+}
+
+# SELF-TEST PROSE IS NOT A COMPILER DIAGNOSTIC (#977).
+#
+# actions/setup-go registers a problem matcher whose pattern is
+# `^\s*(.+\.go):(?:(\d+):(\d+):)? (.*)`, and it is applied to every
+# line this step prints. Two PASS lines name a file pattern that ends in
+# `.go:`, so the matcher claimed them, took the text after the colon as
+# its message, and put two FAILURE annotations on a job that passed. The
+# line beside them naming `scripts/test-*.sh:` is untouched, which is
+# what says the matcher and not the content is doing it.
+#
+# Keyed on the property: a suite's output is prose and never a Go build,
+# so the matcher has no business reading it. Keying on the two case
+# names would last until the next case name contains a Go path.
+#
+# ITS BOUND: this holds for the remainder of the job. One later step
+# builds ./cmd/net-dhcp with its output in the log, so a compiler error
+# there fails the step with no inline annotation. The two gates in this
+# job that also compile send stdout and stderr to /dev/null, so they
+# never had one to lose.
+[ -z "${GITHUB_ACTIONS:-}" ] || echo "::remove-matcher owner=go::"
+
 echo "Discovered ${#tests[@]} gate self-test(s) in $DIR, running up to ${jobs} at a time."
 failed=()
 skipped=()
@@ -163,7 +232,9 @@ trap 'rm -rf "$OUT"' EXIT
 # a pass — the same direction as every other refusal here.
 worker() { # <index> <path>
     local i="$1" t="$2"
-    bash "$t" > "$OUT/$i.out" 2>&1
+    # The scrub runs in a subshell of its own, so a call to worker that
+    # is not backgrounded cannot strip this runner's own environment.
+    ( scrub_github_env; exec bash "$t" ) > "$OUT/$i.out" 2>&1
     echo "$?" > "$OUT/$i.rc"
 }
 
