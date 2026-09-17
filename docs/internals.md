@@ -18,12 +18,11 @@ namespace to it. Two things differ:
 
 1. A container-creation request is made.
 2. A `veth` pair is created and the host end is connected to the bridge
-   (both interfaces are still in the host namespace at this point). On a
-   network that set `host_ifname` the host end is renamed here, after
-   the container or after its hostname, and the generated `dh-` name
-   stays on the link as an altname, because teardown looks the link up
-   by it. A rename that the kernel takes but that will not keep the
-   altname is undone for the same reason.
+   (both interfaces are still in the host namespace at this point). The
+   host end is named `dh-` plus twelve hex digits here, whatever the
+   network asked for: the container's name is not known at this point,
+   so a network that set `host_ifname` gets its rename at step 7, where
+   the daemon's answer already is.
 3. A one-shot DHCP acquisition runs on the container end (still in the
    host namespace). The plugin provides the initial IP address to Docker.
 4. Docker moves the container end of the `veth` pair into the
@@ -35,16 +34,33 @@ namespace to it. Two things differ:
    library running inside the plugin, so there is nothing for the
    container to see and nothing to exec. It never configures the link
    either. The plugin applies the lease via netlink.
-6. The container's name is asked of the daemon **after** that client is
+6. The container's name is asked of the daemon once that client is
    already leasing, and handed to it when the answer comes; the client
    then renews once immediately so the server's table carries the name
    within one exchange. The order is this way round because a daemon
    that is still starting a container does not answer questions about
-   it, and the lease does not have to wait for that answer. Two shapes
-   still ask first, because they need the name at construction: a
-   `register_dns` network, which builds option 81 from it, and a
-   re-attach, where the endpoint is rebuilt before the client starts.
-7. The client keeps running, renewing the lease when required, until the
+   it, and the lease does not have to wait for that answer. Two routes
+   have the name before the client starts and do not take this one: a
+   `register_dns` network, whose option 81 is built when the client is
+   constructed and has no setter for it; and any attach that had to ask
+   the daemon anyway to find the container's namespace, which is the
+   fallback to the container's process where the sandbox key is refused,
+   and the path that re-adopts a running container after a plugin
+   restart. A container **restart** is a different
+   thing and is not one of these: Docker drives it as a detach and a
+   re-attach, and the endpoint is rebuilt before the attach begins.
+7. On a network that set `host_ifname` the host-side link is renamed
+   now, after the container or after its hostname, at the point the
+   daemon's answer is already in hand and the attach can no longer
+   fail. The generated `dh-` name stays on the link as an altname,
+   because the plugin re-derives that name and looks the link up by it
+   in several places without ever reading a name back from the kernel,
+   and `DeleteEndpoint` is one of them: a miss there is the normal end
+   of a forced teardown, so a rename with no altname would leave the
+   veth on the bridge for the life of the host, silently. A rename the
+   kernel takes but will not keep the altname on is undone for the same
+   reason.
+8. The client keeps running, renewing the lease when required, until the
    container shuts down.
 
 In macvlan and ipvlan mode the shape is the same, with a child interface
@@ -172,13 +188,23 @@ knows which client is underneath.
 
 ## How IPv6 is handled
 
-`-o ipv6_mode=dhcp` gives an endpoint a **second DHCP client**, in the
-same shape as its first: one `dhcpManager`, one library client, one
-record. (`-o ipv6=true` is the short spelling of that mode.) A `slaac`
-network runs no second client and takes the address from the router's
-advertisement instead; `auto` asks the server first and falls back to
-the advertisement. Nothing about the v4 path changes in any of them,
-which is the whole design. The
+Any `ipv6_mode` but `off` gives an endpoint a **second DHCP client**,
+in the same shape as its first: one `dhcpManager`, one library client,
+one record. What differs between the modes is what that client does on
+the wire. In `dhcp` it leases the address over DHCPv6, which is what
+`-o ipv6=true` has always meant. In `slaac` it sends no Solicit and
+forms the address from an advertised prefix. In `auto` it reads the
+advertisement and does what it says: the managed-address flag means
+DHCPv6, a clear flag means the prefix. It solicits routers and reads
+advertisements in all three, which is where the container's IPv6
+default route and its link MTU come from. The routes the advertisement
+asks for arrive the same way and `skip_routes` opts out of those; the
+default route is not governed by it. Resolvers are a union and not a
+choice: the library merges the advertisement's RDNSS and DNSSL into the
+same lists a DHCPv6 server's options 23 and 24 fill, with the server's
+taking precedence (RFC 8106 section 5.3.1), and `propagate_dns` decides
+whether the result is written into the container at all. Nothing about
+the v4 path changes in any of them, which is the whole design. The
 maintainer's rule for this milestone was that IPv6 takes the same shape
 as IPv4 unless the v4 shape was itself a hack.
 

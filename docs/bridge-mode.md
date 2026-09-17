@@ -269,11 +269,15 @@ docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.2.0 \
 ```
 
 `ipv6_mode` takes `off` (the default), `dhcp` for a DHCPv6 lease beside
-the v4 one, `slaac` to take the address, the routes, the MTU and the
-resolvers from the router's advertisement, and `auto` to try the server
-first and fall back to the advertisement. `-o ipv6=true` is the short
-spelling of `dhcp`. The modes, and `ipv6_auto_strict` for what `auto`
-does when neither answers, are in the
+the v4 one, `slaac` to form the address from the router's advertised
+prefix and send no Solicit, and `auto` to read the advertisement and do
+what it says: DHCPv6 where the advertisement asks for it, the prefix
+where it does not. `-o ipv6=true` is the short spelling of `dhcp`. The
+default route and the MTU come from the advertisement in all three, and
+on a `propagate_dns` network its resolvers reach the container too,
+behind any a DHCPv6 server supplies. The modes, and
+`ipv6_auto_strict` for what `auto` does when the router asks for DHCPv6
+and no server answers, are in the
 [driver reference](reference.md#driver-options-network-level).
 
 > **One of the two IPAM shapes is required.** Docker's built-in IPAM must

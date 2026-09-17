@@ -119,7 +119,8 @@ One of the two is required. On arm64 the `-arm64` tag goes in these
 lines too, because a network records the tagged reference as its driver.
 Add `-o ipv6_mode=dhcp` for a DHCPv6 lease beside the v4 one, or
 `-o ipv6_mode=slaac` to take the address from the router's
-advertisement; `auto` tries the server first and falls back. `-o
+advertisement; `auto` reads the advertisement and does what it says,
+DHCPv6 where it asks for DHCPv6 and the prefix where it does not. `-o
 ipv6=true` is the short spelling of `dhcp`. All of them need the `null`
 line, because the IPAM shape serves IPv4 only and refuses the
 combination ([#960]). The modes are set out in
@@ -154,10 +155,14 @@ networks:
   external DHCP client to install, supervise or reap.
 - **IPv6 is one line, and the network says where the address comes
   from.** `-o ipv6_mode=` takes `off` (the default), `dhcp`, `slaac` or
-  `auto`. A `dhcp` network leases over DHCPv6 with its own timers, its
-  own counters and a DUID that survives a restart; a `slaac` network
-  takes the address, the routes, the MTU and the resolvers from the
-  router's advertisement, with the advertised lifetimes. On
+  `auto`. A `dhcp` network leases the address over DHCPv6 with its own
+  timers, its own counters and a DUID that survives a restart; a `slaac`
+  network forms it from the router's advertisement instead and holds it
+  for the advertised lifetimes; `auto` reads the advertisement and does
+  what it says. In all three the default route and the MTU come from
+  the advertisement and not from the container's own kernel, and on a
+  `propagate_dns` network its resolvers reach the container too, behind
+  any a DHCPv6 server supplies. On
   `--ipam-driver null` networks; the IPAM shape serves IPv4 only
   ([reference](reference.md#driver-options-network-level)).
 - **A restart keeps the address.** In `bridge` and `macvlan` the MAC is

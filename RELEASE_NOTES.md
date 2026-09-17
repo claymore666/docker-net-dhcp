@@ -13,23 +13,17 @@ forks that have been waiting on review.
 
 ## v2.2.0
 
-A network now says where its IPv6 address comes from. `ipv6_mode` takes
-`off` (the default), `dhcp`, `slaac` and `auto`, and `-o ipv6=true` is
-the short spelling of `ipv6_mode=dhcp`, unchanged in meaning; on a
-`slaac` or `auto` network the plugin installs every address the router's
-advertisement forms and holds it for the advertised lifetimes, so a
+A network now says where its IPv6 address comes from: `ipv6_mode` takes
+`off` (the default), `dhcp`, `slaac` and `auto`, `-o ipv6=true` is the
+short spelling of `dhcp`, and on a mode that forms its own address a
 segment with a router and no DHCPv6 server at all is now a segment
-containers get IPv6 on. The plugin also reads the advertisement itself
-and puts what it says into the container, the default route, the routes
-the router asks for, the MTU and the resolvers, so there is one IPv6
-default route on the link instead of two possible ones and a change on
-the segment reaches a running container without a restart. Two smaller
-network options arrive beside them: `release_lease=on_remove` hands an
-endpoint's addresses back a minute after its container stops, and, in
-bridge mode, `host_ifname` names host-side interfaces after the
-containers they belong to. `/Plugin.Health` and `/metrics` gain the
-counters for all of it, including the four endings a DHCPv6 acquisition
-that produces no address can have, which used to be one.
+containers get IPv6 on. The plugin reads the router's advertisement
+itself and puts what it says into the container, the default route, the
+routes, the MTU and the resolvers, so a change on the segment reaches a
+running container without a restart. Two smaller network options arrive
+beside them, `release_lease=on_remove` and, in bridge mode,
+`host_ifname`, and `/Plugin.Health` and `/metrics` gain the counters for
+all of it.
 
 ### Upgrade notes
 
@@ -66,7 +60,7 @@ section below is still the list the daemon shows you.
 | A `host_ifname` network names its host-side links after their containers | `ip link` and `brctl show` read like the compose file. The generated `dh-` name stays on the link as an altname, so anything that looks that name up still finds it, including teardown and restart recovery. A name over 15 characters is truncated to its first 9 plus the endpoint's first 5 hex, and a name already in use on the host leaves that link with its generated name. |
 | `host_ifname` is refused at `docker network create` in `mode=macvlan` and `mode=ipvlan` | A create naming it there fails with the reason in the message. Those modes move the link into the container and leave nothing on the host to name. |
 | Three more counters are new on `/Plugin.Health` and `/metrics` | `host_ifnames_applied`, `host_ifname_conflicts` and `host_ifname_failures`. None of them flips `healthy`. |
-| Three counters for the container's name are new on `/Plugin.Health` and `/metrics` | `hostnames_applied_late`, `hostname_lookup_failures` and `hostname_apply_failures`: the name reached a client that was already leasing, the daemon never answered, or the client would not take it. The first is the denominator for the other two, whose zeros say nothing on their own. The endpoint keeps its lease in all three, so none of them flips `healthy`. |
+| Three counters for the container's name are new on `/Plugin.Health` and `/metrics` | `hostnames_applied_late`, `hostname_lookup_failures` and `hostname_apply_failures`: the name reached a client that was already leasing, the daemon never answered, or the client would not take it. The first narrows the other two without deciding them: their zeros are also what a host reads when its containers were started without `--hostname`, and the plugin log tells those apart. The endpoint keeps its lease in all three, so none of them flips `healthy`. |
 | Six counters for IPv6 router discovery are new on `/Plugin.Health` and `/metrics` | `router_solicits_sent`, `router_adverts_seen`, `router_adverts_refused`, `router_advert_options_ignored`, `router_table_entries_dropped` and `router_table_entries_evicted`. They say whether anything advertised on the link at all and whether what advertised was readable, which an IPv6 container that came up with no gateway, no MTU and no resolver used to leave nothing behind to look at. Read the sightings against the solicitations: zero on both is a client that never asked, which is not the same as a link whose routers are silent. All six stay at zero on a host with no IPv6 endpoint, and none of them flips `healthy`. |
 | Docker still shows one IPv6 address per endpoint | A container on a link advertising two prefixes holds both addresses, and `docker inspect` shows the one `ipv6_main_prefix` names or the first advertised. libnetwork has no way to change an endpoint's address after `CreateEndpoint`, so this is the engine's shape and not a setting. |
 | The container's IPv6 default route comes from the plugin, not its kernel | `ip -6 route show default` inside a container on an `ipv6=true` network shows one route via an `fe80::` address, as before. It is now installed by Docker from the plugin's Join answer, so it appears with the endpoint and not a moment later. |
@@ -214,8 +208,12 @@ section below is still the list the daemon shows you.
   clients sent from container links, the advertisements that decoded and
   reached them, frames whose ICMPv6 type said advertisement and which
   would not decode, options refused by their own standard while the rest
-  of the frame was read, and entries a full router, resolver or search
-  list refused or threw out. The refusals are apart from the sightings
+  of the frame was read, entries a full router or route list refused,
+  and entries a full resolver or search list threw out to take an
+  arrival. The last two are opposite rules: a refusal keeps what was
+  heard first, an eviction keeps what expires last, and either above
+  zero means the client's table caps are in force. The refusals of
+  whole frames are apart from the sightings
   because their difference is the diagnostic: a link with no router and
   a link whose router sends something this client refuses read the same
   in one total, and one of the two is a router to find while the other
