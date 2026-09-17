@@ -113,6 +113,12 @@ func TestRecovery_PluginDisableEnable_PreservesEndpoint(t *testing.T) {
 	// broken while every test in the shard had passed.
 	harness.AllowUnprobedLeases(1)
 
+	// The plugin's own account of what recovery did, for the failure
+	// that needs it. Marked here so the window is the recycle and not
+	// the whole suite, and dumped only on failure.
+	logMark := harness.MarkPluginLog(t, ctx)
+	harness.DumpPluginLogOnFailure(t, ctx, logMark, "the plugin was disabled")
+
 	if err := cli.PluginDisable(ctx, harness.PluginRef, types.PluginDisableOptions{Force: true}); err != nil {
 		t.Fatalf("PluginDisable: %v", err)
 	}
@@ -129,24 +135,39 @@ func TestRecovery_PluginDisableEnable_PreservesEndpoint(t *testing.T) {
 	}
 	t.Log("plugin re-enabled")
 
-	// Plugin process is up; recoverEndpoints runs synchronously
-	// inside NewPlugin so by the time the socket accepts requests
-	// recovery is already complete. Poll briefly for socket
-	// readiness — Plugin.Enabled flips slightly before the socket is
-	// listening.
+	// Plugin process is up. The walk inside NewPlugin has run — it is
+	// synchronous and Listen binds the socket after it — but the walk
+	// only SPAWNS each endpoint's rebuild, and every counter this test
+	// reads is moved by that rebuild: recovered_ok after Start returns
+	// (pkg/plugin/plugin.go:2907-2944), the sandbox route inside it
+	// (pkg/plugin/dhcp_manager.go:2599). So socket readiness is the
+	// start of the thing under test, not the end of it.
+	//
+	// Plugin.Enabled flips slightly before the socket is listening, so
+	// poll for the socket first, then wait for the rebuild.
 	harness.WaitPluginHealth(t, ctx, cli, 15*time.Second)
+
+	// The wait, and the assertion, are one thing: recovered_ok reaching
+	// 1 within the budget the plugin's own timeouts allow for it. A
+	// timeout here is the failure recovered_ok=0 used to be, with the
+	// counters that say which route the plugin took printed beside it.
+	// Through the window, so every poll is checked against the instance
+	// the window opened on.
+	const rebuilt = "recovery to rebuild this endpoint's renewal client (recovered_ok >= 1)"
+	waited, ok := harness.AwaitRecoveryRebuildWindow(w, rebuilt,
+		func(h *harness.HealthResponse) bool { return h.RecoveredOK >= 1 })
+	if !ok {
+		t.Errorf("%s", harness.RecoveryRebuildFailure(rebuilt, waited))
+	}
 
 	// Closing the window does both jobs at once: it takes the
 	// post-recycle read the assertions below use, and it asserts the
 	// instance id actually changed — i.e. that this test really did
-	// exercise a fresh plugin process.
+	// exercise a fresh plugin process. Taken after the wait, so the
+	// sandbox-route assertions below read counters the rebuild has
+	// finished writing.
 	_, healthAfter := w.End()
 	t.Logf("recovered_ok after: %d", healthAfter.RecoveredOK)
-
-	if healthAfter.RecoveredOK < 1 {
-		t.Errorf("recovered_ok=%d (expected >=1; recovery did not pick up our endpoint after the recycle)",
-			healthAfter.RecoveredOK)
-	}
 	if healthAfter.RecoveryFailed != 0 {
 		t.Errorf("recovery_failed=%d (recovery saw at least one endpoint it could not rebuild)", healthAfter.RecoveryFailed)
 	}
