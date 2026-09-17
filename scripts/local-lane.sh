@@ -170,6 +170,9 @@ LANE=(
   # of, derived from the Go source and never from the prose (#984).
   "window constants|-|bash scripts/check-window-constants.sh"
   "scheduled shard coverage|-|bash scripts/check-shard-coverage.sh"
+  # The engine matrix drives what the documentation promises, and the
+  # documentation is edited far more often than the cell (#1013).
+  "engine-matrix shapes|-|bash scripts/check-engine-matrix-shapes.sh"
   "golden fixture keying|go|bash scripts/check-golden-fixture-name-keyed.sh"
   "test/policy-gates split|-|bash scripts/check-test-job-purity.sh"
   # The lane checks itself: if test.yaml gains a gate this file does

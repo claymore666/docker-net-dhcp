@@ -57,6 +57,10 @@ on:
       - '.github/engine-rows.txt'
       - 'scripts/engine-baseline.sh'
       - 'scripts/engine-floor.sh'
+      # The cell derives the networks it drives from this document
+      # (#1013), so an edit to it changes the measurement exactly as an
+      # edit to the row list does.
+      - 'docs/reference.md'
       - 'pkg/plugin/engine_floor.go'
   schedule:
     - cron: '41 5 * * 2'   # weekly Tue 05:41 UTC, off-peak odd minute

@@ -355,6 +355,18 @@ jobs:
       - name: Scheduled-shard coverage check
         run: bash scripts/check-shard-coverage.sh
 
+      # Every `docker network create` the documentation promises has a
+      # row in the engine matrix (#1013). The matrix derives its
+      # networks from docs/reference.md, and this is the half of that
+      # which runs on a pull request: the matrix has its own lane, so a
+      # document that gains a shape the cell cannot drive would
+      # otherwise sit green until that lane next ran. It was not
+      # hypothetical -- `--ipam-driver <this plugin>` was documented for
+      # two releases, driven on no engine, and broken on every engine
+      # below 28 the whole time (#1012).
+      - name: Engine-matrix shape check
+        run: bash scripts/check-engine-matrix-shapes.sh
+
       # Every driver-option key the code parses must be documented in
       # docs/reference.md — an undocumented option turns CI red (#132).
       - name: Option-docs drift check
