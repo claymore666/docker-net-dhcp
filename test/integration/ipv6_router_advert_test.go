@@ -425,3 +425,129 @@ func TestDHCPv6_NoAddressSegmentGetsNoIPv6RouteYet(t *testing.T) {
 		})
 	}
 }
+
+// TestDHCPv6_RouterDiscoveryCountersRise is #814's integration line:
+// "the counter rises on a network with advertisements enabled".
+//
+// WHAT MAKES IT NON-VACUOUS. The counter is not the evidence that the
+// segment advertised -- the container is. This test establishes the
+// same precondition the withdrawal test above does, exactly one IPv6
+// default route via a link-local address, and only then reads the
+// numbers. The container's kernel is at accept_ra=0 and DHCPv6 carries
+// no next hop, so that route exists because an advertisement arrived
+// and the plugin acted on it. A rig that produced no advertisements
+// fails at the precondition and never reaches the counter claim.
+//
+// WHY BOTH COUNTERS. router_adverts_seen alone cannot be read: zero is
+// a link whose routers are silent and a client that never asked, and
+// only one of the two is a segment to go and look at. The pair is the
+// reading, which is why #814 asks for the sighting count and this file
+// asserts the solicitation count beside it.
+//
+// AN ABSENT FIELD FAILS HERE RATHER THAN PASSING. A plugin that
+// publishes neither counter decodes both as 0, the rise assertion is
+// then false, and the run goes red -- which is the direction an absent
+// measurement has to fail in.
+func TestDHCPv6_RouterDiscoveryCountersRise(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 240*time.Second)
+	defer cancel()
+
+	f := harness.NewV6FixtureWithArgs(t, harness.V6Managed, managedArgsWith(raParams(0, 1800)))
+	dumpOnFailure(t, f)
+
+	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+	if err != nil {
+		t.Fatalf("docker client: %v", err)
+	}
+	defer cli.Close()
+
+	// The baseline is taken BEFORE the network exists, so every
+	// advertisement this test is about falls inside the window.
+	before := harness.PluginHealthOrNil(ctx)
+	if before == nil {
+		t.Fatal("could not read the plugin health surface before the container started. " +
+			"Absent data is not a zero and a rise measured from an assumed baseline is " +
+			"not a measurement")
+	}
+
+	netName := "dh-itest-v6rdc"
+	id, startErr := startOnV6Segment(t, ctx, cli, f, netName)
+	if startErr != nil {
+		t.Fatalf("ContainerStart on a managed v6 segment: %v", startErr)
+	}
+
+	addr := linkGlobalV6(t, ctx, id, harness.IPAcquisitionBudget)
+	if addr == "" {
+		t.Fatal("no global IPv6 appeared on the container link")
+	}
+
+	// THE PRECONDITION. This is the container's own evidence that the
+	// segment advertised: its kernel installs nothing from an
+	// advertisement, and DHCPv6 carries no next hop, so a default route
+	// via a link-local address can only have come through the plugin
+	// from a frame it read.
+	routes, ok := awaitDefaultRouteCount(t, ctx, id, 1, harness.IPAcquisitionBudget)
+	if !ok || !harness.HasLinkLocalDefaultRoute(routes) {
+		t.Fatalf("the container did not reach exactly one IPv6 default route via a "+
+			"link-local address within %v, so nothing here proves the segment "+
+			"advertised and the counter claim below would be free. "+
+			"`ip -6 route show default` says:\n%s", harness.IPAcquisitionBudget, routes)
+	}
+
+	after := harness.PluginHealthOrNil(ctx)
+	if after == nil {
+		t.Fatal("could not read the plugin health surface after the container had its route")
+	}
+
+	// THE RED HAS TWO READINGS AND THE MESSAGE NAMES BOTH. The
+	// precondition proves an advertisement reached the SEGMENT, which
+	// it can do by two routes: the plugin's client read it, or the RA
+	// guard did not take and the container's own kernel did. Only the
+	// first is what this counter claims, so the guard-failure count is
+	// printed beside the sighting count and the reader is not left to
+	// guess which of the two happened.
+	if after.RouterAdvertsSeen <= before.RouterAdvertsSeen {
+		t.Errorf("router_adverts_seen stayed at %d while a container on this segment "+
+			"demonstrably took its IPv6 default route from an advertisement. Two things "+
+			"produce that: the frames reached the client and no number says so, which is "+
+			"what this test is for; or the RA guard did not take and the route came from "+
+			"the container's own kernel, in which case the plugin's client may have seen "+
+			"nothing and the defect is the guard. router_advert_guard_failures went from "+
+			"%d to %d, which separates them (#814)",
+			after.RouterAdvertsSeen,
+			before.RouterAdvertGuardFailures, after.RouterAdvertGuardFailures)
+	}
+	if after.RouterSolicitsSent <= before.RouterSolicitsSent {
+		t.Errorf("router_solicits_sent stayed at %d, so the sighting count beside it "+
+			"cannot be read: a zero there would be indistinguishable from a client that "+
+			"never asked (#814)", after.RouterSolicitsSent)
+	}
+
+	// Printed on a green run too: these are the numbers an operator is
+	// being told to read, and a line that only appears on failure gives
+	// the handover no row.
+	t.Logf("router discovery on a segment with advertisements enabled: solicits +%d, "+
+		"adverts seen +%d, refused +%d, options ignored +%d, table entries dropped +%d, evicted +%d",
+		after.RouterSolicitsSent-before.RouterSolicitsSent,
+		after.RouterAdvertsSeen-before.RouterAdvertsSeen,
+		after.RouterAdvertsRefused-before.RouterAdvertsRefused,
+		after.RouterAdvertOptionsIgnored-before.RouterAdvertOptionsIgnored,
+		after.RouterTableEntriesDropped-before.RouterTableEntriesDropped,
+		after.RouterTableEntriesEvicted-before.RouterTableEntriesEvicted)
+
+	// The fixture's dnsmasq is well formed, so a refusal here is a
+	// finding about the decoder and not about the segment.
+	//
+	// THE BOUND, considered rather than missed: this is a PROCESS-WIDE
+	// counter read across a window, so anything else soliciting on any
+	// segment during that window is inside the difference. MEASURED:
+	// there is no t.Parallel() anywhere in test/integration, so within
+	// a shard nothing else runs here. What the bound does not exclude
+	// is an earlier test in the same shard leaving a container running
+	// and still soliciting.
+	if d := after.RouterAdvertsRefused - before.RouterAdvertsRefused; d != 0 {
+		t.Errorf("router_adverts_refused rose by %d against a dnsmasq fixture whose "+
+			"advertisements are well formed. Either the decoder refused something it "+
+			"should read, or something on this path corrupted the frames", d)
+	}
+}

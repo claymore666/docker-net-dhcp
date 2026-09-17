@@ -1180,6 +1180,42 @@ type HealthResponse struct {
 	// route rather than one pointing at a router that is gone.
 	IPv6RouterWithdrawn int32 `json:"ipv6_router_withdrawn"`
 
+	// The library's RFC 4861 router-discovery counters, folded across
+	// every DHCPv6 manager this process ever ran (#814). They describe
+	// the SEGMENT, and they are the numbers to read when a container
+	// comes up with no IPv6 gateway, no MTU and no resolver: every one
+	// of those fields comes out of an advertisement.
+	//
+	// RouterSolicitsSent is RFC 4861 section 6.3.7's solicitations that
+	// left a container's link. READ RouterAdvertsSeen AGAINST IT: a
+	// zero sighting count beside a zero solicitation count is a client
+	// that never asked, which is not the same reading as a link whose
+	// routers are silent.
+	RouterSolicitsSent int32 `json:"router_solicits_sent"`
+	// RouterAdvertsSeen counts advertisements that decoded and reached
+	// the state machine; RouterAdvertsRefused frames whose ICMPv6 type
+	// said Router Advertisement and which would not decode. Their
+	// difference is the diagnostic: a link with no router and a link
+	// whose router is advertising something this client refuses are one
+	// number in a total holding both, and one of them is a router to
+	// find while the other is a router to fix.
+	RouterAdvertsSeen    int32 `json:"router_adverts_seen"`
+	RouterAdvertsRefused int32 `json:"router_adverts_refused"`
+	// RouterAdvertOptionsIgnored counts OPTIONS and not frames: one
+	// option refused by its own standard's validity rule out of an
+	// advertisement the rest of which was read. It rises on
+	// advertisements that are otherwise fine, so it is not part of
+	// RouterAdvertsRefused.
+	RouterAdvertOptionsIgnored int32 `json:"router_advert_options_ignored"`
+	// RouterTableEntriesDropped counts arrivals a full list in the
+	// library's router table would not take, RouterTableEntriesEvicted
+	// entries a full list threw out to take an arrival (RFC 8106
+	// section 6.2 (d)). Either above zero means the table's caps are in
+	// force, which on an ordinary segment means something is
+	// advertising more than a link has.
+	RouterTableEntriesDropped int32 `json:"router_table_entries_dropped"`
+	RouterTableEntriesEvicted int32 `json:"router_table_entries_evicted"`
+
 	// Checks is one entry per named check, keyed by the counter behind
 	// it. Each value is a SINGLE-ELEMENT ARRAY because section 4 says
 	// so: the draft's keys point to arrays so that a sub-component
@@ -1451,6 +1487,12 @@ func (p *Plugin) healthSnapshot() HealthResponse {
 		IPv6LinkEnableFailures:       p.ipv6LinkEnableFailures.Load(),
 		RouterAdvertGuardFailures:    p.routerAdvertGuardFailures.Load(),
 		IPv6RouterWithdrawn:          p.ipv6RouterWithdrawn.Load(),
+		RouterSolicitsSent:           p.routerSolicitsSent.Load(),
+		RouterAdvertsSeen:            p.routerAdvertsSeen.Load(),
+		RouterAdvertsRefused:         p.routerAdvertsRefused.Load(),
+		RouterAdvertOptionsIgnored:   p.routerAdvertOptionsIgnored.Load(),
+		RouterTableEntriesDropped:    p.routerTableEntriesDropped.Load(),
+		RouterTableEntriesEvicted:    p.routerTableEntriesEvicted.Load(),
 		Version:                      buildinfo.Version,
 		Commit:                       buildinfo.Commit,
 		Library:                      buildinfo.Library,

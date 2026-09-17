@@ -461,6 +461,23 @@ type HealthResponse struct {
 	// container can then read the plugin's own account of why.
 	IPv6RouterWithdrawn int32 `json:"ipv6_router_withdrawn"`
 
+	// The library's own RFC 4861 router-discovery counters (#814).
+	// None is healthy-affecting and none is in the floor table: every
+	// one of them describes what the SEGMENT sent, not a plugin fault,
+	// and a run on an IPv4-only fixture moves none of them.
+	//
+	// RouterAdvertsSeen is the one a v6 test asserts on. It is the
+	// plugin's evidence that a link it attached a container to was
+	// advertising at all, and the counter #814 asks a v6 integration
+	// run to watch rise. Read it against RouterSolicitsSent: a zero
+	// beside a zero is a client that never asked.
+	RouterSolicitsSent         int32 `json:"router_solicits_sent"`
+	RouterAdvertsSeen          int32 `json:"router_adverts_seen"`
+	RouterAdvertsRefused       int32 `json:"router_adverts_refused"`
+	RouterAdvertOptionsIgnored int32 `json:"router_advert_options_ignored"`
+	RouterTableEntriesDropped  int32 `json:"router_table_entries_dropped"`
+	RouterTableEntriesEvicted  int32 `json:"router_table_entries_evicted"`
+
 	// The five IPAM-driver counters (#110). None is healthy-affecting
 	// and none is in the floor table: an IPAM-mode network is one of
 	// the product's two shapes, and every one of these describes what

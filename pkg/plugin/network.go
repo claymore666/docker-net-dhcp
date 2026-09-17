@@ -2156,32 +2156,6 @@ func parseIfnameOption(options map[string]interface{}) (string, error) {
 	return s, nil
 }
 
-// Join hands the per-endpoint host-side link to Docker (so it can move it
-// into the container netns) along with route information, then starts a
-// persistent DHCP client to keep the lease alive for the life of the
-// endpoint.
-//
-// Bridge mode also copies static routes from the host bridge — those
-// routes are how the upstream propagates LAN topology when the bridge is
-// the host's L3 gateway. Macvlan mode skips that: the parent NIC's host
-// routes belong to the host, not the container, and the DHCP gateway is
-// the only route the container needs.
-// noteSlowAttach records an attach that succeeded, but only after
-// outlasting AwaitTimeout — i.e. one the #406 grace is carrying.
-// Reports whether it counted.
-//
-// Split out of Join's attach goroutine so it can be exercised
-// directly (#431). The counter existed for a release without a single
-// test asserting it ever moves, which made its constant zero
-// uninterpretable: "the daemon-busy window never arose" and "the
-// increment cannot fire" produce identical readings, and the v1.4.0
-// evidence needed to tell them apart. Reaching this code in the
-// goroutine requires a *successful* Start, which needs a real network
-// namespace, so no unit test can get here through Join.
-//
-// Caller must only invoke this for a successful attach. A failed one
-// has its own classification below, and counting it here would put a
-// fault in a counter documented as not healthy-affecting.
 // noteAttachDuration records one successful attach in the counters
 // that carry the distribution at the shipped log level.
 //
@@ -2229,6 +2203,22 @@ func (p *Plugin) noteAttachDuration(elapsed time.Duration) {
 	}
 }
 
+// noteSlowAttach records an attach that succeeded, but only after
+// outlasting AwaitTimeout — i.e. one the #406 grace is carrying.
+// Reports whether it counted.
+//
+// Split out of Join's attach goroutine so it can be exercised
+// directly (#431). The counter existed for a release without a single
+// test asserting it ever moves, which made its constant zero
+// uninterpretable: "the daemon-busy window never arose" and "the
+// increment cannot fire" produce identical readings, and the v1.4.0
+// evidence needed to tell them apart. Reaching this code in the
+// goroutine requires a *successful* Start, which needs a real network
+// namespace, so no unit test can get here through Join.
+//
+// Caller must only invoke this for a successful attach. A failed one
+// has its own classification below, and counting it here would put a
+// fault in a counter documented as not healthy-affecting.
 func (p *Plugin) noteSlowAttach(r JoinRequest, elapsed time.Duration) bool {
 	// Strictly greater: an attach that finishes exactly on budget did
 	// not need the grace.
@@ -2245,6 +2235,16 @@ func (p *Plugin) noteSlowAttach(r JoinRequest, elapsed time.Duration) bool {
 	return true
 }
 
+// Join hands the per-endpoint host-side link to Docker (so it can move it
+// into the container netns) along with route information, then starts a
+// persistent DHCP client to keep the lease alive for the life of the
+// endpoint.
+//
+// Bridge mode also copies static routes from the host bridge — those
+// routes are how the upstream propagates LAN topology when the bridge is
+// the host's L3 gateway. Macvlan mode skips that: the parent NIC's host
+// routes belong to the host, not the container, and the DHCP gateway is
+// the only route the container needs.
 func (p *Plugin) Join(ctx context.Context, r JoinRequest) (JoinResponse, error) {
 	log.WithField("options", r.Options).Debug("Join options")
 	res := JoinResponse{}

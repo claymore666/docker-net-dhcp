@@ -148,6 +148,30 @@ net_dhcp_router_advert_guard_failures_total 7077324
 # TYPE net_dhcp_ipv6_router_withdrawn_total counter
 net_dhcp_ipv6_router_withdrawn_total 3245771
 
+# HELP net_dhcp_router_solicits_sent_total RFC 4861 section 6.3.7 Router Solicitations sent from container links by the DHCPv6 client. READ router_adverts_seen_total AGAINST THIS ONE: a zero sighting count beside a zero solicitation count is a client that never asked, which is not the same reading as a link whose routers are silent. Only IPv6 endpoints solicit, so it cannot move on an IPv4-only host.
+# TYPE net_dhcp_router_solicits_sent_total counter
+net_dhcp_router_solicits_sent_total 2355602
+
+# HELP net_dhcp_router_adverts_seen_total Router Advertisements that decoded and reached the DHCPv6 state machine. This is the number that says an IPv6 segment is answering at all: the gateway, the MTU, the on-link prefixes, the more-specific routes and a stateless segment's resolvers all come out of these frames, and a container that came up with none of them on a host reading zero here was on a link nothing advertised on. Frames dropped before the client saw them are in none of these series.
+# TYPE net_dhcp_router_adverts_seen_total counter
+net_dhcp_router_adverts_seen_total 7241860
+
+# HELP net_dhcp_router_adverts_refused_total Frames whose ICMPv6 type said Router Advertisement and which would not decode: a zero-length option, an option running past the end of the frame, a non-zero ICMP Code. Separate from router_adverts_seen_total because their difference is the diagnostic. A link with no router and a link whose router is advertising something this client refuses read the same in a total holding both, and one of them is a router to find while the other is a router to fix. Not healthy-affecting: the plugin cannot tell a broken router from a frame something on the path corrupted.
+# TYPE net_dhcp_router_adverts_refused_total counter
+net_dhcp_router_adverts_refused_total 2262229
+
+# HELP net_dhcp_router_advert_options_ignored_total Options inside an advertisement refused by that option's own standard, while the rest of the advertisement was read. It counts OPTIONS and not frames, and it rises on advertisements that are otherwise fine, so it is not part of router_adverts_refused_total. Two things put entries in it: an option the decoder cannot read by its own rule, and a value the state machine read and may not use, which today is a link MTU outside the range RFC 4861 section 6.3.4 lets a host copy. Not healthy-affecting: a router offering one option nobody can use still supplies everything else.
+# TYPE net_dhcp_router_advert_options_ignored_total counter
+net_dhcp_router_advert_options_ignored_total 6299770
+
+# HELP net_dhcp_router_table_entries_dropped_total Advertised entries a full list in the client's router table would not take: a ninth router, or a seventeenth more-specific route. Non-zero means the table's caps are in force, which on a segment carrying one link's worth of routers means something is advertising more than a link has. A refusal holds what was heard first, so what is lost is the newest arrival. Not healthy-affecting: the caps exist so that a link cannot spend this plugin's memory, and they are doing that.
+# TYPE net_dhcp_router_table_entries_dropped_total counter
+net_dhcp_router_table_entries_dropped_total 6046670
+
+# HELP net_dhcp_router_table_entries_evicted_total Held entries a full resolver or search list threw out to take an arrival, which is what RFC 8106 section 6.2 (d) asks of those two lists. The pair of router_table_entries_dropped_total, and the other way round: an eviction holds what expires last, so what is lost is something the client already had. Read the two together; either above zero means the caps are in force. Not healthy-affecting: the caps exist so that a link cannot spend this plugin's memory, and an eviction is them working.
+# TYPE net_dhcp_router_table_entries_evicted_total counter
+net_dhcp_router_table_entries_evicted_total 2018064
+
 # HELP net_dhcp_dhcp_routes_applied_total DHCP option-121 classless static routes handed to Docker. Counts routes, not Joins.
 # TYPE net_dhcp_dhcp_routes_applied_total counter
 net_dhcp_dhcp_routes_applied_total 1196133

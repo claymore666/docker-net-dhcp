@@ -38,6 +38,15 @@ own kernel no longer processes advertisements, so there is one IPv6
 default route on the link instead of two possible ones, and a change on
 the segment reaches a running container without restarting it.
 
+`/Plugin.Health` and `/metrics` now publish what the plugin's DHCPv6
+clients see of router discovery: the solicitations they sent, the
+advertisements that arrived, the ones that would not decode, options a
+router sent that no standard lets a host use, and entries the client's
+router table had no room for. An IPv6 container that comes up with no
+gateway, no MTU and no resolver used to leave nothing behind to look at;
+these say whether anything advertised on the link at all, and whether
+what advertised was readable.
+
 ### Upgrade notes
 
 Required on every host before `docker plugin install`, unchanged since v1.5.0:

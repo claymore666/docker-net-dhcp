@@ -455,3 +455,12 @@ func TestTranslate_ANakTerminatedCycleReportsNothing(t *testing.T) {
 
 	close(lib.src)
 }
+
+// advertsSeen moves the library's Router Advertisement sighting count,
+// which is what the wire does on a link with a router on it and what no
+// lease event accompanies.
+func (f *fakeLib) advertsSeen(n uint64) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.stats.RouterAdvertsSeen = n
+}

@@ -410,6 +410,13 @@ func acquireOnce6(ctx context.Context, iface string, params proto.Params6, opts 
 	if opts.Records != nil {
 		manager = opts.Records.NewManagerID()
 	}
+	// A NEW MANAGER'S COUNTERS START AT ZERO, so the snapshots the
+	// delta reporters below subtract from have to start there too.
+	// getIP6 runs this function twice through one options value on the
+	// errV6HintInUse retry, and without this the second pass reports
+	// nothing until it passes what the first pass had already counted.
+	// See managerStarted.
+	opts.managerStarted()
 
 	info, lastE := runAcquisition6(ctx, iface, client, opts, params.Hint, V6AcquisitionWindow(params))
 
@@ -420,6 +427,13 @@ func acquireOnce6(ctx context.Context, iface string, params proto.Params6, opts 
 	opts.count(manager, stats)
 	opts.v6ModeReport(stats)
 	opts.v6PrefixReport(stats)
+	// The acquisition's own advertisements. This one-shot runs for the
+	// whole of RFC 4861 section 6.3.7's discovery window and then ends,
+	// so the solicitations it sent and the advertisements they brought
+	// back are counted here or nowhere: no persistent client exists yet
+	// on CreateEndpoint, and the one Join starts later has a manager,
+	// and therefore a set of counters, of its own.
+	opts.routerReport(stats)
 
 	out, err := acquisitionResult6(info, lastE)
 	return out, ra, err
