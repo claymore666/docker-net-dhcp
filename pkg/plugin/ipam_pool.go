@@ -114,6 +114,28 @@ func ipamPoolIDSuffix(opts map[string]string) (string, error) {
 				k, strings.Join(ipamPoolOptKeys, ", "), util.ErrIPAM)
 		}
 	}
+	// ONE KEY, because the decoder reads one (#1010, found by
+	// FuzzIPAMPoolIDRoundTrip). ipamPoolIDNames returns a single
+	// key/name pair, so a suffix carrying both encoded an option that
+	// nothing downstream can see: RequestPool stored `parent` as the
+	// issued pool's name and `bridge` reached no comparison at all, and
+	// two requests differing only in the invisible half derived one
+	// name. That is the identity collapse the unknown-key refusal above
+	// exists to prevent, one level in. Refusing is also the only answer
+	// that is not a guess about which of the two the operator meant, and
+	// a network is on one interface: the two keys are the macvlan/ipvlan
+	// and the bridge spelling of the same thing.
+	var given []string
+	for _, k := range ipamPoolOptKeys {
+		if _, ok := opts[k]; ok {
+			given = append(given, k)
+		}
+	}
+	if len(given) > 1 {
+		return "", fmt.Errorf("--ipam-opt %s were given together and a pool names one interface. Keep the one that matches this network's `-o %s=`: %w",
+			strings.Join(given, " and "), given[0], util.ErrIPAM)
+	}
+
 	var parts []string
 	for _, k := range ipamPoolOptKeys {
 		v, ok := opts[k]

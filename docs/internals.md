@@ -861,12 +861,25 @@ and the gate self-tests (#829 split them, and both are required
 contexts). It needs no privileges and mutates no host state, so the
 answer you get locally is the answer CI will give.
 
-The fuzz step is currently a no-op, and is named here as one instead of
-being counted as coverage: its two targets belonged to the 1.x lease
-parsers and no target of either name exists in this tree, so `go test
--fuzz` matches nothing and exits 0. The wire codec's own fuzzing lives
-in the library module. Re-pointing the step is outstanding work, and
-this page claims nothing more.
+The fuzz step runs four native Go targets, one invocation each, for a
+budget in executions rather than wall clock (#324): the resolv.conf
+renderer, the host-side link name, the DHCPv6 identity blob and the IPAM
+PoolID. Their seed corpora also run as ordinary tests in the race step,
+which is not the same thing — a seed cannot find an input nobody has
+generated yet. The wire codec's own fuzzing lives in the library module.
+
+It was a no-op until #1010. The two targets it named belonged to the 1.x
+lease parsers and had been deleted with them, and `go test -fuzz` over a
+package with no matching target prints PASS and exits 0, so a required
+check ran for weeks with one possible verdict.
+[`scripts/check-fuzz-budget.sh`](https://github.com/claymore666/docker-net-dhcp/blob/main/scripts/check-fuzz-budget.sh)
+now resolves every name in the step against the package beside it, and
+refuses a target in the tree that the step never fuzzes. That is why the
+step is four spelled-out invocations and not a loop: a name assembled at
+run time is a name the gate cannot resolve. It asks both questions of
+`scripts/local-lane.sh` as well, because the lane carries the same four
+invocations and this page tells you it gives the answer CI will give: a
+rename in one file alone goes red.
 
 The lane's contents live in
 [`scripts/local-lane.sh`](https://github.com/claymore666/docker-net-dhcp/blob/main/scripts/local-lane.sh),

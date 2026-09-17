@@ -125,3 +125,62 @@ func TestBuildResolvConf_DomainYieldsOneSearchDomain(t *testing.T) {
 		t.Errorf("a second domain reached the file:\n%s", out)
 	}
 }
+
+// TestBuildResolvConf_SearchListEntryYieldsOneSearchDomain is #704
+// through the OTHER channel, found by FuzzBuildResolvConf (#1010).
+//
+// TestBuildResolvConf_DomainYieldsOneSearchDomain above closed it for
+// option 15, the single domain, because option 15 is taken whole. The
+// search LIST was called structurally safe on the grounds that it
+// reaches the plugin through strings.Fields — which is a property of
+// whoever fills it, not of this renderer, and resolvSafe's own comment
+// says the filter is here so the renderer cannot emit a line it was not
+// asked for whoever calls it. It could: one entry carrying a space
+// rendered as two search domains, with the server's first.
+//
+// Whether the library can put a space inside an RFC 1035 label is not
+// measured here and is not what makes this a defect: the backstop
+// claimed to hold for any caller and did not.
+func TestBuildResolvConf_SearchListEntryYieldsOneSearchDomain(t *testing.T) {
+	out := string(buildResolvConf([]string{"10.99.0.53"}, []string{"a.attacker.test b.attacker.test", "corp.example"}, "", ""))
+
+	var search string
+	for _, line := range strings.Split(out, "\n") {
+		if strings.HasPrefix(line, "search ") {
+			search = line
+		}
+	}
+	if search != "search corp.example" {
+		t.Errorf("search line = %q, want only the entry that is one field", search)
+	}
+	if strings.Contains(out, "attacker.test") {
+		t.Errorf("a multi-field search entry reached the file:\n%s", out)
+	}
+}
+
+// TestBuildResolvConf_ZoneCannotRestructureTheLine is the one argument
+// that reached the file unfiltered (#1010).
+//
+// RFC 4007 section 11 spells a scope zone after a '%', and
+// zonedNameserver appends the container's interface name there for a
+// link-local resolver (RFC 8106 section 5.1, #821). The name went in
+// whole, so the nameserver line was only as well-formed as its caller.
+//
+// UNREACHABLE TODAY, and pinned anyway: the one caller reads the name
+// off a netlink link (dhcp_manager.go), and a kernel interface name
+// cannot hold whitespace. The filter costs one line and removes the
+// dependence on that fact being true forever.
+func TestBuildResolvConf_ZoneCannotRestructureTheLine(t *testing.T) {
+	out := string(buildResolvConf([]string{"fe80::1"}, nil, "", "eth0\nnameserver 6.6.6.6"))
+
+	if strings.Contains(out, "6.6.6.6") {
+		t.Errorf("an interface name appended a line:\n%s", out)
+	}
+	lines := strings.Split(strings.TrimSuffix(out, "\n"), "\n")
+	if len(lines) != 2 {
+		t.Errorf("got %d lines, want the marker and one nameserver:\n%s", len(lines), out)
+	}
+	if lines[1] != "nameserver fe80::1" {
+		t.Errorf("nameserver line = %q, want the address with no zone", lines[1])
+	}
+}
