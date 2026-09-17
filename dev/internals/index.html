@@ -2183,11 +2183,11 @@ race suite and the short fuzz, and <code>policy-gates</code> for every <code>che
 and the gate self-tests (#829 split them, and both are required
 contexts). It needs no privileges and mutates no host state, so the
 answer you get locally is the answer CI will give.</p>
-<p>The fuzz step runs four native Go targets, one invocation each, for a
-budget in executions rather than wall clock (#324): the resolv.conf
+<p>The fuzz step runs four native Go targets, one invocation each, on a
+budget counted in executions and not in wall clock (#324): the resolv.conf
 renderer, the host-side link name, the DHCPv6 identity blob and the IPAM
 PoolID. Their seed corpora also run as ordinary tests in the race step,
-which is not the same thing — a seed cannot find an input nobody has
+which is not the same thing: a seed cannot find an input nobody has
 generated yet. The wire codec's own fuzzing lives in the library module.</p>
 <p>It was a no-op until #1010. The two targets it named belonged to the 1.x
 lease parsers and had been deleted with them, and <code>go test -fuzz</code> over a
