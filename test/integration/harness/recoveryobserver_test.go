@@ -23,17 +23,36 @@ import (
 // prove nothing about the real loop.
 type fakeRecovery struct {
 	flipAt   time.Duration // when recovered_ok becomes 1; negative means never
+	failAt   time.Duration // when recovery_failed becomes 1; negative means never
 	deferred int32
+	// unreachableFrom is when the plugin stops answering; negative means
+	// it always answers.
+	unreachableFrom time.Duration
 
 	elapsed time.Duration
 	polls   int
 	budgets []time.Duration
 }
 
+func newFakeRecovery() *fakeRecovery {
+	return &fakeRecovery{flipAt: -1, failAt: -1, unreachableFrom: -1}
+}
+
+// succeedsAt and failsAt are the two arms of one rebuild, named so a case
+// cannot accidentally describe a plugin that does both.
+func (f *fakeRecovery) succeedsAt(d time.Duration) *fakeRecovery { f.flipAt = d; return f }
+func (f *fakeRecovery) failsAt(d time.Duration) *fakeRecovery    { f.failAt = d; return f }
+
 func (f *fakeRecovery) read() *HealthResponse {
+	if f.unreachableFrom >= 0 && f.elapsed >= f.unreachableFrom {
+		return nil
+	}
 	h := &HealthResponse{RecoveryDeferred: f.deferred, InstanceID: "fake"}
 	if f.flipAt >= 0 && f.elapsed >= f.flipAt {
 		h.RecoveredOK = 1
+	}
+	if f.failAt >= 0 && f.elapsed >= f.failAt {
+		h.RecoveryFailed = 1
 	}
 	return h
 }
@@ -48,14 +67,16 @@ func (f *fakeRecovery) poll(budget time.Duration) (*HealthResponse, bool) {
 	// interval short of it. A fake that took one more sample than that
 	// would report a budget with no margin as sufficient.
 	for f.elapsed < deadline {
-		last = f.read()
-		if last.RecoveredOK >= 1 {
-			return last, true
+		// A failed read leaves the previous one standing, the way Await
+		// does: the socket can blink during the events these tests
+		// provoke.
+		if h := f.read(); h != nil {
+			last = h
+			if h.RecoveredOK >= 1 {
+				return h, true
+			}
 		}
 		f.elapsed += awaitPollInterval
-	}
-	if last == nil {
-		last = f.read()
 	}
 	return last, false
 }
@@ -70,12 +91,12 @@ func TestAwaitRecoveryRebuild_CountsARebuildThatFinishesLate(t *testing.T) {
 
 	// The previous version, which is the strongest mutant of this
 	// change: one read, taken the moment the socket answers.
-	f := &fakeRecovery{flipAt: late}
+	f := newFakeRecovery().succeedsAt(late)
 	if f.read().RecoveredOK >= 1 {
 		t.Fatal("the fake counted the rebuild at t=0, so it cannot show what a single read misses")
 	}
 
-	f = &fakeRecovery{flipAt: late}
+	f = newFakeRecovery().succeedsAt(late)
 	h, ok := awaitRecoveryRebuild(discardf, "a rebuild", f.poll)
 	if !ok {
 		t.Errorf("the wait did not see a rebuild counted at %s, inside the %s budget: %s",
@@ -86,13 +107,12 @@ func TestAwaitRecoveryRebuild_CountsARebuildThatFinishesLate(t *testing.T) {
 	}
 }
 
-// The margin the budget carries is one poll interval, and this is the
-// case that spends it: a client counted at exactly AWAIT_TIMEOUT is
-// within what the plugin allows itself, and a poll loop samples only
-// while it is before its deadline, so a budget of exactly AWAIT_TIMEOUT
-// takes its last sample a quarter of a second too early.
+// The last instant the product allows a success: a client counted at
+// exactly AWAIT_TIMEOUT is inside what its own context permits. The
+// margin the budget carries is spent by the classifier case below, whose
+// counter lands at the far end of the budget rather than this one.
 func TestAwaitRecoveryRebuild_CountsARebuildAtTheProductsOwnDeadline(t *testing.T) {
-	f := &fakeRecovery{flipAt: awaitTimeoutDefault}
+	f := newFakeRecovery().succeedsAt(awaitTimeoutDefault)
 	if _, ok := awaitRecoveryRebuild(discardf, "a rebuild", f.poll); !ok {
 		t.Errorf("a rebuild counted at %s — the last instant AWAIT_TIMEOUT allows one — was missed "+
 			"by a %s budget", awaitTimeoutDefault, RecoveryRebuildBudget)
@@ -100,7 +120,7 @@ func TestAwaitRecoveryRebuild_CountsARebuildAtTheProductsOwnDeadline(t *testing.
 }
 
 func TestAwaitRecoveryRebuild_FailsWhenTheCounterNeverMoves(t *testing.T) {
-	f := &fakeRecovery{flipAt: -1}
+	f := newFakeRecovery()
 	h, ok := awaitRecoveryRebuild(discardf, "a rebuild", f.poll)
 	if ok {
 		t.Fatal("the wait reported a rebuild the fake never counted")
@@ -124,7 +144,8 @@ func TestAwaitRecoveryRebuild_ExtendsOnlyOnTheDeferredRoute(t *testing.T) {
 	late := RecoveryRebuildBudget + 30*time.Second
 
 	t.Run("deferred", func(t *testing.T) {
-		f := &fakeRecovery{flipAt: late, deferred: 1}
+		f := newFakeRecovery().succeedsAt(late)
+		f.deferred = 1
 		var logged []string
 		h, ok := awaitRecoveryRebuild(func(format string, args ...any) {
 			logged = append(logged, fmt.Sprintf(format, args...))
@@ -149,7 +170,7 @@ func TestAwaitRecoveryRebuild_ExtendsOnlyOnTheDeferredRoute(t *testing.T) {
 	})
 
 	t.Run("not deferred", func(t *testing.T) {
-		f := &fakeRecovery{flipAt: late}
+		f := newFakeRecovery().succeedsAt(late)
 		if _, ok := awaitRecoveryRebuild(discardf, "a rebuild", f.poll); ok {
 			t.Error("the wait extended past the normal route's budget for a plugin that never deferred")
 		}
@@ -157,6 +178,66 @@ func TestAwaitRecoveryRebuild_ExtendsOnlyOnTheDeferredRoute(t *testing.T) {
 			t.Errorf("polls=%d, want 1", f.polls)
 		}
 	})
+}
+
+// A Start that fails by exhausting AWAIT_TIMEOUT records nothing at
+// that instant: the classifier then inspects the container on a fresh
+// context of its own before recovery_failed moves. A budget that ended
+// at AWAIT_TIMEOUT would give up inside that gap, call a failed rebuild
+// "still in flight", and let the recovery_failed == 0 assertion that
+// follows read a document taken before the counter could move.
+func TestAwaitRecoveryRebuild_WaitsForTheClassifierToSpeak(t *testing.T) {
+	f := newFakeRecovery().failsAt(awaitTimeoutDefault + recoveryPerNetworkTimeoutDefault)
+	h, ok := awaitRecoveryRebuild(discardf, "a rebuild", f.poll)
+	if ok {
+		t.Fatal("the wait reported a rebuild for a plugin that only ever recorded a failure")
+	}
+	if h == nil || h.RecoveryFailed != 1 {
+		t.Fatalf("the wait gave up before the classifier moved: %s. Everything after this reads a "+
+			"document in which the failure has not happened yet", RecoveryRoutes(h))
+	}
+	got := RecoveryRebuildFailure("a rebuild", h)
+	if !strings.Contains(got, "recovery_failed=1") || !strings.Contains(got, "FAILED") {
+		t.Errorf("the verdict does not name the arm that fired:\n%s", got)
+	}
+	if strings.Contains(got, "still in flight") {
+		t.Errorf("the verdict calls a classified failure a rebuild still in flight, which is the "+
+			"reading this change exists to separate:\n%s", got)
+	}
+}
+
+// The opposite direction of the same text: nothing was classified, so
+// "still in flight" is the right sentence and the classifier one is not.
+func TestRecoveryRebuildFailure_SaysStillInFlightWhenNothingWasClassified(t *testing.T) {
+	got := RecoveryRebuildFailure("a rebuild", &HealthResponse{})
+	if !strings.Contains(got, "still in flight") {
+		t.Errorf("a wait that ended with every counter at zero does not say so:\n%s", got)
+	}
+	if strings.Contains(got, "FAILED") {
+		t.Errorf("a wait that ended with every counter at zero claims a failure was recorded:\n%s", got)
+	}
+}
+
+// A plugin that stops answering during the extension leaves the
+// extension with no read of its own. Discarding the first poll's read
+// there would quote the normal route's budget for a wait that took the
+// deferred one, and quote no counters for a plugin that had published
+// recovery_deferred.
+func TestAwaitRecoveryRebuild_KeepsTheLastReadWhenTheExtensionGetsNone(t *testing.T) {
+	f := newFakeRecovery()
+	f.deferred = 1
+	f.unreachableFrom = RecoveryRebuildBudget
+
+	h, ok := awaitRecoveryRebuild(discardf, "a rebuild", f.poll)
+	if ok {
+		t.Fatal("the wait reported a rebuild from a plugin that stopped answering")
+	}
+	if h == nil || h.RecoveryDeferred != 1 {
+		t.Fatalf("the extension discarded the only read there was: %s", RecoveryRoutes(h))
+	}
+	if got := RecoveryRebuildFailure("a rebuild", h); !strings.Contains(got, RecoveryDeferredRebuildBudget.String()) {
+		t.Errorf("the failure text quotes a budget this wait did not spend:\n%s", got)
+	}
 }
 
 func TestRecoveryRebuildFailure_QuotesTheBudgetOfTheRouteTaken(t *testing.T) {
@@ -219,6 +300,7 @@ func TestRecoveryBudgetsTrackTheProduct(t *testing.T) {
 		want time.Duration
 	}{
 		{"defaultAwaitTimeout", awaitTimeoutDefault},
+		{"recoveryPerNetworkTimeout", recoveryPerNetworkTimeoutDefault},
 		{"recoveryBudget", recoveryBudgetDefault},
 		{"recoveryDeferredDaemonWait", recoveryDeferredDaemonWaitDefault},
 	} {

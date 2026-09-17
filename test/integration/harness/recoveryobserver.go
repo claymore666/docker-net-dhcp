@@ -32,12 +32,32 @@ import (
 // A test that reads the counters when the socket first answers is
 // reading the middle of that work. These budgets say how long the work
 // may take, on each of the two routes into it.
+//
+// THE FAILURE ARM TAKES LONGER THAN THE SUCCESS ARM, which is why the
+// budgets are not simply AWAIT_TIMEOUT. A Start that fails by exhausting
+// its context does not record anything yet: the goroutine then classifies
+// the endpoint with containerGone (pkg/plugin/plugin.go:2929), on a FRESH
+// Background context capped at recoveryPerNetworkTimeout
+// (pkg/plugin/plugin.go:2688) precisely because startCtx is already dead
+// on that arm, and only then moves recovery_failed or
+// recovery_aborted_container_gone (pkg/plugin/plugin.go:2936, 2941). A
+// budget that ended at AWAIT_TIMEOUT would give up while the classifier
+// was still running, report "still in flight" about a rebuild that had
+// failed, and hand the tests' recovery_failed == 0 assertion a document
+// taken before the counter could move — a vacuous pass on exactly the
+// fault they exist to catch.
 const (
 	// awaitTimeoutDefault is AWAIT_TIMEOUT as config.json ships it. The
 	// per-endpoint Start runs on a context capped at it
-	// (pkg/plugin/plugin.go:2908), so a rebuild that has not been
-	// counted by then never will be: its context is dead.
+	// (pkg/plugin/plugin.go:2908), so a rebuild not counted by then has
+	// failed rather than being slow — but see the classifier above for
+	// how long it then takes to say so.
 	awaitTimeoutDefault = 10 * time.Second
+	// recoveryPerNetworkTimeoutDefault is recoveryPerNetworkTimeout
+	// (pkg/plugin/plugin.go:125), which caps the classifier's inspect
+	// (pkg/plugin/plugin.go:2688) as well as the walk's own Docker
+	// round-trips.
+	recoveryPerNetworkTimeoutDefault = 3 * time.Second
 	// recoveryBudgetDefault is recoveryBudget (pkg/plugin/plugin.go:117).
 	recoveryBudgetDefault = 30 * time.Second
 	// recoveryDeferredDaemonWaitDefault is recoveryDeferredDaemonWait
@@ -46,10 +66,11 @@ const (
 
 	// RecoveryRebuildBudget bounds the normal route: the daemon answered,
 	// the walk ran inside NewPlugin, and the only thing left when the
-	// socket starts serving is each endpoint's Start. One poll interval
-	// on top, because a poll loop takes its last sample just under its
-	// deadline and the increment may land in that gap.
-	RecoveryRebuildBudget = awaitTimeoutDefault + awaitPollInterval
+	// socket starts serving is each endpoint's Start, plus the classifier
+	// that runs if it failed. One poll interval on top, because a poll
+	// loop takes its last sample just under its deadline and the
+	// increment may land in that gap.
+	RecoveryRebuildBudget = awaitTimeoutDefault + recoveryPerNetworkTimeoutDefault + awaitPollInterval
 
 	// RecoveryDeferredRebuildBudget bounds the other route. When the
 	// daemon was not serving yet the walk is handed to
@@ -57,7 +78,7 @@ const (
 	// on wait+recoveryBudget (pkg/plugin/plugin.go:2639) and only then
 	// spawns the Starts — whose own context is a fresh Background, so it
 	// is added, not absorbed.
-	RecoveryDeferredRebuildBudget = recoveryDeferredDaemonWaitDefault + recoveryBudgetDefault + awaitTimeoutDefault + awaitPollInterval
+	RecoveryDeferredRebuildBudget = recoveryDeferredDaemonWaitDefault + recoveryBudgetDefault + RecoveryRebuildBudget
 )
 
 // RecoveryRoutes renders the counters that separate the ways a recovery
@@ -127,7 +148,18 @@ func awaitRecoveryRebuild(logf func(string, ...any), what string, poll recoveryP
 		"%s and not the %s the normal route gets. Waiting a further %s. Counters so far: %s",
 		what, RecoveryRebuildBudget, h.RecoveryDeferred,
 		RecoveryDeferredRebuildBudget, RecoveryRebuildBudget, extra, RecoveryRoutes(h))
-	return poll(extra)
+
+	// The first poll's read is kept when the extension never gets one of
+	// its own. A plugin that stops answering during the extension would
+	// otherwise return no read at all, and the failure text derives the
+	// budget it quotes from the read — so it would report a 10s wait for
+	// one that took a hundred, and quote no counters for a plugin that
+	// had published recovery_deferred.
+	extended, ok := poll(extra)
+	if extended == nil {
+		return h, ok
+	}
+	return extended, ok
 }
 
 // RecoveryRebuildFailure is the text a test prints when the property it
@@ -147,8 +179,30 @@ func RecoveryRebuildFailure(what string, h *HealthResponse) string {
 	}
 	return fmt.Sprintf("waited %s for %s and it never held.\n"+
 		"  %s\n"+
-		"  recovered_ok is incremented only after the recovered endpoint's client has restarted "+
-		"(pkg/plugin/plugin.go:2944), so 0 here with every other counter at 0 means the rebuild was "+
-		"still in flight when the budget ran out — a different fault from one the classifier counted.",
-		waited, what, RecoveryRoutes(h))
+		"  %s",
+		waited, what, RecoveryRoutes(h), recoveryVerdict(h))
+}
+
+// recoveryVerdict reads the counters back and says which of the two
+// things happened, because they want opposite next steps and the numbers
+// alone do not say which is which to a reader.
+//
+// A classified failure is the product reporting a fault. "Still in
+// flight" is this budget being too short, or a rebuild wedged somewhere
+// that records nothing. Printing the second sentence over the first is
+// the mistake this whole change was made to stop, one level up.
+func recoveryVerdict(h *HealthResponse) string {
+	switch {
+	case h == nil:
+		return "No counter could be read, so nothing above is evidence of anything."
+	case h.RecoveryFailed > 0 || h.RecoveryAbortedContainerGone > 0:
+		return fmt.Sprintf("The classifier recorded this endpoint: recovery_failed=%d, "+
+			"recovery_aborted_container_gone=%d (pkg/plugin/plugin.go:2936, 2941). The rebuild "+
+			"FAILED — it was not still running when the budget ran out.",
+			h.RecoveryFailed, h.RecoveryAbortedContainerGone)
+	default:
+		return "recovered_ok is incremented only after the recovered endpoint's client has " +
+			"restarted (pkg/plugin/plugin.go:2944), and no failure arm moved either, so the " +
+			"rebuild was still in flight when the budget ran out."
+	}
 }
