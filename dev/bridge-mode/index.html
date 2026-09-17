@@ -1355,15 +1355,27 @@ iptables -S FORWARD | head -1</code>.</p>
 <h2 id="2-create-the-network">2. Create the network<a class="headerlink" href="#2-create-the-network" title="Permanent link">&para;</a></h2>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a><span class="c1"># On arm64 use the -arm64 tag. A network stores this exact reference</span>
 <a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a><span class="c1"># as its driver, so it must name the plugin you installed.</span>
-<a id="__codelineno-11-3" name="__codelineno-11-3" href="#__codelineno-11-3"></a>docker<span class="w"> </span>network<span class="w"> </span>create<span class="w"> </span>-d<span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:v2.1.1<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-11-3" name="__codelineno-11-3" href="#__codelineno-11-3"></a>docker<span class="w"> </span>network<span class="w"> </span>create<span class="w"> </span>-d<span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:v2.2.0<span class="w"> </span><span class="se">\</span>
 <a id="__codelineno-11-4" name="__codelineno-11-4" href="#__codelineno-11-4"></a><span class="w">  </span>--ipam-driver<span class="w"> </span>null<span class="w"> </span>-o<span class="w"> </span><span class="nv">bridge</span><span class="o">=</span>my-bridge<span class="w"> </span>my-dhcp-net
 </code></pre></div>
 <p>With IPv6 as well (the <code>docker network create --ipv6</code> flag does <strong>not</strong>
-work with the null IPAM driver; use the <code>ipv6</code> driver option instead):</p>
+work with the null IPAM driver; use the <code>ipv6_mode</code> driver option
+instead):</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a><span class="c1"># arm64: the -arm64 tag here too.</span>
-<a id="__codelineno-12-2" name="__codelineno-12-2" href="#__codelineno-12-2"></a>docker<span class="w"> </span>network<span class="w"> </span>create<span class="w"> </span>-d<span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:v2.1.1<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-12-3" name="__codelineno-12-3" href="#__codelineno-12-3"></a><span class="w">  </span>--ipam-driver<span class="w"> </span>null<span class="w"> </span>-o<span class="w"> </span><span class="nv">bridge</span><span class="o">=</span>my-bridge<span class="w"> </span>-o<span class="w"> </span><span class="nv">ipv6</span><span class="o">=</span><span class="nb">true</span><span class="w"> </span>my-dhcp-net
+<a id="__codelineno-12-2" name="__codelineno-12-2" href="#__codelineno-12-2"></a>docker<span class="w"> </span>network<span class="w"> </span>create<span class="w"> </span>-d<span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:v2.2.0<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-12-3" name="__codelineno-12-3" href="#__codelineno-12-3"></a><span class="w">  </span>--ipam-driver<span class="w"> </span>null<span class="w"> </span>-o<span class="w"> </span><span class="nv">bridge</span><span class="o">=</span>my-bridge<span class="w"> </span>-o<span class="w"> </span><span class="nv">ipv6_mode</span><span class="o">=</span>dhcp<span class="w"> </span>my-dhcp-net
 </code></pre></div>
+<p><code>ipv6_mode</code> takes <code>off</code> (the default), <code>dhcp</code> for a DHCPv6 lease beside
+the v4 one, <code>slaac</code> to form the address from the router's advertised
+prefix and send no Solicit, and <code>auto</code> to read the advertisement and do
+what it says: DHCPv6 where the advertisement asks for it, the prefix
+where it does not. <code>-o ipv6=true</code> is the short spelling of <code>dhcp</code>. The
+default route and the MTU come from the advertisement in all three, and
+on a <code>propagate_dns</code> network its resolvers reach the container too,
+behind any a DHCPv6 server supplies. The modes, and
+<code>ipv6_auto_strict</code> for what <code>auto</code> does when the router asks for DHCPv6
+and no server answers, are in the
+<a href="../reference/#driver-options-network-level">driver reference</a>.</p>
 <blockquote>
 <p><strong>One of the two IPAM shapes is required.</strong> Docker's built-in IPAM must
 not be the allocator: it hands out addresses from its own pool, which
@@ -1421,10 +1433,10 @@ on <code>compose down</code>):</p>
 <a id="__codelineno-15-7" name="__codelineno-15-7" href="#__codelineno-15-7"></a><span class="nt">networks</span><span class="p">:</span>
 <a id="__codelineno-15-8" name="__codelineno-15-8" href="#__codelineno-15-8"></a><span class="w">  </span><span class="nt">dhcp</span><span class="p">:</span>
 <a id="__codelineno-15-9" name="__codelineno-15-9" href="#__codelineno-15-9"></a><span class="w">    </span><span class="c1"># arm64: the -arm64 tag, matching the plugin you installed.</span>
-<a id="__codelineno-15-10" name="__codelineno-15-10" href="#__codelineno-15-10"></a><span class="w">    </span><span class="nt">driver</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">ghcr.io/claymore666/docker-net-dhcp:v2.1.1</span>
+<a id="__codelineno-15-10" name="__codelineno-15-10" href="#__codelineno-15-10"></a><span class="w">    </span><span class="nt">driver</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">ghcr.io/claymore666/docker-net-dhcp:v2.2.0</span>
 <a id="__codelineno-15-11" name="__codelineno-15-11" href="#__codelineno-15-11"></a><span class="w">    </span><span class="nt">driver_opts</span><span class="p">:</span>
 <a id="__codelineno-15-12" name="__codelineno-15-12" href="#__codelineno-15-12"></a><span class="w">      </span><span class="nt">bridge</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">my-bridge</span>
-<a id="__codelineno-15-13" name="__codelineno-15-13" href="#__codelineno-15-13"></a><span class="w">      </span><span class="nt">ipv6</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;true&#39;</span>
+<a id="__codelineno-15-13" name="__codelineno-15-13" href="#__codelineno-15-13"></a><span class="w">      </span><span class="nt">ipv6_mode</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;dhcp&#39;</span>
 <a id="__codelineno-15-14" name="__codelineno-15-14" href="#__codelineno-15-14"></a><span class="w">    </span><span class="nt">ipam</span><span class="p">:</span>
 <a id="__codelineno-15-15" name="__codelineno-15-15" href="#__codelineno-15-15"></a><span class="w">      </span><span class="nt">driver</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;null&#39;</span>
 </code></pre></div>
@@ -1436,6 +1448,15 @@ on <code>compose down</code>):</p>
   gateway when the offered gateway changes, for the life of the
   endpoint. The renewal runs inside the plugin process and never inside
   the container.</li>
+<li><code>-o host_ifname=container_name</code> names the host-side half of the veth
+  pair after the container, so <code>ip link</code> and <code>brctl show</code> on the host
+  read like the compose file; <code>-o host_ifname=hostname</code> uses the
+  container's hostname, which is not unique on a host. Off by default,
+  where the link is <code>dh-</code> plus twelve hex digits. Bridge mode only: the
+  option is refused at <code>docker network create</code> in <code>macvlan</code> and
+  <code>ipvlan</code>, which leave nothing on the host to name. The rule, what
+  happens when the name is taken, and the counters that say so are in
+  <a href="../reference/#host-side-interface-names-host_ifname">Host-side interface names</a>.</li>
 <li>Use <code>--mac-address</code> / <code>mac_address</code> for MAC-keyed reservations or to
   reuse an old lease; <code>--hostname</code> / <code>hostname</code> is sent as DHCP option 12
   for DHCP-DNS integration. Per-endpoint and per-container knobs are
