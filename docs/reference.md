@@ -1233,6 +1233,39 @@ the rows above that start an endpoint with none are the DHCPv6 ones:
 `ipv6=true` and `ipv6_mode=dhcp` on a segment that hands out no
 address.
 
+#### Server-initiated reconfiguration
+
+A DHCPv6 server can start a renewal itself instead of waiting for the
+client's T1, by sending a Reconfigure message (RFC 9915 §18.2.11). The
+plugin's client accepts one, and has since v2.1.1's DHCP library pin
+([#925](https://github.com/claymore666/docker-net-dhcp/issues/925)).
+
+| What the client does | Where it comes from |
+|---|---|
+| Announces that it is willing to be reconfigured, in its Solicit, Request and Information-request (§21.20's Reconfigure Accept option) | Always on. §21.20: "In the absence of this option, the default behavior is that the client is unwilling to accept Reconfigure messages", so a client that does not announce is never sent one |
+| Accepts a Reconfigure only when it is authenticated with the reconfigure key that server gave it (§20.4's Reconfiguration Key Authentication Protocol), and only when the replay detection value is one it has not seen from that server (§20.3) | The DHCP library |
+| Discards everything else: an unauthenticated Reconfigure, a wrong key, a replayed value, one that names no server or names another client, one that arrives while an exchange is already in flight | The DHCP library |
+| Answers an accepted Reconfigure with the Renew, Rebind or Information-request its Reconfigure Message option names, and applies the result | The DHCP library; the result reaches the container on the same path a renewal with new parameters uses |
+
+**There is no counter for this yet.** A Reconfigure the client accepted
+and one it discarded are both invisible on `/Plugin.Health` and on
+`/metrics`: the DHCP library records them in its own journal and exports
+no number, so the plugin has nothing to publish. The counters are part
+of [#925](https://github.com/claymore666/docker-net-dhcp/issues/925) and
+land when the library exports them.
+
+**Two bounds worth knowing.** A reconfigure key does not survive a
+plugin restart: §20.4.2 has a server choose one "during the
+Request/Reply, Solicit/Reply, or Information-request/Reply message
+exchange", a restarted endpoint resumes its held lease with a Confirm
+instead, and neither that message nor a Renew carries the announcement
+or receives a key. Such an endpoint discards every Reconfigure from its
+server until its next full acquisition, and falls back on its own T1,
+which is what it would have done anyway. And an Information-request the
+server asks for on a **managed** segment is counted as
+`dhcpv6_config_only`, the same as a stateless answer, because it is the
+same message.
+
 #### If you upgrade onto 2.0 with an IPv6 network already created
 
 Nothing to do. A network record written by a 1.x build carries
@@ -1527,7 +1560,7 @@ already parse it were not told to expect a new type.
 | `docker_api_non_get_refusals` | no | n/a | (v2.0.0+) Requests to the Docker API refused before they were sent because their method was neither `GET` nor `HEAD`. The plugin's whole Docker surface is `NetworkList`, `NetworkInspect`, `ContainerInspect` and the client library's version ping, so this stays at zero for the life of an installation; a non-zero value means code in this process tried to **write** to the daemon, which is the grant that makes a compromise of the plugin equivalent to root on the host (#691). Not `healthy`-affecting: the refusal is the safe outcome and the caller sees the error. |
 | `ledger_write_failures` | no | warn | Failed `audit_log` ledger appends. It degrades forensics and never networking. Operators using `audit_log` alert on this. |
 | `state_file_chmod_failures` | no | warn | (v2.0.0+) Files the startup sweep could not tighten under [`STATE_DIR`](#plugin-settings), plus one for a `STATE_DIR` that could not be read at all, in which case no file was examined (#804). Not healthy-affecting: a loose mode on a state file degrades nothing the plugin does, and the writer is root either way. **Worth investigating** whenever it moves: zero is the normal reading on every host, including one that has never been upgraded, so each tick is a file still readable by any user on the host. The plugin log names the path; `chmod 0600` it. A reading of 1 with no path in the log is the directory arm, and there the whole sweep did nothing. |
-| `dhcpv6_config_only` | no | n/a | (v1.9.0+) DHCPv6 replies that carried configuration and no address, such as a stateless network answering an Information-request with DNS servers and a search list (#815). On a stateless segment this rising is the feature working; on a managed or IPv4-only one it stays at zero on its own. Not `healthy`-affecting. |
+| `dhcpv6_config_only` | no | n/a | (v1.9.0+) DHCPv6 replies that carried configuration and no address, such as a stateless network answering an Information-request with DNS servers and a search list (#815). On a stateless segment this rising is the feature working. On an IPv4-only one it stays at zero. On a **managed** segment it has moved since v2.1.1's library pin: a bound client answers a server-initiated Reconfigure that names Information-request with one, and its reply is counted here (#925). Not `healthy`-affecting. |
 | `dhcpv6_not_offered` | no | n/a | (v1.9.0+) Endpoints created on an IPv6 network that offers no DHCPv6 address (#868): the segment answered with configuration and no address, or advertised with the managed flag clear. The endpoint starts without a DHCPv6 lease. Since v2.2.0 it also gets no IPv6 route and no global IPv6 address: the guard writes `accept_ra=0` and `autoconf=0`, so its kernel no longer supplies either, and the daemon refuses an IPv6 route on a link with no IPv6 address, so the plugin cannot supply them either. This is the ending for an `ipv6_mode` that takes its address from a DHCPv6 server, which is `ipv6=true` and `ipv6_mode=dhcp`: on `slaac` and `auto` the address is formed from the advertisement, and the route and the gateway arrive with it. Not `healthy`-affecting: this is a description of the segment and never a fault. Read it against `dhcpv6_no_router_advert`: the two exist to tell an advertised absence from an absent advertisement, and their sum would not. **Not a check:** both clauses fail. Its own value carries no verdict, because the same number is correct behaviour on a stateless or SLAAC network and a misconfiguration on one meant to be managed, and on a stateless or SLAAC network its normal reading is one per endpoint, so a check on non-zero would fire on every healthy container there. |
 | `dhcpv6_no_router_advert` | no | n/a | (v1.9.0+) Endpoints created on an IPv6 network where **no router advertisement arrived at all** inside the acquisition budget (#868). The endpoint starts without a DHCPv6 lease, and the plugin logs a warning: unlike the row above this usually is a fault, because a segment with no IPv6 router gives the container no route either. Not `healthy`-affecting, because the plugin cannot tell a misconfigured segment from a deliberately routerless one. If it rises on a segment that does have a router, the advertisement did not arrive inside RFC 4861's discovery window. The DHCPv6 acquisition budget covers that window by derivation, so the usual cause is something cutting the budget below it: a `lease_timeout` set under 13 seconds, or a DHCPv4 half that took so long that little of the daemon's 30-second call deadline was left for the v6 one. The plugin logs a warning naming both numbers when that happens. |
 | `dhcpv6_refused` | no | n/a | (v2.2.0+) Endpoints that **failed** because a DHCPv6 server answered and refused the client: a Status Code option carrying something other than Success (RFC 9915 §21.13, #816). The plugin logs the code's name beside the endpoint. Not `healthy`-affecting: the endpoint's failure is already reported to Docker, and the segment's DHCPv6 pool is not this plugin's health. Read it against `dhcpv6_no_server`, which is the ending where nothing answered at all: a refusal means a reachable, configured server with no address for this client, so the place to look is the server's range and its bindings. `NoAddrsAvail` is an exhausted pool; `NotOnLink` is an address requested outside the range the server serves, which a stale `preferred_ipv6` can produce. **Not a check:** the imperative above is to read this counter *against* `dhcpv6_no_server`, and its own value carries no verdict — one refusal on a segment whose pool is deliberately smaller than the container count is the server working as configured, and a `warn` check here would fire on it. |
