@@ -107,16 +107,23 @@ func DumpPluginLogOnFailure(t *testing.T, ctx context.Context, mark int64, what 
 // parameter, and this is the one place that knows the wait is about to
 // use it.
 //
-// Fatal, because everything after a wait bounded by the wrong number is
-// a measurement of something else. The cost is one PluginInspect per
-// recycle, against a daemon the test is already talking to.
+// Errorf and not Fatalf, although a bound the plugin contradicts makes
+// the wait below meaningless. TestRecovery_DaemonRestart_PreservesContainer
+// is written to keep reporting: its switch on the two preservation paths
+// and the IP and MAC comparisons after it are there so that one failed
+// recycle still says WHICH properties held. Stopping that test at its
+// first line would throw that away, and it buys nothing: the drift is
+// already recorded as a failure, and the assertions that follow are
+// about the address, not about the bound. The cost is one PluginInspect
+// per recycle, against a daemon the test is already talking to.
 func checkInstalledAwaitTimeout(t *testing.T, ctx context.Context, cli *docker.Client) {
 	t.Helper()
 	p, _, err := cli.PluginInspectWithRaw(ctx, PluginRef)
 	if err != nil {
-		t.Fatalf("PluginInspect, to read the AWAIT_TIMEOUT the recovery budget is derived from: %v", err)
+		t.Errorf("PluginInspect, to read the AWAIT_TIMEOUT the recovery budget is derived from: %v", err)
+		return
 	}
 	if msg := InstalledAwaitTimeoutDrift(p.Settings.Env); msg != "" {
-		t.Fatalf("%s", msg)
+		t.Errorf("%s", msg)
 	}
 }

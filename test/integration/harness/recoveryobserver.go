@@ -39,13 +39,13 @@ import (
 // the endpoint with containerGone (pkg/plugin/plugin.go:2929), on a FRESH
 // Background context capped at recoveryPerNetworkTimeout
 // (pkg/plugin/plugin.go:2688) precisely because startCtx is already dead
-// on that arm, and only then moves recovery_failed or
-// recovery_aborted_container_gone (pkg/plugin/plugin.go:2936, 2941). A
-// budget that ended at AWAIT_TIMEOUT would give up while the classifier
-// was still running, report "still in flight" about a rebuild that had
-// failed, and hand the tests' recovery_failed == 0 assertion a document
-// taken before the counter could move — a vacuous pass on exactly the
-// fault they exist to catch.
+// on that arm, and only then moves recovery_failed
+// (pkg/plugin/plugin.go:2936) or recovery_aborted_container_gone
+// (pkg/plugin/plugin.go:2930). A budget that ended at AWAIT_TIMEOUT
+// would give up while the classifier was still running, report "still
+// in flight" about a rebuild that had failed, and hand the tests'
+// recovery_failed == 0 assertion a document taken before the counter
+// could move — a vacuous pass on exactly the fault they exist to catch.
 const (
 	// awaitTimeoutDefault is AWAIT_TIMEOUT as config.json ships it. The
 	// per-endpoint Start runs on a context capped at it
@@ -132,12 +132,30 @@ func RecoveryRoutes(h *HealthResponse) string {
 // a coupling test still green. The manifest half is a copy nobody
 // checks; this is the half the copy cannot see.
 //
-// A setting that is missing or unparseable is drift too. The value the
+// A setting that is missing or unparseable is drift too: the value the
 // plugin runs with is then unknown, and an unknown cap is not evidence
 // that the bound is right.
+//
+// WHY THAT ARM DOES NOT RED A CORRECT LANE, stated properly because the
+// first version of this comment gave a false reason. Settings.Env is the
+// INSTALLED plugin's own manifest, not this tree's: installed plugins on
+// a development box report different numbers of entries from each other
+// and from the manifest here, because each was built from the manifest
+// of its own version. So "config.json declares it" says nothing about
+// what a given installed plugin publishes. What does say something is
+// that the integration lane creates the plugin from this checkout
+// (`docker plugin create "$REF" plugin`, .github/workflows/integration.yml:772),
+// so the plugin under test carries this tree's manifest and this
+// tree's manifest declares the setting. Reached anyway, the arm is
+// still right: a plugin whose manifest lacks the setting is not the one
+// this tree builds, and its cap is unknown here.
 func InstalledAwaitTimeoutDrift(env []string) string {
 	const name = "AWAIT_TIMEOUT"
 	for _, e := range env {
+		// Whole name, both ends. A setting whose name merely contains
+		// this one is a different setting, and reading either
+		// EXTRA_AWAIT_TIMEOUT or AWAIT_TIMEOUT_MS as this one would let
+		// a plugin that never published AWAIT_TIMEOUT pass the check.
 		k, v, ok := strings.Cut(e, "=")
 		if !ok || k != name {
 			continue
@@ -161,9 +179,10 @@ func InstalledAwaitTimeoutDrift(env []string) string {
 		return ""
 	}
 	return fmt.Sprintf("the installed plugin publishes no %s setting, so the %s the recovery "+
-		"budgets are derived from cannot be confirmed against the plugin the lane installed. "+
-		"config.json declares it, so an installed plugin without it is not the plugin this test "+
-		"expects", name, awaitTimeoutDefault)
+		"budgets are derived from cannot be confirmed against the plugin under test. Settings.Env "+
+		"carries the installed plugin's own manifest, and the lane creates the plugin from this "+
+		"checkout, whose manifest declares the setting, so the plugin answering here is not the "+
+		"one this tree builds", name, awaitTimeoutDefault)
 }
 
 // recoveryPoll is one bounded attempt at a condition: the last health
@@ -226,8 +245,17 @@ func awaitRecoveryRebuild(logf func(string, ...any), what string, verify func(),
 // report "recovery did not pick up our endpoint" about a plugin whose
 // counters say it was deferred or displaced.
 //
-// The budget is read back off the health document rather than passed
-// in: the caller would otherwise have to know which of the two routes
+// The headline number says where it comes from. A wait can only be
+// bounded by the value this tree declares, and the plugin that answered
+// may have been set to another one; that disagreement is a recorded
+// failure by the time this prints, and a reader who takes the first
+// line at face value would go looking for a rebuild that overran a cap
+// nothing was running under. Naming the derivation costs one line and
+// keeps the loudest sentence in the job from asserting something the
+// same job has contradicted.
+//
+// The budget is read back off the health document instead of being
+// passed in: the caller would otherwise have to know which of the two routes
 // its own wait took, and a number typed at the call site is the one
 // place this could claim a wait it did not perform.
 func RecoveryRebuildFailure(what string, h *HealthResponse) string {
@@ -236,9 +264,13 @@ func RecoveryRebuildFailure(what string, h *HealthResponse) string {
 		waited = RecoveryDeferredRebuildBudget
 	}
 	return fmt.Sprintf("waited %s for %s and it never held.\n"+
+		"  That budget is derived from AWAIT_TIMEOUT as this tree's manifest declares it (%s), "+
+		"not from the plugin that answered here. If the two disagree, the drift check this wait "+
+		"runs before spending anything has already said so above, and this line is the shorter "+
+		"of the two.\n"+
 		"  %s\n"+
 		"  %s",
-		waited, what, RecoveryRoutes(h), recoveryVerdict(h))
+		waited, what, awaitTimeoutDefault, RecoveryRoutes(h), recoveryVerdict(h))
 }
 
 // recoveryVerdict reads the counters back and says which of the two
