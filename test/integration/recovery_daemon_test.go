@@ -161,6 +161,13 @@ func TestRecovery_DaemonRestart_PreservesContainer(t *testing.T) {
 	// one running; the daemon restart below ends that process.
 	bindW.End()
 
+	// The plugin's own account of what recovery did across the restart,
+	// dumped only if this test fails. Marked while the daemon is still
+	// up; the plugin ID does not change, so the window survives the
+	// restart that ends the process.
+	logMark := harness.MarkPluginLog(t, ctx)
+	harness.DumpPluginLogOnFailure(t, ctx, logMark, "the daemon was restarted")
+
 	harness.RestartDockerDaemon(t, ctx)
 
 	// The pre-restart cli's TCP connection is dead. Build a new one.
@@ -180,10 +187,29 @@ func TestRecovery_DaemonRestart_PreservesContainer(t *testing.T) {
 
 	// Plugin.Health socket is replaced when the plugin process is
 	// respawned by docker. Poll until the new socket answers — that
-	// signals plugin enable + recovery have completed (recovery is
-	// synchronous inside NewPlugin before the socket starts
-	// listening, see pkg/plugin/plugin.go).
+	// signals plugin enable and the end of the recovery WALK, which is
+	// synchronous inside NewPlugin before the socket starts listening.
+	// It does not signal that any endpoint was rebuilt: the walk spawns
+	// each rebuild and recovered_ok is incremented only after it
+	// returns (pkg/plugin/plugin.go:2907-2944). Same for the tombstone
+	// path, which a CreateEndpoint after the restart drives.
 	healthAfter := harness.WaitPluginHealth(t, ctx, cli2, 30*time.Second)
+
+	// So wait for the property, bounded by the plugin's own timeouts on
+	// whichever route recovery took. No counter window: the restart
+	// ends the client this test opened with, so the reads before and
+	// after it cannot be tied to one plugin instance here — the reason
+	// bindW is closed above rather than carried across.
+	const preserved = "one of the two paths that preserve the address to have run " +
+		"(recovered_ok >= 1 or tombstones_consumed >= 1)"
+	// The switch below is the assertion — its default arm is the one
+	// this wait exists to stop firing early — so the wait's own verdict
+	// is not read a second time here.
+	waited, _ := harness.AwaitRecoveryRebuildOn(t, ctx, cli2, preserved,
+		func(h *harness.HealthResponse) bool { return h.RecoveredOK >= 1 || h.TombstonesConsumed >= 1 })
+	if waited != nil {
+		healthAfter = waited
+	}
 	t.Logf("after restart: recovered_ok=%d tombstones_consumed=%d recovery_failed=%d recovery_deferred=%d recovery_aborted_container_gone=%d",
 		healthAfter.RecoveredOK, healthAfter.TombstonesConsumed, healthAfter.RecoveryFailed,
 		healthAfter.RecoveryDeferred, healthAfter.RecoveryAbortedContainerGone)
@@ -215,13 +241,17 @@ func TestRecovery_DaemonRestart_PreservesContainer(t *testing.T) {
 	case healthAfter.TombstonesConsumed >= 1:
 		t.Log("address preserved by CreateEndpoint replaying the tombstone")
 	default:
-		t.Errorf("neither path fired after the daemon restart: recovered_ok=0 and "+
-			"tombstones_consumed=0, yet the address assertions below are what decide "+
-			"this test. Either the address did not actually survive (the assertions "+
-			"below will say), or it survived by a mechanism this test does not model "+
-			"— and an unmodelled mechanism is not something to pass on (#386). "+
-			"recovery_deferred=%d recovery_aborted_container_gone=%d",
-			healthAfter.RecoveryDeferred, healthAfter.RecoveryAbortedContainerGone)
+		t.Errorf("neither path fired after the daemon restart, and neither had within the budget "+
+			"the plugin's own timeouts allow. Either the address did not actually survive (the "+
+			"assertions below will say), or it survived by a mechanism this test does not model "+
+			"— and an unmodelled mechanism is not something to pass on (#386).\n  %s",
+			harness.RecoveryRebuildFailure(preserved, healthAfter))
+	}
+	if waited == nil {
+		t.Errorf("the plugin answered once after the restart and then not again for the whole " +
+			"wait, so the counters judged above are the first reachable read and not the last. " +
+			"A plugin that stops answering during recovery is a fault in its own right, and it " +
+			"is not the one the arms above name")
 	}
 
 	//

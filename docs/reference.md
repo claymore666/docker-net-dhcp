@@ -1290,11 +1290,19 @@ endpoint on a plugin-served network, and rebuilds a DHCP manager for
 each. The first acquisition requests the address the container is already
 using (option 50) so the server ACKs it instead of allocating a new one.
 
-Recovery runs synchronously inside plugin startup, before the socket
+The walk runs synchronously inside plugin startup, before the socket
 accepts requests, whenever the daemon is answering, which is the normal
 case. When it is not, the walk is deferred until after the socket is up
 and can meet a `CreateEndpoint`; registration is a compare-and-set, so
 the `Join` keeps its client and recovery stands down (see below).
+
+Restarting each endpoint's client is not part of the walk. The walk
+adopts the endpoint and starts its client on its own goroutine, capped
+by `AWAIT_TIMEOUT`, and the counters below move when that client has
+restarted, which is after the socket has begun answering. A reading
+taken the moment `/Plugin.Health` first responds is a reading taken in
+the middle of the work.
+
 Results land on `/Plugin.Health` as `recovered_ok`, `recovery_failed`,
 `recovery_aborted_container_gone` and `recovery_network_gone`, with the
 last two covering containers that had already exited when recovery

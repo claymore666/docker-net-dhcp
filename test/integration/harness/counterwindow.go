@@ -13,7 +13,22 @@ package harness
 import (
 	"fmt"
 	"strings"
+	"time"
 )
+
+// awaitPollInterval is the gap between health reads inside Await.
+//
+// 250ms, inherited from the failure suite's own poll helper: it returns
+// closer to the moment the health state flips without touching the
+// caller's budget (#254), and the floor keeps the extra CPU off the
+// timing-sensitive preflight probe. Do not raise it casually — that
+// tuning was deliberate.
+//
+// It sits on the untagged side because the recovery budgets in
+// recoveryobserver.go add one interval to the product timeout they are
+// derived from, so the margin and the interval it describes have to be
+// one value rather than two spellings of 250ms.
+const awaitPollInterval = 250 * time.Millisecond
 
 // InstanceVerdict is the result of comparing the plugin process across
 // two /Plugin.Health reads (#405).
