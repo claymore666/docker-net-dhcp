@@ -121,3 +121,74 @@ func TestDHCPv6_TheClientAnnouncesReconfigureAcceptOnTheWire(t *testing.T) {
 			strings.Join(findings, "; "), cap6.SeenTally(), harness.FormatDHCPv6Messages(msgs))
 	}
 }
+
+// The third announcing kind, on the only segment that sends it.
+//
+// RFC 9915 section 20.4.2 names three exchanges a server may choose a
+// reconfigure key in -- "the Request/Reply, Solicit/Reply, or
+// Information-request/Reply message exchange" -- and a stateless
+// endpoint performs exactly one of them. It sends no Solicit and no
+// Request, so the Information-request is its ONLY chance to announce,
+// and a client that did not announce there can never be reconfigured
+// at all.
+//
+// IT IS ALSO THE ARM WITH THE WORST FAILURE. The library's own bound
+// (proto/doc.go) is that a client holding a lease escapes a stuck
+// Reconfigure exchange at its T1, and that "a STATELESS client has
+// neither timer". So on this segment the announcement is both the only
+// way in and the case with no timer to recover on, which is why it is
+// read on the wire here and not left to the managed case above.
+func TestDHCPv6_Stateless_TheClientAnnouncesReconfigureAcceptOnTheWire(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+
+	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+	if err != nil {
+		t.Fatalf("docker client: %v", err)
+	}
+	defer cli.Close()
+
+	f := harness.NewV6Fixture(t, harness.V6Stateless)
+	dumpOnFailure(t, f)
+
+	cap6 := f.StartDHCPv6Capture()
+	t.Cleanup(func() {
+		if t.Failed() {
+			cap6.Dump(func(s string) { t.Log(s) })
+		}
+	})
+
+	w := harness.BeginCounterWindow(t, ctx, cli, "dhcpv6_config_only")
+	if _, err := startOnV6Segment(t, ctx, cli, f, "dh-itest-v6reconfsl"); err != nil {
+		t.Fatalf("a container failed to start on a stateless DHCPv6 segment: %v", err)
+	}
+
+	// THE EXCHANGE FIRST, for the reason the managed case reads the
+	// address first: a capture holding no client message could be read
+	// as "the plugin does not announce" when nothing ran at all, and
+	// the finding would name the wrong defect. On this segment there is
+	// no address to read, and the counter that moves when the stateless
+	// Reply is received is the evidence that one happened (#815).
+	if _, ok := w.Await(30*time.Second, func(now, before *harness.HealthResponse) bool {
+		return now.DHCPv6ConfigOnly > before.DHCPv6ConfigOnly
+	}); !ok {
+		t.Fatalf("dhcpv6_config_only did not move within 30s, so no stateless DHCPv6 exchange "+
+			"completed and there is nothing on the wire to read. This is not #925.\n%s",
+			cap6.SeenTally())
+	}
+
+	want := []uint8{harness.DHCPv6InformationRequest}
+	msgs, ok := cap6.AwaitClientMessages(want, reconfigureAcceptBudget())
+	if !ok {
+		t.Fatalf("the capture did not see an INFORMATION-REQUEST from the client within %s, so "+
+			"there is nothing to assert about what it announced.\n%s\ncaptured:\n%s",
+			reconfigureAcceptBudget(), cap6.SeenTally(), harness.FormatDHCPv6Messages(msgs))
+	}
+
+	if findings := harness.ReconfigureAcceptFindings(msgs, want...); len(findings) > 0 {
+		t.Errorf("this plugin's DHCPv6 client did not announce RFC 9915 section 21.20's "+
+			"Reconfigure Accept option in its Information-request, which is the only message a "+
+			"stateless client can announce in (#925): %s\n%s\ncaptured:\n%s",
+			strings.Join(findings, "; "), cap6.SeenTally(), harness.FormatDHCPv6Messages(msgs))
+	}
+}

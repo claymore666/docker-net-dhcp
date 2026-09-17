@@ -76,18 +76,29 @@
 #                    first row's start-and-read.
 #              A refresh takes all five to the median of three like every
 #              other row.
-#   one row    TestDHCPv6_TheClientAnnouncesReconfigureAcceptOnTheWire is
-#              35.00 and is INFERRED, not measured: it arrives with #925
-#              and no corpus run could have costed it. It is
-#              TestDHCPv6_Managed_StillRequiresALease's shape (16.39:
-#              one managed v6 fixture, one container, one read) plus the
-#              wait for the client's Solicit and Request to reach the
-#              capture, which is bounded by harness.IPAcquisitionBudget
-#              at 15s. 16.39 + 15.00 = 31.39, and the row is 35.00: it
-#              is deliberately above the derivation, on the rule the
-#              five TestSLAAC_* rows follow, so a first run costs less
-#              than the table says instead of more. A refresh takes it
-#              to the median of three like every other row.
+#   two rows   The two #925 rows are INFERRED, not measured: they arrive
+#              with that issue and no corpus run could have costed them.
+#              Both are an existing row's shape plus the wait for the
+#              client's announcing messages to reach the capture, which
+#              is bounded by harness.IPAcquisitionBudget at 15s, and
+#              both are set deliberately above their derivation on the
+#              rule the five TestSLAAC_* rows follow, so a first run
+#              costs less than the table says instead of more.
+#                TheClientAnnouncesReconfigureAcceptOnTheWire  35.00
+#                  = TestDHCPv6_Managed_StillRequiresALease (16.39: one
+#                    managed v6 fixture, one container, one read) plus
+#                    15.00 = 31.39.
+#                Stateless_TheClientAnnouncesReconfigureAcceptOnTheWire
+#                                                              50.00
+#                  = TestDHCPv6_Stateless_ConfigurationReachesTheContainer
+#                    (30.44: one stateless v6 fixture, one container,
+#                    one counter await) plus 15.00 = 45.44. The
+#                    stateless shape is the dearer of the two because
+#                    its evidence that the exchange ran is a counter
+#                    that moves after the endpoint is up, where the
+#                    managed one reads an address.
+#              A refresh takes both to the median of three like every
+#              other row.
 #   one row    TestEngineIdentity_HealthMatchesTheDaemonsOwnAnswer is 0.05
 #              and is INFERRED, not measured: it arrives with #670 and
 #              no corpus run could have costed it. It starts no
@@ -377,6 +388,7 @@ TestDHCPv6_NoAddressSegmentGetsNoIPv6RouteYet	170.00
 TestDHCPv6_RefusedAndSilentAreTwoRows	56.00
 TestDHCPv6_RouterWithdrawalAndReturn	55.00
 TestDHCPv6_Stateless_ConfigurationReachesTheContainer	30.44
+TestDHCPv6_Stateless_TheClientAnnouncesReconfigureAcceptOnTheWire	50.00
 TestDHCPv6_TheClientAnnouncesReconfigureAcceptOnTheWire	35.00
 TestDNSPropagate_BridgeModeWritesResolvConfToo	11.60
 TestDNSPropagate_DefaultIsUnchanged	11.72

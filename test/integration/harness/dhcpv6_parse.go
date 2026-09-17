@@ -321,23 +321,39 @@ func announcesReconfigure(t uint8) bool {
 // that saw the server and not the client, and a segment that was
 // silent.
 //
+// IT REFUSES A LINK WITH MORE THAN ONE CLIENT ON IT. Every message
+// here is attributed to the caller's client, and the only thing that
+// selects them is direction and message type. A second DHCPv6 client
+// on the same link -- a container left behind by an earlier case, or
+// anything else on a shared bridge -- would have its Solicit read as
+// this plugin's, which is a false accusation in one direction and a
+// verdict about the wrong endpoint in the other. So distinct ethernet
+// sources are counted, and more than one ends the verdict: nothing
+// here can say which client is the subject, and saying so is the only
+// honest answer.
+//
 // `required` is the message kinds this caller's exchange must have
-// produced. A caller passing none gets the presence check over whatever
-// arrived, and no protection from an empty capture; every caller in
-// this repo passes the kinds its mode sends, and the integration case
-// passes SOLICIT and REQUEST.
+// produced. The empty-capture refusal above is unconditional and runs
+// ahead of it, so a caller passing none is still refused an empty
+// capture; what it gives up is the check that a PARTICULAR kind
+// arrived. Every caller in this repo passes the kinds its mode sends:
+// the managed case passes SOLICIT and REQUEST, and the stateless case
+// passes INFORMATION-REQUEST, which is the only announcing message a
+// stateless client ever sends.
 func ReconfigureAcceptFindings(msgs []DHCPv6Message, required ...uint8) []string {
 	var findings []string
 
 	var fromClient, fromServer int
 	seen := map[uint8]int{}
 	missing := map[uint8][]DHCPv6Message{}
+	speakers := map[string]int{}
 	for _, m := range msgs {
 		if !m.FromClient {
 			fromServer++
 			continue
 		}
 		fromClient++
+		speakers[m.SourceMAC.String()]++
 		if !announcesReconfigure(m.Type) {
 			continue
 		}
@@ -358,6 +374,25 @@ func ReconfigureAcceptFindings(msgs []DHCPv6Message, required ...uint8) []string
 			findings = append(findings, "the capture took no DHCPv6 message in either direction: "+
 				"the segment did no DHCPv6 at all, or the capture was not running")
 		}
+		return findings
+	}
+
+	if len(speakers) > 1 {
+		macs := make([]string, 0, len(speakers))
+		for mac := range speakers {
+			macs = append(macs, mac)
+		}
+		sort.Strings(macs)
+		var parts []string
+		for _, mac := range macs {
+			parts = append(parts, fmt.Sprintf("%s (%d message(s))", mac, speakers[mac]))
+		}
+		findings = append(findings, fmt.Sprintf(
+			"client messages came from %d different ethernet sources -- %s -- so more than one "+
+				"DHCPv6 client spoke on this link and nothing here can say which of them is the "+
+				"endpoint under test. Every verdict about what \"the client\" announced is "+
+				"withheld for this run; capture on a link this endpoint has to itself",
+			len(speakers), strings.Join(parts, ", ")))
 		return findings
 	}
 

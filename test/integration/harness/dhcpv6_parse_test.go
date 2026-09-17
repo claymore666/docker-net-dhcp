@@ -42,6 +42,16 @@ func dhcpv6Option(code uint16, data []byte) []byte {
 // options.
 func buildDHCPv6Frame(t *testing.T, srcPort, dstPort uint16, msgType uint8, xid uint32, opts ...[]byte) []byte {
 	t.Helper()
+	return buildDHCPv6FrameFrom(t, testV6SrcMAC, srcPort, dstPort, msgType, xid, opts...)
+}
+
+// buildDHCPv6FrameFrom is the same, with the ethernet source named.
+// The verdict attributes what it reads to one client, and the only
+// thing on a captured frame that says which client sent it is this
+// address, so a test about two clients on one link has to be able to
+// set it.
+func buildDHCPv6FrameFrom(t *testing.T, srcMAC string, srcPort, dstPort uint16, msgType uint8, xid uint32, opts ...[]byte) []byte {
+	t.Helper()
 
 	payload := []byte{msgType, byte(xid >> 16), byte(xid >> 8), byte(xid)}
 	for _, o := range opts {
@@ -63,7 +73,7 @@ func buildDHCPv6Frame(t *testing.T, srcPort, dstPort uint16, msgType uint8, xid 
 	copy(ip[24:40], net.ParseIP("ff02::1:2").To16())
 	ip = append(ip, udp...)
 
-	src, err := net.ParseMAC(testV6SrcMAC)
+	src, err := net.ParseMAC(srcMAC)
 	if err != nil {
 		t.Fatalf("test MAC: %v", err)
 	}
@@ -397,4 +407,116 @@ func TestReconfigureAcceptFindings_AnEmptyCaptureIsAFinding(t *testing.T) {
 				"segment: %q", got[0])
 		}
 	})
+}
+
+// A second DHCPv6 client on the link takes the verdict away, and does
+// not get this plugin blamed for what it did or did not announce.
+//
+// THE CAPTURE CANNOT NAME ITS SUBJECT. ReconfigureAcceptFindings
+// selects on direction and on message type, and a Solicit is a Solicit
+// whoever sent it: a container left behind by an earlier case, or
+// anything else that speaks DHCPv6 on a shared bridge, is read as the
+// endpoint under test. That fails both ways -- a stranger's silent
+// Solicit reddens the lane against this plugin, and a stranger's
+// announcing Solicit would satisfy an assertion the plugin never met.
+// So more than one ethernet source among the client messages ends the
+// verdict instead of producing one.
+func TestReconfigureAcceptFindings_TwoClientsOnTheLinkVoidTheVerdict(t *testing.T) {
+	const strangerMAC = "02:42:ac:11:00:09"
+
+	ours, ok := ParseDHCPv6(buildDHCPv6Frame(t, dhcpv6ClientPort, dhcpv6ServerPort,
+		DHCPv6Solicit, 0x111111, clientIDOption(), reconfigureAcceptOption()))
+	if !ok {
+		t.Fatal("ParseDHCPv6 refused this plugin's Solicit")
+	}
+	stranger, ok := ParseDHCPv6(buildDHCPv6FrameFrom(t, strangerMAC, dhcpv6ClientPort,
+		dhcpv6ServerPort, DHCPv6Solicit, 0x222222, clientIDOption()))
+	if !ok {
+		t.Fatal("ParseDHCPv6 refused the stranger's Solicit")
+	}
+
+	findings := ReconfigureAcceptFindings([]DHCPv6Message{ours, stranger}, DHCPv6Solicit)
+	if len(findings) != 1 {
+		t.Fatalf("two clients on the link produced %d finding(s), want exactly one that withholds "+
+			"the verdict: %v", len(findings), findings)
+	}
+	got := findings[0]
+	for _, want := range []string{testV6SrcMAC, strangerMAC, "more than one"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the finding does not contain %q, so the reader cannot tell which speakers "+
+				"were on the link: %s", want, got)
+		}
+	}
+	if strings.Contains(got, "carried no Reconfigure Accept option") {
+		t.Errorf("the finding accuses a client of not announcing, on a link where the verdict "+
+			"cannot say whose message that was: %s", got)
+	}
+}
+
+// The same two messages from ONE client are judged, and this is the
+// control for the test above.
+//
+// Without it, the refusal above is satisfied by a function that
+// withheld its verdict always, and #925's whole assertion would be
+// silently gone. Here both frames carry the same ethernet source: the
+// silent one IS reported.
+func TestReconfigureAcceptFindings_OneClientThatWentSilentOnceIsStillJudged(t *testing.T) {
+	announced, ok := ParseDHCPv6(buildDHCPv6Frame(t, dhcpv6ClientPort, dhcpv6ServerPort,
+		DHCPv6Solicit, 0x111111, clientIDOption(), reconfigureAcceptOption()))
+	if !ok {
+		t.Fatal("ParseDHCPv6 refused the announcing Solicit")
+	}
+	silent, ok := ParseDHCPv6(buildDHCPv6Frame(t, dhcpv6ClientPort, dhcpv6ServerPort,
+		DHCPv6Request, 0x222222, clientIDOption()))
+	if !ok {
+		t.Fatal("ParseDHCPv6 refused the silent Request")
+	}
+
+	findings := ReconfigureAcceptFindings([]DHCPv6Message{announced, silent},
+		DHCPv6Solicit, DHCPv6Request)
+	if len(findings) != 1 {
+		t.Fatalf("one client whose REQUEST carried no Reconfigure Accept option produced %d "+
+			"finding(s), want exactly one: %v", len(findings), findings)
+	}
+	if !strings.Contains(findings[0], "REQUEST") ||
+		!strings.Contains(findings[0], "carried no Reconfigure Accept option") {
+		t.Errorf("the finding does not name the silent REQUEST: %s", findings[0])
+	}
+}
+
+// An INFORMATION-REQUEST is an announcing message, and a stateless
+// client's only one.
+//
+// RFC 9915 section 20.4.2 names Information-request/Reply as one of the
+// three exchanges a server may choose a reconfigure key in, and a
+// stateless endpoint performs no other: it sends no Solicit and no
+// Request, so if this kind were left out of the announcing set, a
+// stateless client could never be reconfigured and nothing would say
+// so. The integration case on the stateless fixture requires exactly
+// this kind, and this is the fast-lane half of it.
+func TestReconfigureAcceptFindings_ASilentInformationRequestIsAFinding(t *testing.T) {
+	silent, ok := ParseDHCPv6(buildDHCPv6Frame(t, dhcpv6ClientPort, dhcpv6ServerPort,
+		DHCPv6InformationRequest, 0x333333, clientIDOption(), elapsedTimeOption()))
+	if !ok {
+		t.Fatal("ParseDHCPv6 refused a well-formed Information-request")
+	}
+
+	findings := ReconfigureAcceptFindings([]DHCPv6Message{silent}, DHCPv6InformationRequest)
+	if len(findings) != 1 {
+		t.Fatalf("a silent INFORMATION-REQUEST produced %d finding(s), want exactly one: %v",
+			len(findings), findings)
+	}
+	if !strings.Contains(findings[0], "INFORMATION-REQUEST") {
+		t.Errorf("the finding does not name the message kind: %s", findings[0])
+	}
+
+	announcing, ok := ParseDHCPv6(buildDHCPv6Frame(t, dhcpv6ClientPort, dhcpv6ServerPort,
+		DHCPv6InformationRequest, 0x444444, clientIDOption(), reconfigureAcceptOption()))
+	if !ok {
+		t.Fatal("ParseDHCPv6 refused the announcing Information-request")
+	}
+	if f := ReconfigureAcceptFindings([]DHCPv6Message{announcing}, DHCPv6InformationRequest); len(f) != 0 {
+		t.Errorf("an announcing INFORMATION-REQUEST produced findings, so the stateless case "+
+			"would be red on a client that did everything right: %v", f)
+	}
 }
