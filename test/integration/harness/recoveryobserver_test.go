@@ -6,6 +6,8 @@ package harness
 import (
 	"encoding/json"
 	"fmt"
+	"go/parser"
+	"go/token"
 	"os"
 	"regexp"
 	"strconv"
@@ -698,9 +700,9 @@ func TestCitedLines_ReadsTheSpellingsTheseFilesUse(t *testing.T) {
 		want []citation
 	}{
 		{
-			// The spelling of the stale citation, with a run-up that
-			// makes no claim: a parser fixture is not an assertion about
-			// the plugin, and the sweep below reads these files too.
+			// The spelling of the stale citation. A fixture is not an
+			// assertion about the plugin, which is why the sweep below
+			// reads comments and leaves string literals alone.
 			name: "the stale citation, in its own spelling",
 			text: "and only then it moves, at (pkg/plugin/plugin.go:2936, 2941). A budget",
 			want: []citation{{2936, 2936}, {2941, 2941}},
@@ -719,6 +721,18 @@ func TestCitedLines_ReadsTheSpellingsTheseFilesUse(t *testing.T) {
 			name: "two separate citations are two claims, not one list",
 			text: "still present (pkg/plugin/plugin.go:2936), a walk-level failure (pkg/plugin/plugin.go:2532).",
 			want: []citation{{2936, 2936}, {2532, 2532}},
+		},
+		{
+			// The defect's own spelling. The long form is what the fix
+			// wrote; this is what the next hand writes.
+			name: "the short spelling, with no package directory",
+			text: "and only then it moves, at (plugin.go:2936, 2941). A budget",
+			want: []citation{{2936, 2936}, {2941, 2941}},
+		},
+		{
+			name: "the short spelling repeated after a conjunction",
+			text: "two arms (plugin.go:2936 and plugin.go:2930) and they",
+			want: []citation{{2936, 2936}, {2930, 2930}},
 		},
 		{
 			name: "a number that is not a citation is not taken",
@@ -748,11 +762,18 @@ func TestCitedLines_ReadsTheSpellingsTheseFilesUse(t *testing.T) {
 // a classifier arm when :2941 is a cleanup call. A reader sent there
 // finds removeDHCPManagerIfSame and no counter at all.
 //
-// So: wherever the text names one of these counters, or an arm, just
+// So: wherever a comment names one of these counters, or an arm, just
 // before a line citation, that line must still be one that moves one of
 // them. The sweep is keyed on the subject and reads the run-up to the
 // citation, because that run-up is what makes the citation a claim about
 // an arm instead of a pointer at some other line.
+//
+// A sweep is a universal, and a universal is satisfied by an empty
+// domain. Two things empty this one without touching a word of the
+// prose: an extractor that returns nothing, and an anchor that has
+// stopped matching a spelling these files use. Both are checked below,
+// against a count taken off the raw source and against a per-file
+// statement of what the answer should be.
 func TestEveryCitedArmIsAnIncrementSite(t *testing.T) {
 	const pluginSrc = "../../../pkg/plugin/plugin.go"
 	site := map[int]string{}
@@ -765,49 +786,108 @@ func TestEveryCitedArmIsAnIncrementSite(t *testing.T) {
 	// not a claim about a line.
 	claims := []string{"recovery_failed", "recovery_aborted_container_gone", "recovered_ok", "arm"}
 
-	for _, path := range []string{"recoveryobserver.go", "recoveryobserver_live.go", "recoveryobserver_test.go"} {
-		t.Run(path, func(t *testing.T) {
-			prose := flattenProse(t, path)
-			anchor := regexp.MustCompile(`pkg/plugin/plugin\.go:`)
-			found := 0
-			for _, loc := range anchor.FindAllStringIndex(prose, -1) {
-				runUp := prose[max(0, loc[0]-90):loc[0]]
-				if !containsAny(runUp, claims) {
-					continue
-				}
-				// One anchor can carry a list, and the numbers after the
-				// first are written bare. Parse from the anchor so every
-				// number in the list is judged, not only the one the
-				// path is spelled in front of.
-				cites, _ := parseCitationList(prose[loc[1]:])
-				for _, c := range cites {
-					found++
-					if !c.satisfiedBy(site) {
-						t.Errorf("%s says ...%q and cites %s for it, but no counter is incremented "+
-							"there. A citation that points at the wrong line is worse than none: "+
-							"its reader goes and looks", path, runUp, c)
+	// What each file is expected to answer. An empty result reads the
+	// same whether the file is wiring that claims nothing or the sweep
+	// has gone blind, and those want opposite reactions, so each file
+	// says which one it is.
+	for _, f := range []struct {
+		path       string
+		wantClaims bool
+	}{
+		{"recoveryobserver.go", true},
+		{"recoveryobserver_live.go", false},
+		{"recoveryobserver_test.go", true},
+	} {
+		t.Run(f.path, func(t *testing.T) {
+			// Comments only. The citations in string literals are the
+			// verdict text, and TestRecoveryVerdictCitesEveryIncrementSite
+			// reads those in both directions already: every line it cites
+			// moves a counter it names, and every such site is cited.
+			// Sweeping them here too would add nothing but this file's
+			// own parser fixtures, which are spellings and not claims.
+			//
+			// One comment group at a time, because a counter named in the
+			// block above a citation, with code in between, is not that
+			// citation's run-up.
+			parsed, claimed := 0, 0
+			for _, prose := range commentBlocks(t, f.path) {
+				for _, loc := range citationAnchor.FindAllStringIndex(prose, -1) {
+					// One anchor can carry a list, and the numbers after
+					// the first are written bare. Parse from the anchor
+					// so every number in the list is judged, not only the
+					// one the path is spelled in front of.
+					cites, _ := parseCitationList(prose[loc[1]:])
+					parsed += len(cites)
+					runUp := prose[max(0, loc[0]-90):loc[0]]
+					if !containsAny(runUp, claims) {
+						continue
+					}
+					for _, c := range cites {
+						claimed++
+						if !c.satisfiedBy(site) {
+							t.Errorf("%s says ...%q and cites %s for it, but no counter is incremented "+
+								"there. A citation that points at the wrong line is worse than none: "+
+								"its reader goes and looks", f.path, runUp, c)
+						}
 					}
 				}
 			}
-			if found == 0 {
-				t.Logf("no arm citation in %s", path)
+			// The reader above is held against a second one that shares
+			// none of its machinery: `plugin.go:` counted off the raw
+			// comment lines. If the sweep sees fewer citations than the
+			// file plainly contains, the ones it missed are asserted
+			// about by nothing at all.
+			if anchors := commentAnchors(t, f.path); parsed < anchors {
+				t.Errorf("%s carries %d `plugin.go:` citations in its comments and the sweep read "+
+					"%d. Whatever it could not read, it is silent about, and silence here passes",
+					f.path, anchors, parsed)
+			}
+			switch {
+			case f.wantClaims && claimed == 0:
+				t.Errorf("%s makes no claim about an arm anywhere near a citation, and this table "+
+					"says it should. Either the prose stopped making them or the sweep stopped "+
+					"seeing them. If the prose really changed, change the table with it", f.path)
+			case !f.wantClaims && claimed > 0:
+				t.Errorf("%s makes %d such claims and this table says it makes none. They were "+
+					"judged above; the table is what is wrong, and it has to be right for an "+
+					"empty result anywhere else to mean anything", f.path, claimed)
 			}
 		})
 	}
 }
 
-// flattenProse reads a Go file as one line of running text, with the
-// comment markers and the string-literal seams taken out, so a sentence
-// wrapped across lines or split across concatenated literals reads as
-// one.
-func flattenProse(t *testing.T, path string) string {
+// commentBlocks reads a Go file's comment groups, each as one line of
+// running text with the markers taken out, so a sentence wrapped across
+// several lines reads as one and two groups never run together.
+func commentBlocks(t *testing.T, path string) []string {
+	t.Helper()
+	file, err := parser.ParseFile(token.NewFileSet(), path, nil, parser.ParseComments)
+	if err != nil {
+		t.Fatalf("parsing %s: %v", path, err)
+	}
+	var out []string
+	for _, group := range file.Comments {
+		out = append(out, strings.Join(strings.Fields(group.Text()), " "))
+	}
+	return out
+}
+
+// commentAnchors counts the citations in a file's comment lines the
+// blunt way, off the bytes, so that it cannot go quiet for any of the
+// reasons commentBlocks and the citation pattern can.
+func commentAnchors(t *testing.T, path string) int {
 	t.Helper()
 	src, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("reading %s: %v", path, err)
 	}
-	r := strings.NewReplacer("//", " ", "\"+", " ", "\"", " ", "\n", " ", "\t", " ")
-	return strings.Join(strings.Fields(r.Replace(string(src))), " ")
+	n := 0
+	for _, line := range strings.Split(string(src), "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "//") {
+			n += strings.Count(line, "plugin.go:")
+		}
+	}
+	return n
 }
 
 func containsAny(s string, subs []string) bool {
@@ -930,14 +1010,17 @@ func configEnvDuration(t *testing.T, path, name string) time.Duration {
 // citedLines pulls every plugin.go line number out of a text.
 //
 // A citation is not always spelled with the path in front of the
-// number. These files already write `(pkg/plugin/plugin.go:3186-3188,
-// 3249)`, and the stale citation this test exists for was
-// `(pkg/plugin/plugin.go:2936, 2941)`: the wrong number was the BARE
-// one. A reader of the parser that only saw full-path numbers would see
-// the defect only in the spelling the fix happened to use, which is the
-// spelling least likely to be wrong next time. So after the path, this
-// keeps taking numbers for as long as they are joined by a comma, a
-// semicolon, a range dash, the word "and", or a repeat of the path.
+// number, and the path is not always spelled in full. These files
+// already write `(pkg/plugin/plugin.go:3186-3188, 3249)`, and the stale
+// citation this test exists for was `(pkg/plugin/plugin.go:2936,
+// 2941)`: the wrong number was the BARE one. The package directory is
+// optional in the same way, because `plugin.go:2941` is what a hand
+// writes when it is already talking about the plugin, and a reader that
+// only saw the long form would see the defect only in the spelling the
+// fix happened to use, which is the spelling least likely to be wrong
+// next time. So after the path, this keeps taking numbers for as long
+// as they are joined by a comma, a semicolon, a range dash, the word
+// "and", or a repeat of the path in either spelling.
 //
 // A range is treated as the block it names: `A-B` is satisfied when
 // any line in A..B qualifies, because a range cites a passage and not a
@@ -961,9 +1044,9 @@ func citedLines(text string) []citation {
 }
 
 var (
-	citationAnchor = regexp.MustCompile(`pkg/plugin/plugin\.go:`)
+	citationAnchor = regexp.MustCompile(`(?:pkg/plugin/)?plugin\.go:`)
 	citationNumber = regexp.MustCompile(`^(\d+)`)
-	citationJoiner = regexp.MustCompile(`^(\s*-\s*|\s*[,;]\s*|\s+and\s+)(pkg/plugin/plugin\.go:)?`)
+	citationJoiner = regexp.MustCompile(`^(\s*-\s*|\s*[,;]\s*|\s+and\s+)((?:pkg/plugin/)?plugin\.go:)?`)
 )
 
 // parseCitationList reads ONE citation list, starting immediately after
