@@ -37,7 +37,7 @@ section below is still the list the daemon shows you.
 | `docker network create --ipam-driver <plugin>` succeeds on a Docker Engine below 28 | The create failed in every earlier 2.x release, with and without `--subnet`, ending in `failed to allocate gateway (): IpamDriver.RequestAddress`. Nothing to configure. Engine 28 and later never sent that request and is unchanged (#1012). |
 | On an engine below 28, such a network records the pool's network address as its gateway | `docker network inspect` shows it in the gateway field, and `Gateway 0.0.0.0` on a network created without `--subnet`. It is not a host address (RFC 1122 section 3.2.1.3), so no DHCP server hands it to a container, and no container is given it. Engine 28 and later asks for no gateway and the field stays empty, as before (#1012). |
 | On an engine below 28, a `/31` or a `/32` pool in that shape is refused at `docker network create` | Both addresses of a `/31` are host addresses (RFC 3021 section 2.1) and a `/32` has only its one, so there is no address to record as the gateway that the DHCP server could not also lease to a container. The message names the two ways through: pass `--gateway`, or use a shorter prefix. Engine 28 and later creates those networks with neither (#1012). |
-| The release page carries two more assets, `provenance.intoto.jsonl` and `provenance-arm64.intoto.jsonl` | The build provenance was already produced and signed, and lived only in GitHub's attestation store, where it is found by a digest you already hold. The same bundle is now downloadable and verifies offline with `gh attestation verify --bundle`. [`docs/verifying-releases.md`](docs/verifying-releases.md) has the command. Nothing about the images, their signatures or the SBOMs changes (#1011). |
+| The release page carries two more assets, `provenance.intoto.jsonl` and `provenance-arm64.intoto.jsonl` | The build provenance was already produced and signed, and lived only in GitHub's attestation store, where it is found by a digest you already hold. The same bundle is now downloadable and is read from disk by `gh attestation verify --bundle`, which needs no GitHub credentials and makes no call to the attestation store. It is not an offline command: `gh` still refreshes Sigstore's trusted root over the network. [`docs/verifying-releases.md`](docs/verifying-releases.md) has the command. Nothing about the images, their signatures or the SBOMs changes (#1011). |
 | `--ipam-opt parent=` and `--ipam-opt bridge=` written together are refused at `docker network create` | A create naming both keys fails, and the message names the key to keep, the one matching the network's own `-o parent=` or `-o bridge=`. A pool names one interface. Before this release the second key was accepted and dropped and the pool identity was built from the first alone, so two networks differing only in that key derived one identity (#1010). |
 
 ### New
@@ -49,7 +49,8 @@ section below is still the list the daemon shows you.
   is involved, and the publishing step verifies every subject in the bundle
   against the published file with the same `gh attestation verify --bundle`
   command [`docs/verifying-releases.md`](docs/verifying-releases.md) gives
-  users (#1011, PR #1018).
+  users, where that page also states what the flag does and does not avoid
+  (#1011, PR #1018).
 - Every `v*` tag runs the production network shape, macvlan on a parent with
   this plugin as the network driver and as the IPAM driver, on the engine
   version the production host runs, and reads a container's address back from
@@ -72,8 +73,9 @@ section below is still the list the daemon shows you.
   `a.test b.test` rendered as `search a.test b.test`, two search domains
   where the lease carried one. Such a value is now dropped, with the reason
   and the value in the plugin log, the way a value carrying a control
-  character already was. The filter that ran before this one starts at
-  `0x20`, one character above the space (#689, #704, PR #1020).
+  character already was. The filter that ran before this one rejects every
+  character below `0x20`, and the space is `0x20` itself (#689, #704,
+  PR #1020).
 - `docker network create -d <plugin> --ipam-driver <plugin>` failed on every
   Docker Engine below 28, with and without `--subnet`, with `failed to
   allocate gateway ()`, carrying the IPAM driver's refusal of a request on a
