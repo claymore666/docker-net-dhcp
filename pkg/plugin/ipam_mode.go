@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/claymore666/dhcp-golib/lease"
+	"github.com/claymore666/dhcp-golib/proto"
 	log "github.com/sirupsen/logrus"
 
 	"github.com/claymore666/docker-net-dhcp/v2/pkg/util"
@@ -349,12 +350,20 @@ func ipamRefuseIPvlan(mode string) error {
 	if mode != ModeIPvlan {
 		return nil
 	}
-	return fmt.Errorf("%w: ipvlan networks cannot use this plugin as an IPAM driver in v2.1.0, because ipvlan children share the parent's MAC and Docker's IPAM contract requires a per-endpoint one. Create the network with --ipam-driver null instead, which is unchanged and supported. Progress on ipvlan in IPAM mode is tracked in issue #949", util.ErrIPAM)
+	return fmt.Errorf("%w: ipvlan networks cannot use this plugin as an IPAM driver, because ipvlan children share the parent's MAC and Docker's IPAM contract requires a per-endpoint one. Create the network with --ipam-driver null instead, which is unchanged and supported. Progress on ipvlan in IPAM mode is tracked in issue #949", util.ErrIPAM)
 }
 
-// ipamRefuseIPv6 closes `-o ipv6=true` on a network this plugin is the
-// IPAM driver for, and it is a refusal of a combination that the tree
+// ipamRefuseIPv6 closes IPv6 on a network this plugin is the IPAM
+// driver for, and it is a refusal of a combination that the tree
 // already did not serve.
+//
+// IT TAKES THE RESOLVED MODE, NOT A BOOLEAN, because the message names
+// it. Two spellings switch IPv6 on -- `-o ipv6_mode=` with any mode but
+// off, and `-o ipv6=true`, which resolves to dhcp -- and a refusal that
+// names only the second tells an operator who wrote the first to remove
+// an option they never typed. The mode is formatted from what
+// ipv6Mode() resolved, so a mode added to proto.AllModes6 reaches the
+// message without an edit here.
 //
 // What the option promises in null mode is a second address: the null
 // CreateEndpoint runs a DHCPv6 exchange, opens a v6 record through
@@ -377,9 +386,9 @@ func ipamRefuseIPvlan(mode string) error {
 // is paid once, by the operator who can still act on it, rather than at
 // every container start by a message about something else. It takes
 // nothing away from a null-mode network, where ipv6=true is unchanged.
-func ipamRefuseIPv6(ipv6 bool) error {
-	if !ipv6 {
+func ipamRefuseIPv6(mode proto.Mode6) error {
+	if mode == proto.Mode6Off {
 		return nil
 	}
-	return fmt.Errorf("%w: `-o ipv6=true` cannot be combined with this plugin as the IPAM driver in v2.1.0. This plugin's IPAM driver serves IPv4 only, so the network would run no DHCPv6 exchange and the container would get no IPv6 address from it. Create the network with --ipam-driver null instead, where `-o ipv6=true` is unchanged and supported, or create it without ipv6. Progress on IPv6 in IPAM mode is tracked in issue #960", util.ErrIPAM)
+	return fmt.Errorf("%w: this network switches IPv6 on with ipv6_mode=%s, and IPv6 cannot be combined with this plugin as the IPAM driver. Two spellings reach this refusal: `-o ipv6_mode=` with any mode but off, and `-o ipv6=true`, which is the short spelling of the dhcp mode. This plugin's IPAM driver serves IPv4 only, so the network would run no DHCPv6 exchange and the container would get no IPv6 address from it. Create the network with --ipam-driver null instead, where every ipv6_mode is unchanged and supported, or create it without IPv6. Progress on IPv6 in IPAM mode is tracked in issue #960", util.ErrIPAM, mode)
 }
