@@ -117,10 +117,14 @@ docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.2.0 \
 
 One of the two is required. On arm64 the `-arm64` tag goes in these
 lines too, because a network records the tagged reference as its driver.
-Add `-o ipv6=true` for a DHCPv6 lease beside the v4 one; it needs the
-`null` line, because the IPAM shape is IPv4 only in v2.1.0 and refuses
-the combination ([#960]). The two shapes are set out in
-[the driver reference](reference.md#address-allocation).
+Add `-o ipv6_mode=dhcp` for a DHCPv6 lease beside the v4 one, or
+`-o ipv6_mode=slaac` to take the address from the router's
+advertisement; `auto` tries the server first and falls back. `-o
+ipv6=true` is the short spelling of `dhcp`. All of them need the `null`
+line, because the IPAM shape serves IPv4 only and refuses the
+combination ([#960]). The modes are set out in
+[the driver reference](reference.md#driver-options-network-level), and
+the two shapes in [the same page](reference.md#address-allocation).
 
 [#960]: https://github.com/claymore666/docker-net-dhcp/issues/960
 
@@ -148,15 +152,25 @@ networks:
   run in the plugin, one client per endpoint, and the lifecycle is visible
   on [the health endpoint](reference.md#pluginhealth). There is no
   external DHCP client to install, supervise or reap.
-- **IPv6 is the same one line.** `-o ipv6=true` adds a DHCPv6 lease with
-  its own timers, its own counters and a DUID that survives a restart.
-  On `--ipam-driver null` networks; the IPAM shape is IPv4 only in
-  v2.1.0.
+- **IPv6 is one line, and the network says where the address comes
+  from.** `-o ipv6_mode=` takes `off` (the default), `dhcp`, `slaac` or
+  `auto`. A `dhcp` network leases over DHCPv6 with its own timers, its
+  own counters and a DUID that survives a restart; a `slaac` network
+  takes the address, the routes, the MTU and the resolvers from the
+  router's advertisement, with the advertised lifetimes. On
+  `--ipam-driver null` networks; the IPAM shape serves IPv4 only
+  ([reference](reference.md#driver-options-network-level)).
 - **A restart keeps the address.** In `bridge` and `macvlan` the MAC is
   carried across `docker restart`, so a server-side reservation still
   matches and the old address is re-requested; a plugin restart or upgrade
   re-adopts running containers, so their leases do not lapse
   ([how](reference.md#restart-stability-mac-and-ip)).
+- **The lease can go back when the container stops.** `-o
+  release_lease=on_stop` hands the address to the server at `docker
+  stop`; `-o release_lease=on_remove` holds it for the restart window
+  first, so a container that comes straight back keeps it. Per network
+  and off by default
+  ([reference](reference.md#driver-options-network-level)).
 - **No host plumbing per container.** `macvlan` and `ipvlan` attach to a
   NIC that is already there: no bridge to build, no route to add, nothing
   on the host to undo afterwards.

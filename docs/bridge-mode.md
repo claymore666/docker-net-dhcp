@@ -259,13 +259,22 @@ docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.2.0 \
 ```
 
 With IPv6 as well (the `docker network create --ipv6` flag does **not**
-work with the null IPAM driver; use the `ipv6` driver option instead):
+work with the null IPAM driver; use the `ipv6_mode` driver option
+instead):
 
 ```bash
 # arm64: the -arm64 tag here too.
 docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.2.0 \
-  --ipam-driver null -o bridge=my-bridge -o ipv6=true my-dhcp-net
+  --ipam-driver null -o bridge=my-bridge -o ipv6_mode=dhcp my-dhcp-net
 ```
+
+`ipv6_mode` takes `off` (the default), `dhcp` for a DHCPv6 lease beside
+the v4 one, `slaac` to take the address, the routes, the MTU and the
+resolvers from the router's advertisement, and `auto` to try the server
+first and fall back to the advertisement. `-o ipv6=true` is the short
+spelling of `dhcp`. The modes, and `ipv6_auto_strict` for what `auto`
+does when neither answers, are in the
+[driver reference](reference.md#driver-options-network-level).
 
 > **One of the two IPAM shapes is required.** Docker's built-in IPAM must
 > not be the allocator: it hands out addresses from its own pool, which
@@ -336,7 +345,7 @@ networks:
     driver: ghcr.io/claymore666/docker-net-dhcp:v2.2.0
     driver_opts:
       bridge: my-bridge
-      ipv6: 'true'
+      ipv6_mode: 'dhcp'
     ipam:
       driver: 'null'
 ```
@@ -349,6 +358,15 @@ Notes:
   gateway when the offered gateway changes, for the life of the
   endpoint. The renewal runs inside the plugin process and never inside
   the container.
+- `-o host_ifname=container_name` names the host-side half of the veth
+  pair after the container, so `ip link` and `brctl show` on the host
+  read like the compose file; `-o host_ifname=hostname` uses the
+  container's hostname, which is not unique on a host. Off by default,
+  where the link is `dh-` plus twelve hex digits. Bridge mode only: the
+  option is refused at `docker network create` in `macvlan` and
+  `ipvlan`, which leave nothing on the host to name. The rule, what
+  happens when the name is taken, and the counters that say so are in
+  [Host-side interface names](reference.md#host-side-interface-names-host_ifname).
 - Use `--mac-address` / `mac_address` for MAC-keyed reservations or to
   reuse an old lease; `--hostname` / `hostname` is sent as DHCP option 12
   for DHCP-DNS integration. Per-endpoint and per-container knobs are

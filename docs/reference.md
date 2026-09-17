@@ -471,7 +471,7 @@ different parent. Two such networks otherwise derive the same pool
 identity, and the second `docker network create` is refused, naming this
 option. One network needs neither key.
 
-**Not in v2.1.0.** `ipvlan` networks cannot use this plugin as their
+**Not supported.** `ipvlan` networks cannot use this plugin as their
 IPAM driver: Docker generates a MAC per endpoint for an IPAM driver that
 asks for one, and ipvlan children share the parent's MAC and refuse a
 supplied one. The network create is refused, and `--ipam-driver null` is
