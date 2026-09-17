@@ -8,7 +8,7 @@
 #
 # WHY THIS EXISTS. Three lanes now run the main suite unsharded --
 # integration-arm64.yml, coverage.yml and integration-hosted.yml -- and
-# each of them arrived at the same 45m by its own derivation, in its own
+# each of them arrived at the same ceiling by its own derivation, in its own
 # comment, reconciled against the others by nothing at all. Before this
 # gate, `grep -rn ITEST_TIMEOUT scripts/` returned empty: no check read
 # the value, none asked which lanes are one-process, and none compared a
