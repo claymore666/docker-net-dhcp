@@ -437,6 +437,12 @@ func TestHostIfname_APluginRecycleLeavesTheNamedLinkAlone(t *testing.T) {
 	// container, so one v4 lease.
 	harness.AllowUnprobedLeases(1)
 
+	// The plugin's own account of the recycle, dumped only if this test
+	// fails. The rename runs inside the same rebuild the counters below
+	// describe, so its log lines are the evidence for both.
+	logMark := harness.MarkPluginLog(t, ctx)
+	harness.DumpPluginLogOnFailure(t, ctx, logMark, "the plugin was disabled")
+
 	if err := cli.PluginDisable(ctx, harness.PluginRef, types.PluginDisableOptions{Force: true}); err != nil {
 		t.Fatalf("PluginDisable: %v", err)
 	}
@@ -451,14 +457,32 @@ func TestHostIfname_APluginRecycleLeavesTheNamedLinkAlone(t *testing.T) {
 	}
 	harness.WaitPluginHealth(t, ctx, cli, 15*time.Second)
 
+	// The socket answering means the recovery walk finished, not that
+	// the endpoint was rebuilt: the walk spawns each rebuild and the
+	// rename this test is about runs inside it, beside the counters
+	// below (pkg/plugin/host_ifname.go, reached from dhcpManager.Start).
+	// recovered_ok moves after that Start returns, so waiting for it is
+	// waiting for the rename to have happened.
+	const rebuilt = "recovery to rebuild this endpoint's renewal client (recovered_ok >= 1)"
+	waited, ok := harness.AwaitRecoveryRebuildWindow(w, rebuilt,
+		func(h *harness.HealthResponse) bool { return h.RecoveredOK >= 1 })
+
 	_, after := w.End()
 	t.Logf("after the recycle: recovered_ok=%d host_ifnames_applied=%d host_ifname_failures=%d host_ifname_conflicts=%d",
 		after.RecoveredOK, after.HostIfnamesApplied, after.HostIfnameFailures, after.HostIfnameConflicts)
 
-	if after.RecoveredOK < 1 {
-		t.Fatalf("recovered_ok=%d after the recycle, want at least 1. Recovery is the path that runs "+
-			"the rename a second time, so a recycle that recovered nothing has not measured it",
-			after.RecoveredOK)
+	if !ok {
+		t.Fatalf("%s\n  Recovery is the path that runs the rename a second time, so a recycle that "+
+			"recovered nothing has not measured it.", harness.RecoveryRebuildFailure(rebuilt, waited))
+	}
+	// recovery_failed was in this window's counter list and asserted
+	// nowhere, which made it decoration. It is the arm that flips
+	// healthy: a rebuild that failed leaves the rename unmeasured for
+	// the same reason recovered_ok=0 does, and says so.
+	if after.RecoveryFailed != 0 {
+		t.Errorf("recovery_failed=%d after the recycle: the endpoint whose link this test renames was "+
+			"not rebuilt, so the rename counters below describe some other endpoint. %s",
+			after.RecoveryFailed, harness.RecoveryRoutes(after))
 	}
 	if after.HostIfnameFailures != 0 {
 		t.Errorf("host_ifname_failures=%d after a recycle over a link that is named, on its bridge and "+

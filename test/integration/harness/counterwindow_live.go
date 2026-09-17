@@ -111,15 +111,6 @@ func (w *CounterWindow) Before() *HealthResponse {
 	return w.before
 }
 
-// awaitPollInterval is the gap between health reads inside Await.
-//
-// 250ms, inherited from the failure suite's own poll helper: it returns
-// closer to the moment the health state flips without touching the
-// caller's budget (#254), and the floor keeps the extra CPU off the
-// timing-sensitive preflight probe. Do not raise it casually — that
-// tuning was deliberate.
-const awaitPollInterval = 250 * time.Millisecond
-
 // Await polls the plugin's health until cond reports true or budget is
 // spent, and returns the last successful read plus whether cond ever
 // held.
