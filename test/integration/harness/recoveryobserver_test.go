@@ -42,16 +42,22 @@ func (f *fakeRecovery) poll(budget time.Duration) (*HealthResponse, bool) {
 	f.polls++
 	f.budgets = append(f.budgets, budget)
 	deadline := f.elapsed + budget
-	for {
-		h := f.read()
-		if h.RecoveredOK >= 1 {
-			return h, true
-		}
-		if !(f.elapsed < deadline) {
-			return h, false
+	var last *HealthResponse
+	// CounterWindow.Await's loop, exactly: it samples only while it is
+	// still before its deadline, so the last sample it can take lands one
+	// interval short of it. A fake that took one more sample than that
+	// would report a budget with no margin as sufficient.
+	for f.elapsed < deadline {
+		last = f.read()
+		if last.RecoveredOK >= 1 {
+			return last, true
 		}
 		f.elapsed += awaitPollInterval
 	}
+	if last == nil {
+		last = f.read()
+	}
+	return last, false
 }
 
 func discardf(string, ...any) {}
@@ -77,6 +83,19 @@ func TestAwaitRecoveryRebuild_CountsARebuildThatFinishesLate(t *testing.T) {
 	}
 	if f.polls != 1 {
 		t.Errorf("polls=%d, want 1: a rebuild on the normal route must not reach the deferred budget", f.polls)
+	}
+}
+
+// The margin the budget carries is one poll interval, and this is the
+// case that spends it: a client counted at exactly AWAIT_TIMEOUT is
+// within what the plugin allows itself, and a poll loop samples only
+// while it is before its deadline, so a budget of exactly AWAIT_TIMEOUT
+// takes its last sample a quarter of a second too early.
+func TestAwaitRecoveryRebuild_CountsARebuildAtTheProductsOwnDeadline(t *testing.T) {
+	f := &fakeRecovery{flipAt: awaitTimeoutDefault}
+	if _, ok := awaitRecoveryRebuild(discardf, "a rebuild", f.poll); !ok {
+		t.Errorf("a rebuild counted at %s — the last instant AWAIT_TIMEOUT allows one — was missed "+
+			"by a %s budget", awaitTimeoutDefault, RecoveryRebuildBudget)
 	}
 }
 
