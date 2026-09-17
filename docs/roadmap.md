@@ -119,17 +119,21 @@ from. [#817] adds the `ipv6_mode` option, with `off`, `dhcp`, `slaac`
 and `auto`, and makes `-o ipv6=true` its short spelling for `dhcp`.
 [#818] and [#808] form the address from an advertised prefix, so a
 segment with a router and no DHCPv6 server is one containers get IPv6
-on. [#821] takes the default route, the routes, the MTU and the
-resolvers from the advertisement and puts them in the container, in
-place of the container's own kernel. [#819] handles lifetimes,
-withdrawal and renumbering, and adds `ipv6_main_prefix` for which
-address Docker is told about. [#814] parses Router Advertisements into
-a first-class event and publishes six counters for router discovery.
-[#925] accepts a server-initiated Reconfigure, authenticated with the
-server's reconfigure key. [#816] stops a v6 acquisition reporting a
-lease timeout where no exchange was possible: a refusal, a silent
-server, a prefix that formed nothing and a prefix that formed nothing
-in time are four counters and four messages.
+on. [#821] takes the default route, the routes and the MTU from the
+advertisement and puts them in the container in place of the
+container's own kernel, and the resolvers too on a `propagate_dns`
+network. [#819] handles lifetimes, withdrawal and renumbering, and
+adds `ipv6_main_prefix` for which address Docker is told about. [#814]
+parses Router Advertisements into a first-class event and publishes
+six counters for router discovery. [#925] accepts a server-initiated
+Reconfigure, authenticated with the server's reconfigure key. [#816]
+stops a v6 acquisition reporting a lease timeout where no exchange was
+possible: a refusal, a silent server and an advertisement whose
+prefixes form no address each get their own counter and their own
+message. [#818] adds a fourth, for an advertisement that formed no
+address inside the budget, which is another node already holding the
+one this endpoint's prefix and MAC form, or an advertisement too late
+for duplicate address detection to finish.
 
 The milestone also carries work that is not IPv6. [#961] takes the
 container hostname to a client that is already leasing, so an attach

@@ -13,17 +13,17 @@ forks that have been waiting on review.
 
 ## v2.2.0
 
-A network now says where its IPv6 address comes from: `ipv6_mode` takes
-`off` (the default), `dhcp`, `slaac` and `auto`, `-o ipv6=true` is the
-short spelling of `dhcp`, and on a mode that forms its own address a
-segment with a router and no DHCPv6 server at all is now a segment
-containers get IPv6 on. The plugin reads the router's advertisement
-itself and puts what it says into the container, the default route, the
-routes, the MTU and the resolvers, so a change on the segment reaches a
-running container without a restart. Two smaller network options arrive
-beside them, `release_lease=on_remove` and, in bridge mode,
-`host_ifname`, and `/Plugin.Health` and `/metrics` gain the counters for
-all of it.
+A network now says where its IPv6 address comes from: `ipv6_mode`
+takes `off` (the default), `dhcp`, `slaac` and `auto`, `-o ipv6=true`
+is the short spelling of `dhcp`, and on a mode that forms its own
+address a segment with a router and no DHCPv6 server at all is now a
+segment containers get IPv6 on. The plugin reads the router's
+advertisement itself and puts the default route, the routes and the
+MTU into the container, and its resolvers too on a `propagate_dns`
+network, so a change on the segment reaches a running container
+without a restart. Two smaller network options arrive beside them,
+`release_lease=on_remove` and, in bridge mode, `host_ifname`, and
+`/Plugin.Health` and `/metrics` gain the counters for all of it.
 
 ### Upgrade notes
 
@@ -69,8 +69,8 @@ section below is still the list the daemon shows you.
 | The advertised MTU is applied to the container's link | It was applied by the container's kernel before, to IPv6 only. It is now applied to the link, which bounds IPv4 as well. `propagate_mtu` does not govern it: an option defaulting to false would have taken the advertised MTU away from every existing IPv6 network. Where both families supply an MTU the link takes the smaller of the two. The MTU refusal range is unchanged. |
 | RDNSS and DNSSL reach `/etc/resolv.conf` on a `propagate_dns=true` network | DHCPv6's own DNS options still win where a server supplies both (RFC 8106 section 5.3.1). A resolver at a link-local address is written with its interface as an RFC 4007 scope zone, `nameserver fe80::1%eth0`; musl, the C library in Alpine images, does not parse that form. |
 | A `dhcp` segment that offers no DHCPv6 address gets no IPv6 route | On `ipv6=true` and `ipv6_mode=dhcp` the DHCPv6 server is the only source of an address, and with no address the plugin cannot pass its gateway or routes on: the daemon disables IPv6 on a container link carrying no IPv6 address and the kernel then refuses every IPv6 route on it, so an endpoint answer carrying one fails the container outright instead of degrading. The container keeps its IPv4, its link-local address and the stateless DHCPv6 configuration. **On `ipv6_mode=slaac` and `ipv6_mode=auto` this row does not apply.** The plugin forms the address from the advertisement and installs it ([#818](https://github.com/claymore666/docker-net-dhcp/issues/818)), and the IPv6 default route arrives beside it. |
-| A change on the segment is applied to a running container | A router that renumbers itself, changes its MTU, changes the routes it offers or changes its resolvers moves the container with it, with no restart. |
-| A router that withdraws itself takes the container's default route with it | RFC 4861 reads a Router Lifetime of 0 as "no longer to be used as a default router". The container is left with no IPv6 default route, which is correct, and not one pointing at a router that is gone. The new `ipv6_router_withdrawn` counter records it. Resolvers are kept: RFC 8106 section 6.1 says the DNS options need not be dropped when the router lifetime expires. |
+| A change on the segment is applied to a running container | A router that renumbers itself, changes its MTU, changes the routes it offers or changes the resolvers a `propagate_dns` network passes on moves the container with it, with no restart. |
+| A router that withdraws itself takes the container's default route with it | RFC 4861 reads a Router Lifetime of 0 as "no longer to be used as a default router". The container is left with no IPv6 default route, which is correct, and not one pointing at a router that is gone. The new `ipv6_router_withdrawn` counter records it. Resolvers are kept where the container has them: RFC 8106 section 6.1 says the DNS options need not be dropped when the router lifetime expires, and a network without `propagate_dns` never had them to drop. |
 | New health counter `ipv6_router_withdrawn` | Counts container IPv6 default routes removed because the router withdrew itself. Counts routes removed, not advertisements received. Not `healthy`-affecting. |
 | A managed segment that also advertises its prefix as autonomous gives one address, not several | Such a container used to hold the DHCPv6 lease, an address its kernel formed from the prefix, and privacy addresses where the image enabled them; an outbound connection picked among them per RFC 6724 and need not have picked the leased one. `autoconf=0` leaves the lease alone, so what `docker inspect` reports is what the container uses. A workload that depended on a kernel-formed address on such a segment loses it. |
 | `router_advert_guard_failures` counts one more thing | The guard now also removes routes the container's kernel installed from an advertisement before the guard ran. A failure there is counted beside the sysctl failures, so the bound per IPv6 endpoint goes from six steps to seven. |
