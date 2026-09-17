@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -30,13 +31,14 @@ type fakeRecovery struct {
 	// it always answers.
 	unreachableFrom time.Duration
 
-	elapsed time.Duration
-	polls   int
-	budgets []time.Duration
+	elapsed  time.Duration
+	polls    int
+	budgets  []time.Duration
+	verified int // how many polls had happened when the bound was checked; -1 means never
 }
 
 func newFakeRecovery() *fakeRecovery {
-	return &fakeRecovery{flipAt: -1, failAt: -1, abortAt: -1, unreachableFrom: -1}
+	return &fakeRecovery{flipAt: -1, failAt: -1, abortAt: -1, unreachableFrom: -1, verified: -1}
 }
 
 // succeedsAt, failsAt and abortsAt are the three ends one rebuild can
@@ -47,6 +49,11 @@ func newFakeRecovery() *fakeRecovery {
 func (f *fakeRecovery) succeedsAt(d time.Duration) *fakeRecovery { f.flipAt = d; return f }
 func (f *fakeRecovery) failsAt(d time.Duration) *fakeRecovery    { f.failAt = d; return f }
 func (f *fakeRecovery) abortsAt(d time.Duration) *fakeRecovery   { f.abortAt = d; return f }
+
+// verify stands in for the live check that the installed plugin agrees
+// with the bound this wait is about to spend. It records how much of the
+// wait had already happened when it ran.
+func (f *fakeRecovery) verify() { f.verified = f.polls }
 
 func (f *fakeRecovery) read() *HealthResponse {
 	if f.unreachableFrom >= 0 && f.elapsed >= f.unreachableFrom {
@@ -105,7 +112,7 @@ func TestAwaitRecoveryRebuild_CountsARebuildThatFinishesLate(t *testing.T) {
 	}
 
 	f = newFakeRecovery().succeedsAt(late)
-	h, ok := awaitRecoveryRebuild(discardf, "a rebuild", f.poll)
+	h, ok := awaitRecoveryRebuild(discardf, "a rebuild", f.verify, f.poll)
 	if !ok {
 		t.Errorf("the wait did not see a rebuild counted at %s, inside the %s budget: %s",
 			late, RecoveryRebuildBudget, RecoveryRoutes(h))
@@ -121,7 +128,7 @@ func TestAwaitRecoveryRebuild_CountsARebuildThatFinishesLate(t *testing.T) {
 // counter lands at the far end of the budget rather than this one.
 func TestAwaitRecoveryRebuild_CountsARebuildAtTheProductsOwnDeadline(t *testing.T) {
 	f := newFakeRecovery().succeedsAt(awaitTimeoutDefault)
-	if _, ok := awaitRecoveryRebuild(discardf, "a rebuild", f.poll); !ok {
+	if _, ok := awaitRecoveryRebuild(discardf, "a rebuild", f.verify, f.poll); !ok {
 		t.Errorf("a rebuild counted at %s — the last instant AWAIT_TIMEOUT allows one — was missed "+
 			"by a %s budget", awaitTimeoutDefault, RecoveryRebuildBudget)
 	}
@@ -129,7 +136,7 @@ func TestAwaitRecoveryRebuild_CountsARebuildAtTheProductsOwnDeadline(t *testing.
 
 func TestAwaitRecoveryRebuild_FailsWhenTheCounterNeverMoves(t *testing.T) {
 	f := newFakeRecovery()
-	h, ok := awaitRecoveryRebuild(discardf, "a rebuild", f.poll)
+	h, ok := awaitRecoveryRebuild(discardf, "a rebuild", f.verify, f.poll)
 	if ok {
 		t.Fatal("the wait reported a rebuild the fake never counted")
 	}
@@ -157,7 +164,7 @@ func TestAwaitRecoveryRebuild_ExtendsOnlyOnTheDeferredRoute(t *testing.T) {
 		var logged []string
 		h, ok := awaitRecoveryRebuild(func(format string, args ...any) {
 			logged = append(logged, fmt.Sprintf(format, args...))
-		}, "a rebuild", f.poll)
+		}, "a rebuild", f.verify, f.poll)
 		if !ok {
 			t.Errorf("the wait gave up at the normal route's budget although the plugin reported "+
 				"recovery_deferred=1: %s", RecoveryRoutes(h))
@@ -179,7 +186,7 @@ func TestAwaitRecoveryRebuild_ExtendsOnlyOnTheDeferredRoute(t *testing.T) {
 
 	t.Run("not deferred", func(t *testing.T) {
 		f := newFakeRecovery().succeedsAt(late)
-		if _, ok := awaitRecoveryRebuild(discardf, "a rebuild", f.poll); ok {
+		if _, ok := awaitRecoveryRebuild(discardf, "a rebuild", f.verify, f.poll); ok {
 			t.Error("the wait extended past the normal route's budget for a plugin that never deferred")
 		}
 		if f.polls != 1 {
@@ -196,7 +203,7 @@ func TestAwaitRecoveryRebuild_ExtendsOnlyOnTheDeferredRoute(t *testing.T) {
 // follows read a document taken before the counter could move.
 func TestAwaitRecoveryRebuild_WaitsForTheClassifierToSpeak(t *testing.T) {
 	f := newFakeRecovery().failsAt(awaitTimeoutDefault + recoveryPerNetworkTimeoutDefault)
-	h, ok := awaitRecoveryRebuild(discardf, "a rebuild", f.poll)
+	h, ok := awaitRecoveryRebuild(discardf, "a rebuild", f.verify, f.poll)
 	if ok {
 		t.Fatal("the wait reported a rebuild for a plugin that only ever recorded a failure")
 	}
@@ -204,10 +211,11 @@ func TestAwaitRecoveryRebuild_WaitsForTheClassifierToSpeak(t *testing.T) {
 		t.Fatalf("the wait gave up before the classifier moved: %s. Everything after this reads a "+
 			"document in which the failure has not happened yet", RecoveryRoutes(h))
 	}
-	got := RecoveryRebuildFailure("a rebuild", h)
-	if !strings.Contains(got, "recovery_failed=1") || !strings.Contains(got, "FAILED") {
-		t.Errorf("the verdict does not name the arm that fired:\n%s", got)
+	verdict := recoveryVerdict(h)
+	if !strings.Contains(verdict, "recovery_failed=1") || !strings.Contains(verdict, "FAILED") {
+		t.Errorf("the verdict does not name the arm that fired:\n%s", verdict)
 	}
+	got := RecoveryRebuildFailure("a rebuild", h)
 	if strings.Contains(got, "still in flight") {
 		t.Errorf("the verdict calls a classified failure a rebuild still in flight, which is the "+
 			"reading this change exists to separate:\n%s", got)
@@ -236,7 +244,7 @@ func TestAwaitRecoveryRebuild_KeepsTheLastReadWhenThePluginGoesAway(t *testing.T
 	f := newFakeRecovery().failsAt(2 * time.Second)
 	f.unreachableFrom = 5 * time.Second
 
-	h, ok := awaitRecoveryRebuild(discardf, "a rebuild", f.poll)
+	h, ok := awaitRecoveryRebuild(discardf, "a rebuild", f.verify, f.poll)
 	if ok {
 		t.Fatal("the wait reported a rebuild from a plugin that recorded a failure and went away")
 	}
@@ -258,7 +266,7 @@ func TestAwaitRecoveryRebuild_KeepsTheLastReadWhenTheExtensionGetsNone(t *testin
 	f.deferred = 1
 	f.unreachableFrom = RecoveryRebuildBudget
 
-	h, ok := awaitRecoveryRebuild(discardf, "a rebuild", f.poll)
+	h, ok := awaitRecoveryRebuild(discardf, "a rebuild", f.verify, f.poll)
 	if ok {
 		t.Fatal("the wait reported a rebuild from a plugin that stopped answering")
 	}
@@ -313,16 +321,18 @@ func TestRecoveryRoutes_NamesEveryRoute(t *testing.T) {
 	}
 }
 
-// The classifier's OTHER arm, driven on its own. A recycle whose
-// container had already exited records recovery_aborted_container_gone
-// and nothing else: no rebuild was attempted and none is pending. A
-// verdict keyed on recovery_failed alone reports that as a rebuild still
-// in flight, which sends its reader looking for a hang that is not
-// there — and the counters printed beside it say nothing, because the
-// reader has just been told which sentence to believe.
+// The classifier's OTHER arm, driven on its own. A recycle that records
+// recovery_aborted_container_gone is one where a Start failed and the
+// container was gone when the plugin looked afterwards
+// (pkg/plugin/plugin.go:2930): the endpoint is not coming back and
+// nothing is pending. A verdict keyed on recovery_failed alone reports
+// that as a rebuild still in flight, which sends its reader looking for
+// a hang that is not there — and the counters printed beside it say
+// nothing, because the reader has just been told which sentence to
+// believe.
 func TestAwaitRecoveryRebuild_NamesTheContainerGoneArm(t *testing.T) {
 	f := newFakeRecovery().abortsAt(awaitTimeoutDefault + recoveryPerNetworkTimeoutDefault)
-	h, ok := awaitRecoveryRebuild(discardf, "a rebuild", f.poll)
+	h, ok := awaitRecoveryRebuild(discardf, "a rebuild", f.verify, f.poll)
 	if ok {
 		t.Fatal("the wait reported a rebuild for a plugin whose container had already exited")
 	}
@@ -333,17 +343,24 @@ func TestAwaitRecoveryRebuild_NamesTheContainerGoneArm(t *testing.T) {
 		t.Fatalf("the fake moved both arms, so this case cannot show what the second one adds: %s",
 			RecoveryRoutes(h))
 	}
-	got := RecoveryRebuildFailure("a rebuild", h)
-	if !strings.Contains(got, "recovery_aborted_container_gone=1") {
-		t.Errorf("the verdict does not name the arm that fired:\n%s", got)
+	// On the verdict alone, not on the whole failure text: RecoveryRoutes
+	// prints every counter into that same string, so an assertion there
+	// would be satisfied by the routes line whether the verdict named
+	// this arm or not.
+	verdict := recoveryVerdict(h)
+	if !strings.Contains(verdict, "recovery_aborted_container_gone=1") {
+		t.Errorf("the verdict does not name the arm that fired:\n%s", verdict)
 	}
-	if !strings.Contains(got, "container had already exited") {
-		t.Errorf("the verdict names the counter but not what it means, and this arm is the benign "+
-			"one — the reader needs the difference:\n%s", got)
+	if !strings.Contains(verdict, "gone when the plugin looked afterwards") {
+		t.Errorf("the verdict names the counter but not what it means, and the two arms want "+
+			"different next steps:\n%s", verdict)
 	}
-	if strings.Contains(got, "still in flight") {
-		t.Errorf("the verdict calls an endpoint whose container had already exited a rebuild that "+
-			"is still running:\n%s", got)
+	if strings.Contains(verdict, "still in flight") {
+		t.Errorf("the verdict calls an endpoint whose Start failed against a departed container a "+
+			"rebuild that is still running:\n%s", verdict)
+	}
+	if got := RecoveryRebuildFailure("a rebuild", h); !strings.Contains(got, verdict) {
+		t.Errorf("the call-site text does not carry the verdict:\n%s", got)
 	}
 }
 
@@ -362,7 +379,7 @@ func TestAwaitRecoveryRebuild_WaitsForTheClassifierOnTheDeferredRouteToo(t *test
 	f := newFakeRecovery().failsAt(latest)
 	f.deferred = 1
 
-	h, ok := awaitRecoveryRebuild(discardf, "a rebuild", f.poll)
+	h, ok := awaitRecoveryRebuild(discardf, "a rebuild", f.verify, f.poll)
 	if ok {
 		t.Fatal("the wait reported a rebuild for a plugin that only ever recorded a failure")
 	}
@@ -402,6 +419,237 @@ func TestRecoveryRebuildFailure_SaysSoWhenNoReadEverSucceeded(t *testing.T) {
 	if !strings.Contains(got, RecoveryRebuildBudget.String()) {
 		t.Errorf("the failure text quotes no budget, so it does not say how long it waited:\n%s", got)
 	}
+}
+
+// The manifest is what the plugin is BUILT from; `docker plugin set`
+// decides what it RUNS with, and AWAIT_TIMEOUT is settable. The
+// coupling test above reads the manifest and would stay green through
+// exactly that override, which puts the original flake back with a wait
+// in front of it. These are the readings of the installed value, and
+// only one of them lets the wait proceed.
+func TestInstalledAwaitTimeoutDrift(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		env     []string
+		wantOK  bool
+		mustSay string
+	}{
+		{
+			name:   "the installed value is the one the budgets are derived from",
+			env:    []string{"LOG_LEVEL=trace", "AWAIT_TIMEOUT=10s", "STATE_DIR=/var/lib/net-dhcp"},
+			wantOK: true,
+		},
+		{
+			name:    "docker plugin set raised it",
+			env:     []string{"AWAIT_TIMEOUT=30s"},
+			mustSay: "30s",
+		},
+		{
+			name:    "docker plugin set lowered it",
+			env:     []string{"AWAIT_TIMEOUT=2s"},
+			mustSay: "2s",
+		},
+		{
+			name:    "the setting is not a duration",
+			env:     []string{"AWAIT_TIMEOUT=forever"},
+			mustSay: "not a duration",
+		},
+		{
+			name:    "the plugin publishes no such setting",
+			env:     []string{"LOG_LEVEL=trace"},
+			mustSay: "publishes no AWAIT_TIMEOUT",
+		},
+		{
+			name:    "no settings at all",
+			env:     nil,
+			mustSay: "publishes no AWAIT_TIMEOUT",
+		},
+		{
+			// A name that merely ends in the setting's is a different
+			// setting, and reading it as this one would make the check
+			// pass on a plugin that never published AWAIT_TIMEOUT.
+			name:    "another setting whose name ends the same way",
+			env:     []string{"EXTRA_AWAIT_TIMEOUT=10s"},
+			mustSay: "publishes no AWAIT_TIMEOUT",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := InstalledAwaitTimeoutDrift(tc.env)
+			if tc.wantOK {
+				if got != "" {
+					t.Errorf("a plugin running the value the budgets are derived from is reported as "+
+						"drift, which reds every recycle test on a correct lane:\n%s", got)
+				}
+				return
+			}
+			if got == "" {
+				t.Fatalf("env %v is passed as agreeing with %s, so the wait below spends a bound "+
+					"the installed plugin contradicts", tc.env, awaitTimeoutDefault)
+			}
+			if !strings.Contains(got, tc.mustSay) {
+				t.Errorf("the message does not say %q, so a reader cannot tell what disagreed:\n%s",
+					tc.mustSay, got)
+			}
+			if !strings.Contains(got, awaitTimeoutDefault.String()) {
+				t.Errorf("the message never quotes the value the budgets are derived from:\n%s", got)
+			}
+		})
+	}
+}
+
+// The verdict describes what each counter MEANS, and that description
+// is keyed on the sites that move the counter, not on the counter's
+// name. recovery_failed has three of them and only one is a failing
+// Start: the other two are a walk-level failure before any Start
+// reached the endpoint, and a deferred walk whose daemon never came
+// back. A verdict that tells its reader to look at Start on either of
+// those sends them to the one thing that did not happen, which is the
+// same class of wrong answer this branch exists to stop.
+//
+// So this is a case per SITE, read out of the product: every line that
+// increments one of the three counters must be cited by the verdict
+// that names it, and every line the verdict cites must still be one of
+// them. A new site added to the plugin fails this, and so does a
+// citation left behind by one that moved.
+func TestRecoveryVerdictCitesEveryIncrementSite(t *testing.T) {
+	const pluginSrc = "../../../pkg/plugin/plugin.go"
+	failed := incrementSites(t, pluginSrc, "recoveryFailed")
+	gone := incrementSites(t, pluginSrc, "recoveryAbortedContainerGone")
+	ok := incrementSites(t, pluginSrc, "recoveredOK")
+
+	for _, tc := range []struct {
+		name    string
+		verdict string
+		want    []int
+	}{
+		{
+			name:    "the classified verdict",
+			verdict: recoveryVerdict(&HealthResponse{RecoveryFailed: 1}),
+			want:    append(append([]int{}, failed...), gone...),
+		},
+		{
+			name:    "the still-in-flight verdict",
+			verdict: recoveryVerdict(&HealthResponse{}),
+			want:    ok,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cited := citedLines(tc.verdict)
+			for _, line := range tc.want {
+				if !cited[line] {
+					t.Errorf("pkg/plugin/plugin.go:%d moves one of the counters this verdict names "+
+						"and the verdict does not cite it, so the sentence describes fewer ways to "+
+						"reach that counter than the plugin has:\n%s", line, tc.verdict)
+				}
+			}
+			want := map[int]bool{}
+			for _, line := range tc.want {
+				want[line] = true
+			}
+			for line := range cited {
+				if !want[line] {
+					t.Errorf("the verdict cites pkg/plugin/plugin.go:%d, which no longer increments "+
+						"a counter this verdict names. A citation that has moved is worse than "+
+						"none: it sends its reader to a line chosen by a previous version of the "+
+						"plugin:\n%s", line, tc.verdict)
+				}
+			}
+		})
+	}
+}
+
+// incrementSites returns the line numbers of every `p.<counter>.Add(1)`
+// in a Go source file. None found is a failure for the same reason it is
+// in constDuration: the point of the helper is that the sites live
+// elsewhere, so "not found" is the drift it exists to catch.
+func incrementSites(t *testing.T, path, counter string) []int {
+	t.Helper()
+	src, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading %s: %v", path, err)
+	}
+	re := regexp.MustCompile(`^\s*p\.` + regexp.QuoteMeta(counter) + `\.Add\(1\)\s*$`)
+	var lines []int
+	for i, line := range strings.Split(string(src), "\n") {
+		if re.MatchString(line) {
+			lines = append(lines, i+1)
+		}
+	}
+	if len(lines) == 0 {
+		t.Fatalf("no `p.%s.Add(1)` in %s. Either the counter was renamed, is incremented some "+
+			"other way, or is gone, and in every case the verdict's description of it is "+
+			"unverified", counter, path)
+	}
+	return lines
+}
+
+// citedLines pulls every `pkg/plugin/plugin.go:N` out of a verdict.
+func citedLines(verdict string) map[int]bool {
+	out := map[int]bool{}
+	for _, m := range regexp.MustCompile(`pkg/plugin/plugin\.go:(\d+)`).FindAllStringSubmatch(verdict, -1) {
+		n, err := strconv.Atoi(m[1])
+		if err != nil {
+			continue
+		}
+		out[n] = true
+	}
+	return out
+}
+
+// The bound is checked before any of it is spent. A check that runs
+// after the wait has given its answer is not a check: the budget it
+// would have rejected has already been spent and the verdict already
+// printed. This drives the order rather than reading it, because the two
+// spellings that break it, a deferred call and a call moved below the
+// poll, look identical to a source scan of the live file.
+func TestAwaitRecoveryRebuild_ChecksTheBoundBeforeSpendingIt(t *testing.T) {
+	f := newFakeRecovery().succeedsAt(time.Second)
+	if _, ok := awaitRecoveryRebuild(discardf, "a rebuild", f.verify, f.poll); !ok {
+		t.Fatal("the wait missed a rebuild counted at 1s")
+	}
+	if f.verified != 0 {
+		t.Errorf("the installed bound was checked after %d poll(s) had already run, want 0. By then "+
+			"the wait has spent the budget the check exists to reject", f.verified)
+	}
+}
+
+// Both live waits must pass a check that does something. The parameter
+// makes the ORDER observable above; this is the other half, that what
+// gets passed is the real check. There is no local control for it: the
+// two waits are behind the `integration` build tag, so a closure that
+// does nothing compiles and every local test stays green.
+func TestBothWaitsPassTheInstalledTimeoutCheck(t *testing.T) {
+	const liveSrc = "recoveryobserver_live.go"
+	for _, fn := range []string{"AwaitRecoveryRebuildWindow", "AwaitRecoveryRebuildOn"} {
+		t.Run(fn, func(t *testing.T) {
+			if body := funcBody(t, liveSrc, fn); !strings.Contains(body, "checkInstalledAwaitTimeout(") {
+				t.Errorf("%s spends the recovery budget without checking it against the plugin the "+
+					"lane installed, so `docker plugin set AWAIT_TIMEOUT` moves the product's cap "+
+					"and this wait keeps the old bound", fn)
+			}
+		})
+	}
+}
+
+// funcBody returns the text of a top-level function, from its `func`
+// line to the closing brace in the first column.
+func funcBody(t *testing.T, path, name string) string {
+	t.Helper()
+	src, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading %s: %v", path, err)
+	}
+	start := strings.Index(string(src), "\nfunc "+name+"(")
+	if start < 0 {
+		t.Fatalf("no top-level func %s in %s. It was renamed or moved, and what called it is "+
+			"unverified here", name, path)
+	}
+	rest := string(src)[start+1:]
+	end := strings.Index(rest, "\n}\n")
+	if end < 0 {
+		t.Fatalf("func %s in %s has no closing brace in the first column", name, path)
+	}
+	return rest[:end]
 }
 
 // The budgets are the load-bearing parameter of the wait, and they are

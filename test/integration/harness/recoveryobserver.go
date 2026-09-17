@@ -114,6 +114,58 @@ func RecoveryRoutes(h *HealthResponse) string {
 	return strings.Join(parts, " ")
 }
 
+// InstalledAwaitTimeoutDrift compares the AWAIT_TIMEOUT the installed
+// plugin is actually running with against the value both recovery
+// budgets are derived from, and returns the text of the disagreement,
+// or "" when there is none. env is the plugin's Settings.Env, whose
+// entries are NAME=value (MEASURED against an installed plugin
+// 2026-09-17: ["LOG_LEVEL=trace" "AWAIT_TIMEOUT=10s" "STATE_DIR=..."]).
+//
+// WHY THE INSTALLED VALUE AND NOT ONLY THE MANIFEST.
+// TestRecoveryBudgetsTrackTheProduct reads config.json, which is what
+// the plugin is BUILT from. AWAIT_TIMEOUT is declared settable there,
+// so `docker plugin set <ref> AWAIT_TIMEOUT=30s` is a legal line, and
+// the three integration workflows already run one `docker plugin set`
+// each. A lane that adds that one word moves the product's cap while
+// the manifest, and every budget derived from it, stays where it is:
+// the flake this branch is about, back, with a wait in front of it and
+// a coupling test still green. The manifest half is a copy nobody
+// checks; this is the half the copy cannot see.
+//
+// A setting that is missing or unparseable is drift too. The value the
+// plugin runs with is then unknown, and an unknown cap is not evidence
+// that the bound is right.
+func InstalledAwaitTimeoutDrift(env []string) string {
+	const name = "AWAIT_TIMEOUT"
+	for _, e := range env {
+		k, v, ok := strings.Cut(e, "=")
+		if !ok || k != name {
+			continue
+		}
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			return fmt.Sprintf("the installed plugin runs with %s=%q, which is not a duration. "+
+				"The recovery budgets are bounded by %s and there is no way to tell whether that "+
+				"still covers one Start", name, v, awaitTimeoutDefault)
+		}
+		if d != awaitTimeoutDefault {
+			return fmt.Sprintf("the installed plugin runs with %s=%s and the recovery budgets are "+
+				"derived from %s. Each recovery Start is capped at the installed value "+
+				"(pkg/plugin/plugin.go:2907), so the wait below is bounded by the wrong number: "+
+				"either it gives up on a rebuild the plugin was still allowed to finish, or it "+
+				"waits past the point where one could still be running. config.json is the "+
+				"manifest the plugin is built from and `docker plugin set` overrides it, which is "+
+				"why the mirrored constant alone does not answer this",
+				name, d, awaitTimeoutDefault)
+		}
+		return ""
+	}
+	return fmt.Sprintf("the installed plugin publishes no %s setting, so the %s the recovery "+
+		"budgets are derived from cannot be confirmed against the plugin the lane installed. "+
+		"config.json declares it, so an installed plugin without it is not the plugin this test "+
+		"expects", name, awaitTimeoutDefault)
+}
+
 // recoveryPoll is one bounded attempt at a condition: the last health
 // read it managed and whether the condition ever held.
 type recoveryPoll func(budget time.Duration) (*HealthResponse, bool)
@@ -134,7 +186,13 @@ type recoveryPoll func(budget time.Duration) (*HealthResponse, bool)
 // failure, because a helper that fataled here would turn the property
 // into "the helper returned", and the caller is the only place that
 // knows which property it was waiting for.
-func awaitRecoveryRebuild(logf func(string, ...any), what string, poll recoveryPoll) (*HealthResponse, bool) {
+func awaitRecoveryRebuild(logf func(string, ...any), what string, verify func(), poll recoveryPoll) (*HealthResponse, bool) {
+	// Before the first poll, never beside it: a bound checked after the
+	// wait has already given its answer is not a check. Taking it as a
+	// parameter is what makes the order observable here, where it can be
+	// driven; a call the two live waits made for themselves could be
+	// deferred, or moved below the poll, with nothing to see it.
+	verify()
 	h, ok := poll(RecoveryRebuildBudget)
 	if ok {
 		return h, true
@@ -196,12 +254,16 @@ func recoveryVerdict(h *HealthResponse) string {
 	case h == nil:
 		return "No counter could be read, so nothing above is evidence of anything."
 	case h.RecoveryFailed > 0 || h.RecoveryAbortedContainerGone > 0:
-		return fmt.Sprintf("The classifier recorded this endpoint: recovery_failed=%d, "+
-			"recovery_aborted_container_gone=%d (pkg/plugin/plugin.go:2936, 2941). The rebuild "+
-			"FAILED, it was not still running when the budget ran out. The two arms want "+
-			"different next steps: recovery_failed is the Start itself failing, while "+
-			"recovery_aborted_container_gone says the container had already exited, so there was "+
-			"nothing left to rebuild.",
+		return fmt.Sprintf("Recovery recorded a failure against this endpoint: recovery_failed=%d, "+
+			"recovery_aborted_container_gone=%d. The rebuild FAILED, it was not still running when "+
+			"the budget ran out. The two counters want different next steps. "+
+			"recovery_aborted_container_gone means a Start failed and the container was gone when "+
+			"the plugin looked afterwards (pkg/plugin/plugin.go:2930); the container may well have "+
+			"been there when recovery began. recovery_failed is every other recorded failure and "+
+			"not only a failing Start: a Start that failed with the container still present "+
+			"(pkg/plugin/plugin.go:2936), a walk-level failure before any Start reached this "+
+			"endpoint (pkg/plugin/plugin.go:2532), and a deferred walk whose daemon never came "+
+			"back (pkg/plugin/plugin.go:2660).",
 			h.RecoveryFailed, h.RecoveryAbortedContainerGone)
 	default:
 		return "recovered_ok is incremented only after the recovered endpoint's client has " +

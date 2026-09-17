@@ -29,7 +29,9 @@ import (
 // site.
 func AwaitRecoveryRebuildWindow(w *CounterWindow, what string, cond func(*HealthResponse) bool) (*HealthResponse, bool) {
 	w.t.Helper()
-	return awaitRecoveryRebuild(w.t.Logf, what, func(budget time.Duration) (*HealthResponse, bool) {
+	return awaitRecoveryRebuild(w.t.Logf, what, func() {
+		checkInstalledAwaitTimeout(w.t, w.ctx, w.cli)
+	}, func(budget time.Duration) (*HealthResponse, bool) {
 		return w.Await(budget, func(now, _ *HealthResponse) bool { return cond(now) })
 	})
 }
@@ -47,7 +49,9 @@ func AwaitRecoveryRebuildWindow(w *CounterWindow, what string, cond func(*Health
 func AwaitRecoveryRebuildOn(t *testing.T, ctx context.Context, cli *docker.Client, what string,
 	cond func(*HealthResponse) bool) (*HealthResponse, bool) {
 	t.Helper()
-	return awaitRecoveryRebuild(t.Logf, what, func(budget time.Duration) (*HealthResponse, bool) {
+	return awaitRecoveryRebuild(t.Logf, what, func() {
+		checkInstalledAwaitTimeout(t, ctx, cli)
+	}, func(budget time.Duration) (*HealthResponse, bool) {
 		deadline := time.Now().Add(budget)
 		var last *HealthResponse
 		for {
@@ -93,4 +97,26 @@ func DumpPluginLogOnFailure(t *testing.T, ctx context.Context, mark int64, what 
 		}
 		t.Logf("--- net-dhcp plugin log since %s ---\n%s", what, window)
 	})
+}
+
+// checkInstalledAwaitTimeout refuses to spend a budget the plugin the
+// lane installed contradicts.
+//
+// It runs inside the two waits instead of at the three call sites, so a
+// fourth recycle site cannot forget it: the bound is the wait's own
+// parameter, and this is the one place that knows the wait is about to
+// use it.
+//
+// Fatal, because everything after a wait bounded by the wrong number is
+// a measurement of something else. The cost is one PluginInspect per
+// recycle, against a daemon the test is already talking to.
+func checkInstalledAwaitTimeout(t *testing.T, ctx context.Context, cli *docker.Client) {
+	t.Helper()
+	p, _, err := cli.PluginInspectWithRaw(ctx, PluginRef)
+	if err != nil {
+		t.Fatalf("PluginInspect, to read the AWAIT_TIMEOUT the recovery budget is derived from: %v", err)
+	}
+	if msg := InstalledAwaitTimeoutDrift(p.Settings.Env); msg != "" {
+		t.Fatalf("%s", msg)
+	}
 }
