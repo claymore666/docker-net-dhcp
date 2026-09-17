@@ -182,7 +182,11 @@ for entry in "${LINES[@]}"; do
         continue
     fi
 
-    if ! printf '%s\n' "$listed" | grep -qxF -- "$target"; then
+    # No -q: a consumer that exits early takes the producer down with
+    # SIGPIPE and the pipeline reports failure on success under pipefail
+    # (scripts/check-pipefail-consumers.sh). Reading to EOF and dropping
+    # the output is the same test with an honest status.
+    if ! printf '%s\n' "$listed" | grep -xF -- "$target" > /dev/null; then
         echo "$WORKFLOW:$lineno: -fuzz names $target, and $pkg has no such target." >&2
         echo "  go test would print PASS and exit 0 having fuzzed nothing. Targets there:" >&2
         printf '%s\n' "$listed" | grep -E '^Fuzz' | sed 's/^/    /' >&2
