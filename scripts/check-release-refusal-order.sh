@@ -44,6 +44,19 @@
 #      run that has already re-pushed both registries. One fix does not
 #      reach the copies: rule 4 is the reason there is no second copy to
 #      forget.
+#   6. A JUDGING JOB TOLERATES NOTHING. Neither the job nor any of its
+#      steps may carry `continue-on-error`, for EITHER subject. A
+#      `needs:` edge orders jobs by their CONCLUSION, and a job that
+#      reports success whatever happened satisfies every edge pointing
+#      at it: the graph rules above would still print PASS while the
+#      judgement they order was never made. One line does it, and the
+#      idiom is live in this repository -- engine-matrix.yml runs its
+#      cells that way on purpose, because there a row is a measurement
+#      and the lane's verdict is a separate job. Here the judgement IS
+#      the verdict. The key is refused whatever its value, including a
+#      literal `false`, because an expression that evaluates to true is
+#      not distinguishable from one that does not by reading it.
+#
 #   5. The PRE-FLIGHT judge -- a judging job that is an ancestor of a
 #      publishing job -- checks out no tree the trigger names: no
 #      `actions/checkout` in it may carry a `ref:` that is a `${{ }}`
@@ -121,14 +134,54 @@ PUBLISH_CMD = re.compile(
 # on a comment. A comment line's `#` is not a command delimiter, so
 # requiring command position is what excludes it -- there is no separate
 # comment stripper to keep in step with the shell's actual grammar.
-INVOCATION = re.compile(
-    r'(?:^|[;&|(]|\|\||&&)\s*(?:!\s*)?(?:(?:bash|sh)\s+)?'
-    r'((?:[A-Za-z0-9._-]+/)*)scripts/release-body\.sh(?=[\s;&|)]|$)', re.M)
+def invocation_re(script):
+    return re.compile(
+        r'(?:^|[;&|(]|\|\||&&)\s*(?:!\s*)?(?:(?:bash|sh)\s+)?'
+        r'((?:[A-Za-z0-9._-]+/)*)' + re.escape(script) + r'(?=[\s;&|)]|$)', re.M)
+
+
+INVOCATION = invocation_re('scripts/release-body.sh')
+
+# THE SECOND SUBJECT (#1014). The same three questions, asked about the
+# judgement that the plugin works on the engine the deployment runs:
+# somebody asks it, every publisher descends from whoever asked, and the
+# asker holds no credential of its own.
+#
+# RULE 4 DOES NOT EXTEND TO IT, RULE 5 NOW DOES.
+#
+# Rule 4 pins WHICH COPY of the notes extractor runs, because a tag
+# predating that script reaches it only after both registries have been
+# pushed, and dies there. This judgement runs BEFORE every publisher, so
+# a tag that does not carry the script fails at the step and nothing is
+# published: the direction rule 4 exists to prevent cannot occur here.
+#
+# Rule 5 forbids a judge from materialising a tree the trigger names.
+# It did not extend here while this judgement WAS the cell: what it
+# judged was the tag's own plugin, built and run, so the tree was the
+# subject and not an accident of how the job was written. That is no
+# longer the shape (#1014). The engine verdict is now read from the
+# matrix run that measured the tag's commit, and this job builds
+# nothing, so it needs no tree the trigger names and rule 5 holds it to
+# that. This is the rule that would otherwise be held only by CodeQL,
+# which reports the shape after a push and not in the lane.
+VERDICT = invocation_re('scripts/production-shape-verdict.sh')
 EXPRESSION = re.compile(r'\$\{\{')
 # Tree-materialising git, in command position (see INVOCATION above).
 CHECKOUT_CMD = re.compile(
     r'(?:^|[;&|(]|\|\||&&)\s*(?:!\s*)?git\b[^\n]*?'
     r'\s(checkout|switch|restore|worktree)\b', re.M)
+
+
+def tolerances_of(name, job):
+    """Where `continue-on-error` appears in this job, job level first."""
+    out = []
+    if isinstance(job, dict) and 'continue-on-error' in job:
+        out.append("the job itself (continue-on-error: %s)" % job.get('continue-on-error'))
+    for st in (job.get('steps') if isinstance(job, dict) else None) or []:
+        if isinstance(st, dict) and 'continue-on-error' in st:
+            out.append("step `%s` (continue-on-error: %s)"
+                       % (st.get('name') or st.get('uses') or 'unnamed', st.get('continue-on-error')))
+    return out
 
 
 def steps_of(job):
@@ -165,6 +218,7 @@ def checkouts_of(job):
 
 publishers = {}     # name -> why
 judges = []
+verdict_judges = []   # jobs that read the production-shape verdict (#1014)
 invocations = []    # (job, step name, directory, full text)
 for name, job in jobs.items():
     if not isinstance(job, dict):
@@ -186,16 +240,26 @@ for name, job in jobs.items():
                 invocations.append((name, st.get('name') or 'unnamed step',
                                     hit.group(1).rstrip('/') or '.',
                                     '%sscripts/release-body.sh' % hit.group(1)))
+            if VERDICT.search(run):
+                verdict_judges.append(name)
     if why:
         publishers[name] = why
 
 judges = sorted(set(judges))
+verdict_judges = sorted(set(verdict_judges))
 
 if not judges:
     print("::error title=Release refusal order cannot be judged::no job in %s runs release-body.sh. The release "
           "body is either assembled inline again -- the defect that shipped a placeholder as v2.0.0-rc1's notes -- "
           "or the script was renamed and this gate now orders nothing. Either way it is not a pass." % path,
           file=sys.stderr)
+    sys.exit(2)
+
+if not verdict_judges:
+    print("::error title=Release refusal order cannot be judged::no job in %s runs production-shape-verdict.sh. "
+          "Either the engine the deployment runs is no longer driven before publishing -- the defect that put "
+          "v2.2.0 on the registries with a network mode that could not be created there -- or the script was "
+          "renamed and this gate now orders nothing. Either way it is not a pass." % path, file=sys.stderr)
     sys.exit(2)
 
 if not publishers:
@@ -234,6 +298,34 @@ for j in judges:
         print("FAIL  job `%s` both judges the notes and publishes (%s)." % (j, '; '.join(publishers[j])), file=sys.stderr)
         print("      `needs:` orders jobs, not steps; a judgement sharing a job with the push is not ordered before it.", file=sys.stderr)
 
+# Rules 2 and 3 for the second subject: every publisher descends from the
+# production-shape verdict, and the job that reads it publishes nothing.
+for name in sorted(publishers):
+    anc = ancestors(name)
+    covering = [j for j in verdict_judges if j in anc]
+    if covering:
+        print("      %-24s engine judged first by: %s" % (name, ', '.join(covering)))
+        continue
+    fail = 1
+    print("FAIL  job `%s` publishes (%s) but no job reading the production-shape verdict is among its needs:." % (name, '; '.join(publishers[name])), file=sys.stderr)
+    print("      Its ancestors are: %s. Verdict jobs: %s." % (', '.join(sorted(anc)) or '(none)', ', '.join(verdict_judges)), file=sys.stderr)
+    print("      A tag that was never run on the engine the deployment runs is a tag published on hope.", file=sys.stderr)
+
+for j in verdict_judges:
+    if j in publishers:
+        fail = 1
+        print("FAIL  job `%s` both reads the production-shape verdict and publishes (%s)." % (j, '; '.join(publishers[j])), file=sys.stderr)
+        print("      `needs:` orders jobs, not steps; a verdict sharing a job with the push is not ordered before it.", file=sys.stderr)
+
+# Rule 6 -- a judging job tolerates nothing, for either subject.
+for j in sorted(set(judges) | set(verdict_judges)):
+    for where in tolerances_of(j, jobs.get(j) or {}):
+        fail = 1
+        print("FAIL  judging job `%s` carries continue-on-error on %s." % (j, where), file=sys.stderr)
+        print("      `needs:` orders jobs by their conclusion. A job that reports success whatever happened", file=sys.stderr)
+        print("      satisfies every edge pointing at it, so the ordering above would still pass while the", file=sys.stderr)
+        print("      judgement it orders was never made.", file=sys.stderr)
+
 # Rule 4 -- every invocation runs OUR copy. Its domain is `judges`, already
 # refused above when empty.
 for job_name, step_name, where, text in invocations:
@@ -255,7 +347,8 @@ for job_name, step_name, where, text in invocations:
     print("      %-24s runs %-40s from `%s` (this workflow's own ref)" % (job_name, text, where))
 
 # Rule 5 -- the pre-flight judge checks out no tree the trigger names.
-preflight = sorted(j for j in judges if any(j in ancestors(p_) for p_ in publishers))
+preflight = sorted(j for j in (set(judges) | set(verdict_judges))
+                   if any(j in ancestors(p_) for p_ in publishers))
 if not preflight:
     # Rule 2 has already said why, in terms an operator can act on; do not
     # overwrite a judged failure with "could not judge".
@@ -293,7 +386,8 @@ for j in preflight:
 if fail:
     sys.exit(1)
 
-print("PASS  %d publishing job(s) in %s all descend from the release-body judgement in %s; "
-      "%d invocation(s) run this workflow's own copy; pre-flight judge(s) %s check out no trigger-named tree"
-      % (len(publishers), path, ', '.join(judges), len(invocations), ', '.join(preflight)))
+print("PASS  %d publishing job(s) in %s all descend from the release-body judgement in %s and from the "
+      "production-shape verdict in %s; %d invocation(s) run this workflow's own copy; pre-flight judge(s) %s "
+      "check out no trigger-named tree"
+      % (len(publishers), path, ', '.join(judges), ', '.join(verdict_judges), len(invocations), ', '.join(preflight)))
 PY
