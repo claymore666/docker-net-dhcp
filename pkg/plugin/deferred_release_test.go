@@ -4,6 +4,7 @@
 package plugin
 
 import (
+	"bytes"
 	"net"
 	"net/netip"
 	"path/filepath"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/claymore666/dhcp-golib/lease"
+	log "github.com/sirupsen/logrus"
 
 	"github.com/claymore666/docker-net-dhcp/v2/pkg/dhcp"
 )
@@ -302,6 +304,72 @@ func TestDeferredRelease_NothingLeavesBeforeTheDeadlineAndTheSettle(t *testing.T
 	}
 }
 
+// captureDebugLog is captureLog with the level the quiet path writes at.
+// A debug line is still an operator-visible line; it is the level they
+// turn on when they are asking why, which is the only time this one
+// matters.
+func captureDebugLog(t *testing.T, fn func()) string {
+	t.Helper()
+
+	std := log.StandardLogger()
+	prevOut, prevLevel := std.Out, std.GetLevel()
+	t.Cleanup(func() {
+		std.Out = prevOut
+		std.SetLevel(prevLevel)
+	})
+
+	var buf bytes.Buffer
+	std.Out = &buf
+	std.SetLevel(log.DebugLevel)
+	fn()
+	return buf.String()
+}
+
+// TestDeferredRelease_TheDocumentedWindowIsTheArithmeticOfItsConstants
+// ties the band in the docs to the numbers that produce it.
+//
+// The table above proves the settle is OBEYED, and it proves that by
+// computing its own boundaries from `releaseSettle`, so it goes on
+// passing if the constant changes. That is the right shape for a
+// boundary test and the wrong shape for a documented promise: the
+// reference, the internals page and the release notes all state 65 to
+// 80 seconds from `docker stop` to the datagram, and that sentence is
+// three constants added up. Change any one of them and those documents
+// become false. This test is the arithmetic. The sweep that names each
+// stale sentence is scripts/check-window-constants.sh, which the lane
+// runs and which derives the band from these same three constants.
+//
+// The floor is the window plus the settle, reached when a sweep lands
+// exactly on it. The ceiling is one whole tick later, which is the
+// worst case: a sweep that ran a moment before the settle expired
+// cannot send until the next one.
+func TestDeferredRelease_TheDocumentedWindowIsTheArithmeticOfItsConstants(t *testing.T) {
+	const (
+		documentedFloor   = 65 * time.Second
+		documentedCeiling = 80 * time.Second
+	)
+
+	if got := tombstoneTTL + releaseSettle; got != documentedFloor {
+		t.Errorf("the soonest a held address can go back is %v and the documented band "+
+			"says %v. tombstoneTTL is %v and releaseSettle is %v; whichever moved, every "+
+			"prose statement of this band is now stale, and so is every sentence that "+
+			"spells one of the three constants beside its subject. Do not sweep for the "+
+			"old number by hand: a grep for the number and its unit misses the sites "+
+			"that abbreviate it, parenthesise it, wrap it across a line break or write "+
+			"it as a word, and this tree has all four. `bash "+
+			"scripts/check-window-constants.sh` derives the band from the constants and "+
+			"names every stale sentence with its file and line",
+			got, documentedFloor, tombstoneTTL, releaseSettle)
+	}
+	if got := tombstoneTTL + releaseSettle + ipamSweepInterval; got != documentedCeiling {
+		t.Errorf("the latest a held address goes back is %v and the documented band says "+
+			"%v. The ceiling is one whole sweep tick past the floor, because a sweep that "+
+			"ran just before the settle expired waits a full interval; ipamSweepInterval "+
+			"is %v. `bash scripts/check-window-constants.sh` names the sentences this "+
+			"falsifies", got, documentedCeiling, ipamSweepInterval)
+	}
+}
+
 // TestDeferredRelease_OnlyAnOnRemoveNetworkIsSwept is the guard's other
 // direction, and it is the arm with the worst failure (defeat rows I4
 // and I5).
@@ -371,6 +439,53 @@ func TestDeferredRelease_ANetworkWithNoStoredOptionsIsLeftAlone(t *testing.T) {
 	}
 	if got := recordPhase(t, p, id); got != lease.PhaseRetained {
 		t.Errorf("the record is %v, want RETAINED: a record closed here can never be released", got)
+	}
+}
+
+// TestDeferredRelease_TheSweepIsQuietAboutAnOptionsFileItMayReadNextTick
+// is the other half of TestDeleteNetwork_SaysSoWhenItCannotReadTheOptionsItNeeds,
+// and the two are only worth anything together.
+//
+// The same condition gets two different levels on purpose. On the
+// removal path nothing will ever look at those addresses again, so it
+// warns. Here a later pass can still decide, so it does not: this sweep
+// runs on every tick for the life of the deployment, and a warning
+// here would be four an hour, forever, for a condition that may clear
+// by itself. That is how an operator learns to stop reading the log.
+//
+// Without this test the contrast is asserted in one direction only, and
+// a change that made the quiet half loud would pass everything.
+func TestDeferredRelease_TheSweepIsQuietAboutAnOptionsFileItMayReadNextTick(t *testing.T) {
+	p, sender := deferredPlugin(t, ReleaseOnRemove)
+	deadline := time.Now()
+	id := heldRecord(t, p, deferredMAC(0x02), "192.168.99.10/24", deadline)
+	if err := deleteOptions(deferredTestNetwork); err != nil {
+		t.Fatalf("deleteOptions: %v", err)
+	}
+
+	// At debug, because that is the level under test: the shared
+	// captureLog pins Info, which would drop the very line this asserts
+	// and turn "quiet" into "silent" without anything being wrong.
+	out := captureDebugLog(t, func() {
+		p.sweepDeferredReleases(deadline.Add(time.Hour))
+	})
+
+	if got := sender.callCount(); got != 0 {
+		t.Fatalf("%d release(s) went out, want 0", got)
+	}
+	if got := recordPhase(t, p, id); got != lease.PhaseRetained {
+		t.Errorf("the record is %v, want RETAINED", got)
+	}
+	for _, loud := range []string{"level=warning", "level=error"} {
+		if strings.Contains(out, loud) {
+			t.Errorf("the sweep logged at %s for a condition a later tick may resolve. "+
+				"This pass runs every %v forever, so that is four an hour for the life of "+
+				"the deployment:\n%s", loud, ipamSweepInterval, out)
+		}
+	}
+	if !strings.Contains(out, "leaving the record as it is") {
+		t.Errorf("the sweep said nothing at all. Quiet is not silent: an operator asking "+
+			"why an address never went back has only this line to find:\n%s", out)
 	}
 }
 
@@ -825,7 +940,7 @@ func TestDeleteNetwork_SaysSoWhenItCannotReadTheOptionsItNeeds(t *testing.T) {
 //
 // On `on_remove` the stop sends nothing and moves no counter, so a
 // `docker stop` on this network looks from the outside exactly like a
-// stop on a `never` network for the next 60 to 80 seconds. The one
+// stop on a `never` network for the next 65 to 80 seconds. The one
 // thing that tells them apart is this line, and the reference documents
 // it as such, so its absence is a defect and not a missing nicety. The
 // address is in it because an operator reading it is about to go and

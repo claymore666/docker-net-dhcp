@@ -166,6 +166,9 @@ LANE=(
   # the lane's does not have, and a gate that refuses on a credential
   # the lane cannot supply would be red every run.
   "pool facts|-|bash scripts/check-pool-facts.sh"
+  # The on_remove window's prose against the three constants it is made
+  # of, derived from the Go source and never from the prose (#984).
+  "window constants|-|bash scripts/check-window-constants.sh"
   "scheduled shard coverage|-|bash scripts/check-shard-coverage.sh"
   "golden fixture keying|go|bash scripts/check-golden-fixture-name-keyed.sh"
   "test/policy-gates split|-|bash scripts/check-test-job-purity.sh"
