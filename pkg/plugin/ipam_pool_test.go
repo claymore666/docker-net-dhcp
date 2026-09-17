@@ -4,6 +4,7 @@
 package plugin
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -62,6 +63,58 @@ func TestIpamPoolID_IsAFunctionOfItsInputs(t *testing.T) {
 	if !strings.HasPrefix(first, ipamPoolIDPrefix) {
 		t.Errorf("PoolID %q does not carry the %q prefix that marks it as ours in `docker network inspect`", first, ipamPoolIDPrefix)
 	}
+}
+
+// TestIpamPoolID_TheTwoKeyRefusalDoesNotShadowThePrefixRefusal drives
+// the two refusals that arrived on this file from different branches
+// against each other.
+//
+// #1010 refuses `--ipam-opt parent` and `bridge` together, in
+// ipamPoolIDSuffix, which RequestPool reaches at `docker network
+// create`. #1019 refuses a gateway request on a /31 or a /32, in
+// ipamPoolNetworkAddress, which RequestAddress reaches afterwards. The
+// two merged without a textual conflict, and a clean merge says nothing
+// about whether they still compose: a refusal added upstream of another
+// can take every input the second one was built to judge.
+//
+// So both orders are driven. With both keys the earlier refusal answers
+// and names the key to keep, and with one key the request survives it
+// and meets the prefix refusal intact, which is what shows the first
+// did not swallow the second's domain.
+func TestIpamPoolID_TheTwoKeyRefusalDoesNotShadowThePrefixRefusal(t *testing.T) {
+	const pool = "192.168.99.4/31"
+
+	t.Run("both keys are refused before any address is asked for", func(t *testing.T) {
+		both := map[string]string{"parent": "eth0", "bridge": "br-lan"}
+		_, err := ipamPoolID(ipamLocalAddressSpace, pool, both)
+		if !errors.Is(err, util.ErrIPAM) {
+			t.Fatalf("both keys on a %s pool: got %v, want a %v refusal", pool, err, util.ErrIPAM)
+		}
+		if !strings.Contains(err.Error(), "given together") {
+			t.Errorf("the refusal is %q and does not say the two keys were given together", err)
+		}
+	})
+
+	t.Run("one key still reaches the prefix refusal", func(t *testing.T) {
+		p, _ := ipamFixture(t)
+		p.ipamIndex = newIPAMIndex()
+		id, err := ipamPoolID(ipamLocalAddressSpace, pool, map[string]string{"parent": "eth0"})
+		if err != nil {
+			t.Fatalf("one key on a %s pool was refused at create: %v", pool, err)
+		}
+		_, err = p.RequestAddress(context.Background(), RequestAddressRequest{
+			PoolID:  id,
+			Options: map[string]string{ipamOptRequestAddressType: ipamOptGateway},
+		})
+		if err == nil {
+			t.Fatalf("a gateway address was invented on a %s pool. Every address in it can "+
+				"be leased to a container, and #1010's refusal upstream must not have taken "+
+				"this request out of #1019's reach", pool)
+		}
+		if !strings.Contains(err.Error(), "--gateway") {
+			t.Errorf("the refusal is %q and does not name the option that supplies a gateway", err)
+		}
+	})
 }
 
 // TestIpamPoolID_CreateAndReplayDeriveOneIdentity is the OTHER half, and
