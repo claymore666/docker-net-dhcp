@@ -2408,13 +2408,16 @@ asks for one, and ipvlan children share the parent's MAC and refuse a
 supplied one. The network create is refused, and <code>--ipam-driver null</code> is
 unchanged and supported for ipvlan (#949).</p>
 <p><strong>IPv6 is IPv4-only in this shape, and the combination is refused.</strong> The
-plugin allocates no IPv6 pool, so Docker's <code>--ipv6</code> is refused; and
-<code>-o ipv6=true</code> is refused too, because the IPAM endpoint path runs no
-DHCPv6 exchange at all. A container on such a network would get no IPv6
-address from the plugin, and the identity the v6 client falls back to at
-join time is derived from the endpoint MAC, which Docker regenerates at
-every restart in this shape. Both refusals name #960. <code>-o ipv6=true</code> on
-an <code>--ipam-driver null</code> network is unchanged and supported.</p>
+plugin allocates no IPv6 pool, so Docker's <code>--ipv6</code> is refused; and so is
+every option that switches IPv6 on for the network, which is
+<code>-o ipv6=true</code> and <code>-o ipv6_mode=</code> with any mode but <code>off</code>, because the
+IPAM endpoint path runs no DHCPv6 exchange at all. A container on such a
+network would get no IPv6 address from the plugin, and the identity the
+v6 client falls back to at join time is derived from the endpoint MAC,
+which Docker regenerates at every restart in this shape. The refusals
+name #960, and the one at <code>docker network create</code> names the mode the
+network was set to. On an <code>--ipam-driver null</code> network every <code>ipv6_mode</code>
+is unchanged and supported.</p>
 <p><strong>A network's IPAM driver is fixed when it is created.</strong> Upgrading the
 plugin never moves an existing <code>--ipam-driver null</code> network into the new
 shape, and switching shapes is a <code>docker network rm</code> and a create.</p>
