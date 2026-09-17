@@ -40,13 +40,13 @@ name: Capture fixtures
 # secrets, and #593 is the record of what happens when such a context
 # takes an arbitrary ref and hands it to actions/checkout: a fork's PR
 # head is fetchable from this repository, so `-f ref=refs/pull/<N>/head`
-# reached a secret-bearing job. integration.yml now guards that input
-# with the dispatch-ref job. This workflow does not need the input at
-# all — `gh workflow run --ref` already selects a branch or tag, and a
-# pull-request ref is not dispatchable — so the hazard is absent by
-# construction rather than guarded. Do not add an input here without
-# also adding the guard job; scripts/check-dispatch-ref-guard.sh will
-# fail the build if you do.
+# reached a secret-bearing job. integration.yml carried that input
+# behind a guard job until #1009 deleted both. No workflow here needs
+# the input — `gh workflow run --ref` already selects a branch or tag,
+# and a pull-request ref is not dispatchable — so the hazard is absent
+# by construction rather than guarded. Do not add an input here without
+# also adding a job that validates it;
+# scripts/check-dispatch-ref-guard.sh will fail the build if you do.
 on:
   workflow_dispatch:
 

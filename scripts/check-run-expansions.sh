@@ -23,10 +23,10 @@
 # project keeps getting bitten by, which is why it is checked instead of
 # remembered.
 #
-# It also caught a second class: the dispatch-ref GUARD job in
-# integration.yml expanded the very input it exists to validate. A guard
-# subvertible through its own argument protects nothing downstream of
-# it.
+# It also caught a second class: integration.yml's dispatch-ref GUARD
+# job, deleted in #1009 along with the input it validated, expanded that
+# very input. A guard subvertible through its own argument protects
+# nothing downstream of it.
 #
 # SECRETS ARE CHECKED TOO, for a different reason. `${{ secrets.X }}`
 # inside a run body writes the secret into the step script on disk,

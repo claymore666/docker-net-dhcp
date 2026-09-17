@@ -86,20 +86,30 @@ name: Integration
 # workflow to `pull_request_target`, or checking out a PR head in a job
 # that has the credential — reverses that and must not be done here.
 #
-# `workflow_dispatch` IS such a route, and this note did not say so
+# `workflow_dispatch` WAS such a route, and this note did not say so
 # until #593. A fork's PR head is fetchable from the base repository
 # (`refs/pull/<N>/head`, no `repository:` argument needed), a dispatch
-# context DOES carry repository secrets, and the `ref` input below went
+# context DOES carry repository secrets, and a `ref` input went
 # straight to actions/checkout. Passing `-f ref=refs/pull/<N>/head` —
 # or the head's bare SHA, which no ref pattern can see — reached the
-# outcome this paragraph forbids, by a route it had not named.
+# outcome this paragraph forbids, by a route it had not named. It also
+# ran the named tree's own scripts with the default branch's Actions
+# cache scope, which the `actions/setup-go` steps carrying `cache: true`
+# in codeql.yml and test.yaml — six of them — restore from: CodeQL
+# alerts 94, 122 and 123.
 #
-# That is now enforced rather than described. The `dispatch-ref` job
-# rejects any ref not reachable from a branch or tag of this repository
-# before anything checks it out, every consumer of `inputs.ref` sits
-# behind it, and scripts/check-dispatch-ref-guard.sh fails the build if
-# a future job takes the input without that dependency. Prose was what
-# failed here; do not replace the check with more of it.
+# #593 guarded the input; #1009 deleted it, the guard job with it, and
+# the `ref:` argument from both checkouts. What runs is the tree the
+# workflow file came from, so `gh workflow run integration.yml --ref
+# <branch-or-tag>` still picks the tree to test and a pull-request ref
+# is not dispatchable — the hazard is absent by construction here, the
+# way it always was in capture-fixtures.yml. Do not put an input back
+# without constraining it before anything is fetched:
+# scripts/check-dispatch-ref-guard.sh fails the build if a job takes a
+# dispatch input into a checkout unconstrained, and
+# scripts/resolve-dispatch-ref.sh is the shape left in this tree — an
+# allowlist that can emit refs/heads/dev or refs/tags/vX.Y.Z and
+# nothing else.
 on:
   push:
     branches:
@@ -117,12 +127,10 @@ on:
   # an empty commit to dev (pollutes history, bypasses the PR rule) or
   # `gh run rerun` on the originating PR run, which depends on that run
   # still existing and on remembering which one matches the tree.
+  #
+  # No inputs (#1009): the dispatch's own `--ref` names the branch or
+  # tag, and every checkout below takes that same tree.
   workflow_dispatch:
-    inputs:
-      ref:
-        description: "Branch, tag or SHA OF THIS REPOSITORY to run the suite against. Blank = the default branch. A pull-request ref is rejected (#593)."
-        required: false
-        type: string
 
 # Serializes privileged self-hosted WORKFLOW RUNS (shared with
 # coverage.yml, #296) — one PR's integration run cannot overlap
@@ -221,58 +229,6 @@ permissions:
   actions: read
 
 jobs:
-  # Validate the dispatch ref BEFORE anything checks it out (#593).
-  #
-  # Deliberately NOT conditioned on `github.event_name`. A skipped job
-  # skips everything in its `needs:` chain, so an `if:` here would skip
-  # the gate and the suites on every push and pull_request — and the
-  # aggregator would read that as a failure. Instead the job always
-  # runs and the script passes trivially on a blank ref, which is what
-  # every non-dispatch event supplies.
-  #
-  # It checks out WITHOUT `ref:` on purpose: this job must never
-  # materialize the untrusted tree it is judging. What it runs is the
-  # workflow's own ref, which required write access to dispatch.
-  dispatch-ref:
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          # Load-bearing. The check answers "is this commit reachable
-          # from one of our branches or tags", and `--contains` on a
-          # truncated graph answers that wrong in the direction that
-          # rejects legitimate refs. The script refuses to run on a
-          # shallow clone rather than guess.
-          fetch-depth: 0
-
-      - name: Fetch every branch and tag
-        # Explicit rather than inferred from fetch-depth, for the same
-        # reason release-backmerge.yml fetches its two tips by hand:
-        # checkout leaves us on ONE ref, and this check can only see
-        # what is in the object store. The input's own description
-        # advertises a tag as valid, so a missing refs/tags would reject
-        # `v1.6.0` as "not ours" — failing closed, but confusingly, at
-        # the moment somebody is trying to test a release tag.
-        run: |
-          git fetch --no-tags origin '+refs/heads/*:refs/remotes/origin/*'
-          git fetch --tags origin
-
-      # The ref reaches the shell through env, never expanded into the
-      # script text (#737). Worth naming what makes this instance
-      # different from the other four: THIS IS THE GUARD JOB. `${{ }}`
-      # is substituted before bash parses the line, so the one job whose
-      # entire purpose is to refuse an untrusted ref could be subverted
-      # through the very input it validates — and it runs FIRST, so
-      # everything gated behind it inherits the outcome. A guard that
-      # can be walked through by its own argument is a different class
-      # of finding from an ordinary injection site, and this comment
-      # exists so that is not re-discovered from scratch.
-      - name: Reject a dispatch ref that is not ours
-        env:
-          INPUT_REF: ${{ inputs.ref }}
-        run: bash scripts/check-dispatch-ref.sh "${INPUT_REF}"
-
   # Decide ONCE whether this event needs the suites at all: docs-only PR
   # diffs (#311) and post-merge pushes whose tree already passed (#312)
   # exit in seconds instead of holding a privileged pool slot for ~20
@@ -291,25 +247,15 @@ jobs:
   # ubuntu-latest, not the dhcp-ci pool: this is an API call and a
   # git rev-parse, and it must not consume a privileged runner slot.
   gate:
-    needs: dispatch-ref
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
       decision: ${{ steps.gate.outputs.decision }}
     steps:
-      # No `ref:` — this job runs scripts/integration-run-gate.sh, and
-      # it must run OUR copy of it (#593). Checking out `inputs.ref`
-      # here executed an attacker-chosen script with the default
-      # branch's Actions cache scope, which is the open CodeQL
-      # `actions/cache-poisoning/poisonable-step` alert: four setup-go
-      # call sites across codeql.yml and test.yaml restore that cache on
-      # the default branch.
-      #
-      # Nothing is lost by dropping it. The gate decides repo policy,
-      # not PR content: on a dispatch its answer is the hardcoded "run"
-      # (#419), and on push/pull_request the input is blank, so this
-      # checkout is the event's own tree either way — which is exactly
-      # what the push-mode tree comparison needs.
+      # The event's own tree, and OUR copy of
+      # scripts/integration-run-gate.sh (#593). The push branch below
+      # compares `git rev-parse HEAD^{tree}` against past runs, so the
+      # tree read here has to be the one the event names.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Suite-needed gate
@@ -380,12 +326,6 @@ jobs:
       HAS_HUB_CREDS: ${{ secrets.DOCKERHUB_USERNAME != '' && secrets.DOCKERHUB_TOKEN != '' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          # Empty on every event except workflow_dispatch, where
-          # checkout falls back to the triggering ref (#419). Validated
-          # by dispatch-ref, which gate depends on and this job descends
-          # from (#593).
-          ref: ${{ inputs.ref }}
 
       # The two Hub base images are pulled ONCE per run now instead of
       # once per suite job, which is the other half of #562 the login
@@ -657,10 +597,6 @@ jobs:
       INTEGRATION_PLUGIN_REF: ghcr.io/claymore666/docker-net-dhcp:integration
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          # Empty on every event except workflow_dispatch, where
-          # checkout falls back to the triggering ref (#419).
-          ref: ${{ inputs.ref }}
 
       # The Docker Hub login moved to the `build` job with the build
       # itself (#562, D41). These jobs no longer pull a base image: the

@@ -54,12 +54,14 @@
 # It also judges a binary compiled from this tree, and not the one
 # inside the published image. That is the same reach the copy check it
 # replaces had -- a test.yaml step over the checkout -- and the reason
-# it is not extended into the integration lane is written down rather
-# than left to be rediscovered: the suite and build jobs there check out
-# `inputs.ref`, so a step added to either is a poisonable step in a job
-# holding the default branch's cache scope. CodeQL says so, and the same
-# alert is already open on that dispatch path. The image's own claim is
-# checked by the health document cell and by reproducible-build.yml.
+# it is not extended into the integration lane was written down rather
+# than left to be rediscovered: until #1009 the suite and build jobs
+# there checked out `inputs.ref`, so a step added to either was a
+# poisonable step in a job holding the default branch's cache scope, and
+# CodeQL had the alert open to say so. #1009 deleted that input, so that
+# reason no longer stands. The extension has not been made and nothing
+# here claims a second reason for that. The image's own claim is checked
+# by the health document cell and by reproducible-build.yml.
 #
 # USAGE
 #
