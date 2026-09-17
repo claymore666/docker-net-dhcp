@@ -1790,3 +1790,333 @@ func englishCount(t *testing.T, n int) string {
 	}
 	return words[n]
 }
+
+// TestRequestAddress_TheGatewayOnAnEngineThatDoesNotAskGwAllocCheck
+// drives the order an engine below 28 puts these handlers in, which is
+// the order no test drove before #1012: RequestPool, then a gateway
+// RequestAddress carrying NO address on a pool nothing is bound to yet,
+// then CreateNetwork.
+//
+// THE EMPTY ADDRESS IS THE WHOLE CASE. GwAllocCheck, the call that
+// stops the daemon asking at all, arrived in engine 28; before it,
+// moby's network.go requests a gateway from the IPAM driver at every
+// create whose pool carried none, and `docker network create` fails
+// with "failed to allocate gateway ()" if the driver refuses. The
+// integration lane runs engine 29, where the call is suppressed, so
+// this is the observer for that half of the matrix.
+//
+// The answer is the pool's OWN network address, which is what separates
+// it from answering 0.0.0.0 on every pool: an operator who typed
+// --subnet gets a gateway record describing the subnet they typed, and
+// the address is one no DHCP server hands out, so it can never shadow a
+// lease.
+func TestRequestAddress_TheGatewayOnAnEngineThatDoesNotAskGwAllocCheck(t *testing.T) {
+	cases := []struct {
+		name    string
+		subnet  string
+		want    string
+		gateway string
+	}{
+		{name: "a network created with --subnet", subnet: ipamTestPool, want: ipamTestPool, gateway: "192.168.99.0"},
+		{name: "a network created with no --subnet", subnet: "", want: ipamAnyPool, gateway: "0.0.0.0"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			withStateDir(t, t.TempDir())
+			const bridge = "br-ipam-gw"
+			withFakeBridge(t, bridge)
+
+			p := newPluginForTest()
+			p.ipamPools = newIssuedPools()
+			p.ipamIndex = newIPAMIndex()
+			p.docker = &fakeDocker{}
+			r, err := dhcp.OpenRecords(t.TempDir()+"/"+recordFileName, "test-instance")
+			if err != nil {
+				t.Fatalf("OpenRecords: %v", err)
+			}
+			t.Cleanup(func() { _ = r.Close() })
+			p.records = r
+
+			pool, err := p.RequestPool(RequestPoolRequest{
+				AddressSpace: ipamLocalAddressSpace,
+				Pool:         tc.subnet,
+			})
+			if err != nil {
+				t.Fatalf("RequestPool: %v", err)
+			}
+
+			res, err := p.RequestAddress(context.Background(), RequestAddressRequest{
+				PoolID:  pool.PoolID,
+				Options: map[string]string{ipamOptRequestAddressType: ipamOptGateway},
+			})
+			if err != nil {
+				t.Fatalf("the gateway request an engine below 28 sends at `docker network "+
+					"create` was refused: %v. The daemon turns this into \"failed to "+
+					"allocate gateway ()\" and the network is not created (#1012)", err)
+			}
+			if res.Address != tc.want {
+				t.Fatalf("gateway = %q, want %q: the pool's own network address, wearing the "+
+					"pool's prefix", res.Address, tc.want)
+			}
+
+			// What the daemon does with the answer: it becomes this
+			// network's gateway and comes back in CreateNetwork.
+			if err := p.CreateNetwork(CreateNetworkRequest{
+				NetworkID: ipamTestNetwork,
+				Options: map[string]interface{}{
+					util.OptionsKeyGeneric: map[string]interface{}{"bridge": bridge},
+				},
+				IPv4Data: []*IPAMData{{
+					AddressSpace: ipamLocalAddressSpace,
+					Pool:         pool.Pool,
+					Gateway:      res.Address,
+				}},
+			}); err != nil {
+				t.Fatalf("CreateNetwork with the gateway this driver answered: %v", err)
+			}
+
+			sn, err := ipamNetwork(ipamTestNetwork)
+			if err != nil {
+				t.Fatalf("the network was not bound: %v", err)
+			}
+			if sn.Binding.Gateway != tc.gateway {
+				t.Errorf("the persisted gateway is %q, want %q. It is what `docker network "+
+					"inspect` reports on a network created with no --subnet, and what the "+
+					"echo branch compares an address against for the life of the network",
+					sn.Binding.Gateway, tc.gateway)
+			}
+
+			// `docker network rm`: libnetwork releases the gateway it
+			// was given before it deletes the network. It reaches the
+			// release path and is classified there as an address no
+			// lease record holds, which is what it is: nothing was
+			// leased for it and nothing is handed back.
+			if err := p.ReleaseAddress(ReleaseAddressRequest{
+				PoolID:  pool.PoolID,
+				Address: tc.gateway,
+			}); err != nil {
+				t.Errorf("releasing the gateway at network delete: %v", err)
+			}
+			if n := p.ipamReleaseUnknown.Load(); n != 1 {
+				t.Errorf("ipam_release_unknown = %d after the gateway was released, want 1. "+
+					"The release either never reached the handler or was read as a "+
+					"reservation being handed back", n)
+			}
+
+			// And for the rest of the network's life the same address
+			// is echoed instead of being leased.
+			back, err := p.RequestAddress(context.Background(), RequestAddressRequest{
+				PoolID:  pool.PoolID,
+				Address: tc.gateway,
+			})
+			if err != nil {
+				t.Fatalf("the daemon-start replay of the gateway was refused: %v", err)
+			}
+			if bareAddress(back.Address) != tc.gateway {
+				t.Errorf("the replayed gateway came back as %q, want %q", back.Address, tc.gateway)
+			}
+		})
+	}
+}
+
+// TestIpamPoolOfID_ReadsThePoolBackOutOfTheIdentity pins the derivation
+// the answer above is built on. The PoolID is assembled from the
+// address space, the canonical pool and an optional interface suffix
+// (ipamPoolID), and the gateway answer takes the pool back out of it
+// rather than out of a store the daemon-start replay has already
+// emptied.
+func TestIpamPoolOfID_ReadsThePoolBackOutOfTheIdentity(t *testing.T) {
+	for _, tc := range []struct {
+		opts map[string]string
+		pool string
+		want string
+	}{
+		{pool: ipamTestPool, want: ipamTestPool},
+		{pool: "", want: ipamAnyPool},
+		{pool: "192.168.99.7/24", want: ipamTestPool},
+		{opts: map[string]string{"parent": "eth0"}, pool: ipamTestPool, want: ipamTestPool},
+		{opts: map[string]string{"bridge": "br-lan"}, pool: "", want: ipamAnyPool},
+	} {
+		id, err := ipamPoolID(ipamLocalAddressSpace, tc.pool, tc.opts)
+		if err != nil {
+			t.Fatalf("ipamPoolID(%q, %v): %v", tc.pool, tc.opts, err)
+		}
+		got, err := ipamPoolOfID(id)
+		if err != nil {
+			t.Fatalf("ipamPoolOfID(%q): %v", id, err)
+		}
+		if got.String() != tc.want {
+			t.Errorf("ipamPoolOfID(%q) = %q, want %q", id, got, tc.want)
+		}
+	}
+
+	// A pool identity this driver did not issue is refused instead of
+	// being answered with a guess: the answer becomes a network's
+	// gateway, and a gateway derived from an unparsed string would be
+	// whatever the string happened to contain.
+	for _, bad := range []string{
+		"null/0.0.0.0/0",
+		"dhcp/somewhere-else/192.168.99.0/24",
+		"dhcp/" + ipamLocalAddressSpace + "/192.168.99.0",
+		"dhcp/" + ipamLocalAddressSpace + "/not-a-prefix/24",
+		"dhcp/" + ipamLocalAddressSpace + "/fd00::/64",
+	} {
+		if _, err := ipamPoolOfID(bad); err == nil {
+			t.Errorf("ipamPoolOfID(%q) was answered; it names no pool this driver issued", bad)
+		} else if !errors.Is(err, util.ErrIPAM) {
+			t.Errorf("ipamPoolOfID(%q) refused with %v, which does not wrap util.ErrIPAM", bad, err)
+		}
+	}
+}
+
+// TestRequestAddress_OnlyTheGatewayIsAnsweredOnAnUnboundPool is the
+// boundary of the answer above.
+//
+// The gateway is answered on an unbound pool because it says what it is
+// on the wire and is never an endpoint's address. Nothing else is: a
+// request with no address and no gateway option is a container asking
+// for a lease, and a pool no network holds has nothing to lease from.
+// Answering it would hand a container an address from a network this
+// process knows nothing about, with no record behind it.
+func TestRequestAddress_OnlyTheGatewayIsAnsweredOnAnUnboundPool(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		opts map[string]string
+	}{
+		{name: "no options at all"},
+		{name: "an endpoint being created", opts: map[string]string{ipamOptMacAddress: ipamTestMAC}},
+		{name: "a request type that is not the gateway", opts: map[string]string{
+			ipamOptRequestAddressType: "com.docker.network.endpoint.something",
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p, b := ipamFixture(t)
+			p.ipamIndex = newIPAMIndex()
+			_, err := p.RequestAddress(context.Background(), RequestAddressRequest{
+				PoolID:  b.PoolID,
+				Options: tc.opts,
+			})
+			if err == nil {
+				t.Fatal("an address was leased from a pool no network on this host holds. " +
+					"Only a gateway-type request is answered there")
+			}
+			if !strings.Contains(err.Error(), "nothing to lease from") {
+				t.Errorf("the refusal is %q and does not say what is wrong", err)
+			}
+		})
+	}
+}
+
+// TestRequestAddress_AGatewayWithNoAddressOnABoundPoolNamesTheRemedy
+// pins the one gateway shape that is still refused.
+//
+// A bound pool means CreateNetwork has already run for this network, so
+// a gateway request arriving now is not the one an engine sends while a
+// create is in flight. There is no address to give it: this plugin
+// leases per endpoint and the gateway comes from the DHCP server at
+// Join. The refusal is what an operator reads, so it names the option
+// that gets Docker a gateway record.
+func TestRequestAddress_AGatewayWithNoAddressOnABoundPoolNamesTheRemedy(t *testing.T) {
+	p, b := ipamFixture(t)
+	_, err := p.RequestAddress(context.Background(), RequestAddressRequest{
+		PoolID:  b.PoolID,
+		Options: map[string]string{ipamOptRequestAddressType: ipamOptGateway},
+	})
+	if err == nil {
+		t.Fatal("a gateway address was allocated on a network that already exists")
+	}
+	if !strings.Contains(err.Error(), "--gateway") {
+		t.Errorf("the refusal is %q and does not name the option that gets Docker's own "+
+			"network record a gateway", err)
+	}
+}
+
+// TestRequestAddress_TheGatewayAnswerHasTwoPrefixLengthsItRefuses is
+// the boundary of the answer above, driven at it.
+//
+// The answer is the pool's network address because a network address is
+// not a host address. On a /31 both addresses are host addresses (RFC
+// 3021 Section 2.1) and on a /32 the single address is one, so on those
+// two prefixes there is nothing to invent that the DHCP server could
+// not hand to a container. An address invented there would be recorded
+// as the network's gateway and echoed from the binding for the life of
+// the network, so the container that was really given it would have its
+// address confirmed by a record that does not exist.
+//
+// The refusal is not a dead end. `--gateway` is passed straight
+// through, on any prefix, which is the remedy the message names; and an
+// engine from 28 up never asks, so the prefix changes nothing there.
+func TestRequestAddress_TheGatewayAnswerHasTwoPrefixLengthsItRefuses(t *testing.T) {
+	gwOpts := map[string]string{ipamOptRequestAddressType: ipamOptGateway}
+
+	t.Run("a pool with no address that is not a host address is refused", func(t *testing.T) {
+		for _, pool := range []string{"192.168.99.4/31", "192.168.99.7/32"} {
+			p, _ := ipamFixture(t)
+			p.ipamIndex = newIPAMIndex()
+			id, err := ipamPoolID(ipamLocalAddressSpace, pool, nil)
+			if err != nil {
+				t.Fatalf("ipamPoolID(%q): %v", pool, err)
+			}
+			_, err = p.RequestAddress(context.Background(), RequestAddressRequest{
+				PoolID: id, Options: gwOpts,
+			})
+			if err == nil {
+				t.Fatalf("pool %s: an address was invented for the gateway. Every address in "+
+					"this pool can be leased to a container, and the one taken here would "+
+					"be answered from the binding for the life of the network", pool)
+			}
+			if !errors.Is(err, util.ErrIPAM) {
+				t.Errorf("pool %s: the refusal %v does not wrap util.ErrIPAM", pool, err)
+			}
+			if !strings.Contains(err.Error(), "--gateway") {
+				t.Errorf("pool %s: the refusal is %q and does not name the option that "+
+					"supplies a gateway on such a network", pool, err)
+			}
+		}
+	})
+
+	// The twin, one bit away. A /30 has two host addresses and a network
+	// address, so the answer exists and is given.
+	t.Run("one bit shorter is answered", func(t *testing.T) {
+		p, _ := ipamFixture(t)
+		p.ipamIndex = newIPAMIndex()
+		id, err := ipamPoolID(ipamLocalAddressSpace, "192.168.99.4/30", nil)
+		if err != nil {
+			t.Fatalf("ipamPoolID: %v", err)
+		}
+		res, err := p.RequestAddress(context.Background(), RequestAddressRequest{
+			PoolID: id, Options: gwOpts,
+		})
+		if err != nil {
+			t.Fatalf("a /30 pool was refused: %v", err)
+		}
+		if res.Address != "192.168.99.4/30" {
+			t.Errorf("gateway = %q, want 192.168.99.4/30", res.Address)
+		}
+	})
+
+	// And the remedy the refusal names works on the refused prefixes: a
+	// typed --gateway carries an address, so nothing is invented.
+	t.Run("a typed --gateway is answered on the refused prefixes", func(t *testing.T) {
+		for _, tc := range []struct{ pool, gw, want string }{
+			{pool: "192.168.99.4/31", gw: "192.168.99.5", want: "192.168.99.5/32"},
+			{pool: "192.168.99.7/32", gw: "192.168.99.7", want: "192.168.99.7/32"},
+		} {
+			p, _ := ipamFixture(t)
+			p.ipamIndex = newIPAMIndex()
+			id, err := ipamPoolID(ipamLocalAddressSpace, tc.pool, nil)
+			if err != nil {
+				t.Fatalf("ipamPoolID(%q): %v", tc.pool, err)
+			}
+			res, err := p.RequestAddress(context.Background(), RequestAddressRequest{
+				PoolID: id, Address: tc.gw, Options: gwOpts,
+			})
+			if err != nil {
+				t.Fatalf("pool %s with --gateway %s: %v", tc.pool, tc.gw, err)
+			}
+			if res.Address != tc.want {
+				t.Errorf("pool %s: gateway = %q, want %q", tc.pool, res.Address, tc.want)
+			}
+		}
+	})
+}

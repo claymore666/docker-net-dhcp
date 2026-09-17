@@ -453,6 +453,26 @@ handing out an address outside the subnet you typed would put a
 container in Docker's own records outside its network's pool, and
 `docker run` fails instead.
 
+**The gateway record on engines below 28.** Docker 28 asks the plugin
+whether a network needs a gateway address of its own, and the answer is
+no. Older engines do not ask. They request one from the IPAM driver at
+`docker network create`, and a driver that refuses fails the create with
+`failed to allocate gateway ()`. The driver answers with the pool's own
+network address, which is not a host address and so is not one a DHCP
+server can lease, so on those engines a network created without
+`--subnet` shows `Gateway 0.0.0.0` in `docker network inspect`. It is a record in Docker's store and not a
+route: the gateway a container uses is the one the DHCP server names,
+and it reaches the container at endpoint creation on every engine. A
+`--gateway` you type yourself is kept unchanged on all of them.
+
+Two subnets have no such address. In a `/31` both addresses are host
+addresses and in a `/32` the single address is one, so on an engine
+below 28 `--subnet 192.168.99.4/31` is refused at create with a message
+naming the two ways through: type `--gateway <address>` yourself, which
+is passed to Docker unchanged and leaves nothing to invent, or use a
+shorter prefix. Docker 28 and later does not ask, so it creates those
+networks with neither.
+
 **Keep `docker plugin enable --timeout` at its 30s default.** In this
 shape the address is acquired inside the daemon's IPAM call, and the
 plugin sizes that work to the default budget: one reservation gets 26s
