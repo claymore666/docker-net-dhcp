@@ -158,10 +158,10 @@ for unattended):
 sudo mkdir -p /var/lib/net-dhcp
 
 # amd64
-docker plugin install ghcr.io/claymore666/docker-net-dhcp:v2.2.0
+docker plugin install ghcr.io/claymore666/docker-net-dhcp:v2.2.1
 
 # arm64 (v1.7.0 onward). The architecture is in the tag, see below
-docker plugin install ghcr.io/claymore666/docker-net-dhcp:v2.2.0-arm64
+docker plugin install ghcr.io/claymore666/docker-net-dhcp:v2.2.1-arm64
 ```
 
 **If the directory is missing**, the install pulls the plugin, then
@@ -175,7 +175,7 @@ plugin that is already there:
 
 ```bash
 sudo mkdir -p /var/lib/net-dhcp
-docker plugin enable ghcr.io/claymore666/docker-net-dhcp:v2.2.0
+docker plugin enable ghcr.io/claymore666/docker-net-dhcp:v2.2.1
 ```
 
 On arm64 that second line takes the `-arm64` tag, like every other
@@ -383,7 +383,7 @@ You bring an existing Linux bridge that is L2-connected to the LAN
 (see [`bridge-mode.md`](bridge-mode.md) for the bridge setup itself):
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.2.0 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.2.1 \
     --ipam-driver null \
     -o bridge=my-bridge \
     my-dhcp-net
@@ -395,7 +395,7 @@ No host changes are needed. Containers get per-container
 kernel-generated MACs as macvlan children of a host NIC:
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.2.0 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.2.1 \
     --ipam-driver null \
     -o mode=macvlan -o parent=eth0 \
     lan-dhcp
@@ -409,7 +409,7 @@ security, hostile vSwitches, some Wi-Fi APs). The DHCP server must key
 reservations on DHCP option 61 (client identifier) and never on MAC:
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.2.0 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.2.1 \
     --ipam-driver null \
     -o mode=ipvlan -o parent=eth0 \
     lan-dhcp
@@ -426,8 +426,8 @@ also serves an IPAM driver of its own (#110), and the line names the
 plugin twice:
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.2.0 \
-    --ipam-driver ghcr.io/claymore666/docker-net-dhcp:v2.2.0 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.2.1 \
+    --ipam-driver ghcr.io/claymore666/docker-net-dhcp:v2.2.1 \
     -o mode=macvlan -o parent=eth0 \
     lan-dhcp
 ```
@@ -453,6 +453,26 @@ handing out an address outside the subnet you typed would put a
 container in Docker's own records outside its network's pool, and
 `docker run` fails instead.
 
+**The gateway record on engines below 28.** Docker 28 asks the plugin
+whether a network needs a gateway address of its own, and the answer is
+no. Older engines do not ask. They request one from the IPAM driver at
+`docker network create`, and a driver that refuses fails the create with
+`failed to allocate gateway ()`. The driver answers with the pool's own
+network address, which is not a host address and so is not one a DHCP
+server can lease, so on those engines a network created without
+`--subnet` shows `Gateway 0.0.0.0` in `docker network inspect`. It is a record in Docker's store and not a
+route: the gateway a container uses is the one the DHCP server names,
+and it reaches the container at endpoint creation on every engine. A
+`--gateway` you type yourself is kept unchanged on all of them.
+
+Two subnets have no such address. In a `/31` both addresses are host
+addresses and in a `/32` the single address is one, so on an engine
+below 28 `--subnet 192.168.99.4/31` is refused at create with a message
+naming the two ways through: type `--gateway <address>` yourself, which
+is passed to Docker unchanged and leaves nothing to invent, or use a
+shorter prefix. Docker 28 and later does not ask, so it creates those
+networks with neither.
+
 **Keep `docker plugin enable --timeout` at its 30s default.** In this
 shape the address is acquired inside the daemon's IPAM call, and the
 plugin sizes that work to the default budget: one reservation gets 26s
@@ -470,6 +490,15 @@ only for a **second** network in this shape with the same subnet on a
 different parent. Two such networks otherwise derive the same pool
 identity, and the second `docker network create` is refused, naming this
 option. One network needs neither key.
+
+The two keys are exclusive. A pool names one interface, so giving both
+is refused at `docker network create`. The pool is requested before this
+network's own `-o` options reach the driver, so the refusal cannot tell
+which of the two your network is and does not pretend to: it names both,
+`-o bridge=` on a bridge network, `-o parent=` on a macvlan or ipvlan
+one, and you keep the one your mode owns (#1010). Before that refusal
+the second key was accepted and dropped, and the pool identity was built
+from the first key alone.
 
 **Not supported.** `ipvlan` networks cannot use this plugin as their
 IPAM driver: Docker generates a MAC per endpoint for an IPAM driver that
@@ -1409,7 +1438,7 @@ socket also gives, so a permission problem looks exactly like a dead
 endpoint:
 
 ```bash
-PLUGIN_ID=$(docker plugin inspect -f '{{.Id}}' ghcr.io/claymore666/docker-net-dhcp:v2.2.0)
+PLUGIN_ID=$(docker plugin inspect -f '{{.Id}}' ghcr.io/claymore666/docker-net-dhcp:v2.2.1)
 sudo curl -s --unix-socket /run/docker/plugins/$PLUGIN_ID/net-dhcp.sock \
     http://localhost/Plugin.Health | jq .
 ```
@@ -1613,7 +1642,7 @@ quietly go missing from your dashboards.
 On the plugin socket, always:
 
 ```bash
-PLUGIN_ID=$(docker plugin inspect -f '{{.Id}}' ghcr.io/claymore666/docker-net-dhcp:v2.2.0)
+PLUGIN_ID=$(docker plugin inspect -f '{{.Id}}' ghcr.io/claymore666/docker-net-dhcp:v2.2.1)
 sudo curl -s --unix-socket /run/docker/plugins/$PLUGIN_ID/net-dhcp.sock \
     http://localhost/metrics
 ```
@@ -1622,7 +1651,7 @@ Prometheus cannot scrape a UNIX socket, so for an actual scrape target
 set `METRICS_ADDR`:
 
 ```bash
-PLUGIN=ghcr.io/claymore666/docker-net-dhcp:v2.2.0
+PLUGIN=ghcr.io/claymore666/docker-net-dhcp:v2.2.1
 docker plugin disable "$PLUGIN"
 docker plugin set "$PLUGIN" METRICS_ADDR=127.0.0.1:9099
 docker plugin enable "$PLUGIN"
@@ -1782,7 +1811,7 @@ Raise verbosity with a disable, a set, and an enable, in that order,
 because `docker plugin set` is refused while the plugin is running:
 
 ```bash
-PLUGIN=ghcr.io/claymore666/docker-net-dhcp:v2.2.0
+PLUGIN=ghcr.io/claymore666/docker-net-dhcp:v2.2.1
 docker plugin disable "$PLUGIN"
 docker plugin set "$PLUGIN" LOG_LEVEL=trace
 docker plugin enable "$PLUGIN"
@@ -1865,7 +1894,7 @@ Compose-managed alternative (network lifecycle tied to the project):
 ```yaml
 networks:
   lan:
-    driver: ghcr.io/claymore666/docker-net-dhcp:v2.2.0
+    driver: ghcr.io/claymore666/docker-net-dhcp:v2.2.1
     driver_opts:
       mode: macvlan
       parent: eth0

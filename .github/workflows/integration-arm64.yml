@@ -39,6 +39,15 @@ on:
       - 'v*-rc*'
   workflow_dispatch:
 
+# One tag push has started this workflow twice (#1007: v2.2.0-rc2, two
+# push-event runs one second apart, both publishing to the registries).
+# The group is the tag ref, so a second run for the same tag replaces the
+# first: the newest run's images, signatures and release page agree with
+# each other. A dispatch against a tag joins the same group on purpose.
+concurrency:
+  group: integration-arm64-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 

@@ -114,6 +114,37 @@ func ipamPoolIDSuffix(opts map[string]string) (string, error) {
 				k, strings.Join(ipamPoolOptKeys, ", "), util.ErrIPAM)
 		}
 	}
+	// ONE KEY, because the decoder reads one (#1010, found by
+	// FuzzIPAMPoolIDRoundTrip). ipamPoolIDNames returns a single
+	// key/name pair, so a suffix carrying both encoded an option that
+	// nothing downstream can see: RequestPool stored `parent` as the
+	// issued pool's name and `bridge` reached no comparison at all, and
+	// two requests differing only in the invisible half derived one
+	// name. That is the identity collapse the unknown-key refusal above
+	// exists to prevent, one level in. Refusing is also the only answer
+	// that is not a guess about which of the two the operator meant, and
+	// a network is on one interface: the two keys are the macvlan/ipvlan
+	// and the bridge spelling of the same thing.
+	var given []string
+	for _, k := range ipamPoolOptKeys {
+		if _, ok := opts[k]; ok {
+			given = append(given, k)
+		}
+	}
+	// BOTH SPELLINGS ARE NAMED, because this driver cannot see which one
+	// the network owns. libnetwork allocates the pool while the create
+	// is still running and hands the network's own `-o` options to
+	// CreateNetwork afterwards, so at this point there is no mode to
+	// read: the only thing here is the --ipam-opt map the operator
+	// typed. Naming one key is then a guess, and the first version of
+	// this message guessed by position -- it printed the first of
+	// ipamPoolOptKeys that was present, which is always `parent`, so a
+	// bridge network was told to keep an option it does not have.
+	if len(given) > 1 {
+		return "", fmt.Errorf("--ipam-opt %s were given together and a pool names one interface. Keep the one this network's mode owns: `-o bridge=` on a bridge network, `-o parent=` on a macvlan or ipvlan one. Both are named because the pool is requested before this network's own `-o` options reach this driver, which cannot tell from here which of the two your network is: %w",
+			strings.Join(given, " and "), util.ErrIPAM)
+	}
+
 	var parts []string
 	for _, k := range ipamPoolOptKeys {
 		v, ok := opts[k]
@@ -137,6 +168,17 @@ func ipamPoolIDSuffix(opts map[string]string) (string, error) {
 
 // ipamPoolIDNames reports the interface name a PoolID's suffix carries,
 // and which option named it. Both empty when the PoolID has no suffix.
+//
+// IT RETURNS THE FIRST MARKER IT FINDS, AND ITS PREMISE IS THE REFUSAL
+// ABOVE. A suffix carries at most one key only because
+// ipamPoolIDSuffix refuses the pair, and what this returns becomes the
+// issued pool's interface name at ipam.go, which is an identity and not
+// a message. Relax that refusal and this silently picks by position
+// again, on the half of the input the operator cannot see. Nothing here
+// could say so, so the premise is driven instead:
+// TestIpamPoolIDNames_ItsOneMarkerPremiseIsTheTwoKeyRefusal mints every
+// combination of the accepted keys and fails if any id this package
+// produces carries two markers.
 func ipamPoolIDNames(poolID string) (key, name string) {
 	for _, k := range ipamPoolOptKeys {
 		marker := "/" + k + "="
@@ -145,6 +187,81 @@ func ipamPoolIDNames(poolID string) (key, name string) {
 		}
 	}
 	return "", ""
+}
+
+// ipamPoolNetworkAddress answers a gateway-type request that carries no
+// address, with the pool's own network address wearing the pool's
+// prefix.
+//
+// SOMETHING HAS TO BE ANSWERED. A remote IPAM driver has no spelling
+// for "no address": moby libnetwork/ipams/remote/remote.go turns an
+// empty Address in the reply into ErrNoIPReturned, at v26.1.5 and at
+// v28.0.0 alike, and the gateway call site in network.go turns any
+// error into a failed `docker network create`. The built-in null
+// driver's nil answer is reachable only from inside the daemon.
+//
+// THE NETWORK ADDRESS, because it is not a host address and so cannot
+// shadow a lease a container is later given. RFC 1122 Section 3.2.1.3:
+// "IP addresses are not permitted to have the value 0 or -1 for any of
+// the <Host-number>, <Network-number>, or <Subnet-number> fields
+// (except in the special cases listed above)." That matters here
+// because the answer is persisted as this network's gateway
+// (CreateNetwork) and an address equal to it is echoed from then on
+// instead of being leased. It also describes the pool the daemon asked
+// about, which 0.0.0.0 would not on a network created with --subnet.
+// Nothing routes through it: the gateway a container uses comes from
+// this plugin's Join answer, which libnetwork installs from the
+// endpoint's join info and never from the pool's.
+//
+// AND THE BOUNDARY OF THAT SENTENCE, which is two prefix lengths.
+// RFC 3021 Section 2.1, on the two addresses a /31 leaves: "In a
+// point-to-point link with a 31-bit subnet mask, the two addresses
+// above MUST be interpreted as host addresses." A /32 pool has one
+// address and it is a host address too. On those two there is no
+// address to invent that a DHCP server could not hand to a container,
+// so none is invented: the request is refused and the message names the
+// option that supplies one. On an engine that asks, such a network then
+// needs --gateway; on engine 28 and up nothing asks and the prefix
+// makes no difference.
+func ipamPoolNetworkAddress(poolID string) (RequestAddressResponse, error) {
+	pool, err := ipamPoolOfID(poolID)
+	if err != nil {
+		return RequestAddressResponse{}, err
+	}
+	if pool.Bits() > 30 {
+		return RequestAddressResponse{}, fmt.Errorf("%w: this Docker Engine asks an IPAM driver for a gateway address at `docker network create`, and the pool %v has no address that is not a host address: every address in a /31 and a /32 can be handed to a container by the DHCP server, so one taken for the gateway here would be one this plugin later refuses to lease. Create the network with --gateway <address>, which is passed straight through, or use a shorter prefix. Docker Engine 28 and later does not ask and needs neither", util.ErrIPAM, pool)
+	}
+	return RequestAddressResponse{Address: pool.String()}, nil
+}
+
+// ipamPoolOfID reads the address pool back out of a PoolID.
+//
+// The identity is the request made canonical (ipamPoolID) and an
+// interface name may carry no `/`, so the two fields after the address
+// space are the pool and nothing else. Derived from the id the daemon
+// sent rather than looked up, because the issue it was minted from is
+// consumed at CreateNetwork and gone by the daemon-start replay.
+func ipamPoolOfID(poolID string) (netip.Prefix, error) {
+	rest, ok := strings.CutPrefix(poolID, ipamPoolIDPrefix)
+	if !ok {
+		return netip.Prefix{}, fmt.Errorf("pool %q was not issued by this driver: %w", poolID, util.ErrIPAM)
+	}
+	parts := strings.SplitN(rest, "/", 4)
+	if len(parts) < 3 {
+		return netip.Prefix{}, fmt.Errorf("pool %q carries no address pool: %w", poolID, util.ErrIPAM)
+	}
+	if parts[0] != ipamLocalAddressSpace && parts[0] != ipamGlobalAddressSpace {
+		return netip.Prefix{}, fmt.Errorf("pool %q names address space %q, which is not one of this driver's: %w",
+			poolID, parts[0], util.ErrIPAM)
+	}
+	p, err := netip.ParsePrefix(parts[1] + "/" + parts[2])
+	if err != nil {
+		return netip.Prefix{}, fmt.Errorf("pool %q carries no CIDR prefix: %w", poolID, util.ErrIPAM)
+	}
+	if !p.Addr().Is4() {
+		return netip.Prefix{}, fmt.Errorf("pool %q is not IPv4: %w", poolID, util.ErrIPAM)
+	}
+	return p.Masked(), nil
 }
 
 // ipamBinding is what CreateNetwork learned and RequestAddress needs: it

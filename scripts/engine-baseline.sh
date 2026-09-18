@@ -45,9 +45,9 @@
 #                     that does, and only a measurement of a published
 #                     reference reaches it.
 #   network-create    the remote driver is reachable and CreateNetwork
-#                     is answered, once per network mode.
+#                     is answered, once per documented network shape.
 #   container-lease   a container comes up with an address from the
-#                     fixture's pool, once per network mode.
+#                     fixture's pool, once per documented shape.
 #   dnsmasq-ack       that address was ACKed by the DHCP server, read
 #                     from the SERVER's log. The plugin's own report of
 #                     an address is not evidence that a lease exists.
@@ -57,12 +57,31 @@
 #                     onto a different address would satisfy "it has an
 #                     address" and break every container that was
 #                     addressed by the old one.
+#   endpoint-release  the endpoint comes OFF the network and the network
+#                     is removed, once per documented shape. A shape
+#                     that leases correctly and cannot be dismantled is
+#                     one a user meets the second time they run the
+#                     documented commands, and until #1014 nothing here
+#                     reached it: the only removals in this file were
+#                     `docker rm -f` of the nested daemon's container.
 #
-# ALL THREE MODES, because the floor is published for all three. bridge,
-# macvlan and ipvlan take different paths through CreateNetwork and
-# CreateEndpoint, and an engine that breaks one of them breaks the
+# THE SHAPES ARE DERIVED FROM THE DOCUMENTATION, not listed here.
+# bridge, macvlan and ipvlan take different paths through CreateNetwork
+# and CreateEndpoint, and an engine that breaks one of them breaks the
 # plugin for the users on that mode. They share one L2 segment and one
-# DHCP server here, each on its own netdev (#556).
+# DHCP server here, each on its own netdev (#556). The IPAM driver is
+# the second axis and it was invisible: every network here was created
+# with `--ipam-driver null`, so the documented `--ipam-driver <this
+# plugin>` shape had never run on any engine in this matrix, on any row,
+# since it was published (#1013).
+#
+# A list would have the same hole again at the next shape. So the cell
+# reads every `docker network create` this project documents out of
+# docs/reference.md and drives one network per distinct shape it finds,
+# and a documented block it cannot turn into a network is a failure and
+# never a silent skip. `--print-shapes` and `--print-shape-sources`
+# print that derivation without starting anything, which is what
+# scripts/check-engine-matrix-shapes.sh reads on every pull request.
 #
 # The verdict is the FIRST failing step, by name, because "27 fails" and
 # "27 fails at plugin-create" are different facts and only the second
@@ -70,6 +89,8 @@
 #
 # Usage:
 #   scripts/engine-baseline.sh <engine-tag> [plugin-rootfs-dir]
+#   scripts/engine-baseline.sh --print-shapes
+#   scripts/engine-baseline.sh --print-shape-sources
 #
 # <engine-tag> is the docker library tag suffix, e.g. `29`, `26`,
 # `20.10`; the cell runs `docker:<engine-tag>-dind`.
@@ -83,11 +104,116 @@
 #   PLUGIN_REF        registry reference when no rootfs directory is given
 #   KEEP=1            leave the container running for inspection
 #   TEST_IMAGE        image the test container runs (default alpine:3.20)
+#   ENGINE_SHAPES_DOC the document the network shapes are derived from
+#                     (default docs/reference.md)
 #
 # Exit: 0 the whole baseline passed, 1 a step failed, 2 the cell could
 # not be set up (the engine itself is not runnable here).
 
 set -uo pipefail
+
+# ---- the shapes the documentation promises ---------------------------
+#
+# The parser reads fenced blocks only, joins backslash continuations,
+# and keeps the commands that name this plugin as network driver, as
+# IPAM driver, or as both. Each one becomes `<ipam>|<mode>|<interface
+# option>`: the fixture supplies the netdev, so two documented examples
+# that differ only in the interface NAME are one shape.
+#
+# Every refusal below names the line it refused, and there is no branch
+# that drops a documented command quietly: a block this cannot map is
+# the case #1013 is about, and it has to be louder than a shape that is
+# merely missing.
+SHAPES_DOC="${ENGINE_SHAPES_DOC:-$(dirname "$0")/../docs/reference.md}"
+
+# The marker that says a driver reference is this plugin. A reference
+# carries a registry, a path and a tag, all of which move between
+# releases; the project name does not.
+SHAPES_PLUGIN_MARKER="docker-net-dhcp"
+
+derive_shapes() {
+    local mode="${1:-shapes}"
+    if [ ! -f "$SHAPES_DOC" ]; then
+        echo "$SHAPES_DOC does not exist, so no network shape can be derived" >&2
+        return 2
+    fi
+    awk -v PLUGIN="$SHAPES_PLUGIN_MARKER" -v MODE="$mode" '
+    function refuse(lineno, why) {
+        printf("%s:%d: %s\n", FILENAME, lineno, why) > "/dev/stderr"
+        bad = 1
+    }
+    function emit(   n, i, tok, kv, drv, ipam, mode, ifk, kind, key) {
+        if (cmd == "") return
+        if (index(cmd, "docker network create") == 0) { cmd = ""; return }
+        n = split(cmd, tok, /[ \t]+/)
+        drv = ""; ipam = ""; mode = ""; ifk = ""
+        for (i = 1; i <= n; i++) {
+            if (tok[i] == "-d" || tok[i] == "--driver") { i++; drv = tok[i]; continue }
+            if (tok[i] == "--ipam-driver") { i++; ipam = tok[i]; continue }
+            if (tok[i] == "-o" || tok[i] == "--opt") {
+                i++
+                split(tok[i], kv, "=")
+                if (kv[1] == "mode") mode = kv[2]
+                else if (kv[1] == "bridge" || kv[1] == "parent") ifk = kv[1]
+                continue
+            }
+        }
+        if (index(drv, PLUGIN) == 0 && index(ipam, PLUGIN) == 0) {
+            if (MODE == "sources") printf("%d out-of-scope -\n", start)
+            cmd = ""
+            return
+        }
+        key = "-"
+        if (index(drv, PLUGIN) == 0) {
+            refuse(start, "this example asks this plugin for its addresses and creates the network with another driver (-d " drv "), which the plugin refuses; the cell has no network to drive for it")
+        } else if (ipam == "") {
+            refuse(start, "this example names no --ipam-driver, so the network would be given Docker built-in IPAM, which this plugin refuses at CreateNetwork")
+        } else if (ipam != "null" && index(ipam, PLUGIN) == 0) {
+            refuse(start, "this example names --ipam-driver " ipam ", which is neither null nor this plugin, and the cell cannot install it")
+        } else {
+            kind = (ipam == "null") ? "null" : "plugin"
+            if (mode == "") mode = "bridge"
+            if (mode != "bridge" && mode != "macvlan" && mode != "ipvlan") {
+                refuse(start, "this example names -o mode=" mode ", which is not a mode this plugin offers")
+            } else if (ifk == "") {
+                refuse(start, "this example names neither -o bridge= nor -o parent=, so the cell cannot say which netdev of its fixture the network belongs on")
+            } else {
+                key = kind "|" mode "|" ifk
+            }
+        }
+        if (MODE == "sources") {
+            printf("%d in-scope %s\n", start, key)
+        } else if (key != "-" && !(key in seen)) {
+            seen[key] = 1
+            print key
+        }
+        cmd = ""
+    }
+    /^[ \t]*```/ { emit(); inblk = 1 - inblk; cmd = ""; cont = 0; next }
+    inblk == 0 { next }
+    {
+        line = $0
+        sub(/^[ \t]*/, "", line)
+        sub(/^\$[ \t]+/, "", line)
+        cont_next = (line ~ /\\[ \t]*$/)
+        sub(/\\[ \t]*$/, "", line)
+        if (cont) {
+            cmd = cmd " " line
+        } else {
+            emit()
+            cmd = line
+            start = NR
+        }
+        cont = cont_next
+    }
+    END { emit(); if (bad) exit 1 }
+    ' "$SHAPES_DOC"
+}
+
+case "${1:-}" in
+    --print-shapes)        derive_shapes shapes;  exit $? ;;
+    --print-shape-sources) derive_shapes sources; exit $? ;;
+esac
 
 ENGINE_TAG="${1:-}"
 ROOTFS_DIR="${2:-}"
@@ -213,23 +339,35 @@ acks() {
     d sh -c "grep -c 'DHCPACK($SEGMENT) $addr ' $DNSMASQ_LOG 2>/dev/null" | tr -d '\r' | head -1
 }
 
-# lease_in_mode drives one network mode end to end and leaves the
-# address in MODE_ADDR.
+# lease_in_shape drives one documented network shape end to end and
+# leaves the address in MODE_ADDR.
 #
 # A GLOBAL AND NOT AN ECHOED RETURN VALUE: `fail` exits, and an exit
 # inside a command substitution ends the subshell, not the cell. A row
 # would then continue past a failed step and report a later verdict.
-lease_in_mode() {
-    local mode="$1" net="$2" ctr="$3"; shift 3
+#
+# EVERY EXIT FROM HERE IS `fail`, never `unavailable`. A create this
+# engine refuses is the measurement the row exists to take, and
+# `unavailable` would record it as "the cell could not ask", which
+# scripts/engine-floor.sh reads as no evidence either way.
+lease_in_shape() {
+    local ipam="$1" mode="$2" net="$3" ctr="$4"; shift 4
+    local label="$ipam-$mode" ipam_arg=""
     MODE_ADDR=""
 
-    STEP="network-create-$mode"
-    d docker network create -d "$PLUGIN_NAME" --ipam-driver null -o mode="$mode" "$@" "$net" >/dev/null \
-        || fail "docker network create -o mode=$mode was refused"
+    case "$ipam" in
+        null)   ipam_arg="null" ;;
+        plugin) ipam_arg="$PLUGIN_NAME" ;;
+        *)      STEP="network-create-$label"; fail "the derived shape names IPAM driver '$ipam', which this cell cannot install" ;;
+    esac
 
-    STEP="container-lease-$mode"
+    STEP="network-create-$label"
+    d docker network create -d "$PLUGIN_NAME" --ipam-driver "$ipam_arg" -o mode="$mode" "$@" "$net" >/dev/null \
+        || fail "docker network create --ipam-driver $ipam -o mode=$mode was refused"
+
+    STEP="container-lease-$label"
     d docker run -d --name "$ctr" --network "$net" "$TEST_IMAGE" sleep 600 >/dev/null \
-        || fail "the container did not start on the $mode network"
+        || fail "the container did not start on the $label network"
 
     local addr=""
     for _ in $(seq 1 30); do
@@ -237,13 +375,13 @@ lease_in_mode() {
         [ -n "$addr" ] && break
         sleep 1
     done
-    [ -n "$addr" ] || fail "the $mode container never reported an address"
+    [ -n "$addr" ] || fail "the $label container never reported an address"
 
-    STEP="dnsmasq-ack-$mode"
+    STEP="dnsmasq-ack-$label"
     d sh -c "grep 'DHCPACK($SEGMENT) $addr ' $DNSMASQ_LOG >/dev/null" \
-        || fail "the DHCP server logged no ACK for $addr ($mode)"
+        || fail "the DHCP server logged no ACK for $addr ($label)"
 
-    say "== $mode: $addr, ACKed by the DHCP server"
+    say "== $label: $addr, ACKed by the DHCP server"
     MODE_ADDR="$addr"
 }
 
@@ -357,13 +495,47 @@ STEP=plugin-enabled
 d docker plugin inspect -f '{{.Enabled}}' "$PLUGIN_NAME" 2>/dev/null | grep -x true >/dev/null \
     || fail "the plugin is installed but not enabled"
 
-# ---- step 5: a lease in every mode the plugin offers ------------------
-lease_in_mode macvlan "$MACVLAN_NET" "$MACVLAN_CTR" -o parent="$PARENT"
-macvlan_addr="$MODE_ADDR"
+# ---- step 5: a lease in every shape the documentation promises -------
+STEP=shapes
+shapes="$(derive_shapes shapes)" \
+    || fail "the network shapes could not be derived from $SHAPES_DOC; the messages above name the block"
+[ -n "$shapes" ] \
+    || fail "$SHAPES_DOC documents no network for this plugin, so this row would measure nothing"
 
-lease_in_mode bridge "em-net-bridge" "em-ctr-bridge" -o bridge="$SEGMENT"
+# The loop reads from a REDIRECT and not a pipe: `fail` exits, and an
+# exit inside a pipeline ends a subshell while the row walks on.
+macvlan_addr=""
+DRIVEN=""
+while IFS='|' read -r shape_ipam shape_mode shape_ifk; do
+    [ -n "$shape_ipam" ] || continue
+    net="em-net-$shape_ipam-$shape_mode"
+    ctr="em-ctr-$shape_ipam-$shape_mode"
+    STEP="network-create-$shape_ipam-$shape_mode"
+    case "$shape_mode:$shape_ifk" in
+        bridge:bridge)  dev_opt=(-o bridge="$SEGMENT") ;;
+        macvlan:parent) dev_opt=(-o parent="$PARENT") ;;
+        ipvlan:parent)  dev_opt=(-o parent="$IPVLAN_PARENT") ;;
+        *) fail "a documented shape asks for mode=$shape_mode on -o $shape_ifk=, and this fixture has no netdev for that pair" ;;
+    esac
+    lease_in_shape "$shape_ipam" "$shape_mode" "$net" "$ctr" "${dev_opt[@]}"
+    DRIVEN="$DRIVEN$net|$ctr|$shape_ipam-$shape_mode
+"
+    if [ "$shape_ipam-$shape_mode" = "null-macvlan" ]; then
+        MACVLAN_NET="$net"
+        MACVLAN_CTR="$ctr"
+        macvlan_addr="$MODE_ADDR"
+    fi
+done <<EOF
+$shapes
+EOF
 
-lease_in_mode ipvlan "em-net-ipvlan" "em-ctr-ipvlan" -o parent="$IPVLAN_PARENT"
+# The restart below is driven on the documented macvlan network. It is
+# derived like everything else, so a document that stops promising that
+# shape takes the restart measurement with it and says so here instead
+# of restarting a container that was never created.
+STEP=restart-subject
+[ -n "$macvlan_addr" ] \
+    || fail "$SHAPES_DOC documents no macvlan network with --ipam-driver null, which is the shape the restart is measured on"
 
 # ---- step 6: the endpoint across a restart ----------------------------
 # Driven on the macvlan network. The restart path is CreateEndpoint and
@@ -406,6 +578,41 @@ done
 [ "$acks_after" -gt "$acks_before" ] \
     || fail "the DHCP server logged no new ACK for $after after the restart (was $acks_before, still $acks_after)"
 say "== after restart: $after, re-ACKed by the DHCP server"
+
+# ---- step 7: the endpoint comes off, and the network goes away -------
+# AFTER the restart, not inside lease_in_shape, because step 6 restarts
+# one of these containers on one of these networks: dismantling a shape
+# as soon as it leased would delete the subject the restart measures.
+#
+# The loop reads from a REDIRECT for the reason the drive loop gives:
+# `fail` exits, and an exit inside a pipeline ends a subshell while the
+# row walks on.
+while IFS='|' read -r net ctr label; do
+    [ -n "$net" ] || continue
+
+    STEP="endpoint-release-$label"
+    d docker network disconnect "$net" "$ctr" \
+        || fail "docker network disconnect was refused on the $label network"
+
+    # THE ENDPOINT IS GONE, not merely the command exited 0. A
+    # disconnect that leaves the network on the container leaves a lease
+    # nobody will renew and an address the DHCP server still believes
+    # is taken. The network's own key is what is read, because an empty
+    # address field is also what a template error prints.
+    still="$(d docker inspect -f '{{json .NetworkSettings.Networks}}' "$ctr" 2>/dev/null | tr -d '\r')"
+    case "$still" in
+        *"\"$net\""*) fail "the $label endpoint is still attached to $net after disconnect" ;;
+    esac
+
+    d docker rm -f "$ctr" >/dev/null 2>&1 || true
+
+    d docker network rm "$net" >/dev/null \
+        || fail "docker network rm was refused on the $label network"
+
+    say "== $label: disconnected and removed"
+done <<EOF
+$DRIVEN
+EOF
 
 STEP=complete
 verdict pass "macvlan=$macvlan_addr after_restart=$after"

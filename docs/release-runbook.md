@@ -201,6 +201,16 @@ registries, and there is no rollback: `docker plugin create`
 re-tars the rootfs non-reproducibly, so undoing it means publishing
 yet another digest and orphaning the previous signature.
 
+**The engine evidence ages out.** Publishing is gated on the engine
+matrix row recorded for the tag's own commit, and those rows are kept for
+30 days. Dispatching a tag older than that refuses, and so does
+dispatching a tag cut before that gate existed, because nothing recorded
+a row for it. The two refuse differently and say so: a tag nobody
+measured is refused for having no matrix run at all, and a tag whose rows
+have gone names the run that measured it and reports that it keeps no
+rows any more. Re-running the matrix on the tag records a fresh row and
+clears the second.
+
 **Use an rc tag instead.** [The rc dry-run](#pre-release-dry-run-rc-tags)
 runs the identical chain and touches no bare release tag and no
 `:latest`, which is what every recovery step in this file now points
@@ -219,6 +229,16 @@ a refusal, or deciding whether to dispatch anyway:
 - **Re-running the tag currently being released is allowed** by the
   guard. It still rebuilds, so it still drifts the digest; the guard
   covers `:latest` moving backwards and says nothing about the rebuild.
+  **Since #1008 it also cancels the run that is publishing.**
+  `release.yml` groups on `release-${{ github.ref }}` with
+  `cancel-in-progress: true`, and a `workflow_dispatch` against a tag
+  carries that tag as its ref, so the dispatch joins the group and the
+  in-flight run for that tag is cancelled wherever it had got to, images
+  and signatures included. The dispatched run publishes every one of them
+  again, so the end state is one consistent set and the intermediate state
+  is a tag whose registries and release page are mid-replacement.
+  `integration-arm64.yml` groups the same way, on
+  `integration-arm64-${{ github.ref }}`.
 - **Dispatching an older release is refused,** with a non-zero exit
   and nothing published. This is the case that used to succeed
   quietly and move `:latest` back with it.
@@ -918,9 +938,27 @@ be true.
     → **Publish the same manifest under the Hub alias** (or skip) →
     Install syft → **Generate SBOM (SPDX + CycloneDX)** → **Package and
     sign release artifact** → **Attest release-artifact provenance** →
-    **Attest image provenance (GHCR)** → **Check attestation parity
-    across registries** → **Upload signed artifacts for the release
-    job** → Workflow summary.
+    **Publish and verify the release provenance bundle** → **Attest
+    image provenance (GHCR)** → **Check attestation parity across
+    registries** → **Upload signed artifacts for the release job** →
+    Workflow summary.
+
+    *Publish and verify the release provenance bundle* runs
+    [`scripts/publish-provenance-asset.sh`](https://github.com/claymore666/docker-net-dhcp/blob/main/scripts/publish-provenance-asset.sh),
+    which attaches the attestation the step before it produced to the
+    release page as `provenance.intoto.jsonl`
+    (`provenance-arm64.intoto.jsonl` in the arm64 job), so provenance is
+    readable from the page and not only from GitHub's attestation store
+    (#1011). It refuses an asset name Scorecard's provenance check would
+    not count, re-reads the subject list out of the bundle it is about
+    to publish, refuses a bundle that does not name the tarball, and
+    runs `gh attestation verify --bundle` over every subject, which is
+    the command
+    [Verifying releases](https://claymore666.github.io/docker-net-dhcp/verifying-releases/)
+    gives users. A red here means the published bundle does not verify
+    the published bytes, and the release stops before the page exists.
+    Every one of those refusals is driven offline on each lane run by
+    `scripts/test-publish-provenance-asset.sh`, with `gh` stubbed.
 
     *Publish the same manifest under the Hub alias* runs
     [`scripts/publish-hub-alias.sh`](https://github.com/claymore666/docker-net-dhcp/blob/main/scripts/publish-hub-alias.sh),
@@ -1004,16 +1042,24 @@ be true.
                             #   net-dhcp-plugin-vX.Y.Z-linux-arm64.tar.gz
                             #   checksums.txt + checksums.txt.sigstore.json
                             #   checksums-arm64.txt + checksums-arm64.txt.sigstore.json
+                            #   provenance.intoto.jsonl + provenance-arm64.intoto.jsonl
    # Re-verify the signature the way a downstream consumer would:
    cosign verify-blob \
      --bundle checksums.txt.sigstore.json \
      --certificate-identity-regexp '^https://github.com/claymore666/docker-net-dhcp/.github/workflows/release.yml@' \
      --certificate-oidc-issuer https://token.actions.githubusercontent.com \
      checksums.txt
+   # And the provenance, taken from the page, with no API call:
+   gh attestation verify net-dhcp-plugin-vX.Y.Z-linux-amd64.tar.gz \
+     --bundle provenance.intoto.jsonl \
+     --repo claymore666/docker-net-dhcp
    ```
    Adjust the title/notes in the UI if the one-liner needs polish.
    The job is idempotent on a tag re-dispatch (re-uploads assets with
-   `--clobber`). This satisfies OpenSSF Scorecard **Signed-Releases**;
+   `--clobber`). This satisfies OpenSSF Scorecard **Signed-Releases**,
+   whose provenance half reads the asset NAME and counts only a
+   `.intoto.jsonl` suffix, which is what the two provenance assets are
+   named for (#1011);
    an rc dry-run produces an equivalent **pre-release** with the same
    signed assets, which is how this path is exercised before the real
    tag (rc releases never move `:latest` and are marked pre-release).
