@@ -151,40 +151,40 @@ health endpoint against what the DHCP server's lease file says. The
 milestone link above is the list that decides what is on it.
 
 **[v2.3.0](https://github.com/claymore666/docker-net-dhcp/milestone/31)**
-finishes IPv6. The first two are the ones a user hits: [#960] gives the
-IPAM shape, the create line v2.1.0 recommends, an IPv6 exchange and a
-stable v6 identity, where today every option that switches IPv6 on is
-refused at `docker network create`; and [#1029] sends the DHCPv6 Client
-FQDN, so `register_dns` registers the AAAA record beside the A it has
-registered since v1.3.0. [#1027] and [#1028] are "IPv6-mostly": the
-IPv4 client honours IPv6-Only Preferred (option 108) and the router
-discovery reads PREF64, the NAT64 prefix. [#1032] adds RFC 7217
-stable-privacy interface identifiers as an option, keeping modified
-EUI-64 as the default. [#1038] stops a SLAAC-only network paying the
-full DHCPv6 solicitation on every attach. Then the DHCPv6 the engine
-does not speak yet, each designed first: [#926] Rapid Commit, [#927]
-temporary addresses (IA_TA), [#214] prefix delegation (IA_PD), [#859]
-the NTP server list, and [#1033] the timezone options logged as the v4
-ones are. [#1016] gives the v2.2.0 behaviours that only a unit test
-drives an integration test each.
-
-**[v2.4.0](https://github.com/claymore666/docker-net-dhcp/milestone/34)**
 is the host plumbing an operator does by hand today: [#902] VLAN
 sub-interfaces, [#903] a bridge the plugin creates and owns, [#904]
 link-local fallback where no server answers, off by default, [#905]
-macvlan and ipvlan sub-modes, [#1037] an explicit `mtu` and [#1036]
-`require_mac`. [#903] sits inside the rule below that the plugin does
-not change interfaces the host already has: the bridge is one the
-plugin creates for its own networks and owns for as long as they exist,
-and no interface the host configured is touched. [#949] gives the IPAM
-shape ipvlan, keyed on the MAC Docker generates for the endpoint. On
-the IPv4 side [#1030] reads Microsoft's classless routes (option 249),
-[#1031] adds Rapid Commit, and [#1034] logs the vendor-specific
-options. [#1035] measures whether a plugin installs from a
-multi-architecture manifest list, which the arm64 theme below says it
-cannot, and if it does, ships one. [#1015] gives every documented
-option an engine-matrix step, and three gates that report green while
-wrong ride the same release: [#866], [#883] and [#888].
+macvlan and ipvlan sub-modes, and beside them [#1037] an explicit
+`mtu` and [#1036] `require_mac`. [#903] sits inside the rule below
+that the plugin does not change interfaces the host already has: the
+bridge is one the plugin creates for its own networks and owns for as
+long as they exist, and no interface the host configured is touched.
+It also carries the two things the IPAM shape, the create line v2.1.0
+recommends, still refuses at `docker network create`: [#960] gives it
+a DHCPv6 exchange and a stable v6 identity, and [#949] gives it ipvlan,
+keyed on the MAC Docker generates for the endpoint. [#1029] sends the
+DHCPv6 Client FQDN, so `register_dns` registers the AAAA record beside
+the A it has registered since v1.3.0. [#1015] gives every documented
+option an engine-matrix step, [#1016] gives the v2.2.0 behaviours that
+only a unit test drives an integration test each, and three gates that
+report green while wrong ride the same release: [#866], [#883] and
+[#888].
+
+**[v2.4.0](https://github.com/claymore666/docker-net-dhcp/milestone/34)**
+finishes IPv6. [#1027] and [#1028] are "IPv6-mostly": the IPv4 client
+honours IPv6-Only Preferred (option 108) and the router discovery reads
+PREF64, the NAT64 prefix. [#1032] adds RFC 7217 stable-privacy
+interface identifiers as an option, keeping modified EUI-64 as the
+default. [#1038] stops a SLAAC-only network paying the full DHCPv6
+solicitation on every attach. Then the DHCPv6 the engine does not
+speak yet, each designed first: [#926] Rapid Commit, [#927] temporary
+addresses (IA_TA), [#214] prefix delegation (IA_PD), [#859] the NTP
+server list, and [#1033] the timezone options logged as the v4 ones
+are. On the IPv4 side [#1030] reads Microsoft's classless routes
+(option 249), [#1031] adds Rapid Commit, and [#1034] logs the
+vendor-specific options. [#1035] measures whether a plugin installs
+from a multi-architecture manifest list, which the arm64 theme below
+says it cannot, and if it does, ships one.
 
 **[v2.5.0](https://github.com/claymore666/docker-net-dhcp/milestone/35)**
 changes nothing a user sees. It is the CI consolidation programme
