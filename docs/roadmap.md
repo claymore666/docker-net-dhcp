@@ -154,17 +154,30 @@ milestone link above is the list that decides what is on it.
 is the host plumbing an operator does by hand today: [#902] VLAN
 sub-interfaces, [#903] a bridge the plugin creates and owns, [#904]
 link-local fallback where no server answers, [#905] macvlan and ipvlan
-sub-modes. It also carries [#960], which gives the IPAM shape a DHCPv6
-exchange and a stable v6 identity, both of which that shape refuses
-today: it serves IPv4 only, and every option that switches IPv6 on is
-refused there at `docker network create`.
+sub-modes. It also carries the two things the IPAM shape still refuses
+at `docker network create`: [#960] gives it a DHCPv6 exchange and a
+stable v6 identity, and [#949] gives it ipvlan, keyed on the MAC Docker
+generates for the endpoint. Three gates that report green while wrong
+ride the same release: [#866], [#883] and [#888].
 [#903] sits inside the rule below that the plugin does not
 change interfaces the host already has: the bridge is one the plugin
 creates for its own networks and owns for as long as they exist, and no
 interface the host configured is touched.
 
-[#926] Rapid Commit, [#927] temporary addresses (IA_TA) and [#214]
-prefix delegation (IA_PD) carry no milestone and are not scheduled.
+**[v2.4.0](https://github.com/claymore666/docker-net-dhcp/milestone/34)**
+is the DHCPv6 the engine does not speak yet, each designed first: [#926]
+Rapid Commit, the two-message exchange; [#927] temporary addresses
+(IA_TA); [#214] prefix delegation (IA_PD); and [#859], the NTP server
+list from option 56.
+
+**[v2.5.0](https://github.com/claymore666/docker-net-dhcp/milestone/35)**
+changes nothing a user sees. It is the CI consolidation programme
+[#733] tracks, factoring the gate corpus and proving a gate can be
+removed, plus three pieces of debt: [#657] enforces the netlink seam so
+the endpoint paths can be unit-tested, [#178] moves off the frozen
+`docker/docker` module onto the ones moby publishes, and [#674] writes
+down what a version number promises.
+
 [#218], the deterministic MAC, is backlog: it waits on upstream Docker
 ([moby/moby#52871], the table below) and is scheduled only when that
 lands.
@@ -332,6 +345,14 @@ for the next time someone asks.
 
 [#110]: https://github.com/claymore666/docker-net-dhcp/issues/110
 [#949]: https://github.com/claymore666/docker-net-dhcp/issues/949
+[#859]: https://github.com/claymore666/docker-net-dhcp/issues/859
+[#733]: https://github.com/claymore666/docker-net-dhcp/issues/733
+[#178]: https://github.com/claymore666/docker-net-dhcp/issues/178
+[#674]: https://github.com/claymore666/docker-net-dhcp/issues/674
+[#657]: https://github.com/claymore666/docker-net-dhcp/issues/657
+[#866]: https://github.com/claymore666/docker-net-dhcp/issues/866
+[#883]: https://github.com/claymore666/docker-net-dhcp/issues/883
+[#888]: https://github.com/claymore666/docker-net-dhcp/issues/888
 [#960]: https://github.com/claymore666/docker-net-dhcp/issues/960
 [#961]: https://github.com/claymore666/docker-net-dhcp/issues/961
 [#962]: https://github.com/claymore666/docker-net-dhcp/issues/962
