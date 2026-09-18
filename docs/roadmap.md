@@ -153,18 +153,47 @@ milestone link above is the list that decides what is on it.
 **[v2.3.0](https://github.com/claymore666/docker-net-dhcp/milestone/31)**
 is the host plumbing an operator does by hand today: [#902] VLAN
 sub-interfaces, [#903] a bridge the plugin creates and owns, [#904]
-link-local fallback where no server answers, [#905] macvlan and ipvlan
-sub-modes. It also carries [#960], which gives the IPAM shape a DHCPv6
-exchange and a stable v6 identity, both of which that shape refuses
-today: it serves IPv4 only, and every option that switches IPv6 on is
-refused there at `docker network create`.
-[#903] sits inside the rule below that the plugin does not
-change interfaces the host already has: the bridge is one the plugin
-creates for its own networks and owns for as long as they exist, and no
-interface the host configured is touched.
+link-local fallback where no server answers, off by default, [#905]
+macvlan and ipvlan sub-modes, and beside them [#1037] an explicit
+`mtu` and [#1036] `require_mac`. [#903] sits inside the rule below
+that the plugin does not change interfaces the host already has: the
+bridge is one the plugin creates for its own networks and owns for as
+long as they exist, and no interface the host configured is touched.
+It also carries the two things the IPAM shape, the create line v2.1.0
+recommends, still refuses at `docker network create`: [#960] gives it
+a DHCPv6 exchange and a stable v6 identity, and [#949] gives it ipvlan,
+keyed on the MAC Docker generates for the endpoint. [#1029] sends the
+DHCPv6 Client FQDN, so `register_dns` registers the AAAA record beside
+the A it has registered since v1.3.0. [#1015] gives every documented
+option an engine-matrix step, [#1016] gives the v2.2.0 behaviours that
+only a unit test drives an integration test each, and three gates that
+report green while wrong ride the same release: [#866], [#883] and
+[#888].
 
-[#926] Rapid Commit, [#927] temporary addresses (IA_TA) and [#214]
-prefix delegation (IA_PD) carry no milestone and are not scheduled.
+**[v2.4.0](https://github.com/claymore666/docker-net-dhcp/milestone/34)**
+finishes IPv6. [#1027] and [#1028] are "IPv6-mostly": the IPv4 client
+honours IPv6-Only Preferred (option 108) and the router discovery reads
+PREF64, the NAT64 prefix. [#1032] adds RFC 7217 stable-privacy
+interface identifiers as an option, keeping modified EUI-64 as the
+default. [#1038] stops a SLAAC-only network paying the full DHCPv6
+solicitation on every attach. Then the DHCPv6 the engine does not
+speak yet, each designed first: [#926] Rapid Commit, [#927] temporary
+addresses (IA_TA), [#214] prefix delegation (IA_PD), [#859] the NTP
+server list, and [#1033] the timezone options logged as the v4 ones
+are. On the IPv4 side [#1030] reads Microsoft's classless routes
+(option 249), [#1031] adds Rapid Commit, and [#1034] logs the
+vendor-specific options. [#1035] measures whether a plugin installs
+from a multi-architecture manifest list, which the arm64 theme below
+says it cannot, and if it does, ships one.
+
+**[v2.5.0](https://github.com/claymore666/docker-net-dhcp/milestone/35)**
+changes nothing a user sees. It is the CI consolidation programme
+[#733] tracks, factoring the gate corpus and proving a gate can be
+removed, plus three pieces of debt: [#657] enforces the netlink seam so
+the endpoint paths can be unit-tested, [#178] moves off the frozen
+`docker/docker` module onto the ones moby publishes, and [#674] writes
+down what a version number promises.
+
 [#218], the deterministic MAC, is backlog: it waits on upstream Docker
 ([moby/moby#52871], the table below) and is scheduled only when that
 lands.
@@ -210,7 +239,8 @@ included, as a release-candidate gate ([#531]). The shipping shape is
 per-architecture tags (`vX.Y.Z-arm64`, `latest-arm64`), first published
 with v1.7.0 ([#507]). A Docker *plugin* cannot be installed from a
 multi-architecture manifest list at all, so the architecture lives in
-the tag and not in a manifest.
+the tag and not in a manifest. That claim is now contested by a
+registry that serves one, and [#1035] measures it.
 
 ### 4. A test substrate that cannot lie
 
@@ -332,6 +362,28 @@ for the next time someone asks.
 
 [#110]: https://github.com/claymore666/docker-net-dhcp/issues/110
 [#949]: https://github.com/claymore666/docker-net-dhcp/issues/949
+[#1015]: https://github.com/claymore666/docker-net-dhcp/issues/1015
+[#1016]: https://github.com/claymore666/docker-net-dhcp/issues/1016
+[#1027]: https://github.com/claymore666/docker-net-dhcp/issues/1027
+[#1028]: https://github.com/claymore666/docker-net-dhcp/issues/1028
+[#1029]: https://github.com/claymore666/docker-net-dhcp/issues/1029
+[#1030]: https://github.com/claymore666/docker-net-dhcp/issues/1030
+[#1031]: https://github.com/claymore666/docker-net-dhcp/issues/1031
+[#1032]: https://github.com/claymore666/docker-net-dhcp/issues/1032
+[#1033]: https://github.com/claymore666/docker-net-dhcp/issues/1033
+[#1034]: https://github.com/claymore666/docker-net-dhcp/issues/1034
+[#1035]: https://github.com/claymore666/docker-net-dhcp/issues/1035
+[#1036]: https://github.com/claymore666/docker-net-dhcp/issues/1036
+[#1037]: https://github.com/claymore666/docker-net-dhcp/issues/1037
+[#1038]: https://github.com/claymore666/docker-net-dhcp/issues/1038
+[#859]: https://github.com/claymore666/docker-net-dhcp/issues/859
+[#733]: https://github.com/claymore666/docker-net-dhcp/issues/733
+[#178]: https://github.com/claymore666/docker-net-dhcp/issues/178
+[#674]: https://github.com/claymore666/docker-net-dhcp/issues/674
+[#657]: https://github.com/claymore666/docker-net-dhcp/issues/657
+[#866]: https://github.com/claymore666/docker-net-dhcp/issues/866
+[#883]: https://github.com/claymore666/docker-net-dhcp/issues/883
+[#888]: https://github.com/claymore666/docker-net-dhcp/issues/888
 [#960]: https://github.com/claymore666/docker-net-dhcp/issues/960
 [#961]: https://github.com/claymore666/docker-net-dhcp/issues/961
 [#962]: https://github.com/claymore666/docker-net-dhcp/issues/962
