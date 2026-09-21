@@ -2605,7 +2605,7 @@ value as an invalid duration.</p>
 <td>all</td>
 <td>per-endpoint id</td>
 <td>v0.9.0</td>
-<td>Override DHCP option 61 (Client Identifier) for every endpoint on this network; sent as RFC 2132 opaque bytes (type <code>0x00</code>). The default per-endpoint id is what makes per-container reservations work, and a fixed <code>client_id</code> makes all containers look like one client to the server. Pair with <code>vendor_class</code> for class-based policy. <strong>The derived default differs by mode</strong> (see below).</td>
+<td>Override DHCP option 61 (Client Identifier) for every endpoint on this network; sent as RFC 2132 opaque bytes (type <code>0x00</code>). The default per-endpoint id is what makes per-container reservations work, and a fixed <code>client_id</code> makes all containers look like one client to the server. Pair with <code>vendor_class</code> for class-based policy. <strong>The derived default differs by mode</strong> (see below). <strong>Since v2.2.2 a change to this option does not move an endpoint that already holds a lease:</strong> the identifier an endpoint sends is the one stored with its lease record, so the new value applies to addresses taken after the change. See <a href="#restart-stability-mac-and-ip">Restart stability</a>.</td>
 </tr>
 <tr>
 <td><code>vendor_class</code></td>
@@ -3043,6 +3043,17 @@ container that is</strong>, and only while it is the single one being kept. So:<
   <a href="#pluginhealth"><code>/Plugin.Health</code></a>. The two cases above are not
   counted, because from the plugin's side nothing ambiguous happened.</li>
 </ul>
+<p><strong>A restart of the plugin does not spend the minute.</strong> If the plugin, or
+the daemon under it, stops between Docker asking for an address and the
+container's endpoint being created, the next plugin process finds the
+address held by a record no endpoint owns and hands it back, so the
+container claims it again on its next start, inside the same minute. It
+does this only for an address no endpoint on that network has: an
+address belonging to a container Docker still lists is left alone,
+running or not. The addresses handed back are counted as
+<code>ipam_stranded_records</code>. Before v2.2.2 such an address stayed held until
+the network was removed, and <code>--ip</code> on it, or a container pinned to the
+hardware address that was leasing it, was refused for as long as it did.</p>
 <p>The reason the rule is this blunt is that Docker's address request
 carries no hostname and no endpoint id. The only thing in it that
 identifies anything is a hardware address Docker generates fresh for
@@ -3057,6 +3068,22 @@ the client sends one, and dnsmasq does: it looks a lease up by client
 identifier first and falls back to the hardware address only when one
 side has none. Against such a server the binding matches and the
 address comes back.</p>
+<p>The plugin sends that identifier from the endpoint's own lease record,
+both for the address request and for every renewal the container makes
+afterwards, so the two exchanges present the one value the server has
+the address filed under. Before v2.2.2 only the address request did, and
+the renewals derived the identifier from the hardware address Docker had
+just minted: the request was given the address back, the container's own
+client was refused it seconds later and took a different one, and
+<code>docker inspect</code> went on reporting the first. One consequence is worth
+stating, because it is a change of behaviour: a <code>client_id</code> changed on
+the network while a container is stopped does not reach the wire on that
+container's next start. Its record still carries the value its address
+was leased under, and giving that address back is what the record is
+for. The new value applies to the next address taken fresh: within a
+minute of the container being removed in IPAM mode, and on the next
+container created on a <code>--ipam-driver null</code> network, where a record
+lives as long as the endpoint.</p>
 <p>A server that <strong>ignores</strong> option 61 and keys on the hardware address
 alone sees an unknown client instead, and hands out a different
 address. That is a real configuration and not a hypothetical; dnsmasq
@@ -4076,6 +4103,12 @@ already parse it were not told to expect a new type.</p>
 <td>no</td>
 <td>warn</td>
 <td><em>(v2.1.0+)</em> Address requests refused because the network was already leasing an address for that hardware address, so the container that asked second did not start. It is <strong>not</strong> <code>healthy</code>-affecting: refusing is the safe outcome, and the alternative is two endpoints holding one address and the loser failing later with a message about a plugin restart that did not happen. Its producer is two endpoints carrying one MAC. Docker generates a unique hardware address per endpoint and passes an operator-set one through unchanged, so <code>docker run --mac-address X</code> twice on one network, or a Compose file pinning one MAC on two services, puts two endpoints on one hardware address; a DHCP server files its lease per hardware address and would hand them the same address. Worth investigating whenever it moves, because each move is a container that did not start: give each container its own <code>--mac-address</code>, or leave it unset. It is <strong>not</strong> moved by Docker re-sending a request after its own plugin call timed out: that re-send carries no body (the daemon hands the same, already-drained reader to every attempt) and is refused before any handler runs, so raising <code>--timeout</code> does not change this counter.</td>
+</tr>
+<tr>
+<td><code>ipam_stranded_records</code></td>
+<td>no</td>
+<td>warn</td>
+<td><em>(v2.2.2+)</em> Lease records a previous plugin process left behind with no endpoint on them, handed back when this process started so their addresses can be claimed again. <strong>A move is the repair, not the fault.</strong> The producer is a plugin process, or a daemon under it, that ended between Docker asking for an address and the container's endpoint being created. Left alone such a record keeps the address for good: it is not one of the recently-removed endpoints a restart claims from, so the container's next attempt takes a second address; it still answers address lookups, so <code>--ip</code> on that address and a container pinned to its hardware address are both refused; and no network ever hands it back, not even <code>release_lease=on_remove</code>. Not <code>healthy</code>-affecting. Watch it: a steady rise means the plugin or the daemon is restarting while containers start, and that is worth investigating on its own.</td>
 </tr>
 <tr>
 <td><code>ipam_release_unknown</code></td>
