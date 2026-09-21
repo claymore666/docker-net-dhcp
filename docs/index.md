@@ -21,6 +21,17 @@ no external DHCP client to install and no client process per container.
     current release. Pick a v1.x version from the selector for the 1.x
     manual.
 
+On this page:
+
+- [Requirements](#requirements)
+- [Quick start](#quick-start)
+- [Documentation](#documentation), including the [driver reference](reference.md) and the [roadmap](roadmap.md)
+- [Images and releases](#images-and-releases)
+- [Why this one](#why-this-one)
+- [Origin and licence](#origin-and-licence)
+- [Verifying releases](#verifying-releases)
+- [Project & community](#project-community)
+
 ## Requirements
 
 - **Docker Engine 20.10 or newer.** 20.10 is the lowest version this
@@ -36,7 +47,7 @@ no external DHCP client to install and no client process per container.
   because it is unmeasured: on a cgroup v2 host it cannot start a
   container at all, so nothing there tests this plugin.
   Every change is also tested against the engine the integration suite
-  runs on, **29.8.0** today, read from that run's `Fixture engine drift`
+  runs on, **29.8.1** today, read from that run's `Fixture engine drift`
   step.
 - **Plugin interface `docker.networkdriver/1.0`**, which is what the
   plugin manifest declares. The plugin negotiates the Docker API version
@@ -88,16 +99,16 @@ no external DHCP client to install and no client process per container.
 sudo mkdir -p /var/lib/net-dhcp
 
 # amd64
-docker plugin install ghcr.io/claymore666/docker-net-dhcp:v2.2.1
+docker plugin install ghcr.io/claymore666/docker-net-dhcp:v2.2.2
 # arm64
-docker plugin install ghcr.io/claymore666/docker-net-dhcp:v2.2.1-arm64
+docker plugin install ghcr.io/claymore666/docker-net-dhcp:v2.2.2-arm64
 ```
 
 One network, created once. `macvlan` needs only a host NIC; `bridge`
 wants a bridge you bring yourself ([Bridge mode](bridge-mode.md)):
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.2.1 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.2.2 \
   --ipam-driver null -o mode=macvlan -o parent=eth0 lan-dhcp
 
 docker run --rm -ti --network lan-dhcp alpine ip address show
@@ -110,8 +121,8 @@ goes into Docker's own address management, which makes `--ip` and
 Compose's `ipv4_address` work.
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.2.1 \
-  --ipam-driver ghcr.io/claymore666/docker-net-dhcp:v2.2.1 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.2.2 \
+  --ipam-driver ghcr.io/claymore666/docker-net-dhcp:v2.2.2 \
   -o mode=macvlan -o parent=eth0 lan-dhcp
 ```
 
@@ -142,6 +153,53 @@ networks:
   lan-dhcp:
     external: true
 ```
+
+## Documentation
+
+- **[Driver reference](reference.md)** is the manual: every option,
+  setting and counter, install and upgrade, lease behaviour,
+  observability, Compose usage, troubleshooting.
+- **[Bridge mode](bridge-mode.md)** is the one-time host bridge setup.
+- **[macvlan / ipvlan modes](parent-attached-modes.md)** covers choosing
+  between them, and their constraints.
+- **[Verifying releases](verifying-releases.md)** covers signatures, SLSA
+  provenance, SBOMs, and rebuilding the binaries yourself.
+- **[How it works](internals.md)** is the mechanism, for contributors.
+- **[Roadmap](roadmap.md)** is where this is going, and what it will not do.
+- **[Contributing](contributing.md)** is what an acceptable pull request
+  looks like.
+- **[Release runbook](release-runbook.md)** is the maintainer-facing
+  publish procedure.
+
+These pages are **versioned**: use the selector in the header to read the
+documentation matching the plugin version you have installed.
+
+## Images and releases
+
+Images go to GHCR (`ghcr.io/claymore666/docker-net-dhcp:vX.Y.Z`, primary)
+and are mirrored to Docker Hub under two names,
+`claymore666/net-dhcp:vX.Y.Z` and
+`claymore666/docker-net-dhcp:vX.Y.Z`. The two Hub names are the same
+image at the same digest; install from either. Pin a version for
+reproducibility.
+
+Published builds are **`linux/amd64`** on the bare tag and
+**`linux/arm64`** as `:vX.Y.Z-arm64` / `:latest-arm64` (v1.7.0 onward).
+Those two are the whole set: **32-bit ARM is not built**, so there is no
+`armv7` or `armhf` tag to install.
+The architecture lives in the tag because a Docker *plugin* cannot be
+installed from a multi-architecture manifest list at all: the daemon
+reads a plugin's privileges before pulling it, its manifest handler
+matches single manifests only, and an index therefore fails with `did not
+find plugin config for specified reference` on every architecture, with
+no `--platform` to steer it. The `-arm64` tag replaces the bare one in
+**every** snippet that names the image, including
+`docker network create -d`: a network records the tagged reference as its
+driver, so a bare tag there names a plugin the host does not have.
+
+- [GHCR package](https://github.com/claymore666/docker-net-dhcp/pkgs/container/docker-net-dhcp)
+- [GitHub Releases](https://github.com/claymore666/docker-net-dhcp/releases)
+  carries per-release notes, credits and signed artifacts.
 
 ## Why this one
 
@@ -194,53 +252,6 @@ GPL-3.0. See
 [LICENSE.md](https://github.com/claymore666/docker-net-dhcp/blob/main/LICENSE.md).
 The upstream project is GPL-3.0 and this derivative stays under the same
 licence.
-
-## Documentation
-
-- **[Driver reference](reference.md)** is the manual: every option,
-  setting and counter, install and upgrade, lease behaviour,
-  observability, Compose usage, troubleshooting.
-- **[Bridge mode](bridge-mode.md)** is the one-time host bridge setup.
-- **[macvlan / ipvlan modes](parent-attached-modes.md)** covers choosing
-  between them, and their constraints.
-- **[Verifying releases](verifying-releases.md)** covers signatures, SLSA
-  provenance, SBOMs, and rebuilding the binaries yourself.
-- **[How it works](internals.md)** is the mechanism, for contributors.
-- **[Roadmap](roadmap.md)** is where this is going, and what it will not do.
-- **[Contributing](contributing.md)** is what an acceptable pull request
-  looks like.
-- **[Release runbook](release-runbook.md)** is the maintainer-facing
-  publish procedure.
-
-These pages are **versioned**: use the selector in the header to read the
-documentation matching the plugin version you have installed.
-
-## Images and releases
-
-Images go to GHCR (`ghcr.io/claymore666/docker-net-dhcp:vX.Y.Z`, primary)
-and are mirrored to Docker Hub under two names,
-`claymore666/net-dhcp:vX.Y.Z` and
-`claymore666/docker-net-dhcp:vX.Y.Z`. The two Hub names are the same
-image at the same digest; install from either. Pin a version for
-reproducibility.
-
-Published builds are **`linux/amd64`** on the bare tag and
-**`linux/arm64`** as `:vX.Y.Z-arm64` / `:latest-arm64` (v1.7.0 onward).
-Those two are the whole set: **32-bit ARM is not built**, so there is no
-`armv7` or `armhf` tag to install.
-The architecture lives in the tag because a Docker *plugin* cannot be
-installed from a multi-architecture manifest list at all: the daemon
-reads a plugin's privileges before pulling it, its manifest handler
-matches single manifests only, and an index therefore fails with `did not
-find plugin config for specified reference` on every architecture, with
-no `--platform` to steer it. The `-arm64` tag replaces the bare one in
-**every** snippet that names the image, including
-`docker network create -d`: a network records the tagged reference as its
-driver, so a bare tag there names a plugin the host does not have.
-
-- [GHCR package](https://github.com/claymore666/docker-net-dhcp/pkgs/container/docker-net-dhcp)
-- [GitHub Releases](https://github.com/claymore666/docker-net-dhcp/releases)
-  carries per-release notes, credits and signed artifacts.
 
 ## Verifying releases
 

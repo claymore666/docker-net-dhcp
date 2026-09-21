@@ -689,8 +689,23 @@ func (m *dhcpManager) endpointMAC() net.HardwareAddr {
 // that failed to be freed; now it shows up as a container that came
 // back on a different address, which is the guarantee this project
 // exists to provide.
-func (m *dhcpManager) clientID() []byte {
-	return resolveClientID(m.opts, m.joinReq.EndpointID, m.endpointMAC())
+// recordIdentity is what the endpoint's own record says option 61 was,
+// empty when there is no record or it carries none. It WINS over
+// everything this endpoint could derive, including the operator's
+// `client_id`, through the one rule the reservation half already runs:
+// see ipamExchangeClientID, which states why, and refuses an identity
+// this chassis did not write rather than sending its tail.
+//
+// THE TWO HALVES HAVE TO AGREE OR THE ADDRESS MOVES. In IPAM mode
+// Docker mints a fresh MAC for the endpoint a restarting container
+// comes back on, so the id derived here is a client the server has
+// never seen. Deriving it was correct while both halves derived it;
+// once the reservation started re-binding under the record's identity
+// this one was the odd half out, and the lane measured the
+// cost: the reservation was given .10 back and the client was NAKed
+// off it seconds later, onto .11, with Docker still reporting .10.
+func (m *dhcpManager) clientID(recordIdentity []byte) []byte {
+	return ipamExchangeClientID(resolveClientID(m.opts, m.joinReq.EndpointID, m.endpointMAC()), recordIdentity)
 }
 
 // macString returns the endpoint's MAC for ledger entries: the
@@ -2152,6 +2167,13 @@ func (m *dhcpManager) handleEvent(event dhcp.Event, v6 bool) {
 // end -- which is the measurement that cannot fail.
 var startDHCPClient = func(c *dhcp.DHCPClient) (chan dhcp.Event, error) { return c.Start() }
 
+// newDHCPClient prepares the persistent client. A seam for the same
+// reason as the one above, one step earlier: what the attach hands the
+// client is decided here, and the link it will open on is part of it
+// (#1050). Nothing is opened by this call, so a test can read what was
+// handed over without a namespace or a capability.
+var newDHCPClient = dhcp.NewDHCPClient
+
 func (m *dhcpManager) setupClient(v6 bool) (chan error, error) {
 	v6Str := ""
 	if v6 {
@@ -2218,11 +2240,20 @@ func (m *dhcpManager) setupClient(v6 bool) (chan error, error) {
 		resumption dhcp.Resumption
 		identity6  dhcp.Identity6
 		recordID   string
+		// The v4 record's option-61 identity, and NOTHING ELSE'S. It
+		// is assigned in the branch below and nowhere else: the v6
+		// record's identity is a DUID with an IAID, it is read back
+		// through identity6 which parses it, and a blob that happened
+		// to begin with the opaque type byte would otherwise reach the
+		// v4-only ClientID field of a v6 client as a tail no record
+		// describes.
+		v4Identity []byte
 	)
 	if !v6 {
 		m.recordID, resumption = m.resumeFromRecord()
 		recordID = m.recordID
 		requestedIP = resumption.Prefer
+		v4Identity = resumption.Identity
 		if resumption.Lease == nil && requestedIP == "" {
 			if v4Addr, _ := m.lastIPs(); v4Addr != nil && v4Addr.IP != nil {
 				requestedIP = v4Addr.IP.String()
@@ -2289,6 +2320,11 @@ func (m *dhcpManager) setupClient(v6 bool) (chan error, error) {
 		FQDN:         m.opts.fqdnMode(),
 		V6:           v6,
 		NetNS:        &m.nsHandle,
+		// The link, named by the one thing about it the engine does
+		// not change while the attach runs. The name below is read
+		// here and resolved again inside the namespace at the open,
+		// and the engine's rename lands between the two (#1050).
+		LinkIndex: m.ctrLink.Attrs().Index,
 		// Same MAC the CreateEndpoint one-shot used — this is the same
 		// link, moved into the netns — so the chaddr and the derived
 		// client-id are identical and the server renews the very lease
@@ -2308,11 +2344,13 @@ func (m *dhcpManager) setupClient(v6 bool) (chan error, error) {
 		// demuxed to the right slave) is real and is now covered as a
 		// special case of the general one: every mode runs on a raw
 		// AF_PACKET socket. See the note in pkg/dhcp/params.go.
-		// Same client-id the initial DISCOVER used in CreateEndpoint, so
-		// renewals are seen as the same client by the server. Derived
-		// from the MAC the one-shot ran under rather than from the link
-		// in hand (#371). Honours the operator's client_id override.
-		ClientID:    m.clientID(),
+		// Same client-id the exchange that took this address used, so
+		// renewals and the release are seen as the same client by the
+		// server. The record's identity when it has one, which is the
+		// only value a re-bound address answers to; otherwise derived
+		// from the MAC the one-shot ran under and not from the link in
+		// hand (#371), honouring the operator's client_id override.
+		ClientID:    m.clientID(v4Identity),
 		VendorClass: m.opts.VendorClass,
 		// HonorRouterAdverts is REQUIRED on a persistent v6 client and
 		// refused on every other shape, which is what makes "the v6
@@ -2350,7 +2388,7 @@ func (m *dhcpManager) setupClient(v6 bool) (chan error, error) {
 	// address a previous one never finished checking.
 	m.noteResumedACD(resumption, clientOpts.ConflictMode, v6)
 
-	client, err := dhcp.NewDHCPClient(m.ctrLink.Attrs().Name, &clientOpts)
+	client, err := newDHCPClient(m.ctrLink.Attrs().Name, &clientOpts)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create DHCP%v client: %w", v6Str, err)
 	}
@@ -2457,7 +2495,11 @@ func (m *dhcpManager) locateContainerLink(ctx context.Context) error {
 	}
 
 	hostName, oldCtrName := vethPairNames(m.joinReq.EndpointID)
-	hostLink, err := netlink.LinkByName(hostName)
+	// Through the guard, and through the seam it uses: a second Join
+	// for this endpoint displaces the manager whose attach is renaming,
+	// and this lookup landing in that rename's two kernel calls fails
+	// the whole attach (#1051).
+	hostLink, err := hostLinkByGeneratedName(hostName)
 	if err != nil {
 		return fmt.Errorf("failed to find host side of veth pair: %w", err)
 	}
@@ -2926,7 +2968,7 @@ func (m *dhcpManager) Start(ctx context.Context) (err error) {
 	// is a name, in the server's table and on the host-side link, which
 	// is worth a counter and a log line and is not worth tearing a
 	// working endpoint down for.
-	m.afterAttach(phases, inspected, inspect, ctrName, &ctrHostname)
+	m.afterAttach(phases, inspected, inspect, &ctrName, &ctrHostname)
 
 	return nil
 }

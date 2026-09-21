@@ -191,7 +191,7 @@ func TestRecovery_DaemonRestart_PreservesContainer(t *testing.T) {
 	// synchronous inside NewPlugin before the socket starts listening.
 	// It does not signal that any endpoint was rebuilt: the walk spawns
 	// each rebuild and recovered_ok is incremented only after it
-	// returns (pkg/plugin/plugin.go:2907-2944). Same for the tombstone
+	// returns (pkg/plugin/plugin.go:2932-2969). Same for the tombstone
 	// path, which a CreateEndpoint after the restart drives.
 	healthAfter := harness.WaitPluginHealth(t, ctx, cli2, 30*time.Second)
 

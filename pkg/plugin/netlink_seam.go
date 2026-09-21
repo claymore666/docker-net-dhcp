@@ -55,6 +55,17 @@ var (
 	}
 )
 
+// ipamAddReserveLink is the reservation's link build, as a seam.
+//
+// Building it needs CAP_NET_ADMIN, and it is the FIRST thing the
+// reserve does, so without this nothing root-free reaches a single
+// line of the exchange that follows -- including the two exits between
+// the re-bind and the packets, where a record that has just taken the
+// network's one tombstone is handed back or lost for good. Those two
+// decisions are the whole of whether a container keeps its address
+// across a failed start, and neither is reachable any other way.
+var ipamAddReserveLink = (*Plugin).addIPAMReserveLink
+
 // nlAddrDel is the netns-handle-scoped AddrDel, as a seam.
 //
 // It is a function value and not a bare method reference because the

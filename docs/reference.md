@@ -158,10 +158,10 @@ for unattended):
 sudo mkdir -p /var/lib/net-dhcp
 
 # amd64
-docker plugin install ghcr.io/claymore666/docker-net-dhcp:v2.2.1
+docker plugin install ghcr.io/claymore666/docker-net-dhcp:v2.2.2
 
 # arm64 (v1.7.0 onward). The architecture is in the tag, see below
-docker plugin install ghcr.io/claymore666/docker-net-dhcp:v2.2.1-arm64
+docker plugin install ghcr.io/claymore666/docker-net-dhcp:v2.2.2-arm64
 ```
 
 **If the directory is missing**, the install pulls the plugin, then
@@ -175,7 +175,7 @@ plugin that is already there:
 
 ```bash
 sudo mkdir -p /var/lib/net-dhcp
-docker plugin enable ghcr.io/claymore666/docker-net-dhcp:v2.2.1
+docker plugin enable ghcr.io/claymore666/docker-net-dhcp:v2.2.2
 ```
 
 On arm64 that second line takes the `-arm64` tag, like every other
@@ -383,7 +383,7 @@ You bring an existing Linux bridge that is L2-connected to the LAN
 (see [`bridge-mode.md`](bridge-mode.md) for the bridge setup itself):
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.2.1 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.2.2 \
     --ipam-driver null \
     -o bridge=my-bridge \
     my-dhcp-net
@@ -395,7 +395,7 @@ No host changes are needed. Containers get per-container
 kernel-generated MACs as macvlan children of a host NIC:
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.2.1 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.2.2 \
     --ipam-driver null \
     -o mode=macvlan -o parent=eth0 \
     lan-dhcp
@@ -409,7 +409,7 @@ security, hostile vSwitches, some Wi-Fi APs). The DHCP server must key
 reservations on DHCP option 61 (client identifier) and never on MAC:
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.2.1 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.2.2 \
     --ipam-driver null \
     -o mode=ipvlan -o parent=eth0 \
     lan-dhcp
@@ -426,8 +426,8 @@ also serves an IPAM driver of its own (#110), and the line names the
 plugin twice:
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.2.1 \
-    --ipam-driver ghcr.io/claymore666/docker-net-dhcp:v2.2.1 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.2.2 \
+    --ipam-driver ghcr.io/claymore666/docker-net-dhcp:v2.2.2 \
     -o mode=macvlan -o parent=eth0 \
     lan-dhcp
 ```
@@ -565,7 +565,7 @@ value as an invalid duration.
 | `skip_routes` | all | `false` | upstream; all modes since v0.9.0 | Don't copy non-default static routes from the parent (bridge or NIC) into containers, **and** don't apply DHCP-supplied classless static routes (option 121, see below), **and** (v2.2.0+, #821) don't apply the routes an IPv6 Router Advertisement asks for. v0.9.0 extended parent route-copying from bridge-only to all modes (#102); set `true` to restore the old macvlan/ipvlan no-copy behaviour. Neither default gateway is affected either way. |
 | `propagate_dns` | all | `false` | v0.9.0 | Write the DHCP-supplied DNS server list (option 6 / v6 option 23) into the container's `/etc/resolv.conf` on every bind/renew. Overrides Docker's embedded resolver for this network; the `search` line uses option 119 with fallback to option 15 on v4, and DHCPv6 option 24 on v6 (v1.9.0+, #815). Since v2.2.0 (#821) the v6 list also carries RFC 8106 RDNSS and DNSSL from the Router Advertisement, with DHCPv6's own options taking precedence (RFC 8106 §5.3.1), and it is rewritten when a later advertisement changes it. A resolver at a link-local address is written with its interface as an RFC 4007 §11 scope zone, `nameserver fe80::1%eth0`; musl does not parse that form. An empty list is never written: the container keeps the resolvers it had. |
 | `propagate_mtu` | all | `false` | v0.9.0 | Apply DHCP option 26 (Interface MTU) to the container link on bind/renew. For jumbo-frame (9000) and VPN-reduced (~1450) networks. Since v1.8.0 an MTU outside `[576, 65535]` is refused and the link keeps the MTU it had, counted by `mtu_refused`. Nothing below this plugin holds the bottom of that range, so a server-supplied 68 used to be applied verbatim. **This option governs IPv4 only.** The MTU an IPv6 Router Advertisement carries (RFC 4861 §4.6.4) is applied whatever it says, because until v2.2.0 the container's kernel applied it on every IPv6 network and an option defaulting to `false` would have taken it away; it is applied to the link, so it bounds IPv4 as well, and the refusal range still holds. On a dual-stack network where both families supply an MTU, the link takes the **smaller** of the two: the larger is a promise the link cannot keep for the family that asked for the smaller one (#821). |
-| `client_id` | all | per-endpoint id | v0.9.0 | Override DHCP option 61 (Client Identifier) for every endpoint on this network; sent as RFC 2132 opaque bytes (type `0x00`). The default per-endpoint id is what makes per-container reservations work, and a fixed `client_id` makes all containers look like one client to the server. Pair with `vendor_class` for class-based policy. **The derived default differs by mode** (see below). |
+| `client_id` | all | per-endpoint id | v0.9.0 | Override DHCP option 61 (Client Identifier) for every endpoint on this network; sent as RFC 2132 opaque bytes (type `0x00`). The default per-endpoint id is what makes per-container reservations work, and a fixed `client_id` makes all containers look like one client to the server. Pair with `vendor_class` for class-based policy. **The derived default differs by mode** (see below). **Since v2.2.2 a change to this option does not move an endpoint that already holds a lease:** the identifier an endpoint sends is the one stored with its lease record, so the new value applies to addresses taken after the change. See [Restart stability](#restart-stability-mac-and-ip). |
 | `vendor_class` | all | `docker-net-dhcp` | v0.9.0 | Override DHCP option 60 (Vendor Class Identifier), for DHCP servers running class-based policy (different gateway/option sets per class). v4 only: the DHCPv6 client sends no vendor-class option. |
 | `validate_dhcp` | macvlan, ipvlan | `false` | v0.9.0 | Pre-flight probe at `docker network create`: one-shot DHCP exchange on a temporary child of the parent, rejecting the network if no server answers within 8s. Catches isolated parents / blocked UDP 67-68 / broken VLAN tags at create time. Costs one transient lease per probe. Bridge mode rejects the option. **Since v1.6.0 the probe link is the same kind the network's endpoints will be**: a macvlan child for a macvlan network, an ipvlan L2 child for an ipvlan one (#486). It used to build a macvlan whatever the mode was, on the reasoning that reachability is mode-agnostic; reachability is, but the parent is not. One parent cannot carry both kinds, so a macvlan probe on an ipvlan network was refused outright whenever an ipvlan container was already running on that NIC, so `validate_dhcp` failed for a reason that had nothing to do with DHCP, which is the opposite of what the flag is for. **What MAC you will see at the server:** on macvlan, a random locally-administered address. On ipvlan, the **parent's** address, because an ipvlan child cannot have its own, by kernel design. The probe is otherwise identity-neutral: it sends no hostname and no client identifier, so on ipvlan there is nothing but the shared `chaddr` to tell it apart from the containers on that NIC. Don't go looking for a random MAC in an ipvlan probe's lease log. |
 | `dhcp_servers` | all | _(none)_ | v1.8.0 | Ordered preference list of DHCPv4 servers, e.g. `1.1.1.1,2.2.2.2`. The initial acquisition tries each in turn, restricted to that one server, and takes the first lease offered. **The list is exhaustive**: if none of them answers, the endpoint fails instead of accepting whichever server happened to reply. Naming your servers is what makes the list complete. The ladder **divides** the existing acquisition budget (`lease_timeout`) instead of extending it, so enabling this never makes `docker run` slower. Because it divides instead of extending, a long list cannot get one attempt each: an attempt costs entering the container's network namespace, opening a packet socket on the interface and a DHCP round trip, so a slice too small to hold one exchange is a guaranteed failure instead of a fast one. Once the list outgrows the budget the plugin keeps the top entries on their own attempts and asks **the tail as a single group**. With the default 34s budget that is the first ten individually, then the rest together, each attempt taking 3.09s of it. Nothing is dropped, the total does not grow, and what degrades is only the strict ordering *within* that last group. Lists of eleven or fewer are unaffected at that budget. (#731) Once a lease is held it stays with the server that granted it, because renewal is unicast. **DHCPv4 only**: a v6 entry is rejected at `docker network create` instead of being silently ignored, and a DHCPv6 client on a network that sets this is given no list at all instead of a v4 one it cannot use. The list itself is validated the same way: an empty entry (a trailing or doubled comma), an entry that is not an IP address, and a repeated address each fail the create instead of being quietly dropped. **2.0 matches on the Server Identifier (option 54) and never on the packet's source address**, so the list now works behind a DHCP relay, and the 1.x limitation recorded under #111 is gone. Two consequences worth knowing: a message that carries no server identifier at all is **refused** while an allow list is set (an allow list a message can satisfy by omitting the field is not a restriction), and a server identifier is a value anyone on the link can put in a datagram, so this narrows which claimed identities the client acts on and authenticates nothing. |
@@ -751,7 +751,11 @@ client. An interface name is cosmetic and nothing here fails an attach.
 two kernel calls, and a plugin killed between them leaves a link that
 carries only the derived name. Nothing then finds it by the `dh-` name,
 including teardown, so it stays on the bridge until `ip link del <name>`
-removes it. The window is one netlink round trip wide.
+removes it. The window is one netlink round trip wide. Since v2.2.2 the
+plugin's own lookups of that name wait for a rename in flight instead of
+reading through it, so an endpoint deleted inside the window is torn down
+and `docker network inspect --verbose` reports its host veth; a plugin
+that dies inside the window is what the bound above is left describing.
 
 **A restart re-derives the name.** Docker drives a restart as a detach
 and a re-attach, the plugin rebuilds the host-side link with its `dh-`
@@ -942,6 +946,18 @@ container that is**, and only while it is the single one being kept. So:
   [`/Plugin.Health`](#pluginhealth). The two cases above are not
   counted, because from the plugin's side nothing ambiguous happened.
 
+**A restart of the plugin does not spend the minute.** If the plugin, or
+the daemon under it, stops between Docker asking for an address and the
+container's endpoint being created, the next plugin process finds the
+address held by a record no endpoint owns and hands it back, so the
+container claims it again on its next start, inside the same minute. It
+does this only for an address no endpoint on that network has: an
+address belonging to a container Docker still lists is left alone,
+running or not. The addresses handed back are counted as
+`ipam_stranded_records`. Before v2.2.2 such an address stayed held until
+the network was removed, and `--ip` on it, or a container pinned to the
+hardware address that was leasing it, was refused for as long as it did.
+
 The reason the rule is this blunt is that Docker's address request
 carries no hostname and no endpoint id. The only thing in it that
 identifies anything is a hardware address Docker generates fresh for
@@ -957,6 +973,23 @@ the client sends one, and dnsmasq does: it looks a lease up by client
 identifier first and falls back to the hardware address only when one
 side has none. Against such a server the binding matches and the
 address comes back.
+
+The plugin sends that identifier from the endpoint's own lease record,
+both for the address request and for every renewal the container makes
+afterwards, so the two exchanges present the one value the server has
+the address filed under. Before v2.2.2 only the address request did, and
+the renewals derived the identifier from the hardware address Docker had
+just minted: the request was given the address back, the container's own
+client was refused it seconds later and took a different one, and
+`docker inspect` went on reporting the first. One consequence is worth
+stating, because it is a change of behaviour: a `client_id` changed on
+the network while a container is stopped does not reach the wire on that
+container's next start. Its record still carries the value its address
+was leased under, and giving that address back is what the record is
+for. The new value applies to the next address taken fresh: within a
+minute of the container being removed in IPAM mode, and on the next
+container created on a `--ipam-driver null` network, where a record
+lives as long as the endpoint.
 
 A server that **ignores** option 61 and keys on the hardware address
 alone sees an unknown client instead, and hands out a different
@@ -1438,7 +1471,7 @@ socket also gives, so a permission problem looks exactly like a dead
 endpoint:
 
 ```bash
-PLUGIN_ID=$(docker plugin inspect -f '{{.Id}}' ghcr.io/claymore666/docker-net-dhcp:v2.2.1)
+PLUGIN_ID=$(docker plugin inspect -f '{{.Id}}' ghcr.io/claymore666/docker-net-dhcp:v2.2.2)
 sudo curl -s --unix-socket /run/docker/plugins/$PLUGIN_ID/net-dhcp.sock \
     http://localhost/Plugin.Health | jq .
 ```
@@ -1585,6 +1618,7 @@ already parse it were not told to expect a new type.
 | `ipam_replay_miss` | no | warn | *(v2.1.0+)* Stored endpoint addresses the plugin would **not** confirm at a daemon restart, because no lease record in that network holds them. The refusal is the safe outcome and is not `healthy`-affecting: Docker keeps the address it stored, the refusal is logged, and the network driver's own recovery adopts the endpoint from Docker's view. It is worth investigating, because it means the lease record and Docker's store have drifted apart on a host where they are supposed to be two views of the same fact: a lost or hand-edited `lease-records.jsonl`, a state directory restored from a backup, or a network whose records were removed while its containers were not. The endpoint that missed is the one to look at; the others are unaffected. |
 | `ipam_rebind_ambiguous` | no | warn | *(v2.1.0+)* Address requests that met more than one recently-removed endpoint on the same network, so nothing said which previous address the request belonged to and the DHCP server chose. **This is a documented limit, counted.** An address request carries no hostname and no endpoint id, so when several containers on one network restart together the plugin has nothing to match them on, and guessing would hand one container's address to another. Not `healthy`-affecting: every container still gets an address. Watch it anyway: it is the one signal that addresses on this host moved for a reason an operator can act on, by pinning the ones that matter with `--ip` or `--mac-address`, by restarting containers one at a time, or by using `--ipam-driver null`, where restart stability is carried by the plugin's own tombstones instead. |
 | `ipam_reserve_duplicate_mac` | no | warn | *(v2.1.0+)* Address requests refused because the network was already leasing an address for that hardware address, so the container that asked second did not start. It is **not** `healthy`-affecting: refusing is the safe outcome, and the alternative is two endpoints holding one address and the loser failing later with a message about a plugin restart that did not happen. Its producer is two endpoints carrying one MAC. Docker generates a unique hardware address per endpoint and passes an operator-set one through unchanged, so `docker run --mac-address X` twice on one network, or a Compose file pinning one MAC on two services, puts two endpoints on one hardware address; a DHCP server files its lease per hardware address and would hand them the same address. Worth investigating whenever it moves, because each move is a container that did not start: give each container its own `--mac-address`, or leave it unset. It is **not** moved by Docker re-sending a request after its own plugin call timed out: that re-send carries no body (the daemon hands the same, already-drained reader to every attempt) and is refused before any handler runs, so raising `--timeout` does not change this counter. |
+| `ipam_stranded_records` | no | warn | *(v2.2.2+)* Lease records a previous plugin process left behind with no endpoint on them, handed back when this process started so their addresses can be claimed again. **A move is the repair, not the fault.** The producer is a plugin process, or a daemon under it, that ended between Docker asking for an address and the container's endpoint being created. Left alone such a record keeps the address for good: it is not one of the recently-removed endpoints a restart claims from, so the container's next attempt takes a second address; it still answers address lookups, so `--ip` on that address and a container pinned to its hardware address are both refused; and no network ever hands it back, not even `release_lease=on_remove`. Not `healthy`-affecting. Watch it: a steady rise means the plugin or the daemon is restarting while containers start, and that is worth investigating on its own. |
 | `ipam_release_unknown` | no | n/a | *(v2.1.0+)* Addresses Docker released that no lease record of the plugin's holds. Not a fault and not `healthy`-affecting: a release for an address whose record was already retained (the endpoint was deleted) or closed (its creation failed) is the normal ordering, and the counter exists so that the release path has an outside number at all. |
 | `dns_propagation_pid_mismatches` | no | n/a | (v1.8.0+) DNS propagations refused because the container PID resolved through Docker no longer belonged to that container by the time the plugin acted on it (#688). Only reachable with `propagate_dns` opted in. Refusing is the safe outcome, because the container keeps the `resolv.conf` it had and the next renewal propagates again, so this is not `healthy`-affecting. It is reported because the plugin runs in the host PID namespace: each one is a `/etc/resolv.conf` write that would otherwise have landed in an unrelated host process that inherited the recycled PID. A sustained rise means containers are exiting inside the propagation window; an isolated one is a container that stopped at the wrong moment. |
 | `netns_pid_mismatches` | no | n/a | (v1.8.0+) Sandbox network-namespace opens refused because the container PID resolved through Docker no longer belonged to that container. The sibling of `dns_propagation_pid_mismatches` above, on the path with the larger blast radius and with no opt-in: what the refusal prevents is not one file but a netlink handle carrying every address, MTU and route the plugin applies, with `CAP_NET_ADMIN`. **In 2.0 the second half of that is closer to home and never further away.** Nothing is spawned into the namespace: the plugin locks one of its own OS threads, `setns`es it into the sandbox, opens the raw packet socket that carries the whole DHCP exchange there, and returns the thread. So the wrong namespace no longer means a client process pointed at the wrong container. It means the plugin's own thread and its own `CAP_NET_RAW` socket landed on an unrelated host process's network, and the client that keeps running on that socket stays there for the life of the endpoint. Refusing fails the attach, so unlike the DNS case it is not silent, but the error reads like a slow container start, and only this counter says the PID belonged to something else. Not `healthy`-affecting: the attach failure is reported to Docker, and the container simply does not come up on this network. Any non-zero value is worth reading: it means a container exited inside the attach window and the kernel handed its PID to another task. |
@@ -1642,7 +1676,7 @@ quietly go missing from your dashboards.
 On the plugin socket, always:
 
 ```bash
-PLUGIN_ID=$(docker plugin inspect -f '{{.Id}}' ghcr.io/claymore666/docker-net-dhcp:v2.2.1)
+PLUGIN_ID=$(docker plugin inspect -f '{{.Id}}' ghcr.io/claymore666/docker-net-dhcp:v2.2.2)
 sudo curl -s --unix-socket /run/docker/plugins/$PLUGIN_ID/net-dhcp.sock \
     http://localhost/metrics
 ```
@@ -1651,7 +1685,7 @@ Prometheus cannot scrape a UNIX socket, so for an actual scrape target
 set `METRICS_ADDR`:
 
 ```bash
-PLUGIN=ghcr.io/claymore666/docker-net-dhcp:v2.2.1
+PLUGIN=ghcr.io/claymore666/docker-net-dhcp:v2.2.2
 docker plugin disable "$PLUGIN"
 docker plugin set "$PLUGIN" METRICS_ADDR=127.0.0.1:9099
 docker plugin enable "$PLUGIN"
@@ -1811,7 +1845,7 @@ Raise verbosity with a disable, a set, and an enable, in that order,
 because `docker plugin set` is refused while the plugin is running:
 
 ```bash
-PLUGIN=ghcr.io/claymore666/docker-net-dhcp:v2.2.1
+PLUGIN=ghcr.io/claymore666/docker-net-dhcp:v2.2.2
 docker plugin disable "$PLUGIN"
 docker plugin set "$PLUGIN" LOG_LEVEL=trace
 docker plugin enable "$PLUGIN"
@@ -1894,7 +1928,7 @@ Compose-managed alternative (network lifecycle tied to the project):
 ```yaml
 networks:
   lan:
-    driver: ghcr.io/claymore666/docker-net-dhcp:v2.2.1
+    driver: ghcr.io/claymore666/docker-net-dhcp:v2.2.2
     driver_opts:
       mode: macvlan
       parent: eth0

@@ -7,8 +7,10 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 
 	log "github.com/sirupsen/logrus"
+	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
 
 	"github.com/claymore666/docker-net-dhcp/v2/pkg/dhcp"
@@ -160,11 +162,58 @@ func isHostIfnameAlnum(c byte) bool {
 // the two routes that already had the name skip nameTheRunningClient
 // entirely, and a rename guarded beside that call would have skipped
 // them too.
-func (m *dhcpManager) afterAttach(phases *joinPhases, inspected bool, lookup func() error, ctrName string, ctrHostname *string) {
+//
+// BOTH FIELDS ARRIVE THE SAME WAY, AND THAT IS THE POINT. lookup is the
+// attach's own inspect closure and it fills the caller's variables when
+// it runs, which on the sandbox key route is HERE and not before the
+// call. A value copied at the call is therefore the empty string the
+// attach started with, whatever the daemon went on to answer: on engine
+// 29.8.1, where the key route carries every attach, that is every
+// container on a `container_name` network keeping its generated link
+// name while the same attach put the container's name on the wire.
+func (m *dhcpManager) afterAttach(phases *joinPhases, inspected bool, lookup func() error, ctrName, ctrHostname *string) {
 	if !inspected {
 		inspected = m.nameTheRunningClient(phases, lookup, ctrHostname)
 	}
-	m.renameHostLink(inspected, ctrName, *ctrHostname)
+	m.renameHostLink(inspected, *ctrName, *ctrHostname)
+}
+
+// hostLinkNaming closes the two kernel calls a rename takes to every
+// lookup this process makes of the generated `dh-<12 hex>` name (#1051).
+//
+// THE KERNEL HAS NO STATE IN WHICH BOTH NAMES RESOLVE. MEASURED in a
+// user namespace on 6.12.107: an altname equal to the link's current
+// name is EEXIST, and a rename onto the link's own altname is EEXIST
+// too. So the old name can only become an altname after the rename has
+// freed it, and between those two calls nothing on the host answers to
+// it. No ordering removes that window; what this removes is our own
+// readers from it.
+//
+// It matters because of what a miss means to the reader. DeleteEndpoint
+// treats one as the normal end of a forced teardown and returns nil, so
+// a read landing in the window leaves the veth on the bridge for the
+// life of the host, silently -- the failure the altname exists to
+// prevent, in its transient form. A Leave cannot get there (stop waits
+// on startedCh, which Start closes after the rename), but a manager
+// DISPLACED by a second Join for the same endpoint is stopped on a
+// goroutine only Close waits for, and its attach can still be renaming
+// while the delete runs. EndpointOperInfo is not serialised with any
+// attach at all.
+//
+// Write-held across the rename and the altname, read-held for the one
+// lookup: no I/O, no daemon call, microseconds, and off the attach's
+// critical path. An OUTSIDE reader -- the suite, an operator's `ip
+// link` -- cannot be serialised by anything this process does, which is
+// why the suite waits the window out instead.
+var hostLinkNaming sync.RWMutex
+
+// hostLinkByGeneratedName looks a host-side veth up by the name derived
+// from its endpoint ID, and is how every site outside the rename itself
+// does it (#1051). Kept honest by TestHostLinkLookupsGoThroughTheGuard.
+func hostLinkByGeneratedName(name string) (netlink.Link, error) {
+	hostLinkNaming.RLock()
+	defer hostLinkNaming.RUnlock()
+	return nlLinkByName(name)
 }
 
 // renameHostLink gives this endpoint's host-side veth the name its
@@ -203,6 +252,13 @@ func (m *dhcpManager) renameHostLink(inspected bool, ctrName, ctrHostname string
 	if !inspected || m.opts.HostIfname == HostIfnameOff || m.opts.effectiveMode() != ModeBridge {
 		return
 	}
+	// HELD FROM HERE, and not from the rename call, because the lookup
+	// below is the one this function must make INSIDE its own write
+	// section: hostLinkByGeneratedName would take the read lock this
+	// same goroutine is about to hold for writing.
+	hostLinkNaming.Lock()
+	defer hostLinkNaming.Unlock()
+
 	hostName, _ := vethPairNames(m.joinReq.EndpointID)
 	want := deriveHostIfname(m.opts.hostIfnameSource(ctrName, ctrHostname), m.joinReq.EndpointID)
 

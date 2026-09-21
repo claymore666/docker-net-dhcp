@@ -51,13 +51,20 @@ func hostLinkFor(t *testing.T, endpointID string) netlink.Link {
 	generated := generatedHostName(endpointID)
 	link, err := netlink.LinkByName(generated)
 	if err != nil {
-		t.Fatalf("no link on this host answers to %q: %v\n"+
-			"That name is what the plugin derives from the endpoint ID at teardown, at "+
-			"EndpointOperInfo and at restart recovery. A renamed link that no longer answers to it "+
-			"is a veth left on the bridge for the life of the host (#978).\n%s",
-			generated, err, linkTable(t))
+		noLinkAnswers(t, generated, err)
 	}
 	return link
+}
+
+// noLinkAnswers is the claim both reads make, in one place so the
+// deadline and the single look cannot drift apart.
+func noLinkAnswers(t *testing.T, generated string, err error) {
+	t.Helper()
+	t.Fatalf("no link on this host answers to %q: %v\n"+
+		"That name is what the plugin derives from the endpoint ID at teardown, at "+
+		"EndpointOperInfo and at restart recovery. A renamed link that no longer answers to it "+
+		"is a veth left on the bridge for the life of the host (#978).\n%s",
+		generated, err, linkTable(t))
 }
 
 // generatedHostName is vethPairNames' host half, written out rather than
@@ -535,16 +542,30 @@ func TestHostIfname_APluginRecycleLeavesTheNamedLinkAlone(t *testing.T) {
 	}
 }
 
+// waitHostLinkName waits for this endpoint's host-side link to carry
+// the name its network asked for, and makes both of the claims it made
+// before: a link must answer to the generated name, and that link must
+// end up named `want`.
+//
+// THE FIRST CLAIM IS NOW DUE AT THE DEADLINE and not at the first look,
+// because the rename is two kernel calls and the generated name
+// resolves to nothing between them -- the kernel refuses an altname
+// equal to a link's current name, so the old name can only go back on
+// after the rename has taken it off. The plugin keeps its OWN readers
+// out of that window (#1051); an outside reader like this one cannot be
+// kept out of it by anything the plugin does, so it waits it out. A
+// deadline reached with nothing ever answering still fails, with the
+// same words a single look fails in.
 func waitHostLinkName(t *testing.T, endpointID, want string, budget time.Duration) netlink.Link {
 	t.Helper()
-	deadline := time.Now().Add(budget)
-	for {
-		link := hostLinkFor(t, endpointID)
-		if link.Attrs().Name == want || !time.Now().Before(deadline) {
-			return link
-		}
-		time.Sleep(250 * time.Millisecond)
+	generated := generatedHostName(endpointID)
+	link, _, err := harness.AwaitSettled(budget, 250*time.Millisecond,
+		func() (netlink.Link, error) { return netlink.LinkByName(generated) },
+		func(l netlink.Link) bool { return l.Attrs().Name == want })
+	if err != nil {
+		noLinkAnswers(t, generated, err)
 	}
+	return link
 }
 
 func waitEndpointID(t *testing.T, ctx context.Context, cli *docker.Client, ctrID, netName string, budget time.Duration) string {

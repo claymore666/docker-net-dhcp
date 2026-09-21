@@ -139,7 +139,7 @@ func TestRecovery_PluginDisableEnable_PreservesEndpoint(t *testing.T) {
 	// synchronous and Listen binds the socket after it — but the walk
 	// only SPAWNS each endpoint's rebuild, and every counter this test
 	// reads is moved by that rebuild: recovered_ok after Start returns
-	// (pkg/plugin/plugin.go:2907-2944), the sandbox route inside it
+	// (pkg/plugin/plugin.go:2932-2969), the sandbox route inside it
 	// (pkg/plugin/dhcp_manager.go:2599). So socket readiness is the
 	// start of the thing under test, not the end of it.
 	//

@@ -1639,7 +1639,11 @@ func (p *Plugin) EndpointOperInfo(ctx context.Context, r InfoRequest) (InfoRespo
 	hostName, _ := vethPairNames(r.EndpointID)
 	// Through the seam so the name this publishes can be driven: the
 	// link it reads is renamed by CAP_NET_ADMIN work no unit lane has.
-	hostLink, err := nlLinkByName(hostName)
+	// Through the guard because that rename takes two kernel calls, and
+	// between them nothing answers to the name derived here (#1051):
+	// this call is not serialised with any attach, so a `docker network
+	// inspect --verbose` during one would be told the veth is missing.
+	hostLink, err := hostLinkByGeneratedName(hostName)
 	if err != nil {
 		return res, fmt.Errorf("failed to find host side of veth pair: %w", err)
 	}
@@ -1680,6 +1684,20 @@ func (p *Plugin) DeleteEndpoint(ctx context.Context, r DeleteEndpointRequest) er
 		// delete that refused would wedge `docker network rm` on a
 		// network whose only fault is an unreadable file.
 		if !errors.Is(err, errIPAMBindingLost) {
+			// THE FINGERPRINT DOES NOT SURVIVE THIS RETURN. The
+			// engine releases the address whether or not this call
+			// succeeded: deleteEndpoint logs a driver error that is
+			// not a permission refusal and carries on, and Delete
+			// then calls releaseIPAddresses unconditionally (moby
+			// 406bdd8c82, daemon/libnetwork/endpoint.go:968-1000;
+			// v26.1.5 libnetwork/endpoint.go:861-863). ReleaseAddress
+			// reads these fingerprints to tell an endpoint that is
+			// still up from one whose creation rolled back, so a
+			// fingerprint left here would answer "still up" for an
+			// endpoint the engine has already torn down, and the
+			// record behind it would sit in the created phase until
+			// the next plugin start.
+			p.takeEndpoint(r.EndpointID)
 			return fmt.Errorf("failed to get network options: %w", err)
 		}
 		mode, modeKnown = "", false
@@ -1809,7 +1827,11 @@ func (p *Plugin) DeleteEndpoint(ctx context.Context, r DeleteEndpointRequest) er
 	// Through the seam, like the parent-attached teardown beside it,
 	// so a unit test can prove which paths a delete actually ran
 	// rather than infer it from a return value that is nil either way.
-	link, err := nlLinkByName(hostName)
+	// Through the guard because the arm below reads a miss as a
+	// finished teardown, and a rename in flight makes the name miss for
+	// two kernel calls (#1051). A Leave cannot reach that window, a
+	// displaced manager's attach can.
+	link, err := hostLinkByGeneratedName(hostName)
 	if err != nil {
 		// A veth pair dies whole when the container-side end's netns is
 		// destroyed (OOM-kill, `docker rm -f`, host reboot race), so a

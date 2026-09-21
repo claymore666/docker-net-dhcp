@@ -11,6 +11,108 @@ forks that have been waiting on review.
 
 [upstream]: https://github.com/devplayer0/docker-net-dhcp
 
+## v2.2.2
+
+A container that is restarted while the plugin is down gets its own address
+back again. An address the plugin had re-bound to the restarting container
+could be left held by a record no container owned, and it stayed held for the
+life of the lease journal: the restart lost the address, a second lease was
+burned in its place, and `--ip` on that address and a container pinned to a
+fixed hardware address were both refused.
+
+Containers attaching on Docker Engine 29.8.1 get their renewal client again.
+
+### Upgrade notes
+
+Required on every host before `docker plugin install`, unchanged since v1.5.0:
+
+```bash
+sudo mkdir -p /var/lib/net-dhcp
+```
+
+**The privilege prompt does not change.** No field `docker plugin upgrade`
+prompts on has moved since v2.0.0, so the manifest-delta table in the v2.0.0
+section below is still the list the daemon shows you.
+
+| What changed | What it does to you |
+| --- | --- |
+| An address the plugin re-bound to a restarting container is handed back when the attachment does not complete | The 60 second restart window now survives a failed container start, a plugin that ends mid-exchange and a DHCP server that does not answer. Before this, the address was held by a record with no container behind it until the journal was replaced. Applies to networks that name this plugin as their IPAM driver (#1047). |
+| A plugin start gives back the IPAM records of containers the engine no longer attaches | The check runs once per network at start-up, only for records an earlier plugin process wrote last and only for hardware addresses the engine does not list on that network. A running container's record is left alone, and a network whose endpoint list cannot be read is left untouched. `/health` counts what was handed back in `ipam_stranded_records` (#1047). |
+| An address whose lease has expired while the container was down is closed instead of being offered to the retry | The plugin does not offer a restarting container an address the server is free to have given to someone else. The container gets a new lease, as it does today when no window is open (#1047). |
+| An address the DHCP server answered with that the network cannot use is not offered to the next container | An answer outside the network's subnet, or one that is not the address `--ip` asked for, is refused as before, and the record it arrived on is now closed. Before this it could be left as the one address the next container on that network asked for, under the first container's identity, and be refused in the same way (#1047). |
+| A restarted container's renewals carry the same DHCP client identifier its address was claimed with | The address request and every renewal after it now send the identifier stored with the endpoint's lease record. Before this the renewals derived one from the hardware address Docker had just minted: the server refused the address it had granted seconds earlier, the container took a different one, and `docker inspect` still reported the first. Consequence worth noting: a `client_id` changed on a network while a container is stopped applies to addresses taken after the change, not to that container's next start (#1047). |
+| A container that already restarted under v2.2.1 can take one new address on its first start after the upgrade | Its lease record holds the identifier the address was first claimed with, while the address in the record is the one the server gave its later hardware address after refusing that claim. The request made on the first start after the upgrade asks for that address under the stored identifier, the server does not have it filed there, and the container is given another address, which it then keeps. It happens once, and it ends an address that moved on every restart under v2.2.1. A container that never restarted, and every container created after the upgrade, is unaffected (#1047). |
+
+### New
+
+- [`README.md`](README.md) and the documentation home open with a jump
+  list, one line per section, with the
+  [`docs/reference.md`](docs/reference.md) driver reference and the
+  [`docs/roadmap.md`](docs/roadmap.md) roadmap linked from it. The
+  Documentation section moves above the argument for the plugin on both
+  pages, and on the site the Images and releases section moves with it,
+  so the install and the pointers to the manual come first. The
+  restructure rewrites no sentence (#1039). One sentence on both pages
+  does read differently in this release: the engine the integration suite
+  runs on is 29.8.1, and it said 29.8.0.
+- [`docs/roadmap.md`](docs/roadmap.md) opens with a table of the open
+  milestones, then the issues on each of them, then a diagram of the
+  release line. The five themes and the refusals are tables of subject,
+  state and anchor issue, with the reasoning folded under them, and the
+  paragraphs describing released milestones and the 1.x history are
+  gone: the driver reference is the authority on what exists and these
+  notes are the record of what each tag changed, which the page now
+  says. The diagram is drawn by a script the documentation site fetches
+  from a content delivery network; a reader who cannot reach it sees the
+  diagram's source text and the caption below it, which names the same
+  releases in prose (#1040).
+- `pkg/plugin` has a package overview on pkg.go.dev. The page carried a
+  symbol list and no prose (#1040).
+
+### Fixed
+
+- The persistent DHCP client failed to open on Docker Engine 29.8.1, with
+  `open a DHCP client on dh-<id>: runtime: interface "dh-<id>": route ip+net:
+  no such network interface`, and the endpoint held the address it had just
+  been given with nothing to renew it. The engine moves the container-side
+  link into the sandbox namespace and renames it, and the name was resolved a
+  second time, inside that namespace, after the plugin had read it. The link
+  now travels to the open as its index, which a rename does not change: the
+  open resolves the name the link has at that instant, checks that the name
+  it opened belongs to that link, and opens again where it does not. A link
+  that is gone fails once with the kernel's reason for it, whether its old
+  name was free or had been taken by another link, and a link whose name
+  never settles ends as an error and not as a client on somebody else's
+  link. The IPv4 and IPv6 clients open through the same path. Earlier
+  engines were exposed to the same window and were reached less often, and
+  the same change covers them (#1050).
+- On Docker Engine 29.8.1, a bridge network created with
+  `-o host_ifname=container_name` left every host-side link with the
+  generated `dh-<id>` name, counted `host_ifname_failures` for each one and
+  logged `The container's name has no characters an interface name may
+  carry`. The daemon had answered with the name: that engine lets the plugin
+  enter the sandbox namespace through its netns key, which is the route that
+  reads the container after the attach instead of before it, and the rename
+  was given a copy of the name taken before that read. It now reads the name
+  the same lookup answered with, the way the container's hostname already
+  did. Networks with `-o host_ifname=hostname`, and the option left off, were
+  not affected (#1051).
+- Renaming a host-side link takes two kernel calls, and between them nothing
+  on the host answered to the `dh-<id>` name this plugin derives from the
+  endpoint ID: the kernel refuses an altname equal to a link's current name,
+  so the old name can only be put back after the rename has freed it.
+  Teardown reads a miss of that name as a teardown that already happened, so
+  a delete landing in that window left the veth on the bridge, and
+  `docker network inspect --verbose` reported the endpoint as having no host
+  veth. The plugin's own lookups now wait for a rename in flight instead of
+  reading through it (#1051).
+- `go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp`, an
+  indirect dependency, moves to 1.45.0, out of the version range the
+  repository's Dependabot alert names for it, and the modules it requires
+  move with it. `github.com/sirupsen/logrus` moves to 1.10.2 and
+  `golang.org/x/sys` to 0.48.0. The plugin is built with Go 1.27.1
+  (#1046).
+
 ## v2.2.1
 
 A network that names this plugin as its IPAM driver can now be created on a

@@ -24,6 +24,17 @@ to install and no client process per container.
 This branch is the 2.x line and every page on it describes that build.
 The snippets below install the current release.
 
+On this page:
+
+- [Requirements](#requirements)
+- [Quick start](#quick-start)
+- [Documentation](#documentation), including the [driver reference](docs/reference.md) and the [roadmap](docs/roadmap.md)
+- [Why this one](#why-this-one)
+- [Origin and licence](#origin-and-licence)
+- [Verifying releases](#verifying-releases)
+- [Project & community](#project--community)
+- [Contributing](#contributing)
+
 ## Requirements
 
 - **Docker Engine 20.10 or newer.** 20.10 is the lowest version this
@@ -39,7 +50,7 @@ The snippets below install the current release.
   because it is unmeasured: on a cgroup v2 host it cannot start a
   container at all, so nothing there tests this plugin.
   Every change is also tested against the engine the integration suite
-  runs on, **29.8.0** today, read from that run's `Fixture engine drift`
+  runs on, **29.8.1** today, read from that run's `Fixture engine drift`
   step.
 - **Plugin interface `docker.networkdriver/1.0`**, which is what the
   plugin manifest declares. The plugin negotiates the Docker API version
@@ -91,16 +102,16 @@ The snippets below install the current release.
 sudo mkdir -p /var/lib/net-dhcp
 
 # amd64
-docker plugin install ghcr.io/claymore666/docker-net-dhcp:v2.2.1
+docker plugin install ghcr.io/claymore666/docker-net-dhcp:v2.2.2
 # arm64
-docker plugin install ghcr.io/claymore666/docker-net-dhcp:v2.2.1-arm64
+docker plugin install ghcr.io/claymore666/docker-net-dhcp:v2.2.2-arm64
 ```
 
 One network, created once. `macvlan` needs only a host NIC; `bridge`
 wants a bridge you bring yourself ([bridge mode](docs/bridge-mode.md)):
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.2.1 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.2.2 \
   --ipam-driver null -o mode=macvlan -o parent=eth0 lan-dhcp
 
 docker run --rm -ti --network lan-dhcp alpine ip address show
@@ -113,8 +124,8 @@ goes into Docker's own address management, which makes `--ip` and
 Compose's `ipv4_address` work.
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.2.1 \
-  --ipam-driver ghcr.io/claymore666/docker-net-dhcp:v2.2.1 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.2.2 \
+  --ipam-driver ghcr.io/claymore666/docker-net-dhcp:v2.2.2 \
   -o mode=macvlan -o parent=eth0 lan-dhcp
 ```
 
@@ -147,6 +158,32 @@ networks:
   lan-dhcp:
     external: true
 ```
+
+## Documentation
+
+Published at **<https://claymore666.github.io/docker-net-dhcp/>**, one
+version per release; the same pages live in [`docs/`](docs).
+
+- **[Driver reference](docs/reference.md)** is the manual: every option,
+  setting and counter, install and upgrade, lease behaviour,
+  observability, Compose usage, troubleshooting.
+- **[Bridge mode](docs/bridge-mode.md)** is the one-time host bridge setup.
+- **[macvlan / ipvlan modes](docs/parent-attached-modes.md)** covers
+  choosing between them, and their constraints.
+- **[Verifying releases](docs/verifying-releases.md)** covers signatures,
+  SLSA provenance, SBOMs, and rebuilding the binaries yourself.
+- **[How it works](docs/internals.md)** is the mechanism, for contributors.
+- **[Roadmap](docs/roadmap.md)** is where this is going, and what it will
+  not do.
+- **[Contributing](docs/contributing.md)** is what an acceptable pull
+  request looks like.
+- **[Changelog](RELEASE_NOTES.md)** · **[Release runbook](docs/release-runbook.md)**
+
+Images go to GHCR (`ghcr.io/claymore666/docker-net-dhcp:vX.Y.Z`, primary)
+and are mirrored to Docker Hub under two names,
+`claymore666/net-dhcp:vX.Y.Z` and
+`claymore666/docker-net-dhcp:vX.Y.Z`. The two Hub names are the same
+image at the same digest; install from either.
 
 ## Why this one
 
@@ -199,32 +236,6 @@ and this derivative stays under the same licence.
 
 [fork-parent]: https://github.com/devplayer0/docker-net-dhcp
 [dhcp-golib]: https://github.com/claymore666/dhcp-golib
-
-## Documentation
-
-Published at **<https://claymore666.github.io/docker-net-dhcp/>**, one
-version per release; the same pages live in [`docs/`](docs).
-
-- **[Driver reference](docs/reference.md)** is the manual: every option,
-  setting and counter, install and upgrade, lease behaviour,
-  observability, Compose usage, troubleshooting.
-- **[Bridge mode](docs/bridge-mode.md)** is the one-time host bridge setup.
-- **[macvlan / ipvlan modes](docs/parent-attached-modes.md)** covers
-  choosing between them, and their constraints.
-- **[Verifying releases](docs/verifying-releases.md)** covers signatures,
-  SLSA provenance, SBOMs, and rebuilding the binaries yourself.
-- **[How it works](docs/internals.md)** is the mechanism, for contributors.
-- **[Roadmap](docs/roadmap.md)** is where this is going, and what it will
-  not do.
-- **[Contributing](docs/contributing.md)** is what an acceptable pull
-  request looks like.
-- **[Changelog](RELEASE_NOTES.md)** · **[Release runbook](docs/release-runbook.md)**
-
-Images go to GHCR (`ghcr.io/claymore666/docker-net-dhcp:vX.Y.Z`, primary)
-and are mirrored to Docker Hub under two names,
-`claymore666/net-dhcp:vX.Y.Z` and
-`claymore666/docker-net-dhcp:vX.Y.Z`. The two Hub names are the same
-image at the same digest; install from either.
 
 ## Verifying releases
 

@@ -46,7 +46,7 @@ func newFakeRecovery() *fakeRecovery {
 // succeedsAt, failsAt and abortsAt are the three ends one rebuild can
 // reach, named so a case cannot accidentally describe a plugin that does
 // two of them. failsAt and abortsAt are the classifier's two arms
-// (pkg/plugin/plugin.go:2936 and pkg/plugin/plugin.go:2930) and they
+// (pkg/plugin/plugin.go:2961 and pkg/plugin/plugin.go:2955) and they
 // mean opposite things to a
 // reader, so each is driven on its own.
 func (f *fakeRecovery) succeedsAt(d time.Duration) *fakeRecovery { f.flipAt = d; return f }
@@ -343,7 +343,7 @@ func TestRecoveryRoutes_NamesEveryRoute(t *testing.T) {
 // The classifier's OTHER arm, driven on its own. A recycle that records
 // recovery_aborted_container_gone is one where a Start failed and the
 // container was gone when the plugin looked afterwards
-// (pkg/plugin/plugin.go:2930): the endpoint is not coming back and
+// (pkg/plugin/plugin.go:2955): the endpoint is not coming back and
 // nothing is pending. A verdict keyed on recovery_failed alone reports
 // that as a rebuild still in flight, which sends its reader looking for
 // a hang that is not there — and the counters printed beside it say
