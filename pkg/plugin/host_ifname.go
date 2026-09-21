@@ -160,11 +160,20 @@ func isHostIfnameAlnum(c byte) bool {
 // the two routes that already had the name skip nameTheRunningClient
 // entirely, and a rename guarded beside that call would have skipped
 // them too.
-func (m *dhcpManager) afterAttach(phases *joinPhases, inspected bool, lookup func() error, ctrName string, ctrHostname *string) {
+//
+// BOTH FIELDS ARRIVE THE SAME WAY, AND THAT IS THE POINT. lookup is the
+// attach's own inspect closure and it fills the caller's variables when
+// it runs, which on the sandbox key route is HERE and not before the
+// call. A value copied at the call is therefore the empty string the
+// attach started with, whatever the daemon went on to answer: on engine
+// 29.8.1, where the key route carries every attach, that is every
+// container on a `container_name` network keeping its generated link
+// name while the same attach put the container's name on the wire.
+func (m *dhcpManager) afterAttach(phases *joinPhases, inspected bool, lookup func() error, ctrName, ctrHostname *string) {
 	if !inspected {
 		inspected = m.nameTheRunningClient(phases, lookup, ctrHostname)
 	}
-	m.renameHostLink(inspected, ctrName, *ctrHostname)
+	m.renameHostLink(inspected, *ctrName, *ctrHostname)
 }
 
 // renameHostLink gives this endpoint's host-side veth the name its

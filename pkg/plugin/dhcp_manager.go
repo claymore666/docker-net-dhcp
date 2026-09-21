@@ -2938,7 +2938,7 @@ func (m *dhcpManager) Start(ctx context.Context) (err error) {
 	// is a name, in the server's table and on the host-side link, which
 	// is worth a counter and a log line and is not worth tearing a
 	// working endpoint down for.
-	m.afterAttach(phases, inspected, inspect, ctrName, &ctrHostname)
+	m.afterAttach(phases, inspected, inspect, &ctrName, &ctrHostname)
 
 	return nil
 }

@@ -31,6 +31,17 @@ Containers attaching on Docker Engine 29.8.1 get their renewal client again.
   else's link. The IPv4 and IPv6 clients open through the same path. Earlier
   engines were exposed to the same window and were reached less often, and
   the same change covers them (#1050).
+- On Docker Engine 29.8.1, a bridge network created with
+  `-o host_ifname=container_name` left every host-side link with the
+  generated `dh-<id>` name, counted `host_ifname_failures` for each one and
+  logged `The container's name has no characters an interface name may
+  carry`. The daemon had answered with the name: that engine lets the plugin
+  enter the sandbox namespace through its netns key, which is the route that
+  reads the container after the attach instead of before it, and the rename
+  was given a copy of the name taken before that read. It now reads the name
+  the same lookup answered with, the way the container's hostname already
+  did. Networks with `-o host_ifname=hostname`, and the option left off, were
+  not affected (#1051).
 
 ## v2.2.1
 
