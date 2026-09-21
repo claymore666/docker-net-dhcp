@@ -4,6 +4,7 @@
 package plugin
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"github.com/claymore666/dhcp-golib/lease"
+	dNetwork "github.com/docker/docker/api/types/network"
 	log "github.com/sirupsen/logrus"
 	"github.com/vishvananda/netlink"
 
@@ -207,6 +209,29 @@ func (s *ipamReserves) take(key string) (*ipamReservation, bool) {
 	return r, true
 }
 
+// inFlight reports whether an exchange under this key is running: the
+// reservation is in the map and its answer has not been written yet.
+// The re-bind is folded into the journal between begin and finish, so
+// a record in created with an exchange in flight belongs to that
+// exchange and to nobody else.
+func (s *ipamReserves) inFlight(key string) bool {
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r, ok := s.m[key]
+	if !ok {
+		return false
+	}
+	select {
+	case <-r.done:
+		return false
+	default:
+		return true
+	}
+}
+
 // stale lists the keys of completed reservations older than age, which
 // is the sweeper's population: Docker asked for an address, was given
 // one, and never created the endpoint.
@@ -305,7 +330,7 @@ func (p *Plugin) runIPAMReserve(ctx context.Context, networkID string, sn stored
 		return none, fmt.Errorf("failed to name a reservation link: %w", err)
 	}
 
-	remove, err := p.addIPAMReserveLink(ctx, name, peer, mode, opts, mac)
+	remove, err := ipamAddReserveLink(p, ctx, name, peer, mode, opts, mac)
 	if err != nil {
 		return none, err
 	}
@@ -330,10 +355,11 @@ func (p *Plugin) runIPAMReserve(ctx context.Context, networkID string, sn stored
 		recordID = p.recordReserved(networkID, mac, identity)
 	}
 
-	giveUp := func() { p.ipamGiveUpRecord(recordID, rebound) }
+	giveUp := func(keepTheWindow bool) { p.ipamGiveUpAttempt(recordID, keepTheWindow, time.Now()) }
 
 	pol, err := resolveServerPolicy(opts)
 	if err != nil {
+		giveUp(rebound)
 		return ipamReservation{record: recordID}, err
 	}
 	base := dhcp.DHCPClientOptions{
@@ -346,18 +372,29 @@ func (p *Plugin) runIPAMReserve(ctx context.Context, networkID string, sn stored
 		RequestedIP: requestedIP,
 	}
 	if err := p.conflictWiring(&base, opts, roleAcquire, networkID, "", false); err != nil {
+		giveUp(rebound)
 		return ipamReservation{record: recordID}, err
 	}
 
 	info, _, err := p.acquireWithPolicy(ctx, name, pol, false, budget, "", base)
 	if err != nil {
-		giveUp()
+		giveUp(rebound)
 		return none, fmt.Errorf("failed to reserve an address for %v via DHCP within %v: %w", mac, budget, err)
 	}
 
 	res, err := ipamAcceptedReservation(info, recordID, sn.Binding.Pool, demanded)
 	if err != nil {
-		giveUp()
+		// THE WINDOW IS NOT KEPT HERE, and this is the one exit that
+		// does not keep it. The ACK is folded onto the record before
+		// either acceptance rule looks at it, so this record now holds
+		// an address this plugin refused. A tombstone carrying it is
+		// offered to the next container on the network, which asks for
+		// it under this container's identity and is refused the same
+		// way; on an on_remove network it is also a release for an
+		// address that was never taken. What the window offers back is
+		// an address that cannot be used here, so it is worth less
+		// than either.
+		giveUp(false)
 		return none, err
 	}
 	return res, nil
@@ -443,32 +480,94 @@ func ipamExchangeClientID(fresh, rebindIdentity []byte) []byte {
 	return fresh
 }
 
-// ipamGiveUpRecord is what a failed reserve does to its record, and the
-// answer is not the same for a fresh one and a re-bound one.
+// ipamGiveUpAttempt ends the record of an exchange that produced no
+// reservation this plugin accepted, and it does not ask whether that
+// record holds a lease. The attempt either never got an address or was
+// handed one the acceptance rules refused, and a refused address must
+// not become the candidate the next container on this network takes:
+// the next MAC would ask for it under the first container's identity
+// and be refused in the same way, for as long as the window is renewed.
 //
-// A FAILED EXCHANGE MUST NOT CONSUME THE CANDIDATE. ipamRebindCandidate
-// writes OpRebind before any packet goes out, because the exchange has
-// to run under the identity the server already has a lease filed under,
-// and that fold clears the tombstone deadline: the record stops being a
-// candidate the moment it is taken. Closing it on failure would spend
-// the documented address stability on an attempt that never reached the
-// server -- a container restarted on its own during a brief outage
-// would find nothing to re-bind seconds later, take a fresh address,
-// and nothing would say so, because ipam_rebind_ambiguous counts a
-// different case entirely. Retaining it puts the tombstone back with a
-// fresh deadline, so a retry inside the window finds exactly the one
-// candidate it had, and an attempt that never comes expires as it would
-// have.
+// A FAILED EXCHANGE MUST NOT CONSUME THE CANDIDATE, which is what
+// keepTheWindow is for, and every caller passes whether THIS attempt
+// re-bound the tombstone -- except the one exit holding an ACK the
+// acceptance rules refused, which passes false because the address on
+// the record is no longer the one the window promised. ipamRebindCandidate writes OpRebind before any packet
+// goes out, because the exchange has to run under the identity the
+// server already has a lease filed under, and that fold clears the
+// tombstone deadline: the record stops being a candidate the moment it
+// is taken. Closing it on failure would spend the documented address
+// stability on an attempt that never reached the server -- a container
+// restarted on its own during a brief outage would find nothing to
+// re-bind seconds later, take a fresh address, and nothing would say
+// so, because ipam_rebind_ambiguous counts a different case entirely.
+// Retaining it puts the tombstone back with a fresh deadline, so a
+// retry inside the window finds exactly the one candidate it had, and
+// an attempt that never comes expires as it would have.
 //
-// A record that was never a tombstone is closed, which is what the
-// reserve has always done: nothing is owed to an address the plugin
-// never held.
-func (p *Plugin) ipamGiveUpRecord(recordID string, rebound bool) {
-	if rebound {
-		p.recordRetained(recordID, time.Now().Add(tombstoneTTL))
+// A record this attempt did not re-bind is closed, for the reason the
+// last paragraph of ipamGiveUpRecord gives.
+func (p *Plugin) ipamGiveUpAttempt(recordID string, keepTheWindow bool, now time.Time) {
+	if keepTheWindow {
+		p.recordRetained(recordID, now.Add(tombstoneTTL))
 		return
 	}
 	p.closeRecord(recordID)
+}
+
+// ipamGiveUpRecord ends a record no endpoint is going to own, and the
+// choice between the two ways of ending it is whether the record still
+// has an address to give back.
+//
+// IT IS THE ONE GIVE-UP FOR AN ACCEPTED RESERVATION, and every exit
+// that abandons one comes through it: every exit of createIPAMEndpoint
+// after it has taken the reservation, a ReleaseAddress for a
+// reservation nobody consumed, and the stranded-record rule a plugin
+// restart runs. One clock read and one rule, so the window a container
+// is promised cannot be 60 seconds down one path and nothing down
+// another. An exchange that produced no accepted reservation ends at
+// ipamGiveUpAttempt instead, and that is the whole list.
+//
+// A RECORD THAT HOLDS A LEASE IS RETAINED even when nothing is owed to
+// it, because the lease is real at the server: the plugin asked for an
+// address, was given one, and is now walking away from it. Retained, a
+// retry inside the window claims it back under the same identity and
+// the server hands over the same address; closed, the next attempt runs
+// a fresh DISCOVER and the host holds two leases where it needs one,
+// and nothing ever gives the first one back (D-7: no DHCPRELEASE).
+//
+// A record holding NOTHING is closed, and it has to be, because
+// Tombstones filters on the phase and the deadline and never asks for
+// an address (lease/rebuild.go). An address-less tombstone is therefore
+// a full candidate: laid beside a real one it makes the pair ambiguous,
+// and the container the real one belongs to loses its address to
+// ipam_rebind_ambiguous.
+func (p *Plugin) ipamGiveUpRecord(recordID string, now time.Time) {
+	if p.ipamRecordHoldsLease(recordID, now) {
+		p.recordRetained(recordID, now.Add(tombstoneTTL))
+		return
+	}
+	p.closeRecord(recordID)
+}
+
+// ipamRecordHoldsLease reports whether the record still has a lease the
+// server would recognise. A record it cannot read holds nothing.
+func (p *Plugin) ipamRecordHoldsLease(recordID string, now time.Time) bool {
+	if p.records == nil || recordID == "" {
+		return false
+	}
+	rb, err := p.records.Rebuilt()
+	if err != nil {
+		log.WithError(err).WithField("record", recordID).
+			Warn("Could not read the lease records while giving up a reservation; closing it rather than laying a tombstone with no address on it")
+		return false
+	}
+	rec, ok := rb.ByID(recordID)
+	if !ok {
+		return false
+	}
+	_, holds := rec.Resume(now)
+	return holds
 }
 
 // ipamACKIsTheOneAsked refuses an ACK for an address other than the one
@@ -755,4 +854,117 @@ func retainOrphanedReservations(records *dhcp.Records, now time.Time) int {
 			Info("Retained reservations left behind by a previous plugin process; a restarting container can claim its address back")
 	}
 	return retained
+}
+
+// ipamListedMACs is the engine's own answer about a network turned into
+// the set the stranded-record rule reads, and a false second return
+// means the answer cannot be used.
+//
+// AN ENTRY IT CANNOT PARSE POISONS THE WHOLE SET, because the rule below
+// acts on ABSENCE: one hardware address that does not make it into the
+// set makes every record on the network look unowned, and the rule would
+// then give up the records of containers that are running. A set that is
+// short by one is indistinguishable from a network with one fewer
+// endpoint, so the only safe answer is to write nothing for that network
+// this time round.
+//
+// The `ep-<id>` placeholders are deliberately IN. libnetwork stores an
+// endpoint before its container has a sandbox, and it is still retrying
+// Join for it; its record is owned and must be left alone.
+func ipamListedMACs(containers map[string]dNetwork.EndpointResource) ([]net.HardwareAddr, bool) {
+	out := make([]net.HardwareAddr, 0, len(containers))
+	for _, info := range containers {
+		mac, err := net.ParseMAC(info.MacAddress)
+		if err != nil {
+			log.WithFields(log.Fields{
+				"endpoint": shortID(info.EndpointID),
+				"mac":      info.MacAddress,
+			}).Warn("An endpoint in this network reports a hardware address that cannot be read, so records left behind by a previous plugin process are left alone on it")
+			return nil, false
+		}
+		out = append(out, mac)
+	}
+	return out, true
+}
+
+// giveUpStrandedIPAMRecords hands back the addresses of IPAM records
+// that the previous plugin process left with no endpoint behind them.
+//
+// THE HOLE IT CLOSES. An address request re-binds the single tombstone
+// on its network and the record moves to CREATED before any link exists
+// (ipamRebindCandidate). If the process ends there -- between
+// RequestAddress and CreateEndpoint -- the reservation dies with its
+// memory and the record survives in CREATED: no tombstone, so a retry
+// re-binds nothing and takes a second lease; still answering address
+// lookups, so `--ip` on that address is refused as held by another
+// endpoint and a container pinned to the hardware address the re-bind
+// wrote is refused outright; and outside the retained set, so neither
+// the `on_remove` sweep nor `docker network rm` ever hands it back.
+//
+// TWO KEYS, AND BOTH ARE NECESSARY. A record is given up only when its
+// last writer was an EARLIER process and its hardware address is one the
+// engine does not list for this network.
+//
+// The writer alone is not enough: a running endpoint can sit in CREATED
+// across a restart, because the phase only moves at the bind inside
+// setupClient, which runs in a goroutine neither Join nor recovery waits
+// for, and a failed attach leaves the record where it is. Giving those
+// up would let a second container re-bind a running container's address,
+// and on `release_lease=on_remove` it would put a DHCPRELEASE for a live
+// address on the wire a minute later.
+//
+// The engine's list alone is not enough either: a container starting in
+// THIS process is not listed until its CreateEndpoint has returned, so
+// the rule would give up the record of the start it is racing.
+//
+// It does not wait for recovery's own adoptions, and does not need to:
+// every endpoint recovery adopts is one the engine listed, so the list
+// already protects it whether its bind has landed, failed, or not yet
+// run.
+//
+// WHAT IT CANNOT SEE is an engine that answers with a SHORT list. A
+// network's endpoint enumeration logs a store read error and returns
+// what it has, and an endpoint whose own read fails is dropped from the
+// answer; both look exactly like a network with fewer endpoints. There
+// is no second source to check against: an IPAM handler may not ask
+// Docker anything (ipam_mode.go), and recovery has the one answer.
+func (p *Plugin) giveUpStrandedIPAMRecords(networkID string, listed []net.HardwareAddr, now time.Time) int {
+	if p.records == nil {
+		return 0
+	}
+	rb, err := p.records.Rebuilt()
+	if err != nil {
+		log.WithError(err).WithField("network", shortID(networkID)).
+			Warn("Could not read the lease records; addresses left behind by a previous plugin process stay where they are")
+		return 0
+	}
+	instance := p.records.Instance()
+	given := 0
+	for _, rec := range rb.Records {
+		if rec.Scope != networkID || rec.Phase != lease.PhaseCreated || rec.Instance == instance {
+			continue
+		}
+		if ipamMACIsListed(listed, rec.CHAddr) {
+			continue
+		}
+		_, held := rec.Resume(now)
+		p.ipamGiveUpRecord(rec.ID, now)
+		given++
+		p.ipamStrandedRecords.Add(1)
+		log.WithFields(log.Fields{
+			"network":  shortID(networkID),
+			"record":   rec.ID,
+			"retained": held,
+		}).Info("A previous plugin process left this endpoint's lease record behind and no endpoint on this network claims it; giving it up so a container restarting can claim the address back")
+	}
+	return given
+}
+
+func ipamMACIsListed(listed []net.HardwareAddr, chaddr []byte) bool {
+	for _, mac := range listed {
+		if bytes.Equal(mac, chaddr) {
+			return true
+		}
+	}
+	return false
 }

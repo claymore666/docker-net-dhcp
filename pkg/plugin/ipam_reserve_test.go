@@ -370,7 +370,7 @@ func TestIpamACKIsTheOneAsked(t *testing.T) {
 	}
 }
 
-// TestIpamGiveUpRecord_AFailedExchangeLeavesTheCandidate.
+// TestIpamGiveUpAttempt_AFailedExchangeLeavesTheCandidate.
 //
 // ipamRebindCandidate writes OpRebind before any packet goes out --
 // the exchange has to run under the identity the server already has a
@@ -380,7 +380,7 @@ func TestIpamACKIsTheOneAsked(t *testing.T) {
 // outage finds nothing to re-bind on the retry seconds later, takes a
 // fresh address, and no counter moves: ipam_rebind_ambiguous is about
 // two candidates, not none.
-func TestIpamGiveUpRecord_AFailedExchangeLeavesTheCandidate(t *testing.T) {
+func TestIpamGiveUpAttempt_AFailedExchangeLeavesTheCandidate(t *testing.T) {
 	mac, _ := net.ParseMAC(ipamTestMAC)
 	ident := dhcp.ClientIdentity([]byte{7})
 
@@ -401,7 +401,7 @@ func TestIpamGiveUpRecord_AFailedExchangeLeavesTheCandidate(t *testing.T) {
 
 		// The exchange fails -- the server is unreachable, or the ACK
 		// is refused by the subnet rule.
-		p.ipamGiveUpRecord(id, true)
+		p.ipamGiveUpAttempt(id, true, time.Now())
 
 		// The retry, well inside the window.
 		againID, againAddr, _ := p.ipamRebindCandidate(ipamTestNetwork, restarted)
@@ -421,7 +421,7 @@ func TestIpamGiveUpRecord_AFailedExchangeLeavesTheCandidate(t *testing.T) {
 		if id == "" {
 			t.Fatal("recordReserved returned no record")
 		}
-		p.ipamGiveUpRecord(id, false)
+		p.ipamGiveUpAttempt(id, false, time.Now())
 		if got := ipamPhaseOf(t, p, id); got != lease.PhaseClosed {
 			t.Errorf("phase = %v, want Closed. Nothing is owed to an address the plugin never "+
 				"held, and a reservation left open answers address lookups forever.", got)

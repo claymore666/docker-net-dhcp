@@ -10,8 +10,8 @@
 #
 # POPULATION: TOP-LEVEL TEST FUNCTIONS, PARENTS ONLY.
 # One row per `func TestX(t *testing.T)` in test/integration/*_test.go —
-# 145 of them, the main suite's 138 and the failure suite's 7. MEASURED
-# on this table: 145 data rows, and 145 `func TestX(t *testing.T)` in
+# 146 of them, the main suite's 139 and the failure suite's 7. MEASURED
+# on this table: 146 data rows, and 146 `func TestX(t *testing.T)` in
 # test/integration/*_test.go counted independently of them.
 #
 # THIS NUMBER HAS NOW BEEN WRONG TWICE, and the second time is the
@@ -23,7 +23,7 @@
 # population from the sharder and never reads this sentence, so nothing
 # goes red when it drifts: re-measure it against the table beside it
 # rather than adding your rows to the number already written here.
-# Recounted 2026-09-17. A subtest's
+# Recounted 2026-09-21. A subtest's
 # seconds are inside its parent's figure and are NOT a row of their own.
 # That is stated because the previous edition's header did not state it
 # and the population was read back two ways: 104 rows summing 1804.88s
@@ -136,6 +136,20 @@
 #              it cost 27.05s and failed, and 15 of those seconds were a
 #              wait for a counter that cannot move on this pool, which
 #              the cell no longer takes here.
+#   one row    TestIPAMStranded_APluginThatEndsMidRestartGivesTheAddressBack
+#              is 70.00 and is INFERRED, not measured: it arrives with
+#              the stranded-record work and no corpus run could have
+#              costed it. It is the shape of
+#              TestIPAM_AContainerStartedInsideTheWindowTakesTheTombstone
+#              (38.00: one fixture, one network, a container in and out,
+#              a second container taking the tombstone inside the
+#              window) plus a plugin disable and enable cycle, which
+#              TestRecovery_PluginDisableEnable_PreservesEndpoint costs
+#              at 12.86, plus the 6 s it deliberately waits before the
+#              teardown: 56.86. 70.00 is above that derivation on the
+#              rule the rows above follow, so a first run costs less
+#              than the table says instead of more. A refresh takes it
+#              to the median of three like every other row.
 #   one row    TestDHCPv6_NoAddressSegmentGetsNoIPv6RouteYet is 170.00
 #              and is INFERRED, not measured: it arrives with #821 and no
 #              corpus run could have costed it. It is two arms, each one
@@ -402,8 +416,8 @@ TestConflictCheck_SquattedOfferIsDeclined	37.00
 TestConflictCheck_SquatterAfterTheFact	36.71
 TestConflictCheck_WaitAcquisitionIsTimed	9.15
 TestDHCPv6_ADuplicateOnTheSegmentIsRefused	30.08
-TestDHCPv6_AdvertisedMTUReachesTheContainer	30.00
 TestDHCPv6_ASquatOnARunningContainerIsCountedAndTheAddressChanges	38.00
+TestDHCPv6_AdvertisedMTUReachesTheContainer	30.00
 TestDHCPv6_Managed_ServerSilent_IsStillFatal	27.95
 TestDHCPv6_Managed_StillRequiresALease	16.39
 TestDHCPv6_NoAddressModes_StartTheEndpoint	80.63
@@ -439,11 +453,12 @@ TestFailure_UnansweredRenewalsCounted	84.19
 TestHealthCounters_ObtainedAndReleased	12.13
 TestHealthDocument_BuildInfoIsWhatTheLaneBuilt	0.01
 TestHealthDocument_EndpointEntryMatchesTheContainer	12.05
-TestHostIfname_APluginRecycleLeavesTheNamedLinkAlone	26.00
 TestHostIfname_ALongNameIsTruncatedAndATakenOneIsRefused	24.00
+TestHostIfname_APluginRecycleLeavesTheNamedLinkAlone	26.00
 TestHostIfname_IsRederivedOnRestart	22.00
 TestHostIfname_TheHostLinkTakesTheContainersName	14.50
 TestHostname_ReachesTheServersTableAfterTheClientStarts	12.08
+TestIPAMStranded_APluginThatEndsMidRestartGivesTheAddressBack	70.00
 TestIPAM_AContainerStartedInsideTheWindowTakesTheTombstone	38.00
 TestIPAM_ARemovedNeighbourMakesTheRebindAmbiguous	34.00
 TestIPAM_AddressIsTheServersACK	13.00

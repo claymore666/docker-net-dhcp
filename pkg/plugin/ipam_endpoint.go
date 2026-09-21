@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"time"
 
 	log "github.com/sirupsen/logrus"
 	"github.com/vishvananda/netlink"
@@ -82,10 +83,26 @@ func (p *Plugin) createIPAMEndpoint(ctx context.Context, r CreateEndpointRequest
 	if !ok {
 		return res, fmt.Errorf("%w: no reservation is held for %v on this network. The plugin was restarted between Docker allocating the address and creating the container; run `docker start` again", util.ErrIPAM, mac)
 	}
+	// EVERY EXIT FROM HERE ON GIVES THE RECORD BACK. Taking the
+	// reservation is the point of no return: the map entry is gone, so
+	// the reserve sweeper can no longer reach this record, and the
+	// address it holds was leased by RequestAddress and is real at the
+	// server. A record left in place by a failure here lays no
+	// tombstone, so the container's next attempt cannot re-bind it and
+	// takes a second lease; it still answers address lookups, so `--ip`
+	// on that address and a container pinned to this hardware address
+	// are both refused; and nothing ever hands it back, because a
+	// DHCPRELEASE only goes out for a record an endpoint holds (D-7).
+	// ipamGiveUpRecord decides between a tombstone and a close by
+	// whether the lease is real, which is what makes one call right at
+	// every one of these exits.
+	giveUp := func() { p.ipamGiveUpRecord(rsv.record, time.Now()) }
 	if rsv.err != nil {
+		giveUp()
 		return res, rsv.err
 	}
 	if rsv.addr.Addr() != want.Addr() {
+		giveUp()
 		return res, fmt.Errorf("%w: Docker created this endpoint with %v while the lease reserved for %v is %v", util.ErrIPAM, want.Addr(), mac, rsv.addr.Addr())
 	}
 	if rsv.record == "" {
@@ -96,6 +113,7 @@ func (p *Plugin) createIPAMEndpoint(ctx context.Context, r CreateEndpointRequest
 
 	remove, err := p.addIPAMEndpointLink(ctx, r.EndpointID, mode, opts, mac)
 	if err != nil {
+		giveUp()
 		return res, err
 	}
 
@@ -106,12 +124,14 @@ func (p *Plugin) createIPAMEndpoint(ctx context.Context, r CreateEndpointRequest
 	// INIT-REBOOT, under an address Docker has already published.
 	if err := p.recordCreatedOn(rsv.record, r.NetworkID, endpointRecordKey(mode, r.EndpointID, mac)); err != nil {
 		remove()
+		giveUp()
 		return res, err
 	}
 
 	ip, err := netlink.ParseAddr(rsv.info.IP)
 	if err != nil {
 		remove()
+		giveUp()
 		return res, fmt.Errorf("failed to parse the reserved address %q: %w", rsv.info.IP, err)
 	}
 	gateway := rsv.info.Gateway

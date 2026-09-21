@@ -1491,6 +1491,20 @@ type Plugin struct {
 	// therefore not the remedy for a rise here.
 	ipamReserveDuplicateMAC stampedCounter
 
+	// ipamStrandedRecords counts lease records a previous plugin process
+	// left in the created phase with no endpoint behind them, which this
+	// process gave up at start-up so the address can be claimed again.
+	//
+	// Every move is an address that would otherwise have been held for
+	// good: a record in that state lays no tombstone, so a retry cannot
+	// re-bind it, and it answers address lookups, so --ip on it and a
+	// container pinned to its hardware address are both refused. Not
+	// healthy-affecting, and a move is the plugin repairing itself. Its
+	// producer is a plugin process that ended between an address request
+	// and the endpoint being created, so a rise means this plugin, or
+	// the daemon under it, is being restarted while containers start.
+	ipamStrandedRecords stampedCounter
+
 	// ipamReleaseUnknown counts addresses libnetwork released that no
 	// lease record of ours holds. Informational: a release for an
 	// address whose record is already retained or closed is the normal
@@ -2606,6 +2620,17 @@ func (p *Plugin) recoverEndpoints(ctx context.Context, daemonWait time.Duration)
 				continue
 			}
 			recovered++
+		}
+		// The stranded-record rule, after the adoptions and only in
+		// IPAM mode. It reads the SAME inspect answer the loop above
+		// just walked, so a network whose inspect failed has already
+		// been skipped and nothing is written for it, and a network
+		// this plugin does not allocate for has no records of this
+		// kind at all.
+		if ipamBindingOf(n.ID) != nil {
+			if listed, ok := ipamListedMACs(netInfo.Containers); ok {
+				p.giveUpStrandedIPAMRecords(n.ID, listed, time.Now())
+			}
 		}
 	}
 	if recovered > 0 || failed > 0 || gone > 0 || alreadyManaged > 0 {

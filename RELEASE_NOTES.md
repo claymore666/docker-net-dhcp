@@ -11,6 +11,34 @@ forks that have been waiting on review.
 
 [upstream]: https://github.com/devplayer0/docker-net-dhcp
 
+## v2.2.2
+
+A container that is restarted while the plugin is down gets its own address
+back again. An address the plugin had re-bound to the restarting container
+could be left held by a record no container owned, and it stayed held for the
+life of the lease journal: the restart lost the address, a second lease was
+burned in its place, and `--ip` on that address and a container pinned to a
+fixed hardware address were both refused.
+
+### Upgrade notes
+
+Required on every host before `docker plugin install`, unchanged since v1.5.0:
+
+```bash
+sudo mkdir -p /var/lib/net-dhcp
+```
+
+**The privilege prompt does not change.** No field `docker plugin upgrade`
+prompts on has moved since v2.0.0, so the manifest-delta table in the v2.0.0
+section below is still the list the daemon shows you.
+
+| What changed | What it does to you |
+| --- | --- |
+| An address the plugin re-bound to a restarting container is handed back when the attachment does not complete | The 60 second restart window now survives a failed container start, a plugin that ends mid-exchange and a DHCP server that does not answer. Before this, the address was held by a record with no container behind it until the journal was replaced. Applies to networks that name this plugin as their IPAM driver (#1047). |
+| A plugin start gives back the IPAM records of containers the engine no longer attaches | The check runs once per network at start-up, only for records an earlier plugin process wrote last and only for hardware addresses the engine does not list on that network. A running container's record is left alone, and a network whose endpoint list cannot be read is left untouched. `/health` counts what was handed back in `ipam_stranded_records` (#1047). |
+| An address whose lease has expired while the container was down is closed instead of being offered to the retry | The plugin does not offer a restarting container an address the server is free to have given to someone else. The container gets a new lease, as it does today when no window is open (#1047). |
+| An address the DHCP server answered with that the network cannot use is not offered to the next container | An answer outside the network's subnet, or one that is not the address `--ip` asked for, is refused as before, and the record it arrived on is now closed. Before this it could be left as the one address the next container on that network asked for, under the first container's identity, and be refused in the same way (#1047). |
+
 ## v2.2.1
 
 A network that names this plugin as its IPAM driver can now be created on a

@@ -204,6 +204,15 @@ func (r *Records) Close() error {
 // unreadable lines anywhere else.
 func (r *Records) Damage() lease.StoreDamage { return r.store.Damage() }
 
+// Instance is the id every line this store writes is stamped with.
+//
+// It is what lets a reader compare a record's last writer against the
+// process holding the file, which is the only way to tell a record this
+// process wrote from one the process before it left behind. Reading it
+// from the store rather than from whatever the caller passed to
+// OpenRecords keeps the two from drifting.
+func (r *Records) Instance() string { return r.instance }
+
 // Rebuilt folds the whole file.
 func (r *Records) Rebuilt() (lease.Rebuilt, error) {
 	evs, err := r.store.Load()
