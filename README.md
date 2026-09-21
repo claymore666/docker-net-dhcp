@@ -50,7 +50,7 @@ On this page:
   because it is unmeasured: on a cgroup v2 host it cannot start a
   container at all, so nothing there tests this plugin.
   Every change is also tested against the engine the integration suite
-  runs on, **29.8.0** today, read from that run's `Fixture engine drift`
+  runs on, **29.8.1** today, read from that run's `Fixture engine drift`
   step.
 - **Plugin interface `docker.networkdriver/1.0`**, which is what the
   plugin manifest declares. The plugin negotiates the Docker API version
@@ -102,16 +102,16 @@ On this page:
 sudo mkdir -p /var/lib/net-dhcp
 
 # amd64
-docker plugin install ghcr.io/claymore666/docker-net-dhcp:v2.2.1
+docker plugin install ghcr.io/claymore666/docker-net-dhcp:v2.2.2
 # arm64
-docker plugin install ghcr.io/claymore666/docker-net-dhcp:v2.2.1-arm64
+docker plugin install ghcr.io/claymore666/docker-net-dhcp:v2.2.2-arm64
 ```
 
 One network, created once. `macvlan` needs only a host NIC; `bridge`
 wants a bridge you bring yourself ([bridge mode](docs/bridge-mode.md)):
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.2.1 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.2.2 \
   --ipam-driver null -o mode=macvlan -o parent=eth0 lan-dhcp
 
 docker run --rm -ti --network lan-dhcp alpine ip address show
@@ -124,8 +124,8 @@ goes into Docker's own address management, which makes `--ip` and
 Compose's `ipv4_address` work.
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.2.1 \
-  --ipam-driver ghcr.io/claymore666/docker-net-dhcp:v2.2.1 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.2.2 \
+  --ipam-driver ghcr.io/claymore666/docker-net-dhcp:v2.2.2 \
   -o mode=macvlan -o parent=eth0 lan-dhcp
 ```
 

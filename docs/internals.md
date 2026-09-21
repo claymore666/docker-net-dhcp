@@ -33,7 +33,11 @@ namespace to it. Two things differ:
    namespace**. The client is not a process: it is the in-tree DHCP
    library running inside the plugin, so there is nothing for the
    container to see and nothing to exec. It never configures the link
-   either. The plugin applies the lease via netlink.
+   either. The plugin applies the lease via netlink. The link reaches
+   that open as its index and not as a name: the engine renames the
+   container end on its way into the namespace, and a name read before
+   the move can already belong to another link by the time the socket
+   is opened.
 6. The container's name is asked of the daemon once that client is
    already leasing, and handed to it when the answer comes; the client
    then renews once immediately so the server's table carries the name
@@ -59,7 +63,10 @@ namespace to it. Two things differ:
    of a forced teardown, so a rename with no altname would leave the
    veth on the bridge for the life of the host, silently. A rename the
    kernel takes but will not keep the altname on is undone for the same
-   reason.
+   reason. Between the two calls nothing on the host answers to the
+   `dh-` name, so those lookups go through one reader that waits for a
+   rename in flight; the rename's own lookup is the exception and runs
+   inside it.
 8. The client keeps running, renewing the lease when required, until the
    container shuts down.
 
@@ -991,7 +998,7 @@ container and checks the interface the engine actually created. There is
 no version threshold to hit. The upstream fix (moby/moby#52866,
 stopping the remote-driver proxy from dropping `DstName`) merged to moby
 master on 2026-08-26, is milestoned for engine 29.8.0, and that engine
-was released on 2026-09-03. The lane's engine is 29.8.0, read from the
+was released on 2026-09-03. The lane's engine is 29.8.1, read from the
 run's `Fixture engine drift` step, so the probe now succeeds there and
 the dependent tests run. They still skip on any box whose engine is
 older, and a skip there is expected and is not a signal that the run
