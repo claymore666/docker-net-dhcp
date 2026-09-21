@@ -11,7 +11,7 @@ below decide what is in a release; this page follows them.
 
 | Release | Theme | Milestone |
 | --- | --- | --- |
-| v2.2.2 | The IPAM lease record, the renewal client, and the two pages a new reader lands on | [milestone 36](https://github.com/claymore666/docker-net-dhcp/milestone/36) |
+| v2.2.2 | The IPAM lease record, the attach path, and the two pages a new reader lands on | [milestone 36](https://github.com/claymore666/docker-net-dhcp/milestone/36) |
 | v2.3.0 | The host plumbing an operator does by hand today, and the gaps the IPAM shape still refuses | [milestone 31](https://github.com/claymore666/docker-net-dhcp/milestone/31) |
 | v2.4.0 | The rest of IPv6, and the DHCP options the client does not read yet | [milestone 34](https://github.com/claymore666/docker-net-dhcp/milestone/34) |
 | v2.5.0 | CI consolidation and code debt; nothing a user sees | [milestone 35](https://github.com/claymore666/docker-net-dhcp/milestone/35) |
@@ -23,6 +23,9 @@ below decide what is in a release; this page follows them.
 - [#1050], the renewal client is opened by a link name the engine has
   already changed, so the container keeps its address only until the
   lease runs out
+- [#1051], the host-side link keeps its generated name when the attach
+  enters the container's namespace by the sandbox key, so
+  `host_ifname=container_name` has no effect there
 - [#1039], a table of contents at the top of the README, with the
   reference and this page reachable without scrolling
 - [#1040], this page: the table above, the picture below, and the
@@ -372,6 +375,7 @@ project does, that review is where it gets corrected.
 [#1045]: https://github.com/claymore666/docker-net-dhcp/issues/1045
 [#1047]: https://github.com/claymore666/docker-net-dhcp/issues/1047
 [#1050]: https://github.com/claymore666/docker-net-dhcp/issues/1050
+[#1051]: https://github.com/claymore666/docker-net-dhcp/issues/1051
 [moby/moby#52866]: https://github.com/moby/moby/pull/52866
 [moby/moby#52870]: https://github.com/moby/moby/issues/52870
 [moby/moby#52871]: https://github.com/moby/moby/pull/52871
