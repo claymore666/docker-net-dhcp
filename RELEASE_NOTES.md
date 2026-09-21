@@ -51,8 +51,10 @@ section below is still the list the daemon shows you.
   [`docs/roadmap.md`](docs/roadmap.md) roadmap linked from it. The
   Documentation section moves above the argument for the plugin on both
   pages, and on the site the Images and releases section moves with it,
-  so the install and the pointers to the manual come first. No sentence
-  on either page is rewritten (#1039).
+  so the install and the pointers to the manual come first. The
+  restructure rewrites no sentence (#1039). One sentence on both pages
+  does read differently in this release: the engine the integration suite
+  runs on is 29.8.1, and it said 29.8.0.
 - [`docs/roadmap.md`](docs/roadmap.md) opens with a table of the open
   milestones, then the issues on each of them, then a diagram of the
   release line. The five themes and the refusals are tables of subject,
