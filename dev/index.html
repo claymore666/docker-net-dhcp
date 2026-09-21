@@ -531,28 +531,6 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#why-this-one" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Why this one
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#origin-and-licence" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Origin and licence
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
   <a href="#documentation" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -568,6 +546,28 @@
     <span class="md-ellipsis">
       
         Images and releases
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#why-this-one" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Why this one
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#origin-and-licence" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Origin and licence
       
     </span>
   </a>
@@ -929,28 +929,6 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#why-this-one" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Why this one
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#origin-and-licence" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Origin and licence
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
   <a href="#documentation" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -966,6 +944,28 @@
     <span class="md-ellipsis">
       
         Images and releases
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#why-this-one" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Why this one
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#origin-and-licence" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Origin and licence
       
     </span>
   </a>
@@ -1041,6 +1041,17 @@ no external DHCP client to install and no client process per container.</p>
 current release. Pick a v1.x version from the selector for the 1.x
 manual.</p>
 </div>
+<p>On this page:</p>
+<ul>
+<li><a href="#requirements">Requirements</a></li>
+<li><a href="#quick-start">Quick start</a></li>
+<li><a href="#documentation">Documentation</a>, including the <a href="reference/">driver reference</a> and the <a href="roadmap/">roadmap</a></li>
+<li><a href="#images-and-releases">Images and releases</a></li>
+<li><a href="#why-this-one">Why this one</a></li>
+<li><a href="#origin-and-licence">Origin and licence</a></li>
+<li><a href="#verifying-releases">Verifying releases</a></li>
+<li><a href="#project-community">Project &amp; community</a></li>
+</ul>
 <h2 id="requirements">Requirements<a class="headerlink" href="#requirements" title="Permanent link">&para;</a></h2>
 <ul>
 <li><strong>Docker Engine 20.10 or newer.</strong> 20.10 is the lowest version this
@@ -1148,6 +1159,50 @@ container:</p>
 <a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a><span class="w">  </span><span class="nt">lan-dhcp</span><span class="p">:</span>
 <a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a><span class="w">    </span><span class="nt">external</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
 </code></pre></div>
+<h2 id="documentation">Documentation<a class="headerlink" href="#documentation" title="Permanent link">&para;</a></h2>
+<ul>
+<li><strong><a href="reference/">Driver reference</a></strong> is the manual: every option,
+  setting and counter, install and upgrade, lease behaviour,
+  observability, Compose usage, troubleshooting.</li>
+<li><strong><a href="bridge-mode/">Bridge mode</a></strong> is the one-time host bridge setup.</li>
+<li><strong><a href="parent-attached-modes/">macvlan / ipvlan modes</a></strong> covers choosing
+  between them, and their constraints.</li>
+<li><strong><a href="verifying-releases/">Verifying releases</a></strong> covers signatures, SLSA
+  provenance, SBOMs, and rebuilding the binaries yourself.</li>
+<li><strong><a href="internals/">How it works</a></strong> is the mechanism, for contributors.</li>
+<li><strong><a href="roadmap/">Roadmap</a></strong> is where this is going, and what it will not do.</li>
+<li><strong><a href="contributing/">Contributing</a></strong> is what an acceptable pull request
+  looks like.</li>
+<li><strong><a href="release-runbook/">Release runbook</a></strong> is the maintainer-facing
+  publish procedure.</li>
+</ul>
+<p>These pages are <strong>versioned</strong>: use the selector in the header to read the
+documentation matching the plugin version you have installed.</p>
+<h2 id="images-and-releases">Images and releases<a class="headerlink" href="#images-and-releases" title="Permanent link">&para;</a></h2>
+<p>Images go to GHCR (<code>ghcr.io/claymore666/docker-net-dhcp:vX.Y.Z</code>, primary)
+and are mirrored to Docker Hub under two names,
+<code>claymore666/net-dhcp:vX.Y.Z</code> and
+<code>claymore666/docker-net-dhcp:vX.Y.Z</code>. The two Hub names are the same
+image at the same digest; install from either. Pin a version for
+reproducibility.</p>
+<p>Published builds are <strong><code>linux/amd64</code></strong> on the bare tag and
+<strong><code>linux/arm64</code></strong> as <code>:vX.Y.Z-arm64</code> / <code>:latest-arm64</code> (v1.7.0 onward).
+Those two are the whole set: <strong>32-bit ARM is not built</strong>, so there is no
+<code>armv7</code> or <code>armhf</code> tag to install.
+The architecture lives in the tag because a Docker <em>plugin</em> cannot be
+installed from a multi-architecture manifest list at all: the daemon
+reads a plugin's privileges before pulling it, its manifest handler
+matches single manifests only, and an index therefore fails with <code>did not
+find plugin config for specified reference</code> on every architecture, with
+no <code>--platform</code> to steer it. The <code>-arm64</code> tag replaces the bare one in
+<strong>every</strong> snippet that names the image, including
+<code>docker network create -d</code>: a network records the tagged reference as its
+driver, so a bare tag there names a plugin the host does not have.</p>
+<ul>
+<li><a href="https://github.com/claymore666/docker-net-dhcp/pkgs/container/docker-net-dhcp">GHCR package</a></li>
+<li><a href="https://github.com/claymore666/docker-net-dhcp/releases">GitHub Releases</a>
+  carries per-release notes, credits and signed artifacts.</li>
+</ul>
 <h2 id="why-this-one">Why this one<a class="headerlink" href="#why-this-one" title="Permanent link">&para;</a></h2>
 <ul>
 <li><strong>The address comes from the LAN's own server</strong>, so the router's lease
@@ -1196,50 +1251,6 @@ engine.</p>
 <a href="https://github.com/claymore666/docker-net-dhcp/blob/main/LICENSE.md">LICENSE.md</a>.
 The upstream project is GPL-3.0 and this derivative stays under the same
 licence.</p>
-<h2 id="documentation">Documentation<a class="headerlink" href="#documentation" title="Permanent link">&para;</a></h2>
-<ul>
-<li><strong><a href="reference/">Driver reference</a></strong> is the manual: every option,
-  setting and counter, install and upgrade, lease behaviour,
-  observability, Compose usage, troubleshooting.</li>
-<li><strong><a href="bridge-mode/">Bridge mode</a></strong> is the one-time host bridge setup.</li>
-<li><strong><a href="parent-attached-modes/">macvlan / ipvlan modes</a></strong> covers choosing
-  between them, and their constraints.</li>
-<li><strong><a href="verifying-releases/">Verifying releases</a></strong> covers signatures, SLSA
-  provenance, SBOMs, and rebuilding the binaries yourself.</li>
-<li><strong><a href="internals/">How it works</a></strong> is the mechanism, for contributors.</li>
-<li><strong><a href="roadmap/">Roadmap</a></strong> is where this is going, and what it will not do.</li>
-<li><strong><a href="contributing/">Contributing</a></strong> is what an acceptable pull request
-  looks like.</li>
-<li><strong><a href="release-runbook/">Release runbook</a></strong> is the maintainer-facing
-  publish procedure.</li>
-</ul>
-<p>These pages are <strong>versioned</strong>: use the selector in the header to read the
-documentation matching the plugin version you have installed.</p>
-<h2 id="images-and-releases">Images and releases<a class="headerlink" href="#images-and-releases" title="Permanent link">&para;</a></h2>
-<p>Images go to GHCR (<code>ghcr.io/claymore666/docker-net-dhcp:vX.Y.Z</code>, primary)
-and are mirrored to Docker Hub under two names,
-<code>claymore666/net-dhcp:vX.Y.Z</code> and
-<code>claymore666/docker-net-dhcp:vX.Y.Z</code>. The two Hub names are the same
-image at the same digest; install from either. Pin a version for
-reproducibility.</p>
-<p>Published builds are <strong><code>linux/amd64</code></strong> on the bare tag and
-<strong><code>linux/arm64</code></strong> as <code>:vX.Y.Z-arm64</code> / <code>:latest-arm64</code> (v1.7.0 onward).
-Those two are the whole set: <strong>32-bit ARM is not built</strong>, so there is no
-<code>armv7</code> or <code>armhf</code> tag to install.
-The architecture lives in the tag because a Docker <em>plugin</em> cannot be
-installed from a multi-architecture manifest list at all: the daemon
-reads a plugin's privileges before pulling it, its manifest handler
-matches single manifests only, and an index therefore fails with <code>did not
-find plugin config for specified reference</code> on every architecture, with
-no <code>--platform</code> to steer it. The <code>-arm64</code> tag replaces the bare one in
-<strong>every</strong> snippet that names the image, including
-<code>docker network create -d</code>: a network records the tagged reference as its
-driver, so a bare tag there names a plugin the host does not have.</p>
-<ul>
-<li><a href="https://github.com/claymore666/docker-net-dhcp/pkgs/container/docker-net-dhcp">GHCR package</a></li>
-<li><a href="https://github.com/claymore666/docker-net-dhcp/releases">GitHub Releases</a>
-  carries per-release notes, credits and signed artifacts.</li>
-</ul>
 <h2 id="verifying-releases">Verifying releases<a class="headerlink" href="#verifying-releases" title="Permanent link">&para;</a></h2>
 <p>Every release from v1.1.0 is cosign-signed (keyless) on both registries
 and ships an SBOM; <strong>SLSA build provenance is attested for the GHCR image
