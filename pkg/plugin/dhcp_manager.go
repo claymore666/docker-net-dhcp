@@ -2152,6 +2152,13 @@ func (m *dhcpManager) handleEvent(event dhcp.Event, v6 bool) {
 // end -- which is the measurement that cannot fail.
 var startDHCPClient = func(c *dhcp.DHCPClient) (chan dhcp.Event, error) { return c.Start() }
 
+// newDHCPClient prepares the persistent client. A seam for the same
+// reason as the one above, one step earlier: what the attach hands the
+// client is decided here, and the link it will open on is part of it
+// (#1050). Nothing is opened by this call, so a test can read what was
+// handed over without a namespace or a capability.
+var newDHCPClient = dhcp.NewDHCPClient
+
 func (m *dhcpManager) setupClient(v6 bool) (chan error, error) {
 	v6Str := ""
 	if v6 {
@@ -2289,6 +2296,11 @@ func (m *dhcpManager) setupClient(v6 bool) (chan error, error) {
 		FQDN:         m.opts.fqdnMode(),
 		V6:           v6,
 		NetNS:        &m.nsHandle,
+		// The link, named by the one thing about it the engine does
+		// not change while the attach runs. The name below is read
+		// here and resolved again inside the namespace at the open,
+		// and the engine's rename lands between the two (#1050).
+		LinkIndex: m.ctrLink.Attrs().Index,
 		// Same MAC the CreateEndpoint one-shot used — this is the same
 		// link, moved into the netns — so the chaddr and the derived
 		// client-id are identical and the server renews the very lease
@@ -2350,7 +2362,7 @@ func (m *dhcpManager) setupClient(v6 bool) (chan error, error) {
 	// address a previous one never finished checking.
 	m.noteResumedACD(resumption, clientOpts.ConflictMode, v6)
 
-	client, err := dhcp.NewDHCPClient(m.ctrLink.Attrs().Name, &clientOpts)
+	client, err := newDHCPClient(m.ctrLink.Attrs().Name, &clientOpts)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create DHCP%v client: %w", v6Str, err)
 	}

@@ -11,6 +11,27 @@ forks that have been waiting on review.
 
 [upstream]: https://github.com/devplayer0/docker-net-dhcp
 
+## v2.2.2
+
+Containers attaching on Docker Engine 29.8.1 get their renewal client again.
+
+### Fixed
+
+- The persistent DHCP client failed to open on Docker Engine 29.8.1, with
+  `open a DHCP client on dh-<id>: runtime: interface "dh-<id>": route ip+net:
+  no such network interface`, and the endpoint held the address it had just
+  been given with nothing to renew it. The engine moves the container-side
+  link into the sandbox namespace and renames it, and the name was resolved a
+  second time, inside that namespace, after the plugin had read it. The link
+  now travels to the open as its index, which a rename does not change: the
+  open resolves the name the link has at that instant, checks that the name
+  it opened belongs to that link, and opens again where it does not. A link
+  that is gone still fails once, with the reason the open gave, and a link
+  whose name never settles ends as an error and not as a client on somebody
+  else's link. The IPv4 and IPv6 clients open through the same path. Earlier
+  engines were exposed to the same window and were reached less often, and
+  the same change covers them (#1050).
+
 ## v2.2.1
 
 A network that names this plugin as its IPAM driver can now be created on a
