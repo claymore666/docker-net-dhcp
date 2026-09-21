@@ -751,7 +751,11 @@ client. An interface name is cosmetic and nothing here fails an attach.
 two kernel calls, and a plugin killed between them leaves a link that
 carries only the derived name. Nothing then finds it by the `dh-` name,
 including teardown, so it stays on the bridge until `ip link del <name>`
-removes it. The window is one netlink round trip wide.
+removes it. The window is one netlink round trip wide. Since v2.2.2 the
+plugin's own lookups of that name wait for a rename in flight instead of
+reading through it, so an endpoint deleted inside the window is torn down
+and `docker network inspect --verbose` reports its host veth; a plugin
+that dies inside the window is what the bound above is left describing.
 
 **A restart re-derives the name.** Docker drives a restart as a detach
 and a re-attach, the plugin rebuilds the host-side link with its `dh-`
