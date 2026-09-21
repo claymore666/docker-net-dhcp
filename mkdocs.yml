@@ -86,7 +86,17 @@ markdown_extensions:
       anchor_linenums: true
   - pymdownx.inlinehilite
   - pymdownx.snippets
-  - pymdownx.superfences
+  # The `mermaid` fence is rendered as a diagram, not as a code block.
+  # mkdocs-material's own bundle selects elements carrying this class and
+  # fetches the Mermaid runtime from a CDN when the page is viewed, so the
+  # site needs no extra script tag. A reader who cannot reach that CDN sees
+  # the fence's source text, so a page using this fence says in prose what
+  # its diagram shows.
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
   - pymdownx.tabbed:
       alternate_style: true
 
