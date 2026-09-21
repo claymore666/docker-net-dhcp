@@ -116,6 +116,17 @@ type DHCPClientOptions struct {
 	// BORROWED — Start enters it and never closes it.
 	NetNS *netns.NsHandle
 
+	// LinkIndex is the endpoint's link, named by the one thing about
+	// it that does not change. Zero means the caller has none to
+	// offer and the interface name stands.
+	//
+	// The name does not survive the attach: the engine moves the
+	// container-side link into the sandbox namespace and renames it,
+	// and the open resolves the name a second time, inside that
+	// namespace, after the name was read. With the index the open
+	// resolves the CURRENT name and checks what it opened (#1050).
+	LinkIndex int
+
 	// MAC is the endpoint's pinned hardware address. It is the chaddr
 	// on the wire and, unless ClientID overrides it, the identity the
 	// server files the lease under, so the one-shot acquisition and the
@@ -1646,16 +1657,24 @@ func newLibClient(iface string, params proto.Params, opts *DHCPClientOptions) (*
 		EventBuffer: eventBuffer,
 	}
 
-	if opts.NetNS == nil {
+	open := func(name string) (*dhcpruntime.Client, error) {
+		cfg.Interface = name
 		return dhcpruntime.NewClient(cfg)
+	}
+	abandon := func(client *dhcpruntime.Client) { _ = client.Run(canceledContext()) }
+
+	if opts.NetNS == nil {
+		client, _, err := openOnLink(iface, opts.LinkIndex, open, abandon)
+		return client, err
 	}
 
 	var (
 		client *dhcpruntime.Client
+		opened string
 		cerr   error
 	)
 	if err := inNetNS(*opts.NetNS,
-		func() { client, cerr = dhcpruntime.NewClient(cfg) },
+		func() { client, opened, cerr = openOnLink(iface, opts.LinkIndex, open, abandon) },
 		func() {
 			if client != nil {
 				_ = client.Run(canceledContext())
@@ -1665,7 +1684,7 @@ func newLibClient(iface string, params proto.Params, opts *DHCPClientOptions) (*
 		return nil, err
 	}
 	if cerr != nil {
-		return nil, fmt.Errorf("dhcp: open a DHCP client on %v: %w", iface, cerr)
+		return nil, fmt.Errorf("dhcp: open a DHCP client on %v: %w", opened, cerr)
 	}
 	return client, nil
 }

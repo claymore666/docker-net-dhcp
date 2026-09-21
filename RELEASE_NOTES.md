@@ -11,6 +11,48 @@ forks that have been waiting on review.
 
 [upstream]: https://github.com/devplayer0/docker-net-dhcp
 
+## v2.2.2
+
+Containers attaching on Docker Engine 29.8.1 get their renewal client again.
+
+### Fixed
+
+- The persistent DHCP client failed to open on Docker Engine 29.8.1, with
+  `open a DHCP client on dh-<id>: runtime: interface "dh-<id>": route ip+net:
+  no such network interface`, and the endpoint held the address it had just
+  been given with nothing to renew it. The engine moves the container-side
+  link into the sandbox namespace and renames it, and the name was resolved a
+  second time, inside that namespace, after the plugin had read it. The link
+  now travels to the open as its index, which a rename does not change: the
+  open resolves the name the link has at that instant, checks that the name
+  it opened belongs to that link, and opens again where it does not. A link
+  that is gone fails once with the kernel's reason for it, whether its old
+  name was free or had been taken by another link, and a link whose name
+  never settles ends as an error and not as a client on somebody else's
+  link. The IPv4 and IPv6 clients open through the same path. Earlier
+  engines were exposed to the same window and were reached less often, and
+  the same change covers them (#1050).
+- On Docker Engine 29.8.1, a bridge network created with
+  `-o host_ifname=container_name` left every host-side link with the
+  generated `dh-<id>` name, counted `host_ifname_failures` for each one and
+  logged `The container's name has no characters an interface name may
+  carry`. The daemon had answered with the name: that engine lets the plugin
+  enter the sandbox namespace through its netns key, which is the route that
+  reads the container after the attach instead of before it, and the rename
+  was given a copy of the name taken before that read. It now reads the name
+  the same lookup answered with, the way the container's hostname already
+  did. Networks with `-o host_ifname=hostname`, and the option left off, were
+  not affected (#1051).
+- Renaming a host-side link takes two kernel calls, and between them nothing
+  on the host answered to the `dh-<id>` name this plugin derives from the
+  endpoint ID: the kernel refuses an altname equal to a link's current name,
+  so the old name can only be put back after the rename has freed it.
+  Teardown reads a miss of that name as a teardown that already happened, so
+  a delete landing in that window left the veth on the bridge, and
+  `docker network inspect --verbose` reported the endpoint as having no host
+  veth. The plugin's own lookups now wait for a rename in flight instead of
+  reading through it (#1051).
+
 ## v2.2.1
 
 A network that names this plugin as its IPAM driver can now be created on a
