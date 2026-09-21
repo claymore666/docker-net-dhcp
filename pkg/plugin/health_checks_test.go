@@ -65,6 +65,7 @@ func checkBumpers() []checkBumper {
 		{"ipam_replay_miss", "", func(p *Plugin) { p.ipamReplayMiss.Add(1) }},
 		{"ipam_rebind_ambiguous", "", func(p *Plugin) { p.ipamRebindAmbiguous.Add(1) }},
 		{"ipam_reserve_duplicate_mac", "", func(p *Plugin) { p.ipamReserveDuplicateMAC.Add(1) }},
+		{"ipam_stranded_records", "", func(p *Plugin) { p.ipamStrandedRecords.Add(1) }},
 		{"hostname_lookup_failures", "", func(p *Plugin) { p.hostnameLookupFailures.Add(1) }},
 		{"hostname_apply_failures", "", func(p *Plugin) { p.hostnameApplyFailures.Add(1) }},
 		{"host_ifname_conflicts", "", func(p *Plugin) { p.hostIfnameConflicts.Add(1) }},

@@ -213,6 +213,118 @@ func TestRetainOrphanedReservations_AtStartUpEveryReservationIsOrphaned(t *testi
 	}
 }
 
+// TestIpamRebindCandidate_LeavesARunningEndpointsAddressAlone is this
+// change's own guard, and the reason it exists is the change itself.
+//
+// A tombstone is laid by a teardown, and every teardown in this process
+// takes the endpoint's fingerprint first, so a candidate that still has
+// one is a record that was retained while its container kept running.
+// Until the persistent client spoke as the record, re-binding such a
+// record cost the NEW container its address and nothing else: its
+// client asked as itself and the server gave it a fresh one. Now that
+// both exchanges speak as the record, two live clients would present
+// one option-61 identity, the server keeps one binding per identity,
+// and the damage lands on the OLD container instead -- a healthy one,
+// which is worse than the defect all of this repairs.
+//
+// The key is the PAIR, hardware address and address, for the same
+// reason the release handler keys on the pair: two IPAM networks on one
+// segment can hold the same address, and the address alone would
+// refuse re-binds that are correct.
+func TestIpamRebindCandidate_LeavesARunningEndpointsAddressAlone(t *testing.T) {
+	mac, _ := net.ParseMAC(ipamTestMAC)
+	ident := dhcp.ClientIdentity([]byte{7})
+	newMAC, _ := net.ParseMAC("02:42:c0:a8:63:0b")
+
+	tombstone := func(t *testing.T, p *Plugin, chaddr net.HardwareAddr, addr string) string {
+		t.Helper()
+		id := p.recordCreated(ipamTestNetwork, chaddr, ident)
+		if err := p.records.Observed(id, acquired(addr, time.Hour), nil); err != nil {
+			t.Fatalf("Observed: %v", err)
+		}
+		if err := p.records.Retained(id, time.Now().Add(time.Minute)); err != nil {
+			t.Fatalf("Retained: %v", err)
+		}
+		return id
+	}
+	holds := func(p *Plugin, endpointID string, chaddr net.HardwareAddr, addr string) {
+		p.rememberEndpoint(endpointID, endpointFingerprint{MAC: chaddr.String(), IPv4: addr}, dhcpHostname{})
+	}
+
+	t.Run("a live endpoint's record is not offered", func(t *testing.T) {
+		p, _ := ipamFixture(t)
+		id := tombstone(t, p, mac, "192.168.99.10/24")
+		holds(p, "endpoint-still-running", mac, "192.168.99.10")
+
+		gotID, gotAddr, gotIdent := p.ipamRebindCandidate(ipamTestNetwork, newMAC)
+		if gotID != "" || gotAddr != "" || gotIdent != nil {
+			t.Errorf("re-bound (%q, %q) from a record a running endpoint still holds. Both "+
+				"clients would then renew under one identity and the running container "+
+				"would be answered for somebody else's address", gotID, gotAddr)
+		}
+		if got := ipamPhaseOf(t, p, id); got != lease.PhaseRetained {
+			t.Errorf("the record moved to %v; it was not taken, so nothing should have been "+
+				"written to it", got)
+		}
+		if n := p.ipamRebindAmbiguous.Load(); n != 0 {
+			t.Errorf("ipam_rebind_ambiguous = %d; skipping a held record is not an ambiguity", n)
+		}
+	})
+
+	t.Run("the same hardware address on another address still re-binds", func(t *testing.T) {
+		p, _ := ipamFixture(t)
+		id := tombstone(t, p, mac, "192.168.99.10/24")
+		holds(p, "endpoint-elsewhere", mac, "192.168.99.99")
+
+		gotID, gotAddr, _ := p.ipamRebindCandidate(ipamTestNetwork, newMAC)
+		if gotID != id || gotAddr != "192.168.99.10" {
+			t.Errorf("re-bound (%q, %q), want (%q, 192.168.99.10). The guard keys on the "+
+				"pair; keyed on the hardware address alone it refuses re-binds that are "+
+				"correct", gotID, gotAddr, id)
+		}
+	})
+
+	t.Run("the ordinary teardown still re-binds", func(t *testing.T) {
+		// DeleteEndpoint takes the fingerprint before the record is
+		// retained, so the case the rule exists for has none.
+		p, _ := ipamFixture(t)
+		id := tombstone(t, p, mac, "192.168.99.10/24")
+		holds(p, "endpoint-gone", mac, "192.168.99.10")
+		p.takeEndpoint("endpoint-gone")
+
+		gotID, gotAddr, gotIdent := p.ipamRebindCandidate(ipamTestNetwork, newMAC)
+		if gotID != id || gotAddr != "192.168.99.10" {
+			t.Fatalf("re-bound (%q, %q), want (%q, 192.168.99.10) — this is the whole feature",
+				gotID, gotAddr, id)
+		}
+		if !bytes.Equal(gotIdent, ident) {
+			t.Errorf("identity %x, want %x", gotIdent, ident)
+		}
+	})
+
+	t.Run("one held and one free candidate is not an ambiguity", func(t *testing.T) {
+		// The held record is dropped BEFORE the count, so the
+		// restarting container still gets its own address back instead
+		// of meeting a limit that does not apply to it.
+		p, _ := ipamFixture(t)
+		other, _ := net.ParseMAC("02:42:c0:a8:63:0c")
+		held := tombstone(t, p, mac, "192.168.99.10/24")
+		free := tombstone(t, p, other, "192.168.99.11/24")
+		holds(p, "endpoint-still-running", mac, "192.168.99.10")
+
+		gotID, gotAddr, _ := p.ipamRebindCandidate(ipamTestNetwork, newMAC)
+		if gotID != free || gotAddr != "192.168.99.11" {
+			t.Errorf("re-bound (%q, %q), want (%q, 192.168.99.11)", gotID, gotAddr, free)
+		}
+		if n := p.ipamRebindAmbiguous.Load(); n != 0 {
+			t.Errorf("ipam_rebind_ambiguous = %d; one of the two was never a candidate", n)
+		}
+		if got := ipamPhaseOf(t, p, held); got != lease.PhaseRetained {
+			t.Errorf("the held record moved to %v", got)
+		}
+	})
+}
+
 // TestIpamRebindCandidate_AmbiguityIsCountedNotGuessed.
 //
 // A RequestAddress carries no hostname and no endpoint id, so when
@@ -370,7 +482,7 @@ func TestIpamACKIsTheOneAsked(t *testing.T) {
 	}
 }
 
-// TestIpamGiveUpRecord_AFailedExchangeLeavesTheCandidate.
+// TestIpamGiveUpAttempt_AFailedExchangeLeavesTheCandidate.
 //
 // ipamRebindCandidate writes OpRebind before any packet goes out --
 // the exchange has to run under the identity the server already has a
@@ -380,7 +492,7 @@ func TestIpamACKIsTheOneAsked(t *testing.T) {
 // outage finds nothing to re-bind on the retry seconds later, takes a
 // fresh address, and no counter moves: ipam_rebind_ambiguous is about
 // two candidates, not none.
-func TestIpamGiveUpRecord_AFailedExchangeLeavesTheCandidate(t *testing.T) {
+func TestIpamGiveUpAttempt_AFailedExchangeLeavesTheCandidate(t *testing.T) {
 	mac, _ := net.ParseMAC(ipamTestMAC)
 	ident := dhcp.ClientIdentity([]byte{7})
 
@@ -401,7 +513,7 @@ func TestIpamGiveUpRecord_AFailedExchangeLeavesTheCandidate(t *testing.T) {
 
 		// The exchange fails -- the server is unreachable, or the ACK
 		// is refused by the subnet rule.
-		p.ipamGiveUpRecord(id, true)
+		p.ipamGiveUpAttempt(id, true, time.Now())
 
 		// The retry, well inside the window.
 		againID, againAddr, _ := p.ipamRebindCandidate(ipamTestNetwork, restarted)
@@ -421,7 +533,7 @@ func TestIpamGiveUpRecord_AFailedExchangeLeavesTheCandidate(t *testing.T) {
 		if id == "" {
 			t.Fatal("recordReserved returned no record")
 		}
-		p.ipamGiveUpRecord(id, false)
+		p.ipamGiveUpAttempt(id, false, time.Now())
 		if got := ipamPhaseOf(t, p, id); got != lease.PhaseClosed {
 			t.Errorf("phase = %v, want Closed. Nothing is owed to an address the plugin never "+
 				"held, and a reservation left open answers address lookups forever.", got)

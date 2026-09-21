@@ -41,9 +41,11 @@ func TestMTUPropagate_OptInSetsLinkMTU(t *testing.T) {
 	id, _, _ := harness.RunContainer(t, ctx, netName, ctrName)
 
 	// MTU is applied from the persistent-client `bound` event
-	// (post-Join). Poll briefly to absorb the gap between
-	// inspect-shows-IP and bound-event-processed.
-	deadline := time.Now().Add(5 * time.Second)
+	// (post-Join). The wait absorbs the gap between inspect-shows-IP
+	// and bound-event-processed, including a reply lost on the
+	// fixture's veth pair: see harness.RetransmitBudget.
+	budget := harness.RetransmitBudget(2)
+	deadline := time.Now().Add(budget)
 	wantMTU := "mtu " + harness.TestMTU
 	var out string
 	for time.Now().Before(deadline) {
@@ -54,7 +56,7 @@ func TestMTUPropagate_OptInSetsLinkMTU(t *testing.T) {
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
-	t.Errorf("expected %q on eth0 within 5s; got:\n%s", wantMTU, out)
+	t.Errorf("expected %q on eth0 within %s; got:\n%s", wantMTU, budget, out)
 }
 
 // TestMTUPropagate_DefaultIsUnchanged: without the opt-in, eth0
