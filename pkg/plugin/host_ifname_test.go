@@ -511,8 +511,9 @@ func TestAfterAttach_TheNameReachesTheClientAndThenTheLink(t *testing.T) {
 	withRenameSeams(t, r)
 
 	ctrHostname := ""
+	ctrName := "/web"
 	m.afterAttach(newJoinPhases(), false, func() error { ctrHostname = "web1"; return nil },
-		"/web", &ctrHostname)
+		&ctrName, &ctrHostname)
 
 	if got := client.names; len(got) != 1 || got[0] != "web1" {
 		t.Errorf("the running client was told %v, want exactly [web1] (#961)", got)
@@ -542,12 +543,12 @@ func TestAfterAttach_ARouteThatAlreadyHadTheNameStillRenamesTheLink(t *testing.T
 	r := &renameLog{}
 	withRenameSeams(t, r)
 
-	ctrHostname := "web1"
+	ctrName, ctrHostname := "/web", "web1"
 	m.afterAttach(newJoinPhases(), true, func() error {
 		t.Error("the daemon was asked again on a route that already had the name: the attach pays a " +
 			"second inspect while the daemon is inside ContainerStart (#406)")
 		return nil
-	}, "/web", &ctrHostname)
+	}, &ctrName, &ctrHostname)
 
 	if got := r.names; len(got) != 1 || got[0] != "web1" {
 		t.Fatalf("the kernel was asked to set names %v, want exactly [web1]", got)
@@ -568,10 +569,10 @@ func TestAfterAttach_ADaemonThatNeverAnsweredRenamesNothing(t *testing.T) {
 	r := &renameLog{}
 	withRenameSeams(t, r)
 
-	ctrHostname := ""
+	ctrName, ctrHostname := "", ""
 	m.afterAttach(newJoinPhases(), false, func() error {
 		return errors.New("daemon is inside ContainerStart")
-	}, "", &ctrHostname)
+	}, &ctrName, &ctrHostname)
 
 	if len(r.lookups) != 0 || len(r.names) != 0 {
 		t.Fatalf("netlink was asked %v and told to set %v after a lookup that never answered: the "+
@@ -924,5 +925,55 @@ func TestRenameHostLink_ARenamedContainerWhoseNewNameIsTakenKeepsWhatItHas(t *te
 	if got := p.hostIfnamesApplied.Load(); got != 1 {
 		t.Errorf("host_ifnames_applied = %d, want 1: the first attach applied a name and this one did "+
 			"not", got)
+	}
+}
+
+// THE ROUTE THAT FILLS THE NAME AFTER THE ATTACH, which is every
+// attach on an engine that lets this plugin enter the sandbox through
+// its netns key.
+//
+// MEASURED, engine 29.8.0 against 29.8.1 on the same code: the key
+// route replaced the container PID route (sandbox_key_entries +1 where
+// sandbox_pid_fallbacks was +1), and the PID route was the one that
+// inspected the container on the way in. Without it the daemon is not
+// asked until the lookup below, so the container's name does not exist
+// when the attach reaches this call, and a caller that hands over the
+// value it holds at that moment hands over an empty string. What the
+// operator saw: the container's name on the wire, from the same
+// inspect, and the host-side link still called dh-a1b2c3d4e5f6, with
+// host_ifname_failures counting a name the daemon had answered
+// perfectly well.
+//
+// The hostname has always been passed as a pointer, which is why a
+// `hostname` network never showed this and no test had the shape to
+// catch it. Both fields come from the one lookup and both are read
+// after it runs.
+func TestAfterAttach_TheContainerNameReachesTheLinkWhenTheLookupIsLate(t *testing.T) {
+	m, p := aBridgeEndpoint(t, HostIfnameContainerName)
+	client := &fakeJoinClient{}
+	m.setHealthClient(client)
+	r := &renameLog{}
+	withRenameSeams(t, r)
+
+	ctrName, ctrHostname := "", ""
+	m.afterAttach(newJoinPhases(), false, func() error {
+		ctrName, ctrHostname = "/web1", "web1"
+		return nil
+	}, &ctrName, &ctrHostname)
+
+	if got := r.names; len(got) != 1 || got[0] != "web1" {
+		t.Fatalf("the kernel was asked to set names %v, want exactly [web1]. The lookup answered with "+
+			"the container's name and the link kept dh-a1b2c3d4e5f6, which is the whole of #978 not "+
+			"happening on this route", got)
+	}
+	if got := r.altNames; len(got) != 1 || got[0] != "dh-a1b2c3d4e5f6" {
+		t.Errorf("the old name was kept as %v, want exactly [dh-a1b2c3d4e5f6]", got)
+	}
+	if got := p.hostIfnamesApplied.Load(); got != 1 {
+		t.Errorf("host_ifnames_applied = %d, want 1", got)
+	}
+	if got := p.hostIfnameFailures.Load(); got != 0 {
+		t.Errorf("host_ifname_failures = %d, want 0: the daemon answered with a name an interface may "+
+			"carry, and counting that as a failure points an operator at the container's name", got)
 	}
 }

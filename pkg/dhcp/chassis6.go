@@ -267,16 +267,24 @@ func newLibClient6(iface string, params proto.Params6, opts *DHCPClientOptions) 
 		EventBuffer: eventBuffer,
 	}
 
-	if opts.NetNS == nil {
+	open := func(name string) (*dhcpruntime.Client6, error) {
+		cfg.Interface = name
 		return dhcpruntime.NewClient6(cfg)
+	}
+	abandon := func(client *dhcpruntime.Client6) { _ = client.Run(canceledContext()) }
+
+	if opts.NetNS == nil {
+		client, _, err := openOnLink(iface, opts.LinkIndex, open, abandon)
+		return client, err
 	}
 
 	var (
 		client *dhcpruntime.Client6
+		opened string
 		cerr   error
 	)
 	if err := inNetNS(*opts.NetNS,
-		func() { client, cerr = dhcpruntime.NewClient6(cfg) },
+		func() { client, opened, cerr = openOnLink(iface, opts.LinkIndex, open, abandon) },
 		func() {
 			if client != nil {
 				_ = client.Run(canceledContext())
@@ -286,7 +294,7 @@ func newLibClient6(iface string, params proto.Params6, opts *DHCPClientOptions) 
 		return nil, err
 	}
 	if cerr != nil {
-		return nil, fmt.Errorf("dhcp: open a DHCPv6 client on %v: %w", iface, cerr)
+		return nil, fmt.Errorf("dhcp: open a DHCPv6 client on %v: %w", opened, cerr)
 	}
 	return client, nil
 }

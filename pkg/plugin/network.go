@@ -1639,7 +1639,11 @@ func (p *Plugin) EndpointOperInfo(ctx context.Context, r InfoRequest) (InfoRespo
 	hostName, _ := vethPairNames(r.EndpointID)
 	// Through the seam so the name this publishes can be driven: the
 	// link it reads is renamed by CAP_NET_ADMIN work no unit lane has.
-	hostLink, err := nlLinkByName(hostName)
+	// Through the guard because that rename takes two kernel calls, and
+	// between them nothing answers to the name derived here (#1051):
+	// this call is not serialised with any attach, so a `docker network
+	// inspect --verbose` during one would be told the veth is missing.
+	hostLink, err := hostLinkByGeneratedName(hostName)
 	if err != nil {
 		return res, fmt.Errorf("failed to find host side of veth pair: %w", err)
 	}
@@ -1823,7 +1827,11 @@ func (p *Plugin) DeleteEndpoint(ctx context.Context, r DeleteEndpointRequest) er
 	// Through the seam, like the parent-attached teardown beside it,
 	// so a unit test can prove which paths a delete actually ran
 	// rather than infer it from a return value that is nil either way.
-	link, err := nlLinkByName(hostName)
+	// Through the guard because the arm below reads a miss as a
+	// finished teardown, and a rename in flight makes the name miss for
+	// two kernel calls (#1051). A Leave cannot reach that window, a
+	// displaced manager's attach can.
+	link, err := hostLinkByGeneratedName(hostName)
 	if err != nil {
 		// A veth pair dies whole when the container-side end's netns is
 		// destroyed (OOM-kill, `docker rm -f`, host reboot race), so a

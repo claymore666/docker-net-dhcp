@@ -20,6 +20,8 @@ life of the lease journal: the restart lost the address, a second lease was
 burned in its place, and `--ip` on that address and a container pinned to a
 fixed hardware address were both refused.
 
+Containers attaching on Docker Engine 29.8.1 get their renewal client again.
+
 ### Upgrade notes
 
 Required on every host before `docker plugin install`, unchanged since v1.5.0:
@@ -40,6 +42,44 @@ section below is still the list the daemon shows you.
 | An address the DHCP server answered with that the network cannot use is not offered to the next container | An answer outside the network's subnet, or one that is not the address `--ip` asked for, is refused as before, and the record it arrived on is now closed. Before this it could be left as the one address the next container on that network asked for, under the first container's identity, and be refused in the same way (#1047). |
 | A restarted container's renewals carry the same DHCP client identifier its address was claimed with | The address request and every renewal after it now send the identifier stored with the endpoint's lease record. Before this the renewals derived one from the hardware address Docker had just minted: the server refused the address it had granted seconds earlier, the container took a different one, and `docker inspect` still reported the first. Consequence worth noting: a `client_id` changed on a network while a container is stopped applies to addresses taken after the change, not to that container's next start (#1047). |
 | A container that already restarted under v2.2.1 can take one new address on its first start after the upgrade | Its lease record holds the identifier the address was first claimed with, while the address in the record is the one the server gave its later hardware address after refusing that claim. The request made on the first start after the upgrade asks for that address under the stored identifier, the server does not have it filed there, and the container is given another address, which it then keeps. It happens once, and it ends an address that moved on every restart under v2.2.1. A container that never restarted, and every container created after the upgrade, is unaffected (#1047). |
+
+### Fixed
+
+- The persistent DHCP client failed to open on Docker Engine 29.8.1, with
+  `open a DHCP client on dh-<id>: runtime: interface "dh-<id>": route ip+net:
+  no such network interface`, and the endpoint held the address it had just
+  been given with nothing to renew it. The engine moves the container-side
+  link into the sandbox namespace and renames it, and the name was resolved a
+  second time, inside that namespace, after the plugin had read it. The link
+  now travels to the open as its index, which a rename does not change: the
+  open resolves the name the link has at that instant, checks that the name
+  it opened belongs to that link, and opens again where it does not. A link
+  that is gone fails once with the kernel's reason for it, whether its old
+  name was free or had been taken by another link, and a link whose name
+  never settles ends as an error and not as a client on somebody else's
+  link. The IPv4 and IPv6 clients open through the same path. Earlier
+  engines were exposed to the same window and were reached less often, and
+  the same change covers them (#1050).
+- On Docker Engine 29.8.1, a bridge network created with
+  `-o host_ifname=container_name` left every host-side link with the
+  generated `dh-<id>` name, counted `host_ifname_failures` for each one and
+  logged `The container's name has no characters an interface name may
+  carry`. The daemon had answered with the name: that engine lets the plugin
+  enter the sandbox namespace through its netns key, which is the route that
+  reads the container after the attach instead of before it, and the rename
+  was given a copy of the name taken before that read. It now reads the name
+  the same lookup answered with, the way the container's hostname already
+  did. Networks with `-o host_ifname=hostname`, and the option left off, were
+  not affected (#1051).
+- Renaming a host-side link takes two kernel calls, and between them nothing
+  on the host answered to the `dh-<id>` name this plugin derives from the
+  endpoint ID: the kernel refuses an altname equal to a link's current name,
+  so the old name can only be put back after the rename has freed it.
+  Teardown reads a miss of that name as a teardown that already happened, so
+  a delete landing in that window left the veth on the bridge, and
+  `docker network inspect --verbose` reported the endpoint as having no host
+  veth. The plugin's own lookups now wait for a rename in flight instead of
+  reading through it (#1051).
 
 ## v2.2.1
 
