@@ -18,12 +18,14 @@ import (
 // through hostLinkByGeneratedName, and the one exception is the rename
 // itself, whose lookup has to stay inside its own write section (#1051).
 //
-// A call site added later is the whole risk. Four sites already derive
-// that name without reading one back from the kernel, the file that
-// renames the link says no future call site should have to be
-// remembered, and a fifth reading it raw would be invisible to every
-// cell here: the window is two kernel calls wide and nothing unit-sized
-// lands in it by chance.
+// A call site added later is the whole risk: the window is two kernel
+// calls wide and nothing unit-sized lands in it by chance, so a raw
+// lookup would be invisible to every behaviour cell here.
+//
+// The name is followed and not its spelling. A site is judged by where
+// its argument came from -- vethPairNames' host half, or subLinkName,
+// which is that same half byte for byte -- through plain assignment,
+// so calling the variable something else does not hide the call.
 func TestHostLinkLookupsGoThroughTheGuard(t *testing.T) {
 	files, err := filepath.Glob("*.go")
 	if err != nil {
@@ -33,10 +35,12 @@ func TestHostLinkLookupsGoThroughTheGuard(t *testing.T) {
 	fset := token.NewFileSet()
 	var (
 		raw          []string
+		guarded      int
 		guardedRead  bool
 		guardedWrite bool
 		sawGuard     bool
 		sawRename    bool
+		sawSources   int
 	)
 	for _, name := range files {
 		if strings.HasSuffix(name, "_test.go") {
@@ -63,15 +67,21 @@ func TestHostLinkLookupsGoThroughTheGuard(t *testing.T) {
 			case "renameHostLink":
 				sawRename = true
 				guardedWrite = callsOn(fn.Body, "hostLinkNaming", "Lock")
+			case "vethPairNames", "subLinkName":
+				sawSources++
 			}
 
+			tainted := generatedNames(fn.Body)
 			ast.Inspect(fn.Body, func(n ast.Node) bool {
 				call, ok := n.(*ast.CallExpr)
 				if !ok || len(call.Args) != 1 {
 					return true
 				}
-				arg, ok := call.Args[0].(*ast.Ident)
-				if !ok || arg.Name != "hostName" {
+				if !isGeneratedName(call.Args[0], tainted) {
+					return true
+				}
+				if ident, ok := call.Fun.(*ast.Ident); ok && ident.Name == "hostLinkByGeneratedName" {
+					guarded++
 					return true
 				}
 				if !isLinkByName(call.Fun) {
@@ -86,9 +96,15 @@ func TestHostLinkLookupsGoThroughTheGuard(t *testing.T) {
 		}
 	}
 
-	if !sawGuard || !sawRename {
+	if !sawGuard || !sawRename || sawSources != 2 {
 		t.Fatalf("this test lost its subject: hostLinkByGeneratedName found=%v, renameHostLink "+
-			"found=%v. It asserts nothing until both are back", sawGuard, sawRename)
+			"found=%v, name sources found=%d of 2. It asserts nothing until they are back",
+			sawGuard, sawRename, sawSources)
+	}
+	if guarded < 4 {
+		t.Fatalf("this test found only %d guarded lookup(s) of a generated name and the package has "+
+			"more than that, so following the name stopped working and a raw lookup would now pass "+
+			"unseen. Repair the walk before trusting the result", guarded)
 	}
 	if !guardedRead {
 		t.Errorf("hostLinkByGeneratedName does not take hostLinkNaming for reading, so every site " +
@@ -137,6 +153,65 @@ func isLinkByName(fun ast.Expr) bool {
 	case *ast.SelectorExpr:
 		pkg, ok := f.X.(*ast.Ident)
 		return ok && pkg.Name == "netlink" && f.Sel.Name == "LinkByName"
+	}
+	return false
+}
+
+// generatedNames collects the identifiers in one function body that
+// hold a host-side veth's generated name: assigned from vethPairNames
+// (first result) or subLinkName, or copied from one that was. Two
+// passes, because a copy can be written before the walk reaches its
+// source in a nested block.
+func generatedNames(body *ast.BlockStmt) map[string]bool {
+	tainted := map[string]bool{}
+	for pass := 0; pass < 2; pass++ {
+		ast.Inspect(body, func(n ast.Node) bool {
+			as, ok := n.(*ast.AssignStmt)
+			if !ok || len(as.Rhs) != 1 {
+				return true
+			}
+			switch rhs := as.Rhs[0].(type) {
+			case *ast.CallExpr:
+				fn, ok := rhs.Fun.(*ast.Ident)
+				if !ok {
+					return true
+				}
+				switch fn.Name {
+				case "vethPairNames":
+					if len(as.Lhs) == 2 {
+						mark(tainted, as.Lhs[0])
+					}
+				case "subLinkName":
+					if len(as.Lhs) == 1 {
+						mark(tainted, as.Lhs[0])
+					}
+				}
+			case *ast.Ident:
+				if len(as.Lhs) == 1 && tainted[rhs.Name] {
+					mark(tainted, as.Lhs[0])
+				}
+			}
+			return true
+		})
+	}
+	return tainted
+}
+
+func mark(tainted map[string]bool, lhs ast.Expr) {
+	if ident, ok := lhs.(*ast.Ident); ok && ident.Name != "_" {
+		tainted[ident.Name] = true
+	}
+}
+
+// isGeneratedName reports whether this argument is a generated host
+// name: a tracked identifier, or subLinkName called in place.
+func isGeneratedName(arg ast.Expr, tainted map[string]bool) bool {
+	switch a := arg.(type) {
+	case *ast.Ident:
+		return tainted[a.Name]
+	case *ast.CallExpr:
+		fn, ok := a.Fun.(*ast.Ident)
+		return ok && fn.Name == "subLinkName"
 	}
 	return false
 }

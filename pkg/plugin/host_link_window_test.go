@@ -173,3 +173,71 @@ func TestEndpointOperInfo_ARenameInFlightStillHasAHostVeth(t *testing.T) {
 			"through has finished", got)
 	}
 }
+
+// The window is as narrow as two kernel calls only while nothing else
+// runs inside it. Work added between them -- a retry, a second lookup,
+// a counter read -- widens it for every reader the guard cannot cover:
+// an operator's `ip link`, the suite, another process. This cell is
+// that bound, over what reaches the kernel; a pure delay between the
+// two calls is not visible here and is the part this bound gives up.
+func TestRenameHostLink_NothingReachesTheKernelBetweenTheTwoCalls(t *testing.T) {
+	w := newWindowTable(windowHostName)
+
+	var (
+		mu    sync.Mutex
+		order []string
+	)
+	record := func(op string) {
+		mu.Lock()
+		order = append(order, op)
+		mu.Unlock()
+	}
+
+	prevBy, prevSet, prevAlt := nlLinkByName, nlLinkSetName, nlLinkAddAltName
+	t.Cleanup(func() { nlLinkByName, nlLinkSetName, nlLinkAddAltName = prevBy, prevSet, prevAlt })
+
+	nlLinkByName = func(name string) (netlink.Link, error) {
+		record("lookup")
+		return w.byName(name)
+	}
+	nlLinkSetName = func(_ netlink.Link, name string) error {
+		record("rename")
+		w.mu.Lock()
+		defer w.mu.Unlock()
+		delete(w.names, w.link.Attrs().Name)
+		w.link.LinkAttrs.Name = name
+		w.names[name] = true
+		return nil
+	}
+	nlLinkAddAltName = func(_ netlink.Link, name string) error {
+		record("altname")
+		w.mu.Lock()
+		defer w.mu.Unlock()
+		w.names[name] = true
+		return nil
+	}
+
+	m := newDHCPManager(nil, JoinRequest{
+		NetworkID:  windowNetID,
+		EndpointID: windowEndpointID,
+	}, DHCPNetworkOptions{Mode: ModeBridge, Bridge: "br0", HostIfname: HostIfnameContainerName}).
+		withPlugin(&Plugin{})
+	m.renameHostLink(true, "/web", "web-host")
+
+	mu.Lock()
+	defer mu.Unlock()
+	for i, op := range order {
+		if op != "rename" {
+			continue
+		}
+		if i+1 >= len(order) || order[i+1] != "altname" {
+			t.Fatalf("the kernel calls went %v: the generated name %q is gone from the rename until "+
+				"the altname, and everything between them is time in which an operator's `ip link`, "+
+				"the suite and another process are told this host has no such link (#1051)",
+				order, windowHostName)
+		}
+		return
+	}
+	t.Fatalf("this cell saw no rename at all, in %v: it asserts nothing until renameHostLink asks "+
+		"the kernel for a name again", order)
+}

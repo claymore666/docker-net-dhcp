@@ -676,7 +676,13 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, callStart tim
 // and ipvlan since they live under the same name.
 func (p *Plugin) deleteParentAttachedEndpoint(r DeleteEndpointRequest) error {
 	name := subLinkName(r.EndpointID)
-	link, err := nlLinkByName(name)
+	// Through the guard, like the bridge-mode teardown: subLinkName is
+	// vethPairNames' host half byte for byte, and a miss below is read
+	// as a teardown that already happened. Nothing renames a child link
+	// today, so this cannot miss for that reason yet; the guard costs a
+	// read lock and stops the next mode that renames from having to
+	// find this line (#1051).
+	link, err := hostLinkByGeneratedName(name)
 	if err != nil {
 		// Expected: the link is gone with the container netns.
 		log.WithFields(log.Fields{
@@ -732,7 +738,7 @@ func (p *Plugin) parentAttachedEndpointOperInfo(opts DHCPNetworkOptions, r InfoR
 	}
 	// The link is in the container netns by the time anyone polls this, so
 	// "not found" is expected and not an error.
-	if link, err := netlink.LinkByName(name); err == nil {
+	if link, err := hostLinkByGeneratedName(name); err == nil {
 		info.LinkMAC = link.Attrs().HardwareAddr.String()
 	}
 	if err := mapstructure.Decode(info, &res.Value); err != nil {
