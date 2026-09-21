@@ -43,6 +43,30 @@ section below is still the list the daemon shows you.
 | A restarted container's renewals carry the same DHCP client identifier its address was claimed with | The address request and every renewal after it now send the identifier stored with the endpoint's lease record. Before this the renewals derived one from the hardware address Docker had just minted: the server refused the address it had granted seconds earlier, the container took a different one, and `docker inspect` still reported the first. Consequence worth noting: a `client_id` changed on a network while a container is stopped applies to addresses taken after the change, not to that container's next start (#1047). |
 | A container that already restarted under v2.2.1 can take one new address on its first start after the upgrade | Its lease record holds the identifier the address was first claimed with, while the address in the record is the one the server gave its later hardware address after refusing that claim. The request made on the first start after the upgrade asks for that address under the stored identifier, the server does not have it filed there, and the container is given another address, which it then keeps. It happens once, and it ends an address that moved on every restart under v2.2.1. A container that never restarted, and every container created after the upgrade, is unaffected (#1047). |
 
+### New
+
+- [`README.md`](README.md) and the documentation home open with a jump
+  list, one line per section, with the
+  [`docs/reference.md`](docs/reference.md) driver reference and the
+  [`docs/roadmap.md`](docs/roadmap.md) roadmap linked from it. The
+  Documentation section moves above the argument for the plugin on both
+  pages, and on the site the Images and releases section moves with it,
+  so the install and the pointers to the manual come first. No sentence
+  on either page is rewritten (#1039).
+- [`docs/roadmap.md`](docs/roadmap.md) opens with a table of the open
+  milestones, then the issues on each of them, then a diagram of the
+  release line. The five themes and the refusals are tables of subject,
+  state and anchor issue, with the reasoning folded under them, and the
+  paragraphs describing released milestones and the 1.x history are
+  gone: the driver reference is the authority on what exists and these
+  notes are the record of what each tag changed, which the page now
+  says. The diagram is drawn by a script the documentation site fetches
+  from a content delivery network; a reader who cannot reach it sees the
+  diagram's source text and the caption below it, which names the same
+  releases in prose (#1040).
+- `pkg/plugin` has a package overview on pkg.go.dev. The page carried a
+  symbol list and no prose (#1040).
+
 ### Fixed
 
 - The persistent DHCP client failed to open on Docker Engine 29.8.1, with
@@ -80,6 +104,12 @@ section below is still the list the daemon shows you.
   `docker network inspect --verbose` reported the endpoint as having no host
   veth. The plugin's own lookups now wait for a rename in flight instead of
   reading through it (#1051).
+- `go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp`, an
+  indirect dependency, moves to 1.45.0, out of the version range the
+  repository's Dependabot alert names for it, and the modules it requires
+  move with it. `github.com/sirupsen/logrus` moves to 1.10.2 and
+  `golang.org/x/sys` to 0.48.0. The plugin is built with Go 1.27.1
+  (#1046).
 
 ## v2.2.1
 
