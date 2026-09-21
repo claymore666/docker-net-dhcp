@@ -554,6 +554,31 @@ type Resumption struct {
 	// completed; proto.ACDIdle is the honest value for a
 	// proto.ConflictOff client, which runs no check at all.
 	ACD proto.ACDPhase
+
+	// Identity is the option-61 value the record was created with, AS
+	// SENT, type byte included -- the same bytes Created and Reserved
+	// were given.
+	//
+	// IT IS THE HALF THE v4 SIDE USED TO THROW AWAY. Resume6 has handed
+	// the DHCPv6 identity back since #820 for a reason that is not a v6
+	// reason at all: an exchange resumed under an identity the server
+	// does not have the binding filed under is a new client, and a new
+	// client is a new address. v4 had no such field, so the persistent
+	// client re-derived option 61 from the hardware address -- correct
+	// for an endpoint that kept its hardware address, and wrong for
+	// exactly the case the re-bind exists for. In IPAM mode Docker mints
+	// a fresh one for the endpoint a restarting container comes back on:
+	// the reservation asks under the RECORD's identity and is given the
+	// address back, then the client asks for the same address under an
+	// identity the server has never seen and is NAKed. MEASURED on the
+	// lane: ACK .10 under the record's identity, DHCPNAK then .11 under
+	// the derived one, with the container reported to Docker on .10.
+	//
+	// Empty for a record that has none: one written before identities
+	// were stored, or an endpoint adopted from Docker's own view. The
+	// caller reads that as "derive one", which is what it did for every
+	// record before this field existed.
+	Identity []byte
 }
 
 // ACDUnfinished reports whether this record is EVIDENCE OF A CHECK
@@ -592,7 +617,12 @@ func (r Resumption) ACDUnfinished() bool {
 }
 
 // Resume finds the record for one identity on one network and says what
-// a new manager may ask for.
+// a new manager may ask for, and who it is while asking.
+//
+// Both answers or neither, for the reason Resume6 states on the v6
+// side: an address is resumed FROM a binding the server holds, and the
+// binding is filed under the identity, so a resume that took the lease
+// and left the identity behind asks for another client's address.
 //
 // Keyed on scope AND hardware address. Either alone is wrong for a
 // reason the library states: an index on the address alone collapses
@@ -615,7 +645,7 @@ func (r *Records) Resume(scope string, chaddr []byte, now time.Time) (string, Re
 		if rec.Phase == lease.PhaseClosed {
 			continue
 		}
-		res := Resumption{Phase: rec.Phase.String(), ACD: rec.ACD}
+		res := Resumption{Phase: rec.Phase.String(), ACD: rec.ACD, Identity: rec.Identity}
 		if l, ok := rec.Resume(now); ok {
 			res.Lease = &l
 		} else if a, ok := rec.Prefer(now); ok {

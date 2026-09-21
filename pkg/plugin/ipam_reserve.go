@@ -764,7 +764,7 @@ func (p *Plugin) ipamRebindCandidate(networkID string, mac net.HardwareAddr) (st
 		log.WithError(err).WithField("network", shortID(networkID)).Warn("Could not read the lease records; this reservation gets a fresh identity")
 		return "", "", nil
 	}
-	candidates := rb.Tombstones(networkID, time.Now())
+	candidates := p.ipamUnheldTombstones(networkID, rb.Tombstones(networkID, time.Now()))
 	if len(candidates) == 0 {
 		return "", "", nil
 	}
@@ -786,6 +786,46 @@ func (p *Plugin) ipamRebindCandidate(networkID string, mac net.HardwareAddr) (st
 		return "", "", nil
 	}
 	return rec.ID, addr.String(), rec.Identity
+}
+
+// ipamUnheldTombstones drops a candidate whose address a live endpoint
+// of this process still holds.
+//
+// IT IS THE RE-BIND'S HALF OF THE RULE THAT THE IDENTITY MADE SHARP. A
+// tombstone is laid by a teardown, and every teardown in this process
+// takes the endpoint's fingerprint first, so a candidate that still has
+// one is a record that was retained while its container kept running --
+// the restart rule's own defeat row, reached from a truthful-looking
+// but short endpoint list. Re-binding it used to cost the NEW container
+// its address, which was self-limiting because its client then spoke as
+// itself; now that the client speaks as the record, it would cost the
+// OLD container its lease instead, because the server keeps one binding
+// per client-id and the last exchange wins. A healthy container losing
+// its address to a second one's arrival is worse than the defect this
+// whole change repairs, so the candidate is skipped and the next
+// container gets a fresh identity and a fresh address, which is exactly
+// what it got before.
+//
+// The key is the pair, hardware address AND address, for the reason the
+// release handler keys on the pair: two IPAM networks on one segment
+// can hold the same address.
+//
+// It cannot see another process's endpoints. That half is the restart
+// rule's two keys, and the short-list limit it documents.
+func (p *Plugin) ipamUnheldTombstones(networkID string, candidates []lease.Record) []lease.Record {
+	kept := candidates[:0:0]
+	for _, rec := range candidates {
+		addr, ok := rec.Addr()
+		if ok && p.ipamEndpointHolds(net.HardwareAddr(rec.CHAddr), addr.String()) {
+			log.WithFields(log.Fields{
+				"network": shortID(networkID),
+				"record":  rec.ID,
+			}).Info("A recently-removed endpoint's address is still held by a running endpoint on this network; it is not offered to this request")
+			continue
+		}
+		kept = append(kept, rec)
+	}
+	return kept
 }
 
 // ipamSweepInterval is how often orphaned reservations are looked for.
