@@ -1684,6 +1684,20 @@ func (p *Plugin) DeleteEndpoint(ctx context.Context, r DeleteEndpointRequest) er
 		// delete that refused would wedge `docker network rm` on a
 		// network whose only fault is an unreadable file.
 		if !errors.Is(err, errIPAMBindingLost) {
+			// THE FINGERPRINT DOES NOT SURVIVE THIS RETURN. The
+			// engine releases the address whether or not this call
+			// succeeded: deleteEndpoint logs a driver error that is
+			// not a permission refusal and carries on, and Delete
+			// then calls releaseIPAddresses unconditionally (moby
+			// 406bdd8c82, daemon/libnetwork/endpoint.go:968-1000;
+			// v26.1.5 libnetwork/endpoint.go:861-863). ReleaseAddress
+			// reads these fingerprints to tell an endpoint that is
+			// still up from one whose creation rolled back, so a
+			// fingerprint left here would answer "still up" for an
+			// endpoint the engine has already torn down, and the
+			// record behind it would sit in the created phase until
+			// the next plugin start.
+			p.takeEndpoint(r.EndpointID)
 			return fmt.Errorf("failed to get network options: %w", err)
 		}
 		mode, modeKnown = "", false

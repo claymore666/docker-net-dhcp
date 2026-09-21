@@ -83,3 +83,64 @@ func TestACKedTo(t *testing.T) {
 		})
 	}
 }
+
+// A restart on the standing fixture, as dnsmasq logs it: the
+// reservation's exchange under the removed container's identity, then
+// the container's own client being refused and taking another address.
+// ACKedTo(.10, the new MAC) is TRUE for this log, and the container is
+// on .11.
+const restartAckLog = `
+Sep 21 15:16:02 dnsmasq-dhcp[5432]: 1 DHCPREQUEST(dh-itest) 192.168.99.10 ea:a9:52:1b:95:ab
+Sep 21 15:16:02 dnsmasq-dhcp[5432]: 1 DHCPACK(dh-itest) 192.168.99.10 ea:a9:52:1b:95:ab
+Sep 21 15:16:10 dnsmasq-dhcp[5432]: 2 DHCPREQUEST(dh-itest) 192.168.99.10 ea:a9:52:1b:95:ab
+Sep 21 15:16:10 dnsmasq-dhcp[5432]: 2 DHCPNAK(dh-itest) 192.168.99.10 ea:a9:52:1b:95:ab
+Sep 21 15:16:10 dnsmasq-dhcp[5432]: 3 DHCPACK(dh-itest) 192.168.99.11 ea:a9:52:1b:95:ab
+`
+
+func TestLastACKedAddress(t *testing.T) {
+	tests := []struct {
+		name string
+		log  string
+		mac  string
+		want string
+	}{
+		{
+			name: "the newest ACK wins over an older one for the same client",
+			log:  restartAckLog, mac: "ea:a9:52:1b:95:ab",
+			want: "192.168.99.11",
+		},
+		{
+			name: "one ACK is its own answer",
+			log:  ackLog, mac: "b6:53:0e:19:10:83",
+			want: "192.168.99.95",
+		},
+		{
+			// Another client's ACKs say nothing about this one.
+			name: "a client the server never ACKed has no address",
+			log:  ackLog, mac: "02:00:00:00:99:95",
+			want: "",
+		},
+		{
+			name: "an empty log is not an address",
+			log:  "", mac: "b6:53:0e:19:10:83",
+			want: "",
+		},
+		{
+			// A NAK is the opposite of an ACK and must not be read as
+			// one; on its own it leaves the client with no address.
+			name: "a NAK is not an ACK",
+			log: "Sep 21 15:16:10 dnsmasq-dhcp[5432]: 2 DHCPNAK(dh-itest) 192.168.99.10 " +
+				"ea:a9:52:1b:95:ab\n",
+			mac:  "ea:a9:52:1b:95:ab",
+			want: "",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := LastACKedAddress([]byte(tc.log), tc.mac); got != tc.want {
+				t.Errorf("LastACKedAddress(_, %q) = %q, want %q", tc.mac, got, tc.want)
+			}
+		})
+	}
+}

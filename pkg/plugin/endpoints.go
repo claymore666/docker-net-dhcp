@@ -594,6 +594,14 @@ type HealthResponse struct {
 	// start: two endpoints on one network were pinned to one
 	// --mac-address.
 	IPAMReserveDuplicateMAC int32 `json:"ipam_reserve_duplicate_mac"`
+	// IPAMStrandedRecords counts lease records a previous plugin process
+	// left in the created phase with no endpoint behind them, which this
+	// process gave up at start-up so the address can be claimed again.
+	// NOT healthy-affecting: a move is the plugin repairing itself, and
+	// each one is an address that would otherwise have been held for
+	// good. A rise means this plugin, or the daemon under it, is being
+	// restarted while containers start.
+	IPAMStrandedRecords int32 `json:"ipam_stranded_records"`
 	// IPAMReleaseUnknown counts addresses libnetwork released that no
 	// lease record of ours holds. NOT healthy-affecting and not a
 	// fault: a release for an address whose record is already retained
@@ -1262,6 +1270,7 @@ func (p *Plugin) checkStamps() map[string]time.Time {
 		"ipam_replay_miss":           p.ipamReplayMiss.LastMoved(),
 		"ipam_rebind_ambiguous":      p.ipamRebindAmbiguous.LastMoved(),
 		"ipam_reserve_duplicate_mac": p.ipamReserveDuplicateMAC.LastMoved(),
+		"ipam_stranded_records":      p.ipamStrandedRecords.LastMoved(),
 		"hostname_lookup_failures":   p.hostnameLookupFailures.LastMoved(),
 		"hostname_apply_failures":    p.hostnameApplyFailures.LastMoved(),
 		"host_ifname_conflicts":      p.hostIfnameConflicts.LastMoved(),
@@ -1406,6 +1415,7 @@ func (p *Plugin) healthSnapshot() HealthResponse {
 		IPAMReplayMiss:               p.ipamReplayMiss.Load(),
 		IPAMRebindAmbiguous:          p.ipamRebindAmbiguous.Load(),
 		IPAMReserveDuplicateMAC:      p.ipamReserveDuplicateMAC.Load(),
+		IPAMStrandedRecords:          p.ipamStrandedRecords.Load(),
 		IPAMReleaseUnknown:           p.ipamReleaseUnknown.Load(),
 		DNSPropagationPIDMismatches:  p.dnsPropagationPIDMismatches.Load(),
 		NetnsPIDMismatches:           p.netnsPIDMismatches.Load(),

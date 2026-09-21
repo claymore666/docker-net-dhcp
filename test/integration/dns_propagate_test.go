@@ -45,9 +45,12 @@ func TestDNSPropagate_OptInWritesResolvConf(t *testing.T) {
 
 	// resolv.conf is written from the persistent client's `bound`
 	// event, which fires after libnetwork's Join — i.e. after
-	// RunContainer's "got an IP" return. Poll briefly: the write
-	// is fast but not synchronous with the inspect IP.
-	deadline := time.Now().Add(5 * time.Second)
+	// RunContainer's "got an IP" return. The write is fast but not
+	// synchronous with the inspect IP, and a reply lost on the
+	// fixture's veth pair delays it by the client's own
+	// retransmission: see harness.RetransmitBudget.
+	budget := harness.RetransmitBudget(2)
+	deadline := time.Now().Add(budget)
 	var out string
 	for time.Now().Before(deadline) {
 		out = harness.ExecOutput(t, ctx, id, "cat", "/etc/resolv.conf")
@@ -57,8 +60,8 @@ func TestDNSPropagate_OptInWritesResolvConf(t *testing.T) {
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
-	t.Errorf("DHCP DNS server %s never appeared in container's resolv.conf within 5s\nlast contents:\n%s",
-		harness.TestDNSServer, out)
+	t.Errorf("DHCP DNS server %s never appeared in container's resolv.conf within %s\nlast contents:\n%s",
+		harness.TestDNSServer, budget, out)
 }
 
 // TestDNSPropagate_DefaultIsUnchanged confirms the v0.7.0 baseline
@@ -137,8 +140,10 @@ func TestDNSPropagate_BridgeModeWritesResolvConfToo(t *testing.T) {
 
 	// Same wait as the macvlan arm, and for the same reason:
 	// resolv.conf is written from the Join manager's bind event, which
-	// lands after libnetwork's Join returns.
-	deadline := time.Now().Add(5 * time.Second)
+	// lands after libnetwork's Join returns, and a lost reply delays
+	// it by the client's own retransmission.
+	budget := harness.RetransmitBudget(2)
+	deadline := time.Now().Add(budget)
 	var out string
 	for time.Now().Before(deadline) {
 		out = harness.ExecOutput(t, ctx, id, "cat", "/etc/resolv.conf")
@@ -160,7 +165,7 @@ func TestDNSPropagate_BridgeModeWritesResolvConfToo(t *testing.T) {
 		time.Sleep(200 * time.Millisecond)
 	}
 	t.Errorf("bridge-mode DHCP DNS server %s never appeared in the container's resolv.conf "+
-		"within 5s. propagate_dns is exercised on macvlan by the test above; this is the "+
+		"within %s. propagate_dns is exercised on macvlan by the test above; this is the "+
 		"mode that had no coverage at all after the v6 suite was retired.\nlast contents:\n%s",
-		harness.BridgeTestDNSServer, out)
+		harness.BridgeTestDNSServer, budget, out)
 }

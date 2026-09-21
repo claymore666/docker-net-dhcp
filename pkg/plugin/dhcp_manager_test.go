@@ -1035,13 +1035,28 @@ func TestManagerClientID_DoesNotDependOnALiveLink(t *testing.T) {
 	withLink := managerWithMACs("", hintMAC, linkMAC)
 	afterContainerGone := managerWithMACs("", hintMAC, nil)
 
-	joined := withLink.clientID()
-	releasing := afterContainerGone.clientID()
+	joined := withLink.clientID(nil)
+	releasing := afterContainerGone.clientID(nil)
 	if string(joined) != string(releasing) {
 		t.Fatalf("id drifted once the container link was gone: join=%x release=%x", joined, releasing)
 	}
 	if string(joined) != string(hintMAC) {
 		t.Errorf("got %x, want MAC-derived %x", joined, []byte(hintMAC))
+	}
+
+	// The same property for the id a re-bound record carries, which is
+	// the one the release at stop has to go out under: the DHCPRELEASE
+	// is sent by the client these options were captured on, and an id
+	// that moved once the link was gone would free nothing.
+	identity := dhcp.ClientIdentity([]byte("record-identity"))
+	joinedRebound := withLink.clientID(identity)
+	releasingRebound := afterContainerGone.clientID(identity)
+	if string(joinedRebound) != string(releasingRebound) {
+		t.Fatalf("a re-bound record's id drifted once the container link was gone: join=%x release=%x",
+			joinedRebound, releasingRebound)
+	}
+	if string(joinedRebound) != "record-identity" {
+		t.Errorf("got %x, want the record's identity %q", joinedRebound, "record-identity")
 	}
 }
 
@@ -1053,7 +1068,7 @@ func TestManagerClientID_ModeAndOverride(t *testing.T) {
 
 	t.Run("macvlan derives from the MAC", func(t *testing.T) {
 		m := managerWithMACs("macvlan", hintMAC, nil)
-		if got := m.clientID(); string(got) != string(hintMAC) {
+		if got := m.clientID(nil); string(got) != string(hintMAC) {
 			t.Errorf("got %x, want %x", got, []byte(hintMAC))
 		}
 	})
@@ -1062,7 +1077,7 @@ func TestManagerClientID_ModeAndOverride(t *testing.T) {
 		// ipvlan slaves share the parent's MAC, so a MAC-derived id
 		// would be identical for every container on the network.
 		m := managerWithMACs("ipvlan", hintMAC, nil)
-		got := m.clientID()
+		got := m.clientID(nil)
 		if want := clientIDFromEndpoint(eid); string(got) != string(want) {
 			t.Errorf("got %x, want endpoint-derived %x", got, want)
 		}
@@ -1074,10 +1089,188 @@ func TestManagerClientID_ModeAndOverride(t *testing.T) {
 	t.Run("operator override wins", func(t *testing.T) {
 		m := managerWithMACs("", hintMAC, nil)
 		m.opts.ClientID = "my-id"
-		if got := m.clientID(); string(got) != "my-id" {
+		if got := m.clientID(nil); string(got) != "my-id" {
 			t.Errorf("got %q, want %q", got, "my-id")
 		}
 	})
+}
+
+// TestManagerClientID_TheRecordsIdentityWins is the defect the lane
+// caught: the reservation re-binds a removed endpoint's record and asks
+// under the identity the server has that address filed against, and the
+// persistent client then has to ask under the SAME one. Deriving it
+// from the hardware address Docker minted for the new endpoint is a
+// client the server has never seen: the measured cost was a DHCPACK for
+// .10 to the reservation, a DHCPNAK to the client seconds later, and a
+// container running on .11 while Docker reported .10.
+//
+// Every row asserts the identifier BYTES, because a counter or a
+// phase would read the same whether or not they reached the wire.
+func TestManagerClientID_TheRecordsIdentityWins(t *testing.T) {
+	// What a record written by this build carries: the option-61 value
+	// as sent, the chassis's type byte in front of the payload.
+	stored := dhcp.ClientIdentity([]byte{0xde, 0xad, 0xbe, 0xef})
+
+	for _, tc := range []struct {
+		name     string
+		mode     string
+		clientID string
+		identity []byte
+		want     string
+		why      string
+	}{
+		{
+			name: "no record identity leaves the derived id alone",
+			want: string(hintMAC),
+			why:  "a fresh endpoint has nothing to resume and must send what its MAC derives",
+		},
+		{
+			name:     "a re-bound record's identity wins over the MAC",
+			identity: stored,
+			want:     "\xde\xad\xbe\xef",
+			why:      "the server has the re-bound address filed under this and under nothing else",
+		},
+		{
+			name:     "a re-bound record's identity wins over the operator's client_id",
+			clientID: "operator-id",
+			identity: stored,
+			want:     "\xde\xad\xbe\xef",
+			why: "the reservation half already prefers the record here; an operator setting that " +
+				"won on this half alone would put the two exchanges back out of step and NAK the address",
+		},
+		{
+			name:     "the operator's client_id still wins with no record identity",
+			clientID: "operator-id",
+			want:     "operator-id",
+			why:      "a fresh endpoint on a network that sets client_id is unchanged by any of this",
+		},
+		{
+			name:     "an identity this build never wrote is refused",
+			identity: []byte{0x01, 0x02, 0x03},
+			want:     string(hintMAC),
+			why: "a DUID or any other shape is not an option-61 payload, and re-sending its tail " +
+				"would put a value on the wire that no record describes",
+		},
+		{
+			name:     "an identity of only the type byte is refused",
+			identity: []byte{0x00},
+			want:     string(hintMAC),
+			why:      "there is no payload to send",
+		},
+		{
+			name:     "ipvlan keeps the record's identity too",
+			mode:     "ipvlan",
+			identity: stored,
+			want:     "\xde\xad\xbe\xef",
+			why:      "the mode decides what is DERIVED, and a record's identity is not derived",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := managerWithMACs(tc.mode, hintMAC, nil)
+			m.opts.ClientID = tc.clientID
+			if got := m.clientID(tc.identity); string(got) != tc.want {
+				t.Errorf("client identifier on the wire = %x, want %x. %s", got, tc.want, tc.why)
+			}
+		})
+	}
+}
+
+// TestClientIDWiring_OneCallSiteAndTheV4IdentityOnly is the guard the
+// behavioural tests above cannot give.
+//
+// They prove what clientID ANSWERS. This proves where the answer goes
+// and what it is asked with, and both are properties of source that has
+// no seam: the persistent client is built inside a function that needs
+// a network namespace and a live link, so a test that drove it would be
+// an integration test to check an argument.
+//
+// Two things, and the second is the one that could go wrong quietly.
+// The v6 record's identity is a DUID with an IAID, not an option-61
+// payload, and a DUID that happened to begin with the chassis's opaque
+// type byte would pass ClientIDPayload and put its tail in the v4-only
+// ClientID field of a v6 client. Nothing on the wire would name the
+// cause. The branch that assigns the variable is therefore the whole
+// guard, and it is asserted here rather than trusted.
+func TestClientIDWiring_OneCallSiteAndTheV4IdentityOnly(t *testing.T) {
+	src, err := os.ReadFile("dhcp_manager.go")
+	if err != nil {
+		t.Fatalf("read dhcp_manager.go: %v", err)
+	}
+	text := string(src)
+
+	const call = "ClientID:    m.clientID(v4Identity),"
+	if got := strings.Count(text, call); got != 1 {
+		t.Errorf("%q appears %d time(s), want exactly 1. The persistent client's option 61 is "+
+			"the identity the reservation used, and a second call site or a different argument "+
+			"is how the two halves drifted apart in the first place", call, got)
+	}
+	if got := strings.Count(text, "m.clientID("); got != 1 {
+		t.Errorf("m.clientID( is called %d time(s) in dhcp_manager.go, want exactly 1", got)
+	}
+
+	const assign = "v4Identity = resumption.Identity"
+	if got := strings.Count(text, assign); got != 1 {
+		t.Fatalf("%q appears %d time(s), want exactly 1", assign, got)
+	}
+
+	// The v4 arm runs from the resume to the else, and the assignment
+	// has to be inside it.
+	start := strings.Index(text, "m.recordID, resumption = m.resumeFromRecord()")
+	if start < 0 {
+		t.Fatal("the v4 resume moved; this guard needs updating deliberately")
+	}
+	end := strings.Index(text[start:], "m.recordID6, resumption, identity6 = m.resumeFromRecord6()")
+	if end < 0 {
+		t.Fatal("the v6 resume moved; this guard needs updating deliberately")
+	}
+	if at := strings.Index(text, assign); at < start || at > start+end {
+		t.Errorf("%q is not inside the IPv4 branch of setupClient. A v6 record's identity is a "+
+			"DUID and an IAID; sending its tail as option 61 would be a value no record describes",
+			assign)
+	}
+}
+
+// TestManagerClientID_IsTheReservationsIdentity is the agreement
+// itself, asserted between the two halves rather than inside one of
+// them.
+//
+// The two are in different files and neither can see the other, which
+// is how they drifted. A test that only checked the manager would go
+// green against a reservation that had changed its mind.
+func TestManagerClientID_IsTheReservationsIdentity(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		clientID string
+	}{
+		{name: "derived on both halves"},
+		{name: "operator client_id on the network", clientID: "operator-id"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			opts := DHCPNetworkOptions{ClientID: tc.clientID}
+
+			// The record as the first container left it: the identity
+			// its own reservation sent, stored as it went out.
+			stored := dhcp.ClientIdentity(resolveClientID(opts, "", hintMAC))
+
+			// The retry. Docker mints a new MAC, and the reservation
+			// re-binds the record under it.
+			reservation := ipamExchangeClientID(resolveClientID(opts, "", linkMAC), stored)
+
+			m := managerWithMACs("", linkMAC, linkMAC)
+			m.opts = opts
+			client := m.clientID(stored)
+
+			if string(client) != string(reservation) {
+				t.Fatalf("the reservation asks as %x and the container's client asks as %x. "+
+					"The server files the lease under the first and NAKs the second, so the "+
+					"container comes back on a different address than Docker was told about",
+					reservation, client)
+			}
+			if payload, _ := dhcp.ClientIDPayload(stored); string(client) != string(payload) {
+				t.Errorf("both halves agree on %x, which is not the record's identity %x", client, payload)
+			}
+		})
+	}
 }
 
 // TestStop_NeverBoundV6ClientIsNotAuditedAsReleased is the v6 half of

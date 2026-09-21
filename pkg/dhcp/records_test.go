@@ -4,6 +4,7 @@
 package dhcp
 
 import (
+	"bytes"
 	"errors"
 	"net/netip"
 	"os"
@@ -454,6 +455,89 @@ func TestRecords_ResumeCarriesTheLeaseAcrossManagers(t *testing.T) {
 	if resume.Addr != held.Addr {
 		t.Errorf("resume address = %s, want %s", resume.Addr, held.Addr)
 	}
+}
+
+// TestRecords_ResumeCarriesTheIdentity is the other half of what a
+// manager about to start needs, and the half v4 used to drop.
+//
+// An address is resumed FROM a binding the server holds, and the server
+// files the binding under the option-61 identity. A resume that handed
+// back the lease and left the identity behind lets the caller ask for
+// the address as somebody else, which is a DHCPNAK and a different
+// address. The v6 side has returned its identity since the Confirm
+// work; this is the v4 twin.
+func TestRecords_ResumeCarriesTheIdentity(t *testing.T) {
+	mac := []byte{2, 0, 0, 0, 0, 1}
+	identity := []byte{0, 9, 9}
+
+	t.Run("the stored identity comes back", func(t *testing.T) {
+		r, _ := testRecords(t)
+		if err := r.Created("rec-1", "net-1", mac, identity); err != nil {
+			t.Fatalf("Created: %v", err)
+		}
+
+		id, res, ok := r.Resume("net-1", mac, time.Now())
+		if !ok {
+			t.Fatal("no record to resume")
+		}
+		if id != "rec-1" {
+			t.Fatalf("resumed %q, want rec-1", id)
+		}
+		if !bytes.Equal(res.Identity, identity) {
+			t.Errorf("identity = %x, want %x. The manager re-derives option 61 when this is "+
+				"empty, and a re-bound address is filed under this and under nothing else",
+				res.Identity, identity)
+		}
+	})
+
+	t.Run("a re-bind under a new hardware address keeps it", func(t *testing.T) {
+		// The case the whole field exists for: Docker mints a fresh MAC
+		// for the endpoint a restarting container comes back on, the
+		// re-bind consumes the tombstone under that MAC, and the
+		// identity is write-once so it stays the first container's.
+		r, _ := testRecords(t)
+		if err := r.Created("rec-1", "net-1", mac, identity); err != nil {
+			t.Fatalf("Created: %v", err)
+		}
+		if err := r.Retained("rec-1", time.Now().Add(time.Minute)); err != nil {
+			t.Fatalf("Retained: %v", err)
+		}
+		fresh := []byte{2, 0, 0, 0, 0, 2}
+		if err := r.Rebound("rec-1", fresh); err != nil {
+			t.Fatalf("Rebound: %v", err)
+		}
+
+		id, res, ok := r.Resume("net-1", fresh, time.Now())
+		if !ok {
+			t.Fatal("the re-bound record is not resumable under the new hardware address")
+		}
+		if id != "rec-1" {
+			t.Fatalf("resumed %q, want the re-bound rec-1", id)
+		}
+		if !bytes.Equal(res.Identity, identity) {
+			t.Errorf("identity = %x, want the record's original %x. The reservation asked under "+
+				"the original and was given the address back; the client asking under anything "+
+				"else is NAKed off it", res.Identity, identity)
+		}
+	})
+
+	t.Run("a record with no identity offers none", func(t *testing.T) {
+		// An endpoint adopted from Docker's own view has no identity to
+		// offer, and the caller derives one, which is what it did for
+		// every record before this field existed.
+		r, _ := testRecords(t)
+		if err := r.Adopted("rec-1", "net-1", mac, nil); err != nil {
+			t.Fatalf("Adopted: %v", err)
+		}
+
+		_, res, ok := r.Resume("net-1", mac, time.Now())
+		if !ok {
+			t.Fatal("no record to resume")
+		}
+		if len(res.Identity) != 0 {
+			t.Errorf("identity = %x, want none", res.Identity)
+		}
+	})
 }
 
 // TestRecords_TwoManagersGetTwoIDs pins the obligation the fold cannot

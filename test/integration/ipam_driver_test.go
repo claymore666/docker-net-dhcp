@@ -294,7 +294,11 @@ func TestIPAM_SingleRestartKeepsTheAddress(t *testing.T) {
 	}
 	if beforeMAC == afterMAC {
 		t.Logf("NOTE: the MAC did not change across the restart (%s), so this run did not "+
-			"exercise the identity carry-over the assertion above is about", beforeMAC)
+			"exercise the identity carry-over the assertion above is about. The scenario "+
+			"that exercises it whatever the engine does is "+
+			"TestIPAMStranded_APluginThatEndsMidRestartGivesTheAddressBack, where the "+
+			"container is replaced and its hardware address cannot be the old one",
+			beforeMAC)
 	}
 	logData, err := os.ReadFile(fixture.DnsmasqLog())
 	if err != nil {
@@ -303,6 +307,28 @@ func TestIPAM_SingleRestartKeepsTheAddress(t *testing.T) {
 	if acked, acks := harness.ACKedTo(logData, after, afterMAC); !acked {
 		t.Errorf("the server never ACKed %s to the restarted container's MAC %s; the address "+
 			"in Docker's store is not the one that was leased.\nACKs for it: %v", after, afterMAC, acks)
+	}
+	// The same evidence asked the other way round, and the assertion
+	// above cannot stand in for it. An address is claimed twice across
+	// a restart -- once by the reservation, once by the container's own
+	// client -- so "the server ACKed this address to this MAC at some
+	// point" is satisfied by the first claim even when the second was
+	// NAKed and handed a different address. That is how an address that
+	// moved on the wire reads as green while Docker goes on publishing
+	// the one the reservation was given.
+	//
+	// It is a regression guard on this path rather than a new failure:
+	// a restart in place keeps the endpoint and its hardware address,
+	// so the identity the client derives already matches the record's.
+	// The path where they diverge is a container REPLACED after a
+	// restart, which is the stranded-record scenario's business; this
+	// arm is what makes the divergence visible here too, for a fraction
+	// of a second's reading.
+	if last := harness.LastACKedAddress(logData, afterMAC); last != after {
+		t.Errorf("the server last acknowledged %q for %s, and Docker publishes %s.\n"+
+			"Every other container on this network resolves the published address, so a "+
+			"container running on a different one is unreachable at the name it is "+
+			"published under.", last, afterMAC, after)
 	}
 
 	// Row 10: the JSON store must carry nothing for this network.

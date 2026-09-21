@@ -534,6 +534,7 @@ func (p *Plugin) apiReleaseAddress(w http.ResponseWriter, r *http.Request) {
 // happens now. Nothing releases from inside this function: a release
 // here would race the retry the retention exists for, which is the
 // whole reason retention wins at this point in the life of the address.
+
 func (p *Plugin) ReleaseAddress(req ReleaseAddressRequest) error {
 	networkID, bound := p.ipamIndex.network(req.PoolID)
 	if !bound {
@@ -555,14 +556,62 @@ func (p *Plugin) ReleaseAddress(req ReleaseAddressRequest) error {
 		p.ipamReleaseUnknown.Add(1)
 		return nil
 	}
-	if rec.Phase != lease.PhaseReserved {
+	// CREATED IS HERE TOO. A re-bound record is created from the moment
+	// the re-bind is written, before any packet, so the one call the
+	// engine always makes when a container start rolls back used to see
+	// the one phase it did not act on. Nothing else reaches such a
+	// record: its reservation is gone, and a CreateEndpoint that never
+	// ran gets no DeleteEndpoint.
+	//
+	// An exchange still running owns its own record, and the
+	// reservation is taken before the record is given up so that
+	// nothing can consume an answer pointing at a record nobody holds.
+	if rec.Phase != lease.PhaseReserved && rec.Phase != lease.PhaseCreated {
 		return nil
 	}
-	p.recordRetained(rec.ID, time.Now().Add(tombstoneTTL))
-	p.ipamReserves.take(ipamReserveKey(req.PoolID, net.HardwareAddr(rec.CHAddr)))
+	key := ipamReserveKey(req.PoolID, net.HardwareAddr(rec.CHAddr))
+	if p.ipamReserves.inFlight(key) {
+		return nil
+	}
+	if p.ipamEndpointHolds(net.HardwareAddr(rec.CHAddr), req.Address) {
+		return nil
+	}
+	p.ipamReserves.take(key)
+	p.ipamGiveUpRecord(rec.ID, time.Now())
 	log.WithFields(log.Fields{
 		"network": shortID(networkID),
 		"address": req.Address,
-	}).Info("An address was released before its endpoint existed; retaining it so a retry can claim it back")
+		"phase":   rec.Phase.String(),
+	}).Info("An address was released with no endpoint holding it; giving it back so a retry can claim it")
 	return nil
+}
+
+// ipamEndpointHolds reports whether an endpoint THIS process created
+// is still holding the address being released.
+//
+// The give-up above acts on a record that outlived its endpoint. The
+// engine releases an address only after telling the driver to delete
+// the endpoint, and that call takes the fingerprint, so on the ordinary
+// path there is nothing here to find; this makes "no endpoint can be
+// holding it" a thing the handler checks instead of a reading of the
+// engine. A fingerprint is written last in createIPAMEndpoint, after
+// every exit that gives the record back, so a failed create leaves
+// none and a live endpoint leaves one until it is deleted.
+//
+// The pair is the key, not the address alone: two IPAM networks on one
+// segment can hand out the same address, and blocking on that would
+// strand exactly the record this arm exists to hand back.
+func (p *Plugin) ipamEndpointHolds(mac net.HardwareAddr, addr string) bool {
+	if len(mac) == 0 || addr == "" {
+		return false
+	}
+	want := mac.String()
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for _, fp := range p.endpointFingerprints {
+		if fp.MAC == want && fp.IPv4 == addr {
+			return true
+		}
+	}
+	return false
 }
