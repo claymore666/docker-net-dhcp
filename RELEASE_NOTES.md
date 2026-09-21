@@ -43,6 +43,15 @@ Containers attaching on Docker Engine 29.8.1 get their renewal client again.
   the same lookup answered with, the way the container's hostname already
   did. Networks with `-o host_ifname=hostname`, and the option left off, were
   not affected (#1051).
+- Renaming a host-side link takes two kernel calls, and between them nothing
+  on the host answered to the `dh-<id>` name this plugin derives from the
+  endpoint ID: the kernel refuses an altname equal to a link's current name,
+  so the old name can only be put back after the rename has freed it.
+  Teardown reads a miss of that name as a teardown that already happened, so
+  a delete landing in that window left the veth on the bridge, and
+  `docker network inspect --verbose` reported the endpoint as having no host
+  veth. The plugin's own lookups now wait for a rename in flight instead of
+  reading through it (#1051).
 
 ## v2.2.1
 

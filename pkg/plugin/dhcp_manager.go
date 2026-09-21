@@ -2469,7 +2469,11 @@ func (m *dhcpManager) locateContainerLink(ctx context.Context) error {
 	}
 
 	hostName, oldCtrName := vethPairNames(m.joinReq.EndpointID)
-	hostLink, err := netlink.LinkByName(hostName)
+	// Through the guard, and through the seam it uses: a second Join
+	// for this endpoint displaces the manager whose attach is renaming,
+	// and this lookup landing in that rename's two kernel calls fails
+	// the whole attach (#1051).
+	hostLink, err := hostLinkByGeneratedName(hostName)
 	if err != nil {
 		return fmt.Errorf("failed to find host side of veth pair: %w", err)
 	}
