@@ -43,11 +43,14 @@ func TestExtraOptions_SearchListInResolvConf(t *testing.T) {
 	id, _, _ := harness.RunContainer(t, ctx, netName, ctrName)
 
 	// Search list lands from the persistent client's bound event,
-	// same path as DNSServers — poll briefly to absorb the gap
-	// between RunContainer's "got an IP" return and the bound-event
-	// resolv.conf write.
+	// same path as DNSServers. The gap between RunContainer's "got
+	// an IP" return and the bound-event resolv.conf write is
+	// normally milliseconds, but a reply lost on the fixture's veth
+	// pair costs the client's own retransmission delay, which is
+	// what the budget is: see harness.RetransmitBudget.
 	wantDomains := strings.Split(harness.TestSearchList, ",")
-	deadline := time.Now().Add(5 * time.Second)
+	budget := harness.RetransmitBudget(2)
+	deadline := time.Now().Add(budget)
 	var out string
 	for time.Now().Before(deadline) {
 		out = harness.ExecOutput(t, ctx, id, "cat", "/etc/resolv.conf")
@@ -57,8 +60,8 @@ func TestExtraOptions_SearchListInResolvConf(t *testing.T) {
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
-	t.Errorf("expected all of %v on a `search` line within 5s; got:\n%s",
-		wantDomains, out)
+	t.Errorf("expected all of %v on a `search` line within %s; got:\n%s",
+		wantDomains, budget, out)
 }
 
 // hasAllDomains reports whether every entry in want appears on a
@@ -117,7 +120,10 @@ func TestExtraOptions_NTPAndTFTPLogged(t *testing.T) {
 	logMark := harness.MarkPluginLog(t, ctx)
 	harness.RunContainer(t, ctx, netName, ctrName)
 
-	deadline := time.Now().Add(5 * time.Second)
+	// The options are logged from the bound event, so the wait covers
+	// a reply lost on the way to it: see harness.RetransmitBudget.
+	budget := harness.RetransmitBudget(2)
+	deadline := time.Now().Add(budget)
 	var got string
 	for time.Now().Before(deadline) {
 		got = harness.ReadPluginLogSince(t, ctx, logMark)
@@ -130,8 +136,8 @@ func TestExtraOptions_NTPAndTFTPLogged(t *testing.T) {
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
-	t.Errorf("plugin log did not surface NTP=%s / TFTP=%s within 5s",
-		harness.TestNTPServer, harness.TestTFTPServer)
+	t.Errorf("plugin log did not surface NTP=%s / TFTP=%s within %s",
+		harness.TestNTPServer, harness.TestTFTPServer, budget)
 }
 
 // TestExtraOptions_WPADAndTimezoneLogged is the #262 round-trip: the
@@ -163,7 +169,10 @@ func TestExtraOptions_WPADAndTimezoneLogged(t *testing.T) {
 	harness.RunContainer(t, ctx, netName, ctrName)
 
 	want := []string{harness.TestWPAD, harness.TestPosixTZ, harness.TestTZDBTZ, harness.TestTimeOffset}
-	deadline := time.Now().Add(5 * time.Second)
+	// The options are logged from the bound event, so the wait covers
+	// a reply lost on the way to it: see harness.RetransmitBudget.
+	budget := harness.RetransmitBudget(2)
+	deadline := time.Now().Add(budget)
 	var got string
 	for time.Now().Before(deadline) {
 		got = harness.ReadPluginLogSince(t, ctx, logMark)
@@ -175,7 +184,7 @@ func TestExtraOptions_WPADAndTimezoneLogged(t *testing.T) {
 	}
 	for _, w := range want {
 		if !strings.Contains(got, w) {
-			t.Errorf("plugin log did not surface %q within 5s", w)
+			t.Errorf("plugin log did not surface %q within %s", w, budget)
 		}
 	}
 }
