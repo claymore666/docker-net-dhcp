@@ -139,6 +139,19 @@ func openOnLink[T any](iface string, index int, open func(string) (T, error), ab
 		}
 
 		abandon(client)
+
+		// A LINK THAT IS GONE IS NOT A LINK THAT KEEPS MOVING. The
+		// open succeeded on somebody else's link, which happens both
+		// when the rename freed the name and when the link was
+		// DELETED and the name was taken after it. The two end
+		// differently and an operator acts on them differently, so
+		// the index is asked once more: a link that no longer
+		// resolves is reported with the kernel's reason for it, and
+		// nothing is retried, because nothing about it changes.
+		if _, rerr := linkNameByIndex(index); rerr != nil {
+			return zero, name, rerr
+		}
+
 		if attempt >= openLinkAttempts {
 			return zero, name, fmt.Errorf("%w: index %d", errLinkNameUnstable, index)
 		}

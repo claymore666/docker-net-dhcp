@@ -26,9 +26,10 @@ Containers attaching on Docker Engine 29.8.1 get their renewal client again.
   now travels to the open as its index, which a rename does not change: the
   open resolves the name the link has at that instant, checks that the name
   it opened belongs to that link, and opens again where it does not. A link
-  that is gone still fails once, with the reason the open gave, and a link
-  whose name never settles ends as an error and not as a client on somebody
-  else's link. The IPv4 and IPv6 clients open through the same path. Earlier
+  that is gone fails once with the kernel's reason for it, whether its old
+  name was free or had been taken by another link, and a link whose name
+  never settles ends as an error and not as a client on somebody else's
+  link. The IPv4 and IPv6 clients open through the same path. Earlier
   engines were exposed to the same window and were reached less often, and
   the same change covers them (#1050).
 - On Docker Engine 29.8.1, a bridge network created with

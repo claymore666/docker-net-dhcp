@@ -196,6 +196,44 @@ func TestOpenOnLink_ALinkThatIsGoneFailsOnceWithItsOwnReason(t *testing.T) {
 	}
 }
 
+// TestOpenOnLink_ALinkThatIsGoneWhileItsNameIsTakenKeepsTheRealReason
+// is the same dead container, with the one difference that makes the
+// two halves of "the link is gone" end in different places: something
+// else took the name before the open reached it, so the open SUCCEEDS,
+// on a link that is not the caller's.
+//
+// Without the second question this costs four opens and reports a name
+// that kept being renamed, which is a cause an operator would go
+// looking for and would not find. The link is gone, that is the
+// reason, and it is the reason the caller hears.
+func TestOpenOnLink_ALinkThatIsGoneWhileItsNameIsTakenKeepsTheRealReason(t *testing.T) {
+	f := newFakeNetns(map[int]string{3: "dh-abcdef012345"})
+	f.onOpen = func(f *fakeNetns) {
+		delete(f.names, 3)
+		f.names[9] = "dh-abcdef012345"
+	}
+	f.install(t)
+
+	_, _, err := openOnLink("dh-abcdef012345", 3, f.open, f.abandon)
+	if err == nil {
+		t.Fatal("a client opened on another endpoint's link was returned for a link that is gone")
+	}
+	if !errors.Is(err, errNoSuchLink) {
+		t.Errorf("the caller hears %v, and the link is gone: that is what an operator acts on", err)
+	}
+	if errors.Is(err, errLinkNameUnstable) {
+		t.Error("a deleted link whose name was taken is reported as a name that kept moving: the " +
+			"operator is sent after a rename that never happened")
+	}
+	if len(f.opens) != 1 {
+		t.Errorf("opens were %v, want exactly one: a link that is gone does not come back between "+
+			"attempts, whoever holds its old name", f.opens)
+	}
+	if len(f.abandoned) != 1 {
+		t.Errorf("clients abandoned: %v, want the one opened on the link that took the name", f.abandoned)
+	}
+}
+
 // TestOpenOnLink_AnotherLinkHoldingTheOldNameIsNotAccepted is the one
 // way a SUCCESSFUL open is wrong: the rename freed the old name and
 // something else took it before the open resolved it. The client that
