@@ -15,7 +15,7 @@
 # Pinned to the BUILD platform on purpose: skopeo only fetches, so emulating it
 # under qemu would cost minutes and buy nothing. --override-arch is what makes
 # it fetch the TARGET architecture's images regardless of where it runs.
-FROM --platform=$BUILDPLATFORM debian:trixie-slim@sha256:3a39a0592364683e6bab97937b72cad5a8fa6dcbbee90edb3bb48c7f8e94f258 AS seeder
+FROM --platform=$BUILDPLATFORM debian:trixie-slim@sha256:a99cfc517144bc59b1978475ec53b46ecabec7e43635402ee5b77cc54cd1b20a AS seeder
 ARG TARGETARCH
 RUN apt-get update && apt-get install -y --no-install-recommends skopeo ca-certificates \
     && rm -rf /var/lib/apt/lists/*
@@ -28,9 +28,9 @@ RUN mkdir /seed \
          docker-archive:/seed/alpine-testimage.tar:alpine:3.20
 
 # ---- runner image
-FROM debian:trixie-slim@sha256:3a39a0592364683e6bab97937b72cad5a8fa6dcbbee90edb3bb48c7f8e94f258
+FROM debian:trixie-slim@sha256:a99cfc517144bc59b1978475ec53b46ecabec7e43635402ee5b77cc54cd1b20a
 
-ARG GO_VERSION=1.27.0
+ARG GO_VERSION=1.27.1
 # Resolved by the build workflow from actions/runner's latest release;
 # no default on purpose so a stale pin can't hide in this file.
 ARG RUNNER_VERSION
