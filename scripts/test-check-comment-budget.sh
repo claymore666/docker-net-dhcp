@@ -236,6 +236,16 @@ run_setup "a comment added in another package does not bind this one" 1 'p .*ros
 one_cmt_drop() { gofile "$(basebody)
 // one" > p/a.go; }
 run_setup "a rise with one added comment line fails" 1 'p .*FAIL rose' base_more one_cmt_drop
+swap_code() { gofile "$(basebody)
+$(code 3 | sed 's/^var v/var n/')" > p/a.go; }
+run_setup "a rise with added code and no comment line passes" 0 'rose, no comment added' base_more swap_code
+doc_drop() { drop_code; printf '%s\npackage p\n' "$(cmt 12 '#9')" > p/doc.go; }
+run_setup "an added package doc does not bind the share" 0 'rose, no comment added' base_more doc_drop
+base_body() { printf '%s\n' "$BASE" > p/a.go; }
+even() { gofile "$(basebody)
+$(cmt 10 '#7')
+$(code 11 | sed 's/^var v/var e/')" > p/a.go; }
+run_setup "an equal share with an added comment line passes" 0 'p .* ok$' base_body even
 line_doc() {
     printf '//line gen.go:90\n\n%s\npackage p\n' "$(cmt 12 '#9')" > p/doc.go
 }
