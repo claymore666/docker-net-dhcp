@@ -12,22 +12,10 @@ import (
 	"github.com/vishvananda/netlink"
 )
 
-// The rename of a host-side veth is two kernel calls, and between them
-// the generated `dh-<12 hex>` name resolves to nothing: the kernel
-// refuses an altname equal to the link's current name and refuses a
-// rename onto the link's own altname (MEASURED in a user namespace on
-// 6.12.107), so the old name can only be put back after the rename has
-// freed it. These cells drive a reader INTO that window and require it
-// to see the link (#1051).
-//
-// The window is opened from inside the rename seam rather than by
-// sleeping: the fake table drops the name, releases the reader, and the
-// altname goes on only once the reader has answered or a bound has
-// passed. Without the guard the reader answers from inside the window
-// every time.
+// The kernel refuses an altname equal to the link's name and a rename onto the link's
+// own altname (measured on 6.12.107 in a user namespace), so the generated name
+// resolves to nothing between the two calls of a rename (#1051).
 
-// windowTable is a link table keyed by every name that resolves,
-// altnames included, which is what netlink.LinkByName does.
 type windowTable struct {
 	mu      sync.Mutex
 	link    *netlink.Veth
@@ -51,11 +39,6 @@ func (w *windowTable) byName(name string) (netlink.Link, error) {
 	return w.link, nil
 }
 
-// driveTheRenameWindow runs one rename with probe racing it, and
-// releases probe at the instant the generated name has stopped
-// resolving. The rename waits for the probe to answer before it puts
-// the name back, bounded so a probe the guard is holding cannot wedge
-// it: that bound is reached in exactly the arm where the guard works.
 func driveTheRenameWindow(t *testing.T, w *windowTable, generated string, probe func()) {
 	t.Helper()
 
@@ -174,12 +157,6 @@ func TestEndpointOperInfo_ARenameInFlightStillHasAHostVeth(t *testing.T) {
 	}
 }
 
-// The window is as narrow as two kernel calls only while nothing else
-// runs inside it. Work added between them -- a retry, a second lookup,
-// a counter read -- widens it for every reader the guard cannot cover:
-// an operator's `ip link`, the suite, another process. This cell is
-// that bound, over what reaches the kernel; a pure delay between the
-// two calls is not visible here and is the part this bound gives up.
 func TestRenameHostLink_NothingReachesTheKernelBetweenTheTwoCalls(t *testing.T) {
 	w := newWindowTable(windowHostName)
 

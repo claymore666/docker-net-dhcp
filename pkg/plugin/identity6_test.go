@@ -13,13 +13,8 @@ import (
 )
 
 const (
-	// Two Docker endpoint ids: 64 hex characters, differing in the
-	// first byte, so a seed cut from the front separates them.
-	epA = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-	epB = "f123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-	// And a third that differs only AFTER the first sixteen bytes, which
-	// is the population a prefix-cut seed cannot separate. It is here to
-	// bound the claim, not to pass it.
+	epA        = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	epB        = "f123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 	epLateDiff = "0123456789abcdef0123456789abcdefffffffffffffffffffffffffffffffff"
 )
 
@@ -32,23 +27,6 @@ func mustMAC(t *testing.T, s string) net.HardwareAddr {
 	return mac
 }
 
-// The DHCPv6 identity is derived from the MAC in every mode where the
-// MAC is per-endpoint, and from the endpoint id in the one mode where it
-// is not (D30 Q4).
-//
-// WHY THE SPLIT EXISTS. An ipvlan L2 slave inherits the parent link's
-// MAC by kernel design, so every container on one ipvlan network has the
-// SAME hardware address. A MAC-derived DUID there is one identity shared
-// by every endpoint: they all claim one binding, the server hands the
-// same address out repeatedly, and the containers fight over it. That is
-// #895, the v6 form of what #219 named for v4 -- and it is silent, since
-// each container comes up with an address that looks fine until a second
-// one starts.
-//
-// WHY NOT THE ENDPOINT FORM EVERYWHERE. Because 1.9.0 handed dhcpcd the
-// MAC-derived DUID on bridge and macvlan (P-8.6), and an endpoint
-// upgraded from 1.x has to present the identity the server already holds
-// a binding for or it loses its address on the upgrade.
 func TestResolveIdentity6_ModeDecidesTheShape(t *testing.T) {
 	mac := mustMAC(t, "02:42:ac:11:00:02")
 
@@ -66,8 +44,6 @@ func TestResolveIdentity6_ModeDecidesTheShape(t *testing.T) {
 			if id.IAID != 0xac110002 {
 				t.Errorf("IAID = %#x, want %#x (the MAC's low four bytes)", id.IAID, 0xac110002)
 			}
-			// The endpoint id must not reach a MAC-derived identity, or
-			// the 1.x upgrade path silently changes DUID.
 			other, err := resolveIdentity6(DHCPNetworkOptions{Mode: mode}, epB, mac)
 			if err != nil {
 				t.Fatalf("resolveIdentity6: %v", err)
@@ -93,8 +69,6 @@ func TestResolveIdentity6_ModeDecidesTheShape(t *testing.T) {
 				"on this network shares", a.DUID, mac)
 		}
 
-		// THE PROPERTY: two endpoints on ONE ipvlan parent, same MAC,
-		// different identities.
 		b, err := resolveIdentity6(DHCPNetworkOptions{Mode: ModeIPvlan}, epB, mac)
 		if err != nil {
 			t.Fatalf("resolveIdentity6: %v", err)
@@ -107,12 +81,6 @@ func TestResolveIdentity6_ModeDecidesTheShape(t *testing.T) {
 			t.Errorf("two ipvlan endpoints derive one IAID %#x", a.IAID)
 		}
 
-		// THE BOUND on that property, stated rather than hidden: the
-		// seed is a PREFIX of the endpoint id, so two ids that agree on
-		// their first sixteen bytes collide. Docker's ids are random
-		// 32-byte hex, so this is not reachable in practice -- but the
-		// claim above is "different endpoint ids", and this is the
-		// population it does not cover.
 		late, err := resolveIdentity6(DHCPNetworkOptions{Mode: ModeIPvlan}, epLateDiff, mac)
 		if err != nil {
 			t.Fatalf("resolveIdentity6: %v", err)
@@ -124,13 +92,6 @@ func TestResolveIdentity6_ModeDecidesTheShape(t *testing.T) {
 	})
 }
 
-// A caller with no MAC falls back to the endpoint form rather than to no
-// identity at all.
-//
-// buildParams6 refuses the zero identity, so "no MAC" would otherwise
-// refuse the endpoint outright -- and the endpoint id is always there.
-// It is the same fallback resolveClientID takes for v4, for the same
-// reason.
 func TestResolveIdentity6_FallsBackWhenThereIsNoMAC(t *testing.T) {
 	id, err := resolveIdentity6(DHCPNetworkOptions{Mode: ModeBridge}, epA, nil)
 	if err != nil {
@@ -143,8 +104,6 @@ func TestResolveIdentity6_FallsBackWhenThereIsNoMAC(t *testing.T) {
 	if len(id.DUID) != 2+16 || id.DUID[1] != 4 {
 		t.Errorf("DUID = %x, want the endpoint-derived DUID-UUID", id.DUID)
 	}
-	// Matching what ipvlan derives from the same endpoint is the point:
-	// one fallback, not two shapes of it.
 	ipvlan, err := resolveIdentity6(DHCPNetworkOptions{Mode: ModeIPvlan}, epA, nil)
 	if err != nil {
 		t.Fatalf("resolveIdentity6: %v", err)
@@ -154,14 +113,6 @@ func TestResolveIdentity6_FallsBackWhenThereIsNoMAC(t *testing.T) {
 	}
 }
 
-// An endpoint id too short to cut a UUID from is an error naming the
-// endpoint, not a silently short DUID.
-//
-// A truncated seed would produce a DUID-UUID of the wrong length, which
-// the library refuses anyway -- but it refuses it after the chassis has
-// been asked for a client, with a message about a UUID length. The
-// refusal here names the endpoint, and it is loud in exactly the case
-// that reaches it: a test or an engine handing over a short id.
 func TestResolveIdentity6_RefusesAnUnusableEndpointID(t *testing.T) {
 	_, err := resolveIdentity6(DHCPNetworkOptions{Mode: ModeIPvlan}, "abcd", nil)
 	if err == nil {
@@ -170,20 +121,11 @@ func TestResolveIdentity6_RefusesAnUnusableEndpointID(t *testing.T) {
 	if !strings.Contains(err.Error(), "abcd") {
 		t.Errorf("the error does not name the endpoint: %v", err)
 	}
-	// Not hex, right length: hex.DecodeString is what rejects it, and
-	// the caller still gets a named endpoint rather than a decode error.
 	if _, err := resolveIdentity6(DHCPNetworkOptions{Mode: ModeIPvlan}, strings.Repeat("z", 64), nil); err == nil {
 		t.Error("resolveIdentity6 accepted a non-hex endpoint id")
 	}
 }
 
-// The seed is a prefix of the endpoint id and the exact width of a UUID.
-//
-// Both halves matter. Sixteen bytes is RFC 9915 section 11.5's payload
-// width, and the library refuses anything else; a PREFIX rather than a
-// hash keeps the identity legible in the server's log beside the
-// endpoint it belongs to, which is what an operator matching a binding
-// to a container actually does.
 func TestEndpointSeed(t *testing.T) {
 	seed := endpointSeed(epA)
 	if len(seed) != uuidBytes {
@@ -199,7 +141,6 @@ func TestEndpointSeed(t *testing.T) {
 	if endpointSeed("") != nil {
 		t.Error("endpointSeed produced a seed from an empty endpoint id")
 	}
-	// The identity built from it is the one dhcp.Identity6 accepts back.
 	id, err := resolveIdentity6(DHCPNetworkOptions{Mode: ModeIPvlan}, epA, nil)
 	if err != nil {
 		t.Fatalf("resolveIdentity6: %v", err)

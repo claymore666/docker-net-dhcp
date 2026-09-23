@@ -17,43 +17,26 @@ import (
 	"github.com/claymore666/docker-net-dhcp/v2/pkg/util"
 )
 
-// Replay of captured libnetwork requests (#644).
-//
-// Every other test in this package builds its request values by hand,
-// which means it asserts this code against OUR MODEL of what the daemon
-// sends. These tests assert against what the daemon actually sent,
-// recorded by captureHandler during an integration run.
-//
-// #298 is why. stable_lease was designed against an assumed
-// CreateEndpoint payload, shipped, and was reverted from v1.3.0 once
-// the endpoint identity turned out to be unresolvable in the docker-run
-// and compose flows. Nothing runnable without a daemon could see it.
-//
-// Regenerate with `make capture-fixtures` — see
-// docs/internals.md#request-fixtures.
+// Replay of captured libnetwork requests (#644), so tests assert what the daemon sent: stable_lease
+// shipped against an assumed CreateEndpoint payload and was reverted (#298).
+// Regenerate with `make capture-fixtures`.
 
 const fixtureRoot = "testdata/requests"
 
-// fixtureManifest records WHICH daemon produced a capture. A fixture is
-// a recording of one engine version, and a recording nobody can date is
-// an assumption that agrees with itself forever.
 type fixtureManifest struct {
-	// Engine is the Docker Engine version that sent these requests, as
-	// reported by `docker version --format {{.Server.Version}}`.
+	// Engine is the Docker Engine version that sent these requests.
 	Engine string `json:"engine"`
 	// Captured is the ISO-8601 date of the run.
 	Captured string `json:"captured"`
-	// Commit is the repository commit the capturing plugin was built
-	// from.
+	// Commit is the repository commit the capturing plugin was built from.
 	Commit string `json:"commit"`
-	// Flow describes the container lifecycle that produced the
-	// requests, e.g. "docker run --rm" or "compose up then down".
+	// Flow describes the container lifecycle that produced the requests.
 	Flow string `json:"flow"`
 }
 
 type fixtureCall struct {
-	file   string // basename, e.g. 0003-NetworkDriver.CreateEndpoint.json
-	method string // e.g. NetworkDriver.CreateEndpoint
+	file   string
+	method string
 	body   []byte
 }
 
@@ -63,10 +46,6 @@ type fixtureFlow struct {
 	calls    []fixtureCall
 }
 
-// loadFixtureFlows reads every captured flow. A missing or empty
-// fixture set is a FAILURE, never a skip: a fixture suite that quietly
-// tests nothing is the exact failure mode these fixtures exist to
-// replace, and it would report green forever.
 func loadFixtureFlows(t *testing.T) []fixtureFlow {
 	t.Helper()
 
@@ -123,7 +102,6 @@ func loadFixtureFlow(t *testing.T, dir string) fixtureFlow {
 		if e.IsDir() || name == "manifest.json" || !strings.HasSuffix(name, ".json") {
 			continue
 		}
-		// captureHandler writes NNNN-<Method>.json.
 		_, method, ok := strings.Cut(strings.TrimSuffix(name, ".json"), "-")
 		if !ok {
 			t.Errorf("%s/%s: filename is not NNNN-<Method>.json", dir, name)
@@ -140,8 +118,7 @@ func loadFixtureFlow(t *testing.T, dir string) fixtureFlow {
 		flow.calls = append(flow.calls, fixtureCall{file: name, method: method, body: body})
 	}
 
-	// ReadDir sorts, and the sequence prefix is zero-padded, so this is
-	// the order the daemon issued the calls in.
+	// os.ReadDir sorts and the prefix is zero-padded, so this is the order the daemon issued the calls in.
 	sort.Slice(flow.calls, func(i, j int) bool { return flow.calls[i].file < flow.calls[j].file })
 
 	if len(flow.calls) == 0 {
@@ -150,9 +127,6 @@ func loadFixtureFlow(t *testing.T, dir string) fixtureFlow {
 	return flow
 }
 
-// newRequestValue returns a fresh zero value of the request struct this
-// package uses for the given libnetwork method, or false if the method
-// carries no request body we model.
 func newRequestValue(method string) (interface{}, bool) {
 	switch method {
 	case "NetworkDriver.CreateNetwork":
@@ -173,27 +147,8 @@ func newRequestValue(method string) (interface{}, bool) {
 	return nil, false
 }
 
-// THE POINT OF THIS FILE.
-//
-// Replaying each captured body through util.ParseJSONOrErrorResponse —
-// the first statement of every apiXxx handler — turns "the daemon sends
-// a field we do not model" from something discovered on a privileged
-// runner, or in production, or never, into a unit-test failure.
-//
-// It is not a soft failure in production either: that parser decodes
-// with DisallowUnknownFields, so an unmodelled field is a 400 and the
-// container does not start.
-//
-// It is the assertion #218 and #125 are both waiting on. Each is blocked
-// on moby forwarding a field to a call we already receive
-// (netlabel.EndpointName at CreateEndpoint, moby/moby#52870; DstName
-// handling at Join, moby/moby#52865). The day an engine carrying either
-// one produces a capture, this test names the new field.
-//
-// A failure here is NOT necessarily a defect. A new field may be
-// irrelevant to us. It means the request contract moved and somebody has
-// to decide — which is the whole point, because today nothing tells us
-// it moved at all.
+// ParseJSONOrErrorResponse decodes with DisallowUnknownFields, so an unmodelled field is a 400 and
+// the container does not start; #218 and #125 wait on moby/moby#52870 and #52865 adding fields.
 func TestFixtures_NoUnmodelledFields(t *testing.T) {
 	for _, flow := range loadFixtureFlows(t) {
 		for _, call := range flow.calls {
@@ -201,11 +156,6 @@ func TestFixtures_NoUnmodelledFields(t *testing.T) {
 			if !ok {
 				continue
 			}
-			// Through the handler's own parser, not a lookalike
-			// decoder. Every apiXxx handler starts with exactly this
-			// call, so a change to it — dropping DisallowUnknownFields,
-			// say — changes what this test asserts, instead of leaving
-			// the test agreeing with a rule production no longer has.
 			rec := httptest.NewRecorder()
 			req := httptest.NewRequest(http.MethodPost, "/"+call.method, bytes.NewReader(call.body))
 			if err := util.ParseJSONOrErrorResponse(v, rec, req); err != nil {
@@ -221,9 +171,6 @@ func TestFixtures_NoUnmodelledFields(t *testing.T) {
 	}
 }
 
-// Every captured call must decode into the struct the handler uses.
-// Separate from the unknown-field test on purpose: this one must stay
-// green even while a contract change is being triaged.
 func TestFixtures_DecodeIntoHandlerTypes(t *testing.T) {
 	for _, flow := range loadFixtureFlows(t) {
 		for _, call := range flow.calls {
@@ -238,12 +185,6 @@ func TestFixtures_DecodeIntoHandlerTypes(t *testing.T) {
 	}
 }
 
-// The fields the plugin reads must actually arrive. This is the #298
-// assertion in its most direct form: stable_lease assumed an identity
-// was resolvable at CreateEndpoint, and in the docker-run and compose
-// flows it was not.
-//
-// Asserted per flow, because the flows are exactly where they differed.
 func TestFixtures_RequiredFieldsPresent(t *testing.T) {
 	for _, flow := range loadFixtureFlows(t) {
 		var sawCreateEndpoint, sawJoin bool
@@ -292,9 +233,6 @@ func TestFixtures_RequiredFieldsPresent(t *testing.T) {
 	}
 }
 
-// A capture is a recording of one engine version. Report which, so a
-// reviewer reading a failure knows what produced it without going to
-// the manifest.
 func TestFixtures_ReportProvenance(t *testing.T) {
 	for _, flow := range loadFixtureFlows(t) {
 		t.Logf("flow %-24s engine %-10s captured %s  commit %s  (%d calls) — %s",
@@ -303,16 +241,7 @@ func TestFixtures_ReportProvenance(t *testing.T) {
 	}
 }
 
-// The plugin's whole reason to exist is that the daemon does NOT assign
-// the address — libnetwork hands us an endpoint with an empty Interface
-// and we go and lease one. resolveExplicitV4 is where that assumption is
-// cashed, and #298 is what it costs to assume wrongly about a field at
-// CreateEndpoint.
-//
-// Asserted against the real bodies rather than a struct we wrote, so the
-// day an engine starts populating Interface.Address in an ordinary
-// `docker run` — not `--ip`, which is a different flow and would
-// legitimately carry one — this says so.
+// libnetwork hands an ordinary `docker run` endpoint an empty Interface; the plugin leases the address (#298).
 func TestFixtures_NoExplicitAddressInOrdinaryFlows(t *testing.T) {
 	for _, flow := range loadFixtureFlows(t) {
 		for _, call := range flow.calls {

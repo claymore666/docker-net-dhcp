@@ -14,12 +14,6 @@ import (
 	dNetwork "github.com/docker/docker/api/types/network"
 )
 
-// lockedDocker is a dockerClient whose bookkeeping survives being
-// touched from two goroutines at once. recoverOneEndpoint spawns the
-// manager's Start before it returns, so that goroutine is still calling
-// into the client while the test body drives DeleteEndpoint against the
-// same one. The shared fakeDocker counts its calls with plain ints and
-// would report that as a data race instead of the behaviour under test.
 type lockedDocker struct {
 	mu         sync.Mutex
 	containers map[string]dContainer.InspectResponse
@@ -45,10 +39,7 @@ func (d *lockedDocker) ContainerInspect(_ context.Context, id string) (dContaine
 
 func (d *lockedDocker) Close() error { return nil }
 
-// The engine probe never runs in these fixtures — they build a Plugin
-// directly rather than through NewPlugin — so these answer the way an
-// unreachable daemon does, which keeps the fake from implying a version
-// no test here asserted on.
+// These fixtures skip the engine probe in NewPlugin, so the fake answers as an unreachable daemon.
 func (d *lockedDocker) Ping(context.Context) (dTypes.Ping, error) {
 	return dTypes.Ping{}, errors.New("no daemon in this fixture")
 }
@@ -59,8 +50,6 @@ func (d *lockedDocker) ServerVersion(context.Context) (dTypes.Version, error) {
 
 func (d *lockedDocker) ClientVersion() string { return "" }
 
-// withHostname builds the ContainerInspect answer recovery reads: a
-// running container whose Config carries the hostname.
 func withHostname(h string) dContainer.InspectResponse {
 	return dContainer.InspectResponse{
 		ContainerJSONBase: &dContainer.ContainerJSONBase{
@@ -70,9 +59,6 @@ func withHostname(h string) dContainer.InspectResponse {
 	}
 }
 
-// recoveryPlugin is a plugin whose network options resolve from disk, so
-// DeleteEndpoint never needs the Docker API, and whose Docker client
-// answers the one ContainerInspect recovery makes.
 func recoveryPlugin(t *testing.T, networkID string, docker dockerClient) *Plugin {
 	t.Helper()
 	p := newTestPlugin(t)
@@ -83,23 +69,6 @@ func recoveryPlugin(t *testing.T, networkID string, docker dockerClient) *Plugin
 	return p
 }
 
-// TestRecoverOneEndpoint_RecordsFingerprint is the regression test for
-// #721.
-//
-// rememberEndpoint had exactly two call sites, both on the
-// CreateEndpoint path. recoverOneEndpoint rebuilt the DHCP manager for
-// an already-attached endpoint and recorded nothing, and DeleteEndpoint
-// writes a tombstone only for an endpoint it holds a fingerprint for.
-// So every endpoint that had lived through a plugin or daemon restart
-// silently lost address stability across its next `docker restart`: no
-// tombstone, a fresh MAC, and in general a different address from the
-// DHCP server. Nothing said so — tombstones_consumed simply stayed
-// flat.
-//
-// The assertion is deliberately made at the far end, on the tombstone,
-// rather than on the fingerprint map: the fingerprint is an
-// implementation detail and the tombstone is the thing the next
-// CreateEndpoint actually inherits.
 func TestRecoverOneEndpoint_RecordsFingerprint(t *testing.T) {
 	const (
 		netID    = "net-recovered"
@@ -135,30 +104,14 @@ func TestRecoverOneEndpoint_RecordsFingerprint(t *testing.T) {
 	if !ok {
 		t.Fatal("a recovered endpoint left no tombstone when it was deleted; the next docker restart gets a fresh MAC")
 	}
-	// Bare addresses, not the CIDR recovery was handed: the tombstone is
-	// replayed into a DHCP request (option 50), which takes an address.
+	// Bare addresses: the tombstone is replayed as option 50 (RFC 2132 section 9.1).
 	if gotMAC != mac || gotIPv4 != "192.168.0.166" || gotIPv6 != "2001:db8::1" {
 		t.Errorf("tombstone: got (%q, %q, %q), want (%q, 192.168.0.166, 2001:db8::1)", gotMAC, gotIPv4, gotIPv6, mac)
 	}
 }
 
-// TestRecoverOneEndpoint_NoHostnameNoWildcardTombstone is the other
-// direction, and it is the reason the fix records nothing rather than
-// recording an empty hostname.
-//
-// tombstoneStore.consume reads a tombstone with an empty Hostname as
-// "matches any container on this network" — a deliberate carve-out for
-// v0.5.0 tombstones and for the CreateEndpoint/container-registration
-// race, both honest absences. A recovery that recorded a fingerprint
-// with no hostname would therefore not be laying a weaker tombstone, it
-// would be laying a wildcard one, and the next container to attach to
-// this network would inherit a MAC and an address that were never its
-// own. That is the shape #693 closed on the consuming side; closing
-// #721 must not reopen it on the writing side.
-//
-// Each case ends in "no tombstone at all", which is exactly the
-// behaviour these endpoints have today — the direction that cannot cost
-// a container that did nothing wrong its identity.
+// An empty-hostname tombstone matches any container (#693), so recovery records none when the hostname is unknown
+// (#721).
 func TestRecoverOneEndpoint_NoHostnameNoWildcardTombstone(t *testing.T) {
 	const (
 		epID  = "abcdef0123456789cccc"
@@ -166,12 +119,6 @@ func TestRecoverOneEndpoint_NoHostnameNoWildcardTombstone(t *testing.T) {
 		mac   = "02:42:ac:11:00:08"
 	)
 
-	// wantSkipped and wantRejected are asserted as a PAIR because the two
-	// counters are deliberately disjoint: recovery_fingerprints_skipped
-	// is "the daemon would not tell me", unsafe_hostnames_rejected is "a
-	// container sent a hostname nobody should send". Collapsing them
-	// would leave an operator unable to tell a degraded daemon from a
-	// hostile container, which is the whole reason there are two.
 	cases := []struct {
 		name         string
 		docker       dockerClient
@@ -225,17 +172,10 @@ func TestRecoverOneEndpoint_NoHostnameNoWildcardTombstone(t *testing.T) {
 				t.Fatalf("DeleteEndpoint: %v", err)
 			}
 
-			// Asked with a DIFFERENT container's hostname: that is the
-			// theft this guards against. A wildcard tombstone answers it.
 			if gotMAC, gotIPv4, _, ok := p.consumeTombstone(netID, dhcpHostname{name: "some-other-container"}); ok {
 				t.Errorf("another container inherited mac=%q ipv4=%q from a hostname-less recovery — %s", gotMAC, gotIPv4, tc.reason)
 			}
 
-			// The skip must be VISIBLE. Without this the fix inherits
-			// the invisibility of the bug it closes: no fingerprint
-			// means no tombstone means an endpoint that silently loses
-			// its address on its next restart, with tombstones_consumed
-			// staying flat — which is what a quiet host looks like too.
 			if got := p.recoveryFingerprintsSkipped.Load(); got != tc.wantSkipped {
 				t.Errorf("recovery_fingerprints_skipped = %d, want %d", got, tc.wantSkipped)
 			}
@@ -246,11 +186,6 @@ func TestRecoverOneEndpoint_NoHostnameNoWildcardTombstone(t *testing.T) {
 	}
 }
 
-// TestRecoverOneEndpoint_LosingTheRaceRecordsNothing pins the placement
-// of the recording, not just its existence. A Join that beat recovery to
-// the endpoint owns it, and its CreateEndpoint replay records its own
-// fingerprint; stamping ours over it would hand that endpoint's
-// tombstone our idea of the hostname.
 func TestRecoverOneEndpoint_LosingTheRaceRecordsNothing(t *testing.T) {
 	const (
 		netID = "net-raced"
@@ -261,7 +196,6 @@ func TestRecoverOneEndpoint_LosingTheRaceRecordsNothing(t *testing.T) {
 	p := recoveryPlugin(t, netID, &lockedDocker{
 		containers: map[string]dContainer.InspectResponse{ctrID: withHostname("app-1")},
 	})
-	// What the winning Join left behind.
 	p.registerDHCPManager(epID, &dhcpManager{})
 	p.rememberEndpoint(epID, endpointFingerprint{MAC: "02:42:ac:11:00:09"}, dhcpHostname{name: "app-1"})
 

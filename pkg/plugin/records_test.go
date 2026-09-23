@@ -40,14 +40,6 @@ func acquired(addr string, until time.Duration) lease.Event {
 	}
 }
 
-// TestRecordLifecycle_TheJoinManagerResumesTheOneShotsLease is the
-// whole reason the record exists, driven end to end without a network.
-//
-// CreateEndpoint's one-shot wins a lease and stops; the stop arrives as
-// Lost{ReasonStopped}, which is this chassis's own cancellation and NOT
-// a loss. If it were folded as one, the Join manager below would find
-// nothing to resume and would DISCOVER — and the container would come
-// up on whatever address the server offered next, silently.
 func TestRecordLifecycle_TheJoinManagerResumesTheOneShotsLease(t *testing.T) {
 	p := recordingPlugin(t)
 	mac, _ := net.ParseMAC("02:42:c0:a8:63:0a")
@@ -79,8 +71,6 @@ func TestRecordLifecycle_TheJoinManagerResumesTheOneShotsLease(t *testing.T) {
 		t.Errorf("both a resume and a preference (%q); they are mutually exclusive by construction", res.Prefer)
 	}
 
-	// resumeFromRecord binds as well, and the bind is what a second
-	// plugin process must not repeat.
 	rb, err := p.records.Rebuilt()
 	if err != nil {
 		t.Fatalf("Rebuilt: %v", err)
@@ -94,14 +84,6 @@ func TestRecordLifecycle_TheJoinManagerResumesTheOneShotsLease(t *testing.T) {
 	}
 }
 
-// TestRecordBound_ARecoveredRecordIsNotBoundTwice is the silent trap.
-//
-// The fold accepts a bind only from CREATED or ADOPTED. A plugin
-// restart resumes a record a previous process left JOINED, and a bind
-// written unconditionally there is REFUSED — with no error to the
-// writer, because a rejected event still folds into a record with its
-// Rejects counter bumped and nothing else moved. The only observable
-// is the counter, so that is what this asserts.
 func TestRecordBound_ARecoveredRecordIsNotBoundTwice(t *testing.T) {
 	p := recordingPlugin(t)
 	mac, _ := net.ParseMAC("02:42:c0:a8:63:0b")
@@ -116,8 +98,6 @@ func TestRecordBound_ARecoveredRecordIsNotBoundTwice(t *testing.T) {
 	if _, res := m.resumeFromRecord(); res.Lease == nil {
 		t.Fatal("first Join found nothing to resume")
 	}
-	// The restart: a second manager on the same record, which is now
-	// JOINED.
 	if _, res := m.resumeFromRecord(); res.Lease == nil {
 		t.Fatal("the restart found nothing to resume")
 	}
@@ -134,9 +114,6 @@ func TestRecordBound_ARecoveredRecordIsNotBoundTwice(t *testing.T) {
 	}
 }
 
-// TestRetainRecordFor_TombstonesTheIdentity closes the other end: a
-// record left JOINED after its endpoint is gone would have plugin-start
-// recovery resume a lease for a container that no longer exists.
 func TestRetainRecordFor_TombstonesTheIdentity(t *testing.T) {
 	p := recordingPlugin(t)
 	mac, _ := net.ParseMAC("02:42:c0:a8:63:0c")
@@ -162,10 +139,8 @@ func TestRetainRecordFor_TombstonesTheIdentity(t *testing.T) {
 		t.Fatalf("the fold refused %d event(s); last %v", rec.Counters.Rejects, rec.LastReject)
 	}
 
-	// A tombstone's address was GIVEN UP. It may be asked for as a
-	// preference in a DISCOVER — which is what makes a restarted
-	// container keep its address — but it must not be claimed with an
-	// INIT-REBOOT, which asserts a lease this identity no longer holds.
+	// A tombstone's address may be asked for in a DISCOVER but not claimed with an INIT-REBOOT,
+	// which asserts a held lease (RFC 2131 section 3.2).
 	_, res, ok := p.records.Resume("net-1", mac, time.Now())
 	if !ok {
 		t.Fatal("the tombstone answered nothing at all")
@@ -178,11 +153,6 @@ func TestRetainRecordFor_TombstonesTheIdentity(t *testing.T) {
 	}
 }
 
-// TestRecordCreated_ASecondEndpointDoesNotShareTheFirstsRecord pins
-// the index the whole scheme is keyed on. An index on the MAC alone
-// would collapse one machine on two networks into one record; an index
-// on the address alone would collapse two networks handing out the same
-// private address.
 func TestRecordCreated_ASecondEndpointDoesNotShareTheFirstsRecord(t *testing.T) {
 	p := recordingPlugin(t)
 	mac, _ := net.ParseMAC("02:42:c0:a8:63:0d")
@@ -208,13 +178,6 @@ func TestRecordCreated_ASecondEndpointDoesNotShareTheFirstsRecord(t *testing.T) 
 	}
 }
 
-// TestEndpointRecordKey_SeparatesIpvlanEndpointsThatShareAMAC is the
-// index defect stated as a test.
-//
-// dhcp.Records.Resume answers a (scope, chaddr) lookup with the NEWEST
-// match, so two records filed under one key are one record as far as
-// every resume is concerned. Two ipvlan endpoints on one network share
-// the parent's MAC, so that is exactly what they were.
 func TestEndpointRecordKey_SeparatesIpvlanEndpointsThatShareAMAC(t *testing.T) {
 	shared, err := net.ParseMAC("02:42:ac:11:00:02")
 	if err != nil {
@@ -233,8 +196,6 @@ func TestEndpointRecordKey_SeparatesIpvlanEndpointsThatShareAMAC(t *testing.T) {
 		t.Errorf("an ipvlan key is still the parent MAC: a=%s b=%s parent=%s", a, b, shared)
 	}
 
-	// Shaped like a MAC, and like one no link wears: locally
-	// administered, not a group address.
 	for _, k := range []net.HardwareAddr{a, b} {
 		if len(k) != 6 {
 			t.Errorf("key %v is %d bytes, want 6 so it reads as a hardware address", k, len(k))
@@ -247,19 +208,11 @@ func TestEndpointRecordKey_SeparatesIpvlanEndpointsThatShareAMAC(t *testing.T) {
 		}
 	}
 
-	// STABLE, which is the half that makes it usable at all: the resume
-	// side derives it again in another process.
 	if again := endpointRecordKey(ModeIPvlan, epA, shared); again.String() != a.String() {
 		t.Errorf("the key is not stable: %s then %s", a, again)
 	}
 }
 
-// TestEndpointRecordKey_LeavesEveryOtherModeOnItsMAC is the
-// preservation control. Every mode but ipvlan gives its endpoint a MAC
-// of its own, and that MAC is what a tombstone restores and therefore
-// what an address survives a container restart by. A key derived from
-// the endpoint id would be a new key for every new endpoint, and the
-// record would never be found again.
 func TestEndpointRecordKey_LeavesEveryOtherModeOnItsMAC(t *testing.T) {
 	mac, err := net.ParseMAC("02:42:ac:11:00:03")
 	if err != nil {
@@ -273,9 +226,6 @@ func TestEndpointRecordKey_LeavesEveryOtherModeOnItsMAC(t *testing.T) {
 	}
 }
 
-// TestRecoveredMAC_TreatsAnEmptyMACAsIpvlanOnly. Docker reports no MAC
-// for an ipvlan endpoint because the plugin never sets one; for every
-// other mode an empty MAC is a real failure and must stay one.
 func TestRecoveredMAC_TreatsAnEmptyMACAsIpvlanOnly(t *testing.T) {
 	t.Run("a reported MAC is used verbatim", func(t *testing.T) {
 		got, err := recoveredMAC(DHCPNetworkOptions{Mode: ModeMacvlan}, "02:42:ac:11:00:04")
@@ -292,14 +242,6 @@ func TestRecoveredMAC_TreatsAnEmptyMACAsIpvlanOnly(t *testing.T) {
 		}
 	})
 	t.Run("an empty MAC on a mode that has one is a failure", func(t *testing.T) {
-		// A parent is named on purpose, and the assertion is on the
-		// error's IDENTITY rather than on its presence. Without both,
-		// a macvlan endpoint that fell through into the ipvlan branch
-		// would still fail here -- on the parent lookup, for a reason
-		// that has nothing to do with the refusal -- and the subtest
-		// would read that as the refusal it is meant to observe.
-		// MEASURED: the mutant that removes the mode check survived a
-		// bare err != nil.
 		_, err := recoveredMAC(DHCPNetworkOptions{Mode: ModeMacvlan, Parent: "dh-no-such-parent"}, "")
 		if err == nil {
 			t.Fatal("recoveredMAC accepted an empty MAC on macvlan, where an endpoint always has one")
@@ -314,10 +256,6 @@ func TestRecoveredMAC_TreatsAnEmptyMACAsIpvlanOnly(t *testing.T) {
 		}
 	})
 	t.Run("an empty MAC on ipvlan reads the parent", func(t *testing.T) {
-		// No parent link exists in this namespace, so the outcome
-		// asserted is that the ERROR is about the parent rather than
-		// about parsing: that is the branch taken, and it is the one
-		// the lane exercises against a real parent.
 		_, err := recoveredMAC(DHCPNetworkOptions{Mode: ModeIPvlan, Parent: "dh-no-such-parent"}, "")
 		if err == nil {
 			t.Fatal("recoveredMAC found a parent that does not exist")
@@ -329,20 +267,6 @@ func TestRecoveredMAC_TreatsAnEmptyMACAsIpvlanOnly(t *testing.T) {
 	})
 }
 
-// TestRecordKey_IsTheEndpointKeyAndNotTheBareMAC observes the call site
-// rather than the helper.
-//
-// endpointRecordKey has its own tests, and they pass whether or not
-// anything calls it: dhcpManager.recordKey is the single place every
-// record read and write on a manager goes through, and a version of it
-// that returns endpointMAC() directly restores the collision the helper
-// exists to remove -- silently, because every OTHER mode agrees with the
-// MAC and the ipvlan disagreement is only visible on ipvlan.
-//
-// The macvlan arm is the preservation control: keying by endpoint is
-// wrong for the modes whose endpoints already have distinct MACs,
-// because their stored records are under the MAC and would stop being
-// found.
 func TestRecordKey_IsTheEndpointKeyAndNotTheBareMAC(t *testing.T) {
 	mac, err := net.ParseMAC("02:42:ac:11:00:07")
 	if err != nil {

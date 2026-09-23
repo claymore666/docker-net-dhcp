@@ -5,55 +5,17 @@ package plugin
 
 import "net/http"
 
-// apiRoute is one entry in the plugin's HTTP routing table.
 type apiRoute struct {
 	path    string
 	handler http.HandlerFunc
 }
 
-// routes is the complete set of paths this driver answers on its
-// socket — the single source of truth, so that what we serve and what
-// we deliberately do not serve are both readable in one place.
-//
-// Two libnetwork RPCs are deliberately absent even though the daemon
-// calls them on every container start and stop (#646, captured on
-// engine 26.1.5):
-//
-//	/NetworkDriver.ProgramExternalConnectivity
-//	/NetworkDriver.RevokeExternalConnectivity
-//
-// Nothing routes them, so http.ServeMux answers its default bare 404,
-// and libnetwork's remote driver reads that as "driver does not
-// implement this" and carries on — moby's
-// libnetwork/drivers/remote/driver.go guards both calls with
-//
-//	if err != nil && plugins.IsNotFound(err) { return nil }
-//
-// and plugins.IsNotFound tests the status code alone, never the body.
-// So the 404 status is the contract, not an accident of routing: give
-// this mux a custom NotFound handler that answers anything else and
-// every container start fails with "driver failed programming external
-// connectivity on endpoint". Nothing else in this repo would go red
-// for that — TestRoutes_UnimplementedMethodsAnswer404 exists for
-// exactly this.
-//
-// The other RPCs the remote driver can emit — AllocateNetwork,
-// FreeNetwork, DiscoverNew, DiscoverDelete — carry no such tolerance; a
-// 404 from those propagates as a real error. They are unreachable for
-// us rather than tolerated: all four are swarm / node-discovery paths.
-//
-// GwAllocCheck WAS in that list and is now served, and the sentence it
-// used to be covered by is the reason this paragraph changed with the
-// route rather than after it. A 404 from GwAllocCheck propagates as a
-// real error, and the call is made exactly when GetCapabilities
-// advertises gwAllocChecker — which ours now does, so the route and the
-// capability are one change and neither is safe alone (#110).
-//
-// The /IpamDriver.* paths below are the same socket and the same mux.
-// A managed plugin declares its interface types in config.json and the
-// daemon selects it by capability, so one process answers both contracts
-// and request capture files the new paths under their real names
-// because capturablePaths is built from this table.
+// routes is every path this driver serves. ProgramExternalConnectivity and
+// RevokeExternalConnectivity stay unrouted: moby's remote driver ignores their error
+// when plugins.IsNotFound, which tests the 404 status alone, so a custom NotFound
+// handler would fail every container start (#646, engine 26.1.5). A 404 from
+// GwAllocCheck is a real error, and the daemon calls it because GetCapabilities
+// advertises gwAllocChecker, so the route and the capability ship together (#110).
 func (p *Plugin) routes() []apiRoute {
 	return []apiRoute{
 		{"/NetworkDriver.GetCapabilities", p.apiGetCapabilities},
@@ -69,7 +31,6 @@ func (p *Plugin) routes() []apiRoute {
 		{"/NetworkDriver.Join", p.apiJoin},
 		{"/NetworkDriver.Leave", p.apiLeave},
 
-		// The bundled DHCP IPAM driver (#110).
 		{"/IpamDriver.GetCapabilities", p.apiIpamGetCapabilities},
 		{"/IpamDriver.GetDefaultAddressSpaces", p.apiIpamGetDefaultAddressSpaces},
 		{"/IpamDriver.RequestPool", p.apiRequestPool},
@@ -77,22 +38,13 @@ func (p *Plugin) routes() []apiRoute {
 		{"/IpamDriver.RequestAddress", p.apiRequestAddress},
 		{"/IpamDriver.ReleaseAddress", p.apiReleaseAddress},
 
-		// Plugin observability — not part of the libnetwork RPC
-		// contract, but lives on the same socket so anything that can
-		// talk to the plugin can also poll its state.
 		{"/Plugin.Health", p.apiHealth},
 
-		// The same counters in Prometheus text format (#651). On the
-		// socket unconditionally: it costs nothing, and it lets an
-		// operator with a socket-aware scrape path collect metrics
-		// without the plugin opening a port at all. The optional TCP
-		// listener is METRICS_ADDR, off by default — see
-		// (*Plugin).ListenMetrics.
+		// Prometheus text on the socket, unconditionally; the TCP listener is METRICS_ADDR (#651).
 		{"/metrics", p.apiMetrics},
 	}
 }
 
-// newServeMux builds the plugin's request router from routes().
 func (p *Plugin) newServeMux() *http.ServeMux {
 	mux := http.NewServeMux()
 	for _, r := range p.routes() {
@@ -101,15 +53,7 @@ func (p *Plugin) newServeMux() *http.ServeMux {
 	return mux
 }
 
-// unroutedRPCs are libnetwork RPCs the daemon DOES call on this socket
-// and we deliberately do not serve — see the routes() comment for why
-// the resulting bare 404 is the contract rather than an accident.
-//
-// They are listed rather than described because two things need them by
-// name: TestRoutes_UnimplementedMethodsAnswer404, which pins the 404,
-// and request capture (#644), which must record them under their real
-// names. A capture that filed them as "unknown" would erase precisely
-// the evidence that established this contract in the first place.
+// unroutedRPCs are the RPCs the daemon calls here that answer a bare 404, named for request capture (#644).
 func unroutedRPCs() []string {
 	return []string{
 		"/NetworkDriver.ProgramExternalConnectivity",
@@ -117,14 +61,7 @@ func unroutedRPCs() []string {
 	}
 }
 
-// capturablePaths is every path request capture may name: the ones we
-// serve, plus the ones we knowingly do not (#644).
-//
-// It is built from the SAME table the mux is built from, so a route
-// added to routes() is captured without anyone remembering a second
-// place. Anything outside both lists is captured as "unknown" — the
-// filename can only ever be a constant from this file, never a string
-// from the request.
+// capturablePaths is every path request capture may name, built from the routes table (#644).
 func capturablePaths(rs []apiRoute) []string {
 	paths := make([]string, 0, len(rs)+2)
 	for _, r := range rs {

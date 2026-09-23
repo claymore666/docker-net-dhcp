@@ -91,10 +91,6 @@ func TestLedger_RotationBySize(t *testing.T) {
 	l := testLedger(t, &failures)
 	l.maxSize = 512
 
-	// Append until the first rotation fires, then assert no line was
-	// lost across that boundary. (Multiple rotations deliberately drop
-	// the oldest generation — retention is bounded to one rotated file
-	// — so the invariant under test is per-boundary, not global.)
 	appended := 0
 	for ; appended < 100; appended++ {
 		if _, err := os.Stat(l.path + ".1"); err == nil {
@@ -114,7 +110,6 @@ func TestLedger_RotationBySize(t *testing.T) {
 	if len(active) == 0 {
 		t.Error("active file empty — the rotation-triggering line should land in the fresh file")
 	}
-	// Order preserved across the boundary: rotated holds the oldest.
 	if len(rotated) == 0 || rotated[0].Endpoint != "ep00" {
 		t.Errorf("rotated file should start at ep00, got %+v", rotated)
 	}
@@ -151,8 +146,6 @@ func TestLedger_AgeAnchorSurvivesRestart(t *testing.T) {
 	l.now = func() time.Time { return base }
 	l.Append(ledgerEntry{Kind: "bound", Network: "net1", Endpoint: "ep1"})
 
-	// Fresh leaseLedger over the same file = plugin restart. The age
-	// anchor must come from the file's first entry, not the restart.
 	l2 := newLeaseLedger(l.path, &failures)
 	l2.now = func() time.Time { return base.Add(l2.maxAge + time.Hour) }
 	l2.Append(ledgerEntry{Kind: "renew", Network: "net1", Endpoint: "ep1"})
@@ -164,8 +157,7 @@ func TestLedger_AgeAnchorSurvivesRestart(t *testing.T) {
 
 func TestLedger_WriteFailureIsNonFatal(t *testing.T) {
 	var failures atomic.Int32
-	// A path whose parent is a regular file can never be created —
-	// fails for root and non-root alike (ENOTDIR).
+	// A path under a regular file cannot be created, for root as well (ENOTDIR).
 	dir := t.TempDir()
 	blocker := filepath.Join(dir, "blocker")
 	if err := os.WriteFile(blocker, []byte("x"), 0o644); err != nil {
@@ -211,15 +203,12 @@ func TestLedger_AuditDisabledByDefault(t *testing.T) {
 	p := &Plugin{}
 	p.ledger = newLeaseLedger(filepath.Join(t.TempDir(), ledgerFileName), &failures)
 
-	// No audit_log opt: audit must be a no-op — zero filesystem
-	// activity, not just an empty file.
 	m := newDHCPManager(nil, JoinRequest{NetworkID: "net1", EndpointID: "ep1"}, DHCPNetworkOptions{}).withPlugin(p)
 	m.audit("bound", "192.168.99.50")
 	if _, err := os.Stat(p.ledger.path); !os.IsNotExist(err) {
 		t.Fatalf("ledger file exists despite audit_log not set (stat err: %v)", err)
 	}
 
-	// Opt-in: same call writes.
 	m2 := newDHCPManager(nil, JoinRequest{NetworkID: "net1", EndpointID: "ep1"}, DHCPNetworkOptions{AuditLog: true}).withPlugin(p)
 	m2.audit("bound", "192.168.99.50")
 	entries := readLedgerLines(t, p.ledger.path)

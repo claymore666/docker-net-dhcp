@@ -16,25 +16,6 @@ import (
 	"github.com/claymore666/docker-net-dhcp/v2/pkg/dhcp"
 )
 
-// TestClassifyV6Absence covers every RAObservation value -- three
-// booleans, eight inhabitants -- against both causes the classifier
-// distinguishes.
-//
-// TWO ROWS ARE WORTH WRITING DOWN.
-//
-// {Seen:false, Managed:true} cannot arise from the acquisition path --
-// nothing sets Managed without having seen an advertisement -- but a
-// classifier that tested Managed FIRST would read it as fatal, and that
-// same reordering silently turns every stateless segment fatal too.
-// Pinning the impossible row states which of the two fields decides.
-//
-// And {Seen:true, Managed:true} with dhcp.ErrNoV6Address is the row
-// where the wire overrules the diagnostic. It is reachable: the library
-// switches to the Information-request on an M=0 O=1 advertisement, and
-// a LATER advertisement on the same link can set M -- at which point
-// Router() says managed while the segment has already answered "no
-// addresses here" on the wire. A classifier that read only the
-// observation would call that fatal and refuse to start the container.
 func TestClassifyV6Absence(t *testing.T) {
 	timeout := errors.New("timed out")
 	cases := []struct {
@@ -52,19 +33,12 @@ func TestClassifyV6Absence(t *testing.T) {
 		{"managed without an advertisement", dhcp.RAObservation{Managed: true}, timeout, v6NoRouter},
 		{"managed and other without an advertisement", dhcp.RAObservation{Managed: true, Other: true}, timeout, v6NoRouter},
 
-		// The wire beats the diagnostic, in both directions.
 		{"stateless reply, quiet observation", dhcp.RAObservation{}, dhcp.ErrNoV6Address, v6NotOffered},
 		{"stateless reply, managed observation", dhcp.RAObservation{Seen: true, Managed: true}, dhcp.ErrNoV6Address, v6NotOffered},
 		{"stateless reply, wrapped cause", dhcp.RAObservation{Seen: true, Managed: true},
 			fmt.Errorf("failed to get initial IPv6 address: %w", dhcp.ErrNoV6Address), v6NotOffered},
 	}
 
-	// NON-VACUITY, keyed on the input domain rather than on a row
-	// count. A table is a universal that a deleted row satisfies
-	// silently -- nothing else in the package, and not
-	// check-test-weakening.sh, reports a row that stopped being there.
-	// Three booleans have exactly eight inhabitants, so the domain can
-	// be stated rather than counted.
 	covered := map[dhcp.RAObservation]bool{}
 	for _, tc := range cases {
 		if tc.cause == timeout {
@@ -84,10 +58,6 @@ func TestClassifyV6Absence(t *testing.T) {
 			}
 		}
 	}
-	// And the wire-beats-the-diagnostic half needs at least one row
-	// whose observation would classify DIFFERENTLY on its own; without
-	// it the ErrNoV6Address arm could be deleted and every remaining
-	// row would still pass.
 	overruled := false
 	for _, tc := range cases {
 		if errors.Is(tc.cause, dhcp.ErrNoV6Address) && classifyV6Absence(tc.ra, timeout, proto.Mode6DHCP) != tc.want {
@@ -109,16 +79,6 @@ func TestClassifyV6Absence(t *testing.T) {
 	}
 }
 
-// TestNoteV6Absence_TolerancePolarity is the one-directional half of the
-// guard (#868): the two absences that are tolerated, and the one that is
-// not, in one table so that a change flipping any of them cannot be read
-// as a change to only its own case.
-//
-// The fatal row is the load-bearing one. Everything else in the fix
-// makes the plugin MORE tolerant, and the whole risk of it is that
-// tolerance spreads to a segment which genuinely offered DHCPv6 and then
-// went silent. A `return true` in noteV6Absence's default arm makes that
-// row red here and nothing else in the package.
 func TestNoteV6Absence_TolerancePolarity(t *testing.T) {
 	type outcome struct {
 		tolerated  bool
@@ -137,17 +97,6 @@ func TestNoteV6Absence_TolerancePolarity(t *testing.T) {
 		{"managed is fatal", dhcp.RAObservation{Seen: true, Managed: true}, false, 0, 0},
 	}
 
-	// NON-VACUITY, and it is load-bearing here rather than tidy.
-	//
-	// MEASURED: emptying this table -- INCLUDING the fatal row, the one
-	// thing in the package that keeps a real DHCPv6 outage from being
-	// waved through -- leaves the lane green and check-test-weakening.sh
-	// clean. A table is a universal, and a universal over an empty set
-	// is satisfied by nothing at all.
-	//
-	// Keyed on the three OUTCOMES rather than on a row count, because a
-	// count is equally satisfied by duplicating a tolerated row over the
-	// fatal one, which is the deletion that actually costs something.
 	required := map[outcome]string{
 		{true, 1, 0}:  "a stateless segment is TOLERATED and counted as not-offered",
 		{true, 0, 1}:  "an absent router is TOLERATED and counted as no-router",
@@ -179,15 +128,6 @@ func TestNoteV6Absence_TolerancePolarity(t *testing.T) {
 	}
 }
 
-// TestNoteV6Absence_CountersAreNotOneCounter pins that the two tolerated
-// cases move DIFFERENT numbers.
-//
-// The table above would stay green if both arms incremented the same
-// counter and the assertions were written to match, so this asserts the
-// property directly: after one of each, neither counter carries the
-// other's event. An operator reading dhcpv6_no_router_advert is deciding
-// whether to go and look for a missing router, and a merged counter
-// sends them looking on every stateless network in the estate.
 func TestNoteV6Absence_CountersAreNotOneCounter(t *testing.T) {
 	p := &Plugin{}
 	p.noteV6Absence(dhcp.RAObservation{Seen: true}, "eth0", "aaaa", nil, proto.Mode6DHCP)
@@ -203,15 +143,6 @@ func TestNoteV6Absence_CountersAreNotOneCounter(t *testing.T) {
 	}
 }
 
-// TestNoteV6Absence_TheAbsentRouterCaseCarriesTheCause pins the log
-// side, because the two tolerated cases are deliberately not equally
-// loud and the difference is the operator's only prompt to act.
-//
-// A stateless segment is working as configured, so it logs at Info and
-// carries no error. An absent router is not a configuration anyone
-// chose, so it logs at Warn and carries the acquisition failure that
-// produced it — without the cause the warning says something is missing
-// but not what was tried.
 func TestNoteV6Absence_TheAbsentRouterCaseCarriesTheCause(t *testing.T) {
 	hook := logtest.NewLocal(log.StandardLogger())
 	defer hook.Reset()
@@ -252,38 +183,12 @@ func TestNoteV6Absence_TheAbsentRouterCaseCarriesTheCause(t *testing.T) {
 	}
 }
 
-// WHAT A SEEN ROUTER AND NO ADDRESS MEANS DEPENDS ON THE MODE (#818).
-//
-// The table above is the mode the plugin had before `ipv6_mode`:
-// addresses come from a server, so an advertisement without the managed
-// flag means there are none here and the endpoint starts without one.
-// In a mode that forms its own address from the advertisement, that
-// same observation is the opposite statement -- the advertisement IS
-// the address source, it arrived, and nothing was formed from it -- and
-// the endpoint must not start, because its only mechanism produced
-// nothing.
-//
-// THE M=1 ROW IS THE ONE THAT WAS ACTIVELY WRONG. proto.Mode6SLAAC
-// sends no Solicit whatever the M flag says, so the answer a `slaac`
-// endpoint got on a managed segment was "no DHCPv6 server answered
-// within N s" -- about an exchange that never happened, pointing an
-// operator at a server this network does not use.
-//
-// `auto` keeps v6Fatal there and that is not an inconsistency: auto on
-// an M=1 advertisement DID solicit, and the fallback that follows a
-// silent server either forms an address (in which case this function is
-// not reached) or ends the acquisition with the library's own reason.
-//
-// Both halves of the (observation x mode) domain are enumerated, so a
-// verdict that stopped reading the mode fails on the forming rows and a
-// verdict that read ONLY the mode fails on the `dhcp` rows.
+// proto.Mode6SLAAC sends no Solicit whatever the M flag says, so a seen router with no address ends a forming mode
+// (#818).
 func TestClassifyV6Absence_TheModeDecidesWhatASeenRouterMeans(t *testing.T) {
 	timeout := errors.New("timed out")
 	modes := []proto.Mode6{proto.Mode6DHCP, proto.Mode6SLAAC, proto.Mode6Auto, proto.Mode6Off}
 
-	// Written out rather than derived from the function: seen and
-	// managed decide, `other` never does, and every mode is here so a
-	// new one cannot arrive without a row.
 	want := map[proto.Mode6]map[[2]bool]v6Verdict{
 		proto.Mode6DHCP: {
 			{false, false}: v6NoRouter, {false, true}: v6NoRouter,
@@ -325,26 +230,12 @@ func TestClassifyV6Absence_TheModeDecidesWhatASeenRouterMeans(t *testing.T) {
 		}
 	}
 
-	// The wire still beats the mode, the way it beats the observation:
-	// a router that advertised prefixes this client refused names the
-	// thing to fix, and a forming mode must not overwrite it with the
-	// vaguer ending.
 	if got := classifyV6Absence(dhcp.RAObservation{Seen: true},
 		fmt.Errorf("wrapped: %w", dhcp.ErrNoSLAACPrefix), proto.Mode6SLAAC); got != v6SLAACNoPrefix {
 		t.Errorf("a refused-prefix cause in slaac classified as %v, want v6SLAACNoPrefix", got)
 	}
 }
 
-// The new ending has its own counter and its own tolerance, and both
-// directions are asserted in one place.
-//
-// A verdict that was counted on an existing counter would be invisible
-// on /metrics -- an operator would read dhcpv6_no_server and go looking
-// for a DHCPv6 server on a network that never speaks to one. A verdict
-// that TOLERATED the endpoint would be worse: `ipv6_mode=slaac` says
-// the advertisement is where this network's addresses come from, so an
-// endpoint with none has nothing left, and starting it hides that in a
-// container that simply has no IPv6.
 func TestNoteV6Absence_AFormingModeWithNoAddressIsItsOwnEnding(t *testing.T) {
 	p := &Plugin{}
 	tolerated := p.noteV6Absence(dhcp.RAObservation{Seen: true, Managed: true},
@@ -387,12 +278,6 @@ func TestNoteV6Absence_AFormingModeWithNoAddressIsItsOwnEnding(t *testing.T) {
 	}
 }
 
-// The verdict enumeration is the domain every table below runs over,
-// so it is itself checked against the declaration rather than against a
-// reader's memory. v6VerdictCount sits at the end of the const block,
-// so a verdict added above it and forgotten here fails this test and
-// every table that iterates allV6Verdicts stops being a claim about the
-// population.
 func TestAllV6Verdicts_IsEveryDeclaredVerdict(t *testing.T) {
 	all := allV6Verdicts()
 	if len(all) != int(v6VerdictCount) {
@@ -412,22 +297,6 @@ func TestAllV6Verdicts_IsEveryDeclaredVerdict(t *testing.T) {
 	}
 }
 
-// TestV6AbsenceTolerated_OnlyTheNoRouterRowReadsTheMode is #818's
-// change to the ending #989 documented as temporary.
-//
-// docs/reference.md's DHCPv6 verdict table said, for "advertised
-// nothing at all": tolerated "in every ipv6_mode, including slaac and
-// auto ... because the address they would form is not installed yet",
-// and "that changes with #818". This is that change, stated as a table
-// so both halves of it are executable: the forming modes fail, and
-// every other mode and every other verdict answer exactly what they
-// answered before.
-//
-// The expectation is written out per (verdict, mode) rather than
-// derived, and every pair is required to have a row. A predicate that
-// stopped reading the mode passes the dhcp column and fails the slaac
-// and auto cells of one row; a predicate that read only the mode fails
-// four rows.
 func TestV6AbsenceTolerated_OnlyTheNoRouterRowReadsTheMode(t *testing.T) {
 	want := map[v6Verdict]map[proto.Mode6]bool{
 		v6Fatal:          {proto.Mode6DHCP: false, proto.Mode6SLAAC: false, proto.Mode6Auto: false, proto.Mode6Off: false},
@@ -457,14 +326,6 @@ func TestV6AbsenceTolerated_OnlyTheNoRouterRowReadsTheMode(t *testing.T) {
 	}
 }
 
-// The same rule at the level an operator sees it: one counter for both
-// endings, two different endpoint outcomes, and the counter moves in
-// every mode because the population it counts is "saw no router".
-//
-// THE COUNTER IS THE PRESERVATION CONTROL. A change that made the
-// forming modes fatal by routing them to a different verdict would pass
-// the outcome assertion and quietly empty dhcpv6_no_router_advert for
-// the two modes most likely to produce it.
 func TestNoteV6Absence_ASegmentWithNoRouterEndsAFormingEndpoint(t *testing.T) {
 	cases := []struct {
 		mode      proto.Mode6

@@ -22,15 +22,6 @@ import (
 	"github.com/claymore666/docker-net-dhcp/v2/pkg/dhcp"
 )
 
-// TestRenew_LeaseChangedCounter pins the v0.9.0 / T1-4 counter
-// behaviour: when dhcpcd returns a different IP than the manager's
-// recorded lastIP, p.leaseChangedV4.Add(1) fires.
-//
-// We don't need a live netlink/netns fixture — the counter bump
-// happens in the early part of renew, before any kernel-touching
-// branches. The MTU / DNS / gateway side-paths are gated on
-// PropagateMTU / PropagateDNS / info.Gateway, all of which we leave
-// off so they don't try to dereference a nil m.netHandle.
 func TestRenew_LeaseChangedCounter(t *testing.T) {
 	addr1, err := netlink.ParseAddr("192.168.0.10/24")
 	if err != nil {
@@ -70,14 +61,8 @@ func TestRenew_LeaseChangedCounter(t *testing.T) {
 	})
 
 	t.Run("first bind (no prior lastIP) does not bump counter", func(t *testing.T) {
-		// On the very first bound event lastIP is nil; that's a fresh
-		// lease, not a change. The condition `lastIP != nil && ...`
-		// guards this. Pin the contract so a future refactor doesn't
-		// regress to the old `lastIP == nil || !ip.Equal(*lastIP)`
-		// shape that bumped the counter on every initial bind.
 		p := &Plugin{}
 		m := &dhcpManager{plugin: p}
-		// no setLastIP — lastIP is nil
 
 		if err := m.renew(false, dhcp.Info{IP: addr1.String()}); err != nil {
 			t.Fatalf("renew: %v", err)
@@ -89,10 +74,6 @@ func TestRenew_LeaseChangedCounter(t *testing.T) {
 	})
 
 	t.Run("v6 changed IP bumps the v6 half only", func(t *testing.T) {
-		// Since #730 each family owns a counter and a v6 event bumps
-		// exactly one of them. The v4 half staying at 0 is the whole
-		// point: it used to move on every event, which is what made
-		// the v4 number something that had to be subtracted back out.
 		p := &Plugin{}
 		m := &dhcpManager{plugin: p}
 		m.setLastIP(true, addr1)
@@ -127,9 +108,6 @@ func TestRenew_LeaseChangedCounter(t *testing.T) {
 	})
 
 	t.Run("nil plugin is safe", func(t *testing.T) {
-		// Tests that drive renew without wiring a Plugin (pre-v0.9.0
-		// shape) must keep working — production callers always set
-		// it via withPlugin, but the safety check is cheap.
 		m := &dhcpManager{plugin: nil}
 		m.setLastIP(false, addr1)
 
@@ -139,12 +117,8 @@ func TestRenew_LeaseChangedCounter(t *testing.T) {
 	})
 }
 
-// TestHandleEvent_Counters pins which health counter each dhcpcd
-// lifecycle event bumps (#128). The "nak" arm matters most: dnsmasq
-// silently ignores refused renewals in several shapes instead of
-// emitting DHCPNAK, so this contract cannot be pinned reliably at the
-// integration level — when a real server does NAK (dhcpcd maps the
-// NAK reason to the event), this is the path that counts it.
+// TestHandleEvent_Counters pins the nak arm here: dnsmasq ignores refused renewals in several shapes without a
+// DHCPNAK (#128).
 func TestHandleEvent_Counters(t *testing.T) {
 	addr, err := netlink.ParseAddr("192.168.0.10/24")
 	if err != nil {
@@ -161,13 +135,6 @@ func TestHandleEvent_Counters(t *testing.T) {
 		{"leasefail", func(p *Plugin) int32 { return p.dhcpTimeoutsV4.Load() }, func(p *Plugin) int32 { return p.dhcpTimeoutsV6.Load() }},
 		{"nak", func(p *Plugin) int32 { return p.naksReceivedV4.Load() }, func(p *Plugin) int32 { return p.naksReceivedV6.Load() }},
 	}
-	// Each event under both families bumps EXACTLY ONE half (#212,
-	// #730). Asserting both halves — one moved, the other did not — is
-	// what makes this a contract rather than a count: before #730 the
-	// un-suffixed counter moved on every event, so a v6 event bumped
-	// two counters and the v4 number had to be recovered by
-	// subtracting them at render time. That subtraction is the defect
-	// #730 removed, and it is unreachable only while this holds.
 	for _, c := range cases {
 		for _, v6 := range []bool{false, true} {
 			family := "v4"
@@ -201,16 +168,10 @@ func TestHandleEvent_Counters(t *testing.T) {
 		for _, evt := range []string{"deconfig", "something-new"} {
 			m.handleEvent(dhcp.Event{Type: evt}, false)
 		}
-		// Both halves, not just the v4 one: these events are dispatched
-		// with v6=false, so a bump mis-routed to the v6 half would
-		// leave a v4-only sum at zero and pass.
 		total := p.leasesObtainedV4.Load() + p.leasesRenewedV4.Load() +
 			p.dhcpTimeoutsV4.Load() + p.naksReceivedV4.Load() +
 			p.leasesObtainedV6.Load() + p.leasesRenewedV6.Load() +
 			p.dhcpTimeoutsV6.Load() + p.naksReceivedV6.Load() +
-			// #815's counter joins the sum for the same reason the v6
-			// halves did: a case matching too broadly would bump it here
-			// and a total that omitted it would call that clean.
 			p.dhcpv6ConfigOnly.Load()
 		if total != 0 {
 			t.Errorf("counters moved on non-counting events: %d", total)
@@ -226,17 +187,7 @@ func TestHandleEvent_Counters(t *testing.T) {
 	})
 }
 
-// stoppingManager builds a dhcpManager that Stop() can run against
-// without a live netns/netlink fixture: Start is marked complete with
-// no error, and the two consumer goroutines are simulated by
-// pre-filling their exit channels.
-//
-// nsHandle is set to netns.None() deliberately. NsHandle.IsOpen() is
-// `ns != -1`, so the zero value (0) reports *open* and Stop's deferred
-// cleanup would close file descriptor 0 — the test process's stdin.
-// Real managers can't hit that (Start sets the handle, and a Start that
-// failed earlier short-circuits Stop via startErr), but a test that
-// hand-builds the struct has to say so.
+// NsHandle.IsOpen is `ns != -1`, so the zero value reports open and Stop would close fd 0; set netns.None().
 func stoppingManager(t *testing.T, p *Plugin, opts DHCPNetworkOptions, errV4, errV6 error) *dhcpManager {
 	t.Helper()
 
@@ -249,12 +200,6 @@ func stoppingManager(t *testing.T, p *Plugin, opts DHCPNetworkOptions, errV4, er
 		t.Fatalf("ParseAddr v4: %v", err)
 	}
 	m.setLastIP(false, v4)
-	// Every case in this file models a client that reached a bind and is
-	// now being shut down, which is what makes "stopped" the honest
-	// ledger entry. Without this the manager is in the never-bound state
-	// instead, where Stop must NOT claim a release — see
-	// TestStop_LeavingAndNotLeavingAreTheSame, whose
-	// client_started_but_never_bound row drives exactly that state.
 	m.boundV4.Store(true)
 
 	m.errChan = make(chan error, 1)
@@ -266,7 +211,6 @@ func stoppingManager(t *testing.T, p *Plugin, opts DHCPNetworkOptions, errV4, er
 			t.Fatalf("ParseAddr v6: %v", err)
 		}
 		m.setLastIP(true, v6)
-		// Same reasoning as boundV4 above, for the v6 client (#608).
 		m.boundV6.Store(true)
 
 		m.errChanV6 = make(chan error, 1)
@@ -275,15 +219,6 @@ func stoppingManager(t *testing.T, p *Plugin, opts DHCPNetworkOptions, errV4, er
 	return m
 }
 
-// TestStop_AuditsBothFamiliesIndependently pins the dual-drain contract
-// (#325/#330). Stop must read BOTH consumer channels before returning —
-// the old code returned early on a v4 stop failure, which left the
-// v6 consumer live and mid-renew on m.netHandle while the deferred
-// closeNetHandle nilled the socket out from under it, and additionally
-// hid the v6 outcome from the audit ledger.
-//
-// The v4-fails-v6-succeeds row is the regression the old code failed:
-// it recorded a failure for v4 and nothing at all for v6.
 func TestStop_AuditsBothFamiliesIndependently(t *testing.T) {
 	errV4 := errors.New("v4 stop boom")
 	errV6 := errors.New("v6 stop boom")
@@ -344,11 +279,6 @@ func TestStop_AuditsBothFamiliesIndependently(t *testing.T) {
 				t.Fatalf("Stop() = %v, want an error wrapping %v", err, tc.wantErr)
 			}
 
-			// wantFailures is the total across both families, which
-			// since #730 is the sum of the two halves rather than a
-			// counter of its own. Asserting the sum keeps this case
-			// about Stop's auditing; which half moved is pinned by
-			// TestStop_BoundV6StopFailureIsCountedPerFamily.
 			if got := p.clientStopFailuresV4.Load() + p.clientStopFailuresV6.Load(); got != tc.wantFailures {
 				t.Errorf("lease release failures (v4+v6) = %d, want %d", got, tc.wantFailures)
 			}
@@ -367,8 +297,6 @@ func TestStop_AuditsBothFamiliesIndependently(t *testing.T) {
 				}
 			}
 
-			// Each family's entry must carry its own address — the
-			// point of auditing them separately.
 			if entries[0].IP != "192.168.99.50" {
 				t.Errorf("v4 entry IP = %q, want 192.168.99.50", entries[0].IP)
 			}
@@ -379,9 +307,6 @@ func TestStop_AuditsBothFamiliesIndependently(t *testing.T) {
 	}
 }
 
-// TestStop_FailedStartIsANoOp pins the short-circuit: a manager whose
-// Start errored has nothing to release, so Stop must not touch the
-// ledger, the counters, or the (never-populated) exit channels.
 func TestStop_FailedStartIsANoOp(t *testing.T) {
 	var ledgerFailures atomic.Int32
 	p := &Plugin{}
@@ -403,13 +328,6 @@ func TestStop_FailedStartIsANoOp(t *testing.T) {
 	}
 }
 
-// failedStartManager builds the manager TestStop_FailedStartIsANoOp
-// could not: Start errored, and the CreateEndpoint one-shot's address is
-// still recorded on it.
-//
-// That combination is what #720 was about, and what #800 settled. The
-// older test seeds no lastIP, so a stop path that acted on the lease
-// would find nothing to act on and look correct for the wrong reason.
 func failedStartManager(t *testing.T, p *Plugin) *dhcpManager {
 	t.Helper()
 
@@ -427,9 +345,6 @@ func failedStartManager(t *testing.T, p *Plugin) *dhcpManager {
 	return m
 }
 
-// ledgerKinds reads the audit ledger, tolerating a file that was never
-// created — which is itself a result, and the one several tests below
-// expect.
 func ledgerKinds(t *testing.T, l *leaseLedger) []string {
 	t.Helper()
 	if _, err := os.Stat(l.path); os.IsNotExist(err) {
@@ -442,26 +357,8 @@ func ledgerKinds(t *testing.T, l *leaseLedger) []string {
 	return kinds
 }
 
-// TestStop_LeavingAndNotLeavingAreTheSame is #800's rule stated as the
-// thing a test can see.
-//
-// The plugin no longer distinguishes "this endpoint is going away" from
-// "this manager is being shut down" when it comes to the lease, because
-// at the moment of the decision those two are indistinguishable in the
-// one case that matters: `docker restart` is a Leave immediately
-// followed by a Join for the SAME MAC, and the tombstone exists to
-// promise that Join the same address. Anything the leaving path did to
-// the lease raced that promise.
-//
-// So both entry points must now produce IDENTICAL observable results,
-// and this asserts equality rather than two hard-coded expectations. A
-// change that reintroduces asymmetry fails here whichever side it
-// favours — including a re-added reclaim, which is what the old
-// behaviour was and therefore the strongest mutant this test faces.
-//
-// Every row seeds an address, because a stop path that acts on a lease
-// finds nothing to act on when there is none and passes for the wrong
-// reason.
+// TestStop_LeavingAndNotLeavingAreTheSame: `docker restart` is a Leave then a Join for the same MAC, so both stop
+// paths leave the lease alone (#800).
 func TestStop_LeavingAndNotLeavingAreTheSame(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -531,14 +428,6 @@ func TestStop_LeavingAndNotLeavingAreTheSame(t *testing.T) {
 	}
 }
 
-// The equality above is satisfied by a plugin that does nothing at all
-// on either path, so this pins what the shared outcome actually IS.
-//
-// Without it, deleting every audit call would turn
-// TestStop_LeavingAndNotLeavingAreTheSame green — the failure mode the
-// #780 counters exist to name, one level up: two identical results are
-// not evidence of correct behaviour unless at least one of them is
-// known to be non-empty.
 func TestStop_AuditsAStopWithoutClaimingARelease(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
@@ -595,11 +484,6 @@ func TestStop_AuditsAStopWithoutClaimingARelease(t *testing.T) {
 			if !slices.Equal(kinds, tc.wantKinds) {
 				t.Errorf("ledger kinds = %v, want %v — %s", kinds, tc.wantKinds, tc.why)
 			}
-			// Whatever else it writes, it must never claim the server
-			// saw a DHCPRELEASE. None of the rows here sets
-			// release_lease, so nothing in them sends one; a release is
-			// also not a ledger kind on a network that does set it,
-			// which is what the counters are for (#962).
 			for _, k := range kinds {
 				if strings.Contains(k, "release") {
 					t.Errorf("ledger kind %q names a release; no client releases a "+
@@ -611,9 +495,6 @@ func TestStop_AuditsAStopWithoutClaimingARelease(t *testing.T) {
 	}
 }
 
-// The event that flips the manager out of the never-bound state. Only a
-// v4 bind counts: the reclaim hands back the v4 address and there is no
-// v6 equivalent, so a v6-only bind must leave the v4 lease unclaimed.
 func TestHandleEvent_BoundOwnershipIsV4Only(t *testing.T) {
 	for _, tc := range []struct {
 		event string
@@ -646,10 +527,6 @@ func familySuffix(v6 bool) string {
 	return "_v4"
 }
 
-// #406: when a Join runs out of budget, every phase reports the same
-// "context deadline exceeded" and the useful question — which phase
-// consumed it — has no answer. These pin the rendering, since the
-// phases themselves are only reachable with a live daemon.
 func TestJoinPhases(t *testing.T) {
 	t.Run("renders each phase with its own time", func(t *testing.T) {
 		p := newJoinPhases()
@@ -667,9 +544,6 @@ func TestJoinPhases(t *testing.T) {
 	})
 
 	t.Run("says so when nothing completed", func(t *testing.T) {
-		// The most interesting failure of all: the budget went entirely
-		// to the first phase. An empty string here would read as "no
-		// timing available" rather than "it never got past step one".
 		if got := newJoinPhases().summary(); !strings.Contains(got, "no phase completed") {
 			t.Errorf("summary with no marks = %q; want an explicit note", got)
 		}
@@ -709,14 +583,6 @@ func TestJoinPhases(t *testing.T) {
 	})
 }
 
-// TestStart_RecordsPhasesForTheCaller is the check that #411's timing
-// actually reaches a reader. #411 logged it on its own Debug line and
-// the line went unread: the health floor's evidence dump prints error
-// and warning lines, so a run with six "context deadline exceeded"
-// failures showed no timing anywhere near them. Instrumentation that
-// lands somewhere other than the failure it explains is not
-// instrumentation, so the summary is now recorded on the manager and
-// the Join failure log folds it in (#406).
 func TestStart_RecordsPhasesForTheCaller(t *testing.T) {
 	const (
 		netID = "net-1"
@@ -729,8 +595,6 @@ func TestStart_RecordsPhasesForTheCaller(t *testing.T) {
 				ctrID: {EndpointID: epID},
 			}},
 		},
-		// The failure under investigation: the container resolves, then
-		// inspecting it never answers.
 		containerErr: errors.New("context deadline exceeded"),
 	}
 	m := newDHCPManager(docker, JoinRequest{NetworkID: netID, EndpointID: epID}, DHCPNetworkOptions{})
@@ -752,21 +616,6 @@ func TestStart_RecordsPhasesForTheCaller(t *testing.T) {
 	}
 }
 
-// TestStart_CarriesNoPhaseRecordBeforeItRuns holds the zero value, so a
-// reader of startPhases can tell "Start has not recorded" from "Start
-// recorded nothing".
-//
-// IT USED TO BE NAMED FOR A CLAIM ITS BODY NEVER DROVE. As
-// TestStart_LeavesNoPhaseRecordOnSuccess it asserted that a successful
-// Start records no timing, over a manager whose Start had never been
-// called: no unit test in this package can reach a successful Start,
-// which needs a live network namespace. The claim is also no longer the
-// tree's: #403 asks for the distribution of Join durations against the
-// 10s budget, and a record kept only for the Joins that missed the
-// budget is the tail served as the distribution. Start now records on
-// both outcomes, the success line is at debug beside the per-attach key
-// refusal, and the observer for it is the integration lane, where a
-// successful Start happens.
 func TestStart_CarriesNoPhaseRecordBeforeItRuns(t *testing.T) {
 	m := newDHCPManager(&fakeDocker{}, JoinRequest{}, DHCPNetworkOptions{})
 	if m.startPhases != "" || m.startTotal != "" {
@@ -774,25 +623,12 @@ func TestStart_CarriesNoPhaseRecordBeforeItRuns(t *testing.T) {
 	}
 }
 
-// TestStop_CancelsAnInFlightAttach is the guard on the risk the #406
-// fix introduces rather than the bug it fixes.
-//
-// The attach budget grew from AwaitTimeout to AwaitTimeout+60s so a
-// daemon that is busy with the container being joined stops being read
-// as a plugin failure. Stop waits for Start to finish, so without a
-// cancellation path that same 60s would be charged to every Leave that
-// arrives during an attach — libnetwork would block for a minute
-// waiting on an attach whose container is already going away. A longer
-// wait that becomes a longer teardown is not a fix, it is a trade, and
-// nobody agreed to that one.
 func TestStop_CancelsAnInFlightAttach(t *testing.T) {
 	m := newDHCPManager(&fakeDocker{}, JoinRequest{}, DHCPNetworkOptions{})
 
 	ctx, cancel := context.WithCancel(context.Background())
 	m.attachCancel = cancel
 
-	// Stand in for an attach parked on an unresponsive daemon: it
-	// finishes only when its context is cancelled.
 	attachReturned := make(chan struct{})
 	go func() {
 		<-ctx.Done()
@@ -820,14 +656,8 @@ func TestStop_CancelsAnInFlightAttach(t *testing.T) {
 	}
 }
 
-// TestAttachBudget_ExceedsTheDaemonBusyWindow states the relationship
-// the fix depends on as an assertion rather than as a comment. If
-// someone later tunes AwaitTimeout or the grace to the point where the
-// attach budget no longer clears the client-timeout window that
-// produced #406, this says so.
 func TestAttachBudget_ExceedsTheDaemonBusyWindow(t *testing.T) {
-	// What was measured: five Docker client requests, each giving up at
-	// its own 2s timeout, filled a 10s attach budget end to end.
+	// Measured: five Docker client requests, each timing out at 2 s, filled a 10 s attach budget (#406).
 	const observedBusyWindow = 10 * time.Second
 	if attachDaemonBusyGrace <= observedBusyWindow {
 		t.Errorf("attachDaemonBusyGrace = %v, which does not clear the %v window measured in #406; "+
@@ -836,19 +666,6 @@ func TestAttachBudget_ExceedsTheDaemonBusyWindow(t *testing.T) {
 	}
 }
 
-// TestJoin_AttachCancelIsSetBeforeRegistration pins an ordering that a
-// reader cannot see from either line on its own.
-//
-// registerDHCPManager publishes the manager so a fast Leave can find
-// it — its own comment says as much. Stop then reads attachCancel. So
-// the assignment has to happen before the registration, or a Leave that
-// wins the race reads nil, does not cancel, and waits out the full
-// attach grace: the exact behaviour TestStop_CancelsAnInFlightAttach
-// forbids, reintroduced by a line that merely sits in the wrong place.
-//
-// Checked as source order because there is no runtime seam between the
-// two statements to test against, and the failure mode is a race that a
-// unit test would reproduce only occasionally (#406).
 func TestJoin_AttachCancelIsSetBeforeRegistration(t *testing.T) {
 	src, err := os.ReadFile("network.go")
 	if err != nil {
@@ -867,19 +684,6 @@ func TestJoin_AttachCancelIsSetBeforeRegistration(t *testing.T) {
 	}
 }
 
-// TestStart_SurvivesADaemonThatWillNotAnswer makes the #406 condition
-// happen on demand instead of waiting for CI to be unlucky.
-//
-// Every integration run so far has been a sample: unchanged code has
-// scored 6, 5, 4, 3 and 0 Join failures, and a run that scores 0 says
-// only that the condition did not arise. That is not a basis for
-// deciding whether the grace earns its place, and hoping the next run
-// hits it is not a method.
-//
-// So the fake daemon stalls the way the real one does — accepting the
-// call and never answering — and the two budgets are compared directly.
-// The measured window was 10s (five Docker client requests, each giving
-// up at its own 2s timeout); 15s here is comfortably past it.
 func TestStart_SurvivesADaemonThatWillNotAnswer(t *testing.T) {
 	const (
 		netID     = "net-1"
@@ -888,12 +692,6 @@ func TestStart_SurvivesADaemonThatWillNotAnswer(t *testing.T) {
 		stall     = 120 * time.Millisecond
 		oldBudget = 40 * time.Millisecond
 	)
-	// Scaled down through the same seam the recovery tests use. The
-	// ratio is what is being tested — a stall that outlasts the old
-	// budget and not the new one — and it holds at any scale. That the
-	// SHIPPED constant clears the measured 10s window is a separate
-	// assertion, in TestAttachBudget_ExceedsTheDaemonBusyWindow, so
-	// shrinking it here cannot quietly weaken that.
 	prev := attachDaemonBusyGrace
 	attachDaemonBusyGrace = 400 * time.Millisecond
 	t.Cleanup(func() { attachDaemonBusyGrace = prev })
@@ -932,9 +730,6 @@ func TestStart_SurvivesADaemonThatWillNotAnswer(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), oldBudget+attachDaemonBusyGrace)
 		defer cancel()
 		err := m.Start(ctx)
-		// Start goes on to open a netns and locate a link, neither of
-		// which exists here, so it still fails — but it must get PAST
-		// the inspect. Reaching a later phase is the whole claim.
 		if err != nil && strings.Contains(err.Error(), "Docker container info") {
 			t.Fatalf("still gave up at the inspect with the grace applied: %v", err)
 		}
@@ -944,8 +739,6 @@ func TestStart_SurvivesADaemonThatWillNotAnswer(t *testing.T) {
 	})
 }
 
-// hintMAC / linkMAC are deliberately different so a test can tell which
-// source a derivation actually used.
 var (
 	hintMAC = net.HardwareAddr{0x02, 0x42, 0xac, 0x11, 0x00, 0x03}
 	linkMAC = net.HardwareAddr{0x02, 0x42, 0xac, 0x11, 0x00, 0x99}
@@ -963,12 +756,6 @@ func managerWithMACs(mode string, hint, link net.HardwareAddr) *dhcpManager {
 	return m
 }
 
-// TestEndpointMAC_PrefersTheRecordedMAC is the guard against the drift
-// #371 made possible. The DHCP identity is keyed to the MAC the
-// CreateEndpoint one-shot ran under; that MAC is recorded on the join
-// hint. Reading it off whatever link happens to be in hand instead
-// would produce a different identity the moment the two disagree — and
-// the orphan-release path (#370) runs when there is no link at all.
 func TestEndpointMAC_PrefersTheRecordedMAC(t *testing.T) {
 	t.Run("recorded MAC wins over the live link", func(t *testing.T) {
 		m := managerWithMACs("", hintMAC, linkMAC)
@@ -992,19 +779,6 @@ func TestEndpointMAC_PrefersTheRecordedMAC(t *testing.T) {
 	})
 }
 
-// TestJoin_AttachBudgetIncludesTheGrace closes the gap between the two
-// tests above.
-//
-// TestStart_SurvivesADaemonThatWillNotAnswer proves a longer budget
-// outlasts a stalled daemon, but it builds its own context, so deleting
-// the grace from the Join path would not make it fail.
-// TestAttachBudget_ExceedsTheDaemonBusyWindow proves the constant is
-// large enough, but not that anything uses it. Between them sits the
-// line that actually matters, and neither covers it.
-//
-// Static, like the ordering guard: the budget is built inside a
-// goroutine in a handler that needs a live libnetwork request, and a
-// check this cheap should not need one.
 func TestJoin_AttachBudgetIncludesTheGrace(t *testing.T) {
 	src, err := os.ReadFile("network.go")
 	if err != nil {
@@ -1019,18 +793,6 @@ func TestJoin_AttachBudgetIncludesTheGrace(t *testing.T) {
 	}
 }
 
-// TestManagerClientID_DoesNotDependOnALiveLink pins the property the
-// whole helper exists for: the id must be the same whether or not the
-// container's link is still around.
-//
-// It used to be phrased as "the same across call sites", because the
-// removed orphaned-lease reclaim was a second caller that ran after the
-// link was gone. There is one caller now, and the property is if
-// anything more load-bearing than it was (#800): the plugin no longer
-// releases, so a restarting container gets its address back only by
-// presenting the same option-61 identity the one-shot used and being
-// recognised. An id that quietly changed when the link went away would
-// mean a different address on every restart.
 func TestManagerClientID_DoesNotDependOnALiveLink(t *testing.T) {
 	withLink := managerWithMACs("", hintMAC, linkMAC)
 	afterContainerGone := managerWithMACs("", hintMAC, nil)
@@ -1044,10 +806,6 @@ func TestManagerClientID_DoesNotDependOnALiveLink(t *testing.T) {
 		t.Errorf("got %x, want MAC-derived %x", joined, []byte(hintMAC))
 	}
 
-	// The same property for the id a re-bound record carries, which is
-	// the one the release at stop has to go out under: the DHCPRELEASE
-	// is sent by the client these options were captured on, and an id
-	// that moved once the link was gone would free nothing.
 	identity := dhcp.ClientIdentity([]byte("record-identity"))
 	joinedRebound := withLink.clientID(identity)
 	releasingRebound := afterContainerGone.clientID(identity)
@@ -1060,9 +818,6 @@ func TestManagerClientID_DoesNotDependOnALiveLink(t *testing.T) {
 	}
 }
 
-// TestManagerClientID_ModeAndOverride checks the manager-level helper
-// honours the same rules resolveClientID does, so routing every call
-// site through it changes no semantics.
 func TestManagerClientID_ModeAndOverride(t *testing.T) {
 	eid := "0123456789abcdef0123456789abcdef"
 
@@ -1074,8 +829,7 @@ func TestManagerClientID_ModeAndOverride(t *testing.T) {
 	})
 
 	t.Run("ipvlan stays endpoint-derived", func(t *testing.T) {
-		// ipvlan slaves share the parent's MAC, so a MAC-derived id
-		// would be identical for every container on the network.
+		// ipvlan slaves share the parent's MAC, so a MAC-derived id would be the same for every container (#219).
 		m := managerWithMACs("ipvlan", hintMAC, nil)
 		got := m.clientID(nil)
 		if want := clientIDFromEndpoint(eid); string(got) != string(want) {
@@ -1095,20 +849,9 @@ func TestManagerClientID_ModeAndOverride(t *testing.T) {
 	})
 }
 
-// TestManagerClientID_TheRecordsIdentityWins is the defect the lane
-// caught: the reservation re-binds a removed endpoint's record and asks
-// under the identity the server has that address filed against, and the
-// persistent client then has to ask under the SAME one. Deriving it
-// from the hardware address Docker minted for the new endpoint is a
-// client the server has never seen: the measured cost was a DHCPACK for
-// .10 to the reservation, a DHCPNAK to the client seconds later, and a
-// container running on .11 while Docker reported .10.
-//
-// Every row asserts the identifier BYTES, because a counter or a
-// phase would read the same whether or not they reached the wire.
+// TestManagerClientID_TheRecordsIdentityWins: a client-id from the new MAC got a DHCPNAK after the reservation's ACK,
+// and the container ran on another address (#1047).
 func TestManagerClientID_TheRecordsIdentityWins(t *testing.T) {
-	// What a record written by this build carries: the option-61 value
-	// as sent, the chassis's type byte in front of the payload.
 	stored := dhcp.ClientIdentity([]byte{0xde, 0xad, 0xbe, 0xef})
 
 	for _, tc := range []struct {
@@ -1175,22 +918,6 @@ func TestManagerClientID_TheRecordsIdentityWins(t *testing.T) {
 	}
 }
 
-// TestClientIDWiring_OneCallSiteAndTheV4IdentityOnly is the guard the
-// behavioural tests above cannot give.
-//
-// They prove what clientID ANSWERS. This proves where the answer goes
-// and what it is asked with, and both are properties of source that has
-// no seam: the persistent client is built inside a function that needs
-// a network namespace and a live link, so a test that drove it would be
-// an integration test to check an argument.
-//
-// Two things, and the second is the one that could go wrong quietly.
-// The v6 record's identity is a DUID with an IAID, not an option-61
-// payload, and a DUID that happened to begin with the chassis's opaque
-// type byte would pass ClientIDPayload and put its tail in the v4-only
-// ClientID field of a v6 client. Nothing on the wire would name the
-// cause. The branch that assigns the variable is therefore the whole
-// guard, and it is asserted here rather than trusted.
 func TestClientIDWiring_OneCallSiteAndTheV4IdentityOnly(t *testing.T) {
 	src, err := os.ReadFile("dhcp_manager.go")
 	if err != nil {
@@ -1213,8 +940,6 @@ func TestClientIDWiring_OneCallSiteAndTheV4IdentityOnly(t *testing.T) {
 		t.Fatalf("%q appears %d time(s), want exactly 1", assign, got)
 	}
 
-	// The v4 arm runs from the resume to the else, and the assignment
-	// has to be inside it.
 	start := strings.Index(text, "m.recordID, resumption = m.resumeFromRecord()")
 	if start < 0 {
 		t.Fatal("the v4 resume moved; this guard needs updating deliberately")
@@ -1230,13 +955,6 @@ func TestClientIDWiring_OneCallSiteAndTheV4IdentityOnly(t *testing.T) {
 	}
 }
 
-// TestManagerClientID_IsTheReservationsIdentity is the agreement
-// itself, asserted between the two halves rather than inside one of
-// them.
-//
-// The two are in different files and neither can see the other, which
-// is how they drifted. A test that only checked the manager would go
-// green against a reservation that had changed its mind.
 func TestManagerClientID_IsTheReservationsIdentity(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
@@ -1248,12 +966,8 @@ func TestManagerClientID_IsTheReservationsIdentity(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			opts := DHCPNetworkOptions{ClientID: tc.clientID}
 
-			// The record as the first container left it: the identity
-			// its own reservation sent, stored as it went out.
 			stored := dhcp.ClientIdentity(resolveClientID(opts, "", hintMAC))
 
-			// The retry. Docker mints a new MAC, and the reservation
-			// re-binds the record under it.
 			reservation := ipamExchangeClientID(resolveClientID(opts, "", linkMAC), stored)
 
 			m := managerWithMACs("", linkMAC, linkMAC)
@@ -1273,21 +987,6 @@ func TestManagerClientID_IsTheReservationsIdentity(t *testing.T) {
 	}
 }
 
-// TestStop_NeverBoundV6ClientIsNotAuditedAsReleased is the v6 half of
-// the honesty rule (#608).
-//
-// Until #608 the v6 client was judged on its exit error alone: signalled
-// before it bound it exits cleanly, so the ledger recorded a release for
-// the IA_NA address the one-shot had taken — the ledger asserting the
-// server saw a DHCPv6 RELEASE for an address no client ever held a
-// binding to release.
-//
-// The v4 client is bound in every row, so exactly one honest v4 entry is
-// expected and the v6 half must add nothing. Both entry points are
-// asserted and expect the SAME result: since #800 the lease is treated
-// identically whether or not the endpoint is leaving, and a row here
-// that differed would mean that rule had been quietly reintroduced on
-// the v6 side.
 func TestStop_NeverBoundV6ClientIsNotAuditedAsReleased(t *testing.T) {
 	errSignalled := errors.New("signal: terminated")
 
@@ -1327,10 +1026,6 @@ func TestStop_NeverBoundV6ClientIsNotAuditedAsReleased(t *testing.T) {
 						"a binding; there is no v6 lease event to write down", e.Kind, e.IP)
 				}
 			}
-			// The v4 client DID bind and DID shut down cleanly, so
-			// exactly one honest entry is expected. Asserting it here
-			// is what stops this test passing on a plugin that audits
-			// nothing at all.
 			if !slices.Equal(kinds, []string{"stopped"}) {
 				t.Errorf("ledger kinds = %v, want [stopped] — the bound v4 client's "+
 					"own entry, and nothing from v6", kinds)
@@ -1339,18 +1034,6 @@ func TestStop_NeverBoundV6ClientIsNotAuditedAsReleased(t *testing.T) {
 	}
 }
 
-// TestStop_BoundV6StopFailureIsCountedPerFamily guards the other
-// direction of #608: a v6 client that DID hold its binding and failed to
-// shut down is still a real failure — audited as such, returned as an
-// error, and counted on the v6 split so a dual-stack operator can tell
-// which family failed. The v4 row pins that the split does not move on a
-// v4 failure.
-//
-// What it no longer means is that a lease was not handed back. Nothing
-// is handed back on any path since #800; this counts a client that did
-// not exit cleanly when signalled, which is why it is
-// client_stop_failures and not the lease_release_failures it was called
-// when the plugin still released.
 func TestStop_BoundV6StopFailureIsCountedPerFamily(t *testing.T) {
 	boom := errors.New("release boom")
 	for _, tc := range []struct {
@@ -1374,10 +1057,6 @@ func TestStop_BoundV6StopFailureIsCountedPerFamily(t *testing.T) {
 					"never-bound handling", err, boom)
 			}
 
-			// wantAgg is the total across both families. Since #730 it
-			// is their sum, so assert the sum AND the v4 half: the two
-			// together say which counter moved, not merely how many
-			// bumps happened.
 			if got := p.clientStopFailuresV4.Load() + p.clientStopFailuresV6.Load(); got != tc.wantAgg {
 				t.Errorf("client_stop_failures (v4+v6) = %d, want %d", got, tc.wantAgg)
 			}
@@ -1391,20 +1070,6 @@ func TestStop_BoundV6StopFailureIsCountedPerFamily(t *testing.T) {
 	}
 }
 
-// A lease that carries no per-address list still deprecates.
-//
-// v6WantedAddrs is total over every Info a caller can hand it, and its
-// no-list branch hands the main address straight through with whatever
-// attributes it already has. That is the one path on which renew's own
-// call to v6AddrAttrs decides what reaches the kernel: for every Info
-// the chassis renders today the list is non-empty and the set-building
-// loop sets the attributes again, so this pins the fallback's own
-// answer, not a shape the chassis produces. A renewal that dropped the
-// flag here would install a deprecated address permanent and preferred.
-//
-// The observer is the address the manager recorded, which is the same
-// object it handed to the apply path. m.netHandle is nil, so the apply
-// path returns before it touches the kernel.
 func TestRenew_ADeprecatedV6LeaseWithNoAddressListKeepsItsDeprecation(t *testing.T) {
 	m := &dhcpManager{plugin: &Plugin{}}
 
@@ -1422,8 +1087,6 @@ func TestRenew_ADeprecatedV6LeaseWithNoAddressListKeepsItsDeprecation(t *testing
 			"address permanent and preferred", got.ValidLft, got.PreferedLft, infiniteLft)
 	}
 
-	// The preservation control: the same lease without the flag is an
-	// address advertised forever, and it carries no lifetimes at all.
 	keep := &dhcpManager{plugin: &Plugin{}}
 	if err := keep.renew(true, dhcp.Info{IP: "2001:db8:1::a/64"}); err != nil {
 		t.Fatalf("renew: %v", err)
@@ -1437,12 +1100,6 @@ func TestRenew_ADeprecatedV6LeaseWithNoAddressListKeepsItsDeprecation(t *testing
 			kept.ValidLft, kept.PreferedLft)
 	}
 
-	// THE NUMBERS THEMSELVES. Both cases above carry zero in both
-	// fields, so neither can see a renewal that passes the kernel
-	// lifetimes it invented instead of the ones the lease holds. A
-	// lease that holds an address list has them re-derived per address
-	// in v6WantedAddrs, which is why this shape -- the lease-wide pair,
-	// no list -- is the only one where this call decides anything.
 	finite := &dhcpManager{plugin: &Plugin{}}
 	if err := finite.renew(true, dhcp.Info{
 		IP:               "2001:db8:1::a/64",

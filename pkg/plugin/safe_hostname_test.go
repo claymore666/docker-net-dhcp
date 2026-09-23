@@ -5,10 +5,6 @@ package plugin
 
 import "testing"
 
-// The drop itself is guaranteed structurally by dhcp.directive. What this
-// pins is that the event is COUNTED, because a silent safe-failure is the
-// shape this repo has been bitten by: nothing is broken afterwards, so
-// nothing draws attention to the fact that somebody tried. #692.
 func TestSafeHostname_DropsAndCounts(t *testing.T) {
 	p := &Plugin{}
 
@@ -23,9 +19,6 @@ func TestSafeHostname_DropsAndCounts(t *testing.T) {
 	if got.name != "" {
 		t.Errorf("an injecting hostname survived: %q", got.name)
 	}
-	// The refused bit is the half that matters to the caller making an
-	// identity decision; "" alone cannot tell it apart from "no hostname
-	// found". It travels welded to the name for that reason (#726).
 	if got.trusted() {
 		t.Error("a refused hostname reported itself as safe")
 	}
@@ -39,9 +32,7 @@ func TestSafeHostname_DropsAndCounts(t *testing.T) {
 	}
 }
 
-// An underscore is not a legal RFC 1123 hostname and Docker accepts it
-// anyway, so a well-formedness check here would have broken working
-// deployments to fix a structural problem. Keep the rule about structure.
+// Docker accepts an underscore in a hostname, which RFC 1123 does not allow.
 func TestSafeHostname_KeepsWhatDockerAccepts(t *testing.T) {
 	p := &Plugin{}
 	for _, h := range []string{"my_app", "MY-APP.example.com", "a.b.c", "hôte", ""} {

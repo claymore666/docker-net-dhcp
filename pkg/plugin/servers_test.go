@@ -30,9 +30,6 @@ func TestParseServerList(t *testing.T) {
 		{name: "empty entry", in: "1.1.1.1,,2.2.2.2", errIs: true},
 		{name: "trailing comma", in: "1.1.1.1,", errIs: true},
 		{name: "duplicate", in: "1.1.1.1,1.1.1.1", errIs: true},
-		// v6 is refused rather than ignored: dhcpcd stores both lists as
-		// in_addr_t and dhcp6.c never reads them, so accepting a v6 entry
-		// would apply to nothing while looking like it worked.
 		{name: "ipv6 is rejected", in: "2001:db8::1", errIs: true},
 		{name: "ipv6 mixed in is rejected", in: "1.1.1.1,2001:db8::1", errIs: true},
 	} {
@@ -57,8 +54,6 @@ func TestParseServerList(t *testing.T) {
 	}
 }
 
-// The option names must appear in the error: an operator who set both
-// lists needs to know which one is malformed.
 func TestParseServerList_ErrorNamesTheOption(t *testing.T) {
 	_, err := parseServerList("dhcp_deny_servers", "nope")
 	if err == nil {
@@ -83,9 +78,6 @@ func TestResolveServerPolicy(t *testing.T) {
 		}
 	})
 
-	// dhcpcd ignores a blacklist whenever a whitelist is configured
-	// (src/dhcp.c:3181-3196). Emitting one anyway would advertise a
-	// denial that is not enforced, so the renderer must be handed none.
 	t.Run("no blacklist is emitted alongside a whitelist", func(t *testing.T) {
 		pol, err := resolveServerPolicy(DHCPNetworkOptions{
 			DHCPServers: "1.1.1.1",
@@ -97,7 +89,6 @@ func TestResolveServerPolicy(t *testing.T) {
 		if got := pol.denyList(); got != nil {
 			t.Fatalf("denyList = %v, want nil so dhcpcd is not given a directive it will not read", got)
 		}
-		// ...and the denial still has to be real, via subtraction.
 		for _, a := range pol.allowList() {
 			if a == "3.3.3.3" {
 				t.Fatal("denied server survived into the whitelist")
@@ -118,9 +109,6 @@ func TestResolveServerPolicy(t *testing.T) {
 		}
 	})
 
-	// Denying every preferred server would otherwise collapse to "no
-	// preference", i.e. accept anything — the opposite of what both
-	// options were set to do.
 	t.Run("denying the whole preference list is refused", func(t *testing.T) {
 		_, err := resolveServerPolicy(DHCPNetworkOptions{
 			DHCPServers: "1.1.1.1,2.2.2.2",
@@ -171,10 +159,6 @@ func TestAcquisitionAttempts(t *testing.T) {
 		}
 	})
 
-	// The ladder must divide the existing budget, never extend it: the
-	// one-shot acquisition already runs against a tight ceiling (#403,
-	// #417) and buying ordering with extra seconds there would trade a
-	// rare misconfiguration for a common regression.
 	t.Run("tier budgets never sum above the total", func(t *testing.T) {
 		for _, list := range []string{
 			"1.1.1.1",
@@ -196,8 +180,6 @@ func TestAcquisitionAttempts(t *testing.T) {
 		}
 	})
 
-	// Both directives are DHCPv4-only. Applying them to a v6 exchange
-	// would restrict nothing while implying it had.
 	t.Run("v6 gets one unrestricted attempt whatever the policy", func(t *testing.T) {
 		pol, err := resolveServerPolicy(DHCPNetworkOptions{
 			DHCPServers: "1.1.1.1,2.2.2.2",
@@ -233,15 +215,6 @@ func TestAcquisitionAttempts(t *testing.T) {
 	})
 }
 
-// TestPolicyRestricted pins which acquisitions count as an exhausted
-// policy when they fail. The counter's whole job is to separate "the
-// servers you named are silent" from "DHCP is broken", so the boundary
-// it draws is the boundary between those two operator actions.
-//
-// The single-entry row is the one that matters most: an earlier version
-// keyed the counter on having more than one tier, which left the most
-// likely real failure — a network naming one server, and that server
-// going quiet — reading as an ordinary timeout.
 func TestPolicyRestricted(t *testing.T) {
 	cases := []struct {
 		name string
@@ -270,10 +243,6 @@ func TestPolicyRestricted(t *testing.T) {
 			want: true,
 		},
 		{
-			// v6 is handed neither list (dhcpcd's directives are
-			// DHCPv4-only), so nothing was restricted and a failure
-			// there is a plain timeout however the network is
-			// configured.
 			name: "a v4 policy does not restrict the v6 exchange",
 			pol:  serverPolicy{Prefer: mustAddrs(t, "192.0.2.1", "192.0.2.2")},
 			v6:   true,

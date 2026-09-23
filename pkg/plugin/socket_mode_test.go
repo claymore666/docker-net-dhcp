@@ -12,20 +12,8 @@ import (
 	"time"
 )
 
-// TestListen_SocketIsOwnerOnlyUnderAPermissiveUmask pins the property
-// SECURITY.md relies on when it calls serving /metrics on the plugin
-// socket "unchanged ground": that socket is root-only, so anything
-// able to read it can already call every RPC.
-//
-// A UNIX socket's mode is 0777 &^ umask, so before #687 that property
-// was inherited from whatever umask the plugin runtime happened to
-// set -- true by accident under the usual 0022, false under 0002.
-// The test therefore installs a permissive umask of its own: under the
-// runtime default it would pass against the old behaviour too, and
-// prove nothing.
-//
-// Listen is driven for real rather than mirrored, so the guard cannot
-// rot away from the code path it protects.
+// A UNIX socket's mode is 0777 &^ umask, so the test sets umask 0: under the usual
+// 0022 the code before #687 passed as well.
 func TestListen_SocketIsOwnerOnlyUnderAPermissiveUmask(t *testing.T) {
 	dir := t.TempDir()
 	sockPath := filepath.Join(dir, "net-dhcp.sock")
@@ -41,7 +29,6 @@ func TestListen_SocketIsOwnerOnlyUnderAPermissiveUmask(t *testing.T) {
 		<-errCh
 	}()
 
-	// Wait for Listen to get as far as binding.
 	deadline := time.Now().Add(5 * time.Second)
 	var fi os.FileInfo
 	for {
@@ -66,8 +53,6 @@ func TestListen_SocketIsOwnerOnlyUnderAPermissiveUmask(t *testing.T) {
 			"the RPC surface is reachable by more than the owner", mode)
 	}
 
-	// And the socket still works for the owner -- a guard that locked
-	// the daemon out would also satisfy the assertion above.
 	c, err := net.Dial("unix", sockPath)
 	if err != nil {
 		t.Fatalf("owner cannot connect to the restricted socket: %v", err)

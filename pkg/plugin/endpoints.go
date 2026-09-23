@@ -17,15 +17,7 @@ import (
 type CapabilitiesResponse struct {
 	Scope             string
 	ConnectivityScope string
-	// GwAllocChecker tells libnetwork it may ask this driver whether a
-	// network needs a gateway address allocated. It is what stops every
-	// `docker network create` in IPAM mode from running a DHCP exchange
-	// for an address no container uses.
-	//
-	// DECLARING IT MAKES /NetworkDriver.GwAllocCheck REQUIRED. libnetwork
-	// calls that RPC only when this field is true, and a 404 from it is a
-	// real error rather than the tolerated one the unrouted RPCs get. The
-	// route and this field are one change; see routes().
+	// GwAllocChecker makes libnetwork call /NetworkDriver.GwAllocCheck, whose 404 is then a real error (#110).
 	GwAllocChecker bool
 }
 
@@ -175,41 +167,18 @@ type JoinRequest struct {
 	Options    map[string]interface{}
 }
 
-// ifnameOption is the endpoint option carrying a user-requested
-// container-side interface name. Compose's
-// `services.*.networks.*.interface_name` (engine 28+ / API 1.48+)
-// ships as this key; `docker network connect --driver-opt` can set it
-// on any engine version. The plugin honors it by returning DstName in
-// the Join response (#125).
+// ifnameOption carries Compose's `interface_name` (engine 28+, API 1.48+) or a `--driver-opt` key (#125).
 const ifnameOption = "com.docker.network.endpoint.ifname"
 
-// InterfaceName consists of the name of the interface in the global netns and
-// the desired prefix to be appended to the interface inside the container netns.
-//
-// DstName, when non-empty, asks libnetwork for that exact name inside
-// the container instead of DstPrefix+index. The remote-driver API has
-// carried the field for years, but the remote proxy dropped it
-// (drivers/remote/driver.go called `iface.SetNames(SrcName, DstPrefix,
-// "")`) until moby/moby#52866, merged 2026-08-26 and milestoned for
-// engine 29.8.0, where it shipped. Built-in drivers got per-driver
-// interface_name in engine 28; remote drivers were left out until that
-// fix. MEASURED with a nested daemon per line (#670): 28.5.2 and 29.7.2
-// name the interface by DstPrefix and index, 29.8.0 names it as asked.
-// We return it either way: it is the documented response shape, costs
-// nothing on engines that ignore it, and activates by itself on the
-// first engine that honours it (#125). What an engine below 29.8.0
-// costs is said at CreateEndpoint and counted as ifname_unsupported,
-// because a silently different interface name is otherwise invisible.
+// InterfaceName is the Join interface name, whose DstName remote drivers get from engine 29.8.0 (moby/moby#52866);
+// 28.5.2 and 29.7.2 were measured naming the interface by DstPrefix and index (#125, #670).
 type InterfaceName struct {
 	SrcName   string
 	DstPrefix string
 	DstName   string
 }
 
-// libnetwork's route-type encoding for StaticRoute.RouteType.
-// See https://github.com/moby/libnetwork/blob/master/docs/remote.md
-// — 0 ("via gateway") expects a NextHop; 1 ("on-link / connected")
-// has no next hop.
+// libnetwork's StaticRoute.RouteType values (moby/libnetwork docs/remote.md): 0 has a NextHop, 1 is on-link.
 const (
 	RouteTypeNextHop = 0
 	RouteTypeOnLink  = 1
@@ -266,747 +235,202 @@ func (p *Plugin) apiLeave(w http.ResponseWriter, r *http.Request) {
 	util.JSONResponse(w, struct{}{}, http.StatusOK)
 }
 
-// HealthResponse is the payload returned by /Plugin.Health.
-//
-// # WHAT `Healthy` MEANS
-//
-// False when any of FIVE counters is non-zero: recovery_failed,
-// join_start_failures, tombstone_write_failures, address_conflicts and
-// tombstone_quarantines. Each is marked Healthy-affecting on its field
-// below, and docs/reference.md states the same set in four more places;
-// scripts/check-health-contract.sh keeps those in step.
-//
-// This comment said "at least one plugin-restart recovery failed" —
-// ONE counter — from before v1.6.0 until #724. The expression 350 lines
-// below had four by then. It is the comment a developer reads first
-// when adding a counter, which is exactly how it stayed wrong for two
-// releases: the gate reads reference.md and the expression, not this.
-// Corrected here rather than only in the docs, because the next person
-// to add a Healthy-affecting counter reads this file (#638, #724).
-//
-// # IT LATCHES, AND THE OBVIOUS REMEDY DOES NOT CLEAR IT
-//
-// Every counter behind the flag is a monotonic atomic; nothing
-// decrements them. So `healthy: false` means "a fault occurred at some
-// point during THIS plugin process", not "something is wrong right
-// now". An operator who restarts the affected containers fixes the
-// condition — and the flag stays false. The only thing that clears it
-// is restarting the plugin, which tears down the renewal client of
-// every managed endpoint on the host, so it is not a free action and
-// must not be taken as routine hygiene. Pair a reading with InstanceID
-// to tell "still the same process, still latched" from "a new process
-// that has already gone bad".
-//
-// That is deliberate. An alert that goes quiet on its own is worse than
-// one that never clears, because the operator learns nothing from the
-// silence. If "unhealthy right now" is ever wanted, it is a new field,
-// not a change to this one.
+// HealthResponse is the /Plugin.Health payload, whose Healthy latches false for the process's life once a counter
+// marked Healthy-affecting below moves, and only a plugin restart clears it (#638, #724).
 type HealthResponse struct {
-	// Status is draft-inadarei-api-health-check-06 section 3.1's
-	// pass/warn/fail, and Checks is its section 3.6 object. They are a
-	// REFINEMENT of Healthy, never a replacement: `fail` is exactly
-	// `healthy: false`, because both are read from the one declaration
-	// (metricDef.healthy) rather than derived twice. What they add is
-	// WHICH counter, WHEN it last moved, and a middle value for the
-	// counters the reference tells an operator to watch without
-	// calling them a fault.
-	//
-	// Healthy stays exactly as it was. 1.x dashboards read it, and a
-	// field whose meaning is narrowed by a new sibling is a field that
-	// silently changed.
+	// Status and Checks follow draft-inadarei-api-health-check-06 sections 3.1 and 3.6; `fail` is `healthy: false`.
 	Status string `json:"status"`
-	// Version, Commit and Library are what this binary was built from
-	// (pkg/buildinfo). They are also the labels of net_dhcp_build_info.
+	// Version, Commit and Library are the build identity (pkg/buildinfo), also the net_dhcp_build_info labels.
 	Version string `json:"version"`
 	Commit  string `json:"commit"`
 	Library string `json:"library"`
-	// EngineVersion and APIVersion are what the DAEMON said when this
-	// process started, not what this process assumed (#670).
-	// EngineVersion is the engine's own version string and is the value
-	// the minimum is measured and compared on; APIVersion is what the
-	// client library NEGOTIATED with it, which is min(our maximum, the
-	// daemon's maximum) and so can be lower than either side supports.
-	//
-	// Both read `unknown` when the daemon did not answer at startup.
-	// Docker restarts this plugin during its own startup and the socket
-	// is routinely not serving yet at that moment (#383), so `unknown`
-	// is a state an operator can actually see, and it means "this
-	// process never found out" rather than "there is no engine".
+	// EngineVersion and APIVersion are what the daemon answered at startup, or `unknown` when its socket was not yet
+	// serving (#383, #670).
 	EngineVersion string `json:"engine_version"`
 	APIVersion    string `json:"api_version"`
 	Healthy       bool   `json:"healthy"`
-	// InstanceID identifies the plugin process that served this
-	// response. Every counter below is in-memory and returns to zero
-	// when the process does, so two reads are only comparable as a
-	// delta when their InstanceID matches (#405).
-	//
-	// uptime_seconds is a weaker version of the same signal: it does
-	// reset, but a plugin that restarts early in a long window and then
-	// runs longer than the first reading shows uptime going *up* across
-	// the pair, and the reset goes unnoticed. Comparing ids has no such
-	// blind spot.
+	// InstanceID names the serving process, so two reads compare as a delta only when it matches (#405).
 	InstanceID      string  `json:"instance_id"`
 	UptimeSeconds   float64 `json:"uptime_seconds"`
 	ActiveEndpoints int     `json:"active_endpoints"`
 	PendingHints    int     `json:"pending_hints"`
 	RecoveredOK     int32   `json:"recovered_ok"`
-	// RecoveryFailed counts post-restart recoveries that failed for a
-	// container that was still running: it has no renewal client and
-	// will lose its lease at expiry. Healthy-affecting.
-	//
-	// Two conditions were folded into this counter historically and are
-	// now split out, because neither leaves a running container without
-	// a renewal client and both are routine after a daemon restart:
-	// RecoveryDeferred (#383) and RecoveryAbortedContainerGone (#376).
+	// RecoveryFailed counts failed recoveries of a still-running container, which then has no renewal client; Healthy-affecting.
 	RecoveryFailed int32 `json:"recovery_failed"`
-	// RecoveryDeferred counts the times recovery met a daemon that was
-	// not serving yet and was retried once the socket came up (#383).
-	// Docker respawns the plugin during its own startup, so this is the
-	// expected state at that moment, not a fault — NOT Healthy-affecting.
-	// A rise paired with recovery_failed means the retry ran out too:
-	// that pair is the signal that endpoints really are unrecovered.
+	// RecoveryDeferred counts recoveries retried once the daemon socket came up (#383); not Healthy-affecting.
 	RecoveryDeferred int32 `json:"recovery_deferred"`
-	// RecoveryAbortedContainerGone counts recoveries abandoned because
-	// the container had already exited or been removed (#376). Not
-	// Healthy-affecting: nothing is running without a renewal client.
-	// The recovery-side twin of JoinAbortedContainerGone, and normal
-	// after a daemon restart that outlived some containers.
+	// RecoveryAbortedContainerGone counts recoveries abandoned because the container had exited (#376); not
+	// Healthy-affecting.
 	RecoveryAbortedContainerGone int32 `json:"recovery_aborted_container_gone"`
-	// RecoveryNetworkGone counts networks skipped during post-restart
-	// recovery because they had been removed between the NetworkList
-	// that found them and the NetworkInspect that reads their detail
-	// (#648). Not Healthy-affecting: a network that is gone leaves no
-	// running container without a renewal client. Counted rather than
-	// silent so a host churning networks under a restarting daemon is
-	// still visible. It landed in recovery_failed until #648, where it
-	// was fatal.
+	// RecoveryNetworkGone counts networks removed between NetworkList and NetworkInspect (#648); not Healthy-affecting.
 	RecoveryNetworkGone int32 `json:"recovery_network_gone"`
-	// RecoveryFingerprintsSkipped counts endpoints recovery adopted but
-	// could not describe: the ContainerInspect that would have supplied
-	// the hostname did not answer, or answered with no hostname (#721).
-	// Not Healthy-affecting: the endpoint has a renewal client, so no
-	// running container is without one — what it has lost is the
-	// tombstone that would have carried its MAC and address across its
-	// next `docker restart`.
-	//
-	// It exists because #721's fix would otherwise have inherited the
-	// invisibility of the bug it closes. A skipped fingerprint means no
-	// tombstone, and the only outward sign of that was
-	// tombstones_consumed staying flat — indistinguishable from a quiet
-	// host. A hostname REFUSED by safeHostname is not counted here; it
-	// moves unsafe_hostnames_rejected instead, so "the daemon would not
-	// answer me" stays distinguishable from "a container sent a hostname
-	// nobody should send".
+	// RecoveryFingerprintsSkipped counts adopted endpoints with no hostname to fingerprint, so no tombstone (#721);
+	// not Healthy-affecting.
 	RecoveryFingerprintsSkipped int32 `json:"recovery_fingerprints_skipped"`
-	// RecoveryAlreadyManaged counts endpoints a recovery walk found
-	// already registered to another manager and therefore left alone —
-	// a Join reached them first. Not Healthy-affecting: the endpoint has
-	// a renewal client, it just is not the one this walk would have
-	// built. Counted because it is the only outward evidence of recovery
-	// racing a Join, and because the completion log used to report those
-	// endpoints as recovered (#480).
+	// RecoveryAlreadyManaged counts endpoints a Join registered before the recovery walk (#480); not Healthy-affecting.
 	RecoveryAlreadyManaged int32 `json:"recovery_already_managed"`
-	// JoinStartFailures counts persistent-client Start failures at
-	// Join time (#317): a running container with no renewal client.
-	// Healthy-affecting — same operator action as recovery_failed
-	// (find the cause in the plugin log, restart the container).
+	// JoinStartFailures counts renewal client Start failures at Join (#317); Healthy-affecting.
 	JoinStartFailures int32 `json:"join_start_failures"`
-	// JoinAbortedContainerGone counts attaches abandoned because the
-	// container exited before the persistent client was up (#373). Not
-	// Healthy-affecting: there is no running container without a
-	// renewal client. Worth watching anyway — a rise means containers
-	// are dying seconds after start.
+	// JoinAbortedContainerGone counts attaches abandoned because the container exited first (#373); not
+	// Healthy-affecting.
 	JoinAbortedContainerGone int32 `json:"join_aborted_container_gone"`
-	// JoinAbortedNoContainer counts attaches abandoned because no
-	// container ever claimed the endpoint on the network (#566). The
-	// address is LEFT TO EXPIRE. It was released here until #800
-	// removed that path, and `release_lease=on_stop` does not restore
-	// it: a release happens at Leave, and an endpoint no container
-	// claimed reaches no Leave at all, whatever the release is built
-	// from (#962).
-	// Not Healthy-affecting: nothing is running without a renewal
-	// client, because nothing is running. A rise means endpoints are
-	// being created for containers that never attach.
+	// JoinAbortedNoContainer counts attaches no container claimed, whose address is left to expire (#566, #800,
+	// #962); not Healthy-affecting.
 	JoinAbortedNoContainer int32 `json:"join_aborted_no_container"`
 
-	// JoinAttachSlow counts attaches that succeeded only after
-	// outlasting AwaitTimeout, waiting on a daemon that was busy with
-	// the container being attached. Not healthy-affecting — these are
-	// successes — but a rising count is the visible form of #406.
+	// JoinAttachSlow counts attaches that succeeded after outlasting AwaitTimeout (#406); not healthy-affecting.
 	JoinAttachSlow int32 `json:"join_attach_slow"`
 
-	// JoinAttachCompleted counts successful attaches. It is the
-	// population the three buckets below partition, and without it a
-	// bucket of zero cannot be told from a lane that attached nothing.
+	// JoinAttachCompleted counts successful attaches, the population the three duration buckets partition.
 	JoinAttachCompleted int32 `json:"join_attach_completed"`
-	// JoinAttachUnder1s and JoinAttach1sToBudget are the body of the
-	// distribution JoinAttachSlow is the tail of. Under a second, then
-	// a second up to and including AwaitTimeout; above it is
-	// JoinAttachSlow, so the three sum to JoinAttachCompleted.
-	//
-	// They exist because the per-attach timing line is Debug and the
-	// shipped LOG_LEVEL is info: on a host nobody has reconfigured,
-	// these are the only per-attach durations there are (#403).
+	// JoinAttachUnder1s and JoinAttach1sToBudget with JoinAttachSlow sum to JoinAttachCompleted (#403).
 	JoinAttachUnder1s    int32 `json:"join_attach_under_1s"`
 	JoinAttach1sToBudget int32 `json:"join_attach_1s_to_budget"`
-	// JoinAttachMsMax is the longest successful attach in
-	// milliseconds, saturating at MaxInt32. Not an average: #403 asks
-	// how close a loaded host comes to AwaitTimeout, and an average
-	// over a quiet host hides exactly the attach that answers it.
+	// JoinAttachMsMax is the longest successful attach in milliseconds, saturating at MaxInt32 (#403).
 	JoinAttachMsMax int32 `json:"join_attach_ms_max"`
 
-	// RestartLinkUpWaited counts child links brought up only after
-	// waiting out the departing link's hold on the address (#408). Not
-	// healthy-affecting: this is the fix working, and it is counted so
-	// the window is visible rather than inferred — the same reason
-	// JoinAttachSlow exists.
+	// RestartLinkUpWaited counts child links brought up after the departing link released the address (#408); not
+	// healthy-affecting.
 	RestartLinkUpWaited int32 `json:"restart_link_up_waited"`
-	// RestartLinkUpTimeouts counts that wait outlasting its budget. The
-	// restart then fails with `address already in use`. Not
-	// healthy-affecting despite being a real failure: it surfaces
-	// through CreateEndpoint to the operator directly, and `healthy`
-	// is for faults nothing else reports (#422).
+	// RestartLinkUpTimeouts counts that wait outlasting its budget, failing with `address already in use` (#422); not
+	// healthy-affecting.
 	RestartLinkUpTimeouts int32 `json:"restart_link_up_timeouts"`
 
-	// JoinAbortedEndpointLeft counts attaches cancelled because the
-	// endpoint left while the attach was still running. Not
-	// healthy-affecting: there is no running container missing a
-	// renewal client.
+	// JoinAbortedEndpointLeft counts attaches cancelled because the endpoint left first; not healthy-affecting.
 	JoinAbortedEndpointLeft int32 `json:"join_aborted_endpoint_left"`
-	// TombstoneWriteFailures counts tombstone persistence failures.
-	// Healthy-affecting: an endpoint will not keep its address across a
-	// restart.
-	//
-	// It moves on a failed READ as well as a failed write. Since #724,
-	// a transient read error (EIO, EMFILE, a read racing a writer) makes
-	// the write path refuse rather than rewrite the file from nothing,
-	// and that refusal is counted here — the consequence is identical to
-	// a failed write, and the name being narrower than the meaning is
-	// worth one sentence rather than a fourth counter.
+	// TombstoneWriteFailures counts failed tombstone writes and reads refused since #724; Healthy-affecting.
 	TombstoneWriteFailures int32 `json:"tombstone_write_failures"`
-	// TombstoneQuarantines counts times the tombstone file was found
-	// unparseable and moved aside as tombstones.json.corrupt-<ts>
-	// (#724). Healthy-affecting, and the counter that costs the most
-	// when it moves: a write failure loses ONE container's MAC and
-	// address, a quarantine loses every live tombstone on the host, so
-	// every container restarting for the rest of the TTL window comes
-	// back with a new identity.
-	//
-	// Separate from TombstoneWriteFailures on purpose. The two have
-	// different remedies — a write failure means the disk is full or
-	// read-only, a quarantine leaves a file to read — and merging them
-	// would leave an operator unable to tell which one they are being
-	// paged for.
-	//
-	// WHY IT LATCHES `healthy`, WHICH IS NOT OBVIOUS. The argument
-	// against is real: the condition is self-healing by construction —
-	// the file is renamed away, the plugin continues correctly from an
-	// empty set, and the cost is bounded at one TTL window of address
-	// instability for containers that happen to restart in it. Against
-	// that, the remedy for a latched `healthy` is to restart the
-	// plugin, which tears down every managed endpoint's renewal client:
-	// strictly more damaging than the fault. On those terms alone it
-	// would not latch.
-	//
-	// It latches anyway, for two reasons. Consistency first:
-	// TombstoneWriteFailures is already healthy-affecting, and a
-	// quarantine is the same family — tombstones did not work. Splitting
-	// them would mean an I/O error latches and actual file corruption
-	// does not. And the one that decides it: a quarantine does not mean
-	// tombstones had a bad minute, it means SOMETHING WROTE GARBAGE
-	// into stateDir — a host bind mount that survives `docker plugin rm`
-	// and upgrade, and that now also holds the versioned options file.
-	// The self-healing is about the tombstones. The signal is about the
-	// disk, and that is worth an operator's attention even though this
-	// particular symptom cleared itself.
+	// TombstoneQuarantines counts unparseable tombstone files moved aside as tombstones.json.corrupt-<ts>, since
+	// something wrote garbage into stateDir (#724); Healthy-affecting.
 	TombstoneQuarantines int32 `json:"tombstone_quarantines"`
-	// UnsafeHostnamesRejected counts container hostnames dropped before
-	// reaching the DHCP request because they carried a control
-	// character (#692). NOT healthy-affecting: the drop is the
-	// safe outcome and the lease proceeds. It is reported because a
-	// legitimate hostname never contains one, so a rising value is
-	// somebody probing rather than background noise.
+	// UnsafeHostnamesRejected counts container hostnames dropped for a control character (#692); not healthy-affecting.
 	UnsafeHostnamesRejected int32 `json:"unsafe_hostnames_rejected"`
 
-	// HostnamesAppliedLate, HostnameLookupFailures and
-	// HostnameApplyFailures are the three outcomes of the container's
-	// name arriving after its DHCP client is already leasing (#961).
-	// Read them together: the first is the domain the other two are
-	// zero against. v4 only, because this plugin's DHCP library sends
-	// no name option for DHCPv6 at all.
+	// HostnamesAppliedLate, HostnameLookupFailures and HostnameApplyFailures are the outcomes of a late v4 hostname
+	// (#961).
 	HostnamesAppliedLate   int32 `json:"hostnames_applied_late"`
 	HostnameLookupFailures int32 `json:"hostname_lookup_failures"`
 	HostnameApplyFailures  int32 `json:"hostname_apply_failures"`
 
-	// HostIfnamesApplied, HostIfnameConflicts and HostIfnameFailures
-	// are the three outcomes of naming a host-side link after its
-	// container (#978). Read them together: the first is the domain the
-	// other two are zero against, and all three stay at zero on a host
-	// with no network that asked for it. Bridge mode only, because it
-	// is the only mode that leaves a link on the host.
+	// HostIfnamesApplied, HostIfnameConflicts and HostIfnameFailures are the bridge-mode host link naming outcomes
+	// (#978).
 	HostIfnamesApplied  int32 `json:"host_ifnames_applied"`
 	HostIfnameConflicts int32 `json:"host_ifname_conflicts"`
 	HostIfnameFailures  int32 `json:"host_ifname_failures"`
-	// UnsafeOptionValuesDropped counts server-chosen DHCP string
-	// values refused before use because they carried a control
-	// character, plus option-15 domains truncated at their first space.
-	// NOT healthy-affecting: dropping is the safe outcome and the lease
-	// proceeds. Its sibling above covers the value the CONTAINER
-	// chooses; this one covers the values the SERVER chooses, which is
-	// the larger set and the one nothing filtered before (#703, #704).
+	// UnsafeOptionValuesDropped counts server-chosen DHCP strings refused or truncated (#703, #704); not
+	// healthy-affecting.
 	UnsafeOptionValuesDropped int32 `json:"unsafe_option_values_dropped"`
-	// NetworkOptionsRejected counts endpoint operations that met a
-	// network's stored options and would not act on them as written:
-	// an interface name the kernel would not accept, or a mode this
-	// plugin does not implement (#727). DeleteEndpoint counts without
-	// refusing, so a rise does not mean nothing was torn down. NOT
-	// healthy-affecting: refusing is the safe outcome and the
-	// operation already fails visibly to Docker; one network's record
-	// is broken, not the plugin. A non-zero value means options
-	// written before name validation existed (#705), or a hand-edited
-	// state directory.
+	// NetworkOptionsRejected counts endpoint operations refusing a network's stored options (#705, #727); not
+	// healthy-affecting.
 	NetworkOptionsRejected int32 `json:"network_options_rejected"`
-	// IPAMReplayHits counts stored endpoint addresses this plugin
-	// confirmed at a daemon restart from its own lease record (#110).
-	// Only moves on networks created with this plugin as their IPAM
-	// driver. NOT healthy-affecting: it is the mechanism working. It is
-	// the denominator for the counter below.
+	// IPAMReplayHits counts stored endpoint addresses confirmed from a lease record at a daemon restart (#110).
 	IPAMReplayHits int32 `json:"ipam_replay_hits"`
-	// IPAMReplayMiss counts stored endpoint addresses this plugin
-	// refused to confirm because no lease record in that network holds
-	// them. NOT healthy-affecting: the refusal is the safe outcome and
-	// the network driver's own recovery adopts the endpoint from
-	// Docker's view. Worth investigating: the lease record and Docker's
-	// store have drifted apart.
+	// IPAMReplayMiss counts stored endpoint addresses refused because no lease record holds them (#110).
 	IPAMReplayMiss int32 `json:"ipam_replay_miss"`
-	// IPAMRebindAmbiguous counts address requests that met more than one
-	// recently-removed endpoint on the network, so nothing said which
-	// address to ask for and the DHCP server decided. NOT
-	// healthy-affecting: every container still gets an address. Watch
-	// it: it is the one signal that addresses moved for a reason the
-	// operator can act on.
+	// IPAMRebindAmbiguous counts address requests that met more than one removed endpoint, so the server chose (#110).
 	IPAMRebindAmbiguous int32 `json:"ipam_rebind_ambiguous"`
-	// IPAMReserveDuplicateMAC counts address requests refused because the
-	// network was already leasing an address for that hardware address.
-	// NOT healthy-affecting for the host: refusing is the safe outcome,
-	// and the alternative is two endpoints holding one address. Worth
-	// investigating, because every move is a container that did not
-	// start: two endpoints on one network were pinned to one
-	// --mac-address.
+	// IPAMReserveDuplicateMAC counts address requests refused for a hardware address already leasing (#110).
 	IPAMReserveDuplicateMAC int32 `json:"ipam_reserve_duplicate_mac"`
-	// IPAMStrandedRecords counts lease records a previous plugin process
-	// left in the created phase with no endpoint behind them, which this
-	// process gave up at start-up so the address can be claimed again.
-	// NOT healthy-affecting: a move is the plugin repairing itself, and
-	// each one is an address that would otherwise have been held for
-	// good. A rise means this plugin, or the daemon under it, is being
-	// restarted while containers start.
+	// IPAMStrandedRecords counts CREATED records a previous process left without an endpoint, given up at start-up
+	// (#1047).
 	IPAMStrandedRecords int32 `json:"ipam_stranded_records"`
-	// IPAMReleaseUnknown counts addresses libnetwork released that no
-	// lease record of ours holds. NOT healthy-affecting and not a
-	// fault: a release for an address whose record is already retained
-	// or closed is the normal ordering.
+	// IPAMReleaseUnknown counts released addresses no lease record holds, the normal order after a retain (#110).
 	IPAMReleaseUnknown int32 `json:"ipam_release_unknown"`
-	// DNSPropagationPIDMismatches counts DNS propagations refused
-	// because the container PID resolved through Docker no longer
-	// belonged to that container by the time the plugin acted on it
-	// (#688). NOT healthy-affecting: refusing is the safe outcome and
-	// the container keeps the resolv.conf it had. It is reported
-	// because the plugin shares the host PID namespace, so each one is
-	// a write that would otherwise have gone to an unrelated host
-	// process.
+	// DNSPropagationPIDMismatches counts DNS writes refused because the container PID was recycled (#688).
 	DNSPropagationPIDMismatches int32 `json:"dns_propagation_pid_mismatches"`
-	// NetnsPIDMismatches counts sandbox network-namespace opens refused
-	// because the container PID resolved through Docker no longer named
-	// that container. The attach fails, so this is not silent -- but the
-	// failure looks like a slow start; only this counter distinguishes a
-	// recycled PID from one.
+	// NetnsPIDMismatches counts sandbox netns opens refused because the container PID was recycled (#695).
 	NetnsPIDMismatches int32 `json:"netns_pid_mismatches"`
-	// SandboxKeyEntries, SandboxKeyEntryFailures and SandboxPIDFallbacks
-	// say which route the plugin took into each container's network
-	// namespace. SandboxKeyEntries counts opens carried by the sandbox
-	// key the daemon publishes; SandboxKeyEntryFailures counts refusals
-	// of that route; SandboxPIDFallbacks counts the endpoints that ended
-	// up on the /proc/<pid>/ns/net route instead.
-	//
-	// READ FALLBACKS AGAINST ENTRIES. Zero fallbacks with zero entries
-	// is not "the key route works" -- it is "nothing was opened". The
-	// pair is what makes the claim have a domain, and it is the evidence
-	// for whether the host PID namespace and CAP_SYS_PTRACE are still
-	// needed for the netns route on this host. Neither is
-	// healthy-affecting: a fallback that succeeds is a working endpoint.
+	// SandboxKeyEntries, SandboxKeyEntryFailures and SandboxPIDFallbacks count the sandbox key route, its refusals and
+	// the /proc/<pid>/ns/net fallback, the evidence for whether the PID route is still needed (#725).
 	SandboxKeyEntries       int32 `json:"sandbox_key_entries"`
 	SandboxKeyEntryFailures int32 `json:"sandbox_key_entry_failures"`
 	SandboxPIDFallbacks     int32 `json:"sandbox_pid_fallbacks"`
 
-	// The four arms SandboxKeyEntryFailures folds together, published
-	// separately because the aggregate cannot say WHICH refusal
-	// happened and the two most likely ones want opposite remedies.
-	//
-	// SandboxKeyNotANamespace is the expected one where the sandbox
-	// netns mount is private (sandbox_netns_propagation=0):
-	// the entry is the placeholder file libnetwork creates before it
-	// bind-mounts the namespace over it, and the plugin's own
-	// /var/run/docker bind was taken before that mount existed. Nothing
-	// to do about it; the PID route carries the attach.
-	//
-	// SandboxKeyNotPermitted is the one that looks identical in the
-	// aggregate and is NOT expected: the daemon is publishing keys
-	// somewhere this plugin does not accept, which is what a
-	// non-default `dockerd --exec-root` produces. The remedy there is a
-	// change to this plugin, not to the host.
-	//
-	// SandboxKeyWrongNSType has never been observed and is published
-	// anyway, because "never observed" is a claim that needs a counter
-	// to stay true. SandboxKeyUnavailable is the residual: the entry
-	// never became openable inside the attach budget.
-	//
-	// SandboxKeyAbsent is the endpoint no key was published for at
-	// all, by either source. It used to land in
-	// SandboxKeyNotPermitted, whose documented cause and remedy are
-	// about a key that exists.
-	//
-	// They sum to SandboxKeyEntryFailures exactly. None is
-	// healthy-affecting.
+	// SandboxKeyNotANamespace (the expected arm under sandbox_netns_propagation=0), SandboxKeyNotPermitted (a
+	// non-default `dockerd --exec-root`), SandboxKeyWrongNSType, SandboxKeyUnavailable and SandboxKeyAbsent sum to
+	// SandboxKeyEntryFailures (#725).
 	SandboxKeyAbsent        int32 `json:"sandbox_key_absent"`
 	SandboxKeyNotPermitted  int32 `json:"sandbox_key_not_permitted"`
 	SandboxKeyNotANamespace int32 `json:"sandbox_key_not_a_namespace"`
 	SandboxKeyWrongNSType   int32 `json:"sandbox_key_wrong_ns_type"`
 	SandboxKeyUnavailable   int32 `json:"sandbox_key_unavailable"`
 
-	// DockerAPINonGETRefusals counts requests to the Docker API the
-	// plugin refused to send because their method was not GET. The
-	// plugin's whole Docker surface is four read calls, so this is
-	// expected to stay zero for the life of an installation; a non-zero
-	// value means code in this process tried to write to the daemon
-	// (#691). NOT healthy-affecting: the refusal is the safe outcome.
+	// DockerAPINonGETRefusals counts Docker API requests refused for a method other than GET (#691).
 	DockerAPINonGETRefusals int32 `json:"docker_api_non_get_refusals"`
-	// DHCPRoutesApplied counts DHCP option-121 classless static routes
-	// handed to Docker. DHCPDefaultRouteSuperseded counts the Joins
-	// where those routes cover 0.0.0.0/0 by union rather than by a
-	// literal default entry -- i.e. the container's egress goes to the
-	// option-121 next hop even though the reported gateway, and
-	// `docker inspect`, still name the router from option 3. Neither is
-	// healthy-affecting: this is legitimate split-tunnel behaviour as
-	// often as it is not. They are the evidence trail (#700).
+	// DHCPRoutesApplied counts option-121 routes handed to Docker, and DHCPDefaultRouteSuperseded the Joins whose
+	// routes cover 0.0.0.0/0 by union, so egress bypasses the option-3 router (#700).
 	DHCPRoutesApplied          int32 `json:"dhcp_routes_applied"`
 	DHCPDefaultRouteSuperseded int32 `json:"dhcp_default_route_superseded"`
-	// MTURefused counts option-26 MTUs outside the range the plugin
-	// will apply; the link keeps the MTU it had. NOT healthy-affecting.
-	// Read it because the alternative was silent: a link clamped near
-	// the RFC floor black-holes path MTU discovery and looks like a
-	// slow network, not a misconfiguration (#702).
+	// MTURefused counts option-26 MTUs outside the applied range, which leave the link MTU unchanged (#702).
 	MTURefused int32 `json:"mtu_refused"`
-	// TombstonesConsumed counts CreateEndpoints that replayed a fresh
-	// tombstone and so handed a recreated container its previous
-	// MAC/IP. Not Healthy-affecting: this is the address-stability
-	// mechanism working.
-	//
-	// It is the counterpart to RecoveredOK. Between them they say which
-	// of the two paths preserved an address across a restart, which is
-	// what makes "the address survived, but via neither path" a
-	// detectable state rather than a silent pass (#386).
+	// TombstonesConsumed counts CreateEndpoints that gave a recreated container its previous MAC and IP (#386).
 	TombstonesConsumed int32 `json:"tombstones_consumed"`
-	// LeaseChanged counts renewals where the server returned a different
-	// IP than the manager last recorded. Not Healthy-affecting (it
-	// doesn't break Docker's view fatally — see plugin.go for the
-	// truthfulness-gap discussion), but worth alerting on for
-	// long-running containers.
+	// LeaseChanged counts renewals where the server returned a different IP than last recorded (#100).
 	LeaseChanged int32 `json:"lease_changed"`
-	// AddressConflicts counts leased addresses found already in use on
-	// the segment (#524, D12), in both families. Healthy-affecting: the
-	// endpoint is up and reporting an address that does not work, and
-	// no other counter moves for it.
-	//
-	// Since 2.0 it covers the whole life of the lease, not just the
-	// moment after acquisition: RFC 5227 section 2.1's probes before
-	// the address is used AND section 2.4's listener afterwards. A
-	// conflict that appears an hour into a container's life moves it.
-	//
-	// IT IS THE SUM OF AddressConflictsV4 AND AddressConflictsV6, and
-	// only the v4 half is the population ACDConflictsDetected counts.
-	// See those two fields.
+	// AddressConflicts is the sum of AddressConflictsV4 and AddressConflictsV6 over the lease's life, RFC 5227
+	// sections 2.1 and 2.4 (#524); Healthy-affecting.
 	AddressConflicts int32 `json:"address_conflicts"`
-	// ACDProbesSent, ACDAnnouncementsSent, ACDConflictsDetected and
-	// ACDARPSendFailures are the library's own RFC 5227 counters.
-	//
-	// READ ACDProbesSent BEFORE BELIEVING AddressConflicts IS ZERO.
-	// That is the whole reason these are here: a zero conflict count
-	// over a plugin that never sent a probe is not a clean segment, and
-	// the two readings were indistinguishable in #524.
-	// ACDProbesSent and ACDAnnouncementsSent move on every acquisition
-	// in conflict_check=wait and =async, and never in =off.
-	//
-	// ACDConflictsDetected is the library's count of the same conflicts
-	// AddressConflicts counts from the chassis side. They must agree;
-	// a divergence is a defect in this seam, not a property of the
-	// segment.
-	//
-	// ACDARPSendFailures is probes and announcements the ARP socket
-	// refused. NOT Healthy-affecting on its own — but a probe that was
-	// never sent proves nothing about the address, so a rise here is
-	// what turns "no conflict" into "no question asked".
+	// ACDProbesSent, ACDAnnouncementsSent, ACDConflictsDetected and ACDARPSendFailures are the library's RFC 5227
+	// counters, which show whether a zero AddressConflicts had any probe behind it (#524, #882).
 	ACDProbesSent        int32 `json:"acd_probes_sent"`
 	ACDAnnouncementsSent int32 `json:"acd_announcements_sent"`
 	ACDConflictsDetected int32 `json:"acd_conflicts_detected"`
 	ACDARPSendFailures   int32 `json:"acd_arp_send_failures"`
-	// ACDResumedUnchecked counts endpoints resumed from a record whose
-	// section 2.1 check had not completed when the previous plugin
-	// process stopped (D23). NOT healthy-affecting: the resumed client
-	// re-runs the check on its INIT-REBOOT acknowledgement, so the
-	// window closes on its own. It is a `warn` check because during
-	// that window a container holds an address nothing finished
-	// checking.
+	// ACDResumedUnchecked counts endpoints resumed before their RFC 5227 section 2.1 check finished, re-run on the
+	// INIT-REBOOT ACK (#882); a `warn` check.
 	ACDResumedUnchecked int32 `json:"acd_resumed_unchecked"`
 
-	// SandboxNetnsVisible is how many sandbox netns entries the plugin
-	// can currently see, or -1 when it cannot read the directory at all
-	// (#567). Sampled at request time rather than accumulated — it
-	// describes the plugin's view of the host right now, not something
-	// that happened.
-	//
-	// It exists because the evidence sandboxGone depends on was
-	// unreachable for the entire life of this plugin and nothing said
-	// so. The directory is not part of the image; it is bind-mounted by
-	// config.json, and before #567 it was not mounted at all, so
-	// os.ReadDir failed on every call and sandboxGone answered "no
-	// usable evidence" forever. A dead branch is invisible precisely
-	// because it never does anything.
-	//
-	// READ IT AGAINST ACTIVE_ENDPOINTS, NOT ON ITS OWN. The two
-	// failure modes are opposite and only the comparison separates
-	// them:
-	//
-	//   -1  the directory is unreadable — the mount is missing. Every
-	//       sandboxGone answer is "no evidence", which is safe but
-	//       useless: the API 404 becomes the only source of truth.
-	//    0  with endpoints attached, the directory is readable but
-	//       WRONG — mounted from somewhere with no sandboxes in it.
-	//       This is the dangerous one. sandboxGone finds no entry
-	//       matching any key and concludes every container has
-	//       vanished, which is worse than never answering.
-	//
-	// A plain zero with no endpoints attached is neither: there is
-	// genuinely nothing to see.
+	// SandboxNetnsVisible is the sandbox netns entries visible at request time, -1 when the directory is unreadable
+	// (a missing mount) and 0 with endpoints attached when it is mounted from the wrong place (#567).
 	SandboxNetnsVisible int32 `json:"sandbox_netns_visible"`
 
-	// SandboxNetnsPropagation says whether a mount the daemon makes
-	// under the sandbox netns directory AFTER this process started can
-	// reach this process at all.
-	//
-	//    1  the mount carries a propagation link, so it can. An attach
-	//       can then enter the sandbox by its key.
-	//    0  the mount is private. Every attach is for a sandbox younger
-	//       than this process, so every attach is refused with
-	//       sandbox_key_not_a_namespace and carried by the container
-	//       PID, which is what pidhost and CAP_SYS_PTRACE are for.
-	//   -1  mountinfo is unreadable, or no mount covers any permitted
-	//       directory. The directory not existing yet is NOT this
-	//       reading: the daemon creates it inside the mount that
-	//       already covers its parent, so the answer is that mount's.
-	//
-	// It exists because the zero reading is the whole of SECURITY.md's
-	// causal sentence, and until now that sentence was an inference
-	// from a refusal count. A refusal count is equally consistent with
-	// a key shape this plugin declines, which wants the opposite
-	// remedy. See sandboxNetnsPropagationIn for the bound on the 1.
+	// SandboxNetnsPropagation is 1 when a later daemon mount under the sandbox netns directory reaches this process, 0
+	// when the mount is private so attaches take the PID route, and -1 when mountinfo is unreadable (#417).
 	SandboxNetnsPropagation int32 `json:"sandbox_netns_propagation"`
 
-	// SandboxNetnsInitMounts is how many sandbox netns mounts exist in
-	// PID 1's mount table.
-	//
-	//   -2  PID 1 shares this process's mount namespace, so reaching
-	//       the sandbox key through /proc/1/root reaches the table
-	//       this process already has.
-	//   -1  PID 1's mount table could not be read.
-	//    0  a different mount namespace that carries none of them.
-	//    N  a different mount namespace that carries N. Read it
-	//       against sandbox_netns_visible.
-	//
-	// Under a nested engine PID 1 is that engine's init and not the
-	// outer host's, so this reads differently on the integration lane
-	// and on a systemd host, and a route judged on one of them alone
-	// is judged on the wrong number.
+	// SandboxNetnsInitMounts is the sandbox netns mounts in PID 1's table: -2 shared namespace, -1 unreadable, else
+	// the count, and under a nested engine PID 1 is that engine's init (#417).
 	SandboxNetnsInitMounts int32 `json:"sandbox_netns_init_mounts"`
 
-	// DHCP-wire counters (T2-4). Naming intentionally drops the
-	// Prometheus `_total` suffix to stay consistent with the
-	// existing fields above; the issue's proposal listed them with
-	// `_total` for documentation clarity but the wire field is the
-	// shorter form.
-	//
-	// Each of these is the SUM of its *_v4 and *_v6 halves below, added
-	// in healthSnapshot (#730). It is not a counter in its own right,
-	// and nothing increments it. The meaning operators alert on is
-	// unchanged — it was a v4+v6 total before and it is a v4+v6 total
-	// now — but it is now derived from the halves rather than the
-	// halves being derived from it.
+	// LeasesObtained and the wire counters below are the sums of their _v4 and _v6 halves, without `_total` (#730).
 	LeasesObtained int32 `json:"leases_obtained"`
 	LeasesRenewed  int32 `json:"leases_renewed"`
-	// RenewalsUnanswered counts renewal requests that got no answer,
-	// one per request, while the client kept running (#940). Read it
-	// beside LeasesRenewed and ahead of DHCPTimeouts: renewals
-	// completing with this flat is a healthy lease; this climbing with
-	// LeasesRenewed flat is a DHCP server that has gone quiet.
-	//
-	// HOW EARLY IT MOVES IS A PROPERTY OF THE LEASE, not a constant.
-	// It moves at the first retransmission, and RFC 2131 section 4.4.5
-	// has the client "wait one-half of the remaining time until T2 (in
-	// RENEWING state) and one-half of the remaining lease time (in
-	// REBINDING state), down to a minimum of 60 seconds". The 60
-	// seconds is a FLOOR under that wait, which proto.renewalDelay
-	// implements as max(RenewRetransmitFloor, half), so the wait is a
-	// minute only when T2 is about two minutes off and is hours on a
-	// long lease. On the 24 hour lease #940 was reported from, T1 is at
-	// 12h and T2 at 21h, so the first retransmission is ~4h30m after
-	// the client's first renewal request at T1: the MEASURED four
-	// requests across 7h52m are that halving schedule, not a
-	// one-minute one. DHCPTimeouts
-	// first moves for a held lease when the lease ends, at 24h, so what
-	// this buys on that lease is about 7.5 hours of warning.
-	//
-	// NOT Healthy-affecting, and not a `warn` check either. A single
-	// lost datagram moves it on a segment that is working, so non-zero
-	// is not by itself the abnormal state a check can fire on; what is
-	// actionable is a rise with no renewals completing beside it, which
-	// is a relationship between two counters and not a threshold on
-	// one.
-	//
-	// The request currently in flight is not counted: one is proven
-	// unanswered only by the retransmission that follows it. A client
-	// that has sent N requests into silence reports N-1.
+	// RenewalsUnanswered counts renewal requests that got no answer, first moving at the RFC 2131 section 4.4.5
+	// retransmission (half the time to T2, floor 60 s), measured 4h30m after T1 on a 24 h lease (#940).
 	RenewalsUnanswered int32 `json:"renewals_unanswered"`
-	// DHCPServerTierFallbacks counts STEPS DOWN the dhcp_servers
-	// ladder: one per preferred entry that did not answer inside its
-	// slice of the budget and handed on to the next (#111). One
-	// acquisition against three silent preferred servers adds 2, not
-	// 1 — the counter measures how far down the list acquisition had
-	// to walk, which is the number worth having and is what the code
-	// has always produced. Three of the four places this was described
-	// said "acquisitions" instead, and #731 is that drift.
-	//
-	// Not healthy-affecting — the endpoint still got an address; a
-	// steady rise is how a silently-dead primary shows up.
+	// DHCPServerTierFallbacks counts steps down the dhcp_servers ladder, one per silent preferred entry (#111, #731).
 	DHCPServerTierFallbacks int32 `json:"dhcp_server_tier_fallbacks"`
-	// DHCPServerPolicyExhausted counts acquisitions abandoned because no
-	// server listed in dhcp_servers answered (#111). Not Healthy-
-	// affecting on its own: the acquisition failure it accompanies is
-	// already counted and already fails the operation.
+	// DHCPServerPolicyExhausted counts acquisitions no dhcp_servers entry answered (#111); not Healthy-affecting.
 	DHCPServerPolicyExhausted int32 `json:"dhcp_server_policy_exhausted"`
-	// DHCPServerPolicyTimeouts counts dhcp_timeouts on endpoints whose
-	// renewal client is restricted to dhcp_servers (#731). A strict
-	// subset of DHCPTimeouts and NOT Healthy-affecting: every tick it
-	// counts is already counted there, and weighting one outage twice
-	// would make a policy-restricted endpoint look worse than an
-	// unrestricted one failing identically.
+	// DHCPServerPolicyTimeouts counts the subset of dhcp_timeouts on dhcp_servers-restricted endpoints (#731).
 	DHCPServerPolicyTimeouts int32 `json:"dhcp_server_policy_timeouts"`
 	DHCPTimeouts             int32 `json:"dhcp_timeouts"`
-	// ClientStopFailures counts renewal clients that did not shut down
-	// cleanly when the plugin signalled them at teardown. Not
-	// Healthy-affecting: the endpoint is going away either way.
-	//
-	// It does NOT mean a lease was not handed back. Whether a lease
-	// goes back at all is `release_lease`'s question (#962), and on the
-	// default `never` no path sends a DHCPRELEASE: a stopped
-	// container's lease expires on the server's clock, like any other
-	// host's (#800). The counter that answers the release question is
-	// ReleaseFailures. This one was called lease_release_failures until
-	// v1.9.0, when it stopped describing a release at all.
+	// ClientStopFailures counts renewal clients that did not stop cleanly, not a missing release (#800, #962).
 	ClientStopFailures int32 `json:"client_stop_failures"`
-	// ReleasesSent and ReleaseFailures are the sum of their per-family
-	// halves below (#962), stored the way every other pair is: the
-	// halves are the counters and this is their sum, computed in
-	// healthSnapshot rather than incremented anywhere.
-	//
-	// ReleaseFailures is warn-classified because it names addresses
-	// that are still leased upstream against the operator's stated
-	// intent. It is not Healthy-affecting: nothing on this host is
-	// broken by it, and the outcome is the one a `never` network has
-	// on every teardown.
+	// ReleasesSent and ReleaseFailures are the sums of their per-family halves, ReleaseFailures a `warn` check (#962).
 	ReleasesSent    int32 `json:"releases_sent"`
 	ReleaseFailures int32 `json:"release_failures"`
-	// ReleasesReclaimed is the sum of its per-family halves: held
-	// addresses a RUNNING container is using again at the end of the
-	// restart window on a `release_lease=on_remove` network, so the
-	// record was closed and no datagram was sent (#984). It is what
-	// the option's quiet half looks like from outside: with it at zero
-	// and `releases_sent` climbing, nothing is restarting inside the
-	// window; with it climbing, the window is doing the job it exists
-	// for. Zero on `never` and on `on_stop`, which have no window.
-	//
-	// IT IS NARROWER THAN "NOTHING WAS SENT". Two other outcomes also
-	// send nothing and are deliberately not counted here: the same
-	// address stopped a second time, where a newer record carries its
-	// own deadline and decides the address itself, and an address
-	// acquisition in flight under the same endpoint key, where the
-	// address is left to expire so it is not taken from under an
-	// exchange that may be about to be given it. Each has its own
-	// sentence in the log at `debug`. Counting either here would
-	// report a restart that did not happen.
+	// ReleasesReclaimed counts on_remove addresses a running container reused inside the restart window, so the
+	// record closed without a datagram (#984).
 	ReleasesReclaimed int32 `json:"releases_reclaimed"`
-	// NAKsReceived counts server NAKs on renewal/rebind. Not
-	// Healthy-affecting on its own — the client recovers by
-	// re-DISCOVERing — but each NAK-triggered re-bind widens the
-	// docker-inspect divergence tracked by lease_changed (#128).
+	// NAKsReceived counts server NAKs on renewal or rebind, each widening the lease_changed divergence (#128).
 	NAKsReceived int32 `json:"naks_received"`
-	// DisplacedStops counts managers displaced at Join — a Join that
-	// found a recovery-registered manager still in the registry for
-	// the same endpoint (plugin restart racing a container restart).
-	// Not Healthy-affecting: the displaced client is stopped and
-	// released, and the new one takes over. A climbing value means
-	// containers are restarting into a plugin that had recovered them,
-	// so pair it with recovered_ok when diagnosing a restart loop.
+	// DisplacedStops counts recovery-registered managers displaced by a Join for the same endpoint.
 	DisplacedStops int32 `json:"displaced_stops"`
-	// ParentLinkWaits / ParentLinkWaitTimeouts cover contention on a
-	// shared parent NIC. A parent is a macvlan port or an ipvlan port,
-	// never both, so the validate_dhcp probe holding one across a DHCP
-	// round trip can collide with an endpoint asking for the other
-	// (#486/#549). The plugin queues them per parent instead.
-	//
-	// Waits counts the operations that had to queue; timeouts counts
-	// those that gave up after parentGateBudget and went to the kernel
-	// anyway. Neither is Healthy-affecting: queuing is the mechanism
-	// working, and a timeout only restores the behaviour that existed
-	// before the queue did. Timeouts climbing is the actionable one —
-	// it means a reclaim is holding a parent far longer than its DORA
-	// should take, and container starts on that NIC are failing with
-	// "device or resource busy".
+	// ParentLinkWaits and ParentLinkWaitTimeouts count operations queued on a shared parent NIC and those that gave up
+	// after parentGateBudget, since a parent is a macvlan or an ipvlan port, never both (#486, #549).
 	ParentLinkWaits        int32 `json:"parent_link_waits"`
 	ParentLinkWaitTimeouts int32 `json:"parent_link_wait_timeouts"`
-	// LedgerWriteFailures counts failed appends to the audit_log
-	// lease ledger (#109). Not Healthy-affecting — a lost audit line
-	// degrades forensics, not networking; operators using audit_log
-	// alert on this directly.
+	// LedgerWriteFailures counts failed appends to the audit_log lease ledger (#109); not Healthy-affecting.
 	LedgerWriteFailures int32 `json:"ledger_write_failures"`
-	// IfnameUnsupported counts endpoints created with a custom
-	// interface name on an engine that does not apply one (#125, #670).
-	// The request is accepted and the network works; the interface
-	// carries the driver's prefix and index instead of the requested
-	// name. Nothing else reports that, which is why it is counted.
+	// IfnameUnsupported counts custom interface names on an engine that does not apply them (#125, #670).
 	IfnameUnsupported int32 `json:"ifname_unsupported"`
-	// StateFileChmodFailures counts files the startup sweep could not
-	// tighten, plus one for a STATE_DIR it could not read at all
-	// (#804). Not Healthy-affecting: nothing the plugin does is
-	// degraded by a loose mode on a state file. It is a `warn` check
-	// because the remedy is an operator's to apply, one `chmod` on the
-	// path the plugin log names, and because a sweep that failed and a
-	// sweep that found nothing to do are otherwise the same reading.
+	// StateFileChmodFailures counts state files the startup sweep could not tighten, plus an unreadable STATE_DIR
+	// (#804).
 	StateFileChmodFailures int32 `json:"state_file_chmod_failures"`
 
-	// Per-family breakdown of the wire counters (#212, #730). Both
-	// halves are STORED; the un-suffixed field above is their sum,
-	// computed in healthSnapshot from the same two values rendered
-	// here. It is not a third counter, and neither half is a subset of
-	// it. On a dual-stack host this isolates the v6-specific failure
-	// signal (NAK/timeout) the aggregate hides.
-	//
-	// Until #730 the v4 share was not stored at all: the un-suffixed
-	// field was the counter and the v4 number was recovered by
-	// subtracting *_v6 from it at render time. Two independently
-	// updated atomics combined by subtraction can produce a value lower
-	// than the previous read, and a counter that decreases is a reset
-	// to Prometheus. Storing both and adding for the total is
-	// monotonic under every interleaving; subtracting is not.
+	// LeaseChangedV4 and the per-family counters below are stored, and the un-suffixed field is their sum, since a
+	// total recovered by subtraction can decrease and reads as a reset to Prometheus (#212, #730).
 	LeaseChangedV4   int32 `json:"lease_changed_v4"`
 	LeasesObtainedV4 int32 `json:"leases_obtained_v4"`
 	LeasesRenewedV4  int32 `json:"leases_renewed_v4"`
@@ -1016,224 +440,85 @@ type HealthResponse struct {
 	NAKsReceivedV4       int32 `json:"naks_received_v4"`
 	// ClientStopFailuresV4 is the v4 half of ClientStopFailures.
 	ClientStopFailuresV4 int32 `json:"client_stop_failures_v4"`
-	// ReleasesSentV4 and ReleaseFailuresV4 are the `release_lease`
-	// pair for IPv4 (#962): DHCPRELEASE messages that left the host,
-	// and attempts that produced none. Both stay at zero on a network
-	// that does not set the option, which is every network by default.
+	// ReleasesSentV4 and ReleaseFailuresV4 are the IPv4 `release_lease` pair (#962).
 	ReleasesSentV4    int32 `json:"releases_sent_v4"`
 	ReleaseFailuresV4 int32 `json:"release_failures_v4"`
-	// ReleasesReclaimedV4 is the IPv4 half of ReleasesReclaimed: held
-	// addresses a running container is using again at the end of the
-	// restart window on a `release_lease=on_remove` network, so nothing
-	// was sent (#984). Like the sum, it does not count the other two
-	// reasons a held address is not handed back.
+	// ReleasesReclaimedV4 is the IPv4 half of ReleasesReclaimed (#984).
 	ReleasesReclaimedV4 int32 `json:"releases_reclaimed_v4"`
-	// AddressConflictsV4 is the RFC 5227 half of AddressConflicts, and
-	// it is the ONLY half that may be compared against ACDProbesSent
-	// and ACDConflictsDetected: those two count ARP, which no DHCPv6
-	// conflict can produce.
+	// AddressConflictsV4 is the RFC 5227 half, the only one comparable with the ARP-based ACD counters.
 	AddressConflictsV4 int32 `json:"address_conflicts_v4"`
 
-	// THE v6 FIELDS BELOW HAVE WRITERS AGAIN (#911). Each one is
-	// incremented by a DHCPv6 client running beside the v4 one, and a
-	// zero means the thing did not happen rather than "this build
-	// cannot report it" -- which is what it meant while 2.0 was IPv4-
-	// only, and is the reason that statement was written here at all.
-	//
-	// A zero is still not evidence of health on its own. Two of them --
-	// dhcpv6_not_offered and dhcpv6_no_router_advert -- are absences
-	// the plugin TOLERATES, and their integration proofs assert
-	// dnsmasq's log beside the counter for exactly that reason: a
-	// counter is the plugin's belief, and the exchange is what
-	// happened.
+	// LeaseChangedV6 and the v6 fields below are written by the DHCPv6 client, so a zero means it did not happen
+	// (#911).
 	LeaseChangedV6   int32 `json:"lease_changed_v6"`
 	LeasesObtainedV6 int32 `json:"leases_obtained_v6"`
 	LeasesRenewedV6  int32 `json:"leases_renewed_v6"`
-	// RenewalsUnansweredV6 is the DHCPv6 half: Renew and Rebind
-	// messages (RFC 9915 sections 18.2.4 and 18.2.5) the server did not
-	// answer. A v6-only silence is invisible in the sum.
+	// RenewalsUnansweredV6 counts unanswered Renew and Rebind messages (RFC 9915 sections 18.2.4 and 18.2.5).
 	RenewalsUnansweredV6 int32 `json:"renewals_unanswered_v6"`
 	DHCPTimeoutsV6       int32 `json:"dhcp_timeouts_v6"`
 	NAKsReceivedV6       int32 `json:"naks_received_v6"`
-	// AddressConflictsV6 is the DHCPv6 half of AddressConflicts: an
-	// address the kernel's Duplicate Address Detection (RFC 4862
-	// section 5.4) found on the link, declined to the server under RFC
-	// 9915 section 18.2.8. NOTHING ARP-SHAPED COUNTS IT -- not
-	// ACDProbesSent, not ACDConflictsDetected -- so a non-zero here
-	// beside a zero ACDConflictsDetected is the two protocols, not a
-	// seam defect.
-	//
-	// The replacement address the library then wins arrives as an
-	// ordinary bind and is applied to the container's interface.
-	// Docker's record of the endpoint is NOT updated, exactly as for a
-	// v4 lease change (#104); read LeaseChangedV6 beside this.
+	// AddressConflictsV6 counts addresses the kernel's DAD (RFC 4862 section 5.4) found in use, declined under RFC 9915
+	// section 18.2.8; Docker's record is not updated for the replacement, as for v4 (#104).
 	AddressConflictsV6 int32 `json:"address_conflicts_v6"`
-	// ClientStopFailuresV6 is the v6 share of ClientStopFailures
-	// (#608): the persistent DHCPv6 client held a binding and did not
-	// shut down cleanly when the plugin signalled it. No release is
-	// involved in THIS counter: on a `release_lease=on_stop` network
-	// the release is attempted at Leave, before the client is
-	// signalled, and it is counted in ReleasesSentV6 and
-	// ReleaseFailuresV6 below (#962). On every other network nothing
-	// this plugin runs sends one (#800).
+	// ClientStopFailuresV6 is the v6 share of ClientStopFailures, with any release counted apart (#608, #962).
 	ClientStopFailuresV6 int32 `json:"client_stop_failures_v6"`
-	// ReleasesSentV6 and ReleaseFailuresV6 are the same pair for
-	// DHCPv6 Release messages (RFC 9915 section 18.2.7). Read them per
-	// family and never as a sum: a dual-stack endpoint that handed its
-	// v4 address back and could not hand its v6 one back is the case
-	// the split exists to make visible.
+	// ReleasesSentV6 and ReleaseFailuresV6 count DHCPv6 Release messages (RFC 9915 section 18.2.7), read per family.
 	ReleasesSentV6    int32 `json:"releases_sent_v6"`
 	ReleaseFailuresV6 int32 `json:"release_failures_v6"`
-	// ReleasesReclaimedV6 is the DHCPv6 half of ReleasesReclaimed: the
-	// v6 record of a dual-stack endpoint is a second record with its
-	// own deadline, so one family's address can be in use again while
-	// the other's goes back to the server (#984). Like the sum, it
-	// counts a running container's address and nothing else.
+	// ReleasesReclaimedV6 is the DHCPv6 half of ReleasesReclaimed, a second record with its own deadline (#984).
 	ReleasesReclaimedV6 int32 `json:"releases_reclaimed_v6"`
-	// DHCPv6ConfigOnly counts DHCPv6 information replies -- address-less
-	// configuration from a network advertising the RA "other config"
-	// flag (#815). NOT healthy-affecting: it is a normal exchange on a
-	// stateless network. Before #815 these were dropped unread, so such
-	// a network was indistinguishable from one that answered nothing.
-	// It has no v4 half; see the atom for why.
+	// DHCPv6ConfigOnly counts DHCPv6 information replies on a network with the RA "other config" flag (#815).
 	DHCPv6ConfigOnly int32 `json:"dhcpv6_config_only"`
-	// DHCPv6NotOffered counts endpoints created without a DHCPv6
-	// address because the segment advertised no managed DHCPv6 --
-	// stateless or SLAAC (#868). NOT healthy-affecting: on those
-	// networks it is the correct outcome, there being no DHCPv6
-	// address on them to be had. The endpoint has no global IPv6
-	// address at all: since #821 the guard writes autoconf=0, so the
-	// kernel forms none from the advertised prefix either. The endpoint
-	// still gets its IPv6 gateway, MTU, routes and DNS from the
-	// advertisement, read by the plugin's own client. See v6_absence.go
-	// and docs/reference.md.
+	// DHCPv6NotOffered counts endpoints with no DHCPv6 address because the RA advertised no managed DHCPv6, and with
+	// autoconf=0 no SLAAC address either (#821, #868).
 	DHCPv6NotOffered int32 `json:"dhcpv6_not_offered"`
-	// DHCPv6NoRouterAdvert counts endpoints created without a DHCPv6
-	// address because no router advertisement arrived at all (#868).
-	// Kept apart from DHCPv6NotOffered because "no DHCPv6 here" and
-	// "nothing said anything" call for different operator action.
+	// DHCPv6NoRouterAdvert counts endpoints with no DHCPv6 address because no router advertisement arrived (#868).
 	DHCPv6NoRouterAdvert int32 `json:"dhcpv6_no_router_advert"`
-	// DHCPv6Refused counts endpoints that FAILED because a DHCPv6
-	// server answered and refused the client -- RFC 9915 §21.13's
-	// Status Code option carrying something other than Success (#816).
-	// NOT healthy-affecting: the endpoint's failure is reported to
-	// Docker, and the segment's DHCPv6 pool is not this plugin's
-	// health. Read it against dhcpv6_no_server: a refusal means a
-	// reachable server with no address for this client, a silence
-	// means no server answered at all.
+	// DHCPv6Refused counts endpoints failed by a server Status Code other than Success (RFC 9915 21.13, #816).
 	DHCPv6Refused int32 `json:"dhcpv6_refused"`
-	// DHCPv6NoServer counts endpoints that FAILED because the segment
-	// advertised the managed flag and no DHCPv6 server answered inside
-	// the acquisition budget (#816). NOT healthy-affecting, for the
-	// same reason as the row above.
+	// DHCPv6NoServer counts endpoints failed because a managed segment's DHCPv6 server never answered (#816).
 	DHCPv6NoServer int32 `json:"dhcpv6_no_server"`
-	// DHCPv6SLAACNoPrefix counts endpoints that FAILED on a network
-	// whose `ipv6_mode` forms its own address, because a router
-	// advertised and none of its prefixes could form one (RFC 4862
-	// §5.5.3) (#816, #817). NOT healthy-affecting: the prefixes are the
-	// router's.
+	// DHCPv6SLAACNoPrefix counts SLAAC endpoints failed because no advertised prefix could form an address (RFC 4862
+	// 5.5.3, #816, #817).
 	DHCPv6SLAACNoPrefix int32 `json:"dhcpv6_slaac_no_prefix"`
 
-	// DHCPv6SLAACNoAddress counts endpoints that FAILED on a network
-	// whose ipv6_mode forms the address from a router advertisement,
-	// where a router advertised and no address formed inside the
-	// acquisition budget. Its sibling above is the case where the
-	// library named the reason.
+	// DHCPv6SLAACNoAddress counts SLAAC endpoints where no address formed inside the acquisition budget (#818).
 	DHCPv6SLAACNoAddress int32 `json:"dhcpv6_slaac_no_address"`
 
-	// IPv6SLAACAddresses counts addresses formed from a router
-	// advertisement and installed on a container link, and
-	// IPv6AddressesWithdrawn the ones removed again when the lease
-	// stopped holding them. They count ADDRESSES, not endpoints: one
-	// container on a link with two autonomous prefixes raises the first
-	// by two.
+	// IPv6SLAACAddresses and IPv6AddressesWithdrawn count addresses installed and removed, not endpoints (#818, #819).
 	IPv6SLAACAddresses     int32 `json:"ipv6_slaac_addresses"`
 	IPv6AddressesWithdrawn int32 `json:"ipv6_addresses_withdrawn"`
 
-	// IPv6SLAACPrefixesIgnored counts advertised prefixes no address
-	// was formed from, for any of RFC 4862 section 5.5.3's reasons and
-	// including this client's cap of eight addresses per endpoint.
+	// IPv6SLAACPrefixesIgnored counts prefixes skipped under RFC 4862 section 5.5.3 or the eight-address cap.
 	IPv6SLAACPrefixesIgnored int32 `json:"ipv6_slaac_prefixes_ignored"`
 
-	// IPv6MainPrefixUnmatched counts endpoints whose network named an
-	// ipv6_main_prefix that none of the endpoint's addresses fell
-	// inside, so the first advertised prefix went to Docker instead.
+	// IPv6MainPrefixUnmatched counts endpoints where no address fell inside ipv6_main_prefix (#819).
 	IPv6MainPrefixUnmatched int32 `json:"ipv6_main_prefix_unmatched"`
-	// DHCPv6AutoFallbacks counts endpoints on an `ipv6_mode=auto`
-	// network whose address was formed from a router's advertised
-	// prefix after the segment advertised DHCPv6 and no server answered
-	// (#817). NOT healthy-affecting: the endpoint has an address and
-	// the segment is the thing to look at. It counts addresses that
-	// really formed, never fallbacks attempted.
+	// DHCPv6AutoFallbacks counts `ipv6_mode=auto` endpoints that formed a SLAAC address after DHCPv6 went silent
+	// (#817).
 	DHCPv6AutoFallbacks int32 `json:"dhcpv6_auto_fallbacks"`
-	// IPv6LinkEnableFailures counts container links IPv6 could not be
-	// enabled on before a DHCPv6 client was started. Distinguishes a
-	// quiet segment from one the plugin could never have heard.
+	// IPv6LinkEnableFailures counts container links IPv6 could not be enabled on before the DHCPv6 client started.
 	IPv6LinkEnableFailures int32 `json:"ipv6_link_enable_failures"`
-	// RouterAdvertGuardFailures counts steps of the Router-Advertisement
-	// guard that did not take on a container link (#875): a sysctl
-	// write that failed, or a read-back holding something other than
-	// what was written. Three knobs, two steps each. Non-zero means
-	// some container's kernel may not be processing advertisements, and
-	// DHCPv6 supplies no route of its own -- so the endpoint looks
-	// healthy now and loses its route when the advertisement it has
-	// expires. It does not count a privileged process inside the
-	// container undoing the settings; see docs/reference.md.
+	// RouterAdvertGuardFailures counts RA guard sysctl steps that failed or read back wrong on a container link (#875).
 	RouterAdvertGuardFailures int32 `json:"router_advert_guard_failures"`
-	// IPv6RouterWithdrawn counts container IPv6 default routes removed
-	// because the advertising router set its Router Lifetime to 0
-	// (#821). Counts routes removed, not advertisements seen. Not
-	// healthy-affecting: a router withdrawing itself is deliberate, and
-	// the containers on that segment are correctly left with no default
-	// route rather than one pointing at a router that is gone.
+	// IPv6RouterWithdrawn counts container v6 default routes removed for a Router Lifetime of 0 (#821).
 	IPv6RouterWithdrawn int32 `json:"ipv6_router_withdrawn"`
 
-	// The library's RFC 4861 router-discovery counters, folded across
-	// every DHCPv6 manager this process ever ran (#814). They describe
-	// the SEGMENT, and they are the numbers to read when a container
-	// comes up with no IPv6 gateway, no MTU and no resolver: every one
-	// of those fields comes out of an advertisement.
-	//
-	// RouterSolicitsSent is RFC 4861 section 6.3.7's solicitations that
-	// left a container's link. READ RouterAdvertsSeen AGAINST IT: a
-	// zero sighting count beside a zero solicitation count is a client
-	// that never asked, which is not the same reading as a link whose
-	// routers are silent.
+	// RouterSolicitsSent and the router counters below are the library's RFC 4861 counters folded across every
+	// DHCPv6 manager, solicitations under section 6.3.7 (#814).
 	RouterSolicitsSent int32 `json:"router_solicits_sent"`
-	// RouterAdvertsSeen counts advertisements that decoded and reached
-	// the state machine; RouterAdvertsRefused frames whose ICMPv6 type
-	// said Router Advertisement and which would not decode. Their
-	// difference is the diagnostic: a link with no router and a link
-	// whose router is advertising something this client refuses are one
-	// number in a total holding both, and one of them is a router to
-	// find while the other is a router to fix.
+	// RouterAdvertsSeen counts decoded advertisements and RouterAdvertsRefused undecodable ones (#814).
 	RouterAdvertsSeen    int32 `json:"router_adverts_seen"`
 	RouterAdvertsRefused int32 `json:"router_adverts_refused"`
-	// RouterAdvertOptionsIgnored counts OPTIONS and not frames: one
-	// option refused by its own standard's validity rule out of an
-	// advertisement the rest of which was read. It rises on
-	// advertisements that are otherwise fine, so it is not part of
-	// RouterAdvertsRefused.
+	// RouterAdvertOptionsIgnored counts refused options, not frames, in otherwise read advertisements (#814).
 	RouterAdvertOptionsIgnored int32 `json:"router_advert_options_ignored"`
-	// RouterTableEntriesDropped counts arrivals a full list in the
-	// library's router table would not take, RouterTableEntriesEvicted
-	// entries a full list threw out to take an arrival (RFC 8106
-	// section 6.2 (d)). Either above zero means the table's caps are in
-	// force, which on an ordinary segment means something is
-	// advertising more than a link has.
+	// RouterTableEntriesDropped and RouterTableEntriesEvicted count the router table caps in force (RFC 8106 6.2 (d)).
 	RouterTableEntriesDropped int32 `json:"router_table_entries_dropped"`
 	RouterTableEntriesEvicted int32 `json:"router_table_entries_evicted"`
 
-	// Checks is one entry per named check, keyed by the counter behind
-	// it. Each value is a SINGLE-ELEMENT ARRAY because section 4 says
-	// so: the draft's keys point to arrays so that a sub-component
-	// backed by several nodes can report each of them, and it asks for
-	// a one-element array where that is not relevant, "for
-	// consistency".
+	// Checks is one single-element array per named check, as the health-check draft's section 4 asks.
 	Checks map[string][]HealthCheck `json:"checks"`
-	// Endpoints is one entry per registered manager, bounded by
-	// ActiveEndpoints. Not in /metrics: a series per container is a
-	// cardinality decision, and it is taken separately.
+	// Endpoints is one entry per registered manager, kept out of /metrics as a cardinality decision.
 	Endpoints []EndpointHealth `json:"endpoints"`
 }
 
@@ -1241,17 +526,6 @@ func (p *Plugin) apiHealth(w http.ResponseWriter, r *http.Request) {
 	util.JSONResponse(w, p.healthSnapshot(), http.StatusOK)
 }
 
-// checkStamps is the movement time of every counter a check is declared
-// on, keyed by the json tag the check is keyed on.
-//
-// A METHOD RATHER THAN A LITERAL INSIDE healthSnapshot, so that this map
-// can be read on its own. A check whose field is missing here renders
-// with the time of the reading -- a fresh-looking timestamp on a latched
-// fault, saying the opposite of what happened -- and a stamp taken from
-// the neighbouring counter is the same lie with a plausible value. Both
-// are invisible in a document; TestHealthChecks_EveryCheckHasAStamp
-// drives one counter at a time and reads this map, which is the only
-// place either is observable at all.
 func (p *Plugin) checkStamps() map[string]time.Time {
 	return map[string]time.Time{
 		"recovery_failed":            p.recoveryFailed.LastMoved(),
@@ -1279,46 +553,14 @@ func (p *Plugin) checkStamps() map[string]time.Time {
 	}
 }
 
-// healthSnapshot builds one consistent view of the plugin's counters.
-//
-// It exists so that /Plugin.Health and /metrics cannot disagree (#651).
-// Both render from this and only this, which makes "two views, one
-// source" a property of the code rather than something a reviewer has
-// to keep noticing. The alternative — a metrics handler that reads the
-// atomics itself — would be a second hand-maintained list of 45 fields,
-// and this repo has watched that shape rot more than once (#542, #636).
-//
-// The counters are read without a lock and are therefore not a single
-// atomic instant: two of them can be a few nanoseconds apart. For an
-// individual monotonic counter read for rates and alerting that is
-// harmless, and it is the behaviour /Plugin.Health has always had. Only
-// the two map lengths need p.mu, because reading a map during a
-// concurrent write is a data race rather than a stale number.
-//
-// It is NOT harmless for a value COMBINED from two of them, and #730 is
-// what that costs. Each family pair is therefore loaded exactly once
-// here, into a local, and the aggregate is the sum of those two locals
-// — so the pair a caller sees is internally consistent even though the
-// two loads are nanoseconds apart. Adding is what makes the skew
-// tolerable: the sum of two monotonic counters is monotonic under every
-// interleaving. The previous shape subtracted, and subtraction is not.
-// Do not reintroduce a second .Load() of one of these halves; that is
-// the defect, not the arithmetic.
+// healthSnapshot is the one source for /Plugin.Health and /metrics (#651). Counters load without a lock, and each
+// family pair loads once and is summed, since a sum of monotonic counters stays monotonic (#730).
 func (p *Plugin) healthSnapshot() HealthResponse {
-	// ONE read of the manager map, for both `endpoints` and
-	// `active_endpoints`. See endpointViewsOf: the two are one fact, and
-	// deriving them from two acquisitions of p.mu let a Join or Leave
-	// land between them.
 	managers, pending := p.managerSnapshot()
 	endpoints := endpointViewsOf(managers)
 
-	// One load of the engine identity, for both fields. The two are one
-	// observation and are stored as one, so a reader cannot see a
-	// version from before a re-probe beside an API version from after.
 	engine := p.engineSnapshot()
 
-	// ONE resolution of the three sandbox-netns readings' sources, so the
-	// three fields below describe the same directory set.
 	netns := p.netnsReadingSources()
 
 	failed := p.recoveryFailed.Load()
@@ -1329,7 +571,6 @@ func (p *Plugin) healthSnapshot() HealthResponse {
 	conflicts := conflictsV4 + conflictsV6
 	tsQuarantines := p.tombstones.quarantines.Load()
 
-	// One load per half, used for both the half and the sum.
 	leaseChangedV4 := p.leaseChangedV4.Load()
 	leaseChangedV6 := p.leaseChangedV6.Load()
 	leasesObtainedV4 := p.leasesObtainedV4.Load()
@@ -1353,38 +594,20 @@ func (p *Plugin) healthSnapshot() HealthResponse {
 
 	now := time.Now()
 	h := HealthResponse{
-		// Healthy is false on any condition that means an operator
-		// should look: a recovery or join-start failure means a running
-		// container has no renewal goroutine; a tombstone-write failure
-		// means the next restart of some container will pick a new
-		// MAC/IP; an address conflict means a container is up and
-		// reporting an address that belongs to someone else (#524); a
-		// tombstone quarantine means the whole tombstone file was
-		// unreadable, so EVERY container restarting in the next TTL
-		// window picks a new MAC and address (#724).
-		//
-		// See HealthResponse's own comment for what this flag does and
-		// does not say — in particular that it latches for the life of
-		// the process.
-		Healthy:       failed == 0 && joinFails == 0 && tsFails == 0 && conflicts == 0 && tsQuarantines == 0,
-		EngineVersion: engine.Version,
-		APIVersion:    engine.APIVersion,
-		InstanceID:    p.instanceID,
-		UptimeSeconds: time.Since(p.startTime).Seconds(),
-		// len(endpoints), not a second len(p.persistentDHCP): the count
-		// IS the length of the array beside it.
+		// Healthy is false on the five latched conditions (#524, #724); see HealthResponse.
+		Healthy:           failed == 0 && joinFails == 0 && tsFails == 0 && conflicts == 0 && tsQuarantines == 0,
+		EngineVersion:     engine.Version,
+		APIVersion:        engine.APIVersion,
+		InstanceID:        p.instanceID,
+		UptimeSeconds:     time.Since(p.startTime).Seconds(),
 		ActiveEndpoints:   len(endpoints),
 		Endpoints:         endpoints,
 		PendingHints:      pending,
 		RecoveredOK:       p.recoveredOK.Load(),
 		RecoveryFailed:    failed,
 		JoinStartFailures: joinFails,
-		// The three below are deliberately absent from the Healthy
-		// expression above, like JoinAbortedContainerGone. A daemon that
-		// was still starting (#383), a container that had already
-		// exited when recovery reached it (#376), and a network removed
-		// out from under the recovery walk (#648) all leave nothing
-		// behind to be unhealthy about.
+		// Deliberately absent from Healthy: a starting daemon (#383), an exited container (#376), a removed network
+		// (#648).
 		RecoveryDeferred:             p.recoveryDeferred.Load(),
 		RecoveryAbortedContainerGone: p.recoveryAbortedContainerGone.Load(),
 		RecoveryNetworkGone:          p.recoveryNetworkGone.Load(),
@@ -1508,9 +731,6 @@ func (p *Plugin) healthSnapshot() HealthResponse {
 		Library:                      buildinfo.Library,
 	}
 
-	// The checks are built from the response ABOVE, so the value a
-	// check reports and the value the counter field reports are the
-	// same read: they cannot disagree even under a concurrent bump.
 	h.Status, h.Checks = healthChecks(h, p.checkStamps(), now)
 	return h
 }

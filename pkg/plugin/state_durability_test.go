@@ -17,21 +17,6 @@ import (
 	"time"
 )
 
-// Tests for #724: STATE_DIR persistence is durable and versioned where
-// that is worth paying for, deliberately neither where it is not, and
-// never destroys a file it could not read.
-//
-// Each test below is red against the pre-fix tree. Rehearsed by
-// extracting the pre-fix pkg/plugin with `git archive` and running this
-// file against it, rather than against a hand-built fixture -- a
-// fixture proves the test can fail, not that it fails on the code the
-// issue was filed about.
-
-// readRawTombstones returns the tombstone file exactly as it is on
-// disk, decoded only as far as "a list of objects". Deliberately not
-// decoded into []tombstone: the point of these tests is the BYTES the
-// plugin writes, and decoding through the same struct that wrote them
-// would agree with any mistake symmetrically.
 func readRawTombstones(t *testing.T) []map[string]any {
 	t.Helper()
 	data, err := os.ReadFile(tombstoneFilePath())
@@ -45,12 +30,6 @@ func readRawTombstones(t *testing.T) []map[string]any {
 	return raw
 }
 
-// TestSaveOptions_StampsSchemaVersion pins the on-disk shape of the
-// options file: the schema version is present, and it is a sibling of
-// the option fields rather than a wrapper around them. The second half
-// is the half that matters. A nested {"v":1,"options":{...}} would pass
-// any test that only looked for the version, and would be unreadable to
-// every build that predates it.
 func TestSaveOptions_StampsSchemaVersion(t *testing.T) {
 	withStateDir(t, t.TempDir())
 
@@ -79,27 +58,15 @@ func TestSaveOptions_StampsSchemaVersion(t *testing.T) {
 	if !ok {
 		t.Fatalf("options file carries no schema version: %s", data)
 	}
-	// THE BASE VERSION AND NOT THE CURRENT ONE, for a network with no
-	// IPAM binding. The version says what a reader must understand to
-	// read this file, and a null-IPAM network's file has not changed a
-	// byte since schema 1 (D19): stamping it 2 would make every v2.0
-	// build refuse a file it reads perfectly. The IPAM half is below.
+	// A null-IPAM network's file is unchanged since schema 1, so it carries the base version (#110, #724).
 	if got := v.(float64); int(got) != stateSchemaVersionBase {
 		t.Errorf(`"v" = %v, want %d`, got, stateSchemaVersionBase)
 	}
-	// The option fields stay at the top level. If this fails, the
-	// version was added as an envelope and older builds can no longer
-	// read the file.
 	if _, ok := raw["Parent"]; !ok {
 		t.Errorf("option fields are no longer at the top level, so an older build cannot read this file: %s", data)
 	}
 }
 
-// TestLoadOptions_LegacyFileHasNoVersion is the compatibility half: a
-// file written before the version field existed must still load. It is
-// green before the fix and after it -- that is the point. It fails only
-// if the version check is written as "reject anything that does not
-// declare a version", which would make every upgrade lose its state.
 func TestLoadOptions_LegacyFileHasNoVersion(t *testing.T) {
 	dir := t.TempDir()
 	withStateDir(t, dir)
@@ -118,11 +85,6 @@ func TestLoadOptions_LegacyFileHasNoVersion(t *testing.T) {
 	}
 }
 
-// TestLoadOptions_RefusesFutureSchema covers the branch the version
-// field exists to enable. A file this build does not understand is
-// refused, so the caller falls back to the docker API -- which is
-// authoritative for everything in this struct -- instead of attaching a
-// network in whatever mode a v1 reading of a v2 file happens to yield.
 func TestLoadOptions_RefusesFutureSchema(t *testing.T) {
 	dir := t.TempDir()
 	withStateDir(t, dir)
@@ -137,16 +99,8 @@ func TestLoadOptions_RefusesFutureSchema(t *testing.T) {
 	}
 }
 
-// TestSaveTombstones_CarriesNoSchemaVersion pins the DECISION not to
-// version this file, so that a later pass adding one for symmetry with
-// the options file has to read why first.
-//
-// A 60-second cache has nothing to migrate: by the time any build other
-// than the writer can read the file, every record in it has expired.
-// And the shape a version would take here is actively harmful -- the
-// file is a top-level array, so a versioned envelope makes every older
-// build read it as corrupt, which since #724 quarantines it and loses
-// the lot. Discard is the correct handling, and it needs no field.
+// The tombstone file stays unversioned: a 60 s cache has nothing to migrate, and an envelope around its top-level
+// array reads as corrupt to older builds (#724).
 func TestSaveTombstones_CarriesNoSchemaVersion(t *testing.T) {
 	withStateDir(t, t.TempDir())
 
@@ -165,10 +119,6 @@ func TestSaveTombstones_CarriesNoSchemaVersion(t *testing.T) {
 	}
 }
 
-// TestLoadTombstones_RecordsWithoutVersionLoad is the regression guard
-// under that decision: nothing in the read path may start demanding a
-// version field. If it ever does, every tombstone written by the build
-// before it is dropped on upgrade.
 func TestLoadTombstones_RecordsWithoutVersionLoad(t *testing.T) {
 	dir := t.TempDir()
 	withStateDir(t, dir)
@@ -188,15 +138,7 @@ func TestLoadTombstones_RecordsWithoutVersionLoad(t *testing.T) {
 	}
 }
 
-// TestLoadTombstones_LegacyNullFile covers the other shape that has
-// been written to this file: an empty list marshals to the JSON literal
-// `null`, not to `[]`. It must read back as an empty list and must NOT
-// be mistaken for corruption -- quarantining it would move a perfectly
-// good file aside and page an operator over an empty cache.
-//
-// This was an unwritten assumption until now. The release it lands in
-// is the one about durability, so every shape that has ever been
-// written to the file gets a test proving the current reader takes it.
+// An empty list marshals to `null`, not `[]`, and must not be quarantined (#724).
 func TestLoadTombstones_LegacyNullFile(t *testing.T) {
 	dir := t.TempDir()
 	withStateDir(t, dir)
@@ -212,16 +154,11 @@ func TestLoadTombstones_LegacyNullFile(t *testing.T) {
 	if len(ts) != 0 {
 		t.Errorf("got %d records from a null file, want 0: %+v", len(ts), ts)
 	}
-	// And it must not have been mistaken for corruption and quarantined.
 	if aside := quarantinedFiles(t, dir); len(aside) != 0 {
 		t.Errorf("a legacy null file was quarantined as corrupt: %v", aside)
 	}
 }
 
-// TestLoadTombstones_RoundtripsAnEmptyList closes the loop on the shape
-// question: whatever the writer produces for an empty list, the reader
-// must take it back. Same reasoning as the null case, from the other
-// direction.
 func TestLoadTombstones_RoundtripsAnEmptyList(t *testing.T) {
 	dir := t.TempDir()
 	withStateDir(t, dir)
@@ -238,14 +175,11 @@ func TestLoadTombstones_RoundtripsAnEmptyList(t *testing.T) {
 	}
 }
 
-// TestLoadTombstones_QuarantinesCorruptFile is the direct test of the
-// third defect in #724: an unreadable file is moved aside with its
-// bytes intact, not left in place to be overwritten.
 func TestLoadTombstones_QuarantinesCorruptFile(t *testing.T) {
 	dir := t.TempDir()
 	withStateDir(t, dir)
 
-	const corrupt = `[{"network_id":"net1","mac_address":"02:42:ac:11:00:02"` // truncated mid-object
+	const corrupt = `[{"network_id":"net1","mac_address":"02:42:ac:11:00:02"`
 	if err := os.WriteFile(tombstoneFilePath(), []byte(corrupt), stateFileMode); err != nil {
 		t.Fatalf("write corrupt tombstones: %v", err)
 	}
@@ -254,8 +188,6 @@ func TestLoadTombstones_QuarantinesCorruptFile(t *testing.T) {
 	if err == nil {
 		t.Fatal("loadTombstones accepted a truncated file")
 	}
-	// The error must be distinguishable, not merely present. This is the
-	// signal `add` branches on to decide whether continuing is safe.
 	if !errors.Is(err, errTombstonesQuarantined) {
 		t.Errorf("error does not wrap errTombstonesQuarantined, so a caller cannot tell a refusal from an absence: %v", err)
 	}
@@ -276,21 +208,11 @@ func TestLoadTombstones_QuarantinesCorruptFile(t *testing.T) {
 	}
 }
 
-// TestTombstoneStore_CorruptFileSurvivesTheNextWrite is the defect as a
-// user would meet it, and the reason the quarantine exists at all.
-//
-// Before the fix: loadTombstones returned an error, store.add logged a
-// warning, set the list to nil, and saved ONE entry over the unreadable
-// file -- destroying every other tombstone in it, silently, at exactly
-// the moment an operator would want the bytes.
-//
-// The assertion is on the file system, not on a counter or a log line:
-// the original bytes must still exist somewhere under stateDir.
 func TestTombstoneStore_CorruptFileSurvivesTheNextWrite(t *testing.T) {
 	dir := t.TempDir()
 	withStateDir(t, dir)
 
-	const corrupt = `[{"network_id":"doomed","mac_address":"02:42:ac:11:00:99"` // truncated
+	const corrupt = `[{"network_id":"doomed","mac_address":"02:42:ac:11:00:99"`
 	if err := os.WriteFile(tombstoneFilePath(), []byte(corrupt), stateFileMode); err != nil {
 		t.Fatalf("write corrupt tombstones: %v", err)
 	}
@@ -300,13 +222,11 @@ func TestTombstoneStore_CorruptFileSurvivesTheNextWrite(t *testing.T) {
 		t.Fatalf("add: %v", err)
 	}
 
-	// The new tombstone landed.
 	raw := readRawTombstones(t)
 	if len(raw) != 1 || raw[0]["network_id"] != "net-new" {
 		t.Fatalf("the new tombstone was not written: %+v", raw)
 	}
 
-	// And the unreadable one was not destroyed to make room for it.
 	aside := quarantinedFiles(t, dir)
 	if len(aside) != 1 {
 		t.Fatalf("the corrupt file was overwritten rather than quarantined; %d quarantined files: %v", len(aside), aside)
@@ -319,36 +239,13 @@ func TestTombstoneStore_CorruptFileSurvivesTheNextWrite(t *testing.T) {
 		t.Errorf("quarantined bytes differ from the original:\n  got  %s\n  want %s", got, corrupt)
 	}
 
-	// And it is counted, so the health surface says this happened. A
-	// quarantine that is only logged is invisible to the one thing
-	// operators alert on.
 	if n := s.quarantines.Load(); n != 1 {
 		t.Errorf("tombstone_quarantines = %d, want 1; a corrupt file that moves no counter reads exactly like a clean run", n)
 	}
 }
 
-// TestTombstoneStore_TransientReadFailureWritesNothing is the other half
-// of the same rule, and the one that is easy to get wrong while fixing
-// the first.
-//
-// A refusal must not look like an absence. `loadTombstones` returns one
-// error type for two very different situations: the contents were
-// unparseable (nothing to save, quarantine and move on) and the file
-// could not be READ at all (EIO, EMFILE, a read racing a writer). The
-// second says nothing about the contents, which may be perfectly good —
-// so treating it as "start fresh" destroys live data because a
-// descriptor was briefly unavailable.
-//
-// THE FIXTURE IS A SYMLINK TO A DIRECTORY, and the shape is load-
-// bearing. os.ReadFile follows it, opens a directory and returns EISDIR
-// — a read error, not a parse error — and unlike a chmod it behaves the
-// same when the suite runs as root, which it does on the integration
-// runner. A plain directory at that path does NOT work: rename(2) then
-// fails too, so the pre-fix code returns an error for the wrong reason
-// and the test passes against the bug. rename does not follow a symlink
-// in its final component, so it happily REPLACES this one — which means
-// the only thing stopping the write is the code choosing not to do it.
-// That is precisely what is under test.
+// The fixture is a symlink to a directory: ReadFile fails with EISDIR even as root, and rename replaces the symlink,
+// so only the code's choice stops the write (#724).
 func TestTombstoneStore_TransientReadFailureWritesNothing(t *testing.T) {
 	dir := t.TempDir()
 	withStateDir(t, dir)
@@ -367,7 +264,6 @@ func TestTombstoneStore_TransientReadFailureWritesNothing(t *testing.T) {
 		t.Fatal("add rewrote the tombstone file after failing to read it; a transient read failure is not an empty list, and the contents it overwrote may have been perfectly good")
 	}
 
-	// Nothing was written over, nothing was moved aside, nobody paged.
 	fi, statErr := os.Lstat(tombstoneFilePath())
 	if statErr != nil {
 		t.Fatalf("lstat: %v", statErr)
@@ -383,7 +279,6 @@ func TestTombstoneStore_TransientReadFailureWritesNothing(t *testing.T) {
 	}
 }
 
-// quarantinedFiles lists the tombstones.json.corrupt-* files in dir.
 func quarantinedFiles(t *testing.T, dir string) []string {
 	t.Helper()
 	entries, err := os.ReadDir(dir)
@@ -399,44 +294,9 @@ func quarantinedFiles(t *testing.T, dir string) []string {
 	return out
 }
 
-// TestStateWritesUseTheRightSyncPolicy reads state.go itself and pins
-// the DECISION each writer made, not just the mechanism: the options
-// file is durable, tombstones.json is deliberately not.
-//
-// # WHY EACH HALF EXISTS
-//
-// The options file is written from CreateNetwork, lives on a host bind
-// mount, and survives `docker plugin rm` and upgrade by design (#440).
-// It is read after every daemon restart, including the restart that
-// follows a power cut. It needs the fsyncs.
-//
-// tombstones.json must NOT get them, and this is the half that will
-// look like a bug to the next reader. tombstoneTTL is 60 seconds. The
-// only crash an fsync survives is power loss or a panic -- a clean
-// `systemctl restart docker` never loses the page cache -- and no host
-// boots, starts dockerd and reaches this file within 60 seconds of
-// losing power, so every record in it prunes as stale on the first read
-// afterwards. An fsync there buys durability for data guaranteed
-// worthless by the time anything reads it, and charges for it on the
-// endpoint path: `add` runs on every DeleteEndpoint and `consume`
-// writes whenever a prune changed something. #724 asked for fsync on
-// both files, on the grounds that "both files exist specifically to
-// survive restarts". That is true of one of them.
-//
-// IT IS A SOURCE-LEVEL CHECK ON PURPOSE. fsync is not observable from a
-// Go test: the only difference it makes is what survives a power cut,
-// and nothing short of a crashing block device or an instrumented
-// filesystem can show that. The alternatives were worse -- a swappable
-// `var syncFile = ...` seam would assert that our code calls our own
-// hook, which is the plugin's opinion of itself rather than outside
-// evidence, and would go green for any future writer that simply did
-// not use the seam.
-//
-// So this asserts on the one artefact that is real: the source. It goes
-// red if the syncs are removed, if a writer stops routing through
-// writeStateFileAtomic, if the file sync drifts to after the rename
-// where it guarantees nothing -- or if a well-meaning "you forgot an
-// fsync" patch puts one back on the tombstone hot path.
+// The options file is fsynced, since it outlives plugin rm and upgrade (#440). tombstones.json is not: its 60 s TTL
+// has expired by the time a host is back from a power loss. fsync is not observable from a test, so this reads the
+// source (#724).
 func TestStateWritesUseTheRightSyncPolicy(t *testing.T) {
 	fset := token.NewFileSet()
 	f, err := parser.ParseFile(fset, "state.go", nil, 0)
@@ -456,7 +316,6 @@ func TestStateWritesUseTheRightSyncPolicy(t *testing.T) {
 		t.Fatal("state.go has no writeStateFileAtomic; if the durable write path was renamed, update this test to name it — do not delete the check")
 	}
 
-	// The file sync must happen, and must happen before the rename.
 	syncPos, renamePos := token.NoPos, token.NoPos
 	ast.Inspect(writer, func(n ast.Node) bool {
 		call, ok := n.(*ast.CallExpr)
@@ -490,15 +349,11 @@ func TestStateWritesUseTheRightSyncPolicy(t *testing.T) {
 			fset.Position(syncPos), fset.Position(renamePos))
 	}
 
-	// The directory holding the renamed file must be synced too, or the
-	// rename itself can be lost.
+	// The directory must be synced too, or the rename itself can be lost (#724).
 	if !callsFunc(writer, "syncDir") {
 		t.Error("writeStateFileAtomic never syncs the containing directory; the rename can be absent after a power cut even though the file's bytes are down (#724)")
 	}
 
-	// Both persisted files go through it, and each states its policy. A
-	// writer that open-codes its own rename is the two-copies problem
-	// the helper exists to end.
 	wantPolicy := map[string]string{
 		"saveNetwork":    "syncDurable",
 		"saveTombstones": "syncEphemeral",
@@ -525,8 +380,6 @@ func TestStateWritesUseTheRightSyncPolicy(t *testing.T) {
 		}
 	}
 
-	// The quarantine rename is durable for the same reason: an operator
-	// reads that file after the crash that produced it.
 	if q, ok := funcs["quarantineTombstones"]; ok {
 		if !callsFunc(q, "syncDir") {
 			t.Error("quarantineTombstones does not sync the directory; the quarantine rename can be lost by the same power cut that corrupted the file")
@@ -536,12 +389,6 @@ func TestStateWritesUseTheRightSyncPolicy(t *testing.T) {
 	}
 }
 
-// policyArg returns the identifier passed as the last argument of the
-// writeStateFileAtomic call inside n, or "" if there is none or it is
-// not a plain identifier. A non-identifier is reported as a miss rather
-// than accepted: a computed sync policy would put the decision
-// somewhere this check cannot read it, which is the same as not having
-// the check.
 func policyArg(n ast.Node) string {
 	got := ""
 	ast.Inspect(n, func(node ast.Node) bool {
@@ -561,8 +408,6 @@ func policyArg(n ast.Node) string {
 	return got
 }
 
-// callsFunc reports whether n contains a call to the plain function
-// named name.
 func callsFunc(n ast.Node, name string) bool {
 	found := false
 	ast.Inspect(n, func(node ast.Node) bool {
@@ -578,7 +423,6 @@ func callsFunc(n ast.Node, name string) bool {
 	return found
 }
 
-// callsSelector reports whether n contains a call to any x.name(...).
 func callsSelector(n ast.Node, name string) bool {
 	found := false
 	ast.Inspect(n, func(node ast.Node) bool {

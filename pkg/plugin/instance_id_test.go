@@ -11,16 +11,7 @@ import (
 	"time"
 )
 
-// The instance id exists so a consumer holding two /Plugin.Health reads
-// can tell "these counters did not move" apart from "these counters were
-// reset under me" (#405). Everything below defends one of the three
-// properties that makes it usable for that: it is never empty, it
-// differs between processes, and it is stable within one.
-
 func TestNewInstanceID_NeverEmpty(t *testing.T) {
-	// An empty id is the dangerous value, not merely an ugly one: two
-	// empty ids compare equal, so a consumer would read "same process"
-	// across a genuine restart and trust a delta spanning a reset.
 	for i := 0; i < 100; i++ {
 		if got := newInstanceID(); got == "" {
 			t.Fatalf("newInstanceID returned empty on call %d — an empty id "+
@@ -30,9 +21,6 @@ func TestNewInstanceID_NeverEmpty(t *testing.T) {
 }
 
 func TestNewInstanceID_DiffersBetweenCalls(t *testing.T) {
-	// Each call stands in for a plugin process. A generator that
-	// repeated itself would make a restart look like continuity, which
-	// is the failure #405 is about.
 	const n = 100
 	seen := make(map[string]int, n)
 	for i := 0; i < n; i++ {
@@ -47,9 +35,6 @@ func TestNewInstanceID_DiffersBetweenCalls(t *testing.T) {
 }
 
 func TestNewPlugin_InstanceIDIsStableAcrossReads(t *testing.T) {
-	// Within one process the id must not move, or every delta would
-	// report a spurious reset and the check would be worthless in the
-	// opposite direction.
 	p := &Plugin{
 		startTime:      time.Now(),
 		instanceID:     newInstanceID(),
@@ -69,10 +54,6 @@ func TestNewPlugin_InstanceIDIsStableAcrossReads(t *testing.T) {
 }
 
 func TestNewPlugin_DistinctPluginsReportDistinctInstanceIDs(t *testing.T) {
-	// The end-to-end property, read off the wire rather than the field:
-	// two plugins are two processes and must be distinguishable through
-	// /Plugin.Health, which is the only surface the integration harness
-	// has.
 	mk := func() *Plugin {
 		return &Plugin{
 			startTime:      time.Now(),

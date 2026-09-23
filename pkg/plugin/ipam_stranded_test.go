@@ -24,10 +24,6 @@ import (
 	"github.com/claymore666/docker-net-dhcp/v2/pkg/dhcp"
 )
 
-// f0Bridge is a bridge that does not exist on the host running the
-// test, which is what makes createIPAMEndpoint's link build fail
-// without CAP_NET_ADMIN. It is also the name f0Parent answers for on
-// the release path's own seam, so the same fixture serves both.
 const f0Bridge = "br-f0-absent"
 
 const (
@@ -35,8 +31,6 @@ const (
 	f0Addr2 = "192.168.99.11/24"
 )
 
-// f0Parent is hostParent under a chosen name, so the release path can
-// resolve a bridge whose real counterpart must not exist.
 func f0Parent(t *testing.T, name string) {
 	t.Helper()
 	link := &netlink.Bridge{LinkAttrs: netlink.LinkAttrs{Name: name, Index: 7}}
@@ -60,15 +54,6 @@ func f0Parent(t *testing.T, name string) {
 	t.Cleanup(func() { nlLinkByName, nlAddrList = prevByName, prevList })
 }
 
-// f0Fixture is an IPAM-mode network with release_lease=on_remove, a
-// reopenable journal, and the wire under a fake.
-//
-// release_lease=on_remove is the value every case here is measured
-// under because it is the one that turns a wrong answer into a
-// datagram: a record retained when it should not have been becomes a
-// DHCPRELEASE for a live address about 65 seconds later, and a record
-// left in place when it should have been given up never produces one
-// at all. The phase alone cannot tell those apart.
 func f0Fixture(t *testing.T) (*Plugin, *ipamBinding, *fakeSender, string) {
 	t.Helper()
 	withStateDir(t, t.TempDir())
@@ -107,9 +92,6 @@ func f0Options() DHCPNetworkOptions {
 	return DHCPNetworkOptions{Mode: ModeBridge, Bridge: f0Bridge, ReleaseLease: ReleaseOnRemove}
 }
 
-// f0Reopen ends the process holding the journal and opens it as the
-// next one, which is the only way a record's last writer can differ
-// from the process reading it.
 func f0Reopen(t *testing.T, p *Plugin, journal, instance string) {
 	t.Helper()
 	if p.records != nil {
@@ -140,8 +122,6 @@ func f0MAC(n byte) net.HardwareAddr {
 	return net.HardwareAddr{0x02, 0x00, 0x00, 0x00, 0x00, n}
 }
 
-// f0Tombstone is one endpoint that ran and was removed: the state a
-// restart re-binds from.
 func f0Tombstone(t *testing.T, p *Plugin, mac net.HardwareAddr, addr string) string {
 	t.Helper()
 	id := p.recordCreated(ipamTestNetwork, mac, dhcp.ClientIdentity(mac))
@@ -158,10 +138,6 @@ func f0Tombstone(t *testing.T, p *Plugin, mac net.HardwareAddr, addr string) str
 	return id
 }
 
-// f0Created is an endpoint whose record sits in CREATED with a real
-// lease on it: what CreateEndpoint leaves behind before the bind, and
-// what a running container's record looks like when recordBound never
-// ran (its goroutine is one neither Join nor recovery waits for).
 func f0Created(t *testing.T, p *Plugin, mac net.HardwareAddr, addr string) string {
 	t.Helper()
 	id := p.recordCreated(ipamTestNetwork, mac, dhcp.ClientIdentity(mac))
@@ -176,9 +152,6 @@ func f0Created(t *testing.T, p *Plugin, mac net.HardwareAddr, addr string) strin
 	return id
 }
 
-// f0Rebind is RequestAddress's half of a restart: the network's one
-// tombstone taken under the container's new hardware address. The
-// record is CREATED from here on, with no endpoint behind it.
 func f0Rebind(t *testing.T, p *Plugin, mac net.HardwareAddr, want string) string {
 	t.Helper()
 	id, addr, _ := p.ipamRebindCandidate(ipamTestNetwork, mac)
@@ -191,8 +164,6 @@ func f0Rebind(t *testing.T, p *Plugin, mac net.HardwareAddr, want string) string
 	return id
 }
 
-// f0Reservation puts a finished, successful reservation in the map,
-// exactly as runIPAMReserve leaves one for CreateEndpoint to take.
 func f0Reservation(p *Plugin, b *ipamBinding, mac net.HardwareAddr, recordID, addr string, err error) {
 	key := ipamReserveKey(b.PoolID, mac)
 	r, _ := p.ipamReserves.begin(key, time.Now())
@@ -211,8 +182,6 @@ func f0CreateRequest(mac net.HardwareAddr, addr string) CreateEndpointRequest {
 	}
 }
 
-// f0Docker is a daemon that answers the hostname lookup at once, so a
-// CreateEndpoint drive does not spend the two-second poll budget.
 func f0Docker() *fakeDocker {
 	epID := f0CreateRequest(f0MAC(0x02), "").EndpointID
 	return &fakeDocker{
@@ -236,10 +205,6 @@ func f0Tombstones(t *testing.T, p *Plugin, at time.Time) int {
 	return len(rb.Tombstones(ipamTestNetwork, at))
 }
 
-// f0AddressIsFree answers the two refusals a stranded record produces:
-// `--ip` on its address and a container pinned to the hardware address
-// it was re-bound to. Both are lookups the plugin makes before any
-// packet, so both are readable without a server.
 func f0AddressIsFree(t *testing.T, p *Plugin, addr string, mac net.HardwareAddr) (byAddr, byMAC bool) {
 	t.Helper()
 	rb, err := p.records.Rebuilt()
@@ -251,26 +216,11 @@ func f0AddressIsFree(t *testing.T, p *Plugin, addr string, mac net.HardwareAddr)
 	return !live, !held
 }
 
-// TestIPAMCreateEndpoint_EveryExitAfterTheTakeHandsTheAddressBack is
-// row 15 of the design note, driven where it actually happens.
-//
-// A restart re-binds the network's one tombstone before CreateEndpoint
-// runs, so from the re-bind onwards the address is held by a record
-// with no endpoint on it. If CreateEndpoint then fails, the reservation
-// has already been taken out of the map -- the sweeper cannot see it --
-// and a failed CreateEndpoint gets no DeleteEndpoint, so nothing else
-// in the plugin ever reaches that record. Before this change it stayed
-// CREATED for the life of the network: no tombstone for the retry to
-// re-bind, `--ip` on its address refused as held by an endpoint that
-// does not exist, the container's own pinned hardware address refused
-// outright, and no release on the wire on any value of release_lease.
 func TestIPAMCreateEndpoint_EveryExitAfterTheTakeHandsTheAddressBack(t *testing.T) {
 	first, restarted, next := f0MAC(0x01), f0MAC(0x02), f0MAC(0x03)
 
 	for _, tc := range []struct {
-		name string
-		// drive runs CreateEndpoint into one exit and returns nothing;
-		// the assertions below are the same for every exit.
+		name  string
 		drive func(t *testing.T, p *Plugin, b *ipamBinding, recordID string)
 	}{
 		{
@@ -287,8 +237,6 @@ func TestIPAMCreateEndpoint_EveryExitAfterTheTakeHandsTheAddressBack(t *testing.
 			name: "the reservation carries an error",
 			drive: func(t *testing.T, p *Plugin, b *ipamBinding, recordID string) {
 				f0Reservation(p, b, restarted, recordID, f0Addr, errors.New("the exchange failed"))
-				// finish deletes a failed reservation, so put it back
-				// the way a caller that kept one would leave it.
 				key := ipamReserveKey(b.PoolID, restarted)
 				r, _ := p.ipamReserves.begin(key, time.Now())
 				p.ipamReserves.finish(key, r, ipamReservation{record: recordID}, nil)
@@ -336,8 +284,6 @@ func TestIPAMCreateEndpoint_EveryExitAfterTheTakeHandsTheAddressBack(t *testing.
 				t.Errorf("the hardware address is still answered as leasing, so a container pinned " +
 					"with --mac-address cannot be started again at all")
 			}
-			// The retry, inside the window: the same record, the same
-			// address, which is the whole of what the window promises.
 			againID, againAddr, _ := p.ipamRebindCandidate(ipamTestNetwork, next)
 			if againID != id || againAddr != "192.168.99.10" {
 				t.Errorf("the retry re-bound (%q, %q), want (%q, 192.168.99.10). Without the "+
@@ -351,23 +297,12 @@ func TestIPAMCreateEndpoint_EveryExitAfterTheTakeHandsTheAddressBack(t *testing.
 	}
 }
 
-// TestIPAMCreateEndpoint_AnAddresslessRecordIsClosedNotRetained is the
-// other direction, and the reason the give-up is one function.
-//
-// Tombstones filters on the phase and the deadline and never asks
-// whether the record has an address, so a retained record holding
-// nothing is a full re-bind candidate. Laid beside a real one it makes
-// the pair ambiguous, and the container the real one belongs to loses
-// its address to the DHCP server's choice.
 func TestIPAMCreateEndpoint_AnAddresslessRecordIsClosedNotRetained(t *testing.T) {
 	restarted := f0MAC(0x02)
 	p, b, _, _ := f0Fixture(t)
 	p.docker = f0Docker()
 	now := time.Now()
 
-	// A reserve that never got an ACK: the record exists, nothing is
-	// on it. CreateEndpoint cannot normally follow one, so this drives
-	// the give-up at the exit that can: the address mismatch.
 	id := p.recordReserved(ipamTestNetwork, restarted, dhcp.ClientIdentity(restarted))
 	f0Reservation(p, b, restarted, id, f0Addr, nil)
 	if _, err := p.createIPAMEndpoint(context.Background(), f0CreateRequest(restarted, "192.168.99.44/24"), f0Options(), b); err == nil {
@@ -383,15 +318,6 @@ func TestIPAMCreateEndpoint_AnAddresslessRecordIsClosedNotRetained(t *testing.T)
 	}
 }
 
-// TestIPAMReserve_ThePreExchangeExitsGiveTheCandidateBack covers the
-// two exits between the re-bind and the first packet.
-//
-// The re-bind is written before anything goes on the wire, because the
-// exchange has to run under the identity the server already has a
-// lease filed under, and that write clears the tombstone deadline. A
-// reserve that then fails at its own option reads used to return with
-// the record CREATED and the reservation deleted, which is the stranded
-// state reached without Docker ever calling CreateEndpoint at all.
 func TestIPAMReserve_ThePreExchangeExitsGiveTheCandidateBack(t *testing.T) {
 	first, restarted, next := f0MAC(0x01), f0MAC(0x02), f0MAC(0x03)
 
@@ -420,10 +346,6 @@ func TestIPAMReserve_ThePreExchangeExitsGiveTheCandidateBack(t *testing.T) {
 			p, b, sender, _ := f0Fixture(t)
 			id := f0Tombstone(t, p, first, f0Addr)
 
-			// The link build needs CAP_NET_ADMIN and is the first thing
-			// the reserve does, so nothing past it is reachable here
-			// without the seam. Nothing is sent: both exits are before
-			// the exchange.
 			removed := 0
 			prev := ipamAddReserveLink
 			ipamAddReserveLink = func(_ *Plugin, _ context.Context, _, _, _ string, _ DHCPNetworkOptions, _ net.HardwareAddr) (func(), error) {
@@ -453,11 +375,6 @@ func TestIPAMReserve_ThePreExchangeExitsGiveTheCandidateBack(t *testing.T) {
 	}
 }
 
-// TestIPAMReserve_AnAbandonedWindowStillEndsOnTheWire is the positive
-// control for every "nothing was sent" assertion above: the same
-// fixture, the same failure, and nobody retrying. The address goes back
-// to the server when the window closes, which is what release_lease=
-// on_remove promises and what proves the sender is wired at all.
 func TestIPAMReserve_AnAbandonedWindowStillEndsOnTheWire(t *testing.T) {
 	first, restarted := f0MAC(0x01), f0MAC(0x02)
 	p, b, sender, _ := f0Fixture(t)
@@ -469,8 +386,6 @@ func TestIPAMReserve_AnAbandonedWindowStillEndsOnTheWire(t *testing.T) {
 		t.Fatal("CreateEndpoint succeeded; this host has the bridge the fixture needs absent")
 	}
 
-	// Read after the give-up, so the deadline it wrote is inside the
-	// window this closes and not a moment past it.
 	if n := p.sweepDeferredReleases(time.Now().Add(tombstoneTTL + releaseSettle)); n != 1 {
 		t.Fatalf("the sweep handed back %d addresses once the window had closed, want 1", n)
 	}
@@ -480,25 +395,12 @@ func TestIPAMReserve_AnAbandonedWindowStillEndsOnTheWire(t *testing.T) {
 	}
 }
 
-// TestIPAMReserve_ARefusedACKIsNotHandedToTheNextContainer is the exit
-// where the server answered and the answer was refused.
-//
-// The fold files the address the moment the ACK arrives, before either
-// acceptance rule has looked at it, so at this exit the record holds an
-// address this plugin did not take. Laying it down as a tombstone puts
-// it in front of the next container on the network, which then asks for
-// it under the first container's identity and is refused in exactly the
-// same way, for as long as something keeps renewing the window. On an
-// on_remove network it is also a release for an address the plugin
-// never accepted, about a minute later.
 func TestIPAMReserve_ARefusedACKIsNotHandedToTheNextContainer(t *testing.T) {
 	first, mine, next := f0MAC(0x01), f0MAC(0x02), f0MAC(0x03)
 	const refused = "10.9.9.9/24"
 
 	for _, tc := range []struct {
 		name string
-		// take leaves the record in the shape the reserve reached this
-		// exit with, and returns its id.
 		take func(t *testing.T, p *Plugin) string
 	}{
 		{
@@ -513,11 +415,6 @@ func TestIPAMReserve_ARefusedACKIsNotHandedToTheNextContainer(t *testing.T) {
 			},
 		},
 		{
-			// THE SAME EXIT WITH A WINDOW OWED. The re-bind took the
-			// network's tombstone, and the refused ACK has overwritten
-			// the address that tombstone was offering, so handing the
-			// window back hands the next container an address it will
-			// be refused for too.
 			name: "a re-bound record",
 			take: func(t *testing.T, p *Plugin) string {
 				t.Helper()
@@ -531,9 +428,6 @@ func TestIPAMReserve_ARefusedACKIsNotHandedToTheNextContainer(t *testing.T) {
 			now := time.Now()
 			id := tc.take(t, p)
 
-			// The server answers with an address outside the pool the
-			// network was created with, and the fold takes it before
-			// either acceptance rule runs.
 			if err := p.records.Observed(id, acquired(refused, time.Hour), nil); err != nil {
 				t.Fatalf("Observed: %v", err)
 			}
@@ -541,7 +435,6 @@ func TestIPAMReserve_ARefusedACKIsNotHandedToTheNextContainer(t *testing.T) {
 				t.Fatal("the ACK was accepted, so this test no longer drives the exit it is about")
 			}
 
-			// What the exit passes: no window, whatever was re-bound.
 			p.ipamGiveUpAttempt(id, false, now)
 
 			if got := f0Rec(t, p, id).Phase; got != lease.PhaseClosed {
@@ -569,21 +462,11 @@ func TestIPAMReserve_ARefusedACKIsNotHandedToTheNextContainer(t *testing.T) {
 	}
 }
 
-// TestIPAMReleaseAddress_GivesUpACreatedRecordWithNoEndpoint is the
-// second arm.
-//
-// The engine rolls a failed container start back with ReleaseAddress,
-// and before this change that call walked away from every phase but
-// RESERVED. A re-bound record is CREATED from the moment the re-bind is
-// written, so the one call that always arrives saw the one phase it did
-// not act on.
 func TestIPAMReleaseAddress_GivesUpACreatedRecordWithNoEndpoint(t *testing.T) {
 	first, restarted, next := f0MAC(0x01), f0MAC(0x02), f0MAC(0x03)
 	p, b, sender, _ := f0Fixture(t)
 	id := f0Tombstone(t, p, first, f0Addr)
 	f0Rebind(t, p, restarted, "192.168.99.10")
-	// CreateEndpoint took the reservation and then failed, so nothing
-	// is left in the map for this handler to find.
 	f0Reservation(p, b, restarted, id, f0Addr, nil)
 	p.ipamReserves.take(ipamReserveKey(b.PoolID, restarted))
 
@@ -606,17 +489,6 @@ func TestIPAMReleaseAddress_GivesUpACreatedRecordWithNoEndpoint(t *testing.T) {
 	}
 }
 
-// TestIPAMReleaseAddress_FreesTheHardwareAddressForTheRetry is the
-// other half of the same handler: the reservation has to go with the
-// record.
-//
-// An address request whose hardware address already has a reservation
-// in flight does not run its own exchange; it waits on the one that is
-// there and takes its answer. That is the one-exchange rule, and it is
-// right while the reservation is live. Left behind after the record it
-// points at has been given up, it hands the next attempt the answer of
-// an attempt that was abandoned, and the record it names no longer
-// belongs to anyone.
 func TestIPAMReleaseAddress_FreesTheHardwareAddressForTheRetry(t *testing.T) {
 	mac := f0MAC(0x01)
 	p, b, _, _ := f0Fixture(t)
@@ -633,15 +505,6 @@ func TestIPAMReleaseAddress_FreesTheHardwareAddressForTheRetry(t *testing.T) {
 	}
 }
 
-// TestIPAMReleaseAddress_LeavesAnExchangeInFlightAlone is the bound on
-// the arm above.
-//
-// A second address request under the same hardware address re-binds the
-// record before it sends anything, so between that fold and the answer
-// the record is created and the exchange that owns it is still running.
-// A release for the old address arriving in that window must not give
-// the record away under the exchange's feet: the answer would name a
-// record already handed to a retry.
 func TestIPAMReleaseAddress_LeavesAnExchangeInFlightAlone(t *testing.T) {
 	first, restarted := f0MAC(0x01), f0MAC(0x02)
 	p, b, sender, _ := f0Fixture(t)
@@ -673,14 +536,6 @@ func TestIPAMReleaseAddress_LeavesAnExchangeInFlightAlone(t *testing.T) {
 	}
 }
 
-// TestIPAMReleaseAddress_ClosesARecordWhoseLeaseHasGone is the other
-// direction of the same handler.
-//
-// The record lookup filters on the phase alone, so a record whose lease
-// expired while the container was down is still the one that answers
-// for the address. Handing that one back as a tombstone would offer the
-// retry an address the server is free to have given to someone else,
-// and would make a real candidate on the same network ambiguous.
 func TestIPAMReleaseAddress_ClosesARecordWhoseLeaseHasGone(t *testing.T) {
 	mac := f0MAC(0x01)
 	p, b, _, _ := f0Fixture(t)
@@ -700,20 +555,9 @@ func TestIPAMReleaseAddress_ClosesARecordWhoseLeaseHasGone(t *testing.T) {
 	}
 }
 
-// TestIPAMReleaseAddress_LeavesARunningEndpointAlone is the preservation
-// control for the arm above, and the case where being wrong costs a
-// running container its address.
-//
-// A joined record belongs to a container that is up. The release
-// handler must not touch it, and on a release_lease=on_remove network
-// the cost of touching it is not a phase in a file: it is a DHCPRELEASE
-// for an address in use, about a minute later.
 func TestIPAMReleaseAddress_LeavesARunningEndpointAlone(t *testing.T) {
 	for _, tc := range []struct {
 		name string
-		// hold puts the record in the shape a running container
-		// leaves it in, and returns the phase it must still be in
-		// after the handler has run.
 		hold func(t *testing.T, p *Plugin, id string, mac net.HardwareAddr) lease.Phase
 	}{
 		{
@@ -727,12 +571,6 @@ func TestIPAMReleaseAddress_LeavesARunningEndpointAlone(t *testing.T) {
 			},
 		},
 		{
-			// CREATED AND UP. recordBound runs on a goroutine
-			// neither Join nor recovery waits for, so a container
-			// that is up can still be in the phase this change
-			// taught the handler to act on. The endpoint holding
-			// it is the difference, and the handler has to read
-			// it: the record cannot say it.
 			name: "created, endpoint held by this process",
 			hold: func(t *testing.T, p *Plugin, _ string, mac net.HardwareAddr) lease.Phase {
 				t.Helper()
@@ -770,18 +608,6 @@ func TestIPAMReleaseAddress_LeavesARunningEndpointAlone(t *testing.T) {
 	}
 }
 
-// TestIPAMReleaseAddress_OnlyTheWholeKeyBlocksTheGiveUp is the bound on
-// the guard above.
-//
-// The guard keys on a PAIR, the endpoint's hardware address and its
-// address, and each half has its own way of being the wrong answer on
-// its own. Two IPAM networks on one segment are handed addresses by the
-// same server, so the same address can be live on one while the record
-// on the other is the one nobody holds. And one hardware address can
-// hold a different address: a fixed `--mac-address` container attached
-// to a second network, or the same container after a re-bind moved its
-// address. Either half of the key on its own leaves stranded exactly
-// the record this handler exists to hand back.
 func TestIPAMReleaseAddress_OnlyTheWholeKeyBlocksTheGiveUp(t *testing.T) {
 	mine, elsewhere := f0MAC(0x01), f0MAC(0x09)
 	for _, tc := range []struct {
@@ -816,12 +642,6 @@ func TestIPAMReleaseAddress_OnlyTheWholeKeyBlocksTheGiveUp(t *testing.T) {
 			if got, _, _ := p.ipamRebindCandidate(ipamTestNetwork, f0MAC(0x02)); got == "" {
 				t.Error("the retry was offered nothing, so the address is stranded")
 			}
-			// A record that never reached the bound phase held a
-			// lease nothing ever used, so the window ends by
-			// expiring and not on the wire. The address comes back
-			// through the tombstone above; a datagram here would be
-			// a release for an address this plugin never put on an
-			// interface.
 			if n := p.sweepDeferredReleases(now.Add(tombstoneTTL + releaseSettle)); n != 0 || sender.callCount() != 0 {
 				t.Errorf("a release went out for a lease that was never bound: swept=%d sent=%d", n, sender.callCount())
 			}
@@ -829,17 +649,6 @@ func TestIPAMReleaseAddress_OnlyTheWholeKeyBlocksTheGiveUp(t *testing.T) {
 	}
 }
 
-// TestIPAMReleaseAddress_AFailedTeardownDoesNotBlockTheGiveUp is the
-// other bound on the same guard, and the one the guard itself created.
-//
-// DeleteEndpoint returns before it takes the fingerprint when the
-// network's options cannot be read, and the engine releases the address
-// whether or not that call succeeded. A fingerprint left behind there
-// would answer "an endpoint still holds this" for an endpoint the
-// engine has already torn down, and the record would sit in the created
-// phase until the next plugin start. The teardown gives the fingerprint
-// up on that exit, so the release that follows still reaches the
-// record.
 func TestIPAMReleaseAddress_AFailedTeardownDoesNotBlockTheGiveUp(t *testing.T) {
 	mine, next := f0MAC(0x01), f0MAC(0x02)
 	p, b, sender, _ := f0Fixture(t)
@@ -879,14 +688,6 @@ func TestIPAMReleaseAddress_AFailedTeardownDoesNotBlockTheGiveUp(t *testing.T) {
 	}
 }
 
-// TestIPAMListedMACs_OneUnreadableEntryPoisonsTheAnswer is the guard on
-// the rule's input.
-//
-// The rule below acts on ABSENCE, so one hardware address that does not
-// make it into the set makes a record look unowned, and its container
-// is running. A set short by one cannot be told from a network with one
-// fewer endpoint, so the only safe answer is to write nothing this
-// time round.
 func TestIPAMListedMACs_OneUnreadableEntryPoisonsTheAnswer(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
@@ -933,31 +734,16 @@ func TestIPAMListedMACs_OneUnreadableEntryPoisonsTheAnswer(t *testing.T) {
 	}
 }
 
-// TestIPAMStrandedRecords_TheRuleKeysOnTheWriterAndTheEngineList is the
-// third arm: the same stranded state reached by the plugin ending
-// between the two calls, where no handler of ours ever runs again.
-//
-// BOTH KEYS ARE NECESSARY and the test drives all four combinations.
-// The writer alone is not enough, because a running container's record
-// can sit in CREATED across a restart: the phase only moves at the bind
-// inside setupClient, which runs in a goroutine neither Join nor
-// recovery waits for. The engine's list alone is not enough either,
-// because a container starting in THIS process is not listed until its
-// CreateEndpoint has returned.
 func TestIPAMStrandedRecords_TheRuleKeysOnTheWriterAndTheEngineList(t *testing.T) {
 	running, restarted, inflightMAC, removed := f0MAC(0x01), f0MAC(0x02), f0MAC(0x03), f0MAC(0x04)
 	p, _, sender, journal := f0Fixture(t)
 
-	// The previous process: one running container, and one restart
-	// caught between RequestAddress and CreateEndpoint.
 	runningID := f0Created(t, p, running, f0Addr)
 	f0Tombstone(t, p, removed, f0Addr2)
 	strandedID := f0Rebind(t, p, restarted, "192.168.99.11")
 
 	f0Reopen(t, p, journal, "proc-2")
 	now := time.Now()
-	// A start in flight in the new process: written by this process,
-	// not yet listed by the engine.
 	inflightID := f0Created(t, p, inflightMAC, "192.168.99.12/24")
 
 	if n := p.giveUpStrandedIPAMRecords(ipamTestNetwork, []net.HardwareAddr{running}, now); n != 1 {
@@ -977,7 +763,6 @@ func TestIPAMStrandedRecords_TheRuleKeysOnTheWriterAndTheEngineList(t *testing.T
 		t.Errorf("ipam_stranded_records = %d, want 1", n)
 	}
 
-	// The retry gets the stranded address back, and only that one.
 	againID, againAddr, _ := p.ipamRebindCandidate(ipamTestNetwork, f0MAC(0x05))
 	if againID != strandedID || againAddr != "192.168.99.11" {
 		t.Errorf("the retry re-bound (%q, %q), want (%q, 192.168.99.11)", againID, againAddr, strandedID)
@@ -989,9 +774,6 @@ func TestIPAMStrandedRecords_TheRuleKeysOnTheWriterAndTheEngineList(t *testing.T
 	}
 }
 
-// TestIPAMStrandedRecords_TheRunningEndpointStillHeals is the rest of
-// the preservation control: recovery's own bind, which runs beside the
-// rule, still takes the record the rule left alone.
 func TestIPAMStrandedRecords_TheRunningEndpointStillHeals(t *testing.T) {
 	running := f0MAC(0x01)
 	p, _, sender, journal := f0Fixture(t)
@@ -1015,9 +797,6 @@ func TestIPAMStrandedRecords_TheRunningEndpointStillHeals(t *testing.T) {
 	}
 }
 
-// TestIPAMStrandedRecords_ARecordHoldingNothingIsClosed is the same
-// direction as the CreateEndpoint case: a record with no address must
-// not become a re-bind candidate.
 func TestIPAMStrandedRecords_ARecordHoldingNothingIsClosed(t *testing.T) {
 	stale := f0MAC(0x01)
 	p, _, _, journal := f0Fixture(t)
@@ -1037,10 +816,6 @@ func TestIPAMStrandedRecords_ARecordHoldingNothingIsClosed(t *testing.T) {
 	}
 }
 
-// TestIPAMStrandedRecords_RunTwiceWritesOnce pins that the rule is not
-// a clock: the second pass of a plugin that recovers twice (#383 runs
-// recovery again once the socket is listening) must find nothing left
-// to do, or every pass would reset a window a container is counting on.
 func TestIPAMStrandedRecords_RunTwiceWritesOnce(t *testing.T) {
 	restarted, removed := f0MAC(0x02), f0MAC(0x04)
 	p, _, _, journal := f0Fixture(t)
@@ -1064,10 +839,6 @@ func TestIPAMStrandedRecords_RunTwiceWritesOnce(t *testing.T) {
 	}
 }
 
-// TestIPAMStrandedRecords_AnotherNetworkIsNotTouched pins the scope: the
-// rule reads one network's inspect answer, so it may only write to that
-// network's records. A second IPAM network on the same host has its own
-// endpoints and its own list.
 func TestIPAMStrandedRecords_AnotherNetworkIsNotTouched(t *testing.T) {
 	mac := f0MAC(0x01)
 	p, _, _, journal := f0Fixture(t)
@@ -1085,17 +856,11 @@ func TestIPAMStrandedRecords_AnotherNetworkIsNotTouched(t *testing.T) {
 	}
 }
 
-// TestRecoverEndpoints_RunsTheStrandedRuleOnIPAMNetworksOnly is the
-// call site: the rule reads the answer recovery already has, so a
-// network whose inspect failed is skipped before it and a network this
-// plugin does not allocate for never reaches it.
 func TestRecoverEndpoints_RunsTheStrandedRuleOnIPAMNetworksOnly(t *testing.T) {
 	restarted, removed := f0MAC(0x02), f0MAC(0x04)
 
 	for _, tc := range []struct {
-		name string
-		// arrange returns the docker fake and whether the network is
-		// IPAM-mode on disk.
+		name   string
 		docker func() *fakeDocker
 		ipam   bool
 		want   lease.Phase
@@ -1175,17 +940,9 @@ func TestRecoverEndpoints_RunsTheStrandedRuleOnIPAMNetworksOnly(t *testing.T) {
 	}
 }
 
-// TestIPAMStranded_DocumentedLimits pins the two shapes the rule cannot
-// see, so that a change which silently alters either of them is a
-// failing test and not a discovery in production.
 func TestIPAMStranded_DocumentedLimits(t *testing.T) {
-	// LIMIT 1: an engine that answers 200 with a SHORT list. A
-	// network's endpoint enumeration logs a store read error and
-	// returns what it has, and an endpoint whose own read fails is
-	// dropped from the answer; both look exactly like a network with
-	// fewer endpoints. There is no second source to check against: an
-	// IPAM handler may not ask Docker anything, and recovery has the
-	// one answer. A running container's record is given up.
+	// Limit 1: an engine's endpoint enumeration drops entries it cannot read and still answers 200, so a running
+	// container's record is given up (#1047).
 	t.Run("a short engine list gives up a running endpoint's record", func(t *testing.T) {
 		running := f0MAC(0x01)
 		p, _, _, journal := f0Fixture(t)
@@ -1203,12 +960,8 @@ func TestIPAMStranded_DocumentedLimits(t *testing.T) {
 			"is handed back")
 	})
 
-	// LIMIT 2: a listed placeholder that is rolled back afterwards.
-	// CreateEndpoint succeeded in the previous process, so the engine
-	// has stored the endpoint and lists it as ep-<id> while it retries
-	// Join. The rule leaves it, which is the safe direction. The
-	// engine then rolls the endpoint back, and what closes the record
-	// is the release handler, not the rule.
+	// Limit 2: an endpoint stored by a previous process is listed as ep-<id> while the engine retries Join; its
+	// rollback reaches ReleaseAddress, not this rule (#1047).
 	t.Run("a placeholder is left alone and the rollback gives it up", func(t *testing.T) {
 		restarted, removed := f0MAC(0x02), f0MAC(0x04)
 		p, b, _, journal := f0Fixture(t)
@@ -1222,8 +975,6 @@ func TestIPAMStranded_DocumentedLimits(t *testing.T) {
 		if got := f0Rec(t, p, id).Phase; got != lease.PhaseCreated {
 			t.Fatalf("phase = %v, want created while the engine still lists it", got)
 		}
-		// The rollback: DeleteEndpoint finds no fingerprint in this
-		// process, and ReleaseAddress is what is left.
 		if err := p.ReleaseAddress(ReleaseAddressRequest{PoolID: b.PoolID, Address: "192.168.99.10"}); err != nil {
 			t.Fatalf("ReleaseAddress: %v", err)
 		}
@@ -1234,18 +985,6 @@ func TestIPAMStranded_DocumentedLimits(t *testing.T) {
 	})
 }
 
-// TestIPAMReserve_EveryExitAfterTheReBindHandsTheWindowBack reads the
-// reserve's source, because the exits below it need a DHCP server.
-//
-// Two properties, and each of them has been wrong in this function.
-// The first is that no error leaves without giving the record up: an
-// exit added without that line takes the network's one tombstone and
-// keeps it, and the container that was restarting gets a fresh address
-// with nothing counting it. The second is WHICH give-up: the one for a
-// reservation the plugin accepted retains a record that still holds a
-// lease, and at these exits the lease is either absent or one the
-// acceptance rules refused, so using it here lays a tombstone carrying
-// an address the next container will be refused for as well.
 func TestIPAMReserve_EveryExitAfterTheReBindHandsTheWindowBack(t *testing.T) {
 	const (
 		decl  = "giveUp := func(keepTheWindow bool) { p.ipamGiveUpAttempt(recordID, keepTheWindow, time.Now()) }"
@@ -1303,8 +1042,6 @@ func TestIPAMReserve_EveryExitAfterTheReBindHandsTheWindowBack(t *testing.T) {
 			"the server policy, the conflict wiring, the exchange and the refused ACK", exits)
 	}
 
-	// The refused ACK is the exit that must NOT keep the window: the
-	// fold has already put the refused address on the record.
 	ack := -1
 	for i := start; i < len(lines); i++ {
 		if strings.Contains(lines[i], "ipamAcceptedReservation(") {

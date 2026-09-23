@@ -11,8 +11,6 @@ import (
 	"time"
 )
 
-// startMetricsListener brings up the optional TCP endpoint on a
-// kernel-assigned port and returns its base URL.
 func startMetricsListener(t *testing.T) (*Plugin, string) {
 	t.Helper()
 	p := &Plugin{
@@ -32,8 +30,6 @@ func startMetricsListener(t *testing.T) (*Plugin, string) {
 	return p, "http://" + p.metricsListener.Addr().String()
 }
 
-// TestMetricsListener_ServesTheExposition is the happy path: the port an
-// operator opened actually answers a scrape.
 func TestMetricsListener_ServesTheExposition(t *testing.T) {
 	_, base := startMetricsListener(t)
 
@@ -58,26 +54,10 @@ func TestMetricsListener_ServesTheExposition(t *testing.T) {
 	}
 }
 
-// TestMetricsListener_ExposesNothingButMetrics is the security assertion
-// of this feature, and the reason the TCP endpoint is a second server
-// rather than p.server on another listener.
-//
-// p.server routes every libnetwork RPC. This plugin runs with
-// CAP_NET_ADMIN, CAP_SYS_ADMIN and CAP_SYS_PTRACE and
-// "network": {"type": "host"}, so serving that mux on a TCP port would
-// hand anyone who can reach the port the ability to create networks,
-// join endpoints and delete them — on the host's own network namespace.
-//
-// The mistake this guards against is a plausible one-line "simplification"
-// (reuse p.server.Handler, why build a second mux?), and nothing else in
-// the suite would go red for it. A 404 here is the contract.
+// The TCP endpoint has its own mux because the socket's mux routes every libnetwork RPC.
 func TestMetricsListener_ExposesNothingButMetrics(t *testing.T) {
 	p, base := startMetricsListener(t)
 
-	// Every path the plugin serves on its socket, plus the paths the
-	// daemon calls that we deliberately leave unrouted. Taken from the
-	// routing table rather than a literal list so a route added later
-	// is covered here automatically.
 	var paths []string
 	for _, r := range p.routes() {
 		if r.path == "/metrics" {
@@ -91,8 +71,7 @@ func TestMetricsListener_ExposesNothingButMetrics(t *testing.T) {
 	}
 
 	for _, path := range paths {
-		// POST, because that is how libnetwork calls them — a GET-only
-		// check could pass while the real method was reachable.
+		// libnetwork calls every RPC with POST.
 		resp, err := http.Post(base+path, "application/json", strings.NewReader("{}"))
 		if err != nil {
 			t.Fatalf("POST %s: %v", path, err)
@@ -108,10 +87,6 @@ func TestMetricsListener_ExposesNothingButMetrics(t *testing.T) {
 	}
 }
 
-// TestMetricsListener_BadAddressFailsAtStartup pins that a malformed or
-// unusable METRICS_ADDR is a startup error rather than a goroutine that
-// logs and leaves the plugin running without the endpoint an operator
-// asked for.
 func TestMetricsListener_BadAddressFailsAtStartup(t *testing.T) {
 	p := &Plugin{}
 	err := p.ListenMetrics("this is not an address")
@@ -126,9 +101,6 @@ func TestMetricsListener_BadAddressFailsAtStartup(t *testing.T) {
 	}
 }
 
-// TestMetricsListener_OffByDefault records that constructing a plugin
-// opens no port. The default is the security posture, so it is asserted
-// rather than assumed.
 func TestMetricsListener_OffByDefault(t *testing.T) {
 	p := &Plugin{}
 	if p.metricsServer != nil || p.metricsListener != nil {

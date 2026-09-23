@@ -8,11 +8,6 @@ import (
 	"testing"
 )
 
-// TestParseIfnameOption pins the validation contract for the
-// interface_name endpoint option (#125): absent is fine, valid names
-// pass through, and anything the kernel's dev_valid_name would reject
-// fails the Join loudly instead of surfacing as a rename error deep
-// inside libnetwork.
 func TestParseIfnameOption(t *testing.T) {
 	cases := []struct {
 		name    string

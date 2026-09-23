@@ -28,23 +28,8 @@ func mustParseAddr(t *testing.T, cidr string) *netlink.Addr {
 	return a
 }
 
-// EVERY ADDRESS TAKES ITS LIFETIMES FROM ITS OWN ADVERTISEMENT.
-// Defeat row 6 of the #818 list, and the reason it is a row: the lease
-// carries an aggregate pair as well, and reading it here is both easy
-// and wrong. The library's Deadlines() makes Lease.Expire the LONGEST
-// valid lifetime across the addresses it holds and its preferred
-// deadline the SHORTEST preferred, so on a link advertising a
-// unique-local prefix for an hour and a global one for five minutes,
-// an aggregate-fed install gives the five-minute address an hour to
-// live: it stays on the link, and stays PREFERRED, long after the
-// router stopped saying it exists. Nothing fails, and the container
-// keeps choosing a source address from a prefix that is no longer
-// advertised.
-//
-// Both addresses also carry IFA_F_NODAD, for the reason
-// TestV6AddrAttrs_TurnsOffDuplicateAddressDetection gives: the library
-// ran RFC 4862 section 5.4's check on each of them before it reported
-// the lease.
+// The library's Deadlines() makes Lease.Expire the longest valid lifetime and the preferred deadline the shortest,
+// so each address must take its lifetimes from its own advertisement (#818).
 func TestV6WantedAddrs_EachAddressCarriesItsOwnLifetimes(t *testing.T) {
 	main := mustParseAddr(t, "2001:db8:1::a/64")
 	info := dhcp.Info{
@@ -92,15 +77,6 @@ func TestV6WantedAddrs_EachAddressCarriesItsOwnLifetimes(t *testing.T) {
 	}
 }
 
-// The address Docker was told about is applied first.
-//
-// It matters on one path and only one: an AddrReplace that fails takes
-// the whole renewal with it, and if one of several is going to fail,
-// the address `docker inspect` already shows is the one worth having on
-// the link. The order is asserted rather than left to the lease's,
-// because the library's list order is the router's advertisement order
-// and ipv6_main_prefix exists precisely because that order is not the
-// operator's choice.
 func TestV6WantedAddrs_AppliesTheReportedAddressFirst(t *testing.T) {
 	main := mustParseAddr(t, "2001:db8:1::a/64")
 	info := dhcp.Info{
@@ -124,13 +100,6 @@ func TestV6WantedAddrs_AppliesTheReportedAddressFirst(t *testing.T) {
 	}
 }
 
-// A lease that carries no list still installs its address.
-//
-// Info.Addrs is empty for every DHCPv4 lease, for a DHCPv6 lease from a
-// server that granted one address, and for any Info a caller builds by
-// hand. A function that returned nothing for those would silently stop
-// installing addresses on the paths that have worked all along, and no
-// v6 test naming SLAAC would notice.
 func TestV6WantedAddrs_ALeaseWithNoListInstallsItsOwnAddress(t *testing.T) {
 	main := mustParseAddr(t, "2001:db8:1::a/128")
 	main.ValidLft, main.PreferedLft = 7200, 3600
@@ -148,12 +117,6 @@ func TestV6WantedAddrs_ALeaseWithNoListInstallsItsOwnAddress(t *testing.T) {
 	}
 }
 
-// An address the lease reports and netlink cannot parse fails the
-// renewal instead of being skipped.
-//
-// Skipping it would install a SUBSET of the lease and then hand that
-// subset to the set difference below, which would withdraw the rest of
-// the container's addresses as though the lease had dropped them.
 func TestV6WantedAddrs_RefusesAnAddressItCannotParse(t *testing.T) {
 	main := mustParseAddr(t, "2001:db8:1::a/64")
 	_, err := v6WantedAddrs(main, dhcp.Info{
@@ -169,18 +132,8 @@ func TestV6WantedAddrs_RefusesAnAddressItCannotParse(t *testing.T) {
 	}
 }
 
-// THE ADDRESSES THAT LEAVE THE LEASE COME OFF THE LINK.
-// Defeat row 4. Two things take an address out of a v6 lease and
-// neither is a renewal onto a different address: a valid lifetime that
-// ran out, and a router that stopped advertising the prefix it was
-// formed from. "The address changed" is not a question with one answer
-// on a link with two of them, so the manager keeps the set it installed
-// and diffs it.
-//
-// The kernel's own lifetimes are a backstop and not this: a router that
-// keeps refreshing the valid lifetime of a prefix it no longer
-// advertises to THIS client leaves the address on the link for as long
-// as the lease lives.
+// The manager diffs the set it installed: a router may refresh the valid lifetime of a prefix it no longer advertises
+// to this client (#818).
 func TestV6AddrsToWithdraw_RemovesWhatTheLeaseNoLongerHolds(t *testing.T) {
 	installed := func(keys ...string) map[string]*netlink.Addr {
 		out := map[string]*netlink.Addr{}
@@ -251,18 +204,7 @@ func TestV6AddrsToWithdraw_RemovesWhatTheLeaseNoLongerHolds(t *testing.T) {
 	}
 }
 
-// A FORMED ADDRESS THAT EXPIRES IS NOT A DHCP OUTAGE.
-// Defeat row 11. `Lost{ReasonExpired}` on a SLAAC lease arrives as its
-// own event type, and the event type is what decides which counter
-// moves: routed through "leasefail" it would feed countOutageTick, so
-// dhcp_timeouts -- the counter an operator alerts on to mean "the DHCP
-// server stopped answering" -- would climb for a router that withdrew a
-// prefix, with no DHCP server involved at any point in the endpoint's
-// life.
-//
-// The address removal itself is guarded by netHandle/ctrLink, which are
-// nil here, so this drives the counter semantics alone; the removal is
-// TestV6AddrsToWithdraw's and the integration suite's.
+// A SLAAC expiry routed through "leasefail" would feed dhcp_timeouts with no DHCP server involved (#818).
 func TestHandleEvent_ASLAACExpiryIsNotADHCPOutage(t *testing.T) {
 	p := &Plugin{}
 	m := newDHCPManager(nil, JoinRequest{NetworkID: "net1", EndpointID: "ep1"}, DHCPNetworkOptions{}).withPlugin(p)
@@ -280,8 +222,6 @@ func TestHandleEvent_ASLAACExpiryIsNotADHCPOutage(t *testing.T) {
 		t.Errorf("dhcp_server_policy_timeouts = %d, want 0", got)
 	}
 
-	// The other direction, or the assertion above is satisfied by an
-	// event type nothing handles at all.
 	m.handleEvent(dhcp.Event{Type: "leasefail"}, true)
 	if got := p.dhcpTimeoutsV6.Load(); got != 1 {
 		t.Errorf("dhcp_timeouts_v6 = %d after a leasefail, want 1: the counter this test "+
@@ -289,16 +229,6 @@ func TestHandleEvent_ASLAACExpiryIsNotADHCPOutage(t *testing.T) {
 	}
 }
 
-// The ledger says where an address came from.
-//
-// `bound` is otherwise the same row for an address a DHCP server handed
-// out and one this plugin formed from an advertisement, and they are
-// not the same event to anyone reading the file back: there is no lease
-// on any server behind the second, so there is nothing to correlate it
-// with and no server log it appears in.
-//
-// Both directions, because a `source` written on every row would be
-// just as useless as one written on none.
 func TestAudit_AFormedAddressSaysWhereItCameFrom(t *testing.T) {
 	var failures atomic.Int32
 	p := &Plugin{}
@@ -326,19 +256,6 @@ func TestAudit_AFormedAddressSaysWhereItCameFrom(t *testing.T) {
 	}
 }
 
-// An ipv6_main_prefix that matched nothing is counted once and named.
-//
-// THE COUNTER'S POPULATION IS ENDPOINTS, which is why it is bumped from
-// the acquisition and not from the lease seam that computed the flag:
-// every renewal crosses that seam, and a counter bumped there would
-// report how often a client renewed. Read as endpoints, a value of 1 on
-// a fleet means one network's option names a prefix its router does not
-// advertise; read as renewals it means nothing at all.
-//
-// It is a warning and not a failure. The addresses are formed either
-// way and the container has them; what is wrong is that `docker
-// inspect` shows one the operator did not ask for, and a typo in an
-// option must not take containers down.
 func TestNoteMainPrefixFallback_CountsEndpointsAndNamesBothPrefixes(t *testing.T) {
 	hook := logtest.NewLocal(log.StandardLogger())
 	defer hook.Reset()
@@ -363,10 +280,6 @@ func TestNoteMainPrefixFallback_CountsEndpointsAndNamesBothPrefixes(t *testing.T
 			"address Docker was given, or there is nothing to compare", entries[0].Data)
 	}
 
-	// Every direction that must NOT count, in one place: a lease that
-	// matched, a v4 acquisition (Info.MainAddrFallback is a v6 field
-	// and a v4 Info can only carry its zero), and a network that named
-	// no prefix at all.
 	q := &Plugin{}
 	q.noteMainPrefixFallback(true, dhcp.Info{IP: "2001:db8:1::42/64"}, main, "e1")
 	q.noteMainPrefixFallback(false, dhcp.Info{IP: "192.168.99.50/24", MainAddrFallback: true}, netip.Prefix{}, "e2")
@@ -377,9 +290,6 @@ func TestNoteMainPrefixFallback_CountsEndpointsAndNamesBothPrefixes(t *testing.T
 	}
 }
 
-// fakeV6LinkAddrs records the netlink calls the v6 apply path makes and
-// makes none of them. It is the TRANSPORT and not the verdict: it
-// returns whatever error a case asks for and decides nothing else.
 type fakeV6LinkAddrs struct {
 	replaced []string
 	deleted  []string
@@ -397,8 +307,6 @@ func (f *fakeV6LinkAddrs) AddrDel(_ netlink.Link, a *netlink.Addr) error {
 	return f.delErr[a.String()]
 }
 
-// applyManager is a manager wired for the apply path and nothing else:
-// a link that is never dialled, a plugin for the counters, a ledger.
 func applyManager(t *testing.T) (*dhcpManager, *Plugin) {
 	t.Helper()
 	var failures atomic.Int32
@@ -410,23 +318,10 @@ func applyManager(t *testing.T) (*dhcpManager, *Plugin) {
 	return m, p
 }
 
-// THE LOOP, NOT THE ARITHMETIC. Defeat rows 3 and 4.
-//
-// v6WantedAddrs and v6AddrsToWithdraw have their own tables above, and
-// both of them stayed green against a manager that installed the first
-// address of the set and never removed anything: the helpers were
-// tested and the code that calls them was observed by nothing. That is
-// this test's whole subject, which is why it asserts on the netlink
-// calls that were made and in what order.
-//
-// The three phases are one sequence on one manager because that is what
-// makes them a renumbering. Asserting each from a fresh manager would
-// test three first binds.
 func TestApplyV6Addrs_InstallsEveryAddressAndRemovesWhatLeftTheLease(t *testing.T) {
 	m, p := applyManager(t)
 	h := &fakeV6LinkAddrs{}
 
-	// Phase 1: a lease holding two advertised prefixes.
 	two := dhcp.Info{
 		IP:    "2001:db8:1::a/64",
 		SLAAC: true,
@@ -458,8 +353,6 @@ func TestApplyV6Addrs_InstallsEveryAddressAndRemovesWhatLeftTheLease(t *testing.
 		t.Errorf("ipv6_slaac_addresses = %d after two formed addresses were installed, want 2", got)
 	}
 
-	// Phase 2: the same lease again, which is what a renewal is. No
-	// address arrived and none left.
 	if err := m.applyV6Addrs(h, mustParseAddr(t, two.IP), two); err != nil {
 		t.Fatalf("re-applying the same lease: %v", err)
 	}
@@ -477,7 +370,6 @@ func TestApplyV6Addrs_InstallsEveryAddressAndRemovesWhatLeftTheLease(t *testing.
 			"refreshes reports how often the router advertised", got)
 	}
 
-	// Phase 3: the router stops advertising the second prefix.
 	one := dhcp.Info{
 		IP:    "2001:db8:1::a/64",
 		SLAAC: true,
@@ -509,11 +401,6 @@ func TestApplyV6Addrs_InstallsEveryAddressAndRemovesWhatLeftTheLease(t *testing.
 	}
 }
 
-// A kernel that refuses one address does not silently drop the rest.
-//
-// The error direction, because the loop above returns on the first
-// failure: what must not happen is a refusal being swallowed and the
-// endpoint coming up holding an address set nobody checked.
 func TestApplyV6Addrs_AKernelRefusalIsReturnedAndNamesTheAddress(t *testing.T) {
 	m, _ := applyManager(t)
 	h := &fakeV6LinkAddrs{replErr: map[string]error{"2001:db8:1::a/64": unix.EINVAL}}
@@ -532,13 +419,6 @@ func TestApplyV6Addrs_AKernelRefusalIsReturnedAndNamesTheAddress(t *testing.T) {
 	}
 }
 
-// A withdrawal the kernel refuses is a warning and not a failed renewal,
-// and the address is out of the manager's set either way.
-//
-// The opposite direction of the row above, and they are different on
-// purpose: an address that is arriving is the lease, and an address that
-// is leaving is already gone. A manager that returned an error here
-// would fail a renewal over cleanup it no longer has any use for.
 func TestApplyV6Addrs_AFailedWithdrawalDoesNotFailTheRenewal(t *testing.T) {
 	m, p := applyManager(t)
 	h := &fakeV6LinkAddrs{delErr: map[string]error{"fd00:9::a/64": unix.ENODEV}}
@@ -573,26 +453,15 @@ func TestApplyV6Addrs_AFailedWithdrawalDoesNotFailTheRenewal(t *testing.T) {
 	}
 }
 
-// THE DEPRECATION CARRIED BY ONE MEMBER OF THE SET REACHES THE KERNEL.
-//
-// The pair of lifetimes cannot say it: an address deprecated on a
-// prefix advertised forever renders as (0, 0), and so does an address
-// advertised with no deadlines at all. This walks the set-building loop
-// with one of each, so the flag has to travel per address and not per
-// lease. A version that passed the same answer for every member would
-// either install the deprecated address preferred, or deprecate the one
-// the router is still telling the host to prefer -- and both are
-// silent, because RFC 4862 section 5.5.4 leaves a deprecated address on
-// the link and reachable.
+// A deprecated address on a forever prefix and a permanent one both render as (0, 0), so the flag travels per address
+// (#819).
 func TestV6WantedAddrs_ADeprecatedMemberKeepsItsDeprecation(t *testing.T) {
 	main := mustParseAddr(t, "2001:db8:1::a/64")
 	info := dhcp.Info{
 		IP:    "2001:db8:1::a/64",
 		SLAAC: true,
 		Addrs: []dhcp.V6Addr{
-			// Advertised forever and still preferred.
 			{IP: "2001:db8:1::a/64"},
-			// Advertised forever, preferred lifetime spent.
 			{IP: "fd00:db8:2::a/64", Deprecated: true},
 		},
 	}
@@ -620,8 +489,6 @@ func TestV6WantedAddrs_ADeprecatedMemberKeepsItsDeprecation(t *testing.T) {
 			"router advertised", dep.ValidLft, dep.PreferedLft, infiniteLft)
 	}
 
-	// The preservation control: the member that is NOT deprecated still
-	// carries no lifetimes, which is this plugin's permanent address.
 	keep, ok := byKey["2001:db8:1::a/64"]
 	if !ok {
 		t.Fatalf("the main address is not in the set: %v", byKey)
@@ -633,24 +500,8 @@ func TestV6WantedAddrs_ADeprecatedMemberKeepsItsDeprecation(t *testing.T) {
 	}
 }
 
-// THE CHAIN FROM A LEASE EVENT TO NETLINK, which nothing below the
-// integration lane could see.
-//
-// Every test above enters at applyV6Addrs with a transport handed in,
-// so all of them stayed green against a manager whose dispatch never
-// reached the apply path at all: `case "bound"` not calling renew,
-// installV6Address returning early, the netHandle guard widened. The
-// only observer of that stretch was an integration arm, and an
-// integration arm is a poor one here -- the engine installs the address
-// CreateEndpoint reported when it builds the sandbox, so the container's
-// link holds the right address, with IFA_F_NODAD, before this plugin
-// has applied anything (MEASURED, engine 29.8.0, run 35153680517:
-// `flags 02 valid_lft forever preferred_lft forever`).
-//
-// So this drives the whole chain from the event the persistent client
-// emits, and asserts the two things that install is NOT: the lease's
-// own lifetimes on the wire to netlink, and the counter an operator
-// reads moving for each address.
+// Measured, engine 29.8.0, run 35153680517: the engine installs the reported address with IFA_F_NODAD before the
+// plugin applies anything, so this drives the chain from the lease event to netlink (#818).
 func TestHandleEvent_ABoundSLAACLeaseReachesTheLink(t *testing.T) {
 	m, p := applyManager(t)
 	h := &fakeV6LinkAddrs{}
@@ -685,8 +536,6 @@ func TestHandleEvent_ABoundSLAACLeaseReachesTheLink(t *testing.T) {
 		t.Errorf("leases_obtained_v6 = %d after one bound event, want 1", got)
 	}
 
-	// The lifetimes, because the address alone is the one thing the
-	// engine's install already got right.
 	_, last := m.lastIPs()
 	if last == nil {
 		t.Fatal("the bound event recorded no IPv6 address")
@@ -698,10 +547,6 @@ func TestHandleEvent_ABoundSLAACLeaseReachesTheLink(t *testing.T) {
 			last.ValidLft, last.PreferedLft)
 	}
 
-	// The other direction. Without it, a dispatch that applied the
-	// address set on every event whatsoever would satisfy everything
-	// above: `config` is a DHCPv6 information reply, it carries no
-	// address, and it must not touch the link.
 	other, _ := applyManager(t)
 	oh := &fakeV6LinkAddrs{}
 	other.v6Addrs = oh

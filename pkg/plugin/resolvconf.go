@@ -19,59 +19,12 @@ import (
 	"github.com/claymore666/docker-net-dhcp/v2/pkg/dhcp"
 )
 
-// errPIDNotContainer is returned when the PID handed to
-// writeContainerResolvConf no longer belongs to the container it was
-// resolved from. Callers count it: a rise means the plugin came that
-// close to writing DHCP-supplied content into an unrelated process.
 var errPIDNotContainer = errors.New("pid no longer belongs to the expected container")
 
-// cgroupNamesContainer reports whether the contents of a
-// /proc/<pid>/cgroup file place that task inside container ctrID.
-//
-// IT IS A FILTER, NOT AN AUTHORIZATION. A true answer means "this is
-// not obviously a different container", never "this is that container."
-// Every caller that acts on the strength of it must carry its own proof
-// of identity; openContainerProc is what does.
-//
-// # The reasoning this replaces, and why it was wrong
-//
-// This comment used to say the substring match was deliberate because
-// "the ID is 64 hex characters, so it cannot collide with anything else
-// in the path". That is true of ACCIDENTAL collision and false of
-// deliberate collision, and the difference is the whole question. The
-// argument silently assumed /proc/<pid>/cgroup contains only names the
-// system chose. It does not: cgroup path components are named by
-// whoever owns the subtree, and an ordinary login shell owns one.
-//
-//	systemd-run --user --scope --unit="docker-<64 hex>.scope" sleep 60
-//
-// No root, no Docker socket, no group membership. That places any
-// chosen container ID in an unprivileged user's cgroup path, and this
-// function then returns true for that task. The ID's length buys
-// nothing against someone who is copying it rather than guessing it.
-//
-// The match is also over the whole FILE rather than a field of a line,
-// so the ID counts wherever it lands -- including a cgroup v1 controller
-// list, which is not a path at all.
-//
-// # Why it is still a substring match here
-//
-// Narrowing this to compare whole "/"-separated segments of the path
-// field is scheduled with the netns-identity work (#785), NOT because
-// it is expensive but because ON ITS OWN IT BUYS NOTHING: the same
-// one-line systemd-run above names an exact leaf segment just as easily
-// as a substring. Narrowing alone moves the guard from trivially
-// defeated to defeated by one command, which is tidiness dressed as a
-// fix. It is worth doing beside a real identity check and misleading
-// without one, so it ships with that or not at all.
-//
-// TestCgroupNamesContainer_DelegatedSubtreeIsAcceptedByDesign asserts
-// the hole as a TRUE against this code, so it goes red the day someone
-// believes a narrowing closed it.
-//
-// An empty ctrID is never a match. It is what a future caller that
-// forgot to thread the ID through would pass, and "check nothing" is
-// not an acceptable reading of it.
+// cgroupNamesContainer is a filter, not an authorization (#688): an unprivileged
+// `systemd-run --user --scope --unit=docker-<id>.scope` puts any container ID in a cgroup path, and the match is
+// over the whole file. Narrowing to path segments alone buys nothing and ships with the netns identity work (#785);
+// TestCgroupNamesContainer_DelegatedSubtreeIsAcceptedByDesign asserts the hole. An empty ctrID never matches.
 func cgroupNamesContainer(cgroup, ctrID string) bool {
 	if ctrID == "" {
 		return false
@@ -79,54 +32,22 @@ func cgroupNamesContainer(cgroup, ctrID string) bool {
 	return strings.Contains(cgroup, ctrID)
 }
 
-// openContainerProc opens /proc/<pid> and confirms the task behind it
-// still belongs to ctrID before anything is done with it (#688).
-//
-// Both halves matter, and neither is sufficient alone:
-//
-//   - The cgroup check answers "is this still that container?". The
-//     PID is resolved through Docker (NetworkInspect -> ContainerInspect)
-//     and nothing between that call and the setns re-checks it. The
-//     plugin runs with pidhost: true, so if the container exits in
-//     that window and the kernel recycles the PID, the victim is an
-//     arbitrary *host* process -- possibly one in the host's root
-//     mount namespace. A liveness check would not help: the whole
-//     failure mode is that something else is alive at that PID.
-//   - The returned directory fd pins the answer. procfs invalidates a
-//     /proc/<pid> dentry when the task exits, so every openat below
-//     this fd either reaches the same task or fails with ESRCH -- a
-//     PID recycled after the check cannot be reached through it.
-//     Re-deriving the path as a string afterwards would reopen the
-//     window the check just closed.
-//
-// The container ID appears in the cgroup path under both cgroup
-// drivers (`/docker/<id>` for cgroupfs, `docker-<id>.scope` for
-// systemd) and survives a private cgroup namespace, which only
-// prefixes the path. A substring match on the 64-hex ID is therefore
-// both sufficient and unambiguous.
+// openContainerProc confirms the task at pid still belongs to ctrID and returns a /proc/<pid> directory fd (#688).
+// The plugin runs with pidhost, so a recycled PID names an arbitrary host task; procfs invalidates the dentry when
+// the task exits, so every openat below the fd reaches the same task or fails with ESRCH.
 func openContainerProc(pid int, ctrID string) (*os.File, error) {
 	d, err := os.Open(fmt.Sprintf("/proc/%d", pid))
 	if err != nil {
 		return nil, fmt.Errorf("open /proc/%d: %w", pid, err)
 	}
 
-	// O_CLOEXEC, like the sibling openat in openContainerNetNS. Go's
-	// os/exec does not sweep foreign descriptors, so an fd opened
-	// without it is inherited by whatever another goroutine spawns in
-	// the same window.
+	// O_CLOEXEC: os/exec does not sweep foreign descriptors, so another goroutine's spawn would inherit this one.
 	fd, err := unix.Openat(int(d.Fd()), "cgroup", unix.O_RDONLY|unix.O_CLOEXEC, 0)
 	if err != nil {
 		d.Close()
 		return nil, fmt.Errorf("%w: reading the cgroup of pid %d: %v", errPIDNotContainer, pid, err)
 	}
-	// Wrapped and closed on every path out (#729). The d.Close() calls
-	// in the arms below close the DIRECTORY fd; this one is a second,
-	// independent descriptor, and it used to be dropped on the floor on
-	// success, on read error and on cgroup mismatch alike. os.NewFile
-	// attaches a finalizer, so the leak is bounded by whenever the GC
-	// next runs — in a process that also holds netlink sockets, FIFOs
-	// and the plugin's listening sockets, and reaches here once per
-	// bound/renew event with propagate_dns and once per attach.
+	// Closed on every path out (#729): os.NewFile's finalizer bounds a leak only by the next GC.
 	cgroupFile := os.NewFile(uintptr(fd), "cgroup")
 	defer cgroupFile.Close()
 
@@ -145,47 +66,12 @@ func openContainerProc(pid int, ctrID string) (*os.File, error) {
 	return d, nil
 }
 
-// writeContainerResolvConf enters the mount namespace of the process
-// identified by pid and rewrites /etc/resolv.conf with the
-// DHCP-supplied DNS server list.
-//
-// Why setns into the mount namespace rather than writing the host's
-// /var/lib/docker/containers/<id>/resolv.conf bind source directly:
-// the plugin's filesystem only bind-mounts /var/run/docker.sock (see
-// config.json), so it can't see the host's resolv.conf bind source.
-// Adding another bind mount would prompt every existing user for
-// re-grant on upgrade. Mount-ns entry is a one-time code cost that
-// avoids any plugin-config change.
-//
-// Threading contract: setns is per-thread, so we lock the goroutine
-// to one OS thread for the duration. On the *unhappy* path (setns
-// back to host fails) we deliberately do NOT call UnlockOSThread —
-// the thread is now in the container's mount namespace and would
-// poison the next goroutine that lands on it. Go's runtime retires
-// poisoned threads when their owning goroutine exits, so callers
-// must run this from a goroutine they're willing to lose. In
-// practice this only fires if the container netns vanished mid-write
-// (i.e. the container died), which is exactly the case we already
-// have to live with on every other namespace operation.
-//
-// Caveats baked in:
-//   - Docker rewrites /etc/resolv.conf on `docker network connect`
-//     and `disconnect`. Our write survives between those events but
-//     not across them. Operators connecting/disconnecting networks
-//     will need to wait for the next DHCP renewal to re-populate.
-//   - Multi-network containers: the LAST plugin to write wins.
-//     Containers attached to two net-dhcp networks will end up with
-//     whichever network's renewal happened most recently.
-//   - search-domain handling: prefer the multi-entry DHCP option 119
-//     (Domain Search List). Falls back to the
-//     single-entry option 15 (`domain`) when option 119
-//     isn't supplied. RFC 3397 specifies option 119 supersedes option
-//     15 when both are present.
+// writeContainerResolvConf enters pid's mount namespace and rewrites /etc/resolv.conf (#100): config.json does not
+// mount /var/lib/docker/containers, and a new mount prompts every user for a re-grant on upgrade. If setns back fails
+// the thread stays locked and retires with its goroutine. Docker rewrites the file on network connect and disconnect,
+// and with two net-dhcp networks the last renewal wins. Option 119 takes precedence over option 15 (RFC 3397).
 func writeContainerResolvConf(pid int, ctrID string, dns []string, searchList []string, searchDomain, iface string) error {
-	// Drop anything that would restructure the file before the emptiness
-	// guard below, so "every nameserver the server sent was unusable"
-	// lands on that guard rather than producing a resolv.conf with no
-	// nameserver line at all (#689).
+	// Unusable values are dropped before the emptiness guard, so all-unusable lands on it (#689).
 	dns = resolvSafe(dns)
 	searchList = resolvSafe(searchList)
 	if !dhcp.SafeValue(searchDomain) {
@@ -201,14 +87,10 @@ func writeContainerResolvConf(pid int, ctrID string, dns []string, searchList []
 	}
 
 	if len(dns) == 0 {
-		// Defensive: caller should have filtered. Writing empty
-		// resolv.conf would silently nuke name resolution.
 		return fmt.Errorf("refusing to write empty resolv.conf")
 	}
 
-	// Before locking a thread or touching a namespace: confirm the PID
-	// still belongs to the container it was resolved from, and keep the
-	// directory fd that proves it (#688).
+	// The PID is confirmed before any thread is locked or namespace touched (#688).
 	procDir, err := openContainerProc(pid, ctrID)
 	if err != nil {
 		return err
@@ -217,11 +99,7 @@ func writeContainerResolvConf(pid int, ctrID string, dns []string, searchList []
 
 	runtime.LockOSThread()
 
-	// Open self-thread's mnt ns through /proc/self/task/<tid>/ns/mnt
-	// rather than /proc/self/ns/mnt: the latter resolves to the main
-	// thread's ns, but we just locked to a *different* thread that
-	// may already have been moved by an earlier goroutine on this
-	// runtime. Always read the current thread's view.
+	// /proc/self/ns/mnt resolves to the main thread's namespace, so the locked thread's own entry is read.
 	origMnt, err := os.Open(fmt.Sprintf("/proc/self/task/%d/ns/mnt", unix.Gettid()))
 	if err != nil {
 		runtime.UnlockOSThread()
@@ -229,8 +107,7 @@ func writeContainerResolvConf(pid int, ctrID string, dns []string, searchList []
 	}
 	defer origMnt.Close()
 
-	// Through procDir, not by path: see openContainerProc. Reopening
-	// /proc/<pid>/ns/mnt as a string would let a recycled PID back in.
+	// Through procDir, not by path, so a recycled PID cannot get back in (#688).
 	targetFd, err := unix.Openat(int(procDir.Fd()), "ns/mnt", unix.O_RDONLY|unix.O_CLOEXEC, 0)
 	if err != nil {
 		runtime.UnlockOSThread()
@@ -239,14 +116,8 @@ func writeContainerResolvConf(pid int, ctrID string, dns []string, searchList []
 	targetMnt := os.NewFile(uintptr(targetFd), "ns/mnt")
 	defer targetMnt.Close()
 
-	// Detach this thread's filesystem state (CWD, root, umask) from
-	// the rest of the Go runtime's threads BEFORE setns into the
-	// mount namespace. Linux refuses CLONE_NEWNS setns when the
-	// caller still shares fs state with another process — that's
-	// what produced "invalid argument" on the first CI run. unshare
-	// is per-thread and cheap; the locked thread is retired with
-	// the goroutine after we return so the side-effect is
-	// well-scoped.
+	// Linux refuses a CLONE_NEWNS setns while the thread shares fs state, which gave "invalid argument" on the first
+	// CI run; unshare(CLONE_FS) is per-thread (#100).
 	if err := unix.Unshare(unix.CLONE_FS); err != nil {
 		runtime.UnlockOSThread()
 		return fmt.Errorf("unshare CLONE_FS: %w", err)
@@ -260,41 +131,21 @@ func writeContainerResolvConf(pid int, ctrID string, dns []string, searchList []
 	writeErr := os.WriteFile("/etc/resolv.conf", buildResolvConf(dns, searchList, searchDomain, iface), 0644)
 
 	if err := unix.Setns(int(origMnt.Fd()), unix.CLONE_NEWNS); err != nil {
-		// Thread is now stuck in the container's mnt ns. Don't
-		// UnlockOSThread — see threading contract above.
+		// The thread is now in the container's mount namespace, so it is not unlocked.
 		return fmt.Errorf("setns back to host mnt ns failed (write was: %v): %w", writeErr, err)
 	}
 	runtime.UnlockOSThread()
 	return writeErr
 }
 
-// buildResolvConf renders the DHCP-supplied DNS list as a resolv.conf
-// file. Marker comment lets operators see at a glance that the file
-// is plugin-managed and where the values came from.
-//
-// Search-line precedence (RFC 3397): a non-empty searchList from
-// option 119 wins over the single-domain searchDomain from option 15.
-// When both are absent no `search` line is emitted — resolv.conf is
-// then equivalent to a no-search-domain configuration.
+// buildResolvConf renders the DNS list; option 119 takes precedence over option 15 (RFC 3397, #101).
 func buildResolvConf(dns []string, searchList []string, searchDomain, iface string) []byte {
-	// Backstop. writeContainerResolvConf already filtered; doing it here
-	// too means the renderer itself cannot emit a line it was not asked
-	// for, whoever calls it. Same reasoning as dhcp.directive on the
-	// config-file side — the format has no escaping, so "drop" is the
-	// only available answer.
 	dns = resolvSafe(dns)
 	searchList = resolvSafe(searchList)
 	if !dhcp.SafeValue(searchDomain) {
 		searchDomain = ""
 	}
 	searchDomain, _ = dhcp.FirstSearchDomain(searchDomain)
-	// The zone is spelled after a '%' inside the nameserver line, so an
-	// interface name carrying whitespace or a control character would
-	// restructure that line the way a resolver value would. Unreachable
-	// from the one caller, which reads the name off a netlink link and
-	// so cannot hold either; stated here because the paragraph above
-	// claims this renderer cannot emit a line it was not asked for
-	// whoever calls it, and iface was the one argument that escaped it.
 	if !resolvOneField(iface) {
 		iface = ""
 	}
@@ -313,31 +164,9 @@ func buildResolvConf(dns []string, searchList []string, searchDomain, iface stri
 	return []byte(b.String())
 }
 
-// zonedNameserver appends the container-side interface as a scope zone
-// to a link-local resolver address, and leaves everything else alone.
-//
-// WHY IT IS NEEDED (#821): RFC 8106 section 5.1 lets a Router
-// Advertisement carry link-local addresses as RDNSS entries, and
-// routers do -- a segment whose router is also its resolver has no
-// other address to give. A link-local address is ambiguous on a host
-// with more than one interface, so RFC 4007 section 11 spells the zone
-// after a '%'. glibc's resolver passes the zone through to the socket;
-// WITHOUT it, a `nameserver fe80::1` line is unusable and every lookup
-// fails with "Invalid argument".
-//
-// THE ZONE IS THE CONTAINER'S NAME FOR THE LINK, not the host's. The
-// file is read inside the container, where the interface is `eth0` or
-// whatever the endpoint's interface_name asked for, and the host-side
-// veth name means nothing there. The caller reads it off the link it
-// located inside the sandbox.
-//
-// THE BOUND, stated rather than pretended away: musl (the C library in
-// the alpine images this project tests against) parses resolv.conf with
-// inet_pton and does not accept a zone at all, so a musl container
-// silently drops such a line. There is nothing the plugin can write
-// that works for both, and writing the glibc-correct form is the choice
-// that loses nothing: without the zone the address does not work under
-// either library.
+// zonedNameserver zones a link-local resolver with the container's interface name (RFC 4007 section 11, #821).
+// Routers send link-local RDNSS entries (RFC 8106 section 5.1), and glibc fails every lookup on one without a zone.
+// musl parses resolv.conf with inet_pton and drops a zoned line, so no form works for both.
 func zonedNameserver(ns, iface string) string {
 	if iface == "" || strings.Contains(ns, "%") {
 		return ns
@@ -349,31 +178,13 @@ func zonedNameserver(ns, iface string) string {
 	return ns + "%" + iface
 }
 
-// resolvOneField reports whether a value can occupy one field of one
-// resolv.conf line.
-//
-// TWO RULES, AND THE SECOND WAS MISSING (#1010, found by
-// FuzzBuildResolvConf). dhcp.SafeValue stops at r < 0x20, one character
-// short of the space at 0x20, and a space is this sink's field
-// separator: a search-list entry of "a.test b.test" renders as
-// `search a.test b.test`, which is two search domains where the lease
-// carried one, with the server's choice first. That is #704 exactly,
-// through the channel #689 called structurally safe because its
-// upstream helper used strings.Fields -- a property of a caller, which
-// is not a property this renderer can rely on. Stating it here is what
-// makes the backstop true whoever calls it.
+// resolvOneField also refuses a space: dhcp.SafeValue stops at 0x1f, and a space splits one entry into two (#1010,
+// #704).
 func resolvOneField(v string) bool {
 	return v != "" && dhcp.SafeValue(v) && !strings.ContainsFunc(v, unicode.IsSpace)
 }
 
-// resolvSafe drops entries that cannot be written to /etc/resolv.conf as
-// a single field.
-//
-// resolv.conf is line-oriented with no quoting, so a value carrying a
-// newline does not corrupt its own line — it appends a line the DHCP
-// server chose, and `nameserver <attacker>` is a legal one. #689.
-// Filtering every list here keeps the property from depending on which
-// upstream helper was used.
+// resolvSafe drops values carrying a newline, which would add a line the server chose (#689).
 func resolvSafe(vals []string) []string {
 	out := vals[:0:0]
 	for _, v := range vals {

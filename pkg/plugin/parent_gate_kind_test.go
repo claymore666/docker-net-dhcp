@@ -14,27 +14,7 @@ import (
 	"testing"
 )
 
-// TestLockParent_TheCallSitesNameTheKindTheyAreAttaching is the other
-// half of the same-kind branch: the branch itself is tested in
-// parent_gate_test.go, but it can only be as right as the kind each
-// call site hands it.
-//
-// The argument is otherwise unobserved. lockParent's kind reaches no
-// return value and no error -- it selects between an ordinary wait and
-// a health warning, and both of those are counters -- so a site that
-// passed the wrong kind, or nothing at all, would compile, run, and
-// report every give-up on that path as a collision the kernel may have
-// refused. That is the counter an operator is supposed to act on.
-//
-// Two arms drive the real sites; the third reads the ones no unit test
-// can reach, and says which is which rather than implying it covers
-// them all.
 func TestLockParent_TheCallSitesNameTheKindTheyAreAttaching(t *testing.T) {
-	// The holder attaches the SAME kind as the caller below, which is
-	// the pair the kernel permits. It is the reading a wrong argument
-	// destroys: a site passing "" or the other mode turns this into the
-	// warning counter, and a cross-kind holder could not tell the two
-	// apart.
 	t.Run("the preflight probe", func(t *testing.T) {
 		p := &Plugin{}
 		holder := p.lockParent(context.Background(), probeGateParent, ModeMacvlan, "test-holder")
@@ -43,8 +23,6 @@ func TestLockParent_TheCallSitesNameTheKindTheyAreAttaching(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
 
-		// Errors: the parent does not exist, and the gate is taken
-		// before it is looked up. What matters is which counter moved.
 		_ = p.runDHCPProbe(ctx, probeGateParent, ModeMacvlan, serverPolicy{})
 		assertSameKindGiveUp(t, p, "dhcp_probe.go")
 	})
@@ -57,8 +35,6 @@ func TestLockParent_TheCallSitesNameTheKindTheyAreAttaching(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
 
-		// Same shape: the gate is taken first, and the parent lookup
-		// that follows fails on a name no host has.
 		if _, err := p.addIPAMReserveLink(ctx, "dh-kind-a", "dh-kind-b", ModeMacvlan,
 			DHCPNetworkOptions{Parent: probeGateParent}, nil); err == nil {
 			t.Fatal("the reservation link was built against a parent that does not exist")
@@ -66,13 +42,6 @@ func TestLockParent_TheCallSitesNameTheKindTheyAreAttaching(t *testing.T) {
 		assertSameKindGiveUp(t, p, "ipam_reserve.go")
 	})
 
-	// WHY THE REMAINING SITES ARE A SOURCE CHECK. Both take the gate
-	// after a successful parent lookup, so driving them needs a real
-	// NIC and CAP_NET_ADMIN -- the integration lane, where the counter
-	// split is not what is under test. The structure is checked instead,
-	// and the limit is stated rather than left to be assumed: this says
-	// each site passes a mode variable, not that the variable holds the
-	// right mode.
 	t.Run("every site names a mode variable", func(t *testing.T) {
 		sites := lockParentCallSites(t)
 		if len(sites) < 4 {
@@ -98,9 +67,6 @@ func TestLockParent_TheCallSitesNameTheKindTheyAreAttaching(t *testing.T) {
 	})
 }
 
-// assertSameKindGiveUp is the verdict both runtime arms want: the caller
-// gave up against a holder of its own kind, which is an ordinary wait
-// and not the warning.
 func assertSameKindGiveUp(t *testing.T, p *Plugin, site string) {
 	t.Helper()
 	if got := p.parentLinkWaitTimeouts.Load(); got != 0 {
@@ -117,11 +83,9 @@ func assertSameKindGiveUp(t *testing.T, p *Plugin, site string) {
 
 type lockParentSite struct {
 	where string
-	arg   string // the identifier passed as kind, empty for anything else
+	arg   string
 }
 
-// lockParentCallSites reads the plugin's own source for calls to
-// lockParent, outside test files.
 func lockParentCallSites(t *testing.T) []lockParentSite {
 	t.Helper()
 	entries, err := os.ReadDir(".")

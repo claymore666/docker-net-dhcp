@@ -14,17 +14,10 @@ import (
 	"github.com/claymore666/docker-net-dhcp/v2/pkg/dhcp"
 )
 
-// ipamPhaseCase is one record in one phase, all holding the same
-// address in a network of their own, so a lookup keyed on (scope,
-// address) sees exactly one candidate per case.
 type ipamPhaseCase struct {
-	phase lease.Phase
-	// answers says whether a RequestAddress replay may be answered from
-	// a record in this phase.
+	phase   lease.Phase
 	answers bool
-	// build writes the events that put a record in this phase and
-	// returns its id, or "" when the phase cannot hold an address at all.
-	build func(t *testing.T, p *Plugin, scope string, mac net.HardwareAddr) string
+	build   func(t *testing.T, p *Plugin, scope string, mac net.HardwareAddr) string
 }
 
 func ipamPhaseCases() []ipamPhaseCase {
@@ -37,9 +30,6 @@ func ipamPhaseCases() []ipamPhaseCase {
 	}
 	return []ipamPhaseCase{
 		{lease.PhaseUnset, false, func(t *testing.T, p *Plugin, scope string, mac net.HardwareAddr) string {
-			// No events at all. There is no record, so there is nothing
-			// to hold an address: the case exists so the table covers
-			// all eight phases rather than the seven that are reachable.
 			return ""
 		}},
 		{lease.PhaseReserved, true, func(t *testing.T, p *Plugin, scope string, mac net.HardwareAddr) string {
@@ -100,15 +90,7 @@ func ipamPhaseCases() []ipamPhaseCase {
 
 const ipamPhaseAddr = "192.168.99.10/24"
 
-// preChangeLookup is the lookup as it stood before this change: the
-// library's index by scope and address, with the caller applying no
-// phase test at all.
-//
-// IT IS HERE TO BE RUN, not to document. The design claimed the lookup
-// needed narrowing; the claim is only worth anything if the unnarrowed
-// version is shown answering for a phase nothing holds. Deleting this
-// function and its test is deleting the evidence for the filter beside
-// it.
+// preChangeLookup is the lookup without the phase filter, kept to show it answering for dead records.
 func preChangeLookup(rb lease.Rebuilt, networkID string, addr netip.Addr) (lease.Record, bool) {
 	matches := rb.ByScopeAddr(networkID, addr)
 	if len(matches) == 0 {
@@ -147,16 +129,6 @@ func ipamPhaseFixture(t *testing.T) (*Plugin, map[lease.Phase]string) {
 	return p, scopes
 }
 
-// TestIpamPhaseFilter_ThePreChangeLookupAnswersForDeadRecords is the
-// observer, run against the lookup as it was.
-//
-// A CLOSED record is the phase CreateEndpoint's failure path writes, and
-// a RETAINED one is a tombstone whose address the re-bind branch hands
-// out through its own deadline. The unnarrowed lookup answers for both.
-// That is what makes a daemon-restart replay of a closed endpoint count
-// as a replay HIT: ipam_replay_miss, whose whole job is to make that
-// visible, never moves, and the endpoint comes back attached to an
-// address nothing holds.
 func TestIpamPhaseFilter_ThePreChangeLookupAnswersForDeadRecords(t *testing.T) {
 	p, scopes := ipamPhaseFixture(t)
 	rb, err := p.records.Rebuilt()
@@ -187,10 +159,6 @@ func TestIpamPhaseFilter_ThePreChangeLookupAnswersForDeadRecords(t *testing.T) {
 	}
 }
 
-// TestIpamPhaseFilter_OverEveryPhase is the same table against the
-// lookup that ships. Both directions: a phase that must answer and does
-// not loses a container its address at a restart, and a phase that must
-// not answer and does hands one out that nothing holds.
 func TestIpamPhaseFilter_OverEveryPhase(t *testing.T) {
 	p, scopes := ipamPhaseFixture(t)
 	rb, err := p.records.Rebuilt()
@@ -205,8 +173,6 @@ func TestIpamPhaseFilter_OverEveryPhase(t *testing.T) {
 			seen[c.phase] = true
 			scope, built := scopes[c.phase]
 			if !built {
-				// The unreachable phase. Nothing holds an address in it,
-				// so the assertion is that the filter says so anyway.
 				if ipamPhaseAnswers(c.phase) {
 					t.Errorf("%v is in the answering set and no record can ever be in it "+
 						"holding an address", c.phase)
@@ -223,9 +189,6 @@ func TestIpamPhaseFilter_OverEveryPhase(t *testing.T) {
 		})
 	}
 
-	// The non-vacuity guard: eight phases, every one of them judged. A
-	// phase added to the library and not to this table would otherwise
-	// ship with no classification at all.
 	for _, ph := range []lease.Phase{
 		lease.PhaseUnset, lease.PhaseReserved, lease.PhaseCreated, lease.PhaseJoined,
 		lease.PhaseLeft, lease.PhaseRetained, lease.PhaseAdopted, lease.PhaseClosed,
@@ -236,9 +199,6 @@ func TestIpamPhaseFilter_OverEveryPhase(t *testing.T) {
 	}
 }
 
-// TestIpamLiveRecord_NewestWins. A tombstone and the record that
-// succeeded it share one address, and Rebuild returns records in
-// creation order, so the last answering match is the current one.
 func TestIpamLiveRecord_NewestWins(t *testing.T) {
 	p := recordingPlugin(t)
 	mac, _ := net.ParseMAC("02:42:c0:a8:63:0a")
@@ -269,16 +229,6 @@ func TestIpamLiveRecord_NewestWins(t *testing.T) {
 	}
 }
 
-// TestIpamPhaseFilter_TheSetIsTheLibrarysOwn couples the two
-// derivations of one fact, because the looser of the two decides.
-//
-// ipamRecordPhases and lease.Record.Resume answer the same question --
-// which phases can still hold a lease worth claiming -- and the MAC
-// guard now asks the library rather than re-deriving it. That leaves
-// ipamRecordPhases as the address-keyed half's own copy, and a copy
-// that drifts is the defect this test exists for: a phase admitted here
-// and refused there would make an address replay answer from a record
-// the duplicate guard reads as holding nothing.
 func TestIpamPhaseFilter_TheSetIsTheLibrarysOwn(t *testing.T) {
 	now := time.Now()
 	for _, ph := range lease.AllPhases() {

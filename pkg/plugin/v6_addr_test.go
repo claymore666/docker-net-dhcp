@@ -16,24 +16,8 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// A DHCPv6 address is installed with duplicate-address detection turned
-// OFF, because it has already passed one (D30 Q1).
-//
-// RFC 9915 section 18.2.10.1 makes the CLIENT run the check: "The client
-// performs duplicate address detection on each of the received addresses
-// in any IAs it accepts before using that address for traffic". The
-// library does exactly that and only then emits Acquired. Handing the
-// address to the kernel without this flag makes RFC 4862 section 5.4 run
-// a second time on an address that just passed, and the second run can
-// FAIL where the first did not: RFC 7527 section 4.1's loopback case, or
-// any node that answers the probe, marks the address `dadfailed` and the
-// kernel withdraws it. RFC 4429 section 3.3 is the same argument from
-// the other side.
-//
-// This is asserted on the flag and not on `ip -6 addr` timing on
-// purpose: without the flag the address is `tentative` only for the
-// length of the check, so a proof that reads the link state passes on a
-// fast box and fails on a loaded runner.
+// RFC 9915 section 18.2.10.1 has the client run DAD before using the address, which the library does; a second
+// kernel run (RFC 4862 section 5.4) can fail where the first passed (RFC 7527 section 4.1), so NODAD is set (#911).
 func TestV6AddrAttrs_TurnsOffDuplicateAddressDetection(t *testing.T) {
 	addr, err := netlink.ParseAddr("2001:db8::5/128")
 	if err != nil {
@@ -53,9 +37,6 @@ func TestV6AddrAttrs_TurnsOffDuplicateAddressDetection(t *testing.T) {
 	}
 }
 
-// The flag is ORed in, not assigned. netlink.ParseAddr and the callers
-// above it can put flags on the address already, and an assignment here
-// would drop them silently.
 func TestV6AddrAttrs_KeepsFlagsItDidNotSet(t *testing.T) {
 	addr, err := netlink.ParseAddr("2001:db8::5/128")
 	if err != nil {
@@ -71,13 +52,7 @@ func TestV6AddrAttrs_KeepsFlagsItDidNotSet(t *testing.T) {
 	}
 }
 
-// An infinite lease is both lifetimes zero, which is what makes the
-// kernel send no IFA_CACHEINFO at all.
-//
-// The alternative encoding -- a very large number -- would be a
-// countdown the kernel eventually reaches. Zero here is netlink's
-// "forever", and it is the ONLY value that means it: a one-second
-// lifetime and an infinite one differ by one integer.
+// Both lifetimes zero sends no IFA_CACHEINFO, which is netlink's forever (#911).
 func TestV6AddrAttrs_InfiniteLeaseSendsNoLifetimes(t *testing.T) {
 	addr, err := netlink.ParseAddr("2001:db8::5/128")
 	if err != nil {
@@ -88,30 +63,15 @@ func TestV6AddrAttrs_InfiniteLeaseSendsNoLifetimes(t *testing.T) {
 		t.Errorf("an infinite lease gave ValidLft=%d PreferedLft=%d, want both zero",
 			addr.ValidLft, addr.PreferedLft)
 	}
-	// And a finite one does send them, or the assertion above is
-	// satisfied by a function that never sets anything.
 	v6AddrAttrs(addr, 10, 5, false)
 	if addr.ValidLft == 0 || addr.PreferedLft == 0 {
 		t.Error("a finite lease produced no lifetimes")
 	}
 }
 
-// AN INFINITE VALID LIFETIME BESIDE A FINITE PREFERRED ONE.
-//
-// RFC 4861 section 4.6.2 gives the Prefix Information option two
-// independent lifetimes and spells infinity 0xFFFFFFFF, and RFC 4862
-// section 5.5.3 only requires preferred <= valid -- so a router may
-// legally advertise a prefix that never expires and stops being
-// preferred in half an hour, and a deprecated prefix is exactly that
-// shape with the preferred half at zero. This plugin's own spelling of
-// infinity is Info's zero, and the two cannot both travel in one
-// IFA_CACHEINFO: the netlink library attaches that structure whenever
-// EITHER lifetime is non-zero and puts both numbers in it, so the pair
-// (0, 1800) reaches the kernel as a valid lifetime of zero seconds and
-// the address is refused with EINVAL. The container then has no address
-// at all, which is the opposite of what an unbounded advertisement
-// asked for, and it is silent from this side: the error arrives at a
-// renewal, on one address of a set.
+// A router may advertise an infinite valid lifetime (0xFFFFFFFF, RFC 4861 section 4.6.2) beside a finite preferred
+// one. netlink sends IFA_CACHEINFO when either lifetime is non-zero, so (0, 1800) would reach the kernel as valid 0
+// and fail EINVAL (#819).
 func TestV6AddrAttrs_AnInfiniteValidLifetimeIsTranslatedNotSentAsZero(t *testing.T) {
 	addr, err := netlink.ParseAddr("2001:db8::5/128")
 	if err != nil {
@@ -129,10 +89,6 @@ func TestV6AddrAttrs_AnInfiniteValidLifetimeIsTranslatedNotSentAsZero(t *testing
 			"valid half alone", addr.PreferedLft)
 	}
 
-	// The deprecated shape, which is the same branch with the preferred
-	// half at zero -- and it must NOT take the translation, because
-	// both lifetimes zero is this plugin's permanent address and sends
-	// no IFA_CACHEINFO at all.
 	addr2, err := netlink.ParseAddr("2001:db8::6/128")
 	if err != nil {
 		t.Fatalf("ParseAddr: %v", err)
@@ -145,26 +101,8 @@ func TestV6AddrAttrs_AnInfiniteValidLifetimeIsTranslatedNotSentAsZero(t *testing
 	}
 }
 
-// A deprecated address is not sent to the kernel as a permanent one.
-//
-// MEASURED 2026-09-16 on this box, in unshare -Urn on a dummy link:
-// "ip -6 addr add ... valid_lft forever preferred_lft 0" installs the
-// address WITH the kernel's deprecated flag and preferred_lft 0sec, and
-// an address added with preferred_lft 3 is deprecated by the kernel's
-// own timer at t=6 although it is also permanent. So the pair below is
-// the state RFC 4862 section 5.5.4 asks for, and the kernel runs the
-// preferred timer on it.
-//
-// The pair (valid 0, preferred 0) reaches this function from two
-// different advertisements: an address with no deadlines at all, which
-// is permanent and preferred, and an address deprecated on a prefix
-// advertised forever, which is permanent and NOT preferred. The numbers
-// alone cannot tell them apart, so the fourth argument carries the
-// answer and the translation to the kernel's infinity fires on it. A
-// version that keyed only on a non-zero preferred lifetime sends no
-// IFA_CACHEINFO for the deprecated shape, and the kernel installs an
-// address the router has asked the host to stop using for new
-// connections as its most preferred one.
+// Measured 2026-09-16 in unshare -Urn on a dummy link: valid_lft forever with preferred_lft 0 installs the address
+// deprecated, the state RFC 4862 section 5.5.4 asks for, so a deprecated permanent address is translated (#819).
 func TestV6AddrAttrs_ADeprecatedInfiniteAddressIsNotSentAsPermanent(t *testing.T) {
 	addr, err := netlink.ParseAddr("2001:db8::7/128")
 	if err != nil {
@@ -183,9 +121,6 @@ func TestV6AddrAttrs_ADeprecatedInfiniteAddressIsNotSentAsPermanent(t *testing.T
 			addr.PreferedLft)
 	}
 
-	// The preservation control. Same two numbers, not deprecated: this
-	// is every permanent address on the link, and it must still send no
-	// lifetimes at all.
 	keep, err := netlink.ParseAddr("2001:db8::8/128")
 	if err != nil {
 		t.Fatalf("ParseAddr: %v", err)
@@ -198,18 +133,8 @@ func TestV6AddrAttrs_ADeprecatedInfiniteAddressIsNotSentAsPermanent(t *testing.T
 	}
 }
 
-// The preferred lifetime never outlives the valid one.
-//
-// RFC 4862 section 5.5.3 e) treats a preferred lifetime longer than the
-// valid one as a malformed advertisement; the kernel clamps rather than
-// refuses, so the symptom of getting this backwards is an address that
-// is preferred right up to the moment it disappears -- no deprecation
-// window, and every connection established in it dies at once.
-//
-// The chassis is what guarantees the ordering (Preferred is derived from
-// the lease's own preferred deadline and falls back to the valid one),
-// so this reads the pair the chassis produces rather than an invented
-// one.
+// RFC 4862 section 5.5.3 e) treats preferred > valid as malformed, and the kernel clamps it, leaving no deprecation
+// window (#911).
 func TestV6AddrAttrs_PreferredNeverExceedsValid(t *testing.T) {
 	addr, err := netlink.ParseAddr("2001:db8::5/128")
 	if err != nil {
@@ -228,17 +153,7 @@ func TestV6AddrAttrs_PreferredNeverExceedsValid(t *testing.T) {
 	}
 }
 
-// NODAD is set in ONE place, and that place is the v6 arm.
-//
-// WHY A SOURCE-LEVEL TEST. The flag reaches the kernel through a netlink
-// socket against a real link in a real namespace; there is no seam
-// between the manager and that socket that a unit test can sit in. What
-// IS checkable is that no other site sets the flag -- because the
-// failure that matters is not "it was set wrongly" but "a v4 address
-// picked it up too", and a v4 address installed with NODAD skips RFC
-// 5227's check that the library ran for v6 and did not run for v4 in
-// this mode. That is silent: the address works until another host on the
-// segment has it too.
+// A v4 address with NODAD would skip the RFC 5227 check the library did not run for it, silently (#911).
 func TestNODAD_IsSetOnlyOnTheV6Path(t *testing.T) {
 	names, err := filepath.Glob("*.go")
 	if err != nil {
@@ -277,33 +192,8 @@ func TestNODAD_IsSetOnlyOnTheV6Path(t *testing.T) {
 	}
 }
 
-// And the v6 attributes are applied only when the family is v6.
-//
-// The same argument in the other direction: v6AddrAttrs called
-// unconditionally would put NODAD and a pair of lifetimes on every IPv4
-// address the plugin installs. The lifetimes are the loud half -- a v4
-// address would start expiring -- and NODAD is the silent one.
-//
-// THE RULE IS "REACHED ONLY FROM THE V6 ARM", NOT "WRITTEN INSIDE IT".
-// The apply path installs a LIST of addresses (#818), each carrying its
-// own lifetimes, so the call that stamps them sits one frame below the
-// `if v6` that decides the family. A rule keyed on the neighbouring
-// text would be satisfied by moving the call back up and would refuse a
-// helper that cannot be reached from the v4 path at all, so it is keyed
-// on the call graph instead: a call is allowed where it is lexically
-// under `if v6`, or inside a function EVERY call site of which is
-// itself allowed. A function nothing in the package calls is not
-// allowed, so the rule cannot be satisfied by making its subject
-// unreachable.
-//
-// WHAT IT CANNOT SEE, stated rather than hidden: a function value. A
-// closure written under `if v6` and called from somewhere else reads as
-// guarded, and a call made through a variable of function type has no
-// callee name to follow. Both are refused by TestNODAD_IsSetOnlyOnTheV6Path
-// only insofar as they name the flag themselves; a second helper that
-// took v6AddrAttrs as a parameter would pass both. The package has no
-// such call today and the analyser is driven against a synthetic one in
-// TestV6AttrGuard_RefusesACallThatEscapesTheV6Arm.
+// The rule follows the call graph: a call is allowed under `if v6` or in a function every caller of which is allowed.
+// A function value or a closure is not followed (#818, #911).
 func TestV6AddrAttrs_IsCalledUnderTheFamilySwitch(t *testing.T) {
 	names, err := filepath.Glob("*.go")
 	if err != nil {
@@ -339,15 +229,6 @@ func TestV6AddrAttrs_IsCalledUnderTheFamilySwitch(t *testing.T) {
 	}
 }
 
-// v6AttrGuardOf answers, for one parsed package, which calls to
-// v6AddrAttrs are reachable only from a family switch that has already
-// chosen v6.
-//
-// `if v6 { ... }` with no init statement is the only guard it reads,
-// because it is the only one the apply path writes: the family is a
-// bool parameter threaded through renew, applyAddressChange and the
-// phases below them. An `else` branch is outside the body's braces and
-// so is not guarded, which is the direction that matters.
 type v6AttrGuard struct {
 	sites     []string
 	unguarded []string
@@ -427,9 +308,6 @@ func v6AttrGuardOf(fset *token.FileSet, files []*ast.File) v6AttrGuard {
 	for _, c := range calls {
 		byCallee[c.callee] = append(byCallee[c.callee], c)
 	}
-	// Ascending fixed point from the lexically guarded calls. A
-	// function with no call site in this package never enters the set,
-	// so "nothing calls it" is not an answer.
 	v6Only := map[string]bool{}
 	for changed := true; changed; {
 		changed = false
@@ -468,13 +346,6 @@ func v6AttrGuardOf(fset *token.FileSet, files []*ast.File) v6AttrGuard {
 	return out
 }
 
-// The analyser is driven against sources that are wrong in each of the
-// ways it exists to catch, and against the shape it must keep allowing.
-//
-// Without this, the rule above is a rule with one possible verdict:
-// every widening of a guard rule has to show that the widened rule
-// still goes red, and that the narrow case it used to cover is still
-// covered.
 func TestV6AttrGuard_RefusesACallThatEscapesTheV6Arm(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -551,21 +422,7 @@ func v6AddrAttrs() {}`,
 	}
 }
 
-// TestHealthClient_IsPublishedOnlyForV4 pins which family the
-// `endpoints` array of /Plugin.Health describes.
-//
-// A dual-stack endpoint runs two clients and the array has one entry
-// per ENDPOINT, so one of the two has to be the one it reads. It is
-// the v4 client: `address`, `lease_state`, the three lease times and
-// the RFC 5227 pair all come from it, and RFC 5227 is a v4 protocol
-// with no v6 counterpart at all. docs/reference.md states that bound
-// on the `endpoints` row.
-//
-// The guard is `if !v6` around ONE call, and inverting it is silent in
-// exactly the way this array cannot afford: the entry would carry the
-// container's IPv6 address in a field every consumer reads as its
-// IPv4 one, with an `acd_phase` belonging to a client that never ran
-// ACD. Nothing else in the document would disagree.
+// The `endpoints` array describes the v4 client: RFC 5227 fields are v4-only (#911).
 func TestHealthClient_IsPublishedOnlyForV4(t *testing.T) {
 	fset := token.NewFileSet()
 	f, err := parser.ParseFile(fset, "dhcp_manager.go", nil, 0)
