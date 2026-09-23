@@ -6,11 +6,12 @@ package harness
 import (
 	"encoding/json"
 	"fmt"
+	"go/ast"
 	"go/parser"
 	"go/token"
 	"os"
 	"regexp"
-	"strconv"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -44,7 +45,7 @@ func newFakeRecovery() *fakeRecovery {
 }
 
 // succeedsAt, failsAt and abortsAt are the three ends one rebuild can reach; failsAt and abortsAt are the
-// classifier's two arms (pkg/plugin/plugin.go:1258 and pkg/plugin/plugin.go:1252), each driven on its own (#376).
+// classifier's two arms (pkg/plugin/plugin.go:recoverOneEndpoint), each driven on its own (#376).
 func (f *fakeRecovery) succeedsAt(d time.Duration) *fakeRecovery { f.flipAt = d; return f }
 func (f *fakeRecovery) failsAt(d time.Duration) *fakeRecovery    { f.failAt = d; return f }
 func (f *fakeRecovery) abortsAt(d time.Duration) *fakeRecovery   { f.abortAt = d; return f }
@@ -337,7 +338,7 @@ func TestRecoveryRoutes_NamesEveryRoute(t *testing.T) {
 }
 
 // recovery_aborted_container_gone means a Start failed and the container was gone when the plugin looked
-// (pkg/plugin/plugin.go:1252), so nothing is pending; a verdict keyed on recovery_failed alone would call it a
+// (pkg/plugin/plugin.go:recoverOneEndpoint), so nothing is pending; a verdict keyed on recovery_failed alone would call it a
 // rebuild still in flight (#376).
 func TestAwaitRecoveryRebuild_NamesTheContainerGoneArm(t *testing.T) {
 	f := newFakeRecovery().abortsAt(awaitTimeoutDefault + recoveryPerNetworkTimeoutDefault)
@@ -512,74 +513,139 @@ func TestInstalledAwaitTimeoutDrift(t *testing.T) {
 	}
 }
 
-// The verdict describes what each counter MEANS, and that description
-// is keyed on the sites that move the counter, not on the counter's
-// name. recovery_failed has three of them and only one is a failing
-// Start: the other two are a walk-level failure before any Start
-// reached the endpoint, and a deferred walk whose daemon never came
-// back. A verdict that tells its reader to look at Start on either of
-// those sends them to the one thing that did not happen, which is the
-// same class of wrong answer this branch exists to stop.
-//
-// So this is a case per SITE, read out of the product: every line that
-// increments one of the three counters must be cited by the verdict
-// that names it, and every line the verdict cites must still be one of
-// them. A new site added to the plugin fails this, and so does a
-// citation left behind by one that moved.
+// Each counter's site is cited by the function holding it, once per site, under the counter's own name, so a new,
+// moved or deleted site and a citation under the wrong counter all go red (#376, #1056).
 func TestRecoveryVerdictCitesEveryIncrementSite(t *testing.T) {
 	const pluginSrc = "../../../pkg/plugin/plugin.go"
-	failed := incrementSites(t, pluginSrc, "recoveryFailed")
-	gone := incrementSites(t, pluginSrc, "recoveryAbortedContainerGone")
-	ok := incrementSites(t, pluginSrc, "recoveredOK")
+	sites := recoveryIncrementFuncs(t, pluginSrc)
 
 	for _, tc := range []struct {
-		name    string
-		verdict string
-		want    []int
+		name     string
+		verdict  string
+		counters []string
 	}{
 		{
-			name:    "the classified verdict",
-			verdict: recoveryVerdict(&HealthResponse{RecoveryFailed: 1}),
-			want:    append(append([]int{}, failed...), gone...),
+			name:     "the classified verdict",
+			verdict:  recoveryVerdict(&HealthResponse{RecoveryFailed: 1}),
+			counters: []string{"recovery_failed", "recovery_aborted_container_gone"},
 		},
 		{
-			name:    "the still-in-flight verdict",
-			verdict: recoveryVerdict(&HealthResponse{}),
-			want:    ok,
+			name:     "the still-in-flight verdict",
+			verdict:  recoveryVerdict(&HealthResponse{}),
+			counters: []string{"recovered_ok"},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			want := map[int]string{}
-			for _, line := range tc.want {
-				want[line] = "wanted"
-			}
-			cited := map[int]bool{}
-			for _, c := range citedLines(tc.verdict) {
-				for n := c.from; n <= c.through; n++ {
-					cited[n] = true
+			cited := map[string]map[string]int{}
+			for _, c := range citedFuncs(tc.verdict) {
+				if c.name == "" {
+					t.Errorf("the verdict cites plugin.go by something other than a function name, and a "+
+						"line number goes stale on any edit above it:\n%s", tc.verdict)
+					continue
 				}
-				if !c.satisfiedBy(want) {
-					t.Errorf("the verdict cites %s, which no longer increments a counter this "+
-						"verdict names. A citation that has moved is worse than none: it sends its "+
-						"reader to a line chosen by a previous version of the plugin:\n%s",
-						c, tc.verdict)
+				counter := counterBefore(tc.verdict[:c.at])
+				if !slices.Contains(tc.counters, counter) {
+					t.Errorf("the verdict cites %s under %q, which is not a counter this verdict "+
+						"describes:\n%s", c, counter, tc.verdict)
+					continue
 				}
+				if sites[counter][c.name] == 0 {
+					t.Errorf("the verdict cites %s for %s, and that function does not increment it. "+
+						"Its reader goes and looks:\n%s", c, counter, tc.verdict)
+				}
+				if cited[counter] == nil {
+					cited[counter] = map[string]int{}
+				}
+				cited[counter][c.name]++
 			}
-			for _, line := range tc.want {
-				if !cited[line] {
-					t.Errorf("pkg/plugin/plugin.go:%d moves one of the counters this verdict names "+
-						"and the verdict does not cite it, so the sentence describes fewer ways to "+
-						"reach that counter than the plugin has:\n%s", line, tc.verdict)
+			for _, counter := range tc.counters {
+				for fn, n := range sites[counter] {
+					if cited[counter][fn] != n {
+						t.Errorf("pkg/plugin/plugin.go:%s moves %s at %d site(s) and the verdict cites it "+
+							"%d time(s) for that counter, so the sentence describes a different set of "+
+							"ways to reach it than the plugin has:\n%s",
+							fn, counter, n, cited[counter][fn], tc.verdict)
+					}
 				}
 			}
 		})
 	}
 }
 
-// incrementSites returns the line numbers of every `p.<counter>.Add(1)`
-// in a Go source file. None found is a failure for the same reason it is
-// in constDuration: the point of the helper is that the sites live
-// elsewhere, so "not found" is the drift it exists to catch.
+// recoveryCounters maps each health field the verdicts name to the Plugin field that counts it.
+var recoveryCounters = map[string]string{
+	"recovery_failed":                 "recoveryFailed",
+	"recovery_aborted_container_gone": "recoveryAbortedContainerGone",
+	"recovered_ok":                    "recoveredOK",
+}
+
+// counterBefore returns the health field named last in text, or "" when it names none.
+func counterBefore(text string) string {
+	best, at := "", -1
+	for field := range recoveryCounters {
+		if i := strings.LastIndex(text, field); i > at {
+			best, at = field, i
+		}
+	}
+	return best
+}
+
+// recoveryIncrementFuncs maps each recovery health field to the plugin functions incrementing it and their site counts.
+func recoveryIncrementFuncs(t *testing.T, path string) map[string]map[string]int {
+	t.Helper()
+	file, err := parser.ParseFile(token.NewFileSet(), path, nil, 0)
+	if err != nil {
+		t.Fatalf("parsing %s: %v", path, err)
+	}
+	out := map[string]map[string]int{}
+	for field, counter := range recoveryCounters {
+		out[field] = map[string]int{}
+		total := 0
+		for _, decl := range file.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || fn.Body == nil {
+				continue
+			}
+			ast.Inspect(fn.Body, func(n ast.Node) bool {
+				if isIncrementOf(n, counter) {
+					out[field][fn.Name.Name]++
+					total++
+				}
+				return true
+			})
+		}
+		// The AST walk is held against the line scan, which shares none of its machinery (#1056).
+		if lines := incrementSites(t, path, counter); total != len(lines) {
+			t.Fatalf("the AST walk found %d `p.%s.Add(1)` in %s and the line scan %d; a site one of "+
+				"them cannot see is judged by nothing", total, counter, path, len(lines))
+		}
+	}
+	return out
+}
+
+// isIncrementOf reports whether n is the call p.<counter>.Add(1).
+func isIncrementOf(n ast.Node, counter string) bool {
+	call, ok := n.(*ast.CallExpr)
+	if !ok || len(call.Args) != 1 {
+		return false
+	}
+	add, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok || add.Sel.Name != "Add" {
+		return false
+	}
+	field, ok := add.X.(*ast.SelectorExpr)
+	if !ok || field.Sel.Name != counter {
+		return false
+	}
+	recv, ok := field.X.(*ast.Ident)
+	if !ok || recv.Name != "p" {
+		return false
+	}
+	one, ok := call.Args[0].(*ast.BasicLit)
+	return ok && one.Value == "1"
+}
+
+// incrementSites returns the line numbers of every `p.<counter>.Add(1)` in a Go source file; none is a failure.
 func incrementSites(t *testing.T, path, counter string) []int {
 	t.Helper()
 	src, err := os.ReadFile(path)
@@ -677,109 +743,47 @@ func funcBody(t *testing.T, path, name string) string {
 	return rest[:end]
 }
 
-// The parser has to read the spellings these files ALREADY use, not the
-// one the last fix happened to produce. The stale citation this sweep
-// exists for wrote its wrong number bare, after a comma, and a parser
-// keyed on the full path in front of every number would have seen the
-// defect only once it had been rewritten. The last case is the live
-// citation in recoveryobserver.go that carries both shapes at once.
-func TestCitedLines_ReadsTheSpellingsTheseFilesUse(t *testing.T) {
+// The citation reader takes the spellings these files use, and a near-miss name reads as itself (#1056).
+func TestCitedFuncs_ReadsTheSpellingsTheseFilesUse(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		text string
-		want []citation
+		want []string
 	}{
-		{
-			// The spelling of the stale citation. A fixture is not an
-			// assertion about the plugin, which is why the sweep below
-			// reads comments and leaves string literals alone.
-			name: "the stale citation, in its own spelling",
-			text: "and only then it moves, at (pkg/plugin/plugin.go:2936, 2941). A budget",
-			want: []citation{{2936, 2936}, {2941, 2941}},
-		},
-		{
-			name: "a range followed by a bare number",
-			text: "before Listen binds the socket (pkg/plugin/plugin.go:3186-3188, 3249), so a test",
-			want: []citation{{3186, 3188}, {3249, 3249}},
-		},
-		{
-			name: "the path repeated after a conjunction",
-			text: "two arms (pkg/plugin/plugin.go:2936 and pkg/plugin/plugin.go:2930) and they",
-			want: []citation{{2936, 2936}, {2930, 2930}},
-		},
-		{
-			name: "two separate citations are two claims, not one list",
-			text: "still present (pkg/plugin/plugin.go:2936), a walk-level failure (pkg/plugin/plugin.go:2532).",
-			want: []citation{{2936, 2936}, {2532, 2532}},
-		},
-		{
-			// The defect's own spelling. The long form is what the fix
-			// wrote; this is what the next hand writes.
-			name: "the short spelling, with no package directory",
-			text: "and only then it moves, at (plugin.go:2936, 2941). A budget",
-			want: []citation{{2936, 2936}, {2941, 2941}},
-		},
-		{
-			name: "the short spelling repeated after a conjunction",
-			text: "two arms (plugin.go:2936 and plugin.go:2930) and they",
-			want: []citation{{2936, 2936}, {2930, 2930}},
-		},
-		{
-			name: "a number that is not a citation is not taken",
-			text: "the #405 shape (pkg/plugin/plugin.go:2944), 15 characters later",
-			want: []citation{{2944, 2944}},
-		},
+		{"the long spelling", "and only then it moves (pkg/plugin/plugin.go:recoverOneEndpoint). A budget",
+			[]string{"recoverOneEndpoint"}},
+		{"the short spelling", "and only then it moves (plugin.go:recoverOneEndpoint). A budget",
+			[]string{"recoverOneEndpoint"}},
+		{"two citations in one list", "(pkg/plugin/plugin.go:NewPlugin, pkg/plugin/plugin.go:Listen) but",
+			[]string{"NewPlugin", "Listen"}},
+		{"a name that extends another is its own", "back (pkg/plugin/plugin.go:recoverEndpointsDeferred).",
+			[]string{"recoverEndpointsDeferred"}},
+		{"a line number is read as no name", "the #405 shape (pkg/plugin/plugin.go:2944), 15 characters later",
+			[]string{""}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got := citedLines(tc.text)
+			got := citedFuncs(tc.text)
 			if len(got) != len(tc.want) {
-				t.Fatalf("read %v, want %v. A citation this parser cannot see is one the sweep "+
-					"below reports nothing about", got, tc.want)
+				t.Fatalf("read %v, want %v. A citation this reader cannot see is one nothing below "+
+					"judges", got, tc.want)
 			}
 			for i := range got {
-				if got[i] != tc.want[i] {
-					t.Errorf("citation %d is %v, want %v", i, got[i], tc.want[i])
+				if got[i].name != tc.want[i] {
+					t.Errorf("citation %d names %q, want %q", i, got[i].name, tc.want[i])
 				}
 			}
 		})
 	}
 }
 
-// A cited line NUMBER is a claim about that line, and nothing checked
-// one. The verdict test above checks that each counter NAME is cited at
-// every site that moves it; it says nothing about the citations in the
-// prose around them, and two of those named pkg/plugin/plugin.go:2941 as
-// a classifier arm when :2941 is a cleanup call. A reader sent there
-// finds removeDHCPManagerIfSame and no counter at all.
-//
-// So: wherever a comment names one of these counters, or an arm, just
-// before a line citation, that line must still be one that moves one of
-// them. The sweep is keyed on the subject and reads the run-up to the
-// citation, because that run-up is what makes the citation a claim about
-// an arm instead of a pointer at some other line.
-//
-// A sweep is a universal, and a universal is satisfied by an empty
-// domain. Two things empty this one without touching a word of the
-// prose: an extractor that returns nothing, and an anchor that has
-// stopped matching a spelling these files use. Both are checked below,
-// against a count taken off the raw source and against a per-file
-// statement of what the answer should be.
+// A comment that names a counter or an arm just before a citation claims the cited function moves it; the claim is
+// judged against the counter named last, and an empty sweep is checked by a byte count and a per-file table (#1056).
 func TestEveryCitedArmIsAnIncrementSite(t *testing.T) {
 	const pluginSrc = "../../../pkg/plugin/plugin.go"
-	site := map[int]string{}
-	for _, counter := range []string{"recoveryFailed", "recoveryAbortedContainerGone", "recoveredOK"} {
-		for _, line := range incrementSites(t, pluginSrc, counter) {
-			site[line] = counter
-		}
-	}
-	// "arm" in lower case only: a heading shouting THE FAILURE ARM is
-	// not a claim about a line.
+	sites := recoveryIncrementFuncs(t, pluginSrc)
+	// "arm" in lower case only: a heading shouting THE FAILURE ARM is not a claim about a function.
 	claims := []string{"recovery_failed", "recovery_aborted_container_gone", "recovered_ok", "arm"}
 
-	// What each file is expected to answer. An empty result reads the
-	// same whether the file is wiring that claims nothing or the sweep
-	// has gone blind, and those want opposite reactions, so each file
-	// says which one it is.
 	for _, f := range []struct {
 		path       string
 		wantClaims bool
@@ -789,44 +793,34 @@ func TestEveryCitedArmIsAnIncrementSite(t *testing.T) {
 		{"recoveryobserver_test.go", true},
 	} {
 		t.Run(f.path, func(t *testing.T) {
-			// Comments only. The citations in string literals are the
-			// verdict text, and TestRecoveryVerdictCitesEveryIncrementSite
-			// reads those in both directions already: every line it cites
-			// moves a counter it names, and every such site is cited.
-			// Sweeping them here too would add nothing but this file's
-			// own parser fixtures, which are spellings and not claims.
-			//
-			// One comment group at a time, because a counter named in the
-			// block above a citation, with code in between, is not that
-			// citation's run-up.
+			// Comments only: TestRecoveryVerdictCitesEveryIncrementSite judges the verdict strings.
 			parsed, claimed := 0, 0
 			for _, prose := range commentBlocks(t, f.path) {
-				for _, loc := range citationAnchor.FindAllStringIndex(prose, -1) {
-					// One anchor can carry a list, and the numbers after
-					// the first are written bare. Parse from the anchor
-					// so every number in the list is judged, not only the
-					// one the path is spelled in front of.
-					cites, _ := parseCitationList(prose[loc[1]:])
-					parsed += len(cites)
-					runUp := prose[max(0, loc[0]-90):loc[0]]
+				for _, c := range citedFuncs(prose) {
+					parsed++
+					if c.name == "" {
+						t.Errorf("%s cites plugin.go by line number, which goes stale on any edit above "+
+							"it; cite the function", f.path)
+						continue
+					}
+					runUp := prose[max(0, c.at-90):c.at]
 					if !containsAny(runUp, claims) {
 						continue
 					}
-					for _, c := range cites {
-						claimed++
-						if !c.satisfiedBy(site) {
-							t.Errorf("%s says ...%q and cites %s for it, but no counter is incremented "+
-								"there. A citation that points at the wrong line is worse than none: "+
-								"its reader goes and looks", f.path, runUp, c)
+					claimed++
+					counter := counterBefore(runUp)
+					moves := sites[counter][c.name] > 0
+					if counter == "" {
+						for field := range recoveryCounters {
+							moves = moves || sites[field][c.name] > 0
 						}
+					}
+					if !moves {
+						t.Errorf("%s says ...%q and cites %s for it, but that function increments no "+
+							"such counter. Its reader goes and looks", f.path, runUp, c)
 					}
 				}
 			}
-			// The reader above is held against a second one that shares
-			// none of its machinery: `plugin.go:` counted off the raw
-			// comment lines. If the sweep sees fewer citations than the
-			// file plainly contains, the ones it missed are asserted
-			// about by nothing at all.
 			if anchors := commentAnchors(t, f.path); parsed < anchors {
 				t.Errorf("%s carries %d `plugin.go:` citations in its comments and the sweep read "+
 					"%d. Whatever it could not read, it is silent about, and silence here passes",
@@ -843,6 +837,32 @@ func TestEveryCitedArmIsAnIncrementSite(t *testing.T) {
 					"empty result anywhere else to mean anything", f.path, claimed)
 			}
 		})
+	}
+}
+
+// Every function the observer and the recovery tests cite, in comments and strings, exists in plugin.go (#1056).
+func TestEveryCitedFuncExistsInThePlugin(t *testing.T) {
+	file, err := parser.ParseFile(token.NewFileSet(), "../../../pkg/plugin/plugin.go", nil, 0)
+	if err != nil {
+		t.Fatalf("parsing plugin.go: %v", err)
+	}
+	funcs := map[string]bool{}
+	for _, decl := range file.Decls {
+		if fn, ok := decl.(*ast.FuncDecl); ok {
+			funcs[fn.Name.Name] = true
+		}
+	}
+	for _, path := range []string{"recoveryobserver.go", "recoveryobserver_live.go",
+		"../recovery_test.go", "../recovery_daemon_test.go"} {
+		src, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("reading %s: %v", path, err)
+		}
+		for _, c := range citedFuncs(string(src)) {
+			if !funcs[c.name] {
+				t.Errorf("%s cites %s, which is not a function in pkg/plugin/plugin.go", path, c)
+			}
+		}
 	}
 }
 
@@ -997,98 +1017,25 @@ func configEnvDuration(t *testing.T, path, name string) time.Duration {
 	return 0
 }
 
-// citedLines pulls every plugin.go line number out of a text.
-//
-// A citation is not always spelled with the path in front of the
-// number, and the path is not always spelled in full. These files
-// already write `(pkg/plugin/plugin.go:3186-3188, 3249)`, and the stale
-// citation this test exists for was `(pkg/plugin/plugin.go:2936,
-// 2941)`: the wrong number was the BARE one. The package directory is
-// optional in the same way, because `plugin.go:2941` is what a hand
-// writes when it is already talking about the plugin, and a reader that
-// only saw the long form would see the defect only in the spelling the
-// fix happened to use, which is the spelling least likely to be wrong
-// next time. So after the path, this keeps taking numbers for as long
-// as they are joined by a comma, a semicolon, a range dash, the word
-// "and", or a repeat of the path in either spelling.
-//
-// A range is treated as the block it names: `A-B` is satisfied when
-// any line in A..B qualifies, because a range cites a passage and not a
-// statement. A comma list is the opposite: each number is its own
-// claim, and each has to hold.
-func citedLines(text string) []citation {
+// citedFuncs returns every plugin.go citation in text; a citation not followed by a Go identifier has no name.
+func citedFuncs(text string) []citation {
 	var out []citation
-	consumedTo := 0
-	for _, loc := range citationAnchor.FindAllStringIndex(text, -1) {
-		// An anchor inside a list already read is part of that list, not
-		// a second claim: "A and pkg/plugin/plugin.go:B" is one citation
-		// of two lines.
-		if loc[0] < consumedTo {
-			continue
+	for _, m := range citationPattern.FindAllStringSubmatchIndex(text, -1) {
+		c := citation{at: m[0]}
+		if m[2] >= 0 {
+			c.name = text[m[2]:m[3]]
 		}
-		cites, n := parseCitationList(text[loc[1]:])
-		out = append(out, cites...)
-		consumedTo = loc[1] + n
+		out = append(out, c)
 	}
 	return out
 }
 
-var (
-	citationAnchor = regexp.MustCompile(`(?:pkg/plugin/)?plugin\.go:`)
-	citationNumber = regexp.MustCompile(`^(\d+)`)
-	citationJoiner = regexp.MustCompile(`^(\s*-\s*|\s*[,;]\s*|\s+and\s+)((?:pkg/plugin/)?plugin\.go:)?`)
-)
+var citationPattern = regexp.MustCompile(`(?:pkg/plugin/)?plugin\.go:([A-Za-z_][A-Za-z0-9_]*)?`)
 
-// parseCitationList reads ONE citation list, starting immediately after
-// the path. It stops at the first thing that is not another number in
-// the same list, so a citation elsewhere in the text is a separate
-// claim and is not swept into this one.
-func parseCitationList(rest string) ([]citation, int) {
-	var out []citation
-	consumed, ranged := 0, false
-	for {
-		m := citationNumber.FindStringSubmatch(rest)
-		if m == nil {
-			break
-		}
-		n, err := strconv.Atoi(m[1])
-		if err != nil {
-			break
-		}
-		if ranged && len(out) > 0 {
-			out[len(out)-1].through = n
-		} else {
-			out = append(out, citation{from: n, through: n})
-		}
-		rest = rest[len(m[1]):]
-		consumed += len(m[1])
-		j := citationJoiner.FindStringSubmatch(rest)
-		if j == nil {
-			break
-		}
-		ranged = strings.Contains(j[1], "-")
-		rest = rest[len(j[0]):]
-		consumed += len(j[0])
-	}
-	return out, consumed
+// citation is one cited plugin.go function and the offset of its citation in the text.
+type citation struct {
+	at   int
+	name string
 }
 
-// citation is one cited place: a single line, or a range naming a block.
-type citation struct{ from, through int }
-
-func (c citation) String() string {
-	if c.from == c.through {
-		return fmt.Sprintf("pkg/plugin/plugin.go:%d", c.from)
-	}
-	return fmt.Sprintf("pkg/plugin/plugin.go:%d-%d", c.from, c.through)
-}
-
-// satisfiedBy reports whether any line this citation names is in lines.
-func (c citation) satisfiedBy(lines map[int]string) bool {
-	for n := c.from; n <= c.through; n++ {
-		if lines[n] != "" {
-			return true
-		}
-	}
-	return false
-}
+func (c citation) String() string { return "pkg/plugin/plugin.go:" + c.name }
