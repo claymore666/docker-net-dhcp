@@ -27,18 +27,14 @@ func TestErrToStatus(t *testing.T) {
 		{"ParentDown", ErrParentDown, http.StatusBadRequest},
 		{"ModeMismatch", ErrModeMismatch, http.StatusBadRequest},
 
-		// Upstream-misbehaviour: DHCP server didn't reply.
 		{"NoLease", ErrNoLease, http.StatusBadGateway},
 
-		// Transient Docker state — retryable.
 		{"NoContainer", ErrNoContainer, http.StatusServiceUnavailable},
 		{"NoSandbox", ErrNoSandbox, http.StatusServiceUnavailable},
 
-		// Stage state mismatch — request arrived in the wrong order.
 		{"NoHint", ErrNoHint, http.StatusConflict},
 		{"NotVEth", ErrNotVEth, http.StatusConflict},
 
-		// Anything we don't know about is a 500
 		{"unknown", errors.New("something else"), http.StatusInternalServerError},
 	}
 
@@ -51,15 +47,11 @@ func TestErrToStatus(t *testing.T) {
 	}
 }
 
-// TestErrToStatus_Wrapped verifies that errors.Is unwrapping works —
-// callers commonly wrap our sentinel errors with fmt.Errorf("...: %w", err)
-// and we still need them to map to the right HTTP status.
 func TestErrToStatus_Wrapped(t *testing.T) {
 	wrapped := fmt.Errorf("validation context: %w", ErrParentRequired)
 	if got := ErrToStatus(wrapped); got != http.StatusBadRequest {
 		t.Errorf("wrapped ErrParentRequired should map to 400, got %d", got)
 	}
-	// Also exercise the new non-400 mappings under wrapping.
 	if got := ErrToStatus(fmt.Errorf("upstream: %w", ErrNoLease)); got != http.StatusBadGateway {
 		t.Errorf("wrapped ErrNoLease should map to 502, got %d", got)
 	}

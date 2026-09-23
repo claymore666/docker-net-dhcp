@@ -14,10 +14,7 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-// JSONResponse Sends a JSON payload in response to a HTTP request.
-// The payload is encoded into a buffer first so that, on encoding failure,
-// we can still send a clean HTTP 500 instead of a garbled response with a
-// half-flushed body and a no-op second WriteHeader call.
+// JSONResponse sends v as JSON with statusCode, encoded first so an encoding failure still sends a clean 500.
 func JSONResponse(w http.ResponseWriter, v interface{}, statusCode int) {
 	var buf bytes.Buffer
 	if err := json.NewEncoder(&buf).Encode(v); err != nil {
@@ -36,15 +33,7 @@ type jsonError struct {
 	Message string `json:"Err"`
 }
 
-// JSONErrResponse Sends an `error` as a JSON object with a `message`
-// property. Logs at a level matching the HTTP status:
-//
-//   - 5xx -> Error (we did something wrong)
-//   - 4xx -> Warn  (caller did something wrong; not actionable for us)
-//   - other -> Info
-//
-// A torrent of 4xx from a misconfigured client used to land at ERROR,
-// drowning real failures (I-12 in the 2026-05-05 review).
+// JSONErrResponse sends err as a JSON object and logs at Error for 5xx, Warn for 4xx and Info otherwise (#88).
 func JSONErrResponse(w http.ResponseWriter, err error, statusCode int) {
 	if statusCode == 0 {
 		statusCode = ErrToStatus(err)
@@ -68,20 +57,7 @@ func JSONErrResponse(w http.ResponseWriter, err error, statusCode int) {
 	}
 }
 
-// ParseJSONOrErrorResponse decodes the request body as JSON into v.
-// On failure it ALSO writes a 400 JSON error response to w; the
-// caller is expected to early-return on a non-nil error and not
-// touch w again. The verbose name is deliberate: the prior name
-// (ParseJSONBody) read as a pure parse, but the function quietly
-// took over response writing — a future caller writing the
-// obvious-looking
-//
-//	if err := ParseJSONBody(&req, w, r); err != nil {
-//	    JSONErrResponse(w, err, ...); return
-//	}
-//
-// would double-write headers. This name makes the response-writing
-// side-effect impossible to overlook at the call site.
+// ParseJSONOrErrorResponse decodes the body into v and, on failure, has already written the 400 response to w.
 func ParseJSONOrErrorResponse(v interface{}, w http.ResponseWriter, r *http.Request) error {
 	d := json.NewDecoder(r.Body)
 	d.DisallowUnknownFields()
@@ -92,36 +68,13 @@ func ParseJSONOrErrorResponse(v interface{}, w http.ResponseWriter, r *http.Requ
 	return nil
 }
 
-// explainRequestBody names the one thing an EMPTY body means on this
-// socket.
-//
-// The daemon encodes a plugin call into a bytes.Buffer and hands the
-// SAME reader to every attempt of that call (moby pkg/plugins/client.go,
-// callWithRetry). The first attempt drains it, so when the client's
-// timeout fires and the client re-sends, the re-send carries no body at
-// all. io.EOF from the decoder is therefore never a malformed request
-// here: it is a call this plugin took longer to answer than the daemon
-// was willing to wait for, and the operator's lever is the timeout the
-// plugin was enabled with.
-//
-// THE LEVER ONLY MOVES ONE WAY, and the message says so because nothing
-// else the operator can read does. The daemon does not pass `--timeout`
-// to the plugin, so every budget on this side is sized to the 30s
-// default (plugin.pluginCallBudget, and the IPAM reserve's 26s derived
-// from it). Lowering it therefore breaks these calls permanently rather
-// than making them fail sooner, and raising it buys nothing. Naming the
-// flag without naming its direction is what sends an operator to raise
-// a number that cannot help.
-//
-// MEASURED, integration run 34600486961, failure-1: a reservation held
-// past a 5s client timeout came back to the operator as
-// `IpamDriver.RequestAddress: failed to parse request body: EOF`, which
-// names neither the timeout nor the retry and reads like a protocol
-// defect in the plugin.
-//
-// A body that started and stopped (io.ErrUnexpectedEOF) is a different
-// thing -- a connection that broke mid-write -- and keeps the generic
-// text.
+// The daemon hands the same drained buffer to every attempt of a call (moby pkg/plugins/client.go, callWithRetry), so
+// a re-send after its client timeout arrives with no body. The daemon does not pass `--timeout` to the plugin, so its
+// budgets are sized to the 30s default (plugin.pluginCallBudget) and only a lower value changes anything, for the
+// worse (#110). Measured in integration run 34600486961: a reservation held past a 5s timeout surfaced as "failed to
+// parse request body: EOF". io.ErrUnexpectedEOF is a broken connection and keeps the generic text.
+
+// explainRequestBody names the one thing an empty body means on the plugin socket.
 func explainRequestBody(err error) error {
 	if errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
 		return fmt.Errorf("this request arrived with no body. On the plugin socket that means "+

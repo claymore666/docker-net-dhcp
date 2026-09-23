@@ -12,12 +12,9 @@ import (
 	"github.com/vishvananda/netlink"
 )
 
-// AwaitLinkByIndex polls for a netlink Link by index until it appears,
-// ctx is cancelled, or interval-paced retries exhaust. Synchronous
-// because the async form leaked a goroutine per call; it surfaces the
-// last attempt's error alongside the deadline because a bare "context
-// deadline exceeded" hid a persistent failure in production for weeks
-// (#317).
+// The deadline error carries the last attempt's error: a bare deadline hid a persistent failure for weeks (#317).
+
+// AwaitLinkByIndex polls LinkByIndex in the caller's goroutine until the link appears or ctx ends.
 func AwaitLinkByIndex(ctx context.Context, handle *netlink.Handle, index int, interval time.Duration) (netlink.Link, error) {
 	var lastErr error
 	for {
@@ -34,28 +31,13 @@ func AwaitLinkByIndex(ctx context.Context, handle *netlink.Handle, index int, in
 	}
 }
 
-// DumpResult is what a netlink dump call returns, with the one error
-// that is not a failure removed.
-//
-// In vishvananda/netlink v1.3.1 every dump-style call — LinkList,
-// AddrList, RouteList and their filtered and *WithOptions forms —
-// returns ErrDumpInterrupted TOGETHER WITH A USABLE RESULT SET.
-// link_linux.go:2419-2436 bails early only on an error that is not the
-// sentinel; otherwise it parses the messages and hands them back
-// alongside it. The sentinel means the kernel set NLM_F_DUMP_INTR
-// because the table changed mid-dump, which is what a suite creating
-// and tearing down macvlan children generates by design.
-//
-// Treating it as fatal cost the arm64 lane a red on the v1.8.0-rc2 tag
-// (#802) and is the fail-open half of the mode-collision guard in
-// childLinkKind. Every OTHER error is returned unchanged: a helper
-// that swallowed them would turn a real netlink failure into an empty
-// result set, which is the same blindness pointing the other way.
-//
-// Used as `util.DumpResult(netlink.LinkList())` — the dump call's two
-// results are the two parameters — so no call site has to spell the
-// sentinel, and scripts/check-netlink-dump-errors.sh refuses a dump
-// call that does not go through here.
+// vishvananda/netlink v1.3.1 returns ErrDumpInterrupted together with a usable result set (Handle.LinkList and the
+// other dump calls): the kernel set NLM_F_DUMP_INTR because the table changed mid-dump, which a suite creating and
+// removing macvlan children does by design. Treating it as fatal turned the arm64 lane red on v1.8.0-rc2 (#802).
+// Swallowing any other error would turn a real failure into an empty set. scripts/check-netlink-dump-errors.sh
+// refuses a dump call that does not go through here.
+
+// DumpResult returns a netlink dump call's results with ErrDumpInterrupted dropped and every other error unchanged.
 func DumpResult[T any](v []T, err error) ([]T, error) {
 	if err != nil && !errors.Is(err, netlink.ErrDumpInterrupted) {
 		return nil, err

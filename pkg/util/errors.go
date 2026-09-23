@@ -9,14 +9,7 @@ import (
 )
 
 var (
-	// ErrIPAM is every refusal about address allocation: an IPAM driver
-	// this plugin will not serve a network for, and the refusals its own
-	// IPAM driver makes about a pool or an address (#110).
-	//
-	// The text no longer names the null driver, and that is the change:
-	// two IPAM drivers are supported now, so a message saying otherwise
-	// would send an operator to recreate a network that is already
-	// correct. Every site that wraps this supplies the specific sentence.
+	// ErrIPAM is every refusal about address allocation; the wrapping site supplies the specific sentence (#110).
 	ErrIPAM = errors.New("this network's address allocation was refused")
 	// ErrBridgeRequired indicates a network bridge was not provided for network creation
 	ErrBridgeRequired = errors.New("bridge required (mode=bridge)")
@@ -34,8 +27,7 @@ var (
 	ErrParentDown = errors.New("parent interface is down")
 	// ErrModeMismatch indicates an option that doesn't apply to the chosen mode was set
 	ErrModeMismatch = errors.New("option does not apply to selected mode")
-	// ErrInvalidServerList indicates dhcp_servers or dhcp_deny_servers
-	// could not be parsed, or the two contradict each other
+	// ErrInvalidServerList indicates dhcp_servers or dhcp_deny_servers could not be parsed, or the two contradict.
 	ErrInvalidServerList = errors.New("invalid DHCP server list")
 	// ErrMACAddress indicates an invalid MAC address
 	ErrMACAddress = errors.New("invalid MAC address")
@@ -52,19 +44,11 @@ var (
 	ErrNoSandbox = errors.New("missing joined endpoint state")
 )
 
-// ErrToStatus maps a sentinel error to its HTTP status. Validation
-// errors (caller-supplied bad input) produce 400. Upstream-DHCP and
-// retryable Docker-state-transition errors produce 502 / 503 / 409
-// so the wire shape is meaningful to non-libnetwork consumers; the
-// libnetwork integration treats all 5xx the same so this is purely
-// a clarity win for direct API users / logs / dashboards.
-//
-// Anything not enumerated here falls through to 500 — those are
-// either internal plumbing failures (netlink, fs) or unexpected
-// daemon errors, where 500 is the honest answer.
+// libnetwork treats every 5xx alike; the distinct codes are for direct API users, logs and dashboards (#40).
+
+// ErrToStatus maps a sentinel error to its HTTP status, 500 for anything not listed.
 func ErrToStatus(err error) int {
 	switch {
-	// Caller-supplied validation failures.
 	case errors.Is(err, ErrIPAM), errors.Is(err, ErrBridgeRequired), errors.Is(err, ErrNotBridge),
 		errors.Is(err, ErrBridgeUsed), errors.Is(err, ErrMACAddress),
 		errors.Is(err, ErrInvalidMode), errors.Is(err, ErrParentRequired),
@@ -72,22 +56,12 @@ func ErrToStatus(err error) int {
 		errors.Is(err, ErrModeMismatch), errors.Is(err, ErrInvalidServerList):
 		return http.StatusBadRequest
 
-	// Upstream DHCP server didn't respond — not our fault, not the
-	// caller's. 502 (Bad Gateway) matches the "we depend on an
-	// upstream that misbehaved" semantics.
 	case errors.Is(err, ErrNoLease):
 		return http.StatusBadGateway
 
-	// Docker is in a transient state where our prerequisite isn't
-	// available yet (the container or sandbox is being torn up/down).
-	// 503 (Service Unavailable) signals "retry later".
 	case errors.Is(err, ErrNoContainer), errors.Is(err, ErrNoSandbox):
 		return http.StatusServiceUnavailable
 
-	// Stage state mismatch — Join arrived without CreateEndpoint
-	// hints, or DeleteEndpoint without a registered fingerprint.
-	// 409 (Conflict) matches "the resource isn't in a state that
-	// permits this operation".
 	case errors.Is(err, ErrNoHint), errors.Is(err, ErrNotVEth):
 		return http.StatusConflict
 
