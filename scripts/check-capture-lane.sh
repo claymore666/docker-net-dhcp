@@ -72,6 +72,12 @@ if [ -z "${body//[[:space:]]/}" ]; then
     exit 2
 fi
 
+# Only a command word runs: `echo make capture-fixtures` and a step
+# name naming the drift gate both passed a text match (#883).
+# shellcheck source=scripts/workflow-shell-lines.sh
+. "$(dirname "$0")/workflow-shell-lines.sh"
+cmds=$(workflow_shell_lines "$WF" | shell_simple_commands)
+
 fail=0
 note() { echo "FAIL  $*" >&2; fail=1; }
 
@@ -99,13 +105,13 @@ else
 fi
 
 # --- 3. it still captures ---------------------------------------------
-if ! printf '%s\n' "$body" | grep -E 'make[[:space:]]+capture-fixtures' >/dev/null; then
+if ! printf '%s\n' "$cmds" | grep -E '^make( [^ ]+)* capture-fixtures( |$)' >/dev/null; then
     note "'$WF' never invokes 'make capture-fixtures'."
     echo "  Without it this workflow is a lane reservation that records nothing." >&2
 fi
 
 # --- 4. it verifies its own claim -------------------------------------
-if ! printf '%s\n' "$body" | grep -F "$DRIFT_GATE" >/dev/null; then
+if ! workflow_shell_lines "$WF" | shell_command_words | sed 's|.*/||' | grep -Fx "$DRIFT_GATE" >/dev/null; then
     note "'$WF' does not re-run the drift gate after capturing."
     echo "  The capture can pass having written nothing — capture_one_flow" >&2
     echo "  reports that case and leaves the previous fixtures in place. The" >&2

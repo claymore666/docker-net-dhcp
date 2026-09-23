@@ -129,6 +129,30 @@ write_wf "$LANE" "$CAP" "$DRIFT" '  summarize:
 check "a second job fails rather than passing on the first" rc1 "$(verdict)"
 
 # --- cannot-check is distinct from broken -----------------------------
+# A mention is not a run (#883): each decoy names the command and runs
+# nothing, and each passed the text match this gate used to make.
+says() {
+    local out; out=$(bash "$CHECK" "$TMP/wf.yml" 2>&1) || true
+    case "$out" in *"$1"*) echo said ;; *) echo silent ;; esac
+}
+write_wf "$LANE" 'echo make capture-fixtures' "$DRIFT"
+check "an echoed capture is not a capture" rc1 "$(verdict)"
+check "and the report says the capture is missing" said "$(says "never invokes 'make capture-fixtures'")"
+
+write_wf "$LANE" "$CAP" "echo $DRIFT"
+check "an echoed drift gate is not a drift check" rc1 "$(verdict)"
+check "and the report says the drift check is missing" said "$(says 'does not re-run the drift gate')"
+
+write_wf "$LANE" "$CAP" "true # $DRIFT"
+check "a trailing comment naming the drift gate is not a drift check" rc1 "$(verdict)"
+
+write_wf "$LANE" "$CAP" 'echo done' '      - name: bash scripts/check-fixture-engine-drift.sh
+        run: "true"'
+check "a step that only names the drift gate is not a drift check" rc1 "$(verdict)"
+
+write_wf "$LANE" 'make -C . capture-fixtures' './scripts/check-fixture-engine-drift.sh'
+check "make with options and a direct path still count" pass "$(verdict)"
+
 rm -f "$TMP/wf.yml"
 check "a missing workflow is rc2, not rc1" rc2 "$(verdict)"
 
