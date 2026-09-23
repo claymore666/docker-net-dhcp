@@ -409,6 +409,26 @@ jobs:
       - name: Docs-drift check
         run: bash scripts/check-docs-drift.sh
 
+      # Comment budget on the Go lines a pull request adds (#1056). The
+      # range is the event's base..head, as for the weakening gate (#413);
+      # a push or scheduled run has none and the gate prints its skip. The
+      # checkout is depth 1, so the merge base needs the history fetched.
+      - name: Comment budget
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" != "pull_request" ]; then
+            bash scripts/check-comment-budget.sh
+            exit $?
+          fi
+          if [ "$(git rev-parse --is-shallow-repository)" = "true" ]; then
+            git fetch --no-tags --no-recurse-submodules --unshallow origin "$BASE_SHA" "$HEAD_SHA"
+          else
+            git fetch --no-tags --no-recurse-submodules origin "$BASE_SHA" "$HEAD_SHA"
+          fi
+          bash scripts/check-comment-budget.sh "$BASE_SHA..$HEAD_SHA"
+
       # External review row E-4. This branch has no dhcpcd: not in the
       # image, not in the tree, and no helper the plugin execs. The
       # documents said otherwise in 82 places, and each one was a wrong
