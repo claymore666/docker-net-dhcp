@@ -564,6 +564,7 @@ if [ "${1-}" = "--whole" ]; then
         [ "${#got[@]}" -gt 0 ] || die2 "'$p' names no Go file at $rev"
         files+=("${got[@]}")
     done
+    mapfile -t files < <(printf '%s\n' "${files[@]}" | LC_ALL=C sort -u)
     extract "$rev" "$WORK/head"
     "$WORK/cb" whole "$WORK/head" "${files[@]}"
     exit $?

@@ -313,6 +313,8 @@ run_case "whole mode judges only the named paths" p/a.go "$OLD11" "$OLD11
 var y = 2" 0 'q .*' --whole HEAD q/anchor.go
 run_case "whole mode judges a named directory" p/a.go "$OLD11" "$OLD11
 var y = 2" 1 'p/a.go:23' --whole HEAD p
+run_case "whole mode judges a file named twice once" p/a.go "$OLD11" "$OLD11
+var y = 2" 1 'whole: 1 file\(s\), 1 failure' --whole HEAD p p/a.go
 run_case "whole mode exits 2 on a path with no Go file" p/a.go "$BASE" "$BASE
 var y = 2" 2 'no Go file' --whole HEAD nosuch
 run_case "whole mode exits 2 on an unresolvable revision" p/a.go "$BASE" "$BASE
@@ -371,6 +373,10 @@ PR_BODY='````
 ```
 Comments-only: yes
 ````' run_setup "a shorter fence does not close a fence" 0 'SKIP, the pull-request body has no' lean one_token "${PROVE[@]}"
+PR_BODY='```
+```go
+Comments-only: yes
+```' run_setup "a fence line with an info string does not close a fence" 0 'SKIP, the pull-request body has no' lean one_token "${PROVE[@]}"
 PR_BODY='> Comments-only: yes' run_setup "a quoted marker is ignored" 0 'SKIP, the pull-request body has no' lean one_token "${PROVE[@]}"
 PR_BODY='    Comments-only: yes' run_setup "an indented marker is ignored" 0 'SKIP, the pull-request body has no' lean one_token "${PROVE[@]}"
 PR_BODY='<!--
