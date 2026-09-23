@@ -152,6 +152,23 @@ wf_mention "      - run: |" "          # bash scripts/test-b.sh" "          echo
 SELFTEST_WORKFLOWS="$TMP/wf" \
     check "a shell comment inside a run block is not delegation" 1 "$TMP/deleg" "delegated to nowhere"
 
+# #883: an executed line that only NAMES the file is not delegation.
+wf_mention "      - run: echo scripts/test-b.sh runs elsewhere"
+SELFTEST_WORKFLOWS="$TMP/wf" \
+    check "an echo argument naming the file is not delegation" 1 "$TMP/deleg" "delegated to nowhere"
+
+wf_mention "      - run: echo \"x; bash scripts/test-b.sh\""
+SELFTEST_WORKFLOWS="$TMP/wf" \
+    check "a separator inside a quoted string is not delegation" 1 "$TMP/deleg" "delegated to nowhere"
+
+wf_mention "      - run: cat scripts/test-b.sh"
+SELFTEST_WORKFLOWS="$TMP/wf" \
+    check "reading the file is not delegation" 1 "$TMP/deleg" "delegated to nowhere"
+
+wf_mention "      - run: out=\"\$(bash scripts/test-b.sh)\" || exit 1"
+SELFTEST_WORKFLOWS="$TMP/wf" \
+    check "a substitution that runs it IS delegation" 0 "$TMP/deleg" "test-b.sh -> somejob"
+
 # THE PRESERVATION CONTROLS. Narrowing what counts is only safe if the
 # forms that DO execute still count; a check that rejected everything
 # would pass all four cases above.
@@ -177,7 +194,7 @@ MUT="$TMP/mut-grepall.sh"
 # evidence about this one.
 cp "$(dirname "$0")/workflow-shell-lines.sh" "$TMP/workflow-shell-lines.sh"
 awk '
-/^        case "\$workflow_shell" in$/ {
+/^        case \$.\\n."\$workflow_cmds"\$.\\n. in$/ {
     print "        if [ ! -d \"$WORKFLOWS\" ] || ! grep -rq -- \"$base\" \"$WORKFLOWS\" 2>/dev/null; then"
     print "            undelegated+=(\"$base\")"
     print "        fi"
@@ -200,7 +217,7 @@ skip { next }
 mut_code="$(grep -v '^[[:space:]]*#' "$MUT")"
 mut_built=1
 cmp -s "$RUNNER" "$MUT" && mut_built=0
-case "$mut_code" in *'case "$workflow_shell" in'*) mut_built=0 ;; esac
+case "$mut_code" in *'"$workflow_cmds"'*) mut_built=0 ;; esac
 case "$mut_code" in *'grep -rq -- "$base"'*) : ;; *) mut_built=0 ;; esac
 if [ "$mut_built" -eq 1 ] && bash -n "$MUT" 2>/dev/null; then
     echo "PASS: mutant built, differs from the runner, and restores the line-wide grep"
@@ -216,6 +233,28 @@ if [ "$mut_built" -eq 1 ] && bash -n "$MUT" 2>/dev/null; then
     fi
 else
     echo "FAIL: could not build the line-wide-grep mutant; the narrowing is unverified"
+    failures=$((failures + 1))
+fi
+
+# The version before #883, restored: any executed line containing the
+# name counts. The echo fixture must read as delegation under it, or the
+# #883 cases above are not measuring command position.
+MUT883="$TMP/mut-883.sh"
+sed -e "s#^\(    workflow_cmds=\"\$(workflow_shell_lines \"\$WORKFLOWS\"\) | shell_command_words | sed 's|\.\*/||')\"#\1)\"#" \
+    -e 's#^            \*\$.\\n."\$base"\$.\\n.\*) : ;;#            *"$base"*) : ;;#' "$RUNNER" > "$MUT883"
+if ! cmp -s "$RUNNER" "$MUT883" && ! grep -q 'shell_command_words |' "$MUT883" \
+        && grep -qF '*"$base"*) : ;;' "$MUT883" && bash -n "$MUT883"; then
+    wf_mention "      - run: echo scripts/test-b.sh runs elsewhere"
+    SELFTEST_DIR="$TMP/deleg" SELFTEST_WORKFLOWS="$TMP/wf" bash "$MUT883" > "$TMP/out" 2>&1
+    mrc=$?
+    if [ "$mrc" -eq 0 ] && grep -q "test-b.sh -> somejob" "$TMP/out"; then
+        echo "PASS: with the pre-#883 match, an ECHO reads as delegation -- the cases are live"
+    else
+        echo "FAIL: with the pre-#883 match, the echo still failed (rc=$mrc)"
+        failures=$((failures + 1))
+    fi
+else
+    echo "FAIL: could not build the pre-#883 mutant"
     failures=$((failures + 1))
 fi
 
