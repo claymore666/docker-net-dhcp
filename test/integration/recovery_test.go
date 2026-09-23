@@ -136,7 +136,7 @@ func TestRecovery_PluginDisableEnable_PreservesEndpoint(t *testing.T) {
 	t.Log("plugin re-enabled")
 
 	// Socket readiness is the start of the thing under test: the walk inside NewPlugin only spawns each rebuild,
-	// and recovered_ok moves after Start returns (pkg/plugin/plugin.go:1240-1265, #376). Plugin.Enabled flips
+	// and recovered_ok moves after Start returns (pkg/plugin/plugin.go:recoverOneEndpoint, #376). Plugin.Enabled flips
 	// before the socket listens, so poll for the socket first, then wait for the rebuild.
 	harness.WaitPluginHealth(t, ctx, cli, 15*time.Second)
 

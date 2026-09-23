@@ -186,7 +186,7 @@ func TestRecovery_DaemonRestart_PreservesContainer(t *testing.T) {
 	}
 
 	// The new socket answering marks the end of the synchronous recovery walk, not of any rebuild: the walk spawns
-	// each rebuild and recovered_ok moves only after it returns (pkg/plugin/plugin.go:1240-1265, #376).
+	// each rebuild and recovered_ok moves only after it returns (pkg/plugin/plugin.go:recoverOneEndpoint, #376).
 	healthAfter := harness.WaitPluginHealth(t, ctx, cli2, 30*time.Second)
 
 	// So wait for the property, bounded by the plugin's own timeouts on
