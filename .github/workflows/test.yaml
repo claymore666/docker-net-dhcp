@@ -422,6 +422,20 @@ jobs:
           git fetch --no-tags --no-recurse-submodules --unshallow origin
           bash scripts/check-comment-budget.sh HEAD^1..HEAD^2
 
+      # A pull request whose body has a `Comments-only: yes` line must keep
+      # every Go file's code tokens, except the files a
+      # `Comments-only-except:` line names (#1056). The body reaches the
+      # script as an environment variable, never as workflow text.
+      - name: Comment-only proof
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" != "pull_request" ]; then
+            bash scripts/check-comment-budget.sh --prove-marked
+            exit $?
+          fi
+          bash scripts/check-comment-budget.sh --prove-marked HEAD^1 HEAD^2
+
       # External review row E-4. This branch has no dhcpcd: not in the
       # image, not in the tree, and no helper the plugin execs. The
       # documents said otherwise in 82 places, and each one was a wrong

@@ -87,6 +87,7 @@ LANE=(
   "starter-task claims|-|bash scripts/check-good-first-issues.sh --static"
   "docs drift|-|bash scripts/check-docs-drift.sh"
   "comment budget|go|bash scripts/check-comment-budget.sh origin/dev..HEAD"
+  "comment-only proof|go|bash scripts/check-comment-budget.sh --prove-marked origin/dev HEAD"
   "retired words|-|bash scripts/check-retired-words.sh"
   "conflict markers|-|bash scripts/check-conflict-markers.sh"
   "health contract|-|bash scripts/check-health-contract.sh"

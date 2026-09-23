@@ -2,13 +2,16 @@
 # Copyright the docker-net-dhcp contributors.
 # SPDX-License-Identifier: GPL-3.0-only
 
-# Comment budget on Go files (#1056). On the lines a range adds, a comment
-# block is at most 10 lines and a block of 2 or more names #N or RFC N;
-# per package, comment/(comment+code) lines may not rise over the merge base.
-# --prove requires every changed Go file to keep its code tokens (#1056).
+# Comment budget on Go files (#1056). On the lines a range adds, a block is
+# at most 10 lines and a block of 2 or more names #N or RFC N; a package's
+# comment share may not rise over the merge base. --prove, and --prove-marked
+# when PR_BODY has a "Comments-only: yes" line, require unchanged code tokens.
+# --whole applies the block rules to every line of the named Go files.
 #
 # Usage: check-comment-budget.sh [<base>..<head>]
 #        check-comment-budget.sh --prove <base> <head>
+#        check-comment-budget.sh --prove-marked [<base> <head>]
+#        check-comment-budget.sh --whole <rev> [<path>...]
 # Exit:  0 clean or no range to judge, 1 fail, 2 cannot check.
 set -uo pipefail
 
@@ -17,6 +20,9 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/tmpdir-guard.sh"
 
 die2() { echo "FAIL  cannot check: $*" >&2; exit 2; }
+
+# git archive from a subdirectory would extract only that subtree.
+if top=$(git rev-parse --show-toplevel 2>/dev/null); then cd "$top" || die2 "cannot enter $top"; fi
 
 commit_of() {
     git rev-parse -q --verify "$1^{commit}" 2>/dev/null || die2 "cannot resolve '$1'"
@@ -57,6 +63,7 @@ const (
 	neutral = 'N'
 	header  = 'H'
 	pkgdoc  = 'P'
+	trail   = 'T'
 )
 
 var refRE = regexp.MustCompile(`#[0-9]+|RFC [0-9]+`)
@@ -135,6 +142,8 @@ func classify(name string, src []byte) file {
 	f := file{class: make([]byte, n+1), text: append([]string{""}, lines...)}
 	for i := 1; i <= n; i++ {
 		switch {
+		case hasCode[i] && hasText[i]:
+			f.class[i] = trail
 		case hasCode[i]:
 			f.class[i] = code
 		case hasText[i]:
@@ -154,13 +163,13 @@ func classify(name string, src []byte) file {
 
 // markHeader exempts the licence block ahead of the package clause (#1056).
 func markHeader(f *file) {
-	for i := 1; i < len(f.class) && f.class[i] != code; {
+	for i := 1; i < len(f.class) && f.class[i] != code && f.class[i] != trail; {
 		if f.class[i] == blank {
 			i++
 			continue
 		}
 		start, spdx := i, false
-		for ; i < len(f.class) && f.class[i] != code && f.class[i] != blank; i++ {
+		for ; i < len(f.class) && f.class[i] != code && f.class[i] != trail && f.class[i] != blank; i++ {
 			spdx = spdx || strings.Contains(f.text[i], "SPDX-License-Identifier")
 		}
 		for j := start; spdx && j < i; j++ {
@@ -211,7 +220,7 @@ func walk(root string) map[string]share {
 		s := out[filepath.Dir(rel)]
 		for _, c := range f.class {
 			switch c {
-			case comment:
+			case comment, trail:
 				s.c++
 			case code:
 				s.k++
@@ -231,6 +240,74 @@ func pct(s share) string {
 		return "-"
 	}
 	return fmt.Sprintf("%.1f%% (%d/%d)", 100*float64(s.c)/float64(s.c+s.k), s.c, s.c+s.k)
+}
+
+// blocks judges the comment blocks of root/p that hold a touched line; a trailing comment is a one-line block and cannot fail.
+func blocks(root, p string, touched func(int) bool) (bad int, commented bool) {
+	src, err := os.ReadFile(filepath.Join(root, p))
+	if err != nil {
+		fail2("%v", err)
+	}
+	f := classify(p, src)
+	for i := range f.class {
+		if (f.class[i] == comment || f.class[i] == trail) && touched(i) {
+			commented = true
+		}
+	}
+	for i := 1; i < len(f.class); {
+		if f.class[i] != comment && f.class[i] != pkgdoc {
+			i++
+			continue
+		}
+		start, count, hit, ref, doc := i, 0, false, false, false
+		for ; i < len(f.class) && (f.class[i] == comment || f.class[i] == pkgdoc || f.class[i] == neutral); i++ {
+			if f.class[i] == neutral {
+				continue
+			}
+			count++
+			hit = hit || touched(i)
+			ref = ref || refRE.MatchString(f.text[i])
+			doc = doc || f.class[i] == pkgdoc
+		}
+		if !hit {
+			continue
+		}
+		if count > 10 && !doc {
+			fmt.Printf("FAIL  %s:%d: comment block of %d lines; the limit is 10\n", p, start, count)
+			bad++
+		}
+		if count >= 2 && !ref {
+			fmt.Printf("FAIL  %s:%d: comment block of %d lines carries no #N or RFC N reference\n", p, start, count)
+			bad++
+		}
+	}
+	return bad, commented
+}
+
+// whole judges every line of the named files and prints their packages' shares.
+func whole(root string, names []string) int {
+	bad := 0
+	pkgs := map[string]bool{}
+	for _, p := range names {
+		b, _ := blocks(root, p, func(int) bool { return true })
+		bad += b
+		pkgs[filepath.Dir(p)] = true
+	}
+	shares := walk(root)
+	dirs := make([]string, 0, len(pkgs))
+	for p := range pkgs {
+		dirs = append(dirs, p)
+	}
+	sort.Strings(dirs)
+	fmt.Println("comment share per package, comment lines / (comment + code lines):")
+	for _, p := range dirs {
+		fmt.Printf("  %-40s %s\n", p, pct(shares[p]))
+	}
+	fmt.Printf("comment-budget whole: %d file(s), %d failure(s)\n", len(names), bad)
+	if bad > 0 {
+		return 1
+	}
+	return 0
 }
 
 // check reads "path:line" added lines from stdin and judges head against base.
@@ -260,43 +337,9 @@ func check(base, head string) int {
 	}
 	sort.Strings(paths)
 	for _, p := range paths {
-		src, err := os.ReadFile(filepath.Join(head, p))
-		if err != nil {
-			fail2("%v", err)
-		}
-		f := classify(p, src)
-		for i := range f.class {
-			if f.class[i] == comment && added[p][i] {
-				commented[filepath.Dir(p)] = true
-			}
-		}
-		for i := 1; i < len(f.class); {
-			if f.class[i] != comment && f.class[i] != pkgdoc {
-				i++
-				continue
-			}
-			start, count, touched, ref, doc := i, 0, false, false, false
-			for ; i < len(f.class) && (f.class[i] == comment || f.class[i] == pkgdoc || f.class[i] == neutral); i++ {
-				if f.class[i] == neutral {
-					continue
-				}
-				count++
-				touched = touched || added[p][i]
-				ref = ref || refRE.MatchString(f.text[i])
-				doc = doc || f.class[i] == pkgdoc
-			}
-			if !touched {
-				continue
-			}
-			if count > 10 && !doc {
-				fmt.Printf("FAIL  %s:%d: comment block of %d lines; the limit is 10\n", p, start, count)
-				bad++
-			}
-			if count >= 2 && !ref {
-				fmt.Printf("FAIL  %s:%d: comment block of %d lines carries no #N or RFC N reference\n", p, start, count)
-				bad++
-			}
-		}
+		b, c := blocks(head, p, func(i int) bool { return added[p][i] })
+		bad += b
+		commented[filepath.Dir(p)] = commented[filepath.Dir(p)] || c
 	}
 	b, h := walk(base), walk(head)
 	pkgs := map[string]bool{}
@@ -393,13 +436,15 @@ func prove(base, head string, names []string) int {
 
 func main() {
 	if len(os.Args) < 4 {
-		fail2("usage: helper check|prove <base-dir> <head-dir> [file...]")
+		fail2("usage: helper check|prove <base-dir> <head-dir> [file...] | whole <dir> <file>...")
 	}
 	switch os.Args[1] {
 	case "check":
 		os.Exit(check(os.Args[2], os.Args[3]))
 	case "prove":
 		os.Exit(prove(os.Args[2], os.Args[3], os.Args[4:]))
+	case "whole":
+		os.Exit(whole(os.Args[2], os.Args[3:]))
 	}
 	fail2("unknown mode %q", os.Args[1])
 }
@@ -411,14 +456,26 @@ GO
 guarded_tmpdir WORK
 build_helper "$WORK"
 
-if [ "${1-}" = "--prove" ]; then
-    [ "$#" -eq 3 ] || die2 "usage: $0 --prove <base> <head>"
-    base=$(commit_of "$2") || exit 2
-    head=$(commit_of "$3") || exit 2
-    mapfile -t files < <(git -c core.quotePath=false diff --name-only --no-renames "$base" "$head" -- '*.go' \
+# prove_files BASE HEAD LABEL [EXEMPT...]: the token proof over the Go files BASE..HEAD changes.
+prove_files() {
+    local base="$1" head="$2" label="$3" f e keep
+    shift 3
+    mapfile -t all < <(git -c core.quotePath=false diff --name-only --no-renames "$base" "$head" -- '*.go' \
         | grep -Ev '(^|/)(testdata|vendor)/')
+    files=()
+    for f in "${all[@]}"; do
+        keep=1
+        for e in "$@"; do [ "$f" = "$e" ] && keep=0; done
+        [ "$keep" -eq 1 ] && files+=("$f")
+    done
+    for e in "$@"; do
+        case " ${all[*]} " in
+            *" $e "*) echo "exempt   $e" ;;
+            *)        echo "exempt   $e (no Go change)" ;;
+        esac
+    done
     if [ "${#files[@]}" -eq 0 ]; then
-        echo "comment-budget proof: no Go file changed between $2 and $3"
+        echo "comment-budget proof: no Go file changed between $label"
         exit 0
     fi
     extract "$base" "$WORK/base"
@@ -427,6 +484,90 @@ if [ "${1-}" = "--prove" ]; then
     rc=$?
     [ "$rc" -eq 0 ] && echo "comment-budget proof: code tokens identical in ${#files[@]} file(s)"
     exit "$rc"
+}
+
+# marker_lines: "marker" and "except <path>" for the PR_BODY lines at column 0,
+# outside fenced code and HTML comments; a CRLF body is read as LF (#1056).
+marker_lines() {
+    printf '%s\n' "$PR_BODY" | LC_ALL=C awk '
+        function fence(s,   t, c, n) {
+            t = s; sub(/^(   |  | )/, "", t)
+            c = substr(t, 1, 1)
+            if (c != "`" && c != "~") return ""
+            for (n = 1; substr(t, n + 1, 1) == c; n++) ;
+            return n >= 3 ? c n : ""
+        }
+        { sub(/\r$/, "") }
+        html { if (index($0, "-->")) html = 0; next }
+        open != "" {
+            f = fence($0); t = $0; sub(/^ *[`~]+[ \t]*$/, "", t)
+            if (f != "" && t == "" && substr(f, 1, 1) == substr(open, 1, 1) && substr(f, 2) + 0 >= substr(open, 2) + 0) open = ""
+            next
+        }
+        fence($0) != "" { open = fence($0); next }
+        index($0, "<!--") { if (!index(substr($0, index($0, "<!--") + 4), "-->")) html = 1; next }
+        /^Comments-only: yes[ \t]*$/ { print "marker"; next }
+        /^Comments-only-except:/ {
+            sub(/^Comments-only-except:[ \t]*/, "")
+            n = split($0, a, /[ \t]+/)
+            for (i = 1; i <= n; i++) if (a[i] != "") print "except " a[i]
+        }'
+}
+
+if [ "${1-}" = "--prove" ]; then
+    [ "$#" -eq 3 ] || die2 "usage: $0 --prove <base> <head>"
+    base=$(commit_of "$2") || exit 2
+    head=$(commit_of "$3") || exit 2
+    prove_files "$base" "$head" "$2 and $3"
+fi
+
+if [ "${1-}" = "--prove-marked" ]; then
+    # The workflow passes no revisions outside a pull request (#1056).
+    if [ "$#" -eq 1 ]; then
+        echo "comment-budget proof: SKIP, no pull request at this stage"
+        exit 0
+    fi
+    [ "$#" -eq 3 ] || die2 "usage: $0 --prove-marked [<base> <head>]"
+    if [ -z "${PR_BODY+set}" ]; then
+        echo "comment-budget proof: SKIP, PR_BODY is not set (no pull-request body at this stage)"
+        exit 0
+    fi
+    marked=0
+    exempt=()
+    while read -r kind path; do
+        case "$kind" in
+            marker) marked=1 ;;
+            except) exempt+=("$path") ;;
+        esac
+    done < <(marker_lines)
+    if [ "$marked" -eq 0 ]; then
+        echo "comment-budget proof: SKIP, the pull-request body has no 'Comments-only: yes' line"
+        exit 0
+    fi
+    base=$(commit_of "$2") || exit 2
+    head=$(commit_of "$3") || exit 2
+    # The base tip may carry code the pull request never touched (#1056).
+    mb=$(git merge-base "$base" "$head" 2>/dev/null) || die2 "no merge base between $2 and $3"
+    echo "comment-budget proof: 'Comments-only: yes', judging $(git rev-parse --short "$mb")..$(git rev-parse --short "$head")"
+    prove_files "$mb" "$head" "the merge base and $3" "${exempt[@]}"
+fi
+
+if [ "${1-}" = "--whole" ]; then
+    [ "$#" -ge 2 ] || die2 "usage: $0 --whole <rev> [<path>...]"
+    rev=$(commit_of "$2") || exit 2
+    shift 2
+    [ "$#" -eq 0 ] && set -- .
+    files=()
+    for p in "$@"; do
+        mapfile -t got < <(git -c core.quotePath=false ls-tree -r --name-only --full-tree "$rev" -- "$p" \
+            | grep -E '\.go$' | grep -Ev '(^|/)(testdata|vendor)/')
+        [ "${#got[@]}" -gt 0 ] || die2 "'$p' names no Go file at $rev"
+        files+=("${got[@]}")
+    done
+    mapfile -t files < <(printf '%s\n' "${files[@]}" | LC_ALL=C sort -u)
+    extract "$rev" "$WORK/head"
+    "$WORK/cb" whole "$WORK/head" "${files[@]}"
+    exit $?
 fi
 
 [ "$#" -le 1 ] || die2 "usage: $0 [<base>..<head>]"

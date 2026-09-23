@@ -99,7 +99,7 @@ run_case "a 2-line block with #N passes" p/a.go "$BASE" "$(grow "$(cmt 1)
 run_case "a 2-line block with RFC N passes" p/a.go "$BASE" "$(grow "$(cmt 1)
 // RFC 2131 section 4.4.5")" 0 ''
 run_case "a 1-line block without a reference passes" p/a.go "$BASE" "$(grow "$(cmt 1)")" 0 ''
-run_case "a trailing comment on a code line is code" p/a.go "$BASE" "$(grow 'var t1 = 1 // one
+run_case "two trailing comments are two one-line blocks" p/a.go "$BASE" "$(grow 'var t1 = 1 // one
 var t2 = 2 // two')" 0 ''
 run_case "a removed block passes" p/a.go "$(gofile "$(code 20)
 $(cmt 12)
@@ -112,6 +112,14 @@ run_case "a package whose share falls passes" p/a.go "$(gofile "$(code 20)
 $(cmt 1)")" "$(gofile "$(code 30)
 $(cmt 1)")" 0 ''
 run_case "a deleted file passes" p/a.go "$(gofile "$(code 3)")" "" 0 'removed'
+trail() { local i; for i in $(seq 1 "$1"); do printf 'var t%s = %s // %s\n' "$i" "$i" "${2:-note}"; done; }
+run_case "five trailing comments raise the share" p/a.go "$BASE" "$(gofile "$(basebody)
+$(trail 5)")" 1 'p .*FAIL rose'
+run_case "five trailing directives stay code" p/a.go "$BASE" "$(gofile "$(basebody)
+$(trail 5 'nolint:all' | sed 's|// nolint|//nolint|')")" 0 'p .* ok$'
+run_case "a trailing comment does not join the blocks around it" p/a.go "$BASE" "$(grow "// one
+var t = 1 // two
+// three")" 0 ''
 
 # Exemptions.
 LIC='// Copyright the docker-net-dhcp contributors.
@@ -123,6 +131,11 @@ run_case "the same header without SPDX is judged" p/a.go "" "// Copyright the do
 // All rights reserved.
 
 $(gofile "$(code 5)")" 1 'a.go:1: comment block of 2 lines'
+run_case "a block after a commented package clause is not a licence header" p/a.go "" "package p // the package
+
+// SPDX-License-Identifier is named here
+// and on a second line
+var x = 1" 1 'a.go:3: comment block of 2 lines carries no'
 run_case "//go: directives are ignored" p/a.go "$BASE" "$(grow '//go:generate true
 //go:generate false
 var d = 1')" 0 ''
@@ -148,8 +161,10 @@ var z = 1" 1 'doc.go:5: comment block of 11 lines'
 
 # Multi-file fixtures (#1056): BEFORE writes the base commit's tree and
 # AFTER changes it for the head commit; the gate judges HEAD~1..HEAD.
-run_setup() { # NAME WANT_RC WANT_GREP BEFORE AFTER
+run_setup() { # NAME WANT_RC WANT_GREP BEFORE AFTER [ARGS...]
     local name="$1" want="$2" want_grep="$3" before="$4" after="$5" dir rc
+    shift 5
+    if [ "$#" -eq 0 ]; then set -- HEAD~1..HEAD; fi
     guarded_tmpdir dir
     (
         cd "$dir" || exit 2
@@ -159,7 +174,7 @@ run_setup() { # NAME WANT_RC WANT_GREP BEFORE AFTER
         mkdir p
         "$before"; git add -A; git commit -qm base
         "$after"; git add -A; git commit -qm head
-        bash "$GATE" HEAD~1..HEAD > "$dir/out" 2>&1
+        bash "$GATE" "$@" > "$dir/out" 2>&1
         echo $? > "$dir/rc"
     ) >/dev/null 2>&1
     rc=$(cat "$dir/rc" 2>/dev/null)
@@ -283,6 +298,128 @@ run_case "proof exits 2 on an unresolvable revision" p/a.go "$PB" "$PB
 // x" 2 'cannot resolve' --prove nosuch HEAD
 run_case "proof exits 2 on a file that does not parse" p/a.go "$PB" "$PB
 func (" 2 'does not parse' --prove HEAD~1 HEAD
+
+# Whole mode (#1056): every line of the named files, added or not.
+OLD11="$(gofile "$(code 20)
+$(cmt 11 '#7')
+var x = 1")"
+run_case "whole mode fails an untouched 11-line block" p/a.go "$OLD11" "$OLD11
+var y = 2" 1 'p/a.go:23: comment block of 11 lines' --whole HEAD
+run_case "whole mode fails an untouched unreferenced block" p/a.go "$(grow "$(cmt 2)")" "$(grow "$(cmt 2)")
+var y = 2" 1 'p/a.go:.*carries no' --whole HEAD~1 p
+run_case "whole mode passes a clean file" p/a.go "$BASE" "$BASE
+var y = 2" 0 'comment share per package' --whole HEAD
+run_case "whole mode judges only the named paths" p/a.go "$OLD11" "$OLD11
+var y = 2" 0 'q .*' --whole HEAD q/anchor.go
+run_case "whole mode judges a named directory" p/a.go "$OLD11" "$OLD11
+var y = 2" 1 'p/a.go:23' --whole HEAD p
+run_case "whole mode judges a file named twice once" p/a.go "$OLD11" "$OLD11
+var y = 2" 1 'whole: 1 file\(s\), 1 failure' --whole HEAD p p/a.go
+run_case "whole mode exits 2 on a path with no Go file" p/a.go "$BASE" "$BASE
+var y = 2" 2 'no Go file' --whole HEAD nosuch
+run_case "whole mode exits 2 on an unresolvable revision" p/a.go "$BASE" "$BASE
+var y = 2" 2 'cannot resolve' --whole nosuch
+
+dir=""
+guarded_tmpdir dir
+(
+    cd "$dir" || exit 2
+    git init -q .
+    git config user.email t@t; git config user.name t
+    git config commit.gpgsign false
+    mkdir -p p q; printf '%s\n' "$OLD11" > p/a.go; gofile "$(code 3)" > q/b.go; git add -A; git commit -qm one
+    cd q || exit 2
+    bash "$GATE" --whole HEAD p > "$dir/out" 2>&1
+    echo $? > "$dir/rc"
+) >/dev/null 2>&1
+if [ "$(cat "$dir/rc" 2>/dev/null)" = 1 ] && grep -F 'p/a.go:23: comment block of 11 lines' "$dir/out" >/dev/null; then
+    ok "whole mode from a subdirectory judges repository paths"
+else
+    no "whole mode from a subdirectory judges repository paths"
+    sed 's/^/      /' "$dir/out" >&2
+fi
+rm -rf "$dir"
+
+# Marked proof (#1056): the pull-request body reaches the gate as PR_BODY.
+one_token() { lean; sed -i 's/^var v30 = 30$/var v30 = 31/' p/a.go; }
+cmt_only() { lean; sed -i '/^\/\/ line 1 $/d' p/a.go; }
+two_files() { lean; gofile "$(code 5 | sed 's/^var v/var b/')" > p/b.go; }
+both_token() { two_files; sed -i 's/^var v30 = 30$/var v30 = 31/' p/a.go; sed -i 's/^var b5 = 5$/var b5 = 6/' p/b.go; }
+MARK='Summary line.
+
+Comments-only: yes'
+PROVE=(--prove-marked HEAD~1 HEAD)
+PR_BODY="$MARK" run_setup "a marked body with one changed token fails" 1 'DIFFERS  p/a.go' lean one_token "${PROVE[@]}"
+PR_BODY="$MARK" run_setup "a marked body with a comment-only change passes" 0 'code tokens identical in 1 file' lean cmt_only "${PROVE[@]}"
+PR_BODY="$MARK
+Comments-only-except: p/a.go" run_setup "an excepted file is not proved" 0 'exempt +p/a.go' lean one_token "${PROVE[@]}"
+PR_BODY="$MARK
+Comments-only-except: p/a.go" run_setup "an except line exempts only the named file" 1 'DIFFERS  p/b.go' two_files both_token "${PROVE[@]}"
+PR_BODY="$MARK
+Comments-only-except: p/a" run_setup "an except path is not a prefix" 1 'DIFFERS  p/a.go' lean one_token "${PROVE[@]}"
+PR_BODY="Summary line." run_setup "an unmarked body skips with its reason" 0 'SKIP, the pull-request body has no' lean one_token "${PROVE[@]}"
+run_setup "an unset body skips with its reason" 0 'SKIP, PR_BODY is not set' lean one_token "${PROVE[@]}"
+PR_BODY="$MARK" run_setup "no revisions skip as not a pull request" 0 'SKIP, no pull request' lean one_token --prove-marked
+PR_BODY="$MARK" run_setup "a marked proof with one revision exits 2" 2 'usage' lean one_token --prove-marked HEAD
+PR_BODY='Comments-only: no' run_setup "a marker saying no skips" 0 'SKIP, the pull-request body has no' lean one_token "${PROVE[@]}"
+PR_BODY=$'Summary.\r\n\r\nComments-only: yes\r\n' run_setup "a CRLF body is read" 1 'DIFFERS  p/a.go' lean one_token "${PROVE[@]}"
+PR_BODY='```
+Comments-only: yes
+```' run_setup "a marker in a backtick fence is ignored" 0 'SKIP, the pull-request body has no' lean one_token "${PROVE[@]}"
+PR_BODY='~~~
+Comments-only: yes
+~~~' run_setup "a marker in a tilde fence is ignored" 0 'SKIP, the pull-request body has no' lean one_token "${PROVE[@]}"
+PR_BODY='````
+```
+Comments-only: yes
+````' run_setup "a shorter fence does not close a fence" 0 'SKIP, the pull-request body has no' lean one_token "${PROVE[@]}"
+PR_BODY='```
+```go
+Comments-only: yes
+```' run_setup "a fence line with an info string does not close a fence" 0 'SKIP, the pull-request body has no' lean one_token "${PROVE[@]}"
+PR_BODY='> Comments-only: yes' run_setup "a quoted marker is ignored" 0 'SKIP, the pull-request body has no' lean one_token "${PROVE[@]}"
+PR_BODY='    Comments-only: yes' run_setup "an indented marker is ignored" 0 'SKIP, the pull-request body has no' lean one_token "${PROVE[@]}"
+PR_BODY='<!--
+Comments-only: yes
+-->' run_setup "a marker in an HTML comment is ignored" 0 'SKIP, the pull-request body has no' lean one_token "${PROVE[@]}"
+PR_BODY='```
+x
+```
+<!-- note -->
+Comments-only: yes' run_setup "a marker after a closed fence and comment counts" 1 'DIFFERS  p/a.go' lean one_token "${PROVE[@]}"
+PR_BODY='<!--
+template note
+-->
+Comments-only: yes' run_setup "a marker after a closed HTML comment counts" 1 'DIFFERS  p/a.go' lean one_token "${PROVE[@]}"
+PR_BODY="$MARK
+\`\`\`
+Comments-only-except: p/a.go
+\`\`\`" run_setup "an except line in a fence is ignored" 1 'DIFFERS  p/a.go' lean one_token "${PROVE[@]}"
+
+# A marked proof judges the pull request's own change: the base branch
+# moved on after the fork with a code change of its own (#1056).
+dir=""
+guarded_tmpdir dir
+(
+    cd "$dir" || exit 2
+    git init -q .
+    git config user.email t@t; git config user.name t
+    git config commit.gpgsign false
+    mkdir p; lean; gofile "$(code 3 | sed 's/^var v/var b/')" > p/b.go; git add -A; git commit -qm fork
+    git checkout -q -b topic
+    cmt_only; git commit -qam topic
+    git checkout -q -b moved HEAD~1
+    sed -i 's/^var b3 = 3$/var b3 = 4/' p/b.go; git commit -qam moved
+    PR_BODY="$MARK" bash "$GATE" --prove-marked moved topic > "$dir/out" 2>&1
+    echo $? > "$dir/rc"
+) >/dev/null 2>&1
+if [ "$(cat "$dir/rc" 2>/dev/null)" = 0 ] && grep -F 'code tokens identical in 1 file' "$dir/out" >/dev/null; then
+    ok "a marked proof judges from the merge base"
+else
+    no "a marked proof judges from the merge base"
+    sed 's/^/      /' "$dir/out" >&2
+fi
+rm -rf "$dir"
 
 # The base branch moved on after the fork (#463): the share is judged
 # against the merge base, not the base branch's newer tip.
