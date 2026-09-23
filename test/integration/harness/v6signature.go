@@ -278,6 +278,9 @@ type RAFrame struct {
 	// RouterLifetime is the router lifetime; zero means not a default router.
 	RouterLifetime time.Duration
 	Prefixes       []RAPrefix
+	Routes         []RARoute
+	DNSServers     []net.IP
+	SearchDomains  []string
 }
 
 // RAPrefix is one Prefix Information option (RFC 4861 section 4.6.2).
@@ -319,9 +322,14 @@ func (f RAFrame) String() string {
 			p.Prefix, p.PrefixLen, strings.Join(pf, ", "),
 			raLifetimeString(p.ValidLifetime), raLifetimeString(p.PreferredLifetime)))
 	}
-	return fmt.Sprintf("%s RA src=%s flags=[%s] lifetime=%s hoplimit=%d prefixes=%s",
+	routes := make([]string, 0, len(f.Routes))
+	for _, r := range f.Routes {
+		routes = append(routes, fmt.Sprintf("%s/%d lifetime=%s", r.Prefix, r.PrefixLen, raLifetimeString(r.Lifetime)))
+	}
+	return fmt.Sprintf("%s RA src=%s flags=[%s] lifetime=%s hoplimit=%d prefixes=%s routes=[%s] rdnss=%v dnssl=%v",
 		f.At.Format("15:04:05.000"), f.SourceMAC, strings.Join(flags, ", "),
-		f.RouterLifetime, f.CurHopLimit, strings.Join(parts, " "))
+		f.RouterLifetime, f.CurHopLimit, strings.Join(parts, " "), strings.Join(routes, " "),
+		f.DNSServers, f.SearchDomains)
 }
 
 func raLifetimeString(secs uint32) string {
@@ -396,9 +404,30 @@ func ParseRA(b []byte) (RAFrame, bool) {
 				PreferredLifetime: binary.BigEndian.Uint32(o[raPrefixPreferredOffset : raPrefixPreferredOffset+4]),
 			})
 		}
+		f.parseOption(o[:optLen])
 		o = o[optLen:]
 	}
 	return f, true
+}
+
+// parseOption decodes the RFC 4191 and RFC 8106 options; a Route Information prefix may be 0, 8 or 16 bytes long.
+func (f *RAFrame) parseOption(o []byte) {
+	switch {
+	case o[0] == raOptRouteInfo && len(o) >= 8:
+		prefix := make(net.IP, net.IPv6len)
+		copy(prefix, o[8:])
+		f.Routes = append(f.Routes, RARoute{
+			Prefix:    prefix,
+			PrefixLen: o[2],
+			Lifetime:  binary.BigEndian.Uint32(o[4:8]),
+		})
+	case o[0] == raOptRDNSS && len(o) >= 24:
+		for a := o[8:]; len(a) >= net.IPv6len; a = a[net.IPv6len:] {
+			f.DNSServers = append(f.DNSServers, net.IP(append([]byte(nil), a[:net.IPv6len]...)))
+		}
+	case o[0] == raOptDNSSL && len(o) > 8:
+		f.SearchDomains = append(f.SearchDomains, decodeDNSSL(o[8:])...)
+	}
 }
 
 // dnsmasq 2.91's RA schedule (#911): ra_start_unsolicited(now, NULL) draws 0..5 s (radv.c:135), (now, context)
