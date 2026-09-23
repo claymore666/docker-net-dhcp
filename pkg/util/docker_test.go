@@ -26,7 +26,7 @@ func (s *awaitStub) ContainerInspect(context.Context, string) (container.Inspect
 }
 
 func TestAwaitContainerInspect_NotFoundIsTerminal(t *testing.T) {
-	// Verbatim shape of what the daemon returns for a removed container.
+	// Verbatim shape of what the daemon returns for a removed container (#401).
 	stub := &awaitStub{err: fmt.Errorf(
 		"Error response from daemon: No such container: deadbeef: %w", cerrdefs.ErrNotFound)}
 

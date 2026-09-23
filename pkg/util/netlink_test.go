@@ -23,7 +23,7 @@ func TestAwaitLinkByIndex_DeadlineCarriesLastError(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
 
-	// Kernel ifindexes are small positive ints, so 1<<30 never appears.
+	// Kernel ifindexes are small positive ints, so 1<<30 never appears (#317).
 	_, err = AwaitLinkByIndex(ctx, handle, 1<<30, 10*time.Millisecond)
 	if err == nil {
 		t.Fatal("expected an error for a link index that never appears")
