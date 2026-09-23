@@ -7,10 +7,7 @@ package harness
 
 import "testing"
 
-// Real dnsmasq output, trimmed. The trailing token on an ACK is the
-// client hostname when the client sent one — the static-IP container
-// reached ACK without one on the run that exposed all this, which is
-// why the reservation keys on the MAC.
+// Real dnsmasq output, trimmed: the trailing token on an ACK is the client hostname only when the client sent one.
 const ackLog = `
 Aug  1 15:36:42 dnsmasq-dhcp[5432]: 3202957726 DHCPDISCOVER(dh-itest-dhcp) 192.168.99.95 b6:53:0e:19:10:83
 Aug  1 15:36:42 dnsmasq-dhcp[5432]: 3202957726 DHCPACK(dh-itest-dhcp) 192.168.99.95 b6:53:0e:19:10:83
@@ -32,9 +29,6 @@ func TestACKedTo(t *testing.T) {
 			wantOK: true, wantACKs: 1,
 		},
 		{
-			// The failure this assertion exists for: the address was
-			// handed out, just not to us. Docker's view cannot see the
-			// difference; the server's log can.
 			name: "the address was ACKed to somebody else",
 			log:  ackLog, ip: "192.168.99.95", mac: "02:00:00:00:99:95",
 			wantOK: false, wantACKs: 1,
@@ -45,15 +39,11 @@ func TestACKedTo(t *testing.T) {
 			wantOK: false, wantACKs: 0,
 		},
 		{
-			// An unreadable or empty log must never read as success —
-			// absent data is not evidence of the happy path.
 			name: "an empty log is not a pass",
 			log:  "", ip: "192.168.99.95", mac: "b6:53:0e:19:10:83",
 			wantOK: false, wantACKs: 0,
 		},
 		{
-			// A DISCOVER naming the address is not an ACK; only the
-			// ACK says the server committed to it.
 			name: "a DISCOVER for the address is not an ACK",
 			log: "Aug  1 15:37:03 dnsmasq-dhcp[5432]: 1 DHCPDISCOVER(dh-itest-dhcp) " +
 				"192.168.99.95 02:00:00:00:99:95\n",
@@ -61,8 +51,6 @@ func TestACKedTo(t *testing.T) {
 			wantOK: false, wantACKs: 0,
 		},
 		{
-			// .9 must not match .95 — a prefix match would let a
-			// neighbouring lease vouch for this one.
 			name: "a shorter address is not a prefix match",
 			log:  "Aug  1 15:37:03 dnsmasq-dhcp[5432]: 1 DHCPACK(dh-itest-dhcp) 192.168.99.95 aa:bb:cc:dd:ee:ff\n",
 			ip:   "192.168.99.9", mac: "aa:bb:cc:dd:ee:ff",
@@ -84,11 +72,8 @@ func TestACKedTo(t *testing.T) {
 	}
 }
 
-// A restart on the standing fixture, as dnsmasq logs it: the
-// reservation's exchange under the removed container's identity, then
-// the container's own client being refused and taking another address.
-// ACKedTo(.10, the new MAC) is TRUE for this log, and the container is
-// on .11.
+// A restart on the standing fixture as dnsmasq logs it: the reservation's exchange under the removed container's
+// identity, then the container's own client refused and taking another address (#1047).
 const restartAckLog = `
 Sep 21 15:16:02 dnsmasq-dhcp[5432]: 1 DHCPREQUEST(dh-itest) 192.168.99.10 ea:a9:52:1b:95:ab
 Sep 21 15:16:02 dnsmasq-dhcp[5432]: 1 DHCPACK(dh-itest) 192.168.99.10 ea:a9:52:1b:95:ab
@@ -115,7 +100,6 @@ func TestLastACKedAddress(t *testing.T) {
 			want: "192.168.99.95",
 		},
 		{
-			// Another client's ACKs say nothing about this one.
 			name: "a client the server never ACKed has no address",
 			log:  ackLog, mac: "02:00:00:00:99:95",
 			want: "",
@@ -126,8 +110,6 @@ func TestLastACKedAddress(t *testing.T) {
 			want: "",
 		},
 		{
-			// A NAK is the opposite of an ACK and must not be read as
-			// one; on its own it leaves the client with no address.
 			name: "a NAK is not an ACK",
 			log: "Sep 21 15:16:10 dnsmasq-dhcp[5432]: 2 DHCPNAK(dh-itest) 192.168.99.10 " +
 				"ea:a9:52:1b:95:ab\n",

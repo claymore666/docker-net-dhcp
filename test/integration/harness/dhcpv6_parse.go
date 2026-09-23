@@ -1,17 +1,6 @@
 // Copyright the docker-net-dhcp contributors.
 // SPDX-License-Identifier: GPL-3.0-only
 
-// No `//go:build integration` tag, deliberately, and for the reason
-// dhcprequest_parse.go and v6signature.go give: everything in this file
-// is a pure function over bytes, so it is driven in the fast lane
-// against frames built field by field rather than being validated only
-// in a world that needs root, a bridge and a DHCP server to enter.
-//
-// The capture that feeds it (dhcpv6capture.go) is tagged, gathers the
-// evidence, and asks the functions here for the verdict. The split is
-// the point: an instrument whose verdict can only be exercised on the
-// privileged lane is one nobody can drive in both directions.
-
 package harness
 
 import (
@@ -23,65 +12,30 @@ import (
 	"time"
 )
 
-// What this file is for: #925's opt-in, read off the wire.
-//
-// RFC 9915 section 21.20 makes the Reconfigure Accept option the whole
-// of whether a client may be reconfigured at all -- "In the absence of
-// this option, the default behavior is that the client is unwilling to
-// accept Reconfigure messages" -- so the announcement is the feature,
-// and the announcement is two bytes in a datagram and nothing else.
-//
-// THE PLUGIN'S OWN PARAMETERS ARE NOT EVIDENCE OF IT. There is already
-// a unit test that asks buildParams6 for its AcceptReconfigure field
-// (pkg/dhcp/v6mode_test.go). That test can pass over a client that
-// never reached the wire, over an encoder that drops the option, and
-// over a library whose emission is behind a condition the plugin does
-// not meet. What is on the link is the only reading that closes those,
-// and it is what this instrument takes.
+// RFC 9915 section 21.20: "In the absence of this option, the default behavior is that the client is unwilling to
+// accept Reconfigure messages", so #925's opt-in is two bytes on the wire, read here off captured frames.
 
-// DHCPv6Message is one captured DHCPv6 datagram, reduced to what a
-// question about announced options turns on.
-//
-// BOTH DIRECTIONS ARE KEPT, and that is not symmetry for its own sake.
-// A capture that held only client messages reports the same thing --
-// nothing -- for a segment where the client never spoke and for a
-// capture placed where a client's frames do not pass. Those need
-// different repairs, and the server's half of the exchange is what
-// tells them apart: server traffic present with no client traffic is a
-// vantage on the wrong side, and neither present is a segment that did
-// nothing.
+// DHCPv6Message is one captured DHCPv6 datagram, either direction, so a capture with server traffic and no client
+// traffic reads as a wrong vantage (#925).
 type DHCPv6Message struct {
 	At time.Time
-	// Raw is the frame exactly as it came off the wire, carried so a
-	// failing lane run can print the bytes the decoder was given.
+	// Raw is the frame as captured, printed on a failing run.
 	Raw []byte
 	// SourceMAC is the ethernet source.
 	SourceMAC net.HardwareAddr
-	// SourceIP and DestIP are the IPv6 addresses of the datagram. A
-	// Solicit goes to ff02::1:2 (section 7.1's All_DHCP_Relay_Agents_and_Servers)
-	// and a Reply comes back to the client's link-local, so these say
-	// which leg of an exchange a frame is without consulting the ports
-	// a second time.
+	// SourceIP and DestIP are the datagram's IPv6 addresses; a Solicit goes to ff02::1:2 (RFC 9915 section 7.1).
 	SourceIP, DestIP net.IP
-	// FromClient is true when the datagram left the client port for the
-	// server port (section 7.2: 546 and 547). It is the direction, read
-	// off the ports rather than guessed from the message type, because
-	// the message type is exactly what a decoder with a wrong offset
-	// gets wrong.
+	// FromClient is true when the datagram went from port 546 to port 547 (RFC 9915 section 7.2).
 	FromClient bool
-	// Type is section 7.3's msg-type octet.
+	// Type is RFC 9915 section 7.3's msg-type octet.
 	Type uint8
 	// TransactionID is the 24-bit transaction-id that follows it.
 	TransactionID uint32
-	// Options is every option code carried, in the order they appeared
-	// and with repeats kept. Codes and not values: this instrument
-	// answers which options were announced, and section 21.20's option
-	// has no value to read -- "option-len: 0", the option IS the
-	// announcement.
+	// Options is every option code carried, in order with repeats; section 21.20's option has option-len 0.
 	Options []uint16
 }
 
-// Section 7.3's message types, as far as this instrument names them.
+// RFC 9915 section 7.3's message types used here.
 const (
 	DHCPv6Solicit            uint8 = 1
 	DHCPv6Advertise          uint8 = 2
@@ -94,13 +48,9 @@ const (
 	DHCPv6InformationRequest uint8 = 11
 )
 
-// The option codes this file names. Section 21.
+// Option codes from RFC 9915 section 21.
 const (
-	// DHCPv6OptClientID is section 21.2. Named because the fast-lane
-	// test hides a 0x0014 inside its payload: an instrument that
-	// searched the datagram for two bytes rather than walking it would
-	// report section 21.20's option present in a message that carries
-	// none, and that is the failure this whole file exists to not have.
+	// DHCPv6OptClientID is RFC 9915 section 21.2.
 	DHCPv6OptClientID uint16 = 1
 	// DHCPv6OptElapsedTime is section 21.9.
 	DHCPv6OptElapsedTime uint16 = 8
@@ -108,18 +58,11 @@ const (
 	DHCPv6OptReconfigureAccept uint16 = 20
 )
 
-// The offsets this file reads. Written out rather than inlined so the
-// numbers appear once and a reader can check them against RFC 9915
-// section 7.2, section 7.3 and section 21.1 without counting.
+// Offsets from RFC 9915 sections 7.2, 7.3 and 21.1.
 const (
-	// Section 7.2: "Clients listen for DHCP messages on UDP port 546.
-	// Servers and relay agents listen for DHCP messages on UDP port
-	// 547."
 	dhcpv6ClientPort = 546
 	dhcpv6ServerPort = 547
 
-	// Section 7.3's client/server message header: one octet of
-	// msg-type, three of transaction-id, then the options.
 	dhcpv6HeaderLen     = 4
 	dhcpv6OptionStart   = 4
 	dhcpv6OptHeaderLen  = 4
@@ -129,22 +72,8 @@ const (
 	ipv6AddrLen         = 16
 )
 
-// ParseDHCPv6 decodes an ethernet frame carrying a DHCPv6 datagram, and
-// reports false for everything else.
-//
-// Everything else is most of what arrives: the socket underneath is
-// ETH_P_ALL (see captureEthertypeBE), so the router advertisements, the
-// neighbour discovery and the container's own traffic all pass through
-// here. Each is dropped rather than mis-parsed -- a frame that is not a
-// DHCPv6 datagram is not evidence of anything this instrument claims.
-//
-// BOUND, and it is ParseRA's: IPv6 extension headers are not walked and
-// a fragmented datagram is not reassembled. A frame carrying either is
-// REFUSED rather than half-read. A DHCPv6 client message is far below
-// any link MTU and this fixture's client sends neither, so the bound
-// costs nothing here; and the direction it fails in is the safe one,
-// because a refused frame reads as absence and ReconfigureAcceptFindings
-// makes absence a finding rather than a pass.
+// ParseDHCPv6 decodes an ethernet frame carrying a DHCPv6 datagram and reports false for anything else. Extension
+// headers and fragments are refused, not walked (#925).
 func ParseDHCPv6(b []byte) (DHCPv6Message, bool) {
 	if len(b) < ethHeaderLen+ipv6HeaderLen+udpHeaderLen+dhcpv6HeaderLen {
 		return DHCPv6Message{}, false
@@ -156,16 +85,9 @@ func ParseDHCPv6(b []byte) (DHCPv6Message, bool) {
 	if ip[0]>>4 != 6 {
 		return DHCPv6Message{}, false
 	}
-	// Next Header, and it must be UDP right here. A Hop-by-Hop or
-	// Fragment header would put the UDP header somewhere else, and this
-	// decoder refuses rather than guesses.
 	if ip[ipv6NextHeaderIndex] != protoUDP {
 		return DHCPv6Message{}, false
 	}
-	// The payload length the header claims, checked against the frame
-	// that actually arrived. A shorter frame than its own header
-	// describes is truncated, and a decoder that read on would be
-	// reading whatever the capture buffer held before it.
 	payloadLen := int(binary.BigEndian.Uint16(ip[4:6]))
 	if payloadLen < udpHeaderLen+dhcpv6HeaderLen || len(ip) < ipv6HeaderLen+payloadLen {
 		return DHCPv6Message{}, false
@@ -179,9 +101,7 @@ func ParseDHCPv6(b []byte) (DHCPv6Message, bool) {
 	if !fromClient && !fromServer {
 		return DHCPv6Message{}, false
 	}
-	// The UDP length covers the header and the payload (RFC 768). Taken
-	// from the datagram rather than from the frame, so trailing padding
-	// a link layer added is not read as options.
+	// The UDP length (RFC 768) excludes link-layer padding from the options.
 	udpLen := int(binary.BigEndian.Uint16(udp[4:6]))
 	if udpLen < udpHeaderLen+dhcpv6HeaderLen || udpLen > len(udp) {
 		return DHCPv6Message{}, false
@@ -195,23 +115,16 @@ func ParseDHCPv6(b []byte) (DHCPv6Message, bool) {
 		DestIP:     net.IP(append([]byte(nil), ip[ipv6DstStart:ipv6DstStart+ipv6AddrLen]...)),
 		FromClient: fromClient,
 		Type:       dh[0],
-		// Section 7.3's transaction-id is three octets, so it is read as
-		// three and not as a uint32 starting one byte early.
+		// RFC 9915 section 7.3's transaction-id is three octets.
 		TransactionID: uint32(dh[1])<<16 | uint32(dh[2])<<8 | uint32(dh[3]),
 	}
 
-	// Section 21.1's option format: two octets of code, two of length,
-	// then that many octets of data. WALKED, never searched: an option
-	// code is only an option code where an option begins, and a DUID or
-	// an IA address holding the same two bytes is not an announcement.
-	// The fast-lane test drives exactly that frame.
+	// RFC 9915 section 21.1 options are walked, never searched: a DUID holding 0x0014 is not option 20.
 	for o := dh[dhcpv6OptionStart:]; len(o) >= dhcpv6OptHeaderLen; {
 		code := binary.BigEndian.Uint16(o[0:2])
 		dataLen := int(binary.BigEndian.Uint16(o[2:4]))
 		if dhcpv6OptHeaderLen+dataLen > len(o) {
-			// An option that runs off the end of the datagram. The
-			// options read so far stand -- they were whole -- and the
-			// walk stops rather than inventing the rest.
+			// An option running off the end stops the walk; the whole options before it stand.
 			break
 		}
 		m.Options = append(m.Options, code)
@@ -220,8 +133,7 @@ func ParseDHCPv6(b []byte) (DHCPv6Message, bool) {
 	return m, true
 }
 
-// HasOption reports whether the message carried an option with this
-// code.
+// HasOption reports whether the message carried an option with this code.
 func (m DHCPv6Message) HasOption(code uint16) bool {
 	for _, c := range m.Options {
 		if c == code {
@@ -231,13 +143,12 @@ func (m DHCPv6Message) HasOption(code uint16) bool {
 	return false
 }
 
-// AnnouncesReconfigureAccept is section 21.20's option, present.
+// AnnouncesReconfigureAccept reports whether RFC 9915 section 21.20's option is present.
 func (m DHCPv6Message) AnnouncesReconfigureAccept() bool {
 	return m.HasOption(DHCPv6OptReconfigureAccept)
 }
 
-// DHCPv6MsgName renders section 7.3's msg-type for a human, and its
-// number for one this file does not name.
+// DHCPv6MsgName renders a section 7.3 msg-type by name, or by number when unnamed.
 func DHCPv6MsgName(t uint8) string {
 	switch t {
 	case DHCPv6Solicit:
@@ -282,18 +193,8 @@ func (m DHCPv6Message) String() string {
 		m.SourceIP, m.DestIP, m.TransactionID, opts)
 }
 
-// ReconfigureAcceptAnnouncers is section 21.20's three message kinds,
-// which are the three exchanges section 20.4.2 lets a server grant a
-// reconfigure key in: "The server selects a reconfigure key for a
-// client during the Request/Reply, Solicit/Reply, or
-// Information-request/Reply message exchange."
-//
-// A CLIENT THAT ANNOUNCED IN ONE OF THREE HAS NOT ANNOUNCED. Which
-// exchange grants the key is the server's choice, so an announcement
-// missing from any of the three is a server that may never hand this
-// client a key, and the client is then deaf to Reconfigure with nothing
-// to read that says so. That is why the verdict below is over every
-// captured message of these kinds rather than over the first one.
+// ReconfigureAcceptAnnouncers returns the three message kinds in which RFC 9915 section 20.4.2 lets a server pick
+// a reconfigure key: "during the Request/Reply, Solicit/Reply, or Information-request/Reply message exchange."
 func ReconfigureAcceptAnnouncers() []uint8 {
 	return []uint8{DHCPv6Solicit, DHCPv6Request, DHCPv6InformationRequest}
 }
@@ -307,39 +208,9 @@ func announcesReconfigure(t uint8) bool {
 	return false
 }
 
-// ReconfigureAcceptFindings is #925's verdict over one capture: every
-// client message of section 21.20's three kinds announced the option,
-// and the capture actually saw the kinds `required` names.
-//
-// IT REFUSES AN EMPTY CAPTURE, and that is the reason it exists as a
-// function rather than as a loop in the test. "Every captured Solicit
-// announced it" is true of a capture that took no Solicit, and a
-// capture placed where the client's frames do not pass takes none: the
-// assertion would then be a statement about nothing, which is the #524
-// fault in its purest form. So absence is a finding here, and it is
-// worded so the reader can tell the two absences apart -- a vantage
-// that saw the server and not the client, and a segment that was
-// silent.
-//
-// IT REFUSES A LINK WITH MORE THAN ONE CLIENT ON IT. Every message
-// here is attributed to the caller's client, and the only thing that
-// selects them is direction and message type. A second DHCPv6 client
-// on the same link -- a container left behind by an earlier case, or
-// anything else on a shared bridge -- would have its Solicit read as
-// this plugin's, which is a false accusation in one direction and a
-// verdict about the wrong endpoint in the other. So distinct ethernet
-// sources are counted, and more than one ends the verdict: nothing
-// here can say which client is the subject, and saying so is the only
-// honest answer.
-//
-// `required` is the message kinds this caller's exchange must have
-// produced. The empty-capture refusal above is unconditional and runs
-// ahead of it, so a caller passing none is still refused an empty
-// capture; what it gives up is the check that a PARTICULAR kind
-// arrived. Every caller in this repo passes the kinds its mode sends:
-// the managed case passes SOLICIT and REQUEST, and the stateless case
-// passes INFORMATION-REQUEST, which is the only announcing message a
-// stateless client ever sends.
+// ReconfigureAcceptFindings is #925's verdict: every client message of the three kinds announced the option and every
+// required kind arrived. An empty capture is a finding (#524), and more than one announcing ethernet source ends the
+// verdict, since nothing here can tell which client is the subject.
 func ReconfigureAcceptFindings(msgs []DHCPv6Message, required ...uint8) []string {
 	var findings []string
 
@@ -356,14 +227,7 @@ func ReconfigureAcceptFindings(msgs []DHCPv6Message, required ...uint8) []string
 		if !announcesReconfigure(m.Type) {
 			continue
 		}
-		// COUNTED HERE AND NOT ONE LINE HIGHER, and the difference is
-		// a direction. The question this set answers is whose
-		// ANNOUNCEMENTS are being judged, so a second client that
-		// sends no announcing message -- a Renew, a Rebind, a Release
-		// -- does not take the verdict away from an endpoint whose
-		// Solicit and Request are unambiguous. Counting every client
-		// message instead would withhold a verdict this capture can
-		// give, which is a gate that cries wolf on any shared link.
+		// Only announcing messages count as speakers: a second client's Renew leaves this endpoint's verdict standing (#925).
 		speakers[m.SourceMAC.String()]++
 		seen[m.Type]++
 		if !m.AnnouncesReconfigureAccept() {

@@ -8,16 +8,10 @@ import (
 	"time"
 )
 
-// Every fixture string below is VERBATIM output, captured either from
-// alpine:3.20 (the image the suite runs containers in) or from the
-// failing CI run itself. That is the whole point of this file: the
-// previous version of this observer was validated against a probe
-// image with full iproute2 and keyed on a `proto ra` field busybox
-// does not emit, so it could never have passed where it actually runs.
+// Fixture strings are verbatim from alpine:3.20, the suite's container image, or from the failing CI run; busybox
+// emits no `proto ra` field, which an iproute2-validated observer relied on (#875).
 
-// Captured from the CI run that caught it — the container's own
-// `ip -6 route show default`. Note: no `proto` field, and the double
-// spaces are busybox's.
+// The container's own `ip -6 route show default` from that CI run: no `proto` field, busybox's double spaces.
 const ciRouteShowDefault = `default via fe80::8ab:aaff:fe85:2df5 dev dh-itest-br20  metric 1024  expires 0sec`
 
 // Captured from alpine:3.20, `ip -6 -o addr show scope global`.
@@ -28,28 +22,18 @@ func TestV6IfaceFromAddrShow(t *testing.T) {
 		t.Errorf("busybox addr show: got %q, want %q — the observer would read sysctls "+
 			"from the wrong path and measure nothing (#875)", got, "dh-itest-br20")
 	}
-	// The defect this replaced: the interface is NOT eth0, and assuming
-	// it was produced three "No such file or directory" reads in CI.
+	// The interface is not eth0; assuming it gave three "No such file or directory" reads in CI.
 	if got := V6IfaceFromAddrShow(busyboxAddrShow, "fd00:6470:6864::42"); got == "eth0" {
 		t.Error("derived eth0; that hardcoded guess is exactly what failed in CI")
 	}
-	// Absence: an address that is not there must not yield an interface.
 	if got := V6IfaceFromAddrShow(busyboxAddrShow, "fd00:dead::1"); got != "" {
 		t.Errorf("invented interface %q for an absent address", got)
 	}
 	if got := V6IfaceFromAddrShow("", "fd00:6470:6864::42"); got != "" {
 		t.Errorf("invented interface %q from empty output", got)
 	}
-	// A PREFIX of a present address is not that address (#875, third
-	// round). The fixture prefixes make this impossible to hit today,
-	// which is why a substring match survived. A second global address
-	// on one link is what makes it reachable, and #821 takes the
-	// kernel's route to that away again (autoconf=0) without closing
-	// it: a multi-network container, a SLAAC address once #818 lands,
-	// or an operator adding one by hand all put two there. So this is
-	// the case that would arrive without a test naming it.
-	// Driven on the REAL fixture output, then on a two-address line so
-	// the wrong answer would be a real interface name rather than "".
+	// #875: a prefix of a present address is not that address. Two global addresses on one link make it reachable:
+	// a multi-network container, SLAAC (#818) or an operator's address, even with #821's autoconf=0.
 	if got := V6IfaceFromAddrShow(busyboxAddrShow, "fd00:6470:6864::4"); got != "" {
 		t.Errorf("matched %q on a PREFIX of a present address; the observer would then "+
 			"read sysctls from the wrong interface and report what it found there", got)
@@ -61,9 +45,6 @@ func TestV6IfaceFromAddrShow(t *testing.T) {
 		t.Errorf("got %q, want %q: the shorter address must not be answered by the line "+
 			"that merely CONTAINS it", got, "dh-itest-br20")
 	}
-	// Preservation control: the exact-match rewrite must not have made
-	// the ordinary lookup stop working, and the answer must still come
-	// from the line that carries the address rather than the first line.
 	if got := V6IfaceFromAddrShow(twoAddrs, "fd00:6470:6864::32"); got != "eth0" {
 		t.Errorf("got %q, want %q on an exact address that IS present", got, "eth0")
 	}
@@ -74,7 +55,6 @@ func TestHasLinkLocalDefaultRoute(t *testing.T) {
 		t.Error("the real CI route line was not recognised as an RA-derived default " +
 			"route; this is the exact string the `proto ra` version failed on")
 	}
-	// Drive the absence in both directions that matter.
 	for _, tc := range []struct {
 		name string
 		in   string
@@ -92,9 +72,7 @@ func TestHasLinkLocalDefaultRoute(t *testing.T) {
 }
 
 func TestSysctlReadFailed(t *testing.T) {
-	// Verbatim from alpine:3.20 when the path does not exist — the
-	// vacuity case. It must be distinguishable from a value, or a test
-	// reports success having measured nothing.
+	// Verbatim from alpine:3.20 when the path does not exist.
 	if !SysctlReadFailed(`cat: can't open '/proc/sys/net/ipv6/conf/eth0/accept_ra': No such file or directory`) {
 		t.Error("a failed read was scored as a value; the observer would report a " +
 			"wrong-value failure, or a pass, for an assertion that never ran")
@@ -109,11 +87,7 @@ func TestSysctlReadFailed(t *testing.T) {
 	}
 }
 
-// Verbatim DHCPREPLY lines from the CI fixture's dnsmasq in the run
-// that exposed the RA-assertion ordering bug (#875). Pinned as literal
-// text rather than reconstructed: the anchor these feed decides
-// whether the RA-guard assertions are allowed to run at all, so its
-// matcher has to be driven against the real rendering.
+// Verbatim DHCPREPLY lines from the CI fixture's dnsmasq in the run that exposed the RA-assertion ordering bug (#875).
 const (
 	ciBindBridge  = `Aug 28 13:57:39 dnsmasq-dhcp[6902]: 3874478 DHCPREPLY(dh-itest-br2) fd00:6470:6864::32 00:03:00:01:ea:eb:ed:a4:b0:f5 `
 	ciBindMacvlan = `Aug 28 13:57:33 dnsmasq-dhcp[6947]: 4883247 DHCPREPLY(dh-itest-dhcp) fd00:6470:6863::91 00:03:00:01:26:54:5f:ae:24:20`
@@ -129,10 +103,6 @@ func TestCountDHCPv6Binds_CountsARealBind(t *testing.T) {
 	}
 }
 
-// The MAC scoping is the whole point of the discriminator, so drive
-// its absence: a reply for the SAME address from a DIFFERENT container
-// must not count. Without this the anchor fires early on a reused
-// pooled address and the RA assertions go back to racing the guard.
 func TestCountDHCPv6Binds_ADifferentMACOnTheSameAddressDoesNotCount(t *testing.T) {
 	const otherClient = `Aug 28 13:40:01 dnsmasq-dhcp[6902]: 1111111 DHCPREPLY(dh-itest-br2) fd00:6470:6864::32 00:03:00:01:aa:bb:cc:dd:ee:ff`
 
@@ -163,23 +133,13 @@ func TestCountDHCPv6Binds_IsCaseInsensitiveOnBothSides(t *testing.T) {
 	}
 }
 
-// An address that is a PREFIX of another pool address must not be
-// matched by substring alone in a way the caller would not expect.
-// Recorded as the known bound rather than fixed: the matcher is
-// substring-based, so ::9 matches ::91. Callers pass whole addresses
-// taken from the link, never truncated ones.
+// The known bound: the matcher is substring-based, so ::9 matches ::91; callers pass whole addresses (#875).
 func TestCountDHCPv6Binds_SubstringMatchingIsTheDocumentedBound(t *testing.T) {
 	if got := CountDHCPv6Binds(ciBindMacvlan, "fd00:6470:6863::9"); got != 1 {
 		t.Errorf("documented bound (substring match): got %d, want 1", got)
 	}
 }
 
-// LastDHCPv6BindAt exists so the renewal test can anchor its window on
-// the SERVER's clock instead of on the moment the address surfaces to
-// `ip -6 addr`. Every case below runs against the verbatim CI lines
-// above, for the reason the block comment on them gives: the anchor
-// decides what the window measures, so its parser is driven against the
-// real rendering rather than a reconstruction.
 func TestLastDHCPv6BindAt_ReadsTheServersOwnStamp(t *testing.T) {
 	ref := time.Date(2026, time.September, 8, 12, 0, 0, 0, time.Local)
 
@@ -193,9 +153,6 @@ func TestLastDHCPv6BindAt_ReadsTheServersOwnStamp(t *testing.T) {
 	}
 }
 
-// The LAST match, not the first: a shared fixture log accumulates every
-// test's traffic, and the bind this test is anchored on is the newest
-// one for the address.
 func TestLastDHCPv6BindAt_TakesTheLastMatch(t *testing.T) {
 	ref := time.Date(2026, time.September, 8, 12, 0, 0, 0, time.Local)
 	earlier := `Aug 28 13:40:01 dnsmasq-dhcp[6947]: 1111111 DHCPREPLY(dh-itest-dhcp) fd00:6470:6863::91 00:03:00:01:26:54:5f:ae:24:20`
@@ -209,10 +166,6 @@ func TestLastDHCPv6BindAt_TakesTheLastMatch(t *testing.T) {
 	}
 }
 
-// An unreadable clock must report NOT FOUND, never the zero time. The
-// zero time is decades in the past, so a caller that anchored on it
-// would find every window already satisfied — a check with one possible
-// verdict, dressed as evidence.
 func TestLastDHCPv6BindAt_AnUnparseableStampIsNotFound(t *testing.T) {
 	ref := time.Date(2026, time.September, 8, 12, 0, 0, 0, time.Local)
 	noStamp := `dnsmasq-dhcp[6947]: 4883247 DHCPREPLY(dh-itest-dhcp) fd00:6470:6863::91 00:03:00:01:26:54:5f:ae:24:20`
@@ -228,9 +181,7 @@ func TestLastDHCPv6BindAt_AnUnparseableStampIsNotFound(t *testing.T) {
 	}
 }
 
-// The stamp carries no year. Reading a 31 December line on 1 January
-// must not place the bind eleven months in the FUTURE, which would make
-// the window unreachable and the test red for a calendar reason.
+// dnsmasq's stamp has no year, so a 31 December line read on 1 January belongs to the previous year.
 func TestLastDHCPv6BindAt_RollsBackOverNewYear(t *testing.T) {
 	ref := time.Date(2027, time.January, 1, 0, 0, 30, 0, time.Local)
 	line := `Dec 31 23:59:58 dnsmasq-dhcp[6947]: 4883247 DHCPREPLY(dh-itest-dhcp) fd00:6470:6863::91 00:03:00:01:26:54:5f:ae:24:20`
@@ -247,9 +198,6 @@ func TestLastDHCPv6BindAt_RollsBackOverNewYear(t *testing.T) {
 	}
 }
 
-// Same scoping as CountDHCPv6Binds: a reply for the same address from a
-// different client is a different container's bind, and anchoring on it
-// would start the window at somebody else's lease.
 func TestLastDHCPv6BindAt_ADifferentMACIsNotTheAnchor(t *testing.T) {
 	ref := time.Date(2026, time.September, 8, 12, 0, 0, 0, time.Local)
 	other := `Aug 28 14:10:00 dnsmasq-dhcp[6947]: 1111111 DHCPREPLY(dh-itest-dhcp) fd00:6470:6863::91 00:03:00:01:aa:bb:cc:dd:ee:ff`
@@ -267,9 +215,6 @@ func TestLastDHCPv6BindAt_ADifferentMACIsNotTheAnchor(t *testing.T) {
 	}
 }
 
-// CountDefaultRoutes is the observer for "exactly one default route",
-// which is the claim #821 made checkable. Its two failure directions
-// are the two this plugin can produce.
 func TestCountDefaultRoutes(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -292,8 +237,7 @@ func TestCountDefaultRoutes(t *testing.T) {
 	}
 }
 
-// ResolvNameservers keeps the scope zone, because the zone is the thing
-// under test on a link-local resolver (RFC 4007 section 11).
+// The scope zone is kept: it is what is under test on a link-local resolver (RFC 4007 section 11).
 func TestResolvNameservers(t *testing.T) {
 	got := ResolvNameservers("# generated\nsearch corp.example\nnameserver fe80::1%eth0\nnameserver 2001:db8::53\n")
 	want := []string{"fe80::1%eth0", "2001:db8::53"}

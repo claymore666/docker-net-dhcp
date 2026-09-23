@@ -24,61 +24,32 @@ import (
 )
 
 const (
-	// TestImage is what `docker run` pulls if absent. alpine:3.20 is
-	// pinned so a registry blip doesn't suddenly change runtime
-	// behaviour mid-test-run; busybox-shipping `ip` is what we need.
+	// TestImage is pinned so a registry change cannot alter runtime behaviour mid-run.
 	TestImage = "alpine:3.20"
-	// IPAcquisitionBudget caps how long Run waits for a container to
-	// have a non-empty IP after start. The plugin's CreateEndpoint
-	// returns synchronously after dhcpcd gets a lease, so the docker
-	// inspect should reflect the IP within milliseconds; the budget
-	// is generous to absorb real-world dnsmasq RTTs and image pulls.
+	// IPAcquisitionBudget caps how long Run waits for a started container to report an IP.
 	IPAcquisitionBudget = 15 * time.Second
 )
 
-// HostConfig is the HostConfig every test container must be created
-// with — use it instead of a bare &container.HostConfig{} so no site
-// silently reintroduces the stop grace described below.
-//
-// Test containers run `sleep infinity` as PID 1, and the kernel
-// discards SIGTERM for PID 1 unless the process installs a handler. So
-// every `docker stop` in the suite waited out its full 10-second grace
-// and then SIGKILLed — measured at 10.16s per teardown, across 50+
-// teardowns (#367). Docker's init (tini) forwards the signal to
-// `sleep`, whose default disposition is to terminate, so the container
-// exits at once: 10.16s -> 0.18s.
-//
-// Init is deliberately not `docker stop -t 0` or a bare force-remove.
-// With init the container still exits 143 (SIGTERM), not 137
-// (SIGKILL), so the graceful Leave -> dhcpManager.Stop path that
-// health_counters and audit_log assert on is preserved rather than
-// bypassed. Faster and more faithful, not faster instead of faithful.
-// (That path stopped ending in a DHCPRELEASE in #800 for every network
-// that does not set release_lease, which is all of them here bar the
-// one TestReleaseLease drives; what it still drives, and what those
-// tests still read, is the client shutdown and the ledger entry it
-// writes.)
-//
-// Everything is freshly allocated per call — including the *bool —
-// because callers needing extra fields (a restart policy, say) mutate
-// the returned struct.
+// HostConfig is the HostConfig every test container must be created with.
+// Init is set because the kernel discards SIGTERM for PID 1 without a handler, so `sleep infinity` waited out the
+// 10 s stop grace: measured 10.16 s per teardown, 0.18 s with init (#367). The container still exits 143, not 137, so
+// the graceful Leave path the health and audit tests read is kept; `docker stop -t 0` would bypass it. Since #800 that
+// path ends in a DHCPRELEASE only with release_lease set. Callers mutate the returned struct, so each call allocates.
 func HostConfig() *container.HostConfig {
 	init := true
 	return &container.HostConfig{
-		AutoRemove: false, // tests remove explicitly in cleanup
+		AutoRemove: false,
 		Init:       &init,
 	}
 }
 
-// EnsureImage pulls TestImage if not already present locally. Run from
-// TestMain to amortize the pull across the whole suite.
+// EnsureImage pulls TestImage if it is not present locally.
 func EnsureImage(ctx context.Context) error {
 	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
 	if err != nil {
 		return fmt.Errorf("docker client: %w", err)
 	}
 	defer cli.Close()
-	// Try inspect first; pull only on miss.
 	if _, err := cli.ImageInspect(ctx, TestImage); err == nil {
 		return nil
 	}
@@ -87,9 +58,7 @@ func EnsureImage(ctx context.Context) error {
 		return fmt.Errorf("ImagePull: %w", err)
 	}
 	defer rc.Close()
-	// Decode each JSON line so a mid-stream {"errorDetail":...} is
-	// surfaced as a real error instead of a silent partial pull
-	// (I-6 in the 2026-05-05 review).
+	// Decode each JSON line so a mid-stream errorDetail fails the pull instead of leaving it partial.
 	dec := json.NewDecoder(rc)
 	for {
 		var msg struct {
@@ -113,23 +82,14 @@ func EnsureImage(ctx context.Context) error {
 	}
 }
 
-// RunContainer starts a long-lived alpine container attached to the
-// given plugin-driven network and returns its container ID once the
-// IP is available. Registers a t.Cleanup to stop+remove the container.
-//
-// The container runs `sleep infinity`, so tests can exec into it for
-// connectivity checks. cmd is appended to the args if you want a
-// different entrypoint shape.
+// RunContainer starts a `sleep infinity` container on networkName, registers its removal and returns once it has an IP.
 func RunContainer(t *testing.T, ctx context.Context, networkName, containerName string) (id, ipv4, mac string) {
 	t.Helper()
 	return runContainer(t, ctx, networkName, containerName, "", HostConfig())
 }
 
-// RunContainerUser is RunContainer with an explicit container user
-// (docker run --user). A non-root user changes the kernel's ptrace
-// check on /proc/<pid>/ns/net, which the plugin's persistent client
-// must pass at Join — root test containers can't exercise that path
-// (#317).
+// RunContainerUser is RunContainer with a container user; a non-root user changes the ptrace check on /proc/<pid>/ns/net
+// the plugin's client must pass at Join (#317).
 func RunContainerUser(t *testing.T, ctx context.Context, networkName, containerName, user string) (id, ipv4, mac string) {
 	t.Helper()
 	return runContainer(t, ctx, networkName, containerName, user, HostConfig())
@@ -146,9 +106,8 @@ func runContainer(t *testing.T, ctx context.Context, networkName, containerName,
 	createStart := time.Now()
 	create, err := cli.ContainerCreate(ctx,
 		&container.Config{
-			Image: TestImage,
-			Cmd:   []string{"sleep", "infinity"},
-			// Hostname surfaces in the tombstone for restart-stability tests.
+			Image:    TestImage,
+			Cmd:      []string{"sleep", "infinity"},
 			Hostname: containerName,
 			User:     user,
 		},
@@ -167,10 +126,7 @@ func runContainer(t *testing.T, ctx context.Context, networkName, containerName,
 	}
 	id = create.ID
 	t.Cleanup(func() {
-		// Best-effort kill+remove; logs the error but doesn't fail the test.
-		// Timed separately (#368): stop is the signal round-trip that
-		// #367's Init:true was meant to collapse, remove is disk work.
-		// One combined number would hide a regression in either.
+		// Stop and remove are timed separately (#368): stop is the signal round-trip #367 collapsed, remove is disk work.
 		bg := context.Background()
 		stopStart := time.Now()
 		_ = cli.ContainerStop(bg, id, container.StopOptions{})
@@ -191,10 +147,6 @@ func runContainer(t *testing.T, ctx context.Context, networkName, containerName,
 		t.Fatalf("ContainerStart(%s): %v", id, err)
 	}
 
-	// Poll docker inspect until the network endpoint reports an IP.
-	// This span is the DHCP acquisition proper — the one phase here
-	// that is protocol time rather than daemon bookkeeping, and so the
-	// one where "nothing to reclaim" is the likeliest honest answer.
 	acquireStart := time.Now()
 	deadline := time.Now().Add(IPAcquisitionBudget)
 	for time.Now().Before(deadline) {
@@ -210,22 +162,13 @@ func runContainer(t *testing.T, ctx context.Context, networkName, containerName,
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	// Emitted on the timeout path too: a run that exhausted the budget
-	// is precisely the one whose acquisition time you want in the
-	// table, and t.Fatalf below stops this goroutine.
+	// Emitted on the timeout path too, since t.Fatalf below stops this goroutine.
 	EndPhase(t, PhaseIPAcquisition, acquireStart)
 	t.Fatalf("container %s did not get an IP within %v", containerName, IPAcquisitionBudget)
-	return // unreachable
+	return
 }
 
-// EndpointShortID returns the first 12 characters of the container's
-// libnetwork endpoint id on networkName — the exact form the plugin
-// puts in its `endpoint=` log field (pkg/plugin.shortID).
-//
-// This is the join key between a test and the plugin's own record of
-// what it did to that endpoint, which is what makes an assertion
-// endpoint-scoped rather than plugin-wide (#278). See
-// CountPluginLogLines.
+// EndpointShortID returns the 12-character endpoint id the plugin logs as `endpoint=` (#278).
 func EndpointShortID(t *testing.T, ctx context.Context, cli *docker.Client, containerID, networkName string) string {
 	t.Helper()
 	ins, err := cli.ContainerInspect(ctx, containerID)
@@ -245,9 +188,7 @@ func EndpointShortID(t *testing.T, ctx context.Context, cli *docker.Client, cont
 	return ep.EndpointID[:12]
 }
 
-// ExecOutput runs `docker exec` with the given args and returns
-// combined stdout+stderr as a string. Use for quick assertions like
-// `ip -4 addr show eth0` from inside a test container.
+// ExecOutput runs `docker exec` and returns combined stdout and stderr.
 func ExecOutput(t *testing.T, ctx context.Context, containerID string, cmd ...string) string {
 	t.Helper()
 	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
@@ -269,12 +210,7 @@ func ExecOutput(t *testing.T, ctx context.Context, containerID string, cmd ...st
 		t.Fatalf("ExecAttach: %v", err)
 	}
 	defer att.Close()
-	// The exec has no TTY, so the attach stream is multiplexed: each
-	// frame carries an 8-byte header (stream id + payload length).
-	// Reading it raw embeds those header bytes in the returned string —
-	// line starts get garbage prefixes, which breaks any line-anchored
-	// parsing (#130). StdCopy demultiplexes; stdout and stderr both
-	// write into out to preserve the combined-output contract.
+	// Without a TTY the attach stream carries 8-byte frame headers; StdCopy strips them (#130).
 	var out strings.Builder
 	if _, err := stdcopy.StdCopy(&out, &out, att.Reader); err != nil {
 		t.Fatalf("demux exec output: %v", err)
@@ -282,9 +218,7 @@ func ExecOutput(t *testing.T, ctx context.Context, containerID string, cmd ...st
 	return out.String()
 }
 
-// AssertIP fails the test if got is not a valid IPv4 in the macvlan
-// fixture's DHCP pool. Common helper to keep the assertion phrasing
-// consistent.
+// AssertIP fails the test unless got is an IPv4 in the macvlan fixture's pool.
 func AssertIP(t *testing.T, got string) net.IP {
 	t.Helper()
 	ip := net.ParseIP(got)
@@ -302,15 +236,7 @@ func AssertIP(t *testing.T, got string) net.IP {
 	return ip
 }
 
-// AssertEphemeralIP is the EphemeralFixture's analogue of AssertIP.
-//
-// It exists because the pool check inside AssertIP is FATAL, so it
-// cannot be composed with another fixture's pool predicate: wrapping it
-// in IsInEphemeralPool never reaches the wrapper, and the subtest dies
-// naming the main fixture's range against an address that was never
-// supposed to be in it. That is a defect a reader sees only after
-// reading AssertIP, so the remedy is a second assert rather than a
-// comment.
+// AssertEphemeralIP is AssertIP for the EphemeralFixture; AssertIP's pool check is fatal, so it cannot be composed.
 func AssertEphemeralIP(t *testing.T, got string) net.IP {
 	t.Helper()
 	ip := net.ParseIP(got)

@@ -10,15 +10,6 @@ import (
 	"testing"
 )
 
-// The instrument's own observer.
-//
-// arpcapture.go decides, frame by frame, whether RFC 5227 ran. Every
-// conflict_check assertion in the suite is downstream of parseARP and
-// IsProbe, and neither had a test — so an instrument defect arrived on
-// the lane looking like a product defect, twice. This file drives the
-// predicates on bytes, with no socket and no privilege, so the next one
-// arrives here instead.
-
 // frame builds an ethernet + ARP-over-IPv4 packet.
 func frame(ethertype uint16, op uint16, srcMAC, senderHW string, spa, tpa string) []byte {
 	b := make([]byte, 14+28)
@@ -50,22 +41,8 @@ const (
 	ethIPv4 = 0x0800
 )
 
-// TestARPFrame_ProbeNeedsAZeroSenderAndARealTarget is the case that
-// failed on the lane.
-//
-// A container on a network with no gateway resolves 0.0.0.0. The kernel
-// emits an ordinary ARP Request for it, and inet_select_addr cannot
-// choose a sender address for a zero target either, so the frame is
-// spa=0.0.0.0 tpa=0.0.0.0 — three of them a second apart, which is the
-// neighbour retransmission schedule and looks exactly like RFC 5227
-// section 2.1.1's. A predicate keyed only on the zero SENDER called
-// those three a probe and failed conflict_check=off on a plugin that
-// had correctly sent nothing.
-//
-// The row that matters is "kernel resolving 0.0.0.0". The others are
-// there so a fix that tightens the predicate into uselessness — a probe
-// is never recognised at all — fails too: a check with one possible
-// verdict is worthless in whichever direction it points.
+// A container on a network with no gateway resolves 0.0.0.0, and the kernel's ARP Requests for it are spa=0.0.0.0
+// tpa=0.0.0.0, three a second apart, like an RFC 5227 section 2.1.1 probe (#882).
 func TestARPFrame_ProbeNeedsAZeroSenderAndARealTarget(t *testing.T) {
 	const src = "5e:b8:82:78:37:36"
 
@@ -105,8 +82,6 @@ func TestARPFrame_ProbeNeedsAZeroSenderAndARealTarget(t *testing.T) {
 			parses: true,
 		},
 		{
-			// The socket is ETH_P_ALL now, so this is reachable and the
-			// ethertype filter is the harness's own job.
 			name:   "an IPv4 datagram on the same link",
 			f:      frame(ethIPv4, 1, src, src, "0.0.0.0", "192.168.101.42"),
 			parses: false,
@@ -135,10 +110,6 @@ func TestARPFrame_ProbeNeedsAZeroSenderAndARealTarget(t *testing.T) {
 	}
 }
 
-// TestARPFrame_ShortFrameIsNotHalfParsed pins the other direction of the
-// same rule: a truncated frame must be dropped, not read out of the
-// bytes that happen to be there. A partially parsed frame with a zero
-// tail reads as an announcement of 0.0.0.0, which is not a thing.
 func TestARPFrame_ShortFrameIsNotHalfParsed(t *testing.T) {
 	full := frame(ethARP, 1, "5e:b8:82:78:37:36", "5e:b8:82:78:37:36", "0.0.0.0", "192.168.101.42")
 	for n := 0; n < len(full); n++ {
@@ -151,12 +122,7 @@ func TestARPFrame_ShortFrameIsNotHalfParsed(t *testing.T) {
 	}
 }
 
-// TestCaptureEthertype_IsHtonsOfETHPALL pins the byte order.
-//
-// AF_PACKET wants the protocol in NETWORK order. Getting it wrong does
-// not fail: it binds to a protocol nothing uses and the capture stays
-// empty, which reads as "nothing was on the wire" — the exact false
-// negative this whole file exists to prevent.
+// AF_PACKET takes the protocol in network order; host order binds to a protocol nothing uses and captures nothing (#882).
 func TestCaptureEthertype_IsHtonsOfETHPALL(t *testing.T) {
 	if got := captureEthertypeBE(); got != 0x0300 {
 		t.Errorf("captureEthertypeBE = %#04x, want %#04x (htons(ETH_P_ALL))", got, 0x0300)

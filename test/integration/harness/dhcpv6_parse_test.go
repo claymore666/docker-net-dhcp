@@ -1,9 +1,6 @@
 // Copyright the docker-net-dhcp contributors.
 // SPDX-License-Identifier: GPL-3.0-only
 
-// No `//go:build integration` tag: the subject is pure, so it is driven
-// here rather than only on the lane that needs root and a bridge.
-
 package harness
 
 import (
@@ -13,22 +10,15 @@ import (
 	"testing"
 )
 
-// Frames are assembled FIELD BY FIELD here rather than pasted as a hex
-// blob, and that is the point of the file. ParseRA's own history is the
-// argument: a decoder one byte off read Cur Hop Limit as the flags and
-// reported the same answer for three different segment modes, and only
-// a test that knows which byte it put where can catch that. A blob
-// records what one capture happened to contain; a builder states what
-// each field IS, so a decoder reading the wrong offset disagrees with
-// the test about a value the test can name.
+// Frames are built field by field so a decoder reading a wrong offset disagrees about a value the test names; an
+// off-by-one ParseRA once returned the same flags for three segment modes (#925).
 
 const (
 	testV6SrcMAC = "02:42:ac:11:00:02"
 	testV6DstMAC = "33:33:00:01:00:02"
 )
 
-// dhcpv6Option encodes RFC 9915 section 21.1's option: code, length,
-// data.
+// dhcpv6Option encodes an RFC 9915 section 21.1 option: code, length, data.
 func dhcpv6Option(code uint16, data []byte) []byte {
 	b := make([]byte, 4+len(data))
 	binary.BigEndian.PutUint16(b[0:2], code)
@@ -37,19 +27,11 @@ func dhcpv6Option(code uint16, data []byte) []byte {
 	return b
 }
 
-// buildDHCPv6Frame assembles an ethernet frame carrying a DHCPv6
-// datagram with the given ports, message type, transaction id and
-// options.
 func buildDHCPv6Frame(t *testing.T, srcPort, dstPort uint16, msgType uint8, xid uint32, opts ...[]byte) []byte {
 	t.Helper()
 	return buildDHCPv6FrameFrom(t, testV6SrcMAC, srcPort, dstPort, msgType, xid, opts...)
 }
 
-// buildDHCPv6FrameFrom is the same, with the ethernet source named.
-// The verdict attributes what it reads to one client, and the only
-// thing on a captured frame that says which client sent it is this
-// address, so a test about two clients on one link has to be able to
-// set it.
 func buildDHCPv6FrameFrom(t *testing.T, srcMAC string, srcPort, dstPort uint16, msgType uint8, xid uint32, opts ...[]byte) []byte {
 	t.Helper()
 
@@ -88,21 +70,13 @@ func buildDHCPv6FrameFrom(t *testing.T, srcMAC string, srcPort, dstPort uint16, 
 	return append(eth, ip...)
 }
 
-// reconfigureAcceptOption is section 21.20's option: "option-len: 0".
+// reconfigureAcceptOption is RFC 9915 section 21.20's option, with option-len 0.
 func reconfigureAcceptOption() []byte {
 	return dhcpv6Option(DHCPv6OptReconfigureAccept, nil)
 }
 
-// clientIDOption is a Client Identifier whose payload is the DUID this
-// plugin builds, with the two bytes 0x00 0x14 planted inside it.
-//
-// 0x0014 is 20, section 21.20's option code, and it sits where an
-// option code would be if a reader started one option too early. A
-// decoder that searched the datagram for those bytes, or that walked
-// the options from the wrong offset, reports Reconfigure Accept present
-// in a message carrying none. That is D-3 on the defeat list and it is
-// the single most likely way this instrument reads as working while
-// asserting nothing.
+// clientIDOption is the plugin's DUID with 0x00 0x14 (option 20, RFC 9915 section 21.20) planted inside it, which a
+// decoder that searches bytes or walks from a wrong offset reads as Reconfigure Accept.
 func clientIDOption() []byte {
 	return dhcpv6Option(DHCPv6OptClientID, []byte{
 		0x00, 0x03, 0x00, 0x01, 0x02, 0x42, 0x00, 0x14, 0x00, 0x00,
@@ -113,14 +87,6 @@ func elapsedTimeOption() []byte {
 	return dhcpv6Option(DHCPv6OptElapsedTime, []byte{0x00, 0x00})
 }
 
-// A Solicit carrying section 21.20's option decodes into every field
-// the verdict reads, and each is asserted by name.
-//
-// THE TRANSACTION ID AND THE TYPE ARE ASSERTED FOR ParseRA's REASON,
-// not because a test needs them: they are the values that change when
-// an offset moves, so a decoder reading the options from the wrong
-// place disagrees with this test about a number it can print, instead
-// of quietly walking garbage that happens to contain no option 20.
 func TestParseDHCPv6_ASolicitDecodesIntoItsFields(t *testing.T) {
 	frame := buildDHCPv6Frame(t, dhcpv6ClientPort, dhcpv6ServerPort, DHCPv6Solicit, 0xABCDEF,
 		clientIDOption(), reconfigureAcceptOption(), elapsedTimeOption())
@@ -162,13 +128,6 @@ func TestParseDHCPv6_ASolicitDecodesIntoItsFields(t *testing.T) {
 	}
 }
 
-// THE OPPOSITE DIRECTION, and the reason the check is a check. The same
-// builder, the same Client Identifier with 0x0014 buried in its
-// payload, and no Reconfigure Accept option: the decoder must say so.
-//
-// A decoder that searched the 10 octets of that DUID for two bytes
-// passes the test above and fails this one, which is the only way to
-// tell the two implementations apart from the outside.
 func TestParseDHCPv6_ADUIDContainingTheOptionCodeIsNotAnAnnouncement(t *testing.T) {
 	frame := buildDHCPv6Frame(t, dhcpv6ClientPort, dhcpv6ServerPort, DHCPv6Solicit, 1,
 		clientIDOption(), elapsedTimeOption())
@@ -188,8 +147,6 @@ func TestParseDHCPv6_ADUIDContainingTheOptionCodeIsNotAnAnnouncement(t *testing.
 	}
 }
 
-// A server's Reply is not a client message, and the direction is read
-// off the ports.
 func TestParseDHCPv6_AServerReplyIsNotAClientMessage(t *testing.T) {
 	frame := buildDHCPv6Frame(t, dhcpv6ServerPort, dhcpv6ClientPort, DHCPv6Reply, 2,
 		clientIDOption())
@@ -204,7 +161,6 @@ func TestParseDHCPv6_AServerReplyIsNotAClientMessage(t *testing.T) {
 	}
 }
 
-// Everything the decoder must refuse rather than half-read.
 func TestParseDHCPv6_RefusesWhatItCannotRead(t *testing.T) {
 	good := buildDHCPv6Frame(t, dhcpv6ClientPort, dhcpv6ServerPort, DHCPv6Solicit, 3,
 		reconfigureAcceptOption())
@@ -213,7 +169,7 @@ func TestParseDHCPv6_RefusesWhatItCannotRead(t *testing.T) {
 	notIPv6[12], notIPv6[13] = 0x08, 0x00
 
 	notUDP := append([]byte(nil), good...)
-	notUDP[ethHeaderLen+6] = 58 // ICMPv6 next header: an extension header would land here too
+	notUDP[ethHeaderLen+6] = 58
 
 	wrongPorts := buildDHCPv6Frame(t, 1234, 5678, DHCPv6Solicit, 4, reconfigureAcceptOption())
 
@@ -247,15 +203,11 @@ func TestParseDHCPv6_RefusesWhatItCannotRead(t *testing.T) {
 	}
 }
 
-// An option whose length runs off the end of the datagram stops the
-// walk and does not invent the rest.
 func TestParseDHCPv6_AnOptionRunningOffTheEndStopsTheWalk(t *testing.T) {
 	frame := buildDHCPv6Frame(t, dhcpv6ClientPort, dhcpv6ServerPort, DHCPv6Solicit, 5,
 		reconfigureAcceptOption(), dhcpv6Option(DHCPv6OptClientID, []byte{1, 2, 3, 4}))
 
-	// Lie about the last option's length so it claims more data than
-	// the datagram holds. The UDP and IPv6 lengths are untouched: this
-	// is a malformed option inside a well-formed datagram.
+	// The last option claims more data than the datagram holds; the UDP and IPv6 lengths stay valid.
 	frame[len(frame)-6] = 0xFF
 
 	m, ok := ParseDHCPv6(frame)
@@ -268,8 +220,6 @@ func TestParseDHCPv6_AnOptionRunningOffTheEndStopsTheWalk(t *testing.T) {
 			m.Options, DHCPv6OptReconfigureAccept)
 	}
 }
-
-// --- the verdict, driven in both directions -----------------------------
 
 func clientMsg(t *testing.T, typ uint8, opts ...[]byte) DHCPv6Message {
 	t.Helper()
@@ -289,8 +239,6 @@ func serverMsg(t *testing.T, typ uint8) DHCPv6Message {
 	return m
 }
 
-// The verdict passes a capture in which every announcing message
-// announced.
 func TestReconfigureAcceptFindings_AnAnnouncingClientHasNoFindings(t *testing.T) {
 	msgs := []DHCPv6Message{
 		clientMsg(t, DHCPv6Solicit, clientIDOption(), reconfigureAcceptOption()),
@@ -304,15 +252,8 @@ func TestReconfigureAcceptFindings_AnAnnouncingClientHasNoFindings(t *testing.T)
 	}
 }
 
-// A Renew carries no Reconfigure Accept option and MUST NOT be counted
-// against the client.
-//
-// RFC 9915 section 20.4.2: "The server selects a reconfigure key for a
-// client during the Request/Reply, Solicit/Reply, or
-// Information-request/Reply message exchange." No section 18.2 text
-// names the option for a Renew or a Rebind, so a verdict that demanded
-// it there would redden on a correct client at T1 — which is every
-// long-running endpoint, so the check would be discharged within a day.
+// RFC 9915 section 20.4.2 picks the reconfigure key in Request, Solicit or Information-request exchanges and section
+// 18.2 names the option for no Renew or Rebind, so a Renew without it is correct.
 func TestReconfigureAcceptFindings_ARenewIsNotAnAnnouncingMessage(t *testing.T) {
 	msgs := []DHCPv6Message{
 		clientMsg(t, DHCPv6Solicit, clientIDOption(), reconfigureAcceptOption()),
@@ -327,8 +268,6 @@ func TestReconfigureAcceptFindings_ARenewIsNotAnAnnouncingMessage(t *testing.T) 
 	}
 }
 
-// A Solicit that did not announce is a finding, and the finding names
-// the message kind.
 func TestReconfigureAcceptFindings_ASilentSolicitIsAFinding(t *testing.T) {
 	msgs := []DHCPv6Message{
 		clientMsg(t, DHCPv6Solicit, clientIDOption()),
@@ -343,10 +282,6 @@ func TestReconfigureAcceptFindings_ASilentSolicitIsAFinding(t *testing.T) {
 	}
 }
 
-// The Request half of the same, so the check is not a Solicit check
-// wearing a general name. #925's opt-in has to hold in every one of
-// section 21.20's three kinds, and a verdict that only ever looked at
-// the first is D-5.
 func TestReconfigureAcceptFindings_ASilentRequestIsAFinding(t *testing.T) {
 	msgs := []DHCPv6Message{
 		clientMsg(t, DHCPv6Solicit, clientIDOption(), reconfigureAcceptOption()),
@@ -361,9 +296,6 @@ func TestReconfigureAcceptFindings_ASilentRequestIsAFinding(t *testing.T) {
 	}
 }
 
-// A required kind that never arrived is a finding, not a pass. This is
-// D-5's other half: the client announced in its Solicit and the
-// exchange never reached a Request, so nothing checked the Request.
 func TestReconfigureAcceptFindings_ARequiredKindThatNeverArrivedIsAFinding(t *testing.T) {
 	msgs := []DHCPv6Message{
 		clientMsg(t, DHCPv6Solicit, clientIDOption(), reconfigureAcceptOption()),
@@ -377,12 +309,7 @@ func TestReconfigureAcceptFindings_ARequiredKindThatNeverArrivedIsAFinding(t *te
 	}
 }
 
-// THE ONE THAT MATTERS: an empty capture is a finding.
-//
-// Without this arm every assertion in the integration case is true of
-// the empty set, which is what a capture on the wrong vantage produces
-// and what #524 was. Driven in both of its shapes, because they call
-// for different repairs.
+// An empty capture is what a wrong vantage produces (#524).
 func TestReconfigureAcceptFindings_AnEmptyCaptureIsAFinding(t *testing.T) {
 	t.Run("nothing at all", func(t *testing.T) {
 		got := ReconfigureAcceptFindings(nil, DHCPv6Solicit, DHCPv6Request)
@@ -409,18 +336,6 @@ func TestReconfigureAcceptFindings_AnEmptyCaptureIsAFinding(t *testing.T) {
 	})
 }
 
-// A second DHCPv6 client on the link takes the verdict away, and does
-// not get this plugin blamed for what it did or did not announce.
-//
-// THE CAPTURE CANNOT NAME ITS SUBJECT. ReconfigureAcceptFindings
-// selects on direction and on message type, and a Solicit is a Solicit
-// whoever sent it: a container left behind by an earlier case, or
-// anything else that speaks DHCPv6 on a shared bridge, is read as the
-// endpoint under test. That fails both ways -- a stranger's silent
-// Solicit reddens the lane against this plugin, and a stranger's
-// announcing Solicit would satisfy an assertion the plugin never met.
-// So more than one ethernet source among the client messages ends the
-// verdict instead of producing one.
 func TestReconfigureAcceptFindings_TwoClientsOnTheLinkVoidTheVerdict(t *testing.T) {
 	const strangerMAC = "02:42:ac:11:00:09"
 
@@ -453,13 +368,6 @@ func TestReconfigureAcceptFindings_TwoClientsOnTheLinkVoidTheVerdict(t *testing.
 	}
 }
 
-// The same two messages from ONE client are judged, and this is the
-// control for the test above.
-//
-// Without it, the refusal above is satisfied by a function that
-// withheld its verdict always, and #925's whole assertion would be
-// silently gone. Here both frames carry the same ethernet source: the
-// silent one IS reported.
 func TestReconfigureAcceptFindings_OneClientThatWentSilentOnceIsStillJudged(t *testing.T) {
 	announced, ok := ParseDHCPv6(buildDHCPv6Frame(t, dhcpv6ClientPort, dhcpv6ServerPort,
 		DHCPv6Solicit, 0x111111, clientIDOption(), reconfigureAcceptOption()))
@@ -484,16 +392,7 @@ func TestReconfigureAcceptFindings_OneClientThatWentSilentOnceIsStillJudged(t *t
 	}
 }
 
-// An INFORMATION-REQUEST is an announcing message, and a stateless
-// client's only one.
-//
-// RFC 9915 section 20.4.2 names Information-request/Reply as one of the
-// three exchanges a server may choose a reconfigure key in, and a
-// stateless endpoint performs no other: it sends no Solicit and no
-// Request, so if this kind were left out of the announcing set, a
-// stateless client could never be reconfigured and nothing would say
-// so. The integration case on the stateless fixture requires exactly
-// this kind, and this is the fast-lane half of it.
+// A stateless client sends only Information-request, one of RFC 9915 section 20.4.2's three exchanges.
 func TestReconfigureAcceptFindings_ASilentInformationRequestIsAFinding(t *testing.T) {
 	silent, ok := ParseDHCPv6(buildDHCPv6Frame(t, dhcpv6ClientPort, dhcpv6ServerPort,
 		DHCPv6InformationRequest, 0x333333, clientIDOption(), elapsedTimeOption()))
@@ -521,14 +420,6 @@ func TestReconfigureAcceptFindings_ASilentInformationRequestIsAFinding(t *testin
 	}
 }
 
-// A second client that never announces does NOT take the verdict away.
-//
-// THE REFUSAL HAS A DOMAIN AND THIS IS IT. The set that decides whether
-// the subject is ambiguous is the ANNOUNCING messages, not every client
-// datagram on the link: a stranger renewing its own lease says nothing
-// about section 21.20 and leaves this endpoint's Solicit unambiguous.
-// Counting every client message instead would withhold a verdict the
-// capture can give, and on a shared bridge it would do so on every run.
 func TestReconfigureAcceptFindings_AStrangerThatNeverAnnouncesLeavesTheVerdictStanding(t *testing.T) {
 	const strangerMAC = "02:42:ac:11:00:09"
 

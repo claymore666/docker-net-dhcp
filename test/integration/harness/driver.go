@@ -21,46 +21,16 @@ import (
 	docker "github.com/docker/docker/client"
 )
 
-// DriverClient speaks libnetwork's remote-driver protocol to the plugin
-// directly, over the same UNIX socket PluginHealth already uses.
-//
-// # Why a test would want this
-//
-// Some plugin states are only reachable by controlling the ORDER of
-// driver calls, and Docker will not let a test do that. The clearest
-// example is an orphaned lease: CreateEndpoint takes an address, and
-// the endpoint is orphaned if the persistent client never binds before
-// the endpoint goes away. Through Docker the only lever is a container
-// that exits quickly — which is a race against dhcpcd's DORA, not a
-// construction. The suite lost that race for the first time when #555
-// repartitioned the shards, and the losing test could not tell whether
-// the code was wrong or the window had simply closed.
-//
-// Driving the driver directly removes the race: an endpoint Docker
-// never attached to a container cannot be claimed by one, so the attach
-// fails with util.ErrNoContainer and the orphan exists by construction.
-// No sleeps, no retries, no widened budgets — the state is built rather
-// than waited for.
-//
-// # What this is NOT
-//
-// It is not a way to skip Docker where Docker is the thing under test.
-// Anything asserting on what a *container* sees — an address inside the
-// netns, a renamed interface, a restart — must keep going through
-// Docker, because the daemon's own behaviour is part of the claim.
-// This is for the narrow case where the daemon is only a sequencer and
-// its scheduling is what makes the test flaky.
-//
-// Requires root, like every other socket user in this harness.
+// DriverClient speaks libnetwork's remote-driver protocol to the plugin socket, to build states that need a call order
+// Docker will not give a test, such as an endpoint no container can claim (#568). Anything a container sees still goes
+// through Docker. Requires root.
 type DriverClient struct {
 	t    *testing.T
 	sock string
 	hc   *http.Client
 }
 
-// NewDriverClient resolves the live plugin's socket and returns a client
-// bound to it. It fails the test if the plugin is not enabled — a
-// caller cannot meaningfully continue without it.
+// NewDriverClient returns a client bound to the live plugin's socket, failing the test if the plugin is not enabled.
 func NewDriverClient(t *testing.T, ctx context.Context, cli *docker.Client) *DriverClient {
 	t.Helper()
 
@@ -78,8 +48,7 @@ func NewDriverClient(t *testing.T, ctx context.Context, cli *docker.Client) *Dri
 					return d.DialContext(ctx, "unix", sock)
 				},
 			},
-			// Generous: CreateEndpoint performs a full DHCP round trip
-			// against the fixture, and Join's own work is asynchronous.
+			// CreateEndpoint runs a full DHCP round trip against the fixture.
 			Timeout: 60 * time.Second,
 		},
 	}
@@ -90,9 +59,7 @@ type driverError struct {
 	Err string `json:"Err"`
 }
 
-// call POSTs req to method and decodes the reply into out (which may be
-// nil). A non-2xx reply carries the plugin's own message, which is the
-// part a failing test needs to see.
+// call POSTs req to method and decodes the reply into out, which may be nil.
 func (d *DriverClient) call(ctx context.Context, method string, req, out any) error {
 	body, err := json.Marshal(req)
 	if err != nil {
@@ -126,29 +93,19 @@ func (d *DriverClient) call(ctx context.Context, method string, req, out any) er
 	return nil
 }
 
-// EndpointAddresses is what CreateEndpoint hands back: the addresses the
-// one-shot DHCP client leased, and the MAC it leased them against.
+// EndpointAddresses is CreateEndpoint's reply: the leased addresses and the MAC they were leased against.
 type EndpointAddresses struct {
 	Address     string
 	AddressIPv6 string
 	MacAddress  string
 }
 
-// CreateEndpoint runs the plugin's CreateEndpoint, which leases an
-// address from the real DHCP server and attaches the endpoint's child
-// link to the parent NIC.
+// CreateEndpoint runs the plugin's CreateEndpoint, which leases an address and attaches the endpoint's child link.
 func (d *DriverClient) CreateEndpoint(ctx context.Context, netID, endpointID string) (EndpointAddresses, error) {
 	return d.CreateEndpointWithMAC(ctx, netID, endpointID, "")
 }
 
-// CreateEndpointWithMAC is CreateEndpoint with an explicit hardware
-// address, the way libnetwork passes one when the caller pinned it.
-//
-// It exists so a test can lease the SAME address twice on purpose: the
-// DHCP server keys its offers on the client's MAC, so a fixed MAC makes
-// the second lease land on the first one's address instead of whatever
-// the pool hands out next. That turns "hope the address repeats" into a
-// property of the request.
+// CreateEndpointWithMAC is CreateEndpoint with a pinned MAC; the DHCP server keys offers on the MAC, so a repeat lease gets the same address.
 func (d *DriverClient) CreateEndpointWithMAC(ctx context.Context, netID, endpointID, mac string) (EndpointAddresses, error) {
 	var res struct {
 		Interface *EndpointAddresses
@@ -172,9 +129,7 @@ func (d *DriverClient) CreateEndpointWithMAC(ctx context.Context, netID, endpoin
 	return *res.Interface, nil
 }
 
-// Join runs the plugin's Join. It returns as soon as the plugin has
-// answered; the persistent client is attached asynchronously, exactly
-// as it is for a real container.
+// Join runs the plugin's Join, which attaches the persistent client asynchronously.
 func (d *DriverClient) Join(ctx context.Context, netID, endpointID, sandboxKey string) error {
 	return d.call(ctx, "NetworkDriver.Join", map[string]any{
 		"NetworkID":  netID,
@@ -192,8 +147,7 @@ func (d *DriverClient) Leave(ctx context.Context, netID, endpointID string) erro
 	}, nil)
 }
 
-// DeleteEndpoint runs the plugin's DeleteEndpoint, which removes the
-// endpoint's child link from the parent NIC.
+// DeleteEndpoint runs the plugin's DeleteEndpoint, which removes the endpoint's child link.
 func (d *DriverClient) DeleteEndpoint(ctx context.Context, netID, endpointID string) error {
 	return d.call(ctx, "NetworkDriver.DeleteEndpoint", map[string]any{
 		"NetworkID":  netID,
@@ -201,10 +155,7 @@ func (d *DriverClient) DeleteEndpoint(ctx context.Context, netID, endpointID str
 	}, nil)
 }
 
-// CleanupEndpoint tears an endpoint down on a background context and
-// only warns on failure, for use from t.Cleanup where the test's own
-// context may already be cancelled. Leave is attempted first and its
-// error ignored: an endpoint that never joined has nothing to leave.
+// CleanupEndpoint runs Leave, ignoring its error, and DeleteEndpoint on a background context, only warning on failure.
 func (d *DriverClient) CleanupEndpoint(netID, endpointID string) {
 	d.t.Helper()
 
@@ -217,10 +168,7 @@ func (d *DriverClient) CleanupEndpoint(netID, endpointID string) {
 	}
 }
 
-// NewEndpointID returns a random libnetwork-shaped endpoint ID.
-//
-// libnetwork uses 64 hex characters and the plugin logs a truncated
-// form, so tests that read the plugin log can correlate on the prefix.
+// NewEndpointID returns a random 64-hex endpoint ID as libnetwork makes them.
 func NewEndpointID(t *testing.T) string {
 	t.Helper()
 
@@ -231,24 +179,8 @@ func NewEndpointID(t *testing.T) string {
 	return hex.EncodeToString(b[:])
 }
 
-// LiveSandboxKey returns the real netns path of a running container,
-// as libnetwork recorded it.
-//
-// It exists so a test can drive Join with a sandbox that GENUINELY
-// EXISTS while still reaching "no container claims this endpoint". Those
-// are two independent facts about the world, and the plugin checks them
-// separately — it asks whether the sandbox netns is still there, and it
-// asks whether any container holds this endpoint on the network. A test
-// that wants the second answer must not accidentally also give the
-// first, or it lands on the vanished-container branch instead and
-// proves something else.
-//
-// This replaced a synthetic key pointing at a path that did not exist.
-// That worked only because the plugin could not read the netns
-// directory at all and so could never conclude "gone"; the moment that
-// directory became visible, the synthetic key started answering "the
-// container vanished" and the construction silently changed meaning.
-// A real key is stable under both, which is the point.
+// LiveSandboxKey returns a running container's netns path, so Join gets a sandbox that exists while no container
+// claims the endpoint; the plugin checks those two facts separately (#573).
 func LiveSandboxKey(t *testing.T, ctx context.Context, cli *docker.Client, containerID string) string {
 	t.Helper()
 
@@ -269,8 +201,7 @@ func LiveSandboxKey(t *testing.T, ctx context.Context, cli *docker.Client, conta
 	return key
 }
 
-// shortID mirrors the plugin's own log truncation so harness messages
-// line up with plugin log lines.
+// shortID mirrors the plugin's log truncation.
 func shortID(id string) string {
 	if len(id) > 12 {
 		return id[:12]

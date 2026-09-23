@@ -8,10 +8,7 @@ import (
 	"time"
 )
 
-// The lines below are real logrus text output, copied in shape from
-// the plugin's own writer: a value with a space is quoted, a value
-// without one is not. Hand-simplified lines would drive a parser
-// against a format nothing produces.
+// Real logrus text output shape: a value with a space is quoted, one without is bare.
 const (
 	goodLine = `time="2026-09-11T08:04:06Z" level=debug msg="Attach completed" endpoint=ep-0123 ` +
 		`network=net-0123 phase_total=1.23s phases="netns=120ms dhcp=1.1s" took=1.234s`
@@ -24,10 +21,6 @@ const (
 	otherLine = `time="2026-09-11T08:04:06Z" level=info msg="Lease bound" endpoint=ep-0127 took=4s`
 )
 
-// TestAttachDurations_ReadsTheQuotedAndTheBareForm is the drive the
-// integration package cannot give: it refuses to run as a non-root
-// user, so a parser living there is executed by nothing a change can
-// run before pushing.
 func TestAttachDurations_ReadsTheQuotedAndTheBareForm(t *testing.T) {
 	got := AttachDurations(goodLine + "\n" + noPhasesLine + "\n" + otherLine + "\n")
 	if len(got) != 2 {
@@ -38,8 +31,6 @@ func TestAttachDurations_ReadsTheQuotedAndTheBareForm(t *testing.T) {
 	}
 }
 
-// A line that is not an attach line must not contribute, or the
-// distribution is over a population that includes other events.
 func TestAttachDurations_IgnoresOtherLinesThatCarryATook(t *testing.T) {
 	if got := AttachDurations(otherLine + "\n"); len(got) != 0 {
 		t.Errorf("a non-attach line carrying took= produced %v, want none", got)
@@ -53,10 +44,6 @@ func TestAttachLinesWithoutPhases_CountsEmptyAndTheNoPhaseText(t *testing.T) {
 	}
 }
 
-// The direction that matters: a phase summary that IS present must not
-// be counted as missing. It is quoted because it contains spaces, and
-// comparing it with its quotes on is how the check fires on a healthy
-// plugin and sends a reader after a defect that is not there.
 func TestAttachLinesWithoutPhases_AQuotedSummaryIsPresent(t *testing.T) {
 	if got := AttachLinesWithoutPhases(goodLine + "\n"); got != 0 {
 		t.Errorf("a line carrying phases=\"netns=120ms dhcp=1.1s\" counted as missing (%d)", got)

@@ -18,67 +18,31 @@ import (
 	"github.com/vishvananda/netlink"
 )
 
-// Bridge-mode fixture state. The plugin's bridge mode is structurally
-// different from the parent-attached modes — it expects a Linux bridge
-// the user already created and assigns each container a per-endpoint
-// veth into that bridge. We therefore run a *second* dnsmasq on a
-// distinct subnet so the bridge-mode tests don't collide with the
-// macvlan/ipvlan path's pool.
-//
-// Why on a separate subnet? Two DHCP servers on the same broadcast
-// domain would race and the plugin's containers would bind whichever
-// answered first. Distinct L2 (this is a separate Linux bridge in the
-// host netns, no link to the macvlan veth pair) plus distinct L3
-// (192.168.100/24 vs 192.168.99/24) keeps them cleanly isolated.
+// The bridge-mode fixture runs a second dnsmasq on its own Linux bridge and subnet (#61): two servers on one broadcast
+// domain would race, so it shares neither L2 nor L3 with the macvlan fixture.
 const (
-	// BridgeName is the Linux bridge the plugin's bridge-mode tests
-	// pass as `bridge=`. Chosen to fit IFNAMSIZ (15 chars + NUL).
+	// BridgeName is the Linux bridge passed as `bridge=`, within IFNAMSIZ.
 	BridgeName = "dh-itest-br2"
-	// BridgeAddr is the static IPv4 the harness puts on the bridge so
-	// dnsmasq has something to bind to.
+	// BridgeAddr is the bridge's static IPv4, which dnsmasq binds to.
 	BridgeAddr = "192.168.100.1/24"
 
-	// BridgeDHCPPoolStart / End / SubnetCIDR mirror the macvlan
-	// fixture's constants but on the bridge subnet.
+	// BridgeDHCPPoolStart is the first address of the bridge fixture's pool.
 	BridgeDHCPPoolStart = "192.168.100.10"
 	BridgeDHCPPoolEnd   = "192.168.100.99"
 	BridgeSubnetCIDR    = "192.168.100.0/24"
 
-	// BridgeTestDNSServer is what the bridge fixture advertises as
-	// IPv4 DHCP option 6, and it is deliberately NOT TestDNSServer.
-	//
-	// Distinct because that is what makes the bridge-mode assertion
-	// mean something: both fixtures are up in the same run, and a
-	// container on the bridge that somehow got the macvlan fixture's
-	// answer would be indistinguishable from a correct one if the two
-	// addresses were equal. Nothing serves DNS there — the test
-	// asserts propagation, not resolution, exactly as TestDNSServer's
-	// comment says of the macvlan side.
-	//
-	// The option is NEW on this fixture (r2, finding 5a). It only ever
-	// reaches a container whose network opted in with propagate_dns,
-	// so every other bridge test is unaffected by its presence.
+	// BridgeTestDNSServer is the bridge fixture's option 6, distinct from TestDNSServer so a container answered by the
+	// wrong fixture is visible (#899); nothing serves DNS there and it reaches only propagate_dns networks.
 	BridgeTestDNSServer = "192.168.100.53"
 
-	// Dual-stack constants for the bridge fixture (#103) — a distinct
-	// ULA prefix from the macvlan fixture's fd00:6470:6863::/64, same
-	// isolation rationale as the distinct v4 subnets above.
+	// Dual-stack constants for the bridge fixture (#103), on a ULA prefix distinct from the macvlan fixture's.
 	BridgeAddrV6          = "fd00:6470:6864::1/64"
 	BridgeDHCPv6PoolStart = "fd00:6470:6864::10"
 	BridgeDHCPv6PoolEnd   = "fd00:6470:6864::99"
 	BridgeSubnetV6CIDR    = "fd00:6470:6864::/64"
 )
 
-// startBridge brings up the bridge fixture: a Linux bridge with a
-// static IP, iptables FORWARD ACCEPT rules so DHCP isn't dropped by
-// docker's default-deny FORWARD policy (br_netfilter routes bridged
-// traffic through iptables when loaded), and a second dnsmasq bound
-// to the bridge.
-//
-// The bridge is named distinctly from the veth pair to avoid any
-// confusion at teardown — both use the same dh-itest-* prefix the
-// orphan-cleanup script keys on, but distinct names so removal
-// order doesn't matter.
+// startBridge brings up the bridge, its FORWARD rules and the bridge dnsmasq.
 func (f *Fixture) startBridge() error {
 	la := netlink.NewLinkAttrs()
 	la.Name = BridgeName
@@ -91,10 +55,7 @@ func (f *Fixture) startBridge() error {
 		return fmt.Errorf("LinkByName bridge: %w", err)
 	}
 
-	// Disable STP forward-delay: the kernel default is 15s, during
-	// which the bridge port is in LISTENING/LEARNING and won't pass
-	// DHCP. With a single bridge and no loop risk in the test setup
-	// it's safe to set forward_delay=0.
+	// The kernel's 15 s STP forward delay blocks DHCP on a new port; one bridge has no loop to guard (#61).
 	fdPath := filepath.Join("/sys/class/net", BridgeName, "bridge/forward_delay")
 	if err := os.WriteFile(fdPath, []byte("0"), 0o644); err != nil {
 		return fmt.Errorf("disable STP forward_delay: %w", err)
@@ -124,7 +85,6 @@ func (f *Fixture) startBridge() error {
 	}
 	f.iptablesInstalled = true
 
-	// Per-run temp dir for the second dnsmasq's lease file + log.
 	tmp, err := os.MkdirTemp("", "dh-itest-br-")
 	if err != nil {
 		return fmt.Errorf("MkdirTemp bridge: %w", err)
@@ -147,7 +107,7 @@ func (f *Fixture) startBridge() error {
 		"--dhcp-range="+BridgeDHCPv6PoolStart+","+BridgeDHCPv6PoolEnd+","+LeaseTime,
 		"--enable-ra",
 		"--dhcp-option=option6:dns-server,["+TestDNS6Server+"]",
-		"--dhcp-option=6,"+BridgeTestDNSServer, // option 6: DNS servers (IPv4)
+		"--dhcp-option=6,"+BridgeTestDNSServer,
 		"--dhcp-leasefile="+f.bridgeLeaseFile,
 		"--dhcp-no-override",
 		"--dhcp-broadcast",
@@ -160,24 +120,14 @@ func (f *Fixture) startBridge() error {
 	if err := f.bridgeDnsmasq.Start(); err != nil {
 		return fmt.Errorf("start bridge dnsmasq: %w", err)
 	}
-	// Poll the bridge IP's UDP/67 until the bind shows up. We dial
-	// the bridge address rather than INADDR_ANY because the bridge
-	// dnsmasq is `--bind-interfaces`'d to the bridge — it doesn't
-	// take INADDR_ANY, so a parallel listen on 0.0.0.0:67 succeeds
-	// even after the bridge bind has happened. Same shape as
-	// waitDnsmasqReady; symmetric polling avoids the prior 200ms
-	// sleep flaking on slow boxes (I-4 in the 2026-05-05 review).
+	// dnsmasq runs with --bind-interfaces, so a probe on 0.0.0.0:67 succeeds even after the bind; dial the bridge IP.
 	if err := waitBridgeDnsmasqReady(2 * time.Second); err != nil {
 		return fmt.Errorf("bridge dnsmasq did not bind: %w", err)
 	}
 	return nil
 }
 
-// waitBridgeDnsmasqReady polls UDP/67 on the bridge IP until dnsmasq
-// has bound it. Mirrors waitDnsmasqReady but targets the bridge's
-// L3 address (BridgeAddr without the /mask) so it doesn't conflict
-// with the macvlan-fixture dnsmasq that already owns INADDR_ANY:67
-// in this test process.
+// waitBridgeDnsmasqReady polls UDP/67 on the bridge IP until dnsmasq has bound it.
 func waitBridgeDnsmasqReady(budget time.Duration) error {
 	bridgeIP := net.ParseIP(strings.SplitN(BridgeAddr, "/", 2)[0])
 	if bridgeIP == nil {
@@ -187,7 +137,6 @@ func waitBridgeDnsmasqReady(budget time.Duration) error {
 	for time.Now().Before(deadline) {
 		conn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: bridgeIP, Port: 67})
 		if err != nil {
-			// Port is taken — dnsmasq has bound it.
 			return nil
 		}
 		_ = conn.Close()
@@ -196,10 +145,7 @@ func waitBridgeDnsmasqReady(budget time.Duration) error {
 	return fmt.Errorf("bridge dnsmasq did not bind UDP/67 on %s within %v", bridgeIP, budget)
 }
 
-// stopBridge tears down whatever startBridge brought up. Idempotent
-// and best-effort: each step swallows errors so a partial setup can
-// still be cleaned, and a leftover from a previous panic'd run is
-// removed too (the LinkByName/LinkDel pair handles that).
+// stopBridge tears down whatever startBridge set up, best-effort, including a previous run's leftovers.
 func (f *Fixture) stopBridge() {
 	if f.bridgeDnsmasq != nil && f.bridgeDnsmasq.Process != nil {
 		_ = f.bridgeDnsmasq.Process.Signal(syscall.SIGTERM)
@@ -224,8 +170,7 @@ func (f *Fixture) stopBridge() {
 	}
 }
 
-// DumpBridgeLogs prints the bridge-fixture dnsmasq log. Symmetric
-// with DumpLogs for the macvlan side.
+// DumpBridgeLogs prints the bridge fixture's dnsmasq log.
 func (f *Fixture) DumpBridgeLogs(write func(string)) {
 	if f.bridgeDnsmasqLog == "" {
 		write("(bridge fixture not started)")
@@ -239,33 +184,15 @@ func (f *Fixture) DumpBridgeLogs(write func(string)) {
 	write("--- bridge dnsmasq log ---\n" + string(data))
 }
 
-// BridgeDnsmasqLogPath returns the PATH of the bridge fixture's
-// dnsmasq log, the bridge-side twin of Fixture.DnsmasqLog. Named for
-// the path rather than the contents because the neighbouring
-// BridgeLog returns the bytes, and a caller that confuses the two
-// gets a filename parsed as a log rather than an error (#875).
-//
-// Empty when the bridge fixture was never started, which is a
-// distinguishable value: reading it fails loudly instead of silently
-// counting zero lines.
+// BridgeDnsmasqLogPath returns the path of the bridge fixture's dnsmasq log, empty if it never started (#875).
 func (f *Fixture) BridgeDnsmasqLogPath() string { return f.bridgeDnsmasqLog }
 
-// CountBridgeLogLines counts bridge-fixture dnsmasq log lines
-// containing every one of the given substrings (case-insensitive), e.g.
-// ("DHCPRELEASE", mac). The bridge-side twin of Fixture.CountLogLines,
-// so an assertion about the wire conversation reads the same on either
-// segment.
-//
-// Counts rather than reports a boolean for the same reason its macvlan
-// twin does: the fixture is shared and its log accumulates every test's
-// traffic, so only a delta across a window says anything about the
-// endpoint under test.
+// CountBridgeLogLines counts bridge dnsmasq log lines containing every substring, case-insensitively.
 func (f *Fixture) CountBridgeLogLines(substrings ...string) int {
 	return countMatchingLines(f.bridgeDnsmasqLog, substrings...)
 }
 
-// IsInBridgePool reports whether ip falls in the bridge fixture's
-// DHCP-handed range. Symmetric with IsInPool for the macvlan side.
+// IsInBridgePool reports whether ip is in the bridge fixture's pool.
 func IsInBridgePool(ip net.IP) bool {
 	v4 := ip.To4()
 	if v4 == nil {
@@ -276,15 +203,9 @@ func IsInBridgePool(ip net.IP) bool {
 	return bytesGE(v4, start) && bytesLE(v4, end)
 }
 
-// installBridgeForward opens iptables FORWARD for traffic in and out of
-// a fixture bridge. docker's default FORWARD policy is DROP, and with
-// br_netfilter loaded even pure-bridge DHCP traffic (UDP 67/68
-// broadcast between ports of the same bridge) is run through iptables
-// FORWARD. Without these inserts the DHCPDISCOVER never reaches
-// dnsmasq. Both families: bridge-nf-call-ip6tables routes bridged
-// DHCPv6 (UDP 546/547) through ip6tables FORWARD the same way
-// bridge-nf-call-iptables does for v4 (#103). Used for the bridge-mode
-// fixture and, since #556, for the parent-attached segment too.
+// installBridgeForward opens iptables and ip6tables FORWARD for a fixture bridge. Docker's FORWARD policy is DROP and
+// br_netfilter sends bridged DHCP (UDP 67/68) and DHCPv6 (UDP 546/547) through it, so without these rules DHCPDISCOVER
+// never reaches dnsmasq (#103). Since #556 the parent-attached segment uses it too.
 func installBridgeForward(bridge string) error {
 	for _, args := range [][]string{
 		{"-I", "FORWARD", "-i", bridge, "-j", "ACCEPT"},

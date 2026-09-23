@@ -11,51 +11,19 @@ import (
 	"time"
 )
 
-// The v6 mode signature's own observer, in the fast lane.
-//
-// Every frame and every log below is VERBATIM. The frames are the LANE's
-// own: run 33996052773, main-1-suite, where the mode contract test
-// decodes the advertisement each mode was accepted on and prints the
-// bytes it decoded. The logs are `--log-dhcp --log-facility=-` output
-// from the same argv off the lane, driven by a minimal DHCPv6 sender in
-// a peer namespace, because no run on this branch can make a client
-// speak v6.
-//
-// The frames come from the lane and not from a convenient namespace
-// because the first set did not, and it showed: captured with an argv
-// this fixture does not use, they advertised a /120 prefix with
-// infinite lifetimes where every mode of this fixture advertises /64
-// with 1800s. Nothing failed -- the bits the signature reads were the
-// same -- and nothing would have, because nothing tied the bytes to the
-// fixture. That is the raguard_parse.go lesson twice over: an observer
-// validated in a world it does not run in was already shipped once,
-// keyed on a field the real image never prints.
-//
-// THE BOUND ON THESE CONSTANTS, in the reviewer's words: the pinned
-// frames do not re-derive. If the runner's dnsmasq changes its RA, the
-// fast-lane decoder test keeps passing on 2026-09-05's bytes; the lane
-// fixture goes red only if a field in the signature moves. The tie is
-// the contract test printing `hex.EncodeToString(frames[0].Raw)` for a
-// human to refresh from -- a pin to the past by construction. Building
-// the re-derivation is deliberately not this round's work; the bound is
-// written here so the next reader does not have to rediscover it.
+// The RA frames are verbatim from lane run 33996052773, main-1-suite; the logs are dnsmasq `--log-dhcp` output from
+// the same argv, driven by a minimal DHCPv6 sender in a peer namespace (#911). An earlier set captured with another
+// argv advertised a /120 prefix with infinite lifetimes where every fixture mode advertises /64 with 1800 s. The frames
+// do not re-derive: if the runner's dnsmasq changes its RA, only a moved signature field turns the lane red.
 
-// --- verbatim frames ----------------------------------------------------
-
-// mode=managed. dnsmasq sets M and O
-// and, because it is serving addresses for this prefix itself, does NOT
-// set the prefix option's A bit.
+// mode=managed: dnsmasq sets M and O and, serving addresses itself, clears the prefix's A bit.
 const raManagedHex = "333300000001d66740dba1e886dd6c04517e00703afffe80000000000000d46740fffedba1e8" +
 	"ff0200000000000000000000000000018600df8540c007080000000000000000030440800000" +
 	"07080000070800000000fd00647068650000000000000000000005010000000005dc0101d667" +
 	"40dba1e81f030000000007080676366d6f6465076578616d706c65001903000000000708fd00" +
 	"6470686500000000000000000053"
 
-// mode=managed-exhausted: M and O set, prefix advertised WITHOUT the
-// autonomous bit, exactly as managed -- the two differ in what the
-// server does with an address and not in what it advertises. Captured
-// 2026-09-16 on the session box, dnsmasq 2.91 in `unshare -Urn`, the
-// same run as logManagedExhausted below.
+// mode=managed-exhausted advertises exactly as managed. Captured 2026-09-16, dnsmasq 2.91 in `unshare -Urn` (#989).
 const raManagedExhaustedHex = "333300000001f25f24640dca86dd6c02e82100703afffe80000000000000f05f24fffe640dca" +
 	"ff020000000000000000000000000001860008c140c007080000000000000000030440800000" +
 	"07080000070800000000fd00647068650000000000000000000005010000000005dc0101f25f" +
@@ -76,46 +44,25 @@ const raSLAACHex = "3333000000018ad3401f959486dd6c04fa6700703afffe80000000000000
 	"401f95941f030000000007080676366d6f6465076578616d706c65001903000000000708fd00" +
 	"6470686500000000000000000053"
 
-// mode=auto-fallback: M and O set AND the prefix advertised as
-// autonomous, which no other mode in this file does. Captured
-// 2026-09-16 on the session box, dnsmasq 2.91 in `unshare -Urn`, one
-// veth pair, the same run as logAutoFallback below; tcpdump rather
-// than racapture.go, because the mode did not exist yet when it was
-// measured. Flags byte 0xc0 at ICMPv6 offset 5, prefix option
-// `03 04 40 c0` -- length 64, L and A.
+// mode=auto-fallback: M and O set and the prefix autonomous, unlike any other mode (#818). Captured 2026-09-16, dnsmasq
+// 2.91 in `unshare -Urn`, with tcpdump: flags byte 0xc0 at ICMPv6 offset 5, prefix option `03 04 40 c0`.
 const raAutoFallbackHex = "33330000000176a66e95a4e486dd6c0ba59100703afffe8000000000000074a66efffe95a4e4" +
 	"ff02000000000000000000000000000186003d5c40c007080000000000000000030440c00000" +
 	"07080000070800000000fd00647068650000000000000000000005010000000005dc010176a6" +
 	"6e95a4e41f030000000007080676366d6f6465076578616d706c65001903000000000708fd00" +
 	"6470686500000000000000000053"
 
-// mode=managed-silent: byte-for-byte the managed signature. --dhcp-ignore
-// changes what the server ANSWERS, not what it advertises.
+// mode=managed-silent: byte for byte managed's signature; --dhcp-ignore changes answers, not advertisements.
 const raManagedSilentHex = "33330000000162bb4b8d99c986dd6c066d8800703afffe8000000000000060bb4bfffe8d99c9" +
 	"ff0200000000000000000000000000018600c1b840c007080000000000000000030440800000" +
 	"07080000070800000000fd00647068650000000000000000000005010000000005dc010162bb" +
 	"4b8d99c91f030000000007080676366d6f6465076578616d706c65001903000000000708fd00" +
 	"6470686500000000000000000053"
 
-// A SLAAC segment whose one prefix is advertised DEPRECATED: the
-// autonomous bit is set, the valid lifetime is RFC 4861 section
-// 4.6.2's infinity and the preferred lifetime is zero, so a node forms
-// the address and the kernel marks it deprecated the moment it does.
-//
-// MEASURED 2026-09-16 on the session box, dnsmasq 2.91 under
-// `unshare -Urn`, one veth pair, `--dhcp-range=fd00:6470:6865::,ra-only,deprecated`
-// plus --enable-ra: the prefix option reads `03 04 40 c0 ffffffff
-// 00000000`, and the library's own client formed
-// fd00:6470:6865:0:b8be:26ff:fe2d:babd/64 from it in one second with
-// its preferred instant already past and its valid instant the zero
-// time, which is that seam's spelling of "never expires".
-//
-// It is the wire half of #819's deprecation arm. No mode of this
-// fixture advertises it, because its five-field signature is SLAAC's
-// exactly -- the difference is in the option's lifetimes, which the
-// signature deliberately does not read -- so the segment is started
-// through NewV6FixtureWithArgs under the slaac name and the test that
-// wants it reads these two lifetimes itself.
+// A SLAAC prefix advertised deprecated (#819): A set, valid lifetime RFC 4861 section 4.6.2's infinity, preferred 0.
+// Measured 2026-09-16, dnsmasq 2.91 in `unshare -Urn`, `--dhcp-range=fd00:6470:6865::,ra-only,deprecated` plus
+// --enable-ra: the prefix option reads `03 04 40 c0 ffffffff 00000000`, and the library's client formed the address in
+// one second with its preferred instant already past. Its five-field signature equals SLAAC's.
 const raDeprecatedPrefixHex = "33330000000182a66511995286dd6c0da1e400703afffe8000000000000080a665fffe119952" +
 	"ff02000000000000000000000000000186006c68400007080000000000000000030440c0ffff" +
 	"ffff0000000000000000fd00647068650000000000000000000005010000000005dc010182a6" +
@@ -131,22 +78,8 @@ func mustFrame(t *testing.T, s string) []byte {
 	return b
 }
 
-// TestParseRA_ReadsTheFlagsFromTheByteAfterCurHopLimit is the decoder's
-// load-bearing case.
-//
-// RFC 4861 section 4.2 puts the M and O flags in the octet AFTER Cur Hop
-// Limit. Reading Cur Hop Limit instead is the mistake worth a test of
-// its own rather than a comment, because it does not crash and it does
-// not look wrong: dnsmasq sets Cur Hop Limit to 64 on every one of these
-// frames, 64 is 0x40, and 0x40 is exactly "O set, M clear" -- so an
-// off-by-one decoder reports STATELESS for the managed segment, for the
-// stateless segment and for the managed-silent segment alike, and only
-// the slaac row goes red. Three of five modes would pass while the
-// instrument measured a constant.
-//
-// The three rows below therefore differ from each other in the flags
-// byte and agree with each other in Cur Hop Limit, which is what makes
-// them able to tell those two readings apart at all.
+// RFC 4861 section 4.2 puts M and O in the octet after Cur Hop Limit. dnsmasq sends Cur Hop Limit 64 (0x40, which reads
+// as "O set, M clear"), so an off-by-one decoder reports stateless for three modes (#911).
 func TestParseRA_ReadsTheFlagsFromTheByteAfterCurHopLimit(t *testing.T) {
 	cases := []struct {
 		name           string
@@ -154,12 +87,7 @@ func TestParseRA_ReadsTheFlagsFromTheByteAfterCurHopLimit(t *testing.T) {
 		hexFrame       string
 		managed, other bool
 		autonomous     bool
-		// The prefix option's two lifetimes, in seconds. Every mode of
-		// this fixture advertises 1800 for both, which is dnsmasq's
-		// own default and not the fixture's 2m lease time; the
-		// deprecated capture is the row that carries anything else,
-		// and it is here so the two fields are read from a frame that
-		// distinguishes them rather than from five that agree.
+		// dnsmasq advertises 1800 s for both prefix lifetimes by default, whatever the lease time.
 		wantValid, wantPreferred uint32
 	}{
 		{"managed", V6Managed, raManagedHex, true, true, false, 1800, 1800},
@@ -179,10 +107,6 @@ func TestParseRA_ReadsTheFlagsFromTheByteAfterCurHopLimit(t *testing.T) {
 			if f.Managed != c.managed || f.OtherConfig != c.other {
 				t.Errorf("M=%v O=%v, want M=%v O=%v", f.Managed, f.OtherConfig, c.managed, c.other)
 			}
-			// The control for the off-by-one: every one of these
-			// frames carries Cur Hop Limit 64, so a decoder that read
-			// the flags from here would report the same answer for all
-			// four rows above -- and the rows above disagree.
 			if f.CurHopLimit != 64 {
 				t.Errorf("Cur Hop Limit = %d, want 64; the frames this test tells apart all "+
 					"carry 64 here, and that is what makes the flag byte the only thing "+
@@ -198,12 +122,6 @@ func TestParseRA_ReadsTheFlagsFromTheByteAfterCurHopLimit(t *testing.T) {
 			if !p.OnLink {
 				t.Error("prefix L flag clear; dnsmasq sets on-link unless off-link was asked for")
 			}
-			// Every mode advertises the interface's own /64, whatever
-			// its pool covers. This is asserted as a constant rather
-			// than per row because it was per row, with /120 for the
-			// two managed modes, which is what the frames captured
-			// with the wrong argv said -- and no row disagreeing with
-			// another is a row that checks nothing.
 			if p.PrefixLen != 64 {
 				t.Errorf("prefix length = %d, want 64", p.PrefixLen)
 			}
@@ -213,13 +131,6 @@ func TestParseRA_ReadsTheFlagsFromTheByteAfterCurHopLimit(t *testing.T) {
 			if f.RouterLifetime != 1800*time.Second {
 				t.Errorf("router lifetime = %s, want 30m", f.RouterLifetime)
 			}
-			// The prefix option's own lifetimes, which are a
-			// different field from the router lifetime above and sit
-			// twelve bytes further into a different option. Reading
-			// one for the other is the same class of mistake as
-			// reading Cur Hop Limit for the flags, and it is just as
-			// plausible: five of these seven frames carry 1800 in all
-			// three places.
 			if p.ValidLifetime != c.wantValid || p.PreferredLifetime != c.wantPreferred {
 				t.Errorf("prefix valid=%d preferred=%d, want valid=%d preferred=%d",
 					p.ValidLifetime, p.PreferredLifetime, c.wantValid, c.wantPreferred)
@@ -231,11 +142,6 @@ func TestParseRA_ReadsTheFlagsFromTheByteAfterCurHopLimit(t *testing.T) {
 	}
 }
 
-// TestParseRA_RefusesWhatIsNotARouterAdvertisement drives the other
-// direction. A decoder that accepts anything makes every "an RA
-// arrived" assertion true for any traffic at all, and the socket this
-// runs behind is bound to ETH_P_ALL, so it really does see everything
-// on the link.
 func TestParseRA_RefusesWhatIsNotARouterAdvertisement(t *testing.T) {
 	good := mustFrame(t, raManagedHex)
 
@@ -257,18 +163,13 @@ func TestParseRA_RefusesWhatIsNotARouterAdvertisement(t *testing.T) {
 			t.Error("accepted a frame too short to hold the advertisement header")
 		}
 	})
-	// Preservation control: the unmutated frame still parses, so the
-	// rejections above are not a decoder that refuses everything.
 	if _, ok := ParseRA(good); !ok {
 		t.Error("the unmutated captured frame no longer parses")
 	}
 }
 
-// --- verbatim server logs -----------------------------------------------
-
-// Captured 2026-09-05, dnsmasq 2.91, one user namespace per mode, a
-// minimal DHCPv6 sender in the peer namespace. Trimmed to the lines the
-// contract reads; no line is edited.
+// Captured 2026-09-05, dnsmasq 2.91, one user namespace per mode, a minimal DHCPv6 sender in the peer namespace;
+// trimmed to the lines the contract reads, none edited (#911).
 const (
 	logManaged = `Sep  5 23:32:56 dnsmasq-dhcp[747116]: DHCP, IP range 192.168.103.10 -- 192.168.103.99, lease time 2m
 Sep  5 23:32:56 dnsmasq-dhcp[747116]: DHCPv6, IP range fd00:6470:6865::10 -- fd00:6470:6865::99, lease time 2m
@@ -279,12 +180,8 @@ Sep  5 23:32:58 dnsmasq-dhcp[747116]: 658189 DHCPREQUEST(br0) 00:03:00:01:9e:14:
 Sep  5 23:32:58 dnsmasq-dhcp[747116]: 658189 DHCPREPLY(br0) fd00:6470:6865::54 00:03:00:01:9e:14:a2:d9:ef:ef 
 `
 
-	// The stateless log is the reason one cell of the M7 design table
-	// is wrong. dnsmasq ANSWERS the Information-request -- the sender
-	// received message type 7 -- and logs no DHCPREPLY line for it:
-	// log6_quiet is called once on that path, at rfc3315.c:1144.
-	// Requiring DHCPREPLY here would have failed every stateless
-	// scenario against a server that behaved correctly.
+	// dnsmasq answers the Information-request (the sender received type 7) and logs no DHCPREPLY: log6_quiet is called
+	// once on that path (rfc3315.c:1144, dnsmasq 2.91) (#911).
 	logStateless = `Sep  5 23:33:11 dnsmasq-dhcp[747377]: DHCP, IP range 192.168.103.10 -- 192.168.103.99, lease time 2m
 Sep  5 23:33:11 dnsmasq-dhcp[747377]: DHCPv6 stateless on fd00:6470:6865::
 Sep  5 23:33:12 dnsmasq-dhcp[747377]: RTR-ADVERT(br0) fd00:6470:6865::
@@ -292,9 +189,7 @@ Sep  5 23:33:13 dnsmasq-dhcp[747377]: 658188 DHCPINFORMATION-REQUEST(br0) 00:03:
 Sep  5 23:33:13 dnsmasq-dhcp[747377]: 658188 sent size: 16 option: 23 dns-server  fd00:6470:6865::53
 `
 
-	// A SLAAC-only range gives dnsmasq no DHCPv6 server for the
-	// prefix, so the Solicit the sender emitted is not answered and
-	// not logged at all.
+	// A SLAAC-only range gives dnsmasq no DHCPv6 server for the prefix, so the Solicit is neither answered nor logged.
 	logSLAAC = `Sep  5 23:33:15 dnsmasq-dhcp[747532]: DHCP, IP range 192.168.103.10 -- 192.168.103.99, lease time 2m
 Sep  5 23:33:16 dnsmasq-dhcp[747532]: RTR-ADVERT(br0) fd00:6470:6865::
 Sep  5 23:33:16 dnsmasq-dhcp[747532]: RTR-ADVERT(br0) fd00:6470:6865::
@@ -305,12 +200,9 @@ Sep  5 23:33:22 dnsmasq-dhcp[747748]: DHCPv6, IP range fd00:6470:6865::10 -- fd0
 Sep  5 23:33:24 dnsmasq-dhcp[747748]: 658188 DHCPSOLICIT(br0) 00:03:00:01:ce:41:ae:6d:50:36 ignored
 `
 
-	// Captured 2026-09-16 in the same shape: dnsmasq 2.91 on one end of
-	// a veth pair in `unshare -Urn`, the library's own DHCPv6 client on
-	// the other, LC_ALL=C. The static-only range is what makes the
-	// server answer and refuse; the Advertise carries a message-level
-	// Status Code 2 and the client reported Failed{nak, NoAddrsAvail}
-	// on every Solicit.
+	// Captured 2026-09-16, dnsmasq 2.91 in `unshare -Urn` against the library's client, LC_ALL=C (#989). The static-only
+	// range makes the server answer and refuse: the Advertise carries Status Code 2 and the client reported
+	// Failed{nak, NoAddrsAvail} on every Solicit.
 	logManagedExhausted = `Sep 16 18:44:16 dnsmasq-dhcp[4182581]: DHCP, IP range 192.168.103.10 -- 192.168.103.99, lease time 2m
 Sep 16 18:44:16 dnsmasq-dhcp[4182581]: DHCPv6, static leases only on fd00:6470:6865::ff, lease time 2m
 Sep 16 18:44:17 dnsmasq-dhcp[4182581]: RTR-ADVERT(s0) fd00:6470:6865::
@@ -319,17 +211,9 @@ Sep 16 18:44:18 dnsmasq-dhcp[4182581]: 8008303 DHCPADVERTISE(s0) 00:03:00:01:02:
 Sep 16 18:44:18 dnsmasq-dhcp[4182581]: 8008303 sent size: 24 option: 13 status  2 no addresses available
 `
 
-	// Captured 2026-09-16, dnsmasq 2.91 in `unshare -Urn`, LC_ALL=C, the
-	// library's own client in proto.Mode6Auto on the peer end of the
-	// veth pair; the same run as raAutoFallbackHex. The client solicited
-	// three times, was ignored three times, gave up on DHCPv6 and formed
-	// fd00:6470:6865:0:bc1b:12ff:fe5b:c905/64 from the advertised
-	// prefix, reporting SLAACFallbacks 1 and SLAACAddressesFormed 1.
-	//
-	// THE `available DHCP range` LINES ARE PART OF THE CAPTURE AND ARE
-	// KEPT. --log-dhcp prints them for a request the server then
-	// ignores, so a reader who sees them in a lane log is looking at a
-	// segment that refused, not at one that served.
+	// Captured 2026-09-16, same run as raAutoFallbackHex (#818): the client in proto.Mode6Auto solicited three times, was
+	// ignored, and formed fd00:6470:6865:0:bc1b:12ff:fe5b:c905/64 by SLAAC. --log-dhcp prints the `available DHCP range`
+	// lines for a request it then ignores.
 	logAutoFallback = `Sep 16 20:52:29 dnsmasq-dhcp[474848]: DHCP, IP range 192.168.103.10 -- 192.168.103.99, lease time 2m
 Sep 16 20:52:29 dnsmasq-dhcp[474848]: DHCPv6, IP range fd00:6470:6865::10 -- fd00:6470:6865::99, lease time 2m
 Sep 16 20:52:29 dnsmasq-dhcp[474848]: router advertisement on fd00:6470:6865::
@@ -370,41 +254,14 @@ func logFor(m V6Mode) string {
 	return ""
 }
 
-// TestV6ExchangeFindings_EachModesOwnLogPassesAndTheOthersDoNot drives
-// the exchange contract in both directions, per mode, against the logs
-// a real exchange produced.
-//
-// The off-diagonal is the half that matters. A contract whose must-set
-// is empty and whose must-NOT set is empty passes every log, which is
-// what "AssertExchange" would silently become if a mode's row were
-// dropped -- and the diagonal alone cannot see that.
 func TestV6ExchangeFindings_EachModesOwnLogPassesAndTheOthersDoNot(t *testing.T) {
-	// SLAAC's contract is a must-NOT set and nothing else, because a
-	// SLAAC-only segment has no DHCPv6 server to complete an exchange
-	// with. Its row therefore passes any log with no v6 DHCP token in
-	// it, and that is a property of the mode rather than a gap in the
-	// table -- the bound is stated on V6ExchangeFindings and pinned
-	// here so it cannot widen unnoticed.
+	// SLAAC has no DHCPv6 server, so its contract is a must-NOT set only and passes any log without a v6 token (#911).
 	passesForeignLogs := map[V6Mode]map[V6Mode]bool{
 		V6SLAAC: {V6SLAAC: true},
-		// A no-RA segment and a managed-silent one produce THE SAME
-		// DHCP log: a SOLICIT that is ignored and nothing else. They
-		// differ in whether the segment ADVERTISES, which is the
-		// fixture-time half and is asserted there (AssertNoRAWithin,
-		// AwaitRAAfter) rather than here. The pair is declared in both
-		// directions because the property is symmetric, and a row that
-		// named only one direction would be claiming a discrimination
-		// the log cannot carry.
+		// no-RA and managed-silent produce the same DHCP log, an ignored SOLICIT; they differ only on the wire (#911).
 		V6NoRA:          {V6NoRA: true, V6ManagedSilent: true, V6AutoFallback: true},
 		V6ManagedSilent: {V6ManagedSilent: true, V6NoRA: true, V6AutoFallback: true},
-		// auto-fallback's DHCP log is a third copy of that same ignored
-		// SOLICIT, so it joins the pair above in all three directions.
-		// The three modes are separated on the WIRE and nowhere else:
-		// no-RA advertises nothing, managed-silent advertises no
-		// autonomous prefix, auto-fallback advertises one. All three
-		// differences are in V6Signature and are asserted at fixture
-		// construction, which is why the drift matrix can tell the three
-		// apart while this table cannot.
+		// auto-fallback's log is a third copy of that ignored SOLICIT; V6Signature separates the three on the wire (#818).
 		V6AutoFallback: {V6AutoFallback: true, V6NoRA: true, V6ManagedSilent: true},
 	}
 
@@ -430,13 +287,6 @@ func TestV6ExchangeFindings_EachModesOwnLogPassesAndTheOthersDoNot(t *testing.T)
 	}
 }
 
-// TestV6ExchangeFindings_AnEmptyLogFailsEveryModeThatRequiresOne is the
-// live negative control's fast-lane twin: a fixture on which no client
-// ever ran has a log with no exchange in it, and AssertExchange must
-// refuse rather than pass.
-//
-// SLAAC is the named exception and the reason the exception is named:
-// it requires nothing, so it cannot detect that nothing happened.
 func TestV6ExchangeFindings_AnEmptyLogFailsEveryModeThatRequiresOne(t *testing.T) {
 	for _, mode := range V6Modes() {
 		findings := V6ExchangeFindings(mode, "")
@@ -453,20 +303,9 @@ func TestV6ExchangeFindings_AnEmptyLogFailsEveryModeThatRequiresOne(t *testing.T
 	}
 }
 
-// TestV6ExchangeFindings_NoNeedleIsProseDnsmasqTranslates.
-//
-// dnsmasq is translated and the integration runner speaks German. A
-// needle that gettext rewrites matches nothing under that locale, and a
-// must-NOT set that matches nothing passes VACUOUSLY -- the failure
-// that does not announce itself. Every needle in the contract is
-// therefore either an upper-case protocol token dnsmasq prints verbatim
-// or the one translated word this harness knowingly depends on, and
-// that one is safe only because withCLocale pins the server to LC_ALL=C.
+// dnsmasq is translated and the runner speaks German, so a gettext-rewritten needle would match nothing (#942).
 func TestV6ExchangeFindings_NoNeedleIsProseDnsmasqTranslates(t *testing.T) {
-	// The single knowingly-translated needle, and the reason it is
-	// allowed: `_("ignored")`, rfc3315.c:652, rendered "ignoriert" by
-	// dnsmasq's own po/de.po. locale_test.go is what keeps withCLocale
-	// on every server this harness starts.
+	// `_("ignored")` at rfc3315.c:652 renders as "ignoriert" under dnsmasq's po/de.po; withCLocale pins LC_ALL=C (#942).
 	const knownTranslated = "ignored"
 
 	for mode, c := range v6ExchangeContract {
@@ -487,34 +326,11 @@ func TestV6ExchangeFindings_NoNeedleIsProseDnsmasqTranslates(t *testing.T) {
 	}
 }
 
-// TestV6ExchangeContract_ForbidsOnlyTokensTheV4PathNeverPrints is
-// finding 1's guard, and it replaces one that named the property in its
-// title and tested a spelling in its body.
-//
-// The claim: no mode's must-NOT column may name a token dnsmasq's v4
-// path also prints. This fixture is dual-stack in every mode, so such a
-// column fails a segment for something its v4 half did. The previous
-// version of this test asserted the single literal "DHCPREQUEST" and
-// therefore could not see DHCPDECLINE and DHCPRELEASE sitting in
-// SLAAC's column -- and its own comment said DHCPREQUEST was "the one"
-// such name, when the intersection of dnsmasq's two print tables is
-// three.
-//
-// It is driven, not merely asserted: the mutated contracts below are
-// wrong in exactly the way the shipped one was wrong, and every mode is
-// driven with every ambiguous token rather than with a representative
-// one. A mode with no row at all is a finding too, which is the second
-// claim the old test made and the only one it kept.
 func TestV6ExchangeContract_ForbidsOnlyTokensTheV4PathNeverPrints(t *testing.T) {
-	// The shipped table agrees with the property.
 	if findings := V6ContractFindings(v6ExchangeContract); len(findings) != 0 {
 		t.Fatalf("the shipped exchange contract is not clean:\n  %s", strings.Join(findings, "\n  "))
 	}
 
-	// Drive the failure, with the real offenders rather than with a
-	// token somebody thought was one. Round 1's guard tested the
-	// literal "DHCPREQUEST" and therefore could not see DHCPDECLINE or
-	// DHCPRELEASE sitting in SLAAC's must-NOT column.
 	ambiguous := DnsmasqAmbiguousDHCPTokens()
 	if len(ambiguous) < 3 {
 		t.Fatalf("the v4/v6 name tables intersect in %v; this test's premise is that the "+
@@ -543,8 +359,6 @@ func TestV6ExchangeContract_ForbidsOnlyTokensTheV4PathNeverPrints(t *testing.T) 
 		}
 	}
 
-	// The other direction: a token that IS v6-only may be forbidden by
-	// any mode, so the guard is not simply refusing everything.
 	control := V6OnlyDHCPTokens()[0]
 	for _, mode := range V6Modes() {
 		ok := make(map[V6Mode]v6ExchangeRule, len(v6ExchangeContract))
@@ -559,13 +373,8 @@ func TestV6ExchangeContract_ForbidsOnlyTokensTheV4PathNeverPrints(t *testing.T) 
 		}
 	}
 
-	// The mustLine column, which is the one that fails GREEN. A line
-	// every one of whose tokens the v4 path also prints is satisfied by
-	// the v4 half alone: dnsmasq writes `DHCPRELEASE(br0) ... ignored`
-	// on the v4 path (rfc2131.c:1096 with the message at :1105), which
-	// is the same shape as the v6 `DHCPSOLICIT ... ignored` that the
-	// managed-silent row -- the one row in this table that has a
-	// mustLine -- requires.
+	// dnsmasq's v4 path writes `DHCPRELEASE(br0) ... ignored` (rfc2131.c:1096, message at :1105), the shape of the v6
+	// `DHCPSOLICIT ... ignored` line the managed-silent row requires (#915).
 	for _, tok := range ambiguous {
 		t.Run(V6ManagedSilent.String()+"/requires-line/"+tok, func(t *testing.T) {
 			bad := make(map[V6Mode]v6ExchangeRule, len(v6ExchangeContract))
@@ -588,10 +397,6 @@ func TestV6ExchangeContract_ForbidsOnlyTokensTheV4PathNeverPrints(t *testing.T) 
 		})
 	}
 
-	// The preservation control for that column: a line whose tokens are
-	// ambiguous EXCEPT for one v6-only name is fine, because that one
-	// name is what the v4 path cannot write. Without this the rule
-	// above could be "reject every mustLine" and still pass.
 	for _, tok := range ambiguous {
 		ok := make(map[V6Mode]v6ExchangeRule, len(v6ExchangeContract))
 		for k, v := range v6ExchangeContract {
@@ -606,7 +411,6 @@ func TestV6ExchangeContract_ForbidsOnlyTokensTheV4PathNeverPrints(t *testing.T) 
 		}
 	}
 
-	// A mode with no row at all is a finding, not a silent pass.
 	missing := map[V6Mode]v6ExchangeRule{}
 	for k, v := range v6ExchangeContract {
 		if k != V6SLAAC {
@@ -619,29 +423,9 @@ func TestV6ExchangeContract_ForbidsOnlyTokensTheV4PathNeverPrints(t *testing.T) 
 	}
 }
 
-// TestV6ExchangeFindings_AV4OnlyExchangeSatisfiesNoModeAndAccusesNone is
-// the same property from the log side, and the SLAAC row is the reason
-// it exists.
-//
-// SLAAC's must-NOT column is the derived v6-only set and nothing else,
-// which is the decision this round made: a SLAAC segment's v4 half is
-// free to do anything DHCPv4 does, including the RFC 5227 conflict path
-// where the plugin sends a DHCPDECLINE, and none of it reaches the v6
-// verdict. The alternative -- keeping the ambiguous tokens and
-// exempting SLAAC -- would have left the same trap for the next mode
-// that acquires a must-NOT column.
+// SLAAC's must-NOT column is the v6-only set, so its v4 half, including an RFC 5227 DHCPDECLINE, never reaches the v6
+// verdict (#915).
 func TestV6ExchangeFindings_AV4OnlyExchangeSatisfiesNoModeAndAccusesNone(t *testing.T) {
-	// Every v4 message name dnsmasq can print, in one log, including
-	// the two that used to be in SLAAC's must-NOT column. No v6.
-	//
-	// These are LINES, not bare names, and the difference is the point.
-	// dnsmasq's v4 log_packet appends a `message` to the name on the
-	// same line (rfc2131.c:1096, with message = _("ignored") at :1105),
-	// so a v4 line reads `DHCPRELEASE(br0) 192.168.103.10 aa:.. ignored`
-	// -- the same shape as the v6 `DHCPSOLICIT ... ignored` the
-	// stateless row requires. A log built from bare names could not
-	// have caught a mustLine satisfied by the v4 half, so this test
-	// would have been the second observer of a rule it could not see.
 	var b strings.Builder
 	for _, n := range dnsmasqV4MessageNames {
 		fmt.Fprintf(&b, "Sep  6 00:00:00 dnsmasq-dhcp[1]: %s(br0) 192.168.103.10 aa:bb:cc:dd:ee:ff ignored\n", n)
@@ -661,7 +445,6 @@ func TestV6ExchangeFindings_AV4OnlyExchangeSatisfiesNoModeAndAccusesNone(t *test
 		}
 	}
 
-	// It accuses nobody: no mode's must-NOT column is tripped by it.
 	for _, mode := range V6Modes() {
 		for _, f := range V6ExchangeFindings(mode, v4Only) {
 			if strings.Contains(f, "forbids") {
@@ -670,10 +453,9 @@ func TestV6ExchangeFindings_AV4OnlyExchangeSatisfiesNoModeAndAccusesNone(t *test
 		}
 	}
 
-	// And it satisfies nobody that requires anything.
 	for _, mode := range V6Modes() {
 		if mode == V6SLAAC {
-			continue // requires nothing; see the bound on V6ExchangeFindings
+			continue
 		}
 		if len(V6ExchangeFindings(mode, v4Only)) == 0 {
 			t.Errorf("mode %s is satisfied by a v4-only exchange", mode)
@@ -681,26 +463,6 @@ func TestV6ExchangeFindings_AV4OnlyExchangeSatisfiesNoModeAndAccusesNone(t *test
 	}
 }
 
-// TestV6ExchangeFindings_TheMustLineIsPerLineNotWholeLog is the
-// observer for countLinesWithAll's per-line scope, owed to this round
-// by #915.
-//
-// The mustLine column exists because it fails GREEN, and the whole
-// reason it is a LINE rule is that dnsmasq's v4 path writes the same
-// shape: `DHCPRELEASE(br0) <addr> <mac> ignored` (rfc2131.c:1096 with
-// the message at :1105). If countLinesWithAll were a whole-log
-// conjunction — `strings.Contains(log, a) && strings.Contains(log, b)`
-// — the two halves could come from two different lines, and no other
-// test in either lane would notice: the v4-only log in
-// TestV6ExchangeFindings_AV4OnlyExchangeSatisfiesNoModeAndAccusesNone
-// carries `ignored` but no DHCPSOLICIT at all, so its finding fires
-// under either scope.
-//
-// The log below is the case that separates them, and it is a segment
-// that can really happen: a managed-silent fixture whose SOLICIT was
-// in fact ANSWERED — the mistyped ignore directive AwaitIgnoredSolicit
-// guards against — on a fixture whose v4 half refused one release.
-// Both needles are in the log; neither line carries both.
 func TestV6ExchangeFindings_TheMustLineIsPerLineNotWholeLog(t *testing.T) {
 	rule, ok := v6ExchangeContract[V6ManagedSilent]
 	if !ok || len(rule.mustLine) == 0 {
@@ -712,9 +474,6 @@ func TestV6ExchangeFindings_TheMustLineIsPerLineNotWholeLog(t *testing.T) {
 			"whole-log, so this observer would be vacuous", V6ManagedSilent, rule.mustLine)
 	}
 
-	// Every needle on its own line, none of them together. The tokens
-	// come from the contract rather than being retyped, so a contract
-	// edit cannot leave this test driving a rule that no longer exists.
 	var b strings.Builder
 	for i, tok := range rule.mustLine {
 		fmt.Fprintf(&b, "Sep  6 00:00:0%d dnsmasq-dhcp[1]: %s(br0) 2001:db8::10 00:01:00:01\n", i, tok)
@@ -748,9 +507,6 @@ func TestV6ExchangeFindings_TheMustLineIsPerLineNotWholeLog(t *testing.T) {
 			V6ManagedSilent, rule.mustLine, findings)
 	}
 
-	// The other direction, so the assertion above is not satisfied by a
-	// mustLine that nothing can ever meet: the same tokens on ONE line
-	// produce no line finding.
 	joined := "Sep  6 00:00:00 dnsmasq-dhcp[1]: " + strings.Join(rule.mustLine, " ") + "\n"
 	for _, f := range V6ExchangeFindings(V6ManagedSilent, joined) {
 		if strings.Contains(f, "no single log line carries all of") {
@@ -759,8 +515,6 @@ func TestV6ExchangeFindings_TheMustLineIsPerLineNotWholeLog(t *testing.T) {
 		}
 	}
 }
-
-// --- the mode signature -------------------------------------------------
 
 func evidenceFor(t *testing.T, mode V6Mode) V6Evidence {
 	t.Helper()
@@ -785,9 +539,6 @@ func evidenceFor(t *testing.T, mode V6Mode) V6Evidence {
 	return ev
 }
 
-// TestV6ModeFindings_TheCapturedEvidenceMatchesTheModeItCameFrom is the
-// signature table's diagonal, driven against real frames rather than
-// against the table restated.
 func TestV6ModeFindings_TheCapturedEvidenceMatchesTheModeItCameFrom(t *testing.T) {
 	for _, mode := range V6Modes() {
 		t.Run(mode.String(), func(t *testing.T) {
@@ -798,16 +549,6 @@ func TestV6ModeFindings_TheCapturedEvidenceMatchesTheModeItCameFrom(t *testing.T
 	}
 }
 
-// TestV6ModeFindings_EvidenceFromAnotherModeIsRejectedAndNamesThePair
-// is the drift matrix's fast-lane twin: the same statement, without a
-// bridge, so it runs on every push instead of only on the privileged
-// lane.
-//
-// The exempt pairs are DERIVED from the signature table by
-// V6IndistinguishableModes rather than listed here. A mode added later
-// whose signature collides with an existing one is exempted by that
-// function and counted by the test below, instead of quietly making a
-// hand-written exemption list wrong.
 func TestV6ModeFindings_EvidenceFromAnotherModeIsRejectedAndNamesThePair(t *testing.T) {
 	exempt := map[[2]V6Mode]bool{}
 	for _, p := range V6IndistinguishableModes() {
@@ -838,16 +579,6 @@ func TestV6ModeFindings_EvidenceFromAnotherModeIsRejectedAndNamesThePair(t *test
 	}
 }
 
-// TestV6IndistinguishableModes_IsExactlyManagedAndManagedSilent pins
-// the size and the membership of the exemption the matrix above
-// derives.
-//
-// Without this, a change that made two more modes look alike would
-// silently shrink the matrix: the derivation would exempt the new pair
-// and nothing would say so. The pair that IS exempt is closed by
-// AwaitIgnoredSolicit and by AssertExchange, which read the one thing
-// that separates managed from managed-silent -- what the server does
-// when a client finally asks.
 func TestV6IndistinguishableModes_IsExactlyManagedAndManagedSilent(t *testing.T) {
 	got := V6IndistinguishableModes()
 	if len(got) != 1 {
@@ -859,7 +590,6 @@ func TestV6IndistinguishableModes_IsExactlyManagedAndManagedSilent(t *testing.T)
 	}
 }
 
-// TestClassifyV6Segment_NamesTheModeOrNothing.
 func TestClassifyV6Segment_NamesTheModeOrNothing(t *testing.T) {
 	for _, mode := range V6Modes() {
 		got := ClassifyV6Segment(evidenceFor(t, mode))
@@ -873,51 +603,23 @@ func TestClassifyV6Segment_NamesTheModeOrNothing(t *testing.T) {
 			t.Errorf("%s's own evidence classified as %v", mode, got)
 		}
 	}
-	// Evidence that matches nothing must name nothing, rather than
-	// falling back on the first row of the table.
 	impossible := V6Evidence{PoolLogged: false, RALogged: false}
 	if got := ClassifyV6Segment(impossible); len(got) != 0 {
 		t.Errorf("classified an empty segment as %v; no mode has that signature", got)
 	}
 }
 
-// TestV6NoRAWindow_IsLongerThanDnsmasqsOwnWorstCase.
-//
-// The negative half of trap 1 fails silently when the window is shorter
-// than the interval at which the server would have advertised: the
-// no-RA mode then passes because it did not wait. The window is derived
-// from dnsmasq's own scheduling constants rather than written as a
-// number, and this is the assertion that the derivation still points
-// the right way after somebody edits one of them.
-// TestRABudget_CoversBothScheduleBranchesWithAMargin is finding 2's
-// observer.
-//
-// The number this replaces was the literal 5s, which is
-// DnsmasqFirstRAUpperBound EXACTLY: a wait for an advertisement that
-// expires at the same instant as dnsmasq's own worst case for sending
-// one. The reason given for the zero margin was a measured range
-// ("0.950 s .. 0.983 s every time") that the lane falsified twice in
-// the very run the record cited. So the margin is asserted here rather
-// than argued in a comment, and it is asserted against BOTH branches:
-// the 1s branch this fixture is measured to be on (radv.c:129, reached
-// from dhcp6.c:715) and the 0..5s draw it is not (radv.c:135).
-//
-// What a too-small budget buys is not a slow test; it is the wrong
-// MODE. A bring-up whose advertisement lands after the budget is a
-// bring-up with no frame in hand, and a segment with no frame in hand
-// classifies as nora.
+// The budget must cover both of dnsmasq's first-RA branches: the 1 s branch this fixture takes
+// (radv.c:129 `ra_time = now + 1`, reached from dhcp6.c:715) and the 0 to 5 s draw (radv.c:135).
+// A late RA leaves no frame and classifies as nora (#915).
 func TestRABudget_CoversBothScheduleBranchesWithAMargin(t *testing.T) {
-	// The 1s branch: radv.c:129 is `ra_time = now + 1`, and dnsmasq's
-	// clock is integer seconds, so the frame lands in the second
-	// after the one it started in.
+	// dnsmasq's clock is integer seconds, so the 1 s branch lands within 2 s.
 	const fixedBranch = 2 * time.Second
 	if RABudget() < fixedBranch {
 		t.Errorf("the budget (%s) does not cover the `now + 1` branch (radv.c:129) with its "+
 			"integer-second rounding (%s), which is the branch every measured bring-up of "+
 			"this fixture is on", RABudget(), fixedBranch)
 	}
-	// The draw: radv.c:135. Covering it is what makes the budget a
-	// bound rather than a description of the fast branch.
 	if RABudget() <= DnsmasqFirstRAUpperBound() {
 		t.Errorf("the budget (%s) does not exceed dnsmasq's own worst case for a first "+
 			"advertisement (%s); a wait that expires exactly when the thing it waits for is "+
@@ -928,9 +630,6 @@ func TestRABudget_CoversBothScheduleBranchesWithAMargin(t *testing.T) {
 		t.Errorf("the slop is %s; the bound above is dnsmasq's own schedule and accounts for "+
 			"no fork, exec, config parse or SIGALRM delivery on a loaded runner", firstRASlop)
 	}
-	// And it is a margin, not a rewrite: the budget stays inside the
-	// no-RA window, which is the invariant the window test guards from
-	// the other side.
 	if RABudget() >= V6NoRAWindow() {
 		t.Errorf("the budget (%s) reaches the absence window (%s)", RABudget(), V6NoRAWindow())
 	}
@@ -954,22 +653,10 @@ func TestV6NoRAWindow_IsLongerThanDnsmasqsOwnWorstCase(t *testing.T) {
 	}
 }
 
-// TestV6EvidenceSettled_ADisagreementAloneDoesNotFinishAnObservation is
-// the regression that run 33994533077 bought.
-//
-// The evidence loop used to stop the moment what it had seen disagreed
-// with the mode under test. That is sound for a VERDICT -- the
-// disagreement is real and only grows -- and wrong for the MESSAGE,
-// which is built from the same evidence and is what the drift matrix
-// asserts on. A stateless fixture started with managed's flags
-// disagrees on the pool bit within milliseconds, long before the
-// advertisement that would have said "managed" arrives; stopping there
-// reported the segment as nora, which it never was.
-//
-// Both outcomes are driven here, on the exact shape the lane produced.
+// Run 33994533077: a stateless fixture started with managed's flags disagreed on the pool bit within milliseconds,
+// before its RA arrived, and stopping there reported it as nora (#915).
 func TestV6EvidenceSettled_ADisagreementAloneDoesNotFinishAnObservation(t *testing.T) {
-	// 370 ms in: dnsmasq has written its range lines, no advertisement
-	// has been captured yet.
+	// 370 ms in: dnsmasq has logged its range lines and no RA has been captured.
 	early := V6Evidence{PoolLogged: true}
 	if V6EvidenceSettled(early) {
 		t.Fatalf("an observation with no advertisement in it reports as settled; the fixture " +
@@ -981,7 +668,6 @@ func TestV6EvidenceSettled_ADisagreementAloneDoesNotFinishAnObservation(t *testi
 			"mode rather than nothing at all", got, V6NoRA)
 	}
 
-	// The same segment once its first advertisement lands.
 	f, ok := ParseRA(mustFrame(t, raManagedHex))
 	if !ok {
 		t.Fatalf("the managed capture no longer parses")
@@ -995,9 +681,6 @@ func TestV6EvidenceSettled_ADisagreementAloneDoesNotFinishAnObservation(t *testi
 		t.Fatalf("ClassifyV6Segment(settled managed evidence) = %v, want managed first", got)
 	}
 
-	// What the drift matrix actually asks for: the refusal names the
-	// mode the segment IS, and it can only do that from the settled
-	// observation.
 	findings := V6ModeFindings(V6Stateless, settled)
 	if len(findings) == 0 {
 		t.Fatalf("managed evidence under the stateless name produced no finding")
@@ -1011,15 +694,6 @@ func TestV6EvidenceSettled_ADisagreementAloneDoesNotFinishAnObservation(t *testi
 	}
 }
 
-// TestV6ModeNamesIn_APrefixOfALongerModeNameIsNotThatMode drives the
-// substring trap the drift matrix's pair assertion sat in.
-//
-// "managed" is a prefix of "managed-silent", and the refusal a drifted
-// cell produces frequently names BOTH ("the segment answers as managed
-// or managed-silent") because they are indistinguishable at fixture
-// time. So a Contains test for "managed" is satisfied by a message that
-// names only managed-silent, and the cell that was supposed to prove
-// the diagnosis proves nothing about which half of the pair was found.
 func TestV6ModeNamesIn_APrefixOfALongerModeNameIsNotThatMode(t *testing.T) {
 	cases := []struct {
 		s    string
@@ -1034,11 +708,7 @@ func TestV6ModeNamesIn_APrefixOfALongerModeNameIsNotThatMode(t *testing.T) {
 		{"mode=nora", []V6Mode{V6NoRA}},
 		{"slaac; managed-silent.", []V6Mode{V6SLAAC, V6ManagedSilent}},
 		{"no mode here", nil},
-		// The trap in isolation: naming only the longer name must not
-		// name the shorter one.
 		{"managed-silent", []V6Mode{V6ManagedSilent}},
-		// ...and the reverse control, so this is not a function that
-		// simply never reports managed.
 		{"managed", []V6Mode{V6Managed}},
 	}
 	for _, c := range cases {
@@ -1055,9 +725,6 @@ func TestV6ModeNamesIn_APrefixOfALongerModeNameIsNotThatMode(t *testing.T) {
 		})
 	}
 
-	// The property, stated once rather than per row: naming the longer
-	// mode never names the shorter, for every pair of modes whose names
-	// overlap that way.
 	for _, a := range V6Modes() {
 		for _, b := range V6Modes() {
 			if a == b || !strings.HasPrefix(b.String(), a.String()) {
@@ -1070,15 +737,7 @@ func TestV6ModeNamesIn_APrefixOfALongerModeNameIsNotThatMode(t *testing.T) {
 	}
 }
 
-// TestDnsmasqVersionFindings_TheTranscriptionPremiseIsCheckedNotAssumed
-// is finding 3's observer, and it drives the direction the lane cannot:
-// a runner whose dnsmasq is not the one the tables were read from.
-//
-// The verbatim strings below are `dnsmasq --version`'s first line as
-// this project has actually seen it -- 2.91 on the runner 2026-09-05
-// and 2.92rel2 on the same machine role 2026-08-27 -- plus the sentence
-// dnsmasqVersion() returns when the probe itself fails, which is the
-// case that would otherwise pass by carrying no version at all.
+// `dnsmasq --version` first lines as seen: 2.91 on the runner 2026-09-05, 2.92rel2 on the same role 2026-08-27 (#915).
 func TestDnsmasqVersionFindings_TheTranscriptionPremiseIsCheckedNotAssumed(t *testing.T) {
 	const transcribed = "Dnsmasq version 2.91  Copyright (c) 2000-2024 Simon Kelley"
 	if findings := DnsmasqVersionFindings(transcribed); len(findings) != 0 {
@@ -1109,8 +768,6 @@ func TestDnsmasqVersionFindings_TheTranscriptionPremiseIsCheckedNotAssumed(t *te
 		})
 	}
 
-	// The premise is a constant a reader can check against the tables,
-	// so it must not drift into something that is not a version.
 	if v, ok := parseDnsmasqVersion("Dnsmasq version " + DnsmasqTablesTranscribedFrom); !ok ||
 		v != DnsmasqTablesTranscribedFrom {
 		t.Errorf("DnsmasqTablesTranscribedFrom = %q does not parse as a version",

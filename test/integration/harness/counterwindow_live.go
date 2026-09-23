@@ -13,31 +13,8 @@ import (
 	docker "github.com/docker/docker/client"
 )
 
-// CounterWindow brackets a pair of /Plugin.Health reads and refuses to
-// hand back a delta it cannot vouch for (#405).
-//
-// Before this existed, 29 measurement sites across 9 files took a
-// `before` and an `after` by hand and subtracted them. The plugin's
-// counters are in-memory and reset with the plugin process; three tests
-// in this suite end that process on purpose. A pair straddling one of
-// those reads as "no change" — or goes negative and reads as no change
-// again — and nothing anywhere noticed. Four separate incidents were
-// worked around individually before the shared cause was named.
-//
-// The type exists so the delta is unobtainable without the check having
-// run, rather than the check being one more thing to remember at a
-// thirtieth call site.
-//
-// Usage:
-//
-//	w := harness.BeginCounterWindow(t, ctx, cli, "leases_obtained")
-//	... exercise ...
-//	before, after := w.End()
-//	if after.LeasesObtained-before.LeasesObtained != 1 { ... }
-//
-// The counter names are optional and only shape the failure text; they
-// let the message say which numbers are void instead of leaving the
-// reader to work it out.
+// CounterWindow brackets two /Plugin.Health reads and refuses a delta across a plugin restart: counters are in-memory
+// per process, and three tests end the process on purpose (#405).
 type CounterWindow struct {
 	t             *testing.T
 	ctx           context.Context
@@ -49,12 +26,7 @@ type CounterWindow struct {
 	ended         bool
 }
 
-// BeginCounterWindow reads the plugin's health and opens a window.
-//
-// A failure here is fatal rather than skipped: a test that cannot
-// establish a baseline cannot make a claim about a delta, and carrying
-// on would produce exactly the confident-but-baseless number this type
-// exists to prevent.
+// BeginCounterWindow opens a window on a health read, failing the test if it cannot read.
 func BeginCounterWindow(t *testing.T, ctx context.Context, cli *docker.Client, counters ...string) *CounterWindow {
 	t.Helper()
 	before, err := PluginHealth(ctx, cli)
@@ -65,10 +37,7 @@ func BeginCounterWindow(t *testing.T, ctx context.Context, cli *docker.Client, c
 	}
 	w := &CounterWindow{t: t, ctx: ctx, cli: cli, before: before, counters: counters}
 	t.Cleanup(func() {
-		// A window opened and never closed measured nothing, but looks
-		// from the outside exactly like one that passed. Only complain
-		// when the test was otherwise fine, so this never buries the
-		// real failure.
+		// Only reported when the test was otherwise fine, so it never buries the real failure.
 		if !w.ended && !t.Failed() {
 			t.Errorf("counter window opened at BeginCounterWindow was never closed with End() — "+
 				"no reset check ran and no delta was verified (counters: %v)", w.counters)
@@ -77,62 +46,20 @@ func BeginCounterWindow(t *testing.T, ctx context.Context, cli *docker.Client, c
 	return w
 }
 
-// ExpectRecycle declares that this window is *meant* to span a plugin
-// restart, and that End should fail if the plugin did not restart.
-//
-// This is deliberately an assertion, not an escape hatch. It cannot be
-// used to silence the check: a window carrying it fails when the
-// recycle does not happen, and still fails when identity cannot be
-// established at all. The opt-out shape — something like
-// SkipRecycleCheck — is exactly what CLAUDE.md's "never weaken a
-// failing test" rule forbids, and what #413's gate should reject.
-//
-// It is carried by ONE test today — TestRecovery_PluginDisableEnable_PreservesEndpoint,
-// which disables and re-enables the plugin. Counter deltas across such
-// a window are void by construction; what that test asserts is that
-// the endpoint survived, not that a number moved.
-//
-// The list this replaces named three tests and was wrong about two of
-// them: TestIPv6_MACSurvivesPluginRecycle has never existed in this
-// tree under that name, and TestRecovery_DaemonRestart_PreservesContainer
-// does exist but opens no counter window at all. An enumeration in a
-// comment is an unrun checklist, so the fix is not a corrected list of
-// three — it is to state the property (a window that spans a
-// deliberate plugin restart) and let `grep -rn ExpectRecycle` answer
-// the question of who carries it.
+// ExpectRecycle declares the window spans a plugin restart and makes End fail if none happened; it is an assertion,
+// never an opt-out (#405, #413).
 func (w *CounterWindow) ExpectRecycle() *CounterWindow {
 	w.expectRecycle = true
 	return w
 }
 
-// Before returns the opening read. Provided for assertions that need a
-// value rather than a delta; it does not close the window.
+// Before returns the opening read without closing the window.
 func (w *CounterWindow) Before() *HealthResponse {
 	return w.before
 }
 
-// Await polls the plugin's health until cond reports true or budget is
-// spent, and returns the last successful read plus whether cond ever
-// held.
-//
-// cond receives the current read and the window's opening read, because
-// nearly every condition here is really a delta ("leases_obtained is
-// above where it started"). Handing over the baseline keeps callers
-// from capturing a stale one in a closure, which is the same hazard
-// this type exists to close.
-//
-// Every read is checked against the opening instance. A poll that spans
-// a plugin restart is the nastiest form of the #405 bug: the counters
-// it is watching went back to zero, so a "greater than baseline"
-// condition either never fires and the caller reports a timeout that
-// blames the wrong thing, or fires later for the wrong reason. Failing
-// the moment identity breaks reports the real cause instead.
-//
-// A read error is not fatal on its own — the socket can blink during
-// the events these tests provoke — but never getting a single
-// successful read is. Returning "condition not met" for a plugin that
-// was never reachable would hand the caller an absence of evidence
-// dressed as a measurement.
+// Await polls health until cond(now, before) holds or budget is spent, and returns the last read. It fails when
+// identity breaks mid-poll (#405), and when no read ever succeeded; a single read error is tolerated.
 func (w *CounterWindow) Await(budget time.Duration, cond func(now, before *HealthResponse) bool) (*HealthResponse, bool) {
 	w.t.Helper()
 	deadline := time.Now().Add(budget)
@@ -158,20 +85,8 @@ func (w *CounterWindow) Await(budget time.Duration, cond func(now, before *Healt
 	return last, false
 }
 
-// End takes the closing read, verifies the plugin did not silently
-// restart in between, and returns both reads for the caller to
-// subtract.
-//
-// Every failure path is fatal. An unreadable closing read, an
-// unexpected recycle, and an identity that cannot be established all
-// mean the same thing: the number the test is about to compute does not
-// describe what the test did.
-//
-// End is idempotent: a window closes once, and later calls return that
-// same closing read. Several tests assert on a delta and then hand the
-// window to a shared helper that also closes it; without this they
-// would take two readings a few lines apart and quietly compare against
-// different numbers.
+// End takes the closing read, fails on an unreadable read, an unexpected recycle or unknown identity, and returns both
+// reads; later calls return the same closing read (#405).
 func (w *CounterWindow) End() (before, after *HealthResponse) {
 	w.t.Helper()
 	if w.ended {

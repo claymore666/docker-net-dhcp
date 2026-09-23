@@ -1,12 +1,7 @@
 // Copyright the docker-net-dhcp contributors.
 // SPDX-License-Identifier: GPL-3.0-only
 
-// This file deliberately carries NO `//go:build integration` tag, for
-// the same reason healthfloor.go does not: the comparison below decides
-// whether a counter delta means anything at all, so it has to be
-// testable without a live plugin. A guard that has never been observed
-// rejecting anything is not known to work. Everything needing a socket
-// lives in health.go.
+// No integration tag: whether a counter delta means anything is tested without a live plugin (#405).
 
 package harness
 
@@ -16,41 +11,18 @@ import (
 	"time"
 )
 
-// awaitPollInterval is the gap between health reads inside Await.
-//
-// 250ms, inherited from the failure suite's own poll helper: it returns
-// closer to the moment the health state flips without touching the
-// caller's budget (#254), and the floor keeps the extra CPU off the
-// timing-sensitive preflight probe. Do not raise it casually — that
-// tuning was deliberate.
-//
-// It sits on the untagged side because the recovery budgets in
-// recoveryobserver.go add one interval to the product timeout they are
-// derived from, so the margin and the interval it describes have to be
-// one value rather than two spellings of 250ms.
+// awaitPollInterval is 250 ms, from the failure suite's poll helper (#254); recoveryobserver.go's budgets add one interval to the product timeout.
 const awaitPollInterval = 250 * time.Millisecond
 
-// InstanceVerdict is the result of comparing the plugin process across
-// two /Plugin.Health reads (#405).
-//
-// The plugin's counters live in memory for the lifetime of the plugin
-// *process*, and three tests in this suite deliberately end that
-// process mid-run. A before/after pair that straddles one of those
-// reads as "no change" — or goes negative and reads as no change again.
-// Nothing in the suite noticed this for 29 measurement sites, which is
-// what #405 is about.
+// InstanceVerdict compares the plugin process across two /Plugin.Health reads; counters live for one process (#405).
 type InstanceVerdict int
 
 const (
-	// InstanceUnknown is the zero value on purpose. Every way of
-	// failing to establish the plugin's identity has to land somewhere,
-	// and the safe landing spot is "cannot tell", never "same".
+	// InstanceUnknown is the zero value: identity not established is never "same".
 	InstanceUnknown InstanceVerdict = iota
-	// InstanceSame means both reads came from one plugin process, so a
-	// delta between them is meaningful.
+	// InstanceSame means both reads came from one plugin process.
 	InstanceSame
-	// InstanceRecycled means the plugin restarted between the reads.
-	// Any delta computed across them is void.
+	// InstanceRecycled means the plugin restarted between the reads, voiding any delta.
 	InstanceRecycled
 )
 
@@ -65,21 +37,11 @@ func (v InstanceVerdict) String() string {
 	}
 }
 
-// instanceIDKey is the JSON key carrying the process identity. Named
-// once so the presence check and the failure text cannot drift apart.
+// instanceIDKey is the JSON key carrying the process identity.
 const instanceIDKey = "instance_id"
 
-// CompareInstances reports whether before and after came from the same
-// plugin process.
-//
-// It returns InstanceUnknown rather than guessing whenever identity
-// cannot be established: a nil read, a payload that never carried
-// instance_id (an older plugin), or an empty id. That distinction is
-// the entire point. An absent JSON string decodes to "", and two ""
-// values compare equal — so a naive `before.InstanceID ==
-// after.InstanceID` would report "same process" most confidently
-// exactly when it knows least, which is the mistake this package has
-// already made once with counters that were never published (#377).
+// CompareInstances reports whether two reads came from one plugin process, InstanceUnknown when a read is nil, predates
+// instance_id or has an empty one: two absent ids decode to "" and compare equal (#377, #405).
 func CompareInstances(before, after *HealthResponse) InstanceVerdict {
 	if before == nil || after == nil {
 		return InstanceUnknown
@@ -96,12 +58,7 @@ func CompareInstances(before, after *HealthResponse) InstanceVerdict {
 	return InstanceRecycled
 }
 
-// publishedInstanceID reports whether the payload this value was
-// decoded from actually carried the key.
-//
-// A nil published map means "built by hand, not decoded" — the same
-// convention CheckHealthFloor uses — so hand-built values in unit tests
-// are judged on their field alone.
+// publishedInstanceID reports whether the decoded payload carried the key; a nil published map means built by hand.
 func (h *HealthResponse) publishedInstanceID() bool {
 	if h.published == nil {
 		return true
@@ -110,13 +67,7 @@ func (h *HealthResponse) publishedInstanceID() bool {
 	return ok
 }
 
-// CounterWindowError renders the failure for a window whose delta
-// cannot be trusted. counters names what the caller was about to
-// compare, so the message says which numbers are void rather than
-// leaving the reader to work it out.
-//
-// Returns "" when the verdict is acceptable, so callers can branch on
-// the empty string and keep the accept/reject decision in one place.
+// CounterWindowError renders why a window's delta cannot be trusted, "" when the verdict is acceptable.
 func CounterWindowError(v InstanceVerdict, expectRecycle bool, before, after *HealthResponse, counters ...string) string {
 	switch {
 	case v == InstanceSame && !expectRecycle:
@@ -155,8 +106,7 @@ func CounterWindowError(v InstanceVerdict, expectRecycle bool, before, after *He
 	return b.String()
 }
 
-// unknownReason explains which side failed to identify itself, so the
-// reader is not left diffing two payloads by hand.
+// unknownReason names which side failed to identify itself.
 func unknownReason(before, after *HealthResponse) string {
 	switch {
 	case before == nil && after == nil:
@@ -182,8 +132,7 @@ func unknownReason(before, after *HealthResponse) string {
 	return "  " + strings.Join(missing, "; ") + "."
 }
 
-// short trims an instance id for messages while staying long enough to
-// be visibly different between two processes.
+// short trims an instance id for messages.
 func short(id string) string {
 	if id == "" {
 		return "(empty)"

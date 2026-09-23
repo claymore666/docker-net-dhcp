@@ -1,11 +1,7 @@
 // Copyright the docker-net-dhcp contributors.
 // SPDX-License-Identifier: GPL-3.0-only
 
-// No `//go:build integration` tag, deliberately. This guard reads
-// source files and needs neither root nor a live plugin, so it belongs
-// in the ordinary `go test ./...` job where it fails in seconds rather
-// than after a twelve-minute suite. Same reasoning healthfloor.go
-// documents for itself.
+// No integration tag: this guard reads source and runs in the unit job.
 
 package harness
 
@@ -16,35 +12,10 @@ import (
 	"testing"
 )
 
-// floorReader is the one file allowed to call PluginHealth directly.
-//
-// The health floor takes a single end-of-run reading in TestMain after
-// m.Run(). It is not a delta and has no window to belong to; it is the
-// thing that reports what the counters ended at. Everything else in the
-// suite is measuring a change and must say so through CounterWindow.
+// floorReader is the one file allowed to call PluginHealth: the floor's single end-of-run reading is not a delta (#405).
 const floorReader = "healthfloor_test.go"
 
-// TestCounterWindow_NoDirectHealthReadsInSuite is what actually holds
-// the line for #405.
-//
-// The window type is only worth having if every measurement site uses
-// it, and the natural thing to write in a new test is the pair that was
-// there before:
-//
-//	before, _ := harness.PluginHealth(ctx, cli)
-//	... exercise ...
-//	after, _ := harness.PluginHealth(ctx, cli)
-//	if after.X-before.X != 1 { ... }
-//
-// That compiles, passes, and silently subtracts two numbers from
-// different plugin processes whenever a recycle lands in between —
-// which is how twenty-nine sites came to exist. A reviewer cannot be
-// expected to catch the thirtieth.
-//
-// Static rather than behavioural on purpose: reproducing the fault
-// needs a plugin restart mid-measurement, which is expensive to stage
-// and, being timing-dependent, would not reliably fail even then. The
-// property being defended here is textual, so check it textually.
+// Every other health read goes through CounterWindow: a before/after pair subtracts counters from two plugin processes when a recycle lands in between (#405).
 func TestCounterWindow_NoDirectHealthReadsInSuite(t *testing.T) {
 	files, err := filepath.Glob(filepath.Join("..", "*_test.go"))
 	if err != nil {
@@ -54,9 +25,6 @@ func TestCounterWindow_NoDirectHealthReadsInSuite(t *testing.T) {
 		t.Fatal("no ../*_test.go found; this guard would pass vacuously")
 	}
 
-	// Prove the exemption still names a real file. If healthfloor_test.go
-	// were renamed, a silently-unused exemption would leave the guard
-	// looking fine while the floor's own call went unaccounted for.
 	var sawFloor bool
 	for _, f := range files {
 		if filepath.Base(f) == floorReader {
@@ -95,14 +63,6 @@ func TestCounterWindow_NoDirectHealthReadsInSuite(t *testing.T) {
 	}
 }
 
-// TestCounterWindow_GuardWouldCatchTheOldPattern is the negative
-// control for the guard above.
-//
-// A guard that has never been observed rejecting anything is not known
-// to work — and this repo has already shipped one that passed with the
-// call it was guarding deleted, caught only by running the control.
-// Rather than temporarily corrupting a real file, this feeds the
-// detector the exact text it exists to reject.
 func TestCounterWindow_GuardWouldCatchTheOldPattern(t *testing.T) {
 	const direct = "harness.PluginHealth("
 

@@ -17,21 +17,13 @@ import (
 	"time"
 )
 
-// fakeRecovery is a plugin that counts a rebuilt endpoint at flipAt on a
-// virtual clock, so the wait can be driven past its own budget without
-// spending the wall clock and without a live plugin.
-//
-// It polls the way CounterWindow.Await polls — sample, test the
-// deadline, sleep one interval — because the margin the budgets carry is
-// exactly one such interval, and a fake that sampled differently would
-// prove nothing about the real loop.
+// fakeRecovery counts a rebuilt endpoint at flipAt on a virtual clock, polling exactly as CounterWindow.Await does.
 type fakeRecovery struct {
 	flipAt   time.Duration // when recovered_ok becomes 1; negative means never
 	failAt   time.Duration // when recovery_failed becomes 1; negative means never
 	abortAt  time.Duration // when recovery_aborted_container_gone becomes 1; negative means never
 	deferred int32
-	// unreachableFrom is when the plugin stops answering; negative means
-	// it always answers.
+	// unreachableFrom is when the plugin stops answering; negative means it always answers.
 	unreachableFrom time.Duration
 
 	elapsed  time.Duration
@@ -50,9 +42,7 @@ func (f *fakeRecovery) succeedsAt(d time.Duration) *fakeRecovery { f.flipAt = d;
 func (f *fakeRecovery) failsAt(d time.Duration) *fakeRecovery    { f.failAt = d; return f }
 func (f *fakeRecovery) abortsAt(d time.Duration) *fakeRecovery   { f.abortAt = d; return f }
 
-// verify stands in for the live check that the installed plugin agrees
-// with the bound this wait is about to spend. It records how much of the
-// wait had already happened when it ran.
+// verify stands in for the installed-plugin check and records how many polls preceded it.
 func (f *fakeRecovery) verify() { f.verified = f.polls }
 
 func (f *fakeRecovery) read() *HealthResponse {
@@ -77,14 +67,8 @@ func (f *fakeRecovery) poll(budget time.Duration) (*HealthResponse, bool) {
 	f.budgets = append(f.budgets, budget)
 	deadline := f.elapsed + budget
 	var last *HealthResponse
-	// CounterWindow.Await's loop, exactly: it samples only while it is
-	// still before its deadline, so the last sample it can take lands one
-	// interval short of it. A fake that took one more sample than that
-	// would report a budget with no margin as sufficient.
+	// CounterWindow.Await samples only before its deadline, so its last sample lands one interval short of it.
 	for f.elapsed < deadline {
-		// A failed read leaves the previous one standing, the way Await
-		// does: the socket can blink during the events these tests
-		// provoke.
 		if h := f.read(); h != nil {
 			last = h
 			if h.RecoveredOK >= 1 {
@@ -98,14 +82,9 @@ func (f *fakeRecovery) poll(budget time.Duration) (*HealthResponse, bool) {
 
 func discardf(string, ...any) {}
 
-// A rebuild counted late is the whole defect: the previous observer read
-// the counter once, as early as the socket answered, and called a
-// rebuild that had not finished yet a rebuild that never happened.
 func TestAwaitRecoveryRebuild_CountsARebuildThatFinishesLate(t *testing.T) {
-	const late = 9 * time.Second // inside AWAIT_TIMEOUT, past every plausible single read
+	const late = 9 * time.Second
 
-	// The previous version, which is the strongest mutant of this
-	// change: one read, taken the moment the socket answers.
 	f := newFakeRecovery().succeedsAt(late)
 	if f.read().RecoveredOK >= 1 {
 		t.Fatal("the fake counted the rebuild at t=0, so it cannot show what a single read misses")
@@ -122,10 +101,6 @@ func TestAwaitRecoveryRebuild_CountsARebuildThatFinishesLate(t *testing.T) {
 	}
 }
 
-// The last instant the product allows a success: a client counted at
-// exactly AWAIT_TIMEOUT is inside what its own context permits. The
-// margin the budget carries is spent by the classifier case below, whose
-// counter lands at the far end of the budget rather than this one.
 func TestAwaitRecoveryRebuild_CountsARebuildAtTheProductsOwnDeadline(t *testing.T) {
 	f := newFakeRecovery().succeedsAt(awaitTimeoutDefault)
 	if _, ok := awaitRecoveryRebuild(discardf, "a rebuild", f.verify, f.poll); !ok {
@@ -143,9 +118,6 @@ func TestAwaitRecoveryRebuild_FailsWhenTheCounterNeverMoves(t *testing.T) {
 	if h == nil || h.RecoveredOK != 0 {
 		t.Errorf("the failing wait returned %s, want the last read with recovered_ok=0", RecoveryRoutes(h))
 	}
-	// Bounded, and bounded by the SHORT route: a wait that quietly ran
-	// to the deferred budget would still pass the assertion above while
-	// costing the suite a minute and a half per occurrence.
 	if f.elapsed > RecoveryRebuildBudget+awaitPollInterval {
 		t.Errorf("the wait spent %s on a plugin that never deferred; the budget for that route is %s",
 			f.elapsed, RecoveryRebuildBudget)
@@ -153,9 +125,6 @@ func TestAwaitRecoveryRebuild_FailsWhenTheCounterNeverMoves(t *testing.T) {
 }
 
 func TestAwaitRecoveryRebuild_ExtendsOnlyOnTheDeferredRoute(t *testing.T) {
-	// Later than the normal route allows, earlier than the deferred one
-	// does: the two routes give opposite verdicts on this rebuild, which
-	// is what makes the extension observable at all.
 	late := RecoveryRebuildBudget + 30*time.Second
 
 	t.Run("deferred", func(t *testing.T) {
@@ -195,12 +164,7 @@ func TestAwaitRecoveryRebuild_ExtendsOnlyOnTheDeferredRoute(t *testing.T) {
 	})
 }
 
-// A Start that fails by exhausting AWAIT_TIMEOUT records nothing at
-// that instant: the classifier then inspects the container on a fresh
-// context of its own before recovery_failed moves. A budget that ended
-// at AWAIT_TIMEOUT would give up inside that gap, call a failed rebuild
-// "still in flight", and let the recovery_failed == 0 assertion that
-// follows read a document taken before the counter could move.
+// A Start that exhausts AWAIT_TIMEOUT moves recovery_failed only after the classifier's own fresh context (#376).
 func TestAwaitRecoveryRebuild_WaitsForTheClassifierToSpeak(t *testing.T) {
 	f := newFakeRecovery().failsAt(awaitTimeoutDefault + recoveryPerNetworkTimeoutDefault)
 	h, ok := awaitRecoveryRebuild(discardf, "a rebuild", f.verify, f.poll)
@@ -222,8 +186,6 @@ func TestAwaitRecoveryRebuild_WaitsForTheClassifierToSpeak(t *testing.T) {
 	}
 }
 
-// The opposite direction of the same text: nothing was classified, so
-// "still in flight" is the right sentence and the classifier one is not.
 func TestRecoveryRebuildFailure_SaysStillInFlightWhenNothingWasClassified(t *testing.T) {
 	got := RecoveryRebuildFailure("a rebuild", &HealthResponse{})
 	if !strings.Contains(got, "still in flight") {
@@ -234,12 +196,6 @@ func TestRecoveryRebuildFailure_SaysStillInFlightWhenNothingWasClassified(t *tes
 	}
 }
 
-// A plugin that answers, records a failure and then stops answering
-// inside one poll. CounterWindow.Await keeps the last successful read
-// across failed ones (counterwindow_live.go:139-152), so the fake must
-// too: a fake that let a failed read erase the good one would report
-// "no counter could be read" for a wait that had read the classifier,
-// and this case would then be the one place the difference showed.
 func TestAwaitRecoveryRebuild_KeepsTheLastReadWhenThePluginGoesAway(t *testing.T) {
 	f := newFakeRecovery().failsAt(2 * time.Second)
 	f.unreachableFrom = 5 * time.Second
@@ -256,11 +212,6 @@ func TestAwaitRecoveryRebuild_KeepsTheLastReadWhenThePluginGoesAway(t *testing.T
 	}
 }
 
-// A plugin that stops answering during the extension leaves the
-// extension with no read of its own. Discarding the first poll's read
-// there would quote the normal route's budget for a wait that took the
-// deferred one, and quote no counters for a plugin that had published
-// recovery_deferred.
 func TestAwaitRecoveryRebuild_KeepsTheLastReadWhenTheExtensionGetsNone(t *testing.T) {
 	f := newFakeRecovery()
 	f.deferred = 1
@@ -278,12 +229,6 @@ func TestAwaitRecoveryRebuild_KeepsTheLastReadWhenTheExtensionGetsNone(t *testin
 	}
 }
 
-// The headline number is derived from this tree's manifest, and the
-// plugin that answered may have been set to another value. That is a
-// recorded failure by then, but the failure text is what gets read, and
-// a bound quoted as though it were the product's is the same mistake
-// one level up: a document taken under a premise that does not hold,
-// printed as though it did.
 func TestRecoveryRebuildFailure_SaysWhereItsBudgetComesFrom(t *testing.T) {
 	got := RecoveryRebuildFailure("a rebuild", &HealthResponse{})
 	for _, want := range []string{"AWAIT_TIMEOUT", awaitTimeoutDefault.String(), "drift check"} {
@@ -313,8 +258,6 @@ func TestRecoveryRebuildFailure_QuotesTheBudgetOfTheRouteTaken(t *testing.T) {
 	}
 }
 
-// The failure text is the only evidence a reader gets, and recovered_ok
-// reading 0 has several causes that are told apart by nothing else.
 func TestRecoveryRoutes_NamesEveryRoute(t *testing.T) {
 	h := &HealthResponse{
 		RecoveredOK: 1, RecoveryFailed: 2, RecoveryAbortedContainerGone: 3,
@@ -353,10 +296,7 @@ func TestAwaitRecoveryRebuild_NamesTheContainerGoneArm(t *testing.T) {
 		t.Fatalf("the fake moved both arms, so this case cannot show what the second one adds: %s",
 			RecoveryRoutes(h))
 	}
-	// On the verdict alone, not on the whole failure text: RecoveryRoutes
-	// prints every counter into that same string, so an assertion there
-	// would be satisfied by the routes line whether the verdict named
-	// this arm or not.
+	// RecoveryRoutes prints every counter into the failure text, so this asserts on the verdict alone.
 	verdict := recoveryVerdict(h)
 	if !strings.Contains(verdict, "recovery_aborted_container_gone=1") {
 		t.Errorf("the verdict does not name the arm that fired:\n%s", verdict)
@@ -374,16 +314,7 @@ func TestAwaitRecoveryRebuild_NamesTheContainerGoneArm(t *testing.T) {
 	}
 }
 
-// The deferred route needs the classifier term too. A Start that fails
-// by exhausting AWAIT_TIMEOUT records nothing at that instant whichever
-// route reached it, so a deferred budget written out longhand without
-// that term gives up inside exactly the gap the normal route's budget
-// was widened to cover: the same defect, fixed on one route and left
-// standing on the other.
 func TestAwaitRecoveryRebuild_WaitsForTheClassifierOnTheDeferredRouteToo(t *testing.T) {
-	// The far end of what the deferred route permits: the wait for the
-	// daemon, then the walk's own budget, then a Start that burns
-	// AWAIT_TIMEOUT, then the classifier on its fresh context.
 	latest := recoveryDeferredDaemonWaitDefault + recoveryBudgetDefault +
 		awaitTimeoutDefault + recoveryPerNetworkTimeoutDefault
 	f := newFakeRecovery().failsAt(latest)
@@ -407,13 +338,6 @@ func TestAwaitRecoveryRebuild_WaitsForTheClassifierOnTheDeferredRouteToo(t *test
 	}
 }
 
-// A wait whose every read failed holds no document at all, and it is the
-// wait most likely to be read by someone who has just lost the plugin.
-// Both halves of that path are load-bearing: RecoveryRebuildFailure
-// reads recovery_deferred off the document to pick the budget it quotes,
-// and the verdict reads the counters back to choose its sentence. Either
-// one taken on nothing is a crash in the failure path of another test,
-// which is where a crash is least legible.
 func TestRecoveryRebuildFailure_SaysSoWhenNoReadEverSucceeded(t *testing.T) {
 	got := RecoveryRebuildFailure("a rebuild", nil)
 	if !strings.Contains(got, "No counter could be read") {
@@ -431,12 +355,6 @@ func TestRecoveryRebuildFailure_SaysSoWhenNoReadEverSucceeded(t *testing.T) {
 	}
 }
 
-// The manifest is what the plugin is BUILT from; `docker plugin set`
-// decides what it RUNS with, and AWAIT_TIMEOUT is settable. The
-// coupling test above reads the manifest and would stay green through
-// exactly that override, which puts the original flake back with a wait
-// in front of it. These are the readings of the installed value, and
-// only one of them lets the wait proceed.
 func TestInstalledAwaitTimeoutDrift(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -475,10 +393,6 @@ func TestInstalledAwaitTimeoutDrift(t *testing.T) {
 			mustSay: "publishes no AWAIT_TIMEOUT",
 		},
 		{
-			// Both ends, because a match on one of them is not a match.
-			// Either impostor read as this setting would let a plugin
-			// that never published AWAIT_TIMEOUT pass the check, and
-			// with a value that is not the cap anything runs under.
 			name:    "another setting whose name ends the same way",
 			env:     []string{"EXTRA_AWAIT_TIMEOUT=10s"},
 			mustSay: "publishes no AWAIT_TIMEOUT",
@@ -667,12 +581,6 @@ func incrementSites(t *testing.T, path, counter string) []int {
 	return lines
 }
 
-// The bound is checked before any of it is spent. A check that runs
-// after the wait has given its answer is not a check: the budget it
-// would have rejected has already been spent and the verdict already
-// printed. This drives the order instead of reading it, because the two
-// spellings that break it, a deferred call and a call moved below the
-// poll, look identical to a source scan of the live file.
 func TestAwaitRecoveryRebuild_ChecksTheBoundBeforeSpendingIt(t *testing.T) {
 	f := newFakeRecovery().succeedsAt(time.Second)
 	if _, ok := awaitRecoveryRebuild(discardf, "a rebuild", f.verify, f.poll); !ok {
@@ -684,11 +592,7 @@ func TestAwaitRecoveryRebuild_ChecksTheBoundBeforeSpendingIt(t *testing.T) {
 	}
 }
 
-// Both live waits must pass a check that does something. The parameter
-// makes the ORDER observable above; this is the other half, that what
-// gets passed is the real check. There is no local control for it: the
-// two waits are behind the `integration` build tag, so a closure that
-// does nothing compiles and every local test stays green.
+// The two live waits are behind the `integration` tag, so nothing untagged compiles them.
 func TestBothWaitsPassTheInstalledTimeoutCheck(t *testing.T) {
 	const liveSrc = "recoveryobserver_live.go"
 	for _, fn := range []string{"AwaitRecoveryRebuildWindow", "AwaitRecoveryRebuildOn"} {
@@ -701,13 +605,7 @@ func TestBothWaitsPassTheInstalledTimeoutCheck(t *testing.T) {
 		})
 	}
 
-	// The check REPORTS, it does not stop the test. One of the three
-	// sites, TestRecovery_DaemonRestart_PreservesContainer, is written
-	// so that a failed recycle still says which properties held: a
-	// switch over the two preservation paths, then the IP and the MAC.
-	// A fatal check at the top of its wait would replace all of that
-	// with one line, and it would buy nothing, because the drift is
-	// already recorded as a failure.
+	// TestRecovery_DaemonRestart_PreservesContainer reports every property that held after a failed recycle.
 	t.Run("it reports without stopping the test", func(t *testing.T) {
 		body := funcBody(t, liveSrc, "checkInstalledAwaitTimeout")
 		if strings.Contains(body, "Fatal") {
@@ -722,8 +620,7 @@ func TestBothWaitsPassTheInstalledTimeoutCheck(t *testing.T) {
 	})
 }
 
-// funcBody returns the text of a top-level function, from its `func`
-// line to the closing brace in the first column.
+// funcBody returns a top-level function's text, from its `func` line to the first-column closing brace.
 func funcBody(t *testing.T, path, name string) string {
 	t.Helper()
 	src, err := os.ReadFile(path)
@@ -866,9 +763,7 @@ func TestEveryCitedFuncExistsInThePlugin(t *testing.T) {
 	}
 }
 
-// commentBlocks reads a Go file's comment groups, each as one line of
-// running text with the markers taken out, so a sentence wrapped across
-// several lines reads as one and two groups never run together.
+// commentBlocks returns a file's comment groups, each as one line of text without the markers.
 func commentBlocks(t *testing.T, path string) []string {
 	t.Helper()
 	file, err := parser.ParseFile(token.NewFileSet(), path, nil, parser.ParseComments)
@@ -882,9 +777,7 @@ func commentBlocks(t *testing.T, path string) []string {
 	return out
 }
 
-// commentAnchors counts the citations in a file's comment lines the
-// blunt way, off the bytes, so that it cannot go quiet for any of the
-// reasons commentBlocks and the citation pattern can.
+// commentAnchors counts the citations in a file's comment lines off the raw bytes.
 func commentAnchors(t *testing.T, path string) int {
 	t.Helper()
 	src, err := os.ReadFile(path)
@@ -909,16 +802,8 @@ func containsAny(s string, subs []string) bool {
 	return false
 }
 
-// The budgets are the load-bearing parameter of the wait, and they are
-// copies of numbers that live in the plugin. A copy nobody checks goes
-// stale silently and puts the flake back — with a wait in front of it,
-// which is worse than no wait, because the test then looks patched.
-//
-// This reads the declarations rather than trusting them: the harness is
-// behind the `integration` build tag and the plugin's constants are
-// unexported, so there is no import that would make the drift a compile
-// error. A rename on the plugin side fails this test too, because the
-// pattern then matches nothing and no-match is a failure here.
+// The budgets copy unexported plugin constants the harness cannot import, so this parses them; a rename matches
+// nothing and fails (#376).
 func TestRecoveryBudgetsTrackTheProduct(t *testing.T) {
 	const pluginSrc = "../../../pkg/plugin/plugin.go"
 	for _, tc := range []struct {
@@ -947,10 +832,7 @@ func TestRecoveryBudgetsTrackTheProduct(t *testing.T) {
 	})
 }
 
-// constDuration reads `const <name> = N * time.Unit` out of a Go source
-// file. A declaration it cannot find fails the test: the point of this
-// helper is that the value is elsewhere, so "not found" is the drift it
-// is looking for, not an excuse to pass.
+// constDuration reads `const <name> = N * time.Unit` from a Go source file, failing the test when it is absent.
 func constDuration(t *testing.T, path, name string) time.Duration {
 	t.Helper()
 	src, err := os.ReadFile(path)
