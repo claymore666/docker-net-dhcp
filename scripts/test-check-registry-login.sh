@@ -196,6 +196,117 @@ EOF
 [ "$(run "$d")" = "0" ] && ok "a build named only in a comment is not a build" \
     || no "comments carry no behaviour and must not trip the check"
 
+# ------------------------------------ a mention logs nothing in (#883)
+# Each decoy authenticated while any job line naming the login counted.
+# Its control is the same job with the decoy line gone, red on any
+# version of this gate, so the decoy alone was the pass.
+decoy() {
+    # $1 want, $2 label, $3 fixture name, stdin the steps after checkout
+    local want="$1" label="$2" d
+    d=$(fixture "$3" < <(printf 'name: X\njobs:\n  suite:\n    runs-on: [self-hosted, dhcp-ci]\n    steps:\n      - uses: actions/checkout@v5\n'; cat))
+    [ "$(run "$d")" = "$want" ] && ok "$label" || no "$label (want $want)"
+}
+decoy 1 "an echoed docker login is not a login" echo-login <<'EOF'
+      - name: Log in
+        run: echo "docker login runs elsewhere"
+      - run: make plugin
+EOF
+decoy 1 "control: the same job without the echo" echo-login-del <<'EOF'
+      - name: Log in
+        run: "true"
+      - run: make plugin
+EOF
+decoy 1 "a step named after the login action is not a login" name-login <<'EOF'
+      - name: docker/login-action@abc runs in the runner image
+        run: "true"
+      - run: make plugin
+EOF
+decoy 1 "the login action as a with: value is not a login" with-login <<'EOF'
+      - uses: actions/cache@v4
+        with:
+          key: docker/login-action@abc
+      - run: make plugin
+EOF
+decoy 1 "docker login in an env: value is not a login" env-login <<'EOF'
+      - env:
+          HOW: docker login -u u
+        run: "true"
+      - run: make plugin
+EOF
+decoy 1 "a uses: line inside a run: block is not a login" run-uses-login <<'EOF'
+      - run: |
+          cat <<'Y'
+          uses: docker/login-action@abc
+          Y
+      - run: make plugin
+EOF
+decoy 1 "a mention before the build does not move a later login forward" order-login <<'EOF'
+      - name: docker login comes after the build here
+        run: "true"
+      - run: make plugin
+      - uses: docker/login-action@abc
+EOF
+decoy 1 "control: the later login without the mention" order-login-del <<'EOF'
+      - run: make plugin
+      - uses: docker/login-action@abc
+EOF
+decoy 0 "a docker login fed by a pipe counts" pipe-login <<'EOF'
+      - run: echo "$T" | docker login -u u --password-stdin
+      - run: make plugin
+EOF
+decoy 0 "the login action on the dash line counts" dash-login <<'EOF'
+      - uses: docker/login-action@abc
+      - run: make plugin
+EOF
+
+decoy 0 "a second login after the build does not undo the first" second-login <<'EOF'
+      - uses: docker/login-action@abc
+      - run: make plugin
+      - uses: docker/login-action@abc
+EOF
+decoy 1 "a login after the build in the same step is after it" same-step-login <<'EOF'
+      - run: |
+          make plugin
+          docker login -u u --password-stdin
+EOF
+decoy 1 "a step name naming docker login does not date a later login in its shell" same-step-named <<'EOF'
+      - name: Build, then docker login
+        run: |
+          make plugin
+          docker login -u u --password-stdin
+EOF
+decoy 1 "an echo before the build does not date a later login in the same step" same-step-echo <<'EOF'
+      - run: |
+          echo "docker login follows"
+          make plugin
+          docker login -u u --password-stdin
+EOF
+decoy 0 "control: a login before the build in the same step, echo first" same-step-before <<'EOF'
+      - run: |
+          echo "docker login follows"
+          docker login -u u --password-stdin
+          make plugin
+EOF
+decoy 1 "a login inside a string spanning lines does not date the real one" same-step-string <<'EOF'
+      - run: |
+          echo "note:
+          docker login later"
+          make plugin
+          docker login -u u --password-stdin
+EOF
+decoy 0 "a one-line run: login is dated at its own line" run-line-login <<'EOF'
+      - run: docker login -u u --password-stdin
+        env:
+          NEXT: make plugin
+          NOTE: docker login
+EOF
+decoy 1 "a login split over lines is dated at its last mention, not an earlier echo" split-login <<'EOF'
+      - run: |
+          echo "docker login follows"
+          make plugin
+          docker login -u u \
+            --password-stdin
+EOF
 # ------------------------------------------------- could-not-run (2)
 
 [ "$(run "$TMP/does-not-exist")" = "2" ] && ok "a missing directory exits 2, not 0" \
