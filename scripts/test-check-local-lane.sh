@@ -164,10 +164,13 @@ mkdecoy() {
             quoted)   printf '      - name: m\n        run: echo "x; bash scripts/check-m.sh"\n' ;;
             cont)     printf '      - name: m\n        run: |\n          echo "see" \\\n            "scripts/check-m.sh describe"\n' ;;
             heredoc)  printf '      - name: m\n        run: |\n          cat <<'"'"'EOF'"'"'\n          scripts/check-m.sh\n          EOF\n' ;;
+            mlquote)  printf '      - name: m\n        run: |\n          echo "gates that run elsewhere:\n          scripts/check-m.sh"\n' ;;
+            mlsingle) printf '      - name: m\n        run: |\n          gh pr comment 1 --body '"'"'\n          scripts/check-m.sh\n          '"'"'\n' ;;
+            bashc)    printf '      - name: m\n        run: bash -c "echo scripts/check-m.sh"\n' ;;
         esac
     } > "$f"
 }
-for shape in echo comment nameonly quoted cont heredoc; do
+for shape in echo comment nameonly quoted cont heredoc mlquote mlsingle bashc; do
     mkgates check-a.sh
     mkdecoy "$WF" "$shape"
     mklane "$LANE" "scripts/check-a.sh" ""
@@ -197,7 +200,9 @@ for form in 'x=$(bash scripts/check-m.sh arg) || x=run' \
             "printf '%s' \"\$r\" | bash scripts/check-m.sh \"\$SHA\"" \
             'bash .resolver/scripts/check-m.sh "$TAG" > out.md' \
             'if ! sh -e scripts/check-m.sh; then exit 1; fi' \
-            'FOO=1 "./scripts/check-m.sh"'; do
+            'FOO=1 "./scripts/check-m.sh"' \
+            'bash -c "scripts/check-m.sh"' \
+            'bash -ec "FOO=1 scripts/check-m.sh arg; true"'; do
     mkgates check-a.sh check-m.sh
     mkwf "$WF" "bash scripts/check-a.sh" "$form"
     mklane "$LANE" "scripts/check-a.sh" ""
@@ -208,6 +213,34 @@ for form in 'x=$(bash scripts/check-m.sh arg) || x=run' \
     out=$(bash "$CHECK" "$WF" "$LANE" "$SDIR" 2>&1); rc=$?
     [ $rc -eq 0 ] && ok "rule 4 counts: $form" || no "rule 4 missed an invocation: $form (rc=$rc: $out)"
 done
+
+# A quote spanning lines ends where it closes: the next line is a
+# command again (#883).
+mkgates check-a.sh check-m.sh
+printf 'jobs:\n  test:\n    steps:\n      - name: m\n        run: |\n          echo "a\n          b" && bash scripts/check-a.sh\n          bash scripts/check-m.sh\n' > "$WF"
+mklane "$LANE" "scripts/check-a.sh" ""
+out=$(bash "$CHECK" "$WF" "$LANE" "$SDIR" 2>&1); rc=$?
+[ $rc -eq 1 ] && case "$out" in *"lane nor declared"*check-m.sh*) true ;; *) false ;; esac \
+    && ok "rule 1 counts a script run after a quote spanning lines" \
+    || no "rule 1 missed the run after a multi-line quote (rc=$rc: $out)"
+
+# A # on a string's second line is not a comment: cutting it there
+# left the quote open and hid the run after it (#883).
+mkgates check-a.sh check-m.sh
+printf 'jobs:\n  test:\n    steps:\n      - name: m\n        run: |\n          echo "start\n          x # y" && bash scripts/check-a.sh\n          bash scripts/check-m.sh\n' > "$WF"
+mklane "$LANE" "scripts/check-a.sh" ""
+out=$(bash "$CHECK" "$WF" "$LANE" "$SDIR" 2>&1); rc=$?
+[ $rc -eq 1 ] && case "$out" in *"lane nor declared"*check-m.sh*) true ;; *) false ;; esac \
+    && ok "rule 1 counts a run after a # inside a string spanning lines" \
+    || no "rule 1 lost the run after a # inside a spanning string (rc=$rc: $out)"
+
+# A longer word is not the script: check-m.sh.orig is not check-m.sh.
+mkgates check-a.sh
+mkwf "$WF" "bash scripts/check-a.sh" "bash scripts/check-m.sh.orig"
+mklane "$LANE" "scripts/check-a.sh" ""
+out=$(bash "$CHECK" "$WF" "$LANE" "$SDIR" 2>&1); rc=$?
+[ $rc -eq 0 ] && ok "rule 1 does not read check-m.sh.orig as check-m.sh" \
+               || no "rule 1 matched a prefix of a longer word (rc=$rc: $out)"
 
 # NOT_IN_CI: a gate no workflow runs by design passes with a reason, and
 # the declaration fails once a workflow runs it or the script is gone.

@@ -240,7 +240,7 @@ fi
 # name counts. The echo fixture must read as delegation under it, or the
 # #883 cases above are not measuring command position.
 MUT883="$TMP/mut-883.sh"
-sed -e "s#^\(    workflow_cmds=\"\$(workflow_shell_lines \"\$WORKFLOWS\"\) | shell_command_words | sed 's|\.\*/||')\"#\1)\"#" \
+sed -e "s#^\(    workflow_cmds=\"\$(workflow_shell_lines --raw \"\$WORKFLOWS\"\) | shell_command_words | sed 's|\.\*/||')\"#\1)\"#" \
     -e 's#^            \*\$.\\n."\$base"\$.\\n.\*) : ;;#            *"$base"*) : ;;#' "$RUNNER" > "$MUT883"
 if ! cmp -s "$RUNNER" "$MUT883" && ! grep -q 'shell_command_words |' "$MUT883" \
         && grep -qF '*"$base"*) : ;;' "$MUT883" && bash -n "$MUT883"; then

@@ -81,7 +81,7 @@ for f in "$WF" "$LANE_SH"; do
 done
 
 # --- what the workflow actually runs ----------------------------------
-invoked=$(workflow_shell_lines "$WF" | shell_command_words \
+invoked=$(workflow_shell_lines --raw "$WF" | shell_command_words \
     | grep -oE 'scripts/[A-Za-z0-9_.-]+\.sh$' \
     | grep -vE '^scripts/test-' \
     | sort -u)
@@ -168,7 +168,7 @@ extra=$(comm -23 <(printf '%s\n' "$lane") <(printf '%s\n' "$invoked"))
 WF_DIR="$(dirname "$WF")"
 [ -d "$WF_DIR" ] || { echo "check-local-lane: ${WF_DIR} is not a directory — cannot judge orphans." >&2; exit 2; }
 
-all_wf_invoked=$(workflow_shell_lines "$WF_DIR" | shell_command_words \
+all_wf_invoked=$(workflow_shell_lines --raw "$WF_DIR" | shell_command_words \
     | sed 's|.*/||' \
     | grep -E '^[A-Za-z0-9_.-]+\.sh$' \
     | sort -u)

@@ -79,8 +79,8 @@
 #   * `if:` is not evaluated. An invocation in a step or job that can
 #     never run still counts.
 #   * A tag assembled from a `${{ }}` expression is not expanded.
-#   * A run inside a string, `bash -c 'staticcheck ./...'`, is not
-#     read: only a command word counts (#883).
+#   * Only a command word counts (#883). In a `bash -c` string only the
+#     first command is read: `bash -c 'cd x && staticcheck ./...'` is not.
 #
 # Each of those would clear a term nothing lints, so they are named
 # rather than left to be discovered. `-tags "integration"` USED to
@@ -180,7 +180,7 @@ fi
 # Only a command whose first word is staticcheck counts: a word match
 # accepted `echo staticcheck -tags integration ./...` as coverage (#883).
 mapfile -t invocations < <(
-    workflow_shell_lines "$WORKFLOWS" | shell_simple_commands |
+    workflow_shell_lines --raw "$WORKFLOWS" | shell_simple_commands |
         grep -E '^([^ ]*/)?staticcheck( |$)'
 )
 

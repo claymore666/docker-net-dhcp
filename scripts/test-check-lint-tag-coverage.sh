@@ -326,6 +326,14 @@ repo c14d; go_plain; go_tagged integration
 wf 'go vet ./... && staticcheck ./...' '$HOME/go/bin/staticcheck -tags integration ./...'; track
 chk "a run after && and a path-qualified binary both count" "$(rc)" "0"
 
+# A string spanning block lines: its second line is prose, not a run.
+if [ "$SHAPE" = block ]; then
+    repo c14e; go_plain; go_tagged integration
+    wf 'staticcheck ./...' 'echo "views:
+          staticcheck -tags integration ./..."'; track
+    chk "a tagged run inside a string spanning lines is not a run" "$(rc)" "1"
+fi
+
 done
 
 # The mutant fixtures below are `bare` unless a case says otherwise.
@@ -387,7 +395,7 @@ fi
 # mutant does not clear, the new cases are not measuring the fix.
 mut_grep_all="$TMP/mut-grepall.sh"
 awk '
-/^    workflow_shell_lines "\$WORKFLOWS" \| shell_simple_commands \|$/ {
+/^    workflow_shell_lines --raw "\$WORKFLOWS" \| shell_simple_commands \|$/ {
     print "    grep -rhE \047(^|[[:space:]|;&(])staticcheck[[:space:]]\047 \"$WORKFLOWS\" 2>/dev/null |"
     print "        sed \047s/^[[:space:]]*//\047 | grep -v \047^#\047"
     getline
@@ -403,7 +411,7 @@ awk '
 mut_code="$(grep -v '^[[:space:]]*#' "$mut_grep_all")"
 c_built=1
 cmp -s "$GATE" "$mut_grep_all" && c_built=0
-case "$mut_code" in *'workflow_shell_lines "$WORKFLOWS"'*) c_built=0 ;; esac
+case "$mut_code" in *'workflow_shell_lines --raw "$WORKFLOWS"'*) c_built=0 ;; esac
 case "$mut_code" in *'grep -rhE'*) : ;; *) c_built=0 ;; esac
 if [ "$c_built" -eq 1 ] && bash -n "$mut_grep_all" 2>/dev/null; then
     ok "mutant C built, differs from the gate, and really restores the line-wide grep"
@@ -427,7 +435,7 @@ fi
 # echo decoy of case 14 must read CLEAN under it, or case 14 is inert.
 mut_word="$TMP/mut-word.sh"
 awk '
-/^    workflow_shell_lines "\$WORKFLOWS" \| shell_simple_commands \|$/ {
+/^    workflow_shell_lines --raw "\$WORKFLOWS" \| shell_simple_commands \|$/ {
     print "    workflow_shell_lines \"$WORKFLOWS\" |"
     print "        grep -E \047(^|[[:space:]|;&(])staticcheck[[:space:]]\047"
     getline

@@ -168,6 +168,16 @@ words "a continued command still counts" "scripts/a.sh" 'bash \' '  scripts/a.sh
 words "a heredoc body is not run" "cat scripts/b.sh" "cat <<'EOF'" "scripts/a.sh" "EOF" "scripts/b.sh"
 words "an indented heredoc delimiter" "cat" "cat <<-EOF" "  scripts/a.sh" "  EOF"
 words "a here-string is data" "grep" 'grep x <<< "scripts/a.sh"'
+words "a double quote spanning lines is data" "echo" 'echo "gates:' 'scripts/a.sh"'
+words "a single quote spanning lines is data" "gh" "gh pr comment 1 --body '" "scripts/a.sh" "'"
+words "the line after a spanning quote is a command" "echo scripts/a.sh scripts/b.sh" 'echo "a' 'b" && scripts/a.sh' 'scripts/b.sh'
+words "a # inside a spanning quote is data" "echo" 'echo "a # b' 'scripts/a.sh"'
+words "a trailing comment is not run" "true" 'true # bash scripts/a.sh'
+words "a separator inside a comment is not a separator" "true" 'true # x; scripts/a.sh'
+words "a quote inside a comment opens nothing" "true scripts/a.sh" "true # it's" 'scripts/a.sh'
+words "a quoted or glued # is not a comment" "echo scripts/a.sh" 'echo "#x" a#b; scripts/a.sh'
+words "a bash -c string runs its first word" "echo" 'bash -c "echo scripts/a.sh"'
+words "a bash -c string, assignment skipped" "scripts/a.sh" 'bash -ec "FOO=1 scripts/a.sh x; y"'
 
 # cmds <desc> <expected, lines joined by |> <shell line>...
 cmds() {
@@ -179,11 +189,26 @@ cmds "arguments follow the command word, quotes removed" "staticcheck -tags inte
 cmds "redirects and fd numbers are dropped" "make a|tee x" 'make a 2>&1 | tee x'
 cmds "an echo keeps its text as arguments" "echo staticcheck -tags x" 'echo staticcheck -tags x'
 cmds "a nested substitution is its own command" "git rev-parse --short HEAD|make capture-fixtures C=" 'make capture-fixtures C="$(git rev-parse --short HEAD)"'
+cmds "a bash -c string is the command" "staticcheck -tags integration ./..." "bash -c 'staticcheck -tags integration ./...'"
 
 wf 'jobs:' '  t:' '    steps:' '      - run: bash scripts/a.sh'
 got="$(workflow_shell_lines "$D/ci.yaml")"
 [ "$got" = "bash scripts/a.sh" ] && ok "a single workflow file is read" \
     || bad "a single workflow file gave '$got'"
+
+# --raw: a quote left open in one run: cannot swallow the next (#883).
+wf 'jobs:' '  t:' '    steps:' '      - run: echo "open' '      - run: bash scripts/a.sh'
+got="$(workflow_shell_lines --raw "$D" | shell_command_words | paste -sd' ')"
+[ "$got" = "echo scripts/a.sh" ] && ok "--raw ends an open quote at the next run:" \
+    || bad "--raw let a quote cross into the next step: '$got'"
+wf 'jobs:' '  t:' '    steps:' '      - run: |' '          echo "a # b' '          bash scripts/a.sh"'
+got="$(workflow_shell_lines --raw "$D" | shell_command_words | paste -sd' ')"
+[ "$got" = "echo" ] && ok "--raw keeps a # inside a quote spanning lines" \
+    || bad "--raw over a spanning quote gave '$got'"
+wf 'jobs:' '  t:' '    steps:' '      - run: |' '          echo "start' '          x # y" && bash scripts/a.sh'
+got="$(workflow_shell_lines --raw "$D" | shell_command_words | paste -sd' ')"
+[ "$got" = "echo scripts/a.sh" ] && ok "--raw does not cut a # on a string's second line" \
+    || bad "--raw cut inside a spanning string: '$got'"
 
 # --- NON-VACUITY against the real tree --------------------------------
 # Every case above is synthetic. If the extractor stopped reading this

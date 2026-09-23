@@ -150,6 +150,11 @@ write_wf "$LANE" "$CAP" 'echo done' '      - name: bash scripts/check-fixture-en
         run: "true"'
 check "a step that only names the drift gate is not a drift check" rc1 "$(verdict)"
 
+write_wf "$LANE" "$CAP" '|
+          echo "the drift check runs as:
+          bash scripts/check-fixture-engine-drift.sh"'
+check "a drift gate named inside a string spanning lines is not a drift check" rc1 "$(verdict)"
+
 write_wf "$LANE" 'make -C . capture-fixtures' './scripts/check-fixture-engine-drift.sh'
 check "make with options and a direct path still count" pass "$(verdict)"
 

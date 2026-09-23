@@ -76,7 +76,7 @@ fi
 # name naming the drift gate both passed a text match (#883).
 # shellcheck source=scripts/workflow-shell-lines.sh
 . "$(dirname "$0")/workflow-shell-lines.sh"
-cmds=$(workflow_shell_lines "$WF" | shell_simple_commands)
+cmds=$(workflow_shell_lines --raw "$WF" | shell_simple_commands)
 
 fail=0
 note() { echo "FAIL  $*" >&2; fail=1; }
@@ -111,7 +111,7 @@ if ! printf '%s\n' "$cmds" | grep -E '^make( [^ ]+)* capture-fixtures( |$)' >/de
 fi
 
 # --- 4. it verifies its own claim -------------------------------------
-if ! workflow_shell_lines "$WF" | shell_command_words | sed 's|.*/||' | grep -Fx "$DRIFT_GATE" >/dev/null; then
+if ! workflow_shell_lines --raw "$WF" | shell_command_words | sed 's|.*/||' | grep -Fx "$DRIFT_GATE" >/dev/null; then
     note "'$WF' does not re-run the drift gate after capturing."
     echo "  The capture can pass having written nothing — capture_one_flow" >&2
     echo "  reports that case and leaves the previous fixtures in place. The" >&2

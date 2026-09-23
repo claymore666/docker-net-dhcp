@@ -114,7 +114,7 @@ WORKFLOWS="${SELFTEST_WORKFLOWS:-$(cd "$HERE/.." && pwd)/.github/workflows}"
 # Extracted once: this runs per delegated test, and re-reading every
 # workflow each time would make the cost quadratic in the skip list.
 if [ -d "$WORKFLOWS" ]; then
-    workflow_cmds="$(workflow_shell_lines "$WORKFLOWS" | shell_command_words | sed 's|.*/||')"
+    workflow_cmds="$(workflow_shell_lines --raw "$WORKFLOWS" | shell_command_words | sed 's|.*/||')"
 else
     workflow_cmds=""
 fi
