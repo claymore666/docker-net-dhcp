@@ -965,7 +965,9 @@ be true.
     which copies the signed manifest and its referrers with `oras cp -r`,
     re-reads the digest through the alias name, refuses anything that is
     not the digest just signed, and verifies the signature under the
-    alias. It comes **after** signing on purpose: the alias is the same
+    alias. Docker Hub can list the copied signature later than the
+    manifest (once still missing 1.4 s after the copy), so the verify
+    reads up to six times, 10 s apart, before it fails (#1043). It comes **after** signing on purpose: the alias is the same
     manifest, not a second build (#267). The two Hub description steps
     are separate because the action PATCHes one repository at a time.
 
