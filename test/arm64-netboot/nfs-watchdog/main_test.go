@@ -187,8 +187,41 @@ func TestStatfsProbe(t *testing.T) {
 	}
 }
 
-// End to end against a file standing in for the device: petting starts,
-// and STOPS once the probe goes stale.
+// run() on its own ticker pets a healthy device within the pet interval.
+func TestRun_PetsAHealthyDeviceOnItsOwnTicker(t *testing.T) {
+	dev, err := os.CreateTemp(t.TempDir(), "watchdog")
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := &watchdog{f: dev}
+
+	p := &prober{path: "/irrelevant", interval: time.Hour, statfs: statfsProbe}
+	p.last.Store(time.Now().UnixNano())
+
+	c := config{petInterval: 5 * time.Millisecond, probeInterval: time.Millisecond,
+		staleAfter: time.Hour, hwTimeout: 2 * time.Hour}
+
+	sig := make(chan os.Signal, 1)
+	done := make(chan struct{})
+	go func() {
+		run(w, p, c, sig, make(chan struct{}), func(string, ...any) {})
+		close(done)
+	}()
+
+	// 600 pet intervals of headroom; a ticker a thousand times slower
+	// than configured misses it (#632).
+	deadline := time.Now().Add(3 * time.Second)
+	for size(t, dev.Name()) == 0 {
+		if time.Now().After(deadline) {
+			t.Fatalf("run() never petted a healthy device in 3s with a %s pet interval", c.petInterval)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	sig <- os.Interrupt
+	<-done
+}
+
+// Fed its ticks by the test, the loop pets a healthy device and STOPS once the probe goes stale.
 func TestRun_StopsPettingWhenTheProbeGoesStale(t *testing.T) {
 	dev, err := os.CreateTemp(t.TempDir(), "watchdog")
 	if err != nil {
