@@ -52,14 +52,18 @@ export FUZZ_TREE_ROOT="$TMP/tree"
 # written. Cases that say nothing about the lane get one that agrees
 # with the default stub tree, so a case still measures the thing it
 # names; the lane's own cases pass their own fifth argument.
-LANE_DEFAULT='          go test ./pkg/dhcp/ -run "^$" -fuzz "^FuzzX$" -fuzztime 200000x -timeout 5m'
+#
+# Each body is the shell of one `run: |` step and each lane body the
+# entries of a LANE array, because the gate reads only what those run
+# (#883). So the lane's first entry is line 2 of its file.
+LANE_DEFAULT="  \"fuzz (short)|go|go test ./pkg/dhcp/ -fuzz '^FuzzX\$' -fuzztime 200000x -timeout 5m\""
 
 failures=0
 # check NAME WANT_EXIT WORKFLOW_BODY GREP_PATTERN [LANE_BODY]
 check() {
     local name="$1" want_exit="$2" body="$3" want_grep="$4" lane="${5:-$LANE_DEFAULT}"
-    printf '%s\n' "$body" > "$TMP/wf.yaml"
-    printf '%s\n' "$lane" > "$TMP/lane.sh"
+    printf 'jobs:\n  fuzz:\n    steps:\n      - run: |\n%s\n' "$body" > "$TMP/wf.yaml"
+    printf 'LANE=(\n%s\n)\n' "$lane" > "$TMP/lane.sh"
     FUZZ_WORKFLOW="$TMP/wf.yaml" FUZZ_LANE="$TMP/lane.sh" bash "$CHECK" > "$TMP/out" 2>&1
     local got_exit=$?
     local ok=1
@@ -184,7 +188,7 @@ check "a lane -fuzz name that resolves passes" 0 \
 
 check "a lane -fuzz name that resolves to nothing is refused" 1 \
 "          go test ./pkg/dhcp/ -fuzz '^FuzzX$' -fuzztime 200000x -timeout 5m" \
-"lane.sh:1: -fuzz names FuzzGone" \
+"lane.sh:2: -fuzz names FuzzGone" \
 "          \"fuzz (short)|go|go test ./pkg/dhcp/ -fuzz '^FuzzGone$' -fuzztime 200000x -timeout 5m\""
 
 check "a tree target the lane alone never fuzzes is refused" 1 \
@@ -202,6 +206,78 @@ check "a wall-clock budget in the lane is rejected" 1 \
 "          go test ./pkg/dhcp/ -fuzz '^FuzzX$' -fuzztime 200000x -timeout 5m" \
 "wall-clock budget" \
 "          \"fuzz (short)|go|go test ./pkg/dhcp/ -fuzz '^FuzzX$' -fuzztime 20s -timeout 5m\""
+
+# A MENTION IS NOT AN INVOCATION (#883). Each decoy names FuzzX in
+# something that does not run it, beside a real FuzzA, in a tree holding
+# both; each passed while the gate read -fuzztime lines as text. The
+# control after it is the same file without the decoy, red on any gate.
+WF_A="          go test ./pkg/dhcp/ -fuzz '^FuzzA\$' -fuzztime 200000x -timeout 5m"
+WF_X="          go test ./pkg/dhcp/ -fuzz '^FuzzX\$' -fuzztime 200000x -timeout 5m"
+LANE_A="  \"fuzz (short)|go|go test ./pkg/dhcp/ -fuzz '^FuzzA\$' -fuzztime 200000x -timeout 5m\""
+LANE_X="  \"fuzz (short)|go|go test ./pkg/dhcp/ -fuzz '^FuzzX\$' -fuzztime 200000x -timeout 5m\""
+LANE_AX="$LANE_A
+$LANE_X"
+two() { FUZZ_TREE_ROOT="$TMP/two-tree" check "$@"; }
+
+two "an echoed go test in the workflow smokes nothing" 1 \
+"$WF_A
+          echo go test ./pkg/dhcp/ -fuzz '^FuzzX\$' -fuzztime 200000x -timeout 5m" \
+"FuzzX exists in the tree and $TMP/wf.yaml never fuzzes it" "$LANE_AX"
+two "a go test inside a quoted string smokes nothing" 1 \
+"$WF_A
+          echo \"
+$WF_X
+          \"" \
+"FuzzX exists in the tree and $TMP/wf.yaml never fuzzes it" "$LANE_AX"
+two "a go test in a step name smokes nothing" 1 \
+"$WF_A
+      - name: go test ./pkg/dhcp/ -fuzz '^FuzzX\$' -fuzztime 200000x -timeout 5m
+        run: \"true\"" \
+"FuzzX exists in the tree and $TMP/wf.yaml never fuzzes it" "$LANE_AX"
+two "control: the workflow without its decoy" 1 "$WF_A" \
+"FuzzX exists in the tree and $TMP/wf.yaml never fuzzes it" "$LANE_AX"
+
+check "a workflow whose only fuzz line is echoed is watching nothing" 2 \
+"          echo go test ./pkg/dhcp/ -fuzz '^FuzzX\$' -fuzztime 200000x -timeout 5m" \
+"watching nothing"
+check "control: the same workflow without the echo" 2 "          true" "watching nothing"
+
+two "an echoed lane entry smokes nothing" 1 "$WF_A
+$WF_X" \
+"FuzzX exists in the tree and $TMP/lane.sh never fuzzes it" \
+"$LANE_A
+  \"fuzz (short)|go|echo go test ./pkg/dhcp/ -fuzz '^FuzzX\$' -fuzztime 200000x -timeout 5m\""
+two "a comment after a lane entry smokes nothing" 1 "$WF_A
+$WF_X" \
+"FuzzX exists in the tree and $TMP/lane.sh never fuzzes it" \
+"$LANE_A
+  \"unit tests|go|go test ./...\" # -fuzz '^FuzzX\$' -fuzztime 200000x -timeout 5m"
+two "an entry outside the LANE array smokes nothing" 1 "$WF_A
+$WF_X" \
+"FuzzX exists in the tree and $TMP/lane.sh never fuzzes it" \
+"$LANE_A
+)
+OUT_OF_LANE=(
+  \"fuzz (short)|go|go test ./pkg/dhcp/ -fuzz '^FuzzX\$' -fuzztime 200000x -timeout 5m\""
+two "an escaped quote in a lane entry keeps the echo whole" 1 "$WF_A
+$WF_X" \
+"FuzzX exists in the tree and $TMP/lane.sh never fuzzes it" \
+"$LANE_A
+  \"fuzz (short)|go|echo \\\"; go test ./pkg/dhcp/ -fuzz '^FuzzX\$' -fuzztime 200000x -timeout 5m\\\"\""
+two "an escaped quote inside a lane entry does not end it" 0 "$WF_A
+$WF_X" "4 fuzz invocation(s) across 2 file(s)" \
+"$LANE_A
+  \"fuzz (short)|go|go test ./pkg/dhcp/ -run \\\"^\\\$\\\" -fuzz '^FuzzX\$' -fuzztime 200000x -timeout 5m\""
+two "two strings on one line are two entries" 1 "$WF_A
+$WF_X" \
+"FuzzX exists in the tree and $TMP/lane.sh never fuzzes it" \
+"$LANE_A
+  \"fuzz (short)|go|go test ./pkg/dhcp/\" \"-fuzz '^FuzzX\$' -fuzztime 200000x -timeout 5m\""
+two "control: the lane without its decoy" 1 "$WF_A
+$WF_X" \
+"FuzzX exists in the tree and $TMP/lane.sh never fuzzes it" "$LANE_A"
+two "both files running both targets pass" 0 "$WF_A
+$WF_X" "4 fuzz invocation(s) across 2 file(s)" "$LANE_AX"
 
 FUZZ_WORKFLOW="$TMP/does-not-exist.yaml" FUZZ_LANE="$TMP/lane.sh" bash "$CHECK" > "$TMP/out" 2>&1
 if [ $? -eq 2 ] && grep -q "does not exist" "$TMP/out"; then
