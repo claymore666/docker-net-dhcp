@@ -10,8 +10,8 @@
 #
 # POPULATION: TOP-LEVEL TEST FUNCTIONS, PARENTS ONLY.
 # One row per `func TestX(t *testing.T)` in test/integration/*_test.go —
-# 157 of them, the main suite's 150 and the failure suite's 7. MEASURED
-# on this table: 157 data rows, and 157 `func TestX(t *testing.T)` in
+# 160 of them, the main suite's 153 and the failure suite's 7. MEASURED
+# on this table: 160 data rows, and 160 `func TestX(t *testing.T)` in
 # test/integration/*_test.go counted independently of them.
 #
 # THIS NUMBER HAS NOW BEEN WRONG TWICE, and the second time is the
@@ -360,16 +360,32 @@
 #                  = 57.00 plus the 30s old lifetime, 1s slack and the
 #                    new prefix's formation.
 #              The first run that executes each costs it.
-#   samples    3 for every corpus row. FORTY-EIGHT rows are not corpus
-#              samples, and the eight groups below are disjoint and
+#   three rows the #1016 refusal rows are INFERRED, not measured: no
+#              run has executed them.
+#              TestCreateRefusals_EachNamesTheOptionAndTheReasonAndLeavesNoNetwork
+#              is 30.00: twelve refused creates, which cost what
+#              TestErrors_NetworkCreateValidation's eight do (0.04), and
+#              nineteen accepted create and remove pairs at about a
+#              second each.
+#              TestLeaseTimeout_AnEmptyValueIsTheDefaultAndTheContainerLeases
+#              is 20.00: TestIPAM_IpvlanIsRefusedAtCreate's shape (15.00,
+#              one refused create, one network, one container) plus a
+#              second refused create and a dnsmasq log read.
+#              TestDHCPv6_ARefusalLogsItsStatusCodeByNameOnce is 35.00:
+#              the refusing arm of TestDHCPv6_RefusedAndSilentAreTwoRows
+#              (56.00 for both arms, the silent one the longer) plus a
+#              plugin log read.
+#   samples    3 for every corpus row. FIFTY-ONE rows are not corpus
+#              samples, and the nine groups below are disjoint and
 #              exhaust them: the five `one row` notes above -- 73.85,
 #              84.19, 0.05, 12.08 and 13.00 -- the eighteen #110 rows,
 #              the four #962 TestReleaseLease_* rows, the two
 #              #816/#817 rows, the four #984 TestReleaseLease_OnRemove*
 #              rows, the four #978 TestHostIfname_* rows, the four
-#              #1016 TestReleaseLease_* rows, and the seven #1016 v6
-#              advertisement rows. Forty-five of the
-#              forty-eight are INFERRED; the three that are measured are
+#              #1016 TestReleaseLease_* rows, the seven #1016 v6
+#              advertisement rows, and the three #1016 refusal rows.
+#              Forty-eight of the fifty-one are INFERRED; the three
+#              that are measured are
 #              TestLeaseRenewIPv6_HonorsT1, from three later head runs,
 #              and TestFailure_UnansweredRenewalsCounted and
 #              TestHostname_ReachesTheServersTableAfterTheClientStarts,
@@ -469,7 +485,9 @@ TestConflictCheck_RestartInsideTheAsyncWindow	4.60
 TestConflictCheck_SquattedOfferIsDeclined	37.00
 TestConflictCheck_SquatterAfterTheFact	36.71
 TestConflictCheck_WaitAcquisitionIsTimed	9.15
+TestCreateRefusals_EachNamesTheOptionAndTheReasonAndLeavesNoNetwork	30.00
 TestDHCPv6_ADuplicateOnTheSegmentIsRefused	30.08
+TestDHCPv6_ARefusalLogsItsStatusCodeByNameOnce	35.00
 TestDHCPv6_ASquatOnARunningContainerIsCountedAndTheAddressChanges	38.00
 TestDHCPv6_AdvertisedMTUReachesTheContainer	30.00
 TestDHCPv6_Managed_ServerSilent_IsStillFatal	27.95
@@ -544,6 +562,7 @@ TestLeaseRenewIPv6_HonorsT1	73.85
 TestLeaseRenew_HonorsT1	27.38
 TestLeaseRetention_ARestartRebootsRatherThanDiscovers	12.92
 TestLeaseRetention_NothingEverReleases	35.23
+TestLeaseTimeout_AnEmptyValueIsTheDefaultAndTheContainerLeases	20.00
 TestLifecycleBridge_GoldenPath	12.19
 TestLifecycleBridge_IPv6_GoldenPath	16.98
 TestLifecycleIPvlan_GoldenPath	11.80

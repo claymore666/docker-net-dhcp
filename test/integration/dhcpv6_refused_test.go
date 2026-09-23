@@ -185,3 +185,73 @@ func TestIPv6Mode_SurvivesAPluginRestart(t *testing.T) {
 
 	assertDUIDStableAcrossAPluginRestart(t, ctx, cli, v6)
 }
+
+// refusalLogMsg is noteV6Absence's refusal line; the code name is also inside its error= field and Docker's relayed
+// error, so the test reads the status_code field and not the name anywhere on the line (#816).
+const refusalLogMsg = `msg="The DHCPv6 server refused this client; it answered and has no address for it"`
+
+var (
+	statusCodeField = regexp.MustCompile(`(?:^| )status_code=(\S+)`)
+	endpointField   = regexp.MustCompile(`(?:^| )endpoint=([0-9a-f]{12})(?: |$)`)
+)
+
+// TestDHCPv6_ARefusalLogsItsStatusCodeByNameOnce checks that a NoAddrsAvail answer gives one log line naming the code beside the endpoint and one dhcpv6_refused (#816, #1016).
+func TestDHCPv6_ARefusalLogsItsStatusCodeByNameOnce(t *testing.T) {
+	// The line is written before CreateEndpoint answers, and the daemon waits 30 s for that answer, so ContainerStart
+	// returning bounds the write; the 30 s read budget covers only the file reaching the disk (#868).
+	const daemonCallDeadline = 30 * time.Second
+	ctx, cancel := context.WithTimeout(context.Background(), 4*daemonCallDeadline)
+	defer cancel()
+
+	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+	if err != nil {
+		t.Fatalf("docker client: %v", err)
+	}
+	defer cli.Close()
+
+	f := harness.NewV6Fixture(t, harness.V6ManagedExhausted)
+	dumpOnFailure(t, f)
+
+	before := readV6FailureCounters(t, ctx, cli)
+	mark := harness.MarkPluginLog(t, ctx)
+
+	_, err = startOnV6SegmentWithOpts(t, ctx, cli, f, "dh-itest-v6refusedlog", map[string]string{"ipv6": "", "ipv6_mode": "dhcp"})
+	if err == nil {
+		t.Fatal("the container STARTED on a managed segment whose server answers NoAddrsAvail")
+	}
+	f.AssertExchange(daemonCallDeadline)
+
+	window := harness.AwaitPluginLogSince(t, ctx, mark, daemonCallDeadline, func(w string) bool {
+		return strings.Contains(w, refusalLogMsg)
+	})
+	var lines []string
+	for _, line := range strings.Split(window, "\n") {
+		if strings.Contains(line, refusalLogMsg) {
+			lines = append(lines, line)
+		}
+	}
+	if len(lines) != 1 {
+		t.Fatalf("%d refusal line(s) in the plugin log for one refused endpoint, want exactly 1:\n%s",
+			len(lines), strings.Join(lines, "\n"))
+	}
+	line := lines[0]
+	// The name is the library's rendering of RFC 9915 section 21.13's code 2, the one dnsmasq's static-only range sends.
+	if m := statusCodeField.FindStringSubmatch(line); m == nil || m[1] != "NoAddrsAvail" {
+		t.Errorf("the refusal line does not carry status_code=NoAddrsAvail as a field (got %v); "+
+			"docs/reference.md says the log line names the code:\n%s", m, line)
+	}
+	if !endpointField.MatchString(line) {
+		t.Errorf("the refusal line does not name the endpoint by its 12-hex short id:\n%s", line)
+	}
+
+	after := readV6FailureCounters(t, ctx, cli)
+	for _, name := range v6FailureCounters {
+		want := int64(0)
+		if name == "dhcpv6_refused" {
+			want = 1
+		}
+		if d := after[name] - before[name]; d != want {
+			t.Errorf("%s moved by %d for one refused endpoint, want %d", name, d, want)
+		}
+	}
+}
