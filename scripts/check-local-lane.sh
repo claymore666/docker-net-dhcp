@@ -27,7 +27,8 @@
 #   3. no declaration is stale — exempting a script the workflow no
 #      longer runs hides that the exemption stopped meaning anything
 #   4. no ORPHAN gate: every scripts/check-*.sh is invoked by some
-#      workflow, or declared out of lane
+#      workflow, or declared out of lane, or declared NOT_IN_CI with a
+#      reason and invoked by no workflow
 #
 # (4) closes this gate's own blind direction, and it was found the way
 # these things are always found — by writing a gate and forgetting to
@@ -41,7 +42,7 @@
 #
 # SCOPE, and why it is drawn here
 #
-# For rules 1-3: every `scripts/*.sh` invoked from a non-comment `run:`
+# For rules 1-3: every `scripts/*.sh` in command position of a `run:`
 # line in test.yaml, EXCEPT `test-*.sh`. For rule 4: every
 # `scripts/check-*.sh` on disk, judged against EVERY workflow rather
 # than test.yaml alone — a gate that runs only in release.yml or on a
@@ -50,9 +51,10 @@
 # already cannot drift; listing them here would mean maintaining the same
 # set twice.
 #
-# Comment lines are excluded deliberately: this file's own prose names
-# scripts, and so does test.yaml's. A gate that counted those would
-# demand exemptions for scripts nobody runs.
+# A mention is not an invocation: a comment, an `echo` argument, a step
+# `name:` or an `if:` naming a script counted as running it until #883,
+# which hid check-release-tooling.sh as wired while no workflow ran it.
+# Invocations are the words shell_command_words finds in command position.
 #
 # WHAT IT CANNOT DO
 #
@@ -67,6 +69,9 @@ set -uo pipefail
 
 cd "$(dirname "$0")/.." || exit 2
 
+# shellcheck source=scripts/workflow-shell-lines.sh
+. scripts/workflow-shell-lines.sh || exit 2
+
 WF="${1:-.github/workflows/test.yaml}"
 LANE_SH="${2:-scripts/local-lane.sh}"
 SCRIPTS_DIR="${3:-scripts}"
@@ -76,8 +81,8 @@ for f in "$WF" "$LANE_SH"; do
 done
 
 # --- what the workflow actually runs ----------------------------------
-invoked=$(grep -vE '^[[:space:]]*#' "$WF" \
-    | grep -oE 'scripts/[A-Za-z0-9_.-]+\.sh' \
+invoked=$(workflow_shell_lines "$WF" | shell_command_words \
+    | grep -oE 'scripts/[A-Za-z0-9_.-]+\.sh$' \
     | grep -vE '^scripts/test-' \
     | sort -u)
 
@@ -93,6 +98,8 @@ fi
 lane=$(bash "$LANE_SH" --list 2>/dev/null | sort -u)
 exempt_raw=$(bash "$LANE_SH" --list-exempt 2>/dev/null)
 exempt=$(printf '%s\n' "$exempt_raw" | grep -v '^$' | cut -f1 | sort -u)
+notci_raw=$(bash "$LANE_SH" --list-not-in-ci 2>/dev/null)
+notci=$(printf '%s\n' "$notci_raw" | grep -v '^$' | cut -f1 | sort -u)
 
 if [ -z "$lane" ]; then
     echo "check-local-lane: ${LANE_SH} --list printed nothing — cannot judge coverage." >&2
@@ -121,6 +128,10 @@ while IFS=$'\t' read -r script reason; do
         echo "  'Out of lane' without a reason is indistinguishable from an oversight." >&2
     fi
 done <<< "$exempt_raw"
+while IFS=$'\t' read -r script reason; do
+    [ -n "$script" ] || continue
+    [ -n "${reason// /}" ] || note "${script} is declared NOT_IN_CI with no reason."
+done <<< "$notci_raw"
 
 both=$(comm -12 <(printf '%s\n' "$lane") <(printf '%s\n' "$exempt"))
 if [ -n "$both" ]; then
@@ -157,16 +168,28 @@ extra=$(comm -23 <(printf '%s\n' "$lane") <(printf '%s\n' "$invoked"))
 WF_DIR="$(dirname "$WF")"
 [ -d "$WF_DIR" ] || { echo "check-local-lane: ${WF_DIR} is not a directory — cannot judge orphans." >&2; exit 2; }
 
-all_wf_invoked=$(cat "$WF_DIR"/*.y*ml 2>/dev/null \
-    | grep -vE '^[[:space:]]*#' \
-    | grep -oE '[A-Za-z0-9_.-]+\.sh' \
+all_wf_invoked=$(workflow_shell_lines "$WF_DIR" | shell_command_words \
+    | sed 's|.*/||' \
+    | grep -E '^[A-Za-z0-9_.-]+\.sh$' \
     | sort -u)
 on_disk=$(find "$SCRIPTS_DIR" -maxdepth 1 -name 'check-*.sh' -printf '%f\n' 2>/dev/null | sort -u)
 if [ -z "$on_disk" ]; then
     echo "check-local-lane: no ${SCRIPTS_DIR}/check-*.sh found — cannot judge orphans." >&2
     exit 2
 fi
-exempt_base=$(printf '%s\n' "$exempt" | sed 's|.*/||' | grep -v '^$' | sort -u)
+exempt_base=$(printf '%s\n' "$exempt" "$notci" | sed 's|.*/||' | grep -v '^$' | sort -u)
+notci_run=$(comm -12 <(printf '%s\n' "$notci" | sed 's|.*/||' | grep -v '^$' | sort -u) \
+                     <(printf '%s\n' "$all_wf_invoked"))
+if [ -n "$notci_run" ]; then
+    note "declared NOT_IN_CI, but a workflow runs it:"
+    printf '  %s\n' $notci_run >&2
+fi
+notci_gone=$(comm -23 <(printf '%s\n' "$notci" | sed 's|.*/||' | grep -v '^$' | sort -u) \
+                      <(printf '%s\n' "$on_disk"))
+if [ -n "$notci_gone" ]; then
+    note "declared NOT_IN_CI, but no such ${SCRIPTS_DIR}/check-*.sh exists:"
+    printf '  %s\n' $notci_gone >&2
+fi
 orphans=$(comm -23 <(printf '%s\n' "$on_disk") \
                    <(printf '%s\n' "$all_wf_invoked" "$exempt_base" | sort -u))
 if [ -n "$orphans" ]; then
@@ -174,9 +197,10 @@ if [ -n "$orphans" ]; then
     printf '  %s\n' $orphans >&2
     echo >&2
     echo "  A gate nothing invokes passes when run by hand and protects nothing." >&2
-    echo "  Add it to a workflow, or to OUT_OF_LANE in ${LANE_SH} with the reason" >&2
+    echo "  Add it to a workflow, or to NOT_IN_CI in ${LANE_SH} with the reason" >&2
     echo "  it cannot run in CI. Rules 1-3 above start from what a workflow runs," >&2
-    echo "  so they cannot see this state at all." >&2
+    echo "  so they cannot see this state at all. A step that only names the" >&2
+    echo "  script (echo, comment, name:, if:) does not run it." >&2
     echo >&2
     echo "  Being exercised by its own self-test does not count: that is coverage" >&2
     echo "  by accident, and it disappears the moment the self-test is rewritten." >&2
@@ -186,5 +210,5 @@ if [ "$fail" -ne 0 ]; then
     exit 1
 fi
 
-echo "PASS  local lane covers $(printf '%s\n' "$invoked" | grep -c .) script(s) from ${WF}: $(printf '%s\n' "$lane" | grep -c .) run, $(printf '%s\n' "$exempt" | grep -c .) declared out of lane; $(printf '%s\n' "$on_disk" | grep -c .) check-*.sh on disk, none orphaned"
+echo "PASS  local lane covers $(printf '%s\n' "$invoked" | grep -c .) script(s) from ${WF}: $(printf '%s\n' "$lane" | grep -c .) run, $(printf '%s\n' "$exempt" | grep -c .) declared out of lane; $(printf '%s\n' "$on_disk" | grep -c .) check-*.sh on disk, $(printf '%s\n' "$notci" | grep -c .) declared not in CI, none orphaned"
 exit 0

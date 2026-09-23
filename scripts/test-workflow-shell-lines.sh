@@ -142,6 +142,49 @@ else
     ok "a missing directory returns non-zero, distinct from finding no shell"
 fi
 
+# --- shell_command_words: command position (#883) ----------------------
+# words <desc> <expected, space-joined> <shell line>...
+words() {
+    local desc="$1" want="$2" got; shift 2
+    got="$(printf '%s\n' "$@" | shell_command_words | tr '\n' ' ')"
+    got="${got% }"
+    [ "$got" = "$want" ] && ok "$desc" || bad "$desc — want '$want', got '$got'"
+}
+words "a plain command" "scripts/a.sh" "scripts/a.sh --flag x.sh"
+words "behind bash and its options" "scripts/a.sh" "bash -e scripts/a.sh"
+words "an echo argument is not a command" "echo" 'echo "scripts/a.sh runs elsewhere"'
+words "a separator inside quotes is not a separator" "echo" 'echo "x; bash scripts/a.sh | y"'
+words "a single-quoted substitution is not run" "echo" "echo '\$(bash scripts/a.sh)'"
+words "each side of && || | ;" "a b c d true" "a && b || c | d; true x"
+words "an assignment is skipped, its substitution counts" "scripts/a.sh" 'x=$(bash scripts/a.sh arg) || x=run'
+words "a substitution inside double quotes counts" "scripts/a.sh" 'row="$(bash scripts/a.sh --rows)"'
+words "keywords are skipped" "[ scripts/a.sh" 'if [ -f x ]; then bash scripts/a.sh; fi'
+words "loop keywords are skipped" "for scripts/a.sh" 'for f in x; do bash scripts/a.sh "$f"; done'
+words "negation and grouping" "scripts/a.sh echo" '! bash scripts/a.sh || { echo no; }'
+words "a redirect target is not a command" "scripts/a.sh" 'bash scripts/a.sh > out.sh 2>&1'
+words "a quoted command word" "./scripts/a.sh" 'FOO=1 "./scripts/a.sh"'
+words "a continuation joins the next line" "echo" 'echo "see" \' '  "scripts/a.sh describe"'
+words "a continued command still counts" "scripts/a.sh" 'bash \' '  scripts/a.sh'
+words "a heredoc body is not run" "cat scripts/b.sh" "cat <<'EOF'" "scripts/a.sh" "EOF" "scripts/b.sh"
+words "an indented heredoc delimiter" "cat" "cat <<-EOF" "  scripts/a.sh" "  EOF"
+words "a here-string is data" "grep" 'grep x <<< "scripts/a.sh"'
+
+# cmds <desc> <expected, lines joined by |> <shell line>...
+cmds() {
+    local desc="$1" want="$2" got; shift 2
+    got="$(printf '%s\n' "$@" | shell_simple_commands | paste -sd'|')"
+    [ "$got" = "$want" ] && ok "$desc" || bad "$desc — want '$want', got '$got'"
+}
+cmds "arguments follow the command word, quotes removed" "staticcheck -tags integration ./..." "staticcheck -tags 'integration' ./..."
+cmds "redirects and fd numbers are dropped" "make a|tee x" 'make a 2>&1 | tee x'
+cmds "an echo keeps its text as arguments" "echo staticcheck -tags x" 'echo staticcheck -tags x'
+cmds "a nested substitution is its own command" "git rev-parse --short HEAD|make capture-fixtures C=" 'make capture-fixtures C="$(git rev-parse --short HEAD)"'
+
+wf 'jobs:' '  t:' '    steps:' '      - run: bash scripts/a.sh'
+got="$(workflow_shell_lines "$D/ci.yaml")"
+[ "$got" = "bash scripts/a.sh" ] && ok "a single workflow file is read" \
+    || bad "a single workflow file gave '$got'"
+
 # --- NON-VACUITY against the real tree --------------------------------
 # Every case above is synthetic. If the extractor stopped reading this
 # repository's own workflows it would still pass all of them, and both

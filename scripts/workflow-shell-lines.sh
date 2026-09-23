@@ -43,8 +43,8 @@
 #
 #   * It answers "is this token in something the workflow runs", not
 #     "is this token the command being run". `run: echo foo.sh` emits
-#     a line containing foo.sh. Callers that need argv position must
-#     say so themselves.
+#     a line containing foo.sh. Callers that need argv position pipe
+#     the lines through `shell_command_words` (#883).
 #   * It does not evaluate `if:`, job-level conditions, matrix
 #     exclusions or `continue-on-error`. A step that can never execute
 #     still contributes its shell.
@@ -115,16 +115,105 @@ function emit(s) {
 ' "$1"
 }
 
-# workflow_shell_lines DIR -- every line of shell the workflows under
-# DIR execute. Returns 1 if DIR is not a directory; the caller decides
+# workflow_shell_lines DIR|FILE -- every line of shell the workflows
+# under DIR, or the one workflow FILE, execute. Returns 1 if DIR is not a directory; the caller decides
 # whether that is a refusal, because "no workflows" and "no matching
 # shell" are different findings.
 workflow_shell_lines() {
     local dir="$1" f
+    if [ -f "$dir" ]; then _wsl_awk "$dir"; return 0; fi
     [ -d "$dir" ] || return 1
     while IFS= read -r f; do
         [ -n "$f" ] || continue
         _wsl_awk "$f"
     done < <(find "$dir" -type f \( -name '*.yml' -o -name '*.yaml' \) | LC_ALL=C sort)
     return 0
+}
+
+# shell_command_words -- reads shell lines on stdin, prints the word in
+# command position of every simple command, behind `bash`/`sh` and their
+# options (#883). Out of reach: `bash -c` strings, case patterns, quotes
+# spanning lines.
+shell_command_words() { _wsl_commands 0; }
+
+# shell_simple_commands -- the same commands, one per line, command word
+# first, then its arguments with quotes removed and redirects dropped.
+shell_simple_commands() { _wsl_commands 1; }
+
+_wsl_commands() {
+    awk -v full="$1" '
+BEGIN { SQ = sprintf("%c", 39) }
+function reset() { atstart = 1; collecting = 0; buf = ""; wrapper = 0; skipword = 0; sp = 0; q = ""; incmd = 0; cur = "" }
+function endcmd() { if (incmd) print cur; incmd = 0; cur = "" }
+function finish() {
+    if (!collecting) return
+    collecting = 0
+    if (skipword) { skipword = 0; buf = ""; return }
+    if (hdwant) { hdend = buf; hdwant = 0; buf = ""; return }
+    if (!atstart) { if (incmd) cur = cur " " buf; buf = ""; return }
+    if (buf ~ /^[A-Za-z_][A-Za-z0-9_]*\+?=/ && !wrapper) { buf = ""; return }
+    if (buf ~ /^(if|then|else|elif|fi|do|done|while|until|esac|!|time|\{|\}|exec|command|nohup)$/ && !wrapper) { buf = ""; return }
+    if (buf == "bash" || buf == "sh") { if (!wrapper) { wrapper = 1; buf = ""; return } }
+    if (wrapper && buf ~ /^-/) { buf = ""; return }
+    if (full) { incmd = 1; cur = buf } else print buf
+    atstart = 0; wrapper = 0; buf = ""
+}
+function opencmd() { finish(); endcmd(); atstart = 1; wrapper = 0 }
+function push(tag) { sp++; stk[sp] = tag; scur[sp] = cur; sinc[sp] = incmd; incmd = 0; cur = ""; collecting = 0; buf = ""; atstart = 1; wrapper = 0 }
+function pop() {
+    finish(); endcmd()
+    q = stk[sp]; cur = scur[sp]; incmd = sinc[sp]; sp--
+    if (q == "=assign") { q = ""; atstart = 1; collecting = 1; buf = "x=" }
+    else atstart = 0
+}
+function tokenize(s,   i, c, n) {
+    reset()
+    for (i = 1; i <= length(s); i++) {
+        c = substr(s, i, 1); n = substr(s, i + 1, 1)
+        if (q == SQ) { if (c == SQ) q = ""; else if (collecting) buf = buf c; continue }
+        if (q == "\"") {
+            if (c == "\\") { if (collecting) buf = buf n; i++; continue }
+            if (c == "\"") { q = ""; continue }
+            if (c == "$" && n == "(") { if (collecting && !atstart) finish(); push(q); q = ""; i++; continue }
+            if (collecting) buf = buf c
+            continue
+        }
+        if (c == " " || c == "\t") { finish(); continue }
+        if (c == "\\") { if (!collecting) { collecting = 1; buf = "" } buf = buf n; i++; continue }
+        if (c == SQ || c == "\"") { q = c; if (!collecting) { collecting = 1; buf = "" } continue }
+        if (c == "$" && n == "(") {
+            if (collecting && atstart && buf ~ /^[A-Za-z_][A-Za-z0-9_]*\+?=/) push("=assign")
+            else { finish(); push("") }
+            i++; continue
+        }
+        if (c == ")" && sp > 0) { pop(); continue }
+        if (c == "<" && n == "<") {
+            finish()
+            if (substr(s, i + 2, 1) == "<") { i += 2; skipword = 1; continue }
+            i++; if (substr(s, i + 1, 1) == "-") i++
+            hdwant = 1; continue
+        }
+        if (c == "<" || c == ">") {
+            if (collecting && buf ~ /^[0-9]+$/) { collecting = 0; buf = "" }
+            finish()
+            if (n == "&" || n == ">" || n == "|") i++
+            skipword = 1; continue
+        }
+        if (c == ";" || c == "&" || c == "|" || c == "(" || c == ")" || c == "`") { opencmd(); continue }
+        if (!collecting) { collecting = 1; buf = "" }
+        buf = buf c
+    }
+    finish(); endcmd()
+    while (sp > 0) { endcmd(); cur = scur[sp]; incmd = sinc[sp]; sp--; endcmd() }
+}
+{
+    line = $0
+    if (hdend != "") { t = line; gsub(/^[ \t]+|[ \t]+$/, "", t); if (t == hdend) hdend = ""; next }
+    if (pending != "") { line = pending line; pending = "" }
+    if (line ~ /\\$/ && line !~ /\\\\$/) { pending = substr(line, 1, length(line) - 1) " "; next }
+    hdwant = 0
+    tokenize(line)
+}
+END { if (pending != "") tokenize(pending) }
+'
 }
