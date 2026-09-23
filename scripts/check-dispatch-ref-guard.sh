@@ -17,7 +17,7 @@
 # judge, and the script with it, because a gate no workflow runs is an
 # orphan this repo's lane refuses (scripts/check-local-lane.sh). The
 # NAME is still what this check looks for, deliberately: a workflow
-# that names it without the script being written back fails closed at
+# that runs it without the script being written back fails closed at
 # the step, and shape (a) remains expressible for the next input that
 # needs a reachability answer instead of a shape answer.
 #
@@ -61,6 +61,11 @@
 # regex would be guessing, and the first person to write a correct check
 # it did not recognise would delete the rule rather than the code.
 #
+# A NAME COUNTS ONLY AS A COMMAND (#883). Either script proves something
+# only as the command word of a step's `run:` shell, read by
+# scripts/workflow-shell-lines.sh. Named in an `echo`, a step `name:` or
+# a `with:` value it executes nothing, and the job or step is unproven.
+#
 # WHAT IT DOES NOT CLAIM. It reads workflow text. It cannot tell whether
 # a guard job's `if:` leaves it skipped — which is exactly why the guard
 # job is written to run unconditionally and to pass trivially on a blank
@@ -80,6 +85,9 @@ DIR="${1:-$ROOT/.github/workflows}"
 GUARD_SCRIPT="check-dispatch-ref.sh"
 RESOLVER_SCRIPT="resolve-dispatch-ref.sh"
 
+# shellcheck source=scripts/workflow-shell-lines.sh
+. "$HERE/workflow-shell-lines.sh"
+
 if [ ! -d "$DIR" ]; then
     echo "::error title=Workflow directory missing::$DIR is not a directory" >&2
     exit 2
@@ -98,8 +106,8 @@ fi
 #   input <TAB> -   <TAB> <name>    <TAB> -        <TAB> -
 #   env   <TAB> job <TAB> <VAR>     <TAB> -        <TAB> -     (job "-" = workflow level)
 #   needs <TAB> job <TAB> <csv>     <TAB> -        <TAB> -
-#   guard <TAB> job <TAB> -         <TAB> -        <TAB> -
-#   step  <TAB> job <TAB> <id>      <TAB> <input?> <TAB> <resolver?>
+#   step  <TAB> job <TAB> <id>      <TAB> <input?> <TAB> -
+#   cand  <TAB> job <TAB> <id>      <TAB> -        <TAB> <step lines, \037-joined>
 #   sink  <TAB> job <TAB> <line>    <TAB> <expr>   <TAB> -
 #
 # Steps are buffered because the facts about a step (its `id:`, whether
@@ -109,9 +117,9 @@ fi
 scan_file() {
     awk -v guard="$GUARD_SCRIPT" -v resolver="$RESOLVER_SCRIPT" '
     function reset_step() { sn = 0 }
-    function flush_step(   i, id, usesin, res, isco, refexpr, refline, l) {
+    function flush_step(   i, id, usesin, named, isco, refexpr, refline, l, raw) {
         if (sn == 0) return
-        id = ""; usesin = 0; res = 0; isco = 0; refexpr = ""; refline = 0
+        id = ""; usesin = 0; named = 0; isco = 0; refexpr = ""; refline = 0; raw = ""
         for (i = 1; i <= sn; i++) {
             l = sbuf[i]
             if (l ~ /^[[:space:]]*#/) continue
@@ -131,7 +139,7 @@ scan_file() {
                 sub(/[[:space:]]*$/, "", id)
             }
             if (l ~ /inputs\.[A-Za-z0-9_-]+/) usesin = 1
-            if (index(l, resolver) > 0) res = 1
+            if (index(l, resolver) > 0 || index(l, guard) > 0) named = 1
             if (l ~ /uses:[[:space:]]*actions\/checkout/) isco = 1
             # POSIX ERE only: awk has no \S, and a silently
             # non-matching class here is exactly how a checker reports
@@ -143,7 +151,13 @@ scan_file() {
                 refline = sline[i]
             }
         }
-        printf "step\t%s\t%s\t%d\t%d\n", job, (id == "" ? "-" : id), usesin, res
+        printf "step\t%s\t%s\t%d\t-\n", job, (id == "" ? "-" : id), usesin
+        # A name is only a candidate: bash reads the shell of the step and counts
+        # it as a command word alone, so an echo or a name: proves nothing (#883).
+        if (named) {
+            for (i = 1; i <= sn; i++) { l = sbuf[i]; gsub(/\t/, " ", l); raw = raw (i > 1 ? "\037" : "") l }
+            printf "cand\t%s\t%s\t-\t%s\n", job, (id == "" ? "-" : id), raw
+        }
         if (isco && refexpr != "")
             printf "sink\t%s\t%d\t%s\t-\n", job, refline, refexpr
         reset_step()
@@ -161,9 +175,8 @@ scan_file() {
         if (job != "") {
             flush_step()
             printf "needs\t%s\t%s\t-\t-\n", job, (needs == "" ? "-" : needs)
-            if (isguard) printf "guard\t%s\t-\t-\t-\n", job
         }
-        job = ""; needs = ""; isguard = 0; reset_step()
+        job = ""; needs = ""; reset_step()
     }
 
     # --- the `on:` block, for the dispatch input names -----------------
@@ -234,7 +247,6 @@ scan_file() {
             }
             in_needs = 0
         }
-        if (index($0, guard) > 0 && $0 !~ /^[[:space:]]*#/) isguard = 1
         if ($0 ~ /^      - /) flush_step()
         sn++; sbuf[sn] = $0; sline[sn] = FNR
     }
@@ -268,11 +280,19 @@ for f in "${files[@]}"; do
                 [ "$a" = "-" ] && a=""
                 NEEDS["$job"]="$a"
                 ;;
-            guard)  GUARDJOB["$job"]=1 ;;
             step)
-                [ "$a" != "-" ] && { STEP_IN["${job}/${a}"]="$b"; STEP_RES["${job}/${a}"]="$c"; }
+                [ "$a" != "-" ] && STEP_IN["${job}/${a}"]="$b"
                 [ "$b" = "1" ] && JOB_USES_INPUT["$job"]=1
-                [ "$c" = "1" ] && JOB_HAS_RESOLVER["$job"]=1
+                ;;
+            cand)
+                while IFS= read -r w; do
+                    case "${w##*/}" in
+                        "$RESOLVER_SCRIPT")
+                            [ "$a" != "-" ] && STEP_RES["${job}/${a}"]=1
+                            JOB_HAS_RESOLVER["$job"]=1 ;;
+                        "$GUARD_SCRIPT") GUARDJOB["$job"]=1 ;;
+                    esac
+                done < <(printf '%s\n' "${c//$'\037'/$'\n'}" | workflow_shell_lines --raw - | shell_command_words)
                 ;;
             sink)   sink_rows+=("$job	$a	$b") ;;
         esac
