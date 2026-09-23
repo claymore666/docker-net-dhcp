@@ -10,8 +10,8 @@
 #
 # POPULATION: TOP-LEVEL TEST FUNCTIONS, PARENTS ONLY.
 # One row per `func TestX(t *testing.T)` in test/integration/*_test.go —
-# 146 of them, the main suite's 139 and the failure suite's 7. MEASURED
-# on this table: 146 data rows, and 146 `func TestX(t *testing.T)` in
+# 150 of them, the main suite's 143 and the failure suite's 7. MEASURED
+# on this table: 150 data rows, and 150 `func TestX(t *testing.T)` in
 # test/integration/*_test.go counted independently of them.
 #
 # THIS NUMBER HAS NOW BEEN WRONG TWICE, and the second time is the
@@ -23,7 +23,7 @@
 # population from the sharder and never reads this sentence, so nothing
 # goes red when it drifts: re-measure it against the table beside it
 # rather than adding your rows to the number already written here.
-# Recounted 2026-09-21. A subtest's
+# Recounted 2026-09-24. A subtest's
 # seconds are inside its parent's figure and are NOT a row of their own.
 # That is stated because the previous edition's header did not state it
 # and the population was read back two ways: 104 rows summing 1804.88s
@@ -310,15 +310,40 @@
 #              reads. The first run
 #              that executes each costs it, the way
 #              TestFailure_UnansweredRenewalsCounted was costed.
-#   samples    3 for every corpus row. THIRTY-SEVEN rows are not corpus
-#              samples, and the six groups below are disjoint and
+#   four rows  the #1016 TestReleaseLease_* rows are INFERRED, not
+#              measured: no run has executed them. They reuse the
+#              #984 rows' arithmetic, whose 80s (the 60s window, the 5s
+#              settle, one 15s sweep tick) no knob shortens.
+#              TestReleaseLease_OnRemoveNetworkRemovalHandsTheHeldAddressBackAtOnce
+#              is 30.00: TestReleaseLease_OnStopHandsTheAddressBack's
+#              walk (24.00) plus a container and a network removal; it
+#              waits for no window.
+#              TestReleaseLease_OnRemoveNetworkRemovalHandsBackOnlyThatNetworksAddresses
+#              is 125.00: two networks and three containers (24.00
+#              plus two starts of about 8s), then the sibling's own
+#              window, which is the 80s.
+#              TestReleaseLease_OnRemoveReleasesAtTheWindowsEndAcrossAPluginRestart
+#              is 105.00: TestReleaseLease_OnRemoveHoldsTheAddressThenHandsItBack
+#              (100.00) plus a plugin disable and enable inside the
+#              window, which overlaps it.
+#              TestReleaseLease_OnStopLeavesTheAddressToExpireWhenThePluginMissedTheStop
+#              is 230.00: a container walk (about 20s), a docker stop
+#              against a disabled plugin that may take the engine's
+#              plugin-client retry budget for each of Leave and
+#              DeleteEndpoint (30s each, moby pkg/plugins/client.go),
+#              a plugin enable (about 13s, as
+#              TestRecovery_PluginDisableEnable_PreservesEndpoint), and
+#              a 135s absence watch. The first run that executes each
+#              costs it.
+#   samples    3 for every corpus row. FORTY-ONE rows are not corpus
+#              samples, and the seven groups below are disjoint and
 #              exhaust them: the five `one row` notes above -- 73.85,
 #              84.19, 0.05, 12.08 and 13.00 -- the eighteen #110 rows,
 #              the four #962 TestReleaseLease_* rows, the two
 #              #816/#817 rows, the four #984 TestReleaseLease_OnRemove*
-#              rows, and the four #978 TestHostIfname_* rows.
-#              Thirty-four of the
-#              thirty-seven are INFERRED; the three that are measured are
+#              rows, the four #978 TestHostIfname_* rows, and the four
+#              #1016 TestReleaseLease_* rows. Thirty-eight of the
+#              forty-one are INFERRED; the three that are measured are
 #              TestLeaseRenewIPv6_HonorsT1, from three later head runs,
 #              and TestFailure_UnansweredRenewalsCounted and
 #              TestHostname_ReachesTheServersTableAfterTheClientStarts,
@@ -513,8 +538,12 @@ TestReleaseLease_OnRemoveHandsAnIPAMAddressBackToo	100.00
 TestReleaseLease_OnRemoveHandsTheV6AddressBackToo	108.00
 TestReleaseLease_OnRemoveHoldsTheAddressThenHandsItBack	100.00
 TestReleaseLease_OnRemoveKeepsTheAddressForARestartInsideTheWindow	105.00
+TestReleaseLease_OnRemoveNetworkRemovalHandsBackOnlyThatNetworksAddresses	125.00
+TestReleaseLease_OnRemoveNetworkRemovalHandsTheHeldAddressBackAtOnce	30.00
+TestReleaseLease_OnRemoveReleasesAtTheWindowsEndAcrossAPluginRestart	105.00
 TestReleaseLease_OnStopHandsTheAddressBack	24.00
 TestReleaseLease_OnStopHandsTheV6AddressBackToo	32.00
+TestReleaseLease_OnStopLeavesTheAddressToExpireWhenThePluginMissedTheStop	230.00
 TestReleaseLease_TheOptionIsRefusedAtCreateOrItIsNot	0.10
 TestSLAAC_ADeprecatedPrefixArrivesDeprecated	45.00
 TestSLAAC_ASegmentWithNoRouterEndsAFormingEndpoint	110.00
