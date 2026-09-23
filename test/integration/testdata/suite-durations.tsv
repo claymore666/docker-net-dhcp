@@ -356,8 +356,8 @@
 #                    advertChangeBudget = 38.14, two arms 76.28.
 #                TestSLAAC_AnAddressWhoseValidLifetimeRunsOut* 75.00
 #                  = 57.00 plus the 12s valid lifetime and 1s slack.
-#                TestSLAAC_RenumberingInOneAdvertisement*      85.00
-#                  = 57.00 plus the 20s old lifetime, 1s slack and the
+#                TestSLAAC_RenumberingInOneAdvertisement*      95.00
+#                  = 57.00 plus the 30s old lifetime, 1s slack and the
 #                    new prefix's formation.
 #              The first run that executes each costs it.
 #   samples    3 for every corpus row. FORTY-EIGHT rows are not corpus
@@ -581,7 +581,7 @@ TestSLAAC_ASegmentWithNoRouterEndsAFormingEndpoint	110.00
 TestSLAAC_AnAddressWhoseValidLifetimeRunsOutLeavesTheLink	75.00
 TestSLAAC_AnAdvertisedPrefixReachesTheContainer	45.00
 TestSLAAC_AutoFallsBackOntoTheAdvertisedPrefix	50.00
-TestSLAAC_RenumberingInOneAdvertisementEndsWithExactlyTheNewSet	85.00
+TestSLAAC_RenumberingInOneAdvertisementEndsWithExactlyTheNewSet	95.00
 TestSLAAC_TheAddressComesBackAfterAPluginRestart	60.00
 TestSandboxKeyRoute_Bridge	11.89
 TestSandboxKeyRoute_Ipvlan	11.60

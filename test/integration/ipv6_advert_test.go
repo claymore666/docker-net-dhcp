@@ -33,6 +33,11 @@ const advertChangeBudget = harness.RASenderInterval + 750*time.Millisecond
 // the kernel's address check: valid_lft 3 left the link after 3.03 to 3.32 s, measured 2026-09-24 (#1016).
 const kernelExpirySlack = time.Second
 
+// routeReadFloor is formedAddrReadFloor's exec round-trip on a loaded runner, applied to a route: the plugin installs
+// it by one netlink call inside the advertisement event, so the rest is the read. Both skip_routes arms read to the
+// same deadline, so a route the skip arm misses would also have been late for the positive arm (#1016).
+const routeReadFloor = formedAddrReadFloor
+
 func mustPrefix(t *testing.T, cidr string) netip.Prefix {
 	t.Helper()
 	p, err := netip.ParsePrefix(cidr)
@@ -488,10 +493,7 @@ func TestAdvertRoutes_BecomeContainerRoutesUnlessSkipRoutes(t *testing.T) {
 			want := []string{harness.AdvertOnLinkPrefix, harness.AdvertRoutePrefix, harness.AdvertRoutePrefix2}
 			var out string
 			var lines []string
-			deadline := at.Add(advertChangeBudget)
-			if c.wantRoutes {
-				deadline = deadline.Add(formedAddrReadFloor)
-			}
+			deadline := at.Add(advertChangeBudget + routeReadFloor)
 			for {
 				out = harness.ExecOutput(t, ctx, id, "ip", "-6", "route", "show")
 				lines = pluginV6Routes(out)
@@ -515,7 +517,7 @@ func TestAdvertRoutes_BecomeContainerRoutesUnlessSkipRoutes(t *testing.T) {
 				switch {
 				case c.wantRoutes && !ok:
 					t.Errorf("no route to %s in the container %s after the advertisement carrying it "+
-						"went out:\n%s", cidr, advertChangeBudget, out)
+						"went out:\n%s", cidr, advertChangeBudget+routeReadFloor, out)
 				case c.wantRoutes && cidr != harness.AdvertOnLinkPrefix && !strings.Contains(line, "via fe80::"):
 					t.Errorf("the RFC 4191 route to %s is not via the advertising router's link-local "+
 						"address: %q", cidr, line)
@@ -523,7 +525,8 @@ func TestAdvertRoutes_BecomeContainerRoutesUnlessSkipRoutes(t *testing.T) {
 					t.Errorf("the on-link prefix %s is routed via a gateway: %q", cidr, line)
 				case !c.wantRoutes && ok:
 					t.Errorf("skip_routes=true and the container has a route to %s (%q) after the lease "+
-						"path's bind and the advertisement-change path's %s:\n%s", cidr, line, advertChangeBudget, out)
+						"path's bind and the advertisement-change path's %s:\n%s", cidr, line,
+						advertChangeBudget+routeReadFloor, out)
 				}
 			}
 			if !slices.ContainsFunc(lines, func(l string) bool { return strings.HasPrefix(l, "default via fe80::") }) {
@@ -592,7 +595,7 @@ func TestSLAAC_RenumberingInOneAdvertisementEndsWithExactlyTheNewSet(t *testing.
 	defer cancel()
 	cli := dockerClientFor(t)
 
-	const oldValid = 20
+	const oldValid = 30
 	a, b := mustPrefix(t, harness.AdvertPrefixA), mustPrefix(t, harness.AdvertPrefixB)
 	f, sender := startSenderSegment(t, harness.RangeArgsFor(harness.V6NoRA), slaacOn(
 		advertPrefix(t, harness.AdvertPrefixA, true, oldValid, oldValid)))
@@ -610,6 +613,14 @@ func TestSLAAC_RenumberingInOneAdvertisementEndsWithExactlyTheNewSet(t *testing.
 		advertPrefix(t, harness.AdvertPrefixA, true, 0, 0)))
 	last := lastFrameAdvertising(t, awaitSenderFrame(t, f, at), a)
 	addrB, _ := awaitContainerV6(t, ctx, id, b, harness.IPAcquisitionBudget)
+	held := at.Add(oldValid*time.Second - harness.RASenderInterval - kernelExpirySlack)
+	if set, out := globalV6Set(t, ctx, id); !time.Now().Before(held) {
+		t.Fatalf("%s formed only %s after the renumbering frame, past the %s the old address is still "+
+			"owed:\n%s", addrB, time.Since(at).Round(time.Millisecond), held.Sub(at), out)
+	} else if !slices.Contains(set, addrA) {
+		t.Errorf("%s left the link as soon as %s was advertised with valid 0, with under two hours "+
+			"left; RFC 4862 section 5.5.3(e) keeps it to its own expiry:\n%s", addrA, a, out)
+	}
 	gone := last.Add(oldValid*time.Second + kernelExpirySlack)
 
 	var set []string
