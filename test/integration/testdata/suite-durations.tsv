@@ -10,8 +10,8 @@
 #
 # POPULATION: TOP-LEVEL TEST FUNCTIONS, PARENTS ONLY.
 # One row per `func TestX(t *testing.T)` in test/integration/*_test.go —
-# 150 of them, the main suite's 143 and the failure suite's 7. MEASURED
-# on this table: 150 data rows, and 150 `func TestX(t *testing.T)` in
+# 157 of them, the main suite's 150 and the failure suite's 7. MEASURED
+# on this table: 157 data rows, and 157 `func TestX(t *testing.T)` in
 # test/integration/*_test.go counted independently of them.
 #
 # THIS NUMBER HAS NOW BEEN WRONG TWICE, and the second time is the
@@ -335,15 +335,41 @@
 #              TestRecovery_PluginDisableEnable_PreservesEndpoint), and
 #              a 135s absence watch. The first run that executes each
 #              costs it.
-#   samples    3 for every corpus row. FORTY-ONE rows are not corpus
-#              samples, and the seven groups below are disjoint and
+#   seven rows the #1016 rows are INFERRED, not measured. Each starts
+#              from TestSLAAC_AnAdvertisedPrefixReachesTheContainer
+#              (45.00) or a named row, adds harness.V6NoRAWindow (12s)
+#              where its fixture proves no dnsmasq advertisement before
+#              the harness sender starts, and adds the lifetimes it
+#              waits out; each is rounded UP.
+#                TestMainPrefix_* (two)                        60.00
+#                  = 45.00 + 12.00 = 57.00.
+#                TestAutoStrict_*                              80.00
+#                  = AutoFallsBackOntoTheAdvertisedPrefix (50.00) plus
+#                    TestDHCPv6_Managed_ServerSilent_IsStillFatal
+#                    (27.95) for the strict arm = 77.95.
+#                TestAdvertDNS_*                               75.00
+#                  = 45.00 plus TestDHCPv6_Managed_StillRequiresALease
+#                    (16.39), plus a persistent bind per arm (2 to 5s,
+#                    #875) = 71.39.
+#                TestAdvertRoutes_*                            85.00
+#                  = per arm 12.00 + 16.39 + 5 for the bind + 4.75 for
+#                    advertChangeBudget = 38.14, two arms 76.28.
+#                TestSLAAC_AnAddressWhoseValidLifetimeRunsOut* 75.00
+#                  = 57.00 plus the 12s valid lifetime and 1s slack.
+#                TestSLAAC_RenumberingInOneAdvertisement*      85.00
+#                  = 57.00 plus the 20s old lifetime, 1s slack and the
+#                    new prefix's formation.
+#              The first run that executes each costs it.
+#   samples    3 for every corpus row. FORTY-EIGHT rows are not corpus
+#              samples, and the eight groups below are disjoint and
 #              exhaust them: the five `one row` notes above -- 73.85,
 #              84.19, 0.05, 12.08 and 13.00 -- the eighteen #110 rows,
 #              the four #962 TestReleaseLease_* rows, the two
 #              #816/#817 rows, the four #984 TestReleaseLease_OnRemove*
-#              rows, the four #978 TestHostIfname_* rows, and the four
-#              #1016 TestReleaseLease_* rows. Thirty-eight of the
-#              forty-one are INFERRED; the three that are measured are
+#              rows, the four #978 TestHostIfname_* rows, the four
+#              #1016 TestReleaseLease_* rows, and the seven #1016 v6
+#              advertisement rows. Forty-five of the
+#              forty-eight are INFERRED; the three that are measured are
 #              TestLeaseRenewIPv6_HonorsT1, from three later head runs,
 #              and TestFailure_UnansweredRenewalsCounted and
 #              TestHostname_ReachesTheServersTableAfterTheClientStarts,
@@ -426,8 +452,11 @@
 #     | sed -E 's/.*: ([A-Za-z0-9_]+) \(([0-9.]+)s\)/\1\t\2/'
 # then take the per-name median across the three, sort by name, and
 # re-derive the shard counts above from the new totals.
+TestAdvertDNS_ReachesTheResolverAndDHCPv6ComesFirst	75.00
+TestAdvertRoutes_BecomeContainerRoutesUnlessSkipRoutes	85.00
 TestAuditLog_DefaultOff	12.63
 TestAuditLog_RecordsLifecycle	12.31
+TestAutoStrict_ASilentManagedServerFailsTheEndpointAndTheDefaultFallsBack	80.00
 TestClasslessStaticRoutes_AbsentWithoutOptIn	12.09
 TestClasslessStaticRoutes_AppliedFromDHCP	11.96
 TestClientID_DefaultIsMACDerived	11.50
@@ -522,6 +551,8 @@ TestLifecycleMacvlan_GoldenPath	11.61
 TestLifecycleMacvlan_IPv6_GoldenPath	17.68
 TestMTUPropagate_DefaultIsUnchanged	12.15
 TestMTUPropagate_OptInSetsLinkMTU	11.79
+TestMainPrefix_AnUnadvertisedPrefixReportsTheFirstAdvertisedOne	60.00
+TestMainPrefix_TheSecondOfTwoAdvertisedPrefixesIsWhatDockerReports	60.00
 TestMetrics_SocketServesTheFullSurface	0.01
 TestMultiNetwork_SameSubnetRefused	27.75
 TestNonRootContainer_PersistentClientStarts	27.48
@@ -547,8 +578,10 @@ TestReleaseLease_OnStopLeavesTheAddressToExpireWhenThePluginMissedTheStop	230.00
 TestReleaseLease_TheOptionIsRefusedAtCreateOrItIsNot	0.10
 TestSLAAC_ADeprecatedPrefixArrivesDeprecated	45.00
 TestSLAAC_ASegmentWithNoRouterEndsAFormingEndpoint	110.00
+TestSLAAC_AnAddressWhoseValidLifetimeRunsOutLeavesTheLink	75.00
 TestSLAAC_AnAdvertisedPrefixReachesTheContainer	45.00
 TestSLAAC_AutoFallsBackOntoTheAdvertisedPrefix	50.00
+TestSLAAC_RenumberingInOneAdvertisementEndsWithExactlyTheNewSet	85.00
 TestSLAAC_TheAddressComesBackAfterAPluginRestart	60.00
 TestSandboxKeyRoute_Bridge	11.89
 TestSandboxKeyRoute_Ipvlan	11.60
