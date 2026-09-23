@@ -414,5 +414,201 @@ else
 fi
 : > "$WORK/waivers.txt"
 
+# --- the verdict is about the SHA it prints (#888) -------------------
+# These cases run the gate as CI does: no seam, inside a git checkout,
+# from its root, against the tracked files.
+mkrepo() {
+    guarded_tmpdir REPO
+    (
+        cd "$REPO" || exit 2
+        git init -q .
+        git config user.email t@t; git config user.name t
+        git config commit.gpgsign false
+        mkdir scripts
+        cp "$GATE" scripts/check-release-notes-symbols.sh
+        printf 'package fixture\n\nfunc renameMe() {}\n' > src.go
+        cat > RELEASE_NOTES.md <<'MD'
+## v9.9.0
+
+The helper is `renameMe`.
+MD
+        git add -A; git commit -qm base
+    ) >/dev/null 2>&1
+}
+grun() {
+    OUT=$(cd "${1:-$REPO}" && bash "$REPO/scripts/check-release-notes-symbols.sh" 2>&1)
+    RC=$?
+}
+
+mkrepo
+grun
+sha=$(git -C "$REPO" rev-parse --short HEAD)
+if [ "$RC" = 0 ] && printf '%s' "$OUT" | grep "resolve at $sha" >/dev/null; then
+    ok "a clean checkout passes at its SHA, as in CI"
+else
+    no "clean checkout: expected exit 0 at $sha, got $RC: $OUT"
+fi
+
+sed -i 's/renameMe/renamedTo/' "$REPO/src.go"
+grun
+if [ "$RC" = 2 ] && printf '%s' "$OUT" | grep 'Uncommitted changes' | grep 'src.go' >/dev/null; then
+    ok "a symbol renamed in the working tree only is refused, naming the file"
+else
+    no "working-tree rename: expected exit 2 naming src.go, got $RC: $OUT"
+fi
+
+( cd "$REPO" && git commit -qam rename ) >/dev/null 2>&1
+grun
+sha=$(git -C "$REPO" rev-parse --short HEAD)
+if [ "$RC" = 1 ] && printf '%s' "$OUT" | grep "renameMe. does not resolve.*at $sha" >/dev/null; then
+    ok "the same rename, committed, fails at the new SHA, as in CI"
+else
+    no "committed rename: expected exit 1 naming renameMe at $sha, got $RC: $OUT"
+fi
+
+mkrepo
+cat > "$REPO/RELEASE_NOTES.md" <<'MD'
+## v9.9.0
+
+The helper is `stagedOnly`.
+MD
+printf 'package fixture\n\nfunc stagedOnly() {}\n' > "$REPO/staged.go"
+( cd "$REPO" && git add -A ) >/dev/null 2>&1
+grun
+if [ "$RC" = 2 ] && printf '%s' "$OUT" | grep 'Uncommitted changes' | grep 'staged.go' >/dev/null; then
+    ok "a symbol defined only in a staged file does not pass at a SHA that lacks it"
+else
+    no "staged-only symbol: expected exit 2 naming staged.go, got $RC: $OUT"
+fi
+
+mkrepo
+cat > "$REPO/RELEASE_NOTES.md" <<'MD'
+## v9.9.0
+
+The helper is `notInvented`.
+MD
+grun
+if [ "$RC" = 2 ] && printf '%s' "$OUT" | grep 'Uncommitted changes' | grep 'RELEASE_NOTES.md' >/dev/null; then
+    ok "release notes edited in the working tree only are refused, naming the file"
+else
+    no "working-tree notes edit: expected exit 2 naming RELEASE_NOTES.md, got $RC: $OUT"
+fi
+
+mkrepo
+rm -f "$REPO/src.go"
+grun
+if [ "$RC" = 2 ] && printf '%s' "$OUT" | grep 'Uncommitted changes' | grep 'src.go' >/dev/null; then
+    ok "a tracked Go file deleted in the working tree only is refused"
+else
+    no "working-tree deletion: expected exit 2 naming src.go, got $RC: $OUT"
+fi
+
+mkrepo
+printf 'package fixture\n\nfunc scratchCopy() {}\n' > "$REPO/scratch.go"
+printf 'draft\n' > "$REPO/notes.txt"
+grun
+if [ "$RC" = 0 ]; then
+    ok "untracked files are outside the corpus and do not cause a refusal"
+else
+    no "untracked files: expected exit 0, got $RC: $OUT"
+fi
+
+cp "$REPO/RELEASE_NOTES.md" "$REPO/draft.md"
+OUT=$(cd "$REPO" && bash scripts/check-release-notes-symbols.sh draft.md 2>&1)
+RC=$?
+if [ "$RC" = 2 ] && printf '%s' "$OUT" | grep 'Untracked file checked' | grep 'draft.md' >/dev/null; then
+    ok "an untracked notes file inside the checkout is refused, naming it"
+else
+    no "untracked notes file: expected exit 2 naming draft.md, got $RC: $OUT"
+fi
+
+mkrepo
+guarded_tmpdir OTHER
+( cd "$OTHER" && git init -q . ) >/dev/null 2>&1
+grun "$OTHER"
+if [ "$RC" = 2 ] && printf '%s' "$OUT" | grep 'Run from another checkout' >/dev/null; then
+    ok "the gate refuses when run from a different checkout than its own"
+else
+    no "another checkout: expected exit 2, got $RC: $OUT"
+fi
+grun "$REPO/scripts"
+if [ "$RC" = 0 ]; then
+    ok "a subdirectory of the gate's own checkout is the same checkout"
+else
+    no "subdirectory: expected exit 0, got $RC: $OUT"
+fi
+
+mkrepo
+sed -i 's/renameMe/renamedTo/' "$REPO/src.go"
+OUT=$(cd "$REPO" && SYMBOL_SOURCES="$WORK/src.go" SYMBOL_WAIVERS="$WORK/waivers.txt" \
+      bash scripts/check-release-notes-symbols.sh "$WORK/ok.md" 2>&1)
+RC=$?
+if [ "$RC" = 0 ]; then
+    ok "the SYMBOL_SOURCES seam judges only the files it names, not the dirty checkout"
+else
+    no "seam in a dirty checkout: expected exit 0, got $RC: $OUT"
+fi
+
+mkrepo
+guarded_tmpdir LINKDIR
+ln -s "$REPO" "$LINKDIR/checkout"
+OUT=$(cd "$LINKDIR/checkout" && bash scripts/check-release-notes-symbols.sh 2>&1)
+RC=$?
+if [ "$RC" = 0 ]; then
+    ok "a checkout reached through a symlink is the same checkout"
+else
+    no "symlinked checkout: expected exit 0, got $RC: $OUT"
+fi
+printf '# HISTORICAL - renamed\nrenameMe\n' >> "$REPO/RELEASE_NOTES.md"
+OUT=$(cd "$LINKDIR/checkout" && bash scripts/check-release-notes-symbols.sh 2>&1)
+RC=$?
+if [ "$RC" = 2 ] && printf '%s' "$OUT" | grep 'Uncommitted changes' | grep 'RELEASE_NOTES.md' >/dev/null; then
+    ok "dirty notes reached through a symlinked checkout are refused"
+else
+    no "symlinked checkout, dirty notes: expected exit 2 naming RELEASE_NOTES.md, got $RC: $OUT"
+fi
+
+mkrepo
+(
+    cd "$REPO" || exit 2
+    mkdir .github
+    printf '# waivers\n' > .github/release-notes-symbol-waivers.txt
+    git add -A; git commit -qm waivers
+) >/dev/null 2>&1
+printf '# HISTORICAL - renamed\nrenameMe\n' >> "$REPO/.github/release-notes-symbol-waivers.txt"
+grun
+if [ "$RC" = 2 ] && printf '%s' "$OUT" | grep 'Uncommitted changes' | grep 'release-notes-symbol-waivers.txt' >/dev/null; then
+    ok "a waiver file edited in the working tree only is refused, naming it"
+else
+    no "working-tree waiver edit: expected exit 2 naming the waiver file, got $RC: $OUT"
+fi
+
+mkrepo
+cp "$REPO/RELEASE_NOTES.md" "$REPO/draft.md"
+echo draft.md >> "$REPO/.git/info/exclude"
+OUT=$(cd "$REPO" && bash scripts/check-release-notes-symbols.sh draft.md 2>&1)
+RC=$?
+if [ "$RC" = 2 ] && printf '%s' "$OUT" | grep 'Untracked file checked' | grep 'draft.md' >/dev/null; then
+    ok "an ignored notes file inside the checkout is refused, naming it"
+else
+    no "ignored notes file: expected exit 2 naming draft.md, got $RC: $OUT"
+fi
+
+guarded_tmpdir SHIM
+real_git=$(command -v git)
+cat > "$SHIM/git" <<SH
+#!/bin/sh
+for a; do [ "\$a" = diff ] && exit 128; done
+exec $real_git "\$@"
+SH
+chmod +x "$SHIM/git"
+OUT=$(cd "$REPO" && PATH="$SHIM:$PATH" bash scripts/check-release-notes-symbols.sh 2>&1)
+RC=$?
+if [ "$RC" = 2 ] && printf '%s' "$OUT" | grep 'Cannot compare with HEAD' >/dev/null; then
+    ok "a failing git diff refuses instead of passing"
+else
+    no "failing git diff: expected exit 2, got $RC: $OUT"
+fi
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

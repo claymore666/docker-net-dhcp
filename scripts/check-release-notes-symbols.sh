@@ -77,7 +77,8 @@
 #                        (default: the tracked *.go files) -- the seam
 #                        the self-test drives.
 # Exit:  0 every symbol resolves or is waived, 1 one or more do not,
-#        2 cannot check.
+#        2 cannot check, including uncommitted changes to the checked
+#        files or a run from another checkout (#888).
 
 set -uo pipefail
 
@@ -95,6 +96,57 @@ fi
 # reason to skip -- it is a reason to say so and still resolve.
 SHA=$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null) || SHA=""
 [ -z "$SHA" ] && SHA="unknown-tree"
+
+# The verdict names a SHA, and a dirty tree or another checkout is not
+# that SHA. Measured on e69ba52: a staged new .go file passed "at
+# e69ba52", which lacks it, and the script run from a second checkout
+# judged that checkout's tree (#888). Refusing keeps a clean CI checkout
+# unchanged; untracked Go files are outside the corpus and do not count.
+if [ "$SHA" != "unknown-tree" ]; then
+    ROOT_P=$(cd "$ROOT" && pwd -P)
+    specs=()
+    docs=()
+    if [ -z "${SYMBOL_SOURCES:-}" ]; then
+        here=$(git rev-parse --show-toplevel 2>/dev/null) || here=""
+        if [ -n "$here" ] && [ "$here" != "$ROOT_P" ]; then
+            echo "::error title=Run from another checkout::this script judges ${ROOT_P} at ${SHA}," \
+                 "but it was run from ${here}. Run the copy of the script inside the checkout" \
+                 "you mean to check." >&2
+            exit 2
+        fi
+        specs+=('*.go')
+    fi
+    for f in "$NOTES" "$WAIVERS"; do
+        [ -f "$f" ] || continue
+        abs="$(cd "$(dirname "$f")" && pwd -P)/$(basename "$f")"
+        case "$abs" in
+            "$ROOT_P"/*) docs+=(":(literal)${abs#"$ROOT_P"/}") ;;
+        esac
+    done
+    if [ "${#docs[@]}" -ne 0 ]; then
+        untracked=$(git -C "$ROOT" ls-files --others -- "${docs[@]}" 2>/dev/null)
+        if [ -n "$untracked" ]; then
+            echo "::error title=Untracked file checked::$(printf "%s" "$untracked" | tr '\n' ' ')" \
+                 "is not in ${SHA}, so a verdict \"at ${SHA}\" would not be about it." \
+                 "Commit it, or pass a file outside the checkout." >&2
+            exit 2
+        fi
+        specs+=("${docs[@]}")
+    fi
+    if [ "${#specs[@]}" -ne 0 ]; then
+        if ! dirty=$(git -C "$ROOT" diff --name-only HEAD -- "${specs[@]}" 2>/dev/null); then
+            echo "::error title=Cannot compare with HEAD::git diff --name-only HEAD failed in ${ROOT_P}," \
+                 "so whether the checked files are the ones at ${SHA} is unknown." >&2
+            exit 2
+        fi
+        if [ -n "$dirty" ]; then
+            echo "::error title=Uncommitted changes in the checked files::the verdict would say" \
+                 "\"at ${SHA}\" about files that differ from ${SHA}: $(printf "%s" "$dirty" | tr '\n' ' ')." \
+                 "Commit them and run again." >&2
+            exit 2
+        fi
+    fi
+fi
 
 # ---------------------------------------------------------------- corpus
 # Resolve against tracked Go files, with comments and string literals
