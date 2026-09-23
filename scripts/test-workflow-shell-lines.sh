@@ -172,6 +172,7 @@ words "a double quote spanning lines is data" "echo" 'echo "gates:' 'scripts/a.s
 words "a single quote spanning lines is data" "gh" "gh pr comment 1 --body '" "scripts/a.sh" "'"
 words "the line after a spanning quote is a command" "echo scripts/a.sh scripts/b.sh" 'echo "a' 'b" && scripts/a.sh' 'scripts/b.sh'
 words "a # inside a spanning quote is data" "echo" 'echo "a # b' 'scripts/a.sh"'
+words "an escaped quote does not close a spanning string" "echo" 'echo "a \" b' 'scripts/a.sh""' '"'
 words "a trailing comment is not run" "true" 'true # bash scripts/a.sh'
 words "a separator inside a comment is not a separator" "true" 'true # x; scripts/a.sh'
 words "a quote inside a comment opens nothing" "true scripts/a.sh" "true # it's" 'scripts/a.sh'

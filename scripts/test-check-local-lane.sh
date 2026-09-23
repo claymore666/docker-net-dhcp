@@ -166,11 +166,12 @@ mkdecoy() {
             heredoc)  printf '      - name: m\n        run: |\n          cat <<'"'"'EOF'"'"'\n          scripts/check-m.sh\n          EOF\n' ;;
             mlquote)  printf '      - name: m\n        run: |\n          echo "gates that run elsewhere:\n          scripts/check-m.sh"\n' ;;
             mlsingle) printf '      - name: m\n        run: |\n          gh pr comment 1 --body '"'"'\n          scripts/check-m.sh\n          '"'"'\n' ;;
+            mlescape) printf '      - name: m\n        run: |\n          echo "a \\" b\n          scripts/check-m.sh""\n          "\n' ;;
             bashc)    printf '      - name: m\n        run: bash -c "echo scripts/check-m.sh"\n' ;;
         esac
     } > "$f"
 }
-for shape in echo comment nameonly quoted cont heredoc mlquote mlsingle bashc; do
+for shape in echo comment nameonly quoted cont heredoc mlquote mlsingle mlescape bashc; do
     mkgates check-a.sh
     mkdecoy "$WF" "$shape"
     mklane "$LANE" "scripts/check-a.sh" ""

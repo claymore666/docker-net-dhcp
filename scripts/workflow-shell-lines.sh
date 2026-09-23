@@ -139,7 +139,8 @@ workflow_shell_lines() {
 # command position of every simple command, behind `bash`/`sh` and their
 # options, and the first word of a `bash -c` string (#883). Feed it
 # `workflow_shell_lines --raw` so quotes spanning lines are joined. Out
-# of reach: case patterns, and later commands inside a `bash -c` string.
+# of reach: case patterns, later commands inside a `bash -c` string, and a
+# `bash` nested in one (read as `bash`).
 shell_command_words() { _wsl_commands 0; }
 
 # shell_simple_commands -- the same commands, one per line, command word
