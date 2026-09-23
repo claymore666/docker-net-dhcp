@@ -118,15 +118,16 @@ function emit(s) {
 ' "$1"
 }
 
-# workflow_shell_lines [--raw] DIR|FILE -- every line of shell the workflows
-# under DIR, or the one workflow FILE, execute. Returns 1 if DIR is not a directory; the caller decides
+# workflow_shell_lines [--raw] DIR|FILE|- -- every line of shell the workflows
+# under DIR, the one workflow FILE, or the YAML on stdin (`-`, one step or
+# job cut out by a caller, #883) execute. Returns 1 if DIR is not a directory; the caller decides
 # whether that is a refusal, because "no workflows" and "no matching
 # shell" are different findings.
 workflow_shell_lines() {
     local dir="$1" f
     local raw=0
     if [ "$dir" = --raw ]; then raw=1; dir="$2"; fi
-    if [ -f "$dir" ]; then _wsl_awk "$dir" "$raw"; return 0; fi
+    if [ "$dir" = - ] || [ -f "$dir" ]; then _wsl_awk "$dir" "$raw"; return 0; fi
     [ -d "$dir" ] || return 1
     while IFS= read -r f; do
         [ -n "$f" ] || continue

@@ -211,6 +211,13 @@ got="$(workflow_shell_lines --raw "$D" | shell_command_words | paste -sd' ')"
 [ "$got" = "echo scripts/a.sh" ] && ok "--raw does not cut a # on a string's second line" \
     || bad "--raw cut inside a spanning string: '$got'"
 
+# One step cut out of a workflow is read from stdin, as the step-aware
+# gates feed it (#883). `name:` stays prose there too.
+got="$(printf '%s\n' '      - name: bash scripts/b.sh' '        run: echo x && bash scripts/a.sh' |
+    workflow_shell_lines --raw - | shell_command_words | paste -sd' ')"
+[ "$got" = "echo scripts/a.sh" ] && ok "a step on stdin is read, its name is not" \
+    || bad "a step on stdin gave '$got'"
+
 # --- NON-VACUITY against the real tree --------------------------------
 # Every case above is synthetic. If the extractor stopped reading this
 # repository's own workflows it would still pass all of them, and both
