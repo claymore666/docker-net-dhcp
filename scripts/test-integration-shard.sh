@@ -174,6 +174,118 @@ else
     no "the shard target does not run ./test/integration/harness/ — its integration-tagged guards would never execute"
 fi
 
+# Placement (#866): each case runs the partitioner on a scratch copy of
+# the tree with one edit, and a stranded test must be named, not counted.
+# shellcheck source=scripts/tmpdir-guard.sh
+. "$HERE/tmpdir-guard.sh"
+guarded_tmpdir PLACE
+scratch() {
+    local d="$PLACE/$1"
+    mkdir -p "$d/scripts" "$d/test"
+    cp "$SHARD" "$d/scripts/" && cp "$MK" "$d/" && cp -r "$SUITE" "$d/test/"
+    printf '%s' "$d"
+}
+go_test() { # <file> <build line or ""> <func line>
+    mkdir -p "$(dirname "$1")"
+    printf '%s\n\npackage %s\n\nimport "testing"\n\n%s {}\n' "$2" "$(basename "$(dirname "$1")")" "$3" > "$1"
+}
+placement() { # <label> <tree> <want exit> [<name the refusal must print>]
+    local err rc
+    err=$(bash "$2/scripts/integration-shard.sh" 1 1 main 2>&1 >/dev/null); rc=$?
+    if [ "$rc" != "$3" ]; then
+        no "placement: $1 exited $rc, want $3: $err"
+    elif [ -n "${4:-}" ] && ! printf '%s' "$err" | grep -F -- "$4" >/dev/null; then
+        no "placement: $1 exited $rc but did not name $4: $err"
+    else
+        ok "placement: $1 exits $3${4:+ and names $4}"
+    fi
+}
+HARNESS_LINE='go test -tags integration -count=1 ./test/integration/harness/'
+TAG='//go:build integration'
+
+d=$(scratch harness)
+go_test "$d/test/integration/harness/placed_test.go" "$TAG" 'func TestPlacedInHarness(t *testing.T)'
+placement "a tagged test in harness/, run by the make line" "$d" 0
+
+d=$(scratch sub)
+go_test "$d/test/integration/harness/sub/placed_test.go" "$TAG" 'func TestPlacedBelowHarness(t *testing.T)'
+placement "a tagged test in harness/sub/" "$d" 1 "TestPlacedBelowHarness"
+
+d=$(scratch sibling)
+go_test "$d/test/integration/sibling/placed_test.go" "$TAG" 'func TestPlacedInASibling(t *testing.T)'
+placement "a tagged test in a new sibling package" "$d" 1 "TestPlacedInASibling"
+
+d=$(scratch sibling-untagged)
+go_test "$d/test/integration/sibling/placed_test.go" "" 'func TestUntaggedSibling(t *testing.T)'
+placement "an untagged test in a sibling package, which the unit lane runs" "$d" 0
+
+d=$(scratch lowercase)
+go_test "$d/test/integration/sibling/placed_test.go" "$TAG" 'func Testable(t *testing.T)'
+placement "a func Go does not name a test (Test then lowercase)" "$d" 0
+
+d=$(scratch testdata)
+go_test "$d/test/integration/testdata/placed_test.go" "$TAG" 'func TestInTestdata(t *testing.T)'
+placement "a test file under testdata/, which go test skips" "$d" 0
+
+d=$(scratch underscore)
+go_test "$d/test/integration/_scratch/placed_test.go" "$TAG" 'func TestInAnUnderscoreDir(t *testing.T)'
+placement "a test under a _ directory, which go test skips" "$d" 0
+
+d=$(scratch loose)
+go_test "$d/test/integration/loose_test.go" "$TAG" 'func TestLooseForm(tt *testing.T)'
+placement "a top-level test the roster regex does not read" "$d" 1 "TestLooseForm"
+
+for edit in delete comment filter untag othertag; do
+    d=$(scratch "line-$edit")
+    go_test "$d/test/integration/harness/placed_test.go" "$TAG" 'func TestPlacedInHarness(t *testing.T)'
+    case "$edit" in
+        delete)  sed -i "\\#$HARNESS_LINE#d" "$d/Makefile" ;;
+        comment) sed -i "s#@$HARNESS_LINE#@\\# $HARNESS_LINE#" "$d/Makefile" ;;
+        filter)  sed -i "s#-count=1 ./test/integration/harness/#-count=1 -run TestNone ./test/integration/harness/#" "$d/Makefile" ;;
+        othertag) sed -i "s#go test -tags integration -count=1 ./test/integration/harness/#go test -tags nointegration -count=1 ./test/integration/harness/#" "$d/Makefile" ;;
+        untag)   sed -i "s#go test -tags integration -count=1 ./test/integration/harness/#go test -count=1 ./test/integration/harness/#" "$d/Makefile" ;;
+    esac
+    if cmp -s "$MK" "$d/Makefile"; then
+        no "placement: the '$edit' edit did not change the Makefile, so the case would prove nothing"
+    else
+        placement "a harness test with the make line edited ($edit)" "$d" 1 "TestPlacedInHarness"
+    fi
+done
+
+d=$(scratch recursive)
+go_test "$d/test/integration/harness/sub/placed_test.go" "$TAG" 'func TestPlacedBelowHarness(t *testing.T)'
+sed -i "s#-count=1 ./test/integration/harness/\$#-count=1 ./test/integration/harness/...#" "$d/Makefile"
+placement "a harness/sub/ test once the make line names harness/..." "$d" 0
+
+d=$(scratch prefix)
+go_test "$d/test/integration/harnessX/placed_test.go" "$TAG" 'func TestPlacedInAPrefixSibling(t *testing.T)'
+sed -i "s#-count=1 ./test/integration/harness/\$#-count=1 ./test/integration/harness/...#" "$d/Makefile"
+placement "a sibling whose name only starts with harness, under harness/..." "$d" 1 "TestPlacedInAPrefixSibling"
+
+d=$(scratch testm)
+go_test "$d/test/integration/sibling/placed_test.go" "$TAG" 'func TestMigrate(t *testing.T)'
+placement "a stranded test whose name starts with TestM" "$d" 1 "TestMigrate"
+
+d=$(scratch tags-list)
+go_test "$d/test/integration/harness/placed_test.go" "$TAG" 'func TestPlacedInHarness(t *testing.T)'
+sed -i "s#go test -tags integration -count=1 ./test/integration/harness/#go test -tags 'linux,integration' -count=1 ./test/integration/harness/#" "$d/Makefile"
+placement "a harness test under a quoted tag list naming integration" "$d" 0
+
+d=$(scratch other-target)
+go_test "$d/test/integration/harness/sub/placed_test.go" "$TAG" 'func TestPlacedBelowHarness(t *testing.T)'
+printf '\nother-target:\n\t@go test -tags integration -count=1 ./test/integration/...\n' >> "$d/Makefile"
+placement "a harness/sub/ test run only by a different make target" "$d" 1 "TestPlacedBelowHarness"
+
+d=$(scratch empty)
+find "$d/test/integration" -name '*_test.go' -delete
+placement "a tree with no Test function at all" "$d" 2 "no Test function found"
+err=$(bash "$d/scripts/integration-shard.sh" 1 1 main 2>&1)
+if printf '%s' "$err" | grep -F "suite tests found" >/dev/null; then
+    no "placement: the empty enumeration fell through to the roster refusal instead of refusing first"
+else
+    ok "placement: the empty enumeration refuses before the roster is consulted"
+fi
+
 # THE PARTITION MUST NOT DEPEND ON WHO RUNS IT (#554).
 #
 # The completeness cases above cannot catch this by construction: they
