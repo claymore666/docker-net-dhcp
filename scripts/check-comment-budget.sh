@@ -108,7 +108,7 @@ func classify(name string, src []byte) file {
 		if tok == token.SEMICOLON && lit == "\n" {
 			continue
 		}
-		start := fset.Position(pos).Line
+		start := fset.PositionFor(pos, false).Line
 		switch tok {
 		case token.COMMENT:
 			if isDirective(lit) {
@@ -178,7 +178,7 @@ func markPkgDoc(f *file, name string, src []byte) {
 	if af.Doc == nil {
 		return
 	}
-	for i := fset.Position(af.Doc.Pos()).Line; i <= fset.Position(af.Doc.End()).Line; i++ {
+	for i := fset.PositionFor(af.Doc.Pos(), false).Line; i <= fset.PositionFor(af.Doc.End(), false).Line; i++ {
 		if f.class[i] == comment {
 			f.class[i] = pkgdoc
 		}
@@ -446,8 +446,10 @@ extract "$b" "$WORK/head"
 git -c core.quotePath=false diff -U0 -M --no-color --diff-filter=d "$mb" "$b" -- '*.go' > "$WORK/diff" \
     || die2 "cannot diff $mb $b"
 LC_ALL=C awk '
-    /^\+\+\+ / { path = substr($0, 7); next }
+    /^diff --git / { hdr = 1; next }
+    hdr && /^\+\+\+ / { path = substr($0, 7); next }
     /^@@ / {
+        hdr = 0
         split($3, h, ","); start = substr(h[1], 2) + 0; n = (h[2] == "" ? 1 : h[2] + 0)
         for (i = 0; i < n; i++) print path ":" (start + i)
     }' "$WORK/diff" | grep -Ev '(^|/)(testdata|vendor)/' > "$WORK/added"

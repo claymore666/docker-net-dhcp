@@ -146,6 +146,82 @@ package p
 $(cmt 11 '#9')
 var z = 1" 1 'doc.go:5: comment block of 11 lines'
 
+# Multi-file fixtures (#1056): BEFORE writes the base commit's tree and
+# AFTER changes it for the head commit; the gate judges HEAD~1..HEAD.
+run_setup() { # NAME WANT_RC WANT_GREP BEFORE AFTER
+    local name="$1" want="$2" want_grep="$3" before="$4" after="$5" dir rc
+    guarded_tmpdir dir
+    (
+        cd "$dir" || exit 2
+        git init -q .
+        git config user.email t@t; git config user.name t
+        git config commit.gpgsign false
+        mkdir p
+        "$before"; git add -A; git commit -qm base
+        "$after"; git add -A; git commit -qm head
+        bash "$GATE" HEAD~1..HEAD > "$dir/out" 2>&1
+        echo $? > "$dir/rc"
+    ) >/dev/null 2>&1
+    rc=$(cat "$dir/rc" 2>/dev/null)
+    if [ "$rc" = "$want" ] && { [ -z "$want_grep" ] || grep -E "$want_grep" "$dir/out" >/dev/null; }; then
+        ok "$name"
+    else
+        no "$name (exit $rc, want $want)"
+        sed 's/^/      /' "$dir/out" >&2
+    fi
+    rm -rf "$dir"
+}
+# One comment over thirty lines of code: any comment line a new file
+# brings in without code raises the share.
+lean() { gofile "$(cmt 1)
+$(code 30)" > p/a.go; }
+base_old() { lean; gofile "$(cmt 12)
+$(code 30 | sed 's/^var v/var o/')" > p/old.go; }
+rename_edit() { git mv p/old.go p/new.go; sed -i 's/^var o30 = 30$/var o30 = 31/' p/new.go; }
+run_setup "a renamed file with an old block and a one-line edit passes" 0 'gate passed' base_old rename_edit
+header_file() { printf '%s\n\n%s\n' "$LIC" "$(gofile "$(code 3 | sed 's/^var v/var h/')")" > p/h.go; }
+run_setup "a licence header in a new file stays out of the share" 0 'gate passed' lean header_file
+doc_file() { printf '%s\npackage p\n' "$(cmt 12 '#9')" > p/doc.go; }
+run_setup "a doc.go package doc stays out of the share" 0 'gate passed' lean doc_file
+bad_file() { printf 'package p\n\nvar s = "open\n' > p/bad.go; }
+run_setup "an added file that does not scan exits 2" 2 'bad.go does not scan' lean bad_file
+base_tail() { gofile "$(basebody)
+$(code 30)" > p/a.go; }
+plus_line() {
+    gofile "$(basebody)
+var r = \`
+++ changed
+\`
+$(code 30)
+// one #7
+$(code 20 | sed 's/^var v/var w/')" > p/a.go
+}
+run_setup "an added line starting ++ is not read as a file header" 0 'gate passed' base_tail plus_line
+base_body() { printf '%s\n' "$BASE" > p/a.go; }
+raw_string() {
+    gofile "$(basebody)
+// one #7
+var r = \`
+$(seq 1 12)
+\`" > p/a.go
+}
+run_setup "every line of a multi-line raw string is code" 0 'gate passed' base_body raw_string
+line_directive() {
+    gofile "$(basebody)
+//line gen.go:1
+//line gen.go:90
+$(code 10 | sed 's/^var v/var w/')
+$(cmt 2)" > p/a.go
+}
+run_setup "//line directives do not move line numbers" 1 'a.go:45: .*carries no' base_body line_directive
+line_only() {
+    gofile "$(basebody)
+//line gen.go:1
+//line gen.go:90
+$(code 10 | sed 's/^var v/var w/')" > p/a.go
+}
+run_setup "//line directives are ignored" 0 'gate passed' base_body line_only
+
 # Ranges.
 run_case "an unresolvable range exits 2" p/a.go "$BASE" "$(grow "")" 2 'cannot resolve' nosuch..HEAD
 run_case "a bare revision exits 2" p/a.go "$BASE" "$(grow "")" 2 'not a <base>..<head> range' HEAD
