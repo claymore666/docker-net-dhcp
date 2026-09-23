@@ -245,6 +245,66 @@ printf '\n# an added comment\n' >> "$d/integration-hosted.yml"
 run "PRESERVATION: a comment naming a shard does not schedule one" 0 "$GATE" "$d" \
     "integration.yml schedules 11 shard(s) covering all [0-9][0-9]* test(s) exactly once"
 
+# --- a shard is a matrix value, not a mention (#883) ----------------------
+# Each decoy stands beside its deleted-line control: main-2's target or
+# id is gone, and the only shard line left is one the lane never reads.
+sc_edit() {   # sc_edit <dir> <file> <old> <new>
+    python3 - "$@" <<'PY'
+import sys
+d, f, a, b = sys.argv[1:]
+p = d + "/" + f
+s = open(p).read()
+assert s.count(a) == 1, (f, a)
+open(p, "w").write(s.replace(a, b))
+PY
+}
+T2="target: integration-test-shard SHARD=2 OF=9 SUITE=main"
+d=$(wfcopy sc0)
+sc_edit "$d" integration.yml "$T2" "target: integration-test"
+run "CONTROL: main-2's target deleted is red" 1 "$GATE" "$d" \
+    "Tests no scheduled shard runs::integration.yml"
+d=$(wfcopy sc1)
+sc_edit "$d" integration.yml "$T2" "target: integration-test  # integration-test-shard SHARD=2 OF=9 SUITE=main"
+run "a shard target in a YAML comment schedules nothing" 1 "$GATE" "$d" \
+    "Tests no scheduled shard runs::integration.yml"
+d=$(wfcopy sc1b)
+sc_edit "$d" integration.yml "$T2" "target: integration-test
+          # - suite: main-2
+          #   target: integration-test-shard SHARD=2 OF=9 SUITE=main"
+run "a matrix entry commented out schedules nothing" 1 "$GATE" "$d" \
+    "Tests no scheduled shard runs::integration.yml"
+d=$(wfcopy sc2)
+sc_edit "$d" integration.yml "$T2" "target: integration-test
+            note: echo make integration-test-shard SHARD=2 OF=9 SUITE=main"
+run "a shard line under another matrix key schedules nothing" 1 "$GATE" "$d" \
+    "Tests no scheduled shard runs::integration.yml"
+d=$(wfcopy sc3c)
+sc_edit "$d" integration-hosted.yml '"main-2-of-9",' ''
+run "CONTROL: main-2-of-9 deleted from the hosted matrix is red" 1 "$GATE" "$d" \
+    "Tests no scheduled shard runs::integration-hosted.yml"
+d=$(wfcopy sc3)
+sc_edit "$d" integration-hosted.yml '"main-2-of-9",' ''
+sc_edit "$d" integration-hosted.yml "    strategy:" '    # was "main-2-of-9"
+    strategy:'
+run "a hosted shard id in a YAML comment schedules nothing" 1 "$GATE" "$d" \
+    "Tests no scheduled shard runs::integration-hosted.yml"
+d=$(wfcopy sclist)
+python3 - "$d/integration-hosted.yml" <<'PY'
+import re, sys
+p = sys.argv[1]
+s = open(p).read()
+m = re.search(r"fromJSON\('(\[\"main-1-of-9\"[^]]*\])'\)", s)
+line = re.search(r"\n( *)shard: \$\{\{.*\n", s)
+ids = re.findall(r'"([^"]+)"', m.group(1))
+block = "\n%sshard:\n" % line.group(1) + "".join("%s  - %s\n" % (line.group(1), i) for i in ids)
+open(p, "w").write(s[:line.start()] + block + s[line.end():])
+PY
+run "a hosted matrix written as a YAML list is read" 0 "$GATE" "$d" \
+    "integration-hosted.yml schedules 11 shard(s) covering all [0-9][0-9]* test(s) exactly once"
+d=$(wfcopy scbad)
+printf 'jobs: [\n' >> "$d/integration.yml"
+run "a lane that is not YAML refuses" 2 "$GATE" "$d" "A lane cannot be read"
+
 # --- wiring: the gate is actually run by the lane and by local-lane.sh ----
 if grep -q "check-shard-coverage.sh" "$ROOT/.github/workflows/test.yaml"; then
     ok "the lane runs this gate"

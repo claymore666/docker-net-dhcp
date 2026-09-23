@@ -22,7 +22,7 @@ mkws() {
     local ws
     guarded_tmpdir ws
     mkdir -p "$ws/scripts" "$ws/.github/workflows"
-    cp "$REPO/$GATE" "$ws/scripts/"
+    cp "$REPO/$GATE" "$REPO/scripts/workflow-shell-lines.sh" "$ws/scripts/"
     cp "$REPO/Makefile" "$REPO/config.json" "$REPO/config-cover.json" "$ws/"
     # BOTH extensions, or this suite reproduces the very narrowing it is
     # here to catch: a workspace built from `*.yml` alone cannot tell a
@@ -129,9 +129,10 @@ ws=$(mkws)
 jq '.mounts += [{"name":"dotted","description":"x","destination":"/var/lib/net-dhcp.d","source":"/var/lib/net-dhcp.d","type":"bind","options":["rbind","rw"]}]' \
     "$ws/config.json" > "$ws/config.json.t" && mv "$ws/config.json.t" "$ws/config.json"
 # The decoy: a literal mkdir of a DIFFERENT directory that the old regex
-# matched because '.' is a metacharacter.
-sed -i 's|^\( *\)mkdir -p /var/lib/net-dhcp$|\1mkdir -p /var/lib/net-dhcpXd /var/lib/net-dhcp|' \
-    "$ws/.github/workflows/integration.yml"
+# matched because '.' is a metacharacter. In every workflow, or another
+# install's plain mkdir produces the red and a regex passes (#883).
+sed -i -E 's#^( *)(sudo )?mkdir -p /var/lib/net-dhcp$#\1\2mkdir -p /var/lib/net-dhcpXd /var/lib/net-dhcp#' \
+    "$ws"/.github/workflows/*.y*ml
 
 # Prove the old check accepted it, so the case below is not a tautology.
 if printf '%s\n' "          mkdir -p /var/lib/net-dhcpXd /var/lib/net-dhcp" \
@@ -184,6 +185,61 @@ rm -f "$narrowed"
 
 check "an install in a .yaml workflow is inspected too" 1 "$ws" "plugin-nowhere"
 
+# 11. A mention is not an invocation (#883). Each decoy names the command
+#     in text; its control deletes the line. Both give one verdict.
+mutate_wf() { # WS FILE SED-SCRIPT: the edit has to have applied
+    cp "$1/.github/workflows/$2" "$1/before"
+    sed -i -E "$3" "$1/.github/workflows/$2"
+    if cmp -s "$1/before" "$1/.github/workflows/$2"; then
+        echo "FAIL: '$3' left $2 unchanged; re-anchor it"
+        fail=$((fail + 1))
+    fi
+    rm -f "$1/before"
+}
+ws=$(mkws); mutate_wf "$ws" integration.yml 's|^( +)mkdir -p /var/lib/net-dhcp$|\1echo mkdir -p /var/lib/net-dhcp|'
+check "an echoed mkdir creates nothing" 1 "$ws" "/var/lib/net-dhcp"
+ws=$(mkws); mutate_wf "$ws" integration.yml '\|^ +mkdir -p /var/lib/net-dhcp$|d'
+check "control: the mkdir deleted" 1 "$ws" "/var/lib/net-dhcp"
+ws=$(mkws); mutate_wf "$ws" integration.yml 's|^( +)mkdir -p /var/lib/net-dhcp$|\1# jq reads config.json, see #440|'
+check "a jq named in a comment derives nothing" 1 "$ws" "/var/lib/net-dhcp"
+ws=$(mkws); mutate_wf "$ws" integration.yml 's|^( +)mkdir -p /var/lib/net-dhcp$|\1echo jq config.json|'
+check "an echoed jq derives nothing" 1 "$ws" "/var/lib/net-dhcp"
+ws=$(mkws); mutate_wf "$ws" coverage.yml 's/xargs -r mkdir -p$/xargs -r echo mkdir -p/'
+check "a jq whose list reaches no mkdir creates nothing" 1 "$ws" "/var/lib/dh-capture"
+ws=$(mkws); mutate_wf "$ws" coverage.yml 's/\| xargs -r mkdir -p$//'
+check "control: the xargs mkdir deleted" 1 "$ws" "/var/lib/dh-capture"
+ws=$(mkws)
+for f in "$ws"/.github/workflows/*.y*ml; do
+    sed -i -E 's/^( +)docker plugin create /\1echo docker plugin create /' "$f"
+done
+check "an echoed create is not an install" 1 "$ws" "never inspected"
+ws=$(mkws)
+for f in "$ws"/.github/workflows/*.y*ml; do sed -i -E '/^ +docker plugin create /d' "$f"; done
+check "control: the creates deleted" 1 "$ws" "never inspected"
+ws=$(mkws); mutate_wf "$ws" integration.yml 's|^( +)mkdir -p /var/lib/net-dhcp$|\1sudo -E mkdir -p /var/lib/net-dhcp|'
+check "a mkdir behind sudo and its flags still creates" 0 "$ws" "4 plugin install(s)"
+ws=$(mkws); mutate_wf "$ws" coverage.yml 's|^( +)(docker plugin create .*)$|\1\2\n\1echo docker plugin create x plugin|'
+check "an echoed create beside a real one is not a second install" 0 "$ws" "4 plugin install(s)"
+ws=$(mkws); mutate_wf "$ws" coverage.yml 's|plugin-cover/config\.json \| xargs|plugin-cover/other.json \| xargs|'
+check "a jq over another file derives nothing" 1 "$ws" "/var/lib/dh-capture"
+
+
+# 12. A real create in any runnable form is still an install (#883): with
+#     the mkdir deleted each form is red, and an unknown wrapper is red.
+PC='s|^( +)docker plugin create ("\$\{INTEGRATION_PLUGIN_REF\}" plugin)$|'
+for form in '\1docker plugin create \2 \|\| exit 1' '\1docker plugin create \2 2>\&1' \
+        '\1if ! docker plugin create \2; then exit 1; fi' \
+        '\1timeout 120 docker plugin create \2' '\1env FOO=1 docker plugin create \2'; do
+    ws=$(mkws); mutate_wf "$ws" integration.yml "$PC$form|"
+    check "form '$form' with its mkdir kept is an install" 0 "$ws" "4 plugin install(s)"
+    ws=$(mkws); mutate_wf "$ws" integration.yml "$PC$form|"
+    mutate_wf "$ws" integration.yml '\|^ +mkdir -p /var/lib/net-dhcp$|d'
+    check "form '$form' with its mkdir deleted is red" 1 "$ws" "/var/lib/net-dhcp"
+done
+ws=$(mkws); mutate_wf "$ws" integration.yml "$PC"'\1retry docker plugin create \2|'
+check "a create behind an unknown wrapper is red, not skipped" 1 "$ws" "cannot"
+ws=$(mkws); mutate_wf "$ws" integration.yml "$PC"'\1timeout docker plugin create \2|'
+check "a wrapper that swallows the create's own words is red" 1 "$ws" "cannot"
 echo
 echo "passed: $pass  failed: $fail"
 [ "$fail" -eq 0 ]
