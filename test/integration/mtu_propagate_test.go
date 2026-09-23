@@ -14,13 +14,7 @@ import (
 	"github.com/claymore666/docker-net-dhcp/v2/test/integration/harness"
 )
 
-// TestMTUPropagate_OptInSetsLinkMTU is the v0.9.0 / T1-2 guard:
-// when `propagate_mtu=true` is set on the network, the container's
-// eth0 must come up with the DHCP-supplied MTU (option 26,
-// advertised by the fixture's dnsmasq as harness.TestMTU).
-//
-// Together with TestMTUPropagate_DefaultIsUnchanged below this pins
-// both the opt-in and the historical default.
+// TestMTUPropagate_OptInSetsLinkMTU checks that propagate_mtu=true gives eth0 the MTU the server sends in option 26.
 func TestMTUPropagate_OptInSetsLinkMTU(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
@@ -40,10 +34,7 @@ func TestMTUPropagate_OptInSetsLinkMTU(t *testing.T) {
 	})
 	id, _, _ := harness.RunContainer(t, ctx, netName, ctrName)
 
-	// MTU is applied from the persistent-client `bound` event
-	// (post-Join). The wait absorbs the gap between inspect-shows-IP
-	// and bound-event-processed, including a reply lost on the
-	// fixture's veth pair: see harness.RetransmitBudget.
+	// The MTU is applied from the post-Join bound event, which can trail the IP by a lost reply (harness.RetransmitBudget).
 	budget := harness.RetransmitBudget(2)
 	deadline := time.Now().Add(budget)
 	wantMTU := "mtu " + harness.TestMTU
@@ -59,9 +50,7 @@ func TestMTUPropagate_OptInSetsLinkMTU(t *testing.T) {
 	t.Errorf("expected %q on eth0 within %s; got:\n%s", wantMTU, budget, out)
 }
 
-// TestMTUPropagate_DefaultIsUnchanged: without the opt-in, eth0
-// retains the link-default MTU (1500 for ethernet, regardless of
-// what DHCP option 26 advertises).
+// TestMTUPropagate_DefaultIsUnchanged checks that without the opt-in eth0 keeps 1500, whatever option 26 says.
 func TestMTUPropagate_DefaultIsUnchanged(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()

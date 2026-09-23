@@ -14,17 +14,10 @@ import (
 	"github.com/claymore666/docker-net-dhcp/v2/test/integration/harness"
 )
 
-// TestFQDN_RegistersInDNS verifies the opt-in FQDN option (#261): with
-// `-o register_dns=true`, the plugin's dhcpcd sends the DHCP FQDN option
-// (81), the DHCP server registers <hostname>.<domain> in its DNS, and
-// the container becomes resolvable by name to its leased IP.
-//
-// The fixture runs dnsmasq with DNS enabled, a domain, and --dhcp-fqdn
-// (WithDNS). --dhcp-fqdn registers ONLY clients that send the FQDN
-// option, ignoring plain option-12 hostnames — so this resolving is
-// itself the proof that the FQDN option (not the bare hostname hint) is
-// what landed. The default-off case (no `fqdn` directive emitted at all)
-// is pinned by the unit tests (TestRenderConfig_FQDN, TestFQDNMode).
+// dnsmasq --dhcp-fqdn registers only clients that send option 81 and ignores a bare option 12 hostname, so a resolved
+// name proves the option was sent; the default-off case is in TestRenderConfig_FQDN and TestFQDNMode (#261).
+
+// TestFQDN_RegistersInDNS checks that register_dns=true makes the container resolvable by name in the server's DNS (#261).
 func TestFQDN_RegistersInDNS(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
@@ -49,10 +42,6 @@ func TestFQDN_RegistersInDNS(t *testing.T) {
 	t.Logf("bound: ip=%s mac=%s; expecting %s.%s -> %s", ip, mac, ctrName, domain, ip)
 	_ = id
 
-	// Resolve <hostname>.<domain> against the fixture's own DNS (a custom
-	// resolver dialing the fixture, since it listens on a private veth and
-	// a high port). Poll: registration lands once the client's FQDN-
-	// carrying bind reaches dnsmasq, a beat after the lease.
 	res := &net.Resolver{
 		PreferGo: true,
 		Dial: func(ctx context.Context, _, _ string) (net.Conn, error) {

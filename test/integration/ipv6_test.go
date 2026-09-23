@@ -3,48 +3,11 @@
 
 //go:build integration
 
-// DHCPv6 coverage, restored onto the 2.0 chassis (#911).
-//
-// These tests were written for 1.9.0 (#103, #213, #875) against a v6
-// dhcpcd client, retired unrun when 2.0 landed without one, and are
-// brought back here against the in-house library. The PROPERTIES they
-// assert are unchanged -- that is the parity claim -- but three of the
-// mechanisms underneath them are not, and each one is stated where it
-// is used rather than assumed:
-//
-//   - THE IDENTITY IS STORED, NOT RE-DERIVED. 1.9.0 pinned dhcpcd's
-//     DUID-LL by rendering `duid 00:03:00:01:<MAC>` into a generated
-//     config on every start, so DUID stability followed from MAC
-//     stability. 2.0 mints the identity once at CreateEndpoint and
-//     writes it to the endpoint's record (D10), so it survives even
-//     where the MAC cannot carry it -- which is what makes the ipvlan
-//     case below possible at all. On bridge and macvlan the VALUE is
-//     unchanged, deliberately: an endpoint upgraded from 1.x presents
-//     the DUID the server already holds a binding for (P-8.6).
-//   - DUPLICATE-ADDRESS DETECTION MOVED INTO THE CLIENT. RFC 9915
-//     section 18.2.10.1 puts the check on the client, and the library
-//     runs it before it reports the lease; the chassis then installs
-//     the address with IFA_F_NODAD so the kernel does not run RFC 4862
-//     section 5.4 a second time on an address that has just passed
-//     (D30 Q1). TestDHCPv6_ADuplicateOnTheSegmentIsRefused is the
-//     outside evidence that the first half of that actually happens.
-//   - THE ROUTER-ADVERTISEMENT GUARD TURNS THE KERNEL OFF (#821). The
-//     obligation has not moved: DHCPv6 carries no next hop (RFC 9915
-//     section 21) and RFC 5942 section 4 rule 1 forbids inferring an
-//     on-link prefix from the assigned address, so somebody has to
-//     process advertisements or the endpoint has an address and no
-//     route. Since v2.2.0 that somebody is the plugin's own DHCPv6
-//     client, and the guard writes accept_ra=0 and autoconf=0 so the
-//     container's kernel does not do it a second time. It also removes
-//     the routes the kernel installed in the window between the engine
-//     bringing the link up and the guard running, because writing
-//     accept_ra=0 purges nothing.
-//
-// What 1.9.0 could not observe and 2.0 can: the container's own kernel
-// is free to solicit. dhcpcd set addr_gen_mode to NONE on the link,
-// which left the container unable to ask for a fresh advertisement, so
-// 1.9.0 could only ever witness the FIRST one. The 2.0 chassis touches
-// addr_gen_mode nowhere.
+// DHCPv6 coverage restored onto the 2.0 chassis (#911), with the properties 1.9.0 asserted (#103, #213, #875). The
+// identity is minted once at CreateEndpoint and stored on the record, with the 1.x DUID-LL value on bridge and macvlan.
+// The client runs duplicate-address detection before reporting (RFC 9915 section 18.2.10.1) and the chassis installs
+// with IFA_F_NODAD. DHCPv6 carries no next hop (RFC 9915 section 21, RFC 5942 section 4), so since v2.2.0 the plugin's
+// client processes advertisements and the guard writes accept_ra=0 and autoconf=0 and purges kernel routes (#821).
 package integration
 
 import (
@@ -64,8 +27,7 @@ import (
 	docker "github.com/docker/docker/client"
 )
 
-// inspectV6 returns the endpoint's GlobalIPv6Address from docker
-// inspect, or "".
+// inspectV6 returns the endpoint's GlobalIPv6Address from docker inspect, or "".
 func inspectV6(t *testing.T, ctx context.Context, cli *docker.Client, ctrID, netName string) string {
 	t.Helper()
 	ins, err := cli.ContainerInspect(ctx, ctrID)
@@ -78,8 +40,7 @@ func inspectV6(t *testing.T, ctx context.Context, cli *docker.Client, ctrID, net
 	return ""
 }
 
-// linkGlobalV6 returns the first global-scope IPv6 address on the
-// container's interface, polled until present or the budget is spent.
+// linkGlobalV6 returns the first global-scope IPv6 address on the container's interface, polled until present or the budget is spent.
 func linkGlobalV6(t *testing.T, ctx context.Context, ctrID string, budget time.Duration) string {
 	t.Helper()
 	deadline := time.Now().Add(budget)
@@ -98,10 +59,9 @@ func linkGlobalV6(t *testing.T, ctx context.Context, ctrID string, budget time.D
 	return ""
 }
 
-// countDHCPv6Replies counts DHCPREPLY lines mentioning addr in the
-// given dnsmasq log -- the v6 sibling of the DHCPACK counting in the
-// lease-renew test. dnsmasq logs one DHCPREPLY per blessed
-// REQUEST/RENEW, so bind=1, renewal=2.
+// dnsmasq logs one DHCPREPLY per accepted REQUEST or RENEW, so bind=1 and renewal=2.
+
+// countDHCPv6Replies counts DHCPREPLY lines mentioning addr in the given dnsmasq log.
 func countDHCPv6Replies(t *testing.T, logPath, addr string, alsoMatch ...string) int {
 	t.Helper()
 	data, err := os.ReadFile(logPath)
@@ -111,10 +71,7 @@ func countDHCPv6Replies(t *testing.T, logPath, addr string, alsoMatch ...string)
 	return harness.CountDHCPv6Binds(string(data), append([]string{addr}, alsoMatch...)...)
 }
 
-// lastDHCPv6ReplyAt returns the server's own stamp on the last
-// DHCPREPLY for addr, and whether one was readable. Same file, same
-// lines and the same matcher as countDHCPv6Replies -- it reads the
-// clock off the evidence the caller is already counting.
+// lastDHCPv6ReplyAt returns the server's stamp on the last DHCPREPLY for addr, and whether one was readable.
 func lastDHCPv6ReplyAt(t *testing.T, logPath, addr string) (time.Time, bool) {
 	t.Helper()
 	data, err := os.ReadFile(logPath)
@@ -125,10 +82,6 @@ func lastDHCPv6ReplyAt(t *testing.T, logPath, addr string) (time.Time, bool) {
 }
 
 // countLogToken counts lines of the dnsmasq log carrying every needle.
-//
-// Unlike countDHCPv6Replies it is not restricted to DHCPREPLY, because
-// the tokens it is used for -- DHCPDECLINE among them -- are their own
-// message types.
 func countLogToken(t *testing.T, logPath string, needles ...string) int {
 	t.Helper()
 	data, err := os.ReadFile(logPath)
@@ -152,10 +105,10 @@ func countLogToken(t *testing.T, logPath string, needles ...string) int {
 	return n
 }
 
-// leaseDUIDForV6 extracts the client DUID from the dnsmasq lease DB
-// line holding addr. v6 lease lines are "<expiry> <iaid> <addr>
-// <hostname> <client-duid>"; the server's own DUID line ("duid <hex>")
-// has fewer fields and never matches an address.
+// v6 lease lines are "<expiry> <iaid> <addr> <hostname> <client-duid>"; the server's own "duid <hex>" line has fewer
+// fields (#103).
+
+// leaseDUIDForV6 extracts the client DUID from the dnsmasq lease DB line holding addr.
 func leaseDUIDForV6(t *testing.T, leaseFile, addr string) string {
 	t.Helper()
 	data, err := os.ReadFile(leaseFile)
@@ -172,20 +125,7 @@ func leaseDUIDForV6(t *testing.T, leaseFile, addr string) string {
 	return ""
 }
 
-// TestIPv6_AcceptedAtCreate is the inversion of the refusal this
-// milestone removed.
-//
-// 2.0 shipped without a DHCPv6 client and refused `ipv6=true` at
-// CreateNetwork so that an operator asking for IPv6 was TOLD rather
-// than handed a network that quietly did nothing with it. That refusal
-// is gone, and its test is inverted rather than deleted: the create has
-// to be ACCEPTED and the network has to exist afterwards.
-//
-// It is a create-only test on purpose. Everything about addresses is
-// asserted by the golden paths below; this one is the cheapest possible
-// statement that the option reaches the driver at all, and it is the one
-// that fails first and most legibly if the refusal is ever reinstated by
-// accident.
+// TestIPv6_AcceptedAtCreate checks that `ipv6=true` is accepted at create and the network exists afterwards (#911).
 func TestIPv6_AcceptedAtCreate(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
@@ -207,21 +147,12 @@ func TestIPv6_AcceptedAtCreate(t *testing.T) {
 		t.Fatalf("an ipv6=true network was refused: %v", err)
 	}
 
-	// A create that "succeeded" and left nothing behind is the other
-	// half of the same claim, and it is the half a refusal returning
-	// nil would satisfy.
 	if _, err := cli.NetworkInspect(ctx, netName, network.InspectOptions{}); err != nil {
 		t.Errorf("the create was accepted and the network does not exist: %v", err)
 	}
 }
 
-// TestIPv6_TheV4OnlyPathIsUnchanged is the preservation control for
-// everything in this file.
-//
-// Wiring a second address family into the chassis is a change to the
-// code path every IPv4 network takes as well: one family switch, one
-// shared record store, one manager. A v4-only network created and used
-// exactly as before is the cheapest statement that none of that moved.
+// TestIPv6_TheV4OnlyPathIsUnchanged checks that a v4-only network works as before and gets no IPv6 address.
 func TestIPv6_TheV4OnlyPathIsUnchanged(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
@@ -232,10 +163,6 @@ func TestIPv6_TheV4OnlyPathIsUnchanged(t *testing.T) {
 	if !harness.IsInPool(net.ParseIP(v4)) {
 		t.Errorf("IPv4 %s not in fixture pool", v4)
 	}
-	// And no IPv6 appeared on a network that did not ask for one. The
-	// family switch defaulting the wrong way is silent otherwise: the
-	// container works, and a second DHCP client is running against a
-	// segment nobody asked it to touch.
 	out := harness.ExecOutput(t, ctx, id, "ip", "-6", "addr", "show", "scope", "global")
 	for _, f := range strings.Fields(out) {
 		if strings.Contains(f, ":") && strings.Contains(f, "/") {
@@ -247,12 +174,7 @@ func TestIPv6_TheV4OnlyPathIsUnchanged(t *testing.T) {
 	}
 }
 
-// TestLifecycleMacvlan_IPv6_GoldenPath: with ipv6=true, a container
-// gets a v4 lease from the v4 pool AND a v6 lease from the ULA pool;
-// docker inspect's GlobalIPv6Address agrees with the address actually
-// on the link; teardown stops both families cleanly
-// (client_stop_failures stays flat -- this exercises the v6 half of
-// dhcpManager.Stop).
+// TestLifecycleMacvlan_IPv6_GoldenPath checks that with ipv6=true a macvlan container gets both families, inspect matches the link, and teardown stops both cleanly.
 func TestLifecycleMacvlan_IPv6_GoldenPath(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
@@ -277,10 +199,7 @@ func TestLifecycleMacvlan_IPv6_GoldenPath(t *testing.T) {
 
 	harness.CreateNetwork(t, ctx, netName, "macvlan", map[string]string{"ipv6": "true"})
 
-	// Lifecycle inlined so ContainerStop (and with it the v4+v6 client
-	// shutdown pair) happens inside the test body, before the final
-	// health assertion. Neither client releases -- D-7, #800 -- so what
-	// is being sequenced is the stop, not a release.
+	// Neither client releases (#800), so the test sequences the stop.
 	create, err := cli.ContainerCreate(ctx,
 		&container.Config{Image: harness.TestImage, Cmd: []string{"sleep", "infinity"}, Hostname: ctrName},
 		harness.HostConfig(),
@@ -297,7 +216,6 @@ func TestLifecycleMacvlan_IPv6_GoldenPath(t *testing.T) {
 		t.Fatalf("ContainerStart: %v", err)
 	}
 
-	// v4 side: same contract as the existing golden paths.
 	var v4 string
 	deadline := time.Now().Add(harness.IPAcquisitionBudget)
 	for time.Now().Before(deadline) {
@@ -318,7 +236,6 @@ func TestLifecycleMacvlan_IPv6_GoldenPath(t *testing.T) {
 		t.Errorf("IPv4 %s not in fixture pool", v4)
 	}
 
-	// v6 side: the live link must carry a ULA-pool address...
 	liveV6 := linkGlobalV6(t, ctx, id, harness.IPAcquisitionBudget)
 	if liveV6 == "" {
 		t.Fatalf("no global IPv6 appeared on the container link")
@@ -327,13 +244,8 @@ func TestLifecycleMacvlan_IPv6_GoldenPath(t *testing.T) {
 		t.Errorf("live IPv6 %s not in fixture v6 pool [%s, %s]", liveV6, harness.DHCPv6PoolStart, harness.DHCPv6PoolEnd)
 	}
 
-	// ...and inspect must agree with reality. CreateEndpoint returns
-	// AddressIPv6 from the one-shot acquisition; the persistent client
-	// re-binds with the SAME identity -- the DUID and IAID stored on
-	// the endpoint's record, not re-derived -- so the server must hand
-	// back the same address. A mismatch here is the v6 flavour of the
-	// #104 divergence: if it fires, the audit found a real edge, so
-	// document it and re-scope rather than loosening silently.
+	// The persistent client re-binds with the DUID and IAID stored on the record, so the server hands back the address
+	// CreateEndpoint reported; a mismatch is the v6 form of #104.
 	insV6 := inspectV6(t, ctx, cli, id, netName)
 	if insV6 == "" {
 		t.Error("docker inspect has empty GlobalIPv6Address for an ipv6=true network")
@@ -344,7 +256,6 @@ func TestLifecycleMacvlan_IPv6_GoldenPath(t *testing.T) {
 	assertLeasedV6IsInstalledWithNODAD(t, ctx, id, liveV6, fixture.DnsmasqLog())
 	assertRouterAdvertsAreBeingProcessed(t, ctx, id, liveV6, fixture.DnsmasqLog())
 
-	// Teardown: both families stop cleanly.
 	if err := cli.ContainerStop(ctx, id, container.StopOptions{}); err != nil {
 		t.Fatalf("ContainerStop: %v", err)
 	}
@@ -355,9 +266,7 @@ func TestLifecycleMacvlan_IPv6_GoldenPath(t *testing.T) {
 	}
 }
 
-// TestLifecycleBridge_IPv6_GoldenPath: the same dual-stack contract
-// through the bridge wiring path (veth into a Linux bridge instead of
-// a macvlan child).
+// TestLifecycleBridge_IPv6_GoldenPath checks the same dual-stack contract through the bridge wiring path.
 func TestLifecycleBridge_IPv6_GoldenPath(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
@@ -389,18 +298,10 @@ func TestLifecycleBridge_IPv6_GoldenPath(t *testing.T) {
 	assertRouterAdvertsAreBeingProcessed(t, ctx, id, liveV6, fixture.BridgeDnsmasqLogPath())
 }
 
-// TestTombstoneRestart_PreservesIPv6 is #213's acceptance test -- the
-// v6 sibling of TestTombstoneRestart_PreservesMACAndIP. On Leave the
-// plugin tombstones the endpoint's v6 address; on the restart's
-// CreateEndpoint that address goes back out as the DHCPv6 hint (the
-// IA_ADDR of the Solicit, proto.Params6.Hint), so a dual-stack
-// container keeps its v6 lease across `docker restart` exactly as it
-// keeps v4.
-//
-// The identity is the other half of why it sticks, and in 2.0 that half
-// is stronger than 1.9.0's: the DUID and IAID come off the endpoint's
-// record rather than being re-derived, so the Solicit is the same
-// client's whatever the plumbing looks like on the second start.
+// On Leave the v6 address is tombstoned and goes back out as the Solicit's IA_ADDR hint (proto.Params6.Hint), and the
+// DUID and IAID come off the record (#213).
+
+// TestTombstoneRestart_PreservesIPv6 checks that a dual-stack container keeps its v6 address across `docker restart` (#213).
 func TestTombstoneRestart_PreservesIPv6(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
@@ -422,10 +323,7 @@ func TestTombstoneRestart_PreservesIPv6(t *testing.T) {
 	defer cli.Close()
 
 	harness.CreateNetwork(t, ctx, netName, "macvlan", map[string]string{"ipv6": "true"})
-	// A normal, promptly-stopping container -- see the note in
-	// tombstone_restart_test.go. The v6 half never needed the slow stop;
-	// the v4 half only appeared to, because a slow stop hid #402 and
-	// #408. This is the IPv6 half of #408's negative control.
+	// A promptly stopping container; a slow stop hid #402 and #408, and this is the IPv6 half of #408's negative control.
 	id, v4Before, macBefore := harness.RunContainer(t, ctx, netName, ctrName)
 	v6Before := linkGlobalV6(t, ctx, id, harness.IPAcquisitionBudget)
 	if v6Before == "" {
@@ -437,8 +335,6 @@ func TestTombstoneRestart_PreservesIPv6(t *testing.T) {
 		t.Fatalf("ContainerRestart: %v", err)
 	}
 
-	// The endpoint is torn down and recreated; wait for the v6 to
-	// reappear on the link before reading the settled values.
 	v6After := linkGlobalV6(t, ctx, id, harness.IPAcquisitionBudget)
 	if v6After == "" {
 		t.Fatalf("container did not re-acquire a global IPv6 within %v after restart", harness.IPAcquisitionBudget)
@@ -468,57 +364,11 @@ func TestTombstoneRestart_PreservesIPv6(t *testing.T) {
 	}
 }
 
-// TestLeaseRenewIPv6_HonorsT1: the v6 sibling of
-// TestLeaseRenew_HonorsT1 -- the direct test for "DHCPv6 renewal is
-// less battle-tested" (#103).
-//
-// WHAT IT PROVES, and it is two things, both on evidence from outside
-// the plugin: a renewal DHCPREPLY for this address reaches the SERVER's
-// own log after T1, and the address the container holds is the same one
-// on the far side of it. A counter would prove the plugin meant to
-// renew; the server's log is what proves the renewal happened.
-//
-// THE WAIT IS THE SERVER'S T1 AND IT IS NOT SHORTENED (D41). dnsmasq
-// derives DHCPv6 T1 as lease/2 = 60s from the fixture's 2m lease and
-// offers no way to advertise it independently -- the v4 sibling's
-// WithRenewTimes trick has no DHCPv6 counterpart in this server, and
-// shortening the LEASE to move T1 is the one remedy this work is not
-// allowed to take. So the 60s stands.
-//
-// WHAT THE FLAT SLEEP DID NOT PROVE, and this is a finding rather than
-// a tidy-up. The old shape sampled the reply count immediately after
-// the bind, slept a flat 75s, sampled again and required growth. First
-// attempt at replacing that sleep with a poll returned in THREE
-// seconds, green: MEASURED on run 34203647801, job 101988277652 --
-// "DHCPREPLYs for fd00:...::92: start=1 end=2" with 1m12s of the
-// ceiling unused. A second DHCPREPLY for the address lands within
-// seconds of the bind, so the old assertion was satisfied by that reply
-// and not by the renewal. The 75s wait was buying nothing; a 5s wait
-// would have passed it just as reliably. The test claimed T1 and
-// measured the bind.
-//
-// SO THE BASELINE MOVED TO THE BOUNDARY. The count is now sampled again
-// a slop below T1, and the growth that satisfies the test has to appear
-// AFTER that sample -- in the window where T1 sits. The bind's own
-// burst is inside the baseline by construction, and the test cannot
-// pass without having waited that long: there is no arrangement of
-// bind-time replies that gets it to green early.
-//
-// AND THE WINDOW IS ANCHORED ON THE SERVER'S CLOCK. The first version
-// of this remedy anchored on time.Now() after the address surfaced,
-// which is T1's start plus an unknown bind delay; review measured only
-// four to five seconds between the baseline and the observed renewal,
-// so a slow bind would have folded the renewal into the baseline and
-// reddened a lease that was renewed on time. The anchor is now the
-// stamp dnsmasq wrote on the bind's own DHCPREPLY, read out of the log
-// this test already reads. The full reasoning, and what each shape of
-// red means, is in the block beside the constants below.
-//
-// That makes it strictly stronger than the version it replaces, and
-// faster: MEASURED 90.03s before (median of runs 34059724566 /
-// 34060966627 / 34064155841) against 73.85s after (median of runs
-// 34204413442 / 34205039347 / 34206023827), because what went is the
-// idling AFTER the renewal was already in the log.
+// dnsmasq derives DHCPv6 T1 as lease/2 = 60s from the 2m lease and cannot advertise it separately, so the wait stands.
+// A second DHCPREPLY lands within seconds of the bind (run 34203647801), so the baseline is taken a slop before T1 and
+// the window is anchored on the stamp of the bind's DHCPREPLY (#103).
+
+// TestLeaseRenewIPv6_HonorsT1 checks from the server's log that a DHCPv6 renewal happens at T1 and keeps the address (#103).
 func TestLeaseRenewIPv6_HonorsT1(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Second)
 	defer cancel()
@@ -532,11 +382,7 @@ func TestLeaseRenewIPv6_HonorsT1(t *testing.T) {
 		}
 	})
 
-	// Wire + neighbor diagnostics, dumped only on failure. These are
-	// what root-caused the udev MACAddressPolicy neighbor-cache
-	// poisoning (#103) -- DHCPv6 failures in this environment tend to
-	// be L2-delivery problems that no application log can show, so
-	// the capture stays.
+	// These diagnostics root-caused the udev MACAddressPolicy neighbour-cache poisoning (#103).
 	var dumps []*os.File
 	for _, iface := range []string{harness.HostVeth, harness.IpvlanParent, harness.DHCPSegment} {
 		f, err := os.CreateTemp("", "v6dbg-"+iface+"-*.txt")
@@ -586,61 +432,17 @@ func TestLeaseRenewIPv6_HonorsT1(t *testing.T) {
 	}
 	startReplies := countDHCPv6Replies(t, fixture.DnsmasqLog(), v6)
 
-	// The three constants, and each is derived rather than chosen.
-	//
-	//   t1 is dnsmasq's, not ours: it advertises lease/2 for DHCPv6 and
-	//   the fixture's lease is 2m. There is no option to advertise it
-	//   independently -- the v4 sibling's WithRenewTimes has no v6
-	//   counterpart in this server -- and moving it would mean
-	//   shortening the lease, which is the one thing this is not
-	//   allowed to do.
-	//
-	//   t1Slop is how far BEFORE t1 the baseline is taken. It exists so
-	//   a renewal that lands exactly on t1 is not swallowed by the
-	//   sample meant to exclude the bind.
-	//
-	//   ceiling is unchanged from the flat sleep: t1 plus enough for a
-	//   loaded runner's scheduling and dnsmasq's own write of the line.
+	// t1 is dnsmasq's lease/2; t1Slop keeps a renewal exactly at t1 out of the baseline; ceiling allows a loaded runner.
 	const (
 		t1             = 60 * time.Second
 		t1Slop         = 5 * time.Second
 		renewalCeiling = 75 * time.Second
 	)
 
-	// WHAT THE WINDOW IS ANCHORED ON, AND WHY IT IS NOT time.Now().
-	//
-	// T1 is the SERVER's timer: dnsmasq starts counting when it sends
-	// the reply. `time.Now()` here is the moment the address became
-	// visible to `ip -6 addr` inside the container, which is that reply
-	// plus the DAD wait, the netlink hop and one poll interval -- an
-	// unknown few seconds LATER. Anchoring on it spends those seconds
-	// out of the five between the baseline (t1-t1Slop) and the renewal
-	// (t1), and review measured what was left: renewals observed at
-	// 59s, 60s and 60s after the client-side anchor against a baseline
-	// at 55s. A slower bind folds the renewal into the baseline and the
-	// test goes red although T1 was honoured exactly.
-	//
-	// So the anchor is the stamp dnsmasq itself wrote on the bind's
-	// DHCPREPLY -- already in the log this test reads for its verdict,
-	// so this is a re-derivation of the anchor and not a new
-	// instrument. Both clocks are this host's. The margin becomes a
-	// fixed five seconds that no bind delay can eat.
-	//
-	// If the stamp cannot be read the anchor falls back to the client
-	// side, which is exactly the previous behaviour -- not a weakening,
-	// and printed either way so a reader knows which window a red is
-	// about.
-	//
-	// WHAT A RED MEANS, in each shape:
-	//   baseline == end        no DHCPREPLY for this address in
-	//                          [t1-t1Slop, ceiling]. Either the renewal
-	//                          timer never fired, or it fired outside
-	//                          the window. The printed counts separate
-	//                          the two: "N at the bind" equal to the
-	//                          baseline means nothing arrived early.
-	//   address changed        the renewal produced a DIFFERENT
-	//                          address, which is a lease not renewed
-	//                          but replaced.
+	// T1 starts when dnsmasq sends the reply, and the address shows in the container after DAD, a netlink hop and a poll,
+	// which left 4 to 5 seconds before the renewal; the anchor is the reply's own stamp, with the client-side time as a
+	// logged fallback (#103). No reply in [t1-t1Slop, ceiling] means the timer did not fire in the window; a different
+	// address means the lease was replaced.
 	clientAnchor := time.Now()
 	anchor, anchorName := clientAnchor, "the address surfacing (server stamp unreadable)"
 	if serverBind, ok := lastDHCPv6ReplyAt(t, fixture.DnsmasqLog(), v6); ok {
@@ -651,9 +453,6 @@ func TestLeaseRenewIPv6_HonorsT1(t *testing.T) {
 		t.Logf("anchor: %s", anchorName)
 	}
 
-	// The bind's own replies, and whatever else the exchange produces in
-	// the seconds after it, all land in the baseline -- that is the
-	// point of taking it at t1-t1Slop and not at the anchor.
 	if wait := time.Until(anchor.Add(t1 - t1Slop)); wait > 0 {
 		select {
 		case <-ctx.Done():
@@ -681,9 +480,7 @@ func TestLeaseRenewIPv6_HonorsT1(t *testing.T) {
 	t.Logf("DHCPREPLYs for %s: baseline=%d end=%d at %s after %s",
 		v6, baseline, endReplies, time.Since(anchor).Round(time.Second), anchorName)
 
-	// Read the address AFTER the reply is in hand, so the comparison is
-	// across the renewal rather than across an interval that happens to
-	// contain one.
+	// Read after the reply, so the comparison spans the renewal.
 	after := linkGlobalV6(t, ctx, id, 5*time.Second)
 	if after != v6 {
 		t.Errorf("IPv6 changed across renewal window: %s -> %s", v6, after)
@@ -696,11 +493,9 @@ func TestLeaseRenewIPv6_HonorsT1(t *testing.T) {
 	}
 }
 
-// TestIPv6_DNS6Propagation: propagate_dns=true writes the DHCPv6
-// option-23 server into resolv.conf (the v6 mirror of the existing
-// v4 pair). resolv.conf is last-writer-wins between the families, so
-// the assertion is "the v6 nameserver appears", polled across the
-// bind window.
+// resolv.conf is last-writer-wins between the families, so the v6 nameserver's appearance is polled.
+
+// TestIPv6_DNS6Propagation checks that propagate_dns=true writes the DHCPv6 option-23 server into resolv.conf.
 func TestIPv6_DNS6Propagation(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
@@ -736,8 +531,6 @@ func TestIPv6_DNS6Propagation(t *testing.T) {
 		harness.CreateNetwork(t, ctx, netName, "macvlan", map[string]string{"ipv6": "true"})
 		id, _, _ := harness.RunContainer(t, ctx, netName, "dh-itest-v6dnsoff-ctr")
 
-		// Wait for the v6 bind (the moment a propagating network
-		// would have written), then assert absence.
 		if v6 := linkGlobalV6(t, ctx, id, harness.IPAcquisitionBudget); v6 == "" {
 			t.Fatal("no global IPv6 appeared on the container link")
 		}
@@ -748,19 +541,10 @@ func TestIPv6_DNS6Propagation(t *testing.T) {
 	})
 }
 
-// TestDUID_PersistsAcrossPluginRestart is #103's "persistent DUID"
-// item, and in 2.0 it is a test of the RECORD rather than of a
-// derivation.
-//
-// 1.9.0 pinned dhcpcd's DUID-LL from the interface MAC on every start,
-// so DUID stability followed from MAC stability. 2.0 mints the identity
-// once at CreateEndpoint and stores it on the endpoint's record (D10),
-// so what this now proves is that the record survives a plugin recycle
-// and is read back rather than re-minted. The observable is unchanged
-// and deliberately so: the dnsmasq lease DB must show the SAME client
-// DUID for the container's address after the plugin restarts and the
-// recovered client re-binds. That is what makes server-side v6
-// reservations stick across plugin upgrades.
+// The DUID is stored on the endpoint's record at CreateEndpoint, so a recycle must read it back; that keeps server-side
+// v6 reservations across plugin upgrades (#103).
+
+// TestDUID_PersistsAcrossPluginRestart checks that the lease DB shows the same client DUID after a plugin restart.
 func TestDUID_PersistsAcrossPluginRestart(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 	defer cancel()
@@ -790,26 +574,10 @@ func TestDUID_PersistsAcrossPluginRestart(t *testing.T) {
 	assertDUIDStableAcrossAPluginRestart(t, ctx, cli, v6)
 }
 
-// TestIPvlan_DHCPv6IdentityIsPerEndpointAndSurvivesARestart is the
-// proof 1.9.0 could not write.
-//
-// An ipvlan L2 slave inherits the parent link's MAC by kernel design,
-// so every endpoint on one ipvlan network has the same hardware
-// address. 1.9.0 derived the DUID from that MAC, which means every
-// container on an ipvlan network presented ONE DHCPv6 identity: they
-// claimed one binding and the server handed the same address out
-// repeatedly (#895, the v6 form of #219). 2.0 mints a per-endpoint
-// DUID-UUID there instead (D30 Q4).
-//
-// Two claims, and neither implies the other:
-//
-//  1. Two containers on one ipvlan network get DIFFERENT addresses.
-//     That is the defect, observed from outside.
-//  2. An ipvlan endpoint's DUID survives a plugin restart. This is
-//     where the RECORD is load-bearing and the 1.9.0 mechanism could
-//     not have worked at all: there is nothing on the link to re-derive
-//     a per-endpoint identity from, so if the record is not read back
-//     the container becomes a new client and loses its address.
+// An ipvlan L2 slave inherits the parent's MAC, so a MAC-derived DUID gave every container one DHCPv6 identity and one
+// address (#895, the v6 form of #219); the plugin mints a per-endpoint DUID-UUID there, and only the record carries it.
+
+// TestIPvlan_DHCPv6IdentityIsPerEndpointAndSurvivesARestart checks that ipvlan containers get different v6 addresses and keep their DUID across a restart (#895).
 func TestIPvlan_DHCPv6IdentityIsPerEndpointAndSurvivesARestart(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
@@ -843,13 +611,7 @@ func TestIPvlan_DHCPv6IdentityIsPerEndpointAndSurvivesARestart(t *testing.T) {
 	t.Logf("ipvlan endpoints: a=%s (docker mac %q, link mac %s) b=%s (docker mac %q, link mac %s)",
 		v6A, macA, linkA, v6B, macB, linkB)
 
-	// The premise, READ FROM THE LINK. Docker reports no MAC at all for
-	// an ipvlan endpoint, so comparing what it reports would compare
-	// two empty strings and pass whatever the kernel had done. What the
-	// claim below needs is that the two links really do wear the same
-	// address; if they do not, this test cannot distinguish a
-	// per-endpoint identity from a MAC-derived one and would be
-	// satisfied by the 1.9.0 mechanism.
+	// Docker reports no MAC for an ipvlan endpoint, so the shared MAC is read from the links.
 	if linkA == "" || linkB == "" {
 		t.Fatalf("could not read the ipvlan links' hardware addresses (a=%q b=%q)", linkA, linkB)
 	}
@@ -859,9 +621,7 @@ func TestIPvlan_DHCPv6IdentityIsPerEndpointAndSurvivesARestart(t *testing.T) {
 			"ipvlan L2 slave inherits the parent's MAC; if that has changed, this "+
 			"test needs rewriting rather than relaxing (#895)", linkA, linkB)
 	}
-	// The second premise, and the one plugin-restart recovery rests on:
-	// Docker reports NO MAC for these endpoints, which is why recovery
-	// has to inherit the parent's rather than parse what it is given.
+	// Recovery inherits the parent's MAC because Docker reports none for these endpoints.
 	if macA != "" || macB != "" {
 		t.Logf("Docker now reports MACs for ipvlan endpoints (%q, %q); recoveredMAC's "+
 			"ipvlan arm is no longer the path recovery takes here", macA, macB)
@@ -872,33 +632,14 @@ func TestIPvlan_DHCPv6IdentityIsPerEndpointAndSurvivesARestart(t *testing.T) {
 			"address to each of them in turn (#895)", macA, v6A)
 	}
 
-	// Claim 2: the identity is in the record, not on the link.
 	assertDUIDStableAcrossAPluginRestart(t, ctx, cli, v6A)
 }
 
-// TestDHCPv6_ADuplicateOnTheSegmentIsRefused is the outside evidence
-// for the first half of D30 Q1: the CLIENT runs duplicate-address
-// detection, and it runs it before it reports the lease.
-//
-// RFC 9915 section 18.2.10.1: "The client performs duplicate address
-// detection on each of the received addresses in any IAs it accepts
-// before using that address for traffic". Section 18.2.10 then says
-// what to do when it finds one -- the client sends a Decline and asks
-// again. The chassis installs the address with IFA_F_NODAD precisely
-// BECAUSE the library has already done this, so if the library ever
-// stopped, the plugin would be installing an unchecked address with
-// the kernel's own check switched off. Nothing else in the suite would
-// notice: the container comes up, the address works, and it works until
-// the other holder sends something.
-//
-// THE SHAPE. A container takes an address; that exact address is then
-// put on the segment by another node; the container is restarted, so
-// the tombstone asks for it back and the server -- which still holds
-// the lease -- offers it. The library must now find the duplicate and
-// refuse it, and the container must come up with a DIFFERENT address.
-//
-// A container that comes back on the SAME address is the failure this
-// test is for, and it is not a flake: it means the check did not run.
+// RFC 9915 section 18.2.10.1 puts duplicate-address detection on the client before use and section 18.2.10 answers a
+// duplicate with a Decline; the chassis installs with IFA_F_NODAD because of it, so the kernel would not catch a
+// library that stopped (#911).
+
+// TestDHCPv6_ADuplicateOnTheSegmentIsRefused checks that a restarted container whose previous v6 address is taken by another node comes back on a different address.
 func TestDHCPv6_ADuplicateOnTheSegmentIsRefused(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
@@ -926,24 +667,8 @@ func TestDHCPv6_ADuplicateOnTheSegmentIsRefused(t *testing.T) {
 		t.Fatal("no global IPv6 appeared on the container link")
 	}
 
-	// The duplicate. It goes on the SEGMENT bridge rather than on the
-	// container's parent veth: the parent is what the macvlan children
-	// hang off, and a macvlan child does not see its own parent's
-	// traffic, so an address there would be invisible to exactly the
-	// node under test.
-	//
-	// `nodad` IS LOAD-BEARING AND IS NOT A SHORTCUT. The address being
-	// added is, by construction, one the segment already has on it, so
-	// the kernel's own duplicate-address detection on THIS side finds
-	// the container and marks the address dadfailed -- an address in
-	// that state answers nothing (RFC 4862 section 5.4.3), and the
-	// squatter this test needs would sit there silent. MEASURED on the
-	// lane 2026-09-06: without it the address never left the tentative
-	// state and the test could not begin. RFC 4429 section 3.3 is the
-	// same permission spelled for optimistic addresses: a node MAY use
-	// an address it has reason to believe is unique, and here the test
-	// has the opposite reason and wants the address anyway, because
-	// being the duplicate is its whole job.
+	// A macvlan child does not see its parent's traffic, so the duplicate goes on the segment bridge. Without `nodad` the
+	// kernel marks it dadfailed and it answers nothing (RFC 4862 section 5.4.3); measured on the lane 2026-09-06 (#911).
 	dup := v6 + "/64"
 	if out, err := exec.Command("ip", "-6", "addr", "add", dup, "dev", harness.DHCPSegment, "nodad").CombinedOutput(); err != nil {
 		t.Fatalf("could not put a duplicate of %s on %s: %v\n%s",
@@ -952,14 +677,7 @@ func TestDHCPv6_ADuplicateOnTheSegmentIsRefused(t *testing.T) {
 	t.Cleanup(func() {
 		_ = exec.Command("ip", "-6", "addr", "del", dup, "dev", harness.DHCPSegment).Run()
 	})
-	// The duplicate has to be answering before the restart, or the
-	// probe finds nothing and this test measures the ordinary path.
-	// A tentative address does not answer a neighbor solicitation
-	// (RFC 4862 section 5.4.3), so wait for it to leave that state --
-	// which `nodad` above should make immediate. This stays as the
-	// OBSERVER of that: if the flag is ever dropped, or a kernel stops
-	// honouring it, the failure below is the reason rather than a
-	// mysterious pass on the ordinary path.
+	// A tentative address does not answer a neighbour solicitation (RFC 4862 section 5.4.3).
 	if !awaitAddrSettled(t, harness.DHCPSegment, v6, 15*time.Second) {
 		t.Fatalf("the duplicate %s on %s never left the tentative state, so it would "+
 			"not have answered the client's probe and this test would measure nothing",
@@ -989,16 +707,8 @@ func TestDHCPv6_ADuplicateOnTheSegmentIsRefused(t *testing.T) {
 			"declining it, and the server still believes the binding is good "+
 			"(RFC 9915 section 18.2.10)", n)
 	}
-	// THE UPPER BOUND IS THE OTHER HALF OF THE SAME CLAIM, and it is
-	// what made this test pass by accident before. Declining an address
-	// and then asking for it again is a closed loop: MEASURED on the
-	// lane 2026-09-06 (run 34058213252) the exchange ran Solicit ->
-	// Advertise -> Request -> Reply -> DAD -> Decline about once a
-	// second for sixteen seconds, because the preferred address is
-	// hinted from the tombstone (#213) and a Decline does not clear the
-	// hint. Two declines are legitimate -- the server may hand the same
-	// address back to the hintless second attempt by chance, and the
-	// library's own recovery covers that -- and a dozen are the loop.
+	// Run 34058213252 (2026-09-06) looped Solicit to Decline about once a second for sixteen seconds because the tombstone
+	// hint survived the Decline (#213, #911); two declines are legitimate, a dozen are the loop.
 	if n > 4 {
 		t.Errorf("the duplicated address was declined %d times. A Decline whose retry "+
 			"asks for the same address again cannot terminate; the endpoint is spending "+
@@ -1006,14 +716,7 @@ func TestDHCPv6_ADuplicateOnTheSegmentIsRefused(t *testing.T) {
 	}
 }
 
-// containerLinkMAC reads the hardware address the container's own
-// non-loopback link wears, from inside the container.
-//
-// FROM THE LINK AND NOT FROM DOCKER, because for an ipvlan endpoint
-// Docker reports no MAC at all: the plugin never sets one (the driver
-// rejects it) and the inherited address is not in the engine's record.
-// A premise checked against what Docker reports would be comparing two
-// empty strings.
+// containerLinkMAC reads the hardware address of the container's own non-loopback link, which Docker does not report for ipvlan.
 func containerLinkMAC(t *testing.T, ctx context.Context, id string) string {
 	t.Helper()
 	for _, line := range strings.Split(harness.ExecOutput(t, ctx, id, "ip", "-o", "link", "show"), "\n") {
@@ -1030,8 +733,7 @@ func containerLinkMAC(t *testing.T, ctx context.Context, id string) string {
 	return ""
 }
 
-// awaitAddrSettled waits for addr on iface to leave the tentative
-// state, which is when it starts answering neighbor solicitations.
+// awaitAddrSettled waits for addr on iface to leave the tentative state, which is when it starts answering neighbor solicitations.
 func awaitAddrSettled(t *testing.T, iface, addr string, budget time.Duration) bool {
 	t.Helper()
 	deadline := time.Now().Add(budget)
@@ -1053,20 +755,10 @@ func awaitAddrSettled(t *testing.T, iface, addr string, budget time.Duration) bo
 	return false
 }
 
-// assertDUIDStableAcrossAPluginRestart recycles the plugin and requires
-// the server's lease DB to name the same client DUID for addr
-// afterwards.
-//
-// A restart is used rather than a fresh endpoint because that is where
-// the identity can quietly move: nothing in the container changes, the
-// address is still on the link, and the only thing that decides whether
-// the recovered client is the SAME DHCPv6 client is whether the record
-// was read back.
+// assertDUIDStableAcrossAPluginRestart recycles the plugin and requires the server's lease DB to name the same client DUID for addr afterwards.
 func assertDUIDStableAcrossAPluginRestart(t *testing.T, ctx context.Context, cli *docker.Client, v6 string) {
 	t.Helper()
 
-	// dnsmasq records the lease (with the client DUID) once the
-	// persistent client's request is replied to; poll for the entry.
 	var duidBefore string
 	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
@@ -1080,9 +772,7 @@ func assertDUIDStableAcrossAPluginRestart(t *testing.T, ctx context.Context, cli
 	}
 	repliesBefore := countDHCPv6Replies(t, fixture.DnsmasqLog(), v6)
 
-	// Plugin restart: the same belt-and-braces shape as the recovery
-	// tests -- re-enable is registered as cleanup BEFORE the disable so
-	// a failed assertion cannot leave the runner's plugin off.
+	// Re-enable is registered before the disable, so a failed assertion cannot leave the plugin off.
 	t.Cleanup(func() {
 		bg := context.Background()
 		if err := cli.PluginEnable(bg, harness.PluginRef, types.PluginEnableOptions{Timeout: 30}); err != nil {
@@ -1105,9 +795,7 @@ func assertDUIDStableAcrossAPluginRestart(t *testing.T, ctx context.Context, cli
 	}
 	t.Log("plugin restarted; awaiting the recovered v6 client's re-bind...")
 
-	// A fresh DHCPREPLY for the address proves the post-restart
-	// exchange happened, so the lease DB entry read below is
-	// post-restart truth rather than a stale leftover.
+	// A fresh DHCPREPLY proves the post-restart exchange happened before the lease DB is read.
 	deadline = time.Now().Add(90 * time.Second)
 	rebound := false
 	for time.Now().Before(deadline) {
@@ -1132,37 +820,15 @@ func assertDUIDStableAcrossAPluginRestart(t *testing.T, ctx context.Context, cli
 	}
 }
 
-// raGuardKnobs is the sysctl contract the Router-Advertisement guard
-// asserts inside the container, and the value each knob must hold.
-//
-// DERIVED from the guard itself, never a second copy of its table.
-//
-// The rejected design is a hand-written map here, and its failure mode
-// is asymmetric in the direction that matters: value drift between the
-// two enumerations goes red, so the copy LOOKS safe, while a knob ADDED
-// in pkg/dhcp is silently unobserved -- the assertion iterates the copy,
-// the new knob is simply not among the things checked, and the suite
-// stays green over a guard it no longer covers. A count check is the
-// same defect one step along, because the count comes from the copy too.
-//
-// A FUNCTION rather than a package-level var, and that is not style.
-// RouterAdvertGuardContract returns a fresh map per call precisely so an
-// observer's expectations cannot be rewritten by anything it observes; a
-// package-level cache would hand that property straight back, since any
-// test in this package could mutate it and every later caller would read
-// the edit.
+// A hand-written copy would miss a knob added in pkg/dhcp, and RouterAdvertGuardContract returns a fresh map per call
+// so no caller can edit another's expectations (#875).
+
+// raGuardKnobs returns the sysctl contract the Router-Advertisement guard must leave in the container.
 func raGuardKnobs() map[string]string { return dhcp.RouterAdvertGuardContract() }
 
-// assertRAGuardReportedNoFailure checks that the guard raised no
-// failure on a host where it demonstrably held.
-//
-// verified/wantVerified are the knobs the CALLER read back from inside
-// the container. They are parameters rather than an adjacent guard on
-// purpose: this assertion is only meaningful AFTER that read-back, and a
-// dependency expressed by adjacency is one a reorder carries with it.
-// The health assertion below is sound ONLY because it runs after that
-// loop. Making the dependency executable means a reorder leaves
-// verified at 0 and fails here instead of silently asserting nothing.
+// verified is a parameter so the check fails when it runs before the caller's read-back (#875).
+
+// assertRAGuardReportedNoFailure checks that the guard raised no failure on a host where it demonstrably held.
 func assertRAGuardReportedNoFailure(t *testing.T, ctx context.Context, verified, wantVerified int) {
 	t.Helper()
 	if verified != wantVerified {
@@ -1174,39 +840,9 @@ func assertRAGuardReportedNoFailure(t *testing.T, ctx context.Context, verified,
 			"been moved ahead of the loop (#875, #911)", verified, wantVerified)
 	}
 
-	// The counter's HEALTHY path, observed on the CI engine.
-	//
-	// WHAT THIS IS, stated because it is not what it looks like: an
-	// assertion about the OBSERVER, not about the effect. The loop above
-	// is the outside evidence -- it reads the container's real sysctls --
-	// and this project's standing rule is to assert on that rather than on
-	// the plugin's own counters. It is NOT taken here as a substitute for
-	// that loop.
-	//
-	// It earns its place only because it runs AFTER the loop. The loop has
-	// already proven the guard ran and the knobs hold, so a zero here
-	// reads as "ran, and reported no failure" rather than "never ran" --
-	// which is exactly what a zero would mean on its own.
-	//
-	// WHY IT IS WORTH ADDING: the false-alarm direction is otherwise
-	// unobservable in CI. A spurious failure on a healthy host would go
-	// unseen, because the plugin log is only dumped on a failure path --
-	// so the ABSENCE of a complaint from a passing run's logs is not
-	// evidence and must not be read as one.
-	//
-	// WHAT IT CANNOT SEE. Which step failed. Anything endpoint-scoped,
-	// the counter being plugin-wide -- a failure raised by any other
-	// client in this shard lands here too. And the read-back being
-	// deleted from ApplyRouterAdvertGuard: the knobs would still hold,
-	// the loop above would still pass, the counter would still be zero,
-	// and this assertion would still pass having observed nothing about
-	// it. That case is closed in the other lane, by
-	// TestApplyRouterAdvertGuard_ReadsBackWhatItWrote.
-	//
-	// What the loop above DOES rule out is the guard as a whole never
-	// executing: accept_ra=0 and keep_addr_on_down=1 are non-default and
-	// nothing but the guard writes them. That is a narrower claim than
-	// "every step ran", and the difference is the point.
+	// A spurious failure on a healthy host is otherwise unseen in CI, and a zero reads as "ran, no failure" only after the
+	// sysctl loop proved the guard ran. The counter is plugin-wide, and a deleted read-back is caught by
+	// TestApplyRouterAdvertGuard_ReadsBackWhatItWrote (#875).
 	if h := harness.PluginHealthOrNil(ctx); h == nil {
 		t.Error("could not read the plugin health surface, so the RA guard's " +
 			"false-alarm direction was not measured here. Absent data is not a " +
@@ -1221,16 +857,9 @@ func assertRAGuardReportedNoFailure(t *testing.T, ctx context.Context, verified,
 	}
 }
 
-// containerV6Iface returns the name of the interface inside the
-// container that carries addr.
-//
-// It is DERIVED, never assumed. The first version of this helper's
-// caller hardcoded "eth0" and every read returned "No such file or
-// directory": this plugin names the container link after the network
-// (`dh-itest-br20`), not `eth0`, so the assertions below produced no
-// measurement at all while looking like a normal failure. The
-// interface that holds the leased address is by definition the one the
-// guard was supposed to configure, so derive it from the address.
+// The plugin names the container link after the network, not eth0 (#875).
+
+// containerV6Iface returns the name of the interface inside the container that carries addr.
 func containerV6Iface(t *testing.T, ctx context.Context, id, addr string) string {
 	t.Helper()
 	out := harness.ExecOutput(t, ctx, id, "ip", "-6", "-o", "addr", "show", "scope", "global")
@@ -1243,74 +872,17 @@ func containerV6Iface(t *testing.T, ctx context.Context, id, addr string) string
 	return ""
 }
 
-// persistentV6BindBudget bounds the wait for the persistent v6
-// client's own DHCPv6 bind. MEASURED on 1.9.0 in the CI run that
-// exposed the ordering bug below: the gap between the one-shot's bind
-// and the persistent client's was 2 s (bridge) and 5 s (macvlan), so
-// this is roughly an order of magnitude of headroom for a loaded
-// runner. It is a deadline, not a settling time -- expiry fails the
-// test.
+// Measured on 1.9.0: the persistent client bound 2 s (bridge) and 5 s (macvlan) after the one-shot (#875).
+
+// persistentV6BindBudget bounds the wait for the persistent v6 client's own DHCPv6 bind.
 const persistentV6BindBudget = 45 * time.Second
 
-// awaitPersistentV6Bind blocks until the fixture's DHCP server has
-// recorded a SECOND DHCPv6 bind for addr, which is the precondition
-// every RA-guard assertion below depends on.
-//
-// Why a precondition is needed at all. There are TWO v6 clients per
-// endpoint. The one-shot runs at CreateEndpoint, in the HOST namespace,
-// and it is the one whose lease Docker is told about -- so a container
-// has its global v6 address, and `docker inspect` agrees, well before
-// the PERSISTENT client has started inside the container namespace. The
-// RA guard runs on the way to that persistent client. An assertion
-// gated only on "the address is there" is therefore free to run before
-// the guard has written anything.
-//
-// It did, on 1.9.0. MEASURED, macvlan shard, one-second log resolution:
-//
-//	13:57:31  one-shot binds the address (host ns, link pre-rename)
-//	13:57:34.180  test reads eth0/accept_ra          -> 1 (the kernel default)
-//	13:57:34.456  test reads eth0/keep_addr_on_down  -> 0
-//	13:57:35  the guard runs on eth0, then the client solicits
-//
-// Every value read was a kernel default. The test read the right file,
-// in the right namespace, one second before anything wrote to it.
-// `autoconf` could never have caught it either, its default and its
-// target both being 1 at the time. Since #821 the guard writes
-// autoconf=0, so that knob has become a discriminator too -- which is
-// a reason the ordering anchor below is still needed and not a reason
-// to drop it: two discriminators read one second early are still two
-// kernel defaults.
-//
-// Why THIS anchor. It is outside evidence -- the DHCP server's own
-// record, not the plugin's opinion of itself. It is strictly downstream
-// of the guard: the guard runs while the link is being prepared, before
-// the persistent client exists, so a bind logged by the server proves
-// the guard ran. And it is FIX-INDEPENDENT -- the persistent client
-// binds whether or not the guard held, so the precondition cannot
-// quietly become a restatement of the thing under test.
-//
-// Why the second bind and not the first: MEASURED on 1.9.0 -- the
-// one-shot contributes exactly one DHCPREPLY per address. dnsmasq logs
-// one DHCPREPLY per blessed request or renewal, so the persistent
-// client's own bind is the second.
-//
-// mac scopes the count to THIS endpoint. The fixture log is shared
-// across every test in a shard, so counting replies by address alone
-// would also count a reply left by an EARLIER container that happened
-// to be handed the same pooled address, firing the anchor early and
-// restoring the race this function exists to close. dnsmasq puts the
-// client's DUID on the reply line, and on bridge and macvlan the plugin
-// mints that DUID as a DUID-LL over the container's MAC, so the MAC is
-// an exact per-endpoint discriminator:
-//
-//	DHCPREPLY(dh-itest-br2) fd00:6470:6864::32 00:03:00:01:ea:eb:ed:a4:b0:f5
-//
-// i.e. 00:03 (link-layer) + 00:01 (Ethernet) + the six MAC bytes.
-//
-// THE BOUND THAT CAME WITH 2.0: this scoping holds for bridge and
-// macvlan and NOT for ipvlan, whose DUID is a per-endpoint DUID-UUID
-// with no MAC in it (D30 Q4, #895). No caller here is an ipvlan
-// endpoint; one added later would silently match nothing and time out.
+// The one-shot binds in the host namespace at CreateEndpoint, and the guard runs before the persistent client; on
+// 1.9.0 the test read kernel defaults one second before the guard wrote (#875). The server's second DHCPREPLY for the
+// address is downstream of the guard and independent of it. The count is scoped by the DUID-LL on the reply line
+// (00:03:00:01 + MAC), which holds for bridge and macvlan but not ipvlan's DUID-UUID (#895).
+
+// awaitPersistentV6Bind blocks until the fixture's DHCP server logs this endpoint's second DHCPv6 bind for addr.
 func awaitPersistentV6Bind(t *testing.T, logPath, addr, mac string) {
 	t.Helper()
 
@@ -1318,9 +890,6 @@ func awaitPersistentV6Bind(t *testing.T, logPath, addr, mac string) {
 		t.Fatal("awaitPersistentV6Bind: empty dnsmasq log path — the fixture was " +
 			"never started, so this assertion would have measured nothing")
 	}
-	// An unreadable MAC must not silently degrade to an address-only
-	// match. That is the same "assertion that cannot read its subject
-	// quietly passes" pattern this whole block is about.
 	if mac == "" {
 		t.Fatal("awaitPersistentV6Bind: could not read the container link's MAC, so " +
 			"the bind count cannot be scoped to this endpoint")
@@ -1341,16 +910,7 @@ func awaitPersistentV6Bind(t *testing.T, logPath, addr, mac string) {
 		replies, addr, mac, persistentV6BindBudget)
 }
 
-// awaitPersistentV6BindFor is the anchor above, taken for the endpoint
-// carrying addr, and it returns the container interface that carries
-// it.
-//
-// It exists so the two observers that depend on the PERSISTENT client
-// having bound -- the Router-Advertisement guard's knobs and the
-// installed address's flags -- take the precondition by calling for it
-// rather than by sitting after something else that took it. Adjacency
-// is not a dependency; a reorder carries a neighbouring guard along to
-// where it is vacuous.
+// awaitPersistentV6BindFor waits for the persistent client's bind for addr and returns the container interface that carries it.
 func awaitPersistentV6BindFor(t *testing.T, ctx context.Context, id, addr, logPath string) string {
 	t.Helper()
 
@@ -1360,45 +920,12 @@ func awaitPersistentV6BindFor(t *testing.T, ctx context.Context, id, addr, logPa
 	return iface
 }
 
-// assertLeasedV6IsInstalledWithNODAD is the OUTSIDE evidence for D30
-// Q1: the leased address, as the CONTAINER'S OWN KERNEL holds it,
-// carries IFA_F_NODAD and is neither tentative nor dadfailed.
-//
-// # WHY THE UNIT PROOFS ARE NOT ENOUGH
-//
-// v6AddrAttrs is a pure function and its unit tests say only that the
-// chassis ASKED for the flag. What is between the ask and the kernel is
-// installV6Address's AddrReplace over an address libnetwork already put
-// on the link, from the value CreateEndpoint returned, with no flags
-// and no lifetimes. If that re-apply does not take -- a failed replace,
-// the wrong link, a mode the call never reaches -- the container is
-// left holding the RIGHT ADDRESS with kernel duplicate-address
-// detection armed and no lifetimes, and every other proof in this file
-// still passes: linkGlobalV6 returns the first global v6 address it
-// finds and reads no flags at all. That is a silent defect with no
-// observer, which is what this closes (#911 review round 1, finding 1).
-//
-// It is the flag that is asserted and not the timing. A proof that
-// reads the address right after the bind and requires it to be usable
-// sees a settled address on a fast box and a tentative one on a loaded
-// runner; IFA_F_NODAD is a property of how it was installed and holds
-// whatever the runner is doing.
-//
-// The precondition is taken by calling for it: the re-apply is what the
-// PERSISTENT client's first Acquired does, and libnetwork's flagless
-// address is on the link well before that client exists. Read before
-// the anchor, this would assert on the engine's install and fail for a
-// correct plugin.
-//
-// The poll after the anchor is a deadline, not a settling time. The
-// server's Reply comes before the library's own duplicate-address check
-// and therefore before Acquired, so the anchor returns a moment early;
-// expiry here fails the test.
-//
-// The renderings this reads are harness.V6AddrFlagsFromAddrShow's
-// problem, and the reason it is a pure function driven in the fast lane
-// against captured output from the shipped image: alpine's busybox has
-// no name for IFA_F_NODAD and prints `flags 02`.
+// The unit tests prove only that the chassis asked for the flag; installV6Address replaces the flagless address
+// libnetwork installed, and linkGlobalV6 reads no flags (#911). Busybox prints IFA_F_NODAD as `flags 02`, which
+// harness.V6AddrFlagsFromAddrShow decodes. The Reply precedes the library's DAD, so the poll after the anchor is a
+// deadline.
+
+// assertLeasedV6IsInstalledWithNODAD checks that the container's kernel holds the leased address with IFA_F_NODAD, neither tentative nor dadfailed.
 func assertLeasedV6IsInstalledWithNODAD(t *testing.T, ctx context.Context, id, addr, logPath string) {
 	t.Helper()
 
@@ -1440,68 +967,20 @@ func assertLeasedV6IsInstalledWithNODAD(t *testing.T, ctx context.Context, id, a
 	}
 }
 
-// assertRouterAdvertsAreBeingProcessed is the OUTSIDE observer for the
-// Router-Advertisement guard. Everything else about it is visible only
-// to the plugin: it runs inside the container's namespace, its failures
-// land in a health counter, and a counter reading zero is equally
-// consistent with "the guard held" and "the guard never ran".
-//
-// So this asserts on the container's own kernel state, in the image
-// that actually ships, through the managed plugin -- not on anything
-// the plugin says about itself.
-//
-// Two independent claims, because each one alone can pass while the
-// wiring is broken:
-//
-//  1. The knobs read the values the guard writes. accept_ra=0 and
-//     keep_addr_on_down=1 are not kernel defaults and nothing else
-//     writes them, so reading them back is evidence the guard ran.
-//
-//  2. EXACTLY ONE default route, via a LINK-LOCAL address, is present.
-//     Both halves of that are load-bearing since #821, and they fail in
-//     opposite directions:
-//
-//     ONE, and not zero, is the proof that the plugin's own DHCPv6
-//     client still sees Router Advertisements with the container's
-//     kernel at accept_ra=0. DHCPv6 carries no router -- the option
-//     catalogue is RFC 9915 section 21 and nothing in it has a next hop
-//     -- and the kernel is no longer allowed to install one, so a
-//     default route via fe80::/10 can only have arrived through
-//     Lease.Gateway, the Join answer, and the engine. That is the whole
-//     chain #821 built, observed from outside it.
-//
-//     ONE, and not two, is the proof that accept_ra=0 took AND that the
-//     route the kernel may have installed in the window before the
-//     guard ran was purged. A container with two default routes has
-//     working IPv6 today and picks its next hop by a metric comparison
-//     nobody chose; a presence test cannot see it.
-//
-// Claim 2 was first written as a match on `proto ra`, which is a string
-// the container's `ip` PROVABLY NEVER PRINTS: the test image's busybox
-// route output carries no `proto` field at all. That is also why the
-// second route cannot be identified as the kernel's from in here --
-// only counted. Keying on the via-address makes the assertion a
-// property of the protocol rather than of one tool's formatting.
-//
-// The bound: this does not observe REFRESH. The fixture's dnsmasq runs
-// with --enable-ra and no --ra-param, so its unsolicited interval is
-// dnsmasq's default (up to 600s), far outside any budget here.
+// accept_ra=0 and keep_addr_on_down=1 are not kernel defaults. DHCPv6 has no next hop (RFC 9915 section 21) and the
+// kernel may not install one, so exactly one default route via fe80::/10 proves Lease.Gateway reached the engine and
+// the kernel's early route was purged (#821). Busybox prints no `proto`, so the route is keyed on its via-address. The
+// fixture's unsolicited interval is dnsmasq's default, up to 600s, so refresh is not observed.
+
+// assertRouterAdvertsAreBeingProcessed checks the guard's knobs and the single link-local default route in the container.
 func assertRouterAdvertsAreBeingProcessed(t *testing.T, ctx context.Context, id, addr, logPath string) {
 	t.Helper()
 
-	// Establish the precondition BEFORE reading any knob -- see the
-	// measured ordering above. Everything below is a statement about
-	// the persistent client, and until this returns there is no
-	// persistent client to make a statement about.
 	iface := awaitPersistentV6BindFor(t, ctx, id, addr, logPath)
 
 	t.Logf("RA guard: asserting on derived container interface %q", iface)
 
-	// NON-VACUITY, kept BESIDE the obligation rather than only in the
-	// other lane. raGuardKnobs is derived from
-	// dhcp.RouterAdvertGuardContract(), so an empty table would make
-	// this loop -- and therefore this entire assertion -- pass having
-	// measured nothing.
+	// An empty contract would make this loop pass having measured nothing (#875).
 	knobs := raGuardKnobs()
 	if len(knobs) == 0 {
 		t.Fatal("the RA-guard knob contract is empty, so the loop below would assert " +
@@ -1513,9 +992,6 @@ func assertRouterAdvertsAreBeingProcessed(t *testing.T, ctx context.Context, id,
 	for knob, want := range knobs {
 		p := "/proc/sys/net/ipv6/conf/" + iface + "/" + knob
 		got := strings.TrimSpace(harness.ExecOutput(t, ctx, id, "cat", p))
-		// A read that FAILED is a different verdict from a value that is
-		// wrong, and it must never be reported as either a pass or a
-		// mere mismatch: it means this assertion measured nothing.
 		if harness.SysctlReadFailed(got) {
 			t.Errorf("COULD NOT MEASURE %s: %q. The assertion did not run — this is "+
 				"not evidence the guard failed, it is evidence the observer is "+
@@ -1534,23 +1010,9 @@ func assertRouterAdvertsAreBeingProcessed(t *testing.T, ctx context.Context, id,
 		verified++
 	}
 
-	// The counter check is a CALL that takes what the loop proved, not a
-	// statement sitting next to it. Adjacency is not a dependency: a
-	// reorder moves a neighbouring guard along with the thing it guards,
-	// and the guard then travels to where it is vacuous. Passing
-	// `verified` makes the ordering a DATA dependency instead -- moved
-	// above the loop this call passes 0 and fails; moved above the
-	// declaration it does not compile.
 	assertRAGuardReportedNoFailure(t, ctx, verified, len(knobs))
 
-	// The RA itself is asynchronous: the container solicits at link-up
-	// and dnsmasq answers. Poll rather than sample once.
-	//
-	// This poll returns on the first success, which is only sound
-	// because awaitPersistentV6Bind has already run. Do not hoist it
-	// above the anchor to "save time" -- the budget is a deadline for an
-	// RA that may be slow, not a window in which the defect might show
-	// up.
+	// This poll is sound only after awaitPersistentV6Bind has run.
 	deadline := time.Now().Add(harness.IPAcquisitionBudget)
 	var routes string
 	for time.Now().Before(deadline) {
@@ -1570,10 +1032,6 @@ func assertRouterAdvertsAreBeingProcessed(t *testing.T, ctx context.Context, id,
 		return
 	}
 
-	// THE OTHER DIRECTION, and it does not get a poll: a second default
-	// route is not something that appears late and then goes away. This
-	// is read from the same output the presence check just accepted, so
-	// the two cannot disagree about what the table held.
 	if n := harness.CountDefaultRoutes(routes); n != 1 {
 		t.Errorf("%d IPv6 default routes on %s, want exactly 1. Two means the container's "+
 			"kernel installed one of its own beside the plugin's -- either accept_ra=0 did "+

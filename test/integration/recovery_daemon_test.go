@@ -16,47 +16,12 @@ import (
 	docker "github.com/docker/docker/client"
 )
 
-// TestRecovery_DaemonRestart_PreservesContainer is the integration
-// counterpart to Phase D step 9 of the manual smoke test: bounce the
-// whole docker daemon (harness.RestartDockerDaemon — systemctl on
-// systemd hosts, supervised-dockerd signal on containerized runners)
-// while a plugin-managed container is attached, and verify that
-//
-//   - the daemon comes back up (no hang on plugin re-enable — the
-//     historical upstream failure mode this fork modernized away from)
-//   - the container is running again (RestartPolicy=always so docker
-//     brings it back once the daemon is up)
-//   - the IP and MAC are preserved across the restart
-//
-// Deliberately NOT asserted: Plugin.Health.recovered_ok ≥ 1 on its
-// own. Whether recovery or the tombstone path runs depends on whether
-// dockerd's graceful shutdown ran Leave on the container's endpoint
-// before going down. If it did, the post-restart container goes
-// through CreateEndpoint+tombstone (recovered_ok stays 0,
-// tombstones_consumed > 0); if it didn't, recoverEndpoints rebuilds the
-// manager (recovered_ok > 0). Both yield the same user-visible
-// invariant — same IP and MAC — so that is what is asserted.
-//
-// What IS asserted is that one of the two ran (#386). "The address
-// survived by neither path" used to be indistinguishable from success,
-// because recovered_ok=0 was the expected reading for the tombstone
-// case and nothing observed the tombstone case positively.
-//
-// Note which branch of RestartDockerDaemon CI takes — always the
-// containerized one, see harness/daemon.go. Both branches shut the
-// daemon down gracefully, so both are expected to land on the tombstone
-// path here; the abrupt-death case that would force recovery is #480.
-//
-// **Do not parallelize.** Restarting the daemon drops every docker
-// connection on the host, including those of any other test running
-// concurrently. Per the rule documented in test/integration/README.md
-// the suite is serial; this test relies on that.
-//
-// **Side effects on the runner host.** This test stops every container
-// on the runner briefly (whatever `--restart=always` they have decides
-// whether they come back). Anything else running on the same docker
-// daemon will see ~5–15s of unavailability. The runner is configured
-// for this; on a shared dev box, run with care.
+// Whether recovery or the tombstone path preserves the address depends on whether dockerd's graceful shutdown ran
+// Leave first, so the test asserts that one of the two ran (#386); both branches of RestartDockerDaemon shut down
+// gracefully, and the abrupt case is #480. The test stops every container on the runner for about 5 to 15s.
+// Do not parallelize: restarting the daemon drops every docker connection on the host.
+
+// TestRecovery_DaemonRestart_PreservesContainer checks that a daemon restart brings the container back with its IP and MAC (#386).
 func TestRecovery_DaemonRestart_PreservesContainer(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 240*time.Second)
 	defer cancel()
@@ -79,22 +44,11 @@ func TestRecovery_DaemonRestart_PreservesContainer(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = cli.Close() })
 
-	// Baseline before the container exists: leases_obtained is
-	// cumulative across the (serial) suite, so the wait below is
-	// relative to this snapshot.
-	//
-	// This window covers only the pre-restart bind and is closed before
-	// the daemon goes down. It deliberately does NOT span the restart:
-	// docker respawns the plugin with the daemon, so every counter is
-	// reset, which is exactly why the post-restart assertions further
-	// down are absolute rather than deltas (#405).
+	// Closed before the restart, which respawns the plugin and resets every counter, so the post-restart reads are
+	// absolute (#405).
 	bindW := harness.BeginCounterWindow(t, ctx, cli, "leases_obtained")
 
-	// We can't use harness.RunContainer because it doesn't take a
-	// RestartPolicy. Inlining keeps the harness API stable — but the
-	// HostConfig still comes from the harness so this site keeps the
-	// init PID 1 that spares every teardown docker stop's 10s grace
-	// (#367).
+	// RunContainer takes no RestartPolicy; HostConfig still supplies the init PID 1 that spares docker stop's 10s grace (#367).
 	hostCfg := harness.HostConfig()
 	hostCfg.RestartPolicy = container.RestartPolicy{Name: container.RestartPolicyAlways}
 	create, err := cli.ContainerCreate(ctx,
@@ -117,13 +71,11 @@ func TestRecovery_DaemonRestart_PreservesContainer(t *testing.T) {
 	t.Cleanup(func() {
 		bg, bgCancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer bgCancel()
-		// Use a fresh client because the one captured above may have
-		// been Close()'d by the t.Cleanup chain ordering.
+		// The client above may be closed by the cleanup chain.
 		bgCli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
 		if err == nil {
 			defer bgCli.Close()
-			// Override RestartPolicy so the cleanup container
-			// doesn't auto-restart between Stop and Remove.
+			// So the cleanup container does not restart between Stop and Remove.
 			_, _ = bgCli.ContainerUpdate(bg, id, container.UpdateConfig{
 				RestartPolicy: container.RestartPolicy{Name: container.RestartPolicyDisabled},
 			})
@@ -138,39 +90,20 @@ func TestRecovery_DaemonRestart_PreservesContainer(t *testing.T) {
 	ipBefore, macBefore := waitForEndpoint(t, ctx, cli, id, harness.IPAcquisitionBudget)
 	t.Logf("before restart: ip=%s mac=%s", ipBefore, macBefore)
 
-	// The IP above appears as soon as CreateEndpoint's one-shot DHCP
-	// completes — *before* Join has started the persistent client. If
-	// the daemon goes down inside that window the post-restart endpoint
-	// can come back with a *different* IP, failing the IP-stability
-	// assertion below for reasons that have nothing to do with restart
-	// recovery. Fast hosts never see this window; slower runner-class
-	// hardware does. Wait for the persistent client's first "bound"
-	// event (leases_obtained) before pulling the daemon down.
-	//
-	// The mechanism written here until #800 was that no client existed
-	// to RELEASE the lease on shutdown. That is now false for this
-	// network: it does not set release_lease, so no path sends a
-	// DHCPRELEASE for it (#962). What
-	// survives is the window itself — an endpoint whose Join has not
-	// finished is not the steady state this test is about — so the wait
-	// stays. Whether it is still LOAD-BEARING has not been re-measured
-	// since the release paths went; deleting it needs that measurement,
-	// not this comment.
+	// The IP appears when CreateEndpoint's one-shot completes, before Join starts the persistent client; a daemon kill in
+	// that window can bring the endpoint back on a different IP on slower hardware. No DHCPRELEASE is sent without
+	// release_lease since #800 (#962), and whether the wait is still needed has not been re-measured.
 	waitLeaseObtained(t, bindW, 30*time.Second)
-	// Done with this window while the plugin it measured is still the
-	// one running; the daemon restart below ends that process.
+	// The daemon restart below ends the process this window measured.
 	bindW.End()
 
-	// The plugin's own account of what recovery did across the restart,
-	// dumped only if this test fails. Marked while the daemon is still
-	// up; the plugin ID does not change, so the window survives the
-	// restart that ends the process.
+	// The plugin ID does not change, so the mark survives the restart; dumped only on failure.
 	logMark := harness.MarkPluginLog(t, ctx)
 	harness.DumpPluginLogOnFailure(t, ctx, logMark, "the daemon was restarted")
 
 	harness.RestartDockerDaemon(t, ctx)
 
-	// The pre-restart cli's TCP connection is dead. Build a new one.
+	// The pre-restart cli's connection is dead.
 	_ = cli.Close()
 	cli2, err := waitDaemonReady(ctx, 60*time.Second)
 	if err != nil {
@@ -178,9 +111,7 @@ func TestRecovery_DaemonRestart_PreservesContainer(t *testing.T) {
 	}
 	defer cli2.Close()
 
-	// containerd-shim keeps the container running across the daemon
-	// restart, but ContainerInspect briefly returns 'restarting' as
-	// dockerd reattaches. Poll until State.Running.
+	// dockerd briefly reports 'restarting' while it reattaches to the running container.
 	if err := waitContainerRunning(ctx, cli2, id, 30*time.Second); err != nil {
 		t.Fatalf("container not running after daemon restart: %v", err)
 	}
@@ -189,16 +120,10 @@ func TestRecovery_DaemonRestart_PreservesContainer(t *testing.T) {
 	// each rebuild and recovered_ok moves only after it returns (pkg/plugin/plugin.go:recoverOneEndpoint, #376).
 	healthAfter := harness.WaitPluginHealth(t, ctx, cli2, 30*time.Second)
 
-	// So wait for the property, bounded by the plugin's own timeouts on
-	// whichever route recovery took. No counter window: the restart
-	// ends the client this test opened with, so the reads before and
-	// after it cannot be tied to one plugin instance here — the reason
-	// bindW is closed above rather than carried across.
+	// No counter window: the restart ends the plugin instance, so reads either side cannot be tied to one instance (#405).
 	const preserved = "one of the two paths that preserve the address to have run " +
 		"(recovered_ok >= 1 or tombstones_consumed >= 1)"
-	// The switch below is the assertion — its default arm is the one
-	// this wait exists to stop firing early — so the wait's own verdict
-	// is not read a second time here.
+	// The switch below is the assertion, so the wait's verdict is not read twice.
 	waited, _ := harness.AwaitRecoveryRebuildOn(t, ctx, cli2, preserved,
 		func(h *harness.HealthResponse) bool { return h.RecoveredOK >= 1 || h.TombstonesConsumed >= 1 })
 	if waited != nil {
@@ -208,26 +133,11 @@ func TestRecovery_DaemonRestart_PreservesContainer(t *testing.T) {
 		healthAfter.RecoveredOK, healthAfter.TombstonesConsumed, healthAfter.RecoveryFailed,
 		healthAfter.RecoveryDeferred, healthAfter.RecoveryAbortedContainerGone)
 
-	// Which path preserved the address (#386).
-	//
-	// Either is legitimate and which one runs depends on whether
-	// dockerd's graceful shutdown drove Leave before going down, so
-	// neither can be demanded on its own. What CAN be demanded is that
-	// one of them ran: the IP/MAC assertions below pass if the address
-	// survived, and until tombstones_consumed existed there was no way
-	// to distinguish "the tombstone path preserved it" from "it survived
-	// for a reason this test does not model". That third state read as
-	// success, which is the same shape of blind spot #383 hid in — its
-	// IP/MAC assertions passed throughout while recovery was failing on
-	// every single run.
-	//
-	// The counters are absolute rather than a delta on purpose: the
-	// plugin process is respawned by the daemon restart, so these are
-	// the new instance's own numbers and already scoped to this event.
+	// Before tombstones_consumed, an address surviving by neither path read as success, the blind spot #383 hid in; the
+	// counters are the respawned instance's own (#386).
 	switch {
 	case healthAfter.RecoveredOK >= 1 && healthAfter.TombstonesConsumed >= 1:
-		// Possible with more than one endpoint in play; not an error,
-		// but say so rather than silently picking one.
+		// Possible with more than one endpoint in play.
 		t.Logf("address preserved by BOTH paths (recovered_ok=%d, tombstones_consumed=%d)",
 			healthAfter.RecoveredOK, healthAfter.TombstonesConsumed)
 	case healthAfter.RecoveredOK >= 1:
@@ -248,36 +158,15 @@ func TestRecovery_DaemonRestart_PreservesContainer(t *testing.T) {
 			"is not the one the arms above name")
 	}
 
-	//
-	// recovery_failed IS asserted, and that assertion only became sound
-	// once BOTH benign events were split out of it. Each was independently
-	// enough to make a strict check here flaky by construction:
-	//
-	//   #383 — recovery's first NetworkList hit the Docker client's 2s
-	//   timeout because docker respawns the plugin during its own
-	//   startup, and recovery was then abandoned for every network. This
-	//   counter reached 1 on every single run of this test. It hid for
-	//   so long because the IP/MAC assertions below still passed,
-	//   carried by the tombstone path. Now counted as recovery_deferred.
-	//
-	//   #376 — a container that had merely exited before recovery
-	//   reached it. Now counted as recovery_aborted_container_gone.
-	//
-	// What is left means exactly one thing: a RUNNING container whose
-	// renewal client could not be rebuilt. This container is running
-	// (asserted above), so the only correct value is zero.
-	//
-	// Non-zero recovery_deferred here is expected and fine — it means the
-	// daemon was not ready and the retry did its job.
+	// recovery_failed is sound only since both benign events were split out: #383's NetworkList timeout during the
+	// plugin respawn, now recovery_deferred, which reached 1 on every run, and #376's exited container, now
+	// recovery_aborted_container_gone. This container is running, so zero is the only correct value.
 	if healthAfter.RecoveryFailed != 0 {
 		t.Errorf("recovery_failed=%d after daemon restart: a running container was left without a renewal client (#376, #383)",
 			healthAfter.RecoveryFailed)
 	}
 
-	// In the tombstone-path case (graceful shutdown ran Leave) the
-	// container goes through a fresh CreateEndpoint+dhcpcd on the
-	// way back up; the endpoint can briefly show no IP after
-	// State.Running flips. Poll on the endpoint, not just the state.
+	// On the tombstone path the endpoint can briefly show no IP after State.Running flips.
 	ipAfter, macAfter := waitForEndpoint(t, ctx, cli2, id, harness.IPAcquisitionBudget)
 	t.Logf("after restart:  ip=%s mac=%s", ipAfter, macAfter)
 	if ipAfter != ipBefore {
@@ -288,15 +177,9 @@ func TestRecovery_DaemonRestart_PreservesContainer(t *testing.T) {
 	}
 }
 
-// waitLeaseObtained polls Plugin.Health until leases_obtained moves
-// past the window's opening baseline, i.e. the endpoint's persistent
-// DHCP client has fired its first dhcpcd "bound" event and lease
-// release-on-shutdown is armed.
-//
-// Takes the window rather than a bare baseline int so the wait fails
-// loudly if the plugin restarts underneath it. Watching a counter climb
-// past a number the counter no longer remembers is the #405 bug in its
-// purest form.
+// A window, not a bare baseline, so the wait fails if the plugin restarts underneath it (#405).
+
+// waitLeaseObtained polls Plugin.Health until leases_obtained moves past the window's baseline.
 func waitLeaseObtained(t *testing.T, w *harness.CounterWindow, budget time.Duration) {
 	t.Helper()
 	baseline := w.Before().LeasesObtained
@@ -309,8 +192,7 @@ func waitLeaseObtained(t *testing.T, w *harness.CounterWindow, budget time.Durat
 	t.Logf("persistent DHCP client bound (leases_obtained %d -> %d)", baseline, last.LeasesObtained)
 }
 
-// waitForEndpoint mirrors RunContainer's polling loop but works on
-// an already-started container.
+// waitForEndpoint mirrors RunContainer's polling loop for an already-started container.
 func waitForEndpoint(t *testing.T, ctx context.Context, cli *docker.Client, id string, budget time.Duration) (ipv4, mac string) {
 	t.Helper()
 	deadline := time.Now().Add(budget)
@@ -330,10 +212,7 @@ func waitForEndpoint(t *testing.T, ctx context.Context, cli *docker.Client, id s
 	return
 }
 
-// waitDaemonReady polls Ping on a fresh client until the daemon
-// responds. The daemon takes ~5–15s to come up after systemctl
-// restart docker; the budget here is generous to absorb a slow
-// disk warmup or a plugin that takes time to enable.
+// waitDaemonReady polls Ping on a fresh client until the daemon responds, which takes about 5 to 15s after a restart.
 func waitDaemonReady(ctx context.Context, budget time.Duration) (*docker.Client, error) {
 	deadline := time.Now().Add(budget)
 	for time.Now().Before(deadline) {
@@ -352,10 +231,7 @@ func waitDaemonReady(ctx context.Context, budget time.Duration) (*docker.Client,
 	return nil, context.DeadlineExceeded
 }
 
-// waitContainerRunning polls ContainerInspect until State.Running
-// reports true. Used after daemon restart, where containerd-shim
-// has the container alive but dockerd is briefly seeing it in the
-// 'restarting' state as it reattaches.
+// waitContainerRunning polls ContainerInspect until State.Running is true.
 func waitContainerRunning(ctx context.Context, cli *docker.Client, id string, budget time.Duration) error {
 	deadline := time.Now().Add(budget)
 	var lastState string

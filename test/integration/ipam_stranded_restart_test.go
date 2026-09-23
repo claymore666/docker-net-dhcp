@@ -18,32 +18,11 @@ import (
 	docker "github.com/docker/docker/client"
 )
 
-// TestIPAMStranded_APluginThatEndsMidRestartGivesTheAddressBack drives
-// the hole this suite could not reach before: a plugin process that
-// ends between Docker asking for an address and the container's
-// endpoint being created.
-//
-// THE SEQUENCE. A container runs and is removed, which leaves the
-// network's one recently-removed endpoint holding its address for 60
-// seconds. A second container starts inside that window and the plugin
-// claims the address for it before it sends a single packet, because
-// the exchange has to run under the identity the DHCP server already
-// has the lease filed under. The server is down, so the exchange sits
-// there. The plugin is then torn down mid-exchange, which leaves the
-// lease record holding the address with no endpoint anywhere behind it:
-// the container never started, so Docker lists no endpoint for it, and
-// the reservation the plugin was holding died with the process.
-//
-// WHAT IT PROVES. The container starting again inside the window ends
-// up on the SAME address, and the DHCP server says so: the lease it
-// hands out goes to the new hardware address Docker minted for the
-// retry. Before this change the record was left where it was, so the
-// address had no recently-removed endpoint to claim it from and the
-// retry took a second lease while the first was never handed back.
-//
-// The address, and the server's own answer for it, are the assertions.
-// The plugin's counters are deliberately not: the process that would
-// have moved them is the one that was torn down.
+// A removed endpoint holds its address for 60 s. A second container claims it under the server's lease identity while
+// the server is down, and the plugin is torn down mid-exchange; the retry must get the same address, leased by the
+// server to its new MAC. The plugin's counters are not asserted, since their process was torn down (#1047).
+
+// TestIPAMStranded_APluginThatEndsMidRestartGivesTheAddressBack checks that a plugin ended mid-exchange hands the claimed address back (#1047).
 func TestIPAMStranded_APluginThatEndsMidRestartGivesTheAddressBack(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Minute)
 	defer cancel()
@@ -51,9 +30,7 @@ func TestIPAMStranded_APluginThatEndsMidRestartGivesTheAddressBack(t *testing.T)
 	const netName = "dh-itest-ipam-stranded"
 	const firstCtr = "dh-itest-ipam-stranded-a"
 	const retryCtr = "dh-itest-ipam-stranded-b"
-	// Long enough that the plugin is certainly still waiting on the
-	// server when it is torn down, and far short of the 60 second
-	// window the retry has to land in.
+	// Long enough that the exchange is still waiting on the server, well inside the 60 s window.
 	const teardownAfter = 6 * time.Second
 
 	ef := harness.NewEphemeralFixture(t)
@@ -70,8 +47,7 @@ func TestIPAMStranded_APluginThatEndsMidRestartGivesTheAddressBack(t *testing.T)
 	}
 	t.Cleanup(func() { _ = cli.Close() })
 
-	// Registered before the teardown below, so a failure anywhere after
-	// it still leaves the plugin enabled for every test that follows.
+	// Registered before the teardown so every later test still finds the plugin enabled.
 	t.Cleanup(func() {
 		bg, bgCancel := context.WithTimeout(context.Background(), 90*time.Second)
 		defer bgCancel()
@@ -95,8 +71,6 @@ func TestIPAMStranded_APluginThatEndsMidRestartGivesTheAddressBack(t *testing.T)
 		t.Fatalf("ContainerRemove(%s): %v", firstCtr, err)
 	}
 
-	// From here the address belongs to a recently-removed endpoint and
-	// the clock on it is 60 seconds.
 	windowOpened := time.Now()
 
 	ef.Stop()
@@ -116,8 +90,7 @@ func TestIPAMStranded_APluginThatEndsMidRestartGivesTheAddressBack(t *testing.T)
 		_ = cli.ContainerRemove(bg, create.ID, container.RemoveOptions{Force: true})
 	})
 
-	// No t.Fatalf off the test goroutine: a helper called there reports
-	// against whichever test is running when it fires.
+	// No t.Fatalf off the test goroutine: it would report against whichever test is running.
 	startErr := make(chan error, 1)
 	go func() {
 		startErr <- cli.ContainerStart(context.Background(), create.ID, container.StartOptions{})
@@ -125,9 +98,6 @@ func TestIPAMStranded_APluginThatEndsMidRestartGivesTheAddressBack(t *testing.T)
 
 	time.Sleep(teardownAfter)
 
-	// The plugin goes away with the exchange still in flight. This is
-	// the process death the change is about; forcing it is the only way
-	// to reach it on purpose.
 	if err := cli.PluginDisable(ctx, harness.PluginRef, types.PluginDisableOptions{Force: true}); err != nil {
 		t.Fatalf("PluginDisable: %v", err)
 	}
@@ -151,11 +121,7 @@ func TestIPAMStranded_APluginThatEndsMidRestartGivesTheAddressBack(t *testing.T)
 	}
 	harness.WaitPluginHealth(t, ctx, cli, 60*time.Second)
 
-	// The window the retry has to land in is the one the first
-	// container's removal opened, and this test is worthless if it has
-	// already closed: the retry would then be an ordinary fresh
-	// allocation that the server is free to answer with the same
-	// address anyway.
+	// After the window closes the retry is a fresh allocation the server may answer with the same address anyway.
 	if elapsed := time.Since(windowOpened); elapsed > 45*time.Second {
 		t.Fatalf("the plugin took %s to come back, which leaves no room inside the 60 second "+
 			"window this test measures; nothing was proved either way", elapsed)
@@ -177,19 +143,14 @@ func TestIPAMStranded_APluginThatEndsMidRestartGivesTheAddressBack(t *testing.T)
 			"a second lease and the first is never handed back.", again, addr)
 	}
 
-	// The server's own answer, which is the evidence the plugin cannot
-	// fake: the lease for that address is now filed against the
-	// hardware address Docker minted for the retry.
+	// The server's answer is evidence the plugin cannot fake.
 	if got := ef.LastACKAddress(retryMAC); got != addr {
 		t.Errorf("the DHCP server last acknowledged %q for %s, want %s. The address in Docker's "+
 			"answer and the one the server leased must be the same address.", got, retryMAC, addr)
 	}
 }
 
-// awaitEndpoint reads the container's address and hardware address once
-// the endpoint carries them. The endpoint is built and filled in by two
-// separate calls, so an inspect taken at the wrong moment reports an
-// empty address for a container that is coming up perfectly well.
+// awaitEndpoint returns the endpoint's address and MAC once set; two separate calls fill the endpoint, so an early inspect reads empty.
 func awaitEndpoint(t *testing.T, ctx context.Context, cli *docker.Client, id, netName string) (addr, mac string) {
 	t.Helper()
 	deadline := time.Now().Add(harness.IPAcquisitionBudget)

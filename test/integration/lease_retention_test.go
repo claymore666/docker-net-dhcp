@@ -17,66 +17,23 @@ import (
 	"github.com/claymore666/docker-net-dhcp/v2/test/integration/harness"
 )
 
-// leaseRetentionSettle is how long a release, if one were sent, has to
-// reach the server's log after the event that would have sent it.
-//
-// Sized well above the observed plugin-to-dnsmasq latency rather than
-// tuned to it: this budget bounds how long the test waits before
-// declaring an absence, and an absence declared too early is a pass the
-// tree has not earned. Every wait here is spent in full — there is no
-// early exit, because there is no positive event to wait for.
+// No early exit: there is no positive event, and an absence declared too early is a pass not earned (#800).
+
+// leaseRetentionSettle is how long a release, if one were sent, has to reach the server's log.
 const leaseRetentionSettle = 5 * time.Second
 
-// leaseRetentionRebootDeadline bounds the wait for the FIRST packet a
-// resumed endpoint puts on the wire after a plugin recycle, and
-// leaseRetentionPoll is that wait's interval.
-//
-// Neither is a property. The deadline only has to outlast a plugin
-// start on a loaded runner; the test asserts on WHICH message arrived,
-// never on how long it took, and an expired deadline is reported by the
-// positive control ("the resumed client never spoke at all") rather
-// than by the property.
+// leaseRetentionRebootDeadline and leaseRetentionPoll bound the wait for a resumed endpoint's first packet; the test asserts which message arrived, never how long it took.
 const (
 	leaseRetentionRebootDeadline = 45 * time.Second
 	leaseRetentionPoll           = 250 * time.Millisecond
 )
 
-// TestLeaseRetention_NothingEverReleases is #800, asserted where it can
-// actually be seen.
-//
-// The rule: a container is a host on this segment, and a host does not
-// hand its address back when it stops. The lease expires on the server's
-// clock, or the container comes back before then and re-claims it. On a
-// network that does not set release_lease -- the default, which this
-// network is -- no path sends a DHCPRELEASE (#962). The opposite
-// network is driven by TestReleaseLease_OnStopHandsTheAddressBack in
-// release_lease_test.go, against this same log.
-//
-// # Why the assertion is the server's log
-//
-// There is no counter for this and there deliberately is not one. A
-// counter would say what the plugin believes it did; only dnsmasq's log
-// says what the server actually saw, and the two came apart before —
-// the reclaim this change removes counted a success while releasing an
-// address a live container was still using. So the whole test is a
-// statement about one file that the plugin does not write.
-//
-// # Why a DHCPACK is asserted first
-//
-// CountLogLines returns 0 for a log it cannot read, which is the same
-// answer it gives for "no releases happened". Every phase below is
-// therefore preceded by proof that this endpoint's traffic IS in that
-// file: if the DHCPACK for this address is visible, the reader works,
-// the path is right, and a zero release count is a fact about the wire
-// rather than about the test.
-//
-// # The lifecycle, not one event
-//
-// Releasing had two sources and they fired at different moments — the
-// client's own `release` directive on a graceful stop, and a background
-// reclaim on an endpoint that no persistent client took over. Stopping
-// only one of them still leaves the defect, so this walks the whole
-// lifecycle and re-checks after each step.
+// Without release_lease no path sends a DHCPRELEASE (#800, #962). The server's log is the evidence: the removed
+// reclaim counted a success while releasing an address a live container was using. CountLogLines returns 0 for an
+// unreadable log, so a DHCPACK is asserted first; releasing had two sources, the client's `release` directive on a
+// graceful stop and a background reclaim, so the whole lifecycle is walked.
+
+// TestLeaseRetention_NothingEverReleases checks that no DHCPRELEASE reaches the server across stop, restart and removal (#800).
 func TestLeaseRetention_NothingEverReleases(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
@@ -104,19 +61,14 @@ func TestLeaseRetention_NothingEverReleases(t *testing.T) {
 	id, ip, mac := harness.RunContainer(t, ctx, netName, ctrName)
 	t.Logf("container %s holds ip=%s mac=%s", ctrName, ip, mac)
 
-	// The positive control, and the precondition. Both are the same
-	// check: an address that was never ACKed cannot be released either,
-	// so a run that skipped this would report "no releases" for an
-	// endpoint that never had a lease.
+	// An address never ACKed cannot be released, so this is the precondition and the positive control.
 	if got := fixture.CountLogLines("DHCPACK", ip); got < 1 {
 		t.Fatalf("dnsmasq logged no DHCPACK for %s. Either the endpoint never took a "+
 			"lease or this test is not reading the server's log — and in both cases "+
 			"the release assertions below are vacuous", ip)
 	}
 
-	// Every phase measures against the count at the START of the test,
-	// not against the previous phase, so a release in phase one cannot
-	// be absorbed into phase two's baseline.
+	// Every phase compares against the start of the test, so a release in one phase cannot hide in the next baseline.
 	baseline := fixture.CountLogLines("DHCPRELEASE", ip)
 	if baseline != 0 {
 		t.Logf("NOTE: %d DHCPRELEASE line(s) for %s predate this test; asserting on the delta",
@@ -136,9 +88,7 @@ func TestLeaseRetention_NothingEverReleases(t *testing.T) {
 		}
 	}
 
-	// Phase 1: a graceful stop. This is what the client's `release`
-	// directive fired on, the one an operator sees most, and the one a
-	// release_lease=on_stop network DOES release on.
+	// A release_lease=on_stop network does release here (#962).
 	if err := cli.ContainerStop(ctx, id, container.StopOptions{}); err != nil {
 		t.Fatalf("ContainerStop: %v", err)
 	}
@@ -148,9 +98,6 @@ func TestLeaseRetention_NothingEverReleases(t *testing.T) {
 			"restart that may be seconds away, and the release told the server it "+
 			"was free.")
 
-	// Phase 2: the restart. The address must come back, which is the
-	// other half of the rule — not releasing is only correct if
-	// re-claiming works.
 	if err := cli.ContainerStart(ctx, id, container.StartOptions{}); err != nil {
 		t.Fatalf("ContainerStart: %v", err)
 	}
@@ -178,11 +125,7 @@ func TestLeaseRetention_NothingEverReleases(t *testing.T) {
 	}
 	assertNoRelease("a stop/start cycle", "Neither half of a restart releases.")
 
-	// Phase 3: the endpoint really going away. This is the case the
-	// removed reclaim existed for, and the one where holding the lease
-	// costs something — an address unavailable until it expires. That
-	// cost is the accepted trade: a missed reclaim leaves a lease to
-	// expire, a wrong one takes an address from something using it.
+	// The case the removed reclaim existed for: a missed reclaim leaves a lease to expire, a wrong one takes an address in use (#800).
 	if err := cli.ContainerRemove(ctx, id, container.RemoveOptions{Force: true}); err != nil {
 		t.Fatalf("ContainerRemove: %v", err)
 	}
@@ -192,38 +135,12 @@ func TestLeaseRetention_NothingEverReleases(t *testing.T) {
 			"and guessing wrong hands a live container's address to somebody else.")
 }
 
-// TestLeaseRetention_ARestartRebootsRatherThanDiscovers is the other
-// half of "a lease is a lease", and it is asserted on the wire for the
-// same reason the release test is.
-//
-// # What it is for
-//
-// The 2.0 plugin remembers each endpoint's lease in a durable record
-// and hands it to the Join manager as proto.Params.Resume. That turns
-// the first packet after a plugin restart into RFC 2131 section
-// 4.4.2's INIT-REBOOT DHCPREQUEST instead of a DHCPDISCOVER, which is
-// the whole of what makes an address survive the restart rather than
-// be re-offered by luck.
-//
-// # Why the address is NOT the oracle
-//
-// This is the trap the test exists to avoid. Drop Resume entirely and
-// the container almost always keeps its address anyway: the binding is
-// still free in the server's pool, so the DISCOVER comes back with the
-// same lease. An assertion that compares the address before and after
-// stays green over a plugin that lost INIT-REBOOT completely, and only
-// goes red on a busy segment, in production, months later, when the
-// address has been handed to someone else in the meantime.
-//
-// So the oracle is what dnsmasq logged. After the recycle there must be
-// a DHCPREQUEST for this MAC and NO new DHCPDISCOVER. Those are two
-// assertions on purpose:
-//
-//   - no new DISCOVER is the property. A DISCOVER means the record was
-//     not read, or was read and not resumed.
-//   - a new REQUEST is the control. Without it, a plugin whose Join
-//     manager never started at all — no packets whatsoever — would
-//     satisfy the first assertion perfectly.
+// The durable lease record is handed to the Join manager as proto.Params.Resume, making the first packet after a
+// plugin restart an RFC 2131 section 4.4.2 INIT-REBOOT DHCPREQUEST (PR #899). The address is not the oracle: without
+// Resume, a DISCOVER is usually re-offered the same free binding. No new DISCOVER is the property, and a new REQUEST is
+// the control against a Join manager that sent nothing.
+
+// TestLeaseRetention_ARestartRebootsRatherThanDiscovers checks that after a plugin recycle the endpoint sends a DHCPREQUEST and no DHCPDISCOVER (PR #899).
 func TestLeaseRetention_ARestartRebootsRatherThanDiscovers(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
@@ -251,17 +168,12 @@ func TestLeaseRetention_ARestartRebootsRatherThanDiscovers(t *testing.T) {
 	_, ip, mac := harness.RunContainer(t, ctx, netName, ctrName)
 	t.Logf("container %s holds ip=%s mac=%s", ctrName, ip, mac)
 
-	// The MAC is what makes both counts belong to THIS endpoint.
-	// CountLogLines AND-matches substrings, so an empty MAC would match
-	// every line of the fixture's log and both deltas below would be
-	// about the whole server.
+	// CountLogLines AND-matches substrings, so an empty MAC would match every line.
 	if mac == "" {
 		t.Fatal("the container reports no MAC, so the per-endpoint counts below would be " +
 			"counts of the whole fixture log")
 	}
-	// The precondition and the positive control in one: an endpoint
-	// that never took a lease has nothing to reboot into, and a log
-	// this test cannot read returns 0 for everything.
+	// An endpoint that never took a lease has nothing to reboot into, and an unreadable log returns 0.
 	if got := fixture.CountLogLines("DHCPACK", mac); got < 1 {
 		t.Fatalf("dnsmasq logged no DHCPACK for %s: either the endpoint never leased or "+
 			"this test is not reading the server's log, and every count below is vacuous", mac)
@@ -287,25 +199,8 @@ func TestLeaseRetention_ARestartRebootsRatherThanDiscovers(t *testing.T) {
 	harness.WaitPluginHealth(t, ctx, cli, 15*time.Second)
 	t.Log("plugin recycled")
 
-	// WAIT FOR THE FIRST PACKET, NOT FOR A DURATION.
-	//
-	// "No DISCOVER" is an absence, and an absence declared early is a
-	// pass the tree has not earned — so the obvious shape is to sleep
-	// long enough and then look. It is the wrong shape twice. A fixed
-	// sleep is too short on a loaded runner, which turns the control
-	// below red for a reason that has nothing to do with INIT-REBOOT;
-	// and it is a guess in the other direction too, because what this
-	// test actually wants to know is WHICH MESSAGE the resumed client
-	// sent FIRST. RFC 2131 4.4.2 puts the DHCPREQUEST first on the
-	// reboot path and 4.4.1 puts the DHCPDISCOVER first on the init
-	// path, so the first packet to appear IS the verdict, and waiting
-	// past it buys nothing.
-	//
-	// So: poll both counts against one deadline and stop at whichever
-	// moves. The deadline is generous because it is not the property —
-	// it only has to outlast a slow plugin start; nothing is asserted
-	// from its length, and it is the CONTROL below that fails if it
-	// expires with the wire still silent.
+	// RFC 2131 puts the DHCPREQUEST first on the reboot path (4.4.2) and the DHCPDISCOVER first on the init path (4.4.1),
+	// so the first packet is the verdict; the deadline only has to outlast a slow plugin start.
 	var request, discover int
 	deadline := time.Now().Add(leaseRetentionRebootDeadline)
 	for {

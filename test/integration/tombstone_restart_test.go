@@ -15,17 +15,9 @@ import (
 	docker "github.com/docker/docker/client"
 )
 
-// TestTombstoneRestart_PreservesMACAndIP guards the v0.5.x stability
-// guarantee that `docker restart <ctr>` keeps the same MAC and IP.
-//
-// Mechanism: on Leave the plugin writes a tombstone with the MAC and
-// last-known IP, keyed by (network, endpoint). On the subsequent
-// CreateEndpoint Docker hands the same endpoint ID back, so the
-// plugin reuses the tombstoned MAC for the new macvlan child and
-// asks dhcpcd to renew the same IP. tombstoneTTL was bumped to 60s
-// in v0.6.1 (see #55) so a slow `systemctl restart docker` doesn't
-// drop the entry — but `docker restart <ctr>` itself completes in
-// well under that window.
+// The Leave tombstone keeps the MAC and IP for tombstoneTTL, 60 s since v0.6.1, and the restart reuses the endpoint ID (#55).
+
+// TestTombstoneRestart_PreservesMACAndIP checks that `docker restart` keeps the container's MAC and IP.
 func TestTombstoneRestart_PreservesMACAndIP(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
@@ -40,17 +32,8 @@ func TestTombstoneRestart_PreservesMACAndIP(t *testing.T) {
 	})
 
 	harness.CreateNetwork(t, ctx, netName, "macvlan", nil)
-	// A NORMAL container, stopping promptly, which is the whole point.
-	// This used to opt out of the init PID 1 so `docker stop` took its
-	// full 10s grace, and the opt-out's own comment admitted the test
-	// "only passes with a slow stop". Two real bugs were hiding behind
-	// that: the lease reclaim never running (#402) and, worse, the
-	// restart itself failing with `address already in use` because the
-	// replaced endpoint's link still held the MAC (#408).
-	//
-	// So this line is the negative control for #408. Revert the fix in
-	// linkUpAwaitingAddress and this test fails — which is the only
-	// reason to believe the fix works.
+	// A prompt stop is the negative control for #408: the slow-stop opt-out hid the replaced link holding the MAC and the
+	// reclaim never running (#402).
 	id, ipBefore, macBefore := harness.RunContainer(t, ctx, netName, ctrName)
 	t.Logf("before restart: ip=%s mac=%s", ipBefore, macBefore)
 
@@ -64,9 +47,7 @@ func TestTombstoneRestart_PreservesMACAndIP(t *testing.T) {
 		t.Fatalf("ContainerRestart: %v", err)
 	}
 
-	// Re-poll inspect for the post-restart endpoint values; the
-	// endpoint is torn down and re-created so the IP can briefly
-	// be empty mid-restart.
+	// The endpoint is re-created, so the IP can be empty mid-restart.
 	deadline := time.Now().Add(harness.IPAcquisitionBudget)
 	var ipAfter, macAfter string
 	for time.Now().Before(deadline) {

@@ -14,26 +14,11 @@ import (
 	docker "github.com/docker/docker/client"
 )
 
-// TestNonRootContainer_PersistentClientStarts is the regression test
-// for #317: the persistent DHCP client must start for a container whose
-// init process runs as a NON-ROOT user.
-//
-// Opening /proc/<pid>/ns/net is gated by the kernel's PTRACE_MODE_READ
-// check: same uid as the target, or CAP_SYS_PTRACE. Every other test in
-// this suite runs its container as root, so the uid-match arm always
-// passes and the capability is never needed — which is exactly how the
-// missing CAP_SYS_PTRACE in config.json survived every release of this
-// fork. In production (any compose service with a `USER`) the netns
-// open failed with EACCES on every retry, the persistent client never
-// started, and the lease silently went unrenewed and unreleased.
-//
-// The assertion strategy mirrors TestLeaseRenew_HonorsT1: a dedicated
-// ephemeral fixture advertises short T1/T2 (option 58/59, #253), and a
-// renewal DHCPACK within the window proves the persistent client is
-// alive inside the non-root container's netns. On a pre-#317 plugin
-// the client never starts, no renewal ACK arrives, and this test fails
-// — verified against the unfixed manifest. join_start_failures must
-// also stay flat (it's the counter #317 adds for this failure mode).
+// Opening /proc/<pid>/ns/net passes the kernel's PTRACE_MODE_READ check by matching uid or by CAP_SYS_PTRACE; every
+// other test runs as root, which is how the missing capability shipped. A renewal ACK under short T1 (option 58, #253)
+// proves the client runs; join_start_failures must stay flat (#317).
+
+// TestNonRootContainer_PersistentClientStarts checks that the persistent client starts for a non-root container (#317).
 func TestNonRootContainer_PersistentClientStarts(t *testing.T) {
 	const (
 		renewT1 = 12 // seconds; dhcpcd renews here, above its floor
@@ -66,8 +51,7 @@ func TestNonRootContainer_PersistentClientStarts(t *testing.T) {
 	harness.CreateNetwork(t, ctx, netName, "macvlan", map[string]string{
 		"parent": harness.EphemeralHostVeth,
 	})
-	// 65534 = nobody. uid != 0 is the whole point: the plugin (root)
-	// must need CAP_SYS_PTRACE to enter this container's netns.
+	// 65534 is nobody: a uid other than 0 makes the root plugin need CAP_SYS_PTRACE (#317).
 	id, ipBefore, mac := harness.RunContainerUser(t, ctx, netName, ctrName, "65534:65534")
 	t.Logf("initial: ip=%s mac=%s user=nobody", ipBefore, mac)
 
@@ -98,11 +82,7 @@ func TestNonRootContainer_PersistentClientStarts(t *testing.T) {
 		t.Errorf("no renewal DHCPACK for the non-root container within %s — persistent client did not start in its netns (#317: check CAP_SYS_PTRACE in the plugin manifest)", waitFor)
 	}
 
-	// The suite shares one plugin instance, so assert the DELTA of the
-	// failure counter across this test, not its absolute value. Closing
-	// the window also proves the instance was the same one throughout,
-	// without which the delta below would be arithmetic on two
-	// unrelated numbers (#405).
+	// Closing the window proves one plugin instance throughout, so the delta compares one process (#405).
 	healthBefore, healthAfter := w.End()
 	if d := healthAfter.JoinStartFailures - healthBefore.JoinStartFailures; d != 0 {
 		t.Errorf("join_start_failures grew by %d during this test — persistent client failed to start", d)

@@ -3,38 +3,10 @@
 
 //go:build integration
 
-// The executable check for #524 and D23: an endpoint leased an address
-// that another device on the segment already holds must be DETECTED and
-// DECLINED, not silently accepted.
-//
-// In production this cost an endpoint and was found only because the
-// upgrade was verified against outside evidence — the plugin's own
-// report said healthy:true with every counter at zero, because nothing
-// looked. These tests are that "nothing looked" turned into something
-// that goes red.
-//
-// WHAT CHANGED SINCE THE FIRST VERSION OF THIS FILE. The chassis's own
-// datagram probe is gone; the DHCP library now runs RFC 5227 on a raw
-// ARP socket inside the container's namespace, per network, under
-// conflict_check. Two consequences shape every test below:
-//
-//  1. The DHCP SERVER's log is now evidence, where before it deliberately
-//     was not. The old probe was passive and the server never learned
-//     anything; RFC 5227 obliges a DHCPDECLINE (RFC 2131 section 3.1(5))
-//     and the server writes it down. That line, and the fresh DHCPOFFER
-//     after it, are the outside evidence for the whole mechanism.
-//  2. The check is per-network and can be turned OFF, so a test can no
-//     longer assume a probe was sent. conflict_check=off is asserted
-//     from the segment's ARP capture — the absence of a frame, which no
-//     counter can show. The capture listens on the DHCP-server end of
-//     the fixture's veth pair, NOT on the macvlan parent: the parent
-//     cannot see its own children's transmits, and the first version of
-//     this file asserted the absence from there, where the absence was
-//     guaranteed. See arpcapture.go.
-//
-// Nothing here asserts on the plugin's counters ALONE. Each case reads
-// the server's log, the wire, or the container's own view of its
-// address; the counters are cross-checks on top.
+// An endpoint leased an address another device already held must detect and decline it (#524). The library runs
+// RFC 5227 on a raw ARP socket in the container's namespace, per network, and the DHCPDECLINE it sends (RFC 2131
+// section 3.1(5)) and the fresh DHCPOFFER after it are read from the server's log. conflict_check=off is asserted from
+// the ARP capture on the server end of the veth pair, because a macvlan parent cannot see its children's transmits.
 
 package integration
 
@@ -49,37 +21,23 @@ import (
 	docker "github.com/docker/docker/client"
 )
 
-// conflictWait is how long the assertions wait for RFC 5227 to reach a
-// conclusion.
-//
-// The worst-case section 2.1 window is PROBE_WAIT 1s + 2 x PROBE_MAX 2s
-// + ANNOUNCE_WAIT 2s = 7s, and a DECLINE costs RFC 2131 section 3.1(5)'s
-// ten-second restart minimum plus a fresh DORA on top. This has to
-// outlast that plus the scheduling slack of a loaded runner; it is a
-// ceiling on waiting, not a measurement of anything.
+// RFC 5227 section 2.1's worst case is PROBE_WAIT 1s + 2 x PROBE_MAX 2s + ANNOUNCE_WAIT 2s = 7s, and a decline adds
+// RFC 2131 section 3.1(5)'s ten-second restart and a fresh DORA; this is a ceiling on waiting.
+
+// conflictWait is how long the assertions wait for RFC 5227 to reach a conclusion.
 const conflictWait = 45 * time.Second
 
-// ci-pool-exempt: a DHCP address pool, not the CI runner pool
-// The pool is TWO addresses wide on purpose. The squatter sits on the
-// first, so there is exactly one other address for the server to fall
-// back to after the DECLINE — which makes "the container came up on a
-// different address" a fact about the mechanism rather than about the
-// pool's size. Guessing which address a pool will yield is not sound
-// (see harness.WithPool), so the first is pinned by squatting it.
+// The DHCP range holds two addresses and the squatter pins the first, so after the decline the server has exactly
+// one other address to offer (#524).
 const (
 	squatAddr = "192.168.101.42"
 	altAddr   = "192.168.101.43"
 )
 
-// recycleAfterDeliberateConflict retires the fault a test induces on
-// purpose.
-//
-// address_conflicts is a FATAL floor counter and the floor is absolute
-// over the whole run, so a conflict induced here would fail the shard
-// after the test itself passed. Recycling the plugin is the only way to
-// clear a counter — they are process-local by design — and it is the
-// reason the counter can stay fatal: nothing else in the suite should
-// ever move it, so the floor needs no notion of an expected conflict.
+// address_conflicts is a fatal floor counter, absolute over the run, and counters are process-local, so only a
+// plugin recycle clears a conflict a test induced (#524).
+
+// recycleAfterDeliberateConflict recycles the plugin so a deliberately induced conflict does not fail the shard's floor.
 func recycleAfterDeliberateConflict(t *testing.T) {
 	t.Cleanup(func() {
 		bg, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -91,13 +49,9 @@ func recycleAfterDeliberateConflict(t *testing.T) {
 	})
 }
 
-// TestConflictCheck_SquattedOfferIsDeclined is case (a): the address the
-// server is about to hand out is already held.
-//
-// Run in wait and in async, because the two differ in WHEN the container
-// is told its address, not in whether the conflict is found — and a
-// mechanism that only worked in the mode that blocks would look correct
-// from every counter.
+// Wait and async differ in when the container is told its address, not in whether the conflict is found.
+
+// TestConflictCheck_SquattedOfferIsDeclined checks that an offered address another host already holds is declined, in wait and in async (#524).
 func TestConflictCheck_SquattedOfferIsDeclined(t *testing.T) {
 	for _, mode := range []string{"wait", "async"} {
 		t.Run(mode, func(t *testing.T) {
@@ -117,22 +71,11 @@ func TestConflictCheck_SquattedOfferIsDeclined(t *testing.T) {
 			})
 			recycleAfterDeliberateConflict(t)
 
-			// Park the squatter BEFORE the container exists, so the
-			// address is already taken at the moment the lease is
-			// granted — the ordering of the production incident, where
-			// the other host had been sitting on the address for as
-			// long as it had been racked.
+			// The squatter is parked before the container exists, as in the production incident (#524).
 			squatMAC := ef.Squat(squatAddr)
 			t.Logf("squatter holds %s at %s", squatAddr, squatMAC)
 
-			// Declared where the squatter is planted, because this is
-			// the only place that knows a conflict is coming. It does
-			// not excuse the conflict -- the assertions below are the
-			// conflict -- it excuses the health floor's counter being
-			// allowed to under-report it by one after a later test
-			// recycles the plugin, which the log outlives. Anything
-			// beyond the declaration is still the seam dropping an
-			// event (#524).
+			// This excuses only the floor counter under-reporting the conflict by one after a later recycle (#524).
 			harness.AllowStagedConflicts(1)
 
 			cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
@@ -153,8 +96,6 @@ func TestConflictCheck_SquattedOfferIsDeclined(t *testing.T) {
 			id, ip, mac := harness.RunContainer(t, ctx, netName, netName+"-ctr")
 			t.Logf("endpoint bound: ip=%s mac=%s", ip, mac)
 
-			// THE outside evidence, and the one the old datagram probe
-			// could never produce: the DHCP server was told.
 			if !awaitLogLines(t, ef, "DHCPDECLINE", declinesBefore+1, conflictWait) {
 				t.Fatalf("the DHCP server never logged a DHCPDECLINE within %v.\n"+
 					"A container is on an address another device holds and RFC 2131 section "+
@@ -167,10 +108,7 @@ func TestConflictCheck_SquattedOfferIsDeclined(t *testing.T) {
 					"(offers before=%d now=%d)", offersBefore, ef.CountLogLines("DHCPOFFER"))
 			}
 
-			// The container's OWN view, which is the only one that can
-			// be right after an address change: docker inspect reports
-			// what was configured at CreateEndpoint and in async that
-			// is the address being declined.
+			// docker inspect reports what CreateEndpoint configured, which in async is the declined address.
 			final := awaitContainerAddr(t, ctx, id, squatAddr, conflictWait)
 			if final == squatAddr {
 				t.Fatalf("the container is still on the squatted address %s; it was declined "+
@@ -178,8 +116,6 @@ func TestConflictCheck_SquattedOfferIsDeclined(t *testing.T) {
 			}
 			t.Logf("container settled on %s (squatter holds %s)", final, squatAddr)
 
-			// The wire says the check actually ran, rather than the
-			// address changing for some unrelated reason.
 			if probes := cap.ProbesFrom(mac); len(probes) == 0 {
 				t.Errorf("no ARP Probe from the endpoint's MAC %s on the segment; the address "+
 					"changed but RFC 5227 section 2.1 is not what changed it", mac)
@@ -197,39 +133,21 @@ func TestConflictCheck_SquattedOfferIsDeclined(t *testing.T) {
 				t.Error("healthy is still true with a conflict recorded; /Plugin.Health is the " +
 					"surface operators page on, and it is saying the endpoint is fine")
 			}
-			// The library's own count and the chassis's event-derived
-			// one are two derivations of one population. They must
-			// agree; a divergence is a seam defect, not a segment
-			// property.
-			//
-			// AGAINST THE v4 HALF, not the aggregate. The library
-			// counter is RFC 5227 ARP; a DHCPv6 conflict is found by
-			// Duplicate Address Detection and never reaches it, so
-			// comparing it against address_conflicts would report a
-			// seam defect for every v6 squat.
+			// The library's count and the chassis's event-derived one must agree on the v4 half: a DHCPv6 conflict is found by
+			// Duplicate Address Detection and never reaches the RFC 5227 counter (#524).
 			if after.ACDConflictsDetected < after.AddressConflictsV4 {
 				t.Errorf("acd_conflicts_detected=%d is below address_conflicts_v4=%d; the plugin "+
 					"counted conflicts the library did not",
 					after.ACDConflictsDetected, after.AddressConflictsV4)
 			}
 
-			// A window that is opened and never closed measured nothing
-			// while looking exactly like one that passed, so the harness
-			// fails the test for it. Closed here rather than deferred so
-			// it runs before the plugin recycle registered above.
+			// Closed here so it runs before the plugin recycle registered above.
 			w.End()
 		})
 	}
 }
 
-// TestConflictCheck_SquatterAfterTheFact is case (b) for the modes that
-// look: RFC 5227 section 2.4, a conflict that arrives long after the
-// address was checked and taken into use.
-//
-// Section 2.1 cannot cover this and never claimed to. The old datagram
-// probe could not either, and said so in the documentation — "a
-// collision that starts after the endpoint is up will not appear here".
-// This is that gap closed, and the test that shows it closed.
+// TestConflictCheck_SquatterAfterTheFact checks that a conflict arriving after the address was taken into use is defended under RFC 5227 section 2.4 (#524).
 func TestConflictCheck_SquatterAfterTheFact(t *testing.T) {
 	for _, mode := range []string{"wait", "async"} {
 		t.Run(mode, func(t *testing.T) {
@@ -268,12 +186,9 @@ func TestConflictCheck_SquatterAfterTheFact(t *testing.T) {
 
 			declinesBefore := ef.CountLogLines("DHCPDECLINE")
 
-			// Now the squatter arrives, on the address the container is
-			// already using, and puts a frame on the wire claiming it.
 			squatMAC := ef.Squat(ip)
 			t.Logf("squatter took the LIVE address %s at %s", ip, squatMAC)
-			// One staged section 2.4 conflict; see the note in
-			// TestConflictCheck_SquattedOfferIsDeclined.
+			// One staged section 2.4 conflict, as in TestConflictCheck_SquattedOfferIsDeclined (#524).
 			harness.AllowStagedConflicts(1)
 			changeStart := time.Now()
 			ef.AnnounceSquatter(ip, harness.EphemeralParentAddr[:strings.Index(harness.EphemeralParentAddr, "/")])
@@ -289,10 +204,6 @@ func TestConflictCheck_SquatterAfterTheFact(t *testing.T) {
 			if final == ip {
 				t.Fatalf("the container is still on the contested address %s after %v", ip, gap)
 			}
-			// The MEASUREMENT the handover records: how long the
-			// container spent between the two addresses. Reported
-			// whatever the outcome, because a number nobody prints is a
-			// number nobody checks.
 			t.Logf("MEASURED: address changed %s -> %s, %.1fs from the squatter's announcement "+
 				"to the container carrying the new address (mode=%s)",
 				ip, final, gap.Seconds(), mode)
@@ -308,26 +219,10 @@ func TestConflictCheck_SquatterAfterTheFact(t *testing.T) {
 	}
 }
 
-// TestConflictCheck_OffSendsNoProbe is the other half of case (b), and
-// the one that can only be answered from the wire.
-//
-// conflict_check=off must run no probe and no listener. No counter can
-// show that: zero probes sent and a plugin that forgot to send them are
-// the same reading. The ARP capture is the instrument, and the
-// assertion is the ABSENCE of a frame from the endpoint's own MAC.
-//
-// An absence assertion is worth exactly what its instrument is worth,
-// and this one's first instrument was worthless: bound to the macvlan
-// parent it could not see a macvlan child's transmits at all, so "no
-// Probe from the container" was true on every run, probing or not. The
-// capture now sits on the far end of the veth pair (see arpcapture.go),
-// and the run is not allowed to conclude until the capture has proved
-// itself alive on that link by recording the squatter's own frames.
-//
-// The squatter is real and takes the live address exactly as in the
-// test above, so this is not "nothing happened on a quiet segment" —
-// the same stimulus that changes the address in wait and async must
-// change nothing here.
+// A capture bound to the macvlan parent cannot see a child's transmits, so the capture sits on the far end of the veth
+// pair and must record the squatter's own frames before an absence counts (#524).
+
+// TestConflictCheck_OffSendsNoProbe checks from the wire that conflict_check=off sends no probe while a real squatter takes the live address.
 func TestConflictCheck_OffSendsNoProbe(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
 	defer cancel()
@@ -346,11 +241,7 @@ func TestConflictCheck_OffSendsNoProbe(t *testing.T) {
 		}
 	})
 
-	// This shard leases an address on a network that will never probe.
-	// Declared here, next to the conflict_check=off that causes it, so
-	// the census gate judges only what is left — without this the
-	// zero-probes finding would fire on a correct run and the fix
-	// reached for would be to delete the gate (#551).
+	// Declared beside the conflict_check=off that causes it, so the census gate judges only the rest (#551).
 	harness.AllowUnprobedLeases(1)
 
 	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
@@ -374,13 +265,9 @@ func TestConflictCheck_OffSendsNoProbe(t *testing.T) {
 	t.Logf("squatter took the LIVE address %s at %s", ip, squatMAC)
 	ef.AnnounceSquatter(ip, harness.EphemeralParentAddr[:strings.Index(harness.EphemeralParentAddr, "/")])
 
-	// Long enough for the whole mechanism to have run if it were going
-	// to. The two tests above complete well inside this; waiting less
-	// would let "off works" mean "we did not wait".
+	// Longer than the whole mechanism takes in the tests above, so "off" is not "did not wait".
 	time.Sleep(30 * time.Second)
 
-	// The evidence-positive check first, because a frame that IS there
-	// says something whatever the instrument's state is.
 	sent := 0
 	for _, f := range cap.FramesFrom(mac) {
 		if f.IsProbe() || f.IsAnnouncement() {
@@ -390,13 +277,8 @@ func TestConflictCheck_OffSendsNoProbe(t *testing.T) {
 		}
 	}
 
-	// The positive control gates the PASS, not the failure above. An
-	// absence read off a dead instrument is a pass with no content, and
-	// this assertion is the one carrying conflict_check=off. The
-	// squatter shares the captured link and has just ARPed on it, so
-	// its frames must be here; if they are not, the capture is not
-	// watching the segment the container is on and "no probes" is a
-	// verdict the instrument could not have reached otherwise.
+	// The squatter shares the captured link and has just sent ARP on it, so no frame from it means the capture is not on
+	// the container's segment (#524).
 	if sent == 0 {
 		if live := cap.FramesFrom(squatMAC); len(live) == 0 {
 			cap.Dump(func(s string) { t.Log(s) })
@@ -432,19 +314,10 @@ func TestConflictCheck_OffSendsNoProbe(t *testing.T) {
 	}
 }
 
-// TestConflictCheck_WaitAcquisitionIsTimed is case (c): the price of
-// the default, measured rather than asserted from the arithmetic.
-//
-// RFC 5227 section 2.1.1 costs PROBE_WAIT 1s + (PROBE_NUM-1) x up to
-// PROBE_MAX 2s + ANNOUNCE_WAIT 2s: 4.0s best, 7.0s worst, 5.5s mean.
-// RFC 2131 section 4.1 puts one DISCOVER retransmission of 4s +/-1s in
-// front of it, so the chassis's own bound is 12.0s from the first
-// DISCOVER, which is what defaultLeaseTimeout is derived from.
-//
-// The wire is the instrument: the ARP capture gives the interval from
-// the first Probe to the last Announcement directly, with none of
-// docker's container-start overhead in it. The end-to-end number is
-// logged beside it because that is what an operator actually waits.
+// RFC 5227 section 2.1.1 costs 4.0s best, 7.0s worst and 5.5s mean, and RFC 2131 section 4.1 puts one 4s +/-1s
+// DISCOVER retransmission in front of it, so defaultLeaseTimeout derives from 12.0s after the first DISCOVER.
+
+// TestConflictCheck_WaitAcquisitionIsTimed checks from the ARP capture that conflict_check=wait acquisition stays within the RFC 5227 bound.
 func TestConflictCheck_WaitAcquisitionIsTimed(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
 	defer cancel()
@@ -489,8 +362,6 @@ func TestConflictCheck_WaitAcquisitionIsTimed(t *testing.T) {
 			"so the segment was never told the address is taken", mac)
 	}
 
-	// MEASURED, printed whether or not it passes: a number nobody
-	// prints is a number nobody checks.
 	msg := "MEASURED: conflict_check=wait acquisition of " + ip
 	if len(anns) > 0 {
 		acd := anns[len(anns)-1].At.Sub(probes[0].At)
@@ -500,12 +371,7 @@ func TestConflictCheck_WaitAcquisitionIsTimed(t *testing.T) {
 			"(the chassis's own bound is 12.0s from the first DISCOVER, plus container start).",
 			msg, acd.Seconds(), len(probes), len(anns), endToEnd.Seconds())
 
-		// The RFC's own worst case, with a wide allowance for a loaded
-		// runner. This is a bound on the MECHANISM, not a performance
-		// assertion: what it catches is a probe schedule that has
-		// silently become an order of magnitude longer, which would
-		// blow through lease_timeout in production and show up as
-		// intermittent `docker run` failures.
+		// A bound on the mechanism: a probe schedule an order of magnitude longer would exceed lease_timeout in production.
 		if acd > 30*time.Second {
 			t.Errorf("the section 2.1 window took %.2fs, far beyond the 7.0s worst case; "+
 				"lease_timeout is derived from that arithmetic and would be wrong", acd.Seconds())
@@ -525,23 +391,11 @@ func TestConflictCheck_WaitAcquisitionIsTimed(t *testing.T) {
 	}
 }
 
-// TestConflictCheck_RestartInsideTheAsyncWindow is case (d) and D23's
-// durable half.
-//
-// In async the container has its address while section 2.1 is still
-// running. If the plugin restarts inside that window the next process
-// has to know the check never finished — which is why the ACD phase is
-// written into the durable record and handed back on Resume.
-//
-// THE HARD PART IS ATTRIBUTION, not observation. The pre-restart client
-// is probing when the restart is requested, and its frames are
-// indistinguishable from the resumed client's by source MAC, target
-// address and shape. "After the plugin came back" is therefore not an
-// oracle: it is a claim about a clock, and round 1's version of this
-// case passed on a frame the pre-restart client had sent (review r1,
-// finding 1). The window here opens on the resumed client's own
-// INIT-REBOOT DHCPACK, read from the DHCP server's log, which no other
-// process on this segment can produce.
+// In async the container has its address while section 2.1 runs, so the ACD phase is written into the durable record
+// and handed back on Resume. The pre-restart client's frames match the resumed client's by MAC, target and shape, so
+// a frame counts only when captured after the plugin was confirmed back (run 33911095990, #524).
+
+// TestConflictCheck_RestartInsideTheAsyncWindow checks that a plugin restart inside the async RFC 5227 window re-runs the probe.
 func TestConflictCheck_RestartInsideTheAsyncWindow(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
 	defer cancel()
@@ -572,31 +426,9 @@ func TestConflictCheck_RestartInsideTheAsyncWindow(t *testing.T) {
 	createdAt := time.Now()
 	t.Logf("async endpoint bound at once: ip=%s mac=%s", ip, mac)
 
-	// THE ANCHOR IS TAKEN BEFORE THE RESTART, and it is the whole
-	// difference between this case and a tautology.
-	//
-	// The pre-restart client is inside section 2.1 right now, and its
-	// frames carry the same source MAC, the same target address and the
-	// same shape as the resumed client's. Round 1 opened the window at
-	// the moment the restart was REQUESTED and accepted the first
-	// qualifying frame after it; on run 33911095990 the single frame it
-	// rested on was stamped 0.30s BEFORE the plugin was confirmed back,
-	// so a build whose resumed client never re-probed passed.
-	//
-	// WHAT MAKES A FRAME THE RESUMED CLIENT'S is that it was captured
-	// after the plugin was confirmed back: cliReset does not return
-	// until then, and the old process — with its client — is gone by
-	// that point. That is the boundary the probe window below uses, and
-	// it is the reason the case holds.
-	//
-	// The DHCPACK count is a PRECONDITION, not that boundary. It says
-	// the resumed client completed RFC 2131 section 4.4.2's INIT-REBOOT
-	// exchange, so that an absence of probes is a statement about D23
-	// rather than about a recovery that never happened. It cannot be
-	// the boundary: dnsmasq's log does not carry the request kind, so a
-	// late ACK to the PRE-restart client (whose manager starts in a
-	// goroutine waiting on ContainerStart) counts here exactly like the
-	// resumed client's own.
+	// cliReset returns only once the plugin is back and the old process is gone, so frames after it are the resumed
+	// client's. The DHCPACK count is a precondition that the RFC 2131 section 4.4.2 INIT-REBOOT exchange happened, not the
+	// boundary: dnsmasq's log does not carry the request kind, so a late ACK to the pre-restart client counts the same.
 	acksBefore := ef.CountLogLines("DHCPACK", mac)
 	if acksBefore < 1 {
 		t.Fatalf("the server logged no DHCPACK for %s before the restart: either the endpoint "+
@@ -604,9 +436,7 @@ func TestConflictCheck_RestartInsideTheAsyncWindow(t *testing.T) {
 			"would be an absence mistaken for an event", mac)
 	}
 
-	// Recycle immediately. In async CreateEndpoint returns without
-	// waiting for section 2.1, so the restart lands inside the window
-	// by construction rather than by racing a sleep.
+	// In async CreateEndpoint returns before section 2.1 completes, so the restart lands inside the window.
 	restartAt := time.Now()
 	if err := cliReset(ctx, t); err != nil {
 		t.Fatalf("plugin restart: %v", err)
@@ -615,30 +445,13 @@ func TestConflictCheck_RestartInsideTheAsyncWindow(t *testing.T) {
 	t.Logf("plugin recycled %.2fs after the endpoint was created; the disable/enable itself "+
 		"took %.2fs", backAt.Sub(createdAt).Seconds(), backAt.Sub(restartAt).Seconds())
 
-	// The container must still hold its address across the restart.
-	// That is the recovery path this suite already covers; asserted
-	// here so a restart that lost the lease cannot be mistaken for the
-	// conflict machinery working.
 	if now := containerAddr(t, ctx, id); now != ip {
 		t.Fatalf("the container's address changed from %s to %s across the plugin restart, "+
 			"which is a recovery failure and makes the rest of this test unreadable", ip, now)
 	}
 
-	// Wait until the server has logged a DHCPACK it had not logged
-	// before the restart.
-	//
-	// The chain a resumed probe needs is: the plugin is enabled, it
-	// recovers the durable record, the Join manager sends RFC 2131
-	// section 4.4.2's INIT-REBOOT DHCPREQUEST, the server ACKs it, and
-	// proto.Machine runs section 2.1's check on that ACK — whatever the
-	// record said about the phase. Waiting for it is what separates "no
-	// probe, because D23 is broken" from "no probe yet, because the
-	// resumed client has not got to its exchange".
-	//
-	// ackAt is when this LOOP SAW the count rise, not when the server
-	// stamped the line: the poll is 100ms and the log is read through
-	// the fixture. It is used for the deadline and the diagnostics
-	// below, never as the probe boundary.
+	// A resumed probe runs after recovery, the INIT-REBOOT DHCPREQUEST (RFC 2131 section 4.4.2) and its ACK, so waiting
+	// for the ACK separates a broken resume from one not yet done. ackAt is when the 100ms poll saw the count rise.
 	var ackAt time.Time
 	probesAtAnchor := -1
 	deadline := time.Now().Add(conflictWait)
@@ -665,21 +478,8 @@ func TestConflictCheck_RestartInsideTheAsyncWindow(t *testing.T) {
 		"from %s had been captured up to that point",
 		ackAt.Sub(backAt).Seconds(), probesAtAnchor, mac)
 
-	// The wire, after the plugin was back: the resumed client re-checks
-	// the address rather than assuming a check that never finished.
-	//
-	// backAt, not ackAt. Anchoring on the ACK would discard the resumed
-	// client's FIRST probe whenever it goes out between the server
-	// stamping that ACK and this test polling for it — the case would
-	// then be resting on a later retransmission and would say nothing
-	// if only one probe were ever sent.
-	//
-	// A section 2.1.1 Probe, not "a Probe or an Announcement": an
-	// Announcement is also what the kernel emits when an address is
-	// added to a link, so accepting one would let the address being
-	// re-configured stand in for the check being re-run. The target
-	// address is asserted too, so a probe for some other address on the
-	// same MAC cannot carry the verdict.
+	// backAt, not ackAt, so the resumed client's first probe is not discarded. Only a section 2.1.1 Probe for this
+	// address counts, because the kernel also emits an Announcement when an address is added to a link (#524).
 	var after []harness.ARPFrame
 	deadline = time.Now().Add(conflictWait)
 	for {
@@ -709,22 +509,10 @@ func TestConflictCheck_RestartInsideTheAsyncWindow(t *testing.T) {
 	}
 }
 
-// TestConflictCheck_BridgeModeDoesNotSelfReport is the case that fails a
-// naive implementation, and it survives the change of mechanism intact.
-//
-// In macvlan and ipvlan the parent cannot reach its own child, so any
-// ARP reply is already somebody else's. In bridge mode the host CAN
-// reach the container, and the container's own kernel answers for the
-// address it is probing. A check that asked "did anything reply?" would
-// report every single bridge-mode endpoint as a conflict, and the whole
-// suite would go red for the fix rather than for the bug.
-//
-// Under RFC 5227 the exemption is the library's own-traffic filter,
-// keyed on Params.CHAddr (M6 review r2, finding 1): a reply whose sender
-// hardware address is the client's own is not a conflict. If the chassis
-// ever passes something other than the link's address there, this is the
-// test that goes red — which is why it is kept as its own test rather
-// than folded into a table with the macvlan cases.
+// In bridge mode the container's own kernel answers for the address it probes; the library's own-traffic filter keys
+// on Params.CHAddr, so this fails if the chassis passes anything other than the link's address (#524).
+
+// TestConflictCheck_BridgeModeDoesNotSelfReport checks that a bridge-mode endpoint does not report its own ARP reply as a conflict.
 func TestConflictCheck_BridgeModeDoesNotSelfReport(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
 	defer cancel()
@@ -766,8 +554,7 @@ func TestConflictCheck_BridgeModeDoesNotSelfReport(t *testing.T) {
 	w.End()
 }
 
-// awaitLogLines waits for the fixture's DHCP server log to reach want
-// occurrences of substr.
+// awaitLogLines waits for the fixture's DHCP server log to reach want occurrences of substr.
 func awaitLogLines(t *testing.T, ef *harness.EphemeralFixture, substr string, want int, within time.Duration) bool {
 	t.Helper()
 	deadline := time.Now().Add(within)
@@ -782,13 +569,7 @@ func awaitLogLines(t *testing.T, ef *harness.EphemeralFixture, substr string, wa
 	}
 }
 
-// containerAddr reads the address the CONTAINER has, not the one Docker
-// recorded when the endpoint was created.
-//
-// The two differ exactly when this file's subject fires: an address
-// change after CreateEndpoint leaves docker inspect stale, so asserting
-// on it alone would report the conflict as unhandled when it was
-// handled correctly.
+// containerAddr reads the address the container has, which differs from docker inspect after an address change.
 func containerAddr(t *testing.T, ctx context.Context, id string) string {
 	t.Helper()
 	out := harness.ExecOutput(t, ctx, id, "ip", "-4", "-o", "addr", "show", "dev", "eth0")
@@ -800,8 +581,7 @@ func containerAddr(t *testing.T, ctx context.Context, id string) string {
 	return ""
 }
 
-// awaitContainerAddr waits until the container's address is something
-// other than was, and returns whatever it ends on.
+// awaitContainerAddr waits until the container's address is something other than was, and returns whatever it ends on.
 func awaitContainerAddr(t *testing.T, ctx context.Context, id, was string, within time.Duration) string {
 	t.Helper()
 	deadline := time.Now().Add(within)
@@ -818,10 +598,7 @@ func awaitContainerAddr(t *testing.T, ctx context.Context, id, was string, withi
 	}
 }
 
-// cliReset recycles the plugin process, which is the only way to clear
-// a counter — they are process-local by design. Used by the conflict
-// tests to retire a fault induced on purpose, and by the restart case
-// as the restart itself.
+// cliReset recycles the plugin process, which is the only way to clear its process-local counters.
 func cliReset(ctx context.Context, t *testing.T) error {
 	t.Helper()
 	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())

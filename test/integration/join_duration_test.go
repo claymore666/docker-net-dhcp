@@ -16,46 +16,15 @@ import (
 	"github.com/claymore666/docker-net-dhcp/v2/test/integration/harness"
 )
 
-// attachObservationBudget bounds the wait for the attach counter to
-// move. The attach runs in a goroutine the Join response does not wait
-// for, so it is observable only after the container is up; the budget
-// is the plugin's own attach budget plus the daemon-busy grace, which
-// is the longest an attach it will still complete can take.
+// attachObservationBudget is the plugin's attach budget plus the daemon-busy grace, the longest an attach it still completes can take.
 const attachObservationBudget = 30 * time.Second
 
-// TestJoinDuration_DistributionInThisShard is #403's first step: how
-// long a Join actually takes, against the 10s AWAIT_TIMEOUT that caps
-// it.
-//
-// WHY A PASS OVER THE LOG AND NOT A COUNTER. join_attach_slow counts
-// the attaches that outran the budget. That is the tail, and #401 is
-// the record of what arguing about a budget from the tail costs: the
-// first attempt raised the timeout on the assumption of slowness and
-// measured no improvement, because nine of the twelve failures were
-// something else. A distribution needs the attaches that FINISHED in
-// time as well, and since #403 the plugin logs one line per successful
-// attach with the same phase names the failure line carries.
-//
-// WHAT THE POPULATION IS, and the name says it because the first
-// version's did not. The suite is partitioned into shards, each its own
-// job with its own daemon, plugin and log, so this reads the attaches
-// of the tests that ran before it IN ONE SHARD — roughly a tenth of the
-// run. A p99 over that n is the maximum under another name, and the
-// handover reports it as a shard figure.
-//
-// IT ATTACHES A CONTAINER OF ITS OWN, which is not decoration. Nothing
-// holds this test's position inside its shard: a rebalance, or a new
-// test costed ahead of it, can leave it first, and then a distribution
-// over zero samples fails for a scheduling reason with the instrument
-// working perfectly. Its own attach makes the population non-empty by
-// construction, so a zero here is the instrument and nothing else.
-//
-// IT ASSERTS, and the assertions are about the instrument rather than
-// the numbers. A p99 threshold here would be a threshold set to today's
-// value on a shared runner, which is the floor #385 already paid for.
-// What must not silently become true is that the instrument stopped
-// producing lines: a run with no attach line looks exactly like a run
-// where every attach was fast.
+// The population is the attaches of one shard, roughly a tenth of the run, so its p99 is close to the maximum. The
+// test attaches a container of its own so the population is never empty by scheduling, and it asserts on the
+// instrument, not the numbers: a p99 threshold would be today's value on a shared runner (#385), and a run with no
+// attach line looks like a run where every attach was fast (#401, #403).
+
+// TestJoinDuration_DistributionInThisShard logs the Join duration distribution of the attaches in this shard (#403).
 func TestJoinDuration_DistributionInThisShard(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
 	defer cancel()
@@ -75,31 +44,16 @@ func TestJoinDuration_DistributionInThisShard(t *testing.T) {
 
 	w := harness.BeginCounterWindow(t, ctx, cli, "join_attach_completed")
 
-	// Marked AFTER the counter window's baseline read, and read below
-	// BEFORE that window closes, so the log window sits INSIDE the
-	// counter window on both ends. The whole-log figures further down
-	// cannot be cross-read against a counter at all: the log spans the
-	// plugin's whole life and the counter spans the current process,
-	// and at this PR's first head the two printed 7 and 1 in one shard
-	// with nothing published to say which of the two readings applied
-	// (#417 review r1).
-	//
-	// The order of the two ends is not cosmetic. Marking first would
-	// open the log window a whole health round trip before the counter
-	// baseline, and reading it after End would leave it open past the
-	// closing read, and a line landing in either gap is a line the
-	// counter delta does not contain.
+	// Marked after the counter window's baseline read and read before it closes, so the log window sits inside the
+	// counter window on both ends; the whole-log figures below span the plugin's life and cannot be cross-read (#417).
 	mark := harness.MarkPluginLog(t, ctx)
 
 	harness.CreateNetwork(t, ctx, "dhcptest-joindur", "macvlan", nil)
 	_, ipv4, _ := harness.RunContainer(t, ctx, "dhcptest-joindur", "dhcptest-joindur-c1")
 	harness.AssertIP(t, ipv4)
 
-	// The counter moves AFTER RunContainer returns: MEASURED at about
-	// 320 ms on a hosted runner, because the attach is a goroutine the
-	// Join response does not wait for. A single read here would be a
-	// read taken too early on a fast host, so wait for the attach the
-	// container proves happened, bounded by the budget it runs under.
+	// The attach is a goroutine the Join response does not wait for; the counter moved about 320 ms after RunContainer
+	// returned on a hosted runner (#417).
 	_, moved := w.Await(attachObservationBudget, func(now, before *harness.HealthResponse) bool {
 		return now.JoinAttachCompleted > before.JoinAttachCompleted
 	})
@@ -110,20 +64,12 @@ func TestJoinDuration_DistributionInThisShard(t *testing.T) {
 			"counter a host running the shipped LOG_LEVEL=info carries no per-attach duration "+
 			"at all except join_attach_slow, which is the tail (#403).", attachObservationBudget, ipv4)
 	}
-	// THE TWO RECORDS OVER ONE WINDOW, read before the counter window
-	// closes so that the log window ends inside it. Anything the plugin
-	// counts between this read and End inflates the delta, which is the
-	// safe direction for the comparison below.
-	//
-	// Awaited rather than sampled: the positive assertion would
-	// otherwise judge whatever had reached the file, and a `<=` over an
-	// empty window is satisfied by emptying it.
+	// Awaited, not sampled: a `<=` over an empty window is satisfied by emptying it (#417).
 	window := harness.AwaitPluginLogSince(t, ctx, mark, attachObservationBudget,
 		func(w string) bool { return len(harness.AttachDurations(w)) > 0 })
 	windowTook := harness.AttachDurations(window)
 
-	// End closes the counter window, which is also the check that the
-	// plugin did not restart under any of the reads above.
+	// End also checks that the plugin did not restart under the reads above.
 	before, after := w.End()
 	counted := after.JoinAttachCompleted - before.JoinAttachCompleted
 
@@ -133,19 +79,8 @@ func TestJoinDuration_DistributionInThisShard(t *testing.T) {
 			"The two records of #403 are written side by side from one elapsed value; a window "+
 			"with the counter and without the line is the line being lost.", counted, ipv4)
 	}
-	// WHAT THIS DIRECTION ESTABLISHES, and what it does not. The plugin
-	// increments the counter and writes the line from the same place,
-	// the counter first, so a line inside the window whose count is
-	// missing from the delta is either a counter that missed the attach
-	// or an attach whose increment beat the baseline read by less than
-	// the gap between those two statements. The second is bounded by
-	// that gap and by nothing this test can narrow further, so the red
-	// names both readings rather than asserting the first.
-	//
-	// It is still worth failing on. The residual is microseconds wide
-	// and the defect it is looking for is a counter that silently
-	// undercounts the population every figure #403 quotes is drawn
-	// from.
+	// The counter is incremented before the line is written, so a line missing from the delta is a counter that missed
+	// the attach or an increment that beat the baseline read by that gap; the red names both readings (#403, #417).
 	if int32(len(windowTook)) > counted {
 		t.Errorf("this test's window carries %d attach line(s) and the counter moved by %d "+
 			"over a window that contains it, with no plugin restart inside either.\n"+
@@ -173,12 +108,8 @@ func TestJoinDuration_DistributionInThisShard(t *testing.T) {
 			"Log length: %d bytes.", after.JoinAttachCompleted, len(log))
 	}
 
-	// THE TWO RECORDS, cross-read. The counter and the line are written
-	// side by side from the same elapsed value, so a log with fewer
-	// lines than the plugin counted is the line being lost: a level
-	// change, a rotated file, a filter. Fewer counted than logged is
-	// normal and not asserted — a plugin restarted mid-shard resets its
-	// counters while the log keeps the older lines.
+	// Counter and line are written side by side from one elapsed value, so fewer lines than counted is a lost line; fewer
+	// counted than logged is normal after a restart mid-shard resets the counters (#403).
 	if int32(len(took)) < after.JoinAttachCompleted {
 		t.Errorf("the log carries %d attach durations but the plugin counted %d attaches. "+
 			"The figures below are over a subset of the attaches that happened, which is a "+
@@ -186,12 +117,7 @@ func TestJoinDuration_DistributionInThisShard(t *testing.T) {
 	}
 
 	sort.Slice(took, func(i, j int) bool { return took[i] < took[j] })
-	// instance and uptime travel with the figures. The lines below are
-	// over the plugin's whole life and the counters are over the
-	// current process, so a reader comparing them needs to know whether
-	// those are the same stretch. Without it a recycle and a counter
-	// that missed attaches look alike, which is what a seven-to-one
-	// disagreement looked like at this PR's first head.
+	// instance and uptime say whether the whole-life lines and the per-process counters cover the same stretch (#417).
 	t.Logf("JOIN-DURATION shard-local n=%d p50=%s p90=%s p99=%s max=%s counted=%d "+
 		"instance=%s uptime=%.0fs window_lines=%d window_counted=%d "+
 		"(budget: AWAIT_TIMEOUT as installed on this lane; the population is this shard, not the run; "+
@@ -205,26 +131,15 @@ func TestJoinDuration_DistributionInThisShard(t *testing.T) {
 		after.JoinAttachUnder1s, after.JoinAttach1sToBudget, after.JoinAttachSlow, after.JoinAttachMsMax,
 		after.InstanceID, after.UptimeSeconds)
 
-	// THE PHASES, and this is the assertion that holds the success-side
-	// recording rather than the log line. Start records its phase
-	// summary in a deferred exit that used to run only when Start
-	// failed. Restoring that condition leaves this line in place and
-	// leaves `took` on it, because the elapsed time is measured by the
-	// caller; only the phases go empty. A line without them dates the
-	// attach and says nothing about where its time went, which is the
-	// half #406 added and #403 needs.
+	// Start records its phases in a deferred exit that once ran only on failure; restoring that leaves the line and
+	// `took` in place and empties only the phases (#406).
 	if n := harness.AttachLinesWithoutPhases(log); n > 0 {
 		t.Errorf("%d of %d attach lines carry no phase breakdown. Start is recording its "+
 			"phases only for the attaches that FAILED again, so the run has durations with "+
 			"nothing to attribute them to (#403, #406).", n, len(took)+n)
 	}
 
-	// The one number that is a fault rather than a measurement: an
-	// attach that finished is an attach whose container has a renewal
-	// client, so a long one is slow and not broken. A DURATION THAT
-	// CANNOT BE PARSED is the instrument lying, and is worth failing on
-	// because every figure above would then be computed over a subset
-	// nobody declared.
+	// A finished attach has a renewal client, so a long one is slow, not broken; an unparseable duration is the fault (#403).
 	if bad := harness.MalformedAttachLines(log); bad > 0 {
 		t.Errorf("%d attach lines carried a duration this test could not parse; the figures "+
 			"above are over the %d it could, which is a population nobody chose", bad, len(took))

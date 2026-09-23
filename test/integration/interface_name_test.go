@@ -3,25 +3,10 @@
 
 //go:build integration
 
-// interface_name support (#125). Characterization result (from moby
-// source, daemon/libnetwork/drivers/remote/driver.go): the engine
-// forwards the endpoint option com.docker.network.endpoint.ifname to
-// remote plugins in CreateEndpoint and Join, and the remote-driver
-// API's InterfaceName response carries DstName — but the proxy called
-// `iface.SetNames(SrcName, DstPrefix, "")`, DISCARDING the plugin's
-// DstName. Built-in drivers got per-driver interface_name in engine
-// 28; remote drivers were left out. moby/moby#52866 fixed the proxy
-// (merged 2026-08-26) and it SHIPPED in engine 29.8.0: measured with a
-// nested daemon per line (#670), 28.5.2 and 29.7.2 name the interface
-// by the driver prefix and 29.8.0 names it as asked. So the discard is
-// what a run on 29.7.x or older sees. So:
-//   - the plugin's side (validate + return DstName) is fully
-//     assertable today, via its own logs and the Join error path;
-//   - whether the ENGINE applies the name is probed at runtime —
-//     the dependent tests skip with a pointer to the upstream gap
-//     until a fixed engine runs this suite, then activate on their
-//     own. No version-number gate: the probe tests the actual
-//     behaviour, which is the thing that matters.
+// The engine forwards com.docker.network.endpoint.ifname to remote plugins, but until moby/moby#52866 (merged
+// 2026-08-26, shipped in 29.8.0) the remote proxy discarded the plugin's DstName; measured with a nested daemon per
+// line, 28.5.2 and 29.7.2 name the interface by the driver prefix and 29.8.0 names it as asked (#125, #670). The
+// plugin's half is asserted on any engine; the engine's half is probed at runtime, not gated on a version.
 package integration
 
 import (
@@ -39,9 +24,7 @@ import (
 
 const ifnameOpt = "com.docker.network.endpoint.ifname"
 
-// runContainerWithIfname creates and starts a container on netName
-// with the ifname endpoint driver-opt, returning (id, ipv4) once the
-// endpoint has an IP. Cleanup registered.
+// runContainerWithIfname starts a container on netName with the ifname driver-opt and returns its id and IPv4 once it has one.
 func runContainerWithIfname(t *testing.T, ctx context.Context, cli *docker.Client, netName, ctrName, ifname string) (string, string) {
 	t.Helper()
 	create, err := cli.ContainerCreate(ctx,
@@ -78,22 +61,14 @@ func runContainerWithIfname(t *testing.T, ctx context.Context, cli *docker.Clien
 	return "", ""
 }
 
-// engineAppliesIfname reports whether the running engine actually
-// renamed the interface — the capability probe the dependent tests
-// gate on.
+// engineAppliesIfname reports whether the running engine actually renamed the interface.
 func engineAppliesIfname(t *testing.T, ctx context.Context, ctrID, ifname string) bool {
 	t.Helper()
 	out := harness.ExecOutput(t, ctx, ctrID, "ip", "-o", "link")
 	return strings.Contains(out, ": "+ifname+"@") || strings.Contains(out, ": "+ifname+":")
 }
 
-// TestInterfaceName_PluginHonorsOption asserts the plugin's half of
-// #125, which is fully testable on any engine: a container attached
-// with the ifname driver-opt gets a working DHCP lease, and the
-// plugin's Join honored the option (its log records the custom name).
-// The engine half is probed and reported; until the upstream remote-
-// driver pass-through lands, the interface still comes up as ethN and
-// the lease must be unaffected either way.
+// TestInterfaceName_PluginHonorsOption checks that the ifname option leaves the lease intact and that the plugin's statement about the name matches the engine (#125).
 func TestInterfaceName_PluginHonorsOption(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
@@ -115,12 +90,7 @@ func TestInterfaceName_PluginHonorsOption(t *testing.T) {
 
 	harness.CreateNetwork(t, ctx, netName, "macvlan", nil)
 
-	// WHICH STATEMENT IS OWED is decided by the ENGINE, and the engine
-	// is asked here rather than taken from the plugin's own report of
-	// it (#670). Below the boundary the plugin must say the name will
-	// not be applied and count it; at or above it, the plugin must say
-	// it honoured the name. A cell that accepted either sentence would
-	// pass against a plugin that had stopped saying anything.
+	// The engine's version decides which statement is owed, asked of the engine and not the plugin (#670).
 	srv, err := cli.ServerVersion(ctx)
 	if err != nil {
 		t.Fatalf("ServerVersion: %v", err)
@@ -129,15 +99,10 @@ func TestInterfaceName_PluginHonorsOption(t *testing.T) {
 
 	window := harness.BeginCounterWindow(t, ctx, cli, "ifname_unsupported")
 
-	// Scoped to this attach. "Honoring custom interface name" and lan0
-	// are what the sibling tests in this file log too, so over the
-	// whole log this assertion is satisfied by whichever of them ran
-	// first.
+	// Sibling tests log the same name, so the read is scoped to this attach.
 	logMark := harness.MarkPluginLog(t, ctx)
 	id, ip := runContainerWithIfname(t, ctx, cli, netName, "dh-itest-ifname-ctr", "lan0")
 
-	// The lease itself must be unaffected by the option, on either
-	// engine. This is the half #125 was always able to assert.
 	if !strings.Contains(harness.ExecOutput(t, ctx, id, "ip", "-4", "addr"), ip+"/") {
 		t.Errorf("leased address %s not present on the container link", ip)
 	}
@@ -156,8 +121,6 @@ func TestInterfaceName_PluginHonorsOption(t *testing.T) {
 			"something they did not ask for.", srv.Version, wantStatement)
 	}
 
-	// The engine's own behaviour, read from the container, must agree
-	// with the statement the plugin made about it.
 	applied := engineAppliesIfname(t, ctx, id, "lan0")
 	if applied != engineApplies {
 		t.Errorf("engine %s: the container interface is named lan0 = %v, and this suite expected %v "+
@@ -165,9 +128,7 @@ func TestInterfaceName_PluginHonorsOption(t *testing.T) {
 			"changed behaviour inside a line.", srv.Version, applied, engineApplies)
 	}
 
-	// The counter carries the same fact for an operator who is not
-	// reading logs, and it must NOT move on an engine that applies the
-	// name.
+	// The counter must not move on an engine that applies the name (#670).
 	before, after := window.End()
 	delta := after.IfnameUnsupported - before.IfnameUnsupported
 	switch {
@@ -180,12 +141,10 @@ func TestInterfaceName_PluginHonorsOption(t *testing.T) {
 	}
 }
 
-// engineVersionAppliesIfname is this suite's own copy of the boundary,
-// deliberately not imported from pkg/plugin: a cell that took the
-// constant from the code it is checking would agree with it by
-// construction. 29.8.0 is where moby/moby#52866 taught libnetwork's
-// remote proxy to pass DstName through; MEASURED with a nested daemon
-// per line, 28.5.2 and 29.7.2 name the interface by the driver prefix.
+// This suite's own copy of the boundary, not imported from pkg/plugin, so the cell cannot agree with the code by
+// construction; 29.8.0 is the first engine with moby/moby#52866 (#670).
+
+// engineVersionAppliesIfname reports whether an engine version applies a remote driver's DstName.
 func engineVersionAppliesIfname(version string) bool {
 	fields := strings.SplitN(version, ".", 3)
 	if len(fields) < 2 {
@@ -212,10 +171,7 @@ func engineVersionAppliesIfname(version string) bool {
 	return minor >= 8
 }
 
-// TestInterfaceName_InvalidRejected: a name the kernel could never
-// accept must fail the attach loudly at Join with the plugin's
-// validation error — not surface as a cryptic rename failure. Fully
-// engine-independent.
+// TestInterfaceName_InvalidRejected checks that a name the kernel cannot accept fails the attach with the plugin's validation error (#125).
 func TestInterfaceName_InvalidRejected(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
@@ -238,8 +194,7 @@ func TestInterfaceName_InvalidRejected(t *testing.T) {
 		}},
 		nil, "dh-itest-ifbad-ctr")
 	if err != nil {
-		// Some engine versions validate at create — also acceptable,
-		// as long as the attach can't succeed.
+		// Some engine versions validate at create, which is acceptable as long as the attach cannot succeed.
 		t.Logf("rejected at create: %v", err)
 		return
 	}
@@ -256,30 +211,11 @@ func TestInterfaceName_InvalidRejected(t *testing.T) {
 	}
 }
 
-// TestInterfaceName_MultiNetworkDeterministic is the reporter's
-// actual pain (#125): one container on two plugin networks with fixed
-// names must map names to networks identically on every restart.
-// Gated on the engine actually applying DstName — skips with the
-// upstream pointer until then, activates by itself on a fixed engine.
-//
-// THE TWO NETWORKS MUST BE ON DIFFERENT PARENTS IN DIFFERENT SUBNETS,
-// and that is not a stylistic choice. This test was written against a
-// single parent, skipped on every engine for its whole life, and the
-// first engine that ever ran it (a dockerd carrying moby/moby#52866)
-// failed it at ContainerStart with
-//
-//	cannot program address 192.168.99.23/24 in sandbox interface
-//	because it conflicts with existing route {Dst: 192.168.99.0/24 ...}
-//
-// libnetwork refuses a second interface in a subnet the container
-// already routes, so both endpoints leasing from one fixture could
-// never both attach — on any engine, with or without the ifname
-// option. Measured on both sides of the upstream fix; the failure is
-// identical, so it was never the fix's doing.
-//
-// It is also the wrong topology for the report. The reporter runs an
-// mDNS bridge, which exists to relay BETWEEN subnets: distinct subnets
-// are the scenario, not an artefact of the fixture.
+// The two networks are on different parents in different subnets: libnetwork refuses a second interface in a subnet
+// the container already routes ("cannot program address ... conflicts with existing route"), on both sides of
+// moby/moby#52866, and the reporter's mDNS bridge relays between subnets (#125).
+
+// TestInterfaceName_MultiNetworkDeterministic checks that one container on two plugin networks maps each fixed name to its own network on every restart (#125).
 func TestInterfaceName_MultiNetworkDeterministic(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
@@ -297,15 +233,8 @@ func TestInterfaceName_MultiNetworkDeterministic(t *testing.T) {
 		}
 	})
 
-	// Probe with a throwaway container first.
-	//
-	// The engine probe comes BEFORE the second fixture is stood up, and
-	// that order is load-bearing: EphemeralFixture asserts on teardown
-	// that its DHCP server actually granted a lease (#472). A fixture
-	// created ahead of a skip is torn down having served nobody, so the
-	// guard fires and the run reports FAIL where it should report SKIP
-	// -- on every engine below 29.8.0.
-	// Measured: it did exactly that before this was reordered.
+	// The engine probe runs before the second fixture exists: EphemeralFixture asserts on teardown that it granted a
+	// lease (#472), so a fixture created ahead of a skip reported FAIL on every engine below 29.8.0.
 	probeNet := "dh-itest-ifprobe"
 	harness.CreateNetwork(t, ctx, probeNet, "macvlan", nil)
 	probeID, _ := runContainerWithIfname(t, ctx, cli, probeNet, "dh-itest-ifprobe-ctr", "probe0")
@@ -313,8 +242,7 @@ func TestInterfaceName_MultiNetworkDeterministic(t *testing.T) {
 		t.Skip("engine does not apply remote-driver DstName yet (moby drivers/remote/driver.go drops it); test activates once the upstream pass-through ships")
 	}
 
-	// The second subnet. The suite-static fixture serves 192.168.99.0/24
-	// on HostVeth; this one serves 192.168.101.0/24 on its own parent.
+	// The suite-static fixture serves 192.168.99.0/24 on HostVeth; this one serves 192.168.101.0/24 on its own parent.
 	ef := harness.NewEphemeralFixture(t)
 	t.Cleanup(func() {
 		if t.Failed() {
@@ -347,7 +275,6 @@ func TestInterfaceName_MultiNetworkDeterministic(t *testing.T) {
 		_ = cli.ContainerRemove(bg, id, container.RemoveOptions{Force: true})
 	})
 
-	// macForName maps interface name -> MAC inside the container.
 	macForName := func(name string) string {
 		out := harness.ExecOutput(t, ctx, id, "ip", "-o", "link", "show", name)
 		for _, f := range strings.Fields(out) {
@@ -358,11 +285,7 @@ func TestInterfaceName_MultiNetworkDeterministic(t *testing.T) {
 		return ""
 	}
 
-	// v4ForName is the assertion that makes this test about NETWORKS
-	// rather than about two stable strings. A MAC mapping that never
-	// moves is satisfied by both names landing on the same network;
-	// the subnet each name carries is what says wan0 is the network the
-	// compose file called wan0.
+	// The subnet each name carries says it is the network the compose file named, not just a stable MAC.
 	v4ForName := func(name string) string {
 		out := harness.ExecOutput(t, ctx, id, "ip", "-o", "-4", "addr", "show", name)
 		for _, f := range strings.Fields(out) {
@@ -378,7 +301,6 @@ func TestInterfaceName_MultiNetworkDeterministic(t *testing.T) {
 		if err := cli.ContainerStart(ctx, id, container.StartOptions{}); err != nil {
 			t.Fatalf("ContainerStart (round %d): %v", restart, err)
 		}
-		// Both names must exist with stable MAC association.
 		deadline := time.Now().Add(harness.IPAcquisitionBudget)
 		var w, l string
 		for time.Now().Before(deadline) {
@@ -392,7 +314,6 @@ func TestInterfaceName_MultiNetworkDeterministic(t *testing.T) {
 			t.Fatalf("round %d: wan0/lan0 not both present (wan0=%q lan0=%q)", restart, w, l)
 		}
 
-		// Each name must carry an address from ITS OWN network.
 		wantWan, wantLan := "192.168.99.", "192.168.101."
 		gotWan, gotLan := v4ForName("wan0"), v4ForName("lan0")
 		if !strings.HasPrefix(gotWan, wantWan) {

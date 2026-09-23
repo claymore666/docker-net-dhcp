@@ -17,74 +17,15 @@ import (
 	"github.com/claymore666/docker-net-dhcp/v2/test/integration/harness"
 )
 
-// The route an attach takes into a container's network namespace is a
-// property of the HOST, not of this engine and not of this plugin.
-// These four cells are keyed on it.
-//
-// WHAT DECIDES IT. libnetwork creates each entry under
-// /var/run/docker/netns/ as an ordinary empty file and then bind-mounts
-// the namespace over it. The plugin's /var/run/docker mount is a bind
-// taken when the PLUGIN PROCESS starts, and a bind is a snapshot and
-// not a subscription, so whether the daemon's later per-sandbox mount
-// reaches the plugin depends on the propagation of the mount the daemon
-// publishes on. The plugin publishes that answer as
-// sandbox_netns_propagation: 1 the mount is linked and a later mount
-// arrives, 0 it is private and the plugin opens the placeholder file
-// underneath.
-//
-// MEASURED, both branches, BY THESE CELLS. A citation naming a run in
-// which these cells did not execute is not a measurement of them, which
-// is how the earlier version of this block came to cite a probe: run
-// 34598318503 was dispatched with a layout whose only job logged the
-// counters and asserted nothing, and the job that runs these cells was
-// skipped in it.
-//
-//   - 1: Integration (hosted cross-check) run 34617922956, ubuntu-latest,
-//     all four cells, each printing branch=linked and
-//     sandbox_netns_propagation=1, every refusal arm +0. The key route
-//     carries the attach. Production 2026-09-11 answers 1 as well, read
-//     by a probe and not by these cells.
-//   - 0: this suite's own pool, Integration run 34616833894, all four
-//     cells, each printing branch=private and
-//     sandbox_netns_propagation=0 with sandbox_key_not_a_namespace +1.
-//     The container PID route carries the attach, which is why the
-//     manifest still asks for the host PID namespace and CAP_SYS_PTRACE.
-//
-// WHAT THESE CELLS ASSERT. Three things:
-//
-//  1. OUTSIDE EVIDENCE, unconditional and identical on both branches.
-//     `ip -4 addr show` INSIDE the container carries the leased
-//     address. That is the kernel's view of the namespace, not the
-//     plugin's report of it.
-//  2. EXACTLY ONE ROUTE per attach, on both branches, so no assertion
-//     below can be satisfied by an attach that entered no namespace at
-//     all.
-//  3. THE ROUTE THIS HOST'S PROPAGATION PREDICTS. On 1: entries rise,
-//     fallbacks and refusals stay flat. On 0: the refusal is counted,
-//     its arm is sandbox_key_not_a_namespace, and the PID route carries
-//     the attach. Each branch asserts a counter the other cannot move,
-//     so a cell cannot pass on the wrong host for the wrong reason.
-//
-// -1 FAILS HERE, and is never a skip. It is the gauge reporting that
-// the mount table could not be read, so the cell cannot know which
-// branch to assert. That is a broken instrument and not an absent host;
-// a skip would empty the domain of every assertion below while leaving
-// the run green.
-//
-// A NOTE ON WHAT THE KEY ROUTE DOES NOT BUY, even on branch 1. The
-// address a container has is applied by CreateEndpoint's one-shot
-// client before Join, so a Join that opens the placeholder file and
-// calls it a namespace leaves a container that LOOKS right while the
-// PERSISTENT client — renewals, resolv.conf, MTU — never starts. An
-// early version of this change did exactly that: every cell went green
-// and twenty-six unrelated tests went red with "failed to set into
-// network namespace N ... invalid argument". The counter has since sat
-// behind an NS_GET_NSTYPE check, so it counts namespaces entered rather
-// than files opened.
-//
-// The counters are deltas over a window, because the suite shares one
-// plugin instance and an absolute read would be arithmetic over every
-// test that ran before this one (#405).
+// libnetwork bind-mounts each namespace over an empty file under /var/run/docker/netns/, and the plugin's mount of
+// that directory is a snapshot taken at plugin start, so a later sandbox reaches the plugin only where the daemon's
+// mount is linked: sandbox_netns_propagation 1 linked, 0 private, -1 unreadable, which fails (#725, #417). Measured by
+// these cells: 1 on hosted run 34617922956 (key route), 0 on the suite's pool run 34616833894 (PID route, hence the
+// host PID namespace and CAP_SYS_PTRACE). An early key route that opened the placeholder file left the persistent
+// client unstarted and twenty-six tests red with "failed to set into network namespace", so the counter sits behind
+// an NS_GET_NSTYPE check (#725). The counters are deltas over a window because the suite shares one plugin (#405).
+
+// sandboxKeyCell attaches one container and asserts its address, exactly one route, and the route the host's propagation predicts (#725).
 func sandboxKeyCell(t *testing.T, mode, netName, ctrName, user string) {
 	t.Helper()
 
@@ -95,9 +36,7 @@ func sandboxKeyCell(t *testing.T, mode, netName, ctrName, user string) {
 		if t.Failed() {
 			fixture.DumpLogs(func(s string) { t.Log(s) })
 			if mode == "bridge" {
-				// The bridge fixture runs its own dnsmasq on its own
-				// subnet; without this a bridge-cell failure shows the
-				// macvlan server's log, which never saw the request.
+				// The bridge fixture runs its own dnsmasq on its own subnet.
 				fixture.DumpBridgeLogs(func(s string) { t.Log(s) })
 			}
 			harness.DumpPluginLog(t)
@@ -123,15 +62,13 @@ func sandboxKeyCell(t *testing.T, mode, netName, ctrName, user string) {
 	} else {
 		id, ipv4, _ = harness.RunContainerUser(t, ctx, netName, ctrName, user)
 	}
-	// The pools differ per fixture, and asserting the wrong one would
-	// fail a cell for a reason that has nothing to do with the route.
+	// The pools differ per fixture.
 	if mode == "bridge" {
 		harness.AssertBridgeIP(t, ipv4)
 	} else {
 		harness.AssertIP(t, ipv4)
 	}
 
-	// 1. Outside evidence, from inside the namespace.
 	out := harness.ExecOutput(t, ctx, id, "ip", "-4", "addr", "show")
 	if !strings.Contains(out, ipv4+"/") {
 		t.Errorf("`ip -4 addr show` inside the container does not carry %s.\n%s\n"+
@@ -139,11 +76,7 @@ func sandboxKeyCell(t *testing.T, mode, netName, ctrName, user string) {
 			"read from inside the namespace the plugin says it configured.", ipv4, out)
 	}
 
-	// The attach runs in a goroutine the Join response does not wait
-	// for, so a running container is not yet an attach the counters have
-	// seen. Wait for the route to be taken, and FAIL at the budget: a
-	// window closed early reads as "no route was taken", which is the
-	// one answer this cell must never produce quietly.
+	// The attach runs in a goroutine the Join response does not wait for, and a window closed early reads as no route taken.
 	if _, moved := w.Await(attachObservationBudget, func(now, before *harness.HealthResponse) bool {
 		e, ok1 := delta(now.SandboxKeyEntries, before.SandboxKeyEntries)
 		f, ok2 := delta(now.SandboxPIDFallbacks, before.SandboxPIDFallbacks)
@@ -168,9 +101,7 @@ func sandboxKeyCell(t *testing.T, mode, netName, ctrName, user string) {
 	if !ok1 || !ok2 || !ok3 || !ok4 || !ok5 || !ok6 || !ok7 || !ok8 {
 		return
 	}
-	// Printed whether or not the cell passes: the cell table in the
-	// handover is read off these lines, and a table built only from
-	// failures has no rows on a green run.
+	// Printed on every run, so a green run has rows too.
 	t.Logf("CELL mode=%s user=%q: sandbox_key_entries +%d, sandbox_key_entry_failures +%d, sandbox_pid_fallbacks +%d",
 		mode, user, entries, failures, fallbacks)
 	t.Logf("CELL-ARM mode=%s user=%q: sandbox_key_absent +%d, sandbox_key_not_permitted +%d, "+
@@ -179,20 +110,13 @@ func sandboxKeyCell(t *testing.T, mode, netName, ctrName, user string) {
 
 	branch, okBranch := propagationBranch(t, before.SandboxNetnsPropagation, after.SandboxNetnsPropagation)
 
-	// THE HOST, printed beside the route it took, and the branch named
-	// rather than left to be inferred from the numbers. Which route is
-	// available is a property of the mount the daemon publishes sandbox
-	// keys on, not of this plugin. Without these numbers the assertions
-	// below read as a claim about the engine when they are a claim about
-	// one mount (#417).
+	// The route available is a property of the mount the daemon publishes sandbox keys on, not of the engine (#417).
 	t.Logf("CELL-HOST mode=%s user=%q: branch=%s, sandbox_netns_propagation=%s, "+
 		"sandbox_netns_init_mounts=%s, sandbox_netns_visible=%s",
 		mode, user, branchName(branch, okBranch), gaugeString(after.SandboxNetnsPropagation),
 		gaugeString(after.SandboxNetnsInitMounts), gaugeString(after.SandboxNetnsVisible))
 
-	// The domain, on both branches: exactly one route carried this
-	// attach. Without it, every assertion below is satisfied by a plugin
-	// that entered no namespace at all.
+	// Without exactly one route, the assertions below pass for a plugin that entered no namespace.
 	if entries+fallbacks != 1 {
 		t.Errorf("sandbox_key_entries +%d and sandbox_pid_fallbacks +%d sum to %d across one "+
 			"container attach on %s, want exactly 1: one attach takes one route, and a sum of zero "+
@@ -204,9 +128,7 @@ func sandboxKeyCell(t *testing.T, mode, netName, ctrName, user string) {
 	}
 
 	if branch == propagationLinked {
-		// The linked branch. entries is the counter the private branch
-		// cannot move, so this is not an assertion the other host also
-		// satisfies.
+		// entries is the counter the private branch cannot move.
 		if entries != 1 {
 			t.Errorf("sandbox_key_entries rose by %d on %s, want exactly 1. "+
 				"sandbox_netns_propagation=1 says the daemon's later sandbox mount reaches this "+
@@ -232,9 +154,7 @@ func sandboxKeyCell(t *testing.T, mode, netName, ctrName, user string) {
 				"gauge calls linked", notANamespace, mode)
 		}
 	} else {
-		// The private branch: the pool's own host, and the one the
-		// manifest's PID-namespace grant exists for. fallbacks is the
-		// counter the linked branch cannot move.
+		// fallbacks is the counter the linked branch cannot move.
 		if entries != 0 {
 			t.Errorf("sandbox_key_entries rose by %d on %s with sandbox_netns_propagation=0: the "+
 				"plugin entered a namespace through a key whose mount cannot have reached it, so "+
@@ -251,18 +171,9 @@ func sandboxKeyCell(t *testing.T, mode, netName, ctrName, user string) {
 				"an attach on a private mount, so the /proc/<pid>/ns/net route must — and it is why the "+
 				"manifest still asks for the host PID namespace and CAP_SYS_PTRACE", fallbacks, mode)
 		}
-		// WHICH REFUSAL, and this is the assertion SECURITY.md's causal
-		// sentence rests on rather than the aggregate above.
-		//
-		// "The key route was refused" is compatible with two causes that
-		// produce identical counts and want opposite remedies: the bind
-		// snapshot (this plugin opens the placeholder file libnetwork
-		// left under the mount — sandbox_key_not_a_namespace) and a
-		// daemon started with a non-default --exec-root, which
-		// publishes keys in a directory this plugin declines outright
-		// (sandbox_key_not_permitted). Until the arms were published,
-		// every cell in this file was equally consistent with the
-		// second, and SECURITY.md asserted the first.
+		// SECURITY.md's causal sentence rests on this arm: a refused key route is either the bind snapshot
+		// (sandbox_key_not_a_namespace) or a daemon with a non-default --exec-root (sandbox_key_not_permitted), with identical
+		// aggregate counts and opposite remedies (#725).
 		if notANamespace != 1 {
 			t.Errorf("sandbox_key_not_a_namespace rose by %d on %s, want exactly 1. This is the arm "+
 				"SECURITY.md names: the entry opened and was NOT a namespace, i.e. the daemon's later "+
@@ -272,8 +183,7 @@ func sandboxKeyCell(t *testing.T, mode, netName, ctrName, user string) {
 		}
 	}
 
-	// Neither branch expects these, and each names a different host
-	// misconfiguration rather than a route.
+	// Each names a host misconfiguration, not a route.
 	if notPermitted != 0 {
 		t.Errorf("sandbox_key_not_permitted rose by %d on %s. The daemon is publishing sandbox keys "+
 			"outside /var/run/docker/netns and /run/docker/netns — a non-default --exec-root does "+
@@ -289,17 +199,12 @@ func sandboxKeyCell(t *testing.T, mode, netName, ctrName, user string) {
 		t.Errorf("sandbox_key_unavailable rose by %d on %s: the refusal was none of the four named "+
 			"arms, so the cause is one nothing in the tree has named", unavailable, mode)
 	}
-	// An attach always carries a key: libnetwork puts it in the Join
-	// request. A rise here means it did not, and then the refusal
-	// measured above is about the absence of the input rather than
-	// about the mount propagation SECURITY.md argues from.
+	// libnetwork always puts the key in the Join request, so a rise means the refusal is about a missing input (#725).
 	if absent != 0 {
 		t.Errorf("sandbox_key_absent rose by %d on %s: this attach reached the key route with no key "+
 			"at all, so the arm below is not measuring what the daemon published", absent, mode)
 	}
 	// The arms are exhaustive by construction (countSandboxKeyRefusal).
-	// Asserting it here is what makes the five deltas above an account
-	// of the aggregate rather than four numbers beside it.
 	if arms := absent + notPermitted + notANamespace + wrongType + unavailable; arms != failures {
 		t.Errorf("the refusal arms sum to %d and sandbox_key_entry_failures rose by %d on %s: a "+
 			"refusal was counted in the aggregate and attributed to no arm, so the arms are no "+
@@ -307,25 +212,15 @@ func sandboxKeyCell(t *testing.T, mode, netName, ctrName, user string) {
 	}
 }
 
-// The two measured answers of sandbox_netns_propagation. Named because
-// a cell keyed on a bare 1 reads as a boolean, and the gauge has three
-// values, the third of which is a broken instrument.
+// The two measured answers of sandbox_netns_propagation; the third value, -1, is a broken instrument.
 const (
 	propagationPrivate int32 = 0
 	propagationLinked  int32 = 1
 )
 
-// propagationBranch picks the branch a cell must assert, and refuses
-// every answer that is not one of the two measured ones.
-//
-// An absent gauge is a plugin that does not publish it; -1 is a plugin
-// that could not read its own mount table. Neither is a host on which
-// these cells have nothing to say, and treating either as a skip is how
-// four cells go green having asserted no route at all. Both fail.
-//
-// The two reads must agree. The gauge is a property of a mount taken
-// before this window opened, so a change across it means the branch was
-// chosen from something that did not hold for the whole attach.
+// An absent gauge or -1 fails, never skips; the two reads must agree, since the mount predates the window.
+
+// propagationBranch picks the branch a cell must assert and refuses any answer other than the two measured ones.
 func propagationBranch(t *testing.T, before, after *int32) (int32, bool) {
 	t.Helper()
 	if before == nil || after == nil {
@@ -351,10 +246,7 @@ func propagationBranch(t *testing.T, before, after *int32) (int32, bool) {
 	return 0, false
 }
 
-// branchName renders the branch for the CELL-HOST line, including the
-// case where no branch could be chosen: a line that printed "private"
-// for an unreadable gauge would put a measurement in the record that
-// the run refused to make.
+// branchName renders the branch for the CELL-HOST line, including the case where no branch could be chosen.
 func branchName(branch int32, ok bool) string {
 	if !ok {
 		return "undecided"
@@ -365,10 +257,7 @@ func branchName(branch int32, ok bool) string {
 	return "private"
 }
 
-// delta is the nil-safe subtraction Await's condition needs. It reports
-// false for an absent counter instead of zero, so a plugin that does
-// not publish the field never satisfies the wait and the caller's
-// timeout says so.
+// delta is the nil-safe subtraction Await's condition needs, reporting false for an absent counter.
 func delta(now, before *int32) (int32, bool) {
 	if now == nil || before == nil {
 		return 0, false
@@ -376,10 +265,7 @@ func delta(now, before *int32) (int32, bool) {
 	return *now - *before, true
 }
 
-// counterDelta reads a delta and refuses to compute one from an absent
-// counter. A plugin that does not publish the field is not a plugin
-// reporting zero, and reading the absence as zero is the exact shape
-// that would let a build without the key route pass every cell above.
+// counterDelta returns a counter's delta and refuses to compute one from an absent counter.
 func counterDelta(t *testing.T, name string, before, after *int32) (int32, bool) {
 	t.Helper()
 	if before == nil || after == nil {
@@ -390,8 +276,7 @@ func counterDelta(t *testing.T, name string, before, after *int32) (int32, bool)
 	return *after - *before, true
 }
 
-// The cells. Each is its own test so the run names which one failed
-// rather than which combination did.
+// TestSandboxKeyRoute_Macvlan runs the sandbox-key cell for a macvlan network (#725).
 
 func TestSandboxKeyRoute_Macvlan(t *testing.T) {
 	sandboxKeyCell(t, "macvlan", "dh-itest-skey-mv", "dh-itest-skey-mv-ctr", "")
@@ -405,27 +290,16 @@ func TestSandboxKeyRoute_Ipvlan(t *testing.T) {
 	sandboxKeyCell(t, "ipvlan", "dh-itest-skey-iv", "dh-itest-skey-iv-ctr", "")
 }
 
-// The non-root cell is #317's case: the kernel gates /proc/<pid>/ns/net
-// on PTRACE_MODE_READ, so a container whose init runs as uid 65534 is
-// the only cell in which the PID route needs CAP_SYS_PTRACE at all. If
-// the key route carries this one, the netns half of that capability's
-// justification is gone — the mount-namespace half is not, and
-// SECURITY.md says so.
-//
-// BOUND, stated rather than implied: this is a non-root INIT UID, not a
-// userns-remapped daemon. `dockerd --userns-remap` is a daemon-level
-// setting this lane does not run, so nothing here measures it; what is
-// measured is the uid mismatch that makes the ptrace check bite, which
-// is the mechanism #317 was about.
+// The kernel gates /proc/<pid>/ns/net on PTRACE_MODE_READ, so a non-root init uid is the one cell where the PID route
+// needs CAP_SYS_PTRACE (#317). This is a non-root init uid, not a `dockerd --userns-remap` daemon, which the lane does
+// not run.
+
+// TestSandboxKeyRoute_NonRootContainer runs the sandbox-key cell for a container whose init runs as uid 65534 (#317, #725).
 func TestSandboxKeyRoute_NonRootContainer(t *testing.T) {
 	sandboxKeyCell(t, "macvlan", "dh-itest-skey-nr", "dh-itest-skey-nr-ctr", "65534:65534")
 }
 
-// gaugeString renders a health gauge that may be absent. "absent" and
-// "-1" are different findings: the first is a plugin that does not
-// publish the field, the second is one that published "I could not
-// tell". Folding them would make an old plugin look like a measured
-// unknown.
+// gaugeString renders a health gauge that may be absent, keeping "absent" and "-1" apart.
 func gaugeString(v *int32) string {
 	if v == nil {
 		return "absent"

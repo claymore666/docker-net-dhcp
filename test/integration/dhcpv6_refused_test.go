@@ -18,16 +18,7 @@ import (
 	"github.com/claymore666/docker-net-dhcp/v2/test/integration/harness"
 )
 
-// metricCounter reads one counter out of the plugin's own /metrics
-// exposition, over the plugin's socket.
-//
-// READ FROM /metrics AND NOT FROM /Plugin.Health, deliberately. The two
-// are served from the same fields, so this is not a second opinion
-// about the number -- what it adds is that the row an operator's
-// scraper will actually see EXISTS, is named what the reference says,
-// and carries the value. #644's lesson in the other direction: a
-// counter that only the health document carries is a counter no
-// dashboard can plot.
+// metricCounter reads one counter from the plugin's /metrics over its socket, so the series an operator scrapes must exist (#644).
 func metricCounter(t *testing.T, ctx context.Context, cli *docker.Client, name string) int64 {
 	t.Helper()
 	body, _, err := harness.PluginMetrics(ctx, cli)
@@ -48,12 +39,7 @@ func metricCounter(t *testing.T, ctx context.Context, cli *docker.Client, name s
 	return v
 }
 
-// v6FailureCounters is the whole set #816 is about, read together.
-//
-// Together and not one at a time: the complaint is that two endings
-// produced ONE number, so an arm that reads only its own counter would
-// pass for a plugin that moved all of them at once. Every arm below
-// reads the set and asserts on every member.
+// Every arm reads all three counters: two endings once moved one number, so an arm reading only its own would pass that (#816).
 var v6FailureCounters = []string{"dhcpv6_refused", "dhcpv6_no_server", "dhcpv6_slaac_no_prefix"}
 
 func readV6FailureCounters(t *testing.T, ctx context.Context, cli *docker.Client) map[string]int64 {
@@ -65,43 +51,19 @@ func readV6FailureCounters(t *testing.T, ctx context.Context, cli *docker.Client
 	return out
 }
 
-// TestDHCPv6_RefusedAndSilentAreTwoRows is #816.
-//
-// TWO SEGMENTS THAT END THE SAME WAY FOR THE CONTAINER. On both of
-// them the router advertises the managed-address flag, the endpoint
-// gets no DHCPv6 address, and `docker run` fails. What differs is the
-// fault, and it is the difference an operator has to act on:
-//
-//	managed-exhausted  the server ANSWERED and refused this client
-//	                   (RFC 9915 section 21.13's Status Code,
-//	                   NoAddrsAvail) -> go and look at the pool
-//	managed-silent     no server answered at all -> go and look at
-//	                   whether there is a server
-//
-// Before this, both moved nothing and read identically: one message,
-// no counter, no code. The assertion is therefore not "a counter
-// moved" but that each segment moves ITS OWN row and leaves the other
-// two where they were -- a plugin that cannot tell the two apart
-// passes any weaker form of this test.
-//
-// The plugin's counters are its own account of itself, so each arm
-// also reads the SERVER's log through the fixture's exchange contract:
-// an Advertise the server sent on the refusing segment, and a Solicit
-// it ignored on the silent one.
+// On both segments the RA sets the managed flag and `docker run` fails. On managed-exhausted the server answers with
+// NoAddrsAvail (RFC 9915 section 21.13), on managed-silent nobody answers; each must move its own counter and no other,
+// and each arm also reads the server's log for the exchange (#816).
+
+// TestDHCPv6_RefusedAndSilentAreTwoRows checks that a refusing and a silent DHCPv6 server move different counters (#816).
 func TestDHCPv6_RefusedAndSilentAreTwoRows(t *testing.T) {
 	cases := []struct {
 		name string
 		mode harness.V6Mode
 		net  string
-		// want is the counter this segment must move by one.
 		want string
-		// opts is what the network is created with. The refusing arm
-		// states `ipv6_mode=dhcp` and no `ipv6` at all, which is also
-		// #817's end-to-end proof that the new option switches IPv6 on
-		// by itself and reaches the client.
-		opts map[string]string
-		// evidence reads the server's own log for the exchange that
-		// makes this segment the one it claims to be.
+		// The refusing arm sets ipv6_mode=dhcp and no ipv6, which is also the proof that the mode alone enables IPv6 (#817).
+		opts     map[string]string
 		evidence func(*harness.V6Fixture)
 	}{
 		{
@@ -111,10 +73,7 @@ func TestDHCPv6_RefusedAndSilentAreTwoRows(t *testing.T) {
 			want: "dhcpv6_refused",
 			opts: map[string]string{"ipv6": "", "ipv6_mode": "dhcp"},
 			evidence: func(f *harness.V6Fixture) {
-				// The contract for this mode requires a DHCPSOLICIT and
-				// a DHCPADVERTISE and forbids a DHCPREPLY: the server
-				// answered, and the client never got as far as asking,
-				// because it was refused at the Advertise.
+				// The contract requires Solicit and Advertise and forbids Reply: the client was refused at the Advertise (#816).
 				f.AssertExchange(30 * time.Second)
 			},
 		},
@@ -131,11 +90,7 @@ func TestDHCPv6_RefusedAndSilentAreTwoRows(t *testing.T) {
 		},
 	}
 
-	// NON-VACUITY. #816 is a statement about a PAIR, so one arm proves
-	// nothing: a counter that moves on one segment and is never read
-	// on the other is exactly the shape the issue describes. The check
-	// runs before the engine is touched, so it cannot be reported as
-	// an environment failure.
+	// #816 is about a pair, so both arms must have run; checked before the engine is touched.
 	seen := map[string]bool{}
 	for _, c := range cases {
 		seen[c.want] = true
@@ -173,7 +128,6 @@ func TestDHCPv6_RefusedAndSilentAreTwoRows(t *testing.T) {
 					"reason this test is about:\n%v", tc.mode, err)
 			}
 
-			// The server's own account, before the plugin's.
 			tc.evidence(f)
 
 			after := readV6FailureCounters(t, ctx, cli)
@@ -195,18 +149,10 @@ func TestDHCPv6_RefusedAndSilentAreTwoRows(t *testing.T) {
 	}
 }
 
-// TestIPv6Mode_SurvivesAPluginRestart is the replay half of #817.
-//
-// Docker does not store a plugin's options for it: at plugin start it
-// REPLAYS `CreateNetwork` for every network the driver owns, with the
-// options the operator typed. So an option the plugin accepts at create
-// and refuses on replay -- or normalises into something the second
-// create cannot read -- takes every endpoint on that network down at
-// the next plugin upgrade, and nothing before the upgrade says so.
-//
-// The observable is the endpoint, not the option: the recovered client
-// re-binds the same address under the same DUID after the plugin comes
-// back, which cannot happen if the replayed CreateNetwork failed.
+// At plugin start Docker replays CreateNetwork with the operator's options, so an option refused or mis-normalised on
+// replay takes every endpoint down at the next upgrade; the recovered client re-binds the same address and DUID (#817).
+
+// TestIPv6Mode_SurvivesAPluginRestart checks that an ipv6_mode=dhcp network keeps its DHCPv6 address across a plugin restart (#817).
 func TestIPv6Mode_SurvivesAPluginRestart(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 	defer cancel()
@@ -226,10 +172,7 @@ func TestIPv6Mode_SurvivesAPluginRestart(t *testing.T) {
 	}
 	defer cli.Close()
 
-	// `ipv6_mode=dhcp` ALONE, with no `ipv6` beside it. That is the
-	// spelling the reference documents, and it is the one that has to
-	// survive: the plugin derives "this network has IPv6" from the mode
-	// on every path, including the one a replay takes.
+	// ipv6_mode=dhcp alone is the documented spelling, and the mode must imply IPv6 on the replay path too (#817).
 	harness.CreateNetwork(t, ctx, netName, "macvlan", map[string]string{"ipv6_mode": "dhcp"})
 	id, _, _ := harness.RunContainer(t, ctx, netName, "dh-itest-v6moderestart-ctr")
 

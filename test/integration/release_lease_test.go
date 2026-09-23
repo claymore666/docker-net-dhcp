@@ -19,30 +19,18 @@ import (
 	"github.com/claymore666/docker-net-dhcp/v2/test/integration/harness"
 )
 
-// releaseVisibleBudget bounds the wait for a release to reach the
-// server's lease DB.
-//
-// It bounds a POSITIVE event and is therefore spent only when something
-// is wrong: the loop below returns as soon as the entry is gone. RFC
-// 2131 section 4.4.6 defines no answer to a DHCPRELEASE, so what is
-// being waited on is dnsmasq receiving one datagram on a loopback-speed
-// veth and rewriting its lease file, not a round trip.
+// RFC 2131 section 4.4.6 defines no answer to a DHCPRELEASE, so the wait is for dnsmasq to rewrite its lease file.
+
+// releaseVisibleBudget bounds the wait for a release to reach the server's lease DB.
 const releaseVisibleBudget = 30 * time.Second
 
 const releaseVisiblePoll = 250 * time.Millisecond
 
-// leaseFileHolds reports whether dnsmasq's lease DB still has an entry
-// for addr.
-//
-// THE LEASE FILE AND NOT THE LOG TOKEN, and the difference is the whole
-// reason this helper exists. dnsmasq prints `DHCPRELEASE` on both
-// families, and on its v4 path it prints the same token for a release
-// it did not act on, with `ignored` appended to the same line
-// (rfc2131.c). So a token count says a release ARRIVED; only the lease
-// DB says the server gave the address up. Both families are read the
-// same way: a v4 line is `<expiry> <mac> <addr> <hostname> <client-id>`
-// and a v6 line is `<expiry> <iaid> <addr> <hostname> <duid>`, so the
-// address is the third field in either.
+// dnsmasq prints `DHCPRELEASE` on both families, and on v4 also for a release it ignored, with `ignored` on the same
+// line (rfc2131.c), so only the lease DB says the address was given up (#962). The address is the third field in a
+// v4 line (`<expiry> <mac> <addr> <hostname> <client-id>`) and a v6 line (`<expiry> <iaid> <addr> <hostname> <duid>`).
+
+// leaseFileHolds reports whether dnsmasq's lease DB still has an entry for addr.
 func leaseFileHolds(t *testing.T, leaseFile, addr string) bool {
 	t.Helper()
 	data, err := os.ReadFile(leaseFile)
@@ -72,23 +60,10 @@ func waitLeaseFile(t *testing.T, leaseFile, addr string, want bool) bool {
 	}
 }
 
-// TestReleaseLease_TheOptionIsRefusedAtCreateOrItIsNot pins the
-// option's domain at the only place an operator meets it.
-//
-// `on_remove` is accepted since #984, and it is accepted as a TIMED
-// release and not as a handler on `docker rm`: libnetwork deletes an
-// endpoint when its container STOPS, not when it is removed, so there
-// is no remove-time call to hang a release on. The value holds the
-// address for the restart window and hands it back at the deadline if
-// nothing claimed it, which is what
-// TestReleaseLease_OnRemoveHoldsTheAddressThenHandsItBack reads off the
-// server. Here it is only the domain: the value spells, and the network
-// exists afterwards.
-//
-// The refusing rows are the half that stops the acceptance from being
-// "accept everything": a create that succeeds for every string would
-// pass a test written only in the accepting direction, and an operator
-// would get a network that looks configured and behaves as `never`.
+// on_remove is a timed release since #984: libnetwork deletes an endpoint when its container stops, not when it is
+// removed, so there is no remove-time call to hang a release on.
+
+// TestReleaseLease_TheOptionIsRefusedAtCreateOrItIsNot checks which release_lease values network create accepts and refuses (#962, #984).
 func TestReleaseLease_TheOptionIsRefusedAtCreateOrItIsNot(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
@@ -109,9 +84,7 @@ func TestReleaseLease_TheOptionIsRefusedAtCreateOrItIsNot(t *testing.T) {
 		{name: "never is the default and is spellable", value: "never"},
 		{name: "on_remove is implemented", value: "on_remove"},
 		{name: "a typo is refused", value: "on_stpo", wantErr: true, mentions: "release_lease"},
-		// The near-miss #984 invites, and the one an operator reaches
-		// for after reading the option's name: the refusal has to name
-		// the value it did not take, not just the option.
+		// The refusal names the value it did not take (#984).
 		{name: "a near miss of the new value is refused", value: "on_delete", wantErr: true, mentions: "on_remove"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -146,26 +119,10 @@ func TestReleaseLease_TheOptionIsRefusedAtCreateOrItIsNot(t *testing.T) {
 	}
 }
 
-// TestReleaseLease_OnStopHandsTheAddressBack is #962 asserted where it
-// can actually be seen: the server's own lease database.
-//
-// # Why the lease DB and not the counter
-//
-// `releases_sent` says what the plugin believes it put on the wire.
-// Only dnsmasq says whether it gave the address up, and the two can
-// come apart in both directions -- a release the plugin counted and the
-// server ignored (dnsmasq prints `DHCPRELEASE ... ignored` and moves
-// nothing), or an address the server dropped for an unrelated reason.
-// The counter is read here as well, afterwards, and only as the
-// operator's view of the same event.
-//
-// # The MAC is the other half
-//
-// A released endpoint lays no tombstone, so its successor comes back
-// under a different MAC. That is the cost of the option and it is
-// asserted, because an implementation that released AND kept the
-// tombstone would hand the next container an address the server has
-// already put back in its pool.
+// releases_sent is the plugin's belief, and dnsmasq may ignore a counted release, so the server's lease DB is the
+// evidence. A released endpoint lays no tombstone, so its successor gets a new MAC (#962).
+
+// TestReleaseLease_OnStopHandsTheAddressBack checks that release_lease=on_stop returns the address in the server's lease DB (#962).
 func TestReleaseLease_OnStopHandsTheAddressBack(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
@@ -193,29 +150,14 @@ func TestReleaseLease_OnStopHandsTheAddressBack(t *testing.T) {
 	id, ip, mac := harness.RunContainer(t, ctx, netName, ctrName)
 	t.Logf("container %s holds ip=%s mac=%s", ctrName, ip, mac)
 
-	// The precondition and the positive control in one: an address the
-	// server never recorded cannot be seen to go back, and a lease file
-	// this test cannot read would produce the same "gone" as a release.
-	//
-	// IT WAITS FOR THE LEASE AND DELIBERATELY NOT FOR THE CLIENT. The
-	// lease this finds is the one CreateEndpoint's one-shot won, and
-	// the stop below may well arrive before the persistent client has
-	// attached or bound. That is not a flaw in the test, it is the
-	// case the option exists for, meaning `docker run --rm` and
-	// anything else short-lived, and while the release was asked of a
-	// running client it was also the case that could not work: this
-	// test went red because the client that was asked did not exist
-	// yet. The release is built from the lease record now, so the
-	// client's state does not enter into it.
+	// Waits for the one-shot's lease, not for the persistent client: the stop may arrive before that client exists, the
+	// `docker run --rm` case, and the release is built from the lease record (#962).
 	if !waitLeaseFile(t, fixture.LeaseFile(), ip, true) {
 		t.Fatalf("dnsmasq's lease DB has no entry for %s, so the assertion below cannot "+
 			"tell a release from a lease that was never recorded", ip)
 	}
 
-	// A counter window rather than two hand-rolled reads: the counters
-	// live in the plugin process, and a delta taken across a recycle
-	// would subtract two different processes' numbers and read as "no
-	// change" (#405).
+	// A delta across a plugin recycle would subtract two processes' numbers (#405).
 	w := harness.BeginCounterWindow(t, ctx, cli,
 		"releases_sent_v4", "release_failures_v4", "releases_sent_v6", "release_failures_v6")
 	releasesBefore := fixture.CountLogLines("DHCPRELEASE", ip)
@@ -236,8 +178,7 @@ func TestReleaseLease_OnStopHandsTheAddressBack(t *testing.T) {
 			"least 1", releaseLines, ip)
 	}
 
-	// The operator's view of the same event, read after the outside
-	// evidence and never instead of it.
+	// The operator's view, read after the outside evidence.
 	before, after := w.End()
 	t.Logf("across the stop the counters moved: releases_sent_v4 by %d, "+
 		"release_failures_v4 by %d, releases_sent_v6 by %d, release_failures_v6 by %d",
@@ -256,8 +197,7 @@ func TestReleaseLease_OnStopHandsTheAddressBack(t *testing.T) {
 		t.Errorf("the v6 pair moved by %d on a v4-only network", got)
 	}
 
-	// And the cost. No tombstone was laid, so the restart is a new
-	// endpoint with a new MAC asking for a new address.
+	// No tombstone was laid, so the restart is a new endpoint with a new MAC.
 	if err := cli.ContainerStart(ctx, id, container.StartOptions{}); err != nil {
 		t.Fatalf("ContainerStart: %v", err)
 	}
@@ -289,23 +229,10 @@ func TestReleaseLease_OnStopHandsTheAddressBack(t *testing.T) {
 	}
 }
 
-// TestReleaseLease_DefaultNetworksStillKeepTheirAddresses is the
-// preservation control for the whole option, and it pins the finding
-// that decided its shape.
-//
-// Two things are asserted about a network that does not set
-// `release_lease`, which is every network created before v2.1.1:
-//
-//   - neither release counter moves across a full stop/start cycle. A
-//     release folded from intent, or an option read with the wrong
-//     default, would move them here.
-//   - the MAC survives the stop, and `tombstones_consumed` moves. That
-//     is DELETE-ENDPOINT-RUNS-ON-STOP stated as a check: Docker tears
-//     the endpoint down when the container stops, and the tombstone
-//     written there is what the next start consumes. `docker rm` is
-//     never called in this test. It is why `on_remove` is a TIMED
-//     release (#984) and not a handler on `DeleteEndpoint`, and it is
-//     measured here rather than asserted in a comment.
+// Docker tears the endpoint down when the container stops, and the tombstone written there is what the next start
+// consumes; `docker rm` is never called here, which is why on_remove is a timed release (#984).
+
+// TestReleaseLease_DefaultNetworksStillKeepTheirAddresses checks that a network without release_lease sends no release and keeps its MAC across a stop (#962).
 func TestReleaseLease_DefaultNetworksStillKeepTheirAddresses(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
@@ -399,21 +326,11 @@ func TestReleaseLease_DefaultNetworksStillKeepTheirAddresses(t *testing.T) {
 	}
 }
 
-// TestReleaseLease_OnStopHandsTheV6AddressBackToo is the v6 half, and
-// it is a separate test because the two families release differently.
-//
-// RFC 9915 section 18.2.7: "The client MUST stop using all of the
-// leases being released before the client begins the Release message
-// exchange process. For an address, this means the address MUST have
-// been removed from the interface." So the v6 arm takes the address off
-// the container link first and sends nothing if that fails, while the
-// v4 arm leaves its address in place because RFC 2131 section 3.1(6)
-// identifies the binding by `ciaddr`. One arm can work with the other
-// broken, in either direction, and only a dual-stack endpoint shows it.
-//
-// The observer is again the server's lease DB, per family. dnsmasq
-// prints the token `DHCPRELEASE` on both paths, so a token count cannot
-// tell a v6 release from the v4 one beside it.
+// RFC 9915 section 18.2.7: the client MUST stop using a released address, so the v6 arm removes it from the link
+// first and sends nothing if that fails; the v4 arm keeps its address, since RFC 2131 section 3.1(6) identifies the
+// binding by ciaddr. dnsmasq prints `DHCPRELEASE` on both paths, so the lease DB is read per family (#962).
+
+// TestReleaseLease_OnStopHandsTheV6AddressBackToo checks that release_lease=on_stop returns both addresses of a dual-stack endpoint (#962).
 func TestReleaseLease_OnStopHandsTheV6AddressBackToo(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
@@ -449,10 +366,7 @@ func TestReleaseLease_OnStopHandsTheV6AddressBackToo(t *testing.T) {
 	t.Logf("container %s holds ip=%s v6=%s", ctrName, ip, v6)
 
 	for _, addr := range []string{ip, v6} {
-		// Same as the v4 test: this waits for the LEASE and not for the
-		// v6 client. A persistent DHCPv6 client that never bound inside
-		// the endpoint's life is exactly the shape this test used to go
-		// red on, and the release no longer needs one.
+		// Waits for the lease, not the v6 client, as in the v4 test (#962).
 		if !waitLeaseFile(t, fixture.LeaseFile(), addr, true) {
 			t.Fatalf("dnsmasq's lease DB has no entry for %s; a release for it could not "+
 				"be told from a lease that was never recorded", addr)
@@ -462,10 +376,7 @@ func TestReleaseLease_OnStopHandsTheV6AddressBackToo(t *testing.T) {
 	w := harness.BeginCounterWindow(t, ctx, cli,
 		"releases_sent_v4", "releases_sent_v6", "release_failures")
 
-	// Per family, because a bare `DHCPRELEASE` count cannot say which
-	// arm printed the line. The address makes the count specific, and
-	// these are read out on a green run so the lane states what the
-	// server was asked for and not only that the lease went away.
+	// Per family and per address, since a bare `DHCPRELEASE` count cannot say which arm printed it.
 	releasesBefore := map[string]int{
 		ip: fixture.CountLogLines("DHCPRELEASE", ip),
 		v6: fixture.CountLogLines("DHCPRELEASE", v6),

@@ -20,37 +20,12 @@ import (
 	"github.com/claymore666/docker-net-dhcp/v2/test/integration/harness"
 )
 
-// Server-selection tests for dhcp_servers (#111) and
-// dhcp_deny_servers (#669).
-//
-// These are the only tests in the suite that deliberately run TWO DHCP
-// servers on one broadcast domain. Everywhere else the harness works
-// hard to keep exactly one, because a race between servers makes every
-// address assertion ambiguous. Here the race IS the subject: the
-// feature exists to decide it, and against a single server a passing
-// test would prove nothing at all.
-//
-// Every assertion below is read from outside the plugin:
-//
-//   - WHICH server leased is read from the leased address. The two
-//     pools are disjoint (harness.BridgeChallengerPool*), and
-//     TestBridgeChallenger_AddressPlanIsUnambiguous keeps them that
-//     way, so the address names its issuer with no inference.
-//   - THAT a server did or did not serve a given container is read
-//     from that server's own dnsmasq log, by MAC.
-//
-// The health counters are checked too, but only as a second statement
-// about the same event — never as the primary evidence. A counter
-// proves the plugin's intent; the server's log proves the effect.
-//
-// The whole file is bridge-mode: it needs a real Linux bridge to hang
-// a second server off. The macvlan/ipvlan fixture is a point-to-point
-// veth pair with one server at the far end and cannot host a second
-// one. The selection logic itself is mode-independent — both
-// acquisition paths go through acquireWithPolicy — so mode is a
-// property of the fixture here, not of the feature.
+// Server selection for dhcp_servers (#111) and dhcp_deny_servers (#669) runs two DHCP servers on one bridge, the only
+// place the suite does. Which server leased is read from the address, since the pools are disjoint
+// (TestBridgeChallenger_AddressPlanIsUnambiguous), and each server's dnsmasq log says by MAC whom it served; the
+// counters are a second statement. Bridge mode only, as the macvlan fixture is a veth pair with one server, and both
+// acquisition paths go through acquireWithPolicy.
 
-// policyClient returns a docker client for the counter windows below.
 func policyClient(t *testing.T) *docker.Client {
 	t.Helper()
 	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
@@ -61,14 +36,9 @@ func policyClient(t *testing.T) *docker.Client {
 	return cli
 }
 
-// ackedIn reports whether a dnsmasq log contains a DHCPACK naming both
-// this address and this MAC — i.e. whether THIS server is the one that
-// completed the exchange.
-//
-// Matching on the ACK specifically, rather than on the MAC appearing
-// anywhere, matters: both servers see every DHCPDISCOVER on a shared
-// segment and both log it. A server that saw the discover and was
-// refused looks identical to the winner if you only grep for the MAC.
+// Both servers log every DHCPDISCOVER on a shared segment, so only the ACK names the winner.
+
+// ackedIn reports whether a dnsmasq log contains a DHCPACK naming both this address and this MAC.
 func ackedIn(logText, ip, mac string) bool {
 	for _, line := range strings.Split(logText, "\n") {
 		if !strings.Contains(line, "DHCPACK") {
@@ -81,19 +51,13 @@ func ackedIn(logText, ip, mac string) bool {
 	return false
 }
 
-// policyACKBudget bounds the wait for a server to flush the ACK it has
-// already sent. Generous relative to what it covers — the gap measured
-// here is well under a second — because the cost of it being too short
-// is a red on a healthy product, and the cost of it being long is paid
-// only on a run that was going to fail anyway.
+// policyACKBudget bounds the wait for a server to flush an ACK it already sent, a gap well under a second.
 const policyACKBudget = 15 * time.Second
 
-// bridgeServerIP is the primary bridge dnsmasq's address, which is what
-// a test passes to name it in a policy.
+// bridgeServerIP returns the primary bridge dnsmasq's address, as a policy names it.
 func bridgeServerIP() string { return strings.SplitN(harness.BridgeAddr, "/", 2)[0] }
 
-// assertLeasedBy checks, from both servers' logs and from the address
-// itself, that want (and only want) served this container.
+// assertLeasedBy checks from both servers' logs and the address that want, and only want, served this container.
 func assertLeasedBy(t *testing.T, want, ip, mac string) {
 	t.Helper()
 
@@ -120,30 +84,9 @@ func assertLeasedBy(t *testing.T, want, ip, mac string) {
 			ip, got, want)
 	}
 
-	// WAIT for the expected ACK before reading either log.
-	//
-	// Both servers log from their own processes, asynchronously to
-	// anything this test can observe: the address is visible in
-	// `docker inspect` as soon as CreateEndpoint's one-shot client is
-	// done, which is before the server has necessarily flushed the ACK
-	// it just sent. A single read raced that and failed on an address
-	// the pool check had already shown was correct — "no DHCPACK …
-	// though the address says it leased it", intermittently, on a
-	// different test each run.
-	//
-	// This is not a retry papering over a flaky product. It is the
-	// instrument the rest of this suite already uses for the same
-	// reason (see waitBridgeLogLines in recovery_daemon_kill_test.go);
-	// the single read was the defect. The assertion is unchanged: if
-	// the ACK never arrives, the wait expires and the same error fires.
-	//
-	// ORDER MATTERS, and it is the presence that is waited on. The
-	// second half of each case below is an ABSENCE — the losing server
-	// must NOT have ACKed — and an absence read too early is true of a
-	// log that simply has not been written yet. Waiting for the winner
-	// first means the losing server has had at least as long to write
-	// its own line, so the absence is read from a log that is known to
-	// be current.
+	// The address shows in `docker inspect` before the server has flushed its ACK, and a single read failed
+	// intermittently on a correct address; waiting for the winner first also means the loser's log is current before its
+	// absence is read (#669).
 	wantPrimary := want == primary
 	deadline := time.Now().Add(policyACKBudget)
 	var ackedByPrimary, ackedByChallenger bool
@@ -159,8 +102,7 @@ func assertLeasedBy(t *testing.T, want, ip, mac string) {
 		time.Sleep(100 * time.Millisecond)
 	}
 
-	// The server's own log is the outside evidence; the pool reading
-	// above is a shortcut that has to agree with it.
+	// The server's log is the evidence; the pool reading has to agree with it.
 	switch want {
 	case primary:
 		if !ackedByPrimary {
@@ -183,16 +125,10 @@ func assertLeasedBy(t *testing.T, want, ip, mac string) {
 	}
 }
 
-// runPolicyContainers starts n containers on netName and returns their
-// (ip, mac) pairs.
-//
-// n is 3 rather than 1 on purpose. With two servers answering, one
-// container landing on the named server is what an unpoliced race
-// produces roughly half the time. Three consecutive wins is not a
-// proof, but it is the difference between an assertion that can fail
-// and one that cannot: a policy that did nothing has a 1-in-8 chance
-// of surviving this, and the deterministic evidence (the losing
-// server's log carrying no ACK) has to hold for every one of them.
+// Three containers, since an unpoliced race puts one on the named server about half the time, and a policy that did
+// nothing survives three with a 1-in-8 chance (#111).
+
+// runPolicyContainers starts n containers on netName and returns their ip and mac pairs.
 func runPolicyContainers(t *testing.T, ctx context.Context, netName string, n int) [][2]string {
 	t.Helper()
 	out := make([][2]string, 0, n)
@@ -203,14 +139,7 @@ func runPolicyContainers(t *testing.T, ctx context.Context, netName string, n in
 	return out
 }
 
-// TestServerPolicy_PrefersTheNamedServer is the core #111 assertion:
-// with two servers answering, the one named in dhcp_servers is the one
-// that leases — in either direction.
-//
-// Both directions are tested because one alone cannot distinguish the
-// feature from luck. If only "prefer the challenger" were checked, a
-// bug that always picked the challenger regardless of configuration
-// would pass.
+// TestServerPolicy_PrefersTheNamedServer checks in both directions that the server named in dhcp_servers leases (#111).
 func TestServerPolicy_PrefersTheNamedServer(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
@@ -242,11 +171,7 @@ func TestServerPolicy_PrefersTheNamedServer(t *testing.T) {
 	}
 }
 
-// TestServerPolicy_DenyExcludesTheNamedServer is the #669 assertion:
-// the denied server never serves this network, and the other one does.
-//
-// Again in both directions — a deny-list that denied the wrong server,
-// or denied everything, would pass a single-direction test.
+// TestServerPolicy_DenyExcludesTheNamedServer checks in both directions that a denied server never serves the network (#669).
 func TestServerPolicy_DenyExcludesTheNamedServer(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
@@ -279,18 +204,11 @@ func TestServerPolicy_DenyExcludesTheNamedServer(t *testing.T) {
 	}
 }
 
-// TestServerPolicy_DenyBeatsPreferForTheSameServer is the regression
-// guard for dhcpcd's precedence rule, and it is the reason the plugin
-// subtracts the deny-list from the preference list at parse time
-// instead of emitting both directives.
-//
-// dhcpcd only consults its blacklist when no whitelist is configured
-// (10.3.2 src/dhcp.c:3181-3196). A network that set both and had both
-// passed through would therefore see the blacklist silently ignored —
-// and because the denied server is FIRST in the preference list here,
-// that bug has exactly one visible symptom: the container leases from
-// the server the operator denied. Nothing else in the suite would
-// notice.
+// dhcpcd consults its blacklist only when no whitelist is configured (10.3.2 src/dhcp.c:3181-3196), so the plugin
+// subtracts the deny-list from the preference list at parse time; with the denied server first, a dropped denial
+// leases from it (#669).
+
+// TestServerPolicy_DenyBeatsPreferForTheSameServer checks that a server both preferred and denied never leases (#669).
 func TestServerPolicy_DenyBeatsPreferForTheSameServer(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
@@ -305,8 +223,7 @@ func TestServerPolicy_DenyBeatsPreferForTheSameServer(t *testing.T) {
 	primary := bridgeServerIP()
 	netName := "dh-itest-deny-over-prefer"
 	harness.CreateNetwork(t, ctx, netName, "bridge", map[string]string{
-		// The denied server is the FIRST preference: if the denial were
-		// dropped, this is the server that would win.
+		// The denied server is the first preference, the one that would win if the denial were dropped.
 		"dhcp_servers":      primary + "," + harness.BridgeChallengerIP,
 		"dhcp_deny_servers": primary,
 	})
@@ -316,17 +233,10 @@ func TestServerPolicy_DenyBeatsPreferForTheSameServer(t *testing.T) {
 	t.Logf("✓ %s stayed denied despite being first in dhcp_servers", primary)
 }
 
-// TestServerPolicy_FallsBackToTheNextServer covers the ladder: the
-// first preference is an address nothing answers at, so acquisition
-// must move on to the second and succeed.
-//
-// lease_timeout is raised because the ladder DIVIDES the acquisition
-// budget rather than extending it — that is a deliberate property of
-// the feature (a preference list must not make `docker run` slower),
-// and it means two tiers at the 10s default would give each tier 5s.
-// This is not the test being loosened to pass: the default budget is
-// still what an unconfigured network gets, and a shorter per-tier
-// slice would test dhcpcd's retry timing rather than the fallback.
+// The ladder divides the acquisition budget, so a preference list does not slow `docker run`; lease_timeout is raised
+// so each of two tiers gets more than 5s of the 10s default (#111).
+
+// TestServerPolicy_FallsBackToTheNextServer checks that acquisition moves past a silent first preference to the second (#111).
 func TestServerPolicy_FallsBackToTheNextServer(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
@@ -364,15 +274,7 @@ func TestServerPolicy_FallsBackToTheNextServer(t *testing.T) {
 		harness.BridgeAbsentServerIP, harness.BridgeChallengerIP)
 }
 
-// TestServerPolicy_ExhaustedFailsClosed is the property that makes the
-// feature safe to use: when every server the network is allowed to use
-// is silent, the container does NOT start with an address from
-// somewhere else. A policy that widened under pressure would hand an
-// operator the one outcome they configured it to prevent.
-//
-// It also pins the counter that separates this from an ordinary DHCP
-// timeout. Both failures look identical in a log — "no lease in 10s" —
-// and they call for different operator action.
+// TestServerPolicy_ExhaustedFailsClosed checks that no container starts with an address when every allowed server is silent (#111).
 func TestServerPolicy_ExhaustedFailsClosed(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
@@ -387,9 +289,7 @@ func TestServerPolicy_ExhaustedFailsClosed(t *testing.T) {
 
 	netName := "dh-itest-server-exhausted"
 	harness.CreateNetwork(t, ctx, netName, "bridge", map[string]string{
-		// Both live servers are on this segment and both would answer
-		// an unrestricted DISCOVER. Only an address nothing answers at
-		// is allowed.
+		// Both live servers would answer an unrestricted DISCOVER, so only an address nothing answers at is allowed.
 		"dhcp_servers": harness.BridgeAbsentServerIP,
 	})
 
@@ -428,9 +328,7 @@ func TestServerPolicy_ExhaustedFailsClosed(t *testing.T) {
 		t.Errorf("dhcp_server_policy_exhausted moved by %d, want >= 1: without it this "+
 			"failure is indistinguishable from a broken DHCP segment", d)
 	}
-	// A single-entry preference list has no next tier, so nothing was
-	// fallen back FROM. Pinning it at zero keeps the two counters
-	// meaning different things.
+	// A single-entry list has no next tier, so the fallback counter stays zero.
 	if d := after.DHCPServerTierFallbacks - before.DHCPServerTierFallbacks; d != 0 {
 		t.Errorf("dhcp_server_tier_fallbacks moved by %d, want 0: there was only one "+
 			"preference, so there was nothing to fall back to", d)

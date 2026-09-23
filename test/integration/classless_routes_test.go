@@ -14,17 +14,10 @@ import (
 	"github.com/claymore666/docker-net-dhcp/v2/test/integration/harness"
 )
 
-// TestClasslessStaticRoutes_AppliedFromDHCP is the integration proof for
-// #260: a DHCP server that hands out a classless static route (option
-// 121, RFC 3442) should have that route applied inside the container.
-//
-// The fixture's dnsmasq pushes TestClasslessRoute via TestClasslessRouteGW
-// only to clients tagged with vendor_class = TestClasslessVendorClass, so
-// a container on a network that opts into that vendor class must end up
-// with the route in its table. This exercises the full path the unit
-// tests can't reach: the one-shot lease's Routes ride the joinHint and
-// are emitted as StaticRoutes in the Join response, which libnetwork then
-// programs into the container netns.
+// The fixture sends option 121 only to vendor class TestClasslessVendorClass; the route rides the one-shot lease's
+// joinHint into Join's StaticRoutes, which libnetwork programs (#260, RFC 3442).
+
+// TestClasslessStaticRoutes_AppliedFromDHCP checks that an option 121 route from the server is applied in the container.
 func TestClasslessStaticRoutes_AppliedFromDHCP(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
@@ -52,11 +45,7 @@ func TestClasslessStaticRoutes_AppliedFromDHCP(t *testing.T) {
 	t.Logf("classless route applied: %s", strings.TrimSpace(out))
 }
 
-// TestClasslessStaticRoutes_AbsentWithoutOptIn is the negative side: a
-// default-config container (no matching vendor class) is not tagged, so
-// dnsmasq never sends option 121 and the route must be absent. Guards
-// against the fixture leaking the route to every client and against the
-// plugin inventing routes from nowhere.
+// TestClasslessStaticRoutes_AbsentWithoutOptIn checks that a container outside the vendor class gets no option 121 route (#260).
 func TestClasslessStaticRoutes_AbsentWithoutOptIn(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
@@ -81,10 +70,7 @@ func TestClasslessStaticRoutes_AbsentWithoutOptIn(t *testing.T) {
 	}
 }
 
-// routeGateway returns the `via` gateway of the route to dest in
-// `ip route` output, failing the test if the route is absent. Matches on
-// the exact destination field (fields[0]) to avoid the substring
-// false-matches that bit the default-route helper (#130).
+// routeGateway returns the `via` gateway of the route to dest, matching the destination field exactly (#130).
 func routeGateway(t *testing.T, out, dest string) string {
 	t.Helper()
 	for _, line := range strings.Split(out, "\n") {
@@ -97,8 +83,7 @@ func routeGateway(t *testing.T, out, dest string) string {
 	return ""
 }
 
-// hasRoute reports whether `ip route` output contains any route whose
-// destination field is exactly dest.
+// hasRoute reports whether `ip route` output has a route whose destination is exactly dest.
 func hasRoute(out, dest string) bool {
 	for _, line := range strings.Split(out, "\n") {
 		if fields := strings.Fields(line); len(fields) >= 1 && fields[0] == dest {

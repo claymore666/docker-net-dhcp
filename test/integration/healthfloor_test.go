@@ -16,64 +16,23 @@ import (
 	"github.com/claymore666/docker-net-dhcp/v2/test/integration/harness"
 )
 
-// healthFloorBudget is how long the floor waits for /Plugin.Health to
-// answer at the end of a suite. Generous because the last test to run
-// is not fixed: `go test` ordering puts whatever it likes last, and
-// some tests recycle the plugin or the daemon, after which the socket
-// takes a moment to come back.
+// healthFloorBudget is how long the floor waits for /Plugin.Health at the end of a suite, after tests that may recycle the plugin or the daemon.
 const healthFloorBudget = 30 * time.Second
 
-// checkHealthFloor asks the plugin whether anything went wrong during
-// the run, and returns a non-zero exit code if something did.
-//
-// This is the complement to assertNoNewHealthFaults in
-// failure_test.go, not a duplicate of it. Those are per-test DELTAS —
-// "did this test break something". This is an absolute FLOOR — "is
-// the plugin OK". A delta only catches a fault that happens to fall
-// inside a test's own bracket; the floor catches one that no test
-// bracketed, including a fault raised during fixture setup or between
-// tests. #374 replaced four absolute `!h.Healthy` assertions with
-// deltas, which was right, but left the suite with no floor at all.
-//
-// Two honest limits, stated here rather than discovered later:
-//
-//   - The counters reset when the plugin process does, and
-//     TestRecovery_PluginDisableEnable_PreservesEndpoint and the
-//     daemon-restart test both recycle it. So this is "no fault since the last plugin
-//     restart in this run", not "no fault in the whole run". The
-//     failure suite has no such test, so there it does cover
-//     everything. The per-test deltas cover what the reset erases.
-//     Since #385 the verdict says which of the two it is instead of
-//     printing an unqualified "clean" — see FloorCleanLine. Making the
-//     floor actually span the whole run is the remaining half of #385.
-//   - It asserts h.Healthy since #421, alongside every counter behind
-//     that flag (floorCounters is the list; it is four today, and the
-//     count is deliberately not repeated in prose). All of them are
-//     now fatal — the benign paths that
-//     used to be folded into recovery_failed are counted separately as
-//     recovery_deferred (#383) and recovery_aborted_container_gone
-//     (#376) — and the flag is checked as well as the table, so a
-//     further healthy-affecting counter added to the plugin cannot slip
-//     past this suite's mirror of it.
-//
-// floorHealthBaseline / floorLogBaseline are the plugin's counters and
-// log length when this test process started, set once by TestMain.
-//
-// Package-level rather than plumbed: the floor runs after m.Run() has
-// returned, so there is no call stack to thread them through, and the
-// same reasoning already applies to conflictAllowance in the harness.
-//
-// Both zero values mean "no baseline", which is exactly the old
-// behaviour — judging the plugin's whole life. That is the safe
-// fallback: it can only widen what gets judged.
+// checkHealthFloor is the absolute floor beside the per-test deltas of assertNoNewHealthFaults, which #374 left the
+// suite without. The counters reset when the plugin does, so it covers the stretch since the last restart and says so
+// (FloorCleanLine, #385); it asserts h.Healthy and every counter in floorCounters (#421), with the benign recovery
+// paths counted apart (#376, #383). Package-level because the floor runs after m.Run() returns; zero means no
+// baseline and judges the plugin's whole life (#584).
+
+// floorHealthBaseline and floorLogBaseline are the plugin's counters and log length when TestMain started.
 var (
 	floorHealthBaseline *harness.HealthResponse
 	floorLogBaseline    int64
 )
 
 func checkHealthFloor(suite time.Duration) int {
-	// TestMain's own ctx carries a 60s setup timeout and expired long
-	// before m.Run() returned; the floor needs a fresh one.
+	// TestMain's own ctx carries a 60s setup timeout that has expired by now.
 	ctx, cancel := context.WithTimeout(context.Background(), healthFloorBudget+15*time.Second)
 	defer cancel()
 
@@ -100,56 +59,26 @@ func checkHealthFloor(suite time.Duration) int {
 		time.Sleep(500 * time.Millisecond)
 	}
 	if lastErr != nil {
-		// Deliberately fatal rather than a skip. A floor that goes
-		// quiet exactly when the plugin is unreachable is a floor
-		// that reports green on the worst runs — the plugin having
-		// died is itself the thing worth failing on. If a test leaves
-		// the plugin disabled on purpose, it has to re-enable it,
-		// which every such test already does in a cleanup.
+		// Fatal, not a skip: an unreachable plugin is itself worth failing on, and tests that disable it re-enable it in cleanup.
 		fmt.Fprintf(os.Stderr,
 			"HEALTH FLOOR: /Plugin.Health did not answer within %v: %v\n", healthFloorBudget, lastErr)
 		return 1
 	}
 
-	// Printed before the verdict, and on every run. The census reads the
-	// whole log, so unlike the counters below it is not blinded by a
-	// mid-suite plugin restart — see JoinFailureCensus.
-	//
-	// And now judged, not merely printed. Run 30699310641 is why: three
-	// Joins failed, three containers were left without a renewal client,
-	// and the run went green — because join_start_failures resets with
-	// the plugin process and the floor below only sees the last ~12% of
-	// a run. The census reads the whole log and had the number the whole
-	// time. A measurement nobody fails on is a measurement that prevents
-	// nothing (#385, #406).
-	// Both censuses read the whole log, so unlike the counters below
-	// they are not blinded by a mid-suite plugin restart. The Join half
-	// already worked this way; extending it to the other two
-	// healthy-affecting counters is the remaining half of #385. Their
-	// increments each sit next to a distinct log line, and the log
-	// spans the run while the counters span only the last restart —
-	// 10% of one recent run.
+	// The censuses read the whole log, so a mid-suite plugin restart does not blind them: run 30699310641 went green with
+	// three failed Joins because join_start_failures reset with the plugin and the floor saw the last ~12% of the run
+	// (#385, #406).
 	censusFailures, faultCount, conflictsInLog := printCensuses(ctx)
 
-	// Printed before the verdict either way. The census answers "did
-	// anything break"; this answers "did the #406 grace carry attaches
-	// that would otherwise have broken", which a clean census cannot —
-	// these failures are intermittent, so a zero can mean the fix
-	// worked or that the condition never arose, and only this
-	// distinguishes them.
+	// Whether the #406 grace carried attaches that would otherwise have failed, which a clean census cannot say.
 	fmt.Fprint(os.Stderr, harness.AttachGraceLine(h, censusFailures))
 
-	// Same question for the #524 check: did it run at all? A green run
-	// with address_conflicts=0 says nothing until this does.
+	// Whether the #524 check ran at all.
 	fmt.Fprint(os.Stderr, harness.ACDCensusLine(h))
 
 	findings := harness.CheckHealthFloor(h)
 
-	// The census above printed whether the check ran; this is what acts
-	// on it (#551). Printing alone is what let every run between #527
-	// and #550 report "2 probe(s) could not run at all" and stay green.
-	// Appended to the same findings list so it prints, counts and fails
-	// through the existing path rather than a parallel one.
+	// Every run between #527 and #550 printed "2 probe(s) could not run at all" and stayed green (#551).
 	findings = append(findings,
 		harness.ACDCensusFindings(h, harness.AllowedARPSendFailures(), harness.AllowedUnprobedLeases(),
 			harness.AllowedStagedConflicts(),
@@ -185,8 +114,7 @@ func checkHealthFloor(suite time.Duration) int {
 		if f.Fatal {
 			verdict = "FATAL"
 		}
-		// An absent counter has no value to print, and printing its
-		// zero is exactly the confusion this finding exists to end.
+		// An absent counter has no value to print, and a printed zero is the confusion this finding ends.
 		if f.Absent {
 			fmt.Fprintf(os.Stderr, "  %s %s=<not reported>: %s\n", verdict, f.Counter, f.Why)
 			continue
@@ -204,26 +132,16 @@ func checkHealthFloor(suite time.Duration) int {
 	return 0
 }
 
-// floorEvidenceTailLines is how much trailing context the floor prints
-// after the fault lines. Enough to show the run winding down around the
-// last fault; short enough that the fault lines stay the thing you see.
+// floorEvidenceTailLines is how much trailing plugin log the floor prints after the fault lines.
 const floorEvidenceTailLines = 80
 
-// printFloorEvidence writes the plugin's own account of the run to
-// stderr, next to the counters the floor just objected to.
-//
-// A counter is the symptom. The log lines behind it are the evidence,
-// and on CI they live on an ephemeral runner that is destroyed with the
-// job — so a floor failure that prints only a number is unactionable by
-// the time anyone reads it (#385). Printed for warnings as well as
-// fatal findings: a non-fatal finding is exactly the case where someone
-// has to judge whether it matters, which needs the log.
+// CI runners are destroyed with the job, so a floor failure without the log lines is unactionable (#385).
+
+// printFloorEvidence writes the plugin's log to stderr beside the counters the floor objected to.
 func printFloorEvidence(ctx context.Context) {
 	logPath, data, err := harness.PluginLog(ctx)
 	if err != nil {
-		// Not fatal on its own. The floor's verdict is decided by the
-		// counters; missing evidence makes that verdict harder to act
-		// on, it does not make it wrong.
+		// The counters decide the verdict; missing evidence does not make it wrong.
 		fmt.Fprintf(os.Stderr, "  (plugin log unavailable: %v)\n", err)
 		return
 	}
@@ -231,51 +149,25 @@ func printFloorEvidence(ctx context.Context) {
 	fmt.Fprint(os.Stderr, harness.FloorEvidence(data, floorEvidenceTailLines))
 }
 
-// printJoinCensus reports how many Joins failed to start a persistent
-// client across the whole run, grouped by cause.
-//
-// Silent when there were none, so it costs a healthy run nothing. When
-// there were some, it is the only place that says so: the health floor's
-// counters reset with the plugin process and the main suite recycles it
-// three times, so a run can carry a dozen of these and still report a
-// single-digit counter (#385). Sizing the Join budget for the host
-// (#401) needs the real number, on every run, not the tail of it after
-// something else has already gone red.
-// Returns how many Join-start failures the log recorded, and how many
-// other healthy-affecting faults it recorded. The floor fails on either.
-//
-// One read serves both censuses: the log is the single instrument that
-// spans the whole run, and reading it twice would invite the two
-// verdicts to disagree about which run they are describing.
+// The main suite recycles the plugin three times, so a run can carry a dozen Join-start failures and report a
+// single-digit counter; sizing the Join budget needs the real number (#385, #401). One read serves both censuses.
+
+// printCensuses reports the whole run's Join-start failures and other healthy-affecting faults from the plugin log.
 func printCensuses(ctx context.Context) (joinFailures, otherFaults, probeFailuresInLog int) {
 	_, data, err := harness.PluginLog(ctx)
 	if err != nil {
-		// A log we cannot read is reported as a fault rather than
-		// passed over. It used to be quiet here because the census was
-		// only a diagnostic; now that the run's verdict depends on it,
-		// silence would mean an unreadable log reads as a clean one —
-		// the failure mode this whole issue is about.
+		// Now that the verdict depends on the census, an unreadable log must not read as a clean one (#385).
 		fmt.Fprintf(os.Stderr,
 			"HEALTH FLOOR: could not read the plugin log to count faults: %v\n"+
 				"  Treating that as a fault: the log is the only instrument that spans the\n"+
 				"  whole run, so without it this run has no verdict to give (#385).\n", err)
-		// The 1 above already fails the run, so the 0 here cannot be
-		// mistaken for "no probe failures" — nothing downstream gets to
-		// treat this as a clean census.
 		return 1, 0, 0
 	}
 	fmt.Fprint(os.Stderr, harness.JoinFailureCensus(data))
 	faults, report := harness.FaultCensus(data)
 	fmt.Fprint(os.Stderr, report)
-	// The join and fault censuses stay WHOLE-LOG on purpose. Neither has
-	// a declared allowance, so a fault carried over from an earlier
-	// process is a fault either way and re-reporting it costs nothing —
-	// whereas narrowing them would give back the restart-blindness #385
-	// closed.
-	//
-	// The ACD census is the one that must be scoped, because it is the
-	// only one judged against allowances that a test process declares
-	// and cannot carry across an exec.
+	// The join and fault censuses stay whole-log (#385); the ACD census is scoped because it is judged against
+	// allowances a test process declares and cannot carry across an exec.
 	return harness.JoinFailureCount(data), faults,
 		harness.ConflictsInLog(harness.LogSince(data, floorLogBaseline))
 }

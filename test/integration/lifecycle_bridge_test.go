@@ -14,20 +14,7 @@ import (
 	"github.com/claymore666/docker-net-dhcp/v2/test/integration/harness"
 )
 
-// TestLifecycleBridge_GoldenPath is the bridge-mode counterpart to
-// TestLifecycleMacvlan_GoldenPath. The plugin's bridge mode predates
-// the macvlan/ipvlan additions and goes through a structurally
-// different code path: per-endpoint veth pair, host side attached to
-// a user-provided Linux bridge, container side moved into the
-// container netns. dhcpcd still runs in the container netns, but the
-// DHCP server it talks to here is the second dnsmasq the bridge
-// fixture starts on the bridge interface (192.168.100/24, distinct
-// from the macvlan path's 192.168.99/24 to avoid lease cross-talk).
-//
-// Exercises: CreateNetwork (mode=bridge branch with bridge-link
-// validation), createBridgeEndpoint, dhcpManager.Start over the
-// host-side veth, Join (move container-side veth into netns), Leave,
-// DeleteEndpoint (bridge cleanup branch), DeleteNetwork.
+// TestLifecycleBridge_GoldenPath creates a bridge-mode network, runs a container on it and removes both.
 func TestLifecycleBridge_GoldenPath(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
@@ -49,11 +36,7 @@ func TestLifecycleBridge_GoldenPath(t *testing.T) {
 	ip := harness.AssertBridgeIP(t, ipv4)
 	t.Logf("✓ container IP %s falls in bridge DHCP pool", ip)
 
-	// Bridge mode names the in-container interface after the bridge
-	// (DstPrefix=opts.Bridge in pkg/plugin/network.go), not "eth0",
-	// so we check `ip -4 addr` without naming the link. The IP being
-	// configured on *some* interface inside the container netns is
-	// the real invariant.
+	// Bridge mode names the container interface after the bridge (DstPrefix in pkg/plugin/network.go), not eth0.
 	out := harness.ExecOutput(t, ctx, id, "ip", "-4", "addr")
 	if !strings.Contains(out, ipv4) {
 		t.Errorf("no interface inside container reports docker-inspect IP %q\nactual:\n%s", ipv4, out)
