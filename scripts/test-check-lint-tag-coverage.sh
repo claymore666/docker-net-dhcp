@@ -443,7 +443,7 @@ awk '
 }
 { print }' "$GATE" > "$mut_word"
 if ! cmp -s "$GATE" "$mut_word" && bash -n "$mut_word" 2>/dev/null &&
-   ! grep -v '^[[:space:]]*#' "$mut_word" | grep -q shell_simple_commands; then
+   ! grep -v '^[[:space:]]*#' "$mut_word" | grep shell_simple_commands >/dev/null; then
     ok "mutant D built and really restores the word match"
     repo m5; go_plain; go_tagged integration
     wf 'echo staticcheck ./...' 'staticcheck -tags integration ./...'; track
