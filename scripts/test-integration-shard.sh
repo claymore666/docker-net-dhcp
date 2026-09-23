@@ -194,7 +194,7 @@ placement() { # <label> <tree> <want exit> [<name the refusal must print>]
     err=$(bash "$2/scripts/integration-shard.sh" 1 1 main 2>&1 >/dev/null); rc=$?
     if [ "$rc" != "$3" ]; then
         no "placement: $1 exited $rc, want $3: $err"
-    elif [ -n "${4:-}" ] && ! printf '%s' "$err" | grep -qF -- "$4"; then
+    elif [ -n "${4:-}" ] && ! printf '%s' "$err" | grep -F -- "$4" >/dev/null; then
         no "placement: $1 exited $rc but did not name $4: $err"
     else
         ok "placement: $1 exits $3${4:+ and names $4}"
@@ -280,7 +280,7 @@ d=$(scratch empty)
 find "$d/test/integration" -name '*_test.go' -delete
 placement "a tree with no Test function at all" "$d" 2 "no Test function found"
 err=$(bash "$d/scripts/integration-shard.sh" 1 1 main 2>&1)
-if printf '%s' "$err" | grep -qF "suite tests found"; then
+if printf '%s' "$err" | grep -F "suite tests found" >/dev/null; then
     no "placement: the empty enumeration fell through to the roster refusal instead of refusing first"
 else
     ok "placement: the empty enumeration refuses before the roster is consulted"
