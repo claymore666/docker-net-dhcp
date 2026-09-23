@@ -43,12 +43,8 @@ func newFakeRecovery() *fakeRecovery {
 	return &fakeRecovery{flipAt: -1, failAt: -1, abortAt: -1, unreachableFrom: -1, verified: -1}
 }
 
-// succeedsAt, failsAt and abortsAt are the three ends one rebuild can
-// reach, named so a case cannot accidentally describe a plugin that does
-// two of them. failsAt and abortsAt are the classifier's two arms
-// (pkg/plugin/plugin.go:2961 and pkg/plugin/plugin.go:2955) and they
-// mean opposite things to a
-// reader, so each is driven on its own.
+// succeedsAt, failsAt and abortsAt are the three ends one rebuild can reach; failsAt and abortsAt are the
+// classifier's two arms (pkg/plugin/plugin.go:1258 and pkg/plugin/plugin.go:1252), each driven on its own (#376).
 func (f *fakeRecovery) succeedsAt(d time.Duration) *fakeRecovery { f.flipAt = d; return f }
 func (f *fakeRecovery) failsAt(d time.Duration) *fakeRecovery    { f.failAt = d; return f }
 func (f *fakeRecovery) abortsAt(d time.Duration) *fakeRecovery   { f.abortAt = d; return f }
@@ -340,15 +336,9 @@ func TestRecoveryRoutes_NamesEveryRoute(t *testing.T) {
 	}
 }
 
-// The classifier's OTHER arm, driven on its own. A recycle that records
-// recovery_aborted_container_gone is one where a Start failed and the
-// container was gone when the plugin looked afterwards
-// (pkg/plugin/plugin.go:2955): the endpoint is not coming back and
-// nothing is pending. A verdict keyed on recovery_failed alone reports
-// that as a rebuild still in flight, which sends its reader looking for
-// a hang that is not there — and the counters printed beside it say
-// nothing, because the reader has just been told which sentence to
-// believe.
+// recovery_aborted_container_gone means a Start failed and the container was gone when the plugin looked
+// (pkg/plugin/plugin.go:1252), so nothing is pending; a verdict keyed on recovery_failed alone would call it a
+// rebuild still in flight (#376).
 func TestAwaitRecoveryRebuild_NamesTheContainerGoneArm(t *testing.T) {
 	f := newFakeRecovery().abortsAt(awaitTimeoutDefault + recoveryPerNetworkTimeoutDefault)
 	h, ok := awaitRecoveryRebuild(discardf, "a rebuild", f.verify, f.poll)

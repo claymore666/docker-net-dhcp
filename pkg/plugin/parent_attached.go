@@ -3,18 +3,7 @@
 
 package plugin
 
-// This file implements the macvlan and ipvlan attachment modes. Both
-// share the same lifecycle: a child sub-interface is created on a host
-// parent NIC, an initial DHCP lease is acquired in the host netns,
-// libnetwork moves the link into the container netns. The only
-// per-mode difference is the netlink link type and whether the child
-// can carry a distinct MAC.
-//
-// ipvlan support inspired by @LANCommander's fork
-// (LANCommander/docker-net-dhcp), which independently added both
-// modes side-by-side. Our implementation differs in keeping a separate
-// `parent` driver option (instead of overloading `bridge`) and in
-// using MAC-based link rediscovery instead of ifindex-based.
+// ipvlan support was inspired by LANCommander/docker-net-dhcp, which added both modes side by side (#46).
 
 import (
 	"bytes"
@@ -33,10 +22,6 @@ import (
 	"github.com/claymore666/docker-net-dhcp/v2/pkg/util"
 )
 
-// subLinkName returns the host-side child link name for an endpoint.
-// Mirrors the prefix used for the bridge-mode veth so existing log/diag
-// patterns still apply. Used for both macvlan and ipvlan children.
-// Defensive against short IDs (see vethPairNames) — never panics.
 func subLinkName(endpointID string) string {
 	prefix := endpointID
 	if len(endpointID) > 12 {
@@ -45,10 +30,6 @@ func subLinkName(endpointID string) string {
 	return "dh-" + prefix
 }
 
-// validateParentForChild ensures the parent NIC exists, is up, and is
-// itself a suitable parent for a macvlan/ipvlan child (i.e. not already
-// a bridge or another macvlan/ipvlan). We do not change the parent's
-// state — the host's NIC config is off-limits.
 func validateParentForChild(name string) (netlink.Link, error) {
 	link, err := nlLinkByName(name)
 	if err != nil {
@@ -64,10 +45,8 @@ func validateParentForChild(name string) (netlink.Link, error) {
 	return link, nil
 }
 
-// newChildLink builds the right netlink.Link for the requested mode.
-// macvlan submode is "bridge" so children on the same parent can talk
-// to each other. ipvlan submode is L2 so it bridges (rather than
-// L3-routes) packets — required for DHCP since DHCP needs L2 broadcast.
+// newChildLink uses macvlan bridge mode so children on one parent reach each other, and ipvlan L2 so DHCP broadcasts
+// pass (#905).
 func newChildLink(mode string, la netlink.LinkAttrs) netlink.Link {
 	if mode == ModeIPvlan {
 		return &netlink.IPVlan{LinkAttrs: la, Mode: netlink.IPVLAN_MODE_L2}
@@ -75,33 +54,9 @@ func newChildLink(mode string, la netlink.LinkAttrs) netlink.Link {
 	return &netlink.Macvlan{LinkAttrs: la, Mode: netlink.MACVLAN_MODE_BRIDGE}
 }
 
-// explainChildLinkAdd turns the kernel's bare EBUSY on child-link
-// creation into the sentence that answers it.
-//
-// macvlan and ipvlan children are MUTUALLY EXCLUSIVE on one parent: both
-// claim the parent netdev's single receive handler, and the second kind
-// to ask is refused with EBUSY. Many children of the SAME kind are fine,
-// and removing the last child of one kind frees the parent for the
-// other. Verified directly against the kernel, both directions.
-//
-// Left as a bare errno this is close to undiagnosable. "failed to create
-// ipvlan link: device or resource busy" says nothing about the macvlan
-// network next to it, and an operator reading it has no reason to
-// suspect a different network is the cause. It cost this project a
-// weekly cross-check failure that was first blamed on the runner image
-// (#486), and both directions of it are in the CI record: an ipvlan
-// endpoint refused while a macvlan child was live, and a macvlan
-// validate_dhcp probe refused while an ipvlan child was live.
-//
-// Deliberately NOT a retry. Where this is teardown lag it would go away
-// on its own, but where the operator really is running both kinds on one
-// NIC it is permanent, and retrying a permanent condition only delays a
-// confusing error — the same trade #486 called out. Naming the cause
-// serves both cases: the transient one says what to wait for, the
-// permanent one says what to change.
-//
-// The parent is inspected rather than guessed, so the message can name
-// the kind actually in the way. Only reached on the error path.
+// explainChildLinkAdd names the kind in the way when the kernel refuses a child with EBUSY: macvlan and ipvlan both
+// claim the parent's single rx_handler, so the second kind is refused while same-kind children coexist (#486).
+// Not a retry, since two kinds on one NIC is permanent.
 func explainChildLinkAdd(err error, mode, parent string, parentIndex int) error {
 	if !errors.Is(err, unix.EBUSY) {
 		return fmt.Errorf("failed to create %v link: %w", mode, err)
@@ -109,21 +64,13 @@ func explainChildLinkAdd(err error, mode, parent string, parentIndex int) error 
 
 	occupant, known := childLinkKind(parentIndex)
 	if !known {
-		// The link table could not be read, so nothing is known about
-		// what the parent carries. Said out loud rather than folded
-		// into the branch below: "nothing of the other kind is there"
-		// and "the question could not be asked" are different answers
-		// and want different next steps from the operator (#802).
+		// An unreadable link table is reported apart from a parent that carries neither kind (#802).
 		return fmt.Errorf("failed to create %v link on %q: %w — the parent would not "+
 			"accept another child, and its link table could not be read, so whether it "+
 			"already carries %v children is unknown; check with `ip -d link show` and "+
 			"retry", mode, parent, err, otherChildMode(mode))
 	}
 	if occupant == "" || occupant == mode {
-		// EBUSY with nothing of the other kind visible: the blocker has
-		// already gone (a teardown that completed between the refusal
-		// and this lookup) or lives somewhere this scan cannot see.
-		// Say what is known and no more.
 		return fmt.Errorf("failed to create %v link on %q: %w — the parent would not "+
 			"accept another child; if a %v network is being torn down on the same "+
 			"parent, retry once it has finished", mode, parent, err, otherChildMode(mode))
@@ -136,18 +83,7 @@ func explainChildLinkAdd(err error, mode, parent string, parentIndex int) error 
 		mode, parent, err, parent, occupant, mode)
 }
 
-// childLinkKind reports the kind of parent-attached child already on
-// this parent — "macvlan", "ipvlan", or "" if it carries neither — and
-// whether the link table could be read at all.
-//
-// THE SECOND RETURN IS THE FIX, NOT THE DUMP TOLERANCE (#802). A
-// `string` return cannot express "I could not tell": the dump error
-// used to come back as "", which is the caller's encoding for "this
-// parent carries neither kind", so a transient netlink failure made a
-// mode-collision guard report the parent as free. Name the opposite
-// failure: refusing a legitimate create would be loud and
-// self-correcting; admitting an illegitimate one is silent and lands as
-// a kernel EBUSY the operator has to decode.
+// childLinkKind reports the child kind on this parent and whether the link table could be read (#802).
 func childLinkKind(parentIndex int) (kind string, known bool) {
 	links, err := util.DumpResult(nlLinkList())
 	if err != nil {
@@ -167,7 +103,6 @@ func childLinkKind(parentIndex int) (kind string, known bool) {
 	return "", true
 }
 
-// otherChildMode names the kind that would conflict with this one.
 func otherChildMode(mode string) string {
 	if mode == ModeIPvlan {
 		return ModeMacvlan
@@ -175,62 +110,16 @@ func otherChildMode(mode string) string {
 	return ModeIPvlan
 }
 
-// childLinkUpBudget bounds the wait for a child link's hardware address
-// to become free. See linkUpAwaitingAddress.
-//
-// The thing being waited for is Docker completing a DeleteEndpoint it
-// has already begun, which is hundreds of milliseconds. This sits well
-// inside the engine's own endpoint-creation patience, so a wait that
-// does expire still surfaces as the plugin's error rather than as an
-// engine timeout with no explanation.
+// childLinkUpBudget covers Docker finishing a DeleteEndpoint it has begun, within the engine's creation patience
+// (#408).
 const childLinkUpBudget = 3 * time.Second
 
-// childLinkUpInterval paces the retries within that budget.
 const childLinkUpInterval = 150 * time.Millisecond
 
-// linkUpAwaitingAddress brings a child link up, waiting out the window
-// where its hardware address is still held by the link it replaces.
-//
-// The kernel refuses to bring up a macvlan child whose address is
-// already live on the parent — including the parent's own address. On
-// restart the plugin deliberately re-applies the previous endpoint's MAC
-// (that is how the lease comes back), so if DeleteEndpoint has not yet
-// removed the old child, LinkSetUp returns EADDRINUSE and the whole
-// restart fails:
-//
-//	Cannot restart container <id>: failed to set up container networking:
-//	  ... failed to set macvlan link up: address already in use
-//
-// That is a user-visible restart failure, not a degradation (#408). It
-// went unseen because the restart tests used containers that ignored
-// SIGTERM and so took Docker's full 10s stop grace, by which time the
-// old link was long gone. Containers that handle SIGTERM promptly —
-// most well-behaved images — restart fast enough to hit it.
-//
-// The address frees itself once DeleteEndpoint lands, so waiting is the
-// fix. There is deliberately NO fallback to a different address: the
-// point of re-applying the tombstoned MAC is that this exact address is
-// what brings the lease back, and coming up on a different one is the
-// failure the feature exists to prevent. If the budget expires, failing
-// is correct.
-//
-// Retrying on the kernel's answer rather than scanning for the old link
-// is also deliberate. A child Docker has already moved into a netns that
-// is being destroyed still holds the address on the parent's port and
-// does not appear in a host-side link list, so a scan would report
-// "free" and the LinkSetUp would still fail.
-// Returns whether it had to wait — i.e. whether the window this
-// function exists for actually arose. A caller with access to the
-// health counters records that; the function itself stays free of the
-// Plugin so the existing unit tests can call it directly.
-//
-// Reporting the wait rather than only its failure is the point. This is
-// the fix for the release's headline defect and it did its whole job in
-// silence: on success after retrying, nothing anywhere recorded that
-// the window had been hit (#422). An operator could not tell whether
-// their host meets it at all, how often, or whether the budget is close
-// to expiring — and neither could we, which is the position #403
-// describes for the #406 grace.
+// linkUpAwaitingAddress retries LinkSetUp on EADDRINUSE: the kernel refuses a macvlan child whose MAC is live on the
+// parent, and a restart re-applies the previous endpoint's MAC before DeleteEndpoint removed the old child (#408).
+// No fallback address: the MAC is what brings the lease back. It retries on the kernel's answer, since a child in a
+// dying netns holds the address but is absent from the host link list. It reports whether it waited (#422).
 func linkUpAwaitingAddress(ctx context.Context, link netlink.Link, budget time.Duration) (bool, error) {
 	deadline := time.Now().Add(budget)
 	waited := false
@@ -242,8 +131,7 @@ func linkUpAwaitingAddress(ctx context.Context, link netlink.Link, budget time.D
 		if !errors.Is(err, unix.EADDRINUSE) {
 			return waited, err
 		}
-		// From here on the address was held by the departing link, so
-		// whatever happens next, this call met the #408 window.
+		// From here the departing link held the address, so this call met the #408 window.
 		waited = true
 		if !time.Now().Before(deadline) {
 			return waited, fmt.Errorf("%w (the address is still held by the link this one replaces, "+
@@ -257,18 +145,8 @@ func linkUpAwaitingAddress(ctx context.Context, link netlink.Link, budget time.D
 	}
 }
 
-// noteRestartLinkUpWait records the outcome of a child link-up that met
-// the #408 window: the departing link still holding the address.
-//
-// Split from linkUpAwaitingAddress so that function stays callable
-// without a Plugin, and so this decision is directly testable — the
-// #431 lesson, where a counter shipped for a release with nothing
-// asserting it could move.
-//
-// Neither counter is healthy-affecting. A successful wait is the fix
-// working. A timeout IS a real failure, but it surfaces through
-// CreateEndpoint to the operator as `address already in use`; `healthy`
-// is for faults that nothing else reports (#422).
+// noteRestartLinkUpWait records a #408 wait; neither counter affects healthy, since a timeout surfaces through
+// CreateEndpoint (#422).
 func (p *Plugin) noteRestartLinkUpWait(r CreateEndpointRequest, waited bool, err error) {
 	if !waited {
 		return
@@ -289,16 +167,6 @@ func (p *Plugin) noteRestartLinkUpWait(r CreateEndpointRequest, waited bool, err
 		Info("Child link came up after waiting out the departing link's address (#408)")
 }
 
-// createParentAttachedEndpoint creates the per-endpoint child link on
-// the host's parent NIC (macvlan or ipvlan depending on mode), runs a
-// one-shot DHCP client on it (still in host netns) to acquire an initial lease, and
-// stashes the result for Join. Docker will move the link into the
-// container's netns when it acts on our Join response.
-// callStart is CreateEndpoint's own entry time, PASSED rather than
-// re-taken here: it is one fact -- when the daemon's deadline on this
-// call began -- and a second time.Now() in this function would be a
-// second answer to it that drifts by however long the branch above
-// took. See v6AcquisitionDeadline.
 func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, callStart time.Time, r CreateEndpointRequest, opts DHCPNetworkOptions) (CreateEndpointResponse, error) {
 	res := CreateEndpointResponse{Interface: &EndpointInterface{}}
 	mode := opts.effectiveMode()
@@ -308,12 +176,7 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, callStart tim
 		return res, err
 	}
 
-	// MAC/IP selection: explicit > tombstone > kernel-picked /
-	// server-picked. ipvlan children share the parent's MAC and ignore
-	// HardwareAddr, so the tombstone path doesn't apply there (and an
-	// explicit MAC is rejected loudly to avoid silent misconfiguration).
-	// Static IPs (`docker run --ip`) are accepted in both modes — they
-	// pass through as a DHCP option 50 hint.
+	// ipvlan children share the parent's MAC, so no tombstone MAC applies and an explicit MAC is refused; --ip is option 50 in both modes.
 	effectiveMAC := ""
 	if r.Interface != nil {
 		effectiveMAC = r.Interface.MacAddress
@@ -326,10 +189,6 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, callStart tim
 	if err != nil {
 		return res, err
 	}
-	// Look up the hostname up front so we can scope tombstone matching
-	// to the same container (prevents identity swap during sequential
-	// `compose restart`). Best-effort: if the lookup misses or returns
-	// empty, consumeTombstone falls back to network-only matching.
 	hostname := p.initialDHCPHostname(ctx, r.NetworkID, r.EndpointID)
 
 	requestedIP := explicitV4
@@ -340,17 +199,10 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, callStart tim
 			if requestedIP == "" {
 				requestedIP = tombIP
 			}
-			// Inherit the prior v6 as the DHCPv6 preferred address too,
-			// so a restarting macvlan container keeps its v6 lease the
-			// same way it keeps v4 (#213).
+			// The prior v6 address is the DHCPv6 preferred address, so a restart keeps its v6 lease like v4 (#213).
 			if requestedV6 == "" {
 				requestedV6 = tombIPv6
 			}
-			// hostname is a dhcpHostname, which is a NAME AND A REFUSAL
-			// FLAG. Logging the struct printed `hostname="{ false}"` on
-			// a real run (2026-09-04) -- the operator got the zero value
-			// of the flag and no name at all, on the one line that says
-			// which container's identity was inherited. Log the name.
 			log.WithFields(log.Fields{
 				"network":  shortID(r.NetworkID),
 				"endpoint": shortID(r.EndpointID),
@@ -370,11 +222,7 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, callStart tim
 	la.Name = subLinkName(r.EndpointID)
 	la.ParentIndex = parent.Attrs().Index
 	if effectiveMAC != "" {
-		// ipvlan children share the parent's MAC by design; libnetwork
-		// passing us a custom MAC would silently get ignored, so we
-		// fail loudly instead. (Tombstones are filtered out above for
-		// ipvlan, so reaching this branch in ipvlan mode means the
-		// caller really did request a custom MAC.)
+		// ipvlan children share the parent's MAC, so a custom MAC would be ignored silently and is refused.
 		if mode == ModeIPvlan {
 			return res, fmt.Errorf("%w: ipvlan does not support a custom MAC address (children share the parent's MAC)", util.ErrMACAddress)
 		}
@@ -386,15 +234,8 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, callStart tim
 	}
 	link := newChildLink(mode, la)
 
-	// Queue behind anything else holding this parent — in practice the
-	// validate_dhcp preflight probe, which holds it across a full DHCP
-	// round trip (#549). Held across the LinkAdd only: two endpoints on
-	// the same parent contend for microseconds, and it is the probe's
-	// multi-second DORA this exists to wait out.
-	//
-	// The orphaned-lease reclaim used to be the holder named here, and
-	// the more demanding one — its link was created from a goroutine
-	// ordered against nothing at all. It was removed in v1.9.0 (#800).
+	// Queues behind the validate_dhcp probe, which holds the parent across a DHCP round trip, for the LinkAdd only
+	// (#549).
 	guard := p.lockParent(ctx, opts.Parent, mode, "create_endpoint")
 	err = addChildLink(guard, link)
 	guard.Unlock()
@@ -402,10 +243,6 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, callStart tim
 		return res, explainChildLinkAdd(err, mode, opts.Parent, parent.Attrs().Index)
 	}
 
-	// Hoisted out of the closure so the failure path below can close
-	// the record it opened. A CREATED record whose CreateEndpoint
-	// failed holds no lease and so offers nothing to resume, but it is
-	// a line in an append-only file that nothing would ever remove.
 	var (
 		recordID  string
 		recordID6 string
@@ -413,29 +250,16 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, callStart tim
 	)
 
 	if err := func() error {
-		// Reload to pick up the kernel-assigned MAC (macvlan) or the
-		// inherited parent MAC (ipvlan) if we didn't set one.
 		fresh, err := netlink.LinkByName(la.Name)
 		if err != nil {
 			return fmt.Errorf("failed to re-fetch %v link: %w", mode, err)
 		}
 		mac := fresh.Attrs().HardwareAddr
 
-		// Pin the kernel-assigned MAC (macvlan only — ipvlan rejects
-		// any MAC set with EOPNOTSUPP, and its children share the
-		// parent's MAC anyway). The bridge path has pinned its veth
-		// MACs for ages; macvlan never did, and the gap finally
-		// surfaced (#103): systemd-udevd's MACAddressPolicy=persistent
-		// (Debian default) replaces a *randomly assigned* MAC moments
-		// after link creation, so the initial DHCP exchange ran from
-		// udev's MAC while the link-local kept deriving from ours —
-		// and libnetwork re-applies our reported MAC at Join. v4
-		// survives by client-id matching, but the one-shot DHCPv6
-		// poisons the server's neighbor cache (link-local -> udev's
-		// MAC), blackholing the container's persistent client for the
-		// cache lifetime (~45s on the wire capture). Explicitly
-		// setting the MAC — even to its current value — flips
-		// addr_assign_type to "set", which the udev policy respects.
+		// Pin the kernel-assigned macvlan MAC (#103): udev's MACAddressPolicy=persistent, the Debian default,
+		// replaces a randomly assigned MAC just after creation, and a set addr_assign_type stops it. Without the pin
+		// the one-shot DHCPv6 poisoned the server's neighbour cache for about 45 s on the capture. ipvlan refuses any
+		// MAC set with EOPNOTSUPP.
 		if mode != ModeIPvlan && effectiveMAC == "" {
 			if err := netlink.LinkSetHardwareAddr(fresh, mac); err != nil {
 				return fmt.Errorf("failed to pin %v link MAC: %w", mode, err)
@@ -448,14 +272,7 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, callStart tim
 			return fmt.Errorf("failed to set %v link up: %w", mode, err)
 		}
 
-		// libnetwork applies res.Interface.MacAddress to the link
-		// during Join via netlink LinkSetHardwareAddr. The ipvlan
-		// driver rejects any MAC change (slaves share the parent's
-		// MAC by kernel design), even setting to the current value,
-		// with EOPNOTSUPP. So we skip the MAC response entirely for
-		// ipvlan; libnetwork leaves the link's MAC as-is, and
-		// docker inspect picks the inherited MAC up via netlink
-		// after Join finishes.
+		// libnetwork sets MacAddress at Join, which an ipvlan slave refuses with EOPNOTSUPP even for its own MAC.
 		if mode != ModeIPvlan && (r.Interface == nil || r.Interface.MacAddress == "") {
 			res.Interface.MacAddress = mac.String()
 		}
@@ -464,33 +281,17 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, callStart tim
 		if opts.LeaseTimeout != 0 {
 			timeout = opts.LeaseTimeout
 		}
-		// Client-id from the MAC for macvlan (tombstone-preserved, so the
-		// IPv4 lease survives a restart) and from the endpoint ID for
-		// ipvlan, whose slaves all share the parent MAC and so need
-		// something that tells them apart — see resolveClientID (#371).
-		// hostname was resolved earlier for tombstone matching and is
-		// reused for the DHCP option 12 hint here. Operator-supplied
-		// client_id overrides the derived value.
+		// Client-id from the MAC for macvlan and from the endpoint ID for ipvlan, whose slaves share the parent MAC
+		// (#371).
 		clientID := resolveClientID(opts, r.EndpointID, mac)
 
-		// The CREATED record (D10). Identity is generated once, here,
-		// and written with the record: the option-61 value AS SENT,
-		// type byte included, because that is what the server files
-		// the lease under. The one-shot below writes its own events to
-		// this record, and the Join manager reads them back as an
-		// INIT-REBOOT rather than starting a fresh DISCOVER.
 		recordID = p.recordCreated(r.NetworkID,
 			endpointRecordKey(mode, r.EndpointID, mac), dhcp.ClientIdentity(clientID))
 		p.updateJoinHint(r.EndpointID, func(hint *joinHint) {
 			hint.RecordID = recordID
 		})
 
-		// The DHCPv6 identity and its own record — the sibling of the
-		// block in network.go, through the same two helpers so the two
-		// modes cannot drift. This is the path where the ipvlan arm of
-		// resolveIdentity6 matters: an ipvlan slave inherits the
-		// parent's MAC, so the MAC-derived DUID would be identical for
-		// every container on the network (#895).
+		// An ipvlan slave inherits the parent's MAC, so its DUID is endpoint-derived (#895).
 		if opts.ipv6Enabled() {
 			id6, err := resolveIdentity6(opts, r.EndpointID, mac)
 			if err != nil {
@@ -507,46 +308,28 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, callStart tim
 				v6str = "v6"
 			}
 
-			// Server preference ladder (#111) / deny-list (#669),
-			// through the same helper the bridge path uses so the two
-			// cannot drift.
+			// Server preference ladder (#111) and deny-list (#669), shared with the bridge path.
 			pol, err := resolveServerPolicy(opts)
 			if err != nil {
 				return err
 			}
 
 			base := dhcp.DHCPClientOptions{
-				// .name, not the whole value: see the sibling in
-				// network.go. Config, not identity.
 				Hostname:    hostname.name,
 				FQDN:        opts.fqdnMode(),
 				ClientID:    clientID,
 				VendorClass: opts.VendorClass,
-				// MAC keys the v4 lease and, on bridge and macvlan, the
-				// v6 DUID-LL too, so the one-shot and the persistent
-				// client share one identity (#152). ipvlan is the
-				// exception in BOTH families: its slaves inherit the
-				// parent's MAC, so the v4 client-id comes from the
-				// endpoint (resolveClientID) and so does the v6 DUID
-				// (resolveIdentity6, #895).
+				// The MAC keys the v4 lease and the v6 DUID-LL, except on ipvlan, where both come from the endpoint
+				// (#152, #895).
 				MAC:      mac,
 				Records:  p.records,
 				RecordID: recordID,
 			}
 			if v6 {
-				// The v6 record, the v6 identity and the network's
-				// ipv6_mode, set together. This is the second copy of
-				// the attach path and the reason v6Wiring exists: the
-				// mode's zero value is a working client, so a copy
-				// that set two of the three would be silently `dhcp`
-				// on every macvlan network.
 				if err := p.v6Wiring(&base, opts, identity6, recordID6, requestedV6, r.EndpointID); err != nil {
 					return err
 				}
 			}
-			// Conflict detection, from the network's stored
-			// conflict_check (D23). Set on the BASE, so every attempt
-			// down the dhcp_servers ladder runs in the same mode.
 			if err := p.conflictWiring(&base, opts, roleAcquire, r.NetworkID, r.EndpointID, v6); err != nil {
 				return err
 			}
@@ -554,9 +337,6 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, callStart tim
 				base.RequestedIP = requestedIP
 			}
 
-			// The v6 half is the SECOND acquisition in this call and
-			// gets what is left of the daemon's deadline; the v4 half
-			// keeps lease_timeout untouched. See v6AcquisitionDeadline.
 			acqCtx := ctx
 			if v6 {
 				var endV6 context.CancelFunc
@@ -566,14 +346,7 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, callStart tim
 
 			info, ra, err := p.acquireWithPolicy(acqCtx, la.Name, pol, v6, timeout, r.EndpointID, base)
 			if err != nil {
-				// A DHCPv6 acquisition that produced nothing is not
-				// automatically a failure: on a stateless or SLAAC
-				// segment there is no DHCPv6 address by definition, and
-				// treating the timeout as fatal meant no container
-				// started at all on those networks (#868). What the
-				// segment ADVERTISED decides, not how long we waited --
-				// a segment offering managed DHCPv6 that then goes
-				// quiet is still fatal, here as before.
+				// No DHCPv6 address is fatal only where the segment advertised managed DHCPv6 (#868).
 				if v6 && p.noteV6Absence(ra, la.Name, r.EndpointID, err, base.Mode6) {
 					return nil
 				}
@@ -589,11 +362,7 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, callStart tim
 				if v6 {
 					res.Interface.AddressIPv6 = info.IP
 					hint.IPv6 = addr
-					// Same as the bridge copy in network.go, and for
-					// the same reason: DHCPv6 has no gateway option,
-					// so the IPv6 gateway is the advertisement's
-					// link-local source address the library saw during
-					// this acquisition (#821).
+					// DHCPv6 has no gateway option, so the v6 gateway is the advertisement's link-local source (#821).
 					fillV6Hint(hint, info)
 				} else {
 					res.Interface.Address = info.IP
@@ -621,9 +390,7 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, callStart tim
 		}
 		return nil
 	}(); err != nil {
-		// Roll back the child link if anything after LinkAdd failed.
-		// Best-effort: if LinkDel itself fails the kernel will reap the
-		// link with the netns soon enough.
+		// Best-effort rollback: a link LinkDel misses goes with its netns.
 		p.closeRecord(recordID)
 		p.closeRecord(recordID6)
 		_ = netlink.LinkDel(link)
@@ -642,9 +409,6 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, callStart tim
 		}
 	})
 
-	// Remember the chosen MAC and IPs so DeleteEndpoint can stash
-	// them as a tombstone. macvlan only — for ipvlan the MAC is the
-	// parent's and there's nothing to stabilize.
 	if mode == ModeMacvlan {
 		p.rememberEndpoint(r.EndpointID, endpointFingerprint{MAC: hintMAC, IPv4: hintIPv4, IPv6: hintIPv6, Ifname: p.hintIfname(r.EndpointID)}, hostname)
 	}
@@ -667,24 +431,12 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, callStart tim
 	return res, nil
 }
 
-// deleteParentAttachedEndpoint best-effort cleans up the host-side
-// child link. Once Docker has moved the link into the container netns
-// the host can no longer see it, and the kernel removes it when the
-// netns dies — so a "not found" here is the normal happy path. We
-// only delete when the link is still in our netns (e.g. CreateEndpoint
-// failed mid-way or Join was never called). Same code handles macvlan
-// and ipvlan since they live under the same name.
+// deleteParentAttachedEndpoint removes a child still in the host netns; once moved, the kernel removes it with the netns.
 func (p *Plugin) deleteParentAttachedEndpoint(r DeleteEndpointRequest) error {
 	name := subLinkName(r.EndpointID)
-	// Through the guard, like the bridge-mode teardown: subLinkName is
-	// vethPairNames' host half byte for byte, and a miss below is read
-	// as a teardown that already happened. Nothing renames a child link
-	// today, so this cannot miss for that reason yet; the guard costs a
-	// read lock and stops the next mode that renames from having to
-	// find this line (#1051).
+	// Through the rename guard like the bridge teardown, though nothing renames a child link today (#1051).
 	link, err := hostLinkByGeneratedName(name)
 	if err != nil {
-		// Expected: the link is gone with the container netns.
 		log.WithFields(log.Fields{
 			"network":  shortID(r.NetworkID),
 			"endpoint": shortID(r.EndpointID),
@@ -701,10 +453,6 @@ func (p *Plugin) deleteParentAttachedEndpoint(r DeleteEndpointRequest) error {
 	return nil
 }
 
-// findLinkByMAC walks the link table behind `handle` (typically the
-// container's netns handle) and returns the link with the given hardware
-// address. Used to re-discover a macvlan child after Docker has moved and
-// renamed it inside the container.
 func findLinkByMAC(handle linkLister, mac net.HardwareAddr) (netlink.Link, error) {
 	links, err := util.DumpResult(handle.LinkList())
 	if err != nil {
@@ -718,8 +466,7 @@ func findLinkByMAC(handle linkLister, mac net.HardwareAddr) (netlink.Link, error
 	return nil, fmt.Errorf("no link with MAC %v", mac)
 }
 
-// parentAttachedOperInfo is what we hand back to libnetwork in
-// EndpointOperInfo for both macvlan and ipvlan endpoints.
+// parentAttachedOperInfo is the EndpointOperInfo answer for macvlan and ipvlan endpoints.
 type parentAttachedOperInfo struct {
 	Mode     string `mapstructure:"mode"`
 	Parent   string `mapstructure:"parent"`
@@ -736,8 +483,6 @@ func (p *Plugin) parentAttachedEndpointOperInfo(opts DHCPNetworkOptions, r InfoR
 		Parent:   opts.Parent,
 		HostLink: name,
 	}
-	// The link is in the container netns by the time anyone polls this, so
-	// "not found" is expected and not an error.
 	if link, err := hostLinkByGeneratedName(name); err == nil {
 		info.LinkMAC = link.Attrs().HardwareAddr.String()
 	}

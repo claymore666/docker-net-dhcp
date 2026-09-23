@@ -10,26 +10,8 @@ import (
 	"testing"
 )
 
-// TestAfterAttachReadsWhatTheLookupFilled is the drift check the
-// behaviour tests cannot make.
-//
-// WHY IT NEEDS A WIRING TEST. afterAttach's own tests call it directly
-// and prove it reads the container name the late lookup writes. Nothing
-// in this package executes Start, which is where the argument is
-// chosen, so the defect that reached the field lives in a line no test
-// runs: MEASURED, restoring the copy at the call site leaves the whole
-// of ./pkg/... green while every attach on the sandbox key route
-// renames the host link to the empty string again (#1051).
-//
-// WHAT IT ASSERTS. Every value afterAttach takes by pointer is passed
-// as the address of a variable the lookup closure itself assigns. A
-// copy taken at the call, or the address of a copy, is the bug: the
-// lookup runs inside afterAttach on this route, so anything captured
-// before the call still holds what the attach started with.
-//
-// THE BOUND. Keyed on SPELLING, like the other wiring checks here. A
-// variable filled through a helper the closure calls reads as a
-// violation though it is correct.
+// No test runs Start, where afterAttach's arguments are chosen, so this checks by
+// spelling that each pointer argument is a variable the lookup closure assigns (#1051).
 func TestAfterAttachReadsWhatTheLookupFilled(t *testing.T) {
 	fset := token.NewFileSet()
 
@@ -56,8 +38,6 @@ func TestAfterAttachReadsWhatTheLookupFilled(t *testing.T) {
 		t.Fatal("the attach no longer declares both Start and afterAttach: this check has lost its subject")
 	}
 
-	// The positions afterAttach takes by pointer, read from its own
-	// signature so the check follows a reordered parameter list.
 	byPointer := map[int]bool{}
 	pos := 0
 	for _, field := range decl.Type.Params.List {
@@ -80,9 +60,6 @@ func TestAfterAttachReadsWhatTheLookupFilled(t *testing.T) {
 			"reads, or this check is measuring the wrong function")
 	}
 
-	// The variables the lookup closure writes. Assignment through the
-	// closure is what makes a value late; everything else is known
-	// before the attach and could travel by value.
 	filled := map[string]bool{}
 	var lookup *ast.FuncLit
 	ast.Inspect(start, func(n ast.Node) bool {

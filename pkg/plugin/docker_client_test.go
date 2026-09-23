@@ -22,39 +22,23 @@ import (
 
 const testDHCPDriver = "claymore666/docker-net-dhcp:latest"
 
-// fakeDocker is a programmable dockerClient for exercising the error
-// arms of the recovery, option-fallback and hostname-lookup paths,
-// which integration cannot reach without a real daemon misbehaving.
 type fakeDocker struct {
-	listResult []dNetwork.Summary
-	listErr    error
-	// listErrUntil, when non-zero, is the call number on which
-	// NetworkList stops returning listErr and starts answering — a
-	// daemon that comes up mid-recovery (#383).
+	listResult   []dNetwork.Summary
+	listErr      error
 	listErrUntil int
 
-	inspectResult map[string]dNetwork.Inspect
-	inspectErr    error
-	// inspectErrFromCall, when non-zero, is the 1-based call number at
-	// which NetworkInspect starts returning inspectErr. It exists for
-	// the netOptions arm of #648: recovery inspects a network, then
-	// netOptions inspects it again, and only the second call may see
-	// the 404. Without it the two calls cannot be told apart.
+	inspectResult      map[string]dNetwork.Inspect
+	inspectErr         error
 	inspectErrFromCall int
 
 	containerResult map[string]dContainer.InspectResponse
 	containerErr    error
-	// containerDelay models the daemon not answering while it holds the
-	// container it is being asked about — the #406 condition. Blocks
-	// rather than erroring, because that is what the real daemon does:
-	// the connection is accepted and no response header ever arrives.
+	// containerDelay blocks like a daemon holding the container, which accepts the connection and sends no header
+	// (#406).
 	containerDelay time.Duration
 
 	closeErr error
 
-	// The engine probe's half of the client (#670). The zero value is
-	// a daemon that answers the ping and reports nothing, which is not
-	// a shape any real daemon has; a test that cares sets these.
 	pingErr       error
 	versionResult dTypes.Version
 	versionErr    error
@@ -83,17 +67,11 @@ func (f *fakeDocker) ServerVersion(_ context.Context) (dTypes.Version, error) {
 	return f.versionResult, nil
 }
 
-// ClientVersion is the NEGOTIATED version in the real client, which is
-// why the fake reports one value for it and lets ServerVersion carry a
-// different one: the two disagreeing is a case the floor has to have an
-// answer for, not an impossible state.
+// ClientVersion is the negotiated version, so the fake lets it disagree with ServerVersion, a case the floor answers.
 func (f *fakeDocker) ClientVersion() string { return f.clientVersion }
 
 func (f *fakeDocker) NetworkList(_ context.Context, _ dNetwork.ListOptions) ([]dNetwork.Summary, error) {
 	f.listCalls++
-	// listErrUntil models a daemon that is still starting: fail the
-	// first N-1 calls, then answer. Zero means "always fail" (the
-	// original behaviour), so existing cases are unaffected.
 	if f.listErr != nil && (f.listErrUntil == 0 || f.listCalls < f.listErrUntil) {
 		return nil, f.listErr
 	}
@@ -125,13 +103,8 @@ func (f *fakeDocker) ContainerInspect(ctx context.Context, id string) (dContaine
 
 func (f *fakeDocker) Close() error { return f.closeErr }
 
-// testDaemonWait keeps the entry gate's retry loop short. Real waits are
-// seconds; the unit suite only needs the loop to terminate.
 const testDaemonWait = 100 * time.Millisecond
 
-// fastRetries shrinks the gap between entry-gate attempts so a test can
-// observe several of them inside testDaemonWait without paying the real
-// half-second spacing.
 func fastRetries(t *testing.T) {
 	t.Helper()
 	prev := recoveryDaemonRetryInterval
@@ -139,11 +112,6 @@ func fastRetries(t *testing.T) {
 	t.Cleanup(func() { recoveryDaemonRetryInterval = prev })
 }
 
-// TestRecoverEndpoints_NetworkListError pins the #383 contract: a daemon
-// that never answers is reported to the caller as "not ready" and does
-// NOT count a failure here. Counting it at this level is what made a
-// routine daemon restart look like a plugin fault — the decision belongs
-// to whoever knows whether a retry is still coming (NewPlugin/Listen).
 func TestRecoverEndpoints_NetworkListError(t *testing.T) {
 	fastRetries(t)
 	f := &fakeDocker{listErr: errors.New("list boom")}
@@ -165,13 +133,11 @@ func TestRecoverEndpoints_NetworkListError(t *testing.T) {
 	}
 }
 
-// TestRecoverEndpoints_NetworkListRecoversAfterRetry is the other half:
-// a daemon that is merely slow to start must be waited out, not skipped.
 func TestRecoverEndpoints_NetworkListRecoversAfterRetry(t *testing.T) {
 	fastRetries(t)
 	f := &fakeDocker{
 		listErr:      errors.New("daemon still starting"),
-		listErrUntil: 3, // fail the first two calls, succeed on the third
+		listErrUntil: 3,
 		listResult:   []dNetwork.Summary{{ID: "n1", Driver: "bridge"}},
 	}
 	p := &Plugin{docker: f}
@@ -217,17 +183,6 @@ func TestRecoverEndpoints_NetworkInspectError(t *testing.T) {
 	}
 }
 
-// #648. The list recovery walks is a snapshot: a `docker network rm`
-// landing between it and the detail read answers the second call with a
-// 404. That was counted as recovery_failed — fatal, and enough to flip
-// healthy — so an ordinary network removal racing a daemon restart
-// reported the plugin's most serious fault. A network that is gone has
-// no running container left without a renewal client.
-//
-// The direction matters as much as the count: TestRecoverEndpoints_
-// NetworkInspectError above pins that a REAL error is still fatal, and
-// both must hold. A fix that swallowed every inspect error would pass
-// this test and destroy the counter.
 func TestRecoverEndpoints_NetworkGoneIsNotAFailure(t *testing.T) {
 	f := &fakeDocker{
 		listResult: []dNetwork.Summary{{ID: "n1", Driver: testDHCPDriver}},
@@ -245,11 +200,8 @@ func TestRecoverEndpoints_NetworkGoneIsNotAFailure(t *testing.T) {
 	}
 }
 
-// The same race one call later: NetworkInspect answers, and netOptions —
-// which reaches the daemon only when its on-disk cache misses — gets the
-// 404 instead.
 func TestRecoverEndpoints_NetOptionsNetworkGoneIsNotAFailure(t *testing.T) {
-	withStateDir(t, t.TempDir()) // force the on-disk miss -> docker fallback
+	withStateDir(t, t.TempDir())
 	f := &fakeDocker{
 		listResult: []dNetwork.Summary{{ID: "n1", Driver: testDHCPDriver}},
 		inspectResult: map[string]dNetwork.Inspect{
@@ -273,9 +225,6 @@ func TestRecoverEndpoints_NetOptionsNetworkGoneIsNotAFailure(t *testing.T) {
 	}
 }
 
-// The counter has to reach the wire, and it must NOT move Healthy. A
-// counter nobody can read is a log line with extra steps; one that flips
-// healthy is the bug this fix exists to undo.
 func TestApiHealth_RecoveryNetworkGoneIsNotUnhealthy(t *testing.T) {
 	p := newHealthPlugin()
 
@@ -308,7 +257,7 @@ func TestApiHealth_RecoveryNetworkGoneIsNotUnhealthy(t *testing.T) {
 }
 
 func TestRecoverEndpoints_NetOptionsDecodeError(t *testing.T) {
-	withStateDir(t, t.TempDir()) // force the on-disk miss -> docker fallback
+	withStateDir(t, t.TempDir())
 	f := &fakeDocker{
 		listResult: []dNetwork.Summary{{ID: "n1", Driver: testDHCPDriver}},
 		inspectResult: map[string]dNetwork.Inspect{
@@ -330,7 +279,6 @@ func TestNetOptions_DiskHitSkipsDocker(t *testing.T) {
 	if err := saveOptions("n1", want); err != nil {
 		t.Fatalf("saveOptions: %v", err)
 	}
-	// Docker errors on any call, proving the disk hit short-circuits it.
 	f := &fakeDocker{inspectErr: errors.New("docker must not be called")}
 	p := &Plugin{docker: f}
 
@@ -362,7 +310,6 @@ func TestNetOptions_DockerFallbackSuccessAndBackfill(t *testing.T) {
 	if got.Bridge != "br9" {
 		t.Fatalf("opts: got %+v want bridge=br9", got)
 	}
-	// Backfill: the next load should now hit disk without touching docker.
 	if _, err := loadOptions("n1"); err != nil {
 		t.Fatalf("expected options backfilled to disk, loadOptions: %v", err)
 	}
@@ -445,9 +392,6 @@ func TestLookupEndpointMAC(t *testing.T) {
 }
 
 func TestReacquireEndpoint_MACLookupError(t *testing.T) {
-	// Non-ipvlan mode looks up the original MAC first; a docker failure
-	// there must abort before the CreateEndpoint replay (which needs a
-	// live netns and is integration-covered).
 	f := &fakeDocker{inspectErr: errors.New("inspect boom")}
 	p := &Plugin{docker: f}
 
@@ -508,8 +452,6 @@ func TestInitialDHCPHostname_EmptyOnFailure(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			// Short deadline so the poll loop gives up quickly instead of
-			// waiting the full initialDHCPHostnameLookupTimeout.
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
 			defer cancel()
 			p := &Plugin{docker: c.f}
@@ -520,21 +462,6 @@ func TestInitialDHCPHostname_EmptyOnFailure(t *testing.T) {
 	}
 }
 
-// TestInitialDHCPHostname_RefusalIsNotAnAbsence pins the SECOND return
-// value, which every other test here discards with `_`.
-//
-// Both outcomes produce an empty hostname and they mean opposite things
-// (#726). An absent hostname is an honest unknown, and tombstone
-// matching treats it as a wildcard on purpose — that is the v0.5.0
-// contract. A REFUSED hostname is attacker-supplied, and if it arrives
-// at the tombstone store looking like an absence it buys that wildcard:
-// one container with a control character in its hostname could then
-// consume the tombstone of any container on the network and inherit its
-// MAC and address.
-//
-// So the flag is the whole fix, and until this test it was asserted
-// nowhere at its source: TestInitialDHCPHostname_Success and
-// _EmptyOnFailure both read `got, _`.
 func TestInitialDHCPHostname_RefusalIsNotAnAbsence(t *testing.T) {
 	const netID, epID = "n1", "ep1"
 

@@ -185,14 +185,8 @@ func TestRecovery_DaemonRestart_PreservesContainer(t *testing.T) {
 		t.Fatalf("container not running after daemon restart: %v", err)
 	}
 
-	// Plugin.Health socket is replaced when the plugin process is
-	// respawned by docker. Poll until the new socket answers — that
-	// signals plugin enable and the end of the recovery WALK, which is
-	// synchronous inside NewPlugin before the socket starts listening.
-	// It does not signal that any endpoint was rebuilt: the walk spawns
-	// each rebuild and recovered_ok is incremented only after it
-	// returns (pkg/plugin/plugin.go:2932-2969). Same for the tombstone
-	// path, which a CreateEndpoint after the restart drives.
+	// The new socket answering marks the end of the synchronous recovery walk, not of any rebuild: the walk spawns
+	// each rebuild and recovered_ok moves only after it returns (pkg/plugin/plugin.go:1240-1265, #376).
 	healthAfter := harness.WaitPluginHealth(t, ctx, cli2, 30*time.Second)
 
 	// So wait for the property, bounded by the plugin's own timeouts on

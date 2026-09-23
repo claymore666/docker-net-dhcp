@@ -17,35 +17,9 @@ import (
 	"github.com/claymore666/docker-net-dhcp/v2/pkg/dhcp"
 )
 
-// The three endings #816 added to the classifier, against the
-// observations that would decide differently on their own.
-//
-// THE POINT OF EACH ROW IS THE DISAGREEMENT. A refusal arrives on a
-// segment whose advertisement says managed, which the observation alone
-// reads as v6Fatal -- the right ANSWER for the endpoint and the wrong
-// DIAGNOSIS for the operator, because the two faults are a server with
-// an empty pool and no server at all. `slaac_no_prefix` arrives on a
-// segment that advertised without the managed flag, which the
-// observation alone reads as "no DHCPv6 here, carry on" -- tolerated,
-// so the container would start with no IPv6 address at all on a network
-// whose whole configuration is that the address comes from the router.
-// A REFUSAL THAT AGREES WITH THE ADVERTISEMENT IS NOT A FAULT.
-//
-// The table above is about the wire OVERRULING the observation, and its
-// own guard refuses a row where the cause changes nothing. This is the
-// opposite property and so it cannot live there: here the wire and the
-// flags SAY THE SAME THING, and the verdict has to be the one they
-// agree on.
-//
-// MEASURED (#821, run 35141032546, shard main-4): a stateless segment
-// advertises O=1 M=0 and its dnsmasq answers the Solicit with Status
-// Code 2 NoAddrsAvail. Read as a refusal, CreateEndpoint failed and no
-// container started on a correctly configured network -- losing its
-// IPv4 too, since the endpoint never came up at all.
-//
-// The managed row is the preservation control: the same status code on
-// a segment that DID promise addresses must stay fatal, or this fix
-// would turn every real refusal into a silent start with no address.
+// A stateless segment advertises O=1 M=0 and its dnsmasq answers a Solicit with Status
+// Code 2 NoAddrsAvail; that refusal agrees with the advertisement and is not a fault
+// (#821, run 35141032546). The same code under M=1 stays fatal (#816).
 func TestClassifyV6Absence_ARefusalThatAgreesWithTheAdvertisementIsNotAFault(t *testing.T) {
 	refused := dhcp.V6Refusal("NoAddrsAvail", "no addresses available")
 
@@ -75,10 +49,6 @@ func TestClassifyV6Absence_ARefusalThatAgreesWithTheAdvertisementIsNotAFault(t *
 	}
 }
 
-// The endpoint PROCEEDS on a stateless segment whose server refused it,
-// which is the half the classifier alone cannot show: noteV6Absence
-// turns the verdict into the boolean CreateEndpoint acts on, and it was
-// this boolean that was false in run 35141032546.
 func TestNoteV6Absence_AStatelessRefusalStillCreatesTheEndpoint(t *testing.T) {
 	p := newTestPlugin(t)
 	refused := dhcp.V6Refusal("NoAddrsAvail", "no addresses available")
@@ -107,19 +77,11 @@ func TestClassifyV6Absence_TheWireCausesOverruleTheObservation(t *testing.T) {
 		ra    dhcp.RAObservation
 		cause error
 		want  v6Verdict
-		// alone is what the observation gives with an ordinary
-		// timeout, and it is asserted as well: a row whose cause
-		// changes nothing proves nothing about the cause.
 		alone v6Verdict
 	}{
 		{"refused on a managed segment", dhcp.RAObservation{Seen: true, Managed: true}, refused, v6Refused, v6Fatal},
 		{"refused, wrapped by the caller", dhcp.RAObservation{Seen: true, Managed: true},
 			fmt.Errorf("failed to get initial IPv6 address: %w", refused), v6Refused, v6Fatal},
-		// The deadline arm of the acquisition wraps BOTH: the cause it
-		// already had, and the budget that then ran out. If it
-		// overwrote the first -- which it did until #816 -- the
-		// refusal would be unreachable in the field while every
-		// synthetic row above stayed green.
 		{"refused, then the budget ran out", dhcp.RAObservation{Seen: true, Managed: true},
 			fmt.Errorf("%w; the DHCPv6 acquisition budget then ran out: %w", refused, errors.New("context deadline exceeded")),
 			v6Refused, v6Fatal},
@@ -141,10 +103,6 @@ func TestClassifyV6Absence_TheWireCausesOverruleTheObservation(t *testing.T) {
 		})
 	}
 
-	// The preservation control for the whole widening: the endings that
-	// were tolerated before #816 are still tolerated. A refusal arm
-	// written as "any failure with a cause is fatal" passes every row
-	// above and fails here.
 	if got := classifyV6Absence(dhcp.RAObservation{Seen: true, Other: true}, dhcp.ErrNoV6Address, proto.Mode6DHCP); got != v6NotOffered {
 		t.Errorf("a stateless segment now classifies as %v; #868's tolerance is what the "+
 			"new verdicts must not eat", got)
@@ -155,15 +113,6 @@ func TestClassifyV6Absence_TheWireCausesOverruleTheObservation(t *testing.T) {
 	}
 }
 
-// Every DHCPv6 ending that fails an endpoint moves ITS OWN counter and
-// no other, and every one of them still fails the endpoint.
-//
-// ONE TABLE FOR ALL THREE, on the rule TestNoteV6Absence_TolerancePolarity
-// states: a change that flipped one of them would otherwise read as a
-// change to only its own case. The counters are the whole of #816 --
-// before it, two of these three ends moved nothing at all and the third
-// did not exist -- so "each moved by one and the others by zero" is the
-// property, not "some counter moved".
 func TestNoteV6Absence_EachFailureIsItsOwnRow(t *testing.T) {
 	type counts struct{ refused, noServer, noPrefix int32 }
 	cases := []struct {
@@ -180,9 +129,6 @@ func TestNoteV6Absence_EachFailureIsItsOwnRow(t *testing.T) {
 			fmt.Errorf("%w: 2 option(s) refused", dhcp.ErrNoSLAACPrefix), counts{noPrefix: 1}},
 	}
 
-	// NON-VACUITY, keyed on the outcomes rather than on a row count:
-	// duplicating one row over another satisfies a count and empties
-	// the claim.
 	required := map[counts]string{
 		{refused: 1}:  "a refusal moves dhcpv6_refused and nothing else",
 		{noServer: 1}: "a silent server moves dhcpv6_no_server and nothing else",
@@ -207,9 +153,6 @@ func TestNoteV6Absence_EachFailureIsItsOwnRow(t *testing.T) {
 			if got != tc.want {
 				t.Errorf("counters = %+v, want %+v", got, tc.want)
 			}
-			// The two tolerated counters are the preservation control:
-			// a failure that also moved one of them would make a
-			// dashboard read a fault as a healthy stateless segment.
 			if n := p.dhcpv6NotOffered.Load(); n != 0 {
 				t.Errorf("dhcpv6_not_offered = %d on a failing endpoint, want 0", n)
 			}
@@ -220,9 +163,7 @@ func TestNoteV6Absence_EachFailureIsItsOwnRow(t *testing.T) {
 	}
 }
 
-// The refusal's log line names the code, which is the whole of what an
-// operator can act on: NoAddrsAvail is an exhausted pool, NotOnLink is
-// an address asked for outside the range the server serves.
+// NoAddrsAvail is an exhausted pool, NotOnLink an address outside the served range (RFC 8415 section 21.13).
 func TestNoteV6Absence_TheRefusalNamesTheStatusCode(t *testing.T) {
 	hook := logtest.NewLocal(log.StandardLogger())
 	defer hook.Reset()
@@ -250,8 +191,6 @@ func TestNoteV6Absence_TheRefusalNamesTheStatusCode(t *testing.T) {
 	}
 }
 
-// The auto fallback counts what FORMED and says so, and the counter is
-// a gain rather than a total.
 func TestV6FallbackReporter_CountsTheGainAndWarns(t *testing.T) {
 	hook := logtest.NewLocal(log.StandardLogger())
 	defer hook.Reset()
@@ -281,9 +220,6 @@ func TestV6FallbackReporter_CountsTheGainAndWarns(t *testing.T) {
 		}
 	}
 
-	// A zero gain is not an event. The chassis calls the reporter with
-	// whatever delta it computed, and a line per no-op would bury the
-	// real ones.
 	hook.Reset()
 	report(0)
 	if n := len(hook.AllEntries()); n != 0 {

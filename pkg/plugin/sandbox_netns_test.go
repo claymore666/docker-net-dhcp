@@ -15,14 +15,6 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// withSandboxNetnsDirs points the package's permitted sandbox-netns
-// directories at a temporary one for the duration of a test.
-//
-// Swapping the package variable rather than only exercising the ...In
-// seam is deliberate: openSandboxNetNS reads the variable, and a test
-// that only ever calls the injectable form leaves the production route
-// unexecuted -- which is the shape the counters in this file exist to
-// stop being invisible.
 func withSandboxNetnsDirs(t *testing.T, dirs []string) {
 	t.Helper()
 	prev := sandboxNetnsDirs
@@ -30,11 +22,6 @@ func withSandboxNetnsDirs(t *testing.T, dirs []string) {
 	t.Cleanup(func() { sandboxNetnsDirs = prev })
 }
 
-// TestOpenSandboxNetNSByKey_RefusesAnythingOutsideThePermittedDirectories
-// pins the refusal, not the acceptance. The key arrives from the daemon
-// and is a path this plugin then opens with CAP_SYS_ADMIN behind it, so
-// "anything the daemon says" is not an acceptable reading of it: an
-// unrecognised shape is refused rather than guessed at.
 func TestOpenSandboxNetNSByKey_RefusesAnythingOutsideThePermittedDirectories(t *testing.T) {
 	dirs := []string{"/var/run/docker/netns"}
 
@@ -65,33 +52,12 @@ func TestOpenSandboxNetNSByKey_RefusesAnythingOutsideThePermittedDirectories(t *
 	}
 }
 
-// linkANetnsEntry makes dir/name resolve to a REAL network namespace —
-// this process's own — without root.
-//
-// WHY NOT AN ORDINARY FILE, WHICH IS WHAT THIS FIXTURE USED TO BE.
-// libnetwork creates each sandbox entry as an empty file and bind-mounts
-// the namespace over it, so an ordinary file is exactly what the plugin
-// sees when the daemon's mounts are NOT propagated into its mount
-// namespace. A fixture made of ordinary files therefore selects the
-// passing path: every open succeeds, the route looks proven, and the
-// setns fails on the lane instead — which is what happened, MEASURED
-// 2026-09-04, with a green unit suite the whole time.
-//
-// A symlink to /proc/self/ns/net makes the openat resolve to genuine
-// nsfs, which is the thing the caller has to be handed. Bind-mounting
-// one would need CAP_SYS_ADMIN and this suite has none.
+// libnetwork bind-mounts each namespace over an empty file, so without propagation the plugin sees
+// an ordinary file (measured 2026-09-04); a symlink to /proc/self/ns/net gives real nsfs (#725).
 func linkANetnsEntry(path string) error {
 	return os.Symlink("/proc/self/ns/net", path)
 }
 
-// The acceptance control. Without it every case above is satisfied by
-// an opener that refuses everything, and the refusal table would be
-// measuring nothing.
-//
-// It asserts IDENTITY, not readability: the descriptor handed back must
-// be the same namespace the path names, compared by inode on nsfs.
-// Reading bytes through it — what this test used to do — is a check an
-// ordinary file passes and a namespace cannot.
 func TestOpenSandboxNetNSByKey_OpensTheEntryOfAPermittedDirectory(t *testing.T) {
 	dir := t.TempDir()
 	const name = "8fc1a2b3c4d5"
@@ -118,15 +84,6 @@ func TestOpenSandboxNetNSByKey_OpensTheEntryOfAPermittedDirectory(t *testing.T) 
 	}
 }
 
-// TestOpenSandboxNetNSByKey_RefusesAnEntryThatIsNotANamespace is the
-// case the lane paid for.
-//
-// An entry that is present but is the ORDINARY FILE underneath an
-// unpropagated bind mount opens cleanly and is useless: setns on it
-// fails with EINVAL, three layers down, inside a netlink call, long
-// after the caller could have taken the other route. Refusing it here
-// with errNoSandboxKey is what turns that into a counted fallback
-// instead of a dead endpoint.
 func TestOpenSandboxNetNSByKey_RefusesAnEntryThatIsNotANamespace(t *testing.T) {
 	dir := t.TempDir()
 	const name = "8fc1a2b3c4d5"
@@ -147,17 +104,7 @@ func TestOpenSandboxNetNSByKey_RefusesAnEntryThatIsNotANamespace(t *testing.T) {
 	}
 }
 
-// TestOpenSandboxNetNSByKey_RefusesANamespaceOfTheWrongType is the
-// other half of the check, and it is not decoration.
-//
-// NS_GET_NSTYPE succeeds on ANY namespace descriptor, so "the ioctl
-// worked" is not "this is a network namespace". A UTS namespace opens
-// cleanly, answers the ioctl, and then fails setns(CLONE_NEWNET) with
-// EINVAL — the same three-layers-down failure the ordinary-file case
-// produced. Comparing the answer to CLONE_NEWNET is what makes the
-// check about the type rather than about the syscall, and a mutant
-// that only asked whether the ioctl succeeded survived until this
-// existed.
+// NS_GET_NSTYPE answers for any namespace, and setns(CLONE_NEWNET) on a UTS namespace fails with EINVAL (#725).
 func TestOpenSandboxNetNSByKey_RefusesANamespaceOfTheWrongType(t *testing.T) {
 	dir := t.TempDir()
 	const name = "8fc1a2b3c4d5"
@@ -179,11 +126,6 @@ func TestOpenSandboxNetNSByKey_RefusesANamespaceOfTheWrongType(t *testing.T) {
 	}
 }
 
-// TestAwaitSandboxNetNSByKey_DoesNotPollAPermanentRefusal is the #401
-// lesson applied to this route. A key that names an unaccepted
-// directory will name one at every retry, so polling it can only end in
-// the deadline — and the budget it spends is the budget the PID
-// fallback then does not have.
 func TestAwaitSandboxNetNSByKey_DoesNotPollAPermanentRefusal(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -204,10 +146,6 @@ func TestAwaitSandboxNetNSByKey_DoesNotPollAPermanentRefusal(t *testing.T) {
 	}
 }
 
-// The other direction: an entry that is simply not there YET is the
-// ordinary case at Join, and must be waited for rather than refused.
-// Without this the fast-refusal above would be satisfied by an await
-// that never polls at all.
 func TestAwaitSandboxNetNSByKey_WaitsForAnEntryThatArrivesLate(t *testing.T) {
 	dir := t.TempDir()
 	key := filepath.Join(dir, "aa11bb22")
@@ -227,16 +165,6 @@ func TestAwaitSandboxNetNSByKey_WaitsForAnEntryThatArrivesLate(t *testing.T) {
 	closeNsHandle(ns)
 }
 
-// TestAwaitSandboxNetNSByKey_DeadlineNamesTheLastAttempt pins the third
-// outcome: the key was ACCEPTABLE and the entry never appeared.
-//
-// The deadline is the only thing separating "the sandbox is still being
-// assembled" from "the container went away", so the error a caller sees
-// is the whole of what it has to work with. Without the cause, both
-// arrive as a bare context deadline and read identically — the same
-// collapse #317 was diagnosed through, one layer down. The claim was
-// written in the comment on awaitSandboxNetNSByKey and asserted
-// nowhere: a mutant that dropped the wrapped cause survived the suite.
 func TestAwaitSandboxNetNSByKey_DeadlineNamesTheLastAttempt(t *testing.T) {
 	dir := t.TempDir()
 	key := filepath.Join(dir, "never-appears")
@@ -262,14 +190,6 @@ func TestAwaitSandboxNetNSByKey_DeadlineNamesTheLastAttempt(t *testing.T) {
 	}
 }
 
-// TestOpenSandboxNetNS_CountsTheKeyRoute drives the production opener —
-// the one that reads the package variable — and asserts the three
-// counters that carry the whole PR-1 measurement.
-//
-// The domain assertion is the one that matters. sandbox_pid_fallbacks
-// is read as "the PID route was not needed", and on its own that
-// reading is satisfied by a plugin that opened nothing at all; only
-// sandbox_key_entries says the question had a subject.
 func TestOpenSandboxNetNS_CountsTheKeyRoute(t *testing.T) {
 	dir := t.TempDir()
 	key := filepath.Join(dir, "cc33dd44")
@@ -284,9 +204,6 @@ func TestOpenSandboxNetNS_CountsTheKeyRoute(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	// The PID is a real one that does NOT name the container: if the
-	// key route were skipped, the fallback would refuse and the case
-	// would fail loudly rather than pass by another route.
 	ns, err := m.openSandboxNetNS(ctx, key, os.Getpid(), foreignCtrID, time.Millisecond)
 	if err != nil {
 		t.Fatalf("the key route refused a key naming a real entry: %v", err)
@@ -307,10 +224,6 @@ func TestOpenSandboxNetNS_CountsTheKeyRoute(t *testing.T) {
 	}
 }
 
-// The fallback arm, driven for real: the key is refused and the PID
-// route carries the open. This is the mutant-killer for "the fallback
-// is dead code" and for "the failure counter is wired to the success
-// arm".
 func TestOpenSandboxNetNS_CountsTheFallbackWhenTheKeyIsRefused(t *testing.T) {
 	withSandboxNetnsDirs(t, []string{"/var/run/docker/netns"})
 
@@ -340,9 +253,6 @@ func TestOpenSandboxNetNS_CountsTheFallbackWhenTheKeyIsRefused(t *testing.T) {
 	}
 }
 
-// Both routes failing must report BOTH causes. Reporting only the
-// second is how the reason the fallback was reached at all became
-// invisible.
 func TestOpenSandboxNetNS_BothRoutesFailingNamesTheKeyErrorToo(t *testing.T) {
 	withSandboxNetnsDirs(t, []string{"/var/run/docker/netns"})
 

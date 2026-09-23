@@ -16,23 +16,8 @@ import (
 	"github.com/claymore666/docker-net-dhcp/v2/pkg/dhcp"
 )
 
-// TestSetupClient_TheClientIsOpenedOnTheLinkAndNotOnlyOnItsName closes
-// the hole the re-read left open (#1050).
-//
-// The re-read by index makes the name current at the instant the plugin
-// reads it, and the name is resolved AGAIN, inside the namespace, when
-// the client is opened. On a host where the sandbox key route carries
-// the attach the open lands early in the container start, so the
-// engine's rename falls between those two resolutions and the open
-// fails on a name the kernel no longer has. The index is the one thing
-// about the link that does not change, so it travels with the name and
-// the open resolves the current name from it.
-//
-// WHAT THIS DRIVES: that the index of the link the attach LOCATED is
-// what the client is opened with. What happens with that index on the
-// far side is openOnLink's own subject, in pkg/dhcp, where a rename can
-// be landed at the instant of the open without a namespace or a
-// capability.
+// The engine can rename the link between the plugin's read and the client's open, so
+// the client is opened by the link index, which does not change (#1050).
 func TestSetupClient_TheClientIsOpenedOnTheLinkAndNotOnlyOnItsName(t *testing.T) {
 	docker := &fakeDocker{
 		inspectResult: map[string]dNetwork.Inspect{
@@ -49,10 +34,6 @@ func TestSetupClient_TheClientIsOpenedOnTheLinkAndNotOnlyOnItsName(t *testing.T)
 	}
 	m, _ := daemonFreeManager(t, docker)
 
-	// The re-read answers with the name the engine has just given the
-	// link, on the index the located link had. Both halves matter: the
-	// name proves the drive reaches the open path, the index is what
-	// the assertion is about.
 	const renamed = "eth0"
 	var locatedIndex int
 	prevByIndex := nlLinkByIndex

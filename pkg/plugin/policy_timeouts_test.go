@@ -5,32 +5,14 @@ package plugin
 
 import "testing"
 
-// The renewal half of #731.
-//
-// dhcp_server_policy_exhausted is written by acquireWithPolicy, which
-// walks the dhcp_servers ladder and can run off the end of it. The
-// PERSISTENT client has no ladder: it holds one whitelist for the life
-// of the endpoint and, when every named server has gone, simply gets no
-// answers. The only thing that showed was a dhcp_timeouts tick, which
-// is the same thing a real outage produces — so an allow-list naming a
-// server that had been renumbered, retired or firewalled read as "DHCP
-// is down" and sent the operator to look at the wrong machine.
-//
-// The counter's whole meaning is a RELATIONSHIP: it is a strict subset
-// of dhcp_timeouts, and that is how it is read (both rising = the
-// allow-list is the cause; dhcp_timeouts alone = it is not). A
-// relationship between two counters cannot be held by a comment on
-// either of them, so it is asserted here on both at once.
+// The policy timeout counter is read as a strict subset of dhcp_timeouts, so the cases
+// assert both at once (#731).
 
 func policyTickPlugin() *dhcpManager {
 	return &dhcpManager{plugin: &Plugin{}}
 }
 
-// dhcp_timeouts has had no single backing field since #766 split every
-// DHCP counter by family: the exposition adds the two, and the subset
-// property below is a claim about that sum, not about either half. Read
-// it the same way the Health handler does, so a future split cannot
-// leave this test asserting against a fraction of the counter it names.
+// aggregateTimeouts sums both families the way the Health handler does, since #766 split dhcp_timeouts by family.
 func aggregateTimeouts(p *Plugin) int32 {
 	return p.dhcpTimeoutsV4.Load() + p.dhcpTimeoutsV6.Load()
 }
@@ -86,10 +68,6 @@ func TestCountOutageTick_PolicyTimeoutsAreASubsetOfTimeouts(t *testing.T) {
 	}
 }
 
-// The subset property itself, over a mixed sequence rather than one
-// tick. Counting the policy tick in place of the generic one — or in
-// addition to a second generic one — would leave every single-tick case
-// above green.
 func TestCountOutageTick_SubsetHoldsAcrossAMixedSequence(t *testing.T) {
 	m := policyTickPlugin()
 
@@ -119,11 +97,6 @@ func TestCountOutageTick_SubsetHoldsAcrossAMixedSequence(t *testing.T) {
 	}
 }
 
-// The premise that lets dhcp_server_policy_timeouts skip the family
-// split every other DHCP counter carries: a v6 client is never
-// restricted, so a v6 sibling would be a permanent zero. Asserted
-// rather than commented, because a permanent-zero counter is the kind
-// of thing nobody notices is wrong.
 func TestClientServerLists_V6IsNeverRestricted(t *testing.T) {
 	pol, err := resolveServerPolicy(DHCPNetworkOptions{
 		DHCPServers: "192.168.0.1,192.168.0.2",
@@ -145,8 +118,6 @@ func TestClientServerLists_V6IsNeverRestricted(t *testing.T) {
 	}
 }
 
-// Same, for a deny-only policy: denyList() is non-empty when there is
-// no preference list, and it too must stop at v4.
 func TestClientServerLists_V6DropsTheDenyListToo(t *testing.T) {
 	pol, err := resolveServerPolicy(DHCPNetworkOptions{DenyServers: "192.168.0.9"})
 	if err != nil {

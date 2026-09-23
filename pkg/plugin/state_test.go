@@ -13,8 +13,6 @@ import (
 	"time"
 )
 
-// withStateDir overrides the package-level stateDir for the duration of
-// the test, restoring the previous value via t.Cleanup.
 func withStateDir(t *testing.T, dir string) {
 	t.Helper()
 	prev := stateDir
@@ -58,7 +56,6 @@ func TestLoadOptions_Missing(t *testing.T) {
 func TestLoadOptions_CorruptJSON(t *testing.T) {
 	dir := t.TempDir()
 	withStateDir(t, dir)
-	// Write a deliberately corrupt file
 	if err := os.WriteFile(filepath.Join(dir, "bad.json"), []byte("{not valid json"), 0o644); err != nil {
 		t.Fatalf("setup: %v", err)
 	}
@@ -66,9 +63,6 @@ func TestLoadOptions_CorruptJSON(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected parse error, got nil")
 	}
-	// Important: this must NOT be an os.ErrNotExist, because callers
-	// distinguish "not persisted yet" (fall back to docker API) from
-	// "corrupt" (log and still fall back, but loudly).
 	if errors.Is(err, os.ErrNotExist) {
 		t.Errorf("corrupt JSON should NOT report as ErrNotExist; got %v", err)
 	}
@@ -76,11 +70,9 @@ func TestLoadOptions_CorruptJSON(t *testing.T) {
 
 func TestDeleteOptions_Idempotent(t *testing.T) {
 	withStateDir(t, t.TempDir())
-	// Delete on a never-saved id must not error
 	if err := deleteOptions("ghost"); err != nil {
 		t.Errorf("deleteOptions on missing file should be nil, got %v", err)
 	}
-	// Save and delete, then delete again
 	if err := saveOptions("real", DHCPNetworkOptions{Bridge: "br0"}); err != nil {
 		t.Fatalf("saveOptions: %v", err)
 	}
@@ -92,10 +84,6 @@ func TestDeleteOptions_Idempotent(t *testing.T) {
 	}
 }
 
-// TestSaveOptions_AtomicNoTornFile verifies the temp-then-rename
-// strategy: if a save fails between Write and Rename (we can't
-// realistically trigger that, but we can at least confirm there's no
-// leftover .tmp file polluting the state dir on a successful save).
 func TestSaveOptions_LeavesNoTempFiles(t *testing.T) {
 	dir := t.TempDir()
 	withStateDir(t, dir)
@@ -118,7 +106,6 @@ func TestSaveOptions_LeavesNoTempFiles(t *testing.T) {
 
 func TestSaveOptions_CreatesStateDir(t *testing.T) {
 	parent := t.TempDir()
-	// Point at a sub-path that does NOT yet exist
 	subdir := filepath.Join(parent, "nested", "state")
 	withStateDir(t, subdir)
 	if err := saveOptions("net1", DHCPNetworkOptions{Bridge: "br0"}); err != nil {
@@ -142,28 +129,20 @@ func TestTombstones_RoundtripAndConsume(t *testing.T) {
 
 	p := newPluginForTest()
 
-	// Empty state: no tombstones to consume.
 	if mac, ip, ipv6, ok := p.consumeTombstone("net-A", dhcpHostname{}); ok {
 		t.Errorf("consumeTombstone on empty state returned (%q, %q, %q, true), want (\"\", \"\", \"\", false)", mac, ip, ipv6)
 	}
 
-	// One tombstone for net-A → next consumeTombstone for net-A wins.
 	p.addTombstone("net-A", "", "02:42:ac:11:00:01", "192.168.0.166", "fe80::1")
 	mac, ip, ipv6, ok := p.consumeTombstone("net-A", dhcpHostname{})
 	if !ok || mac != "02:42:ac:11:00:01" || ip != "192.168.0.166" || ipv6 != "fe80::1" {
 		t.Errorf("consumeTombstone net-A: got (%q, %q, %q, %v), want (02:42:ac:11:00:01, 192.168.0.166, fe80::1, true)", mac, ip, ipv6, ok)
 	}
-	// Tombstone is consumed exactly once.
 	if mac, ip, ipv6, ok := p.consumeTombstone("net-A", dhcpHostname{}); ok {
 		t.Errorf("second consumeTombstone returned (%q, %q, %q, true); should be empty after consume", mac, ip, ipv6)
 	}
 }
 
-// tombstones_consumed is what lets a restart test say WHICH path
-// preserved an address (#386), so it has to move exactly when a
-// tombstone is actually replayed — not when one is merely looked for.
-// A counter that over-counts would let the daemon-restart test report
-// the tombstone path for a run that took neither.
 func TestTombstones_ConsumedCounter(t *testing.T) {
 	withStateDir(t, t.TempDir())
 	p := newPluginForTest()
@@ -172,9 +151,6 @@ func TestTombstones_ConsumedCounter(t *testing.T) {
 		t.Fatalf("fresh plugin: tombstones_consumed=%d, want 0", got)
 	}
 
-	// A miss must not count. This is the case that matters: the
-	// daemon-restart test reads the counter as evidence the tombstone
-	// path ran, so a lookup that found nothing must leave it alone.
 	if _, _, _, ok := p.consumeTombstone("net-A", dhcpHostname{}); ok {
 		t.Fatal("consumeTombstone on empty state returned ok=true")
 	}
@@ -190,8 +166,6 @@ func TestTombstones_ConsumedCounter(t *testing.T) {
 		t.Errorf("after one replay: tombstones_consumed=%d, want 1", got)
 	}
 
-	// Consumed exactly once: the second lookup finds nothing, so the
-	// counter must not advance again.
 	if _, _, _, ok := p.consumeTombstone("net-A", dhcpHostname{}); ok {
 		t.Fatal("tombstone was consumable twice")
 	}
@@ -199,8 +173,6 @@ func TestTombstones_ConsumedCounter(t *testing.T) {
 		t.Errorf("a second lookup double-counted: tombstones_consumed=%d, want 1", got)
 	}
 
-	// An ambiguous match (two candidates on one network) is declined by
-	// consumeTombstone, and a declined match is not a replay.
 	p.addTombstone("net-B", "", "aa:aa:aa:aa:aa:aa", "10.0.0.1", "")
 	p.addTombstone("net-B", "", "bb:bb:bb:bb:bb:bb", "10.0.0.2", "")
 	if _, _, _, ok := p.consumeTombstone("net-B", dhcpHostname{}); ok {
@@ -231,31 +203,20 @@ func TestTombstones_TwoOnSameNetworkBothSkipped(t *testing.T) {
 	p.addTombstone("net-A", "", "aa:aa:aa:aa:aa:aa", "10.0.0.1", "")
 	p.addTombstone("net-A", "", "bb:bb:bb:bb:bb:bb", "10.0.0.2", "")
 
-	// Two matches on same network → ambiguous, return ok=false.
-	// The point is to avoid handing one container's MAC to a
-	// concurrently-restarting peer.
 	if mac, ip, ipv6, ok := p.consumeTombstone("net-A", dhcpHostname{}); ok {
 		t.Errorf("consumeTombstone with 2 candidates should return ok=false, got (%q, %q, %q, true)", mac, ip, ipv6)
 	}
 }
 
-// TestTombstones_AmbiguousMatchesDropped encodes the W-3 fix: when
-// two same-network tombstones both match the consume key, return
-// ok=false AND drop both, so the next consume isn't poisoned by the
-// same ambiguity for the rest of the TTL window.
 func TestTombstones_AmbiguousMatchesDropped(t *testing.T) {
 	withStateDir(t, t.TempDir())
 	p := newPluginForTest()
-	// Two tombstones with empty hostnames on the same network — the
-	// classic concurrent-restart case.
 	p.addTombstone("net-A", "", "aa:aa:aa:aa:aa:aa", "10.0.0.1", "")
 	p.addTombstone("net-A", "", "bb:bb:bb:bb:bb:bb", "10.0.0.2", "")
 
 	if _, _, _, ok := p.consumeTombstone("net-A", dhcpHostname{}); ok {
 		t.Fatal("first consume must return ok=false (ambiguous)")
 	}
-	// Subsequent consume must also be ok=false but for "no match"
-	// reasons, not "still ambiguous" — both should be gone.
 	ts, err := loadTombstones()
 	if err != nil {
 		t.Fatalf("loadTombstones: %v", err)
@@ -267,40 +228,25 @@ func TestTombstones_AmbiguousMatchesDropped(t *testing.T) {
 	}
 }
 
-// TestTombstones_HostnameNarrowsMatch encodes the C-5 fix: with two
-// tombstones on the same network but different hostnames, a consume
-// that names one hostname must return only that container's MAC.
-// Before the fix, this case would return ok=false (ambiguous), and
-// before *that* a worse design returned ok=true with whichever
-// tombstone happened to be first — silently swapping container
-// identities during sequential `compose restart`.
 func TestTombstones_HostnameNarrowsMatch(t *testing.T) {
 	withStateDir(t, t.TempDir())
 	p := newPluginForTest()
 	p.addTombstone("net-A", "alpha", "aa:aa:aa:aa:aa:aa", "10.0.0.1", "")
 	p.addTombstone("net-A", "bravo", "bb:bb:bb:bb:bb:bb", "10.0.0.2", "")
 
-	// Consume narrowed by hostname returns only the matching MAC.
 	mac, ip, _, ok := p.consumeTombstone("net-A", dhcpHostname{name: "alpha"})
 	if !ok || mac != "aa:aa:aa:aa:aa:aa" || ip != "10.0.0.1" {
 		t.Fatalf("alpha consume: got (%q, %q, %v), want alpha's tombstone", mac, ip, ok)
 	}
-	// bravo's tombstone must still be there.
 	mac, ip, _, ok = p.consumeTombstone("net-A", dhcpHostname{name: "bravo"})
 	if !ok || mac != "bb:bb:bb:bb:bb:bb" || ip != "10.0.0.2" {
 		t.Fatalf("bravo consume: got (%q, %q, %v), want bravo's tombstone", mac, ip, ok)
 	}
 }
 
-// TestTombstones_EmptyHostnameMatchesAny verifies the backward-compat
-// path: a v0.5.0 tombstone (no hostname) is still consumable when the
-// new code calls with hostname="" or with a non-empty hostname (in
-// which case empty Hostname is treated as "matches anything"). Only
-// the "exactly one" rule still fires.
 func TestTombstones_EmptyHostnameMatchesAny(t *testing.T) {
 	withStateDir(t, t.TempDir())
 	p := newPluginForTest()
-	// Pre-existing tombstone written by an older binary (no hostname).
 	p.addTombstone("net-A", "", "aa:aa:aa:aa:aa:aa", "10.0.0.1", "")
 	mac, _, _, ok := p.consumeTombstone("net-A", dhcpHostname{name: "alpha"})
 	if !ok || mac != "aa:aa:aa:aa:aa:aa" {
@@ -308,11 +254,6 @@ func TestTombstones_EmptyHostnameMatchesAny(t *testing.T) {
 	}
 }
 
-// TestTombstones_ConcurrentAddDoesNotLose asserts that N parallel
-// addTombstone calls all land on disk. tombstoneStore's own mutex
-// serializes the read-modify-write today; a refactor that drops it would
-// silently lose entries because each writer's load+marshal loses
-// concurrent peers' updates. Run with -race for the full guarantee.
 func TestTombstones_ConcurrentAddDoesNotLose(t *testing.T) {
 	withStateDir(t, t.TempDir())
 	p := newPluginForTest()
@@ -345,8 +286,6 @@ func TestTombstones_ConcurrentAddDoesNotLose(t *testing.T) {
 
 func TestTombstones_ExpiredEntriesPruned(t *testing.T) {
 	withStateDir(t, t.TempDir())
-	// Hand-craft an expired entry directly to disk (faster than
-	// sleeping for tombstoneTTL in a test).
 	old := []tombstone{{
 		NetworkID:   "net-A",
 		MacAddress:  "ff:ff:ff:ff:ff:ff",
@@ -373,8 +312,6 @@ func TestRememberAndTakeEndpoint(t *testing.T) {
 	if _, ok := p.takeEndpoint("ep-1"); ok {
 		t.Errorf("take must remove the entry it returned")
 	}
-	// Empty MAC must not be remembered (avoids polluting map for
-	// failed CreateEndpoints).
 	p.rememberEndpoint("ep-2", endpointFingerprint{MAC: "", IPv4: "10.0.0.1"}, dhcpHostname{})
 	if _, ok := p.takeEndpoint("ep-2"); ok {
 		t.Errorf("rememberEndpoint with empty MAC must be a no-op")
@@ -385,14 +322,12 @@ func TestUpdateEndpointIPs_PreservesUnsetField(t *testing.T) {
 	p := newPluginForTest()
 	p.rememberEndpoint("ep-1", endpointFingerprint{MAC: "aa:bb:cc:dd:ee:ff", IPv4: "10.0.0.1", IPv6: "fe80::1"}, dhcpHostname{})
 
-	// Update v4 only — v6 must survive.
 	p.updateEndpointIPs("ep-1", "10.0.0.2", "")
 	fp, _ := p.takeEndpoint("ep-1")
 	if fp.IPv4 != "10.0.0.2" || fp.IPv6 != "fe80::1" {
 		t.Errorf("v4-only update lost v6: %+v", fp)
 	}
 
-	// Update v6 only — v4 must survive.
 	p.rememberEndpoint("ep-2", endpointFingerprint{MAC: "aa:bb:cc:dd:ee:ff", IPv4: "10.0.0.1", IPv6: "fe80::1"}, dhcpHostname{})
 	p.updateEndpointIPs("ep-2", "", "fe80::2")
 	fp, _ = p.takeEndpoint("ep-2")
@@ -401,10 +336,6 @@ func TestUpdateEndpointIPs_PreservesUnsetField(t *testing.T) {
 	}
 }
 
-// TestStateFilePath_RejectsPathInjection pins the go/path-injection
-// (CWE-22) guard: a networkID with separators / traversal must be
-// rejected before it reaches the filesystem, and the resolved path for a
-// valid ID must stay within stateDir.
 func TestStateFilePath_RejectsPathInjection(t *testing.T) {
 	withStateDir(t, t.TempDir())
 
@@ -429,8 +360,6 @@ func TestStateFilePath_RejectsPathInjection(t *testing.T) {
 	}
 }
 
-// TestOptionsOps_RejectInvalidNetworkID: the public save/load/delete entry
-// points refuse a malicious ID rather than touching an out-of-bounds path.
 func TestOptionsOps_RejectInvalidNetworkID(t *testing.T) {
 	withStateDir(t, t.TempDir())
 
@@ -444,7 +373,6 @@ func TestOptionsOps_RejectInvalidNetworkID(t *testing.T) {
 	if err := deleteOptions(bad); err == nil {
 		t.Error("deleteOptions accepted a traversal network id")
 	}
-	// Nothing should have been written anywhere under the temp stateDir.
 	entries, _ := os.ReadDir(stateDir)
 	if len(entries) != 0 {
 		t.Errorf("expected empty stateDir after rejected ops, found %d entries", len(entries))

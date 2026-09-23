@@ -16,14 +16,6 @@ import (
 	"github.com/claymore666/docker-net-dhcp/v2/pkg/util"
 )
 
-// The name rule, at its boundaries (#978).
-//
-// The rule is the operator's, not the plugin's: `docs/reference.md`
-// states it in words and an operator reads `ip link` expecting what it
-// says. So the cases below are the sentences of that paragraph, one
-// test case each, and the expected names are written out rather than
-// computed -- a table that derived its answers the way the subject does
-// would agree with any rule at all.
 func TestDeriveHostIfname_TheRuleAtItsBoundaries(t *testing.T) {
 	// 64 hex, the shape libnetwork actually sends.
 	const ep = "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90"
@@ -87,8 +79,6 @@ func TestDeriveHostIfname_TheRuleAtItsBoundaries(t *testing.T) {
 	}
 }
 
-// Two long names sharing their first nine bytes must not become one
-// name. This is the whole reason the suffix is keyed on the endpoint.
 func TestDeriveHostIfname_TwoLongNamesOnOneHostStayDistinct(t *testing.T) {
 	const epA = "aaaaaaaaaaaa1111"
 	const epB = "bbbbbbbbbbbb2222"
@@ -104,9 +94,6 @@ func TestDeriveHostIfname_TwoLongNamesOnOneHostStayDistinct(t *testing.T) {
 	}
 }
 
-// A hostname is not unique on a host. The suffix must not be derived
-// from the source string, or two containers sharing one hostname derive
-// one name.
 func TestDeriveHostIfname_OneHostnameOnTwoEndpointsDerivesTwoNames(t *testing.T) {
 	a := deriveHostIfname("shared-hostname-value", "1111111111111111")
 	b := deriveHostIfname("shared-hostname-value", "2222222222222222")
@@ -126,8 +113,7 @@ func TestHostIfnameSource_PicksTheFieldTheOptionNames(t *testing.T) {
 		{HostIfnameHostname, "web-host"},
 	} {
 		opts := DHCPNetworkOptions{HostIfname: tc.opt}
-		// The Docker API's Name field carries a leading slash, which no
-		// interface name may contain and ValidIfaceName refuses.
+		// The Docker API's Name carries a leading slash, which ValidIfaceName refuses (#978).
 		if got := opts.hostIfnameSource("/web", "web-host"); got != tc.want {
 			t.Errorf("host_ifname=%q sourced %q, want %q", tc.opt, got, tc.want)
 		}
@@ -179,9 +165,6 @@ func TestValidateModeOptions_HostIfnameIsRefusedWhereNothingStaysOnTheHost(t *te
 	}
 }
 
-// renameLog records what the two netlink seams were asked to do, in
-// order, so an arm is judged on what reached the kernel rather than on
-// which counter moved.
 type renameLog struct {
 	lookups  []string
 	names    []string
@@ -219,9 +202,6 @@ func withRenameSeams(t *testing.T, r *renameLog) {
 	})
 }
 
-// aBridgeEndpoint is a manager on a bridge network that asked for named
-// host links. The endpoint ID is 64 hex, so vethPairNames' 12-hex
-// prefix and deriveHostIfname's 5-hex suffix are both real.
 func aBridgeEndpoint(t *testing.T, opt string) (*dhcpManager, *Plugin) {
 	t.Helper()
 	p := &Plugin{}
@@ -379,9 +359,6 @@ func TestRenameHostLink_AnAltnameThatCannotBeAddedUndoesTheRename(t *testing.T) 
 	}
 }
 
-// The undo can fail too, and then the link really is unreachable by the
-// name every other site derives. It is counted once and said loudly;
-// what it must not do is report success.
 func TestRenameHostLink_AnUndoThatFailsIsStillNotAnApplication(t *testing.T) {
 	m, p := aBridgeEndpoint(t, HostIfnameContainerName)
 	r := &renameLog{
@@ -437,10 +414,7 @@ func TestRenameHostLink_AHostLinkThatIsNotThereIsCountedAndNotRenamed(t *testing
 	}
 }
 
-// The one case where the container's name is already the generated one.
-// It must not go to the kernel: the altname add that follows a rename
-// would then ask for a name the link already has, which is EEXIST, and
-// the undo would rename it to itself.
+// An altname add for a name the link already holds is EEXIST, so this case must not reach the kernel (#978).
 func TestRenameHostLink_ANameThatIsAlreadyTheGeneratedOneAsksTheKernelNothing(t *testing.T) {
 	m, p := aBridgeEndpoint(t, HostIfnameContainerName)
 	r := &renameLog{}
@@ -458,12 +432,7 @@ func TestRenameHostLink_ANameThatIsAlreadyTheGeneratedOneAsksTheKernelNothing(t 
 	}
 }
 
-// What `docker network inspect --verbose` prints for a renamed link.
-//
-// An operator who set host_ifname reads that field and `ip link`, and
-// the two must not disagree: the lookup resolves through the altname,
-// so publishing the name it was looked up BY would print a name the
-// kernel no longer shows anywhere.
+// The lookup resolves through the altname, so the published name is the one the link has (#978).
 func TestEndpointOperInfo_PublishesTheNameTheLinkHas(t *testing.T) {
 	withStateDir(t, t.TempDir())
 	p := newPluginForTest()
@@ -495,14 +464,6 @@ func TestEndpointOperInfo_PublishesTheNameTheLinkHas(t *testing.T) {
 	}
 }
 
-// The wiring between #961's lookup and #978's rename, which neither
-// step's own drives can see: that both run, in that order, on one
-// attach, and that the rename runs on BOTH routes into it.
-//
-// The order is load-bearing. The lookup fills the hostname field and the
-// rename reads it, so a rename moved above the lookup derives its name
-// from an empty string and silently leaves every endpoint on a
-// `hostname` network with its generated name.
 func TestAfterAttach_TheNameReachesTheClientAndThenTheLink(t *testing.T) {
 	m, p := aBridgeEndpoint(t, HostIfnameHostname)
 	client := &fakeJoinClient{}
@@ -534,10 +495,6 @@ func TestAfterAttach_TheNameReachesTheClientAndThenTheLink(t *testing.T) {
 	}
 }
 
-// The route the guard's position exists for: register_dns and the PID
-// fallback have the name before the client starts and never enter the
-// lookup at all. A rename nested inside that lookup's `if` would rename
-// nothing here, on those hosts only, with no counter to say so.
 func TestAfterAttach_ARouteThatAlreadyHadTheNameStillRenamesTheLink(t *testing.T) {
 	m, p := aBridgeEndpoint(t, HostIfnameHostname)
 	r := &renameLog{}
@@ -561,9 +518,6 @@ func TestAfterAttach_ARouteThatAlreadyHadTheNameStillRenamesTheLink(t *testing.T
 	}
 }
 
-// A daemon that never answered renames nothing. The link keeps the name
-// it was created with and #961's hostname_lookup_failures has already
-// said why, so #978 adds no second counter for the same event.
 func TestAfterAttach_ADaemonThatNeverAnsweredRenamesNothing(t *testing.T) {
 	m, p := aBridgeEndpoint(t, HostIfnameContainerName)
 	r := &renameLog{}
@@ -589,25 +543,14 @@ func TestAfterAttach_ADaemonThatNeverAnsweredRenamesNothing(t *testing.T) {
 	}
 }
 
-// fakeKernel models what the kernel does to a link's NAMES, which the
-// seam fixture above deliberately does not: it answers lookups on the
-// altname as well as the primary name, and it refuses a name it is
-// already holding under either.
-//
-// MEASURED on 6.12.107 with the module this repo pins, under
-// `unshare -Urn`, on a veth that is up and enslaved to a bridge:
-//   - LinkSetName to the name the link already has returns 0
-//   - LinkAddAltName with an altname the link already has is EEXIST
-//   - LinkSetName to a name the link holds as an ALTNAME is EEXIST,
-//     because altnames share the kernel's name hash
-//   - LinkByName on an altname resolves and returns the link under its
-//     primary name
+// fakeKernel models link names as measured on 6.12.107 under `unshare -Urn` on a bridged veth (#978):
+// LinkSetName to the current name returns 0; LinkAddAltName of a held altname is EEXIST;
+// LinkSetName to a held altname is EEXIST, as altnames share the name hash; LinkByName on an altname
+// returns the link under its primary name.
 type fakeKernel struct {
 	name     string
 	altNames map[string]bool
-	// taken is every name some OTHER link on this host holds, as a
-	// primary name or an altname; the kernel keeps one table for both,
-	// which is why a collision can come from either.
+	// taken is every name another link holds, primary or altname: the kernel keeps one table for both (#978).
 	taken map[string]bool
 	sets  []string
 	adds  []string
@@ -625,9 +568,6 @@ func withKernelSeams(t *testing.T, k *fakeKernel) {
 	prevBy, prevSet, prevAlt := nlLinkByName, nlLinkSetName, nlLinkAddAltName
 	nlLinkByName = func(name string) (netlink.Link, error) {
 		if k.taken[name] {
-			// Some other link holds it, so this one is not what comes
-			// back; nothing here looks a foreign link up, so refusing
-			// is the honest answer.
 			return nil, unix.ENODEV
 		}
 		if !k.has(name) {
@@ -659,18 +599,7 @@ func withKernelSeams(t *testing.T, k *fakeKernel) {
 	})
 }
 
-// A second attach over an already renamed link is the ORDINARY event,
-// not a pathology: recovery calls Start again for every endpoint it
-// rebuilds after a plugin restart, and its synthesised request carries
-// no sandbox key, so the inspect runs first and the rename runs with
-// the daemon's answer in hand.
-//
-// Without the read-back at host_ifname.go the second pass walks the
-// whole path over a healthy link: the rename to the name it already has
-// succeeds, the altname is EEXIST, the undo is EEXIST, and the operator
-// gets a warn counter and the Error line that says the link must be
-// removed by hand. About a link that is on the bridge, correctly named,
-// and found by teardown without trouble.
+// Recovery calls Start again for every endpoint after a plugin restart, so a renamed link is the ordinary case (#978).
 func TestRenameHostLink_ASecondPassOverTheSameLinkIsNotAFailure(t *testing.T) {
 	m, p := aBridgeEndpoint(t, HostIfnameContainerName)
 	k := &fakeKernel{name: "dh-a1b2c3d4e5f6"}
@@ -708,10 +637,6 @@ func TestRenameHostLink_ASecondPassOverTheSameLinkIsNotAFailure(t *testing.T) {
 	}
 }
 
-// The fixture's own control. If the fake stopped resolving altnames or
-// stopped refusing a name the link already holds, the drive above would
-// pass for the wrong reason, and so would every mutant it is meant to
-// kill.
 func TestFakeKernel_AnswersAsTheKernelWasMeasuredTo(t *testing.T) {
 	k := &fakeKernel{name: "dh-a1b2c3d4e5f6"}
 	withKernelSeams(t, k)
@@ -744,9 +669,6 @@ func TestFakeKernel_AnswersAsTheKernelWasMeasuredTo(t *testing.T) {
 			"share the kernel's name hash, which is why the undo cannot be assumed to work", err)
 	}
 
-	// A name some OTHER link on this host holds. One table for names
-	// and altnames, so the refusal is the same either way, and a lookup
-	// of it does not return this link.
 	k.taken = map[string]bool{"api": true}
 	if err := nlLinkSetName(link, "api"); !errors.Is(err, unix.EEXIST) {
 		t.Errorf("renaming onto a name another interface holds: err = %v, want EEXIST", err)
@@ -756,11 +678,7 @@ func TestFakeKernel_AnswersAsTheKernelWasMeasuredTo(t *testing.T) {
 			"that answered with this link would make a collision look like a link already named", err)
 	}
 
-	// The library does not rewrite the struct on a successful rename,
-	// MEASURED by reading netlink v1.3.1 link_linux.go LinkSetName: it
-	// builds the request from base and returns the kernel's answer. The
-	// fake matches that, so a drive here cannot pass because a fake
-	// updated a field the real one leaves alone.
+	// netlink v1.3.1 LinkSetName does not rewrite the struct on success, and the fake matches (#978).
 	if got := link.Attrs().Name; got != "dh-a1b2c3d4e5f6" {
 		t.Errorf("the link struct's name is %q after renames through the seam, want it untouched at "+
 			"%q, the name it carried when the lookup returned it: the library leaves the struct "+
@@ -769,11 +687,6 @@ func TestFakeKernel_AnswersAsTheKernelWasMeasuredTo(t *testing.T) {
 	}
 }
 
-// A hostname this plugin refused to put on the wire does not get to name
-// an interface instead. safeHostname drops a --hostname carrying a
-// control character because the container chose that value; the
-// derivation would have turned the same value into a legal name, so the
-// refusal is repeated where the name is chosen.
 func TestRenameHostLink_AHostnameTheWireRefusedDoesNotNameTheLink(t *testing.T) {
 	m, p := aBridgeEndpoint(t, HostIfnameHostname)
 	r := &renameLog{}
@@ -797,7 +710,6 @@ func TestRenameHostLink_AHostnameTheWireRefusedDoesNotNameTheLink(t *testing.T) 
 	}
 }
 
-// The other direction: a hostname the wire accepts still names the link.
 func TestRenameHostLink_AHostnameTheWireAcceptsStillNamesTheLink(t *testing.T) {
 	m, _ := aBridgeEndpoint(t, HostIfnameHostname)
 	r := &renameLog{}
@@ -810,17 +722,8 @@ func TestRenameHostLink_AHostnameTheWireAcceptsStillNamesTheLink(t *testing.T) {
 	}
 }
 
-// The same second pass, with the wanted name MOVED instead of standing
-// still: `docker rename web api` on a running container, then a plugin
-// restart. Recovery inspects, the daemon says /api, and the link is
-// named web with the generated name on it as an altname.
-//
-// The read-back does not fire here, because the link is not yet named
-// what this attach wants. What the path must not do is offer the kernel
-// an altname the link already has: that is EEXIST, and the undo that
-// answers it is EEXIST too, so a link that ends up named api, keeping
-// its altname and sitting on its bridge, is reported as one that has to
-// be removed by hand.
+// `docker rename web api` then a plugin restart: the link is web with the generated altname, which must not be
+// re-added (#978).
 func TestRenameHostLink_ARenamedContainerTakesItsNewNameWithoutAFailure(t *testing.T) {
 	m, p := aBridgeEndpoint(t, HostIfnameContainerName)
 	k := &fakeKernel{name: "dh-a1b2c3d4e5f6"}
@@ -860,9 +763,6 @@ func TestRenameHostLink_ARenamedContainerTakesItsNewNameWithoutAFailure(t *testi
 	}
 }
 
-// The other direction, so the skip above cannot widen into "never add
-// the altname": a first attach, where the link still answers to the
-// generated name as its own, must add it.
 func TestRenameHostLink_AFirstAttachStillPutsTheOldNameBackOnTheLink(t *testing.T) {
 	m, p := aBridgeEndpoint(t, HostIfnameContainerName)
 	k := &fakeKernel{name: "dh-a1b2c3d4e5f6"}
@@ -883,15 +783,6 @@ func TestRenameHostLink_AFirstAttachStillPutsTheOldNameBackOnTheLink(t *testing.
 	}
 }
 
-// A renamed container whose new name is already taken by something else
-// on the host. This is the collision arm reached on a SECOND pass, where
-// the link already carries both names and has a name worth keeping.
-//
-// The link must keep what it has -- its current name and its altname --
-// and the conflict counter, not the failure counter, must say so: an
-// operator reading host_ifname_conflicts is told to rename one of the
-// two things, and one reading host_ifname_failures is told the plugin
-// or the kernel misbehaved.
 func TestRenameHostLink_ARenamedContainerWhoseNewNameIsTakenKeepsWhatItHas(t *testing.T) {
 	m, p := aBridgeEndpoint(t, HostIfnameContainerName)
 	k := &fakeKernel{name: "dh-a1b2c3d4e5f6"}
@@ -928,26 +819,8 @@ func TestRenameHostLink_ARenamedContainerWhoseNewNameIsTakenKeepsWhatItHas(t *te
 	}
 }
 
-// THE ROUTE THAT FILLS THE NAME AFTER THE ATTACH, which is every
-// attach on an engine that lets this plugin enter the sandbox through
-// its netns key.
-//
-// MEASURED, engine 29.8.0 against 29.8.1 on the same code: the key
-// route replaced the container PID route (sandbox_key_entries +1 where
-// sandbox_pid_fallbacks was +1), and the PID route was the one that
-// inspected the container on the way in. Without it the daemon is not
-// asked until the lookup below, so the container's name does not exist
-// when the attach reaches this call, and a caller that hands over the
-// value it holds at that moment hands over an empty string. What the
-// operator saw: the container's name on the wire, from the same
-// inspect, and the host-side link still called dh-a1b2c3d4e5f6, with
-// host_ifname_failures counting a name the daemon had answered
-// perfectly well.
-//
-// The hostname has always been passed as a pointer, which is why a
-// `hostname` network never showed this and no test had the shape to
-// catch it. Both fields come from the one lookup and both are read
-// after it runs.
+// Measured, engine 29.8.0 against 29.8.1 on the same code: the netns-key route replaced the PID route, which had
+// inspected the container on the way in, so the name exists only after the lookup (#1051).
 func TestAfterAttach_TheContainerNameReachesTheLinkWhenTheLookupIsLate(t *testing.T) {
 	m, p := aBridgeEndpoint(t, HostIfnameContainerName)
 	client := &fakeJoinClient{}

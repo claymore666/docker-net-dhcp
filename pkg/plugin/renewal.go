@@ -9,16 +9,6 @@ import (
 	"github.com/claymore666/docker-net-dhcp/v2/pkg/dhcp"
 )
 
-// renewalWiring points one persistent client's unanswered-renewal
-// reports at the process-wide counter for its family.
-//
-// The persistent client only. A CreateEndpoint one-shot holds no lease
-// to renew, so there is nothing for it to report and no second writer
-// of this counter; see DHCPClientOptions.OnRenewalStats.
-//
-// The nil check is on the plugin, as in conflictWiring: a dhcpManager
-// built for a unit test carries none, and a client with nowhere to
-// report to still has to run.
 func (p *Plugin) renewalWiring(o *dhcp.DHCPClientOptions, networkID, endpointID string, v6 bool) {
 	if p == nil {
 		return
@@ -26,22 +16,8 @@ func (p *Plugin) renewalWiring(o *dhcp.DHCPClientOptions, networkID, endpointID 
 	o.OnRenewalStats = p.renewalReporter(networkID, endpointID, v6)
 }
 
-// renewalReporter builds the callback that turns one manager's gain in
-// unanswered renewal requests into the plugin's counter and the
-// operator's log line.
-//
-// THE LOG LINE IS HALF THE POINT. #940 is a production host on which
-// the DHCP server stopped answering renewals for 7h52m while
-// /Plugin.Health read healthy, dhcp_timeouts read 0, and the plugin log
-// carried nothing at any level. A counter answers the operator who is
-// already looking at a dashboard; the line is what the operator who is
-// reading logs at 3am has to find. It names the endpoint, because the
-// counter is plugin-wide and cannot.
-//
-// It is WARN and not ERROR: the container still holds a working
-// address, and the failure this reports is recoverable by the server
-// coming back. It becomes an outage, and dhcp_timeouts, only if the
-// retransmissions run out.
+// renewalReporter adds a manager's unanswered-renewal delta to the counter and logs a
+// WARN naming the endpoint, which the plugin-wide counter cannot (#940).
 func (p *Plugin) renewalReporter(networkID, endpointID string, v6 bool) func(dhcp.RenewalStats) {
 	return func(s dhcp.RenewalStats) {
 		if s.Unanswered == 0 {
@@ -59,12 +35,6 @@ func (p *Plugin) renewalReporter(networkID, endpointID string, v6 bool) func(dhc
 	}
 }
 
-// familyCounter picks the half of a family pair this event belongs to.
-//
-// It returns the counter rather than bumping it, which bumpFamily does,
-// because a library delta is added with addUint64's saturation and not
-// with a bare Add: the health surface is int32 and the library counts
-// in uint64.
 func familyCounter(v4Counter, v6Counter intCounter, v6 bool) intCounter {
 	if v6 {
 		return v6Counter

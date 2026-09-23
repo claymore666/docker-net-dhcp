@@ -18,7 +18,6 @@ func TestApiHealth(t *testing.T) {
 		joinHints:      make(map[string]joinHint),
 		persistentDHCP: make(map[string]*dhcpManager),
 	}
-	// Seed some state so we can verify the counters reflect it.
 	p.storeJoinHint("ep-pending-1", joinHint{Gateway: "192.168.0.1"})
 	p.storeJoinHint("ep-pending-2", joinHint{Gateway: "192.168.0.1"})
 	p.registerDHCPManager("ep-active-1", &dhcpManager{})
@@ -55,12 +54,6 @@ func TestApiHealth(t *testing.T) {
 	}
 }
 
-// TestApiHealth_TombstoneWriteFailureUnhealthy verifies that a non-zero
-// tombstoneWriteFailures counter flips the response to unhealthy. The
-// counter is bumped from addTombstone's saveTombstones error path; we
-// just write to it directly here since the surface we care about is
-// what /Plugin.Health reports, not the disk-write path that already
-// has its own coverage.
 func TestApiHealth_TombstoneWriteFailureUnhealthy(t *testing.T) {
 	p := &Plugin{
 		startTime:      time.Now(),
@@ -85,11 +78,6 @@ func TestApiHealth_TombstoneWriteFailureUnhealthy(t *testing.T) {
 	}
 }
 
-// TestApiHealth_JoinStartFailureUnhealthy verifies that a non-zero
-// joinStartFailures counter flips the response to unhealthy and is
-// reported under join_start_failures (#317). The counter is bumped from
-// Join's Start-failure goroutine; as with the tombstone sibling above,
-// the surface under test is what /Plugin.Health reports.
 func TestApiHealth_JoinStartFailureUnhealthy(t *testing.T) {
 	p := &Plugin{
 		startTime:      time.Now(),
@@ -114,28 +102,6 @@ func TestApiHealth_JoinStartFailureUnhealthy(t *testing.T) {
 	}
 }
 
-// TestApiHealth_RecoveryFailureUnhealthy and its quarantine sibling
-// below complete the five. Healthy is one boolean built from five
-// independent terms, and the gate beside it compares that expression by
-// TERM COUNT, not by name -- it cannot do better, because the operands
-// are function-local variables the gate never sees. So dropping
-// `failed == 0` while adding any other term keeps the count at five and
-// the gate stays green.
-//
-// Three of the five already had an arm that dies when its own term is
-// dropped. These two did not, and they are the two whose absence costs
-// most: a failed recovery means a RUNNING container has no renewal
-// client, and a quarantine means every live tombstone on the host was
-// lost, so every container restarting in the next TTL window comes back
-// with a new MAC and address. Either one could have been dropped from
-// the expression with the count intact, the gate green, and the plugin
-// reporting healthy over it.
-//
-// EACH ARM SETS ONE COUNTER AND ONLY ONE. That is what makes the five
-// score independently: this test must go red when `failed == 0` is
-// removed and stay green when any of the other four is, so a mutation
-// is attributed to the term that actually carries it rather than to the
-// union of whatever a fixture happened to set.
 func TestApiHealth_RecoveryFailureUnhealthy(t *testing.T) {
 	p := &Plugin{
 		startTime:      time.Now(),
@@ -158,8 +124,6 @@ func TestApiHealth_RecoveryFailureUnhealthy(t *testing.T) {
 	if got.RecoveryFailed != 1 {
 		t.Errorf("expected 1 recovery failure reported, got %d", got.RecoveryFailed)
 	}
-	// The other four terms stay at zero, so a green here after dropping
-	// `failed == 0` cannot be rescued by some other counter.
 	if got.JoinStartFailures != 0 || got.TombstoneWriteFailures != 0 ||
 		got.AddressConflicts != 0 || got.TombstoneQuarantines != 0 {
 		t.Errorf("fixture leaked into another term: join=%d tsWrite=%d conflicts=%d quarantines=%d",
@@ -168,15 +132,6 @@ func TestApiHealth_RecoveryFailureUnhealthy(t *testing.T) {
 	}
 }
 
-// TestApiHealth_TombstoneQuarantineUnhealthy is the fifth arm. The
-// counter lives on the tombstoneStore rather than on Plugin directly,
-// which is why it reads p.tombstones.quarantines -- a zero-valued
-// tombstoneStore is usable, so no fixture setup is needed beyond it.
-//
-// A quarantine is not a degraded write like its tombstone_write_failures
-// neighbour: the whole file was unreadable and moved aside, so EVERY
-// tombstone on the host is gone at once (#724). Healthy has to be false
-// for that, and until now nothing said so.
 func TestApiHealth_TombstoneQuarantineUnhealthy(t *testing.T) {
 	p := &Plugin{
 		startTime:      time.Now(),
@@ -207,21 +162,12 @@ func TestApiHealth_TombstoneQuarantineUnhealthy(t *testing.T) {
 	}
 }
 
-// TestApiHealth_PerFamilyCounters pins the #212 contract on the wire as
-// #730 restated it: BOTH halves are stored and rendered, and the
-// un-suffixed counter is their sum rather than a counter of its own.
-//
-// The values are chosen so the aggregate cannot be confused with either
-// half — no half equals another family's total — so a snapshot that
-// rendered the wrong field fails a specific assertion rather than
-// happening to match.
 func TestApiHealth_PerFamilyCounters(t *testing.T) {
 	p := &Plugin{
 		startTime:      time.Now(),
 		joinHints:      make(map[string]joinHint),
 		persistentDHCP: make(map[string]*dhcpManager),
 	}
-	// Each family owns its counter; the un-suffixed field is the sum.
 	p.naksReceivedV4.Add(5)
 	p.naksReceivedV6.Add(2)
 	p.dhcpTimeoutsV4.Add(3)
@@ -258,9 +204,6 @@ func TestApiHealth_PerFamilyCounters(t *testing.T) {
 		}
 	}
 
-	// Pin the wire keys so the field names don't silently drift. Both
-	// halves, because #730's whole point is that the v4 number is now
-	// carried rather than reconstructed by a consumer.
 	for _, key := range []string{
 		"naks_received_v4", "dhcp_timeouts_v4", "leases_obtained_v4",
 		"leases_renewed_v4", "lease_changed_v4", "client_stop_failures_v4",

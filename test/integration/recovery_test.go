@@ -135,16 +135,9 @@ func TestRecovery_PluginDisableEnable_PreservesEndpoint(t *testing.T) {
 	}
 	t.Log("plugin re-enabled")
 
-	// Plugin process is up. The walk inside NewPlugin has run — it is
-	// synchronous and Listen binds the socket after it — but the walk
-	// only SPAWNS each endpoint's rebuild, and every counter this test
-	// reads is moved by that rebuild: recovered_ok after Start returns
-	// (pkg/plugin/plugin.go:2932-2969), the sandbox route inside it
-	// (pkg/plugin/dhcp_manager.go:2599). So socket readiness is the
-	// start of the thing under test, not the end of it.
-	//
-	// Plugin.Enabled flips slightly before the socket is listening, so
-	// poll for the socket first, then wait for the rebuild.
+	// Socket readiness is the start of the thing under test: the walk inside NewPlugin only spawns each rebuild,
+	// and recovered_ok moves after Start returns (pkg/plugin/plugin.go:1240-1265, #376). Plugin.Enabled flips
+	// before the socket listens, so poll for the socket first, then wait for the rebuild.
 	harness.WaitPluginHealth(t, ctx, cli, 15*time.Second)
 
 	// The wait, and the assertion, are one thing: recovered_ok reaching

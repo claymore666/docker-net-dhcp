@@ -9,39 +9,15 @@ import (
 	"testing"
 )
 
-// TestRoutes_UnimplementedMethodsAnswer404 pins the status code the
-// daemon sees for the two libnetwork RPCs this driver does not
-// implement but does receive on every container start and stop.
-//
-// It has to be exactly 404, and for a reason that is invisible from
-// here: moby's remote driver skips both calls only when
-// plugins.IsNotFound(err) says so, and that helper compares the HTTP
-// status alone — it never looks at the body. A 500, or a 200 carrying
-// an Err field, both come back as a hard error and every affected
-// container fails to start with "driver failed programming external
-// connectivity on endpoint".
-//
-// Nothing in the plugin chooses this today: the paths are simply
-// unregistered, so http.ServeMux's default handler answers. That makes
-// it exactly the kind of behaviour that a custom NotFound handler or a
-// route-wrapping middleware would take away silently. This test is the
-// thing that goes red.
 func TestRoutes_UnimplementedMethodsAnswer404(t *testing.T) {
 	mux := newTestPlugin(t).newServeMux()
 
-	// Sanity floor: a route we DO serve must not answer 404, or the
-	// assertions below would pass just as well over an empty mux.
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/NetworkDriver.GetCapabilities", nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GetCapabilities: got %d, want 200 — the mux under test is not the real one", rec.Code)
 	}
 
-	// Driven from unroutedRPCs() rather than a second hand-written
-	// list. Request capture allowlists the same function so those calls
-	// can be recorded as evidence (#644); if the two lists were
-	// independent, implementing one of these RPCs would leave the other
-	// list quietly describing a world that no longer exists.
 	unimplemented := append(unroutedRPCs(), "/NetworkDriver.NoSuchMethodExists")
 
 	for _, path := range unimplemented {
@@ -57,10 +33,6 @@ func TestRoutes_UnimplementedMethodsAnswer404(t *testing.T) {
 	}
 }
 
-// unroutedRPCs and routes must not contradict each other. They are two
-// halves of one statement — "these we serve, those we knowingly do not"
-// — and capturablePaths concatenates them, so an entry in both would
-// also mean a duplicate capture name.
 func TestRoutes_UnroutedRPCsAreNotAlsoRouted(t *testing.T) {
 	served := map[string]bool{}
 	for _, r := range (&Plugin{}).routes() {
@@ -79,12 +51,6 @@ func TestRoutes_UnroutedRPCsAreNotAlsoRouted(t *testing.T) {
 	}
 }
 
-// TestRoutes_RegisteredSetIsPinned covers the opposite direction from
-// the 404 test: that one stays green if a route silently disappears,
-// and it turns red if one of the two unimplemented RPCs is ever
-// implemented — which is a legitimate thing to do, just not a silent
-// one. Pinning the whole set means either change is a deliberate edit
-// here, with the comment in routes.go read on the way past.
 func TestRoutes_RegisteredSetIsPinned(t *testing.T) {
 	want := []string{
 		"/NetworkDriver.GetCapabilities",
@@ -96,8 +62,6 @@ func TestRoutes_RegisteredSetIsPinned(t *testing.T) {
 		"/NetworkDriver.Join",
 		"/NetworkDriver.Leave",
 		"/NetworkDriver.GwAllocCheck",
-		// The IPAM driver (#110). One plugin serves both contracts, so
-		// these arrive on the same socket as the eight above.
 		"/IpamDriver.GetCapabilities",
 		"/IpamDriver.GetDefaultAddressSpaces",
 		"/IpamDriver.RequestPool",

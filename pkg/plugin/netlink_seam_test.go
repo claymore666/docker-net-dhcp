@@ -14,9 +14,6 @@ import (
 	"github.com/claymore666/docker-net-dhcp/v2/pkg/util"
 )
 
-// fakeLink is a minimal netlink.Link for driving the type/flags-dependent
-// branches of validateParentForChild and the route helpers without a real
-// interface.
 type fakeLink struct {
 	attrs netlink.LinkAttrs
 	typ   string
@@ -25,7 +22,6 @@ type fakeLink struct {
 func (f *fakeLink) Attrs() *netlink.LinkAttrs { return &f.attrs }
 func (f *fakeLink) Type() string              { return f.typ }
 
-// stubLinkByName swaps nlLinkByName for the test's duration.
 func stubLinkByName(t *testing.T, fn func(string) (netlink.Link, error)) {
 	t.Helper()
 	prev := nlLinkByName
@@ -44,7 +40,7 @@ func TestValidateParentForChild(t *testing.T) {
 		{
 			name:    "lookup_failure",
 			lookErr: errors.New("no such device"),
-			wantErr: nil, // wrapped generic error, just expect non-nil
+			wantErr: nil,
 		},
 		{
 			name:    "reject_bridge",
@@ -163,7 +159,7 @@ func TestAddRoutes_ListError(t *testing.T) {
 
 func TestAddRoutes_DefaultGatewayV4(t *testing.T) {
 	stubRouteList(t, []netlink.Route{
-		{Dst: nil, Gw: net.IPv4(192, 168, 0, 1)}, // default route
+		{Dst: nil, Gw: net.IPv4(192, 168, 0, 1)},
 	}, nil)
 	p := &Plugin{}
 	res := &JoinResponse{}
@@ -175,21 +171,6 @@ func TestAddRoutes_DefaultGatewayV4(t *testing.T) {
 	}
 }
 
-// The host's own IPv6 default route is NOT the container's (#821).
-//
-// THIS TEST IS THE INVERSE OF THE ONE IT REPLACES, deliberately, and
-// the inversion is the change: addRoutes used to copy the host's v6
-// default into res.GatewayIPv6 and now must not. The host's default
-// route is what the HOST's kernel made of an advertisement sent to the
-// host, on a link the container is not on in bridge mode; the
-// container's gateway is what the advertisement on the container's own
-// segment said, which arrives on the hint and is set in Join before
-// this function runs.
-//
-// The v4 sibling above is the preservation control: the same route
-// shape, the other family, still copied. Without it this assertion
-// would also pass against an addRoutes that had stopped reading the
-// default route at all.
 func TestAddRoutes_DoesNotTakeTheV6DefaultFromTheHost(t *testing.T) {
 	stubRouteList(t, []netlink.Route{
 		{Dst: nil, Gw: net.ParseIP("fe80::1")},
@@ -207,10 +188,6 @@ func TestAddRoutes_DoesNotTakeTheV6DefaultFromTheHost(t *testing.T) {
 	}
 }
 
-// And the value that IS set is the one from the hint, all the way
-// through Join's own copy. Asserting the field on a JoinResponse built
-// by hand would pass against a Join that never reads the hint, so this
-// drives the assignment in Join itself.
 func TestJoin_SetsTheV6GatewayFromTheHint(t *testing.T) {
 	res := JoinResponse{}
 	hint := joinHint{GatewayIPv6: "fe80::1", RoutesIPv6: []*StaticRoute{
@@ -226,9 +203,6 @@ func TestJoin_SetsTheV6GatewayFromTheHint(t *testing.T) {
 	}
 }
 
-// skip_routes takes the advertised routes away and leaves the gateway,
-// which is the same split the v4 path has: the option governs static
-// routes, not the default route.
 func TestJoin_SkipRoutesKeepsTheV6Gateway(t *testing.T) {
 	res := JoinResponse{}
 	hint := joinHint{GatewayIPv6: "fe80::1", RoutesIPv6: []*StaticRoute{
@@ -266,8 +240,6 @@ func TestAddRoutes_KernelRouteSkipped(t *testing.T) {
 	}, nil)
 	p := &Plugin{}
 	res := &JoinResponse{}
-	// hint left empty: the kernel-protocol check short-circuits before
-	// the hint deref.
 	if err := p.addRoutes(&DHCPNetworkOptions{}, false, &fakeLink{}, JoinRequest{}, joinHint{}, res); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -279,7 +251,7 @@ func TestAddRoutes_KernelRouteSkipped(t *testing.T) {
 func TestAddRoutes_OnLinkRoute(t *testing.T) {
 	_, dst, _ := net.ParseCIDR("10.0.0.0/8")
 	stubRouteList(t, []netlink.Route{
-		{Dst: dst}, // no Gw -> on-link
+		{Dst: dst},
 	}, nil)
 	p := &Plugin{}
 	res := &JoinResponse{}
@@ -310,12 +282,7 @@ func TestFindLinkByMAC(t *testing.T) {
 			t.Fatal("expected error when LinkList fails")
 		}
 	})
-	// #802: netlink v1.3.1 returns ErrDumpInterrupted alongside a
-	// usable result set, and re-discovering the child inside the
-	// container netns used to abort on it although the link it wants is
-	// very likely in `links`. The tolerance has to reach the RESULT --
-	// an implementation that returned (nil, nil) for the sentinel would
-	// satisfy an error-only assertion and still lose the link.
+	// netlink v1.3.1 returns ErrDumpInterrupted with a usable result set, so the result must survive (#802).
 	t.Run("dump_interrupted_still_finds_it", func(t *testing.T) {
 		got, err := findLinkByMAC(fakeLinkLister{
 			links: []netlink.Link{match},
@@ -357,7 +324,6 @@ func TestAddRoutes_StaticNextHopV4(t *testing.T) {
 	}, nil)
 	p := &Plugin{}
 	res := &JoinResponse{}
-	// hint.IPv4 must be set: the route-skip check dereferences it for v4.
 	hint := joinHint{IPv4: &netlink.Addr{IPNet: &net.IPNet{IP: net.IPv4(192, 168, 0, 50), Mask: net.CIDRMask(24, 32)}}}
 	if err := p.addRoutes(&DHCPNetworkOptions{}, false, &fakeLink{}, JoinRequest{}, hint, res); err != nil {
 		t.Fatalf("unexpected error: %v", err)

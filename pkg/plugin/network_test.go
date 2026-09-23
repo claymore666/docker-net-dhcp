@@ -22,8 +22,8 @@ import (
 
 func TestDHCPStaticRoutes(t *testing.T) {
 	got := dhcpStaticRoutes([]dhcp.Route{
-		{Destination: "10.0.0.0/8", Gateway: "192.168.99.2"}, // next-hop
-		{Destination: "172.16.0.0/12"},                       // on-link (empty gateway)
+		{Destination: "10.0.0.0/8", Gateway: "192.168.99.2"},
+		{Destination: "172.16.0.0/12"},
 	})
 	want := []*StaticRoute{
 		{Destination: "10.0.0.0/8", RouteType: RouteTypeNextHop, NextHop: "192.168.99.2"},
@@ -420,14 +420,6 @@ func TestValidateIPAMData(t *testing.T) {
 	}
 }
 
-// TestSandboxGone is the discriminator behind #373: it decides whether a
-// failed persistent-client start is a plugin fault (running container
-// with no renewal client — healthy-affecting) or a container that simply
-// exited mid-attach (benign).
-//
-// Getting this backwards is expensive in both directions: false "gone"
-// hides a real fault from /Plugin.Health, false "present" pages an
-// operator every time a short-lived container exits.
 func TestSandboxGone(t *testing.T) {
 	dir := t.TempDir()
 	dirs := []string{dir}
@@ -450,32 +442,18 @@ func TestSandboxGone(t *testing.T) {
 	})
 
 	t.Run("empty key is not gone", func(t *testing.T) {
-		// No evidence is not evidence of absence. An empty SandboxKey
-		// must fall back to treating the failure as real, rather than
-		// swallowing every failure on a daemon that stops sending it.
 		if sandboxGoneIn(dirs, "") {
 			t.Error("empty sandbox key treated as gone; that would suppress every join-start failure")
 		}
 	})
 
 	t.Run("key outside the permitted dirs is not gone", func(t *testing.T) {
-		// The file genuinely does not exist, so an unvalidated stat
-		// would say "gone". Rejecting on shape must win: an
-		// unrecognised key is no evidence, not negative evidence.
 		if sandboxGoneIn(dirs, filepath.Join(t.TempDir(), "elsewhere")) {
 			t.Error("accepted a sandbox key outside the permitted netns dirs; unrecognised shapes must degrade to counting a real failure")
 		}
 	})
 
 	t.Run("production dirs are wired in", func(t *testing.T) {
-		// Guards against sandboxGone being left pointed at a test or
-		// empty list, which would make it answer false for every real
-		// Join and silently restore the pre-#373 behaviour.
-		//
-		// Asserted on the validation rather than on sandboxGone itself:
-		// the stat result depends on privilege (see the EACCES subtest
-		// below), and this test must mean the same thing whether it runs
-		// as root on the integration runner or as an ordinary user.
 		if len(sandboxNetnsDirs) == 0 {
 			t.Fatal("sandboxNetnsDirs is empty; sandboxGone can never fire")
 		}
@@ -489,14 +467,7 @@ func TestSandboxGone(t *testing.T) {
 	})
 
 	t.Run("unreadable parent is not gone", func(t *testing.T) {
-		// sandboxGone keys on ErrNotExist specifically, not on "stat
-		// failed". A permission error is not evidence the container
-		// went away, so it must degrade to counting a real failure.
-		//
-		// This is not hypothetical: /var/run/docker is 0700 root, so an
-		// unprivileged caller gets EACCES for every sandbox key. The
-		// plugin runs as root and sees ENOENT; anything else must not
-		// quietly read as "gone".
+		// /var/run/docker is 0700 root, so an unprivileged stat gets EACCES, which must not read as gone (#373).
 		if os.Geteuid() == 0 {
 			t.Skip("running as root; EACCES is not reachable")
 		}
@@ -510,11 +481,6 @@ func TestSandboxGone(t *testing.T) {
 	})
 }
 
-// TestSplitSandboxKeyIn covers the validation that keeps a Join
-// request's path data out of an unconstrained filesystem call
-// (CodeQL go/path-injection, #374). Every rejection here must return an
-// empty dir, which sandboxGoneIn turns into "not gone" — the
-// conservative answer that counts a real failure.
 func TestSplitSandboxKeyIn(t *testing.T) {
 	const okDir = "/var/run/docker/netns"
 	dirs := []string{okDir, "/run/docker/netns"}
@@ -551,14 +517,8 @@ func TestSplitSandboxKeyIn(t *testing.T) {
 	}
 }
 
-// The three error shapes below are verbatim from the integration run
-// that #401 was filed on. Every one of them was counted as a plugin
-// fault; every one of them means the container had already gone.
+// The three error shapes below are verbatim from the integration run #401 was filed on.
 func TestJoinAbortedByVanish(t *testing.T) {
-	// A sandbox key that does not resolve to a permitted directory, so
-	// sandboxGone answers false and cannot rescue any of these cases.
-	// That is deliberate: each subtest has to be classified by its
-	// error alone, which is the whole point of the change.
 	const unhelpfulKey = "/somewhere/else/abc123"
 
 	t.Run("daemon says no such container", func(t *testing.T) {
@@ -570,8 +530,6 @@ func TestJoinAbortedByVanish(t *testing.T) {
 	})
 
 	t.Run("sandbox netns is gone", func(t *testing.T) {
-		// The shape AwaitNetNS now produces: the deadline, with the
-		// last attempt kept in the chain rather than only in the text.
 		err := fmt.Errorf("failed to get sandbox network namespace: %w",
 			fmt.Errorf("%w (last attempt: %w)", context.DeadlineExceeded, syscall.ENOENT))
 		if !joinAbortedByVanish(err, unhelpfulKey) {
@@ -587,9 +545,7 @@ func TestJoinAbortedByVanish(t *testing.T) {
 		}
 	})
 
-	// The other half of the contract, and the more important half: this
-	// must not become a blanket excuse. #373 and #376 both took the
-	// stance that no usable evidence is not evidence of absence.
+	// No usable evidence is not evidence of absence (#373, #376).
 	t.Run("a real fault for a container that is still there stays a fault", func(t *testing.T) {
 		for _, tc := range []struct {
 			name string
@@ -613,8 +569,6 @@ func TestJoinAbortedByVanish(t *testing.T) {
 		sandboxNetnsDirs = []string{dir}
 		t.Cleanup(func() { sandboxNetnsDirs = saved })
 
-		// An error carrying no evidence either way, so only the key can
-		// decide — this is the #373 path, which must be untouched.
 		err := errors.New("failed to start DHCP client: exec format error")
 		if !joinAbortedByVanish(err, filepath.Join(dir, "vanished")) {
 			t.Error("#373's sandbox-key evidence stopped working")
@@ -622,21 +576,8 @@ func TestJoinAbortedByVanish(t *testing.T) {
 	})
 }
 
-// TestJoinFailure_TeardownCancelIsNotAFault pins the classification the
-// #406 grace made necessary.
-//
-// Adding a cancellation path changed what a cancelled attach looks
-// like: run 30700597210 reported six join_start_failures carrying
-// `context canceled` — every one an endpoint that was being torn down
-// while its attach was still running. Nothing was left without a
-// renewal client, because nothing was left. Counting those as faults
-// would have turned a normal Leave into a health-affecting error, which
-// is the same mistake #373 and #376 each had to undo once.
-//
-// The flag is checked rather than the error, deliberately: a cancelled
-// context can come from somewhere that is not a teardown, and excusing
-// every context.Canceled would be the blanket amnesty those two issues
-// were careful not to grant.
+// Run 30700597210 reported six join_start_failures carrying context canceled, each an endpoint torn down mid-attach
+// (#406).
 func TestJoinFailure_TeardownCancelIsNotAFault(t *testing.T) {
 	m := &dhcpManager{startedCh: make(chan struct{})}
 
@@ -644,7 +585,6 @@ func TestJoinFailure_TeardownCancelIsNotAFault(t *testing.T) {
 		t.Fatal("a fresh manager already claims its attach was aborted")
 	}
 
-	// Stop is what sets it, and only Stop.
 	ctx, cancel := context.WithCancel(context.Background())
 	m.attachCancel = cancel
 	m.startErr = context.Canceled
@@ -659,14 +599,6 @@ func TestJoinFailure_TeardownCancelIsNotAFault(t *testing.T) {
 	}
 }
 
-// TestJoinFailureLeavesAddressUnused pins the predicate that decides
-// whether a failed attach hands its address back (#566).
-//
-// The negative half is the important half. A reclaim that fires on the
-// wrong error takes an address away from a container that is using it —
-// the same duplicate assignment #524 was about, except caused by us —
-// so this asserts the default is "do not release" and that only one
-// error opts in.
 func TestJoinFailureLeavesAddressUnused(t *testing.T) {
 	t.Run("no container claimed the endpoint", func(t *testing.T) {
 		if !joinFailureLeavesAddressUnused(util.ErrNoContainer) {
@@ -681,9 +613,6 @@ func TestJoinFailureLeavesAddressUnused(t *testing.T) {
 		}
 	})
 
-	// Every one of these is compatible with a RUNNING container holding
-	// the address. Releasing on any of them is worse than the leak it
-	// would fix.
 	t.Run("a live container keeps its address", func(t *testing.T) {
 		for _, tc := range []struct {
 			name string
@@ -705,15 +634,6 @@ func TestJoinFailureLeavesAddressUnused(t *testing.T) {
 	})
 }
 
-// TestSandboxNetnsVisibleIn pins the diagnostic that makes #567's dead
-// branch observable.
-//
-// The point of separating this from sandboxGoneIn is that sandboxGoneIn
-// answers false for BOTH "the entry is there" and "I cannot read the
-// directory", correctly — for its purpose those mean the same thing.
-// That folding is exactly what let an unreachable directory look
-// healthy for every release up to #567. These cases exist to keep the
-// two distinguishable from outside the process.
 func TestSandboxNetnsVisibleIn(t *testing.T) {
 	populated := t.TempDir()
 	for _, name := range []string{"aaaa", "bbbb", "cccc"} {
@@ -730,10 +650,6 @@ func TestSandboxNetnsVisibleIn(t *testing.T) {
 		want int32
 	}{
 		{
-			// The mount is missing — the state every shipped release
-			// was in. Must be -1 and never 0: a zero here would be
-			// indistinguishable from a host with no containers, which
-			// is the confusion this field exists to end.
 			name: "no readable directory is -1, not 0",
 			dirs: []string{missing},
 			want: -1,
@@ -744,10 +660,6 @@ func TestSandboxNetnsVisibleIn(t *testing.T) {
 			want: -1,
 		},
 		{
-			// Readable and genuinely empty. Legitimate on an idle host,
-			// and only dangerous when endpoints are attached — which is
-			// why the health field is documented to be read against
-			// active_endpoints rather than alone.
 			name: "a readable empty directory is 0",
 			dirs: []string{empty},
 			want: 0,
@@ -758,19 +670,13 @@ func TestSandboxNetnsVisibleIn(t *testing.T) {
 			want: 3,
 		},
 		{
-			// THE DOUBLE-COUNT GUARD. /var/run is a symlink to /run on
-			// most hosts, so both entries in sandboxNetnsDirs name the
-			// same directory. Summing would report six for three
-			// sandboxes and make the number useless for the comparison
-			// it exists to serve.
+			// /var/run is a symlink to /run on most hosts, so both entries name one directory and must not be summed
+			// (#567).
 			name: "the same directory reached twice is not counted twice",
 			dirs: []string{populated, populated},
 			want: 3,
 		},
 		{
-			// An unreadable first entry must not mask a readable
-			// second one, or a host whose netns lives under /run gets
-			// -1 while the evidence is right there.
 			name: "an unreadable directory falls through to a readable one",
 			dirs: []string{missing, populated},
 			want: 3,
@@ -786,19 +692,6 @@ func TestSandboxNetnsVisibleIn(t *testing.T) {
 	}
 }
 
-// The production directory list must be what the manifest mounts.
-//
-// This is the assertion that was missing. network_test.go tested
-// sandboxGoneIn thoroughly by injecting t.TempDir()s, so it proved the
-// logic and said nothing about whether production's input was
-// reachable — the parameter that made the function testable is the
-// parameter that let the tests never touch the failing case (#567).
-//
-// It cannot check that the mount WORKS from here; that needs a running
-// plugin and is asserted by the integration suite against
-// sandbox_netns_visible. It can check that nobody removes the mount
-// while leaving the code that depends on it, which is the regression
-// that would restore the dead branch silently.
 func TestSandboxNetnsDirsAreMounted(t *testing.T) {
 	for _, name := range pluginManifests {
 		t.Run(name, func(t *testing.T) {
@@ -826,12 +719,7 @@ func TestSandboxNetnsDirsAreMounted(t *testing.T) {
 	}
 }
 
-// pluginManifests is every manifest that ships a plugin, because a gate
-// that reads one of them cannot see a mount added to the other.
-// config-cover.json builds the instrumented plugin the coverage lane
-// enables, and it carried the same lazily-created bind source (#588) —
-// a lane that runs once per release would have failed on it long after
-// the PR that introduced it.
+// pluginManifests includes config-cover.json, which carried the same lazy bind source (#588).
 var pluginManifests = []string{"config.json", "config-cover.json"}
 
 type manifestMount struct {
@@ -858,16 +746,8 @@ func readPluginManifest(t *testing.T, name string) []manifestMount {
 	return manifest.Mounts
 }
 
-// enableTimeMountSources are the only bind sources config.json may name,
-// each with the reason it is present on a host that has just installed
-// the plugin and done nothing else.
-//
-// The daemon does not create a missing bind source (#440), so a mount
-// whose source does not exist fails the enable and takes the whole
-// install with it. The question a new mount has to answer is therefore
-// not "does this path exist on my machine" but "does it exist on a host
-// whose daemon has never created a network sandbox" — which is every
-// first install, and almost no machine anyone tests on.
+// The daemon does not create a missing bind source (#440), so each source must exist on a host that has run no
+// container (#588).
 var enableTimeMountSources = map[string]string{
 	"/var/run/docker.sock": "the daemon's own socket; the plugin cannot be called at all without it",
 	"/var/run/docker":      "created at daemon start — it holds plugins/, which must exist before any plugin can be enabled",
@@ -876,31 +756,13 @@ var enableTimeMountSources = map[string]string{
 	"/var/lib/dh-capture":  "REQUEST_CAPTURE_DIR for the instrumented plugin (#644); `make capture-fixtures` mkdir -p's it before create/enable, and it never ships in config.json",
 }
 
-// lazyMountSources are paths the daemon creates on demand rather than at
-// startup. Naming one as a bind source builds an install that works on
-// every machine that has run a container and fails on every machine that
-// has not.
+// lazyMountSources are created by the daemon on demand, so binding one fails on a fresh install (#588).
 var lazyMountSources = map[string]string{
 	"/var/run/docker/netns": "libnetwork creates it on the first sandbox, not at daemon start",
 	"/run/docker/netns":     "same directory by the other name",
 }
 
-// A bind source that does not exist yet fails the enable, so every one
-// of them has to be a path the daemon has already made by the time it
-// enables plugins.
-//
-// This is #588 written down as a check. v1.6.0-rc2 mounted
-// /var/run/docker/netns, which libnetwork does not create until the
-// first container sandbox. Every host we own had run a container, so the
-// directory was always there: the integration suite passed, the coverage
-// lane passed, and production would have upgraded without a murmur. The
-// only machine that could see it was a hosted runner installing onto a
-// daemon that had never started anything — verify-install, which caught
-// it, but only by accident of being fresh rather than by asking.
-//
-// TestSandboxNetnsDirsAreMounted guards the opposite direction: that the
-// mount does not disappear. Neither one implies the other, and this
-// release needed both.
+// v1.6.0-rc2 mounted /var/run/docker/netns, which libnetwork creates only with the first sandbox (#588).
 func TestPluginMountSourcesExistAtEnableTime(t *testing.T) {
 	for _, name := range pluginManifests {
 		t.Run(name, func(t *testing.T) {

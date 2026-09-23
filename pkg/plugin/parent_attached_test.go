@@ -13,12 +13,6 @@ import (
 	"time"
 )
 
-// TestParentAttachedEndpointOperInfo_NoLink covers the expected case:
-// by the time anyone polls EndpointOperInfo for a macvlan/ipvlan
-// endpoint, the child link has typically been moved into the
-// container's netns. The host-side LinkByName lookup fails — that's
-// not an error; we still return the static fields (mode, parent,
-// host-link name) so libnetwork has something to display.
 func TestParentAttachedEndpointOperInfo_NoLink(t *testing.T) {
 	p := newPluginForTest()
 
@@ -36,7 +30,7 @@ func TestParentAttachedEndpointOperInfo_NoLink(t *testing.T) {
 		"mode":          ModeMacvlan,
 		"parent":        "ens18",
 		"sub_link_host": subLinkName(r.EndpointID),
-		"sub_link_mac":  "", // expected empty: the link is in the container netns by now
+		"sub_link_mac":  "",
 	}
 	for k, v := range want {
 		if got := res.Value[k]; got != v {
@@ -45,9 +39,6 @@ func TestParentAttachedEndpointOperInfo_NoLink(t *testing.T) {
 	}
 }
 
-// TestParentAttachedEndpointOperInfo_IPvlan covers the ipvlan path —
-// same flow as macvlan but the mode field is encoded differently and
-// libnetwork-facing operators rely on it being honest.
 func TestParentAttachedEndpointOperInfo_IPvlan(t *testing.T) {
 	p := newPluginForTest()
 	opts := DHCPNetworkOptions{Mode: ModeIPvlan, Parent: "ens18"}
@@ -62,12 +53,6 @@ func TestParentAttachedEndpointOperInfo_IPvlan(t *testing.T) {
 	}
 }
 
-// TestDeleteParentAttachedEndpoint_LinkAlreadyGone is the expected
-// path on container teardown: the macvlan/ipvlan child has been
-// reaped along with the container netns by the time we get here.
-// LinkByName fails with "not found"; the function logs and returns
-// nil. A regression that propagated the netlink error here would
-// surface as spurious DeleteEndpoint failures on every clean shutdown.
 func TestDeleteParentAttachedEndpoint_LinkAlreadyGone(t *testing.T) {
 	p := newPluginForTest()
 	r := DeleteEndpointRequest{
@@ -79,10 +64,6 @@ func TestDeleteParentAttachedEndpoint_LinkAlreadyGone(t *testing.T) {
 	}
 }
 
-// TestNewDHCPManager covers the constructor — verifies the channels
-// are initialized non-nil (a refactor that swapped to lazy
-// initialization would deadlock Stop's <-startedCh on a manager
-// whose Start was never called).
 func TestNewDHCPManager(t *testing.T) {
 	r := JoinRequest{NetworkID: "net-1", EndpointID: "ep-1"}
 	opts := DHCPNetworkOptions{Mode: ModeMacvlan, Parent: "ens18"}
@@ -100,7 +81,6 @@ func TestNewDHCPManager(t *testing.T) {
 	if m.startedCh == nil {
 		t.Error("startedCh must be non-nil so Stop's <-startedCh doesn't deadlock")
 	}
-	// Channel must be unclosed initially — Start closes it on completion.
 	select {
 	case <-m.startedCh:
 		t.Error("startedCh should not be closed at construction")
@@ -108,9 +88,6 @@ func TestNewDHCPManager(t *testing.T) {
 	}
 }
 
-// #408: a restart re-applies the previous endpoint's MAC, so it collides
-// with the link it is replacing until DeleteEndpoint removes it. The
-// kernel says EADDRINUSE and the whole `docker restart` fails.
 func TestLinkUpAwaitingAddress(t *testing.T) {
 	swapSetUp := func(t *testing.T, fn func(netlink.Link) error) *int {
 		t.Helper()
@@ -126,8 +103,6 @@ func TestLinkUpAwaitingAddress(t *testing.T) {
 	link := &netlink.Macvlan{LinkAttrs: netlink.LinkAttrs{Name: "dh-test"}}
 
 	t.Run("waits out the link it is replacing", func(t *testing.T) {
-		// Busy at first, then the old endpoint's link goes away — which
-		// is what DeleteEndpoint landing looks like from here.
 		var n int
 		calls := swapSetUp(t, func(netlink.Link) error {
 			n++
@@ -188,8 +163,6 @@ func TestLinkUpAwaitingAddress(t *testing.T) {
 	})
 
 	t.Run("any other error is immediate, not retried", func(t *testing.T) {
-		// Retrying a permission problem or a missing link just burns the
-		// budget and reports the wrong cause at the end.
 		boom := errors.New("operation not permitted")
 		calls := swapSetUp(t, func(netlink.Link) error { return boom })
 		waited, err := linkUpAwaitingAddress(context.Background(), link, time.Second)
@@ -215,21 +188,11 @@ func TestLinkUpAwaitingAddress(t *testing.T) {
 		if !errors.Is(err, context.Canceled) {
 			t.Errorf("want context.Canceled, got %v", err)
 		}
-		// The kernel's reason still has to survive, or a cancelled
-		// restart reports nothing about why it was waiting.
 		if !errors.Is(err, unix.EADDRINUSE) {
 			t.Errorf("the last attempt's error was discarded: %v", err)
 		}
 	})
 }
-
-// The #408 fix shipped as v1.4.0's headline defect repair and recorded
-// nothing when it worked — no counter, no log line, not even at debug.
-// An operator could not tell whether their host meets the window at
-// all, how often, or whether the budget is close to expiring (#422).
-//
-// These pin the counting decision. The wait itself is covered above;
-// what is new is that meeting the window is now observable.
 
 func TestNoteRestartLinkUpWait_CountsASuccessfulWait(t *testing.T) {
 	p := &Plugin{}
@@ -249,8 +212,6 @@ func TestNoteRestartLinkUpWait_CountsAnExpiredBudgetSeparately(t *testing.T) {
 	if got := p.restartLinkUpTimeouts.Load(); got != 1 {
 		t.Errorf("restart_link_up_timeouts = %d, want 1", got)
 	}
-	// Folding the two together would make the fix look like it was
-	// working on exactly the runs where it was not.
 	if got := p.restartLinkUpWaited.Load(); got != 0 {
 		t.Errorf("restart_link_up_waited = %d, want 0 — a failed wait is not a carried restart", got)
 	}
@@ -266,12 +227,6 @@ func TestNoteRestartLinkUpWait_SilentWhenTheWindowNeverArose(t *testing.T) {
 	}
 }
 
-// Neither counter may flip healthy. A successful wait is the fix
-// working, and a timeout is already loud — it surfaces to the operator
-// as `address already in use` from their own docker restart. Making
-// either healthy-affecting would page someone over an error they are
-// already looking at, and #421 is separately trying to make `healthy`
-// mean something precise.
 func TestRestartLinkUpCounters_AreNotHealthyAffecting(t *testing.T) {
 	p := &Plugin{
 		joinHints:      make(map[string]joinHint),

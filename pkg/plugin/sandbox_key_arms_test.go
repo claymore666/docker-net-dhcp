@@ -17,10 +17,6 @@ import (
 	dNetwork "github.com/docker/docker/api/types/network"
 )
 
-// armCounts is the whole arm surface, read together. Read together
-// because the property being asserted is an ACCOUNT of
-// sandbox_key_entry_failures, not four independent numbers: a test that
-// checks one arm rose passes on a build where two did.
 type armCounts struct {
 	failures      int32
 	absent        int32
@@ -45,38 +41,14 @@ func (a armCounts) sum() int32 {
 	return a.absent + a.notPermitted + a.notANamespace + a.wrongType + a.unavailable
 }
 
-// TestSandboxKeyRefusal_EachArmIsCountedSeparately is the unit half of
-// the finding the review raised: SECURITY.md says the key route is
-// refused because the daemon's per-sandbox bind mounts are not
-// propagated into this plugin's mount namespace, and before the arms
-// existed nothing in the tree — no test, no cell, no log line reaching a
-// green run — could tell that apart from a key this plugin declines on
-// sight, which is what a daemon with a non-default --exec-root produces.
-// Identical aggregate, opposite remedies.
-//
-// Every case drives the PRODUCTION opener (the one that reads the
-// package variable) so the counters are reached the way an attach
-// reaches them, and each asserts the whole arm surface rather than its
-// own arm: an arm that fires as well is as wrong as an arm that does
-// not fire.
+// A key outside the permitted directories is what a daemon with a non-default --exec-root sends (#725).
 func TestSandboxKeyRefusal_EachArmIsCountedSeparately(t *testing.T) {
-	// The fallback needs a PID that is NOT the container's, so the PID
-	// route refuses too and no case here can pass by taking it.
 	for _, tc := range []struct {
-		name string
-		// entry builds the fixture inside dir and returns the key to
-		// hand the opener. An empty return means "a key outside dir".
+		name  string
 		entry func(t *testing.T, dir string) string
 		want  armCounts
 	}{
 		{
-			// The empty key is the recovery path's shape: post-restart
-			// adoption builds a manager for a live container with no
-			// Join behind it, so there is no key. It counted as
-			// not_permitted until 2.0-alpha.1, which made every plugin
-			// restart read as a host running a non-default --exec-root
-			// -- the one arm whose documented remedy is a change to
-			// this plugin.
 			name:  "no sandbox key at all",
 			entry: func(t *testing.T, dir string) string { return "" },
 			want:  armCounts{failures: 1, absent: 1},
@@ -124,8 +96,6 @@ func TestSandboxKeyRefusal_EachArmIsCountedSeparately(t *testing.T) {
 			p := &Plugin{}
 			m := &dhcpManager{plugin: p}
 
-			// Short: the "never appears" case is the only one that
-			// spends the budget, and it has to spend all of it.
 			ctx, cancel := context.WithTimeout(context.Background(), 120*time.Millisecond)
 			defer cancel()
 
@@ -141,8 +111,6 @@ func TestSandboxKeyRefusal_EachArmIsCountedSeparately(t *testing.T) {
 					"wrong as one that does not fire: the five are an account of "+
 					"sandbox_key_entry_failures, and a cell reads them as one.", got, tc.want)
 			}
-			// Stated separately from the comparison above so a future
-			// case that changes `want` cannot drop the invariant with it.
 			if got.sum() != got.failures {
 				t.Errorf("the arms sum to %d and sandbox_key_entry_failures is %d: a refusal was "+
 					"counted in the aggregate and attributed to no arm", got.sum(), got.failures)
@@ -151,13 +119,6 @@ func TestSandboxKeyRefusal_EachArmIsCountedSeparately(t *testing.T) {
 	}
 }
 
-// TestSandboxKeyRefusal_ClassificationIsTotal drives the classifier with
-// an error carrying none of the three sentinels.
-//
-// The residual arm is the reason the sum invariant holds by
-// construction rather than by everybody remembering to add a counter
-// when they add a refusal. Drive the absence: with the default arm gone,
-// this case increments nothing and the invariant breaks.
 func TestSandboxKeyRefusal_ClassificationIsTotal(t *testing.T) {
 	p := &Plugin{}
 	p.countSandboxKeyRefusal(context.DeadlineExceeded)
@@ -173,17 +134,7 @@ func TestSandboxKeyRefusal_ClassificationIsTotal(t *testing.T) {
 	}
 }
 
-// TestSandboxKeyFallback_IsNotAWarning is finding 3.
-//
-// On a host whose sandbox netns mount is private this fallback happens
-// on EVERY attach, of every container, forever. A warning asks its reader to do something, and
-// there is nothing to do — so a line that is correct and unactionable
-// on every attach of a healthy host is training an operator to filter
-// the level. The counters carry the signal at every log level; the line
-// carries the detail.
-//
-// Both directions are asserted. Only the first would be satisfied by
-// deleting the line altogether.
+// On a host whose sandbox netns mount is private this fallback runs on every attach, so it logs below warning (#725).
 func TestSandboxKeyFallback_IsNotAWarning(t *testing.T) {
 	withSandboxNetnsDirs(t, []string{"/var/run/docker/netns"})
 
@@ -231,9 +182,6 @@ func TestSandboxKeyFallback_IsNotAWarning(t *testing.T) {
 		t.Errorf("no debug line was emitted for the fallback:\n%s\nLowering the level must not mean "+
 			"deleting the evidence — the reason the key was refused is only in this line.", out)
 	}
-	// The reason is taken from the sentinel rather than typed, so a
-	// reworded refusal cannot leave this asserting a string nothing
-	// emits any more.
 	for _, want := range []string{"the container PID route carries this attach", errSandboxKeyNotPermitted.Error()} {
 		if !strings.Contains(out, want) {
 			t.Errorf("the fallback line does not carry %q:\n%s\n"+
@@ -242,17 +190,6 @@ func TestSandboxKeyFallback_IsNotAWarning(t *testing.T) {
 	}
 }
 
-// TestMetricHelp_NamesTheExpectedStateAsExpected is finding 3's other
-// half, and the surface an operator actually reads: the HELP string
-// served on /metrics, which a dashboard shows beside the number.
-//
-// The counter's help used to say a sustained rise "means the
-// /var/run/docker mount is not carrying the daemon's sandbox netns
-// entries on this host" — true, and phrased as a diagnosis of a fault,
-// for a state that is normal on every host whose sandbox netns mount
-// is private. The prose is not
-// checkable in general; that it does not call the normal state abnormal
-// without saying so is.
 func TestMetricHelp_NamesTheExpectedStateAsExpected(t *testing.T) {
 	help := map[string]string{}
 	for _, d := range metricDefs() {
@@ -271,8 +208,6 @@ func TestMetricHelp_NamesTheExpectedStateAsExpected(t *testing.T) {
 				"says so; an operator reading a dashboard sees this string instead.", name, h)
 		}
 	}
-	// The other direction: the arm that is NOT expected must not be
-	// described as if it were, or the pair says nothing.
 	if h := help["sandbox_key_not_permitted"]; !strings.Contains(strings.ToLower(h), "not expected") {
 		t.Errorf("the /metrics help for sandbox_key_not_permitted does not mark it as the "+
 			"unexpected arm:\n%s\nIt is the one that shares an aggregate with the ordinary case "+
@@ -280,19 +215,6 @@ func TestMetricHelp_NamesTheExpectedStateAsExpected(t *testing.T) {
 	}
 }
 
-// TestStart_RecoveryTakesTheKeyFromTheInspect is finding 4.
-//
-// recoverOneEndpoint synthesises a JoinRequest with NO SandboxKey — a
-// re-adoption has no Join to carry one — so the only production route to
-// the key on that path is the ContainerInspect that Start already makes.
-// A reviewer's mutant deleting that assignment SURVIVED `go test
-// ./pkg/...`: the sole observer was one integration cell on one shard.
-//
-// This drives Start with the recovery SHAPE (empty joinReq.SandboxKey)
-// and a fake daemon whose inspect carries a key naming a real network
-// namespace, and asserts the key route was the one taken. It exercises
-// the LINE, not a helper called by it, which is the only version that
-// kills that mutant.
 func TestStart_RecoveryTakesTheKeyFromTheInspect(t *testing.T) {
 	dir := t.TempDir()
 	key := filepath.Join(dir, "ee55ff66")
@@ -305,12 +227,7 @@ func TestStart_RecoveryTakesTheKeyFromTheInspect(t *testing.T) {
 	const epID = "epid-recovery-key-source"
 	const ctrID = "ctrid-recovery-key-source"
 
-	// The key lives here and NOWHERE else in this test: the JoinRequest
-	// below carries none, exactly as a re-adoption's synthesised one
-	// does. Assigned through the promoted field rather than through a
-	// composite literal, because the struct that declares it is
-	// deprecated and naming it fails staticcheck — the production read
-	// in dhcp_manager.go goes through the same promoted field.
+	// Set through the promoted field, since naming the deprecated struct fails staticcheck.
 	settings := &dContainer.NetworkSettings{}
 	settings.SandboxKey = key
 
@@ -337,10 +254,6 @@ func TestStart_RecoveryTakesTheKeyFromTheInspect(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	// Start is EXPECTED to fail: there is no container link in this
-	// process's namespace to locate. Everything asserted below happens
-	// before that point, and asserting the counters rather than the
-	// error is what keeps this test about the key source.
 	_ = m.Start(ctx)
 	closeNsHandle(m.nsHandle)
 	closeNetHandle(m.netHandle)
@@ -360,15 +273,6 @@ func TestStart_RecoveryTakesTheKeyFromTheInspect(t *testing.T) {
 	}
 }
 
-// TestHealthSnapshot_CarriesTheRefusalArms is the wiring assertion for
-// the arms, and it is not decoration: an arm that is counted in the
-// process and not published is an arm no cell can read, which is the
-// exact shape of the finding it answers. The counters were already
-// right when the review found nothing could see them.
-//
-// Distinct values per arm, so a snapshot that populates every field
-// from one counter — or wires two fields to the same one — fails here
-// rather than agreeing with itself.
 func TestHealthSnapshot_CarriesTheRefusalArms(t *testing.T) {
 	p := &Plugin{}
 	p.sandboxKeyAbsent.Store(2)

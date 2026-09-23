@@ -12,10 +12,6 @@ import (
 	"github.com/claymore666/docker-net-dhcp/v2/pkg/dhcp"
 )
 
-// Six deltas into six counters, with six distinct values: the failure
-// this drives is a fold that adds the right numbers to the wrong
-// counters, which compiles, publishes six plausible series and is
-// invisible in any test that folds a single value.
 func TestAddRouterStats_EachDeltaReachesItsOwnCounter(t *testing.T) {
 	p := &Plugin{}
 	p.addRouterStats(dhcp.RouterStats{
@@ -44,16 +40,6 @@ func TestAddRouterStats_EachDeltaReachesItsOwnCounter(t *testing.T) {
 	}
 }
 
-// Deltas accumulate, and ALL SIX do.
-//
-// A counter that stored its argument instead of adding it would read as
-// the last manager's delta rather than as the process's total, and on a
-// host with more than one IPv6 container it would go DOWN -- the one
-// direction these may not move. Every field is driven here rather than
-// one of them: six lines with the same shape are six places the wrong
-// operator can be written, and a test that drives one of them leaves
-// the other five to a reading of the diff. MEASURED: with only
-// AdvertsSeen driven, a mutant storing SolicitsSent survived.
 func TestAddRouterStats_EverySixDeltasAccumulate(t *testing.T) {
 	p := &Plugin{}
 	first := dhcp.RouterStats{
@@ -86,10 +72,6 @@ func TestAddRouterStats_EverySixDeltasAccumulate(t *testing.T) {
 	}
 }
 
-// The health surface is int32 and the library counts in uint64, so a
-// cast is the natural thing to write and turns a large value negative.
-// A counter that goes negative reads as a reset, which is the one
-// direction a Prometheus counter may not move in.
 func TestAddRouterStats_SaturatesRatherThanGoingNegative(t *testing.T) {
 	p := &Plugin{}
 	p.addRouterStats(dhcp.RouterStats{AdvertsSeen: math.MaxInt32 + 1})
@@ -99,14 +81,6 @@ func TestAddRouterStats_SaturatesRatherThanGoingNegative(t *testing.T) {
 	}
 }
 
-// The callback is armed in EVERY IPv6 mode, and that is the difference
-// from the fallback reporter beside it.
-//
-// Router discovery is not a mode's business: a `dhcp` segment's client
-// solicits and reads the M and O flags exactly as a `slaac` one does.
-// A version that armed this only where OnV6Fallback is armed would
-// publish router-discovery numbers for `auto` networks and zero for
-// every other kind, which reads as a segment with no router on it.
 func TestV6Wiring_ArmsTheRouterStatsCallbackInEveryMode(t *testing.T) {
 	id6 := dhcp.Identity6{DUID: []byte{0, 4, 1, 2, 3, 4}, IAID: 0x11223344}
 	for _, tc := range []struct {
@@ -137,9 +111,6 @@ func TestV6Wiring_ArmsTheRouterStatsCallbackInEveryMode(t *testing.T) {
 	}
 }
 
-// A manager built for a unit test carries a nil plugin, and a counter
-// has nowhere to go. The mode still has to reach the wire, which is the
-// rule the two callbacks in this helper already follow.
 func TestV6Wiring_ANilPluginArmsNoCallbackAndStillCarriesTheMode(t *testing.T) {
 	var p *Plugin
 	var base dhcp.DHCPClientOptions
@@ -155,8 +126,6 @@ func TestV6Wiring_ANilPluginArmsNoCallbackAndStillCarriesTheMode(t *testing.T) {
 	}
 }
 
-// The counters reach the served document. Without this the six fields
-// could be folded correctly and never leave the process.
 func TestHealth_ServesTheRouterDiscoveryCounters(t *testing.T) {
 	p := &Plugin{}
 	p.addRouterStats(dhcp.RouterStats{

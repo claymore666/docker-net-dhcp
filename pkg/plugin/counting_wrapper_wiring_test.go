@@ -12,64 +12,9 @@ import (
 	"testing"
 )
 
-// Counters whose increment lives inside a wrapper are only protected
-// while that wrapper is the ONLY thing that calls the function it
-// wraps. This table is that rule, one row per counter.
-//
-// Nothing else can enforce it. Every test of such a counter drives the
-// wrapper, so a caller that reverts to the wrapped function directly
-// leaves the whole suite green while the counter silently stops firing
-// on the only path in production that reaches it. The rows below were
-// found that way -- as surviving mutants, by running them, not by
-// reading the code, and so was the third.
-//
-// WHAT THIS TABLE DOES NOT SEE, and it must be said here rather than
-// discovered later. It matches names and binds in one package's AST. It
-// is a real step up from a grep -- it will not be fooled by a comment
-// or a string -- but it is not alias analysis, and an author determined
-// to reach a subject some other way can:
-//
-//   - hand the subject through a struct field, a map, a closure capture
-//     or an interface, none of which is inspected;
-//   - reach it from another package, which is never parsed;
-//   - reach it by reflection.
-//
-// The direct bind forms ARE covered, because those are the ones a
-// normal person reaches for when the plain call is inconvenient: taking
-// its address, assigning it to a local, or binding it at package scope.
-// That is the population a wiring gate is aimed at, and the limit above
-// is the honest boundary rather than a to-do.
-//
-// CALLED IS NOT REACHED, and this is the boundary most likely to be
-// over-read given how much else this file states. Every row asks
-// whether anything BYPASSES the wrapper. None asks whether the wrapper
-// is on a live path. So a counter can stop firing entirely with all
-// rows green: leave the wrapper as the callee's only caller, but let
-// the wrapper itself be reached only from code nothing calls, and the
-// table sees one caller and passes while the counter fires never.
-// Driven, not reasoned: removing a row's real call site and adding a
-// dead production function in its place leaves the whole table green.
-// A self-call is excluded, so the one-hop version of this is closed;
-// a two-hop dead chain walks straight through.
-//
-// Closing it properly means a transitive walk from the exported surface
-// -- reachability, not call counting -- which is a different gate and a
-// larger one. It is deliberately not built here. What this file
-// protects is the bypass, and dead code is caught by the coverage
-// ratchet and by review rather than by this table.
-//
-// The property is about Go source, so this is a Go test using go/ast
-// rather than a shell gate: no lane entry, no OUT_OF_LANE declaration
-// and no meta-test of its own, because it IS its own meta-test. Add a
-// second call site to any row and it goes red, which is the entire
-// property. There is no hand-kept list to drift.
-// The two netns rows name openSandboxNetNSLazyPID and not
-// openSandboxNetNS. #417 split the opener so the container's PID is
-// resolved only where the sandbox key route is refused, and the counted
-// body went with the fallback it counts; openSandboxNetNS is now a thin
-// caller that hands it a PID it already has. The property is unchanged
-// and so is its subject: one caller of the open, one place the counter
-// moves.
+// Each counter's wrapper must be the only caller of what it wraps (#769). The check reads names and direct binds in
+// one package's AST; a struct field, closure, other package or reflection is not seen, and neither is a wrapper
+// reached only from dead code. The netns rows name openSandboxNetNSLazyPID, where #417 moved the counted body.
 func TestCountingWrappers_AreTheOnlyCallers(t *testing.T) {
 	tests := []struct {
 		callee  string
@@ -84,13 +29,6 @@ func TestCountingWrappers_AreTheOnlyCallers(t *testing.T) {
 				"docs/reference.md tells operators that counter is the only thing distinguishing that " +
 				"refusal from a slow container start",
 		},
-		// The observe/observeLease row went with the outage watchdog.
-		// lease_time_clamped counted a lease lifetime cut down to stay
-		// usable as a synthetic deadline; the library owns the lease's
-		// own expiry and represents an infinite lease as a zero Expire
-		// (seam D-10), so there is no lifetime to clamp and no counter
-		// to guard. The row is not merely unreachable — its callee,
-		// its wrapper and its counter are all deleted.
 		{
 			callee:  "netnsPIDMismatches",
 			wrapper: "openSandboxNetNSLazyPID",
@@ -118,18 +56,6 @@ func TestCountingWrappers_AreTheOnlyCallers(t *testing.T) {
 				"the second is the only thing that reports a guard that did not take, which otherwise " +
 				"presents as a container that is healthy until the advertisement it holds expires (#875)",
 		},
-		// The rows above cost one line each, which was the point
-		// of the table: the next instance of this shape adds a row
-		// rather than another near-identical test.
-		//
-		// Two of them name a FIELD, not a function, and that is
-		// deliberate. Its increment is `...netnsPIDMismatches.Add(1)`,
-		// and a row keyed on `Add` would be useless: `Add` has 56
-		// production call sites in this package, one of them a
-		// sync.WaitGroup. Keying on the counter asks the question that
-		// actually matters -- what may touch this counter -- and it is
-		// the only form in which a counter incremented INLINE (rather
-		// than by a helper of its own) can be held at all.
 	}
 
 	for _, tc := range tests {
@@ -139,17 +65,12 @@ func TestCountingWrappers_AreTheOnlyCallers(t *testing.T) {
 	}
 }
 
-// assertSoleCaller parses this package's production sources and fails
-// unless every call to callee sits inside wrapper.
 func assertSoleCaller(t *testing.T, callee, wrapper, why string) {
 	t.Helper()
 
 	fset := token.NewFileSet()
 
-	// The files are read and parsed here rather than through
-	// parser.ParseDir, which is deprecated as of Go 1.25 for not
-	// honouring build tags. This package has none, and a plain
-	// directory read keeps the test free of a tooling dependency.
+	// parser.ParseDir is deprecated as of Go 1.25 for ignoring build tags, so the files are read one by one.
 	entries, err := os.ReadDir(".")
 	if err != nil {
 		t.Fatalf("reading the package directory: %v", err)
@@ -173,22 +94,8 @@ func assertSoleCaller(t *testing.T, callee, wrapper, why string) {
 
 	callers := callSitesOf(fset, files, callee)
 
-	// AND THE PRESENCE CHECK BELOW IS ON THE CALLEE, WHICH STOPS ONE
-	// LEVEL SHORT (#790). "The callee is reached, and only through the
-	// wrapper" is satisfied in full while the WRAPPER itself is called by
-	// nothing: the callee's only call site is inside the wrapper, so it
-	// is present and exclusive, and the counter is nonetheless a
-	// permanent zero in /metrics.
-	//
-	// Measured: reverting countOutageTick's one production call site to
-	// its pre-#769 form left the package green -- 385 tests, all four
-	// rows passing -- while dhcp_server_policy_timeouts stopped being
-	// reachable. Every test of that counter still passed, because they
-	// all drive the wrapper.
-	//
-	// Self-calls do not count: a wrapper that only recurses is reached
-	// from nothing, and would satisfy a naive presence check the same way
-	// zero callers satisfies exclusivity.
+	// The wrapper must be reached too (#790): reverting countOutageTick's one call site to its pre-#769 form left the
+	// package green while dhcp_server_policy_timeouts could no longer move. Self-calls do not count.
 	wrapperCallers := callSitesOf(fset, files, wrapper)
 	var reached []string
 	for _, c := range wrapperCallers {
@@ -207,12 +114,6 @@ func assertSoleCaller(t *testing.T, callee, wrapper, why string) {
 			wrapper, callee, callee, wrapper, wrapper, why, wrapper)
 	}
 
-	// TWO-SIDED ON PURPOSE, and this is the half that is easy to lose.
-	// "No caller outside the wrapper" is satisfied by ZERO callers --
-	// which is the very mutant this test exists to kill, the call being
-	// deleted. Phrased that way it would go green over the defect it
-	// was written for, for every row at once, silently and forever. So
-	// presence is asserted before exclusivity.
 	if len(callers) == 0 {
 		t.Fatalf("nothing in production calls %s.\n"+
 			"  The likeliest cause is that %s stopped calling it, in which case the counter it wraps\n"+
@@ -237,15 +138,6 @@ func assertSoleCaller(t *testing.T, callee, wrapper, why string) {
 	}
 }
 
-// callSitesOf returns every production call site of `name` in the parsed
-// files, as "enclosingFunc (file:line:col)".
-//
-// EXTRACTED SO BOTH SIDES ARE MATCHED THE SAME WAY (#790). The wrapper's
-// presence is now asserted as well as the callee's, and a second, simpler
-// scan for the wrapper would have been a different matcher: it would miss
-// the bind-laundering forms this one was extended to catch, so the two
-// halves of a two-sided assertion would disagree about what a call site
-// is. One matcher, asked twice.
 func callSitesOf(fset *token.FileSet, files []*ast.File, name string) []string {
 	callee := name
 	var callers []string
@@ -260,41 +152,11 @@ func callSitesOf(fset *token.FileSet, files []*ast.File, name string) []string {
 	}
 	for _, file := range files {
 		for _, decl := range file.Decls {
-			// PACKAGE SCOPE IS A SITE TOO. Walking only FuncDecls
-			// misses `var zzAwait = awaitContainerNetNS` at file
-			// level, which is the laundering mutant in its shortest
-			// form -- it survived the first version of the bind rule
-			// for exactly this reason, and only driving it showed
-			// that. The enclosing name is then the file rather than a
-			// function, which is what the report should say.
 			where := "package scope"
 			if fn, ok := decl.(*ast.FuncDecl); ok {
 				where = fn.Name.Name
 			}
 			ast.Inspect(decl, func(n ast.Node) bool {
-				// A BIND IS A CALL SITE, and matching only CallExpr
-				// makes this a matcher of NAMES that one local walks
-				// straight past:
-				//
-				//   c := &m.plugin.netnsPIDMismatches; c.Add(1)
-				//   var zzAwait = awaitContainerNetNS; zzAwait(...)
-				//
-				// Both compile, both give the subject a second reachable
-				// site, and both were SURVIVING mutants until this case
-				// existed -- found by driving them, not by reading. It
-				// is the same failure the proc-path gate had, where
-				// "/proc" + "/" + strconv.Itoa(pid) walked past a regex
-				// that caught fmt.Sprintf.
-				//
-				// Deliberately not alias analysis. Only the TOP-LEVEL
-				// value of an assignment or var spec is examined, never
-				// its interior, so `x := Foo{N: p.counter.Load()}` stays
-				// uncounted -- reads must not become violations (see the
-				// mutates() note below). A determined author can still
-				// get around this; it catches the spelling a normal
-				// person reaches for when the direct one is
-				// inconvenient, which is the whole population a wiring
-				// gate is aimed at.
 				switch bind := n.(type) {
 				case *ast.AssignStmt:
 					for _, rhs := range bind.Rhs {
@@ -314,30 +176,8 @@ func callSitesOf(fset *token.FileSet, files []*ast.File, name string) []string {
 				if !ok {
 					return true
 				}
-				// A subject is matched as the thing being CALLED --
-				// bare or qualified -- or as the RECEIVER whose method
-				// is being called.
-				//
-				// The second form is what lets a row name a counter
-				// FIELD rather than a function: `netnsPIDMismatches`
-				// matches `m.plugin.netnsPIDMismatches.Add(1)`. Naming
-				// the method instead would be useless, because `Add`
-				// has 56 production call sites in this package and one
-				// of them is a sync.WaitGroup.
-				//
-				// Both forms answer the same question -- what must only
-				// be reached through the wrapper -- so they share a
-				// column rather than needing a second one. A name that
-				// happened to be both would match both, which is
-				// stricter, not looser.
-				//
-				// The receiver form counts only MUTATING methods. A
-				// counter is read wherever it is published --
-				// healthSnapshot loads every one of them -- and a rule
-				// that called those call sites violations would be
-				// unsatisfiable, so the first person to hit it would
-				// delete the row. The invariant is about who may WRITE
-				// the counter.
+				// A row may name a counter field, matched as the receiver of a mutating method; reads stay allowed
+				// (#769).
 				switch f := call.Fun.(type) {
 				case *ast.Ident:
 					if f.Name == callee {
@@ -355,10 +195,6 @@ func callSitesOf(fset *token.FileSet, files []*ast.File, name string) []string {
 	return callers
 }
 
-// trailingName returns the last identifier of a receiver expression --
-// "netnsPIDMismatches" for m.plugin.netnsPIDMismatches, "wg" for wg --
-// or "" for anything else. It is how a row names the counter a wrapper
-// guards instead of the method that increments it.
 func trailingName(e ast.Expr) string {
 	switch x := e.(type) {
 	case *ast.Ident:
@@ -369,12 +205,7 @@ func trailingName(e ast.Expr) string {
 	return ""
 }
 
-// mutates reports whether an atomic method WRITES its receiver. The set
-// is closed on purpose: a method outside it is treated as a read, so a
-// new mutator added to sync/atomic would make a row go quiet rather than
-// red. That is caught by the presence half of the assertion only if the
-// row's sole write used the new method -- so if this list ever needs a
-// name, add it here rather than working around the row.
+// mutates is a closed set: a new sync/atomic mutator would make a row quiet, so add it here (#769).
 func mutates(method string) bool {
 	switch method {
 	case "Add", "Store", "Swap", "CompareAndSwap":
@@ -383,12 +214,6 @@ func mutates(method string) bool {
 	return false
 }
 
-// boundName returns the name a bound VALUE refers to -- the subject of
-// `= awaitContainerNetNS`, of `= m.plugin.netnsPIDMismatches` and of
-// `= &m.plugin.netnsPIDMismatches` -- or "" for anything else,
-// including a call, a literal or a composite. Only these three shapes
-// hand the subject itself to another identifier; everything else has
-// already been reduced to a value.
 func boundName(e ast.Expr) string {
 	if u, ok := e.(*ast.UnaryExpr); ok && u.Op == token.AND {
 		e = u.X

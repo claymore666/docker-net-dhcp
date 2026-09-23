@@ -16,8 +16,6 @@ import (
 	logtest "github.com/sirupsen/logrus/hooks/test"
 )
 
-// newHealthPlugin is a Plugin with the maps a health snapshot reads and
-// nothing else. It is the shape every counter test needs.
 func newHealthPlugin() *Plugin {
 	return &Plugin{
 		startTime:      time.Now(),
@@ -26,11 +24,6 @@ func newHealthPlugin() *Plugin {
 	}
 }
 
-// The mode an operator types has to reach proto.Params, and it has to
-// reach the RIGHT value. A map that resolved an unknown name to the
-// zero value would silently give every mistyped network the default,
-// which is the slowest mode and the one an operator asking for `async`
-// was trying to avoid.
 func TestConflictWiring_EveryModeReachesTheClientOptions(t *testing.T) {
 	p := newHealthPlugin()
 
@@ -55,17 +48,12 @@ func TestConflictWiring_EveryModeReachesTheClientOptions(t *testing.T) {
 	}
 }
 
-// The chassis default and the library default are ONE fact. Spelled
-// twice they agree until they do not, and the failure is silent: every
-// network created without the option runs a mode nobody chose.
 func TestConflictWiring_TheUnsetOptionIsTheLibrarySOwnDefault(t *testing.T) {
 	p := newHealthPlugin()
 	var o dhcp.DHCPClientOptions
 	if err := p.conflictWiring(&o, DHCPNetworkOptions{}, roleAcquire, "net", "ep", false); err != nil {
 		t.Fatalf("conflictWiring: %v", err)
 	}
-	// The library's default is the zero value of the field it is read
-	// off, taken here rather than named.
 	var libraryDefault proto.Params
 	if o.ConflictMode != libraryDefault.Conflict {
 		t.Errorf("an unset conflict_check gave %v; the library's Params default is %v",
@@ -77,9 +65,6 @@ func TestConflictWiring_TheUnsetOptionIsTheLibrarySOwnDefault(t *testing.T) {
 	}
 }
 
-// A network stored before conflict_check existed decodes to the empty
-// string, which must read as the default rather than as a refusal --
-// otherwise the upgrade breaks every existing network.
 func TestConflictWiring_AStoredNetworkWithNoOptionReadsAsTheDefault(t *testing.T) {
 	mode, err := dhcp.ParseConflictCheck("")
 	if err != nil {
@@ -90,9 +75,6 @@ func TestConflictWiring_AStoredNetworkWithNoOptionReadsAsTheDefault(t *testing.T
 	}
 }
 
-// A value that is not a mode is refused, and the error says which
-// values there are. An operator who typed `waite` has to be told the
-// three, not "invalid".
 func TestConflictWiring_AnUnknownModeIsRefusedAndNamesTheAlternatives(t *testing.T) {
 	_, err := dhcp.ParseConflictCheck("waite")
 	if err == nil {
@@ -111,12 +93,9 @@ func TestConflictWiring_AnUnknownModeIsRefusedAndNamesTheAlternatives(t *testing
 	}
 }
 
-// A dhcpManager built for a unit test carries no plugin. The MODE must
-// still reach the wire; only the counters have nowhere to go.
 func TestConflictWiring_ANilPluginStillSetsTheMode(t *testing.T) {
 	var p *Plugin
 	var o dhcp.DHCPClientOptions
-	// The one mode that is not the zero value, so a no-op cannot pass.
 	name := ""
 	for _, m := range dhcp.ConflictModes() {
 		if m != dhcp.DefaultConflictCheck {
@@ -138,9 +117,6 @@ func TestConflictWiring_ANilPluginStillSetsTheMode(t *testing.T) {
 	}
 }
 
-// One conflict is one bump on address_conflicts, from either of the two
-// events the library emits, and the log line differs because the
-// operator's situation does.
 func TestConflictReporter_CountsOncePerConflict(t *testing.T) {
 	p := newHealthPlugin()
 	report := p.conflictReporter("net", "ep", false)
@@ -158,17 +134,6 @@ func TestConflictReporter_CountsOncePerConflict(t *testing.T) {
 	}
 }
 
-// A DHCPv6 conflict is counted on its OWN half, and the aggregate on
-// the health document is the sum.
-//
-// THE HALF IS THE POINT, not the total. acd_conflicts_detected counts
-// what the ARP state machine found, and the suite asserts it is not
-// below address_conflicts (test/integration/conflict_check_test.go). A
-// v6 conflict folded into one counter makes that comparison read "the
-// plugin counted conflicts the library did not" -- a seam defect that
-// has not happened -- on a correct build. Both halves are asserted here
-// in both directions, so a reporter that bumped the wrong one, or both,
-// fails.
 func TestConflictReporter_SplitsTheFamilies(t *testing.T) {
 	p := newHealthPlugin()
 
@@ -196,11 +161,6 @@ func TestConflictReporter_SplitsTheFamilies(t *testing.T) {
 	}
 }
 
-// A v6-only conflict is enough to flip healthy, and to stamp the check.
-//
-// The opposite direction of the split: a family-split counter whose
-// aggregate is read from the v4 half alone would pass every assertion
-// above and leave a squatted IPv6 container reporting itself healthy.
 func TestConflictReporter_AV6OnlyConflictIsUnhealthyAndStamped(t *testing.T) {
 	p := newHealthPlugin()
 	p.conflictReporter("net", "ep", true)(dhcp.Conflict{Held: true, Addr: "2001:db8::5"})
@@ -217,15 +177,6 @@ func TestConflictReporter_AV6OnlyConflictIsUnhealthyAndStamped(t *testing.T) {
 	}
 }
 
-// The family the reporter carries has to reach the MESSAGE, not only
-// the counter.
-//
-// THE CALL SITE, NOT THE FUNCTION. conflictMessage is exercised
-// directly below; that says nothing about which argument the reporter
-// passes it. A reporter that counts a DHCPv6 conflict in the v6 half
-// and then prints the ARP sentence sends the operator to tcpdump for
-// ARP frames that were never sent, and every counter assertion in this
-// file still passes.
 func TestConflictReporter_LogsTheMessageOfItsOwnFamily(t *testing.T) {
 	p := newHealthPlugin()
 	hook := logtest.NewLocal(log.StandardLogger())
@@ -255,15 +206,6 @@ func TestConflictReporter_LogsTheMessageOfItsOwnFamily(t *testing.T) {
 	}
 }
 
-// The four messages are four different messages, and each names the
-// protocol that found the conflict.
-//
-// A REFERENCE AN OPERATOR ACTS ON. RFC 5227 is ARP; a DHCPv6 conflict
-// is found by the kernel's Duplicate Address Detection (RFC 4862
-// section 5.4) and declined under RFC 9915 section 18.2.8, and no ARP
-// frame is ever sent for it. The v4 lines are unchanged and are pinned
-// here as the preservation control: the integration harness counts them
-// in the plugin's log across a whole run.
 func TestConflictMessage_NamesTheProtocolThatFoundIt(t *testing.T) {
 	cases := []struct {
 		held, v6 bool
@@ -296,9 +238,6 @@ func TestConflictMessage_NamesTheProtocolThatFoundIt(t *testing.T) {
 	}
 }
 
-// The ACD counters accumulate DELTAS across every manager, including
-// the ones that have exited. A snapshot-based implementation passes the
-// first assertion and fails the second.
 func TestACDStats_AccumulateAcrossManagers(t *testing.T) {
 	p := newHealthPlugin()
 
@@ -320,9 +259,6 @@ func TestACDStats_AccumulateAcrossManagers(t *testing.T) {
 	}
 }
 
-// A uint64 delta may not make an int32 counter go backwards. A plain
-// cast does exactly that, and a counter that rewinds reads as a process
-// restart to every scraper.
 func TestACDStats_SaturateRatherThanWrap(t *testing.T) {
 	p := newHealthPlugin()
 	p.addACDStats(dhcp.ACDStats{ProbesSent: math.MaxUint64})
@@ -335,12 +271,6 @@ func TestACDStats_SaturateRatherThanWrap(t *testing.T) {
 	}
 }
 
-// THE BOUNDARY, table-driven: lease_timeout below the probe window is
-// refused in wait and accepted in the other two.
-//
-// The `async` and `off` rows are the preservation control. A refusal
-// keyed on the timeout alone would refuse them too, and the refusal
-// would then be wrong for every network that chose speed deliberately.
 func TestLeaseTimeout_TheProbeWindowBoundIsWaitOnly(t *testing.T) {
 	window := dhcp.ConflictWindow(proto.DefaultACDParams())
 
@@ -351,7 +281,6 @@ func TestLeaseTimeout_TheProbeWindowBoundIsWaitOnly(t *testing.T) {
 		}
 		wantRefused := mode == proto.ConflictWait
 
-		// Just under the window.
 		err = dhcp.CheckLeaseTimeout(window-time.Millisecond, mode)
 		if (err != nil) != wantRefused {
 			t.Errorf("conflict_check=%s, lease_timeout just under the %v window: err=%v, refused wanted=%v",
@@ -366,23 +295,18 @@ func TestLeaseTimeout_TheProbeWindowBoundIsWaitOnly(t *testing.T) {
 			}
 		}
 
-		// Exactly the window, and above it: accepted in every mode.
 		if err := dhcp.CheckLeaseTimeout(window, mode); err != nil {
 			t.Errorf("conflict_check=%s refused a lease_timeout exactly equal to the window: %v", name, err)
 		}
 		if err := dhcp.CheckLeaseTimeout(window+time.Second, mode); err != nil {
 			t.Errorf("conflict_check=%s refused a lease_timeout above the window: %v", name, err)
 		}
-		// Unset: the derived default applies and covers the window.
 		if err := dhcp.CheckLeaseTimeout(0, mode); err != nil {
 			t.Errorf("conflict_check=%s refused an unset lease_timeout: %v", name, err)
 		}
 	}
 }
 
-// The default lease_timeout has to fund one DISCOVER retransmission AND
-// the worst probe window, or `docker run` fails against a working
-// server whenever a packet is lost. The old literal 10s does not.
 func TestLeaseTimeout_DefaultCoversTheWorstWaitAcquisition(t *testing.T) {
 	params := proto.DefaultParams(nil)
 	want := dhcp.AcquisitionWindow(params)
@@ -392,9 +316,6 @@ func TestLeaseTimeout_DefaultCoversTheWorstWaitAcquisition(t *testing.T) {
 			defaultLeaseTimeout, want)
 	}
 
-	// The two terms, each derived here a second time from the library's
-	// own constants, so a change to either is caught rather than
-	// absorbed into the sum.
 	retransmit := time.Duration(params.Discover.Initial + params.Discover.Jitter)
 	window := dhcp.ConflictWindow(proto.DefaultACDParams())
 	if got := retransmit + window; got != want {
@@ -406,8 +327,6 @@ func TestLeaseTimeout_DefaultCoversTheWorstWaitAcquisition(t *testing.T) {
 	}
 }
 
-// The worst-case handler arithmetic must move with the acquisition
-// budget rather than with a number somebody wrote down.
 func TestHTTPLimits_TheWorstCaseHandlerCarriesTheProbeWindow(t *testing.T) {
 	got := socketWorstCaseHandler()
 	want := linkAwaitTimeout + defaultLeaseTimeout + preflightProbeBudget
@@ -419,24 +338,6 @@ func TestHTTPLimits_TheWorstCaseHandlerCarriesTheProbeWindow(t *testing.T) {
 	}
 }
 
-// TestConflictWiring_TheJoinManagerNeverHoldsTheAddressBack drives the
-// one place the two client roles differ.
-//
-// WHY IT IS NOT DEFEAT ROW Y-11. That row is about the mode reaching
-// one manager and not the other, so that half the endpoint's life is
-// unprotected. Nothing here is unprotected: proto.ConflictAsync runs
-// the same RFC 5227 section 2.1 probes, the same section 2.4 listener
-// and sends the same DHCPDECLINE. What it does not do is hold an
-// address back that CreateEndpoint has already handed to dockerd —
-// there is no "before use" left at Join, and waiting for one cost the
-// whole probe window on every container start (MEASURED ~6s on the
-// 2.x lane 2026-09-04; it is what broke the resolv.conf and MTU
-// propagation cases).
-//
-// The `off` row is the one that would carry Y-11 if the rule were
-// written loosely: a role-dependent mode that turned `off` into
-// anything else would probe a network whose operator switched probing
-// off. It is asserted for both roles.
 func TestConflictWiring_TheJoinManagerNeverHoldsTheAddressBack(t *testing.T) {
 	p := newHealthPlugin()
 
@@ -466,9 +367,6 @@ func TestConflictWiring_TheJoinManagerNeverHoldsTheAddressBack(t *testing.T) {
 		}
 	}
 
-	// NO ROLE EVER HOLDS AN ADDRESS BACK AT JOIN, stated over the
-	// library's own enumeration so a mode added later arrives with a
-	// decision rather than a default.
 	for _, m := range proto.AllConflictModes() {
 		var o dhcp.DHCPClientOptions
 		if err := p.conflictWiring(&o, DHCPNetworkOptions{ConflictCheck: m.String()}, roleJoin, "net", "ep", false); err != nil {
@@ -481,16 +379,6 @@ func TestConflictWiring_TheJoinManagerNeverHoldsTheAddressBack(t *testing.T) {
 	}
 }
 
-// TestLeaseTimeout_DefaultFundsOneConflictAndItsRestartDelay is the
-// 2.x lane's 2026-09-04 finding, pinned.
-//
-// A deadline of AcquisitionWindow alone funds an acquisition that finds
-// NO conflict. The run that matters is the other one: the squatter
-// answered the probe, the library DECLINEd and owed RFC 2131 section
-// 3.1(5) ten seconds before asking again, and the clean address arrived
-// ~11s after the first DHCPACK — 0.8s after the chassis had given up.
-// `docker run` failed with a DHCP timeout while the server's log showed
-// a lease allocated.
 func TestLeaseTimeout_DefaultFundsOneConflictAndItsRestartDelay(t *testing.T) {
 	params := proto.DefaultParams(nil)
 	one := dhcp.AcquisitionWindow(params)
@@ -500,15 +388,9 @@ func TestLeaseTimeout_DefaultFundsOneConflictAndItsRestartDelay(t *testing.T) {
 		t.Errorf("defaultLeaseTimeout is %v; one conflict costs %v (first attempt) + %v (RFC 2131 3.1(5)) + %v (second attempt) = %v",
 			defaultLeaseTimeout, one, restart, one, one+restart+one)
 	}
-	// Derived twice on purpose: the composition above and the function
-	// the plugin actually calls have to agree, or the number in the
-	// docs is a third fact.
 	if got := dhcp.ConflictRecoveryWindow(params); got != defaultLeaseTimeout {
 		t.Errorf("defaultLeaseTimeout is %v but ConflictRecoveryWindow is %v", defaultLeaseTimeout, got)
 	}
-	// The restart delay is REAL in the number, not absorbed: a
-	// derivation that dropped it would still be larger than one
-	// acquisition and would still fail the same way on the lane.
 	if defaultLeaseTimeout-2*one != restart {
 		t.Errorf("the default carries %v beyond two acquisitions; RFC 2131 3.1(5) is %v", defaultLeaseTimeout-2*one, restart)
 	}

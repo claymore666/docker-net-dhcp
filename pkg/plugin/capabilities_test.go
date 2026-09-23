@@ -10,23 +10,8 @@ import (
 	"testing"
 )
 
-// TestManifestsGrantCapNetRaw pins the capability the DHCP transport
-// needs, in every manifest that ships a plugin.
-//
-// WHY A TEST AND NOT A COMMENT. 2.0 opens an AF_PACKET socket per
-// endpoint: the exchange has to reach a link the kernel has no address
-// on, which is the whole reason a DHCP client is not an ordinary UDP
-// program. Without CAP_NET_RAW that socket fails at socket(2), so the
-// failure arrives on the first `docker run` against a plugin whose unit
-// tests, gates and image build were all green.
-//
-// It is pinned in BOTH directions of the mistake that produced it. The
-// capability was NOT granted before this change — config.json listed
-// CAP_NET_ADMIN, CAP_SYS_ADMIN and CAP_SYS_PTRACE — while issue #725's
-// title asserts that "CAP_NET_RAW is already granted". A claim about a
-// manifest that the manifest contradicts is exactly what a test is for,
-// and the second half of the assertion below is that the manifest is
-// read rather than the claim.
+// The client opens an AF_PACKET socket per endpoint, and socket(2) fails without
+// CAP_NET_RAW (#725).
 func TestManifestsGrantCapNetRaw(t *testing.T) {
 	const want = "CAP_NET_RAW"
 
@@ -44,9 +29,6 @@ func TestManifestsGrantCapNetRaw(t *testing.T) {
 			t.Fatalf("parse %s: %v", name, err)
 		}
 
-		// An empty list would satisfy "contains nothing forbidden" and
-		// must not satisfy this: the manifest has to name capabilities
-		// at all before the presence of one means anything.
 		if len(m.Linux.Capabilities) == 0 {
 			t.Fatalf("%s declares no capabilities at all; the check below would pass vacuously", name)
 		}

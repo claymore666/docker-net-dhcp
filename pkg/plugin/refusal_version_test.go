@@ -16,66 +16,20 @@ import (
 	"testing"
 )
 
-// A REFUSAL NAMES NO RELEASE VERSION (#817).
-//
-// The IPAM IPv6 refusal said the combination "cannot be combined with
-// this plugin as the IPAM driver in v2.1.0", and the ipvlan refusal
-// beside it said the same about v2.1.0. Both stayed true and both read,
-// on any later release, as a statement about a version the operator is
-// not running. Neither was a changelog entry: the refusal holds in
-// every release that carries the code, so the version told the operator
-// nothing and went stale at the next tag.
-//
-// A metric's HELP text is the opposite case and is deliberately outside
-// this rule. "Since v2.2.0 the interface is at accept_ra=0" says which
-// release changed the behaviour, which is the whole content of the
-// sentence and stays true forever. The rule is about refusals, where the
-// version is never the point.
-//
-// WHAT THIS RULE CANNOT SEE, stated rather than left to be discovered:
-//
-//   - A comment. No operator is shown one, so comments are not judged.
-//     The receipt counts them every run, which is the only place that
-//     number belongs: a count written here would be a hand-typed claim
-//     that goes stale the first time someone writes a comment, and one
-//     did go stale before this line was corrected.
-//   - A version that is not in the literal: `fmt.Errorf("... %s", v)`
-//     where `v` holds a release string at run time reads as clean here.
-//     The message this change wrote names a MODE through `%s` and no
-//     version through any route, so nothing in it depends on that gap.
-//   - An error the plugin passes through from a library, which this
-//     module does not construct and cannot reword.
-//   - `vendor/` and `test/`, which ship no operator-facing refusal.
-//
-// A FIRST VERSION OF THIS RULE WAS KEYED ON THE LINE, and a reviewer
-// showed the escape: `fmt.Errorf(` sits on the first line of the call
-// and the operator's sentence often sits on the next one, so a version
-// on a continuation line was invisible. There are continuation lines
-// inside error constructions in ipv6_mode.go alone. The rule now takes
-// the whole call expression out of the source through the parser, so
-// where the text sits inside the call does not matter.
+// A refusal names no release version, since it holds in every release that carries it (#817).
 
 var releaseVersionPattern = regexp.MustCompile(`\bv[0-9]+\.[0-9]+(\.[0-9]+)?\b`)
 
-// releaseVersionIn returns the first release version named in s, or "".
 func releaseVersionIn(s string) string {
 	return releaseVersionPattern.FindString(s)
 }
 
-// errorConstruction is one `fmt.Errorf` or `errors.New` call, with the
-// whole call expression's source text however many lines it spans.
 type errorConstruction struct {
 	file string
 	line int
 	text string
 }
 
-// moduleRoot walks up from the package directory to the go.mod.
-//
-// IT IS NOT A CONSTANT `../..` BECAUSE A MOVED PACKAGE WOULD THEN SCAN
-// A DIRECTORY THAT EXISTS AND HOLDS NOTHING, which is the empty-domain
-// failure this whole rule is built to avoid, arriving through the path
-// instead of the file list.
 func moduleRoot(t *testing.T) string {
 	t.Helper()
 	dir, err := filepath.Abs(".")
@@ -94,13 +48,6 @@ func moduleRoot(t *testing.T) string {
 	}
 }
 
-// moduleSourceFiles is every non-test Go file this module ships,
-// enumerated rather than listed.
-//
-// A UNIVERSAL OVER A TYPED LIST IS SATISFIED BY NOT ADDING TO THE LIST,
-// which is how a rule like this one quietly stops covering the file
-// where the next refusal is written. The domain is read from the tree,
-// and the test below refuses an empty one.
 func moduleSourceFiles(t *testing.T) (root string, files []string) {
 	t.Helper()
 	root = moduleRoot(t)
@@ -109,8 +56,6 @@ func moduleSourceFiles(t *testing.T) (root string, files []string) {
 			return err
 		}
 		if d.IsDir() {
-			// A dot directory is tooling, not shipped source, and
-			// `vendor` and `test` carry no refusal an operator reads.
 			if strings.HasPrefix(d.Name(), ".") || d.Name() == "vendor" || d.Name() == "test" {
 				return fs.SkipDir
 			}
@@ -134,8 +79,6 @@ func moduleSourceFiles(t *testing.T) (root string, files []string) {
 	return root, files
 }
 
-// errorConstructionsIn parses one file and returns every error it
-// builds, plus the number of comment lines in it that name a release.
 func errorConstructionsIn(t *testing.T, root, rel string) (out []errorConstruction, versionComments int) {
 	t.Helper()
 	src, err := os.ReadFile(filepath.Join(root, rel))
@@ -183,9 +126,6 @@ func errorConstructionsIn(t *testing.T, root, rel string) (out []errorConstructi
 	return out, versionComments
 }
 
-// countDirs is for the receipt: how many directories the domain spans,
-// which is the number that moves when a package is added and nobody
-// notices the rule stopped at the old tree.
 func countDirs(files []string) int {
 	seen := map[string]bool{}
 	for _, f := range files {
@@ -194,16 +134,6 @@ func countDirs(files []string) int {
 	return len(seen)
 }
 
-// errorConstructionsNaming counts the error constructions in the module
-// whose text carries phrase.
-//
-// IT EXISTS SO A DISCRIMINATOR CAN BE CHECKED AND NOT ASSERTED IN PROSE.
-// A test that says "this phrase identifies one refusal" has made a claim
-// about the whole package from inside one subtest, and the first such
-// comment written here was wrong: `#960` names three error
-// constructions, not one. The arms were sound for a different reason
-// than the one written down, which is the same defect the change itself
-// is about.
 func errorConstructionsNaming(t *testing.T, phrase string) int {
 	t.Helper()
 	root, files := moduleSourceFiles(t)
@@ -233,10 +163,6 @@ func TestRefusals_NameNoReleaseVersion(t *testing.T) {
 		all = append(all, got...)
 		comments += c
 	}
-	// THE EXTRACTOR IS PART OF THE DOMAIN. A parser change, an import
-	// rename or a refusal built some other way would leave this list
-	// short, and a rule over a short list is green for the wrong
-	// reason.
 	if len(all) == 0 {
 		t.Fatal("no fmt.Errorf or errors.New call was found in the whole module, which cannot " +
 			"be true. The extractor is broken and this rule is judging nothing")
@@ -256,9 +182,6 @@ func TestRefusals_NameNoReleaseVersion(t *testing.T) {
 			e.file, e.line, v, strings.Join(strings.Fields(e.text), " "))
 	}
 
-	// THE RECEIPT. A gate that discovers what to check has to say what
-	// it read, or "the rule is covered" becomes a claim nobody can
-	// check. The last number is the deliberate comment exclusion above.
 	t.Logf("PASS  no release version in %d error construction(s) over %d module file(s) in "+
 		"%d director(ies); %d comment line(s) name a version and are not judged",
 		len(all), len(files), countDirs(files), comments)
@@ -268,13 +191,7 @@ func TestRefusals_NameNoReleaseVersion(t *testing.T) {
 	}
 }
 
-// The extractor and the matcher, driven directly.
-//
-// WITHOUT THIS THE RULE ABOVE CAN BE GREEN BECAUSE IT MATCHES NOTHING.
-// Both halves are predicates over source text, and a predicate that is
-// false everywhere passes every file in the module.
 func TestRefusalVersionMatchers_SeeTheRealShapes(t *testing.T) {
-	// The exact sentence this change removed, and its ipvlan sibling.
 	for _, s := range []string{
 		"`-o ipv6=true` cannot be combined with this plugin as the IPAM driver in v2.1.0.",
 		"ipvlan networks cannot use this plugin as an IPAM driver in v2.1.0, because",
@@ -287,8 +204,6 @@ func TestRefusalVersionMatchers_SeeTheRealShapes(t *testing.T) {
 				"invisible to the rule", s)
 		}
 	}
-	// The other direction. A rule that fires on ordinary prose gets
-	// waived on its first false positive and then guards nothing.
 	for _, s := range []string{
 		"RFC 4861 section 4.2",
 		"Progress on IPv6 in IPAM mode is tracked in issue #960",
@@ -302,10 +217,6 @@ func TestRefusalVersionMatchers_SeeTheRealShapes(t *testing.T) {
 		}
 	}
 
-	// THE ESCAPE A REVIEWER FOUND IN THE FIRST VERSION OF THIS RULE.
-	// The version sits two lines below the `fmt.Errorf(`, which is
-	// where an operator's sentence normally sits, and a line-keyed rule
-	// never saw it. Driven through the real extractor on a real file.
 	dir := t.TempDir()
 	const sample = `package sample
 
@@ -349,9 +260,6 @@ func c() error { return fmt.Errorf("issue #960 and RFC 4861") }
 			"judged, and `#960` and `RFC 4861` are not versions", hits)
 	}
 
-	// The domain is real, and it reaches past the package this change
-	// edited. The reviewer's second plant was in pkg/dhcp, which a
-	// package-scoped rule would never have looked at.
 	_, files := moduleSourceFiles(t)
 	want := map[string]bool{
 		"pkg/plugin/ipam_mode.go": false,

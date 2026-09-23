@@ -16,52 +16,22 @@ import (
 	"time"
 )
 
-// Recovery counts an endpoint as rebuilt AFTER the work, not before it.
-//
-// recoverEndpoints runs inside NewPlugin and returns before Listen binds
-// the socket (pkg/plugin/plugin.go:3211-3213, 3274), so a test that can
-// read /Plugin.Health knows the walk finished. The walk only SPAWNS each
-// endpoint's rebuild, though: the goroutine at pkg/plugin/plugin.go:2932
-// calls dhcpManager.Start and increments recovered_ok at
-// pkg/plugin/plugin.go:2969 once it returns. Everything Start does moves
-// its counters before that — the sandbox route (pkg/plugin/dhcp_manager.go:2599)
-// and the host-side rename (pkg/plugin/host_ifname.go:217) — which makes
-// recovered_ok the last thing to move and therefore a happens-after
-// barrier for all of them.
-//
-// A test that reads the counters when the socket first answers is
-// reading the middle of that work. These budgets say how long the work
-// may take, on each of the two routes into it.
-//
-// THE FAILURE ARM TAKES LONGER THAN THE SUCCESS ARM, which is why the
-// budgets are not simply AWAIT_TIMEOUT. A Start that fails by exhausting
-// its context does not record anything yet: the goroutine then classifies
-// the endpoint with containerGone (pkg/plugin/plugin.go:2954), on a FRESH
-// Background context capped at recoveryPerNetworkTimeout
-// (pkg/plugin/plugin.go:2713) precisely because startCtx is already dead
-// on that arm, and only then moves recovery_failed
-// (pkg/plugin/plugin.go:2961) or recovery_aborted_container_gone
-// (pkg/plugin/plugin.go:2955). A budget that ended at AWAIT_TIMEOUT
-// would give up while the classifier was still running, report "still
-// in flight" about a rebuild that had failed, and hand the tests'
-// recovery_failed == 0 assertion a document taken before the counter
-// could move — a vacuous pass on exactly the fault they exist to catch.
+// Recovery counts an endpoint as rebuilt after the work (#376). recoverEndpoints returns before Listen binds the
+// socket (pkg/plugin/plugin.go:1416-1418, 1457) but only spawns each rebuild; the goroutine at
+// pkg/plugin/plugin.go:1240 runs dhcpManager.Start, which moves the sandbox route and rename counters first,
+// and then increments recovered_ok (pkg/plugin/plugin.go:1265), a happens-after barrier for all of them.
+// The failure arm takes longer: a Start that exhausts its context is classified with containerGone on a fresh
+// context capped at recoveryPerNetworkTimeout, and only then moves recovery_failed (pkg/plugin/plugin.go:1258)
+// or recovery_aborted_container_gone (pkg/plugin/plugin.go:1252). A budget ending at AWAIT_TIMEOUT would read
+// recovery_failed == 0 before the counter could move.
 const (
-	// awaitTimeoutDefault is AWAIT_TIMEOUT as config.json ships it. The
-	// per-endpoint Start runs on a context capped at it
-	// (pkg/plugin/plugin.go:2933), so a rebuild not counted by then has
-	// failed rather than being slow — but see the classifier above for
-	// how long it then takes to say so.
+	// awaitTimeoutDefault is AWAIT_TIMEOUT as config.json ships it, the cap on each recovered Start (#376).
 	awaitTimeoutDefault = 10 * time.Second
-	// recoveryPerNetworkTimeoutDefault is recoveryPerNetworkTimeout
-	// (pkg/plugin/plugin.go:125), which caps the classifier's inspect
-	// (pkg/plugin/plugin.go:2713) as well as the walk's own Docker
-	// round-trips.
+	// recoveryPerNetworkTimeoutDefault mirrors recoveryPerNetworkTimeout, which also caps the classifier (#376).
 	recoveryPerNetworkTimeoutDefault = 3 * time.Second
-	// recoveryBudgetDefault is recoveryBudget (pkg/plugin/plugin.go:117).
+	// recoveryBudgetDefault mirrors recoveryBudget in pkg/plugin.
 	recoveryBudgetDefault = 30 * time.Second
-	// recoveryDeferredDaemonWaitDefault is recoveryDeferredDaemonWait
-	// (pkg/plugin/plugin.go:139).
+	// recoveryDeferredDaemonWaitDefault mirrors recoveryDeferredDaemonWait in pkg/plugin.
 	recoveryDeferredDaemonWaitDefault = 60 * time.Second
 
 	// RecoveryRebuildBudget bounds the normal route: the daemon answered,
@@ -72,12 +42,8 @@ const (
 	// increment may land in that gap.
 	RecoveryRebuildBudget = awaitTimeoutDefault + recoveryPerNetworkTimeoutDefault + awaitPollInterval
 
-	// RecoveryDeferredRebuildBudget bounds the other route. When the
-	// daemon was not serving yet the walk is handed to
-	// recoverEndpointsDeferred (pkg/plugin/plugin.go:3271), which runs
-	// on wait+recoveryBudget (pkg/plugin/plugin.go:2664) and only then
-	// spawns the Starts — whose own context is a fresh Background, so it
-	// is added, not absorbed.
+	// RecoveryDeferredRebuildBudget bounds the deferred route (#383): recoverEndpointsDeferred waits up to
+	// wait+recoveryBudget, then spawns the Starts on a fresh context, so their budget is added.
 	RecoveryDeferredRebuildBudget = recoveryDeferredDaemonWaitDefault + recoveryBudgetDefault + RecoveryRebuildBudget
 )
 
@@ -169,7 +135,7 @@ func InstalledAwaitTimeoutDrift(env []string) string {
 		if d != awaitTimeoutDefault {
 			return fmt.Sprintf("the installed plugin runs with %s=%s and the recovery budgets are "+
 				"derived from %s. Each recovery Start is capped at the installed value "+
-				"(pkg/plugin/plugin.go:2932), so the wait below is bounded by the wrong number: "+
+				"(pkg/plugin/plugin.go:1240), so the wait below is bounded by the wrong number: "+
 				"either it gives up on a rebuild the plugin was still allowed to finish, or it "+
 				"waits past the point where one could still be running. config.json is the "+
 				"manifest the plugin is built from and `docker plugin set` overrides it, which is "+
@@ -290,16 +256,16 @@ func recoveryVerdict(h *HealthResponse) string {
 			"recovery_aborted_container_gone=%d. The rebuild FAILED, it was not still running when "+
 			"the budget ran out. The two counters want different next steps. "+
 			"recovery_aborted_container_gone means a Start failed and the container was gone when "+
-			"the plugin looked afterwards (pkg/plugin/plugin.go:2955); the container may well have "+
+			"the plugin looked afterwards (pkg/plugin/plugin.go:1252); the container may well have "+
 			"been there when recovery began. recovery_failed is every other recorded failure and "+
 			"not only a failing Start: a Start that failed with the container still present "+
-			"(pkg/plugin/plugin.go:2961), a walk-level failure before any Start reached this "+
-			"endpoint (pkg/plugin/plugin.go:2546), and a deferred walk whose daemon never came "+
-			"back (pkg/plugin/plugin.go:2685).",
+			"(pkg/plugin/plugin.go:1258), a walk-level failure before any Start reached this "+
+			"endpoint (pkg/plugin/plugin.go:1000), and a deferred walk whose daemon never came "+
+			"back (pkg/plugin/plugin.go:1106).",
 			h.RecoveryFailed, h.RecoveryAbortedContainerGone)
 	default:
 		return "recovered_ok is incremented only after the recovered endpoint's client has " +
-			"restarted (pkg/plugin/plugin.go:2969), and no failure arm moved either, so the " +
+			"restarted (pkg/plugin/plugin.go:1265), and no failure arm moved either, so the " +
 			"rebuild was still in flight when the budget ran out."
 	}
 }

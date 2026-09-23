@@ -16,19 +16,6 @@ import (
 	"github.com/claymore666/docker-net-dhcp/v2/pkg/dhcp"
 )
 
-// D23's operator half, driven in BOTH directions.
-//
-// The M6b review measured what one direction is worth here: the warning
-// had no observer at all, and the inverted-guard mutant — warn on a
-// clean resume, stay silent on a half-checked one — survived the whole
-// suite. A test that only drove the half-checked case would still pass
-// under it, because that mutant's failure is a line that is NOT emitted
-// on the other input.
-//
-// Two witnesses per row, and deliberately not one: the log line, which
-// is what an operator greps, and the acd_resumed_unchecked check in
-// /Plugin.Health, which is what a poller reads. They are written at one
-// place and read at two, so a fix applied to either alone is visible.
 func TestResumedACD_WarnsOnAHalfCheckedResumeAndIsSilentOnACleanOne(t *testing.T) {
 	l := lease.Lease{Addr: netip.MustParsePrefix("192.0.2.44/24")}
 
@@ -91,10 +78,6 @@ func TestResumedACD_WarnsOnAHalfCheckedResumeAndIsSilentOnACleanOne(t *testing.T
 	}
 }
 
-// The warning names the address, the phase it stopped in and the mode it
-// ran under. Without the phase an operator cannot tell a probe that was
-// still going from a record this build could not read, and without the
-// mode `probing` and `idle` are not comparable at all.
 func TestResumedACD_WarningCarriesTheFieldsThatMakeItActionable(t *testing.T) {
 	p := newHealthPlugin()
 	m := newDHCPManager(nil, JoinRequest{EndpointID: "ep1", NetworkID: "net1"}, DHCPNetworkOptions{})

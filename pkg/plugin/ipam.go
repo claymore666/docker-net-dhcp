@@ -18,22 +18,15 @@ import (
 	"github.com/claymore666/docker-net-dhcp/v2/pkg/util"
 )
 
-// The option keys libnetwork puts in a RequestAddress. Spelled out here
-// rather than imported: this plugin talks to the daemon over HTTP and
-// JSON, so the wire strings are the contract, and importing a constant
-// would hide a rename behind a compile that still succeeded.
+// Wire strings from libnetwork's RequestAddress options, spelled out so a rename cannot compile silently (#110).
 const (
 	ipamOptRequestAddressType = "RequestAddressType"
 	ipamOptGateway            = "com.docker.network.gateway"
 	ipamOptMacAddress         = "com.docker.network.endpoint.macaddress"
 )
 
-// Payload shapes, from moby libnetwork/ipams/remote/api. The error field
-// is `Error` here and `Err` on the network-driver side; they are two
-// different structs in moby and this plugin serves both. A non-200 with
-// the plugin's usual error body is what actually carries a refusal --
-// the daemon's plugin client turns any non-200 into an error before it
-// ever looks at this field -- so these responses carry only success.
+// Payload shapes from moby libnetwork/ipams/remote/api; the error field is `Error` here and `Err` on the
+// network-driver side, and the daemon turns any non-200 into an error before reading it (#110).
 
 // IpamCapabilitiesResponse answers /IpamDriver.GetCapabilities.
 type IpamCapabilitiesResponse struct {
@@ -87,9 +80,7 @@ type ReleaseAddressRequest struct {
 	Address string
 }
 
-// GwAllocCheckRequest asks the NETWORK driver whether this network needs
-// a gateway address allocated for it. It carries the driver options and
-// nothing else -- no network id and no address space.
+// GwAllocCheckRequest asks the network driver whether a gateway address is needed; it carries only driver options.
 type GwAllocCheckRequest struct {
 	Options map[string]interface{}
 }
@@ -100,23 +91,9 @@ type GwAllocCheckResponse struct {
 	SkipIPv6 bool
 }
 
-// apiGwAllocCheck says this driver never wants a gateway ADDRESS
-// allocated out of the pool.
-//
-// The gateway a container uses is the one the DHCP server named, and it
-// is delivered by the network driver's Join as a route into the sandbox.
-// Asking the IPAM driver for a gateway address would mean running a DHCP
-// exchange at `docker network create` for an address nothing uses.
-//
-// THE ANSWER CANNOT BE PER NETWORK, and that is a property of the call
-// and not a shortcut: the request carries the driver options only, so
-// there is no network id and no address space to branch on, and
-// libnetwork persists whatever comes back into each network's own store.
-// So a `--ipam-driver null` network gets this answer too. That is safe
-// and it is measured rather than assumed: with the null IPAM driver the
-// gateway request returned no address anyway, and a user-typed
-// `--gateway` still reaches the IPAM driver whatever this says
-// (libnetwork asks when `cfg.Gateway != ""` regardless of the skip).
+// apiGwAllocCheck always skips the gateway allocation: the gateway comes from the DHCP server at Join (#110).
+// The request has no network id, so the answer cannot be per network; a user-typed --gateway still reaches
+// RequestAddress, since libnetwork asks whenever cfg.Gateway is set.
 func (p *Plugin) apiGwAllocCheck(w http.ResponseWriter, r *http.Request) {
 	var req GwAllocCheckRequest
 	if err := util.ParseJSONOrErrorResponse(&req, w, r); err != nil {
@@ -126,11 +103,8 @@ func (p *Plugin) apiGwAllocCheck(w http.ResponseWriter, r *http.Request) {
 }
 
 func (p *Plugin) apiIpamGetCapabilities(w http.ResponseWriter, r *http.Request) {
-	// RequiresMACAddress is what puts the endpoint's hardware address
-	// into RequestAddress at all: without it there is nothing to run a
-	// DHCP exchange as. RequiresRequestReplay is what makes the daemon
-	// re-ask for every stored endpoint's address at start-up, which is
-	// how an IPAM-mode network survives a daemon restart.
+	// The daemon fills the MAC into RequestAddress only with RequiresMACAddress, and replays stored endpoints'
+	// addresses at start-up only with RequiresRequestReplay (#110).
 	util.JSONResponse(w, IpamCapabilitiesResponse{
 		RequiresMACAddress:    true,
 		RequiresRequestReplay: true,
@@ -157,13 +131,8 @@ func (p *Plugin) apiRequestPool(w http.ResponseWriter, r *http.Request) {
 	util.JSONResponse(w, res, http.StatusOK)
 }
 
-// RequestPool answers with the pool identity and writes nothing durable.
-//
-// The identity is the canonical request, so the SAME call at the daemon's
-// start-up replay -- where libnetwork sends back the pool this driver
-// returned, together with the option map it persisted -- derives the
-// PoolID the daemon already stored. A driver that minted a fresh id, or
-// that wrote state here, would unbind every network at every restart.
+// RequestPool answers with the canonical pool identity and writes nothing durable, so the start-up replay derives the
+// stored PoolID (#110).
 func (p *Plugin) RequestPool(req RequestPoolRequest) (RequestPoolResponse, error) {
 	if req.V6 {
 		return RequestPoolResponse{}, fmt.Errorf("%w: this plugin does not allocate IPv6 pools. In this shape it serves IPv4 only: `-o ipv6=true`, and `-o ipv6_mode=` with any mode but off, are refused on such a network too, because no DHCPv6 exchange runs on the IPAM endpoint path. For IPv6 today, create the network with --ipam-driver null, where every ipv6_mode is unchanged and supported. Progress on IPv6 in IPAM mode is tracked in issue #960", util.ErrIPAM)
@@ -183,9 +152,7 @@ func (p *Plugin) RequestPool(req RequestPoolRequest) (RequestPoolResponse, error
 	p.ipamPools.add(poolID, req.AddressSpace, pool, name, time.Now())
 
 	log.WithFields(log.Fields{"pool_id": poolID, "pool": pool}).Debug("Address pool requested")
-	// No Data[gateway]: a Meta gateway would become the network's
-	// gateway before any container exists, and the real one is whatever
-	// the DHCP server tells each endpoint at Join.
+	// No Data[gateway]: a Meta gateway would become the network's gateway before any endpoint exists (#110).
 	return RequestPoolResponse{PoolID: poolID, Pool: pool}, nil
 }
 
@@ -194,11 +161,8 @@ func (p *Plugin) apiReleasePool(w http.ResponseWriter, r *http.Request) {
 	if err := util.ParseJSONOrErrorResponse(&req, w, r); err != nil {
 		return
 	}
-	// DROPS THE UNCONSUMED ISSUE AND NOTHING ELSE. This call arrives for
-	// a create that failed on a PoolID another network may still hold,
-	// and again at every network delete BEFORE the driver's
-	// DeleteNetwork. Closing records or dropping a binding here would
-	// destroy a live network's state because an unrelated create failed.
+	// Drops only the unconsumed issue: this arrives for a failed create and at every delete before DeleteNetwork
+	// (#110).
 	p.ipamPools.drop(req.PoolID)
 	util.JSONResponse(w, struct{}{}, http.StatusOK)
 }
@@ -216,39 +180,15 @@ func (p *Plugin) apiRequestAddress(w http.ResponseWriter, r *http.Request) {
 	util.JSONResponse(w, res, http.StatusOK)
 }
 
-// RequestAddress is the whole IPAM dispatch, and the dispatch is a
-// question about the RECORD STORE rather than about the request.
-//
-// It has to be, because three of the shapes are wire-identical. An aux
-// address at create, an aux address at the daemon-start replay, and a
-// stored endpoint's address replayed at that same restart all arrive as
-// an address with no options: libnetwork does not persist the endpoint's
-// IPAM options, and it injects the MAC only when it is creating an
-// endpoint. So what tells them apart is what this plugin knows about the
-// address: the network's own saved gateway and aux set, and whether a
-// record in an answering phase holds it.
+// RequestAddress dispatches on the record store, since libnetwork does not persist endpoint IPAM options (#110).
 func (p *Plugin) RequestAddress(ctx context.Context, req RequestAddressRequest) (RequestAddressResponse, error) {
 	var none RequestAddressResponse
 
 	networkID, bound := p.ipamIndex.network(req.PoolID)
 	if !bound {
-		// No network holds this pool. The calls that legally arrive are
-		// the gateway and aux ones libnetwork makes while a create is
-		// still in flight, before CreateNetwork has bound anything.
-		//
-		// THE GATEWAY COMES FIRST, and an empty address is one of its
-		// shapes. A gateway says so on the wire and is never an
-		// endpoint's address, so it is answered whatever the index
-		// knows; and an engine that does not ask GwAllocCheck asks for
-		// the gateway with no address at all, at `docker network
-		// create`, on this very pool. That is every engine below 28
-		// (moby libnetwork/drivers/remote/driver.go has no such call
-		// at v26.1.5 or v27.0.0, and network.go requests the gateway
-		// whenever the pool carried no gateway of its own). Refusing
-		// it here, which is what the empty-address refusal below did,
-		// failed `docker network create` on all of them with "failed
-		// to allocate gateway ()" and made IPAM mode unusable there
-		// (#1012).
+		// A gateway is answered before any binding exists, including an empty address: engines below 28 have no
+		// GwAllocCheck and request the gateway at create with no address (moby libnetwork/drivers/remote/driver.go at
+		// v26.1.5 and v27.0.0); refusing it failed every such create (#1012).
 		if req.Options[ipamOptRequestAddressType] == ipamOptGateway {
 			if req.Address == "" {
 				return ipamPoolNetworkAddress(req.PoolID)
@@ -258,14 +198,8 @@ func (p *Plugin) RequestAddress(ctx context.Context, req RequestAddressRequest) 
 		if req.Address == "" {
 			return none, fmt.Errorf("%w: no network is bound to pool %v, so there is nothing to lease from", util.ErrIPAM, req.PoolID)
 		}
-		// The aux shape and a stored endpoint's replay are otherwise
-		// wire-identical, and one more thing can make a pool unbound:
-		// rebuildIPAMIndex skipping a network whose file would not
-		// read. Echoing there would confirm Docker's stored address
-		// from a process holding no record of it -- row A's
-		// degradation, arriving before either replay counter is
-		// reached. While anything is missing from the fold, the echo is
-		// refused and counted as the miss it is.
+		// A network rebuildIPAMIndex skipped also looks unbound, so the echo is refused while the fold is incomplete
+		// (#110).
 		if p.ipamIndex.isIncomplete() {
 			p.ipamReplayMiss.Add(1)
 			log.WithFields(log.Fields{
@@ -283,9 +217,6 @@ func (p *Plugin) RequestAddress(ctx context.Context, req RequestAddressRequest) 
 	}
 
 	if req.Options[ipamOptRequestAddressType] == ipamOptGateway {
-		// Never a lease. A typed --gateway is handed straight back; an
-		// untyped one is refused, which is unreachable while
-		// GwAllocCheck answers skip and is the belt beside it.
 		if req.Address == "" {
 			return none, fmt.Errorf("%w: this plugin does not allocate a gateway address. The gateway comes from the DHCP server and reaches the container at Join. Pass --gateway if you need Docker's own network record to name one", util.ErrIPAM)
 		}
@@ -301,20 +232,8 @@ func (p *Plugin) RequestAddress(ctx context.Context, req RequestAddressRequest) 
 		return none, err
 	}
 
-	// THE SETTLED HALF OF THE ONE-EXCHANGE RULE, and it stands here
-	// rather than inside the reserve because the reserve is not the only
-	// way past. A MAC in the options means libnetwork is CREATING an
-	// endpoint -- it injects one at no other time, which is the fact the
-	// replay branch below is built on -- so a create whose hardware
-	// address a live record on this network already holds is a second
-	// endpoint, whatever else the request carries. Left to the reserve,
-	// a second container that pins `--ip` as well as `--mac-address`
-	// walked past: its address AND its MAC match the running endpoint's
-	// record, ipamRecordAnswersFor reads that as the endpoint's own
-	// replay, and the call is ANSWERED. Docker then published one
-	// address for two endpoints and CreateEndpoint refused the loser
-	// with a message about a plugin restart that never happened, with
-	// this counter never moving.
+	// libnetwork injects a MAC only when creating an endpoint, so a create whose MAC a live record here holds is a
+	// second endpoint, even with a matching --ip (#110).
 	if mac != nil {
 		if rec, held := p.ipamEndpointHoldingMAC(networkID, mac); held {
 			return none, p.refuseDuplicateMAC(networkID, mac, "an endpoint of this network already holds it, in phase "+rec.Phase.String())
@@ -327,8 +246,6 @@ func (p *Plugin) RequestAddress(ctx context.Context, req RequestAddressRequest) 
 			return none, fmt.Errorf("%w: %q is not an address", util.ErrIPAM, req.Address)
 		}
 		if rec, ok := p.ipamRecordFor(networkID, addr); ok {
-			// The replay of a stored endpoint: the address is one this
-			// plugin's own record holds, under the MAC that holds it.
 			if err := ipamRecordAnswersFor(rec, mac, addr); err != nil {
 				return none, err
 			}
@@ -336,12 +253,8 @@ func (p *Plugin) RequestAddress(ctx context.Context, req RequestAddressRequest) 
 			return ipamAddressOfRecord(rec.Lease.Addr, sn.Binding.Pool)
 		}
 		if mac == nil {
-			// A replay with no record behind it. Refused rather than
-			// echoed: an echo would have Docker keep serving an address
-			// nothing holds and nothing would ever say so. The daemon
-			// logs the refusal, keeps the stored address, and the
-			// network driver's own recovery adopts it from Docker's
-			// view -- which is the path that has evidence behind it.
+			// A replay with no record is refused; the network driver's recovery adopts the address from Docker's view
+			// (#110).
 			p.ipamReplayMiss.Add(1)
 			log.WithFields(log.Fields{
 				"network": shortID(networkID),
@@ -365,27 +278,9 @@ func (p *Plugin) RequestAddress(ctx context.Context, req RequestAddressRequest) 
 	return RequestAddressResponse{Address: res.addr.String()}, nil
 }
 
-// ipamRecordAnswersFor refuses a record that belongs to some other
-// endpoint.
-//
-// THE MATCH ON THE ADDRESS ALONE IS NOT ENOUGH WHEN THE REQUEST CARRIES
-// A MAC. libnetwork injects the hardware address only when it is
-// CREATING an endpoint, so `docker run --ip X` for an address a running
-// container already holds looks exactly like that container's own
-// replay: the call would be answered, libnetwork would allocate one
-// address to two endpoints, ipam_replay_hits would move for something
-// that is not a replay, and the contradiction would surface later at
-// CreateEndpoint wearing a message about a plugin restart that never
-// happened. A record answers a creating endpoint only when it is that
-// endpoint's, which the CHAddr says.
-//
-// An empty CHAddr is refused with the rest. A record that cannot say
-// whose it is cannot be handed to a new endpoint, and the refusal is
-// visible at `docker run` rather than silent.
+// ipamRecordAnswersFor refuses a record whose CHAddr is not the creating endpoint's MAC, or is empty (#110).
 func ipamRecordAnswersFor(rec lease.Record, mac net.HardwareAddr, addr netip.Addr) error {
 	if mac == nil {
-		// The replay shape: no MAC to compare, and the address is what
-		// Docker stored for this endpoint.
 		return nil
 	}
 	if len(rec.CHAddr) > 0 && bytes.Equal(rec.CHAddr, mac) {
@@ -395,21 +290,8 @@ func ipamRecordAnswersFor(rec lease.Record, mac net.HardwareAddr, addr netip.Add
 		util.ErrIPAM, addr, rec.ID, mac)
 }
 
-// ipamEndpointHoldingMAC asks the RECORD STORE whether this network
-// already has a live endpoint under this hardware address.
-//
-// It fails OPEN on a read error, and the opposite failure is why. The
-// other disk lookup on this path, ipamRecordFor, already fails open on
-// the same error, so a fold that will not read leaves the two agreeing
-// rather than one refusing what the other confirms; and a fail-CLOSED
-// guard here would refuse every container start on every IPAM network
-// on a host whose journal is unreadable, which is a far larger outage
-// than the one this guard exists to prevent. What is lost on such a
-// host is the settled shape, and nothing downstream recovers it:
-// createIPAMEndpoint reads no record at all, only its own in-memory
-// reservation, and every check it makes passes for the second endpoint
-// because they are all about that endpoint's own reservation. The
-// in-flight half still closes two creates racing, with no disk.
+// ipamEndpointHoldingMAC fails open on a read error, as ipamRecordFor does; failing closed would refuse every
+// start on every IPAM network of a host whose journal does not read (#110).
 func (p *Plugin) ipamEndpointHoldingMAC(networkID string, mac net.HardwareAddr) (lease.Record, bool) {
 	if p.records == nil {
 		return lease.Record{}, false
@@ -423,8 +305,6 @@ func (p *Plugin) ipamEndpointHoldingMAC(networkID string, mac net.HardwareAddr) 
 	return ipamLiveRecordForMAC(rb, networkID, mac, time.Now())
 }
 
-// ipamRecordFor is the phase-filtered lookup, lifted so the dispatch
-// reads as one decision and the filter can be driven on its own.
 func (p *Plugin) ipamRecordFor(networkID string, addr netip.Addr) (lease.Record, bool) {
 	if p.records == nil {
 		return lease.Record{}, false
@@ -437,9 +317,7 @@ func (p *Plugin) ipamRecordFor(networkID string, addr netip.Addr) (lease.Record,
 	return ipamLiveRecord(rb, networkID, addr)
 }
 
-// ipamRequestedMAC reads the hardware address libnetwork generated for
-// this endpoint, refusing a malformed one rather than leasing under a
-// different identity than Docker will pin on the link.
+// ipamRequestedMAC refuses a malformed MAC, which would lease under an identity Docker does not pin on the link.
 func ipamRequestedMAC(opts map[string]string) (net.HardwareAddr, error) {
 	s := opts[ipamOptMacAddress]
 	if s == "" {
@@ -452,9 +330,6 @@ func ipamRequestedMAC(opts map[string]string) (net.HardwareAddr, error) {
 	return mac, nil
 }
 
-// ipamIsAuxOfNetwork reports whether this address is one CreateNetwork
-// was told about: the gateway or an auxiliary address. Those are
-// reserved in Docker's own record and never leased.
 func ipamIsAuxOfNetwork(b *ipamBinding, address string) bool {
 	if b.Gateway == address {
 		return true
@@ -467,8 +342,7 @@ func ipamIsAuxOfNetwork(b *ipamBinding, address string) bool {
 	return false
 }
 
-// ipamEchoAddress returns an address the caller supplied, wearing this
-// network's prefix length so libnetwork can parse it as a CIDR.
+// ipamEchoAddress returns a caller-supplied address with this network's prefix length, as libnetwork parses a CIDR.
 func ipamEchoAddress(address, pool string) (RequestAddressResponse, error) {
 	addr, err := netip.ParseAddr(address)
 	if err != nil {
@@ -484,9 +358,7 @@ func ipamEchoAddress(address, pool string) (RequestAddressResponse, error) {
 	return RequestAddressResponse{Address: netip.PrefixFrom(addr, bits).String()}, nil
 }
 
-// ipamAddressOfRecord renders a record's leased address. The record
-// carries the server's own option-1 mask, which is the honest one; the
-// pool is the fallback for a record whose mask never arrived.
+// ipamAddressOfRecord prefers the server's option-1 mask and falls back to the pool's.
 func ipamAddressOfRecord(addr netip.Prefix, pool string) (RequestAddressResponse, error) {
 	if addr.IsValid() && addr.Bits() > 0 {
 		return RequestAddressResponse{Address: addr.String()}, nil
@@ -506,34 +378,9 @@ func (p *Plugin) apiReleaseAddress(w http.ResponseWriter, r *http.Request) {
 	util.JSONResponse(w, struct{}{}, http.StatusOK)
 }
 
-// ReleaseAddress gives one address back.
-//
-// For a live endpoint this arrives AFTER DeleteEndpoint, whose record is
-// already RETAINED, so there is nothing left to do. The case that needs
-// work is the other one: CreateEndpoint failed, so an address was
-// reserved and no endpoint was ever created, and libnetwork releases it.
-// Retaining the reservation with the tombstone deadline is what lets a
-// restart policy's next attempt claim the same address back instead of
-// burning a second lease on the server. No DHCPRELEASE goes on the wire
-// (D-7): the address is left to expire exactly as any other host on the
-// segment leaves one.
-//
-// THAT STILL HOLDS ON `never` AND ON `on_stop` (#962). A release on
-// those two values happens at Leave, built from the endpoint's lease
-// record; a reservation whose CreateEndpoint failed has no endpoint and
-// reaches no Leave, so nothing on that path can see it. What it leaves
-// behind is a real lease the server granted that nothing will ever hand
-// back, held only by the retention above until it expires.
-//
-// `on_remove` is the value that reaches it (#984), and it reaches it
-// from somewhere else: the retention this handler writes carries a
-// deadline, and the record sweeper hands every retained record on an
-// `on_remove` network back when its deadline passes. So this handler
-// keeps doing exactly what it does here on all three values, and the
-// difference is what happens at the end of the window rather than what
-// happens now. Nothing releases from inside this function: a release
-// here would race the retry the retention exists for, which is the
-// whole reason retention wins at this point in the life of the address.
+// ReleaseAddress after a failed CreateEndpoint retains the reservation to the tombstone deadline, so a restart's
+// retry claims the same address; no DHCPRELEASE goes on the wire here on any release_on value (#110, #962). On
+// `on_remove` the record sweeper releases it when the deadline passes (#984).
 
 func (p *Plugin) ReleaseAddress(req ReleaseAddressRequest) error {
 	networkID, bound := p.ipamIndex.network(req.PoolID)
@@ -556,16 +403,7 @@ func (p *Plugin) ReleaseAddress(req ReleaseAddressRequest) error {
 		p.ipamReleaseUnknown.Add(1)
 		return nil
 	}
-	// CREATED IS HERE TOO. A re-bound record is created from the moment
-	// the re-bind is written, before any packet, so the one call the
-	// engine always makes when a container start rolls back used to see
-	// the one phase it did not act on. Nothing else reaches such a
-	// record: its reservation is gone, and a CreateEndpoint that never
-	// ran gets no DeleteEndpoint.
-	//
-	// An exchange still running owns its own record, and the
-	// reservation is taken before the record is given up so that
-	// nothing can consume an answer pointing at a record nobody holds.
+	// A re-bound record is created before any packet, and a rolled-back start reaches it only here (#110).
 	if rec.Phase != lease.PhaseReserved && rec.Phase != lease.PhaseCreated {
 		return nil
 	}
@@ -586,21 +424,7 @@ func (p *Plugin) ReleaseAddress(req ReleaseAddressRequest) error {
 	return nil
 }
 
-// ipamEndpointHolds reports whether an endpoint THIS process created
-// is still holding the address being released.
-//
-// The give-up above acts on a record that outlived its endpoint. The
-// engine releases an address only after telling the driver to delete
-// the endpoint, and that call takes the fingerprint, so on the ordinary
-// path there is nothing here to find; this makes "no endpoint can be
-// holding it" a thing the handler checks instead of a reading of the
-// engine. A fingerprint is written last in createIPAMEndpoint, after
-// every exit that gives the record back, so a failed create leaves
-// none and a live endpoint leaves one until it is deleted.
-//
-// The pair is the key, not the address alone: two IPAM networks on one
-// segment can hand out the same address, and blocking on that would
-// strand exactly the record this arm exists to hand back.
+// ipamEndpointHolds keys on network and address, since two IPAM networks on one segment can issue one address (#110).
 func (p *Plugin) ipamEndpointHolds(mac net.HardwareAddr, addr string) bool {
 	if len(mac) == 0 || addr == "" {
 		return false

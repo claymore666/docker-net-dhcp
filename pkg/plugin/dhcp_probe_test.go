@@ -15,10 +15,6 @@ import (
 	"github.com/claymore666/docker-net-dhcp/v2/pkg/dhcp"
 )
 
-// TestNewProbeMAC pins the LAA + unicast bit semantics. Stable
-// even though the rest of the bytes are random — the constraint is
-// what avoids collision with any manufacturer-assigned MAC on the
-// upstream's reservation table.
 func TestNewProbeMAC(t *testing.T) {
 	mac, err := newProbeMAC()
 	if err != nil {
@@ -34,9 +30,6 @@ func TestNewProbeMAC(t *testing.T) {
 		t.Errorf("multicast bit set on first byte (%#x); not a valid unicast address", mac[0])
 	}
 
-	// Two consecutive calls must produce different MACs (else the
-	// rand source is broken and probes on different runs would
-	// collide in the dnsmasq lease table).
 	m2, err := newProbeMAC()
 	if err != nil {
 		t.Fatalf("newProbeMAC #2: %v", err)
@@ -46,9 +39,6 @@ func TestNewProbeMAC(t *testing.T) {
 	}
 }
 
-// TestNewProbeLinkName guards uniqueness + the dh-probe- prefix that
-// makes orphans easy to spot in `ip link` output if a probe ever
-// fails to clean up.
 func TestNewProbeLinkName(t *testing.T) {
 	a, err := newProbeLinkName()
 	if err != nil {
@@ -57,11 +47,7 @@ func TestNewProbeLinkName(t *testing.T) {
 	if !strings.HasPrefix(a, "dh-probe-") {
 		t.Errorf("missing prefix; got %q", a)
 	}
-	// Linux's IFNAMSIZ is 16 (including null terminator) → max 15
-	// printable chars. dh-probe- (9) + 8 hex = 17. We're 2 over the
-	// limit and need to rely on the kernel truncating, OR we use a
-	// shorter random suffix. Pin the length here so a refactor
-	// doesn't regress past the limit silently.
+	// IFNAMSIZ is 16 including the NUL, so a link name holds at most 15 characters.
 	if len(a) > 15 {
 		t.Errorf("link name %q exceeds Linux IFNAMSIZ-1 (15) — kernel will refuse it", a)
 	}
@@ -72,19 +58,10 @@ func TestNewProbeLinkName(t *testing.T) {
 	}
 }
 
-// TestPreflightProbeBudget_CoversOneLostDiscover pins the budget
-// against the arithmetic that sized it (#307): dhcpcd startup on a
-// slow or virtualized host (~2s) + a lost first DISCOVER retransmitted
-// after dhcpcd's jittered ~4s discover interval + response and
-// handler round-trip (~0.5s). The 5s value this replaced satisfied
-// the same "one retry must fit" intent only with subsecond startup
-// and produced false "no DHCP OFFER" errors against live servers.
-// Lowering the budget below this floor needs #307-grade evidence,
-// not a tidy round number.
 func TestPreflightProbeBudget_CoversOneLostDiscover(t *testing.T) {
 	const (
 		worstStartup      = 2 * time.Second
-		discoverRetry     = 4 * time.Second // dhcpcd default, jittered
+		discoverRetry     = 4 * time.Second // RFC 2131 section 4.1: 4 s, randomised by up to 1 s
 		responseRoundTrip = 500 * time.Millisecond
 	)
 	if floor := worstStartup + discoverRetry + responseRoundTrip; preflightProbeBudget < floor {
@@ -92,21 +69,8 @@ func TestPreflightProbeBudget_CoversOneLostDiscover(t *testing.T) {
 	}
 }
 
-// TestPreflightProbeOptions_RFC5227IsOffOnTheThrowawayLease pins the
-// one field in the preflight client whose wrong value is invisible
-// everywhere except against a working DHCP server.
-//
-// preflightProbeBudget is 8s. conflict_check=wait spends up to 7.0s of
-// it inside RFC 5227 section 2.1 (PROBE_WAIT 1s + two intervals of up
-// to PROBE_MAX 2s + ANNOUNCE_WAIT 2s), so a probe that inherits the
-// network's mode fails `docker network create -o validate_dhcp=true`
-// against a server that answered correctly. MEASURED on the 2.x lane
-// 2026-09-04 at 8.1s.
-//
-// The mode is asserted against proto.ConflictOff, and separately
-// against the arithmetic, so that a future change to either the budget
-// or the RFC schedule that reintroduces the overlap goes red here
-// rather than on the lane.
+// conflict_check=wait spends up to 7 s of the 8 s probe budget in RFC 5227 section 2.1,
+// and a probe that inherited it failed validate_dhcp at 8.1 s (measured 2026-09-04).
 func TestPreflightProbeOptions_RFC5227IsOffOnTheThrowawayLease(t *testing.T) {
 	mac, err := newProbeMAC()
 	if err != nil {
@@ -121,13 +85,6 @@ func TestPreflightProbeOptions_RFC5227IsOffOnTheThrowawayLease(t *testing.T) {
 			o.ConflictMode, proto.ConflictOff)
 	}
 
-	// Why this is not merely tidy: the window does not fit in the
-	// budget ALONGSIDE the exchange the budget was sized for. The
-	// budget covers a lost first DISCOVER and its jittered
-	// retransmission (#307), which is exactly the difference between
-	// dhcp.AcquisitionWindow and dhcp.ConflictWindow, so the two terms
-	// below are derived from the library's constants rather than read
-	// off this file's own comment.
 	window := dhcp.ConflictWindow(proto.DefaultACDParams())
 	exchange := dhcp.AcquisitionWindow(proto.DefaultParams(nil)) - window
 	if exchange+window <= preflightProbeBudget {
@@ -137,10 +94,6 @@ func TestPreflightProbeOptions_RFC5227IsOffOnTheThrowawayLease(t *testing.T) {
 			window, exchange, exchange+window, preflightProbeBudget)
 	}
 
-	// The probe still honours the network's server policy: a server
-	// this network will never lease from is not an answer to "is
-	// anyone listening?" (#111, #669). Asserted here so the extraction
-	// cannot quietly drop it.
 	pol := serverPolicy{Prefer: []netip.Addr{netip.MustParseAddr("192.0.2.1")}}
 	o = preflightProbeOptions(mac, pol)
 	if len(o.AllowServers) != 1 || o.AllowServers[0] != "192.0.2.1" {

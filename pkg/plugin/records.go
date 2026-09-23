@@ -15,49 +15,23 @@ import (
 	"github.com/claymore666/docker-net-dhcp/v2/pkg/dhcp"
 )
 
-// recordFileName is the durable lease record inside STATE_DIR: one
-// JSON object per line, folded on read.
-//
-// A SECOND FILE BESIDE THE LEDGER, and the seam design asked for one.
-// The design's reason for one file is that the audit question ("which
-// address did this container hold last Tuesday") joins the DHCP half
-// and the Docker half, and two files need a version handshake at
-// restart. It is right, and it is not this milestone: the ledger's line
-// format is documented, operators parse it, and folding it into the
-// record's event stream changes what those parsers read. The two files
-// are written from the same events, so they cannot disagree about what
-// happened; what they cost is the join. Recorded in the handover as
-// owed, not as done.
+// recordFileName is the lease record inside STATE_DIR, a second file beside the ledger because operators parse the
+// ledger's lines (#899).
 const recordFileName = "lease-records.jsonl"
 
-// newRecordID mints a record's primary key.
-//
-// Random, and NOT the EndpointID, because a record is one BINDING
-// ATTEMPT and an EndpointID is not: libnetwork mints a fresh endpoint
-// for every container start, so keying on it would make a restarted
-// container a stranger to its own address. The tombstone exists to
-// bridge exactly that gap and here it is a phase of the same record.
+// newRecordID is random, not the EndpointID: libnetwork mints a fresh endpoint on every container start (#899).
 func newRecordID() string {
 	var b [16]byte
 	if _, err := rand.Read(b[:]); err != nil {
-		// A record id that repeats folds two endpoints into one
-		// record. Falling back to a clock would do exactly that on a
-		// machine whose clock is coarse, so the failure is reported
-		// and the caller runs without a record instead.
+		// A clock fallback would repeat ids on a coarse clock, so a failure runs without a record (#899).
 		log.WithError(err).Error("Could not mint a lease record id; this endpoint will not be resumable after a restart")
 		return ""
 	}
 	return hex.EncodeToString(b[:])
 }
 
-// recordCreated writes the CREATED record for one endpoint and returns
-// its id. An empty return means there is no record for this endpoint —
-// every caller treats that as "not resumable", never as an error.
-//
-// Identity is written HERE and once (D10). It is the option-61 value as
-// sent, type byte included, and the fold refuses a second write with
-// different bytes: an identity that changes across a restart is a
-// different client to the server, which hands out a second address.
+// recordCreated writes the CREATED record once, with the option-61 identity as sent; a changed identity is a new
+// client to the server (#899).
 func (p *Plugin) recordCreated(networkID string, mac net.HardwareAddr, identity []byte) string {
 	if p.records == nil {
 		return ""
@@ -74,12 +48,7 @@ func (p *Plugin) recordCreated(networkID string, mac net.HardwareAddr, identity 
 	return id
 }
 
-// recordCreated6 opens the DHCPv6 record for one endpoint.
-//
-// It writes the identity as bytes, which is what makes the DUID
-// durable: an identity re-derived on the next start is one that can
-// change, and RFC 9915 section 11 says a DUID "SHOULD NOT change over
-// time if at all possible".
+// recordCreated6 stores the DUID as bytes, since RFC 9915 section 11 says a DUID "SHOULD NOT change over time" (#911).
 func (p *Plugin) recordCreated6(networkID string, mac net.HardwareAddr, id6 dhcp.Identity6) string {
 	if p.records == nil {
 		return ""
@@ -96,21 +65,10 @@ func (p *Plugin) recordCreated6(networkID string, mac net.HardwareAddr, id6 dhcp
 	return id
 }
 
-// recordKey is endpointRecordKey for this manager's endpoint: the value
-// its records are indexed under.
-//
-// It is a method rather than a call at each site because the create
-// side and the resume side must agree exactly, and they are in
-// different files. A manager that resumed under a different key from
-// the one CreateEndpoint filed the record under finds nothing, mints a
-// fresh identity, and the endpoint quietly becomes a new client.
 func (m *dhcpManager) recordKey() net.HardwareAddr {
 	return endpointRecordKey(m.opts.effectiveMode(), m.joinReq.EndpointID, m.endpointMAC())
 }
 
-// recordStore is the record file, or nil. On the manager rather than
-// reached through m.plugin directly because m.plugin is nil in unit
-// tests that drive a manager without a Plugin.
 func (m *dhcpManager) recordStore() *dhcp.Records {
 	if m.plugin == nil {
 		return nil
@@ -118,21 +76,8 @@ func (m *dhcpManager) recordStore() *dhcp.Records {
 	return m.plugin.records
 }
 
-// resumeFromRecord finds this endpoint's record, says what its manager
-// may ask the server for, and moves the record to JOINED.
-//
-// The three are one function because they are one decision: the record
-// that answers the resume is the record the manager must then write to
-// and the record that must be bound. Split apart, a caller could resume
-// from one record and journal into another, and the two histories of
-// one address would only be seen to differ at the next restart.
-//
-// The lookup is the scope+MAC index and NOT the id CreateEndpoint put
-// in the Join hint, deliberately: recovery after a plugin restart has
-// no hint — there was no CreateEndpoint in this process — so a
-// hint-first path would leave the index exercised only on the rare
-// path, which is the path nobody notices is broken. One mechanism,
-// used on every Join.
+// resumeFromRecord looks up by the scope+MAC index, not the Join hint: recovery after a plugin restart has no hint
+// (#899, #911).
 func (m *dhcpManager) resumeFromRecord() (string, dhcp.Resumption) {
 	if m.plugin == nil || m.plugin.records == nil {
 		return "", dhcp.Resumption{}
@@ -145,20 +90,8 @@ func (m *dhcpManager) resumeFromRecord() (string, dhcp.Resumption) {
 	return id, res
 }
 
-// resumeFromRecord6 is resumeFromRecord in the v6 scope, and it hands
-// back the stored DHCPv6 identity as well.
-//
-// THE IDENTITY IS THE HALF THAT MATTERS MOST ACROSS A RESTART. The
-// lease makes the first message a Confirm rather than a Solicit (#820);
-// the identity is what makes it the SAME client either way, and a
-// Confirm sent under a freshly minted DUID names a binding the server
-// files under somebody else. RFC 9915 section 11 is the rule and this
-// is where it is kept.
-//
-// A zero identity means the record predates the DUID or could not be
-// read back, and the caller mints a fresh one — see setupClient. That
-// is a new client to the server, which is worse than resuming and
-// better than refusing to start.
+// resumeFromRecord6 also returns the stored DUID: a Confirm under a new DUID names another client's binding (RFC 9915
+// section 11, #820).
 func (m *dhcpManager) resumeFromRecord6() (string, dhcp.Resumption, dhcp.Identity6) {
 	if m.plugin == nil || m.plugin.records == nil {
 		return "", dhcp.Resumption{}, dhcp.Identity6{}
@@ -175,13 +108,6 @@ func (m *dhcpManager) resumeFromRecord6() (string, dhcp.Resumption, dhcp.Identit
 	return id, res, id6
 }
 
-// recordResume answers what a manager about to start on this identity
-// may ask the server for.
-//
-// It returns the record's id as well, because a manager that resumes a
-// record must write its events to THAT record: a second record for one
-// identity is two histories of one address, and the older one is what a
-// later restart would find first.
 func (p *Plugin) recordResume(networkID string, key net.HardwareAddr) (string, dhcp.Resumption) {
 	if p.records == nil || len(key) == 0 {
 		return "", dhcp.Resumption{}
@@ -193,14 +119,8 @@ func (p *Plugin) recordResume(networkID string, key net.HardwareAddr) (string, d
 	return id, res
 }
 
-// recordBound moves a record to JOINED when it is not there already.
-//
-// The conditional is not defensive: the fold accepts a bind only from
-// CREATED or ADOPTED, and plugin-restart recovery resumes a record a
-// previous process already left JOINED. A bind written unconditionally
-// would be refused there — and refused SILENTLY, since a rejected event
-// still folds into a record with its Rejects counter bumped and nothing
-// else moved.
+// The fold accepts a bind only from CREATED or ADOPTED, and recovery resumes records already JOINED;
+// a refused event is silent, so the bind is conditional (#899).
 func (p *Plugin) recordBound(id string, phase string) {
 	if p.records == nil || id == "" {
 		return
@@ -213,16 +133,8 @@ func (p *Plugin) recordBound(id string, phase string) {
 	}
 }
 
-// recordLeft is a Leave THAT RELEASED NOTHING: the manager stopped and
-// the last lease snapshot stays, so a restart inside the tombstone TTL
-// can still resume this address.
-//
-// Nothing went on the wire, and since #962 that has two causes rather
-// than one: the network is `release_lease=never`, which is the default
-// and D-7's rule (#800), or it is `release_lease=on_stop` and the
-// release did not leave the host. A Leave that DID release ends the
-// record instead of leaving it resumable; settleReleasedRecord is where
-// the two are chosen between.
+// recordLeft: nothing went on the wire, under release_lease=never (#800) or a failed on_stop release (#962), so the
+// address stays resumable.
 func (p *Plugin) recordLeft(id string) {
 	if p.records == nil || id == "" {
 		return
@@ -232,16 +144,7 @@ func (p *Plugin) recordLeft(id string) {
 	}
 }
 
-// settleReleasedRecord writes the teardown phase of one family's
-// record: CLOSED when its lease was handed back, LEFT when it was not.
-//
-// ONE FUNCTION FOR BOTH ANSWERS so the two cannot be written at
-// different call sites and drift. CLOSED is the right phase for a
-// released lease for the reason closeRecord gives for an abandoned one:
-// the record answers no lookup any more. There is a difference worth
-// stating -- closeRecord's record never had an address, and this one
-// had it and gave it back -- and it makes no difference to what the
-// record must now do, which is nothing (#962).
+// settleReleasedRecord writes CLOSED when the lease went back and LEFT when it did not, in one place (#962).
 func (p *Plugin) settleReleasedRecord(id string, released bool) {
 	if released {
 		p.closeRecord(id)
@@ -250,38 +153,9 @@ func (p *Plugin) settleReleasedRecord(id string, released bool) {
 	p.recordLeft(id)
 }
 
-// retainRecordFor lays the tombstone on the record for one identity.
-//
-// The deadline is the tombstone store's own TTL, from now. It is the
-// caller's min(lease expiry, tombstone TTL) with the lease half left
-// out on purpose: a record whose lease outlives the tombstone is still
-// only useful for as long as a re-bind may consume it, and a deadline
-// past that would keep answering lookups for an endpoint nothing can
-// claim.
-//
-// IT READS THE NEWEST RECORD PER SCOPE AND NOT `Resume`, and the
-// difference is the released case (#962). `Resume` CONTINUES past a
-// CLOSED record to the next older match on the same scope and MAC and
-// returns that one. After a release the newest record is CLOSED, so
-// Resume would answer with an EARLIER endpoint's record -- which on a
-// network that inherited this MAC through a tombstone carries the
-// address that has just been handed back -- and this function would
-// stamp a fresh tombstone deadline on it. That is the inheritance the
-// release exists to prevent, rebuilt one record deeper.
-//
-// State the bound: skipping on CLOSED also skips a record closed for
-// the OTHER reason, an abandoned CreateEndpoint (closeRecord). That
-// needs a DeleteEndpoint for one endpoint to arrive after a failed
-// CreateEndpoint for the same key, and libnetwork runs Leave and
-// DeleteEndpoint for the old endpoint before it creates the new one, so
-// it is not reachable through the restart path that produces the two
-// records. It is a bound, not a proof.
-//
-// The v6 record is a SECOND record under a second scope (dhcp.Scope6),
-// so it is walked separately: a dual-stack endpoint whose v4 record was
-// retained and whose v6 record was not keeps its IPv4 address across a
-// restart and loses its IPv6 one, which is exactly the asymmetry #820
-// exists to remove.
+// retainRecordFor reads the newest record per scope, not Resume: Resume skips a CLOSED record to an older one,
+// which after a release would re-tombstone the address just handed back (#962). The v6 record is a second scope,
+// walked separately, so a restart keeps both families (#820).
 func (p *Plugin) retainRecordFor(networkID string, key net.HardwareAddr) {
 	if p.records == nil || len(key) == 0 {
 		return
@@ -306,14 +180,8 @@ func (p *Plugin) retainRecordFor(networkID string, key net.HardwareAddr) {
 	}
 }
 
-// closeRecord ends a record outright: CreateEndpoint failed after
-// opening one, so there is no endpoint and never was a lease.
-//
-// CLOSED and not RETAINED, because a tombstone exists to be inherited
-// and there is nothing here to inherit: no address was acquired, so the
-// record answers no lookup. Leaving it CREATED would be harmless to
-// correctness and is still wrong — it is a line that would sit in an
-// append-only file for the life of the deployment.
+// closeRecord ends the record as CLOSED: no address was acquired, so there is nothing for a tombstone to hand on
+// (#899).
 func (p *Plugin) closeRecord(id string) {
 	if p.records == nil || id == "" {
 		return
@@ -323,8 +191,6 @@ func (p *Plugin) closeRecord(id string) {
 	}
 }
 
-// recordRetained is DeleteEndpoint: the tombstone phase, with the
-// deadline the tombstone store already computes.
 func (p *Plugin) recordRetained(id string, deadline time.Time) {
 	if p.records == nil || id == "" {
 		return

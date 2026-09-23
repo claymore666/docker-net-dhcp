@@ -21,27 +21,8 @@ import (
 	"github.com/claymore666/docker-net-dhcp/v2/pkg/util"
 )
 
-// TestIpamReserve_OneExchangePerHardwareAddress is defeat row 14 and the
-// reason ipamReserves exists at all.
-//
-// Two DHCP exchanges under one hardware address means two DISCOVERs and
-// two leases filed against one MAC at the server, of which the second is
-// never released: nothing holds it, and no DHCPRELEASE goes on the wire
-// for it on any value of `release_lease` (D-7, #962). `on_stop` releases
-// at Leave from the endpoint's lease record, and a second exchange
-// nothing holds has no endpoint and no record of its own to be found
-// there. So a key already carrying an exchange admits no second one.
-//
-// The loser is REFUSED and not parked on the first one's result. Waiting
-// would hand two endpoints one address, and it is two endpoints that put
-// one key here: libnetwork generates a unique MAC per endpoint and only
-// ever copies an operator-set one through
-// (TestRequestAddress_TwoEndpointsCannotShareOneHardwareAddress carries
-// the measurement).
-//
-// Driven through the real entry point, with the exchange occupied by
-// hand: the netlink and DHCP half needs a parent NIC and a server, and
-// the key is what this is about.
+// A second exchange under one MAC files a second lease no DHCPRELEASE ever returns (#962), and libnetwork only
+// repeats a MAC the operator set, so the loser is refused, not parked (#110).
 func TestIpamReserve_OneExchangePerHardwareAddress(t *testing.T) {
 	p, b := ipamFixture(t)
 	mac, _ := net.ParseMAC(ipamTestMAC)
@@ -57,9 +38,6 @@ func TestIpamReserve_OneExchangePerHardwareAddress(t *testing.T) {
 		t.Fatalf("ipamNetwork: %v", err)
 	}
 
-	// No deadline on the context: a refusal that only arrives because the
-	// caller gave up is the failure this test is here to catch, and one
-	// with no deadline cannot be mistaken for it.
 	done := make(chan error, 1)
 	go func() {
 		_, err := p.ipamReserveAddress(context.Background(), ipamTestNetwork, sn, mac, "")
@@ -88,7 +66,6 @@ func TestIpamReserve_OneExchangePerHardwareAddress(t *testing.T) {
 		t.Errorf("%d reservations held, want 1: the refused request left one behind", n)
 	}
 
-	// The exchange that owns the key still answers its own caller.
 	p.ipamReserves.finish(key, first, ipamReservation{
 		addr:   netip.MustParsePrefix("192.168.99.10/24"),
 		info:   dhcp.Info{IP: "192.168.99.10/24", Gateway: "192.168.99.1"},
@@ -100,9 +77,6 @@ func TestIpamReserve_OneExchangePerHardwareAddress(t *testing.T) {
 	}
 }
 
-// TestIpamReserves_AFailedReservationIsNotRemembered. The next attempt
-// has to run a fresh exchange rather than be handed this one's error
-// forever.
 func TestIpamReserves_AFailedReservationIsNotRemembered(t *testing.T) {
 	s := newIPAMReserves()
 	res, _ := s.begin("k", time.Now())
@@ -113,9 +87,6 @@ func TestIpamReserves_AFailedReservationIsNotRemembered(t *testing.T) {
 	}
 }
 
-// TestIpamReserves_TakeOnlyCompletes. CreateEndpoint must not consume a
-// reservation whose exchange is still running: it would read a zero
-// address and bind the endpoint to nothing.
 func TestIpamReserves_TakeOnlyCompletes(t *testing.T) {
 	s := newIPAMReserves()
 	res, _ := s.begin("k", time.Now())
@@ -131,12 +102,6 @@ func TestIpamReserves_TakeOnlyCompletes(t *testing.T) {
 	}
 }
 
-// TestSweepIPAMReservations_RetainsWhatDockerNeverBuilt.
-//
-// Only a RETAINED record carries a deadline, so a RESERVED one with a
-// live lease and no endpoint -- the daemon spent every retry, or fell
-// over between RequestAddress and CreateEndpoint -- would keep answering
-// address lookups until the network is deleted.
 func TestSweepIPAMReservations_RetainsWhatDockerNeverBuilt(t *testing.T) {
 	p, b := ipamFixture(t)
 	mac, _ := net.ParseMAC(ipamTestMAC)
@@ -152,9 +117,6 @@ func TestSweepIPAMReservations_RetainsWhatDockerNeverBuilt(t *testing.T) {
 		addr: netip.MustParsePrefix("192.168.99.10/24"), record: id,
 	}, nil)
 
-	// Nothing is swept while the endpoint could still arrive. The
-	// control matters: a sweeper that retained immediately would take
-	// the address away from the CreateEndpoint on its way in.
 	if n := p.sweepIPAMReservations(started.Add(time.Second)); n != 0 {
 		t.Fatalf("%d reservation(s) swept a second after they were made; CreateEndpoint had "+
 			"not run yet", n)
@@ -175,13 +137,6 @@ func TestSweepIPAMReservations_RetainsWhatDockerNeverBuilt(t *testing.T) {
 	}
 }
 
-// TestRetainOrphanedReservations_AtStartUpEveryReservationIsOrphaned.
-//
-// The age does not need measuring here, and that is what makes this arm
-// different from the sweeper. A RESERVED record is one an address was
-// answered for and no CreateEndpoint ever bound a link to; the process
-// that could still have bound it is gone, and the fold admits no Create
-// from another.
 func TestRetainOrphanedReservations_AtStartUpEveryReservationIsOrphaned(t *testing.T) {
 	p, _ := ipamFixture(t)
 	mac, _ := net.ParseMAC(ipamTestMAC)
@@ -191,9 +146,6 @@ func TestRetainOrphanedReservations_AtStartUpEveryReservationIsOrphaned(t *testi
 	if err := p.records.Observed(reserved, acquired("192.168.99.10/24", time.Hour), nil); err != nil {
 		t.Fatalf("Observed: %v", err)
 	}
-	// A live endpoint beside it, which must be left alone: retaining a
-	// JOINED record would have restart recovery decline to resume a
-	// container that is running.
 	live := p.recordCreated(ipamTestNetwork, mac, ident)
 	if err := p.records.Observed(live, acquired("192.168.99.11/24", time.Hour), nil); err != nil {
 		t.Fatalf("Observed: %v", err)
@@ -213,24 +165,8 @@ func TestRetainOrphanedReservations_AtStartUpEveryReservationIsOrphaned(t *testi
 	}
 }
 
-// TestIpamRebindCandidate_LeavesARunningEndpointsAddressAlone is this
-// change's own guard, and the reason it exists is the change itself.
-//
-// A tombstone is laid by a teardown, and every teardown in this process
-// takes the endpoint's fingerprint first, so a candidate that still has
-// one is a record that was retained while its container kept running.
-// Until the persistent client spoke as the record, re-binding such a
-// record cost the NEW container its address and nothing else: its
-// client asked as itself and the server gave it a fresh one. Now that
-// both exchanges speak as the record, two live clients would present
-// one option-61 identity, the server keeps one binding per identity,
-// and the damage lands on the OLD container instead -- a healthy one,
-// which is worse than the defect all of this repairs.
-//
-// The key is the PAIR, hardware address and address, for the same
-// reason the release handler keys on the pair: two IPAM networks on one
-// segment can hold the same address, and the address alone would
-// refuse re-binds that are correct.
+// Both exchanges now speak as the record, and the server keeps one binding per option-61 identity, so re-binding a
+// record whose container still runs would take the old container's address. Keyed on MAC and address (#1047).
 func TestIpamRebindCandidate_LeavesARunningEndpointsAddressAlone(t *testing.T) {
 	mac, _ := net.ParseMAC(ipamTestMAC)
 	ident := dhcp.ClientIdentity([]byte{7})
@@ -285,8 +221,6 @@ func TestIpamRebindCandidate_LeavesARunningEndpointsAddressAlone(t *testing.T) {
 	})
 
 	t.Run("the ordinary teardown still re-binds", func(t *testing.T) {
-		// DeleteEndpoint takes the fingerprint before the record is
-		// retained, so the case the rule exists for has none.
 		p, _ := ipamFixture(t)
 		id := tombstone(t, p, mac, "192.168.99.10/24")
 		holds(p, "endpoint-gone", mac, "192.168.99.10")
@@ -303,9 +237,6 @@ func TestIpamRebindCandidate_LeavesARunningEndpointsAddressAlone(t *testing.T) {
 	})
 
 	t.Run("one held and one free candidate is not an ambiguity", func(t *testing.T) {
-		// The held record is dropped BEFORE the count, so the
-		// restarting container still gets its own address back instead
-		// of meeting a limit that does not apply to it.
 		p, _ := ipamFixture(t)
 		other, _ := net.ParseMAC("02:42:c0:a8:63:0c")
 		held := tombstone(t, p, mac, "192.168.99.10/24")
@@ -325,12 +256,7 @@ func TestIpamRebindCandidate_LeavesARunningEndpointsAddressAlone(t *testing.T) {
 	})
 }
 
-// TestIpamRebindCandidate_AmbiguityIsCountedNotGuessed.
-//
-// A RequestAddress carries no hostname and no endpoint id, so when
-// several containers on one network restart together there is nothing to
-// match a request to a previous lease on. Picking one would hand a
-// container's address to a different container.
+// A RequestAddress carries no hostname or endpoint id, so several candidates are counted, not guessed (#110).
 func TestIpamRebindCandidate_AmbiguityIsCountedNotGuessed(t *testing.T) {
 	mac, _ := net.ParseMAC(ipamTestMAC)
 	ident := dhcp.ClientIdentity([]byte{7})
@@ -387,10 +313,6 @@ func TestIpamRebindCandidate_AmbiguityIsCountedNotGuessed(t *testing.T) {
 	})
 }
 
-// TestSaveNetwork_StampsTheIPAMSchemaVersion is the other half of
-// TestSaveOptions_StampsSchemaVersion: a file carrying a pool binding
-// says so in its version, so a 2.0 build refuses it rather than reading
-// the options out of it and serving the network on the null path.
 func TestSaveNetwork_StampsTheIPAMSchemaVersion(t *testing.T) {
 	p, b := ipamFixture(t)
 	_ = p
@@ -432,15 +354,8 @@ func schemaVersionOfFile(t *testing.T, path string) int {
 	return vo.V
 }
 
-// TestIpamACKIsTheOneAsked is the design's §3 rule for the `--ip`
-// shape, and it is a rule about libnetwork rather than about DHCP.
-//
-// Option 50 is a REQUEST: a server may answer another address because
-// the one asked for is reserved for a different client, already leased,
-// or outside the range it serves. libnetwork does not compare the
-// driver's answer to the address it preferred -- it adopts whatever
-// comes back -- so an unchecked ACK makes `docker run --ip A` publish B
-// and exit 0, with nothing anywhere saying the pin did not take.
+// Option 50 is a request, and libnetwork adopts whatever address comes back, so an unchecked ACK makes `--ip A`
+// publish B (#110).
 func TestIpamACKIsTheOneAsked(t *testing.T) {
 	for _, c := range []struct {
 		name, demanded, got string
@@ -471,8 +386,6 @@ func TestIpamACKIsTheOneAsked(t *testing.T) {
 			if !errors.Is(err, util.ErrIPAM) {
 				t.Errorf("error %v does not wrap util.ErrIPAM", err)
 			}
-			// The operator has to be able to tell which address they
-			// asked for from which one the server offered.
 			for _, want := range []string{c.demanded, c.got} {
 				if !strings.Contains(err.Error(), want) {
 					t.Errorf("the refusal is %q and does not name %q", err, want)
@@ -482,16 +395,8 @@ func TestIpamACKIsTheOneAsked(t *testing.T) {
 	}
 }
 
-// TestIpamGiveUpAttempt_AFailedExchangeLeavesTheCandidate.
-//
-// ipamRebindCandidate writes OpRebind before any packet goes out --
-// the exchange has to run under the identity the server already has a
-// lease filed under -- and that fold clears the tombstone deadline. So
-// a reserve that then fails has taken the candidate off the board. If
-// it closes the record, a container restarted on its own during a brief
-// outage finds nothing to re-bind on the retry seconds later, takes a
-// fresh address, and no counter moves: ipam_rebind_ambiguous is about
-// two candidates, not none.
+// OpRebind is written before any packet and clears the tombstone deadline, so a failed exchange must leave the
+// candidate (#1047).
 func TestIpamGiveUpAttempt_AFailedExchangeLeavesTheCandidate(t *testing.T) {
 	mac, _ := net.ParseMAC(ipamTestMAC)
 	ident := dhcp.ClientIdentity([]byte{7})
@@ -511,11 +416,8 @@ func TestIpamGiveUpAttempt_AFailedExchangeLeavesTheCandidate(t *testing.T) {
 			t.Fatalf("the candidate was not taken: (%q, %q)", gotID, gotAddr)
 		}
 
-		// The exchange fails -- the server is unreachable, or the ACK
-		// is refused by the subnet rule.
 		p.ipamGiveUpAttempt(id, true, time.Now())
 
-		// The retry, well inside the window.
 		againID, againAddr, _ := p.ipamRebindCandidate(ipamTestNetwork, restarted)
 		if againID != id {
 			t.Errorf("the retry found candidate %q, want %q. The failed attempt consumed the "+
@@ -541,13 +443,6 @@ func TestIpamGiveUpAttempt_AFailedExchangeLeavesTheCandidate(t *testing.T) {
 	})
 }
 
-// TestIpamExchangeAddresses is the line between a pin and a preference.
-//
-// `--ip` is a demand and an ACK for another address is refused. A
-// tombstone's address is how a restarted container keeps what it had,
-// and the server answering otherwise is the documented limit: refusing
-// there would turn "your address moved" into "your container will not
-// start", on the one path that exists to make restarts survivable.
 func TestIpamExchangeAddresses(t *testing.T) {
 	for _, c := range []struct {
 		name, requested, rebind string
@@ -571,15 +466,8 @@ func TestIpamExchangeAddresses(t *testing.T) {
 	}
 }
 
-// TestIpamExchangeClientID is the fix for the address a restarted
-// container lost.
-//
-// The lane measured it end to end: a container re-bound the tombstone
-// that held 192.168.99.82 and came back on 192.168.99.54, because the
-// exchange went out under a client-id derived from the MAC Docker had
-// just minted for the new endpoint. The server had the lease filed
-// under the old identity and had no reason to hand it to a client it
-// had never heard of.
+// Measured on the lane: a container re-binding the tombstone for 192.168.99.82 came back on .54, because the
+// client-id derived from the MAC Docker had just minted (#1047).
 func TestIpamExchangeClientID(t *testing.T) {
 	fresh := []byte("fresh-from-the-mac")
 
@@ -599,7 +487,6 @@ func TestIpamExchangeClientID(t *testing.T) {
 	})
 
 	t.Run("an identity this chassis did not write is refused, not truncated", func(t *testing.T) {
-		// A DUID-shaped value: a type byte that is not the opaque one.
 		if got := ipamExchangeClientID(fresh, []byte{0xff, 1, 2, 3}); !bytes.Equal(got, fresh) {
 			t.Errorf("sent %x, derived from an identity in a shape no record here writes. "+
 				"Trimming its first byte would put a value on the wire that nothing describes.", got)
@@ -610,15 +497,9 @@ func TestIpamExchangeClientID(t *testing.T) {
 	})
 }
 
-// TestIpamReserveLinkNames is the fix for every bridge-mode reservation.
-//
-// IFNAMSIZ is 16 including the terminator. The first edition named the
-// link (14 characters) and glued "-p" on at the LinkAdd, which is 16,
-// and netlink answered a bare ERANGE -- "numerical result out of range"
-// -- for every bridge reservation the lane ran. Both names come from
-// one function so that one test measures the pair.
+// IFNAMSIZ is 16 with the terminator: a 14-character name plus "-p" got ERANGE for every bridge reservation (#110).
 func TestIpamReserveLinkNames(t *testing.T) {
-	const maxIfname = 15 // IFNAMSIZ - 1
+	const maxIfname = 15
 
 	name, peer, err := ipamReserveLinkNames()
 	if err != nil {
@@ -654,23 +535,8 @@ func TestIpamReserveLinkNames(t *testing.T) {
 	}
 }
 
-// TestIpamReserveVeth_TheClientHalfCarriesTheMAC is the bridge-mode
-// reserve's direction of travel, which the first edition had backwards.
-//
-// The caller hands the DHCP client the link called `name`. A frame
-// transmitted on a bridge port leaves the port rather than entering the
-// bridge, so the half the client runs on must NOT be the one enslaved:
-// with the roles swapped the DISCOVER goes to the dangling end of the
-// veth and nothing on the segment ever sees it. What made that hard to
-// see in the lane is that the direction which DOES work carried the
-// kernel's own IPv6 router solicitation from the dangling end onto the
-// bridge, so the server logged the reservation's MAC and the link
-// looked present while no DHCP ever left it.
-//
-// Two halves, asserted separately because a mutant can get one right:
-// the MAC belongs to `name`, and the peer must not carry it -- a peer
-// wearing the endpoint's MAC would put that address on the bridge from
-// the wrong side and a server answering it would answer the wrong link.
+// A frame sent on a bridge port leaves the port, so the client's half must not be the enslaved one. On the lane,
+// the reversed pair still carried the kernel's router solicitation onto the bridge while no DHCP left it (#110).
 func TestIpamReserveVeth_TheClientHalfCarriesTheMAC(t *testing.T) {
 	mac, err := net.ParseMAC("02:00:00:00:99:95")
 	if err != nil {
@@ -698,30 +564,11 @@ func TestIpamReserveVeth_TheClientHalfCarriesTheMAC(t *testing.T) {
 	}
 }
 
-// TestIpamAcceptedReservation_NoACKBecomesAReservationUnchecked drives
-// the APPLICATION of the two acceptance rules, not the rules.
-//
-// Both rules had unit tests already and both were applied on the
-// success path of runIPAMReserve, which needs netlink and a live DHCP
-// server to enter. So the unit suite could refuse a bad address in
-// isolation while a deleted call site -- the shape a cleanup takes --
-// changed nothing it could see. The rules now live in the constructor
-// that BUILDS the reservation, which is why this test can reach them,
-// and why removing one no longer compiles.
-//
-// The last case fixes the order. When an ACK breaks both rules the
-// operator is told about the network, because the other remedy --
-// asking for a different --ip -- would not help on a network whose
-// server serves a different subnet.
 func TestIpamAcceptedReservation_NoACKBecomesAReservationUnchecked(t *testing.T) {
 	for _, c := range []struct {
 		name, ackIP, pool, demanded string
 		wantErr                     string
-		// notErr is the OTHER rule's wording, for the case that breaks
-		// both. Without it "the network cause wins" is a sentence in a
-		// comment: the --ip refusal quotes the offered address too, so
-		// an assertion on the address alone passes either order.
-		notErr string
+		notErr                      string
 	}{
 		{
 			name:  "in the pool and the address asked for",
@@ -792,14 +639,8 @@ func TestIpamAcceptedReservation_NoACKBecomesAReservationUnchecked(t *testing.T)
 	}
 }
 
-// TestIpamRecordAnswersFor is the guard between an address replay and
-// `docker run --ip` for an address someone else already holds.
-//
-// libnetwork injects the hardware address only when it is CREATING an
-// endpoint, so a creating request for an address a running container
-// holds is byte-for-byte that container's replay apart from the MAC.
-// Answering it allocates one address to two endpoints and moves
-// ipam_replay_hits for something that is not a replay.
+// libnetwork injects the MAC only when creating an endpoint, so a creating request is a replay apart from the MAC
+// (#110).
 func TestIpamRecordAnswersFor(t *testing.T) {
 	addr := netip.MustParseAddr("192.168.99.50")
 	mine := net.HardwareAddr{0x02, 0x42, 0x00, 0x00, 0x00, 0x01}
@@ -819,11 +660,6 @@ func TestIpamRecordAnswersFor(t *testing.T) {
 			lease.Record{ID: "r1", CHAddr: theirs}, mine, true},
 		{"the record cannot say whose it is",
 			lease.Record{ID: "r1"}, mine, true},
-		// An empty-but-present MAC against an empty CHAddr. Dropping
-		// the length guard from the match leaves bytes.Equal comparing
-		// two empty slices, which is TRUE: a record belonging to nobody
-		// would answer a request identifying nobody, and every other
-		// case in this table still passes. That is the whole mutant.
 		{"neither the record nor the request says whose it is",
 			lease.Record{ID: "r1"}, net.HardwareAddr{}, true},
 	} {
@@ -847,17 +683,8 @@ func TestIpamRecordAnswersFor(t *testing.T) {
 	}
 }
 
-// TestIpamReserveBudget_IsSizedToTheDefaultCallBudget couples the number
-// the documentation tells operators to the constant the code uses.
-//
-// The daemon does not pass `docker plugin enable --timeout` to the
-// plugin, so this side cannot follow it: every budget here is derived
-// from the DEFAULT. docs/reference.md therefore tells the operator to
-// leave the flag at 30s and says why, and pkg/util's empty-body refusal
-// says the same in the message they actually see. Both statements are
-// this constant, written out. If it moves and they do not, the plugin
-// contradicts its own documentation at the one moment an operator is
-// reading it to recover a broken network.
+// The daemon does not pass `docker plugin enable --timeout` to the plugin, so budgets derive from the 30 s default
+// (#110).
 func TestIpamReserveBudget_IsSizedToTheDefaultCallBudget(t *testing.T) {
 	if pluginCallBudget != 30*time.Second {
 		t.Errorf("pluginCallBudget is %v, but docs/reference.md and pkg/util's empty-body "+

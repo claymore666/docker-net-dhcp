@@ -10,34 +10,12 @@ import (
 	"time"
 )
 
-// checkBumper moves exactly one of the counters a check is declared on.
-//
-// The table is keyed by the health field AND, for a family-split check,
-// by which half it moves. TestHealthChecks_EveryDeclaredCheckIsDriven
-// reconciles that key set against the declaration in metricDefs, which
-// is what stops this file from being a universal satisfied by an empty
-// domain: a twelfth check added without a bumper here fails, rather than
-// being silently left undriven by every test below.
-//
-// THE HALF IS NOT DECORATION. A family-split check reads an aggregate
-// and its stamp is `laterOf(v4, v6)`, so a table with one row per FIELD
-// drives such a check through one operand only — and `laterOf(a, b) ->
-// return a` then survives every test in this file: the v4 row moves the
-// half that is returned, and nothing ever moves the other. Measured: it
-// did survive. The required halves are derived from `v4field`/`v6field`
-// in metricDefs rather than listed here, so the next family check
-// arrives needing both rows.
 type checkBumper struct {
 	field string
-	// half is "ipv4" or "ipv6" — the exposition's family label — for a
-	// row driving one operand of a family-split check, and empty for a
-	// check that has only one counter behind it.
-	half string
-	bump func(p *Plugin)
+	half  string
+	bump  func(p *Plugin)
 }
 
-// name identifies the row for a sub-test, so the two halves of one field
-// do not collide.
 func (b checkBumper) name() string {
 	if b.half == "" {
 		return b.field
@@ -75,9 +53,6 @@ func checkBumpers() []checkBumper {
 	}
 }
 
-// requiredBumpers is the {field, half} set the declaration demands,
-// derived from metricDefs: a check with v4field/v6field set needs one
-// row per half, anything else needs exactly one.
 func requiredBumpers() map[string]map[string]bool {
 	out := map[string]map[string]bool{}
 	for _, d := range metricDefs() {
@@ -99,8 +74,6 @@ func requiredBumpers() map[string]map[string]bool {
 	return out
 }
 
-// declaredChecks is the field -> status the classification says, read
-// from the declaration rather than restated here.
 func declaredChecks() map[string]string {
 	out := map[string]string{}
 	for _, d := range metricDefs() {
@@ -180,11 +153,6 @@ func sortedKeys(m map[string]bool) []string {
 	return out
 }
 
-// The document's `status` and the 1.x `healthy` flag are two renderings
-// of one fact, and an operator reading one and alerting on the other has
-// to get the same answer. Each of the five healthy-affecting counters is
-// driven ALONE — a test that bumped them together would pass with four
-// of the five unwired.
 func TestHealthChecks_StatusAndHealthyAgreeOnEveryFailCounter(t *testing.T) {
 	declared := declaredChecks()
 
@@ -226,10 +194,6 @@ func TestHealthChecks_StatusAndHealthyAgreeOnEveryFailCounter(t *testing.T) {
 	}
 }
 
-// The other direction: a warn counter must not make the document claim
-// a fault, and must not be able to hide one. A classification read
-// backwards, or a worst-of that let the later check overwrite the
-// earlier, shows up here and not in the test above.
 func TestHealthChecks_WarnNeitherClaimsAFaultNorHidesOne(t *testing.T) {
 	declared := declaredChecks()
 
@@ -252,8 +216,6 @@ func TestHealthChecks_WarnNeitherClaimsAFaultNorHidesOne(t *testing.T) {
 				t.Errorf("check %s is %q; want %q", b.field, c.Status, statusWarn)
 			}
 
-			// Now a real fault beside it. Whichever order the walk
-			// visits them in, fail wins.
 			p.recoveryFailed.Add(1)
 			h = p.healthSnapshot()
 			if h.Status != statusFail {
@@ -266,20 +228,10 @@ func TestHealthChecks_WarnNeitherClaimsAFaultNorHidesOne(t *testing.T) {
 	}
 }
 
-// A check's `time` is when its counter last moved. The flags latch, so
-// this is the only thing in the document that separates "faulted an hour
-// ago" from "faulting now".
-//
-// The bracket is what kills the two mutants that look right: a `time`
-// frozen at process start reads BEFORE `before`, and a `time` taken from
-// the response's own clock reads AFTER `after`.
 func TestHealthChecks_TimeIsWhenTheCounterMoved(t *testing.T) {
 	for _, b := range checkBumpers() {
 		t.Run(b.name(), func(t *testing.T) {
 			p := newHealthPlugin()
-			// Distinguishable from the bump instant on any clock this
-			// runs on; without it "moved" and "read" can share a
-			// nanosecond and the assertion below proves nothing.
 			time.Sleep(2 * time.Millisecond)
 
 			before := time.Now()
@@ -306,9 +258,6 @@ func TestHealthChecks_TimeIsWhenTheCounterMoved(t *testing.T) {
 	}
 }
 
-// A counter that has never moved carries the time of this reading: the
-// honest statement for a zero is "nothing observed as of now", not the
-// zero instant and not a missing field.
 func TestHealthChecks_AnUnmovedCounterIsStampedNow(t *testing.T) {
 	before := time.Now()
 	p := newHealthPlugin()
@@ -329,9 +278,6 @@ func TestHealthChecks_AnUnmovedCounterIsStampedNow(t *testing.T) {
 	}
 }
 
-// Every check needs a unit to render an observedValue against and a
-// sentence to put in `output` when it fires. Both are declared beside
-// the classification, so neither can be forgotten silently.
 func TestHealthChecks_EveryCheckIsAnnotated(t *testing.T) {
 	for _, d := range metricDefs() {
 		if d.healthy && d.warn {
@@ -354,10 +300,6 @@ func TestHealthChecks_EveryCheckIsAnnotated(t *testing.T) {
 	}
 }
 
-// A check reads a HealthResponse field, and the renderer parses that
-// field as an integer. A check declared on a string or a float would
-// render as a failing check naming itself, which is loud but wrong;
-// this is where it is caught instead.
 func TestHealthChecks_EveryCheckFieldIsAnInteger(t *testing.T) {
 	h := (&Plugin{joinHints: map[string]joinHint{}, persistentDHCP: map[string]*dhcpManager{}}).healthSnapshot()
 	byTag := healthFieldsByTag(h)
@@ -374,10 +316,6 @@ func TestHealthChecks_EveryCheckFieldIsAnInteger(t *testing.T) {
 	}
 }
 
-// Informational counters are NOT checks. The classification has three
-// outcomes and the third one is "no entry at all"; a rule that made
-// every counter a check would make `status` move on things no operator
-// should be paged for.
 func TestHealthChecks_InformationalCountersAreNotChecks(t *testing.T) {
 	p := newHealthPlugin()
 	p.recoveryDeferred.Add(1)
@@ -401,22 +339,6 @@ func TestHealthChecks_InformationalCountersAreNotChecks(t *testing.T) {
 	}
 }
 
-// Every check's stamp exists, belongs to that check, and belongs to no
-// other.
-//
-// WHAT THIS ADDS OVER TestHealthChecks_TimeIsWhenTheCounterMoved, which
-// already brackets each check's rendered `time` around its own bump: that
-// test drives one counter on a fresh plugin and reads one check, so it
-// cannot see a stamp that moves for a counter OTHER than its own. A stamp
-// declared `laterOf(own, someone else's)` -- the file's own idiom, since
-// lease_changed is legitimately that -- renders correctly for its own bump
-// and passes every assertion there, while a neighbour's fault silently
-// restamps it. The result is a check reporting a time it never had, which
-// is the failure this document was added to end, wearing a plausible
-// value. The key-set halves are the cheap diagnosis of the same thing: a
-// check with no stamp renders with the time of the READING, so a fault
-// latched an hour ago reads as one happening now, and a stamp for a field
-// that is not a check is a value nothing will ever read.
 func TestHealthChecks_EveryCheckHasAStamp(t *testing.T) {
 	declared := declaredChecks()
 	stamps := newHealthPlugin().checkStamps()

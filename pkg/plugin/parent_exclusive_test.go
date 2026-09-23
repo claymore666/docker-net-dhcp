@@ -13,22 +13,9 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// The kernel fact these tests encode, verified directly against it in
-// both directions:
-//
-//	ip link add mv0 link p0 type macvlan   -> ok
-//	ip link add iv0 link p0 type ipvlan    -> EBUSY
-//	(and the same the other way round)
-//
-// Many children of one kind are fine; the two kinds cannot share a
-// parent, because both claim the parent netdev's single receive
-// handler. Both directions are in this repo's CI record — an ipvlan
-// endpoint refused while a macvlan child was live, and a macvlan
-// validate_dhcp probe refused while an ipvlan child was live (#486).
+// The kernel refuses a macvlan and an ipvlan child on one parent with EBUSY, both ways,
+// since each claims the parent's single receive handler; many of one kind are fine (#486).
 
-// fakeParentChild is a netlink.Link whose type and parent are whatever
-// the test needs. netlink's concrete types report their own Type(), so
-// the two real ones are used directly rather than faked.
 func childOn(t *testing.T, kind string, parentIndex int) netlink.Link {
 	t.Helper()
 
@@ -55,9 +42,6 @@ func withLinkList(t *testing.T, links []netlink.Link, err error) {
 	t.Cleanup(func() { nlLinkList = orig })
 }
 
-// The message an operator actually gets. A bare "device or resource
-// busy" gives no reason to suspect a different network on the same NIC,
-// which is why #486 was first blamed on the runner image.
 func TestExplainChildLinkAdd_NamesTheConflictingKind(t *testing.T) {
 	const parentIdx = 7
 
@@ -94,9 +78,6 @@ func TestExplainChildLinkAdd_NamesTheConflictingKind(t *testing.T) {
 				t.Fatal("explainChildLinkAdd returned nil for an EBUSY")
 			}
 
-			// The errno has to survive: callers and operators both key
-			// off it, and swallowing it would trade one opaque failure
-			// for another.
 			if !errors.Is(err, unix.EBUSY) {
 				t.Errorf("error no longer wraps EBUSY: %v", err)
 			}
@@ -111,10 +92,6 @@ func TestExplainChildLinkAdd_NamesTheConflictingKind(t *testing.T) {
 	}
 }
 
-// A parent that carries nothing of the other kind by the time we look.
-// The blocker went away between the refusal and the lookup, so the
-// message must not assert a conflict it cannot see — it says what is
-// known and stops.
 func TestExplainChildLinkAdd_UnseenBlockerDoesNotInvent(t *testing.T) {
 	withLinkList(t, nil, nil)
 
@@ -127,9 +104,6 @@ func TestExplainChildLinkAdd_UnseenBlockerDoesNotInvent(t *testing.T) {
 	}
 }
 
-// Children of OTHER parents must never be read as the blocker. The scan
-// filters on ParentIndex, and a message naming the wrong network would
-// send an operator to change something that is not the problem.
 func TestExplainChildLinkAdd_IgnoresChildrenOfOtherParents(t *testing.T) {
 	withLinkList(t, []netlink.Link{
 		childOn(t, ModeMacvlan, 99),
@@ -140,9 +114,6 @@ func TestExplainChildLinkAdd_IgnoresChildrenOfOtherParents(t *testing.T) {
 	}
 }
 
-// Anything that is not EBUSY keeps the original shape. The explanation
-// is specific to one kernel condition and must not be pasted onto
-// unrelated failures.
 func TestExplainChildLinkAdd_NonBusyIsUnchanged(t *testing.T) {
 	boom := errors.New("boom")
 
@@ -155,13 +126,6 @@ func TestExplainChildLinkAdd_NonBusyIsUnchanged(t *testing.T) {
 	}
 }
 
-// The probe attaches as the same kind the network's endpoints will.
-//
-// This is the whole of #486's product half. A macvlan probe on an ipvlan
-// network is refused by the kernel as soon as any ipvlan container is
-// running on that parent, and while it runs it blocks every ipvlan
-// endpoint there — so `-o mode=ipvlan -o validate_dhcp=true` failed for
-// a reason that had nothing to do with DHCP.
 func TestNewProbeLink_MatchesTheNetworkMode(t *testing.T) {
 	mac, err := net.ParseMAC("02:11:22:33:44:55")
 	if err != nil {
@@ -175,8 +139,7 @@ func TestNewProbeLink_MatchesTheNetworkMode(t *testing.T) {
 			t.Fatalf("probe link is %T, want *netlink.IPVlan — a macvlan probe "+
 				"cannot coexist with the ipvlan endpoints this network will create", link)
 		}
-		// The kernel rejects a MAC on an ipvlan child outright, so
-		// setting one turns the probe into a hard failure.
+		// The kernel rejects a MAC on an ipvlan child outright.
 		if got := link.Attrs().HardwareAddr; got != nil {
 			t.Errorf("ipvlan probe link carries HardwareAddr %v, want none", got)
 		}
@@ -188,8 +151,6 @@ func TestNewProbeLink_MatchesTheNetworkMode(t *testing.T) {
 		if _, ok := link.(*netlink.Macvlan); !ok {
 			t.Fatalf("probe link is %T, want *netlink.Macvlan", link)
 		}
-		// Random and locally administered, so the DISCOVER cannot land
-		// on a stable upstream reservation.
 		if got := link.Attrs().HardwareAddr; got.String() != mac.String() {
 			t.Errorf("macvlan probe MAC = %v, want %v", got, mac)
 		}
@@ -204,15 +165,6 @@ func TestNewProbeLink_MatchesTheNetworkMode(t *testing.T) {
 	})
 }
 
-// A link table that cannot be read is not a parent that carries
-// nothing. This is #802's product half: childLinkKind used to return ""
-// on a dump error, and "" is the caller's encoding for "neither kind is
-// here" — so a transient netlink failure made the mode-collision guard
-// report the parent as free, in the fail-open direction.
-//
-// The message is the observer because it is what the operator gets.
-// Asserting on the returned pair alone would pass for a caller that
-// received `known=false` and then wrote the old sentence anyway.
 func TestExplainChildLinkAdd_UnreadableLinkTableIsNotAnEmptyParent(t *testing.T) {
 	withLinkList(t, nil, errors.New("netlink: operation not permitted"))
 
@@ -232,13 +184,6 @@ func TestExplainChildLinkAdd_UnreadableLinkTableIsNotAnEmptyParent(t *testing.T)
 	}
 }
 
-// The direction the tolerance is for, and it must reach the VERDICT and
-// not only the error return: with ErrDumpInterrupted the dump's results
-// are usable, so a macvlan child in them still has to be named.
-//
-// Without util.DumpResult at the call site this reads as an unreadable
-// table and the operator is told nothing about the ipvlan network that
-// is actually in the way.
 func TestChildLinkKind_DumpInterruptedStillUsesTheResults(t *testing.T) {
 	const parentIdx = 7
 	withLinkList(t, []netlink.Link{childOn(t, ModeMacvlan, parentIdx)}, netlink.ErrDumpInterrupted)
@@ -254,8 +199,6 @@ func TestChildLinkKind_DumpInterruptedStillUsesTheResults(t *testing.T) {
 	}
 }
 
-// The preservation control for the pair: a clean dump over an empty
-// parent still answers "nothing here, and I could tell".
 func TestChildLinkKind_EmptyParentIsKnown(t *testing.T) {
 	withLinkList(t, nil, nil)
 

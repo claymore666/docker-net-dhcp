@@ -13,48 +13,14 @@ import (
 	"testing"
 )
 
-// TestHostnameTrustIsWired is the observer for the SEGMENT between where
-// a hostname's trust is decided and where it is recorded.
-//
-// # WHY A SOURCE GATE AND NOT A TEST
-//
-// #726 was that both CreateEndpoint paths held the trust bit at their
-// consumeTombstone call and dropped it two hundred lines later at their
-// rememberEndpoint call. The first fix made it a `hostnameTrusted bool`
-// parameter. Both ends of that wire were then pinned by real tests --
-// initialDHCPHostname's trust flag at the source, tombstoneStore.consume
-// at the sink -- and the segment between them was observed by NOTHING:
-// substituting a literal `true` at both call sites left the entire
-// package green while restoring the vulnerability in full.
-//
-// A runtime test cannot reach that segment. It begins inside
-// CreateEndpoint after netlink.LinkAdd has made a veth pair and ends
-// after a DHCP acquisition, so observing it needs CAP_NET_ADMIN and a
-// live DHCP server; the unit suite has neither, and an integration test
-// would only cover whichever of the two paths it exercised.
-//
-// So the wire is made unbreakable instead of watched. The hostname and
-// its trust bit are one value (dhcpHostname) that a caller cannot take
-// apart, which turns the literal-`true` mutant into a COMPILE error --
-// a stronger observer than any test, because it cannot be skipped and
-// costs nothing to run.
-//
-// This gate closes the residue: a dhcpHostname literal built at the call
-// site still compiles, and `dhcpHostname{}` is the original bug exactly
-// (empty name, refused=false, which the tombstone store reads as
-// "matches every container on this network"). Every hostname argument
-// must therefore be a plain identifier that this same function got from
-// the plugin's own hostname resolvers. A constructed value, a zero
-// value, or an identifier from somewhere else goes red here.
+// The path from a hostname's trust verdict to its record needs CAP_NET_ADMIN and a DHCP
+// server, so this checks by source that every hostname argument came from a resolver (#726).
 func TestHostnameTrustIsWired(t *testing.T) {
-	// The functions that DECIDE trust. An identifier bound from one of
-	// these carries a verdict; anything else is a value someone made up.
 	resolvers := map[string]bool{
 		"initialDHCPHostname": true,
 		"recoveredHostname":   true,
 		"safeHostname":        true,
 	}
-	// callee -> index of the hostname argument.
 	sinks := map[string]int{
 		"rememberEndpoint": 2,
 		"consumeTombstone": 1,
@@ -86,8 +52,6 @@ func TestHostnameTrustIsWired(t *testing.T) {
 				continue
 			}
 
-			// Pass 1: which identifiers in this function hold a
-			// resolver's verdict?
 			trusted := map[string]bool{}
 			ast.Inspect(fn.Body, func(n ast.Node) bool {
 				as, ok := n.(*ast.AssignStmt)
@@ -110,7 +74,6 @@ func TestHostnameTrustIsWired(t *testing.T) {
 				return true
 			})
 
-			// Pass 2: every sink's hostname argument must be one of them.
 			ast.Inspect(fn.Body, func(n ast.Node) bool {
 				call, ok := n.(*ast.CallExpr)
 				if !ok {
@@ -148,10 +111,6 @@ func TestHostnameTrustIsWired(t *testing.T) {
 		}
 	}
 
-	// TWO-SIDED ON PURPOSE. Everything above is a rule about call sites
-	// that exist, so it is satisfied completely by there being none —
-	// which is exactly what a refactor that deleted the wire would look
-	// like, and exactly the mutant this gate exists to kill.
 	if scanned == 0 {
 		t.Fatal("scanned no non-test .go files; every check above would have passed vacuously")
 	}
