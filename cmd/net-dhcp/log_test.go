@@ -10,13 +10,6 @@ import (
 	"testing"
 )
 
-// The plugin log lives in the plugin rootfs, which Docker destroys on
-// every `plugin rm` / `install` — the supported upgrade path. So every
-// upgrade took production's whole plugin history with it, at exactly
-// the moment an operator would want the previous version's log. A
-// v1.4.0 production upgrade lost the outgoing plugin's evidence before
-// anyone could read it (#420).
-
 func TestPluginLogWriter_WritesToBothSinks(t *testing.T) {
 	var stdout, file bytes.Buffer
 	w := pluginLogWriter(&stdout, &file)
@@ -33,9 +26,6 @@ func TestPluginLogWriter_WritesToBothSinks(t *testing.T) {
 	}
 }
 
-// Losing either sink is a distinct regression, so each is pinned
-// separately rather than by one combined assertion that could pass on
-// half a fix.
 func TestPluginLogWriter_ToleratesAMissingSink(t *testing.T) {
 	var buf bytes.Buffer
 	if w := pluginLogWriter(&buf, nil); w != &buf {
@@ -46,10 +36,6 @@ func TestPluginLogWriter_ToleratesAMissingSink(t *testing.T) {
 	}
 }
 
-// TestMainUsesPluginLogWriter pins the wiring. The function above can
-// be perfect and unused: the log setup lives in main(), which no unit
-// test can drive, so this is the only thing standing between a correct
-// helper and a plugin that still writes to one sink.
 func TestMainUsesPluginLogWriter(t *testing.T) {
 	src, err := os.ReadFile("main.go")
 	if err != nil {
