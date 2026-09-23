@@ -4,6 +4,7 @@
 package plugin
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -208,6 +209,84 @@ func prepareV6LinkUnder(dir, iface string, linkIndex int) (bool, dhcp.RouterAdve
 	return changed, guard, nil
 }
 
+// v6LinkAttempts is #1050's openLinkAttempts, for the same engine: a
+// move plus a rename, and one more where the container named its
+// interface, so four attempts survive three renames.
+const v6LinkAttempts = 4
+
+// errV6LinkNameUnstable ends a link whose name never held still between
+// the resolve and the write (#1065).
+var errV6LinkNameUnstable = errors.New("the container link kept being renamed while IPv6 was prepared on it")
+
+// v6LinkNameByIndex and v6LinkIndexByName read the calling thread's
+// network namespace: the package-level netlink handle opens its socket
+// on that thread, and /proc/net would answer for the leader's (#1065).
+var (
+	v6LinkNameByIndex = func(index int) (string, error) {
+		l, err := netlink.LinkByIndex(index)
+		if err != nil {
+			return "", err
+		}
+		return l.Attrs().Name, nil
+	}
+	v6LinkIndexByName = func(name string) (int, error) {
+		l, err := netlink.LinkByName(name)
+		if err != nil {
+			return 0, err
+		}
+		return l.Attrs().Index, nil
+	}
+)
+
+// prepareV6LinkOnLink runs prepareV6LinkUnder on the name the link at
+// index has at that instant, with #1050's retry rules for a rename.
+func prepareV6LinkOnLink(dir, located string, index int) (bool, dhcp.RouterAdvertGuardResult, error) {
+	if index <= 0 {
+		return prepareV6LinkUnder(dir, located, index)
+	}
+	current := func(fallback string) string {
+		if name, err := v6LinkNameByIndex(index); err == nil {
+			return name
+		}
+		return fallback
+	}
+
+	var noGuard dhcp.RouterAdvertGuardResult
+	carried := false
+	name := current(located)
+	for attempt := 1; ; attempt++ {
+		changed, guard, err := prepareV6LinkUnder(dir, name, index)
+		if err != nil || guard.Failures > 0 {
+			carried = carried || changed
+			if attempt >= v6LinkAttempts {
+				return carried, guard, err
+			}
+			next := current(name)
+			if next == name {
+				return carried, guard, err
+			}
+			name = next
+			continue
+		}
+
+		owner, oerr := v6LinkIndexByName(name)
+		if oerr != nil || owner == index {
+			return carried || changed, guard, nil
+		}
+		// The sysctls just written belong to link owner, which took the
+		// name before the write reached it; ours is retried under its
+		// own name, and a link that is gone ends here (#1050, #1065).
+		next, rerr := v6LinkNameByIndex(index)
+		if rerr != nil {
+			return carried, noGuard, rerr
+		}
+		if attempt >= v6LinkAttempts {
+			return carried, noGuard, fmt.Errorf("%w: index %d", errV6LinkNameUnstable, index)
+		}
+		name = next
+	}
+}
+
 // prepareIPv6Link puts the container side of this endpoint's link into
 // the state a DHCPv6 client needs, inside the sandbox network
 // namespace: IPv6 administratively on, the Router-Advertisement
@@ -270,8 +349,27 @@ func (m *dhcpManager) prepareIPv6Link() (bool, dhcp.RouterAdvertGuardResult, err
 	if !m.nsHandle.IsOpen() {
 		return false, noGuard, fmt.Errorf("sandbox network namespace handle is closed")
 	}
-	iface := m.ctrLink.Attrs().Name
+	located, index := m.ctrLink.Attrs().Name, m.ctrLink.Attrs().Index
 
+	var (
+		changed bool
+		guard   dhcp.RouterAdvertGuardResult
+		err     error
+	)
+	if eerr := v6EnterSandbox(m, func(dir string) {
+		changed, guard, err = prepareV6LinkOnLink(dir, located, index)
+	}); eerr != nil {
+		return false, noGuard, eerr
+	}
+	return changed, guard, err
+}
+
+// v6EnterSandbox runs work inside the sandbox's network namespace with
+// /proc/sys writable, handing it the sysctl directory; a var so a unit
+// test can run work against a temp tree without CAP_SYS_ADMIN (#1065).
+var v6EnterSandbox = (*dhcpManager).enterV6Sandbox
+
+func (m *dhcpManager) enterV6Sandbox(work func(dir string)) error {
 	// Two namespaces are needed and they are needed for different
 	// reasons: the NETWORK namespace decides which interface the path
 	// names, and the MOUNT namespace decides whether it can be written
@@ -281,7 +379,7 @@ func (m *dhcpManager) prepareIPv6Link() (bool, dhcp.RouterAdvertGuardResult, err
 
 	origNet, err := netns.Get()
 	if err != nil {
-		return false, noGuard, fmt.Errorf("failed to open current network namespace: %w", err)
+		return fmt.Errorf("failed to open current network namespace: %w", err)
 	}
 	defer func() {
 		if err := origNet.Close(); err != nil {
@@ -295,13 +393,13 @@ func (m *dhcpManager) prepareIPv6Link() (bool, dhcp.RouterAdvertGuardResult, err
 	// have moved. Same reasoning as propagateDNS.
 	origMnt, err := os.Open(fmt.Sprintf("/proc/self/task/%d/ns/mnt", unix.Gettid()))
 	if err != nil {
-		return false, noGuard, fmt.Errorf("open self mnt ns: %w", err)
+		return fmt.Errorf("open self mnt ns: %w", err)
 	}
 	defer origMnt.Close()
 
 	if err := makeProcSysWritable(); err != nil {
 		if procSysPrepIsFatal(err) {
-			return false, noGuard, err
+			return err
 		}
 		// Not a verdict -- see makeProcSysWritable. The write below is
 		// the observer, and its own error is the honest report. Audible
@@ -324,7 +422,7 @@ func (m *dhcpManager) prepareIPv6Link() (bool, dhcp.RouterAdvertGuardResult, err
 	}()
 
 	if err := netns.Set(m.nsHandle); err != nil {
-		return false, noGuard, fmt.Errorf("failed to enter network namespace: %w", err)
+		return fmt.Errorf("failed to enter network namespace: %w", err)
 	}
 	defer func() {
 		if err := netns.Set(origNet); err != nil {
@@ -333,10 +431,8 @@ func (m *dhcpManager) prepareIPv6Link() (bool, dhcp.RouterAdvertGuardResult, err
 		}
 	}()
 
-	// The index and not a path, and read here rather than passed down
-	// from the caller: inside this namespace entry it names the
-	// container's link, which is the only place that is true.
-	return prepareV6LinkUnder(ipv6DisableSysctlDir, iface, m.ctrLink.Attrs().Index)
+	work(ipv6DisableSysctlDir)
+	return nil
 }
 
 // joinGuardErrors keeps both reasons the guard is unhappy in one error,
