@@ -57,13 +57,25 @@ printf '%s' "${ALIAS_DIGEST_OUT-}"
 exit "${DOCKER_RC:-0}"
 STUB
 
+# COSIGN_ABSENT_READS=K: the first K reads find no signature, as Docker Hub
+# answered 1.4 s after the v2.2.1-rc1 copy (#1043).
 cat > "$BIN/cosign" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "${STUB_LOG}/cosign.args"
+reads=$(wc -l < "${STUB_LOG}/cosign.args")
+if [ "$reads" -le "${COSIGN_ABSENT_READS:-0}" ]; then
+    echo "Error: no signatures found" >&2
+    exit 1
+fi
 exit "${COSIGN_RC:-0}"
 STUB
 
-chmod 755 "$BIN/oras" "$BIN/docker" "$BIN/cosign"
+cat > "$BIN/sleep" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${STUB_LOG}/sleep.args"
+STUB
+
+chmod 755 "$BIN/oras" "$BIN/docker" "$BIN/cosign" "$BIN/sleep"
 
 SIGNED="sha256:1111111111111111111111111111111111111111111111111111111111111111"
 REBUILT="sha256:2222222222222222222222222222222222222222222222222222222222222222"
@@ -155,8 +167,47 @@ run "an empty digest from the registry cannot be judged" 2 \
     -- "ALIAS_DIGEST_OUT=" -- --expect-digest "$SIGNED" "$SRC" "$DST"
 
 run "equal digests with a signature that does not verify through the alias fails" 1 \
-    "does not verify through the alias name" \
+    "does not verify through the alias name after 6 reads 10 s apart" \
     -- "ALIAS_DIGEST_OUT=$SIGNED" "COSIGN_RC=1" -- --expect-digest "$SIGNED" "$SRC" "$DST"
+
+# ------------------------------------------------- referrers lag the copy (#1043)
+
+run "a signature absent on every read still fails after the last read" 1 \
+    "does not verify through the alias name after 6 reads 10 s apart" \
+    -- "ALIAS_DIGEST_OUT=$SIGNED" "COSIGN_ABSENT_READS=99" -- --expect-digest "$SIGNED" "$SRC" "$DST"
+
+assert "an always-absent signature is read six times" \
+    "$(if [ "$(wc -l < "$TMP/log/cosign.args")" -eq 6 ]; then echo 1; else echo 0; fi)"
+assert "the six reads are separated by five waits of 10 s" \
+    "$(if [ "$(grep -cx 10 "$TMP/log/sleep.args")" -eq 5 ] \
+          && [ "$(wc -l < "$TMP/log/sleep.args")" -eq 5 ]; then echo 1; else echo 0; fi)"
+assert "every read verifies the alias at the signed digest under the same identity" \
+    "$(if [ "$(grep -cF -- "--certificate-identity-regexp ^test-identity\$ --certificate-oidc-issuer https://token.actions.githubusercontent.com claymore666/docker-net-dhcp@$SIGNED" \
+            "$TMP/log/cosign.args")" -eq 6 ]; then echo 1; else echo 0; fi)"
+assert "each failed read before the last prints its attempt count and the wait" \
+    "$(if grep -q "read 1/6 through $DST failed; waiting 10 s" "$TMP/out" \
+          && grep -q "read 5/6 through $DST failed; waiting 10 s" "$TMP/out" \
+          && ! grep -q "read 6/6" "$TMP/out"; then echo 1; else echo 0; fi)"
+
+run "a signature absent on the first read and present on a later one passes" 0 \
+    "verifies under its own name" \
+    -- "ALIAS_DIGEST_OUT=$SIGNED" "COSIGN_ABSENT_READS=2" -- --expect-digest "$SIGNED" "$SRC" "$DST"
+
+assert "the late signature was found on the third read, after two waits" \
+    "$(if [ "$(wc -l < "$TMP/log/cosign.args")" -eq 3 ] \
+          && [ "$(wc -l < "$TMP/log/sleep.args")" -eq 2 ]; then echo 1; else echo 0; fi)"
+
+run "a signature absent on the first five reads and present on the sixth passes" 0 \
+    "verifies under its own name" \
+    -- "ALIAS_DIGEST_OUT=$SIGNED" "COSIGN_ABSENT_READS=5" -- --expect-digest "$SIGNED" "$SRC" "$DST"
+
+run "a signature present on the first read does not wait" 0 \
+    "verifies under its own name" \
+    -- "ALIAS_DIGEST_OUT=$SIGNED" -- --expect-digest "$SIGNED" "$SRC" "$DST"
+
+assert "a first-read signature is read once and never waited for" \
+    "$(if [ "$(wc -l < "$TMP/log/cosign.args")" -eq 1 ] \
+          && [ "$(not_logged sleep.args)" = 1 ]; then echo 1; else echo 0; fi)"
 
 # --------------------------------------------------------------- refusals
 
