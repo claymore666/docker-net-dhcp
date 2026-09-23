@@ -75,6 +75,31 @@ func readLedger(t *testing.T, ctx context.Context, cli *docker.Client) []ledgerL
 	return lines
 }
 
+// boundAndNamedRows returns the first bound row for mac and the first
+// bound or renew row for mac that carries name, either nil when absent.
+func boundAndNamedRows(lines []ledgerLine, mac, name string) (bound, named *ledgerLine) {
+	for _, l := range ledgerForMAC(lines, mac) {
+		if bound == nil && l.Kind == "bound" {
+			bound = &l
+		}
+		if named == nil && (l.Kind == "bound" || l.Kind == "renew") && l.Hostname == name {
+			named = &l
+		}
+	}
+	return bound, named
+}
+
+// ledgerForMAC filters the ledger to entries carrying the given MAC.
+func ledgerForMAC(lines []ledgerLine, mac string) []ledgerLine {
+	var out []ledgerLine
+	for _, l := range lines {
+		if strings.EqualFold(l.MAC, mac) {
+			out = append(out, l)
+		}
+	}
+	return out
+}
+
 // ledgerKindsForMAC filters the ledger to entries carrying the given
 // MAC and returns their kinds in file order.
 func ledgerKindsForMAC(lines []ledgerLine, mac string) []string {
@@ -167,16 +192,14 @@ func TestAuditLog_RecordsLifecycle(t *testing.T) {
 		t.Fatalf("container got no IP within %v", harness.IPAcquisitionBudget)
 	}
 
-	var bound *ledgerLine
+	// The name can land on the renew after the bind (#961): the attach
+	// starts the client before the daemon answers with the name, and the
+	// client renews early to carry it (RFC 2131 section 4.4.5).
+	var bound, named *ledgerLine
 	deadline = time.Now().Add(harness.IPAcquisitionBudget + 5*time.Second)
 	for time.Now().Before(deadline) {
-		for _, l := range readLedger(t, ctx, cli) {
-			if strings.EqualFold(l.MAC, mac) && l.Kind == "bound" {
-				bound = &l
-				break
-			}
-		}
-		if bound != nil {
+		bound, named = boundAndNamedRows(readLedger(t, ctx, cli), mac, ctrName)
+		if bound != nil && named != nil {
 			break
 		}
 		time.Sleep(200 * time.Millisecond)
@@ -193,11 +216,26 @@ func TestAuditLog_RecordsLifecycle(t *testing.T) {
 	if bound.Endpoint == "" {
 		t.Error("bound entry has empty endpoint ID")
 	}
-	if bound.Hostname != ctrName {
-		t.Errorf("bound entry hostname = %q, want %q", bound.Hostname, ctrName)
-	}
 	if _, err := time.Parse(time.RFC3339, bound.TS); err != nil {
 		t.Errorf("bound entry ts %q is not RFC3339: %v", bound.TS, err)
+	}
+	if bound.Hostname != "" && bound.Hostname != ctrName {
+		t.Errorf("bound entry hostname = %q, want %q or empty", bound.Hostname, ctrName)
+	}
+	if named == nil {
+		t.Errorf("no bound or renew ledger entry for MAC %s carries hostname %q within budget; ledger: %+v",
+			mac, ctrName, ledgerForMAC(readLedger(t, ctx, cli), mac))
+	} else {
+		if named.IP != ip {
+			t.Errorf("%s entry carrying the name has IP %q, want container's leased IP %q", named.Kind, named.IP, ip)
+		}
+		if named.Network != netID || named.Endpoint != bound.Endpoint {
+			t.Errorf("%s entry carrying the name is for network %q endpoint %q, want %q endpoint %q",
+				named.Kind, named.Network, named.Endpoint, netID, bound.Endpoint)
+		}
+	}
+	if got, line := waitLeaseHostname(t, fixture.LeaseFile(), ip, ctrName, harness.IPAcquisitionBudget); got != ctrName {
+		t.Errorf("the DHCP server's table has %q as the name for %s, want %q; lease line:\n%s", got, ip, ctrName, line)
 	}
 
 	// Stop drives Leave -> dhcpManager.Stop -> the "stopped" ledger
