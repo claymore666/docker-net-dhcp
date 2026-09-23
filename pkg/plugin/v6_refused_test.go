@@ -200,10 +200,9 @@ func TestV6FallbackReporter_CountsTheGainAndWarns(t *testing.T) {
 	report(1)
 	report(2)
 
-	if got := p.dhcpv6AutoFallbacks.Load(); got != 3 {
-		t.Errorf("dhcpv6_auto_fallbacks = %d after gains of 1 and 2, want 3 — the "+
-			"callback is handed the GAIN, so a reporter that stored the value would "+
-			"lose every fallback after the first", got)
+	if got := p.dhcpv6AutoFallbacks.Load(); got != 1 {
+		t.Errorf("dhcpv6_auto_fallbacks = %d after gains of 1 and 2 on one endpoint, want 1: "+
+			"the counter counts endpoints", got)
 	}
 	entries := hook.AllEntries()
 	if len(entries) != 2 {
@@ -225,7 +224,7 @@ func TestV6FallbackReporter_CountsTheGainAndWarns(t *testing.T) {
 	if n := len(hook.AllEntries()); n != 0 {
 		t.Errorf("a zero gain logged %d line(s), want none", n)
 	}
-	if got := p.dhcpv6AutoFallbacks.Load(); got != 3 {
-		t.Errorf("dhcpv6_auto_fallbacks = %d after a zero gain, want 3", got)
+	if got := p.dhcpv6AutoFallbacks.Load(); got != 1 {
+		t.Errorf("dhcpv6_auto_fallbacks = %d after a zero gain, want 1", got)
 	}
 }

@@ -149,14 +149,16 @@ func (p *Plugin) v6Wiring(base *dhcp.DHCPClientOptions, opts DHCPNetworkOptions,
 	return nil
 }
 
-// v6FallbackReporter counts fallbacks that formed an address and warns, since the address source differs from the
-// configured one (#817).
+// v6FallbackReporter counts an endpoint's first fallback and warns on every one, since the address source differs
+// from the configured one (#817, #1016).
 func (p *Plugin) v6FallbackReporter(endpointID string) func(uint64) {
 	return func(n uint64) {
 		if n == 0 {
 			return
 		}
-		p.dhcpv6AutoFallbacks.Add(int32(n))
+		if _, seen := p.autoFallbackCounted.LoadOrStore(endpointID, struct{}{}); !seen {
+			p.dhcpv6AutoFallbacks.Add(1)
+		}
 		log.WithFields(log.Fields{
 			"endpoint":  shortID(endpointID),
 			"fallbacks": n,
