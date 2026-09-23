@@ -1,10 +1,7 @@
 // Copyright the docker-net-dhcp contributors.
 // SPDX-License-Identifier: GPL-3.0-only
 
-// No `//go:build integration` tag, for the reason v6addrflags.go gives:
-// this is a pure function over bytes, so it is driven in the fast lane
-// against VERBATIM text read from the kernel the suite actually runs
-// containers on.
+// No integration tag: a pure parser driven against verbatim kernel text in the unit job.
 
 package harness
 
@@ -14,57 +11,19 @@ import (
 	"strings"
 )
 
-// PacketSocket is one row of /proc/net/packet: one AF_PACKET socket
-// open in the network namespace the file was read from.
-//
-// # WHY THIS FILE IS THE EVIDENCE
-//
-// Until 2.0 "one DHCP client on the interface" was a question about
-// PROCESSES: dhcpcd was a child, and a stray one was visible in the
-// process table from anywhere on the host. Since 2.0 the client is a
-// goroutine inside the plugin, and a displaced one that failed to stop
-// leaves no process and no file behind. What it cannot hide is its
-// SOCKET: the client speaks DHCP over AF_PACKET bound to the container
-// link, and the kernel lists every such socket in the container's own
-// network namespace.
-//
-// That makes this the outside evidence for a claim that has none
-// otherwise. displaced_stops is the plugin's own opinion that it asked
-// a client to stop. The DHCP server's log cannot settle it either: a
-// client that has stopped sends nothing, and so does a client that is
-// simply between renewals, so the two readings are identical for as
-// long as the test is willing to wait. The socket table is not a
-// question about traffic — it is the kernel naming the sockets that
-// exist at the moment it is read.
+// PacketSocket is one AF_PACKET socket row of /proc/net/packet in the reader's network namespace. Since 2.0 the DHCP
+// client is a goroutine, so a displaced client that did not stop leaves only its socket as outside evidence (#682).
 type PacketSocket struct {
-	// Proto is the protocol the socket is bound to, in host byte order
-	// as the kernel prints it: 0x0800 ETH_P_IP (the DHCPv4 client),
-	// 0x0806 ETH_P_ARP (RFC 5227 conflict detection), 0x86dd
-	// ETH_P_IPV6 (the DHCPv6 client), 0x0003 ETH_P_ALL.
+	// Proto is the bound protocol in host order: 0x0800 ETH_P_IP, 0x0806 ETH_P_ARP, 0x86dd ETH_P_IPV6, 0x0003 ETH_P_ALL.
 	Proto uint16
-	// IfIndex is the interface the socket is bound to, or 0 for a
-	// socket bound to every interface.
+	// IfIndex is the bound interface, 0 for every interface.
 	IfIndex int
-	// Inode is the socket's inode number as printed, kept as text
-	// because it is an identity and never arithmetic. It is what makes
-	// two rows for the same protocol and interface distinguishable in
-	// a failure message.
+	// Inode is the socket's inode as printed, an identity for failure messages.
 	Inode string
 }
 
-// packetProtoColumn, packetIfaceColumn and packetInodeColumn are the
-// columns of /proc/net/packet, which has carried the same nine since
-// Linux 2.2 (net/packet/af_packet.c, packet_seq_show):
-//
-//	sk       RefCnt Type Proto  Iface R Rmem   User   Inode
-//	000000006eb2ee44 3      3     0800  4     1 0      0        2103400
-//
-// Read by INDEX and not by header name on purpose: the header is
-// whitespace-aligned rather than tab-separated, so a name-keyed reader
-// would have to re-derive the columns from the alignment of the first
-// line, and that alignment is what changes between kernels. The count
-// is asserted per row instead, so a kernel that adds a column fails
-// loudly here rather than reporting a plausible wrong number.
+// /proc/net/packet has had the same nine columns since Linux 2.2 (net/packet/af_packet.c, packet_seq_show); the header
+// is space-aligned, so columns are read by index and the count is checked per row (#682).
 const (
 	packetProtoColumn = 3
 	packetIfaceColumn = 4
@@ -72,13 +31,7 @@ const (
 	packetColumns     = 9
 )
 
-// PacketSocketsFromProc parses the contents of /proc/net/packet.
-//
-// It refuses rather than guesses: a row with the wrong number of
-// columns, an unparseable protocol or an unparseable interface index is
-// an error, because the caller's next step is to count what it finds
-// and a silently dropped row reads exactly like a socket that is not
-// there — which is the answer this file exists to disprove.
+// PacketSocketsFromProc parses /proc/net/packet, refusing a row it cannot read rather than dropping it (#682).
 func PacketSocketsFromProc(text string) ([]PacketSocket, error) {
 	var out []PacketSocket
 	for i, line := range strings.Split(text, "\n") {
@@ -113,17 +66,10 @@ func PacketSocketsFromProc(text string) ([]PacketSocket, error) {
 	return out, nil
 }
 
-// EthPIP is ETH_P_IP, the protocol the DHCPv4 client's socket is bound
-// to. Named rather than written as 0x0800 at the call site so the
-// number appears once.
+// EthPIP is ETH_P_IP, the DHCPv4 client's protocol.
 const EthPIP = 0x0800
 
-// PacketSocketsOn returns the sockets bound to proto on ifIndex.
-//
-// A socket bound to interface 0 is bound to EVERY interface and is
-// counted for any ifIndex: the kernel will deliver this link's frames
-// to it, so for the question "how many clients could answer on this
-// link" it is one of them.
+// PacketSocketsOn returns the sockets bound to proto on ifIndex; a socket bound to interface 0 receives on every link and counts.
 func PacketSocketsOn(rows []PacketSocket, proto uint16, ifIndex int) []PacketSocket {
 	var out []PacketSocket
 	for _, r := range rows {
@@ -138,8 +84,7 @@ func PacketSocketsOn(rows []PacketSocket, proto uint16, ifIndex int) []PacketSoc
 	return out
 }
 
-// DescribePacketSockets renders rows for a failure message: the inodes
-// are what distinguishes two clients from one read twice.
+// DescribePacketSockets renders rows with their inodes for a failure message.
 func DescribePacketSockets(rows []PacketSocket) string {
 	if len(rows) == 0 {
 		return "none"

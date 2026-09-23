@@ -8,11 +8,7 @@ import (
 	"testing"
 )
 
-// Cases below use decodeHealth (healthfloor_test.go) rather than struct
-// literals wherever the point turns on what the plugin actually sent:
-// it goes through UnmarshalJSON, so the `published` key set is
-// populated, and "the plugin sent instance_id" stays distinguishable
-// from "the field is at its zero value".
+// decodeHealth goes through UnmarshalJSON, so the `published` key set tells a sent instance_id from a zero value.
 
 func TestCompareInstances_SameProcess(t *testing.T) {
 	a := decodeHealth(t, `{"instance_id":"aaaa1111","uptime_seconds":10}`)
@@ -30,10 +26,6 @@ func TestCompareInstances_Recycled(t *testing.T) {
 	}
 }
 
-// The case the whole file exists for. An absent JSON string decodes to
-// "", and "" == "" — so the obvious implementation reports "same
-// process" with full confidence precisely when it has no evidence at
-// all. That is the #377 mistake repeated on a new field.
 func TestCompareInstances_TwoEmptyIDsAreNotTheSameProcess(t *testing.T) {
 	a := decodeHealth(t, `{"instance_id":"","uptime_seconds":10}`)
 	b := decodeHealth(t, `{"instance_id":"","uptime_seconds":40}`)
@@ -44,9 +36,7 @@ func TestCompareInstances_TwoEmptyIDsAreNotTheSameProcess(t *testing.T) {
 }
 
 func TestCompareInstances_KeyNeverPublished(t *testing.T) {
-	// A plugin predating #405 sends no instance_id. The field is "" and
-	// indistinguishable from an empty one by value alone; only the
-	// published key set can tell them apart.
+	// A plugin predating #405 sends no instance_id.
 	a := decodeHealth(t, `{"uptime_seconds":10,"healthy":true}`)
 	b := decodeHealth(t, `{"uptime_seconds":40,"healthy":true}`)
 	if got := CompareInstances(a, b); got != InstanceUnknown {
@@ -77,9 +67,6 @@ func TestCompareInstances_OneSideMissing(t *testing.T) {
 }
 
 func TestCompareInstances_HandBuiltValuesJudgedOnTheField(t *testing.T) {
-	// published == nil means "not decoded from a payload", matching the
-	// convention CheckHealthFloor already uses. Unit tests that build a
-	// HealthResponse literal must stay usable.
 	same := CompareInstances(&HealthResponse{InstanceID: "x"}, &HealthResponse{InstanceID: "x"})
 	if same != InstanceSame {
 		t.Errorf("hand-built matching ids: got %v, want %v", same, InstanceSame)
@@ -88,7 +75,6 @@ func TestCompareInstances_HandBuiltValuesJudgedOnTheField(t *testing.T) {
 	if diff != InstanceRecycled {
 		t.Errorf("hand-built differing ids: got %v, want %v", diff, InstanceRecycled)
 	}
-	// Even hand-built, empty is still unknown.
 	blank := CompareInstances(&HealthResponse{}, &HealthResponse{})
 	if blank != InstanceUnknown {
 		t.Errorf("hand-built empty ids: got %v, want %v", blank, InstanceUnknown)
@@ -151,8 +137,6 @@ func TestCounterWindowError_UnknownSaysWhichSideFailed(t *testing.T) {
 }
 
 func TestInstanceVerdict_StringIsUnambiguous(t *testing.T) {
-	// These land in failure output; "unknown" must never render as
-	// something a reader could mistake for a clean result.
 	for v, want := range map[InstanceVerdict]string{
 		InstanceSame:     "same-instance",
 		InstanceRecycled: "recycled",
@@ -164,8 +148,6 @@ func TestInstanceVerdict_StringIsUnambiguous(t *testing.T) {
 	}
 }
 
-// The zero value must be the cautious one. If InstanceSame were zero, a
-// verdict variable that never got assigned would read as "fine".
 func TestInstanceVerdict_ZeroValueIsUnknown(t *testing.T) {
 	var v InstanceVerdict
 	if v != InstanceUnknown {

@@ -16,43 +16,9 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// The router-advertisement capture.
-//
-// A segment's IPv6 service mode IS the M and O flags in its router
-// advertisements, and those live on the wire and nowhere else. The DHCP
-// server's log says it advertised; only a frame says WHAT it
-// advertised, and the whole point of the mode signature is that
-// "stateless" and "managed" produce the same log line and different
-// bits. The plugin's own counters cannot answer it either: a counter
-// that never moved and a check that never ran read identically, which
-// is the #524 fault.
-//
-// Written as a raw AF_PACKET socket rather than by shelling out to
-// tcpdump, for arpcapture.go's three reasons, unchanged: the runner
-// image is not guaranteed to carry tcpdump and a test that skips when
-// its instrument is missing reports "nothing to see" on the run where
-// it matters; a capture file has to be flushed before it can be read,
-// which is a race against the assertion; and the frames are wanted as
-// values with timestamps, not as text to re-parse.
-//
-// WHERE IT LISTENS. On the fixture's own bridge, which is the device
-// the DHCP server transmits its advertisements OUT of. That is not the
-// same answer arpcapture.go reaches, and the difference is worth
-// stating rather than copying: there the frames under test are
-// originated by a macvlan CHILD, whose transmit path reaches the lower
-// device without passing the parent's packet taps, so the parent sees
-// only what arrives off the wire. Here the frames are originated by
-// this host, on this device, and `dev_queue_xmit_nit` delivers every
-// transmit to the ptype_all list -- which is what captureEthertypeBE
-// binds to, and the reason it binds to ETH_P_ALL rather than a specific
-// protocol.
-//
-// That reasoning is an argument, so the fixture MEASURES it: its
-// contract test opens this same capture on the bridge and on a link the
-// server does not advertise on, in the managed mode, and requires
-// frames on the first and none on the second. Both verdicts in one run,
-// because a capture that sees nothing anywhere makes every "no RA
-// arrived" assertion below true by construction.
+// A segment's IPv6 mode is the M and O flags of its router advertisements, so the check reads frames: "stateless" and
+// "managed" log the same server line. The capture sits on the fixture's bridge, which the server transmits from, and
+// dev_queue_xmit_nit delivers every transmit to ptype_all; the fixture's contract test measures it (#942).
 
 // RACapture is a running router-advertisement capture on one link.
 type RACapture struct {
@@ -64,23 +30,11 @@ type RACapture struct {
 	frames []RAFrame
 	done   bool
 	err    error
-	// seen counts every frame the socket delivered, by ethertype,
-	// including the ones ParseRA rejects. Kept because "the capture saw
-	// nothing at all" and "the capture saw the segment's traffic and no
-	// advertisement in it" are different findings that used to produce
-	// the same message: the first is a link that cannot transmit or a
-	// capture on the wrong device, the second is a server in the wrong
-	// mode. Diagnosing #942 from the second message cost a day.
+	// seen counts every delivered frame by ethertype, including rejected ones, to tell a silent link from an RA-free one (#942).
 	seen map[uint16]int
 }
 
-// StartRACapture begins capturing router advertisements on iface until
-// the test ends.
-//
-// It fails the test rather than skipping if the socket cannot be
-// opened, for arpcapture.go's reason: a capture that quietly does not
-// run turns every "no advertisement arrived" assertion into a
-// tautology, and those assertions are what the no-RA mode is.
+// StartRACapture captures router advertisements on iface until the test ends, failing the test if the socket cannot be opened.
 func StartRACapture(t V6FixtureT, iface string) *RACapture {
 	t.Helper()
 	fd, err := openCaptureSocket(iface)
@@ -95,10 +49,7 @@ func StartRACapture(t V6FixtureT, iface string) *RACapture {
 	return c
 }
 
-// StartRACaptureInNetns begins capturing inside the named network
-// namespace. The namespace dance and the socket options are
-// capturesocket.go's, shared with every other instrument in this
-// package.
+// StartRACaptureInNetns captures inside the named network namespace.
 func StartRACaptureInNetns(t V6FixtureT, nsName, iface string) *RACapture {
 	t.Helper()
 	fd := openCaptureSocketInNetns(t.Fatalf, "RA capture", nsName, iface)
@@ -160,12 +111,7 @@ func (c *RACapture) Stop() {
 	_ = unix.Close(c.fd)
 }
 
-// Frames returns every advertisement captured so far.
-//
-// It fails the test if the read loop died on an error: a capture that
-// stopped early is indistinguishable from a quiet segment by looking at
-// the result, and this instrument's whole job in the no-RA mode is to
-// tell those two apart.
+// Frames returns every advertisement captured so far, failing the test if the read loop died.
 func (c *RACapture) Frames() []RAFrame {
 	c.t.Helper()
 	c.mu.Lock()
@@ -188,9 +134,7 @@ func (c *RACapture) FramesAfter(since time.Time) []RAFrame {
 	return out
 }
 
-// AwaitRAAfter waits until at least one advertisement has been captured
-// after since, and returns those. ok is false on timeout, with whatever
-// was captured.
+// AwaitRAAfter waits for at least one advertisement after since; ok is false on timeout.
 func (c *RACapture) AwaitRAAfter(since time.Time, within time.Duration) ([]RAFrame, bool) {
 	deadline := time.Now().Add(within)
 	for {
@@ -205,9 +149,7 @@ func (c *RACapture) AwaitRAAfter(since time.Time, within time.Duration) ([]RAFra
 	}
 }
 
-// SeenTally renders every frame the capture took, by ethertype, so a
-// failure message can say whether the link was silent or merely
-// advertisement-free.
+// SeenTally renders the captured frames by ethertype.
 func (c *RACapture) SeenTally() string {
 	c.mu.Lock()
 	defer c.mu.Unlock()

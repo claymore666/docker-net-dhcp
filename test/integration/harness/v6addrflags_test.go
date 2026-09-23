@@ -9,29 +9,17 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// Every string below is VERBATIM `ip -6 -o addr show` output, MEASURED
-// 2026-09-06 in a user+network namespace on the session box: the same
-// addresses, on the same links, read once by the host's iproute2 and
-// once by alpine:3.20's busybox 1.36.1 (the image the suite runs
-// containers in) chrooted into that namespace. The double spaces and
-// the trailing backslash are theirs.
-//
-// The pair is the whole point of the file. The busybox rendering of
-// IFA_F_NODAD is `flags 02` -- the word "nodad" appears nowhere in it
-// -- so an observer validated only against the host's tool passes here
-// and can never pass where it runs.
+// Verbatim `ip -6 -o addr show` output, measured 2026-09-06 in a user+network namespace: the same addresses read by
+// the host's iproute2 and by alpine:3.20's busybox 1.36.1, the suite's container image. busybox renders IFA_F_NODAD
+// as `flags 02`, never "nodad" (#819).
 
-// A /128 installed the way the chassis installs a DHCPv6 lease:
-// IFA_F_NODAD plus both lifetimes.
+// A /128 as the chassis installs a DHCPv6 lease: IFA_F_NODAD and both lifetimes.
 const (
 	nodadLeasedIproute2 = `2: dummy0    inet6 fd00:dead::1/128 scope global nodad dynamic \       valid_lft 300sec preferred_lft 200sec`
 	nodadLeasedBusybox  = `2: dummy0    inet6 fd00:dead::1/128 scope global dynamic flags 02 \       valid_lft 300sec preferred_lft 200sec`
 )
 
-// The same link a moment after two addresses were added, one with
-// IFA_F_NODAD and one without: the second is still running the kernel's
-// duplicate-address detection. This is the shape the chassis's re-apply
-// exists to prevent.
+// Two addresses just added, one with IFA_F_NODAD: the other is still in the kernel's duplicate-address detection.
 const (
 	tentativeIproute2 = `3: v0    inet6 fd00:beef::2/64 scope global nodad \       valid_lft forever preferred_lft forever
 3: v0    inet6 fd00:beef::1/64 scope global tentative \       valid_lft forever preferred_lft forever
@@ -41,9 +29,7 @@ const (
 3: v0    inet6 fe80::c0c8:66ff:fe9e:97a6/64 scope link tentative \       valid_lft forever preferred_lft forever`
 )
 
-// The RFC 7527 outcome the NODAD flag exists to make impossible: the
-// same address claimed twice on one segment, and the kernel took the
-// loser out of service. Both tools name this one.
+// RFC 7527: the address claimed twice on one segment, and the kernel took the loser out of service.
 const (
 	dadfailedIproute2 = `3: v0    inet6 fd00:beef::5/64 scope global dadfailed tentative \       valid_lft forever preferred_lft forever`
 	dadfailedBusybox  = `3: v0    inet6 fd00:beef::5/64 scope global tentative dadfailed \       valid_lft forever preferred_lft forever`
@@ -73,9 +59,7 @@ func TestV6AddrFlagsFromAddrShow_ReadsNODADUnderBothRenderings(t *testing.T) {
 	}
 }
 
-// The other direction, and the one that decides whether this observer
-// can fail at all: the address libnetwork installed and the chassis did
-// NOT re-apply. Same line, same tool, no NODAD.
+// The address libnetwork installed and the chassis did not re-apply: no NODAD.
 func TestV6AddrFlagsFromAddrShow_SeesTheAddressWithoutNODAD(t *testing.T) {
 	for name, out := range map[string]string{
 		"iproute2": tentativeIproute2,
@@ -93,9 +77,6 @@ func TestV6AddrFlagsFromAddrShow_SeesTheAddressWithoutNODAD(t *testing.T) {
 				t.Errorf("Tentative false while the kernel is still probing: %q", f.Line)
 			}
 
-			// ...and the neighbouring address on the SAME output, which
-			// does carry it, so a parser that returns the first line's
-			// flags for every address fails here.
 			g := V6AddrFlagsFromAddrShow(out, "fd00:beef::2")
 			if !g.Found || !g.NoDAD || g.Tentative {
 				t.Errorf("the nodad address on the same link read as found=%v nodad=%v tentative=%v: %q",
@@ -125,9 +106,6 @@ func TestV6AddrFlagsFromAddrShow_ReadsDADFailed(t *testing.T) {
 	}
 }
 
-// An address that is not there must not read as a healthy one. This is
-// the shape a mis-derived interface or a typo'd address produces, and
-// without Found it is byte-identical to "installed, no flags set".
 func TestV6AddrFlagsFromAddrShow_AbsentIsNotHealthy(t *testing.T) {
 	f := V6AddrFlagsFromAddrShow(nodadLeasedBusybox, "fd00:dead::9")
 	if f.Found {
@@ -138,9 +116,7 @@ func TestV6AddrFlagsFromAddrShow_AbsentIsNotHealthy(t *testing.T) {
 	}
 }
 
-// The #875 rule, inherited from V6IfaceFromAddrShow: the address is a
-// whole field split at its prefix length, never a substring. Without it
-// `fd00:dead::1` reads the flags of `fd00:dead::12`.
+// #875: the address is a whole field split at its prefix length, never a substring.
 func TestV6AddrFlagsFromAddrShow_MatchesTheWholeAddressField(t *testing.T) {
 	out := `2: dummy0    inet6 fd00:dead::12/128 scope global tentative \       valid_lft forever preferred_lft forever`
 	if f := V6AddrFlagsFromAddrShow(out, "fd00:dead::1"); f.Found {
@@ -151,8 +127,6 @@ func TestV6AddrFlagsFromAddrShow_MatchesTheWholeAddressField(t *testing.T) {
 	}
 }
 
-// Nothing after the backslash is a flag, and a lifetime keyword must
-// not become one.
 func TestV6AddrFlagsFromAddrShow_StopsAtTheBackslash(t *testing.T) {
 	out := `2: dummy0    inet6 fd00:dead::1/128 scope global \       valid_lft forever preferred_lft forever flags 02 nodad`
 	f := V6AddrFlagsFromAddrShow(out, "fd00:dead::1")
@@ -164,32 +138,14 @@ func TestV6AddrFlagsFromAddrShow_StopsAtTheBackslash(t *testing.T) {
 	}
 }
 
-// The three lifetime shapes an address on a container link can be in,
-// MEASURED 2026-09-16 on the session box under `unshare -Urn`, one
-// dummy link, iproute2-6.15.0, LC_ALL=C: an address deprecated by
-// `preferred_lft 0`, an ordinary leased one, and one with no lifetimes
-// at all. The kernel's own renderings, in one capture, in this order.
-//
-// THE DEPRECATED ROW IS #819's ORACLE. The plugin's own preferred
-// number says what it meant to install; this line says what the kernel
-// holds. A change that stopped passing the preferred lifetime to
-// netlink leaves the first right and the second clear.
+// Lifetime shapes measured 2026-09-16 under `unshare -Urn` on one dummy link, iproute2-6.15.0, LC_ALL=C: deprecated
+// by `preferred_lft 0`, leased, and no lifetimes. The deprecated row is #819's oracle for the preferred lifetime.
 const lifetimesIproute2 = `2: v0    inet6 fd00:beef::9/64 scope global nodad \       valid_lft forever preferred_lft forever
 2: v0    inet6 fd00:beef::8/64 scope global nodad dynamic \       valid_lft 299sec preferred_lft 199sec
 2: v0    inet6 fd00:beef::7/64 scope global nodad deprecated dynamic \       valid_lft 399sec preferred_lft 0sec`
 
-// The same deprecated address as a tool that has no NAME for
-// IFA_F_DEPRECATED would print it.
-//
-// IT IS NOT A CAPTURE and it is not labelled as one. busybox 1.36.1
-// names `deprecated` (MEASURED 2026-09-06, recorded in the header of
-// v6addrflags.go with the rest of that pass), so no tool this suite
-// meets prints the line below today. It is here because the parser
-// reads the residual `flags <hex>` word as well as the name, that path
-// is the one that survives a tool which stops naming the flag, and
-// nothing else in this file drives it for IFA_F_DEPRECATED. 0x20 is
-// unix.IFA_F_DEPRECATED, and the assertion below reads the constant
-// rather than trusting the hex written here.
+// Not a capture: a tool with no name for IFA_F_DEPRECATED would print this. busybox 1.36.1 names `deprecated`
+// (measured 2026-09-06), so this drives only the parser's residual `flags <hex>` path (#819).
 const deprecatedResidual = `2: v0    inet6 fd00:beef::7/64 scope global dynamic flags 22 \       valid_lft 399sec preferred_lft 0sec`
 
 func TestV6AddrFlagsFromAddrShow_ReadsBothLifetimesAndTheDeprecatedBit(t *testing.T) {
@@ -248,11 +204,7 @@ func TestV6AddrFlagsFromAddrShow_ReadsBothLifetimesAndTheDeprecatedBit(t *testin
 		})
 	}
 
-	// The residual rendering above claims 0x22 is NODAD plus
-	// DEPRECATED. That is a claim about the kernel's headers, so it is
-	// read from them rather than asserted by a passing parse: a typo in
-	// the hex would otherwise show up as a parser defect somewhere else
-	// entirely, or not at all.
+	// 0x22 is IFA_F_NODAD|IFA_F_DEPRECATED, read from the kernel headers through unix.
 	if unix.IFA_F_NODAD|unix.IFA_F_DEPRECATED != 0x22 {
 		t.Fatalf("IFA_F_NODAD|IFA_F_DEPRECATED = %#x, and the residual rendering above is "+
 			"written as `flags 22`; the two have to be the same bits or that case drives "+
@@ -260,8 +212,6 @@ func TestV6AddrFlagsFromAddrShow_ReadsBothLifetimesAndTheDeprecatedBit(t *testin
 			unix.IFA_F_NODAD|unix.IFA_F_DEPRECATED)
 	}
 
-	// The other direction: an address the output does not carry reads
-	// as no lifetimes, never as zero ones.
 	if f := V6AddrFlagsFromAddrShow(lifetimesIproute2, "fd00:beef::99"); f.Found || f.Lifetimes {
 		t.Errorf("an absent address read as Found=%v Lifetimes=%v; both must be false, or "+
 			"'preferred lifetime is 0' is satisfied by an address that is not on the link",

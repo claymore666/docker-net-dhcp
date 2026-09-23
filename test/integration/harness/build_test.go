@@ -10,11 +10,6 @@ import (
 	"testing"
 )
 
-// TestBuiltPluginDir_MissingIsAnErrorNotASkip is #583's acceptance
-// check: point the accessor at a lane that does not exist and the
-// answer must be an error naming where it looked — never a nil that a
-// caller could turn into t.Skip. A test that quietly does not run is
-// how a rootfs-dependent test stayed green for a release cycle (#541).
 func TestBuiltPluginDir_MissingIsAnErrorNotASkip(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "no-such-lane")
 	t.Setenv(PluginBuildDirEnv, missing)
@@ -31,10 +26,6 @@ func TestBuiltPluginDir_MissingIsAnErrorNotASkip(t *testing.T) {
 	}
 }
 
-// TestBuiltPluginDir_FindsARootfsWhereverTheLaneBuiltIt: the override
-// is honoured when the directory it names holds a rootfs, absolute or
-// relative to the repo root — the one contract both lanes and every
-// test share.
 func TestBuiltPluginDir_FindsARootfsWhereverTheLaneBuiltIt(t *testing.T) {
 	lane := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(lane, "rootfs"), 0o755); err != nil {
@@ -51,9 +42,6 @@ func TestBuiltPluginDir_FindsARootfsWhereverTheLaneBuiltIt(t *testing.T) {
 	}
 }
 
-// TestPluginBuildDirs_AreTheTwoLanes pins the search list to what the
-// Makefile actually produces, so a renamed target cannot silently leave
-// one lane unsearched.
 func TestPluginBuildDirs_AreTheTwoLanes(t *testing.T) {
 	want := []string{"plugin", "plugin-cover"}
 	if strings.Join(pluginBuildDirs, ",") != strings.Join(want, ",") {

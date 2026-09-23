@@ -1,16 +1,7 @@
 // Copyright the docker-net-dhcp contributors.
 // SPDX-License-Identifier: GPL-3.0-only
 
-// No `//go:build integration` tag, deliberately, and for the reason
-// raguard_parse.go gives: everything in this file is a pure function
-// over bytes or over a captured log, so it is driven in the fast lane
-// against real strings and real frames rather than validated only in a
-// world that needs root, a bridge and a DHCP server to enter.
-//
-// The fixture itself (v6modes.go) is tagged, gathers the evidence, and
-// asks the functions here for the verdict. The split is the point: an
-// instrument whose verdict can only be exercised on the privileged lane
-// is one nobody can drive in both directions.
+// Untagged so the verdict functions run in the fast lane; the tagged fixture in v6modes.go gathers the evidence (#911).
 
 package harness
 
@@ -26,99 +17,35 @@ import (
 type V6Mode int
 
 const (
-	// V6Managed is stateful DHCPv6: an address pool plus RAs with the
-	// M flag. The client gets its address over DHCPv6.
+	// V6Managed is stateful DHCPv6: an address pool and RAs with the M flag.
 	V6Managed V6Mode = iota
-	// V6Stateless is the #815 shape: RAs with the O flag and no
-	// address pool. The client forms its own address from the prefix
-	// and asks DHCPv6 only for configuration -- an
-	// INFORMATION-REQUEST answered with a REPLY carrying DNS servers
-	// and a search list, and no address at all.
+	// V6Stateless is the #815 shape: RAs with the O flag, no pool, and an Information-request answered with configuration.
 	V6Stateless
-	// V6SLAAC is RAs with neither flag and no DHCPv6 server. Address
-	// and nothing else; there is nobody to ask for configuration.
+	// V6SLAAC is RAs with neither flag and no DHCPv6 server.
 	V6SLAAC
-	// V6NoRA is a segment with no router on it: no advertisements, and
-	// a DHCPv6 server that answers nothing.
-	//
-	// BOTH HALVES ARE THE MODE. "No router advertisement" alone is not
-	// a segment where a container can fail to get a v6 address: this
-	// plugin's client solicits once router discovery gives up, and a
-	// listening server answers. The mode exists so that
-	// dhcpv6_no_router_advert -- which the plugin reports for an
-	// endpoint that ended up with NO address and never saw an
-	// advertisement -- has a segment that produces it.
+	// V6NoRA is a segment with no RAs and a DHCPv6 server that answers nothing, which dhcpv6_no_router_advert needs.
 	V6NoRA
-	// V6ManagedSilent is managed DHCPv6 whose server answers nothing:
-	// RAs carry the M flag, so the segment says an address is
-	// available over DHCPv6, and every SOLICIT is dropped.
-	//
-	// This is the mode that keeps #868's fix honest. Tolerating a
-	// missing DHCPv6 address is correct exactly when the segment never
-	// offered one; here it did. A fix that read "v6 acquisition failed,
-	// carry on" rather than "the advertisement said no DHCPv6, carry
-	// on" passes every other mode in this file and fails only this one.
+	// V6ManagedSilent is managed DHCPv6 whose server drops every Solicit, which keeps #868's fix honest.
 	V6ManagedSilent
-	// V6ManagedExhausted is managed DHCPv6 whose server ANSWERS and has
-	// nothing to give: RAs carry the M flag, every Solicit is answered
-	// with an Advertise carrying RFC 9915 section 21.13's Status Code
-	// NoAddrsAvail, and no address is ever allocated.
+	// V6ManagedExhausted is managed DHCPv6 answering every Solicit with Status Code NoAddrsAvail (RFC 9915 section 21.13).
 	//
-	// IT IS THE OTHER HALF OF #816. managed-silent and this mode end
-	// the same way for the container -- no DHCPv6 address, endpoint
-	// refused -- and they are two entirely different faults: there is
-	// no server on that segment, against there is a server whose pool
-	// has nothing for this client. A plugin that reports one number for
-	// both cannot tell an operator which one they have, which is the
-	// complaint #816 is.
-	//
-	// dnsmasq's spelling of it is a static-only range: a v6
-	// --dhcp-range whose second field is `static` carries
-	// CONTEXT_STATIC, and address_allocate skips every static context
-	// (dhcp6.c:497), so a client with no matching --dhcp-host gets
-	// nothing. MEASURED 2026-09-16 on the session box, dnsmasq 2.91,
-	// `unshare -Urn`, the library's own client on the peer end of a
-	// veth pair: "DHCPADVERTISE(s0) 00:03:... no addresses available",
-	// message-level "option: 13 status 2", and the client reporting
-	// Failed{reason=nak, status=2 NoAddrsAvail} on every Solicit. The
-	// advertisement on the wire carried Flags [managed, other
-	// stateful] and a prefix option with Flags [onlink] and no
-	// autonomous bit.
+	// It is #816's other half beside managed-silent. Measured 2026-09-16, dnsmasq 2.91 under `unshare -Urn`, the
+	// library's client on a veth peer: "DHCPADVERTISE(s0) ... no addresses available", "option: 13 status 2", and the
+	// RA carrying [managed, other stateful] with a [onlink] prefix and no A bit (#989). dnsmasq spells it as a static-only
+	// v6 --dhcp-range: address_allocate skips every CONTEXT_STATIC context (dhcp6.c:497).
 	V6ManagedExhausted
-	// V6AutoFallback is a segment that tells a client to ask DHCPv6 and
-	// then answers nothing, while advertising a prefix the client can
-	// form an address from on its own: the RA carries M and O, every
-	// Solicit is ignored, and the Prefix Information option carries the
-	// A bit.
+	// V6AutoFallback advertises M, O and an autonomous prefix and ignores every Solicit, so Mode6Auto's fallback runs (#818).
 	//
-	// IT IS THE ONLY MODE IN WHICH proto.Mode6Auto's FALLBACK CAN RUN.
-	// managed-silent is silent, but dnsmasq clears the A bit on a prefix
-	// it serves addresses for (radv.c:748), so a client that gives up on
-	// DHCPv6 there has nothing to fall back TO. #817 could therefore
-	// drive the fallback only at the plugin's own arithmetic, and said
-	// so as a stated bound. This mode is what drives it end to end.
-	//
-	// dnsmasq's spelling is a v6 --dhcp-range whose third field is
-	// `slaac`: option.c:3823-3830 turns that keyword into CONTEXT_RA
-	// while the range's two address fields have already set
-	// CONTEXT_DHCP, so radv.c:627-644 sets the M and O flags and
-	// radv.c:748 sets the A bit, from one range. --dhcp-ignore=tag:dhcpv6
-	// silences the server half, exactly as it does in managed-silent.
-	//
-	// MEASURED 2026-09-16 on the session box, dnsmasq 2.91 under
-	// `unshare -Urn`, the library's own client in proto.Mode6Auto on the
-	// peer end of a veth pair: the advertisement carried Flags [managed,
-	// other stateful] and a prefix option with Flags [onlink, auto] on
-	// /64, the server logged three ignored DHCPSOLICITs, and the client
-	// reported acquired at 7.9 s with slaac=true, SLAACFallbacks 1 and
-	// SLAACAddressesFormed 1.
+	// dnsmasq clears the A bit on a prefix it serves addresses for (radv.c:748), so managed-silent has nothing to fall
+	// back to. dnsmasq spells it as a v6 --dhcp-range with third field `slaac`: option.c:3823-3830 adds CONTEXT_RA to
+	// CONTEXT_DHCP, so radv.c:627-644 sets M and O and radv.c:748 the A bit, from one range.
+	// Measured 2026-09-16, dnsmasq 2.91 under `unshare -Urn`, the library client in Mode6Auto: RA flags
+	// [managed, other stateful], prefix [onlink, auto] /64, three ignored DHCPSOLICITs, acquired at 7.9 s with
+	// slaac=true, SLAACFallbacks 1 and SLAACAddressesFormed 1.
 	V6AutoFallback
 )
 
-// V6Modes is every mode, in declaration order. It exists so a table
-// test iterates the population rather than a list somebody maintains
-// beside it: a mode added without a row here is a mode the drift
-// matrix silently stops covering.
+// V6Modes is every mode, in declaration order.
 func V6Modes() []V6Mode {
 	return []V6Mode{V6Managed, V6Stateless, V6SLAAC, V6NoRA, V6ManagedSilent, V6ManagedExhausted, V6AutoFallback}
 }
@@ -143,78 +70,29 @@ func (m V6Mode) String() string {
 	return fmt.Sprintf("V6Mode(%d)", int(m))
 }
 
-// V6Signature is what a segment in one mode looks like from OUTSIDE the
-// plugin: two facts from the DHCP server's own log and three from the
-// router advertisement on the wire.
+// V6Signature is a segment's mode seen from outside: two facts from the server log and three from the RA (#911).
 //
-// MEASURED 2026-09-05 against dnsmasq 2.91 on the session box, one user
-// namespace per mode, the frames captured with the AF_PACKET reader in
-// racapture.go and decoded by ParseRA below. Lane run ids for the same
-// table are in the PR body.
+// Measured 2026-09-05, dnsmasq 2.91, one user namespace per mode (auto-fallback 2026-09-16 with tcpdump, #818):
 //
-//	mode            pool  RA   M  O  PIO A   PIO L  router lifetime
-//	managed         yes   yes  1  1  no      /120   1800s
-//	stateless       no    yes  0  1  yes     /64    1800s
-//	slaac           no    yes  0  0  yes     /64    1800s
-//	nora            yes   no   -  -  -       -      -
-//	managed-silent  yes   yes  1  1  no      /120   1800s
-//	managed-exhausted no  yes  1  1  no      /64    1800s
-//	auto-fallback   yes   yes  1  1  yes     /64    1800s
+//	mode pool/RA/M/O/PIO-A/PIO-L: managed y/y/1/1/n//120, stateless n/y/0/1/y//64, slaac n/y/0/0/y//64, nora y/n/-,
+//	managed-silent y/y/1/1/n//120, managed-exhausted n/y/1/1/n//64, auto-fallback y/y/1/1/y//64; lifetime 1800s.
 //
-// The last row was measured on 2026-09-16 with tcpdump on one end of
-// a veth pair instead of with racapture.go, because it was measured
-// before the mode existed in this file. The frame it produced is
-// pinned verbatim in v6signature_test.go and is decoded there by the
-// same ParseRA every other row uses.
-//
-// The wire half is derived from dnsmasq's own source and then measured,
-// which is why the two "to be measured" cells of the M7 design table
-// are now filled: dnsmasq sets the M and O flags at radv.c:537-541 from
-// whether the matching v6 context carries CONTEXT_DHCP and
-// CONTEXT_RA_STATELESS (radv.c:627-644), and it sets the prefix
-// option's A (autonomous) bit only when it is NOT serving addresses for
-// that prefix (`if (do_slaac) opt->flags |= 0x40`, radv.c:748). So
-// "managed" and "stateless" differ on the wire in TWO independent
-// places, not one.
-//
-// WHY THE PREFIX-OPTION A BIT IS IN THE SIGNATURE AT ALL. Without it,
-// stateless and slaac are separated only by the O flag -- one bit, in
-// the one byte a decoder is most likely to read from the wrong offset
-// (see ParseRA). With it, a decoder that reads Cur Hop Limit as the
-// flags byte still gets slaac and stateless wrong in a way this table
-// catches, because Cur Hop Limit is 64 in every one of these frames and
-// carries no information at all.
-//
-// The PIO prefix LENGTH is measured and recorded above but deliberately
-// NOT asserted: dnsmasq derives it from the range's extent (::10--::99
-// fits in a /120), so it is a fact about the fixture's pool bounds and
-// would go red on a pool resize that changes nothing this file is about.
+// dnsmasq sets M and O from CONTEXT_DHCP and CONTEXT_RA_STATELESS (radv.c:537-541, :627-644) and the A bit only when
+// not serving addresses for the prefix (radv.c:748). The PIO length follows the pool extent and is not asserted.
 type V6Signature struct {
-	// Pool is whether the DHCPv6 pool's start address appears in the
-	// server's log. LOCALE-PROOF: an address is an address in every
-	// language, and dnsmasq's surrounding prose ("IP range") is
-	// translated -- "IP-Bereich" under the German locale the
-	// integration runner speaks. Matching the prose would go quietly
-	// green-to-red on a locale nobody changed on purpose.
+	// Pool is whether the pool's start address is in the log; dnsmasq's "IP range" prose is translated ("IP-Bereich").
 	Pool bool
 	// RA is whether the server sends router advertisements at all.
 	RA bool
-	// Managed is the RA's M flag (RFC 4861 section 4.2): addresses are
-	// available over DHCPv6.
+	// Managed is the RA's M flag (RFC 4861 section 4.2).
 	Managed bool
-	// OtherConfig is the RA's O flag: other configuration is available
-	// over DHCPv6.
+	// OtherConfig is the RA's O flag (RFC 4861 section 4.2).
 	OtherConfig bool
-	// AutoPrefix is whether at least one Prefix Information option
-	// carries the A (autonomous address-configuration) bit, RFC 4861
-	// section 4.6.2 -- "this prefix can be used for stateless address
-	// autoconfiguration".
+	// AutoPrefix is whether a Prefix Information option carries the A bit (RFC 4861 section 4.6.2).
 	AutoPrefix bool
 }
 
-// Signature is the mode's expected signature. It replaces the
-// wantPool/wantRA pair, which could not separate stateless from slaac
-// and said so.
+// Signature is the mode's expected signature.
 func (m V6Mode) Signature() V6Signature {
 	switch m {
 	case V6Managed, V6ManagedSilent:
@@ -226,43 +104,25 @@ func (m V6Mode) Signature() V6Signature {
 	case V6NoRA:
 		return V6Signature{Pool: true, RA: false}
 	case V6ManagedExhausted:
-		// POOL IS FALSE AND THAT IS THE MODE, not an accident of which
-		// address the range names. A static-only range allocates
-		// nothing, so dnsmasq logs "static leases only on <addr>"
-		// where a pool would have been -- and the pool's start address
-		// never appears, because there is no pool. That one column is
-		// what separates this mode's signature from managed's and
-		// managed-silent's, which is why the drift matrix can tell it
-		// from both at fixture time and is exempted from neither.
+		// A static-only range logs "static leases only on <addr>" and never the pool start, which separates this mode (#989).
 		return V6Signature{Pool: false, RA: true, Managed: true, OtherConfig: true, AutoPrefix: false}
 	case V6AutoFallback:
-		// THE ONLY SIGNATURE WITH BOTH M AND THE A BIT, and that is the
-		// mode: a segment that offers DHCPv6 and also offers a prefix to
-		// form from. Every other RA mode carries one or the other.
 		return V6Signature{Pool: true, RA: true, Managed: true, OtherConfig: true, AutoPrefix: true}
 	}
 	return V6Signature{}
 }
 
-// V6Evidence is everything the fixture gathered about its own segment:
-// two facts read from the DHCP server's log and every router
-// advertisement seen on the wire.
+// V6Evidence is the server-log facts and every RA the fixture captured on its segment.
 type V6Evidence struct {
-	// PoolLogged is whether the DHCPv6 pool's start address was in the
-	// server's log.
+	// PoolLogged is whether the pool's start address was in the server's log.
 	PoolLogged bool
-	// RALogged is whether the server logged at least one RTR-ADVERT(
-	// line -- the server's own claim that it advertised.
+	// RALogged is whether the server logged an RTR-ADVERT( line.
 	RALogged bool
-	// Frames is every router advertisement the capture saw, which is
-	// the wire's answer to the same question. Both columns are
-	// required: the log says what the server believes it did, the wire
-	// says what left the interface.
+	// Frames is every RA the capture saw.
 	Frames []RAFrame
 }
 
-// Observed reduces the evidence to a signature. With no frames the
-// three RA fields are false, which is the no-RA row.
+// Observed reduces the evidence to a signature; with no frames the RA fields are false.
 func (ev V6Evidence) Observed() V6Signature {
 	s := V6Signature{Pool: ev.PoolLogged, RA: ev.RALogged && len(ev.Frames) > 0}
 	for _, f := range ev.Frames {
@@ -281,19 +141,7 @@ func (ev V6Evidence) Observed() V6Signature {
 	return s
 }
 
-// V6ModeNamesIn returns the modes named in s as WHOLE names, never as a
-// fragment of a longer one.
-//
-// It exists because "managed" is a prefix of "managed-silent", so
-// `strings.Contains(msg, "managed")` is satisfied by a message that
-// names only managed-silent. The drift matrix's whole diagnosis is the
-// pair it names, and a refusal that names the wrong half of the pair
-// while passing the check is worse than one that names neither.
-//
-// A name counts only when neither neighbouring byte could belong to a
-// mode name -- every mode name is lower-case ASCII and hyphens -- so
-// the longer name wins wherever the two overlap, without the caller
-// having to sort by length or know which names are prefixes of which.
+// V6ModeNamesIn returns the modes named in s as whole names, since "managed" prefixes "managed-silent".
 func V6ModeNamesIn(s string) []V6Mode {
 	var out []V6Mode
 	for _, m := range V6Modes() {
@@ -333,36 +181,12 @@ func V6ModeNamed(s string, m V6Mode) bool {
 	return false
 }
 
-// V6EvidenceSettled reports whether ev can still change into a
-// different verdict if the observer keeps watching.
+// V6EvidenceSettled reports whether one RA has arrived, after which the verdict cannot change.
 //
-// It is the stopping rule for the fixture's evidence loop, and it lives
-// here rather than beside that loop because it is the rule the loop got
-// wrong. Time turns an absence into a presence and never the reverse,
-// so an observation that merely DISAGREES with the mode under test is
-// not finished: the presence that would have agreed may still be in
-// flight. Stopping there is not just slow-but-safe in reverse -- the
-// evidence is also the refusal's message, so a segment cut short at
-// 370 ms was reported as "answers as nora" when it was a perfectly
-// ordinary managed segment whose advertisement had not landed yet
-// (run 33994533077).
-//
-// One advertisement settles it. A second carries the same flags, the
-// same prefix and the same options as the first; nothing about the
-// wire column can move afterwards. Nothing settles a segment that has
-// not advertised, which is why the no-RA mode alone spends its whole
-// window.
+// Stopping on disagreement reported an ordinary managed segment as nora at 370 ms (run 33994533077, #911).
 func V6EvidenceSettled(ev V6Evidence) bool { return len(ev.Frames) > 0 }
 
-// ClassifyV6Segment names every mode whose signature the evidence
-// matches. It returns more than one when two modes are genuinely
-// indistinguishable from outside (managed and managed-silent are, until
-// a client speaks), and none when the evidence matches no mode at all.
-//
-// It exists so a failure message can say WHICH mode the segment is in
-// rather than only that it is not the one asked for. "started as
-// managed, the segment answers as slaac" is a diagnosis; "mode check
-// failed" is a bug report somebody else has to reproduce.
+// ClassifyV6Segment names every mode whose signature the evidence matches.
 func ClassifyV6Segment(ev V6Evidence) []V6Mode {
 	got := ev.Observed()
 	var out []V6Mode
@@ -374,16 +198,7 @@ func ClassifyV6Segment(ev V6Evidence) []V6Mode {
 	return out
 }
 
-// V6IndistinguishableModes returns every unordered pair of distinct
-// modes whose signatures are equal -- the pairs no fixture-time check
-// can separate, whatever it reads.
-//
-// It is DERIVED from the signature table rather than written down
-// beside it. The drift matrix exempts exactly the pairs this returns,
-// so a mode added later whose signature collides with an existing one
-// is exempted by this function and named by the test that pins its
-// size, instead of quietly passing a matrix that hand-lists the one
-// collision we knew about.
+// V6IndistinguishableModes returns every unordered pair of distinct modes with equal signatures.
 func V6IndistinguishableModes() [][2]V6Mode {
 	var out [][2]V6Mode
 	modes := V6Modes()
@@ -397,13 +212,7 @@ func V6IndistinguishableModes() [][2]V6Mode {
 	return out
 }
 
-// V6ModeFindings is the fixture's verdict: empty when the evidence says
-// the segment is in the mode it was started as, one line per
-// disagreement otherwise.
-//
-// The first finding always names BOTH the mode asked for and the mode
-// the evidence matches, because that pair is the whole diagnosis and
-// the drift matrix asserts on it.
+// V6ModeFindings is the fixture's verdict, naming the requested and the matched mode first; empty means it agrees.
 func V6ModeFindings(mode V6Mode, ev V6Evidence) []string {
 	want, got := mode.Signature(), ev.Observed()
 	if want == got {
@@ -453,37 +262,20 @@ func V6ModeFindings(mode V6Mode, ev V6Evidence) []string {
 	return out
 }
 
-// --- the wire -----------------------------------------------------------
-
-// RAFrame is one captured router advertisement, reduced to what the
-// mode signature turns on.
+// RAFrame is one captured router advertisement.
 type RAFrame struct {
 	At time.Time
-	// Raw is the frame exactly as it came off the wire. It is carried
-	// so a lane run can print the bytes the decoder was given, which
-	// is where the verbatim frames the fast-lane tests are pinned to
-	// come from -- a decoder pinned to bytes no fixture in this repo
-	// produces is a decoder tested against nothing (2026-09-05: the
-	// first set of pinned frames advertised a /120 prefix with
-	// infinite lifetimes, because they were captured with an argv this
-	// fixture does not use; the lane emits /64 and 1800s).
+	// Raw is the frame as captured. Frames pinned on 2026-09-05 from another argv advertised a /120 prefix with infinite
+	// lifetimes; the lane emits /64 and 1800s (#911).
 	Raw []byte
-	// SourceMAC is the ethernet source. A segment with two routers on
-	// it is a segment whose mode is whichever advertisement arrived
-	// last, so a test that finds two distinct sources here has learned
-	// something no flag comparison would have told it.
+	// SourceMAC is the ethernet source.
 	SourceMAC net.HardwareAddr
-	// CurHopLimit is carried so a test can prove the flags were NOT
-	// read from this byte: it is 64 in every frame this fixture emits,
-	// and 64 is 0x40, which decodes as "O set, M clear" -- the
-	// stateless answer, for every mode.
+	// CurHopLimit is 64 (0x40) in every fixture frame, which decodes as "O set, M clear" if read as the flags byte.
 	CurHopLimit uint8
-	// Managed is the M flag, OtherConfig the O flag (RFC 4861 4.2).
+	// Managed is the M flag, OtherConfig the O flag (RFC 4861 section 4.2).
 	Managed     bool
 	OtherConfig bool
-	// RouterLifetime is the advertisement's router lifetime. Zero means
-	// "not a default router", which is a different segment from an
-	// unadvertised one and worth being able to tell apart.
+	// RouterLifetime is the router lifetime; zero means not a default router.
 	RouterLifetime time.Duration
 	Prefixes       []RAPrefix
 }
@@ -495,26 +287,12 @@ type RAPrefix struct {
 	// OnLink is the L bit, Autonomous the A bit.
 	OnLink     bool
 	Autonomous bool
-	// ValidLifetime and PreferredLifetime are the option's two
-	// lifetimes IN SECONDS, exactly as they sit on the wire, and
-	// RAInfiniteLifetime is the value that means "never expires".
-	//
-	// SECONDS AND NOT time.Duration, which is what RouterLifetime next
-	// door uses. RFC 4861 section 4.6.2 spells infinity as
-	// 0xFFFFFFFF, and a Duration cannot hold that as anything but a
-	// number of years indistinguishable from a router that really
-	// advertised 136 of them. The distinction is the whole of what a
-	// deprecation test reads: a preferred lifetime of 0 and a valid
-	// lifetime of infinity are the two ends of the same field, and an
-	// address carrying them is deprecated and permanent at once.
+	// ValidLifetime and PreferredLifetime are wire seconds, since RFC 4861 section 4.6.2 spells infinity 0xFFFFFFFF (#819).
 	ValidLifetime     uint32
 	PreferredLifetime uint32
 }
 
-// RAInfiniteLifetime is RFC 4861 section 4.6.2's "infinity" in both
-// lifetime fields of a Prefix Information option. The kernel spells the
-// same thing as a zero lifetime in IFA_CACHEINFO, which is why the two
-// are never compared without one of them being converted.
+// RAInfiniteLifetime is RFC 4861 section 4.6.2's infinity; the kernel spells it as zero in IFA_CACHEINFO (#819).
 const RAInfiniteLifetime uint32 = 0xFFFFFFFF
 
 func (f RAFrame) String() string {
@@ -553,26 +331,8 @@ func raLifetimeString(secs uint32) string {
 	return fmt.Sprintf("%ds", secs)
 }
 
-// The offsets ParseRA reads, spelled out because getting one of them
-// wrong is the failure this decoder is most exposed to and the wrong
-// answer is a plausible one rather than a crash.
-//
-// RFC 4861 section 4.2 lays the advertisement out as:
-//
-//	 0                   1                   2                   3
-//	 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
-//	+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-//	|     Type      |     Code      |          Checksum             |
-//	+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-//	| Cur Hop Limit |M|O|  Reserved |       Router Lifetime         |
-//	+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-//
-// So the flags are the byte AFTER Cur Hop Limit -- ICMPv6 payload
-// offset 5, not 4 -- and M is 0x80, O is 0x40. Offset 4 is Cur Hop
-// Limit, which dnsmasq sets to 64 = 0x40 on every frame, so a decoder
-// off by one byte reports "O set, M clear" for MANAGED, STATELESS and
-// SLAAC alike and only the slaac row goes red. That is why RAFrame
-// carries CurHopLimit and why the fast-lane test asserts on it.
+// RFC 4861 section 4.2: the flags byte is ICMPv6 offset 5, after Cur Hop Limit at 4; M is 0x80, O is 0x40. dnsmasq
+// sets Cur Hop Limit to 64, so a decoder one byte off reads "O set, M clear" for every mode (#911).
 const (
 	ethHeaderLen  = 14
 	ipv6HeaderLen = 40
@@ -587,27 +347,12 @@ const (
 	raOptPrefixInfo     = 3
 	raPrefixFlagOnLink  = 0x80
 	raPrefixFlagAutonom = 0x40
-	// RFC 4861 section 4.6.2 lays the Prefix Information option out as
-	// type, length, prefix length, flags, then the two 32-bit
-	// lifetimes, then 4 reserved bytes, then the prefix. So valid is
-	// at offset 4 and preferred at 8, and the prefix at 16, which is
-	// where the decoder already reads it.
+	// RFC 4861 section 4.6.2: valid lifetime at option offset 4, preferred at 8, prefix at 16.
 	raPrefixValidOffset     = 4
 	raPrefixPreferredOffset = 8
 )
 
-// ParseRA decodes an ethernet frame carrying an ICMPv6 Router
-// Advertisement. Anything else is dropped: this instrument answers one
-// question, and a frame it half-understands is worse than one it
-// refuses.
-//
-// It does NOT walk IPv6 extension headers. A router advertisement is
-// sent with hop limit 255 and, in every implementation this fixture
-// runs against, ICMPv6 directly after the fixed header; a frame with an
-// extension header is dropped rather than mis-parsed, which is the safe
-// direction (an advertisement missed reads as absence, and absence is
-// only ever asserted after a window that a present advertisement would
-// have filled). Named here rather than claimed away.
+// ParseRA decodes an ethernet frame carrying an ICMPv6 RA and drops anything else, including extension headers.
 func ParseRA(b []byte) (RAFrame, bool) {
 	if len(b) < ethHeaderLen+ipv6HeaderLen+raOptionOffset {
 		return RAFrame{}, false
@@ -656,97 +401,13 @@ func ParseRA(b []byte) (RAFrame, bool) {
 	return f, true
 }
 
-// --- dnsmasq's own advertisement schedule --------------------------------
-
-// The constants dnsmasq schedules router advertisements by, read from
-// its source at 2.91 (`src/radv.c`), so the fixture's absence window is
-// DERIVED from the server's behaviour rather than set to a number that
-// happened to work.
-//
-//	ra_start_unsolicited(now, NULL):     ra_time = now + rand16()/13000
-//	                                     -> 0 .. 5 s   (radv.c:135)
-//	ra_start_unsolicited(now, context):  ra_time = now + 1  (radv.c:129)
-//	new_timeout, within 60 s of start:   now + 5 + rand16()/4400
-//	                                     -> 5 .. 19 s  (radv.c:977)
-//	new_timeout, after that:             3/4..1 x MaxRtrAdvInterval,
-//	                                     default 600 s (radv.c:981, :999)
-//
-// WHICH BRANCH THIS FIXTURE IS ON, and it is not the one the first
-// version of this comment named. `ra_init` sets the 0..5 s draw at
-// startup, but for a plain (non-template, non-constructed) range --
-// which is every range this fixture uses -- the startup address
-// enumeration reaches `dhcp6.c:715` the first time it finds the
-// interface, "First time found, do fast RA", and calls
-// `ra_start_unsolicited(now, context)`. That is the `now + 1` branch,
-// and it OVERWRITES the draw before the draw can ever fire. The 0..5 s
-// arithmetic is real code that this configuration does not execute.
-//
-// MEASURED, 99 observations, both exits of `send_alarm`
-// (`dnsmasq.c:1371-1379`) represented:
-//
-//	97 x  0.931 s .. 1.041 s  alarm(1) was armed and delivered
-//	 2 x  13 ms and 18 ms     the cached `now` had already reached
-//	                          ra_time when send_alarm ran, so it took
-//	                          the "alarm(0) doesn't do what we want"
-//	                          path and posted EVENT_ALARM immediately
-//
-// Both of those are the SAME schedule branch. The sub-20 ms pair is not
-// a second draw; it is the alarm arriving without a timer, which is the
-// only other exit send_alarm has. Nothing landed between 18 ms and
-// 0.931 s, and nothing landed above 1.041 s -- a uniform 0..5 s draw
-// could not produce that, which is the observation that rules the draw
-// out from the data as well as from the source.
-//
-// THE POPULATION, so the next reader can recount it rather than trust
-// it. Two parts, and every number below is a count of lines, not a
-// recollection:
-//
-// 60 consecutive bring-ups off the lane, this fixture's exact argv,
-// one dnsmasq per bring-up, first frame taken from an AF_PACKET capture
-// opened before the server started: min 0.931 s, max 0.971 s, no
-// outlier. None of these overshoot the 1 s schedule, because dnsmasq's
-// `now + 1` fires at a second boundary that can fall less than a second
-// after exec.
-//
-// 39 on the lane: every "first ... after the server started" line the
-// branch's Integration runs had logged up to and including 34001581367,
-// four per run from the mode contract test and one from the
-// vantage-point test. That run is where the population is CLOSED, and
-// the closure is stated because it has to be: every later run of this
-// branch -- including the one that carries this comment -- adds five
-// more observations, so a total written without a cut-off is false the
-// moment it is pushed. Ten runs, named, one grep each:
-//
-//	33994533077  n=1   max 1.018 s   only the vantage-point test logged
-//	                                 a delay at that head
-//	33995361430  n=5   max 1.019 s
-//	33996052773  n=5   max 1.041 s   the largest overshoot anywhere
-//	33996650903  n=3   max 1.026 s   MUT-A: managed had no --enable-ra,
-//	                                 so that mode and the vantage-point
-//	                                 test logged no delay
-//	33997007028  n=0   --            MUT-B: the constructor's assertion,
-//	                                 and with it the wait, was removed;
-//	                                 the capture was read 80 ms in
-//	33997353467  n=5   max 1.032 s   holds the 18 ms frame
-//	33997868882  n=5   max 1.019 s   holds the 13 ms frame
-//	34000578906  n=5   max 1.018 s
-//	34000948877  n=5   max 1.025 s
-//	34001581367  n=5   max 1.020 s
-//
-// 1+5+5+3+0+5+5+5+5+5 = 39, and 60 + 39 = 99, which is the total this
-// block, `v6modes.go` and the durations header all carry. The four
-// mutant heads stay in the population because none of them changed
-// dnsmasq's argv for a mode that logged a delay: MUT-A only silenced
-// modes -- they logged nothing rather than something wrong -- MUT-B
-// removed the wait, and MUT-C and MUT-D touched the capture's binding
-// and its `since` filter, neither of which moves the server's
-// schedule.
-//
-// The gaps between LATER advertisements do exercise `rand16()`, and
-// they spread as the source says: 8, 12, 12, 15, 19 s and 5, 5, 18, 18
-// s over two 70 s captures, against `new_timeout`'s 5..19 s. So the
-// generator is not degenerate; the first advertisement simply is not
-// drawn from it.
+// dnsmasq 2.91's RA schedule (#911): ra_start_unsolicited(now, NULL) draws 0..5 s (radv.c:135), (now, context)
+// fires at now+1 (radv.c:129), new_timeout within 60 s is 5..19 s (radv.c:977), then 3/4..1 x 600 s (radv.c:981).
+// Every range here reaches dhcp6.c:715 "First time found, do fast RA", so the now+1 branch overwrites the draw.
+// Measured 99 first RAs: 60 off the lane (0.931..0.971 s) and 39 on lane runs 33994533077..34001581367; 97 landed
+// at 0.931..1.041 s and 2 at 13 and 18 ms, where send_alarm took its alarm(0) exit (dnsmasq.c:1371-1379). Later gaps
+// were 5..19 s as new_timeout says. Lane runs (n): 33994533077 (1), 33995361430 (5), 33996052773 (5), 33996650903 (3),
+// 33997007028 (0), 33997353467 (5, the 18 ms frame), 33997868882 (5, the 13 ms frame), 34000578906, 34000948877, 34001581367 (5 each).
 const (
 	dnsmasqRand16Max       = 65535
 	dnsmasqFirstRADivisor  = 13000
@@ -754,83 +415,24 @@ const (
 	dnsmasqShortPeriodDiv  = 4400
 )
 
-// DnsmasqFirstRAUpperBound is dnsmasq's own worst case for the delay
-// from process start to the first unsolicited router advertisement,
-// over BOTH branches: the 0..5 s draw at radv.c:135 dominates the
-// fixed 1 s at radv.c:129, so the draw is the bound.
-//
-// This fixture is measured to be on the 1 s branch every time. The
-// bound is still taken from the draw, because what makes the draw
-// unreachable is that the bridge address is already up when dnsmasq
-// starts -- a property of awaitNoTentativeAddr, three hundred lines
-// away, that no compiler enforces. A bound that holds only while a
-// neighbouring function keeps a promise is not a bound.
+// DnsmasqFirstRAUpperBound is dnsmasq's worst first-RA delay over both branches, the 0..5 s draw (radv.c:135).
 func DnsmasqFirstRAUpperBound() time.Duration {
 	return time.Duration(dnsmasqRand16Max/dnsmasqFirstRADivisor) * time.Second
 }
 
-// firstRASlop is what the fixture allows on top of dnsmasq's own bound
-// for everything the source cannot account for: fork and exec, config
-// parse, the netlink enumeration, and SIGALRM delivery on a loaded
-// runner.
-//
-// dnsmasq's schedule is exact in its own integer-second clock, so a
-// bring-up should sit at or below its scheduled second and the
-// overshoot is the slop. The largest overshoot in the 99 observations
-// above is 41 ms -- 1.041 s against a 1 s schedule, run 33996052773,
-// which is the run whose maximum that is; every other run's maximum is
-// 1.032 s or less, and the 60 off-lane bring-ups top out at 0.971 s and
-// overshoot nothing. One second is twenty-four times the largest
-// overshoot, and it is a round number rather than a percentile because
-// a percentile of 99 samples on two machines is not a distribution.
+// Covers fork, exec, config parse and SIGALRM delivery: the largest overshoot of 99 was 41 ms (run 33996052773, #911).
 const firstRASlop = 1 * time.Second
 
-// V6NoRAWindow is how long the fixture must watch a segment before it
-// may conclude that no router advertisement is coming.
-//
-// It is twice RABudget, and the factor is the margin
-// for everything between dnsmasq deciding to send and the capture
-// recording the frame -- process scheduling on a loaded runner, and the
-// fixture's own readiness poll, which runs before the window starts.
-// Written as a derivation and not as a literal because the failure this
-// window guards is EXACTLY a window shorter than the interval: the
-// no-RA mode would then pass because it did not wait, which is a gate
-// with one possible verdict dressed as evidence.
+// V6NoRAWindow is twice RABudget, how long the fixture watches before concluding no RA is coming.
 func V6NoRAWindow() time.Duration {
 	return 2 * RABudget()
 }
 
-// RABudget is how long the fixture waits for an advertisement it
-// EXPECTS.
-//
-// It is dnsmasq's own bound plus the slop, both derived above, and it
-// is not a literal. The literal it replaces was five seconds, which
-// happened to equal DnsmasqFirstRAUpperBound exactly -- a constant with
-// no margin at all against the bound it was being compared to, standing
-// on a measurement ("0.950 s .. 0.983 s every time") that the lane
-// falsified twice in the very run the record cited.
-//
-// A wait that expires early does not report "slow"; it reports the
-// wrong MODE, because a segment with no advertisement in hand is a
-// segment that classifies as nora. That is the failure this number
-// exists to prevent, and the reason it follows from the source instead
-// of from the fastest bring-ups anyone happened to run.
+// RABudget is how long the fixture waits for an expected RA; an early expiry reads as the nora mode.
 func RABudget() time.Duration { return DnsmasqFirstRAUpperBound() + firstRASlop }
 
-// --- the exchange --------------------------------------------------------
-
-// dnsmasq's two message-name print tables, transcribed from the source
-// the runner's binary is built from. MEASURED 2026-09-06 against
-// dnsmasq 2.91 -- the version the lane logs from its own
-// `dnsmasq --version` probe -- by listing every `"DHCP..."` literal in
-// each file:
-//
-//	grep -oE '"DHCP[A-Z-]+"' src/rfc2131.c | sort -u   (the v4 path)
-//	grep -oE '"DHCP[A-Z-]+"' src/rfc3315.c | sort -u   (the v6 path)
-//
-// and those two files are the only ones in src/ that contain such a
-// literal at all, so the tables below are the whole population and not
-// a sample of it.
+// dnsmasq 2.91's message-name tables, measured 2026-09-06 as every "DHCP..." literal in src/rfc2131.c (v4) and
+// src/rfc3315.c (v6), the only two files holding one (#911).
 var dnsmasqV4MessageNames = []string{
 	"DHCPACK",
 	"DHCPDECLINE",
@@ -855,37 +457,11 @@ var dnsmasqV6MessageNames = []string{
 	"DHCPSOLICIT",
 }
 
-// DnsmasqTablesTranscribedFrom is the dnsmasq version the two tables
-// above were read out of, and it is the premise the whole derivation
-// rests on: v6-minus-v4 is a statement about the message names ONE
-// dnsmasq prints.
-//
-// Round 2's record claimed the lane "asserts" this version. It logged
-// it. The difference matters because the failure a version change
-// produces is silent in the safe-looking direction: 2.92 adding or
-// renaming a v6 message name drops that name out of V6OnlyDHCPTokens(),
-// so SLAAC's must-NOT column quietly stops forbidding it and no test
-// says anything. The runner has moved before -- 2.92rel2 on 2026-08-27,
-// 2.91 on 2026-09-05.
-//
-// The ruling: a different version is a RED, in the fixture, naming the
-// version and the premise. It is not a "stated bound", because a bound
-// nobody executes is what round 2 shipped. The cost is bounded too --
-// this can only fire on a deliberate runner-image change, and the
-// message says what to redo -- and the alternative is a derivation that
-// keeps returning an answer about a program the lane stopped running.
+// DnsmasqTablesTranscribedFrom is the dnsmasq version the tables were read from; the runner had 2.92rel2 on 2026-08-27
+// and 2.91 on 2026-09-05, and another version is red in the fixture (#911).
 const DnsmasqTablesTranscribedFrom = "2.91"
 
-// DnsmasqVersionFindings reports how the `dnsmasq --version` probe
-// disagrees with the version the tables were transcribed from. Empty
-// means it agrees.
-//
-// It takes the probe's output rather than running the probe so both of
-// its outcomes are driven in the fast lane, including the one the lane
-// cannot produce: an unreadable probe. That one is a finding too. The
-// probe's own error path returns a sentence rather than an error, so
-// "could not read dnsmasq --version" would otherwise parse as "no
-// version found" and, under any rule keyed on a mismatch, pass.
+// DnsmasqVersionFindings reports how the `dnsmasq --version` probe disagrees with DnsmasqTablesTranscribedFrom.
 func DnsmasqVersionFindings(probe string) []string {
 	got, ok := parseDnsmasqVersion(probe)
 	if !ok {
@@ -907,8 +483,7 @@ func DnsmasqVersionFindings(probe string) []string {
 	return nil
 }
 
-// parseDnsmasqVersion pulls the version out of `dnsmasq --version`'s
-// first line, which reads "Dnsmasq version 2.91  Copyright ...".
+// The first line reads "Dnsmasq version 2.91  Copyright ...".
 func parseDnsmasqVersion(probe string) (string, bool) {
 	fields := strings.Fields(probe)
 	for i, f := range fields {
@@ -923,21 +498,7 @@ func parseDnsmasqVersion(probe string) (string, bool) {
 	return "", false
 }
 
-// V6OnlyDHCPTokens is the DERIVED set: printed by dnsmasq's v6 path and
-// by no v4 path. It is computed from the two tables above and is never
-// written out, because writing it out is what went wrong.
-//
-// This fixture runs a v4 --dhcp-range in EVERY mode, so a token the v4
-// path also prints says nothing about the v6 half. Round 1 hand-listed
-// this set, got DHCPDECLINE and DHCPRELEASE wrong, and guarded the list
-// with a test that checked the single literal "DHCPREQUEST" -- a guard
-// keyed on a spelling reproduces its own silence, and this one did: the
-// comment it guarded claimed DHCPREQUEST was "the one" such name when
-// the intersection is three. The cost was real and not hypothetical: an
-// M7d scenario on a SLAAC segment whose v4 half hits the RFC 5227
-// conflict path makes the plugin send a v4 DHCPDECLINE, and the SLAAC
-// must-NOT column would have failed it for a v6 half that did exactly
-// what SLAAC requires.
+// V6OnlyDHCPTokens is derived as the v6 table minus the v4 table, since every mode runs a v4 range too.
 func V6OnlyDHCPTokens() []string {
 	v4 := make(map[string]bool, len(dnsmasqV4MessageNames))
 	for _, n := range dnsmasqV4MessageNames {
@@ -952,11 +513,7 @@ func V6OnlyDHCPTokens() []string {
 	return out
 }
 
-// DnsmasqAmbiguousDHCPTokens is the complement V6OnlyDHCPTokens throws
-// away: printed by both paths, and therefore unusable as evidence about
-// either half of a dual-stack segment. It is returned rather than
-// implied so a test can drive the guard with the real offenders instead
-// of with a token somebody thought was one.
+// DnsmasqAmbiguousDHCPTokens is the tokens both dnsmasq paths print.
 func DnsmasqAmbiguousDHCPTokens() []string {
 	v4 := make(map[string]bool, len(dnsmasqV4MessageNames))
 	for _, n := range dnsmasqV4MessageNames {
@@ -971,37 +528,13 @@ func DnsmasqAmbiguousDHCPTokens() []string {
 	return out
 }
 
-// v6ExchangeContract is the client-dependent half of the mode
-// signature: what the server's log must and must not say once a client
-// has spoken. The client-INdependent half (the pool line, RTR-ADVERT)
-// is checked at fixture construction and is not repeated here.
-//
-// MEASURED 2026-09-05, dnsmasq 2.91, one user namespace per mode, a
-// minimal DHCPv6 sender in the peer namespace; the captured logs are
-// pasted verbatim into v6signature_test.go and are what the fast lane
-// drives this table against.
-//
-// Two cells differ from the M7 design table, both measured:
-//
-//   - stateless does NOT log DHCPREPLY. dnsmasq answers an
-//     Information-request (the client receives message type 7) but
-//     logs only the DHCPINFORMATION-REQUEST line -- `log6_quiet` is
-//     called once, at rfc3315.c:1144, and there is no reply-side call
-//     on that path. Requiring DHCPREPLY here would fail every stateless
-//     scenario M7d writes, against a server that behaved correctly.
-//   - managed does not require DHCPREQUEST, for the v4 collision above.
-//
-// The `ignored` needle for managed-silent is a TRANSLATED string, not a
-// protocol token: dnsmasq writes it as `_("ignored")` (rfc3315.c:652)
-// and po/de.po:2083 renders it "ignoriert". It is safe here only
-// because withCLocale pins every fixture server to LC_ALL=C, so the
-// dependency is on that helper and is named rather than assumed.
+// Measured 2026-09-05, dnsmasq 2.91; the logs are pinned in v6signature_test.go (#911). Stateless logs no DHCPREPLY:
+// log6_quiet is called once at rfc3315.c:1144. "ignored" is gettext (rfc3315.c:652, po/de.po:2083 "ignoriert") and
+// needs withCLocale's LC_ALL=C.
 type v6ExchangeRule struct {
 	must    []string
 	mustNot []string
-	// mustLine is a set of substrings that have to appear on ONE line
-	// together, which is a different claim from each appearing
-	// somewhere.
+	// mustLine is substrings that must appear on one line together.
 	mustLine []string
 }
 
@@ -1025,69 +558,22 @@ var v6ExchangeContract = map[V6Mode]v6ExchangeRule{
 		mustNot:  []string{"DHCPADVERTISE", "DHCPREPLY"},
 	},
 	V6ManagedExhausted: {
-		// THE REFUSAL ITSELF IS NOT A NEEDLE. dnsmasq's "no addresses
-		// available" is passed through gettext (rfc3315.c:809) and
-		// comes back as "keine Adressen verfügbar" under the locale
-		// this project's own runner speaks -- MEASURED 2026-09-16,
-		// same run as the mode's own capture. What is locale-proof is
-		// the message type: an Advertise the server sent and a Reply
-		// it never sent, because a client that is refused at the
-		// Advertise never Requests.
+		// "no addresses available" is gettext (rfc3315.c:809), "keine Adressen verfügbar" on the runner's locale (measured
+		// 2026-09-16, #816); the message types are locale-proof.
 		must:    []string{"DHCPSOLICIT", "DHCPADVERTISE"},
 		mustNot: []string{"DHCPREPLY"},
 	},
 	V6AutoFallback: {
-		// The same pair managed-silent uses, and for the same reason:
-		// the client has to have SPOKEN and the server has to have said
-		// nothing back. What separates the two modes is the wire, not
-		// the log -- see the foreign-log exemptions in
-		// v6signature_test.go, which say so rather than hide it.
+		// Managed-silent's pair; the two modes differ on the wire, not in the log (#818).
 		mustLine: []string{"DHCPSOLICIT", "ignored"},
 		mustNot:  []string{"DHCPADVERTISE", "DHCPREPLY"},
 	},
 }
 
-// V6ContractFindings reports how an exchange contract disagrees with
-// what a contract on this dual-stack fixture is allowed to say. Empty
-// means it agrees.
+// V6ContractFindings reports how a contract breaks the dual-stack rules; empty means it agrees.
 //
-// It takes the table rather than reading the package-level one so its
-// own test can drive it with a contract that is WRONG in the specific
-// way round 1 was wrong -- a must-NOT column naming a token dnsmasq's
-// v4 path also prints -- instead of asserting that today's table is
-// today's table.
-//
-// It reads TWO of the three columns, and they carry OPPOSITE rules,
-// because they fail in opposite directions:
-//
-//	mustNot  fails RED. A token the v4 path also prints can fail a
-//	         mode for something its v6 half never did, so EVERY DHCP
-//	         token in the column has to be v6-only.
-//
-//	mustLine fails GREEN. It is a must, and it is the must that names
-//	         a whole line, so a v4 line of the same shape SATISFIES it
-//	         on a segment whose v6 half never spoke. dnsmasq's v4 path
-//	         writes exactly that shape: `log_packet("DHCPRELEASE", ...,
-//	         message, ...)` at rfc2131.c:1096 with message = _("ignored")
-//	         at rfc2131.c:1105. So AT LEAST ONE DHCP token in the line
-//	         has to be v6-only; the rest may be anything.
-//
-// The two are not the same rule with a sign flipped, and writing them
-// as one would be wrong in whichever direction it was written: "every
-// token v6-only" would reject `DHCPSOLICIT ... ignored` if a second,
-// ambiguous token were ever added to it, and "at least one v6-only"
-// would let DHCPDECLINE back into a must-NOT column beside a v6-only
-// neighbour.
-//
-// The must column is guarded from the other side instead, by
-// TestV6ExchangeFindings_AV4OnlyExchangeSatisfiesNoModeAndAccusesNone,
-// which builds a log out of dnsmasq's real v4 log LINES -- each name
-// with the `message` word the v4 path appends to it -- and requires
-// that it satisfies no mode. That is the same property stated as an
-// outcome rather than as a rule about a list, it catches an ambiguous
-// must-token without anyone deciding in advance which tokens are
-// ambiguous, and because those lines carry `ignored` it is a second
-// observer of the mustLine rule as well.
+// mustNot needs every DHCP token v6-only. mustLine needs at least one, since dnsmasq's v4 path logs
+// `log_packet("DHCPRELEASE", ..., message)` (rfc2131.c:1096) with message = _("ignored") (rfc2131.c:1105) (#911).
 func V6ContractFindings(contract map[V6Mode]v6ExchangeRule) []string {
 	v6only := make(map[string]bool)
 	for _, n := range V6OnlyDHCPTokens() {
@@ -1132,18 +618,9 @@ func anyV6Only(tokens []string, v6only map[string]bool) bool {
 	return false
 }
 
-// V6ExchangeFindings reports how the server's log disagrees with what
-// the mode says a completed client exchange looks like. Empty means it
-// agrees.
+// V6ExchangeFindings reports how the server log disagrees with the mode's exchange; empty means it agrees.
 //
-// THE BOUND, named rather than claimed away: for V6SLAAC the contract
-// is a must-NOT set and nothing else, because a SLAAC-only segment has
-// no DHCPv6 server to talk to and therefore nothing client-dependent to
-// require. So this function CANNOT distinguish "the client ran and
-// correctly said nothing" from "no client ran" in that mode, and it
-// returns no findings for an empty log. Every other mode's must-set
-// makes an empty log a finding, which is what makes the live negative
-// control in the fixture's contract test meaningful.
+// V6SLAAC has only a must-NOT set, so an empty log yields no findings in that mode (#911).
 func V6ExchangeFindings(mode V6Mode, log string) []string {
 	c, ok := v6ExchangeContract[mode]
 	if !ok {

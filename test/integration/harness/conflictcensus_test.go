@@ -9,15 +9,6 @@ import (
 	"testing"
 )
 
-// TestACDCensusFindings pins the gate behind the census (#551).
-//
-// The case that matters most is "the motivating run": one probe reached
-// a verdict and two could not run. Every naive formulation of this gate
-// passes that input, which is why it went unnoticed from #527 to #550
-// while the line printed the problem on every single run. The mechanism
-// underneath is now RFC 5227 in the DHCP library rather than the
-// chassis's datagram probe, so the counters are new; the property, and
-// every case below, is the one that was earned.
 func TestACDCensusFindings(t *testing.T) {
 	fatalCounters := func(fs []FloorFinding) []string {
 		var out []string
@@ -37,10 +28,7 @@ func TestACDCensusFindings(t *testing.T) {
 		allowedConf int32
 		conflictLog int      // conflicts visible in the log, scoped to this process
 		want        []string // fatal counters, in order
-		// baseline is the plugin's counters when THIS process started.
-		// nil means the plugin was started for this run, which is what
-		// every sharded lane gives us and what the coverage lane does
-		// not — it drives one plugin through both suites.
+		// baseline is the plugin's counters when this process started; nil means the plugin was started for this run.
 		baseline *HealthResponse
 	}{
 		{
@@ -52,16 +40,12 @@ func TestACDCensusFindings(t *testing.T) {
 			h:    &HealthResponse{ACDProbesSent: 4, LeasesObtained: 4, LeasesObtainedV4: 4},
 		},
 		{
-			// THE motivating run, #527 through #550. A gate that passes
-			// this is the gate we already had.
 			name:        "one probe out and two sends refused, none declared, fails",
 			h:           &HealthResponse{ACDProbesSent: 1, ACDARPSendFailures: 2, LeasesObtained: 3, LeasesObtainedV4: 3},
 			allowedSend: 0,
 			want:        []string{"acd_arp_send_failures"},
 		},
 		{
-			// A test that degrades the ARP socket on purpose declares
-			// it, so it is not a finding.
 			name:        "a declared deliberate refusal is not a finding",
 			h:           &HealthResponse{ACDProbesSent: 3, ACDARPSendFailures: 1, LeasesObtained: 4, LeasesObtainedV4: 4},
 			allowedSend: 1,
@@ -74,156 +58,81 @@ func TestACDCensusFindings(t *testing.T) {
 			want:        []string{"acd_arp_send_failures"},
 		},
 		{
-			// A shard that leased nothing has nothing to check. Failing
-			// here would make the verdict depend on how the partitioner
-			// balanced the run.
 			name: "a shard that leased no v4 address is not a failure",
 			h:    &HealthResponse{ACDProbesSent: 0, LeasesObtained: 0, LeasesObtainedV4: 0},
 		},
 		{
-			// Distinct from a refused send: nothing was even attempted.
 			name: "leases obtained but the check never ran fails",
 			h:    &HealthResponse{ACDProbesSent: 0, ACDARPSendFailures: 0, LeasesObtained: 6, LeasesObtainedV4: 6},
 			want: []string{"acd_probes_sent"},
 		},
 		{
-			// NEW, and the reason the never-ran gate needed rebuilding
-			// when the datagram probe went away: the check is now
-			// opt-out per network. A shard whose leases were all taken
-			// on conflict_check=off networks reaches zero probes on the
-			// operator's own instruction, and declares it.
 			name:        "declared conflict_check=off leases are not a never-ran finding",
 			h:           &HealthResponse{ACDProbesSent: 0, LeasesObtained: 3, LeasesObtainedV4: 3},
 			allowedUnpr: 3,
 			want:        nil,
 		},
 		{
-			// The widening's preservation control. Declaring SOME
-			// off-mode leases must not excuse the rest: one lease was
-			// taken on a network that was supposed to probe, and none
-			// did.
 			name:        "an undeclared lease among declared ones still fails",
 			h:           &HealthResponse{ACDProbesSent: 0, LeasesObtained: 4, LeasesObtainedV4: 4},
 			allowedUnpr: 3,
 			want:        []string{"acd_probes_sent"},
 		},
 		{
-			// And the allowance cannot manufacture a pass by exceeding
-			// the leases — the subtraction goes negative, which is not
-			// a finding, but neither is it a licence: there was nothing
-			// to check either way.
 			name:        "an over-declared allowance is still not a finding",
 			h:           &HealthResponse{ACDProbesSent: 0, LeasesObtained: 1, LeasesObtainedV4: 1},
 			allowedUnpr: 9,
 			want:        nil,
 		},
 		{
-			// A shard that leased nothing in either family reads as
-			// "nothing to check", not as a fault.
 			name: "a shard that leased nothing does not trip the never-ran case",
 			h:    &HealthResponse{ACDProbesSent: 0, ACDARPSendFailures: 0, LeasesObtained: 0, LeasesObtainedV4: 0},
 		},
 		{
-			// #881, AND THE CASE THIS GATE FAILED ON. leases_obtained is
-			// the SUM of the two families, and the premise the old
-			// comment carried — "leases_obtained is v4-only" — stopped
-			// being true when the counters split. RFC 5227's check is
-			// ARP: no DHCPv6 lease can ever produce a probe, so a shard
-			// whose only bind was a v6 one has an EMPTY domain for this
-			// gate and a non-zero sum.
-			//
-			// This is the post-restart shape from the FAMILY side: the
-			// plugin is recycled, recovery re-adopts a running endpoint
-			// whose lease is v6, its resumed client re-binds in the new
-			// process, and no CreateEndpoint ran here at all. Under the
-			// pre-fix guard: FATAL, on a run in which nothing was wrong.
-			// The v4 side of the same shape is the case two rows below,
-			// and it is NOT closed by this change.
+			// RFC 5227's check is ARP, so a v6 lease never produces a probe, while leases_obtained sums both families (#881).
 			name: "a v6 lease with no v4 lease is not a never-ran finding",
 			h:    &HealthResponse{ACDProbesSent: 0, ACDARPSendFailures: 0, LeasesObtained: 1, LeasesObtainedV4: 0},
 			want: nil,
 		},
 		{
-			// THE PRESERVATION CONTROL for the narrowing, and the half a
-			// change that simply deleted the operand would lose: one v4
-			// lease among the v6 ones, nothing probed, still fatal.
 			name: "a v4 lease alongside v6 ones still fails when nothing probed",
 			h:    &HealthResponse{ACDProbesSent: 0, ACDARPSendFailures: 0, LeasesObtained: 4, LeasesObtainedV4: 1},
 			want: []string{"acd_probes_sent"},
 		},
 		{
-			// PINNED OPEN, NOT CLOSED: the P-3 residual of #881, and the
-			// half the family narrowing does NOT reach. Written as a
-			// case so the tree says which of the two it is.
-			//
-			// The shape: the plugin is recycled, recovery adopts a live
-			// IPv4 endpoint, and the resumed client's DHCPACK binds, so
-			// leases_obtained_v4 moves. At Join the mode is
-			// ConflictAsync, and async binds first and probes after: the
-			// library arms a timer at uniform(0, PROBE_WAIT) (RFC 5227
-			// section 2.1) and the first ARP Probe leaves when it fires.
-			// A health read inside that window sees the lease and not
-			// the probe. Both counters here read BELOW the baseline,
-			// which is the restart itself.
-			//
-			// FATAL, deliberately. The counters carry no time, so this
-			// census cannot tell that window from a plugin that never
-			// probes at all — which is the fault the row exists to
-			// catch — and narrowing the domain any further would delete
-			// the check rather than fix it. If this verdict ever
-			// changes it has to change as a decision; this case is what
-			// makes that loud.
+			// Pinned open (#881): async conflict mode binds first and probes after a uniform(0, PROBE_WAIT) timer (RFC 5227
+			// section 2.1), and counters carry no time to tell that window from a plugin that never probes. Fatal by decision.
 			name:     "a v4 lease whose probe timer has not fired yet is STILL fatal (P-3)",
 			h:        &HealthResponse{ACDProbesSent: 0, ACDARPSendFailures: 0, LeasesObtained: 1, LeasesObtainedV4: 1},
 			baseline: &HealthResponse{ACDProbesSent: 9, ACDARPSendFailures: 0, LeasesObtained: 9, LeasesObtainedV4: 9},
 			want:     []string{"acd_probes_sent"},
 		},
 		{
-			// The v6 half does not leak into the domain through the
-			// BASELINE either. Both operands are deltas, so a baseline
-			// read from the sum would make a v6 bind look like a v4 one
-			// going backwards.
 			name:     "a v6 bind after the baseline does not enter the domain",
 			h:        &HealthResponse{ACDProbesSent: 2, LeasesObtained: 5, LeasesObtainedV4: 2},
 			baseline: &HealthResponse{ACDProbesSent: 2, LeasesObtained: 2, LeasesObtainedV4: 2},
 			want:     nil,
 		},
 		{
-			// THE reason the log is read at all. The plugin restarts
-			// mid-suite and its counters reset with it, so a conflict
-			// found before the restart leaves the counter at zero. The
-			// log does not reset. A counter-only gate reads this as a
-			// clean run — and a conflict is a container up on somebody
-			// else's address.
+			// The plugin's counters reset on a mid-suite restart and the log does not (#385).
 			name:        "counters clean but the log records conflicts still fails",
 			h:           &HealthResponse{ACDProbesSent: 2, LeasesObtained: 2, LeasesObtainedV4: 2},
 			conflictLog: 3,
 			want:        []string{"address_conflicts"},
 		},
 		{
-			// The counter can only under-report; the larger wins, and
-			// when the counter IS the larger there is nothing extra to
-			// say.
 			name:        "the counter agreeing with the log is not a finding",
 			h:           &HealthResponse{ACDProbesSent: 2, AddressConflicts: 4, LeasesObtained: 2, LeasesObtainedV4: 2},
 			conflictLog: 1,
 			want:        nil,
 		},
 		{
-			// A refused send recorded nowhere but the counter still
-			// means the check ran, so this is not "never invoked".
 			name:        "a refused send alone does not also raise the never-ran finding",
 			h:           &HealthResponse{ACDProbesSent: 0, ACDARPSendFailures: 2, LeasesObtained: 5, LeasesObtainedV4: 5},
 			allowedSend: 9,
 			want:        nil,
 		},
 		{
-			// THE coverage-lane bug. The main suite declared and caused
-			// one refusal, then exited; this process starts with an
-			// allowance of 0 against a plugin whose counter is still 1.
-			// Judged cumulatively that is an unexplained failure and the
-			// release PR goes red; judged against the baseline it is
-			// nothing to do with this process.
 			name:        "a refusal that predates this process is not ours",
 			h:           &HealthResponse{ACDProbesSent: 5, ACDARPSendFailures: 1, LeasesObtained: 5, LeasesObtainedV4: 5},
 			allowedSend: 0,
@@ -231,9 +140,6 @@ func TestACDCensusFindings(t *testing.T) {
 			want:        nil,
 		},
 		{
-			// The same baseline must not hide a NEW one. This is the
-			// direction that matters: a fix which only ever silences
-			// findings is not a fix.
 			name:        "a refusal after the baseline is still ours",
 			h:           &HealthResponse{ACDProbesSent: 5, ACDARPSendFailures: 2, LeasesObtained: 5, LeasesObtainedV4: 5},
 			allowedSend: 0,
@@ -241,11 +147,6 @@ func TestACDCensusFindings(t *testing.T) {
 			want:        []string{"acd_arp_send_failures"},
 		},
 		{
-			// Counters below the baseline mean the plugin restarted and
-			// reset. The current value is then already scoped to the
-			// restart, so it is used as-is. Clamping to zero here would
-			// report a clean run for one in which the plugin died — #385
-			// exactly.
 			name:        "a counter below the baseline is a restart, not a negative",
 			h:           &HealthResponse{ACDProbesSent: 1, ACDARPSendFailures: 2, LeasesObtained: 1, LeasesObtainedV4: 1},
 			allowedSend: 0,
@@ -253,17 +154,12 @@ func TestACDCensusFindings(t *testing.T) {
 			want:        []string{"acd_arp_send_failures"},
 		},
 		{
-			// The never-ran check has to be scoped too. Cumulatively the
-			// plugin has probed plenty; this process leased addresses and
-			// probed none of them, which is the blindness #551 is about.
 			name:     "the check not running in THIS process is still a finding",
 			h:        &HealthResponse{ACDProbesSent: 4, ACDARPSendFailures: 0, LeasesObtained: 7, LeasesObtainedV4: 7},
 			baseline: &HealthResponse{ACDProbesSent: 4, ACDARPSendFailures: 0, LeasesObtained: 4, LeasesObtainedV4: 4},
 			want:     []string{"acd_probes_sent"},
 		},
 		{
-			// Every fault is reported, not just the first: the run has
-			// unexplained refusals AND a conflict the counter lost.
 			name:        "faults are reported together, not just the first",
 			h:           &HealthResponse{ACDProbesSent: 2, ACDARPSendFailures: 3, LeasesObtained: 2, LeasesObtainedV4: 2},
 			allowedSend: 0,
@@ -271,38 +167,20 @@ func TestACDCensusFindings(t *testing.T) {
 			want:        []string{"acd_arp_send_failures", "address_conflicts"},
 		},
 		{
-			// The lane case. A conflict case staged two conflicts and
-			// declared them; a later test recycled the plugin, so the
-			// counter reset out from under the log. Nothing was
-			// dropped by the seam and nothing should be red.
 			name:        "staged conflicts the counter lost to a restart are declared, not red",
 			h:           &HealthResponse{ACDProbesSent: 6, LeasesObtained: 4, LeasesObtainedV4: 4},
 			allowedConf: 2,
 			conflictLog: 2,
 		},
 		{
-			// THE BOUNDARY, pinned as a boundary and not as a wish.
-			//
-			// Inside a declaring shard the row cannot tell "the counter
-			// lost a staged conflict to a plugin restart" from "the seam
-			// dropped it on the way to the counter": both are log=n,
-			// counter<n. This triple is the one review r1 finding 3
-			// measured, and its verdict is NO fatal finding. The
-			// property #524 is about is held here by the conflict cases'
-			// own counter assertions, not by this row; see
-			// AllowStagedConflicts. The case exists so that a later
-			// change to the row cannot move this boundary silently in
-			// either direction.
+			// Inside a declaring shard, a conflict lost to a restart and one the seam dropped both read log=n, counter<n; this row
+			// cannot tell them apart and the conflict cases' own counter assertions hold #524.
 			name:        "inside the declaration a dropped conflict is invisible to the row",
 			h:           &HealthResponse{ACDProbesSent: 3, LeasesObtained: 2, LeasesObtainedV4: 2},
 			allowedConf: 1,
 			conflictLog: 1,
 		},
 		{
-			// THE PRESERVATION CONTROL, and the reason the allowance is
-			// a subtraction rather than an exemption: one more conflict
-			// than the shard staged is still the seam dropping an
-			// event, which is #524 restored.
 			name:        "one conflict more than declared is still fatal",
 			h:           &HealthResponse{ACDProbesSent: 6, LeasesObtained: 4, LeasesObtainedV4: 4},
 			allowedConf: 2,
@@ -310,49 +188,29 @@ func TestACDCensusFindings(t *testing.T) {
 			want:        []string{"address_conflicts"},
 		},
 		{
-			// A declaration cannot make an UNDECLARED shard pass: with
-			// nothing staged the row is exactly what it was.
 			name:        "an undeclared conflict the counter never saw is fatal",
 			h:           &HealthResponse{ACDProbesSent: 6, LeasesObtained: 4, LeasesObtainedV4: 4},
 			conflictLog: 1,
 			want:        []string{"address_conflicts"},
 		},
 		{
-			// THE UNITS CONTROL, and it pins a subtraction this gate
-			// briefly had. A recovered endpoint's lease IS unprobed --
-			// MEASURED, run 34600486961 main-3: a shard whose last test
-			// recycled the plugin read leases_obtained_v4=1 and
-			// acd_probes_sent=0 on a process 1s old -- and the remedy
-			// is the declaration the causing test makes, not
-			// recovered_ok subtracted here. recovered_ok counts
-			// ENDPOINTS OF EITHER FAMILY; this domain is v4 leases. So
-			// recovered_ok on its own excuses nothing, and this case
-			// fails the moment the subtraction comes back.
+			// Measured, run 34600486961: a shard whose last test recycled the plugin read leases_obtained_v4=1 and
+			// acd_probes_sent=0 on a process 1 s old; recovered_ok counts endpoints of either family (#881).
 			name: "recovered_ok does not excuse an undeclared unprobed lease",
 			h:    &HealthResponse{ACDProbesSent: 0, LeasesObtained: 1, LeasesObtainedV4: 1, RecoveredOK: 1},
 			want: []string{"acd_probes_sent"},
 		},
 		{
-			// The same point at the scale that made it visible: three
-			// recovered endpoints, of which the v6-only ones can never
-			// have moved this domain, must not cancel a v4 lease that
-			// nothing probed for.
 			name: "recovered endpoints of another family cannot cancel a v4 miss",
 			h:    &HealthResponse{ACDProbesSent: 0, LeasesObtained: 1, LeasesObtainedV4: 1, RecoveredOK: 3},
 			want: []string{"acd_probes_sent"},
 		},
 		{
-			// And the declared shape of exactly that shard: the recycle
-			// test declares its one resumed lease, and the gate has
-			// nothing left to judge.
 			name:        "a declared resumed lease is not a never-ran finding",
 			h:           &HealthResponse{ACDProbesSent: 0, LeasesObtained: 1, LeasesObtainedV4: 1, RecoveredOK: 1},
 			allowedUnpr: 1,
 		},
 		{
-			// And the counter agreeing with the log is clean whether or
-			// not anything was declared — a declaration is a licence to
-			// under-report, never a requirement to.
 			name:        "the counter matching the log is clean with a declaration standing",
 			h:           &HealthResponse{ACDProbesSent: 6, LeasesObtained: 4, LeasesObtainedV4: 4, AddressConflicts: 2},
 			allowedConf: 2,
@@ -375,11 +233,7 @@ func TestACDCensusFindings(t *testing.T) {
 	}
 }
 
-// An absent counter is not a zero. If the plugin never published these,
-// the census cannot be judged, and reading <not reported> as 0 would
-// rebuild exactly the blindness this gate closes.
 func TestACDCensusFindingsAbsentCounter(t *testing.T) {
-	// A payload that publishes leases but neither census counter.
 	h := decodeHealth(t, `{"healthy":true,"leases_obtained":3}`)
 
 	got := ACDCensusFindings(h, 0, 0, 0, 0, nil)
@@ -394,14 +248,6 @@ func TestACDCensusFindingsAbsentCounter(t *testing.T) {
 	}
 }
 
-// The domain operand's own absence, driven separately from the two ACD
-// counters above.
-//
-// A payload carrying both ACD counters and NOT leases_obtained_v4 is
-// what an older plugin publishes, and reading its absence as zero
-// empties the gate's domain: probes==0 with checked==0 is no finding,
-// so every run would pass in silence. That is the same defeat as
-// reading an absent probe count as zero, one operand over (#881).
 func TestACDCensusFindingsAbsentDomainCounter(t *testing.T) {
 	h := decodeHealth(t, `{"healthy":true,"acd_probes_sent":0,"acd_arp_send_failures":0,"leases_obtained":3}`)
 
@@ -418,8 +264,6 @@ func TestACDCensusFindingsAbsentDomainCounter(t *testing.T) {
 	}
 }
 
-// The allowances are additive and survive being declared from more than
-// one place, because more than one test may legitimately cause them.
 func TestACDAllowancesAccumulate(t *testing.T) {
 	beforeSend, beforeUnpr := AllowedARPSendFailures(), AllowedUnprobedLeases()
 	t.Cleanup(func() {
@@ -438,16 +282,11 @@ func TestACDAllowancesAccumulate(t *testing.T) {
 	if got, want := AllowedUnprobedLeases(), beforeUnpr+4; got != want {
 		t.Errorf("AllowedUnprobedLeases() = %d, want %d", got, want)
 	}
-	// The two must not be one counter under two names: declaring an
-	// off-mode lease would then quietly excuse a refused send.
 	if got, want := AllowedARPSendFailures(), beforeSend+3; got != want {
 		t.Errorf("AllowUnprobedLeases moved the send-failure allowance: %d, want %d", got, want)
 	}
 }
 
-// ConflictsInLog must count every line the plugin writes at an
-// address_conflicts increment — there are two, and counting only the
-// obvious one under-reports exactly the runs worth failing.
 func TestConflictsInLog(t *testing.T) {
 	cases := []struct {
 		name string
@@ -474,9 +313,6 @@ func TestConflictsInLog(t *testing.T) {
 			want: 3,
 		},
 		{
-			// One line must not be counted twice by matching both
-			// patterns. The loop breaks on the first hit; this is what
-			// notices if that break is removed.
 			name: "a line is counted once even if both patterns were to match",
 			log:  "level=error msg=\"" + conflictProbeMsg + " / " + conflictHeldMsg + "\"\n",
 			want: 1,
@@ -491,21 +327,7 @@ func TestConflictsInLog(t *testing.T) {
 	}
 }
 
-// TestConflictMsgsMatchTheSource is the half a copied literal cannot
-// give itself.
-//
-// The harness matches the plugin's log lines by text because it runs
-// against an INSTALLED plugin, not against this tree — a compile-time
-// constant would be a claim about the source and not about the process
-// under test. That is the right trade, and it has one failure mode:
-// somebody rewords the log line, the census silently counts zero
-// forever, and address_conflicts=0 becomes an alibi again. This reads
-// the source and fails on the drift.
-//
-// It is deliberately a SUBSTRING check against the source file rather
-// than an import: it costs nothing, it cannot pull pkg/plugin into the
-// harness's dependency graph, and it fails at the moment of the rename
-// rather than at the next conflict.
+// The harness runs against an installed plugin, so it matches log text; this reads the source to catch a reworded line.
 func TestConflictMsgsMatchTheSource(t *testing.T) {
 	const src = "../../../pkg/plugin/conflict.go"
 	data, err := os.ReadFile(src)

@@ -12,10 +12,7 @@ import (
 	"testing"
 )
 
-// TestHostConfig_EnablesInit pins the helper itself. Init must be a
-// non-nil true: a nil *bool means "daemon default", which on every
-// engine this suite runs against is init OFF — the exact state that
-// cost the suite ~10s per container teardown (#367).
+// A nil Init means the daemon default, init off on every engine this suite runs, which cost ~10 s per teardown (#367).
 func TestHostConfig_EnablesInit(t *testing.T) {
 	hc := HostConfig()
 	if hc.Init == nil {
@@ -29,12 +26,6 @@ func TestHostConfig_EnablesInit(t *testing.T) {
 	}
 }
 
-// TestHostConfig_FreshPerCall guards the "mutate the returned struct"
-// contract the doc comment offers. recovery_daemon_test.go adds a
-// RestartPolicy to its copy; if the helper ever returned a shared
-// value, that would leak an always-restart policy into every other
-// container in the suite and the damage would show up somewhere else
-// entirely.
 func TestHostConfig_FreshPerCall(t *testing.T) {
 	a, b := HostConfig(), HostConfig()
 	if a == b {
@@ -45,21 +36,7 @@ func TestHostConfig_FreshPerCall(t *testing.T) {
 	}
 }
 
-// TestHostConfig_NoSlowStopOptOut holds the line the opt-out used to
-// hold, from the other side.
-//
-// There used to be a HostConfigNoInit / RunContainerNoInit escape hatch
-// that restored `docker stop`'s full 10-second grace, with a comment
-// admitting the restart tests "only pass with a container that is slow
-// to stop". That was true, and it was the problem: the slow stop was
-// concealing two real defects — the lease reclaim never running (#402)
-// and `docker restart` failing outright with `address already in use`
-// (#408). Both were fixed; the opt-out is gone.
-//
-// It must not come back. A test that "needs" a slow stop is a test
-// standing on top of a product race, and the next person to reach for
-// one will be re-hiding whatever this suite would otherwise have found.
-// Add the slow stop and this fails, which is the point.
+// A slow-stop opt-out hid the lease reclaim never running (#402) and `docker restart` failing with `address already in use` (#408).
 func TestHostConfig_NoSlowStopOptOut(t *testing.T) {
 	patterns := []string{
 		filepath.Join("..", "*_test.go"),
@@ -99,17 +76,6 @@ func TestHostConfig_NoSlowStopOptOut(t *testing.T) {
 	}
 }
 
-// TestHostConfig_NoBareLiteralsInSuite is the part that actually holds
-// the line. The helper is only worth having if every creation site
-// uses it, and the natural thing to write in a new test is
-// `&container.HostConfig{}` — which compiles, passes, and silently
-// hands back the 10-second teardown.
-//
-// Static rather than behavioural on purpose: catching this by timing a
-// container stop would cost more wall clock than the bug does. It also
-// lives here rather than in the suite package because the suite's
-// TestMain requires root and a running plugin, and a check this cheap
-// should not need either.
 func TestHostConfig_NoBareLiteralsInSuite(t *testing.T) {
 	files, err := filepath.Glob(filepath.Join("..", "*_test.go"))
 	if err != nil {

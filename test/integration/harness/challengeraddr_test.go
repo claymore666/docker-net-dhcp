@@ -10,15 +10,6 @@ import (
 	"testing"
 )
 
-// TestBridgeChallenger_AddressPlanIsUnambiguous pins the properties
-// that make the server-policy tests readable.
-//
-// Those tests answer "which DHCP server leased this container" from the
-// leased address alone — no counter, no plugin log. That only works
-// while the two pools stay disjoint and neither server's own address
-// can be handed out. Every one of those assertions would keep compiling
-// and start lying if someone widened a pool by one address, so the
-// property is checked here rather than described in a comment.
 func TestBridgeChallenger_AddressPlanIsUnambiguous(t *testing.T) {
 	primaryStart := net.ParseIP(BridgeDHCPPoolStart)
 	primaryEnd := net.ParseIP(BridgeDHCPPoolEnd)
@@ -35,8 +26,6 @@ func TestBridgeChallenger_AddressPlanIsUnambiguous(t *testing.T) {
 		}
 	}
 
-	// Disjointness, in both directions: neither pool may contain any
-	// endpoint of the other.
 	for name, ip := range map[string]net.IP{
 		"BridgeChallengerPoolStart": chalStart,
 		"BridgeChallengerPoolEnd":   chalEnd,
@@ -58,10 +47,6 @@ func TestBridgeChallenger_AddressPlanIsUnambiguous(t *testing.T) {
 		}
 	}
 
-	// Both servers' own addresses, and the deliberately-absent one,
-	// must be outside both pools — a server handed its own address, or
-	// a container handed the address a test relies on nothing
-	// answering at, breaks the same reading.
 	bridgeIP, _, err := net.ParseCIDR(BridgeAddr)
 	if err != nil {
 		t.Fatalf("BridgeAddr %q does not parse: %v", BridgeAddr, err)
@@ -92,9 +77,6 @@ func TestBridgeChallenger_AddressPlanIsUnambiguous(t *testing.T) {
 			"silence at that address would pass for the wrong reason", absentIP)
 	}
 
-	// The absent address has to be on the segment. An off-subnet entry
-	// would be refused or ignored somewhere other than where the test
-	// intends, so the failure it forces would not be "nothing answered".
 	if !chalNet.Contains(absentIP) {
 		t.Errorf("BridgeAbsentServerIP %s is outside the bridge subnet %s", absentIP, chalNet)
 	}

@@ -15,34 +15,11 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// The client-side DHCP capture.
-//
-// WHAT IT IS FOR. A counter of renewal requests that went unanswered
-// has one failure mode that matters and it is not arithmetic: the
-// counter can be right about a wire that was silent for a different
-// reason, or can move without a single request having left the host.
-// Its own value cannot tell those apart, so the assertion is against
-// the requests ON THE WIRE and the counter is compared to them.
-//
-// WHY NOT THE SERVER LOG. Because there is none to read. dnsmasq
-// decides whether to serve a DHCPREQUEST BEFORE it logs it
-// (src/rfc2131.c: `case DHCPREQUEST: if (ignore || ...) return 0;`
-// precedes every log_packet call), so a request it ignores leaves no
-// line; and the outage this test provokes kills the server outright,
-// which logs even less. "The server logged nothing" is what a silent
-// client and a refused client have in common, which makes it the one
-// piece of evidence that cannot settle the question.
-//
-// WHERE IT LISTENS. The DHCP-server end of the fixture's veth pair,
-// which is arpcapture.go's vantage point and for its reason: the
-// frames under test are originated by a macvlan CHILD, whose transmit
-// path reaches the lower device without passing the parent's packet
-// taps, so a capture on the parent sees what arrives off the wire and
-// none of what the container puts on it. StartDHCPCapture on the
-// fixture picks the right end and the right namespace.
+// Renewal requests are counted on the wire because dnsmasq logs no request it ignores: in src/rfc2131.c,
+// `case DHCPREQUEST: if (ignore || ...) return 0;` precedes every log_packet call. The capture sits on the server end
+// of the veth: a macvlan child's transmit path bypasses the parent's packet taps (#940).
 
-// DHCPCapture is a running capture of client DHCPv4 messages on one
-// link.
+// DHCPCapture is a running capture of client DHCPv4 messages on one link.
 type DHCPCapture struct {
 	t     *testing.T
 	iface string
@@ -54,12 +31,7 @@ type DHCPCapture struct {
 	err    error
 }
 
-// StartDHCPCapture begins capturing on iface until the test ends.
-//
-// It fails the test rather than skipping if the socket cannot be
-// opened, for arpcapture.go's reason: a capture that quietly does not
-// run makes every count it reports a zero, and a zero here would turn
-// the bound the caller asserts into a statement about nothing.
+// StartDHCPCapture captures on iface until the test ends, failing the test if the socket cannot be opened.
 func StartDHCPCapture(t *testing.T, iface string) *DHCPCapture {
 	t.Helper()
 	fd, err := openCaptureSocket(iface)
@@ -74,10 +46,7 @@ func StartDHCPCapture(t *testing.T, iface string) *DHCPCapture {
 	return c
 }
 
-// StartDHCPCaptureInNetns begins capturing inside the named network
-// namespace. The namespace dance and the socket options are
-// capturesocket.go's, shared with every other instrument in this
-// package.
+// StartDHCPCaptureInNetns captures inside the named network namespace.
 func StartDHCPCaptureInNetns(t *testing.T, nsName, iface string) *DHCPCapture {
 	t.Helper()
 	fd := openCaptureSocketInNetns(t.Fatalf, "DHCP capture", nsName, iface)
@@ -87,14 +56,7 @@ func StartDHCPCaptureInNetns(t *testing.T, nsName, iface string) *DHCPCapture {
 	return c
 }
 
-// StartDHCPCapture on the fixture is what a test should call: it puts
-// the capture on the segment's only working vantage point without the
-// test having to know which namespace the fixture put it in.
-//
-// It must be called AFTER the fixture is constructed, since the
-// namespace does not exist before that, and BEFORE the container
-// starts, since a capture opened afterwards has no bind exchange to
-// show and cannot say whether it was ever able to see this client.
+// StartDHCPCapture captures on the fixture's server end; call it after the fixture exists and before the container starts (#940).
 func (ef *EphemeralFixture) StartDHCPCapture(t *testing.T) *DHCPCapture {
 	t.Helper()
 	if ef.isolated() {
@@ -147,12 +109,7 @@ func (c *DHCPCapture) Stop() {
 	_ = unix.Close(c.fd)
 }
 
-// Frames returns every client message captured so far.
-//
-// It fails the test if the read loop died on an error: a capture that
-// stopped early is indistinguishable from a quiet segment by looking at
-// the result, and the whole job of this instrument is to tell a client
-// that stopped asking apart from one nobody answered.
+// Frames returns every client message captured so far, failing the test if the read loop died.
 func (c *DHCPCapture) Frames() []DHCPClientMessage {
 	c.t.Helper()
 	c.mu.Lock()
@@ -164,11 +121,7 @@ func (c *DHCPCapture) Frames() []DHCPClientMessage {
 	return append([]DHCPClientMessage(nil), c.frames...)
 }
 
-// FramesFrom returns the messages whose BOOTP chaddr is mac.
-//
-// Keyed on chaddr and not on the ethernet source because chaddr is the
-// identity the SERVER keys a lease on, which is the identity the
-// counter under test is about.
+// FramesFrom returns the messages whose BOOTP chaddr, the server's lease key, is mac.
 func (c *DHCPCapture) FramesFrom(mac string) []DHCPClientMessage {
 	want, err := net.ParseMAC(mac)
 	if err != nil {
@@ -194,9 +147,7 @@ func (c *DHCPCapture) RenewalRequestsFrom(mac string) []DHCPClientMessage {
 	return out
 }
 
-// AwaitRenewalRequestsFrom waits until mac has put at least n renewal
-// requests on the wire, and returns them. ok is false on timeout, with
-// whatever was captured.
+// AwaitRenewalRequestsFrom waits for at least n renewal requests from mac; ok is false on timeout.
 func (c *DHCPCapture) AwaitRenewalRequestsFrom(mac string, n int, within time.Duration) ([]DHCPClientMessage, bool) {
 	deadline := time.Now().Add(within)
 	for {

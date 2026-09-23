@@ -16,91 +16,33 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// The parent-link ARP capture.
-//
-// RFC 5227's whole mechanism is ARP frames on the segment, and every
-// question worth asking about it — did a Probe go out, from which MAC,
-// for which address, before or after the container was told its address
-// — is answerable from the wire and from nowhere else. The plugin's own
-// counters cannot answer it: a counter that never moved and a check that
-// never ran read identically, which is the #524 fault itself.
-//
-// Written as a raw AF_PACKET socket rather than by shelling out to
-// tcpdump, for three reasons. The runner image is not guaranteed to
-// carry tcpdump, and a test that skips when its instrument is missing
-// is a test that reports "nothing to see" on the run where it matters.
-// A capture file has to be flushed before it can be read, which is a
-// race against the assertion. And the frames are wanted as values with
-// timestamps, not as text to re-parse.
-//
-// WHERE IT LISTENS, AND WHY NOT ON THE PARENT. The obvious vantage
-// point is the macvlan parent, and it is the wrong one. MEASURED on the
-// 2.x lane 2026-09-04: a capture bound to the parent veth's host end
-// saw the SQUATTER's reply arriving and not one of the container's own
-// Probes, on a run where the DHCPDECLINE in the server log proves the
-// Probes were sent and answered. A macvlan child's transmit path
-// reaches the lower device without passing the parent's packet taps, so
-// the parent sees what comes IN off the wire and nothing its children
-// put ON it.
-//
-// That is not a cosmetic difference. It makes "no Probe from the
-// container's MAC on the parent" TRUE whether the plugin probed or not,
-// which is the one assertion conflict_check=off rests on — a gate with
-// one possible verdict, dressed as wire evidence.
-//
-// So the vantage point is the OTHER end of the veth pair, inside the
-// fixture's namespace, where the squatter and the DHCP server already
-// live. Everything the parent transmits arrives there, including every
-// frame its macvlan children originate. It costs a namespace switch to
-// open the socket, which StartARPCaptureInNetns does on a locked
-// thread; the socket stays bound to that namespace afterwards, so the
-// read loop runs anywhere.
+// Measured on the 2.x lane 2026-09-04 (#901): a capture on the macvlan parent's host end saw the squatter's reply and
+// none of the container's Probes, though the server's DHCPDECLINE proved they were sent. A macvlan child's transmits
+// reach the lower device without passing the parent's packet taps, so captures listen on the other veth end, inside
+// the fixture's namespace. The socket is a raw AF_PACKET one because tcpdump is not guaranteed on the runner.
 
-// ARPFrame is one captured ARP packet, reduced to what RFC 5227 turns
-// on.
+// ARPFrame is one captured ARP packet, reduced to the fields RFC 5227 uses.
 type ARPFrame struct {
 	At time.Time
 	// Op is 1 for a request, 2 for a reply.
 	Op uint16
-	// SenderMAC is the ethernet source, which is the identity a Probe
-	// is attributable to. RFC 5227 section 2.1 requires the ARP sender
-	// hardware address to be the same, and SenderHW carries that one so
-	// a test can assert they agree rather than assume it.
+	// SenderMAC is the ethernet source; RFC 5227 section 2.1 requires SenderHW to equal it.
 	SenderMAC net.HardwareAddr
 	SenderHW  net.HardwareAddr
 	SenderIP  net.IP
 	TargetIP  net.IP
 }
 
-// IsProbe reports whether this is an RFC 5227 section 2.1.1 ARP Probe:
-// a request with an ALL-ZERO sender protocol address and the address
-// being probed as its TARGET. The zero sender is what stops a probe
-// disturbing the address's real owner; the non-zero target is what
-// makes it a question about an address at all.
-//
-// BOTH halves are load-bearing, and the second was missing. MEASURED on
-// the 2.x lane 2026-09-04: a container whose network has no gateway
-// resolves 0.0.0.0, and the kernel emits an ordinary ARP Request whose
-// sender protocol address `inet_select_addr` could not fill either --
-// spa 0.0.0.0, tpa 0.0.0.0, three of them a second apart, which is the
-// neighbour retransmission schedule and reads exactly like section
-// 2.1.1's. With only the sender test, `conflict_check=off` failed on a
-// plugin that had correctly sent nothing: the instrument reported the
-// kernel's traffic as the plugin's.
-//
-// This is why it is a method on the frame with its own table test
-// rather than a predicate spelled out at each call site: a predicate
-// too loose fails a correct build, and one too tight passes a broken
-// one, and neither is visible in the caller.
+// IsProbe reports whether this is an RFC 5227 section 2.1.1 Probe: a request with a zero sender and a non-zero target.
+// Measured on the 2.x lane 2026-09-04 (#901): a container on a network with no gateway resolves 0.0.0.0 and the kernel
+// sends requests with spa and tpa both 0.0.0.0, one a second apart, which the sender test alone read as Probes.
 func (f ARPFrame) IsProbe() bool {
 	return f.Op == 1 &&
 		f.SenderIP != nil && f.SenderIP.Equal(net.IPv4zero) &&
 		f.TargetIP != nil && !f.TargetIP.Equal(net.IPv4zero)
 }
 
-// IsAnnouncement reports whether this is an RFC 5227 section 2.3 ARP
-// Announcement: a request whose sender and target protocol addresses
-// are both the address being claimed.
+// IsAnnouncement reports whether this is an RFC 5227 section 2.3 Announcement.
 func (f ARPFrame) IsAnnouncement() bool {
 	return f.Op == 1 && f.SenderIP != nil && f.TargetIP != nil &&
 		!f.SenderIP.Equal(net.IPv4zero) && f.SenderIP.Equal(f.TargetIP)
@@ -133,30 +75,13 @@ type ARPCapture struct {
 	err    error
 }
 
-// StartARPCapture begins capturing ARP on iface until the test ends.
-//
-// It fails the test rather than skipping if the socket cannot be
-// opened. A capture that quietly does not run turns every "no probe was
-// sent" assertion below into a tautology, and those assertions are the
-// ones carrying conflict_check=off.
+// StartARPCapture captures ARP on iface until the test ends, failing the test if the socket cannot open.
 func StartARPCapture(t *testing.T, iface string) *ARPCapture {
 	t.Helper()
 	return startARPCapture(t, "", iface)
 }
 
-// StartARPCaptureInNetns begins capturing ARP on iface inside the named
-// network namespace.
-//
-// The namespace is entered on a LOCKED thread only for as long as the
-// socket takes to open and bind, and the thread is put back before this
-// returns. An AF_PACKET socket belongs to the namespace it was created
-// in for the rest of its life, so the read loop needs no namespace of
-// its own -- which is the property that makes this safe to call from a
-// test whose other goroutines must stay in the host namespace.
-//
-// It FAILS rather than skips when the namespace cannot be entered, for
-// the reason in StartARPCapture: a capture that quietly did not run
-// turns every "nothing was on the wire" assertion into a tautology.
+// StartARPCaptureInNetns captures ARP on iface inside nsName; an AF_PACKET socket keeps its creation namespace (#901).
 func StartARPCaptureInNetns(t *testing.T, nsName, iface string) *ARPCapture {
 	t.Helper()
 	return startARPCapture(t, nsName, iface)
@@ -214,9 +139,7 @@ func (c *ARPCapture) run() {
 	}
 }
 
-// parseARP decodes an ethernet frame carrying IPv4-over-ethernet ARP.
-// Anything else is dropped: this instrument answers questions about
-// RFC 5227, and RFC 5227 is that one shape.
+// parseARP decodes an ethernet frame carrying IPv4-over-ethernet ARP and drops anything else.
 func parseARP(b []byte) (ARPFrame, bool) {
 	const (
 		ethHdr  = 14
@@ -225,19 +148,17 @@ func parseARP(b []byte) (ARPFrame, bool) {
 	if len(b) < ethHdr+arpIPv4 {
 		return ARPFrame{}, false
 	}
-	// The socket is ETH_P_ALL (see captureEthertypeBE), so everything on
-	// the link arrives here and the ethertype filter is ours to apply.
 	if binary.BigEndian.Uint16(b[12:14]) != 0x0806 {
 		return ARPFrame{}, false
 	}
 	a := b[ethHdr:]
-	if binary.BigEndian.Uint16(a[0:2]) != 1 { // hardware type ethernet
+	if binary.BigEndian.Uint16(a[0:2]) != 1 {
 		return ARPFrame{}, false
 	}
-	if binary.BigEndian.Uint16(a[2:4]) != 0x0800 { // protocol type IPv4
+	if binary.BigEndian.Uint16(a[2:4]) != 0x0800 {
 		return ARPFrame{}, false
 	}
-	if a[4] != 6 || a[5] != 4 { // hardware/protocol address lengths
+	if a[4] != 6 || a[5] != 4 {
 		return ARPFrame{}, false
 	}
 	return ARPFrame{
@@ -261,11 +182,7 @@ func (c *ARPCapture) Stop() {
 	_ = unix.Close(c.fd)
 }
 
-// Frames returns everything captured so far.
-//
-// It fails the test if the read loop died on an error, because a
-// capture that stopped early is indistinguishable from a quiet segment
-// by looking at the result.
+// Frames returns everything captured so far, failing the test if the read loop died.
 func (c *ARPCapture) Frames() []ARPFrame {
 	c.t.Helper()
 	c.mu.Lock()
@@ -303,8 +220,7 @@ func (c *ARPCapture) ProbesFrom(mac string) []ARPFrame {
 	return out
 }
 
-// AnnouncementsFrom returns the RFC 5227 section 2.3 Announcements sent
-// by mac.
+// AnnouncementsFrom returns the RFC 5227 section 2.3 Announcements sent by mac.
 func (c *ARPCapture) AnnouncementsFrom(mac string) []ARPFrame {
 	var out []ARPFrame
 	for _, f := range c.FramesFrom(mac) {
@@ -315,8 +231,7 @@ func (c *ARPCapture) AnnouncementsFrom(mac string) []ARPFrame {
 	return out
 }
 
-// AwaitProbeFrom waits until mac has sent at least n Probes, and
-// returns them. ok is false on timeout, with whatever was captured.
+// AwaitProbeFrom waits until mac has sent n Probes and returns them, with ok false on timeout.
 func (c *ARPCapture) AwaitProbeFrom(mac string, n int, within time.Duration) ([]ARPFrame, bool) {
 	deadline := time.Now().Add(within)
 	for {
@@ -340,10 +255,7 @@ func (c *ARPCapture) Dump(log func(string)) {
 	}
 }
 
-// startARPCaptureIn opens the socket inside nsName and starts the
-// read loop. The namespace dance and the socket options are
-// capturesocket.go's, shared with every other instrument in this
-// package.
+// startARPCaptureIn opens the socket inside nsName and starts the read loop.
 func startARPCaptureIn(t *testing.T, nsName, iface string) *ARPCapture {
 	t.Helper()
 
@@ -355,19 +267,7 @@ func startARPCaptureIn(t *testing.T, nsName, iface string) *ARPCapture {
 	return c
 }
 
-// StartARPCapture on the fixture is what a test should call: it puts
-// the capture on the segment's ONLY working vantage point without the
-// test having to know which namespace the fixture put it in.
-//
-// The link is always the DHCP-server end of the veth pair -- the same
-// end the squatter and the server sit on -- because that is where a
-// macvlan child's transmits are visible; see the vantage-point
-// paragraph at the top of this file. Which namespace that end lives in
-// depends on the backend (Kea is namespaced, dnsmasq is not), and that
-// is the only difference between the two branches below.
-//
-// It must be called AFTER the fixture is constructed, since the
-// namespace does not exist before that.
+// StartARPCapture captures on the fixture's DHCP-server veth end, the vantage point that sees macvlan transmits (#901).
 func (ef *EphemeralFixture) StartARPCapture(t *testing.T) *ARPCapture {
 	t.Helper()
 	if ef.isolated() {

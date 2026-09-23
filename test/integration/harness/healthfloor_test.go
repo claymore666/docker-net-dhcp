@@ -1,11 +1,6 @@
 // Copyright the docker-net-dhcp contributors.
 // SPDX-License-Identifier: GPL-3.0-only
 
-// Untagged on purpose — see the header of healthfloor.go. This is the
-// negative control for the integration suite's end-of-run health
-// floor: it proves the floor rejects what it is supposed to reject,
-// without having to deliberately break a real run to find out.
-
 package harness
 
 import (
@@ -16,13 +11,7 @@ import (
 	"testing"
 )
 
-// TestCheckHealthFloor covers the value logic. Every input here is a
-// struct literal, so published is nil and the presence check is
-// skipped by design — presence is JSON-shaped behaviour and is covered
-// against real payloads in TestCheckHealthFloorPresence.
 func TestCheckHealthFloor(t *testing.T) {
-	// findings are keyed by counter name so the cases read as
-	// "which counters, and is the run fatal", not as slice indices.
 	type want struct {
 		counters map[string]int32
 		fatal    bool
@@ -39,9 +28,6 @@ func TestCheckHealthFloor(t *testing.T) {
 		},
 		{
 			name: "nil response is not a failure",
-			// A nil can only come from a caller that already handled
-			// the unreachable-socket case; the floor must not turn
-			// that into a second, misleading failure.
 			in:   nil,
 			want: want{counters: map[string]int32{}, fatal: false},
 		},
@@ -56,31 +42,17 @@ func TestCheckHealthFloor(t *testing.T) {
 			want: want{counters: map[string]int32{"tombstone_write_failures": 3}, fatal: true},
 		},
 		{
-			// #376 has landed, so this counter now means only a real
-			// fault; it stays non-fatal for a few runs of evidence
-			// before the floor is tightened to a plain healthy check.
-			// When that happens this case flips to fatal, and this is
-			// the test that has to be edited to allow it.
 			name: "recovery_failed fails the run",
-			// Non-fatal until #421 while #376 and #383 were still folded
-			// into it. Both are counted separately now, so what remains
-			// means one thing: a RUNNING container whose renewal client
-			// could not be rebuilt.
 			in:   &HealthResponse{RecoveryFailed: 2},
 			want: want{counters: map[string]int32{"recovery_failed": 2}, fatal: true},
 		},
 		{
 			name: "the benign #373 counter is never a finding",
-			// join_aborted_container_gone is the whole point of #373:
-			// a container exiting mid-attach is not a plugin fault.
-			// A run with a busy failure suite bumps this routinely.
 			in:   &HealthResponse{JoinAbortedContainerGone: 7},
 			want: want{counters: map[string]int32{}, fatal: false},
 		},
 		{
 			name: "non-healthy-affecting counters are never findings",
-			// These move on perfectly good runs — the failure suite
-			// exists to make dhcp_timeouts and naks_received rise.
 			in: &HealthResponse{
 				DHCPTimeouts:        5,
 				NAKsReceived:        2,
@@ -99,11 +71,6 @@ func TestCheckHealthFloor(t *testing.T) {
 			},
 		},
 		{
-			// Named without a number on purpose. It said "all three"
-			// while the floor already judged four, and nothing went
-			// red — the case still passed, because a case that lists
-			// a subset is a valid subset case. A count in a name is
-			// a claim no compiler reads (#724).
 			name: "every healthy-affecting counter at once",
 			in: &HealthResponse{
 				RecoveryFailed:         1,
@@ -125,13 +92,6 @@ func TestCheckHealthFloor(t *testing.T) {
 		},
 		{
 			name: "healthy:false alone does not fail the floor",
-			// The floor reads the counters, not the flag. That was
-			// originally because the flag was unreliable; since #376
-			// it is because the floor is still gathering evidence
-			// before trusting it. This case flipping to fatal is the
-			// signal that the tightening has happened — which is the
-			// point at which reading the flag directly replaces this
-			// whole table.
 			in:   &HealthResponse{Healthy: false},
 			want: want{counters: map[string]int32{}, fatal: false},
 		},
@@ -167,8 +127,6 @@ func TestCheckHealthFloor(t *testing.T) {
 	}
 }
 
-// TestFloorFailedEmpty pins the degenerate inputs separately: a run
-// with no findings must not fail, and neither must a nil slice.
 func TestFloorFailedEmpty(t *testing.T) {
 	if FloorFailed(nil) {
 		t.Error("FloorFailed(nil) = true, want false")
@@ -178,12 +136,7 @@ func TestFloorFailedEmpty(t *testing.T) {
 	}
 }
 
-// decodeHealth is the only way these tests build a HealthResponse with
-// a known key set — deliberately, because going through the real
-// decoder is what makes "absent" mean what it means in production. A
-// struct literal cannot express the difference between a counter at
-// zero and a counter that was never sent, which is the entire subject
-// of #377.
+// decodeHealth goes through the real decoder, since a struct literal cannot tell a zero counter from an absent one (#377).
 func decodeHealth(t *testing.T, payload string) *HealthResponse {
 	t.Helper()
 	var h HealthResponse
@@ -197,10 +150,7 @@ func decodeHealth(t *testing.T, payload string) *HealthResponse {
 }
 
 func TestCheckHealthFloorPresence(t *testing.T) {
-	// A payload carrying every counter the floor reads, all at zero.
-	// Cases below drop keys from it rather than listing keys to add,
-	// so a counter added to floorCounters without a matching key here
-	// shows up as a failure instead of being quietly untested.
+	// Cases drop keys from this complete payload, so a counter added to floorCounters without a key here fails.
 	const complete = `{
 		"healthy": true,
 		"uptime_seconds": 42,
@@ -225,9 +175,7 @@ func TestCheckHealthFloorPresence(t *testing.T) {
 			wantValues: map[string]int32{},
 		},
 		{
-			name: "a counter the plugin does not publish is fatal",
-			// The concrete #377 case: an older plugin build predating
-			// #373 answers without join_start_failures at all.
+			name:        "a counter the plugin does not publish is fatal",
 			payload:     `{"healthy": true, "tombstone_write_failures": 0, "tombstone_quarantines": 0, "recovery_failed": 0, "address_conflicts": 0}`,
 			wantAbsent:  []string{"join_start_failures"},
 			wantValues:  map[string]int32{},
@@ -240,9 +188,6 @@ func TestCheckHealthFloorPresence(t *testing.T) {
 			wantAbsent: []string{
 				"join_start_failures", "tombstone_write_failures", "tombstone_quarantines", "recovery_failed",
 				"address_conflicts",
-				// The plugin's own verdict is presence-checked too since
-				// #421: an absent `healthy` decodes to false, which would
-				// otherwise fail the run while claiming the plugin said so.
 				"healthy",
 			},
 			wantValues:  map[string]int32{},
@@ -251,16 +196,11 @@ func TestCheckHealthFloorPresence(t *testing.T) {
 		},
 		{
 			name: "a null payload is treated as publishing nothing",
-			// json.Unmarshal of `null` into a map yields nil without
-			// erroring; if that reached the floor as "presence
-			// unknown" the check would switch itself off.
+			// json.Unmarshal of `null` into a map yields nil without an error.
 			payload: `null`,
 			wantAbsent: []string{
 				"join_start_failures", "tombstone_write_failures", "tombstone_quarantines", "recovery_failed",
 				"address_conflicts",
-				// The plugin's own verdict is presence-checked too since
-				// #421: an absent `healthy` decodes to false, which would
-				// otherwise fail the run while claiming the plugin said so.
 				"healthy",
 			},
 			wantValues:  map[string]int32{},
@@ -268,9 +208,7 @@ func TestCheckHealthFloorPresence(t *testing.T) {
 			wantMissing: true,
 		},
 		{
-			name: "a missing counter and a real fault are both reported",
-			// The absence must not mask the fault, nor the other way
-			// round: a red run needs to show both reasons at once.
+			name:        "a missing counter and a real fault are both reported",
 			payload:     `{"healthy": false, "tombstone_write_failures": 2, "tombstone_quarantines": 0, "recovery_failed": 0, "address_conflicts": 0}`,
 			wantAbsent:  []string{"join_start_failures"},
 			wantValues:  map[string]int32{"tombstone_write_failures": 2},
@@ -278,22 +216,13 @@ func TestCheckHealthFloorPresence(t *testing.T) {
 			wantMissing: true,
 		},
 		{
-			name: "recovery_failed alone fails the run",
-			// Was deliberately non-fatal while #376 and #383 were still
-			// folded into it. Both are counted separately now, so what
-			// is left means one thing — a RUNNING container whose
-			// renewal client could not be rebuilt — and the probation
-			// runs came back clean (#421).
+			name:       "recovery_failed alone fails the run",
 			payload:    `{"healthy": false, "join_start_failures": 0, "tombstone_write_failures": 0, "tombstone_quarantines": 0, "recovery_failed": 3, "address_conflicts": 0}`,
 			wantValues: map[string]int32{"recovery_failed": 3},
 			wantFatal:  true,
 		},
 		{
-			name: "an unhealthy plugin fails even when every known counter is clean",
-			// The table is this suite's mirror of pkg/plugin's Healthy
-			// expression, and a mirror drifts. Another healthy-affecting
-			// counter added to the plugin would otherwise leave the floor
-			// reporting clean until someone remembered this file (#421).
+			name:       "an unhealthy plugin fails even when every known counter is clean",
 			payload:    `{"healthy": false, "join_start_failures": 0, "tombstone_write_failures": 0, "tombstone_quarantines": 0, "recovery_failed": 0, "address_conflicts": 0}`,
 			wantValues: map[string]int32{},
 			wantFatal:  true,
@@ -305,9 +234,7 @@ func TestCheckHealthFloorPresence(t *testing.T) {
 			wantFatal:  false,
 		},
 		{
-			name: "an unpublished non-fatal counter is still fatal",
-			// recovery_failed being noisy is a statement about what
-			// its value means, not a licence to stop reading it.
+			name:        "an unpublished non-fatal counter is still fatal",
 			payload:     `{"healthy": true, "join_start_failures": 0, "tombstone_write_failures": 0, "tombstone_quarantines": 0, "address_conflicts": 0}`,
 			wantAbsent:  []string{"recovery_failed"},
 			wantValues:  map[string]int32{},
@@ -315,10 +242,7 @@ func TestCheckHealthFloorPresence(t *testing.T) {
 			wantMissing: true,
 		},
 		{
-			name: "counters outside the floor may be absent freely",
-			// The floor reads the counters in floorCounters. Everything else on the
-			// health surface is free to come and go without turning a
-			// run red — otherwise the check becomes a schema test.
+			name:       "counters outside the floor may be absent freely",
 			payload:    complete,
 			wantValues: map[string]int32{},
 		},
@@ -350,8 +274,6 @@ func TestCheckHealthFloorPresence(t *testing.T) {
 					continue
 				}
 				if f.Flag {
-					// The plugin's own verdict, not a counter — it has
-					// no value to compare.
 					continue
 				}
 				values[f.Counter] = f.Value
@@ -383,10 +305,6 @@ func TestCheckHealthFloorPresence(t *testing.T) {
 	}
 }
 
-// TestUnmarshalKeepsDecodingValues guards the custom UnmarshalJSON
-// against the obvious way to break it: recording the key set correctly
-// while silently dropping the values, which would leave every counter
-// reading zero and the floor permanently green.
 func TestUnmarshalKeepsDecodingValues(t *testing.T) {
 	h := decodeHealth(t, `{
 		"healthy": false,
@@ -417,12 +335,6 @@ func TestUnmarshalKeepsDecodingValues(t *testing.T) {
 	}
 }
 
-// TestFloorCounterNamesMatchJSONTags closes one half of the drift the
-// presence check closes the other half of. The runtime check catches
-// "the plugin renamed a key and this side did not follow"; this catches
-// "this side renamed a struct tag and floorCounters did not follow",
-// which the runtime check cannot see because both sides would move
-// together into agreement about the wrong name.
 func TestFloorCounterNamesMatchJSONTags(t *testing.T) {
 	tags := map[string]bool{}
 	rt := reflect.TypeOf(HealthResponse{})
@@ -457,10 +369,6 @@ func keys(m map[string]bool) []string {
 	return out
 }
 
-// The floor's evidence section is the only thing that turns a counter
-// into something actionable, so it gets the same treatment as the floor
-// itself: exercised without a live plugin, including the cases where
-// the log is unhelpful.
 func TestFloorEvidence(t *testing.T) {
 	const (
 		errLine  = `time="2026-07-31T16:40:00Z" level=error msg="Failed to start persistent DHCP client" endpoint=abc123`
@@ -476,8 +384,6 @@ func TestFloorEvidence(t *testing.T) {
 		}
 		got := FloorEvidence([]byte(strings.Join(lines, "\n")), 10)
 
-		// Both faults are at the very start, far outside any tail —
-		// finding them is the whole point of not just tailing the log.
 		if !strings.Contains(got, "Failed to start persistent DHCP client") {
 			t.Error("error line missing from evidence")
 		}
@@ -515,8 +421,6 @@ func TestFloorEvidence(t *testing.T) {
 		if !strings.Contains(got, fmt.Sprintf("--- last %d of 500 error/warning lines ---", floorEvidenceMaxFaultLines)) {
 			t.Errorf("truncation is not announced:\n%s", firstLines(got, 3))
 		}
-		// Truncating from the front keeps the most recent faults, which
-		// are the ones nearest the failure being diagnosed.
 		if !strings.Contains(got, `msg="fault 499"`) {
 			t.Error("truncation dropped the most recent fault")
 		}
@@ -550,16 +454,8 @@ func firstLines(s string, n int) string {
 	return strings.Join(lines, "\n")
 }
 
-// A "clean" headline gets quoted as evidence that a run was fine, so
-// what it claims has to match what the floor could actually see (#385).
 func TestFloorCleanLine(t *testing.T) {
 	t.Run("full coverage says so plainly", func(t *testing.T) {
-		// 92 is the suite, 95 the plugin's uptime. The number after
-		// "run" is the suite's — this assertion used to demand
-		// "whole 95s run", which is uptime wearing the word "run"
-		// (#474). At this ratio the two are indistinguishable, which
-		// is exactly why the defect survived; the case below separates
-		// them.
 		got := FloorCleanLine(&HealthResponse{UptimeSeconds: 95, Healthy: true}, 92)
 		if !strings.Contains(got, "whole 92s run") {
 			t.Errorf("the run's duration is the suite's, got:\n%s", got)
@@ -572,15 +468,7 @@ func TestFloorCleanLine(t *testing.T) {
 		}
 	})
 
-	// The observation that produced #474: a local single-test run
-	// against a plugin that had been up for hours printed
-	//
-	//   clean — ... over the whole 15479s run (healthy=true)
-	//
-	// for a suite that took 61 seconds. The verdict was sound; the
-	// headline described a run ~250x longer than the one it judged.
-	// A "clean" line gets quoted as evidence (#385), so the numbers in
-	// it have to be the ones it actually looked at.
+	// Measured (#474): a local run against a plugin up for hours printed "whole 15479s run" for a 61 s suite.
 	t.Run("a plugin that long predates the suite does not lend it its uptime", func(t *testing.T) {
 		got := FloorCleanLine(&HealthResponse{UptimeSeconds: 15479, Healthy: true}, 61)
 
@@ -593,9 +481,6 @@ func TestFloorCleanLine(t *testing.T) {
 		if !strings.Contains(got, "15479s") {
 			t.Errorf("uptime should still appear, as uptime:\n%s", got)
 		}
-		// 15479 - 61: the counters carry history this run did not
-		// produce, and the line has to say so rather than let a reader
-		// take "clean" as a verdict on the run alone.
 		if !strings.Contains(got, "predates this run by 15418s") {
 			t.Errorf("a plugin far older than the suite should be disclosed:\n%s", got)
 		}
@@ -605,10 +490,6 @@ func TestFloorCleanLine(t *testing.T) {
 	})
 
 	t.Run("a plugin installed for the run does not carry the predates note", func(t *testing.T) {
-		// CI's shape: the plugin goes in just before the suite, so the
-		// gap is slack rather than history. The note would be noise on
-		// every run, and noise on every run is how a line stops being
-		// read.
 		got := FloorCleanLine(&HealthResponse{UptimeSeconds: 700, Healthy: true}, 611)
 		if strings.Contains(got, "predates") {
 			t.Errorf("ordinary install-then-run slack should not be flagged as history:\n%s", got)
@@ -619,9 +500,6 @@ func TestFloorCleanLine(t *testing.T) {
 	})
 
 	t.Run("a mid-suite restart is disclosed with the numbers", func(t *testing.T) {
-		// The shape of the run that motivated this: 78s of plugin uptime
-		// at the end of an 11-minute suite, previously reported as
-		// "clean" with no qualifier at all.
 		got := FloorCleanLine(&HealthResponse{UptimeSeconds: 78, Healthy: true}, 611)
 		for _, want := range []string{"last 78s", "611s run", "13%", "restarted mid-suite"} {
 			if !strings.Contains(got, want) {
@@ -643,8 +521,6 @@ func TestFloorCleanLine(t *testing.T) {
 	})
 
 	t.Run("healthy is reported either way", func(t *testing.T) {
-		// healthy=false with no finding is possible today: the floor's
-		// fatal set is narrower than the plugin's Healthy expression.
 		for _, suite := range []float64{92, 611} {
 			got := FloorCleanLine(&HealthResponse{UptimeSeconds: 78, Healthy: false}, suite)
 			if !strings.Contains(got, "healthy=false") {
@@ -660,11 +536,8 @@ func TestFloorCleanLine(t *testing.T) {
 	})
 }
 
-// The census is what makes the Join budget observable (#401), so it is
-// pinned against real log lines rather than invented ones.
 func TestJoinFailureCensus(t *testing.T) {
-	// Verbatim from the run that #401 was filed on, trimmed to the
-	// fields that matter. Two distinct causes, one repeated.
+	// Verbatim from the run #401 was filed on, trimmed to the fields that matter.
 	const realLog = `time="2026-07-31T18:07:08Z" level=error msg="Failed to start persistent DHCP client; lease will not be renewed" endpoint=64527feea371 error="failed to get Docker container info: context deadline exceeded" network=62826ec6f0b8
 time="2026-07-31T18:07:25Z" level=error msg="Failed to start persistent DHCP client; lease will not be renewed" endpoint=f3f9d6712b9e error="failed to get Docker container info: context deadline exceeded" network=6bef7628c5ba
 time="2026-07-31T18:08:01Z" level=error msg="Failed to start persistent DHCP client; lease will not be renewed" endpoint=b4e40afce1d8 error="failed to get sandbox network namespace: context deadline exceeded (last attempt: no such file or directory)" network=bae01f6c30ef
@@ -679,14 +552,9 @@ time="2026-07-31T18:09:03Z" level=warning msg="Caller error while processing req
 	if !strings.Contains(got, "  2  failed to get Docker container info: context deadline exceeded") {
 		t.Errorf("causes are not grouped and counted:\n%s", got)
 	}
-	// The benign twin logs a different message and must not be counted —
-	// conflating the two is the bug #373 fixed on the counter side, and
-	// it would be just as wrong here.
 	if strings.Contains(got, "went away during attach") {
 		t.Error("the benign container-gone case was counted as a failure")
 	}
-	// An unrelated warning that happens to carry an error= field must
-	// not be swept in either.
 	if strings.Contains(got, "parent interface is down") {
 		t.Error("an unrelated warning was counted as a Join failure")
 	}
@@ -718,11 +586,6 @@ time="2026-07-31T18:09:03Z" level=warning msg="Caller error while processing req
 	})
 }
 
-// TestJoinFailureCount_MatchesTheCensus keeps the verdict and the
-// diagnostic from drifting apart. They read the same log for the same
-// message, and the only reason they are separate functions is that one
-// is prose and one is a number; if a change makes them disagree, the
-// run's verdict stops matching the evidence printed next to it.
 func TestJoinFailureCount_MatchesTheCensus(t *testing.T) {
 	log := []byte(strings.Join([]string{
 		`time="1" level=error msg="Failed to start persistent DHCP client; lease will not be renewed" error="context deadline exceeded"`,
@@ -739,10 +602,6 @@ func TestJoinFailureCount_MatchesTheCensus(t *testing.T) {
 	}
 }
 
-// TestJoinFailureCount_ZeroIsZero pins the case that decides whether a
-// clean run stays clean. A count that is non-zero on an empty log would
-// fail every green run, which is the fastest way to get a gate switched
-// off again.
 func TestJoinFailureCount_ZeroIsZero(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -760,15 +619,7 @@ func TestJoinFailureCount_ZeroIsZero(t *testing.T) {
 	}
 }
 
-// TestAttachGraceLine_DistinguishesQuietFromFixed is the point of the
-// line existing at all.
-//
-// The #406 failures are intermittent — unchanged code has scored 6, 5,
-// 3 and 0 across runs — so a run with no Join failures is ambiguous:
-// either the grace carried the attaches, or the daemon-busy window
-// never opened. Reporting both as "clean" would let the fix be declared
-// working by a run that never tested it, which is the n=1 reasoning
-// this whole issue has already cost a day to.
+// The #406 failures are intermittent (6, 5, 3 and 0 on unchanged code), so a run with no Join failures is ambiguous.
 func TestAttachGraceLine_DistinguishesQuietFromFixed(t *testing.T) {
 	t.Run("grace used and nothing failed is evidence", func(t *testing.T) {
 		got := AttachGraceLine(&HealthResponse{JoinAttachSlow: 4}, 0)
@@ -799,9 +650,6 @@ func TestAttachGraceLine_DistinguishesQuietFromFixed(t *testing.T) {
 	})
 }
 
-// ACDCensusLine's whole job is to stop a zero from being read as
-// evidence. Each branch is a different answer to "does this run tell us
-// anything about #524", so each one is pinned.
 func TestACDCensusLine(t *testing.T) {
 	cases := []struct {
 		name string
@@ -818,9 +666,6 @@ func TestACDCensusLine(t *testing.T) {
 			name: "no probes is explicitly not evidence",
 			h:    &HealthResponse{},
 			want: []string{"not\n  evidence", "absence of a measurement"},
-			// Deny the AFFIRMATIVE claim, not the substring: this line
-			// legitimately says "is not evidence the segment was clean",
-			// and a looser check would have failed on the right answer.
 			deny: []string{"check ran and the segment was clean"},
 		},
 		{
@@ -843,15 +688,11 @@ func TestACDCensusLine(t *testing.T) {
 		},
 		{
 			name: "a conflict outranks refused sends",
-			// Both non-zero: the conflict is the finding that matters.
 			h:    &HealthResponse{AddressConflicts: 2, ACDProbesSent: 5, ACDARPSendFailures: 1},
 			want: []string{"2 leased address(es)"},
 			deny: []string{"send(s) were refused"},
 		},
 		{
-			// conflict_check=off is a real operator choice, and the
-			// line must not read as an accusation: it names the mode
-			// among the reasons a run can honestly have no probes.
 			name: "the no-probe line names conflict_check=off as a reason",
 			h:    &HealthResponse{LeasesObtained: 3},
 			want: []string{"conflict_check=off"},

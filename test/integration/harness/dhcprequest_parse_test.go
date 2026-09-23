@@ -12,18 +12,8 @@ import (
 	"github.com/claymore666/dhcp-golib/wire"
 )
 
-// The frames below are built by the CLIENT LIBRARY'S OWN encoders --
-// wire.Encode for the DHCP message, runtime.BuildIPv4UDP for the IPv4
-// and UDP headers -- and not typed out by hand.
-//
-// That is the whole point of testing this parser in the fast lane. A
-// decoder pinned to bytes no client in this repo produces is a decoder
-// tested against nothing (v6signature.go records the run where exactly
-// that happened: frames captured with an argv the fixture does not
-// use). These are the bytes the plugin's client puts on the wire,
-// because they come out of the same two functions that put them there;
-// the only part built here is the ethernet header, which the kernel
-// prepends from the SockaddrLinklayer the library hands it.
+// Frames are built with the client library's own encoders, wire.Encode and runtime.BuildIPv4UDP; only the ethernet
+// header, which the kernel prepends from the library's SockaddrLinklayer, is built here (#940).
 const (
 	testClientMAC = "02:42:c0:a8:63:0a"
 	testServerMAC = "02:42:c0:a8:63:01"
@@ -38,9 +28,7 @@ func mustParseMAC(t *testing.T, s string) net.HardwareAddr {
 	return m
 }
 
-// clientFrame assembles one frame the way the library's packet
-// transport does: ethernet header, then BuildIPv4UDP over the encoded
-// DHCP message.
+// clientFrame builds an ethernet header, then BuildIPv4UDP over the encoded DHCP message.
 func clientFrame(t *testing.T, m *wire.Message, src, dst netip.Addr, dstMAC string, sport, dport uint16) []byte {
 	t.Helper()
 	payload, err := wire.Encode(m)
@@ -75,9 +63,6 @@ func renewalMessage(t *testing.T, ciaddr string) *wire.Message {
 	return m
 }
 
-// TestParseDHCPv4Request_RenewalRequest is the frame the whole
-// instrument exists for: the DHCPREQUEST a client sends to extend a
-// lease it already holds.
 func TestParseDHCPv4Request_RenewalRequest(t *testing.T) {
 	frame := clientFrame(t, renewalMessage(t, "192.168.99.10"),
 		netip.MustParseAddr("192.168.99.10"), netip.MustParseAddr("192.168.99.1"),
@@ -106,14 +91,7 @@ func TestParseDHCPv4Request_RenewalRequest(t *testing.T) {
 	}
 }
 
-// TestParseDHCPv4Request_AcquisitionIsNotARenewal is the population
-// control, and it is the same boundary the library's countSent draws.
-//
-// RFC 2131 Table 5 gives ciaddr as zero in the SELECTING and
-// INIT-REBOOT columns. A DISCOVER and a SELECTING REQUEST are how a
-// client that has NO lease behaves, and a client with no lease has
-// nothing to renew: an instrument that counted them would report a
-// clean acquisition as an outage.
+// RFC 2131 Table 5: ciaddr is zero in SELECTING and INIT-REBOOT, the boundary the library's countSent draws too.
 func TestParseDHCPv4Request_AcquisitionIsNotARenewal(t *testing.T) {
 	bcast := netip.AddrFrom4([4]byte{255, 255, 255, 255})
 	zero := netip.AddrFrom4([4]byte{})
@@ -145,11 +123,7 @@ func TestParseDHCPv4Request_AcquisitionIsNotARenewal(t *testing.T) {
 	}
 }
 
-// TestParseDHCPv4Request_RebindIsARenewalRequest. A REBINDING REQUEST
-// is broadcast and carries ciaddr, and the library counts it in
-// RenewalsSent. The instrument must count the same population or the
-// comparison the integration test makes is between two different
-// questions.
+// A REBINDING REQUEST is broadcast with ciaddr, and the library counts it in RenewalsSent.
 func TestParseDHCPv4Request_RebindIsARenewalRequest(t *testing.T) {
 	frame := clientFrame(t, renewalMessage(t, "192.168.99.10"),
 		netip.MustParseAddr("192.168.99.10"), netip.AddrFrom4([4]byte{255, 255, 255, 255}),
@@ -167,16 +141,7 @@ func TestParseDHCPv4Request_RebindIsARenewalRequest(t *testing.T) {
 	}
 }
 
-// TestParseDHCPv4Request_OtherClientMessagesCarryCIAddrToo is the
-// second half of the population boundary, and the message type is what
-// draws it.
-//
-// A DHCPRELEASE names the binding it is giving back in 'ciaddr' (RFC
-// 2131 section 4.4.4) and a DHCPINFORM carries the client's address
-// there too (section 3.4). Both are client messages, both are unicast
-// to port 67, and both would sail through a predicate that tested only
-// for a non-zero 'ciaddr' -- which would count a container being
-// removed as a server that stopped answering.
+// DHCPRELEASE (RFC 2131 section 4.4.4) and DHCPINFORM (section 3.4) carry ciaddr too.
 func TestParseDHCPv4Request_OtherClientMessagesCarryCIAddrToo(t *testing.T) {
 	for name, typ := range map[string]wire.MessageType{
 		"RELEASE": wire.MsgRelease,
@@ -199,10 +164,7 @@ func TestParseDHCPv4Request_OtherClientMessagesCarryCIAddrToo(t *testing.T) {
 	}
 }
 
-// TestParseDHCPv4Request_RejectsWhatIsNotAClientMessage. The socket
-// underneath is ETH_P_ALL, so most of what reaches this function is
-// something else. Each rejection here is a frame that would otherwise
-// be counted as a renewal request nobody sent.
+// The socket is ETH_P_ALL, so most frames reaching the parser are not client DHCP messages.
 func TestParseDHCPv4Request_RejectsWhatIsNotAClientMessage(t *testing.T) {
 	reply := &wire.Message{
 		Op: 2, HType: 1, XID: 9,
@@ -214,9 +176,7 @@ func TestParseDHCPv4Request_RejectsWhatIsNotAClientMessage(t *testing.T) {
 		netip.MustParseAddr("192.168.99.1"), netip.MustParseAddr("192.168.99.10"),
 		testClientMAC, runtime.ServerPort, runtime.ClientPort)
 
-	// A BOOTREPLY addressed to port 67 is what a relay agent's traffic
-	// looks like, and it is the one shape the destination port does not
-	// reject. Without the op check it would be read as a client asking.
+	// A BOOTREPLY to port 67 is relay traffic, which the port does not reject.
 	relayed := clientFrame(t, reply,
 		netip.MustParseAddr("192.168.99.1"), netip.MustParseAddr("192.168.99.2"),
 		testServerMAC, runtime.ServerPort, runtime.ServerPort)
@@ -239,11 +199,6 @@ func TestParseDHCPv4Request_RejectsWhatIsNotAClientMessage(t *testing.T) {
 	}
 }
 
-// TestParseDHCPv4Request_TruncationNeverPanics. The capture hands this
-// function whatever came off the wire, including frames cut short by
-// the read buffer. A panic in the read loop kills the capture, and a
-// dead capture reports an empty wire -- which is the answer that makes
-// every count below it look like a passing measurement.
 func TestParseDHCPv4Request_TruncationNeverPanics(t *testing.T) {
 	frame := clientFrame(t, renewalMessage(t, "192.168.99.10"),
 		netip.MustParseAddr("192.168.99.10"), netip.MustParseAddr("192.168.99.1"),
@@ -251,9 +206,6 @@ func TestParseDHCPv4Request_TruncationNeverPanics(t *testing.T) {
 
 	for i := 0; i <= len(frame); i++ {
 		if m, ok := ParseDHCPv4Request(frame[:i]); ok && i < len(frame) {
-			// A short frame may legitimately still carry everything
-			// this parser reads; what must not happen is a panic or a
-			// renewal claimed out of bytes that were never there.
 			if m.IsRenewalRequest() && i < ethHeaderLen+20+udpHeaderLen+bootpMinLen {
 				t.Fatalf("a %d-byte prefix was read as a renewal request", i)
 			}
@@ -261,10 +213,7 @@ func TestParseDHCPv4Request_TruncationNeverPanics(t *testing.T) {
 	}
 }
 
-// TestDHCPMessageType_WalksPadsAndStopsAtEnd. Option 53 is not
-// guaranteed to be first and the field is not guaranteed to be tightly
-// packed; a walk that assumed either would read the type out of
-// whatever option happened to be at the front.
+// Option 53 need not be first, and pad options may sit between options.
 func TestDHCPMessageType_WalksPadsAndStopsAtEnd(t *testing.T) {
 	cases := map[string]struct {
 		opts []byte

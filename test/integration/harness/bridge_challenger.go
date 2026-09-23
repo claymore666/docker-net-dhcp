@@ -19,67 +19,28 @@ import (
 	"github.com/vishvananda/netlink"
 )
 
-// A second DHCP server on the bridge fixture's segment.
-//
-// Every other fixture in this harness goes out of its way to keep
-// exactly one server per broadcast domain, because a race between two
-// servers makes every address assertion in the suite ambiguous. The
-// server-policy tests (#111 prefer-list, #669 deny-list) need the
-// opposite: the plugin's whole job there is to pick one of several
-// servers that all answer, and a fixture with one server cannot
-// distinguish "the policy worked" from "there was nothing to choose".
-//
-// So this server exists, and it is started ON DEMAND — never as part
-// of the shared fixture. A permanently-running second server would
-// re-introduce exactly the race the rest of the harness avoids, and
-// every existing IsInBridgePool assertion would become a coin flip.
-//
-// Two properties make the result readable as outside evidence rather
-// than as the plugin's own opinion:
-//
-//   - The pools are DISJOINT (.10-.99 primary, .150-.199 challenger).
-//     The leased address alone names the server that won; no counter
-//     and no plugin log is consulted to answer "which one".
-//   - The server runs in its own network namespace, reached over a
-//     veth into the same Linux bridge. Same L2 segment, so both
-//     genuinely receive every DHCPDISCOVER; separate netns, so it can
-//     bind UDP/67 alongside the primary and so its address does not
-//     add a second route for 192.168.100.0/24 in the host namespace.
-//     This is the topology the design was validated against.
-//
-// It is IPv4-only on purpose. The server-selection directives dhcpcd
-// exposes (whitelist/blacklist) are DHCPv4-only, and the plugin
-// rejects v6 entries at network create; an RA-emitting second server
-// here would only add noise the feature can never act on.
+// A second DHCP server on the bridge segment, started on demand for the server-policy tests (#111 prefer-list,
+// #669 deny-list); a permanent second server would make every IsInBridgePool assertion a race. The pools are
+// disjoint (.10-.99 primary, .150-.199 challenger), so the leased address alone names the winning server. It runs in
+// its own netns over a veth into the same bridge: both servers see every DHCPDISCOVER, it can bind UDP/67 beside the
+// primary, and the host gains no second route for the subnet. IPv4 only: dhcpcd's whitelist/blacklist are DHCPv4-only.
 const (
 	// BridgeChallengerNetns is the namespace the challenger runs in.
 	BridgeChallengerNetns = "dh-itest-chal"
-	// bridgeChallengerVeth is the bridge-side end of the veth pair
-	// (enslaved to BridgeName); bridgeChallengerPeer is the end moved
-	// into BridgeChallengerNetns and addressed. Both carry the
-	// dh-itest- prefix the orphan-cleanup script keys on, and both fit
-	// IFNAMSIZ.
+	// bridgeChallengerVeth is the bridge-side veth end; both ends carry the dh-itest- prefix the orphan cleanup keys on.
 	bridgeChallengerVeth = "dh-itest-chalbr"
 	bridgeChallengerPeer = "dh-itest-chal"
 
-	// BridgeChallengerAddr is the challenger's address on the bridge
-	// segment — outside the primary's pool, so the primary can never
-	// hand it to a container.
+	// BridgeChallengerAddr is the challenger's address, outside the primary's pool.
 	BridgeChallengerAddr = "192.168.100.2/24"
-	// BridgeChallengerIP is BridgeChallengerAddr without the prefix,
-	// which is what a test passes as dhcp_servers / dhcp_deny_servers.
+	// BridgeChallengerIP is BridgeChallengerAddr without the prefix, as passed to dhcp_servers and dhcp_deny_servers.
 	BridgeChallengerIP = "192.168.100.2"
 
-	// BridgeChallengerPoolStart / End are disjoint from
-	// BridgeDHCPPoolStart / End. That disjointness is the assertion
-	// surface: see the file comment.
+	// BridgeChallengerPoolStart is the challenger pool's first address, disjoint from the primary's pool (#111).
 	BridgeChallengerPoolStart = "192.168.100.150"
 	BridgeChallengerPoolEnd   = "192.168.100.199"
 
-	// BridgeAbsentServerIP is an address on the bridge subnet that
-	// nothing answers on. Tests use it as a prefer-list entry that
-	// must be tried and must fail, so a fallback or an exhaustion is
-	// forced without taking a real server down.
+	// BridgeAbsentServerIP is a bridge-subnet address nothing answers on, used to force a fallback or exhaustion.
 	BridgeAbsentServerIP = "192.168.100.250"
 )
 
@@ -91,14 +52,7 @@ type bridgeChallenger struct {
 	logFile   string
 }
 
-// StartBridgeChallenger brings up a second DHCP server on the bridge
-// segment and registers its teardown. Call it from a test that needs
-// two servers answering; every other test on the bridge fixture keeps
-// seeing exactly one.
-//
-// Fails the test rather than returning an error: a policy test whose
-// second server did not start would otherwise "pass" against a single
-// server, which is the one outcome that must never look like success.
+// StartBridgeChallenger starts the second DHCP server and registers its teardown, failing the test if it cannot start.
 func (f *Fixture) StartBridgeChallenger(t *testing.T) {
 	t.Helper()
 	if f.chal != nil {
@@ -120,8 +74,6 @@ func (f *Fixture) StartBridgeChallenger(t *testing.T) {
 }
 
 func (f *Fixture) startBridgeChallenger() error {
-	// Idempotent against a previous panicked run: both the link and
-	// the namespace outlive a killed test binary.
 	cleanupBridgeChallenger()
 
 	la := netlink.NewLinkAttrs()
@@ -195,30 +147,15 @@ func (f *Fixture) startBridgeChallenger() error {
 		return fmt.Errorf("start challenger dnsmasq: %w", err)
 	}
 
-	// The challenger's socket lives in another namespace, so the
-	// port-poll waitBridgeDnsmasqReady uses cannot see it from here.
-	// Wait on the server's own "sockets bound" line instead.
+	// The challenger's socket is in another netns, invisible to the port poll, so this waits on its log.
 	if err := f.waitChallengerReady(5 * time.Second); err != nil {
 		return err
 	}
 	return nil
 }
 
-// waitChallengerReady polls the challenger's log for the line dnsmasq
-// prints once its DHCP sockets are open.
-//
-// It is specifically the sockets-bound line and NOT the "DHCP, IP
-// range" line above it: dnsmasq logs the configured range first and
-// binds afterwards, so waiting on the range would return before the
-// server can answer anything and leave the first DHCPDISCOVER of the
-// test racing the bind.
-//
-// Matching log text is a weaker contract than the port poll the
-// primary uses, and it is used only because the socket is in another
-// namespace. If a future dnsmasq reworded this, the fixture fails
-// loudly here with the whole log attached — which is the right
-// failure, rather than a policy test quietly running against one
-// server.
+// waitChallengerReady polls the challenger's log for dnsmasq's sockets-bound line. dnsmasq logs the "DHCP, IP range"
+// line before it binds, so waiting on that line would race the first DHCPDISCOVER (#111).
 func (f *Fixture) waitChallengerReady(budget time.Duration) error {
 	want := "sockets bound exclusively to interface " + bridgeChallengerPeer
 	deadline := time.Now().Add(budget)
@@ -237,8 +174,7 @@ func (f *Fixture) waitChallengerReady(budget time.Duration) error {
 	return fmt.Errorf("challenger dnsmasq did not announce %q within %v:\n%s", want, budget, data)
 }
 
-// stopBridgeChallenger tears down whatever startBridgeChallenger got
-// as far as. Idempotent and best-effort, like stopBridge.
+// stopBridgeChallenger tears down whatever startBridgeChallenger set up, best-effort and idempotent.
 func (f *Fixture) stopBridgeChallenger() {
 	if f.chal == nil {
 		return
@@ -261,10 +197,7 @@ func (f *Fixture) stopBridgeChallenger() {
 	cleanupBridgeChallenger()
 }
 
-// cleanupBridgeChallenger removes the namespace and the veth pair.
-// Deleting the bridge-side end takes the peer with it, but the peer
-// lives in the namespace and `ip netns del` alone would leave it, so
-// both are attempted in that order.
+// cleanupBridgeChallenger removes both veth ends and then the netns; `ip netns del` alone leaves the peer (#111).
 func cleanupBridgeChallenger() {
 	if link, err := netlink.LinkByName(bridgeChallengerVeth); err == nil {
 		_ = netlink.LinkDel(link)
@@ -273,7 +206,6 @@ func cleanupBridgeChallenger() {
 }
 
 // DumpBridgeChallengerLog prints the challenger's dnsmasq log.
-// Symmetric with DumpBridgeLogs.
 func (f *Fixture) DumpBridgeChallengerLog(write func(string)) {
 	if f.chal == nil || f.chal.logFile == "" {
 		write("(bridge challenger not started)")
@@ -287,9 +219,7 @@ func (f *Fixture) DumpBridgeChallengerLog(write func(string)) {
 	write("--- bridge challenger dnsmasq log ---\n" + string(data))
 }
 
-// BridgeChallengerLog returns the challenger's dnsmasq log so far, for
-// tests that assert on what the SERVER did rather than on what the
-// plugin says it did.
+// BridgeChallengerLog returns the challenger's dnsmasq log so far.
 func (f *Fixture) BridgeChallengerLog() string {
 	if f.chal == nil || f.chal.logFile == "" {
 		return ""
@@ -298,8 +228,7 @@ func (f *Fixture) BridgeChallengerLog() string {
 	return string(data)
 }
 
-// BridgeLog returns the primary bridge dnsmasq's log so far. Same
-// purpose as BridgeChallengerLog, for the other side of the segment.
+// BridgeLog returns the primary bridge dnsmasq's log so far.
 func (f *Fixture) BridgeLog() string {
 	if f.bridgeDnsmasqLog == "" {
 		return ""
@@ -308,9 +237,7 @@ func (f *Fixture) BridgeLog() string {
 	return string(data)
 }
 
-// IsInBridgeChallengerPool reports whether ip was handed out by the
-// challenger. Because the two pools are disjoint this is the answer to
-// "which server leased this", not a heuristic.
+// IsInBridgeChallengerPool reports whether ip came from the challenger's pool.
 func IsInBridgeChallengerPool(ip net.IP) bool {
 	v4 := ip.To4()
 	if v4 == nil {

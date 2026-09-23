@@ -15,16 +15,7 @@ import (
 	docker "github.com/docker/docker/client"
 )
 
-// PluginRef is the docker plugin reference the harness expects to be
-// installed and enabled before the test run starts. We deliberately
-// don't install/enable from within tests — that's a global daemon
-// mutation and conflicts with whatever the operator already has set
-// up. The runner's pre-test step handles install (or not).
-//
-// The default ":golang" matches the production install. A run can
-// point the harness at a different tag (e.g. ":dev" for a code
-// change being verified before the ":golang" slot is bumped) by
-// setting INTEGRATION_PLUGIN_REF in the environment.
+// PluginRef is the plugin the run's pre-test step installed; the harness never installs one. INTEGRATION_PLUGIN_REF overrides it.
 var PluginRef = func() string {
 	if v := os.Getenv("INTEGRATION_PLUGIN_REF"); v != "" {
 		return v
@@ -32,10 +23,7 @@ var PluginRef = func() string {
 	return "ghcr.io/claymore666/docker-net-dhcp:golang"
 }()
 
-// VerifyPluginEnabled checks that PluginRef is installed and currently
-// enabled in the local Docker daemon. Use from TestMain so the suite
-// fails fast with a clear message instead of every test failing
-// downstream when network create can't find the driver.
+// VerifyPluginEnabled checks that PluginRef is installed and enabled.
 func VerifyPluginEnabled(ctx context.Context) error {
 	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
 	if err != nil {
@@ -58,6 +46,5 @@ func VerifyPluginEnabled(ctx context.Context) error {
 	return fmt.Errorf("plugin %q is not enabled. Available: %s. Install/enable it before running integration tests", PluginRef, strings.Join(available, ", "))
 }
 
-// DriverName is the network driver name to pass to docker network
-// create — same as PluginRef. Aliased for readability.
+// DriverName is the network driver name, the same as PluginRef.
 var DriverName = PluginRef

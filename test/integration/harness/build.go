@@ -10,30 +10,14 @@ import (
 	"strings"
 )
 
-// PluginBuildDirEnv overrides where BuiltPluginDir looks. Set it when a
-// caller knows better than the search below; leave it unset in the
-// lanes, whose build directories are the two the search already knows.
+// PluginBuildDirEnv overrides where BuiltPluginDir looks.
 const PluginBuildDirEnv = "PLUGIN_BUILD_DIR"
 
-// pluginBuildDirs are the directories, relative to the repo root, that
-// the two lanes build the plugin into: `make plugin` -> plugin/ on
-// every PR, `make plugin-cover` -> plugin-cover/ on release PRs only.
-//
-// This is THE place they are named (#583). A test that spelled one of
-// them itself was born broken in the lane that builds the other, and
-// stayed green for a whole release cycle because that lane runs once
-// per release (#541, fixed narrowly in #582): the contract restated in
-// N places is the shape this repo keeps finding rot in. scripts/
-// check-build-dir-refs.sh keeps every other test file from naming them.
+// pluginBuildDirs are the lanes' build directories under the repo root: `make plugin` on every PR, `make plugin-cover`
+// on release PRs. They are named only here (#583, #541); scripts/check-build-dir-refs.sh keeps other tests from naming them.
 var pluginBuildDirs = []string{"plugin", "plugin-cover"}
 
-// BuiltPluginDir returns the directory holding the plugin rootfs the
-// running lane built, or an error naming everywhere it looked.
-//
-// There is deliberately no "skip if absent" path: a missing rootfs
-// means the calling test did not run, and a test that quietly does not
-// run is the failure mode the STATE_DIR contract exists to prevent.
-// TestBuiltPluginDir_MissingIsAnErrorNotASkip pins that.
+// BuiltPluginDir returns the plugin rootfs directory the running lane built, or an error naming where it looked, never a skip (#583).
 func BuiltPluginDir() (string, error) {
 	root, err := RepoRoot()
 	if err != nil {
