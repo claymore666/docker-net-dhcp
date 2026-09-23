@@ -97,12 +97,34 @@ FILE="${1:-$ROOT/.github/workflows/release.yml}"
 # question it was asked yesterday. Both refuse when they derive
 # nothing, which is what keeps the failure loud rather than silent, and
 # neither can be made to pass by emptying its domain.
-derive_gates() {
-    python3 - "$1" <<'PY'
+derive_gates() { promotion_py gates "$1"; }
+scan() { promotion_py scan "$1"; }
+
+# Emit one record per interesting line (`scan`), or the install-proof
+# jobs one per line (`gates`):
+#
+#   job <TAB> needs <TAB> kind <TAB> line <TAB> detail
+#
+# kind is one of:
+#   needs      — the job's dependency list (emitted once per job)
+#   cranetag   — a step running `crane tag`; detail is the destination
+#   crane_if   — a `crane tag` step whose own `if:` names prerelease
+#   pre_if     — any step in the job whose `if:` names prerelease
+#   recency    — a step running assert-newest-release-tag.sh
+#
+# Steps are buffered rather than scanned line by line, because the
+# question "is THIS retag conditional?" is about the step the line sits
+# in, and the `if:` precedes the `run:` by several lines.
+promotion_py() {
+    python3 - "$@" <<'PY'
 import re, sys
 JOB = re.compile(r"^  ([A-Za-z0-9_-]+):\s*$")
 TOP = re.compile(r"^[A-Za-z]")
 INSTALL = re.compile(r"docker plugin install\b.*--grant-all-permissions")
+CRANE = re.compile(r"crane\s+tag\b")
+RECENCY = re.compile(r"(?:(?:bash|sh)\s+)?(?:[A-Za-z0-9._-]+/)*"
+                     r"assert-newest-release-tag\.sh(?=[\s;&|)]|$)")
+KEYWORD = re.compile(r"(?:^|\s)(?:then|do|else|elif|if|while|until|!)$")
 
 def unquoted_offsets(text):
     out, q, i = set(), None, 0
@@ -120,24 +142,117 @@ def unquoted_offsets(text):
         i += 1
     return out
 
-names, cur, in_jobs = [], None, False
-for line in open(sys.argv[1], encoding="utf-8"):
-    line = line.rstrip("\n")
-    if TOP.match(line):
-        in_jobs = line.startswith("jobs:")
-        continue
-    if in_jobs:
-        m = JOB.match(line)
-        if m:
-            cur = m.group(1)
+# Command position, as check-release-refusal-order.sh reads it (#883):
+# unquoted, and only a separator, a keyword or the `run:` key before it.
+# An echo, a `name:` or a trailing comment naming the command runs
+# nothing. Blind: quote state is per line, so a heredoc line counts.
+def command_at(line, start):
+    if start not in unquoted_offsets(line):
+        return False
+    head = re.sub(r"^\s*(?:-\s+)?(?:run:\s*)?", "", line[:start], count=1)
+    while True:
+        head = head.rstrip()
+        if head == "" or head[-1] in ";&|({":
+            return True
+        m = KEYWORD.search(head)
+        if m is None:
+            return False
+        head = head[:m.start()]
+
+def runs(line, rx):
+    return next((m for m in rx.finditer(line) if command_at(line, m.start())), None)
+
+def gates(path):
+    names, cur, in_jobs = [], None, False
+    for line in open(path, encoding="utf-8"):
+        line = line.rstrip("\n")
+        if TOP.match(line):
+            in_jobs = line.startswith("jobs:")
             continue
-    if cur is None or line.lstrip().startswith("#"):
-        continue
-    free = unquoted_offsets(line)
-    for m in INSTALL.finditer(line):
-        if m.start() in free and cur not in names:
+        if in_jobs:
+            m = JOB.match(line)
+            if m:
+                cur = m.group(1)
+                continue
+        if cur is None or line.lstrip().startswith("#"):
+            continue
+        if runs(line, INSTALL) and cur not in names:
             names.append(cur)
-print("\n".join(names))
+    print("\n".join(names))
+
+def scan(path):
+    st = {"job": "", "needs": [], "buf": [], "in_needs": False}
+
+    def flush_step():
+        dest, crane_line, cond = "", 0, False
+        for n, s in st["buf"]:
+            if runs(s, RECENCY):
+                print("%s\t-\trecency\t%d\t-" % (st["job"], n))
+            m = runs(s, CRANE)
+            if m:
+                if dest == "":
+                    dest = s.rstrip().split()[-1].replace('"', "")
+                if crane_line == 0:
+                    crane_line = n
+            if re.match(r"\s*if:", s) and "prerelease" in s:
+                cond = True
+        if cond:
+            print("%s\t-\tpre_if\t%d\t-" % (st["job"], st["buf"][0][0] if st["buf"] else 0))
+        if crane_line:
+            for kind in ("cranetag", "crane_if") if cond else ("cranetag",):
+                print("%s\t-\t%s\t%d\t%s" % (st["job"], kind, crane_line, dest or "-"))
+        st["buf"] = []
+
+    def flush_job():
+        if st["job"]:
+            flush_step()
+            print("%s\t%s\tneeds\t0\t-" % (st["job"], ",".join(st["needs"]) or "-"))
+        st.update(job="", needs=[], buf=[])
+
+    def addneed(s):
+        st["needs"] += [t for t in re.split(r"\s+", re.sub(r'[\[\]",]', " ", s)) if t]
+
+    in_jobs = False
+    for n, line in enumerate(open(path, encoding="utf-8"), 1):
+        line = line.rstrip("\n")
+        if re.match(r"jobs:\s*$", line):
+            in_jobs = True
+            continue
+        if in_jobs and re.match(r"[^\s#]", line):
+            flush_job()
+            in_jobs = False
+            continue
+        if not in_jobs:
+            continue
+        m = re.match(r"  ([A-Za-z0-9_-]+):\s*$", line)
+        if m:
+            flush_job()
+            st["job"] = m.group(1)
+            continue
+        # Comments never carry behaviour, and this file names `crane tag`
+        # and `prerelease` in prose explaining this very rule.
+        if re.match(r"\s*#", line):
+            st["in_needs"] = False
+            continue
+        if line.startswith("    needs:"):
+            rest = line[len("    needs:"):].strip()
+            st["in_needs"] = rest == ""
+            if rest:
+                addneed(rest)
+            continue
+        if st["in_needs"]:
+            m = re.match(r"      -\s*([A-Za-z0-9_-]+)\s*$", line)
+            if m:
+                addneed(m.group(1))
+                continue
+            st["in_needs"] = False
+        # A new step begins. Everything buffered belongs to the previous one.
+        if line.startswith("      - "):
+            flush_step()
+        st["buf"].append((n, line))
+    flush_job()
+
+{"gates": gates, "scan": scan}[sys.argv[1]](sys.argv[2])
 PY
 }
 
@@ -147,96 +262,6 @@ if [ ! -f "$FILE" ]; then
     exit 2
 fi
 
-# Emit one record per interesting line:
-#
-#   job <TAB> needs <TAB> kind <TAB> line <TAB> detail
-#
-# kind is one of:
-#   needs      — the job's dependency list (emitted once per job)
-#   cranetag   — a step running `crane tag`; detail is the destination
-#   crane_if   — a `crane tag` step whose own `if:` names prerelease
-#   pre_if     — any step in the job whose `if:` names prerelease
-#   recency    — a step running assert-newest-release-tag.sh
-#
-# Steps are buffered rather than scanned line by line, because the
-# question "is THIS retag conditional?" is about the step the line sits
-# in, and the `if:` precedes the `run:` by several lines.
-scan() {
-    awk '
-    function flush_step(   i, dest, has_crane, cond) {
-        has_crane = 0; cond = 0; dest = ""
-        for (i = 1; i <= sn; i++) {
-            if (sbuf[i] ~ /assert-newest-release-tag\.sh/)
-                printf "%s\t-\trecency\t%d\t-\n", job, sline[i]
-            if (sbuf[i] ~ /crane[[:space:]]+tag/) {
-                has_crane = 1
-                if (dest == "") {
-                    dest = sbuf[i]
-                    sub(/[[:space:]]+$/, "", dest)
-                    sub(/^.*[[:space:]]/, "", dest)
-                    gsub(/"/, "", dest)
-                }
-                if (crane_line == 0) crane_line = sline[i]
-            }
-            if (sbuf[i] ~ /^[[:space:]]*if:/ && sbuf[i] ~ /prerelease/) cond = 1
-        }
-        if (cond)
-            printf "%s\t-\tpre_if\t%d\t-\n", job, (sn ? sline[1] : 0)
-        if (has_crane) {
-            printf "%s\t-\tcranetag\t%d\t%s\n", job, crane_line, (dest == "" ? "-" : dest)
-            if (cond)
-                printf "%s\t-\tcrane_if\t%d\t%s\n", job, crane_line, (dest == "" ? "-" : dest)
-        }
-        sn = 0; crane_line = 0
-    }
-    function addneed(s,   parts, i, t) {
-        gsub(/[\[\]",]/, " ", s)
-        n = split(s, parts, /[[:space:]]+/)
-        for (i = 1; i <= n; i++) {
-            t = parts[i]
-            if (t == "") continue
-            needs = (needs == "" ? t : needs "," t)
-        }
-    }
-    function flush_job() {
-        if (job != "") {
-            flush_step()
-            printf "%s\t%s\tneeds\t0\t-\n", job, (needs == "" ? "-" : needs)
-        }
-        job = ""; needs = ""; sn = 0; crane_line = 0
-    }
-    /^jobs:[[:space:]]*$/ { in_jobs = 1; next }
-    in_jobs && /^[^[:space:]#]/ { flush_job(); in_jobs = 0; next }
-    !in_jobs { next }
-    /^  [A-Za-z0-9_-]+:[[:space:]]*$/ { flush_job(); job = $1; sub(/:$/, "", job); next }
-    # Comments never carry behaviour, and this file is heavily commented
-    # — including prose that names `crane tag` and `prerelease` while
-    # explaining this very rule. Counting that as a step would make the
-    # check fire on its own documentation.
-    /^[[:space:]]*#/ { in_needs = 0; next }
-    {
-        if ($0 ~ /^    needs:/) {
-            rest = $0
-            sub(/^    needs:[[:space:]]*/, "", rest)
-            if (rest == "") { in_needs = 1 } else { addneed(rest); in_needs = 0 }
-            next
-        }
-        if (in_needs) {
-            if ($0 ~ /^      -[[:space:]]*[A-Za-z0-9_-]+[[:space:]]*$/) {
-                rest = $0
-                sub(/^      -[[:space:]]*/, "", rest)
-                addneed(rest)
-                next
-            }
-            in_needs = 0
-        }
-        # A new step begins. Everything buffered belongs to the previous one.
-        if ($0 ~ /^      - /) flush_step()
-        sn++; sbuf[sn] = $0; sline[sn] = FNR
-    }
-    END { flush_job() }
-    ' "$1"
-}
 
 declare -A NEEDS=() HAS_PRE_IF=() HAS_RECENCY=()
 jobs=()
