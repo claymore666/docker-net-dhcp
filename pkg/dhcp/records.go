@@ -19,52 +19,12 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// Records is the plugin's durable lease record: one append-only JSONL
-// file, folded on read, written by exactly one process.
-//
-// WHY THE CHASSIS OWNS IT AND NOT THE LIBRARY. The library's ring 2
-// declares lease.Store and ships a JSONL implementation, and the fold is
-// total over (phase, op) — all of that is the library's. What is NOT the
-// library's is which endpoint, which container, which Docker network a
-// line belongs to: the ring gate forbids the library learning a Docker
-// field. So the chassis holds the file, supplies the record id and the
-// scope, and hands the library nothing but its own event types.
-//
-// G-10, THE ONE-WRITER GUARANTEE, AND WHERE IT COMES FROM. lease.Store's
-// contract is that one Append is one write, which makes two writers
-// interleave as two whole lines rather than one corrupt one. It does not
-// make two writers CORRECT: RecordEvent.Seq is strictly increasing per
-// record, and two writers minting sequence numbers from their own
-// memories produce a stream where one writer's events are rejected as
-// stale — silently, because a rejected event still folds into a record
-// with its Rejects counter bumped and nothing else moved. A restart
-// would then resume from a record that is missing half its history.
-//
-// The guarantee is CONSTRUCTED, not asserted, and it is constructed
-// twice because the two hazards are different:
-//
-//   - Another PROCESS on the same file — the upgrade window, where the
-//     old plugin has not exited when the new one starts. Closed by an
-//     flock(LOCK_EX|LOCK_NB) held on a sidecar lock file for the life of
-//     the Records. A second opener is refused with ErrRecordsLocked
-//     rather than admitted to a file it would corrupt.
-//   - Another Records in THIS process. flock also closes this one: the
-//     lock is associated with the open file description, and a second
-//     os.OpenFile creates a second description, so the second flock in
-//     one process conflicts exactly as a second process's would.
-//     TestRecords_SecondOpenIsRefused drives it in-process for that
-//     reason.
-//
-// The filesystem can refuse to lock at all — an NFS mount without lockd.
-// That does not leave either hazard open: flock failing for ANY reason is
-// refused as ErrRecordsLocked and NewPlugin gives up on it (D51), so the
-// FIRST opener does not start and the guarantee is kept by refusing to
-// run. Since v1.5.0 the state directory is a bind of a fixed host path,
-// not the plugin's own rootfs, so which filesystem sits under the lock is
-// the host's choice. The bound is on where the plugin can run, not on
-// whether two writers can overlap; docs/reference.md states it where an
-// operator picks the mount. Which of the two the operator is looking at
-// is read off the errno and said in the refusal — lockRefused.
+// A second opener, in another process or this one, is refused with ErrRecordsLocked: flock binds to the open file
+// description, so two os.OpenFile calls in one process conflict too. A filesystem that cannot lock (NFS without lockd)
+// is refused the same way, and NewPlugin does not start (D51, #950). Since v1.5.0 the state directory is a bind of a
+// fixed host path, so the host chooses the filesystem under the lock.
+
+// Records is the plugin's durable lease record, one append-only JSONL file written by exactly one process (#950).
 type Records struct {
 	path string
 
@@ -74,25 +34,16 @@ type Records struct {
 	mu  sync.Mutex
 	seq map[string]uint64
 
-	// instance names this PROCESS, and is what distinguishes two plugin
-	// processes' lines in one file during an upgrade. It is not the
-	// manager: one process runs the CreateEndpoint one-shot manager and
-	// then the Join manager, and giving those two one id freezes the
-	// wire counters at the first one's totals.
+	// instance names the process, not the manager; one id for two managers freezes the wire counters (#950).
 	instance string
 
 	managers atomic.Uint64
 }
 
-// ErrRecordsLocked is a refused start: the exclusive lock on the lease
-// record was not taken. Every reading lockRefused produces matches it,
-// including the ones that are not a second writer.
+// ErrRecordsLocked is the refused start when the exclusive lock on the lease record was not taken.
 var ErrRecordsLocked = errors.New("dhcp: the lease record file is already open by another writer")
 
-// lockRefusal is one reading of a failed flock. Error prints the
-// reading; Unwrap hands back both ErrRecordsLocked, which is what a
-// caller matches a refused start on, and the errno the reading was
-// derived from.
+// lockRefusal is one reading of a failed flock; Unwrap yields ErrRecordsLocked and the errno it came from.
 type lockRefusal struct {
 	msg   string
 	errno error
@@ -101,23 +52,9 @@ type lockRefusal struct {
 func (e *lockRefusal) Error() string   { return e.msg }
 func (e *lockRefusal) Unwrap() []error { return []error{ErrRecordsLocked, e.errno} }
 
-// lockRefused turns the errno flock returned into the sentence an
-// operator can act on (#950).
-//
-// THE TWO READINGS LEAD TO OPPOSITE ACTIONS, which is why one text for
-// both was a defect rather than a wording preference: a held lock is
-// cleared by disabling whatever holds it, and a mount that cannot lock
-// is not cleared by disabling anything. The errno is the only evidence
-// that separates them at the moment of the refusal.
-//
-// EAGAIN and EOPNOTSUPP each stand for a PAIR: EWOULDBLOCK is the same
-// value as the first on Linux and ENOTSUP the same as the second, so
-// spelling both members is a duplicate case. The test table names all
-// four and goes red on a build that splits a pair.
-//
-// An errno in neither list keeps the generic text and prints the number
-// beside it. Guessing a remedy from an errno we have not thought about
-// is how one text came to cover two causes.
+// EAGAIN equals EWOULDBLOCK and EOPNOTSUPP equals ENOTSUP on Linux, so each case names one of a pair (#950).
+
+// lockRefused turns the flock errno into the remedy, as a held lock and an unlockable mount need opposite actions.
 func lockRefused(path string, err error) error {
 	switch {
 	case errors.Is(err, unix.EAGAIN):
@@ -141,19 +78,13 @@ func lockRefused(path string, err error) error {
 	}
 }
 
-// OpenRecords opens or creates the record file at path.
-//
-// instance names the writing process. Callers pass the plugin's instance
-// id, which is minted per process, so a line can always be attributed
-// even when two plugin processes overlapped.
+// OpenRecords opens or creates the record file at path for the writing process instance.
 func OpenRecords(path, instance string) (*Records, error) {
 	if instance == "" {
 		return nil, fmt.Errorf("dhcp: a record store needs an instance id: an unattributed line cannot be told from another process's")
 	}
 
-	// Taken BEFORE the store is opened. OpenRecordStore repairs a torn
-	// tail by appending a newline, which is a write, and a repair racing
-	// another live writer is the corruption this lock exists to prevent.
+	// Locked before the store opens: OpenRecordStore repairs a torn tail with a write (#950).
 	lock, err := os.OpenFile(path+".lock", os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("dhcp: lock file for %s: %w", path, err)
@@ -171,10 +102,7 @@ func OpenRecords(path, instance string) (*Records, error) {
 
 	r := &Records{path: path, store: store, lock: lock, seq: map[string]uint64{}, instance: instance}
 
-	// The sequence floor comes from the FILE, not from zero. A process
-	// that restarted and began numbering at 1 would have every event
-	// after the first refused as stale, and a refusal is not an error
-	// the writer sees: Fold returns the record with Rejects bumped.
+	// The sequence floor comes from the file; restarting at 1 makes Fold reject later events as stale, silently (#950).
 	evs, err := store.Load()
 	if err != nil {
 		_ = store.Close()
@@ -192,25 +120,16 @@ func OpenRecords(path, instance string) (*Records, error) {
 // Close releases the file and the lock.
 func (r *Records) Close() error {
 	err := r.store.Close()
-	// The lock is released by the close of the last descriptor on the
-	// open file description, so this is the release.
 	if cerr := r.lock.Close(); err == nil {
 		err = cerr
 	}
 	return err
 }
 
-// Damage is what the store could not read: a torn tail from a crash, or
-// unreadable lines anywhere else.
+// Damage is what the store could not read, a torn tail or unreadable lines.
 func (r *Records) Damage() lease.StoreDamage { return r.store.Damage() }
 
-// Instance is the id every line this store writes is stamped with.
-//
-// It is what lets a reader compare a record's last writer against the
-// process holding the file, which is the only way to tell a record this
-// process wrote from one the process before it left behind. Reading it
-// from the store rather than from whatever the caller passed to
-// OpenRecords keeps the two from drifting.
+// Instance is the id every line this store writes is stamped with (#1047).
 func (r *Records) Instance() string { return r.instance }
 
 // Rebuilt folds the whole file.
@@ -222,25 +141,12 @@ func (r *Records) Rebuilt() (lease.Rebuilt, error) {
 	return lease.Rebuild(evs), nil
 }
 
-// NewManagerID mints an id no other manager instance in any process will
-// get.
-//
-// Unique per MANAGER, which is narrower than per endpoint, per interface
-// or per process — all three of which repeat, and any of which folded
-// two managers' counters into one. The instance id is random per plugin
-// process and the counter is per process, so the pair is unique across
-// restarts as well as within one.
+// NewManagerID mints an id unique per manager instance across processes and restarts.
 func (r *Records) NewManagerID() string {
 	return fmt.Sprintf("%s-m%d", r.instance, r.managers.Add(1))
 }
 
-// append stamps the envelope this chassis owns — the record id's next
-// sequence number and the writing process — and writes one line.
-//
-// Sequence numbers are handed out under the same lock that writes, so
-// two goroutines on two endpoints cannot swap their line order within
-// one record. Across records the order does not matter: Seq is per
-// record, and Fold compares it only against that record's own.
+// append stamps the record's next sequence number and the writing process, and writes one line.
 func (r *Records) append(ev lease.RecordEvent) error {
 	if ev.ID == "" {
 		return fmt.Errorf("dhcp: a record event with no record id")
@@ -254,22 +160,14 @@ func (r *Records) append(ev lease.RecordEvent) error {
 		ev.At = time.Now()
 	}
 	if err := r.store.Append(ev); err != nil {
-		// Give the number back: an Append that did not land must not
-		// burn a sequence number, or the next event is a gap and the
-		// fold has no way to tell a gap from a lost line.
+		// An Append that did not land gives its sequence number back; a gap reads as a lost line in the fold (#950).
 		r.seq[ev.ID]--
 		return err
 	}
 	return nil
 }
 
-// Created is the CREATED record: the link exists and this identity is
-// bound to it. One per endpoint, written at CreateEndpoint.
-//
-// Identity is the option-61 value AS SENT, including its type byte
-// (D10). It is write-once in the fold: a second Created with different
-// bytes is refused rather than overwritten, which is the whole point of
-// storing it instead of re-deriving it from a MAC that changes.
+// Created opens the record at CreateEndpoint, binding the option-61 identity as sent, write-once (D10).
 func (r *Records) Created(id, scope string, chaddr, identity []byte) error {
 	return r.append(lease.RecordEvent{
 		ID:       id,
@@ -281,21 +179,7 @@ func (r *Records) Created(id, scope string, chaddr, identity []byte) error {
 	})
 }
 
-// Reserved opens a record for an address answered BEFORE any endpoint
-// exists: the IPAM driver's RequestAddress, which runs before libnetwork
-// has a link to bind to (#110).
-//
-// It is a distinct phase and not an early Created because the two are
-// answerable by different questions. A RESERVED record holds an address
-// and no link, so a restart must be able to tell "Docker was told about
-// this address" from "a container is using it": the first is swept and
-// retained, the second is resumed. The fold admits Create after Reserve,
-// which is how CreateEndpoint later binds the link to THIS record rather
-// than opening a second one for the same address.
-//
-// Identity is written here and once, for the same reason Created writes
-// it: the option-61 value as sent is what the server files the lease
-// under, and the reserve's exchange is the one that put it there.
+// Reserved opens a record for an address answered by the IPAM driver before any endpoint exists (#110).
 func (r *Records) Reserved(id, scope string, chaddr, identity []byte) error {
 	return r.append(lease.RecordEvent{
 		ID:       id,
@@ -307,56 +191,18 @@ func (r *Records) Reserved(id, scope string, chaddr, identity []byte) error {
 	})
 }
 
-// Rebound consumes a tombstone under a new hardware address.
-//
-// The identity is NOT re-sent and must not be: it is write-once in the
-// fold and it is the whole reason a re-bind can keep an address at all.
-// Docker mints a fresh MAC for every endpoint, so the address survives a
-// restart only because the client-id the server files the lease under
-// does not change with it. The CHAddr does change, and the fold accepts
-// that -- it is the one identifying field of the three that is not
-// write-once.
+// Rebound consumes a tombstone under a new hardware address, keeping the write-once identity (#110).
 func (r *Records) Rebound(id string, chaddr []byte) error {
 	return r.append(lease.RecordEvent{ID: id, Op: lease.OpRebind, CHAddr: chaddr})
 }
 
-// Scope6 is the record scope a DHCPv6 endpoint's record lives in: the
-// Docker network id, marked.
-//
-// A DUAL-STACK ENDPOINT NEEDS TWO RECORDS AND THEY MUST NOT COLLIDE.
-// lease.Record binds ONE family (Record.Family is write-once) and one
-// Identity (also write-once, and a v6 record with an empty one is
-// refused), so the v4 client-id and the v6 DUID cannot share a record.
-// The index that finds a record is (scope, chaddr) — Rebuilt.ByScopeMAC
-// — and a dual-stack endpoint has one chaddr, so with one scope the two
-// records would be two matches on every lookup and "the newest wins"
-// would hand a v4 manager the v6 record roughly half the time.
-//
-// The scope is the only half of the key the chassis owns, so it is the
-// half that carries the split. Marked rather than hashed so that a
-// human reading the record file can see which family a line belongs to;
-// '#' is not in a Docker network id.
-//
-// It is applied INSIDE Created6 and Resume6 rather than by the caller,
-// which is what makes "a v6 record cannot be filed under the v4 scope"
-// a property of this file instead of a rule every call site remembers.
+// Scope6 is the record scope of a DHCPv6 endpoint, so a dual-stack endpoint's two records do not collide (#911).
 func Scope6(networkID string) string { return networkID + scope6Marker }
 
-// scope6Marker is the suffix that makes a v6 scope. '#' is not in a
-// Docker network id, which is what lets the two halves round-trip.
+// scope6Marker is the suffix that makes a v6 scope; '#' is not in a Docker network id (#984).
 const scope6Marker = "#v6"
 
-// NetworkOfScope is Scope6 backwards: the network id a scope belongs to,
-// and whether it is the v6 half.
-//
-// IT IS HERE AND NOT AT THE CALLER because the caller that needs it
-// needs the network's OPTIONS, which are filed under the network id and
-// nothing else: the state file's name is validated against a flat token
-// and '#' is not one, so a scope passed where a network id is wanted
-// does not read the wrong file, it reads none and the caller silently
-// does nothing (#984). A second copy of the marker at that call site is
-// the same fact written twice; Scope6 and this share the constant, and
-// the round trip is a test.
+// NetworkOfScope is Scope6 backwards: the network id and whether the scope is the v6 half (#984).
 func NetworkOfScope(scope string) (networkID string, v6 bool) {
 	if id, found := strings.CutSuffix(scope, scope6Marker); found {
 		return id, true
@@ -364,23 +210,12 @@ func NetworkOfScope(scope string) (networkID string, v6 bool) {
 	return scope, false
 }
 
-// Created6 is Created for a DHCPv6 endpoint.
-//
-// identity is Identity6.Bytes(): the DUID as sent, with the IAID. It is
-// write-once in the fold and it is REQUIRED — the library refuses a v6
-// record without one — because it is the whole reason the record
-// exists. RFC 9915 section 11: a DUID "SHOULD NOT change over time if
-// at all possible", and an identity re-derived on every plugin start
-// from whatever the plumbing happens to look like then is one that
-// changes.
+// RFC 9915 section 11: a DUID "SHOULD NOT change over time if at all possible".
+
+// Created6 is Created for a DHCPv6 endpoint, with the DUID and IAID as its required identity (#911).
 func (r *Records) Created6(id, networkID string, chaddr, identity []byte) error {
-	// REFUSED HERE AND NOT LEFT TO THE FOLD. The library rejects a v6
-	// create with no identity, but it rejects it at REBUILD, and the
-	// rebuild drops the offending record and carries on -- Append
-	// returns nil, Rebuilt returns nil, and the endpoint simply has no
-	// v6 record from then on. Every plugin restart then mints a fresh
-	// DUID, the server files each one as a new client, and the only
-	// symptom is an address that changes for no reason.
+	// The library drops an identity-less v6 record at rebuild with no error, and each restart would mint a new DUID
+	// (#911).
 	if len(identity) == 0 {
 		return fmt.Errorf("dhcp: a DHCPv6 record for %v carries no identity "+
 			"(RFC 9915 section 11: the DUID is what makes this the same client after a restart)", id)
@@ -395,15 +230,9 @@ func (r *Records) Created6(id, networkID string, chaddr, identity []byte) error 
 	})
 }
 
-// Resume6 is Resume in the v6 scope, and it hands back the stored
-// identity as well as the lease.
-//
-// TWO ANSWERS BECAUSE A v6 MANAGER NEEDS BOTH, and only one of them is
-// optional. The lease is what makes the first message on the wire RFC
-// 9915 section 18.2.12's Confirm instead of a Solicit (#820); the
-// identity is what makes it the SAME client either way. A restart that
-// resumed the lease under a freshly minted DUID would Confirm a binding
-// the server files under a different client and be told NotOnLink.
+// The lease makes the first message a Confirm (RFC 9915 section 18.2.12, #820); a new DUID would be told NotOnLink.
+
+// Resume6 is Resume in the v6 scope, handing back the stored identity as well as the lease (#911).
 func (r *Records) Resume6(networkID string, chaddr []byte, now time.Time) (string, Resumption, Identity6, bool) {
 	id, res, ok := r.Resume(Scope6(networkID), chaddr, now)
 	if !ok {
@@ -412,12 +241,7 @@ func (r *Records) Resume6(networkID string, chaddr []byte, now time.Time) (strin
 	return id, res, r.identity6(id), true
 }
 
-// identity6 reads back the DUID and IAID a record was created with.
-//
-// An unreadable or absent identity comes back as the zero value, which
-// the caller reads as "mint a fresh one": that is the honest answer for
-// a record written by a build that had none, and buildParams6 refuses
-// the zero value rather than sending it.
+// identity6 reads back a record's DUID and IAID, or the zero value, which buildParams6 refuses to send.
 func (r *Records) identity6(id string) Identity6 {
 	rb, err := r.Rebuilt()
 	if err != nil {
@@ -438,22 +262,12 @@ func (r *Records) identity6(id string) Identity6 {
 	return Identity6{}
 }
 
-// Bound starts a manager on the record: CREATED (or ADOPTED) becomes
-// JOINED.
-//
-// Written by the PLUGIN and not by the chassis, because it is a
-// statement about the endpoint's lifecycle rather than about the
-// exchange: the CreateEndpoint one-shot runs against a CREATED record
-// and must not move it, and a record that a previous plugin process
-// already left JOINED must not be bound a second time. The manager's
-// own half — its events, its Params snapshot and its counters — is
-// written by the chassis.
+// Bound starts a manager on the record, moving CREATED or ADOPTED to JOINED.
 func (r *Records) Bound(id string) error {
 	return r.append(lease.RecordEvent{ID: id, Op: lease.OpBind})
 }
 
-// Adopted takes over an address Docker reports with no record behind
-// it: the endpoint predates this file, or the file was lost.
+// Adopted takes over an address Docker reports with no record behind it.
 func (r *Records) Adopted(id, scope string, chaddr, identity []byte) error {
 	return r.append(lease.RecordEvent{
 		ID:       id,
@@ -465,17 +279,7 @@ func (r *Records) Adopted(id, scope string, chaddr, identity []byte) error {
 	})
 }
 
-// Observed writes one manager event.
-//
-// It routes through lease.EventRecord rather than choosing the op here,
-// because "a Lost is OpLost" is the one arm of the fold that knows
-// ReasonStopped is not a loss. A call site that picked OpLease for it
-// would be refused rather than mis-folded, but only because that mapping
-// lives in one function.
-// params, when non-nil, is the manager's Params snapshot. It rides the
-// manager's FIRST event rather than a line of its own, because a record
-// without the Params that produced its journal is not replayable
-// (proto.Replay takes Params) and a separate line could be the one lost.
+// Observed writes one manager event, with the Params snapshot riding the manager's first event when params is non-nil.
 func (r *Records) Observed(id string, ev lease.Event, params *proto.Params) error {
 	rev := lease.EventRecord(id, r.instance, 0, time.Now(), ev)
 	if params != nil {
@@ -485,21 +289,12 @@ func (r *Records) Observed(id string, ev lease.Event, params *proto.Params) erro
 	return r.append(rev)
 }
 
-// Left stops the manager and keeps the last lease snapshot, which is
-// what makes the address resumable after a restart.
-//
-// It is the op for a teardown in which NOTHING was released: the
-// network is `release_lease=never`, which is the default and D-7's rule
-// (#800), or a release was attempted and did not leave the host (#962).
-// Either way the address is left to expire on the server, exactly as
-// any other host on the segment leaves it. A teardown that did release
-// calls Closed instead, because there is nothing left to resume.
+// Left stops the manager and keeps the last lease snapshot, for a teardown that released nothing (#800, #962).
 func (r *Records) Left(id string) error {
 	return r.append(lease.RecordEvent{ID: id, Op: lease.OpLeave})
 }
 
-// Retained lays the tombstone. deadline is the chassis's
-// min(lease expiry, tombstone TTL).
+// Retained lays the tombstone with deadline min(lease expiry, tombstone TTL).
 func (r *Records) Retained(id string, deadline time.Time) error {
 	return r.append(lease.RecordEvent{ID: id, Op: lease.OpRetain, Deadline: deadline})
 }
@@ -509,104 +304,34 @@ func (r *Records) Closed(id string) error {
 	return r.append(lease.RecordEvent{ID: id, Op: lease.OpClose})
 }
 
-// Counted merges one manager's counter snapshot into the record.
-//
-// manager MUST be the id NewManagerID returned for that manager
-// instance and no other. A snapshot naming no manager is refused; an id
-// that comes back after a different one is refused; two managers handed
-// ONE id are folded as one and nothing detects it — see
-// lease.RecordEvent.Manager.
+// Counted merges the counter snapshot of the manager NewManagerID named into the record.
 func (r *Records) Counted(id, manager string, s lease.Stats) error {
 	return r.append(lease.RecordEvent{ID: id, Op: lease.OpStats, Manager: manager, Stats: &s})
 }
 
-// Resumption is what a record offers a manager that is about to start.
-//
-// Two fields and not one, because the two are different messages on the
-// wire and the difference is the whole of RFC 2131 section 3.2 versus
-// section 4.4.1. Lease non-nil means the record still holds an
-// unexpired address, and the first packet is an INIT-REBOOT
-// DHCPREQUEST: the server either confirms the address or NAKs, and a
-// container keeps the IP it had across a plugin restart. Prefer means
-// the record's address is one this endpoint would LIKE but has no claim
-// to — a tombstone's, or an expired lease's — and it goes out as option
-// 50 in an ordinary DHCPDISCOVER, which a server may ignore.
-//
-// They are never both set: Record.Prefer refuses whatever Record.Resume
-// answers, by construction in the library.
+// Lease is an INIT-REBOOT DHCPREQUEST (RFC 2131 section 3.2); Prefer is option 50 in a DHCPDISCOVER (RFC 2131 section
+// 4.4.1). The library never sets both.
+
+// Resumption is what a record offers a manager about to start: a lease to resume or an address to prefer.
 type Resumption struct {
 	Lease  *lease.Lease
 	Prefer string
 	Phase  string
 
-	// ACD is where RFC 5227's check stood at this record's last lease
-	// event, and it is a DIFFERENT phase from the field above: Phase is
-	// the endpoint's lifecycle (created, joined, left, retained) and
-	// this is the conflict-detection sub-machine's.
-	//
-	// D23 IS WHY IT IS DURABLE. A proto.ConflictAsync client is told
-	// Acquired while section 2.1's check is still running, so a plugin
-	// that dies in that window and rebuilds from this file is resuming
-	// an address nothing ever cleared -- and without the phase that
-	// record is byte-for-byte the record of an address that passed.
-	// proto.ACDProbing and proto.ACDSettling are the unchecked values;
-	// proto.ACDAnnouncing and proto.ACDDefending mean section 2.1
-	// completed; proto.ACDIdle is the honest value for a
-	// proto.ConflictOff client, which runs no check at all.
+	// ACD is RFC 5227's phase at the last lease event; a ConflictAsync client dying mid-check leaves Probing or
+	// Settling (D23, #882).
 	ACD proto.ACDPhase
 
-	// Identity is the option-61 value the record was created with, AS
-	// SENT, type byte included -- the same bytes Created and Reserved
-	// were given.
-	//
-	// IT IS THE HALF THE v4 SIDE USED TO THROW AWAY. Resume6 has handed
-	// the DHCPv6 identity back since #820 for a reason that is not a v6
-	// reason at all: an exchange resumed under an identity the server
-	// does not have the binding filed under is a new client, and a new
-	// client is a new address. v4 had no such field, so the persistent
-	// client re-derived option 61 from the hardware address -- correct
-	// for an endpoint that kept its hardware address, and wrong for
-	// exactly the case the re-bind exists for. In IPAM mode Docker mints
-	// a fresh one for the endpoint a restarting container comes back on:
-	// the reservation asks under the RECORD's identity and is given the
-	// address back, then the client asks for the same address under an
-	// identity the server has never seen and is NAKed. MEASURED on the
-	// lane: ACK .10 under the record's identity, DHCPNAK then .11 under
-	// the derived one, with the container reported to Docker on .10.
-	//
-	// Empty for a record that has none: one written before identities
-	// were stored, or an endpoint adopted from Docker's own view. The
-	// caller reads that as "derive one", which is what it did for every
-	// record before this field existed.
+	// Measured on the lane (#1047): a derived identity was NAKed and moved .10 to .11; the record's got .10 back.
+
+	// Identity is the option-61 value the record was created with, empty for records that have none (#1047).
 	Identity []byte
 }
 
-// ACDUnfinished reports whether this record is EVIDENCE OF A CHECK
-// THAT WAS STILL RUNNING when the process that wrote it stopped.
-//
-// IT IS NOT THE NEGATION OF "cleared", and the difference is the whole
-// function. proto.ACDIdle means the sub-machine holds nothing: it is
-// what a proto.ConflictOff client writes, what every record written
-// before M6 says, and -- the case that matters here -- what the fold
-// records at the end of EVERY ordinary acquisition, because cancelling
-// a manager drops the lease and the ACD sub-machine goes idle with it
-// (the library's Record.ACD says "the phase at the loss, whatever the
-// reason"). Reading idle as "not cleared" put a warning on the healthy
-// path of every single container start; MEASURED on the 2.x lane,
-// 2026-09-04.
-//
-// So idle is named here explicitly, with its reason, rather than left
-// to fall out of a negation. Everything else that is not one of the
-// two finished phases -- proto.ACDProbing, proto.ACDSettling, and any
-// phase the library adds later -- is unfinished, which keeps the
-// asymmetry that matters: an unknown phase costs a log line rather
-// than silently reading as clean.
-//
-// It is DIAGNOSTIC ONLY. D23's "a restart during the window resumes
-// the check" is delivered by the library, which re-runs section 2.1 on
-// the INIT-REBOOT DHCPACK whatever the record said; this is the
-// chassis's evidence about what the previous process was in the middle
-// of, and the only place that evidence exists at all.
+// ACDIdle is what every ordinary acquisition ends in, so reading idle as unfinished warned on every start, measured on
+// the 2.x lane 2026-09-04 (#882).
+
+// ACDUnfinished reports whether the record shows an RFC 5227 check still running when its writer stopped (#882).
 func (r Resumption) ACDUnfinished() bool {
 	switch r.ACD {
 	case proto.ACDAnnouncing, proto.ACDDefending, proto.ACDIdle:
@@ -616,24 +341,9 @@ func (r Resumption) ACDUnfinished() bool {
 	}
 }
 
-// Resume finds the record for one identity on one network and says what
-// a new manager may ask for, and who it is while asking.
-//
-// Both answers or neither, for the reason Resume6 states on the v6
-// side: an address is resumed FROM a binding the server holds, and the
-// binding is filed under the identity, so a resume that took the lease
-// and left the identity behind asks for another client's address.
-//
-// Keyed on scope AND hardware address. Either alone is wrong for a
-// reason the library states: an index on the address alone collapses
-// two networks that hand out the same private address into one record,
-// and an index on the MAC alone does the same to one machine on two
-// networks.
-//
-// More than one record can match — a tombstone and its successor share
-// a MAC — so the newest non-closed one wins. "Newest" is position in
-// the file: Rebuild appends in creation order, and a re-bind consumes
-// the tombstone rather than making a second record.
+// Keyed on scope and hardware address; of several matches the newest non-closed record wins, by file position (#353).
+
+// Resume finds the record for one identity on one network and says what a new manager may ask for, and as whom (#1047).
 func (r *Records) Resume(scope string, chaddr []byte, now time.Time) (string, Resumption, bool) {
 	rb, err := r.Rebuilt()
 	if err != nil {

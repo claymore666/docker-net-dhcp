@@ -27,16 +27,9 @@ func testIdentity6(t *testing.T, mac string) Identity6 {
 	return Identity6{DUID: duid, IAID: iaid}
 }
 
-// The two families of one dual-stack endpoint do not share a record.
-//
-// WHAT GOES WRONG WITHOUT THE SCOPE SUFFIX. A record is indexed by scope
-// AND hardware address, and a dual-stack endpoint has ONE hardware
-// address on ONE network -- so a v6 record filed under the network id
-// collides with the v4 record of the same endpoint exactly. The fold
-// takes the newest match, so whichever family bound last would answer
-// both Resume calls: the v4 manager would be handed a /128 to
-// INIT-REBOOT, or the v6 manager would Confirm a v4 address. Both are
-// silent at the record layer and only fail on the wire.
+// A dual-stack endpoint has one hardware address on one network, so without the scope suffix the two families' records
+// collide (#911).
+
 func TestRecords6_TheFamiliesDoNotShareARecord(t *testing.T) {
 	r, _ := testRecords(t)
 	const network = "net-1"
@@ -74,23 +67,13 @@ func TestRecords6_TheFamiliesDoNotShareARecord(t *testing.T) {
 	}
 }
 
-// The identity survives the file, which is the entire reason the record
-// carries it.
-//
-// RFC 9915 section 11: a DUID "SHOULD NOT change over time if at all
-// possible". A plugin restart that re-derives the identity is fine as
-// long as it derives the SAME one -- and on ipvlan it cannot, because
-// every endpoint on the parent shares the MAC and the identity is seeded
-// from the endpoint id (#895). So the file is the only thing that makes
-// an ipvlan endpoint the same DHCPv6 client after a restart, and this
-// reopens it to prove the identity is in the bytes and not in the
-// process.
+// RFC 9915 section 11: a DUID "SHOULD NOT change over time if at all possible"; on ipvlan only the file keeps it
+// (#895).
+
 func TestRecords6_IdentitySurvivesAReopen(t *testing.T) {
 	r, path := testRecords(t)
 	const network = "net-1"
 	mac := []byte{0x02, 0x42, 0xac, 0x11, 0x00, 0x02}
-	// A DUID-UUID, the ipvlan shape: nothing about the link can
-	// reproduce it.
 	duid, err := DUIDUUID(bytes.Repeat([]byte{0x5a}, 16))
 	if err != nil {
 		t.Fatalf("DUIDUUID: %v", err)
@@ -120,17 +103,8 @@ func TestRecords6_IdentitySurvivesAReopen(t *testing.T) {
 	}
 }
 
-// A v6 record with no identity is refused at the call, not at the
-// rebuild.
-//
-// WHY THIS IS NOT LEFT TO THE LIBRARY. The library does refuse it --
-// RFC 9915 section 11, a v6 record carries the DUID as sent -- but it
-// refuses at FOLD time, and the fold drops the offending record and
-// carries on. So the write succeeds, Rebuilt succeeds, the rest of the
-// file is intact, and the endpoint just quietly has no v6 record: every
-// plugin restart mints a fresh DUID, the server files each one as a new
-// client, and the operator sees an address that changes for no reason
-// with nothing in the log. Measured on this tree, 2026-09-06.
+// Measured 2026-09-06: the library drops an identity-less v6 record at fold time and the write still succeeds (#911).
+
 func TestRecords6_ARecordWithNoIdentityIsRefusedAtTheCall(t *testing.T) {
 	r, _ := testRecords(t)
 	const network = "net-1"
@@ -139,28 +113,17 @@ func TestRecords6_ARecordWithNoIdentityIsRefusedAtTheCall(t *testing.T) {
 	if err := r.Created6("ep-v6", network, mac, nil); err == nil {
 		t.Fatal("Created6 accepted an empty identity")
 	}
-	// And nothing was written: a refused call that still appended would
-	// burn the record id.
 	if id, _, _, ok := r.Resume6(network, mac, time.Now()); ok {
 		t.Errorf("a refused Created6 left record %q behind", id)
 	}
 
-	// The zero identity is refused again on the way to the wire, which
-	// is the second half of the same guarantee -- a record written by an
-	// older build carries none, and Resume6 hands that back as the zero
-	// value rather than a guess.
 	if _, err := buildParams6(&DHCPClientOptions{V6: true}, false); err == nil {
 		t.Error("buildParams6 accepted the zero identity a record-less endpoint resumes")
 	}
 }
 
-// A record whose identity blob is too short to split is reported as
-// absent, not as a truncated DUID.
-//
-// The blob is opaque to the library (D10), so nothing below the chassis
-// validates it; a corrupted line would otherwise become a DUID one byte
-// shorter than the one the server has, which is a NEW client that gets a
-// new address and no diagnosis.
+// The identity blob is opaque to the library (D10), so nothing below the chassis validates it (#911).
+
 func TestRecords6_ACorruptIdentityIsNotTruncated(t *testing.T) {
 	r, _ := testRecords(t)
 	const network = "net-1"
@@ -179,8 +142,6 @@ func TestRecords6_ACorruptIdentityIsNotTruncated(t *testing.T) {
 	}
 }
 
-// Resume6 on a network with no v6 record says so, rather than falling
-// back to the v4 one.
 func TestRecords6_NoRecordIsNotTheV4Record(t *testing.T) {
 	r, _ := testRecords(t)
 	const network = "net-1"
@@ -195,25 +156,12 @@ func TestRecords6_NoRecordIsNotTheV4Record(t *testing.T) {
 	}
 }
 
-// TestNetworkOfScope_IsScope6Backwards pins the pair that lets a caller
-// go from a record's scope to the network whose options it must read.
-//
-// THE FAILURE IT CLOSES IS SILENT AT EVERY LEVEL. A v6 scope handed to
-// a caller that wants a network id reads a state file whose name
-// carries a '#', which the path check refuses -- so the caller gets an
-// error it treats as "this network says nothing", does nothing, and
-// reports nothing. Every DHCPv6 address on the host would then be held
-// forever by a plugin that believed it was releasing them (#984).
-//
-// The v4 direction is asserted too: a network id is its own v4 scope
-// and must come back unchanged, or every v4 record would be filed for a
-// network that does not exist.
+// A v6 scope carries a '#' the state-file path check refuses, which left DHCPv6 addresses unreleased (#984).
+
 func TestNetworkOfScope_IsScope6Backwards(t *testing.T) {
 	for _, network := range []string{
 		"0123456789abcdef",
 		"n1",
-		// A network id can end in a digit and a letter; nothing here
-		// may key on the last characters rather than on the marker.
 		"abcv6",
 		"v6",
 	} {

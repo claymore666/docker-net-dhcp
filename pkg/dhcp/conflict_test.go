@@ -16,10 +16,6 @@ import (
 	"github.com/claymore666/dhcp-golib/wire"
 )
 
-// The chassis spells no mode name. These tests may, because their whole
-// job is to notice when the library stops printing one — a chassis that
-// derived its own expectations from the same call it is checking would
-// pass under any rename at all.
 const (
 	wantWait  = "wait"
 	wantAsync = "async"
@@ -66,14 +62,13 @@ func TestParseConflictCheck_MapsEachNameToItsOwnMode(t *testing.T) {
 	}
 }
 
-// RFC 5227 section 2.1.1's schedule and section 2.1's completion
-// condition, arithmetic written out a second time here rather than
-// re-calling the function under test.
+// RFC 5227 sections 2.1.1 and 2.1, written out here a second time so the test does not re-call the function under test.
+
 func TestConflictWindow_IsRFC5227sArithmetic(t *testing.T) {
 	p := proto.DefaultACDParams()
 	got := ConflictWindow(p)
 
-	// PROBE_WAIT 1s + (PROBE_NUM-1=2) * PROBE_MAX 2s + ANNOUNCE_WAIT 2s.
+	// RFC 5227 section 2.1.1: PROBE_WAIT 1s + (PROBE_NUM-1=2) * PROBE_MAX 2s + ANNOUNCE_WAIT 2s.
 	want := 1*time.Second + 2*2*time.Second + 2*time.Second
 	if got != want {
 		t.Errorf("ConflictWindow(defaults) = %v, want %v", got, want)
@@ -82,18 +77,15 @@ func TestConflictWindow_IsRFC5227sArithmetic(t *testing.T) {
 		t.Fatalf("the RFC's own table gives %v, not 7s; the fixture is wrong", want)
 	}
 
-	// ANNOUNCE_WAIT is IN the window: section 2.1 completes
-	// ANNOUNCE_WAIT after the last probe, not at it. A window computed
-	// from the transmissions alone is 5s and would let a lease_timeout
-	// of 6s past the refusal.
+	// RFC 5227 section 2.1 completes ANNOUNCE_WAIT after the last probe; a 5s window would let a 6s lease_timeout past
+	// the refusal (#882).
 	noSettle := p
 	noSettle.AnnounceWait = 0
 	if ConflictWindow(noSettle) != want-2*time.Second {
 		t.Error("ANNOUNCE_WAIT does not contribute to the window")
 	}
 
-	// The announcements are NOT in it: section 2.3 releases the address
-	// at the FIRST announcement.
+	// RFC 5227 section 2.3 releases the address at the first announcement, so announcements are not in the window.
 	more := p
 	more.AnnounceNum, more.AnnounceInterval = 9, 9*proto.Second
 	if ConflictWindow(more) != want {
@@ -115,7 +107,6 @@ func TestAcquisitionWindow_IsOneRetransmissionPlusTheProbeWindow(t *testing.T) {
 		t.Fatalf("the arithmetic gives %v, not the 12.0s the M6 review measured", want)
 	}
 
-	// A zero ACD table means the library's defaults, not a zero window.
 	bare := p
 	bare.ACD = proto.ACDParams{}
 	if AcquisitionWindow(bare) != want {
@@ -123,21 +114,8 @@ func TestAcquisitionWindow_IsOneRetransmissionPlusTheProbeWindow(t *testing.T) {
 	}
 }
 
-// TestConflictRecoveryWindow_AZeroRestartDelayIsTheDefaultNotZero is
-// the arm that decides the DEFAULT, and it is the one a lazy test
-// misses.
-//
-// proto.Params.RestartDelay carries a documented inversion: zero means
-// the library's default of 10s, NOT "restart immediately". Every
-// derivation the chassis does through proto.DefaultParams(nil) sees a
-// filled-in 10s and never exercises the resolution, so a build that
-// read a zero as zero would pass every other test in this file and
-// derive a deadline TEN SECONDS shorter than the wait the library is
-// about to take -- which is the exact shape of the lane failure that
-// produced ConflictRecoveryWindow in the first place.
-//
-// Found by mutant M13 surviving, which is what a surviving mutant is
-// for.
+// proto.Params.RestartDelay zero means the library's 10s default, not an immediate restart (#882).
+
 func TestConflictRecoveryWindow_AZeroRestartDelayIsTheDefaultNotZero(t *testing.T) {
 	one := AcquisitionWindow(proto.DefaultParams(nil))
 
@@ -166,9 +144,6 @@ func TestConflictRecoveryWindow_AZeroRestartDelayIsTheDefaultNotZero(t *testing.
 			got-2*one, time.Duration(proto.DefaultRestartDelay))
 	}
 
-	// A negative value is the same question asked the other way: it is
-	// not a duration the library could honour, so it resolves the same
-	// way rather than SHORTENING the deadline below one acquisition.
 	neg := proto.DefaultParams(nil)
 	neg.RestartDelay = -1
 	if got := ConflictRecoveryWindow(neg); got != want {
@@ -176,16 +151,7 @@ func TestConflictRecoveryWindow_AZeroRestartDelayIsTheDefaultNotZero(t *testing.
 	}
 }
 
-// ---------------------------------------------------------------------
-// The exclusivity claim, driven rather than believed.
-//
-// The library says Failed{ReasonConflict} and Lost{ReasonConflict} are
-// never both emitted for one conflict, and the chassis counts one bump
-// per event. If the claim were false the counter would double, and
-// nothing on this side would notice: a conflict counter that reads high
-// is believed. So the claim is DRIVEN here, on the library's own pure
-// ring-1 machine, with no socket and no clock.
-// ---------------------------------------------------------------------
+// The library emits Failed{ReasonConflict} or Lost{ReasonConflict} for one conflict, never both (#882).
 
 const (
 	testAddr   = "192.168.99.50"
@@ -197,9 +163,7 @@ var (
 	theirMAC = net.HardwareAddr{0x02, 0x42, 0xAC, 0x11, 0x00, 0x63}
 )
 
-// fastACD is RFC 5227's COUNTS with nanosecond durations. Every number
-// the schedule branches on is the RFC's; only the waits are scaled, and
-// nothing here measures a wait.
+// fastACD is RFC 5227's counts with nanosecond durations.
 func fastACD() proto.ACDParams {
 	p := proto.DefaultACDParams()
 	p.ProbeWait = 3 * proto.Nanosecond
@@ -278,8 +242,7 @@ func received(t *testing.T, m *wire.Message) proto.Event {
 
 func instant(n int64) proto.Instant { return proto.Instant(n) }
 
-// squatterReply is the frame RFC 5227 section 2.1.1 and section 2.4
-// both call a conflict: another host answering for our address.
+// squatterReply is the frame RFC 5227 sections 2.1.1 and 2.4 call a conflict.
 func squatterReply() *wire.ARPPacket {
 	a := netip.MustParseAddr(testAddr)
 	return &wire.ARPPacket{Op: wire.ARPReply, SenderHW: theirMAC, SenderIP: a, TargetIP: a}
@@ -305,8 +268,6 @@ func has(acts []proto.Action, k proto.ActionKind) bool {
 }
 
 func TestConflict_TheLibraryEmitsExactlyOneEventPerConflict(t *testing.T) {
-	// (1) conflict inside the probe window, conflict_check=wait.
-	// Nothing was ever handed to the caller, so the report is Failed.
 	t.Run("probe window, wait", func(t *testing.T) {
 		m, ackActs := acdMachine(t, proto.ConflictWait)
 		if has(ackActs, proto.ActLeaseAcquired) {
@@ -323,9 +284,6 @@ func TestConflict_TheLibraryEmitsExactlyOneEventPerConflict(t *testing.T) {
 		}
 	})
 
-	// (2) conflict inside the probe window, conflict_check=async. The
-	// caller already has the address, so the SAME conflict is reported
-	// as a loss — and still only once.
 	t.Run("probe window, async", func(t *testing.T) {
 		m, ackActs := acdMachine(t, proto.ConflictAsync)
 		if !has(ackActs, proto.ActLeaseAcquired) {
@@ -341,14 +299,9 @@ func TestConflict_TheLibraryEmitsExactlyOneEventPerConflict(t *testing.T) {
 		}
 	})
 
-	// (3) RFC 5227 section 2.4: the conflict arrives after the address
-	// has been checked and taken into use. One Lost, no Failed.
+	// RFC 5227 section 2.4: a conflict after the address is in use.
 	t.Run("after acquisition, wait", func(t *testing.T) {
 		m, _ := acdMachine(t, proto.ConflictWait)
-		// Drive the whole section 2.1 schedule out on the virtual
-		// clock. Bounded: PROBE_NUM probes, ANNOUNCE_WAIT, then the
-		// announcements — a dozen timer fires covers it, and running
-		// out is a failure rather than a silent skip.
 		acquired := false
 		for i := 0; i < 24 && !acquired; i++ {
 			_, acts := m.Step(instant(int64(10+i)), uint64(10+i), proto.TimerFired(proto.TimerACD))
@@ -367,10 +320,6 @@ func TestConflict_TheLibraryEmitsExactlyOneEventPerConflict(t *testing.T) {
 		}
 	})
 
-	// (4) conflict_check=off runs no check at all, so the same frame is
-	// not a conflict. This is the preservation control in the other
-	// direction: it shows the three rows above are the sub-machine
-	// answering and not the frame being special.
 	t.Run("off, the same frame is nothing", func(t *testing.T) {
 		m, _ := acdMachine(t, proto.ConflictOff)
 		_, acts := m.Step(instant(3), 4, proto.ARPReceived(squatterReply()))
@@ -381,8 +330,6 @@ func TestConflict_TheLibraryEmitsExactlyOneEventPerConflict(t *testing.T) {
 	})
 }
 
-// The chassis's own half: one bump per event, exactly the two kinds,
-// and nothing else.
 func TestConflict_TheChassisCountsEachEventOnce(t *testing.T) {
 	cases := []struct {
 		name string
@@ -396,9 +343,6 @@ func TestConflict_TheChassisCountsEachEventOnce(t *testing.T) {
 		{"Lost{ReasonStopped}", lease.Event{Kind: lease.Lost, Reason: proto.ReasonStopped}, false, false},
 		{"Lost{ReasonNak}", lease.Event{Kind: lease.Lost, Reason: proto.ReasonNak}, false, false},
 		{"Acquired", lease.Event{Kind: lease.Acquired}, false, false},
-		// A conflict reason on a kind that never carries one. It must
-		// not count: the predicate is over the PAIR, and keying on the
-		// reason alone would count a Renewed as a conflict.
 		{"Renewed{ReasonConflict}", lease.Event{Kind: lease.Renewed, Reason: proto.ReasonConflict}, false, false},
 	}
 
@@ -423,9 +367,8 @@ func TestConflict_TheChassisCountsEachEventOnce(t *testing.T) {
 	}
 }
 
-// A conflict must never reach the plugin as "leasefail". That event
-// feeds dhcp_timeouts, which means "the DHCP server went quiet" — and
-// the server has just answered.
+// The leasefail event feeds dhcp_timeouts, which means the DHCP server went quiet (#882).
+
 func TestTranslateOne_AConflictIsNotALeaseFailure(t *testing.T) {
 	now := time.Now()
 	for _, ev := range []lease.Event{
@@ -438,8 +381,6 @@ func TestTranslateOne_AConflictIsNotALeaseFailure(t *testing.T) {
 		}
 	}
 
-	// The preservation control: the same two kinds with any other
-	// reason still produce the events they always did.
 	for _, c := range []struct {
 		ev   lease.Event
 		want string
@@ -456,10 +397,6 @@ func TestTranslateOne_AConflictIsNotALeaseFailure(t *testing.T) {
 	}
 }
 
-// The mode has to reach proto.Params, from BOTH managers. A mode that
-// applied to the one-shot alone would probe the address before use and
-// then stop listening for section 2.4's conflicts for the whole of the
-// container's life.
 func TestBuildParams_TheModeReachesBothManagers(t *testing.T) {
 	for _, name := range ConflictModes() {
 		mode, err := ParseConflictCheck(name)
@@ -479,20 +416,8 @@ func TestBuildParams_TheModeReachesBothManagers(t *testing.T) {
 	}
 }
 
-// The library's own-traffic exemption is keyed on Params.CHAddr (M6
-// review r2, finding 1). A CHAddr that is not the sending interface's
-// hardware address makes the client read its own kernel's ARP replies
-// as conflicts and DECLINE its own address on every acquisition.
-//
-// THE NAME SAYS WHAT IS ASSERTED, which is the mapping buildParams owns:
-// CHAddr comes from opts.MAC and the client-id does not leak into it.
-// That opts.MAC is the container link's hardware address is the
-// caller's guarantee, not this function's — see the comment at
-// DefaultParams in params.go — and it is proved end to end by
-// TestConflictCheck_BridgeModeDoesNotSelfReport, which is the only
-// place a wrong CHAddr can actually be observed. The earlier name here
-// claimed the end-to-end fact and asserted the mapping (review r1,
-// finding 5).
+// The library's own-traffic exemption is keyed on Params.CHAddr; a wrong one declines its own address (#882).
+
 func TestBuildParams_TheCHAddrIsOptsMACAndNotTheClientID(t *testing.T) {
 	p, err := buildParams(&DHCPClientOptions{MAC: ourMAC, ClientID: []byte("something-else")}, false)
 	if err != nil {
@@ -501,8 +426,6 @@ func TestBuildParams_TheCHAddrIsOptsMACAndNotTheClientID(t *testing.T) {
 	if string(p.CHAddr) != string(ourMAC) {
 		t.Errorf("Params.CHAddr = %x, want the endpoint's MAC %x", p.CHAddr, ourMAC)
 	}
-	// The client-id is a separate identity and must NOT have leaked
-	// into CHAddr: that is the exact substitution the review priced.
 	if strings.Contains(string(p.CHAddr), "something-else") {
 		t.Error("the client-id reached Params.CHAddr")
 	}
@@ -513,8 +436,6 @@ func TestACDStats_SubIsSaturating(t *testing.T) {
 	if got := cur.Sub(ACDStats{ProbesSent: 2}); got.ProbesSent != 3 || got.AnnouncementsSent != 2 {
 		t.Errorf("Sub gave %+v", got)
 	}
-	// A prev ABOVE cur cannot happen within one manager, and if it ever
-	// did an unsigned subtraction would produce a delta of about 2^64.
 	if got := cur.Sub(ACDStats{ProbesSent: 9}); got.ProbesSent != 0 {
 		t.Errorf("a backwards delta gave %d, want 0", got.ProbesSent)
 	}
@@ -526,8 +447,6 @@ func TestACDStats_SubIsSaturating(t *testing.T) {
 	}
 }
 
-// acdReport is a DELTA pump: two calls with the same totals report the
-// gain once and then nothing.
 func TestACDReport_IsADeltaNotASnapshot(t *testing.T) {
 	var got []ACDStats
 	o := &DHCPClientOptions{OnACDStats: func(d ACDStats) { got = append(got, d) }}
@@ -547,29 +466,8 @@ func TestACDReport_IsADeltaNotASnapshot(t *testing.T) {
 	}
 }
 
-// TestAcquireStep_AnAcquisitionEndsOnAcquiredAndNothingElse is the
-// `wait` rule of the 2.3 table, driven.
-//
-// WHAT IT PINS. In proto.ConflictWait an address conflict found in RFC
-// 5227 section 2.1's probe window reaches the chassis as
-// Failed{ReasonConflict}. The library then does RFC 2131 section
-// 3.1(5) on its own -- DHCPDECLINE, "a minimum of ten seconds", back to
-// INIT -- and offers the endpoint a different address a few seconds
-// later. A chassis that ended the acquisition there would turn every
-// squatted address into a failed `docker run` while the DHCP server was
-// answering perfectly, and the operator would see a DHCP timeout with a
-// DHCPACK in the server log.
-//
-// WHY IT IS A UNIT TEST OF acquireStep AND NOT OF GetIP. GetIP's loop
-// needs a raw socket and a network namespace, so the integration suite
-// is the only place it runs. The decision is the part that can be
-// wrong, so the decision is what is extracted and driven; the
-// integration cases in test/integration/conflict_check_test.go assert
-// the same rule end to end on a real squatter.
-//
-// The Failed arms still carry an ERROR without ending the attempt, and
-// that is asserted too: it is what makes the deadline's eventual error
-// name the conflict rather than "context deadline exceeded".
+// In proto.ConflictWait the library declines per RFC 2131 section 3.1(5) and offers another address (#882).
+
 func TestAcquireStep_AnAcquisitionEndsOnAcquiredAndNothingElse(t *testing.T) {
 	leased := lease.Lease{
 		Addr:     netip.MustParsePrefix("192.168.99.30/24"),
@@ -603,10 +501,6 @@ func TestAcquireStep_AnAcquisitionEndsOnAcquiredAndNothingElse(t *testing.T) {
 			wantErrHas: "192.168.99.30/24",
 		},
 		{
-			// The preservation control for the row above: a Failed
-			// that is NOT a conflict must not end the attempt either,
-			// so a mutant that returns on every Failed cannot hide
-			// behind "the conflict row is the special case".
 			name:       "a plain failure is recorded, not returned",
 			ev:         lease.Event{Kind: lease.Failed, Reason: proto.ReasonNoServer},
 			wantDone:   false,

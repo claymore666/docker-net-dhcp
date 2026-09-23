@@ -10,56 +10,16 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-// sanitizeInfo drops every string value inside an Info that carries a
-// control character, returning how many it dropped.
-//
-// # WHY THIS EXISTS AT ALL, GIVEN NOTHING IS EXPLOITABLE TODAY
-//
-// Four options reach Info as raw server-chosen strings —
-// new_bootfile_name (67), new_posix_timezone (100), new_tzdb_timezone
-// (101) and new_wpad (252). dhcpcd validates only its `dname`-typed
-// options (12, 15, 66); these four are `string`-typed and it passes \n
-// and \r through verbatim, measured. From Info they go straight into
-// logrus fields.
-//
-// new_tftp_server_name (66) IS dname-typed and so IS validated by
-// dhcpcd. It is filtered here anyway: this function is reflective (see
-// below), and an exemption would be a hand-maintained claim about
-// someone else's parser. Four is the number that needs this filter;
-// five is the number of server-chosen string options, and the two get
-// confused — docs/reference.md states both and says which is which.
-//
-// Today that is safe by accident and by one thing only: logrus's default
-// TextFormatter quotes the value, so a forged `level=error msg=...` stays
-// inside one field. Nothing pins that formatter. Set a JSONFormatter and
-// it stays safe; add a second sink, a custom formatter, or write any of
-// these values to a file, and log forgery into the daemon log, -logfile
-// and the integration fault census is live the same day. #703.
-//
-// So there are two independent layers, because one accidental layer is
-// not a layer: this filter at the boundary, and a test that pins
-// single-line rendering. Neither is load-bearing alone.
-//
-// REFLECTION IS DELIBERATE. A hand-listed set of fields is exactly the
-// shape this repo keeps watching rot — the same argument
-// TestRenderConfig_NoValueCanIntroduceADirective makes. A new Info field
-// wired up next year is covered the day it is added, and an Info field
-// of a KIND this function does not handle fails
-// TestSanitizeInfo_NoFieldEscapesTheFilter rather than passing silently.
-//
-// Dropping rather than escaping, as everywhere else on this path: the
-// sinks (dhcpcd.conf, resolv.conf, a log line) have no escaping in
-// common, so the only answer that holds for all of them is not to carry
-// the value.
+// Options 67, 100, 101 and 252 reach Info as raw server-chosen strings, and logrus's TextFormatter quoting is the only
+// other layer, which nothing pins (#703). Reflection covers a field added later, and a kind it does not handle fails
+// TestSanitizeInfo_NoFieldEscapesTheFilter; dropping is chosen over escaping because the sinks share no escaping.
+
+// sanitizeInfo drops every string value in an Info that carries a control character and returns how many it dropped.
 func sanitizeInfo(info *Info) int {
 	return sanitizeValue(reflect.ValueOf(info).Elem())
 }
 
-// sanitizeValue is sanitizeInfo's recursive worker. Kinds it does not
-// understand are left alone deliberately: numbers and bools cannot carry
-// a control character, and a kind that CAN — a future map or nested
-// pointer — is caught by the reflection test rather than silently
-// skipped here.
+// sanitizeValue is sanitizeInfo's recursive worker; a kind that could carry a string is caught by the reflection test.
 func sanitizeValue(v reflect.Value) int {
 	dropped := 0
 	switch v.Kind() {
@@ -100,11 +60,8 @@ func sanitizeValue(v reflect.Value) int {
 	return dropped
 }
 
-// quoteForLog renders a value with its control characters escaped, so
-// the WARNING about a forgery attempt is not itself the forgery. %q on a
-// logrus field would be quoted twice by the TextFormatter and not at all
-// by a JSONFormatter; doing it here does not depend on which one is
-// installed.
+// quoteForLog escapes control characters here, so the forgery warning is not itself a forgery under any formatter
+// (#703).
 func quoteForLog(s string) string {
 	out := make([]rune, 0, len(s)+8)
 	for _, r := range s {
@@ -125,37 +82,17 @@ func quoteForLog(s string) string {
 	return string(out)
 }
 
-// FirstSearchDomain keeps only the first whitespace-separated token of
-// an option-15 domain, reporting whether it had to cut anything.
-//
-// SafeValue CANNOT do this job, and the reason is worth
-// writing down: it rejects r < 0x20 || r == 0x7f, and 0x20 -- the space
-// -- is precisely the field separator of the sink it protects. So a
-// space passes the filter, `search %s` renders it verbatim, and one
-// search domain becomes several. Measured end to end: dhcpcd's option-15
-// dname validation accepts "a.attacker.test b.attacker.test", and the
-// generated file carried both.
-//
-// This is the completeness gap #689 recorded one character short of
-// closing. DNSServers and SearchList are structurally safe because they
-// reach us through strings.Fields; Domain is taken whole, and that
-// asymmetry is the whole defect. Impact is low -- it needs
-// propagate_dns, where the same server already owns `nameserver` via
-// option 6 -- but it lets the attacker put his domain FIRST in the
-// search order, which changes which host a bare name resolves to (#704).
-//
-// Exported for the same reason as SafeValue: the filter that
-// counts runs at the BuildEvent boundary, and the renderer keeps the
-// same rule as an uncounted backstop, so both need it.
+// SafeValue passes 0x20, the space that separates `search` entries, so one domain could become several and put an
+// attacker's first in the search order (#704, #689).
+
+// FirstSearchDomain keeps the first whitespace-separated token of an option-15 domain and reports a cut.
 func FirstSearchDomain(domain string) (string, bool) {
 	fields := strings.Fields(domain)
 	switch len(fields) {
 	case 0:
-		// Either empty or whitespace only; neither is a search domain.
 		return "", domain != ""
 	case 1:
-		// Still report a change when the token was surrounded by
-		// whitespace: `search " x"` is not the line we were asked for.
+		// Surrounding whitespace is a change too: `search " x"` is not the line asked for (#699).
 		return fields[0], fields[0] != domain
 	default:
 		return fields[0], true

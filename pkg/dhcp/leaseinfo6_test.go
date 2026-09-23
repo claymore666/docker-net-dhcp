@@ -12,29 +12,17 @@ import (
 	"github.com/claymore666/dhcp-golib/proto"
 )
 
-// The whole v6 half of one lease, rendered.
-//
-// EVERY NUMBER A CONTAINER'S IPv6 ADDRESSES GET COMES OUT OF THIS
-// FUNCTION, and the two ways it can be wrong are both silent. Reading
-// the lease's aggregate deadlines instead of each address's own gives a
-// short-lived prefix a long-lived one's expiry (proto.Lease6.Deadlines
-// makes Lease.Expire the LONGEST valid lifetime in the set). Rendering
-// only the first address leaves the rest of them off the link while the
-// library keeps refreshing them, and the endpoint looks perfectly
-// healthy from every side: the address Docker shows is there, the
-// counters move, and the container simply cannot be reached on the
-// other prefix.
+// proto.Lease6.Deadlines makes Lease.Expire the longest valid lifetime in the set, so each address needs its own
+// (#819).
+
 func TestInfoFromLease_EveryV6AddressCarriesItsOwnLifetimes(t *testing.T) {
 	now := time.Date(2026, 9, 16, 12, 0, 0, 0, time.UTC)
 	gua := netip.MustParsePrefix("2001:db8:1::42/64")
 	ula := netip.MustParsePrefix("fd00:9::42/64")
 
 	l := lease.Lease{
-		SLAAC: true,
-		Addr:  gua,
-		// The aggregate the library computes over the set. Both
-		// numbers are deliberately wrong for BOTH addresses, so any
-		// read of them shows up.
+		SLAAC:     true,
+		Addr:      gua,
 		Expire:    now.Add(2 * time.Hour),
 		Preferred: now.Add(time.Minute),
 		Addrs: []lease.Addr6{
@@ -62,8 +50,6 @@ func TestInfoFromLease_EveryV6AddressCarriesItsOwnLifetimes(t *testing.T) {
 				i, info.Addrs[i], want, 7200, 60)
 		}
 	}
-	// The reported address is the first the lease holds, and the
-	// lease-wide numbers Docker and the plugin read follow IT.
 	if info.IP != "2001:db8:1::42/64" {
 		t.Errorf("Info.IP = %q, want the first address the lease holds", info.IP)
 	}
@@ -73,22 +59,8 @@ func TestInfoFromLease_EveryV6AddressCarriesItsOwnLifetimes(t *testing.T) {
 	}
 }
 
-// ipv6_main_prefix decides which address Docker is told about, and says
-// so when it decided nothing.
-//
-// Docker's endpoint carries exactly ONE AddressIPv6 and libnetwork has
-// no in-place swap for it (#104), so on a link advertising two prefixes
-// one of them is the address `docker inspect` shows and the other is
-// only on the link. Which one is the operator's choice; without the
-// option it is the router's advertisement order, which is not a choice
-// anybody made.
-//
-// THE FALLBACK IS THE HALF WORTH TESTING. A named prefix that matches
-// nothing has to produce a working endpoint -- the addresses are formed
-// either way and refusing the endpoint would make a typo in an
-// annotation take containers down -- and it has to be visible, or an
-// operator reading `docker inspect` sees a prefix they did not ask for
-// with nothing anywhere saying why.
+// Docker's endpoint carries exactly one AddressIPv6 and libnetwork has no in-place swap for it (#104).
+
 func TestInfoFromLease_TheMainPrefixChoosesWhatDockerIsTold(t *testing.T) {
 	now := time.Date(2026, 9, 16, 12, 0, 0, 0, time.UTC)
 	gua := netip.MustParsePrefix("2001:db8:1::42/64")
@@ -112,9 +84,6 @@ func TestInfoFromLease_TheMainPrefixChoosesWhatDockerIsTold(t *testing.T) {
 		{"unset takes the first advertised", "", "fd00:9::42/64", 7200, false},
 		{"the global prefix", "2001:db8:1::/64", "2001:db8:1::42/64", 3600, false},
 		{"the unique-local prefix", "fd00:9::/64", "fd00:9::42/64", 7200, false},
-		// A prefix shorter than the advertised one still contains the
-		// address, which is the reading netip.Prefix.Contains gives
-		// and the one an operator writing fd00::/8 means.
 		{"a shorter prefix that contains it", "2001:db8::/32", "2001:db8:1::42/64", 3600, false},
 		{"a prefix nothing falls inside", "2001:db8:ffff::/48", "fd00:9::42/64", 7200, true},
 	} {
@@ -143,26 +112,9 @@ func TestInfoFromLease_TheMainPrefixChoosesWhatDockerIsTold(t *testing.T) {
 	}
 }
 
-// The two zeros this seam has to keep apart, and one it must not
-// produce.
-//
-// A DEPRECATED ADDRESS IS PreferredSeconds=0 WITH A VALID LIFETIME
-// LEFT. That is RFC 4862 section 5.5.4's second phase and the kernel's
-// spelling of it (`preferred_lft 0`, flag `deprecated`): the container
-// keeps using it for connections it already has and opens no new ones
-// on it.
-//
-// AN INFINITE PREFERRED LIFETIME IS ALSO THE ZERO TIME in the library,
-// because proto.Lease6.PreferredUntil refuses a preferred deadline of
-// zero seconds. Rendered as PreferredSeconds=0 it would deprecate an
-// address that is perfectly current, on every advertisement carrying an
-// infinite lifetime, which is what a great many routers send. It takes
-// the valid lifetime instead.
-//
-// AN EXPIRED ADDRESS IS NOT RENDERED AT ALL. Info's zero lifetime is
-// netlink's infinity, so an address one second past its deadline and an
-// address advertised forever are the same two numbers; dropping it here
-// is what stops the second reading from being installed.
+// RFC 4862 section 5.5.4: a deprecated address is preferred_lft 0 with valid lifetime left; proto.Lease6.PreferredUntil
+// gives an infinite preferred lifetime the zero time too (#819).
+
 func TestInfoFromLease_DeprecatedInfiniteAndExpiredAreThreeThings(t *testing.T) {
 	now := time.Date(2026, 9, 16, 12, 0, 0, 0, time.UTC)
 	a := netip.MustParsePrefix("2001:db8:1::42/64")
@@ -212,13 +164,6 @@ func TestInfoFromLease_DeprecatedInfiniteAndExpiredAreThreeThings(t *testing.T) 
 	})
 }
 
-// A lease with no v6 list is left exactly as it was.
-//
-// Every DHCPv4 lease is this shape, and so is every Info a caller
-// builds by hand. The v6 rendering has to be total over them: a
-// function that wrote an empty Addrs slice, or that reached for
-// Lease.Addr without checking its family, would put a v4 address into
-// the field the v6 apply path walks.
 func TestInfoFromLease_AV4LeaseGetsNoV6Rendering(t *testing.T) {
 	now := time.Date(2026, 9, 16, 12, 0, 0, 0, time.UTC)
 	info, _ := infoFromLease(lease.Lease{
@@ -240,28 +185,15 @@ func TestInfoFromLease_AV4LeaseGetsNoV6Rendering(t *testing.T) {
 	}
 }
 
-// A deprecated address whose valid lifetime never ends.
-//
-// RFC 4861 section 4.6.2 lets a Prefix Information option carry a
-// preferred lifetime of 0 beside a valid lifetime of 0xFFFFFFFF, and
-// RFC 4862 section 5.5.3 e) accepts it: the prefix is autonomous, the
-// address is formed, and it is deprecated from the moment it exists.
-// Rendered as the pair of numbers alone that arrives as (0, 0), which
-// is the SAME spelling this seam gives an address advertised forever
-// and preferred forever. Two facts derived from one pair, and the
-// permanent reading is the one the apply path takes: the container
-// would get a preferred address on a prefix the router has already
-// told it to stop using for new connections, and nothing on either
-// side says so. The flag is the address's own answer, carried instead
-// of derived.
+// RFC 4861 section 4.6.2 allows preferred 0 beside valid 0xFFFFFFFF, and RFC 4862 section 5.5.3 e) forms that address
+// deprecated (#819).
+
 func TestInfoFromLease_ADeprecatedAddressWithNoValidDeadlineIsNotAPermanentOne(t *testing.T) {
 	now := time.Date(2026, 9, 16, 12, 0, 0, 0, time.UTC)
 	a := netip.MustParsePrefix("2001:db8:1::42/64")
 
 	t.Run("deprecated and infinite", func(t *testing.T) {
 		info, _ := infoFromLease(lease.Lease{SLAAC: true, Addr: a, Addrs: []lease.Addr6{
-			// Preferred in the past, Valid zero: the library's
-			// spelling of "no deadline".
 			{Addr: a, Preferred: now.Add(-time.Minute)},
 		}}, proto.RouterObservation{}, now, netip.Prefix{})
 		if len(info.Addrs) != 1 {
@@ -283,10 +215,6 @@ func TestInfoFromLease_ADeprecatedAddressWithNoValidDeadlineIsNotAPermanentOne(t
 		}
 	})
 
-	// The preservation control for the widening above: the same two
-	// zeros, reached the other way. An address with neither deadline is
-	// preferred forever, and a flag that answered yes here would
-	// deprecate every permanent address on the link.
 	t.Run("infinite and preferred", func(t *testing.T) {
 		info, _ := infoFromLease(lease.Lease{SLAAC: true, Addr: a, Addrs: []lease.Addr6{
 			{Addr: a},
@@ -301,8 +229,6 @@ func TestInfoFromLease_ADeprecatedAddressWithNoValidDeadlineIsNotAPermanentOne(t
 		}
 	})
 
-	// And the third way to reach a zero preferred lifetime: a deadline
-	// that has not arrived yet is not a spent one.
 	t.Run("preferred in the future", func(t *testing.T) {
 		info, _ := infoFromLease(lease.Lease{SLAAC: true, Addr: a, Addrs: []lease.Addr6{
 			{Addr: a, Preferred: now.Add(time.Minute), Valid: now.Add(time.Hour)},

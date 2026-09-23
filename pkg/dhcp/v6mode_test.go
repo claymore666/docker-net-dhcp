@@ -17,13 +17,6 @@ import (
 	"github.com/claymore666/dhcp-golib/wire"
 )
 
-// Every mode the library declares has an option spelling, and every
-// option spelling is a mode the machine implements.
-//
-// THE TWO SETS ARE ONE SET OR THEY DRIFT. An option value the plugin
-// accepts and the machine does not implement is a `docker network
-// create` that succeeds and an endpoint that fails; a mode the machine
-// implements and the option cannot name is a feature nobody can reach.
 func TestParseIPv6Mode_IsTheLibrarysOwnEnumeration(t *testing.T) {
 	all := proto.AllModes6()
 	if len(all) == 0 {
@@ -48,11 +41,6 @@ func TestParseIPv6Mode_IsTheLibrarysOwnEnumeration(t *testing.T) {
 	}
 }
 
-// The unset option and `ipv6_mode=dhcp` are the same number and not the
-// same instruction, which is the whole reason ParseIPv6Mode has a third
-// result. proto.Mode6's zero is Mode6DHCP, so a parser that answered
-// with the mode alone would make an unset option indistinguishable from
-// the one value that switches DHCPv6 on.
 func TestParseIPv6Mode_UnsetIsNotDHCP(t *testing.T) {
 	mode, set, err := ParseIPv6Mode("")
 	if err != nil {
@@ -67,9 +55,6 @@ func TestParseIPv6Mode_UnsetIsNotDHCP(t *testing.T) {
 	}
 }
 
-// A typo is refused and never resolved to the zero value, which is
-// `dhcp`: a network created with `ipv6_mode=slack` would otherwise
-// quietly buy the mode the operator was moving away from.
 func TestParseIPv6Mode_RefusesAValueOutsideTheSet(t *testing.T) {
 	_, set, err := ParseIPv6Mode("slack")
 	if err == nil {
@@ -86,15 +71,9 @@ func TestParseIPv6Mode_RefusesAValueOutsideTheSet(t *testing.T) {
 	}
 }
 
-// IPv6ModeFormsAddresses is a second spelling of an unexported library
-// predicate, and this is the check that keeps the two in agreement.
-//
-// IT DRIVES THE LIBRARY RATHER THAN RESTATING IT. proto.Params6's own
-// validation refuses a machine with no LinkAddr in exactly the modes
-// that form addresses (ErrNoLinkAddr), so building one per declared
-// mode with the link address left out asks the library which modes
-// those are. A mode added later, or a mode that changes side, fails
-// here rather than in the field.
+// proto.Params6 refuses a missing LinkAddr exactly in the forming modes (ErrNoLinkAddr), so the library is asked
+// (#817).
+
 func TestIPv6ModeFormsAddresses_AgreesWithTheLibrary(t *testing.T) {
 	for _, m := range proto.AllModes6() {
 		p := proto.DefaultParams6()
@@ -105,8 +84,6 @@ func TestIPv6ModeFormsAddresses_AgreesWithTheLibrary(t *testing.T) {
 
 		_, err := proto.New6(p)
 		if m == proto.Mode6Off {
-			// Off never reaches a machine at all; buildParams6 refuses
-			// it one layer up, and the library refuses it here.
 			if !errors.Is(err, proto.ErrMode6Off) {
 				t.Errorf("proto.New6 with Mode6Off returned %v, want ErrMode6Off", err)
 			}
@@ -121,16 +98,8 @@ func TestIPv6ModeFormsAddresses_AgreesWithTheLibrary(t *testing.T) {
 	}
 }
 
-// The mode, the link address and the library's Reconfigure default, on
-// the Params6 THIS PLUGIN BUILDS.
-//
-// READ OFF THE BUILT VALUE AND NOT OFF THE LIBRARY'S SOURCE (#925). The
-// library's DefaultParams6 sets AcceptReconfigure true
-// (proto/backoff6.go:288) and that is where the value comes from, but a
-// proof that reads it there passes just as well for a chassis that
-// overrode it afterwards. Asking the plugin for its own parameters is
-// the only reading that can catch an override, which is the finding
-// #925 asks this plugin to rule out.
+// Read off the built Params6, where an override would show; the library's DefaultParams6 sets AcceptReconfigure (#925).
+
 func TestBuildParams6_CarriesTheModeTheLinkAddressAndReconfigure(t *testing.T) {
 	mac := []byte{0x02, 0x42, 0xac, 0x11, 0x00, 0x02}
 	for _, m := range proto.AllModes6() {
@@ -162,7 +131,6 @@ func TestBuildParams6_CarriesTheModeTheLinkAddressAndReconfigure(t *testing.T) {
 					"unwilling, so something in this chassis turned it off. #925's server "+
 					"side is answered by the library; this is the plugin side of it.", m)
 			}
-			// A LinkAddr the library would refuse never reaches it.
 			if _, err := proto.New6(p); err != nil {
 				t.Errorf("the library refuses the Params6 this plugin builds in mode %v: %v", m, err)
 			}
@@ -170,15 +138,8 @@ func TestBuildParams6_CarriesTheModeTheLinkAddressAndReconfigure(t *testing.T) {
 	}
 }
 
-// The strict setting has ONE spelling the library reads: a negative
-// AutoFallback. Zero is "the caller did not say", which resolves to
-// half the router-discovery window -- so a strict setting that shipped
-// as a zero would read as honoured at every layer above and fall back
-// anyway.
-//
-// BOTH ARMS ARE ONE TABLE on purpose: the default arm is the
-// preservation control for the strict one, and a change that made
-// everything strict would pass a test that only drove `true`.
+// A zero AutoFallback resolves to half the router-discovery window; strict is only a negative value (#817).
+
 func TestBuildParams6_StrictAutoIsTheValueTheLibraryReads(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -210,12 +171,6 @@ func TestBuildParams6_StrictAutoIsTheValueTheLibraryReads(t *testing.T) {
 	}
 }
 
-// A stored preferred address is not asked for in `slaac`, and it is
-// still parsed and still refused when malformed.
-//
-// IGNORED AT THE ONE PLACE THAT BUILDS Params6, not by never reading
-// it: a value that is read and dropped can be tested, and a value
-// nothing reads cannot.
 func TestBuildParams6_PreferredAddressIsDroppedOnlyWhereItCannotBeAsked(t *testing.T) {
 	const want = "fd00:98::10"
 	cases := []struct {
@@ -249,10 +204,6 @@ func TestBuildParams6_PreferredAddressIsDroppedOnlyWhereItCannotBeAsked(t *testi
 		})
 	}
 
-	// The preservation control for the refusal: dropping the hint in
-	// slaac must not drop the VALIDATION of it, or a typo in
-	// preferred_ipv6 becomes silent on exactly the networks where it is
-	// hardest to notice.
 	o := testOpts6(t)
 	o.Mode6 = proto.Mode6SLAAC
 	o.MAC = []byte{0x02, 0x42, 0xac, 0x11, 0x00, 0x02}
@@ -263,7 +214,6 @@ func TestBuildParams6_PreferredAddressIsDroppedOnlyWhereItCannotBeAsked(t *testi
 	}
 }
 
-// Mode6Off never reaches the library from here.
 func TestBuildParams6_RefusesModeOff(t *testing.T) {
 	o := testOpts6(t)
 	o.Mode6 = proto.Mode6Off
@@ -272,7 +222,6 @@ func TestBuildParams6_RefusesModeOff(t *testing.T) {
 	}
 }
 
-// The three causes #816 tells apart, read off the library's own event.
 func TestV6FailureCause(t *testing.T) {
 	cases := []struct {
 		name  string
@@ -292,9 +241,7 @@ func TestV6FailureCause(t *testing.T) {
 					t.Errorf("the message does not name the code: %v", err)
 				}
 			}},
-		// RFC 9915 section 21.13 makes an absent Status Code and
-		// Success one verdict. A Nak carrying neither is v4-shaped and
-		// must not produce a refusal message naming "Success".
+		// RFC 9915 section 21.13 makes an absent Status Code and Success one verdict (#816).
 		{"a Nak with no status code", lease.Event{Reason: proto.ReasonNak},
 			func(t *testing.T, err error) {
 				if err != nil {
@@ -343,27 +290,9 @@ func TestV6FailureCause(t *testing.T) {
 	}
 }
 
-// THE CASE #989 PINNED, REWRITTEN TO THE ANSWER #818 GIVES.
-//
-// Up to v2.1.x this test asserted the opposite: `ipv6_mode=slaac`
-// reached the library, the library formed an address from an autonomous
-// prefix and stamped it as an acquired lease, and the chassis threw the
-// acquisition away the moment an advertisement said M=0 O=0
-// (ErrNoDHCPv6OnSegment) -- which is the ordinary SLAAC segment, and
-// therefore exactly the segment `slaac` exists for. The endpoint
-// started with no address. That early conclusion is #868's fix for
-// containers hanging on stateless networks and it was not mode-aware.
-//
-// It is mode-aware now (concludesOnAdvertisedAbsence), so the two rows
-// below are the whole rule and they run in one table deliberately: the
-// `dhcp` row is what #868 bought and the thing this change must not
-// take back. A container start on the ordinary SLAAC home network still
-// ends in about two seconds there, and widening the change to every
-// mode would charge every network that never asked for address
-// formation the full acquisition budget with nothing failing.
-//
-// The reference row, the DHCPv6 verdict table and RELEASE_NOTES.md say
-// the same thing in words and move with this test.
+// Up to v2.1.x the M=0 O=0 conclusion ended slaac acquisitions with no address, a case #989 pinned; the dhcp row keeps
+// #868's early verdict (#818).
+
 func TestRunAcquisition6_OnlyAModeThatFormsAddressesOutlivesAnAdvertisedAbsence(t *testing.T) {
 	cases := []struct {
 		mode      proto.Mode6
@@ -400,16 +329,6 @@ func TestRunAcquisition6_OnlyAModeThatFormsAddressesOutlivesAnAdvertisedAbsence(
 	}
 }
 
-// The deadline is what ends a forming mode's acquisition when the
-// library says nothing at all, and the error the plugin classifies has
-// to be the deadline's rather than an advertised absence.
-//
-// IT IS THE OTHER HALF OF THE TABLE ABOVE AND NOT A RESTATEMENT. That
-// one asserts which error comes back; this one asserts that the
-// acquisition RAN to the window instead of returning early, which is
-// what gives duplicate address detection its time. A change that
-// dropped the early conclusion for forming modes AND returned
-// immediately with a nil error would pass the row above.
 func TestRunAcquisition6_AFormingModeRunsToItsWindow(t *testing.T) {
 	client := &fakeV6Client{
 		events: make(chan lease.Event),
@@ -431,8 +350,6 @@ func TestRunAcquisition6_AFormingModeRunsToItsWindow(t *testing.T) {
 	}
 }
 
-// A formed address ends the acquisition exactly as a granted one does,
-// and it arrives carrying the whole set.
 func TestRunAcquisition6_AFormedAddressEndsTheAcquisition(t *testing.T) {
 	events := make(chan lease.Event, 1)
 	events <- lease.Event{Kind: lease.Acquired, Lease: lease.Lease{
@@ -464,23 +381,6 @@ func TestRunAcquisition6_AFormedAddressEndsTheAcquisition(t *testing.T) {
 	}
 }
 
-// The network's `ipv6_main_prefix` reaches the address Docker is told
-// about, and does it through the acquisition rather than through
-// infoFromLease alone.
-//
-// THAT SEAM IS THE WHOLE POINT OF THE TEST. infoFromLease's own table
-// drives the selection with the prefix handed straight to it, so a
-// chassis that parsed the option, stored it and passed a zero Prefix
-// down would pass every one of those rows while `docker inspect` showed
-// whichever prefix the router happened to advertise first. The option
-// is silent when it is dropped: there is no error, no counter and no
-// log line, and the address it names is on the container's link either
-// way.
-//
-// Both directions, because the fallback is the half that cannot be seen
-// from outside: a prefix no advertisement carries must still produce an
-// address, and must say so on Info.MainAddrFallback for the counter and
-// the log line the plugin writes from it.
 func TestRunAcquisition6_TheNetworksMainPrefixChoosesTheReportedAddress(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -532,17 +432,6 @@ func TestRunAcquisition6_TheNetworksMainPrefixChoosesTheReportedAddress(t *testi
 	}
 }
 
-// The chain that makes dhcpv6_auto_fallbacks mean anything: the
-// library's running total, this chassis's delta, the plugin's counter.
-//
-// WITHOUT THIS THE COUNTER IS DRIVEN ONLY BY CALLING ITS OWN CALLBACK,
-// which tests the plugin's arithmetic on a number nothing produced. The
-// library's lease.Stats is a RUNNING TOTAL and this chassis is asked
-// for it more than once per acquisition, so the whole of what could go
-// wrong here is reporting the total every time: an endpoint that fell
-// back once would be counted once per poll, and the counter an operator
-// reads as "how many containers are on an advertised prefix" would be a
-// count of how often the chassis looked.
 func TestV6ModeReport_ReportsTheGainAndNeverTheTotal(t *testing.T) {
 	var got []uint64
 	o := &DHCPClientOptions{V6: true, Mode6: proto.Mode6Auto, OnV6Fallback: func(n uint64) {
@@ -551,7 +440,7 @@ func TestV6ModeReport_ReportsTheGainAndNeverTheTotal(t *testing.T) {
 
 	o.v6ModeReport(lease.Stats{SLAACFallbacks: 0})
 	o.v6ModeReport(lease.Stats{SLAACFallbacks: 1})
-	o.v6ModeReport(lease.Stats{SLAACFallbacks: 1}) // the same reading again
+	o.v6ModeReport(lease.Stats{SLAACFallbacks: 1})
 	o.v6ModeReport(lease.Stats{SLAACFallbacks: 3})
 
 	want := []uint64{1, 2}
@@ -565,12 +454,6 @@ func TestV6ModeReport_ReportsTheGainAndNeverTheTotal(t *testing.T) {
 		}
 	}
 
-	// The other direction, and it is the one that is easy to lose: a
-	// reading that did not move must produce nothing, and a total that
-	// went DOWN must not be reported as a gain. lease.Stats is
-	// monotonic per manager, so the second is unreachable today and is
-	// asserted because the guard is written as an inequality and an
-	// inequality has a direction.
 	got = nil
 	o.v6ModeReport(lease.Stats{SLAACFallbacks: 3})
 	o.v6ModeReport(lease.Stats{SLAACFallbacks: 1})
@@ -578,21 +461,11 @@ func TestV6ModeReport_ReportsTheGainAndNeverTheTotal(t *testing.T) {
 		t.Errorf("a reading that did not rise produced %v", got)
 	}
 
-	// A chassis with no reporter behind it does not panic: the
-	// one-shot acquisition builds these options without a plugin.
 	(&DHCPClientOptions{V6: true}).v6ModeReport(lease.Stats{SLAACFallbacks: 5})
 }
 
-// The same delta rule for the refused-prefix counter, and it is not a
-// restatement of the one above: the two reporters keep SEPARATE
-// running totals on the same options struct, and a copy-paste that read
-// one seen-value for both would make each reading of either counter
-// suppress the other.
-//
-// The number this one carries is also larger and noisier -- a router
-// readvertises every few seconds (RFC 4861 section 6.2.1) and every
-// advertisement can refuse prefixes again -- which is exactly why it is
-// reported as a gain.
+// A router readvertises every few seconds (RFC 4861 section 6.2.1), so this count is reported as a gain (#818).
+
 func TestV6PrefixReport_ReportsTheGainAndNeverTheTotal(t *testing.T) {
 	var prefixes, fallbacks []uint64
 	o := &DHCPClientOptions{
@@ -621,16 +494,10 @@ func TestV6PrefixReport_ReportsTheGainAndNeverTheTotal(t *testing.T) {
 			"share a struct and must not share a seen-value", fallbacks)
 	}
 
-	// And the fallback reporter still works after this one has run, in
-	// the same direction: one seen-value for both would leave the
-	// second reporter silent.
 	o.v6ModeReport(lease.Stats{SLAACFallbacks: 1})
 	if len(fallbacks) != 1 || fallbacks[0] != 1 {
 		t.Errorf("the fallback reporter carried %v after the prefix reporter ran, want [1]", fallbacks)
 	}
 
-	// A chassis with no reporter behind it does not panic: the
-	// one-shot acquisition builds these options without a plugin, and
-	// `dhcp` networks never arm this one at all.
 	(&DHCPClientOptions{V6: true}).v6PrefixReport(lease.Stats{SLAACPrefixesIgnored: 5})
 }

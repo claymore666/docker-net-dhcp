@@ -11,34 +11,10 @@ import (
 	"github.com/claymore666/dhcp-golib/lease"
 )
 
-// The plugin end of #925's first test: the two library events a
-// server-initiated Reconfigure arrives on already carry its result into
-// the plugin.
-//
-// RFC 9915 section 18.2.11 gives a Reconfigure three answers — "the
-// client responds with a Renew message, a Rebind message, or an
-// Information-request message as indicated by the Reconfigure Message
-// option" — and each of the three ends in a library event this chassis
-// already translates. A Renew or Rebind whose Reply differs from the
-// lease in hand produces lease.Renewed and lease.Changed
-// (proto/machine6.go stamps ActLeaseRenewed and, when the contents
-// differ, ActLeaseChanged); an Information-request produces
-// lease.Configured. #925's scope line says the reconfigured lease
-// "flows through the existing changed-configuration path, the same one
-// a renewal with new parameters uses. No new plugin-side state." These
-// tests are what makes that claim checkable from this side.
-//
-// WHAT THESE TESTS CANNOT DO, said here rather than left to be
-// discovered. They cannot distinguish their own subject. A constructed
-// lease.Changed drives exactly the path a T1 renewal with new
-// parameters drives, because nothing on a library event says which
-// timer or which message started the exchange — and nothing should:
-// #925 asks for no new plugin-side state, so the plugin is DESIGNED not
-// to be able to tell a Reconfigure-driven renewal from any other. The
-// value here is therefore a pin and not a demonstration: it holds the
-// path #925 depends on, and it fails if that path stops carrying
-// changed parameters through. A test that claimed to observe a
-// Reconfigure would be claiming something this plugin cannot see.
+// RFC 9915 section 18.2.11: a Reconfigure is answered by Renew, Rebind or Information-request, and #925 routes each
+// through the existing changed-configuration path.
+// Bound: no library event names the message that started an exchange, so these tests pin the path and cannot observe a
+// Reconfigure.
 
 // reconfV6Lease is a bound DHCPv6 lease, as lease.Lease.
 func reconfV6Lease(addr, dns string, domain string, now time.Time) lease.Lease {
@@ -53,22 +29,11 @@ func reconfV6Lease(addr, dns string, domain string, now time.Time) lease.Lease {
 	}
 }
 
-// A Renew a Reconfigure asked for comes back with different parameters,
-// and the plugin is told about the NEW ones.
-//
-// THE ASSERTION IS ON THE CONTENTS AND NOT ON THE EVENT TYPE. A
-// translation that emitted "renew" carrying the OLD lease would pass
-// any check that only read out.Type, and the container would keep
-// resolving against a DNS server the segment has moved off — which is
-// the entire operational content of a reconfiguration. So the new
-// resolver and the new address are read out of the event.
 func TestReconfigurePath_AChangedLeaseCarriesTheNewParametersToThePlugin(t *testing.T) {
 	now := time.Now()
 	old := reconfV6Lease("2001:db8::5/128", "2001:db8::53", "old.example", now)
 	fresh := reconfV6Lease("2001:db8::5/128", "2001:db8::35", "new.example", now)
 
-	// The Renewed that accompanies the same Reply, first, so renewedAt
-	// is set the way the live path sets it.
 	outRenew, emit, renewedAt := translateOne(
 		lease.Event{Kind: lease.Renewed, Lease: old}, now, time.Time{}, netip.Prefix{})
 	if !emit {
@@ -78,11 +43,7 @@ func TestReconfigurePath_AChangedLeaseCarriesTheNewParametersToThePlugin(t *test
 		t.Errorf("Renewed translated to %q, want \"renew\"", outRenew.Type)
 	}
 
-	// The Changed that follows a renewal whose contents differ, OUTSIDE
-	// the coalescing window. Inside it the plugin has already applied
-	// this Reply on the "renew" above, which
-	// TestTranslate_ARenewalIsNotCountedTwice pins; outside it this is
-	// the event that carries a changed configuration on its own.
+	// Outside the coalescing window this Changed carries the configuration on its own (#925).
 	outChanged, emit, _ := translateOne(
 		lease.Event{Kind: lease.Changed, Lease: fresh},
 		now.Add(10*coalesceWindow), renewedAt, netip.Prefix{})
@@ -108,16 +69,8 @@ func TestReconfigurePath_AChangedLeaseCarriesTheNewParametersToThePlugin(t *test
 	}
 }
 
-// The third of section 18.2.11's answers. An Information-request a
-// Reconfigure asked for is answered with a Reply carrying configuration
-// and no address, which the library stamps as ActConfigured and emits
-// as lease.Configured.
-//
-// THE LEASE IS UNTOUCHED AND THE EVENT MUST NOT CARRY ONE. The library
-// keeps a bound client's binding and its timers across that detour
-// (proto's TestAReconfigureNamingInformationRequestKeepsTheLease); an
-// event that arrived here carrying an empty address would have the
-// plugin reconfigure a container's interface to have none.
+// The library keeps a bound client's binding across an Information-request, so the event must carry no address (#925).
+
 func TestReconfigurePath_AnInformationRequestAnswerIsAConfigEvent(t *testing.T) {
 	now := time.Now()
 

@@ -8,251 +8,99 @@ type Info struct {
 	Gateway string
 	Domain  string
 
-	// DNSServers is the DNS server list from DHCP option 6 (v4) or
-	// option 23 (v6). Empty when the server didn't supply the option.
-	// Consumers MUST treat empty as "do not change container resolv.conf"
-	// — overwriting with empty would silently drop name resolution.
+	// DNSServers is option 6 (v4) or 23 (v6); empty means leave the container's resolv.conf alone, not clear it (#100).
 	DNSServers []string `json:",omitempty"`
 
-	// MTU is the Interface MTU from DHCP option 26. 0 when the server
-	// didn't supply the option. Consumers MUST treat 0 as "do not change
-	// link MTU" — applying 0 would set a useless link state. Renewals
-	// can include a different MTU; consumers should compare and only
-	// re-apply on change.
+	// MTU is option 26; 0 means leave the link MTU alone, and a renewal re-applies only a changed value (#101).
 	MTU int `json:",omitempty"`
 
-	// NTPServers is the NTP server list from DHCP option 42 (dhcpcd
-	// env var `new_ntp_servers`). Empty when the server didn't supply the
-	// option. Surfaced to operators via plugin logs at info level on
-	// bind/renew; not auto-applied to the container — workloads
-	// needing NTP should consume the value themselves (typically via
-	// a sidecar that reads docker logs or polls Plugin.Health).
+	// NTPServers is option 42, logged on bind and renew and never applied to the container (#105).
 	NTPServers []string `json:",omitempty"`
 
-	// SearchList is the DNS Domain Search List from DHCP option 119
-	// (dhcpcd env var `new_domain_search`). Empty when the server didn't supply
-	// the option. When PropagateDNS=true the plugin emits this as the
-	// `search` line in the container's /etc/resolv.conf; falls back
-	// to the single-domain `Domain` (option 15) when SearchList is
-	// empty.
+	// SearchList is option 119, the resolv.conf `search` line under PropagateDNS, falling back to Domain (option 15)
+	// (#105).
 	SearchList []string `json:",omitempty"`
 
-	// TFTPServer is the TFTP server hostname from DHCP option 66
-	// (dhcpcd env var `new_tftp_server_name`). Empty when not supplied. Used for
-	// PXE-boot-style scenarios; surfaced to operators via plugin
-	// logs, not auto-applied to the container.
+	// TFTPServer is option 66, logged and never applied to the container (#105).
 	TFTPServer string `json:",omitempty"`
 
-	// BootFile is the boot file name from DHCP option 67 (dhcpcd env
-	// var `new_bootfile_name`). Same surfacing semantics as TFTPServer.
+	// BootFile is option 67, logged like TFTPServer (#105).
 	BootFile string `json:",omitempty"`
 
-	// WPAD is the Web Proxy Auto-Discovery URL from DHCP option 252
-	// (dhcpcd env var `new_wpad`; option 252 is non-standard, so the
-	// config `define`s it). PosixTimezone / TZDBTimezone come from the
-	// RFC 4833 timezone options 100 (PCode, `new_posix_timezone`) and
-	// 101 (TCode, `new_tzdb_timezone`); TimeOffset is the legacy option 2
-	// (seconds from UTC, `new_time_offset`). All observe-only, like
-	// TFTPServer/BootFile: surfaced to operators via plugin logs, never
-	// pushed into the container (the no-plumbing bar, #262).
+	// WPAD (option 252), the RFC 4833 timezones (options 100 and 101) and TimeOffset (option 2) are logged only, never
+	// pushed into the container, to keep the no-plumbing bar (#262).
 	WPAD          string `json:",omitempty"`
 	PosixTimezone string `json:",omitempty"`
 	TZDBTimezone  string `json:",omitempty"`
 	TimeOffset    string `json:",omitempty"`
 
-	// Routes are the more-specific routes this endpoint was told about:
-	// DHCP option 121's classless static routes on the v4 path (RFC
-	// 3442), and RFC 4191's Route Information Options on the v6 one,
-	// where DHCPv6 has no route option of its own and the advertisement
-	// is the only source. Empty when neither supplied any.
-	//
-	// A DEFAULT ROUTE IS NEVER IN HERE, in either family. RFC 3442 folds
-	// option 121's 0.0.0.0/0 into Gateway during parsing and RFC 4191
-	// section 2.3 allows a ::/0 Route Information Option that means the
-	// same thing; both are Gateway's business, and a copy of one here
-	// would be a second default route racing the one Docker installs.
-	//
-	// Applied at Join as container StaticRoutes, and on the v6 path
-	// re-applied when a later advertisement changes them (#821).
-	// `skip_routes=true` opts out of both.
+	// A default route is never here: RFC 3442 folds 0.0.0.0/0 into Gateway and RFC 4191 section 2.3's ::/0 means the
+	// same, and a copy would race the default route Docker installs (#821).
+
+	// Routes are option 121's routes (RFC 3442) on v4 and RFC 4191 Route Information Options on v6, applied at Join
+	// (#821).
 	Routes []Route `json:",omitempty"`
 
-	// OnLinkPrefixes are the prefixes the advertisement said are
-	// reachable without a router: RFC 4861 section 4.6.2's Prefix
-	// Information options with the L flag set. v6 only, empty when none
-	// were advertised.
-	//
-	// SEPARATE FROM Routes BECAUSE THEY ARE A DIFFERENT QUESTION AND
-	// HAVE A DIFFERENT LIFETIME. Routes is a routing table the plugin
-	// keeps in step with the advertisement for the life of the endpoint;
-	// this is on-link determination, applied once at Join, and it exists
-	// because the plugin took the link off accept_ra (#821): the kernel
-	// used to install the on-link route from the same option, and the
-	// DHCPv6 address is a /128 that RFC 5942 section 4 forbids deriving
-	// a prefix from. Without it a container on a segment whose router
-	// advertises Router Lifetime 0 has no IPv6 route of any kind.
-	//
-	// THE BOUND: the library reports the prefixes of the MOST RECENT
-	// advertisement rather than a union, so this is what one frame said.
-	// On a segment with one router every advertisement carries the same
-	// Prefix Information option and the two are the same thing.
+	// Applied once at Join because accept_ra is off (#821) and a DHCPv6 /128 yields no prefix (RFC 5942 section 4);
+	// without it a Router Lifetime 0 segment leaves no IPv6 route. The library reports the most recent advertisement's
+	// prefixes, not a union.
+
+	// OnLinkPrefixes are RFC 4861 section 4.6.2 Prefix Information options with the L flag; v6 only.
 	OnLinkPrefixes []string `json:",omitempty"`
 
-	// RouterSeen says whether a Router Advertisement had been seen on
-	// this link when this Info was built. v6 only; always false on a
-	// DHCPv4 path, whose client never looks.
-	//
-	// IT IS THE DIFFERENCE BETWEEN SILENCE AND A WITHDRAWAL, and only
-	// the MTU needs it so far. RFC 9915 section 18.2.1's Solicit goes
-	// out WITHOUT waiting for router discovery, so a lease event can be
-	// stamped before the first advertisement arrives on a link that
-	// does have a router -- the library says so of its own field, in as
-	// many words: "the zero value means it had seen none WHEN THIS
-	// EVENT WAS STAMPED". An MTU of 0 on such an event is the router
-	// not having spoken yet. An MTU of 0 with this flag set is the
-	// router having spoken and said nothing about the MTU, which IS a
-	// withdrawal. Folding the two makes the link MTU flip between the
-	// two families once per event, which is the thing propagateMTU's
-	// smaller-of-two rule exists to prevent.
+	// RFC 9915 section 18.2.1's Solicit does not wait for router discovery, so an MTU of 0 before an advertisement is
+	// silence while an MTU of 0 after one is a withdrawal; folding them flips the link MTU per event (#821).
+
+	// RouterSeen says whether a Router Advertisement had been seen on the link when this Info was built; v6 only.
 	RouterSeen bool `json:",omitempty"`
 
-	// LeaseSeconds is the lease lifetime the server granted, in seconds
-	// (v4 `new_dhcp_lease_time`; v6 the IA_NA valid lifetime
-	// `new_dhcp6_ia_na1_ia_addr1_vltime`). 0 when the server didn't
-	// supply it.
-	//
-	// It exists so the plugin can tell "healthy client, quietly holding a
-	// long lease" apart from "client that stopped getting service"
-	// WITHOUT depending on a lease-loss hook (#353). dhcpcd does not
-	// reliably deliver one: under `--noconfigure`, which this plugin
-	// always ran, a lapsed lease fired the hook as RELEASE rather than
-	// EXPIRE, and up to v1.8.x a graceful stop produced the same reason,
-	// so it could not be counted as a failure.
-	//
-	// #800 changed that. The RELEASE-on-lapse behaviour needed the
-	// `release` directive as well as `--noconfigure`, and #800 removed
-	// the directive: this build's clients fire EXPIRE on a lapse, which
-	// mapReason already counts. Measured four ways and confirmed by the
-	// failure suite across both trees — see pkg/dhcp.mapReason and #855.
-	//
-	// LeaseSeconds is kept regardless. It is the backstop for a lapse
-	// dhcpcd does not report at all, and it is what #353 was actually
-	// about; it does not depend on which hook fires.
-	//
-	// The renewal time (T1, option 58) is deliberately NOT carried here
-	// even though dhcpcd exports it, because under `--noconfigure` it is
-	// not a deadline anything meets: with no address configured on the
-	// link, dhcpcd's T1 unicast renewal always fails ("failed to renew
-	// DHCP, rebinding") and the lease is actually renewed at T2 by
-	// broadcast rebind. Verified against dhcpcd 10.3.2 with a healthy
-	// server: on a 120s lease the only post-bind hook was REBIND at
-	// t+105s. A T1-derived deadline would therefore fire on every
-	// healthy client.
+	// T1 is not carried: dhcpcd 10.3.2 under --noconfigure never renewed at T1 and rebound at T2 (a 120 s lease rebound
+	// at t+105 s), so a T1 deadline would fire on healthy clients. LeaseSeconds backs a lapse no event reports (#353,
+	// #800, #855).
+
+	// LeaseSeconds is the granted lease lifetime, the IA_NA valid lifetime on v6, 0 when the server gave none.
 	LeaseSeconds int `json:",omitempty"`
 
-	// PreferredSeconds is RFC 9915 section 7.1's preferred lifetime for
-	// a DHCPv6 address, in seconds, and 0 for a v4 lease or an infinite
-	// v6 one.
-	//
-	// TWO LIFETIMES AND NOT ONE, which is the v6 lease's shape. Section
-	// 7.1 calls the preferred lifetime "the length of time that a valid
-	// address is preferred", after which "the address becomes
-	// deprecated"; RFC 4862 section 5.5.4 says a deprecated address is
-	// still usable by an established connection and MUST NOT be chosen
-	// for a new one. LeaseSeconds above is the VALID lifetime, which is
-	// when the address goes away. The kernel enforces the difference
-	// once both are installed on the link, which is why they are
-	// carried rather than folded: a chassis that installed only the
-	// valid lifetime would have the container opening new connections
-	// on a deprecated address for the whole of the gap.
+	// RFC 4862 section 5.5.4: a deprecated address serves existing connections but must not start new ones, so both
+	// lifetimes are installed and the kernel enforces the gap (#911).
+
+	// PreferredSeconds is RFC 9915 section 7.1's preferred lifetime of a v6 address, 0 for v4 or infinite.
 	PreferredSeconds int `json:",omitempty"`
 
-	// IPDeprecated is the Deprecated flag of the address in IP, carried
-	// here for the same reason V6Addr carries its own: the pair of
-	// numbers above cannot express it. See V6Addr.Deprecated.
+	// IPDeprecated is the Deprecated flag of the address in IP, since the two numbers cannot express it (#818).
 	IPDeprecated bool `json:",omitempty"`
 
-	// Addrs is EVERY address a DHCPv6 or SLAAC lease holds, each with
-	// its own two lifetimes, and IP is the one of them this network
-	// reports to Docker. It is empty for a v4 lease.
-	//
-	// IT IS A LIST BECAUSE RFC 4862 SECTION 5.5.3 FORMS ONE ADDRESS PER
-	// AUTONOMOUS PREFIX. A link that advertises a unique-local prefix
-	// and a global one is an ordinary link, and the library holds an
-	// address for each (lease.Lease.Addrs, cap proto.MaxSLAACAddresses
-	// = 8). A chassis reading IP alone would install one of them and
-	// leave the rest unconfigured with nothing anywhere saying so.
-	//
-	// EACH CARRIES ITS OWN PAIR AND THE LEASE'S PAIR IS AN AGGREGATE.
-	// LeaseSeconds and PreferredSeconds above are the CHOSEN address's,
-	// and the library's own Lease.Expire is the LONGEST valid lifetime
-	// across the set while Lease.Preferred is the SHORTEST preferred
-	// (proto/lease6.go Deadlines, PreferredUntil). Installing every
-	// address with the aggregate would give a short-lived prefix the
-	// long-lived one's expiry, and the container would hold an address
-	// its router stopped advertising.
+	// RFC 4862 section 5.5.3 forms one address per autonomous prefix, up to proto.MaxSLAACAddresses. Each carries its
+	// own lifetimes, since the lease's are aggregates: Lease.Expire is the longest valid and Lease.Preferred the
+	// shortest preferred (#818).
+
+	// Addrs is every address a DHCPv6 or SLAAC lease holds, IP being the one reported to Docker; empty for v4.
 	Addrs []V6Addr `json:",omitempty"`
 
-	// SLAAC says the addresses were FORMED from a router advertisement
-	// (RFC 4862 section 5.5.3) rather than granted by a DHCPv6 server.
-	//
-	// It is carried and not derived. "No server DUID" and "no renewal
-	// deadline" are both true of things that are not this, and the two
-	// endings differ in what an operator does about them: a formed
-	// address that goes away is a router that stopped advertising a
-	// prefix, and no DHCP server was involved at any point.
+	// SLAAC says the addresses were formed from an advertisement (RFC 4862 section 5.5.3), not granted by a server
+	// (#818).
 	SLAAC bool `json:",omitempty"`
 
-	// MainAddrFallback says the network named an `ipv6_main_prefix`,
-	// no address of this lease falls inside it, and IP is therefore the
-	// first address the lease holds.
-	//
-	// It rides the event rather than being recomputed by the counter,
-	// because the prefix and the lease are both here and neither is
-	// anywhere else: the plugin would otherwise have to parse the
-	// option a second time to find out whether the selection it was
-	// handed was the one the operator asked for.
+	// MainAddrFallback says no lease address falls inside the `ipv6_main_prefix`, so IP is the lease's first address
+	// (#818).
 	MainAddrFallback bool `json:",omitempty"`
 }
 
-// V6Addr is one address of a v6 lease with its own two RFC 9915 section
-// 7.1 lifetimes, in seconds, on Info's convention: 0 means the lease
-// carried no deadline, which for the valid lifetime is the kernel's
-// "forever".
-//
-// A SLAAC ADDRESS CARRIES THE ADVERTISED PREFIX LENGTH AND A GRANTED
-// ONE CARRIES /128. That is the library's rule, not a choice here
-// (lease/event.go: "A granted address has no prefix length of its own,
-// so it is a host address. Only RFC 4862 section 5.5.3's option carries
-// one."), and it is what puts the on-link route for a formed prefix on
-// the container link: with the kernel's own router-advertisement
-// processing off, the address's own prefix length is the only thing
-// that makes the segment on-link.
+// A SLAAC address carries the advertised prefix length and a granted one /128, by the library's rule; with the kernel's
+// RA processing off that length alone makes a formed prefix on-link (#818).
+
+// V6Addr is one v6 lease address with its RFC 9915 section 7.1 lifetimes in seconds, 0 meaning no deadline.
 type V6Addr struct {
-	// IP is the address with its prefix length, e.g.
-	// "2001:db8::1c:42ff:fe00:2/64".
+	// IP is the address with its prefix length, e.g. "2001:db8::1c:42ff:fe00:2/64".
 	IP string
 	// ValidSeconds and PreferredSeconds are this address's own pair.
 	ValidSeconds     int `json:",omitempty"`
 	PreferredSeconds int `json:",omitempty"`
-	// Deprecated says this address's preferred lifetime has ELAPSED:
-	// RFC 4862 section 5.5.4's second phase, "SHOULD continue to be
-	// used as a source address in existing communications, but SHOULD
-	// NOT be used to initiate new communications".
-	//
-	// IT IS CARRIED BECAUSE THE PAIR OF NUMBERS CANNOT SAY IT. On this
-	// struct's convention a zero lifetime means the lease carried no
-	// deadline, so a router that deprecates a prefix by advertising a
-	// preferred lifetime of zero while leaving the valid lifetime
-	// unbounded -- which RFC 4861 section 4.6.2 lets it do, and which
-	// is how a prefix is withdrawn gently -- produces the pair (0, 0).
-	// That is indistinguishable from an address that is current and
-	// never expires, and the two install as opposite things: one is
-	// deprecated, the other is permanent and preferred.
-	//
-	// So the property travels beside the numbers instead of being
-	// inferred from them, and v6AddrAttrs takes it as an argument it
-	// cannot be called without.
+	// A router may withdraw a prefix gently with preferred 0 and valid unbounded (RFC 4861 section 4.6.2), which reads
+	// (0, 0) like a permanent address, so the flag travels and v6AddrAttrs takes it (#819).
+
+	// Deprecated says the preferred lifetime has elapsed, RFC 4862 section 5.5.4's "SHOULD NOT be used to initiate new
+	// communications".
 	Deprecated bool `json:",omitempty"`
 }
 
@@ -260,41 +108,18 @@ type V6Addr struct {
 type Route struct {
 	// Destination is the canonical CIDR (e.g. "10.0.0.0/8").
 	Destination string
-	// Gateway is the next hop. Empty means the route is on-link (dhcpcd
-	// reported the gateway as 0.0.0.0).
+	// Gateway is the next hop; empty means on-link.
 	Gateway string `json:",omitempty"`
 }
 
 type Event struct {
 	Type string
 	Data Info
-	// UnsafeValuesDropped is how many server-chosen string values
-	// BuildEvent refused because they carried a control character
-	// (#703).
-	//
-	// It rides the event because the filter runs in the dhcpcd hook
-	// process and the health counter lives in the plugin, which is a
-	// different process on the other side of the FIFO. Without it the
-	// drop would be invisible to operators, and a filter whose work
-	// leaves no trace is indistinguishable from an attack that was
-	// never attempted.
+	// UnsafeValuesDropped is how many server-chosen string values sanitizeInfo refused for a control character (#703).
 	UnsafeValuesDropped int `json:",omitempty"`
-	// RouterFlags is RFC 4861 section 4.2's two configuration bits as
-	// the letters an operator reads in a log line: "M", "O", "MO", or
-	// empty for an advertisement carrying neither -- and empty as well
-	// for a v4 event and for a v6 link where no advertisement has
-	// arrived yet.
-	//
-	// FOR A HUMAN, NOT FOR A DECISION. Nothing branches on this string:
-	// the machine-readable form is dhcp.RAObservation, which has a
-	// Seen of its own and can therefore tell "no advertisement" from
-	// "an advertisement with neither bit set" -- a distinction this
-	// string deliberately does not make, because the log line it goes
-	// on says which link and which endpoint beside it.
-	//
-	// It rides EVERY v6 event rather than a "routeradvert" event of its
-	// own (which is what 1.9.0 had, from the dhcpcd hook): the library
-	// stamps its running observation on every event it emits, so a
-	// separate event kind would be a second copy of one fact.
+	// Nothing branches on it; dhcp.RAObservation is the machine-readable form. It rides every v6 event since the
+	// library stamps its observation on each (#868).
+
+	// RouterFlags is RFC 4861 section 4.2's M and O bits as log letters: "M", "O", "MO" or empty.
 	RouterFlags string `json:",omitempty"`
 }

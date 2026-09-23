@@ -12,28 +12,9 @@ import (
 	"testing"
 )
 
-// TestAcquisitionWindow_ComesFromTheDerivationAndNowhereElse closes the
-// one seam between two things that ARE tested.
-//
-// V6AcquisitionWindow's derivation is driven by
-// TestV6SolicitWindow_CoversTheRetransmissionsItClaims, and
-// runAcquisition6's use of whatever window it is given is driven by
-// TestRunAcquisition6_HasItsOwnWindow. What neither can see is the
-// argument that joins them: getIP6 opens a packet socket before it
-// reaches the call, so no unit test can execute that line, and a
-// literal there -- or lease_timeout back again -- would leave both of
-// the tests above green. MEASURED 2026-09-06: the mutant that replaces
-// the argument with a 90s literal survived everything else in this
-// package.
-//
-// THE BOUND. This is keyed on the SPELLING of the call and of its
-// argument. A window reached through a variable assigned from
-// V6AcquisitionWindow, or through a wrapper around it, reads as a
-// violation here even though it is correct; a window computed by a
-// function that merely happens to be NAMED V6AcquisitionWindow reads as
-// correct even though it is not. It is a wiring check and not a
-// behaviour one, which is why it exists BESIDE the two behaviour tests
-// rather than instead of either.
+// Measured 2026-09-06: a 90s literal in place of V6AcquisitionWindow survived every other test in the package (#911).
+// Bound: this is keyed on spelling, so a correct window reached through a variable reads as a violation.
+
 func TestAcquisitionWindow_ComesFromTheDerivationAndNowhereElse(t *testing.T) {
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, "chassis6.go", nil, 0)
@@ -63,9 +44,6 @@ func TestAcquisitionWindow_ComesFromTheDerivationAndNowhereElse(t *testing.T) {
 		return true
 	})
 
-	// NON-VACUITY. A rename of the function, or a move of the call into
-	// another file, empties the search and every assertion below then
-	// holds over nothing.
 	if len(args) == 0 {
 		t.Fatal("no call to runAcquisition6 in chassis6.go: this test's domain is empty, " +
 			"and an empty domain satisfies the rule below without checking anything")
@@ -83,23 +61,9 @@ func TestAcquisitionWindow_ComesFromTheDerivationAndNowhereElse(t *testing.T) {
 	}
 }
 
-// TestHintlessRetry_IsWiredIntoTheOneAcquisitionCall closes the seam
-// the same way, for the same reason, over the second attempt.
-//
-// TestRetryWithoutHint6 drives the decision and its bound;
-// TestRunAcquisition6_AHintedConflictEndsTheLoop drives the event that
-// asks for it. Neither can see getIP6, which is where the two are
-// joined and which opens a packet socket on its first line. The mutants
-// that live in that gap are: run the acquisition once and return (the
-// retry never happens); pass the ORIGINAL params to the second pass (it
-// asks for the declined address again); and hand runAcquisition6 no
-// hint (every conflict is treated as a server's own choice, and the
-// loop this PR exists to break comes back).
-//
-// THE BOUND is the one the test above states: this is keyed on
-// spelling. It says the call sites READ correctly, not that they
-// BEHAVE correctly, which is why it sits beside the behaviour tests
-// rather than instead of them.
+// getIP6 opens a packet socket on its first line, so no unit test reaches the retry wiring and it is checked by
+// spelling (#911).
+
 func TestHintlessRetry_IsWiredIntoTheOneAcquisitionCall(t *testing.T) {
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, "chassis6.go", nil, 0)
@@ -115,7 +79,7 @@ func TestHintlessRetry_IsWiredIntoTheOneAcquisitionCall(t *testing.T) {
 		return b.String()
 	}
 
-	// calls named fn, anywhere under n, with each call's arguments spelled.
+	// calls lists the calls named fn under n, with each call's arguments spelled.
 	calls := func(n ast.Node, fn string) [][]string {
 		var found [][]string
 		ast.Inspect(n, func(n ast.Node) bool {
@@ -149,15 +113,11 @@ func TestHintlessRetry_IsWiredIntoTheOneAcquisitionCall(t *testing.T) {
 			getIP6Fn = fn
 		}
 	}
-	// NON-VACUITY, and it is the whole of this test's domain: a renamed
-	// or moved getIP6 empties every assertion below.
 	if getIP6Fn == nil {
 		t.Fatal("no getIP6 in chassis6.go: this test's domain is empty, and an empty " +
 			"domain satisfies every rule below without checking anything")
 	}
 
-	// The retry is a loop, and the loop is the bound: see
-	// retryWithoutHint6 for why it cannot run a third time.
 	var loops []*ast.ForStmt
 	ast.Inspect(getIP6Fn, func(n ast.Node) bool {
 		if f, ok := n.(*ast.ForStmt); ok {
@@ -189,11 +149,7 @@ func TestHintlessRetry_IsWiredIntoTheOneAcquisitionCall(t *testing.T) {
 			"it is both the decision to retry and the bound on retrying", len(got))
 	}
 
-	// THE LOOP'S ONLY EXIT IS THAT DECISION. MEASURED 2026-09-06: with
-	// the assertions above and none of these, the mutant that widens the
-	// exit condition -- so the first attempt always returns and the
-	// retry is dead code -- survived the whole package, because it
-	// changes neither call nor spelling of an argument.
+	// Measured 2026-09-06: the mutant that widens the loop's exit survived the package without these assertions (#911).
 	var (
 		returns int
 		conds   []string
@@ -217,7 +173,6 @@ func TestHintlessRetry_IsWiredIntoTheOneAcquisitionCall(t *testing.T) {
 			"retryWithoutHint6 answered", conds)
 	}
 
-	// And the hint reaches the loop that has to recognise the conflict.
 	run := calls(file, "runAcquisition6")
 	if len(run) != 1 {
 		t.Fatalf("runAcquisition6 is called %d times in chassis6.go, want exactly one", len(run))

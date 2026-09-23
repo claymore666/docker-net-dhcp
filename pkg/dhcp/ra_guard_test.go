@@ -10,35 +10,20 @@ import (
 	"testing"
 )
 
-// fakeSysctlTree lays out a /proc/sys/net/ipv6/conf/<iface>/ with the
-// three knobs present and at their kernel defaults, so a test measures
-// what the guard WRITES rather than what happened to be there.
+// fakeSysctlTree lays out a per-interface IPv6 conf directory with the three knobs at their kernel defaults.
 func fakeSysctlTree(t *testing.T, iface string) string {
 	t.Helper()
 	dir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(dir, iface), 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
-	// The kernel's defaults on a fresh link, and all three are wrong for
-	// this plugin: accept_ra 1 has the kernel act on advertisements the
-	// plugin's own client is already reading, autoconf 1 has it form an
-	// address beside the one the plugin holds a lease for,
-	// keep_addr_on_down 0 drops the address on a carrier flap.
+	// Kernel defaults on a fresh link: accept_ra 1, autoconf 1, keep_addr_on_down 0 (#821).
 	seed := map[string]string{
 		"accept_ra":         "1",
 		"autoconf":          "1",
 		"keep_addr_on_down": "0",
 	}
-	// EVERY SEED DIFFERS FROM THE VALUE THE GUARD WILL WRITE, and that is
-	// the whole property this fixture exists for: a seed that already
-	// equals the contract makes the read-back below pass whether the
-	// guard wrote anything or not. Today the kernel's default is the
-	// complement of the contract for all three knobs, which is why the
-	// literals above read as defaults rather than as "not the contract".
-	// It is asserted rather than left to a reader, because the two lists
-	// move independently -- change the contract to accept_ra 1 and this
-	// goes red here, at the fixture, instead of going quietly vacuous in
-	// three tests.
+	// Every seed differs from the contract, or the read-back would pass with no write (#911).
 	contract := RouterAdvertGuardContract()
 	if len(seed) != len(contract) {
 		t.Fatalf("the fixture seeds %d knobs and the contract has %d: %v vs %v",
@@ -63,16 +48,6 @@ func fakeSysctlTree(t *testing.T, iface string) string {
 	return dir
 }
 
-// The guard writes exactly the contract, and the contract is what the
-// rest of the plugin reads.
-//
-// TWO ASSERTIONS FROM ONE RUN, deliberately. RouterAdvertGuardContract
-// is what the docs and the operator-facing diagnostics quote; the writes
-// are what the container's kernel sees. Asserting the writes against a
-// hand-written list would let the two drift; asserting them against the
-// contract makes the contract the single statement, and the hand-written
-// values below pin the contract itself so "both changed together" is
-// still a failure.
 func TestApplyRouterAdvertGuard_WritesTheContract(t *testing.T) {
 	const iface = "eth0"
 	dir := fakeSysctlTree(t, iface)
@@ -97,18 +72,8 @@ func TestApplyRouterAdvertGuard_WritesTheContract(t *testing.T) {
 		}
 	}
 
-	// The contract itself, spelled out. accept_ra 0, and not 1 or 2:
-	// the plugin's own client reads the advertisement off a raw socket
-	// and puts the gateway, MTU, routes and DNS into the Join answer,
-	// so a kernel that acted on the same advertisement would install a
-	// second default route beside the one the engine installs from that
-	// answer. autoconf 0 is the same statement on the address side: the
-	// plugin holds a lease for the address the container uses.
-	//
-	// This pins the value, not the direction. Flipping accept_ra back to
-	// 2 here keeps this test green only if the guard is flipped with it,
-	// and the container-side observer for the flip is "ip -6 route"
-	// inside the container in the integration suite, not this map.
+	// accept_ra 0: the plugin's own client reads the advertisement, so a kernel acting on it would add a second default
+	// route (#821).
 	want := map[string]string{"accept_ra": "0", "autoconf": "0", "keep_addr_on_down": "1"}
 	if len(contract) != len(want) {
 		t.Errorf("the contract has %d knobs, want %d: %v", len(contract), len(want), contract)
@@ -120,9 +85,6 @@ func TestApplyRouterAdvertGuard_WritesTheContract(t *testing.T) {
 	}
 }
 
-// The contract is a fresh map per call. It is handed to callers that log
-// it and to tests that range over it; a shared map is a caller able to
-// rewrite what the next one reads.
 func TestRouterAdvertGuardContract_IsNotShared(t *testing.T) {
 	a := RouterAdvertGuardContract()
 	for k := range a {
@@ -133,16 +95,9 @@ func TestRouterAdvertGuardContract_IsNotShared(t *testing.T) {
 	}
 }
 
-// A tree with no knobs at all is counted, not fatal, and the count is
-// bounded by the number of steps.
-//
-// WHY NOT FATAL. This runs inside the container's namespace on a link
-// the engine has just created. A missing knob means the kernel was built
-// without something, or /proc/sys is mounted read-only in a rootfs the
-// plugin does not control -- neither is a reason to refuse to give the
-// container an address. It is a reason for the operator to know the
-// endpoint may have an address and no route, which is what the counter
-// is for.
+// A missing knob is counted, not fatal: a kernel without it or a read-only /proc/sys is no reason to refuse an address
+// (#911).
+
 func TestApplyRouterAdvertGuard_CountsRatherThanRefuses(t *testing.T) {
 	res := ApplyRouterAdvertGuard(t.TempDir(), "eth0")
 	if res.Failures == 0 {
@@ -151,14 +106,9 @@ func TestApplyRouterAdvertGuard_CountsRatherThanRefuses(t *testing.T) {
 	if res.Err == nil {
 		t.Error("the guard reported failures with no error to log")
 	}
-	// Two steps per knob -- the write and the read-back -- so the count
-	// is bounded, and the bound is what makes the counter comparable
-	// between endpoints.
 	if max := 2 * len(RouterAdvertGuardContract()); res.Failures > max {
 		t.Errorf("Failures = %d, above the %d-step bound", res.Failures, max)
 	}
-	// Every missing knob is named, so the operator can tell "the kernel
-	// has no keep_addr_on_down" from "/proc/sys is read-only".
 	for knob := range RouterAdvertGuardContract() {
 		if !strings.Contains(res.Err.Error(), knob) {
 			t.Errorf("the error does not name %v: %v", knob, res.Err)
@@ -166,25 +116,13 @@ func TestApplyRouterAdvertGuard_CountsRatherThanRefuses(t *testing.T) {
 	}
 }
 
-// A knob that accepts a write and reads back something else is a
-// failure. This is the shape a write-only assertion cannot see, and it
-// is the shape that actually happens: a sysctl the kernel clamps, or a
-// value another agent in the namespace immediately overwrites.
 func TestApplyRouterAdvertGuard_ReadsBackWhatItWrote(t *testing.T) {
 	const iface = "eth0"
 	dir := fakeSysctlTree(t, iface)
-	// /dev/null takes any write and reads back empty, which is exactly
-	// "the write succeeded and the value did not change".
 	p := filepath.Join(dir, iface, "accept_ra")
 	if err := os.Remove(p); err != nil {
 		t.Fatalf("remove: %v", err)
 	}
-	// FATAL, not a skip. This is the only test of the read-back, which
-	// is the half of the guard a write-only assertion cannot see, and a
-	// skip here would delete it silently on whatever host could not
-	// make the symlink. Every host this suite runs on is Linux with a
-	// writable temp directory, so a failure means the premise changed
-	// and that is worth a red.
 	if err := os.Symlink(os.DevNull, p); err != nil {
 		t.Fatalf("cannot symlink %v: %v", os.DevNull, err)
 	}
@@ -197,7 +135,6 @@ func TestApplyRouterAdvertGuard_ReadsBackWhatItWrote(t *testing.T) {
 	if res.Err == nil || !strings.Contains(res.Err.Error(), "accept_ra") {
 		t.Errorf("the error does not name accept_ra: %v", res.Err)
 	}
-	// The other two still took: one bad knob does not abandon the rest.
 	for _, knob := range []string{"autoconf", "keep_addr_on_down"} {
 		got, err := os.ReadFile(filepath.Join(dir, iface, knob))
 		if err != nil {
@@ -211,11 +148,6 @@ func TestApplyRouterAdvertGuard_ReadsBackWhatItWrote(t *testing.T) {
 	}
 }
 
-// The path is per-interface. Every container endpoint in this process
-// shares /proc/sys/net/ipv6/conf, and `all` and `default` are siblings
-// of the interface directory -- a path built without the interface would
-// silently reconfigure the host's defaults from inside a namespace that
-// may or may not have its own /proc.
 func TestRAGuardPath_IsScopedToTheInterface(t *testing.T) {
 	got := raGuardPath("/proc/sys/net/ipv6/conf", "eth0", "accept_ra")
 	if want := "/proc/sys/net/ipv6/conf/eth0/accept_ra"; got != want {
@@ -226,9 +158,6 @@ func TestRAGuardPath_IsScopedToTheInterface(t *testing.T) {
 	}
 }
 
-// The production root is the real one. Nothing else in the package names
-// it, so a typo here is a guard that silently writes into a directory
-// that does not exist and counts six failures on every endpoint.
 func TestSysctlIPv6ConfDir(t *testing.T) {
 	if want := "/proc/sys/net/ipv6/conf"; sysctlIPv6ConfDir != want {
 		t.Errorf("sysctlIPv6ConfDir = %q, want %q", sysctlIPv6ConfDir, want)
