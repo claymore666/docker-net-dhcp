@@ -1048,8 +1048,9 @@ func (m *dhcpManager) withdrawV6DefaultRoute(existing []netlink.Route) error {
 // reconcileAdvertisedRoutes diffs the RFC 4191 Route Information routes against what this manager installed (see
 // lastAdvertRoutes), removing a route no longer advertised (#821). On-link prefixes come from the Join answer only:
 // the library's router table holds the latest frame, and one advertisement omitting a prefix must not remove it.
+// skip_routes opts out here as it does at Join, for both the lease and the advertisement path (#1016).
 func (m *dhcpManager) reconcileAdvertisedRoutes(info dhcp.Info) error {
-	if m.netHandle == nil || m.ctrLink == nil {
+	if m.netHandle == nil || m.ctrLink == nil || m.opts.SkipRoutes {
 		return nil
 	}
 	idx := m.ctrLink.Attrs().Index

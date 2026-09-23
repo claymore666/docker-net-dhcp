@@ -700,6 +700,57 @@ func TestRenew_SeedsTheAdvertisedRouteDiffBase(t *testing.T) {
 	}
 }
 
+// skipRoutesManager is a v6 manager on a skip_routes network whose link holds the default route Join installed.
+func skipRoutesManager(t *testing.T) (*dhcpManager, *fakeRouteTable) {
+	t.Helper()
+	m, _, f := v6Manager(t)
+	m.opts.SkipRoutes = true
+	f.routes = []netlink.Route{defaultV6Route("fe80::1")}
+	prevMTU, prevAddr := nlHandleLinkSetMTU, nlHandleAddrReplace
+	nlHandleLinkSetMTU = func(*netlink.Handle, netlink.Link, int) error { return nil }
+	nlHandleAddrReplace = func(*netlink.Handle, netlink.Link, *netlink.Addr) error { return nil }
+	t.Cleanup(func() { nlHandleLinkSetMTU, nlHandleAddrReplace = prevMTU, prevAddr })
+	return m, f
+}
+
+func assertSkipRoutesHeld(t *testing.T, m *dhcpManager, f *fakeRouteTable, path string) {
+	t.Helper()
+	for _, r := range append(append([]netlink.Route(nil), f.replace...), f.added...) {
+		if r.Dst != nil && r.Dst.String() == "2001:db8:1::/48" {
+			t.Fatalf("the %s path installed the advertised route %v on a skip_routes network, "+
+				"which Join left out", path, r.Dst)
+		}
+	}
+	if len(m.lastAdvertRoutes) != 0 {
+		t.Errorf("the %s path recorded %v as installed on a skip_routes network", path, m.lastAdvertRoutes)
+	}
+	for _, r := range f.deleted {
+		if r.Dst == nil {
+			t.Errorf("the %s path removed the default route; skip_routes leaves the gateway alone", path)
+		}
+	}
+}
+
+var skipRoutesAdvert = dhcp.Info{
+	IP:      "2001:db8::5/64",
+	Gateway: "fe80::1",
+	Routes:  []dhcp.Route{{Destination: "2001:db8:1::/48", Gateway: "fe80::1"}},
+}
+
+func TestRenew_SkipRoutesInstallsNoAdvertisedRoute(t *testing.T) {
+	m, f := skipRoutesManager(t)
+	if err := m.renew(true, skipRoutesAdvert); err != nil {
+		t.Fatalf("renew: %v", err)
+	}
+	assertSkipRoutesHeld(t, m, f, "lease")
+}
+
+func TestApplyRouterAdvert_SkipRoutesInstallsNoAdvertisedRoute(t *testing.T) {
+	m, f := skipRoutesManager(t)
+	m.applyRouterAdvert(skipRoutesAdvert)
+	assertSkipRoutesHeld(t, m, f, "advertisement")
+}
+
 func TestPropagateMTU_AWithdrawnMTUStopsVoting(t *testing.T) {
 	newManager := func(t *testing.T) (*dhcpManager, *fakeLink) {
 		t.Helper()
