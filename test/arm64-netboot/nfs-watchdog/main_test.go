@@ -13,7 +13,6 @@ import (
 	"time"
 )
 
-// The decision this program exists to make, in both directions.
 func TestShouldPet(t *testing.T) {
 	now := time.Unix(1_000_000, 0)
 	for _, tc := range []struct {
@@ -22,10 +21,6 @@ func TestShouldPet(t *testing.T) {
 		staleAfter time.Duration
 		want       bool
 	}{
-		// A host that has never had a successful probe must NOT be
-		// petted. Starting up is not evidence the filesystem works, and
-		// treating it as such would keep a host alive that never had a
-		// working root.
 		{"never probed", time.Time{}, 45 * time.Second, false},
 		{"just probed", now, 45 * time.Second, true},
 		{"within the limit", now.Add(-44 * time.Second), 45 * time.Second, true},
@@ -41,8 +36,6 @@ func TestShouldPet(t *testing.T) {
 	}
 }
 
-// Every rejected configuration is one that would make this a no-op or a
-// hair-trigger, which is worse than not running it at all.
 func TestConfigValidate(t *testing.T) {
 	ok := config{
 		petInterval:   10 * time.Second,
@@ -60,20 +53,16 @@ func TestConfigValidate(t *testing.T) {
 		want string
 	}{
 		{
-			// The board would reset while we still believed the
-			// filesystem was fine, so nothing would ever log a reason.
 			"stale-after at or over the hardware timeout",
 			func(c *config) { c.staleAfter = 60 * time.Second },
 			"shorter than the hardware timeout",
 		},
 		{
-			// A healthy host goes stale between probes and resets.
 			"probe-interval at or over stale-after",
 			func(c *config) { c.probeInterval = 45 * time.Second },
 			"shorter than stale-after",
 		},
 		{
-			// One missed tick would be a reset.
 			"pet-interval over half the hardware timeout",
 			func(c *config) { c.petInterval = 31 * time.Second },
 			"under half the hardware timeout",
@@ -96,10 +85,6 @@ func TestConfigValidate(t *testing.T) {
 	}
 }
 
-// A probe that BLOCKS must look exactly like a probe that fails. On a
-// hard NFS mount that is the real shape of an outage — statfs never
-// returns — and a design that only handled errors would keep petting
-// forever through it.
 func TestProber_BlockedProbeGoesStale(t *testing.T) {
 	release := make(chan struct{})
 	p := &prober{
@@ -125,17 +110,8 @@ func TestProber_BlockedProbeGoesStale(t *testing.T) {
 
 func TestProber_FailingProbeStopsPublishing(t *testing.T) {
 	var fail atomic.Bool
-	// Closed by the fake the first time it actually returns the error.
-	// Sampling `frozen` off the wall clock instead raced the prober and
-	// went red on CI: setting the flag does not stop a probe that has
-	// ALREADY returned nil and has not yet reached its Store, so the
-	// timestamp could still move once after the flag flipped and the
-	// test read a value that was not final. Because run() is a single
-	// goroutine, entering the failing probe means every earlier success
-	// has already been stored -- so a sample taken after this signal is
-	// the last one the prober will ever publish, with no timing
-	// assumption at all. This is not a widened window: the 50ms below is
-	// still the window in which a WRONG publish would be caught.
+	// Closed by the fake when it first returns the error: run() is one goroutine, so every earlier success is stored
+	// by then and a sample taken after it is final; the 50ms below is still the window a wrong publish is caught in (#874).
 	failed := make(chan struct{})
 	var failedOnce sync.Once
 	p := &prober{
@@ -174,10 +150,6 @@ func TestProber_FailingProbeStopsPublishing(t *testing.T) {
 	}
 }
 
-// statfs, not a file read: the page cache answers a read from RAM long
-// after the server is gone, which would feed the watchdog straight
-// through the outage it exists to catch. Asserted against a real path so
-// the call is the real one.
 func TestStatfsProbe(t *testing.T) {
 	if err := statfsProbe(t.TempDir()); err != nil {
 		t.Fatalf("statfs on a real directory must succeed: %v", err)
@@ -187,7 +159,6 @@ func TestStatfsProbe(t *testing.T) {
 	}
 }
 
-// run() on its own ticker pets a healthy device within the pet interval.
 func TestRun_PetsAHealthyDeviceOnItsOwnTicker(t *testing.T) {
 	dev, err := os.CreateTemp(t.TempDir(), "watchdog")
 	if err != nil {
@@ -221,7 +192,6 @@ func TestRun_PetsAHealthyDeviceOnItsOwnTicker(t *testing.T) {
 	<-done
 }
 
-// Fed its ticks by the test, the loop pets a healthy device and STOPS once the probe goes stale.
 func TestRun_StopsPettingWhenTheProbeGoesStale(t *testing.T) {
 	dev, err := os.CreateTemp(t.TempDir(), "watchdog")
 	if err != nil {
@@ -262,12 +232,8 @@ func TestRun_StopsPettingWhenTheProbeGoesStale(t *testing.T) {
 		t.Fatalf("the watchdog was still being petted after the probe went stale: 2 -> %d", got)
 	}
 
-	// Stopping while the share is silent must NOT disarm. This is the
-	// shutdown path: systemd stops units before it unmounts, so the
-	// SIGTERM that ends this process arrives BEFORE the unmount that is
-	// going to hang. Disarming here removes the only thing left that
-	// could end that hang, which is what the board did for 14 minutes
-	// on 2026-08-20.
+	// systemd stops units before it unmounts, so this SIGTERM arrives before the unmount that hangs; disarming here left
+	// the board hung for 14 minutes on 2026-08-20 (#684).
 	b, err := os.ReadFile(dev.Name())
 	if err != nil {
 		t.Fatal(err)
@@ -303,12 +269,6 @@ func tail(s string) string {
 	return s
 }
 
-// The board this program runs on has a 15s hardware watchdog, while the
-// defaults describe a 60s one. Before fitToHardware that combination
-// was fatal: the process refused to start, and because PID 1 had
-// already released the device the board then ran unwatched. Refusing to
-// run is the one outcome a watchdog must never choose, so each way back
-// into it is driven here.
 func TestFitToHardware(t *testing.T) {
 	defaults := func(hw time.Duration) config {
 		return config{
@@ -358,15 +318,12 @@ func TestFitToHardware(t *testing.T) {
 				t.Fatal("reported scaling a value it was told not to touch")
 			}
 		}
-		// And the contradiction still has to surface rather than being
-		// papered over by the values around it.
 		if err := got.validate(); err == nil {
 			t.Fatal("an unusable explicit stale-after validated clean")
 		}
 	})
 
 	t.Run("the scaled timings validate across the plausible range", func(t *testing.T) {
-		// Whatever device this lands on next, the ratios have to hold.
 		for hw := 5 * time.Second; hw <= 120*time.Second; hw += time.Second {
 			got, _ := fitToHardware(defaults(hw), nil)
 			if err := got.validate(); err != nil {
@@ -377,9 +334,6 @@ func TestFitToHardware(t *testing.T) {
 	})
 
 	t.Run("a hardware timeout too small to be usable stays fatal", func(t *testing.T) {
-		// Scaling must not manufacture a zero or sub-second petter and
-		// call it healthy: below a usable timeout the honest answer is
-		// still the error.
 		got, _ := fitToHardware(defaults(2*time.Second), nil)
 		if got.petInterval <= 0 || got.probeInterval <= 0 || got.staleAfter <= 0 {
 			if err := got.validate(); err == nil {
@@ -389,12 +343,6 @@ func TestFitToHardware(t *testing.T) {
 	})
 }
 
-// The stop path has to tell two identical SIGTERMs apart, and it gets
-// exactly one piece of evidence: whether the filesystem still answers.
-// Both directions are driven here because they fail in opposite ways —
-// disarming on the shutdown path leaves a wedged board nothing can end,
-// and staying armed on an operator's stop resets a healthy host seconds
-// after somebody deliberately stopped the service to look at it.
 func TestRun_DisarmsOnlyWhileTheFilesystemAnswers(t *testing.T) {
 	for _, tc := range []struct {
 		name       string

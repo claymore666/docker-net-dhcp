@@ -1,74 +1,15 @@
 // Copyright the docker-net-dhcp contributors.
 // SPDX-License-Identifier: GPL-3.0-only
 
-// nfs-watchdog pets the SoC hardware watchdog only while the root
-// filesystem still answers, so an arm64 CI host whose NFS server
-// disappears resets itself instead of wedging (#632).
-//
-// WHY SYSTEMD'S WATCHDOG IS NOT ENOUGH
-//
-// The OS image already arms this device: it ships
-// /usr/lib/systemd/system.conf.d/40-rpi-enable-watchdog.conf with
-// RuntimeWatchdogSec=1m, and PID 1 holds /dev/watchdog0. The minute it
-// asks for is not what it gets: this SoC's watchdog caps at 15s and the
-// kernel clamps the request without saying so. It was armed during the
-// outage that motivated this and the board still had to be
-// power-cycled.
-//
-// The reason is the failure itself. systemd is resident in memory and
-// its event loop never touches the root filesystem, so it keeps petting
-// while every process that needs I/O blocks forever on a hard mount.
-// From the watchdog's point of view the board is healthy — which is
-// exactly why such a host answers ping, accepts TCP on 22, and never
-// produces an ssh banner: sshd cannot re-exec its own binary off the
-// share that just went away.
-//
-// So the petting has to be conditional on I/O that actually reaches the
-// server. That is the whole idea here.
-//
-// # HOW A BLOCKED PROBE IS THE SIGNAL, NOT A PROBLEM
-//
-// The probe runs in its own goroutine and publishes a timestamp; the
-// petting loop reads that timestamp and never calls into the filesystem
-// itself. On a hard NFS mount a probe does not fail, it blocks
-// indefinitely — so a stuck probe simply stops refreshing the timestamp
-// and looks identical to a failing one. That is correct, and it is why
-// there is no timeout plumbed into the probe call: the staleness
-// deadline IS the timeout.
-//
-// # WHY statfs
-//
-// It issues an FSSTAT RPC, so it reaches the server. Reading a file
-// would not: the page cache answers from RAM long after the server is
-// gone, which would keep the watchdog fed through the exact outage it
-// is meant to catch.
-//
-// # WHY THE PROCESS PINS ITS OWN MEMORY
-//
-// Clean file-backed pages stay evictable during the outage, and faulting
-// them back in blocks on the dead share. A petter that gets paged out is
-// a petter that stops petting for the wrong reason — and, worse, one
-// that would have reset a healthy box. mlockall keeps this process whole.
-//
-// # WHY STOPPING IS CONDITIONAL
-//
-// A deliberate `systemctl stop` on a healthy board must not reset it a
-// few seconds later, so the stop path writes the magic-close byte and
-// the kernel disarms the timer. But shutdown sends that same SIGTERM,
-// and a shutdown blocking on a dead share is one of the wedges this
-// exists to end -- disarming there would remove the only thing that
-// could. So the decision is the same one the petting loop makes: if the
-// filesystem is still answering, this is somebody stopping the service
-// and we disarm; if it has gone silent, we close the device WITHOUT the
-// magic byte, which the kernel reads as "closed unexpectedly" and leaves
-// the timer running. Both halves are pinned by
-// TestRun_DisarmsOnlyWhileTheFilesystemAnswers.
-//
-// WHY IT LOGS TO /dev/kmsg
-//
-// journald can block a writer when its buffers fill, and its own storage
-// is on the share. The kernel ring buffer is memory and never blocks.
+// nfs-watchdog pets the SoC hardware watchdog only while the root filesystem still answers, so an arm64 CI host
+// whose NFS server disappears resets itself instead of wedging (#632).
 package main
+
+// systemd already pets /dev/watchdog0 (RuntimeWatchdogSec=1m, which the kernel clamps to this SoC's 15s), but it is
+// resident and never touches the root filesystem, so it keeps petting while every process blocks on the hard mount:
+// the host answers ping and TCP 22 and never sends an ssh banner. A probe blocked on the mount stops refreshing the
+// timestamp the petting loop reads, so the staleness deadline is the probe's timeout. Logs go to /dev/kmsg because
+// journald can block a writer and stores on the share (#632).
 
 import (
 	"errors"
@@ -85,8 +26,7 @@ import (
 	"time"
 )
 
-// Watchdog ioctls. The magic-close byte 'V' is written before a
-// deliberate close so stopping this service does not arm a reset.
+// magicClose written before close makes the kernel stop the timer.
 const magicClose = "V"
 
 type config struct {
@@ -98,30 +38,19 @@ type config struct {
 	hwTimeout     time.Duration
 }
 
-// validate refuses a configuration that cannot do its job, rather than
-// running a watchdog whose numbers quietly make it a no-op or a
-// hair-trigger. Each of these has a failure direction worth naming.
+// validate refuses timings that would make the watchdog a no-op or a hair-trigger.
 func (c config) validate() error {
 	if c.staleAfter <= 0 || c.petInterval <= 0 || c.probeInterval <= 0 {
 		return errors.New("pet-interval, probe-interval and stale-after must all be positive")
 	}
-	// The hardware bites hwTimeout after the last pet. If we tolerate
-	// staleness for longer than that, the board resets while we still
-	// consider the filesystem healthy — the reset would be real but our
-	// reason for it would be a lie, and the log would say nothing.
 	if c.staleAfter >= c.hwTimeout {
 		return fmt.Errorf("stale-after (%s) must be shorter than the hardware timeout (%s), "+
 			"otherwise the board resets before this process ever decides anything", c.staleAfter, c.hwTimeout)
 	}
-	// A probe that runs less often than we tolerate staleness can never
-	// refresh the timestamp in time: the watchdog would fire on a
-	// perfectly healthy host.
 	if c.probeInterval >= c.staleAfter {
 		return fmt.Errorf("probe-interval (%s) must be shorter than stale-after (%s), "+
 			"otherwise a healthy host still goes stale between probes", c.probeInterval, c.staleAfter)
 	}
-	// Same argument one level down: pet at least twice per hardware
-	// timeout so a single missed tick is not a reset.
 	if c.petInterval*2 >= c.hwTimeout {
 		return fmt.Errorf("pet-interval (%s) must be under half the hardware timeout (%s), "+
 			"otherwise one missed tick resets the board", c.petInterval, c.hwTimeout)
@@ -129,27 +58,11 @@ func (c config) validate() error {
 	return nil
 }
 
-// fitToHardware rescales the timings the operator did not set so the
-// built-in defaults survive a device whose timeout is smaller than they
-// assume.
-//
-// The defaults describe a 60s watchdog. The BCM2835 on the arm64 CI
-// board maxes out at 15s and silently clamps to it, so every default
-// above is out of range at once and validate rejects all of them. That
-// verdict is correct and the consequence was still wrong: the process
-// exited, PID 1 had already handed the device over, and the board ran
-// with NO watchdog at all — the failure mode this program exists to
-// remove, reached by refusing to start.
-//
-// So a default that does not fit the hardware is rescaled to it rather
-// than being fatal. Ratios, not constants: pet five times per timeout,
-// tolerate staleness for three fifths of it. Those satisfy validate for
-// any timeout large enough to be usable, and on a 15s device they give
-// the 3s/3s/9s that was proven by hand on the board.
-//
-// Only untouched values move. An operator who names a number gets it or
-// gets an error — silently overriding an explicit flag would make the
-// running configuration something nobody wrote down.
+// The BCM2835 on the arm64 CI board caps at 15s and clamps silently, so the 60s defaults all failed validate, the
+// process exited after PID 1 had handed the device over, and the board ran unwatched (#661). Pet at a fifth of the
+// timeout and go stale at three fifths: 3s/3s/9s on that board, proven by hand. An explicit value is never moved.
+
+// fitToHardware rescales the timings the operator did not set to fit the device's timeout.
 func fitToHardware(c config, explicit map[string]bool) (config, []string) {
 	if c.validate() == nil {
 		return c, nil
@@ -171,24 +84,16 @@ func fitToHardware(c config, explicit map[string]bool) (config, []string) {
 	return c, changed
 }
 
-// shouldPet is the whole decision, kept separate from the clock and the
-// device so it can be tested directly.
+// shouldPet is the petting decision, separate from the clock and the device.
 func shouldPet(now, lastGood time.Time, staleAfter time.Duration) bool {
-	// Not redundant, though a mutation test cannot tell: the zero Time
-	// would also fall out of the comparison below, but only because
-	// time.Sub clamps an overflowing difference to the maximum Duration.
-	// Relying on that would make "a host that has never had a working
-	// root must not be petted" an accident of arithmetic rather than a
-	// decision. TestShouldPet pins the behaviour either way.
+	// Explicit: the zero time also fails below, but only because time.Sub clamps an overflow to the maximum Duration.
 	if lastGood.IsZero() {
 		return false
 	}
 	return now.Sub(lastGood) <= staleAfter
 }
 
-// prober republishes "the filesystem answered at T" forever. It never
-// returns; a blocked statfs simply stops it publishing, which is the
-// signal.
+// prober publishes the time of the last successful probe; a blocked statfs stops publishing, which is the signal.
 type prober struct {
 	path     string
 	interval time.Duration
@@ -217,16 +122,14 @@ func (p *prober) run(stop <-chan struct{}) {
 	}
 }
 
+// statfs sends an FSSTAT RPC to the server; a file read is answered from the page cache after the server is gone
+// (#632).
 func statfsProbe(path string) error {
 	var st syscall.Statfs_t
 	return syscall.Statfs(path, &st)
 }
 
-// hwTimeoutFromSysfs reads the timeout the device is actually running
-// with. Asking the kernel beats configuring a number and hoping: the
-// driver may clamp what it is given, and every safety margin below is
-// only meaningful against the real value. Returns 0 when it cannot be
-// read, and the caller falls back to the configured one.
+// hwTimeoutFromSysfs reads the timeout the driver actually runs with, since it may clamp the configured one, or 0.
 func hwTimeoutFromSysfs(device string) time.Duration {
 	name := filepath.Base(device)
 	b, err := os.ReadFile(filepath.Join("/sys/class/watchdog", name, "timeout"))
@@ -240,9 +143,7 @@ func hwTimeoutFromSysfs(device string) time.Duration {
 	return time.Duration(secs) * time.Second
 }
 
-// kmsg is the log sink: the kernel ring buffer is memory, so it cannot
-// block on the filesystem this process exists to distrust. Falls back to
-// stderr when /dev/kmsg is not writable (a container, a test).
+// openKmsg opens the kernel ring buffer as the log sink, or stderr where it is not writable.
 func openKmsg() io.Writer {
 	f, err := os.OpenFile("/dev/kmsg", os.O_WRONLY, 0)
 	if err != nil {
@@ -261,21 +162,14 @@ func (w *watchdog) pet() error {
 	return err
 }
 
-// disarm writes the magic-close byte so a deliberate stop does not leave
-// a timer running. Without it, stopping this service to debug something
-// would reset the box a minute later. Only correct while the filesystem
-// still answers -- see release.
+// disarm writes the magic-close byte and closes, stopping the timer; only correct while the filesystem answers.
 func (w *watchdog) disarm() {
 	_, _ = w.f.WriteString(magicClose)
 	_ = w.f.Close()
 }
 
-// release closes the device WITHOUT the magic byte. The kernel's watchdog
-// core treats that as "closed unexpectedly": it declines to stop the
-// timer and pings once more, so the board resets one hardware timeout
-// later. That is the wanted outcome when this process is asked to stop
-// while the share is already gone, because the thing asking is a
-// shutdown that is about to hang.
+// release closes without the magic byte, which the watchdog core treats as unexpected: the timer keeps running and
+// the board resets one hardware timeout later (#684).
 func (w *watchdog) release() {
 	_ = w.f.Close()
 }
@@ -295,8 +189,6 @@ func main() {
 		fmt.Fprintf(log, "nfs-watchdog: "+format+"\n", a...)
 	}
 
-	// Validate against the timeout the device really has, not the one
-	// we were told to assume.
 	if real := hwTimeoutFromSysfs(c.device); real > 0 && real != c.hwTimeout {
 		logf("device reports a %s hardware timeout (configured %s); using the device's", real, c.hwTimeout)
 		c.hwTimeout = real
@@ -313,10 +205,8 @@ func main() {
 		os.Exit(2)
 	}
 
-	// Pin every page before touching the device. If this fails we are
-	// not in a position to promise the thing this program is for, so it
-	// is fatal rather than a warning: a petter that can be paged out
-	// would eventually reset a healthy machine.
+	// Clean file-backed pages stay evictable and faulting them back blocks on the dead share, so an unpinned petter
+	// could stop petting a healthy host (#632).
 	if err := syscall.Mlockall(syscall.MCL_CURRENT | syscall.MCL_FUTURE); err != nil {
 		logf("FATAL: mlockall: %v — refusing to run unpinned, this process would "+
 			"block on the same share it is watching and reset a healthy host", err)
@@ -362,14 +252,8 @@ func petLoop(w *watchdog, p *prober, c config, sig <-chan os.Signal, stop chan s
 		select {
 		case <-sig:
 			close(stop)
-			// systemd sends this SIGTERM both when an operator stops
-			// the service and when the host is shutting down, and the
-			// two want opposite things from the device. The filesystem
-			// answers the question: a stop on a healthy board is
-			// somebody at a keyboard, and disarming is right; a stop
-			// while the share is silent is a shutdown that is about to
-			// block on it, and the timer is the only thing that will
-			// end that.
+			// systemd sends SIGTERM on an operator stop and on shutdown; a shutdown blocks on a dead share, so the timer
+			// stays armed unless the filesystem still answers (#684).
 			last := p.lastGood()
 			if shouldPet(time.Now(), last, c.staleAfter) {
 				logf("stopping on signal with %s still answering; disarming so this does not reset the host", c.probePath)
@@ -389,9 +273,6 @@ func petLoop(w *watchdog, p *prober, c config, sig <-chan os.Signal, stop chan s
 			last := p.lastGood()
 			if shouldPet(now, last, c.staleAfter) {
 				if starving {
-					// Said out loud because the alternative is a host
-					// that came within seconds of a reset and nothing
-					// anywhere records that it happened.
 					logf("filesystem answering again after %s of silence; resuming", now.Sub(last).Round(time.Second))
 					starving = false
 				}
@@ -414,9 +295,7 @@ func petLoop(w *watchdog, p *prober, c config, sig <-chan os.Signal, stop chan s
 	}
 }
 
-// explicitTimings names the timings the operator stated, by flag or by
-// environment. Both are somebody writing a number down on purpose, so
-// both are left alone by fitToHardware.
+// explicitTimings names the timings set by flag or environment, which fitToHardware leaves alone.
 func explicitTimings() map[string]bool {
 	explicit := map[string]bool{}
 	flag.Visit(func(f *flag.Flag) { explicit[f.Name] = true })
