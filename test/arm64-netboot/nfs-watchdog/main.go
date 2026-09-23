@@ -86,7 +86,7 @@ func fitToHardware(c config, explicit map[string]bool) (config, []string) {
 
 // shouldPet is the petting decision, separate from the clock and the device.
 func shouldPet(now, lastGood time.Time, staleAfter time.Duration) bool {
-	// Explicit: the zero time also fails below, but only because time.Sub clamps an overflow to the maximum Duration.
+	// Explicit: the zero time also fails below, but only because time.Sub clamps an overflow to the maximum Duration (#632).
 	if lastGood.IsZero() {
 		return false
 	}

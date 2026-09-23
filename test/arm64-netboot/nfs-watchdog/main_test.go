@@ -91,7 +91,7 @@ func TestProber_BlockedProbeGoesStale(t *testing.T) {
 		path:     "/irrelevant",
 		interval: time.Millisecond,
 		statfs: func(string) error {
-			<-release // never returns until the test says so
+			<-release
 			return nil
 		},
 	}
@@ -298,7 +298,7 @@ func TestFitToHardware(t *testing.T) {
 		if len(changed) != 3 {
 			t.Fatalf("want all three timings scaled, got %v", changed)
 		}
-		// The values proven by hand on the board.
+		// The values proven by hand on the board (#661).
 		if got.petInterval != 3*time.Second ||
 			got.probeInterval != 3*time.Second ||
 			got.staleAfter != 9*time.Second {
