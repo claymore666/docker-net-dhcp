@@ -16,23 +16,7 @@ import (
 	"github.com/vishvananda/netlink"
 )
 
-// TestStaticRoutes_BridgeCopiesToContainer verifies the plugin's
-// bridge-mode static-route copy logic in pkg/plugin/network.go
-// addRoutes: every non-default, non-DHCP-subnet, non-kernel-protocol
-// route present on the host bridge at Join time is replicated into
-// the container's netns via res.StaticRoutes.
-//
-// We pre-add a route `192.168.250.0/24 dev dh-itest-br2` on the host
-// bridge before connecting the container, then assert the container's
-// `ip route` lists 192.168.250.0/24 inside its netns.
-//
-// Why this matters operationally: bridge-mode networks bridged to a
-// VLAN trunk often need extra-subnet on-link routes (e.g. management
-// VLANs reachable through the same bridge but not handed out by DHCP).
-// Without this copy, those routes work on the host but vanish inside
-// every container — a silent footgun. The skip_routes=true option is
-// the consumer-facing escape hatch; this test guards the default
-// behaviour.
+// TestStaticRoutes_BridgeCopiesToContainer checks that a non-default, non-DHCP-subnet route on the bridge appears in the container.
 func TestStaticRoutes_BridgeCopiesToContainer(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
@@ -50,10 +34,7 @@ func TestStaticRoutes_BridgeCopiesToContainer(t *testing.T) {
 		}
 	})
 
-	// Add the extra route to the bridge before any container attaches.
-	// Plugin's addRoutes runs at Join time and snapshots the host's
-	// route table for the bridge — a route added after Join wouldn't
-	// land in the container.
+	// addRoutes reads the host's routes for the bridge at Join, so a route added after Join would not reach the container.
 	bridge, err := netlink.LinkByName(harness.BridgeName)
 	if err != nil {
 		t.Fatalf("LinkByName(%s): %v", harness.BridgeName, err)

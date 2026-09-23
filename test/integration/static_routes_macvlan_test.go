@@ -16,17 +16,9 @@ import (
 	"github.com/vishvananda/netlink"
 )
 
-// TestStaticRoutes_MacvlanCopiesToContainer is the v0.9.0 / T1-3
-// guard for parent-attached static-route parity: a non-default,
-// non-DHCP-subnet route added to the parent NIC (HostVeth in the
-// fixture) must appear inside the macvlan container's netns, just
-// like the bridge-mode counterpart in static_routes_bridge_test.go.
-//
-// Pre-v0.9.0 macvlan never inherited host routes — the upstream
-// design was "containers share the LAN, no extra routes". v0.9.0
-// extends bridge-mode behaviour to parent-attached for symmetry;
-// `-o skip_routes=true` opts back out for users who relied on the
-// old no-copy behaviour.
+// Since v0.9.0 parent-attached modes copy host routes like bridge mode; skip_routes=true keeps the earlier no-copy behaviour.
+
+// TestStaticRoutes_MacvlanCopiesToContainer checks that a non-default route on the parent NIC appears in the container.
 func TestStaticRoutes_MacvlanCopiesToContainer(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
@@ -74,10 +66,7 @@ func TestStaticRoutes_MacvlanCopiesToContainer(t *testing.T) {
 	}
 }
 
-// TestStaticRoutes_MacvlanSkipRoutesOpt: with `-o skip_routes=true`,
-// the same parent-NIC route must NOT appear inside the container.
-// Pins the opt-out for users who depended on pre-v0.9.0 no-copy
-// macvlan behaviour.
+// TestStaticRoutes_MacvlanSkipRoutesOpt checks that skip_routes=true keeps the parent-NIC route out of the container.
 func TestStaticRoutes_MacvlanSkipRoutesOpt(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()

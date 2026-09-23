@@ -14,26 +14,10 @@ import (
 	"github.com/claymore666/docker-net-dhcp/v2/test/integration/harness"
 )
 
-// TestLifecycleIPvlan_GoldenPath mirrors the macvlan golden path with
-// mode=ipvlan. ipvlan-L2 is the default in newChildLink and the only
-// mode that can carry DHCP (which needs L2 broadcast) — this test
-// guards that invariant; an accidental switch to L3 mode would fail
-// here with dhcpcd never seeing an OFFER.
-//
-// One observable mode-specific difference: ipvlan children inherit
-// the parent's MAC, so docker inspect shows the HostVeth MAC instead
-// of a random one. The test asserts the container's eth0 has the
-// same MAC the daemon reported.
-//
-// Earlier this test was `t.Skip`'d because the OFFER never reached
-// the slave through a veth parent. The fix forces the BROADCAST flag
-// in DISCOVER for ipvlan mode so the OFFER is L2-broadcast at the wire
-// level and the kernel floods it to all slaves of the parent — the
-// plugin sets this via the dhcpcd `broadcast` directive (#243; was
-// busybox `udhcpc -B` before the #152 migration). The fixture
-// deliberately does NOT pass dnsmasq `--dhcp-broadcast`, so this test
-// genuinely exercises that client-side flag: if it regressed, ipvlan
-// acquisition here would hang.
+// Only ipvlan L2 carries DHCP broadcast. The fixture does not pass dnsmasq --dhcp-broadcast, so the OFFER reaches the
+// child only because the plugin sets dhcpcd's broadcast flag in DISCOVER; without it acquisition hangs (#243).
+
+// TestLifecycleIPvlan_GoldenPath runs the golden path with mode=ipvlan and checks that eth0 carries the parent's MAC.
 func TestLifecycleIPvlan_GoldenPath(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()

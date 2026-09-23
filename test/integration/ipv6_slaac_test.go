@@ -18,36 +18,19 @@ import (
 	"github.com/claymore666/docker-net-dhcp/v2/test/integration/harness"
 )
 
-// The end-to-end half of #818, #819 and #808: an `ipv6_mode=slaac` or
-// `ipv6_mode=auto` network puts the address the router advertised on
-// the container's link.
-//
-// EVERY ASSERTION HERE IS OUTSIDE EVIDENCE, and that is the point of
-// the file. The unit tests in pkg/plugin and pkg/dhcp drive the address
-// set, its lifetimes and the endings a forming mode has; what they
-// cannot say is whether anything reached the container. So these read
-// `ip -6 addr` INSIDE the container -- the address, the kernel's flags
-// and the kernel's two lifetimes -- and the DHCP server's own log for
-// what the segment did. The plugin's counters are read too, always
-// after the container's own state and never instead of it: a counter is
-// evidence that the plugin formed an intention.
+// Unit tests drive the address set, its lifetimes and a forming mode's endings; these read `ip -6 addr` inside the
+// container and the DHCP server's log, and the plugin's counters only after the container's own state (#808, #818,
+// #819).
 
-// slaacAddrBudget is how long an assertion here waits for the formed
-// address to appear on the container's link.
-//
-// It is the acquisition budget plus the fixture's own advertisement
-// budget, because the two are in series and nothing overlaps them: the
-// address cannot form before an advertisement arrives (RFC 4862 section
-// 5.5.3 forms it from the Prefix Information option), and the
-// advertisement's own bound is dnsmasq's schedule, derived in
-// harness.RABudget. A literal here would be a number that happened to
-// work on the runner it was written on.
+// The address forms from the Prefix Information option only after an advertisement arrives (RFC 4862 section 5.5.3),
+// so the acquisition budget and harness.RABudget are in series.
+
+// slaacAddrBudget is how long an assertion waits for the formed address to appear on the container's link.
 func slaacAddrBudget() time.Duration {
 	return harness.IPAcquisitionBudget + harness.RABudget()
 }
 
-// v6InPrefix returns the first address inside prefix that `ip -6 -o addr
-// show` printed, and whether there was one.
+// v6InPrefix returns the first address inside prefix that `ip -6 -o addr show` printed, and whether there was one.
 func v6InPrefix(out string, prefix netip.Prefix) (string, bool) {
 	for _, field := range strings.Fields(out) {
 		bare, _, ok := strings.Cut(field, "/")
@@ -63,24 +46,11 @@ func v6InPrefix(out string, prefix netip.Prefix) (string, bool) {
 	return "", false
 }
 
-// awaitContainerV6 polls the container's own view until an address
-// inside prefix is on the link, and returns it with the kernel's flags
-// and lifetimes.
-//
-// The address is taken from the CONTAINER and matched against the
-// advertised prefix, not taken from docker inspect. An endpoint whose
-// reported address is right and whose link is empty is exactly the
-// shape #818 fixes, and a helper that read the reported one would pass
-// on it.
-//
-// PRESENCE IS NOT THIS PLUGIN'S INSTALL, and a caller that needs the
-// second wants awaitPluginAppliedV6 below. The engine puts the address
-// CreateEndpoint reported on the link itself while it builds the
-// sandbox, so an address inside the prefix is there before the plugin's
-// persistent client has bound anything. This helper is right for the
-// restart arm, whose question is whether an address that was already
-// there is still there, and wrong for an arm whose question is what the
-// plugin installed.
+// A reported address on an empty link is the shape #818 fixed, so the address is read from the container. The engine
+// installs the reported address itself when it builds the sandbox, so presence is not the plugin's install; this
+// helper suits the restart arm, and awaitPluginAppliedV6 the arms about what the plugin installed.
+
+// awaitContainerV6 polls the container until an address inside prefix is on its link and returns it with its flags and lifetimes.
 func awaitContainerV6(t *testing.T, ctx context.Context, id string, prefix netip.Prefix, budget time.Duration) (string, harness.V6AddrFlags) {
 	t.Helper()
 	var out string
@@ -101,41 +71,18 @@ func awaitContainerV6(t *testing.T, ctx context.Context, id string, prefix netip
 	}
 }
 
-// formedAddrReadFloor is the shortest budget awaitPluginAppliedV6 gives
-// the container read once the counter has moved.
-//
-// The counter moves ON the netlink call that installed the address, so
-// by then the address is on the link and this is a floor for one exec
-// round-trip on a loaded runner, not a wait for anything to happen.
+// The counter moves on the netlink call that installed the address, so this is one exec round-trip on a loaded runner.
+
+// formedAddrReadFloor is the shortest budget awaitPluginAppliedV6 gives the container read once the counter has moved.
 const formedAddrReadFloor = 5 * time.Second
 
-// awaitPluginAppliedV6 waits for THIS PLUGIN to install a formed
-// address on the container's link, and only then reads the container's
-// own view of it.
-//
-// THE DIFFERENCE FROM awaitContainerV6 IS THE POINT. libnetwork
-// installs the address CreateEndpoint reported when it builds the
-// sandbox, and it installs it permanent: MEASURED on engine 29.8.0
-// (run 35153680517) the container's link carries
-// `inet6 <formed>/64 scope global flags 02 valid_lft forever
-// preferred_lft forever` while the plugin's persistent client is still
-// acquiring. Neither presence NOR the flag separates the two installs:
-// 0x02 is IFA_F_NODAD and the engine sets it as well. The kernel's two
-// lifetimes do, and so does the counter.
-//
-// The wait is on the counter, and the assertions afterwards are still
-// on the container's own kernel. ipv6_slaac_addresses moves on the
-// netlink call this plugin makes, once per address that was not already
-// in the set it installed (pkg/plugin/metrics.go), so a renewal of an
-// address already on the link cannot satisfy it and neither can the
-// engine's install of one. Nothing in this suite calls t.Parallel and
-// each of these arms runs one container, so a move inside the window is
-// this endpoint's.
-//
-// WHICH QUESTION TO ASK OF THE COUNTER is the cond argument, and there
-// are two. v6InstalledSinceBaseline is the ordinary one. A plugin that
-// has just been restarted needs the other, for the reason
-// v6InstalledByThisProcess gives.
+// libnetwork installs the reported address permanent with IFA_F_NODAD (0x02) while the plugin's client is still
+// acquiring, measured on engine 29.8.0, run 35153680517; only the lifetimes and the counter separate the two installs
+// (#818). ipv6_slaac_addresses moves once per address newly added to the plugin's set (pkg/plugin/metrics.go), so
+// neither a renewal nor the engine's install satisfies it, and with no t.Parallel a move is this endpoint's. The cond
+// argument is v6InstalledSinceBaseline, or v6InstalledByThisProcess after a restart.
+
+// awaitPluginAppliedV6 waits for this plugin to install a formed address on the container's link, then reads the container's view of it.
 func awaitPluginAppliedV6(t *testing.T, ctx context.Context, w *harness.CounterWindow, id string,
 	prefix netip.Prefix, budget time.Duration,
 	cond func(now, before *harness.HealthResponse) bool) (string, harness.V6AddrFlags) {
@@ -159,12 +106,7 @@ func awaitPluginAppliedV6(t *testing.T, ctx context.Context, w *harness.CounterW
 			"comes from.\n"+
 			"`ip -6 -o addr show scope global` said:\n%s", prefix, budget, out)
 	}
-	// The window between the engine's install and this plugin's, which
-	// is how long a container holds the formed address permanent and
-	// preferred. It is logged and not asserted on: it is the acquisition
-	// this endpoint's own client has to finish, and a bound on it would
-	// be a bound on a DHCPv6 or router-discovery exchange. Reading it
-	// off the runs is how it becomes a number at all.
+	// The gap between the engine's install and the plugin's is the endpoint's own acquisition, logged and not asserted.
 	t.Logf("the plugin's own install landed %s after the container started",
 		time.Since(start).Round(100*time.Millisecond))
 
@@ -175,21 +117,15 @@ func awaitPluginAppliedV6(t *testing.T, ctx context.Context, w *harness.CounterW
 	return awaitContainerV6(t, ctx, id, prefix, read)
 }
 
-// v6InstalledSinceBaseline is the ordinary condition: this plugin
-// installed a formed address after the window opened.
+// v6InstalledSinceBaseline reports whether this plugin installed a formed address after the window opened.
 func v6InstalledSinceBaseline(now, before *harness.HealthResponse) bool {
 	return now.IPv6SLAACAddresses > before.IPv6SLAACAddresses
 }
 
-// v6InstalledByThisProcess is the same question asked of a plugin that
-// has just been restarted, where a delta cannot ask it.
-//
-// The counters are in-memory and start at zero with the process, so any
-// value at all is an install this process made. A baseline read taken
-// after the restart is a race the test would lose silently: the resumed
-// endpoint can install its address before the first health read
-// succeeds, and a delta against that baseline would then wait for a
-// second install that is never coming.
+// The counters start at zero with the process, and a resumed endpoint can install before the first health read
+// succeeds, so a delta would wait for a second install that never comes (#818).
+
+// v6InstalledByThisProcess reports whether a just-restarted plugin process has installed any formed address.
 func v6InstalledByThisProcess(now, _ *harness.HealthResponse) bool {
 	return now.IPv6SLAACAddresses >= 1
 }
@@ -204,16 +140,10 @@ func v6SegmentPrefix(t *testing.T) netip.Prefix {
 	return p
 }
 
-// assertHealthyFormedAddress is the shape a formed address has to be in
-// on the container's link, whichever mode formed it.
-//
-// NODAD is asserted for the reason assertLeasedV6IsInstalledWithNODAD
-// gives for a leased address, and it is a STRONGER claim here: the
-// library ran RFC 4862 section 5.4 duplicate address detection on the
-// formed address before it reported it, and a modified EUI-64 interface
-// identifier gets no second try after a failure (section 5.4.5), so an
-// address the kernel re-probes is one the kernel can take away with no
-// way back.
+// The library ran RFC 4862 section 5.4 detection before reporting the address, and a modified EUI-64 identifier gets
+// no second try after a failure (section 5.4.5), so a kernel re-probe could take it away for good.
+
+// assertHealthyFormedAddress checks the NODAD flag and lifetimes a formed address must carry on the container's link.
 func assertHealthyFormedAddress(t *testing.T, addr string, f harness.V6AddrFlags) {
 	t.Helper()
 	if !f.NoDAD {
@@ -237,14 +167,7 @@ func assertHealthyFormedAddress(t *testing.T, addr string, f harness.V6AddrFlags
 	}
 }
 
-// TestSLAAC_AnAdvertisedPrefixReachesTheContainer is #808's shape and
-// #818's proof: a segment with a router and NO DHCPv6 server at all
-// leases IPv4 from DHCP and forms IPv6 from the advertisement.
-//
-// It closes defeat row 2 -- the address arrives and carries neither the
-// NODAD flag nor the advertised lifetimes -- by reading the flags and
-// both lifetimes out of the container's kernel rather than the address
-// alone.
+// TestSLAAC_AnAdvertisedPrefixReachesTheContainer checks that with no DHCPv6 server the container forms its IPv6 address from the advertisement, with NODAD and the advertised lifetimes (#808, #818).
 func TestSLAAC_AnAdvertisedPrefixReachesTheContainer(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
@@ -274,14 +197,8 @@ func TestSLAAC_AnAdvertisedPrefixReachesTheContainer(t *testing.T) {
 	t.Logf("formed address inside the container: %q", flags.Line)
 	assertHealthyFormedAddress(t, addr, flags)
 
-	// THE LIFETIMES ARE THE ROUTER'S. The fixture's advertisement
-	// carries 1800 seconds in both fields (MEASURED, and pinned
-	// verbatim in harness/v6signature_test.go), and the kernel counts
-	// them down from the moment it installed the address. So the
-	// assertion is an interval and not an equality, and the upper
-	// bound is what a defect would break: an address installed with
-	// the kernel's infinity, or with a lifetime the plugin invented,
-	// lands outside it.
+	// The fixture advertises 1800 seconds in both fields (pinned in harness/v6signature_test.go) and the kernel counts down
+	// from its install, so the check is an interval whose upper bound catches infinity or an invented lifetime (#818).
 	const advertised = 1800
 	if flags.Valid.Forever || flags.Preferred.Forever {
 		t.Errorf("the address carries an infinite lifetime (valid=%s preferred=%s) on a "+
@@ -306,22 +223,13 @@ func TestSLAAC_AnAdvertisedPrefixReachesTheContainer(t *testing.T) {
 		}
 	}
 
-	// Docker's own view. It reports ONE address per endpoint, and on
-	// this single-prefix segment it must be the one on the link: a
-	// reported address the container does not hold is what an operator
-	// reads out of `docker inspect` and puts in a firewall rule.
+	// Docker reports one address per endpoint, and operators copy it from `docker inspect` into firewall rules.
 	if got := inspectV6(t, ctx, cli, id, netName); got != addr {
 		t.Errorf("docker inspect reports %q and the container holds %q", got, addr)
 	}
 
-	// EXACTLY ONE, and not "at least one", because the wait above
-	// already required a move and an at-least-one here would be a check
-	// with one possible verdict. This segment advertises one autonomous
-	// prefix, RFC 4862 section 5.5.3 forms one address per prefix, and a
-	// renewal of an address already installed does not count again
-	// (TestApplyV6Addrs_InstallsEveryAddressAndRemovesWhatLeftTheLease),
-	// so anything but 1 is a counter that describes something other
-	// than the addresses this container has.
+	// One autonomous prefix forms one address (RFC 4862 section 5.5.3), and a renewal does not count again
+	// (TestApplyV6Addrs_InstallsEveryAddressAndRemovesWhatLeftTheLease), so the count is exactly 1.
 	before, after := w.End()
 	if formed := after.IPv6SLAACAddresses - before.IPv6SLAACAddresses; formed != 1 {
 		t.Errorf("ipv6_slaac_addresses moved by %d for one container on a segment "+
@@ -342,26 +250,14 @@ func TestSLAAC_AnAdvertisedPrefixReachesTheContainer(t *testing.T) {
 		}
 	}
 
-	// #808's other half, read from the server's own log: NO DHCPv6
-	// EXCHANGE HAPPENED. The slaac contract is a must-NOT set over the
-	// DHCP message names only dnsmasq's v6 path prints, so this fails
-	// if anything leased this container an address over DHCPv6 -- which
-	// is the reading under which every assertion above would pass for
-	// the wrong reason.
+	// The slaac contract's must-NOT set fails if anything leased this container an address over DHCPv6 (#808).
 	f.AssertExchange(30 * time.Second)
 }
 
-// TestSLAAC_ADeprecatedPrefixArrivesDeprecated is #819's deprecation
-// phase, and it closes defeat row 5: the assertion is the KERNEL's
-// flag and the KERNEL's preferred lifetime, never the plugin's own
-// number.
-//
-// The segment is V6SLAAC's with one directive changed, so it is started
-// through NewV6FixtureWithArgs under the slaac name; see
-// harness.V6DeprecatedPrefixArgs for why it is not a mode of its own.
-// The wire half is asserted here rather than assumed, because the whole
-// test is about a lifetime and the fixture's mode check does not read
-// lifetimes.
+// The segment is V6SLAAC's with one directive changed (harness.V6DeprecatedPrefixArgs), and the wire half is asserted
+// because the fixture's mode check does not read lifetimes (#819).
+
+// TestSLAAC_ADeprecatedPrefixArrivesDeprecated checks that a deprecated prefix's address arrives with the kernel's deprecated flag and zero preferred lifetime (#819).
 func TestSLAAC_ADeprecatedPrefixArrivesDeprecated(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
@@ -375,8 +271,7 @@ func TestSLAAC_ADeprecatedPrefixArrivesDeprecated(t *testing.T) {
 	f := harness.NewV6FixtureWithArgs(t, harness.V6SLAAC, harness.V6DeprecatedPrefixArgs())
 	dumpOnFailure(t, f)
 
-	// The wire, first: an advertisement whose prefix option is NOT
-	// deprecated makes everything below a test of nothing.
+	// An advertisement whose prefix is not deprecated would make everything below a test of nothing.
 	frames := f.AwaitRAAfter(f.EvidenceStartedAt(), harness.RABudget())
 	if len(frames) == 0 {
 		t.Fatalf("no router advertisement captured on the segment")
@@ -395,12 +290,7 @@ func TestSLAAC_ADeprecatedPrefixArrivesDeprecated(t *testing.T) {
 			"kernel to deprecate. Frames:\n%v", frames)
 	}
 
-	// Opened before the container exists, because the wait below is a
-	// delta against it: the address the engine installs at container
-	// start is valid forever and preferred forever, and the one this
-	// test is about is valid forever and preferred 0sec, so on this arm
-	// the kernel's own line is the only thing that separates them and
-	// the counter is the only thing that says when to read it.
+	// The engine's install is preferred forever and this one preferred 0sec, so the counter says when to read the line.
 	w := harness.BeginCounterWindow(t, ctx, cli, "ipv6_slaac_addresses")
 
 	id, err := startOnV6SegmentWithOpts(t, ctx, cli, f, "dh-itest-slaacdep",
@@ -443,12 +333,9 @@ func TestSLAAC_ADeprecatedPrefixArrivesDeprecated(t *testing.T) {
 	}
 }
 
-// TestSLAAC_AutoFallsBackOntoTheAdvertisedPrefix drives #817's fallback
-// end to end, which is the bound that release stated and could not
-// close: no fixture advertised the managed flag beside an autonomous
-// prefix, so nothing made the library actually fall back.
-//
-// harness.V6AutoFallback is that segment. It closes defeat row 15.
+// No earlier fixture advertised the managed flag beside an autonomous prefix; harness.V6AutoFallback does (#817).
+
+// TestSLAAC_AutoFallsBackOntoTheAdvertisedPrefix checks that ipv6_mode=auto falls back to the advertised prefix when DHCPv6 is silent (#817).
 func TestSLAAC_AutoFallsBackOntoTheAdvertisedPrefix(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
@@ -494,25 +381,14 @@ func TestSLAAC_AutoFallsBackOntoTheAdvertisedPrefix(t *testing.T) {
 			"answered, and this endpoint did not fail", n)
 	}
 
-	// Outside evidence that the DHCPv6 half really was tried and
-	// really was silent: the server's own log has to carry a Solicit
-	// it ignored and no Advertise or Reply. Without it, a plugin that
-	// never solicited at all would satisfy every assertion above --
-	// and "auto fell back" would be a claim about an exchange that
-	// never happened.
+	// The server's log must carry an ignored Solicit and no Advertise or Reply, so a plugin that never solicited cannot pass.
 	f.AssertExchange(60 * time.Second)
 }
 
-// TestSLAAC_ASegmentWithNoRouterEndsAFormingEndpoint is the endpoint
-// half of the ending #989 documented as temporary: a forming mode with
-// no advertisement has no source of an address, so the endpoint fails.
-//
-// BOTH DIRECTIONS RUN, on the same segment, in one table. The
-// `ipv6_mode=dhcp` row is the preservation control and it is #868's
-// tolerance: a DHCPv6 server that is there answers a Solicit whether or
-// not a router advertises, so refusing that container buys nothing. A
-// change that made the ending fatal for everyone passes the slaac row
-// and fails this one.
+// The ipv6_mode=dhcp row is the preservation control: a present DHCPv6 server answers whether or not a router
+// advertises (#868), so a change that made the ending fatal for everyone fails that row.
+
+// TestSLAAC_ASegmentWithNoRouterEndsAFormingEndpoint checks that a forming IPv6 mode fails on a segment with no router advertisement (#989).
 func TestSLAAC_ASegmentWithNoRouterEndsAFormingEndpoint(t *testing.T) {
 	cases := []struct {
 		mode      string
@@ -558,12 +434,7 @@ func TestSLAAC_ASegmentWithNoRouterEndsAFormingEndpoint(t *testing.T) {
 					c.mode)
 			}
 
-			// The counter is the same for both outcomes, because the
-			// population it counts is every endpoint that saw no
-			// advertisement. A change that made the forming modes
-			// fatal by routing them to some other verdict would pass
-			// the outcome check above and quietly empty this counter
-			// for the two modes most likely to produce it.
+			// The counter covers every endpoint that saw no advertisement, whatever the outcome.
 			before, after := w.End()
 			if n := after.DHCPv6NoRouterAdvert - before.DHCPv6NoRouterAdvert; n < 1 {
 				t.Errorf("dhcpv6_no_router_advert moved by %d in ipv6_mode=%s, want at "+
@@ -574,16 +445,10 @@ func TestSLAAC_ASegmentWithNoRouterEndsAFormingEndpoint(t *testing.T) {
 	}
 }
 
-// TestSLAAC_TheAddressComesBackAfterAPluginRestart is defeat row 12 and
-// the design note's defeat 10: the resumed client re-forms the same
-// address and runs duplicate address detection again, and the only
-// node holding that address is the container itself.
-//
-// A client that read its own Neighbor Advertisement as a conflict would
-// take the address off the link on every plugin restart, and RFC 4862
-// section 5.4.5 gives a modified EUI-64 identifier no second try. The
-// assertion is therefore that the address is STILL THERE and NOT
-// dadfailed, read from the container after a real disable and enable.
+// A client reading its own Neighbor Advertisement as a conflict would drop the address on every restart, with no
+// second try under RFC 4862 section 5.4.5.
+
+// TestSLAAC_TheAddressComesBackAfterAPluginRestart checks that a formed address survives a plugin restart and is not dadfailed (#818).
 func TestSLAAC_TheAddressComesBackAfterAPluginRestart(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
@@ -597,14 +462,7 @@ func TestSLAAC_TheAddressComesBackAfterAPluginRestart(t *testing.T) {
 	f := harness.NewV6Fixture(t, harness.V6SLAAC)
 	dumpOnFailure(t, f)
 
-	// BOTH READS ARE OF THIS PLUGIN'S INSTALL, and that is what makes
-	// the arm about this plugin. The engine put the reported address on
-	// the link when it built the sandbox, permanent and with
-	// IFA_F_NODAD, and a plugin restart does nothing to an address the
-	// engine installed: presence, the address being the same one, the
-	// flags and the lifetimes printed are all satisfied by a copy this
-	// plugin never touched, which would answer the arm's own question
-	// with the thing it exists to exclude.
+	// The engine's permanent NODAD copy survives a restart untouched, so both reads are of this plugin's install.
 	w := harness.BeginCounterWindow(t, ctx, cli, "ipv6_slaac_addresses")
 
 	id, err := startOnV6SegmentWithOpts(t, ctx, cli, f, "dh-itest-slaacrs",
@@ -615,20 +473,14 @@ func TestSLAAC_TheAddressComesBackAfterAPluginRestart(t *testing.T) {
 	prefix := v6SegmentPrefix(t)
 	addrBefore, _ := awaitPluginAppliedV6(t, ctx, w, id, prefix, slaacAddrBudget(), v6InstalledSinceBaseline)
 
-	// Closed before the restart, because a window that spans one is
-	// measuring across a counter reset and CounterWindow refuses it.
+	// CounterWindow refuses a window that spans a restart.
 	if before, after := w.End(); after.IPv6SLAACAddresses-before.IPv6SLAACAddresses != 1 {
 		t.Errorf("ipv6_slaac_addresses moved by %d before the restart, want 1",
 			after.IPv6SLAACAddresses-before.IPv6SLAACAddresses)
 	}
 
-	// The resumed endpoint re-binds its v4 lease without going through
-	// CreateEndpoint, so the RFC 5227 probe that bind would have run is
-	// the asynchronous one beside the address, and it races this test's
-	// own teardown. One lease, because one container is attached;
-	// declaring more than the shard takes weakens the zero-probes gate
-	// silently. Same cause and same declaration as
-	// TestRecovery_PluginDisableEnable_PreservesEndpoint.
+	// The resumed endpoint's v4 probe is the asynchronous one and races teardown; one container, one lease, as in
+	// TestRecovery_PluginDisableEnable_PreservesEndpoint (#551).
 	harness.AllowUnprobedLeases(1)
 
 	t.Cleanup(func() {
@@ -655,12 +507,7 @@ func TestSLAAC_TheAddressComesBackAfterAPluginRestart(t *testing.T) {
 	}
 	harness.WaitPluginHealth(t, ctx, cli, 15*time.Second)
 
-	// A SECOND WINDOW, on the process that came back. Its counters
-	// started at zero with it, so v6InstalledByThisProcess asks the
-	// question a delta cannot ask here: did THIS plugin process install
-	// a formed address for this endpoint, or is the address on the link
-	// only the copy the engine made at container start, which no
-	// restart could have removed.
+	// The restarted process's counters start at zero, so v6InstalledByThisProcess asks whether it installed the address.
 	w2 := harness.BeginCounterWindow(t, ctx, cli, "ipv6_slaac_addresses")
 
 	addrAfter, flags := awaitPluginAppliedV6(t, ctx, w2, id, prefix, slaacAddrBudget(), v6InstalledByThisProcess)

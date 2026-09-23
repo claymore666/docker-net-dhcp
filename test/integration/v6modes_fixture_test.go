@@ -18,32 +18,12 @@ import (
 	"github.com/claymore666/docker-net-dhcp/v2/test/integration/harness"
 )
 
-// TestV6Fixture_ModesComeUpAsRequested is the v6-modes fixture's own
-// contract test: each of the five modes brings up a segment that is
-// actually in that mode, proven from the router advertisement on the
-// wire and from the server's own log, both.
-//
-// It exists because the first version of that fixture came up in the
-// WRONG MODE and said nothing. dnsmasq was started while the bridge's
-// global IPv6 address was still tentative, so it could not send from
-// it and its first router advertisement slipped from about one second
-// to about nine — while logging "IPv6 router advertisement enabled"
-// exactly as it does when everything is fine. Three of the four modes
-// were silently degraded. The only visible symptom was a consumer
-// test failing to observe behaviour that genuinely was not happening,
-// and the cheapest-looking repair would have been to widen a timeout
-// until the symptom went away.
-//
-// #815 is one consumer of this fixture; #816, #820 and #821 are the
-// others, and #911's chassis round is the next.
-//
-// The assertions live in the fixture (NewV6Fixture fails the test if
-// the segment is not in the mode asked for), so this is the thing that
-// RUNS them — and it runs them for every mode rather than for
-// whichever one a consumer happens to need today. V6ManagedSilent is
-// in the list for everything client-independent; the one thing that
-// separates it from V6Managed needs a client, and that is
-// AssertExchange's business.
+// The first fixture started dnsmasq while the bridge's global IPv6 address was tentative, so its first router
+// advertisement slipped from about one to about nine seconds while it logged "IPv6 router advertisement enabled" as
+// usual, and three of four modes came up degraded (#911). NewV6Fixture fails the test when the segment is not in the
+// mode asked for; V6ManagedSilent differs from V6Managed only once a client speaks, which is AssertExchange's check.
+
+// TestV6Fixture_ModesComeUpAsRequested checks that each of the five modes brings up a segment in that mode, from the wire and from the server's log (#815, #816, #820, #821, #911).
 func TestV6Fixture_ModesComeUpAsRequested(t *testing.T) {
 	for _, mode := range harness.V6Modes() {
 		t.Run(mode.String(), func(t *testing.T) {
@@ -60,15 +40,7 @@ func TestV6Fixture_ModesComeUpAsRequested(t *testing.T) {
 				t.Errorf("fixture mode = %s, want %s", f.Mode(), mode)
 			}
 
-			// The design table's two "to be measured" wire cells are
-			// measured HERE, on the lane, and this run's log is the
-			// record: every mode prints the advertisement the fixture
-			// accepted it on, decoded, with the delay from the moment
-			// the server was started. The assertion is assertMode's;
-			// this is the evidence a reader can check it against, and
-			// it is also the first-advertisement bound the readiness
-			// race needs, measured per mode rather than argued from
-			// one.
+			// Each mode logs the advertisement the fixture accepted, decoded, with its delay from the server's start (#911).
 			frames := f.RACapture().FramesAfter(f.StartedAt())
 			if len(frames) == 0 {
 				t.Logf("wire: no advertisement within %s of the server starting", harness.V6NoRAWindow())
@@ -77,26 +49,8 @@ func TestV6Fixture_ModesComeUpAsRequested(t *testing.T) {
 			delay := frames[0].At.Sub(f.StartedAt())
 			t.Logf("wire: %d advertisement(s), first %s after the server started: %s",
 				len(frames), delay.Round(time.Millisecond), frames[0])
-			// TWO CLOCKS, and they are not the same instant. The
-			// number LOGGED above is measured from the server's
-			// start, because that is what dnsmasq's schedule is
-			// relative to and what the population in
-			// v6signature.go's schedule block counts. The number
-			// ASSERTED below is measured from the instant
-			// assertMode's budget began -- after the readiness wait,
-			// which sits between the two and costs whatever it costs.
-			//
-			// Round 2 asserted the logged number against RABudget()
-			// and called it "the same budget assertMode spends". It
-			// was not: it was a strictly shorter interval, so the
-			// direction was safe and the claim was false, and a
-			// bring-up whose readiness poll cost 500 ms could have
-			// reddened here on a fixture assertMode accepted.
-			//
-			// The bound is asserted rather than only logged because
-			// the first record of this measurement was a comment
-			// claiming a range the lane had already falsified twice,
-			// which is what an unasserted number buys.
+			// The logged delay counts from the server's start, which dnsmasq's schedule is relative to; the asserted one counts
+			// from when assertMode's budget began, after the readiness wait, so it is the interval RABudget bounds (#911).
 			budgeted := frames[0].At.Sub(f.EvidenceStartedAt())
 			if budgeted > harness.RABudget() {
 				t.Errorf("first advertisement %s after assertMode's budget began (%s after the "+
@@ -105,39 +59,17 @@ func TestV6Fixture_ModesComeUpAsRequested(t *testing.T) {
 					budgeted.Round(time.Millisecond), delay.Round(time.Millisecond),
 					harness.RABudget(), harness.V6NoRA)
 			}
-			// The bytes, so the fast-lane decoder can be pinned to a
-			// frame THIS fixture produced on THIS lane rather than to
-			// one captured elsewhere with a different argv.
+			// The bytes pin the fast-lane decoder to a frame this fixture produced on the lane (#911).
 			t.Logf("wire bytes (%s): %s", mode, hex.EncodeToString(frames[0].Raw))
 		})
 	}
 }
 
-// TestV6Fixture_RefusesASegmentThatCannotTransmit watches the carrier
-// gate refuse, in every mode.
-//
-// It is the other half of the test above: that one says each mode comes
-// up, this one says a segment that cannot carry a frame never reaches a
-// consumer's body at all. The two failures it separates look identical
-// from a consumer -- "no router advertisement" is what a wrong mode, a
-// capture on the wrong link and a link with stopped transmit queues all
-// look like -- and one mode makes the third of those invisible: /nora's
-// assertion is that NO advertisement arrives, so a dead link PASSES it.
-//
-// MEASURED, run 34603031325: with the bridge's port removed on a hosted
-// runner, the first version of the gate refused in two modes of five,
-// walked past the other three, and /nora passed on a bridge whose
-// carrier was 0 and whose capture took no frame of any kind. The gate
-// was reading IFF_RUNNING, which a freshly created bridge reports while
-// its operstate is still unknown. This is the run that would have said
-// so, and it runs in every mode because that is where the difference
-// was.
-//
-// The state is built by attaching the port and leaving it down rather
-// than by leaving the bridge portless: a portless bridge is not the
-// same link on every kernel -- the pool's transmits, hosted's does not
-// -- and a drive that only reproduces on one host is not a drive the
-// lane runs.
+// With the bridge's port removed on a hosted runner (run 34603031325), a gate reading IFF_RUNNING refused in two modes
+// of five and /nora passed on a bridge with carrier 0, because a new bridge reports IFF_RUNNING while its operstate is
+// unknown (#942). The port is attached and left down because a portless bridge transmits on some kernels only.
+
+// TestV6Fixture_RefusesASegmentThatCannotTransmit checks that the carrier gate refuses a segment that cannot carry a frame, in every mode (#942).
 func TestV6Fixture_RefusesASegmentThatCannotTransmit(t *testing.T) {
 	for _, mode := range harness.V6Modes() {
 		t.Run(mode.String(), func(t *testing.T) {
@@ -157,10 +89,7 @@ func TestV6Fixture_RefusesASegmentThatCannotTransmit(t *testing.T) {
 	}
 }
 
-// startWithADeadBridgePort constructs a segment whose bridge port is
-// attached and never brought up, and reports whether the fixture
-// refused it. It goes through the fixture's own constructor, so what it
-// watches is the path a consumer takes.
+// startWithADeadBridgePort starts a segment through the fixture's constructor with its bridge port attached and down, and reports whether the fixture refused it.
 func startWithADeadBridgePort(t *testing.T, mode harness.V6Mode) (refused bool, msg string) {
 	c := &capturedT{T: t}
 	defer func() {
@@ -178,28 +107,10 @@ func startWithADeadBridgePort(t *testing.T, mode harness.V6Mode) (refused bool, 
 	return false, ""
 }
 
-// --- observing the fixture's own refusal --------------------------------
-
-// errCapturedFatal unwinds a captured Fatalf. It is a sentinel rather
-// than a bare panic so a real panic from the fixture — a nil map, a
-// netlink surprise — still crashes the test instead of being read as
-// "the fixture refused", which would make the drift matrix pass for
-// entirely the wrong reason.
+// errCapturedFatal unwinds a captured Fatalf, so a real panic from the fixture still crashes the test.
 var errCapturedFatal = errors.New("v6 fixture refused (captured)")
 
-// capturedT is the smallest thing that can watch the fixture fail, and
-// it is the first of its kind in this harness — the repo's usual
-// pattern is a pure predicate with a *testing.T wrapper, and
-// V6ModeFindings is exactly that. It is not enough here on its own:
-// the mutant this file has to kill is one that leaves the verdict
-// correct and stops ACTING on it, and only a test that goes through the
-// real constructor can see that.
-//
-// *testing.T is embedded rather than reimplemented, so Helper, Logf and
-// Cleanup are the real ones: the fixture's teardown really is
-// registered on the subtest and really runs before the next pair
-// starts, which matters because all twenty-five of them share one
-// bridge name.
+// capturedT embeds *testing.T and records a Fatalf, so a test can watch the fixture's real constructor refuse.
 type capturedT struct {
 	*testing.T
 	failed bool
@@ -212,8 +123,7 @@ func (c *capturedT) Fatalf(format string, args ...any) {
 	panic(errCapturedFatal)
 }
 
-// startUnderName starts a segment with actual's dnsmasq flags, tells
-// the fixture it is name, and reports whether the fixture refused it.
+// startUnderName starts a segment with actual's dnsmasq flags, tells the fixture it is name, and reports whether the fixture refused it.
 func startUnderName(t *testing.T, name, actual harness.V6Mode) (refused bool, msg string) {
 	c := &capturedT{T: t}
 	defer func() {
@@ -231,48 +141,12 @@ func startUnderName(t *testing.T, name, actual harness.V6Mode) (refused bool, ms
 	return false, ""
 }
 
-// TestV6Fixture_RefusesASegmentInAnotherModesShape is the drift matrix,
-// and it is the plugin-side twin of the library's v6-fixture-mode-drift
-// oracle scenario.
-//
-// Trap 2 is a test that is green because the fixture answered from a
-// different mode than the test named: a "managed" segment that in fact
-// ran stateless still answers Information-requests, so "the container
-// got DNS" passes in the wrong mode. The defence is that the fixture
-// itself refuses, before any consumer's body runs. A defence nobody has
-// watched refuse is not known to work, so this starts every ordered
-// pair of distinct modes the wrong way round and requires the refusal —
-// and runs the diagonal, so a fixture that refused everything would
-// fail here too.
-//
-// The exempt pairs are DERIVED, by V6IndistinguishableModes, from the
-// signature table itself: two modes no fixture-time evidence can
-// separate are two modes this matrix cannot ask about. That is a
-// property of managed and managed-silent, which differ only in what the
-// server does once a client speaks, and it is pinned to exactly that
-// one pair by a fast-lane test — so a third collision arriving later is
-// named rather than silently exempted.
-//
-// WHAT IT PROVES: the fixture refuses a segment whose dnsmasq flags are
-// another mode's, before the consumer's body runs, and its refusal
-// names both modes by whole name. Every ordered pair is started the
-// wrong way round; the diagonal is started too, so a fixture that
-// refused everything is red here as well.
-//
-// WHY ITS WALL CLOCK STANDS (D41). Measured 65.44s, of which ~38s is
-// spent in exactly five of the 25 cells — the ones whose ACTUAL mode is
-// nora, where the only evidence of the mode is that no router
-// advertisement arrives (4 refusal cells at ~6.4s = one RABudget each,
-// and the nora/flags-of-nora diagonal at 12.4s = the full
-// V6NoRAWindow). The remaining 20 cells cost ~1.4s each and are already
-// nothing but a fixture start. The absence windows are DERIVED in
-// harness/v6signature.go from dnsmasq's own first-RA bound, and
-// shortening one is the precise failure they were written to guard: a
-// no-RA check that passes because it did not wait is a check with one
-// possible verdict. So this test keeps its clock, and the shard
-// partition is what absorbs it: at 65.36s it is the fifth-longest
-// main-suite test, well under the 196s longest shard, and the
-// longest-first packer places it before the filler.
+// Pairs no fixture-time evidence can separate are derived by V6IndistinguishableModes from the signature table and are
+// pinned to managed and managed-silent by a fast-lane test (#911). The nora cells wait a full RABudget or
+// V6NoRAWindow, derived from dnsmasq's first-advertisement bound, because a no-RA check that did not wait has one
+// verdict (#911).
+
+// TestV6Fixture_RefusesASegmentInAnotherModesShape checks that the fixture refuses every ordered pair of modes started the wrong way round, and accepts the diagonal (#911).
 func TestV6Fixture_RefusesASegmentInAnotherModesShape(t *testing.T) {
 	exempt := map[[2]harness.V6Mode]bool{}
 	for _, p := range harness.V6IndistinguishableModes() {
@@ -286,11 +160,6 @@ func TestV6Fixture_RefusesASegmentInAnotherModesShape(t *testing.T) {
 			t.Run(name.String()+"/flags-of-"+actual.String(), func(t *testing.T) {
 				refused, msg := startUnderName(t, name, actual)
 
-				// The exempt pair is DRIVEN, not skipped. Skipping it
-				// asserted nothing about the exemption, and these are
-				// the two cells whose names overlap -- exactly where
-				// the pair assertion below used to be satisfied by the
-				// wrong half.
 				if name == actual || exempt[[2]harness.V6Mode{name, actual}] {
 					if refused {
 						t.Fatalf("the fixture refused a segment it cannot tell from the mode "+
@@ -303,12 +172,7 @@ func TestV6Fixture_RefusesASegmentInAnotherModesShape(t *testing.T) {
 						"every consumer of the %s mode would then be asserting against a "+
 						"%s segment", actual, name, name, actual)
 				}
-				// The message has to name the pair, because that is the
-				// whole diagnosis: a refusal that says only "mode check
-				// failed" leaves the next person to reproduce it. Whole
-				// names, not substrings: `managed` is a prefix of
-				// `managed-silent`, and a refusal naming only the
-				// latter satisfied a Contains check for the former.
+				// `managed` is a prefix of `managed-silent`, so the refusal must name both modes by whole name (#911).
 				if !harness.V6ModeNamed(msg, name) {
 					t.Errorf("the refusal does not name the mode asked for (%s); names %v: %s",
 						name, harness.V6ModeNamesIn(msg), msg)
@@ -322,26 +186,13 @@ func TestV6Fixture_RefusesASegmentInAnotherModesShape(t *testing.T) {
 	}
 }
 
-// --- the capture's vantage point ----------------------------------------
+// A macvlan child's transmits never pass its parent's taps, so the ARP capture needs a different vantage point, and a
+// capture on a link the server never uses would pass AssertNoRAWithin for every mode (#911).
 
-// TestV6RACapture_SeesTheAdvertisementOnTheBridgeAndNotOnAQuietLink is
-// the measurement behind the vantage-point paragraph in racapture.go,
-// and it is here rather than argued there because the ARP capture next
-// door reaches the OPPOSITE conclusion for its own frames — a macvlan
-// child's transmits never pass its parent's taps — and "the same
-// reasoning applies" is exactly the kind of claim that is wrong once.
-//
-// The failure it closes: a capture opened on a link the server never
-// transmits on sees nothing, whereupon AssertNoRAWithin passes for
-// every mode and the no-RA row becomes a gate with one possible
-// verdict. Both verdicts are therefore produced in one run, by the same
-// code, on a segment that is definitely advertising.
+// TestV6RACapture_SeesTheAdvertisementOnTheBridgeAndNotOnAQuietLink checks that the capture sees the bridge's advertisement and nothing on a quiet link.
 func TestV6RACapture_SeesTheAdvertisementOnTheBridgeAndNotOnAQuietLink(t *testing.T) {
 	const quietLink = "dh-itest-quiet6"
 
-	// A link of our own that no router advertises on. Removed first in
-	// case a panicked run left it behind, and torn down here rather
-	// than by the fixture, which does not know about it.
 	if l, err := netlink.LinkByName(quietLink); err == nil {
 		_ = netlink.LinkDel(l)
 	}
@@ -390,22 +241,10 @@ func TestV6RACapture_SeesTheAdvertisementOnTheBridgeAndNotOnAQuietLink(t *testin
 	}
 }
 
-// --- trap 1's observers -------------------------------------------------
+// The AssertNoRAWithin window is derived from dnsmasq's own scheduling, since a window shorter than its interval
+// passes because it did not wait (#911).
 
-// TestV6Fixture_AwaitRAAfterAndItsNegative drives both observers M7d
-// will call, in both directions, on live segments.
-//
-// AwaitRAAfter is trap 1's positive: "an advertisement arrived AFTER
-// this instant" is the premise every v6 scenario rests on, and it is a
-// different claim from "an advertisement exists" — the trap is a test
-// that passes because the RA came before the client started, or never,
-// while the client reported no router and the test only checked that
-// the endpoint came up.
-//
-// AssertNoRAWithin is its negative, and the window it spends is derived
-// from dnsmasq's own scheduling rather than chosen: a window shorter
-// than the interval at which the server would have advertised passes
-// because it did not wait.
+// TestV6Fixture_AwaitRAAfterAndItsNegative checks AwaitRAAfter and AssertNoRAWithin in both directions on live segments.
 func TestV6Fixture_AwaitRAAfterAndItsNegative(t *testing.T) {
 	t.Run("an advertising segment satisfies AwaitRAAfter", func(t *testing.T) {
 		f := harness.NewV6Fixture(t, harness.V6Managed)
@@ -433,15 +272,8 @@ func TestV6Fixture_AwaitRAAfterAndItsNegative(t *testing.T) {
 		f.AssertNoRAWithin(harness.V6NoRAWindow())
 	})
 
-	// The other direction for each, observed rather than argued. An
-	// advertising segment must FAIL AssertNoRAWithin, and a silent one
-	// must FAIL AwaitRAAfter — otherwise both are functions with one
-	// possible verdict.
 	t.Run("an advertising segment fails AssertNoRAWithin", func(t *testing.T) {
 		refused, msg := captureFixtureCall(t, harness.V6Managed, func(f *harness.V6Fixture) {
-			// The full derived window, at no cost: the fixture has
-			// already captured this segment's advertisement, so the
-			// refusal comes on the first poll.
 			f.AssertNoRAWithin(harness.V6NoRAWindow())
 		})
 		if !refused {
@@ -452,17 +284,9 @@ func TestV6Fixture_AwaitRAAfterAndItsNegative(t *testing.T) {
 		}
 	})
 
-	// The direction that could go quiet. On an ADVERTISING segment the
-	// log column is satisfied forever -- the fixture logged an
-	// RTR-ADVERT line at construction -- so if the wire column were
-	// ever dropped, or read without the `since` filter, this call
-	// would pass while claiming something false. `since` is set past
-	// every advertisement the segment has produced, and the NEXT one
-	// is at least five seconds out -- `new_timeout` is
-	// `now + 5 + rand16()/4400`, radv.c:977, so five is the floor and
-	// not the mean -- and the budget below is two seconds, which is
-	// inside that floor with room for the call's own start-up. A
-	// budget of five would race the earliest possible next frame.
+	// On an advertising segment the log column is satisfied forever, so this catches a dropped wire column or a missing
+	// `since` filter. dnsmasq schedules the next advertisement at `now + 5 + rand16()/4400` (radv.c:977), so five seconds
+	// is the floor and the two-second budget stays inside it (#911).
 	t.Run("an advertising segment fails AwaitRAAfter for an instant after its advertisement", func(t *testing.T) {
 		refused, msg := captureFixtureCall(t, harness.V6Managed, func(f *harness.V6Fixture) {
 			seen := f.RACapture().FramesAfter(f.StartedAt())
@@ -488,9 +312,7 @@ func TestV6Fixture_AwaitRAAfterAndItsNegative(t *testing.T) {
 
 	t.Run("a silent segment fails AwaitRAAfter", func(t *testing.T) {
 		refused, msg := captureFixtureCall(t, harness.V6NoRA, func(f *harness.V6Fixture) {
-			// dnsmasq's own worst case for a first advertisement, so
-			// this waits exactly as long as one would have taken to
-			// arrive rather than a number picked to be short.
+			// dnsmasq's worst case for a first advertisement, so the wait is exactly as long as one would take.
 			f.AwaitRAAfter(f.StartedAt(), harness.DnsmasqFirstRAUpperBound())
 		})
 		if !refused {
@@ -502,20 +324,9 @@ func TestV6Fixture_AwaitRAAfterAndItsNegative(t *testing.T) {
 	})
 }
 
-// TestV6Fixture_AssertExchangeRefusesASegmentNoClientEverUsed is
-// AssertExchange's live negative control.
-//
-// The positive is elsewhere, deliberately: the fast lane drives the
-// verdict against captured server logs, one per mode, and
-// dhcpv6_noaddress_modes_test.go drives it against live segments whose
-// clients really completed the exchange. This is the half that would
-// rot silently either way: a contract whose must-set had been emptied
-// passes every positive above and only fails here, on a log with no
-// exchange in it at all.
+// TestV6Fixture_AssertExchangeRefusesASegmentNoClientEverUsed checks that AssertExchange refuses a server log with no exchange in it (#911).
 func TestV6Fixture_AssertExchangeRefusesASegmentNoClientEverUsed(t *testing.T) {
 	refused, msg := captureFixtureCall(t, harness.V6Managed, func(f *harness.V6Fixture) {
-		// A budget, not a wait: no container has joined a network on
-		// this segment, so nothing can arrive however long it polls.
 		f.AssertExchange(time.Second)
 	})
 	if !refused {
@@ -527,14 +338,7 @@ func TestV6Fixture_AssertExchangeRefusesASegmentNoClientEverUsed(t *testing.T) {
 	}
 }
 
-// captureFixtureCall builds a fixture in mode — which must succeed —
-// and then runs call under a T that records a Fatalf instead of
-// suffering it.
-//
-// The phase flag is what keeps the two apart. Without it a fixture that
-// failed to come up at all would be reported as "the call under test
-// refused", and the negative control would be green for a reason that
-// has nothing to do with the function it names.
+// captureFixtureCall builds a fixture in mode, which must succeed, then runs call under a T that records a Fatalf.
 func captureFixtureCall(t *testing.T, mode harness.V6Mode, call func(*harness.V6Fixture)) (refused bool, msg string) {
 	c := &capturedT{T: t}
 	inCall := false

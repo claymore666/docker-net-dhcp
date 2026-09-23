@@ -21,31 +21,14 @@ import (
 	"github.com/claymore666/docker-net-dhcp/v2/test/integration/harness"
 )
 
-// #978's outside evidence: the host's own link table.
-//
-// Every unit drive for this stops at the seam. They assert what the
-// plugin ASKED netlink to do, and a rename that the kernel refused, or
-// that landed on a link nothing else can find any more, leaves those
-// assertions exactly as green. What an operator reads is `ip link` and
-// `brctl show`, and that is what these read: the fixture's own link
-// table, in the namespace the plugin ran in, by the same rtnetlink dump
-// `ip` uses.
-//
-// BRIDGE MODE ONLY, and that is the product's boundary and not the
-// cell's: a macvlan or ipvlan child is moved into the container and
-// leaves nothing on the host, which is why `docker network create`
-// refuses the option in those modes. That refusal is a unit drive.
+// Unit drives stop at what the plugin asked netlink to do, so these read the fixture's link table by the rtnetlink
+// dump `ip` uses (#978). Bridge mode only: a macvlan or ipvlan child moves into the container and leaves nothing on
+// the host, so network create refuses the option there.
 
-// hostLinkFor returns the link the fixture's host namespace has for this
-// endpoint, found by the generated name.
-//
-// FOUND BY THE GENERATED NAME ON PURPOSE. After a rename that name is
-// only an ALTNAME of the link, and resolving through it is exactly what
-// keeps DeleteEndpoint, EndpointOperInfo and restart recovery working --
-// all three derive it from the endpoint ID and none of them reads a name
-// back from the kernel. A lookup that stopped resolving here is the
-// silent leak this test exists for, so it is the lookup, and the link's
-// real name is read off what comes back.
+// After a rename the generated name is only an altname, and DeleteEndpoint, EndpointOperInfo and restart recovery all
+// resolve the link through it, so the lookup is by that name (#978).
+
+// hostLinkFor returns the host namespace's link for this endpoint, found by its generated name.
 func hostLinkFor(t *testing.T, endpointID string) netlink.Link {
 	t.Helper()
 	generated := generatedHostName(endpointID)
@@ -56,8 +39,7 @@ func hostLinkFor(t *testing.T, endpointID string) netlink.Link {
 	return link
 }
 
-// noLinkAnswers is the claim both reads make, in one place so the
-// deadline and the single look cannot drift apart.
+// noLinkAnswers fails the test because no link answers to the generated name.
 func noLinkAnswers(t *testing.T, generated string, err error) {
 	t.Helper()
 	t.Fatalf("no link on this host answers to %q: %v\n"+
@@ -67,9 +49,7 @@ func noLinkAnswers(t *testing.T, generated string, err error) {
 		generated, err, linkTable(t))
 }
 
-// generatedHostName is vethPairNames' host half, written out rather than
-// called: a fixture that derived the name the way the subject does would
-// agree with the subject whatever the rule became.
+// generatedHostName spells out vethPairNames' host half, so the fixture cannot agree with the subject by construction.
 func generatedHostName(endpointID string) string {
 	return "dh-" + endpointID[:12]
 }
@@ -93,8 +73,7 @@ func TestHostIfname_TheHostLinkTakesTheContainersName(t *testing.T) {
 	defer cancel()
 
 	netName := "dh-itest-hifname"
-	// 14 characters, so the truncation rule is not in play here and a
-	// failure means the rename and not the derivation.
+	// 14 characters, so truncation is not in play.
 	ctrName := "dh-itest-hifa"
 
 	t.Cleanup(func() {
@@ -119,9 +98,7 @@ func TestHostIfname_TheHostLinkTakesTheContainersName(t *testing.T) {
 	epID := endpointIDOf(t, ctx, cli, id, netName)
 	t.Logf("container %s: ip=%s endpoint=%s", ctrName, ipv4, epID)
 
-	// The rename happens after the attach has succeeded, so the
-	// container can be running with its address before the link has its
-	// name. Poll rather than read once.
+	// The rename happens after the attach succeeds, so the container can have its address before the link has its name.
 	link := waitHostLinkName(t, epID, ctrName, 30*time.Second)
 	if got := link.Attrs().Name; got != ctrName {
 		t.Fatalf("the host-side link is named %q, want %q. That is what ip link and brctl show print, "+
@@ -163,11 +140,8 @@ func TestHostIfname_TheHostLinkTakesTheContainersName(t *testing.T) {
 		t.Errorf("host_ifname_failures advanced by %d on a rename that happened", got)
 	}
 
-	// TEARDOWN IS THE POINT OF THE ALTNAME, so it is driven and not
-	// argued. DeleteEndpoint looks the link up by the generated name and
-	// treats a miss as the normal end of a forced teardown, so a rename
-	// that broke the lookup would leave this link behind with nothing
-	// said anywhere.
+	// DeleteEndpoint looks the link up by the generated name and treats a miss as a normal forced teardown, so a broken
+	// lookup would leave the link behind silently (#978).
 	if err := cli.ContainerRemove(ctx, id, container.RemoveOptions{Force: true}); err != nil {
 		t.Fatalf("ContainerRemove: %v", err)
 	}
@@ -208,10 +182,8 @@ func TestHostIfname_ALongNameIsTruncatedAndATakenOneIsRefused(t *testing.T) {
 
 	harness.CreateNetwork(t, ctx, netName, "bridge", map[string]string{"host_ifname": "container_name"})
 
-	// 27 characters against the kernel's 15. The expected name is
-	// spelled out from the rule in docs/reference.md -- first 9
-	// characters, '-', the endpoint's first 5 hex -- and not computed
-	// with the plugin's own helper, which would agree with any rule.
+	// 27 characters against the kernel's 15; the expected name follows docs/reference.md (first 9 characters, '-', the
+	// endpoint's first 5 hex), not the plugin's helper (#978).
 	longName := "dh-itest-hifname-truncated1"
 	longID, _, _ := harness.RunContainer(t, ctx, netName, longName)
 	longEP := endpointIDOf(t, ctx, cli, longID, netName)
@@ -228,10 +200,7 @@ func TestHostIfname_ALongNameIsTruncatedAndATakenOneIsRefused(t *testing.T) {
 			len(longName), got, wantTruncated, linkTable(t))
 	}
 
-	// THE COLLISION, made rather than hoped for. Interface names are
-	// unique per namespace and the host's is shared with everything
-	// else on the box, so the case an operator meets is a name that
-	// something unrelated already holds.
+	// Interface names are unique per namespace, and the host's is shared with everything else on the box.
 	taken := "dh-itest-taken"
 	takenLink := &netlink.Dummy{LinkAttrs: netlink.LinkAttrs{Name: taken}}
 	if err := netlink.LinkAdd(takenLink); err != nil {
@@ -282,12 +251,10 @@ func TestHostIfname_ALongNameIsTruncatedAndATakenOneIsRefused(t *testing.T) {
 	}
 }
 
-// A restart re-derives the name rather than remembering it, and the
-// route this network takes to the container's name is the other one:
-// register_dns needs the name before the DHCP client is constructed, so
-// the attach has it in hand before the client starts and never enters
-// the late-naming path at all (#961). A rename hung on that path would
-// leave this network's links generated, and only this cell would say so.
+// register_dns needs the name before the client is constructed, so that attach never enters the late-naming path
+// (#961); a rename hung on that path would leave this network's links generated.
+
+// TestHostIfname_IsRederivedOnRestart checks that a restarted container's host link takes its name again (#978).
 func TestHostIfname_IsRederivedOnRestart(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
@@ -313,11 +280,7 @@ func TestHostIfname_IsRederivedOnRestart(t *testing.T) {
 		"host_ifname":  "hostname",
 		"register_dns": "true",
 	})
-	// RunContainer sets --hostname to the container's name, so
-	// host_ifname=hostname and host_ifname=container_name name the same
-	// string here; what differs is which field of the inspect the
-	// plugin reads, and a plugin reading the wrong one produces an
-	// empty name and no rename at all.
+	// RunContainer sets --hostname to the container's name, so the two modes differ only in the inspect field read.
 	id, _, _ := harness.RunContainer(t, ctx, netName, ctrName)
 	epBefore := endpointIDOf(t, ctx, cli, id, netName)
 	waitHostLinkName(t, epBefore, ctrName, 30*time.Second)
@@ -339,43 +302,20 @@ func TestHostIfname_IsRederivedOnRestart(t *testing.T) {
 			generatedHostName(epAfter), link.Attrs().AltNames)
 	}
 
-	// Exactly one link may carry this name. A rebuild that left the
-	// previous one behind would show up as a second veth on the bridge
-	// with the same container behind it, and the kernel would have
-	// refused the second rename, so the survivor would be the DEAD one.
+	// A rebuild that left the previous link behind would make the kernel refuse the second rename, leaving the dead one named.
 	if n := countLinksNamed(t, ctrName); n != 1 {
 		t.Errorf("%d links on this host are named %q, want 1: a restart that leaves the previous "+
 			"endpoint's link behind leaves the new one generated\n%s", n, ctrName, linkTable(t))
 	}
 }
 
-// A plugin recycle runs the rename a SECOND time over a link that
-// already carries both names, and that is the ordinary path, not an
-// edge: recovery rebuilds every endpoint through the same Start, and
-// its synthesised request carries no sandbox key, so the inspect runs
-// first and the rename runs with the daemon's answer in hand.
-//
-// What the kernel answers on that second pass, MEASURED on 6.12.107:
-// renaming to the name the link already has succeeds, adding the
-// altname it already has is EEXIST, and renaming back is EEXIST too,
-// because altnames share the kernel's name hash. So the failure arm and
-// the undo arm are both reachable with nothing wrong, and the cost of
-// getting it wrong is a warn counter and a line telling the operator to
-// remove a healthy link by hand, on every container on such a network
-// every time the plugin restarts.
-//
-// This reads the counters ABSOLUTELY and not as a delta: PluginDisable
-// ends the process and PluginEnable starts a fresh one, so every counter
-// begins at zero again. ExpectRecycle is what makes that a fact rather
-// than an assumption.
-//
-// The container is RENAMED before the recycle, so the second pass is the
-// harder of the two: the wanted name has moved while the old name is
-// still on the link as an altname. The link must come back under the new
-// name, still carrying the altname, with neither failure counter moving.
-//
-// **Do not parallelize.** Disabling the plugin takes every other
-// plugin-managed container on the host with it.
+// Recovery rebuilds every endpoint through the same Start with no sandbox key, so a recycle renames a second time over
+// a link carrying both names. Measured on kernel 6.12.107: renaming to the current name succeeds, adding an existing
+// altname is EEXIST, and renaming back is EEXIST too, since altnames share the name hash (#978). Counters are read
+// absolutely because PluginEnable starts a fresh process.
+// Do not parallelize: disabling the plugin takes every plugin-managed container with it.
+
+// TestHostIfname_APluginRecycleLeavesTheNamedLinkAlone checks that a recycle after a container rename moves no failure counter and keeps both names (#978).
 func TestHostIfname_APluginRecycleLeavesTheNamedLinkAlone(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
 	defer cancel()
@@ -398,8 +338,7 @@ func TestHostIfname_APluginRecycleLeavesTheNamedLinkAlone(t *testing.T) {
 	}
 	defer cli.Close()
 
-	// Registered before the disable, so a failure anywhere below still
-	// leaves the plugin enabled for the rest of the shard. Idempotent.
+	// Registered before the disable, so a failure below still leaves the plugin enabled for the shard.
 	t.Cleanup(func() {
 		bg, bgCancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer bgCancel()
@@ -420,17 +359,8 @@ func TestHostIfname_APluginRecycleLeavesTheNamedLinkAlone(t *testing.T) {
 			before.Attrs().Name, generatedHostName(ep), before.Attrs().AltNames)
 	}
 
-	// AND THE NAME MOVES ACROSS THE RECYCLE. A rename here makes the
-	// second pass one where the wanted name has changed while the old
-	// name is still on the link as an altname, which is the case the
-	// read-back alone does not answer: the link is not yet named what
-	// this attach wants, so the path runs, and offering an altname the
-	// link already carries is EEXIST with an undo that is EEXIST too.
-	// Without it this cell would only ever drive the standing-still
-	// case.
-	//
-	// Docker's own cleanup is keyed on the container ID, so the rename
-	// does not strand it.
+	// The rename makes the second pass one where the wanted name moved while the old one is still an altname, so the
+	// rename path runs and meets EEXIST (#978); Docker's cleanup is keyed on the container ID.
 	if err := cli.ContainerRename(ctx, id, renamedTo); err != nil {
 		t.Fatalf("ContainerRename(%s -> %s): %v", ctrName, renamedTo, err)
 	}
@@ -439,14 +369,10 @@ func TestHostIfname_APluginRecycleLeavesTheNamedLinkAlone(t *testing.T) {
 		"host_ifnames_applied", "host_ifname_conflicts", "host_ifname_failures",
 		"recovered_ok", "recovery_failed").ExpectRecycle()
 
-	// The recovered endpoint's ARP probe is asynchronous and races this
-	// test's teardown, the same way it does in the recovery cell. One
-	// container, so one v4 lease.
+	// The recovered endpoint's ARP probe races teardown; one container, one v4 lease.
 	harness.AllowUnprobedLeases(1)
 
-	// The plugin's own account of the recycle, dumped only if this test
-	// fails. The rename runs inside the same rebuild the counters below
-	// describe, so its log lines are the evidence for both.
+	// Dumped only on failure; the rename runs inside the rebuild the counters describe.
 	logMark := harness.MarkPluginLog(t, ctx)
 	harness.DumpPluginLogOnFailure(t, ctx, logMark, "the plugin was disabled")
 
@@ -464,12 +390,7 @@ func TestHostIfname_APluginRecycleLeavesTheNamedLinkAlone(t *testing.T) {
 	}
 	harness.WaitPluginHealth(t, ctx, cli, 15*time.Second)
 
-	// The socket answering means the recovery walk finished, not that
-	// the endpoint was rebuilt: the walk spawns each rebuild and the
-	// rename this test is about runs inside it, beside the counters
-	// below (pkg/plugin/host_ifname.go, reached from dhcpManager.Start).
-	// recovered_ok moves after that Start returns, so waiting for it is
-	// waiting for the rename to have happened.
+	// The walk spawns each rebuild and the rename runs inside dhcpManager.Start, after which recovered_ok moves.
 	const rebuilt = "recovery to rebuild this endpoint's renewal client (recovered_ok >= 1)"
 	waited, ok := harness.AwaitRecoveryRebuildWindow(w, rebuilt,
 		func(h *harness.HealthResponse) bool { return h.RecoveredOK >= 1 })
@@ -482,20 +403,13 @@ func TestHostIfname_APluginRecycleLeavesTheNamedLinkAlone(t *testing.T) {
 		t.Fatalf("%s\n  Recovery is the path that runs the rename a second time, so a recycle that "+
 			"recovered nothing has not measured it.", harness.RecoveryRebuildFailure(rebuilt, waited))
 	}
-	// recovery_failed was in this window's counter list and asserted
-	// nowhere, which made it decoration. It is the arm that flips
-	// healthy: a rebuild that failed leaves the rename unmeasured for
-	// the same reason recovered_ok=0 does, and says so.
+	// A failed rebuild leaves the rename unmeasured.
 	if after.RecoveryFailed != 0 {
 		t.Errorf("recovery_failed=%d after the recycle: the endpoint whose link this test renames was "+
 			"not rebuilt, so the rename counters below describe some other endpoint. %s",
 			after.RecoveryFailed, harness.RecoveryRoutes(after))
 	}
-	// The classifier's other arm, for the same reason. This test's
-	// container runs from before the recycle to after it, so
-	// recovery_aborted_container_gone means the plugin could not find a
-	// container that was there, and the rename it was going to redo
-	// never ran.
+	// The container runs across the recycle, so this counter would mean the plugin could not find a container that was there.
 	if after.RecoveryAbortedContainerGone != 0 {
 		t.Errorf("recovery_aborted_container_gone=%d after the recycle, although this test's container "+
 			"was running throughout: recovery gave up on the endpoint whose link this test renames, "+
@@ -542,20 +456,11 @@ func TestHostIfname_APluginRecycleLeavesTheNamedLinkAlone(t *testing.T) {
 	}
 }
 
-// waitHostLinkName waits for this endpoint's host-side link to carry
-// the name its network asked for, and makes both of the claims it made
-// before: a link must answer to the generated name, and that link must
-// end up named `want`.
-//
-// THE FIRST CLAIM IS NOW DUE AT THE DEADLINE and not at the first look,
-// because the rename is two kernel calls and the generated name
-// resolves to nothing between them -- the kernel refuses an altname
-// equal to a link's current name, so the old name can only go back on
-// after the rename has taken it off. The plugin keeps its OWN readers
-// out of that window (#1051); an outside reader like this one cannot be
-// kept out of it by anything the plugin does, so it waits it out. A
-// deadline reached with nothing ever answering still fails, with the
-// same words a single look fails in.
+// The rename is two kernel calls and the generated name resolves to nothing between them, since the kernel refuses an
+// altname equal to the current name; the plugin keeps its own readers out of that window (#1051), an outside reader
+// waits it out, so the first claim is due at the deadline.
+
+// waitHostLinkName waits for the endpoint's host link to answer to its generated name and to be named want.
 func waitHostLinkName(t *testing.T, endpointID, want string, budget time.Duration) netlink.Link {
 	t.Helper()
 	generated := generatedHostName(endpointID)

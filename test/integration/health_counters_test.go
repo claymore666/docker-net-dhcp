@@ -16,16 +16,7 @@ import (
 	docker "github.com/docker/docker/client"
 )
 
-// TestHealthCounters_ObtainedAndReleased pins the v0.9.0 / T2-4
-// wiring: a clean container lifecycle (create → bound → release →
-// remove) advances /Plugin.Health.leases_obtained by at least one
-// and leaves client_stop_failures unchanged.
-//
-// Inlining ContainerCreate/Start/Stop/Remove instead of using
-// harness.RunContainer because Run defers cleanup via t.Cleanup,
-// which fires after the test body returns — we need the release
-// to happen WITHIN the test so we can take the post-release health
-// snapshot before the assertion.
+// TestHealthCounters_ObtainedAndReleased checks that a clean lifecycle raises leases_obtained and leaves client_stop_failures alone.
 func TestHealthCounters_ObtainedAndReleased(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
@@ -79,10 +70,7 @@ func TestHealthCounters_ObtainedAndReleased(t *testing.T) {
 		t.Fatalf("ContainerStart: %v", err)
 	}
 
-	// Wait for the persistent client's `bound` event — that's what
-	// bumps leases_obtained. CreateEndpoint's initial DISCOVER runs
-	// a one-shot dhcpcd whose events don't feed the plugin's counters;
-	// the persistent client started in Join is what we're testing.
+	// Only the persistent client started in Join feeds leases_obtained; the one-shot client in CreateEndpoint does not.
 	budget := harness.IPAcquisitionBudget + 5*time.Second
 	afterStart, ok := w.Await(budget, func(now, before *harness.HealthResponse) bool {
 		return now.LeasesObtained > before.LeasesObtained
@@ -94,14 +82,8 @@ func TestHealthCounters_ObtainedAndReleased(t *testing.T) {
 	t.Logf("after start: leases_obtained=%d (advanced by %d)",
 		afterStart.LeasesObtained, afterStart.LeasesObtained-before.LeasesObtained)
 
-	// Drive the explicit teardown: ContainerStop -> Leave ->
-	// dhcpManager.Stop -> SIGTERM -> the client exits. A clean shutdown
-	// must NOT bump client_stop_failures. No release is involved on this
-	// network: it sets no release_lease, so the default `never` applies
-	// and since #800 the address stays leased (#962). That is why the
-	// counter is named for the client and not for the lease, and the
-	// name holds on an `on_stop` network too, where a release is sent
-	// at Leave and counted in releases_sent, never here.
+	// With no release_lease the default `never` sends no release since #800, so a clean stop moves only the client's
+	// counter; an `on_stop` release is counted in releases_sent (#962).
 	if err := cli.ContainerStop(ctx, id, container.StopOptions{}); err != nil {
 		t.Fatalf("ContainerStop: %v", err)
 	}

@@ -14,16 +14,7 @@ import (
 	"github.com/claymore666/docker-net-dhcp/v2/test/integration/harness"
 )
 
-// TestDNSPropagate_OptInWritesResolvConf is the v0.9.0 / T1-1
-// guard: when `propagate_dns=true` is set on the network, the
-// container's /etc/resolv.conf must contain the DHCP-supplied DNS
-// server (option 6, advertised by the fixture's dnsmasq as
-// harness.TestDNSServer).
-//
-// Without this opt-in, Docker's embedded resolver handles DNS and
-// the fixture's address never appears in resolv.conf. Together with
-// the negative side of TestDNSPropagate_DefaultIsUnchanged below,
-// this pins both the opt-in behaviour and the historical default.
+// TestDNSPropagate_OptInWritesResolvConf checks that propagate_dns=true puts the server's option 6 DNS server in resolv.conf.
 func TestDNSPropagate_OptInWritesResolvConf(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
@@ -43,12 +34,7 @@ func TestDNSPropagate_OptInWritesResolvConf(t *testing.T) {
 	})
 	id, _, _ := harness.RunContainer(t, ctx, netName, ctrName)
 
-	// resolv.conf is written from the persistent client's `bound`
-	// event, which fires after libnetwork's Join — i.e. after
-	// RunContainer's "got an IP" return. The write is fast but not
-	// synchronous with the inspect IP, and a reply lost on the
-	// fixture's veth pair delays it by the client's own
-	// retransmission: see harness.RetransmitBudget.
+	// resolv.conf is written from the persistent client's bound event, after Join returns (harness.RetransmitBudget).
 	budget := harness.RetransmitBudget(2)
 	deadline := time.Now().Add(budget)
 	var out string
@@ -64,12 +50,7 @@ func TestDNSPropagate_OptInWritesResolvConf(t *testing.T) {
 		harness.TestDNSServer, budget, out)
 }
 
-// TestDNSPropagate_DefaultIsUnchanged confirms the v0.7.0 baseline
-// behaviour: without the propagate_dns opt-in, the container's
-// resolv.conf is whatever Docker's resolver wrote (typically a
-// 127.0.0.11 stub, or the host's nameservers — never our fixture's
-// 192.168.99.53). Guards against an accidental flip of the default
-// during refactors.
+// TestDNSPropagate_DefaultIsUnchanged checks that without propagate_dns resolv.conf never names the fixture's DNS server.
 func TestDNSPropagate_DefaultIsUnchanged(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
@@ -93,31 +74,11 @@ func TestDNSPropagate_DefaultIsUnchanged(t *testing.T) {
 	}
 }
 
-// TestDNSPropagate_BridgeModeWritesResolvConfToo holds the property
-// that the ten retired DHCPv6 tests took with them (r2, finding 5a).
-//
-// WHAT WAS LOST AND WHY IT MATTERS. Base
-// `dhcpv6_noaddress_modes_test.go:30-34` created BRIDGE networks with
-// `propagate_dns: "true"`. It was retired with the rest of the v6 suite
-// (brief §6), and every surviving user of the option —
-// `TestDNSPropagate_OptInWritesResolvConf` above and
-// `extra_options_test.go` — is macvlan. So after the retirement the
-// opt-in was exercised on exactly one of the three modes the plugin
-// ships.
-//
-// WHAT MAKES IT A REAL GAP RATHER THAN A TIDY ONE. resolv.conf is
-// written from `renew()` in the container's netns and is not
-// mode-keyed, so the write itself is shared. What is NOT shared is
-// everything in front of it: bridge mode reaches the container over a
-// veth pair whose host side the manager runs on, not over a macvlan
-// child, and the endpoint the DHCP client is bound to is created by a
-// different branch of CreateNetwork. A defect in that branch that left
-// `Info.DNSServers` empty would pass every test in this file.
-//
-// The fixture's bridge dnsmasq advertises harness.BridgeTestDNSServer
-// on option 6 — a DIFFERENT address from the macvlan fixture's, so a
-// container that somehow answered from the wrong fixture fails here
-// rather than passing by coincidence.
+// resolv.conf is written by renew() in any mode, but bridge mode reaches it through a veth whose host side the manager
+// runs on and a different CreateNetwork branch; the bridge fixture's option 6 differs from the macvlan fixture's, so
+// an answer from the wrong fixture fails (#899).
+
+// TestDNSPropagate_BridgeModeWritesResolvConfToo checks that propagate_dns=true writes the bridge fixture's DNS server in bridge mode.
 func TestDNSPropagate_BridgeModeWritesResolvConfToo(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
@@ -138,10 +99,6 @@ func TestDNSPropagate_BridgeModeWritesResolvConfToo(t *testing.T) {
 	id, ipv4, _ := harness.RunContainer(t, ctx, netName, ctrName)
 	harness.AssertBridgeIP(t, ipv4)
 
-	// Same wait as the macvlan arm, and for the same reason:
-	// resolv.conf is written from the Join manager's bind event, which
-	// lands after libnetwork's Join returns, and a lost reply delays
-	// it by the client's own retransmission.
 	budget := harness.RetransmitBudget(2)
 	deadline := time.Now().Add(budget)
 	var out string
@@ -150,11 +107,7 @@ func TestDNSPropagate_BridgeModeWritesResolvConfToo(t *testing.T) {
 		if strings.Contains(out, harness.BridgeTestDNSServer) {
 			t.Logf("resolv.conf inside the bridge-mode container:\n%s", out)
 
-			// The negative half, in the same run: the macvlan
-			// fixture's address must NOT be there. Without it a
-			// container that had been attached to the wrong fixture
-			// would satisfy the assertion above as soon as both
-			// addresses appeared.
+			// The macvlan fixture's server must be absent, or a container on the wrong fixture would pass once both appeared.
 			if strings.Contains(out, harness.TestDNSServer) {
 				t.Errorf("the bridge-mode container's resolv.conf also names the MACVLAN "+
 					"fixture's DNS server %s; the endpoint is not on the network the test "+

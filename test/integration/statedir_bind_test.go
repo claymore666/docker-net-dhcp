@@ -18,47 +18,15 @@ import (
 	"time"
 )
 
-// TestStateDirBindSource_MissingSourceContract pins the install-time
-// contract documented in #494 / #499 and repeated at the top of the
-// v1.5.0 release notes.
-//
-// Since #440 the manifest bind-mounts STATE_DIR from the host, and the
-// Docker daemon does NOT create a missing bind source. Everything the
-// docs then tell an operator — that the install leaves a *disabled*
-// plugin rather than rolling back, that retrying the install answers
-// "already exists" and never re-attempts the mount, that the recovery
-// is mkdir + `docker plugin enable` — is a statement about daemon
-// behaviour, not about our code. Until now it was verified only by a
-// manual run pasted into a PR body, so a future engine release could
-// change any of it and the docs would go quietly wrong. That is the
-// exact failure mode this project keeps being burned by: prose that
-// decays silently while nothing goes red.
-//
-// Point 3 below is the one that matters most. "The install rolled back"
-// and "you now have a disabled plugin" are different worlds for an
-// operator, and it is the second that makes the retry advice necessary.
-//
-// The suite's own plugin is installed once per run and the rest of the
-// suite is using it, so this test builds a throwaway plugin of its own:
-// its own name, its own bind source under a temporary path, never
-// /var/lib/net-dhcp. It reuses the rootfs the runner already built, so
-// it costs a directory copy rather than a second image build.
-//
-// The throwaway name is deliberately OUTSIDE the maintained namespaces
-// that driverRegexp matches. A plugin named `.../claymore666/
-// docker-net-dhcp:<tag>` treats every network on such a driver as its
-// own on startup and runs recovery over them — which, with the suite's
-// plugin live on the same daemon, would mean two instances
-// re-DISCOVERing the same endpoints. The daemon contract under test
-// does not care what the plugin is called; the blast radius does.
-// The rootfs comes from harness.BuiltPluginDir — the ONE place the
-// lanes' build directories are named (#583). This test used to carry
-// its own list, and before that a single hard-coded PR-lane path,
-// which is how it was born broken in the coverage lane and stayed
-// green for a whole release cycle (#541, #582).
+// Since #440 the manifest bind-mounts STATE_DIR from the host and the daemon does not create a missing bind source;
+// the documented install contract (#494, #499) is daemon behaviour: the install leaves a disabled plugin, a retry
+// answers "already exists", and recovery is mkdir plus `docker plugin enable`. The throwaway plugin's name stays
+// outside driverRegexp's namespaces, or it would run recovery over the suite plugin's networks. The rootfs comes from
+// harness.BuiltPluginDir, the one place build directories are named (#541, #582, #583).
+
+// TestStateDirBindSource_MissingSourceContract checks the daemon's contract for a plugin whose STATE_DIR bind source is missing (#494).
 func TestStateDirBindSource_MissingSourceContract(t *testing.T) {
-	// The in-plugin mount point, i.e. the mounts[] entry whose source
-	// this test redirects. Must match config.json.
+	// The mounts[] destination this test redirects; must match config.json.
 	const stateDest = "/var/lib/net-dhcp"
 
 	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
@@ -70,36 +38,20 @@ func TestStateDirBindSource_MissingSourceContract(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Scratch lives under the repo, not /tmp: the rootfs copy is done
-	// with hardlinks, which need the same filesystem.
+	// Under the repo, not /tmp: the rootfs copy uses hardlinks, which need one filesystem.
 	scratch, err := os.MkdirTemp(root, ".itest-statedir-")
 	if err != nil {
 		t.Fatalf("scratch dir: %v", err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(scratch) })
 
-	// The plugin name is unique per run, and that is load-bearing
-	// rather than tidiness.
-	//
-	// A name that was successfully enabled earlier in the SAME daemon
-	// lifetime keeps a registered network-driver handler even after
-	// `plugin disable` + `plugin rm`. Re-create that name and step 5
-	// below stops answering "found but disabled" and instead dials the
-	// dead socket of the previous incarnation — measured on 26.1.5, 4/4
-	// deterministic with a fresh name and reproducible with a reused
-	// one. CI would never have seen it (its daemon is new each run);
-	// a second `make integration-local` on a developer's box would.
-	//
-	// The name also stays OUTSIDE the namespaces driverRegexp matches
-	// — see the doc comment above.
-	// Lowercased: os.MkdirTemp's random suffix is mixed-case and Docker
-	// rejects a plugin reference that is not lowercase ("repository
-	// name ... must be lowercase"), which would fail nearly every run.
+	// A name enabled earlier in the same daemon lifetime keeps a registered driver handler after disable and rm, so a
+	// reused name dials the dead socket, measured on 26.1.5, 4/4 (#500). Docker rejects a plugin reference that is not
+	// lowercase, and os.MkdirTemp's suffix is mixed-case.
 	suffix := strings.ToLower(strings.TrimPrefix(filepath.Base(scratch), ".itest-statedir-"))
 	pluginRef := "local/dh-itest-statedir-" + suffix + ":500"
 
-	// The bind source the daemon will be asked for. Deliberately NOT
-	// created yet — its absence is the whole scenario.
+	// Not created yet: its absence is the scenario.
 	bindSource := filepath.Join(scratch, "state")
 	pkgDir := filepath.Join(scratch, "plugin")
 
@@ -107,7 +59,7 @@ func TestStateDirBindSource_MissingSourceContract(t *testing.T) {
 	rewriteStateDirSource(t, filepath.Join(pkgDir, "config.json"), stateDest, bindSource)
 
 	t.Cleanup(func() {
-		// Fresh ctx: cleanup must still run when the test ctx expired.
+		// Cleanup must still run when the test ctx has expired.
 		cctx, ccancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer ccancel()
 		_, _ = dockerRun(cctx, t, "plugin", "disable", "-f", pluginRef)
@@ -116,10 +68,7 @@ func TestStateDirBindSource_MissingSourceContract(t *testing.T) {
 		}
 	})
 
-	// 1. Package it with the bind source absent. `create` is the local
-	//    equivalent of the pull half of `docker plugin install`: it
-	//    stages the plugin without starting it, so it must succeed even
-	//    though the mount cannot be satisfied.
+	// `create` stages the plugin without starting it, so it succeeds with the mount unsatisfied.
 	if out, err := dockerRun(ctx, t, "plugin", "create", pluginRef, pkgDir); err != nil {
 		if strings.Contains(out, "already exists") {
 			t.Fatalf("plugin create %s hit a content-store collision: %v: %s\n"+
@@ -130,10 +79,7 @@ func TestStateDirBindSource_MissingSourceContract(t *testing.T) {
 		t.Fatalf("plugin create %s: %v: %s", pluginRef, err, out)
 	}
 
-	// 2. Enabling is where the mount happens, and it must fail — naming
-	//    the path the operator has to create. An error that does not
-	//    name it is a usability regression: the whole recovery
-	//    instruction is "mkdir the path from the error".
+	// Enabling mounts, fails, and must name the path the operator has to create.
 	out, err := dockerRun(ctx, t, "plugin", "enable", pluginRef)
 	if err == nil {
 		t.Fatalf("plugin enable succeeded with bind source %s absent; "+
@@ -146,7 +92,7 @@ func TestStateDirBindSource_MissingSourceContract(t *testing.T) {
 			bindSource, out)
 	}
 
-	// 3. THE claim: not rolled back, still installed, disabled.
+	// Not rolled back: still installed, disabled.
 	if enabled, ok := pluginEnabled(ctx, t, pluginRef); !ok {
 		t.Fatalf("plugin %s is not listed after a failed enable; the daemon rolled the "+
 			"install back, so the documented `docker plugin enable` recovery no longer "+
@@ -155,10 +101,7 @@ func TestStateDirBindSource_MissingSourceContract(t *testing.T) {
 		t.Fatalf("plugin %s reports Enabled=true after enable failed", pluginRef)
 	}
 
-	// 4. A second attempt does not silently fix it. `create` answers
-	//    "already exists" (as `install` does), and the plugin stays
-	//    disabled — the mount is never re-attempted, which is why the
-	//    docs say to fix the path and enable rather than to reinstall.
+	// A retry answers "already exists" and never re-attempts the mount, so the docs say to fix the path and enable.
 	out, err = dockerRun(ctx, t, "plugin", "create", pluginRef, pkgDir)
 	if err == nil {
 		t.Errorf("a second `plugin create` succeeded; the docs say a retry answers "+
@@ -171,9 +114,7 @@ func TestStateDirBindSource_MissingSourceContract(t *testing.T) {
 		t.Errorf("after the retry, plugin listed=%v enabled=%v; want listed and disabled", ok, enabled)
 	}
 
-	// 5. Using it in this state is refused, and the refusal says
-	//    "disabled" rather than "not found" — the difference between an
-	//    operator re-installing (which will not help) and enabling.
+	// The refusal says "disabled", not "not found", so the operator enables and does not reinstall.
 	netName := "dh-itest-statedir-disabled"
 	out, err = dockerRun(ctx, t, "network", "create", "-d", pluginRef, netName)
 	if err == nil {
@@ -185,20 +126,8 @@ func TestStateDirBindSource_MissingSourceContract(t *testing.T) {
 			"not merely missing. Got: %s", out)
 	}
 
-	// 6. Recovery: create the directory, enable, done — and nothing
-	//    already in that directory is lost. The marker stands in for
-	//    the tombstones, per-network options and audit ledger a real
-	//    operator's state dir holds; #440's entire point is that they
-	//    survive, so an enable that wiped them would be silent data
-	//    loss.
-	//
-	//    It is seeded 0644, which is the state #804 found on a
-	//    production host: a file an older plugin wrote before
-	//    stateFileMode existed, which no later write ever touched. The
-	//    contents must survive and the mode must not, so this is also
-	//    the end-to-end observer for the startup sweep. The unit tests
-	//    in pkg/plugin drive the sweep; only this drives a real plugin
-	//    process starting over a pre-populated STATE_DIR.
+	// The marker stands in for the state a real STATE_DIR holds, which must survive (#440). It is seeded 0644, the state
+	// #804 found on a production host, so this is the end-to-end observer for the startup mode sweep.
 	if err := os.MkdirAll(bindSource, 0o755); err != nil {
 		t.Fatalf("mkdir bind source: %v", err)
 	}
@@ -218,10 +147,7 @@ func TestStateDirBindSource_MissingSourceContract(t *testing.T) {
 			"the recovery is documented as lossless", string(b), err)
 	}
 
-	// The sweep runs inside NewPlugin, a few lines before the socket
-	// this enable waited for, so the mode is expected to be 0600
-	// already. The poll keeps the assertion off the ordering of two
-	// events in another process and costs nothing when it is.
+	// The sweep runs inside NewPlugin before the socket appears; the poll keeps the assertion off that ordering (#804).
 	mode := os.FileMode(0)
 	for deadline := time.Now().Add(15 * time.Second); ; {
 		fi, err := os.Stat(marker)
@@ -250,12 +176,7 @@ func repoRoot(t *testing.T) string {
 	return root
 }
 
-// copyPluginPackage clones the built plugin package into dst. Hardlinks
-// first (`cp -al`): the rootfs is tens of thousands of files and this
-// test only ever rewrites config.json, which is written fresh rather
-// than edited in place, so nothing is shared back into the original.
-// A real copy is the fallback for the case where the two paths turn out
-// to be on different filesystems.
+// copyPluginPackage hardlinks the built plugin package into dst, falling back to a real copy across filesystems.
 func copyPluginPackage(ctx context.Context, t *testing.T, src, dst string) {
 	t.Helper()
 	if out, err := exec.CommandContext(ctx, "cp", "-al", src, dst).CombinedOutput(); err != nil {
@@ -265,27 +186,14 @@ func copyPluginPackage(ctx context.Context, t *testing.T, src, dst string) {
 			t.Fatalf("copy plugin package %s -> %s: %v: %s", src, dst, err, out)
 		}
 	}
-	// Make the rootfs layer unique to this run.
-	//
-	// `docker plugin create` digests the rootfs and stores it as
-	// content. The runner built this same tree minutes earlier and
-	// created the suite's own plugin from it, so a byte-identical copy
-	// hashes to a blob the daemon already holds and `create` fails with
-	// `content sha256:...: already exists` (seen on 26.1.5). The marker
-	// is one file with the scratch directory's random name in it: it
-	// changes the digest, is inert inside the plugin, and is unique per
-	// run so a repeat on the same daemon does not collide either.
-	//
-	// It has to be a NEW file rather than an edit — the copy above is
-	// hardlinked, so writing to any existing path would write into the
-	// runner's real plugin package.
+	// `docker plugin create` stores the rootfs by digest, so a byte-identical copy fails with `content sha256:...:
+	// already exists` (seen on 26.1.5); a new file, since the copy is hardlinked into the runner's real package (#500).
 	marker := filepath.Join(dst, "rootfs", ".dh-itest-statedir-500")
 	if err := os.WriteFile(marker, []byte(filepath.Base(filepath.Dir(dst))+"\n"), 0o644); err != nil {
 		t.Fatalf("write rootfs marker: %v", err)
 	}
 
-	// config.json is rewritten below; break the hardlink so the
-	// repo's own config.json can never be modified through it.
+	// Breaks the hardlink so the repo's own config.json cannot be modified through it.
 	cfg := filepath.Join(dst, "config.json")
 	b, err := os.ReadFile(cfg)
 	if err != nil {
@@ -299,11 +207,7 @@ func copyPluginPackage(ctx context.Context, t *testing.T, src, dst string) {
 	}
 }
 
-// rewriteStateDirSource points the mounts[] entry whose destination is
-// dest at a new host source, leaving the rest of the manifest exactly
-// as shipped. It fails loudly when no such entry exists: that would
-// mean the bind mount this whole test is about has been removed from
-// config.json, and silently testing nothing is the outcome to avoid.
+// rewriteStateDirSource points the mounts[] entry for dest at a new host source and fails when no such entry exists.
 func rewriteStateDirSource(t *testing.T, cfgPath, dest, newSource string) {
 	t.Helper()
 	raw, err := os.ReadFile(cfgPath)
@@ -337,10 +241,7 @@ func rewriteStateDirSource(t *testing.T, cfgPath, dest, newSource string) {
 	}
 }
 
-// pluginEnabled reports whether ref is currently listed by the daemon
-// and, if so, whether it is enabled. Read through `docker plugin
-// inspect` rather than the Go client so the test observes exactly what
-// the docs tell an operator to run.
+// pluginEnabled reports, through `docker plugin inspect` as the docs tell operators, whether ref is listed and enabled.
 func pluginEnabled(ctx context.Context, t *testing.T, ref string) (enabled, listed bool) {
 	t.Helper()
 	out, err := dockerRun(ctx, t, "plugin", "inspect", "--format", "{{.Enabled}}", ref)
@@ -358,10 +259,7 @@ func pluginEnabled(ctx context.Context, t *testing.T, ref string) (enabled, list
 	}
 }
 
-// dockerRun shells out to the docker CLI and returns its combined
-// output. The CLI, not the API client, because every claim under test
-// is quoted from documentation that tells operators to run these exact
-// commands — including the error text they are told to read.
+// dockerRun runs the docker CLI the docs quote and returns its combined output.
 func dockerRun(ctx context.Context, t *testing.T, args ...string) (string, error) {
 	t.Helper()
 	cmd := exec.CommandContext(ctx, "docker", args...)

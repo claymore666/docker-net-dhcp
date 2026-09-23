@@ -20,18 +20,10 @@ import (
 	docker "github.com/docker/docker/client"
 )
 
-// TestHealthDocument_EndpointEntryMatchesTheContainer reads one real
-// container's entry out of /Plugin.Health's `endpoints` array (O-3) and
-// checks the address against the kernel's view from inside that
-// container's own namespace.
-//
-// THE ADDRESS IS CHECKED FROM OUTSIDE THE PLUGIN, which is the whole
-// point of the cell (#524). Every other field in the entry is the
-// plugin's account of itself and can only be read for shape; the
-// address is the one value something else can be asked about, and
-// `ip -4 addr show` inside the container is that something else. An
-// entry that rendered the wrong endpoint's address -- the mutant this
-// cell exists for -- passes every self-consistent check and fails here.
+// The address is the one field something outside the plugin can confirm: an entry rendering another endpoint's
+// address passes every self-consistent check and fails the in-container `ip -4 addr` here (#524).
+
+// TestHealthDocument_EndpointEntryMatchesTheContainer checks a container's /Plugin.Health endpoint entry against the kernel inside the container (#524).
 func TestHealthDocument_EndpointEntryMatchesTheContainer(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
@@ -56,20 +48,8 @@ func TestHealthDocument_EndpointEntryMatchesTheContainer(t *testing.T) {
 	id, ipv4, _ := harness.RunContainer(t, ctx, netName, ctrName)
 	harness.AssertIP(t, ipv4)
 
-	// One reading, not a window: nothing here is a delta. The fields
-	// below are the document's account of a state that exists right
-	// now, and the WaitPluginHealth family is the suite's sanctioned
-	// single read (see counterwindow_guard_test.go) precisely because
-	// it makes no claim about counters.
-	//
-	// The reading has a precondition, and it is on a DIFFERENT field
-	// from any asserted below. `container_start` returning does not
-	// mean the renewal client has bound: the manager is registered when
-	// the Join returns and the client binds after it, so the document
-	// honestly reports `acquiring` with no address for a moment, and
-	// one reading landed there in CI. Waiting on lease_state is a
-	// precondition; waiting until the address matched would make this a
-	// report that the plugin eventually said the right thing.
+	// One reading, no delta. The client binds after Join returns, so the entry reads `acquiring` for a moment, as one CI
+	// reading did; lease_state is the precondition, since waiting for the address to match would only prove it eventually did (#524).
 	wantNet := shortDockerID(netID)
 	h := harness.WaitPluginHealthFor(t, ctx, cli, 30*time.Second,
 		"the endpoint on network "+wantNet+" to report lease_state=bound",
@@ -104,11 +84,7 @@ func TestHealthDocument_EndpointEntryMatchesTheContainer(t *testing.T) {
 			wantNet, formatEndpoints(h.Endpoints))
 	}
 
-	// 1. OUTSIDE EVIDENCE. The document says this endpoint holds this
-	// address; the kernel inside the container is asked whether it
-	// does. `ip` prints "inet <addr>/<prefix> " and the document
-	// renders the same CIDR, so the comparison is of the whole thing
-	// and not of a prefix of it.
+	// `ip` prints "inet <addr>/<prefix> " and the document renders the same CIDR, so the whole prefix is compared.
 	out := harness.ExecOutput(t, ctx, id, "ip", "-4", "addr", "show")
 	if e.Address == "" {
 		t.Fatalf("the entry for %s carries no address while the container holds %s:\n%s",
@@ -119,9 +95,7 @@ func TestHealthDocument_EndpointEntryMatchesTheContainer(t *testing.T) {
 			"carry it. The document's address is the plugin's word for it and this is the "+
 			"kernel's.\n%s", wantNet, e.Address, out)
 	}
-	// The address Docker reported for the container, independently of
-	// both: an entry rendering a DIFFERENT live endpoint's address
-	// would still be a real address on some interface somewhere.
+	// Docker's own address for the container: another live endpoint's address would still exist on some interface.
 	if pfx, perr := netip.ParsePrefix(e.Address); perr != nil {
 		t.Errorf("`endpoints` renders %q for %s, which does not parse as a CIDR", e.Address, wantNet)
 	} else if pfx.Addr().String() != ipv4 {
@@ -129,18 +103,13 @@ func TestHealthDocument_EndpointEntryMatchesTheContainer(t *testing.T) {
 			wantNet, e.Address, ipv4)
 	}
 
-	// 2. THE REST OF THE FIELDS, each for what it can be checked
-	// against. These are the plugin's own account, so each assertion
-	// says what would be wrong rather than repeating the value.
 	if e.Endpoint == "" {
 		t.Error("the entry carries no endpoint id, so nothing in it can be attributed")
 	}
 	if e.Mode != "macvlan" {
 		t.Errorf("`endpoints` says mode=%q for a network created with mode=macvlan", e.Mode)
 	}
-	// lease_state is deliberately NOT re-asserted: it is the
-	// precondition the read above waited on, and a check that cannot
-	// fail reads on the page exactly like one that holds.
+	// lease_state was the precondition of the read and cannot fail here, so it is not asserted.
 	switch e.ConflictCheck {
 	case "wait", "async", "off":
 	default:
@@ -159,10 +128,7 @@ func TestHealthDocument_EndpointEntryMatchesTheContainer(t *testing.T) {
 	} else if net.ParseIP(e.Server) == nil {
 		t.Errorf("`endpoints` says server=%q, which is not an address", e.Server)
 	}
-	// The times are absolute by design, so each one is checked for
-	// being a time AND for lying on the right side of now. A renewal
-	// deadline in the past is the shape a duration rendered as an
-	// instant would take.
+	// A renewal deadline in the past is how a duration rendered as an instant would look.
 	now := time.Now()
 	for _, ts := range []struct {
 		name, value string
@@ -201,9 +167,6 @@ func TestHealthDocument_EndpointEntryMatchesTheContainer(t *testing.T) {
 		e.Endpoint, e.Network, e.Mode, e.LeaseState, e.Address, e.Server,
 		e.ConflictCheck, e.ACDPhase, e.LastEvent, e.LastEventAt, e.RenewAt, e.RebindAt, e.ExpiresAt)
 
-	// 3. The document's own agreement, which the unit tests cannot
-	// reach: this plugin is serving a real endpoint, so `status` and
-	// `healthy` have to be saying the same thing about it.
 	if h.Status == nil {
 		t.Fatal("this plugin publishes no `status`, so pass/warn/fail cannot be judged")
 	}
@@ -217,18 +180,10 @@ func TestHealthDocument_EndpointEntryMatchesTheContainer(t *testing.T) {
 	}
 }
 
-// TestHealthDocument_BuildInfoIsWhatTheLaneBuilt reads the three build
-// identity values (O-4) back out of the plugin this lane built, on both
-// surfaces they are published on.
-//
-// WHY THE SHA COMES FROM THE ENVIRONMENT. The workflow step that builds
-// the plugin derives the commit once and exports it (NET_DHCP_EXPECT_COMMIT);
-// this cell compares against that value rather than deriving its own,
-// because a second derivation would be checked against itself and the
-// looser of the two would decide. Where the variable is not set -- a
-// hand-installed plugin, a lane that has not been taught to export it --
-// the value is still required to be a full revision rather than absent
-// or empty, which is the failure that looks like nothing.
+// NET_DHCP_EXPECT_COMMIT is derived once by the build step, since a second derivation would be checked against itself;
+// unset, the value must still be a full revision, since an empty one looks like nothing (#910).
+
+// TestHealthDocument_BuildInfoIsWhatTheLaneBuilt checks the three build identity values on both surfaces against what this lane built.
 func TestHealthDocument_BuildInfoIsWhatTheLaneBuilt(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -245,7 +200,6 @@ func TestHealthDocument_BuildInfoIsWhatTheLaneBuilt(t *testing.T) {
 	}
 	defer cli.Close()
 
-	// One reading, no delta: see the note in the cell above.
 	h := harness.WaitPluginHealth(t, ctx, cli, 15*time.Second)
 	if h.Version == nil || h.Commit == nil || h.Library == nil {
 		t.Fatalf("this plugin publishes version=%v commit=%v library=%v: an absent field and an "+
@@ -266,16 +220,8 @@ func TestHealthDocument_BuildInfoIsWhatTheLaneBuilt(t *testing.T) {
 		}
 	}
 
-	// The library version is not a build argument: the Dockerfile
-	// reads it out of the tree, with the same `go list -m` the Makefile
-	// uses. So the tree is what it is checked against, and this is the
-	// one of the three that has an independent source inside the
-	// repository -- go.mod's pin.
-	//
-	// A derivation that fails is a FAILURE, not a skip: the fallback in
-	// the Dockerfile turns an unreadable pin into the word `unknown`,
-	// and a cell that tolerated its own derivation failing would agree
-	// with that word instead of catching it.
+	// The Dockerfile reads the library version with the Makefile's `go list -m`, turning a failure into `unknown`, so a
+	// failed derivation here is a failure, not a skip (#910).
 	w, rerr := harness.CommandStdout(ctx, "go", "list", "-m",
 		"-f", "{{.Version}}", "github.com/claymore666/dhcp-golib")
 	if rerr != nil {
@@ -297,10 +243,7 @@ func TestHealthDocument_BuildInfoIsWhatTheLaneBuilt(t *testing.T) {
 			"clone that produced it", *h.Commit)
 	}
 
-	// The second surface. build_info is a gauge whose only purpose is
-	// its labels, so a series rendered with an empty label value is
-	// the failure this half exists for -- it scrapes, it graphs, and
-	// it identifies nothing.
+	// build_info exists only for its labels, so an empty label value scrapes and graphs and identifies nothing.
 	body, _, err := harness.PluginMetrics(ctx, cli)
 	if err != nil {
 		t.Fatalf("/metrics: %v", err)
@@ -337,8 +280,7 @@ func TestHealthDocument_BuildInfoIsWhatTheLaneBuilt(t *testing.T) {
 
 var fullRevision = regexp.MustCompile(`^[0-9a-f]{40}$`)
 
-// shortDockerID mirrors the plugin's own shortID: the document renders
-// ids at 12 characters and the API hands out 64.
+// shortDockerID mirrors the plugin's shortID: 12 characters of the 64 the API returns.
 func shortDockerID(id string) string {
 	if len(id) >= 12 {
 		return id[:12]

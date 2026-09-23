@@ -14,15 +14,7 @@ import (
 	"github.com/claymore666/docker-net-dhcp/v2/test/integration/harness"
 )
 
-// TestExtraOptions_SearchListInResolvConf is the v0.9.0 / T2-2
-// guard for option 119: when propagate_dns=true, the container's
-// /etc/resolv.conf must carry a single `search` line containing
-// every domain from harness.TestSearchList. Option 119 wins over
-// option 15 per RFC 3397.
-//
-// Pairs with the unit test TestBuildResolvConf_SearchListPrecedence —
-// this one validates the dhcpcd → handler → plugin → mount-ns
-// pipeline actually produces the rendered file the unit test pins.
+// TestExtraOptions_SearchListInResolvConf checks that propagate_dns writes option 119, which wins over option 15 (RFC 3397), as one search line.
 func TestExtraOptions_SearchListInResolvConf(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
@@ -42,12 +34,7 @@ func TestExtraOptions_SearchListInResolvConf(t *testing.T) {
 	})
 	id, _, _ := harness.RunContainer(t, ctx, netName, ctrName)
 
-	// Search list lands from the persistent client's bound event,
-	// same path as DNSServers. The gap between RunContainer's "got
-	// an IP" return and the bound-event resolv.conf write is
-	// normally milliseconds, but a reply lost on the fixture's veth
-	// pair costs the client's own retransmission delay, which is
-	// what the budget is: see harness.RetransmitBudget.
+	// The search list is written from the persistent client's bound event (harness.RetransmitBudget).
 	wantDomains := strings.Split(harness.TestSearchList, ",")
 	budget := harness.RetransmitBudget(2)
 	deadline := time.Now().Add(budget)
@@ -64,9 +51,7 @@ func TestExtraOptions_SearchListInResolvConf(t *testing.T) {
 		wantDomains, budget, out)
 }
 
-// hasAllDomains reports whether every entry in want appears on a
-// `search` line in resolvConf. Order is not asserted — dhcpcd /
-// dnsmasq are free to reorder, but every element must be present.
+// hasAllDomains reports whether every domain in want is on a search line, in any order.
 func hasAllDomains(resolvConf string, want []string) bool {
 	var searchLine string
 	for _, line := range strings.Split(resolvConf, "\n") {
@@ -86,15 +71,7 @@ func hasAllDomains(resolvConf string, want []string) bool {
 	return true
 }
 
-// TestExtraOptions_NTPAndTFTPLogged is the v0.9.0 / T2-2 guard
-// for the surface-via-plugin-log path: NTP / TFTP / boot-file
-// values aren't applied to the container automatically, but the
-// plugin must log them at info level on bound so operators can
-// pick them up without flipping LOG_LEVEL=trace.
-//
-// The persistent client's `bound` event runs after RunContainer
-// returns, so we poll the plugin log file. Reuses
-// harness.DumpPluginLog's path resolution.
+// TestExtraOptions_NTPAndTFTPLogged checks that the NTP, TFTP and boot-file options are logged at info on bound.
 func TestExtraOptions_NTPAndTFTPLogged(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
@@ -109,19 +86,12 @@ func TestExtraOptions_NTPAndTFTPLogged(t *testing.T) {
 		}
 	})
 
-	// Doesn't need propagate_dns — the log line fires unconditionally
-	// when the captured info struct has any of the new fields set.
 	harness.CreateNetwork(t, ctx, netName, "macvlan", nil)
 
-	// The values below are fixture constants, so every container on
-	// this fixture logs them. Over the whole log this test passes on a
-	// neighbour's line and would pass with its own container never
-	// attached at all.
+	// Every container on this fixture logs these constants, so only lines after the mark count.
 	logMark := harness.MarkPluginLog(t, ctx)
 	harness.RunContainer(t, ctx, netName, ctrName)
 
-	// The options are logged from the bound event, so the wait covers
-	// a reply lost on the way to it: see harness.RetransmitBudget.
 	budget := harness.RetransmitBudget(2)
 	deadline := time.Now().Add(budget)
 	var got string
@@ -140,13 +110,10 @@ func TestExtraOptions_NTPAndTFTPLogged(t *testing.T) {
 		harness.TestNTPServer, harness.TestTFTPServer, budget)
 }
 
-// TestExtraOptions_WPADAndTimezoneLogged is the #262 round-trip: the
-// fixture advertises WPAD (252), RFC 4833 timezone (100/101) and the
-// legacy time offset (2); dhcpcd must request and export them (under
-// its real names posix_timezone/tzdb_timezone — NOT pcode/tcode — and
-// via the `define`d wpad), and the plugin must surface them in the
-// "DHCP options received" log line. Observe-only: nothing is applied to
-// the container. Proves the dhcpcd option names are correct end-to-end.
+// dhcpcd exports option 100 and 101 as posix_timezone and tzdb_timezone, not pcode and tcode, and WPAD (252) through a
+// `define` (#262, RFC 4833).
+
+// TestExtraOptions_WPADAndTimezoneLogged checks that WPAD, the RFC 4833 timezones and the time offset reach the options log line (#262).
 func TestExtraOptions_WPADAndTimezoneLogged(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
@@ -163,14 +130,10 @@ func TestExtraOptions_WPADAndTimezoneLogged(t *testing.T) {
 
 	harness.CreateNetwork(t, ctx, netName, "macvlan", nil)
 
-	// Scoped for the reason the NTP/TFTP test above is scoped: these
-	// are fixture constants and every container logs them.
 	logMark := harness.MarkPluginLog(t, ctx)
 	harness.RunContainer(t, ctx, netName, ctrName)
 
 	want := []string{harness.TestWPAD, harness.TestPosixTZ, harness.TestTZDBTZ, harness.TestTimeOffset}
-	// The options are logged from the bound event, so the wait covers
-	// a reply lost on the way to it: see harness.RetransmitBudget.
 	budget := harness.RetransmitBudget(2)
 	deadline := time.Now().Add(budget)
 	var got string

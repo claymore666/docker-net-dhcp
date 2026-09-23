@@ -18,27 +18,15 @@ import (
 	"github.com/claymore666/docker-net-dhcp/v2/test/integration/harness"
 )
 
-// A recorded call is one log line carrying the transport's message and
-// two logrus fields. logrus' TextFormatter is what the plugin runs
-// with, so fields arrive as key=value with the value quoted only when
-// the value needs it; both spellings are matched, because which one
-// appears is a property of the value and not of the plugin.
-//
-// Three expressions rather than one: Go's regexp is RE2 and has no
-// backreferences, so "the same quote on both sides" cannot be written
-// as a pattern. Matching the fields separately says the same thing
-// without pretending otherwise.
+// The plugin runs logrus' TextFormatter, which quotes a value only when it needs quoting, so both spellings match; RE2
+// has no backreferences, so the fields are matched separately (#691).
 var (
 	dockerAPICallLine   = regexp.MustCompile(`msg="docker-api call"`)
 	dockerAPICallMethod = regexp.MustCompile(`\bmethod="?([^"\s]*)"?`)
 	dockerAPICallPath   = regexp.MustCompile(`\bpath="?([^"\s]*)"?`)
 )
 
-// parseDockerAPICall pulls the method and path out of one recorded
-// line. A line that carries the message but not both fields is a
-// FAILURE to report, not a line to skip: it means the record changed
-// shape and this test would otherwise quietly judge a smaller set than
-// the plugin actually made.
+// parseDockerAPICall returns the method and path of one recorded line, failing the test on a line with the message but not both fields.
 func parseDockerAPICall(t *testing.T, line string) (method, path string, isCall bool) {
 	t.Helper()
 	if !dockerAPICallLine.MatchString(line) {
@@ -54,37 +42,11 @@ func parseDockerAPICall(t *testing.T, line string) (method, path string, isCall 
 	return m[1], p[1], true
 }
 
-// TestDockerAPI_OnlySafeMethodsReachTheDaemon is the live half of
-// #691's read-only socket contract.
-//
-// WHAT THE UNIT SUITE ALREADY PROVES, AND WHY IT IS NOT ENOUGH.
-// docker_transport_test.go drives the round tripper directly: POST,
-// PUT, PATCH, DELETE and a lowercase "get" are refused, GET and HEAD
-// pass, and the refusal counter moves. All of that is a statement about
-// a transport in a test process. It says nothing about whether the
-// transport is installed in the client the RUNNING plugin uses, nor
-// what that plugin actually sends to a real daemon across real
-// container lifecycles. The interesting failure is not "the wrapper is
-// wrong" — it is "the wrapper is not in the path", and only a live
-// plugin can be asked that.
-//
-// THE ASSERTION IS THE SET, NOT A SAMPLE. The plugin logs each distinct
-// method+path once, so its log carries the SET of shapes the daemon saw
-// since the plugin started — every network create and every container
-// attach this shard has run. That set is printed into the run whether
-// the test passes or fails: the handover's claim is about what the
-// plugin calls, and a claim like that should be readable off a green
-// run rather than reconstructed from a red one. It is also how #691's
-// three-call list gets RE-MEASURED at this base instead of quoted.
-//
-// THE DOMAIN IS ASSERTED FIRST, IN THREE PARTS. "No unsafe method was
-// seen" is true of a plugin that made no calls at all, of a log that
-// was never written, and of a build with the recording removed. So this
-// requires at least one recorded call, at least one GET among them, and
-// the two shapes the plugin cannot work without: a network read and a
-// ContainerInspect (the sandbox key and the hostname both come from it
-// — seam design D-5). Without those, "every call was safe" is a
-// statement about a set the test itself emptied.
+// The unit suite drives the transport directly; only a live plugin shows the transport is in its client's path. The
+// plugin logs each method and path once, so the log holds the set of shapes, printed on every run. The domain comes
+// first: at least one call, a GET, a network read and a ContainerInspect, which carries the sandbox key and hostname (#691).
+
+// TestDockerAPI_OnlySafeMethodsReachTheDaemon checks that the running plugin sends only GET and HEAD to the daemon (#691).
 func TestDockerAPI_OnlySafeMethodsReachTheDaemon(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
@@ -109,17 +71,9 @@ func TestDockerAPI_OnlySafeMethodsReachTheDaemon(t *testing.T) {
 
 	w := harness.BeginCounterWindow(t, ctx, cli, "docker_api_non_get_refusals")
 
-	// The log gets the same window as the counter. The DOMAIN checks
-	// below ask whether THIS test drove a network read and a container
-	// inspect, and over the whole log any earlier test answers them, so
-	// the record could be short by exactly the calls this test exists
-	// to cover and still report them as covered.
+	// The domain checks ask what this test drove, and over the whole log an earlier test would answer them.
 	logMark := harness.MarkPluginLog(t, ctx)
 
-	// Exercise the plugin so the window covers real API traffic rather
-	// than only whatever startup left behind: CreateNetwork drives the
-	// network reads, and attaching a container drives Join's
-	// ContainerInspect.
 	harness.CreateNetwork(t, ctx, netName, "macvlan", nil)
 	_, ipv4, _ := harness.RunContainer(t, ctx, netName, ctrName)
 	harness.AssertIP(t, ipv4)
@@ -135,11 +89,7 @@ func TestDockerAPI_OnlySafeMethodsReachTheDaemon(t *testing.T) {
 	methods := map[string]int{}
 	sawContainerInspect := false
 	sawNetworkRead := false
-	// Re-read until the window holds both calls this test drove. The
-	// ContainerInspect is written as Join returns, so a single read
-	// after the attach can miss it by milliseconds; over the whole log
-	// an earlier test's inspect stood in for it and the race never
-	// showed.
+	// The ContainerInspect is logged as Join returns, so one read after the attach can miss it.
 	harness.AwaitPluginLogSince(t, ctx, logMark, 10*time.Second, func(window string) bool {
 		observed = map[string]bool{}
 		methods = map[string]int{}
@@ -170,7 +120,6 @@ func TestDockerAPI_OnlySafeMethodsReachTheDaemon(t *testing.T) {
 	t.Logf("DOCKER-API SURFACE, as the plugin's own transport recorded it against a live daemon:\n  %s",
 		strings.Join(calls, "\n  "))
 
-	// The domain.
 	if len(calls) == 0 {
 		t.Fatalf("the plugin's log records no `docker-api call` line at all, so there is no set to "+
 			"judge. Either the read-only transport is not installed in the client the plugin uses, or "+
@@ -191,11 +140,7 @@ func TestDockerAPI_OnlySafeMethodsReachTheDaemon(t *testing.T) {
 			"come from: %v", calls)
 	}
 
-	// The claim, over the WHOLE log and not the window above. The
-	// domain is about what this test drove; the claim is about what the
-	// plugin has ever sent, and narrowing it to the window would drop
-	// every call another test provoked out of the only place that
-	// judges them.
+	// The claim is over the whole log: it covers every call the plugin has sent, not only this test's.
 	all := map[string]bool{}
 	for _, line := range strings.Split(harness.ReadWholePluginLog(t, ctx), "\n") {
 		method, path, isCall := parseDockerAPICall(t, line)

@@ -16,21 +16,9 @@ import (
 	docker "github.com/docker/docker/client"
 )
 
-// TestRecovery_PluginDisableEnable_PreservesEndpoint exercises the
-// recoverEndpoints code path: forcibly recycle the plugin while a
-// container is attached, then verify (a) Plugin.Health.recovered_ok
-// advanced past zero, and (b) the container's IP and MAC are
-// identical to what they were before the recycle.
-//
-// **Do not parallelize.** This test mutates daemon-global state by
-// disabling/enabling the plugin. Other tests running concurrently
-// would lose plugin RPC service mid-flight.
-//
-// Cleanup is defensive: the t.Cleanup re-enables the plugin even if
-// any assertion failed mid-cycle, so a panic between disable and
-// enable can't leave the runner host with the plugin stuck off
-// (which would block every subsequent test and any smoke testing on
-// the same host).
+// Do not parallelize: disabling the plugin takes RPC service from every other test.
+
+// TestRecovery_PluginDisableEnable_PreservesEndpoint checks that a plugin recycle recovers an attached endpoint with its IP and MAC unchanged (#376).
 func TestRecovery_PluginDisableEnable_PreservesEndpoint(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
 	defer cancel()
@@ -54,9 +42,7 @@ func TestRecovery_PluginDisableEnable_PreservesEndpoint(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = cli.Close() })
 
-	// Belt-and-braces re-enable: registered immediately so any panic
-	// or t.Fatal between here and the explicit enable still leaves
-	// the plugin enabled. Idempotent — already-enabled is fine.
+	// Registered before the disable, so a failure between disable and enable still leaves the plugin enabled.
 	t.Cleanup(func() {
 		bg, bgCancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer bgCancel()
@@ -67,55 +53,20 @@ func TestRecovery_PluginDisableEnable_PreservesEndpoint(t *testing.T) {
 		}
 	})
 
-	// PluginDisable kills the plugin process and PluginEnable starts a
-	// fresh one, so every counter below is from a brand-new instance
-	// starting at zero. A before/after delta across this point is void,
-	// which is why the assertions further down are absolute (`after >=
-	// 1`) rather than deltas.
-	//
-	// That used to be recorded here as a comment and enforced by
-	// nothing. The window makes it an assertion: ExpectRecycle fails if
-	// the plugin does *not* restart, so if PluginDisable ever stops
-	// ending the process this test says so instead of quietly measuring
-	// a delta against a stale baseline (#405). It is also the only
-	// place instance_id is exercised against a real recycle rather than
-	// a fabricated payload.
+	// PluginEnable starts a fresh process, so the counters below are absolute; ExpectRecycle fails if the plugin did not
+	// restart (#405).
 	w := harness.BeginCounterWindow(t, ctx, cli,
 		"recovered_ok", "recovery_failed",
 		"sandbox_key_entries", "sandbox_key_entry_failures", "sandbox_pid_fallbacks",
 		"sandbox_key_absent", "sandbox_key_not_permitted", "sandbox_key_not_a_namespace",
 		"sandbox_key_wrong_ns_type", "sandbox_key_unavailable").ExpectRecycle()
 
-	// The recycle below leaves this shard's plugin holding ONE v4 lease
-	// that no ARP Probe covers, and the census gate has to be told, the
-	// same way the conflict_check=off test tells it.
-	//
-	// The probe RFC 5227 asks for runs in the CreateEndpoint one-shot,
-	// before the address is used (pkg/plugin/conflict.go, roleAcquire
-	// under ConflictWait). A RECOVERED endpoint never goes through
-	// CreateEndpoint: recovery synthesises the Join manager straight
-	// from Docker's view, and the Join client runs ConflictAsync --
-	// beside the address, for the reason stated there. So the resumed
-	// bind moves leases_obtained_v4 on the new process while the only
-	// probe it will ever produce is asynchronous, and it races this
-	// test's own teardown.
-	//
-	// One lease, because one container is attached. Declaring more than
-	// the shard takes weakens the gate silently; declaring it here
-	// rather than subtracting recovered_ok inside the gate keeps the
-	// units honest -- recovered_ok counts endpoints of either family and
-	// the gate's domain is v4 leases, so a recovered v6-only endpoint
-	// would have cancelled a real v4 miss.
-	//
-	// MEASURED, integration run 34600486961 main-3: this test ran last
-	// in its shard, the floor read a plugin 1s old with
-	// leases_obtained_v4=1, acd_probes_sent=0, and called the check
-	// broken while every test in the shard had passed.
+	// RFC 5227's probe runs in the CreateEndpoint one-shot (roleAcquire under ConflictWait), but a recovered endpoint
+	// skips CreateEndpoint and the Join client probes asynchronously, racing teardown; one container, one v4 lease. Run
+	// 34600486961 main-3 ran this test last and the floor read leases_obtained_v4=1 with acd_probes_sent=0 (#725).
 	harness.AllowUnprobedLeases(1)
 
-	// The plugin's own account of what recovery did, for the failure
-	// that needs it. Marked here so the window is the recycle and not
-	// the whole suite, and dumped only on failure.
+	// Marked here so the window is the recycle, dumped only on failure.
 	logMark := harness.MarkPluginLog(t, ctx)
 	harness.DumpPluginLogOnFailure(t, ctx, logMark, "the plugin was disabled")
 
@@ -140,12 +91,7 @@ func TestRecovery_PluginDisableEnable_PreservesEndpoint(t *testing.T) {
 	// before the socket listens, so poll for the socket first, then wait for the rebuild.
 	harness.WaitPluginHealth(t, ctx, cli, 15*time.Second)
 
-	// The wait, and the assertion, are one thing: recovered_ok reaching
-	// 1 within the budget the plugin's own timeouts allow for it. A
-	// timeout here is the failure recovered_ok=0 used to be, with the
-	// counters that say which route the plugin took printed beside it.
-	// Through the window, so every poll is checked against the instance
-	// the window opened on.
+	// A timeout is the failure recovered_ok=0 used to be, with the route counters printed beside it (#376).
 	const rebuilt = "recovery to rebuild this endpoint's renewal client (recovered_ok >= 1)"
 	waited, ok := harness.AwaitRecoveryRebuildWindow(w, rebuilt,
 		func(h *harness.HealthResponse) bool { return h.RecoveredOK >= 1 })
@@ -153,24 +99,14 @@ func TestRecovery_PluginDisableEnable_PreservesEndpoint(t *testing.T) {
 		t.Errorf("%s", harness.RecoveryRebuildFailure(rebuilt, waited))
 	}
 
-	// Closing the window does both jobs at once: it takes the
-	// post-recycle read the assertions below use, and it asserts the
-	// instance id actually changed — i.e. that this test really did
-	// exercise a fresh plugin process. Taken after the wait, so the
-	// sandbox-route assertions below read counters the rebuild has
-	// finished writing.
+	// End asserts the instance id changed, and is taken after the rebuild has written its counters.
 	_, healthAfter := w.End()
 	t.Logf("recovered_ok after: %d", healthAfter.RecoveredOK)
 	if healthAfter.RecoveryFailed != 0 {
 		t.Errorf("recovery_failed=%d (recovery saw at least one endpoint it could not rebuild)", healthAfter.RecoveryFailed)
 	}
-	// The other direction of the #376 classifier, and the reason this
-	// assertion is worth having: recovery_aborted_container_gone is
-	// the arm that does NOT flip healthy, so a classifier that called
-	// a running container "gone" would turn every real recovery
-	// failure into a silent one and recovered_ok/recovery_failed above
-	// would look fine. The container ran throughout this recycle, so
-	// nothing may land in the benign bucket.
+	// recovery_aborted_container_gone does not flip healthy, so a classifier calling a running container gone would hide
+	// every real recovery failure; the container ran throughout (#376).
 	if healthAfter.RecoveryAbortedContainerGone != 0 {
 		t.Errorf("recovery_aborted_container_gone=%d: the container ran throughout the recycle, so recovery must not have classified it as gone (#376)",
 			healthAfter.RecoveryAbortedContainerGone)
@@ -194,59 +130,12 @@ func TestRecovery_PluginDisableEnable_PreservesEndpoint(t *testing.T) {
 		t.Errorf("MAC changed across plugin recycle: before=%s after=%s", macBefore, macAfter)
 	}
 
-	// THE RECOVERY CELL OF THE #725 MEASUREMENT, and the cell that
-	// explains all the others.
-	//
-	// The brief asked whether the sandbox key survives a plugin restart,
-	// since recovery re-adopts an endpoint with no Join to carry one —
-	// "the key must come from the durable record — does it?". Two
-	// separate answers came back.
-	//
-	// WHERE THE KEY COMES FROM: not the record, and it need not. Join
-	// and recovery both reach dhcpManager.Start, which already inspects
-	// the container, so NetworkSettings.SandboxKey is one always-fresh
-	// source for both. Nothing was added to the durable record.
-	//
-	// WHETHER IT WORKS: HERE, YES, and on either host. In
-	// sandbox_key_route_test.go's four cells it depends on the host, and
-	// the two facts together are what make the finding precise:
-	//
-	//   the plugin's read-only /var/run/docker is a bind mount taken when
-	//   the plugin process starts, and a bind mount is a SNAPSHOT, not a
-	//   subscription. libnetwork bind-mounts each netns over an ordinary
-	//   empty file under netns/. A sandbox that already existed when the
-	//   plugin started is visible through the key on every host. A
-	//   sandbox created afterwards reaches the plugin only where the
-	//   mount the daemon publishes keys on is linked to the plugin's,
-	//   which the plugin reports as sandbox_netns_propagation; where it
-	//   is private the key resolves to the empty file underneath (which
-	//   is why openSandboxNetNSByKeyIn checks NS_GET_NSTYPE rather than
-	//   trusting a successful open).
-	//
-	// Recovery is the case where the sandbox necessarily predates the
-	// plugin process: the container was running before the disable, and
-	// this is a fresh plugin after the enable. So the key route carries
-	// recovery on every host, and it does. MEASURED on the lane
-	// 2026-09-05, run 33927195482: entries 1, failures 0, fallbacks 0
-	// here; entries 0, failures 1, fallbacks 1 in every attach cell on
-	// that host, whose propagation reads 0.
-	//
-	// Age is SUFFICIENT for the key route and it is not necessary. A
-	// linked host takes the key route for a sandbox younger than the
-	// plugin as well, which is what the attach cells' linked branch
-	// asserts (#417). Reading age as the rule turns the private host's
-	// numbers into the universal case, which is the reading those cells
-	// exist to remove.
-	//
-	// This is also why the manifest cannot lose pidhost or
-	// CAP_SYS_PTRACE: on a private host the PID route carries every
-	// attach, and this pool is such a host.
-	//
-	// The reads are ABSOLUTE, not deltas, for the reason stated at the
-	// window above: this is a fresh plugin process and its counters
-	// started at zero. That is what makes them exactly right here —
-	// every route taken on this instance was taken by recovery, because
-	// nothing else has run on it yet.
+	// Join and recovery both reach dhcpManager.Start, which inspects the container, so NetworkSettings.SandboxKey is the
+	// key source and nothing was added to the durable record (#725). The plugin's /var/run/docker is a bind-mount snapshot
+	// taken at plugin start, so a sandbox that predates the plugin, as a recovered one does, is visible through its key on
+	// every host; a younger one only where sandbox_netns_propagation is linked. Measured on the lane 2026-09-05, run
+	// 33927195482: entries 1, failures 0, fallbacks 0 here, and 0/1/1 in every attach cell on that host (#725). On a
+	// private host the PID route carries every attach, so the manifest keeps pidhost and CAP_SYS_PTRACE (#417).
 	if healthAfter.SandboxKeyEntries == nil || healthAfter.SandboxPIDFallbacks == nil ||
 		healthAfter.SandboxKeyEntryFailures == nil {
 		t.Fatal("the recovered plugin publishes no sandbox route counters, so which route recovery " +
@@ -283,23 +172,8 @@ func TestRecovery_PluginDisableEnable_PreservesEndpoint(t *testing.T) {
 			"fallback", keyFailures)
 	}
 
-	// The negative half of the arm measurement, and the control for the
-	// four attach cells.
-	//
-	// sandbox_key_absent joined the set in 2.0-alpha.1 and this is
-	// where the claim "not observed on any measured host" is checked:
-	// recovery is the one path whose JoinRequest carries no key, so if
-	// the inspect fallback in dhcp_manager.go ever stops finding one,
-	// this arm is where it shows up.
-	//
-	// Those cells assert sandbox_key_not_a_namespace == 1 per attach.
-	// On its own that is satisfied by a plugin that refuses every key
-	// for that reason, whatever the sandbox — which is precisely the
-	// reading "the key route is simply broken" would give. Here the
-	// SAME code, on the SAME daemon, in the SAME run, refuses nothing:
-	// no arm fires at all. That is what makes the placeholder-file
-	// explanation a discriminator rather than a description of a
-	// uniformly negative result.
+	// Recovery is the one path whose JoinRequest carries no key, so sandbox_key_absent shows here if the inspect fallback
+	// stops finding one; and the same code that refuses every attach cell's key refuses nothing here (#725).
 	if healthAfter.SandboxKeyAbsent == nil || healthAfter.SandboxKeyNotPermitted == nil ||
 		healthAfter.SandboxKeyNotANamespace == nil ||
 		healthAfter.SandboxKeyWrongNSType == nil || healthAfter.SandboxKeyUnavailable == nil {
@@ -331,11 +205,7 @@ func TestRecovery_PluginDisableEnable_PreservesEndpoint(t *testing.T) {
 		}
 	}
 
-	// Outside evidence, the same as every other cell: the kernel's view
-	// from inside the namespace, not Docker's record of it. The inspect
-	// above proves libnetwork still believes the endpoint; this proves
-	// the address is actually configured on the interface after the
-	// recycle.
+	// The kernel's view from inside the namespace, after the recycle.
 	out := harness.ExecOutput(t, ctx, id, "ip", "-4", "addr", "show")
 	if !strings.Contains(out, ipAfter+"/") {
 		t.Errorf("`ip -4 addr show` inside the container does not carry %s after the recycle.\n%s",

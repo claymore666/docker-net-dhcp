@@ -3,11 +3,8 @@
 
 //go:build integration
 
-// The two IPAM-driver scenarios that need a DHCP server they are
-// allowed to break (#110, design rows 8 and 11). Both run against a
-// per-test EphemeralFixture, never the suite-static one, and both are
-// named TestFailure_ so they land in the failure suite where a test is
-// permitted to spend real seconds waiting.
+// The IPAM-driver scenarios that break their DHCP server (#110, design rows 8 and 11) run on a per-test
+// EphemeralFixture, in the failure suite.
 
 package integration
 
@@ -27,22 +24,15 @@ import (
 	"github.com/claymore666/docker-net-dhcp/v2/test/integration/harness"
 )
 
-// ipamReserveLinkPrefix is the name the reserve gives its temporary
-// link (pkg/plugin/ipam_reserve.go, ipamReserveLinkName). Transcribed
-// rather than imported because this suite asks what the INSTALLED
-// plugin left on the host, and a constant imported from the plugin
-// would make the question answer itself.
+// Transcribed from pkg/plugin/ipam_reserve.go (ipamReserveLinkName), so the installed plugin cannot answer for itself.
+
+// ipamReserveLinkPrefix is the name prefix of the reserve's temporary link.
 const ipamReserveLinkPrefix = "dh-ipam-"
 
-// assertNoReserveLinksLeft fails if any reservation link is still on
-// the host.
-//
-// The link carries the endpoint's MAC and sits on the parent, so one
-// left behind is not merely litter: it answers ARP for an address a
-// container is about to be given, and the next reserve on that parent
-// meets a name collision it cannot explain. A failed reserve is exactly
-// when a cleanup path is least likely to have run, which is why the
-// assertion belongs to the failure tests and not to the happy ones.
+// A leftover link carries the endpoint's MAC on the parent, answers ARP for an address about to be given, and makes
+// the next reserve's name collide (#110).
+
+// assertNoReserveLinksLeft fails if any reservation link is still on the host.
 func assertNoReserveLinksLeft(t *testing.T, when string) {
 	t.Helper()
 	links, err := util.DumpResult(netlink.LinkList())
@@ -58,37 +48,18 @@ func assertNoReserveLinksLeft(t *testing.T, when string) {
 	}
 }
 
-// TestFailure_IPAMServerDownFailsInsideTheBudget is design row 8.
-//
-// With no DHCP server the reserve cannot answer, and WHEN it gives up
-// is the whole test. The daemon's IPAM client stops listening at
-// `docker plugin enable --timeout` (30s by default) and re-sends the
-// call, and that re-send carries NO BODY and is refused before any
-// handler runs (TestFailure_IPAMResentRequestIsRefusedNotServedTwice
-// below is the measurement). So a reserve that ran the network's own
-// lease_timeout -- 34s by default, which is the conflict-recovery
-// window -- would hand the operator a Docker-side timeout while the
-// plugin was still working, and a parse error underneath it instead of
-// a late answer.
-// The reserve is therefore capped to the daemon's budget, and this is
-// the test that the cap is real rather than a comment.
-//
-// The second network drives the cap explicitly: lease_timeout=40s is
-// longer than the budget, must be announced in the log, and must not
-// change when the failure arrives.
+// The daemon's IPAM client stops listening at `docker plugin enable --timeout` (30s default) and re-sends a call with
+// no body, so a reserve running the default 34s lease_timeout would answer too late; the reserve is capped to the
+// daemon's budget, and a lease_timeout of 40s must be announced and not change when the failure arrives (#110).
+
+// TestFailure_IPAMServerDownFailsInsideTheBudget checks that with no DHCP server the reserve fails inside the daemon's IPAM budget (#110).
 func TestFailure_IPAMServerDownFailsInsideTheBudget(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
-	// The budget the plugin gives one reservation: pluginCallBudget
-	// (30s) minus pluginCallMargin (4s). Transcribed, and the
-	// assertion below is deliberately looser than the number -- what
-	// is being tested is that the failure lands inside the daemon's
-	// patience, not that it lands on a particular second.
+	// pluginCallBudget (30s) minus pluginCallMargin (4s), transcribed; the assertion is looser than the number.
 	const reserveBudget = 26 * time.Second
-	// Room for the container create, the network calls around it and a
-	// loaded runner. Still far short of the 30s at which the daemon
-	// stops listening, which is the boundary that matters.
+	// Room for the calls around the reserve on a loaded runner, still short of the daemon's 30s.
 	const ceiling = reserveBudget + 8*time.Second
 
 	ef := harness.NewEphemeralFixture(t)
@@ -105,40 +76,17 @@ func TestFailure_IPAMServerDownFailsInsideTheBudget(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = cli.Close() })
 
-	// Created while the server is up: `docker network create` runs no
-	// exchange unless validate_dhcp is set, and a create that failed
-	// for its own reasons would tell us nothing about the reserve.
+	// Network create runs no exchange unless validate_dhcp is set.
 	harness.CreateNetworkIPAM(t, ctx, "dh-itest-ipam-down", "macvlan", "",
 		nil, map[string]string{"parent": harness.EphemeralHostVeth})
-	// `--ipam-opt parent=` on the second one, and not for decoration:
-	// two subnet-less IPAM networks derive the same PoolID, and the
-	// driver refuses the second create with exactly the remedy this
-	// line is (design row 6). Without it this test's own setup was the
-	// thing that tripped the rule -- MEASURED in integration run
-	// 34600486961, failure-2: `network 0c0f76ccc6e5 already holds pool
-	// 0.0.0.0/0`. The option goes into the pool identity and nowhere
-	// else; the interface the reservation runs on is still the driver
-	// option below.
+	// Two subnet-less IPAM networks derive the same PoolID and the second create is refused (design row 6); run
+	// 34600486961 failure-2 hit `already holds pool 0.0.0.0/0` here. The option enters only the pool identity (#110).
 	harness.CreateNetworkIPAM(t, ctx, "dh-itest-ipam-down-long", "macvlan", "",
 		map[string]string{"parent": harness.EphemeralHostVeth},
 		map[string]string{"parent": harness.EphemeralHostVeth, "lease_timeout": "40s"})
 
-	// One container that SUCCEEDS, before the server is killed.
-	//
-	// Two jobs, and neither is decoration. It is the preservation
-	// control: every assertion below is about a refusal, and a refusal
-	// proves nothing unless the same network, the same parent and the
-	// same reserve path can be shown to work when the server is there.
-	// Without it a network that never could have leased an address --
-	// wrong parent, wrong pool -- passes this test perfectly.
-	//
-	// And it is what the fixture itself requires. EphemeralFixture
-	// checks at teardown that the server logged at least one lease
-	// allocation (harness/ephemeral.go, checkLeaseGrants, #472),
-	// because a fixture that granted nothing is one whose timings were
-	// never confirmed against the server. A test whose every exchange
-	// is meant to fail has to produce that one grant rather than have
-	// the check relaxed for everybody else.
+	// The preservation control, since a network that could never lease passes every refusal; and EphemeralFixture
+	// requires one lease grant at teardown (checkLeaseGrants, #472).
 	const controlName = "dh-itest-ipam-down-control"
 	if err := ipamRunContainerErr(t, ctx, cli, "dh-itest-ipam-down", controlName, nil); err != nil {
 		t.Fatalf("the control container could not start while the DHCP server was UP: %v\n"+
@@ -185,13 +133,7 @@ func TestFailure_IPAMServerDownFailsInsideTheBudget(t *testing.T) {
 		})
 	}
 
-	// The cap is announced for the network that asked for more than the
-	// budget. A cap applied silently is a number the operator set and
-	// the plugin ignored.
-	//
-	// Read from the window opened before the server was killed, not
-	// from the whole log: another IPAM-mode test on this plugin would
-	// otherwise satisfy the assertion for this one.
+	// Read from the window opened before the kill, since another IPAM test would satisfy a whole-log read.
 	const capMarker = "Capping lease_timeout"
 	window := harness.AwaitPluginLogSince(t, ctx, capMark, 10*time.Second,
 		func(w string) bool { return strings.Contains(w, capMarker) })
@@ -202,61 +144,24 @@ func TestFailure_IPAMServerDownFailsInsideTheBudget(t *testing.T) {
 	}
 }
 
-// TestFailure_IPAMResentRequestIsRefusedNotServedTwice is design row 11,
-// from defeat row 14, and it asserts the opposite of what that row
-// predicted.
-//
-// The row said the daemon RE-SENDS the same RequestAddress body when
-// its client timeout expires, and that a reserve treating the second
-// body as a new request would run a second DHCP exchange for one
-// endpoint. The first half is true and the second cannot happen: the
-// daemon encodes the call into a bytes.Buffer and hands the SAME
-// reader to every attempt (moby pkg/plugins/client.go, callWithRetry),
-// so the first attempt drains it and the re-send arrives with NO BODY.
-// There is nothing in it to identify an endpoint with, let alone to
-// join an exchange with. MEASURED in integration run 34600486961,
-// failure-1: `IpamDriver.RequestAddress: failed to parse request body:
-// EOF`, and the container did not start.
-//
-// So the reachable invariants are these three, and they are what the
-// daemon's re-send actually costs an operator:
-//
-//   - the run FAILS, with a message that names the timeout and the
-//     re-send rather than a decoder error;
-//   - exactly ONE DHCP client ran for the endpoint, counted as the
-//     number of distinct DISCOVER client MACs on the segment. Two
-//     would be two leases on the server, one container, and the spare
-//     never released;
-//   - the address is not wedged: with the server back, starting the
-//     same container again comes up.
-//
-// The provocation is the real one: the plugin is re-enabled with
-// `--timeout 5` so the daemon gives up at five seconds, and the server
-// is held down for eight so the first exchange is still running when
-// the second body arrives.
-//
-// ipam_reserve_duplicate_mac is NOT asserted here any more, and cannot be: the
-// empty re-send is refused before any handler sees it, so nothing
-// reaches the join. The counter stays for the concurrency it was
-// written for and the handover records that the daemon's own re-send
-// does not reach it.
+// The daemon hands the same drained reader to every attempt (moby pkg/plugins/client.go, callWithRetry), so the
+// re-send arrives with no body; run 34600486961 failure-1 logged `failed to parse request body: EOF` (#110). The
+// invariants are a failure naming the timeout, one DHCP client per endpoint by distinct DISCOVER MACs, and a
+// container that starts once the server is back; ipam_reserve_duplicate_mac is not reached by this re-send.
+
+// TestFailure_IPAMResentRequestIsRefusedNotServedTwice checks that the daemon's body-less re-send is refused without a second DHCP client (#110).
 func TestFailure_IPAMResentRequestIsRefusedNotServedTwice(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
 	const netName = "dh-itest-ipam-resend"
 	const ctrName = "dh-itest-ipam-resend-ctr"
-	// Shorter than the outage below, so the daemon's client really does
-	// give up while the exchange is still in flight. That inequality is
-	// the test: raise it above the outage and the re-send never happens
-	// and this test passes having provoked nothing.
+	// Shorter than the outage, or the re-send never happens.
 	const pluginTimeout = 5
 	const outage = 8 * time.Second
 
 	ef := harness.NewEphemeralFixture(t)
-	// Opened before anything starts: a capture opened later could not
-	// tell "this endpoint ran one exchange" from "this instrument never
-	// saw this endpoint".
+	// Opened before anything starts, so one exchange is told apart from a capture that never saw the endpoint.
 	wire := ef.StartDHCPCapture(t)
 	t.Cleanup(func() {
 		if t.Failed() {
@@ -272,9 +177,7 @@ func TestFailure_IPAMResentRequestIsRefusedNotServedTwice(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = cli.Close() })
 
-	// Registered before the disable, so a failure anywhere below still
-	// leaves the plugin enabled at the stock timeout for every test
-	// that follows. Idempotent; already-enabled is fine.
+	// Registered before the disable, so a failure below still restores the stock timeout.
 	t.Cleanup(func() {
 		bg, bgCancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer bgCancel()
@@ -320,10 +223,7 @@ func TestFailure_IPAMResentRequestIsRefusedNotServedTwice(t *testing.T) {
 	ef.Stop()
 	startErr := make(chan error, 1)
 	go func() {
-		// No t.Fatalf from here: a test helper called off the test
-		// goroutine reports against whichever test is running when it
-		// fires, which is how a failure ends up blamed on its
-		// neighbour.
+		// No t.Fatalf off the test goroutine: it would report against whichever test is running.
 		startErr <- cli.ContainerStart(context.Background(), create.ID, container.StartOptions{})
 	}()
 
@@ -345,13 +245,7 @@ func TestFailure_IPAMResentRequestIsRefusedNotServedTwice(t *testing.T) {
 			"asked for.", pluginTimeout)
 	}
 	t.Logf("refused, as it must be: %v", startFailure)
-	// "30s" and "BELOW" are the direction of the lever. This test is the
-	// cell that drives it: the plugin was enabled at 5s, which is below
-	// the 26s one reservation is given, so on this network every
-	// address request fails from here until the operator puts the flag
-	// back. The plugin is never told the value, so it cannot adapt --
-	// and a message that names the flag without naming that sends the
-	// reader to raise a number that cannot help.
+	// The plugin never learns the --timeout value, so the message must say it is below the 26s a reservation needs (#110).
 	for _, want := range []string{"no body", "--timeout", "30s", "BELOW"} {
 		if !strings.Contains(startFailure.Error(), want) {
 			t.Errorf("the failure the operator sees does not mention %q. The cause is a call "+
@@ -360,19 +254,8 @@ func TestFailure_IPAMResentRequestIsRefusedNotServedTwice(t *testing.T) {
 		}
 	}
 
-	// --- outside evidence: how many DHCP clients ran for this endpoint.
-	//
-	// The count is of distinct DISCOVER client MACs, not of transaction
-	// ids. A single client legitimately draws a fresh xid when its
-	// retransmission budget runs out and it reverts to INIT (RFC 2131
-	// section 3.1(5), and dhcp-golib proto/machine.go beginAcquisition
-	// on the exhausted branch), and an eight-second outage is long
-	// enough to reach that. The MAC does not move under a client: one
-	// reserve builds one link with the endpoint's MAC on it, and a
-	// reserve driven off the EMPTY re-sent body has no MAC to use and
-	// must invent one -- so a second address served for this endpoint
-	// shows up here as a second MAC, which is the defect this test is
-	// about.
+	// A client draws a fresh xid when it reverts to INIT (RFC 2131 section 3.1(5); dhcp-golib beginAcquisition), but its
+	// MAC does not move, and a reserve driven off the empty body would have to invent one; so clients are counted by MAC.
 	frames := wire.Frames()
 	macs := map[string]int{}
 	xids := map[uint32]struct{}{}
@@ -398,17 +281,8 @@ func TestFailure_IPAMResentRequestIsRefusedNotServedTwice(t *testing.T) {
 	}
 	assertNoReserveLinksLeft(t, "after a reservation the daemon stopped waiting for")
 
-	// Back to the stock timeout BEFORE the retry.
-	//
-	// MEASURED: at --timeout 5 no reserve can finish, server up or not.
-	// The reserve's own ARP Probe schedule (RFC 5227: three probes, 1-2s
-	// apart, spread over roughly 6s -- pkg/plugin/conflict.go, roleAcquire
-	// under ConflictWait) outlasts the five-second client budget on its
-	// own, so the retry below would fail with the same "no body" error
-	// and the failure would say nothing about the address being wedged.
-	// The wedge this assertion is about is the plugin's; five seconds is
-	// the operator's, and leaving it in place would let the operator's
-	// setting answer for the plugin's.
+	// At --timeout 5 no reserve can finish: RFC 5227's three probes 1 to 2s apart span about 6s (roleAcquire under
+	// ConflictWait), so the retry needs the stock timeout (#110).
 	if err := cli.PluginDisable(ctx, harness.PluginRef, types.PluginDisableOptions{Force: true}); err != nil {
 		t.Fatalf("PluginDisable before the retry: %v", err)
 	}
@@ -424,14 +298,8 @@ func TestFailure_IPAMResentRequestIsRefusedNotServedTwice(t *testing.T) {
 	harness.WaitPluginHealth(t, ctx, cli, 30*time.Second)
 	t.Log("plugin back at the stock 30s client timeout for the retry")
 
-	// The address is not wedged. A reservation the daemon abandoned is
-	// RETAINED rather than closed, and the lease records live on disk,
-	// so the retry below -- which meets the freshly recycled process
-	// above, not the one that took the reservation -- still finds the
-	// candidate by rebuilding them. What is asserted is the
-	// user-visible half, that the same container starts: which address
-	// the server hands a returning client is the server's to decide,
-	// and the retained record is a preference, not a demand.
+	// An abandoned reservation is retained and its records live on disk, so the recycled process still finds the
+	// candidate; the assertion is the container starting, since the address is the server's choice (#110).
 	if err := cli.ContainerStart(ctx, create.ID, container.StartOptions{}); err != nil {
 		t.Fatalf("the container did not start on the retry, with the server back: %v\n"+
 			"A reservation the daemon gave up on has left this endpoint unable to get an "+

@@ -18,10 +18,7 @@ import (
 
 var fixture *harness.Fixture
 
-// TestMain stands up the fixture (veth pair + dnsmasq) once per
-// `go test` invocation. Per the v0.7.0 design choice 5c (hybrid
-// isolation), tests share the fixture but own their own plugin
-// network and container.
+// TestMain starts the shared fixture once; each test owns its network and container.
 func TestMain(m *testing.M) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
@@ -42,31 +39,16 @@ func TestMain(m *testing.M) {
 	}
 	fixture = f
 
-	// Baseline the plugin before any test runs, so the floor can judge
-	// what THIS process caused rather than everything the plugin has
-	// done since it started.
-	//
-	// The sharded lanes create a plugin per job, so the two are the same
-	// thing there. The coverage lane drives ONE instrumented plugin
-	// through the main suite and then this one, and a probe failure the
-	// main suite declared as deliberate was still on the counter when
-	// this process started with an allowance of zero. That failed the
-	// v1.6.0 release PR's coverage run on a run in which nothing was
-	// wrong.
-	//
-	// Best-effort by design: a baseline that cannot be read leaves the
-	// zero value, which restores the old whole-plugin-life behaviour.
-	// That direction judges more than this process caused, never less.
+	// The coverage lane runs one plugin through the main suite and then this one, and a probe failure declared there
+	// failed the v1.6.0 release PR's coverage run, so the floor judges from this process's baseline. An unreadable
+	// baseline falls back to the whole plugin life, which judges more, never less (#584).
 	floorHealthBaseline = harness.PluginHealthOrNil(ctx)
 	floorLogBaseline = harness.PluginLogSize(ctx)
 
 	suiteStart := time.Now()
 	rc := m.Run()
 
-	// The health floor runs before teardown, while the plugin is
-	// still serving, and unconditionally: on an already-red run its
-	// output is often what explains the red. It can turn a green run
-	// red, never the reverse. See checkHealthFloor.
+	// The floor runs before teardown on every run, since on a red run its output often explains it; it can only turn green red.
 	if code := checkHealthFloor(time.Since(suiteStart)); code != 0 && rc == 0 {
 		rc = code
 	}
@@ -77,18 +59,9 @@ func TestMain(m *testing.M) {
 	os.Exit(rc)
 }
 
-// TestLifecycleMacvlan_GoldenPath is the smoke test: create a
-// macvlan-mode network on HostVeth, run a container, assert it gets
-// an IP from the DHCP pool, exec a sanity command, then leave.
-//
-// This single test exercises CreateNetwork (mode=macvlan branch),
-// validateParentForChild, createParentAttachedEndpoint,
-// dhcpManager.Start (initial lease via one-shot dhcpcd), Join (move link
-// into netns), Leave (Stop the manager; no DHCPRELEASE, because this
-// network does not set release_lease and the default is never — the
-// address is left to expire, #800/#962), DeleteEndpoint
-// (parent-attached cleanup branch), and DeleteNetwork — covering
-// the macvlan path end-to-end.
+// Leave sends no DHCPRELEASE: this network does not set release_lease, whose default is never (#800, #962).
+
+// TestLifecycleMacvlan_GoldenPath creates a macvlan network, runs a container that must lease from the pool, and removes both.
 func TestLifecycleMacvlan_GoldenPath(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
@@ -109,19 +82,13 @@ func TestLifecycleMacvlan_GoldenPath(t *testing.T) {
 	ip := harness.AssertIP(t, ipv4)
 	t.Logf("✓ container IP %s falls in DHCP pool", ip)
 
-	// Sanity: the container's own view of its IP must match docker
-	// inspect (truthfulness invariant — see RELEASE_NOTES v0.6.0).
 	out := harness.ExecOutput(t, ctx, id, "ip", "-4", "addr", "show", "eth0")
 	if !strings.Contains(out, ipv4) {
 		t.Errorf("eth0 inside container does not show docker-inspect IP %q\nactual:\n%s", ipv4, out)
 	}
 
-	// MAC parity: the container's eth0 MAC must equal the docker
-	// inspect MAC. Not strictly required by the design, but a
-	// sudden divergence would mean somebody is lying.
 	if !strings.Contains(strings.ToLower(out), "") {
-		// (presence of `inet` line implies link came up; relying on
-		// the IP check above is enough)
+		// The inet line above already proves the link came up.
 	}
 	macOut := harness.ExecOutput(t, ctx, id, "ip", "link", "show", "eth0")
 	if !strings.Contains(strings.ToLower(macOut), strings.ToLower(mac)) {

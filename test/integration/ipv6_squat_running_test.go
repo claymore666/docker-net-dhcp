@@ -18,44 +18,12 @@ import (
 	docker "github.com/docker/docker/client"
 )
 
-// TestDHCPv6_ASquatOnARunningContainerIsCountedAndTheAddressChanges is
-// the RUNNING-container half of the DHCPv6 conflict, which
-// TestDHCPv6_ADuplicateOnTheSegmentIsRefused does not cover: that one
-// restarts the container, so the conflict is found by a CreateEndpoint
-// one-shot before any address is in use. Here the container never
-// stops.
-//
-// WHAT THE PATH ACTUALLY IS, and it is not the v4 one. RFC 5227's
-// section 2.4 listener keeps watching an IPv4 address for the life of
-// the lease, so a v4 squat is noticed while the container runs with no
-// other event needed. DHCPv6 has no such listener: RFC 4862 section
-// 5.4's duplicate-address detection runs when an address is taken into
-// use, and proto.Machine6 acts on a duplicate only through EvDADResult
-// or EvAddressLost. Nothing in this plugin reports either for an
-// address already bound, so a squat that appears under a bound v6
-// lease is invisible until the client next takes the address into use.
-// The plugin recycle below is that moment: the resumed client runs
-// section 5.4 again on the remembered address (proto.Machine6's
-// continueFromResume calls startDAD on both the confirmed and the
-// unconfirmed arm), finds the squatter, declines under RFC 9915
-// section 18.2.8 and acquires a replacement -- while the container is
-// up and using the address throughout.
-//
-// WHAT IS ASSERTED, IN ORDER OF WHAT IT PROVES. The server's own log
-// carries the DHCPDECLINE, which is the outside evidence that the
-// event happened at all; the container's interface carries a different
-// address, which is what the endpoint got out of it; the plugin's log
-// carries the DHCPv6 conflict line and address_conflicts_v6 has moved,
-// which is what an operator would see. The ARP-shaped counters must
-// NOT move: nothing here sends an ARP frame, and address_conflicts_v4
-// is the half acd_conflicts_detected is compared against.
-//
-// WHAT DOCKER SEES IS PINNED AS A KNOWN-WRONG ANSWER, deliberately.
-// libnetwork has no in-place endpoint-address swap, so the container's
-// NetworkSettings still name the address the squatter holds. That is
-// the same truthfulness gap lease_changed reports for IPv4 (#104) and
-// it is a v2.1 IPAM matter; it is pinned by an EQUALITY here, so that
-// closing it arrives as a failing test rather than as nobody noticing.
+// DHCPv6 has no RFC 5227 section 2.4 listener: RFC 4862 section 5.4 detection runs only when an address is taken into
+// use, and proto.Machine6 acts on a duplicate only through EvDADResult or EvAddressLost, so a squat under a bound v6
+// lease is invisible until the client next takes the address into use. The plugin recycle is that moment:
+// continueFromResume calls startDAD on both arms, and the client declines under RFC 9915 section 18.2.8 (PR #930).
+
+// TestDHCPv6_ASquatOnARunningContainerIsCountedAndTheAddressChanges checks that a v6 squat under a running container is declined, counted as v6 and replaced (PR #930).
 func TestDHCPv6_ASquatOnARunningContainerIsCountedAndTheAddressChanges(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 	defer cancel()
@@ -76,8 +44,7 @@ func TestDHCPv6_ASquatOnARunningContainerIsCountedAndTheAddressChanges(t *testin
 	}
 	defer cli.Close()
 
-	// Registered before the first disable, so a t.Fatal between the
-	// disable and the enable cannot leave the runner without a plugin.
+	// Registered before the first disable, so a t.Fatal cannot leave the runner without a plugin.
 	t.Cleanup(func() {
 		bg, bgCancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer bgCancel()
@@ -97,13 +64,8 @@ func TestDHCPv6_ASquatOnARunningContainerIsCountedAndTheAddressChanges(t *testin
 	}
 	t.Logf("the running container holds %s", held)
 
-	// The squatter, on the segment bridge and not on the parent: a
-	// macvlan child does not see its own parent's traffic, so an
-	// address there would be invisible to the node under test. `nodad`
-	// is load-bearing for the reason the sibling test records -- the
-	// address IS a duplicate by construction, so this side's own
-	// duplicate-address detection would mark it dadfailed and a
-	// dadfailed address answers nothing (RFC 4862 section 5.4.3).
+	// On the segment bridge, since a macvlan child does not see its parent's traffic; `nodad`, because a duplicate
+	// would go dadfailed here and a dadfailed address answers nothing (RFC 4862 section 5.4.3).
 	dup := held + "/64"
 	if out, err := exec.Command("ip", "-6", "addr", "add", dup, "dev", harness.DHCPSegment, "nodad").CombinedOutput(); err != nil {
 		t.Fatalf("could not put a duplicate of %s on %s: %v\n%s", held, harness.DHCPSegment, err, out)
@@ -117,25 +79,14 @@ func TestDHCPv6_ASquatOnARunningContainerIsCountedAndTheAddressChanges(t *testin
 			held, harness.DHCPSegment)
 	}
 
-	// Declared where the squatter is planted, for the reason the v4
-	// conflict tests declare it: the health floor reads the log across
-	// the whole run and the counters only since the last plugin start,
-	// and this test restarts the plugin twice. It excuses the counter
-	// under-reporting a conflict this shard caused on purpose; it
-	// excuses nothing about the assertions below, which are the
-	// conflict.
+	// The health floor reads the log across the run but counters only since the last plugin start, and this test
+	// restarts the plugin twice; it excuses the counter only, not the assertions below (PR #930).
 	harness.AllowStagedConflicts(1)
 
 	declinesBefore := countLogToken(t, fixture.DnsmasqLog(), "DHCPDECLINE")
 
-	// The plugin log, from HERE. The container is bound and the
-	// squatter is planted, so every conflict line after this mark is
-	// this test's. Reading the whole log instead was a defect: the
-	// assertions below name a family and a protocol, and the suite runs
-	// many tests through one plugin whose log survives every restart in
-	// it. On the arm64 lane, which runs the whole main suite in one
-	// process, the section 2.4 assertion read three lines a
-	// TestConflictCheck_ test had written ten minutes earlier.
+	// The plugin log survives every restart; on the arm64 lane a whole-log read matched three lines a
+	// TestConflictCheck_ test had written ten minutes earlier (#933).
 	logMark := harness.MarkPluginLog(t, ctx)
 
 	w := harness.BeginCounterWindow(t, ctx, cli,
@@ -146,10 +97,7 @@ func TestDHCPv6_ASquatOnARunningContainerIsCountedAndTheAddressChanges(t *testin
 	}
 	harness.WaitPluginHealth(t, ctx, cli, 15*time.Second)
 
-	// The interface is the endpoint's own evidence and it is read
-	// first: a counter that moved over a container still sitting on the
-	// squatted address would be the plugin reporting an action it did
-	// not take.
+	// The interface is read first, so a counter cannot pass over a container still on the squatted address.
 	replacement := awaitOtherGlobalV6(t, ctx, id, held, 2*harness.IPAcquisitionBudget)
 	if replacement == "" {
 		t.Fatalf("the container's link never carried a global IPv6 other than %s after the "+
@@ -161,9 +109,7 @@ func TestDHCPv6_ASquatOnARunningContainerIsCountedAndTheAddressChanges(t *testin
 
 	_, after := w.End()
 
-	// The server's log. The counter is the plugin's belief; this is
-	// what happened on the wire, and it is what tells the server the
-	// binding is bad (RFC 9915 section 18.2.10).
+	// The decline tells the server the binding is bad (RFC 9915 section 18.2.10).
 	if n := countLogToken(t, fixture.DnsmasqLog(), "DHCPDECLINE") - declinesBefore; n < 1 {
 		t.Errorf("the server logged no DHCPDECLINE after the squat (%d new lines). The "+
 			"container may have moved address for some other reason, and the server still "+
@@ -175,11 +121,7 @@ func TestDHCPv6_ASquatOnARunningContainerIsCountedAndTheAddressChanges(t *testin
 			"want at least 1. The address changed under the container and no counter says "+
 			"why", after.AddressConflictsV6)
 	}
-	// The other direction. Duplicate address detection is ICMPv6
-	// neighbour discovery, not ARP: a v6 conflict that landed on the v4
-	// half would make acd_conflicts_detected read lower than
-	// address_conflicts_v4 and report a seam defect that has not
-	// happened (see TestConflictCheck_SquattedOfferIsDeclined).
+	// Duplicate address detection is ICMPv6 neighbour discovery, not ARP, so the v4 half must stay flat (PR #930).
 	if after.AddressConflictsV4 != 0 {
 		t.Errorf("address_conflicts_v4=%d over a run whose only conflict was found by "+
 			"duplicate address detection; no ARP frame was sent for it", after.AddressConflictsV4)
@@ -189,22 +131,13 @@ func TestDHCPv6_ASquatOnARunningContainerIsCountedAndTheAddressChanges(t *testin
 			after.AddressConflicts, after.AddressConflictsV4, after.AddressConflictsV6)
 	}
 
-	// The operator's line. The counter resets with the plugin process
-	// and the log does not, which is why the health floor counts these
-	// lines across the whole run; a conflict that moved a counter and
-	// wrote nothing would be invisible to it.
+	// The counter resets with the plugin process and the log does not, so the health floor counts these lines across the run.
 	logText := harness.AwaitPluginLogSince(t, ctx, logMark, 5*time.Second, func(window string) bool {
 		return strings.Contains(window, "(RFC 4862 section 5.4 Duplicate Address Detection)") &&
 			strings.Contains(window, "family=ipv6")
 	})
-	// The citation rather than a whole sentence, because WHICH of the
-	// two DHCPv6 lines is written is not this test's business and is
-	// not fixed by the construction: the recycled client runs detection
-	// on an address it has not confirmed yet, so the library reports it
-	// as offered (held=false) even though the container had been using
-	// it all run. Both v6 lines carry this citation and neither v4 line
-	// does, so it identifies the family and the protocol that found the
-	// conflict without pinning the arm.
+	// The recycled client reports the address as offered (held=false), so the citation, carried by both v6 lines and
+	// neither v4 line, identifies family and protocol without pinning the arm (PR #930).
 	const wantCitation = "(RFC 4862 section 5.4 Duplicate Address Detection)"
 	if !strings.Contains(logText, wantCitation) {
 		t.Errorf("the plugin log carries no DHCPv6 conflict line: nothing cites %q.\n"+
@@ -221,18 +154,8 @@ func TestDHCPv6_ASquatOnARunningContainerIsCountedAndTheAddressChanges(t *testin
 			"will find none")
 	}
 
-	// PINNED, KNOWN WRONG, AND ASSERTED AS SUCH. Docker still reports
-	// the address the squatter holds: libnetwork has no in-place
-	// endpoint address swap, so nothing the plugin can do here updates
-	// it (#104). This is the v2.1 IPAM question, not a defect this test
-	// wants fixed silently.
-	//
-	// ASSERTED, not logged. A log line goes green whatever Docker
-	// answers -- the replacement address, an empty string, a third
-	// value -- and a pin that cannot go red pins nothing. The equality
-	// below fails the moment the divergence closes OR changes shape,
-	// which is the notification this test exists to give; when it does,
-	// the failure message says what to write instead.
+	// Known wrong, pinned by equality: libnetwork has no in-place endpoint address swap, so Docker still reports the
+	// squatted address (#104, #881); a fix or a changed shape fails here and the message says what to write instead.
 	ins, err := cli.ContainerInspect(ctx, id)
 	if err != nil {
 		t.Fatalf("ContainerInspect: %v", err)
@@ -252,29 +175,18 @@ func TestDHCPv6_ASquatOnARunningContainerIsCountedAndTheAddressChanges(t *testin
 			ep.GlobalIPv6Address, held, replacement)
 	}
 
-	// The conflict this test staged is real and the counter is
-	// healthy-affecting, so the run-level floor would fail this shard
-	// for it. The floor covers the stretch since the last plugin start
-	// by design; the recycle here is what ends the stretch, and
-	// AllowStagedConflicts above is what lets the log-versus-counter
-	// census tolerate the difference. Everything this test asserts was
-	// asserted before this line.
+	// The run-level floor would fail this shard for the staged conflict; the recycle ends the floor's stretch and
+	// AllowStagedConflicts lets the log-versus-counter census tolerate it (PR #930).
 	if err := cliReset(ctx, t); err != nil {
 		t.Fatalf("closing plugin recycle: %v", err)
 	}
 	harness.WaitPluginHealth(t, ctx, cli, 15*time.Second)
 }
 
-// awaitOtherGlobalV6 waits for the container's link to carry a global
-// IPv6 that is not `not`, and returns it.
-//
-// It is not linkGlobalV6 with a comparison bolted on: that helper
-// returns the FIRST global address it finds, and during a lease change
-// the link carries both for as long as the stale one takes to be
-// removed. A test built on "the first address changed" would then be
-// waiting on the deletion rather than on the acquisition, and would
-// fail on a plugin that acquired the replacement correctly and lost
-// the cleanup.
+// During a lease change the link carries both addresses until the stale one is removed, so waiting on "the first
+// address changed" would wait on the deletion, not the acquisition (#930).
+
+// awaitOtherGlobalV6 waits for the container's link to carry a global IPv6 other than `not` and returns it.
 func awaitOtherGlobalV6(t *testing.T, ctx context.Context, ctrID, not string, budget time.Duration) string {
 	t.Helper()
 	deadline := time.Now().Add(budget)

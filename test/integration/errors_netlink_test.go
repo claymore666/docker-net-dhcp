@@ -18,11 +18,7 @@ import (
 	"github.com/vishvananda/netlink"
 )
 
-// TestErrors_ParentDown drives validateParentForChild's down-state
-// branch. Brings the host veth admin-down, attempts to create a
-// macvlan network on it, asserts the plugin rejects the create
-// with ErrParentDown wrapping. Restores the link to UP in
-// t.Cleanup so subsequent tests still see a healthy parent.
+// TestErrors_ParentDown checks that a macvlan network on an admin-down parent is refused with ErrParentDown.
 func TestErrors_ParentDown(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -66,19 +62,14 @@ func TestErrors_ParentDown(t *testing.T) {
 	}
 }
 
-// TestErrors_ParentIsBridge drives validateParentForChild's
-// disallowed-type branch. Creates a transient Linux bridge in the
-// host netns, points the plugin at it as a macvlan parent, asserts
-// rejection. macvlan over a bridge is something the kernel itself
-// would happily allow but produces nonsensical behaviour for our
-// use case (broadcast loops, MAC learning conflicts), so the
-// plugin refuses up-front.
+// The kernel allows macvlan over a bridge, but it loops broadcasts and confuses MAC learning, so the plugin refuses it.
+
+// TestErrors_ParentIsBridge checks that a Linux bridge is refused as a macvlan parent.
 func TestErrors_ParentIsBridge(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	// Linux IFNAMSIZ caps interface names at 15 characters + NUL.
-	// "dh-itest-br" is 11; fits with room for a suffix.
+	// IFNAMSIZ caps interface names at 15 characters.
 	const brName = "dh-itest-br"
 	br := &netlink.Bridge{LinkAttrs: netlink.LinkAttrs{Name: brName}}
 	if err := netlink.LinkAdd(br); err != nil {
@@ -119,18 +110,9 @@ func TestErrors_ParentIsBridge(t *testing.T) {
 	}
 }
 
-// TestErrors_DriverOptIPMalformed drives the resolveExplicitV4
-// driver-opt validation branch in CreateEndpoint: an endpoint-level
-// `ip=` driver-opt that doesn't parse as a bare IPv4 must be
-// rejected with ErrIPAM wrapping.
-//
-// The conflict path (Interface.Address from --ip vs driver-opt ip)
-// is unreachable through the docker API on a null-IPAM network —
-// libnetwork rejects --ip with "user specified IP address is
-// supported only when connecting to networks with user configured
-// subnets", before the plugin's CreateEndpoint sees it. The
-// driver-opt path is the one we can exercise end-to-end here, and
-// it covers the same parsing helper.
+// libnetwork refuses --ip on a null-IPAM network before CreateEndpoint, so only the driver-opt path is reachable here.
+
+// TestErrors_DriverOptIPMalformed checks that an endpoint `ip=` driver-opt that is not a bare IPv4 is refused with ErrIPAM.
 func TestErrors_DriverOptIPMalformed(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
@@ -163,10 +145,7 @@ func TestErrors_DriverOptIPMalformed(t *testing.T) {
 		_ = cli.ContainerRemove(bg, ctrName, container.RemoveOptions{Force: true})
 	})
 
-	// libnetwork sometimes defers CreateEndpoint from ContainerCreate
-	// to ContainerStart; either path is fine, but the plugin must
-	// reject before the container actually runs. Capture whichever
-	// call fails.
+	// libnetwork may defer CreateEndpoint from ContainerCreate to ContainerStart, so either call can carry the refusal.
 	var failure string
 	if createErr != nil {
 		failure = createErr.Error()

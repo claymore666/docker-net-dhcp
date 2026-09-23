@@ -17,15 +17,7 @@ import (
 	"github.com/claymore666/docker-net-dhcp/v2/test/integration/harness"
 )
 
-// TestEngineIdentity_HealthMatchesTheDaemonsOwnAnswer is the outside
-// evidence for #670's published fields.
-//
-// THE PLUGIN'S OWN VALUE IS NOT EVIDENCE FOR THE PLUGIN'S OWN VALUE. A
-// cell that read `engine_version` and checked it looked like a version
-// would pass against a plugin that reported the version it was COMPILED
-// against, or the floor constant, or the last value it saw on another
-// host. The daemon is asked the same question here, through this test's
-// own client, and the two answers have to be the same string.
+// TestEngineIdentity_HealthMatchesTheDaemonsOwnAnswer checks the #670 engine fields against the daemon's own answer to this client.
 func TestEngineIdentity_HealthMatchesTheDaemonsOwnAnswer(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
@@ -61,19 +53,13 @@ func TestEngineIdentity_HealthMatchesTheDaemonsOwnAnswer(t *testing.T) {
 		t.Fatalf("api_version = %q on a run where the daemon answered", api)
 	}
 
-	// The published API version is NEGOTIATED: the lower of what the
-	// client library can speak and what this daemon can. So it must not
-	// be above the daemon's own maximum, and a plugin publishing its
-	// library's maximum instead of the negotiated value fails here on
-	// any daemon older than the library.
+	// The published API version is negotiated, the lower of the library's and the daemon's, so it may not exceed the daemon's maximum (#670).
 	if apiAbove(api, srv.APIVersion) {
 		t.Errorf("api_version = %q, above the daemon's maximum %q; that is not a negotiated version",
 			api, srv.APIVersion)
 	}
 
-	// The same identity on the metrics surface, because that is where
-	// an operator's dashboard reads it and the two renderings are
-	// separate code.
+	// The metrics surface renders the identity in separate code (#670).
 	body, _, err := harness.PluginMetrics(ctx, cli)
 	if err != nil {
 		t.Fatalf("PluginMetrics: %v", err)
@@ -84,8 +70,7 @@ func TestEngineIdentity_HealthMatchesTheDaemonsOwnAnswer(t *testing.T) {
 	}
 }
 
-// apiAbove reports whether a is a higher API version than b. Docker API
-// versions are major.minor and are not decimals: 1.41 is above 1.9.
+// apiAbove reports whether a is a higher Docker API version than b, compared as major.minor: 1.41 is above 1.9.
 func apiAbove(a, b string) bool {
 	aMaj, aMin, aOK := apiParts(a)
 	bMaj, bMin, bOK := apiParts(b)

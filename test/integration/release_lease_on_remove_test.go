@@ -3,23 +3,11 @@
 
 //go:build integration
 
-// `release_lease=on_remove` (#984) against the server that grants the
-// leases. The option is `never` for the length of the restart window
-// and `on_stop` after it, and every proof here reads the window from
-// the outside: dnsmasq's lease database and its log say whether the
-// address went back, and the container's own address and MAC say
-// whether it was claimed back.
-//
-// THESE TESTS SPEND REAL TIME AND THAT IS THE POINT. The window is the
-// tombstone TTL, 60 seconds, plus the settle and one sweep tick, so the
-// wall clock from the stop to the datagram is 65 to 80 seconds. There is
-// no product knob that shortens it and one was not added: an override
-// would reach every copy of the plugin a harness spawns and would ship
-// a setting no operator asked for. The predicate, the settle and the
-// sweep are driven with an injected clock in the package's own tests
-// (pkg/plugin/deferred_release_test.go); what cannot be injected is
-// whether a real DHCP server gives the address up, which is what these
-// four tests are for.
+// release_lease=on_remove (#984) read from the server: dnsmasq's lease database and log say whether the address went
+// back, and the container's address and MAC whether it was claimed back. The window is the tombstone TTL, 60 seconds,
+// plus the settle and one sweep tick, so the wall clock from the stop to the datagram is 65 to 80 seconds. No knob
+// shortens it, since an override would reach every plugin copy a harness spawns; pkg/plugin/deferred_release_test.go
+// drives the timing with an injected clock.
 
 package integration
 
@@ -36,33 +24,18 @@ import (
 	"github.com/claymore666/docker-net-dhcp/v2/test/integration/harness"
 )
 
-// onRemoveWindow is the plugin's restart window as an operator meets
-// it: the tombstone TTL (pkg/plugin/state.go, tombstoneTTL).
-//
-// Transcribed and not imported, like every other constant this suite
-// asks the INSTALLED plugin about: a value imported from the package
-// under test would make the question answer itself.
+// onRemoveWindow is tombstoneTTL in pkg/plugin/state.go, transcribed so the installed plugin is not asked about its own import.
 const onRemoveWindow = 60 * time.Second
 
-// onRemoveVisibleBudget bounds the wait for the release to reach the
-// server, from the stop.
-//
-// It is the window, plus the settle (5s), plus one sweep tick (15s),
-// plus room for a slow runner. A POSITIVE event is being waited on, so
-// the whole budget is only spent when the release does not arrive.
+// onRemoveVisibleBudget is the window, plus the settle (5s), plus one sweep tick (15s), plus room for a slow runner (#984).
 const onRemoveVisibleBudget = onRemoveWindow + 75*time.Second
 
-// onRemoveHeldProbe is how long after the stop the address must still
-// be leased. Well inside the window and well outside the ~1s in which
-// an `on_stop` release would have gone out.
+// onRemoveHeldProbe is well inside the window and well past the ~1s in which an on_stop release would have gone out.
 const onRemoveHeldProbe = 20 * time.Second
 
-// waitLeaseFileWithin is waitLeaseFile with the caller's budget, and it
-// reports how long the wait took.
-//
-// The elapsed time is the assertion the counters cannot make: a release
-// that arrives one second after the stop is `on_stop` wearing another
-// value's name, and the lease file alone cannot tell the two apart.
+// A release one second after the stop is on_stop under another name, which the lease file alone cannot tell (#984).
+
+// waitLeaseFileWithin is waitLeaseFile with the caller's budget, returning how long the wait took.
 func waitLeaseFileWithin(t *testing.T, leaseFile, addr string, want bool, budget time.Duration) (time.Duration, bool) {
 	t.Helper()
 	start := time.Now()
@@ -78,8 +51,7 @@ func waitLeaseFileWithin(t *testing.T, leaseFile, addr string, want bool, budget
 	}
 }
 
-// containerAddress reads back what Docker publishes for a container on
-// one network, waiting for an address to appear.
+// containerAddress waits for Docker to publish the container's address and MAC on the test's network.
 func containerAddress(t *testing.T, ctx context.Context, cli *docker.Client, id string) (ip, mac string) {
 	t.Helper()
 	deadline := time.Now().Add(harness.IPAcquisitionBudget)
@@ -99,14 +71,10 @@ func containerAddress(t *testing.T, ctx context.Context, cli *docker.Client, id 
 	return "", ""
 }
 
-// TestReleaseLease_OnRemoveHoldsTheAddressThenHandsItBack is the whole
-// option in one container's life, read off the server.
-//
-// Three assertions, and the FIRST is the one that separates this value
-// from `on_stop`: twenty seconds after the stop the server must still
-// hold the address. An implementation that released at DeleteEndpoint
-// would pass the second assertion and fail this one, and it is the
-// implementation the option's name invites.
+// An implementation releasing at DeleteEndpoint passes the hand-back and fails the first assertion, that the server
+// still holds the address twenty seconds after the stop (#984).
+
+// TestReleaseLease_OnRemoveHoldsTheAddressThenHandsItBack checks that the server keeps the address inside the window and gets it back after (#984).
 func TestReleaseLease_OnRemoveHoldsTheAddressThenHandsItBack(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
@@ -134,8 +102,6 @@ func TestReleaseLease_OnRemoveHoldsTheAddressThenHandsItBack(t *testing.T) {
 	id, ip, mac := harness.RunContainer(t, ctx, netName, ctrName)
 	t.Logf("container %s holds ip=%s mac=%s", ctrName, ip, mac)
 
-	// The precondition and the positive control: an address the server
-	// never recorded cannot be seen to go back.
 	if !waitLeaseFile(t, fixture.LeaseFile(), ip, true) {
 		t.Fatalf("dnsmasq's lease DB has no entry for %s, so nothing below can be read", ip)
 	}
@@ -149,7 +115,6 @@ func TestReleaseLease_OnRemoveHoldsTheAddressThenHandsItBack(t *testing.T) {
 		t.Fatalf("ContainerStop: %v", err)
 	}
 
-	// Inside the window: the address is the container's to come back to.
 	time.Sleep(onRemoveHeldProbe)
 	if !leaseFileHolds(t, fixture.LeaseFile(), ip) {
 		t.Errorf("dnsmasq gave %s up %s after the stop. release_lease=on_remove holds the "+
@@ -182,8 +147,7 @@ func TestReleaseLease_OnRemoveHoldsTheAddressThenHandsItBack(t *testing.T) {
 			"can leave the DB for reasons other than a release", releaseLines, ip)
 	}
 
-	// The operator's view of the same event, read after the outside
-	// evidence and never instead of it.
+	// The plugin's counters, read after the outside evidence and never instead of it.
 	before, after := w.End()
 	t.Logf("across the window the counters moved: releases_sent_v4 by %d, "+
 		"release_failures_v4 by %d, releases_reclaimed_v4 by %d",
@@ -203,16 +167,10 @@ func TestReleaseLease_OnRemoveHoldsTheAddressThenHandsItBack(t *testing.T) {
 	}
 }
 
-// TestReleaseLease_OnRemoveKeepsTheAddressForARestartInsideTheWindow is
-// the other half of the option, and the half an operator chooses it for.
-//
-// A container that comes back inside the window keeps its address AND
-// its MAC, and nothing ever goes on the wire for it. The wait after the
-// restart is not padding: the sweep looks at the record when the window
-// runs out, and an implementation whose claim check missed would hand
-// the address back THEN, with the container running on it. That is the
-// duplicate assignment of #524 with the plugin's own fingerprints on
-// it, and only a test that waits out the window can see it.
+// The wait past the window is not padding: a claim check that missed would release then, with the container running
+// on the address, the duplicate assignment of #524 (#984).
+
+// TestReleaseLease_OnRemoveKeepsTheAddressForARestartInsideTheWindow checks that a restart inside the window keeps address and MAC with nothing sent (#984).
 func TestReleaseLease_OnRemoveKeepsTheAddressForARestartInsideTheWindow(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
@@ -266,8 +224,6 @@ func TestReleaseLease_OnRemoveKeepsTheAddressForARestartInsideTheWindow(t *testi
 		t.Errorf("the restarted container came back on %s, not %s", ipAfter, ip)
 	}
 
-	// Out past the window, with the container running. This is where a
-	// claim check that did not look at the address would release.
 	for time.Since(stopped) < onRemoveWindow+30*time.Second {
 		time.Sleep(time.Second)
 	}
@@ -297,17 +253,10 @@ func TestReleaseLease_OnRemoveKeepsTheAddressForARestartInsideTheWindow(t *testi
 	}
 }
 
-// TestReleaseLease_OnRemoveHandsTheV6AddressBackToo is the DHCPv6 half,
-// and it is a separate test because the two families are two records
-// with two deadlines and two senders.
-//
-// RFC 9915 section 18.2.7 requires the address to be off the interface
-// before a Release exchange begins. At the deadline the container's
-// link is long gone, so the address is off it by absence, which is the
-// one way this path differs from the `on_stop` sender beside it. The
-// observer is the server's lease DB per family: dnsmasq prints the same
-// DHCPRELEASE token on both paths, so a token count cannot tell them
-// apart.
+// RFC 9915 section 18.2.7 requires the address off the interface before a Release; at the deadline the link is gone.
+// dnsmasq prints the same DHCPRELEASE token on both paths, so the observer is the per-family lease database (#984).
+
+// TestReleaseLease_OnRemoveHandsTheV6AddressBackToo checks that the DHCPv6 address goes back at the window's end (#984).
 func TestReleaseLease_OnRemoveHandsTheV6AddressBackToo(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
@@ -386,17 +335,10 @@ func TestReleaseLease_OnRemoveHandsTheV6AddressBackToo(t *testing.T) {
 	}
 }
 
-// TestReleaseLease_OnRemoveHandsAnIPAMAddressBackToo is the bundled
-// IPAM driver's half of the same window (#110, #984).
-//
-// In IPAM mode the record is retained by DeleteEndpoint exactly as in
-// the null-IPAM shape, and libnetwork's own ReleaseAddress arrives
-// afterwards and finds it already retained. So the sweep is what hands
-// the address back, and this test is here because "the same code path"
-// is a claim about the code and not about the driver Docker is talking
-// to: an IPAM-mode network answers its own address requests, and an
-// address handed back that the driver still believes it owns would be
-// handed out twice.
+// In IPAM mode DeleteEndpoint retains the record and libnetwork's later ReleaseAddress finds it retained, so the sweep
+// hands the address back; an address the driver still believes it owns would be handed out twice (#110, #984).
+
+// TestReleaseLease_OnRemoveHandsAnIPAMAddressBackToo checks the same window through the bundled IPAM driver (#110, #984).
 func TestReleaseLease_OnRemoveHandsAnIPAMAddressBackToo(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
