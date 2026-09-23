@@ -14,6 +14,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/claymore666/dhcp-golib/lease"
 	"github.com/claymore666/dhcp-golib/proto"
 	dNetwork "github.com/docker/docker/api/types/network"
 	log "github.com/sirupsen/logrus"
@@ -75,16 +76,16 @@ type dhcpManager struct {
 	// plugin is nil in unit tests that drive no lease events; production sets it in Plugin.Join.
 	plugin *Plugin
 
-	// ipMu guards lastIP, lastIPv6, the lastEvent pair, clientV4 and hostname, written by the event goroutine.
+	// ipMu guards lastIP, lastIPv6, seenV4, clientV4 and hostname, written by the event goroutine.
 	ipMu     sync.Mutex
 	lastIP   *netlink.Addr
 	lastIPv6 *netlink.Addr
 	// v6Installed is every IPv6 address put on the container link, a set since RFC 4862 section 5.5.3 forms one per
 	// autonomous prefix and a withdrawn prefix's address must go (#818).
 	v6Installed map[string]*netlink.Addr
-	// lastEvent and lastEventAt sit under ipMu with the addresses, so one read describes one instant.
-	lastEvent   string
-	lastEventAt time.Time
+	// seenV4 is the v4 client as its event goroutine last recorded it; the health entry renders its lease from here
+	// because the library marks a lease held before it emits the event (#1044).
+	seenV4 v4Record
 
 	// recordID is the durable lease record (#899); empty in unit tests and adopted endpoints, where record calls no-op.
 	recordID string
@@ -243,16 +244,33 @@ func (m *dhcpManager) noteResumedACD(r dhcp.Resumption, mode proto.ConflictMode,
 			"it is re-checked on the INIT-REBOOT acknowledgement")
 }
 
-func (m *dhcpManager) lastEventSeen() (string, time.Time) {
-	m.ipMu.Lock()
-	defer m.ipMu.Unlock()
-	return m.lastEvent, m.lastEventAt
+type v4Record struct {
+	event string
+	at    time.Time
+	lease lease.Lease
 }
 
-func (m *dhcpManager) noteEvent(kind string) {
+// noteEvent records a v4 event with the client's lease when that lease is the address the event carries (only bound
+// and renew carry one); v6 events are not recorded, since every field of the entry describes the v4 client (#1044).
+func (m *dhcpManager) noteEvent(event dhcp.Event, v6 bool) {
+	if v6 {
+		return
+	}
+	rec := v4Record{event: event.Type, at: time.Now()}
+	if c := m.healthClient(); c != nil {
+		if l, ok := c.Lease(); ok && l.Addr.String() == event.Data.IP {
+			rec.lease = l
+		}
+	}
 	m.ipMu.Lock()
 	defer m.ipMu.Unlock()
-	m.lastEvent, m.lastEventAt = kind, time.Now()
+	m.seenV4 = rec
+}
+
+func (m *dhcpManager) healthSnapshot() (v4Record, joinClient) {
+	m.ipMu.Lock()
+	defer m.ipMu.Unlock()
+	return m.seenV4, m.clientV4
 }
 
 func (m *dhcpManager) lastIPs() (*netlink.Addr, *netlink.Addr) {
@@ -1154,7 +1172,7 @@ func (m *dhcpManager) countOutageTick(v6, policyRestricted bool) {
 // handleEvent dispatches one client event to counters, ledger and renew; unit-testable because dnsmasq ignores
 // refused renewals instead of NAKing, so naks_received is pinned here (#128).
 func (m *dhcpManager) handleEvent(event dhcp.Event, v6 bool) {
-	m.noteEvent(event.Type)
+	m.noteEvent(event, v6)
 	// pkg/dhcp already dropped these; counted for every event type, since the count describes the exchange (#703).
 	if event.UnsafeValuesDropped > 0 && m.plugin != nil {
 		m.plugin.unsafeOptionValuesDropped.Add(int32(event.UnsafeValuesDropped))

@@ -13,6 +13,8 @@ import (
 
 	"github.com/claymore666/dhcp-golib/lease"
 	"github.com/claymore666/dhcp-golib/proto"
+
+	"github.com/claymore666/docker-net-dhcp/v2/pkg/dhcp"
 )
 
 // fakeJoinClient records every name call because the library renews early for each one (#961).
@@ -69,7 +71,7 @@ func TestEndpointViews_TwoEndpointsRenderTheirOwnFields(t *testing.T) {
 		NetworkID:  "111111111111222222222222",
 	}, DHCPNetworkOptions{Mode: ModeMacvlan})
 	mBound.setHealthClient(bound)
-	mBound.noteEvent("bound")
+	mBound.handleEvent(dhcp.Event{Type: "bound", Data: dhcp.Info{IP: "192.0.2.17/24"}}, false)
 
 	mAcquiring := newDHCPManager(nil, JoinRequest{
 		EndpointID: "ccccccccccccdddddddddddd",
