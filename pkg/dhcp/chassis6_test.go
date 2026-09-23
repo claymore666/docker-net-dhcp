@@ -16,20 +16,8 @@ import (
 	"github.com/vishvananda/netns"
 )
 
-// HonorRouterAdverts is a precondition, not a preference: a persistent
-// DHCPv6 client cannot start without it, and nothing else can start with
-// it.
-//
-// WHY A REFUSAL AND NOT AN OPERATOR OPTION (D30 Q3). DHCPv6 carries no
-// next-hop: RFC 9915 section 21 defines no router option, and RFC 5942
-// section 4 rule 1 says an address's prefix is NOT implicitly on-link.
-// An endpoint whose kernel is not processing Router Advertisements
-// therefore ends up with an address and no route, and it ends up there
-// silently -- the lease is fine, the address is on the link, and every
-// packet leaves through nothing. There is no configuration in which the
-// plugin should start that client, so the field is not a switch; it is
-// the caller stating it has done the work, and the four cases below are
-// the whole domain of who may state it.
+// DHCPv6 has no router option (RFC 9915 section 21) and RFC 5942 section 4 rule 1 makes no prefix on-link (D30 Q3).
+
 func TestCheckRouterAdvertGuardShape(t *testing.T) {
 	ns := netns.NsHandle(-1)
 	cases := []struct {
@@ -51,10 +39,7 @@ func TestCheckRouterAdvertGuardShape(t *testing.T) {
 		{name: "a v4 one-shot claiming the guard", honor: true, oneShot: true, wantErr: true},
 	}
 
-	// NON-VACUITY on the input domain rather than the row count: three
-	// booleans that the function reads, eight inhabitants, and the ninth
-	// row above is the same shape twice with a namespace. A row that
-	// stopped being here is a shape nothing judges.
+	// Coverage of the three read booleans, not the row count (#911).
 	covered := map[[3]bool]bool{}
 	for _, tc := range cases {
 		covered[[3]bool{tc.v6, tc.honor, tc.oneShot}] = true
@@ -68,8 +53,6 @@ func TestCheckRouterAdvertGuardShape(t *testing.T) {
 			}
 		}
 	}
-	// And both verdicts have to appear, or the table is checking one
-	// constant.
 	var accepts, refuses int
 	for _, tc := range cases {
 		if tc.wantErr {
@@ -99,33 +82,19 @@ func TestCheckRouterAdvertGuardShape(t *testing.T) {
 	}
 }
 
-// The router-discovery window is derived from the parameters the client
-// will actually run with, and it is longer than a single solicitation.
-//
-// WHY IT EXISTS. getIP6 warns when the caller's acquisition budget is
-// shorter than this, because a "no router advertisement" verdict reached
-// inside the window describes the deadline and not the segment -- and
-// that verdict is what the plugin turns into "the segment has no IPv6
-// router", an operator-facing claim about their network.
-//
-// The shape is RFC 4861: up to MAX_RTR_SOLICITATION_DELAY (section 6.3.7,
-// 1 second) before the first solicitation, then MAX_RTR_SOLICITATIONS of
-// them RTR_SOLICITATION_INTERVAL apart (section 10).
+// RFC 4861 sections 6.3.7 and 10: MAX_RTR_SOLICITATION_DELAY, then MAX_RTR_SOLICITATIONS at RTR_SOLICITATION_INTERVAL.
+
 func TestRouterDiscoveryWindow(t *testing.T) {
 	def := RouterDiscoveryWindow(proto.DefaultParams6())
 	if want := time.Second + 3*4*time.Second; def != want {
 		t.Errorf("the default window is %v, want %v (1s delay + 3 solicitations 4s apart)", def, want)
 	}
 
-	// A zero in either field is the library's "use the default", not
-	// "zero seconds": a window of one second would make the warning fire
-	// on every ordinary acquisition and stop meaning anything.
+	// Zero is the library's default, not zero seconds (#911).
 	if got := RouterDiscoveryWindow(proto.Params6{}); got != def {
 		t.Errorf("the window for zero parameters is %v, want the default %v", got, def)
 	}
 
-	// And a caller that raised either knob gets a longer window, or the
-	// warning is measured against a budget the client will overrun.
 	slow := proto.DefaultParams6()
 	slow.RouterSolicitations = 6
 	if got := RouterDiscoveryWindow(slow); got <= def {
@@ -138,21 +107,8 @@ func TestRouterDiscoveryWindow(t *testing.T) {
 	}
 }
 
-// One library event, one verdict about whether the acquisition is over.
-//
-// THE Configured ROW IS THE ONE THIS TEST EXISTS FOR (D30 Q7). A
-// stateless segment answers the Information-request with DNS servers and
-// no address, and the library reports that as its own event kind. Ending
-// the acquisition there rather than waiting out the deadline is worth a
-// full lease_timeout per endpoint on every stateless network -- and the
-// verdict is the same one the deadline would reach, because proto's v6
-// machine only switches to the Information-request after an
-// advertisement with M=0, so an address is no longer coming.
-//
-// The error carried is a SENTINEL and not a message, because
-// classifyV6Absence over in pkg/plugin has to tell "the segment said no
-// addresses" from "we ran out of time"; a formatted string would make
-// that a substring match.
+// A stateless Configured ends the acquisition with a sentinel pkg/plugin classifies (D30 Q7, #868).
+
 func TestAcquireStep6(t *testing.T) {
 	now := time.Now()
 	acquired := lease.Event{Kind: lease.Acquired, Lease: lease.Lease{
@@ -193,21 +149,11 @@ func TestAcquireStep6(t *testing.T) {
 		t.Error("Failed carried no error, so the caller reports ErrNoLease with no reason")
 	}
 
-	// An event that says nothing about the outcome leaves the loop
-	// running: Bound, Renewed and the rest arrive on this channel too.
 	if got := acquireStep6(lease.Event{Kind: lease.Renewed}, false, netip.Prefix{}); got.Done || got.Err != nil {
 		t.Errorf("Renewed ended the acquisition or carried an error: %+v", got)
 	}
 }
 
-// The stateless reply's configuration reaches the container, and it
-// goes through the same sanitiser every DHCP-supplied value does.
-//
-// The v6 path is a NEW source of server-controlled strings reaching
-// /etc/resolv.conf, and the sanitiser is what stops a search domain with
-// an embedded newline from writing a second directive into that file.
-// It applies to the lease path already; this asserts it was not skipped
-// on the way in from a Configured event.
 func TestInfoFromConfig(t *testing.T) {
 	cfg := lease.Configuration{
 		DNS:    []netip.Addr{netip.MustParseAddr("2001:db8::1"), netip.MustParseAddr("2001:db8::2")},
@@ -223,19 +169,12 @@ func TestInfoFromConfig(t *testing.T) {
 	if len(info.SearchList) != 2 || info.SearchList[1] != "corp.example.test" {
 		t.Errorf("SearchList = %v, want both domains in order", info.SearchList)
 	}
-	// A stateless reply has no address by definition; anything that put
-	// one here would be the chassis inventing it.
 	if info.IP != "" || info.Gateway != "" {
 		t.Errorf("a Configured event produced IP %q gateway %q", info.IP, info.Gateway)
 	}
 
-	// AND IT SAYS NOTHING ABOUT THE ROUTER, which is what keeps it from
-	// withdrawing the link's MTU. This is the second constructor of a v6
-	// Info, and an Information-request Reply (RFC 9915 section 18.2.6)
-	// carries no router information at all: MTU 0 here is the reply not
-	// mentioning it, never a router that stopped advertising one. With
-	// RouterSeen set, every stateless event would drop the v6 MTU vote
-	// and hand the link to the v4 number.
+	// An Information-request Reply carries no router information (RFC 9915 section 18.2.6), so MTU 0 is not a
+	// withdrawal (#821).
 	if info.RouterSeen || info.MTU != 0 {
 		t.Errorf("a Configured event claimed to carry router information "+
 			"(RouterSeen=%v MTU=%d)", info.RouterSeen, info.MTU)
@@ -253,9 +192,7 @@ func TestInfoFromConfig(t *testing.T) {
 		}
 	}
 
-	// The search list is the chassis's own copy: the library's
-	// Configuration is the manager's, and a shared backing array is the
-	// sanitiser rewriting a value the library will send again.
+	// The search list is copied, so the sanitiser never rewrites the library's value (#911).
 	cfg = lease.Configuration{Search: []string{"example.test"}}
 	info, _ = infoFromConfig(cfg)
 	cfg.Search[0] = "rewritten"
@@ -265,18 +202,8 @@ func TestInfoFromConfig(t *testing.T) {
 	}
 }
 
-// The v6 lease carries two lifetimes and the chassis reports both.
-//
-// RFC 9915 section 7.1 gives an IA Address a preferred and a valid
-// lifetime; RFC 4862 section 5.5.4 makes the preferred one the point at
-// which the address stops being used for NEW connections while existing
-// ones survive to the valid lifetime. The kernel needs both to deprecate
-// rather than delete, so a chassis that reported only the valid lifetime
-// would have every v6 address stay preferred until the moment it
-// vanished.
-//
-// A v4 lease has no such split, and PreferredSeconds stays zero there --
-// which is what keeps the field's `omitempty` truthful.
+// RFC 9915 section 7.1 and RFC 4862 section 5.5.4: preferred and valid lifetimes let the kernel deprecate first.
+
 func TestInfoFromLease_PreferredSecondsIsV6Only(t *testing.T) {
 	now := time.Now()
 
@@ -293,9 +220,7 @@ func TestInfoFromLease_PreferredSecondsIsV6Only(t *testing.T) {
 		t.Errorf("PreferredSeconds = %d, want 1800", info.PreferredSeconds)
 	}
 
-	// An infinite preferred lifetime is the zero Time, on the library's
-	// convention -- not "zero seconds", which would deprecate the
-	// address the instant it was installed.
+	// The zero Time is an infinite preferred lifetime on the library's convention (#911).
 	v6.Preferred = time.Time{}
 	info, _ = infoFromLease(v6, proto.RouterObservation{}, now, netip.Prefix{})
 	if info.PreferredSeconds != info.LeaseSeconds {
@@ -315,12 +240,6 @@ func TestInfoFromLease_PreferredSecondsIsV6Only(t *testing.T) {
 	}
 }
 
-// The router flags are rendered from an observation, and an observation
-// with no advertisement in it renders nothing.
-//
-// The empty string is load-bearing: this goes into an event the operator
-// reads, and "M" on a link where no advertisement ever arrived would be
-// a claim about the segment derived from a zero value.
 func TestRouterFlags(t *testing.T) {
 	cases := []struct {
 		r    proto.RouterObservation
@@ -340,14 +259,6 @@ func TestRouterFlags(t *testing.T) {
 	}
 }
 
-// Merge is OR and not last-wins.
-//
-// The server-policy ladder makes several attempts on one link. An
-// advertisement seen on the first attempt is still evidence about the
-// segment when the fourth times out, and a last-wins fold would report
-// a routerless segment for a link that answered -- which is the
-// difference between "your network has no IPv6 router" and "this
-// attempt was short", told to the operator as if it were the same thing.
 func TestRAObservation_MergeIsMonotonic(t *testing.T) {
 	seen := RAObservation{Seen: true, Managed: true, Other: true}
 	if got := seen.Merge(RAObservation{}); got != seen {
@@ -367,11 +278,6 @@ func TestRAObservation_MergeIsMonotonic(t *testing.T) {
 	}
 }
 
-// The library's observation crosses the seam field for field.
-//
-// pkg/plugin must not name a library type (D22/D23), so this conversion
-// is the only place the two spellings meet; a field dropped here is a
-// flag the absence classifier never sees.
 func TestRAObservation_ConvertsEveryField(t *testing.T) {
 	got := raObservation(proto.RouterObservation{Seen: true, Managed: true, Other: true})
 	if !got.Seen || !got.Managed || !got.Other {
@@ -380,8 +286,6 @@ func TestRAObservation_ConvertsEveryField(t *testing.T) {
 	if raObservation(proto.RouterObservation{}) != (RAObservation{}) {
 		t.Error("raObservation invented a flag from a zero observation")
 	}
-	// One field at a time, or a conversion that ORed them together
-	// would pass the all-true row.
 	if got := raObservation(proto.RouterObservation{Managed: true}); got != (RAObservation{Managed: true}) {
 		t.Errorf("raObservation(Managed) = %+v", got)
 	}
@@ -393,39 +297,22 @@ func TestRAObservation_ConvertsEveryField(t *testing.T) {
 	}
 }
 
-// TestV6AcquisitionWindow_FitsInsideTheDaemonsDeadline is the guard on
-// the number #868's fix actually depends on.
-//
-// The verdict CreateEndpoint draws about a segment is worth nothing if
-// it arrives after the daemon has abandoned the request, and the
-// deadline the one-shot used to run under -- lease_timeout, whose
-// default is ConflictRecoveryWindow -- is longer than that. This pins
-// both ends: the window has to cover router discovery plus a real
-// Solicit exchange, and it has to end well before the daemon does.
 func TestV6AcquisitionWindow_FitsInsideTheDaemonsDeadline(t *testing.T) {
 	p := proto.DefaultParams6()
 	got := V6AcquisitionWindow(p)
 
-	// The lower end. Below RouterDiscoveryWindow the "no router
-	// advertisement" verdict describes the deadline rather than the
-	// segment, which is the failure RouterDiscoveryWindow exists to
-	// name, and a window with no Solicit allowance at all could not
-	// acquire on a managed segment that drops one message.
 	if got <= RouterDiscoveryWindow(p) {
 		t.Errorf("V6AcquisitionWindow(%s) does not outlast router discovery (%s); "+
 			"an absence verdict drawn inside it is about the deadline",
 			got, RouterDiscoveryWindow(p))
 	}
-	// The upper end, and the reason this function exists. moby's plugin
-	// client gives a request 30s; the endpoint's v4 half is spent
-	// before the v6 half starts.
+	// moby's plugin client gives a request 30 s (#868).
 	const daemonDeadline = 30 * time.Second
 	if got >= daemonDeadline {
 		t.Errorf("V6AcquisitionWindow(%s) reaches the daemon's %s plugin deadline; "+
 			"CreateEndpoint would be abandoned before it could report the segment",
 			got, daemonDeadline)
 	}
-	// And the whole point: it is not lease_timeout.
 	if got >= ConflictRecoveryWindow(proto.DefaultParams(nil)) {
 		t.Errorf("V6AcquisitionWindow(%s) is not shorter than the v4-derived default "+
 			"lease_timeout (%s), so the v6 one-shot still runs on DHCPv4's budget",
@@ -433,10 +320,8 @@ func TestV6AcquisitionWindow_FitsInsideTheDaemonsDeadline(t *testing.T) {
 	}
 }
 
-// TestV6SolicitWindow_CoversTheRetransmissionsItClaims derives the sum
-// independently of the loop that produces it. RFC 9915 section 15
-// doubles each timer and section 18.2.1 delays the first: with the
-// library's one-second constants that is 1 + 1.1 + 2.2 + 4.4.
+// RFC 9915 section 15 doubles each timer and section 18.2.1 delays the first: 1 + 1.1 + 2.2 + 4.4 with the defaults.
+
 func TestV6SolicitWindow_CoversTheRetransmissionsItClaims(t *testing.T) {
 	p := proto.DefaultParams6()
 	if v6SolicitTransmissions != 4 {
@@ -449,19 +334,11 @@ func TestV6SolicitWindow_CoversTheRetransmissionsItClaims(t *testing.T) {
 		t.Errorf("v6SolicitWindow = %s, want %s", got, want)
 	}
 
-	// A zero field means "the library's default" and must not mean
-	// "zero": a Params6 built by hand would otherwise fund no Solicit
-	// at all and the window would collapse to router discovery.
 	if got := v6SolicitWindow(proto.Params6{}); got != want {
 		t.Errorf("v6SolicitWindow(zero Params6) = %s, want the default's %s", got, want)
 	}
 }
 
-// TestAdvertisedNoDHCPv6 is the discriminator behind the early SLAAC
-// verdict, over every observation there is. Only one of the eight says
-// "the segment has already told us DHCPv6 has nothing here"; the two
-// that carry a flag are segments with something to ask for, and the
-// four with nothing seen are segments that have not answered yet.
 func TestAdvertisedNoDHCPv6(t *testing.T) {
 	for _, tc := range []struct {
 		ra   RAObservation
@@ -482,14 +359,6 @@ func TestAdvertisedNoDHCPv6(t *testing.T) {
 	}
 }
 
-// TestErrNoDHCPv6OnSegment_ClassifiesAsNotOffered keeps the early
-// verdict and the counter it feeds in step: an acquisition that ends
-// this way must reach the operator as "the segment offers none", never
-// as a fatal failure or as a missing router.
-//
-// It lives here rather than beside classifyV6Absence because the
-// observation is what decides, and the observation that produces this
-// error is the one asserted above.
 func TestErrNoDHCPv6OnSegment_IsAnAdvertisedAbsence(t *testing.T) {
 	ra := RAObservation{Seen: true}
 	if !advertisedNoDHCPv6(ra) {
@@ -501,13 +370,8 @@ func TestErrNoDHCPv6OnSegment_IsAnAdvertisedAbsence(t *testing.T) {
 	}
 }
 
-// TestCarryResumedConfig6 is the whole of the Confirm gap.
-//
-// RFC 9915 section 18.2.13's Reply to a Confirm carries a status and no
-// options, so the lease that comes out of a resumed binding has no DNS
-// servers on it. The four cases below are the four things that can be
-// true when the first event arrives, and the last two are the ones that
-// keep the memory from becoming a second source of truth.
+// RFC 9915 section 18.2.13's Reply to a Confirm carries a status and no options.
+
 func TestCarryResumedConfig6(t *testing.T) {
 	dns := func(s ...string) []netip.Addr {
 		out := make([]netip.Addr, 0, len(s))
@@ -539,8 +403,7 @@ func TestCarryResumedConfig6(t *testing.T) {
 		if len(ev.Lease.DNS) != 1 || ev.Lease.DNS[0].String() != "2001:db8::9" {
 			t.Errorf("DNS = %v, want the server's own answer untouched", ev.Lease.DNS)
 		}
-		// The pair is all-or-nothing: a Reply carrying option 23 and
-		// not option 24 has said there is no search list.
+		// RFC 3646: a Reply with option 23 and no option 24 has said there is no search list (#911).
 		if len(ev.Lease.DomainSearch) != 0 {
 			t.Errorf("DomainSearch = %v, want none: the server sent DNS and no search list", ev.Lease.DomainSearch)
 		}
@@ -583,12 +446,7 @@ func TestCarryResumedConfig6(t *testing.T) {
 	})
 }
 
-// fakeV6Client is a v6AcquisitionClient with no socket under it.
-//
-// Run blocks until its context is cancelled and then closes the event
-// channel, which is what *dhcpruntime.Client6 does and what the drain
-// at the end of runAcquisition6 depends on: a Run that returned without
-// closing would park the drain forever.
+// fakeV6Client closes its event channel when Run returns, as *dhcpruntime.Client6 does.
 type fakeV6Client struct {
 	events chan lease.Event
 	router proto.RouterObservation
@@ -604,14 +462,7 @@ func (f *fakeV6Client) Events() <-chan lease.Event { return f.events }
 
 func (f *fakeV6Client) Router() proto.RouterObservation { return f.router }
 
-// acquisition6Result runs runAcquisition6 in the background and refuses
-// to wait longer than patience for it.
-//
-// The wait is bounded because the two mutants this file's tests kill --
-// the early conclusion disabled, the window replaced by the caller's
-// clock -- both express themselves as "later than it should have been",
-// and a test that simply called the function would express that as a
-// HANG, which is a third verdict rather than a failure.
+// acquisition6Result bounds the wait so a late verdict fails instead of hanging (#911).
 func acquisition6Result(t *testing.T, ctx context.Context, client v6AcquisitionClient, opts *DHCPClientOptions, hint netip.Addr, window, patience time.Duration) (Info, time.Duration, error) {
 	t.Helper()
 
@@ -635,16 +486,6 @@ func acquisition6Result(t *testing.T, ctx context.Context, client v6AcquisitionC
 	}
 }
 
-// TestRunAcquisition6_EndsOnAnAdvertisementThatOffersNoDHCPv6 drives the
-// early conclusion and its opposite.
-//
-// The first arm is the one #868 could not reach: a segment whose router
-// says M=0 O=0 has ANSWERED, and waiting the window out to say so is
-// what put the verdict past the deadline the daemon keeps on a plugin
-// call. The second arm is the preservation control, and it is not
-// optional -- concluding on any advertisement at all would end a managed
-// acquisition before the server had a chance to reply, which is a
-// container with no address on a network that has one for it.
 func TestRunAcquisition6_EndsOnAnAdvertisementThatOffersNoDHCPv6(t *testing.T) {
 	t.Run("M=0 O=0 ends it without waiting the window out", func(t *testing.T) {
 		client := &fakeV6Client{
@@ -690,13 +531,6 @@ func TestRunAcquisition6_EndsOnAnAdvertisementThatOffersNoDHCPv6(t *testing.T) {
 	})
 }
 
-// TestRunAcquisition6_HasItsOwnWindow drives the deadline this function
-// keeps for itself.
-//
-// The caller's context is given a deadline far longer than the daemon
-// will wait on a plugin call -- which is exactly the shape lease_timeout
-// produced, and exactly what #868 saw -- so an acquisition that honours
-// only the caller's clock never returns in time to say anything.
 func TestRunAcquisition6_HasItsOwnWindow(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
@@ -715,22 +549,9 @@ func TestRunAcquisition6_HasItsOwnWindow(t *testing.T) {
 	}
 }
 
-// TestAcquireStep6_AConflictOnAHintedAddressEndsTheAttempt drives the
-// arm that makes the difference between a container that starts and a
-// container that does not.
-//
-// MEASURED on the lane 2026-09-06 (run 34058213252): with the preferred
-// address held by another node, the exchange ran Solicit -> Advertise ->
-// Request -> Reply -> DAD -> Decline about once a second for sixteen
-// seconds and then the daemon gave up on the plugin call. Every one of
-// those rounds asked for the same address, because the hint is set when
-// the client is built and a Decline does not clear it.
-//
-// THE TWO CONTROLS ARE NOT OPTIONAL. Ending on any conflict at all
-// would take away the library's own recovery -- a conflict on a
-// server-chosen address is answered by restarting discovery, and the
-// next address is a different one -- and ending on any Failed at all
-// would turn every transient refusal into a second acquisition.
+// Measured on the lane 2026-09-06, run 34058213252: a held hinted address looped Solicit to Decline about once a second
+// for sixteen seconds until the daemon gave up (#911).
+
 func TestAcquireStep6_AConflictOnAHintedAddressEndsTheAttempt(t *testing.T) {
 	conflict := lease.Event{Kind: lease.Failed, Reason: proto.ReasonConflict, Note: "in use"}
 
@@ -756,11 +577,6 @@ func TestAcquireStep6_AConflictOnAHintedAddressEndsTheAttempt(t *testing.T) {
 	}
 }
 
-// TestRetryWithoutHint6 drives the decision AND its bound.
-//
-// The bound is the point: the second pass must not be able to ask for a
-// third, and it is held by the method's own state rather than by a
-// counter at the call site, so it is checked here by asking twice.
 func TestRetryWithoutHint6(t *testing.T) {
 	hint := netip.MustParseAddr("fd00:6470:6863::90")
 	inUse := fmt.Errorf("dhcp: %w: in use", errV6HintInUse)
@@ -791,10 +607,7 @@ func TestRetryWithoutHint6(t *testing.T) {
 			"if it is not, a segment with a squatter turns CreateEndpoint into a loop")
 	}
 
-	// Preservation control: a hinted attempt that failed for any other
-	// reason keeps both the hint and the resumption, and gets no second
-	// pass. Widening this to every error would drop #213's preferred
-	// address on any transient refusal.
+	// Any other failure keeps the hint and resumption, #213's preferred address.
 	keep := &DHCPClientOptions{V6: true, Resume: &lease.Lease{}}
 	keep.params6 = proto.Params6{Hint: hint}
 	if _, again := keep.retryWithoutHint6(ErrNoLease); again {
@@ -805,16 +618,12 @@ func TestRetryWithoutHint6(t *testing.T) {
 			"duplicate (hint %v, resume %v)", keep.params6.Hint, keep.Resume)
 	}
 
-	// And an unhinted attempt has nothing to retry differently.
 	none := &DHCPClientOptions{V6: true}
 	if _, again := none.retryWithoutHint6(inUse); again {
 		t.Error("an attempt that asked for no particular address was retried without one")
 	}
 }
 
-// TestRunAcquisition6_AHintedConflictEndsTheLoop is the same decision
-// one level up: the loop must return on the conflict rather than sit
-// out the window, because sitting it out IS the defect.
 func TestRunAcquisition6_AHintedConflictEndsTheLoop(t *testing.T) {
 	hint := netip.MustParseAddr("fd00:6470:6863::90")
 	conflict := lease.Event{Kind: lease.Failed, Reason: proto.ReasonConflict, Note: "in use"}
@@ -834,8 +643,6 @@ func TestRunAcquisition6_AHintedConflictEndsTheLoop(t *testing.T) {
 			"remaining budget is what the second attempt has to run in", took)
 	}
 
-	// The control at this level: with no hint asked for, the same event
-	// leaves the loop running for the library to recover in.
 	unhinted := &fakeV6Client{
 		events: make(chan lease.Event, 1),
 		router: proto.RouterObservation{Seen: true, Managed: true},

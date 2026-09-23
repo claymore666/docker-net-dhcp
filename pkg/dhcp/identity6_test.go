@@ -9,39 +9,21 @@ import (
 	"testing"
 )
 
-// The identity survives the round trip through the record store byte for
-// byte, for every DUID length the chassis can mint.
-//
-// WHY A ROUND TRIP AND NOT TWO SEPARATE ASSERTIONS. The store holds one
-// opaque blob (D10: identity is caller-supplied bytes), so Bytes and
-// ParseIdentity6 are a codec whose only contract is that they compose to
-// the identity. A DUID has no self-describing length on the wire in this
-// blob, so the split is positional -- the IAID is the LAST four bytes --
-// and a codec that agreed with itself while splitting in the wrong place
-// would pass two independent assertions and hand the server a different
-// DUID after every restart.
+// The blob has no self-describing DUID length, so the split is positional: the IAID is the last four bytes (D10, #911).
+
 func TestIdentity6_RoundTrip(t *testing.T) {
 	cases := []struct {
 		name string
 		id   Identity6
 	}{
-		// DUID-LL from a six-byte MAC: 2 bytes of type, 2 of hardware
-		// type, 6 of address. The bridge and macvlan shape.
+		// DUID-LL from a six-byte MAC (RFC 9915 section 11.4): the bridge and macvlan shape.
 		{"duid-ll", Identity6{DUID: []byte{0, 3, 0, 1, 0x02, 0x42, 0xac, 0x11, 0, 2}, IAID: 0xac110002}},
-		// DUID-UUID: 2 bytes of type, 16 of UUID. The ipvlan shape,
-		// where every endpoint on one parent shares the MAC (#895).
+		// DUID-UUID: the ipvlan shape, where every endpoint on one parent shares the MAC (#895).
 		{"duid-uuid", Identity6{
 			DUID: append([]byte{0, 4}, bytes.Repeat([]byte{0xab}, 16)...),
 			IAID: 1,
 		}},
-		// The boundary: the shortest blob ParseIdentity6 accepts is
-		// five bytes, one of DUID and four of IAID. Nothing mints one,
-		// which is exactly why it is here -- the length check is `<=`
-		// and an off-by-one there turns a one-byte DUID into a zero
-		// identity that buildParams6 refuses.
 		{"one-byte duid", Identity6{DUID: []byte{0x7f}, IAID: 0}},
-		// Every bit of the IAID set: a big-endian encode/decode pair
-		// that agreed on little-endian would pass a symmetric value.
 		{"max iaid", Identity6{DUID: []byte{0, 3, 0, 1, 1, 2, 3, 4, 5, 6}, IAID: 0xffffffff}},
 		{"asymmetric iaid", Identity6{DUID: []byte{0, 3, 0, 1, 1, 2, 3, 4, 5, 6}, IAID: 0x01020304}},
 	}
@@ -67,9 +49,6 @@ func TestIdentity6_RoundTrip(t *testing.T) {
 	}
 }
 
-// Bytes copies. The blob goes to a record store that outlives the
-// options struct it came from, and a shared backing array means a later
-// append to the DUID rewrites a persisted identity in place.
 func TestIdentity6_BytesDoesNotAliasTheDUID(t *testing.T) {
 	duid := []byte{0, 3, 0, 1, 1, 2, 3, 4, 5, 6}
 	id := Identity6{DUID: duid, IAID: 7}
@@ -80,8 +59,6 @@ func TestIdentity6_BytesDoesNotAliasTheDUID(t *testing.T) {
 	}
 }
 
-// And so does ParseIdentity6, in the other direction: the blob it is
-// handed comes straight off a record read.
 func TestParseIdentity6_DoesNotAliasTheBlob(t *testing.T) {
 	blob := []byte{0, 3, 0, 1, 1, 2, 3, 4, 5, 6, 0, 0, 0, 7}
 	id, err := ParseIdentity6(blob)
@@ -94,13 +71,6 @@ func TestParseIdentity6_DoesNotAliasTheBlob(t *testing.T) {
 	}
 }
 
-// A blob too short to hold both halves is an error, not a truncated
-// identity.
-//
-// FOUR AND BELOW, not "empty": four bytes parse cleanly as an IAID with
-// an empty DUID, and an empty DUID is the zero identity -- which
-// buildParams6 refuses, but only after the caller has already logged
-// "resumed the endpoint's identity". The refusal belongs at the read.
 func TestParseIdentity6_RefusesABlobWithNoDUID(t *testing.T) {
 	for n := 0; n <= 4; n++ {
 		if _, err := ParseIdentity6(make([]byte, n)); err == nil {
@@ -118,8 +88,7 @@ func TestIdentity6_IsZero(t *testing.T) {
 	if !(Identity6{}).IsZero() {
 		t.Error("the zero Identity6 does not report itself zero")
 	}
-	// The IAID alone is not an identity: zero is a legitimate IAID
-	// value, so only the DUID can decide.
+	// Zero is a legitimate IAID, so only the DUID decides (#911).
 	if !(Identity6{IAID: 42}).IsZero() {
 		t.Error("an Identity6 with an IAID and no DUID reports itself non-zero; " +
 			"the DUID is the part RFC 9915 section 11 says must persist")
@@ -133,8 +102,6 @@ func TestIdentity6_IsZero(t *testing.T) {
 	}
 }
 
-// The two DUID constructors produce the shapes RFC 9915 section 11
-// defines, and the wrapper does not lose the library's refusals.
 func TestDUIDConstructors(t *testing.T) {
 	mac, err := net.ParseMAC("02:42:ac:11:00:02")
 	if err != nil {
@@ -144,8 +111,7 @@ func TestDUIDConstructors(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DUIDLL: %v", err)
 	}
-	// RFC 9915 section 11.4: type 3, then a 16-bit hardware type, then
-	// the link-layer address. Hardware type 1 is Ethernet.
+	// RFC 9915 section 11.4: type 3, then a 16-bit hardware type (1 is Ethernet), then the link-layer address.
 	want := []byte{0, 3, 0, 1, 0x02, 0x42, 0xac, 0x11, 0x00, 0x02}
 	if !bytes.Equal(duid, want) {
 		t.Errorf("DUIDLL(%v) = %x, want %x", mac, duid, want)
@@ -168,15 +134,9 @@ func TestDUIDConstructors(t *testing.T) {
 	}
 }
 
-// The IAID derivations take from opposite ends, and that is the whole
-// point of having two of them.
-//
-// IAIDFromMAC takes the LOW four bytes because the high two of a MAC are
-// the OUI: every container on one Docker network shares them, so a
-// high-end derivation would hand every endpoint on the segment the same
-// IAID and the server would read them as one client's several
-// interfaces (RFC 9915 section 12). IAIDFromBytes takes the FIRST four
-// because its seed is a random endpoint id with no structure to avoid.
+// The high bytes of a MAC are the OUI shared on one Docker network, and RFC 9915 section 12 reads equal IAIDs as one
+// client (#911).
+
 func TestIAIDDerivations_TakeFromOppositeEnds(t *testing.T) {
 	mac, err := net.ParseMAC("02:42:ac:11:00:02")
 	if err != nil {
@@ -199,8 +159,6 @@ func TestIAIDDerivations_TakeFromOppositeEnds(t *testing.T) {
 		t.Errorf("IAIDFromBytes(%x) = %#x, want %#x (the first four bytes)", seed, iaid, 0xdeadbeef)
 	}
 
-	// Two endpoints on one macvlan parent differ only in the low half
-	// of the MAC; that is the population IAIDFromMAC has to separate.
 	other, err := net.ParseMAC("02:42:ac:11:00:03")
 	if err != nil {
 		t.Fatalf("ParseMAC: %v", err)

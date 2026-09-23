@@ -23,17 +23,6 @@ func testOpts6(t *testing.T) *DHCPClientOptions {
 	}
 }
 
-// buildParams6 refuses every shape that would put a DHCPv6 client on the
-// wire without a stable identity, and refuses to be called for a v4
-// endpoint at all.
-//
-// THE IDENTITY REFUSAL IS THE ONE THAT MATTERS. proto.Params6 has no
-// default DUID and the library validates it, so a missing identity is
-// caught either way -- but caught THERE it is caught after the chassis
-// has already entered the container's namespace and opened a socket, and
-// the message names a library field rather than the record that should
-// have carried the identity. Refusing here keeps the diagnosis where the
-// operator can act on it.
 func TestBuildParams6_Refusals(t *testing.T) {
 	cases := []struct {
 		name string
@@ -59,11 +48,8 @@ func TestBuildParams6_Refusals(t *testing.T) {
 			o.PreferredV6 = "not-an-address"
 			return o
 		}},
-		// A v4 address in the v6 hint is the operator having filled in
-		// the wrong option, and it is silent otherwise: netip parses it,
-		// and a hint the server cannot honour is answered with a
-		// different address, so the endpoint comes up looking fine and
-		// the `ipv6` option quietly means nothing (#213).
+		// A v4 hint parses and the server answers another address, so the `ipv6` option would silently mean nothing
+		// (#213).
 		{"a v4 address as the v6 hint", func() *DHCPClientOptions {
 			o := testOpts6(t)
 			o.PreferredV6 = "192.168.0.10"
@@ -80,9 +66,6 @@ func TestBuildParams6_Refusals(t *testing.T) {
 			if _, err := buildParams6(tc.opts(), false); err == nil {
 				t.Error("buildParams6 accepted it")
 			}
-			// Both call shapes: the one-shot and the persistent client
-			// run the same builder, and a refusal that only fires for
-			// one of them leaves the other on the wire.
 			if _, err := buildParams6(tc.opts(), true); err == nil {
 				t.Error("buildParams6 accepted it as a one-shot")
 			}
@@ -90,15 +73,9 @@ func TestBuildParams6_Refusals(t *testing.T) {
 	}
 }
 
-// The identity reaches the parameters, and the ORO is not left at the
-// library's nil.
-//
-// WHY THE ORO IS SET HERE AND NOT LEFT DEFAULT. proto.DefaultParams6
-// leaves ORO nil, and dnsmasq 2.91 answers an Information-request with
-// exactly the options that were asked for -- measured in M7c. A nil ORO
-// on a stateless segment therefore yields a Configured event with no DNS
-// servers at all, which reads as "the segment offers no resolver" and is
-// indistinguishable from the real thing.
+// Measured: dnsmasq 2.91 answers an Information-request with exactly the options asked for, and proto.DefaultParams6
+// leaves ORO nil (#911).
+
 func TestBuildParams6_CarriesTheIdentityAndAsksForConfiguration(t *testing.T) {
 	opts := testOpts6(t)
 	p, err := buildParams6(opts, false)
@@ -132,21 +109,14 @@ func TestBuildParams6_CarriesTheIdentityAndAsksForConfiguration(t *testing.T) {
 		}
 	}
 
-	// The DUID is copied, not aliased: the options struct is the
-	// caller's and outlives this call.
 	opts.Identity6.DUID[0] = 0xff
 	if p.DUID[0] == 0xff {
 		t.Error("buildParams6 aliases the caller's DUID")
 	}
 }
 
-// The hint is set only when the operator asked for one.
-//
-// A zero netip.Addr and "::" are different requests: the library reads
-// an invalid Hint as "no IA_ADDR in the Solicit", which is the ordinary
-// case, while any valid address is an IA_ADDR the server is asked to
-// honour. Defaulting an absent option to the unspecified address would
-// put an IA_ADDR of :: on the wire.
+// The library reads an invalid Hint as no IA_ADDR, while "::" is an IA_ADDR the server is asked to honour (#911).
+
 func TestBuildParams6_HintIsOptional(t *testing.T) {
 	p, err := buildParams6(testOpts6(t), false)
 	if err != nil {
@@ -167,15 +137,8 @@ func TestBuildParams6_HintIsOptional(t *testing.T) {
 	}
 }
 
-// The retransmission ceiling stays the library's, and the Solicit stays
-// uncapped.
-//
-// RFC 9915 section 18.2.1 gives Solicit no MRC and no MRD: a client that
-// hears no server keeps soliciting at SOL_MAX_RT forever. That is the
-// behaviour the plugin wants -- the container's deadline, not the
-// client's, decides when to give up -- and it is a property of
-// proto.DefaultParams6 that buildParams6 could quietly override. Pinning
-// it here means an override has to be deliberate.
+// RFC 9915 section 18.2.1 gives Solicit no MRC and no MRD, so the container's deadline decides when to give up.
+
 func TestBuildParams6_KeepsTheLibraryRetransmissionPolicy(t *testing.T) {
 	p, err := buildParams6(testOpts6(t), false)
 	if err != nil {

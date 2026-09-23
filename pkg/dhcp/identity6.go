@@ -11,44 +11,30 @@ import (
 	"github.com/claymore666/dhcp-golib/wire"
 )
 
-// Identity6 is one endpoint's DHCPv6 identity: RFC 9915 section 21.2's
-// DUID as it goes on the wire, and section 21.4's IAID.
-//
-// THE CHASSIS MINTS IT AND THE LIBRARY CARRIES IT (D10, D30 Q4). The
-// library refuses an empty DUID rather than inventing one, because RFC
-// 9915 section 11 says a DUID "SHOULD NOT change over time if at all
-// possible" and a value generated per process changes on every restart.
-// Persistence is therefore this side's obligation: the identity is
-// written once into the endpoint's v6 record and read back on every
-// restart, and Bytes/ParseIdentity6 are the two halves of that.
+// RFC 9915 section 11 says a DUID "SHOULD NOT change over time if at all possible" and the library refuses an empty
+// one, so the chassis mints it once and the v6 record carries it across restarts through Bytes and ParseIdentity6
+// (#911).
+
+// Identity6 is one endpoint's DHCPv6 identity: the RFC 9915 section 21.2 DUID and the section 21.4 IAID.
 type Identity6 struct {
 	// DUID is the whole option 21.2 payload, type code included.
 	DUID []byte
-	// IAID is the identity association identifier. Zero is a legal
-	// value on the wire and is not a sentinel; an Identity6 with no
-	// DUID is the empty one.
+	// IAID is the identity association identifier; zero is legal, and no DUID means the empty Identity6.
 	IAID uint32
 }
 
 // IsZero reports an identity that was never minted.
 func (i Identity6) IsZero() bool { return len(i.DUID) == 0 }
 
-// hwTypeEthernet is IANA's "Number Hardware Type (hrd)" 1, the value
-// RFC 9915 section 11.4's DUID-LL carries for an Ethernet link.
+// hwTypeEthernet is IANA hardware type 1, which RFC 9915 section 11.4's DUID-LL carries for Ethernet.
 const hwTypeEthernet = 1
 
-// iaidLen is the width of an IAID on the wire (RFC 9915 section 21.4:
-// "IAID: The unique identifier for this IA_NA", a 4-octet field).
+// iaidLen is the IAID's width on the wire (RFC 9915 section 21.4).
 const iaidLen = 4
 
-// Bytes renders the identity for the durable record: the DUID followed
-// by the IAID in network order.
-//
-// THE IAID GOES LAST because the DUID is variable-length and the record
-// stores one opaque blob. A fixed-width tail is the only split that can
-// be parsed back without a second length field, and a record that could
-// not be parsed back would be a record of an identity nobody can reuse
-// — which is the whole reason it is stored rather than re-derived.
+// The IAID goes last: the DUID is variable-length, and a fixed-width tail splits back without a length field (#911).
+
+// Bytes renders the identity for the durable record: the DUID, then the IAID in network order.
 func (i Identity6) Bytes() []byte {
 	if i.IsZero() {
 		return nil
@@ -70,13 +56,10 @@ func ParseIdentity6(b []byte) (Identity6, error) {
 	}, nil
 }
 
-// DUIDLL is RFC 9915 section 11.4's DUID-LL over an Ethernet address:
-// the four bytes 00:03:00:01 followed by the MAC.
-//
-// It is 1.9.0's identity unchanged (P-8.6). dhcpcd was told the same
-// value as a `duid` directive, so a bridge or macvlan endpoint upgraded
-// from 1.x presents the identity the server already has a binding for
-// and keeps its address.
+// It is 1.9.0's identity unchanged, the value dhcpcd got as `duid`, so an endpoint upgraded from 1.x keeps its binding
+// (#911).
+
+// DUIDLL is RFC 9915 section 11.4's DUID-LL over an Ethernet address: 00:03:00:01 followed by the MAC.
 func DUIDLL(mac net.HardwareAddr) ([]byte, error) {
 	duid, err := wire.DUIDLL(hwTypeEthernet, mac)
 	if err != nil {
@@ -85,13 +68,10 @@ func DUIDLL(mac net.HardwareAddr) ([]byte, error) {
 	return duid, nil
 }
 
-// DUIDUUID is RFC 9915 section 11.5's DUID-UUID over a caller-supplied
-// sixteen octets.
-//
-// It exists for ipvlan and for nothing else (#895, D30 Q4). An ipvlan
-// slave inherits the parent's MAC by kernel design, so a MAC-derived
-// DUID is IDENTICAL for every container on the network and they all
-// claim one binding — the v6 form of the defect #219 names for v4.
+// Only for ipvlan: a slave inherits the parent's MAC, so a MAC-derived DUID would be the same for every container
+// (#895, #219).
+
+// DUIDUUID is RFC 9915 section 11.5's DUID-UUID over a caller-supplied sixteen octets.
 func DUIDUUID(uuid []byte) ([]byte, error) {
 	duid, err := wire.DUIDUUID(uuid)
 	if err != nil {
@@ -100,7 +80,7 @@ func DUIDUUID(uuid []byte) ([]byte, error) {
 	return duid, nil
 }
 
-// IAIDFromMAC is 1.9.0's IAID: the low four bytes of the MAC (P-8.6).
+// IAIDFromMAC is 1.9.0's IAID: the low four bytes of the MAC (#911).
 func IAIDFromMAC(mac net.HardwareAddr) (uint32, error) {
 	if len(mac) < iaidLen {
 		return 0, fmt.Errorf("dhcp: an IAID needs %d bytes of hardware address, got %d", iaidLen, len(mac))

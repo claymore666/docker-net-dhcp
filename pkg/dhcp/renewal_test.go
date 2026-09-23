@@ -13,25 +13,9 @@ import (
 	"github.com/claymore666/dhcp-golib/proto"
 )
 
-// TestRenewalWatch_AnAnsweredRenewalNeverMovesTheCounter is the
-// opposite failure, and it is the one that decides whether this counter
-// is worth having.
-//
-// The tempting implementation is RenewalsSent, or Sent minus Completed,
-// and both move the moment a renewal leaves the host. Every healthy
-// renewal is a request in flight for as long as the server takes to
-// answer, so a counter of that shape reports an outage on a network
-// that is working perfectly and an operator alerting on it learns to
-// ignore it. A counter that moves on the send rather than on the
-// silence is the wrong counter.
 func TestRenewalWatch_AnAnsweredRenewalNeverMovesTheCounter(t *testing.T) {
 	var w renewalWatch
 
-	// Three renewals, each answered before the next: the client is
-	// being served and nothing here is a fault. The answer arrives the
-	// way the wire delivers it, as the lease event the chassis is
-	// handed, rather than as a hand-built snapshot in the shape the
-	// counter would like to see.
 	for i := uint64(1); i <= 3; i++ {
 		if got := w.fold(lease.Stats{RenewalsSent: i, RenewalsCompleted: i - 1}); got != 0 {
 			t.Fatalf("renewal %d in flight reported %d unanswered request(s); a request that is "+
@@ -46,44 +30,24 @@ func TestRenewalWatch_AnAnsweredRenewalNeverMovesTheCounter(t *testing.T) {
 	}
 }
 
-// TestRenewalWatch_AnEndingThatNeverCompletesIsStillAnEnding is the
-// opposite failure in its most expensive form: a WARN line naming an
-// endpoint on a network where the server answered every request.
-//
-// A DHCPNAK in RENEWING or REBINDING drops the lease with ReasonNak
-// (proto/machine.go:603-617) and never reaches enterBound, which is the
-// only producer of ActLeaseRenewed and therefore the only thing that
-// bumps RenewalsCompleted (lease/manager.go:1065); its v6 twin is a
-// Reply carrying NotOnLink, which ends the lease the same way
-// (proto/machine6.go:1283-1286). The request was already counted sent
-// (lease/manager.go:1364), so RenewalsSent stays permanently one ahead
-// of RenewalsCompleted for the life of that manager, and
-// Sent-minus-Completed-minus-one claims one unanswered request at the
-// instant the NEXT renewal leaves the host, while it is still in
-// flight. Once for every NAK the client ever takes, and the running
-// maximum never gives it back.
-//
-// Both endings reach the chassis as a Lost event
-// (lease/manager.go:1092), which is where the cycle's end is read from.
+// A DHCPNAK in RENEWING drops the lease with ReasonNak and never reaches enterBound, the only bump of
+// RenewalsCompleted; the v6 twin is NotOnLink, and both reach the chassis as Lost (#940).
+
 func TestRenewalWatch_AnEndingThatNeverCompletesIsStillAnEnding(t *testing.T) {
 	var w renewalWatch
 	var total uint64
 
-	// The renewal at T1, answered by a DHCPNAK: the lease is dropped,
-	// and RenewalsCompleted does not move, now or ever.
+	// A DHCPNAK at T1: RenewalsCompleted never moves for this cycle (#940).
 	naked := lease.Stats{RenewalsSent: 1, NaksSeen: 1, NaksAccepted: 1, LeasesLost: 1}
 	total += w.fold(naked)
 	w.cycleEnded(naked)
 
-	// The client re-acquires. An acquisition's DHCPREQUEST carries a
-	// zero ciaddr and is not a renewal, so nothing here moves
-	// RenewalsSent.
+	// An acquisition's DHCPREQUEST has a zero ciaddr and is not a renewal (RFC 2131 Table 5).
 	reacquired := naked
 	reacquired.LeasesAcquired = 2
 	total += w.fold(reacquired)
 	w.cycleEnded(reacquired)
 
-	// The next renewal, in flight: Sent is 2 and Completed is still 0.
 	inFlight := reacquired
 	inFlight.RenewalsSent = 2
 	total += w.fold(inFlight)
@@ -95,7 +59,6 @@ func TestRenewalWatch_AnEndingThatNeverCompletesIsStillAnEnding(t *testing.T) {
 			total)
 	}
 
-	// And that one is acknowledged. Still nothing owed.
 	acked := inFlight
 	acked.RenewalsCompleted = 1
 	total += w.fold(acked)
@@ -106,15 +69,6 @@ func TestRenewalWatch_AnEndingThatNeverCompletesIsStillAnEnding(t *testing.T) {
 	}
 }
 
-// TestRenewalWatch_EveryEventKindEndsTheCycle takes its population from
-// the library rather than from a list written here, so a kind added to
-// lease.AllEventKinds arrives in this test on the next bump.
-//
-// The watch does not read the kind, and that is the design: "the caller
-// was told something happened to this lease" is the property, and an
-// event that did not in fact end a renewal cycle costs at most the
-// requests already proven unanswered. That is the direction this
-// counter is allowed to err in.
 func TestRenewalWatch_EveryEventKindEndsTheCycle(t *testing.T) {
 	for _, k := range lease.AllEventKinds() {
 		t.Run(k.String(), func(t *testing.T) {
@@ -134,22 +88,17 @@ func TestRenewalWatch_EveryEventKindEndsTheCycle(t *testing.T) {
 	}
 }
 
-// TestRenewalWatch_MovesOncePerRetransmission is the counter's own
-// contract, driven on the sequence #940 was reported from: four renewal
-// requests over 7h52m, the fourth answered.
+// Four renewal requests over 7h52m, the fourth answered, as reported in #940.
+
 func TestRenewalWatch_MovesOncePerRetransmission(t *testing.T) {
 	var w renewalWatch
 	total := uint64(0)
 
-	// The renewal at T1. Nothing is proven yet: this request may still
-	// be answered.
 	total += w.fold(lease.Stats{RenewalsSent: 1})
 	if total != 0 {
 		t.Fatalf("the first renewal request alone reported %d unanswered; it is still in flight", total)
 	}
 
-	// Each retransmission proves the request before it was never
-	// answered, and proves exactly one.
 	for send := uint64(2); send <= 4; send++ {
 		before := total
 		total += w.fold(lease.Stats{RenewalsSent: send})
@@ -159,8 +108,6 @@ func TestRenewalWatch_MovesOncePerRetransmission(t *testing.T) {
 		}
 	}
 
-	// The fourth request is answered. The three before it stay
-	// unanswered: an acknowledgement does not retract them.
 	total += w.fold(lease.Stats{RenewalsSent: 4, RenewalsCompleted: 1})
 	if total != 3 {
 		t.Fatalf("after the fourth request was answered the counter reads %d; the first three went "+
@@ -168,18 +115,12 @@ func TestRenewalWatch_MovesOncePerRetransmission(t *testing.T) {
 	}
 }
 
-// TestRenewalWatch_NeverFalls is D-2: the plugin's counter is a
-// Prometheus counter, and a decrease is a RESET, which repays the whole
-// accumulated value as a rate spike on the next scrape (#730, one
-// counter over). Sent-minus-Completed falls at every acknowledgement,
-// so the value handed out has to be a running maximum and the reported
-// gain can never be negative.
+// A Prometheus counter decrease is a reset that repays the whole value as a rate spike (D-2, #730).
+
 func TestRenewalWatch_NeverFalls(t *testing.T) {
 	var w renewalWatch
 	var total uint64
 
-	// Two renewal cycles, each with two retransmissions before the ACK.
-	// Sent-minus-Completed goes 1,2,3,2 and then 3,4,5,4 across them.
 	steps := []struct {
 		s    lease.Stats
 		ends bool
@@ -212,9 +153,6 @@ func TestRenewalWatch_NeverFalls(t *testing.T) {
 			"unanswered; want 4", total)
 	}
 
-	// What can still go wrong is a fold that hands out the same ground
-	// twice, so re-folding a snapshot already seen must report nothing.
-	// Taken mid-cycle, where there is ground to hand out.
 	mid := lease.Stats{RenewalsSent: 9, RenewalsCompleted: 2}
 	if first := w.fold(mid); first != 2 {
 		t.Fatalf("three requests into the third cycle reported %d unanswered, want 2", first)
@@ -226,13 +164,8 @@ func TestRenewalWatch_NeverFalls(t *testing.T) {
 	}
 }
 
-// TestRenewalWatch_DoesNotCountAcquisition is D-4. The library counts
-// RenewalsSent at countSent, on a DHCPREQUEST with a non-zero ciaddr
-// only, which RFC 2131 Table 5 gives as the RENEWING and REBINDING
-// column; an acquisition's DISCOVER/REQUEST and the INIT-REBOOT REQUEST
-// carry a zero ciaddr and are counted elsewhere. This asserts the
-// chassis side of that boundary: a manager that is acquiring, however
-// hard, moves nothing here.
+// RFC 2131 Table 5: only RENEWING and REBINDING send a DHCPREQUEST with a non-zero ciaddr (D-4, #940).
+
 func TestRenewalWatch_DoesNotCountAcquisition(t *testing.T) {
 	var w renewalWatch
 	busy := lease.Stats{
@@ -246,9 +179,7 @@ func TestRenewalWatch_DoesNotCountAcquisition(t *testing.T) {
 	}
 }
 
-// fakeLib is a libClient whose counters the test controls. It stands in
-// for the library client at the seam the chassis already declares, so
-// the translate goroutine can be driven with no socket and no wire.
+// fakeLib is a libClient whose counters the test controls.
 type fakeLib struct {
 	mu    sync.Mutex
 	stats lease.Stats
@@ -258,10 +189,6 @@ type fakeLib struct {
 func (f *fakeLib) Run(ctx context.Context) error { return nil }
 func (f *fakeLib) Events() <-chan lease.Event    { return f.src }
 func (f *fakeLib) Lease() (lease.Lease, bool)    { return lease.Lease{}, false }
-
-// Release is the seam's fourth method. This fake counts the call and
-// moves no counter, which is the shape releaseHeldLease must read as a
-// FAILED release: a library that was asked and put nothing on the wire.
 
 func (f *fakeLib) Stats() lease.Stats {
 	f.mu.Lock()
@@ -275,21 +202,6 @@ func (f *fakeLib) send(n uint64) {
 	f.stats.RenewalsSent = n
 }
 
-// TestTranslate_ARetransmissionIsReportedWithNoLeaseEvent is #940
-// itself, at the seam the defect lives at.
-//
-// THE DEFECT. A renewal request leaves the host from the library's
-// retransmission timer and, when it is not answered, produces no lease
-// event: the state machine stays in RENEWING and asks again. translate
-// folded the library's counters on the event arm only, so for the whole
-// of an outage there was nothing to fold on, /Plugin.Health read
-// unchanged, and the first counter to move was dhcp_timeouts at the end
-// of the lease -- 24 hours later on the lease this was reported from.
-//
-// So the test delivers NO event at all. It drives the counters the way
-// the wire does, from underneath, and asserts the plugin side is told.
-// Deleting the ticker from translate leaves every other test in this
-// package green and kills this one.
 func TestTranslate_ARetransmissionIsReportedWithNoLeaseEvent(t *testing.T) {
 	lib := &fakeLib{src: make(chan lease.Event)}
 
@@ -300,14 +212,11 @@ func TestTranslate_ARetransmissionIsReportedWithNoLeaseEvent(t *testing.T) {
 		events: newEventChan(),
 		src:    lib.src,
 		runner: lib,
-		// Far below RFC 2131 section 4.4.5's one-minute floor on the
-		// real schedule: this test places the retransmissions itself
-		// and only needs the fold to run between them.
+		// Far below RFC 2131 section 4.4.5's one-minute floor; the test places the retransmissions itself.
 		pollEvery: time.Millisecond,
 	}
 	go c.translate()
 
-	// The renewal at T1. In flight, so nothing is owed yet.
 	lib.send(1)
 	select {
 	case s := <-reports:
@@ -315,8 +224,6 @@ func TestTranslate_ARetransmissionIsReportedWithNoLeaseEvent(t *testing.T) {
 	case <-time.After(50 * time.Millisecond):
 	}
 
-	// The retransmission. The request before it is now refused, and no
-	// lease event has been delivered on this stream at any point.
 	lib.send(2)
 	select {
 	case s := <-reports:
@@ -332,14 +239,8 @@ func TestTranslate_ARetransmissionIsReportedWithNoLeaseEvent(t *testing.T) {
 	close(lib.src)
 }
 
-// TestRenewalPoll_IsDerivedFromTheProtocolFloor holds the tick to the
-// thing it has to observe rather than to a number someone liked.
-//
-// RFC 2131 section 4.4.5 puts a floor of one minute under the wait
-// before a renewal is retransmitted, and the library spells it
-// proto.RenewRetransmitFloor. A tick at or above that floor can miss
-// every retransmission there is, and the counter then reports an
-// outage only when something else happens to fold.
+// RFC 2131 section 4.4.5 floors the renewal retransmission wait at one minute (proto.RenewRetransmitFloor).
+
 func TestRenewalPoll_IsDerivedFromTheProtocolFloor(t *testing.T) {
 	floor := time.Duration(proto.RenewRetransmitFloor)
 	if renewalPollInterval >= floor {
@@ -352,17 +253,6 @@ func TestRenewalPoll_IsDerivedFromTheProtocolFloor(t *testing.T) {
 	}
 }
 
-// TestTranslate_ALeaseEventFoldsTooKeeps the other fold site honest.
-//
-// The tick is what makes an outage observable while nothing else
-// happens; the event arm is what keeps the reading CURRENT when
-// something does. Without it the counter is up to one tick stale at
-// every moment a lease event is handled -- including the last one
-// before the client stops, whose value is what the deferred final
-// report hands over.
-//
-// Driven with the ticker effectively switched off, so the only thing
-// that can produce a report here is the event arm.
 func TestTranslate_ALeaseEventFoldsToo(t *testing.T) {
 	lib := &fakeLib{src: make(chan lease.Event)}
 
@@ -373,14 +263,11 @@ func TestTranslate_ALeaseEventFoldsToo(t *testing.T) {
 		events: newEventChan(),
 		src:    lib.src,
 		runner: lib,
-		// Far longer than this test can run: a report arriving here is
-		// the event arm's or it is nothing.
+		// Longer than the test runs, so only the event arm can report (#940).
 		pollEvery: time.Hour,
 	}
 	go c.translate()
 
-	// Two requests, the first of them therefore refused, and no tick
-	// will ever come.
 	lib.send(2)
 	lib.src <- lease.Event{}
 
@@ -398,16 +285,6 @@ func TestTranslate_ALeaseEventFoldsToo(t *testing.T) {
 	close(lib.src)
 }
 
-// TestTranslate_ANakTerminatedCycleReportsNothing is the NAK scenario
-// at the seam, with the fold running on the real tick and the ending
-// delivered as the real lease event.
-//
-// It is the preservation control on the tick: the whole change is "fold
-// while nothing happens", and the cost of getting that wrong is a
-// counter that moves on a network where every renewal was answered. A
-// watch that reads RenewalsSent minus RenewalsCompleted passes every
-// other test in this file and fails this one on the first tick after
-// the second request leaves the host.
 func TestTranslate_ANakTerminatedCycleReportsNothing(t *testing.T) {
 	lib := &fakeLib{src: make(chan lease.Event)}
 
@@ -422,25 +299,15 @@ func TestTranslate_ANakTerminatedCycleReportsNothing(t *testing.T) {
 	}
 	go c.translate()
 
-	// The renewal at T1 leaves the host, and the server answers it with
-	// a DHCPNAK: the lease is dropped and RenewalsCompleted never moves
-	// for this cycle.
 	lib.send(1)
 	lib.src <- lease.Event{Kind: lease.Lost, Reason: proto.ReasonNak}
 
-	// Drain the translated event. The loop emits it AFTER the counters
-	// are folded and the cycle is closed, so taking it here is the
-	// barrier that puts the next request unambiguously in the next
-	// cycle rather than in a sleep.
 	select {
 	case <-c.events:
 	case <-time.After(wedgeBudget):
 		t.Fatalf("the Lost event was not translated within %v", wedgeBudget)
 	}
 
-	// The client re-acquires and renews again. That request is in
-	// flight, and RenewalsSent is now 2 against a RenewalsCompleted
-	// that is still 0.
 	lib.send(2)
 
 	select {
@@ -456,9 +323,7 @@ func TestTranslate_ANakTerminatedCycleReportsNothing(t *testing.T) {
 	close(lib.src)
 }
 
-// advertsSeen moves the library's Router Advertisement sighting count,
-// which is what the wire does on a link with a router on it and what no
-// lease event accompanies.
+// advertsSeen moves the library's advertisement count, which no lease event accompanies (#814).
 func (f *fakeLib) advertsSeen(n uint64) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
