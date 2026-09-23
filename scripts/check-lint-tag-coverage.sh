@@ -79,6 +79,8 @@
 #   * `if:` is not evaluated. An invocation in a step or job that can
 #     never run still counts.
 #   * A tag assembled from a `${{ }}` expression is not expanded.
+#   * A run inside a string, `bash -c 'staticcheck ./...'`, is not
+#     read: only a command word counts (#883).
 #
 # Each of those would clear a term nothing lints, so they are named
 # rather than left to be discovered. `-tags "integration"` USED to
@@ -175,12 +177,11 @@ fi
 # shellcheck source=scripts/workflow-shell-lines.sh
 . "$HERE/workflow-shell-lines.sh"
 
-# `go install .../cmd/staticcheck@vX` is not an invocation either:
-# staticcheck there is preceded by a slash, so requiring a word
-# boundary in front excludes it without naming the install line.
+# Only a command whose first word is staticcheck counts: a word match
+# accepted `echo staticcheck -tags integration ./...` as coverage (#883).
 mapfile -t invocations < <(
-    workflow_shell_lines "$WORKFLOWS" |
-        grep -E '(^|[[:space:]|;&(])staticcheck[[:space:]]'
+    workflow_shell_lines "$WORKFLOWS" | shell_simple_commands |
+        grep -E '^([^ ]*/)?staticcheck( |$)'
 )
 
 if [ "${#invocations[@]}" -eq 0 ]; then
