@@ -24,7 +24,7 @@ type EndpointHealth struct {
 	Mode     string `json:"mode"`
 	// Address is the lease the renewal client currently holds, in CIDR form.
 	Address string `json:"address,omitempty"`
-	// LeaseState is `bound` when the client holds a lease and `acquiring` when it does not.
+	// LeaseState is `bound` when the client holds the lease its last recorded event bound, `acquiring` otherwise.
 	LeaseState string `json:"lease_state"`
 	// RenewAt, RebindAt and ExpiresAt are T1, T2 and the lease end as RFC 3339 times; an empty
 	// ExpiresAt on a bound endpoint is an infinite lease (RFC 2131 section 3.3).
@@ -33,7 +33,7 @@ type EndpointHealth struct {
 	ExpiresAt string `json:"expires_at,omitempty"`
 	// Server is the DHCP server that granted the lease (option 54).
 	Server string `json:"server,omitempty"`
-	// LastEvent is the manager's most recent lifecycle event, such as `bound`, `renew` or `nak`, with its time.
+	// LastEvent is the v4 client's most recent lifecycle event, such as `bound`, `renew` or `nak`, with its time.
 	LastEvent   string `json:"last_event,omitempty"`
 	LastEventAt string `json:"last_event_at,omitempty"`
 	// ConflictCheck is the RFC 5227 mode this client runs in and ACDPhase is where that check has got to.
@@ -48,13 +48,12 @@ func (m *dhcpManager) healthView() EndpointHealth {
 		Mode:     m.opts.effectiveMode(),
 	}
 
-	kind, at := m.lastEventSeen()
-	e.LastEvent = kind
-	if !at.IsZero() {
-		e.LastEventAt = at.Format(time.RFC3339Nano)
+	rec, c := m.healthSnapshot()
+	e.LastEvent = rec.event
+	if !rec.at.IsZero() {
+		e.LastEventAt = rec.at.Format(time.RFC3339Nano)
 	}
 
-	c := m.healthClient()
 	if c == nil {
 		e.LeaseState = "acquiring"
 		e.ConflictCheck = "unknown"
@@ -65,11 +64,14 @@ func (m *dhcpManager) healthView() EndpointHealth {
 	e.ConflictCheck = c.ConflictMode().String()
 	e.ACDPhase = c.ACDPhase().String()
 
-	l, ok := c.Lease()
-	if !ok {
+	// A conflict drops the lease with no event (dhcp.translateOne), so the record alone would stay bound; the live
+	// read only ever demotes it, and every rendered field still comes from the record (#1044).
+	live, ok := c.Lease()
+	if !ok || live.Addr != rec.lease.Addr {
 		e.LeaseState = "acquiring"
 		return e
 	}
+	l := rec.lease
 	e.LeaseState = "bound"
 	e.Address = l.Addr.String()
 	if l.ServerID.IsValid() {
