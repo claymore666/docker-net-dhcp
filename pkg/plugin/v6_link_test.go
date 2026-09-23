@@ -18,9 +18,6 @@ import (
 )
 
 func TestIPv6DisablePath(t *testing.T) {
-	// The path is per-interface and per-netns; the interface name is
-	// the only variable and it belongs in the middle component, not
-	// appended to the file.
 	if got, want := ipv6DisablePath(ipv6DisableSysctlDir, "eth0"), "/proc/sys/net/ipv6/conf/eth0/disable_ipv6"; got != want {
 		t.Errorf("ipv6DisablePath(eth0) = %q, want %q", got, want)
 	}
@@ -30,9 +27,7 @@ func TestIPv6DisablePath(t *testing.T) {
 }
 
 func TestClearDisableIPv6(t *testing.T) {
-	// The two outcomes are the point: an endpoint that DID get an
-	// IPv6 address arrives here already enabled, and writing anyway
-	// would make every endpoint look like the #868 case in the log.
+	// A link that already has IPv6 is read and not written, or every endpoint would log as the #868 case.
 	tests := []struct {
 		name        string
 		content     string
@@ -43,10 +38,6 @@ func TestClearDisableIPv6(t *testing.T) {
 		{name: "already enabled", content: "0\n", wantChanged: false, wantFile: "0\n"},
 		{name: "already enabled, no trailing newline", content: "0", wantChanged: false, wantFile: "0"},
 	}
-	// Non-vacuity, keyed on the outcome: "the two outcomes are the
-	// point" is what the comment above claims, and a table reduced to
-	// one of them -- or to none -- passes silently against a
-	// clearDisableIPv6 that always writes or never does.
 	var changed, unchanged int
 	for _, tt := range tests {
 		if tt.wantChanged {
@@ -85,10 +76,7 @@ func TestClearDisableIPv6(t *testing.T) {
 }
 
 func TestClearDisableIPv6_MissingSysctlIsAnError(t *testing.T) {
-	// Not a silent success: an absent sysctl means the interface is
-	// not the one we think it is, or /proc/sys is not the namespace's
-	// own -- either way the DHCPv6 client that follows cannot work,
-	// and the caller counts it.
+	// An absent sysctl is an error the caller counts, not a silent success (#868).
 	_, err := clearDisableIPv6(filepath.Join(t.TempDir(), "does-not-exist"))
 	if err == nil {
 		t.Fatal("clearDisableIPv6 on a missing path returned nil error")
@@ -99,13 +87,7 @@ func TestClearDisableIPv6_MissingSysctlIsAnError(t *testing.T) {
 }
 
 func TestPrepareIPv6Link_RefusesBeforeTouchingAThread(t *testing.T) {
-	// Both refusals happen before any thread is locked or any
-	// namespace entered. The nil-link one is the important half: it is
-	// not a defensive nicety but the difference between an error and a
-	// panic, because Attrs() on a nil Link dereferences nil -- and it
-	// has to be checked BEFORE the namespace switch, or the panic
-	// unwinds a goroutine that is locked to a thread sitting in the
-	// container's network namespace.
+	// Attrs() on a nil Link panics, so both refusals come before the namespace switch.
 	tests := []struct {
 		name string
 		m    *dhcpManager
@@ -118,11 +100,6 @@ func TestPrepareIPv6Link_RefusesBeforeTouchingAThread(t *testing.T) {
 			want: "namespace handle is closed",
 		},
 	}
-	// Non-vacuity. Both refusals are named in the comment above, and the
-	// nil-link one is the difference between an error and a panic that
-	// unwinds a goroutine locked to a thread sitting in the container's
-	// network namespace. Dropping it leaves this test green over the
-	// remaining case.
 	if len(tests) != 2 {
 		t.Fatalf("the refusal table has %d rows, want both preconditions — each has to "+
 			"be refused BEFORE any thread is locked or any namespace entered",
@@ -134,10 +111,6 @@ func TestPrepareIPv6Link_RefusesBeforeTouchingAThread(t *testing.T) {
 			if err == nil {
 				t.Fatalf("prepareIPv6Link returned nil error (changed=%v)", changed)
 			}
-			// The guard is not attempted on a link that failed its
-			// preconditions: a step count above zero here would mean
-			// sysctls were written on a link the function has just
-			// said it cannot address.
 			if guard.Failures != 0 {
 				t.Errorf("prepareIPv6Link reported %d guard steps after refusing the link; "+
 					"the guard must not run at all on a link it cannot name", guard.Failures)
@@ -150,9 +123,6 @@ func TestPrepareIPv6Link_RefusesBeforeTouchingAThread(t *testing.T) {
 }
 
 func TestEnsureIPv6Enabled_CountsTheFailure(t *testing.T) {
-	// The counter is the whole reason this failure is distinguishable
-	// from a quiet segment: both otherwise present only as DHCPv6
-	// timeouts.
 	p := &Plugin{}
 	m := (&dhcpManager{}).withPlugin(p)
 	m.ensureIPv6Enabled()
@@ -162,34 +132,14 @@ func TestEnsureIPv6Enabled_CountsTheFailure(t *testing.T) {
 }
 
 func TestEnsureIPv6Enabled_SurvivesANilPlugin(t *testing.T) {
-	// dhcpManager.plugin is nil in unit tests that do not stand up a
-	// Plugin; a refusal is still a refusal with no counter to bump.
 	m := &dhcpManager{}
 	m.ensureIPv6Enabled()
 }
 
-// startV6BranchWindow bounds "the same branch" for the gate below: the
-// two calls sit within a couple of dozen lines of each other today,
-// and a limit keeps the ordering claim from being satisfied by two
-// calls in unrelated parts of the file.
+// startV6BranchWindow keeps the order claim inside Start's v6 branch.
 const startV6BranchWindow = 40
 
-// TestStart_EnablesIPv6BeforeTheV6Client pins the ORDER, not the
-// presence.
-//
-// Both calls could be present and the fix still be dead: on a link the
-// engine disabled, no link-local ever appears, so the client's own wait
-// for one spends its whole budget and refuses, and enabling IPv6
-// afterwards arrives with the DHCPv6 client already given up on a link
-// that had nothing on it. That is precisely the shape the stateless run
-// under #868 produced -- "No usable link-local address", then a -6
-// client that never emitted a router solicitation -- so the ordering is
-// the defect, and presence alone would not have caught it.
-//
-// Source-reading rather than behavioural because reaching this code
-// needs a live container, a sandbox namespace and root; the alternative
-// to a gate here is no observer at all. STATED BOUND: it reads the
-// spelling of two calls, so a rename or a wrapper is invisible to it.
+// A source gate, since Start needs root and a sandbox; a rename or a wrapper of either call is invisible (#868).
 func TestStart_EnablesIPv6BeforeTheV6Client(t *testing.T) {
 	const (
 		enable  = "m.ensureIPv6Enabled()"
@@ -220,25 +170,14 @@ func TestStart_EnablesIPv6BeforeTheV6Client(t *testing.T) {
 		}
 	}
 
-	// A LINE ORDER IS NOT AN EXECUTION ORDER. `defer m.ensureIPv6Enabled()`
-	// and `go m.ensureIPv6Enabled()` leave the call exactly where it is
-	// and move when it runs -- the first to after the client has already
-	// failed, the second to whenever. Both walked through the version of
-	// this gate that only compared line numbers (MEASURED: the mutant
-	// survived). So the enable must be a plain statement on its own line.
-	// STATED BOUND: a call moved inside a helper that defers it is still
-	// invisible here.
+	// A deferred or go-launched enable keeps its line but runs late, so the enable must be a plain statement (#868).
 	if got := strings.TrimSpace(lines[at(enable)[0]-1]); got != enable {
 		t.Errorf("%v line %d is %q, want exactly %q -- a deferred or spawned enable runs "+
 			"after or beside the client rather than before it, and the line order below "+
 			"cannot tell the difference", srcFile, at(enable)[0], got, enable)
 	}
 
-	// setupClient(true) is the unique marker for the IPv6 branch of
-	// Start -- there is exactly one persistent DHCPv6 client -- so
-	// requiring the enable to sit above it, and close by, says "inside
-	// that branch" without depending on how the branch itself is
-	// spelled.
+	// setupClient(true) is the only persistent DHCPv6 client, so it marks the v6 branch.
 	enableLine, clientLine := at(enable)[0], at(client)[0]
 	if enableLine >= clientLine {
 		t.Errorf("%v: %q is on line %d and %q on %d -- IPv6 must be enabled BEFORE the "+
@@ -254,45 +193,14 @@ func TestStart_EnablesIPv6BeforeTheV6Client(t *testing.T) {
 	}
 }
 
-// linkLocalWaitMarkers are the three things a link-local wait in THIS
-// package has to read, whatever it is called.
-//
-// Keyed on the MECHANISM and not on a function name (#911 review round
-// 1, finding 5). A wait for a usable IPv6 link-local address over
-// netlink has to select on link scope and reject the two duplicate-
-// address-detection flags; a wait that does less than that is not
-// waiting for a usable address, and one that does it under another name
-// still names these three.
+// linkLocalWaitMarkers are what any netlink link-local wait reads: link scope and the two DAD flags (#911).
 var linkLocalWaitMarkers = []string{
 	"RT_SCOPE_LINK",
 	"IFA_F_TENTATIVE",
 	"IFA_F_DADFAILED",
 }
 
-// TestTheChassisDoesNotWaitForALinkLocalItself is the observer for "the
-// v6 Join path waits for the link-local ONCE".
-//
-// One fact, one derivation. runtime.InterfaceLinkLocal resolves the
-// interface on the calling thread, refuses a tentative or dad-failed
-// address, and waits its own derived bound (RFC 4862 section 5.4.2's
-// delay plus one probe, plus a stated margin) for a usable one. The
-// chassis had a SECOND wait in front of it, on a ten-second budget
-// derived from nothing, so a link whose link-local never cleared spent
-// fourteen seconds of a thirty-second Join deadline arriving at the
-// refusal the library reaches in four -- and newLibClient6's own doc
-// comment asserted the wait was not there.
-//
-// WHY A SOURCE SCAN. The Join path needs root, a sandbox namespace and
-// a live container; nothing in the unit lane can execute it. The
-// property is an ABSENCE, and an absence is what a scan can actually
-// establish over a whole package where a behavioural test can only
-// speak for the path it drives.
-//
-// STATED BOUNDS. It reads production sources under pkg/plugin only:
-// a wait added in another package of the chassis, or one written
-// against /proc/net/if_inet6 or netip's IsLinkLocalUnicast instead of
-// netlink, is invisible to it. It cannot see a wait inside the library
-// either, which is the point -- that one is the derivation being kept.
+// A source scan of pkg/plugin, since Join needs root; a wait in another package or via /proc/net is invisible (#911).
 func TestTheChassisDoesNotWaitForALinkLocalItself(t *testing.T) {
 	entries, err := os.ReadDir(".")
 	if err != nil {
@@ -323,8 +231,7 @@ func TestTheChassisDoesNotWaitForALinkLocalItself(t *testing.T) {
 		}
 	}
 
-	// NON-VACUITY. A scan that read nothing reports the same clean
-	// result as a package with no wait in it.
+	// Non-vacuity: a scan that read nothing is as clean as a package with no wait.
 	if scanned < 2 {
 		t.Fatalf("scanned %d production sources in this package; the check above measured "+
 			"nothing", scanned)
@@ -334,19 +241,6 @@ func TestTheChassisDoesNotWaitForALinkLocalItself(t *testing.T) {
 	}
 }
 
-// TestProcSysPrep_NeverStopsTheWrite pins the direction the /proc/sys
-// preparation is allowed to fail in.
-//
-// The remount is best effort: on a runtime where /proc/sys is not a
-// separate mount it fails and /proc/sys is already writable, so the
-// disable_ipv6 write would have succeeded. Treating the preparation's
-// error as the verdict skipped that write and left the container with
-// no IPv6 for a mount the host did not need — a guard failing in the
-// direction that breaks a working host. pkg/dhcp/client.go carries the
-// measurement and makes the same call non-fatal for dhcpcd's argv.
-//
-// This asserts the disposition rather than the log line, because a
-// comment saying "we keep going" is prose and prose satisfies nothing.
 func TestProcSysPrep_NeverStopsTheWrite(t *testing.T) {
 	for _, err := range []error{
 		errors.New("unshare mount namespace: operation not permitted"),
@@ -365,10 +259,6 @@ func TestProcSysPrep_NeverStopsTheWrite(t *testing.T) {
 	}
 }
 
-// TestClearDisableIPv6_IsTheObserver is the other half: with the
-// preparation contributing no verdict, the write must still fail loudly
-// when the tree really is unwritable. Otherwise the change above would
-// have traded a false negative for a silent one.
 func TestClearDisableIPv6_IsTheObserver(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "disable_ipv6")
@@ -390,17 +280,7 @@ func TestClearDisableIPv6_IsTheObserver(t *testing.T) {
 	}
 }
 
-// notTheContractValue is a value for one guard knob that the guard
-// itself would never leave there.
-//
-// IT IS DERIVED FROM THE CONTRACT, NOT WRITTEN DOWN, and that is the
-// whole of it. This fixture used to seed every knob with "0", which was
-// discriminating while the contract read accept_ra=2/autoconf=1 and
-// stopped being so the moment #821 flipped two of them to 0: a knob
-// seeded at the value the guard writes cannot tell "the guard wrote it"
-// from "nobody touched it", and both assertions below would have gone
-// quietly vacuous with no test going red. Deriving the seed means the
-// next change to the contract cannot do that either.
+// notTheContractValue derives each seed from the guard contract, so a seed never equals what the guard writes (#821).
 func notTheContractValue(want string) string {
 	if want == "0" {
 		return "1"
@@ -408,10 +288,7 @@ func notTheContractValue(want string) string {
 	return "0"
 }
 
-// v6LinkSysctlDir builds a stand-in for /proc/sys/net/ipv6/conf with
-// one interface directory holding disable_ipv6 and the guard's three
-// knobs, all at values a real sandbox link starts from: IPv6 off, and
-// every guard knob at something the guard has to move.
+// v6LinkSysctlDir stands in for /proc/sys/net/ipv6/conf: one link with IPv6 off and every guard knob off contract.
 func v6LinkSysctlDir(t *testing.T, iface string) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -445,22 +322,6 @@ func v6LinkKnob(t *testing.T, dir, iface, name string) string {
 	return strings.TrimSpace(string(b))
 }
 
-// TestPrepareV6LinkUnder_GuardRunsOnlyAfterIPv6IsOn drives the ORDER,
-// which is the whole claim of prepareIPv6Link and was the part no test
-// could reach: the namespace entry around it needs root and a sandbox,
-// so a mutant that applied the guard on a link whose IPv6 could not be
-// turned on survived the entire unit lane, and so did one that never
-// applied the guard at all.
-//
-// The two directions are the test. On a link that can be enabled the
-// guard's knobs must end up at the contract's values — otherwise the
-// container has a DHCPv6 address and no route, because DHCPv6 carries
-// no next hop. On a link that cannot, the guard must not have run:
-// its knobs write and read back perfectly well on a link with IPv6
-// administratively off, so a guard applied there reports success for
-// an endpoint on which no advertisement can be processed at all, and
-// router_advert_guard_failures reads zero for the one endpoint that
-// most needs it to read something.
 func TestPrepareV6LinkUnder_GuardRunsOnlyAfterIPv6IsOn(t *testing.T) {
 	const iface = "eth0"
 	contract := dhcp.RouterAdvertGuardContract()
@@ -496,9 +357,7 @@ func TestPrepareV6LinkUnder_GuardRunsOnlyAfterIPv6IsOn(t *testing.T) {
 
 	t.Run("IPv6 cannot be enabled: the guard does not run", func(t *testing.T) {
 		dir := v6LinkSysctlDir(t, iface)
-		// A directory where disable_ipv6 should be: the read fails, and
-		// it fails the way a sysctl that is not there or not readable
-		// does, without needing a read-only mount or a non-root user.
+		// A directory at disable_ipv6 makes the read fail as a missing or unreadable sysctl does.
 		p := filepath.Join(dir, iface, "disable_ipv6")
 		if err := os.Remove(p); err != nil {
 			t.Fatalf("remove: %v", err)
