@@ -759,6 +759,9 @@ func TestIPAM_ReplayAfterDaemonRestart(t *testing.T) {
 		_ = bgCli.ContainerStop(bg, id, container.StopOptions{})
 		_ = bgCli.ContainerRemove(bg, id, container.RemoveOptions{Force: true})
 	})
+	// The address appears at CreateEndpoint before Join starts the persistent client, so wait for the bind first; the
+	// window opens before the start, since the bind can land before the address is read (#386, #1016).
+	bindW := harness.BeginCounterWindow(t, ctx, cli, "leases_obtained")
 	if err := cli.ContainerStart(ctx, id, container.StartOptions{}); err != nil {
 		t.Fatalf("ContainerStart: %v", err)
 	}
@@ -766,8 +769,6 @@ func TestIPAM_ReplayAfterDaemonRestart(t *testing.T) {
 	before, beforeMAC := ipamNetworkAddress(t, ctx, cli, id, netName)
 	t.Logf("before the restart: %s on %s", before, beforeMAC)
 
-	// The address appears at CreateEndpoint before Join starts the persistent client, so wait for the bind first (#386).
-	bindW := harness.BeginCounterWindow(t, ctx, cli, "leases_obtained")
 	waitLeaseObtained(t, bindW, 30*time.Second)
 	bindW.End()
 
