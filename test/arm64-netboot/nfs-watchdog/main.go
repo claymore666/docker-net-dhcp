@@ -348,12 +348,15 @@ func main() {
 	run(w, p, c, sig, stop, logf)
 }
 
-// run is the petting loop, separated from main so a test can drive it
-// with a fake device and a fake clock source.
+// run is the petting loop on a real ticker, separated from main so a test can drive it with a fake device.
 func run(w *watchdog, p *prober, c config, sig <-chan os.Signal, stop chan struct{}, logf func(string, ...any)) {
 	tick := time.NewTicker(c.petInterval)
 	defer tick.Stop()
+	petLoop(w, p, c, sig, stop, tick.C, logf)
+}
 
+// petLoop decides once per tick, taking the time from the tick itself.
+func petLoop(w *watchdog, p *prober, c config, sig <-chan os.Signal, stop chan struct{}, ticks <-chan time.Time, logf func(string, ...any)) {
 	starving := false
 	for {
 		select {
@@ -382,7 +385,7 @@ func run(w *watchdog, p *prober, c config, sig <-chan os.Signal, stop chan struc
 				"will be ended by the hardware — that is deliberate.", c.probePath, age, c.staleAfter)
 			w.release()
 			return
-		case now := <-tick.C:
+		case now := <-ticks:
 			last := p.lastGood()
 			if shouldPet(now, last, c.staleAfter) {
 				if starving {

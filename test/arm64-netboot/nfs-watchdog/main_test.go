@@ -196,39 +196,38 @@ func TestRun_StopsPettingWhenTheProbeGoesStale(t *testing.T) {
 	}
 	w := &watchdog{f: dev}
 
+	// Ticks carry synthetic times and each send on the unbuffered channel
+	// returns only once the loop has handled the tick before it; sleeping
+	// on a real ticker flaked under -race (#632, run 35876722101).
+	last := time.Now().Add(-time.Hour)
 	p := &prober{path: "/irrelevant", interval: time.Hour, statfs: statfsProbe}
-	p.last.Store(time.Now().UnixNano()) // healthy to begin with
+	p.last.Store(last.UnixNano())
 
-	c := config{petInterval: 2 * time.Millisecond, probeInterval: time.Millisecond,
+	c := config{petInterval: time.Hour, probeInterval: time.Millisecond,
 		staleAfter: 40 * time.Millisecond, hwTimeout: time.Second}
 
 	sig := make(chan os.Signal, 1)
-	stop := make(chan struct{})
+	ticks := make(chan time.Time)
 	var logged []string
 	done := make(chan struct{})
 	go func() {
-		run(w, p, c, sig, stop, func(f string, a ...any) { logged = append(logged, f) })
+		petLoop(w, p, c, sig, make(chan struct{}), ticks, func(f string, a ...any) { logged = append(logged, f) })
 		close(done)
 	}()
 
-	time.Sleep(20 * time.Millisecond)
-	petsWhileHealthy := size(t, dev.Name())
-	if petsWhileHealthy == 0 {
-		t.Fatal("nothing was written to the device while the filesystem was healthy")
+	ticks <- last
+	ticks <- last.Add(c.staleAfter)
+	ticks <- last.Add(c.staleAfter + time.Nanosecond)
+	ticks <- last.Add(time.Second)
+	if got := size(t, dev.Name()); got != 2 {
+		t.Fatalf("want one pet per healthy tick (2), device holds %d bytes", got)
 	}
-
-	// The prober's interval is an hour, so the timestamp now ages out
-	// and nothing refreshes it — the outage, simulated honestly.
-	time.Sleep(80 * time.Millisecond)
-	petsAfterStale := size(t, dev.Name())
-
-	time.Sleep(40 * time.Millisecond)
-	if got := size(t, dev.Name()); got != petsAfterStale {
-		t.Fatalf("the watchdog was still being petted after the probe went stale: %d -> %d", petsAfterStale, got)
-	}
-
+	ticks <- last.Add(time.Minute)
 	sig <- os.Interrupt
 	<-done
+	if got := size(t, dev.Name()); got != 2 {
+		t.Fatalf("the watchdog was still being petted after the probe went stale: 2 -> %d", got)
+	}
 
 	// Stopping while the share is silent must NOT disarm. This is the
 	// shutdown path: systemd stops units before it unmounts, so the
@@ -244,14 +243,14 @@ func TestRun_StopsPettingWhenTheProbeGoesStale(t *testing.T) {
 		t.Fatalf("the watchdog was disarmed on a stop taken while the filesystem was already gone; tail is %q", tail(string(b)))
 	}
 
-	var sawRefusal bool
+	var refusals int
 	for _, l := range logged {
 		if strings.Contains(l, "NOT petting") {
-			sawRefusal = true
+			refusals++
 		}
 	}
-	if !sawRefusal {
-		t.Fatal("stopping to pet must be logged; a silent reset is indistinguishable from a crash")
+	if refusals != 1 {
+		t.Fatalf("stopping to pet must be logged once, got %d; a silent reset is indistinguishable from a crash", refusals)
 	}
 }
 
