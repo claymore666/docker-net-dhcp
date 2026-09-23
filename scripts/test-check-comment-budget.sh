@@ -179,9 +179,11 @@ base_old() { lean; gofile "$(cmt 12)
 $(code 30 | sed 's/^var v/var o/')" > p/old.go; }
 rename_edit() { git mv p/old.go p/new.go; sed -i 's/^var o30 = 30$/var o30 = 31/' p/new.go; }
 run_setup "a renamed file with an old block and a one-line edit passes" 0 'gate passed' base_old rename_edit
-header_file() { printf '%s\n\n%s\n' "$LIC" "$(gofile "$(code 3 | sed 's/^var v/var h/')")" > p/h.go; }
+# Each adds one comment line, so the share rule binds the package (#1057).
+header_file() { printf '%s\n\n%s\n' "$LIC" "$(gofile "// one
+$(code 40 | sed 's/^var v/var h/')")" > p/h.go; }
 run_setup "a licence header in a new file stays out of the share" 0 'gate passed' lean header_file
-doc_file() { printf '%s\npackage p\n' "$(cmt 12 '#9')" > p/doc.go; }
+doc_file() { printf '%s\npackage p\n\n// one\n%s\n' "$(cmt 12 '#9')" "$(code 40 | sed 's/^var v/var d/')" > p/doc.go; }
 run_setup "a doc.go package doc stays out of the share" 0 'gate passed' lean doc_file
 bad_file() { printf 'package p\n\nvar s = "open\n' > p/bad.go; }
 run_setup "an added file that does not scan exits 2" 2 'bad.go does not scan' lean bad_file
@@ -221,6 +223,23 @@ line_only() {
 $(code 10 | sed 's/^var v/var w/')" > p/a.go
 }
 run_setup "//line directives are ignored" 0 'gate passed' base_body line_only
+
+# The share rule binds only a package that gains a comment line (#1057).
+drop_code() { gofile "$(basebody)" > p/a.go; }
+base_more() { gofile "$(basebody)
+$(code 10)" > p/a.go; }
+run_setup "a share rise from deleting code alone passes" 0 'rose, no comment added' base_more drop_code
+two_pkgs() { base_more; mkdir q; gofile "$(code 10)" > q/b.go; }
+cmt_elsewhere() { drop_code; gofile "// one
+$(code 10)" > q/b.go; }
+run_setup "a comment added in another package does not bind this one" 1 'p .*rose, no comment added' two_pkgs cmt_elsewhere
+one_cmt_drop() { gofile "$(basebody)
+// one" > p/a.go; }
+run_setup "a rise with one added comment line fails" 1 'p .*FAIL rose' base_more one_cmt_drop
+line_doc() {
+    printf '//line gen.go:90\n\n%s\npackage p\n' "$(cmt 12 '#9')" > p/doc.go
+}
+run_setup "a doc.go package doc below a //line directive is still exempt" 0 'gate passed' lean line_doc
 
 # Ranges.
 run_case "an unresolvable range exits 2" p/a.go "$BASE" "$(grow "")" 2 'cannot resolve' nosuch..HEAD

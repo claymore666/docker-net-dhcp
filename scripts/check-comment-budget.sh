@@ -253,6 +253,7 @@ func check(base, head string) int {
 		added[p][n] = true
 	}
 	bad := 0
+	commented := map[string]bool{}
 	paths := make([]string, 0, len(added))
 	for p := range added {
 		paths = append(paths, p)
@@ -264,6 +265,11 @@ func check(base, head string) int {
 			fail2("%v", err)
 		}
 		f := classify(p, src)
+		for i := range f.class {
+			if f.class[i] == comment && added[p][i] {
+				commented[filepath.Dir(p)] = true
+			}
+		}
 		for i := 1; i < len(f.class); {
 			if f.class[i] != comment && f.class[i] != pkgdoc {
 				i++
@@ -316,7 +322,11 @@ func check(base, head string) int {
 			v = "removed"
 		case !bok:
 			v = "new"
-		case hs.c*(bs.c+bs.k) > bs.c*(hs.c+hs.k):
+		case hs.c*(bs.c+bs.k) <= bs.c*(hs.c+hs.k):
+		case !commented[p]:
+			// A rise with no added comment line, as from deleting code, passes (#1057).
+			v = "rose, no comment added"
+		default:
 			v = "FAIL rose"
 			bad++
 		}
