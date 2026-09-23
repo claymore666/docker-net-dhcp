@@ -149,6 +149,132 @@ out=$(bash "$CHECK" "$WF" "$LANE" "$SDIR" 2>&1); rc=$?
 [ $rc -eq 0 ] && ok "a script named only in a comment needs no lane entry" \
                || no "a commented mention was treated as an invocation (rc=$rc: $out)"
 
+# --- a mention is not an invocation (#883) ----------------------------
+# mkdecoy <file> <shape>: one real step running check-a.sh, plus a step
+# that names check-m.sh without running it.
+mkdecoy() {
+    local f="$1" shape="$2"
+    {
+        printf 'jobs:\n  test:\n    steps:\n'
+        printf '      - name: a\n        run: bash scripts/check-a.sh\n'
+        case "$shape" in
+            echo)     printf '      - name: m\n        run: echo "scripts/check-m.sh runs elsewhere"\n' ;;
+            comment)  printf '      - name: m\n        run: true  # bash scripts/check-m.sh\n' ;;
+            nameonly) printf '      - name: bash scripts/check-m.sh\n        if: false\n        run: true\n' ;;
+            quoted)   printf '      - name: m\n        run: echo "x; bash scripts/check-m.sh"\n' ;;
+            cont)     printf '      - name: m\n        run: |\n          echo "see" \\\n            "scripts/check-m.sh describe"\n' ;;
+            heredoc)  printf '      - name: m\n        run: |\n          cat <<'"'"'EOF'"'"'\n          scripts/check-m.sh\n          EOF\n' ;;
+            mlquote)  printf '      - name: m\n        run: |\n          echo "gates that run elsewhere:\n          scripts/check-m.sh"\n' ;;
+            mlsingle) printf '      - name: m\n        run: |\n          gh pr comment 1 --body '"'"'\n          scripts/check-m.sh\n          '"'"'\n' ;;
+            mlescape) printf '      - name: m\n        run: |\n          echo "a \\" b\n          scripts/check-m.sh""\n          "\n' ;;
+            bashc)    printf '      - name: m\n        run: bash -c "echo scripts/check-m.sh"\n' ;;
+        esac
+    } > "$f"
+}
+for shape in echo comment nameonly quoted cont heredoc mlquote mlsingle mlescape bashc; do
+    mkgates check-a.sh
+    mkdecoy "$WF" "$shape"
+    mklane "$LANE" "scripts/check-a.sh" ""
+    out=$(bash "$CHECK" "$WF" "$LANE" "$SDIR" 2>&1); rc=$?
+    [ $rc -eq 0 ] && ok "rule 1: a script only named ($shape) needs no lane entry" \
+                   || no "rule 1: the $shape mention was treated as an invocation (rc=$rc: $out)"
+    mkgates check-a.sh check-m.sh
+    mklane "$LANE" "scripts/check-a.sh,scripts/check-m.sh" ""
+    out=$(bash "$CHECK" "$WF" "$LANE" "$SDIR" 2>&1); rc=$?
+    [ $rc -eq 1 ] && case "$out" in *"no workflow runs"*check-m.sh*) true ;; *) false ;; esac \
+        && ok "rule 4: a gate only named ($shape) is still an orphan" \
+        || no "rule 4: the $shape mention counted as wiring (rc=$rc: $out)"
+done
+
+# The same mentions as the ONLY scripts in the workflow: nothing is
+# invoked, which is a refusal, not a clean compare.
+mkgates check-m.sh
+printf 'jobs:\n  test:\n    steps:\n      - name: m\n        run: echo "scripts/check-m.sh runs elsewhere"\n' > "$WF"
+mklane "$LANE" "scripts/check-m.sh" ""
+out=$(bash "$CHECK" "$WF" "$LANE" "$SDIR" 2>&1); rc=$?
+[ $rc -eq 2 ] && ok "a workflow that only names scripts exits 2" \
+               || no "a mention-only workflow returned $rc (: $out)"
+
+# Invocation shapes the repository's workflows use must still count.
+for form in 'x=$(bash scripts/check-m.sh arg) || x=run' \
+            'row="$(bash scripts/check-m.sh --rows)"' \
+            "printf '%s' \"\$r\" | bash scripts/check-m.sh \"\$SHA\"" \
+            'bash .resolver/scripts/check-m.sh "$TAG" > out.md' \
+            'if ! sh -e scripts/check-m.sh; then exit 1; fi' \
+            'FOO=1 "./scripts/check-m.sh"' \
+            'bash -c "scripts/check-m.sh"' \
+            'bash -ec "FOO=1 scripts/check-m.sh arg; true"'; do
+    mkgates check-a.sh check-m.sh
+    mkwf "$WF" "bash scripts/check-a.sh" "$form"
+    mklane "$LANE" "scripts/check-a.sh" ""
+    out=$(bash "$CHECK" "$WF" "$LANE" "$SDIR" 2>&1); rc=$?
+    [ $rc -eq 1 ] && case "$out" in *"lane nor declared"*check-m.sh*) true ;; *) false ;; esac \
+        && ok "rule 1 counts: $form" || no "rule 1 missed an invocation: $form (rc=$rc: $out)"
+    mklane "$LANE" "scripts/check-a.sh,scripts/check-m.sh" ""
+    out=$(bash "$CHECK" "$WF" "$LANE" "$SDIR" 2>&1); rc=$?
+    [ $rc -eq 0 ] && ok "rule 4 counts: $form" || no "rule 4 missed an invocation: $form (rc=$rc: $out)"
+done
+
+# A quote spanning lines ends where it closes: the next line is a
+# command again (#883).
+mkgates check-a.sh check-m.sh
+printf 'jobs:\n  test:\n    steps:\n      - name: m\n        run: |\n          echo "a\n          b" && bash scripts/check-a.sh\n          bash scripts/check-m.sh\n' > "$WF"
+mklane "$LANE" "scripts/check-a.sh" ""
+out=$(bash "$CHECK" "$WF" "$LANE" "$SDIR" 2>&1); rc=$?
+[ $rc -eq 1 ] && case "$out" in *"lane nor declared"*check-m.sh*) true ;; *) false ;; esac \
+    && ok "rule 1 counts a script run after a quote spanning lines" \
+    || no "rule 1 missed the run after a multi-line quote (rc=$rc: $out)"
+
+# A # on a string's second line is not a comment: cutting it there
+# left the quote open and hid the run after it (#883).
+mkgates check-a.sh check-m.sh
+printf 'jobs:\n  test:\n    steps:\n      - name: m\n        run: |\n          echo "start\n          x # y" && bash scripts/check-a.sh\n          bash scripts/check-m.sh\n' > "$WF"
+mklane "$LANE" "scripts/check-a.sh" ""
+out=$(bash "$CHECK" "$WF" "$LANE" "$SDIR" 2>&1); rc=$?
+[ $rc -eq 1 ] && case "$out" in *"lane nor declared"*check-m.sh*) true ;; *) false ;; esac \
+    && ok "rule 1 counts a run after a # inside a string spanning lines" \
+    || no "rule 1 lost the run after a # inside a spanning string (rc=$rc: $out)"
+
+# A longer word is not the script: check-m.sh.orig is not check-m.sh.
+mkgates check-a.sh
+mkwf "$WF" "bash scripts/check-a.sh" "bash scripts/check-m.sh.orig"
+mklane "$LANE" "scripts/check-a.sh" ""
+out=$(bash "$CHECK" "$WF" "$LANE" "$SDIR" 2>&1); rc=$?
+[ $rc -eq 0 ] && ok "rule 1 does not read check-m.sh.orig as check-m.sh" \
+               || no "rule 1 matched a prefix of a longer word (rc=$rc: $out)"
+
+# NOT_IN_CI: a gate no workflow runs by design passes with a reason, and
+# the declaration fails once a workflow runs it or the script is gone.
+mklanenotci() {
+    mklane "$LANE" "$1" ""
+    sed -i 's/^esac$//' "$LANE"
+    printf '  --list-not-in-ci)\n    printf "%%s\\t%%s\\n" "%s" "%s"\n    ;;\nesac\n' "$2" "$3" >> "$LANE"
+}
+mkgates check-a.sh check-m.sh
+mkwf "$WF" "bash scripts/check-a.sh"
+mklanenotci "scripts/check-a.sh" "scripts/check-m.sh" "workstation preflight"
+out=$(bash "$CHECK" "$WF" "$LANE" "$SDIR" 2>&1); rc=$?
+[ $rc -eq 0 ] && ok "a gate declared NOT_IN_CI with a reason is not an orphan" \
+               || no "a NOT_IN_CI gate was still called an orphan (rc=$rc: $out)"
+mklanenotci "scripts/check-a.sh" "scripts/check-m.sh" " "
+out=$(bash "$CHECK" "$WF" "$LANE" "$SDIR" 2>&1); rc=$?
+[ $rc -eq 1 ] && case "$out" in *"check-m.sh is declared NOT_IN_CI with no reason"*) true ;; *) false ;; esac \
+    && ok "a NOT_IN_CI declaration with no reason fails" \
+               || no "an empty NOT_IN_CI reason returned $rc (: $out)"
+mkwf "$WF" "bash scripts/check-a.sh" "bash scripts/check-m.sh"
+mklanenotci "scripts/check-a.sh,scripts/check-m.sh" "scripts/check-m.sh" "workstation preflight"
+out=$(bash "$CHECK" "$WF" "$LANE" "$SDIR" 2>&1); rc=$?
+[ $rc -eq 1 ] && case "$out" in *"NOT_IN_CI, but a workflow runs it"*check-m.sh*) true ;; *) false ;; esac \
+    && ok "a NOT_IN_CI gate that a workflow runs fails" \
+               || no "a contradicted NOT_IN_CI returned $rc (: $out)"
+mkgates check-a.sh
+mkwf "$WF" "bash scripts/check-a.sh"
+mklanenotci "scripts/check-a.sh" "scripts/check-m.sh" "workstation preflight"
+out=$(bash "$CHECK" "$WF" "$LANE" "$SDIR" 2>&1); rc=$?
+[ $rc -eq 1 ] && case "$out" in *"NOT_IN_CI, but no such"*check-m.sh*) true ;; *) false ;; esac \
+    && ok "a NOT_IN_CI declaration for a missing script fails" \
+               || no "a stale NOT_IN_CI returned $rc (: $out)"
+
 # --- 4. orphan gates ---------------------------------------------------
 # The direction rules 1-3 structurally cannot see. All three start from
 # what the workflow invokes, so a gate NO workflow invokes is in

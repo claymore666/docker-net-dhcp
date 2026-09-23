@@ -40,6 +40,7 @@
 #   scripts/local-lane.sh              run the lane
 #   scripts/local-lane.sh --list       print the scripts the lane runs
 #   scripts/local-lane.sh --list-exempt   print "<script>\t<reason>"
+#   scripts/local-lane.sh --list-not-in-ci   same, for NOT_IN_CI
 # Env:
 #   STRICT=1   a skipped step is a failure
 # Exit: 0 all ran and passed, 1 something failed, 2 cannot run (empty lane).
@@ -205,6 +206,12 @@ OUT_OF_LANE=(
   "scripts/check-coverage-floor.sh|compares the baseline at the merge base against this branch's, so it needs the base the PR is opened against; a local guess at that ref would judge the wrong pair of blobs"
 )
 
+# "script|reason" for a check-*.sh no workflow runs by design, so the
+# orphan rule of check-local-lane.sh accepts it (#883).
+NOT_IN_CI=(
+  "scripts/check-release-tooling.sh|preflight for the release runbook's manual steps; it checks the maintainer's own cosign, gh and git signing key, which a runner does not have"
+)
+
 lane_scripts() {
     local e cmd
     for e in "${LANE[@]}"; do
@@ -218,8 +225,11 @@ case "${1:-}" in
     --list-exempt)
         for e in "${OUT_OF_LANE[@]}"; do printf '%s\t%s\n' "${e%%|*}" "${e#*|}"; done
         exit 0 ;;
+    --list-not-in-ci)
+        for e in "${NOT_IN_CI[@]}"; do printf '%s\t%s\n' "${e%%|*}" "${e#*|}"; done
+        exit 0 ;;
     "") ;;
-    *) echo "usage: $0 [--list|--list-exempt]" >&2; exit 2 ;;
+    *) echo "usage: $0 [--list|--list-exempt|--list-not-in-ci]" >&2; exit 2 ;;
 esac
 
 if [ "${#LANE[@]}" -eq 0 ]; then

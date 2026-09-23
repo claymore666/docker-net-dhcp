@@ -104,11 +104,8 @@ mapfile -t tests < <(printf '%s\n' "${tests[@]}" | sort)
 # filename does not count either — that is the same defect one door
 # along, and it is the one #872's own gate was caught by.
 #
-# THE BOUNDARY. This asks whether the filename appears in an executed
-# line, not whether it is the command's argv[0]. `run: echo
-# scripts/test-x.sh` would satisfy it. Narrowing further would mean
-# parsing shell, and the failure that cost something was prose, not a
-# contrived echo.
+# `run: echo scripts/test-x.sh` satisfied it until #883; the file must
+# now be the command word of a simple command (shell_command_words).
 WORKFLOWS="${SELFTEST_WORKFLOWS:-$(cd "$HERE/.." && pwd)/.github/workflows}"
 
 # shellcheck source=scripts/workflow-shell-lines.sh
@@ -117,9 +114,9 @@ WORKFLOWS="${SELFTEST_WORKFLOWS:-$(cd "$HERE/.." && pwd)/.github/workflows}"
 # Extracted once: this runs per delegated test, and re-reading every
 # workflow each time would make the cost quadratic in the skip list.
 if [ -d "$WORKFLOWS" ]; then
-    workflow_shell="$(workflow_shell_lines "$WORKFLOWS")"
+    workflow_cmds="$(workflow_shell_lines --raw "$WORKFLOWS" | shell_command_words | sed 's|.*/||')"
 else
-    workflow_shell=""
+    workflow_cmds=""
 fi
 
 jobs="${SELFTEST_JOBS:-$(nproc 2>/dev/null || echo 1)}"
@@ -209,12 +206,12 @@ for t in "${tests[@]}"; do
         skipped+=("$base -> $owner")
         # A case glob rather than a pipeline into grep: under pipefail a
         # consumer that exits early kills the producer with SIGPIPE and
-        # the pipeline reports failure on success. $workflow_shell is
+        # the pipeline reports failure on success. $workflow_cmds is
         # empty when there is no workflow directory, which falls to the
         # same arm — "no workflows" and "no execution" are both
         # "delegated to nowhere".
-        case "$workflow_shell" in
-            *"$base"*) : ;;
+        case $'\n'"$workflow_cmds"$'\n' in
+            *$'\n'"$base"$'\n'*) : ;;
             *) undelegated+=("$base") ;;
         esac
         continue

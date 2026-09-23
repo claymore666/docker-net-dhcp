@@ -304,6 +304,36 @@ wf 'staticcheck -tags "integration" ./...'
 track
 chk "and a quoted-tag-only workflow is still missing the default view" "$(rc)" "1"
 
+# --- 14 AN ARGUMENT IS NOT AN INVOCATION (#883) ----------------------
+# A word-boundary match counted `echo staticcheck ...` as a linter run.
+# Each direction: the echo must not stand in for the view it names.
+repo c14; go_plain; go_tagged integration
+wf 'echo staticcheck ./...' 'staticcheck -tags integration ./...'; track
+chk "an echoed untagged run is not the default view" "$(rc)" "1"
+says "and the default view is reported missing" 'runs WITHOUT -tags'
+
+repo c14b; go_plain; go_tagged integration
+wf 'staticcheck ./...' 'echo staticcheck -tags integration ./...'; track
+chk "an echoed tagged run does not cover its tag" "$(rc)" "1"
+says "and the tag is reported unlinted" "build tag 'integration' is carried by 1 tracked"
+
+repo c14c; go_plain; go_tagged integration
+wf 'echo staticcheck ./... staticcheck -tags integration ./...'; track
+chk "a workflow that only echoes staticcheck is vacuous" "$(rc)" "2"
+
+# Preservation: command position after && and a path-qualified binary.
+repo c14d; go_plain; go_tagged integration
+wf 'go vet ./... && staticcheck ./...' '$HOME/go/bin/staticcheck -tags integration ./...'; track
+chk "a run after && and a path-qualified binary both count" "$(rc)" "0"
+
+# A string spanning block lines: its second line is prose, not a run.
+if [ "$SHAPE" = block ]; then
+    repo c14e; go_plain; go_tagged integration
+    wf 'staticcheck ./...' 'echo "views:
+          staticcheck -tags integration ./..."'; track
+    chk "a tagged run inside a string spanning lines is not a run" "$(rc)" "1"
+fi
+
 done
 
 # The mutant fixtures below are `bare` unless a case says otherwise.
@@ -365,10 +395,10 @@ fi
 # mutant does not clear, the new cases are not measuring the fix.
 mut_grep_all="$TMP/mut-grepall.sh"
 awk '
-/^    workflow_shell_lines "\$WORKFLOWS" \|$/ {
+/^    workflow_shell_lines --raw "\$WORKFLOWS" \| shell_simple_commands \|$/ {
     print "    grep -rhE \047(^|[[:space:]|;&(])staticcheck[[:space:]]\047 \"$WORKFLOWS\" 2>/dev/null |"
-    print "        sed \047s/^[[:space:]]*//\047 | grep -v \047^#\047 |"
-    print "        cat |"
+    print "        sed \047s/^[[:space:]]*//\047 | grep -v \047^#\047"
+    getline
     next
 }
 { print }' "$GATE" > "$mut_grep_all"
@@ -381,7 +411,7 @@ awk '
 mut_code="$(grep -v '^[[:space:]]*#' "$mut_grep_all")"
 c_built=1
 cmp -s "$GATE" "$mut_grep_all" && c_built=0
-case "$mut_code" in *'workflow_shell_lines "$WORKFLOWS"'*) c_built=0 ;; esac
+case "$mut_code" in *'workflow_shell_lines --raw "$WORKFLOWS"'*) c_built=0 ;; esac
 case "$mut_code" in *'grep -rhE'*) : ;; *) c_built=0 ;; esac
 if [ "$c_built" -eq 1 ] && bash -n "$mut_grep_all" 2>/dev/null; then
     ok "mutant C built, differs from the gate, and really restores the line-wide grep"
@@ -399,6 +429,31 @@ if [ "$c_built" -eq 1 ] && bash -n "$mut_grep_all" 2>/dev/null; then
     else bad "the real gate cleared the tagged-only named fixture"; fi
 else
     bad "could not build mutant C; case 11 is unverified"
+fi
+
+# MUTANT D: the pre-#883 matcher, a word match over executed lines. The
+# echo decoy of case 14 must read CLEAN under it, or case 14 is inert.
+mut_word="$TMP/mut-word.sh"
+awk '
+/^    workflow_shell_lines --raw "\$WORKFLOWS" \| shell_simple_commands \|$/ {
+    print "    workflow_shell_lines \"$WORKFLOWS\" |"
+    print "        grep -E \047(^|[[:space:]|;&(])staticcheck[[:space:]]\047"
+    getline
+    next
+}
+{ print }' "$GATE" > "$mut_word"
+if ! cmp -s "$GATE" "$mut_word" && bash -n "$mut_word" 2>/dev/null &&
+   ! grep -v '^[[:space:]]*#' "$mut_word" | grep shell_simple_commands >/dev/null; then
+    ok "mutant D built and really restores the word match"
+    repo m5; go_plain; go_tagged integration
+    wf 'echo staticcheck ./...' 'staticcheck -tags integration ./...'; track
+    if LINT_TAG_ROOT="$R" bash "$mut_word" >/dev/null 2>&1; then
+        ok "with it, an echoed default view reads CLEAN; case 14 is live"
+    else
+        bad "mutant D still reported a gap; case 14 is not measuring the matcher"
+    fi
+else
+    bad "could not build mutant D; case 14 is unverified"
 fi
 
 # --- the emptied-domain refusal ---------------------------------------
