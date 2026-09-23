@@ -617,12 +617,17 @@ func v6WantedAddrs(main *netlink.Addr, info dhcp.Info) ([]wantedV6Addr, error) {
 
 // withdrawV6AddrsNotIn removes every installed address the lease no longer holds, as a set difference: an expired
 // valid lifetime (RFC 4862 section 5.5.4) or a withdrawn prefix can take one address while another stays, and an
-// unrouted address would still be picked as a source (#818, #819). Failures are counted, never fatal.
+// unrouted address would still be picked as a source (#818, #819). Failures are logged, never fatal.
+//
+// EADDRNOTAVAIL counts as withdrawn: the installed valid_lft is floored to whole seconds, so the kernel drops the
+// address about a second before the library's deadline and this delete finds it gone (measured 2026-09-24, #1016).
 func (m *dhcpManager) withdrawV6AddrsNotIn(h v6LinkAddrs, want []wantedV6Addr, source string) {
 	for _, gone := range v6AddrsToWithdraw(m.installedV6(), want) {
 		key, addr := gone.key, gone.addr
 		m.forgetV6Addr(key)
-		if err := h.AddrDel(m.ctrLink, addr); err != nil {
+		err := h.AddrDel(m.ctrLink, addr)
+		kernelExpired := errors.Is(err, unix.EADDRNOTAVAIL)
+		if err != nil && !kernelExpired {
 			log.
 				WithError(err).
 				WithFields(m.logFields(true)).
@@ -638,6 +643,7 @@ func (m *dhcpManager) withdrawV6AddrsNotIn(h v6LinkAddrs, want []wantedV6Addr, s
 			WithFields(m.logFields(true)).
 			WithField("withdrawn_ip", key).
 			WithField("source", source).
+			WithField("kernel_expired", kernelExpired).
 			Info("An IPv6 address left this endpoint's lease and was removed from the link")
 	}
 	for _, w := range want {
