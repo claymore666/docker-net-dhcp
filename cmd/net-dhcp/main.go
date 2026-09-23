@@ -38,7 +38,7 @@ func main() {
 			currentLogFd = nil
 		}
 	}
-	// log.Fatal exits without running defers, so under -logfile its last line could stay unflushed.
+	// log.Fatal exits without running defers, so under -logfile its last line could stay unflushed (#38).
 	fatalCleanup := func(err error, msg string) {
 		log.WithError(err).Error(msg)
 		closeLogFile()
@@ -83,7 +83,7 @@ func main() {
 		}
 		defer closeLogFile()
 
-		// SIGHUP reopens the file after logrotate moves or copytruncates it and signals from postrotate.
+		// SIGHUP reopens the file after logrotate moves or copytruncates it and signals from postrotate (#34).
 		hup := make(chan os.Signal, 1)
 		signal.Notify(hup, unix.SIGHUP)
 		go func() {
