@@ -115,9 +115,9 @@
 # promoted" -- over a workflow that installed nothing.
 #
 # The discriminator is POSITION, not vocabulary: an install counts only
-# when the token sits OUTSIDE any shell quoting ON ITS OWN LINE. That
-# is what separates the single-line echo above from a real command, and
-# it is what a re-wording of the echoed text cannot get around.
+# when the token sits OUTSIDE any shell quoting ON ITS OWN LINE, in
+# command position (#883): a bare `echo docker plugin install ...` is
+# unquoted and still prints. A re-wording cannot get around either.
 #
 # THE CLAIM STOPS AT THE LINE, and the boundary is stated here because
 # the earlier version of this paragraph did not state one -- it said
@@ -127,12 +127,10 @@
 #
 #   a heredoc body line          docker plugin install --grant... $REF
 #   a multi-line echo's 2nd line  ...--grant-all-permissions $REF"
-#   a trailing comment           true  # docker plugin install --gr...
 #
 # The scan reads one line at a time with quoting state reset at each
-# newline, and it strips a comment only when `#` is the first non-space
-# character. All three are therefore out of reach by construction, not
-# by oversight.
+# newline. Both are therefore out of reach by construction, not by
+# oversight. A trailing comment is not: `#` is no command separator.
 #
 # The live one is the heredoc: release.yml already writes step
 # summaries and already uses heredocs, so ordinary housekeeping could
@@ -223,21 +221,37 @@ def unquoted_offsets(text):
     return out
 
 
+KEYWORD = re.compile(r"(?:^|\s)(?:then|do|else|elif|if|while|until|!)$")
+
+
+# Command position, as check-release-refusal-order.sh reads it (#883):
+# unquoted, and only a separator, a keyword or the `run:` key before it.
+# A bare `echo docker plugin install ...` is unquoted and still prints.
+def command_at(text, start):
+    if start not in unquoted_offsets(text):
+        return False
+    head = re.sub(r"^\s*(?:-\s+)?(?:run:\s*)?", "", text[:start], count=1)
+    while True:
+        head = head.rstrip()
+        if head == "" or head[-1] in ";&|({":
+            return True
+        m = KEYWORD.search(head)
+        if m is None:
+            return False
+        head = head[:m.start()]
+
+
 def runs(text, rx):
-    """The first match of `rx` that a shell would EXECUTE.
-    An occurrence inside quotes is text the step prints, not a command
-    it runs. Used for the install detection (#858) and for the copy
-    that publishes the alias (#972): an echoed copy publishes nothing.
+    """The matches of `rx` that a shell would EXECUTE.
+    An occurrence inside quotes or behind a printer is text the step
+    prints, not a command it runs. Used for the install detection
+    (#858), the verifier's reference and the promotion (#883).
     """
-    free = unquoted_offsets(text)
-    for m in rx.finditer(text):
-        if m.start() in free:
-            return m
-    return None
+    return [m for m in rx.finditer(text) if command_at(text, m.start())]
 
 def is_install(text):
     """True when `text` runs an install rather than printing one."""
-    return runs(text, INSTALL) is not None
+    return bool(runs(text, INSTALL))
 
 
 def copies(text):
@@ -312,9 +326,11 @@ for line in open(sys.argv[1], encoding="utf-8"):
     m = ENVKV.match(stripped)
     if m and "${" not in m.group(1):
         cur["env"][m.group(1)] = m.group(2)
-    for role, rx in (("publish", PUBLISH), ("verify", VERIFY), ("promote", PROMOTE)):
-        for n, t in rx.findall(stripped):
-            cur["hits"].append((role, n, t))
+    for n, t in PUBLISH.findall(stripped):
+        cur["hits"].append(("publish", n, t))
+    for role, rx in (("verify", VERIFY), ("promote", PROMOTE)):
+        for m in runs(stripped, rx):
+            cur["hits"].append((role, m.group(1), m.group(2)))
     copied = copies(stripped)
     if copied is not None:
         cur["hits"].append(("publish", copied.group(1), copied.group(2)))
