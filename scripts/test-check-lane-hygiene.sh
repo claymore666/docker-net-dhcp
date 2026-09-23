@@ -125,6 +125,64 @@ guarded_tmpdir d
     || no "a matrix declaration was misread as an un-guarded step"
 rm -rf "$d"
 
+# --- a mention guards and runs nothing (#883) --------------------------
+# Each decoy passed while the gate matched `if: always()` and the command
+# as text anywhere in a step. The control is the same step with the
+# decoy text gone: red on any version of this gate, so the decoy was
+# the whole pass.
+mk_step() {
+    # $1 dir, $2.. the lines of one step after the install step
+    local d="$1"; shift
+    {
+        printf 'name: lane\non:\n  workflow_dispatch:\njobs:\n  suite:\n'
+        printf '    runs-on: ubuntu-latest\n    steps:\n'
+        printf '      - name: Build + install\n        run: |\n'
+        printf '          docker plugin create "$REF" plugin\n'
+        printf '%s\n' "$@"
+    } > "$d/lane.yml"
+}
+decoy() {
+    # $1 want, $2 label, $3.. step lines
+    local want="$1" label="$2"; shift 2
+    guarded_tmpdir d; mk_step "$d" "$@"
+    [ "$(verdict "$d")" = "$want" ] && ok "$label" || no "$label (want $want)"
+    rm -rf "$d"
+}
+decoy 1 "A: a teardown whose plugin rm is an echo argument is not a teardown" \
+    '      - name: Tear down' '        if: always()' \
+    '        run: echo "docker plugin rm -f $REF runs elsewhere"'
+decoy 1 "A control: the same step with the echo gone" \
+    '      - name: Tear down' '        if: always()' '        run: "true"'
+decoy 1 "A: if: always() written in run: is not the step's if" \
+    '      - name: Tear down' '        run: |' '          echo "if: always()"' \
+    '          docker plugin rm -f "$REF" || true'
+decoy 1 "A: if: always() in a step name is not the step's if" \
+    '      - name: "Tear down, if: always()"' '        run: docker plugin rm -f "$REF" || true'
+decoy 1 "A: an if: always() line inside a run block is not the step's if" \
+    '      - name: Tear down' '        run: |' "          cat <<'Y'" '          if: always()' \
+    '          Y' '          docker plugin rm -f "$REF" || true'
+decoy 1 "A control: the teardown with no if: at all" \
+    '      - name: Tear down' '        run: docker plugin rm -f "$REF" || true'
+
+decoy 1 "B: echo \"if: always()\" before the failure suite is not an if:" \
+    '      - name: Run failure suite' \
+    '        run: echo "if: always()" && make integration-test-failure' \
+    '      - name: Tear down' '        if: always()' '        run: docker plugin rm -f "$REF"'
+decoy 1 "B: if: always() in a step name is not an if:" \
+    '      - name: "Run failure suite, if: always()"' '        run: make integration-test-failure' \
+    '      - name: Tear down' '        if: always()' '        run: docker plugin rm -f "$REF"'
+decoy 1 "B control: the failure suite with no if: at all" \
+    '      - name: Run failure suite' '        run: make integration-test-failure' \
+    '      - name: Tear down' '        if: always()' '        run: docker plugin rm -f "$REF"'
+decoy 0 "B: a step that only echoes the target runs no failure suite" \
+    '      - name: Note' '        run: echo "make integration-test-failure runs in the matrix"' \
+    '      - name: Tear down' '        if: always()' '        run: docker plugin rm -f "$REF"'
+decoy 0 "A: a teardown whose first key is if: always() is a teardown" \
+    '      - if: always()' '        name: Tear down' '        run: docker plugin rm -f "$REF" || true'
+decoy 1 "B: a failure suite whose first key is id: still needs its if:" \
+    '      - id: failure' '        name: Run failure suite' '        run: make integration-test-failure' \
+    '      - name: Tear down' '        if: always()' '        run: docker plugin rm -f "$REF"'
+
 # --- C. `edited` where a gate reads the PR body -------------------------
 
 mk_body_gate() {
