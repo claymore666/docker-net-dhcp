@@ -51,6 +51,9 @@ edit() {
 # ---- the tree as shipped ---------------------------------------------
 out="$(bash "$GATE" 2>&1)"; got=$?
 check "the tree as shipped is green" 0 "every one has a matrix line" "$out" "$got"
+# The green twin adds one option to the shipped count; a hand-written count went stale with each new option (#1036).
+shipped="$(printf '%s' "$out" | sed -n 's/.* documents \([0-9][0-9]*\) options;.*/\1/p')"
+[ -n "$shipped" ] || { echo "FAIL  the shipped gate output names no option count: '$out'"; exit 1; }
 for want in 'release_lease|step|' 'conflict_check|step|' '--ip|step|' '--ip6|measure|' 'mode|shape|'; do
     out="$(grep -F -- "$want" "$STEPS")"; got=$?
     check "the shipped step list has $want" 0 "$want" "$out" "$got"
@@ -68,7 +71,7 @@ out="$(ENGINE_SHAPES_DOC="$tmp/both.md" bash "$CELL" --print-option-steps | grep
 check "the derivation prints an empty line for it" 0 "em_new||" "$out" "$got"
 { cat "$STEPS"; echo 'em_new|step|a fresh line in the server log'; } > "$tmp/steps-new"
 out="$(gate "$tmp/both.md" "$tmp/steps-new")"; got=$?
-check "green twin: the same option with a step line" 0 "documents 31 options" "$out" "$got"
+check "green twin: the same option with a step line" 0 "documents $((shipped + 1)) options" "$out" "$got"
 
 edit "$tmp/detailed-only.md" '/^| `host_ifname` | bridge | \*(off)\* | \*\*v2.2.0\*\* |/a | `em_new` | all | `false` | **v2.3.0** | A new option. |'
 out="$(gate "$tmp/detailed-only.md" "$tmp/steps-new")"; got=$?

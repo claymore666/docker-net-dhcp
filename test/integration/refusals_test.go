@@ -90,8 +90,9 @@ type refusalCase struct {
 	controls map[string]createShape
 }
 
-// The rows are the "is refused" sentences of docs/reference.md's ipv6, ipv6_mode and host_ifname rows and its IPAM
-// section (#1016); ErrIPAM and ErrModeMismatch prefix every one of them, so no row matches on the prefix alone.
+// The rows are the "is refused" sentences of docs/reference.md's ipv6, ipv6_mode, host_ifname and require_mac rows and
+// its IPAM section (#1016, #1036); ErrIPAM and ErrModeMismatch prefix every one of them, so no row matches on the
+// prefix alone.
 var refusalCases = []refusalCase{
 	{
 		name:    "host_ifname is refused on macvlan and the message names the mode",
@@ -109,6 +110,23 @@ var refusalCases = []refusalCase{
 		controls: map[string]createShape{
 			"the same value is accepted on bridge": {mode: "bridge", opts: map[string]string{"host_ifname": "hostname"}},
 			"ipvlan without it is accepted":        {mode: "ipvlan"},
+		},
+	},
+	{
+		name:    "require_mac is refused on ipvlan and the message says why",
+		refused: createShape{mode: "ipvlan", opts: map[string]string{"require_mac": "true"}},
+		want:    []string{"require_mac cannot be set in mode=ipvlan", "share the parent's MAC"},
+		controls: map[string]createShape{
+			"the same value is accepted on macvlan": {mode: "macvlan", opts: map[string]string{"require_mac": "true"}},
+			"ipvlan with it off is accepted":        {mode: "ipvlan", opts: map[string]string{"require_mac": "false"}},
+		},
+	},
+	{
+		name:    "require_mac with a value that is not a boolean is refused naming the option",
+		refused: createShape{mode: "bridge", opts: map[string]string{"require_mac": "yes"}},
+		want:    []string{"cannot parse 'require_mac' as bool", `parsing "yes"`},
+		controls: map[string]createShape{
+			"require_mac=true is accepted on bridge": {mode: "bridge", opts: map[string]string{"require_mac": "true"}},
 		},
 	},
 	{

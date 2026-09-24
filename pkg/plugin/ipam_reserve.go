@@ -66,6 +66,8 @@ type ipamReservation struct {
 	record  string
 	err     error
 	started time.Time
+	// rebound marks a record taken over from a removed endpoint, which a refused endpoint hands back (#1036).
+	rebound bool
 }
 
 // ipamReserveKey is the pool and MAC pair, since two networks on one host can be handed the same generated MAC.
@@ -99,7 +101,7 @@ func (s *ipamReserves) begin(key string, now time.Time) (*ipamReservation, bool)
 }
 
 func (s *ipamReserves) finish(key string, r *ipamReservation, out ipamReservation, err error) {
-	r.addr, r.info, r.record, r.err = out.addr, out.info, out.record, err
+	r.addr, r.info, r.record, r.err, r.rebound = out.addr, out.info, out.record, err, out.rebound
 	close(r.done)
 	if s == nil {
 		return
@@ -274,6 +276,7 @@ func (p *Plugin) runIPAMReserve(ctx context.Context, networkID string, sn stored
 		giveUp(false)
 		return none, err
 	}
+	res.rebound = rebound
 	return res, nil
 }
 
