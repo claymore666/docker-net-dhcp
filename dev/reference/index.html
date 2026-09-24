@@ -648,10 +648,21 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#ipvlan-l2" class="md-nav__link">
+  <a href="#ipvlan" class="md-nav__link">
     <span class="md-ellipsis">
       
-        ipvlan (L2)
+        ipvlan
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#macvlan-and-ipvlan-sub-modes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        macvlan and ipvlan sub-modes
       
     </span>
   </a>
@@ -1099,10 +1110,21 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#ipvlan-l2" class="md-nav__link">
+  <a href="#ipvlan" class="md-nav__link">
     <span class="md-ellipsis">
       
-        ipvlan (L2)
+        ipvlan
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#macvlan-and-ipvlan-sub-modes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        macvlan and ipvlan sub-modes
       
     </span>
   </a>
@@ -1378,6 +1400,16 @@ network create -o key=value</code>, or <code>driver_opts:</code> in Compose:</p>
 <td><code>parent</code></td>
 <td>macvlan, ipvlan</td>
 <td><em>(required)</em></td>
+</tr>
+<tr>
+<td><code>macvlan_mode</code></td>
+<td>macvlan</td>
+<td><code>bridge</code></td>
+</tr>
+<tr>
+<td><code>ipvlan_mode</code></td>
+<td>ipvlan</td>
+<td><code>l2</code></td>
 </tr>
 <tr>
 <td><code>gateway</code></td>
@@ -1799,13 +1831,15 @@ policy, fails the same way and leaves it stopped: then run
 </code></pre></div>
 <h3 id="macvlan">macvlan<a class="headerlink" href="#macvlan" title="Permanent link">&para;</a></h3>
 <p>No host changes are needed. Containers get per-container
-kernel-generated MACs as macvlan children of a host NIC:</p>
+kernel-generated MACs as macvlan children of a host NIC
+(<code>macvlan_mode=passthru</code> is the exception, see
+<a href="#macvlan-and-ipvlan-sub-modes">sub-modes</a>):</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>docker<span class="w"> </span>network<span class="w"> </span>create<span class="w"> </span>-d<span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:v2.2.2<span class="w"> </span><span class="se">\</span>
 <a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="w">    </span>--ipam-driver<span class="w"> </span>null<span class="w"> </span><span class="se">\</span>
 <a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="w">    </span>-o<span class="w"> </span><span class="nv">mode</span><span class="o">=</span>macvlan<span class="w"> </span>-o<span class="w"> </span><span class="nv">parent</span><span class="o">=</span>eth0<span class="w"> </span><span class="se">\</span>
 <a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a><span class="w">    </span>lan-dhcp
 </code></pre></div>
-<h3 id="ipvlan-l2">ipvlan (L2)<a class="headerlink" href="#ipvlan-l2" title="Permanent link">&para;</a></h3>
+<h3 id="ipvlan">ipvlan<a class="headerlink" href="#ipvlan" title="Permanent link">&para;</a></h3>
 <p>Like macvlan, but children share the parent NIC's MAC, for switches or
 hypervisors that refuse multiple MACs per port (sticky-MAC port
 security, hostile vSwitches, some Wi-Fi APs). The DHCP server must key
@@ -1818,6 +1852,116 @@ reservations on DHCP option 61 (client identifier) and never on MAC:</p>
 <p>Mode-specific constraints (MAC behaviour, parent-NIC rules, kernel
 limitations) are catalogued in
 <a href="../parent-attached-modes/#constraints"><code>parent-attached-modes.md</code></a>.</p>
+<h3 id="macvlan-and-ipvlan-sub-modes">macvlan and ipvlan sub-modes<a class="headerlink" href="#macvlan-and-ipvlan-sub-modes" title="Permanent link">&para;</a></h3>
+<p>Since v2.3.0, <code>-o macvlan_mode=</code> and <code>-o ipvlan_mode=</code> choose the kernel
+mode of each container's link
+(<a href="https://github.com/claymore666/docker-net-dhcp/issues/905">#905</a>).
+Left out, a macvlan link is <code>bridge</code> and an ipvlan link is <code>l2</code>, as in
+every earlier release. <code>ip -d link show eth0</code> inside the container shows
+the mode, and a plugin restart rebuilds each link in the mode its network
+was created with.</p>
+<table>
+<thead>
+<tr>
+<th>option</th>
+<th>value</th>
+<th>DHCP</th>
+<th>what the mode changes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>macvlan_mode</code></td>
+<td><code>bridge</code> (default)</td>
+<td>leases</td>
+<td>containers on one parent reach each other inside the host</td>
+</tr>
+<tr>
+<td><code>macvlan_mode</code></td>
+<td><code>vepa</code></td>
+<td>leases</td>
+<td>every frame leaves through the parent, container to container too; two containers on one parent reach each other only through a switch port that sends frames back where they came from (hairpin, 802.1Qbg reflective relay)</td>
+</tr>
+<tr>
+<td><code>macvlan_mode</code></td>
+<td><code>private</code></td>
+<td>leases</td>
+<td>containers on one parent never reach each other, not even through such a switch</td>
+</tr>
+<tr>
+<td><code>macvlan_mode</code></td>
+<td><code>passthru</code></td>
+<td>leases, one container per parent</td>
+<td>the container takes the parent itself; see below</td>
+</tr>
+<tr>
+<td><code>ipvlan_mode</code></td>
+<td><code>l2</code> (default)</td>
+<td>leases</td>
+<td></td>
+</tr>
+<tr>
+<td><code>ipvlan_mode</code></td>
+<td><code>l3</code>, <code>l3s</code></td>
+<td>refused</td>
+<td>see below</td>
+</tr>
+</tbody>
+</table>
+<p>Every value that leases was measured leasing from dnsmasq on Linux 6.12,
+and the integration suite leases in each of them. Any other value, or
+<code>macvlan_mode</code> on an ipvlan network, <code>ipvlan_mode</code> on a macvlan one, or
+either on a bridge network, is refused at <code>docker network create</code> with
+the accepted values in the error. <code>validate_dhcp</code> probes with the
+network's sub-mode.</p>
+<p><strong>ipvlan <code>l3</code> and <code>l3s</code> are refused.</strong> An ipvlan child in <code>l3</code> or <code>l3s</code>
+mode sends no broadcast out of its parent, so its DHCPDISCOVER reaches no
+DHCP server and no relay. Measured on Linux 6.12.107 on 2026-09-24: a
+dnsmasq on the segment logged no DISCOVER from an <code>l3</code> or <code>l3s</code> child,
+and with dnsmasq bound to the parent itself, a capture on the parent saw
+no packet at all. No relay or server placement helps, so
+<code>docker network create</code> refuses both values with that reason. The option
+keeps its name, and <code>l2</code> is the one accepted value.</p>
+<p><strong>The kernel keeps one ipvlan mode per parent.</strong> A new ipvlan child in
+another mode switches every child on that parent to its mode, including
+the running containers of other networks (measured on the same kernel).
+The plugin refuses an ipvlan network on a parent that already carries an
+ipvlan network in another mode, its own or one of Docker's <code>ipvlan</code>
+driver, and names that network in the error. It cannot refuse the
+reverse order: a Docker <code>ipvlan</code> network in <code>l3</code> created later on a
+parent this plugin uses is not the plugin's to stop. Keep <code>l3</code> ipvlan
+networks off the parents this plugin uses.</p>
+<p><strong><code>macvlan_mode=passthru</code> gives the parent to one container.</strong> Measured
+on Linux 6.12:</p>
+<ul>
+<li>The container's link wears the parent's MAC, so the DHCP server sees
+  the parent's MAC for that container. The plugin sets the link's MAC to
+  that same value, which leaves the parent's MAC as it is and keeps
+  udev from rewriting it.</li>
+<li>While the container runs, the host loses the parent: the host's own
+  address on it stops answering from the network, and the parent is put
+  in promiscuous mode. The address answers again once the container
+  stops. Use a NIC the host does not need.</li>
+<li>A second container on the network is refused. The kernel answers
+  <code>invalid argument</code>, and the plugin's error explains it:
+  <code>failed to create macvlan link on "eth0": invalid argument. The kernel
+  answers this when a macvlan_mode=passthru child holds the parent: a
+  passthru network gives its parent to one container, so a second child
+  is refused beside it, ...</code>. Stop the container that holds the parent,
+  or put the network on another parent.</li>
+<li>A passthru network and any other macvlan network, of this plugin or of
+  Docker's <code>macvlan</code> driver, cannot share a parent; the second one is
+  refused at <code>docker network create</code>, naming the first.</li>
+<li><code>--mac-address</code> is refused, because a MAC set on the passthru link
+  changes the parent's own MAC. For the same reason <code>require_mac=true</code>
+  and this plugin's IPAM mode (which gives every endpoint a MAC) are
+  refused with <code>passthru</code> at <code>docker network create</code>; use
+  <code>--ipam-driver null</code>.</li>
+<li>On <code>docker restart</code> the old link can still hold the parent for a
+  moment while its namespace goes away, and the kernel refuses the new
+  one <code>invalid argument</code> in that window. The plugin retries for up to
+  3 seconds before it reports the error.</li>
+</ul>
 <h3 id="address-allocation">Address allocation<a class="headerlink" href="#address-allocation" title="Permanent link">&para;</a></h3>
 <p>Every example above passes <code>--ipam-driver null</code>. Since v2.1.0 the plugin
 also serves an IPAM driver of its own (#110), and the line names the
@@ -1944,7 +2088,7 @@ value as an invalid duration.</p>
 <td>n/a</td>
 <td><code>bridge</code></td>
 <td>macvlan v0.2.0, ipvlan v0.4.0</td>
-<td>Attachment strategy: <code>bridge</code>, <code>macvlan</code>, or <code>ipvlan</code> (L2).</td>
+<td>Attachment strategy: <code>bridge</code>, <code>macvlan</code>, or <code>ipvlan</code>. <code>macvlan_mode</code> and <code>ipvlan_mode</code> choose the kernel mode of the link.</td>
 </tr>
 <tr>
 <td><code>bridge</code></td>
@@ -1959,6 +2103,20 @@ value as an invalid duration.</p>
 <td><em>(required)</em></td>
 <td>v0.2.0</td>
 <td>Host NIC to attach children to (e.g. <code>eth0</code>, <code>ens18</code>). Must exist and be administratively <code>UP</code>.</td>
+</tr>
+<tr>
+<td><code>macvlan_mode</code></td>
+<td>macvlan</td>
+<td><code>bridge</code></td>
+<td><strong>v2.3.0</strong></td>
+<td>Kernel mode of each container's macvlan link: <code>bridge</code>, <code>vepa</code>, <code>private</code> or <code>passthru</code> (#905). Each of them leases. <code>passthru</code> gives the parent to one container, wears the parent's MAC, and is refused with <code>--mac-address</code>, <code>require_mac=true</code>, this plugin's IPAM mode, and another macvlan network on the same parent. Any other value, and the option on a network that is not macvlan, is refused at <code>docker network create</code>. See <a href="#macvlan-and-ipvlan-sub-modes">macvlan and ipvlan sub-modes</a>.</td>
+</tr>
+<tr>
+<td><code>ipvlan_mode</code></td>
+<td>ipvlan</td>
+<td><code>l2</code></td>
+<td><strong>v2.3.0</strong></td>
+<td>Kernel mode of each container's ipvlan link (#905). <code>l2</code> is the one accepted value. <code>l3</code> and <code>l3s</code> are refused at <code>docker network create</code>: such a child sends no broadcast, so no DHCP server or relay hears its DHCPDISCOVER (measured on Linux 6.12.107, 2026-09-24). The kernel keeps one ipvlan mode per parent, so an ipvlan network is refused on a parent that another ipvlan network uses in another mode. The option on a network that is not ipvlan is refused. See <a href="#macvlan-and-ipvlan-sub-modes">macvlan and ipvlan sub-modes</a>.</td>
 </tr>
 <tr>
 <td><code>gateway</code></td>
@@ -2063,7 +2221,7 @@ value as an invalid duration.</p>
 <td>macvlan, ipvlan</td>
 <td><code>false</code></td>
 <td>v0.9.0</td>
-<td>Pre-flight probe at <code>docker network create</code>: one-shot DHCP exchange on a temporary child of the parent, rejecting the network if no server answers within 8s. Catches isolated parents / blocked UDP 67-68 / broken VLAN tags at create time. Costs one transient lease per probe. Bridge mode rejects the option. <strong>Since v1.6.0 the probe link is the same kind the network's endpoints will be</strong>: a macvlan child for a macvlan network, an ipvlan L2 child for an ipvlan one (#486). It used to build a macvlan whatever the mode was, on the reasoning that reachability is mode-agnostic; reachability is, but the parent is not. One parent cannot carry both kinds, so a macvlan probe on an ipvlan network was refused outright whenever an ipvlan container was already running on that NIC, so <code>validate_dhcp</code> failed for a reason that had nothing to do with DHCP, which is the opposite of what the flag is for. <strong>What MAC you will see at the server:</strong> on macvlan, a random locally-administered address. On ipvlan, the <strong>parent's</strong> address, because an ipvlan child cannot have its own, by kernel design. The probe is otherwise identity-neutral: it sends no hostname and no client identifier, so on ipvlan there is nothing but the shared <code>chaddr</code> to tell it apart from the containers on that NIC. Don't go looking for a random MAC in an ipvlan probe's lease log.</td>
+<td>Pre-flight probe at <code>docker network create</code>: one-shot DHCP exchange on a temporary child of the parent, rejecting the network if no server answers within 8s. Catches isolated parents / blocked UDP 67-68 / broken VLAN tags at create time. Costs one transient lease per probe. Bridge mode rejects the option. <strong>Since v1.6.0 the probe link is the same kind the network's endpoints will be</strong>: a macvlan child for a macvlan network, an ipvlan child for an ipvlan one (#486), and since v2.3.0 in the network's <code>macvlan_mode</code> or <code>ipvlan_mode</code> (#905). It used to build a macvlan whatever the mode was, on the reasoning that reachability is mode-agnostic; reachability is, but the parent is not. One parent cannot carry both kinds, so a macvlan probe on an ipvlan network was refused outright whenever an ipvlan container was already running on that NIC, so <code>validate_dhcp</code> failed for a reason that had nothing to do with DHCP, which is the opposite of what the flag is for. <strong>What MAC you will see at the server:</strong> a random locally-administered address as the client hardware address (<code>chaddr</code>), in every mode, so that is the MAC in the server's log and lease table. On ipvlan and on <code>macvlan_mode=passthru</code> the frames leave with the parent's MAC, because such a child cannot have its own, by kernel design. The probe is otherwise identity-neutral: it sends no hostname and no client identifier.</td>
 </tr>
 <tr>
 <td><code>dhcp_servers</code></td>

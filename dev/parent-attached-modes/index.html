@@ -1021,13 +1021,13 @@
 </tr>
 <tr>
 <td><code>macvlan</code></td>
-<td>a per-container macvlan child of one of the host's NICs</td>
-<td><strong>distinct</strong> (kernel-generated)</td>
-<td><strong>none</strong>, the host NIC is untouched</td>
+<td>a per-container macvlan child (<code>bridge</code> mode by default) of a host NIC</td>
+<td><strong>distinct</strong> (kernel-generated); the parent's under <code>passthru</code></td>
+<td><strong>none</strong>, the host NIC is untouched; <code>passthru</code> takes it from the host</td>
 </tr>
 <tr>
 <td><code>ipvlan</code></td>
-<td>a per-container ipvlan child (L2 mode) of one of the host's NICs</td>
+<td>a per-container ipvlan child (L2 mode) of a host NIC</td>
 <td><strong>shared with parent</strong></td>
 <td><strong>none</strong>, the host NIC is untouched</td>
 </tr>
@@ -1041,7 +1041,7 @@ The difference is at L2: each container's MAC.</p>
   which is what most LANs and DHCP servers expect. The Fritz.Box (or
   any home/SOHO router) sees each container as a fully distinct
   device.</li>
-<li><strong><code>ipvlan</code></strong> (L2 mode) is the right pick when the upstream switch or
+<li><strong><code>ipvlan</code></strong> is the right pick when the upstream switch or
   hypervisor refuses to bridge multiple MACs from one port. Common
   triggers: managed switches with sticky-MAC port-security enabled,
   Wi-Fi access points that refuse multi-MAC bridging, hypervisor
@@ -1133,9 +1133,12 @@ sidecar, no <code>cap_add</code>:</p>
 <li><strong>ipvlan-specific:</strong> custom MAC addresses are unsupported (children
   share the parent's MAC). Passing <code>--mac-address</code> on <code>docker run</code>
   with an ipvlan network will fail with <code>invalid MAC address</code>.</li>
-<li><strong>ipvlan-specific:</strong> only L2 mode is supported. ipvlan L3 / L3S
-  modes are not used because they'd break DHCP (DHCP requires L2
-  broadcast).</li>
+<li><strong>ipvlan-specific:</strong> only L2 mode leases. <code>-o ipvlan_mode=l3</code> and
+  <code>l3s</code> are refused at <code>docker network create</code>, because such a child
+  sends no broadcast and its DHCPDISCOVER reaches no server or relay.
+  <code>-o macvlan_mode=</code> picks <code>bridge</code>, <code>vepa</code>, <code>private</code> or <code>passthru</code>
+  for macvlan. See
+  <a href="../reference/#macvlan-and-ipvlan-sub-modes">macvlan and ipvlan sub-modes</a>.</li>
 <li><strong>ipvlan-specific:</strong> if your DHCP server keys reservations solely
   on MAC and ignores DHCP option 61 (client identifier), ipvlan
   won't work as a stability mechanism, because every ipvlan slave shares

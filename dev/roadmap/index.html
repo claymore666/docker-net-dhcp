@@ -1432,8 +1432,8 @@ read it before writing the PR.</p>
 <td><a href="https://github.com/claymore666/docker-net-dhcp/issues/528">#528</a></td>
 </tr>
 <tr>
-<td>It will not support ipvlan L3 or L3S</td>
-<td>DHCP needs L2 broadcast</td>
+<td>It refuses ipvlan L3 and L3S, see <a href="../reference/#macvlan-and-ipvlan-sub-modes">reference</a></td>
+<td>an L3 child sends no broadcast, so DHCP cannot start</td>
 <td>n/a</td>
 </tr>
 <tr>
