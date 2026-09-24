@@ -2013,6 +2013,11 @@ network create -o key=value</code>, or <code>driver_opts:</code> in Compose:</p>
 <td><code>false</code></td>
 </tr>
 <tr>
+<td><code>mtu</code></td>
+<td>all</td>
+<td>unset</td>
+</tr>
+<tr>
 <td><code>client_id</code></td>
 <td>all</td>
 <td>per-endpoint id</td>
@@ -2598,7 +2603,14 @@ value as an invalid duration.</p>
 <td>all</td>
 <td><code>false</code></td>
 <td>v0.9.0</td>
-<td>Apply DHCP option 26 (Interface MTU) to the container link on bind/renew. For jumbo-frame (9000) and VPN-reduced (~1450) networks. Since v1.8.0 an MTU outside <code>[576, 65535]</code> is refused and the link keeps the MTU it had, counted by <code>mtu_refused</code>. Nothing below this plugin holds the bottom of that range, so a server-supplied 68 used to be applied verbatim. <strong>This option governs IPv4 only.</strong> The MTU an IPv6 Router Advertisement carries (RFC 4861 §4.6.4) is applied whatever it says, because until v2.2.0 the container's kernel applied it on every IPv6 network and an option defaulting to <code>false</code> would have taken it away; it is applied to the link, so it bounds IPv4 as well, and the refusal range still holds. On a dual-stack network where both families supply an MTU, the link takes the <strong>smaller</strong> of the two: the larger is a promise the link cannot keep for the family that asked for the smaller one (#821).</td>
+<td>Apply DHCP option 26 (Interface MTU) to the container link on bind/renew. For jumbo-frame (9000) and VPN-reduced (~1450) networks. Since v1.8.0 an MTU outside <code>[576, 65535]</code> is refused and the link keeps the MTU it had, counted by <code>mtu_refused</code>. With <a href="#driver-options-network-level"><code>mtu</code></a> set, <code>mtu</code> governs the link MTU and this option cannot be combined with it. Nothing below this plugin holds the bottom of that range, so a server-supplied 68 used to be applied verbatim. <strong>This option governs IPv4 only.</strong> The MTU an IPv6 Router Advertisement carries (RFC 4861 §4.6.4) is applied whatever it says, because until v2.2.0 the container's kernel applied it on every IPv6 network and an option defaulting to <code>false</code> would have taken it away; it is applied to the link, so it bounds IPv4 as well, and the refusal range still holds. On a dual-stack network where both families supply an MTU, the link takes the <strong>smaller</strong> of the two: the larger is a promise the link cannot keep for the family that asked for the smaller one (#821).</td>
+</tr>
+<tr>
+<td><code>mtu</code></td>
+<td>all</td>
+<td>unset</td>
+<td>v2.3.0</td>
+<td>Set the MTU of every container link this network creates: a decimal integer from 68 to 65535. When set it is the only source of the link MTU. DHCP option 26 and the MTU an IPv6 Router Advertisement carries are not applied, one info line per endpoint names both values, and <code>mtu_refused</code> does not count it. The plugin sets the link back to this value on every bind and renew. Refused at network creation: a value outside 68..65535, a value that is not a decimal integer, a value beside <code>propagate_mtu=true</code>, and a value above the MTU of the parent (macvlan, ipvlan) or of the bridge; the error names both values. If the kernel refuses the value when a container starts, the endpoint fails with the kernel's error and leaves no link behind. In bridge mode both ends of the veth pair get the value, since ends that differ drop full-size frames without an error. <strong>Bridge:</strong> a bridge whose MTU was never changed follows its smallest port, so a container with a smaller mtu lowers the bridge's own host interface for as long as that container is attached, and it comes back when the container leaves; a bridge whose MTU was ever set to a value other than its current one holds it (measured 2026-09-24, kernel 6.12). The creation check reads the bridge's MTU at that moment, so while such a container is attached, a second network on that bridge with a larger mtu is refused. <strong>ipvlan:</strong> the child follows its parent's MTU, so a parent MTU change shows in the container until the next renew. <strong>macvlan:</strong> a parent lowered below the configured value clamps the child, and the re-apply is refused on every renew until the parent comes back, with one warning line each time. (#1037)</td>
 </tr>
 <tr>
 <td><code>client_id</code></td>
@@ -3313,7 +3325,7 @@ router is one <code>docker network create</code> line and not a contradiction.</
   answer's gateway, the <strong>routes</strong> it asks for (RFC 4191 Route
   Information options as next-hop routes, prefixes with the on-link flag
   as on-link routes), the <strong>MTU</strong> (RFC 4861 §4.6.4) on the container's
-  link, and the <strong>DNS servers and search list</strong> (RFC 8106 RDNSS and
+  link unless the network sets <code>mtu</code> (#1037), and the <strong>DNS servers and search list</strong> (RFC 8106 RDNSS and
   DNSSL) into <code>/etc/resolv.conf</code> when <code>propagate_dns=true</code>. All four are
   rewritten when a later advertisement changes them, without restarting
   the container. The gateway and the routes need the endpoint to have
@@ -4157,7 +4169,7 @@ already parse it were not told to expect a new type.</p>
 <td><code>mtu_refused</code></td>
 <td>no</td>
 <td>n/a</td>
-<td>(v1.8.0+) MTUs outside <code>[576, 65535]</code>, refused with the container link left at the MTU it had. Each family is counted separately, and a refused value does not vote on the link MTU. Option 26 on the IPv4 path, which moves only with <code>propagate_mtu=true</code>, and since v2.2.0 the Router Advertisement's MTU option on the IPv6 path, which is not gated on it (#821). Nothing below the plugin holds the bottom of that range: a server-supplied 68 is carried through verbatim and would be accepted, and the result is destroyed throughput plus black-holed path MTU discovery, re-applied on every renewal, which looks like a slow network instead of a misconfiguration.</td>
+<td>(v1.8.0+) MTUs outside <code>[576, 65535]</code>, refused with the container link left at the MTU it had. Each family is counted separately, and a refused value does not vote on the link MTU. Option 26 on the IPv4 path, which moves only with <code>propagate_mtu=true</code>, and since v2.2.0 the Router Advertisement's MTU option on the IPv6 path, which is not gated on it (#821). Neither is counted on a network that sets <code>mtu</code>, which applies neither (#1037). Nothing below the plugin holds the bottom of that range: a server-supplied 68 is carried through verbatim and would be accepted, and the result is destroyed throughput plus black-holed path MTU discovery, re-applied on every renewal, which looks like a slow network instead of a misconfiguration.</td>
 </tr>
 <tr>
 <td><code>sandbox_key_entries</code></td>
@@ -4723,7 +4735,7 @@ consumer-side:</p>
 <tr>
 <td>Container on a dual-stack network has an MTU smaller than either server asked for</td>
 <td>Both families write the same link MTU, and since v2.2.0 the link takes the smaller of the two (#821). The larger value is a promise the link cannot keep for the family that asked for the smaller one</td>
-<td><code>ip link show</code> inside the container against the DHCPv4 option-26 value and the advertised MTU. Before v2.2.0 the two flipped the link back and forth, once per renewal of either family</td>
+<td><code>ip link show</code> inside the container against the DHCPv4 option-26 value and the advertised MTU. Before v2.2.0 the two flipped the link back and forth, once per renewal of either family. A network that sets <code>mtu</code> applies neither value (#1037)</td>
 </tr>
 <tr>
 <td>Container on an <code>ipv6=true</code> network has a smaller MTU than expected on <strong>IPv4</strong> too</td>
