@@ -11,25 +11,38 @@ below decide what is in a release; this page follows them.
 
 | Release | Theme | Milestone |
 | --- | --- | --- |
-| v2.2.2 | The IPAM lease record, the attach path, and the two pages a new reader lands on | [milestone 36](https://github.com/claymore666/docker-net-dhcp/milestone/36) |
+| v2.2.3 | The default route at the first lease, a renumber inside one subnet, on-link routes after Join, a persistent client on a late link, and the tests and gates listed below | [milestone 37](https://github.com/claymore666/docker-net-dhcp/milestone/37) |
 | v2.3.0 | The host plumbing an operator does by hand today, and the gaps the IPAM shape still refuses | [milestone 31](https://github.com/claymore666/docker-net-dhcp/milestone/31) |
 | v2.4.0 | The rest of IPv6, and the DHCP options the client does not read yet | [milestone 34](https://github.com/claymore666/docker-net-dhcp/milestone/34) |
 | v2.5.0 | CI consolidation and code debt; nothing a user sees | [milestone 35](https://github.com/claymore666/docker-net-dhcp/milestone/35) |
 
-### v2.2.2
+### v2.2.3
 
-- [#1047], a restart that fails after the address is re-bound leaves the
-  lease record unreachable
-- [#1050], the renewal client is opened by a link name the engine has
-  already changed, so the container keeps its address only until the
-  lease runs out
-- [#1051], the host-side link keeps its generated name when the attach
-  enters the container's namespace by the sandbox key, so
-  `host_ifname=container_name` has no effect there
-- [#1039], a table of contents at the top of the README, with the
-  reference and this page reachable without scrolling
-- [#1040], this page: the table above, the picture below, and the
-  themes and refusals as tables
+- [#1084], the first lease adds the default route the engine is about to
+  program, and the container fails to start
+- [#1081], a renumber inside one subnet leaves the container with no IPv4
+  address on a host with `promote_secondaries=0`
+- [#1065], IPv6 is prepared on a link name the engine has already changed
+- [#1044], an endpoint entry can read `lease_state=bound` with no
+  `last_event`
+- [#1016], an integration test for the v2.2.0 behaviours that only a unit
+  test drives
+- [#1015], an engine-matrix step for every documented option
+- [#866], tests under `test/integration/harness/` run nowhere and nothing
+  says so
+- [#883], a gate counts a mention as an invocation, so an unwired gate
+  reports as wired
+- [#888], a gate resolves symbols at git HEAD, so an uncommitted rewrite
+  is never judged
+- [#1042], the coverage-presence wait is shorter than recent coverage runs
+- [#1043], the Docker Hub alias signature is verified before the registry
+  serves the copied referrers
+- [#1056], the comment volume in the Go tree, and a gate on added comments
+- [#1088], an IPv6 on-link prefix route is installed only from the Join
+  answer, never from a later router advertisement
+- [#1089], the persistent DHCPv4 client can open before the engine sets
+  the link up and then never binds, although the server acknowledges
+  every request
 
 ### v2.3.0
 
@@ -47,20 +60,6 @@ below decide what is in a release; this page follows them.
 - [#1036], a `require_mac` option that refuses an endpoint with no
   Docker-supplied MAC
 - [#1037], an `mtu` option that sets the endpoint link MTU explicitly
-- [#1015], an engine-matrix step for every documented option
-- [#1016], an integration test for the v2.2.0 behaviours that only a unit
-  test drives
-- [#866], tests under `test/integration/harness/` run nowhere and nothing
-  says so
-- [#883], a gate counts a mention as an invocation, so an unwired gate
-  reports as wired
-- [#888], a gate resolves symbols at git HEAD, so an uncommitted rewrite
-  is never judged
-- [#1042], the coverage-presence wait is shorter than recent coverage runs
-- [#1043], the Docker Hub alias signature is verified before the registry
-  serves the copied referrers
-- [#1044], an endpoint entry can read `lease_state=bound` with no
-  `last_event`
 - [#1045], the code-scanning result is not a required check on either
   protected branch
 
@@ -367,15 +366,16 @@ project does, that review is where it gets corrected.
 [#1036]: https://github.com/claymore666/docker-net-dhcp/issues/1036
 [#1037]: https://github.com/claymore666/docker-net-dhcp/issues/1037
 [#1038]: https://github.com/claymore666/docker-net-dhcp/issues/1038
-[#1039]: https://github.com/claymore666/docker-net-dhcp/issues/1039
-[#1040]: https://github.com/claymore666/docker-net-dhcp/issues/1040
 [#1042]: https://github.com/claymore666/docker-net-dhcp/issues/1042
 [#1043]: https://github.com/claymore666/docker-net-dhcp/issues/1043
 [#1044]: https://github.com/claymore666/docker-net-dhcp/issues/1044
 [#1045]: https://github.com/claymore666/docker-net-dhcp/issues/1045
-[#1047]: https://github.com/claymore666/docker-net-dhcp/issues/1047
-[#1050]: https://github.com/claymore666/docker-net-dhcp/issues/1050
-[#1051]: https://github.com/claymore666/docker-net-dhcp/issues/1051
+[#1056]: https://github.com/claymore666/docker-net-dhcp/issues/1056
+[#1065]: https://github.com/claymore666/docker-net-dhcp/issues/1065
+[#1081]: https://github.com/claymore666/docker-net-dhcp/issues/1081
+[#1084]: https://github.com/claymore666/docker-net-dhcp/issues/1084
+[#1088]: https://github.com/claymore666/docker-net-dhcp/issues/1088
+[#1089]: https://github.com/claymore666/docker-net-dhcp/issues/1089
 [moby/moby#52866]: https://github.com/moby/moby/pull/52866
 [moby/moby#52870]: https://github.com/moby/moby/issues/52870
 [moby/moby#52871]: https://github.com/moby/moby/pull/52871
