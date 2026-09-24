@@ -120,10 +120,23 @@ fi
 ALIAS_REPO="$(inspect_ref "$ALIAS")"
 ALIAS_REPO="${ALIAS_REPO%:*}"
 
-cosign verify \
-    --certificate-identity-regexp "$IDENTITY_REGEXP" \
-    --certificate-oidc-issuer "$OIDC_ISSUER" \
-    "${ALIAS_REPO}@${ALIAS_DIGEST}" > /dev/null \
-    || fail "${ALIAS} is the signed digest, but the signature does not verify through the alias name. The manifest copied and its referrers did not, so a user pulling the alias cannot verify what they pulled."
+# Docker Hub can serve the copied manifest before its referrers index lists
+# the copied bundle: v2.2.1-rc1 read "no signatures found" 1.4 s after the
+# copy and passed on a rerun ten minutes later (#1043, one failure in seven
+# tag runs). The lag is unmeasured beyond that; six reads 10 s apart wait up
+# to 50 s, and a longer lag still fails here.
+VERIFY_READS=6
+VERIFY_WAIT=10
+read_n=1
+until cosign verify \
+        --certificate-identity-regexp "$IDENTITY_REGEXP" \
+        --certificate-oidc-issuer "$OIDC_ISSUER" \
+        "${ALIAS_REPO}@${ALIAS_DIGEST}" > /dev/null; do
+    [ "$read_n" -lt "$VERIFY_READS" ] \
+        || fail "${ALIAS} is the signed digest, but the signature does not verify through the alias name after ${VERIFY_READS} reads ${VERIFY_WAIT} s apart. The manifest copied and its referrers did not, so a user pulling the alias cannot verify what they pulled."
+    echo "publish-hub-alias: signature read ${read_n}/${VERIFY_READS} through ${ALIAS} failed; waiting ${VERIFY_WAIT} s for the registry's referrers."
+    sleep "$VERIFY_WAIT"
+    read_n=$((read_n + 1))
+done
 
 echo "Alias ${ALIAS} is ${ALIAS_DIGEST}, the digest signed for ${SOURCE}, and it verifies under its own name."

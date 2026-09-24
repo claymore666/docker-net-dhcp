@@ -35,20 +35,6 @@ func servers(n int) []string {
 	return out
 }
 
-// TestAcquisitionAttempts_NoAttemptIsStarved is the #731 regression,
-// and it pins the GUARANTEE rather than the constant.
-//
-// The ladder divided a fixed 10s budget by the number of preferred
-// servers with no floor. Every attempt is a full dhcp.NewDHCPClient --
-// an unshare, a dhcpcd spawn, FIFO setup, then a round trip -- so six
-// servers bought 1.66s each and twenty bought 500ms. An operator who
-// filled the option in carefully got an acquisition that failed where
-// naming nothing would have succeeded.
-//
-// Deliberately asserted as ">= minAttemptBudget" and not "== 3s": the
-// number is a policy choice and may move, while "no attempt is ever
-// given less time than one exchange needs" is the property that must
-// not.
 func TestAcquisitionAttempts_NoAttemptIsStarved(t *testing.T) {
 	const total = 10 * time.Second
 
@@ -69,11 +55,8 @@ func TestAcquisitionAttempts_NoAttemptIsStarved(t *testing.T) {
 			sum += a.Budget
 		}
 
-		// The ladder DIVIDES the budget; it must never extend it. A
-		// preference list that makes `docker run` slower is the
-		// regression this feature was explicitly built to avoid
-		// (#403, #417), and a floor is the obvious fix that would
-		// have caused it.
+		// The ladder divides the budget and never extends it, so a preference list cannot slow `docker run` (#403,
+		// #417).
 		if sum > total {
 			t.Errorf("%d servers: attempts total %v, over the %v budget — the ladder must divide the budget, "+
 				"never extend it", n, sum, total)
@@ -81,13 +64,6 @@ func TestAcquisitionAttempts_NoAttemptIsStarved(t *testing.T) {
 	}
 }
 
-// TestAcquisitionAttempts_OrderingIsKeptWhereItFits pins what packing
-// costs and, more importantly, what it does not.
-//
-// The tail shares one attempt only once the list outgrows the budget.
-// Merging the TAIL rather than the head is the design: the operator
-// wrote the list in preference order, so the entries that lose their
-// own attempt must be the ones they ranked lowest.
 func TestAcquisitionAttempts_OrderingIsKeptWhereItFits(t *testing.T) {
 	const total = 10 * time.Second
 
@@ -142,10 +118,6 @@ func TestAcquisitionAttempts_OrderingIsKeptWhereItFits(t *testing.T) {
 	})
 }
 
-// TestAcquisitionAttempts_UnrestrictedPathIsUntouched: the packing only
-// exists for a preference ladder. A network with no dhcp_servers, and
-// every v6 exchange (dhcpcd's whitelist is DHCPv4-only), must still get
-// one unrestricted attempt with the WHOLE budget.
 func TestAcquisitionAttempts_UnrestrictedPathIsUntouched(t *testing.T) {
 	const total = 10 * time.Second
 
@@ -173,32 +145,6 @@ func TestAcquisitionAttempts_UnrestrictedPathIsUntouched(t *testing.T) {
 	}
 }
 
-// TestPackTiers_ATinyBudgetStillRunsOnce guards the degenerate end. If
-// the total budget is ever configured below one floor, the ladder must
-// collapse to a single attempt rather than shredding the budget across
-// the whole list.
-//
-// SHREDDING is what the unfixed tree actually did, and saying so
-// matters: int(total/minAttemptBudget) is 0 below one floor, and
-// packTiers returns its input unchanged for n < 1, so the ladder fell
-// through to one attempt PER SERVER -- 20 servers on half a floor got
-// 75ms each, worse than the 500ms #731 was filed against. It did not
-// produce zero attempts, and a reader told it did would go looking for
-// a crash instead of for silent starvation.
-//
-// The count assertion below excludes zero as well, because a count is
-// the only thing that can, but zero is the direction this code has
-// never taken.
-//
-// ONE, and the count is the assertion. An earlier version of this test
-// said "collapse to a single attempt" in its name and its comment and
-// asserted only that the count was non-zero and that no server was
-// dropped. It ran the 3-server sub-floor case, got THREE attempts of a
-// third of a too-small budget each, and passed -- so it stated the
-// property while discriminating nothing, and the defect it was named
-// for sat underneath it. Prose in a test is not an assertion, and a
-// test whose name over-claims is worse than one that says less: this
-// one read as covered.
 func TestPackTiers_ATinyBudgetStillRunsOnce(t *testing.T) {
 	pol := preferPolicy(t, "10.0.0.1", "10.0.0.2", "10.0.0.3")
 	attempts := acquisitionAttempts(pol, false, minAttemptBudget/2)
@@ -224,27 +170,12 @@ func TestPackTiers_ATinyBudgetStillRunsOnce(t *testing.T) {
 	}
 }
 
-// TestAcquisitionAttempts_NoLadderIsStarvedBelowTheFloor is the
-// behaviour table oversight measured on the unfixed head, kept as a
-// test because the single 3-server case above is one point on a curve
-// and the defect was visible only at the ends.
-//
-// lease_timeout is operator-settable with no validated minimum, so
-// every row here is reachable configuration rather than a hypothetical.
 func TestAcquisitionAttempts_NoLadderIsStarvedBelowTheFloor(t *testing.T) {
 	servers := make([]string, 0, 20)
 	for i := 1; i <= 20; i++ {
 		servers = append(servers, fmt.Sprintf("10.0.0.%d", i))
 	}
 
-	// Every total here is written AS A MULTIPLE OF THE FLOOR, and every
-	// row name states its relationship to the floor rather than a
-	// duration. The first draft transcribed 3s/1.5s/900ms, which made
-	// the rows a fourth copy of minAttemptBudget: moving the constant
-	// 3s -> 5s reddened four test functions, so "the number is the
-	// adjustable part" was already false, and a row named "below the
-	// floor" holding a literal 1.5s would have become a false statement
-	// about what it tests without anything going red to say so.
 	cases := []struct {
 		name         string
 		servers      int
@@ -266,10 +197,6 @@ func TestAcquisitionAttempts_NoLadderIsStarvedBelowTheFloor(t *testing.T) {
 				t.Fatalf("got %d attempts, want %d", len(attempts), tc.wantAttempts)
 			}
 			for i, a := range attempts {
-				// Above the floor every attempt must clear it. Below
-				// it there is exactly one attempt and it holds
-				// everything there was -- starved by the operator's
-				// budget, not by the ladder.
 				want := minAttemptBudget
 				if tc.total < minAttemptBudget {
 					want = tc.total
@@ -283,19 +210,10 @@ func TestAcquisitionAttempts_NoLadderIsStarvedBelowTheFloor(t *testing.T) {
 	}
 }
 
-// TestAcquireWithPolicy_FallbacksCountStepsNotAcquisitions pins the
-// semantics #731 found described wrongly in three of the four places
-// that describe them.
-//
-// The counter has always bumped once per STEP down the ladder, which is
-// the more useful number — it says how far acquisition had to walk, not
-// merely that it walked. Three copies said "acquisitions". The code was
-// right and the prose was wrong, so the prose moved; this is what stops
-// the next reader from "fixing" the code to match a sentence.
 func TestAcquireWithPolicy_FallbacksCountStepsNotAcquisitions(t *testing.T) {
 	cases := []struct {
 		name          string
-		answerOn      int // 1-based attempt that succeeds; 0 = none ever does
+		answerOn      int
 		wantFallbacks int32
 		wantExhausted int32
 		reason        string
@@ -348,33 +266,12 @@ func TestAcquireWithPolicy_FallbacksCountStepsNotAcquisitions(t *testing.T) {
 	}
 }
 
-// TestAcquisitionAttempts_TheGuaranteeHoldsAtEveryFloor drives the
-// property the constant's comment claims, at floors other than the one
-// that ships.
-//
-// The comment used to say "the number is the adjustable part". A run
-// contradicted it: moving minAttemptBudget 3s -> 5s or 3s -> 7s reddens
-// TestAcquisitionAttempts, TestAcquisitionAttempts_OrderingIsKeptWhereItFits
-// and TestAcquireWithPolicy_FallbacksCountStepsNotAcquisitions, and
-// 3s -> 2s reddens the ordering one -- three test functions transcribing
-// the value, pinning it in BOTH directions. The comment now says so.
-//
-// But a corrected comment is still a comment, and this is the same
-// species the table above exists for: a claim about behaviour with
-// nothing driving it. Prose decays silently; a check fails loudly. So
-// the ladder takes the floor as an argument and the guarantee is
-// asserted across a spread of them. A future change that holds only
-// because the floor happens to be 3s goes red here, at the floor where
-// it does not hold, rather than shipping.
 func TestAcquisitionAttempts_TheGuaranteeHoldsAtEveryFloor(t *testing.T) {
 	servers := make([]string, 0, 20)
 	for i := 1; i <= 20; i++ {
 		servers = append(servers, fmt.Sprintf("10.0.0.%d", i))
 	}
 
-	// Deliberately including a floor far below the shipped one and one
-	// far above: the arithmetic that broke was integer division, which
-	// misbehaves at the ends and not in the middle.
 	floors := []time.Duration{
 		250 * time.Millisecond,
 		2 * time.Second,
@@ -382,9 +279,6 @@ func TestAcquisitionAttempts_TheGuaranteeHoldsAtEveryFloor(t *testing.T) {
 		5 * time.Second,
 		7 * time.Second,
 	}
-	// Every total is a multiple of the floor under test, never a
-	// duration -- the rule this file exists to enforce applies to the
-	// test that enforces it.
 	multiples := []struct {
 		name string
 		of   func(time.Duration) time.Duration
@@ -414,10 +308,6 @@ func TestAcquisitionAttempts_TheGuaranteeHoldsAtEveryFloor(t *testing.T) {
 					for i, a := range attempts {
 						spent += a.Budget
 						seen += len(a.Allow)
-						// THE GUARANTEE: never less than one floor,
-						// as long as the budget can fund one attempt.
-						// Below the floor there is exactly one attempt
-						// and it holds everything there was.
 						want := floor
 						if total < floor {
 							want = total
@@ -434,7 +324,6 @@ func TestAcquisitionAttempts_TheGuaranteeHoldsAtEveryFloor(t *testing.T) {
 							"but it cannot be shredded into slices that certainly fail",
 							len(attempts))
 					}
-					// The ladder DIVIDES total; it never extends it.
 					if spent > total {
 						t.Errorf("attempts spend %v of a %v budget: the ladder may not make "+
 							"`docker run` slower than it is today (#403, #417)", spent, total)

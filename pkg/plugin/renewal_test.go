@@ -18,15 +18,6 @@ import (
 	"github.com/claymore666/docker-net-dhcp/v2/pkg/dhcp"
 )
 
-// TestRenewalsUnanswered_TheOperatorCanREADIt drives the reporter and
-// then reads what an operator reads: the FIELDS of /Plugin.Health and
-// the series on /metrics.
-//
-// Reading the atomics back would assert that this test can add. What
-// #940 is about is a number reaching the document an operator polls, so
-// the assertion is on the document and on the exposition, through
-// healthSnapshot and the renderer, which is the whole path between the
-// counter and the person looking for the outage.
 func TestRenewalsUnanswered_TheOperatorCanREADIt(t *testing.T) {
 	p := &Plugin{}
 	p.renewalReporter("net1", "ep1", false)(dhcp.RenewalStats{Unanswered: 2})
@@ -60,10 +51,6 @@ func TestRenewalsUnanswered_TheOperatorCanREADIt(t *testing.T) {
 	}
 }
 
-// TestRenewalsUnanswered_TheFamilyIsNotCosmetic. A v6-only silence is
-// invisible in the sum, which is the whole reason these counters are
-// split (#212, #730), so each reporter must move its own half and only
-// its own half.
 func TestRenewalsUnanswered_TheFamilyIsNotCosmetic(t *testing.T) {
 	for _, v6 := range []bool{false, true} {
 		family := "ipv4"
@@ -88,12 +75,6 @@ func TestRenewalsUnanswered_TheFamilyIsNotCosmetic(t *testing.T) {
 	}
 }
 
-// TestRenewalsUnanswered_MovesNoOtherCounter is the preservation
-// control. This counter is NOT an early dhcp_timeouts and must not
-// double-count one outage: an unanswered renewal request and an
-// acquisition that ran out of retransmissions are different facts with
-// different remedies, and the pair is only readable while each moves on
-// its own evidence.
 func TestRenewalsUnanswered_MovesNoOtherCounter(t *testing.T) {
 	p := &Plugin{}
 	p.renewalReporter("net1", "ep1", false)(dhcp.RenewalStats{Unanswered: 4})
@@ -117,11 +98,6 @@ func TestRenewalsUnanswered_MovesNoOtherCounter(t *testing.T) {
 	}
 }
 
-// TestRenewalsUnanswered_AZeroGainIsNotAReport. The chassis reports a
-// DELTA and a fold with nothing new to say produces zero. A counter
-// that moved on such a report would climb on every tick of an idle
-// client, which is the counter saying "outage" about silence it never
-// observed.
 func TestRenewalsUnanswered_AZeroGainIsNotAReport(t *testing.T) {
 	p := &Plugin{}
 	hook := logtest.NewLocal(log.StandardLogger())
@@ -134,32 +110,14 @@ func TestRenewalsUnanswered_AZeroGainIsNotAReport(t *testing.T) {
 	if got := p.renewalsUnansweredV4.Load(); got != 0 {
 		t.Errorf("five empty reports moved the counter to %d", got)
 	}
-	// AND NOTHING WAS LOGGED. The counter staying at zero is only half
-	// of it: the fold runs every 15 seconds for the life of every
-	// endpoint, so a reporter that logged an empty gain would put four
-	// warnings a minute per container into the log, each one saying the
-	// server did not answer a request that was never sent. An operator
-	// who learns to filter this line out is an operator who will not
-	// see the real one.
 	if n := len(hook.AllEntries()); n != 0 {
 		t.Errorf("five empty reports wrote %d log line(s); the first is %q",
 			n, hook.LastEntry().Message)
 	}
 }
 
-// TestRenewalReporter_LogsTheLineTheOperatorHasToFind. #940 is a
-// production host on which the server stopped answering renewals for
-// 7h52m with nothing in the log at any level. A counter serves the
-// operator who is already looking at a dashboard; this line is what the
-// operator reading logs has to be able to find, and it carries the
-// endpoint, which the plugin-wide counter cannot.
-//
-// THE PHRASE IS PINNED HERE because something else greps for it:
-// TestFailure_UnansweredRenewalsCounted matches renewalWarnMarker
-// against the running plugin's log to tie a counter rise to its own
-// endpoint. That test runs only on the privileged lane, so a reworded
-// message would otherwise be discovered there, an hour later, as a
-// missing line rather than as a rename.
+// The warning text is pinned because TestFailure_UnansweredRenewalsCounted greps renewalWarnMarker on the privileged
+// lane (#940).
 func TestRenewalReporter_LogsTheLineTheOperatorHasToFind(t *testing.T) {
 	p := &Plugin{}
 	hook := logtest.NewLocal(log.StandardLogger())
@@ -194,11 +152,6 @@ func TestRenewalReporter_LogsTheLineTheOperatorHasToFind(t *testing.T) {
 	}
 }
 
-// TestRenewalWiring_OnlyThePersistentClientReports. The CreateEndpoint
-// one-shot acquires and returns; it holds no lease to renew. Wiring it
-// would add a second writer to a counter about renewals, on a path that
-// has none, and every acquisition retransmission would then have to be
-// argued about.
 func TestRenewalWiring_OnlyThePersistentClientReports(t *testing.T) {
 	p := &Plugin{}
 
@@ -209,8 +162,6 @@ func TestRenewalWiring_OnlyThePersistentClientReports(t *testing.T) {
 			"#940 is unfixed on the only path that renews")
 	}
 
-	// A manager with no plugin behind it is the unit-test shape, and
-	// the client still has to run.
 	var noPlugin dhcp.DHCPClientOptions
 	var nilPlugin *Plugin
 	nilPlugin.renewalWiring(&noPlugin, "net1", "ep1", false)
@@ -219,26 +170,6 @@ func TestRenewalWiring_OnlyThePersistentClientReports(t *testing.T) {
 	}
 }
 
-// TestRenewalWiring_IsCalledOnceAndOnlyFromSetupClient is the CALL SITE,
-// and it is a source-level test for the reason family_flag_wiring_test.go
-// gives: there is no seam between setupClient and a raw socket in a real
-// network namespace, so what is checkable here is the wiring, and the
-// wiring is where this breaks.
-//
-// The two failures it exists for are opposite and both silent.
-//
-// Deleting the call leaves every behavioural test in this package green:
-// the reporter is still correct, the counter is still exposed, the
-// document still carries the field, and nothing on the renewing path
-// ever calls any of it. #940 would be unfixed on the only path that
-// renews, and the counter would read 0 forever -- which is exactly what
-// it read while the production outage ran.
-//
-// Adding it to a roleAcquire site is the other one. Those are
-// CreateEndpoint one-shots: they acquire an address and return, holding
-// no lease to renew. A reporter there would be a second writer to this
-// counter on a path whose retransmissions are an ACQUISITION's, and
-// every rise would then have to be argued about instead of read.
 func TestRenewalWiring_IsCalledOnceAndOnlyFromSetupClient(t *testing.T) {
 	fset := token.NewFileSet()
 	files, err := filepath.Glob("*.go")
@@ -272,11 +203,6 @@ func TestRenewalWiring_IsCalledOnceAndOnlyFromSetupClient(t *testing.T) {
 					return true
 				}
 				sites = append(sites, site{fn: fn.Name.Name})
-				// The family must come from setupClient's own
-				// parameter. A literal here would send every endpoint's
-				// reports to one half of the pair, and the half that is
-				// never written reads exactly like a family with no
-				// outages.
 				if len(call.Args) != 4 {
 					t.Errorf("renewalWiring in %s takes %d argument(s); this test reads the last "+
 						"one as the family and can no longer do so", fn.Name.Name, len(call.Args))

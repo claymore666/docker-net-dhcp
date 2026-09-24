@@ -1,10 +1,7 @@
 // Copyright the docker-net-dhcp contributors.
 // SPDX-License-Identifier: GPL-3.0-only
 
-// No `//go:build integration` tag, for the reason raguard_parse.go
-// gives: this is a pure function over bytes, so it is driven in the
-// fast lane against VERBATIM strings captured from the image the suite
-// actually runs containers in.
+// No integration tag: a pure parser driven against verbatim output from the suite's container image.
 package harness
 
 import (
@@ -15,80 +12,27 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// V6AddrFlags is what the container's kernel says about one address:
-// the three bits that decide whether the DHCPv6 lease was installed the
-// way the chassis claims it installs it (D30 Q1 -- the library ran
-// duplicate-address detection, so the kernel is told not to repeat it).
-//
-// Found is separate from the three booleans on purpose. An address that
-// is not on the link at all reads as "no NODAD, not tentative, not
-// dadfailed", which is indistinguishable from a healthy address by any
-// caller that only looks at the bits -- and it is the exact shape a
-// mis-derived interface name or a typo'd address produces.
+// V6AddrFlags is the container kernel's NODAD, tentative and dadfailed bits for one address (D30 Q1: the library ran
+// DAD, so the kernel is told not to repeat it); Found tells an absent address from a clean one (#819).
 type V6AddrFlags struct {
 	Found     bool
 	NoDAD     bool
 	Tentative bool
 	DADFailed bool
-	// Deprecated is IFA_F_DEPRECATED: the address's preferred lifetime
-	// has run out and its valid lifetime has not. RFC 4862 section
-	// 5.5.4 -- "SHOULD continue to be used as a source address in
-	// existing communications, but SHOULD NOT be used to initiate new
-	// communications". It is the KERNEL's word for it, which is why
-	// #819's deprecation arm reads this and never the plugin's own
-	// number: a change that stopped passing the preferred lifetime to
-	// netlink leaves the plugin's number right and this bit clear.
+	// Deprecated is IFA_F_DEPRECATED, the kernel's word for an elapsed preferred lifetime (RFC 4862 section 5.5.4), which #819's deprecation arm reads.
 	Deprecated bool
-	// Valid and Preferred are the address's two lifetimes as the
-	// kernel reports them, and Lifetimes says whether they were read
-	// at all. A tool that printed no lifetime pair leaves them zero,
-	// which is not the same as an address with zero left -- and a
-	// caller asserting "preferred is zero" would be satisfied by it.
+	// Valid and Preferred are the kernel's two lifetimes; Lifetimes says whether a pair was read, since unprinted is not zero.
 	Lifetimes bool
 	Valid     V6Lifetime
 	Preferred V6Lifetime
-	// Line is the verbatim line the flags were read from, for the
-	// failure message. Empty when Found is false.
+	// Line is the verbatim line the flags were read from, empty when Found is false.
 	Line string
 }
 
-// V6AddrFlagsFromAddrShow reads the flags of addr out of the output of
-// `ip -6 -o addr show`.
-//
-// # WHY THIS IS NOT A strings.Contains ON "nodad"
-//
-// MEASURED 2026-09-06 on this box, the same address installed with
-// IFA_F_NODAD, read by the two `ip` implementations this suite meets:
-//
-//	iproute2 6.x:      ... scope global nodad dynamic \ valid_lft 300sec ...
-//	busybox 1.36.1:    ... scope global dynamic flags 02 \ valid_lft 300sec ...
-//
-// alpine:3.20 -- the image the suite runs containers in -- ships the
-// busybox one, and it has no name for IFA_F_NODAD: it prints the bits
-// it cannot name as a residual `flags <hex>`. An observer keyed on the
-// word "nodad" is therefore an observer that can only ever fail inside
-// the shipped image, which is the same defect raguard_parse.go's header
-// records against `proto ra` and the reason that file exists.
-//
-// Busybox DOES name tentative, dadfailed, deprecated, secondary and
-// dynamic (MEASURED the same way), so those arrive as words from both
-// tools -- but the residual `flags` word is read for them too, because
-// "this tool names it today" is not a property to build an observer on.
-//
-// The bit values come from the kernel headers via x/sys/unix rather
-// than being spelled here, so this cannot drift from what the plugin
-// sets.
-//
-// The address is matched as a WHOLE FIELD split at its prefix length,
-// the same rule V6IfaceFromAddrShow uses and for the same #875 reason:
-// a substring match answers yes for `fd00::3` on a line carrying
-// `fd00::32/128`.
-//
-// The bound, named rather than claimed away: only the fields BEFORE the
-// backslash are read. Both tools put the lifetimes after it, and
-// `valid_lft`/`preferred_lft` are not flags; a tool that moved a flag
-// behind the backslash would read here as an absent flag, which is the
-// safe direction for every caller (they assert a flag is PRESENT).
+// V6AddrFlagsFromAddrShow reads addr's flags from `ip -6 -o addr show` output. Measured 2026-09-06: iproute2 6.x
+// prints `nodad`, alpine:3.20's busybox 1.36.1 prints `flags 02`, so the residual `flags <hex>` word is read for every
+// flag, with bit values from x/sys/unix. The address is a whole field (#875). Only fields before the backslash are read;
+// both tools put the lifetimes after it (#819).
 func V6AddrFlagsFromAddrShow(out, addr string) V6AddrFlags {
 	for _, line := range strings.Split(out, "\n") {
 		fields := strings.Fields(line)
@@ -119,10 +63,7 @@ func V6AddrFlagsFromAddrShow(out, addr string) V6AddrFlags {
 			case "dadfailed":
 				f.DADFailed = true
 			case "scope", "proto":
-				// The two keywords in `ip addr` output whose VALUE is
-				// the next field. Skipping the value keeps a scope or
-				// protocol that happens to spell a flag name from
-				// reading as that flag.
+				// In `ip addr` output the value of these two keywords is the next field.
 				i++
 			case "flags":
 				if i+1 < len(fields) {
@@ -142,16 +83,7 @@ func V6AddrFlagsFromAddrShow(out, addr string) V6AddrFlags {
 	return V6AddrFlags{}
 }
 
-// V6Lifetime is one of an address's two lifetimes as `ip addr` prints
-// it: a number of seconds, or the kernel's infinity.
-//
-// Forever is a field and not a magic number, because the two readings
-// an address can carry -- "0 seconds left" and "never expires" -- are
-// the ends of the same axis and a caller that stored infinity as 0 or
-// as the largest uint32 would have exactly one of them wrong. The
-// kernel's own encoding has the same trap: 0xFFFFFFFF on the wire is
-// infinity and 0 is expiry, and the plugin's netlink attributes carry
-// both.
+// V6Lifetime is one lifetime as `ip addr` prints it, seconds or forever; on the wire 0xFFFFFFFF is infinity and 0 is expiry.
 type V6Lifetime struct {
 	Seconds int
 	Forever bool
@@ -164,20 +96,7 @@ func (l V6Lifetime) String() string {
 	return fmt.Sprintf("%dsec", l.Seconds)
 }
 
-// v6LifetimesFrom reads the `valid_lft X preferred_lft Y` pair both
-// tools print after the backslash.
-//
-// IT IS KEYED ON THE KEYWORD AND NOT ON POSITION. iproute2 and busybox
-// agree on the two keywords and on the `<n>sec` spelling (MEASURED, the
-// verbatim pairs in v6addrflags_test.go), and neither promises the
-// order or that nothing else sits between them. A reader that took
-// fields 1 and 3 would be reading a position two tools happen to share
-// today.
-//
-// The pair counts as READ only when both keywords carried a value this
-// function understood. Half a pair is not a lifetime: a caller
-// asserting that a preferred lifetime reached zero must not be handed a
-// zero that means "not printed".
+// v6LifetimesFrom reads the `valid_lft X preferred_lft Y` pair after the backslash by keyword; ok needs both values (#819).
 func v6LifetimesFrom(tail []string) (valid, preferred V6Lifetime, ok bool) {
 	var gotValid, gotPreferred bool
 	for i := 0; i+1 < len(tail); i++ {

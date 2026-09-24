@@ -30,17 +30,8 @@ func testRecords(t *testing.T) (*Records, string) {
 	return r, path
 }
 
-// TestRecords_SecondOpenIsRefused drives G-10 in the only direction
-// that can be driven without a second process.
-//
-// flock is associated with the OPEN FILE DESCRIPTION, not with the
-// process, so a second os.OpenFile in this process conflicts exactly as
-// a second plugin process's would. If this ever passes silently — a
-// second Records handed back — the guarantee has become an assertion,
-// and the failure it admits is not a corrupt file but a silently
-// truncated history: the second writer's sequence numbers restart, its
-// events fold as stale, and a restart resumes from a record missing
-// everything the loser wrote.
+// flock binds to the open file description, so a second open in one process conflicts like a second process (#950).
+
 func TestRecords_SecondOpenIsRefused(t *testing.T) {
 	_, path := testRecords(t)
 
@@ -54,9 +45,6 @@ func TestRecords_SecondOpenIsRefused(t *testing.T) {
 	}
 }
 
-// TestRecords_LockIsReleasedOnClose is the control for the test above:
-// a refusal that never lifts would make a plugin restart impossible,
-// and a test that only checks the refusal cannot tell the two apart.
 func TestRecords_LockIsReleasedOnClose(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "leases.jsonl")
@@ -75,13 +63,6 @@ func TestRecords_LockIsReleasedOnClose(t *testing.T) {
 	_ = second.Close()
 }
 
-// TestRecords_AHeldLockNamesTheOtherTag is #950 end to end: the refusal
-// an operator actually reads, produced by a real kernel EWOULDBLOCK
-// rather than an injected one.
-//
-// End to end because the classification is worth nothing if OpenRecords
-// does not reach it. This is the only case that ties the two together;
-// the errno table below cannot see a call site that stopped calling.
 func TestRecords_AHeldLockNamesTheOtherTag(t *testing.T) {
 	_, path := testRecords(t)
 
@@ -105,20 +86,8 @@ func TestRecords_AHeldLockNamesTheOtherTag(t *testing.T) {
 	}
 }
 
-// TestRecords_TheLockRefusalReadsTheErrno drives the readings that no
-// filesystem we can reach produces.
-//
-// The errno is injected, and injected is all it can be: EWOULDBLOCK is
-// the only one of these a test can make the kernel return. What each
-// case asserts is the pair -- the sentence it must carry AND the
-// sentence it must not -- because the defect #950 describes is one text
-// standing in for two opposite remedies, and a case that only checks
-// for its own text passes while both arms return the same string.
-//
-// EWOULDBLOCK and EAGAIN are one value on Linux, and so are EOPNOTSUPP
-// and ENOTSUP. They are named separately here and once each in
-// lockRefused: if a build ever splits a pair, this table goes red and
-// the classification is what has to change.
+// EWOULDBLOCK equals EAGAIN and EOPNOTSUPP equals ENOTSUP on Linux; a build that splits a pair turns this red (#950).
+
 func TestRecords_TheLockRefusalReadsTheErrno(t *testing.T) {
 	const path = "/state/lease-records.jsonl"
 
@@ -141,9 +110,6 @@ func TestRecords_TheLockRefusalReadsTheErrno(t *testing.T) {
 		{"ENOTSUP", unix.ENOTSUP, unsupported, []string{held}},
 		{"EINVAL", unix.EINVAL, unsupported, []string{held}},
 		{"ENOSYS", unix.ENOSYS, unsupported, []string{held}},
-		// Neither reading. The generic text is what ships for an errno
-		// we cannot name, and it ships WITH the errno: a refusal whose
-		// cause we are guessing at must hand the operator the number.
 		{"EINTR", unix.EINTR, generic, []string{held, unsupported}},
 	}
 
@@ -165,10 +131,6 @@ func TestRecords_TheLockRefusalReadsTheErrno(t *testing.T) {
 			if !strings.Contains(got, path) {
 				t.Errorf("refusal for %v does not name the record file: %q", c.errno, got)
 			}
-			// Both of these are load-bearing for a caller. The
-			// sentinel is what pkg/plugin and any importer matches a
-			// lock refusal on, and nothing else in this repository
-			// reads it, so only this assertion can see it go.
 			if !errors.Is(err, ErrRecordsLocked) {
 				t.Errorf("refusal for %v is not an ErrRecordsLocked", c.errno)
 			}
@@ -179,10 +141,6 @@ func TestRecords_TheLockRefusalReadsTheErrno(t *testing.T) {
 	}
 }
 
-// TestRecords_TheGenericRefusalCarriesTheErrno is the half of the
-// fallback arm the table above states in words: an unnamed errno is
-// printed, not only wrapped, because the operator reading the daemon log
-// has no errors.Is.
 func TestRecords_TheGenericRefusalCarriesTheErrno(t *testing.T) {
 	got := lockRefused("/state/lease-records.jsonl", unix.EINTR).Error()
 	if !strings.Contains(got, unix.EINTR.Error()) {
@@ -190,20 +148,6 @@ func TestRecords_TheGenericRefusalCarriesTheErrno(t *testing.T) {
 	}
 }
 
-// TestRecords_TheReferenceQuotesTheRefusals holds the operator manual to
-// the three sentences this file produces.
-//
-// The upgrade section of docs/reference.md is where an operator is sent
-// after a failed `docker plugin enable`, and it tells them apart by
-// quoting them. A quote retyped from memory, or left behind when the
-// wording moves, sends the reader looking in the daemon log for a line
-// that is not there -- and no test that reads only Go can see it. The
-// fragments come from lockRefused, so the manual cannot drift from the
-// code without this going red.
-//
-// The path is elided: the sentences carry the record file's path, which
-// this package cannot derive (the state directory is pkg/plugin's), so
-// the quoted path itself is unchecked. That is the bound.
 func TestRecords_TheReferenceQuotesTheRefusals(t *testing.T) {
 	doc := reference(t)
 
@@ -227,8 +171,7 @@ func TestRecords_TheReferenceQuotesTheRefusals(t *testing.T) {
 	}
 }
 
-// reference returns docs/reference.md with its line wrapping removed, so
-// a quoted sentence can be looked for as one string.
+// reference returns docs/reference.md with its line wrapping removed, so a quoted sentence is one string.
 func reference(t *testing.T) string {
 	t.Helper()
 	b, err := os.ReadFile(filepath.Join("..", "..", "docs", "reference.md"))
@@ -238,33 +181,10 @@ func reference(t *testing.T) string {
 	return strings.Join(strings.Fields(string(b)), " ")
 }
 
-// TestRecords_TheReferenceGivesEachRefusalItsOwnRemedy is the other half
-// of #950: the refusal names the cause AND the action, and the action an
-// operator is given lives in the manual rather than in the message.
-//
-// A quote check cannot see it. The sentences the plugin prints can all be
-// quoted correctly while the instruction beneath each one is the other
-// one's -- MEASURED by the reviewer at this change's first head, who
-// swapped the two remedies and watched the suite stay green.
-//
-// So the remedies are located RELATIVE TO ANCHORS DERIVED FROM THE CODE:
-// each refusal's own text opens its region, and a remedy that moves out
-// of its region, or disappears, goes red. The remedy wording itself is a
-// literal here because it is prose and has no source in the code -- which
-// is also what makes it the thing most likely to drift.
-//
-// THE REPOINTING SENTENCE IS NOT DECORATION. `STATE_DIR` is settable and
-// the bind source is not, so repointing it makes the lock succeed and
-// silently moves the lease record, the tombstones and the audit ledger
-// back inside the plugin rootfs, where the next upgrade destroys them.
-// The settings row already says so, and this holds the two to each other:
-// if that row's rule is ever reworded, this goes red beside it.
 func TestRecords_TheReferenceGivesEachRefusalItsOwnRemedy(t *testing.T) {
 	doc := reference(t)
 
 	const elided = "<the record file>"
-	// part[0] of the held message and part[1] of the unsupported one:
-	// the halves that carry no path, taken from lockRefused itself.
 	heldParts := strings.Split(strings.TrimPrefix(lockRefused(elided, unix.EWOULDBLOCK).Error(), "dhcp: "), elided)
 	unsupParts := strings.Split(strings.TrimPrefix(lockRefused(elided, unix.ENOLCK).Error(), "dhcp: "), elided)
 
@@ -290,7 +210,7 @@ func TestRecords_TheReferenceGivesEachRefusalItsOwnRemedy(t *testing.T) {
 	remedies := []struct {
 		name   string
 		text   string
-		region int // the anchor whose region the remedy must sit in
+		region int
 	}{
 		{"disable the holder", "Disable the old tag, then enable the new one.", 0},
 		{"give the mount a filesystem that locks", "Back `/var/lib/net-dhcp` on the host with a filesystem that implements file locking.", 1},
@@ -314,25 +234,13 @@ func TestRecords_TheReferenceGivesEachRefusalItsOwnRemedy(t *testing.T) {
 		}
 	}
 
-	// The settings row this leans on. Quoted, because the sentence above
-	// is only correct while the row still says repointing opts out.
 	if !strings.Contains(doc, "repointing this setting opts out") {
 		t.Error("docs/reference.md no longer says repointing STATE_DIR opts out; the remedy above assumes it does")
 	}
 }
 
-// TestRecords_AnUnopenableLockFileNamesItself is the arm above the
-// classification: the lock file cannot be CREATED, so there is no errno
-// from flock to read and none of the three readings applies.
-//
-// It is a fourth line in the daemon log at the same step, and the manual
-// quotes it as one. The case pins what an operator gets, including the
-// two negatives: it is not an ErrRecordsLocked, because no lock was ever
-// contended, and the errno survives for a caller that wants it.
-//
-// Driven with a missing parent directory rather than a mode the process
-// may not write: root ignores the mode, and a case that passes only for
-// an unprivileged runner is a case that stops running.
+// Root ignores file modes, so the lock file is made unopenable by a missing parent directory (#950).
+
 func TestRecords_AnUnopenableLockFileNamesItself(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "no-such-directory", "leases.jsonl")
 
@@ -352,8 +260,6 @@ func TestRecords_AnUnopenableLockFileNamesItself(t *testing.T) {
 		t.Errorf("a lock file that could not be created was reported as a contended lock: %q", got)
 	}
 
-	// The manual quotes this line too, and the quote is derived: take
-	// what the plugin prints before the path.
 	if i := strings.Index(got, path); i > 0 {
 		lead := strings.TrimSpace(strings.TrimPrefix(got[:i], "dhcp: "))
 		if !strings.Contains(reference(t), lead) {
@@ -362,13 +268,6 @@ func TestRecords_AnUnopenableLockFileNamesItself(t *testing.T) {
 	}
 }
 
-// TestRecords_SequenceSurvivesAReopen is the defect a per-process
-// counter starting at zero produces, driven end to end.
-//
-// The fold refuses an event whose Seq does not advance, and it refuses
-// it QUIETLY — the record comes back with Rejects bumped and nothing
-// else moved. So the observable is not an error from Append; it is a
-// record whose phase never left where the first process put it.
 func TestRecords_SequenceSurvivesAReopen(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "leases.jsonl")
@@ -412,9 +311,6 @@ func TestRecords_SequenceSurvivesAReopen(t *testing.T) {
 	}
 }
 
-// TestRecords_ResumeCarriesTheLeaseAcrossManagers is the seam's whole
-// reason for a durable record: the CreateEndpoint one-shot's lease has
-// to reach the Join manager as an INIT-REBOOT, not as a fresh DISCOVER.
 func TestRecords_ResumeCarriesTheLeaseAcrossManagers(t *testing.T) {
 	r, _ := testRecords(t)
 
@@ -433,9 +329,7 @@ func TestRecords_ResumeCarriesTheLeaseAcrossManagers(t *testing.T) {
 	if err := r.Observed("rec-1", lease.Event{Kind: lease.Acquired, Lease: held}, nil); err != nil {
 		t.Fatalf("Observed: %v", err)
 	}
-	// The acquisition manager's last event. It is a cancellation the
-	// chassis itself asked for, and if the record treated it as a loss
-	// the Join manager would resume nothing.
+	// ReasonStopped is the chassis's own cancel, not a loss (#899).
 	if err := r.Observed("rec-1", lease.Event{Kind: lease.Lost, Reason: proto.ReasonStopped}, nil); err != nil {
 		t.Fatalf("Observed(stopped): %v", err)
 	}
@@ -457,15 +351,6 @@ func TestRecords_ResumeCarriesTheLeaseAcrossManagers(t *testing.T) {
 	}
 }
 
-// TestRecords_ResumeCarriesTheIdentity is the other half of what a
-// manager about to start needs, and the half v4 used to drop.
-//
-// An address is resumed FROM a binding the server holds, and the server
-// files the binding under the option-61 identity. A resume that handed
-// back the lease and left the identity behind lets the caller ask for
-// the address as somebody else, which is a DHCPNAK and a different
-// address. The v6 side has returned its identity since the Confirm
-// work; this is the v4 twin.
 func TestRecords_ResumeCarriesTheIdentity(t *testing.T) {
 	mac := []byte{2, 0, 0, 0, 0, 1}
 	identity := []byte{0, 9, 9}
@@ -491,10 +376,8 @@ func TestRecords_ResumeCarriesTheIdentity(t *testing.T) {
 	})
 
 	t.Run("a re-bind under a new hardware address keeps it", func(t *testing.T) {
-		// The case the whole field exists for: Docker mints a fresh MAC
-		// for the endpoint a restarting container comes back on, the
-		// re-bind consumes the tombstone under that MAC, and the
-		// identity is write-once so it stays the first container's.
+		// Docker mints a fresh MAC for a restarting container's endpoint; the write-once identity stays the first one
+		// (#1047).
 		r, _ := testRecords(t)
 		if err := r.Created("rec-1", "net-1", mac, identity); err != nil {
 			t.Fatalf("Created: %v", err)
@@ -522,9 +405,6 @@ func TestRecords_ResumeCarriesTheIdentity(t *testing.T) {
 	})
 
 	t.Run("a record with no identity offers none", func(t *testing.T) {
-		// An endpoint adopted from Docker's own view has no identity to
-		// offer, and the caller derives one, which is what it did for
-		// every record before this field existed.
 		r, _ := testRecords(t)
 		if err := r.Adopted("rec-1", "net-1", mac, nil); err != nil {
 			t.Fatalf("Adopted: %v", err)
@@ -540,14 +420,6 @@ func TestRecords_ResumeCarriesTheIdentity(t *testing.T) {
 	})
 }
 
-// TestRecords_TwoManagersGetTwoIDs pins the obligation the fold cannot
-// check for itself.
-//
-// Two managers handed ONE id are folded as one and NOTHING detects it:
-// a higher snapshot under one id is exactly what a renewal looks like,
-// so the wire half silently undercounts by the first manager's total.
-// The library says so in RecordEvent.Manager and leaves the uniqueness
-// to the caller; this is the caller's side of it.
 func TestRecords_TwoManagersGetTwoIDs(t *testing.T) {
 	r, _ := testRecords(t)
 
@@ -564,11 +436,6 @@ func TestRecords_TwoManagersGetTwoIDs(t *testing.T) {
 	}
 }
 
-// TestRecords_StatsAccumulateAcrossManagers drives the pair of
-// obligations together: distinct ids, and a rebaseline when the manager
-// changes. The second manager's counters start at zero, so a chassis
-// that reused one id would have the fold read the second snapshot as
-// the first one going backwards.
 func TestRecords_StatsAccumulateAcrossManagers(t *testing.T) {
 	r, _ := testRecords(t)
 
@@ -601,16 +468,8 @@ func TestRecords_StatsAccumulateAcrossManagers(t *testing.T) {
 	}
 }
 
-// TestRecords_OneRecordStoreCallSite is the structural half of G-10.
-//
-// The lock above stops a second writer that OPENS the file. It cannot
-// stop a second writer that never went through OpenRecords, and the way
-// one appears is a second runtime.OpenRecordStore somewhere in the
-// plugin. Counting the call sites is the only check that sees a caller
-// nobody has written yet.
 func TestRecords_OneRecordStoreCallSite(t *testing.T) {
-	// Assembled rather than written out: a literal here would make
-	// this file its own second hit and the count would never be 1.
+	// Assembled so this file is not its own second hit (#950).
 	const fn = "OpenRecord" + "Store("
 
 	var hits []string
@@ -627,9 +486,6 @@ func TestRecords_OneRecordStoreCallSite(t *testing.T) {
 			if err != nil {
 				return err
 			}
-			// Both spellings: the import alias this package uses and
-			// the package's own name, so a second call site that
-			// imported it plainly is not invisible to the count.
 			for _, form := range []string{"dhcpruntime." + fn, "runtime." + fn} {
 				if strings.Contains(string(b), form) {
 					hits = append(hits, path)
@@ -653,13 +509,8 @@ func TestRecords_OneRecordStoreCallSite(t *testing.T) {
 	}
 }
 
-// TestRecords_TheACDPhaseSurvivesARestart is D23's durable half. In
-// async the address is handed to the container while RFC 5227 section
-// 2.1 is still running; if the plugin restarts inside that window the
-// next process has to know the check never finished. The phase is read
-// back OUT OF THE FILE here, by a second Records over the same path,
-// because a fold that only kept it in memory would pass an in-process
-// assertion and lose it on the restart this exists for.
+// RFC 5227 section 2.1 still runs when an async address is handed out, so the phase must survive a restart (D23).
+
 func TestRecords_TheACDPhaseSurvivesARestart(t *testing.T) {
 	dir := t.TempDir()
 	mac := []byte{2, 0, 0, 0, 0, 1}
@@ -676,17 +527,11 @@ func TestRecords_TheACDPhaseSurvivesARestart(t *testing.T) {
 		phase      proto.ACDPhase
 		unfinished bool
 	}{
-		// async: handed out DURING the probe schedule. These are the
-		// only two a restart is evidence about.
 		{"probing", proto.ACDProbing, true},
 		{"settling", proto.ACDSettling, true},
-		// wait: handed out only after section 2.1 cleared it.
 		{"announcing", proto.ACDAnnouncing, false},
 		{"defending", proto.ACDDefending, false},
-		// off ran no check -- and so does the END of every ordinary
-		// acquisition, because cancelling a manager drops the lease and
-		// the sub-machine goes idle with it. Reading this as unfinished
-		// warns on every healthy container start.
+		// Idle also ends every ordinary acquisition, so reading it as unfinished warns on every start (#882).
 		{"idle", proto.ACDIdle, false},
 	}
 
@@ -710,14 +555,11 @@ func TestRecords_TheACDPhaseSurvivesARestart(t *testing.T) {
 				t.Fatalf("close: %v", err)
 			}
 
-			// The restart.
 			second, err := OpenRecords(p, "instance-b")
 			if err != nil {
 				t.Fatalf("reopen: %v", err)
 			}
 			defer func() { _ = second.Close() }()
-			// Through the chassis's OWN resume path — the one
-			// dhcp_manager.go calls — not the library record directly.
 			id, resume, ok := second.Resume("net-1", mac, time.Now())
 			if !ok {
 				t.Fatal("nothing to resume after the restart")
@@ -737,9 +579,6 @@ func TestRecords_TheACDPhaseSurvivesARestart(t *testing.T) {
 		})
 	}
 
-	// The phase must be on the WIRE of the record, not only in the
-	// rebuilt struct: a reader that never wrote it would still pass the
-	// rows above if Resume defaulted to the same value.
 	p := filepath.Join(dir, "probing.jsonl")
 	raw, err := os.ReadFile(p)
 	if err != nil {
@@ -750,23 +589,8 @@ func TestRecords_TheACDPhaseSurvivesARestart(t *testing.T) {
 	}
 }
 
-// TestResumption_IdleIsNotEvidenceOfAnUncheckedAddress pins the
-// distinction the 2.x lane taught on 2026-09-04: proto.ACDIdle is the
-// ABSENCE of evidence, not evidence of an unchecked address.
-//
-// The first version of this predicate was spelled as the negation of
-// "cleared", so idle read as unfinished -- and idle is what the fold
-// writes at the end of every ordinary acquisition, because cancelling
-// the one-shot drops the lease and takes the sub-machine idle with it.
-// The result was a WARNING on the healthy path of every container
-// start, which is how a log stops being read.
-//
-// The asymmetry the first version was reaching for is kept: a phase the
-// library adds later is not in the finished set and not idle, so it
-// reads as unfinished and costs a log line rather than silently
-// reading as clean. That is asserted here over the library's own
-// enumeration, so a new phase arrives with a decision rather than a
-// default.
+// Measured on the 2.x lane 2026-09-04: idle read as unfinished warned on every healthy container start (#882).
+
 func TestResumption_IdleIsNotEvidenceOfAnUncheckedAddress(t *testing.T) {
 	if (Resumption{}).ACDUnfinished() {
 		t.Error("the zero Resumption reports an unfinished check; the zero phase is idle, which is no check at all")
@@ -777,8 +601,6 @@ func TestResumption_IdleIsNotEvidenceOfAnUncheckedAddress(t *testing.T) {
 			t.Errorf("ACDUnfinished(%v) = %v, want %v", phase, got, want)
 		}
 	}
-	// The unknown-phase direction, driven rather than described: a
-	// value the library does not print today must warn.
 	unknown := proto.ACDPhase(len(proto.AllACDPhases()) + 7)
 	if !(Resumption{ACD: unknown}).ACDUnfinished() {
 		t.Errorf("ACDUnfinished(%v) = false for a phase this build does not know; an unknown phase must cost a log line, not read as clean", unknown)

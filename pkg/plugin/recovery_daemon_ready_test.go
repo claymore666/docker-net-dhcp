@@ -15,16 +15,9 @@ import (
 	dNetwork "github.com/docker/docker/api/types/network"
 )
 
-// The tests here cover #383: Docker respawns the plugin during its own
-// startup, so recovery's first Docker call routinely meets a daemon that
-// is not serving yet. Before the fix that single timeout counted a
-// recovery_failure and abandoned recovery entirely, leaving every
-// attached container without a renewal client — silently, because the
-// tombstone path still preserved the addresses.
+// Docker respawns the plugin during its own startup, so recovery's first Docker call
+// can meet a daemon that is not serving yet (#383).
 
-// TestRecoverEndpointsDeferred_DaemonComesUp is the ordinary case: the
-// daemon was not ready when the socket came up, but answers shortly
-// after. Nothing should be counted as a failure.
 func TestRecoverEndpointsDeferred_DaemonComesUp(t *testing.T) {
 	fastRetries(t)
 	f := &fakeDocker{
@@ -44,9 +37,6 @@ func TestRecoverEndpointsDeferred_DaemonComesUp(t *testing.T) {
 	}
 }
 
-// TestRecoverEndpointsDeferred_DaemonNeverComesUp is the arm that must
-// still count a real failure. Nothing retries after this, so the
-// endpoints genuinely are running without renewal.
 func TestRecoverEndpointsDeferred_DaemonNeverComesUp(t *testing.T) {
 	fastRetries(t)
 	f := &fakeDocker{listErr: errors.New("daemon is gone")}
@@ -62,10 +52,6 @@ func TestRecoverEndpointsDeferred_DaemonNeverComesUp(t *testing.T) {
 	}
 }
 
-// TestRecoverEndpointsDeferred_CancelStopsTheWait proves Close can stop
-// the retry. Without it a plugin shutting down mid-wait would sit for
-// the full budget, and worse, could register a manager after the
-// shutdown drain had already run.
 func TestRecoverEndpointsDeferred_CancelStopsTheWait(t *testing.T) {
 	f := &fakeDocker{listErr: errors.New("daemon still starting")}
 	p := &Plugin{docker: f}
@@ -74,8 +60,6 @@ func TestRecoverEndpointsDeferred_CancelStopsTheWait(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		// A wait far longer than the test could tolerate: only the
-		// cancel can end this.
 		p.recoverEndpointsDeferred(ctx, time.Hour)
 	}()
 
@@ -88,10 +72,6 @@ func TestRecoverEndpointsDeferred_CancelStopsTheWait(t *testing.T) {
 	}
 }
 
-// TestApiHealth_RecoveryDeferredIsNotUnhealthy pins the classification.
-// Meeting a still-starting daemon is the expected state at plugin
-// respawn; if it flipped healthy false, every host reboot would page an
-// operator over nothing — the #373/#376 mistake, one site further along.
 func TestApiHealth_RecoveryDeferredIsNotUnhealthy(t *testing.T) {
 	p := &Plugin{
 		joinHints:      make(map[string]joinHint),

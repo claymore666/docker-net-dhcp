@@ -16,35 +16,13 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-// maxRtrSolicitationDelay is RFC 4861 section 10's host constant of that
-// name: "MAX_RTR_SOLICITATION_DELAY 1 second".
-//
-// Spelled here rather than read from proto.Params6 because the library
-// does not carry it: the delay is applied by the sender of the first
-// solicitation and the library's schedule starts after it. It is in
-// RouterDiscoveryWindow because the CALLER's deadline has to cover the
-// whole of RFC 4861 section 6.3.7 or its verdict is about the deadline.
+// maxRtrSolicitationDelay is RFC 4861 section 10's "MAX_RTR_SOLICITATION_DELAY 1 second", which Params6 does not carry.
 const maxRtrSolicitationDelay = time.Second
 
-// RouterDiscoveryWindow is the longest RFC 4861 section 6.3.7's
-// solicitation schedule can take, and therefore the shortest deadline
-// under which "no router advertisement arrived" is a statement about
-// the SEGMENT rather than about the deadline.
-//
-// Section 6.3.7: a host waits "a random amount of time between 0 and
-// MAX_RTR_SOLICITATION_DELAY" and then transmits "up to
-// MAX_RTR_SOLICITATIONS Router Solicitation messages", each "separated
-// by at least RTR_SOLICITATION_INTERVAL seconds". So the last
-// solicitation leaves at delay + (n-1) intervals, and one further
-// interval is the wait for its answer: delay + n*interval, which is
-// 1 + 3*4 = 13s with the library's defaults.
-//
-// WHY IT IS DERIVED FROM Params6 AND NOT WRITTEN DOWN. The two numbers
-// are the library's, a caller can change them, and a constant here
-// would be a second derivation of one fact -- the shape that produces
-// two answers to "how long does discovery take". The one number this
-// function does own is the initial delay, which the library has no
-// field for; see maxRtrSolicitationDelay.
+// RFC 4861 section 6.3.7: delay plus MAX_RTR_SOLICITATIONS intervals, 1 + 3*4 = 13 s with the library's defaults
+// (#911).
+
+// RouterDiscoveryWindow is the shortest deadline under which "no router advertisement arrived" describes the segment.
 func RouterDiscoveryWindow(p proto.Params6) time.Duration {
 	n := p.RouterSolicitations
 	if n <= 0 {
@@ -57,61 +35,24 @@ func RouterDiscoveryWindow(p proto.Params6) time.Duration {
 	return maxRtrSolicitationDelay + time.Duration(n)*interval
 }
 
-// v6SolicitTransmissions is how many Solicits a one-shot DHCPv6
-// acquisition is funded for: the first plus three retransmissions.
-//
-// IT IS A CHOICE AND IT HAS TO BE. RFC 9915 section 7.6 gives the
-// Solicit exchange no MRC and no MRD -- "MRC 0" and "MRD 0" -- so the
-// protocol never stops trying, and RouterDiscoveryWindow's kind of
-// derivation is not available: there is no retransmission count in the
-// RFC to read. What decides it instead is who is waiting. A one-shot
-// runs inside CreateEndpoint, which the Docker daemon abandons after
-// its own plugin-request deadline (30s, moby/pkg/plugins), and a
-// verdict that arrives after that reaches nobody: the container fails
-// to start with "context deadline exceeded" and the operator is told
-// nothing about the segment. Four transmissions survives three lost
-// messages and still leaves the answer inside that deadline.
+// RFC 9915 section 7.6 gives Solicit "MRC 0" and "MRD 0", and the daemon abandons CreateEndpoint after 30 s
+// (moby/pkg/plugins); four transmissions fit (#911).
+
+// v6SolicitTransmissions is how many Solicits a one-shot DHCPv6 acquisition is funded for.
 const v6SolicitTransmissions = 4
 
-// V6AcquisitionWindow is how long a one-shot DHCPv6 acquisition may run
-// before the chassis draws its verdict, and it is NOT lease_timeout.
-//
-// WHY THE CALLER'S DEADLINE IS THE WRONG NUMBER HERE. lease_timeout's
-// default is ConflictRecoveryWindow -- 34s with the library's constants
-// -- and every term in it is DHCPv4's: a DISCOVER retransmission, RFC
-// 5227's probe window, and RFC 2131 section 3.1(5)'s ten-second wait
-// before a declined address is asked for again. None of those describes
-// a DHCPv6 exchange, and the number they add up to is longer than the
-// daemon will wait for CreateEndpoint to answer. MEASURED on the lane
-// 2026-09-06: on a SLAAC segment the v6 one-shot ran to the 34s
-// deadline and `docker run` failed with "context deadline exceeded"
-// after ~30s -- #868's symptom exactly, from the budget rather than
-// from the verdict.
-//
-// Two terms, in the order the client spends them:
-//
-//	RouterDiscoveryWindow  RFC 4861 section 6.3.7: the client has no
-//	                       reason to speak DHCPv6 until an
-//	                       advertisement tells it to, and the library
-//	                       waits this out before soliciting anyway.
-//	the Solicit schedule   RFC 9915 section 15's doubling, from
-//	                       SOL_MAX_DELAY through v6SolicitTransmissions
-//	                       transmissions, with section 15's randomiser
-//	                       at its maximum (+0.1) on every timer.
-//
-// 13.0 + 8.7 = 21.7s with the library's defaults. A caller whose own
-// deadline is shorter still wins: getIP6 takes the smaller of the two.
+// lease_timeout's 34 s is DHCPv4's; measured on the lane 2026-09-06, a SLAAC segment ran to it and `docker run` failed
+// after ~30 s (#868). RFC 4861 section 6.3.7 plus RFC 9915 section 15's Solicit schedule: 13.0 + 8.7 = 21.7 s (#911).
+
+// V6AcquisitionWindow is how long a one-shot DHCPv6 acquisition may run before the chassis draws its verdict.
 func V6AcquisitionWindow(p proto.Params6) time.Duration {
 	return RouterDiscoveryWindow(p) + v6SolicitWindow(p)
 }
 
+// RFC 9915 section 18.2.1 delays the first Solicit up to SOL_MAX_DELAY; section 15's RT = 2*RTprev + RAND*2*RTprev is
+// taken at RAND = +0.1 (#911).
+
 // v6SolicitWindow is the Solicit half of V6AcquisitionWindow.
-//
-// RFC 9915 section 18.2.1 delays the first Solicit by "a random amount
-// of time between 0 and SOL_MAX_DELAY", and section 15 sets each
-// retransmission timer from the previous one: RT = 2*RTprev +
-// RAND*2*RTprev with RAND in [-0.1, +0.1]. The maximum is what a budget
-// has to cover, so every timer here is taken at +0.1.
 func v6SolicitWindow(p proto.Params6) time.Duration {
 	d := proto.DefaultParams6()
 	delay := time.Duration(p.SolMaxDelay)
@@ -130,87 +71,32 @@ func v6SolicitWindow(p proto.Params6) time.Duration {
 	return total
 }
 
-// v6RouterPollInterval is how often getIP6 re-reads the running router
-// observation while it waits.
-//
-// A POLL AND NOT AN EVENT because the library has none to give: an
-// advertisement is not a lease.Event, so the only way the chassis can
-// act on one is to look. Short enough that the SLAAC verdict is not
-// noticeably later than the advertisement that produced it, long enough
-// that a quiet 21.7s acquisition costs under a hundred wake-ups.
+// v6RouterPollInterval is how often getIP6 re-reads the router observation, as advertisements are not lease events
+// (#911).
 const v6RouterPollInterval = 250 * time.Millisecond
 
-// ErrNoDHCPv6OnSegment is a segment whose router advertisement carries
-// neither the M nor the O flag: RFC 4861 section 4.2's plain SLAAC.
-//
-// IT IS THE VERDICT THE DEADLINE WOULD HAVE REACHED, TAKEN EARLY, and
-// it is the same argument acquireStep6 makes for RFC 9915 section
-// 18.2.6's Reply. An advertisement with M=0 and O=0 says there is
-// nothing to ask DHCPv6 for, and proto.Machine6 agrees -- it sends no
-// Solicit at all on such a link, so nothing is in flight and waiting
-// out the rest of the budget cannot change the answer. Concluding here
-// turns a container start on the ordinary SLAAC home network from
-// "21.7 seconds, then no address" into "about two seconds, then no
-// address", and the endpoint is created either way.
+// proto.Machine6 sends no Solicit on an M=0 O=0 link, so the verdict is taken in about two seconds instead of 21.7
+// (#911).
+
+// ErrNoDHCPv6OnSegment is a segment whose advertisement carries neither the M nor the O flag (RFC 4861 section 4.2).
 var ErrNoDHCPv6OnSegment = errors.New("dhcp: the segment's router advertisement offers no DHCPv6")
 
-// advertisedNoDHCPv6 reports whether the segment has already said, on
-// the wire, that DHCPv6 has nothing for this client.
+// advertisedNoDHCPv6 reports whether the segment has already said DHCPv6 has nothing for this client.
 func advertisedNoDHCPv6(r RAObservation) bool {
 	return r.Seen && !r.Managed && !r.Other
 }
 
-// concludesOnAdvertisedAbsence is the early conclusion above, read in
-// the network's ipv6_mode (#818).
-//
-// IN A MODE THAT FORMS ITS OWN ADDRESS, AN ADVERTISEMENT WITH NEITHER
-// FLAG IS THE START OF AN ACQUISITION AND NOT THE END OF ONE. RFC 4861
-// section 4.2's M=0 O=0 says DHCPv6 has nothing for this client, which
-// is the whole of what ErrNoDHCPv6OnSegment means -- and on an
-// `ipv6_mode=slaac` network DHCPv6 was never going to be asked. What
-// carries the address there is the Prefix Information option on that
-// same advertisement (RFC 4862 section 5.5.3), the library forms an
-// address from it, runs duplicate address detection and emits Acquired,
-// and concluding on the advertisement ended the acquisition before any
-// of that could arrive. That is why an `ipv6_mode=slaac` network gave
-// its containers no address up to v2.1.x: the conclusion is #868's fix
-// for containers hanging on stateless networks, and it was not
-// mode-aware.
-//
-// THE `dhcp` ROW IS THE ONE TO PROTECT, and it is why this is a
-// predicate rather than a condition deleted. #868's whole benefit is
-// that a `docker run` on the ordinary SLAAC home network takes about
-// two seconds instead of the full acquisition budget. Widening the
-// change to every mode would take that back for every network that
-// never asked for address formation, and nothing would fail -- the
-// containers would simply start twenty seconds later.
-//
-// A forming mode's acquisition ends on what the library says instead:
-// Acquired once the formed address passes detection, Failed with
-// ErrNoSLAACPrefix when the advertisement carried no prefix an address
-// could be formed from, or the budget.
+// In slaac and auto the M=0 O=0 advertisement carries the prefix to form from (RFC 4862 section 5.5.3); concluding
+// there gave slaac networks no address up to v2.1.x. The dhcp mode keeps #868's two-second conclusion (#818).
+
+// concludesOnAdvertisedAbsence is the early no-DHCPv6 conclusion, taken only in the dhcp ipv6_mode.
 func concludesOnAdvertisedAbsence(mode proto.Mode6, r RAObservation) bool {
 	return !IPv6ModeFormsAddresses(mode) && advertisedNoDHCPv6(r)
 }
 
-// checkRouterAdvertGuardShape refuses HonorRouterAdverts on every shape
-// it does not belong on, and refuses a persistent v6 client that does
-// not carry it.
-//
-// TWO REFUSALS IN ONE FUNCTION BECAUSE THEY ARE ONE RULE: the guard
-// belongs to the persistent DHCPv6 client and to nothing else, which
-// makes both "set on the wrong client" and "missing on the right one"
-// wiring mistakes of the same kind. A dropped flag is a wiring mistake
-// that looks like a working plugin, and neither of its failures is one
-// anything downstream would report -- accept_ra=0 on a link still in
-// the HOST namespace turns the host's own router discovery off, and a
-// v6 endpoint whose link was never guarded carries whatever route its
-// kernel made of the advertisement beside the one the plugin installed,
-// with a completely healthy look either way (#875, #821).
-//
-// oneShot is the CreateEndpoint acquisition. Its link is still in the
-// host's network namespace when it runs, which is why the guard is
-// refused there and not merely skipped.
+// Unguarded, accept_ra=0 on a host-namespace link or a second kernel default route both look healthy (#875, #821).
+
+// checkRouterAdvertGuardShape requires HonorRouterAdverts on the persistent v6 client and refuses it everywhere else.
 func checkRouterAdvertGuardShape(opts *DHCPClientOptions, oneShot bool) error {
 	if opts.HonorRouterAdverts {
 		switch {
@@ -232,37 +118,15 @@ func checkRouterAdvertGuardShape(opts *DHCPClientOptions, oneShot bool) error {
 	return nil
 }
 
-// newLibClient6 opens a DHCPv6 library client on iface, inside
-// opts.NetNS when one is given.
-//
-// THE ORDER ON THIS PATH IS FIXED AND EACH STEP IS A PRECONDITION OF
-// THE NEXT:
-//
-//  1. disable_ipv6 cleared on the link. NOT here -- the plugin does it
-//     (pkg/plugin/v6_link.go) before this is called, in the same
-//     namespace entry as step 2, because it needs a writable /proc/sys
-//     and the plugin is where the mount-namespace machinery lives. On a
-//     link with disable_ipv6=1 no link-local ever appears, so step 3
-//     fails inside its own bound and the failure reads as a quiet
-//     segment. The engine sets that flag on a sandbox interface whose
-//     endpoint carries no IPv6 address, which is a reachable state.
-//  2. the Router-Advertisement guard written and read back, same place,
-//     same reason. HonorRouterAdverts is this function's assertion that
-//     it happened.
-//  3. NewClient6, which is where the sockets are made and therefore
-//     where the namespace is decided. IT WAITS FOR A NON-TENTATIVE
-//     LINK-LOCAL ITSELF -- the library's InterfaceLinkLocal states the
-//     bound -- and the chassis does NOT wait a second time: one fact,
-//     one derivation.
-//  4. Run, from Start, on any thread.
+// The plugin clears disable_ipv6 and writes the RA guard first (pkg/plugin/v6_link.go); NewClient6 then waits for a
+// non-tentative link-local itself, and the engine sets disable_ipv6 on a link with no IPv6 address (#911).
+
+// newLibClient6 opens a DHCPv6 library client on iface, inside opts.NetNS when one is given.
 func newLibClient6(iface string, params proto.Params6, opts *DHCPClientOptions) (*dhcpruntime.Client6, error) {
 	cfg := dhcpruntime.ClientConfig6{
 		Interface: iface,
 		Params6:   params,
-		// The binding this identity held in a previous run of the
-		// plugin, which makes the first message on the wire RFC 9915
-		// section 18.2.12's Confirm instead of a Solicit -- the whole
-		// of what makes an address survive a plugin restart (#820).
+		// A resumed binding makes the first message a Confirm (RFC 9915 section 18.2.12, #820).
 		Resume:      opts.Resume,
 		EventBuffer: eventBuffer,
 	}
@@ -299,26 +163,10 @@ func newLibClient6(iface string, params proto.Params6, opts *DHCPClientOptions) 
 	return client, nil
 }
 
-// getIP6 is GetIP for a DHCPv6 endpoint: one acquisition, bounded by
-// the caller's deadline, and an observation of what the segment
-// advertised whether or not an address came out of it.
-//
-// THE OBSERVATION IS TAKEN AT THE END AND NOWHERE ELSE. Router() is a
-// running answer -- it is the zero value until the first advertisement
-// arrives, and RFC 4861 section 6.3.7 allows that to be seconds --
-// so a read taken when the loop starts, or on the first event, would
-// say "no router" for a segment that answers in a second. The verdict
-// pkg/plugin/v6_absence.go draws is only as good as the moment this is
-// read, and the moment is the deadline. See RouterDiscoveryWindow for
-// what the deadline has to cover for the reading to be about the
-// segment at all.
-//
-// THE v6 MACHINE NEVER GIVES UP ON ITS OWN. RFC 9915 section 7.6 puts
-// SOL_MAX_RT at 3600 s and gives the Solicit exchange no MRC and no
-// MRD, so ctx is the only thing that ends a hopeless attempt. That is
-// the same shape the v4 one-shot has and the same shape 1.9.0 had; it
-// is stated because it is the reason lease_timeout is not advisory
-// here.
+// Router() is zero until the first advertisement, and RFC 9915 section 7.6 gives Solicit no MRC or MRD with SOL_MAX_RT
+// 3600 s, so ctx ends the attempt, as in 1.9.0 (RFC 4861 section 6.3.7, #911).
+
+// getIP6 is GetIP for DHCPv6, taking the segment's advertisement observation at the deadline.
 func getIP6(ctx context.Context, iface string, opts *DHCPClientOptions) (Info, RAObservation, error) {
 	var ra RAObservation
 	if err := checkRouterAdvertGuardShape(opts, true); err != nil {
@@ -330,20 +178,12 @@ func getIP6(ctx context.Context, iface string, opts *DHCPClientOptions) (Info, R
 		return Info{}, ra, err
 	}
 	opts.params6 = params
-	// No Params snapshot rides a v6 event; see
-	// DHCPClientOptions.paramsWritten.
+	// No Params snapshot rides a v6 event; see DHCPClientOptions.paramsWritten (#911).
 	opts.paramsWritten = true
 
 	if dl, ok := ctx.Deadline(); ok {
 		if budget, want := time.Until(dl), RouterDiscoveryWindow(params); budget < want {
-			// AUDIBLE, NOT FATAL. The endpoint can still get an
-			// address -- a segment that answers immediately answers
-			// inside any budget -- but the ABSENCE verdict this
-			// function's observation feeds cannot be trusted below
-			// this line, and an operator reading
-			// dhcpv6_no_router_advert deserves to know that the
-			// number was produced by a deadline shorter than router
-			// discovery.
+			// A deadline shorter than router discovery makes the absence verdict unreliable, so it is logged (#911).
 			log.WithField("iface", iface).
 				WithField("lease_timeout", budget.Round(time.Second)).
 				WithField("router_discovery_window", want).
@@ -352,11 +192,7 @@ func getIP6(ctx context.Context, iface string, opts *DHCPClientOptions) (Info, R
 		}
 	}
 
-	// AT MOST TWO PASSES, and the bound is in retryWithoutHint6 rather
-	// than in a counter here: the only thing that asks for a second
-	// pass is a hint, the method clears the hint before it says yes,
-	// and it says no to an attempt that carried none. See
-	// errV6HintInUse for what the second pass is for.
+	// At most two passes; retryWithoutHint6 clears the hint before it answers yes (#911).
 	for {
 		info, ra, err := acquireOnce6(ctx, iface, opts.params6, opts)
 		declined, again := opts.retryWithoutHint6(err)
@@ -371,25 +207,9 @@ func getIP6(ctx context.Context, iface string, opts *DHCPClientOptions) (Info, R
 	}
 }
 
-// retryWithoutHint6 answers whether the attempt that ended in err is
-// worth running again without its address hint, and prepares the
-// options for that second run.
-//
-// IT IS THE WHOLE OF THE BOUND ON getIP6's LOOP. A retry is offered
-// only to an attempt that carried a hint, and the hint is cleared
-// before the answer is yes, so a second refusal cannot be produced by
-// the same options and there is never a third pass. The one-line
-// version: this method is the loop's counter, held as state rather
-// than as an integer, because the state is also what the next attempt
-// has to be run with.
-//
-// THE RESUMED BINDING GOES WITH THE HINT. Both name the same address --
-// the chassis hints what it remembered -- and a Resume makes the first
-// message on the wire RFC 9915 section 18.2.12's Confirm ABOUT that
-// address, so leaving it in place would ask the server to bless the
-// very address another node answered for. The RFC 3646 lists that a
-// Confirm cannot carry, and that carryResumedConfig6 exists to restore,
-// are not lost with it: a Solicit's Reply carries them itself.
+// The resumed binding goes with the hint, as a Confirm would ask about the declined address (RFC 9915 section 18.2.12).
+
+// retryWithoutHint6 reports whether a failed hinted attempt may run once more, clearing the hint and resumed binding.
 func (o *DHCPClientOptions) retryWithoutHint6(err error) (netip.Addr, bool) {
 	if !errors.Is(err, errV6HintInUse) || !o.params6.Hint.IsValid() {
 		return netip.Addr{}, false
@@ -400,12 +220,7 @@ func (o *DHCPClientOptions) retryWithoutHint6(err error) (netip.Addr, bool) {
 	return declined, true
 }
 
-// acquireOnce6 is ONE DHCPv6 acquisition on iface under params: a
-// client of its own, the loop, and the observation taken at the end.
-//
-// Split out of getIP6 for the one reason getIP6 runs it twice. See
-// errV6HintInUse for what the second run changes and why there is
-// never a third.
+// acquireOnce6 is one DHCPv6 acquisition on iface under params, with the observation taken at the end.
 func acquireOnce6(ctx context.Context, iface string, params proto.Params6, opts *DHCPClientOptions) (Info, RAObservation, error) {
 	var ra RAObservation
 
@@ -418,59 +233,28 @@ func acquireOnce6(ctx context.Context, iface string, params proto.Params6, opts 
 	if opts.Records != nil {
 		manager = opts.Records.NewManagerID()
 	}
-	// A NEW MANAGER'S COUNTERS START AT ZERO, so the snapshots the
-	// delta reporters below subtract from have to start there too.
-	// getIP6 runs this function twice through one options value on the
-	// errV6HintInUse retry, and without this the second pass reports
-	// nothing until it passes what the first pass had already counted.
-	// See managerStarted.
+	// A new manager's counters start at zero, so the delta snapshots are reset on the retry pass (#814).
 	opts.managerStarted()
 
 	info, lastE := runAcquisition6(ctx, iface, client, opts, params.Hint, V6AcquisitionWindow(params))
 
-	// AFTER the drain: the last advertisement can arrive on the same
-	// pass as the event that ended the loop.
+	// After the drain, since the last advertisement can arrive with the final event (#911).
 	ra = raObservation(client.Router())
 	stats := client.Stats()
 	opts.count(manager, stats)
 	opts.v6ModeReport(stats)
 	opts.v6PrefixReport(stats)
-	// The acquisition's own advertisements. This one-shot runs for the
-	// whole of RFC 4861 section 6.3.7's discovery window and then ends,
-	// so the solicitations it sent and the advertisements they brought
-	// back are counted here or nowhere: no persistent client exists yet
-	// on CreateEndpoint, and the one Join starts later has a manager,
-	// and therefore a set of counters, of its own.
+	// The one-shot's RFC 4861 solicitations and advertisements are counted here or nowhere (#814).
 	opts.routerReport(stats)
 
 	out, err := acquisitionResult6(info, lastE)
 	return out, ra, err
 }
 
-// acquisitionResult6 is the DHCPv6 acquisition's verdict: the lease if
-// there is one, and otherwise the zero Info beside the reason there is
-// not.
-//
-// THE ADVERTISEMENT IS DELIBERATELY NOT CARRIED OUT OF HERE, and the
-// reason is a fact about the engine rather than a choice (#821,
-// MEASURED on the lane 2026-09-16, run 35131643324, four shards). An
-// endpoint with no DHCPv6 address gets no global IPv6 address on its
-// link; the engine disables IPv6 on a link that carries none; the
-// kernel then refuses every IPv6 route on it. Putting the
-// advertisement's gateway and routes into the Join answer for such a
-// segment made the daemon fail the whole sandbox with
-//
-//	error setting interface "<host-if>" routes to ["fd00:...::/64"]: permission denied
-//
-// so NO container started on the segment at all -- taking its IPv4 with
-// it, and #868's guarantee with that. The plugin cannot order its own
-// disable_ipv6 clear in front of the engine either: the clear happens
-// in the manager goroutine Join spawns, after the engine has moved the
-// link and applied the answer.
-//
-// So on a segment that hands out no DHCPv6 address the advertisement
-// stays unusable until the container has a global IPv6 address to use
-// it with, which is #818. This function is where that changes.
+// Measured on the lane 2026-09-16, run 35131643324: advertised routes on a link with no global IPv6 made the daemon
+// fail the whole sandbox with "routes ... permission denied", as the engine disables IPv6 there (#821, #818).
+
+// acquisitionResult6 is the DHCPv6 acquisition's verdict: the lease, or the zero Info beside the reason there is none.
 func acquisitionResult6(info Info, lastE error) (Info, error) {
 	if info.IP != "" {
 		return info, nil
@@ -481,70 +265,22 @@ func acquisitionResult6(info Info, lastE error) (Info, error) {
 	return Info{}, lastE
 }
 
-// errV6HintInUse is a conflict found by the client's own duplicate
-// address detection (RFC 9915 section 18.2.10.1) on an attempt that
-// asked the server for a particular address.
-//
-// WHY IT ENDS THE ATTEMPT INSTEAD OF LETTING THE LIBRARY RETRY. Section
-// 18.2.10.1 says the client sends a Decline and restarts the
-// configuration process. Until the library was imported as a module it
-// restarted with the SAME Params6.Hint, because the hint was set once
-// when the client was built and nothing in the exchange cleared it --
-// and section 18.2.1 lets a client hint and says nothing about a server
-// refusing one, so a server that honours hints (MEASURED against
-// dnsmasq 2.91 on the lane 2026-09-06, run 34058213252) handed back the
-// address the node had just declined. Solicit -> Advertise -> Request
-// -> Reply -> DAD -> Decline, about once a second, until the caller's
-// deadline: the container never started, and the error it failed with
-// was "context deadline exceeded" rather than the duplicate that caused
-// it.
-//
-// v0.1.0 closes that loop where it belonged: Machine6.solicitHint
-// returns no hint for an address the machine has declined, and
-// restartDiscovery drops the resumed binding with it, so the library's
-// own restart converges on a server-chosen address.
-// TestDeclinedAddressIsNotHinted pins that contract on this side of the
-// module boundary.
-//
-// The two-pass shape stays for what it does that the library's internal
-// restart cannot: getIP6's second pass is where the operator gets a
-// warning naming the declined address, and it makes the recovery one
-// the chassis can see and bound rather than one that happens inside a
-// Run it only watches.
+// Measured against dnsmasq 2.91 on the lane 2026-09-06, run 34058213252: a server that honours hints re-offered the
+// declined address about once a second until the deadline (RFC 9915 sections 18.2.1 and 18.2.10.1, #911).
+
+// errV6HintInUse is a DAD conflict on an attempt that asked the server for a particular address.
 var errV6HintInUse = errors.New("the preferred DHCPv6 address is in use by another node on the segment")
 
-// v6AcquisitionClient is the part of *dhcpruntime.Client6 the
-// acquisition loop below reads.
-//
-// It is declared here for the reason libClient is declared in
-// chassis.go — it is the chassis's demand, not the library's offer —
-// and, unlike libClient, it names Router(), because the loop's second
-// exit is an observation about the SEGMENT rather than about a lease.
+// v6AcquisitionClient is the part of *dhcpruntime.Client6 the acquisition loop reads, including Router() (#911).
 type v6AcquisitionClient interface {
 	Run(ctx context.Context) error
 	Events() <-chan lease.Event
 	Router() proto.RouterObservation
 }
 
-// runAcquisition6 runs one DHCPv6 acquisition to a verdict and drains
-// what the client had left to say.
-//
-// SEPARATED FROM getIP6 SO IT CAN BE DRIVEN. Everything above it in
-// getIP6 needs a real interface in a real namespace — newLibClient6
-// opens a packet socket — so for as long as the loop lived inside that
-// function nothing in the unit lane could reach it, and MEASURED
-// 2026-09-06 three mutants of it survived: the early conclusion
-// disabled, the window replaced by the caller's clock, and (in the
-// persistent client's copy of the same call) the resumed resolver no
-// longer carried. The seam is the client, not the socket.
-//
-// THE ACQUISITION RUNS UNDER THE SMALLER OF TWO DEADLINES, and window
-// is the second one. See V6AcquisitionWindow for why the caller's
-// cannot be the only bound: lease_timeout is derived from DHCPv4's
-// conflict recovery and is longer than the daemon will wait for
-// CreateEndpoint to answer, so on a segment with no DHCPv6 on it the
-// verdict this function exists to produce arrived after nobody was
-// listening.
+// Measured 2026-09-06: three mutants of the loop survived while it lived inside getIP6 (#911).
+
+// runAcquisition6 runs one DHCPv6 acquisition to a verdict under the smaller of ctx and window, then drains the client.
 func runAcquisition6(ctx context.Context, iface string, client v6AcquisitionClient, opts *DHCPClientOptions, hint netip.Addr, window time.Duration) (Info, error) {
 	acqCtx, endAcq := context.WithTimeout(ctx, window)
 	defer endAcq()
@@ -564,16 +300,7 @@ func runAcquisition6(ctx context.Context, iface string, client v6AcquisitionClie
 	for !got {
 		select {
 		case <-acqCtx.Done():
-			// THE CAUSE ALREADY IN HAND IS KEPT AND THE DEADLINE IS
-			// ADDED TO IT (#816). A DHCPv6 server that refuses this
-			// client answers and the machine goes back to discovery
-			// (RFC 9915 section 18.2.10.1), so the refusal arrives
-			// early and the window still runs out; an assignment here
-			// overwrote it, and the verdict pkg/plugin draws would
-			// have read "nobody answered" for a segment whose server
-			// said NoAddrsAvail. Both errors stay in the chain, so a
-			// caller testing for context.DeadlineExceeded still finds
-			// it.
+			// The refusal already in hand is kept beside the deadline (RFC 9915 section 18.2.10.1, #816).
 			if lastE == nil {
 				lastE = acqCtx.Err()
 			} else {
@@ -582,9 +309,7 @@ func runAcquisition6(ctx context.Context, iface string, client v6AcquisitionClie
 			got = true
 
 		case <-poll.C:
-			// The segment answered the question with an
-			// advertisement rather than with a lease event; see
-			// ErrNoDHCPv6OnSegment and concludesOnAdvertisedAbsence.
+			// The segment answered with an advertisement, not a lease event (#818).
 			if concludesOnAdvertisedAbsence(opts.Mode6, raObservation(client.Router())) {
 				lastE = ErrNoDHCPv6OnSegment
 				got = true
@@ -596,8 +321,7 @@ func runAcquisition6(ctx context.Context, iface string, client v6AcquisitionClie
 				got = true
 				break
 			}
-			// Before the record and before the step, for the reason
-			// the persistent client's loop does it there.
+			// Before the record and the step, as in the persistent client's loop (#911).
 			opts.carryResumedConfig6(&ev)
 			opts.record(ev)
 			out := acquireStep6(ev, hint.IsValid(), opts.MainPrefix6)
@@ -612,9 +336,7 @@ func runAcquisition6(ctx context.Context, iface string, client v6AcquisitionClie
 	}
 
 	cancel()
-	// Drained in the foreground and recorded, for the reason GetIP's
-	// drain gives: the Join manager reads this record the moment
-	// CreateEndpoint returns, and a background drain would race it.
+	// Drained in the foreground for the reason GetIP's drain gives (#911).
 	for ev := range client.Events() {
 		opts.carryResumedConfig6(&ev)
 		opts.record(ev)
@@ -625,33 +347,10 @@ func runAcquisition6(ctx context.Context, iface string, client v6AcquisitionClie
 	return info, lastE
 }
 
-// acquireStep6 decides whether a one-shot DHCPv6 acquisition ends on ev.
-//
-// Three arms, and the third is the one that is not obvious:
-//
-//   - Acquired ends it with an address, as v4's does.
-//   - Failed names the cause so the caller's error is the reason rather
-//     than "context deadline exceeded".
-//   - Configured ENDS IT WITHOUT AN ADDRESS, and that is a deliberate
-//     early return rather than a wait for the deadline. RFC 9915
-//     section 18.2.6's Reply only ever arrives on the stateless path:
-//     proto.Machine6 switches to the Information-request exactly when a
-//     Router Advertisement says M=0 O=1, so a Configured in this window
-//     IS the observation the deadline would have been waited out to
-//     take -- the segment has said, on the wire, that it has no
-//     addresses. Waiting the remaining lease_timeout would produce the
-//     same verdict (dhcpv6_not_offered) and charge every container
-//     start on every stateless network for it.
-//
-// A Lost is impossible before an Acquired and needs no arm: the library
-// emits it only for a lease it had.
-//
-// hinted is the fourth arm and it is a SPLIT OF THE SECOND: a Failed
-// naming a conflict ends the attempt when this one asked for a
-// particular address, and only then. See errV6HintInUse. A conflict on
-// a server-chosen address is left to the library, which restarts
-// discovery and is handed a different address the next time round --
-// the loop that arm would break does not exist without a hint.
+// proto.Machine6 sends an Information-request only on M=0 O=1, so Configured is the stateless verdict (RFC 9915 section
+// 18.2.6, #868).
+
+// acquireStep6 ends a one-shot DHCPv6 acquisition on Acquired, Configured, or a hinted conflict.
 func acquireStep6(ev lease.Event, hinted bool, main netip.Prefix) acquireOutcome {
 	switch ev.Kind {
 	case lease.Acquired:
@@ -671,65 +370,25 @@ func acquireStep6(ev lease.Event, hinted bool, main netip.Prefix) acquireOutcome
 	return acquireOutcome{}
 }
 
-// ErrNoV6Address is a DHCPv6 exchange that produced configuration and
-// no address: the segment is stateless (RFC 9915 section 18.2.6).
-//
-// It is an ERROR because the caller asked for an address and did not
-// get one, and it is NOT A FAULT: the endpoint is created without a
-// DHCPv6 address and the container starts. The two statements live
-// together here because separating them is what #868 was -- a timeout
-// that meant either "this segment has no DHCPv6 addresses" or "the
-// DHCPv6 server went quiet", read as the second every time.
+// ErrNoV6Address is a stateless segment's configuration without an address (RFC 9915 section 18.2.6), not a fault
+// (#868).
 var ErrNoV6Address = errors.New("dhcp: the segment offers DHCPv6 configuration but no address")
 
-// infoFromConfig renders RFC 9915 section 18.2.6's stateless answer as
-// the Info the plugin applies.
-//
-// EVERYTHING AN ADDRESS WOULD HAVE CARRIED IS ABSENT AND STAYS ABSENT.
-// The DNS servers are option 23 and the search list option 24 (RFC
-// 3646); there is no address, no lifetime, no MTU and no route, because
-// none of those is in an Information-request Reply. The plugin's
-// contract for an empty field is "do not change what the container
-// has", so an Info built here changes exactly the two things the server
-// actually sent.
+// infoFromConfig renders the stateless answer's options 23 and 24 (RFC 3646) as an Info, leaving every other field
+// empty.
 func infoFromConfig(c lease.Configuration) (Info, int) {
 	info := Info{SearchList: append([]string(nil), c.Search...)}
 	for _, d := range c.DNS {
 		info.DNSServers = append(info.DNSServers, d.String())
 	}
-	// The same filter every lease crosses, at the same boundary and for
-	// the same reason: these strings are the server's choice.
+	// The same sanitising filter every lease crosses (#911).
 	return info, sanitizeInfo(&info)
 }
 
-// carryResumedConfig6 fills a resumed DHCPv6 binding's RFC 3646 lists
-// from the lease the chassis remembered for it.
-//
-// WHY ANYTHING IS MISSING AT ALL. A plugin restart resumes a v6 binding
-// with RFC 9915 section 18.2.12's Confirm, and section 18.2.13's answer
-// to one is a Reply carrying a Server Identifier and a Status Code and
-// NOTHING ELSE -- no IA, no option 23, no option 24. proto.Resume6
-// carries the addresses, their lifetimes and the server DUID, which is
-// everything the Confirm MESSAGE needs and not everything the container
-// needs: the lease that comes back out of a successful Confirm has no
-// DNS servers and no search list on it. MEASURED on the lane
-// 2026-09-06: a container whose resolver had been written from DHCPv6
-// lost it at the first plugin restart and did not get it back until T1,
-// sixty seconds later.
-//
-// WHAT THIS IS NOT. It is not a second source of truth, and it cannot
-// go stale, because the memory is consumed by the FIRST event that
-// carries a lease whatever that event says. A Reply that carries option
-// 23 is the server speaking and wins outright; a Confirm that was
-// refused leads to a Solicit whose Reply does carry the lists. So the
-// remembered value is applied at most once, to the one exchange the
-// protocol gives no way to ask.
-//
-// The fill is all-or-nothing across the pair. RFC 3646 makes options 23
-// and 24 independent, so a Reply that carried one of them HAS spoken
-// about the other -- a server that sends DNS servers and no search list
-// is saying there is no search list, and topping it up from a record
-// would invent one.
+// A Confirm's Reply carries no options 23 or 24 (RFC 9915 section 18.2.13); measured on the lane 2026-09-06, a restart
+// lost the DHCPv6 resolver until T1, sixty seconds later (#911).
+
+// carryResumedConfig6 fills a resumed binding's RFC 3646 lists from the remembered lease, once, when both are absent.
 func (o *DHCPClientOptions) carryResumedConfig6(ev *lease.Event) {
 	if o.resumedConfigTaken || !o.V6 || o.Resume == nil {
 		return

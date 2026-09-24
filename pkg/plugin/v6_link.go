@@ -4,6 +4,7 @@
 package plugin
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -19,89 +20,18 @@ import (
 	"github.com/claymore666/docker-net-dhcp/v2/pkg/util"
 )
 
-// The engine turns IPv6 OFF on a container interface that carries no
-// IPv6 address.
-//
-// libnetwork writes net.ipv6.conf.<iface>.disable_ipv6 = 1 on the
-// sandbox interface when the endpoint has no AddressIPv6, and #868 made
-// that case reachable for the first time: before it, an endpoint with no
-// DHCPv6 address was never created at all. Measured on the CI engine
-// (docker run on a network without IPv6: disable_ipv6 reads 1 on eth0
-// while conf/all reads 0), and again in an isolated netns against the
-// plugin's own persistent-client argv:
-//
-//	disable_ipv6=1 -> no link-local, no router solicitation, no
-//	                 information-request; the v6 client reports nothing at all
-//	disable_ipv6=0 -> link-local appears, RS goes out, the client requests
-//	                 DHCPv6 information and an INFORM6 event carries the
-//	                 server's DNS and search domain
-//
-// So on a stateless or SLAAC segment the endpoint now starts, and then
-// has no IPv6 of any kind — the flag the engine set for "no address"
-// also forecloses the mechanisms that were supposed to supply one. That
-// is the failure the stateless arm of
-// TestDHCPv6_Stateless_ConfigurationReachesTheContainer reported: not a
-// budget that was too short, but a link on which nothing could ever
-// arrive.
-//
-// Clearing it is therefore part of running a DHCPv6 client at all, not a
-// special case of the tolerated path: wherever the plugin is about to
-// speak DHCPv6 on a link, IPv6 has to be administratively on. Where the
-// endpoint did get an address the flag is already 0 and this is a read
-// and no write.
+// libnetwork sets disable_ipv6=1 on a sandbox interface whose endpoint has no AddressIPv6 (#868). Measured on the CI
+// engine: while it is set there is no link-local, no router solicitation and no DHCPv6 exchange; cleared, an INFORM6
+// carries the server's DNS. Where the endpoint got an address the flag is already 0 and this only reads.
 const ipv6DisableSysctlDir = "/proc/sys/net/ipv6/conf"
 
-// procSysMount is the sysctl tree's mount point. It is mounted READ-ONLY
-// in the managed-plugin rootfs -- the same fact that made every lease
-// fail in #247, documented on pkg/dhcp's procSysPath, and the reason the
-// DHCP path remounts it inside its own mount namespace before
-// touching net/ipv6/conf/<if>/{autoconf,accept_ra}.
-//
-// It bit here too, and the counter added with this code is what said so:
-// the first CI run reported ipv6_link_enable_failures = 1 with "open ...
-// disable_ipv6: read-only file system". Entering the container's NETWORK
-// namespace changes which sysctls the path names; it does not change
-// whether the filesystem carrying them can be written.
+// procSysMount is the sysctl tree's mount point, read-only in the managed-plugin rootfs (#247, #868).
 const procSysMount = "/proc/sys"
 
-// makeProcSysWritable takes a private mount namespace for the calling
-// thread and remounts the sysctl tree read-write inside it.
-//
-// Private first, and recursively: an unshared mount namespace still
-// inherits shared propagation, so without this the remount could
-// propagate back to the host's view. `unshare -m`(1) does this by
-// default and the Go call does not, which is exactly the kind of
-// difference that makes a shell recipe unsafe to transcribe.
-//
-// IT IS BEST EFFORT, AND THAT IS THE MEASURED TRADE, NOT A SHRUG. The
-// sibling that does the same remount on the pkg/dhcp side already carries
-// the measurement -- pkg/dhcp.mountPrep, and the "procsys-remount" step
-// mountPrepStep names there: on a
-// --privileged runtime the remount FAILS -- `can't find /proc/sys in
-// /proc/mounts`, because /proc/sys is not a separate mount there -- and
-// /proc/sys is already writable, so the failure is correct and
-// harmless. That sibling therefore makes it non-fatal deliberately.
-//
-// This function returned an error on that failure, and the caller took
-// it as a verdict: the disable_ipv6 write was then NEVER ATTEMPTED, on
-// a host where it would have succeeded. A guard fails in one direction,
-// and this one failed in the direction that turns a working host into
-// one with no IPv6 -- for a mount that host does not need.
-//
-// So each step reports separately and only the WRITE decides:
-//
-//   - unshare and MS_PRIVATE gate the REMOUNT and nothing else. If
-//     either fails there is no private namespace, so remounting would
-//     propagate to the host's view, and it is skipped. The write still
-//     goes ahead in whatever view we have.
-//   - the remount failing is not a verdict either. clearDisableIPv6
-//     reads and writes the real path, and its own EROFS is the honest
-//     report of "the sysctl tree is not writable" -- one observer, at
-//     the place the obligation lives, instead of a proxy that can be
-//     wrong in both directions.
-//
-// The caller must already hold its OS thread and must restore the
-// original mount namespace afterwards.
+// makeProcSysWritable remounts /proc/sys read-write in a private mount namespace of the calling thread (#868). It
+// makes the namespace private recursively first, or the remount propagates to the host. Best effort: on a
+// --privileged runtime the remount fails and /proc/sys is already writable, so only the disable_ipv6 write decides;
+// a failed unshare or MS_PRIVATE skips the remount, never the write. The caller holds its OS thread and restores it.
 func makeProcSysWritable() error {
 	if err := unix.Unshare(unix.CLONE_FS | unix.CLONE_NEWNS); err != nil {
 		return fmt.Errorf("unshare mount namespace: %w", err)
@@ -115,38 +45,15 @@ func makeProcSysWritable() error {
 	return nil
 }
 
-// procSysPrepDisposition says what a makeProcSysWritable error means to
-// the caller. It exists so the "keep going" decision is a value a test
-// can read, rather than a comment beside a `log.Debug` that nothing
-// executes.
-//
-// There is exactly one disposition today -- CONTINUE -- and that is the
-// point: no failure of the preparation step may stop the write. If a
-// future step here ever does have to be fatal, it gets a second value
-// and this function stops being a constant, which is a change a
-// reviewer can see.
+// procSysPrepIsFatal is false: no makeProcSysWritable failure may stop the disable_ipv6 write (#868).
 func procSysPrepIsFatal(error) bool { return false }
 
-// ipv6DisablePath is the disable_ipv6 sysctl for one interface under
-// dir, as seen from inside the network namespace that owns it.
-// /proc/sys/net is per-netns: the same path names a different switch
-// depending on the reader's netns, which is why the caller enters the
-// sandbox rather than reaching in from the host.
-//
-// dir is a parameter for the same reason ApplyRouterAdvertGuard takes
-// one -- a temp directory stands in for /proc/sys/net/ipv6/conf in a
-// test -- and production has exactly one caller, which passes
-// ipv6DisableSysctlDir.
+// ipv6DisablePath is the disable_ipv6 sysctl for iface under dir, a per-netns path; dir is a test seam.
 func ipv6DisablePath(dir, iface string) string {
 	return filepath.Join(dir, iface, "disable_ipv6")
 }
 
-// clearDisableIPv6 turns IPv6 on for the interface whose disable_ipv6
-// sysctl is at path, reporting whether it had to write anything.
-//
-// Split out from the namespace entry below it so the read-before-write
-// and its two outcomes are reachable from a test with a temp file; the
-// caller supplies the namespace and the path.
+// clearDisableIPv6 turns IPv6 on at path and reports whether it had to write.
 func clearDisableIPv6(path string) (bool, error) {
 	cur, err := os.ReadFile(path)
 	if err != nil {
@@ -161,28 +68,9 @@ func clearDisableIPv6(path string) (bool, error) {
 	return true, nil
 }
 
-// prepareV6LinkUnder is the two obligations IN ORDER, over one sysctl
-// directory, with no namespace in it.
-//
-// It exists because the ORDER is the claim and the order was the part
-// no test could reach: prepareIPv6Link below is a namespace entry with
-// these four lines at the bottom, and a mutant that applied the guard
-// on a link whose IPv6 could not be turned on survived the whole unit
-// lane. The dir parameter is the seam -- ApplyRouterAdvertGuard already
-// took one for the same reason -- so both directions are drivable
-// against a temp directory.
-//
-// The disable_ipv6 failure returns the ZERO guard result and not a
-// partial one, which is the direction that matters: a guard applied to
-// a link with IPv6 administratively off writes its knobs and reads
-// them back truthfully, so router_advert_guard_failures would report
-// zero for an endpoint on which no advertisement can be processed at
-// all. One failure, one counter.
-//
-// linkIndex is the third obligation's operand: the purge deletes routes
-// on a link and there is no path for it, only an index. A zero index
-// SKIPS the purge, which is the pre-Start case and not a production
-// one; every production caller has located the link first.
+// prepareV6LinkUnder runs the disable_ipv6 clear, the guard and the purge in that order under dir, so a test drives
+// the order (#911). A disable_ipv6 failure returns the zero guard result, since a guard on a link with IPv6 off reads
+// back healthy; a zero linkIndex skips the purge, which only happens before Start.
 func prepareV6LinkUnder(dir, iface string, linkIndex int) (bool, dhcp.RouterAdvertGuardResult, error) {
 	var noGuard dhcp.RouterAdvertGuardResult
 	changed, err := clearDisableIPv6(ipv6DisablePath(dir, iface))
@@ -195,11 +83,7 @@ func prepareV6LinkUnder(dir, iface string, linkIndex int) (bool, dhcp.RouterAdve
 		return changed, guard, nil
 	}
 
-	// AFTER the guard, in the same function, for the same reason the
-	// guard is after the disable_ipv6 clear: the order is the claim.
-	// Purging first would delete routes that the very next
-	// advertisement puts straight back, because the kernel would still
-	// be at accept_ra=1 while it happened.
+	// The purge follows the guard: at accept_ra=1 the next advertisement would put the routes straight back (#821).
 	failed, perr := purgeRouterAdvertRoutes(linkIndex)
 	guard.Failures += failed
 	if perr != nil {
@@ -208,80 +92,125 @@ func prepareV6LinkUnder(dir, iface string, linkIndex int) (bool, dhcp.RouterAdve
 	return changed, guard, nil
 }
 
-// prepareIPv6Link puts the container side of this endpoint's link into
-// the state a DHCPv6 client needs, inside the sandbox network
-// namespace: IPv6 administratively on, the Router-Advertisement
-// guard's three sysctls written and read back, and whatever the kernel
-// already installed from an advertisement taken off the link.
-//
-// THREE OBLIGATIONS AND ONE NAMESPACE ENTRY, deliberately. Two write
-// per-interface sysctls under /proc/sys/net/ipv6/conf/<if>/ and the
-// third deletes routes on the same link, so all three need the same
-// namespaces for the same reasons -- the NETWORK namespace decides
-// which link the path and the index name, the MOUNT namespace decides
-// whether the sysctls can be written at all. Doing them separately
-// would mean three thread locks, three mount unshares and three setns
-// pairs over one interface, and would put a window between them in
-// which the link is IPv6-enabled and unguarded.
-//
-// THE ORDER IS FIXED: disable_ipv6, then the guard, then the purge.
-// On a link with IPv6 administratively off the guard's knobs still
-// exist and still accept writes, but nothing they govern can happen,
-// and a guard applied before the link is on would be read as healthy
-// on a link that never receives an advertisement. The purge comes last
-// because accept_ra=0 is what stops the next advertisement putting
-// back what it just removed; purging first would leave a race the
-// length of one advertisement interval. All three run before the
-// client is opened, which is the order pkg/dhcp/chassis6.go's
-// newLibClient6 states from the other side.
-//
-// The link-enable half reports SEPARATELY from the other two. It is a
-// different failure with a different consequence -- no IPv6 at all
-// versus IPv6 with the kernel's own idea of the route still on the
-// link -- and it has a counter of its own (ipv6_link_enable_failures
-// against router_advert_guard_failures). Folding it would make an
-// operator unable to tell which one they have. The guard and the purge
-// DO share a counter, because they are one obligation seen twice: the
-// kernel must not be the thing that decides this container's IPv6
-// route. The log line distinguishes them.
-//
-// Concurrency contract is pkg/dhcp.inNetNS's, for the same reason and
-// with the same failure handling: the goroutine is locked to its OS
-// thread for the switch, and if the switch back fails the thread is
-// deliberately kept locked so a wrong-netns thread never re-enters Go's
-// pool.
+// v6LinkAttempts is #1050's openLinkAttempts, for the same engine: a
+// move plus a rename, and one more where the container named its
+// interface, so four attempts survive three renames.
+const v6LinkAttempts = 4
+
+// errV6LinkNameUnstable ends a link whose name never held still between
+// the resolve and the write (#1065).
+var errV6LinkNameUnstable = errors.New("the container link kept being renamed while IPv6 was prepared on it")
+
+// v6LinkNameByIndex and v6LinkIndexByName read the calling thread's
+// network namespace: the package-level netlink handle opens its socket
+// on that thread, and /proc/net would answer for the leader's (#1065).
+var (
+	v6LinkNameByIndex = func(index int) (string, error) {
+		l, err := netlink.LinkByIndex(index)
+		if err != nil {
+			return "", err
+		}
+		return l.Attrs().Name, nil
+	}
+	v6LinkIndexByName = func(name string) (int, error) {
+		l, err := netlink.LinkByName(name)
+		if err != nil {
+			return 0, err
+		}
+		return l.Attrs().Index, nil
+	}
+)
+
+// prepareV6LinkOnLink runs prepareV6LinkUnder on the name the link at
+// index has at that instant, with #1050's retry rules for a rename.
+func prepareV6LinkOnLink(dir, located string, index int) (bool, dhcp.RouterAdvertGuardResult, error) {
+	if index <= 0 {
+		return prepareV6LinkUnder(dir, located, index)
+	}
+	current := func(fallback string) string {
+		if name, err := v6LinkNameByIndex(index); err == nil {
+			return name
+		}
+		return fallback
+	}
+
+	var noGuard dhcp.RouterAdvertGuardResult
+	carried := false
+	name := current(located)
+	for attempt := 1; ; attempt++ {
+		changed, guard, err := prepareV6LinkUnder(dir, name, index)
+		if err != nil || guard.Failures > 0 {
+			carried = carried || changed
+			if attempt >= v6LinkAttempts {
+				return carried, guard, err
+			}
+			next := current(name)
+			if next == name {
+				return carried, guard, err
+			}
+			name = next
+			continue
+		}
+
+		owner, oerr := v6LinkIndexByName(name)
+		if oerr != nil || owner == index {
+			return carried || changed, guard, nil
+		}
+		// The sysctls just written belong to link owner, which took the
+		// name before the write reached it; ours is retried under its
+		// own name, and a link that is gone ends here (#1050, #1065).
+		next, rerr := v6LinkNameByIndex(index)
+		if rerr != nil {
+			return carried, noGuard, rerr
+		}
+		if attempt >= v6LinkAttempts {
+			return carried, noGuard, fmt.Errorf("%w: index %d", errV6LinkNameUnstable, index)
+		}
+		name = next
+	}
+}
+
+// prepareIPv6Link enables IPv6, writes the Router-Advertisement guard and purges RA routes on the container link, in
+// that order, in one sandbox entry, before the client opens (#868, #911, #821). The link-enable failure has its own
+// counter, ipv6_link_enable_failures; the guard and the purge share router_advert_guard_failures. A failed switch
+// back keeps the thread locked, as in pkg/dhcp.inNetNS.
 func (m *dhcpManager) prepareIPv6Link() (bool, dhcp.RouterAdvertGuardResult, error) {
-	// Both preconditions are read BEFORE any thread is locked or any
-	// namespace entered, because neither needs the namespace and a
-	// failure after the switch is a failure with a thread to unwind.
-	//
-	// The link check is not decoration: m.ctrLink is nil until
-	// locateContainerLink has run, and Attrs() on a nil Link panics.
+	// m.ctrLink is nil until locateContainerLink runs, and Attrs() on a nil Link panics.
 	var noGuard dhcp.RouterAdvertGuardResult
 	if m.ctrLink == nil {
 		return false, noGuard, fmt.Errorf("container link not located yet")
 	}
-	// NsHandle.IsOpen() is `ns != -1`, so it catches a CLOSED handle
-	// and NOT the zero value -- an unset handle is 0, which is stdin.
-	// Checked here anyway because a closed handle is the reachable
-	// case (Stop closes it), and the zero value only occurs in a
-	// manager that never reached openSandboxNetNS, which cannot reach
-	// this call either.
+	// IsOpen catches a handle Stop closed, not the zero value.
 	if !m.nsHandle.IsOpen() {
 		return false, noGuard, fmt.Errorf("sandbox network namespace handle is closed")
 	}
-	iface := m.ctrLink.Attrs().Name
+	located, index := m.ctrLink.Attrs().Name, m.ctrLink.Attrs().Index
 
-	// Two namespaces are needed and they are needed for different
-	// reasons: the NETWORK namespace decides which interface the path
-	// names, and the MOUNT namespace decides whether it can be written
-	// at all.
+	var (
+		changed bool
+		guard   dhcp.RouterAdvertGuardResult
+		err     error
+	)
+	if eerr := v6EnterSandbox(m, func(dir string) {
+		changed, guard, err = prepareV6LinkOnLink(dir, located, index)
+	}); eerr != nil {
+		return false, noGuard, eerr
+	}
+	return changed, guard, err
+}
+
+// v6EnterSandbox runs work inside the sandbox's network namespace with
+// /proc/sys writable, handing it the sysctl directory; a var so a unit
+// test can run work against a temp tree without CAP_SYS_ADMIN (#1065).
+var v6EnterSandbox = (*dhcpManager).enterV6Sandbox
+
+func (m *dhcpManager) enterV6Sandbox(work func(dir string)) error {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 
 	origNet, err := netns.Get()
 	if err != nil {
-		return false, noGuard, fmt.Errorf("failed to open current network namespace: %w", err)
+		return fmt.Errorf("failed to open current network namespace: %w", err)
 	}
 	defer func() {
 		if err := origNet.Close(); err != nil {
@@ -289,42 +218,31 @@ func (m *dhcpManager) prepareIPv6Link() (bool, dhcp.RouterAdvertGuardResult, err
 		}
 	}()
 
-	// Read the CURRENT thread's mount namespace, not /proc/self/ns/mnt:
-	// that resolves to the main thread's, and this goroutine has just
-	// locked to a different one which an earlier goroutine may already
-	// have moved. Same reasoning as propagateDNS.
+	// This thread's mount namespace: /proc/self/ns/mnt names the leader's.
 	origMnt, err := os.Open(fmt.Sprintf("/proc/self/task/%d/ns/mnt", unix.Gettid()))
 	if err != nil {
-		return false, noGuard, fmt.Errorf("open self mnt ns: %w", err)
+		return fmt.Errorf("open self mnt ns: %w", err)
 	}
 	defer origMnt.Close()
 
 	if err := makeProcSysWritable(); err != nil {
 		if procSysPrepIsFatal(err) {
-			return false, noGuard, err
+			return err
 		}
-		// Not a verdict -- see makeProcSysWritable. The write below is
-		// the observer, and its own error is the honest report. Audible
-		// rather than silent, because a host where this fails every
-		// time and the write succeeds anyway is worth being able to
-		// recognise in a log.
+		// Not a verdict (#868): the write below reports; logged so a host where this always fails is recognisable.
 		log.WithError(err).WithFields(m.logFields(true)).
 			Debug("Could not make /proc/sys writable; attempting the disable_ipv6 write anyway")
 	}
 	defer func() {
 		if err := unix.Setns(int(origMnt.Fd()), unix.CLONE_NEWNS); err != nil {
-			// The thread is now stuck in a mount namespace of our own
-			// making. Keep it locked (a second Lock so the deferred
-			// Unlock does not pair) so it dies with the goroutine
-			// rather than returning to Go's pool with a private
-			// /proc/sys view.
+			// A second Lock keeps a thread left in our private mount namespace out of Go's pool.
 			log.WithError(err).Error("Failed to restore original mount namespace; pinning thread for kill")
 			runtime.LockOSThread()
 		}
 	}()
 
 	if err := netns.Set(m.nsHandle); err != nil {
-		return false, noGuard, fmt.Errorf("failed to enter network namespace: %w", err)
+		return fmt.Errorf("failed to enter network namespace: %w", err)
 	}
 	defer func() {
 		if err := netns.Set(origNet); err != nil {
@@ -333,16 +251,11 @@ func (m *dhcpManager) prepareIPv6Link() (bool, dhcp.RouterAdvertGuardResult, err
 		}
 	}()
 
-	// The index and not a path, and read here rather than passed down
-	// from the caller: inside this namespace entry it names the
-	// container's link, which is the only place that is true.
-	return prepareV6LinkUnder(ipv6DisableSysctlDir, iface, m.ctrLink.Attrs().Index)
+	work(ipv6DisableSysctlDir)
+	return nil
 }
 
-// joinGuardErrors keeps both reasons the guard is unhappy in one error,
-// because the counter they share is one number and an operator reading
-// it has only the log to tell "the sysctls would not write" from "the
-// kernel's own routes would not come off".
+// joinGuardErrors keeps both guard failures in one error, since they share one counter.
 func joinGuardErrors(a, b error) error {
 	switch {
 	case a == nil:
@@ -353,40 +266,15 @@ func joinGuardErrors(a, b error) error {
 	return fmt.Errorf("%v; %w", a, b)
 }
 
-// purgeRouterAdvertRoutes deletes every route the kernel installed on
-// this link from a Router Advertisement, and reports how many deletions
-// failed.
-//
-// WHY IT EXISTS: WRITING accept_ra=0 PURGES NOTHING. It stops the
-// kernel processing the NEXT advertisement; the default route, and any
-// more specific route, that an earlier one already installed stay in
-// the table until their own router lifetime runs out, which RFC 4861
-// section 4.2 allows to be up to 65535 seconds. That window is real and
-// not theoretical: the engine creates the link in the sandbox and
-// brings it up at the kernel default accept_ra=1, and this guard runs
-// from the manager's Start afterwards, so an advertisement arriving in
-// between is processed in full. The container would then carry the
-// kernel's default route beside the one the engine installs from the
-// Join answer, and which of the two wins is a metric comparison nobody
-// wrote down.
-//
-// RTPROT_RA (9) is what the kernel stamps on them, and it stamps it on
-// nothing else, so the filter is the definition of the population
-// rather than a heuristic about it. The address the kernel may have
-// formed from the same advertisement is NOT touched here: removing an
-// address the container may already be using is a different decision
-// with a different failure, and it is #818's.
-//
-// The link index and not the name: the engine renames the link after
-// moving it, and the index is what survives that.
+// purgeRouterAdvertRoutes deletes the RTPROT_RA routes on the link at linkIndex and returns the failure count (#821).
+// accept_ra=0 stops the next advertisement but keeps installed routes for their lifetime, up to 65535 s (RFC 4861
+// section 4.2), and the link comes up at accept_ra=1 before the guard runs. Addresses formed from an RA are #818's.
 func purgeRouterAdvertRoutes(linkIndex int) (int, error) {
 	routes, err := util.DumpResult(nlRouteListFiltered(unix.AF_INET6, &netlink.Route{
 		LinkIndex: linkIndex,
 		Protocol:  unix.RTPROT_RA,
 	}, netlink.RT_FILTER_OIF|netlink.RT_FILTER_PROTOCOL))
 	if err != nil {
-		// One failure, not one per route: the list is the whole of
-		// this step and there is nothing after it to attempt.
 		return 1, fmt.Errorf("list kernel router-advertisement routes: %w", err)
 	}
 
@@ -399,9 +287,7 @@ func purgeRouterAdvertRoutes(linkIndex int) (int, error) {
 				firstErr = fmt.Errorf("delete kernel router-advertisement route %v: %w",
 					describeRoute(routes[i]), err)
 			}
-			// KEEP GOING. One route that will not come off is not a
-			// reason to leave the rest, and the default route is not
-			// reliably first in the list.
+			// Keep going: the default route is not reliably first in the list.
 			continue
 		}
 		log.WithField("route", describeRoute(routes[i])).
@@ -410,8 +296,7 @@ func purgeRouterAdvertRoutes(linkIndex int) (int, error) {
 	return failed, firstErr
 }
 
-// describeRoute renders one route for a log field as "dest via gw", so
-// the record says which route was taken away rather than how many.
+// describeRoute renders one route as "dest via gw" for a log field.
 func describeRoute(r netlink.Route) string {
 	dst := "default"
 	if r.Dst != nil {
@@ -423,23 +308,11 @@ func describeRoute(r netlink.Route) string {
 	return dst + " via " + r.Gw.String()
 }
 
-// ensureIPv6Enabled is the call site's view: put the link in shape for
-// DHCPv6, and treat every failure as degraded rather than fatal.
-//
-// Degraded and not fatal because the v4 client is already running and
-// keeping the container's IPv4 lease is worth more than refusing the
-// endpoint over the v6 half. Both failures are visible without reading
-// the log -- a link with IPv6 off produces no link-local and every
-// DHCPv6 exchange fails; a link with the guard not in force carries a
-// second default route, the kernel's, beside the one the engine
-// installed from the Join answer -- and each has a counter of its own
-// so the cause is distinguishable from a segment that is merely quiet.
+// ensureIPv6Enabled prepares the link for DHCPv6 and treats every failure as degraded, keeping the IPv4 lease (#868).
 func (m *dhcpManager) ensureIPv6Enabled() {
 	changed, guard, err := m.prepareIPv6Link()
 	if err != nil {
-		// Nil plugin, not nil error: unit tests that do not stand up a
-		// Plugin leave it nil, and the failure is still a failure when
-		// there is no counter to bump (see dhcpManager.plugin).
+		// A nil plugin is a unit test without one.
 		if m.plugin != nil {
 			m.plugin.ipv6LinkEnableFailures.Add(1)
 		}
@@ -455,13 +328,7 @@ func (m *dhcpManager) ensureIPv6Enabled() {
 		if m.plugin != nil {
 			m.plugin.routerAdvertGuardFailures.Add(int32(guard.Failures))
 		}
-		// LOUD, because this is the failure that looks like success.
-		// The container keeps whatever route the kernel accepted in
-		// the window before the guard ran, beside the route the engine
-		// installed from the Join answer, and which of the two wins is
-		// a metric comparison nobody chose. RFC 4861 section 4.2 lets
-		// a Router Lifetime run to 65535 seconds, so "it will sort
-		// itself out" is not a bound worth having.
+		// Loud: the kernel RA route may outlive this for a Router Lifetime of up to 65535 s (RFC 4861 section 4.2).
 		log.WithError(guard.Err).WithFields(m.logFields(true)).
 			WithField("failed_steps", guard.Failures).
 			Warn("The Router Advertisement guard did not take on the container link; " +

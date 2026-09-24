@@ -12,32 +12,10 @@ import (
 	"testing"
 )
 
-// TestOneShotAcquisition_FoldsItsOwnRouterDiscovery closes the one fold
-// site no behaviour test in this package can reach.
-//
-// WHY IT NEEDS A WIRING TEST AT ALL. The other three fold sites are in
-// translate(), which a fake runner drives, and each has a test that
-// goes red when its line is deleted. acquireOnce6 is not reachable that
-// way: it opens a real packet socket on a real interface in a real
-// namespace (see the comment on getIP6), so nothing in this package
-// executes it. MEASURED: deleting opts.routerReport(stats) from
-// acquireOnce6 leaves the whole of ./pkg/... green.
-//
-// WHY THAT LINE MATTERS MORE THAN THE OTHER THREE, not less. A
-// CreateEndpoint one-shot never reaches translate() at all. It runs for
-// the whole of RFC 4861 section 6.3.7's discovery window, counts every
-// solicitation it sent and every advertisement that came back, and then
-// ends. No later client inherits those counters: the persistent client
-// Join starts has a manager, and a set of counters, of its own. The
-// line's own comment says the numbers are counted "here or nowhere",
-// and until this test that claim had no observer.
-//
-// THE BOUND, which is the same one the acquisition-window wiring test
-// states about itself. This is keyed on SPELLING. A fold reached
-// through a wrapper, or through a variable holding the stats, reads as
-// a violation here though it is correct; a call to something merely
-// NAMED routerReport reads as correct though it is not. It is a wiring
-// check beside the behaviour tests, not instead of them.
+// acquireOnce6 opens a real packet socket, so no behaviour test reaches its fold, and a CreateEndpoint one-shot's
+// router-discovery counters are counted there or nowhere (#814). Keyed on spelling: a wrapper reads as a violation, a
+// function merely named routerReport passes.
+
 func TestOneShotAcquisition_FoldsItsOwnRouterDiscovery(t *testing.T) {
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, "chassis6.go", nil, 0)
@@ -86,8 +64,6 @@ func TestOneShotAcquisition_FoldsItsOwnRouterDiscovery(t *testing.T) {
 			fn = f
 		}
 	}
-	// NON-VACUITY. A renamed or moved acquireOnce6 empties every
-	// assertion below, and an empty domain satisfies all of them.
 	if fn == nil {
 		t.Fatal("no acquireOnce6 in chassis6.go: this test's domain is empty, and an " +
 			"empty domain satisfies every rule below without checking anything")
@@ -105,10 +81,7 @@ func TestOneShotAcquisition_FoldsItsOwnRouterDiscovery(t *testing.T) {
 		t.Fatalf("acquireOnce6 folds router discovery with %d argument(s), want 1", n)
 	}
 
-	// THE SAME SNAPSHOT THE RECORD IS WRITTEN FROM. A second
-	// client.Stats() call here would be a second reading of a moving
-	// counter, so the live number and the durable one would disagree
-	// about the same acquisition by whatever arrived between them.
+	// One snapshot: a second client.Stats() call would read a moving counter twice (#814).
 	count := calls(fn, "count")
 	if len(count) != 1 || len(count[0]) != 2 {
 		t.Fatalf("acquireOnce6 writes the durable record %d time(s); this test reads the "+
@@ -120,9 +93,7 @@ func TestOneShotAcquisition_FoldsItsOwnRouterDiscovery(t *testing.T) {
 			"the durable one disagree about the same acquisition", fold[0][0], count[0][1])
 	}
 
-	// A NEW MANAGER'S SNAPSHOT STARTS AT ZERO. getIP6 runs this
-	// function twice through one options value, so without this the
-	// second pass's gains are subtracted away. See managerStarted.
+	// getIP6 runs this twice through one options value, so each new manager's snapshot must start at zero (#814).
 	if got := calls(fn, "managerStarted"); len(got) != 1 {
 		t.Errorf("acquireOnce6 calls managerStarted %d time(s), want exactly one: on "+
 			"getIP6's errV6HintInUse retry this function runs again through the SAME "+

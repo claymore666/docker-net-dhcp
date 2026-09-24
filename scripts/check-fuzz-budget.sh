@@ -79,20 +79,69 @@ for src in "${SOURCES[@]}"; do
     fi
 done
 
-# Deliberately a SUPERSET match: every -fuzztime occurrence, whatever
-# follows it, including malformed ones. A pattern that only recognised
-# well-formed budgets would be blind to exactly the spelling that
-# breaks — the lesson from check-version-pins, which matched only valid
-# pins and so could not see a broken one for months.
-#
-# YAML comments are skipped — this file explains the rule in prose right
-# above the step it governs, and a comment cannot execute. Everything
-# else is judged, well-formed or not.
+# shellcheck source=scripts/workflow-shell-lines.sh
+. "$(cd "$(dirname "$0")" && pwd)/workflow-shell-lines.sh"
+
+# Deliberately a SUPERSET of budgets: every `go test` that carries a
+# -fuzztime is judged, well-formed or not, because a pattern that only
+# recognised valid budgets would be blind to the spelling that breaks.
+fuzz_cmds() { awk '$1 == "go" && $2 == "test" && / -fuzztime([= ]|$)/'; }
+
+# Only a command counts, never a mention (#883): an echo, a comment or a
+# name: once smoked a target here. The workflow is read as the shell its
+# steps run; the lane as the command field of each LANE entry, unescaped
+# the way bash reads a double-quoted string, since that is what it runs.
+lane_cmds() {
+    awk '
+        /^LANE=\(/ { inl = 1; next }
+        inl && /^\)/ { inl = 0; next }
+        inl && /^[ \t]*"/ {
+            s = $0; sub(/^[ \t]*"/, "", s); out = ""; closed = 0
+            for (i = 1; i <= length(s); i++) {
+                c = substr(s, i, 1); d = substr(s, i + 1, 1)
+                if (c == "\"") { closed = 1; break }
+                if (c == "\\" && d != "" && index("$\"\\`", d)) { out = out d; i++ } else out = out c
+            }
+            if (!closed) next
+            n = index(out, "|"); if (!n) next; out = substr(out, n + 1)
+            n = index(out, "|"); if (!n) next
+            printf "%d\t%s\n", FNR, substr(out, n + 1)
+        }' "$1"
+}
+
+# workflow_fuzz FILE: lineno:command for each fuzz command its steps run.
+# A line is tied to a command only if the joined block ran that command,
+# so a line inside a quoted string cannot stand in for one; a command
+# split over lines keeps no line number (#883).
+workflow_fuzz() {
+    local src="$1" ln text c
+    local -A avail=()
+    while IFS= read -r c; do avail["$c"]=$(( ${avail["$c"]:-0} + 1 )); done \
+        < <(workflow_shell_lines --raw "$src" | shell_simple_commands | fuzz_cmds)
+    while IFS=: read -r ln text; do
+        text="$(printf '%s\n' "$text" | sed -E 's/^[[:space:]]*(-[[:space:]]+)?run:[[:space:]]*//')"
+        while IFS= read -r c; do
+            [ "${avail["$c"]:-0}" -gt 0 ] || continue
+            avail["$c"]=$(( avail["$c"] - 1 ))
+            printf '%s:%s\n' "$ln" "$c"
+        done < <(printf '%s\n' "$text" | shell_simple_commands | fuzz_cmds)
+    done < <(grep -nE -- '-fuzztime' "$src" | grep -vE '^[0-9]+:[[:space:]]*#')
+    for c in "${!avail[@]}"; do
+        for ((ln = 0; ln < avail["$c"]; ln++)); do printf '%s:%s\n' "-" "$c"; done
+    done
+}
+
 LINES=()
 for src in "${SOURCES[@]}"; do
-    mapfile -t found < <(grep -nE -- '-fuzztime' "$src" | grep -vE '^[0-9]+:[[:space:]]*#')
+    if [ "$src" = "$LANE" ]; then
+        mapfile -t found < <(lane_cmds "$src" | while IFS=$'\t' read -r ln c; do
+            printf '%s\n' "$c" | shell_simple_commands | fuzz_cmds | sed "s/^/$ln:/"
+        done)
+    else
+        mapfile -t found < <(workflow_fuzz "$src")
+    fi
     if [ "${#found[@]}" -eq 0 ]; then
-        echo "check-fuzz-budget: no -fuzztime found in $src." >&2
+        echo "check-fuzz-budget: no go test with -fuzztime runs in $src." >&2
         echo "Either the fuzz step was removed (say so deliberately, and delete this gate)" >&2
         echo "or it was renamed/reshaped and this check is now watching nothing." >&2
         exit 2

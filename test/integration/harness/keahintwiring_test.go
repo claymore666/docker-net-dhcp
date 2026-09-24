@@ -1,12 +1,7 @@
 // Copyright the docker-net-dhcp contributors.
 // SPDX-License-Identifier: GPL-3.0-only
 
-// No `//go:build integration` tag, deliberately. This guard reads a
-// source file and needs neither root nor a live Kea, so it belongs in
-// the ordinary `go test ./...` job where it fails in seconds rather
-// than after a twelve-minute suite -- and, more to the point, where it
-// runs at all on a host that cannot run the integration suite. Same
-// reasoning counterwindow_guard_test.go documents for itself.
+// No integration tag: this guard reads source and runs in the unit job, on hosts that cannot run the suite (#869).
 
 package harness
 
@@ -16,19 +11,10 @@ import (
 	"testing"
 )
 
-// The readiness failure the whole of #869 exists to explain. Matched as
-// a string because it is the user-visible text; if it changes, this
-// guard must be pointed at the new one deliberately rather than quietly
-// matching nothing.
+// keaReadinessFailure is the user-visible failure #869 explains.
 const keaReadinessFailure = "ephemeral kea did not become ready"
 
-// enclosingCallStatement returns the whole call expression whose first
-// line contains marker: from the start of that line to the parenthesis
-// that closes the call.
-//
-// Parens inside string literals, rune literals and line comments do not
-// count -- the format string this is used on is full of text, and a
-// naive depth count would stop in the middle of it.
+// enclosingCallStatement returns the call whose first line contains marker, ignoring parens in string, rune and line-comment text.
 func enclosingCallStatement(src, marker string) (string, bool) {
 	i := strings.Index(src, marker)
 	if i < 0 {
@@ -71,22 +57,7 @@ func enclosingCallStatement(src, marker string) (string, bool) {
 	return "", false
 }
 
-// TestKeaHint_IsWiredIntoTheReadinessFailure is what actually delivers
-// #869.
-//
-// Everything else about the hint -- the tier selection, the denial
-// record, the wording of each claim -- is a pure function with unit
-// tests, and every one of them stays green with the hint disconnected
-// from the failure message. Deleting the argument from this Fatalf, or
-// reverting it to the two-argument form it had before #869, restores
-// the exact failure the issue was filed about: "did not become ready"
-// with an empty log and no mention of AppArmor. Nothing went red.
-//
-// Static rather than behavioural on purpose. Reproducing the delivery
-// end to end means a host with the kea package installed and its
-// profile loaded in enforce mode, which is precisely the host CI is not
-// and must not become. The property is textual, so it is checked
-// textually.
+// Static: delivering the hint end to end needs Kea installed with its AppArmor profile in enforce mode, which CI is not (#869).
 func TestKeaHint_IsWiredIntoTheReadinessFailure(t *testing.T) {
 	src, err := os.ReadFile("ephemeral.go")
 	if err != nil {
@@ -102,11 +73,7 @@ func TestKeaHint_IsWiredIntoTheReadinessFailure(t *testing.T) {
 			keaReadinessFailure)
 	}
 
-	// Match the CALL, not the identifier. appArmorKeaHint is DEFINED in
-	// keaconfine.go, so a whole-package search for the name finds it
-	// with the call site deleted; and even within ephemeral.go a bare
-	// Contains would be satisfied by a mention in a comment. Scoping to
-	// the failing statement is what makes this about delivery.
+	// The call, not the identifier: appArmorKeaHint is defined in keaconfine.go and could be named in a comment (#869).
 	const wired = "appArmorKeaHint("
 	if !strings.Contains(stmt, wired) {
 		t.Errorf("the ephemeral Kea readiness failure no longer passes %s.\n"+
@@ -118,12 +85,7 @@ func TestKeaHint_IsWiredIntoTheReadinessFailure(t *testing.T) {
 			"notices.", wired, stmt)
 	}
 
-	// The hint's empty-log claim is only true of the log the reader can
-	// actually see, so both must come from ONE read. readLog returns
-	// the whole file -- appended to across every Stop/StartAgain cycle
-	// -- and a non-empty "(could not read ...)" string on error, so a
-	// second read can disagree with the first and the hint would then
-	// say "the log above is empty" underneath a log that is not.
+	// The hint's empty-log claim and the printed log must come from one read: readLog can differ between reads (#869).
 	const secondRead = "ef.readLog()"
 	if strings.Contains(stmt, secondRead) {
 		t.Errorf("the readiness failure calls %s inside the message.\n"+
@@ -135,13 +97,6 @@ func TestKeaHint_IsWiredIntoTheReadinessFailure(t *testing.T) {
 	}
 }
 
-// TestKeaHint_GuardWouldCatchThePrePRForm is the negative control.
-//
-// A guard that has never been observed rejecting anything is not known
-// to work, and this repo has already shipped one that passed with the
-// call it was guarding deleted. Rather than corrupting ephemeral.go,
-// this feeds the detector the exact shapes it exists to reject --
-// including the two-argument form the Fatalf had before #869.
 func TestKeaHint_GuardWouldCatchThePrePRForm(t *testing.T) {
 	const preIssue869 = "\tef.t.Fatalf(\"ephemeral kea did not become ready; config:\\n%s\\nlog:\\n%s\",\n" +
 		"\t\tef.renderedConfig, ef.readLog())\n"
@@ -156,9 +111,6 @@ func TestKeaHint_GuardWouldCatchThePrePRForm(t *testing.T) {
 		t.Errorf("the second-read detector misses an inline readLog call:\n%s", stmt)
 	}
 
-	// A hint mentioned only in a comment beside the failure is not
-	// delivery. The extractor must stop at the call, not swallow the
-	// surrounding lines.
 	const commentOnly = "\t// appArmorKeaHint(ef.tmpDir, true) used to be passed here.\n" +
 		"\tef.t.Fatalf(\"ephemeral kea did not become ready; config:\\n%s\",\n" +
 		"\t\tef.renderedConfig)\n"
@@ -170,8 +122,6 @@ func TestKeaHint_GuardWouldCatchThePrePRForm(t *testing.T) {
 		t.Errorf("a mention in a neighbouring comment satisfied the detector:\n%s", stmt)
 	}
 
-	// The current form must be accepted, or the guard is a check with
-	// one possible verdict.
 	const current = "\tkeaLog := ef.readLog()\n" +
 		"\tef.t.Fatalf(\"ephemeral kea did not become ready; config:\\n%s\\nlog:\\n%s\\n%s\",\n" +
 		"\t\tef.renderedConfig, keaLog, appArmorKeaHint(ef.tmpDir, keaLog == \"\"))\n"
@@ -186,9 +136,6 @@ func TestKeaHint_GuardWouldCatchThePrePRForm(t *testing.T) {
 		t.Errorf("the second-read detector fires on the single-read form:\n%s", stmt)
 	}
 
-	// A format string containing an unbalanced paren must not truncate
-	// the statement -- that would silently drop the argument list and
-	// turn this guard into a false red.
 	const parenInString = "\tef.t.Fatalf(\"ephemeral kea did not become ready :-( config:\\n%s\",\n" +
 		"\t\tef.renderedConfig, appArmorKeaHint(ef.tmpDir, true))\n"
 	stmt, ok = enclosingCallStatement(parenInString, keaReadinessFailure)

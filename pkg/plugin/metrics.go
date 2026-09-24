@@ -12,106 +12,31 @@ import (
 	"strings"
 )
 
-// metricPrefix namespaces every series this plugin exposes.
 const metricPrefix = "net_dhcp_"
 
-// metricDef describes one exposed metric family and — crucially — which
-// HealthResponse field(s) it renders.
-//
-// The field names are not decoration. TestMetrics_EveryHealthFieldIsExposed
-// walks HealthResponse by reflection and asserts every json tag is claimed
-// here, so adding field 46 to HealthResponse without exposing it fails the
-// unit suite rather than silently leaving a hole in someone's dashboard.
-// That is the whole reason this is a table and not a series of Fprintf
-// calls: a hand-kept list is the shape this repo has repeatedly watched rot
-// (#542, #636), and the metrics surface is the one place where rot is
-// invisible until an alert that should have fired does not.
+// metricDef is one metric family and the HealthResponse fields it renders, which
+// TestMetrics_EveryHealthFieldIsExposed checks (#542, #636).
 type metricDef struct {
-	// name is the series name without the net_dhcp_ prefix and without
-	// the _total suffix that counters get.
-	name string
-	// counter marks a monotonic series. Counters are exposed as
-	// <prefix><name>_total per Prometheus convention; gauges as
-	// <prefix><name>.
+	name    string
 	counter bool
-	// help is the HELP line. It is operator-facing documentation and
-	// should say what the number means, not restate the name.
-	help string
-	// healthy marks a counter that the Healthy expression reads: a
-	// non-zero value makes the plugin report itself unhealthy.
-	//
-	// THIS IS THE DECLARATION. It used to be inferred by reading the
-	// English in help, which is how #826 happened: the classifier saw
-	// "Healthy-affecting." inside "Not healthy-affecting:" and called a
-	// denial an assertion. The fix read the sentence better, and #854
-	// found the same defect one axis over -- "Not a healthy-affecting
-	// counter" puts a word between the negator and the term and is read
-	// as asserting again. A heuristic over prose has now been wrong
-	// twice in the same place, so the property stopped being prose.
-	//
-	// scripts/check-health-contract.sh reads this field. The sentence
-	// in help stays for operators and is pinned to this field by
-	// TestMetricHelpMatchesHealthyField, which is what stops the two
-	// from drifting apart now that only one of them is authoritative.
+	help    string
+	// healthy marks a counter whose non-zero value makes the plugin unhealthy, declared here and no longer read from
+	// help (#826, #854).
 	healthy bool
-	// warn marks a counter the reference table tells an operator to
-	// watch or alert on WITHOUT calling it a fault. It is the second
-	// axis of the health document's check classification: `healthy`
-	// counters become `fail` checks, these become `warn` checks, and a
-	// counter with neither is informational and is not a check at all.
-	//
-	// The rule is the reference row's own words, not taste: the row
-	// carries an imperative about THIS counter's value ("alert on it",
-	// "Watch it", "worth investigating", "the actionable one"). The
-	// classification is also a column of that table, and
-	// scripts/check-health-contract.sh reads this declaration against
-	// it -- the same reconciliation `healthy` already gets, because a
-	// classification stated in two places is the #638 shape one column
-	// over.
-	//
-	// healthy and warn are mutually exclusive; a check is one status.
-	warn bool
-	// unit is the check's observedUnit (draft section 4.4) and action
-	// is its output (section 4.8) when the counter is non-zero. Both
-	// are required on a check and meaningless without one, which
-	// TestHealthChecks_EveryCheckIsAnnotated holds.
+	// warn marks a counter the reference table says to watch without calling it a fault; it excludes healthy (#638).
+	warn   bool
 	unit   string
 	action string
-	// field is the HealthResponse json tag this renders.
-	field string
-	// v4field and v6field, when set, make this a family-split metric:
-	// each names the stored half rendered under the matching family
-	// label. field then names the v4+v6 aggregate, which this metric
-	// CLAIMS (so the exposure guard counts it as covered) but does not
-	// emit as a series of its own — the two labelled series carry it.
-	//
-	// Both halves are read, never derived. This file used to compute
-	// the ipv4 series as aggregate-minus-v6 in a helper called
-	// familySplit; #730 removed it. Two independently updated counters
-	// combined by SUBTRACTION can yield a value below the previous
-	// scrape, which Prometheus reads as a counter reset and repays as a
-	// rate spike of the entire accumulated count. Do not reintroduce
-	// the arithmetic: if a family series ever needs computing rather
-	// than reading, the fix belongs in healthSnapshot, where both
-	// halves are loaded once.
+	field  string
+	// v4field and v6field name the stored halves of a family-split metric, both read: subtracting one from the
+	// aggregate can go below the last scrape, which Prometheus reads as a counter reset (#730).
 	v4field string
 	v6field string
-	// values maps a STRING field's value to its exposition number.
-	// Prometheus has no string type, so a string health field is
-	// exposed as an enumeration rather than not at all, and a value
-	// this map does not carry is an error rather than a silent zero --
-	// a status nobody enumerated must not render as `pass`.
-	values map[string]string
+	values  map[string]string
 }
 
-// metricDefs is the complete exposition table.
-//
-// Order here is the order on the wire, which makes the golden file a
-// readable document rather than a hash. Related metrics sit together for
-// the same reason.
 func metricDefs() []metricDef {
 	return []metricDef{
-		// Identity and liveness.
 		{name: "health_status", help: "The health document's overall status, ordered so that worse is higher: 0 pass, 1 warn, 2 fail. `> 0` is the alerting expression; `>= 2` is the subset net_dhcp_healthy already carried. Like net_dhcp_healthy it LATCHES for the life of the process -- read net_dhcp_build_info's instance_id to tell a fault this process recorded earlier from a new one.", field: "status", values: map[string]string{statusPass: "0", statusWarn: "1", statusFail: "2"}},
 		{name: "healthy", help: "1 when the plugin reports itself healthy, 0 when an operator should look. Mirrors the healthy field of /Plugin.Health.", field: "healthy"},
 		{name: "uptime_seconds", help: "Seconds since this plugin process started.", field: "uptime_seconds"},
@@ -121,8 +46,6 @@ func metricDefs() []metricDef {
 		{name: "sandbox_netns_propagation", help: "Whether a mount the daemon makes under the sandbox netns directory after this process started can reach it: 1 linked, 0 private, -1 unreadable or uncovered. Answered before the directory exists, from the mount covering its parent. A 0 means every attach takes the container PID route, a 1 means every attach takes the sandbox key route, and both are ordinary.", field: "sandbox_netns_propagation"},
 		{name: "sandbox_netns_init_mounts", help: "Sandbox netns mounts in PID 1's mount table: -2 PID 1 shares this process's mount namespace, -1 unreadable, N otherwise. Read it against sandbox_netns_visible.", field: "sandbox_netns_init_mounts"},
 
-		// Lease lifecycle. These nine carry a family label, and
-		// address_conflicts below is the tenth.
 		{name: "leases_obtained", counter: true, help: "Leases obtained from the DHCP server.", field: "leases_obtained", v4field: "leases_obtained_v4", v6field: "leases_obtained_v6"},
 		{name: "leases_renewed", counter: true, help: "Lease renewals accepted by the DHCP server.", field: "leases_renewed", v4field: "leases_renewed_v4", v6field: "leases_renewed_v6"},
 		{name: "lease_changed", counter: true, warn: true, unit: "renewals", action: "A renewal returned a different address, and docker inspect does not update on a lease change, so its reported address is stale for those containers.", help: "Renewals that came back with a different address than the client held.", field: "lease_changed", v4field: "lease_changed_v4", v6field: "lease_changed_v6"},
@@ -134,9 +57,7 @@ func metricDefs() []metricDef {
 		{name: "releases_reclaimed", counter: true, help: "Held addresses a running container is using again at the end of the restart window on a release_lease=on_remove network, so the record was closed and nothing was sent. Narrower than nothing-was-sent: an address stopped a second time and an acquisition in flight under the same key also send nothing and are not counted here. Zero on release_lease=never and on release_lease=on_stop, which have no window. It is the option's quiet half: with releases_sent climbing and this flat, nothing is restarting inside the window, and with this climbing the window is doing what it exists for.", field: "releases_reclaimed", v4field: "releases_reclaimed_v4", v6field: "releases_reclaimed_v6"},
 		{name: "release_failures", counter: true, warn: true, unit: "releases", action: "A lease this network asked to hand back did not go on the wire, so that address stays leased until it expires on the server. Read it against releases_sent, and read the plugin log beside it for which of the reasons it was.", help: "Attempts to hand a lease back that put no message on the wire: no lease record for the endpoint, no address or no server on the record, a record the sender refuses, no address on the parent to send from, the send itself failing, or a DHCPv6 address that could not be taken off the link first (RFC 9915 section 18.2.7 requires that before the exchange). The address is left to expire on the server's clock, which is what a release_lease=never network does on every teardown.", field: "release_failures", v4field: "release_failures_v4", v6field: "release_failures_v6"},
 
-		// No family label: there is no v4 counterpart to measure, so a
-		// v4field here would expose a series that is zero by
-		// construction rather than by observation (#815).
+		// No family label: there is no v4 counterpart, so a v4 series would be zero by construction (#815).
 		{name: "dhcpv6_config_only", counter: true, help: "DHCPv6 information replies received: address-less configuration from a network advertising the RA other-config flag. Counts replies received, not configuration applied.", field: "dhcpv6_config_only"},
 		{name: "dhcpv6_not_offered", counter: true, help: "Endpoints started on an IPv6 network whose router advertisement offered no DHCPv6 address (stateless or SLAAC). Not a fault: the network is working as configured and there is no DHCPv6 address on it to be had. The container comes up with IPv4, an IPv6 link-local and DHCPv6 configuration where the segment offers it, and no global IPv6 address from this plugin. Since v2.2.0 the interface is at accept_ra=0/autoconf=0, so the kernel forms no SLAAC address and installs no route from the advertisement either, and the daemon refuses an IPv6 route on a link carrying no IPv6 address, so the plugin cannot supply one here; the container has a link-local address and no IPv6 route until a global address is formed for it (#818). Kept apart from dhcpv6_no_router_advert because that one means no router answered at all.", field: "dhcpv6_not_offered"},
 		{name: "dhcpv6_refused", counter: true, help: "Endpoints that failed because a DHCPv6 server answered and refused the client, carrying a Status Code other than Success (RFC 9915 section 21.13). The code's name is in the log line beside the endpoint. The server is reachable and configured and has no address for this client: an exhausted pool answers NoAddrsAvail, and a client asking for an address outside the range the server serves gets NotOnLink. Kept apart from dhcpv6_no_server, which is the ending where nothing answered at all.", field: "dhcpv6_refused"},
@@ -159,17 +80,14 @@ func metricDefs() []metricDef {
 		{name: "router_table_entries_dropped", counter: true, help: "Advertised entries a full list in the client's router table would not take: a ninth router, or a seventeenth more-specific route. Non-zero means the table's caps are in force, which on a segment carrying one link's worth of routers means something is advertising more than a link has. A refusal holds what was heard first, so what is lost is the newest arrival. Not healthy-affecting: the caps exist so that a link cannot spend this plugin's memory, and they are doing that.", field: "router_table_entries_dropped"},
 		{name: "router_table_entries_evicted", counter: true, help: "Held entries a full resolver or search list threw out to take an arrival, which is what RFC 8106 section 6.2 (d) asks of those two lists. The pair of router_table_entries_dropped_total, and the other way round: an eviction holds what expires last, so what is lost is something the client already had. Read the two together; either above zero means the caps are in force. Not healthy-affecting: the caps exist so that a link cannot spend this plugin's memory, and an eviction is them working.", field: "router_table_entries_evicted"},
 
-		// Server-supplied values the plugin bounds or must evidence (#699).
 		{name: "dhcp_routes_applied", counter: true, help: "DHCP option-121 classless static routes handed to Docker. Counts routes, not Joins.", field: "dhcp_routes_applied"},
 		{name: "dhcp_default_route_superseded", counter: true, help: "Joins whose option-121 routes cover 0.0.0.0/0 by union rather than by a literal default entry, so container egress follows those next hops even though the reported gateway still names the option-3 router. Legitimate in split-tunnel setups; the point is that it is now visible.", field: "dhcp_default_route_superseded"},
 		{name: "mtu_refused", counter: true, help: "Option-26 MTUs outside the range the plugin will apply; the container link keeps the MTU it had.", field: "mtu_refused"},
 
-		// Server selection (#111).
 		{name: "dhcp_server_tier_fallbacks", counter: true, help: "Steps down the dhcp_servers ladder: one per preferred entry that did not answer inside its slice of the budget and handed on to the next. One acquisition against three silent preferred servers adds 2, not 1. The only outside signal that a preferred server is silently dead.", field: "dhcp_server_tier_fallbacks"},
 		{name: "dhcp_server_policy_exhausted", counter: true, help: "Acquisitions abandoned because no server listed in dhcp_servers answered.", field: "dhcp_server_policy_exhausted"},
 		{name: "dhcp_server_policy_timeouts", counter: true, help: "dhcp_timeouts on endpoints whose renewal client is restricted to dhcp_servers.", field: "dhcp_server_policy_timeouts"},
 
-		// Post-restart recovery.
 		{name: "recovered_ok", counter: true, help: "Endpoints whose renewal client was rebuilt after a plugin restart.", field: "recovered_ok"},
 		{name: "recovery_failed", counter: true, healthy: true, unit: "endpoints", action: "A container that is still running has no lease-renewal client and will lose its address at expiry. Restart it; the plugin log carries the cause.", help: "Post-restart rebuilds that failed for a container that is still running; it runs without lease renewal and loses its IP at expiry. Healthy-affecting.", field: "recovery_failed"},
 		{name: "recovery_deferred", counter: true, help: "Recovery walks postponed because the daemon was still starting (#383). Not a fault.", field: "recovery_deferred"},
@@ -178,7 +96,6 @@ func metricDefs() []metricDef {
 		{name: "recovery_fingerprints_skipped", counter: true, help: "Endpoints recovery adopted but could not describe, because the container inspect gave no hostname. Not healthy-affecting: they keep their renewal client and lose only address stability across their next restart.", field: "recovery_fingerprints_skipped"},
 		{name: "recovery_already_managed", counter: true, help: "Endpoints a recovery walk left alone because a Join had already claimed them. Not a fault; the only outward evidence of recovery racing a Join.", field: "recovery_already_managed"},
 
-		// Join / attach.
 		{name: "join_start_failures", counter: true, healthy: true, unit: "endpoints", action: "A container that is still running got its initial lease but no renewal client. Restart it; the plugin log carries the cause.", help: "Joins whose DHCP client failed to start, leaving a running container without lease renewal. Healthy-affecting.", field: "join_start_failures"},
 		{name: "join_aborted_container_gone", counter: true, help: "Joins abandoned because the container disappeared mid-attach. Not a fault.", field: "join_aborted_container_gone"},
 		{name: "join_aborted_no_container", counter: true, help: "Joins abandoned because no container was ever found for the endpoint. Not a fault.", field: "join_aborted_no_container"},
@@ -192,7 +109,6 @@ func metricDefs() []metricDef {
 		{name: "restart_link_up_waited", counter: true, help: "Container restarts that had to wait for the interface to come back up.", field: "restart_link_up_waited"},
 		{name: "restart_link_up_timeouts", counter: true, warn: true, unit: "restarts", action: "A departing link held its address past the wait budget, so docker restart failed with \"address already in use\". Worth investigating: any non-zero value means a restart was refused.", help: "Container restarts where the interface never came up inside the wait.", field: "restart_link_up_timeouts"},
 
-		// RFC 5227 address conflict detection (#524, D12, D23).
 		{name: "address_conflicts", counter: true, healthy: true, unit: "addresses", action: "A leased address was found in use by another device on the segment. Look for a statically configured host inside the DHCP pool.", help: "Leased addresses found already in use by another host, over the whole life of the lease. The ipv4 series is RFC 5227: section 2.1's probes before the address is used and section 2.4's listener afterwards, and conflict_check governs it -- it moves in =wait and =async, and in =off the client neither probes nor listens, so it moves only for a conflict reported to the client from outside it, which no code path in this plugin does today. The ipv6 series is the kernel's Duplicate Address Detection (RFC 4862 section 5.4), declined under RFC 9915 section 18.2.8; it is not ARP, conflict_check does not govern it, and nothing ARP-shaped counts it. Healthy-affecting.", field: "address_conflicts", v4field: "address_conflicts_v4", v6field: "address_conflicts_v6"},
 		{name: "acd_probes_sent", counter: true, help: "RFC 5227 section 2.1.1 ARP Probes sent. READ THIS BEFORE BELIEVING address_conflicts{family=\"ipv4\"} IS ZERO: zero here over a running plugin means no IPv4 address was ever checked, which is not the same reading as a clean segment (#524). It says nothing about the ipv6 series, which is Duplicate Address Detection and sends no ARP. Moves in conflict_check=wait and =async, never in =off.", field: "acd_probes_sent"},
 		{name: "acd_announcements_sent", counter: true, help: "RFC 5227 section 2.3 ARP Announcements sent. Two go out per address that passed the probe, and a live scrape can be one behind: the first is sent at the bind and the second from a timer 2s later (section 2.3 ANNOUNCE_INTERVAL), while the plugin folds the library counter on client events, so a freshly bound address reads 1 until the next event on that endpoint. Moves in conflict_check=wait and =async, never in =off. Read against acd_probes_sent: probes climbing with no announcements means addresses are being checked and none is coming back clean.", field: "acd_announcements_sent"},
@@ -200,13 +116,9 @@ func metricDefs() []metricDef {
 		{name: "acd_arp_send_failures", counter: true, warn: true, unit: "frames", action: "ARP Probes or Announcements the socket refused. A probe that never went out proves nothing about the address, so address_conflicts=0 stops meaning the segment is clean.", help: "ARP Probes and Announcements the socket refused. Not healthy-affecting: a refused send is not itself a conflict, but a probe that never went out proves nothing about the address, so a rise turns \"no conflict found\" into \"the question was not asked\". Moves in conflict_check=wait and =async, never in =off.", field: "acd_arp_send_failures"},
 		{name: "acd_resumed_unchecked", counter: true, warn: true, unit: "endpoints", action: "An endpoint was resumed from a record whose RFC 5227 section 2.1 check had not finished, so it held its address with no completed check behind it until the resumed client re-checked it on the INIT-REBOOT acknowledgement.", help: "Endpoints picked up after a plugin restart from a durable record whose RFC 5227 section 2.1 check had not completed (D23). The resumed client re-runs section 2.1 on its INIT-REBOOT acknowledgement whatever the record said, so the window closes on its own; this counts how often it opened. Not healthy-affecting: the container keeps its address and the check is re-run.", field: "acd_resumed_unchecked"},
 
-		// Orphaned leases (#370).
-
-		// Parent link waits.
 		{name: "parent_link_waits", counter: true, help: "Operations that queued for a parent interface another operation was using, and got it. Includes the ones that gave up waiting for a holder attaching the SAME kind of child (macvlan beside macvlan, ipvlan beside ipvlan), because a parent accepts those side by side and the wait protected nothing -- the operation proceeds and succeeds. Two containers starting together on one parent-attached network land here, since an address reservation holds the parent across its DHCP exchange. Not healthy-affecting: it is contention, not failure.", field: "parent_link_waits"},
 		{name: "parent_link_wait_timeouts", counter: true, warn: true, unit: "operations", action: "An operation gave up waiting for a parent interface that was being used to attach the OTHER kind of child. A parent NIC is a macvlan port or an ipvlan port and never both, so the kernel may refuse what this operation went on to do, and a container start can fail with \"device or resource busy\". Look for a macvlan and an ipvlan network sharing one parent, or a validate_dhcp probe running beside container starts.", help: "Operations that gave up waiting for a parent interface held for the other kind of child, or held by something this plugin could no longer identify. They proceed anyway and the kernel is the authority; this counts the times that gamble was taken. Same-kind contention is NOT counted here -- see parent_link_waits -- because the kernel permits it and a warning nobody can act on is worse than none.", field: "parent_link_wait_timeouts"},
 
-		// Persistence.
 		{name: "tombstone_write_failures", counter: true, healthy: true, unit: "writes", action: "A tombstone could not be written or re-read, so some container will pick a fresh MAC and address on its next restart. Check STATE_DIR for space and for read errors.", help: "Tombstone writes that failed, so the next restart of that container picks a new MAC and address. Healthy-affecting.", field: "tombstone_write_failures"},
 		{name: "tombstone_quarantines", counter: true, healthy: true, unit: "files", action: "The tombstone file was unparseable and was moved aside, taking every live tombstone on the host with it. Every container restarting in the next TTL window comes back with a new MAC and address.", help: "Times the tombstone file was found unparseable and moved aside as tombstones.json.corrupt-<ts>; every live tombstone on the host was lost with it, so containers restarting in the next TTL window come back with new MACs and addresses. Healthy-affecting.", field: "tombstone_quarantines"},
 		{name: "tombstones_consumed", counter: true, help: "Tombstones read back to preserve a container's MAC and address across a restart.", field: "tombstones_consumed"},
@@ -219,9 +131,7 @@ func metricDefs() []metricDef {
 		{name: "host_ifname_failures", counter: true, warn: true, unit: "endpoints", action: "The rename was refused and it was not a name that was taken: a container name with no character an interface name may carry, a host-side link that was not there, or a kernel that would not rename a running link. Read the plugin log, which names which. The endpoint keeps its lease and its generated link name.", help: "Renames that did not happen for any reason other than the name being taken, so the endpoint's host-side link kept its generated name.", field: "host_ifname_failures"},
 		{name: "unsafe_option_values_dropped", counter: true, help: "Server-chosen DHCP string values refused before use because they carried a control character, plus option-15 domains truncated at their first space. The DHCP library validates domain-typed options; string-typed ones can carry anything the server put on the wire (#703, #704).", field: "unsafe_option_values_dropped"},
 		{name: "network_options_rejected", counter: true, help: "Endpoint operations that met a network's stored options and would not act on them as written: an interface name the kernel would not accept, or a mode this plugin does not implement. DeleteEndpoint counts without refusing, so a rise does not mean nothing was torn down. Not healthy-affecting: refusing is the safe outcome and the operation already fails visibly to Docker. A rise means options persisted before name validation existed, or a hand-edited state directory (#727).", field: "network_options_rejected"},
-		// The bundled IPAM driver (#110). Every one of these stays zero
-		// on a network created with --ipam-driver null, which is the
-		// shape this plugin shipped with and still supports.
+		// The IPAM driver's counters stay zero on a network created with --ipam-driver null (#110).
 		{name: "ipam_replay_hits", counter: true, help: "Stored endpoint addresses confirmed at a daemon restart from this plugin's own lease record. The mechanism working: it is how an IPAM-mode endpoint keeps its address across a restart. Read it as the denominator for ipam_replay_miss.", field: "ipam_replay_hits"},
 		{name: "ipam_replay_miss", counter: true, warn: true, unit: "addresses", action: "A stored endpoint's address matched no lease record in its network, so the plugin refused to confirm it and the network driver's recovery adopts the endpoint from Docker's view instead. Worth investigating: the lease record and Docker's store have drifted apart, which is a lost or hand-edited record file.", help: "Stored endpoint addresses this plugin would not confirm at a daemon restart because no lease record in that network holds them.", field: "ipam_replay_miss"},
 		{name: "ipam_rebind_ambiguous", counter: true, warn: true, unit: "requests", action: "Several containers on one network restarted together, and an address request carries no hostname and no endpoint id, so nothing said which previous lease it belonged to and the DHCP server decided. Watch it: addresses on this host moved, and pinning with --ip or --mac-address, or using --ipam-driver null, is the remedy.", help: "Address requests that met more than one recently-removed endpoint on the network and so could not tell which address to ask for.", field: "ipam_rebind_ambiguous"},
@@ -245,22 +155,8 @@ func metricDefs() []metricDef {
 	}
 }
 
-// metricLabelOnlyFields are HealthResponse fields deliberately exposed as
-// a LABEL rather than as a series of their own.
-//
-// instance_id is the whole point of build_info: a counter reset is
-// invisible in a time series unless something in the series identity
-// changes with the process. Carrying the id as a label means a plugin
-// restart appears as a new series, which Prometheus already knows how to
-// handle, instead of as a counter that silently rewound. That is the same
-// failure #405 found inside our own integration suite, where counters
-// reset three times per run and nothing noticed.
-//
-// engine_version and api_version are labels on a SEPARATE series and not
-// on build_info (#670). build_info describes this build; the engine is
-// the host's, it changes when the operator upgrades Docker and not when
-// they upgrade the plugin, and folding it into build_info would make
-// every existing build_info series break on an engine upgrade.
+// instance_id is a build_info label so a plugin restart shows as a new series, not a rewound counter (#405).
+// Engine labels go on a separate series, since the engine changes on a Docker upgrade (#670).
 var metricLabelOnlyFields = map[string]string{
 	"instance_id":    "build_info",
 	"version":        "build_info",
@@ -270,50 +166,23 @@ var metricLabelOnlyFields = map[string]string{
 	"api_version":    "engine_info",
 }
 
-// metricNotExposedFields are HealthResponse fields deliberately absent
-// from /metrics, each with the reason.
-//
-// AN ESCAPE HATCH WITH A COST, and it is here because the alternative
-// is worse. healthFieldsByTag renders scalars; a map or a slice falls
-// through its default arm, which means a structured field added to
-// HealthResponse would be missing from that map, unclaimed by
-// metricDefs, and — before this list existed —
-// TestMetrics_EveryHealthFieldIsExposed would have failed with no way
-// to say "deliberately". Saying it in a table with a reason is a
-// decision a reviewer can read; skipping non-scalars in
-// healthFieldsByTag would have been the same decision, taken silently,
-// for every future field at once.
-//
-// The reason is length-checked by the same test, so an entry cannot be
-// added with an empty one.
+// metricNotExposedFields are HealthResponse fields left out of /metrics, each with a reason the exposure test checks
+// (#651).
 var metricNotExposedFields = map[string]string{
 	"checks":    "one series per check would restate net_dhcp_health_status and the healthy-affecting counters, which are already exposed; the check's observedValue IS the counter's series",
 	"endpoints": "a series per container is a cardinality decision this row does not take; the per-endpoint lease gauge is its own piece of work (O-5)",
 }
 
-// writeExposition renders one health snapshot as Prometheus text format
-// (version 0.0.4) to w.
-//
-// Deliberately hand-rolled rather than pulling in prometheus/client_golang.
-// go.mod carries 8 direct dependencies and this plugin runs with
-// CAP_NET_ADMIN, CAP_SYS_ADMIN and CAP_SYS_PTRACE on the host network
-// namespace, so the bar for a new direct dependency is high and the
-// surface being bought here is one text renderer over 45 integers. The
-// cost of that choice is that conformance is ours to hold, which is what
-// the golden file and the escaping test are for.
+// writeExposition renders Prometheus text format 0.0.4 by hand: a new direct dependency in a process holding
+// CAP_NET_ADMIN, CAP_SYS_ADMIN and CAP_SYS_PTRACE was not worth one renderer (#651).
 func writeExposition(w io.Writer, h HealthResponse) error {
 	return writeExpositionWith(w, h, metricDefs())
 }
 
-// writeExpositionWith is writeExposition with the table injected, so the
-// error paths below are reachable from a test without a broken table
-// having to be committed to reach them.
 func writeExpositionWith(w io.Writer, h HealthResponse, defs []metricDef) error {
 	byTag := healthFieldsByTag(h)
 	var b strings.Builder
 
-	// build_info first: it is the series a reader needs to interpret
-	// every counter below it.
 	b.WriteString("# HELP " + metricPrefix + "build_info Plugin build and instance identity. version is the release tag (dev outside a release), commit the git revision it was built from, library the revision of the in-tree DHCP library; none of the three is ever empty, and `unknown` means the build did not carry it. The instance_id label changes on every plugin restart, so a counter reset appears as a new series rather than as a rewind.\n")
 	b.WriteString("# TYPE " + metricPrefix + "build_info gauge\n")
 	b.WriteString(metricPrefix + `build_info{instance_id="` + escapeLabelValue(h.InstanceID) +
@@ -321,14 +190,8 @@ func writeExpositionWith(w io.Writer, h HealthResponse, defs []metricDef) error 
 		`",commit="` + escapeLabelValue(h.Commit) +
 		`",library="` + escapeLabelValue(h.Library) + "\"} 1\n")
 
-	// engine_info beside it: the daemon's identity, as the daemon
-	// reported it at startup. engine_version is the version the minimum
-	// is measured and compared on; api_version is what the client
-	// library negotiated, which is min(our maximum, the daemon's), so it
-	// can be below both sides' capability. Both read `unknown` when the
-	// daemon did not answer at startup (#383's window), which is a state
-	// an operator can see and is not the same as an engine that is
-	// missing.
+	// api_version is the negotiated min(client, daemon) version; both engine fields read `unknown` when the daemon
+	// did not answer at startup (#383, #670).
 	b.WriteString("\n# HELP " + metricPrefix + "engine_info The Docker Engine this plugin process is talking to, as the daemon reported it at startup. engine_version is what the minimum supported engine is compared against; api_version is the API version this client negotiated with it, which is the lower of the two maximums. Both read `unknown` when the daemon did not answer at startup.\n")
 	b.WriteString("# TYPE " + metricPrefix + "engine_info gauge\n")
 	b.WriteString(metricPrefix + `engine_info{engine_version="` + escapeLabelValue(h.EngineVersion) +
@@ -379,19 +242,6 @@ func writeExpositionWith(w io.Writer, h HealthResponse, defs []metricDef) error 
 	return err
 }
 
-// healthFieldsByTag renders every HealthResponse field to its exposition
-// value, keyed by json tag.
-//
-// Reflection rather than a switch over 45 named fields, for the same
-// reason metricDefs is a table: the alternative is a second list that has
-// to be edited in lockstep with the struct, and nothing would fail when
-// somebody forgot. A field whose type is not exposable is an error rather
-// than a skip — silently dropping it would produce exactly the invisible
-// hole this design exists to prevent.
-//
-// Booleans render as 1/0 because Prometheus has no boolean type; floats
-// use 'g' with full precision so a value round-trips rather than being
-// truncated to a scrape-time approximation.
 func healthFieldsByTag(h HealthResponse) map[string]string {
 	out := make(map[string]string)
 	v := reflect.ValueOf(h)
@@ -417,32 +267,23 @@ func healthFieldsByTag(h HealthResponse) map[string]string {
 		case reflect.Float32, reflect.Float64:
 			out[tag] = strconv.FormatFloat(f.Float(), 'g', -1, 64)
 		default:
-			// Unreachable for the current struct, and a compile-time
-			// impossibility to assert. TestMetrics_EveryHealthFieldIsExposed
-			// fails loudly if a field ever lands here, because the tag
-			// will be missing from this map.
 			continue
 		}
 	}
 	return out
 }
 
-// escapeLabelValue applies the Prometheus text-format escaping rules for
-// label values: backslash, double quote and newline.
 func escapeLabelValue(s string) string {
 	r := strings.NewReplacer(`\`, `\\`, `"`, `\"`, "\n", `\n`)
 	return r.Replace(s)
 }
 
-// escapeHelp applies the (different, smaller) escaping rules for HELP
-// text: backslash and newline only. A double quote is legal there and
-// must NOT be escaped, which is why this is not escapeLabelValue.
+// escapeHelp escapes backslash and newline only: a double quote is legal in HELP text.
 func escapeHelp(s string) string {
 	r := strings.NewReplacer(`\`, `\\`, "\n", `\n`)
 	return r.Replace(s)
 }
 
-// apiMetrics serves the exposition over HTTP.
 func (p *Plugin) apiMetrics(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
 	if err := writeExposition(w, p.healthSnapshot()); err != nil {

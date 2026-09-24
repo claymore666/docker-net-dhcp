@@ -59,6 +59,23 @@ engine_of() {
     sed -n 's/.*"engine"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$1" | head -1
 }
 
+# --report prints the running engine beside the fixtures' and exits 0: a
+# lane whose engine is not the integration lane's (the arm64 runner) still
+# says what it ran on, and a minor apart is a notice, not a verdict (#1015).
+if [ "${1:-}" = "--report" ]; then
+    running="${ENGINE_VERSION:-$(docker version --format '{{.Server.Version}}' 2>/dev/null || true)}"
+    recorded="$(find "$FIXTURE_ROOT" -mindepth 2 -maxdepth 2 -name manifest.json 2>/dev/null \
+        | while read -r m; do engine_of "$m"; done | sort -u | paste -sd, - || true)"
+    echo "running engine ${running:-unknown}, fixtures recorded on ${recorded:-nothing}"
+    for r in ${recorded//,/ }; do
+        if [ -n "$running" ] && [ "$(minor_of "$running")" != "$(minor_of "$r")" ]; then
+            echo "::notice title=Engine version::running engine $running, fixtures recorded on $recorded (different minor)"
+            break
+        fi
+    done
+    exit 0
+fi
+
 if [ ! -d "$FIXTURE_ROOT" ]; then
     echo "FAIL: $FIXTURE_ROOT does not exist."
     echo "  The fixture suite cannot be checked for drift because there are no"

@@ -268,6 +268,24 @@ WF_TAR='tar -czf "$ART" -C plugin . && tar -czf "$ART2" -C other .' \
     mktree "$TMP/q" yes no yes
 case_ "two packaging roots is a refusal, not a guess" "$TMP/q" 2 "ambiguous"
 
+# A tar the step echoes or comments out packs nothing (#883). Each one
+# stands where the packaging line stood, so the tree packages no tarball.
+WF_TAR='echo tar -czf "$ART" -C plugin .' mktree "$TMP/rd1" yes no yes
+case_ "an echoed packaging line is no packaging" "$TMP/rd1" 2 "packages no tarball"
+WF_TAR='# tar -czf "$ART" -C plugin .' mktree "$TMP/rd2" yes no yes
+case_ "a packaging line commented out in the run block is no packaging" "$TMP/rd2" 2 \
+    "packages no tarball"
+WF_TAR=':' mktree "$TMP/rd3" yes no yes
+sed -i '1i # tar -czf "$ART" -C plugin .' "$TMP/rd3/.github/workflows/release.yml"
+case_ "a packaging line in a YAML comment is no packaging" "$TMP/rd3" 2 \
+    "packages no tarball"
+WF_TAR='tar -czf "$ART" -C plugin . && echo tar -czf x -C plugin config.json' \
+    mktree "$TMP/rd4" yes no yes
+case_ "an echoed second operand set beside the real tar is not read" "$TMP/rd4" 0 \
+    "signed manifest(s)"
+WF_TAR='true && tar -czf "$ART" -C "plugin" .' mktree "$TMP/rd5" yes no yes
+case_ "a chained tar with a quoted root is read" "$TMP/rd5" 0 "signed manifest(s)"
+
 # --- the link flags across both builds (review r2, finding 3) -----------
 # THE REVIEWER'S SCENARIO. Half A reads the Makefile; the release binary
 # comes from the Dockerfile. With GO_LDFLAGS losing Commit= and the

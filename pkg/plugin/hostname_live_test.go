@@ -18,20 +18,8 @@ import (
 	"github.com/vishvananda/netlink"
 )
 
-// The four outcomes of a name that arrives after its client is already
-// leasing (#961), driven one at a time.
-//
-// The attach reaches this step with the container leasing and the whole
-// attach already successful, so NOTHING HERE MAY FAIL THE ATTACH and
-// every arm is silent unless it is counted. These drives are what makes
-// each arm's counter the thing that distinguishes it: the same endpoint,
-// the same running client, four different reasons the DHCP server's
-// table does or does not learn the name.
-//
-// WHAT THEY CANNOT SAY: that the server was told. The library's
-// SetHostname returns before anything is on the wire and says so, so a
-// handover here is intent and not effect. The effect is asserted on the
-// dnsmasq lease file in test/integration.
+// The library's SetHostname returns before anything is on the wire, so these assert intent; the
+// integration suite asserts the name in dnsmasq's lease file (#961).
 func aNamedEndpoint(t *testing.T) (*dhcpManager, *Plugin, *fakeJoinClient) {
 	t.Helper()
 	p := &Plugin{}
@@ -120,14 +108,6 @@ func TestNameTheRunningClient_ARefusedNameIsNotHandedOver(t *testing.T) {
 	}
 }
 
-// TestNameTheRunningClient_AContainerWithNoNameIsNotAFailure keeps the
-// positive counter's domain honest.
-//
-// A container started without --hostname has an empty Config.Hostname,
-// which is an ordinary container and not a fault. Handing the empty
-// string over would tell the library to stop sending option 12, which
-// this client is already not sending, and would make
-// hostnames_applied_late rise once per container on every host.
 func TestNameTheRunningClient_AContainerWithNoNameIsNotAFailure(t *testing.T) {
 	m, p, client := aNamedEndpoint(t)
 
@@ -172,13 +152,6 @@ func TestNameTheRunningClient_AClientThatRefusesTheNameIsCountedApart(t *testing
 	}
 }
 
-// TestNameTheRunningClient_NoClientIsAnApplyFailure covers the arm that
-// has no client at all.
-//
-// It is reachable: the manager publishes the v4 client inside
-// setupClient, and a future path that names an endpoint whose client was
-// never published would otherwise return silently with the name in a
-// field nobody sends.
 func TestNameTheRunningClient_NoClientIsAnApplyFailure(t *testing.T) {
 	p := &Plugin{}
 	m := newDHCPManager(nil, JoinRequest{NetworkID: "net-1", EndpointID: "ep-1"}, DHCPNetworkOptions{}).withPlugin(p)
@@ -194,32 +167,8 @@ func TestNameTheRunningClient_NoClientIsAnApplyFailure(t *testing.T) {
 	}
 }
 
-// TestStart_ARegisterDNSNetworkTakesTheNameBeforeTheClientStarts is
-// #961's bound, and it is asserted here so the claim cannot grow.
-//
-// register_dns puts the container's name in RFC 4702's option 81, which
-// the library takes when the client is constructed and offers no setter
-// for, and section 3.1 forbids the Host Name option beside it. So such a
-// network keeps the pre-start wait: a client started before the name
-// arrived would carry no option 81 for its whole life, and the late
-// SetHostname would put the name in option 12 instead -- a different
-// option, asking the server for nothing.
-//
-// The sample is taken at the socket, because "it waited" and "it did not
-// wait" leave the same totals when Start returns.
-// TestNameTheRunningClient_ZeroOnAllThreeIsNotOnlyAnIdleHost pins what a
-// zero reading means, because three documents state it in prose:
-// docs/reference.md's hostnames_applied_late row, the help string in
-// metrics.go, and the field comment in plugin.go.
-//
-// hostnames_applied_late narrows the two failure counters; it does not
-// decide them. Five attaches here do real work and leave all three at
-// zero, because none of the containers was started with --hostname and
-// an empty name is not handed over. So "zero everywhere" is not "this
-// host has attached nothing", and the three documents may not say it
-// is. The named attach at the end is the other direction: the same
-// plugin, one container with a name, and only then does the positive
-// counter move.
+// register_dns sends the name in option 81 (RFC 4702), which the library takes only at construction
+// and section 3.1 keeps apart from option 12, so such a network waits for the name before Start (#961).
 func TestNameTheRunningClient_ZeroOnAllThreeIsNotOnlyAnIdleHost(t *testing.T) {
 	p := &Plugin{}
 	attaches := 0
@@ -261,21 +210,6 @@ func TestNameTheRunningClient_ZeroOnAllThreeIsNotOnlyAnIdleHost(t *testing.T) {
 	}
 }
 
-// TestNameTheRunningClient_TheLedgerNamesOnlyWhatTheClientTook reads the
-// AUDIT LEDGER instead of a counter, because the ledger is what
-// docs/reference.md sells as the lease-lifecycle record and it carries a
-// hostname column.
-//
-// m.hostname is what audit() writes into that column, and the accessor
-// is named for what the field means: the name this endpoint puts on the
-// wire. So the field may only be written once the running client has
-// taken the name. Written on the way past, it would name an endpoint the
-// DHCP server was never told about, on exactly the attaches where
-// hostname_apply_failures says the opposite -- two records of one fact,
-// disagreeing, with the counter loud and the ledger silent.
-//
-// Both directions, because a field that is never written is trivially
-// never wrong: the arm that succeeds must still reach the ledger.
 func TestNameTheRunningClient_TheLedgerNamesOnlyWhatTheClientTook(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -362,12 +296,6 @@ func TestStart_ARegisterDNSNetworkTakesTheNameBeforeTheClientStarts(t *testing.T
 	}
 }
 
-// TestStart_TheDefaultNetworkTakesTheNameAfterTheClientStarts is the
-// preservation control's opposite number: the same fixture with
-// register_dns off must take the other branch.
-//
-// Without it, a carve-out widened to every network would pass every
-// other drive in this file.
 func TestStart_TheDefaultNetworkTakesTheNameAfterTheClientStarts(t *testing.T) {
 	docker := &fakeDocker{
 		inspectResult: map[string]dNetwork.Inspect{
@@ -387,10 +315,6 @@ func TestStart_TheDefaultNetworkTakesTheNameAfterTheClientStarts(t *testing.T) {
 		t.Fatal("this fixture is meant to be the default network; register_dns is set")
 	}
 
-	// The substitute publishes a client that can be asked what it was
-	// told, at the instant a real one becomes live. Without it the
-	// manager holds the library client whose socket this lane could not
-	// open, and every arm below reads as an apply failure.
 	client := &fakeJoinClient{}
 	inspectsAtSocket := -1
 	withStartedClient(t, func() {
@@ -423,56 +347,9 @@ func TestStart_TheDefaultNetworkTakesTheNameAfterTheClientStarts(t *testing.T) {
 	}
 }
 
-// TestReacquireEndpoint_AsksTheDaemonBeforeTheAttachBegins is the bound
-// on #961's window claim, pinned so it cannot quietly widen again.
-//
-// The window this change empties is measured from dhcpManager.Start,
-// and Join does not always reach Start first. On `docker restart`
-// libnetwork sends Leave then Join on the same endpoint with no
-// CreateEndpoint between them, so Join finds no hint and rebuilds the
-// endpoint before any attach begins: a NetworkInspect to recover the
-// MAC, then a CreateEndpoint replay whose own hostname lookup is a
-// second NetworkInspect and a ContainerInspect, and then a one-shot
-// DHCP exchange. All of it against the daemon that is inside
-// ContainerStart for the container being restarted, which is #406's own
-// case.
-//
-// So the property is "a container start does not wait for the daemon",
-// and a restart still does. docs/reference.md and RELEASE_NOTES.md say
-// which one they mean; this drive is what makes the sentence false if
-// the route ever stops asking.
-//
-// WHY THE OPTIONS ARE ON DISK BEFORE THE ROUTE RUNS. netOptionsRaw
-// serves a network it cannot find on disk by asking the daemon and then
-// backfilling the answer. That fallback is a NetworkInspect, so on an
-// empty state directory this test counted a call the RESTART ROUTE
-// never made, and passed for a reason unrelated to its own sentence.
-// It also made the fixture order-dependent: the first subtest's
-// backfill persisted net-1.json and the second subtest then read it, so
-// the second went daemon-free and the drive went red wherever the state
-// directory was writable, which is to say wherever the suite ran as
-// root. Seeding the record closes both at once -- the fallback is
-// unreachable, so every call counted here is the route's own.
-//
-// The parent is stubbed because the assertion is about which calls the
-// route makes, not about the host it runs on: without a parent that
-// resolves, validateParentForChild returns before the hostname lookup,
-// and a green would mean only that the box had no such interface. The stub's link carries ifindex 0, so the child-link
-// creation below the lookup is refused by the kernel and this test
-// cannot build anything on the host that runs it.
-//
-// The ContainerInspect is asserted alongside the NetworkInspect because
-// it is the one that names a place: initialDHCPHostname is the only
-// caller of it on this route, so a non-zero containerCalls says the
-// route reached the hostname lookup in createParentAttachedEndpoint.
-// inspectCalls alone is satisfied by any daemon call anywhere on the
-// route, including a fallback that comes back.
-//
-// The property is over-determined, and that is stated rather than
-// hidden: in macvlan the MAC lookup asks the daemon before the replay
-// does, so removing the hostname lookup leaves the MAC lookup asking
-// and no mutant of that shape can go red on inspectCalls. The
-// containerCalls assertion is what it does go red on.
+// On `docker restart` libnetwork sends Leave then Join with no CreateEndpoint, so Join rebuilds the
+// endpoint through daemon calls while the daemon is inside ContainerStart (#406, #961). The stub
+// parent has ifindex 0, so the kernel refuses the child link and nothing is built on the host.
 func TestReacquireEndpoint_AsksTheDaemonBeforeTheAttachBegins(t *testing.T) {
 	for _, mode := range []string{ModeMacvlan, ModeIPvlan} {
 		t.Run(mode, func(t *testing.T) {

@@ -11,15 +11,8 @@ import (
 	"github.com/claymore666/dhcp-golib/proto"
 )
 
-// TestRetransmitBudget_IsTheClientsOwnScheduleAtItsSlowest pins the
-// sizes, so a schedule change in the library fails here, in the local
-// lane, with the numbers in the message, instead of reddening a pool
-// cell that looks like a flake.
-//
-// RFC 2131 section 4.1's example schedule is 4 s, then 8 s, then 16 s,
-// each randomised by +/- 1 s, and it stops doubling at 64 s. The
-// slowest run of the first n retransmissions is the running sum of
-// those plus one second each: 5 s, 14 s, 31 s, 64 s.
+// RFC 2131 section 4.1: retransmit delays of 4, 8, 16 s up to 64 s, each randomised by +/- 1 s, so the slowest
+// first n retransmissions sum to 5, 14, 31 and 64 s.
 func TestRetransmitBudget_IsTheClientsOwnScheduleAtItsSlowest(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -42,11 +35,6 @@ func TestRetransmitBudget_IsTheClientsOwnScheduleAtItsSlowest(t *testing.T) {
 	}
 }
 
-// TestRetransmitBudget_NoDelayTheClientCanDrawIsLonger is the claim the
-// budget rests on: the entropy value it builds each delay from really
-// is the slowest of that delay's range. A budget built on the middle of
-// the range would be a second short per retransmission, which is the
-// same defect one size up and would look like a flake.
 func TestRetransmitBudget_NoDelayTheClientCanDrawIsLonger(t *testing.T) {
 	b := proto.DefaultBackoff()
 	slowest := slowestJitter(b)

@@ -18,30 +18,10 @@ import (
 	docker "github.com/docker/docker/client"
 )
 
-// TestStaticIP_DriverOpt drives the `--driver-opt ip=<addr>` static-IP
-// override path: the container is connected with an explicit
-// per-endpoint driver opt, and the plugin must propagate that to
-// dhcpcd's `request` directive (DHCP option 50) so dnsmasq hands out
-// the caller-chosen lease rather than picking from the pool.
-//
-// Exercises pkg/plugin/network.go::parseDriverOptIP (whose only
-// not-trivial branch was a 0%-coverage gap in v0.7.0) and
-// resolveExplicitV4 (the agreed-value return path).
-//
-// The address is RESERVED in the fixture — harness.StaticTestIP, pinned
-// by a --dhcp-host on harness.StaticTestMAC — not merely picked high in
-// the pool. The previous comment here claimed dnsmasq allocates "from
-// the low end upward" so a high address would stay free. That is not how
-// dnsmasq allocates; it hashes the client identity across the whole
-// range. The address was never reserved and this test was a coin flip:
-// it passed three consecutive runs on one commit and then failed twice
-// on that same commit, drawing .89 once and .12 once.
-//
-// The reservation keys on the MAC, which the test pins, rather than on
-// the hostname: initialDHCPHostname is best-effort and returns "" when
-// the endpoint is not yet bound to a container, so a hostname key would
-// reintroduce a race. Hostname is still set, but only to keep the
-// dnsmasq log readable — that log is how this was diagnosed.
+// dnsmasq hashes the client identity across the whole range, so an unreserved high address drew .89 and .12 on one
+// commit; the address is reserved by MAC, since initialDHCPHostname returns "" before the endpoint is bound (#425).
+
+// TestStaticIP_DriverOpt checks that `--driver-opt ip=<addr>` is requested as option 50 and leased by the server.
 func TestStaticIP_DriverOpt(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
@@ -64,17 +44,12 @@ func TestStaticIP_DriverOpt(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = cli.Close() })
 
-	// Inline a RunContainer-equivalent because the harness helper
-	// doesn't take per-endpoint DriverOpts — the static-IP override
-	// is the only test that needs them so far. Promote to a harness
-	// helper if a second consumer appears.
+	// harness.RunContainer takes no per-endpoint DriverOpts.
 	create, err := cli.ContainerCreate(ctx,
 		&container.Config{
 			Image: harness.TestImage,
 			Cmd:   []string{"sleep", "infinity"},
-			// Not what the reservation keys on — that is the MAC below
-			// — but it makes the dnsmasq log readable, which is how
-			// this test's failure was diagnosed in the first place.
+			// The hostname only makes the dnsmasq log readable; the reservation keys on the MAC (#425).
 			Hostname: harness.StaticTestHostname,
 		},
 		harness.HostConfig(),
@@ -82,11 +57,7 @@ func TestStaticIP_DriverOpt(t *testing.T) {
 			EndpointsConfig: map[string]*network.EndpointSettings{
 				netName: {
 					DriverOpts: map[string]string{"ip": wantIP},
-					// Must match the fixture's --dhcp-host reservation.
-					// Fixed rather than Docker-assigned so the address
-					// cannot be handed to anyone else, and keyed on the
-					// MAC rather than the hostname because the hostname
-					// is best-effort at DISCOVER time.
+					// Must match the fixture's --dhcp-host reservation (#425).
 					MacAddress: harness.StaticTestMAC,
 				},
 			},
@@ -108,10 +79,6 @@ func TestStaticIP_DriverOpt(t *testing.T) {
 		t.Fatalf("ContainerStart: %v", err)
 	}
 
-	// Poll docker inspect until the endpoint reports the IP we asked
-	// for. If the plugin ignored the driver-opt and let dnsmasq pick,
-	// we'd see a different address from the pool — that's the
-	// regression this test guards against.
 	deadline := time.Now().Add(harness.IPAcquisitionBudget)
 	var gotIP string
 	for time.Now().Before(deadline) {
@@ -136,31 +103,16 @@ func TestStaticIP_DriverOpt(t *testing.T) {
 		t.Errorf("static-IP driver-opt was ignored: requested %s, got %s", wantIP, gotIP)
 	}
 
-	// The address matching is necessary but not sufficient: before the
-	// reservation existed this test passed three runs in a row on an
-	// address nothing was holding for it, then failed twice. A pass is
-	// only evidence that the reservation works if the SERVER says it
-	// leased this address to the reserved MAC. Docker's view cannot
-	// distinguish "reserved" from "free by luck".
+	// Docker's view cannot tell a reserved address from one free by luck, which passed three runs before failing twice (#425).
 	assertServerLeasedTo(t, wantIP, harness.StaticTestMAC)
 
-	// Inside-container view must agree (truthfulness invariant).
 	out := harness.ExecOutput(t, ctx, id, "ip", "-4", "addr", "show", "eth0")
 	if !strings.Contains(out, wantIP) {
 		t.Errorf("eth0 inside container does not show requested IP %q\nactual:\n%s", wantIP, out)
 	}
 }
 
-// assertServerLeasedTo reads dnsmasq's own log and requires a DHCPACK
-// handing ip to mac.
-//
-// This is the outside evidence the suite is supposed to prefer:
-// Docker's endpoint view proves the container ended up with an
-// address, not that the server chose it for the reason we think. The
-// distinction is not academic — TestStaticIP_DriverOpt spent its whole
-// life passing on an unreserved address, and the container view looked
-// identical on the runs where it was lucky and the run where it was
-// not.
+// assertServerLeasedTo requires a DHCPACK in dnsmasq's log handing ip to mac.
 func assertServerLeasedTo(t *testing.T, ip, mac string) {
 	t.Helper()
 

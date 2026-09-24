@@ -10,21 +10,7 @@ import (
 	"time"
 )
 
-// What survives of the outage-cadence tests.
-//
-// OUTAGE_TICK and OUTAGE_GRACE went with the watchdog: they existed to
-// make a synthetic cadence cheap for the integration suite, and the
-// library reports a failed attempt directly, so there is no cadence to
-// tune. AWAIT_TIMEOUT is the knob that is left, and the two rules these
-// tests hold are unchanged and still needed — a deployment that sets
-// nothing gets the documented default, and the value config.json
-// declares is the value the code uses, because the manifest is what an
-// operator reads to learn it.
-
 func TestNewPluginOptions_ZeroValueIsProductionDefault(t *testing.T) {
-	// NewPlugin dials docker, so exercise the defaulting logic the way
-	// NewPlugin does rather than constructing a Plugin — this is the
-	// contract cmd/net-dhcp relies on when it leaves fields at zero.
 	opts := Options{}
 	if opts.AwaitTimeout <= 0 {
 		opts.AwaitTimeout = defaultAwaitTimeout
@@ -36,9 +22,6 @@ func TestNewPluginOptions_ZeroValueIsProductionDefault(t *testing.T) {
 	}
 }
 
-// TestConfigJSONMatchesCodeDefaults keeps the shipped manifest honest.
-// config.json's declared values are what an operator reads to learn the
-// defaults, and nothing else would catch them drifting from the code.
 func TestConfigJSONMatchesCodeDefaults(t *testing.T) {
 	want := map[string]time.Duration{
 		"AWAIT_TIMEOUT": defaultAwaitTimeout,

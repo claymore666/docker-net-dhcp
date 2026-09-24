@@ -18,52 +18,21 @@ import (
 	"github.com/claymore666/docker-net-dhcp/v2/pkg/util"
 )
 
-// The values of the `release_lease` network option (#962).
-//
-// RELEASE IS OFF BY DEFAULT AND THAT IS #800's RULE, NOT AN OVERSIGHT.
-// A container is a host on this segment and a host does not hand its
-// address back when it is switched off; the lease expires on the
-// server's clock and a container that comes back before then re-claims
-// it. Networks that would rather have the address back early say so.
+// The values of the `release_lease` network option (#962); off by default, as a host does not release at power-off
+// (#800).
 const (
 	// ReleaseNever is the default: no path sends a DHCPRELEASE or a
 	// DHCPv6 Release, which is exactly the v1.9.0 behaviour (#800).
 	ReleaseNever = "never"
-	// ReleaseOnStop hands the lease back when the endpoint leaves its
-	// sandbox, which is every `docker stop`, every `docker rm` of a
-	// running container and every `docker network disconnect`. A
-	// container that restarts asks for a fresh lease.
+	// ReleaseOnStop releases when the endpoint leaves its sandbox: every `docker stop`, every `docker rm` of a
+	// running container and every `docker network disconnect` (#962).
 	ReleaseOnStop = "on_stop"
-	// ReleaseOnRemove is `never` for the length of the restart window
-	// and `on_stop` after it (#984).
-	//
-	// IT IS A TIMED RELEASE AND NOT A THIRD CALL SITE, and the reason
-	// is a fact about libnetwork rather than about this plugin:
-	// `DeleteEndpoint` runs when a container STOPS, not when it is
-	// removed, and `docker rm` of a container that is already stopped
-	// reaches this plugin not at all. The tombstone that keeps a MAC
-	// stable across `docker restart` is written at `DeleteEndpoint` and
-	// consumed by the next `CreateEndpoint` inside its TTL, which is
-	// only possible if both run during the restart. So a release hung
-	// off that handler would fire on every `docker stop` -- which is
-	// ReleaseOnStop under a second name.
-	//
-	// What this value does instead: the stop keeps the lease and the
-	// record, exactly as ReleaseNever does, and a sweep hands the
-	// address back at the record's own deadline unless something has
-	// claimed it back by then. The window IS the tombstone TTL, because
-	// after it nothing can claim the address back: the tombstone is
-	// pruned and a restart comes up under a new MAC.
+	// ReleaseOnRemove releases at the record's tombstone deadline, because libnetwork calls DeleteEndpoint at stop and
+	// never at `docker rm` of a stopped container (#984).
 	ReleaseOnRemove = "on_remove"
 )
 
-// parseReleaseLease normalises and validates the `release_lease`
-// option. Empty is ReleaseNever.
-//
-// The refusal happens once, at CreateNetwork, so that everything after
-// it deals in a value this file names -- the same rule conflict_check
-// follows. A typo that silently selected the default would be a network
-// an operator believes releases and that never does.
+// parseReleaseLease normalises the option and refuses unknown values at CreateNetwork (#962).
 func parseReleaseLease(v string) (string, error) {
 	switch v {
 	case "", ReleaseNever:
@@ -78,39 +47,20 @@ func parseReleaseLease(v string) (string, error) {
 	}
 }
 
-// releasesOnStop reports whether this network hands its leases back
-// when an endpoint leaves.
-//
-// A METHOD AND NOT A COMPARISON AT EACH SITE. The release decision, the
-// record's phase and the tombstone skip are three consequences of one
-// answer, and three separate string comparisons are three places for
-// them to disagree about what the network asked for.
 func (o DHCPNetworkOptions) releasesOnStop() bool {
 	return o.ReleaseLease == ReleaseOnStop
 }
 
-// releasesOnRemove reports whether this network hands an address back
-// at the record's deadline when nothing has claimed it back.
-//
-// The same rule as releasesOnStop above, for the same reason: the
-// sweep, the DeleteNetwork drain and the teardown log line are three
-// consequences of one answer.
 func (o DHCPNetworkOptions) releasesOnRemove() bool {
 	return o.ReleaseLease == ReleaseOnRemove
 }
 
-// releasedAny reports whether either family's lease was handed back.
 func (m *dhcpManager) releasedAny() bool {
 	return m.releasedV4.Load() || m.releasedV6.Load()
 }
 
-// withdrawV6Address takes this endpoint's DHCPv6 address off the
-// container link, which RFC 9915 section 18.2.7 requires before a
-// Release exchange may begin.
-//
-// A missing address is not an error: the link is being torn down around
-// this call and the kernel may have removed it already, and an address
-// that is not on the interface satisfies the MUST by being absent.
+// withdrawV6Address removes the address before a Release, as RFC 9915 section 18.2.7 requires; a missing one is
+// absent already.
 func (m *dhcpManager) withdrawV6Address() error {
 	_, last := m.lastIPs()
 	if last == nil || last.IPNet == nil || last.IP == nil {
@@ -128,112 +78,28 @@ func (m *dhcpManager) withdrawV6Address() error {
 	return nil
 }
 
-// releaseOutcome is WHY a family's release did or did not leave the
-// host, and it is a named value rather than a bool because the answers
-// below are different operator problems.
-//
-// A bare false read "the address was not handed back" and said nothing
-// about which of them it was. The counters do NOT split along this
-// type: a release that did not happen is a release failure whatever the
-// reason, and an operator reading `release_failures_v4` is asking how
-// often the address was not handed back. The reason is what the log
-// line is for.
-//
-// THE SET CHANGED WITH THE SENDER. While the release was asked of a
-// running DHCP client there was a `no_client` answer, and it was the
-// commonest one: a container stopped before its persistent client
-// attached kept its address and was charged a failure. The release is
-// now built from the durable record and sent from the host's own
-// address on the parent, so there is no client to be absent and that
-// answer is gone. What can go wrong instead is the record, the host's
-// addressing, or the socket, which is what the four refusals below are.
+// releaseOutcome names why a family's release did or did not leave the host; the counters do not split on it (#962).
 type releaseOutcome string
 
 const (
-	// releaseSent is the only outcome a datagram left the host for.
-	releaseSent releaseOutcome = "sent"
-	// releaseNoRecord is no durable record for this endpoint and
-	// family, or one that cannot be read back. Nothing to build from.
-	releaseNoRecord releaseOutcome = "no_record"
-	// releaseNoAddress is a record that holds no leased address, so
-	// there is no binding to give back. A record that never bound is
-	// the ordinary case and it is not a fault.
+	releaseSent      releaseOutcome = "sent"
+	releaseNoRecord  releaseOutcome = "no_record"
 	releaseNoAddress releaseOutcome = "no_address"
-	// releaseNoServer is a record that names no server: no option 54
-	// for v4, no server DUID for v6. RFC 2131 section 4.4.4 unicasts a
-	// DHCPRELEASE to the server and offers no broadcast fallback, so
-	// there is nowhere to send it.
-	releaseNoServer releaseOutcome = "no_server"
-	// releaseBadRecord is a record whose own fields disagree: an
-	// unknown family, a v6 record with no DUID and IAID, or two IAIDs
-	// that do not match. It is a plugin defect rather than an operator
-	// problem and it is kept apart from the three above for that
-	// reason.
-	releaseBadRecord releaseOutcome = "bad_record"
-	// releaseNoSource is no address on the parent this release could
-	// come from, in this family. See hostSourceFor.
-	releaseNoSource releaseOutcome = "no_source"
-	// releaseSendFailed is a datagram that was built and did not leave
-	// the host.
+	// releaseNoServer: no option 54 or server DUID, and RFC 2131 section 4.4.4 unicasts a DHCPRELEASE with no
+	// broadcast fallback.
+	releaseNoServer   releaseOutcome = "no_server"
+	releaseBadRecord  releaseOutcome = "bad_record"
+	releaseNoSource   releaseOutcome = "no_source"
 	releaseSendFailed releaseOutcome = "send_failed"
-	// releaseWithdrawFailed is the v6-only arm: the address could not
-	// be taken off the container link, so RFC 9915 section 18.2.7
-	// forbids beginning the exchange and nothing was built or sent.
+	// releaseWithdrawFailed: the address stayed on the link, so RFC 9915 section 18.2.7 forbids the exchange.
 	releaseWithdrawFailed releaseOutcome = "withdraw_failed"
 )
 
-// releaseHeldLease hands one family's lease back, and reports whether a
-// datagram left the host and, when it did not, why.
-//
-// IT IS BUILT FROM THE RECORD AND NOT FROM A RUNNING CLIENT. The record
-// is written at CreateEndpoint and the one-shot exchange writes its
-// lease into it, so the record holds the address the container actually
-// used, the identity as sent, the chaddr and the server. A client is a
-// worse source for all four: it may never have attached, it may never
-// have bound, and at teardown its namespace may already be gone. The
-// address a container used is in the record either way.
-//
-// MEASURED against dnsmasq 2.91 before this was built, both families, on
-// a veth fixture: a release sent from an address that never held the
-// lease closes it, and one carrying the wrong identity does not. dnsmasq
-// matches v4 on the client-identifier when the binding has one and on
-// chaddr when it does not, and v6 on the DUID and IAID; the source
-// address is not consulted in either family. That is a fact about
-// dnsmasq and not about every server, which is why the record's
-// `Identity` is replayed exactly as sent, including its absence.
-//
-// RFC 9915 section 18.2.7 is why the v6 arm removes the address first:
-//
-//	The client MUST stop using all of the leases being released
-//	before the client begins the Release message exchange process.
-//	For an address, this means the address MUST have been removed
-//	from the interface.
-//
-// The second MUST in that section -- "The client MUST NOT use any of
-// the addresses it is releasing as the source address in the Release
-// message" -- is satisfied by construction, because the source is the
-// parent's link-local and the released address is a global one on the
-// container's link. The library refuses the violation anyway rather
-// than trusting this comment.
-//
-// v4 has no such rule. RFC 2131 section 4.4.6 is the whole of what a
-// DHCPRELEASE is:
-//
-//	If the client no longer requires use of its assigned network
-//	address (e.g., the client is gracefully shut down), the client
-//	sends a DHCPRELEASE message to the server.  Note that the
-//	correct operation of DHCP does not depend on the transmission of
-//	DHCPRELEASE messages.
-//
-// and section 4.4.4 is where the transmission rule lives:
-//
-//	The DHCP client broadcasts DHCPDISCOVER, DHCPREQUEST and
-//	DHCPINFORM messages, unless the client knows the address of a
-//	DHCP server.  The client unicasts DHCPRELEASE messages to the
-//	server.
-//
-// Both are the library's to obey; the v4 address stays on the link
-// because section 3.1(6) identifies the lease by 'ciaddr'.
+// releaseHeldLease builds the release from the durable record, which holds the used address, identity, chaddr and
+// server even when no client attached (#962). Measured against dnsmasq 2.91: it matches v4 on the client-identifier,
+// else chaddr, and v6 on DUID and IAID, never the source address, so Identity is replayed as sent. The v6 address
+// comes off the link first (RFC 9915 section 18.2.7); a DHCPRELEASE is unicast (RFC 2131 section 4.4.4) and names
+// the lease by ciaddr (section 3.1), so the v4 address stays.
 func (m *dhcpManager) releaseHeldLease(v6 bool) releaseOutcome {
 	rec, ok := m.releaseRecord(v6)
 	if !ok {
@@ -253,25 +119,7 @@ func (m *dhcpManager) releaseHeldLease(v6 bool) releaseOutcome {
 	return releaseFromRecord(rec, m.opts, v6, held, m.logFields(v6))
 }
 
-// releaseFromRecord is the release itself, with no manager in it: pick
-// the source on the parent, put one datagram on the wire, say why it
-// did not go.
-//
-// IT TAKES THE RECORD AND THE NETWORK'S OPTIONS AND NOTHING ELSE,
-// because the second caller has nothing else. The deferred release
-// (#984) runs on a ticker long after the endpoint, its manager, its
-// namespace and its container are gone, and it holds exactly these
-// three things: a record read back off the file, the network's
-// persisted options, and which family it is looking at. A step that
-// needs the manager stays in the manager -- the DHCPv6 address has to
-// come off the container link before the exchange may begin (RFC 9915
-// section 18.2.7) and only the teardown path has a link to take it off,
-// which is why that step is above this call and not inside it.
-//
-// `held` is the address being given back, as the caller knows it, and
-// it is only used to keep the source off it. An invalid one means "the
-// caller does not know", which is honest rather than defensive: the
-// library refuses a source that is the released address anyway.
+// releaseFromRecord needs only the record, the options and the family, which is all the deferred release holds (#984).
 func releaseFromRecord(rec lease.Record, opts DHCPNetworkOptions, v6 bool, held netip.Addr, fields log.Fields) releaseOutcome {
 	src, iface, err := hostSourceFor(opts, v6, held)
 	if err != nil {
@@ -289,51 +137,10 @@ func releaseFromRecord(rec lease.Record, opts DHCPNetworkOptions, v6 bool, held 
 	return releaseSent
 }
 
-// rtSendRelease is the one call that puts a datagram on the wire, as a
-// seam. Every refusal below it is reachable in a unit test only because
-// this is a var: the real one opens a socket on the parent.
 var rtSendRelease = runtime.SendRelease
 
-// releaseRecord reads back the durable record this family's release is
-// built from.
-//
-// THE ID IS NOT ALWAYS THERE AND THE INDEX IS WHY THIS STILL WORKS.
-// m.recordID and m.recordID6 are assigned in setupClient, and an attach
-// that was cancelled because the endpoint is already leaving returns
-// before setupClient runs (Plugin.Join, "Attach cancelled because the
-// endpoint is leaving"). That manager reaches Stop with both ids empty
-// and a record sitting in the store, written by CreateEndpoint with the
-// address the one-shot exchange took -- so an id-only lookup answers
-// "no record" for an endpoint that plainly has one, and the address is
-// left leased on a network that asked for it back. MEASURED on CI
-// before this existed: zero datagrams, release_failures_v4 +1, dnsmasq
-// still holding the address.
-//
-// The fallback is the SAME (scope, MAC) index resumeFromRecord uses on
-// every Join, keyed with recordKey() so the create side and this side
-// cannot disagree about what the record was filed under.
-//
-// IT REFUSES A TOMBSTONE, and that is the direction this must not fail
-// in. The index answers with the newest record under the key; a
-// RETAINED one belongs to an endpoint that has already gone and is what
-// the next CreateEndpoint inherits an address from (#820). Releasing it
-// would hand back an address the plugin is about to promise to a
-// restarting container -- the inheritance a release exists to prevent,
-// run backwards. A CLOSED one is a record already settled, by an
-// earlier release or an abandoned CreateEndpoint, and has nothing left
-// to hand back.
-//
-// The id found this way is written back onto the manager, because Leave
-// settles the record through that field (settleReleasedRecord) and a
-// release built off a record the manager does not name is a release
-// whose record is never closed.
-//
-// The empty-key refusal below is a NO-OP TODAY and is kept anyway:
-// Rebuilt.ByScopeMAC carries `len(mac) > 0` in its own predicate, so
-// nothing can be reached through an empty key (MEASURED, lease/rebuild.go).
-// The premise is stated at both levels because only the one here
-// survives a change to the library, and the two sibling lookups
-// (retainRecordFor, recordResume) state it the same way.
+// releaseRecord falls back to the (scope, MAC) index when an attach cancelled before setupClient left no id (#966),
+// refusing a retained record, which the next CreateEndpoint inherits (#820), and a closed one.
 func (m *dhcpManager) releaseRecord(v6 bool) (lease.Record, bool) {
 	if m.plugin == nil || m.plugin.records == nil {
 		return lease.Record{}, false
@@ -372,8 +179,6 @@ func (m *dhcpManager) releaseRecord(v6 bool) (lease.Record, bool) {
 	return rec, true
 }
 
-// adoptRecordID names the record this manager is releasing, for the
-// teardown that follows the send.
 func (m *dhcpManager) adoptRecordID(v6 bool, id string) {
 	if v6 {
 		m.recordID6 = id
@@ -382,12 +187,6 @@ func (m *dhcpManager) adoptRecordID(v6 bool, id string) {
 	m.recordID = id
 }
 
-// classifyReleaseError maps the library's typed refusals onto the
-// reasons above.
-//
-// EVERY ONE OF THEM IS NAMED, and the default is the socket. A refusal
-// folded into "send failed" would tell an operator to look at the
-// network for a record that was never going to work.
 func classifyReleaseError(err error) releaseOutcome {
 	switch {
 	case errors.Is(err, lease.ErrReleaseNoAddr):
@@ -408,27 +207,11 @@ func classifyReleaseError(err error) releaseOutcome {
 	}
 }
 
-// announceRelease is the line an operator reads when a stop did not
-// hand the address back.
-//
-// IT IS A WARNING FOR EVERY OUTCOME BUT TWO, because on a network
-// configured `release_lease=on_stop` a stop that releases nothing is
-// the configuration not doing its job, and the address then sits in the
-// server's pool until its own clock frees it. Each reason gets its own
-// sentence: they are not variations on one problem and the fix for each
-// is different.
-//
-// The two exceptions are the send itself and a record that holds no
-// address. A record with no address is an endpoint that never got a
-// lease, which is not a failure to release; there was nothing there.
 func (m *dhcpManager) announceRelease(v6 bool, out releaseOutcome) {
 	announceReleaseOutcome(log.WithFields(m.logFields(v6)).WithField("outcome", string(out)), out)
 }
 
-// announceReleaseOutcome is announceRelease with the entry supplied,
-// because the deferred release has no manager to build one from (#984)
-// and the sentences are the same sentences: the reason an address did
-// not go back does not depend on which path asked for it.
+// announceReleaseOutcome takes the entry, since the deferred release has no manager (#984).
 func announceReleaseOutcome(entry *log.Entry, out releaseOutcome) {
 	switch out {
 	case releaseSent:
@@ -458,10 +241,6 @@ func announceReleaseOutcome(entry *log.Entry, out releaseOutcome) {
 	}
 }
 
-// releaseFamily is one family's whole teardown step: ask, count, say.
-//
-// The three are together because they are one event seen three ways,
-// and a caller that did two of them is the defect this collapses.
 func (m *dhcpManager) releaseFamily(v6 bool) bool {
 	out := m.releaseHeldLease(v6)
 	sent := out == releaseSent
@@ -470,17 +249,7 @@ func (m *dhcpManager) releaseFamily(v6 bool) bool {
 	return sent
 }
 
-// releaseHeldLeases is the whole of what `release_lease=on_stop` does
-// at teardown, for both families, and it reports whether ANY family's
-// address was handed back.
-//
-// THE ANY IS DELIBERATE AND IT IS WHAT THE TOMBSTONE READS. The
-// tombstone is one object carrying the MAC, the v4 address and the v6
-// address together; a dual-stack endpoint that released only its v4
-// lease must not leave behind a tombstone whose next consumer asks for
-// the address just handed back. Each family's RECORD is still settled
-// on its own outcome, because a v6 lease that was not released is a v6
-// lease this endpoint may still resume.
+// releaseHeldLeases reports whether any family released, since one tombstone carries both addresses (#962).
 func (m *dhcpManager) releaseHeldLeases() (releasedV4, releasedV6 bool) {
 	releasedV4 = m.releaseFamily(false)
 	if m.opts.ipv6Enabled() {
@@ -494,18 +263,7 @@ func (m *dhcpManager) releaseHeldLeases() (releasedV4, releasedV6 bool) {
 	return releasedV4, releasedV6
 }
 
-// announceDeferredRelease is what an operator reads at the stop on a
-// `release_lease=on_remove` network: nothing went back, and when it
-// will (#984).
-//
-// AT THE STOP AND NOT AT THE SEND, because the send is up to a minute
-// and a half later and in another goroutine. An operator watching a
-// container stop on a network configured to hand its addresses back
-// sees no release here, and without this line the only honest reading
-// of that silence is that the option does nothing.
-//
-// The window is stated as the value the deadline is actually computed
-// from, so the sentence cannot drift away from the constant.
+// announceDeferredRelease logs at the stop on an `on_remove` network when the address will go back (#984).
 func (m *dhcpManager) announceDeferredRelease() {
 	entry := log.WithFields(m.logFields(false)).WithField("window", tombstoneTTL.String())
 	if v4, v6 := m.lastIPs(); v4 != nil && v4.IP != nil {
@@ -518,13 +276,6 @@ func (m *dhcpManager) announceDeferredRelease() {
 		"they go back to the server at the record's deadline unless a container claims them back first")
 }
 
-// countRelease moves the per-family pair. Sent is a packet the library
-// saw leave; failed is an attempt that produced none, whatever the
-// reason -- and the reasons are the releaseOutcome values above, which
-// is why both halves are moved from this plugin's own outcome and not
-// from any counter the library keeps. Only the plugin knows a release
-// was asked for and did not happen: a record it could not find puts
-// nothing into the library at all.
 func (m *dhcpManager) countRelease(v6 bool, sent bool) {
 	if m.plugin == nil {
 		return
@@ -532,9 +283,7 @@ func (m *dhcpManager) countRelease(v6 bool, sent bool) {
 	m.plugin.countRelease(v6, sent)
 }
 
-// countRelease is the pair itself, on the plugin, because the deferred
-// release (#984) moves the same two counters with no manager in the
-// picture. One release is one release however it was decided on.
+// countRelease sits on the plugin because the deferred release moves the same counters with no manager (#984).
 func (p *Plugin) countRelease(v6 bool, sent bool) {
 	if sent {
 		bumpFamily(&p.releasesSentV4, &p.releasesSentV6, v6)
@@ -543,13 +292,6 @@ func (p *Plugin) countRelease(v6 bool, sent bool) {
 	bumpFamily(&p.releaseFailuresV4, &p.releaseFailuresV6, v6)
 }
 
-// hostLink is the interface a release leaves the host by: the bridge in
-// bridge mode, the parent NIC in macvlan and ipvlan mode.
-//
-// It is the PARENT and never the container's veth, which is the whole
-// point of a release built from a record: the container's link may be
-// gone, and the datagram still has to reach the segment the lease was
-// granted on.
 func (o DHCPNetworkOptions) hostLink() string {
 	if o.effectiveMode() == ModeBridge {
 		return o.Bridge
@@ -557,54 +299,18 @@ func (o DHCPNetworkOptions) hostLink() string {
 	return o.Parent
 }
 
-// errNoHostSource is "this host has no address on the parent that a
-// release could come from, in this family".
 var errNoHostSource = errors.New("no usable source address on the parent for this family")
 
-// hostSourceFor is the manager's own source, for the family it is
-// tearing down: the network's options and the address this endpoint
-// last held.
 func (m *dhcpManager) hostSourceFor(v6 bool) (netip.Addr, string, error) {
 	held, _ := m.releasedAddr(v6)
 	return hostSourceFor(m.opts, v6, held)
 }
 
-// hostSourceFor picks the address the release is sent FROM.
-//
-// THE CALLER PICKS IT AND THE LIBRARY REFUSES TO. runtime.ReleaseConfig
-// has no default source, because the one default that looks obvious --
-// the first address on the parent -- is the released address itself on
-// a host that still carries it, which RFC 9915 section 18.2.7 forbids.
-// So the choice is made here, where the mode and the released address
-// are both known.
-//
-// THE RULE, per family:
-//
-//   - v4: any address on the parent that is not link-local (169.254/16,
-//     RFC 3927) and not the address being released. A DHCPRELEASE
-//     carries the released address in 'ciaddr' (RFC 2131 section 3.1(6))
-//     and the source only has to be a return path the server could use,
-//     which nothing reads because nothing answers a DHCPRELEASE.
-//   - v6: a LINK-LOCAL address on the parent, and nothing else. The
-//     destination is [ff02::1:2]:547, which is link-scoped multicast,
-//     and RFC 9915 section 7.2 has a client send from its link-local
-//     address. A global source would be refused by the library when it
-//     is the released address and would be wrong even when it is not.
-//
-// ON A PARENT WITH SEVERAL, the smallest address in byte order wins.
-// The rule is arbitrary and it is written down because the alternative
-// is worse: netlink's order is the order the addresses were added, so
-// "the first one" changes when an operator adds an address, and two
-// releases on one parent would go out from two different sources for no
-// reason a log could explain. Sorting makes the choice reproducible,
-// which is what a support thread needs.
-//
-// ON A PARENT WITH NONE IN THAT FAMILY the release is refused and
-// nothing is sent: errNoHostSource, counted as a release failure and
-// warned with the parent's name. The v6 case is the one that happens in
-// practice, on a parent whose IPv6 is disabled (`disable_ipv6=1`), and
-// the answer is honest -- a host with no IPv6 on the segment has no way
-// to tell a DHCPv6 server anything.
+// hostSourceFor picks the release source (#962): for v4 any non-link-local parent address (RFC 3927) that is not the
+// released one, which rides in ciaddr (RFC 2131 section 3.1); for v6 a parent link-local, since the destination
+// ff02::1:2 is link-scoped (RFC 9915 section 7.2) and the released address may not be the source (section 18.2.7).
+// Several candidates: the smallest in byte order, as netlink's order changes when one is added. None refuses,
+// commonly a parent with disable_ipv6=1.
 func hostSourceFor(opts DHCPNetworkOptions, v6 bool, held netip.Addr) (netip.Addr, string, error) {
 	name := opts.hostLink()
 	if name == "" {
@@ -637,7 +343,6 @@ func hostSourceFor(opts DHCPNetworkOptions, v6 bool, held netip.Addr) (netip.Add
 			continue
 		}
 		if v6 != cand.IsLinkLocalUnicast() {
-			// v6 takes link-local only; v4 takes anything but.
 			continue
 		}
 		if held.IsValid() && cand == held {
@@ -653,8 +358,6 @@ func hostSourceFor(opts DHCPNetworkOptions, v6 bool, held netip.Addr) (netip.Add
 	return best, name, nil
 }
 
-// releasedAddr is the address this family is giving back, as the plugin
-// last saw it on the link. It is used to keep the source off it.
 func (m *dhcpManager) releasedAddr(v6 bool) (netip.Addr, bool) {
 	v4a, v6a := m.lastIPs()
 	a := v4a

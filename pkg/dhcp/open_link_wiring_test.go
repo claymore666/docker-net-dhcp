@@ -12,28 +12,9 @@ import (
 	"testing"
 )
 
-// TestBothFamiliesOpenThroughTheIndex is the drift check the behaviour
-// tests cannot make.
-//
-// WHY IT NEEDS A WIRING TEST. newLibClient and newLibClient6 open real
-// packet sockets on a real interface in a real namespace, so nothing in
-// this package executes either of them; openOnLink's own tests drive
-// the retry with a fake open and say nothing about who calls it.
-// MEASURED: restoring either constructor's direct call to the library
-// leaves the whole of ./pkg/... green.
-//
-// WHAT IT ASSERTS. Each constructor reaches the library through
-// openOnLink, hands it the caller's index, and makes no library call of
-// its own outside the closure openOnLink drives. The second half is the
-// half that matters: a constructor that keeps one direct call for its
-// own namespace-free path is a family that opens by name again, on the
-// route where an index was offered and ignored.
-//
-// THE BOUND. Keyed on SPELLING, like the other wiring checks in this
-// package. A call reached through a wrapper reads as a violation though
-// it is correct, and a function merely named openOnLink reads as
-// correct though it is not. It stands beside the behaviour tests and
-// not instead of them.
+// Keyed on spelling (#1050): a call through a wrapper reads as a violation, and a function merely named openOnLink
+// passes.
+
 func TestBothFamiliesOpenThroughTheIndex(t *testing.T) {
 	for _, cell := range []struct {
 		file, fn, libCall string

@@ -11,9 +11,6 @@ import (
 	"github.com/vishvananda/netlink"
 )
 
-// TestDumpResult_SentinelKeepsTheResults is the direction #802 is
-// about: netlink v1.3.1 hands back a usable result set alongside
-// ErrDumpInterrupted, and the harness threw both away.
 func TestDumpResult_SentinelKeepsTheResults(t *testing.T) {
 	got, err := DumpResult([]int{1, 2, 3}, netlink.ErrDumpInterrupted)
 	if err != nil {
@@ -24,10 +21,6 @@ func TestDumpResult_SentinelKeepsTheResults(t *testing.T) {
 	}
 }
 
-// TestDumpResult_WrappedSentinelKeepsTheResults is the same direction
-// through errors.Is rather than through equality. A caller that wrapped
-// the dump's error before it reached here still has a usable result set,
-// and an implementation comparing with == would say otherwise.
 func TestDumpResult_WrappedSentinelKeepsTheResults(t *testing.T) {
 	wrapped := fmt.Errorf("LinkList: %w", netlink.ErrDumpInterrupted)
 	got, err := DumpResult([]int{1}, wrapped)
@@ -39,10 +32,6 @@ func TestDumpResult_WrappedSentinelKeepsTheResults(t *testing.T) {
 	}
 }
 
-// TestDumpResult_OtherErrorsAreRefused is the OTHER direction, and it is
-// the one a helper written to make a red lane green would lose: EPERM,
-// a closed socket and a parse failure must still be errors, and the
-// results must not be handed on as though the dump had succeeded.
 func TestDumpResult_OtherErrorsAreRefused(t *testing.T) {
 	boom := errors.New("operation not permitted")
 
@@ -55,8 +44,6 @@ func TestDumpResult_OtherErrorsAreRefused(t *testing.T) {
 	}
 }
 
-// TestDumpResult_NoErrorIsUnchanged is the preservation control: the
-// ordinary successful dump must behave exactly as the bare call did.
 func TestDumpResult_NoErrorIsUnchanged(t *testing.T) {
 	got, err := DumpResult([]string{"a", "b"}, nil)
 	if err != nil {
@@ -67,10 +54,6 @@ func TestDumpResult_NoErrorIsUnchanged(t *testing.T) {
 	}
 }
 
-// TestDumpResult_AcceptsARealDumpCall is the shape every call site
-// uses, compiled rather than described: the dump's two results are the
-// helper's two parameters, so a signature change that broke `f(g())`
-// would fail here rather than at every migrated site at once.
 func TestDumpResult_AcceptsARealDumpCall(t *testing.T) {
 	links, err := DumpResult(netlink.LinkList())
 	if err != nil {

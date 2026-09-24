@@ -14,18 +14,7 @@ import (
 	"github.com/claymore666/docker-net-dhcp/v2/test/integration/harness"
 )
 
-// TestVendorClass_OverrideRoutesViaTaggedGateway is the v0.9.0 / T2-3
-// integration counterpart for #106 — closes the test-plan gap noted
-// in the post-merge audit.
-//
-// The fixture's dnsmasq is configured with --dhcp-vendorclass=set:...
-// + --dhcp-option=tag:...,3,TestTaggedGateway, so a container whose
-// network sets vendor_class=harness.TestVendorClass should receive
-// the tagged gateway (.250) instead of dnsmasq's default
-// listen-address gateway (.1). End-to-end proof that the operator's
-// vendor_class override actually reaches the wire and class-based
-// policy fires upstream — the dhcpcd config-shape unit tests only
-// verify that the `vendorclassid` directive is emitted.
+// TestVendorClass_OverrideRoutesViaTaggedGateway checks that vendor_class makes dnsmasq's tag rule hand out the tagged gateway (#106).
 func TestVendorClass_OverrideRoutesViaTaggedGateway(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
@@ -53,16 +42,7 @@ func TestVendorClass_OverrideRoutesViaTaggedGateway(t *testing.T) {
 	t.Logf("default route: %s", strings.TrimSpace(out))
 }
 
-// TestVendorClass_DefaultUsesUntaggedGateway is the negative side:
-// without the vendor_class opt-in, the container's vendor identifier
-// stays at the plugin's default ("docker-net-dhcp"), which doesn't
-// match dnsmasq's tag rule, so the gateway stays on the default .1.
-//
-// Together with the override test above, this pins both branches of
-// the class-based-policy split. Guards against:
-//   - a future refactor that accidentally sets a vendor class even
-//     when the operator didn't ask for one
-//   - a fixture mistake that flips the tag rule's polarity
+// TestVendorClass_DefaultUsesUntaggedGateway checks that the default vendor class "docker-net-dhcp" gets the untagged gateway (#106).
 func TestVendorClass_DefaultUsesUntaggedGateway(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
@@ -88,12 +68,7 @@ func TestVendorClass_DefaultUsesUntaggedGateway(t *testing.T) {
 	t.Logf("default route: %s", strings.TrimSpace(out))
 }
 
-// TestVendorClass_NonMatchingValueUsesDefaultGateway verifies that
-// only the *exact* configured vendor class triggers the dnsmasq tag.
-// A network that sets vendor_class to some other string still gets
-// the untagged gateway — proves the override goes on the wire (not
-// silently dropped), and that dnsmasq's matching is actually doing
-// the work (not falling open).
+// TestVendorClass_NonMatchingValueUsesDefaultGateway checks that only the exact configured vendor class selects the tagged gateway (#106).
 func TestVendorClass_NonMatchingValueUsesDefaultGateway(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
@@ -120,14 +95,10 @@ func TestVendorClass_NonMatchingValueUsesDefaultGateway(t *testing.T) {
 	}
 }
 
-// defaultRouteGateway extracts the gateway of the default route from
-// `ip route` output. BusyBox `ip` (alpine test containers) ignores the
-// `show default` filter and prints the whole routing table, so
-// substring assertions against the raw output false-match the leased
-// address: the default gateway "192.168.99.1" is a prefix of every
-// lease in .10–.19, which appears in the subnet route's `src` field
-// (~11% flake, #130). Parse the actual default line and compare
-// gateways exactly instead.
+// BusyBox `ip` ignores `show default` and prints the whole table, and the gateway 192.168.99.1 is a prefix of every
+// lease in .10-.19, so a substring match flaked in about 11 % of runs (#130).
+
+// defaultRouteGateway returns the gateway of the default route in `ip route` output.
 func defaultRouteGateway(t *testing.T, out string) string {
 	t.Helper()
 	for _, line := range strings.Split(out, "\n") {

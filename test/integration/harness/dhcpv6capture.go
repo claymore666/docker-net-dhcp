@@ -16,35 +16,9 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// The DHCPv6 capture.
-//
-// WHAT IT IS FOR. #925's opt-in is RFC 9915 section 21.20's Reconfigure
-// Accept option, and an option is on the wire or it is not. The plugin
-// already has a unit test that reads AcceptReconfigure off the Params6
-// it builds (pkg/dhcp/v6mode_test.go); that is the plugin's intention,
-// and this is the outcome. The two are different claims, and the ways
-// the second can be false while the first is true -- an encoder that
-// drops the option, a library condition the plugin does not meet, a
-// client that never reached the link at all -- are exactly the ways a
-// feature ships broken behind a green test.
-//
-// Written as a raw AF_PACKET socket for racapture.go's three reasons,
-// unchanged: the runner image is not guaranteed to carry tcpdump and a
-// test that skips when its instrument is missing reports "nothing to
-// see" on the run where it matters; a capture file has to be flushed
-// before it can be read, which is a race against the assertion; and the
-// frames are wanted as values with timestamps, not as text to re-parse.
-//
-// WHERE IT LISTENS, and what is INFERRED about it. On the v6 fixture's
-// own bridge, which is the device its dnsmasq binds and therefore the
-// device on which the client's Solicit is delivered locally -- that
-// delivery is how the server receives the message at all, so a capture
-// there sees what the server saw. That is an argument and not a
-// measurement, and it is why ReconfigureAcceptFindings refuses a
-// capture with no client message in it instead of passing: if the
-// inference is wrong, this instrument says so loudly and names which
-// half it saw, rather than making every assertion about the client's
-// options true by taking none of them.
+// #925's opt-in is the RFC 9915 section 21.20 Reconfigure Accept option, checked on the wire. The capture sits on the
+// v6 fixture's bridge, which its dnsmasq binds, so it sees what the server saw; ReconfigureAcceptFindings refuses a
+// capture with no client message in it.
 
 // DHCPv6Capture is a running DHCPv6 capture on one link.
 type DHCPv6Capture struct {
@@ -56,21 +30,11 @@ type DHCPv6Capture struct {
 	frames []DHCPv6Message
 	done   bool
 	err    error
-	// seen counts every frame the socket delivered, by ethertype,
-	// including the ones ParseDHCPv6 rejects. Kept for racapture.go's
-	// reason: "the capture saw nothing at all" and "the capture saw the
-	// segment's traffic and no DHCPv6 in it" are different findings
-	// that otherwise produce the same message.
+	// seen counts every delivered frame by ethertype, including rejected ones, to tell a silent link from a DHCPv6-free one.
 	seen map[uint16]int
 }
 
-// StartDHCPv6Capture begins capturing DHCPv6 on iface until the test
-// ends.
-//
-// It fails the test rather than skipping if the socket cannot be
-// opened, for racapture.go's reason: a capture that quietly does not
-// run turns every statement about what the client announced into a
-// statement about an empty set.
+// StartDHCPv6Capture captures DHCPv6 on iface until the test ends, failing the test if the socket cannot be opened.
 func StartDHCPv6Capture(t V6FixtureT, iface string) *DHCPv6Capture {
 	t.Helper()
 	fd, err := openCaptureSocket(iface)
@@ -85,10 +49,7 @@ func StartDHCPv6Capture(t V6FixtureT, iface string) *DHCPv6Capture {
 	return c
 }
 
-// StartDHCPv6CaptureInNetns begins capturing inside the named network
-// namespace. The namespace dance and the socket options are
-// capturesocket.go's, shared with every other instrument in this
-// package.
+// StartDHCPv6CaptureInNetns captures inside the named network namespace.
 func StartDHCPv6CaptureInNetns(t V6FixtureT, nsName, iface string) *DHCPv6Capture {
 	t.Helper()
 	fd := openCaptureSocketInNetns(t.Fatalf, "DHCPv6 capture", nsName, iface)
@@ -98,13 +59,7 @@ func StartDHCPv6CaptureInNetns(t V6FixtureT, nsName, iface string) *DHCPv6Captur
 	return c
 }
 
-// StartDHCPv6Capture on the fixture is what a test should call: it puts
-// the capture on the segment without the test having to know which
-// device the fixture built.
-//
-// It must be called BEFORE the container starts. A capture opened
-// afterwards has no Solicit to show and cannot say whether it was ever
-// able to see this client, which is the one thing it is for.
+// StartDHCPv6Capture captures on the fixture's bridge; call it before the container starts (#925).
 func (f *V6Fixture) StartDHCPv6Capture() *DHCPv6Capture {
 	f.t.Helper()
 	return StartDHCPv6Capture(f.t, V6BridgeName)
@@ -159,12 +114,7 @@ func (c *DHCPv6Capture) Stop() {
 	_ = unix.Close(c.fd)
 }
 
-// Messages returns every DHCPv6 datagram captured so far, both
-// directions.
-//
-// It fails the test if the read loop died on an error: a capture that
-// stopped early is indistinguishable from a quiet segment by looking at
-// the result, and telling those apart is this instrument's job.
+// Messages returns every DHCPv6 datagram captured so far, both directions, failing the test if the read loop died.
 func (c *DHCPv6Capture) Messages() []DHCPv6Message {
 	c.t.Helper()
 	c.mu.Lock()
@@ -187,15 +137,8 @@ func (c *DHCPv6Capture) ClientMessages() []DHCPv6Message {
 	return out
 }
 
-// AwaitClientMessages waits until every message kind in kinds has been
-// captured from the client at least once, and returns the whole
-// capture. ok is false on timeout, with whatever was captured.
-//
-// EVERY KIND AND NOT A COUNT, because the question is whether the
-// exchange got as far as each of section 21.20's announcing messages. A
-// count would be satisfied by four Solicits and no Request, which is
-// the retransmitting client and precisely the run whose Request nobody
-// checked.
+// AwaitClientMessages waits until every kind in kinds came from the client at least once, and returns the whole capture;
+// ok is false on timeout. Every kind, not a count: four Solicits and no Request is a retransmitting client (#925).
 func (c *DHCPv6Capture) AwaitClientMessages(kinds []uint8, within time.Duration) ([]DHCPv6Message, bool) {
 	deadline := time.Now().Add(within)
 	for {
@@ -223,9 +166,7 @@ func (c *DHCPv6Capture) AwaitClientMessages(kinds []uint8, within time.Duration)
 	}
 }
 
-// SeenTally renders every frame the capture took, by ethertype, so a
-// failure message can say whether the link was silent or merely
-// DHCPv6-free.
+// SeenTally renders the captured frames by ethertype.
 func (c *DHCPv6Capture) SeenTally() string {
 	c.mu.Lock()
 	defer c.mu.Unlock()

@@ -11,18 +11,6 @@ import (
 	"time"
 )
 
-// TestParentGate_SerialisesOneParent is the property the whole change
-// exists for, expressed without netlink: two operations on the same
-// parent never overlap.
-//
-// Deliberately asserts on observed concurrency rather than on ordering.
-// Which one wins the race is not a promise the gate makes; that only one
-// is inside at a time is.
-//
-// Remove the gate — call the body directly instead of through
-// lockParent — and this fails: the goroutines are started together and
-// the body holds its "inside" state long enough that overlap is certain,
-// not probabilistic.
 func TestParentGate_SerialisesOneParent(t *testing.T) {
 	p := &Plugin{}
 
@@ -57,14 +45,6 @@ func TestParentGate_SerialisesOneParent(t *testing.T) {
 	}
 }
 
-// TestParentGate_DifferentParentsDoNotSerialise is requirement 1 of the
-// design: per parent, not global. A global lock would pass the test
-// above and fail this one.
-//
-// Each goroutine blocks until every other has arrived. If the gate
-// serialised across parents they could not all arrive, and this
-// deadlocks into its timeout rather than failing an assertion — so the
-// barrier carries its own deadline.
 func TestParentGate_DifferentParentsDoNotSerialise(t *testing.T) {
 	p := &Plugin{}
 
@@ -99,16 +79,9 @@ func TestParentGate_DifferentParentsDoNotSerialise(t *testing.T) {
 	wg.Wait()
 }
 
-// TestParentGate_BudgetExpiryCountsAndProceeds pins the degrade path.
-//
-// A caller that cannot get the gate must proceed anyway: blocking a
-// container start behind a wedged reclaim is worse than the EBUSY it
-// replaces. The counter is what tells an operator that happened.
 func TestParentGate_BudgetExpiryCountsAndProceeds(t *testing.T) {
 	p := &Plugin{}
 
-	// Take the gate directly and hold it, standing in for a reclaim that
-	// is not going to finish.
 	holder, ok, _ := p.parentGate.acquire(context.Background(), "eth0", ModeIPvlan, time.Second)
 	if !ok {
 		t.Fatal("could not take an uncontended gate")
@@ -118,7 +91,7 @@ func TestParentGate_BudgetExpiryCountsAndProceeds(t *testing.T) {
 	start := time.Now()
 	unlock, got, _ := p.parentGate.acquire(context.Background(), "eth0", ModeMacvlan, 50*time.Millisecond)
 	waited := time.Since(start)
-	unlock() // must be safe on the timeout path
+	unlock()
 
 	if got {
 		t.Fatal("acquired a gate that was already held")
@@ -131,9 +104,6 @@ func TestParentGate_BudgetExpiryCountsAndProceeds(t *testing.T) {
 	}
 }
 
-// TestLockParent_TimeoutIsCounted checks the counter wiring on the path
-// an operator actually reads, which the test above deliberately bypasses
-// by calling acquire directly.
 func TestLockParent_TimeoutIsCounted(t *testing.T) {
 	p := &Plugin{}
 
@@ -143,9 +113,6 @@ func TestLockParent_TimeoutIsCounted(t *testing.T) {
 	}
 	defer holder()
 
-	// Cancel immediately: lockParent uses the full parentGateBudget, and
-	// waiting 4s in a unit test to observe a counter is not worth it. The
-	// ctx path and the timer path land on the same branch.
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
@@ -159,9 +126,6 @@ func TestLockParent_TimeoutIsCounted(t *testing.T) {
 	}
 }
 
-// TestLockParent_UncontendedIsSilent guards the counters' signal value.
-// If an ordinary endpoint creation on an idle host bumped
-// parent_link_waits, the counter would climb forever and mean nothing.
 func TestLockParent_UncontendedIsSilent(t *testing.T) {
 	p := &Plugin{}
 
@@ -177,9 +141,6 @@ func TestLockParent_UncontendedIsSilent(t *testing.T) {
 	}
 }
 
-// TestLockParent_NoParentIsANoOp covers bridge-mode networks, which have
-// no parent NIC at all. They must not queue behind anything, and must
-// not register as contention.
 func TestLockParent_NoParentIsANoOp(t *testing.T) {
 	p := &Plugin{}
 
@@ -203,15 +164,6 @@ func TestLockParent_NoParentIsANoOp(t *testing.T) {
 	}
 }
 
-// TestLockParent_GuardIsAlwaysUsable covers the contract the guard type
-// depends on: lockParent never returns nil, and Unlock is safe whatever
-// happened during the acquisition.
-//
-// Both matter because every caller defers Unlock unconditionally. The
-// no-parent and nil-Plugin paths return a guard that holds nothing, and
-// the timeout path returns one whose wait failed; if any of those came
-// back nil or panicked on release, the deferred Unlock would take down
-// the plugin on a path that is supposed to degrade quietly.
 func TestLockParent_GuardIsAlwaysUsable(t *testing.T) {
 	cancelled, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -238,20 +190,12 @@ func TestLockParent_GuardIsAlwaysUsable(t *testing.T) {
 		})
 	}
 
-	// A zero guard is what a future caller would get by declaring one
-	// rather than calling lockParent. It must not panic either — the
-	// type is a compile-time requirement, not a runtime trap.
 	var zero parentGuard
 	zero.Unlock()
 	var nilGuard *parentGuard
 	nilGuard.Unlock()
 }
 
-// TestLockParent_GuardIsReleasedNotJustDiscarded proves Unlock actually
-// hands the parent on. A guard whose release was dropped would compile,
-// satisfy every type check, and deadlock the next endpoint on that NIC
-// for the full budget — so the type carrying the release is not on its
-// own evidence that the release happens.
 func TestLockParent_GuardIsReleasedNotJustDiscarded(t *testing.T) {
 	p := &Plugin{}
 
@@ -277,29 +221,9 @@ func TestLockParent_GuardIsReleasedNotJustDiscarded(t *testing.T) {
 	}
 }
 
-// TestLockParent_ASameKindHolderIsNotAHealthWarning.
-//
-// The gate excludes more than the kernel does. A parent NIC registers
-// one rx_handler, so it refuses a macvlan child beside an ipvlan one
-// and permits any number of the same kind. The gate is one mutex per
-// parent and knows none of that, so a caller that gives up waiting for
-// a holder of its OWN kind has lost the budget and protected nothing.
-//
-// It stayed invisible while every holder was brief. An address
-// reservation holds the parent across a whole DHCP exchange, so two
-// containers starting together on one macvlan network -- `docker
-// compose up` -- reach the give-up branch every time. Reported as
-// parent_link_wait_timeouts that is a health warning whose action text
-// says container starts were refused, and nothing was refused: the
-// second start proceeds and the kernel accepts it.
-//
-// The cross-kind arm is what keeps this from being a way to silence the
-// counter. That is the collision the gate exists for, and it must still
-// warn.
+// A parent NIC has one rx_handler: the kernel refuses a macvlan beside an ipvlan child and allows many of one kind
+// (#486).
 func TestLockParent_ASameKindHolderIsNotAHealthWarning(t *testing.T) {
-	// Cancelled before the wait, so the give-up branch is reached
-	// without spending parentGateBudget in a unit test. acquire treats
-	// the cancellation and the timer as one branch.
 	giveUp := func() context.Context {
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
@@ -357,18 +281,6 @@ func TestLockParent_ASameKindHolderIsNotAHealthWarning(t *testing.T) {
 	})
 }
 
-// TestParentGate_AHolderSwapIsNotEvidenceOfSafety is the INTERVAL the
-// same-kind branch is really about.
-//
-// The branch acts on "nothing that held this parent while I waited
-// could ever have conflicted with me", and that is a statement about a
-// stretch of time, not about a moment. Sampling the holder at each end
-// of the wait answers it only while nothing changed twice in between: a
-// cross-kind holder that releases to a same-kind one reads as the
-// caller's own kind at both ends, and the child it attached is still on
-// the parent, which is precisely where the kernel refuses. So the
-// caller registers itself before its first attempt and every take of
-// another kind marks it, and these are the arms of that rule.
 func TestParentGate_AHolderSwapIsNotEvidenceOfSafety(t *testing.T) {
 	t.Run("one holder of my own kind, start to finish", func(t *testing.T) {
 		p := &Plugin{}
@@ -404,10 +316,6 @@ func TestParentGate_AHolderSwapIsNotEvidenceOfSafety(t *testing.T) {
 	})
 
 	t.Run("the other kind took it during the wait", func(t *testing.T) {
-		// The swap, staged as the waiter experiences it: the holder
-		// changes while the waiter is registered and still waiting. It
-		// cannot be staged through the token, since a waiter blocked on
-		// it would take it the moment it came free.
 		p := &Plugin{}
 		release, ok, _ := p.parentGate.acquire(context.Background(), "eth0", ModeMacvlan, time.Second)
 		if !ok {
@@ -433,11 +341,6 @@ func TestParentGate_AHolderSwapIsNotEvidenceOfSafety(t *testing.T) {
 	})
 
 	t.Run("the other kind released to my own kind under me", func(t *testing.T) {
-		// The swap the reviewer named, in its worst order: the caller
-		// arrives behind the other kind, that holder LEAVES, and a
-		// holder of the caller's own kind takes the parent in its
-		// place. Every reading taken after that moment says "same kind,
-		// harmless", and the ipvlan child is still on the parent.
 		p := &Plugin{}
 		release, ok, _ := p.parentGate.acquire(context.Background(), "eth0", ModeIPvlan, time.Second)
 		if !ok {
@@ -485,11 +388,6 @@ func TestParentGate_AHolderSwapIsNotEvidenceOfSafety(t *testing.T) {
 	})
 
 	t.Run("end to end through acquire, both verdicts", func(t *testing.T) {
-		// The arms above reach heldThroughout directly. This one drives
-		// the entry point, so the registration that decides the verdict
-		// is the one acquire makes for itself, at the instant it first
-		// tries the queue -- the two are one critical section, and a
-		// budget this short leaves no room for a reading taken later.
 		for _, tc := range []struct {
 			name   string
 			holder string
@@ -522,8 +420,6 @@ func TestParentGate_AHolderSwapIsNotEvidenceOfSafety(t *testing.T) {
 	})
 
 	t.Run("the give-up path answers on the registration, not a fresh read", func(t *testing.T) {
-		// End to end through waitForParent, with the parent held by the
-		// other kind and the caller's context already cancelled.
 		p := &Plugin{}
 		release, ok, _ := p.parentGate.acquire(context.Background(), "eth0", ModeIPvlan, time.Second)
 		if !ok {
@@ -546,16 +442,6 @@ func TestParentGate_AHolderSwapIsNotEvidenceOfSafety(t *testing.T) {
 	})
 }
 
-// TestParentGate_AWaiterIsDeregistered covers the other end of the
-// registration: every acquisition adds one, and nothing else removes
-// them.
-//
-// A waiter that is never deregistered is not a wrong answer, which is
-// why the rest of this file stays green without it. It is one struct
-// per acquisition retained for the life of the daemon, walked under the
-// gate's lock by every take on that parent -- an endpoint-creation path
-// that gets slower the longer the host has been up, and slowest on the
-// busiest NIC.
 func TestParentGate_AWaiterIsDeregistered(t *testing.T) {
 	waiters := func(p *Plugin) int {
 		p.parentGate.mu.Lock()
@@ -597,11 +483,6 @@ func TestParentGate_AWaiterIsDeregistered(t *testing.T) {
 	})
 }
 
-// TestParentGate_TheHolderKindIsCleared. The record of who holds a
-// parent is a map entry written on acquire, and an entry left behind by
-// a release would make the NEXT waiter compare itself against a holder
-// that has been gone for hours -- which reads as "same kind, harmless"
-// for every caller of the kind that last ran.
 func TestParentGate_TheHolderKindIsCleared(t *testing.T) {
 	p := &Plugin{}
 	release, ok, _ := p.parentGate.acquire(context.Background(), "eth0", ModeMacvlan, time.Second)

@@ -138,6 +138,8 @@ GOOD_TEST="$(cat <<'EOF'
         run: go vet ./...
       - name: Format check
         run: gofmt -l .
+      - name: Allow link changes inside the tests' user namespaces
+        run: sudo sysctl -q -w kernel.apparmor_restrict_unprivileged_userns=0
       - name: Test (with race detector)
         run: go test -race -count=1 ./...
       - name: Fuzz (short)
@@ -214,7 +216,7 @@ check "a comment naming a gate script is not a finding" 0 "$(wf commented "$COMM
 # The predicate is COMMAND POSITION, not the substring `go test`. The
 # substring version was defeated by a one-line echo -- measured on the
 # review of #834 -- and it certified a required check named `test`
-# running no suite at all. Every case below keeps all eight ALLOWED
+# running no suite at all. Every case below keeps all nine ALLOWED
 # steps, so only arm D moves.
 R_NOSUITE='        run: echo "we no longer go test in CI"'
 NOSUITE=${GOOD_TEST/        run: go test -race -count=1 .\/.../$R_NOSUITE}

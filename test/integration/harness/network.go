@@ -18,15 +18,7 @@ import (
 	"github.com/claymore666/docker-net-dhcp/v2/pkg/util"
 )
 
-// CreateNetwork drives `docker network create` with the plugin and
-// the per-test options. Registers a t.Cleanup to delete it. Returns
-// the network ID.
-//
-// mode is "bridge", "macvlan", or "ipvlan". The harness picks the
-// attachment point for the mode: HostVeth for macvlan, IpvlanParent
-// for ipvlan (each its own netdev on one L2 segment — see #556 on the
-// constants), BridgeName for bridge. Pass parent= or bridge= in
-// extraOpts only to override that deliberately.
+// CreateNetwork creates a plugin network of mode bridge, macvlan or ipvlan on the harness's parent for that mode (#556), with cleanup, and returns its ID.
 func CreateNetwork(t *testing.T, ctx context.Context, name, mode string, extraOpts map[string]string) string {
 	t.Helper()
 	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
@@ -51,9 +43,7 @@ func CreateNetwork(t *testing.T, ctx context.Context, name, mode string, extraOp
 		AssertParentFreeOfOtherKind(t, parent, mode)
 	}
 
-	// This span covers the plugin's whole CreateNetwork RPC, which
-	// includes the preflight DHCP probe — an 8s budget that should
-	// return on the first OFFER (#368).
+	// The span includes the plugin's preflight DHCP probe, an 8 s budget that returns on the first OFFER (#368).
 	createStart := time.Now()
 	res, err := cli.NetworkCreate(ctx, name, network.CreateOptions{
 		Driver:  DriverName,
@@ -65,8 +55,6 @@ func CreateNetwork(t *testing.T, ctx context.Context, name, mode string, extraOp
 		t.Fatalf("NetworkCreate(%s, mode=%s, opts=%v): %v", name, mode, opts, err)
 	}
 	t.Cleanup(func() {
-		// Use a fresh context so a parent ctx-cancel during a
-		// failure doesn't skip cleanup.
 		removeStart := time.Now()
 		err := cli.NetworkRemove(context.Background(), res.ID)
 		EndPhase(t, PhaseNetworkRemove, removeStart)
@@ -84,14 +72,9 @@ func isNotFound(err error) bool {
 	return strings.Contains(err.Error(), "not found") || strings.Contains(err.Error(), "No such network")
 }
 
-// AssertParentFreeOfOtherKind fails the test if parent already carries
-// a child of the kind that cannot coexist with mode — an ipvlan child
-// under a macvlan network's parent or the reverse. The kernel would
-// refuse the plugin's LinkAdd with "device or resource busy", from deep
-// inside a netlink call, and that reads as a plugin fault: it cost an
-// investigation an hour before #556 named it. With dedicated parents
-// this must never fire; if it does, some test left a child of the wrong
-// kind on a parent that is not its own, and the message names both.
+// AssertParentFreeOfOtherKind fails if parent carries a child of the kind that cannot coexist with mode. The kernel
+// refuses the plugin's LinkAdd for an ipvlan child under a macvlan parent, or the reverse, with "device or resource
+// busy" (#556).
 func AssertParentFreeOfOtherKind(t *testing.T, parent, mode string) {
 	t.Helper()
 	other := map[string]string{"macvlan": "ipvlan", "ipvlan": "macvlan"}[mode]
@@ -117,18 +100,8 @@ func AssertParentFreeOfOtherKind(t *testing.T, parent, mode string) {
 	}
 }
 
-// CreateNetworkIPAM drives `docker network create` with this plugin as
-// BOTH the network driver and the IPAM driver (#110).
-//
-// It is a second function rather than an option on CreateNetwork
-// because the two shapes are the product's two supported shapes and
-// every existing test belongs to the first one. D19 says the
-// `--ipam-driver null` shape does not change; a shared helper that
-// grew an IPAM branch would make every null-mode test's create depend
-// on an argument no null-mode test passes.
-//
-// subnet is the `--subnet` and may be empty, which is the untyped case
-// the driver answers with 0.0.0.0/0. ipamOpts are `--ipam-opt` pairs.
+// CreateNetworkIPAM creates a network with this plugin as both network and IPAM driver (#110). A separate helper, since
+// the `--ipam-driver null` shape does not change (D19); an empty subnet is the untyped case the driver answers with 0.0.0.0/0.
 func CreateNetworkIPAM(t *testing.T, ctx context.Context, name, mode, subnet string, ipamOpts map[string]string, extraOpts map[string]string) string {
 	t.Helper()
 	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
@@ -180,13 +153,7 @@ func CreateNetworkIPAM(t *testing.T, ctx context.Context, name, mode, subnet str
 	return res.ID
 }
 
-// CreateNetworkIPAMErr is CreateNetworkIPAM for the cases that must be
-// REFUSED: it returns the daemon's error instead of failing the test,
-// and registers no cleanup for a network that was never created.
-//
-// A refusal asserted by catching a t.Fatalf is not asserted at all, and
-// a refusal test that shares the happy path's helper is one edit away
-// from asserting nothing.
+// CreateNetworkIPAMErr returns the daemon's error for a create that must be refused, and registers no cleanup (#110).
 func CreateNetworkIPAMErr(ctx context.Context, name, mode, subnet string, ipamOpts, extraOpts map[string]string) error {
 	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
 	if err != nil {
@@ -216,8 +183,6 @@ func CreateNetworkIPAMErr(ctx context.Context, name, mode, subnet string, ipamOp
 		Options: opts,
 	})
 	if err == nil {
-		// It was accepted. Remove it so the next test is not run on a
-		// host holding a network this one says cannot exist.
 		_ = cli.NetworkRemove(context.Background(), res.ID)
 		return nil
 	}

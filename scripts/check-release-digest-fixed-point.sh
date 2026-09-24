@@ -328,13 +328,18 @@ fi
 # relative to `plugin`, which is exactly the path an operator has after
 # extracting. Transcribing `rootfs/usr/sbin/` here instead would be a
 # second declaration of the layout, wrong the day the layout moves.
-mapfile -t TAR_ROOTS < <(grep -oE 'tar -[a-z]*c[a-z]* +[^ ]+ +-C +[^ ]+' "$WF" | awk '{print $NF}' | tr -d '"' | sort -u)
+# Read from the tar commands the workflow runs, quotes removed: a `tar -c`
+# in an echo or a comment packs nothing (#883).
+# shellcheck source=scripts/workflow-shell-lines.sh
+. "$(cd "$(dirname "$0")" && pwd)/workflow-shell-lines.sh"
+TAR_CMDS="$(workflow_shell_lines --raw "$WF" | shell_simple_commands | grep -E '^tar +-[a-zA-Z]*c[a-zA-Z]* ')"
+mapfile -t TAR_ROOTS < <(printf '%s\n' "$TAR_CMDS" | grep -oE 'tar -[a-z]*c[a-z]* +[^ ]+ +-C +[^ ]+' | awk '{print $NF}' | sort -u)
 case "${#TAR_ROOTS[@]}" in
     1) TAR_ROOT="${TAR_ROOTS[0]}" ;;
     0) die "$WF packages no tarball with 'tar -c ... -C <dir>' — the extracted path of a manifest entry cannot be derived" ;;
     *) die "$WF packages tarballs from ${#TAR_ROOTS[@]} different -C directories (${TAR_ROOTS[*]}); which one a manifest entry extracts from is ambiguous and this check will not guess" ;;
 esac
-mapfile -t TARBALL_OPERANDS < <(grep -oE 'tar -[a-z]*c[a-z]* +[^ ]+' "$WF" | awk '{print $NF}' | tr -d '"' | sort -u)
+mapfile -t TARBALL_OPERANDS < <(printf '%s\n' "$TAR_CMDS" | grep -oE 'tar -[a-z]*c[a-z]* +[^ ]+' | awk '{print $NF}' | sort -u)
 
 # WHAT the tar packs, not only where it runs. `-C plugin .` packs
 # everything under plugin; `-C plugin config.json` packs one file and no
@@ -344,8 +349,7 @@ mapfile -t TARBALL_OPERANDS < <(grep -oE 'tar -[a-z]*c[a-z]* +[^ ]+' "$WF" | awk
 # cannot drift apart.
 # One record per tar INVOCATION, not per line: two of them chained with
 # && on one line are two packagings, and reading the line would take the
-# first one's operands for both. The -C directories above are found with
-# grep -oE, which already sees every occurrence on a line.
+# first one's operands for both. The shell reader splits them.
 tar_member_sets() {
     local line rest tok mems
     while IFS= read -r line; do
@@ -361,7 +365,7 @@ tar_member_sets() {
             done
         fi
         printf '%s\n' "${mems% }"
-    done < <(sed -e 's/&&/\n/g' -e 's/;/\n/g' "$WF" | grep -E 'tar +-[a-zA-Z]*c[a-zA-Z]* ')
+    done <<< "$TAR_CMDS"
 }
 mapfile -t TAR_MEMBER_SETS < <(tar_member_sets | sort -u)
 case "${#TAR_MEMBER_SETS[@]}" in

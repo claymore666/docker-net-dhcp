@@ -14,18 +14,6 @@ import (
 	"time"
 )
 
-// Close's shutdown ordering (#338 item 2). Before this, Close called
-// server.Close, which by contract returns WITHOUT waiting for in-flight
-// handlers, so a Join already past the listener could register a
-// manager after the registry had been drained. That was mitigated with
-// a second speculative sweep; these tests pin the real guarantee that
-// replaced it — Shutdown waits for handlers to return, and because
-// registerDHCPManager runs synchronously inside the Join handler, "no
-// handler running" means "the registry is final".
-
-// shrinkShutdownTimeout shortens the whole-shutdown budget for a single
-// test and restores it afterwards. The forced and timeout paths are
-// only reachable by letting the budget expire.
 func shrinkShutdownTimeout(t *testing.T, d time.Duration) {
 	t.Helper()
 	prev := pluginShutdownTimeout
@@ -33,19 +21,12 @@ func shrinkShutdownTimeout(t *testing.T, d time.Duration) {
 	t.Cleanup(func() { pluginShutdownTimeout = prev })
 }
 
-// instantManager returns a manager whose Stop is a no-op: Stop waits on
-// startedCh and short-circuits when startErr is set, so a closed
-// channel plus a recorded failure means it never touches dhcpcd or a
-// netlink handle.
 func instantManager() *dhcpManager {
 	m := &dhcpManager{startedCh: make(chan struct{}), startErr: errors.New("start failed")}
 	close(m.startedCh)
 	return m
 }
 
-// servedPlugin wires a plugin's HTTP server to handler and serves it on
-// a unix socket, returning a client bound to that socket. Mirrors what
-// Listen does, minus the blocking Serve.
 func servedPlugin(t *testing.T, p *Plugin, handler http.Handler) *http.Client {
 	t.Helper()
 
@@ -65,11 +46,6 @@ func servedPlugin(t *testing.T, p *Plugin, handler http.Handler) *http.Client {
 }
 
 func TestClose_WaitsForInFlightHandlerBeforeDraining(t *testing.T) {
-	// The regression this pins: a handler that is mid-Join when
-	// shutdown starts must finish, and the manager it registers must
-	// still be swept. With server.Close the handler kept running past
-	// both sweeps and its manager was left behind — a live dhcpcd with
-	// no owner, holding a lease nobody would ever release.
 	p := newTestPlugin(t)
 	p.docker = &fakeDocker{}
 
@@ -78,7 +54,6 @@ func TestClose_WaitsForInFlightHandlerBeforeDraining(t *testing.T) {
 	client := servedPlugin(t, p, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		close(handlerEntered)
 		<-release
-		// Stands in for Join's synchronous registration.
 		p.registerDHCPManager("late-endpoint", instantManager())
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -94,7 +69,6 @@ func TestClose_WaitsForInFlightHandlerBeforeDraining(t *testing.T) {
 	closed := make(chan error, 1)
 	go func() { closed <- p.Close() }()
 
-	// Close must still be blocked: the handler has not returned.
 	select {
 	case err := <-closed:
 		t.Fatalf("Close returned while a handler was still in flight (err=%v) — the registry it drained was not final", err)
@@ -121,9 +95,6 @@ func TestClose_WaitsForInFlightHandlerBeforeDraining(t *testing.T) {
 }
 
 func TestClose_WedgedHandlerStillBoundsShutdown(t *testing.T) {
-	// The graceful guarantee has a limit, and the limit is the point:
-	// a handler that never returns must not hold shutdown open. Close
-	// falls back to forcing connections closed and re-sweeping.
 	shrinkShutdownTimeout(t, 200*time.Millisecond)
 
 	p := newTestPlugin(t)
@@ -151,8 +122,6 @@ func TestClose_WedgedHandlerStillBoundsShutdown(t *testing.T) {
 
 	select {
 	case err := <-closed:
-		// Forcing the listener closed after a graceful attempt is the
-		// expected outcome, not an error to report upward.
 		if err != nil {
 			t.Errorf("Close on the forced path returned %v, want nil", err)
 		}
@@ -166,17 +135,12 @@ func TestClose_WedgedHandlerStillBoundsShutdown(t *testing.T) {
 }
 
 func TestClose_PhasesShareOneBudget(t *testing.T) {
-	// Three phases now wait on a deadline (HTTP grace, client fan-out,
-	// displaced-stop drain). They share ONE budget deliberately: a
-	// per-phase timeout would multiply the wall-clock an operator sits
-	// through on `docker plugin disable` every time a phase is added.
 	const budget = 300 * time.Millisecond
 	shrinkShutdownTimeout(t, budget)
 
 	p := newTestPlugin(t)
 	p.docker = &fakeDocker{}
 
-	// Wedge the HTTP phase.
 	handlerEntered := make(chan struct{})
 	wedged := make(chan struct{})
 	t.Cleanup(func() { close(wedged) })
@@ -192,7 +156,6 @@ func TestClose_PhasesShareOneBudget(t *testing.T) {
 	}()
 	<-handlerEntered
 
-	// And wedge the displaced-stop phase.
 	stuck := make(chan struct{})
 	t.Cleanup(func() { close(stuck) })
 	p.displacedStops.Add(1)
@@ -207,22 +170,12 @@ func TestClose_PhasesShareOneBudget(t *testing.T) {
 	}
 	elapsed := time.Since(start)
 
-	// Two wedged phases against one budget: comfortably under what
-	// per-phase timeouts would cost, with slack for a loaded runner.
 	if elapsed > 4*budget {
 		t.Errorf("Close took %v with a %v budget — phases look like they are each getting their own timeout", elapsed, budget)
 	}
 }
 
 func TestClose_DrainsDisplacedManagerStops(t *testing.T) {
-	// #338 item 3. Join stops a displaced manager in a goroutine so it
-	// doesn't block on the dhcpcd shutdown. Close has to account for
-	// those: cutting one short at process exit leaves a dhcpcd renewing
-	// for an endpoint this plugin no longer manages, racing the client
-	// the incoming Join just built for the same binding.
-	//
-	// The lease itself is not at stake — since #800 nothing releases and
-	// the address is held either way. What is at stake is the client.
 	p := newTestPlugin(t)
 	p.docker = &fakeDocker{}
 

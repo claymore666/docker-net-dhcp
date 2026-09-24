@@ -18,12 +18,6 @@ func (f *fakeMetricsListener) ListenMetrics(addr string) error {
 	return f.err
 }
 
-// The default must be no listener at all. This is the assertion that
-// matters most in this file: the plugin runs with CAP_NET_ADMIN on the
-// host network namespace, so a port opened by accident is a port on the
-// host. An unset METRICS_ADDR must not reach ListenMetrics at all —
-// "listens on an empty address and happens to fail" is not the same
-// posture as "never listens".
 func TestListenMetricsFromEnv_UnsetOpensNothing(t *testing.T) {
 	f := &fakeMetricsListener{err: errors.New("must not be called")}
 
@@ -46,9 +40,6 @@ func TestListenMetricsFromEnv_SetPassesTheAddressThrough(t *testing.T) {
 	}
 }
 
-// A bad address must reach the caller, which fails startup on it. The
-// alternative — logging and carrying on — leaves an operator who asked
-// for a scrape target with a plugin that silently has none.
 func TestListenMetricsFromEnv_BindFailureReachesTheCaller(t *testing.T) {
 	want := errors.New("address already in use")
 	f := &fakeMetricsListener{err: want}

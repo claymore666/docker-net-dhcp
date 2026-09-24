@@ -5,39 +5,25 @@ package harness
 
 import "testing"
 
-// Every sample below is VERBATIM /proc/net/packet output, captured on
-// this project's session box (Linux 6.12) rather than typed from the
-// kernel source. The multi-socket ones were produced by opening
-// AF_PACKET sockets inside an unprivileged user namespace
-// (`unshare -rn`), which is the only way to get more than one row
-// without root and is the same shape the plugin's clients produce:
-// SOCK_DGRAM, bound to one interface, one socket per protocol.
-//
-// A hand-written sample would be a claim about the format. These are
-// the format.
+// Verbatim /proc/net/packet output from Linux 6.12; the multi-socket samples are AF_PACKET sockets opened under
+// `unshare -rn`, SOCK_DGRAM and bound to one interface, the shape the plugin's clients produce (#682).
 const (
 	// One ARP socket, on the session box's own root namespace.
 	procOneSocket = `sk               RefCnt Type Proto  Iface R Rmem   User   Inode
 000000002bee1efa 3      2    0806   2     1 0      0      3927
 `
-	// The three protocols this plugin's clients bind: ETH_P_IP for
-	// DHCPv4, ETH_P_ARP for RFC 5227, ETH_P_IPV6 for DHCPv6. One
-	// endpoint on a dual-stack network looks like this.
+	// ETH_P_IP for DHCPv4, ETH_P_ARP for RFC 5227, ETH_P_IPV6 for DHCPv6: one dual-stack endpoint's sockets.
 	procThreeProtocols = `sk               RefCnt Type Proto  Iface R Rmem   User   Inode
 00000000c4f0055c 2      2    0800   1     0 0      0      1739463
 00000000faf658eb 2      2    0806   1     0 0      0      1739464
 00000000deeaa38c 2      2    86dd   1     0 0      0      1739465
 `
-	// THE FAILURE THIS OBSERVER EXISTS FOR: two DHCPv4 clients bound
-	// to one interface. A displaced client that did not stop looks
-	// exactly like this, and nothing else in the suite can see it.
+	// Two DHCPv4 clients on one interface: a displaced client that did not stop (#682).
 	procTwoDHCPv4Clients = `sk               RefCnt Type Proto  Iface R Rmem   User   Inode
 000000006e12b26d 2      2    0800   1     0 0      0      1761563
 00000000fe4d2285 2      2    0800   1     0 0      0      1761564
 `
-	// The empty namespace: a header and nothing under it. It is the
-	// reading a blind observer produces, so it has to be
-	// distinguishable from every other one.
+	// A header and no rows: an empty namespace.
 	procNoSockets = `sk               RefCnt Type Proto  Iface R Rmem   User   Inode
 `
 )
@@ -56,7 +42,6 @@ func TestPacketSocketsFromProc_ReadsTheColumns(t *testing.T) {
 	}
 }
 
-// The header is not a socket, and an empty namespace is not an error.
 func TestPacketSocketsFromProc_HeaderOnlyIsNoSockets(t *testing.T) {
 	rows, err := PacketSocketsFromProc(procNoSockets)
 	if err != nil {
@@ -68,11 +53,6 @@ func TestPacketSocketsFromProc_HeaderOnlyIsNoSockets(t *testing.T) {
 	}
 }
 
-// The hexadecimal protocol column is read as hexadecimal. 86dd read as
-// decimal is not a number at all and 0800 read as decimal is 800, so a
-// base-10 reader either fails loudly or counts an ETH_P_IP socket as
-// something else — and the count this file feeds would then be zero
-// over a live client.
 func TestPacketSocketsFromProc_ProtocolIsHexadecimal(t *testing.T) {
 	rows, err := PacketSocketsFromProc(procThreeProtocols)
 	if err != nil {
@@ -92,8 +72,6 @@ func TestPacketSocketsFromProc_ProtocolIsHexadecimal(t *testing.T) {
 	}
 }
 
-// The displacement failure, driven. Without this case the observer
-// could return a constant 1 and every assertion built on it would pass.
 func TestPacketSocketsOn_TwoClientsOnOneInterfaceAreTwo(t *testing.T) {
 	rows, err := PacketSocketsFromProc(procTwoDHCPv4Clients)
 	if err != nil {
@@ -110,11 +88,6 @@ func TestPacketSocketsOn_TwoClientsOnOneInterfaceAreTwo(t *testing.T) {
 	}
 }
 
-// The other direction: a socket on a DIFFERENT interface is not this
-// interface's client. Without this, an observer that ignored the
-// interface column would count every endpoint on the host and the
-// assertion would fail on a correct plugin as soon as a second test
-// container existed.
 func TestPacketSocketsOn_AnotherInterfaceIsNotThisOne(t *testing.T) {
 	rows, err := PacketSocketsFromProc(procTwoDHCPv4Clients)
 	if err != nil {
@@ -130,10 +103,7 @@ func TestPacketSocketsOn_AnotherInterfaceIsNotThisOne(t *testing.T) {
 	}
 }
 
-// A socket bound to interface 0 hears every interface, so it counts for
-// the link under test. Stated as a case rather than in a comment
-// because the opposite reading — skip it, it is not "on" this link — is
-// the one that makes a stray client invisible.
+// A socket bound to interface 0 receives on every interface, so it counts for the link under test.
 func TestPacketSocketsOn_InterfaceZeroIsEveryInterface(t *testing.T) {
 	const anyIface = `sk               RefCnt Type Proto  Iface R Rmem   User   Inode
 000000006e12b26d 2      2    0800   0     0 0      0      1761563
@@ -148,13 +118,6 @@ func TestPacketSocketsOn_InterfaceZeroIsEveryInterface(t *testing.T) {
 	}
 }
 
-// A kernel that changes the column set is a refusal, not a number.
-//
-// The count is the whole output of this file, and a wrong count is
-// indistinguishable from a correct one at the call site. A row this
-// parser cannot read is therefore an error rather than a skipped line:
-// dropping it silently would report "one client" for a namespace it
-// could not read at all.
 func TestPacketSocketsFromProc_RefusesRatherThanGuesses(t *testing.T) {
 	cases := []struct {
 		name string

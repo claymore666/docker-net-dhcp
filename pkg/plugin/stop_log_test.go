@@ -14,100 +14,10 @@ import (
 	logtest "github.com/sirupsen/logrus/hooks/test"
 )
 
-// TestStop_NoStopPathClaimsAReclaimOrRelease pins the operator's view of
-// a stop, which is the one thing about #800 that no other test in this
-// package can see.
-//
-// The ledger and the counters were both corrected when the release
-// paths went. The LOG LINE was not: it went on telling an operator
-// "Persistent client stopped before it ever held the lease; reclaiming
-// it" after the reclaim it named had been deleted. Nothing failed —
-// the ledger was right, the counters were right, and the sentence a
-// human reads was false. That is the shape prose decays in, and the
-// only reason it was found is that someone grepped for the word rather
-// than for a renamed symbol.
-//
-// # What is scanned, and why it is not just the message
-//
-// The haystack is the message PLUS every field key and value. Operators
-// do not read logrus's Message; they read the rendered line, and in a
-// JSON pipeline the fields are the only thing anyone greps. A first
-// version of this test scanned e.Message alone and passed against a
-// mutant that added WithField("lease_action", "reclaimed") to the very
-// line under test, on the very path under test.
-//
-// # What is driven, and why more than one path
-//
-// Every arm of settleFamily plus the startErr early return — five rows.
-// Two of the three places that ever reclaimed a lease sit OUTSIDE the
-// never-bound path (the startErr block says so in its own comment), so
-// a test that drove only that path left them unguarded: mutants that
-// added a reclaim claim to the bound-clean, hard-exit and start-failed
-// paths all survived it, and survived `go test ./...` entire.
-//
-// # Non-vacuity, per row
-//
-// A row that expects a report names the substring that identifies it
-// and requires exactly one — "the capture is non-empty" is not enough,
-// because a stop emits other lines and the first version of this test
-// PASSED with the line under test deleted. Rows whose path logs nothing
-// name no anchor: requiring one there would fail them for the wrong
-// reason, and the claim scan is still not vacuous against these
-// mutants, because a mutant ADDS a line rather than removing one.
-//
-// That argument covers the mutant this test exists for. It does NOT
-// cover the anchorless rows silently ceasing to exercise their path:
-// delete what settleFamily's bound-clean or hard-exit arm emits and this
-// test still passes, because a row with no anchor cannot tell "the path
-// ran and claimed nothing" from "the path did not run".
-//
-// The coverage is real, and it lives next door. THREE mutants, not two,
-// because the hard-exit arm has two observables and they have different
-// killers — a first version of this list drove the two deletions
-// together and then attributed the UNION of their killers to a mutant
-// described as deleting only the audit:
-//
-//   - bound-clean, audit deleted (its only observable) ->
-//     TestStop_AuditsBothFamiliesIndependently,
-//     TestStop_AuditsAStopWithoutClaimingARelease,
-//     TestStop_NeverBoundV6ClientIsNotAuditedAsReleased.
-//   - hard-exit, "stop_failed" audit deleted ->
-//     TestStop_AuditsBothFamiliesIndependently,
-//     TestStop_AuditsAStopWithoutClaimingARelease.
-//     NOT TestStop_BoundV6StopFailureIsCountedPerFamily: it reads the
-//     counters and never looks at the ledger, so it stays green.
-//   - hard-exit, clientStopFailures bump deleted ->
-//     TestStop_AuditsBothFamiliesIndependently,
-//     TestStop_BoundV6StopFailureIsCountedPerFamily.
-//     NOT TestStop_AuditsAStopWithoutClaimingARelease, for the mirror
-//     reason: it reads the ledger and not the counters.
-//
-// This test passed under all three, which is the residual being
-// recorded. Deleting those siblings would leave these two rows vacuous
-// with nothing to say so. The general form, since this comment got it
-// wrong once: one arm, two observables, two mutants — a composite
-// deletion yields the union of the killers and names none of them
-// correctly.
-//
-// # The claim is now CONDITIONAL, and on the network's option (#962)
-//
-// `release_lease=on_stop` makes the release a thing this plugin does,
-// and a log line saying so on that network is true. The scan is
-// therefore keyed on the option rather than dropped: every row that
-// does not set it is still held to the absolute, which is the default
-// and every network that existed before the option. The releasing row
-// exists so that the keying is not a way to switch the guard off — it
-// requires the claim to be PRESENT, so a mutant that stops releasing
-// while the option asks for it fails here too.
 func TestStop_NoStopPathClaimsAReclaimOrRelease(t *testing.T) {
 	for _, tc := range []struct {
-		name string
-		// anchor identifies the report this path is expected to emit,
-		// by the CONDITION it describes rather than by the clause under
-		// test. Empty means the path logs nothing and none is required.
-		anchor string
-		// releases is the one network shape where a stop MAY say it
-		// handed a lease back.
+		name     string
+		anchor   string
 		releases bool
 		leaving  bool
 		wantErr  bool
@@ -134,9 +44,6 @@ func TestStop_NoStopPathClaimsAReclaimOrRelease(t *testing.T) {
 			},
 		},
 		{
-			// settleFamily's default arm: audits "stopped" and logs
-			// nothing. A mutant that starts claiming a release here is
-			// exactly the regression #800 must not grow back.
 			name:    "bound_clean_stop",
 			leaving: true,
 			mk: func(t *testing.T, p *Plugin) *dhcpManager {
@@ -144,9 +51,6 @@ func TestStop_NoStopPathClaimsAReclaimOrRelease(t *testing.T) {
 			},
 		},
 		{
-			// case exitErr != nil: bumps client_stop_failures and audits
-			// "stop_failed". Says nothing about the lease, and must not
-			// start to.
 			name:    "bound_hard_exit",
 			leaving: true,
 			wantErr: true,
@@ -156,17 +60,12 @@ func TestStop_NoStopPathClaimsAReclaimOrRelease(t *testing.T) {
 			},
 		},
 		{
-			// The other historical reclaim site. Its own comment records
-			// that it used to hand the one-shot's lease back.
 			name:    "start_failed",
 			anchor:  "outstanding",
 			leaving: true,
 			mk:      failedStartManager,
 		},
 		{
-			// The one network that asks for a release. The line an
-			// operator reads here must say the lease went back, and the
-			// claim scan below is off for exactly this row.
 			name:     "release_lease_on_stop_leaving",
 			anchor:   "handing this endpoint's lease back",
 			releases: true,
@@ -178,9 +77,6 @@ func TestStop_NoStopPathClaimsAReclaimOrRelease(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			// The not-leaving report is Debug; without this it is not
-			// captured and the anchor check fires instead of the claim
-			// under test.
 			prev := log.GetLevel()
 			log.SetLevel(log.DebugLevel)
 			t.Cleanup(func() { log.SetLevel(prev) })
@@ -205,8 +101,6 @@ func TestStop_NoStopPathClaimsAReclaimOrRelease(t *testing.T) {
 
 			entries := hook.AllEntries()
 
-			// The rendered line, not logrus's Message: fields are what a
-			// JSON log pipeline greps, and a claim can hide in one.
 			rendered := make([]string, 0, len(entries))
 			for _, e := range entries {
 				var b strings.Builder
@@ -232,10 +126,6 @@ func TestStop_NoStopPathClaimsAReclaimOrRelease(t *testing.T) {
 			}
 
 			if tc.releases {
-				// The anchor above already required the line, and it
-				// carries the claim by construction. Scanning for the
-				// word here would fail this row for saying the true
-				// thing.
 				return
 			}
 

@@ -281,6 +281,84 @@ echoed_single_quoted() {
 }
 run "a single-quoted echoed install is not verification" 2 echoed_single_quoted "no longer matches" echoed_flag_survives
 
+# --- a mention is not an invocation (#883) ------------------------------
+# A bare echo leaves the command unquoted and still only prints it. Each
+# decoy has a control deleting the same lines; both give one verdict.
+installs_all_bare_echoed() {
+    [ "$(cmds "$1" | grep -c 'echo docker plugin install --grant' || true)" -gt 0 ] &&
+        [ "$(cmds "$1" | grep -E '^ +docker plugin install' | wc -l)" -eq 0 ]
+}
+no_install_left() { ! cmds "$1" | grep -F 'docker plugin install --grant' >/dev/null; }
+echoed_bare() { sed -i -E 's/^( +)docker plugin install --grant/\1echo docker plugin install --grant/' "$1"; }
+run "a bare echoed install is not verification" 2 echoed_bare "ZERO install-verified cells" installs_all_bare_echoed
+deleted_installs() { sed -i -E '/^ +docker plugin install --grant/d' "$1"; }
+run "control: the installs deleted" 2 deleted_installs "ZERO install-verified cells" no_install_left
+
+refs_all_echoed() {
+    [ "$(cmds "$1" | grep -c 'echo REF="\${' || true)" -gt 0 ] &&
+        ! cmds "$1" | grep -E '^ +REF="\$\{' >/dev/null
+}
+no_ref_left() { ! cmds "$1" | grep -F 'REF="${' >/dev/null; }
+echoed_refs() { sed -i -E 's/^( +)(REF="\$\{)/\1echo \2/' "$1"; }
+run "an echoed verifier reference verifies nothing" 2 echoed_refs "ZERO install-verified cells" refs_all_echoed
+deleted_refs() { sed -i -E '/^ +REF="\$\{/d' "$1"; }
+run "control: the verifier references deleted" 2 deleted_refs "ZERO install-verified cells" no_ref_left
+
+promotes_all_echoed() {
+    [ "$(cmds "$1" | grep -c 'echo crane tag ' || true)" -gt 0 ] &&
+        ! cmds "$1" | grep -E '^ +crane tag ' >/dev/null
+}
+echoed_promote() { sed -i -E 's/^( +)crane tag /\1echo crane tag /' "$1"; }
+run "an echoed crane tag is not a promotion" 2 echoed_promote "ZERO promoted cells" promotes_all_echoed
+quoted_promote() { sed -i -E "s/^( +)(crane tag .*)$/\\1echo 'done; \\2'/" "$1"; }
+promotes_all_quoted() { cmds "$1" | grep -F "echo 'done; crane tag" >/dev/null && ! cmds "$1" | grep -E '^ +crane tag ' >/dev/null; }
+run "a crane tag after a separator inside quotes is not a promotion" 2 quoted_promote "ZERO promoted cells" promotes_all_quoted
+deleted_promote() { sed -i -E '/^ +crane tag /d' "$1"; }
+run "control: the crane tag lines deleted" 2 deleted_promote "ZERO promoted cells" no_crane_tag
+
+# The forms that do run: the `run:` key, a keyword and `!` before the
+# command. A reader that refused them would refuse the lane it guards.
+cat > "$TMP/forms.yml" <<'YML'
+name: Release
+on: push
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      TAG: v1
+    steps:
+      - run: make PLUGIN_NAME="${GHCR_NAME}" PLUGIN_TAG="${TAG}" push
+  verify-install:
+    runs-on: ubuntu-latest
+    env:
+      TAG: v1
+    steps:
+      - run: |
+          REF="${GHCR_NAME}:${TAG}"
+          if ! docker plugin install --grant-all-permissions "$REF"; then exit 1; fi
+  promote-latest:
+    runs-on: ubuntu-latest
+    env:
+      TAG: v1
+    steps:
+      - run: crane tag "${GHCR_NAME}:${TAG}" "${LATEST}"
+YML
+forms_out=$(bash "$GATE" "$TMP/forms.yml" 2>&1); forms_rc=$?
+if [ "$forms_rc" -eq 0 ] && printf '%s\n' "$forms_out" | grep -F "1 published cell(s)" >/dev/null; then
+    echo "ok: a run: key, if and ! before the command still count"; pass=$((pass + 1))
+else
+    echo "FAIL: a run: key, if and ! before the command: want exit 0, got $forms_rc"
+    printf '%s\n' "$forms_out" | sed 's/^/      /'; fail=$((fail + 1))
+fi
+sed -i 's|if ! docker plugin install --grant-all-permissions "$REF"; then exit 1; fi|true  # docker plugin install --grant-all-permissions "$REF"|' "$TMP/forms.yml"
+forms_rc=0; forms_out=$(bash "$GATE" "$TMP/forms.yml" 2>&1) || forms_rc=$?
+if [ "$forms_rc" -eq 2 ] && printf '%s\n' "$forms_out" | grep -F "ZERO install-verified cells" >/dev/null; then
+    echo "ok: an install in a trailing comment is not verification"; pass=$((pass + 1))
+else
+    echo "FAIL: an install in a trailing comment: want exit 2, got $forms_rc"
+    printf '%s\n' "$forms_out" | sed 's/^/      /'; fail=$((fail + 1))
+fi
+
 # --- the instrument's own failure mode (regression control) ------------
 # `promote-latest` retags BOTH architectures from ONE amd64 runner. A
 # gate keying arch on `runs-on` calls the arm64 cells unpromoted. Moving

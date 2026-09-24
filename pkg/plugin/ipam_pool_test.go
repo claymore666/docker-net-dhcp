@@ -21,25 +21,8 @@ import (
 	"github.com/claymore666/docker-net-dhcp/v2/pkg/util"
 )
 
-// TestIpamPoolID_IsAFunctionOfItsInputs is the defect the PoolID's shape
-// exists to prevent, driven rather than argued.
-//
-// libnetwork persists the --ipam-opt map with the network and re-sends
-// it at every daemon start. A PoolID assembled by ranging over a Go map
-// is a different string on most of those starts, and the daemon stores
-// the id it was FIRST given: the second derivation stops resolving, and
-// every endpoint on the network fails its address replay. Go randomises
-// map iteration order per range, so one derivation proves nothing and a
-// hundred is the cheapest thing that does.
-//
-// THE TWO-KEY INPUT THIS USED TO DRIVE IS NOW REFUSED, and the refusal
-// is asserted here rather than the case being dropped. A suffix could
-// carry `parent` and `bridge` at once while ipamPoolIDNames reads only
-// one of them back (#1010), so the pair was an identity two different
-// requests shared. Refusing it is what makes map order unobservable
-// instead of merely fixed, which is the stronger answer -- so the loop
-// below keeps running, over the input that is still legal, and the case
-// that stopped being legal is driven as the refusal it became.
+// libnetwork re-sends the persisted --ipam-opt map at every daemon start and keeps the PoolID it was first given,
+// and Go randomises map order per range, so the derivation is repeated (#110, #1010).
 func TestIpamPoolID_IsAFunctionOfItsInputs(t *testing.T) {
 	both := map[string]string{"parent": "eth0", "bridge": "br-lan"}
 	if _, err := ipamPoolID(ipamLocalAddressSpace, "192.168.100.0/24", both); !errors.Is(err, util.ErrIPAM) {
@@ -67,46 +50,13 @@ func TestIpamPoolID_IsAFunctionOfItsInputs(t *testing.T) {
 	}
 }
 
-// TestIpamPoolID_TheTwoKeyRefusalNamesTheOptionEachModeOwns holds the
-// refusal to the sentence docs/reference.md writes about it: the message
-// names the key to keep, the one matching this network's own `-o
-// parent=` or `-o bridge=`.
-//
-// The first version named one key and picked it by position, printing
-// the first of ipamPoolOptKeys that was present. That slice is fixed as
-// {parent, bridge} for a reason nothing to do with this message, so the
-// answer was always `-o parent=`, and a bridge-mode network was told to
-// keep an option it does not have. The page said one thing and the
-// binary said another.
-//
-// This driver cannot do better than naming both. RequestPool runs while
-// the create is still in flight and the network's own `-o` options
-// reach CreateNetwork afterwards, so there is no mode here to read. The
-// test is therefore written from the operator's side: for each mode
-// this plugin has, the message must carry the option THAT mode owns, so
-// whoever reads it finds their own network in it.
-//
-// The pair is also asserted to read the same whichever way the map was
-// built. Go randomises map iteration, and a message assembled by
-// ranging over opts would be two different messages for one mistake.
 func TestIpamPoolID_TheTwoKeyRefusalNamesTheOptionEachModeOwns(t *testing.T) {
-	// The mapping is written out here and not derived from the subject:
-	// a table that asked the code which option a mode owns would agree
-	// with it however the code changed.
-	// Each row carries the pairing and not only the spelling. A message
-	// that named both options while attaching them to the wrong modes
-	// would satisfy a contains-check on the spellings alone and still
-	// send a bridge operator to `-o parent=`, which is the same defect
-	// in a different sentence.
 	owns := []struct{ mode, option, phrase string }{
 		{ModeBridge, "`-o bridge=`", "`-o bridge=` on a bridge network"},
 		{ModeMacvlan, "`-o parent=`", "`-o parent=` on a macvlan or ipvlan one"},
 		{ModeIPvlan, "`-o parent=`", "`-o parent=` on a macvlan or ipvlan one"},
 	}
 
-	// Two maps with the same content, built in the two orders. Go gives
-	// no insertion order, which is the point: whatever it does, one
-	// mistake has one message.
 	parentFirst := map[string]string{}
 	parentFirst["parent"] = "eth0"
 	parentFirst["bridge"] = "br-lan"
@@ -132,14 +82,6 @@ func TestIpamPoolID_TheTwoKeyRefusalNamesTheOptionEachModeOwns(t *testing.T) {
 					o.mode, o.option, o.phrase, err)
 			}
 		}
-		// THE OTHER DIRECTION, because the rows above assert presence
-		// and a guard that only asserts presence fails in one
-		// direction. A message carrying every pairing correctly and
-		// one more sentence, "if in doubt, keep `-o parent=`", passes
-		// every row above and puts a bridge operator back on an option
-		// their network does not have. So each spelling is named
-		// exactly once: once is the pairing, twice is a pairing plus a
-		// directive, and the operator has to be left to pick.
 		for _, o := range owns {
 			if n := strings.Count(err.Error(), o.option); n != 1 {
 				t.Errorf("%s is named %d times in the refusal and must be named once, as one half "+
@@ -158,26 +100,9 @@ func TestIpamPoolID_TheTwoKeyRefusalNamesTheOptionEachModeOwns(t *testing.T) {
 	}
 }
 
-// TestIpamPoolIDNames_ItsOneMarkerPremiseIsTheTwoKeyRefusal drives the
-// assumption ipamPoolIDNames rests on and cannot state.
-//
-// That function returns the FIRST of ipamPoolOptKeys whose marker is in
-// the PoolID, and what it returns becomes the issued pool's interface
-// name, so the positional choice reaches an identity and not only a
-// sentence. It is right today only because the two-key refusal
-// guarantees at most one marker can be there. Nothing at the function
-// says so and nothing went red if the refusal were relaxed, which is
-// the same shape as the defect this branch is fixing: a value picked by
-// position from an ordered list of equally valid candidates.
-//
-// So the premise is asserted over every combination of the keys this
-// driver accepts, on the ids this package actually mints. A relaxed
-// refusal fails here.
 func TestIpamPoolIDNames_ItsOneMarkerPremiseIsTheTwoKeyRefusal(t *testing.T) {
 	values := map[string]string{"parent": "eth0", "bridge": "br-lan"}
 
-	// Every subset of the accepted keys, built from the accepted keys
-	// so a third one added later is covered without touching this.
 	var subsets []map[string]string
 	for mask := 0; mask < 1<<len(ipamPoolOptKeys); mask++ {
 		opts := map[string]string{}
@@ -192,9 +117,6 @@ func TestIpamPoolIDNames_ItsOneMarkerPremiseIsTheTwoKeyRefusal(t *testing.T) {
 	for _, opts := range subsets {
 		id, err := ipamPoolID(ipamLocalAddressSpace, "192.168.100.0/24", opts)
 		if err != nil {
-			// Refused is the other legal answer, and the refusal is
-			// asserted on its own elsewhere. What matters here is that
-			// nothing this package MINTS breaks the premise.
 			continue
 		}
 		var markers []string
@@ -221,22 +143,6 @@ func TestIpamPoolIDNames_ItsOneMarkerPremiseIsTheTwoKeyRefusal(t *testing.T) {
 	}
 }
 
-// TestReferenceDocAndTheTwoKeyRefusalShareOneSentence holds the page to
-// the binary, in the place the two have already disagreed once.
-//
-// docs/reference.md used to say the refusal "names the key to keep: the
-// one matching this network's own `-o parent=` or `-o bridge=`". That
-// promised a selection, and the driver cannot make one: the pool is
-// requested before the network's own `-o` options reach it. The old
-// message did name one key, always `parent`, which is not the one
-// matching anything. So the page has been wrong in one direction and
-// would have been wrong in the other the moment the message stopped
-// choosing. A page that describes a message is a claim about a string,
-// and the cheapest way to hold a claim to a string is to share it.
-//
-// The pairing clause is quoted VERBATIM in both, and this test asserts
-// the page carries what the refusal carries. Whitespace is normalised
-// because Markdown wraps and Go does not; nothing else is relaxed.
 func TestReferenceDocAndTheTwoKeyRefusalShareOneSentence(t *testing.T) {
 	_, err := ipamPoolID(ipamLocalAddressSpace, "192.168.100.0/24",
 		map[string]string{"parent": "eth0", "bridge": "br-lan"})
@@ -244,8 +150,6 @@ func TestReferenceDocAndTheTwoKeyRefusalShareOneSentence(t *testing.T) {
 		t.Fatal("both keys were accepted, so there is no refusal for the page to describe")
 	}
 
-	// The clause the two share. Written here so a change to either side
-	// alone fails this test instead of travelling with one of them.
 	const clause = "`-o bridge=` on a bridge network, `-o parent=` on a macvlan or ipvlan one"
 
 	if !strings.Contains(err.Error(), clause) {
@@ -263,22 +167,6 @@ func TestReferenceDocAndTheTwoKeyRefusalShareOneSentence(t *testing.T) {
 	}
 }
 
-// TestIpamPoolID_TheTwoKeyRefusalDoesNotShadowThePrefixRefusal drives
-// the two refusals that arrived on this file from different branches
-// against each other.
-//
-// #1010 refuses `--ipam-opt parent` and `bridge` together, in
-// ipamPoolIDSuffix, which RequestPool reaches at `docker network
-// create`. #1019 refuses a gateway request on a /31 or a /32, in
-// ipamPoolNetworkAddress, which RequestAddress reaches afterwards. The
-// two merged without a textual conflict, and a clean merge says nothing
-// about whether they still compose: a refusal added upstream of another
-// can take every input the second one was built to judge.
-//
-// So both orders are driven. With both keys the earlier refusal answers
-// and names the key to keep, and with one key the request survives it
-// and meets the prefix refusal intact, which is what shows the first
-// did not swallow the second's domain.
 func TestIpamPoolID_TheTwoKeyRefusalDoesNotShadowThePrefixRefusal(t *testing.T) {
 	const pool = "192.168.99.4/31"
 
@@ -315,23 +203,9 @@ func TestIpamPoolID_TheTwoKeyRefusalDoesNotShadowThePrefixRefusal(t *testing.T) 
 	})
 }
 
-// TestIpamPoolID_CreateAndReplayDeriveOneIdentity is the OTHER half, and
-// it is the one that made the identity a canonical string instead of a
-// hash of the request.
-//
-// The daemon asks twice and the two askings differ. At `docker network
-// create` libnetwork sends the pool the user typed -- unmasked, as
-// typed. At the start-up replay it sends back the pool this driver
-// RETURNED, together with the persisted options. If those two derive
-// different identities the network is unbound the first time dockerd
-// restarts.
+// At create libnetwork sends the pool as typed, and at the start-up replay it sends the pool this driver returned,
+// so both must derive one identity (#110).
 func TestIpamPoolID_CreateAndReplayDeriveOneIdentity(t *testing.T) {
-	// canonical is what the driver must ANSWER with, written out here
-	// rather than taken from ipamCanonicalPool. A replay derived by
-	// calling the subject would agree with the create for any
-	// derivation at all, including one that never masks: the two sides
-	// would be the same wrong function. This column is the independent
-	// half, and it is what makes the masking observable.
 	cases := []struct{ name, typed, canonical string }{
 		{"host bits set", "192.168.100.7/24", "192.168.100.0/24"},
 		{"already masked", "192.168.100.0/24", "192.168.100.0/24"},
@@ -344,8 +218,7 @@ func TestIpamPoolID_CreateAndReplayDeriveOneIdentity(t *testing.T) {
 			if err != nil {
 				t.Fatalf("create derivation: %v", err)
 			}
-			// What the driver answered with, which is what libnetwork
-			// stores and sends back.
+			// The driver's answer, which libnetwork stores and sends back.
 			returned, err := ipamCanonicalPool(c.typed)
 			if err != nil {
 				t.Fatalf("ipamCanonicalPool: %v", err)
@@ -369,9 +242,6 @@ func TestIpamPoolID_CreateAndReplayDeriveOneIdentity(t *testing.T) {
 	}
 }
 
-// TestIpamPoolID_RefusesWhatItCannotTellApart. An --ipam-opt this driver
-// ignored would make two different requests derive one identity, and the
-// second network would take the first one's binding.
 func TestIpamPoolID_RefusesWhatItCannotTellApart(t *testing.T) {
 	cases := []struct {
 		name  string
@@ -400,16 +270,6 @@ func TestIpamPoolID_RefusesWhatItCannotTellApart(t *testing.T) {
 	}
 }
 
-// TestIssuedPoolTTLClearsTheProbeBudget is defeat row G: the TTL is
-// derived from what runs inside the gap it has to survive, not chosen.
-//
-// RequestPool answers, then `docker network create` runs its
-// -o validate_dhcp=true preflight probe -- a full DHCP round trip --
-// and only then does CreateNetwork consume the issue. A TTL that
-// expired underneath the probe would refuse every validate_dhcp network
-// in IPAM mode, and the refusal would name a missing pool rather than a
-// timer. The relation is asserted, not the numbers: raising either
-// constant must keep the order.
 func TestIssuedPoolTTLClearsTheProbeBudget(t *testing.T) {
 	gap := preflightProbeBudget + 5*time.Second
 	if issuedPoolTTL <= gap {
@@ -424,9 +284,6 @@ func TestIssuedPoolTTLClearsTheProbeBudget(t *testing.T) {
 	}
 }
 
-// TestIssuedPools_TakePrefersTheSuffixedIssue is what lets two networks
-// share a subnet on two parents: the second types --ipam-opt parent=,
-// its PoolID carries the suffix, and CreateNetwork can tell them apart.
 func TestIssuedPools_TakePrefersTheSuffixedIssue(t *testing.T) {
 	now := time.Now()
 	s := newIssuedPools()
@@ -441,8 +298,6 @@ func TestIssuedPools_TakePrefersTheSuffixedIssue(t *testing.T) {
 		t.Errorf("took %q; the eth1 network must take the issue whose suffix names eth1, or "+
 			"the two networks swap bindings", got)
 	}
-	// The unsuffixed one is still there for the network that typed no
-	// interface, and it is taken by a create on a different parent.
 	got, ok, _ = s.take(ipamLocalAddressSpace, "192.168.100.0/24", "eth0", now)
 	if !ok || got != "dhcp/dhcp-local/192.168.100.0/24" {
 		t.Errorf("second take = (%q, %v), want the unsuffixed issue", got, ok)
@@ -452,8 +307,6 @@ func TestIssuedPools_TakePrefersTheSuffixedIssue(t *testing.T) {
 	}
 }
 
-// TestIssuedPools_ExpireDropsTheUnconsumed. A create that failed leaves
-// its issue behind, and nothing else would ever remove it.
 func TestIssuedPools_ExpireDropsTheUnconsumed(t *testing.T) {
 	now := time.Now()
 	s := newIssuedPools()
@@ -463,29 +316,19 @@ func TestIssuedPools_ExpireDropsTheUnconsumed(t *testing.T) {
 	}
 }
 
-// TestIpamLeaseTimeoutFloorHolds is defeat row J. Capping lease_timeout
-// to the daemon's plugin-call budget must not push it under the floor
-// CheckLeaseTimeout enforces: two guards disagreeing about one number
-// leave the tighter one unreachable and untested.
 func TestIpamLeaseTimeoutFloorHolds(t *testing.T) {
 	p := &Plugin{}
 	budget := ipamReserveBudget()
 	if budget <= 0 {
 		t.Fatalf("the reserve budget is %v; the cap below would be meaningless", budget)
 	}
-	// The cap itself: a network asking for longer than the daemon will
-	// wait gets the daemon's budget.
 	if got := p.ipamLeaseTimeout(DHCPNetworkOptions{LeaseTimeout: budget + time.Minute}, "pool"); got != budget {
 		t.Errorf("lease_timeout %v capped to %v, want %v", budget+time.Minute, got, budget)
 	}
-	// The preservation control: a network under the budget is untouched.
 	short := budget / 2
 	if got := p.ipamLeaseTimeout(DHCPNetworkOptions{LeaseTimeout: short}, "pool"); got != short {
 		t.Errorf("lease_timeout %v became %v; a value inside the budget must not be touched", short, got)
 	}
-	// The floor. CheckLeaseTimeout refuses a lease_timeout below the
-	// conflict-detection window, and the cap must land above it or the
-	// capped value is one the other guard would refuse.
 	if err := dhcp.CheckLeaseTimeout(budget, proto.ConflictWait); err != nil {
 		t.Errorf("the cap produces %v, which CheckLeaseTimeout refuses: %v.\n"+
 			"Two guards disagreeing about one number leave the tighter one unreachable: "+
@@ -493,22 +336,7 @@ func TestIpamLeaseTimeoutFloorHolds(t *testing.T) {
 	}
 }
 
-// TestApiIpamGetCapabilities_BothCapabilitiesAreOnTheWire pins the two
-// booleans this driver cannot work without, on the wire and by moby's
-// field names.
-//
-// Neither is a preference. RequiresMACAddress is what puts the
-// endpoint's hardware address into RequestAddress at all; without it
-// there is no identity to run a DHCP exchange as and every reserve
-// invents a MAC. RequiresRequestReplay is what makes libnetwork re-ask
-// for every stored endpoint's address at daemon start; without it an
-// IPAM-mode network comes back from a restart with its endpoints
-// unallocated.
-//
-// Asserted against the raw JSON, not only the decoded struct: moby
-// decodes this body into its own type by FIELD NAME
-// (libnetwork/ipams/remote/api), so a rename on this side keeps every
-// Go test green and silently answers false to both.
+// moby decodes this body by field name (libnetwork/ipams/remote/api), so a rename answers false to both (#110).
 func TestApiIpamGetCapabilities_BothCapabilitiesAreOnTheWire(t *testing.T) {
 	p := newTestPlugin(t)
 
@@ -535,8 +363,6 @@ func TestApiIpamGetCapabilities_BothCapabilitiesAreOnTheWire(t *testing.T) {
 	}
 }
 
-// ipamCapabilityCost says what turning one of them off costs, so the
-// failure above names the consequence rather than the boolean.
 func ipamCapabilityCost(name string) string {
 	switch name {
 	case "RequiresMACAddress":
@@ -548,26 +374,6 @@ func ipamCapabilityCost(name string) string {
 	}
 }
 
-// TestIpamBindingFor_TheRefusalNamesTheRealReason.
-//
-// One miss in issuedPools.take used to produce one sentence, and that
-// sentence named a plugin restart. Two of the three ways to reach it
-// are not a restart, and an operator sent to look for one finds
-// nothing wrong with the plugin and nothing wrong with their command.
-//
-//   - `--ipam-opt parent=eth0` beside `-o parent=eth1`. The pool
-//     identity was minted against eth0 and the network is created on
-//     eth1, so take finds an entry for the right space and pool whose
-//     suffix names something else, and it is a typo in one of the two
-//     flags.
-//   - Two `docker network create` for one subnet at once. Both ask for
-//     the same unsuffixed pool, so the second RequestPool overwrites
-//     the first's issue (one map key), one create consumes it, and the
-//     other finds nothing. The remedy is the `--ipam-opt` the other
-//     message tells them to drop.
-//
-// The restart wording stays as one of the named causes, because it is
-// still one of them.
 func TestIpamBindingFor_TheRefusalNamesTheRealReason(t *testing.T) {
 	const pool = "192.168.100.0/24"
 
@@ -609,8 +415,6 @@ func TestIpamBindingFor_TheRefusalNamesTheRealReason(t *testing.T) {
 		if err == nil {
 			t.Fatal("a network bound a pool identity this plugin never issued")
 		}
-		// All three causes, because the operator cannot tell which one
-		// they hit from anything else they can see.
 		for _, want := range []string{"restarted", "same subnet", "--ipam-opt parent="} {
 			if !strings.Contains(err.Error(), want) {
 				t.Errorf("the refusal is %q and does not mention %q", err, want)

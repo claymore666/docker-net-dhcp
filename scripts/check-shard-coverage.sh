@@ -153,24 +153,46 @@ roster_n=$(printf '%s\n' "$roster" | wc -l)
 # `<suite>-<index>-of-<total>` spelling that lane's own "Run one shard"
 # step parses back into SHARD/OF/SUITE. `full` is that lane's unsharded
 # mode and is not a triple.
+#
+# Both are read as matrix VALUES through the YAML parse: a shard line in
+# a comment or under another key schedules nothing (#883).
 triples_of() {
     case "$1" in
-    integration.yml)
-        sed -n 's/.*integration-test-shard SHARD=\([0-9][0-9]*\) OF=\([0-9][0-9]*\) SUITE=\([a-z][a-z]*\).*/\3 \1 \2/p' "$WF/$1"
-        ;;
-    integration-hosted.yml)
-        grep -oE '"[a-z]+-[0-9]+-of-[0-9]+"' "$WF/$1" | tr -d '"' \
-            | sed -E 's/^([a-z]+)-([0-9]+)-of-([0-9]+)$/\1 \2 \3/'
-        ;;
-    *)
-        refuse "Unknown lane" "$1 has no triple spelling declared in this gate."
-        ;;
+    integration.yml|integration-hosted.yml) ;;
+    *) echo "$1 has no triple spelling declared in this gate."; return 2 ;;
     esac
+    python3 - "$1" "$WF/$1" 2>&1 <<'PY'
+import re, sys
+try:
+    import yaml
+except ImportError:
+    sys.exit("PyYAML is not installed, so no matrix can be read")
+lane, path = sys.argv[1], sys.argv[2]
+doc = yaml.safe_load(open(path)) or {}
+TARGET = re.compile(r"integration-test-shard SHARD=(\d+) OF=(\d+) SUITE=([a-z]+)")
+for job in (doc.get("jobs") or {}).values():
+    matrix = ((job or {}).get("strategy") or {}).get("matrix")
+    if not isinstance(matrix, dict):
+        continue
+    if lane == "integration.yml":
+        for entry in matrix.get("include") or []:
+            m = TARGET.match(str((entry or {}).get("target", "")))
+            if m:
+                print(m.group(3), m.group(1), m.group(2))
+    else:
+        shard = matrix.get("shard", [])
+        ids = shard if isinstance(shard, list) else re.findall(r'"([^"]*)"', str(shard))
+        for sid in ids:
+            m = re.fullmatch(r"([a-z]+)-([0-9]+)-of-([0-9]+)", str(sid))
+            if m:
+                print(*m.groups())
+PY
 }
 
 status=0
 for wf in $WORKFLOWS; do
-    triples=$(triples_of "$wf")
+    triples=$(triples_of "$wf") || refuse "A lane cannot be read" \
+        "$WF/$wf: $(printf '%s' "$triples" | tail -n 1)"
     if [ -z "$triples" ]; then
         refuse "A lane schedules no shard" \
             "no (suite, index, total) triple could be read out of $WF/$wf. An empty scheduled set covers nothing, and a gate whose domain is empty passes by saying nothing."

@@ -57,7 +57,7 @@ echo "=== ensuring plugin is enabled (recovery test may have left it disabled) =
 # was not using. It reported the same output either way — there is
 # nothing to see when `plugin inspect` simply misses. The harness reads
 # INTEGRATION_PLUGIN_REF with exactly this default
-# (test/integration/harness/plugin.go:28-33); honour the same seam so
+# (PluginRef in test/integration/harness/plugin.go); honour the same seam so
 # the cleanup and the suite can never disagree about which plugin they
 # mean.
 plugin_ref="${INTEGRATION_PLUGIN_REF:-ghcr.io/claymore666/docker-net-dhcp:golang}"

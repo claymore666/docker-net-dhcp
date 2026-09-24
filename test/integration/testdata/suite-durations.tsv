@@ -10,8 +10,8 @@
 #
 # POPULATION: TOP-LEVEL TEST FUNCTIONS, PARENTS ONLY.
 # One row per `func TestX(t *testing.T)` in test/integration/*_test.go —
-# 146 of them, the main suite's 139 and the failure suite's 7. MEASURED
-# on this table: 146 data rows, and 146 `func TestX(t *testing.T)` in
+# 161 of them, the main suite's 154 and the failure suite's 7. MEASURED
+# on this table: 161 data rows, and 161 `func TestX(t *testing.T)` in
 # test/integration/*_test.go counted independently of them.
 #
 # THIS NUMBER HAS NOW BEEN WRONG TWICE, and the second time is the
@@ -23,7 +23,7 @@
 # population from the sharder and never reads this sentence, so nothing
 # goes red when it drifts: re-measure it against the table beside it
 # rather than adding your rows to the number already written here.
-# Recounted 2026-09-21. A subtest's
+# Recounted 2026-09-24. A subtest's
 # seconds are inside its parent's figure and are NOT a row of their own.
 # That is stated because the previous edition's header did not state it
 # and the population was read back two ways: 104 rows summing 1804.88s
@@ -310,15 +310,97 @@
 #              reads. The first run
 #              that executes each costs it, the way
 #              TestFailure_UnansweredRenewalsCounted was costed.
-#   samples    3 for every corpus row. THIRTY-SEVEN rows are not corpus
-#              samples, and the six groups below are disjoint and
+#   four rows  the #1016 TestReleaseLease_* rows are INFERRED, not
+#              measured: no run has executed them. They reuse the
+#              #984 rows' arithmetic, whose 80s (the 60s window, the 5s
+#              settle, one 15s sweep tick) no knob shortens.
+#              TestReleaseLease_OnRemoveNetworkRemovalHandsTheHeldAddressBackAtOnce
+#              is 30.00: TestReleaseLease_OnStopHandsTheAddressBack's
+#              walk (24.00) plus a container and a network removal; it
+#              waits for no window.
+#              TestReleaseLease_OnRemoveNetworkRemovalHandsBackOnlyThatNetworksAddresses
+#              is 125.00: two networks and three containers (24.00
+#              plus two starts of about 8s), then the sibling's own
+#              window, which is the 80s.
+#              TestReleaseLease_OnRemoveReleasesAtTheWindowsEndAcrossAPluginRestart
+#              is 105.00: TestReleaseLease_OnRemoveHoldsTheAddressThenHandsItBack
+#              (100.00) plus a plugin disable and enable inside the
+#              window, which overlaps it.
+#              TestReleaseLease_OnStopLeavesTheAddressToExpireWhenThePluginMissedTheStop
+#              is 230.00: a container walk (about 20s), a docker stop
+#              against a disabled plugin that may take the engine's
+#              plugin-client retry budget for each of Leave and
+#              DeleteEndpoint (30s each, moby pkg/plugins/client.go),
+#              a plugin enable (about 13s, as
+#              TestRecovery_PluginDisableEnable_PreservesEndpoint), and
+#              a 135s absence watch. The first run that executes each
+#              costs it.
+#   seven rows the #1016 rows are INFERRED, not measured. Each starts
+#              from TestSLAAC_AnAdvertisedPrefixReachesTheContainer
+#              (45.00) or a named row, adds harness.V6NoRAWindow (12s)
+#              where its fixture proves no dnsmasq advertisement before
+#              the harness sender starts, and adds the lifetimes it
+#              waits out; each is rounded UP.
+#                TestMainPrefix_* (two)                        60.00
+#                  = 45.00 + 12.00 = 57.00.
+#                TestAutoStrict_*                              80.00
+#                  = AutoFallsBackOntoTheAdvertisedPrefix (50.00) plus
+#                    TestDHCPv6_Managed_ServerSilent_IsStillFatal
+#                    (27.95) for the strict arm = 77.95.
+#                TestAdvertDNS_*                               75.00
+#                  = 45.00 plus TestDHCPv6_Managed_StillRequiresALease
+#                    (16.39), plus a persistent bind per arm (2 to 5s,
+#                    #875) = 71.39.
+#                TestAdvertRoutes_*                           150.00
+#                  = per arm 12.00 + 16.39 + 5 for the bind + 4.75 for
+#                    advertChangeBudget = 38.14, two arms 76.28, plus
+#                    the #1088 arm: 38.14, twice 11 for router discovery
+#                    giving up with no advertisement (harness V6NoRA
+#                    note), and two more advertChangeBudget = 69.64;
+#                    total 145.92.
+#                TestSLAAC_AnAddressWhoseValidLifetimeRunsOut* 75.00
+#                  = 57.00 plus the 12s valid lifetime and 1s slack.
+#                TestSLAAC_RenumberingInOneAdvertisement*      95.00
+#                  = 57.00 plus the 30s old lifetime, 1s slack and the
+#                    new prefix's formation.
+#              The first run that executes each costs it.
+#   three rows the #1016 refusal rows are INFERRED, not measured: no
+#              run has executed them.
+#              TestCreateRefusals_EachNamesTheOptionAndTheReasonAndLeavesNoNetwork
+#              is 30.00: twelve refused creates, which cost what
+#              TestErrors_NetworkCreateValidation's eight do (0.04), and
+#              nineteen accepted create and remove pairs at about a
+#              second each.
+#              TestLeaseTimeout_AnEmptyValueIsTheDefaultAndTheContainerLeases
+#              is 42.00: TestIPAM_IpvlanIsRefusedAtCreate's shape (15.00,
+#              one refused create, one network, one container) plus a
+#              second refused create and a dnsmasq log read, 20.00, plus
+#              two IPAM networks with a container each at the 11.00 that
+#              TestIPAM_BothShapesOnOneDaemon's second pair adds (26.00).
+#              TestDHCPv6_ARefusalLogsItsStatusCodeByNameOnce is 35.00:
+#              the refusing arm of TestDHCPv6_RefusedAndSilentAreTwoRows
+#              (56.00 for both arms, the silent one the longer) plus a
+#              plugin log read.
+#   one row    TestRenumber_ThePluginKernelTestsPassInTheirOwnNamespace
+#              is 60.00 and is INFERRED, not measured: it arrives with
+#              #1081 and no run has executed it. It starts no container;
+#              it runs `go test` on pkg/plugin twice, once as is and
+#              once with the link refused; the four kernel tests took
+#              1.02s on a warm cache on the session box, so the figure
+#              is the package compile on a cold cache, with room.
+#              The first run that executes it costs it.
+#   samples    3 for every corpus row. FIFTY-TWO rows are not corpus
+#              samples, and the ten groups below are disjoint and
 #              exhaust them: the five `one row` notes above -- 73.85,
 #              84.19, 0.05, 12.08 and 13.00 -- the eighteen #110 rows,
 #              the four #962 TestReleaseLease_* rows, the two
 #              #816/#817 rows, the four #984 TestReleaseLease_OnRemove*
-#              rows, and the four #978 TestHostIfname_* rows.
-#              Thirty-four of the
-#              thirty-seven are INFERRED; the three that are measured are
+#              rows, the four #978 TestHostIfname_* rows, the four
+#              #1016 TestReleaseLease_* rows, the seven #1016 v6
+#              advertisement rows, the three #1016 refusal rows, and
+#              the #1081 renumber row.
+#              Forty-nine of the fifty-two are INFERRED; the three
+#              that are measured are
 #              TestLeaseRenewIPv6_HonorsT1, from three later head runs,
 #              and TestFailure_UnansweredRenewalsCounted and
 #              TestHostname_ReachesTheServersTableAfterTheClientStarts,
@@ -401,8 +483,11 @@
 #     | sed -E 's/.*: ([A-Za-z0-9_]+) \(([0-9.]+)s\)/\1\t\2/'
 # then take the per-name median across the three, sort by name, and
 # re-derive the shard counts above from the new totals.
+TestAdvertDNS_ReachesTheResolverAndDHCPv6ComesFirst	75.00
+TestAdvertRoutes_BecomeContainerRoutesUnlessSkipRoutes	150.00
 TestAuditLog_DefaultOff	12.63
 TestAuditLog_RecordsLifecycle	12.31
+TestAutoStrict_ASilentManagedServerFailsTheEndpointAndTheDefaultFallsBack	80.00
 TestClasslessStaticRoutes_AbsentWithoutOptIn	12.09
 TestClasslessStaticRoutes_AppliedFromDHCP	11.96
 TestClientID_DefaultIsMACDerived	11.50
@@ -415,7 +500,9 @@ TestConflictCheck_RestartInsideTheAsyncWindow	4.60
 TestConflictCheck_SquattedOfferIsDeclined	37.00
 TestConflictCheck_SquatterAfterTheFact	36.71
 TestConflictCheck_WaitAcquisitionIsTimed	9.15
+TestCreateRefusals_EachNamesTheOptionAndTheReasonAndLeavesNoNetwork	30.00
 TestDHCPv6_ADuplicateOnTheSegmentIsRefused	30.08
+TestDHCPv6_ARefusalLogsItsStatusCodeByNameOnce	35.00
 TestDHCPv6_ASquatOnARunningContainerIsCountedAndTheAddressChanges	38.00
 TestDHCPv6_AdvertisedMTUReachesTheContainer	30.00
 TestDHCPv6_Managed_ServerSilent_IsStillFatal	27.95
@@ -490,6 +577,7 @@ TestLeaseRenewIPv6_HonorsT1	73.85
 TestLeaseRenew_HonorsT1	27.38
 TestLeaseRetention_ARestartRebootsRatherThanDiscovers	12.92
 TestLeaseRetention_NothingEverReleases	35.23
+TestLeaseTimeout_AnEmptyValueIsTheDefaultAndTheContainerLeases	42.00
 TestLifecycleBridge_GoldenPath	12.19
 TestLifecycleBridge_IPv6_GoldenPath	16.98
 TestLifecycleIPvlan_GoldenPath	11.80
@@ -497,10 +585,13 @@ TestLifecycleMacvlan_GoldenPath	11.61
 TestLifecycleMacvlan_IPv6_GoldenPath	17.68
 TestMTUPropagate_DefaultIsUnchanged	12.15
 TestMTUPropagate_OptInSetsLinkMTU	11.79
+TestMainPrefix_AnUnadvertisedPrefixReportsTheFirstAdvertisedOne	60.00
+TestMainPrefix_TheSecondOfTwoAdvertisedPrefixesIsWhatDockerReports	60.00
 TestMetrics_SocketServesTheFullSurface	0.01
 TestMultiNetwork_SameSubnetRefused	27.75
 TestNonRootContainer_PersistentClientStarts	27.48
 TestParentGate_EndpointQueuesBehindAProbe	40.23
+TestPersistentBind_ASecondNetworkOnTheSameFixtureBinds	40.00
 TestPreflightProbe_FailsWhenServerUnreachable	8.15
 TestPreflightProbe_IPvlanProbeCoexistsWithIPvlanEndpoints	14.96
 TestPreflightProbe_PassesOnReachableServer	3.47
@@ -513,13 +604,20 @@ TestReleaseLease_OnRemoveHandsAnIPAMAddressBackToo	100.00
 TestReleaseLease_OnRemoveHandsTheV6AddressBackToo	108.00
 TestReleaseLease_OnRemoveHoldsTheAddressThenHandsItBack	100.00
 TestReleaseLease_OnRemoveKeepsTheAddressForARestartInsideTheWindow	105.00
+TestReleaseLease_OnRemoveNetworkRemovalHandsBackOnlyThatNetworksAddresses	125.00
+TestReleaseLease_OnRemoveNetworkRemovalHandsTheHeldAddressBackAtOnce	30.00
+TestReleaseLease_OnRemoveReleasesAtTheWindowsEndAcrossAPluginRestart	105.00
 TestReleaseLease_OnStopHandsTheAddressBack	24.00
 TestReleaseLease_OnStopHandsTheV6AddressBackToo	32.00
+TestReleaseLease_OnStopLeavesTheAddressToExpireWhenThePluginMissedTheStop	230.00
 TestReleaseLease_TheOptionIsRefusedAtCreateOrItIsNot	0.10
+TestRenumber_ThePluginKernelTestsPassInTheirOwnNamespace	60.00
 TestSLAAC_ADeprecatedPrefixArrivesDeprecated	45.00
 TestSLAAC_ASegmentWithNoRouterEndsAFormingEndpoint	110.00
+TestSLAAC_AnAddressWhoseValidLifetimeRunsOutLeavesTheLink	75.00
 TestSLAAC_AnAdvertisedPrefixReachesTheContainer	45.00
 TestSLAAC_AutoFallsBackOntoTheAdvertisedPrefix	50.00
+TestSLAAC_RenumberingInOneAdvertisementEndsWithExactlyTheNewSet	95.00
 TestSLAAC_TheAddressComesBackAfterAPluginRestart	60.00
 TestSandboxKeyRoute_Bridge	11.89
 TestSandboxKeyRoute_Ipvlan	11.60

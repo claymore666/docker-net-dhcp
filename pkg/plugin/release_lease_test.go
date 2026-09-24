@@ -29,24 +29,13 @@ import (
 	"github.com/claymore666/docker-net-dhcp/v2/pkg/util"
 )
 
-// fakeSender stands in for the one call that puts a datagram on the
-// wire, which is the only part of the release path a unit test cannot
-// run: runtime.SendRelease opens a socket on the parent.
-//
-// It records what it was handed, so the tests below can assert the
-// RECORD and the SOURCE rather than only the fact of a call. Those two
-// are where a release goes silently wrong: the wrong family's record
-// releases the wrong address, and a source equal to the released
-// address is the violation RFC 9915 section 18.2.7 names.
+// fakeSender records the lease record and source address; a source equal to the released address violates RFC 9915
+// section 18.2.7.
 type fakeSender struct {
-	mu   sync.Mutex
-	recs []lease.Record
-	cfgs []runtime.ReleaseConfig
-	// err is what the library returns. The typed refusals go here.
-	err error
-	// errFor, when set, is consulted per record instead of err, so a
-	// dual-stack case can fail one family and not the other. That mixed
-	// outcome is the one a single shared flag gets wrong.
+	mu     sync.Mutex
+	recs   []lease.Record
+	cfgs   []runtime.ReleaseConfig
+	err    error
 	errFor func(lease.Record) error
 }
 
@@ -67,7 +56,6 @@ func (f *fakeSender) callCount() int {
 	return len(f.recs)
 }
 
-// installSender puts a fake on the wire seam for the test's lifetime.
 func installSender(t *testing.T, f *fakeSender) *fakeSender {
 	t.Helper()
 	if f == nil {
@@ -79,8 +67,6 @@ func installSender(t *testing.T, f *fakeSender) *fakeSender {
 	return f
 }
 
-// hostParent installs a parent link carrying the given addresses, so
-// hostSourceFor has something to choose from without CAP_NET_ADMIN.
 func hostParent(t *testing.T, addrs ...string) {
 	t.Helper()
 	link := &netlink.Bridge{LinkAttrs: netlink.LinkAttrs{Name: "br0", Index: 7}}
@@ -108,9 +94,6 @@ func hostParent(t *testing.T, addrs ...string) {
 	t.Cleanup(func() { nlLinkByName, nlAddrList = prevByName, prevList })
 }
 
-// withRecords gives a plugin a durable record store if it has none.
-// Every release is built from one now, so a *Plugin{} with no store
-// releases nothing at all.
 func withRecords(t *testing.T, p *Plugin) *Plugin {
 	t.Helper()
 	if p.records != nil {
@@ -125,11 +108,8 @@ func withRecords(t *testing.T, p *Plugin) *Plugin {
 	return p
 }
 
-// releaseTestMAC is the endpoint MAC every record below is keyed on.
 var releaseTestMAC = net.HardwareAddr{0x02, 0x42, 0xac, 0x11, 0x00, 0x02}
 
-// releaseTestIdentity6 is a DUID-LL plus the IAID as the record stores
-// it: "the DUID and IAID as sent".
 func releaseTestIdentity6() dhcp.Identity6 {
 	return dhcp.Identity6{
 		DUID: []byte{0, 3, 0, 1, 0x02, 0x42, 0xac, 0x11, 0x00, 0x02},
@@ -137,33 +117,18 @@ func releaseTestIdentity6() dhcp.Identity6 {
 	}
 }
 
-// TestReleaseLease_ParseRefusesEveryValueItDoesNotImplement pins the
-// option's domain at the only place it is decided.
-//
-// A typo that fell through to the default would be the worst available
-// outcome: an operator who wrote `release_lease=on_stpo` gets a network
-// that looks configured and never releases, and nothing anywhere says
-// so. The three values this plugin implements resolve and everything
-// else is refused with all three named, so the message tells an
-// operator what they may have meant.
 func TestReleaseLease_ParseRefusesEveryValueItDoesNotImplement(t *testing.T) {
 	for _, tc := range []struct {
-		in      string
-		want    string
-		wantErr bool
-		// mentions are substrings the refusal must carry, so a refusal
-		// that says nothing useful fails here rather than in a support
-		// thread.
+		in       string
+		want     string
+		wantErr  bool
 		mentions []string
 	}{
 		{in: "", want: ReleaseNever},
 		{in: "never", want: ReleaseNever},
 		{in: "on_stop", want: ReleaseOnStop},
 		{in: "on_remove", want: ReleaseOnRemove},
-		// The refusal names every value, and `on_remove` is the row
-		// that proves it: a message listing the two values that
-		// existed before #984 would send an operator who mistyped the
-		// third one looking for a value the plugin has.
+		// `on_remove` proves the refusal names every value (#984).
 		{in: "On_Stop", wantErr: true, mentions: []string{"is not one of", "on_remove"}},
 		{in: "on_stpo", wantErr: true, mentions: []string{"is not one of", "on_remove"}},
 		{in: "ON_REMOVE", wantErr: true, mentions: []string{"is not one of", "on_remove"}},
@@ -199,16 +164,6 @@ func TestReleaseLease_ParseRefusesEveryValueItDoesNotImplement(t *testing.T) {
 	}
 }
 
-// TestReleaseLease_TheCreateAndStoredPathsRefuseTheSameSet is the
-// second half of that refusal, and the reason it is a separate test is
-// that the two paths are reached from different directions.
-//
-// validateModeOptions runs at `docker network create`. checkStoredOptions
-// runs on every endpoint call against the record on disk, which is what
-// a network created before this option existed replays -- and what an
-// operator editing the stored options by hand produces. A value refused
-// at create and accepted on replay would be a network that releases
-// because nobody looked at it twice.
 func TestReleaseLease_TheCreateAndStoredPathsRefuseTheSameSet(t *testing.T) {
 	for _, v := range []string{"", "never", "on_stop", "on_remove", "On_Stop", "sometimes"} {
 		t.Run(v, func(t *testing.T) {
@@ -238,8 +193,6 @@ func TestReleaseLease_TheCreateAndStoredPathsRefuseTheSameSet(t *testing.T) {
 	}
 }
 
-// releasingManager is a manager that holds one live client per family
-// and is ready to be stopped.
 func releasingManager(t *testing.T, p *Plugin, value string, ipv6 bool) *dhcpManager {
 	t.Helper()
 	withRecords(t, p)
@@ -256,17 +209,6 @@ func releasingManager(t *testing.T, p *Plugin, value string, ipv6 bool) *dhcpMan
 	return m
 }
 
-// TestReleaseLease_OnlyALeaveOnAReleasingNetworkReleases drives the two
-// guards on the send together, because each one alone is satisfied by
-// the other's mutant.
-//
-// The `leaving` half is the one with teeth. Stop() and StopForLeave()
-// differ by one bool, and everything that is NOT a container leaving
-// its sandbox arrives through Stop with its container still running:
-// `docker plugin disable` routes Plugin.Close there, so does a manager
-// displaced by a newer one for the same endpoint, and so does the
-// cleanup after `docker network rm`. A release on that path tells the
-// server an address is free while a live container is using it.
 func TestReleaseLease_OnlyALeaveOnAReleasingNetworkReleases(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -315,20 +257,9 @@ func TestReleaseLease_OnlyALeaveOnAReleasingNetworkReleases(t *testing.T) {
 	}
 }
 
-// TestReleaseLease_TheCounterFollowsTheSendNotTheIntent is the
-// counter's own observer, driven over the states the sender
-// distinguishes.
-//
-// A plugin counter folded from "we tried" would read the same in all
-// three, and an operator alerting on release_failures would see a clean
-// zero on a host that handed nothing back. The sender returns every
-// failure precisely so this counter can be honest; a swallowed write
-// error would close the record on an address that stays leased.
 func TestReleaseLease_TheCounterFollowsTheSendNotTheIntent(t *testing.T) {
 	for _, tc := range []struct {
-		name string
-		// sendErr is what the library returns; noRecord drops the
-		// record instead, which is refused before any send.
+		name         string
 		sendErr      error
 		noRecord     bool
 		wantSent     int32
@@ -388,16 +319,6 @@ func TestReleaseLease_TheCounterFollowsTheSendNotTheIntent(t *testing.T) {
 	}
 }
 
-// TestReleaseLease_TheReleaseIsBuiltFromThisFamilysRecord is the
-// wiring nothing else reads: WHICH record each family's release is
-// built from, and WHICH address it is sent from.
-//
-// Both are silent when wrong. A v6 release built from the v4 record
-// releases an address the container never had, from a source in the
-// wrong family, and every counter and phase in this file still reads
-// correct. The library refuses the mismatched pair, which is the
-// backstop; this is the observer that says the plugin never hands it
-// one.
 func TestReleaseLease_TheReleaseIsBuiltFromThisFamilysRecord(t *testing.T) {
 	p := &Plugin{}
 	sender := installSender(t, nil)
@@ -436,22 +357,13 @@ func TestReleaseLease_TheReleaseIsBuiltFromThisFamilysRecord(t *testing.T) {
 	}
 }
 
-// TestReleaseLease_TheSourceIsNeverTheReleasedAddress drives
-// hostSourceFor's rule, per family, including the cases that refuse.
-//
-// The v6 half is RFC 9915 section 18.2.7's second MUST NOT: "The client
-// MUST NOT use any of the addresses it is releasing as the source
-// address in the Release message." The library refuses the violation
-// too, and that is deliberate belt and braces; what it cannot do is
-// pick a legal source, because it does not know which link is the
-// parent or which address is being given back.
+// TestReleaseLease_TheSourceIsNeverTheReleasedAddress drives hostSourceFor per family (RFC 9915 section 18.2.7).
 func TestReleaseLease_TheSourceIsNeverTheReleasedAddress(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
 		v6    bool
 		addrs []string
-		// want is the source, or "" for a refusal.
-		want string
+		want  string
 	}{
 		{"v4 takes the one address there is", false,
 			[]string{"192.168.99.2/24"}, "192.168.99.2"},
@@ -475,9 +387,7 @@ func TestReleaseLease_TheSourceIsNeverTheReleasedAddress(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			p := &Plugin{}
 			m := releasingManager(t, p, ReleaseOnStop, true)
-			// stoppingManager puts 192.168.99.50 and fd00::50 on the
-			// endpoint, so the third row's first candidate is exactly
-			// the address being given back.
+			// stoppingManager's 192.168.99.50 and fd00::50 make the third row's first candidate the released address.
 			hostParent(t, tc.addrs...)
 
 			got, iface, err := m.hostSourceFor(tc.v6)
@@ -503,18 +413,8 @@ func TestReleaseLease_TheSourceIsNeverTheReleasedAddress(t *testing.T) {
 	}
 }
 
-// TestReleaseLease_AFailedV6WithdrawalSendsNothing is RFC 9915 section
-// 18.2.7 as an executable check: "The client MUST stop using all of the
-// leases being released before the client begins the Release message
-// exchange process. For an address, this means the address MUST have
-// been removed from the interface."
-//
-// The failure arm is the one that matters. A release sent while the
-// address is still on the link is a client telling the server it has
-// stopped using an address it is at that moment still configured with,
-// and the plugin cannot honour the MUST after the fact. Not sending
-// leaves the address to expire on the server's clock, which is what a
-// `never` network does on every teardown.
+// TestReleaseLease_AFailedV6WithdrawalSendsNothing: the address MUST be off the interface before the Release
+// (RFC 9915 section 18.2.7).
 func TestReleaseLease_AFailedV6WithdrawalSendsNothing(t *testing.T) {
 	for _, tc := range []struct {
 		name         string
@@ -522,10 +422,7 @@ func TestReleaseLease_AFailedV6WithdrawalSendsNothing(t *testing.T) {
 		wantCalls    int
 		wantSent     int32
 		wantFailures int32
-		// wantOutcome is the REASON, read beside the count. Without it
-		// the three arms are one bool and a wrong reason in the log is
-		// invisible here.
-		wantOutcome releaseOutcome
+		wantOutcome  releaseOutcome
 	}{
 		{name: "the address came off", delErr: nil, wantCalls: 1, wantSent: 1,
 			wantOutcome: releaseSent},
@@ -537,8 +434,6 @@ func TestReleaseLease_AFailedV6WithdrawalSendsNothing(t *testing.T) {
 			wantOutcome:  releaseWithdrawFailed,
 		},
 		{
-			// The link is being torn down around this call. An address
-			// that is already gone satisfies the MUST by being absent.
 			name: "the address was already gone", delErr: syscall.EADDRNOTAVAIL,
 			wantCalls: 1, wantSent: 1, wantOutcome: releaseSent,
 		},
@@ -573,16 +468,6 @@ func TestReleaseLease_AFailedV6WithdrawalSendsNothing(t *testing.T) {
 	}
 }
 
-// TestReleaseLease_TheRecordIsClosedPerFamily pins the phase each
-// family's record ends in, and it drives the MIXED outcome because that
-// is the one a single shared flag gets wrong.
-//
-// A record left LEFT after its address went back is re-bindable: the
-// next start resumes it, sends an INIT-REBOOT naming an address the
-// server has already returned to its pool, and the container comes up
-// on an address that may by then belong to someone else. A record
-// CLOSED after a release that never happened is the mirror mistake --
-// this endpoint still holds that lease and may still resume it.
 func TestReleaseLease_TheRecordIsClosedPerFamily(t *testing.T) {
 	for _, tc := range []struct {
 		name        string
@@ -604,10 +489,6 @@ func TestReleaseLease_TheRecordIsClosedPerFamily(t *testing.T) {
 			if id4 == "" || id6 == "" {
 				t.Fatal("no record was created")
 			}
-			// Both records are JOINED, which is where a teardown finds
-			// them: the fold accepts LEFT only from there, so a test
-			// that skipped the bind would be asserting on a rejected
-			// event rather than on a phase.
 			p.recordBound(id4, "created")
 			p.recordBound(id6, "created")
 
@@ -642,16 +523,8 @@ func TestReleaseLease_TheRecordIsClosedPerFamily(t *testing.T) {
 	}
 }
 
-// TestReleaseLease_AReleasedEndpointLeavesNothingBehind is the
-// tombstone half, in both directions.
-//
-// A tombstone hands this endpoint's MAC AND its addresses to whichever
-// container starts next on the network inside the TTL. After a release
-// those addresses are back in the server's pool, so the inheritance
-// would have the next container ask for an address that may already
-// belong to someone else -- #524's duplicate assignment, manufactured
-// by the plugin. The not-released direction is what stops the fix from
-// being "stop writing tombstones".
+// TestReleaseLease_AReleasedEndpointLeavesNothingBehind: a tombstone after a release would reassign returned
+// addresses (#524).
 func TestReleaseLease_AReleasedEndpointLeavesNothingBehind(t *testing.T) {
 	for _, tc := range []struct {
 		name          string
@@ -666,29 +539,10 @@ func TestReleaseLease_AReleasedEndpointLeavesNothingBehind(t *testing.T) {
 		{"not released: the endpoint keeps its MAC across a restart", false, false,
 			true, lease.PhaseRetained, lease.PhaseRetained},
 		{
-			// THE MIXED OUTCOME, and it is the one that says why the
-			// record's tombstone phase is NOT guarded on the
-			// fingerprint flag. The tombstone is one object carrying
-			// both addresses, so the v6 release suppresses it; the v4
-			// lease is still outstanding and its record must be
-			// retained exactly as under `never`, or a restart inside
-			// the TTL stops finding the address this endpoint still
-			// holds.
 			"only the v6 lease went back: the v4 record still gets its tombstone phase", false, true,
 			false, lease.PhaseRetained, lease.PhaseClosed,
 		},
 		{
-			// THE SAME MIXED OUTCOME THE OTHER WAY ROUND, and it is
-			// here because the two are not symmetric in the code that
-			// produces them. retainRecordFor walks the two scopes in
-			// one loop, v4 first; a CLOSED record is skipped and the
-			// walk goes on to the next family. Skip written as a stop
-			// -- `break` for `continue` -- is invisible from the row
-			// above, where the CLOSED record is the last one visited
-			// and stopping and skipping do the same thing. With the
-			// families the other way round it is the difference
-			// between the live v6 record getting its tombstone phase
-			// and never being looked at.
 			"only the v4 lease went back: the v6 record still gets its tombstone phase", true, false,
 			false, lease.PhaseClosed, lease.PhaseRetained,
 		},
@@ -720,9 +574,6 @@ func TestReleaseLease_AReleasedEndpointLeavesNothingBehind(t *testing.T) {
 			p.rememberEndpoint("ep-1", endpointFingerprint{
 				MAC: mac.String(), IPv4: "192.168.99.50",
 			}, dhcpHostname{name: "web"})
-			// The fact, not the option: Leave settles each family's
-			// record from what actually left the host, and marks the
-			// endpoint when either of them did.
 			p.settleReleasedRecord(id4, tc.releasedV4)
 			p.settleReleasedRecord(id6, tc.releasedV6)
 			if tc.releasedV4 || tc.releasedV6 {
@@ -768,16 +619,6 @@ func TestReleaseLease_AReleasedEndpointLeavesNothingBehind(t *testing.T) {
 	}
 }
 
-// TestReleaseLease_LeaveSettlesTheWholeEndpoint drives Plugin.Leave
-// itself, and it exists because everything else in this file drives one
-// consequence at a time.
-//
-// The release, the two record phases and the fingerprint flag are four
-// effects of one event, wired together in Leave and nowhere else. A
-// test per effect leaves the WIRING unobserved: dropping
-// markEndpointReleased, or settling the v6 record from the v4 outcome,
-// changes nothing any of the tests above reads. This is the one that
-// goes red for those.
 func TestReleaseLease_LeaveSettlesTheWholeEndpoint(t *testing.T) {
 	for _, tc := range []struct {
 		name         string
@@ -793,18 +634,10 @@ func TestReleaseLease_LeaveSettlesTheWholeEndpoint(t *testing.T) {
 			wantReleased: true, wantV4Phase: lease.PhaseClosed, wantV6Phase: lease.PhaseClosed,
 		},
 		{
-			// The mixed outcome. One shared flag would settle both
-			// records the same way, and the v6 lease this endpoint
-			// still holds would stop being resumable.
 			name: "only v4 got out", value: ReleaseOnStop, v4OK: true, v6OK: false,
 			wantReleased: true, wantV4Phase: lease.PhaseClosed, wantV6Phase: lease.PhaseLeft,
 		},
 		{
-			// The other half of the mixed outcome, and it is the one
-			// an "any" that forgot the v6 half still passes: the
-			// tombstone carries both addresses, so a v6 lease that
-			// went back must suppress it even though the v4 lease
-			// did not move.
 			name: "only v6 got out", value: ReleaseOnStop, v4OK: false, v6OK: true,
 			wantReleased: true, wantV4Phase: lease.PhaseLeft, wantV6Phase: lease.PhaseClosed,
 		},
@@ -888,25 +721,6 @@ func TestReleaseLease_LeaveSettlesTheWholeEndpoint(t *testing.T) {
 	}
 }
 
-// TestReleaseLease_AFailedStartStillReleases is the population finding
-// 2 was about, and its expectation is the INVERSE of the one this test
-// carried while the release was asked of a running client.
-//
-// The shape: a container stopped before its persistent client attached
-// or bound. That is `docker run --rm` and it is what the option exists
-// for. While the release was asked of a client, this endpoint had none
-// to ask, so nothing was sent, the address stayed leased upstream for
-// its whole lease time, and the plugin charged itself a release
-// failure for a release it could never have made.
-//
-// Built from the record, the client's state stops mattering. The
-// address the container used came from CreateEndpoint's one-shot, the
-// one-shot wrote it into this same record, and the record is still
-// there after the client that never started is gone. So the release
-// goes out and the counter says sent.
-//
-// The `never` row is the control: the option still decides whether
-// anything is attempted at all.
 func TestReleaseLease_AFailedStartStillReleases(t *testing.T) {
 	for _, tc := range []struct {
 		name         string
@@ -948,41 +762,17 @@ func TestReleaseLease_AFailedStartStillReleases(t *testing.T) {
 	}
 }
 
-// TestReleaseLease_ACancelledAttachStillReleases drives the one state
-// where the record exists and the manager holds no id for it.
-//
-// MEASURED on CI (main-7-suite, PR #966 round 2): an endpoint whose
-// attach was cancelled because it was already leaving reaches Stop with
-// both record ids empty, because they are assigned in setupClient and
-// the cancelled attach returns before it runs. The release then found
-// no record, sent no datagram, bumped release_failures_v4 and left the
-// address leased on the server, on a network that had asked for it
-// back. The record was in the store the whole time: CreateEndpoint's
-// one-shot wrote the lease into it.
-//
-// The second case is the direction this must NOT fail in. The index
-// answers with the newest record under the key, and a TOMBSTONE is a
-// record under that key belonging to an endpoint that has already gone
-// — the thing a restart inherits its address from. Releasing that would
-// hand back an address the next CreateEndpoint is about to promise.
+// TestReleaseLease_ACancelledAttachStillReleases: a cancelled attach reaches Stop with no record ids, and must not
+// release a tombstone (#966).
 func TestReleaseLease_ACancelledAttachStillReleases(t *testing.T) {
 	for _, tc := range []struct {
-		name string
-		// settle, when set, is the phase the record is moved to before
-		// the stop: a tombstone or a record already ended.
-		settle string
-		// older adds a CLOSED record under the same key AHEAD of the
-		// live one, which is the shape a restart leaves behind.
+		name       string
+		settle     string
 		older      bool
 		wantCalls  int
 		wantSent   int32
 		wantFailed int32
-		// wantID is whether the manager ends up naming the record it
-		// released. Leave settles the record through that field
-		// (Plugin.Leave, settleReleasedRecord), so a release built off
-		// a record the manager does not name is a release whose record
-		// is never closed.
-		wantID bool
+		wantID     bool
 	}{
 		{name: "no id on the manager, the record is in the store", wantCalls: 1, wantSent: 1, wantID: true},
 		{name: "the newest record under the key is a tombstone", settle: "retained", wantFailed: 1},
@@ -1009,9 +799,6 @@ func TestReleaseLease_ACancelledAttachStillReleases(t *testing.T) {
 			case "closed":
 				p.closeRecord(id)
 			}
-			// The state the cancelled attach leaves: the MAC arrived on
-			// the join hint (Plugin.Join sets it in every mode) and
-			// setupClient never ran, so there is no id.
 			m.MacAddress = releaseTestMAC
 			m.recordID = ""
 
@@ -1041,14 +828,6 @@ func TestReleaseLease_ACancelledAttachStillReleases(t *testing.T) {
 	}
 }
 
-// TestReleaseLease_TheFallbackReadsEachFamilysOwnScope is the same
-// cancelled-attach state on a dual-stack endpoint.
-//
-// The v6 record is a SECOND record under a SECOND scope (dhcp.Scope6),
-// so a fallback that looked both families up under the network id would
-// build the v6 Release from the v4 record. The library refuses that as
-// a family mismatch, which makes the mistake visible; a fallback that
-// refused nothing would hand the wrong address back.
 func TestReleaseLease_TheFallbackReadsEachFamilysOwnScope(t *testing.T) {
 	var ledgerFailures atomic.Int32
 	p := &Plugin{}
@@ -1083,14 +862,6 @@ func TestReleaseLease_TheFallbackReadsEachFamilysOwnScope(t *testing.T) {
 	}
 }
 
-// TestReleaseLease_TheSenderIsCalledOnceAndOnlyFromTheReleasePath is the
-// CALL SITE, in the shape the retired setReleaseClient test had.
-//
-// rtSendRelease is the one line that puts a datagram on a socket. A
-// second caller anywhere in this package would be a release this file's
-// counters, phases and tombstone logic never see, and the first thing
-// an operator would know about it is an address disappearing from the
-// server while a container is still using it.
 func TestReleaseLease_TheSenderIsCalledOnceAndOnlyFromTheReleasePath(t *testing.T) {
 	fset := token.NewFileSet()
 	files, err := filepath.Glob("*.go")
@@ -1137,18 +908,6 @@ func TestReleaseLease_TheSenderIsCalledOnceAndOnlyFromTheReleasePath(t *testing.
 	}
 }
 
-// TestReleaseLease_TheRetainedRecordIsNeverAnOlderOne pins which record
-// DeleteEndpoint stamps its tombstone deadline on.
-//
-// Two records can share one scope and MAC: a teardown whose release
-// FAILED leaves its record LEFT and lays a tombstone, so the next
-// container inherits the MAC, and that container's own teardown can
-// then release successfully and close its record. A lookup that walks
-// PAST the closed record answers with the older one, which carries the
-// address that has just been handed back, and stamping a fresh deadline
-// on it keeps it answering lookups for an address in the server's pool.
-// The `never` row is the control: with nothing closed, the newest
-// record is retained exactly as before.
 func TestReleaseLease_TheRetainedRecordIsNeverAnOlderOne(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
@@ -1203,22 +962,9 @@ func TestReleaseLease_TheRetainedRecordIsNeverAnOlderOne(t *testing.T) {
 	}
 }
 
-// TestReleaseLease_EveryReasonForNotSendingIsNamed drives the outcomes
-// apart.
-//
-// WHY THE REASON IS A TESTED VALUE AND NOT JUST LOG TEXT. A stop on a
-// `release_lease=on_stop` network that hands nothing back has several
-// unrelated causes, and they used to share one bare false. The counter
-// pair deliberately does not tell them apart, so the outcome is the
-// only place the difference survives, and each is a different thing for
-// an operator to do: a record that names no server is a server that
-// never sent option 54, no source is a parent with no address in that
-// family, a bad record is a plugin defect, and a send failure is the
-// socket.
 func TestReleaseLease_EveryReasonForNotSendingIsNamed(t *testing.T) {
 	for _, tc := range []struct {
-		name string
-		// one of these three shapes the case.
+		name     string
 		sendErr  error
 		noRecord bool
 		noSource bool
@@ -1259,8 +1005,6 @@ func TestReleaseLease_EveryReasonForNotSendingIsNamed(t *testing.T) {
 				t.Errorf("releaseFamily(v4) = %v, want %v", got, tc.want == releaseSent)
 			}
 
-			// The counters stay a two-way split: every outcome but the
-			// send is one failure, whatever its reason.
 			wantSent, wantFailed := int32(0), int32(1)
 			if tc.want == releaseSent {
 				wantSent, wantFailed = 1, 0
@@ -1272,10 +1016,6 @@ func TestReleaseLease_EveryReasonForNotSendingIsNamed(t *testing.T) {
 				t.Errorf("release_failures_v4 = %d, want %d", got, wantFailed)
 			}
 
-			// THE LINE AN OPERATOR READS. Without this the whole
-			// outcome type is a value nothing outside the package can
-			// see: deleting the announcement leaves every count and
-			// every return value correct.
 			var said []string
 			for _, e := range hook.AllEntries() {
 				v, ok := e.Data["outcome"]

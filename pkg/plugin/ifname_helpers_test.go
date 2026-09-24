@@ -9,10 +9,6 @@ import (
 	"github.com/vishvananda/netlink"
 )
 
-// TestHintIfname covers the join-hint accessor that carries a custom
-// interface name from CreateEndpoint to Join (#125): present, absent,
-// and empty-Ifname hint all return the right string without panicking
-// on a missing key.
 func TestHintIfname(t *testing.T) {
 	p := &Plugin{joinHints: make(map[string]joinHint)}
 	p.storeJoinHint("ep-named", joinHint{Ifname: "lan0"})
@@ -29,9 +25,6 @@ func TestHintIfname(t *testing.T) {
 	}
 }
 
-// TestFingerprintIfname covers the restart-path fallback: when the
-// join hint has already been consumed, Join recovers the custom
-// interface name from the live-endpoint fingerprint (#125).
 func TestFingerprintIfname(t *testing.T) {
 	p := &Plugin{endpointFingerprints: make(map[string]endpointFingerprint)}
 	p.endpointFingerprints["ep-named"] = endpointFingerprint{MAC: "02:00:00:00:00:01", Ifname: "wan0"}
@@ -48,9 +41,6 @@ func TestFingerprintIfname(t *testing.T) {
 	}
 }
 
-// TestAuditIP pins the bare-address helper the ledger uses for v4/v6
-// release entries (#109): nil addr and nil IP degrade to "" rather
-// than panicking, a real address renders bare.
 func TestAuditIP(t *testing.T) {
 	if got := auditIP(nil); got != "" {
 		t.Errorf("auditIP(nil) = %q, want empty", got)

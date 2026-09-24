@@ -337,6 +337,7 @@ ALLOWED = {
     "Build",
     "Vet",
     "Format check",
+    "Allow link changes inside the tests' user namespaces",
     "Test (with race detector)",
     "Fuzz (short)",
 }

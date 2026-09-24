@@ -21,9 +21,7 @@ import (
 	docker "github.com/docker/docker/client"
 )
 
-// ledgerLine mirrors pkg/plugin.ledgerEntry — duplicated like
-// harness.HealthResponse so the integration package doesn't pull on
-// plugin internals.
+// ledgerLine mirrors pkg/plugin.ledgerEntry, duplicated so this package does not import plugin internals.
 type ledgerLine struct {
 	TS        string `json:"ts"`
 	Kind      string `json:"kind"`
@@ -35,20 +33,10 @@ type ledgerLine struct {
 	MAC       string `json:"mac"`
 }
 
-// readLedger reads STATE_DIR/leases.jsonl. Returns nil when the file
-// doesn't exist yet — callers poll. Any line that fails to parse is a
-// test failure: the ledger's contract is that every line is valid JSON.
-//
-// The path is on the HOST, not inside the plugin rootfs. Since #440
-// STATE_DIR is bind-mounted from /var/lib/net-dhcp so its contents
-// survive `docker plugin rm`; the in-rootfs path this used to read is
-// now the empty mount point. That is exactly what this test caught when
-// the mount landed — the ledger read as `[]` because it was looking at
-// the mount point rather than the mount.
-//
-// Deliberately NOT derived from PluginInspect any more. The old form
-// keyed on the plugin ID, and the whole point of the change is that the
-// state outlives any particular plugin ID.
+// STATE_DIR has been bind-mounted from the host's /var/lib/net-dhcp since #440, so the ledger is read there and not
+// from the plugin rootfs, whose path is now the empty mount point; the plugin ID is not part of the path.
+
+// readLedger reads STATE_DIR/leases.jsonl, returning nil before the file exists and failing on any invalid JSON line.
 func readLedger(t *testing.T, ctx context.Context, cli *docker.Client) []ledgerLine {
 	t.Helper()
 	path := filepath.Join(harness.HostStateDir, "leases.jsonl")
@@ -75,8 +63,30 @@ func readLedger(t *testing.T, ctx context.Context, cli *docker.Client) []ledgerL
 	return lines
 }
 
-// ledgerKindsForMAC filters the ledger to entries carrying the given
-// MAC and returns their kinds in file order.
+// boundAndNamedRows returns the first bound row for mac and the first bound or renew row for mac that carries name.
+func boundAndNamedRows(lines []ledgerLine, mac, name string) (bound, named *ledgerLine) {
+	for _, l := range ledgerForMAC(lines, mac) {
+		if bound == nil && l.Kind == "bound" {
+			bound = &l
+		}
+		if named == nil && (l.Kind == "bound" || l.Kind == "renew") && l.Hostname == name {
+			named = &l
+		}
+	}
+	return bound, named
+}
+
+func ledgerForMAC(lines []ledgerLine, mac string) []ledgerLine {
+	var out []ledgerLine
+	for _, l := range lines {
+		if strings.EqualFold(l.MAC, mac) {
+			out = append(out, l)
+		}
+	}
+	return out
+}
+
+// ledgerKindsForMAC returns the kinds of the entries for mac in file order.
 func ledgerKindsForMAC(lines []ledgerLine, mac string) []string {
 	var kinds []string
 	for _, l := range lines {
@@ -87,15 +97,7 @@ func ledgerKindsForMAC(lines []ledgerLine, mac string) []string {
 	return kinds
 }
 
-// TestAuditLog_RecordsLifecycle is #109's stated test plan made
-// concrete: with audit_log=true, a full container lifecycle leaves a
-// bound and a stopped entry in STATE_DIR/leases.jsonl carrying the
-// container's exact MAC and pool IP, every line valid JSON, and
-// ledger_write_failures stays flat.
-//
-// Container lifecycle is inlined (not harness.RunContainer) for the
-// same reason as the health-counters test: the stopped entry is
-// written during teardown, which must happen inside the test body.
+// TestAuditLog_RecordsLifecycle checks that audit_log=true writes bound and stopped rows with the container's MAC and IP (#109).
 func TestAuditLog_RecordsLifecycle(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
@@ -147,9 +149,6 @@ func TestAuditLog_RecordsLifecycle(t *testing.T) {
 		t.Fatalf("ContainerStart: %v", err)
 	}
 
-	// Learn the container's MAC + IP from inspect once the endpoint
-	// is up, then poll the ledger for the persistent client's bound
-	// entry (written on the first DHCPACK after Join).
 	var mac, ip string
 	deadline := time.Now().Add(harness.IPAcquisitionBudget)
 	for time.Now().Before(deadline) {
@@ -167,16 +166,13 @@ func TestAuditLog_RecordsLifecycle(t *testing.T) {
 		t.Fatalf("container got no IP within %v", harness.IPAcquisitionBudget)
 	}
 
-	var bound *ledgerLine
+	// The name can land on the renew after the bind: the client starts before the daemon answers with the name and renews
+	// early to carry it (#961, RFC 2131 section 4.4.5).
+	var bound, named *ledgerLine
 	deadline = time.Now().Add(harness.IPAcquisitionBudget + 5*time.Second)
 	for time.Now().Before(deadline) {
-		for _, l := range readLedger(t, ctx, cli) {
-			if strings.EqualFold(l.MAC, mac) && l.Kind == "bound" {
-				bound = &l
-				break
-			}
-		}
-		if bound != nil {
+		bound, named = boundAndNamedRows(readLedger(t, ctx, cli), mac, ctrName)
+		if bound != nil && named != nil {
 			break
 		}
 		time.Sleep(200 * time.Millisecond)
@@ -193,17 +189,29 @@ func TestAuditLog_RecordsLifecycle(t *testing.T) {
 	if bound.Endpoint == "" {
 		t.Error("bound entry has empty endpoint ID")
 	}
-	if bound.Hostname != ctrName {
-		t.Errorf("bound entry hostname = %q, want %q", bound.Hostname, ctrName)
-	}
 	if _, err := time.Parse(time.RFC3339, bound.TS); err != nil {
 		t.Errorf("bound entry ts %q is not RFC3339: %v", bound.TS, err)
 	}
+	if bound.Hostname != "" && bound.Hostname != ctrName {
+		t.Errorf("bound entry hostname = %q, want %q or empty", bound.Hostname, ctrName)
+	}
+	if named == nil {
+		t.Errorf("no bound or renew ledger entry for MAC %s carries hostname %q within budget; ledger: %+v",
+			mac, ctrName, ledgerForMAC(readLedger(t, ctx, cli), mac))
+	} else {
+		if named.IP != ip {
+			t.Errorf("%s entry carrying the name has IP %q, want container's leased IP %q", named.Kind, named.IP, ip)
+		}
+		if named.Network != netID || named.Endpoint != bound.Endpoint {
+			t.Errorf("%s entry carrying the name is for network %q endpoint %q, want %q endpoint %q",
+				named.Kind, named.Network, named.Endpoint, netID, bound.Endpoint)
+		}
+	}
+	if got, line := waitLeaseHostname(t, fixture.LeaseFile(), ip, ctrName, harness.IPAcquisitionBudget); got != ctrName {
+		t.Errorf("the DHCP server's table has %q as the name for %s, want %q; lease line:\n%s", got, ip, ctrName, line)
+	}
 
-	// Stop drives Leave -> dhcpManager.Stop -> the "stopped" ledger
-	// entry. The kind was "release" until #800; it is "stopped" now
-	// because nothing releases, and a ledger line saying otherwise
-	// would be a claim about what the DHCP server saw.
+	// Since #800 the row is "stopped", not "release": nothing is released, and the ledger may not claim what the server saw.
 	if err := cli.ContainerStop(ctx, id, container.StopOptions{}); err != nil {
 		t.Fatalf("ContainerStop: %v", err)
 	}
@@ -231,11 +239,7 @@ func TestAuditLog_RecordsLifecycle(t *testing.T) {
 	}
 }
 
-// TestAuditLog_DefaultOff pins the opt-in: without audit_log, a full
-// lifecycle leaves no trace of this container in the ledger. Asserted
-// by MAC absence rather than file absence — STATE_DIR is shared
-// plugin state, so other audit-enabled tests may legitimately have
-// written the file in the same suite run.
+// TestAuditLog_DefaultOff checks that without audit_log the ledger holds nothing for the container's MAC.
 func TestAuditLog_DefaultOff(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
@@ -261,15 +265,7 @@ func TestAuditLog_DefaultOff(t *testing.T) {
 	harness.CreateNetwork(t, ctx, netName, "macvlan", nil)
 	id, _, mac := harness.RunContainer(t, ctx, netName, ctrName)
 
-	// Wait for the persistent client's bound event (the moment an
-	// audit-enabled network would have written its entry), then check
-	// the ledger has nothing for this MAC.
-	//
-	// Reaching the bind is now required rather than merely attempted.
-	// The assertion below — "the ledger holds nothing for this MAC" —
-	// is satisfied trivially by a container that never bound at all, so
-	// letting the wait lapse silently would turn this into a test that
-	// passes hardest when the plugin is least functional.
+	// The bind is required: a container that never bound would satisfy the absence below trivially.
 	if _, ok := w.Await(harness.IPAcquisitionBudget+5*time.Second,
 		func(now, before *harness.HealthResponse) bool {
 			return now.LeasesObtained > before.LeasesObtained

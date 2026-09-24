@@ -44,9 +44,6 @@ func TestApiGetCapabilities(t *testing.T) {
 	}
 }
 
-// decodeErrBody decodes the application/problem+json body into the
-// jsonError shape (`{"Err": "..."}`). All wrappers use util.JSONErrResponse
-// which writes that schema.
 func decodeErrBody(t *testing.T, body []byte) string {
 	t.Helper()
 	var shape struct {
@@ -58,11 +55,6 @@ func decodeErrBody(t *testing.T, body []byte) string {
 	return shape.Err
 }
 
-// TestApiWrappers_BadJSON exercises the JSON-decode failure path of every
-// HTTP wrapper in one place. Each wrapper calls util.ParseJSONOrErrorResponse
-// first; a malformed body must short-circuit with a 400 application/problem+json
-// response and never invoke the underlying network method (which would need
-// netlink/docker and crash this unit test).
 func TestApiWrappers_BadJSON(t *testing.T) {
 	p := newTestPlugin(t)
 
@@ -121,8 +113,6 @@ func TestApiCreateNetwork_InvalidModeMaps400(t *testing.T) {
 		t.Fatalf("status: got %d want 400 (body=%s)", rec.Code, rec.Body.String())
 	}
 	msg := decodeErrBody(t, rec.Body.Bytes())
-	// errors.Is on the wire isn't possible, but the sentinel's literal text
-	// is what makes the response actionable for an operator.
 	if !strings.Contains(msg, "invalid mode") {
 		t.Errorf("body: got %q want substring 'invalid mode'", msg)
 	}
@@ -176,10 +166,6 @@ func TestApiCreateNetwork_BridgeMissingMaps400(t *testing.T) {
 	}
 }
 
-// TestApiDeleteNetwork_NoState verifies the success path of the only
-// HTTP wrapper whose underlying method is fully unit-testable: with no
-// state on disk and no DHCP managers, DeleteNetwork is a no-op that
-// returns 200 with a `{}` body.
 func TestApiDeleteNetwork_NoState(t *testing.T) {
 	p := newTestPlugin(t)
 
@@ -202,9 +188,6 @@ func TestApiDeleteNetwork_NoState(t *testing.T) {
 	}
 }
 
-// stoppableManager returns a dhcpManager whose Stop() short-circuits
-// because startedCh is closed AND startErr is set — that branch
-// returns nil immediately without touching netlink/handles.
 func stoppableManager(networkID string) *dhcpManager {
 	m := &dhcpManager{
 		joinReq:   JoinRequest{NetworkID: networkID},
@@ -217,16 +200,9 @@ func stoppableManager(networkID string) *dhcpManager {
 
 var errStubManager = errors.New("stub manager (test-only)")
 
-// TestApiDeleteNetwork_DropsOrphanedManagers exercises the
-// takeDHCPManagersForNetwork prune introduced for the recovery-then-
-// network-removed lifecycle case (#44). Two managers belong to the
-// removed network, one to a peer; only the two get evicted.
 func TestApiDeleteNetwork_DropsOrphanedManagers(t *testing.T) {
 	p := newTestPlugin(t)
 
-	// Seed three managers across two networks. The stub managers'
-	// Stop() short-circuits via startErr so DeleteNetwork's wg.Wait
-	// completes without touching netlink.
 	p.persistentDHCP["ep-A1"] = stoppableManager("net-A")
 	p.persistentDHCP["ep-A2"] = stoppableManager("net-A")
 	p.persistentDHCP["ep-B1"] = stoppableManager("net-B")
@@ -242,7 +218,6 @@ func TestApiDeleteNetwork_DropsOrphanedManagers(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status: got %d want 200 (body=%s)", rec.Code, rec.Body.String())
 	}
-	// net-A managers gone; net-B's survives.
 	if _, ok := p.persistentDHCP["ep-A1"]; ok {
 		t.Error("ep-A1 must be evicted by DeleteNetwork(net-A)")
 	}
@@ -254,11 +229,6 @@ func TestApiDeleteNetwork_DropsOrphanedManagers(t *testing.T) {
 	}
 }
 
-// TestDecodeOpts_RejectsUnknownField verifies the mapstructure decoder
-// is configured with ErrorUnused: a typo'd option key fails fast at
-// decode time rather than being silently dropped, which is what makes
-// `docker network create -o moed=macvlan ...` (typo) surface as a 400
-// instead of falling through to default-mode behaviour.
 func TestDecodeOpts_RejectsUnknownField(t *testing.T) {
 	_, err := decodeOpts(map[string]interface{}{
 		"mode":      "macvlan",
@@ -273,9 +243,6 @@ func TestDecodeOpts_RejectsUnknownField(t *testing.T) {
 	}
 }
 
-// TestDecodeOpts_DurationParsing verifies the StringToTimeDurationHookFunc
-// is wired so an operator can pass `-o lease_timeout=45s` and get a real
-// time.Duration on the receiving side.
 func TestDecodeOpts_DurationParsing(t *testing.T) {
 	opts, err := decodeOpts(map[string]interface{}{
 		"mode":          "macvlan",
@@ -290,10 +257,6 @@ func TestDecodeOpts_DurationParsing(t *testing.T) {
 	}
 }
 
-// TestDecodeOpts_BoolFromString verifies the WeaklyTypedInput coercion
-// path: docker passes string-typed driver options on the wire even when
-// the operator's intent was a bool, so the decoder must coerce
-// "true"/"false" rather than failing.
 func TestDecodeOpts_BoolFromString(t *testing.T) {
 	opts, err := decodeOpts(map[string]interface{}{
 		"mode":             "macvlan",
@@ -312,9 +275,6 @@ func TestDecodeOpts_BoolFromString(t *testing.T) {
 	}
 }
 
-// TestDecodeOpts_NilInput is the empty-options path libnetwork hits when
-// `docker network create` was run without any `-o` flags. It must not
-// error — validateModeOptions later catches the missing-bridge case.
 func TestDecodeOpts_NilInput(t *testing.T) {
 	opts, err := decodeOpts(nil)
 	if err != nil {
@@ -325,12 +285,6 @@ func TestDecodeOpts_NilInput(t *testing.T) {
 	}
 }
 
-// TestDecodeOpts_NilUnderGenericKey pins the behaviour for the case
-// where the libnetwork payload has the generic key present but with a
-// nil value (rare but reachable via the docker API). decodeOpts must
-// return zero options without error — validateModeOptions then catches
-// the missing-bridge / missing-parent case downstream. Pinned by I-11
-// in the 2026-05-05 review.
 func TestDecodeOpts_NilUnderGenericKey(t *testing.T) {
 	var nilMap map[string]interface{}
 	opts, err := decodeOpts(nilMap)
@@ -342,17 +296,9 @@ func TestDecodeOpts_NilUnderGenericKey(t *testing.T) {
 	}
 }
 
-// TestApiCreateNetwork_DecodeOptsError covers the error path where the
-// driver-opts payload itself is shaped wrong (a non-map under the
-// generic key). decodeOpts returns a wrapped mapstructure error which
-// ErrToStatus doesn't recognize → 500. That's the correct shape: the
-// caller's request was structurally invalid in a way that bypasses
-// our sentinel set.
 func TestApiCreateNetwork_DecodeOptsError(t *testing.T) {
 	p := newTestPlugin(t)
 
-	// String under the generic key — decodeOpts can't decode that into
-	// the DHCPNetworkOptions struct.
 	body, err := json.Marshal(CreateNetworkRequest{
 		NetworkID: "net-bad-opts",
 		Options:   map[string]interface{}{"com.docker.network.generic": "not-a-map"},
@@ -373,9 +319,6 @@ func TestApiCreateNetwork_DecodeOptsError(t *testing.T) {
 	}
 }
 
-// TestApiCreateNetwork_BridgeAndParentRejected covers the
-// ErrModeMismatch branch — a 400 path that goes through validateModeOptions
-// rather than validateIPAMData / decodeOpts.
 func TestApiCreateNetwork_BridgeAndParentRejected(t *testing.T) {
 	p := newTestPlugin(t)
 
@@ -405,21 +348,7 @@ func TestApiCreateNetwork_BridgeAndParentRejected(t *testing.T) {
 	}
 }
 
-// TestDecodeOpts_IPv6UnderEverySpelling holds the property the removed
-// refusal rows in test/integration/errors_test.go used to hold.
-//
-// decodeOpts runs mapstructure with no MatchName, so the match is
-// case-insensitive against the FIELD name and `ipv6`, `IPv6` and
-// `Ipv6` all set one bool. While the option was refused, a refusal
-// keyed on a key string rather than on the decoded value would have
-// enumerated two spellings and missed the third; now that it is
-// honoured, the same defect has the opposite and quieter shape — a
-// network created with `-o IPv6=true` where IPv6 silently does
-// nothing, with no error anywhere and no v6 address on any container.
-//
-// This is the layer the property actually lives at. Driving it through
-// a container would cost three fixtures to observe one bool, and would
-// still be reading the bool through everything downstream of it.
+// mapstructure without MatchName matches field names case-insensitively, so every spelling of ipv6 sets one bool.
 func TestDecodeOpts_IPv6UnderEverySpelling(t *testing.T) {
 	for _, key := range []string{"ipv6", "IPv6", "Ipv6", "IPV6"} {
 		t.Run(key, func(t *testing.T) {
@@ -439,8 +368,6 @@ func TestDecodeOpts_IPv6UnderEverySpelling(t *testing.T) {
 		})
 	}
 
-	// The other direction, so the assertion above is not satisfied by a
-	// field that is true whatever arrives.
 	opts, err := decodeOpts(map[string]interface{}{"mode": "macvlan", "parent": "ens18"})
 	if err != nil {
 		t.Fatalf("decode without the option: %v", err)

@@ -13,20 +13,7 @@ import (
 	docker "github.com/docker/docker/client"
 )
 
-// AwaitRecoveryRebuildWindow waits, on the window that spans the
-// recycle, for a property that only holds once recovery has rebuilt an
-// endpoint's renewal client.
-//
-// Through the window rather than a bare health poll because every read
-// is then checked against the instance the window opened on
-// (CounterWindow.Await): a second, unnoticed restart inside the wait
-// would otherwise satisfy or defeat the condition with counters from a
-// process the test never meant to measure — the #405 shape, in its
-// slowest form.
-//
-// The caller asserts. This returns whether the property held so the
-// failure text, and the decision that it IS a failure, stay at the call
-// site.
+// AwaitRecoveryRebuildWindow waits on the window spanning the recycle, so every read is checked against the window's instance (#405).
 func AwaitRecoveryRebuildWindow(w *CounterWindow, what string, cond func(*HealthResponse) bool) (*HealthResponse, bool) {
 	w.t.Helper()
 	return awaitRecoveryRebuild(w.t.Logf, what, func() {
@@ -36,16 +23,7 @@ func AwaitRecoveryRebuildWindow(w *CounterWindow, what string, cond func(*Health
 	})
 }
 
-// AwaitRecoveryRebuildOn is the same wait for a site that cannot hold a
-// window across the event.
-//
-// The daemon-restart tests are that site: the restart ends the plugin
-// process AND the client the window was opened with, so their windows
-// are closed before the daemon goes down and the read afterwards is
-// taken on a fresh client. That read is identity-blind — it always has
-// been, this only makes it a bounded wait rather than a single sample —
-// and the blindness is the reason this is a separate function instead
-// of a default.
+// AwaitRecoveryRebuildOn is the identity-blind wait for daemon-restart tests, whose window cannot span the restart (#376).
 func AwaitRecoveryRebuildOn(t *testing.T, ctx context.Context, cli *docker.Client, what string,
 	cond func(*HealthResponse) bool) (*HealthResponse, bool) {
 	t.Helper()
@@ -69,20 +47,7 @@ func AwaitRecoveryRebuildOn(t *testing.T, ctx context.Context, cli *docker.Clien
 	})
 }
 
-// DumpPluginLogOnFailure prints the plugin's own log for the window
-// beginning at mark, but only when the test failed.
-//
-// The recycle tests had no plugin log in the job at all: the fixture
-// dumper reads dnsmasq and nothing else, and the suite's teardown
-// removes the plugin, which destroys the file. So the lines that say
-// what recovery did — "Plugin recovery complete", the deferred retry,
-// the per-endpoint Start failure — were never captured for the one run
-// that needed them.
-//
-// Windowed, not whole: on the one-process lane the log spans the entire
-// suite, and a failure here would otherwise arrive under ten minutes of
-// another test's output (#933). Only on failure, because a passing run
-// does not need it and the log is large.
+// DumpPluginLogOnFailure prints the plugin log from mark when the test failed; teardown removes the plugin and its log (#933).
 func DumpPluginLogOnFailure(t *testing.T, ctx context.Context, mark int64, what string) {
 	t.Helper()
 	t.Cleanup(func() {
@@ -99,23 +64,7 @@ func DumpPluginLogOnFailure(t *testing.T, ctx context.Context, mark int64, what 
 	})
 }
 
-// checkInstalledAwaitTimeout refuses to spend a budget the plugin the
-// lane installed contradicts.
-//
-// It runs inside the two waits instead of at the three call sites, so a
-// fourth recycle site cannot forget it: the bound is the wait's own
-// parameter, and this is the one place that knows the wait is about to
-// use it.
-//
-// Errorf and not Fatalf, although a bound the plugin contradicts makes
-// the wait below meaningless. TestRecovery_DaemonRestart_PreservesContainer
-// is written to keep reporting: its switch on the two preservation paths
-// and the IP and MAC comparisons after it are there so that one failed
-// recycle still says WHICH properties held. Stopping that test at its
-// first line would throw that away, and it buys nothing: the drift is
-// already recorded as a failure, and the assertions that follow are
-// about the address, not about the bound. The cost is one PluginInspect
-// per recycle, against a daemon the test is already talking to.
+// checkInstalledAwaitTimeout reports, with Errorf so the recycle test keeps reporting, a wait bound the installed plugin contradicts (#376).
 func checkInstalledAwaitTimeout(t *testing.T, ctx context.Context, cli *docker.Client) {
 	t.Helper()
 	p, _, err := cli.PluginInspectWithRaw(ctx, PluginRef)

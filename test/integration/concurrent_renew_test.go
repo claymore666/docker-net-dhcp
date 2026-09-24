@@ -15,54 +15,18 @@ import (
 	docker "github.com/docker/docker/client"
 )
 
-// TestConcurrentRenew_SameInterfaceNameBothRenew verifies that two
-// containers on the same network — both with the default container-side
-// interface name `eth0` — each keep a persistent DHCP client that
-// actually renews its own lease.
-//
-// This closes a structural blind spot rather than a hypothetical one.
-// dhcpcd keys its pidfile and control sockets by interface name alone,
-// in a runtime dir shared across the plugin's mount view. When only the
-// *state* dir was shadowed per client, the second container's dhcpcd
-// found the first container's live control socket, forwarded its argv
-// to it, and exited 0 — so the second container held an IP that no
-// client was renewing or releasing, while the first container's dhcpcd
-// was reconfigured with the second's settings.
-//
-// Nothing in the suite could see that. TestConcurrency_DistinctLeases
-// is the only concurrent multi-container test and asserts only the
-// *initial* IP/MAC, which comes from the one-shot client at
-// CreateEndpoint — it never waits for a renewal. Every renewal test
-// (TestLeaseRenew_HonorsT1 and the failure suite) runs a single
-// container. So the suite passed identically with
-// the bug present and absent, and the fix for it — a tmpfs over the
-// runtime dir — was covered only by a unit test asserting that string
-// appears in the generated mount script.
-//
-// The ordering is deliberate: the second container starts only after
-// the first is up and settled, so the first container's persistent
-// client is guaranteed live and holding the shared socket when the
-// second one starts. Concurrent starts would make the collision racy;
-// this makes it the expected case.
-//
-// Mechanism as in TestLeaseRenew_HonorsT1: an ephemeral fixture
-// advertising option 58/59 so renewal fires ~12s in rather than at half
-// the lease. The lease itself stays long on purpose — an ACK observed
-// after expiry would be a re-acquisition rather than a renewal, and
-// this test would pass while proving the opposite of its name (#356).
-// Self-validating — if renewal never fires for either container, both
-// assertions fail rather than silently passing.
+// dhcpcd keys its pidfile and control socket by interface name in a shared runtime dir, so a second eth0 client once
+// forwarded its argv to the first and exited 0, leaving an IP nobody renewed; no other test waits for a renewal with
+// two containers. The second container starts after the first client is live, so the collision is the expected case.
+// Renewal is driven by T1 on an ephemeral fixture with a long lease, as in TestLeaseRenew_HonorsT1 (#330, #356).
+
+// TestConcurrentRenew_SameInterfaceNameBothRenew checks that two eth0 containers on one network each renew their own lease (#330).
 func TestConcurrentRenew_SameInterfaceNameBothRenew(t *testing.T) {
 	const (
 		renewT1 = 12 // seconds; dhcpcd renews here, above its floor
 		renewT2 = 25 // seconds; rebind — kept past the wait window
-		// Let the first container's persistent client come up before
-		// the second starts: the client is spawned from a goroutine in
-		// Join, so returning from RunContainer does not imply it is
-		// running yet.
-		settle = 3 * time.Second
-		// Past T1 for the container that started last, comfortably
-		// before its T2.
+		// Join spawns the persistent client from a goroutine, so RunContainer returning does not mean it runs yet (#330).
+		settle  = 3 * time.Second
 		waitFor = 20 * time.Second
 	)
 
@@ -110,18 +74,8 @@ func TestConcurrentRenew_SameInterfaceNameBothRenew(t *testing.T) {
 		t.Fatalf("both containers got the same IP %s — the fixture pool is not handing out distinct leases", ctrs[0].ip)
 	}
 
-	// THE MAC IS THE ONLY THING THAT MAKES THE TWO COUNTS PER-CONTAINER,
-	// so it is asserted before it is used rather than trusted.
-	//
-	// CountLogLines AND-matches substrings against each server log line.
-	// An EMPTY mac therefore matches every DHCPACK in the log, and two
-	// empty MACs make both counters read the same global ACK stream: one
-	// container renewing twice would satisfy both assertions below and
-	// the test would report that concurrent renewal works when only one
-	// client exists. Two EQUAL non-empty MACs do the same thing more
-	// quietly. Neither is hypothetical — RunContainer reads the MAC out
-	// of `docker inspect`, and a plugin that stopped reporting one would
-	// hand back "" without failing anything.
+	// CountLogLines AND-matches substrings, so an empty MAC matches every ACK and two equal MACs share one count; a
+	// plugin that reported no MAC would return "" without failing anything (#330).
 	for i, c := range ctrs {
 		if c.mac == "" {
 			t.Fatalf("container %d has no MAC, so its ACK count would match every ACK in the "+
@@ -133,8 +87,7 @@ func TestConcurrentRenew_SameInterfaceNameBothRenew(t *testing.T) {
 			"and one renewing client would satisfy both", ctrs[0].mac)
 	}
 
-	// Count from here: the binds have happened, so any further ACK for
-	// a MAC is a renewal for that container specifically.
+	// After the binds, each further ACK for a MAC is that container's renewal.
 	for i, c := range ctrs {
 		c.startACKs = ef.CountLogLines("DHCPACK", c.mac)
 		t.Logf("container %d: %d DHCPACK(s) at start of renewal window", i, c.startACKs)

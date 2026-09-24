@@ -13,10 +13,6 @@ import (
 	"github.com/claymore666/docker-net-dhcp/v2/pkg/util"
 )
 
-// withFakeBridge points the netlink seam at a synthetic bridge so
-// CreateNetwork's bridge-reuse guard — pure Go over values Docker hands
-// us — is reachable without CAP_NET_ADMIN. It carries one address so the
-// address-overlap arm below the guard has something to compare.
 func withFakeBridge(t *testing.T, name string) {
 	t.Helper()
 	link := &netlink.Bridge{LinkAttrs: netlink.LinkAttrs{Name: name}}
@@ -34,11 +30,6 @@ func withFakeBridge(t *testing.T, name string) {
 	t.Cleanup(func() { nlLinkByName, nlAddrList = prevLink, prevAddr })
 }
 
-// existingDHCPNetwork is what NetworkList reports for a network this
-// plugin already serves. IPAM driver "null" is what this plugin
-// requires, and it matters here: the address-overlap arm skips null-IPAM
-// networks outright, so the bridge-name comparison is the ONLY thing
-// standing between two DHCP networks and the same bridge.
 func existingDHCPNetwork(bridge string) dNetwork.Summary {
 	return dNetwork.Summary{
 		ID:      "net-old",
@@ -60,32 +51,8 @@ func createBridgeNetwork(t *testing.T, p *Plugin, id, bridge string) error {
 	})
 }
 
-// TestCreateNetwork_BridgeReuseSurvivesANulInAStoredName is the
-// regression test for the escape #705's fix left open.
-//
-// #705 added ValidIfaceName to validateModeOptions, which CreateNetwork
-// is the only caller of. That validates the name of the network being
-// created. It does nothing about the names of the networks it is
-// COMPARED AGAINST: the reuse guard decodes every other DHCP network's
-// options straight out of Docker's record and compares Go strings.
-//
-// Both halves of the bypass are measured on this project's own hardware
-// and recorded in #705: a NUL in a driver option transports through
-// dockerd untouched, and netlink resolves "docker0\x00evil" to docker0
-// because the kernel reads IFLA_IFNAME as a C string. So a network
-// created on a build older than #705 keeps a NUL-bearing bridge name in
-// Docker's netdb, survives the upgrade, and is then compared as a whole
-// Go string against the truncated name a new network asks for:
-//
-//	"br-test" == "br-test\x00evil"  ->  false  ->  no ErrBridgeUsed
-//
-// Two DHCP networks then share one bridge, which is the exact outcome
-// ErrBridgeUsed exists to prevent, reached past the fix that was
-// supposed to prevent it.
-//
-// The last subtest is what stops this passing vacuously: if the guard
-// were broken outright, the first case would "pass" while proving
-// nothing.
+// dockerd passes a NUL in a driver option through untouched and the kernel reads
+// IFLA_IFNAME as a C string, so a name stored before #705 can still carry one.
 func TestCreateNetwork_BridgeReuseSurvivesANulInAStoredName(t *testing.T) {
 	const bridge = "br-test"
 
@@ -104,9 +71,6 @@ func TestCreateNetwork_BridgeReuseSurvivesANulInAStoredName(t *testing.T) {
 	})
 
 	t.Run("a stored name with trailing junk after the NUL is the same case", func(t *testing.T) {
-		// The suffix is attacker-chosen and arbitrary; nothing about the
-		// bypass depends on what follows the NUL, so the test must not
-		// either.
 		withStateDir(t, t.TempDir())
 		withFakeBridge(t, bridge)
 		p := newPluginForTest()
@@ -120,9 +84,6 @@ func TestCreateNetwork_BridgeReuseSurvivesANulInAStoredName(t *testing.T) {
 	})
 
 	t.Run("an honestly different bridge is still allowed", func(t *testing.T) {
-		// The guard must fail in one direction only. A fix that answered
-		// ErrBridgeUsed for every other network would pass the cases
-		// above and make a second DHCP network impossible to create.
 		withStateDir(t, t.TempDir())
 		withFakeBridge(t, bridge)
 		p := newPluginForTest()

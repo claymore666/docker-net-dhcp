@@ -23,10 +23,7 @@ func TestIsDHCPPlugin(t *testing.T) {
 		{"ghcr.io/claymore666/docker-net-dhcp:v0.4.0", true},
 		{"ghcr.io/claymore666/docker-net-dhcp:latest", true},
 
-		// Foreign namespaces are deliberately rejected — see W-6 in the
-		// 2026-05-05 review. A broader regex would let a third-party
-		// image masquerade as an instance of this plugin and trigger
-		// spurious bridge-conflict errors.
+		// Foreign namespaces are rejected so a third-party image cannot pose as this plugin.
 		{"someregistry.example/team/docker-net-dhcp:1.0", false},
 		{"docker-net-dhcp:local", false},
 		{"evil.example/docker-net-dhcp:bad", false},
@@ -34,7 +31,7 @@ func TestIsDHCPPlugin(t *testing.T) {
 		{"bridge", false},
 		{"macvlan", false},
 		{"overlay", false},
-		{"docker-net-dhcp", false}, // missing ":<tag>"
+		{"docker-net-dhcp", false},
 		{"ghcr.io/devplayer0/docker-net-dhcp", false},
 		{"ghcr.io/devplayer0/other-thing:v1", false},
 		{"", false},
@@ -57,9 +54,6 @@ func TestEffectiveMode(t *testing.T) {
 		{"bridge", ModeBridge},
 		{"macvlan", ModeMacvlan},
 		{"ipvlan", ModeIPvlan},
-		// effectiveMode is a normaliser, NOT a validator — it returns
-		// whatever non-empty value is set, even if invalid. Validation
-		// happens in CreateNetwork.
 		{"garbage", "garbage"},
 	}
 	for _, c := range cases {
@@ -72,9 +66,6 @@ func TestEffectiveMode(t *testing.T) {
 	}
 }
 
-// TestFQDNMode pins the register_dns → dhcpcd directive mapping (#261):
-// opt-in yields "both" (server updates A/AAAA + PTR), default yields ""
-// (no fqdn directive — DDNS is opt-in).
 func TestFQDNMode(t *testing.T) {
 	if got := (DHCPNetworkOptions{RegisterDNS: true}).fqdnMode(); got != "both" {
 		t.Errorf("register_dns=true → fqdnMode()=%q, want \"both\"", got)
@@ -187,9 +178,6 @@ func TestDecodeOpts(t *testing.T) {
 	}
 }
 
-// TestVethPairNames pins the naming convention so a refactor that
-// silently changes the prefix doesn't break compatibility with
-// already-running endpoints.
 func TestVethPairNames(t *testing.T) {
 	host, ctr := vethPairNames("0123456789abcdef0123456789abcdef")
 	if host != "dh-0123456789ab" {
@@ -213,10 +201,8 @@ func TestSubLinkName(t *testing.T) {
 
 func TestClientIDFromEndpoint(t *testing.T) {
 	cases := []struct {
-		name string
-		eid  string
-		// We test length + stability rather than literal bytes, since the
-		// derivation is "first 8 bytes of hex-decoded EndpointID".
+		name    string
+		eid     string
 		wantLen int
 		wantNil bool
 	}{
@@ -238,24 +224,18 @@ func TestClientIDFromEndpoint(t *testing.T) {
 		})
 	}
 
-	// Stability: same input must produce same bytes.
 	a := clientIDFromEndpoint("0123456789abcdef0123456789abcdef")
 	b := clientIDFromEndpoint("0123456789abcdef0123456789abcdef")
 	if string(a) != string(b) {
 		t.Errorf("derivation is not stable: %x vs %x", a, b)
 	}
 
-	// Distinctness: different inputs produce different bytes.
 	c := clientIDFromEndpoint("fedcba9876543210fedcba9876543210")
 	if string(a) == string(c) {
 		t.Errorf("derivation collided on different inputs")
 	}
 }
 
-// TestResolveClientID pins the v0.9.0 / T2-3 override semantics
-// (operator-supplied opts.ClientID always wins) and the #371 identity
-// rules: MAC-derived where the MAC is unique, endpoint-derived for
-// ipvlan where it is not.
 func TestResolveClientID(t *testing.T) {
 	const eid = "0123456789abcdef0123456789abcdef"
 	mac := net.HardwareAddr{0x02, 0x42, 0xac, 0x11, 0x00, 0x03}
@@ -268,9 +248,6 @@ func TestResolveClientID(t *testing.T) {
 	})
 
 	t.Run("override wins in ipvlan too", func(t *testing.T) {
-		// The mode-aware branch must sit *below* the override, or an
-		// operator's explicit client_id would be silently ignored on
-		// exactly the mode that most needs manual control.
 		got := resolveClientID(DHCPNetworkOptions{ClientID: "static", Mode: "ipvlan"}, eid, mac)
 		if string(got) != "static" {
 			t.Errorf("override+ipvlan: got %q, want %q", got, "static")
@@ -292,10 +269,7 @@ func TestResolveClientID(t *testing.T) {
 	})
 
 	t.Run("ipvlan stays endpoint-derived", func(t *testing.T) {
-		// ipvlan L2 slaves inherit the parent's MAC, so a MAC-derived id
-		// would be identical for every container on the network and they
-		// would fight over one lease. This is the regression the whole
-		// mode-aware design exists to prevent (#219).
+		// ipvlan L2 slaves inherit the parent's MAC, so a MAC-derived id would be shared by every container (#219).
 		got := resolveClientID(DHCPNetworkOptions{Mode: "ipvlan"}, eid, mac)
 		want := clientIDFromEndpoint(eid)
 		if string(got) != string(want) {
@@ -316,8 +290,6 @@ func TestResolveClientID(t *testing.T) {
 	})
 
 	t.Run("missing MAC falls back to endpoint-derived", func(t *testing.T) {
-		// Degrade to the previous behaviour rather than to no
-		// client-id at all.
 		got := resolveClientID(DHCPNetworkOptions{}, eid, nil)
 		want := clientIDFromEndpoint(eid)
 		if string(got) != string(want) {
@@ -326,9 +298,6 @@ func TestResolveClientID(t *testing.T) {
 	})
 
 	t.Run("override with empty endpoint still works", func(t *testing.T) {
-		// Even if the endpoint id is too short to derive from, an
-		// explicit override should still be honoured. Prevents a
-		// regression where the fallback path swallowed the override.
 		got := resolveClientID(DHCPNetworkOptions{ClientID: "static"}, "", nil)
 		if string(got) != "static" {
 			t.Errorf("override+empty eid: got %q, want %q", got, "static")
@@ -336,25 +305,15 @@ func TestResolveClientID(t *testing.T) {
 	})
 }
 
-// TestListen_RemovesStaleSocket covers the I-9 fix: Listen must
-// best-effort unlink any leftover socket file before binding so a
-// previous unclean shutdown doesn't EADDRINUSE the new one. Driving
-// the full Listen would block on Serve, so we replicate the prelude:
-// pre-place a regular file at the socket path and confirm the unlink
-// path clears it before net.Listen would fail.
 func TestListen_RemovesStaleSocket(t *testing.T) {
 	dir := t.TempDir()
 	sockPath := filepath.Join(dir, "stale.sock")
 
-	// Pre-place a non-socket file at the target path. net.Listen would
-	// fail with EADDRINUSE / "address already in use" on this path
-	// without the os.Remove in Listen.
+	// bind(2) on an existing path fails with EADDRINUSE, which Listen's unlink prevents.
 	if err := os.WriteFile(sockPath, []byte("stale"), 0o600); err != nil {
 		t.Fatalf("setup: %v", err)
 	}
 
-	// Mirror Listen's prelude. We can't call p.Listen directly because
-	// Serve blocks; the unlink + Listen sequence is what we care about.
 	_ = os.Remove(sockPath)
 	l, err := net.Listen("unix", sockPath)
 	if err != nil {
@@ -364,10 +323,6 @@ func TestListen_RemovesStaleSocket(t *testing.T) {
 	_ = os.Remove(sockPath)
 }
 
-// TestRegisterDHCPManager_ReturnsDisplaced pins the displacement
-// contract: registering over an existing entry (Join landing on a
-// recovery-registered endpoint) must hand the old manager back so the
-// caller can Stop it instead of silently leaking its running dhcpcd.
 func TestRegisterDHCPManager_ReturnsDisplaced(t *testing.T) {
 	p := &Plugin{persistentDHCP: make(map[string]*dhcpManager)}
 	m1 := &dhcpManager{}
@@ -384,45 +339,26 @@ func TestRegisterDHCPManager_ReturnsDisplaced(t *testing.T) {
 	}
 }
 
-// TestRemoveDHCPManagerIfSame pins the identity-checked deregistration
-// used by the failed-Start goroutines: between a Start failure and its
-// late cleanup, a fast Leave+Join can install a NEW manager under the
-// same endpoint key — the cleanup must not evict that successor.
 func TestRemoveDHCPManagerIfSame(t *testing.T) {
 	p := &Plugin{persistentDHCP: make(map[string]*dhcpManager)}
 	failed := &dhcpManager{}
 	successor := &dhcpManager{}
 
-	// Normal case: entry still ours -> removed.
 	p.registerDHCPManager("ep1", failed)
 	p.removeDHCPManagerIfSame("ep1", failed)
 	if _, ok := p.takeDHCPManager("ep1"); ok {
 		t.Errorf("entry not removed when identity matches")
 	}
 
-	// Race case: successor already installed -> must survive.
 	p.registerDHCPManager("ep1", successor)
 	p.removeDHCPManagerIfSame("ep1", failed)
 	if got, ok := p.takeDHCPManager("ep1"); !ok || got != successor {
 		t.Errorf("successor manager evicted by stale cleanup (got %v, ok=%v)", got, ok)
 	}
 
-	// Missing entry: no-op, no panic.
 	p.removeDHCPManagerIfSame("ep-gone", failed)
 }
 
-// TestClose_StopsManagersAndClosesServerFirst pins the shutdown
-// ordering fix. Close must shut the HTTP listener BEFORE draining the
-// manager registry: with the old ordering a Join dispatched during the
-// up-to-5s stop fan-out registered a manager into the freshly emptied
-// map that nobody ever stopped, orphaning its lease and its dhcpcd.
-// Close releases nothing even on a release_lease=on_stop network: it
-// arrives through Stop, whose containers are still running (#962).
-//
-// The registry is seeded with short-circuiting stub managers (startErr
-// set) so the fan-out completes without a live dhcpcd; what's under
-// test is that Close drains it at all and reports the docker/server
-// errors correctly.
 func TestClose_StopsManagersAndClosesServerFirst(t *testing.T) {
 	p := newTestPlugin(t)
 	p.docker = &fakeDocker{}
@@ -439,11 +375,6 @@ func TestClose_StopsManagersAndClosesServerFirst(t *testing.T) {
 	}
 }
 
-// TestClose_ReportsDockerAndServerErrors pins the error precedence
-// after the reordering. server.Close() now runs first but its error is
-// held and reported last, so a docker-close failure still wins — and
-// crucially, an early server error must not skip the manager fan-out
-// (that would reintroduce the orphaned-lease bug it was moved to fix).
 func TestClose_ReportsDockerAndServerErrors(t *testing.T) {
 	t.Run("docker error wins over a clean server close", func(t *testing.T) {
 		p := newTestPlugin(t)

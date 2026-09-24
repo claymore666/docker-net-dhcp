@@ -175,7 +175,7 @@ jobs:
           # Must exist BEFORE apt runs: the package's postinst is what
           # starts the service, and there is no undoing that afterwards
           # without a race against socket activation.
-          printf '#!/bin/sh\nexit 101\n' | sudo tee /usr/sbin/policy-rc.d > /dev/null
+          sudo sh -c "printf '#!/bin/sh\\nexit 101\\n' > /usr/sbin/policy-rc.d"
           sudo chmod +x /usr/sbin/policy-rc.d
 
           sudo apt-get update

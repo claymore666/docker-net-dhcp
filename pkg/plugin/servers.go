@@ -16,53 +16,20 @@ import (
 	"github.com/claymore666/docker-net-dhcp/v2/pkg/util"
 )
 
-// serverPolicy is the validated form of the dhcp_servers (#111) and
-// dhcp_deny_servers (#669) network options.
-//
-// The two options answer different questions and are deliberately not
-// merged: Prefer is an ORDERING ("which of these wins when several
-// answer"), Deny is a PERMISSION ("this one never answers for us").
-//
-// Both are enforced by the library's proto.ServerPolicy, which matches
-// on the Server Identifier (option 54) the message advertises. Two
-// properties the rest of this file respects:
-//
-//  1. The key is what the server SAYS it is, not where the packet came
-//     from. 1.x used dhcpcd's whitelist, which matched the IP source
-//     address; behind a relay that is the relay agent for every offer,
-//     so neither option could tell servers apart there. Option 54 is
-//     also what a renewal is unicast to. pkg/dhcp's Params documents
-//     the change.
-//  2. Deny wins over Allow inside the library, and an Allow list fails
-//     CLOSED on a message that carries no server identifier at all.
-//
-// Deny is nonetheless subtracted from Prefer here, at parse time: after
-// resolveServerPolicy there is one truth about what is allowed, and the
-// acquisition tiers below are built from that one list rather than from
-// two that have to be re-composed at each tier.
+// serverPolicy is dhcp_servers (#111) and dhcp_deny_servers (#669), matched by proto.ServerPolicy on option 54,
+// the Server Identifier; behind a relay the source address is the relay's for every offer. Deny is subtracted from
+// Prefer at parse time, and an Allow list fails closed on a message with no option 54.
 type serverPolicy struct {
-	// Prefer is the operator's ordered preference list with denied
-	// entries already removed. Empty means no preference.
+	// Prefer is the operator's ordered preference list with denied entries already removed.
 	Prefer []netip.Addr
-	// Deny is the deny-list. Empty means nothing is denied.
+	// Deny is the deny-list.
 	Deny []netip.Addr
 }
 
-// IsZero reports whether the policy asks for nothing, which is the
-// default for every network that sets neither option.
+// IsZero reports whether the policy asks for nothing, the default for a network that sets neither option.
 func (p serverPolicy) IsZero() bool { return len(p.Prefer) == 0 && len(p.Deny) == 0 }
 
-// parseServerList parses one comma-separated option value into unique
-// IPv4 addresses, preserving order.
-//
-// IPv6 is rejected rather than ignored. Both lists filter on DHCPv4's
-// option 54, which is a server's IPv4 address; DHCPv6's Server
-// Identifier is an opaque DUID naming no address, and proto.Params6
-// carries no policy field at all (pkg/dhcp/params6.go). A v6 entry
-// would parse, apply to nothing, and leave the operator believing a
-// server was ranked or denied when it was not.
-// The same reasoning as the validate_dhcp carve-out in
-// validateModeOptions: refuse loudly instead of no-op'ing quietly.
+// parseServerList refuses IPv6: option 54 is an IPv4 address and proto.Params6 has no policy field (#669).
 func parseServerList(option, value string) ([]netip.Addr, error) {
 	if strings.TrimSpace(value) == "" {
 		return nil, nil
@@ -92,8 +59,6 @@ func parseServerList(option, value string) ([]netip.Addr, error) {
 	return out, nil
 }
 
-// resolveServerPolicy validates both options together and returns the
-// policy the config renderer works from.
 func resolveServerPolicy(opts DHCPNetworkOptions) (serverPolicy, error) {
 	prefer, err := parseServerList("dhcp_servers", opts.DHCPServers)
 	if err != nil {
@@ -109,9 +74,6 @@ func resolveServerPolicy(opts DHCPNetworkOptions) (serverPolicy, error) {
 		denied[a] = struct{}{}
 	}
 
-	// Subtract, so the allow list the client sees never contains a
-	// denied address — see the type comment for why the tiers are
-	// built from one list rather than two.
 	kept := prefer[:0:0]
 	for _, a := range prefer {
 		if _, bad := denied[a]; bad {
@@ -120,10 +82,7 @@ func resolveServerPolicy(opts DHCPNetworkOptions) (serverPolicy, error) {
 		kept = append(kept, a)
 	}
 
-	// A preference list that denies its way to empty is a contradiction,
-	// and one that would otherwise degrade into "no preference at all" —
-	// i.e. silently accept any server, which is the opposite of what
-	// both options were set to achieve. Fail the network create.
+	// A preference list denied to empty would silently accept any server, so the create fails (#669).
 	if len(prefer) > 0 && len(kept) == 0 {
 		return serverPolicy{}, fmt.Errorf(
 			"%w: every dhcp_servers entry is also in dhcp_deny_servers, leaving no server to lease from",
@@ -133,25 +92,12 @@ func resolveServerPolicy(opts DHCPNetworkOptions) (serverPolicy, error) {
 	return serverPolicy{Prefer: kept, Deny: deny}, nil
 }
 
-// allowList is the set of servers the client may accept from. Empty
-// means "impose no allow list".
-//
-// The PERSISTENT client gets the whole preference list rather than one
-// tier: it must be able to renew and rebind after the preferred server
-// goes away, and a whitelist pinned to the tier that won acquisition
-// would strand the endpoint with no lease instead of failing over.
-// Ordering is not expressible to the client, so preference is enforced
-// at acquisition (see tiers) and the lease then stays with whoever granted
-// it — DHCP renewal is unicast to that server.
+// allowList gives the persistent client the whole preference list: renewal is unicast to the granting server, and
+// a whitelist pinned to one tier would strand the endpoint when that server goes away (#111).
 func (p serverPolicy) allowList() []string {
 	return addrsToStrings(p.Prefer)
 }
 
-// denyList is the set of servers to reject. It is empty whenever a
-// preference list exists: an allow list already refuses every server
-// not on it, the denied entries were subtracted from that list in
-// resolveServerPolicy, and a deny list beside it would add nothing
-// while implying the two were composed at the client.
 func (p serverPolicy) denyList() []string {
 	if len(p.Prefer) > 0 {
 		return nil
@@ -159,14 +105,7 @@ func (p serverPolicy) denyList() []string {
 	return addrsToStrings(p.Deny)
 }
 
-// tiers is the acquisition ladder: one tier per preferred server, in
-// operator order, each a whitelist restricted to that single server.
-// Empty when no preference is configured, meaning "one attempt, no
-// restriction".
-//
-// The ladder subdivides the existing acquisition budget and never
-// extends it — see acquisitionTiers' caller. #403 and #417 both concern
-// how tight that budget already is.
+// tiers is one single-server whitelist per preferred server, dividing the acquisition budget (#111, #403, #417).
 func (p serverPolicy) tiers() [][]string {
 	if len(p.Prefer) == 0 {
 		return nil
@@ -189,66 +128,18 @@ func addrsToStrings(in []netip.Addr) []string {
 	return out
 }
 
-// acquisitionAttempt is one pass of the initial DHCP exchange: which
-// servers it will accept from, and how long it gets.
 type acquisitionAttempt struct {
 	Allow  []string
 	Deny   []string
 	Budget time.Duration
 }
 
-// minAttemptBudget is the smallest slice of the acquisition budget one
-// attempt may be given.
-//
-// This is a POLICY CHOICE, not a measurement, and saying so is the
-// point: nothing here has timed an acquisition on the hosts this runs
-// on. What it encodes is that an attempt costs entering the container's
-// network namespace, opening a raw socket on the link and a DHCP round
-// trip before it can succeed -- and since M6, in the default
-// conflict_check=wait, RFC 5227's check on top of that -- so below some
-// slice an attempt cannot answer the question it was given and the
-// ladder is spending the budget on nothing.
-//
-// The daemon this was first written for is gone. An attempt used to be
-// priced as a process spawn: an unshare, a dhcpcd exec and a FIFO
-// handshake. None of those happen now, and the arithmetic below did not
-// change, because what the floor is protecting is the DHCP EXCHANGE at
-// the end of the attempt and that has not moved.
-//
-// The number is NOT the adjustable part, and an earlier draft of this
-// comment said it was. Moving it is a BEHAVIOUR CHANGE, not a tuning
-// knob: driven 3s -> 5s and 3s -> 7s it reddens
-// TestAcquisitionAttempts, TestAcquisitionAttempts_OrderingIsKeptWhereItFits
-// and TestAcquireWithPolicy_FallbacksCountStepsNotAcquisitions, and
-// driven 3s -> 2s it still reddens the ordering one -- so the value is
-// pinned in both directions, by three test functions that transcribe
-// it rather than derive it. Anyone changing it is changing what the
-// ladder does and has those three to answer for.
-//
-// The GUARANTEE is the part that is derived, and it is the part that
-// matters: no attempt is ever handed less than this AS LONG AS THE
-// BUDGET CAN FUND ONE ATTEMPT. TestAcquisitionAttempts_NoAttemptIsStarved
-// and TestAcquisitionAttempts_NoLadderIsStarvedBelowTheFloor pin that
-// relationship rather than the number, and both survive every move
-// above.
-//
-// That qualifier is load-bearing and it is not a gap. lease_timeout is
-// operator-settable with no validated minimum, so a total below this
-// floor is reachable, and no arrangement of the ladder can pay for a
-// full attempt out of it. What the ladder owes there is to spend the
-// whole of a too-small budget on ONE question rather than shred it
-// across the list -- the honest failure instead of the guaranteed one.
-// Said the other way round: the ladder never starves an attempt it
-// could have funded.
+// minAttemptBudget is a policy choice, not a measurement: the smallest slice that holds a netns entry, a raw
+// socket, a DHCP round trip and RFC 5227's check (#731). TestAcquisitionAttempts_NoAttemptIsStarved pins the
+// guarantee; a budget below it gets one attempt.
 const minAttemptBudget = 3 * time.Second
 
-// packTiers folds a tier list down to n attempts by merging the tail
-// into the last one. The first n-1 keep their own attempt and so keep
-// strict ordering; everything after is asked as a single group.
-//
-// Merging the TAIL and not the head is the whole design: the operator
-// wrote the list in preference order, so the entries that lose their
-// individual attempt must be the ones they cared about least.
+// packTiers merges the tail, so the entries the operator ranked lowest lose their own attempt (#731).
 func packTiers(tiers [][]string, n int) [][]string {
 	if n < 1 || len(tiers) <= n {
 		return tiers
@@ -262,84 +153,22 @@ func packTiers(tiers [][]string, n int) [][]string {
 	return append(out, tail)
 }
 
-// acquisitionAttempts expands a policy into the ordered attempts the
-// initial acquisition should make within total.
-//
-// The ladder DIVIDES total; it never extends it. A preference list must
-// not make `docker run` slower than it is today — the one-shot
-// acquisition at CreateEndpoint already runs against a tight ceiling
-// (#403 asks whether a loaded host can hit it, #417 removes ~9.8s of
-// dead time from the same path), so buying ordering with extra seconds
-// there would trade a rare misconfiguration for a common regression.
-//
-// v6 always gets a single unrestricted attempt: both lists are
-// DHCPv4-only (proto.Params6 has no policy field, so a v6 client that
-// carried one would not compile), and tiering a v6 exchange would
-// restrict nothing while implying it had.
+// acquisitionAttempts divides total and never extends it (#403, #417); v6 gets one unrestricted attempt, since
+// proto.Params6 has no policy field (#669).
 func acquisitionAttempts(pol serverPolicy, v6 bool, total time.Duration) []acquisitionAttempt {
 	return acquisitionAttemptsWithFloor(pol, v6, total, minAttemptBudget)
 }
 
-// acquisitionAttemptsWithFloor is acquisitionAttempts with the floor as
-// an argument, and it exists so the GUARANTEE can be driven instead of
-// described.
-//
-// The comment on minAttemptBudget says the number is pinned but the
-// guarantee is derived. That sentence was wrong once already -- it used
-// to say the number was adjustable, and a run contradicted it -- so it
-// does not get to be the only thing holding the claim up. With the
-// floor as a parameter, TestAcquisitionAttempts_TheGuaranteeHoldsAtEveryFloor
-// asserts the property at several floors rather than at 3s, and a
-// change that only works because the floor happens to be 3s goes red.
-//
-// Unexported and called from exactly one place in production, so the
-// shipped behaviour is what it always was.
+// acquisitionAttemptsWithFloor takes the floor as an argument so the guarantee is tested at several floors (#731).
 func acquisitionAttemptsWithFloor(pol serverPolicy, v6 bool, total, floor time.Duration) []acquisitionAttempt {
 	if v6 || len(pol.Prefer) == 0 {
 		return []acquisitionAttempt{{Deny: denyForFamily(pol, v6), Budget: total}}
 	}
 
-	// The number of ATTEMPTS the budget can pay for, which is not the
-	// same as the number of servers named.
-	//
-	// Dividing total by the list length with no floor is what #731
-	// found: every attempt is a full acquisition -- entering the
-	// container's netns, opening a raw socket, then a DHCP round trip,
-	// with RFC 5227's check after it under conflict_check=wait -- so a
-	// slice too small to hold one exchange is not a fast attempt, it is
-	// a guaranteed failure. Six preferred servers bought 1.66s each and
-	// twenty bought 500ms, which made an operator's careful ordering
-	// FAIL where naming nothing would have succeeded. An option that
-	// gets worse the more carefully it is filled in is not an option.
-	//
-	// Packing rather than refusing or overrunning. A per-tier floor
-	// would extend total and break the property this ladder is built
-	// on -- a preference list must never make `docker run` slower than
-	// it is today (#403, #417). Capping the LIST at validation time
-	// would refuse a legitimate configuration for an implementation
-	// reason. Instead the tail shares one attempt: a server whitelist
-	// takes several servers at once, so [a] [b] [c d e ... t] tries the
-	// top preferences in strict order and asks the rest as a group.
-	//
-	// What degrades is strict ordering WITHIN the last attempt, and
-	// only once the list outgrows the budget. What does not degrade is
-	// the total, or the guarantee that every attempt gets enough time
-	// to be a real question.
+	// Dividing total by the list length made six servers 1.66 s each and failed every attempt (#731); the tail shares
+	// one whitelist attempt, so the total never grows (#403, #417).
 	tiers := pol.tiers()
-	// BELOW THE FLOOR, COLLAPSE TO ONE -- do not fall through.
-	//
-	// int(total / minAttemptBudget) is 0 when the budget cannot fund a
-	// single attempt, and a guard of `>= 1` then skips the packing
-	// entirely, dividing the budget across the whole list exactly as
-	// the code #731 was filed against did. Twenty servers on a 1.5s
-	// lease_timeout took 75ms each -- worse than the 500ms the issue
-	// named as a guaranteed failure -- and it reached that by way of
-	// the fix.
-	//
-	// A budget too small for one attempt cannot be rescued; what it
-	// can be is spent once. One question with the whole 1.5s can be
-	// answered by a fast server, twenty questions of 75ms cannot be
-	// answered by anything.
+	// Below the floor the whole budget goes to one attempt: twenty servers on 1.5 s once got 75 ms each (#731).
 	maxAttempts := int(total / floor)
 	if maxAttempts < 1 {
 		maxAttempts = 1
@@ -347,9 +176,6 @@ func acquisitionAttemptsWithFloor(pol serverPolicy, v6 bool, total, floor time.D
 	if len(tiers) > maxAttempts {
 		tiers = packTiers(tiers, maxAttempts)
 	}
-	// Integer division deliberately: the remainder is dropped rather
-	// than handed to the last tier, so the sum of the slices can only
-	// be <= total.
 	each := total / time.Duration(len(tiers))
 	out := make([]acquisitionAttempt, 0, len(tiers))
 	for _, tier := range tiers {
@@ -358,9 +184,6 @@ func acquisitionAttemptsWithFloor(pol serverPolicy, v6 bool, total, floor time.D
 	return out
 }
 
-// denyForFamily returns the blacklist entries that apply to a family.
-// v6 gets none, for the same reason acquisitionAttempts gives it no
-// whitelist.
 func denyForFamily(pol serverPolicy, v6 bool) []string {
 	if v6 {
 		return nil
@@ -368,15 +191,7 @@ func denyForFamily(pol serverPolicy, v6 bool) []string {
 	return pol.denyList()
 }
 
-// policyRestricted reports whether the network's server policy actually
-// narrowed this acquisition, which is the condition under which a total
-// failure is an exhausted policy rather than a plain DHCP timeout.
-//
-// It reads the attempts rather than the serverPolicy on purpose: the
-// carve-outs live in acquisitionAttempts (v6 gets neither list however
-// the network is configured; a preference emptied by nothing at all
-// yields one unrestricted attempt), and re-deriving the answer from the
-// policy would let the counter drift away from what was really sent.
+// policyRestricted reads the attempts, not the policy, so the counter follows what was sent (#731).
 func policyRestricted(attempts []acquisitionAttempt) bool {
 	for _, a := range attempts {
 		if len(a.Allow) > 0 || len(a.Deny) > 0 {
@@ -386,26 +201,9 @@ func policyRestricted(attempts []acquisitionAttempt) bool {
 	return false
 }
 
-// dhcpGetIP indirects the one-shot acquisition, in the same shape and
-// for the same reason as the netlink seam: the ladder below could not
-// be tested at all otherwise, because every attempt opens a raw socket
-// in the container's network namespace. That left the counter semantics #731 found -- one
-// bump per STEP down the ladder, not one per acquisition -- described
-// in four places, wrong in three, and pinned by nothing.
+// dhcpGetIP is a seam for the ladder test, which pins one fallback count per step (#731).
 var dhcpGetIP = dhcp.GetIP
 
-// acquireWithPolicy runs one initial DHCP acquisition through the
-// network's server-preference ladder and returns the first lease won.
-//
-// Every acquisition path goes through here rather than looping over
-// acquisitionAttempts itself. There are two of them (the bridge path in
-// CreateEndpoint and the parent-attached path), and a preference list
-// that silently applied to one of them would be worse than no feature
-// at all — the operator would see it work and not know which half.
-//
-// base carries the per-endpoint identity and hints; this function owns
-// only the per-attempt server restriction, the per-attempt deadline and
-// the counters.
 func (p *Plugin) acquireWithPolicy(
 	ctx context.Context,
 	iface string,
@@ -425,8 +223,6 @@ func (p *Plugin) acquireWithPolicy(
 	for i, attempt := range attempts {
 		clientOpts := base
 		clientOpts.V6 = v6
-		// Never both — see serverPolicy for why one list is built
-		// rather than two.
 		clientOpts.AllowServers = attempt.Allow
 		clientOpts.DenyServers = attempt.Deny
 
@@ -449,33 +245,14 @@ func (p *Plugin) acquireWithPolicy(
 		}
 	}
 
-	// Distinguish "the servers you named are all silent" from "DHCP is
-	// broken". They are identical in a timeout log and call for
-	// different operator action.
-	//
-	// Any policy-restricted acquisition counts, not only a multi-tier
-	// one. A single-entry dhcp_servers that goes quiet is the purest
-	// form of this failure — the network names one server and that
-	// server stopped answering — and it is the case an operator is
-	// most likely to hit. Keying on len(attempts) > 1 would have left
-	// it indistinguishable from an ordinary DHCP timeout, which is the
-	// exact confusion the counter exists to remove.
+	// A single-entry dhcp_servers that goes quiet counts as an exhausted policy too (#111).
 	if policyRestricted(attempts) {
 		p.dhcpServerPolicyExhausted.Add(1)
 	}
 	return info, ra, lastErr
 }
 
-// noteMainPrefixFallback counts and names an `ipv6_main_prefix` that no
-// address of the endpoint's lease fell inside.
-//
-// ONCE PER ENDPOINT, AND THIS IS WHERE THAT IS TRUE. The selection
-// itself happens at the lease seam, which every renewal crosses, so a
-// counter bumped there would count how often the client renewed rather
-// than how many endpoints were affected -- the population an operator
-// reads it as. This is the acquisition both attach paths share, it runs
-// once per endpoint, and it is the same site the tier-fallback counter
-// above is bumped from for the same reason.
+// noteMainPrefixFallback counts once per endpoint here; the lease seam runs on every renewal (#818).
 func (p *Plugin) noteMainPrefixFallback(v6 bool, info dhcp.Info, main netip.Prefix, endpointID string) {
 	if p == nil || !v6 || !info.MainAddrFallback {
 		return

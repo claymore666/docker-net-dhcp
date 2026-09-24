@@ -5,23 +5,8 @@ package plugin
 
 import "testing"
 
-// TestConsumeTombstone_ARefusedHostnameInheritsNothing pins the hole that
-// the #692 fix opened while closing the one it was written for.
-//
-// safeHostname refuses a hostname carrying a control character and returns
-// "". Independently, tombstoneStore.consume treats an EMPTY hostname as
-// "match any tombstone on this network" — a deliberate carve-out for
-// v0.5.0 tombstones and for the CreateEndpoint/container-registration
-// race, both of which are honest absences. Routing a refusal into that
-// same "" turned the sanitiser into a wildcard generator: one \x01 in
-// `docker run --hostname` and the container inherited some other
-// endpoint's MAC and asked the DHCP server for its address. On the
-// deployment this plugin targets — a LAN DHCP server with MAC
-// reservations — that is impersonation and lease theft, not a mix-up.
-//
-// The three cases below have to stay together. The last one is what stops
-// this test passing vacuously: if the victim tombstone were not actually
-// consumable, the first two would "pass" while proving nothing.
+// An empty hostname matches any tombstone, so a refused hostname must match none; the
+// third case keeps the first two from passing vacuously (#692).
 func TestConsumeTombstone_ARefusedHostnameInheritsNothing(t *testing.T) {
 	const (
 		net       = "net-A"
@@ -35,7 +20,6 @@ func TestConsumeTombstone_ARefusedHostnameInheritsNothing(t *testing.T) {
 		p := newPluginForTest()
 		p.addTombstone(net, victim, victimMAC, victimIP, "fe80::99")
 
-		// Exactly what CreateEndpoint does with an attacker's hostname.
 		hostname := p.safeHostname("attacker-host\x01")
 		if hostname.name != "" || hostname.trusted() {
 			t.Fatalf("safeHostname = (%q, trusted=%v), want (\"\", false)", hostname.name, hostname.trusted())

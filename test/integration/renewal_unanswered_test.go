@@ -14,74 +14,27 @@ import (
 	docker "github.com/docker/docker/client"
 )
 
-// TestFailure_UnansweredRenewalsCounted is #940 on a real wire.
-//
-// THE DEFECT. A production host's DHCP server stopped answering
-// renewals for 7h52m. The container kept its address and the client
-// kept asking, which is the protocol working; what was missing was any
-// way to know. /Plugin.Health read healthy, every counter on it read
-// unchanged, and the first one that would have moved was dhcp_timeouts
-// at the END of the lease -- a day later, by which time the address is
-// gone. A renewal request that goes unanswered produces no lease event
-// at all: the state machine stays in RENEWING and retransmits, so there
-// was nothing for the plugin to fold on.
-//
-// WHAT THIS TEST ADDS OVER ITS NEIGHBOURS. TestFailure_ServerLossDuring
-// Renewal already kills a server under a bound client -- with a 20s
-// lease, and it waits for that lease to LAPSE. This one is the window
-// before the lapse, which is where a production outage is actually
-// lived: the lease is 600s and is never allowed to run out, so
-// dhcp_timeouts must stay exactly where it was while the new counter
-// moves. If both moved, one outage would be counted twice and the pair
-// would be unreadable.
-//
-// THE ASSERTION IS AGAINST THE WIRE. The counter's own value cannot
-// support a claim about the counter, and the server's log cannot help
-// here: Kea and dnsmasq alike log a request they decline to serve
-// AFTER deciding to serve it, and this server is not running at all.
-// So a capture on the fixture's end of the veth counts the renewal
-// requests that actually left the host, and the counter is read against
-// that number. The reading is taken in a fixed order -- health first,
-// wire second -- so that a request landing between the two can only
-// widen the bound, never satisfy it.
-//
-// THE BOUND IS TWO-SIDED, and the upper half is the interesting one.
-// The request currently in flight has not been refused yet: it may
-// still be answered. So a client that has put N renewal requests on the
-// wire has proof of exactly N-1 unanswered ones, and a counter reading
-// N would be counting the send rather than the silence -- the wrong
-// counter, the one that reports an outage on a network that is working.
+// A production host's DHCP server once stayed silent to renewals for 7h52m while health and every counter read
+// unchanged; an unanswered renewal produces no lease event, so dhcp_timeouts moves only when the lease lapses (#940).
+// The lease here is 600s and never lapses, so dhcp_timeouts must stay flat while the new counter moves. The server is
+// not running, so the evidence is a capture of renewal requests on the fixture's veth end, read after health; N
+// requests on the wire prove at most N-1 unanswered ones, since the last one may still be answered.
+
+// TestFailure_UnansweredRenewalsCounted checks that renewals a silent server leaves unanswered are counted against the wire (#940).
 func TestFailure_UnansweredRenewalsCounted(t *testing.T) {
 	const (
-		// T1 at 12s, as TestLeaseRenew_HonorsT1 uses: short enough to
-		// be cheap, long enough to be a renewal the client schedules
-		// from the server's option 58 rather than from anything local.
+		// T1 at 12s, as TestLeaseRenew_HonorsT1 uses, scheduled from the server's option 58.
 		renewT1 = 12
-		// T2 at T1 + 120s, and the 120 is arithmetic, not taste. RFC
-		// 2131 section 4.4.5 retransmits after "one-half of the
-		// remaining time until T2 ... down to a minimum of 60 seconds",
-		// which the library spells proto.RenewRetransmitFloor. Half of
-		// 120 IS that floor, so the retransmission falls at T1+60 and
-		// REBINDING is still a minute away when the reading is taken:
-		// the second request on the wire is a genuine RENEWING
-		// retransmission with no state change behind it, which is the
-		// case that produces no lease event and the case #940 is about.
+		// RFC 2131 section 4.4.5 retransmits after half the time remaining until T2, down to 60 seconds
+		// (proto.RenewRetransmitFloor); half of 120 is that floor, so the retransmission at T1+60 is still RENEWING, with no
+		// state change and no lease event (#940).
 		renewT2 = renewT1 + 120
-		// The lease must OUTLIVE the whole test by a wide margin. The
-		// moment it lapses the client loses the address, dhcp_timeouts
-		// moves, and this test would be measuring its neighbour's
-		// scenario instead of its own.
+		// A lapse would move dhcp_timeouts and measure TestFailure_ServerLossDuringRenewal's scenario (#940).
 		leaseSeconds = 600
 
-		// wireBudget bounds the wait for the retransmission itself:
-		// T1 + the 60s floor, plus room for a loaded runner. A deadline,
-		// not a wait -- the poll returns as soon as the second request
-		// is captured.
+		// wireBudget is T1 plus the 60s retransmit floor, plus room for a loaded runner.
 		wireBudget = 120 * time.Second
-		// healthBudget bounds the lag between a request leaving the
-		// host and the plugin's counter reflecting it. The chassis
-		// folds the library's counters on a ticker at a quarter of the
-		// retransmission floor, so the worst case is 15s.
+		// The chassis folds the library's counters on a ticker at a quarter of the retransmit floor, so the lag is at most 15s (#940).
 		healthBudget = 45 * time.Second
 	)
 
@@ -97,10 +50,7 @@ func TestFailure_UnansweredRenewalsCounted(t *testing.T) {
 		harness.WithLeaseSeconds(leaseSeconds),
 		harness.WithRenewTimes(renewT1, renewT2))
 
-	// The capture opens BEFORE the container starts. A capture opened
-	// afterwards has no bind exchange to show, and could not then tell
-	// "this client sent no renewal" apart from "this instrument never
-	// saw this client at all".
+	// Opened before the container starts, so a missing renewal is told apart from a capture that never saw the client.
 	wire := ef.StartDHCPCapture(t)
 
 	t.Cleanup(func() {
@@ -125,28 +75,12 @@ func TestFailure_UnansweredRenewalsCounted(t *testing.T) {
 	id, ip, mac := harness.RunContainer(t, ctx, netName, ctrName)
 	t.Logf("bound: ip=%s mac=%s", ip, mac)
 
-	// Rule 1 of this file: the lease under test must belong to the
-	// PERSISTENT client, not to the CreateEndpoint one-shot. Only the
-	// persistent client renews, and only it reports here.
+	// Only the persistent client renews and reports, never the CreateEndpoint one-shot.
 	awaitBoundPersistentClient(t, bindW)
 	ep := harness.EndpointShortID(t, ctx, cli, id, netName)
 
-	// EVERY BASELINE IN THIS CELL IS TAKEN AT THE KILL, the wire's and
-	// the health document's alike, because the outage is the subject
-	// and nothing before it is (#961). Since #961 a container whose
-	// attach entered through the sandbox key starts its DHCP client
-	// with no name and renews AT ONCE to carry the one the daemon
-	// answers with, which is RFC 2131 section 4.4.5's early renewal and
-	// is ANSWERED. It reaches the wire about two milliseconds after the
-	// bind, so a baseline taken at the bind can fall on either side of
-	// it: counted from the start of the capture it makes the wire wait
-	// below return one renewal early, before the client has gone into
-	// silence twice, which is what the counter needs; and a counter
-	// window opened in the same two milliseconds would see its answer
-	// as a leases_renewed the outage did not cause. On a host that
-	// takes the container PID route there is no such renewal, which is
-	// why the gating lane never saw either shape and the hosted
-	// cross-check saw the first.
+	// Since #961 a sandbox-key attach starts its client with no name and renews at once to carry the daemon's name (RFC
+	// 2131 section 4.4.5), about two milliseconds after the bind and answered, so every baseline is taken at the kill.
 	beforeKill := len(wire.RenewalRequestsFrom(mac))
 
 	killed := time.Now()
@@ -161,7 +95,6 @@ func TestFailure_UnansweredRenewalsCounted(t *testing.T) {
 		"silence at t+%ds and the retransmission at t+%ds",
 		leaseSeconds, renewT1, renewT1, renewT1+60)
 
-	// --- outside evidence, part one: the requests are really on the wire.
 	requests, ok := wire.AwaitRenewalRequestsFrom(mac, beforeKill+2, wireBudget)
 	if !ok {
 		t.Fatalf("only %d renewal request(s) from %s reached the wire within %s of the kill "+
@@ -173,7 +106,7 @@ func TestFailure_UnansweredRenewalsCounted(t *testing.T) {
 	t.Logf("%d renewal request(s) on the wire by t+%.0fs after the kill (%d before it): %s",
 		len(requests)-beforeKill, time.Since(killed).Seconds(), beforeKill, requests[len(requests)-1])
 
-	// --- the plugin's reading, taken BEFORE the wire is counted.
+	// Health is read before the wire is counted.
 	if _, ok := w.Await(healthBudget, func(now, before *harness.HealthResponse) bool {
 		return now.RenewalsUnanswered > before.RenewalsUnanswered
 	}); !ok {
@@ -185,8 +118,7 @@ func TestFailure_UnansweredRenewalsCounted(t *testing.T) {
 		"mode, not a plugin failure")
 	before, after := w.End()
 
-	// --- outside evidence, part two: counted after every health read,
-	// so a request arriving in between can only widen the bound.
+	// Counted after every health read, so a request arriving in between can only widen the bound.
 	onWire := len(wire.RenewalRequestsFrom(mac)) - beforeKill
 	gain := after.RenewalsUnanswered - before.RenewalsUnanswered
 	t.Logf("renewals_unanswered %d -> %d (+%d) against %d renewal request(s) on the wire",
@@ -203,9 +135,7 @@ func TestFailure_UnansweredRenewalsCounted(t *testing.T) {
 			"outage on a network that is answering perfectly well.", gain, onWire, onWire-1)
 	}
 
-	// The family halves are two protocols, not two views of one (#730).
-	// This fixture is IPv4 only, so the v6 half moving would mean the
-	// gain was attributed by something other than the client's family.
+	// The fixture is IPv4 only, and the family halves are two protocols (#730).
 	if d := after.RenewalsUnansweredV4 - before.RenewalsUnansweredV4; d != gain {
 		t.Errorf("renewals_unanswered rose by %d but its v4 half by %d on an IPv4-only fixture; "+
 			"the aggregate is the SUM of the halves and the two must agree", gain, d)
@@ -214,8 +144,6 @@ func TestFailure_UnansweredRenewalsCounted(t *testing.T) {
 		t.Errorf("the v6 half rose by %d on an IPv4-only fixture", d)
 	}
 
-	// The preservation control, and the reason this counter exists at
-	// all: the lease is 600s and nothing has expired.
 	if d := after.DHCPTimeouts - before.DHCPTimeouts; d != 0 {
 		t.Errorf("dhcp_timeouts rose by %d while a %ds lease was still held. The two counters are "+
 			"a pair -- one says the server stopped answering, the other says the client ran out "+
@@ -227,9 +155,7 @@ func TestFailure_UnansweredRenewalsCounted(t *testing.T) {
 			"requests", d)
 	}
 
-	// The counter is plugin-wide and cannot name an endpoint; the log
-	// line is what an operator reading logs at 3am has to find, and it
-	// is what ties this rise to THIS endpoint (#278's rule).
+	// The counter cannot name an endpoint; the log line ties the rise to this one (#278).
 	if got := harness.CountPluginLogLines(t, ctx, renewalWarnMarker, ep) - baseWarn; got < 1 {
 		t.Errorf("the plugin logged no unanswered-renewal warning naming endpoint %s (+%d lines); "+
 			"the counter rose, so either the rise belongs to another client or the operator who "+
@@ -242,8 +168,5 @@ func TestFailure_UnansweredRenewalsCounted(t *testing.T) {
 	}
 }
 
-// renewalWarnMarker is the stable half of the warning pkg/plugin's
-// renewalReporter emits. Matched on a phrase rather than the whole
-// sentence so a wording change does not silently stop matching, and on
-// enough of it that no other line in the log can collide.
+// renewalWarnMarker is a stable phrase of pkg/plugin's renewalReporter warning, specific enough that no other line collides.
 const renewalWarnMarker = "did not answer this endpoint's renewal request"

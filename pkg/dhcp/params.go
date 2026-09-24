@@ -10,34 +10,22 @@ import (
 	"github.com/claymore666/dhcp-golib/proto"
 )
 
+// Supplied here: an empty proto.Params.VendorClass sends no option 60, while an empty vendor_class has always sent this
+// string, and a server keyed on it would fall through to the untagged pool (#899).
+
 // VendorID is DHCPv4 option 60 when the network sets no vendor_class.
-//
-// The default is supplied HERE and not left to the library, and the two
-// are not the same thing: an empty proto.Params.VendorClass sends no
-// option 60 at all, while an empty vendor_class has always meant this
-// string on the wire. A server keyed on it — the tagged-gateway shape
-// the vendor-class integration tests build — would silently fall
-// through to the untagged pool.
 const VendorID = "docker-net-dhcp"
 
-// clientIDTypeOpaque is RFC 2132 section 9.14's type byte for a
-// client-identifier that is not a DUID.
-//
-// The chassis owns the WHOLE option-61 value including this byte
-// (D10). The library sends Params.ClientID verbatim, so a caller that
-// forgets the prefix changes the identity without changing anything
-// visible from the container: the server files the lease under a
-// different key and hands out a second address from the pool.
+// The library sends Params.ClientID verbatim, so a missing type byte files the lease under another key and a second
+// address (#899).
+
+// clientIDTypeOpaque is RFC 2132 section 9.14's type byte for a client-identifier that is not a DUID.
 const clientIDTypeOpaque = 0x00
 
-// ClientIdentity is the option-61 value AS SENT: the chassis's type
-// byte followed by the caller's payload.
-//
-// Exported because the durable record stores the identity rather than
-// re-deriving it (D10), and it must store what went on the wire. A
-// record that kept the payload alone would be a record of a different
-// client than the one the server filed the lease under, and the two
-// would only be seen to differ when a restart got a second address.
+// Exported because the durable record stores the identity as sent, not re-derived; a payload-only record would name
+// another client (#899).
+
+// ClientIdentity is the option-61 value as sent: the chassis's type byte followed by the caller's payload.
 func ClientIdentity(clientID []byte) []byte {
 	if len(clientID) == 0 {
 		return nil
@@ -45,23 +33,10 @@ func ClientIdentity(clientID []byte) []byte {
 	return append([]byte{clientIDTypeOpaque}, clientID...)
 }
 
-// ClientIDPayload is ClientIdentity's inverse: the option-61 value with
-// the chassis's type byte taken back off.
-//
-// A re-bind is what needs it. The identity a record carries is what
-// went on the wire, and an exchange that re-claims that record's
-// address has to go back out under the same value -- the server filed
-// the lease under it, and anything else asks as a new client and is
-// handed a new address. DHCPClientOptions.ClientID is the payload
-// WITHOUT the type byte (buildParams puts it back), so the record's
-// bytes cannot be handed to it unchanged and one of the two forms has
-// to be derived from the other.
-//
-// ok is false for an identity this chassis did not write: shorter than
-// a type byte plus one, or a first byte that is not the opaque type. A
-// DUID or any other shape is refused rather than truncated, because
-// re-sending its tail would put a value on the wire that no record
-// says.
+// A re-bind must go out under the value the server filed the lease under; a DUID or other shape is refused, not
+// truncated, so no value goes on the wire that no record holds (#110).
+
+// ClientIDPayload is ClientIdentity's inverse, and ok is false for an identity this chassis did not write.
 func ClientIDPayload(identity []byte) ([]byte, bool) {
 	if len(identity) < 2 || identity[0] != clientIDTypeOpaque {
 		return nil, false
@@ -69,47 +44,21 @@ func ClientIDPayload(identity []byte) ([]byte, bool) {
 	return append([]byte(nil), identity[1:]...), true
 }
 
-// buildParams turns one endpoint's options into the protocol parameter
-// set for one manager instance.
-//
-// once distinguishes the CreateEndpoint acquisition manager from the
-// persistent Join manager. Since the desync fix below it selects
-// NOTHING: both managers get the same parameters. It stays in the
-// signature because it is how the seam names which manager a call site
-// is building, and because the equality is the rule — a future arm here
-// has to be argued at the assignment it would sit beside, not slipped
-// in. TestBuildParams_NeitherManagerDesyncs asserts the equality.
+// buildParams turns one endpoint's options into the DHCPv4 parameters for one manager instance; once selects nothing
+// (#899).
 func buildParams(opts *DHCPClientOptions, once bool) (proto.Params, error) {
 	if opts.V6 {
-		// Not a refusal of IPv6 any more (#911) but a refusal to build
-		// the WRONG family's parameters: proto.Params is RFC 2131's
-		// and a v6 endpoint takes buildParams6. Loud, because the two
-		// have no field in common and a v6 client handed this would
-		// send a DHCPDISCOVER.
+		// proto.Params is RFC 2131's; a v6 endpoint takes buildParams6, and a v6 client handed this would send a
+		// DHCPDISCOVER (#911).
 		return proto.Params{}, fmt.Errorf("dhcp: buildParams was asked for a DHCPv6 endpoint")
 	}
 	if len(opts.MAC) == 0 {
 		return proto.Params{}, fmt.Errorf("dhcp: no MAC address for the endpoint")
 	}
 
-	// CHAddr IS FILLED HERE, from opts.MAC, and which value that is
-	// matters (M6 review r2, finding 1): the library's own-traffic
-	// exemption in the probe window is keyed on CHAddr, so a client
-	// whose CHAddr is a stable identity rather than the sending
-	// interface's hardware address reads its own kernel's ARP replies
-	// as conflicts and DECLINEs its own address on every acquisition.
-	//
-	// runtime.NewClient's "fill it from the link" branch is therefore
-	// never reached from this chassis: DefaultParams sets CHAddr, and
-	// the empty-MAC refusal above means it is never set to nothing. The
-	// guarantee that the value IS the link's address is the caller's —
-	// both call sites pass link.Attrs().HardwareAddr
-	// (pkg/plugin/dhcp_manager.go for the Join manager,
-	// pkg/plugin/network.go for the one-shot). The end-to-end proof is
-	// TestConflictCheck_BridgeModeDoesNotSelfReport, where a bridge
-	// endpoint whose CHAddr was not the link's would DECLINE its own
-	// address; TestBuildParams_TheCHAddrIsOptsMACAndNotTheClientID
-	// covers the mapping this function is responsible for.
+	// The library's probe-window own-traffic exemption is keyed on CHAddr, so a CHAddr that is not the link's address
+	// DECLINEs its own address (#882). Callers pass link.Attrs().HardwareAddr;
+	// TestConflictCheck_BridgeModeDoesNotSelfReport is the end-to-end proof.
 	p := proto.DefaultParams(opts.MAC)
 
 	p.Hostname = opts.Hostname
@@ -119,25 +68,12 @@ func buildParams(opts *DHCPClientOptions, once bool) (proto.Params, error) {
 	}
 	p.ClientID = ClientIdentity(opts.ClientID)
 
-	// RFC 5227 conflict detection, per network (D23). The zero value is
-	// proto.ConflictWait and DefaultConflictCheck is that value's own
-	// name, so an endpoint whose network predates the option gets the
-	// mode the option's default names — one fact, read from the
-	// library, never spelled here.
-	//
-	// BOTH MANAGERS GET THE SAME MODE, which is not a detail. The
-	// one-shot wins the address and the Join manager holds it; a mode
-	// that applied to one of them would probe the address before use
-	// and then stop listening for section 2.4's conflicts for the whole
-	// of the container's life, or the reverse. `once` selects nothing
-	// here for the same reason it selects nothing below.
+	// RFC 5227 per network; the zero value is proto.ConflictWait. Both managers get the same mode: the one-shot wins
+	// the address and the Join manager must keep listening for section 2.4's conflicts (#882).
 	p.Conflict = opts.ConflictMode
 
-	// register_dns arrives as a mode string because dhcpcd spelled it
-	// that way ("both"); what it means is "ask the server to register
-	// the name in DNS", which RFC 4702 encodes as option 81. Flags are
-	// left zero, which the library resolves to S|E — ask for the A RR
-	// as well as the PTR RR, in canonical wire format.
+	// register_dns means RFC 4702 option 81; zero flags resolve in the library to S|E, the A and PTR RRs in canonical
+	// wire format (#899).
 	if opts.FQDN != "" && opts.Hostname != "" {
 		p.FQDN = proto.FQDN{Name: opts.Hostname}
 	}
@@ -160,76 +96,15 @@ func buildParams(opts *DHCPClientOptions, once bool) (proto.Params, error) {
 	}
 	p.Servers = proto.ServerPolicy{Allow: allow, Deny: deny}
 
-	// Broadcast is NOT set from an option, and that is the fix for a
-	// regression this seam introduced rather than a simplification.
-	//
-	// proto.DefaultParams sets it TRUE and the library documents why:
-	// the flag exists for "a client that cannot receive unicast IP
-	// datagrams until its protocol software has been configured with an
-	// IP address", which is exactly ring 3's raw AF_PACKET socket on an
-	// unconfigured interface, and clearing it "produces a client that
-	// works against servers ignoring the flag and hangs against those
-	// honouring it".
-	//
-	// The plugin used to pass `mode == ModeIPvlan` here, carried across
-	// unchanged from 1.x. Under dhcpcd that expression ADDED the flag
-	// for ipvlan on top of whatever dhcpcd did by default (#243). Here
-	// it OVERWROTE a default of true, so bridge and macvlan endpoints
-	// cleared a flag the transport underneath them requires. The
-	// expression survived the swap; its meaning inverted.
-	//
-	// The fixture cannot see this: dnsmasq and Kea both answer an
-	// unconfigured client whether or not the flag is set, which is why
-	// every integration suite is green. The server that decides it is
-	// the one in production.
+	// Broadcast stays at the library's true: a raw AF_PACKET socket on an unconfigured interface cannot receive unicast
+	// (RFC 2131 section 4.1). The 1.x `mode == ModeIPvlan` expression here cleared it for bridge and macvlan (#243,
+	// #899). dnsmasq and Kea answer either way, so no fixture can see it.
 
-	// D-1, and it applies to BOTH managers.
-	//
-	// proto.DefaultParams desyncs the first DISCOVER by 1–10 seconds
-	// (RFC 2131 section 4.4.1's "random delay between one and ten
-	// seconds"), which is a rule about a fleet of hosts booting
-	// together. Neither manager here is a fleet: each one is a single
-	// container asking for a single address, started by a single
-	// `docker run` or `docker start`.
-	//
-	// The acquisition manager was exempted first, because the desync
-	// ate a lease_timeout that defaults to ten seconds. The Join
-	// manager was left with the draw on the argument that a plugin
-	// restart starts many of them at once — and that argument was
-	// FALSIFIED by measurement rather than re-reasoned. Run
-	// 33785125087 scored the `Resume`-dropped mutant and took two
-	// extra kills with it, TestDNSPropagate_OptInWritesResolvConf and
-	// TestMTUPropagate_OptInSetsLinkMTU, on two different shards. What
-	// the run's own dumps showed was not a slow exchange but SILENCE:
-	// the fixture logged exactly one DHCP transaction for the
-	// container's MAC — CreateEndpoint's one-shot — and the plugin
-	// logged, at teardown, "Persistent client stopped before it ever
-	// held the lease; the one-shot's lease is left to expire on the
-	// server". The Join manager spent the container's whole life
-	// inside the draw and sent nothing.
-	//
-	// That path is reachable UNMUTATED: proto.Machine.takeResume
-	// returns false for a remembered lease that is no longer live and
-	// falls through to this same draw, so a JOINED record whose lease
-	// expired while the container was down (a weekend) starts from
-	// INIT with a 1–10 s wait in front of it. Options 6 and 26 are
-	// applied from the bind event (pkg/plugin/dhcp_manager.go:508-509,
-	// reached from the "bound" and "renew" arms), so for the length of
-	// the draw plus a DORA the container runs with Docker's own
-	// resolv.conf and the link-default MTU on a network that opted
-	// into propagate_dns / propagate_mtu.
-	//
-	// The blast radius is exactly one packet, and that is checkable
-	// rather than asserted: the library requests the desync only for
-	// EvStart and EvLinkUp (proto/machine.go, stepStopped and
-	// stepInit; every other re-acquisition passes withDesync=false),
-	// nothing above ring 1 in this tree ever emits EvLinkUp, and
-	// lease.Manager.Run dispatches EvStart exactly once. So this
-	// assignment moves the FIRST packet of a cold-lease start and
-	// nothing else.
-	//
-	// Both zero disables the delay; the library documents that as the
-	// disabling value rather than as a degenerate range.
+	// RFC 2131 section 4.4.1's 1-10 s desync is for a fleet booting together; each manager here is one container. Run
+	// 33785125087 showed the Join manager spending a container's life inside the draw: a JOINED record whose lease
+	// expired while the container was down starts from INIT, and dhcpManager.renew applies options 6 and 26 only after
+	// a bind (#899). The library draws only for EvStart and EvLinkUp, so this moves one packet. Zero for both disables
+	// the delay.
 	p.DesyncMin, p.DesyncMax = 0, 0
 
 	return p, nil

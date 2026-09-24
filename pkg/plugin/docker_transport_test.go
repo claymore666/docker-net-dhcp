@@ -20,7 +20,6 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-// countingBase records what actually reached the wire.
 type countingBase struct {
 	sent []string
 	resp *http.Response
@@ -34,18 +33,6 @@ func (c *countingBase) RoundTrip(req *http.Request) (*http.Response, error) {
 	return &http.Response{StatusCode: 200, Body: http.NoBody, Request: req}, nil
 }
 
-// TestReadOnlyTransport_RefusesEveryUnsafeMethod drives the whole
-// method table rather than one representative write.
-//
-// One representative is what a prefix or case-insensitive comparison
-// survives, and both of those are the plausible mistakes here: HTTP
-// methods are case-sensitive (RFC 9110 section 9.1), so "get" is not
-// GET and must be refused, and "GETX" shares GET's prefix.
-//
-// HEAD is deliberately absent from this table and present in the
-// preservation control below: the client library's API-version
-// negotiation sends HEAD /_ping, it is safe and body-less, and refusing
-// it made the refusal counter read 1 on a plugin that had done nothing.
 func TestReadOnlyTransport_RefusesEveryUnsafeMethod(t *testing.T) {
 	for _, method := range []string{
 		http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete,
@@ -80,10 +67,6 @@ func TestReadOnlyTransport_RefusesEveryUnsafeMethod(t *testing.T) {
 	}
 }
 
-// The preservation control. Without it every case above is satisfied by
-// a transport that refuses everything, and the plugin would fail to
-// read the daemon at all — which is a strictly worse outcome than the
-// one being guarded against.
 func TestReadOnlyTransport_PassesTheSafeMethods(t *testing.T) {
 	base := &countingBase{}
 	refusals := 0
@@ -113,8 +96,7 @@ func TestReadOnlyTransport_PassesTheSafeMethods(t *testing.T) {
 	}
 }
 
-// An empty Method is GET by http.Request's own contract, and refusing
-// it would break the client library rather than the threat model.
+// An empty Method is GET by http.Request's contract.
 func TestReadOnlyTransport_TreatsAnEmptyMethodAsGET(t *testing.T) {
 	base := &countingBase{}
 	tr := newReadOnlyTransport(base, nil)
@@ -135,9 +117,6 @@ func TestReadOnlyTransport_TreatsAnEmptyMethodAsGET(t *testing.T) {
 	}
 }
 
-// The record is the half the integration lane reads. A refusal that is
-// counted but not recorded leaves the lane with nothing to assert
-// against a real daemon.
 func TestReadOnlyTransport_RecordsBothWhatItSentAndWhatItRefused(t *testing.T) {
 	base := &countingBase{}
 	tr := newReadOnlyTransport(base, nil)
@@ -161,21 +140,6 @@ func TestReadOnlyTransport_RecordsBothWhatItSentAndWhatItRefused(t *testing.T) {
 	}
 }
 
-// TestReadOnlyTransport_WritesTheRecordToTheLog pins the one thing the
-// in-memory record above cannot: the LINE.
-//
-// calls() is unexported and lives in the plugin's process. The only way
-// the claim "this plugin issues these calls and no others" reaches
-// anyone outside is the log line the transport writes the first time it
-// sees a shape, and the integration lane parses exactly that line to
-// judge the set against a live daemon. So the message text and the two
-// field names are an interface, and nothing else in this package
-// treats them as one — a rename would leave every unit test green while
-// the lane's parser silently found nothing to judge.
-//
-// It also asserts the ONCE: a line per request would put one entry per
-// health poll in the log, which is the reason the record is keyed at
-// all.
 func TestReadOnlyTransport_WritesTheRecordToTheLog(t *testing.T) {
 	var buf strings.Builder
 	restoreOut, restoreLevel := log.StandardLogger().Out, log.GetLevel()
@@ -209,33 +173,14 @@ func TestReadOnlyTransport_WritesTheRecordToTheLog(t *testing.T) {
 	}
 }
 
-// TestDockerClient_InterfaceNamesOnlyReadMethods is the gate one layer
-// above the transport.
-//
-// The transport refuses a write at run time, which is the right
-// backstop and the wrong place to find out. This fails at `go test` the
-// moment the narrow interface grows a method that is not a read — the
-// one edit that turns "the plugin makes four read calls" from true
-// into false, and the edit #691's whole proposal rests on not
-// happening.
-//
-// The allowlist is written out rather than derived from a prefix: an
-// "Inspect"/"List" prefix rule would admit `NetworkListAndPrune` and
-// refuse nothing anyone would actually add.
 func TestDockerClient_InterfaceNamesOnlyReadMethods(t *testing.T) {
 	allowed := map[string]bool{
 		"NetworkList":      true,
 		"NetworkInspect":   true,
 		"ContainerInspect": true,
-		// The engine probe (#670). Ping is GET or HEAD /_ping, which
-		// the proxy allowlist in SECURITY.md already carries because
-		// the client library sends it anyway; ServerVersion is GET
-		// /v1.*/version, which that allowlist now names.
+		// The engine probe (#670): Ping is GET or HEAD /_ping and ServerVersion is GET /v1.*/version.
 		"Ping":          true,
 		"ServerVersion": true,
-		// Not API calls: Close drops the local connection pool, and
-		// ClientVersion reads the version the last ping NEGOTIATED
-		// without asking the daemon anything.
 		"Close":         true,
 		"ClientVersion": true,
 	}
@@ -255,10 +200,6 @@ func TestDockerClient_InterfaceNamesOnlyReadMethods(t *testing.T) {
 	}
 }
 
-// TestDockerHostFromEnv drives all three states of the setting. The
-// default arm is the one that matters: an operator who sets nothing
-// must keep the mounted socket, byte for byte, or this change breaks
-// every existing installation to add an option nobody asked for.
 func TestDockerHostFromEnv(t *testing.T) {
 	for _, tc := range []struct{ name, set, want string }{
 		{"unset", "", defaultDockerHost},
@@ -280,9 +221,6 @@ func TestDockerHostFromEnv(t *testing.T) {
 	}
 }
 
-// TestManifestsDeclareDockerHost closes the other direction of the
-// setting: read but not declared means `docker plugin set DOCKER_HOST`
-// fails and the documented proxy deployment does not exist.
 func TestManifestsDeclareDockerHost(t *testing.T) {
 	for _, name := range pluginManifests {
 		b, err := os.ReadFile(filepath.Join("..", "..", name))
@@ -320,20 +258,7 @@ func TestManifestsDeclareDockerHost(t *testing.T) {
 	}
 }
 
-// TestDefaultDockerHostIsAMountedPath pins the fact SECURITY.md's proxy
-// section turns on, and that nothing else in the tree would notice.
-//
-// The plugin sees exactly the destinations config.json mounts. So the
-// default endpoint has to BE one of them — otherwise an operator who
-// sets nothing gets a dial to a path that does not exist inside the
-// plugin — and, the other way round, a proxy on some other unix socket
-// is unreachable no matter what DOCKER_HOST says, because the mount's
-// source is fixed in the manifest with no settable field. That is why
-// the documented deployment is a TCP endpoint on the host's loopback
-// and not the unix socket the first draft of that section described.
-//
-// If the socket mount's source ever becomes settable, this test fails
-// and SECURITY.md's bound is what has to change with it.
+// The plugin sees only config.json's mounts, whose socket source is not settable, so the default must be one (#725).
 func TestDefaultDockerHostIsAMountedPath(t *testing.T) {
 	const socketMountSource = "/var/run/docker.sock"
 
@@ -380,9 +305,6 @@ func TestDefaultDockerHostIsAMountedPath(t *testing.T) {
 	}
 }
 
-// TestNewDockerClient_InstallsTheReadOnlyTransport is the wiring
-// assertion: the refusal is only a contract if it is on the client the
-// plugin actually uses.
 func TestNewDockerClient_InstallsTheReadOnlyTransport(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -408,17 +330,11 @@ func TestNewDockerClient_InstallsTheReadOnlyTransport(t *testing.T) {
 		t.Errorf("docker_api_non_get_refusals = %d before any call, want 0", got)
 	}
 
-	// A real read through the real client, so the wrapper is proven not
-	// to have broken the calls the plugin depends on. The transport is
-	// asserted through BEHAVIOUR rather than through its type: the
-	// library wraps whatever it is given in an OpenTelemetry transport
-	// after the options are applied, so a type assertion here would
-	// measure the library's layering and not this plugin's contract.
+	// Asserted through behaviour, since the client wraps the given transport in an OpenTelemetry one.
 	if _, err := cli.NetworkList(context.Background(), dNetwork.ListOptions{}); err != nil {
 		t.Fatalf("NetworkList through the wrapped client: %v", err)
 	}
 
-	// The refusal, driven through the same client's transport chain.
 	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/v1.51/containers/create", nil)
 	if resp, err := cli.HTTPClient().Transport.RoundTrip(req); err == nil {
 		resp.Body.Close()
@@ -432,27 +348,10 @@ func TestNewDockerClient_InstallsTheReadOnlyTransport(t *testing.T) {
 	}
 }
 
-// TestManifestsDescribeTheSafeMethodContract closes the surface
-// TestManifestsDeclareDockerHost left open: the setting's DESCRIPTION.
-//
-// `docker plugin inspect` is the one place that string is visible on a
-// running host, and it is what an operator writing the allowlist for
-// their read-only proxy reads. Both manifests said "the plugin issues
-// only GET requests" while the shipped contract is GET and HEAD — so a
-// proxy configured from the manifest refuses the client library's
-// version ping, which is the first request the plugin makes, and the
-// plugin cannot reach the daemon at all.
-//
-// THE EXPECTATION IS DERIVED FROM safeDaemonMethods, not typed beside
-// it. That is the whole point: adding a method to the set without
-// saying so in the manifest fails here, and so does naming a method the
-// set does not carry.
 func TestManifestsDescribeTheSafeMethodContract(t *testing.T) {
 	if len(safeDaemonMethods) == 0 {
 		t.Fatal("safeDaemonMethods is empty; every assertion below would pass vacuously")
 	}
-	// Every method RFC 9110 registers, so "unsafe" is a population
-	// rather than the two or three that came to mind.
 	unsafe := []string{
 		http.MethodPost, http.MethodPut, http.MethodPatch,
 		http.MethodDelete, http.MethodConnect, http.MethodOptions, http.MethodTrace,

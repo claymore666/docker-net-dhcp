@@ -11,10 +11,6 @@ import (
 	"github.com/claymore666/docker-net-dhcp/v2/pkg/buildinfo"
 )
 
-// withBuildInfo injects the three values for one test and restores
-// them. Restoring matters: they are package variables, and a test that
-// left them set would make every later test in this binary assert
-// against its fixture rather than against the shipped defaults.
 func withBuildInfo(t *testing.T, version, commit, library string) {
 	t.Helper()
 	v, c, l := buildinfo.Version, buildinfo.Commit, buildinfo.Library
@@ -22,9 +18,6 @@ func withBuildInfo(t *testing.T, version, commit, library string) {
 	buildinfo.Version, buildinfo.Commit, buildinfo.Library = version, commit, library
 }
 
-// Direction one: the values the build passed reach both renderings.
-// Three distinct values, so a document that rendered one of them three
-// times, or read the wrong variable, differs here.
 func TestBuildInfo_InjectedValuesReachTheDocumentAndTheMetric(t *testing.T) {
 	withBuildInfo(t, "v2.0.0-alpha.1", "0123456789abcdef0123456789abcdef01234567", "fedcba9876543210fedcba9876543210fedcba98")
 
@@ -57,10 +50,6 @@ func TestBuildInfo_InjectedValuesReachTheDocumentAndTheMetric(t *testing.T) {
 	}
 }
 
-// Direction two, and the one that matters: a build that was passed
-// NOTHING says so. An unset -X leaves the variable empty, and
-// version="" renders as a label that is present and says nothing --
-// which is the failure that looks like success. The defaults are words.
 func TestBuildInfo_UninjectedValuesAreWordsNotEmptyLabels(t *testing.T) {
 	p := newHealthPlugin()
 	p.instanceID = "inst"
@@ -89,10 +78,7 @@ func TestBuildInfo_UninjectedValuesAreWordsNotEmptyLabels(t *testing.T) {
 	}
 }
 
-// The label set of build_info is a promise: SECURITY.md says the
-// exposition carries no per-endpoint identifier, and these five are the
-// whole allow-list. A sixth label added here without that decision
-// being made is what this catches.
+// SECURITY.md promises the exposition carries no per-endpoint identifier.
 func TestBuildInfo_CarriesExactlyTheFourLabels(t *testing.T) {
 	p := newHealthPlugin()
 	p.instanceID = "inst"

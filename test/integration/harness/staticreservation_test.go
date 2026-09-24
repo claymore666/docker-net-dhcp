@@ -13,14 +13,7 @@ import (
 	"testing"
 )
 
-// TestStaticReservation_IsInsideThePool guards the half of the
-// reservation that is easy to break by moving the pool.
-//
-// dnsmasq NAKs a request for an address outside every --dhcp-range, so
-// StaticTestIP must stay within [DHCPPoolStart, DHCPPoolEnd]. Narrowing
-// the pool without moving the reservation would turn
-// TestStaticIP_DriverOpt from "wrong address" into "no address at all",
-// which is a slower and more confusing failure than this one.
+// dnsmasq NAKs a request for an address outside every --dhcp-range (#425).
 func TestStaticReservation_IsInsideThePool(t *testing.T) {
 	ip := net.ParseIP(StaticTestIP)
 	lo := net.ParseIP(DHCPPoolStart)
@@ -57,18 +50,6 @@ func TestStaticReservation_IsInsideThePool(t *testing.T) {
 	}
 }
 
-// TestStaticReservation_IsPassedToDnsmasq is the half that matters
-// most: the reservation is what takes the address out of the dynamic
-// pool. Drop the flag and TestStaticIP_DriverOpt goes back to being a
-// coin flip — passing most runs and failing occasionally, which is the
-// worst possible failure mode because it reads as flakiness rather
-// than as a defect.
-//
-// Asserted against the fixture source rather than a live dnsmasq: the
-// point is to catch the flag being deleted or edited, and that is a
-// property of the source. StaticReservationArg is called (not
-// restated) so a change to the flag's shape cannot pass by being
-// mirrored in two places.
 func TestStaticReservation_IsPassedToDnsmasq(t *testing.T) {
 	want := StaticReservationArg()
 
@@ -79,10 +60,7 @@ func TestStaticReservation_IsPassedToDnsmasq(t *testing.T) {
 			want, StaticTestMAC, StaticTestIP)
 	}
 
-	// Keyed on the MAC, not the hostname: the plugin's hostname is
-	// best-effort at DISCOVER time (initialDHCPHostname returns "" when
-	// the endpoint is not bound yet), so a hostname key would make the
-	// reservation racy in exactly the way this whole change removes.
+	// Keyed on the MAC: initialDHCPHostname returns "" before the endpoint is bound, so a hostname key is racy (#425).
 	if strings.Contains(want, StaticTestHostname) {
 		t.Errorf("StaticReservationArg() = %q keys the reservation on the hostname. "+
 			"The plugin may send no hostname at DISCOVER time — key on StaticTestMAC.", want)
@@ -99,11 +77,7 @@ func TestStaticReservation_IsPassedToDnsmasq(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read fixture.go: %v", err)
 	}
-	// Match the CALL SITE, not the identifier: fixture.go also contains
-	// `func StaticReservationArg() string`, so a bare Contains check on
-	// the name passes even with the flag deleted from the arg list.
-	// Verified by deleting the call — the first version of this guard
-	// stayed green, which is the whole argument for negative controls.
+	// fixture.go also declares `func StaticReservationArg`, so only the call site proves the flag is passed (#425).
 	const callSite = "StaticReservationArg(),"
 	if !strings.Contains(string(src), callSite) {
 		t.Errorf("fixture.go no longer passes %s to dnsmasq. "+
@@ -113,12 +87,6 @@ func TestStaticReservation_IsPassedToDnsmasq(t *testing.T) {
 	}
 }
 
-// TestStaticReservation_TestUsesTheConstants stops the literal address
-// coming back. The failure this guards against already happened once:
-// the address lived as a bare "192.168.99.95" in the test with a
-// comment explaining why it was safe, and the explanation was wrong.
-// A literal here would silently decouple the test from the
-// reservation.
 func TestStaticReservation_TestUsesTheConstants(t *testing.T) {
 	src, err := os.ReadFile(filepath.Join("..", "static_ip_test.go"))
 	if err != nil {

@@ -85,13 +85,16 @@ note() { echo "FAIL  $*" >&2; fail=1; }
 # that read only a commit range.
 BODY_GATES='check-test-weakening\.sh|check-no-ai-attribution\.sh|check-issue-ref\.sh|check-coverage-floor\.sh'
 
+# shellcheck source=scripts/workflow-shell-lines.sh
+. "$(cd "$(dirname "$0")" && pwd)/workflow-shell-lines.sh"
+
 # Comments stripped. Everything below reads this, never the raw file.
 strip() { grep -vE '^[[:space:]]*#' "$1"; }
 
 # Split a workflow into step blocks on stdout, one block per record,
-# separated by a sentinel line. A step begins at a `- name:`, `- uses:`
-# or `- run:` line and ENDS at the first non-blank line indented no
-# further than its own dash.
+# separated by a sentinel line. A step begins at any `- key:` line, so
+# one opening on `- if:` or `- id:` is still read (#883), and ENDS at the
+# first non-blank line indented no further than its own dash.
 #
 # The dedent rule is load-bearing, not tidiness. Without it a block ran
 # on to the end of the file, absorbing the next job's `strategy.matrix`
@@ -101,7 +104,7 @@ strip() { grep -vE '^[[:space:]]*#' "$1"; }
 # per-step question a whole-file question.
 steps_of() {
     strip "$1" | awk '
-        /^[[:space:]]*-[[:space:]]+(name|uses|run):/ {
+        /^[[:space:]]*-[[:space:]]+[A-Za-z_-]+:/ {
             if (inblk) print "\x01"
             dash = index($0, "-") - 1
             inblk = 1
@@ -117,6 +120,44 @@ steps_of() {
         }
         END { if (inblk) print "\x01" }
     '
+}
+
+# One row per step: <n> <if: always() key> <create> <rm> <failure suite>.
+# The if: counts only as the step's own key, and each command only as a
+# command of its run: shell; in an echo, a name: or a run: string they
+# guard and run nothing (#883).
+step_facts() {
+    local n ifa cand raw c cr td fs
+    steps_of "$1" | awk -v RS='\x01' '
+        {
+            k = split($0, L, "\n"); dash = -1; ifa = 0; raw = ""
+            for (i = 1; i <= k; i++) {
+                if (dash < 0 && L[i] ~ /^[[:space:]]*-[[:space:]]/) {
+                    dash = index(L[i], "-") - 1
+                    pre = sprintf("%" dash "s", "")
+                }
+                if (dash < 0) continue
+                if (L[i] ~ ("^" pre "(-|[ ]) if:[[:space:]]*always\\(\\)")) ifa = 1
+                l = L[i]; gsub(/\t/, " ", l); raw = raw (raw == "" ? "" : "\037") l
+            }
+            n++
+            if (dash < 0) next
+            cand = (index($0, "docker plugin") || index($0, "integration-test-failure")) ? 1 : 0
+            printf "%d\t%d\t%d\t%s\n", n, ifa, cand, (cand ? raw : "-")
+        }' |
+    while IFS=$'\t' read -r n ifa cand raw; do
+        cr=0; td=0; fs=0
+        if [ "$cand" = 1 ]; then
+            while IFS= read -r c; do
+                case "$c" in
+                    "docker plugin create"|"docker plugin create "*) cr=1 ;;
+                    "docker plugin rm"|"docker plugin rm "*) td=1 ;;
+                    "make "*) [[ " $c " == *" integration-test-failure "* ]] && fs=1 ;;
+                esac
+            done < <(printf '%s\n' "${raw//$'\037'/$'\n'}" | workflow_shell_lines --raw - | shell_simple_commands)
+        fi
+        printf '%s\t%s\t%s\t%s\t%s\n' "$n" "$ifa" "$cr" "$td" "$fs"
+    done
 }
 
 for f in "${WF_FILES[@]}"; do
@@ -145,12 +186,9 @@ for f in "${WF_FILES[@]}"; do
         # difference between the two, and it is the actual property:
         # integration-arm64.yml had the pre-install rm at :151 and
         # nothing after the suite.
-        if ! steps_of "$f" | awk -v RS='\x01' '
-                { n++ }
-                /docker plugin create/ { if (!created) created = n }
-                /if:[[:space:]]*always\(\)/ && /docker plugin rm/ {
-                    if (created && n > created) found = 1
-                }
+        if ! step_facts "$f" | awk -F '\t' '
+                $3 == 1 { if (!created) created = $1 }
+                $2 == 1 && $4 == 1 { if (created && $1 > created) found = 1 }
                 END { exit !found }
              '; then
             note "$rel runs 'docker plugin create' with no 'if: always()' teardown step after it."
@@ -172,8 +210,8 @@ for f in "${WF_FILES[@]}"; do
     # DECLARATION, run from a `make ${{ matrix.target }}` step in a
     # separate job where `fail-fast: false` is what keeps the suites
     # independent. A step-level `if:` there would be wrong, not missing.
-    if steps_of "$f" | awk -v RS='\x01' '
-            /make[[:space:]]+integration-test-failure/ && !/if:[[:space:]]*always\(\)/ { bad = 1 }
+    if step_facts "$f" | awk -F '\t' '
+            $5 == 1 && $2 != 1 { bad = 1 }
             END { exit !bad }
          '; then
         note "$rel invokes 'integration-test-failure' in a step without 'if: always()'."

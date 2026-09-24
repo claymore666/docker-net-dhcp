@@ -74,6 +74,16 @@ jobs:
             exit 1
           fi
 
+      # The image's AppArmor lets an unprivileged user namespace be created and then refuses every link change inside
+      # it with EPERM, so the tests that run in their own namespace (inOwnNetns) could not create a link (#1089).
+      - name: Allow link changes inside the tests' user namespaces
+        run: |
+          knob=/proc/sys/kernel/apparmor_restrict_unprivileged_userns
+          if [ -e "$knob" ]; then
+            sudo sysctl -q -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+          echo "apparmor_restrict_unprivileged_userns: $(cat "$knob" 2>/dev/null || echo absent)"
+
       - name: Test (with race detector)
         run: go test -race -count=1 ./...
 
@@ -380,6 +390,11 @@ jobs:
       - name: Engine-matrix shape check
         run: bash scripts/check-engine-matrix-shapes.sh
 
+      # Every documented option has an engine-matrix line with an observer,
+      # and each not-driven one is annotated here on every run (#1015).
+      - name: Engine-matrix option check
+        run: bash scripts/check-engine-matrix-options.sh
+
       # Every driver-option key the code parses must be documented in
       # docs/reference.md — an undocumented option turns CI red (#132).
       - name: Option-docs drift check
@@ -408,6 +423,33 @@ jobs:
       # release stale without anyone noticing.
       - name: Docs-drift check
         run: bash scripts/check-docs-drift.sh
+
+      # Comment budget on the Go lines a pull request adds (#1056). A pull
+      # request checks out its merge commit, whose parents are the base
+      # tip and the head; no pull-request SHA expression reaches a git
+      # command (CodeQL poisonable-step, #1057). Other events skip.
+      - name: Comment budget
+        run: |
+          if [ "$GITHUB_EVENT_NAME" != "pull_request" ]; then
+            bash scripts/check-comment-budget.sh
+            exit $?
+          fi
+          git fetch --no-tags --no-recurse-submodules --unshallow origin
+          bash scripts/check-comment-budget.sh HEAD^1..HEAD^2
+
+      # A pull request whose body has a `Comments-only: yes` line must keep
+      # every Go file's code tokens, except the files a
+      # `Comments-only-except:` line names (#1056). The body reaches the
+      # script as an environment variable, never as workflow text.
+      - name: Comment-only proof
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" != "pull_request" ]; then
+            bash scripts/check-comment-budget.sh --prove-marked
+            exit $?
+          fi
+          bash scripts/check-comment-budget.sh --prove-marked HEAD^1 HEAD^2
 
       # External review row E-4. This branch has no dhcpcd: not in the
       # image, not in the tree, and no helper the plugin execs. The
@@ -621,6 +663,11 @@ jobs:
       # installs a file two workflow lines install. Same class as #297.
       - name: Pipefail-consumer check
         run: bash scripts/check-pipefail-consumers.sh
+
+      # A step that pipes into tee without pipefail reports tee's exit; the
+      # engine-matrix floor went green over "no row passed" that way (#1015).
+      - name: Workflow tee-pipefail check
+        run: bash scripts/check-workflow-tee-pipefail.sh
 
       # Every build-constraint term in the tree must be linted by some
       # staticcheck invocation, and one invocation must carry no tags

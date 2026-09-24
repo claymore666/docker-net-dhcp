@@ -11,19 +11,8 @@ import (
 	dNetwork "github.com/docker/docker/api/types/network"
 )
 
-// dockerClient is the narrow slice of the Docker API client the plugin
-// actually uses. Depending on the interface (rather than the concrete
-// *client.Client) lets tests inject a fake and exercise the error arms
-// of the recovery / option-fallback paths, which integration cannot
-// reach without a real daemon misbehaving. The concrete client
-// satisfies this interface as-is.
-//
-// Ping, ServerVersion and ClientVersion are here for the engine floor
-// (#670) and are the whole of what the version probe needs. Both calls
-// are GET or HEAD, so they pass the read-only transport's refusal
-// (docker_transport.go) rather than being an exception to it.
-// ClientVersion takes no context because it reads what the last ping
-// NEGOTIATED rather than asking the daemon anything.
+// dockerClient is the part of the Docker client the plugin calls, all GET or HEAD
+// so the read-only transport passes them (#670).
 type dockerClient interface {
 	Ping(ctx context.Context) (dTypes.Ping, error)
 	ServerVersion(ctx context.Context) (dTypes.Version, error)

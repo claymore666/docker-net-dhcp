@@ -30,17 +30,12 @@ const (
 	ipamTestMAC     = "02:42:c0:a8:63:0a"
 )
 
-// ipamFixture is a plugin with one IPAM-mode network on disk, its pool
-// bound, and a record store. No Docker client: the property asserted
-// below is that these handlers never reach for one.
 func ipamFixture(t *testing.T) (*Plugin, *ipamBinding) {
 	t.Helper()
 	p, b, _ := ipamFixtureWithJournal(t)
 	return p, b
 }
 
-// ipamFixtureWithJournal is ipamFixture, plus the path of the record
-// journal, for the one test that has to make reading it fail.
 func ipamFixtureWithJournal(t *testing.T) (*Plugin, *ipamBinding, string) {
 	t.Helper()
 	withStateDir(t, t.TempDir())
@@ -79,20 +74,8 @@ func ipamFixtureWithJournal(t *testing.T) (*Plugin, *ipamBinding, string) {
 	return p, b, journal
 }
 
-// TestIpamHandlers_CallDockerZeroTimes is the property D46 was amended
-// to, driven rather than argued.
-//
-// The daemon replays RequestPool and one RequestAddress per stored
-// endpoint from inside libnetwork.New, which NewDaemon calls BEFORE the
-// API listener starts. A handler that asked Docker anything there would
-// block on a server that is not listening yet, and it would block on
-// exactly the path a restart depends on. So the rule is not "avoid the
-// API where convenient": it is that these four handlers never hold a
-// Docker client at all.
-//
-// The observer is a plugin whose docker field is nil. A call would
-// panic, which is louder than a counter and cannot be forgotten to
-// assert on.
+// The daemon replays RequestPool and RequestAddress inside libnetwork.New, before its API listener starts, so
+// these handlers hold no Docker client; a nil docker field panics on any call (#110).
 func TestIpamHandlers_CallDockerZeroTimes(t *testing.T) {
 	p, b := ipamFixture(t)
 	if p.docker != nil {
@@ -103,9 +86,6 @@ func TestIpamHandlers_CallDockerZeroTimes(t *testing.T) {
 	if _, err := p.RequestPool(RequestPoolRequest{AddressSpace: ipamLocalAddressSpace, Pool: ipamTestPool}); err != nil {
 		t.Errorf("RequestPool: %v", err)
 	}
-	// The replay of a stored endpoint, which is the call the whole rule
-	// is about. Its record is written first, as the previous process
-	// would have left it.
 	mac, _ := net.ParseMAC(ipamTestMAC)
 	id := p.recordCreated(ipamTestNetwork, mac, dhcp.ClientIdentity([]byte{7}))
 	if err := p.records.Observed(id, acquired("192.168.99.10/24", time.Hour), nil); err != nil {
@@ -124,8 +104,6 @@ func TestIpamHandlers_CallDockerZeroTimes(t *testing.T) {
 	p.ipamPools.drop(b.PoolID)
 }
 
-// TestRequestAddress_Dispatch drives the branches that are wire-identical
-// and can only be told apart by what the plugin knows.
 func TestRequestAddress_Dispatch(t *testing.T) {
 	mac, _ := net.ParseMAC(ipamTestMAC)
 
@@ -146,8 +124,6 @@ func TestRequestAddress_Dispatch(t *testing.T) {
 
 	t.Run("an aux address is echoed and never leased", func(t *testing.T) {
 		p, b := ipamFixture(t)
-		// Wire-identical to a stored endpoint's replay: an address, no
-		// options. Only the binding says which it is.
 		res, err := p.RequestAddress(context.Background(), RequestAddressRequest{
 			PoolID: b.PoolID, Address: "192.168.99.2",
 		})
@@ -233,9 +209,6 @@ func TestRequestAddress_Dispatch(t *testing.T) {
 	})
 }
 
-// TestRequestPool_RefusesWhatV2_1DoesNotDo. Each refusal names what to
-// do instead, because a refusal an operator cannot act on is a bug
-// report.
 func TestRequestPool_RefusesWhatV2_1DoesNotDo(t *testing.T) {
 	p, _ := ipamFixture(t)
 	cases := []struct {
@@ -243,11 +216,7 @@ func TestRequestPool_RefusesWhatV2_1DoesNotDo(t *testing.T) {
 		req  RequestPoolRequest
 		says []string
 	}{
-		// The v6 refusal names the SHAPE that works, not a version. It
-		// used to say "use -o ipv6=true, which is unchanged", and on
-		// this network that sends the operator to a second dead end:
-		// the IPAM endpoint path runs no DHCPv6 exchange either, so
-		// both doors are closed and only --ipam-driver null is open.
+		// The IPAM endpoint path runs no DHCPv6 exchange either, so the message names --ipam-driver null.
 		{"an IPv6 pool", RequestPoolRequest{AddressSpace: ipamLocalAddressSpace, V6: true}, []string{"#960", "--ipam-driver null", "ipv6_mode"}},
 		{"an --ip-range", RequestPoolRequest{AddressSpace: ipamLocalAddressSpace, Pool: ipamTestPool, SubPool: "192.168.99.128/25"}, []string{"--ip-range"}},
 	}
@@ -270,12 +239,7 @@ func TestRequestPool_RefusesWhatV2_1DoesNotDo(t *testing.T) {
 	}
 }
 
-// TestReleaseAddress_RetainsOnlyAReservation.
-//
-// A live endpoint's record is already RETAINED by DeleteEndpoint when
-// this arrives, and re-retaining it would move the deadline of a
-// tombstone the next container is about to claim. The case that needs
-// work is the reservation nobody built an endpoint for.
+// DeleteEndpoint has already retained a live endpoint's record, and re-retaining would move its tombstone deadline.
 func TestReleaseAddress_RetainsOnlyAReservation(t *testing.T) {
 	mac, _ := net.ParseMAC(ipamTestMAC)
 
@@ -338,21 +302,8 @@ func ipamPhaseOf(t *testing.T, p *Plugin, id string) lease.Phase {
 	return lease.PhaseUnset
 }
 
-// TestIpamBindingLost_RefusesRatherThanDegrades is defeat row A.
-//
-// The state file is the only place the binding lives, and Docker's own
-// record does not carry it. A network served without it runs the null
-// path: a second DHCP exchange, a JSON tombstone this shape does not
-// use, and an address libnetwork already allocated and will refuse.
-// Every one of those is silent here and arrives at the user as
-// something else.
-// The two ways the binding can be missing are driven separately,
-// because they fail in different functions and only one of them looks
-// broken from the outside. An unparseable file is a file nothing can
-// read. A file that parses and carries no binding block is what a
-// NULL-MODE network's state file looks like, and it is the shape a
-// half-written upgrade, a rolled-back build or a hand-edited file
-// produces: perfectly valid, and silently the wrong network.
+// The state file is the only home of the binding, and a parseable file without it is a null-mode file, so both
+// the unparseable and the binding-less file are driven (#110).
 func TestIpamBindingLost_RefusesRatherThanDegrades(t *testing.T) {
 	for _, c := range []struct{ name, content string }{
 		{"the file cannot be parsed", "{not json"},
@@ -383,9 +334,6 @@ func TestIpamBindingLost_RefusesRatherThanDegrades(t *testing.T) {
 	}
 }
 
-// TestIpamRefuseIPvlan is D49, and the second half is the preservation
-// control: a refusal tested only on what it now rejects has no
-// boundary, and this one rejects a mode the null shape still serves.
 func TestIpamRefuseIPvlan(t *testing.T) {
 	err := ipamRefuseIPvlan(ModeIPvlan)
 	if err == nil {
@@ -398,8 +346,6 @@ func TestIpamRefuseIPvlan(t *testing.T) {
 		t.Errorf("the refusal %v is not a util.ErrIPAM, so it does not map to the status "+
 			"code the other IPAM refusals use", err)
 	}
-	// The message is the whole remedy: an operator reading it has to
-	// learn the cause, the supported shape, and where the work is.
 	for _, want := range []string{"ipvlan", "--ipam-driver null", "#949"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("the refusal is %q and does not mention %q", err, want)
@@ -414,12 +360,8 @@ func TestIpamRefuseIPvlan(t *testing.T) {
 	}
 }
 
-// TestRebuildIPAMIndex_FoldsTheStateDirectory. At start-up the daemon
-// replays RequestPool and RequestAddress before it serves its own API,
-// so the PoolID -> network map has to come off the disk.
 func TestRebuildIPAMIndex_FoldsTheStateDirectory(t *testing.T) {
 	_, b := ipamFixture(t)
-	// A null-mode network beside it, which must not appear in the index.
 	if err := saveOptions("net-null-1", DHCPNetworkOptions{Mode: ModeBridge, Bridge: "br0"}); err != nil {
 		t.Fatalf("saveOptions: %v", err)
 	}
@@ -436,9 +378,7 @@ func TestRebuildIPAMIndex_FoldsTheStateDirectory(t *testing.T) {
 	}
 }
 
-// TestIpamIndex_MatchesThePoolIDExactly. Two networks that share a
-// subnet on two parents differ only in the suffix one of them typed, so
-// a prefix match would hand the second network's requests to the first.
+// Two networks sharing a subnet on two parents differ only by a typed suffix, so a prefix match would mix them.
 func TestIpamIndex_MatchesThePoolIDExactly(t *testing.T) {
 	x := newIPAMIndex()
 	x.bind("dhcp/dhcp-local/192.168.100.0/24", "net-a")
@@ -455,8 +395,6 @@ func TestIpamIndex_MatchesThePoolIDExactly(t *testing.T) {
 	}
 }
 
-// TestIpamACKInPool is D50: an ACK outside the subnet the user typed is
-// refused, and a network that typed none has nothing to say about it.
 func TestIpamACKInPool(t *testing.T) {
 	cases := []struct {
 		pool, addr string
@@ -475,16 +413,6 @@ func TestIpamACKInPool(t *testing.T) {
 	}
 }
 
-// TestIpamMode_CreateEndpointIsDispatchedToTheIPAMBranch drives the
-// fork in CreateEndpoint from the side that needs no netlink.
-//
-// The branch itself builds a link and cannot run in this lane, but the
-// choice of branch can: an IPAM-mode network with no reservation held
-// is refused by the IPAM branch with a message naming the reservation,
-// and a null-mode network of the same shape is not. Without the fork
-// the first call takes the null path instead and fails somewhere else
-// entirely, saying nothing about IPAM -- which is the failure an
-// operator would have to debug.
 func TestIpamMode_CreateEndpointIsDispatchedToTheIPAMBranch(t *testing.T) {
 	p, _ := ipamFixture(t)
 
@@ -504,21 +432,10 @@ func TestIpamMode_CreateEndpointIsDispatchedToTheIPAMBranch(t *testing.T) {
 	}
 }
 
-// TestIpamMode_DeleteEndpointWritesNoJSONTombstone is design row 10.
-//
-// The 1.x hostname-keyed JSON store is still in the tree and is still
-// the re-bind mechanism for null mode. In IPAM mode the candidate is
-// the record store's retained record instead, and both stores holding
-// one for the same endpoint is one address offered to two containers.
-//
-// The null-mode half of the table is the preservation control: this
-// gate must take the write away from IPAM-mode networks and from
-// nothing else.
+// In IPAM mode the re-bind candidate is the retained record; a JSON tombstone as well would offer one address twice.
 func TestIpamMode_DeleteEndpointWritesNoJSONTombstone(t *testing.T) {
 	p, _ := ipamFixture(t)
 
-	// A null-mode network beside it, on the same plugin and the same
-	// state directory.
 	const nullNetwork = "net-null-1"
 	if err := saveOptions(nullNetwork, DHCPNetworkOptions{Mode: ModeBridge, Bridge: "br-test"}); err != nil {
 		t.Fatalf("saveOptions: %v", err)
@@ -565,24 +482,11 @@ func TestIpamMode_DeleteEndpointWritesNoJSONTombstone(t *testing.T) {
 	}
 }
 
-// TestIpamReplay_AnAddressHeldByAnotherEndpointIsNotAReplay.
-//
-// The replay branch matches a record by ADDRESS, and two different
-// calls arrive carrying one: the daemon's replay of a stored endpoint,
-// which carries NO MAC, and `docker run --ip X` for an address someone
-// else already holds, which carries the new endpoint's own. So the
-// PRESENCE of a MAC is what separates a replay from a create, and its
-// value separates nothing: a create under a hardware address a live
-// record already holds is a second endpoint whether or not the address
-// matches too. Answering either shape hands one address to two
-// endpoints, moves ipam_replay_hits for something that is not a replay,
-// and surfaces the contradiction later at CreateEndpoint wearing a
-// message about a plugin restart that never happened.
+// A replay of a stored endpoint carries no MAC and `--ip X` carries the new endpoint's, so a MAC marks a create.
 func TestIpamReplay_AnAddressHeldByAnotherEndpointIsNotAReplay(t *testing.T) {
 	holder, _ := net.ParseMAC(ipamTestMAC)
 	other, _ := net.ParseMAC("02:42:c0:a8:63:0b")
 
-	// One running container on 192.168.99.10, filed under its own MAC.
 	seed := func(t *testing.T) (*Plugin, *ipamBinding) {
 		t.Helper()
 		p, b := ipamFixture(t)
@@ -614,22 +518,9 @@ func TestIpamReplay_AnAddressHeldByAnotherEndpointIsNotAReplay(t *testing.T) {
 		}
 	})
 
-	// The corrected half of this test. It read "an endpoint asking again
-	// under its own MAC is still a replay", and answered the call.
-	//
-	// NO REPLAY EVER CARRIES A MAC, so that shape has no such producer.
-	// The daemon's start-up replay calls RequestAddress with
-	// ep.ipamOptions loaded from its store (MEASURED, moby 28.5.2
-	// libnetwork/endpoint.go:1330 reached from controller.go:817), and
-	// ipamOptions is not one of the endpoint fields that is persisted
-	// (MEASURED, endpoint.go:109-127 is the whole of MarshalJSON), so a
-	// replayed endpoint arrives with no options at all. libnetwork puts
-	// the hardware address there only while CREATING an endpoint. What
-	// does produce this shape is a second container pinning the same
-	// `--ip` AND the same `--mac-address`: address and MAC both match
-	// the running endpoint's record, and answering it published one
-	// address for two endpoints and sent the loser to CreateEndpoint to
-	// be refused for a plugin restart that never happened.
+	// No replay carries a MAC: moby 28.5.2 replays with ep.ipamOptions (libnetwork/endpoint.go:1330, reached from
+	// controller.go:817), which MarshalJSON does not persist (endpoint.go:109-127). This shape comes from a second
+	// container pinning the same `--ip` and `--mac-address` (#110).
 	t.Run("a second endpoint pinning the same --ip and MAC is refused, not replayed", func(t *testing.T) {
 		p, b := seed(t)
 		_, err := p.RequestAddress(context.Background(), RequestAddressRequest{
@@ -682,16 +573,8 @@ func TestIpamReplay_AnAddressHeldByAnotherEndpointIsNotAReplay(t *testing.T) {
 	})
 }
 
-// TestIpamUnboundPool_ALostBindingIsNotConfirmed.
-//
-// A pool no network holds has two causes that arrive on the same wire:
-// the aux address libnetwork asks for while a create is still running,
-// and the daemon's replay of a stored endpoint whose network
-// rebuildIPAMIndex had to skip. Echoing the first is correct; echoing
-// the second confirms Docker's stored address from a process that holds
-// no record of it, which is row A's degradation reached before either
-// replay counter. What separates them is whether the start-up fold read
-// everything.
+// An unbound pool is either a create's aux address or the replay of a network rebuildIPAMIndex skipped; only the
+// first may be echoed, and the start-up fold's completeness separates them (#110).
 func TestIpamUnboundPool_ALostBindingIsNotConfirmed(t *testing.T) {
 	const strayPool = "dhcp/dhcp-local/192.168.99.0/24"
 
@@ -753,11 +636,6 @@ func TestIpamUnboundPool_ALostBindingIsNotConfirmed(t *testing.T) {
 	})
 }
 
-// TestRebuildIPAMIndex_ReportsWhatItCouldNotRead is the other half of
-// the rule above: the flag has to be SET by the fold, and it has to stay
-// clear on a directory that read cleanly. A flag that is always set
-// refuses every create with an aux address; one that is never set is
-// the defect it exists to close.
 func TestRebuildIPAMIndex_ReportsWhatItCouldNotRead(t *testing.T) {
 	t.Run("a directory that reads cleanly leaves it clear", func(t *testing.T) {
 		p, _ := ipamFixture(t)
@@ -776,10 +654,7 @@ func TestRebuildIPAMIndex_ReportsWhatItCouldNotRead(t *testing.T) {
 	t.Run("the plugin's own files in the directory are not networks", func(t *testing.T) {
 		p, _ := ipamFixture(t)
 
-		// What every host that has ever deleted an endpoint has --
-		// null mode included, since the tombstone store is the network
-		// driver's. It sits in the state directory beside the network
-		// files and its name, "tombstones", satisfies validNetworkID.
+		// Every host that ever deleted an endpoint has tombstones.json here, and "tombstones" satisfies validNetworkID.
 		if err := p.tombstones.add(ipamTestNetwork, "", ipamTestMAC, "192.168.99.10", ""); err != nil {
 			t.Fatalf("laying a tombstone: %v", err)
 		}
@@ -819,20 +694,8 @@ func TestRebuildIPAMIndex_ReportsWhatItCouldNotRead(t *testing.T) {
 	})
 }
 
-// TestIpamFallback_ARemoteIPAMDriverRefusesUnderAnyName.
-//
-// The refusal on the state-file fallback is the D46 amendment: an
-// IPAM-mode network whose binding cannot be read is refused rather than
-// served on the null path. It used to be keyed on the plugin's
-// published image reference, which is a name the operator chooses:
-// `docker plugin install <ref> --alias lan-dhcp` stores "lan-dhcp", the
-// pattern misses, and the refusal does not fire on precisely the
-// installation that named it something else.
-//
-// The second half is the preservation control. The null shape reaches
-// this same line on every load failure and must still fall through to
-// the Docker API, which is authoritative for everything in
-// DHCPNetworkOptions.
+// `docker plugin install <ref> --alias lan-dhcp` stores the alias, so the refusal must not key on the image name;
+// the null shape must still fall through to the Docker API (#110).
 func TestIpamFallback_ARemoteIPAMDriverRefusesUnderAnyName(t *testing.T) {
 	for _, c := range []struct {
 		name, driver string
@@ -881,47 +744,15 @@ func TestIpamFallback_ARemoteIPAMDriverRefusesUnderAnyName(t *testing.T) {
 	}
 }
 
-// TestRequestAddress_TwoEndpointsCannotShareOneHardwareAddress.
-//
-// The engine honours an operator-set endpoint MAC and copies it into the
-// IPAM options for a RequiresMACAddress driver (MEASURED against moby
-// 28.5.2, libnetwork/network.go:1222 and :1240; only a nil MAC is
-// generated), so `docker run --mac-address X` twice on one network, or a
-// compose file pinning one MAC on two services, reaches this plugin as
-// two address requests carrying one hardware address on one pool.
-//
-// Answering the second out of the first's reservation hands two
-// endpoints one address. libnetwork publishes both, one container
-// starts, and the other is refused at CreateEndpoint by a message about
-// a plugin restart that did not happen. The DHCP server files its lease
-// per hardware address and would hand them the same one in any case, so
-// the second request is refused here, where the plugin still knows why.
-//
-// THE THIRD CASE IS THE COMMON ONE AND IT IS NOT IN THE RESERVE MAP.
-// CreateEndpoint takes the reservation (ipam_endpoint.go, take), so once
-// the first container is up its key is gone; a guard that only read the
-// map would let the second `docker run` own a fresh exchange under a
-// hardware address the server already has a lease filed against. The
-// record store is what still knows, and the phase filter is what keeps
-// the restart path out of it -- TestRequestAddress_ARetainedRecordIsNot
-// ADuplicate drives that side.
-//
-// Refusing at RequestAddress also closes the rollback: libnetwork
-// registers its release-on-failure defer only AFTER assignAddress
-// returns (MEASURED, network.go:1245-1252), so a refused request
-// produces no ReleaseAddress and cannot reach the winner's reservation.
-//
-// Driven through the real entry point with the first endpoint's state
-// seeded by hand: the netlink and DHCP half needs a parent NIC and a
-// server, and the collision is decided before either is touched.
+// moby 28.5.2 copies an operator-set MAC into the IPAM options (libnetwork/network.go:1222, :1240), so two
+// `--mac-address X` endpoints arrive as one key. Once CreateEndpoint takes the reservation only the record store
+// knows. libnetwork registers its release defer after assignAddress returns (network.go:1245-1252), so a
+// refused request sends no ReleaseAddress (#110).
 func TestRequestAddress_TwoEndpointsCannotShareOneHardwareAddress(t *testing.T) {
 	mac, _ := net.ParseMAC(ipamTestMAC)
 
 	for _, c := range []struct {
-		name string
-		// The first endpoint's state. seedReserve is a key in the
-		// reserve map; phase is the record's phase, PhaseUnset for the
-		// window before any record exists.
+		name        string
 		seedReserve bool
 		finished    bool
 		phase       lease.Phase
@@ -986,12 +817,6 @@ func TestRequestAddress_TwoEndpointsCannotShareOneHardwareAddress(t *testing.T) 
 			if !errors.Is(err, util.ErrIPAM) {
 				t.Errorf("error %v does not wrap util.ErrIPAM", err)
 			}
-			// The last two are the refusal's BOUNDARIES, and they are
-			// asserted because without them the sentence promises the
-			// address back unconditionally: it comes back only while the
-			// previous endpoint is the single re-bind candidate, and an
-			// unclaimed reservation is not freed before the sweeper
-			// reaps it.
 			for _, want := range []string{
 				mac.String(),
 				"--mac-address",
@@ -1007,11 +832,7 @@ func TestRequestAddress_TwoEndpointsCannotShareOneHardwareAddress(t *testing.T) 
 				t.Errorf("ipam_reserve_duplicate_mac = %d, want 1", n)
 			}
 
-			// The refusal leaves the reserve map exactly as it found
-			// it. A refusal taken AFTER begin would leave a key nothing
-			// ever finishes and nothing ever sweeps -- stale() only
-			// offers completed ones -- and that key outlives the
-			// endpoint it was never for.
+			// A refusal after begin would leave a key nothing finishes or sweeps, since stale() offers only completed ones.
 			want := 0
 			if c.seedReserve {
 				want = 1
@@ -1022,9 +843,6 @@ func TestRequestAddress_TwoEndpointsCannotShareOneHardwareAddress(t *testing.T) 
 					"finished is never swept either", n, want)
 			}
 
-			// What the winner still has. Its reservation is the one this
-			// process seeded, not a replacement, and its record is in
-			// the phase the refused request found it in.
 			got, ok := p.ipamReserves.take(key)
 			if c.finished && (!ok || got != first) {
 				t.Error("the refused request consumed or replaced the first endpoint's " +
@@ -1045,14 +863,6 @@ func TestRequestAddress_TwoEndpointsCannotShareOneHardwareAddress(t *testing.T) 
 				}
 			}
 
-			// The POOL half of the key, which is the reason the key is a
-			// pair: two networks on one host can be handed one generated
-			// MAC by two daemons' bad luck, and a second network's
-			// request under that MAC is a different endpoint on a
-			// different segment. It must reach its own exchange. What it
-			// reaches here is netlink, which this fixture has no parent
-			// NIC for, so the assertion is on the refusal it did NOT
-			// get and on the counter that did not move.
 			second := ipamSecondNetwork(t, p)
 			_, err = p.RequestAddress(ctx, RequestAddressRequest{
 				PoolID:  second,
@@ -1071,22 +881,7 @@ func TestRequestAddress_TwoEndpointsCannotShareOneHardwareAddress(t *testing.T) 
 	}
 }
 
-// TestRequestAddress_ARetainedRecordIsNotADuplicate is the preservation
-// control for the widening above.
-//
-// The refusal reads the record store, and the record store is also where
-// a restart's re-bind candidate lives. A container that stops and starts
-// again under a PINNED MAC leaves a RETAINED record carrying that exact
-// hardware address, so a guard that refused on any record at all would
-// refuse every such restart -- and it would do it wearing the message
-// that tells the operator to change their --mac-address, for a shape
-// where the address is supposed to come straight back. RETAINED is
-// therefore outside ipamRecordPhases, and this is the assertion that it
-// stays outside.
-//
-// The request is not expected to SUCCEED here: it goes on to netlink,
-// which this fixture has no parent NIC for. What is asserted is the
-// refusal it must not be, and the counter that must not move.
+// A restart under a pinned MAC leaves a RETAINED record with that MAC, so RETAINED stays outside ipamRecordPhases.
 func TestRequestAddress_ARetainedRecordIsNotADuplicate(t *testing.T) {
 	mac, _ := net.ParseMAC(ipamTestMAC)
 	p, b := ipamFixture(t)
@@ -1118,46 +913,13 @@ func TestRequestAddress_ARetainedRecordIsNotADuplicate(t *testing.T) {
 	}
 }
 
-// TestRequestAddress_AnOrphanedRecordStopsRefusingWhenItsLeaseRunsOut
-// is the BOUND on the refusal above, and without it the refusal never
-// lets go.
-//
-// A record can be left in an answering phase with nothing behind it.
-// retainRecordFor lays the tombstone only when an in-memory endpoint
-// fingerprint exists, so a DeleteEndpoint arriving without one -- the
-// plugin restarted and recovery did not re-adopt that endpoint, or the
-// container was removed while the plugin was down and DeleteEndpoint
-// never ran at all -- leaves the record JOINED, and nothing afterwards
-// closes it: the journal has no compaction and recovery closes no
-// record for an endpoint Docker no longer lists. Keyed on the phase
-// alone, that orphan would refuse its hardware address on its network
-// for the life of the journal, telling the operator to remove an
-// endpoint that is already gone.
-//
-// The lease's own expiry is the bound because it is the true one. No
-// DHCPRELEASE is ever sent (D-7), so the server holds the lease against
-// that hardware address until it runs out and a second endpoint under
-// it really would be handed the same address; when it runs out, so does
-// the reason to refuse. The live arm is the control: the same record
-// with a lease still running must still refuse, or this test would pass
-// against a guard that had simply been deleted.
+// retainRecordFor lays a tombstone only when a fingerprint exists, so a record can stay JOINED for the journal's
+// life. No DHCPRELEASE is sent (#962), so the lease's own expiry is the true bound on the refusal (#110).
 func TestRequestAddress_AnOrphanedRecordStopsRefusingWhenItsLeaseRunsOut(t *testing.T) {
 	mac, _ := net.ParseMAC(ipamTestMAC)
 
-	// The third arm is the INFINITE lease, and it is here because a
-	// zero expiry has two readings and only one of them is "no lease".
-	// RFC 2131's 0xffffffff lease time reaches lease.Lease as a zero
-	// Expire, exactly as an unwritten one does; read as expired, an
-	// endpoint whose server granted it an address for ever would be the
-	// one endpoint this guard never protects, and a lease that is never
-	// given back is the last one two endpoints should share.
-	// The last two arms are the OTHER two ways a record spells a zero
-	// expiry, and neither of them holds a lease. A lease lost under a
-	// running endpoint folds to Lease{}, Held=false with the phase left
-	// where it was, and a reservation whose process died before its ACK
-	// never had one; read as infinite leases, both refuse their
-	// hardware address for the life of the journal, which is the
-	// permanence this test exists to bound.
+	// RFC 2131's infinite lease (0xffffffff) reaches lease.Lease as a zero Expire, as does a lost lease (Lease{},
+	// Held=false) and a reservation that never got its ACK; only the first holds a lease.
 	for _, c := range []struct {
 		name       string
 		shape      string
@@ -1196,10 +958,6 @@ func TestRequestAddress_AnOrphanedRecordStopsRefusingWhenItsLeaseRunsOut(t *test
 				}
 			}
 
-			// The premise of the two new arms: they must still be in a
-			// phase the filter ADMITS, or they would pass against a
-			// guard that reads nothing but the phase, and the clause
-			// they exist to drive would be unobserved.
 			if c.shape != "held" {
 				rb, err := p.records.Rebuilt()
 				if err != nil {
@@ -1240,21 +998,8 @@ func TestRequestAddress_AnOrphanedRecordStopsRefusingWhenItsLeaseRunsOut(t *test
 	}
 }
 
-// TestRequestAddress_AnUnreadableJournalDoesNotRefuse drives the
-// DIRECTION of the settled half, which is otherwise unobserved: a fold
-// that will not read must not turn into a refusal.
-//
-// The direction is a choice and the opposite failure is the reason for
-// it. Fail-closed here would refuse every container start on every IPAM
-// network on a host whose journal is unreadable, and the other disk
-// lookup on this path, ipamRecordFor, already fails open on the same
-// error -- two lookups that disagreed about an unreadable fold would
-// have one refusing what the other confirms. What is lost is stated in
-// ipamEndpointHoldingMAC rather than claimed away.
-//
-// The journal is replaced by a DIRECTORY rather than chmod'ed: a run as
-// root ignores the mode bits, and a check that passes for the wrong
-// reason under one uid is not a check.
+// The settled half fails open, as ipamRecordFor does on the same error. The journal is replaced by a directory,
+// since root ignores mode bits (#110).
 func TestRequestAddress_AnUnreadableJournalDoesNotRefuse(t *testing.T) {
 	mac, _ := net.ParseMAC(ipamTestMAC)
 	p, b, journal := ipamFixtureWithJournal(t)
@@ -1295,8 +1040,6 @@ func TestRequestAddress_AnUnreadableJournalDoesNotRefuse(t *testing.T) {
 	}
 }
 
-// ipamSecondNetwork adds a second IPAM-mode network, on its own subnet
-// and its own pool, and returns its PoolID.
 func ipamSecondNetwork(t *testing.T, p *Plugin) string {
 	t.Helper()
 	const id = "net-ipam-2"
@@ -1318,28 +1061,12 @@ func ipamSecondNetwork(t *testing.T, p *Plugin) string {
 	return poolID
 }
 
-// createIPAMBridgeNetwork drives the whole CreateNetwork entrance for a
-// bridge network allocated by THIS plugin's IPAM driver, which is the
-// only place the ipv6 combination can be refused in time to help: the
-// option is read from the network's own options and nothing later in a
-// container start has both facts to hand.
-//
-// The pool is issued first because ipamBindingFor consumes an issue and
-// refuses without one, and a test that never got past that refusal
-// would report a pass for the wrong reason.
 func createIPAMBridgeNetwork(t *testing.T, ipv6 bool, space string) error {
 	t.Helper()
 	return createIPAMBridgeNetworkOpts(t, map[string]interface{}{"ipv6": ipv6}, space)
 }
 
-// createIPAMBridgeNetworkOpts is createIPAMBridgeNetwork with the
-// operator's generic options written out.
-//
-// THE POINT IS THE KEYS THAT ARE ABSENT. `ipv6_mode=slaac` has to reach
-// ipamRefuseIPv6, and an `ipv6` key carrying false alongside it is the
-// written-out contradiction validateIPv6Options refuses two statements
-// earlier -- so a fixture that always spells `ipv6` would test the
-// wrong guard and report it as coverage.
+// An `ipv6=false` beside `ipv6_mode=slaac` is refused by validateIPv6Options first, so the key is left out.
 func createIPAMBridgeNetworkOpts(t *testing.T, generic map[string]interface{}, space string) error {
 	t.Helper()
 	const bridge = "br-ipam6"
@@ -1351,16 +1078,7 @@ func createIPAMBridgeNetworkOpts(t *testing.T, generic map[string]interface{}, s
 	return createIPAMNetworkOptsExact(t, opts, space)
 }
 
-// createIPAMNetworkOptsExact writes the operator's generic options and
-// NOTHING ELSE.
-//
-// A FIXTURE THAT ALWAYS ADDS A KEY DECIDES WHICH GUARD ANSWERS. The
-// bridge key above is right for every bridge-mode case and wrong for
-// one: `mode=ipvlan` on top of it is turned away by validateModeOptions
-// with "bridge cannot be set in mode=ipvlan", so a case that means to
-// read the ipvlan IPAM refusal reads a different sentence and passes on
-// it. Found by a reviewer inside the test this change added, which is
-// the defect class the change is about.
+// `mode=ipvlan` with a bridge key is refused by validateModeOptions first, so this fixture adds no key.
 func createIPAMNetworkOptsExact(t *testing.T, generic map[string]interface{}, space string) error {
 	t.Helper()
 	withStateDir(t, t.TempDir())
@@ -1388,20 +1106,8 @@ func createIPAMNetworkOptsExact(t *testing.T, generic map[string]interface{}, sp
 	})
 }
 
-// TestCreateNetwork_IPAMModeRefusesIPv6 is the entrance for issue #960.
-//
-// docs/reference.md said `-o ipv6=true` "keeps working in both shapes",
-// and in the IPAM shape it does not work at all: ipam_endpoint.go runs
-// no DHCPv6 exchange, opens no v6 record and returns no AddressIPv6, so
-// the container gets no IPv6 address from the plugin. What it does get
-// is a Join-time DUID minted from the endpoint MAC, which libnetwork
-// regenerates for every endpoint in IPAM mode, so even the degraded
-// half changes identity at every restart.
-//
-// The two controls are what give the refusal a boundary: null-mode
-// ipv6=true is the shipping product and must survive, and an IPAM
-// network without ipv6 must still be created, or the refusal has taken
-// the feature away from everyone.
+// In IPAM mode ipam_endpoint.go runs no DHCPv6 exchange and returns no AddressIPv6, and a Join-time DUID from the
+// regenerated endpoint MAC changes at every restart, so ipv6 is refused at CreateNetwork (#960).
 func TestCreateNetwork_IPAMModeRefusesIPv6(t *testing.T) {
 	t.Run("an IPAM network with ipv6 is refused", func(t *testing.T) {
 		err := createIPAMBridgeNetwork(t, true, ipamLocalAddressSpace)
@@ -1415,22 +1121,12 @@ func TestCreateNetwork_IPAMModeRefusesIPv6(t *testing.T) {
 			t.Errorf("the refusal %v is not a util.ErrIPAM, so it does not map to the status "+
 				"code the other IPAM refusals use", err)
 		}
-		// The message is the remedy. Without the supported shape and
-		// the issue, an operator can only guess whether IPv6 is coming.
 		for _, want := range []string{"ipv6", "--ipam-driver null", "#960"} {
 			if !strings.Contains(err.Error(), want) {
 				t.Errorf("the refusal is %q and does not mention %q", err, want)
 			}
 		}
-		// `-o ipv6=true` is the short spelling of ipv6_mode=dhcp, so
-		// the mode the refusal names is the resolved one and not the
-		// option the operator typed.
-		// ASSERTED AS `ipv6_mode=<value>`, NOT AS THE BARE WORDS. The
-		// message names the option in its remedy clause and the word
-		// "dhcp" in the sentence about the short spelling, so either
-		// substring on its own is satisfied by prose that never says
-		// what this network is set to. The pair is what an operator
-		// acts on and it is the only part the resolved mode produces.
+		// `-o ipv6=true` resolves to ipv6_mode=dhcp, so the message is asserted as `ipv6_mode=<value>`.
 		if want := "ipv6_mode=" + proto.Mode6DHCP.String(); !strings.Contains(err.Error(), want) {
 			t.Errorf("the refusal is %q and does not carry %q, the mode `-o ipv6=true` "+
 				"resolves to. The mode is what tells an operator which of their "+
@@ -1438,18 +1134,8 @@ func TestCreateNetwork_IPAMModeRefusesIPv6(t *testing.T) {
 		}
 	})
 
-	// TestCreateNetwork_IPAMModeRefusesIPv6 used to drive `-o ipv6=true`
-	// and nothing else, and the refusal named that spelling alone. An
-	// operator who wrote `-o ipv6_mode=slaac` reached the same refusal
-	// and was told to remove an option they had not typed (#817).
-	//
-	// THE MODES ARE DERIVED, NOT LISTED, and they are derived through
-	// the route an operator's string really takes: dhcp.IPv6Modes() is
-	// the accepted set the option is parsed against, and
-	// dhcp.ParseIPv6Mode is the parser CreateNetwork calls. A mode
-	// added to the library reaches this loop without an edit, which is
-	// the property the message itself has -- it formats the resolved
-	// mode instead of branching on a literal per mode.
+	// The modes come from dhcp.IPv6Modes and dhcp.ParseIPv6Mode, the route an operator's string takes, so a new
+	// library mode reaches this loop without an edit (#817).
 	t.Run("every ipv6_mode that switches IPv6 on is refused and named", func(t *testing.T) {
 		spellings := dhcp.IPv6Modes()
 		if len(spellings) < 2 {
@@ -1481,29 +1167,13 @@ func TestCreateNetwork_IPAMModeRefusesIPv6(t *testing.T) {
 					t.Errorf("the refusal %v is not a util.ErrIPAM, so it does not map to the "+
 						"status code the other IPAM refusals use", err)
 				}
-				// The option AND its value, for the reason the
-				// ipv6=true case above gives: the message mentions
-				// `ipv6_mode` in its remedy whatever this network is
-				// set to, so the bare option name is not evidence that
-				// the operator's own value reached the sentence.
 				if want := "ipv6_mode=" + mode.String(); !strings.Contains(err.Error(), want) {
 					t.Errorf("the refusal is %q and does not carry %q. That is the whole "+
 						"finding: the operator is told about an option they did not "+
 						"write, and not about the one they did", err, want)
 				}
-				// WHICH GUARD ANSWERED. `ipv6_mode=slaac` reaches
-				// several refusals -- the written-out `ipv6=false`
-				// contradiction, and the ipvlan one -- and a fixture
-				// that tripped either would report this arm as covered
-				// while ipamRefuseIPv6 was never reached.
-				//
-				// THE PHRASE IS CHECKED FOR UNIQUENESS, NOT ASSUMED TO
-				// BE UNIQUE. An earlier comment here claimed `#960` was
-				// on this refusal and on no other; it is on three, and
-				// the arm was sound only because the other two are
-				// reached from RequestPool and never from
-				// CreateNetwork. A discriminator that has to be true of
-				// the whole package is measured over the whole package.
+				// `#960` is on three refusals and only this one is reachable from CreateNetwork, so the phrase's
+				// uniqueness is measured over the package (#960).
 				const want = "Two spellings reach this refusal"
 				if n := errorConstructionsNaming(t, want); n != 1 {
 					t.Fatalf("%q occurs in %d error construction(s) in this module, so it "+
@@ -1523,27 +1193,8 @@ func TestCreateNetwork_IPAMModeRefusesIPv6(t *testing.T) {
 		}
 	})
 
-	// The refusal is about a combination this tree does not serve, and
-	// that is true of every release carrying it. A version in the
-	// sentence dates the refusal to the release it was written in and
-	// reads, on a later one, as a statement about something older.
-	//
-	// DRIVEN, so the three messages are the ones the plugin really
-	// produces and not three source lines that might be unreachable.
-	// The static rule over every refusal is
-	// TestRefusals_NameNoReleaseVersion.
+	// A version in a refusal dates it; TestRefusals_NameNoReleaseVersion is the static rule.
 	t.Run("no refusal on this path dates itself to a release", func(t *testing.T) {
-		// EVERY ARM CARRIES A DISCRIMINATOR, because "an error came
-		// back" says nothing about which guard produced it. The ipvlan
-		// arm below was answered by validateModeOptions and not by the
-		// IPAM guard it names: the fixture wrote a `bridge` key, and
-		// `bridge` beside `mode=ipvlan` is refused before the IPAM
-		// question is asked, so the count check was satisfied by a
-		// stranger.
-		//
-		// EACH want IS CHECKED TO OCCUR IN EXACTLY ONE ERROR
-		// CONSTRUCTION in the module, below, because the first version
-		// of this comment asserted that and was wrong about `#960`.
 		type arm struct {
 			where string
 			want  string
@@ -1571,8 +1222,6 @@ func TestCreateNetwork_IPAMModeRefusesIPv6(t *testing.T) {
 				where: "ipvlan at CreateNetwork",
 				want:  "#949",
 				run: func(t *testing.T) error {
-					// No bridge key. That is the whole point of
-					// createIPAMNetworkOptsExact.
 					return createIPAMNetworkOptsExact(t,
 						map[string]interface{}{"mode": "ipvlan", "parent": "eth0"},
 						ipamLocalAddressSpace)
@@ -1618,12 +1267,6 @@ func TestCreateNetwork_IPAMModeRefusesIPv6(t *testing.T) {
 		}
 	})
 
-	// THE SENTENCE MAKES A COMPLETENESS CLAIM AND NOTHING WATCHED IT.
-	// "Two spellings reach this refusal" is a statement about the
-	// OPTIONS an operator can write, and the loop above derives MODES.
-	// A later option that resolves to a non-off mode the way `ipv6`
-	// does would make the shipped sentence false with nothing red.
-	// Raised by a reviewer; this is the observer.
 	t.Run("the message names every option that reaches it", func(t *testing.T) {
 		spellings := ipv6SwitchingOptions(t)
 		if len(spellings) < 2 {
@@ -1638,11 +1281,7 @@ func TestCreateNetwork_IPAMModeRefusesIPv6(t *testing.T) {
 		}
 		msg := err.Error()
 		for _, spelling := range spellings {
-			// `-o ipv6=` and not a bare `ipv6`: the bare option name
-			// is a substring of `ipv6_mode`, so a message that named
-			// only the longer option would satisfy the shorter one's
-			// arm. That is the same weakness a surviving mutant found
-			// in the mode loop above.
+			// `-o ipv6=`, since a bare `ipv6` is a substring of `ipv6_mode`.
 			want := "-o " + spelling + "="
 			if !strings.Contains(msg, want) {
 				t.Errorf("`%s` can switch IPv6 on and reaches this refusal, and the "+
@@ -1653,8 +1292,6 @@ func TestCreateNetwork_IPAMModeRefusesIPv6(t *testing.T) {
 		t.Logf("PASS  the refusal names %v, derived by driving ipv6Mode over "+
 			"%d DHCPNetworkOptions field(s)", spellings,
 			reflect.TypeOf(DHCPNetworkOptions{}).NumField())
-		// The count word, so the sentence cannot go on saying "Two"
-		// once a third option reaches the refusal.
 		want := englishCount(t, len(spellings)) + " spellings reach this refusal"
 		if !strings.Contains(msg, want) {
 			t.Errorf("the message does not carry %q: %q. %d option(s) reach this refusal, "+
@@ -1677,10 +1314,6 @@ func TestCreateNetwork_IPAMModeRefusesIPv6(t *testing.T) {
 		}
 	})
 
-	// The opposite direction for the mode arm: naming the option is not
-	// the same as setting it, and a refusal keyed on the option's
-	// presence would take the IPAM shape away from anyone who spells
-	// out the default.
 	t.Run("an IPAM network with ipv6_mode=off is created", func(t *testing.T) {
 		if err := createIPAMBridgeNetworkOpts(t,
 			map[string]interface{}{"ipv6_mode": proto.Mode6Off.String()}, ipamLocalAddressSpace); err != nil {
@@ -1699,16 +1332,6 @@ func TestCreateNetwork_IPAMModeRefusesIPv6(t *testing.T) {
 	})
 }
 
-// ipv6SwitchingOptions is the operator spelling of every
-// DHCPNetworkOptions field that can make ipv6Mode() answer with a mode
-// that is not off.
-//
-// DERIVED BY DRIVING THE RESOLVER, not read off a list beside it. The
-// question the refusal's sentence answers is "which options bring an
-// operator here", and the only thing that knows is ipv6Mode itself: one
-// field at a time is set on an otherwise-zero option set, and the
-// spelling is kept when the resolver answers with IPv6 switched on. A
-// field added later is driven the same way with no edit here.
 func ipv6SwitchingOptions(t *testing.T) []string {
 	t.Helper()
 	typ := reflect.TypeOf(DHCPNetworkOptions{})
@@ -1729,7 +1352,6 @@ func ipv6SwitchingOptions(t *testing.T) []string {
 	return out
 }
 
-// optionSpelling is what an operator writes after `-o`.
 func optionSpelling(field reflect.StructField) string {
 	if tag := field.Tag.Get("mapstructure"); tag != "" {
 		return strings.Split(tag, ",")[0]
@@ -1737,22 +1359,8 @@ func optionSpelling(field reflect.StructField) string {
 	return strings.ToLower(field.Name)
 }
 
-// candidateOptionValues is the set of values worth trying for one
-// field.
-//
-// AN UNDRIVEN KIND IS A SILENT HOLE, so a field whose type this does not
-// know fails the test by name instead of being skipped. That is the
-// difference between "no other option switches IPv6 on" and "no other
-// option of a type I happened to handle switches IPv6 on".
-//
-// THE BOUND THAT REMAINS, and it runs the other way. For a string field
-// the values tried are the library's IPv6 modes plus a few spellings of
-// "on", so a future string option that switches IPv6 on with some other
-// word is not found, and the derivation is a LOWER bound on the option
-// set. The message naming too few options would then pass, because the
-// count word is compared against the same short list. Closing it needs
-// the resolver to publish which fields it reads, which it does not
-// today; until then this is stated and not implied.
+// A field kind this does not know fails by name. For strings only the library modes and a few spellings of "on"
+// are tried, so the derived option set is a lower bound (#960).
 func candidateOptionValues(t *testing.T, field reflect.StructField) []reflect.Value {
 	t.Helper()
 	switch field.Type.Kind() {
@@ -1768,7 +1376,6 @@ func candidateOptionValues(t *testing.T, field reflect.StructField) []reflect.Va
 		}
 		return out
 	case reflect.Int64:
-		// time.Duration and friends: a non-zero of the field's own type.
 		v := reflect.New(field.Type).Elem()
 		v.SetInt(int64(time.Second))
 		return []reflect.Value{v}
@@ -1780,7 +1387,6 @@ func candidateOptionValues(t *testing.T, field reflect.StructField) []reflect.Va
 	}
 }
 
-// englishCount is the number word a shipped sentence uses.
 func englishCount(t *testing.T, n int) string {
 	t.Helper()
 	words := []string{"Zero", "One", "Two", "Three", "Four", "Five", "Six"}
@@ -1791,25 +1397,9 @@ func englishCount(t *testing.T, n int) string {
 	return words[n]
 }
 
-// TestRequestAddress_TheGatewayOnAnEngineThatDoesNotAskGwAllocCheck
-// drives the order an engine below 28 puts these handlers in, which is
-// the order no test drove before #1012: RequestPool, then a gateway
-// RequestAddress carrying NO address on a pool nothing is bound to yet,
-// then CreateNetwork.
-//
-// THE EMPTY ADDRESS IS THE WHOLE CASE. GwAllocCheck, the call that
-// stops the daemon asking at all, arrived in engine 28; before it,
-// moby's network.go requests a gateway from the IPAM driver at every
-// create whose pool carried none, and `docker network create` fails
-// with "failed to allocate gateway ()" if the driver refuses. The
-// integration lane runs engine 29, where the call is suppressed, so
-// this is the observer for that half of the matrix.
-//
-// The answer is the pool's OWN network address, which is what separates
-// it from answering 0.0.0.0 on every pool: an operator who typed
-// --subnet gets a gateway record describing the subnet they typed, and
-// the address is one no DHCP server hands out, so it can never shadow a
-// lease.
+// Engines below 28 lack GwAllocCheck, so moby's network.go asks the IPAM driver for a gateway with no address and
+// `docker network create` fails with "failed to allocate gateway ()" on a refusal. The lane runs engine 29, which
+// suppresses the call. The answer is the pool's own network address, which no DHCP server hands out (#1012).
 func TestRequestAddress_TheGatewayOnAnEngineThatDoesNotAskGwAllocCheck(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -1859,8 +1449,6 @@ func TestRequestAddress_TheGatewayOnAnEngineThatDoesNotAskGwAllocCheck(t *testin
 					"pool's prefix", res.Address, tc.want)
 			}
 
-			// What the daemon does with the answer: it becomes this
-			// network's gateway and comes back in CreateNetwork.
 			if err := p.CreateNetwork(CreateNetworkRequest{
 				NetworkID: ipamTestNetwork,
 				Options: map[string]interface{}{
@@ -1886,11 +1474,7 @@ func TestRequestAddress_TheGatewayOnAnEngineThatDoesNotAskGwAllocCheck(t *testin
 					sn.Binding.Gateway, tc.gateway)
 			}
 
-			// `docker network rm`: libnetwork releases the gateway it
-			// was given before it deletes the network. It reaches the
-			// release path and is classified there as an address no
-			// lease record holds, which is what it is: nothing was
-			// leased for it and nothing is handed back.
+			// `docker network rm` releases the gateway first; no lease record holds it, so nothing is handed back.
 			if err := p.ReleaseAddress(ReleaseAddressRequest{
 				PoolID:  pool.PoolID,
 				Address: tc.gateway,
@@ -1903,8 +1487,6 @@ func TestRequestAddress_TheGatewayOnAnEngineThatDoesNotAskGwAllocCheck(t *testin
 					"reservation being handed back", n)
 			}
 
-			// And for the rest of the network's life the same address
-			// is echoed instead of being leased.
 			back, err := p.RequestAddress(context.Background(), RequestAddressRequest{
 				PoolID:  pool.PoolID,
 				Address: tc.gateway,
@@ -1919,12 +1501,6 @@ func TestRequestAddress_TheGatewayOnAnEngineThatDoesNotAskGwAllocCheck(t *testin
 	}
 }
 
-// TestIpamPoolOfID_ReadsThePoolBackOutOfTheIdentity pins the derivation
-// the answer above is built on. The PoolID is assembled from the
-// address space, the canonical pool and an optional interface suffix
-// (ipamPoolID), and the gateway answer takes the pool back out of it
-// rather than out of a store the daemon-start replay has already
-// emptied.
 func TestIpamPoolOfID_ReadsThePoolBackOutOfTheIdentity(t *testing.T) {
 	for _, tc := range []struct {
 		opts map[string]string
@@ -1950,10 +1526,6 @@ func TestIpamPoolOfID_ReadsThePoolBackOutOfTheIdentity(t *testing.T) {
 		}
 	}
 
-	// A pool identity this driver did not issue is refused instead of
-	// being answered with a guess: the answer becomes a network's
-	// gateway, and a gateway derived from an unparsed string would be
-	// whatever the string happened to contain.
 	for _, bad := range []string{
 		"null/0.0.0.0/0",
 		"dhcp/somewhere-else/192.168.99.0/24",
@@ -1969,15 +1541,7 @@ func TestIpamPoolOfID_ReadsThePoolBackOutOfTheIdentity(t *testing.T) {
 	}
 }
 
-// TestRequestAddress_OnlyTheGatewayIsAnsweredOnAnUnboundPool is the
-// boundary of the answer above.
-//
-// The gateway is answered on an unbound pool because it says what it is
-// on the wire and is never an endpoint's address. Nothing else is: a
-// request with no address and no gateway option is a container asking
-// for a lease, and a pool no network holds has nothing to lease from.
-// Answering it would hand a container an address from a network this
-// process knows nothing about, with no record behind it.
+// Only the gateway is answered on an unbound pool; a container's lease request there has nothing to lease from.
 func TestRequestAddress_OnlyTheGatewayIsAnsweredOnAnUnboundPool(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -2007,15 +1571,7 @@ func TestRequestAddress_OnlyTheGatewayIsAnsweredOnAnUnboundPool(t *testing.T) {
 	}
 }
 
-// TestRequestAddress_AGatewayWithNoAddressOnABoundPoolNamesTheRemedy
-// pins the one gateway shape that is still refused.
-//
-// A bound pool means CreateNetwork has already run for this network, so
-// a gateway request arriving now is not the one an engine sends while a
-// create is in flight. There is no address to give it: this plugin
-// leases per endpoint and the gateway comes from the DHCP server at
-// Join. The refusal is what an operator reads, so it names the option
-// that gets Docker a gateway record.
+// On a bound pool CreateNetwork has run, and the gateway comes from the DHCP server at Join, so this is refused.
 func TestRequestAddress_AGatewayWithNoAddressOnABoundPoolNamesTheRemedy(t *testing.T) {
 	p, b := ipamFixture(t)
 	_, err := p.RequestAddress(context.Background(), RequestAddressRequest{
@@ -2031,21 +1587,8 @@ func TestRequestAddress_AGatewayWithNoAddressOnABoundPoolNamesTheRemedy(t *testi
 	}
 }
 
-// TestRequestAddress_TheGatewayAnswerHasTwoPrefixLengthsItRefuses is
-// the boundary of the answer above, driven at it.
-//
-// The answer is the pool's network address because a network address is
-// not a host address. On a /31 both addresses are host addresses (RFC
-// 3021 Section 2.1) and on a /32 the single address is one, so on those
-// two prefixes there is nothing to invent that the DHCP server could
-// not hand to a container. An address invented there would be recorded
-// as the network's gateway and echoed from the binding for the life of
-// the network, so the container that was really given it would have its
-// address confirmed by a record that does not exist.
-//
-// The refusal is not a dead end. `--gateway` is passed straight
-// through, on any prefix, which is the remedy the message names; and an
-// engine from 28 up never asks, so the prefix changes nothing there.
+// On a /31 both addresses are host addresses (RFC 3021 Section 2.1) and a /32 is one, so no gateway is invented
+// there; a typed --gateway passes through on any prefix, and engines from 28 never ask (#1012).
 func TestRequestAddress_TheGatewayAnswerHasTwoPrefixLengthsItRefuses(t *testing.T) {
 	gwOpts := map[string]string{ipamOptRequestAddressType: ipamOptGateway}
 
@@ -2075,8 +1618,6 @@ func TestRequestAddress_TheGatewayAnswerHasTwoPrefixLengthsItRefuses(t *testing.
 		}
 	})
 
-	// The twin, one bit away. A /30 has two host addresses and a network
-	// address, so the answer exists and is given.
 	t.Run("one bit shorter is answered", func(t *testing.T) {
 		p, _ := ipamFixture(t)
 		p.ipamIndex = newIPAMIndex()
@@ -2095,8 +1636,6 @@ func TestRequestAddress_TheGatewayAnswerHasTwoPrefixLengthsItRefuses(t *testing.
 		}
 	})
 
-	// And the remedy the refusal names works on the refused prefixes: a
-	// typed --gateway carries an address, so nothing is invented.
 	t.Run("a typed --gateway is answered on the refused prefixes", func(t *testing.T) {
 		for _, tc := range []struct{ pool, gw, want string }{
 			{pool: "192.168.99.4/31", gw: "192.168.99.5", want: "192.168.99.5/32"},

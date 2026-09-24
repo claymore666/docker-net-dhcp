@@ -517,6 +517,51 @@ fi
 check "zero derived install proofs exits 2" 2 "$TMP/noinstall.yml" \
       "No install proofs found"
 
+# --- a mention is not an invocation (#883) ----------------------------
+# Each decoy is the real release.yml with a command turned into text that
+# names it; its control deletes the same lines. Both give one verdict.
+REAL="$ROOT/.github/workflows/release.yml"
+real_mutant() { # OUT SED-SCRIPT: the mutation has to have applied
+    sed -E "$2" "$REAL" > "$TMP/$1"
+    if cmp -s "$REAL" "$TMP/$1"; then
+        echo "FAIL: $1 left release.yml byte-identical; re-anchor it"
+        failures=$((failures + 1))
+    fi
+}
+real_mutant crane-echoed.yml 's/^( +)crane tag /\1echo crane tag /'
+check "an echoed crane tag is not a promotion" 2 "$TMP/crane-echoed.yml" \
+      "No floating-tag promotion found"
+real_mutant crane-deleted.yml '/^ +crane tag /d'
+check "control: the crane tag lines deleted" 2 "$TMP/crane-deleted.yml" \
+      "No floating-tag promotion found"
+real_mutant recency-echoed.yml 's|run: bash (scripts/assert-newest-release-tag\.sh)|run: echo bash \1|'
+check "an echoed recency call does not count" 1 "$TMP/recency-echoed.yml" \
+      "assert-newest-release-tag.sh"
+real_mutant recency-deleted.yml '/run: bash scripts\/assert-newest-release-tag\.sh/d'
+check "control: the recency call deleted" 1 "$TMP/recency-deleted.yml" \
+      "assert-newest-release-tag.sh"
+real_mutant install-echoed.yml 's/^( +)docker plugin install --grant/\1echo docker plugin install --grant/'
+check "a bare echoed install is not an install proof" 2 "$TMP/install-echoed.yml" \
+      "No install proofs found"
+real_mutant install-deleted.yml '/^ +docker plugin install --grant/d'
+check "control: the installs deleted" 2 "$TMP/install-deleted.yml" \
+      "No install proofs found"
+
+# Shapes the real file does not hold: a separator inside quotes, a
+# keyword that is an argument, a name: line. And the forms that do run.
+sed 's|^          crane tag "${GHCR_NAME}:${TAG}" "${LATEST}"$|          echo "done; crane tag ${GHCR_NAME}:${TAG} ${LATEST}"\n          echo then crane tag "${GHCR_NAME}:${TAG}" "${LATEST}"|; s|- name: Promote the GHCR floating tags|- name: crane tag "${GHCR_NAME}:${TAG}" "${LATEST}"|' \
+    "$TMP/fixed.yml" > "$TMP/crane-text.yml"
+check "a crane tag in a string, an argument or a name is not a promotion" 2 \
+      "$TMP/crane-text.yml" "No floating-tag promotion found"
+sed 's|^          crane tag "${GHCR_NAME}:${TAG}" "${LATEST}"$|          true \&\& crane tag "${GHCR_NAME}:${TAG}" "${LATEST}"|; s|run: bash scripts/assert-newest-release-tag.sh|run: set -e; sh ./scripts/assert-newest-release-tag.sh|' \
+    "$TMP/fixed.yml" > "$TMP/crane-chained.yml"
+check "a promotion after a separator still counts" 0 \
+      "$TMP/crane-chained.yml" "all exercised by an rc"
+sed 's|^          crane tag "${GHCR_NAME}:${TAG}" "${LATEST}"$|          if ! crane tag "${GHCR_NAME}:${TAG}" "${LATEST}"; then exit 1; fi|' \
+    "$TMP/fixed.yml" > "$TMP/crane-keyword.yml"
+check "a promotion after if and ! still counts" 0 \
+      "$TMP/crane-keyword.yml" "all exercised by an rc"
+
 # --- the real workflow -------------------------------------------------
 check "the real release.yml" 0 "$ROOT/.github/workflows/release.yml" \
       "all exercised by an rc"

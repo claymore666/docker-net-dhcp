@@ -16,52 +16,13 @@ import (
 	docker "github.com/docker/docker/client"
 )
 
-// TestDisplacedClient_TheInterfaceNeverCarriesTwoClients drives a Join
-// with no preceding Leave against a live endpoint and asserts on the
-// kernel rather than on the plugin's opinion of itself (#682).
-//
-// # The path
-//
-// A Join for an endpoint the plugin already has a manager for displaces
-// that manager: registerDHCPManager returns the incumbent and Join
-// stops it on a goroutine. Reaching it needs a Join with NO PRECEDING
-// LEAVE to the running plugin instance, which is described in
-// pkg/plugin/network.go as "plugin restart racing a container restart".
-//
-// # The ordering, and why this test builds the window instead of racing
-//
-// OBSERVED, by this test, on every run: an endpoint whose container is
-// untouched across a plugin disable/enable survives into the next
-// plugin process and is adopted by the recovery walk — recovered_ok
-// moves and no Leave is delivered in between, because there is nothing
-// to deliver one for. That is the first half of the state the issue
-// describes, and it is deterministic.
-//
-// The other half — a container restart WHILE the plugin is down — is
-// not needed to reach the path and is not driven here. libnetwork
-// delivers Leave as an HTTP call to the plugin's own socket, and a
-// disabled plugin has no socket, so such a restart cannot deliver a
-// Leave to any plugin instance; the endpoint survives to the next start
-// exactly as it does here, and the Join that follows is the displacing
-// one. The issue's second bullet allows precisely this: "If only as a
-// race, the test must create the window rather than wait for it."
-// harness.DriverClient is what creates it — a Join issued straight to
-// the plugin socket, with no Leave before it, by construction.
-//
-// # The evidence
-//
-// Since 2.0 the DHCP client is a goroutine inside the plugin, not a
-// dhcpcd process, so "one client on the interface" cannot be answered
-// from the process table any more. It is answered from
-// /proc/net/packet in the CONTAINER's network namespace: the client
-// speaks DHCP over an AF_PACKET socket bound to the container link, and
-// the kernel lists every such socket. See harness.PacketSocket for why
-// the DHCP server's log cannot settle this — a stopped client and a
-// client between renewals send the same nothing.
-//
-// displaced_stops is the secondary, asserted when the Join gets far
-// enough to move it: it says the plugin ASKED the old client to stop,
-// never that it went.
+// A Join for an endpoint that already has a manager displaces it, registerDHCPManager returning the incumbent (#682).
+// An endpoint untouched across a plugin disable/enable is adopted by the recovery walk with no Leave in between, and a
+// disabled plugin has no socket to receive one; harness.DriverClient then issues the Join with no Leave by
+// construction. Since 2.0 the client is an AF_PACKET socket inside the plugin, so one client on the interface is read
+// from /proc/net/packet in the container's netns; displaced_stops only says the plugin asked.
+
+// TestDisplacedClient_TheInterfaceNeverCarriesTwoClients checks that a Join with no preceding Leave leaves exactly one DHCPv4 client on the container's interface (#682).
 func TestDisplacedClient_TheInterfaceNeverCarriesTwoClients(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
@@ -93,38 +54,9 @@ func TestDisplacedClient_TheInterfaceNeverCarriesTwoClients(t *testing.T) {
 	ifIndex := containerLinkIfIndex(t, ctx, id)
 	t.Logf("container %s holds %s on ifindex %d", ctrName[:12], ip, ifIndex)
 
-	// THE OBSERVER IS PROVEN BEFORE IT IS TRUSTED. A census that reads
-	// zero here is blind — a wrong interface index, a client that never
-	// opened its socket, a /proc/net/packet this kernel does not fill —
-	// and every "exactly one" below would then pass over a plugin that
-	// left two clients running.
-	//
-	// Polled, for the same reason the primary check below is polled,
-	// and it is the same asynchrony: Join returns once the interface is
-	// in the sandbox, and the persistent client is started afterwards
-	// by a goroutine that first resolves the container id through the
-	// Docker API (pkg/plugin/dhcp_manager.go). The socket is the
-	// settled state of an attach, not an instant of it. Read once, this
-	// was the first of the two reds this test showed on the hosted
-	// cross-check: MEASURED on run 34597851110, the socket appeared
-	// 358ms after RunContainer returned, and the failure message's own
-	// second read on run 34537348413 already listed the socket it had
-	// just called absent.
-	//
-	// The budget is harness.IPAcquisitionBudget, the one this suite
-	// already gives a single attach to produce an address, used again
-	// for the step of that same attach which follows it. Waiting
-	// weakens nothing: the count must still be exactly 1, two clients
-	// still fail, and a client that never starts spends the budget and
-	// fails with the same message and the same census.
-	//
-	// THE WAIT IS REPORTED WHETHER OR NOT IT WAS SPENT, because a
-	// budget silently absorbs a regression otherwise. The measurement
-	// that motivated the poll is 358ms (run 34597851110); a socket
-	// arriving at 12s would pass this check and say nothing, and the
-	// next reader would have no way to tell "it was already there" from
-	// "it arrived just inside the budget". The number belongs in the
-	// run, not in the review that noticed it was missing.
+	// The persistent client starts after Join returns, once a goroutine resolves the container id through the Docker API;
+	// the socket appeared 358ms after RunContainer returned on run 34597851110 (#682). The wait is reported whether or
+	// not it was spent, so a regression inside the budget stays visible.
 	censusStart := time.Now()
 	n := len(dhcpv4Sockets(t, ctx, id, ifIndex))
 	settle := censusStart.Add(harness.IPAcquisitionBudget)
@@ -143,8 +75,7 @@ func TestDisplacedClient_TheInterfaceNeverCarriesTwoClients(t *testing.T) {
 
 	w := harness.BeginCounterWindow(t, ctx, cli, "recovered_ok", "displaced_stops").ExpectRecycle()
 
-	// The recycle. Its product is a manager registered by the recovery
-	// walk for a live endpoint — the incumbent the Join below displaces.
+	// The recovery walk registers a manager for the live endpoint, the incumbent the Join below displaces.
 	if err := cliReset(ctx, t); err != nil {
 		t.Fatalf("plugin recycle: %v", err)
 	}
@@ -159,10 +90,7 @@ func TestDisplacedClient_TheInterfaceNeverCarriesTwoClients(t *testing.T) {
 			recovered.RecoveryFailed)
 	}
 
-	// The recovered client is on the interface, and it is the only one.
-	// A recycle that left the old process's socket behind would make
-	// the count below two for a reason that has nothing to do with
-	// displacement.
+	// A recycle that left the old process's socket behind would make the count two for a reason other than displacement.
 	if got := dhcpv4Sockets(t, ctx, id, ifIndex); len(got) != 1 {
 		t.Fatalf("after the recycle the container's namespace holds %d DHCPv4 client "+
 			"socket(s), want exactly 1: %s", len(got), harness.DescribePacketSockets(got))
@@ -171,26 +99,12 @@ func TestDisplacedClient_TheInterfaceNeverCarriesTwoClients(t *testing.T) {
 	endpointID := endpointIDOf(t, ctx, cli, id, netName)
 	sandboxKey := harness.LiveSandboxKey(t, ctx, cli, id)
 
-	// The displacing Join. No Leave precedes it, which is the whole
-	// construction: through Docker this state is only reachable as a
-	// race, and the driver client makes it a sequence.
 	drv := harness.NewDriverClient(t, ctx, cli)
 	joinErr := drv.Join(ctx, netID, endpointID, sandboxKey)
 
-	// TWO OUTCOMES, ONE INVARIANT.
-	//
-	// A Join with no hint reacquires the endpoint from scratch before
-	// it can register anything, and reacquisition builds a new link
-	// carrying the endpoint's MAC. While the incumbent's link is still
-	// alive in the container, that collides and the Join is refused
-	// BEFORE registerDHCPManager is reached: the displacement path is
-	// guarded, and the guard is the address collision, not the
-	// displacement code. Measured on the lane, 2026-09-09.
-	//
-	// Both outcomes are accepted because both are correct, and the
-	// property this test exists for holds in either: the container's
-	// interface carries exactly ONE DHCPv4 client. What is not accepted
-	// is a Join that fails for a reason this test did not construct.
+	// A Join with no hint reacquires the endpoint and builds a new link with its MAC, which collides with the incumbent's
+	// live link and is refused before registerDHCPManager, measured on the lane 2026-09-09 (#682); both outcomes keep one
+	// client on the interface.
 	var displacedStops int32
 	if joinErr == nil {
 		after := harness.WaitPluginHealthFor(t, ctx, cli, 30*time.Second,
@@ -208,14 +122,7 @@ func TestDisplacedClient_TheInterfaceNeverCarriesTwoClients(t *testing.T) {
 			"guard: %v", joinErr)
 	}
 
-	// THE PRIMARY. displaced_stops says the plugin asked. This says the
-	// client went.
-	//
-	// Polled rather than read once: a Join that displaces stops the
-	// incumbent on a goroutine, so "one client" is the settled state
-	// and not an instant. The budget is generous and the failure is the
-	// count, so a slow stop and a stop that never happened are
-	// distinguished by the message rather than by the clock.
+	// Displacement stops the incumbent on a goroutine, so one client is the settled state and the count is the failure.
 	var got []harness.PacketSocket
 	deadline := time.Now().Add(45 * time.Second)
 	for {
@@ -234,9 +141,7 @@ func TestDisplacedClient_TheInterfaceNeverCarriesTwoClients(t *testing.T) {
 			len(got), harness.DescribePacketSockets(got), displacedStops)
 	}
 
-	// And the endpoint still works: a displacement that took the
-	// surviving client with it would also read as "exactly one" for a
-	// moment and then as zero.
+	// A displacement that took the surviving client with it would read as one for a moment and then zero.
 	if now := containerAddr(t, ctx, id); now != ip {
 		t.Errorf("the container's address changed from %s to %s across the Join; the "+
 			"surviving client was supposed to be the one holding this lease", ip, now)
@@ -246,18 +151,13 @@ func TestDisplacedClient_TheInterfaceNeverCarriesTwoClients(t *testing.T) {
 			len(final), harness.DescribePacketSockets(final))
 	}
 
-	// Closed here rather than deferred, so it runs before any later
-	// test recycles the plugin under it.
+	// Closed before any later test recycles the plugin under it.
 	w.End()
 }
 
-// containerLinkIfIndex reads the ifindex of the container's own
-// non-loopback link, from inside the container.
-//
-// Read from /sys rather than derived from a name: the interface is
-// eth0 today and the endpoint-name work (#125, #218) is about changing
-// exactly that, so a test keyed on the name would start failing for a
-// reason that is not its subject.
+// Read from /sys, not derived from a name, since #125 and #218 change the name.
+
+// containerLinkIfIndex reads the ifindex of the container's non-loopback link from inside the container.
 func containerLinkIfIndex(t *testing.T, ctx context.Context, ctrID string) int {
 	t.Helper()
 	out := harness.ExecOutput(t, ctx, ctrID,
@@ -274,8 +174,7 @@ func containerLinkIfIndex(t *testing.T, ctx context.Context, ctrID string) int {
 	return idx
 }
 
-// allSockets is every AF_PACKET socket in the container's namespace,
-// for a failure message that has to say what WAS there.
+// allSockets returns every AF_PACKET socket in the container's namespace, for failure messages.
 func allSockets(t *testing.T, ctx context.Context, ctrID string) []harness.PacketSocket {
 	t.Helper()
 	rows, err := harness.PacketSocketsFromProc(
@@ -286,17 +185,13 @@ func allSockets(t *testing.T, ctx context.Context, ctrID string) []harness.Packe
 	return rows
 }
 
-// dhcpv4Sockets is the ETH_P_IP AF_PACKET sockets bound to the
-// container's link: one per DHCPv4 client on that interface.
+// dhcpv4Sockets returns the ETH_P_IP AF_PACKET sockets bound to the container's link, one per DHCPv4 client.
 func dhcpv4Sockets(t *testing.T, ctx context.Context, ctrID string, ifIndex int) []harness.PacketSocket {
 	t.Helper()
 	return harness.PacketSocketsOn(allSockets(t, ctx, ctrID), harness.EthPIP, ifIndex)
 }
 
-// endpointIDOf reads the endpoint id Docker gave this container on the
-// named network. It is the id the plugin's own registry is keyed on, so
-// a Join carrying it lands on the incumbent manager rather than
-// creating a second endpoint.
+// endpointIDOf returns the endpoint id Docker gave the container on netName, the key of the plugin's registry.
 func endpointIDOf(t *testing.T, ctx context.Context, cli *docker.Client, ctrID, netName string) string {
 	t.Helper()
 	ins, err := cli.ContainerInspect(ctx, ctrID)

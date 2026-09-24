@@ -13,17 +13,11 @@ import (
 
 	"github.com/claymore666/dhcp-golib/lease"
 	"github.com/claymore666/dhcp-golib/proto"
+
+	"github.com/claymore666/docker-net-dhcp/v2/pkg/dhcp"
 )
 
-// fakeJoinClient is a DHCP client in a state this package cannot build
-// a real one into: the three readers the health document asks a client,
-// and the one call the attach makes into a running one.
-//
-// names RECORDS EVERY CALL rather than keeping the last, because the
-// question #961 asks is how many times the server was told, not what it
-// was told last: the library renews early for each one, and a caller
-// that re-applied a name on every event would be paying for exchanges
-// nothing here would notice.
+// fakeJoinClient records every name call because the library renews early for each one (#961).
 type fakeJoinClient struct {
 	mode   proto.ConflictMode
 	phase  proto.ACDPhase
@@ -55,15 +49,6 @@ func mustTime(t *testing.T, s string) time.Time {
 	return v
 }
 
-// Two endpoints in DIFFERENT states, asserted field by field.
-//
-// The states are chosen so that no single value is shared between them:
-// different ids, networks, modes, addresses, servers, lease states,
-// conflict modes and ACD phases. An entry rendered from the wrong
-// manager, a field copied from the previous iteration, or a struct
-// reused across the loop shows up as a value from the other row rather
-// than as a missing one — and "the array has two entries" would hold
-// under every one of those.
 func TestEndpointViews_TwoEndpointsRenderTheirOwnFields(t *testing.T) {
 	p := newHealthPlugin()
 
@@ -81,14 +66,12 @@ func TestEndpointViews_TwoEndpointsRenderTheirOwnFields(t *testing.T) {
 	}
 	acquiring := &fakeJoinClient{mode: proto.ConflictAsync, phase: proto.ACDProbing}
 
-	// Endpoint ids are longer than shortID's 12 so the trim is driven
-	// too: a document that leaked the full id would differ here.
 	mBound := newDHCPManager(nil, JoinRequest{
 		EndpointID: "aaaaaaaaaaaabbbbbbbbbbbb",
 		NetworkID:  "111111111111222222222222",
 	}, DHCPNetworkOptions{Mode: ModeMacvlan})
 	mBound.setHealthClient(bound)
-	mBound.noteEvent("bound")
+	mBound.handleEvent(dhcp.Event{Type: "bound", Data: dhcp.Info{IP: "192.0.2.17/24"}}, false)
 
 	mAcquiring := newDHCPManager(nil, JoinRequest{
 		EndpointID: "ccccccccccccdddddddddddd",
@@ -161,10 +144,6 @@ func TestEndpointViews_TwoEndpointsRenderTheirOwnFields(t *testing.T) {
 	}
 }
 
-// A manager with no client at all -- the window between Join registering
-// the manager and setupClient publishing the client. The phase and the
-// mode are `unknown` there and not `idle`/`wait`: idle in wait mode is a
-// statement about a running check, and this is the absence of one.
 func TestEndpointViews_NoClientYetIsUnknownNotIdle(t *testing.T) {
 	p := newHealthPlugin()
 	p.persistentDHCP["e"] = newDHCPManager(nil, JoinRequest{EndpointID: "e1", NetworkID: "n1"}, DHCPNetworkOptions{})
@@ -186,18 +165,6 @@ func TestEndpointViews_NoClientYetIsUnknownNotIdle(t *testing.T) {
 	}
 }
 
-// The array is bounded by active_endpoints, and since 2.0-alpha.1 the
-// count IS the array's length: healthSnapshot copies the manager map
-// once and derives both from that copy.
-//
-// THIS COMMENT USED TO SAY THE TWO "CANNOT DISAGREE, THE SAME MAP", AND
-// THAT WAS FALSE. They came from two acquisitions of p.mu — one for
-// len(persistentDHCP) and one inside endpointViews — with every counter
-// read in between, so a Join or Leave committing in that window made the
-// array longer or shorter than the count. Measured, with a churn
-// goroutine running: they disagreed. This test is sequential and could
-// not see it; TestHealthDocument_CountAndArrayAgreeUnderChurn below is
-// the one that can.
 func TestHealthDocument_EndpointsMatchActiveEndpoints(t *testing.T) {
 	p := newHealthPlugin()
 
@@ -218,9 +185,6 @@ func TestHealthDocument_EndpointsMatchActiveEndpoints(t *testing.T) {
 	}
 }
 
-// Two consecutive polls of an unchanged host produce the same document.
-// Map order would otherwise reorder the array on every read, which makes
-// a diff of two polls unreadable and a golden of it impossible.
 func TestEndpointViews_AreOrderedByEndpoint(t *testing.T) {
 	p := newHealthPlugin()
 	for _, id := range []string{"ee", "aa", "mm", "bb"} {
@@ -242,24 +206,6 @@ func TestEndpointViews_AreOrderedByEndpoint(t *testing.T) {
 	}
 }
 
-// `endpoints` and `active_endpoints` are one fact, and the reference
-// ships the equality. Drive Join and Leave concurrently with the reader
-// and require every document to satisfy it.
-//
-// WHAT MAKES THIS A TEST RATHER THAN A HOPE. Two things, and both are
-// asserted rather than assumed:
-//
-//   - the churn really overlaps the reads. The writer records how many
-//     mutations it committed while the reader was inside its loop, and
-//     the test fails when that is zero — a churn goroutine that finished
-//     before the reader started would pass over the defect and over the
-//     fix alike, which is the shape a concurrency test fails in.
-//   - the reader takes many documents, not one. The window this closes
-//     was nanoseconds wide on a quiet host; one reading proves nothing
-//     about a race, so the assertion is over every document taken.
-//
-// Run under -race in the lane, which is where the map access this used
-// to make would also be reported.
 func TestHealthDocument_CountAndArrayAgreeUnderChurn(t *testing.T) {
 	p := newHealthPlugin()
 
@@ -271,8 +217,6 @@ func TestHealthDocument_CountAndArrayAgreeUnderChurn(t *testing.T) {
 		wg        sync.WaitGroup
 	)
 
-	// Join and Leave, as they touch the map: under p.mu, one endpoint at
-	// a time. Nothing here reads the health document.
 	wg.Add(1)
 	go func() {
 		defer wg.Done()

@@ -9,14 +9,10 @@ import (
 	"testing"
 )
 
-// errNoSuchLink stands in for what the kernel says about a name or an
-// index that is not there. The library's own text is reproduced where a
-// cell asserts that the caller keeps the real reason.
+// errNoSuchLink stands in for the kernel's error for a name or index that is not there.
 var errNoSuchLink = errors.New("no such network interface")
 
-// fakeNetns is a namespace's link table with one writer: the test. The
-// hooks fire at the instant a client is opened, which is the instant
-// the engine's rename lands in the field.
+// fakeNetns is a namespace's link table whose hooks fire when a client is opened.
 type fakeNetns struct {
 	names     map[int]string
 	opens     []string
@@ -103,15 +99,9 @@ func newFakeNetns(names map[int]string) *fakeNetns {
 	return &fakeNetns{names: names}
 }
 
-// TestOpenOnLink_ARenameBetweenTheReadAndTheOpenOpensTheRightLink is
-// the field failure, driven at the instant it happens.
-//
-// The engine moves the container-side link into the sandbox namespace
-// and renames it. Every name the plugin reads is therefore already
-// stale by the time the open resolves it, which is why narrowing the
-// gap is not a fix: the rename here lands INSIDE the open, after the
-// name was read and before it was resolved, and the open still has to
-// end on the link the caller meant.
+// The engine moves the container-side link into the sandbox namespace and renames it, so every name read is stale
+// (#1050).
+
 func TestOpenOnLink_ARenameBetweenTheReadAndTheOpenOpensTheRightLink(t *testing.T) {
 	f := newFakeNetns(map[int]string{3: "dh-abcdef012345"})
 	f.onOpen = func(f *fakeNetns) { f.names[3] = "eth0" }
@@ -138,10 +128,6 @@ func TestOpenOnLink_ARenameBetweenTheReadAndTheOpenOpensTheRightLink(t *testing.
 	}
 }
 
-// TestOpenOnLink_TwoRenamesAreSurvived keeps the bound honest at the
-// shape the engine can actually produce: the move-and-rename, and then
-// a second rename where the container asked for an interface name of
-// its own.
 func TestOpenOnLink_TwoRenamesAreSurvived(t *testing.T) {
 	f := newFakeNetns(map[int]string{3: "dh-abcdef012345"})
 	f.onOpen = func(f *fakeNetns) {
@@ -163,14 +149,6 @@ func TestOpenOnLink_TwoRenamesAreSurvived(t *testing.T) {
 	}
 }
 
-// TestOpenOnLink_ALinkThatIsGoneFailsOnceWithItsOwnReason is the
-// container that died during the attach.
-//
-// Two things are asserted and both are the point: the caller hears the
-// open's own error and not a rewritten one, and the open is attempted
-// exactly once. A retry keyed on "the open failed" instead of on "the
-// name moved" would spin here for as long as its bound allows, inside
-// the attach budget, for a link that is never coming back.
 func TestOpenOnLink_ALinkThatIsGoneFailsOnceWithItsOwnReason(t *testing.T) {
 	f := newFakeNetns(map[int]string{3: "dh-abcdef012345"})
 	f.onOpen = func(f *fakeNetns) { delete(f.names, 3) }
@@ -196,16 +174,6 @@ func TestOpenOnLink_ALinkThatIsGoneFailsOnceWithItsOwnReason(t *testing.T) {
 	}
 }
 
-// TestOpenOnLink_ALinkThatIsGoneWhileItsNameIsTakenKeepsTheRealReason
-// is the same dead container, with the one difference that makes the
-// two halves of "the link is gone" end in different places: something
-// else took the name before the open reached it, so the open SUCCEEDS,
-// on a link that is not the caller's.
-//
-// Without the second question this costs four opens and reports a name
-// that kept being renamed, which is a cause an operator would go
-// looking for and would not find. The link is gone, that is the
-// reason, and it is the reason the caller hears.
 func TestOpenOnLink_ALinkThatIsGoneWhileItsNameIsTakenKeepsTheRealReason(t *testing.T) {
 	f := newFakeNetns(map[int]string{3: "dh-abcdef012345"})
 	f.onOpen = func(f *fakeNetns) {
@@ -234,11 +202,6 @@ func TestOpenOnLink_ALinkThatIsGoneWhileItsNameIsTakenKeepsTheRealReason(t *test
 	}
 }
 
-// TestOpenOnLink_AnotherLinkHoldingTheOldNameIsNotAccepted is the one
-// way a SUCCESSFUL open is wrong: the rename freed the old name and
-// something else took it before the open resolved it. The client that
-// comes back leases on a link that belongs to another endpoint, and
-// nothing downstream can tell.
 func TestOpenOnLink_AnotherLinkHoldingTheOldNameIsNotAccepted(t *testing.T) {
 	f := newFakeNetns(map[int]string{3: "dh-abcdef012345"})
 	f.onOpen = func(f *fakeNetns) {
@@ -264,12 +227,8 @@ func TestOpenOnLink_AnotherLinkHoldingTheOldNameIsNotAccepted(t *testing.T) {
 	}
 }
 
-// TestOpenOnLink_ARenameAfterTheOpenKeepsTheClient. The library's
-// sockets are bound to the interface once the name is resolved, so a
-// link renamed under a running client keeps leasing. A check that asked
-// "is this link still called what I opened" instead of "is this name
-// still my link" would throw that client away and open a second one for
-// nothing, on every attach.
+// The library's sockets are bound to the interface once the name is resolved, so a renamed link keeps leasing (#1050).
+
 func TestOpenOnLink_ARenameAfterTheOpenKeepsTheClient(t *testing.T) {
 	f := newFakeNetns(map[int]string{3: "dh-abcdef012345"})
 	f.afterOpen = func(f *fakeNetns) { f.names[3] = "eth0" }
@@ -287,10 +246,6 @@ func TestOpenOnLink_ARenameAfterTheOpenKeepsTheClient(t *testing.T) {
 	}
 }
 
-// TestOpenOnLink_AFailedIndexReadFallsBackToTheCallersName. The
-// namespace read is an improvement on the caller's name and is never a
-// precondition for using it: where it fails, the open proceeds exactly
-// as it did before any of this existed.
 func TestOpenOnLink_AFailedIndexReadFallsBackToTheCallersName(t *testing.T) {
 	f := newFakeNetns(map[int]string{3: "dh-abcdef012345"})
 	f.nameErr = func(call int) error {
@@ -313,11 +268,6 @@ func TestOpenOnLink_AFailedIndexReadFallsBackToTheCallersName(t *testing.T) {
 	}
 }
 
-// TestOpenOnLink_WithoutAnIndexNothingIsAsked is the CreateEndpoint
-// one-shot: a link in this namespace that nobody is renaming. It must
-// cost exactly one open and not one namespace read, because that is
-// what it costs today and this change is not entitled to make it
-// slower or to give it a new way to fail.
 func TestOpenOnLink_WithoutAnIndexNothingIsAsked(t *testing.T) {
 	f := newFakeNetns(map[int]string{3: "dh-abcdef012345"})
 	f.install(t)
@@ -338,16 +288,9 @@ func TestOpenOnLink_WithoutAnIndexNothingIsAsked(t *testing.T) {
 	}
 }
 
-// TestOpenOnLink_ANameThatNeverSettlesIsBoundedAndHonest. The last
-// resort has to be an error and not a client: handing back a client
-// opened on a link that is not the caller's is the failure this whole
-// change is about, and it is worse when it is silent. Bounded, every
-// client disposed of, and an error that says what happened.
 func TestOpenOnLink_ANameThatNeverSettlesIsBoundedAndHonest(t *testing.T) {
 	f := newFakeNetns(map[int]string{3: "dh-abcdef012345"})
 	f.names[9] = "taken"
-	// Every read answers with a name another link holds, so every open
-	// succeeds on the wrong link.
 	prevName, prevIndex := linkNameByIndex, linkIndexByName
 	linkNameByIndex = func(int) (string, error) { f.reads++; return "taken", nil }
 	linkIndexByName = func(string) (int, error) { f.lookups++; return 9, nil }
@@ -367,11 +310,6 @@ func TestOpenOnLink_ANameThatNeverSettlesIsBoundedAndHonest(t *testing.T) {
 	}
 }
 
-// TestOpenOnLink_TheV6FamilyOpensTheSameWay. The two families are one
-// function on purpose: the v6 client opens seconds after the v4 one, in
-// the same attach, and a rename between them is the same rename. A
-// second hand-written copy is where one family gets the retry and the
-// other does not.
 func TestOpenOnLink_TheV6FamilyOpensTheSameWay(t *testing.T) {
 	f := newFakeNetns(map[int]string{3: "dh-abcdef012345"})
 	f.onOpen = func(f *fakeNetns) { f.names[3] = "eth0" }

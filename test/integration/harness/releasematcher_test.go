@@ -11,10 +11,7 @@ import (
 	"testing"
 )
 
-// Real dnsmasq-dhcp output, captured from the macvlan fixture while it
-// still released. Kept verbatim: this file exists to prove the matcher
-// recognises what the server actually writes, so paraphrasing it would
-// defeat the point.
+// Real dnsmasq-dhcp output from the macvlan fixture while it still released, verbatim.
 const dnsmasqReleaseLog = `
 Aug 20 11:04:07 dnsmasq-dhcp[1]: DHCPDISCOVER(dh-itest-mv) 1e:c1:60:88:5a:ef
 Aug 20 11:04:07 dnsmasq-dhcp[1]: DHCPOFFER(dh-itest-mv) 192.168.99.34 1e:c1:60:88:5a:ef
@@ -24,25 +21,8 @@ Aug 20 11:04:19 dnsmasq-dhcp[1]: DHCPRELEASE(dh-itest-mv) 192.168.99.34 1e:c1:60
 Aug 20 11:04:22 dnsmasq-dhcp[1]: DHCPACK(dh-itest-mv) 192.168.99.35 12:2a:92:35:a0:cb other
 `
 
-// TestCountLogLines_SeesADHCPRELEASE is the control for
-// TestLeaseRetention_NothingEverReleases, and it has to live here
-// because that test can no longer produce its own.
-//
-// Since #800 nothing sends a DHCPRELEASE on a network that does not set
-// release_lease, and that test's network does not, so it asserts an
-// absence with no way to demonstrate that the matcher would notice a
-// presence. (A releasing network does produce one, and
-// TestReleaseLease_OnStopHandsTheAddressBack reads it -- but a control
-// that needs the whole integration lane to run is not a control this
-// test can rely on.) That is the shape where a
-// silently broken check reads exactly like a clean tree: CountLogLines
-// returns 0 for a log it cannot read, for a log with no releases, and
-// for a matcher that stopped recognising the token — three very
-// different states, one number.
-//
-// So the presence is driven here instead, against a canned log that
-// really contains one. If the plugin ever starts releasing again, the
-// integration test goes red because THIS test says the matcher works.
+// Since #800 nothing sends a DHCPRELEASE on a network without release_lease, so TestLeaseRetention_NothingEverReleases
+// cannot show its matcher sees one; this canned log is its control, since CountLogLines returns 0 for an unreadable log too.
 func TestCountLogLines_SeesADHCPRELEASE(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "dnsmasq.log")
@@ -64,26 +44,17 @@ func TestCountLogLines_SeesADHCPRELEASE(t *testing.T) {
 		t.Errorf("CountLogLines(DHCPRELEASE, %s) = %d, want 1", releasedIP, got)
 	}
 
-	// Keyed on the address, not merely on the token: the shared fixture
-	// carries every test's traffic, so a matcher that ignored the IP
-	// would let a neighbouring endpoint's release fail this run — or,
-	// worse, let this endpoint's release be blamed on a neighbour.
 	if got := f.CountLogLines("DHCPRELEASE", otherIP); got != 0 {
 		t.Errorf("CountLogLines(DHCPRELEASE, %s) = %d, want 0 — the address filter is "+
 			"not being applied, so releases cannot be attributed to an endpoint",
 			otherIP, got)
 	}
 
-	// And the token the retention test uses for its own positive
-	// control resolves against the same reader.
 	if got := f.CountLogLines("DHCPACK", releasedIP); got != 1 {
 		t.Errorf("CountLogLines(DHCPACK, %s) = %d, want 1", releasedIP, got)
 	}
 
-	// An unreadable log must not be mistaken for a clean one by anyone
-	// reading these counts. It cannot be made to fail here — the API
-	// returns 0 either way — which is exactly why every caller asserting
-	// an absence has to assert a presence from the same file first.
+	// The API returns 0 for an unreadable log too, so a caller asserting an absence asserts a presence from the same file first (#800).
 	missing := &Fixture{dnsmasqLog: filepath.Join(dir, "does-not-exist.log")}
 	if got := missing.CountLogLines("DHCPRELEASE"); got != 0 {
 		t.Errorf("CountLogLines on an unreadable log = %d, want 0 (documenting the "+
@@ -91,14 +62,7 @@ func TestCountLogLines_SeesADHCPRELEASE(t *testing.T) {
 	}
 }
 
-// The bridge fixture's matcher is the one the daemon-kill test reads,
-// and it asserts an absence too — so it needs the same control.
-//
-// Both counters run through one implementation (countMatchingLines) as
-// of #800. This test does not take that on trust: it drives the bridge
-// method itself, so factoring them apart again, or giving the bridge
-// side its own copy that drifts, fails here rather than silently
-// weakening TestRecovery_DaemonKilled_LeaseIsHeldUntilItExpires.
+// The daemon-kill test's bridge matcher asserts an absence too, so it gets the same control, through its own method (#800).
 func TestCountBridgeLogLines_SeesADHCPRELEASE(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "bridge-dnsmasq.log")
@@ -117,9 +81,7 @@ func TestCountBridgeLogLines_SeesADHCPRELEASE(t *testing.T) {
 			"not see a release in a log that contains one", got)
 	}
 
-	// Keyed on the MAC here rather than the IP: that is what the
-	// daemon-kill test keys on, because the address is not preserved
-	// across an abrupt daemon death.
+	// Keyed on the MAC: the address is not preserved across an abrupt daemon death.
 	if got := f.CountBridgeLogLines("DHCPRELEASE", releasedMAC); got != 1 {
 		t.Errorf("CountBridgeLogLines(DHCPRELEASE, %s) = %d, want 1", releasedMAC, got)
 	}
@@ -132,8 +94,6 @@ func TestCountBridgeLogLines_SeesADHCPRELEASE(t *testing.T) {
 		t.Errorf("CountBridgeLogLines(DHCPACK, %s) = %d, want 1", otherMAC, got)
 	}
 
-	// An empty path is the unconfigured bridge fixture. Same ambiguity
-	// as the unreadable log above, recorded for the same reason.
 	if got := (&Fixture{}).CountBridgeLogLines("DHCPRELEASE"); got != 0 {
 		t.Errorf("CountBridgeLogLines on an unconfigured fixture = %d, want 0", got)
 	}

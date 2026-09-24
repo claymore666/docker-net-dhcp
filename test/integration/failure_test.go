@@ -3,125 +3,12 @@
 
 //go:build integration
 
-// Runtime failure-injection tests (#128): what happens AFTER a
-// container is bound and the world breaks. Each test runs against a
-// per-test EphemeralFixture DHCP server (never the suite-static one —
-// every other test depends on that staying up) and documents the
-// *intended* degraded-mode behaviour it asserts, so those semantics
-// are decided here rather than discovered in production.
-//
-// These tests cross real DHCP timing boundaries. They used to pay two
-// minutes per boundary because dnsmasq's minimum lease is a hard 2m;
-// the fixture now runs Kea, which honours whatever lease it is told,
-// so each test asks for the shortest lease that still makes its own
-// scenario meaningful (#356).
-//
-// That makes the lease a PARAMETER OF THE SCENARIO rather than a fact
-// of life, and every test below states the inequality it needs —
-// "the outage must outlive the lease", "the outage must cross T1 but
-// not the lease". Change a number without re-checking its inequality
-// and the test keeps passing while no longer crossing the boundary it
-// is named after; that is precisely how the pre-#278 versions of two
-// of these tests went green in ~77s while claiming to wait out a 120s
-// lease.
-//
-// They are split out of the main suite into
-// `make integration-test-failure` (second CI step).
-//
-// Timing facts the asserts below lean on (see pkg/dhcp). THESE CHANGED
-// AT 2.0: the numbers here described dhcpcd and an outage watchdog, and
-// both are gone. The shape of what these tests assert did not change —
-// dhcp_timeouts still rises during an outage and the address still
-// survives it — but WHAT MAKES IT RISE, and how fast, did.
-//
-//   - the client reports the outage itself. dhcpcd under
-//     `--noconfigure` announced nothing usable when a bound lease
-//     lapsed (#353), so the plugin ran a ticker that called the outage
-//     from a lease lifetime and a clock. The library owns the
-//     retransmission schedule and the T1/T2/expiry timers and emits
-//     Failed{ReasonNoServer} when an attempt runs out of retries; the
-//     chassis translates that to "leasefail" and handleEvent counts it
-//     as dhcp_timeouts. There is no watchdog, no OUTAGE_TICK and no
-//     OUTAGE_GRACE — the plugin refuses to install with either, since
-//     the daemon rejects a `docker plugin set` naming a setting
-//     config.json does not declare.
-//
-//   - on a BOUND client the counter moves when the LEASE LAPSES, not
-//     once per tick and not once per failed attempt. A renewal has no
-//     retransmission budget: renewalDelay is half the time remaining
-//     to Rebind, floored, and every attempt re-arms the retransmit
-//     timer with it, so RENEWING has exactly two exits, Rebind and
-//     expiry (dhcp-golib v1.0.0 proto/machine.go:1281-1301, re-armed
-//     by sendRenewal at :1349). The first
-//     sign of a silent server in THIS counter is still
-//     Lost{ReasonExpired} translated to "leasefail"
-//     (pkg/dhcp/chassis.go:877-878), so the rise lands at the expiry of
-//     the lease that was live when the server died, which is the
-//     lifetime remaining at the kill and at most one whole lease.
-//     MEASURED on the production host 2026-09-10, on v2.0.0: a renewal
-//     went unanswered for 7h52m past T1 and moved no counter and wrote
-//     no log line at any level. That measurement is history. Since
-//     v2.1.0 (#940) renewals_unanswered moves at the first
-//     retransmission and the plugin logs a warning naming the endpoint,
-//     so dhcp_timeouts is no longer the earliest sign of a silent
-//     server, only the earliest sign in this counter. The two are read
-//     together: renewals_unanswered rising with dhcp_timeouts flat is a
-//     server that has gone quiet under a lease that still holds.
-//     Failed{ReasonNoServer} does reach the counter, but only on the
-//     acquisition path, where the container's deadline bounds the
-//     attempt.
-//
-//     The budgets below are poll deadlines, not waits: each test
-//     returns as soon as the counter moves, so a generous budget costs
-//     nothing. AND ONE OF THEM WAS NOT GENEROUS ENOUGH. The first
-//     version of this block claimed all of them were sized for the
-//     slowest watchdog cadence and were therefore now loose rather than
-//     tight. That was INFERRED, and run 33773687839 falsified it:
-//     TestFailure_LeaseExpiry's recurrence budget was a bare 80s
-//     literal, the period it bounds is now ~80s MEASURED, and the test
-//     lost the dead heat. See outageRecurBudget, which is derived from
-//     proto.DefaultBackoff() instead of inherited from a tick.
-//
-//     The lesson generalises past that one number: a budget sized
-//     against a deleted mechanism is not conservative just because the
-//     old mechanism was faster. The FIRST-rise budgets did survive,
-//     because that rise is one lease lapsing and the lease is a
-//     parameter of each scenario. Every budget here is now derived from
-//     something this tree still contains, and says from what.
-//
-//   - the library retries indefinitely, so recovery after the server
-//     returns still lands promptly, and while it is gone dhcp_timeouts
-//     keeps climbing rather than stopping at one.
-//
-//   - the plugin DELIBERATELY does NOT tear down the address when the
-//     lease lapses (would wipe copied routes, see dhcp_manager.go) —
-//     the container keeps its address through an outage. Unchanged, and
-//     the property these tests exist for.
-//
-// TWO RULES THIS FILE LEARNED THE HARD WAY (#278). Both cost almost
-// nothing to keep, and dropping either one silently guts these tests:
-//
-//  1. Establish that the persistent client is BOUND before injecting
-//     the failure. RunContainer returns as soon as docker reports an
-//     address, and that address comes from CreateEndpoint's one-shot
-//     lease — the long-lived client Join starts may not have confirmed
-//     its own lease yet. Kill the server inside that window and the
-//     client never leaves the "acquiring" state it starts in, so the
-//     failure it reports is a first acquisition that never succeeded
-//     rather than the lease expiry the test is named after, and the
-//     test goes green having never crossed the boundary it claims to
-//     exercise. Both outage tests used to finish in ~77s, which is less
-//     than the one 120s lease they were supposedly waiting out. The
-//     mechanism that made this cheap to get wrong was the watchdog
-//     firing one grace after the kill; the rule outlives it, because
-//     what it is really about is WHICH lease the assertion is watching.
-//  2. Assert endpoint-scoped, not plugin-wide. Every health counter is
-//     a plugin-level total, so "dhcp_timeouts went up" is satisfied by
-//     ANY manager in the plugin, including an orphan left by an earlier
-//     test. Pair each counter assertion with the plugin's own
-//     endpoint=<short id> log line for the same event
-//     (harness.CountPluginLogLines), and assert it as a delta across
-//     the window so start-up churn cannot stand in for the real event.
+// Runtime failure injection against a per-test EphemeralFixture (#128). Kea honours any lease, so each test states
+// the lease inequality its boundary needs (#356). The library emits Failed{ReasonNoServer} only on acquisition; a bound
+// client's dhcp_timeouts rises when the lease lapses (Lost{ReasonExpired}), and renewals_unanswered moves at the first
+// retransmission since v2.1.0 (#940). The plugin keeps the address through an outage. Each test waits for the
+// persistent client's own bind before the kill, or a failing first acquisition passes for an expiry, and pairs every
+// plugin-wide counter with the endpoint's own log line as a delta (#278).
 package integration
 
 import (
@@ -136,80 +23,31 @@ import (
 	docker "github.com/docker/docker/client"
 )
 
-// Plugin log messages that record a DHCP outage against ONE endpoint.
-// These sit next to the counter bumps in pkg/plugin — handleEvent's
-// "leasefail" and "renew"-with-changed-IP arms, and the outage
-// watchdog — and carry the manager's endpoint field, which the
-// counters themselves do not.
+// Plugin log messages beside the counter bumps in handleEvent, carrying the endpoint field the counters lack (#278).
 const (
 	logLeaseFail = "dhcp failed to get a lease"
 	logIPChanged = "dhcp renew with changed IP"
 
-	// outageRiseBudget bounds the wait for the FIRST dhcp_timeouts rise
-	// after a BOUND client's server dies. That first rise is the lease
-	// lapsing: the library drives its own expiry, so the rise arrives
-	// one lease after the kill (MEASURED at t+20s on a 20s fixture
-	// lease, run 33773687839). It is a deadline, not a wait — the poll
-	// returns as soon as the counter moves — and the headroom is cheap
-	// because the budget is only ever spent in full when the test is
-	// about to fail anyway.
-	//
-	// Until 2.0 this was sized against the outage watchdog's arithmetic
-	// (lease + grace + one tick, ~75s worst case). There is no watchdog
-	// and no grace; the number is kept because it still clears the new
-	// worst case, not because the old derivation still holds.
+	// The first rise is one lease lapsing, measured at t+20s on a 20s lease in run 33773687839.
+
+	// outageRiseBudget bounds the wait for the first dhcp_timeouts rise after a bound client's server dies.
 	outageRiseBudget = 120 * time.Second
 
-	// outageRecurBudget bounds the wait for EVERY LATER rise, and it is
-	// a different quantity from the first — which is why it now has its
-	// own name instead of an 80s literal at the call site.
-	//
-	// THIS IS THE ONE THE SWAP BROKE. Under the watchdog the recurrence
-	// period was a configured tick: 30s shipped, 2s in CI. It is now
-	// one exhausted DISCOVER transaction, because the counter moves on
-	// the library's Failed{ReasonNoServer} and nothing else. DERIVED
-	// from proto.DefaultBackoff() — Initial 4s, doubling, Max 64s,
-	// MaxRetransmissions 4 — so the sends fall at +0, +4, +12, +28,
-	// +60, and the machine tests Exhausted only when the NEXT delay
-	// fires: 60 + 64 = 124s worst case, plus up to 1s of jitter per
-	// step.
-	//
-	// MEASURED at 80s between the first and second rise on run
-	// 33773687839. The budget it replaced was exactly 80s, so the two
-	// raced and the test lost by a fraction of a second — a budget
-	// equal to the period it bounds is a coin flip, not a bound. 180s
-	// clears the 124s ceiling with room for a loaded runner.
-	//
-	// The assertion below is UNCHANGED: if the signal stops recurring
-	// this still fails, and it fails inside the enclosing 5-minute
-	// context either way. What changed is a parameter that was derived
-	// from a mechanism this branch deleted.
+	// proto.DefaultBackoff() (4s doubling to 64s, four retransmissions) puts sends at +0, +4, +12, +28 and +60, and
+	// exhaustion is tested when the next delay fires: 124s worst case plus jitter. Run 33773687839 measured 80s between
+	// rises, which raced the old 80s budget (#899).
+
+	// outageRecurBudget bounds the wait for every later dhcp_timeouts rise, one exhausted DISCOVER transaction apart.
 	outageRecurBudget = 180 * time.Second
 )
 
-// assertNoNewHealthFaults is what a bare `!h.Healthy` check should have
-// been all along.
-//
-// `healthy` is derived from plugin-wide, lifetime-cumulative counters,
-// and one plugin instance serves the entire job — including the main
-// suite, which runs first in a separate `go test` invocation. So a
-// single unrelated fault anywhere before these tests start would fail
-// every health assertion here and say nothing about the scenario under
-// test. That is exactly what happened in #373.
-//
-// #278 already drew this conclusion for dhcp_timeouts ("the counter is
-// plugin-wide, so this rise belongs to some other client"). The health
-// flag next to it kept the absolute form. This applies the same rule:
-// assert that THIS test introduced no new fault, not that the plugin
-// has been faultless for its whole life.
+// healthy derives from plugin-wide lifetime counters and one plugin serves the whole job, so an earlier unrelated
+// fault failed every absolute health check here (#373, #278).
+
+// assertNoNewHealthFaults fails the test if this window introduced a fault, whatever came before it.
 func assertNoNewHealthFaults(t *testing.T, w *harness.CounterWindow, what string) {
 	t.Helper()
-	// Closing the window here rather than taking the caller's
-	// mid-flight reading is deliberate on two counts. It proves the
-	// plugin never restarted across the stretch these deltas describe
-	// (#405), and it reads the counters at the latest possible moment —
-	// they only ever climb, so a check at the end is strictly stronger
-	// than one taken when some earlier condition first held.
+	// Closing the window proves the plugin never restarted across it (#405), and reads the climbing counters last.
 	base, now := w.End()
 	if base == nil || now == nil {
 		return
@@ -225,18 +63,7 @@ func assertNoNewHealthFaults(t *testing.T, w *harness.CounterWindow, what string
 	}
 }
 
-// failureHealth is gone. harness.CounterWindow.Await runs the same
-// poll and additionally rejects a reading taken after the plugin
-// restarted underneath it. "This counter rose above its baseline" is
-// exactly the condition that breaks silently across a reset — the
-// counter being watched went back to zero, so the wait either times out
-// blaming the wrong thing or is satisfied later for the wrong reason
-// (#405). The poll interval and its #254 rationale moved with it.
-
-// awaitBoundPersistentClient blocks until the plugin records a bind
-// beyond the window's opening baseline — i.e. the long-lived client
-// started in Join holds its OWN lease and the lease clock these tests
-// wait out is actually running. Rule 1 in this file's header.
+// awaitBoundPersistentClient blocks until the plugin records a bind beyond the window's baseline, so the long-lived client holds its own lease (#278).
 func awaitBoundPersistentClient(t *testing.T, w *harness.CounterWindow) {
 	t.Helper()
 	if _, ok := w.Await(45*time.Second, func(now, before *harness.HealthResponse) bool {
@@ -244,40 +71,18 @@ func awaitBoundPersistentClient(t *testing.T, w *harness.CounterWindow) {
 	}); !ok {
 		t.Fatal("persistent client never confirmed its own bind; the failure below would land on an acquiring client, not a bound one (#278)")
 	}
-	// This window's only job was the bind; close it here so it is not
-	// left open for the rest of the test. An unclosed window is flagged
-	// by the harness, and rightly — it looks identical to one that
-	// verified something.
 	w.End()
 }
 
-// outageLines counts, for one endpoint, the plugin-log records of the
-// event that bumps dhcp_timeouts: a leasefail.
-//
-// IT USED TO RETURN TWO COUNTS and every caller asserted their SUM --
-// a leasefail beside an outage-watchdog tick, because which of the two
-// fired was the diagnostic. The watchdog is gone: dhcp_timeouts now
-// moves only on the library's Failed{ReasonNoServer}, translated to
-// "leasefail" in handleEvent. MEASURED on run 33773687839: every one of
-// the four tests logged "+N leasefail / +0 watchdog line(s)", at every
-// site, because the two strings the second count matched ("DHCP server
-// still unreachable", "passed its renewal deadline") are emitted
-// NOWHERE in this tree any more.
-//
-// So the second count could only ever be zero, and a term that is
-// always zero inside a `a + b == 0` assertion is not neutral -- it
-// reads to the next person as a live alternative, and it would silently
-// absorb a real regression if either string ever came back for an
-// unrelated reason. Collapsing it makes every one of those assertions
-// STRICTER, not looser: they now require the leasefail they were
-// already, in fact, requiring.
+// Run 33773687839 showed the watchdog strings are emitted nowhere in the tree, so only the leasefail count remains.
+
+// outageLines counts one endpoint's plugin-log leasefail records, the event that bumps dhcp_timeouts.
 func outageLines(t *testing.T, ctx context.Context, endpoint string) (leasefail int) {
 	t.Helper()
 	return harness.CountPluginLogLines(t, ctx, endpoint, logLeaseFail)
 }
 
-// containerIPv4 returns the container's first non-loopback IPv4
-// address as seen inside its own netns, or "" if it has none.
+// containerIPv4 returns the container's first non-loopback IPv4 address as seen inside its own netns, or "" if it has none.
 func containerIPv4(t *testing.T, ctx context.Context, ctrID string) string {
 	t.Helper()
 	for _, f := range strings.Fields(harness.ExecOutput(t, ctx, ctrID, "ip", "-4", "addr")) {
@@ -292,8 +97,7 @@ func containerIPv4(t *testing.T, ctx context.Context, ctrID string) string {
 	return ""
 }
 
-// containerHasIP reports whether `ip -4 addr` inside the container
-// still shows the given address.
+// containerHasIP reports whether `ip -4 addr` inside the container still shows the given address.
 func containerHasIP(t *testing.T, ctx context.Context, ctrID, ip string) bool {
 	t.Helper()
 	out := harness.ExecOutput(t, ctx, ctrID, "ip", "-4", "addr")
@@ -311,47 +115,18 @@ func inRange(ip, start, end string) bool {
 	return bytes.Compare(v4, s) >= 0 && bytes.Compare(v4, e) <= 0
 }
 
-// TestFailure_ServerLossDuringRenewal: the "router rebooted at 3am"
-// scenario, for an outage LONGER than the lease. Intended behaviour
-// asserted:
-//   - while the server is gone, the container KEEPS its address (the
-//     lapse no-op), the plugin stays Healthy, and dhcp_timeouts
-//     records the failure — for THIS endpoint, proven from the
-//     plugin's own log rather than from the plugin-wide counter alone;
-//   - when the server returns, the client re-binds without operator
-//     intervention.
-//
-// It does NOT assert that the address survives, and cannot: the
-// outage is only detectable once the lease has lapsed (the rise is at
-// lease+grace — true at any grace, since the grace is added ON TOP of
-// the lease, and at any lease, since this test sets its own), so by the
-// time this test has proven an outage the server's lease DB no longer
-// holds the client's address. Worse, the plugin's own
-// retain-through-outage behaviour makes the old address look occupied:
-// the container is still answering on it, so a server that probes
-// before offering a freshly allocated address hands out a different
-// one. Observed exactly that against the pre-#356 dnsmasq fixture,
-// which pings — DISCOVER requesting .21, OFFER .22.
-//
-// The same-address contract is real, but it belongs to an outage the
-// lease OUTLIVES; TestFailure_ServerReturnsBeforeExpiry owns it.
-// Asserting it here is what made the pre-#278 version of this test
-// green for the wrong reason: it finished in ~77s, inside the 120s
-// lease, so the server still held the entry and re-ACKed it.
+// The outage is provable only after the lease lapsed, when the server no longer holds the address, and the retained
+// address looks occupied to a server that probes before offering: the pre-#356 dnsmasq fixture offered .22 to a
+// DISCOVER for .21. The same-address contract belongs to TestFailure_ServerReturnsBeforeExpiry (#278).
+
+// TestFailure_ServerLossDuringRenewal checks that through an outage longer than the lease the container keeps its address and the client re-binds when the server returns.
 func TestFailure_ServerLossDuringRenewal(t *testing.T) {
-	// The outage is only detectable after a bound lease lapses (20s)
-	// plus up to one watchdog period, and the re-bind poll after the
-	// server returns adds up to 90s on top of that.
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
 	const netName = "dh-itest-floss"
 
-	// INEQUALITY: the outage must OUTLIVE the lease — that is the whole
-	// scenario, and it is what separates this test from
-	// TestFailure_ServerReturnsBeforeExpiry. The outage here is bounded
-	// by outageRiseBudget, which now bounds one lease lapsing, so any
-	// lease shorter than that budget satisfies it.
+	// The outage must outlive the lease; outageRiseBudget bounds one lease lapsing, so a shorter lease satisfies it (#278).
 	ef := harness.NewEphemeralFixture(t, harness.WithLeaseSeconds(harness.EphemeralOutageLeaseSeconds))
 	t.Cleanup(func() {
 		if t.Failed() {
@@ -382,15 +157,10 @@ func TestFailure_ServerLossDuringRenewal(t *testing.T) {
 	base := faultW.Before()
 	baseFail := outageLines(t, ctx, ep)
 	if baseFail > 0 {
-		// Not fatal: one dhcpcd TIMEOUT during initial acquisition on a
-		// loaded runner is plausible and harmless. Asserting the delta
-		// below keeps the proof intact either way.
+		// One timeout during initial acquisition on a loaded runner is harmless; the assertion is on the delta.
 		t.Logf("endpoint %s carried %d leasefail line(s) from start-up; asserting on the delta", ep, baseFail)
 	}
 
-	// Kill the server uncleanly. The persistent client — now provably
-	// holding its own lease — faces silent T1/T2 retries, expiry, and
-	// a failing re-DISCOVER.
 	killed := time.Now()
 	ef.Stop()
 	t.Logf("server killed; a BOUND lease (fixture lease %ds) has to lapse before the plugin can report a timeout", ef.LeaseSeconds())
@@ -412,8 +182,6 @@ func TestFailure_ServerLossDuringRenewal(t *testing.T) {
 		t.Errorf("container lost %s during the outage; a lapsed lease is deliberately a no-op and should retain the address", ip)
 	}
 
-	// Server returns, lease DB intact: the dhcpcd retry loop must
-	// re-bind to the same address within ~30s (poll 90s for margin).
 	acksBefore := ef.CountLogLines("DHCPACK", mac)
 	restarted := time.Now()
 	ef.StartAgain()
@@ -426,8 +194,7 @@ func TestFailure_ServerLossDuringRenewal(t *testing.T) {
 			recovered = true
 			break
 		}
-		// 90s deadline unchanged; tighter poll only shrinks the
-		// overshoot past the re-bind ACK (#254).
+		// The 90s deadline is unchanged; the poll only shrinks the overshoot past the ACK (#254).
 		time.Sleep(250 * time.Millisecond)
 	}
 	if !recovered {
@@ -435,12 +202,7 @@ func TestFailure_ServerLossDuringRenewal(t *testing.T) {
 	}
 	t.Logf("re-bound at t+%.0fs after the server came back", time.Since(restarted).Seconds())
 
-	// The address may or may not be the original one (see this test's
-	// header) — but whichever it is, the container and the server must
-	// agree on it. A re-bind that leaves the container holding an
-	// address the server has since given away is the failure mode worth
-	// catching here, and it is what the dropped same-address assertion
-	// was accidentally standing in for.
+	// The address may change after the lease lapsed, but the container and the server must agree on it (#278).
 	live := containerIPv4(t, ctx, id)
 	if live == "" {
 		t.Fatal("container has no IPv4 address after the server returned; the client did not recover")
@@ -455,41 +217,14 @@ func TestFailure_ServerLossDuringRenewal(t *testing.T) {
 	assertNoNewHealthFaults(t, faultW, "the server returned and the client re-bound")
 }
 
-// TestFailure_ServerReturnsBeforeExpiry: the same outage, but SHORT —
-// the server is back while the lease is still live. This is where the
-// address-stability contract belongs, and it is the common real case
-// (a router reboot takes well under a lease). Intended behaviour:
-//   - the client re-binds to the SAME address, because the server's
-//     lease DB still holds it;
-//   - lease_changed stays flat — no consumer sees a renumbering;
-//   - dhcp_timeouts stays flat for this endpoint: the outage never
-//     reached lease+grace, so there was nothing to report.
-//
-// Together with TestFailure_ServerLossDuringRenewal this pins both
-// sides of the boundary: inside the lease the address is guaranteed,
-// past it only recovery is.
+// TestFailure_ServerReturnsBeforeExpiry checks that a short outage inside the lease re-binds the same address with lease_changed and dhcp_timeouts flat.
 func TestFailure_ServerReturnsBeforeExpiry(t *testing.T) {
-	// INEQUALITY, and this test is nothing without it:
-	//
-	//	T1 (15s)  <  outage (25s)  <  lease (60s)
-	//
-	// The outage must cross T1 so the client actually attempts — and
-	// fails — a renewal while the server is down; and it must end well
-	// inside the lease so the server's DB still holds the entry when it
-	// returns, which is the address-stability contract being asserted.
-	// Break the left inequality and the test proves nothing (no renewal
-	// was ever attempted); break the right one and it becomes
-	// TestFailure_ServerLossDuringRenewal with a wrong assertion.
-	//
-	// T1/T2 are set explicitly rather than derived from the lease
-	// (which would put T1 at 30s) so the outage can be short while the
-	// lease stays comfortably long. The 35s of margin between the
-	// outage ending and expiry is what absorbs the client's renewal
-	// backoff on a loaded runner.
+	// T1 (15s) < outage (25s) < lease (60s): the outage must cross T1 so a renewal fails, and end inside the lease so the
+	// server still holds the entry (#356). T1/T2 are explicit so the lease can stay long.
 	const (
 		leaseSeconds = 60
-		renewT1      = 15 // above dhcpcd's internal renewal flooring
-		renewT2      = 45 // rebind — deliberately past the outage window
+		renewT1      = 15
+		renewT2      = 45 // rebind, past the outage window
 		outage       = 25 * time.Second
 	)
 
@@ -531,8 +266,6 @@ func TestFailure_ServerReturnsBeforeExpiry(t *testing.T) {
 	base := faultW.Before()
 	baseFail := outageLines(t, ctx, ep)
 
-	// Down and back up well inside the lease — see the inequality at
-	// the top of this function.
 	acksBefore := ef.CountLogLines("DHCPACK", mac)
 	killed := time.Now()
 	ef.Stop()
@@ -561,11 +294,7 @@ func TestFailure_ServerReturnsBeforeExpiry(t *testing.T) {
 	}
 	t.Logf("re-ACKed at t+%.0fs after the kill", time.Since(killed).Seconds())
 
-	// Both halves matter: the server must have handed the SAME address
-	// back (its own ACK is the authority), and the container must still
-	// be holding it. Checking only the container would pass on the
-	// plugin's retain-through-outage behaviour alone, without the
-	// server ever having agreed.
+	// The server's own ACK and the container must both carry the address; the container alone passes on retention.
 	if acked := ef.LastACKAddress(mac); acked != ip {
 		t.Errorf("server's last DHCPACK for %s was %s, want %s; the lease was still live and must have been returned", mac, acked, ip)
 	}
@@ -584,37 +313,18 @@ func TestFailure_ServerReturnsBeforeExpiry(t *testing.T) {
 	assertNoNewHealthFaults(t, faultW, "an outage the plugin should have ridden out silently")
 }
 
-// TestFailure_LeaseRefusedOnRenewal: the site gets renumbered under a
-// live lease — the server comes back on a different subnet and the
-// container's held address is foreign to it. Two CI iterations against
-// the pre-#356 dnsmasq fixture showed it REFUSES such renewals
-// *silently* in several shapes (out-of-range REQUEST: ignored;
-// address-taken REQUEST: ignored) rather than emitting DHCPNAK. Which
-// shape a given server picks is exactly what this test must not depend
-// on — so it asserts the *intended degraded-mode semantics* rather
-// than a specific wire message, and that holds on Kea unchanged:
-//   - the client re-acquires from the new subnet's pool without
-//     operator intervention; lease_changed records the move;
-//   - `docker inspect` keeps reporting the ORIGINAL address: libnetwork
-//     has no in-place endpoint-IP swap RPC, so the inspect divergence
-//     is the DEFINED degraded mode (#104) — lease_changed is the
-//     operator's signal, and this assertion is the documentation;
-//   - the plugin stays Healthy throughout.
-//
-// The naks_received counter's contract is pinned in unit tests
-// (TestHandleEvent_Counters) — when a server does NAK, that's the
-// path that counts it; any NAK observed here is logged for interest.
+// The pre-#356 dnsmasq fixture refused foreign renewals silently in several shapes, so no wire message is asserted.
+// libnetwork has no in-place endpoint-IP swap, so docker inspect keeping the original address is the defined degraded
+// mode and lease_changed the operator's signal (#104); TestHandleEvent_Counters pins naks_received.
+
+// TestFailure_LeaseRefusedOnRenewal checks that after a renumbering the client re-acquires from the new subnet, lease_changed records it and the plugin stays healthy.
 func TestFailure_LeaseRefusedOnRenewal(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
 	const netName = "dh-itest-fref"
 
-	// INEQUALITY: re-acquisition cannot happen before the held lease
-	// stops being defensible, so the shorter the lease the sooner this
-	// test can conclude. Nothing here needs the lease to be long — the
-	// scenario is "the address is foreign to the new server", which is
-	// true from the first renewal attempt onwards.
+	// A short lease lets re-acquisition happen sooner; the held address is foreign from the first renewal (#356).
 	ef := harness.NewEphemeralFixture(t, harness.WithLeaseSeconds(harness.EphemeralOutageLeaseSeconds))
 	t.Cleanup(func() {
 		if t.Failed() {
@@ -637,9 +347,6 @@ func TestFailure_LeaseRefusedOnRenewal(t *testing.T) {
 	id, inspectIP, mac := harness.RunContainer(t, ctx, netName, "dh-itest-fref-ctr")
 	t.Logf("bound: inspect ip=%s mac=%s", inspectIP, mac)
 
-	// Settle: wait for the persistent client's own bound (it can
-	// differ from CreateEndpoint's one-shot lease) so the baseline
-	// isn't polluted by start-up churn.
 	awaitBoundPersistentClient(t, bindW)
 	ep := harness.EndpointShortID(t, ctx, cli, id, netName)
 
@@ -648,13 +355,8 @@ func TestFailure_LeaseRefusedOnRenewal(t *testing.T) {
 	base := faultW.Before()
 	baseChanged := harness.CountPluginLogLines(t, ctx, ep, logIPChanged)
 
-	// Renumber the site: new server address, new pool, wiped DB. The
-	// unicast T1 renewal dies (the old server address is gone); the
-	// T2 broadcast rebind carries a foreign address; re-acquisition
-	// follows somewhere between T2 and expiry + re-DISCOVER. On the
-	// 20s lease, with T1/T2 derived from it, that is T2 ~17.5s and
-	// expiry 20s, so re-acquisition lands within a few tens of seconds
-	// rather than the ~135s a 2m lease imposed.
+	// The unicast renewal dies with the old server address, the broadcast rebind carries a foreign address, and
+	// re-acquisition follows between T2 (~17.5s) and expiry (20s) plus re-DISCOVER (#356).
 	renumbered := time.Now()
 	ef.RestartOnSubnet(harness.EphemeralAltServerAddr, harness.EphemeralAltPoolStart, harness.EphemeralAltPoolEnd)
 	t.Logf("server renumbered; awaiting re-acquisition (lease %ds, so T2 ~%.1fs, expiry %ds)...",
@@ -676,9 +378,7 @@ func TestFailure_LeaseRefusedOnRenewal(t *testing.T) {
 		if liveIP != "" {
 			break
 		}
-		// Each iteration is a docker exec, so hold a 500ms floor
-		// rather than the 250ms used for cheap log/health polls —
-		// still a quarter of the old 2s overshoot (#254).
+		// Each iteration is a docker exec, so the floor is 500ms (#254).
 		time.Sleep(500 * time.Millisecond)
 	}
 	if liveIP == "" {
@@ -694,10 +394,7 @@ func TestFailure_LeaseRefusedOnRenewal(t *testing.T) {
 	if !ok {
 		t.Errorf("lease_changed never recorded the re-acquisition (last: %+v)", h)
 	}
-	// lease_changed is plugin-wide like every other counter. The
-	// address observed inside THIS container above is already
-	// endpoint-scoped evidence; the plugin's own log line for this
-	// endpoint is what ties the counter to it (#278).
+	// The plugin's log line for this endpoint ties the plugin-wide counter to it (#278).
 	if nowChanged := harness.CountPluginLogLines(t, ctx, ep, logIPChanged); nowChanged == baseChanged {
 		t.Errorf("endpoint %s re-addressed to %s but the plugin logged no lease-change line for it (%d before, %d after)", ep, liveIP, baseChanged, nowChanged)
 	}
@@ -706,10 +403,8 @@ func TestFailure_LeaseRefusedOnRenewal(t *testing.T) {
 		t.Logf("server NAKed on the wire (naks_received %d -> %d)", base.NAKsReceived, h.NAKsReceived)
 	}
 
-	// docker inspect still shows the original address: the DEFINED
-	// divergence (#104). If this ever fails because inspect tracks
-	// the new IP, a re-Join mechanism landed — update the reference
-	// manual's troubleshooting row along with this test.
+	// Inspect keeping the original address is the defined divergence (#104); a failure here means a re-Join landed, and
+	// the reference manual's troubleshooting row changes with it.
 	ins, err := cli.ContainerInspect(ctx, id)
 	if err != nil {
 		t.Fatalf("ContainerInspect: %v", err)
@@ -723,29 +418,14 @@ func TestFailure_LeaseRefusedOnRenewal(t *testing.T) {
 	}
 }
 
-// TestFailure_LeaseExpiry: the server disappears permanently and the
-// lease fully lapses. Intended behaviour asserted: address retention
-// is DELIBERATE (deconfig no-op), the endpoint stays L2-reachable on
-// the stale address, dhcp_timeouts keeps climbing as the retry loop
-// spins, and the plugin reports Healthy — "server gone" is a defined
-// degraded mode, not undefined behaviour.
-//
-// This is the test that leans hardest on rule 1 in the file header: a
-// lease that was never held cannot expire, so the bind wait below is
-// not hygiene, it is the entire premise.
+// TestFailure_LeaseExpiry checks that after a permanent server loss the container keeps its address, stays reachable, dhcp_timeouts keeps climbing and the plugin stays healthy.
 func TestFailure_LeaseExpiry(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
 	const netName = "dh-itest-fexp"
 
-	// INEQUALITY: the lease must FULLY lapse and then keep failing to
-	// be re-acquired — this test asserts a RECURRING signal, so it
-	// needs the lease short enough that expiry plus two exhausted
-	// DISCOVER transactions fits inside the budgets below. With the
-	// watchdog gone the second term is the library's retransmission
-	// ladder rather than a configured tick, and it is roughly 40x
-	// longer; outageRecurBudget carries that derivation.
+	// The lease must lapse and two exhausted DISCOVER transactions must fit the budgets; see outageRecurBudget (#278).
 	ef := harness.NewEphemeralFixture(t, harness.WithLeaseSeconds(harness.EphemeralOutageLeaseSeconds))
 	t.Cleanup(func() {
 		if t.Failed() {
@@ -796,12 +476,6 @@ func TestFailure_LeaseExpiry(t *testing.T) {
 		t.Errorf("dhcp_timeouts rose but the plugin logged no outage line for endpoint %s: the counter is plugin-wide, so this rise belongs to some other client (#278)", ep)
 	}
 
-	// The retry loop must keep recording failures — once per exhausted
-	// DISCOVER transaction — and keep recording them AGAINST THIS
-	// ENDPOINT: a client that stalled is invisible in the plugin-wide
-	// total, which is the whole point of reading the per-endpoint log
-	// lines beside the counter. See outageRecurBudget for where the
-	// period comes from now.
 	second, ok := faultW.Await(outageRecurBudget, func(h, _ *harness.HealthResponse) bool {
 		return h.DHCPTimeouts > first.DHCPTimeouts
 	})
@@ -816,20 +490,11 @@ func TestFailure_LeaseExpiry(t *testing.T) {
 	}
 	assertNoNewHealthFaults(t, faultW, "a permanent server loss is a defined degraded mode")
 
-	// Address retention past expiry is deliberate...
 	if !containerHasIP(t, ctx, id, ip) {
 		t.Errorf("container lost %s after lease expiry; retention (deconfig no-op) is the defined behaviour", ip)
 	}
 
-	// ...and the endpoint stays L2-reachable: ping the container from
-	// the server side of the veth pair (the address survives on the
-	// link even though the DHCP server is dead).
-	//
-	// Via the fixture, not exec.Command directly: the server address
-	// lives in the fixture's own network namespace, so a ping issued
-	// from the test process would fail because the source address is
-	// not local here — a false negative indistinguishable from a real
-	// unreachable container.
+	// The server address lives in the fixture's namespace, so the ping goes through the fixture.
 	if out, err := ef.PingFromServer(ip); err != nil {
 		t.Errorf("container %s not L2-reachable on its expired-lease address: %v\n%s", ip, err, out)
 	}

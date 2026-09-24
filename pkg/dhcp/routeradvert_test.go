@@ -32,15 +32,9 @@ func addr(t *testing.T, s string) netip.Addr {
 	return a
 }
 
-// A default route never reaches Info.Routes, in EITHER family.
-//
-// v4: RFC 3442 says a 0.0.0.0/0 entry in option 121 supersedes option
-// 3, and the library folds it into Lease.Gateway. v6: RFC 4191 section
-// 2.3 explicitly allows a Route Information option for ::/0, and the
-// plugin's IPv6 gateway comes from the router list -- a ::/0 route
-// arriving here as a static route would install a SECOND default route
-// beside it, with the winner decided by a metric comparison nobody
-// chose.
+// RFC 3442: a 0.0.0.0/0 option 121 entry supersedes option 3; RFC 4191 section 2.3 allows a ::/0 Route Information
+// option, which here would install a second default route (#821).
+
 func TestInfoFromLease_NoDefaultRouteInRoutes(t *testing.T) {
 	now := time.Now()
 	for _, tc := range []struct {
@@ -66,32 +60,17 @@ func TestInfoFromLease_NoDefaultRouteInRoutes(t *testing.T) {
 	}
 }
 
-// OnLinkPrefixes is the L flag and nothing else.
-//
-// WHY IT IS NEEDED AT ALL: the DHCPv6 address goes on the link as a
-// /128 (RFC 9915 section 18.2.10.1), and RFC 5942 section 4 forbids
-// deriving an on-link prefix from an assigned address, so without this
-// nothing in the container's table says the segment's own prefix is
-// reachable without a router.
+// RFC 5942 section 4 forbids deriving an on-link prefix from the /128 of RFC 9915 section 18.2.10.1 (#821).
+
 func TestOnLinkPrefixes(t *testing.T) {
 	got := onLinkPrefixes(proto.RouterObservation{Prefixes: []wire.PrefixInfo{
-		// Taken: L set, live.
 		{Prefix: addr(t, "2001:db8::"), PrefixLen: 64, OnLink: true, ValidLifetime: 600},
-		// Not taken: A-only. RFC 4861 section 4.6.2 makes the two
-		// flags independent, and an A-without-L prefix says how to
-		// form an address, not what is reachable.
+		// RFC 4861 section 4.6.2 makes the A and L flags independent.
 		{Prefix: addr(t, "2001:db8:1::"), PrefixLen: 64, Autonomous: true, ValidLifetime: 600},
-		// Not taken: withdrawn. Valid Lifetime 0 is the withdrawal.
 		{Prefix: addr(t, "2001:db8:2::"), PrefixLen: 64, OnLink: true, ValidLifetime: 0},
-		// Not taken: link-local, which is on-link by definition and
-		// already has a kernel route.
 		{Prefix: addr(t, "fe80::"), PrefixLen: 64, OnLink: true, ValidLifetime: 600},
-		// Not taken: ::/0 as an on-link prefix would make every
-		// destination on-link and black-hole the container.
 		{Prefix: addr(t, "::"), PrefixLen: 0, OnLink: true, ValidLifetime: 600},
-		// Taken once: the same prefix twice is one route.
 		{Prefix: addr(t, "2001:db8::"), PrefixLen: 64, OnLink: true, ValidLifetime: 1800},
-		// Taken, masked: a router may send host bits.
 		{Prefix: addr(t, "2001:db8:3::5"), PrefixLen: 64, OnLink: true, ValidLifetime: 600},
 	}})
 
@@ -106,10 +85,6 @@ func TestOnLinkPrefixes(t *testing.T) {
 	}
 }
 
-// advertisedDiffers watches the five fields an advertisement can change
-// and NOTHING ELSE. The address and its lifetimes move on every
-// renewal; a watch that read them would report a change the renewal had
-// already applied, once per lease, forever.
 func TestAdvertisedDiffers(t *testing.T) {
 	base := Info{
 		Gateway:    "fe80::1",
@@ -135,6 +110,7 @@ func TestAdvertisedDiffers(t *testing.T) {
 			i.Routes = []Route{{Destination: "2001:db8:1::/48", Gateway: "fe80::9"}}
 			return i
 		}, true},
+		{"on-link prefixes", func(i Info) Info { i.OnLinkPrefixes = []string{"2001:db8:2::/64"}; return i }, true},
 		{"address", func(i Info) Info { i.IP = "2001:db8::5/128"; return i }, false},
 		{"lifetimes", func(i Info) Info { i.LeaseSeconds, i.PreferredSeconds = 99, 88; return i }, false},
 	} {
@@ -146,12 +122,6 @@ func TestAdvertisedDiffers(t *testing.T) {
 	}
 }
 
-// takeAdvertChange reports a CHANGE and never a first sight.
-//
-// The first reading is the baseline: on the path that matters the lease
-// has just been applied through bound, so reporting it again would
-// re-apply a configuration the container already has and write a second
-// ledger row for one event.
 func TestTakeAdvertChange_FirstSightIsSilent(t *testing.T) {
 	c := &DHCPClient{}
 	l := lease.Lease{Gateway: addr(t, "fe80::1")}
@@ -176,15 +146,13 @@ func TestTakeAdvertChange_FirstSightIsSilent(t *testing.T) {
 		t.Errorf("event gateway %q, want fe80::2", ev.Data.Gateway)
 	}
 
-	// And it does not repeat: the change was reported once.
 	if _, ok := c.takeAdvertChange(time.Now()); ok {
 		t.Fatal("the same change was reported twice")
 	}
 }
 
-// A withdrawal is a change like any other, and it is the one with no
-// other mechanism: nothing else takes the container's default route
-// away now that its kernel is at accept_ra=0.
+// With accept_ra=0 nothing else takes the container's default route away (#821).
+
 func TestTakeAdvertChange_ReportsAWithdrawal(t *testing.T) {
 	c := &DHCPClient{}
 	l := lease.Lease{Gateway: addr(t, "fe80::1")}
@@ -201,10 +169,6 @@ func TestTakeAdvertChange_ReportsAWithdrawal(t *testing.T) {
 	}
 }
 
-// No lease, no reading. A client whose library has not produced one yet
-// must not have its zero value taken as a baseline, or the first real
-// advertisement would look like a change from nothing and the one after
-// it like nothing at all.
 func TestTakeAdvertChange_NoLeaseIsSilentAndKeepsNoBaseline(t *testing.T) {
 	c := &DHCPClient{}
 	have := false
@@ -231,8 +195,6 @@ func TestTakeAdvertChange_NoLeaseIsSilentAndKeepsNoBaseline(t *testing.T) {
 	}
 }
 
-// baselineAdvert takes the reading and reports nothing, for the caller
-// that has just applied the same values through the lease path.
 func TestBaselineAdvert_SilencesTheNextReading(t *testing.T) {
 	c := &DHCPClient{}
 	l := lease.Lease{Gateway: addr(t, "fe80::1")}
@@ -248,10 +210,8 @@ func TestBaselineAdvert_SilencesTheNextReading(t *testing.T) {
 	}
 }
 
-// The watch runs four times inside RFC 4861 section 10's
-// MIN_DELAY_BETWEEN_RAS, so the container's view survives two missed
-// frames. A slower watch would make the delay before a container
-// follows a renumbered router depend on how often the router talks.
+// RFC 4861 section 10's MIN_DELAY_BETWEEN_RAS holds four watch intervals (#821).
+
 func TestRAWatchInterval_FitsInsideTheMinimumDelayBetweenAdvertisements(t *testing.T) {
 	if minDelayBetweenRAs != 3*time.Second {
 		t.Errorf("minDelayBetweenRAs = %v, want RFC 4861 section 10's 3s", minDelayBetweenRAs)
@@ -261,18 +221,9 @@ func TestRAWatchInterval_FitsInsideTheMinimumDelayBetweenAdvertisements(t *testi
 	}
 }
 
-// CASE, NOT RULE (#821 -> #818). On a segment that hands out no
-// DHCPv6 address the acquisition returns NOTHING, not the router's
-// advertisement, and this test pins that wrong-but-required answer so
-// it cannot be changed back by accident.
-//
-// The right answer is the advertisement's gateway, MTU and routes. It
-// is not reachable yet: an endpoint with no global IPv6 address has
-// IPv6 disabled on its link by the engine, and the kernel refuses
-// every IPv6 route on such a link, so a Join answer carrying one fails
-// the whole sandbox and the container does not start (MEASURED, lane
-// run 35131643324). #818 gives the container a global address; when it
-// does, this test is the one that changes.
+// Case, not rule (#818): with no global IPv6 address the engine disables IPv6 on the link and the kernel refuses every
+// IPv6 route, so a Join answer carrying one fails the sandbox (lane run 35131643324, #821).
+
 func TestAcquisitionResult6(t *testing.T) {
 	t.Run("no address: nothing comes through, with the reason", func(t *testing.T) {
 		got, err := acquisitionResult6(Info{}, nil)
@@ -307,15 +258,9 @@ func TestAcquisitionResult6(t *testing.T) {
 	})
 }
 
-// THE ADVERTISED MTU IS THE ONLY MTU IPv6 HAS, and this is where it
-// enters the plugin.
-//
-// DHCPv6 has no MTU option: option 26 is DHCPv4's (RFC 2132 section
-// 5.1) and the library fills Lease.MTU from it alone, so a DHCPv6 lease
-// carries MTU 0 forever. RFC 4861 section 4.6.4's MTU option is the
-// only source, and until #821 nothing here read it because the
-// container's kernel was at accept_ra=2 and applied it itself. With
-// accept_ra=0 a zero here is an MTU the container never gets.
+// DHCPv6 has no MTU option; option 26 is DHCPv4's (RFC 2132 section 5.1), so RFC 4861 section 4.6.4's MTU option is the
+// only source (#821).
+
 func TestInfoFromLease_TheAdvertisedMTUIsTheOnlyMTUIPv6Has(t *testing.T) {
 	now := time.Now()
 
@@ -334,11 +279,8 @@ func TestInfoFromLease_TheAdvertisedMTUIsTheOnlyMTUIPv6Has(t *testing.T) {
 		}
 	})
 
-	// THE DISTINCTION THE WITHDRAWAL RESTS ON. RFC 9915 section 18.2.1's
-	// Solicit goes out without waiting for router discovery, so an event
-	// can be stamped before the first advertisement arrives on a link
-	// that does have a router. The MTU is 0 either way; this flag is
-	// what separates "has not spoken" from "stopped saying".
+	// RFC 9915 section 18.2.1's Solicit does not wait for router discovery, so an event can predate the first
+	// advertisement.
 	t.Run("an event stamped before the first advertisement says so", func(t *testing.T) {
 		l := lease.Lease{Addr: pfx(t, "2001:db8::5/64")}
 		got, _ := infoFromLease(l, proto.RouterObservation{}, now, netip.Prefix{})
@@ -350,8 +292,6 @@ func TestInfoFromLease_TheAdvertisedMTUIsTheOnlyMTUIPv6Has(t *testing.T) {
 		}
 	})
 
-	// PRESERVATION CONTROL ONE: a DHCPv4 lease's own option 26 is not
-	// overwritten by a router on the same link.
 	t.Run("option 26 wins on its own family", func(t *testing.T) {
 		l := lease.Lease{Addr: pfx(t, "192.0.2.5/24"), MTU: 9000}
 		got, _ := infoFromLease(l, proto.RouterObservation{Seen: true, MTU: 1280}, now, netip.Prefix{})
@@ -360,9 +300,6 @@ func TestInfoFromLease_TheAdvertisedMTUIsTheOnlyMTUIPv6Has(t *testing.T) {
 		}
 	})
 
-	// PRESERVATION CONTROL TWO: a DHCPv4 client never looks at a router
-	// advertisement, so its observation is the zero value and no MTU
-	// may be invented for it.
 	t.Run("no advertisement seen, no MTU", func(t *testing.T) {
 		l := lease.Lease{Addr: pfx(t, "192.0.2.5/24")}
 		got, _ := infoFromLease(l, proto.RouterObservation{MTU: 1280}, now, netip.Prefix{})
@@ -372,17 +309,10 @@ func TestInfoFromLease_TheAdvertisedMTUIsTheOnlyMTUIPv6Has(t *testing.T) {
 	})
 }
 
-// The live half of the same fact: a router that changes ONLY its MTU
-// has changed the container's configuration, and the watch is the only
-// thing that can notice -- no lease event happens, because the address
-// did not move.
 func TestTakeAdvertChange_AnMTUChangeIsAChange(t *testing.T) {
 	c := &DHCPClient{}
 	l := lease.Lease{Addr: pfx(t, "2001:db8::5/64"), Gateway: addr(t, "fe80::1")}
 	c.view = func() (lease.Lease, bool) { return l, true }
-	// The prefixes are in the fixture precisely so their EXCLUSION is
-	// driven: a view that passed the whole observation through would
-	// carry them, and the last assertion below is what catches it.
 	ra := proto.RouterObservation{
 		Seen: true, MTU: 1400,
 		Prefixes: []wire.PrefixInfo{{
@@ -392,7 +322,7 @@ func TestTakeAdvertChange_AnMTUChangeIsAChange(t *testing.T) {
 	}
 	c.routerView = func() proto.RouterObservation { return ra }
 
-	c.takeAdvertChange(time.Now()) // the baseline
+	c.takeAdvertChange(time.Now())
 	ra.MTU = 1280
 	ev, ok := c.takeAdvertChange(time.Now())
 	if !ok {
@@ -403,9 +333,6 @@ func TestTakeAdvertChange_AnMTUChangeIsAChange(t *testing.T) {
 		t.Errorf("event MTU = %d, want 1280", ev.Data.MTU)
 	}
 
-	// The withdrawal, which is the case propagateMTU's zero branch
-	// exists for: a router that stops advertising an MTU is saying
-	// nothing about it any more.
 	ra.MTU = 0
 	ev, ok = c.takeAdvertChange(time.Now())
 	if !ok {
@@ -415,10 +342,187 @@ func TestTakeAdvertChange_AnMTUChangeIsAChange(t *testing.T) {
 		t.Errorf("event MTU = %d, want 0", ev.Data.MTU)
 	}
 
-	// THE PREFIXES STILL DO NOT FOLLOW. The router view carries the MTU
-	// and nothing else, so on-link determination stays where it is
-	// decided once, at Join.
-	if len(ev.Data.OnLinkPrefixes) != 0 {
-		t.Errorf("OnLinkPrefixes = %v, want none from the live watch", ev.Data.OnLinkPrefixes)
+	if len(ev.Data.OnLinkPrefixes) != 1 || ev.Data.OnLinkPrefixes[0] != "2001:db8::/64" {
+		t.Errorf("OnLinkPrefixes = %v, want [2001:db8::/64] from the live watch", ev.Data.OnLinkPrefixes)
+	}
+}
+
+func onLinkPIO(t *testing.T, a string, valid uint32) wire.PrefixInfo {
+	t.Helper()
+	return wire.PrefixInfo{Prefix: addr(t, a), PrefixLen: 64, OnLink: true, ValidLifetime: valid}
+}
+
+// advertWatch is a client holding a lease whose router observation the test swaps frame by frame.
+func advertWatch(t *testing.T) (*DHCPClient, *proto.RouterObservation) {
+	t.Helper()
+	c := &DHCPClient{}
+	l := lease.Lease{Addr: pfx(t, "2001:db8::5/128"), Gateway: addr(t, "fe80::1")}
+	c.view = func() (lease.Lease, bool) { return l, true }
+	ra := &proto.RouterObservation{Seen: true}
+	c.routerView = func() proto.RouterObservation { return *ra }
+	return c, ra
+}
+
+func TestTakeAdvertChange_APrefixFirstHeardAfterTheBaselineIsReported(t *testing.T) {
+	c, ra := advertWatch(t)
+	c.takeAdvertChange(time.Now())
+
+	ra.Prefixes = []wire.PrefixInfo{onLinkPIO(t, "2001:db8:1::", 1800)}
+	ev, ok := c.takeAdvertChange(time.Now())
+	if !ok {
+		t.Fatal("an advertisement whose only news is an on-link prefix was not reported; a lease bound " +
+			"before the first advertisement never gets the prefix's route (#1088)")
+	}
+	if len(ev.Data.OnLinkPrefixes) != 1 || ev.Data.OnLinkPrefixes[0] != "2001:db8:1::/64" {
+		t.Errorf("OnLinkPrefixes = %v, want [2001:db8:1::/64]", ev.Data.OnLinkPrefixes)
+	}
+}
+
+func TestTakeAdvertChange_AFrameOmittingAPrefixIsNotAChange(t *testing.T) {
+	c, ra := advertWatch(t)
+	ra.Prefixes = []wire.PrefixInfo{onLinkPIO(t, "2001:db8:1::", 1800)}
+	c.takeAdvertChange(time.Now())
+
+	// Two routers, or one splitting its options: each frame names a different subset of the link's prefixes.
+	for i, frame := range [][]wire.PrefixInfo{nil, {onLinkPIO(t, "2001:db8:1::", 1800)}, nil} {
+		ra.Prefixes = frame
+		if ev, ok := c.takeAdvertChange(time.Now()); ok {
+			t.Fatalf("frame %d omitting or repeating a known prefix was reported as a change: %+v", i, ev.Data)
+		}
+	}
+	if got := c.advert.OnLinkPrefixes; len(got) != 1 || got[0] != "2001:db8:1::/64" {
+		t.Fatalf("the known on-link set is %v after frames that only omitted it, want [2001:db8:1::/64]", got)
+	}
+
+	ra.Prefixes = []wire.PrefixInfo{onLinkPIO(t, "2001:db8:2::", 1800)}
+	ev, ok := c.takeAdvertChange(time.Now())
+	if !ok {
+		t.Fatal("a second prefix was not reported")
+	}
+	if got := ev.Data.OnLinkPrefixes; len(got) != 2 || got[0] != "2001:db8:1::/64" || got[1] != "2001:db8:2::/64" {
+		t.Errorf("OnLinkPrefixes = %v, want both, first heard first", got)
+	}
+}
+
+func TestTakeAdvertChange_AZeroValidLifetimeWithdrawsThePrefix(t *testing.T) {
+	c, ra := advertWatch(t)
+	ra.Prefixes = []wire.PrefixInfo{onLinkPIO(t, "2001:db8:1::", 1800), onLinkPIO(t, "2001:db8:2::", 1800)}
+	c.takeAdvertChange(time.Now())
+
+	ra.Prefixes = []wire.PrefixInfo{onLinkPIO(t, "2001:db8:1::", 0)}
+	ev, ok := c.takeAdvertChange(time.Now())
+	if !ok {
+		t.Fatal("a Valid Lifetime 0 for a known prefix was not reported (RFC 4861 section 6.3.4)")
+	}
+	if got := ev.Data.WithdrawnOnLinkPrefixes; len(got) != 1 || got[0] != "2001:db8:1::/64" {
+		t.Errorf("WithdrawnOnLinkPrefixes = %v, want [2001:db8:1::/64]", got)
+	}
+	if got := ev.Data.OnLinkPrefixes; len(got) != 1 || got[0] != "2001:db8:2::/64" {
+		t.Errorf("OnLinkPrefixes = %v, want only the prefix nothing withdrew", got)
+	}
+	if _, ok := c.takeAdvertChange(time.Now()); ok {
+		t.Fatal("the same withdrawal frame, read again, was reported twice")
+	}
+}
+
+func TestTranslate_ABoundEventCarriesThePrefixesTheBaselineRead(t *testing.T) {
+	c, ra := advertWatch(t)
+	ra.Prefixes = []wire.PrefixInfo{onLinkPIO(t, "2001:db8:1::", 1800)}
+	src := make(chan lease.Event, 1)
+	c.src, c.events = src, newEventChan()
+
+	// The event's own router reading predates the frame the baseline then reads.
+	src <- lease.Event{Kind: lease.Acquired, Lease: lease.Lease{Addr: pfx(t, "2001:db8::5/128")}}
+	close(src)
+	c.translate()
+
+	ev := <-c.events
+	if ev.Type != "bound" {
+		t.Fatalf("event %q, want bound", ev.Type)
+	}
+	if got := ev.Data.OnLinkPrefixes; len(got) != 1 || got[0] != "2001:db8:1::/64" {
+		t.Errorf("OnLinkPrefixes = %v, want the baseline's [2001:db8:1::/64]: the watch now counts it as "+
+			"known and reports it no more", got)
+	}
+}
+
+// boundAcross is the bound event whose own router reading is event while the baseline then reads baseline (#1088).
+func boundAcross(t *testing.T, event, baseline []wire.PrefixInfo) (*DHCPClient, *proto.RouterObservation, Event) {
+	t.Helper()
+	c, ra := advertWatch(t)
+	ra.Prefixes = baseline
+	src := make(chan lease.Event, 1)
+	c.src, c.events = src, newEventChan()
+	src <- lease.Event{Kind: lease.Acquired, Lease: lease.Lease{Addr: pfx(t, "2001:db8::5/128")},
+		Router: proto.RouterObservation{Seen: true, Prefixes: event}}
+	close(src)
+	c.translate()
+	return c, ra, <-c.events
+}
+
+func TestTranslate_ABoundEventHonoursAWithdrawalTheBaselineRead(t *testing.T) {
+	const p = "2001:db8:1::/64"
+	c, _, ev := boundAcross(t,
+		[]wire.PrefixInfo{onLinkPIO(t, "2001:db8:1::", 1800)},
+		[]wire.PrefixInfo{onLinkPIO(t, "2001:db8:1::", 0)})
+	if ev.Type != "bound" {
+		t.Fatalf("event %q, want bound", ev.Type)
+	}
+	if containsString(ev.Data.OnLinkPrefixes, p) || !containsString(ev.Data.WithdrawnOnLinkPrefixes, p) {
+		t.Errorf("bound OnLinkPrefixes = %v, Withdrawn = %v; the newer frame withdrew %s (RFC 4861 section 6.3.4)",
+			ev.Data.OnLinkPrefixes, ev.Data.WithdrawnOnLinkPrefixes, p)
+	}
+	if containsString(c.advert.OnLinkPrefixes, p) {
+		t.Errorf("the watch still counts the withdrawn %s as known: %v", p, c.advert.OnLinkPrefixes)
+	}
+}
+
+func TestTranslate_ABoundEventKeepsAPrefixTheBaselineStillAdvertises(t *testing.T) {
+	const p = "2001:db8:1::/64"
+	c, ra, ev := boundAcross(t,
+		[]wire.PrefixInfo{onLinkPIO(t, "2001:db8:1::", 0)},
+		[]wire.PrefixInfo{onLinkPIO(t, "2001:db8:1::", 1800)})
+	if !containsString(ev.Data.OnLinkPrefixes, p) || containsString(ev.Data.WithdrawnOnLinkPrefixes, p) {
+		t.Errorf("bound OnLinkPrefixes = %v, Withdrawn = %v; the newer frame advertises %s",
+			ev.Data.OnLinkPrefixes, ev.Data.WithdrawnOnLinkPrefixes, p)
+	}
+	ra.Prefixes = []wire.PrefixInfo{onLinkPIO(t, "2001:db8:1::", 0)}
+	w, ok := c.takeAdvertChange(time.Now())
+	if !ok || !containsString(w.Data.WithdrawnOnLinkPrefixes, p) {
+		t.Errorf("a later withdrawal of %s was not reported (%v, %+v)", p, ok, w.Data)
+	}
+}
+
+func TestTranslate_ABoundEventPrefixTheBaselineOmitsIsKnownToTheWatch(t *testing.T) {
+	const p = "2001:db8:1::/64"
+	c, ra, ev := boundAcross(t, []wire.PrefixInfo{onLinkPIO(t, "2001:db8:1::", 1800)}, nil)
+	if !containsString(ev.Data.OnLinkPrefixes, p) {
+		t.Fatalf("bound OnLinkPrefixes = %v, want %s from the event's own frame", ev.Data.OnLinkPrefixes, p)
+	}
+	ra.Prefixes = []wire.PrefixInfo{onLinkPIO(t, "2001:db8:1::", 0)}
+	w, ok := c.takeAdvertChange(time.Now())
+	if !ok || !containsString(w.Data.WithdrawnOnLinkPrefixes, p) {
+		t.Errorf("the withdrawal of %s, installed from the bound event, was not reported (%v, %+v)", p, ok, w.Data)
+	}
+}
+
+func TestWithdrawnOnLinkPrefixes_AZeroLifetimeWithoutTheLFlagWithdrawsNothing(t *testing.T) {
+	r := proto.RouterObservation{Seen: true, Prefixes: []wire.PrefixInfo{
+		{Prefix: addr(t, "2001:db8:1::"), PrefixLen: 64, Autonomous: true, ValidLifetime: 0},
+	}}
+	if got := withdrawnOnLinkPrefixes(r); len(got) != 0 {
+		t.Errorf("withdrawn = %v; an option without the L flag says nothing about on-link (RFC 4861 section 4.6.2)",
+			got)
+	}
+
+	c, ra := advertWatch(t)
+	ra.Prefixes = []wire.PrefixInfo{onLinkPIO(t, "2001:db8:1::", 1800)}
+	c.takeAdvertChange(time.Now())
+	ra.Prefixes = r.Prefixes
+	if ev, ok := c.takeAdvertChange(time.Now()); ok {
+		t.Errorf("an L-clear zero-lifetime option was reported as a change: %+v", ev.Data)
+	}
+	if !containsString(c.advert.OnLinkPrefixes, "2001:db8:1::/64") {
+		t.Errorf("the on-link set lost the prefix: %v", c.advert.OnLinkPrefixes)
 	}
 }

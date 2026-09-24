@@ -323,6 +323,75 @@ jobs:
 YAML
 check "a cycle in needs: terminates" 1 "$TMP/cycle" "job a"
 
+# --- a mention is not an invocation (#883) -----------------------------
+# Each decoy below passed the gate while it matched the script names as
+# text. Its deleted-line twin is the control: without the decoy line
+# the same workflow is a finding, so the decoy alone was the pass.
+mkdir -p "$TMP/res-echo" "$TMP/res-echo-del" "$TMP/res-name" "$TMP/res-name-del" \
+         "$TMP/guard-echo" "$TMP/guard-echo-del" "$TMP/guard-name" "$TMP/res-direct"
+sed 's|\$(bash scripts/resolve-dispatch-ref.sh|$(echo bash scripts/resolve-dispatch-ref.sh|' \
+    "$TMP/resolver/w.yml" > "$TMP/res-echo/w.yml"
+check "an echoed resolver does not constrain" 1 "$TMP/res-echo" "through step 'ref'"
+grep -v 'resolve-dispatch-ref.sh "' "$TMP/res-echo/w.yml" > "$TMP/res-echo-del/w.yml"
+check "control: the echoed resolver's step without that line" 1 "$TMP/res-echo-del" \
+      "through step 'ref'"
+
+cat > "$TMP/res-name/w.yml" <<'YAML'
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        required: true
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - id: r
+        name: resolve-dispatch-ref.sh would go here
+        run: echo "ref=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ steps.r.outputs.ref }}
+YAML
+check "a step named after the resolver does not constrain" 1 "$TMP/res-name" "through step 'r'"
+grep -v 'name: resolve-dispatch-ref.sh' "$TMP/res-name/w.yml" > "$TMP/res-name-del/w.yml"
+check "control: the same step without its name" 1 "$TMP/res-name-del" "through step 'r'"
+
+cat > "$TMP/guard-echo/w.yml" <<'YAML'
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        required: true
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: gate
+        run: echo "check-dispatch-ref.sh runs elsewhere"
+  deploy:
+    needs: gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.tag }}
+YAML
+check "a job that echoes the guard is not a guard" 1 "$TMP/guard-echo" "job deploy"
+sed 's|run: echo "check-dispatch-ref.sh runs elsewhere"|run: "true"|' \
+    "$TMP/guard-echo/w.yml" > "$TMP/guard-echo-del/w.yml"
+check "control: the same job with the mention gone" 1 "$TMP/guard-echo-del" "job deploy"
+sed 's|- name: gate|- name: bash scripts/check-dispatch-ref.sh|; s|run: echo "check-dispatch-ref.sh runs elsewhere"|run: "true"|' \
+    "$TMP/guard-echo/w.yml" > "$TMP/guard-name/w.yml"
+check "a step named after the guard is not a guard" 1 "$TMP/guard-name" "job deploy"
+
+# The accepted spellings still count: run directly, and from the
+# sparse-checkout path pages.yml and release.yml use.
+sed 's|\$(bash scripts/resolve-dispatch-ref.sh|$(./.resolver/scripts/resolve-dispatch-ref.sh|' \
+    "$TMP/resolver/w.yml" > "$TMP/res-direct/w.yml"
+check "a resolver run directly from another path constrains" 0 "$TMP/res-direct" \
+      "are constrained by"
+
 # --- comments never carry behaviour ------------------------------------
 # These workflows explain this rule in prose that names both scripts and
 # quotes the unsafe shape.

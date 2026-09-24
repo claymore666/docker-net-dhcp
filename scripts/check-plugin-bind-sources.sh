@@ -17,7 +17,7 @@
 # So: the manifest is the source of truth, and this gate holds every copy
 # to it. A step may satisfy a source either by naming it literally
 # (`mkdir -p /var/lib/net-dhcp`) or by deriving the whole set from the
-# manifest with jq. Sockets under /var/run are excluded deliberately —
+# manifest with jq fed to `xargs mkdir`. Sockets under /var/run are excluded deliberately:
 # mkdir -p over a socket replaces it with a directory.
 set -euo pipefail
 
@@ -27,6 +27,57 @@ MAKEFILE=${MAKEFILE:-Makefile}
 WORKFLOW_DIR=${WORKFLOW_DIR:-.github/workflows}
 
 command -v jq >/dev/null || { echo "this check needs jq"; exit 2; }
+# shellcheck source=scripts/workflow-shell-lines.sh
+. scripts/workflow-shell-lines.sh
+
+# The commands a step runs, one per line, `sudo` and its flags dropped:
+# the gate reads what executes, not what a line names (#883).
+step_commands() {
+    local c w i
+    while IFS= read -r c; do
+        read -r -a w <<< "$c"
+        i=0
+        if [ "${w[0]:-}" = sudo ]; then
+            i=1
+            while [[ "${w[i]:-}" == -* ]]; do i=$((i + 1)); done
+        fi
+        if [ "$i" -lt "${#w[@]}" ]; then printf '%s\n' "${w[*]:i}"; fi
+    done < <(workflow_shell_lines --raw - | shell_simple_commands)
+}
+
+# What one simple command does with `docker plugin create`: "install
+# <dir>" when it runs it (bare or behind timeout/env/nice/command/exec),
+# "none" when echo, printf, : or true only name it, "unread" otherwise.
+# An unread wrapper is a failure, never a skip: a skipped install is the
+# #832 shape, a green count over a smaller corpus (#883).
+create_of() {
+    local -a w
+    read -r -a w <<< "$1"
+    local k=0 n=${#w[@]}
+    while [ "$k" -lt "$n" ] && [ "${w[*]:k:3}" != "docker plugin create" ]; do
+        k=$((k + 1))
+    done
+    [ "$k" -lt "$n" ] || { echo absent; return; }
+    local i=0
+    while [ "$i" -lt "$k" ]; do
+        case "${w[i]}" in
+            echo|printf|:|true) echo none; return ;;
+            timeout) i=$((i + 1))
+                while [[ "${w[i]:-}" == -* ]]; do i=$((i + 1)); done
+                i=$((i + 1)) ;;
+            env) i=$((i + 1))
+                while [[ "${w[i]:-}" == -* || "${w[i]:-}" == *=* ]]; do i=$((i + 1)); done ;;
+            nice|command|exec) i=$((i + 1))
+                while [[ "${w[i]:-}" == -* ]]; do i=$((i + 1)); done ;;
+            *) echo unread; return ;;
+        esac
+    done
+    if [ "$i" -eq "$k" ] && [ $((n - k)) -ge 5 ]; then
+        echo "install ${w[n-1]}"
+    else
+        echo unread
+    fi
+}
 
 # Map plugin build dir -> manifest, from the Makefile itself, so a renamed
 # manifest cannot leave this gate checking a file nobody installs.
@@ -72,11 +123,27 @@ for wf in "${WF_FILES[@]}"; do
             *"- name:"*) step_start=$lineno ;;
         esac
         [[ "$line" == *"docker plugin create"* ]] || continue
-        # Prose about the command is not the command. Skip comment lines,
-        # or every paragraph explaining #440 becomes a phantom install.
-        [[ "$(printf '%s' "$line" | sed 's/^[[:space:]]*//')" == "#"* ]] && continue
-        # `docker plugin create <ref> <dir>` — the build dir is the last field.
-        dir=$(printf '%s\n' "$line" | sed -e 's/[[:space:]]*$//' -e 's/.*[[:space:]]//')
+        # Prose, an echo or a comment naming the command is not an
+        # install, or every paragraph explaining #440 becomes one.
+        cmds=$(sed -n "${step_start},${lineno}p" "$wf" | step_commands)
+        # The commands this line adds to the step, and the build dir from
+        # the create's own words (`docker plugin create <ref> <dir>`).
+        before=0
+        if [ "$lineno" -gt "$step_start" ]; then
+            before=$(sed -n "${step_start},$((lineno - 1))p" "$wf" | step_commands | grep -c . || true)
+        fi
+        dir=""
+        while IFS= read -r c; do
+            verdict=$(create_of "$c")
+            case "$verdict" in
+                install\ *) dir=${verdict#install } ;;
+                unread)
+                    echo "FAIL: $wf:$lineno runs '$c', which this gate cannot"
+                    echo "      read as a plugin install or as a mention."
+                    rc=1 ;;
+            esac
+        done < <(printf '%s\n' "$cmds" | tail -n "+$((before + 1))")
+        [ -n "$dir" ] || continue
         manifest=${MANIFEST[$dir]:-}
         if [ -z "$manifest" ]; then
             echo "FAIL: $wf:$lineno installs plugin dir '$dir', which $MAKEFILE"
@@ -87,38 +154,38 @@ for wf in "${WF_FILES[@]}"; do
         fi
         [ -f "$manifest" ] || { echo "FAIL: $wf:$lineno -> missing $manifest"; rc=1; continue; }
 
-        window=$(sed -n "${step_start},${lineno}p" "$wf")
-        # A jq expression reading this step's manifest covers the whole set
-        # at once, and keeps covering it when a source is added. The jq and
-        # the path routinely sit on different lines of the same recipe, so
-        # look for both anywhere in the step, not on one line.
-        # No `grep -q` as a pipeline consumer here: it exits early, SIGPIPEs
-        # the producer, and pipefail then reports failure on success.
-        if printf '%s\n' "$window" | grep -F 'jq' >/dev/null \
-           && printf '%s\n' "$window" | grep -E -e "$manifest" -e "$dir/config\\.json" >/dev/null; then
+        # A `jq` reading this step's manifest, fed to `xargs mkdir`, covers
+        # the whole set and keeps covering it when a source is added. Both
+        # must run: a jq named in an echo or a comment creates nothing.
+        reads=0; feeds=0; made=""
+        while read -r -a w; do
+            case "${w[0]:-}" in
+                jq)
+                    for a in "${w[@]:1}"; do
+                        if [ "$a" = "$manifest" ] || [ "$a" = "$dir/config.json" ]; then
+                            reads=1
+                        fi
+                    done ;;
+                xargs)
+                    for a in "${w[@]:1}"; do
+                        [[ "$a" == -* ]] && continue
+                        if [ "$a" = mkdir ]; then feeds=1; fi
+                        break
+                    done ;;
+                mkdir) made+=$(printf '%s\n' "${w[@]:1}")$'\n' ;;
+            esac
+        done <<< "$cmds"
+        if [ "$reads" -eq 1 ] && [ "$feeds" -eq 1 ]; then
             checked=$((checked + 1))
             continue
         fi
         missing=()
         while IFS= read -r src; do
             [ -n "$src" ] || continue
-            # LITERAL comparison, not a regex. The path used to be
-            # interpolated into an ERE, where '.' is a metacharacter — so
-            # /var/lib/net-dhcp.d matched /var/lib/net-dhcpXd, and any
-            # dotted bind source could be reported as created by a line
-            # that creates something else. A false pass here is expensive
-            # and silent: the missing source SIGSEGVs dockerd while the
-            # runner still reports online.
-            #
-            # Cut each mkdir invocation down to its own argument list
-            # (everything after `mkdir`, up to the next command
-            # separator) and compare whole tokens with grep -Fx. Flags
-            # like -p simply never equal a path.
-            printf '%s\n' "$window" \
-                | sed -n 's/.*mkdir//p' \
-                | sed 's/[;&|].*//' \
-                | tr ' \t' '\n\n' \
-                | grep -Fx -- "$src" >/dev/null \
+            # LITERAL comparison of whole mkdir arguments, not a regex: as
+            # an ERE /var/lib/net-dhcp.d matched /var/lib/net-dhcpXd (#710).
+            # A missing source SIGSEGVs dockerd while the runner reports online.
+            printf '%s\n' "$made" | grep -Fx -- "$src" >/dev/null \
                 || missing+=("$src")
         done < <(jq -r '.mounts[]? | select(.type=="bind") | .source | select(startswith("/var/lib/"))' "$manifest")
 

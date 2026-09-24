@@ -16,19 +16,7 @@ import (
 	docker "github.com/docker/docker/client"
 )
 
-// errorCases drive TestErrors_NetworkCreateValidation. Each case
-// exercises a validation branch in pkg/plugin/network.go (via the
-// libnetwork remote-driver protocol) — the plugin should refuse the
-// network up-front, before any DHCP traffic is ever attempted.
-//
-// `opts` is the COMPLETE driver-options map; no auto-injection. That
-// keeps each row honest about exactly which combination it's hitting,
-// at the cost of re-typing parent= for the macvlan rows.
-//
-// `wantSubstr` is matched case-insensitively as a substring of the
-// dockerd-wrapped error string. Loose-matching keeps these tests
-// stable across libnetwork wording changes; tightening to exact
-// equality would buy nothing.
+// errorCases is TestErrors_NetworkCreateValidation's table; opts is the complete driver-options map and wantSubstr a case-insensitive substring.
 var errorCases = []struct {
 	name       string
 	opts       map[string]string
@@ -46,11 +34,7 @@ var errorCases = []struct {
 		wantSubstr: "parent required",
 	},
 	{
-		// Sets `bridge=foo` on a macvlan network. The plugin's
-		// validator checks `Parent != ""` first then refuses any
-		// foreign option for the chosen mode, so this exercises the
-		// ErrModeMismatch branch (bridge cannot be set in
-		// mode=macvlan).
+		// The mode check refuses a foreign option for the mode: ErrModeMismatch.
 		name: "MacvlanWithBridge",
 		opts: map[string]string{
 			"mode":   "macvlan",
@@ -69,9 +53,7 @@ var errorCases = []struct {
 		wantSubstr: "null IPAM driver",
 	},
 	{
-		// dhcp_servers / dhcp_deny_servers are validated before any
-		// mode-specific check, so these rows use the cheapest valid
-		// mode rather than saying anything about macvlan.
+		// dhcp_servers and dhcp_deny_servers are validated before any mode-specific check.
 		name: "DHCPServersNotAnIP",
 		opts: map[string]string{
 			"mode":         "macvlan",
@@ -81,10 +63,7 @@ var errorCases = []struct {
 		wantSubstr: "is not an IP address",
 	},
 	{
-		// A v6 entry is refused rather than ignored: dhcpcd's
-		// whitelist/blacklist are DHCPv4-only, so accepting it would
-		// leave the operator believing a server was ranked when
-		// nothing had been (#111).
+		// A v6 entry is refused, not ignored: dhcpcd's whitelist and blacklist are DHCPv4-only (#111).
 		name: "DHCPServersIPv6",
 		opts: map[string]string{
 			"mode":         "macvlan",
@@ -103,10 +82,7 @@ var errorCases = []struct {
 		wantSubstr: "is not an IP address",
 	},
 	{
-		// Denying every preference leaves no server at all. Accepting
-		// it would degrade the network into "any server will do",
-		// which is the opposite of what both options were set to
-		// achieve (#669).
+		// Denying every preferred server would turn the network into "any server will do" (#669).
 		name: "DenyEmptiesPreference",
 		opts: map[string]string{
 			"mode":              "macvlan",
@@ -116,23 +92,9 @@ var errorCases = []struct {
 		},
 		wantSubstr: "leaving no server to lease from",
 	},
-	// The two IPv6 refusal rows that used to close this table are gone
-	// with the refusal (#911): `-o ipv6=true` is honoured now, and an
-	// acceptance has no place in a table of expected failures. The
-	// second of them was there for the key SPELLING, and that property
-	// outlives the refusal in the quieter direction -- an option that
-	// decodes into nothing leaves a network where IPv6 does nothing and
-	// says so nowhere. It moved to
-	// TestDecodeOpts_IPv6UnderEverySpelling, which is the layer the
-	// bool lives at; TestIPv6_AcceptedAtCreate is the live half.
 }
 
-// TestErrors_NetworkCreateValidation walks the validation matrix.
-// These cases never reach DHCP, so the only setup required is that
-// the plugin is enabled (TestMain enforces) and the host-side veth
-// exists for the macvlan cases (the fixture also creates it). On
-// expected-failure rows no network is persisted; on regression we
-// clean up so the next test run starts fresh.
+// TestErrors_NetworkCreateValidation checks that each row is refused at network create, before any DHCP traffic.
 func TestErrors_NetworkCreateValidation(t *testing.T) {
 	for _, tc := range errorCases {
 		t.Run(tc.name, func(t *testing.T) {

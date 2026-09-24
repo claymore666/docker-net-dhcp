@@ -1,16 +1,7 @@
 // Copyright the docker-net-dhcp contributors.
 // SPDX-License-Identifier: GPL-3.0-only
 
-// This file deliberately carries NO `//go:build integration` tag,
-// unlike the rest of the package. The floor decides whether a whole
-// integration run passes, so its logic has to be testable without a
-// live plugin — a floor that has never been observed rejecting
-// anything is not known to work. Keeping the decision pure and
-// untagged puts healthfloor_test.go in the ordinary `go test ./...`
-// unit job. Everything that needs a socket stays in health.go.
-//
-// HealthResponse lives here rather than in health.go for the same
-// reason: the floor takes one, so it has to compile untagged.
+// Untagged so healthfloor_test.go drives the floor in the unit job; HealthResponse lives here for that reason (#377).
 
 package harness
 
@@ -22,10 +13,7 @@ import (
 	"sync"
 )
 
-// HealthCheck mirrors pkg/plugin.HealthCheck: one element of the
-// health document's `checks` object. camelCase field names are the
-// draft's, not this repo's, and a cell that renamed them would be
-// reading a different document.
+// HealthCheck mirrors pkg/plugin.HealthCheck, with the health-check draft's camelCase names (#910).
 type HealthCheck struct {
 	Status        string `json:"status"`
 	ObservedValue int64  `json:"observedValue"`
@@ -34,8 +22,7 @@ type HealthCheck struct {
 	Output        string `json:"output,omitempty"`
 }
 
-// EndpointHealth mirrors pkg/plugin.EndpointHealth: one entry of the
-// health document's `endpoints` array.
+// EndpointHealth mirrors pkg/plugin.EndpointHealth.
 type EndpointHealth struct {
 	Endpoint      string `json:"endpoint"`
 	Network       string `json:"network"`
@@ -52,30 +39,12 @@ type EndpointHealth struct {
 	ACDPhase      string `json:"acd_phase"`
 }
 
-// HealthFieldSeries names the exposition series for the health fields
-// whose series is not net_dhcp_<tag> or net_dhcp_<tag>_total.
+// HealthFieldSeries names the series for health fields not exposed as net_dhcp_<tag> or net_dhcp_<tag>_total.
 var HealthFieldSeries = map[string]string{
 	"status": "health_status",
 }
 
-// HealthFieldsAsLabels are the fields carried as LABELS on an identity
-// series instead of as series of their own, mapped to the series that
-// carries each one, and HealthFieldsNotExposed the ones deliberately
-// absent from /metrics, with the reason.
-//
-// MIRRORS pkg/plugin's metricLabelOnlyFields and metricNotExposedFields
-// for the reason HealthResponse mirrors HealthResponse: this suite asks
-// what the INSTALLED plugin serves, and an oracle imported from the
-// plugin would answer out of the plugin's own declaration. Drift is
-// loud in both directions -- TestMetrics_SocketServesTheFullSurface
-// reports a field it can find no series for, and reports a label it was
-// told to expect and did not find on the line.
-//
-// IT IS A MAP AND NOT A LIST OF BUILD_INFO FIELDS, because #670 added a
-// second identity series and the list shape could only express the
-// first one. A field named here is checked against the line of the
-// series named here, so a field moving between identity series is a
-// failure and not a silent pass.
+// HealthFieldsAsLabels maps label-only fields to their identity series, mirroring pkg/plugin without importing it (#670).
 var HealthFieldsAsLabels = map[string]string{
 	"instance_id":    "build_info",
 	"version":        "build_info",
@@ -90,340 +59,149 @@ var HealthFieldsNotExposed = map[string]string{
 	"endpoints": "a series per container is a cardinality decision O-5 takes, not this one",
 }
 
-// HealthResponse mirrors pkg/plugin.HealthResponse. Duplicated here
-// so the integration package doesn't pull on pkg/plugin internals.
+// HealthResponse mirrors pkg/plugin.HealthResponse without importing it.
 type HealthResponse struct {
 	Healthy bool `json:"healthy"`
-	// Status is draft-inadarei-api-health-check-06's pass/warn/fail
-	// (2.0-alpha.1). A pointer: an older plugin publishes none, and
-	// reading its absence as "pass" is the failure this field exists
-	// to make visible. Healthy stays the latched flag it always was;
-	// Status is never allowed to disagree with it, which is what
-	// TestHealth_StatusAgreesWithHealthy drives per counter.
+	// Status is draft-inadarei-api-health-check-06's pass/warn/fail, nil on a plugin that publishes none (#910).
 	Status *string `json:"status"`
-	// Checks is the same document's named checks, one array per
-	// counter that backs one. Nil on a plugin that publishes none.
+	// Checks is the document's named checks, nil on a plugin that publishes none.
 	Checks map[string][]HealthCheck `json:"checks"`
-	// Endpoints is one entry per registered manager (O-3), bounded by
-	// ActiveEndpoints.
+	// Endpoints is one entry per registered manager.
 	Endpoints []EndpointHealth `json:"endpoints"`
-	// Version / Commit / Library identify the binary that served this
-	// response (O-4). Pointers, because "" and "not published" are the
-	// two answers a cell has to tell apart -- an empty label is the
-	// failure that looks like nothing.
+	// Version, Commit and Library identify the serving binary; nil means not published.
 	Version *string `json:"version"`
 	Commit  *string `json:"commit"`
 	Library *string `json:"library"`
-	// InstanceID identifies the plugin process that served this
-	// response. Two reads are comparable as a delta only when their
-	// InstanceID matches — see counterwindow.go and #405.
+	// InstanceID identifies the serving plugin process, so deltas compare only within one instance (#405).
 	InstanceID      string  `json:"instance_id"`
 	UptimeSeconds   float64 `json:"uptime_seconds"`
 	ActiveEndpoints int     `json:"active_endpoints"`
 	PendingHints    int     `json:"pending_hints"`
 	RecoveredOK     int32   `json:"recovered_ok"`
-	// DisplacedStops counts managers a Join stopped because it found
-	// one already registered for the endpoint (#338). It is the
-	// plugin's own opinion that it ASKED a client to stop; what proves
-	// the client went is the AF_PACKET socket table in the container's
-	// namespace. See PacketSocket.
+	// DisplacedStops counts managers a Join stopped because one was already registered (#338).
 	DisplacedStops int32 `json:"displaced_stops"`
 	RecoveryFailed int32 `json:"recovery_failed"`
-	// RecoveryFailed has four benign twins, at the four points recovery
-	// can stop early for a reason that is not a plugin fault. None is
-	// healthy-affecting.
-	//
-	// RecoveryDeferred is the entry gate: the daemon was not serving yet
-	// when recovery ran, so it was retried after the socket came up.
-	// Expected on any daemon restart (#383).
+	// RecoveryDeferred counts recoveries retried because the daemon was not serving yet (#383).
 	RecoveryDeferred int32 `json:"recovery_deferred"`
-	// RecoveryAbortedContainerGone is the per-endpoint case: the
-	// container had already exited by the time recovery reached it
-	// (#376).
+	// RecoveryAbortedContainerGone counts endpoints whose container exited before recovery reached them (#376).
 	RecoveryAbortedContainerGone int32 `json:"recovery_aborted_container_gone"`
-	// RecoveryNetworkGone is the per-network case: the network was
-	// removed between the listing that found it and the read of its
-	// detail, so the whole network is skipped (#648). The list recovery
-	// walks is a snapshot, and a suite that creates and removes networks
-	// continuously hits this. Until #648 it landed in RecoveryFailed and
-	// failed a run in which every test passed.
+	// RecoveryNetworkGone counts networks removed between recovery's listing and its detail read (#648).
 	RecoveryNetworkGone int32 `json:"recovery_network_gone"`
-	// RecoveryFingerprintsSkipped is the endpoint-level sibling: recovery
-	// adopted the endpoint but could not learn its hostname, so it
-	// recorded no fingerprint and DeleteEndpoint will lay no tombstone
-	// for it (#721). Not fatal — the endpoint has a renewal client, it
-	// has lost only address stability across its next restart — but a
-	// suite where this climbs is one whose restart-stability assertions
-	// are being decided by something other than the code under test.
+	// RecoveryFingerprintsSkipped counts adopted endpoints with no hostname, so no tombstone is laid (#721).
 	RecoveryFingerprintsSkipped int32 `json:"recovery_fingerprints_skipped"`
-	// RecoveryAlreadyManaged is the per-endpoint case on the other side:
-	// a Join reached the endpoint first, so recovery yielded and left
-	// that client in place (#480). Expected whenever a deferred recovery
-	// overlaps containers coming back.
+	// RecoveryAlreadyManaged counts endpoints a Join reached before recovery did (#480).
 	RecoveryAlreadyManaged int32 `json:"recovery_already_managed"`
 	JoinStartFailures      int32 `json:"join_start_failures"`
-	// JoinAbortedContainerGone is the benign twin of JoinStartFailures:
-	// the container exited before the persistent client was up. Not
-	// healthy-affecting (#373).
+	// JoinAbortedContainerGone counts containers that exited before the persistent client was up (#373).
 	JoinAbortedContainerGone int32 `json:"join_aborted_container_gone"`
-	// JoinAbortedNoContainer is the other benign twin: no container ever
-	// claimed the endpoint, so its address was released rather than left
-	// to expire (#566).
+	// JoinAbortedNoContainer counts endpoints no container claimed, whose address was released (#566).
 	JoinAbortedNoContainer int32 `json:"join_aborted_no_container"`
 	JoinAttachSlow         int32 `json:"join_attach_slow"`
-	// The three outcomes of a container's name arriving after its DHCP
-	// client is already leasing (#961). HostnamesAppliedLate is the
-	// domain the other two are read against: a suite where it stays at
-	// zero has not exercised the late path at all, and their zeros then
-	// say nothing. Which is the normal reading on THIS pool: the late
-	// path runs only where the attach entered through the sandbox key,
-	// and sandbox_netns_propagation reads 0 here, so the PID route
-	// carries every attach and puts the name in the client's opening
-	// parameters instead. v4 only; this plugin sends no name option for
-	// DHCPv6.
+	// HostnamesAppliedLate counts names applied after the client was already leasing, v4 only (#961).
 	HostnamesAppliedLate   int32 `json:"hostnames_applied_late"`
 	HostnameLookupFailures int32 `json:"hostname_lookup_failures"`
 	HostnameApplyFailures  int32 `json:"hostname_apply_failures"`
-	// The three outcomes of naming a host-side link after its container
-	// (#978). HostIfnamesApplied is the domain the other two are read
-	// against: a suite where it stays at zero has created no network
-	// that asked for named links, and their zeros then say nothing.
-	// Bridge mode only.
+	// HostIfnamesApplied counts host-side links named after their container, bridge mode only (#978).
 	HostIfnamesApplied  int32 `json:"host_ifnames_applied"`
 	HostIfnameConflicts int32 `json:"host_ifname_conflicts"`
 	HostIfnameFailures  int32 `json:"host_ifname_failures"`
-	// The body of the distribution join_attach_slow is the tail of
-	// (#403). Plain int32: these ship with this change, so a zero from
-	// an older plugin and a zero from a quiet lane are the same
-	// reading here, and JoinAttachCompleted tells them apart.
+	// JoinAttachCompleted counts completed attaches, the domain join_attach_slow is read against (#403).
 	JoinAttachCompleted  int32 `json:"join_attach_completed"`
 	JoinAttachUnder1s    int32 `json:"join_attach_under_1s"`
 	JoinAttach1sToBudget int32 `json:"join_attach_1s_to_budget"`
 	JoinAttachMsMax      int32 `json:"join_attach_ms_max"`
 
-	// RestartLinkUpWaited / RestartLinkUpTimeouts mirror the #408
-	// window: a child link that came up only after the departing link
-	// released the address, and that wait outlasting its budget.
-	// Neither is healthy-affecting (#422).
+	// RestartLinkUpWaited counts child links that came up only after the departing link released the address (#408, #422).
 	RestartLinkUpWaited     int32 `json:"restart_link_up_waited"`
 	RestartLinkUpTimeouts   int32 `json:"restart_link_up_timeouts"`
 	JoinAbortedEndpointLeft int32 `json:"join_aborted_endpoint_left"`
 	TombstoneWriteFailures  int32 `json:"tombstone_write_failures"`
-	// TombstoneQuarantines is healthy-affecting (#724): the tombstone
-	// file was unparseable and was moved aside, taking every live
-	// tombstone on the host with it.
+	// TombstoneQuarantines counts unparseable tombstone files moved aside, which is healthy-affecting (#724).
 	TombstoneQuarantines int32 `json:"tombstone_quarantines"`
-	// TombstonesConsumed is RecoveredOK's counterpart: the address was
-	// preserved by replaying a tombstone rather than by recovery
-	// re-adopting a live endpoint. Together they let a restart test say
-	// WHICH path ran instead of only that the address survived (#386).
+	// TombstonesConsumed counts addresses preserved by replaying a tombstone (#386).
 	TombstonesConsumed int32 `json:"tombstones_consumed"`
-	// AddressConflicts is healthy-affecting (#524) and so appears in
-	// floorCounters below. The ACD rows under it are not, but are
-	// mirrored here so a run can say whether the check actually ran —
-	// a check that never ran reads exactly like a clean segment.
+	// AddressConflicts is healthy-affecting (#524).
 	AddressConflicts int32 `json:"address_conflicts"`
-	// AddressConflictsV4 and AddressConflictsV6 are its two halves, and
-	// they are two different protocols rather than two views of one.
-	// The v4 half is RFC 5227 ARP and is the ONLY half the ACD rows
-	// below cover; the v6 half is the kernel's Duplicate Address
-	// Detection (RFC 4862 section 5.4), declined under RFC 9915 section
-	// 18.2.8, which sends no ARP and moves no ACD counter. A suite that
-	// compares acd_conflicts_detected against the aggregate reports a
-	// seam defect for every DHCPv6 conflict.
+	// AddressConflictsV4 is the RFC 5227 half; the v6 half is DAD (RFC 4862 section 5.4), declined under RFC 9915
+	// section 18.2.8, and moves no ACD counter (#881).
 	AddressConflictsV4 int32 `json:"address_conflicts_v4"`
 	AddressConflictsV6 int32 `json:"address_conflicts_v6"`
-	// ACDProbesSent is what makes address_conflicts=0 mean anything:
-	// zero probes and a clean segment read identically otherwise. It is
-	// RFC 5227 section 2.1.1's ARP Probes, counted by the library.
+	// ACDProbesSent counts RFC 5227 section 2.1.1 ARP Probes.
 	ACDProbesSent int32 `json:"acd_probes_sent"`
-	// ACDAnnouncementsSent is section 2.3's, two per address that
-	// passed. Probes climbing with no announcements means addresses are
-	// being checked and none comes back clean.
+	// ACDAnnouncementsSent counts RFC 5227 section 2.3 announcements, two per address that passed.
 	ACDAnnouncementsSent int32 `json:"acd_announcements_sent"`
-	// ACDConflictsDetected is the library's own count of the same
-	// population as AddressConflicts, taken inside the state machine
-	// rather than from the events it emitted. The two are expected to
-	// agree; a difference is a defect in the plugin's event handling.
+	// ACDConflictsDetected is the library's own count of AddressConflicts' population (#882).
 	ACDConflictsDetected int32 `json:"acd_conflicts_detected"`
-	// ACDARPSendFailures counts probes and announcements the socket
-	// refused. A probe that never went out proves nothing about the
-	// address: this is the question that was not asked.
+	// ACDARPSendFailures counts probes and announcements the socket refused (#882).
 	ACDARPSendFailures int32 `json:"acd_arp_send_failures"`
-	// ACDResumedUnchecked counts endpoints resumed from a record whose
-	// RFC 5227 check had not finished when the plugin last stopped
-	// (D23's operator half). Not healthy-affecting -- it is a `warn`
-	// check, and the address is re-checked on the INIT-REBOOT
-	// acknowledgement.
+	// ACDResumedUnchecked counts endpoints resumed before their RFC 5227 check finished, a warn check (#910).
 	ACDResumedUnchecked int32 `json:"acd_resumed_unchecked"`
-	// SandboxNetnsVisible is how many sandbox netns entries the plugin
-	// can see, or -1 if it cannot read the directory (#567). Sampled per
-	// request, not accumulated. A pointer so an older plugin that does
-	// not publish it is distinguishable from one reporting -1 — absent
-	// data is not a value.
+	// SandboxNetnsVisible is the number of sandbox netns entries the plugin sees, or -1 if unreadable (#567).
 	SandboxNetnsVisible *int32 `json:"sandbox_netns_visible"`
-	// SandboxNetnsPropagation says whether a mount the daemon makes
-	// under the sandbox netns directory after the plugin started can
-	// reach the plugin: 1 linked, 0 private, -1 no covering mount.
-	// It is what tells a cell which host it is running on, so a cell
-	// can assert the route this host can actually take instead of the
-	// route the lane happened to have when it was written. A pointer
-	// for the same reason as its neighbours.
+	// SandboxNetnsPropagation is 1 linked, 0 private or -1 with no covering mount, for later sandbox netns mounts.
 	SandboxNetnsPropagation *int32 `json:"sandbox_netns_propagation"`
-	// SandboxNetnsInitMounts is the sandbox netns mount count in PID 1's
-	// mount table: -2 PID 1 shares the plugin's mount namespace, -1
-	// unreadable, N otherwise. Under a nested engine PID 1 is that
-	// engine's init, so this says which world the lane is.
+	// SandboxNetnsInitMounts is PID 1's sandbox netns mount count: -2 shared namespace, -1 unreadable.
 	SandboxNetnsInitMounts *int32 `json:"sandbox_netns_init_mounts"`
-	// SandboxKeyEntries / SandboxKeyEntryFailures / SandboxPIDFallbacks
-	// say which route the plugin took into each container's network
-	// namespace. Pointers, all three: a plugin that does not publish
-	// them is not a plugin reporting zero, and reading an absence as
-	// "no fallbacks" is exactly the claim these exist to support.
+	// SandboxKeyEntries counts attaches that entered the container's namespace through the sandbox key.
 	SandboxKeyEntries       *int32 `json:"sandbox_key_entries"`
 	SandboxKeyEntryFailures *int32 `json:"sandbox_key_entry_failures"`
 	SandboxPIDFallbacks     *int32 `json:"sandbox_pid_fallbacks"`
-	// The five arms SandboxKeyEntryFailures folds together. They are
-	// what lets a cell assert WHICH refusal happened rather than only
-	// that one did: an unpropagated bind mount (NotANamespace, the
-	// expected arm where the sandbox netns mount is private) and a daemon publishing keys
-	// under a non-default --exec-root (NotPermitted) produce identical
-	// aggregate counts and want opposite remedies. Pointers for the
-	// same reason as the three above.
-	// SandboxKeyAbsent is the fifth arm (2.0-alpha.1): no key was
-	// published for the endpoint at all, by either source.
+	// SandboxKeyAbsent counts endpoints with no published key from either source.
 	SandboxKeyAbsent        *int32 `json:"sandbox_key_absent"`
 	SandboxKeyNotPermitted  *int32 `json:"sandbox_key_not_permitted"`
 	SandboxKeyNotANamespace *int32 `json:"sandbox_key_not_a_namespace"`
 	SandboxKeyWrongNSType   *int32 `json:"sandbox_key_wrong_ns_type"`
 	SandboxKeyUnavailable   *int32 `json:"sandbox_key_unavailable"`
-	// DockerAPINonGETRefusals counts requests to the Docker API the
-	// plugin refused to send because their method was not safe (#691).
+	// DockerAPINonGETRefusals counts Docker API requests refused for an unsafe method (#691).
 	DockerAPINonGETRefusals *int32 `json:"docker_api_non_get_refusals"`
 	LeaseChanged            int32  `json:"lease_changed"`
 	LeasesObtained          int32  `json:"leases_obtained"`
-	// LeasesObtainedV4 is the half of LeasesObtained that RFC 5227's
-	// check can cover. LeasesObtained is the SUM of the two families
-	// (pkg/plugin/endpoints.go), and ARP is IPv4's; the ACD census
-	// judges against this one, not the sum (#881).
+	// LeasesObtainedV4 is the v4 half of LeasesObtained, the half RFC 5227 covers (#881).
 	LeasesObtainedV4 int32 `json:"leases_obtained_v4"`
 	LeasesRenewed    int32 `json:"leases_renewed"`
-	// RenewalsUnanswered counts renewal requests the server did not
-	// answer, one per request, WHILE THE CLIENT IS STILL RUNNING and
-	// the lease is still held (#940). It is not an early DHCPTimeouts:
-	// that one moves when a held lease runs out, hours later, and a
-	// single lost datagram moves this one and nothing else. The two
-	// halves are two protocols, as they are for every other family
-	// pair here, and the un-suffixed field is their sum.
+	// RenewalsUnanswered counts renewals the server did not answer while the lease was still held (#940).
 	RenewalsUnanswered   int32 `json:"renewals_unanswered"`
 	RenewalsUnansweredV4 int32 `json:"renewals_unanswered_v4"`
 	RenewalsUnansweredV6 int32 `json:"renewals_unanswered_v6"`
 	DHCPTimeouts         int32 `json:"dhcp_timeouts"`
-	// ClientStopFailures was lease_release_failures until #800. A
-	// renewal client that did not shut down cleanly when signalled — it
-	// says nothing about the lease, and whether the lease went back is
-	// release_lease's question, answered by the pair below (#962).
+	// ClientStopFailures counts renewal clients that did not stop cleanly, lease_release_failures before #800 (#962).
 	ClientStopFailures int32 `json:"client_stop_failures"`
-	// ReleasesSent / ReleaseFailures are the release_lease pair: a
-	// release that left the host, and an attempt that put nothing on
-	// the wire. Both stay at zero on a network that does not set the
-	// option, which is every network in this suite except the one
-	// TestReleaseLease drives. Read the per-family halves: a dual-stack
-	// endpoint can hand one address back and keep the other.
+	// ReleasesSent counts release_lease releases that left the host (#962).
 	ReleasesSent      int32 `json:"releases_sent"`
 	ReleasesSentV4    int32 `json:"releases_sent_v4"`
 	ReleasesSentV6    int32 `json:"releases_sent_v6"`
 	ReleaseFailures   int32 `json:"release_failures"`
 	ReleaseFailuresV4 int32 `json:"release_failures_v4"`
 	ReleaseFailuresV6 int32 `json:"release_failures_v6"`
-	// ReleasesReclaimed is the `on_remove` window's own counter (#984):
-	// a held address a RUNNING container is using again at the end of
-	// the window, so nothing went on the wire. Zero on `never` and
-	// `on_stop`, which have no window. A test that reads it as "no
-	// datagram left the host" reads it too widely: an address stopped
-	// twice and an acquisition in flight also send nothing and do not
-	// move it. Assert on the lease file for that question.
+	// ReleasesReclaimed counts on_remove addresses a running container reused within the window (#984).
 	ReleasesReclaimed   int32 `json:"releases_reclaimed"`
 	ReleasesReclaimedV4 int32 `json:"releases_reclaimed_v4"`
 	ReleasesReclaimedV6 int32 `json:"releases_reclaimed_v6"`
 	NAKsReceived        int32 `json:"naks_received"`
 	LedgerWriteFailures int32 `json:"ledger_write_failures"`
-	// StateFileChmodFailures counts files the startup sweep could not
-	// tighten under STATE_DIR, plus one for a STATE_DIR that could not
-	// be read at all (#804). Not healthy-affecting and
-	// deliberately not in the floor table: a loose mode on a state file
-	// degrades nothing the plugin does, and the writer is root either
-	// way.
+	// StateFileChmodFailures counts STATE_DIR files the startup sweep could not tighten (#804).
 	StateFileChmodFailures int32 `json:"state_file_chmod_failures"`
-	// IfnameUnsupported counts endpoints created with a custom
-	// interface name on an engine that does not apply one (#125, #670).
-	// Not healthy-affecting and not in the floor table: the container
-	// comes up on a working network and only the interface name
-	// differs from the request. The suite asserts it against the
-	// engine version `docker version` reports, never against the
-	// plugin's own idea of that version.
+	// IfnameUnsupported counts custom interface names on an engine that does not apply them (#125, #670).
 	IfnameUnsupported int32 `json:"ifname_unsupported"`
-	// EngineVersion and APIVersion are what the DAEMON told the plugin
-	// at startup: the engine's version string, and the API version the
-	// client library negotiated with it. Pointers for the reason
-	// Version/Commit/Library are: a plugin that publishes neither and
-	// one that publishes an empty string are different facts, and only
-	// the second is a defect.
+	// EngineVersion is the engine version the daemon reported at startup; nil means not published.
 	EngineVersion *string `json:"engine_version"`
 	APIVersion    *string `json:"api_version"`
-	// ParentLinkWaits / ParentLinkWaitTimeouts cover contention on a
-	// shared parent NIC, where a macvlan and an ipvlan child cannot
-	// coexist (#486/#549). Waits means an operation queued and got
-	// through; timeouts means it gave up and asked the kernel anyway,
-	// which is when a container start can still fail with EBUSY.
-	// Neither is healthy-affecting.
+	// ParentLinkWaits counts operations that queued on a shared parent NIC (#486, #549).
 	ParentLinkWaits        int32 `json:"parent_link_waits"`
 	ParentLinkWaitTimeouts int32 `json:"parent_link_wait_timeouts"`
-	// DHCPServerTierFallbacks / DHCPServerPolicyExhausted cover the
-	// dhcp_servers preference list (#111) and dhcp_deny_servers (#669).
-	// Fallbacks means a preferred server was silent and the next one in
-	// the list answered — the feature working, and the only signal that
-	// a ranked server has gone away. Exhausted means every server the
-	// network was allowed to use stayed silent, which is what separates
-	// "the servers you named are down" from "DHCP is broken". Neither
-	// is healthy-affecting: both describe the segment, not the plugin.
+	// DHCPServerTierFallbacks counts a preferred dhcp_servers entry silent and the next one answering (#111, #669).
 	DHCPServerTierFallbacks   int32 `json:"dhcp_server_tier_fallbacks"`
 	DHCPServerPolicyExhausted int32 `json:"dhcp_server_policy_exhausted"`
 
-	// DHCPv6ConfigOnly counts DHCPv6 replies that carried configuration
-	// and no address — the stateless case (#815). Not healthy-affecting
-	// and deliberately not in the floor table: on a stateless segment
-	// this rising is the feature working, and on every other segment it
-	// stays at zero on its own.
+	// DHCPv6ConfigOnly counts DHCPv6 replies with configuration and no address (#815).
 	DHCPv6ConfigOnly int32 `json:"dhcpv6_config_only"`
 
-	// DHCPv6NotOffered / DHCPv6NoRouterAdvert cover the two ways an
-	// IPv6 endpoint can come up without a DHCPv6 lease (#868): the
-	// router advertised no managed address, or no router advertised at
-	// all. Neither is healthy-affecting and neither belongs in the
-	// floor table — on a v4-only or managed-v6 segment both stay at
-	// zero on their own, and on a stateless segment the first one
-	// rising is the feature working. They are separate fields for the
-	// same reason they are separate counters: a test that asserted
-	// only their sum could not tell a stateless network from a
-	// segment with no router on it.
+	// DHCPv6NotOffered counts IPv6 endpoints whose router advertised no managed address (#868).
 	DHCPv6NotOffered       int32 `json:"dhcpv6_not_offered"`
 	DHCPv6NoRouterAdvert   int32 `json:"dhcpv6_no_router_advert"`
 	IPv6LinkEnableFailures int32 `json:"ipv6_link_enable_failures"`
 
-	// The v6 no-address endings and the SLAAC address counters, mirrored
-	// here for the same reason the two above are: a test that wants a
-	// delta over one of them wants it through CounterWindow, which is
-	// the only reader that checks the plugin did not restart underneath
-	// the pair (#405). Reading them off /metrics instead is equally
-	// valid and dhcpv6_refused_test.go does exactly that; what is not
-	// valid is subtracting two numbers by hand with nothing watching
-	// the instance they came from.
-	//
-	// None of them is healthy-affecting and none belongs in the floor
-	// table. Each is zero on every segment that is not the one it
-	// describes, so a floor entry would be a threshold on a number that
-	// is normally absent, which is the shape that cries wolf.
+	// DHCPv6NoServer and the SLAAC counters are read through CounterWindow, which checks the instance (#405).
 	DHCPv6NoServer           int32 `json:"dhcpv6_no_server"`
 	DHCPv6SLAACNoPrefix      int32 `json:"dhcpv6_slaac_no_prefix"`
 	DHCPv6SLAACNoAddress     int32 `json:"dhcpv6_slaac_no_address"`
@@ -433,44 +211,16 @@ type HealthResponse struct {
 	IPv6SLAACPrefixesIgnored int32 `json:"ipv6_slaac_prefixes_ignored"`
 	IPv6MainPrefixUnmatched  int32 `json:"ipv6_main_prefix_unmatched"`
 
-	// RouterAdvertGuardFailures counts steps of the DHCPv6 Router
-	// Advertisement guard that did not take (#911). DHCPv6 carries no
-	// next hop -- RFC 9915 section 21 defines no router option -- and
-	// RFC 5942 section 4 rule 1 forbids treating the assigned address's
-	// prefix as on-link, so the container's kernel has to be processing
-	// advertisements or the endpoint ends up with an address and no
-	// route.
+	// RouterAdvertGuardFailures counts RA guard steps that did not take (#911).
 	//
-	// NOT healthy-affecting and NOT in the floor table, for the reason
-	// the ipv6_link_enable_failures row above is not: a kernel built
-	// without one of the knobs, or a /proc/sys the plugin cannot write
-	// in, is the operator's environment rather than the plugin
-	// misbehaving -- and it is not a reason to refuse the container an
-	// address. It is here so a test that has PROVEN the knobs hold from
-	// inside the container can then read the guard's own account of
-	// itself; a zero on its own means "held" and "never ran" equally.
+	// DHCPv6 carries no next hop (RFC 9915 section 21) and RFC 5942 section 4 rule 1 forbids an on-link prefix, so the
+	// container kernel must accept RAs for a route.
 	RouterAdvertGuardFailures int32 `json:"router_advert_guard_failures"`
 
-	// IPv6RouterWithdrawn counts container IPv6 default routes removed
-	// because the advertising router set its Router Lifetime to 0 (RFC
-	// 4861 section 4.2, #821). NOT healthy-affecting and NOT in the
-	// floor table: a router withdrawing itself is deliberate, and the
-	// containers on that segment are correctly left with no default
-	// route rather than one pointing at a router that is gone. It is
-	// here so a test that has SEEN the route disappear from inside the
-	// container can then read the plugin's own account of why.
+	// IPv6RouterWithdrawn counts default routes removed for a Router Lifetime of 0 (RFC 4861 section 4.2, #821).
 	IPv6RouterWithdrawn int32 `json:"ipv6_router_withdrawn"`
 
-	// The library's own RFC 4861 router-discovery counters (#814).
-	// None is healthy-affecting and none is in the floor table: every
-	// one of them describes what the SEGMENT sent, not a plugin fault,
-	// and a run on an IPv4-only fixture moves none of them.
-	//
-	// RouterAdvertsSeen is the one a v6 test asserts on. It is the
-	// plugin's evidence that a link it attached a container to was
-	// advertising at all, and the counter #814 asks a v6 integration
-	// run to watch rise. Read it against RouterSolicitsSent: a zero
-	// beside a zero is a client that never asked.
+	// RouterSolicitsSent and RouterAdvertsSeen are the library's RFC 4861 router-discovery counters (#814).
 	RouterSolicitsSent         int32 `json:"router_solicits_sent"`
 	RouterAdvertsSeen          int32 `json:"router_adverts_seen"`
 	RouterAdvertsRefused       int32 `json:"router_adverts_refused"`
@@ -478,47 +228,18 @@ type HealthResponse struct {
 	RouterTableEntriesDropped  int32 `json:"router_table_entries_dropped"`
 	RouterTableEntriesEvicted  int32 `json:"router_table_entries_evicted"`
 
-	// The five IPAM-driver counters (#110). None is healthy-affecting
-	// and none is in the floor table: an IPAM-mode network is one of
-	// the product's two shapes, and every one of these describes what
-	// the DHCP server or the daemon did, not a plugin fault.
-	//
-	// IPAMReplayHits and IPAMReleaseUnknown are not checks at all --
-	// the first counts the daemon-start replay working, which is the
-	// normal path, and the second counts a ReleaseAddress for an
-	// address no record holds, which libnetwork sends legitimately
-	// after a create it rolled back. The other three are warn-level:
-	// a replay that missed leaves one endpoint to re-lease,
-	// an ambiguous re-bind is the documented N>=2 limit, and a
-	// duplicate-MAC refusal is a container that did not start because
-	// two endpoints on one network were pinned to one --mac-address.
+	// IPAMReplayHits and the other IPAM counters describe the server or the daemon, not a plugin fault (#110).
 	IPAMReplayHits          int32 `json:"ipam_replay_hits"`
 	IPAMReplayMiss          int32 `json:"ipam_replay_miss"`
 	IPAMRebindAmbiguous     int32 `json:"ipam_rebind_ambiguous"`
 	IPAMReserveDuplicateMAC int32 `json:"ipam_reserve_duplicate_mac"`
 	IPAMReleaseUnknown      int32 `json:"ipam_release_unknown"`
 
-	// published is the key set of the payload this value was decoded
-	// from. It exists because an absent JSON field decodes to zero,
-	// which is indistinguishable from a counter that is genuinely at
-	// zero — so without it the floor reads "clean" for counters the
-	// plugin never sent (#377).
-	//
-	// nil means "this value was built by hand, not decoded", and the
-	// presence check is skipped. UnmarshalJSON always sets a non-nil
-	// map, including for an empty or null payload, so nil cannot occur
-	// on the path that talks to a real plugin.
+	// published is the decoded key set, since an absent field decodes to zero (#377); nil means built by hand.
 	published map[string]json.RawMessage
 }
 
-// UnmarshalJSON decodes as usual and additionally records which keys
-// the payload actually carried.
-//
-// The `plain` alias is what stops this from recursing: an alias type
-// has the same fields but not the methods, so the inner Unmarshal uses
-// the default struct decoder. published is unexported and therefore
-// invisible to encoding/json, which is also why nothing outside this
-// package can fabricate a misleading key set.
+// UnmarshalJSON decodes as usual and records which keys the payload carried.
 func (h *HealthResponse) UnmarshalJSON(b []byte) error {
 	type plain HealthResponse
 	var p plain
@@ -530,9 +251,7 @@ func (h *HealthResponse) UnmarshalJSON(b []byte) error {
 		return err
 	}
 	if keys == nil {
-		// A literal `null` body unmarshals into a nil map without
-		// erroring. Normalise it: a payload that carried no keys is
-		// "published nothing", not "presence unknown".
+		// A literal null body decodes to a nil map; it published nothing.
 		keys = map[string]json.RawMessage{}
 	}
 	*h = HealthResponse(p)
@@ -540,14 +259,7 @@ func (h *HealthResponse) UnmarshalJSON(b []byte) error {
 	return nil
 }
 
-// floorCounter is one counter the floor reads.
-//
-// The table below is the single source of truth for that set: both the
-// value check and the presence check iterate it, so a counter cannot be
-// added to one and forgotten in the other. name must equal the JSON tag
-// on the field read — TestFloorCounterNamesMatchJSONTags pins that, and
-// the presence check catches the other half of the same drift, where
-// the plugin renames a key this side has not followed.
+// floorCounter is one counter the floor reads; name equals the field's JSON tag.
 type floorCounter struct {
 	name  string
 	read  func(*HealthResponse) int32
@@ -588,76 +300,32 @@ var floorCounters = []floorCounter{
 	},
 }
 
-// absentWhy explains a finding raised because the plugin did not
-// publish a counter at all. Fatal regardless of the counter's own
-// verdict — recovery_failed being merely noisy is a statement about
-// what its value means, not a licence to stop looking at it.
+// absentWhy explains a finding for a counter the plugin did not publish, fatal whatever its verdict (#377).
 const absentWhy = "the plugin did not publish this counter, so this run proves nothing about it — an absent JSON field decodes as zero and would otherwise read as clean. Either the plugin under test is an older build than the suite (rebuild and reinstall it), or the counter was renamed in pkg/plugin/endpoints.go without updating floorCounters in this file"
 
-// FloorFinding is one healthy-affecting counter the floor took issue
-// with — either it moved off zero, or the plugin did not report it.
+// FloorFinding is one healthy-affecting counter that moved off zero or was not reported.
 type FloorFinding struct {
 	Counter string
 	Value   int32
-	// Absent marks a counter the plugin never published. Value is
-	// meaningless for these — the point is that there was no value.
+	// Absent marks a counter the plugin never published.
 	Absent bool
-	// Flag marks a finding about the plugin's own boolean verdict
-	// rather than a counter. Value is meaningless for these too:
-	// printing "healthy=0" would invite a reader to look for a counter
-	// that does not exist.
+	// Flag marks a finding about the plugin's healthy flag.
 	Flag bool
-	// Fatal distinguishes "this counter only ever means a real plugin
-	// fault" from "this counter is known to also count benign events".
-	// A non-fatal finding is still printed — loudly — because it is a
-	// signal, just not one we can hang a build on yet.
+	// Fatal marks a counter that only ever means a plugin fault.
 	Fatal bool
-	// Why explains the verdict in the failure output. The reader is
-	// someone staring at a red CI job, not someone with this file open.
+	// Why explains the verdict in the failure output.
 	Why string
 }
 
 // healthyKey is the plugin's own summary verdict on the payload.
 const healthyKey = "healthy"
 
-// healthyWhy explains a floor failure raised by the flag rather than by
-// a counter this file knows about.
+// healthyWhy explains a floor failure raised by the flag.
 const healthyWhy = "the plugin reports itself unhealthy while every counter this suite checks is at zero. That means pkg/plugin's Healthy expression covers a condition floorCounters does not — a new healthy-affecting counter was added there without being mirrored here. The plugin's own verdict wins: it is the surface operators page on"
 
-// CheckHealthFloor answers "is the plugin OK?" for a whole run, which
-// is a different question from the per-test deltas in
-// assertNoNewHealthFaults. Deltas catch "did this test break
-// something"; the floor catches a fault that no individual test
-// happened to bracket — including one left behind by the main suite
-// before the failure suite even started.
+// CheckHealthFloor returns findings for every healthy-affecting counter that is non-zero or unreported (#377).
 //
-// It returns findings for every healthy-affecting counter that is
-// non-zero or unreported, and nothing at all for a clean run. Each
-// counter yields at most one finding.
-//
-// The values are ABSOLUTE, not deltas from the start of the run, and
-// that is the point: an absolute floor is what notices a fault that
-// predates the first test. The cost is that running against a
-// long-lived plugin (a local box where the plugin has been up across
-// several sessions) can report a counter from an earlier run, so the
-// findings say "since plugin start" out loud.
-//
-// A counter the plugin does not publish is itself a fatal finding.
-// That case is not hypothetical: an old build left installed on a dev
-// box answers /Plugin.Health without join_start_failures at all, and
-// before #377 the floor read the resulting zero as clean — weaker
-// locally than in CI while looking identical. The same silence would
-// follow a renamed JSON tag in CI, where the plugin is always built
-// from the branch under test, so this is not a dev-box-only guard.
-//
-// Note this is deliberately NOT `!h.Healthy`, though it is now one
-// step away from it. Every counter behind that flag means exactly
-// one thing since #376 split the benign container-exit, and #648 the
-// removed network, out of recovery_failed; what is left is wanting a
-// few runs of evidence
-// before promoting recovery_failed to fatal, because the cost of
-// getting that wrong is a red suite nobody can explain. When it is
-// promoted, this table collapses into a single check of h.Healthy.
+// Values are absolute since plugin start. An old build without join_start_failures read as clean before #377.
 func CheckHealthFloor(h *HealthResponse) []FloorFinding {
 	if h == nil {
 		return nil
@@ -685,28 +353,7 @@ func CheckHealthFloor(h *HealthResponse) []FloorFinding {
 		}
 	}
 
-	// The plugin's own verdict, checked last and independently of the
-	// table above (#421).
-	//
-	// Every counter in floorCounters is now fatal, so in principle this
-	// is redundant — and that is exactly why it is worth having. The
-	// table is this suite's *mirror* of pkg/plugin's Healthy
-	// expression, and a mirror drifts: add another healthy-affecting
-	// counter to the plugin and the floor keeps reporting clean until
-	// somebody remembers this file. Asking the plugin directly closes
-	// that gap without waiting for the mirror to catch up.
-	//
-	// Absence is judged too, on the same principle as the counters: a
-	// payload with no `healthy` key decodes to false, which would
-	// otherwise fail every run for the wrong reason and teach everyone
-	// to ignore it.
-	//
-	// Judged only on a decoded payload. `published == nil` means the
-	// value was built by hand rather than received, and there a false
-	// Healthy is the zero value of an unset bool, not the plugin saying
-	// anything — exactly the distinction the counters' own presence
-	// check already makes. Reading it as a verdict would fail every
-	// unit test that builds a literal to exercise one counter.
+	// The plugin's own verdict, checked independently of the mirrored table (#421), and only on a decoded payload.
 	if h.published == nil {
 		return out
 	}
@@ -720,9 +367,7 @@ func CheckHealthFloor(h *HealthResponse) []FloorFinding {
 		})
 	}
 	if !h.Healthy {
-		// Only reported when nothing else already explains it —
-		// otherwise every real fault would print twice, once named and
-		// once as this catch-all, and the named one is more useful.
+		// Only when no named finding already explains it.
 		if len(out) == 0 {
 			out = append(out, FloorFinding{
 				Counter: healthyKey,
@@ -735,9 +380,7 @@ func CheckHealthFloor(h *HealthResponse) []FloorFinding {
 	return out
 }
 
-// FloorFailed reports whether any finding is fatal. Split from
-// CheckHealthFloor so callers print every finding and fail on a
-// subset, rather than choosing between reporting and enforcing.
+// FloorFailed reports whether any finding is fatal.
 func FloorFailed(findings []FloorFinding) bool {
 	for _, f := range findings {
 		if f.Fatal {
@@ -747,36 +390,10 @@ func FloorFailed(findings []FloorFinding) bool {
 	return false
 }
 
-// floorEvidenceMaxFaultLines bounds the fault section. A run that
-// produced more fault lines than this has a much bigger problem than
-// the one the floor is reporting, and the tail plus the on-disk path
-// still lead a reader to the rest.
+// floorEvidenceMaxFaultLines bounds the fault section.
 const floorEvidenceMaxFaultLines = 200
 
-// FloorEvidence picks the parts of a plugin log worth printing when the
-// floor fails, and returns them ready to write to stderr.
-//
-// The floor runs in TestMain after m.Run(), where no test's cleanup is
-// in scope and DumpPluginLog's *testing.T is not available — so before
-// this, a floor failure printed a counter and nothing else, leaving the
-// evidence sitting on disk unread (#385). On CI that disk is an
-// ephemeral runner, so "sitting on disk" means gone.
-//
-// Two sections, both bounded:
-//
-//   - every error- and warning-level line, wherever it falls in the run.
-//     This is not a heuristic: each counter the floor can report is
-//     incremented next to a log.Error or log.Warn at every one
-//     of its increment sites, so the line that explains a finding is
-//     always in this section. Warnings are included as well as errors
-//     because the counter's own line is sometimes a Warn (the tombstone
-//     write failure is), and because the warning before an error is
-//     usually the half that says why.
-//   - the last tailLines lines, for the sequence leading up to the end
-//     of the run, which the fault lines alone do not give.
-//
-// The full log stays on the runner; callers print its path alongside
-// this so a reader who needs everything knows where everything is.
+// FloorEvidence returns every error and warning line plus the last tailLines lines of a plugin log (#385).
 func FloorEvidence(logData []byte, tailLines int) string {
 	lines := strings.Split(strings.TrimRight(string(logData), "\n"), "\n")
 	if len(lines) == 1 && lines[0] == "" {
@@ -792,9 +409,7 @@ func FloorEvidence(logData []byte, tailLines int) string {
 
 	var b strings.Builder
 	if len(faults) == 0 {
-		// Worth saying out loud rather than printing an empty heading:
-		// a counter moved but the log carries no error or warning, which
-		// means the counter and its log line have drifted apart.
+		// A moved counter with no error or warning line means the counter and its log line drifted apart.
 		b.WriteString("  no error- or warning-level lines in the plugin log — " +
 			"a counter moved without logging, which is itself a defect\n")
 	} else {
@@ -824,44 +439,16 @@ func FloorEvidence(logData []byte, tailLines int) string {
 	return b.String()
 }
 
-// floorFullCoverageRatio is how much of the suite the plugin's uptime
-// has to span before the floor's verdict counts as covering the run.
-// Slightly under 1 because the plugin was already up when the suite
-// started, but the two clocks are read at different moments and the
-// fixture setup between them is not free.
+// floorFullCoverageRatio is the share of the suite the plugin's uptime must span to cover the run.
 const floorFullCoverageRatio = 0.98
 
-// floorPredatesRunSeconds is how far the plugin's uptime has to exceed
-// the suite before the line says so. In CI the plugin is installed for
-// the run, so the two are seconds apart and a note would be noise; on a
-// local run against a plugin that has been up for hours the counters
-// carry history the run did not produce, and a bare "clean" reads as a
-// verdict on the run alone. Five minutes separates those two worlds
-// without firing on ordinary install-then-run slack.
+// floorPredatesRunSeconds is how far the uptime must exceed the suite before the line notes history.
 const floorPredatesRunSeconds = 300
 
-// FloorCleanLine renders the floor's verdict when nothing was found.
+// FloorCleanLine renders a clean verdict with what it covered (#385).
 //
-// It exists because "clean" on its own was a lie worth fixing. The
-// counters reset whenever the plugin process does, and three tests
-// recycle it, so on a main-suite run the floor often sees only the last
-// ~80 seconds of eleven minutes — and said `clean — no healthy-affecting
-// counter moved` regardless. Run #379 printed exactly that for a run
-// that did contain a real fault (#383), erased by a later respawn. A
-// headline that reads "clean" gets quoted as evidence, so it has to
-// carry what it actually looked at (#385).
-//
-// suite is the wall-clock the suite took. A zero or negative value
-// means the caller could not measure it, and the qualifier is dropped
-// rather than guessed at.
-//
-// The number that follows "run" is always suiteSeconds. Uptime is a
-// different quantity and is labelled as one: the full-coverage branch
-// used to print uptime under the word "run", which on a local run
-// against a long-lived plugin read `the whole 15479s run` for a suite
-// that took 61 seconds (#474). Same failure as the one #385 fixed — a
-// quotable "clean" that does not carry what it looked at — arrived at
-// from the other side.
+// Run #379 printed "clean" for a run holding a real fault erased by a respawn (#383); uptime once printed as "the
+// whole 15479s run" for a 61 s suite (#474).
 func FloorCleanLine(h *HealthResponse, suiteSeconds float64) string {
 	if h == nil {
 		return ""
@@ -895,19 +482,9 @@ func FloorCleanLine(h *HealthResponse, suiteSeconds float64) string {
 		suiteSeconds-h.UptimeSeconds)
 }
 
-// AttachGraceLine reports how many attaches finished only because of
-// the daemon-busy grace (#406), and is printed on every run.
+// AttachGraceLine reports how many attaches finished only through the daemon-busy grace (#406).
 //
-// It exists because the census going to zero does not, on its own, mean
-// the grace is what did it: these failures are intermittent — runs have
-// scored 6, 5, 3 and 0 against unchanged code — so one clean run proves
-// nothing. join_attach_slow moving is positive evidence of the
-// mechanism rather than an absence of failures, and the two together
-// are what an argument for the fix rests on.
-//
-// A run with zero failures AND zero slow attaches says only that the
-// condition did not arise; it is not a pass, and the wording says so
-// rather than leaving a reader to assume.
+// These failures are intermittent: runs scored 6, 5, 3 and 0 against unchanged code.
 func AttachGraceLine(h *HealthResponse, joinFailures int) string {
 	if h == nil {
 		return ""
@@ -933,15 +510,7 @@ func AttachGraceLine(h *HealthResponse, joinFailures int) string {
 	}
 }
 
-// ACDCensusLine reports whether the address-conflict check actually
-// ran, which address_conflicts alone cannot say. Zero conflicts and
-// zero probes are the same reading, and "nothing checked" is exactly
-// what #524 looked like in production for months — green health, every
-// counter at zero, a container on somebody else's address.
-//
-// Same shape as AttachGraceLine above, for the same reason: a zero that
-// could mean either "the mechanism worked" or "the condition never
-// arose" is not evidence until something distinguishes them.
+// ACDCensusLine reports whether the address-conflict check ran, which zero conflicts cannot say (#524).
 func ACDCensusLine(h *HealthResponse) string {
 	if h == nil {
 		return ""
@@ -970,32 +539,12 @@ func ACDCensusLine(h *HealthResponse) string {
 	}
 }
 
-// joinStartFailureMsg is the log line the plugin emits at every real
-// join_start_failures increment. The benign twin logs something else
-// ("Container went away during attach"), so counting this message counts
-// exactly the faults, with no classification logic duplicated here.
+// joinStartFailureMsg is logged at every real join_start_failures increment, not by its benign twin.
 const joinStartFailureMsg = "Failed to start persistent DHCP client"
 
-// fatalFaultSignature ties a healthy-affecting counter to the log line
-// the plugin writes when it bumps it.
+// fatalFaultSignature ties a healthy-affecting counter to the log line the plugin writes when it bumps it (#385).
 //
-// The counters reset with the plugin process and the main suite recycles
-// it, so CheckHealthFloor's verdict has only ever covered the stretch
-// since the last restart — measured at 10% of one run and 12% of
-// another. The log does not reset, so counting these lines is the same
-// verdict over the whole run. That is the remaining half of #385; the
-// Join half already worked this way and is what caught three failures a
-// green run had hidden.
-//
-// join_start_failures is deliberately absent: it has its own census
-// because it groups by cause, and counting it here as well would double
-// it in the total.
-//
-// msg must be a substring of the line the plugin actually logs.
-// TestFatalFaultSignaturesExistInPluginSource pins every one of them
-// against pkg/plugin, because a reworded log line would silently turn
-// this census into a constant zero — an absent measurement wearing the
-// costume of a clean one.
+// The counters reset with the plugin; they covered 10% and 12% of two measured runs.
 type fatalFaultSignature struct {
 	counter string
 	msg     string
@@ -1035,11 +584,7 @@ var fatalFaultSignatures = []fatalFaultSignature{
 	},
 }
 
-// FaultCensus counts healthy-affecting faults other than Join failures
-// across the WHOLE plugin log, and returns the total plus a report.
-//
-// Returns 0 and "" for a clean run so it stays quiet, and so a caller
-// cannot mistake a report for a verdict — the count is the verdict.
+// FaultCensus counts healthy-affecting faults other than Join failures across the whole plugin log.
 func FaultCensus(logData []byte) (int, string) {
 	lines := strings.Split(string(logData), "\n")
 	counts := map[string]int{}
@@ -1071,30 +616,7 @@ func FaultCensus(logData []byte) (int, string) {
 	return total, b.String()
 }
 
-// JoinFailureCensus counts Join-start failures across the WHOLE plugin
-// log, and summarises what they were.
-//
-// This exists because the counter cannot answer the question. Counters
-// reset when the plugin process does, and the main suite recycles it
-// three times, so join_start_failures at the end of a run describes only
-// the last ~80 seconds (#385). One run showed the gap plainly: twelve of
-// these failures in the log, and a counter reading 1.
-//
-// The log has no such limit — it spans the run. So for "did this run
-// produce Join failures, and why", the log is the instrument and the
-// counter is not. Printed on every run, clean or not: this is the number
-// that says whether the Join budget is sized for the host it is running
-// on (#401), and a number you only see when something else already went
-// red is a number you cannot use to prevent anything.
-//
-
-// JoinFailureCount counts the same failures the census summarises, for
-// callers that need the number rather than the prose.
-//
-// Separate from JoinFailureCensus because the census is a diagnostic and
-// this is a verdict, and they answer to different pressures: a
-// diagnostic may be reworded freely, a verdict may not change what it
-// counts without someone deciding to.
+// JoinFailureCount counts the Join-start failures JoinFailureCensus summarises.
 func JoinFailureCount(logData []byte) int {
 	n := 0
 	for _, l := range strings.Split(string(logData), "\n") {
@@ -1105,8 +627,9 @@ func JoinFailureCount(logData []byte) int {
 	return n
 }
 
-// Returns an empty string when there were none, so a healthy run stays
-// quiet.
+// JoinFailureCensus summarises Join-start failures across the whole plugin log (#385, #401).
+//
+// One run logged twelve of these while the counter read 1.
 func JoinFailureCensus(logData []byte) string {
 	reasons := map[string]int{}
 	total := 0
@@ -1130,10 +653,7 @@ func JoinFailureCensus(logData []byte) string {
 	return b.String()
 }
 
-// joinFailureReason pulls the error= field out of a logrus text line, so
-// the census groups by cause rather than listing every occurrence. A
-// timeout waiting for the Docker API and a container that vanished are
-// different problems and should not be summed into one number.
+// joinFailureReason pulls the error= field out of a logrus text line.
 func joinFailureReason(line string) string {
 	const key = `error="`
 	i := strings.Index(line, key)
@@ -1141,8 +661,7 @@ func joinFailureReason(line string) string {
 		return "(no error field)"
 	}
 	rest := line[i+len(key):]
-	// logrus quotes the value and escapes any inner quote, so the first
-	// unescaped quote ends it.
+	// logrus escapes inner quotes, so the first unescaped quote ends the value.
 	for j := 0; j < len(rest); j++ {
 		if rest[j] == '\\' {
 			j++
@@ -1164,118 +683,15 @@ func sortedKeys(m map[string]int) []string {
 	return out
 }
 
-// ---- the ACD census gate (#551) -------------------------------------
+// The ACD census gate (#551): from #527 until #550 every run printed "2 could not run" and stayed green.
 //
-// ACDCensusLine above already distinguishes the states that matter.
-// Nothing acted on the third. From #527 merging until #550, every
-// single run printed
-//
-//	CONFLICT PROBE: 1 probe(s) reached a verdict and found no conflict,
-//	  but 2 could not run at all.
-//
-// because the macvlan/ipvlan fixture's parent carried no on-subnet
-// address, so the chassis's own datagram probe could not run on two of
-// the three attachment modes. The line said so on every run and the
-// suite went green throughout. That is the failure the detector itself
-// exists to prevent, one level up: "nothing checked" and "nothing
-// found" must not read the same. The instrument was right; there was no
-// gate behind it.
-//
-// The mechanism underneath has since changed completely — the datagram
-// probe is gone and the DHCP library runs RFC 5227 on a raw ARP socket
-// — so the counters this reads are new. The property is not: it is
-// still the case that a green run with address_conflicts=0 says nothing
-// until something else says the check ran.
-//
-// WHY THE OBVIOUS GATE IS THE WRONG ONE. "Endpoints were created and no
-// probe ran" sounds like the property, and it never fired on the case
-// above — one probe DID reach a verdict there. The blindness was in the
-// two that could not run, so the refusals are what must be judged,
-// against what the suite legitimately expects.
-//
-// Three things would otherwise make this fail for reasons unrelated to
-// the property:
-//
-//  1. A test that degrades the ARP socket on purpose. Failing on
-//     acd_arp_send_failures > 0 would break a correct test, so such a
-//     test declares it with AllowARPSendFailures and the gate judges
-//     the excess.
-//  2. The floor runs per shard, and a shard whose tests lease no v4
-//     address legitimately reaches zero probes. Failing on
-//     acd_probes_sent == 0 alone would make the verdict depend on how
-//     the partitioner happened to balance that run — a gate whose
-//     result depends on shard assignment is worse than no gate.
-//  3. NEW SINCE THE PROBE WAS REPLACED, and the reason the old comment
-//     here is no longer true. The check is now OPT-OUT per network:
-//     conflict_check=off runs no probe at all, by the operator's
-//     instruction. The old premise — "the post-lease conflict probe is
-//     NOT opt-in, checkAddressConflict runs for every endpoint that
-//     received a v4 address" — was load-bearing for case 2's gate and
-//     is now false. A shard that leases addresses on conflict_check=off
-//     networks — or resumes an endpoint, whose probe is asynchronous —
-//     reaches zero probes legitimately, so those leases are
-//     declared with AllowUnprobedLeases and subtracted before the gate
-//     asks its question. Without that subtraction this gate would fail
-//     every run containing the off-mode test, and the fix reached for
-//     under time pressure would be to delete the gate.
-//
-//  5. NEW SINCE THE IPAM BRANCH RE-SHARDED THE SUITE (#110), and the
-//     second two-populations defect in this one gate. The domain is
-//     leases_obtained_v4, which counts the PERSISTENT client's bind --
-//     and the probe the gate demands for it is not that client's. A new
-//     endpoint probes in the CreateEndpoint one-shot, roleAcquire under
-//     ConflictWait, which finishes BEFORE the address is reported
-//     (pkg/plugin/conflict.go); the Join client that moves the lease
-//     counter afterwards runs ConflictAsync, beside the address, for
-//     the reason stated there. A RECOVERED endpoint has no
-//     CreateEndpoint one-shot at all: recoverOneEndpoint synthesises
-//     the Join manager directly, so its bind moves the domain while the
-//     only probe it will ever produce is the asynchronous one -- and
-//     that probe races the container's teardown at the end of a shard.
-//     MEASURED, integration run 34600486961 main-3: a shard whose last
-//     test recycled the plugin (recovered_ok=1) read
-//     leases_obtained_v4=1 and acd_probes_sent=0 on a process 1s old,
-//     and the gate called the check broken.
-//
-//     Such a lease is declared by the test that causes it, with
-//     AllowUnprobedLeases, exactly as an off-mode lease is. It is NOT
-//     subtracted here from recovered_ok, which is what this gate did
-//     first: recovered_ok counts ENDPOINTS OF EITHER FAMILY and this
-//     gate's domain is v4 leases, so a recovered v6-only endpoint would
-//     have silently cancelled a real v4 miss -- a gate quietly emptying
-//     its own domain, which is the failure this whole block exists
-//     against. A declaration is per test, bounded, and sits next to its
-//     cause where the reader can check it against the shard.
-//     Recovered endpoints are not left unwatched either way: an address
-//     resumed from a record whose check had not completed moves
-//     acd_resumed_unchecked, which is the warn row below, and a
-//     conflict found by the async probe still moves address_conflicts.
-//
-//  6. NEW SINCE THE v6 COUNTERS SPLIT THE ATOM, and the reason this
-//     gate failed on a coin toss (#881). The premise that used to end
-//     this block — "leases_obtained is v4-only, so a v6-only shard
-//     cannot trip this" — was true when it was written and is false
-//     now: leases_obtained is published as the SUM of
-//     leases_obtained_v4 and leases_obtained_v6
-//     (pkg/plugin/endpoints.go). RFC 5227's check is ARP, so no v6
-//     lease can ever produce a probe, and a shard whose v4 leases were
-//     all declared while a v6 lease landed reads probes=0 against a
-//     non-empty domain. That is the two-populations defect: the domain
-//     operand admitted addresses the probe does not cover. The gate
-//     therefore reads leases_obtained_v4, which is the population the
-//     probe covers, and refuses when the plugin does not publish it.
-//
-// The v6 half is not left unwatched by this change: a DHCPv6 conflict
-// moves address_conflicts_v6 and writes its own log line, and the
-// conflict row below judges both families together.
+// A test that degrades the ARP socket declares it, and a lease no probe covers (conflict_check=off, or a resumed
+// endpoint whose probe is asynchronous) is declared per test. Measured in integration run 34600486961 main-3: a shard
+// whose last test recycled the plugin read leases_obtained_v4=1 and acd_probes_sent=0 (#110). recovered_ok counts
+// both families, so subtracting it would let a v6 endpoint cancel a v4 miss. leases_obtained is the v4 and v6 sum,
+// so the gate reads leases_obtained_v4 (#881).
 
-// acdAllowance accumulates what this shard EXPECTS, declared by the
-// tests that cause it deliberately.
-//
-// Package-level and mutex-guarded rather than plumbed through: the floor
-// runs in TestMain after every test has finished, so there is no value
-// to thread and no ordering to get wrong. A test declares its intent
-// where it causes the condition, which is the only place that knows.
+// acdAllowance accumulates what the tests in this shard declared, read by the floor in TestMain.
 var acdAllowance struct {
 	mu        sync.Mutex
 	sendFail  int32
@@ -1283,12 +699,7 @@ var acdAllowance struct {
 	conflicts int32
 }
 
-// AllowARPSendFailures declares that n refused ARP sends are expected in
-// this shard, because a test degrades the socket on purpose.
-//
-// Call it from the test that does the degrading, next to the degrading,
-// so the declaration cannot drift away from its reason. Anything beyond
-// the declared count fails the run.
+// AllowARPSendFailures declares n expected refused ARP sends in this shard.
 func AllowARPSendFailures(n int32) {
 	acdAllowance.mu.Lock()
 	defer acdAllowance.mu.Unlock()
@@ -1302,29 +713,7 @@ func AllowedARPSendFailures() int32 {
 	return acdAllowance.sendFail
 }
 
-// AllowUnprobedLeases declares that n v4 leases in this shard will never
-// be covered by an ARP Probe. Two causes produce such a lease:
-//
-//   - conflict_check=off on the network. No probe is sent at all, by the
-//     operator's instruction.
-//   - a RESUMED endpoint. The probe RFC 5227 asks for runs in the
-//     CreateEndpoint one-shot, before the address is used (roleAcquire
-//     under ConflictWait). Recovery never goes through CreateEndpoint:
-//     it synthesises the Join manager from Docker's view, and the Join
-//     client probes asynchronously, beside the address. So the resumed
-//     bind moves leases_obtained_v4 while the only probe it will ever
-//     produce races the test that caused it.
-//
-// This is the declaration that keeps the zero-probes gate alive after
-// the check became per-network. Call it in the test that causes the
-// unprobed lease, next to the cause, once per lease. Declaring MORE
-// than the shard actually takes weakens the gate silently, so declare
-// the leases, not the containers.
-//
-// It is deliberately a per-test declaration rather than a subtraction
-// inside the gate: recovered_ok counts endpoints of either family while
-// this gate's domain is v4 leases, so subtracting it there would let a
-// recovered v6-only endpoint cancel a real v4 miss.
+// AllowUnprobedLeases declares n v4 leases in this shard that no ARP Probe covers, once per lease (#882, #110).
 func AllowUnprobedLeases(n int32) {
 	acdAllowance.mu.Lock()
 	defer acdAllowance.mu.Unlock()
@@ -1338,55 +727,10 @@ func AllowedUnprobedLeases() int32 {
 	return acdAllowance.unprobed
 }
 
-// AllowStagedConflicts declares that n address conflicts in this shard
-// were STAGED by a test, with a squatter it put on the segment itself.
+// AllowStagedConflicts declares n conflicts in this shard staged by a test's own squatter (#882).
 //
-// It does NOT excuse the conflict. It excuses one thing only: the
-// counter under-reporting a conflict the log recorded, which is what
-// happens when the plugin is recycled later in the shard — the log file
-// outlives the process, the counter does not. That is an outcome the
-// conflict row's own comment already named as one of its two causes,
-// and before conflict_check existed no test ever produced the first
-// one, so the row had never had to tell them apart.
-//
-// The row still fails on anything BEYOND the declared count, which is
-// the case it exists for: a conflict the suite did not stage, with a
-// counter that stayed at zero, is the seam dropping an event —
-// address_conflicts reporting itself as zero, #524's own failure.
-//
-// Declare it in the test that puts the squatter there, once per
-// conflict it expects to cause, so the declaration cannot drift from
-// its reason. Declaring more than the shard causes weakens the row
-// silently.
-//
-// # THE BOUNDARY THIS BUYS, stated rather than left to be discovered
-//
-// The two causes are indistinguishable at the row's inputs. "The
-// counter lost a staged conflict to a plugin restart" and "the seam
-// dropped that conflict on its way to the counter" both arrive here as
-// log=n, counter<n, and the subtraction excuses n of them. So inside a
-// shard that declares n, the floor does NOT hold "a conflict the plugin
-// failed to count is caught" for the first n conflicts. MEASURED
-// (review r1, finding 3): declared=1, log=1, counter=0 yields zero
-// fatal findings. Beyond n it holds exactly as before, and in a shard
-// that declares nothing it holds from the first conflict — both pinned
-// in conflictcensus_test.go.
-//
-// What holds the property inside the declaration is the conflict cases
-// themselves, which is the right place for it: each one takes a counter
-// window across its own squatter and asserts address_conflicts moved
-// (conflict_check_test.go, TestConflictCheck_SquattedOfferIsDeclined and
-// TestConflictCheck_SquatterAfterTheFact), so a seam that drops the
-// event fails the test that staged it rather than the run that followed
-// it. The unit half is pkg/dhcp's conflict() Kind guard, whose mutant —
-// counting Failed{ReasonConflict} and not Lost{ReasonConflict} — is
-// killed by the unit suite.
-//
-// The floor is deliberately not widened to close this. Narrowing the
-// allowance to "only if the plugin restarted" would need the floor to
-// know about restarts it cannot see, and widening the row to fire
-// inside the declaration reddens correct builds — which is the failure
-// the allowance was added for, MEASURED on the 2.x lane 2026-09-04.
+// Inside the declaration the floor cannot tell a counter lost to a restart from a dropped event: declared=1, log=1,
+// counter=0 yields no fatal finding. The conflict cases assert address_conflicts moved across their own squatter.
 func AllowStagedConflicts(n int32) {
 	acdAllowance.mu.Lock()
 	defer acdAllowance.mu.Unlock()
@@ -1400,11 +744,7 @@ func AllowedStagedConflicts() int32 {
 	return acdAllowance.conflicts
 }
 
-// base returns a usable baseline, so callers with none (a hand-built
-// HealthResponse, an older lane, a failed baseline read) get zeroes and
-// therefore the old whole-plugin-life behaviour. Judging more than this
-// process caused is the safe direction; judging less would hide a real
-// failure, which is the outcome this census exists to prevent.
+// base returns the baseline, or zeroes when there is none, which judges the whole plugin life.
 func base(b *HealthResponse) *HealthResponse {
 	if b == nil {
 		return &HealthResponse{}
@@ -1412,16 +752,7 @@ func base(b *HealthResponse) *HealthResponse {
 	return b
 }
 
-// deltaSincePluginStart converts a cumulative counter into what this
-// process is answerable for.
-//
-// A value BELOW the baseline means the plugin restarted mid-run and its
-// counters went back to zero. The current value is then already scoped
-// to the restart — narrower than this process, not wider — so it is
-// used as-is rather than clamped to zero. Clamping would report "no
-// probes failed" for a run in which the plugin died, which is precisely
-// the shape of #385: the counters reset, the floor saw the tail, and a
-// run with three failed Joins went green.
+// deltaSincePluginStart returns now-was, or now when the plugin restarted below the baseline (#385, #584).
 func deltaSincePluginStart(now, was int32) int32 {
 	if now < was {
 		return now
@@ -1429,28 +760,16 @@ func deltaSincePluginStart(now, was int32) int32 {
 	return now - was
 }
 
-// The two log lines the plugin writes at an address_conflicts increment
-// (pkg/plugin/conflict.go). COPIED, not imported, for the same reason
-// the rest of this harness never imports pkg/…: the suite runs against
-// an INSTALLED plugin, which may be a different build from this tree, so
-// a compile-time constant would be a claim about the source rather than
-// about the process under test. TestConflictMsgsMatchTheSource reads the
-// plugin source and fails when these copies drift, which is the half a
-// literal cannot give itself.
+// The log lines the plugin writes at an address_conflicts increment, copied from pkg/plugin/conflict.go.
 const (
 	conflictProbeMsg = "The address this endpoint was offered is already in use on the segment"
 	conflictHeldMsg  = "The address this endpoint HOLDS was found in use by another device on the segment"
-	// The DHCPv6 pair. A conflict found by Duplicate Address Detection
-	// writes one of these instead, and a census that listed only the
-	// two above counted every v6 squat as zero.
+	// The DHCPv6 pair, written when DAD finds a conflict (#881).
 	conflictProbeMsg6 = "The IPv6 address this endpoint was offered is already in use on the link"
 	conflictHeldMsg6  = "The IPv6 address this endpoint HOLDS was found in use by another node on the link"
 )
 
-// conflictMsgs is every one of them. Listed rather than pattern-matched
-// so that adding a third path without adding it here is the only way to
-// under-count, and so a reader can check the list against the source by
-// eye.
+// conflictMsgs lists every conflict line.
 var conflictMsgs = []string{
 	conflictHeldMsg,
 	conflictProbeMsg,
@@ -1458,21 +777,7 @@ var conflictMsgs = []string{
 	conflictProbeMsg6,
 }
 
-// ConflictsInLog counts conflicts across the WHOLE run.
-//
-// This exists because the counters do not. The plugin's counters live in
-// its process, the main suite recycles that process, and the floor's own
-// output says so: "the plugin restarted mid-suite and its counters reset
-// with it ... this verdict says nothing about the earlier 209s". A
-// counter-only census would therefore miss every conflict that happened
-// before the last restart — the same shape as #385, which is why the
-// Join half already counts log lines instead.
-//
-// It replaces ConflictProbeFailuresInLog, whose three log lines belonged
-// to the deleted datagram probe. The counter it backstops has changed
-// with it: the old one watched the probe's failures, this one watches
-// the conflicts themselves, which is the healthy-affecting row and the
-// one an operator acts on.
+// ConflictsInLog counts conflicts across the whole run, since the counters reset with the plugin (#385).
 func ConflictsInLog(logData []byte) int {
 	if len(logData) == 0 {
 		return 0
@@ -1489,33 +794,14 @@ func ConflictsInLog(logData []byte) int {
 	return n
 }
 
-// ACDCensusFindings judges whether the census is evidence or an alibi,
-// given what the shard declared.
-//
-// conflictsInLog is the count from ConflictsInLog; for the conflict row
-// the larger of it and the counter wins, because the counter can only
-// ever under-report after a restart and the log can only under-report if
-// a line was lost. allowedConflicts is how many of those the shard
-// STAGED and declared -- see AllowStagedConflicts for why that is a
-// subtraction and not an exemption.
-//
-// Returns nil when there is nothing to say — including the honest
-// nothing of a shard that leased no v4 address.
+// ACDCensusFindings judges the census against the shard's declarations; nil means nothing to say.
 func ACDCensusFindings(h *HealthResponse, allowedSendFailures, allowedUnprobed, allowedConflicts int32, conflictsInLog int, baseline *HealthResponse) []FloorFinding {
 	if h == nil {
 		return nil
 	}
-	// An absent counter is not a zero. If the plugin never published
-	// these, the census cannot be judged at all, and saying so is the
-	// point — silently treating <not reported> as 0 would rebuild the
-	// blindness this closes.
+	// An absent counter is not a zero.
 	if h.published != nil {
-		// leases_obtained_v4 is here for the same reason as the two
-		// ACD counters and not as a formality: it is the gate's DOMAIN
-		// operand, so a plugin that does not publish it would empty the
-		// domain and the gate would pass over every run in silence —
-		// the same defeat as reading a probe count of <absent> as zero
-		// (#881).
+		// leases_obtained_v4 is the gate's domain operand (#881).
 		for _, k := range []string{"acd_probes_sent", "acd_arp_send_failures", "leases_obtained_v4"} {
 			if _, ok := h.published[k]; !ok {
 				return []FloorFinding{{
@@ -1532,24 +818,11 @@ func ACDCensusFindings(h *HealthResponse, allowedSendFailures, allowedUnprobed, 
 
 	var out []FloorFinding
 
-	// Counters are cumulative for the PLUGIN's life; the allowance is
-	// declared by THIS process. Comparing them directly is only correct
-	// when the plugin was started for this run, which the sharded lanes
-	// happen to guarantee and the coverage lane does not — it drives one
-	// instrumented plugin through both suites back to back. There, the
-	// main suite's deliberately-degraded probe (declared, allowed, fine)
-	// was still on the counter when the failure suite's process started
-	// with an allowance of 0, and the floor called it unexplained.
-	//
-	// Wrong in the other direction too, and that is the worse one: a
-	// failure that happened before this process started would be
-	// attributed to it, and a real one that happened after a restart
-	// could be masked by subtracting.
+	// Counters are per plugin life and the allowance per process; the coverage lane runs one plugin through both
+	// suites, so compare deltas (#584).
 	sendFailures := deltaSincePluginStart(h.ACDARPSendFailures, base(baseline).ACDARPSendFailures)
 	probes := deltaSincePluginStart(h.ACDProbesSent, base(baseline).ACDProbesSent)
-	// The v4 half, not the sum. See the block above: ARP covers IPv4
-	// and nothing else, so a v6 lease in the domain is an operand the
-	// probe was never going to answer for (#881).
+	// The v4 half: ARP covers only IPv4 (#881).
 	leases := deltaSincePluginStart(h.LeasesObtainedV4, base(baseline).LeasesObtainedV4)
 	conflicts := deltaSincePluginStart(h.AddressConflicts, base(baseline).AddressConflicts)
 
@@ -1568,16 +841,7 @@ func ACDCensusFindings(h *HealthResponse, allowedSendFailures, allowedUnprobed, 
 		})
 	}
 
-	// The check never even tried, on a shard that leased addresses for
-	// it to check. Distinct from the case above: there, probes went out
-	// and some sends were refused; here nothing was attempted at all.
-	//
-	// The declared leases come out first -- an off-mode network's, and a
-	// resumed endpoint's, both declared by the test that causes them
-	// (case 5 above). What is left is leases taken by endpoints that
-	// were supposed to probe before using the address, so a zero here
-	// is the check having stopped working rather than an operator's
-	// choice or a shard shape.
+	// Nothing was attempted on a shard with leases that should have probed.
 	if checked := leases - allowedUnprobed; probes == 0 && sendFailures == 0 && checked > 0 {
 		out = append(out, FloorFinding{
 			Counter: "acd_probes_sent",
@@ -1593,30 +857,8 @@ func ACDCensusFindings(h *HealthResponse, allowedSendFailures, allowedUnprobed, 
 		})
 	}
 
-	// The log saw conflicts the counter did not. Either the counter reset
-	// under the floor (a restart, which the log survives) or the seam
-	// dropped an event on its way to the counter. The second is the
-	// defect address_conflicts exists to report, reporting itself as
-	// zero, and it is why this row is fatal.
-	//
-	// The first used to be red too, and could afford to be: before
-	// conflict_check existed, no test in this suite ever caused a
-	// conflict, so the row's whole domain was the second cause. Now the
-	// conflict cases stage conflicts on purpose, and a shard that
-	// recycles the plugin afterwards -- which several do -- produces the
-	// first cause on a correct build. MEASURED on the 2.x lane
-	// 2026-09-04: two staged conflicts in the log, a counter reset out
-	// from under them, and two red shards saying address_conflicts was
-	// dropped when it had not been.
-	//
-	// So a STAGED conflict is subtracted, and only a staged one: the
-	// test that put the squatter on the segment declares it. Everything
-	// beyond the declaration is judged exactly as before.
-	//
-	// The cost is that inside the declaration this row cannot tell the
-	// restart from a dropped event, so it does not hold #524's property
-	// there. AllowStagedConflicts names the boundary and names what
-	// holds the property instead.
+	// A conflict in the log and not the counter is a restart or a dropped event (#524). Measured on the 2.x lane
+	// 2026-09-04: two staged conflicts and a counter reset made two red shards, so staged conflicts are subtracted (#882).
 	if int32(conflictsInLog) > conflicts+allowedConflicts {
 		why := fmt.Sprintf(
 			"the log records %d address conflict(s) across the run and the counter shows %d. "+

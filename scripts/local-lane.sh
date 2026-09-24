@@ -40,6 +40,7 @@
 #   scripts/local-lane.sh              run the lane
 #   scripts/local-lane.sh --list       print the scripts the lane runs
 #   scripts/local-lane.sh --list-exempt   print "<script>\t<reason>"
+#   scripts/local-lane.sh --list-not-in-ci   same, for NOT_IN_CI
 # Env:
 #   STRICT=1   a skipped step is a failure
 # Exit: 0 all ran and passed, 1 something failed, 2 cannot run (empty lane).
@@ -85,6 +86,8 @@ LANE=(
   "option-docs drift|-|bash scripts/check-option-docs.sh"
   "starter-task claims|-|bash scripts/check-good-first-issues.sh --static"
   "docs drift|-|bash scripts/check-docs-drift.sh"
+  "comment budget|go|bash scripts/check-comment-budget.sh origin/dev..HEAD"
+  "comment-only proof|go|bash scripts/check-comment-budget.sh --prove-marked origin/dev HEAD"
   "retired words|-|bash scripts/check-retired-words.sh"
   "conflict markers|-|bash scripts/check-conflict-markers.sh"
   "health contract|-|bash scripts/check-health-contract.sh"
@@ -108,6 +111,7 @@ LANE=(
   "python deps|-|bash scripts/check-python-deps.sh"
   "fixture hygiene|-|bash scripts/check-selftest-fixtures.sh"
   "pipefail consumers|-|bash scripts/check-pipefail-consumers.sh"
+  "workflow tee pipefail|-|bash scripts/check-workflow-tee-pipefail.sh"
   "netlink dump errors|-|bash scripts/check-netlink-dump-errors.sh"
   "lint tag coverage|-|bash scripts/check-lint-tag-coverage.sh"
   "plugin bind sources|-|bash scripts/check-plugin-bind-sources.sh"
@@ -173,6 +177,7 @@ LANE=(
   # The engine matrix drives what the documentation promises, and the
   # documentation is edited far more often than the cell (#1013).
   "engine-matrix shapes|-|bash scripts/check-engine-matrix-shapes.sh"
+  "engine-matrix options|-|bash scripts/check-engine-matrix-options.sh"
   "golden fixture keying|go|bash scripts/check-golden-fixture-name-keyed.sh"
   "test/policy-gates split|-|bash scripts/check-test-job-purity.sh"
   # The lane checks itself: if test.yaml gains a gate this file does
@@ -204,6 +209,12 @@ OUT_OF_LANE=(
   "scripts/check-coverage-floor.sh|compares the baseline at the merge base against this branch's, so it needs the base the PR is opened against; a local guess at that ref would judge the wrong pair of blobs"
 )
 
+# "script|reason" for a check-*.sh no workflow runs by design, so the
+# orphan rule of check-local-lane.sh accepts it (#883).
+NOT_IN_CI=(
+  "scripts/check-release-tooling.sh|preflight for the release runbook's manual steps; it checks the maintainer's own cosign, gh and git signing key, which a runner does not have"
+)
+
 lane_scripts() {
     local e cmd
     for e in "${LANE[@]}"; do
@@ -217,8 +228,11 @@ case "${1:-}" in
     --list-exempt)
         for e in "${OUT_OF_LANE[@]}"; do printf '%s\t%s\n' "${e%%|*}" "${e#*|}"; done
         exit 0 ;;
+    --list-not-in-ci)
+        for e in "${NOT_IN_CI[@]}"; do printf '%s\t%s\n' "${e%%|*}" "${e#*|}"; done
+        exit 0 ;;
     "") ;;
-    *) echo "usage: $0 [--list|--list-exempt]" >&2; exit 2 ;;
+    *) echo "usage: $0 [--list|--list-exempt|--list-not-in-ci]" >&2; exit 2 ;;
 esac
 
 if [ "${#LANE[@]}" -eq 0 ]; then

@@ -29,6 +29,14 @@ Go code is formatted with `gofmt` and passes `go vet` and
 [`staticcheck`](https://staticcheck.dev/); shell and workflow files pass
 `shellcheck` and `actionlint`. All four run in CI.
 
+A Go comment states what the code cannot: an outside fact, such as a
+measured value with its date, an engine, kernel or server behaviour or an
+RFC section, or a decision. A comment block of two or more lines names an
+issue (`#N`) or an RFC (`RFC N`), and no block runs past ten lines.
+`scripts/check-comment-budget.sh` checks the blocks a pull request adds or
+changes, and refuses a pull request that raises a package's share of
+comment lines (#1056).
+
 ## Tests
 
 New functionality is expected to ship with tests, and a per-package

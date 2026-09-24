@@ -8,11 +8,6 @@ import (
 	"testing"
 )
 
-// TestBuildResolvConf_SearchListPrecedence pins the v0.9.0 / T2-2
-// rendering: option-119 (multi-entry search list) takes precedence
-// over option-15 (single domain) when both are present, falls back
-// to option-15 when only that is set, and emits no `search` line
-// when neither is present. RFC 3397 specifies this precedence.
 func TestBuildResolvConf_SearchListPrecedence(t *testing.T) {
 	dns := []string{"192.0.2.1"}
 
@@ -40,7 +35,6 @@ func TestBuildResolvConf_SearchListPrecedence(t *testing.T) {
 		if strings.Contains(got, "search ") {
 			t.Errorf("unexpected search line when both options empty:\n%s", got)
 		}
-		// Sanity: nameserver line still present.
 		if !strings.Contains(got, "nameserver 192.0.2.1") {
 			t.Errorf("nameserver missing from output:\n%s", got)
 		}

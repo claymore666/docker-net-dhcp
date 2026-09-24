@@ -37,13 +37,11 @@
 # Turning the silence into a red check on the PR is the cheap, bounded
 # option, and it is where the release manager is already looking.
 #
-# Usage: check-coverage-run.sh <head-sha> [wait-minutes]
+# Usage: check-coverage-run.sh <head-sha> [wait-minutes] [live-minutes]
 #   <head-sha>:     the PR head commit the coverage run must cover.
-#   [wait-minutes]: how long a run may take to reach a terminal state
-#                   before that counts as absent (default 75 — a
-#                   coverage RUN is 18m42-36m35, median 22m45, MEASURED
-#                   2026-08-28 over the 13 successful runs retained, and
-#                   it queues behind the same ref's integration run).
+#   [wait-minutes]: how long a run may take to appear (default 75).
+#   [live-minutes]: how long a queued or running run is waited for
+#                   (default 240).
 #
 # Env: GATE_REPO=owner/repo (default: inferred)
 #      GATE_POLL_SECONDS=60
@@ -52,7 +50,8 @@
 # Exit: 0 a coverage run for this head exists and reached a terminal
 #         state (whatever its verdict — presence is what is judged here,
 #         the ratchet judges the numbers),
-#       1 the run was evicted, never appeared, or never finished,
+#       1 the run was evicted, never appeared, never started, or never
+#         finished,
 #       2 cannot check.
 #
 # NOT fail-open. This exists because a silence was read as health; an
@@ -61,6 +60,9 @@ set -uo pipefail
 
 SHA="${1:-}"
 WAIT_MIN="${2:-75}"
+# One coverage run ahead in the shared concurrency group plus this one, each
+# capped by coverage.yml's 105-minute job timeout, plus runner queueing (#1042).
+LIVE_MIN="${3:-240}"
 POLL="${GATE_POLL_SECONDS:-60}"
 WF="${GATE_COVERAGE_WORKFLOW:-coverage.yml}"
 
@@ -85,9 +87,13 @@ annotate() {
     return 0
 }
 
-deadline=$(( $(date -u +%s) + WAIT_MIN * 60 ))
+start=$(date -u +%s)
+deadline=$(( start + WAIT_MIN * 60 ))
+live_deadline=$(( start + LIVE_MIN * 60 ))
 last_error=""
 evicted=""
+unstarted=""
+live=""
 
 while :; do
     runs=$(gh api "repos/${REPO}/actions/workflows/${WF}/runs?head_sha=${SHA}&per_page=20" \
@@ -102,19 +108,18 @@ while :; do
         present=""
         pending=0
         evicted=""
+        unstarted=""
+        live=""
         while IFS=$'\t' read -r id status concl; do
             [ -z "$id" ] && continue
             if [ "$status" != "completed" ]; then
                 pending=1
+                live="${live}${live:+ }${id}:${status}"
                 continue
             fi
-            if [ "$concl" != "cancelled" ]; then
-                present="$id"
-                break
-            fi
-            # Cancelled: the two cases look identical in the run list and
-            # mean opposite things. Zero jobs means nothing was ever
-            # assigned and no check run exists — the #504 shape. One or
+            # Zero jobs means nothing was ever assigned and no check run
+            # exists: the #504 shape when cancelled, and equally absent for
+            # any other conclusion such as startup_failure (#1042). One or
             # more jobs means a check run exists and the PR shows it.
             jobs=$(gh api "repos/${REPO}/actions/runs/${id}/jobs?per_page=1" --jq '.total_count' 2>/dev/null </dev/null)
             case "$jobs" in
@@ -128,7 +133,11 @@ while :; do
                 present="$id"
                 break
             fi
-            evicted="${evicted}${evicted:+ }${id}"
+            if [ "$concl" = "cancelled" ]; then
+                evicted="${evicted}${evicted:+ }${id}"
+            else
+                unstarted="${unstarted}${unstarted:+ }${id}:${concl}"
+            fi
         done <<< "$runs"
 
         if [ -n "$present" ]; then
@@ -136,17 +145,19 @@ while :; do
             exit 0
         fi
 
-        # Every run for this head was evicted while pending, and nothing
+        # Every run for this head ended without a job, and nothing
         # is left that could still produce a check. Waiting cannot change
         # that, so say so now rather than at the deadline.
-        if [ -n "$evicted" ] && [ "$pending" -eq 0 ]; then
+        if [ -n "$evicted$unstarted" ] && [ "$pending" -eq 0 ]; then
             break
         fi
     fi
 
     now=$(date -u +%s)
-    [ "$now" -ge "$deadline" ] && break
-    remaining=$(( deadline - now ))
+    limit=$deadline
+    [ -n "$live" ] && limit=$live_deadline
+    [ "$now" -ge "$limit" ] && break
+    remaining=$(( limit - now ))
     [ "$POLL" -gt 0 ] && sleep "$(( POLL < remaining ? POLL : remaining ))"
     [ "$POLL" -le 0 ] && break
 done
@@ -186,15 +197,48 @@ EOF
     exit 1
 fi
 
+if [ -n "$unstarted" ]; then
+    first=${unstarted%% *}
+    first=${first%%:*}
+    annotate "Coverage run never started" \
+        "The ${WF} run for ${SHA:0:8} (${unstarted}) completed having run zero jobs, so no coverage check exists. Recover with: gh run rerun ${first}"
+    cat >&2 <<EOF
+
+The ${WF} run for ${SHA:0:8} completed without running a job:
+${unstarted}
+
+No job means no check run, so the required \`coverage\` context is absent.
+Fix the cause the run page names, then:
+
+    gh run rerun ${first}
+EOF
+    exit 1
+fi
+
+if [ -n "$live" ]; then
+    annotate "Coverage run unfinished" \
+        "The ${WF} run for ${SHA:0:8} (${live}) did not finish within ${LIVE_MIN}m."
+    cat >&2 <<EOF
+
+The ${WF} run for ${SHA:0:8} exists but did not finish within ${LIVE_MIN}m:
+${live}
+
+It is queued or running for longer than one run ahead of it and its own
+job timeout allow. Check the runner pool, then re-run this gate:
+
+    gh run list --workflow ${WF} --commit ${SHA}
+EOF
+    exit 1
+fi
+
 annotate "No coverage run" \
-    "No ${WF} run for ${SHA:0:8} reached a terminal state within ${WAIT_MIN}m."
+    "No ${WF} run for ${SHA:0:8} appeared within ${WAIT_MIN}m."
 cat >&2 <<EOF
 
-No ${WF} run for ${SHA:0:8} reached a terminal state within ${WAIT_MIN}m.
+No ${WF} run for ${SHA:0:8} appeared within ${WAIT_MIN}m.
 
-Either the run was never created — Actions can drop pull_request event
-delivery while otherwise healthy (#418) — or it is still queued behind
-the same ref's integration run for longer than this gate waits.
+The run was never created: Actions can drop pull_request event delivery
+while otherwise healthy (#418).
 
 Check what exists, then re-run or dispatch against this head:
 

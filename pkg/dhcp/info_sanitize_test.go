@@ -17,20 +17,11 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-// forgery is harmless as a flat token and becomes a second log line the
-// moment it is rendered unquoted.
+// forgery becomes a second log line the moment it is rendered unquoted (#699).
 const forgery = "legit\ntime=\"2026-01-01T00:00:00Z\" level=error msg=\"FORGED\""
 
-// TestSanitizeInfo_NoFieldEscapesTheFilter is written by REFLECTION on
-// purpose, for the same reason
-// TestRenderConfig_NoValueCanIntroduceADirective is: a hand-listed set
-// of fields leaves the NEXT option added to Info uncovered, and the four
-// string options this issue found had been unfiltered since they were
-// added.
-//
-// It also catches the other forgetting mode: an Info field of a KIND
-// sanitizeValue does not handle (a map, a nested pointer) fails here
-// rather than being silently skipped.
+// Reflection covers the next Info field too; four string options had gone unfiltered since they were added (#699).
+
 func TestSanitizeInfo_NoFieldEscapesTheFilter(t *testing.T) {
 	typ := reflect.TypeOf(Info{})
 
@@ -49,7 +40,6 @@ func TestSanitizeInfo_NoFieldEscapesTheFilter(t *testing.T) {
 			case reflect.String:
 				v.Field(i).Set(reflect.ValueOf([]string{forgery}))
 			case reflect.Struct:
-				// []Route: poison every string inside one element.
 				elem := reflect.New(field.Type.Elem()).Elem()
 				for j := 0; j < elem.NumField(); j++ {
 					if elem.Field(j).Kind() == reflect.String {
@@ -61,7 +51,6 @@ func TestSanitizeInfo_NoFieldEscapesTheFilter(t *testing.T) {
 				t.Fatalf("Info.%s is a slice of %s, which sanitizeValue does not handle; extend it and this test", field.Name, field.Type.Elem().Kind())
 			}
 		case reflect.Int, reflect.Bool:
-			// Cannot carry a control character.
 			continue
 		default:
 			t.Fatalf("Info.%s is a %s, which sanitizeValue does not handle; extend it and this test", field.Name, field.Type.Kind())
@@ -81,8 +70,7 @@ func TestSanitizeInfo_NoFieldEscapesTheFilter(t *testing.T) {
 	}
 }
 
-// dumpStrings concatenates every string reachable inside v, so the
-// assertion above does not have to know where a field lives.
+// dumpStrings concatenates every string reachable inside v.
 func dumpStrings(v reflect.Value) string {
 	var b strings.Builder
 	var walk func(reflect.Value)
@@ -105,9 +93,6 @@ func dumpStrings(v reflect.Value) string {
 	return b.String()
 }
 
-// TestSanitizeInfo_LeavesLegitimateValuesAlone is the other direction:
-// an over-eager filter breaks TFTP boot and timezone propagation for
-// deployments doing nothing wrong.
 func TestSanitizeInfo_LeavesLegitimateValuesAlone(t *testing.T) {
 	info := Info{
 		IP:            "192.168.99.10/24",
@@ -133,15 +118,6 @@ func TestSanitizeInfo_LeavesLegitimateValuesAlone(t *testing.T) {
 	}
 }
 
-// TestInfoFromLease_FiltersStringOptions drives the REAL boundary — the
-// one point every lease crosses from the library into the plugin — with
-// option values a hostile server can send. Removing the sanitizeInfo
-// call in infoFromLease turns this red.
-//
-// It replaces TestBuildEvent_FiltersStringOptions, which drove the same
-// filter through the dhcpcd hook's environment. The hook is gone; the
-// filter and its counting are not, and the test follows the filter
-// rather than the mechanism that used to feed it.
 func TestInfoFromLease_FiltersStringOptions(t *testing.T) {
 	l := lease.Lease{
 		Addr:    netip.MustParsePrefix("192.168.99.10/24"),
@@ -171,8 +147,6 @@ func TestInfoFromLease_FiltersStringOptions(t *testing.T) {
 			t.Errorf("Info.%s = %q, want it dropped", name, got)
 		}
 	}
-	// The lease itself must survive: a hostile option must not cost the
-	// container its address.
 	if info.IP != "192.168.99.10/24" {
 		t.Errorf("Info.IP = %q; the lease was lost along with the bad options", info.IP)
 	}
@@ -181,13 +155,6 @@ func TestInfoFromLease_FiltersStringOptions(t *testing.T) {
 	}
 }
 
-// TestLogRendering_StaysOnOneLine is the SECOND layer, and the reason it
-// exists is that the first one was accidental: nothing pinned the
-// formatter, so "these values are harmless" rested on a default that any
-// configuration change could take away.
-//
-// It renders a poisoned field through the logger the plugin actually
-// installs and asserts the record occupies exactly one line.
 func TestLogRendering_StaysOnOneLine(t *testing.T) {
 	var buf bytes.Buffer
 	l := log.New()
@@ -200,9 +167,6 @@ func TestLogRendering_StaysOnOneLine(t *testing.T) {
 	if lines := strings.Count(out, "\n") + 1; lines != 1 {
 		t.Errorf("one log record rendered as %d lines:\n%s", lines, out)
 	}
-	// And the newline is escaped rather than dropped: the check above
-	// must be passing because the formatter quoted the value, not
-	// because the value never arrived.
 	if !strings.Contains(out, `\n`) {
 		t.Errorf("the newline was not rendered as an escape; this test is not proving what it claims:\n%s", out)
 	}
@@ -216,8 +180,7 @@ func TestFirstSearchDomain(t *testing.T) {
 	}{
 		{"corp.example", "corp.example", false},
 		{"", "", false},
-		// The measured attack: dhcpcd's option-15 dname validation
-		// accepts this, and `search %s` renders both.
+		// Measured: dhcpcd's option-15 dname validation accepts this, and `search %s` renders both (#699).
 		{"a.attacker.test b.attacker.test", "a.attacker.test", true},
 		{"a.attacker.test\tb.attacker.test", "a.attacker.test", true},
 		{" corp.example", "corp.example", true},
@@ -232,9 +195,6 @@ func TestFirstSearchDomain(t *testing.T) {
 	}
 }
 
-// TestInfoFromLease_TruncatesMultiDomain drives the option-15 rule at
-// the boundary and counts it. Removing the FirstSearchDomain call in
-// infoFromLease turns this red.
 func TestInfoFromLease_TruncatesMultiDomain(t *testing.T) {
 	l := lease.Lease{
 		Addr:   netip.MustParsePrefix("192.168.99.10/24"),

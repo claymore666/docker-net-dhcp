@@ -11,41 +11,16 @@ import (
 	"github.com/vishvananda/netlink"
 )
 
-// TestDeleteEndpoint_ARefusedHostnameIsNotAnAbsentOne pins the #726
-// wildcard-write in BOTH directions, because a guard that only refuses
-// is as broken as one that only permits.
-//
-// The tombstone store treats an empty Hostname as a WILDCARD: consume
-// skips an entry only when `hostname != "" && t.Hostname != "" &&
-// t.Hostname != hostname`. That is correct and load-bearing for an
-// honest absence -- it is the v0.5.0 contract for containers that have
-// no hostname, and a fix that stopped writing those tombstones would
-// silently take MAC stability away from every one of them.
-//
-// It is exactly wrong for a REFUSAL. safeHostname returns ("", false)
-// for a hostname the plugin will not put in a DHCP packet, and both
-// CreateEndpoint paths then wrote a fingerprint carrying that "" --
-// so the value we declined to trust for a NARROW match became a match
-// against EVERYTHING, handing this container's MAC and IP to whichever
-// unrelated container next started on the network.
-//
-// Direction 1 alone would pass if the fix simply stopped writing
-// tombstones. Direction 2 alone would pass against the unfixed code.
-// Only the pair says what the code must do.
+// An empty tombstone hostname is a wildcard, so a refused hostname must not be recorded
+// as one while an absent one still is (#726).
 func TestDeleteEndpoint_ARefusedHostnameIsNotAnAbsentOne(t *testing.T) {
 	cases := []struct {
-		name string
-		// hostname/hostnameTrusted are what CreateEndpoint recorded.
-		hostname        string
-		hostnameTrusted bool
-		// unrelatedConsumes is the damage question: can a container
-		// that has nothing to do with this one pick the tombstone up?
+		name              string
+		hostname          string
+		hostnameTrusted   bool
 		unrelatedConsumes bool
-		// ownConsumes is the value question, checked only when the
-		// tombstone survived the first: does the container it was
-		// written for still get it back?
-		ownConsumes bool
-		reason      string
+		ownConsumes       bool
+		reason            string
 	}{
 		{
 			name:              "a refused hostname writes NOTHING",
@@ -100,16 +75,13 @@ func TestDeleteEndpoint_ARefusedHostnameIsNotAnAbsentOne(t *testing.T) {
 				t.Fatalf("DeleteEndpoint: %v", err)
 			}
 
-			// The victim's view first. Consuming as the SAME container
-			// would find its own tombstone and look correct in every
-			// case, including the broken one.
 			mac, ipv4, _, ok := p.tombstones.consume("n1", "unrelated-container")
 			if ok != tc.unrelatedConsumes {
 				t.Fatalf("an unrelated container consumed=%v (mac=%q ipv4=%q), want %v — %s",
 					ok, mac, ipv4, tc.unrelatedConsumes, tc.reason)
 			}
 			if ok {
-				return // the entry is gone; nothing left to ask.
+				return
 			}
 
 			if _, _, _, own := p.tombstones.consume("n1", tc.hostname); own != tc.ownConsumes {
@@ -120,16 +92,6 @@ func TestDeleteEndpoint_ARefusedHostnameIsNotAnAbsentOne(t *testing.T) {
 	}
 }
 
-// TestRememberEndpoint_TrustFlowsToTheFingerprint pins the plumbing
-// separately from the behaviour above.
-//
-// The defect was never in the tombstone store. It was that both
-// CreateEndpoint paths HELD the trust bit -- they pass it to
-// consumeTombstone a screen earlier -- and then dropped it when they
-// built the fingerprint. The hostname and its trust bit now arrive as
-// one value the caller cannot take apart; this checks that BOTH halves
-// of that value reach the record, because a struct that is passed whole
-// and then half-copied would fail in exactly the same way.
 func TestRememberEndpoint_TrustFlowsToTheFingerprint(t *testing.T) {
 	for _, trusted := range []bool{true, false} {
 		p := &Plugin{endpointFingerprints: make(map[string]endpointFingerprint)}

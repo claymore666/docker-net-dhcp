@@ -16,31 +16,15 @@ import (
 )
 
 const (
-	// ledgerFileName is the append-only lease audit log inside
-	// STATE_DIR, one JSON object per line (#109).
+	// ledgerFileName is the append-only lease audit log inside STATE_DIR, one JSON object per line (#109).
 	ledgerFileName = "leases.jsonl"
-	// ledgerMaxSize / ledgerMaxAge bound the active file: whichever
-	// trips first rotates it to <name>.1 (replacing the previous
-	// rotation). Two generations on a 16 MB / 30 day budget keeps the
-	// worst case ~32 MB — bounded even on busy networks.
+	// Two generations on a 16 MB / 30 day budget bound the log to about 32 MB (#109).
 	ledgerMaxSize = 16 << 20
 	ledgerMaxAge  = 30 * 24 * time.Hour
 )
 
-// ledgerEntry is one lease-lifecycle event. Kind is one of "bound",
-// "renew", "stopped", or "stop_failed" — the last written when the
-// SIGTERM-driven client shutdown didn't complete cleanly.
-//
-// Neither of the last two says anything about the LEASE. They were
-// "release" and "release_failed" until #800, and that was a claim about
-// what the DHCP server saw; what a stop records is the CLIENT's
-// shutdown, and whether the lease went back is `release_lease`'s
-// question and answered by the releases_sent / release_failures pair
-// (#962). On the default `never` the address is held until it expires
-// whichever of the two kinds is written; on `on_stop` the release is
-// built from the lease record and sent whatever this file says about
-// the client, which is why the two never agreed to be one entry. The rename is breaking for
-// anyone parsing this file and is tabled in RELEASE_NOTES.md.
+// ledgerEntry is one lease event; "stopped" and "stop_failed" record the client's shutdown, not
+// the lease, whose release the releases_sent and release_failures counters report (#800, #962).
 type ledgerEntry struct {
 	TS        string `json:"ts"`
 	Kind      string `json:"kind"`
@@ -49,19 +33,13 @@ type ledgerEntry struct {
 	Container string `json:"container,omitempty"`
 	Hostname  string `json:"hostname,omitempty"`
 	IP        string `json:"ip,omitempty"`
-	// Source says where the address came from when it was not a DHCP
-	// server: `slaac` for an address formed from a router's advertised
-	// prefix (RFC 4862 section 5.5.3). Absent on every row this ledger
-	// carried before, which is what keeps a reader written against the
-	// old shape working: a DHCPv4 or DHCPv6 lease writes no Source.
+	// Source is `slaac` for an address formed from a router's prefix (RFC 4862 section 5.5.3), absent for a lease.
 	Source string `json:"source,omitempty"`
 	MAC    string `json:"mac,omitempty"`
 }
 
-// leaseLedger appends lease events to a JSONL file with size- and
-// age-based rotation. Failures are counted (ledger_write_failures on
-// /Plugin.Health) and logged, never propagated — the audit trail is
-// auxiliary and must not affect lease handling.
+// leaseLedger appends lease events to a rotated JSONL file; a write failure is counted and logged, never propagated
+// (#109).
 type leaseLedger struct {
 	path     string
 	maxSize  int64
@@ -69,10 +47,7 @@ type leaseLedger struct {
 	now      func() time.Time
 	failures intCounter
 
-	mu sync.Mutex
-	// firstTS is the timestamp of the active file's first entry,
-	// recovered from disk after a plugin restart so age rotation
-	// doesn't reset on every enable cycle.
+	mu      sync.Mutex
 	firstTS time.Time
 }
 
@@ -86,7 +61,7 @@ func newLeaseLedger(path string, failures intCounter) *leaseLedger {
 	}
 }
 
-// Append writes one entry, stamping TS itself. Safe for concurrent use.
+// Append writes one entry, stamping TS itself.
 func (l *leaseLedger) Append(e ledgerEntry) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -101,8 +76,6 @@ func (l *leaseLedger) Append(e ledgerEntry) {
 	line = append(line, '\n')
 
 	if err := l.rotateIfNeeded(now, int64(len(line))); err != nil {
-		// Rotation trouble shouldn't lose the event — log and keep
-		// appending to the oversized file; the next Append retries.
 		log.WithError(err).Warn("Lease ledger rotation failed")
 	}
 
@@ -111,30 +84,12 @@ func (l *leaseLedger) Append(e ledgerEntry) {
 		l.fail("open", err)
 		return
 	}
-	// O_CREATE's mode applies only when the file is created, and this
-	// ledger outlives upgrades on a host bind mount. Tighten what is
-	// already there so a file created by an older version does not stay
-	// world-readable forever (#708).
+	// O_CREATE's mode applies only on creation, so a file an older version created is tightened here (#708).
 	if err := f.Chmod(stateFileMode); err != nil {
 		log.WithError(err).Debug("lease ledger chmod failed")
 	}
-	// The ROTATED generation too, and this is the copy that matters.
-	// rotateIfNeeded moves the file with os.Rename, which does not touch
-	// the inode's mode, and nothing ever opens ".1" again -- so the
-	// tightening above reaches the active ledger and never reaches the
-	// one beside it. A host that rotated once before upgrading kept a
-	// world-readable full lease audit trail: every MAC, every leased
-	// address, every hostname, for the whole retention window.
-	//
-	// The inversion is what makes this worth a line here rather than at
-	// the rename: #708 promised the upgrade tightens hosts that have
-	// been running a while, and a host WITH a rotated ledger is exactly
-	// a host that has been running a while. Chmod'ing at the rename site
-	// would fix rotations from now on and leave the already-rotated file
-	// open forever -- fixing it everywhere except the population the
-	// promise was about (#724).
-	//
-	// ENOENT is the normal case: most hosts have never rotated.
+	// os.Rename keeps the inode's mode, so the rotated generation is tightened too; ENOENT means
+	// the host never rotated (#724).
 	if err := os.Chmod(l.path+".1", stateFileMode); err != nil && !os.IsNotExist(err) {
 		log.WithError(err).Debug("rotated lease ledger chmod failed")
 	}
@@ -143,8 +98,7 @@ func (l *leaseLedger) Append(e ledgerEntry) {
 			log.WithError(err).Debug("lease ledger close failed")
 		}
 	}()
-	// A single write of one line under O_APPEND keeps entries intact
-	// even if another process ever appends to the same file.
+	// One write under O_APPEND keeps a line intact against another appender.
 	if _, err := f.Write(line); err != nil {
 		l.fail("write", err)
 		return
@@ -161,9 +115,6 @@ func (l *leaseLedger) fail(op string, err error) {
 	log.WithError(err).WithField("op", op).Warn("Lease ledger write failed")
 }
 
-// rotateIfNeeded moves the active file to <path>.1 when appending
-// `incoming` bytes would cross the size budget, or when the active
-// file's first entry is older than the age budget. Caller holds l.mu.
 func (l *leaseLedger) rotateIfNeeded(now time.Time, incoming int64) error {
 	st, err := os.Stat(l.path)
 	if errors.Is(err, fs.ErrNotExist) {
@@ -174,10 +125,6 @@ func (l *leaseLedger) rotateIfNeeded(now time.Time, incoming int64) error {
 		return err
 	}
 	if l.firstTS.IsZero() {
-		// Fresh leaseLedger over an existing file (plugin restart):
-		// recover the age anchor from the first line. Unparseable
-		// content falls back to mtime — age rotation stays
-		// approximate rather than disabled.
 		l.firstTS = readFirstTS(l.path, st.ModTime())
 	}
 	if st.Size()+incoming <= l.maxSize && now.Sub(l.firstTS) <= l.maxAge {
@@ -190,8 +137,6 @@ func (l *leaseLedger) rotateIfNeeded(now time.Time, incoming int64) error {
 	return nil
 }
 
-// readFirstTS parses the timestamp of the file's first JSONL entry,
-// returning fallback when the file is empty or malformed.
 func readFirstTS(path string, fallback time.Time) time.Time {
 	f, err := os.Open(path)
 	if err != nil {

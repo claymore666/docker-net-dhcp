@@ -14,45 +14,16 @@ import (
 	docker "github.com/docker/docker/client"
 )
 
-// TestLeaseRenew_HonorsT1 verifies the persistent renewal client the
-// plugin starts in dhcpManager.Start actually renews the lease before
-// it expires, and that the renewal goes through (a DHCPACK from the
-// server) without disturbing the container's IP.
-//
-// This test wants a SHORT T1 and a LONG lease, and those pull in
-// opposite directions — which is why it sets the two independently
-// rather than shortening the lease the way the failure suite does
-// (#356). The lease must outlive the whole wait window, because an
-// ACK observed after expiry would be a re-acquisition, not a renewal,
-// and this test would then pass while proving the opposite of its
-// name. So the fixture keeps the default 120s lease and advertises
-// DHCP option 58 (T1, renewal) / 59 (T2, rebind) explicitly via
-// WithRenewTimes; dhcpcd honours the server-supplied T1, so renewal
-// fires at renewT1 (~12s) instead of half the lease (~60s).
-//
-// We wait past T1, well before T2, and assert:
-//   - the container's IP from docker inspect hasn't changed
-//   - the fixture's server log shows at least 2 DHCPACK lines for our
-//     MAC (one for the initial bind, one for the renewal)
-//
-// The shared suite fixture's lease is left untouched — every other
-// test depends on its stability (#253).
-//
-// The mechanism is self-validating: if the server doesn't honour the
-// advertised T1 (or dhcpcd floors it), no renewal ACK lands in the
-// shortened window and the assertions below fail — it never silently
-// passes.
-//
-// Without this test, a regression in dhcpManager.renew or the
-// long-lived dhcpcd client would be silent: the container starts
-// fine, then loses its IP somewhere between T2 and the next operator
-// noticing the connection dropped.
+// The lease must outlive the wait, since an ACK after expiry is a re-acquisition, so the fixture keeps the default
+// 120 s lease and advertises T1 and T2 (options 58 and 59) on its own ephemeral fixture; dhcpcd honours the server's T1
+// (#253, #356).
+
+// TestLeaseRenew_HonorsT1 checks that the persistent client renews at the server's T1 without changing the IP.
 func TestLeaseRenew_HonorsT1(t *testing.T) {
 	const (
 		renewT1 = 12 // seconds; dhcpcd renews here, above its floor
 		renewT2 = 25 // seconds; rebind — kept past the wait window
-		// Wait past T1 but comfortably before T2, so the only ACK we
-		// expect on top of the bind is a renewal ACK, not a rebind.
+		// Past T1 and before T2, so the extra ACK is a renewal and not a rebind.
 		waitFor = 18 * time.Second
 	)
 
@@ -84,9 +55,6 @@ func TestLeaseRenew_HonorsT1(t *testing.T) {
 	case <-time.After(waitFor):
 	}
 
-	// Re-poll inspect: the IP must not have changed during the
-	// renewal window. Any change here means the renewal client lost
-	// the lease and DISCOVERed a new one.
 	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
 	if err != nil {
 		t.Fatalf("docker client: %v", err)
@@ -107,9 +75,6 @@ func TestLeaseRenew_HonorsT1(t *testing.T) {
 	endACKs := ef.CountLogLines("DHCPACK", mac)
 	t.Logf("DHCPACKs for %s: start=%d, after=%d", mac, startACKs, endACKs)
 
-	// The initial bind is one ACK; a renewal is one more. We've
-	// waited past T1, so we expect at least one renewal ACK on top
-	// of the bind. Strictly: endACKs - startACKs >= 1, and total >= 2.
 	if endACKs-startACKs < 1 {
 		t.Errorf("no renewal DHCPACK observed for %s in the %s wait window — renewal client appears stuck or dnsmasq is not handling the renewal request", mac, waitFor)
 	}

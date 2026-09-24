@@ -29,7 +29,9 @@
 #   prints a `go test -run` regex selecting this shard's tests.
 #   The suite defaults to `main` for the callers that predate the split.
 #
-# Exit: 0 with a regex on stdout, 2 on bad usage or an empty partition.
+# Exit: 0 with a regex on stdout, 1 when a test would run in no shard
+#   (each one named), 2 on bad usage, an empty partition or an empty
+#   enumeration.
 #
 # THE PROPERTY THAT MATTERS is not balance, it is completeness: every
 # test must land in exactly one shard OF ITS OWN SUITE, and the two
@@ -39,6 +41,12 @@
 # shapes. scripts/test-integration-shard.sh asserts the union across all
 # shards of each suite, and the union across the two suites, against a
 # roster it extracts independently.
+#
+# ITS DOMAIN is the roster: `func TestX(t *testing.T)` in
+# test/integration/*_test.go. Every other Test function under
+# test/integration/ runs in a shard only if the integration-test-shard
+# make target runs its package unfiltered, and this script refuses to
+# emit any shard while one does not (#866).
 set -uo pipefail
 
 # THE PARTITION MUST BE A FUNCTION OF THE TREE, NOT OF WHO RUNS IT (#554).
@@ -97,6 +105,86 @@ mapfile -t ROSTER < <(
     | sed -E 's/^func (Test[A-Za-z0-9_]+)\(.*/\1/' \
     | sort -u
 )
+
+# Packages the shard make target runs with no -run or -skip filter,
+# read from the recipe lines make executes, not from its comments (#866).
+unfiltered_pkgs() {
+    [ -f "$ROOT/Makefile" ] || return 0
+    awk '
+        /^integration-test-shard:/ { in_r = 1; next }
+        !in_r { next }
+        /^\t/ { line = line substr($0, 2) }
+        !/^\t/ && !/^$/ && !/^#/ { exit }
+        !/^\t/ { next }
+        /\\$/ { sub(/\\$/, "", line); next }
+        {
+            l = line; line = ""
+            sub(/^[ \t@+-]*/, "", l)
+            if (l ~ /^#/ || l !~ /go test/ || l ~ /[ \t]-(test\.)?(run|skip)[ =]/) next
+            if (!match(l, /-tags[ =]["\047]?[^ "\047]*/)) next
+            tags = substr(l, RSTART + 6, RLENGTH - 6); gsub(/["\047]/, "", tags)
+            nt = split(tags, tg, ","); ok = 0
+            for (i = 1; i <= nt; i++) if (tg[i] == "integration") ok = 1
+            if (!ok) next
+            n = split(l, tok, /[ \t]+/)
+            for (i = 1; i <= n; i++) if (tok[i] ~ /^\.\/test\/integration(\/|$)/) {
+                p = substr(tok[i], 3); sub(/\/$/, "", p); print p
+            }
+        }' "$ROOT/Makefile"
+}
+
+# Every Test function under test/integration/ as Go names one (#866): "Test"
+# alone or followed by a non-lowercase character, TestMain excepted. The
+# directories go test skips (testdata, _*, .*) are skipped here too.
+mapfile -d '' -t TEST_FILES < <(
+    find "$SUITE_DIR" -mindepth 1 \( -type d \( -name testdata -o -name '_*' -o -name '.*' \) -prune \) \
+        -o -type f -name '*_test.go' -print0 2>/dev/null
+)
+if [ "${#TEST_FILES[@]}" -gt 0 ]; then
+    FOUND=$(awk '
+        FNR == 1 { tagged = 0; hdr = 1 }
+        hdr && /^\/\/(go:build|[ \t]*\+build)[ \t]/ && /[ \t!(]integration([ \t)&|,]|$)/ { tagged = 1 }
+        /^package[ \t]/ { hdr = 0 }
+        match($0, /^func[ \t]+Test[A-Za-z0-9_]*/) {
+            name = substr($0, RSTART, RLENGTH); sub(/^func[ \t]+/, "", name)
+            if (name == "TestMain" || substr(name, 5, 1) ~ /[a-z]/) next
+            print FILENAME "\t" FNR "\t" name "\t" tagged
+        }' "${TEST_FILES[@]}")
+else
+    FOUND=""
+fi
+if [ -z "$FOUND" ]; then
+    echo "no Test function found under $SUITE_DIR: refusing to certify a placement it has not looked at" >&2
+    exit 2
+fi
+
+mapfile -t UNFILTERED < <(unfiltered_pkgs)
+declare -A IN_ROSTER=()
+for t in "${ROSTER[@]:-}"; do [ -n "$t" ] && IN_ROSTER[$t]=1; done
+stranded=()
+while IFS=$'\t' read -r file line name tagged; do
+    rel=${file#"$ROOT"/}; rel=${rel%/*}
+    covered=""
+    for p in "${UNFILTERED[@]:-}"; do
+        case "$p" in
+            "") ;;
+            */...) [ "$rel" = "${p%/...}" ] || [ "${rel#"${p%/...}"/}" != "$rel" ] && covered=1 ;;
+            *) [ "$rel" = "$p" ] && covered=1 ;;
+        esac
+    done
+    [ -n "$covered" ] && continue
+    if [ "$rel" = "test/integration" ]; then
+        [ -n "${IN_ROSTER[$name]:-}" ] && continue
+        stranded+=("${file#"$ROOT"/}:$line: $name (top-level, but not in the form the roster reads: func $name(t *testing.T))")
+    elif [ "$tagged" = 1 ]; then
+        stranded+=("${file#"$ROOT"/}:$line: $name (package $rel is not run unfiltered by the integration-test-shard make target)")
+    fi
+done <<< "$FOUND"
+if [ "${#stranded[@]}" -gt 0 ]; then
+    echo "no shard would run these tests, and every shard would still go green (#866):" >&2
+    printf '  %s\n' "${stranded[@]}" >&2
+    exit 1
+fi
 
 ALL=()
 for t in "${ROSTER[@]:-}"; do

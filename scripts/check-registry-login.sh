@@ -52,8 +52,14 @@ POOL_LABEL="dhcp-ci"
 # builds even though the word does not appear.
 BUILD_RE='docker build|docker buildx build|make [^|;&]*plugin|make [^|;&]*create'
 
-# What authenticating looks like. Either the action or a raw CLI login.
-LOGIN_RE='docker/login-action|docker login'
+# What authenticating looks like: a step whose own `uses:` key is
+# docker/login-action, or a step whose run: shell has `docker login` as
+# a command. Named in a step name:, a with: or env: value, or an echo, it
+# authenticates nothing, so the text only makes a step a candidate (#883).
+LOGIN_ACTION_RE='^      (- |  )uses:[[:space:]]*["'"'"']?docker/login-action@'
+
+# shellcheck source=scripts/workflow-shell-lines.sh
+. "$HERE/workflow-shell-lines.sh"
 
 shopt -s nullglob
 files=("$DIR"/*.yml "$DIR"/*.yaml)
@@ -72,15 +78,23 @@ fi
 # than the first build, and a job that logs in only afterwards is
 # reported as if it had no login at all, with the reason named.
 scan_file() {
-    awk -v pool="$POOL_LABEL" -v build_re="$BUILD_RE" -v login_re="$LOGIN_RE" '
-    function flush(   ) {
-        if (job != "" && on_pool && build_line > 0) {
-            if (login_line == 0)
-                printf "%s\t%s\t%s\t%d\n", FILENAME, job, "no login step", build_line
-            else if (login_line > build_line)
-                printf "%s\t%s\t%s\t%d\n", FILENAME, job, "logs in at line " login_line ", after the build", build_line
+    awk -v pool="$POOL_LABEL" -v build_re="$BUILD_RE" -v action_re="$LOGIN_ACTION_RE" '
+    function flush_step(   i, l, raw, at) {
+        raw = ""; at = ""
+        for (i = 1; i <= sn; i++) {
+            if (sbuf[i] ~ action_re) { printf "login\t%s\t%d\t-\n", job, sline[i]; sn = 0; return }
+            if (index(sbuf[i], "docker login")) at = at (at == "" ? "" : ",") (i - 1) ":" sline[i]
+            l = sbuf[i]; gsub(/\t/, " ", l); raw = raw (i > 1 ? "\037" : "") l
         }
-        job = ""; on_pool = 0; build_line = 0; login_line = 0
+        if (at != "") printf "cand\t%s\t%s\t%s\n", job, at, raw
+        sn = 0
+    }
+    function flush(   ) {
+        if (job != "") {
+            flush_step()
+            printf "job\t%s\t%d\t%d\n", job, on_pool, build_line
+        }
+        job = ""; on_pool = 0; build_line = 0; sn = 0
     }
     # A job header is exactly two spaces of indent followed by a name
     # and a colon, inside the top-level `jobs:` block.
@@ -99,20 +113,60 @@ scan_file() {
     {
         if ($0 ~ pool) on_pool = 1
         if (build_line == 0 && $0 ~ build_re) build_line = FNR
-        if (login_line == 0 && $0 ~ login_re) login_line = FNR
+        if ($0 ~ /^      - /) flush_step()
+        sn++; sbuf[sn] = $0; sline[sn] = FNR
     }
     END { flush() }
     ' "$1"
+}
+
+logins() { awk '$1 == "docker" && $2 == "login"'; }
+
+# login_line MENTIONS RAW: the line of the step's first `docker login`
+# command, or nothing when its shell runs none. MENTIONS is idx:line per
+# line naming it; a line counts only if, read alone, it runs a login the
+# whole step runs, so an earlier echo or name: cannot date a later login
+# (#883). No such line: the last mention, the later reading. Blind: a
+# heredoc line identical to the login, above the build, dates it early.
+login_line() {
+    local m idx ln c
+    local -a L
+    local -A avail=()
+    IFS=$'\037' read -r -a L <<< "$2"
+    while IFS= read -r c; do avail["$c"]=1; done \
+        < <(printf '%s\n' "${L[@]}" | workflow_shell_lines --raw - | shell_simple_commands | logins)
+    [ "${#avail[@]}" -gt 0 ] || return 0
+    for m in ${1//,/ }; do
+        idx="${m%%:*}"; ln="${m#*:}"
+        while IFS= read -r c; do
+            [ -n "${avail["$c"]:-}" ] && { echo "$ln"; return 0; }
+        done < <(printf '%s\n' "${L[$idx]}" | sed -E 's/^[[:space:]]*(-[[:space:]]+)?run:[[:space:]]*//' |
+            shell_simple_commands | logins)
+    done
+    echo "$ln"
 }
 
 findings=()
 examined=0
 for f in "${files[@]}"; do
     examined=$((examined + 1))
-    while IFS=$'\t' read -r file job why line; do
-        [ -n "${file:-}" ] || continue
-        findings+=("$(basename "$file")	$job	$why	line $line")
+    declare -A LOGIN=()
+    while IFS=$'\t' read -r kind job a b; do
+        case "$kind" in
+            cand) a="$(login_line "$a" "$b")"; [ -n "$a" ] || continue ;&
+            login) [ "${LOGIN[$job]:-0}" -eq 0 ] || [ "$a" -lt "${LOGIN[$job]}" ] && LOGIN[$job]="$a" ;;
+            job)
+                [ "$a" = 1 ] || continue; [ "$b" -gt 0 ] || continue
+                login="${LOGIN[$job]:-0}"
+                if [ "$login" -eq 0 ]; then
+                    findings+=("$(basename "$f")	$job	no login step	line $b")
+                elif [ "$login" -gt "$b" ]; then
+                    findings+=("$(basename "$f")	$job	logs in at line $login, after the build	line $b")
+                fi
+                ;;
+        esac
     done < <(scan_file "$f")
+    unset LOGIN
 done
 
 if [ "${#findings[@]}" -ne 0 ]; then

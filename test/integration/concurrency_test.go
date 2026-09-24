@@ -15,17 +15,9 @@ import (
 	"github.com/claymore666/docker-net-dhcp/v2/test/integration/harness"
 )
 
-// TestConcurrency_DistinctLeases starts N containers on the same
-// macvlan network in parallel and asserts each gets a distinct IP
-// from the DHCP pool. Doubles as a deadlock smoke test:
-// CreateEndpoint takes networkLock per-network, so a regression that
-// upgraded that to a global lock or held it across the one-shot dhcpcd
-// acquisition would serialize starts and quickly blow the timeout.
-//
-// N=4 keeps the test fast (one short-lease dnsmasq, one veth) while
-// being enough to surface a serialization regression: 4 sequential
-// 5-second dhcpcd roundtrips would already exceed the per-container
-// IPAcquisitionBudget if the lock were held wrong.
+// CreateEndpoint locks per network: a global lock, or one held across the acquisition, serializes four 5 s acquisitions past IPAcquisitionBudget.
+
+// TestConcurrency_DistinctLeases starts four containers in parallel and checks that each gets a distinct IP.
 func TestConcurrency_DistinctLeases(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()

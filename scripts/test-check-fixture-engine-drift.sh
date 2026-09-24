@@ -172,6 +172,23 @@ else
     pass=$((pass + 1))
 fi
 
+# --report (#1015): a minor apart is a notice and exit 0, the same minor
+# is no notice; a report that went red would fail the arm64 lane by design.
+guarded_tmpdir tmp
+make_fixtures "$tmp/requests" "macvlan-run=29.8.0"
+apart="$(FIXTURE_ROOT="$tmp/requests" FIXTURE_ENGINE_VERSION="29.7.2" bash "$GATE" --report 2>&1)"; apart_rc=$?
+same="$(FIXTURE_ROOT="$tmp/requests" FIXTURE_ENGINE_VERSION="29.8.1" bash "$GATE" --report 2>&1)"; same_rc=$?
+if [ "$apart_rc" -eq 0 ] && [ "$same_rc" -eq 0 ] \
+    && printf '%s' "$apart" | grep -F "running engine 29.7.2, fixtures recorded on 29.8.0" >/dev/null \
+    && printf '%s' "$apart" | grep -F "::notice title=Engine version::" >/dev/null \
+    && ! printf '%s' "$same" | grep -F "::notice" >/dev/null; then
+    echo "ok    --report exits 0 and notices a minor apart only"
+    pass=$((pass + 1))
+else
+    echo "FAIL  --report: apart exit $apart_rc '$apart', same exit $same_rc '$same'"
+    fail=$((fail + 1))
+fi
+
 echo
 echo "check-fixture-engine-drift self-test: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

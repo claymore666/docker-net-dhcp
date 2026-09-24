@@ -14,20 +14,7 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// The capture socket, shared by every wire instrument in this package.
-//
-// arpcapture.go, racapture.go and dhcpcapture.go ask three questions of
-// three protocols and open the SAME socket to answer them: AF_PACKET,
-// SOCK_RAW, ETH_P_ALL, bound to one link, with a receive timeout so the
-// read loop can notice it has been stopped. Each of the first two
-// carried its own copy and its own comment saying the opener was
-// "factored out so the namespace-switching caller runs exactly the same
-// code and a fix to one cannot miss the other" -- which is the right
-// rule stated twice and applied within one file each time. The third
-// instrument is where that stops: one opener, one namespace dance, and
-// a change to the socket options reaches all three.
-
-// openCaptureSocket opens the packet socket and binds it to iface.
+// openCaptureSocket opens the AF_PACKET, SOCK_RAW, ETH_P_ALL socket every wire instrument shares, bound to iface (#940).
 func openCaptureSocket(iface string) (int, error) {
 	link, err := netlink.LinkByName(iface)
 	if err != nil {
@@ -50,47 +37,17 @@ func openCaptureSocket(iface string) (int, error) {
 	return fd, nil
 }
 
-// captureEthertypeBE is htons(ETH_P_ALL), and it is not ETH_P_ARP for a
-// reason worth the extra frames.
-//
-// A packet socket bound to a SPECIFIC protocol is fed from
-// `ptype_base`, which the receive path consults; the TRANSMIT path
-// (`dev_queue_xmit_nit`) delivers only to `ptype_all`. So an ETH_P_ARP
-// socket sees what arrives on the link and nothing the host sends out
-// of it. MEASURED on the 2.x lane 2026-09-04: the squatter's ARP
-// Request was missing from the capture while the reply to it was
-// present -- which would have made the positive control in the
-// conflict_check=off case unsatisfiable, and every absence beneath it
-// unreadable.
-//
-// The cost is that each parser now has to reject frames of every other
-// shape itself. On a fixture link carrying one DHCP exchange and a ping
-// that is a handful of packets, and the alternative is an instrument
-// that cannot see half the wire.
+// captureEthertypeBE is htons(ETH_P_ALL). A socket bound to one protocol is fed from ptype_base on receive only;
+// dev_queue_xmit_nit delivers transmitted frames to ptype_all. Measured on the 2.x lane 2026-09-04: an ETH_P_ARP
+// capture missed the squatter's ARP Request and kept the reply (#882, #940).
 func captureEthertypeBE() uint16 {
 	const ethPALL = 0x0003
 	return uint16(ethPALL&0xff)<<8 | uint16(ethPALL>>8)
 }
 
-// openCaptureSocketInNetns opens the capture socket inside nsName.
-//
-// The namespace is entered on a LOCKED thread only for as long as the
-// socket takes to open and bind, and the thread is put back before this
-// returns. An AF_PACKET socket belongs to the namespace it was created
-// in for the rest of its life, so the read loop needs no namespace of
-// its own -- which is the property that makes this safe to call from a
-// test whose other goroutines must stay in the host namespace.
-//
-// runtime.LockOSThread is not optional here and the thread is
-// deliberately NOT unlocked on the error paths: a goroutine that failed
-// to restore its namespace must not be handed back to the scheduler,
-// and letting the locked thread die with the goroutine is the only way
-// to guarantee that. fatalf is the test's Fatalf, which ends the
-// goroutine, so the thread dies with it.
-//
-// It FAILS rather than skips when the namespace cannot be entered: a
-// capture that quietly did not run turns every "nothing was on the
-// wire" assertion into a tautology.
+// openCaptureSocketInNetns opens the capture socket inside nsName on a locked thread and restores the thread; an
+// AF_PACKET socket stays in the netns it was created in. On error the thread stays locked and dies with the goroutine
+// through fatalf, since it may still be in the wrong netns (#940).
 func openCaptureSocketInNetns(fatalf func(string, ...any), what, nsName, iface string) int {
 	runtime.LockOSThread()
 

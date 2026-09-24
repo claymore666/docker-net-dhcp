@@ -254,17 +254,20 @@ iptables -S FORWARD | head -1`.
 ```bash
 # On arm64 use the -arm64 tag. A network stores this exact reference
 # as its driver, so it must name the plugin you installed.
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.2.2 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.2.3 \
   --ipam-driver null -o bridge=my-bridge my-dhcp-net
 ```
 
-With IPv6 as well (the `docker network create --ipv6` flag does **not**
-work with the null IPAM driver; use the `ipv6_mode` driver option
-instead):
+With IPv6 as well, use the `ipv6_mode` driver option on every engine.
+On engine 26 (26.1.4, measured 2026-09-24) the daemon refuses
+`docker network create --ipv6` on a network with the null IPAM driver.
+On 29.8.1 it accepts the create, but a `--ip6` address still does not
+reach the plugin: the Solicit carried no requested address (measured the
+same day).
 
 ```bash
 # arm64: the -arm64 tag here too.
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.2.2 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.2.3 \
   --ipam-driver null -o bridge=my-bridge -o ipv6_mode=dhcp my-dhcp-net
 ```
 
@@ -346,7 +349,7 @@ services:
 networks:
   dhcp:
     # arm64: the -arm64 tag, matching the plugin you installed.
-    driver: ghcr.io/claymore666/docker-net-dhcp:v2.2.2
+    driver: ghcr.io/claymore666/docker-net-dhcp:v2.2.3
     driver_opts:
       bridge: my-bridge
       ipv6_mode: 'dhcp'

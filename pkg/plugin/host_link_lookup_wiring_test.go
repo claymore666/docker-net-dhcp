@@ -13,19 +13,8 @@ import (
 	"testing"
 )
 
-// The property no behaviour test in this package can reach: every
-// lookup of a host-side veth by its generated `dh-<12 hex>` name goes
-// through hostLinkByGeneratedName, and the one exception is the rename
-// itself, whose lookup has to stay inside its own write section (#1051).
-//
-// A call site added later is the whole risk: the window is two kernel
-// calls wide and nothing unit-sized lands in it by chance, so a raw
-// lookup would be invisible to every behaviour cell here.
-//
-// The name is followed and not its spelling. A site is judged by where
-// its argument came from -- vethPairNames' host half, or subLinkName,
-// which is that same half byte for byte -- through plain assignment,
-// so calling the variable something else does not hide the call.
+// Every lookup of a host veth by its generated name goes through
+// hostLinkByGeneratedName, except the rename's own lookup inside its write section (#1051).
 func TestHostLinkLookupsGoThroughTheGuard(t *testing.T) {
 	files, err := filepath.Glob("*.go")
 	if err != nil {
@@ -123,8 +112,6 @@ func TestHostLinkLookupsGoThroughTheGuard(t *testing.T) {
 	}
 }
 
-// callsOn reports whether the body calls recv.method(), which is how
-// both halves of the guard are taken.
 func callsOn(body *ast.BlockStmt, recv, method string) bool {
 	found := false
 	ast.Inspect(body, func(n ast.Node) bool {
@@ -144,8 +131,6 @@ func callsOn(body *ast.BlockStmt, recv, method string) bool {
 	return found
 }
 
-// isLinkByName reports whether the call is the seam or the netlink call
-// it stands in for.
 func isLinkByName(fun ast.Expr) bool {
 	switch f := fun.(type) {
 	case *ast.Ident:
@@ -157,11 +142,6 @@ func isLinkByName(fun ast.Expr) bool {
 	return false
 }
 
-// generatedNames collects the identifiers in one function body that
-// hold a host-side veth's generated name: assigned from vethPairNames
-// (first result) or subLinkName, or copied from one that was. Two
-// passes, because a copy can be written before the walk reaches its
-// source in a nested block.
 func generatedNames(body *ast.BlockStmt) map[string]bool {
 	tainted := map[string]bool{}
 	for pass := 0; pass < 2; pass++ {
@@ -203,8 +183,6 @@ func mark(tainted map[string]bool, lhs ast.Expr) {
 	}
 }
 
-// isGeneratedName reports whether this argument is a generated host
-// name: a tracked identifier, or subLinkName called in place.
 func isGeneratedName(arg ast.Expr, tainted map[string]bool) bool {
 	switch a := arg.(type) {
 	case *ast.Ident:

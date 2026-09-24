@@ -104,11 +104,8 @@ mapfile -t tests < <(printf '%s\n' "${tests[@]}" | sort)
 # filename does not count either — that is the same defect one door
 # along, and it is the one #872's own gate was caught by.
 #
-# THE BOUNDARY. This asks whether the filename appears in an executed
-# line, not whether it is the command's argv[0]. `run: echo
-# scripts/test-x.sh` would satisfy it. Narrowing further would mean
-# parsing shell, and the failure that cost something was prose, not a
-# contrived echo.
+# `run: echo scripts/test-x.sh` satisfied it until #883; the file must
+# now be the command word of a simple command (shell_command_words).
 WORKFLOWS="${SELFTEST_WORKFLOWS:-$(cd "$HERE/.." && pwd)/.github/workflows}"
 
 # shellcheck source=scripts/workflow-shell-lines.sh
@@ -117,9 +114,9 @@ WORKFLOWS="${SELFTEST_WORKFLOWS:-$(cd "$HERE/.." && pwd)/.github/workflows}"
 # Extracted once: this runs per delegated test, and re-reading every
 # workflow each time would make the cost quadratic in the skip list.
 if [ -d "$WORKFLOWS" ]; then
-    workflow_shell="$(workflow_shell_lines "$WORKFLOWS")"
+    workflow_cmds="$(workflow_shell_lines --raw "$WORKFLOWS" | shell_command_words | sed 's|.*/||')"
 else
-    workflow_shell=""
+    workflow_cmds=""
 fi
 
 jobs="${SELFTEST_JOBS:-$(nproc 2>/dev/null || echo 1)}"
@@ -209,12 +206,12 @@ for t in "${tests[@]}"; do
         skipped+=("$base -> $owner")
         # A case glob rather than a pipeline into grep: under pipefail a
         # consumer that exits early kills the producer with SIGPIPE and
-        # the pipeline reports failure on success. $workflow_shell is
+        # the pipeline reports failure on success. $workflow_cmds is
         # empty when there is no workflow directory, which falls to the
         # same arm — "no workflows" and "no execution" are both
         # "delegated to nowhere".
-        case "$workflow_shell" in
-            *"$base"*) : ;;
+        case $'\n'"$workflow_cmds"$'\n' in
+            *$'\n'"$base"$'\n'*) : ;;
             *) undelegated+=("$base") ;;
         esac
         continue
@@ -224,6 +221,26 @@ done
 
 OUT="$(mktemp -d)"
 trap 'rm -rf "$OUT"' EXIT
+
+# The ctime of every tracked file and of the directories holding them is read before the workers start and again after
+# they finish, and any change fails the run naming the path. The golden-fixture gate's in-place rewrite of
+# pkg/plugin/endpoints.go raced a parallel reader by timing alone (run 35937925577, 2026-09-24, #1016).
+SNAP_ROOT=""
+if SNAP_ROOT="$(git -C "$DIR" rev-parse --show-toplevel 2>/dev/null)"; then
+    ( cd "$SNAP_ROOT" && git ls-files -z | while IFS= read -r -d '' f; do
+          printf '%s\0' "$f"
+          d="$f"
+          while [ "${d%/*}" != "$d" ]; do d="${d%/*}"; printf '%s\0' "$d"; done
+      done; printf '.\0' ) | LC_ALL=C sort -zu > "$OUT/snap-paths"
+    # %.9Z and not %Z: a write in the snapshot's own second would otherwise read as no change (#1016).
+    snapshot() { ( cd "$SNAP_ROOT" && LC_ALL=C xargs -0 stat -c '%n %.9Z' -- < "$OUT/snap-paths" 2>/dev/null ) \
+        | LC_ALL=C sort; }
+    snapshot > "$OUT/snap-before"
+    [ -s "$OUT/snap-before" ] || {
+        echo "::error title=Gate self-test tree snapshot::could not read the ctimes of the tracked files of $SNAP_ROOT" >&2
+        exit 2
+    }
+fi
 
 # One file per test, named by index so the replay order is the discovery
 # order regardless of which worker finished first. The exit code is
@@ -248,6 +265,15 @@ for i in "${!run[@]}"; do
     fi
 done
 wait
+
+tree_changed=()
+if [ -n "$SNAP_ROOT" ]; then
+    snapshot > "$OUT/snap-after"
+    if ! cmp -s "$OUT/snap-before" "$OUT/snap-after"; then
+        mapfile -t tree_changed < <(LC_ALL=C comm -3 "$OUT/snap-before" "$OUT/snap-after" \
+            | sed -E 's/^\t//; s/ [0-9]+\.[0-9]+$//' | LC_ALL=C sort -u)
+    fi
+fi
 
 for i in "${!run[@]}"; do
     base="$(basename "${run[$i]}")"
@@ -277,12 +303,21 @@ if [ "${#undelegated[@]}" -ne 0 ]; then
     exit 1
 fi
 
+if [ "${#tree_changed[@]}" -ne 0 ]; then
+    echo >&2
+    echo "::error title=Gate self-test wrote to the tree it checks::the ctime of these tracked paths under" \
+         "$SNAP_ROOT changed while the self-tests ran; a rewrite that restores the content moves the ctime too:" >&2
+    printf '  %s\n' "${tree_changed[@]}" >&2
+fi
+
 if [ "${#failed[@]}" -ne 0 ]; then
     echo >&2
     echo "${#failed[@]} gate self-test(s) failed:" >&2
     printf '  %s\n' "${failed[@]}" >&2
     exit 1
 fi
+
+[ "${#tree_changed[@]}" -eq 0 ] || exit 1
 
 ran=$(( ${#tests[@]} - ${#skipped[@]} ))
 echo "All ${ran} gate self-test(s) run here passed (${#skipped[@]} delegated)."

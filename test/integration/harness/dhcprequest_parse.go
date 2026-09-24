@@ -1,15 +1,7 @@
 // Copyright the docker-net-dhcp contributors.
 // SPDX-License-Identifier: GPL-3.0-only
 
-// No `//go:build integration` tag, deliberately, and for the reason
-// v6signature.go and raguard_parse.go give: everything in this file is
-// a pure function over bytes, so it is driven in the fast lane against
-// frames built by the client library's OWN encoder rather than being
-// validated only in a world that needs root, a veth pair and a DHCP
-// server to enter.
-//
-// The capture that feeds it (dhcpcapture.go) is tagged, gathers the
-// evidence, and asks the function here what each frame is.
+// No integration tag: pure functions over frames built by the client library's own encoder, driven in the unit job.
 
 package harness
 
@@ -20,34 +12,19 @@ import (
 	"time"
 )
 
-// DHCPClientMessage is one captured DHCPv4 message sent BY a client,
-// reduced to what a question about renewal turns on.
-//
-// Why the client's messages and not the server's: this instrument
-// exists to count what left the host during an outage, and during an
-// outage the server sends nothing at all. A capture that counted
-// answers would report the same number -- zero -- for a client
-// retransmitting into silence and for a client that had stopped asking,
-// which is the one distinction the whole counter is about.
+// DHCPClientMessage is one captured client DHCPv4 message; during an outage the server sends nothing, so clients' messages are counted (#940).
 type DHCPClientMessage struct {
 	At time.Time
-	// Raw is the frame exactly as it came off the wire, carried so a
-	// failing lane run can print the bytes the decoder was given.
+	// Raw is the frame as captured.
 	Raw []byte
-	// SourceMAC is the ethernet source and ClientMAC is BOOTP's chaddr.
-	// Both, because they are two claims about identity that a relay or
-	// a misconfigured bridge can make disagree, and a test that reads
-	// only one cannot notice.
+	// SourceMAC is the ethernet source and ClientMAC is BOOTP's chaddr, which a relay or bridge can make disagree.
 	SourceMAC net.HardwareAddr
 	ClientMAC net.HardwareAddr
-	// Type is DHCP option 53. Zero when the message carried none, which
-	// makes it a BOOTP message rather than a DHCP one.
+	// Type is DHCP option 53, zero for a BOOTP message.
 	Type uint8
 	// CIAddr is BOOTP's 'ciaddr' field, the client's own address.
 	CIAddr net.IP
-	// Broadcast reports that the frame went to 255.255.255.255 rather
-	// than to one server: the difference between RFC 2131's REBINDING
-	// and RENEWING on the wire.
+	// Broadcast reports a frame to 255.255.255.255: REBINDING rather than RENEWING on the wire (RFC 2131 section 4.4.5).
 	Broadcast bool
 	XID       uint32
 }
@@ -61,22 +38,9 @@ const (
 	DHCPInform   = 8
 )
 
-// IsRenewalRequest reports whether this is a DHCPREQUEST extending a
-// lease the client already holds.
-//
-// The predicate is the message's own content and not a guess about the
-// client's state: RFC 2131 Table 5 gives 'ciaddr' as zero in the
-// SELECTING and INIT-REBOOT columns and as the client's address in the
-// RENEWING and REBINDING ones. It is deliberately the SAME predicate
-// the library counts RenewalsSent with (lease/manager.go, countSent),
-// because the assertion this instrument exists to carry compares the
-// two numbers -- an instrument that counted a different population
-// would make the comparison meaningless in whichever direction it
-// happened to differ.
-//
-// REBINDING is included, for that reason and on purpose: a broadcast
-// REQUEST with ciaddr set is still a renewal request that the server
-// did not answer, and the counter under test moves for it.
+// IsRenewalRequest reports a DHCPREQUEST with ciaddr set: RFC 2131 Table 5 gives ciaddr as zero in SELECTING and
+// INIT-REBOOT and as the client's address in RENEWING and REBINDING. It is the predicate the library's countSent
+// (lease/manager.go) counts RenewalsSent with, so the two populations match (#940).
 func (m DHCPClientMessage) IsRenewalRequest() bool {
 	return m.Type == DHCPRequest && m.CIAddr != nil && !m.CIAddr.Equal(net.IPv4zero)
 }
@@ -106,9 +70,7 @@ func (m DHCPClientMessage) String() string {
 		m.At.Format("15:04:05.000"), kind, dst, m.ClientMAC, m.CIAddr, m.XID)
 }
 
-// The offsets this file reads. Written out rather than inlined so the
-// numbers appear once and a reader can check them against RFC 2131
-// section 2 without counting.
+// Offsets from RFC 2131 section 2.
 const (
 	ethertypeIPv4 = 0x0800
 	protoUDP      = 17
@@ -133,21 +95,8 @@ const (
 	chaddrMaxLen = 16
 )
 
-// ParseDHCPv4Request decodes an ethernet frame carrying a DHCPv4
-// message from a client to a server, and reports false for everything
-// else.
-//
-// Everything else is most of what arrives: the socket underneath is
-// ETH_P_ALL (see captureEthertypeBE), so ARP, the container's own
-// traffic and the server's replies all pass through here. Each is
-// dropped rather than mis-parsed -- a frame that is not a client's
-// DHCP message is not evidence of anything this instrument claims.
-//
-// BOUND, and it is the same one ParseIPv4UDP in the client library
-// takes: a fragmented datagram is refused rather than reassembled. A
-// DHCP message is far below any link MTU, so a fragment here means
-// something exotic is happening and the honest answer is that this
-// instrument did not read it.
+// ParseDHCPv4Request decodes a client-to-server DHCPv4 frame and reports false for anything else, including a fragment,
+// which the client library's ParseIPv4UDP also refuses (#940).
 func ParseDHCPv4Request(b []byte) (DHCPClientMessage, bool) {
 	if len(b) < ethHeaderLen+20+udpHeaderLen+bootpMinLen {
 		return DHCPClientMessage{}, false
@@ -205,13 +154,7 @@ func ParseDHCPv4Request(b []byte) (DHCPClientMessage, bool) {
 	return m, true
 }
 
-// dhcpMessageType walks the option field for option 53, and returns 0
-// when there is none.
-//
-// The walk stops at End and skips Pad, per RFC 2132 section 3.1. An
-// option whose length runs off the end of the buffer ends the walk
-// rather than panicking: a truncated capture is a frame this instrument
-// could not read, never a frame it may guess about.
+// dhcpMessageType returns option 53, or 0; the walk skips Pad, stops at End (RFC 2132 section 3.1) and at a length past the buffer.
 func dhcpMessageType(opts []byte) uint8 {
 	for i := 0; i < len(opts); {
 		switch opts[i] {

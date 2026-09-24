@@ -10,23 +10,9 @@ import (
 	"testing"
 )
 
-// pluginSourceDir is where the plugin's own code lives, relative to
-// this package.
+// pluginSourceDir is the plugin package relative to this one.
 const pluginSourceDir = "../../../pkg/plugin"
 
-// TestFatalFaultSignaturesExistInPluginSource is the load-bearing test
-// in this file.
-//
-// FaultCensus recognises a fault by a substring of the line the plugin
-// logs. Reword that line and the census silently returns zero — and a
-// zero from this census is read as "the run was clean over its whole
-// length", which is the strongest claim the floor makes. Absence of
-// evidence would arrive wearing the costume of evidence of absence,
-// which is the exact failure #385 and #377 are both about.
-//
-// So every signature is pinned against the plugin's source. If this
-// fails, either the log line moved (update the signature) or the fault
-// path was removed (drop it) — but it can no longer happen quietly.
 func TestFatalFaultSignaturesExistInPluginSource(t *testing.T) {
 	src := readPluginSource(t)
 	if len(fatalFaultSignatures) == 0 {
@@ -42,13 +28,6 @@ func TestFatalFaultSignaturesExistInPluginSource(t *testing.T) {
 	}
 }
 
-// TestFatalFaultSignaturesCoverEveryIncrementSite checks the other
-// direction: that no healthy-affecting counter gained an increment the
-// census cannot see.
-//
-// The signature list is a claim about how many distinct ways each
-// counter can move. A new increment site with a new log line would
-// leave the census under-reporting while still looking healthy.
 func TestFatalFaultSignaturesCoverEveryIncrementSite(t *testing.T) {
 	src := readPluginSource(t)
 
@@ -57,11 +36,7 @@ func TestFatalFaultSignaturesCoverEveryIncrementSite(t *testing.T) {
 		"recoveryFailed.Add(":         3,
 		"tombstoneWriteFailures.Add(": 1,
 	}
-	// recoveryFailed has three literal Add sites, but one of them is
-	// inside the recordSyncFailure closure, reached from three call
-	// sites with three distinct log lines — hence five recovery_failed
-	// signatures against three Add sites. Spelled out because the
-	// mismatch looks like a bug otherwise.
+	// recovery_failed has five signatures for three Add sites: one Add is in the recordSyncFailure closure, reached from three log lines.
 	for expr, n := range want {
 		got := strings.Count(src, expr)
 		if got != n {
@@ -109,11 +84,6 @@ func TestFaultCensus_CountsRepeats(t *testing.T) {
 	}
 }
 
-// An empty log is not a clean run. It is a run whose evidence is
-// missing, and the caller has to be able to tell those apart — the
-// count alone cannot, so the floor treats an unreadable log as a fault
-// before it ever gets here. This pins the boundary of what FaultCensus
-// itself promises.
 func TestFaultCensus_EmptyLogReportsZeroAndSaysNothing(t *testing.T) {
 	n, report := FaultCensus(nil)
 	if n != 0 || report != "" {
