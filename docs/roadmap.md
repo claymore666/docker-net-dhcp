@@ -247,7 +247,7 @@ read it before writing the PR.
 | It will not gain a static-IP workflow | an address that must be fixed is fixed where addresses are decided, in a reservation on the DHCP server | n/a |
 | It will not ask for more privileges to buy a feature | a capability added to `config.json` forces every operator to re-approve the plugin on upgrade | [#725] |
 | It will not detect a conflicting container on the same host | RFC 5227 runs on the container's own link, and macvlan parent and child isolation hides a sibling that has taken our address | [#528] |
-| It will not support ipvlan L3 or L3S | DHCP needs L2 broadcast | n/a |
+| It refuses ipvlan L3 and L3S, see [reference](reference.md#macvlan-and-ipvlan-sub-modes) | an L3 child sends no broadcast, so DHCP cannot start | n/a |
 | It will not run its arm64 verification under qemu-user or binfmt | measured: the emulated plugin could not acquire a lease at all, and arm64 verification runs on real hardware | [#531] |
 | It will not backport security fixes | only the latest release is supported, and upgrading is one `docker plugin install` | [SECURITY.md](https://github.com/claymore666/docker-net-dhcp/blob/main/SECURITY.md) |
 | It will not carry AI-assistant attribution in its history | commits and PRs are signed by a person who stands behind them, and a CI check enforces it | n/a |

@@ -260,6 +260,11 @@ type DHCPNetworkOptions struct {
 	HostIfname string `mapstructure:"host_ifname"`
 	// RequireMAC refuses an endpoint whose MAC the user did not set, so a MAC-keyed reservation always matches (#1036).
 	RequireMAC bool `mapstructure:"require_mac"`
+	// MacvlanMode is the macvlan child's kernel mode, bridge (the default), vepa, private or passthru (#905).
+	MacvlanMode string `mapstructure:"macvlan_mode"`
+	// IPvlanMode is the ipvlan child's kernel mode; l2 (the default) is the only accepted value, see parseIPvlanMode
+	// (#905).
+	IPvlanMode string `mapstructure:"ipvlan_mode"`
 }
 
 func (o DHCPNetworkOptions) effectiveMode() string {
@@ -1171,7 +1176,8 @@ func (p *Plugin) recoveredHostname(ctx context.Context, containerID string) (dhc
 
 // recoveredMAC returns the MAC recovery runs the endpoint under. Docker reports none for ipvlan, whose slaves take
 // the parent's MAC and refuse a change with EOPNOTSUPP, so it is read from the parent; measured on the lane
-// 2026-09-06, every ipvlan endpoint failed recovery with `parse MAC "": invalid MAC address` (#911).
+// 2026-09-06, every ipvlan endpoint failed recovery with `parse MAC "": invalid MAC address` (#911). A macvlan
+// passthru child also wears the parent's MAC and reports none to Docker (#905).
 func recoveredMAC(opts DHCPNetworkOptions, macStr string) (net.HardwareAddr, error) {
 	if macStr != "" {
 		mac, err := net.ParseMAC(macStr)
@@ -1180,16 +1186,16 @@ func recoveredMAC(opts DHCPNetworkOptions, macStr string) (net.HardwareAddr, err
 		}
 		return mac, nil
 	}
-	if opts.effectiveMode() != ModeIPvlan {
+	if !opts.childWearsParentMAC() {
 		return nil, fmt.Errorf("parse MAC %q: %w", macStr, errNoRecoveryMAC)
 	}
 	parent, err := netlink.LinkByName(opts.Parent)
 	if err != nil {
-		return nil, fmt.Errorf("ipvlan parent %q: %w", opts.Parent, err)
+		return nil, fmt.Errorf("%s parent %q: %w", opts.effectiveMode(), opts.Parent, err)
 	}
 	hw := parent.Attrs().HardwareAddr
 	if len(hw) == 0 {
-		return nil, fmt.Errorf("ipvlan parent %q has no hardware address to inherit", opts.Parent)
+		return nil, fmt.Errorf("%s parent %q has no hardware address to inherit", opts.effectiveMode(), opts.Parent)
 	}
 	return hw, nil
 }
@@ -1303,10 +1309,11 @@ func (p *Plugin) lookupEndpointMAC(ctx context.Context, networkID, endpointID st
 	return "", fmt.Errorf("endpoint %v not found in network %v's container list", endpointID, networkID)
 }
 
-// reacquireEndpoint reruns CreateEndpoint for a Join with no hint, as on `docker restart`; ipvlan gets no MAC.
+// reacquireEndpoint reruns CreateEndpoint for a Join with no hint, as on `docker restart`; ipvlan and passthru get
+// no MAC, since their child wears the parent's (#905).
 func (p *Plugin) reacquireEndpoint(ctx context.Context, r JoinRequest, opts DHCPNetworkOptions) error {
 	macAddr := ""
-	if opts.effectiveMode() != ModeIPvlan {
+	if !opts.childWearsParentMAC() {
 		mac, err := p.lookupEndpointMAC(ctx, r.NetworkID, r.EndpointID)
 		if err != nil {
 			return fmt.Errorf("failed to look up original endpoint MAC: %w", err)

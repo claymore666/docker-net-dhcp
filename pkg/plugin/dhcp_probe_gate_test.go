@@ -23,7 +23,7 @@ func TestRunDHCPProbe_TakesTheGateForItsParent(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	_ = p.runDHCPProbe(ctx, probeGateParent, ModeMacvlan, serverPolicy{})
+	_ = p.runDHCPProbe(ctx, DHCPNetworkOptions{Mode: ModeMacvlan, Parent: probeGateParent}, serverPolicy{})
 
 	if got := p.parentLinkWaitTimeouts.Load(); got != 1 {
 		t.Fatalf("parent_link_wait_timeouts = %d, want 1 — the probe did not wait on the "+
@@ -36,7 +36,7 @@ func TestRunDHCPProbe_TakesTheGateForItsParent(t *testing.T) {
 func TestRunDHCPProbe_ReleasesTheGateOnTheErrorPath(t *testing.T) {
 	p := &Plugin{}
 
-	if err := p.runDHCPProbe(context.Background(), probeGateParent, ModeMacvlan, serverPolicy{}); err == nil {
+	if err := p.runDHCPProbe(context.Background(), DHCPNetworkOptions{Mode: ModeMacvlan, Parent: probeGateParent}, serverPolicy{}); err == nil {
 		t.Fatalf("probe against %q succeeded; this test needs it to fail so it is "+
 			"exercising the error path", probeGateParent)
 	}

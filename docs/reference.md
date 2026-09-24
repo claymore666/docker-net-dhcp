@@ -59,6 +59,8 @@ network create -o key=value`, or `driver_opts:` in Compose:
 | `mode` | all | `bridge` |
 | `bridge` | bridge | *(required)* |
 | `parent` | macvlan, ipvlan | *(required)* |
+| `macvlan_mode` | macvlan | `bridge` |
+| `ipvlan_mode` | ipvlan | `l2` |
 | `gateway` | all | from DHCP |
 | `ipv6` | all | `false` |
 | `ipv6_mode` | all | `off` |
@@ -399,7 +401,9 @@ docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.2.2 \
 ### macvlan
 
 No host changes are needed. Containers get per-container
-kernel-generated MACs as macvlan children of a host NIC:
+kernel-generated MACs as macvlan children of a host NIC
+(`macvlan_mode=passthru` is the exception, see
+[sub-modes](#macvlan-and-ipvlan-sub-modes)):
 
 ```bash
 docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.2.2 \
@@ -408,7 +412,7 @@ docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.2.2 \
     lan-dhcp
 ```
 
-### ipvlan (L2)
+### ipvlan
 
 Like macvlan, but children share the parent NIC's MAC, for switches or
 hypervisors that refuse multiple MACs per port (sticky-MAC port
@@ -425,6 +429,76 @@ docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.2.2 \
 Mode-specific constraints (MAC behaviour, parent-NIC rules, kernel
 limitations) are catalogued in
 [`parent-attached-modes.md`](parent-attached-modes.md#constraints).
+
+### macvlan and ipvlan sub-modes
+
+Since v2.3.0, `-o macvlan_mode=` and `-o ipvlan_mode=` choose the kernel
+mode of each container's link
+([#905](https://github.com/claymore666/docker-net-dhcp/issues/905)).
+Left out, a macvlan link is `bridge` and an ipvlan link is `l2`, as in
+every earlier release. `ip -d link show eth0` inside the container shows
+the mode, and a plugin restart rebuilds each link in the mode its network
+was created with.
+
+| option | value | DHCP | what the mode changes |
+| ------ | ----- | ---- | --------------------- |
+| `macvlan_mode` | `bridge` (default) | leases | containers on one parent reach each other inside the host |
+| `macvlan_mode` | `vepa` | leases | every frame leaves through the parent, container to container too; two containers on one parent reach each other only through a switch port that sends frames back where they came from (hairpin, 802.1Qbg reflective relay) |
+| `macvlan_mode` | `private` | leases | containers on one parent never reach each other, not even through such a switch |
+| `macvlan_mode` | `passthru` | leases, one container per parent | the container takes the parent itself; see below |
+| `ipvlan_mode` | `l2` (default) | leases | |
+| `ipvlan_mode` | `l3`, `l3s` | refused | see below |
+
+Every value that leases was measured leasing from dnsmasq on Linux 6.12,
+and the integration suite leases in each of them. Any other value, or
+`macvlan_mode` on an ipvlan network, `ipvlan_mode` on a macvlan one, or
+either on a bridge network, is refused at `docker network create` with
+the accepted values in the error. `validate_dhcp` probes with the
+network's sub-mode.
+
+**ipvlan `l3` and `l3s` are refused.** An ipvlan child in `l3` or `l3s`
+mode sends no broadcast out of its parent, so its DHCPDISCOVER reaches no
+DHCP server and no relay. Measured on Linux 6.12.107 on 2026-09-24: a
+dnsmasq on the segment logged no DISCOVER from an `l3` or `l3s` child,
+and with dnsmasq bound to the parent itself, a capture on the parent saw
+no packet at all. No relay or server placement helps, so
+`docker network create` refuses both values with that reason. The option
+keeps its name, and `l2` is the one accepted value.
+
+**The kernel keeps one ipvlan mode per parent.** A new ipvlan child in
+another mode switches every child on that parent to its mode, including
+the running containers of other networks (measured on the same kernel).
+The plugin refuses an ipvlan network on a parent that already carries an
+ipvlan network in another mode, its own or one of Docker's `ipvlan`
+driver, and names that network in the error. It cannot refuse the
+reverse order: a Docker `ipvlan` network in `l3` created later on a
+parent this plugin uses is not the plugin's to stop. Keep `l3` ipvlan
+networks off the parents this plugin uses.
+
+**`macvlan_mode=passthru` gives the parent to one container.** Measured
+on Linux 6.12:
+
+- The container's link wears the parent's MAC, so the DHCP server sees
+  the parent's MAC for that container.
+- A second container on the network is refused. The kernel answers
+  `invalid argument`, and the plugin's error explains it:
+  `failed to create macvlan link on "eth0": invalid argument. The kernel
+  answers this when a macvlan_mode=passthru child holds the parent: a
+  passthru network gives its parent to one container, so a second child
+  is refused beside it, ...`. Stop the container that holds the parent,
+  or put the network on another parent.
+- A passthru network and any other macvlan network, of this plugin or of
+  Docker's `macvlan` driver, cannot share a parent; the second one is
+  refused at `docker network create`, naming the first.
+- `--mac-address` is refused, because a MAC set on the passthru link
+  changes the parent's own MAC. For the same reason `require_mac=true`
+  and this plugin's IPAM mode (which gives every endpoint a MAC) are
+  refused with `passthru` at `docker network create`; use
+  `--ipam-driver null`.
+- On `docker restart` the old link can still hold the parent for a
+  moment while its namespace goes away, and the kernel refuses the new
+  one `invalid argument` in that window. The plugin retries for up to
+  3 seconds before it reports the error.
 
 ### Address allocation
 
@@ -558,9 +632,11 @@ value as an invalid duration.
 
 | option | modes | default | since | description |
 | ------ | ----- | ------- | ----- | ----------- |
-| `mode` | n/a | `bridge` | macvlan v0.2.0, ipvlan v0.4.0 | Attachment strategy: `bridge`, `macvlan`, or `ipvlan` (L2). |
+| `mode` | n/a | `bridge` | macvlan v0.2.0, ipvlan v0.4.0 | Attachment strategy: `bridge`, `macvlan`, or `ipvlan`. `macvlan_mode` and `ipvlan_mode` choose the kernel mode of the link. |
 | `bridge` | bridge | *(required)* | upstream | Existing Linux bridge to plug container veths into. |
 | `parent` | macvlan, ipvlan | *(required)* | v0.2.0 | Host NIC to attach children to (e.g. `eth0`, `ens18`). Must exist and be administratively `UP`. |
+| `macvlan_mode` | macvlan | `bridge` | **v2.3.0** | Kernel mode of each container's macvlan link: `bridge`, `vepa`, `private` or `passthru` (#905). Each of them leases. `passthru` gives the parent to one container, wears the parent's MAC, and is refused with `--mac-address`, `require_mac=true`, this plugin's IPAM mode, and another macvlan network on the same parent. Any other value, and the option on a network that is not macvlan, is refused at `docker network create`. See [macvlan and ipvlan sub-modes](#macvlan-and-ipvlan-sub-modes). |
+| `ipvlan_mode` | ipvlan | `l2` | **v2.3.0** | Kernel mode of each container's ipvlan link (#905). `l2` is the one accepted value. `l3` and `l3s` are refused at `docker network create`: such a child sends no broadcast, so no DHCP server or relay hears its DHCPDISCOVER (measured on Linux 6.12.107, 2026-09-24). The kernel keeps one ipvlan mode per parent, so an ipvlan network is refused on a parent that another ipvlan network uses in another mode. The option on a network that is not ipvlan is refused. See [macvlan and ipvlan sub-modes](#macvlan-and-ipvlan-sub-modes). |
 | `gateway` | all | from DHCP | v0.3.0 | Override the IPv4 default gateway returned by the DHCP server, for split-horizon LANs where containers should egress via a different router (e.g. a VPN gateway). |
 | `ipv6` | all | `false` | upstream | Lease a DHCPv6 address for every endpoint on this network, alongside its DHCPv4 one. Docker reports it as `GlobalIPv6Address`. The address is installed as a `/128` with the server's preferred and valid lifetimes, its DUID and IAID persist across restarts, and the container's link is configured to process Router Advertisements, which is what supplies the route, since DHCPv6 carries no next hop. On a segment that advertises no DHCPv6 address the endpoint still starts, without one; on a segment that advertises one and then answers nothing it fails. See [DHCPv6](#dhcpv6-ipv6true), and the ipvlan upgrade note there if you are moving from 1.x.<br><br>**Since v2.2.0 this option is the short spelling of `ipv6_mode=dhcp`** and keeps exactly that meaning. `ipv6=true` with `ipv6_mode=off` is refused at `docker network create`: the two say opposite things about the same endpoint and there is no reading of the pair that is not a guess. `ipv6=false` written out beside `ipv6_mode=dhcp`, `slaac` or `auto` is refused for the same reason. Setting `ipv6_mode` alone switches IPv6 on, so a network states it once. |
 | `ipv6_mode` | all | `off` | **v2.2.0** | Where an endpoint's IPv6 address comes from. `off` (the default) is no IPv6 from this plugin. `dhcp` leases it over DHCPv6, which is what `ipv6=true` has always meant and still means. `slaac` forms it from a router advertisement's autonomous prefix (RFC 4862 §5.5.3) and sends no Solicit. `auto` reads the router advertisement and does what it says: the managed-address flag means DHCPv6 (RFC 4861 §4.2, "When set, it indicates that addresses are available via Dynamic Host Configuration Protocol"), and a clear flag means the prefix. Any other value is refused at `docker network create` with the accepted set in the message, rather than resolved to a default, because the default is `off` and a typo would silently switch IPv6 off on a network created to have it.<br><br>**`auto` on a link whose router says DHCPv6 and whose server then says nothing** falls back to the advertised prefix after half the router-discovery window, counts it in `dhcpv6_auto_fallbacks` and logs the fallback (the address itself is subject to the boundary at the end of this row). **`-o ipv6_auto_strict=true` turns that off** and fails the endpoint instead; the row below is that option.<br><br>**`slaac` and `auto` are refused in `mode=ipvlan`.** An ipvlan L2 slave inherits the parent link's MAC, an address formed from an advertisement is derived from that MAC (RFC 4291 appendix A), and RFC 4862 gives a node with a fixed interface identifier no retry after duplicate address detection fails, so every container on such a network would form one address and the second one onwards would sit in a conflict it cannot recover from. Use `ipv6_mode=dhcp` on ipvlan, which gives each endpoint its own DUID.<br><br>**In `slaac` a stored preferred address is not asked for.** `-o ipv6=...`'s per-endpoint preferred address (`preferred_ipv6`) is still validated and still refused if malformed, and the plugin logs the address it is not requesting; there is no server to ask, because the address comes from the prefix.<br><br>**In `slaac` and `auto` the plugin installs every address the advertisement forms, on the container's link.** RFC 4862 §5.5.3 forms one address per advertised autonomous prefix, so a link advertising a unique-local prefix and a global one gives the container two, and the client caps an endpoint at eight. Each address is installed with its own preferred and valid lifetimes, taken from the Prefix Information option that formed it and refreshed by every later advertisement (RFC 4861 §6.2.1). An address whose preferred lifetime runs out is left on the link and marked deprecated (`preferred_lft 0`, RFC 4862 §5.5.4: "SHOULD continue to be used as a source address in existing communications, but SHOULD NOT be used to initiate new communications"); one whose valid lifetime runs out, or whose prefix the router stops advertising, is removed. `ip -6 addr show` inside the container is where an operator reads all of this. **The lifetimes arrive a moment after the container does.** The engine installs the address `CreateEndpoint` reported while it builds the container's sandbox, and it has no lifetimes to install, so that address is on the link as `valid_lft forever preferred_lft forever` until the endpoint's own client binds and the plugin applies the advertised numbers. `ipv6_slaac_addresses` moves on that second install, which is what makes the two visible apart. Counters: `ipv6_slaac_addresses`, `ipv6_addresses_withdrawn`, `ipv6_slaac_prefixes_ignored`.<br><br>**Docker is told one address, and `ipv6_main_prefix` chooses which.** `CreateEndpoint` returns a single `AddressIPv6` and the engine has no way to change it afterwards, so `docker inspect` and the engine's own records show the first advertised prefix's address by default, whatever else the container holds. The row below is the option that names another. The addresses the container actually has are the whole set either way. [#818](https://github.com/claymore666/docker-net-dhcp/issues/818), [#819](https://github.com/claymore666/docker-net-dhcp/issues/819) and [#808](https://github.com/claymore666/docker-net-dhcp/issues/808) are the three issues this answers. |
@@ -575,7 +651,7 @@ value as an invalid duration.
 | `mtu` | all | unset | v2.3.0 | Set the MTU of every container link this network creates: a decimal integer from 68 to 65535. When set it is the only source of the link MTU. DHCP option 26 and the MTU an IPv6 Router Advertisement carries are not applied, one info line per endpoint names both values, and `mtu_refused` does not count it. The plugin sets the link back to this value on every bind and renew. Refused at network creation: a value outside 68..65535, a value that is not a decimal integer, a value beside `propagate_mtu=true`, and a value above the MTU of the parent (macvlan, ipvlan) or of the bridge; the error names both values. If the kernel refuses the value when a container starts, the endpoint fails with the kernel's error and leaves no link behind. In bridge mode both ends of the veth pair get the value, since ends that differ drop full-size frames without an error. **Bridge:** a bridge whose MTU was never changed follows its smallest port, so a container with a smaller mtu lowers the bridge's own host interface for as long as that container is attached, and it comes back when the container leaves; a bridge whose MTU was ever set to a value other than its current one holds it (measured 2026-09-24, kernel 6.12). The creation check reads the bridge's MTU at that moment, so while such a container is attached, a second network on that bridge with a larger mtu is refused. **ipvlan:** the child follows its parent's MTU, so a parent MTU change shows in the container until the next renew. **macvlan:** a parent lowered below the configured value clamps the child, and the re-apply is refused on every renew until the parent comes back, with one warning line each time. (#1037) |
 | `client_id` | all | per-endpoint id | v0.9.0 | Override DHCP option 61 (Client Identifier) for every endpoint on this network; sent as RFC 2132 opaque bytes (type `0x00`). The default per-endpoint id is what makes per-container reservations work, and a fixed `client_id` makes all containers look like one client to the server. Pair with `vendor_class` for class-based policy. **The derived default differs by mode** (see below). **Since v2.2.2 a change to this option does not move an endpoint that already holds a lease:** the identifier an endpoint sends is the one stored with its lease record, so the new value applies to addresses taken after the change. See [Restart stability](#restart-stability-mac-and-ip). |
 | `vendor_class` | all | `docker-net-dhcp` | v0.9.0 | Override DHCP option 60 (Vendor Class Identifier), for DHCP servers running class-based policy (different gateway/option sets per class). v4 only: the DHCPv6 client sends no vendor-class option. |
-| `validate_dhcp` | macvlan, ipvlan | `false` | v0.9.0 | Pre-flight probe at `docker network create`: one-shot DHCP exchange on a temporary child of the parent, rejecting the network if no server answers within 8s. Catches isolated parents / blocked UDP 67-68 / broken VLAN tags at create time. Costs one transient lease per probe. Bridge mode rejects the option. **Since v1.6.0 the probe link is the same kind the network's endpoints will be**: a macvlan child for a macvlan network, an ipvlan L2 child for an ipvlan one (#486). It used to build a macvlan whatever the mode was, on the reasoning that reachability is mode-agnostic; reachability is, but the parent is not. One parent cannot carry both kinds, so a macvlan probe on an ipvlan network was refused outright whenever an ipvlan container was already running on that NIC, so `validate_dhcp` failed for a reason that had nothing to do with DHCP, which is the opposite of what the flag is for. **What MAC you will see at the server:** on macvlan, a random locally-administered address. On ipvlan, the **parent's** address, because an ipvlan child cannot have its own, by kernel design. The probe is otherwise identity-neutral: it sends no hostname and no client identifier, so on ipvlan there is nothing but the shared `chaddr` to tell it apart from the containers on that NIC. Don't go looking for a random MAC in an ipvlan probe's lease log. |
+| `validate_dhcp` | macvlan, ipvlan | `false` | v0.9.0 | Pre-flight probe at `docker network create`: one-shot DHCP exchange on a temporary child of the parent, rejecting the network if no server answers within 8s. Catches isolated parents / blocked UDP 67-68 / broken VLAN tags at create time. Costs one transient lease per probe. Bridge mode rejects the option. **Since v1.6.0 the probe link is the same kind the network's endpoints will be**: a macvlan child for a macvlan network, an ipvlan child for an ipvlan one (#486), and since v2.3.0 in the network's `macvlan_mode` or `ipvlan_mode` (#905). It used to build a macvlan whatever the mode was, on the reasoning that reachability is mode-agnostic; reachability is, but the parent is not. One parent cannot carry both kinds, so a macvlan probe on an ipvlan network was refused outright whenever an ipvlan container was already running on that NIC, so `validate_dhcp` failed for a reason that had nothing to do with DHCP, which is the opposite of what the flag is for. **What MAC you will see at the server:** on macvlan, a random locally-administered address. On ipvlan and on `macvlan_mode=passthru`, the **parent's** address, because such a child cannot have its own, by kernel design. The probe is otherwise identity-neutral: it sends no hostname and no client identifier, so on ipvlan there is nothing but the shared `chaddr` to tell it apart from the containers on that NIC. Don't go looking for a random MAC in an ipvlan probe's lease log. |
 | `dhcp_servers` | all | _(none)_ | v1.8.0 | Ordered preference list of DHCPv4 servers, e.g. `1.1.1.1,2.2.2.2`. The initial acquisition tries each in turn, restricted to that one server, and takes the first lease offered. **The list is exhaustive**: if none of them answers, the endpoint fails instead of accepting whichever server happened to reply. Naming your servers is what makes the list complete. The ladder **divides** the existing acquisition budget (`lease_timeout`) instead of extending it, so enabling this never makes `docker run` slower. Because it divides instead of extending, a long list cannot get one attempt each: an attempt costs entering the container's network namespace, opening a packet socket on the interface and a DHCP round trip, so a slice too small to hold one exchange is a guaranteed failure instead of a fast one. Once the list outgrows the budget the plugin keeps the top entries on their own attempts and asks **the tail as a single group**. With the default 34s budget that is the first ten individually, then the rest together, each attempt taking 3.09s of it. Nothing is dropped, the total does not grow, and what degrades is only the strict ordering *within* that last group. Lists of eleven or fewer are unaffected at that budget. (#731) Once a lease is held it stays with the server that granted it, because renewal is unicast. **DHCPv4 only**: a v6 entry is rejected at `docker network create` instead of being silently ignored, and a DHCPv6 client on a network that sets this is given no list at all instead of a v4 one it cannot use. The list itself is validated the same way: an empty entry (a trailing or doubled comma), an entry that is not an IP address, and a repeated address each fail the create instead of being quietly dropped. **2.0 matches on the Server Identifier (option 54) and never on the packet's source address**, so the list now works behind a DHCP relay, and the 1.x limitation recorded under #111 is gone. Two consequences worth knowing: a message that carries no server identifier at all is **refused** while an allow list is set (an allow list a message can satisfy by omitting the field is not a restriction), and a server identifier is a value anyone on the link can put in a datagram, so this narrows which claimed identities the client acts on and authenticates nothing. |
 | `dhcp_deny_servers` | all | _(none)_ | v1.8.0 | Unordered list of DHCPv4 servers this network must never take a lease from, e.g. `3.3.3.3`, a rogue appliance or a second router on the segment. This is a *permission* and never a preference: it composes with `dhcp_servers` instead of competing with it, and a server named in both is removed from the preference list. Denying every entry of `dhcp_servers` is refused at create time, since it would otherwise collapse to accepting any server at all. Same **DHCPv4-only** limit as `dhcp_servers`. **Deny wins** where the two lists disagree. A deny list *on its own* fails open on a message that carries no server identifier: nothing in such a message can show it came from a denied server. (The no-relay limit is gone in 2.0; see `dhcp_servers`.) (#669) |
 | `register_dns` | all | `false` | v1.3.0 | Send the DHCP FQDN option (81) built from the container's hostname, asking the DHCP server to register that name in DNS (forward A/AAAA + reverse PTR). Reuses the same hostname already sent as the option-12 hint. Best-effort and advisory, because many consumer routers ignore option 81, so this *requests* registration, it does not guarantee resolution. Off by default: dynamic-DNS registration is a network-policy decision. See below. |

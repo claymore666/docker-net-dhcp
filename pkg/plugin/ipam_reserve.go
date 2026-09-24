@@ -402,7 +402,11 @@ func (p *Plugin) addIPAMReserveLink(ctx context.Context, name, peer, mode string
 			guard.Unlock()
 			return nil, err
 		}
-		link := newProbeLink(mode, name, parent.Attrs().Index, mac)
+		link, err := newProbeLink(opts, name, parent.Attrs().Index, mac)
+		if err != nil {
+			guard.Unlock()
+			return nil, err
+		}
 		if err := addChildLink(guard, link); err != nil {
 			guard.Unlock()
 			return nil, explainChildLinkAdd(err, mode, opts.Parent, parent.Attrs().Index)

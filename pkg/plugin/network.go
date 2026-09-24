@@ -198,7 +198,7 @@ func validateModeOptions(opts DHCPNetworkOptions) error {
 	default:
 		return fmt.Errorf("%w: %q", util.ErrInvalidMode, opts.Mode)
 	}
-	return nil
+	return validateSubModes(opts)
 }
 
 // sandboxGone reads the filesystem, not the Docker API, since the API call is what times out when a container
@@ -310,6 +310,9 @@ func (p *Plugin) CreateNetwork(r CreateNetworkRequest) error {
 		if err := ipamRefuseIPvlan(opts.effectiveMode()); err != nil {
 			return err
 		}
+		if err := ipamRefusePassthru(opts); err != nil {
+			return err
+		}
 		// validateIPv6Options already resolved this pair, so this cannot fail today; the branch keeps an off mode distinct.
 		mode6, err := opts.ipv6Mode()
 		if err != nil {
@@ -337,6 +340,9 @@ func (p *Plugin) CreateNetwork(r CreateNetworkRequest) error {
 		if err := mtuUnderParent(opts.MTU, parent); err != nil {
 			return err
 		}
+		if err := p.refuseSiblingSubMode(r.NetworkID, opts); err != nil {
+			return err
+		}
 		// Pre-flight DHCP probe, opt-in via validate_dhcp, before saveOptions so a failed probe leaves no state (#108).
 		if opts.ValidateDHCP {
 			// The budget covers the probe and its wait for the parent gate, which runDHCPProbe takes itself (#577).
@@ -345,7 +351,7 @@ func (p *Plugin) CreateNetwork(r CreateNetworkRequest) error {
 				return err
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), preflightProbeBudget+5*time.Second)
-			err = p.runDHCPProbe(ctx, opts.Parent, mode, probePolicy)
+			err = p.runDHCPProbe(ctx, opts, probePolicy)
 			cancel()
 			if err != nil {
 				return err
@@ -652,6 +658,17 @@ func (p *Plugin) checkStoredOptions(id string, opts DHCPNetworkOptions) error {
 			"network": shortID(id),
 			"value":   fmt.Sprintf("%q", opts.ReleaseLease),
 		}).Error("Refusing stored network options: release_lease is not a value this plugin implements")
+		return err
+	}
+
+	// A stored sub-mode passes CreateNetwork's check, so a hand-edited value cannot build a default child (#905).
+	if err := validateSubModes(opts); err != nil {
+		p.networkOptionsRejected.Add(1)
+		log.WithFields(log.Fields{
+			"network":      shortID(id),
+			"macvlan_mode": fmt.Sprintf("%q", opts.MacvlanMode),
+			"ipvlan_mode":  fmt.Sprintf("%q", opts.IPvlanMode),
+		}).Error("Refusing stored network options: the sub-mode is not one this plugin builds")
 		return err
 	}
 
