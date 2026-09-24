@@ -220,8 +220,17 @@ func TestSubModes_APluginRecycleKeepsTheSubMode(t *testing.T) {
 
 	const netName = "dh-itest-submode-recycle"
 	harness.CreateNetwork(t, ctx, netName, "macvlan", map[string]string{"macvlan_mode": "private"})
+	attachW := harness.BeginCounterWindow(t, ctx, cli, "join_attach_completed")
 	id, ipv4, _ := harness.RunContainer(t, ctx, netName, netName+"-ctr")
 	harness.AssertIP(t, ipv4)
+	// The attach outlives the Join response, so the recycle waits for it to land and recovers a running endpoint, not
+	// one whose attach the shutdown cancels (#417, #905).
+	if _, ok := attachW.Await(attachObservationBudget, func(now, before *harness.HealthResponse) bool {
+		return now.JoinAttachCompleted > before.JoinAttachCompleted
+	}); !ok {
+		t.Fatalf("the container's attach did not complete within %s; recycling now would test a cancelled attach", attachObservationBudget)
+	}
+	attachW.End()
 	if _, mode, _ := harness.ChildLinkMode(t, ctx, id, "eth0"); mode != "private" {
 		t.Fatalf("the container's eth0 is mode %q before the recycle, want private", mode)
 	}
@@ -254,6 +263,9 @@ func TestSubModes_APluginRecycleKeepsTheSubMode(t *testing.T) {
 	if waited, ok := harness.AwaitRecoveryRebuildWindow(w, rebuilt,
 		func(h *harness.HealthResponse) bool { return h.RecoveredOK >= 1 }); !ok {
 		t.Errorf("%s", harness.RecoveryRebuildFailure(rebuilt, waited))
+	}
+	if _, after := w.End(); after.RecoveryFailed != 0 {
+		t.Errorf("recovery_failed=%d: the private endpoint was not rebuilt", after.RecoveryFailed)
 	}
 
 	restartOff := fileSize(t, fixture.DnsmasqLog())
