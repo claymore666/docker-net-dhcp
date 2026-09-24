@@ -871,16 +871,19 @@ func (c *DHCPClient) ACDPhase() proto.ACDPhase {
 	return c.client.ACDPhase()
 }
 
-// ErrNoRunningClient is returned by SetHostname when there is no started client to hand the name to.
-var ErrNoRunningClient = errors.New("dhcp: no running client to give a hostname to")
+// ErrNoRunningClient and ErrHostnameV6 are SetHostname's refusals: no started client, and a DHCPv6 client (#1029).
+var (
+	ErrNoRunningClient = errors.New("dhcp: no running client to give a hostname to")
+	ErrHostnameV6      = errors.New("dhcp: the plugin sends no hostname on DHCPv6 yet (#1029)")
+)
 
 // The library renews early to carry the name (RFC 2131 section 4.4.5); option 12 is refused beside option 81 (RFC 4702
-// section 3.1); proto.Params6 has no hostname, so v6 is refused (#961).
+// section 3.1); v6 stays refused until #1029, though dhcp-golib v1.1.0 can send option 39 (claymore666/dhcp-golib#22).
 
 // SetHostname hands the running client the option-12 name and makes it tell the server at once (#961).
 func (c *DHCPClient) SetHostname(name string) error {
 	if c.opts.V6 {
-		return fmt.Errorf("dhcp: %w", lease.ErrHostnameV6)
+		return ErrHostnameV6
 	}
 	if c.client == nil {
 		return ErrNoRunningClient
