@@ -1228,7 +1228,15 @@ What the option does, concretely:
   link unless the network sets `mtu` (#1037), and the **DNS servers and search list** (RFC 8106 RDNSS and
   DNSSL) into `/etc/resolv.conf` when `propagate_dns=true`. All four are
   rewritten when a later advertisement changes them, without restarting
-  the container. The gateway and the routes need the endpoint to have
+  the container, except that on-link prefixes are only added (v2.2.3+,
+  #1088): one advertisement need not carry every prefix of the link, so
+  an advertisement that leaves a prefix out keeps its route, and the
+  route goes when an advertisement gives the prefix a Valid Lifetime of
+  0 (RFC 4861 §6.3.4). A prefix whose lifetime runs out with no such
+  advertisement keeps its route until the container restarts. Before
+  v2.2.3 the on-link prefixes were set once, when the container started,
+  and a lease that finished before the first advertisement got none.
+  The gateway and the routes need the endpoint to have
   a global IPv6 address: see *Networks where DHCPv6 offers no address*
   below for what a segment without one gets, and why.
 - **The Router Advertisement guard**: `accept_ra=0`, `autoconf=0` and

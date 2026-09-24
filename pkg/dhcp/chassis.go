@@ -597,9 +597,17 @@ func (c *DHCPClient) translate() {
 			continue
 		}
 
-		// The advertisement baseline is taken only on events that apply configuration (#821).
+		// The advertisement baseline is taken only on events that apply configuration (#821). Its frame is the newer of
+		// the two readings, so its withdrawals decide, and the event and the watch share one on-link set; otherwise a
+		// prefix changed between the readings is never reported (#1088).
 		if out.Type == "bound" || out.Type == "renew" {
 			c.baselineAdvert(now)
+			c.advert.OnLinkPrefixes = foldOnLink(c.advert.OnLinkPrefixes, Info{
+				OnLinkPrefixes:          out.Data.OnLinkPrefixes,
+				WithdrawnOnLinkPrefixes: c.advert.WithdrawnOnLinkPrefixes,
+			})
+			out.Data.OnLinkPrefixes = append([]string(nil), c.advert.OnLinkPrefixes...)
+			out.Data.WithdrawnOnLinkPrefixes = append([]string(nil), c.advert.WithdrawnOnLinkPrefixes...)
 		}
 		c.deliver(out)
 	}
@@ -640,9 +648,9 @@ func (c *DHCPClient) leaseView() (lease.Lease, bool) {
 }
 
 // DHCPv6 has no MTU option (RFC 2132 section 5.1 is DHCPv4's), so the RFC 4861 section 4.6.4 MTU arrives only by the
-// router observation; on-link prefixes are left out and update only at Join (#821).
+// router observation, as do the on-link prefixes (#821, #1088).
 
-// advertRouterView is the router observation the watch reads, carrying only the advertised MTU.
+// advertRouterView is the router observation the watch reads: the advertised MTU and the latest frame's prefixes.
 func (c *DHCPClient) advertRouterView() proto.RouterObservation {
 	var r proto.RouterObservation
 	if c.routerView != nil {
@@ -650,7 +658,7 @@ func (c *DHCPClient) advertRouterView() proto.RouterObservation {
 	} else if c.client6 != nil {
 		r = c.client6.Router()
 	}
-	return proto.RouterObservation{Seen: r.Seen, MTU: r.MTU}
+	return proto.RouterObservation{Seen: r.Seen, MTU: r.MTU, Prefixes: r.Prefixes}
 }
 
 // baselineAdvert records the advertised configuration without reporting it, for a caller that has just applied it.
@@ -658,7 +666,8 @@ func (c *DHCPClient) baselineAdvert(now time.Time) {
 	c.takeAdvertChange(now)
 }
 
-// The library reports the latest frame's prefixes, not a union, so on-link determination stays at Join (#821).
+// The library reports the latest frame's prefixes, not a union, so the watch keeps one: a prefix leaves it only on
+// Valid Lifetime 0 (RFC 4861 section 6.3.4), and two routers' alternating frames are not a change (#1088).
 
 // takeAdvertChange reports the advertised configuration when it differs from the last view, never a first sight.
 func (c *DHCPClient) takeAdvertChange(now time.Time) (Event, bool) {
@@ -668,6 +677,7 @@ func (c *DHCPClient) takeAdvertChange(now time.Time) (Event, bool) {
 	}
 	// Rendered with the network's main prefix, as bound and renew are, so the choice is not itself a change (#818).
 	info, dropped := infoFromLease(l, c.advertRouterView(), now, c.opts.MainPrefix6)
+	info.OnLinkPrefixes = foldOnLink(c.advert.OnLinkPrefixes, info)
 	first := !c.advertKnown
 	same := c.advertKnown && !advertisedDiffers(c.advert, info)
 	c.advert, c.advertKnown = info, true
@@ -682,13 +692,25 @@ func (c *DHCPClient) takeAdvertChange(now time.Time) (Event, bool) {
 	}, true
 }
 
-// advertisedDiffers compares the five advertisable fields only, not the address that moves on every renewal (#821).
+// foldOnLink is the known on-link set in first-heard order: prev less what info withdraws, plus what it advertises.
+func foldOnLink(prev []string, info Info) []string {
+	var out []string
+	for _, p := range append(append([]string(nil), prev...), info.OnLinkPrefixes...) {
+		if !containsString(info.WithdrawnOnLinkPrefixes, p) && !containsString(out, p) {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// advertisedDiffers compares the six advertisable fields only, not the address that moves on every renewal (#821).
 func advertisedDiffers(a, b Info) bool {
 	return a.Gateway != b.Gateway ||
 		a.MTU != b.MTU ||
 		!sameStrings(a.DNSServers, b.DNSServers) ||
 		!sameStrings(a.SearchList, b.SearchList) ||
-		!sameRoutes(a.Routes, b.Routes)
+		!sameRoutes(a.Routes, b.Routes) ||
+		!sameStrings(a.OnLinkPrefixes, b.OnLinkPrefixes)
 }
 
 func sameStrings(a, b []string) bool {
