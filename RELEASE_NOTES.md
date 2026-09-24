@@ -153,12 +153,14 @@ section below is still the list the daemon shows you.
   the server acknowledged without reading one answer. The plugin then
   logged `Persistent client stopped before it ever held the lease`. The
   plugin now waits up to 30 seconds for the link to be up before the IPv4
-  and IPv6 clients open, and a link that never comes up fails the attach.
+  and IPv6 clients open. A link that never comes up leaves the container
+  running without a renewal client, counted in `join_start_failures`.
   The DHCP library pin moves to dhcp-golib v1.1.0, which keeps its reader
   alive across that error
   ([dhcp-golib#23](https://github.com/claymore666/dhcp-golib/issues/23)).
-  Present since v2.2.2, where the client opens the link by its index
-  (#1050) (#1089).
+  Likely present since v2.2.2, where the client opens the link by its
+  index (#1050): the failures start the day that change merged, and no
+  log shows the first read error (#1089).
 
 ## v2.2.2
 
