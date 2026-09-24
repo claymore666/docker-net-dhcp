@@ -1432,6 +1432,18 @@ func (p *Plugin) noteSlowAttach(r JoinRequest, elapsed time.Duration) bool {
 	return true
 }
 
+// newJoinManager builds the persistent manager from the finished Join answer, marking each family whose gateway the
+// engine will install (#1084).
+func (p *Plugin) newJoinManager(r JoinRequest, opts DHCPNetworkOptions, hint joinHint, res JoinResponse) *dhcpManager {
+	m := newDHCPManager(p.docker, r, opts).withPlugin(p)
+	m.setLastIP(false, hint.IPv4)
+	m.setLastIP(true, hint.IPv6)
+	m.MacAddress = hint.MacAddress
+	m.engineGateway(false).Store(res.Gateway != "")
+	m.engineGateway(true).Store(res.GatewayIPv6 != "")
+	return m
+}
+
 // Join hands Docker the host-side link and routes, then starts the persistent DHCP client for the endpoint.
 func (p *Plugin) Join(ctx context.Context, r JoinRequest) (JoinResponse, error) {
 	log.WithField("options", r.Options).Debug("Join options")
@@ -1527,10 +1539,7 @@ func (p *Plugin) Join(ctx context.Context, r JoinRequest) (JoinResponse, error) 
 	}
 
 	// Register before the start goroutine so a fast Leave finds the manager; Stop waits for Start.
-	m := newDHCPManager(p.docker, r, opts).withPlugin(p)
-	m.setLastIP(false, hint.IPv4)
-	m.setLastIP(true, hint.IPv6)
-	m.MacAddress = hint.MacAddress
+	m := p.newJoinManager(r, opts, hint, res)
 
 	// Set before registerDHCPManager publishes the manager, since Stop reads attachCancel (#406).
 	attachCtx, cancelAttach := context.WithTimeout(context.Background(), p.awaitTimeout+attachDaemonBusyGrace)

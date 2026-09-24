@@ -103,6 +103,13 @@ type dhcpManager struct {
 	// boundV6 is the same proof for the v6 client, read in Stop after errChanV6 drains (#608, #962).
 	boundV6 atomic.Bool
 
+	// engineGatewayV4 and engineGatewayV6 hold while a gateway Join returned has not been seen installed. The engine
+	// adds it after Join returns with an exclusive RouteAdd, and a default route already on the link fails the
+	// container start with "file exists" (moby osl programGateway; the prestart hook on 20.10 to 26, measured
+	// 2026-09-24), so until then a missing default route is the engine's to add (#1084).
+	engineGatewayV4 atomic.Bool
+	engineGatewayV6 atomic.Bool
+
 	// lastAdvertRoutes holds the RA-installed more-specific routes, destination to next hop, as the diff base: an
 	// advertisement that drops a prefix withdraws it (RFC 4191 section 2.3), and the kernel table also holds routes
 	// copied from the host bridge that must stay (#821). Used by the v6 consumer goroutine only.
@@ -175,6 +182,14 @@ func newDHCPManager(docker dockerClient, r JoinRequest, opts DHCPNetworkOptions)
 		stopChan:  make(chan struct{}),
 		startedCh: make(chan struct{}),
 	}
+}
+
+// engineGateway returns the family's mark that the engine still owes the default route Join returned.
+func (m *dhcpManager) engineGateway(v6 bool) *atomic.Bool {
+	if v6 {
+		return &m.engineGatewayV6
+	}
+	return &m.engineGatewayV4
 }
 
 // withPlugin wires the manager to the live counters; unit-test helpers omit it.
@@ -965,10 +980,16 @@ func (m *dhcpManager) reconcileDefaultRoute(v6 bool, info dhcp.Info) error {
 	}
 
 	if len(routes) == 0 {
+		if m.engineGateway(v6).Load() {
+			log.WithFields(m.logFields(v6)).
+				WithField("gateway", newGateway).
+				Info("No default route yet; leaving it to the engine, which installs the gateway Join returned")
+			return nil
+		}
 		log.
 			WithFields(m.logFields(v6)).
 			WithField("gateway", newGateway).
-			Info("dhcp renew adding default route")
+			Info("Adding the default route the lease names")
 
 		if err := m.netHandle.RouteAdd(&netlink.Route{
 			LinkIndex: m.ctrLink.Attrs().Index,
@@ -978,6 +999,7 @@ func (m *dhcpManager) reconcileDefaultRoute(v6 bool, info dhcp.Info) error {
 		}
 		return nil
 	}
+	m.engineGateway(v6).Store(false)
 
 	if !newGateway.Equal(routes[0].Gw) {
 		log.
@@ -1030,7 +1052,16 @@ func (m *dhcpManager) reconcileV6DefaultRoute(info dhcp.Info) error {
 		}
 	}
 
+	if len(existing) > 0 {
+		m.engineGateway(true).Store(false)
+	}
+
 	if info.Gateway == "" {
+		// No router seen yet is silence, not a withdrawal, as for the MTU: a Solicit does not wait for router discovery
+		// (RFC 9915 section 18.2.1), and the engine may already hold the Join gateway's route (#1084).
+		if !info.RouterSeen {
+			return nil
+		}
 		return m.withdrawV6DefaultRoute(existing)
 	}
 
@@ -1044,6 +1075,12 @@ func (m *dhcpManager) reconcileV6DefaultRoute(info dhcp.Info) error {
 	}
 
 	if len(existing) == 0 {
+		if m.engineGateway(true).Load() {
+			log.WithFields(m.logFields(true)).
+				WithField("gateway", gw).
+				Info("No IPv6 default route yet; leaving it to the engine, which installs the gateway Join returned")
+			return nil
+		}
 		log.WithFields(m.logFields(true)).
 			WithField("gateway", gw).
 			Info("Adding the IPv6 default route the Router Advertisement asked for")
@@ -1272,6 +1309,9 @@ func (m *dhcpManager) handleEvent(event dhcp.Event, v6 bool) {
 
 		// A client resuming a held lease can report renew without a bound, so renew marks bound too.
 		m.markBound(v6)
+		// A renew event (T1, T2 or a changed lease) comes after the engine's gateway install, so a default route
+		// missing now is the plugin's to add again (#1084).
+		m.engineGateway(v6).Store(false)
 		if m.plugin != nil {
 			bumpFamily(&m.plugin.leasesRenewedV4, &m.plugin.leasesRenewedV6, v6)
 		}

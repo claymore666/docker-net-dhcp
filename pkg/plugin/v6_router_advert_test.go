@@ -126,7 +126,7 @@ func TestReconcileV6DefaultRoute_UnchangedRouterWritesNothing(t *testing.T) {
 func TestWithdraw_RemovesTheRouteAndCountsIt(t *testing.T) {
 	m, p, f := v6Manager(t)
 	f.routes = []netlink.Route{defaultV6Route("fe80::1")}
-	if err := m.reconcileV6DefaultRoute(dhcp.Info{Gateway: ""}); err != nil {
+	if err := m.reconcileV6DefaultRoute(dhcp.Info{RouterSeen: true, Gateway: ""}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if len(f.deleted) != 1 {
@@ -142,12 +142,12 @@ func TestWithdraw_RemovesTheRouteAndCountsIt(t *testing.T) {
 func TestWithdraw_RepeatedWithdrawalCountsOnce(t *testing.T) {
 	m, p, f := v6Manager(t)
 	f.routes = []netlink.Route{defaultV6Route("fe80::1")}
-	if err := m.reconcileV6DefaultRoute(dhcp.Info{Gateway: ""}); err != nil {
+	if err := m.reconcileV6DefaultRoute(dhcp.Info{RouterSeen: true, Gateway: ""}); err != nil {
 		t.Fatalf("first withdrawal: %v", err)
 	}
 	f.routes = nil
 	for i := 0; i < 3; i++ {
-		if err := m.reconcileV6DefaultRoute(dhcp.Info{Gateway: ""}); err != nil {
+		if err := m.reconcileV6DefaultRoute(dhcp.Info{RouterSeen: true, Gateway: ""}); err != nil {
 			t.Fatalf("repeat %d: %v", i, err)
 		}
 	}
@@ -160,7 +160,7 @@ func TestWithdraw_FailedDeleteDoesNotCount(t *testing.T) {
 	m, p, f := v6Manager(t)
 	f.routes = []netlink.Route{defaultV6Route("fe80::1")}
 	f.delErr = errors.New("no such process")
-	if err := m.reconcileV6DefaultRoute(dhcp.Info{Gateway: ""}); err == nil {
+	if err := m.reconcileV6DefaultRoute(dhcp.Info{RouterSeen: true, Gateway: ""}); err == nil {
 		t.Fatal("a failed delete was reported as success")
 	}
 	if got := p.ipv6RouterWithdrawn.Load(); got != 0 {
@@ -176,11 +176,25 @@ func TestWithdraw_LeavesEverythingThatIsNotOurDefaultRoute(t *testing.T) {
 		{Dst: nil, Gw: net.ParseIP("fe80::9"), Protocol: 2 /* RTPROT_KERNEL */},
 		{Dst: cidr(t, "fe80::/64"), Protocol: 2},
 	}
-	if err := m.reconcileV6DefaultRoute(dhcp.Info{Gateway: ""}); err != nil {
+	if err := m.reconcileV6DefaultRoute(dhcp.Info{RouterSeen: true, Gateway: ""}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if len(f.deleted) != 1 || !f.deleted[0].Gw.Equal(net.ParseIP("fe80::1")) {
 		t.Fatalf("deleted %v, want only the non-kernel default route via fe80::1", f.deleted)
+	}
+}
+
+func TestWithdraw_ALeaseBeforeAnyRouterIsNotAWithdrawal(t *testing.T) {
+	m, p, f := v6Manager(t)
+	f.routes = []netlink.Route{defaultV6Route("fe80::1")}
+	if err := m.reconcileV6DefaultRoute(dhcp.Info{Gateway: ""}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(f.added)+len(f.replace)+len(f.deleted) != 0 {
+		t.Fatalf("a lease with no router seen produced writes: add=%v replace=%v del=%v", f.added, f.replace, f.deleted)
+	}
+	if got := p.ipv6RouterWithdrawn.Load(); got != 0 {
+		t.Errorf("ipv6_router_withdrawn = %d with no router seen, want 0", got)
 	}
 }
 
