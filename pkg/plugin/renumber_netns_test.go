@@ -23,37 +23,58 @@ import (
 	"github.com/claymore666/docker-net-dhcp/v2/pkg/util"
 )
 
-const renumberNetnsChildEnv = "DND_RENUMBER_NETNS_CHILD"
+const (
+	renumberNetnsChildEnv = "DND_RENUMBER_NETNS_CHILD"
+	// renumberRefuseLinkEnv makes newRenumberLink behave as if the kernel refused the link, to drive the skip path.
+	renumberRefuseLinkEnv = "DND_RENUMBER_REFUSE_LINK"
+)
 
 // inOwnNetns re-runs the calling test in a fresh user and network namespace and returns false in the parent; the
 // child returns true and runs the body. uid 0 is mapped because capabilities are recomputed at execve (#1081).
 func inOwnNetns(t *testing.T) bool {
 	t.Helper()
-	if os.Getenv(renumberNetnsChildEnv) == "1" {
+	if os.Getenv(renumberNetnsChildEnv) != "" {
 		return true
 	}
 	name := t.Name()
-	cmd := exec.Command(os.Args[0], "-test.run", "^"+name+"$", "-test.v", "-test.count=1")
-	cmd.Env = append(os.Environ(), renumberNetnsChildEnv+"=1")
-	cmd.SysProcAttr = &syscall.SysProcAttr{Cloneflags: syscall.CLONE_NEWNET}
-	if os.Getuid() != 0 {
-		cmd.SysProcAttr.Cloneflags |= syscall.CLONE_NEWUSER
-		cmd.SysProcAttr.UidMappings = []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getuid(), Size: 1}}
-		cmd.SysProcAttr.GidMappings = []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getgid(), Size: 1}}
-	}
+	cmd := renumberNetnsChild("^" + name + "$")
 	var out bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &out
 	runErr := cmd.Run()
 	text := out.String()
 	switch {
-	case runErr != nil && (errors.Is(runErr, unix.EPERM) || errors.Is(runErr, unix.ENOSPC) || errors.Is(runErr, unix.EACCES)):
-		t.Skipf("no unprivileged user namespace on this host: %v", runErr)
-	case strings.Contains(text, "--- SKIP: "+name+" "):
+	case renumberCloneRefused(runErr):
+		t.Skipf("this host cannot create the namespace: %v", runErr)
+	case runErr != nil:
+		t.Fatalf("the namespaced run of %s failed (%v):\n%s", name, runErr, text)
+	case strings.Contains(text, "--- SKIP: "):
+		// A skipped subtest still lets its parent print PASS, so any skip in the child skips the whole test.
 		t.Skipf("the namespaced run skipped:\n%s", text)
-	case runErr != nil || !strings.Contains(text, "--- PASS: "+name+" "):
+	case !strings.Contains(text, "--- PASS: "+name+" "):
 		t.Fatalf("the namespaced run of %s did not report its own PASS (%v):\n%s", name, runErr, text)
 	}
 	return false
+}
+
+// renumberNetnsChild re-executes the tests matching run in a new network namespace, and a user namespace when not root.
+func renumberNetnsChild(run string) *exec.Cmd {
+	mode := "root"
+	if os.Getuid() != 0 {
+		mode = "userns"
+	}
+	cmd := exec.Command(os.Args[0], "-test.run", run, "-test.v", "-test.count=1")
+	cmd.Env = append(os.Environ(), renumberNetnsChildEnv+"="+mode)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Cloneflags: syscall.CLONE_NEWNET}
+	if mode == "userns" {
+		cmd.SysProcAttr.Cloneflags |= syscall.CLONE_NEWUSER
+		cmd.SysProcAttr.UidMappings = []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getuid(), Size: 1}}
+		cmd.SysProcAttr.GidMappings = []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getgid(), Size: 1}}
+	}
+	return cmd
+}
+
+func renumberCloneRefused(err error) bool {
+	return err != nil && (errors.Is(err, unix.EPERM) || errors.Is(err, unix.ENOSPC) || errors.Is(err, unix.EACCES))
 }
 
 type renumberLink struct {
@@ -75,8 +96,13 @@ func newRenumberLink(t *testing.T, promote int, addr, gw string) renumberLink {
 			t.Fatalf("LinkDel: %v", err)
 		}
 	}
-	if err := h.LinkAdd(&netlink.Dummy{LinkAttrs: netlink.LinkAttrs{Name: name}}); err != nil {
-		if errors.Is(err, unix.EPERM) {
+	err = h.LinkAdd(&netlink.Dummy{LinkAttrs: netlink.LinkAttrs{Name: name}})
+	if os.Getenv(renumberRefuseLinkEnv) == "1" {
+		err = unix.EPERM
+	}
+	if err != nil {
+		// Only an unprivileged user namespace may skip; as root the integration suite requires these tests (#1081).
+		if errors.Is(err, unix.EPERM) && os.Getenv(renumberNetnsChildEnv) == "userns" {
 			t.Skipf("no CAP_NET_ADMIN in the user namespace (an AppArmor userns restriction?): %v", err)
 		}
 		t.Fatalf("LinkAdd: %v", err)
@@ -374,5 +400,40 @@ func TestApplyAddressChange_AV6RenumberLeavesOnlyTheNewAddress(t *testing.T) {
 				t.Errorf("link v6 addresses = %v, want [fd00:6470::10/64]", got)
 			}
 		})
+	}
+}
+
+var renumberKernelTests = []string{
+	"TestRenew_ARenumberLeavesExactlyTheNewAddressAndRoutes",
+	"TestRenew_ARenumberWithTheOldAddressAlreadyGoneStillBinds",
+	"TestApplyAddressChange_ARefusedNewAddressKeepsTheOldOne",
+	"TestApplyAddressChange_AV6RenumberLeavesOnlyTheNewAddress",
+}
+
+func TestRenumberKernelTests_ARefusedLinkIsNeverAPass(t *testing.T) {
+	if os.Getenv(renumberNetnsChildEnv) != "" {
+		t.Skip("runs only at the top level")
+	}
+	if err := renumberNetnsChild("^$").Run(); renumberCloneRefused(err) {
+		t.Skipf("this host cannot create the namespace, so the refused link is never reached: %v", err)
+	}
+	cmd := exec.Command(os.Args[0], "-test.run", "^("+strings.Join(renumberKernelTests, "|")+")$", "-test.v", "-test.count=1")
+	cmd.Env = append(os.Environ(), renumberRefuseLinkEnv+"=1")
+	out, _ := cmd.CombinedOutput()
+	text := string(out)
+	want := "--- SKIP: "
+	if os.Getuid() == 0 {
+		want = "--- FAIL: "
+	}
+	for _, name := range renumberKernelTests {
+		if strings.Contains(text, "\n--- PASS: "+name+" ") {
+			t.Errorf("%s reported PASS with the link refused", name)
+		}
+		if !strings.Contains(text, "\n"+want+name+" ") {
+			t.Errorf("%s did not report %q at top level with the link refused", name, strings.TrimSpace(want))
+		}
+	}
+	if t.Failed() {
+		t.Logf("output:\n%s", text)
 	}
 }

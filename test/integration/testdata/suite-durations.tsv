@@ -380,9 +380,10 @@
 #   one row    TestRenumber_ThePluginKernelTestsPassInTheirOwnNamespace
 #              is 60.00 and is INFERRED, not measured: it arrives with
 #              #1081 and no run has executed it. It starts no container;
-#              it runs `go test` on pkg/plugin, whose four kernel tests
-#              took 1.02s on a warm cache on the session box, so the
-#              figure is the package compile on a cold cache, with room.
+#              it runs `go test` on pkg/plugin twice, once as is and
+#              once with the link refused; the four kernel tests took
+#              1.02s on a warm cache on the session box, so the figure
+#              is the package compile on a cold cache, with room.
 #              The first run that executes it costs it.
 #   samples    3 for every corpus row. FIFTY-TWO rows are not corpus
 #              samples, and the ten groups below are disjoint and
