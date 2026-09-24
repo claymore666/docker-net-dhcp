@@ -98,6 +98,28 @@ plant shell-of-next-step-does-not-count 1 "w.yml:7: pipes into tee" \
     '        shell: bash' \
     '        run: make'
 
+# A step ends where the indent drops back, so a later job's default
+# shell cannot cover it (#1015).
+mkdir -p "$tmp/next-job-default"
+cat > "$tmp/next-job-default/w.yml" <<'YML'
+on: push
+jobs:
+  a:
+    runs-on: ubuntu-latest
+    steps:
+      - name: piped
+        run: false | tee out.txt
+  b:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - run: echo hi
+YML
+out="$(WORKFLOW_DIR="$tmp/next-job-default" bash "$GATE" 2>&1)"
+check "next-job-default-does-not-cover-the-step" 1 "w.yml:7: pipes into tee" "$out" "$?"
+
 mkdir -p "$tmp/empty"
 out="$(WORKFLOW_DIR="$tmp/empty" bash "$GATE" 2>&1)"
 check "no-workflows-cannot-check" 2 "holds no workflow files" "$out" "$?"

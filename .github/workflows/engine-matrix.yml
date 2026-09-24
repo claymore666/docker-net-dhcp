@@ -101,10 +101,12 @@ jobs:
   cell:
     needs: rows
     runs-on: ubuntu-latest
-    # MEASURED on hosted runners at 411 to 439 s per cell on 20.10 and
-    # 24 to 29, one step per documented option (run 35946749955,
-    # 2026-09-24). The cap is a backstop at twice the slowest (#1015).
-    timeout-minutes: 15
+    # Hosted half pass 411 to 439 s, stopped at option 14 of 29 (run
+    # 35946749955). Local full pass 576 s on engine 29.8.1. No hosted
+    # full pass measured as of 2026-09-24. 30 min is twice a hosted full
+    # pass extrapolated from the half pass: 2 x 439 s = 878 s, doubled
+    # is 1756 s, to the next minute (#1015).
+    timeout-minutes: 30
     env:
       # Same shape as integration.yml and capture-fixtures.yml: a
       # step-level `if:` cannot read `secrets` directly, so materialize
