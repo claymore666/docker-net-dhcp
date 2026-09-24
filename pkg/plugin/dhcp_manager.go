@@ -477,6 +477,7 @@ func (m *dhcpManager) applyAddressChange(v6 bool, ip *netlink.Addr, info dhcp.In
 	if err := nlHandleAddrReplace(m.netHandle, m.ctrLink, ip); err != nil {
 		return fmt.Errorf("failed to apply re-acquired address %v: %w", ip, err)
 	}
+	routes, routesErr := m.linkRoutesV4()
 	if err := m.netHandle.AddrDel(m.ctrLink, lastIP); err != nil {
 		// Non-fatal: a stale address left behind is better than failing the bind.
 		log.
@@ -484,8 +485,67 @@ func (m *dhcpManager) applyAddressChange(v6 bool, ip *netlink.Addr, info dhcp.In
 			WithFields(m.logFields(v6)).
 			WithField("stale_ip", lastIP).
 			Warn("Failed to remove stale address after lease change")
+		return nil
 	}
+	return m.recoverFlushedSecondary(ip, lastIP, routes, routesErr)
+}
+
+// recoverFlushedSecondary puts back what the kernel removed with the old address. With promote_secondaries=0 (the
+// kernel default; the effective value is conf.all OR the link's) deleting a primary address deletes every secondary
+// in its subnet, so a same-subnet new address goes too, and with it the default route and the option 121 routes
+// Docker installed at Join, which renew does not re-install (#1081). A promote_secondaries=1 link keeps the new
+// address and every route, and nothing is written.
+func (m *dhcpManager) recoverFlushedSecondary(ip, lastIP *netlink.Addr, routes []netlink.Route, routesErr error) error {
+	held, err := util.DumpResult(m.netHandle.AddrList(m.ctrLink, unix.AF_INET))
+	if err != nil {
+		return fmt.Errorf("failed to list addresses after removing %v: %w", lastIP, err)
+	}
+	for _, a := range held {
+		if a.Equal(*ip) {
+			return nil
+		}
+	}
+	if routesErr != nil {
+		log.WithError(routesErr).WithFields(m.logFields(false)).
+			Warn("Could not list the link's routes before the renumber; the routes the kernel removed are not restored")
+	}
+	if err := nlHandleAddrReplace(m.netHandle, m.ctrLink, ip); err != nil {
+		// The new address is gone too; the old one is better than none, as when the first write fails.
+		if rerr := nlHandleAddrReplace(m.netHandle, m.ctrLink, lastIP); rerr == nil {
+			m.restoreRoutes(routes)
+		}
+		return fmt.Errorf("failed to re-apply address %v after removing %v: %w", ip, lastIP, err)
+	}
+	m.restoreRoutes(routes)
 	return nil
+}
+
+// linkRoutesV4 lists the link's IPv4 routes in every table, less the kernel's own, which come back with the address.
+func (m *dhcpManager) linkRoutesV4() ([]netlink.Route, error) {
+	all, err := util.DumpResult(m.netHandle.RouteListFiltered(unix.AF_INET, &netlink.Route{
+		LinkIndex: m.ctrLink.Attrs().Index,
+		Table:     unix.RT_TABLE_UNSPEC,
+	}, netlink.RT_FILTER_OIF|netlink.RT_FILTER_TABLE))
+	if err != nil {
+		return nil, err
+	}
+	out := all[:0]
+	for _, r := range all {
+		if r.Protocol != unix.RTPROT_KERNEL {
+			out = append(out, r)
+		}
+	}
+	return out, nil
+}
+
+// restoreRoutes re-installs routes listed before the address swap.
+func (m *dhcpManager) restoreRoutes(routes []netlink.Route) {
+	for i := range routes {
+		if err := nlHandleRouteReplace(m.netHandle, &routes[i]); err != nil {
+			log.WithError(err).WithFields(m.logFields(false)).WithField("route", routes[i].String()).
+				Warn("Failed to restore a route the kernel removed with the old address")
+		}
+	}
 }
 
 // v6AddrAttrs sets IFA_F_NODAD and the two lifetimes on a DHCPv6 address (#911). NODAD because the library already
