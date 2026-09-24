@@ -176,6 +176,7 @@ LANE=(
   # The engine matrix drives what the documentation promises, and the
   # documentation is edited far more often than the cell (#1013).
   "engine-matrix shapes|-|bash scripts/check-engine-matrix-shapes.sh"
+  "engine-matrix options|-|bash scripts/check-engine-matrix-options.sh"
   "golden fixture keying|go|bash scripts/check-golden-fixture-name-keyed.sh"
   "test/policy-gates split|-|bash scripts/check-test-job-purity.sh"
   # The lane checks itself: if test.yaml gains a gate this file does

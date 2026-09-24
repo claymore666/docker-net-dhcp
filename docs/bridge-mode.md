@@ -258,9 +258,12 @@ docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.2.2 \
   --ipam-driver null -o bridge=my-bridge my-dhcp-net
 ```
 
-With IPv6 as well (the `docker network create --ipv6` flag does **not**
-work with the null IPAM driver; use the `ipv6_mode` driver option
-instead):
+With IPv6 as well, use the `ipv6_mode` driver option on every engine.
+On engine 26 (26.1.4, measured 2026-09-24) the daemon refuses
+`docker network create --ipv6` on a network with the null IPAM driver.
+On 29.8.1 it accepts the create, but a `--ip6` address still does not
+reach the plugin: the Solicit carried no requested address (measured the
+same day).
 
 ```bash
 # arm64: the -arm64 tag here too.
