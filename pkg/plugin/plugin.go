@@ -690,6 +690,9 @@ type Plugin struct {
 	// dhcpv6AutoFallbacks counts `ipv6_mode=auto` endpoints that formed a SLAAC address after the advertised DHCPv6
 	// server stayed silent, from lease.Stats.SLAACFallbacks (#817).
 	dhcpv6AutoFallbacks atomic.Int32
+	// autoFallbackCounted holds the endpoint IDs already in dhcpv6AutoFallbacks: the Join client and the persistent
+	// client each fall back on a silent server, and the counter counts endpoints (#1016).
+	autoFallbackCounted sync.Map
 
 	// ipv6LinkEnableFailures counts links whose engine-set disable_ipv6=1 could not be cleared (#868); nothing IPv6
 	// arrives on such a link, so it would otherwise read as a DHCPv6 timeout.

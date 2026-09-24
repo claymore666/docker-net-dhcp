@@ -6,6 +6,7 @@ package plugin
 import (
 	"fmt"
 	"net/netip"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -419,6 +420,43 @@ func TestApplyV6Addrs_AKernelRefusalIsReturnedAndNamesTheAddress(t *testing.T) {
 	}
 }
 
+func TestApplyV6Addrs_AnAddressTheKernelAlreadyExpiredCountsAsWithdrawn(t *testing.T) {
+	m, p := applyManager(t)
+	h := &fakeV6LinkAddrs{delErr: map[string]error{"fd00:9::a/64": unix.EADDRNOTAVAIL}}
+
+	two := dhcp.Info{
+		IP:    "2001:db8:1::a/64",
+		SLAAC: true,
+		Addrs: []dhcp.V6Addr{
+			{IP: "2001:db8:1::a/64", ValidSeconds: 3600, PreferredSeconds: 1800},
+			{IP: "fd00:9::a/64", ValidSeconds: 3, PreferredSeconds: 0},
+		},
+	}
+	if err := m.applyV6Addrs(h, mustParseAddr(t, two.IP), two); err != nil {
+		t.Fatalf("applying a two-address lease: %v", err)
+	}
+	one := dhcp.Info{
+		IP:    "2001:db8:1::a/64",
+		SLAAC: true,
+		Addrs: []dhcp.V6Addr{{IP: "2001:db8:1::a/64", ValidSeconds: 3597, PreferredSeconds: 1797}},
+	}
+	if err := m.applyV6Addrs(h, mustParseAddr(t, one.IP), one); err != nil {
+		t.Fatalf("a renewal failed over an address the kernel had already expired: %v", err)
+	}
+	if got := p.ipv6AddressesWithdrawn.Load(); got != 1 {
+		t.Errorf("ipv6_addresses_withdrawn = %d, want 1: the kernel expires an address at its "+
+			"floored valid_lft, about a second before the lease drops it, so a natural expiry "+
+			"always meets EADDRNOTAVAIL here and the address did leave the link", got)
+	}
+	rows := readLedgerLines(t, p.ledger.path)
+	if len(rows) != 1 || rows[0].Kind != "withdrawn" || rows[0].IP != "fd00:9::a" {
+		t.Fatalf("the ledger holds %+v, want one withdrawn row naming fd00:9::a", rows)
+	}
+	if _, still := m.installedV6()["fd00:9::a/64"]; still {
+		t.Error("the manager still holds the expired address, so the next renewal withdraws it again")
+	}
+}
+
 func TestApplyV6Addrs_AFailedWithdrawalDoesNotFailTheRenewal(t *testing.T) {
 	m, p := applyManager(t)
 	h := &fakeV6LinkAddrs{delErr: map[string]error{"fd00:9::a/64": unix.ENODEV}}
@@ -445,6 +483,11 @@ func TestApplyV6Addrs_AFailedWithdrawalDoesNotFailTheRenewal(t *testing.T) {
 	if got := p.ipv6AddressesWithdrawn.Load(); got != 0 {
 		t.Errorf("ipv6_addresses_withdrawn = %d for a removal the kernel refused, want 0: "+
 			"the counter's population is addresses that came off the link", got)
+	}
+	if raw, err := os.ReadFile(p.ledger.path); err == nil && len(raw) > 0 {
+		t.Errorf("the ledger holds %q for a removal the kernel refused, want no row", raw)
+	} else if err != nil && !os.IsNotExist(err) {
+		t.Fatalf("read ledger: %v", err)
 	}
 	if _, still := m.installedV6()["fd00:9::a/64"]; still {
 		t.Error("the manager still holds an address that left the lease, so the next " +

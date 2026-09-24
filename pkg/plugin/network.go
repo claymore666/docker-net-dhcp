@@ -1072,6 +1072,7 @@ func (p *Plugin) EndpointOperInfo(ctx context.Context, r InfoRequest) (InfoRespo
 
 // DeleteEndpoint removes the endpoint's host-side link, best-effort in macvlan mode where the netns reaped it.
 func (p *Plugin) DeleteEndpoint(ctx context.Context, r DeleteEndpointRequest) error {
+	p.autoFallbackCounted.Delete(r.EndpointID)
 	// netMode, not netOptions: teardown must not be blocked by a stored name it never reads (#727).
 	mode, modeKnown, err := p.netMode(ctx, r.NetworkID)
 	if err != nil {

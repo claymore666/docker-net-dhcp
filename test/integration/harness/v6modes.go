@@ -58,6 +58,9 @@ const (
 	V6DNSServer    = "fd00:6470:6865::53"
 	V6SearchDomain = "v6mode.example"
 
+	V6DHCPOnlyDNSServer    = "fd00:6470:6865::54"
+	V6DHCPOnlySearchDomain = "dhcpv6.v6mode.example"
+
 	// raLogToken is printed verbatim as `RTR-ADVERT(%s) %s` (radv.c:758), not through gettext.
 	raLogToken = "RTR-ADVERT("
 )
@@ -138,6 +141,25 @@ func V6DeprecatedPrefixArgs() []string {
 	return []string{
 		"--dhcp-range=" + V6Prefix + ",ra-only,deprecated",
 		"--enable-ra",
+	}
+}
+
+// V6PoolWithoutRAArgs is V6NoRA's segment with its DHCPv6 pool answering, for a harness RASender to advertise over.
+//
+// Argv, not a V6Mode: its startup signature equals V6NoRA's, a pool and no advertisement. dnsmasq sends no RA without
+// --enable-ra or an ra-* range (radv.c), so every advertisement on the segment is the sender's (#1016).
+func V6PoolWithoutRAArgs() []string {
+	return []string{"--dhcp-range=" + V6PoolStartV6 + "," + V6PoolEndV6 + "," + LeaseTime}
+}
+
+// V6DHCPOnlyDNSArgs gives DHCPv6 replies their own resolver and search domain, which the advertisement does not carry.
+//
+// radv.c builds RDNSS and DNSSL from options whose tags match the RA context, and `dhcpv6` is set on DHCPv6 requests
+// only, so the RA keeps V6DNSServer and V6SearchDomain (RFC 8106 section 5.3.1, #1016).
+func V6DHCPOnlyDNSArgs() []string {
+	return []string{
+		"--dhcp-option=tag:dhcpv6,option6:dns-server,[" + V6DHCPOnlyDNSServer + "]",
+		"--dhcp-option=tag:dhcpv6,option6:domain-search," + V6DHCPOnlySearchDomain,
 	}
 }
 
