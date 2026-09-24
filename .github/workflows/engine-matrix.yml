@@ -101,11 +101,10 @@ jobs:
   cell:
     needs: rows
     runs-on: ubuntu-latest
-    # A cell is a pull of a dind image, an apk install, a plugin build
-    # install, three leases and a restart. MEASURED on the author's box
-    # at 2-4 minutes per row with the images cold; the cap is a backstop
-    # above that, not an estimate of it.
-    timeout-minutes: 25
+    # MEASURED on hosted runners at 411 to 439 s per cell on 20.10 and
+    # 24 to 29, one step per documented option (run 35946749955,
+    # 2026-09-24). The cap is a backstop at twice the slowest (#1015).
+    timeout-minutes: 15
     env:
       # Same shape as integration.yml and capture-fixtures.yml: a
       # step-level `if:` cannot read `secrets` directly, so materialize
@@ -218,5 +217,8 @@ jobs:
           pattern: engine-row-*
           path: downloaded
 
+      # The implicit run shell is `bash -e` without pipefail, so tee's exit
+      # was the step's and a failed reconcile went green (#1015, #297).
       - name: Reconcile the measured floor against the declared one
+        shell: bash
         run: bash scripts/engine-floor.sh --reconcile downloaded | tee -a "$GITHUB_STEP_SUMMARY"

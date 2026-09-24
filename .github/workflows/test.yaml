@@ -654,6 +654,11 @@ jobs:
       - name: Pipefail-consumer check
         run: bash scripts/check-pipefail-consumers.sh
 
+      # A step that pipes into tee without pipefail reports tee's exit; the
+      # engine-matrix floor went green over "no row passed" that way (#1015).
+      - name: Workflow tee-pipefail check
+        run: bash scripts/check-workflow-tee-pipefail.sh
+
       # Every build-constraint term in the tree must be linted by some
       # staticcheck invocation, and one invocation must carry no tags
       # at all (#871). A required check that never compiles a tagged

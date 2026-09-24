@@ -1010,7 +1010,7 @@ opt_lease_timeout() {
 }
 
 opt_conflict_check() {
-    local m addr _
+    local m addr ps _
     d sh -c "ip addr add 192.168.99.60/24 dev em-sq && ip addr add 192.168.99.61/24 dev em-sq && ip addr add 192.168.99.62/24 dev em-sq" \
         || fail "could not put the squatted addresses on em-sq"
 
@@ -1031,6 +1031,12 @@ opt_conflict_check() {
     addr="$(v4_of em-c-cc)"
     [ "$addr" = 192.168.99.61 ] \
         || fail "conflict_check=async: at docker run's return the container holds '$addr', not the leased 192.168.99.61"
+    # Recorded, not asserted: with 0 the kernel drops a secondary with its
+    # primary, which decides whether a same-subnet renumber keeps an address.
+    ps="$(d docker exec em-c-cc ip -o -4 addr 2>/dev/null \
+        | awk '$4 ~ /^192\.168\./ { sub(/@.*/, "", $2); print $2; exit }')"
+    ps="$(d docker exec em-c-cc cat "/proc/sys/net/ipv4/conf/${ps:-none}/promote_secondaries" 2>/dev/null)"
+    MEASURED="$MEASURED promote_secondaries=${ps:-unread}"
     fresh_wait "$DNSMASQ_LOG" "$m" "DHCPDECLINE($SEGMENT) 192.168.99.61 " \
         || fail "conflict_check=async: no DHCPDECLINE for the squatted 192.168.99.61"
     for _ in $(seq 1 30); do
@@ -1039,7 +1045,7 @@ opt_conflict_check() {
         sleep 1
     done
     [ -n "$addr" ] && [ "$addr" != 192.168.99.61 ] \
-        || fail "conflict_check=async: the container never left the declined 192.168.99.61"
+        || fail "conflict_check=async: the container never left the declined 192.168.99.61; it holds '${addr:-no IPv4 address}' after 30 s, promote_secondaries=${ps:-unread}"
     fresh_has "$DNSMASQ_LOG" "$m" "DHCPACK($SEGMENT) $addr 02:00:00:00:e0:02" \
         || fail "conflict_check=async: no second ACK for $addr"
     opt_down em-o-cc em-c-cc
