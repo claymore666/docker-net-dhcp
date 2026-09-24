@@ -52,7 +52,7 @@ want_in() {
 
 # A working copy the cases can damage. Only the Go module is needed;
 # the gate builds pkg/plugin and reads its testdata.
-copy_tree() {
+copy_files() {
     local dst="$1"
     mkdir -p "$dst"
     ( cd "$ROOT" && git ls-files -z ) \
@@ -60,8 +60,40 @@ copy_tree() {
         | ( cd "$dst" && tar -xf - )
 }
 
+# The gate copies the tracked files of the tree it checks, so each case's tree is a git work tree (#1016).
+copy_tree() {
+    copy_files "$1"
+    ( cd "$1" && git init -q && git add -A ) \
+        || { echo "FAIL: could not make $1 a git work tree"; failures=$((failures + 1)); }
+}
+
 # --- case 1: the real tree, name-keyed, passes --------------------------
 check "name-keyed fixture passes" 0 "$ROOT"
+
+# --- case 1b: the gate leaves the tree it checks untouched -------------
+#
+# The gate rewrote pkg/plugin/endpoints.go in place while a parallel
+# self-test read that package, and the reader saw an empty file (run
+# 35937925577, 2026-09-24, #1016). A read-only pkg/plugin turns any
+# write into the checked tree into a red here, whatever the timing.
+RO="$TMP/readonly"; PRISTINE="$TMP/pristine"
+copy_tree "$RO"; copy_files "$PRISTINE"
+chmod -R a-w "$RO/pkg/plugin"
+check "the gate passes on a tree whose pkg/plugin is read-only" 0 "$RO"
+for f in pkg/plugin/endpoints.go pkg/plugin/testdata/metrics_exposition.golden; do
+    cmp -s "$RO/$f" "$PRISTINE/$f" \
+        || { echo "FAIL: the gate changed $f in the tree it checked"; failures=$((failures + 1)); }
+done
+chmod -R u+w "$RO/pkg/plugin"
+
+# --- case 1c: a tree that is not a git work tree REFUSES ----------------
+#
+# The gate copies the tracked files; with no git index there is no list
+# to copy, and guessing one would probe a tree the checked one is not.
+PLAIN="$TMP/plain"
+copy_files "$PLAIN"
+check "a tree that is not a git work tree refuses" 2 "$PLAIN"
+want_in "is not in a git work tree"
 
 # --- case 2: index-keyed fixture is REJECTED ----------------------------
 #

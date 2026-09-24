@@ -368,9 +368,11 @@
 #              nineteen accepted create and remove pairs at about a
 #              second each.
 #              TestLeaseTimeout_AnEmptyValueIsTheDefaultAndTheContainerLeases
-#              is 20.00: TestIPAM_IpvlanIsRefusedAtCreate's shape (15.00,
+#              is 42.00: TestIPAM_IpvlanIsRefusedAtCreate's shape (15.00,
 #              one refused create, one network, one container) plus a
-#              second refused create and a dnsmasq log read.
+#              second refused create and a dnsmasq log read, 20.00, plus
+#              two IPAM networks with a container each at the 11.00 that
+#              TestIPAM_BothShapesOnOneDaemon's second pair adds (26.00).
 #              TestDHCPv6_ARefusalLogsItsStatusCodeByNameOnce is 35.00:
 #              the refusing arm of TestDHCPv6_RefusedAndSilentAreTwoRows
 #              (56.00 for both arms, the silent one the longer) plus a
@@ -562,7 +564,7 @@ TestLeaseRenewIPv6_HonorsT1	73.85
 TestLeaseRenew_HonorsT1	27.38
 TestLeaseRetention_ARestartRebootsRatherThanDiscovers	12.92
 TestLeaseRetention_NothingEverReleases	35.23
-TestLeaseTimeout_AnEmptyValueIsTheDefaultAndTheContainerLeases	20.00
+TestLeaseTimeout_AnEmptyValueIsTheDefaultAndTheContainerLeases	42.00
 TestLifecycleBridge_GoldenPath	12.19
 TestLifecycleBridge_IPv6_GoldenPath	16.98
 TestLifecycleIPvlan_GoldenPath	11.80

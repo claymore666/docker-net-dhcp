@@ -383,6 +383,28 @@ else
     echo "PASS: and outside a job it emits no workflow command at all"
 fi
 
+# A self-test that rewrites a tracked file of its own tree, even with the same bytes, or leaves and removes a file in a
+# tracked directory, turns the run red naming the path; the reading twin is the control (run 35937925577, #1016).
+for kind in reads rewrites strays; do
+    mkdir -p "$TMP/tree-$kind/scripts" "$TMP/tree-$kind/pkg"
+    printf 'fixture\n' > "$TMP/tree-$kind/pkg/tracked.txt"
+    if [ "$kind" = rewrites ]; then
+        mk "$TMP/tree-$kind/scripts/test-w.sh" \
+            'f="$(dirname "$0")/../pkg/tracked.txt"; c="$(cat "$f")"; printf "%s\n" "$c" > "$f"'
+    elif [ "$kind" = strays ]; then
+        mk "$TMP/tree-$kind/scripts/test-w.sh" 'f="$(dirname "$0")/../pkg/stray.txt"; : > "$f"; rm -f "$f"'
+    else
+        mk "$TMP/tree-$kind/scripts/test-w.sh" 'cat "$(dirname "$0")/../pkg/tracked.txt" > /dev/null'
+    fi
+    ( cd "$TMP/tree-$kind" && git init -q && git add -A )
+done
+check "a self-test that only reads a tracked file passes" 0 "$TMP/tree-reads/scripts" \
+    "All 1 gate self-test(s) run here passed"
+check "a self-test that rewrites a tracked file with its own bytes fails naming it" 1 "$TMP/tree-rewrites/scripts" \
+    "^  pkg/tracked.txt$"
+check "a self-test that creates and removes a file in a tracked directory fails naming it" 1 \
+    "$TMP/tree-strays/scripts" "^  pkg$"
+
 # The real directory must be discoverable and non-trivial. This is the
 # guard against the runner being wired to a path that happens to be
 # empty in CI — the exact way this class of check goes quietly green.

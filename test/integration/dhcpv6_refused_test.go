@@ -10,10 +10,12 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	docker "github.com/docker/docker/client"
+	"github.com/vishvananda/netlink"
 
 	"github.com/claymore666/docker-net-dhcp/v2/test/integration/harness"
 )
@@ -193,7 +195,62 @@ const refusalLogMsg = `msg="The DHCPv6 server refused this client; it answered a
 var (
 	statusCodeField = regexp.MustCompile(`(?:^| )status_code=(\S+)`)
 	endpointField   = regexp.MustCompile(`(?:^| )endpoint=([0-9a-f]{12})(?: |$)`)
+	pluginHostLink  = regexp.MustCompile(`^dh-([0-9a-f]{12})$`)
 )
+
+// watchEndpointsJoining records, from rtnetlink, the 12-hex endpoint prefix of every plugin host link the kernel enslaves
+// to bridge, so the endpoint a log line names is checked against the kernel and not against the log (#1016). The
+// returned read waits up to budget for the first one; Close does not wake a blocked Receive, so nothing waits on the
+// channel closing.
+func watchEndpointsJoining(t *testing.T, bridge string) func(budget time.Duration) []string {
+	t.Helper()
+	br, err := netlink.LinkByName(bridge)
+	if err != nil {
+		t.Fatalf("look up the fixture bridge %s: %v", bridge, err)
+	}
+	updates := make(chan netlink.LinkUpdate, 256)
+	done := make(chan struct{})
+	var mu sync.Mutex
+	var subErr error
+	seen := map[string]bool{}
+	if err := netlink.LinkSubscribeWithOptions(updates, done, netlink.LinkSubscribeOptions{
+		ErrorCallback: func(err error) { mu.Lock(); subErr = err; mu.Unlock() },
+	}); err != nil {
+		t.Fatalf("subscribe to link updates: %v", err)
+	}
+	t.Cleanup(func() { close(done) })
+	go func() {
+		for u := range updates {
+			a := u.Link.Attrs()
+			if m := pluginHostLink.FindStringSubmatch(a.Name); m != nil && a.MasterIndex == br.Attrs().Index {
+				mu.Lock()
+				seen[m[1]] = true
+				mu.Unlock()
+			}
+		}
+	}()
+	return func(budget time.Duration) []string {
+		t.Helper()
+		for deadline := time.Now().Add(budget); ; time.Sleep(50 * time.Millisecond) {
+			mu.Lock()
+			n, err := len(seen), subErr
+			mu.Unlock()
+			if err != nil {
+				t.Fatalf("the link subscription failed, so which endpoint joined %s is unknown: %v", bridge, err)
+			}
+			if n > 0 || time.Now().After(deadline) {
+				break
+			}
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		ids := make([]string, 0, len(seen))
+		for id := range seen {
+			ids = append(ids, id)
+		}
+		return ids
+	}
+}
 
 // TestDHCPv6_ARefusalLogsItsStatusCodeByNameOnce checks that a NoAddrsAvail answer gives one log line naming the code beside the endpoint and one dhcpv6_refused (#816, #1016).
 func TestDHCPv6_ARefusalLogsItsStatusCodeByNameOnce(t *testing.T) {
@@ -214,6 +271,7 @@ func TestDHCPv6_ARefusalLogsItsStatusCodeByNameOnce(t *testing.T) {
 
 	before := readV6FailureCounters(t, ctx, cli)
 	mark := harness.MarkPluginLog(t, ctx)
+	joined := watchEndpointsJoining(t, f.Bridge())
 
 	_, err = startOnV6SegmentWithOpts(t, ctx, cli, f, "dh-itest-v6refusedlog", map[string]string{"ipv6": "", "ipv6_mode": "dhcp"})
 	if err == nil {
@@ -240,8 +298,16 @@ func TestDHCPv6_ARefusalLogsItsStatusCodeByNameOnce(t *testing.T) {
 		t.Errorf("the refusal line does not carry status_code=NoAddrsAvail as a field (got %v); "+
 			"docs/reference.md says the log line names the code:\n%s", m, line)
 	}
-	if !endpointField.MatchString(line) {
-		t.Errorf("the refusal line does not name the endpoint by its 12-hex short id:\n%s", line)
+	// The kernel queued the enslave event before CreateEndpoint answered, inside the daemon's call deadline; the same
+	// bound covers reading it, and the read returns at the first sighting (#1016).
+	ids := joined(daemonCallDeadline)
+	if len(ids) != 1 {
+		t.Fatalf("the kernel reported %d plugin host link(s) %v joining %s for one container, want exactly 1, "+
+			"so this endpoint's id is unknown", len(ids), ids, f.Bridge())
+	}
+	if m := endpointField.FindStringSubmatch(line); m == nil || m[1] != ids[0] {
+		t.Errorf("the refusal line names endpoint %v; the kernel enslaved dh-%s to %s for this container, "+
+			"so the line is not about this endpoint:\n%s", m, ids[0], f.Bridge(), line)
 	}
 
 	after := readV6FailureCounters(t, ctx, cli)

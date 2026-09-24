@@ -8,6 +8,7 @@ package integration
 import (
 	"context"
 	"os"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -303,5 +304,47 @@ func TestLeaseTimeout_AnEmptyValueIsTheDefaultAndTheContainerLeases(t *testing.T
 		if complaint && strings.Contains(line, "lease_timeout") {
 			t.Errorf("the plugin complained about lease_timeout on a network that left it empty:\n%s", line)
 		}
+	}
+
+	// An IPAM reservation logs the lease_timeout it was handed whenever that exceeds its 26 s budget, which 34 s does,
+	// so that line shows the budget the empty value became; 40s shows the field carries the network's own value (#1016).
+	const capMarker = "Capping lease_timeout"
+	// The daemon's plugin-call wait, `docker plugin enable --timeout` default 30 s (moby plugin/manager_linux.go).
+	const ipamCallDeadline = 30 * time.Second
+	leaseTimeoutField := regexp.MustCompile(`(?:^| )lease_timeout=(\S+)`)
+	for _, c := range []struct{ name, value, want string }{
+		{"dh-itest-leasetimeout-ipam-empty", "", defaultTimeout.String()},
+		{"dh-itest-leasetimeout-ipam-40s", "40s", "40s"},
+	} {
+		t.Run("ipam lease_timeout="+c.value, func(t *testing.T) {
+			mark := harness.MarkPluginLog(t, ctx)
+			harness.CreateNetworkIPAM(t, ctx, c.name, "macvlan", harness.SubnetCIDR, nil,
+				map[string]string{"lease_timeout": c.value})
+			_, ipv4, _ := harness.RunContainer(t, ctx, c.name, c.name+"-ctr")
+			harness.AssertIP(t, ipv4)
+			// The line precedes the reservation, which the daemon waits 30 s for, as TestDHCPv6's read bounds it (#868).
+			window := harness.AwaitPluginLogSince(t, ctx, mark, ipamCallDeadline,
+				func(w string) bool { return strings.Contains(w, capMarker) })
+			var got []string
+			for _, line := range strings.Split(window, "\n") {
+				if strings.Contains(line, capMarker) {
+					m := leaseTimeoutField.FindStringSubmatch(line)
+					if m == nil {
+						t.Fatalf("a %q line carries no lease_timeout field:\n%s", capMarker, line)
+					}
+					got = append(got, m[1])
+				}
+			}
+			if len(got) == 0 {
+				t.Fatalf("no %q line for a reservation on a network created with lease_timeout=%q, so the "+
+					"budget it ran with is unseen", capMarker, c.value)
+			}
+			for _, v := range got {
+				if v != c.want {
+					t.Errorf("a reservation on the network created with lease_timeout=%q ran with lease_timeout=%s, "+
+						"want %s", c.value, v, c.want)
+				}
+			}
+		})
 	}
 }
