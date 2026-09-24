@@ -253,6 +253,7 @@ host_ifname|step|ip link in the host netns shows the container name; control the
 require_mac|step|docker run without --mac-address refused naming the option, no fresh DHCPACK; with --mac-address a fresh ACK carries the MAC; ipvlan and a non-boolean value refused
 macvlan_mode|step|ip -d link in the container netns shows vepa and private, each with a fresh ACK; passthru on a parent of its own leases under the parent MAC and refuses a second container; an unknown value and mode=ipvlan refused
 ipvlan_mode|step|ip -d link in the container netns shows l2 with a fresh ACK; l3 and mode=macvlan refused
+vlan|step|a tagged server on a vlan of the segment ACKs the address the container holds; ip -d link shows <parent>.100 as 802.1Q id 100 with the plugin alias and host IPv6 off, gone after its network; bridge mode, 4095, a 17-byte sub-interface name and release_lease on a plugin-made one refused
 ip|step|fresh ACK in the server log for the requested address, held by the container
 com.docker.network.endpoint.ifname|measure|whether the container link carries the requested name is recorded; an invalid name is refused
 --mac-address|step|fresh ACK in the server log carries the MAC
@@ -378,6 +379,7 @@ LEASE_TIME="2m"
 FIXTURE_DIR="/var/log/engine-matrix"
 DNSMASQ_LOG="$FIXTURE_DIR/dnsmasq.log"
 DNSMASQ2_LOG="$FIXTURE_DIR/dnsmasq2.log"
+VLAN_LOG="$FIXTURE_DIR/dnsmasq-vlan.log"
 AUDIT_LOG="/var/lib/net-dhcp/leases.jsonl"
 V6_BRIDGE="em-v6"
 V6_POOL4="192.168.98.10,192.168.98.99"
@@ -1226,6 +1228,50 @@ opt_ipvlan_mode() {
     [ "$got" = "ipvlan l2" ] || fail "ipvlan_mode=l2: ip -d link in the container reads '$got'"
     fresh_has "$DNSMASQ_LOG" "$m" "DHCPACK($SEGMENT) $V4 " || fail "ipvlan_mode=l2: no fresh ACK for $V4"
     opt_down em-o-im em-c-im
+}
+
+# opt_vlan: the tagged server sits in em-ns2 on a vlan of em-s2, so only a
+# frame tagged 100 on the segment reaches it (#902).
+opt_vlan() {
+    local m got
+    opt_refused "vlan cannot be set in mode=bridge" -o bridge="$SEGMENT" -o vlan=100
+    opt_refused 'vlan "4095" is not a VLAN ID from 1 to 4094' -o mode=macvlan -o parent="$PARENT" -o vlan=4095
+    opt_refused "release_lease=on_stop is refused on $PARENT.100" -o mode=macvlan -o parent="$PARENT" -o vlan=100 -o release_lease=on_stop
+    di sh -c "ip link add em-vl-longpar type dummy && ip link set em-vl-longpar up" \
+        || fail "could not add the long-named parent em-vl-longpar"
+    opt_refused '"em-vl-longpar.100" is not a kernel-legal interface name (at most 15 bytes)' \
+        -o mode=macvlan -o parent=em-vl-longpar -o vlan=100
+    di sh -c "ip link del em-vl-longpar" || fail "could not remove em-vl-longpar"
+    di sh -c "ip netns exec em-ns2 ip link add link em-s2 name em-s2.100 type vlan id 100 &&
+        ip netns exec em-ns2 ip addr add 192.168.97.1/24 dev em-s2.100 &&
+        ip netns exec em-ns2 ip link set em-s2.100 up &&
+        ip netns exec em-ns2 dnsmasq --interface=em-s2.100 --bind-interfaces --except-interface=lo \
+          --dhcp-range=192.168.97.10,192.168.97.99,$LEASE_TIME --log-dhcp --log-facility=$VLAN_LOG --port=0 \
+          --dhcp-leasefile=$FIXTURE_DIR/leases-vlan --pid-file=$FIXTURE_DIR/dnsmasq-vlan.pid" \
+        || fail "the tagged DHCP server did not start"
+    m="$(log_lines "$VLAN_LOG")"
+    opt_net em-o-vl -o mode=macvlan -o parent="$PARENT" -o vlan=100
+    got="$(d ip -d link show "$PARENT.100" 2>&1)"
+    case "$got" in
+        *"vlan protocol 802.1Q id 100 "*"alias docker-net-dhcp"*) ;;
+        *) fail "vlan=100: ip -d link show $PARENT.100 reads: $got" ;;
+    esac
+    got="$(d cat "/proc/sys/net/ipv6/conf/$PARENT.100/disable_ipv6" 2>/dev/null || echo absent)"
+    case "$got" in
+        1 | absent) ;;
+        *) fail "vlan=100: host IPv6 is on for $PARENT.100 (disable_ipv6=$got), so the host joins the vlan (#902)" ;;
+    esac
+    opt_run em-c-vl em-o-vl
+    wait_v4 em-c-vl
+    case "$V4" in
+        192.168.97.*) ;;
+        *) fail "vlan=100: the container holds $V4, outside the tagged server's 192.168.97.0/24" ;;
+    esac
+    fresh_has "$VLAN_LOG" "$m" "DHCPACK(em-s2.100) $V4 " || fail "vlan=100: no fresh ACK from the tagged server for $V4"
+    opt_down em-o-vl em-c-vl
+    d ip link show "$PARENT.100" >/dev/null 2>&1 && fail "vlan=100: $PARENT.100 outlived its only network"
+    d sh -c "kill \$(cat $FIXTURE_DIR/dnsmasq-vlan.pid); rm -f $FIXTURE_DIR/dnsmasq-vlan.pid"
+    di sh -c "ip netns exec em-ns2 ip link del em-s2.100" || fail "could not remove em-s2.100"
 }
 
 # One pair of runs judges the options that change what the client sends;
