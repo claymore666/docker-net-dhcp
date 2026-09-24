@@ -979,6 +979,13 @@ green when CI would not.</p>
 <p>Go code is formatted with <code>gofmt</code> and passes <code>go vet</code> and
 <a href="https://staticcheck.dev/"><code>staticcheck</code></a>; shell and workflow files pass
 <code>shellcheck</code> and <code>actionlint</code>. All four run in CI.</p>
+<p>A Go comment states what the code cannot: an outside fact, such as a
+measured value with its date, an engine, kernel or server behaviour or an
+RFC section, or a decision. A comment block of two or more lines names an
+issue (<code>#N</code>) or an RFC (<code>RFC N</code>), and no block runs past ten lines.
+<code>scripts/check-comment-budget.sh</code> checks the blocks a pull request adds or
+changes, and refuses a pull request that raises a package's share of
+comment lines (#1056).</p>
 <h2 id="tests">Tests<a class="headerlink" href="#tests" title="Permanent link">&para;</a></h2>
 <p>New functionality is expected to ship with tests, and a per-package
 coverage ratchet enforces it at release time: a release cannot merge if a

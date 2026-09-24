@@ -1491,6 +1491,22 @@ knows which client is underneath.</p>
   applies the address, routes, DNS and MTU via netlink. There is no argv
   to build, no environment to scrub, no JSON to parse and no second
   binary in the image.</li>
+<li><strong>The first lease leaves the default route to the engine.</strong> <code>Join</code>
+  returns the gateway and starts the client at once, and the engine
+  installs that gateway after <code>Join</code> returns with an add that fails if a
+  default route is already on the link, which fails the container start
+  with <code>file exists</code>. Until the plugin sees a default route on the link,
+  or the next <code>renew</code> event, a lease or a Router Advertisement that finds
+  none adds nothing. A manager rebuilt at plugin start had no <code>Join</code> and
+  adds the route as before (#1084).</li>
+<li><strong>A renumber inside one subnet puts back what the kernel took with
+  the old address.</strong> The new address is added before the old one is
+  deleted. With <code>promote_secondaries=0</code> on the container link, deleting
+  a primary IPv4 address also deletes every secondary in its subnet, and
+  with no IPv4 address left the kernel drops the link's routes. The plugin reads the addresses
+  back after the delete; if the new one is gone it writes it again and
+  restores the routes it listed before the delete, and if that fails it
+  puts the old address and its routes back (#1081).</li>
 <li><strong>The emit must not block, and a drop is counted.</strong> The only reader is
   that per-endpoint goroutine, and it stops reading the moment the
   endpoint is torn down. A bare send would park the translate goroutine
@@ -2242,7 +2258,10 @@ budget (D41);
 <a href="https://github.com/claymore666/docker-net-dhcp/blob/main/scripts/check-durations-table.sh"><code>scripts/check-durations-table.sh</code></a>
 keeps the weights that partition them honest, over both suites, and
 <a href="https://github.com/claymore666/docker-net-dhcp/blob/main/scripts/test-integration-shard.sh"><code>scripts/test-integration-shard.sh</code></a>
-proves the two partitions together cover the roster exactly once.</p>
+proves the two partitions together cover the roster exactly once.
+The partitioner itself refuses, naming the file and line, a test under
+<code>test/integration/</code> that is neither on the roster nor in a package the
+shard target runs whole (#866).</p>
 <p>Use <code>integration-local</code>.</p>
 <p><code>make integration-test</code> and <code>make integration-test-failure</code> only run <code>go
 test</code>. Building and installing the plugin is a separate chain (<code>make

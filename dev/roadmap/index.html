@@ -658,10 +658,10 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#v222" class="md-nav__link">
+  <a href="#v223" class="md-nav__link">
     <span class="md-ellipsis">
       
-        v2.2.2
+        v2.2.3
       
     </span>
   </a>
@@ -971,10 +971,10 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#v222" class="md-nav__link">
+  <a href="#v223" class="md-nav__link">
     <span class="md-ellipsis">
       
-        v2.2.2
+        v2.2.3
       
     </span>
   </a>
@@ -1138,9 +1138,9 @@ below decide what is in a release; this page follows them.</p>
 </thead>
 <tbody>
 <tr>
-<td>v2.2.2</td>
-<td>The IPAM lease record, the attach path, and the two pages a new reader lands on</td>
-<td><a href="https://github.com/claymore666/docker-net-dhcp/milestone/36">milestone 36</a></td>
+<td>v2.2.3</td>
+<td>The default route at the first lease, a renumber inside one subnet, on-link routes after Join, a persistent client on a late link, and the tests and gates listed below</td>
+<td><a href="https://github.com/claymore666/docker-net-dhcp/milestone/37">milestone 37</a></td>
 </tr>
 <tr>
 <td>v2.3.0</td>
@@ -1159,20 +1159,33 @@ below decide what is in a release; this page follows them.</p>
 </tr>
 </tbody>
 </table>
-<h3 id="v222">v2.2.2<a class="headerlink" href="#v222" title="Permanent link">&para;</a></h3>
+<h3 id="v223">v2.2.3<a class="headerlink" href="#v223" title="Permanent link">&para;</a></h3>
 <ul>
-<li><a href="https://github.com/claymore666/docker-net-dhcp/issues/1047">#1047</a>, a restart that fails after the address is re-bound leaves the
-  lease record unreachable</li>
-<li><a href="https://github.com/claymore666/docker-net-dhcp/issues/1050">#1050</a>, the renewal client is opened by a link name the engine has
-  already changed, so the container keeps its address only until the
-  lease runs out</li>
-<li><a href="https://github.com/claymore666/docker-net-dhcp/issues/1051">#1051</a>, the host-side link keeps its generated name when the attach
-  enters the container's namespace by the sandbox key, so
-  <code>host_ifname=container_name</code> has no effect there</li>
-<li><a href="https://github.com/claymore666/docker-net-dhcp/issues/1039">#1039</a>, a table of contents at the top of the README, with the
-  reference and this page reachable without scrolling</li>
-<li><a href="https://github.com/claymore666/docker-net-dhcp/issues/1040">#1040</a>, this page: the table above, the picture below, and the
-  themes and refusals as tables</li>
+<li><a href="https://github.com/claymore666/docker-net-dhcp/issues/1084">#1084</a>, the first lease adds the default route the engine is about to
+  program, and the container fails to start</li>
+<li><a href="https://github.com/claymore666/docker-net-dhcp/issues/1081">#1081</a>, a renumber inside one subnet leaves the container with no IPv4
+  address on a host with <code>promote_secondaries=0</code></li>
+<li><a href="https://github.com/claymore666/docker-net-dhcp/issues/1065">#1065</a>, IPv6 is prepared on a link name the engine has already changed</li>
+<li><a href="https://github.com/claymore666/docker-net-dhcp/issues/1044">#1044</a>, an endpoint entry can read <code>lease_state=bound</code> with no
+  <code>last_event</code></li>
+<li><a href="https://github.com/claymore666/docker-net-dhcp/issues/1016">#1016</a>, an integration test for the v2.2.0 behaviours that only a unit
+  test drives</li>
+<li><a href="https://github.com/claymore666/docker-net-dhcp/issues/1015">#1015</a>, an engine-matrix step for every documented option</li>
+<li><a href="https://github.com/claymore666/docker-net-dhcp/issues/866">#866</a>, tests under <code>test/integration/harness/</code> run nowhere and nothing
+  says so</li>
+<li><a href="https://github.com/claymore666/docker-net-dhcp/issues/883">#883</a>, a gate counts a mention as an invocation, so an unwired gate
+  reports as wired</li>
+<li><a href="https://github.com/claymore666/docker-net-dhcp/issues/888">#888</a>, a gate resolves symbols at git HEAD, so an uncommitted rewrite
+  is never judged</li>
+<li><a href="https://github.com/claymore666/docker-net-dhcp/issues/1042">#1042</a>, the coverage-presence wait is shorter than recent coverage runs</li>
+<li><a href="https://github.com/claymore666/docker-net-dhcp/issues/1043">#1043</a>, the Docker Hub alias signature is verified before the registry
+  serves the copied referrers</li>
+<li><a href="https://github.com/claymore666/docker-net-dhcp/issues/1056">#1056</a>, the comment volume in the Go tree, and a gate on added comments</li>
+<li><a href="https://github.com/claymore666/docker-net-dhcp/issues/1088">#1088</a>, an IPv6 on-link prefix route is installed only from the Join
+  answer, never from a later router advertisement</li>
+<li><a href="https://github.com/claymore666/docker-net-dhcp/issues/1089">#1089</a>, the persistent DHCPv4 client can open before the engine sets
+  the link up and then never binds, although the server acknowledges
+  every request</li>
 </ul>
 <h3 id="v230">v2.3.0<a class="headerlink" href="#v230" title="Permanent link">&para;</a></h3>
 <ul>
@@ -1190,20 +1203,6 @@ below decide what is in a release; this page follows them.</p>
 <li><a href="https://github.com/claymore666/docker-net-dhcp/issues/1036">#1036</a>, a <code>require_mac</code> option that refuses an endpoint with no
   Docker-supplied MAC</li>
 <li><a href="https://github.com/claymore666/docker-net-dhcp/issues/1037">#1037</a>, an <code>mtu</code> option that sets the endpoint link MTU explicitly</li>
-<li><a href="https://github.com/claymore666/docker-net-dhcp/issues/1015">#1015</a>, an engine-matrix step for every documented option</li>
-<li><a href="https://github.com/claymore666/docker-net-dhcp/issues/1016">#1016</a>, an integration test for the v2.2.0 behaviours that only a unit
-  test drives</li>
-<li><a href="https://github.com/claymore666/docker-net-dhcp/issues/866">#866</a>, tests under <code>test/integration/harness/</code> run nowhere and nothing
-  says so</li>
-<li><a href="https://github.com/claymore666/docker-net-dhcp/issues/883">#883</a>, a gate counts a mention as an invocation, so an unwired gate
-  reports as wired</li>
-<li><a href="https://github.com/claymore666/docker-net-dhcp/issues/888">#888</a>, a gate resolves symbols at git HEAD, so an uncommitted rewrite
-  is never judged</li>
-<li><a href="https://github.com/claymore666/docker-net-dhcp/issues/1042">#1042</a>, the coverage-presence wait is shorter than recent coverage runs</li>
-<li><a href="https://github.com/claymore666/docker-net-dhcp/issues/1043">#1043</a>, the Docker Hub alias signature is verified before the registry
-  serves the copied referrers</li>
-<li><a href="https://github.com/claymore666/docker-net-dhcp/issues/1044">#1044</a>, an endpoint entry can read <code>lease_state=bound</code> with no
-  <code>last_event</code></li>
 <li><a href="https://github.com/claymore666/docker-net-dhcp/issues/1045">#1045</a>, the code-scanning result is not a required check on either
   protected branch</li>
 </ul>
