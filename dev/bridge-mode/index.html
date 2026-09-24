@@ -1358,9 +1358,12 @@ iptables -S FORWARD | head -1</code>.</p>
 <a id="__codelineno-11-3" name="__codelineno-11-3" href="#__codelineno-11-3"></a>docker<span class="w"> </span>network<span class="w"> </span>create<span class="w"> </span>-d<span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:v2.2.2<span class="w"> </span><span class="se">\</span>
 <a id="__codelineno-11-4" name="__codelineno-11-4" href="#__codelineno-11-4"></a><span class="w">  </span>--ipam-driver<span class="w"> </span>null<span class="w"> </span>-o<span class="w"> </span><span class="nv">bridge</span><span class="o">=</span>my-bridge<span class="w"> </span>my-dhcp-net
 </code></pre></div>
-<p>With IPv6 as well (the <code>docker network create --ipv6</code> flag does <strong>not</strong>
-work with the null IPAM driver; use the <code>ipv6_mode</code> driver option
-instead):</p>
+<p>With IPv6 as well, use the <code>ipv6_mode</code> driver option on every engine.
+On engine 26 (26.1.4, measured 2026-09-24) the daemon refuses
+<code>docker network create --ipv6</code> on a network with the null IPAM driver.
+On 29.8.1 it accepts the create, but a <code>--ip6</code> address still does not
+reach the plugin: the Solicit carried no requested address (measured the
+same day).</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a><span class="c1"># arm64: the -arm64 tag here too.</span>
 <a id="__codelineno-12-2" name="__codelineno-12-2" href="#__codelineno-12-2"></a>docker<span class="w"> </span>network<span class="w"> </span>create<span class="w"> </span>-d<span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:v2.2.2<span class="w"> </span><span class="se">\</span>
 <a id="__codelineno-12-3" name="__codelineno-12-3" href="#__codelineno-12-3"></a><span class="w">  </span>--ipam-driver<span class="w"> </span>null<span class="w"> </span>-o<span class="w"> </span><span class="nv">bridge</span><span class="o">=</span>my-bridge<span class="w"> </span>-o<span class="w"> </span><span class="nv">ipv6_mode</span><span class="o">=</span>dhcp<span class="w"> </span>my-dhcp-net

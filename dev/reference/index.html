@@ -2080,9 +2080,9 @@ service's network attachment:</p>
 </tr>
 </tbody>
 </table>
-<p><strong><a href="#driver-options-per-endpoint">Container-level flags</a></strong> that change
-what the plugin sends: <code>--mac-address</code>, <code>--hostname</code>, <code>--ip6</code>, and
-<code>--ip</code> on a network that names this plugin as its IPAM driver
+<p><strong><a href="#driver-options-per-endpoint">Container-level flags</a></strong> the plugin
+reads: <code>--mac-address</code>, <code>--hostname</code>, <code>--ip6</code> (no effect today, #960),
+and <code>--ip</code> on a network that names this plugin as its IPAM driver
 (<a href="#address-allocation">Address allocation</a>).</p>
 <p><strong><a href="#plugin-settings">Plugin settings</a></strong>, set with <code>docker plugin set
 &lt;plugin&gt; NAME=value</code>:</p>
@@ -2876,10 +2876,13 @@ counter moves.</p>
 </tr>
 </tbody>
 </table>
-<p>A static IPv6 request (<code>--ip6</code> / Interface.AddressIPv6) is sent as the
-Solicit's IA Address, which is the DHCPv6 equivalent of option 50 and, like
-option 50, is a request the server may decline (v1.2.0+, restored in 2.0).
-The same mechanism is what makes an address survive <code>docker restart</code>: the
+<p>The plugin puts the IPv6 address Docker hands it at endpoint creation
+(Interface.AddressIPv6) into the Solicit as the requested IA Address, the
+DHCPv6 equivalent of option 50 and, like option 50, a request the server
+may decline. With the null IPAM driver the documented shapes use, Docker
+hands the plugin none, so <code>--ip6</code> has no effect today (measured on engine
+29.8.1, 2026-09-24). IPv6 in IPAM mode is <a href="https://github.com/claymore666/docker-net-dhcp/issues/960">#960</a>, where <code>--ip6</code> becomes
+deliverable. The same mechanism is what makes an address survive <code>docker restart</code>: the
 tombstoned v6 address goes back out as the hint.</p>
 <p>Container-level knobs that interact with the plugin:</p>
 <ul>
@@ -2974,20 +2977,26 @@ requested address (DHCP option 50) on the initial DISCOVER:</p>
 enterprise servers (ISC, dnsmasq, Windows DHCP) respect option 50; many
 consumer routers, the Fritz.Box among them, ignore it and hand out the
 next free pool address unless a UI-side reservation exists for that MAC.</p>
-<p>For IPv6 use <code>--ip6</code> / <code>Interface.AddressIPv6</code>. There is no <code>ip6</code>
-driver-opt. It became a real request in v1.2.0: the address is sent as
-the IA_NA preferred address, the v6 counterpart of <code>--ip</code>.</p>
+<p>There is no <code>ip6</code> driver-opt. The plugin puts the IPv6 address Docker
+hands it at endpoint creation into the Solicit as the requested address,
+the v6 counterpart of <code>--ip</code>. With the null IPAM driver the documented
+shapes use, Docker hands none, so <code>--ip6</code> has no effect today (measured on
+engine 29.8.1, 2026-09-24). IPv6 in IPAM mode is <a href="https://github.com/claymore666/docker-net-dhcp/issues/960">#960</a>, where <code>--ip6</code>
+becomes deliverable.</p>
 <p>On a network created with <strong>this plugin as its IPAM driver</strong> (#110),
 <code>docker run --ip</code>, <code>docker network connect --ip</code> and Compose's
-<code>ipv4_address</code> work as they do on any other Docker network, with or
-without <code>--subnet</code>. The daemon's check is whether some pool on the
+<code>ipv4_address</code> need <code>--subnet</code> on engine 26 (26.1.4 measured
+2026-09-24). Without it the daemon refuses the container with "user
+specified IP address is supported only when connecting to networks with
+user configured subnets". On engine 29.8 (29.8.1 measured) they work
+with or without <code>--subnet</code>: the daemon checks whether some pool on the
 network contains the address, and the subnet-less pool is <code>0.0.0.0/0</code>,
-which contains every address; measured on engine 29.8.0. The request is
-still the server's to honour or ignore, exactly as described above;
-what changes is that Docker knows about it. What the plugin guarantees
-either way is that the address you pinned is the address you get: an
-ACK for a different address fails the run rather than being published
-in its place.</p>
+which contains every address. The exact engine boundary is what the
+weekly engine matrix records. The request is still the server's to
+honour or ignore, as described above; what changes is that Docker knows
+about it. Either way the plugin guarantees that the address you pinned
+is the address you get: an ACK for a different address fails the run and
+is never published in its place.</p>
 <h3 id="restart-stability-mac-and-ip">Restart stability (MAC and IP)<a class="headerlink" href="#restart-stability-mac-and-ip" title="Permanent link">&para;</a></h3>
 <p>Across <code>docker restart</code>, the plugin keeps the container's <strong>MAC</strong> stable
 so the DHCP server sees one device instead of a new one each time.
