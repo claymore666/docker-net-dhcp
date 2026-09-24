@@ -250,6 +250,7 @@ register_dns|step|fresh option 81 in the server log when true, none when false
 audit_log|step|leases.jsonl gains a bound line for the address when true, nothing when false
 release_lease|step|fresh DHCPRELEASE for the address after docker stop with on_stop, none with never
 host_ifname|step|ip link in the host netns shows the container name; control the generated name; macvlan refused naming the mode; bad value refused
+require_mac|step|docker run without --mac-address refused naming the option, no fresh DHCPACK; with --mac-address a fresh ACK carries the MAC; ipvlan and a non-boolean value refused
 ip|step|fresh ACK in the server log for the requested address, held by the container
 com.docker.network.endpoint.ifname|measure|whether the container link carries the requested name is recorded; an invalid name is refused
 --mac-address|step|fresh ACK in the server log carries the MAC
@@ -1139,6 +1140,30 @@ opt_mtu() {
     mtu="$(link_mtu em-c-mtu)"
     [ "$mtu" = 1450 ] || fail "mtu=1450 on $PARENT: the container link MTU is '$mtu'"
     opt_down em-o-mtu em-c-mtu
+}
+
+# opt_require_mac: a container with no MAC of its own is refused before any
+# exchange, and one with --mac-address leases under it (#1036).
+opt_require_mac() {
+    local m out
+    opt_refused "require_mac cannot be set in mode=ipvlan" -o mode=ipvlan -o parent="$PARENT" -o require_mac=true
+    opt_refused "cannot parse 'require_mac' as bool" -o bridge="$SEGMENT" -o require_mac=yes
+    opt_net em-o-rm -o bridge="$SEGMENT" -o require_mac=true
+    m="$(log_lines "$DNSMASQ_LOG")"
+    if out="$(d docker run -d --name em-c-rm0 --network em-o-rm "$TEST_IMAGE" sleep 600 2>&1)"; then
+        fail "require_mac=true: a container without --mac-address started"
+    fi
+    case "$out" in
+        *"require_mac is set on this network"*"--mac-address"*) ;;
+        *) fail "require_mac=true: the refusal does not name the option and --mac-address: $out" ;;
+    esac
+    ! fresh_has "$DNSMASQ_LOG" "$m" "DHCPACK($SEGMENT)" \
+        || fail "require_mac=true: the server ACKed an address for the refused container"
+    opt_run em-c-rm1 em-o-rm --mac-address 02:00:00:00:e4:01
+    wait_v4 em-c-rm1
+    fresh_has "$DNSMASQ_LOG" "$m" "DHCPACK($SEGMENT) $V4 02:00:00:00:e4:01" \
+        || fail "require_mac=true with --mac-address 02:00:00:00:e4:01: no fresh ACK for $V4 carries that MAC"
+    opt_down em-o-rm em-c-rm0 em-c-rm1
 }
 
 # One pair of runs judges the options that change what the client sends;

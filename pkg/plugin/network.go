@@ -159,6 +159,12 @@ func validateModeOptions(opts DHCPNetworkOptions) error {
 		return err
 	}
 
+	// ipvlan children wear the parent's MAC and refuse --mac-address, so every endpoint would be refused (#1036).
+	if opts.RequireMAC && opts.effectiveMode() == ModeIPvlan {
+		return fmt.Errorf("%w: require_mac cannot be set in mode=ipvlan: ipvlan children share the parent's MAC and refuse --mac-address, so every container on the network would be refused",
+			util.ErrModeMismatch)
+	}
+
 	switch opts.effectiveMode() {
 	case ModeMacvlan, ModeIPvlan:
 		if opts.Parent == "" {
@@ -765,19 +771,29 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 	if err != nil {
 		return res, err
 	}
-	if ifname != "" {
-		// The hint reaches Join on every engine; noteIfnameRequest states whether it applies (#670).
-		p.noteIfnameRequest(r.NetworkID, r.EndpointID, ifname)
-		p.updateJoinHint(r.EndpointID, func(h *joinHint) { h.Ifname = ifname })
-	}
 
 	opts, err := p.netOptions(ctx, r.NetworkID)
 	if err != nil {
 		return res, fmt.Errorf("failed to get network options: %w", err)
 	}
 
+	// Before the IPAM split, the ifname hint and a tombstone's MAC, so a refusal leaves nothing behind (#1036).
+	binding := ipamBindingOf(r.NetworkID)
+	if err := refuseWithoutUserMAC(opts, r); err != nil {
+		if binding != nil {
+			p.ipamDropRefusedReservation(r, binding)
+		}
+		return res, err
+	}
+
+	if ifname != "" {
+		// The hint reaches Join on every engine; noteIfnameRequest states whether it applies (#670).
+		p.noteIfnameRequest(r.NetworkID, r.EndpointID, ifname)
+		p.updateJoinHint(r.EndpointID, func(h *joinHint) { h.Ifname = ifname })
+	}
+
 	// Before the mode split: in IPAM mode the address is already leased, so neither branch runs its exchange (#110).
-	if binding := ipamBindingOf(r.NetworkID); binding != nil {
+	if binding != nil {
 		return p.createIPAMEndpoint(ctx, r, opts, binding)
 	}
 
@@ -1491,8 +1507,8 @@ func (p *Plugin) Join(ctx context.Context, r JoinRequest) (JoinResponse, error) 
 
 	hint, ok := p.takeJoinHint(r.EndpointID)
 	if !ok {
-		// `docker restart` sends Leave then Join on the same EndpointID without a CreateEndpoint, so the hint and
-		// link are gone; reacquire (#46).
+		// `docker restart` sends CreateEndpoint before Join on engines 26.1.4 and 29.8.1 (measured 2026-09-24, #1036);
+		// a Join with no hint, from an engine that skips it, reacquires (#46).
 		log.WithFields(log.Fields{
 			"network":  shortID(r.NetworkID),
 			"endpoint": shortID(r.EndpointID),

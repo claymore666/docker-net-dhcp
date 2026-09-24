@@ -258,6 +258,8 @@ type DHCPNetworkOptions struct {
 	// HostIfname names bridge mode's host-side link: empty for `dh-` plus 12 hex, or `container_name` or `hostname`
 	// (#978).
 	HostIfname string `mapstructure:"host_ifname"`
+	// RequireMAC refuses an endpoint whose MAC the user did not set, so a MAC-keyed reservation always matches (#1036).
+	RequireMAC bool `mapstructure:"require_mac"`
 }
 
 func (o DHCPNetworkOptions) effectiveMode() string {
@@ -1315,6 +1317,7 @@ func (p *Plugin) reacquireEndpoint(ctx context.Context, r JoinRequest, opts DHCP
 		NetworkID:  r.NetworkID,
 		EndpointID: r.EndpointID,
 		Interface:  &EndpointInterface{MacAddress: macAddr},
+		replay:     true,
 	}
 	if _, err := p.CreateEndpoint(ctx, fakeReq); err != nil {
 		return fmt.Errorf("CreateEndpoint replay failed: %w", err)

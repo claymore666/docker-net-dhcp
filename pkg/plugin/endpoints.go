@@ -91,6 +91,9 @@ type CreateEndpointRequest struct {
 	EndpointID string
 	Interface  *EndpointInterface
 	Options    map[string]interface{}
+
+	// replay marks reacquireEndpoint's rebuild of an endpoint Docker already created; JSON cannot set it (#1036).
+	replay bool
 }
 
 // CreateEndpointResponse is sent as a response to a CreateEndpointRequest

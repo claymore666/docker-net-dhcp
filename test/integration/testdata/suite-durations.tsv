@@ -10,8 +10,8 @@
 #
 # POPULATION: TOP-LEVEL TEST FUNCTIONS, PARENTS ONLY.
 # One row per `func TestX(t *testing.T)` in test/integration/*_test.go —
-# 166 of them, the main suite's 159 and the failure suite's 7. MEASURED
-# on this table: 166 data rows, and 166 `func TestX(t *testing.T)` in
+# 169 of them, the main suite's 162 and the failure suite's 7. MEASURED
+# on this table: 169 data rows, and 169 `func TestX(t *testing.T)` in
 # test/integration/*_test.go counted independently of them.
 #
 # THIS NUMBER HAS NOW BEEN WRONG TWICE, and the second time is the
@@ -367,10 +367,20 @@
 #   three rows the #1016 refusal rows are INFERRED, not measured: no
 #              run has executed them.
 #              TestCreateRefusals_EachNamesTheOptionAndTheReasonAndLeavesNoNetwork
-#              is 30.00: twelve refused creates, which cost what
+#              is 33.00: fourteen refused creates, which cost what
 #              TestErrors_NetworkCreateValidation's eight do (0.04), and
-#              nineteen accepted create and remove pairs at about a
-#              second each.
+#              twenty accepted create and remove pairs at about a
+#              second each (the two require_mac rows are #1036's).
+#              The three TestRequireMAC_* rows (#1036) are INFERRED too:
+#              TestRequireMAC_WithoutAMACIsRefusedAndLeavesNothing is
+#              48.00, four arms of one network, one refused start and one
+#              leased container at about 12 each;
+#              TestRequireMAC_NetworkConnectIsRefused is 40.00, two
+#              networks, one container, a refused connect, a refused
+#              restart and a start;
+#              TestRequireMAC_APluginRecycleKeepsAnAcceptedContainer is
+#              25.00, TestRecovery_PluginDisableEnable_PreservesEndpoint's
+#              12.86 plus a container restart and its lease.
 #              TestLeaseTimeout_AnEmptyValueIsTheDefaultAndTheContainerLeases
 #              is 42.00: TestIPAM_IpvlanIsRefusedAtCreate's shape (15.00,
 #              one refused create, one network, one container) plus a
@@ -517,7 +527,7 @@ TestConflictCheck_RestartInsideTheAsyncWindow	4.60
 TestConflictCheck_SquattedOfferIsDeclined	37.00
 TestConflictCheck_SquatterAfterTheFact	36.71
 TestConflictCheck_WaitAcquisitionIsTimed	9.15
-TestCreateRefusals_EachNamesTheOptionAndTheReasonAndLeavesNoNetwork	30.00
+TestCreateRefusals_EachNamesTheOptionAndTheReasonAndLeavesNoNetwork	33.00
 TestDHCPv6_ADuplicateOnTheSegmentIsRefused	30.08
 TestDHCPv6_ARefusalLogsItsStatusCodeByNameOnce	35.00
 TestDHCPv6_ASquatOnARunningContainerIsCountedAndTheAddressChanges	38.00
@@ -634,6 +644,9 @@ TestReleaseLease_OnStopHandsTheV6AddressBackToo	32.00
 TestReleaseLease_OnStopLeavesTheAddressToExpireWhenThePluginMissedTheStop	230.00
 TestReleaseLease_TheOptionIsRefusedAtCreateOrItIsNot	0.10
 TestRenumber_ThePluginKernelTestsPassInTheirOwnNamespace	60.00
+TestRequireMAC_APluginRecycleKeepsAnAcceptedContainer	25.00
+TestRequireMAC_NetworkConnectIsRefused	40.00
+TestRequireMAC_WithoutAMACIsRefusedAndLeavesNothing	48.00
 TestSLAAC_ADeprecatedPrefixArrivesDeprecated	45.00
 TestSLAAC_ASegmentWithNoRouterEndsAFormingEndpoint	110.00
 TestSLAAC_AnAddressWhoseValidLifetimeRunsOutLeavesTheLink	75.00
