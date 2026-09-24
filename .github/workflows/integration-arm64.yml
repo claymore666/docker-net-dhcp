@@ -165,6 +165,11 @@ jobs:
       - name: Cleanup orphans from previous runs
         run: bash test/integration/cleanup-orphans.sh
 
+      # This runner's engine is not the one the fixtures were recorded on,
+      # so the engine is reported and a minor apart is a notice (#1015).
+      - name: Engine version
+        run: bash scripts/check-fixture-engine-drift.sh --report
+
       - name: Build + install integration plugin
         run: |
           make PLUGIN_NAME=ghcr.io/claymore666/docker-net-dhcp PLUGIN_TAG=integration plugin

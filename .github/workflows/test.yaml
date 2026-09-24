@@ -380,6 +380,11 @@ jobs:
       - name: Engine-matrix shape check
         run: bash scripts/check-engine-matrix-shapes.sh
 
+      # Every documented option has an engine-matrix line with an observer,
+      # and each not-driven one is annotated here on every run (#1015).
+      - name: Engine-matrix option check
+        run: bash scripts/check-engine-matrix-options.sh
+
       # Every driver-option key the code parses must be documented in
       # docs/reference.md — an undocumented option turns CI red (#132).
       - name: Option-docs drift check
@@ -648,6 +653,11 @@ jobs:
       # installs a file two workflow lines install. Same class as #297.
       - name: Pipefail-consumer check
         run: bash scripts/check-pipefail-consumers.sh
+
+      # A step that pipes into tee without pipefail reports tee's exit; the
+      # engine-matrix floor went green over "no row passed" that way (#1015).
+      - name: Workflow tee-pipefail check
+        run: bash scripts/check-workflow-tee-pipefail.sh
 
       # Every build-constraint term in the tree must be linted by some
       # staticcheck invocation, and one invocation must carry no tags

@@ -196,6 +196,11 @@ jobs:
           INTEGRATION_PLUGIN_REF: ${{ env.COVER_PLUGIN_REF }}
         run: bash test/integration/cleanup-orphans.sh
 
+      # This lane's engine is recorded beside the integration lane's (#1015):
+      # both run on the same pool, so the fixtures' check applies here too.
+      - name: Fixture engine drift
+        run: bash scripts/check-fixture-engine-drift.sh
+
       # Wipe any counter/meta files from a previous coverage run so
       # `go tool covdata` only sees data from this invocation. The
       # mkdir is idempotent — first ever run creates it, subsequent

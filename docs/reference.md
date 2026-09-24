@@ -89,9 +89,9 @@ service's network attachment:
 | `ip` | from DHCP |
 | `com.docker.network.endpoint.ifname` | engine-assigned |
 
-**[Container-level flags](#driver-options-per-endpoint)** that change
-what the plugin sends: `--mac-address`, `--hostname`, `--ip6`, and
-`--ip` on a network that names this plugin as its IPAM driver
+**[Container-level flags](#driver-options-per-endpoint)** the plugin
+reads: `--mac-address`, `--hostname`, `--ip6` (no effect today, #960),
+and `--ip` on a network that names this plugin as its IPAM driver
 ([Address allocation](#address-allocation)).
 
 **[Plugin settings](#plugin-settings)**, set with `docker plugin set
@@ -784,10 +784,13 @@ Passed per container via `docker network connect --driver-opt`, or as
 | `ip` | Request a specific IPv4 address (bare IP, no CIDR; the netmask comes from DHCP). Equivalent to `docker run --ip`; setting both to different values is an error. The address is *requested* from the DHCP server (DHCPREQUEST for it); the server still has final say. |
 | `com.docker.network.endpoint.ifname` | (v1.0.0+) Request a specific interface name inside the container (Compose `interface_name`, engine 28+; or this key under `driver_opts`, any engine). The plugin validates the name (≤15 bytes, kernel charset; invalid names fail the attach with a clear error) and returns it in its Join response. **Engine support:** moby's remote-driver layer discarded the returned name (`drivers/remote/driver.go` passed an empty `DstName`) until [moby/moby#52866](https://github.com/moby/moby/pull/52866), merged to moby master on 2026-08-26 and milestoned for engine **29.8.0**, which was released on 2026-09-03. Before that the name was applied for built-in drivers only, and an interface from a *plugin* driver kept the driver's prefix and an index in attach order. **Measured** (v2.1.0, #670), one engine line at a time in a nested daemon: 28.5.2 and 29.7.2 ignore the requested name, 29.8.0 applies it. Those are the lines that were measured, not every build of them: a vendor engine below 29.8.0 carrying the change applies the name, and the plugin still reports it as ignored, because the plugin compares versions and does not probe the behaviour. The plugin side is ready and the rename activates by itself on the first engine that applies the returned name, with no change on this side. Where the version says the name will not be applied, the plugin says so in its log at `CreateEndpoint`, naming the engine and the version that would apply the name, and counts [`ifname_unsupported`](#pluginhealth). |
 
-A static IPv6 request (`--ip6` / Interface.AddressIPv6) is sent as the
-Solicit's IA Address, which is the DHCPv6 equivalent of option 50 and, like
-option 50, is a request the server may decline (v1.2.0+, restored in 2.0).
-The same mechanism is what makes an address survive `docker restart`: the
+The plugin puts the IPv6 address Docker hands it at endpoint creation
+(Interface.AddressIPv6) into the Solicit as the requested IA Address, the
+DHCPv6 equivalent of option 50 and, like option 50, a request the server
+may decline. With the null IPAM driver the documented shapes use, Docker
+hands the plugin none, so `--ip6` has no effect today (measured on engine
+29.8.1, 2026-09-24). IPv6 in IPAM mode is [#960](https://github.com/claymore666/docker-net-dhcp/issues/960), where `--ip6` becomes
+deliverable. The same mechanism is what makes an address survive `docker restart`: the
 tombstoned v6 address goes back out as the hint.
 
 Container-level knobs that interact with the plugin:
@@ -868,21 +871,27 @@ enterprise servers (ISC, dnsmasq, Windows DHCP) respect option 50; many
 consumer routers, the Fritz.Box among them, ignore it and hand out the
 next free pool address unless a UI-side reservation exists for that MAC.
 
-For IPv6 use `--ip6` / `Interface.AddressIPv6`. There is no `ip6`
-driver-opt. It became a real request in v1.2.0: the address is sent as
-the IA_NA preferred address, the v6 counterpart of `--ip`.
+There is no `ip6` driver-opt. The plugin puts the IPv6 address Docker
+hands it at endpoint creation into the Solicit as the requested address,
+the v6 counterpart of `--ip`. With the null IPAM driver the documented
+shapes use, Docker hands none, so `--ip6` has no effect today (measured on
+engine 29.8.1, 2026-09-24). IPv6 in IPAM mode is [#960](https://github.com/claymore666/docker-net-dhcp/issues/960), where `--ip6`
+becomes deliverable.
 
 On a network created with **this plugin as its IPAM driver** (#110),
 `docker run --ip`, `docker network connect --ip` and Compose's
-`ipv4_address` work as they do on any other Docker network, with or
-without `--subnet`. The daemon's check is whether some pool on the
+`ipv4_address` need `--subnet` on engine 26 (26.1.4 measured
+2026-09-24). Without it the daemon refuses the container with "user
+specified IP address is supported only when connecting to networks with
+user configured subnets". On engine 29.8 (29.8.1 measured) they work
+with or without `--subnet`: the daemon checks whether some pool on the
 network contains the address, and the subnet-less pool is `0.0.0.0/0`,
-which contains every address; measured on engine 29.8.0. The request is
-still the server's to honour or ignore, exactly as described above;
-what changes is that Docker knows about it. What the plugin guarantees
-either way is that the address you pinned is the address you get: an
-ACK for a different address fails the run rather than being published
-in its place.
+which contains every address. The exact engine boundary is what the
+weekly engine matrix records. The request is still the server's to
+honour or ignore, as described above; what changes is that Docker knows
+about it. Either way the plugin guarantees that the address you pinned
+is the address you get: an ACK for a different address fails the run and
+is never published in its place.
 
 ### Restart stability (MAC and IP)
 
