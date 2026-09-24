@@ -40,8 +40,8 @@ func leaseRowFor(t *testing.T, ip string) string {
 	return strings.ToLower(row[1])
 }
 
-// createPluginNetworkErr sends a null-IPAM create to Docker and returns its answer; an accepted network is removed at
-// cleanup.
+// createPluginNetworkErr sends a null-IPAM create to Docker and returns its answer, for the sub-mode refusals; an
+// accepted network is removed at cleanup (#905).
 func createPluginNetworkErr(t *testing.T, ctx context.Context, cli *docker.Client, name string, opts map[string]string) error {
 	t.Helper()
 	res, err := cli.NetworkCreate(ctx, name, network.CreateOptions{

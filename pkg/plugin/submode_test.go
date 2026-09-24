@@ -436,7 +436,7 @@ func TestRecoveredMAC_PassthruReadsTheParent(t *testing.T) {
 	if _, err := recoveredMAC(DHCPNetworkOptions{Mode: ModeMacvlan, Parent: "dh-905-nosuch"}, ""); !errors.Is(err, errNoRecoveryMAC) {
 		t.Errorf("a bridge-mode macvlan endpoint with no Docker MAC recovered: %v", err)
 	}
-	links, err := netlink.LinkList()
+	links, err := util.DumpResult(netlink.LinkList())
 	if err != nil {
 		t.Skipf("no link list to read: %v", err)
 	}
