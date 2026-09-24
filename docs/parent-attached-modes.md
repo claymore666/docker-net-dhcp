@@ -8,7 +8,7 @@
 | mode      | how containers reach the LAN                                              | each child's MAC                  | host changes required |
 | --------- | ------------------------------------------------------------------------- | --------------------------------- | --------------------- |
 | `bridge`  | a veth pair plugged into a Linux bridge you maintain                      | random per veth                   | yes, you bring the bridge |
-| `macvlan` | a per-container macvlan child (`bridge` mode by default) of a host NIC    | **distinct** (kernel-generated)   | **none**, the host NIC is untouched |
+| `macvlan` | a per-container macvlan child (`bridge` mode by default) of a host NIC    | **distinct** (kernel-generated); the parent's under `passthru` | **none**, the host NIC is untouched; `passthru` takes it from the host |
 | `ipvlan`  | a per-container ipvlan child (L2 mode) of a host NIC                      | **shared with parent**            | **none**, the host NIC is untouched |
 
 ### Picking between macvlan and ipvlan

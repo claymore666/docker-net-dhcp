@@ -76,6 +76,9 @@ func (p *Plugin) runDHCPProbe(ctx context.Context, opts DHCPNetworkOptions, pol 
 		}
 	}()
 
+	if err := pinPassthruProbe(opts, probeName); err != nil {
+		return fmt.Errorf("validate_dhcp: %w", err)
+	}
 	if err := netlink.LinkSetUp(probeLink); err != nil {
 		return fmt.Errorf("validate_dhcp: bring probe link up: %w", err)
 	}
@@ -114,6 +117,22 @@ func preflightProbeOptions(probeMAC net.HardwareAddr, pol serverPolicy) *dhcp.DH
 		// TestPreflightProbe_PassesOnReachableServer at 8.1 s (#901).
 		ConflictMode: proto.ConflictOff,
 	}
+}
+
+// pinPassthruProbe sets a passthru probe child's MAC to the one it wears, the parent's, as CreateEndpoint pins an
+// endpoint's: a udev rewrite of an unpinned passthru child would change the parent's MAC (#103, #905).
+func pinPassthruProbe(opts DHCPNetworkOptions, name string) error {
+	if !opts.macvlanPassthru() {
+		return nil
+	}
+	link, err := netlink.LinkByName(name)
+	if err != nil {
+		return fmt.Errorf("re-fetch probe link: %w", err)
+	}
+	if err := netlink.LinkSetHardwareAddr(link, link.Attrs().HardwareAddr); err != nil {
+		return fmt.Errorf("pin passthru probe link MAC: %w", err)
+	}
+	return nil
 }
 
 // newProbeLink builds the probe child as the network's own kind and sub-mode, and sets the MAC only where the child

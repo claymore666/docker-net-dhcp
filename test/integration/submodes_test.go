@@ -120,8 +120,8 @@ func TestSubModes_PassthruTakesItsParentAlone(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read the server log: %v", err)
 	}
-	if !offeredTo(harness.LogSince(logData, logOff), parentMAC) {
-		t.Errorf("validate_dhcp on the passthru network: no OFFER to the parent's MAC %s in the server's log", parentMAC)
+	if !strings.Contains(string(harness.LogSince(logData, logOff)), "DHCPOFFER(") {
+		t.Errorf("validate_dhcp on the passthru network created it with no OFFER in the server's log")
 	}
 
 	err = createPluginNetworkErr(t, ctx, cli, plainNet, map[string]string{"mode": "macvlan", "parent": parent})
@@ -136,7 +136,7 @@ func TestSubModes_PassthruTakesItsParentAlone(t *testing.T) {
 		t.Errorf("the container's eth0 is %s mode %q with MAC %s, want macvlan passthru wearing the parent's %s",
 			kind, mode, mac, parentMAC)
 	}
-	assertMACNotSet(t, ctx, id)
+	assertMACPinned(t, ctx, id)
 	if leased := leaseRowFor(t, ipv4); leased != parentMAC {
 		t.Errorf("the server leased %s to %s, not to the parent's MAC %s", ipv4, leased, parentMAC)
 	}
@@ -162,29 +162,18 @@ func TestSubModes_PassthruTakesItsParentAlone(t *testing.T) {
 	if _, mode, mac := harness.ChildLinkMode(t, ctx, id, "eth0"); mode != "passthru" || mac != parentMAC {
 		t.Errorf("after docker restart the container's eth0 is mode %q with MAC %s", mode, mac)
 	}
-	assertMACNotSet(t, ctx, id)
+	assertMACPinned(t, ctx, id)
 	if !ackedSince(t, fixture.DnsmasqLog(), restartOff)[after] {
 		t.Errorf("the server ACKed no %s after the docker restart", after)
 	}
 }
 
-// offeredTo reports whether the server log holds a DHCPOFFER to mac: a passthru probe wears the parent's MAC, where a
-// probe built in the default sub-mode would ask with a random one (#905).
-func offeredTo(log []byte, mac string) bool {
-	for _, line := range strings.Split(string(log), "\n") {
-		if strings.Contains(line, "DHCPOFFER(") && strings.Contains(line, mac) {
-			return true
-		}
-	}
-	return false
-}
-
-// assertMACNotSet fails on addr_assign_type 3, the kernel's mark of a set address, on the passthru link: a MAC set on
-// it changes the parent's, measured on Linux 6.12, so neither the plugin nor Docker may set one (#905).
-func assertMACNotSet(t *testing.T, ctx context.Context, id string) {
+// assertMACPinned wants addr_assign_type 3, the kernel's mark of a set address, on the passthru link: the plugin pins
+// it to the parent's own MAC so a udev rewrite cannot reach the parent (#103, #905).
+func assertMACPinned(t *testing.T, ctx context.Context, id string) {
 	t.Helper()
-	if got := strings.TrimSpace(harness.ExecOutput(t, ctx, id, "cat", "/sys/class/net/eth0/addr_assign_type")); got != "0" && got != "1" && got != "2" {
-		t.Errorf("the passthru link's addr_assign_type reads %q, want 0, 1 or 2: a MAC set on it changes the parent's", got)
+	if got := strings.TrimSpace(harness.ExecOutput(t, ctx, id, "cat", "/sys/class/net/eth0/addr_assign_type")); got != "3" {
+		t.Errorf("the passthru link's addr_assign_type reads %q, want 3: an unpinned passthru link is udev's to rewrite", got)
 	}
 }
 

@@ -216,7 +216,10 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, callStart tim
 	requestedV6 := explicitV6
 	if mode == ModeMacvlan && effectiveMAC == "" {
 		if tombMAC, tombIP, tombIPv6, ok := p.consumeTombstone(r.NetworkID, hostname); ok {
-			effectiveMAC = tombMAC
+			// The kernel ignores a passthru child's create address, and the pin below sets the parent's (#905).
+			if !opts.macvlanPassthru() {
+				effectiveMAC = tombMAC
+			}
 			if requestedIP == "" {
 				requestedIP = tombIP
 			}
@@ -297,8 +300,9 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, callStart tim
 		// Pin the kernel-assigned macvlan MAC (#103): udev's MACAddressPolicy=persistent, the Debian default,
 		// replaces a randomly assigned MAC just after creation, and a set addr_assign_type stops it. Without the pin
 		// the one-shot DHCPv6 poisoned the server's neighbour cache for about 45 s on the capture. ipvlan refuses any
-		// MAC set with EOPNOTSUPP.
-		if !opts.childWearsParentMAC() && effectiveMAC == "" {
+		// MAC set with EOPNOTSUPP. A passthru child is pinned to the parent's own MAC, which leaves the parent as it is
+		// (measured on Linux 6.12); unpinned, a rewrite of the child would change the parent's (#905).
+		if opts.effectiveMode() != ModeIPvlan && effectiveMAC == "" {
 			if err := netlink.LinkSetHardwareAddr(fresh, mac); err != nil {
 				return fmt.Errorf("failed to pin %v link MAC: %w", mode, err)
 			}
@@ -310,8 +314,8 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, callStart tim
 			return fmt.Errorf("failed to set %v link up: %w", mode, err)
 		}
 
-		// libnetwork sets MacAddress at Join, which an ipvlan slave refuses with EOPNOTSUPP even for its own MAC, and
-		// which a passthru child would pass to the parent (#905).
+		// libnetwork sets MacAddress at Join, which an ipvlan slave refuses with EOPNOTSUPP even for its own MAC; a
+		// passthru child already wears the parent's, pinned above (#905).
 		if !opts.childWearsParentMAC() && (r.Interface == nil || r.Interface.MacAddress == "") {
 			res.Interface.MacAddress = mac.String()
 		}
