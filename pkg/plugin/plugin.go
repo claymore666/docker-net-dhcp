@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -234,6 +235,8 @@ type DHCPNetworkOptions struct {
 	PropagateDNS bool `mapstructure:"propagate_dns"`
 	// PropagateMTU sets the container link's MTU from option 26 on every bind or renew.
 	PropagateMTU bool `mapstructure:"propagate_mtu"`
+	// MTU, 68..65535, is set on every container link this network creates and is then its only source; 0 is unset (#1037).
+	MTU int `mapstructure:"mtu"`
 	// ClientID overrides the derived option 61 for every endpoint, sent with type byte 0x00; see resolveClientID
 	// (#371).
 	ClientID string `mapstructure:"client_id"`
@@ -293,6 +296,7 @@ func decodeOptsSet(input interface{}) (DHCPNetworkOptions, map[string]bool, erro
 		Metadata:         &md,
 		DecodeHook: mapstructure.ComposeDecodeHookFunc(
 			mapstructure.StringToTimeDurationHookFunc(),
+			decimalIntHook,
 		),
 	})
 	if err != nil {
@@ -304,6 +308,19 @@ func decodeOptsSet(input interface{}) (DHCPNetworkOptions, map[string]bool, erro
 	}
 
 	return opts, normaliseOptionKeys(md.Keys), nil
+}
+
+// decimalIntHook reads an int option as base 10 only, since mapstructure's weak decode parses with base 0 and takes
+// "0x5dc" as 1500 and "01400" as octal 768 (#1037).
+func decimalIntHook(f reflect.Type, t reflect.Type, data interface{}) (interface{}, error) {
+	if f.Kind() != reflect.String || t.Kind() != reflect.Int {
+		return data, nil
+	}
+	n, err := strconv.Atoi(data.(string))
+	if err != nil {
+		return nil, fmt.Errorf("%q is not a decimal integer", data)
+	}
+	return n, nil
 }
 
 // normaliseOptionKeys maps mapstructure tags to Go field names, keeping an unmatched key as is.

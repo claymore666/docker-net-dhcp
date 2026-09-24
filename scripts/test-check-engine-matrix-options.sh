@@ -68,7 +68,7 @@ out="$(ENGINE_SHAPES_DOC="$tmp/both.md" bash "$CELL" --print-option-steps | grep
 check "the derivation prints an empty line for it" 0 "em_new||" "$out" "$got"
 { cat "$STEPS"; echo 'em_new|step|a fresh line in the server log'; } > "$tmp/steps-new"
 out="$(gate "$tmp/both.md" "$tmp/steps-new")"; got=$?
-check "green twin: the same option with a step line" 0 "documents 30 options" "$out" "$got"
+check "green twin: the same option with a step line" 0 "documents 31 options" "$out" "$got"
 
 edit "$tmp/detailed-only.md" '/^| `host_ifname` | bridge | \*(off)\* | \*\*v2.2.0\*\* |/a | `em_new` | all | `false` | **v2.3.0** | A new option. |'
 out="$(gate "$tmp/detailed-only.md" "$tmp/steps-new")"; got=$?

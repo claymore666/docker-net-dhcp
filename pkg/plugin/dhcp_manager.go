@@ -110,6 +110,8 @@ type dhcpManager struct {
 	engineGatewayV4 atomic.Bool
 	engineGatewayV6 atomic.Bool
 
+	suppliedMTULogged atomic.Bool
+
 	// lastAdvertRoutes holds the RA-installed more-specific routes, destination to next hop, as the diff base: an
 	// advertisement that drops a prefix withdraws it (RFC 4191 section 2.3), and the kernel table also holds routes
 	// copied from the host bridge that must stay (#821). Used by the v6 consumer goroutine only.
@@ -851,6 +853,11 @@ func (m *dhcpManager) propagateDNS(v6 bool, info dhcp.Info) {
 // not gated on propagate_mtu because the kernel applied it on every v6 network until #821 turned accept_ra off. It
 // writes the link MTU, which bounds IPv4 too, and minPropagatedMTU still applies.
 func (m *dhcpManager) propagateMTU(v6 bool, info dhcp.Info) {
+	if m.opts.MTU != 0 {
+		m.holdOptionMTU(v6, info)
+		return
+	}
+
 	// A family whose option is off gets no vote, neither to raise the link nor to withdraw the other family's value.
 	if !v6 && !m.opts.PropagateMTU {
 		return
@@ -914,6 +921,44 @@ func (m *dhcpManager) propagateMTU(v6 bool, info dhcp.Info) {
 		WithField("new_mtu", want).
 		WithField("supplied_mtu", info.MTU).
 		Info("Applied DHCP-supplied MTU")
+}
+
+// holdOptionMTU applies no supplied MTU and sets a moved link back to the mtu option, as an ipvlan child follows its
+// parent's MTU and a lowered macvlan parent clamps its child (measured 6.12, 2026-09-24, #1037).
+func (m *dhcpManager) holdOptionMTU(v6 bool, info dhcp.Info) {
+	if info.MTU > 0 && (!v6 || info.RouterSeen) && m.suppliedMTULogged.CompareAndSwap(false, true) {
+		log.
+			WithFields(m.logFields(v6)).
+			WithField("mtu", m.opts.MTU).
+			WithField("supplied_mtu", info.MTU).
+			Info("The mtu option is set; the MTU the network supplied is not applied")
+	}
+	if m.netHandle == nil || m.ctrLink == nil {
+		return
+	}
+	link, err := nlLinkByIndex(m.netHandle, m.ctrLink.Attrs().Index)
+	if err != nil {
+		log.WithError(err).WithFields(m.logFields(v6)).Debug("reading the endpoint's link MTU failed")
+		return
+	}
+	current := link.Attrs().MTU
+	if current == m.opts.MTU {
+		return
+	}
+	if err := nlHandleLinkSetMTU(m.netHandle, link, m.opts.MTU); err != nil {
+		log.
+			WithError(err).
+			WithFields(m.logFields(v6)).
+			WithField("mtu", m.opts.MTU).
+			WithField("link_mtu", current).
+			Warn("The kernel refused to set the link back to the mtu option; the link keeps its MTU")
+		return
+	}
+	log.
+		WithFields(m.logFields(v6)).
+		WithField("old_mtu", current).
+		WithField("new_mtu", m.opts.MTU).
+		Info("Set the link back to the mtu option")
 }
 
 // rememberMTU records one family's value, zero meaning withdrawn, and the link's own MTU on the first call, the

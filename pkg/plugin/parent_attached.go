@@ -254,6 +254,9 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, callStart tim
 		if err != nil {
 			return fmt.Errorf("failed to re-fetch %v link: %w", mode, err)
 		}
+		if err := applyEndpointMTU(opts.MTU, fresh); err != nil {
+			return err
+		}
 		mac := fresh.Attrs().HardwareAddr
 
 		// Pin the kernel-assigned macvlan MAC (#103): udev's MACAddressPolicy=persistent, the Debian default,

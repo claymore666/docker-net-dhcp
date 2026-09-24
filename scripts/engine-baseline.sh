@@ -240,6 +240,7 @@ ignore_conflicts|step|a second network on the same bridge refused without it and
 skip_routes|step|option 121 route in the container: present when false, absent when true
 propagate_dns|step|option 6 server in /etc/resolv.conf when true, absent when false
 propagate_mtu|step|option 26 sets the link MTU when true, not when false; an MTU under 576 not applied
+mtu|step|macvlan container link at mtu=1450 on a 1500 parent; 67, a value above the parent and a value beside propagate_mtu=true refused
 client_id|step|client-id in the server lease file equals the option; control differs
 vendor_class|step|fresh vendor class line in the server log names the option; control the default
 validate_dhcp|step|server-less parent refused, served parent accepted, false on the server-less parent accepted, bridge mode refused
@@ -1123,6 +1124,21 @@ opt_propagate_mtu() {
     mtu="$(link_mtu em-c-op)"
     [ "$mtu" = 1500 ] || fail "propagate_mtu=true with option 26 = 400: the link MTU is '$mtu', the reference refuses under 576"
     opt_down em-o-op em-c-op
+}
+
+# opt_mtu runs on the macvlan parent: the bridge segment must stay at the
+# 1500 that opt_propagate_mtu asserts, and a smaller port lowers it (#1037).
+opt_mtu() {
+    local mtu
+    opt_refused "mtu=67" -o mode=macvlan -o parent="$PARENT" -o mtu=67
+    opt_refused "mtu=1501 is above the MTU of $PARENT, 1500" -o mode=macvlan -o parent="$PARENT" -o mtu=1501
+    opt_refused "propagate_mtu=true" -o mode=macvlan -o parent="$PARENT" -o mtu=1450 -o propagate_mtu=true
+    opt_net em-o-mtu -o mode=macvlan -o parent="$PARENT" -o mtu=1450
+    opt_run em-c-mtu em-o-mtu
+    wait_v4 em-c-mtu
+    mtu="$(link_mtu em-c-mtu)"
+    [ "$mtu" = 1450 ] || fail "mtu=1450 on $PARENT: the container link MTU is '$mtu'"
+    opt_down em-o-mtu em-c-mtu
 }
 
 # One pair of runs judges the options that change what the client sends;
