@@ -68,6 +68,31 @@ refuse() { echo "CANNOT JUDGE: $*" >&2; exit 2; }
 [ -f "$GOLDEN" ] || refuse "no $GOLDEN"
 command -v go >/dev/null 2>&1 || refuse "go is not on PATH"
 
+# The probes rewrite endpoints.go and the golden, so they run on a copy of ROOT's tracked files. Rewriting ROOT in
+# place raced a parallel self-test reading pkg/plugin/ on 2026-09-24 (run 35937925577, #1016).
+top="$(git -C "$ROOT" rev-parse --show-toplevel 2>/dev/null)" \
+    || refuse "$ROOT is not in a git work tree, and the gate copies its tracked files to probe them"
+[ "$(cd "$top" && pwd -P)" = "$(cd "$ROOT" && pwd -P)" ] \
+    || refuse "$ROOT is not the top of its git work tree ($top), and the gate copies the tracked files of ROOT"
+
+# shellcheck source=scripts/tmpdir-guard.sh
+. "$(cd "$(dirname "$0")" && pwd)/tmpdir-guard.sh"
+guarded_tmpdir WORK
+( cd "$ROOT" && git ls-files -z ) \
+    | ( cd "$ROOT" && while IFS= read -r -d '' f; do
+            if [ -e "$f" ] || [ -L "$f" ]; then printf '%s\0' "$f"; fi
+        done ) \
+    | ( cd "$ROOT" && tar --null -T - -cf - ) \
+    | ( cd "$WORK" && tar -xf - ) \
+    || refuse "could not copy the tracked files of $ROOT to $WORK"
+# tar keeps the modes, and a read-only ROOT must still be judged: the copy is what the probes write.
+chmod -R u+w "$WORK" || refuse "could not make the copy in $WORK writable"
+WSRC="$WORK/pkg/plugin/endpoints.go"
+WGOLDEN="$WORK/pkg/plugin/testdata/metrics_exposition.golden"
+if ! cmp -s "$SRC" "$WSRC" || ! cmp -s "$GOLDEN" "$WGOLDEN"; then
+    refuse "the copy in $WORK does not hold ROOT's endpoints.go and golden"
+fi
+
 # The insertion point is DERIVED, not transcribed: find HealthResponse,
 # count its tagged fields, and insert after the middle one. Naming a
 # field here would be one more hand-written copy of the struct, and a
@@ -78,16 +103,14 @@ mid_line="$(awk '
     in_struct && /^\}/ { exit }
     in_struct && /`json:"/ { n++; line[n] = NR }
     END { if (n > 2) print line[int(n / 2)] }
-' "$SRC")"
+' "$WSRC")"
 [ -n "$mid_line" ] || refuse "could not find the middle of HealthResponse in $SRC"
 
-SRC_BAK="$(mktemp)"; GOLDEN_BAK="$(mktemp)"; PRE="$(mktemp)"
-cp "$SRC" "$SRC_BAK"; cp "$GOLDEN" "$GOLDEN_BAK"; cp "$GOLDEN" "$PRE"
-restore() { cp "$SRC_BAK" "$SRC"; cp "$GOLDEN_BAK" "$GOLDEN"; rm -f "$SRC_BAK" "$GOLDEN_BAK" "$PRE"; }
-trap restore EXIT
+SRC_BAK="$WORK/endpoints.go.orig"; PRE="$WORK/metrics_exposition.golden.orig"
+cp "$WSRC" "$SRC_BAK"; cp "$WGOLDEN" "$PRE"
 
 regen() {
-    ( cd "$ROOT" && UPDATE_GOLDEN=1 go test ./pkg/plugin/ -run TestMetrics_GoldenExposition -count=1 ) >/dev/null 2>&1
+    ( cd "$WORK" && UPDATE_GOLDEN=1 go test ./pkg/plugin/ -run TestMetrics_GoldenExposition -count=1 ) >/dev/null 2>&1
 }
 
 # POSITIVE CONTROL, before the measurement that matters.
@@ -98,11 +121,11 @@ regen() {
 # that never ran looks exactly like a result. So first prove the
 # regeneration is live: damage the golden, regenerate, and require the
 # damage to be undone.
-printf '\nnet_dhcp_zz_control_line 1\n' >> "$GOLDEN"
+printf '\nnet_dhcp_zz_control_line 1\n' >> "$WGOLDEN"
 if ! regen; then
     refuse "the golden regeneration does not run on this tree (go test failed)"
 fi
-if ! cmp -s "$PRE" "$GOLDEN"; then
+if ! cmp -s "$PRE" "$WGOLDEN"; then
     refuse "the golden regeneration did not restore a damaged golden; it is not writing the file"
 fi
 
@@ -112,16 +135,16 @@ for spec in "${PROBES[@]}"; do
     probe="${spec%%|*}"; rest="${spec#*|}"
     tag="${rest%%|*}"; why="${rest#*|}"
 
-    cp "$SRC_BAK" "$SRC"
+    cp "$SRC_BAK" "$WSRC"
     awk -v ln="$mid_line" -v probe="$probe" -v tag="$tag" '
         { print }
         NR == ln { printf "\t%s int32 `json:\"%s\"`\n", probe, tag }
-    ' "$SRC_BAK" > "$SRC"
+    ' "$SRC_BAK" > "$WSRC"
 
-    if [ "$(grep -c "$probe" "$SRC")" -ne 1 ]; then
+    if [ "$(grep -c "$probe" "$WSRC")" -ne 1 ]; then
         refuse "the probe field $probe was not inserted; the gate would have measured an unmutated tree"
     fi
-    if ! grep -q "$probe int32 \`json:\"$tag\"\`" "$SRC"; then
+    if ! grep -q "$probe int32 \`json:\"$tag\"\`" "$WSRC"; then
         refuse "the probe field $probe was inserted without its json:\"$tag\" tag; the gate would have measured the wrong field order"
     fi
 
@@ -129,7 +152,7 @@ for spec in "${PROBES[@]}"; do
         refuse "the golden could not be regenerated with $probe (json:\"$tag\") present"
     fi
 
-    changed="$(diff "$PRE" "$GOLDEN" | grep -cE '^[<>]')"
+    changed="$(diff "$PRE" "$WGOLDEN" | grep -cE '^[<>]')"
     if [ "$changed" -ne 0 ]; then
         cat >&2 <<EOF
 FAIL: the metrics golden is coupled to HealthResponse's field ORDER.

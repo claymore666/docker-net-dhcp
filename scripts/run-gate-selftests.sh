@@ -222,6 +222,26 @@ done
 OUT="$(mktemp -d)"
 trap 'rm -rf "$OUT"' EXIT
 
+# The ctime of every tracked file and of the directories holding them is read before the workers start and again after
+# they finish, and any change fails the run naming the path. The golden-fixture gate's in-place rewrite of
+# pkg/plugin/endpoints.go raced a parallel reader by timing alone (run 35937925577, 2026-09-24, #1016).
+SNAP_ROOT=""
+if SNAP_ROOT="$(git -C "$DIR" rev-parse --show-toplevel 2>/dev/null)"; then
+    ( cd "$SNAP_ROOT" && git ls-files -z | while IFS= read -r -d '' f; do
+          printf '%s\0' "$f"
+          d="$f"
+          while [ "${d%/*}" != "$d" ]; do d="${d%/*}"; printf '%s\0' "$d"; done
+      done; printf '.\0' ) | LC_ALL=C sort -zu > "$OUT/snap-paths"
+    # %.9Z and not %Z: a write in the snapshot's own second would otherwise read as no change (#1016).
+    snapshot() { ( cd "$SNAP_ROOT" && LC_ALL=C xargs -0 stat -c '%n %.9Z' -- < "$OUT/snap-paths" 2>/dev/null ) \
+        | LC_ALL=C sort; }
+    snapshot > "$OUT/snap-before"
+    [ -s "$OUT/snap-before" ] || {
+        echo "::error title=Gate self-test tree snapshot::could not read the ctimes of the tracked files of $SNAP_ROOT" >&2
+        exit 2
+    }
+fi
+
 # One file per test, named by index so the replay order is the discovery
 # order regardless of which worker finished first. The exit code is
 # written as the last thing the worker does; a worker killed before that
@@ -245,6 +265,15 @@ for i in "${!run[@]}"; do
     fi
 done
 wait
+
+tree_changed=()
+if [ -n "$SNAP_ROOT" ]; then
+    snapshot > "$OUT/snap-after"
+    if ! cmp -s "$OUT/snap-before" "$OUT/snap-after"; then
+        mapfile -t tree_changed < <(LC_ALL=C comm -3 "$OUT/snap-before" "$OUT/snap-after" \
+            | sed -E 's/^\t//; s/ [0-9]+\.[0-9]+$//' | LC_ALL=C sort -u)
+    fi
+fi
 
 for i in "${!run[@]}"; do
     base="$(basename "${run[$i]}")"
@@ -274,12 +303,21 @@ if [ "${#undelegated[@]}" -ne 0 ]; then
     exit 1
 fi
 
+if [ "${#tree_changed[@]}" -ne 0 ]; then
+    echo >&2
+    echo "::error title=Gate self-test wrote to the tree it checks::the ctime of these tracked paths under" \
+         "$SNAP_ROOT changed while the self-tests ran; a rewrite that restores the content moves the ctime too:" >&2
+    printf '  %s\n' "${tree_changed[@]}" >&2
+fi
+
 if [ "${#failed[@]}" -ne 0 ]; then
     echo >&2
     echo "${#failed[@]} gate self-test(s) failed:" >&2
     printf '  %s\n' "${failed[@]}" >&2
     exit 1
 fi
+
+[ "${#tree_changed[@]}" -eq 0 ] || exit 1
 
 ran=$(( ${#tests[@]} - ${#skipped[@]} ))
 echo "All ${ran} gate self-test(s) run here passed (${#skipped[@]} delegated)."
