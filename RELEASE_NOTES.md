@@ -21,7 +21,9 @@ with `failed to set gateway while updating gateway: file exists`.
 
 A renew onto another address in the same subnet keeps the new address on a
 host with the kernel's default `promote_secondaries=0`. IPv6 is prepared on
-the container link's current name after Docker renames it.
+the container link's current name after Docker renames it. The persistent
+DHCP client binds on a link Docker sets up late, and a router advertisement
+after Join installs its on-link prefixes.
 
 ### Upgrade notes
 
@@ -45,59 +47,6 @@ section below is still the list the daemon shows you.
 | `dhcpv6_auto_fallbacks` moves once per endpoint | The counter moved once per client run, so one endpoint on an `ipv6_mode=auto` segment with a silent DHCPv6 server could count more than once. The warning is still logged on every run (#1016). |
 | `ipv6_addresses_withdrawn` counts an address the kernel had already expired | The withdrawal met `EADDRNOTAVAIL` and logged a warning with no count and no `withdrawn` row in `leases.jsonl`. It now counts and writes the row (#1016). |
 | `skip_routes=true` keeps advertised IPv6 routes out after Join too | Every IPv6 lease or router advertisement after Join put the advertised routes into the container anyway. The route reconcile now honours the option (#1016). |
-
-### Fixed
-
-From the engine matrix:
-
-- The first IPv4 lease, the first IPv6 lease and a router advertisement
-  could each add a default route the engine was about to install, and the
-  engine's own add then failed and the container did not start. A manager
-  built by Join now leaves a missing default route to the engine, per
-  family, until it sees a default route on the link or the next renew. A
-  manager rebuilt after a plugin restart had no Join and behaves as before
-  (#1084).
-- A renew onto another address in the same subnet added the new address
-  and deleted the old one. With `promote_secondaries=0` the kernel deletes
-  every secondary address in the subnet with the primary, and with no IPv4
-  address left it drops the link's routes. The order is kept, and the
-  plugin now restores the new address, the default route and the
-  option 121 routes when the kernel took them. If that restore fails, the
-  old address and its routes go back and the renew reports the error
-  (#1081).
-- [`docs/reference.md`](docs/reference.md) and
-  [`docs/bridge-mode.md`](docs/bridge-mode.md) stated, without a
-  measurement, what `--ip` without `--subnet` does on a network that names
-  this plugin as its IPAM driver, and what `--ipv6` and `--ip6` do with
-  the null IPAM driver. They now state what was measured on engines 26.1.4
-  and 29.8.1, that the engine matrix records the `--ip` boundary per
-  engine, and that `--ip6` has no effect with the null IPAM driver today
-  (#960). Use `ipv6_mode` on every engine (#1015).
-
-From the integration lanes:
-
-- IPv6 preparation built the `disable_ipv6` and router advertisement guard
-  paths from the name the container link had when the plugin located it.
-  Docker renames the link in the same window, and on a hit IPv6 stayed off
-  and `ipv6_link_enable_failures` counted the failure. The paths are now built from
-  the name the link has at that instant, resolved from its index, as the
-  DHCP client open does since v2.2.2. IPv4 was not affected (#1065).
-- An endpoint entry in `/Plugin.Health` could read `bound` with the lease
-  times and the server present and `last_event` empty. The entry now
-  renders the lease fields and the event from one record, and the live
-  client can only demote it to `acquiring` (#1044).
-
-From the new integration tests:
-
-- `dhcpv6_auto_fallbacks` counted client runs, not endpoints. It now moves
-  on an endpoint's first fallback, and a recreated endpoint counts again
-  (#1016).
-- `skip_routes=true` held only at Join for IPv6 routes. It now holds for
-  every later lease and advertisement event (#1016).
-- An IPv6 address the kernel had already expired was not counted as
-  withdrawn. The plugin installs the valid lifetime floored to whole
-  seconds, so the kernel removes the address before the lease's deadline.
-  `EADDRNOTAVAIL` now counts as withdrawn (#1016).
 
 ### New
 
@@ -135,18 +84,76 @@ From the new integration tests:
   or `renew` row, since the name can reach the client after the first
   lease (PR #1058). The arm64 watchdog test feeds its own ticks
   (PR #1061).
+- The hosted test job clears the AppArmor restriction on unprivileged
+  user namespaces, so the unit tests that run in their own network
+  namespace can create links there (PR #1091).
 
-### Deferred to v2.3.0
+### Fixed
 
-- `mtu` network option (#1037).
-- `require_mac` network option (#1036).
-- DHCPv6 Client FQDN option, so `register_dns` covers IPv6 (#1029).
-- VLAN sub-interfaces (#902).
-- Bridge mode where the plugin creates and owns the bridge (#903).
-- Link-local fallback when no DHCP server answers (#904).
-- macvlan and ipvlan sub-mode options (#905).
-- ipvlan in IPAM mode (#949).
-- IPv6 in IPAM mode (#960).
+- The first IPv4 lease, the first IPv6 lease and a router advertisement
+  could each add a default route the engine was about to install, and the
+  engine's own add then failed and the container did not start. A manager
+  built by Join now leaves a missing default route to the engine, per
+  family, until it sees a default route on the link or the next renew. A
+  manager rebuilt after a plugin restart had no Join and behaves as before
+  (#1084).
+- A renew onto another address in the same subnet added the new address
+  and deleted the old one. With `promote_secondaries=0` the kernel deletes
+  every secondary address in the subnet with the primary, and with no IPv4
+  address left it drops the link's routes. The order is kept, and the
+  plugin now restores the new address, the default route and the
+  option 121 routes when the kernel took them. If that restore fails, the
+  old address and its routes go back and the renew reports the error
+  (#1081).
+- [`docs/reference.md`](docs/reference.md) and
+  [`docs/bridge-mode.md`](docs/bridge-mode.md) stated, without a
+  measurement, what `--ip` without `--subnet` does on a network that names
+  this plugin as its IPAM driver, and what `--ipv6` and `--ip6` do with
+  the null IPAM driver. They now state what was measured on engines 26.1.4
+  and 29.8.1, that the engine matrix records the `--ip` boundary per
+  engine, and that `--ip6` has no effect with the null IPAM driver today
+  (#960). Use `ipv6_mode` on every engine (#1015).
+- IPv6 preparation built the `disable_ipv6` and router advertisement guard
+  paths from the name the container link had when the plugin located it.
+  Docker renames the link in the same window, and on a hit IPv6 stayed off
+  and `ipv6_link_enable_failures` counted the failure. The paths are now built from
+  the name the link has at that instant, resolved from its index, as the
+  DHCP client open does since v2.2.2. IPv4 was not affected (#1065).
+- An endpoint entry in `/Plugin.Health` could read `bound` with the lease
+  times and the server present and `last_event` empty. The entry now
+  renders the lease fields and the event from one record, and the live
+  client can only demote it to `acquiring` (#1044).
+- `dhcpv6_auto_fallbacks` counted client runs, not endpoints. It now moves
+  on an endpoint's first fallback, and a recreated endpoint counts again
+  (#1016).
+- `skip_routes=true` held only at Join for IPv6 routes. It now holds for
+  every later lease and advertisement event (#1016).
+- An IPv6 address the kernel had already expired was not counted as
+  withdrawn. The plugin installs the valid lifetime floored to whole
+  seconds, so the kernel removes the address before the lease's deadline.
+  `EADDRNOTAVAIL` now counts as withdrawn (#1016).
+- A router advertisement that arrived after Join did not install its
+  on-link prefix routes. They were read only when Join built its answer,
+  so a DHCPv6 lease that completed before the first advertisement left
+  them out of the container, while the advertised routes and the default
+  route were installed. A later advertisement now adds them. An
+  advertisement that leaves a prefix out keeps its route, and the route
+  goes when an advertisement gives the prefix a Valid Lifetime of 0, as
+  [`docs/reference.md`](docs/reference.md) describes. `skip_routes=true`
+  keeps them out, as it does the other advertised routes. Present since
+  v2.2.0 (#1088).
+- The persistent DHCP client could open on the container link before
+  Docker set the link up. Its first read failed with `network is down`,
+  the DHCP library stopped reading, and the client kept sending requests
+  the server acknowledged without reading one answer. The plugin then
+  logged `Persistent client stopped before it ever held the lease`. The
+  plugin now waits up to 30 seconds for the link to be up before the IPv4
+  and IPv6 clients open, and a link that never comes up fails the attach.
+  The DHCP library pin moves to dhcp-golib v1.1.0, which keeps its reader
+  alive across that error
+  ([dhcp-golib#23](https://github.com/claymore666/dhcp-golib/issues/23)).
+  Present since v2.2.2, where the client opens the link by its index
+  (#1050) (#1089).
 
 ## v2.2.2
 
