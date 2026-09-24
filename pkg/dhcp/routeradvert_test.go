@@ -110,6 +110,7 @@ func TestAdvertisedDiffers(t *testing.T) {
 			i.Routes = []Route{{Destination: "2001:db8:1::/48", Gateway: "fe80::9"}}
 			return i
 		}, true},
+		{"on-link prefixes", func(i Info) Info { i.OnLinkPrefixes = []string{"2001:db8:2::/64"}; return i }, true},
 		{"address", func(i Info) Info { i.IP = "2001:db8::5/128"; return i }, false},
 		{"lifetimes", func(i Info) Info { i.LeaseSeconds, i.PreferredSeconds = 99, 88; return i }, false},
 	} {
@@ -341,7 +342,187 @@ func TestTakeAdvertChange_AnMTUChangeIsAChange(t *testing.T) {
 		t.Errorf("event MTU = %d, want 0", ev.Data.MTU)
 	}
 
-	if len(ev.Data.OnLinkPrefixes) != 0 {
-		t.Errorf("OnLinkPrefixes = %v, want none from the live watch", ev.Data.OnLinkPrefixes)
+	if len(ev.Data.OnLinkPrefixes) != 1 || ev.Data.OnLinkPrefixes[0] != "2001:db8::/64" {
+		t.Errorf("OnLinkPrefixes = %v, want [2001:db8::/64] from the live watch", ev.Data.OnLinkPrefixes)
+	}
+}
+
+func onLinkPIO(t *testing.T, a string, valid uint32) wire.PrefixInfo {
+	t.Helper()
+	return wire.PrefixInfo{Prefix: addr(t, a), PrefixLen: 64, OnLink: true, ValidLifetime: valid}
+}
+
+// advertWatch is a client holding a lease whose router observation the test swaps frame by frame.
+func advertWatch(t *testing.T) (*DHCPClient, *proto.RouterObservation) {
+	t.Helper()
+	c := &DHCPClient{}
+	l := lease.Lease{Addr: pfx(t, "2001:db8::5/128"), Gateway: addr(t, "fe80::1")}
+	c.view = func() (lease.Lease, bool) { return l, true }
+	ra := &proto.RouterObservation{Seen: true}
+	c.routerView = func() proto.RouterObservation { return *ra }
+	return c, ra
+}
+
+func TestTakeAdvertChange_APrefixFirstHeardAfterTheBaselineIsReported(t *testing.T) {
+	c, ra := advertWatch(t)
+	c.takeAdvertChange(time.Now())
+
+	ra.Prefixes = []wire.PrefixInfo{onLinkPIO(t, "2001:db8:1::", 1800)}
+	ev, ok := c.takeAdvertChange(time.Now())
+	if !ok {
+		t.Fatal("an advertisement whose only news is an on-link prefix was not reported; a lease bound " +
+			"before the first advertisement never gets the prefix's route (#1088)")
+	}
+	if len(ev.Data.OnLinkPrefixes) != 1 || ev.Data.OnLinkPrefixes[0] != "2001:db8:1::/64" {
+		t.Errorf("OnLinkPrefixes = %v, want [2001:db8:1::/64]", ev.Data.OnLinkPrefixes)
+	}
+}
+
+func TestTakeAdvertChange_AFrameOmittingAPrefixIsNotAChange(t *testing.T) {
+	c, ra := advertWatch(t)
+	ra.Prefixes = []wire.PrefixInfo{onLinkPIO(t, "2001:db8:1::", 1800)}
+	c.takeAdvertChange(time.Now())
+
+	// Two routers, or one splitting its options: each frame names a different subset of the link's prefixes.
+	for i, frame := range [][]wire.PrefixInfo{nil, {onLinkPIO(t, "2001:db8:1::", 1800)}, nil} {
+		ra.Prefixes = frame
+		if ev, ok := c.takeAdvertChange(time.Now()); ok {
+			t.Fatalf("frame %d omitting or repeating a known prefix was reported as a change: %+v", i, ev.Data)
+		}
+	}
+	if got := c.advert.OnLinkPrefixes; len(got) != 1 || got[0] != "2001:db8:1::/64" {
+		t.Fatalf("the known on-link set is %v after frames that only omitted it, want [2001:db8:1::/64]", got)
+	}
+
+	ra.Prefixes = []wire.PrefixInfo{onLinkPIO(t, "2001:db8:2::", 1800)}
+	ev, ok := c.takeAdvertChange(time.Now())
+	if !ok {
+		t.Fatal("a second prefix was not reported")
+	}
+	if got := ev.Data.OnLinkPrefixes; len(got) != 2 || got[0] != "2001:db8:1::/64" || got[1] != "2001:db8:2::/64" {
+		t.Errorf("OnLinkPrefixes = %v, want both, first heard first", got)
+	}
+}
+
+func TestTakeAdvertChange_AZeroValidLifetimeWithdrawsThePrefix(t *testing.T) {
+	c, ra := advertWatch(t)
+	ra.Prefixes = []wire.PrefixInfo{onLinkPIO(t, "2001:db8:1::", 1800), onLinkPIO(t, "2001:db8:2::", 1800)}
+	c.takeAdvertChange(time.Now())
+
+	ra.Prefixes = []wire.PrefixInfo{onLinkPIO(t, "2001:db8:1::", 0)}
+	ev, ok := c.takeAdvertChange(time.Now())
+	if !ok {
+		t.Fatal("a Valid Lifetime 0 for a known prefix was not reported (RFC 4861 section 6.3.4)")
+	}
+	if got := ev.Data.WithdrawnOnLinkPrefixes; len(got) != 1 || got[0] != "2001:db8:1::/64" {
+		t.Errorf("WithdrawnOnLinkPrefixes = %v, want [2001:db8:1::/64]", got)
+	}
+	if got := ev.Data.OnLinkPrefixes; len(got) != 1 || got[0] != "2001:db8:2::/64" {
+		t.Errorf("OnLinkPrefixes = %v, want only the prefix nothing withdrew", got)
+	}
+	if _, ok := c.takeAdvertChange(time.Now()); ok {
+		t.Fatal("the same withdrawal frame, read again, was reported twice")
+	}
+}
+
+func TestTranslate_ABoundEventCarriesThePrefixesTheBaselineRead(t *testing.T) {
+	c, ra := advertWatch(t)
+	ra.Prefixes = []wire.PrefixInfo{onLinkPIO(t, "2001:db8:1::", 1800)}
+	src := make(chan lease.Event, 1)
+	c.src, c.events = src, newEventChan()
+
+	// The event's own router reading predates the frame the baseline then reads.
+	src <- lease.Event{Kind: lease.Acquired, Lease: lease.Lease{Addr: pfx(t, "2001:db8::5/128")}}
+	close(src)
+	c.translate()
+
+	ev := <-c.events
+	if ev.Type != "bound" {
+		t.Fatalf("event %q, want bound", ev.Type)
+	}
+	if got := ev.Data.OnLinkPrefixes; len(got) != 1 || got[0] != "2001:db8:1::/64" {
+		t.Errorf("OnLinkPrefixes = %v, want the baseline's [2001:db8:1::/64]: the watch now counts it as "+
+			"known and reports it no more", got)
+	}
+}
+
+// boundAcross is the bound event whose own router reading is event while the baseline then reads baseline (#1088).
+func boundAcross(t *testing.T, event, baseline []wire.PrefixInfo) (*DHCPClient, *proto.RouterObservation, Event) {
+	t.Helper()
+	c, ra := advertWatch(t)
+	ra.Prefixes = baseline
+	src := make(chan lease.Event, 1)
+	c.src, c.events = src, newEventChan()
+	src <- lease.Event{Kind: lease.Acquired, Lease: lease.Lease{Addr: pfx(t, "2001:db8::5/128")},
+		Router: proto.RouterObservation{Seen: true, Prefixes: event}}
+	close(src)
+	c.translate()
+	return c, ra, <-c.events
+}
+
+func TestTranslate_ABoundEventHonoursAWithdrawalTheBaselineRead(t *testing.T) {
+	const p = "2001:db8:1::/64"
+	c, _, ev := boundAcross(t,
+		[]wire.PrefixInfo{onLinkPIO(t, "2001:db8:1::", 1800)},
+		[]wire.PrefixInfo{onLinkPIO(t, "2001:db8:1::", 0)})
+	if ev.Type != "bound" {
+		t.Fatalf("event %q, want bound", ev.Type)
+	}
+	if containsString(ev.Data.OnLinkPrefixes, p) || !containsString(ev.Data.WithdrawnOnLinkPrefixes, p) {
+		t.Errorf("bound OnLinkPrefixes = %v, Withdrawn = %v; the newer frame withdrew %s (RFC 4861 section 6.3.4)",
+			ev.Data.OnLinkPrefixes, ev.Data.WithdrawnOnLinkPrefixes, p)
+	}
+	if containsString(c.advert.OnLinkPrefixes, p) {
+		t.Errorf("the watch still counts the withdrawn %s as known: %v", p, c.advert.OnLinkPrefixes)
+	}
+}
+
+func TestTranslate_ABoundEventKeepsAPrefixTheBaselineStillAdvertises(t *testing.T) {
+	const p = "2001:db8:1::/64"
+	c, ra, ev := boundAcross(t,
+		[]wire.PrefixInfo{onLinkPIO(t, "2001:db8:1::", 0)},
+		[]wire.PrefixInfo{onLinkPIO(t, "2001:db8:1::", 1800)})
+	if !containsString(ev.Data.OnLinkPrefixes, p) || containsString(ev.Data.WithdrawnOnLinkPrefixes, p) {
+		t.Errorf("bound OnLinkPrefixes = %v, Withdrawn = %v; the newer frame advertises %s",
+			ev.Data.OnLinkPrefixes, ev.Data.WithdrawnOnLinkPrefixes, p)
+	}
+	ra.Prefixes = []wire.PrefixInfo{onLinkPIO(t, "2001:db8:1::", 0)}
+	w, ok := c.takeAdvertChange(time.Now())
+	if !ok || !containsString(w.Data.WithdrawnOnLinkPrefixes, p) {
+		t.Errorf("a later withdrawal of %s was not reported (%v, %+v)", p, ok, w.Data)
+	}
+}
+
+func TestTranslate_ABoundEventPrefixTheBaselineOmitsIsKnownToTheWatch(t *testing.T) {
+	const p = "2001:db8:1::/64"
+	c, ra, ev := boundAcross(t, []wire.PrefixInfo{onLinkPIO(t, "2001:db8:1::", 1800)}, nil)
+	if !containsString(ev.Data.OnLinkPrefixes, p) {
+		t.Fatalf("bound OnLinkPrefixes = %v, want %s from the event's own frame", ev.Data.OnLinkPrefixes, p)
+	}
+	ra.Prefixes = []wire.PrefixInfo{onLinkPIO(t, "2001:db8:1::", 0)}
+	w, ok := c.takeAdvertChange(time.Now())
+	if !ok || !containsString(w.Data.WithdrawnOnLinkPrefixes, p) {
+		t.Errorf("the withdrawal of %s, installed from the bound event, was not reported (%v, %+v)", p, ok, w.Data)
+	}
+}
+
+func TestWithdrawnOnLinkPrefixes_AZeroLifetimeWithoutTheLFlagWithdrawsNothing(t *testing.T) {
+	r := proto.RouterObservation{Seen: true, Prefixes: []wire.PrefixInfo{
+		{Prefix: addr(t, "2001:db8:1::"), PrefixLen: 64, Autonomous: true, ValidLifetime: 0},
+	}}
+	if got := withdrawnOnLinkPrefixes(r); len(got) != 0 {
+		t.Errorf("withdrawn = %v; an option without the L flag says nothing about on-link (RFC 4861 section 4.6.2)",
+			got)
+	}
+
+	c, ra := advertWatch(t)
+	ra.Prefixes = []wire.PrefixInfo{onLinkPIO(t, "2001:db8:1::", 1800)}
+	c.takeAdvertChange(time.Now())
+	ra.Prefixes = r.Prefixes
+	if ev, ok := c.takeAdvertChange(time.Now()); ok {
+		t.Errorf("an L-clear zero-lifetime option was reported as a change: %+v", ev.Data)
+	}
+	if !containsString(c.advert.OnLinkPrefixes, "2001:db8:1::/64") {
+		t.Errorf("the on-link set lost the prefix: %v", c.advert.OnLinkPrefixes)
 	}
 }

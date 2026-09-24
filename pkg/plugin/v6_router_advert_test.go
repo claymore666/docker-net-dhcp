@@ -730,13 +730,14 @@ func skipRoutesManager(t *testing.T) (*dhcpManager, *fakeRouteTable) {
 func assertSkipRoutesHeld(t *testing.T, m *dhcpManager, f *fakeRouteTable, path string) {
 	t.Helper()
 	for _, r := range append(append([]netlink.Route(nil), f.replace...), f.added...) {
-		if r.Dst != nil && r.Dst.String() == "2001:db8:1::/48" {
+		if r.Dst != nil && (r.Dst.String() == "2001:db8:1::/48" || r.Dst.String() == "2001:db8:9::/64") {
 			t.Fatalf("the %s path installed the advertised route %v on a skip_routes network, "+
 				"which Join left out", path, r.Dst)
 		}
 	}
-	if len(m.lastAdvertRoutes) != 0 {
-		t.Errorf("the %s path recorded %v as installed on a skip_routes network", path, m.lastAdvertRoutes)
+	if len(m.lastAdvertRoutes) != 0 || len(m.onLinkInstalled) != 0 {
+		t.Errorf("the %s path recorded %v and %v as installed on a skip_routes network", path,
+			m.lastAdvertRoutes, m.onLinkInstalled)
 	}
 	for _, r := range f.deleted {
 		if r.Dst == nil {
@@ -746,9 +747,10 @@ func assertSkipRoutesHeld(t *testing.T, m *dhcpManager, f *fakeRouteTable, path 
 }
 
 var skipRoutesAdvert = dhcp.Info{
-	IP:      "2001:db8::5/64",
-	Gateway: "fe80::1",
-	Routes:  []dhcp.Route{{Destination: "2001:db8:1::/48", Gateway: "fe80::1"}},
+	IP:             "2001:db8::5/64",
+	Gateway:        "fe80::1",
+	Routes:         []dhcp.Route{{Destination: "2001:db8:1::/48", Gateway: "fe80::1"}},
+	OnLinkPrefixes: []string{"2001:db8:9::/64"},
 }
 
 func TestRenew_SkipRoutesInstallsNoAdvertisedRoute(t *testing.T) {
@@ -856,4 +858,167 @@ func TestPropagateMTU_AWithdrawnMTUStopsVoting(t *testing.T) {
 				"no vote to cast and none to withdraw", got)
 		}
 	})
+}
+
+const laterOnLink = "fd00:6470:6869::/64"
+
+// boundBeforeTheFirstAdvert is a v6 manager whose lease bound before any advertisement, so Join carried no on-link
+// prefix (#1088).
+func boundBeforeTheFirstAdvert(t *testing.T) (*dhcpManager, *fakeRouteTable) {
+	t.Helper()
+	m, _, f := v6Manager(t)
+	prevMTU, prevAddr := nlHandleLinkSetMTU, nlHandleAddrReplace
+	nlHandleLinkSetMTU = func(*netlink.Handle, netlink.Link, int) error { return nil }
+	nlHandleAddrReplace = func(*netlink.Handle, netlink.Link, *netlink.Addr) error { return nil }
+	t.Cleanup(func() { nlHandleLinkSetMTU, nlHandleAddrReplace = prevMTU, prevAddr })
+	if err := m.renew(true, dhcp.Info{IP: "fd00:6470:6865::61/128"}); err != nil {
+		t.Fatalf("renew: %v", err)
+	}
+	f.replace, f.added, f.deleted = nil, nil, nil
+	return m, f
+}
+
+func onLinkWrites(routes []netlink.Route, cidr string) []netlink.Route {
+	var out []netlink.Route
+	for _, r := range routes {
+		if r.Dst != nil && r.Dst.String() == cidr {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+func TestApplyRouterAdvert_AnOnLinkPrefixAfterBindIsInstalledAndAnOmissionKeepsIt(t *testing.T) {
+	m, f := boundBeforeTheFirstAdvert(t)
+
+	m.applyRouterAdvert(dhcp.Info{Gateway: "fe80::1", RouterSeen: true, OnLinkPrefixes: []string{laterOnLink}})
+	got := onLinkWrites(f.replace, laterOnLink)
+	if len(got) != 1 {
+		t.Fatalf("the advertisement after bind wrote %d routes to %s, want 1; wrote %v", len(got), laterOnLink,
+			destinations(f.replace))
+	}
+	if got[0].Gw != nil || got[0].Scope != netlink.SCOPE_LINK {
+		t.Errorf("the on-link prefix was written as %v, want a gatewayless link-scope route", got[0])
+	}
+
+	f.replace = nil
+	m.applyRouterAdvert(dhcp.Info{Gateway: "fe80::1", RouterSeen: true})
+	if del := onLinkWrites(f.deleted, laterOnLink); len(del) != 0 {
+		t.Fatalf("an advertisement that only omitted %s removed it; only Valid Lifetime 0 withdraws a prefix "+
+			"(RFC 4861 section 6.3.4)", laterOnLink)
+	}
+	if !m.onLinkInstalled[laterOnLink] {
+		t.Errorf("the omission dropped %s from the record: %v", laterOnLink, m.onLinkInstalled)
+	}
+	m.applyRouterAdvert(dhcp.Info{Gateway: "fe80::1", RouterSeen: true, OnLinkPrefixes: []string{laterOnLink}})
+	if again := onLinkWrites(f.replace, laterOnLink); len(again) != 0 {
+		t.Errorf("an installed prefix was written again: %v", again)
+	}
+}
+
+func TestApplyRouterAdvert_AZeroValidLifetimeRemovesOnlyTheOnLinkRoute(t *testing.T) {
+	m, f := boundBeforeTheFirstAdvert(t)
+	joined := netlink.Route{Dst: cidr(t, laterOnLink), Protocol: unixRTPROTBOOT, Scope: netlink.SCOPE_LINK}
+	kernels := netlink.Route{Dst: cidr(t, laterOnLink), Protocol: unix.RTPROT_KERNEL, Priority: 256}
+	nextHop := netlink.Route{Dst: cidr(t, laterOnLink), Gw: net.ParseIP("fe80::1"), Protocol: unixRTPROTBOOT}
+	other := netlink.Route{Dst: cidr(t, "fd00:6470:6866::/64"), Protocol: unixRTPROTBOOT}
+	f.routes = []netlink.Route{joined, kernels, nextHop, other}
+
+	m.applyRouterAdvert(dhcp.Info{Gateway: "fe80::1", RouterSeen: true, WithdrawnOnLinkPrefixes: []string{laterOnLink}})
+	if len(f.deleted) != 1 || f.deleted[0].Protocol != unixRTPROTBOOT || f.deleted[0].Gw != nil ||
+		f.deleted[0].Dst.String() != laterOnLink {
+		t.Fatalf("deleted %v, want only the gatewayless route to %s that Join installed; the kernel's route "+
+			"belongs to an address and the next-hop route is not an on-link prefix", f.deleted, laterOnLink)
+	}
+}
+
+func TestApplyRouterAdvert_AWithdrawnPrefixIsNotInstalledAndLeavesTheRecord(t *testing.T) {
+	m, f := boundBeforeTheFirstAdvert(t)
+	m.applyRouterAdvert(dhcp.Info{Gateway: "fe80::1", RouterSeen: true, OnLinkPrefixes: []string{laterOnLink}})
+	f.replace = nil
+
+	m.applyRouterAdvert(dhcp.Info{Gateway: "fe80::1", RouterSeen: true,
+		OnLinkPrefixes: []string{laterOnLink}, WithdrawnOnLinkPrefixes: []string{laterOnLink}})
+	if w := onLinkWrites(f.replace, laterOnLink); len(w) != 0 {
+		t.Errorf("a prefix withdrawn in the same event was written: %v", w)
+	}
+	if m.onLinkInstalled[laterOnLink] {
+		t.Fatalf("the withdrawn prefix is still recorded as installed, so its return would not be written")
+	}
+	m.applyRouterAdvert(dhcp.Info{Gateway: "fe80::1", RouterSeen: true, OnLinkPrefixes: []string{laterOnLink}})
+	if w := onLinkWrites(f.replace, laterOnLink); len(w) != 1 {
+		t.Errorf("the prefix advertised again after its withdrawal was written %d times, want 1", len(w))
+	}
+}
+
+func TestApplyRouterAdvert_AFailedOnLinkWriteIsRetried(t *testing.T) {
+	m, f := boundBeforeTheFirstAdvert(t)
+	f.addErr = errors.New("netlink: no buffer space")
+	if err := m.reconcileAdvertisedRoutes(dhcp.Info{OnLinkPrefixes: []string{laterOnLink}}); err == nil {
+		t.Fatal("a failed on-link write returned no error")
+	}
+	if m.onLinkInstalled[laterOnLink] {
+		t.Fatal("a failed write was recorded as installed, so no later advertisement retries it")
+	}
+	f.addErr = nil
+	if err := m.reconcileAdvertisedRoutes(dhcp.Info{OnLinkPrefixes: []string{laterOnLink}}); err != nil {
+		t.Fatalf("retry: %v", err)
+	}
+	if w := onLinkWrites(f.replace, laterOnLink); len(w) != 1 {
+		t.Errorf("the retry wrote %d routes to %s, want 1", len(w), laterOnLink)
+	}
+}
+
+// At Join a prefix both on-link and a Route Information destination is on-link (v6AdvertisedRoutes, #821).
+func TestReconcileAdvertisedRoutes_OnLinkWinsOverARouteToTheSamePrefix(t *testing.T) {
+	m, f := boundBeforeTheFirstAdvert(t)
+	if err := m.reconcileAdvertisedRoutes(dhcp.Info{
+		Routes:         []dhcp.Route{{Destination: laterOnLink, Gateway: "fe80::1"}},
+		OnLinkPrefixes: []string{laterOnLink},
+	}); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	w := onLinkWrites(f.replace, laterOnLink)
+	if len(w) != 1 || w[0].Gw != nil {
+		t.Fatalf("wrote %v to %s, want one gatewayless route", w, laterOnLink)
+	}
+	if _, ok := m.lastAdvertRoutes[laterOnLink]; ok {
+		t.Errorf("the on-link destination entered the next-hop diff base: %v", m.lastAdvertRoutes)
+	}
+}
+
+func TestReconcileAdvertisedRoutes_AnInstalledPrefixStaysOnLinkWhenAnEventOmitsIt(t *testing.T) {
+	m, f := boundBeforeTheFirstAdvert(t)
+	if err := m.reconcileAdvertisedRoutes(dhcp.Info{OnLinkPrefixes: []string{laterOnLink}}); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	f.replace = nil
+	if err := m.reconcileAdvertisedRoutes(dhcp.Info{
+		Routes: []dhcp.Route{{Destination: laterOnLink, Gateway: "fe80::1"}},
+	}); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if w := onLinkWrites(f.replace, laterOnLink); len(w) != 0 {
+		t.Errorf("a route to the installed on-link prefix %s replaced it: %v", laterOnLink, w)
+	}
+}
+
+func TestReconcileAdvertisedRoutes_AWithdrawnPrefixNoLongerMasksItsRoute(t *testing.T) {
+	m, f := boundBeforeTheFirstAdvert(t)
+	if err := m.reconcileAdvertisedRoutes(dhcp.Info{OnLinkPrefixes: []string{laterOnLink}}); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	f.replace = nil
+	if err := m.reconcileAdvertisedRoutes(dhcp.Info{
+		Routes:                  []dhcp.Route{{Destination: laterOnLink, Gateway: "fe80::1"}},
+		OnLinkPrefixes:          []string{laterOnLink},
+		WithdrawnOnLinkPrefixes: []string{laterOnLink},
+	}); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	w := onLinkWrites(f.replace, laterOnLink)
+	if len(w) != 1 || !w[0].Gw.Equal(net.ParseIP("fe80::1")) {
+		t.Errorf("wrote %v to the withdrawn prefix %s, want the one route via fe80::1 its Route Information "+
+			"option names", w, laterOnLink)
+	}
 }
