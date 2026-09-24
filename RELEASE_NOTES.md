@@ -87,6 +87,11 @@ section below is still the list the daemon shows you.
 - The hosted test job clears the AppArmor restriction on unprivileged
   user namespaces, so the unit tests that run in their own network
   namespace can create links there (PR #1091).
+- The DHCP library moves to `dhcp-golib` v1.1.0, whose raw socket keeps
+  reading after a link that was down comes up
+  ([dhcp-golib#23](https://github.com/claymore666/dhcp-golib/issues/23)).
+  The library can now send a DHCPv6 name, and the plugin still sends none
+  until #1029 (PR #1092).
 
 ### Fixed
 
