@@ -1379,6 +1379,8 @@ func candidateOptionValues(t *testing.T, field reflect.StructField) []reflect.Va
 		v := reflect.New(field.Type).Elem()
 		v.SetInt(int64(time.Second))
 		return []reflect.Value{v}
+	case reflect.Int:
+		return []reflect.Value{reflect.ValueOf(1400)}
 	default:
 		t.Errorf("DHCPNetworkOptions.%s is a %s, which this derivation does not know how to "+
 			"drive. Add it, or the question \"which options switch IPv6 on\" is answered "+

@@ -155,6 +155,10 @@ func validateModeOptions(opts DHCPNetworkOptions) error {
 		return err
 	}
 
+	if err := validateMTUOption(opts); err != nil {
+		return err
+	}
+
 	switch opts.effectiveMode() {
 	case ModeMacvlan, ModeIPvlan:
 		if opts.Parent == "" {
@@ -320,7 +324,11 @@ func (p *Plugin) CreateNetwork(r CreateNetworkRequest) error {
 	}
 
 	if mode := opts.effectiveMode(); mode == ModeMacvlan || mode == ModeIPvlan {
-		if _, err := validateParentForChild(opts.Parent); err != nil {
+		parent, err := validateParentForChild(opts.Parent)
+		if err != nil {
+			return err
+		}
+		if err := mtuUnderParent(opts.MTU, parent); err != nil {
 			return err
 		}
 		// Pre-flight DHCP probe, opt-in via validate_dhcp, before saveOptions so a failed probe leaves no state (#108).
@@ -359,6 +367,9 @@ func (p *Plugin) CreateNetwork(r CreateNetworkRequest) error {
 	}
 	if link.Type() != "bridge" {
 		return util.ErrNotBridge
+	}
+	if err := mtuUnderParent(opts.MTU, link); err != nil {
+		return err
 	}
 
 	if !opts.IgnoreConflicts {
@@ -835,6 +846,11 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 	)
 
 	if err := func() error {
+		// Both ends: veth ends are independent, and with the host end at 1500 and the container end at
+		// 1400 a 1428-byte DF frame is dropped silently (measured 6.12, 2026-09-24, #1037).
+		if err := applyEndpointMTU(opts.MTU, hostLink, &netlink.Veth{LinkAttrs: netlink.LinkAttrs{Name: ctrName}}); err != nil {
+			return err
+		}
 		if err := netlink.LinkSetUp(hostLink); err != nil {
 			return fmt.Errorf("failed to set host side link of veth pair up: %w", err)
 		}

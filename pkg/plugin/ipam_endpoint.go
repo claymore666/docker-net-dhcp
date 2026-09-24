@@ -144,6 +144,10 @@ func (p *Plugin) addIPAMEndpointLink(ctx context.Context, endpointID, mode strin
 				log.WithError(err).WithField("link", la.Name).Warn("Endpoint link cleanup failed; remove it with `ip link del`")
 			}
 		}
+		if err := applyEndpointMTU(opts.MTU, link); err != nil {
+			remove()
+			return nil, err
+		}
 		if _, err := linkUpAwaitingAddress(ctx, link, childLinkUpBudget); err != nil {
 			remove()
 			return nil, fmt.Errorf("failed to set %v link up: %w", mode, err)
@@ -166,6 +170,10 @@ func (p *Plugin) addIPAMEndpointLink(ctx context.Context, endpointID, mode strin
 		if err := netlink.LinkDel(hostLink); err != nil {
 			log.WithError(err).WithField("link", hostName).Warn("Endpoint link cleanup failed; remove it with `ip link del`")
 		}
+	}
+	if err := applyEndpointMTU(opts.MTU, hostLink, &netlink.Veth{LinkAttrs: netlink.LinkAttrs{Name: ctrName}}); err != nil {
+		remove()
+		return nil, err
 	}
 	if err := netlink.LinkSetUp(hostLink); err != nil {
 		remove()
