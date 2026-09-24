@@ -438,7 +438,7 @@ func TestRecoveredMAC_PassthruReadsTheParent(t *testing.T) {
 	}
 	links, err := util.DumpResult(netlink.LinkList())
 	if err != nil {
-		t.Skipf("no link list to read: %v", err)
+		t.Fatalf("list links: %v", err)
 	}
 	for _, l := range links {
 		if hw := l.Attrs().HardwareAddr; len(hw) == 6 {
@@ -449,5 +449,5 @@ func TestRecoveredMAC_PassthruReadsTheParent(t *testing.T) {
 			return
 		}
 	}
-	t.Skip("no link with an Ethernet address in this namespace; the parent read above still ran")
+	t.Fatalf("no link with an Ethernet address in this namespace to stand in for a passthru parent")
 }
