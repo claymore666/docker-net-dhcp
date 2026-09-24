@@ -138,6 +138,22 @@ knows which client is underneath.
   applies the address, routes, DNS and MTU via netlink. There is no argv
   to build, no environment to scrub, no JSON to parse and no second
   binary in the image.
+- **The first lease leaves the default route to the engine.** `Join`
+  returns the gateway and starts the client at once, and the engine
+  installs that gateway after `Join` returns with an add that fails if a
+  default route is already on the link, which fails the container start
+  with `file exists`. Until the plugin sees a default route on the link,
+  or the next `renew` event, a lease or a Router Advertisement that finds
+  none adds nothing. A manager rebuilt at plugin start had no `Join` and
+  adds the route as before (#1084).
+- **A renumber inside one subnet puts back what the kernel took with
+  the old address.** The new address is added before the old one is
+  deleted. With `promote_secondaries=0` on the container link, deleting
+  a primary IPv4 address also deletes every secondary in its subnet, and
+  with no IPv4 address left the kernel drops the link's routes. The plugin reads the addresses
+  back after the delete; if the new one is gone it writes it again and
+  restores the routes it listed before the delete, and if that fails it
+  puts the old address and its routes back (#1081).
 - **The emit must not block, and a drop is counted.** The only reader is
   that per-endpoint goroutine, and it stops reading the moment the
   endpoint is torn down. A bare send would park the translate goroutine
@@ -927,6 +943,9 @@ budget (D41);
 keeps the weights that partition them honest, over both suites, and
 [`scripts/test-integration-shard.sh`](https://github.com/claymore666/docker-net-dhcp/blob/main/scripts/test-integration-shard.sh)
 proves the two partitions together cover the roster exactly once.
+The partitioner itself refuses, naming the file and line, a test under
+`test/integration/` that is neither on the roster nor in a package the
+shard target runs whole (#866).
 
 Use `integration-local`.
 
