@@ -102,6 +102,14 @@ The host's NIC config (IP, routes, netplan/`systemd-networkd`,
 - The parent NIC must support macvlan/ipvlan children. Physical
   Ethernet, VLAN sub-interfaces, and bonds work; bridges, macvlans,
   and ipvlans do not (you can't stack these on top of each other).
+- **A VLAN of the parent** is one option away from v2.3.0:
+  `-o parent=eth0 -o vlan=100` attaches the children to `eth0.100`,
+  which the plugin creates when it is missing and removes with the last
+  network on it, never one it did not create. `<parent>.<id>` must fit
+  the kernel's 15 bytes. The sub-interface is a parent of its own, so a
+  macvlan network on `eth0.100` and an ipvlan network on `eth0` do not
+  clash. See
+  [VLAN sub-interfaces](reference.md#vlan-sub-interfaces-vlan) (#902).
 - The parent NIC must be administratively `UP` before you create the
   network. The plugin won't bring it up for you, since host config is
   off-limits.
