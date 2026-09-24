@@ -74,6 +74,16 @@ jobs:
             exit 1
           fi
 
+      # The image's AppArmor lets an unprivileged user namespace be created and then refuses every link change inside
+      # it with EPERM, so the tests that run in their own namespace (inOwnNetns) could not create a link (#1089).
+      - name: Allow link changes inside the tests' user namespaces
+        run: |
+          knob=/proc/sys/kernel/apparmor_restrict_unprivileged_userns
+          if [ -e "$knob" ]; then
+            sudo sysctl -q -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+          echo "apparmor_restrict_unprivileged_userns: $(cat "$knob" 2>/dev/null || echo absent)"
+
       - name: Test (with race detector)
         run: go test -race -count=1 ./...
 

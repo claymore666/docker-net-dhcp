@@ -697,6 +697,22 @@ func (ef *EphemeralFixture) SeedStolenLease(ip string) {
 	}
 }
 
+// LeaseExpiry returns the expiry the dnsmasq backend last wrote for mac to its lease file.
+func (ef *EphemeralFixture) LeaseExpiry(mac string) (time.Time, bool) {
+	ef.t.Helper()
+	if ef.backend != backendDnsmasq {
+		ef.t.Fatal("LeaseExpiry reads dnsmasq's lease file; this fixture runs another server")
+	}
+	b, err := os.ReadFile(ef.leaseFile)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return time.Time{}, false
+		}
+		ef.t.Fatalf("read the dnsmasq lease file: %v", err)
+	}
+	return DnsmasqLeaseExpiry(string(b), mac)
+}
+
 // ServerIP returns the server's bare IP.
 func (ef *EphemeralFixture) ServerIP() string {
 	return strings.SplitN(ef.serverCIDR, "/", 2)[0]
