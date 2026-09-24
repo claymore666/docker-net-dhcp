@@ -1684,6 +1684,26 @@ func (m *dhcpManager) locateContainerLink(ctx context.Context) error {
 	}, pollTime)
 }
 
+// awaitContainerLinkUp waits for the engine's LinkSetUp, which comes after the move, rename and addressing. A raw
+// socket bound to a link that is not IFF_UP takes ENETDOWN on its first read, and the client library stops reading
+// after it, so the client sends but never reads an ACK (#1089).
+func (m *dhcpManager) awaitContainerLinkUp(ctx context.Context) error {
+	awaitCtx, cancel := context.WithTimeout(ctx, linkAwaitTimeout)
+	defer cancel()
+	index := m.ctrLink.Attrs().Index
+	err := util.AwaitCondition(awaitCtx, func() (bool, error) {
+		link, err := m.netHandle.LinkByIndex(index)
+		if err != nil {
+			return false, fmt.Errorf("failed to read container link %d: %w", index, err)
+		}
+		return link.Attrs().Flags&net.FlagUp != 0, nil
+	}, pollTime)
+	if err != nil {
+		return fmt.Errorf("container link %s was never set up: %w", m.ctrLink.Attrs().Name, err)
+	}
+	return nil
+}
+
 // joinPhases times each stage of Start so an expired budget shows where it went: a slow daemon and an earlier
 // phase consuming the budget both read "context deadline exceeded" and want opposite fixes (#401, #406). A log
 // field, not a health counter.
@@ -1890,6 +1910,9 @@ func (m *dhcpManager) Start(ctx context.Context) (err error) {
 			if ierr := inspect(); ierr != nil {
 				return fmt.Errorf("%w (no link for this endpoint in the sandbox: %w)", ierr, err)
 			}
+			return err
+		}
+		if err := m.awaitContainerLinkUp(ctx); err != nil {
 			return err
 		}
 
