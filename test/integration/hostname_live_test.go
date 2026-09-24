@@ -21,7 +21,7 @@ import (
 // in column four once per ACK. Only an attach through the sandbox key hands the name to a running client; the PID
 // route already has it in the opening parameters. This suite's pool reads sandbox_netns_propagation=0 (run
 // 35127912707, job 104901808558), the hosted cross-check and the production host read 1 (#961).
-// v4 only: dhcp-golib v1.0.0 sends no DHCPv6 name option and refuses SetHostname on a v6 client.
+// v4 only: the plugin sets no DHCPv6 name until #1029 and refuses SetHostname on a v6 client.
 
 // TestHostname_ReachesTheServersTableAfterTheClientStarts checks that the container's name reaches the server's lease table on either attach route (#961).
 func TestHostname_ReachesTheServersTableAfterTheClientStarts(t *testing.T) {

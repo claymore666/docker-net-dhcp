@@ -485,9 +485,9 @@ func TestSetHostname_RefusesWhatItCannotSend(t *testing.T) {
 		t.Fatalf("NewDHCPClient v6: %v", err)
 	}
 	err = v6.SetHostname("web1")
-	if !errors.Is(err, lease.ErrHostnameV6) {
-		t.Errorf("SetHostname on a v6 client = %v, want lease.ErrHostnameV6: this library sends no name "+
-			"option for DHCPv6, so a nil here is a name the caller believes went out", err)
+	if !errors.Is(err, ErrHostnameV6) {
+		t.Errorf("SetHostname on a v6 client = %v, want ErrHostnameV6: the plugin sets no DHCPv6 name "+
+			"until #1029, so a nil here is a name the caller believes went out", err)
 	}
 
 	v4, err := NewDHCPClient("eth0", &DHCPClientOptions{MAC: mac})
