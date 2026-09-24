@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -114,6 +115,9 @@ type dhcpManager struct {
 	// advertisement that drops a prefix withdraws it (RFC 4191 section 2.3), and the kernel table also holds routes
 	// copied from the host bridge that must stay (#821). Used by the v6 consumer goroutine only.
 	lastAdvertRoutes map[string]string
+	// onLinkInstalled holds the on-link prefixes this manager installed; an omission keeps them and only a Valid
+	// Lifetime 0 removes one (RFC 4861 section 6.3.4, #1088). Used by the v6 consumer goroutine only.
+	onLinkInstalled map[string]bool
 
 	// mtuMu guards each family's last accepted MTU, the only state both family goroutines write.
 	mtuMu sync.Mutex
@@ -1143,8 +1147,8 @@ func (m *dhcpManager) withdrawV6DefaultRoute(existing []netlink.Route) error {
 }
 
 // reconcileAdvertisedRoutes diffs the RFC 4191 Route Information routes against what this manager installed (see
-// lastAdvertRoutes), removing a route no longer advertised (#821). On-link prefixes come from the Join answer only:
-// the library's router table holds the latest frame, and one advertisement omitting a prefix must not remove it.
+// lastAdvertRoutes), removing a route no longer advertised (#821), then adds the on-link prefixes, which only a
+// withdrawal removes (#1088). An on-link destination stays out of the diff, as at Join (v6AdvertisedRoutes).
 // skip_routes opts out here as it does at Join, for both the lease and the advertisement path (#1016).
 func (m *dhcpManager) reconcileAdvertisedRoutes(info dhcp.Info) error {
 	if m.netHandle == nil || m.ctrLink == nil || m.opts.SkipRoutes {
@@ -1152,12 +1156,23 @@ func (m *dhcpManager) reconcileAdvertisedRoutes(info dhcp.Info) error {
 	}
 	idx := m.ctrLink.Attrs().Index
 
+	firstErr := m.withdrawOnLinkPrefixes(idx, info.WithdrawnOnLinkPrefixes)
+	onLink := make(map[string]bool, len(m.onLinkInstalled)+len(info.OnLinkPrefixes))
+	for p := range m.onLinkInstalled {
+		onLink[p] = true
+	}
+	for _, p := range info.OnLinkPrefixes {
+		onLink[p] = !slices.Contains(info.WithdrawnOnLinkPrefixes, p)
+	}
+
 	want := make(map[string]string, len(info.Routes))
 	for _, r := range info.Routes {
+		if onLink[r.Destination] {
+			continue
+		}
 		want[r.Destination] = r.Gateway
 	}
 
-	var firstErr error
 	for dest, gw := range m.lastAdvertRoutes {
 		if _, still := want[dest]; still {
 			continue
@@ -1207,6 +1222,69 @@ func (m *dhcpManager) reconcileAdvertisedRoutes(info dhcp.Info) error {
 
 	// Recorded even when a write failed: the record is what was asked of the kernel, and the next diff retries.
 	m.lastAdvertRoutes = want
+
+	if err := m.installOnLinkPrefixes(idx, info); err != nil && firstErr == nil {
+		firstErr = err
+	}
+	return firstErr
+}
+
+// installOnLinkPrefixes adds each advertised on-link prefix not yet installed, recording only a write that succeeded.
+func (m *dhcpManager) installOnLinkPrefixes(idx int, info dhcp.Info) error {
+	var firstErr error
+	for _, p := range info.OnLinkPrefixes {
+		if m.onLinkInstalled[p] || slices.Contains(info.WithdrawnOnLinkPrefixes, p) {
+			continue
+		}
+		_, dst, err := net.ParseCIDR(p)
+		if err != nil {
+			continue
+		}
+		if err := nlHandleRouteReplace(m.netHandle, &netlink.Route{LinkIndex: idx, Dst: dst, Scope: netlink.SCOPE_LINK}); err != nil {
+			if firstErr == nil {
+				firstErr = fmt.Errorf("failed to apply on-link prefix %v: %w", p, err)
+			}
+			continue
+		}
+		if m.onLinkInstalled == nil {
+			m.onLinkInstalled = map[string]bool{}
+		}
+		m.onLinkInstalled[p] = true
+		log.WithFields(m.logFields(true)).WithField("route", p).
+			Info("Applied an on-link prefix the Router Advertisement announced")
+	}
+	return firstErr
+}
+
+// withdrawOnLinkPrefixes removes the gatewayless routes to each prefix withdrawn by RFC 4861 section 6.3.4, also one
+// Join installed, leaving the kernel's own (RTPROT_KERNEL), which belongs to an address.
+func (m *dhcpManager) withdrawOnLinkPrefixes(idx int, withdrawn []string) error {
+	if len(withdrawn) == 0 {
+		return nil
+	}
+	routes, err := nlHandleRouteListFiltered(m.netHandle, unix.AF_INET6, &netlink.Route{LinkIndex: idx},
+		netlink.RT_FILTER_OIF)
+	if err != nil {
+		return fmt.Errorf("failed to list IPv6 routes: %w", err)
+	}
+	var firstErr error
+	for _, p := range withdrawn {
+		delete(m.onLinkInstalled, p)
+		for i := range routes {
+			r := &routes[i]
+			if r.Dst == nil || r.Dst.String() != p || r.Gw != nil || r.Protocol == unix.RTPROT_KERNEL {
+				continue
+			}
+			if err := nlHandleRouteDel(m.netHandle, r); err != nil {
+				if firstErr == nil {
+					firstErr = fmt.Errorf("failed to remove withdrawn on-link prefix %v: %w", p, err)
+				}
+				continue
+			}
+			log.WithFields(m.logFields(true)).WithField("route", p).
+				Info("The Router Advertisement withdrew this on-link prefix (Valid Lifetime 0); removed it from the container")
+		}
+	}
 	return firstErr
 }
 

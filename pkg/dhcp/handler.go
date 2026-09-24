@@ -41,12 +41,14 @@ type Info struct {
 	// (#821).
 	Routes []Route `json:",omitempty"`
 
-	// Applied once at Join because accept_ra is off (#821) and a DHCPv6 /128 yields no prefix (RFC 5942 section 4);
-	// without it a Router Lifetime 0 segment leaves no IPv6 route. The library reports the most recent advertisement's
-	// prefixes, not a union.
+	// The only on-link routes the container gets, because accept_ra is off (#821) and a DHCPv6 /128 yields no prefix
+	// (RFC 5942 section 4); without them a Router Lifetime 0 segment leaves no IPv6 route. Only Valid Lifetime 0 times a
+	// prefix out (RFC 4861 section 6.3.4), so a withdrawal is its own list and an omission withdraws nothing (#1088).
 
 	// OnLinkPrefixes are RFC 4861 section 4.6.2 Prefix Information options with the L flag; v6 only.
 	OnLinkPrefixes []string `json:",omitempty"`
+	// WithdrawnOnLinkPrefixes are those options carrying Valid Lifetime 0; v6 only.
+	WithdrawnOnLinkPrefixes []string `json:",omitempty"`
 
 	// RFC 9915 section 18.2.1's Solicit does not wait for router discovery, so an MTU of 0 before an advertisement is
 	// silence while an MTU of 0 after one is a withdrawal; folding them flips the link MTU per event (#821).

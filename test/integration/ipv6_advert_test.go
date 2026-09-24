@@ -535,6 +535,102 @@ func TestAdvertRoutes_BecomeContainerRoutesUnlessSkipRoutes(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("advert after join", func(t *testing.T) { onLinkAfterJoin(t, ctx, cli) })
+}
+
+// awaitPluginRoutes reads the container's plugin-installed IPv6 routes until done holds or the deadline passes.
+func awaitPluginRoutes(t *testing.T, ctx context.Context, id string, deadline time.Time, done func([]string) bool) (string, []string, bool) {
+	t.Helper()
+	for {
+		out := harness.ExecOutput(t, ctx, id, "ip", "-6", "route", "show")
+		lines := pluginV6Routes(out)
+		if done(lines) {
+			return out, lines, true
+		}
+		if !time.Now().Before(deadline) {
+			return out, lines, false
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+}
+
+// onLinkAfterJoin binds the lease on a segment with no advertisement, so Join carries no on-link prefix, then
+// advertises one: it must become a route, stay through a frame omitting it, and leave on Valid Lifetime 0 (RFC 4861
+// section 6.3.4, #1088).
+func onLinkAfterJoin(t *testing.T, ctx context.Context, cli *docker.Client) {
+	const netName = "dh-itest-riolate"
+	f := harness.NewV6FixtureWithArgs(t, harness.V6NoRA, harness.V6PoolWithoutRAArgs())
+	dumpOnFailure(t, f)
+
+	id, err := startOnV6SegmentWithOpts(t, ctx, cli, f, netName, nil)
+	if err != nil {
+		t.Fatalf("the container did not start on a segment whose DHCPv6 server answers: %v", err)
+	}
+	addr := inspectV6(t, ctx, cli, id, netName)
+	if addr == "" {
+		t.Fatal("docker inspect reports no IPv6 address on a segment whose DHCPv6 server answers")
+	}
+	bindDeadline := time.Now().Add(persistentV6BindBudget)
+	for f.CountLogLines("DHCPREPLY", addr) < 2 {
+		if !time.Now().Before(bindDeadline) {
+			t.Fatalf("the server logged fewer than two DHCPREPLY lines for %s after %s: the persistent client "+
+				"never bound, so no advertisement can arrive after the bind", addr, persistentV6BindBudget)
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+
+	if frames := f.RACapture().Frames(); len(frames) != 0 {
+		t.Fatalf("%d advertisements were on the segment before the sender started, so Join could have carried "+
+			"the prefix and this arm would not test #1088", len(frames))
+	}
+	onLink := func(lines []string) bool { _, ok := routeTo(lines, harness.AdvertOnLinkPrefix); return ok }
+	if out := harness.ExecOutput(t, ctx, id, "ip", "-6", "route", "show"); onLink(pluginV6Routes(out)) {
+		t.Fatalf("the container has a route to %s before anything advertised it:\n%s", harness.AdvertOnLinkPrefix, out)
+	}
+
+	spec := harness.RASpec{
+		Managed:        true,
+		RouterLifetime: harness.AdvertRouteLifetime,
+		Prefixes:       []harness.RAPrefix{advertPrefix(t, harness.AdvertOnLinkPrefix, false, 1800, 1800)},
+	}
+	at := time.Now()
+	sender := harness.StartRASender(t, f.Bridge(), spec)
+	awaitSenderFrame(t, f, at)
+	out, lines, ok := awaitPluginRoutes(t, ctx, id, at.Add(advertChangeBudget+routeReadFloor), onLink)
+	if !ok {
+		t.Fatalf("no route to %s in the container %s after the first advertisement carrying it went out, "+
+			"after the lease bound:\n%s", harness.AdvertOnLinkPrefix, advertChangeBudget+routeReadFloor, out)
+	}
+	if line, _ := routeTo(lines, harness.AdvertOnLinkPrefix); strings.Contains(line, " via ") {
+		t.Errorf("the on-link prefix %s is routed via a gateway: %q", harness.AdvertOnLinkPrefix, line)
+	}
+
+	// The Route Information option (RFC 4191 section 2.3) is the frame's receipt: its route proves the plugin read the
+	// frame that omits the prefix.
+	spec.Prefixes = nil
+	spec.Routes = []harness.RARoute{advertRoute(t, harness.AdvertRoutePrefix)}
+	at = sender.Set(spec)
+	awaitSenderFrame(t, f, at)
+	read := func(lines []string) bool { _, ok := routeTo(lines, harness.AdvertRoutePrefix); return ok }
+	out, lines, ok = awaitPluginRoutes(t, ctx, id, at.Add(advertChangeBudget+routeReadFloor), read)
+	if !ok {
+		t.Fatalf("no route to %s %s after the advertisement omitting %s went out, so nothing shows the plugin "+
+			"read it:\n%s", harness.AdvertRoutePrefix, advertChangeBudget+routeReadFloor, harness.AdvertOnLinkPrefix, out)
+	}
+	if !onLink(lines) {
+		t.Fatalf("an advertisement that only omitted %s removed its route; only Valid Lifetime 0 withdraws a "+
+			"prefix (RFC 4861 section 6.3.4):\n%s", harness.AdvertOnLinkPrefix, out)
+	}
+
+	spec.Prefixes = []harness.RAPrefix{advertPrefix(t, harness.AdvertOnLinkPrefix, false, 0, 0)}
+	at = sender.Set(spec)
+	awaitSenderFrame(t, f, at)
+	gone := func(lines []string) bool { return !onLink(lines) }
+	if out, _, ok = awaitPluginRoutes(t, ctx, id, at.Add(advertChangeBudget+routeReadFloor), gone); !ok {
+		t.Errorf("the route to %s is still in the container %s after an advertisement gave it Valid Lifetime 0:\n%s",
+			harness.AdvertOnLinkPrefix, advertChangeBudget+routeReadFloor, out)
+	}
 }
 
 // TestSLAAC_AnAddressWhoseValidLifetimeRunsOutLeavesTheLink checks RFC 4862 section 5.5.4 expiry and its counter (#1016).

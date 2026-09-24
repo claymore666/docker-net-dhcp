@@ -351,9 +351,13 @@
 #                  = 45.00 plus TestDHCPv6_Managed_StillRequiresALease
 #                    (16.39), plus a persistent bind per arm (2 to 5s,
 #                    #875) = 71.39.
-#                TestAdvertRoutes_*                            85.00
+#                TestAdvertRoutes_*                           150.00
 #                  = per arm 12.00 + 16.39 + 5 for the bind + 4.75 for
-#                    advertChangeBudget = 38.14, two arms 76.28.
+#                    advertChangeBudget = 38.14, two arms 76.28, plus
+#                    the #1088 arm: 38.14, twice 11 for router discovery
+#                    giving up with no advertisement (harness V6NoRA
+#                    note), and two more advertChangeBudget = 69.64;
+#                    total 145.92.
 #                TestSLAAC_AnAddressWhoseValidLifetimeRunsOut* 75.00
 #                  = 57.00 plus the 12s valid lifetime and 1s slack.
 #                TestSLAAC_RenumberingInOneAdvertisement*      95.00
@@ -480,7 +484,7 @@
 # then take the per-name median across the three, sort by name, and
 # re-derive the shard counts above from the new totals.
 TestAdvertDNS_ReachesTheResolverAndDHCPv6ComesFirst	75.00
-TestAdvertRoutes_BecomeContainerRoutesUnlessSkipRoutes	85.00
+TestAdvertRoutes_BecomeContainerRoutesUnlessSkipRoutes	150.00
 TestAuditLog_DefaultOff	12.63
 TestAuditLog_RecordsLifecycle	12.31
 TestAutoStrict_ASilentManagedServerFailsTheEndpointAndTheDefaultFallsBack	80.00
