@@ -251,6 +251,8 @@ audit_log|step|leases.jsonl gains a bound line for the address when true, nothin
 release_lease|step|fresh DHCPRELEASE for the address after docker stop with on_stop, none with never
 host_ifname|step|ip link in the host netns shows the container name; control the generated name; macvlan refused naming the mode; bad value refused
 require_mac|step|docker run without --mac-address refused naming the option, no fresh DHCPACK; with --mac-address a fresh ACK carries the MAC; ipvlan and a non-boolean value refused
+macvlan_mode|step|ip -d link in the container netns shows vepa and private, each with a fresh ACK; passthru on a parent of its own leases under the parent MAC and refuses a second container; an unknown value and mode=ipvlan refused
+ipvlan_mode|step|ip -d link in the container netns shows l2 with a fresh ACK; l3 and mode=macvlan refused
 ip|step|fresh ACK in the server log for the requested address, held by the container
 com.docker.network.endpoint.ifname|measure|whether the container link carries the requested name is recorded; an invalid name is refused
 --mac-address|step|fresh ACK in the server log carries the MAC
@@ -1164,6 +1166,66 @@ opt_require_mac() {
     fresh_has "$DNSMASQ_LOG" "$m" "DHCPACK($SEGMENT) $V4 02:00:00:00:e4:01" \
         || fail "require_mac=true with --mac-address 02:00:00:00:e4:01: no fresh ACK for $V4 carries that MAC"
     opt_down em-o-rm em-c-rm0 em-c-rm1
+}
+
+# link_submode CTR prints the kind and mode of the container's eth0 as
+# `ip -d link` reads them inside its netns, e.g. "macvlan vepa" (#905).
+link_submode() {
+    d sh -c 'nsenter -t "$(docker inspect -f "{{.State.Pid}}" "$0")" -n ip -d -o link show eth0' "$1" 2>/dev/null \
+        | awk '{ for (i = 1; i < NF; i++) if (($i == "macvlan" || $i == "ipvlan") && $(i + 1) == "mode") { print $i, $(i + 2); exit } }'
+}
+
+# opt_macvlan_mode: each sub-mode is the kernel's mode of the container
+# link, and passthru runs on a parent of its own because it takes the
+# parent alone (#905).
+opt_macvlan_mode() {
+    local m sub got out
+    opt_refused 'macvlan_mode "brigde" is not one of bridge, vepa, private, passthru' \
+        -o mode=macvlan -o parent="$PARENT" -o macvlan_mode=brigde
+    opt_refused "macvlan_mode cannot be set in mode=ipvlan" -o mode=ipvlan -o parent="$IPVLAN_PARENT" -o macvlan_mode=bridge
+    for sub in vepa private; do
+        m="$(log_lines "$DNSMASQ_LOG")"
+        opt_net em-o-mm -o mode=macvlan -o parent="$PARENT" -o macvlan_mode="$sub"
+        opt_run em-c-mm em-o-mm
+        wait_v4 em-c-mm
+        got="$(link_submode em-c-mm)"
+        [ "$got" = "macvlan $sub" ] || fail "macvlan_mode=$sub: ip -d link in the container reads '$got'"
+        fresh_has "$DNSMASQ_LOG" "$m" "DHCPACK($SEGMENT) $V4 " || fail "macvlan_mode=$sub: no fresh ACK for $V4"
+        opt_down em-o-mm em-c-mm
+    done
+    di sh -c "ip link add em-pt type veth peer name em-ptp && ip link set em-ptp master $SEGMENT && ip link set em-ptp up && ip link set em-pt up" \
+        || fail "could not add the passthru parent em-pt"
+    m="$(log_lines "$DNSMASQ_LOG")"
+    opt_net em-o-pt -o mode=macvlan -o parent=em-pt -o macvlan_mode=passthru
+    opt_run em-c-pt em-o-pt
+    wait_v4 em-c-pt
+    got="$(link_submode em-c-pt)"
+    [ "$got" = "macvlan passthru" ] || fail "macvlan_mode=passthru: ip -d link in the container reads '$got'"
+    fresh_has "$DNSMASQ_LOG" "$m" "DHCPACK($SEGMENT) $V4 $(d cat /sys/class/net/em-pt/address)" \
+        || fail "macvlan_mode=passthru: no fresh ACK for $V4 carries the parent's MAC"
+    if out="$(d docker run -d --name em-c-pt2 --network em-o-pt "$TEST_IMAGE" sleep 600 2>&1)"; then
+        fail "macvlan_mode=passthru: a second container started"
+    fi
+    case "$out" in
+        *"passthru"*"one container"*) ;;
+        *) fail "macvlan_mode=passthru: the second container's refusal does not name passthru: $out" ;;
+    esac
+    opt_down em-o-pt em-c-pt em-c-pt2
+    di sh -c "ip link del em-pt" || fail "could not remove the passthru parent em-pt"
+}
+
+opt_ipvlan_mode() {
+    local m got
+    opt_refused "ipvlan_mode=l3 is refused" -o mode=ipvlan -o parent="$IPVLAN_PARENT" -o ipvlan_mode=l3
+    opt_refused "ipvlan_mode cannot be set in mode=macvlan" -o mode=macvlan -o parent="$PARENT" -o ipvlan_mode=l2
+    m="$(log_lines "$DNSMASQ_LOG")"
+    opt_net em-o-im -o mode=ipvlan -o parent="$IPVLAN_PARENT" -o ipvlan_mode=l2
+    opt_run em-c-im em-o-im
+    wait_v4 em-c-im
+    got="$(link_submode em-c-im)"
+    [ "$got" = "ipvlan l2" ] || fail "ipvlan_mode=l2: ip -d link in the container reads '$got'"
+    fresh_has "$DNSMASQ_LOG" "$m" "DHCPACK($SEGMENT) $V4 " || fail "ipvlan_mode=l2: no fresh ACK for $V4"
+    opt_down em-o-im em-c-im
 }
 
 # One pair of runs judges the options that change what the client sends;

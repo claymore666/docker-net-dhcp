@@ -45,19 +45,36 @@ func validateParentForChild(name string) (netlink.Link, error) {
 	return link, nil
 }
 
-// newChildLink uses macvlan bridge mode so children on one parent reach each other, and ipvlan L2 so DHCP broadcasts
-// pass (#905).
-func newChildLink(mode string, la netlink.LinkAttrs) netlink.Link {
-	if mode == ModeIPvlan {
-		return &netlink.IPVlan{LinkAttrs: la, Mode: netlink.IPVLAN_MODE_L2}
+// newChildLink builds the child in the network's macvlan_mode or ipvlan_mode, so the endpoint, the IPAM reservation,
+// the validate_dhcp probe and a replay after a plugin restart all build the stored sub-mode (#905).
+func newChildLink(opts DHCPNetworkOptions, la netlink.LinkAttrs) (netlink.Link, error) {
+	if opts.effectiveMode() == ModeIPvlan {
+		m, err := parseIPvlanMode(opts.IPvlanMode)
+		if err != nil {
+			return nil, err
+		}
+		return &netlink.IPVlan{LinkAttrs: la, Mode: m}, nil
 	}
-	return &netlink.Macvlan{LinkAttrs: la, Mode: netlink.MACVLAN_MODE_BRIDGE}
+	m, err := parseMacvlanMode(opts.MacvlanMode)
+	if err != nil {
+		return nil, err
+	}
+	return &netlink.Macvlan{LinkAttrs: la, Mode: m}, nil
 }
 
 // explainChildLinkAdd names the kind in the way when the kernel refuses a child with EBUSY: macvlan and ipvlan both
 // claim the parent's single rx_handler, so the second kind is refused while same-kind children coexist (#486).
 // Not a retry, since two kinds on one NIC is permanent.
 func explainChildLinkAdd(err error, mode, parent string, parentIndex int) error {
+	// A passthru child takes the parent alone, and the kernel refuses the next child EINVAL, measured on Linux 6.12;
+	// EINVAL has other causes, so the text names passthru as one (#905).
+	if mode == ModeMacvlan && errors.Is(err, unix.EINVAL) {
+		return fmt.Errorf("failed to create macvlan link on %q: %w. The kernel answers this when a "+
+			"macvlan_mode=passthru child holds the parent: a passthru network gives its parent to one container, so "+
+			"a second child is refused beside it, and a passthru child is refused while another macvlan child is on "+
+			"the parent. If so, stop the container that holds %q, or put this network on another parent",
+			parent, err, parent)
+	}
 	if !errors.Is(err, unix.EBUSY) {
 		return fmt.Errorf("failed to create %v link: %w", mode, err)
 	}
@@ -181,6 +198,10 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, callStart tim
 	if r.Interface != nil {
 		effectiveMAC = r.Interface.MacAddress
 	}
+	// A MAC set on a passthru child changes the parent's own, so a user MAC is refused (#905).
+	if opts.macvlanPassthru() && effectiveMAC != "" {
+		return res, fmt.Errorf("%w: macvlan_mode=passthru does not support a custom MAC address: the child wears the parent's MAC, and a MAC set on it would change the parent's", util.ErrMACAddress)
+	}
 	explicitV4, err := resolveExplicitV4(r)
 	if err != nil {
 		return res, err
@@ -195,7 +216,10 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, callStart tim
 	requestedV6 := explicitV6
 	if mode == ModeMacvlan && effectiveMAC == "" {
 		if tombMAC, tombIP, tombIPv6, ok := p.consumeTombstone(r.NetworkID, hostname); ok {
-			effectiveMAC = tombMAC
+			// The kernel ignores a passthru child's create address, and the pin below sets the parent's (#905).
+			if !opts.macvlanPassthru() {
+				effectiveMAC = tombMAC
+			}
 			if requestedIP == "" {
 				requestedIP = tombIP
 			}
@@ -232,12 +256,26 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, callStart tim
 		}
 		la.HardwareAddr = mac
 	}
-	link := newChildLink(mode, la)
+	link, err := newChildLink(opts, la)
+	if err != nil {
+		return res, err
+	}
 
 	// Queues behind the validate_dhcp probe, which holds the parent across a DHCP round trip, for the LinkAdd only
 	// (#549).
 	guard := p.lockParent(ctx, opts.Parent, mode, "create_endpoint")
-	err = addChildLink(guard, link)
+	if opts.macvlanPassthru() {
+		var waited bool
+		waited, err = retryPassthruAdd(ctx, childLinkUpBudget, childLinkUpInterval, func() error { return addChildLink(guard, link) })
+		if waited {
+			log.WithError(err).WithFields(log.Fields{
+				"network":  shortID(r.NetworkID),
+				"endpoint": shortID(r.EndpointID),
+			}).Info("Passthru child waited for the parent's previous child to go (#905)")
+		}
+	} else {
+		err = addChildLink(guard, link)
+	}
 	guard.Unlock()
 	if err != nil {
 		return res, explainChildLinkAdd(err, mode, opts.Parent, parent.Attrs().Index)
@@ -262,8 +300,9 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, callStart tim
 		// Pin the kernel-assigned macvlan MAC (#103): udev's MACAddressPolicy=persistent, the Debian default,
 		// replaces a randomly assigned MAC just after creation, and a set addr_assign_type stops it. Without the pin
 		// the one-shot DHCPv6 poisoned the server's neighbour cache for about 45 s on the capture. ipvlan refuses any
-		// MAC set with EOPNOTSUPP.
-		if mode != ModeIPvlan && effectiveMAC == "" {
+		// MAC set with EOPNOTSUPP. A passthru child is pinned to the parent's own MAC, which leaves the parent as it is
+		// (measured on Linux 6.12); unpinned, a rewrite of the child would change the parent's (#905).
+		if opts.effectiveMode() != ModeIPvlan && effectiveMAC == "" {
 			if err := netlink.LinkSetHardwareAddr(fresh, mac); err != nil {
 				return fmt.Errorf("failed to pin %v link MAC: %w", mode, err)
 			}
@@ -275,8 +314,9 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, callStart tim
 			return fmt.Errorf("failed to set %v link up: %w", mode, err)
 		}
 
-		// libnetwork sets MacAddress at Join, which an ipvlan slave refuses with EOPNOTSUPP even for its own MAC.
-		if mode != ModeIPvlan && (r.Interface == nil || r.Interface.MacAddress == "") {
+		// libnetwork sets MacAddress at Join, which an ipvlan slave refuses with EOPNOTSUPP even for its own MAC; a
+		// passthru child already wears the parent's, pinned above (#905).
+		if !opts.childWearsParentMAC() && (r.Interface == nil || r.Interface.MacAddress == "") {
 			res.Interface.MacAddress = mac.String()
 		}
 

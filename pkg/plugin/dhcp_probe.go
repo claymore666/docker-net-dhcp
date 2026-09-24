@@ -32,10 +32,12 @@ const preflightProbeBudget = 8 * time.Second
 // runDHCPProbe runs one DORA from a throwaway child of parent, for validate_dhcp=true. The child is the network's own
 // kind, because macvlan and ipvlan children are mutually exclusive on one parent (explainChildLinkAdd). An ipvlan
 // child wears the parent's MAC, but the random probe MAC still gives the DUID and IAID; the OFFER comes back
-// broadcast because the library sets the flag by default (#243). The lease is left to expire (#800).
+// broadcast because the library sets the flag by default (#243). The lease is left to expire (#800). The child takes
+// the network's sub-mode (#905).
 //
 // Unlock is deferred before LinkDel so it runs after it: the parent gate is held until the child is gone (#577).
-func (p *Plugin) runDHCPProbe(ctx context.Context, parent, mode string, pol serverPolicy) error {
+func (p *Plugin) runDHCPProbe(ctx context.Context, opts DHCPNetworkOptions, pol serverPolicy) error {
+	parent, mode := opts.Parent, opts.effectiveMode()
 	guard := p.lockParent(ctx, parent, mode, "preflight_probe")
 	defer guard.Unlock()
 
@@ -59,7 +61,10 @@ func (p *Plugin) runDHCPProbe(ctx context.Context, parent, mode string, pol serv
 	if err != nil {
 		return fmt.Errorf("validate_dhcp: relookup parent: %w", err)
 	}
-	probeLink := newProbeLink(mode, probeName, parentLink.Attrs().Index, probeMAC)
+	probeLink, err := newProbeLink(opts, probeName, parentLink.Attrs().Index, probeMAC)
+	if err != nil {
+		return fmt.Errorf("validate_dhcp: %w", err)
+	}
 
 	if err := addChildLink(guard, probeLink); err != nil {
 		return fmt.Errorf("validate_dhcp: %w",
@@ -71,6 +76,9 @@ func (p *Plugin) runDHCPProbe(ctx context.Context, parent, mode string, pol serv
 		}
 	}()
 
+	if err := pinPassthruProbe(opts, probeName); err != nil {
+		return fmt.Errorf("validate_dhcp: %w", err)
+	}
 	if err := netlink.LinkSetUp(probeLink); err != nil {
 		return fmt.Errorf("validate_dhcp: bring probe link up: %w", err)
 	}
@@ -111,15 +119,32 @@ func preflightProbeOptions(probeMAC net.HardwareAddr, pol serverPolicy) *dhcp.DH
 	}
 }
 
-// newProbeLink builds the probe child as the network's own kind and sets the MAC only where the kernel accepts one.
-func newProbeLink(mode, name string, parentIndex int, mac net.HardwareAddr) netlink.Link {
+// pinPassthruProbe sets a passthru probe child's MAC to the one it wears, the parent's, as CreateEndpoint pins an
+// endpoint's: a udev rewrite of an unpinned passthru child would change the parent's MAC (#103, #905).
+func pinPassthruProbe(opts DHCPNetworkOptions, name string) error {
+	if !opts.macvlanPassthru() {
+		return nil
+	}
+	link, err := netlink.LinkByName(name)
+	if err != nil {
+		return fmt.Errorf("re-fetch probe link: %w", err)
+	}
+	if err := netlink.LinkSetHardwareAddr(link, link.Attrs().HardwareAddr); err != nil {
+		return fmt.Errorf("pin passthru probe link MAC: %w", err)
+	}
+	return nil
+}
+
+// newProbeLink builds the probe child as the network's own kind and sub-mode, and sets the MAC only where the child
+// does not wear the parent's (#905).
+func newProbeLink(opts DHCPNetworkOptions, name string, parentIndex int, mac net.HardwareAddr) (netlink.Link, error) {
 	la := netlink.NewLinkAttrs()
 	la.Name = name
 	la.ParentIndex = parentIndex
-	if mode != ModeIPvlan {
+	if !opts.childWearsParentMAC() {
 		la.HardwareAddr = mac
 	}
-	return newChildLink(mode, la)
+	return newChildLink(opts, la)
 }
 
 // "dh-probe-" plus 6 hex is 15 bytes, IFNAMSIZ-1: a longer name is refused by LinkAdd.

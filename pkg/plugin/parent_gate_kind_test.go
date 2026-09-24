@@ -23,7 +23,7 @@ func TestLockParent_TheCallSitesNameTheKindTheyAreAttaching(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
 
-		_ = p.runDHCPProbe(ctx, probeGateParent, ModeMacvlan, serverPolicy{})
+		_ = p.runDHCPProbe(ctx, DHCPNetworkOptions{Mode: ModeMacvlan, Parent: probeGateParent}, serverPolicy{})
 		assertSameKindGiveUp(t, p, "dhcp_probe.go")
 	})
 

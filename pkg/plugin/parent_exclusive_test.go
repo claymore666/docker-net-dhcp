@@ -132,8 +132,17 @@ func TestNewProbeLink_MatchesTheNetworkMode(t *testing.T) {
 		t.Fatalf("ParseMAC: %v", err)
 	}
 
+	probe := func(mode string) netlink.Link {
+		t.Helper()
+		link, err := newProbeLink(DHCPNetworkOptions{Mode: mode}, "dh-probe-a1b2c3", 7, mac)
+		if err != nil {
+			t.Fatalf("newProbeLink(%s): %v", mode, err)
+		}
+		return link
+	}
+
 	t.Run("ipvlan network gets an ipvlan probe", func(t *testing.T) {
-		link := newProbeLink(ModeIPvlan, "dh-probe-a1b2c3", 7, mac)
+		link := probe(ModeIPvlan)
 
 		if _, ok := link.(*netlink.IPVlan); !ok {
 			t.Fatalf("probe link is %T, want *netlink.IPVlan — a macvlan probe "+
@@ -146,7 +155,7 @@ func TestNewProbeLink_MatchesTheNetworkMode(t *testing.T) {
 	})
 
 	t.Run("macvlan network gets a macvlan probe with the probe MAC", func(t *testing.T) {
-		link := newProbeLink(ModeMacvlan, "dh-probe-a1b2c3", 7, mac)
+		link := probe(ModeMacvlan)
 
 		if _, ok := link.(*netlink.Macvlan); !ok {
 			t.Fatalf("probe link is %T, want *netlink.Macvlan", link)
@@ -158,7 +167,7 @@ func TestNewProbeLink_MatchesTheNetworkMode(t *testing.T) {
 
 	t.Run("both attach to the parent given", func(t *testing.T) {
 		for _, mode := range []string{ModeMacvlan, ModeIPvlan} {
-			if got := newProbeLink(mode, "dh-probe-a1b2c3", 7, mac).Attrs().ParentIndex; got != 7 {
+			if got := probe(mode).Attrs().ParentIndex; got != 7 {
 				t.Errorf("%s probe ParentIndex = %d, want 7", mode, got)
 			}
 		}

@@ -34,6 +34,9 @@ func (p *Plugin) createIPAMEndpoint(ctx context.Context, r CreateEndpointRequest
 	if err := ipamRefuseIPvlan(mode); err != nil {
 		return res, err
 	}
+	if err := ipamRefusePassthru(opts); err != nil {
+		return res, err
+	}
 
 	if r.Interface == nil || r.Interface.MacAddress == "" {
 		return res, fmt.Errorf("%w: Docker created this endpoint without a MAC address, which this plugin's IPAM driver asks for (RequiresMACAddress). This is a Docker-side inconsistency; re-create the container", util.ErrIPAM)
@@ -132,7 +135,10 @@ func (p *Plugin) addIPAMEndpointLink(ctx context.Context, endpointID, mode strin
 		la.Name = subLinkName(endpointID)
 		la.ParentIndex = parent.Attrs().Index
 		la.HardwareAddr = mac
-		link := newChildLink(mode, la)
+		link, err := newChildLink(opts, la)
+		if err != nil {
+			return nil, err
+		}
 		guard := p.lockParent(ctx, opts.Parent, mode, "create_endpoint")
 		err = addChildLink(guard, link)
 		guard.Unlock()

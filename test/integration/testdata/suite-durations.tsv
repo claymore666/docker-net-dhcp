@@ -415,6 +415,22 @@
 #              AnIPAMMacvlanParentBelowTheOptionFailsTheEndpointAndLeavesNoLink
 #              is 15.00: the same, plus the IPAM reservation's DHCP
 #              exchange before CreateEndpoint.
+#   four rows  the #905 TestSubModes_* rows are INFERRED, not measured:
+#              no run has executed them.
+#              EachLeasesInTheModeItWasCreatedWith is 72.00: six
+#              subtests, each one network and one container, the shape
+#              of TestLifecycleMacvlan_GoldenPath (11.61).
+#              PassthruTakesItsParentAlone is 45.00: one container
+#              (12.00), a validate_dhcp create (3.47), a second start
+#              refused after the 3s EINVAL retry, a refused
+#              --mac-address start and a docker restart (12.00).
+#              DockersOwnIPvlanL3NetworkRefusesAnIPvlanNetworkOnItsParent
+#              is 2.00: three creates, no container.
+#              APluginRecycleKeepsTheSubMode is 25.00, the shape of
+#              TestRequireMAC_APluginRecycleKeepsAnAcceptedContainer.
+#              TestCreateRefusals_EachNamesTheOptionAndTheReasonAndLeavesNoNetwork
+#              grows from 33.00 to 45.00 with #905's nine refusals and
+#              nine accepted create and remove pairs.
 #   samples    3 for every corpus row. FIFTY-SEVEN rows are not corpus
 #              samples, and the eleven groups below are disjoint and
 #              exhaust them: the five `one row` notes above -- 73.85,
@@ -527,7 +543,7 @@ TestConflictCheck_RestartInsideTheAsyncWindow	4.60
 TestConflictCheck_SquattedOfferIsDeclined	37.00
 TestConflictCheck_SquatterAfterTheFact	36.71
 TestConflictCheck_WaitAcquisitionIsTimed	9.15
-TestCreateRefusals_EachNamesTheOptionAndTheReasonAndLeavesNoNetwork	33.00
+TestCreateRefusals_EachNamesTheOptionAndTheReasonAndLeavesNoNetwork	45.00
 TestDHCPv6_ADuplicateOnTheSegmentIsRefused	30.08
 TestDHCPv6_ARefusalLogsItsStatusCodeByNameOnce	35.00
 TestDHCPv6_ASquatOnARunningContainerIsCountedAndTheAddressChanges	38.00
@@ -669,6 +685,10 @@ TestStaticIP_DriverOpt	9.01
 TestStaticRoutes_BridgeCopiesToContainer	11.80
 TestStaticRoutes_MacvlanCopiesToContainer	12.23
 TestStaticRoutes_MacvlanSkipRoutesOpt	11.82
+TestSubModes_APluginRecycleKeepsTheSubMode	25.00
+TestSubModes_DockersOwnIPvlanL3NetworkRefusesAnIPvlanNetworkOnItsParent	2.00
+TestSubModes_EachLeasesInTheModeItWasCreatedWith	72.00
+TestSubModes_PassthruTakesItsParentAlone	45.00
 TestTombstoneRestart_PreservesIPv6	27.17
 TestTombstoneRestart_PreservesMACAndIP	20.39
 TestV6Fixture_AssertExchangeRefusesASegmentNoClientEverUsed	2.34

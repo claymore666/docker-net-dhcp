@@ -34,10 +34,18 @@ func TestShortID(t *testing.T) {
 func TestNewChildLink(t *testing.T) {
 	la := netlink.NewLinkAttrs()
 	la.Name = "dh-test"
+	build := func(opts DHCPNetworkOptions) netlink.Link {
+		t.Helper()
+		l, err := newChildLink(opts, la)
+		if err != nil {
+			t.Fatalf("newChildLink(%+v): %v", opts, err)
+		}
+		return l
+	}
 
-	macv, ok := newChildLink(ModeMacvlan, la).(*netlink.Macvlan)
+	macv, ok := build(DHCPNetworkOptions{Mode: ModeMacvlan}).(*netlink.Macvlan)
 	if !ok {
-		t.Fatalf("ModeMacvlan: expected *netlink.Macvlan, got %T", newChildLink(ModeMacvlan, la))
+		t.Fatalf("ModeMacvlan: expected *netlink.Macvlan, got %T", build(DHCPNetworkOptions{Mode: ModeMacvlan}))
 	}
 	if macv.Mode != netlink.MACVLAN_MODE_BRIDGE {
 		t.Errorf("macvlan submode: got %v want MACVLAN_MODE_BRIDGE", macv.Mode)
@@ -46,15 +54,15 @@ func TestNewChildLink(t *testing.T) {
 		t.Errorf("macvlan attrs not threaded: got %q", macv.LinkAttrs.Name)
 	}
 
-	ipv, ok := newChildLink(ModeIPvlan, la).(*netlink.IPVlan)
+	ipv, ok := build(DHCPNetworkOptions{Mode: ModeIPvlan}).(*netlink.IPVlan)
 	if !ok {
-		t.Fatalf("ModeIPvlan: expected *netlink.IPVlan, got %T", newChildLink(ModeIPvlan, la))
+		t.Fatalf("ModeIPvlan: expected *netlink.IPVlan, got %T", build(DHCPNetworkOptions{Mode: ModeIPvlan}))
 	}
 	if ipv.Mode != netlink.IPVLAN_MODE_L2 {
 		t.Errorf("ipvlan submode: got %v want IPVLAN_MODE_L2 (DHCP needs L2 broadcast)", ipv.Mode)
 	}
 
-	if _, ok := newChildLink("", la).(*netlink.Macvlan); !ok {
+	if _, ok := build(DHCPNetworkOptions{}).(*netlink.Macvlan); !ok {
 		t.Errorf("empty mode should default to macvlan")
 	}
 }
