@@ -431,8 +431,22 @@
 #              TestCreateRefusals_EachNamesTheOptionAndTheReasonAndLeavesNoNetwork
 #              grows from 33.00 to 45.00 with #905's nine refusals and
 #              nine accepted create and remove pairs.
-#   samples    3 for every corpus row. FIFTY-SEVEN rows are not corpus
-#              samples, and the eleven groups below are disjoint and
+#   three rows the #902 TestVlan_* rows are INFERRED, not measured:
+#              no run has executed them.
+#              TheSubInterfaceCarriesTheLeaseAndOutlivesItsLastNetworkOnlyThroughARestart
+#              is 30.00: two creates, one container (12.00) and a plugin
+#              recycle with no endpoint to rebuild.
+#              ALinkThePluginDidNotMakeOrThatIsInUseIsLeftAlone is
+#              20.00: one ipvlan container (12.00), four creates and a
+#              refused one.
+#              IPAMModeBindsThePoolToTheSubInterface is 15.00, the
+#              shape of TestIPAM_AddressIsTheServersACK (13.00) plus a
+#              refused create.
+#              TestCreateRefusals_EachNamesTheOptionAndTheReasonAndLeavesNoNetwork
+#              grows from 45.00 to 50.00 with #902's three refusals and
+#              four accepted create and remove pairs.
+#   samples    3 for every corpus row. SIXTY-FOUR rows are not corpus
+#              samples, and the thirteen groups below are disjoint and
 #              exhaust them: the five `one row` notes above -- 73.85,
 #              84.19, 0.05, 12.08 and 13.00 -- the eighteen #110 rows,
 #              the four #962 TestReleaseLease_* rows, the two
@@ -440,9 +454,10 @@
 #              rows, the four #978 TestHostIfname_* rows, the four
 #              #1016 TestReleaseLease_* rows, the seven #1016 v6
 #              advertisement rows, the three #1016 refusal rows,
-#              the #1081 renumber row, and the five #1037
-#              TestMTUOption_* rows.
-#              Fifty-four of the fifty-seven are INFERRED; the three
+#              the #1081 renumber row, the five #1037
+#              TestMTUOption_* rows, the four #905 TestSubModes_* rows
+#              and the three #902 TestVlan_* rows.
+#              Sixty-one of the sixty-four are INFERRED; the three
 #              that are measured are
 #              TestLeaseRenewIPv6_HonorsT1, from three later head runs,
 #              and TestFailure_UnansweredRenewalsCounted and
@@ -543,7 +558,7 @@ TestConflictCheck_RestartInsideTheAsyncWindow	4.60
 TestConflictCheck_SquattedOfferIsDeclined	37.00
 TestConflictCheck_SquatterAfterTheFact	36.71
 TestConflictCheck_WaitAcquisitionIsTimed	9.15
-TestCreateRefusals_EachNamesTheOptionAndTheReasonAndLeavesNoNetwork	45.00
+TestCreateRefusals_EachNamesTheOptionAndTheReasonAndLeavesNoNetwork	50.00
 TestDHCPv6_ADuplicateOnTheSegmentIsRefused	30.08
 TestDHCPv6_ARefusalLogsItsStatusCodeByNameOnce	35.00
 TestDHCPv6_ASquatOnARunningContainerIsCountedAndTheAddressChanges	38.00
@@ -700,3 +715,6 @@ TestV6RACapture_SeesTheAdvertisementOnTheBridgeAndNotOnAQuietLink	1.46
 TestVendorClass_DefaultUsesUntaggedGateway	12.02
 TestVendorClass_NonMatchingValueUsesDefaultGateway	12.23
 TestVendorClass_OverrideRoutesViaTaggedGateway	12.30
+TestVlan_ALinkThePluginDidNotMakeOrThatIsInUseIsLeftAlone	20.00
+TestVlan_IPAMModeBindsThePoolToTheSubInterface	15.00
+TestVlan_TheSubInterfaceCarriesTheLeaseSurvivesARestartAndGoesWithItsLastNetwork	30.00
