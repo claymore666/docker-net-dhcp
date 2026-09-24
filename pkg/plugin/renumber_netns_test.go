@@ -408,6 +408,9 @@ var renumberKernelTests = []string{
 	"TestRenew_ARenumberWithTheOldAddressAlreadyGoneStillBinds",
 	"TestApplyAddressChange_ARefusedNewAddressKeepsTheOldOne",
 	"TestApplyAddressChange_AV6RenumberLeavesOnlyTheNewAddress",
+	"TestFirstLease_LeavesTheJoinGatewayToTheEngineInEitherOrder_IPv4",
+	"TestFirstLease_LeavesTheJoinGatewayToTheEngineInEitherOrder_IPv6",
+	"TestFirstLease_TheKernelRefusesTheEngineInstallOverAPluginRoute",
 }
 
 func TestRenumberKernelTests_ARefusedLinkIsNeverAPass(t *testing.T) {
