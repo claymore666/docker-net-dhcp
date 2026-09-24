@@ -188,7 +188,10 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, callStart tim
 	res := CreateEndpointResponse{Interface: &EndpointInterface{}}
 	mode := opts.effectiveMode()
 
-	parent, err := validateParentForChild(opts.Parent)
+	if _, err := p.ensureVlanLink(ctx, opts, "create_endpoint"); err != nil {
+		return res, err
+	}
+	parent, err := validateParentForChild(opts.linkParent())
 	if err != nil {
 		return res, err
 	}
@@ -263,7 +266,7 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, callStart tim
 
 	// Queues behind the validate_dhcp probe, which holds the parent across a DHCP round trip, for the LinkAdd only
 	// (#549).
-	guard := p.lockParent(ctx, opts.Parent, mode, "create_endpoint")
+	guard := p.lockParent(ctx, opts.linkParent(), mode, "create_endpoint")
 	if opts.macvlanPassthru() {
 		var waited bool
 		waited, err = retryPassthruAdd(ctx, childLinkUpBudget, childLinkUpInterval, func() error { return addChildLink(guard, link) })
@@ -278,7 +281,7 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, callStart tim
 	}
 	guard.Unlock()
 	if err != nil {
-		return res, explainChildLinkAdd(err, mode, opts.Parent, parent.Attrs().Index)
+		return res, explainChildLinkAdd(err, mode, opts.linkParent(), parent.Attrs().Index)
 	}
 
 	var (
@@ -460,7 +463,7 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, callStart tim
 		"network":  shortID(r.NetworkID),
 		"endpoint": shortID(r.EndpointID),
 		"mode":     mode,
-		"parent":   opts.Parent,
+		"parent":   opts.linkParent(),
 	}).Info("Endpoint created")
 	log.WithFields(log.Fields{
 		"network":     shortID(r.NetworkID),
@@ -523,7 +526,7 @@ func (p *Plugin) parentAttachedEndpointOperInfo(opts DHCPNetworkOptions, r InfoR
 
 	info := parentAttachedOperInfo{
 		Mode:     opts.effectiveMode(),
-		Parent:   opts.Parent,
+		Parent:   opts.linkParent(),
 		HostLink: name,
 	}
 	if link, err := hostLinkByGeneratedName(name); err == nil {

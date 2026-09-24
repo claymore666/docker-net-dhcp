@@ -296,7 +296,7 @@ func (o DHCPNetworkOptions) hostLink() string {
 	if o.effectiveMode() == ModeBridge {
 		return o.Bridge
 	}
-	return o.Parent
+	return o.linkParent()
 }
 
 var errNoHostSource = errors.New("no usable source address on the parent for this family")

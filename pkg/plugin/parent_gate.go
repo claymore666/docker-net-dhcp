@@ -28,6 +28,20 @@ type parentGate struct {
 	waiters map[string]map[*parentWaiter]struct{}
 }
 
+// parentGateKindVlan is an 802.1Q sub-interface's create or remove. It claims no rx_handler on the parent, and the
+// kernel accepted it beside macvlan, passthru and ipvlan children, measured on Linux 6.12, so it coexists with every
+// kind and a wait on it is never reported as a pair the kernel may refuse (#902).
+const parentGateKindVlan = "vlan"
+
+// kindsCoexist reports whether the kernel accepts both kinds on one parent at once. An unknown kind proves nothing,
+// so it coexists only with itself (#110, #902).
+func kindsCoexist(a, b string) bool {
+	if a == "" || b == "" {
+		return a == b
+	}
+	return a == b || a == parentGateKindVlan || b == parentGateKindVlan
+}
+
 // parentWaiter.foreign is write-once-true, so a cross-kind holder that came and went during the wait is still seen
 // (#110).
 type parentWaiter struct {
@@ -53,7 +67,7 @@ func (g *parentGate) enterWait(parent, kind string) (chan struct{}, *parentWaite
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	tok := g.tokenLocked(parent)
-	w := &parentWaiter{kind: kind, foreign: g.holders[parent] != kind}
+	w := &parentWaiter{kind: kind, foreign: !kindsCoexist(g.holders[parent], kind)}
 	if g.waiters == nil {
 		g.waiters = make(map[string]map[*parentWaiter]struct{})
 	}
@@ -95,7 +109,7 @@ func (g *parentGate) noteTakeLocked(parent, kind string) {
 		g.holders[parent] = kind
 	}
 	for w := range g.waiters[parent] {
-		if w.kind != kind {
+		if !kindsCoexist(w.kind, kind) {
 			w.foreign = true
 		}
 	}
@@ -198,16 +212,17 @@ func (p *Plugin) lockParent(ctx context.Context, parent, kind, op string) *paren
 			"op":     op,
 			"waited": waited.String(),
 		}).Debug("Waited for another operation to finish with the parent interface")
-	case heldKind != "" && heldKind == kind:
-		// A wait lost to a holder of the same kind is counted as a wait, not a timeout: the kernel refuses only the
-		// cross pair, and `docker compose up` on one macvlan network lands here on every start (#110).
+	case heldKind != "":
+		// A wait lost to holders the kernel accepts beside this kind is counted as a wait, not a timeout: the kernel
+		// refuses only the cross pair, and `docker compose up` on one macvlan network lands here on every start
+		// (#110, #902).
 		p.parentLinkWaits.Add(1)
 		log.WithFields(log.Fields{
 			"parent": parent,
 			"op":     op,
 			"kind":   kind,
 			"budget": parentGateBudget.String(),
-		}).Debug("Gave up waiting for the parent interface; the holder is attaching the same kind of child, which the kernel permits alongside this one")
+		}).Debug("Gave up waiting for the parent interface; the holder's link is one the kernel permits alongside this one")
 	default:
 		p.parentLinkWaitTimeouts.Add(1)
 		log.WithFields(log.Fields{

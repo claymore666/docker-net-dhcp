@@ -265,6 +265,8 @@ type DHCPNetworkOptions struct {
 	// IPvlanMode is the ipvlan child's kernel mode; l2 (the default) is the only accepted value, see parseIPvlanMode
 	// (#905).
 	IPvlanMode string `mapstructure:"ipvlan_mode"`
+	// Vlan is an 802.1Q ID; the children attach to `<parent>.<id>`, created when missing (#902).
+	Vlan string `mapstructure:"vlan"`
 }
 
 func (o DHCPNetworkOptions) effectiveMode() string {
@@ -434,6 +436,11 @@ type Plugin struct {
 	// endpointFingerprints keeps each endpoint's MAC and IPv4 for DeleteEndpoint's tombstone, after Leave took the
 	// manager (#46).
 	endpointFingerprints map[string]endpointFingerprint
+
+	// vlanMu serialises a vlan sub-interface's create, adoption and removal, and guards vlanPending, the creates
+	// between their ensure and their save; it is never held with mu (#902).
+	vlanMu      sync.Mutex
+	vlanPending map[string]int
 
 	// tombstones serialises tombstones.json and is never held with mu; scripts/check-lock-discipline.sh enforces it.
 	tombstones tombstoneStore
@@ -1189,13 +1196,13 @@ func recoveredMAC(opts DHCPNetworkOptions, macStr string) (net.HardwareAddr, err
 	if !opts.childWearsParentMAC() {
 		return nil, fmt.Errorf("parse MAC %q: %w", macStr, errNoRecoveryMAC)
 	}
-	parent, err := netlink.LinkByName(opts.Parent)
+	parent, err := nlLinkByName(opts.linkParent())
 	if err != nil {
-		return nil, fmt.Errorf("%s parent %q: %w", opts.effectiveMode(), opts.Parent, err)
+		return nil, fmt.Errorf("%s parent %q: %w", opts.effectiveMode(), opts.linkParent(), err)
 	}
 	hw := parent.Attrs().HardwareAddr
 	if len(hw) == 0 {
-		return nil, fmt.Errorf("%s parent %q has no hardware address to inherit", opts.effectiveMode(), opts.Parent)
+		return nil, fmt.Errorf("%s parent %q has no hardware address to inherit", opts.effectiveMode(), opts.linkParent())
 	}
 	return hw, nil
 }
