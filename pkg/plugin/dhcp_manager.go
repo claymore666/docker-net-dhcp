@@ -166,7 +166,7 @@ type dhcpManager struct {
 
 	// clientV4 is the persistent v4 client: the health document reads its lease and RFC 5227 phase, and the attach
 	// sets its hostname through it (#961). Under ipMu, released before the client is called. v6 has no counterpart:
-	// the RFC 5227 pair has no v6 meaning and the library sends no DHCPv6 name option
+	// the RFC 5227 pair has no v6 meaning and the plugin sets no DHCPv6 name until #1029
 	// (TestHealthClient_IsPublishedOnlyForV4).
 	clientV4 joinClient
 
