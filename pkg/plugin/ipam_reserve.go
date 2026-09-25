@@ -68,6 +68,8 @@ type ipamReservation struct {
 	started time.Time
 	// rebound marks a record taken over from a removed endpoint, which a refused endpoint hands back (#1036).
 	rebound bool
+	// record6 is the v6 tombstone re-bound with record, which CreateEndpoint folds its v6 half onto (#960).
+	record6 string
 }
 
 // ipamReserveKey is the pool and MAC pair, since two networks on one host can be handed the same generated MAC.
@@ -101,7 +103,7 @@ func (s *ipamReserves) begin(key string, now time.Time) (*ipamReservation, bool)
 }
 
 func (s *ipamReserves) finish(key string, r *ipamReservation, out ipamReservation, err error) {
-	r.addr, r.info, r.record, r.err, r.rebound = out.addr, out.info, out.record, err, out.rebound
+	r.addr, r.info, r.record, r.err, r.rebound, r.record6 = out.addr, out.info, out.record, err, out.rebound, out.record6
 	close(r.done)
 	if s == nil {
 		return
@@ -234,7 +236,7 @@ func (p *Plugin) runIPAMReserve(ctx context.Context, networkID string, sn stored
 
 	// Exactly one live tombstone supplies the address and the client-id the server filed it under; with more than one,
 	// RequestAddress carries no hostname or endpoint id to choose on, so the server decides and it is counted (#110).
-	recordID, rebindAddr, rebindIdentity := p.ipamRebindCandidate(networkID, mac)
+	recordID, rebindAddr, rebindIdentity, recordID6 := p.ipamRebindCandidate(networkID, mac)
 	rebound := recordID != ""
 	requestedIP, demanded := ipamExchangeAddresses(requestedIP, rebindAddr)
 	clientID = ipamExchangeClientID(clientID, rebindIdentity)
@@ -277,6 +279,7 @@ func (p *Plugin) runIPAMReserve(ctx context.Context, networkID string, sn stored
 		return none, err
 	}
 	res.rebound = rebound
+	res.record6 = recordID6
 	return res, nil
 }
 
@@ -321,40 +324,87 @@ func ipamExchangeClientID(fresh, rebindIdentity []byte) []byte {
 // before any packet goes out, so an attempt that re-bound retains it with a fresh deadline; otherwise an outage
 // would spend the restarted container's address stability. The exit holding a refused ACK passes false (#1047).
 func (p *Plugin) ipamGiveUpAttempt(recordID string, keepTheWindow bool, now time.Time) {
+	rule := ipamGiveUpClose
 	if keepTheWindow {
-		p.recordRetained(recordID, now.Add(tombstoneTTL))
-		return
+		rule = ipamGiveUpRetain
 	}
-	p.closeRecord(recordID)
+	p.ipamGiveUpPair(recordID, rule, now, nil)
 }
 
 // ipamGiveUpRecord is the one give-up for an accepted reservation. A record holding a lease is retained, since
 // without a DHCPRELEASE (#962) a fresh DISCOVER would leave two leases; a record holding nothing is closed, since
 // Tombstones never checks for an address and an empty candidate makes a real one ambiguous (#110).
 func (p *Plugin) ipamGiveUpRecord(recordID string, now time.Time) {
-	if p.ipamRecordHoldsLease(recordID, now) {
-		p.recordRetained(recordID, now.Add(tombstoneTTL))
-		return
-	}
-	p.closeRecord(recordID)
+	p.ipamGiveUpPair(recordID, ipamGiveUpByLease, now, nil)
 }
 
-func (p *Plugin) ipamRecordHoldsLease(recordID string, now time.Time) bool {
+// ipamGiveUpRule is how the named v4 record ends; its v6 half follows ipamGiveUpPair's rule (#960).
+type ipamGiveUpRule uint8
+
+const (
+	ipamGiveUpClose ipamGiveUpRule = iota
+	ipamGiveUpRetain
+	ipamGiveUpByLease
+)
+
+// ipamGiveUpPair ends a v4 record and its unfinished v6 half on one deadline, retaining the v6 half when the v4 one
+// is retained or when it holds a lease itself, so the next re-bind finds both or neither (#960).
+func (p *Plugin) ipamGiveUpPair(recordID string, rule ipamGiveUpRule, now time.Time, eligible func(lease.Record) bool) []string {
 	if p.records == nil || recordID == "" {
-		return false
+		return nil
 	}
+	deadline := now.Add(tombstoneTTL)
 	rb, err := p.records.Rebuilt()
-	if err != nil {
+	if err != nil && rule == ipamGiveUpByLease {
 		log.WithError(err).WithField("record", recordID).
 			Warn("Could not read the lease records while giving up a reservation; closing it rather than laying a tombstone with no address on it")
-		return false
+	} else if err != nil {
+		log.WithError(err).WithField("record", recordID).
+			Warn("Could not read the lease records while giving up a reservation; its IPv6 record is left to the restart rule")
 	}
-	rec, ok := rb.ByID(recordID)
-	if !ok {
-		return false
+	rec, found := rb.ByID(recordID)
+	keep := rule == ipamGiveUpRetain
+	if rule == ipamGiveUpByLease && found {
+		_, keep = rec.Resume(now)
 	}
-	_, holds := rec.Resume(now)
-	return holds
+	p.ipamEndRecord(recordID, keep, deadline)
+	given := []string{recordID}
+	if !found {
+		return given
+	}
+	for _, sib := range ipamSiblings6(rb, rec) {
+		if eligible != nil && !eligible(sib) {
+			continue
+		}
+		_, holds := sib.Resume(now)
+		p.ipamEndRecord(sib.ID, keep || holds, deadline)
+		given = append(given, sib.ID)
+	}
+	return given
+}
+
+func (p *Plugin) ipamEndRecord(id string, keep bool, deadline time.Time) {
+	if keep {
+		p.recordRetained(id, deadline)
+		return
+	}
+	p.closeRecord(id)
+}
+
+// ipamSiblings6 is a v4 record's unfinished v6 half, since a retained one is a tombstone that pairs only at the
+// re-bind (#960).
+func ipamSiblings6(rb lease.Rebuilt, rec lease.Record) []lease.Record {
+	networkID, v6 := dhcp.NetworkOfScope(rec.Scope)
+	if v6 || len(rec.CHAddr) == 0 {
+		return nil
+	}
+	var out []lease.Record
+	for _, sib := range rb.ByScopeMAC(dhcp.Scope6(networkID), rec.CHAddr) {
+		if sib.Phase == lease.PhaseReserved || sib.Phase == lease.PhaseCreated {
+			out = append(out, sib)
+		}
+	}
+	return out
 }
 
 // ipamACKIsTheOneAsked refuses an ACK for another address than `--ip`: option 50 is a request, and libnetwork
@@ -488,37 +538,68 @@ func (p *Plugin) recordReserved(networkID string, mac net.HardwareAddr, identity
 
 // ipamRebindCandidate re-binds exactly one live tombstone; with more than one it counts and logs, since
 // RequestAddress carries no hostname or endpoint id to choose on (#110).
-func (p *Plugin) ipamRebindCandidate(networkID string, mac net.HardwareAddr) (string, string, []byte) {
+func (p *Plugin) ipamRebindCandidate(networkID string, mac net.HardwareAddr) (string, string, []byte, string) {
 	if p.records == nil {
-		return "", "", nil
+		return "", "", nil, ""
 	}
 	rb, err := p.records.Rebuilt()
 	if err != nil {
 		log.WithError(err).WithField("network", shortID(networkID)).Warn("Could not read the lease records; this reservation gets a fresh identity")
-		return "", "", nil
+		return "", "", nil, ""
 	}
-	candidates := p.ipamUnheldTombstones(networkID, rb.Tombstones(networkID, time.Now()))
+	now := time.Now()
+	candidates := p.ipamUnheldTombstones(networkID, rb.Tombstones(networkID, now))
 	if len(candidates) == 0 {
-		return "", "", nil
+		return "", "", nil, ""
 	}
-	if len(candidates) > 1 {
+	var siblings []lease.Record
+	if len(candidates) == 1 {
+		siblings = ipamTombstones6(rb, networkID, candidates[0].CHAddr, now)
+	}
+	if len(candidates) > 1 || len(siblings) > 1 {
 		p.ipamRebindAmbiguous.Add(1)
 		log.WithFields(log.Fields{
 			"network":    shortID(networkID),
 			"candidates": len(candidates),
+			"v6":         len(siblings),
 		}).Info("More than one recently-removed endpoint on this network could claim this address request; the DHCP server decides and the address can change")
-		return "", "", nil
+		return "", "", nil, ""
 	}
 	rec := candidates[0]
 	addr, ok := rec.Addr()
 	if !ok {
-		return "", "", nil
+		return "", "", nil, ""
 	}
 	if err := p.records.Rebound(rec.ID, mac); err != nil {
 		log.WithError(err).WithField("record", rec.ID).Warn("Could not re-bind the recently-removed endpoint's record; this reservation gets a fresh identity")
-		return "", "", nil
+		return "", "", nil, ""
 	}
-	return rec.ID, addr.String(), rec.Identity
+	return rec.ID, addr.String(), rec.Identity, p.ipamRebind6(siblings, mac)
+}
+
+// ipamTombstones6 is the v6 half of a v4 tombstone: the same network and the old MAC, so a v4-only endpoint's
+// tombstone never takes another endpoint's v6 one (#960).
+func ipamTombstones6(rb lease.Rebuilt, networkID string, chaddr []byte, now time.Time) []lease.Record {
+	var out []lease.Record
+	for _, rec := range rb.Tombstones(dhcp.Scope6(networkID), now) {
+		if bytes.Equal(rec.CHAddr, chaddr) {
+			out = append(out, rec)
+		}
+	}
+	return out
+}
+
+// ipamRebind6 moves the v6 tombstone to the new MAC after its v4 twin; on a failed write it stays retained and
+// runs out at its own deadline, and the endpoint mints a fresh v6 record (#960).
+func (p *Plugin) ipamRebind6(siblings []lease.Record, mac net.HardwareAddr) string {
+	if len(siblings) != 1 {
+		return ""
+	}
+	if err := p.records.Rebound(siblings[0].ID, mac); err != nil {
+		log.WithError(err).WithField("record", siblings[0].ID).Warn("Could not re-bind the recently-removed endpoint's IPv6 record; this endpoint gets a fresh IPv6 identity")
+		return ""
+	}
+	return siblings[0].ID
 }
 
 // ipamUnheldTombstones drops a candidate whose MAC and address a live endpoint of this process still holds: the
@@ -551,7 +632,7 @@ func (p *Plugin) sweepIPAMReservations(now time.Time) int {
 			continue
 		}
 		if r.record != "" {
-			p.recordRetained(r.record, now.Add(tombstoneTTL))
+			p.ipamGiveUpAttempt(r.record, true, now)
 			swept++
 			log.WithField("record", r.record).
 				Info("An address was reserved for an endpoint Docker never created; retaining it so a retry can claim it back")
@@ -623,23 +704,29 @@ func (p *Plugin) giveUpStrandedIPAMRecords(networkID string, listed []net.Hardwa
 		return 0
 	}
 	instance := p.records.Instance()
+	stranded := func(rec lease.Record) bool {
+		return rec.Phase == lease.PhaseCreated && rec.Instance != instance && !ipamMACIsListed(listed, rec.CHAddr)
+	}
+	// The v4 scope first, so a v6 record is given up with its v4 twin's deadline; then a v6 record left alone (#960).
+	done := map[string]bool{}
 	given := 0
-	for _, rec := range rb.Records {
-		if rec.Scope != networkID || rec.Phase != lease.PhaseCreated || rec.Instance == instance {
-			continue
+	for _, scope := range []string{networkID, dhcp.Scope6(networkID)} {
+		for _, rec := range rb.Records {
+			if rec.Scope != scope || done[rec.ID] || !stranded(rec) {
+				continue
+			}
+			_, held := rec.Resume(now)
+			for _, id := range p.ipamGiveUpPair(rec.ID, ipamGiveUpByLease, now, stranded) {
+				done[id] = true
+				given++
+				p.ipamStrandedRecords.Add(1)
+			}
+			log.WithFields(log.Fields{
+				"network":  shortID(networkID),
+				"record":   rec.ID,
+				"retained": held,
+			}).Info("A previous plugin process left this endpoint's lease record behind and no endpoint on this network claims it; giving it up so a container restarting can claim the address back")
 		}
-		if ipamMACIsListed(listed, rec.CHAddr) {
-			continue
-		}
-		_, held := rec.Resume(now)
-		p.ipamGiveUpRecord(rec.ID, now)
-		given++
-		p.ipamStrandedRecords.Add(1)
-		log.WithFields(log.Fields{
-			"network":  shortID(networkID),
-			"record":   rec.ID,
-			"retained": held,
-		}).Info("A previous plugin process left this endpoint's lease record behind and no endpoint on this network claims it; giving it up so a container restarting can claim the address back")
 	}
 	return given
 }

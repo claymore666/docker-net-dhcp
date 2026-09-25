@@ -192,7 +192,7 @@ func TestIpamRebindCandidate_LeavesARunningEndpointsAddressAlone(t *testing.T) {
 		id := tombstone(t, p, mac, "192.168.99.10/24")
 		holds(p, "endpoint-still-running", mac, "192.168.99.10")
 
-		gotID, gotAddr, gotIdent := p.ipamRebindCandidate(ipamTestNetwork, newMAC)
+		gotID, gotAddr, gotIdent, _ := p.ipamRebindCandidate(ipamTestNetwork, newMAC)
 		if gotID != "" || gotAddr != "" || gotIdent != nil {
 			t.Errorf("re-bound (%q, %q) from a record a running endpoint still holds. Both "+
 				"clients would then renew under one identity and the running container "+
@@ -212,7 +212,7 @@ func TestIpamRebindCandidate_LeavesARunningEndpointsAddressAlone(t *testing.T) {
 		id := tombstone(t, p, mac, "192.168.99.10/24")
 		holds(p, "endpoint-elsewhere", mac, "192.168.99.99")
 
-		gotID, gotAddr, _ := p.ipamRebindCandidate(ipamTestNetwork, newMAC)
+		gotID, gotAddr, _, _ := p.ipamRebindCandidate(ipamTestNetwork, newMAC)
 		if gotID != id || gotAddr != "192.168.99.10" {
 			t.Errorf("re-bound (%q, %q), want (%q, 192.168.99.10). The guard keys on the "+
 				"pair; keyed on the hardware address alone it refuses re-binds that are "+
@@ -226,7 +226,7 @@ func TestIpamRebindCandidate_LeavesARunningEndpointsAddressAlone(t *testing.T) {
 		holds(p, "endpoint-gone", mac, "192.168.99.10")
 		p.takeEndpoint("endpoint-gone")
 
-		gotID, gotAddr, gotIdent := p.ipamRebindCandidate(ipamTestNetwork, newMAC)
+		gotID, gotAddr, gotIdent, _ := p.ipamRebindCandidate(ipamTestNetwork, newMAC)
 		if gotID != id || gotAddr != "192.168.99.10" {
 			t.Fatalf("re-bound (%q, %q), want (%q, 192.168.99.10) — this is the whole feature",
 				gotID, gotAddr, id)
@@ -243,7 +243,7 @@ func TestIpamRebindCandidate_LeavesARunningEndpointsAddressAlone(t *testing.T) {
 		free := tombstone(t, p, other, "192.168.99.11/24")
 		holds(p, "endpoint-still-running", mac, "192.168.99.10")
 
-		gotID, gotAddr, _ := p.ipamRebindCandidate(ipamTestNetwork, newMAC)
+		gotID, gotAddr, _, _ := p.ipamRebindCandidate(ipamTestNetwork, newMAC)
 		if gotID != free || gotAddr != "192.168.99.11" {
 			t.Errorf("re-bound (%q, %q), want (%q, 192.168.99.11)", gotID, gotAddr, free)
 		}
@@ -277,7 +277,7 @@ func TestIpamRebindCandidate_AmbiguityIsCountedNotGuessed(t *testing.T) {
 		p, _ := ipamFixture(t)
 		id := tombstone(t, p, "192.168.99.10/24")
 		newMAC, _ := net.ParseMAC("02:42:c0:a8:63:0b")
-		gotID, gotAddr, gotIdent := p.ipamRebindCandidate(ipamTestNetwork, newMAC)
+		gotID, gotAddr, gotIdent, _ := p.ipamRebindCandidate(ipamTestNetwork, newMAC)
 		if gotID != id {
 			t.Errorf("re-bound record %q, want %q", gotID, id)
 		}
@@ -300,7 +300,7 @@ func TestIpamRebindCandidate_AmbiguityIsCountedNotGuessed(t *testing.T) {
 		tombstone(t, p, "192.168.99.10/24")
 		tombstone(t, p, "192.168.99.11/24")
 		newMAC, _ := net.ParseMAC("02:42:c0:a8:63:0b")
-		gotID, gotAddr, gotIdent := p.ipamRebindCandidate(ipamTestNetwork, newMAC)
+		gotID, gotAddr, gotIdent, _ := p.ipamRebindCandidate(ipamTestNetwork, newMAC)
 		if gotID != "" || gotAddr != "" || gotIdent != nil {
 			t.Errorf("chose (%q, %q) between two candidates; there is nothing to choose on, "+
 				"so one container would take another's address", gotID, gotAddr)
@@ -411,14 +411,14 @@ func TestIpamGiveUpAttempt_AFailedExchangeLeavesTheCandidate(t *testing.T) {
 			t.Fatalf("Retained: %v", err)
 		}
 		restarted, _ := net.ParseMAC("02:42:c0:a8:63:0b")
-		gotID, gotAddr, _ := p.ipamRebindCandidate(ipamTestNetwork, restarted)
+		gotID, gotAddr, _, _ := p.ipamRebindCandidate(ipamTestNetwork, restarted)
 		if gotID != id || gotAddr != "192.168.99.10" {
 			t.Fatalf("the candidate was not taken: (%q, %q)", gotID, gotAddr)
 		}
 
 		p.ipamGiveUpAttempt(id, true, time.Now())
 
-		againID, againAddr, _ := p.ipamRebindCandidate(ipamTestNetwork, restarted)
+		againID, againAddr, _, _ := p.ipamRebindCandidate(ipamTestNetwork, restarted)
 		if againID != id {
 			t.Errorf("the retry found candidate %q, want %q. The failed attempt consumed the "+
 				"tombstone, so this container takes a fresh address and the documented "+
