@@ -29,10 +29,12 @@ var ErrAddressConflict = errors.New("dhcp: the offered address is already in use
 
 // DHCPClientOptions is one endpoint's DHCP configuration.
 type DHCPClientOptions struct {
-	// Hostname is DHCPv4 option 12, omitted when empty.
+	// Hostname is DHCPv4 option 12, omitted when empty; on DHCPv6 it travels only in option 39, so only with FQDN
+	// (#1029).
 	Hostname string
 
-	// FQDN, when non-empty, asks the server to register Hostname in DNS (RFC 4702 option 81).
+	// FQDN, when non-empty, asks the server to register Hostname in DNS: RFC 4702 option 81 on v4, RFC 4704 option 39
+	// on v6 (#1029).
 	FQDN string
 
 	// V6 selects the DHCPv6 (RFC 9915) library client; a dual-stack endpoint runs one client per family (#911).
@@ -431,6 +433,10 @@ type DHCPClient struct {
 	// runner is the family-independent half of the built client, which a renewal test can replace (#940).
 	runner libClient
 
+	// namer is whichever library client Start built, so SetHostname reaches the right family and a test can stand
+	// in for it (#961, #1029).
+	namer interface{ SetHostname(string) error }
+
 	// renewals turns the library's renewal counters into the unanswered count, touched only by translate (#940).
 	renewals renewalWatch
 
@@ -495,13 +501,13 @@ func (c *DHCPClient) Start() (chan Event, error) {
 		if err != nil {
 			return nil, err
 		}
-		c.client6, runner = client6, client6
+		c.client6, runner, c.namer = client6, client6, client6
 	} else {
 		client, err := newLibClient(c.iface, c.params, &c.opts)
 		if err != nil {
 			return nil, err
 		}
-		c.client, runner = client, client
+		c.client, runner, c.namer = client, client, client
 	}
 	if c.opts.Records != nil {
 		c.manager = c.opts.Records.NewManagerID()
@@ -581,6 +587,7 @@ func (c *DHCPClient) translate() {
 		// Recorded before translation: translateOne drops the coalesced Changed and the stop, and the record must not
 		// (#899).
 		c.opts.record(ev)
+		c.opts.reportFQDN6(ev)
 		// One snapshot folded before the cycle reset, so no request in flight is lost (#940).
 		stats := c.Stats()
 		c.opts.acdReport(stats)
@@ -871,24 +878,26 @@ func (c *DHCPClient) ACDPhase() proto.ACDPhase {
 	return c.client.ACDPhase()
 }
 
-// ErrNoRunningClient and ErrHostnameV6 are SetHostname's refusals: no started client, and a DHCPv6 client (#1029).
+// ErrNoRunningClient and ErrHostnameV6 are SetHostname's refusals: no started client, and a DHCPv6 client on a
+// network without register_dns (#1029).
 var (
 	ErrNoRunningClient = errors.New("dhcp: no running client to give a hostname to")
-	ErrHostnameV6      = errors.New("dhcp: the plugin sends no hostname on DHCPv6 yet (#1029)")
+	ErrHostnameV6      = errors.New("dhcp: a DHCPv6 name travels only in option 39, which asks the server to " +
+		"register it, so a network without register_dns sends none (#1029)")
 )
 
-// The library renews early to carry the name (RFC 2131 section 4.4.5); option 12 is refused beside option 81 (RFC 4702
-// section 3.1); v6 stays refused until #1029, though dhcp-golib v1.1.0 can send option 39 (claymore666/dhcp-golib#22).
+// The library renews early to carry the name (RFC 2131 section 4.4.5, RFC 4704 section 5); the library sends option 39
+// only with S=1, so v6 without register_dns is refused here (#1029 decision (a), claymore666/dhcp-golib#22).
 
-// SetHostname hands the running client the option-12 name and makes it tell the server at once (#961).
+// SetHostname hands the running client its name and makes it tell the server at once (#961).
 func (c *DHCPClient) SetHostname(name string) error {
-	if c.opts.V6 {
+	if c.opts.V6 && c.opts.FQDN == "" {
 		return ErrHostnameV6
 	}
-	if c.client == nil {
+	if c.namer == nil {
 		return ErrNoRunningClient
 	}
-	return c.client.SetHostname(name)
+	return c.namer.SetHostname(name)
 }
 
 // A v6 client answers the zero mode but runs RFC 4862 DAD, per RFC 9915 section 18.2.10.1, reported on DADPhase (#911).
