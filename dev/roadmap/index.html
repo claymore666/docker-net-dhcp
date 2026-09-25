@@ -1243,7 +1243,7 @@ below decide what is in a release; this page follows them.</p>
 <li><a href="https://github.com/claymore666/docker-net-dhcp/issues/960">#960</a>, IPv6 in IPAM mode: the v6 exchange, the v6 record, and a DUID
   that survives a restart</li>
 <li><a href="https://github.com/claymore666/docker-net-dhcp/issues/1029">#1029</a>, the DHCPv6 Client FQDN option, so <code>register_dns</code> registers the
-  AAAA record beside the A</li>
+  AAAA record beside the A; without it a DHCPv6 lease carries no name</li>
 <li><a href="https://github.com/claymore666/docker-net-dhcp/issues/1036">#1036</a>, a <code>require_mac</code> option that refuses an endpoint with no
   Docker-supplied MAC</li>
 <li><a href="https://github.com/claymore666/docker-net-dhcp/issues/1037">#1037</a>, an <code>mtu</code> option that sets the endpoint link MTU explicitly</li>

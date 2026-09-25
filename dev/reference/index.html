@@ -2524,7 +2524,7 @@ value as an invalid duration.</p>
 <td>all</td>
 <td><code>false</code></td>
 <td>v1.3.0</td>
-<td>Send the DHCP FQDN option (81) built from the container's hostname, asking the DHCP server to register that name in DNS (forward A/AAAA + reverse PTR). Reuses the same hostname already sent as the option-12 hint. Best-effort and advisory, because many consumer routers ignore option 81, so this <em>requests</em> registration, it does not guarantee resolution. Off by default: dynamic-DNS registration is a network-policy decision. See below.</td>
+<td>Send the DHCP FQDN option built from the container's hostname, asking the DHCP server to register that name in DNS: option 81 on DHCPv4 (the A record and the reverse PTR), and since v2.3.0 option 39 on a DHCPv6 lease (the AAAA record, #1029). Reuses the same hostname already sent as the option-12 hint. Best-effort and advisory, because many consumer routers ignore the option, so this <em>requests</em> registration, it does not guarantee resolution. <strong>With the option off, the DHCPv6 server's lease table shows no name for the container</strong>, unlike v4, where option 12 carries the name either way: DHCPv6 has no plain hostname option, and option 39 always asks the server to register the name, so the plugin sends it only when asked to. Turning the option on is the way to get the name into the DHCPv6 server's table. A hostname with a label longer than 63 characters is refused on a <code>register_dns</code> network, on both families, because it cannot be encoded as a DNS name; without the option it is accepted. <code>ipv6_mode=slaac</code> registers no AAAA, since there is no DHCPv6 lease to carry the name, and an <code>ipv6_mode=auto</code> network that fell back to SLAAC never registered one; the plugin logs both. Off by default: dynamic-DNS registration is a network-policy decision. See below.</td>
 </tr>
 <tr>
 <td><code>audit_log</code></td>
@@ -2599,18 +2599,51 @@ the option-12 hostname hint the plugin already sends: the hostname says
 <em>who we are</em>, the FQDN option asks the server to <em>publish it</em>. The flags
 byte asks the server to perform <strong>both</strong> the forward (A) and the reverse
 (PTR) update; the container runs no DNS updater of its own, so the
-server does all the work. The v6 equivalent (option 39, RFC 4704) is not
-sent. The DHCP library can send it since dhcp-golib v1.1.0
-(<a href="https://github.com/claymore666/dhcp-golib/pull/22">claymore666/dhcp-golib#22</a>),
-but the plugin sets no DHCPv6 name yet
-(<a href="https://github.com/claymore666/docker-net-dhcp/issues/1029">#1029</a>).</p>
+server does all the work.</p>
+<p><strong>On a DHCPv6 lease the same option is option 39</strong> (RFC 4704), sent
+since v2.3.0
+(<a href="https://github.com/claymore666/docker-net-dhcp/issues/1029">#1029</a>).
+It carries the container's hostname with the S flag set, which asks the
+server to register the AAAA record, and it rides every Solicit,
+Request, Renew and Rebind sent once the name is known, as RFC 4704
+section 5 allows. Docker does not yet tell the plugin the container's
+name when it creates the endpoint
+(<a href="https://github.com/moby/moby/pull/52871">moby/moby#52871</a>), so the
+address is leased without it, and the name first reaches the server in
+a Renew sent when the container starts, a few seconds later. The server
+says in its Reply whether it took the update, and the plugin logs the
+answer to the first message that carried the name, once: <code>The DHCPv6
+server registers the AAAA record for this name</code> when the S flag comes
+back set, a warning when it comes back clear, and a note when the Reply
+carries no option 39 at all. The plugin does no DNS update of its own, so a server that
+declines leaves the name without an AAAA record.</p>
+<p><strong>Without <code>register_dns</code> a DHCPv6 lease carries no name at all.</strong> The
+DHCPv6 server's lease table then shows no name for the container,
+unlike v4, where option 12 carries it on every network. DHCPv6 has no
+plain hostname option: the only way to send a name is option 39, and
+option 39 always asks the server to register it. Turning
+<code>register_dns</code> on is the way to get the name into the DHCPv6 server's
+table.</p>
+<p><strong>Two IPv6 modes register no AAAA.</strong> <code>ipv6_mode=slaac</code> takes its
+address from the router's advertised prefix and sends no DHCPv6
+Solicit, so there is nothing to carry option 39; the container gets its
+A record and no AAAA, and the plugin logs that. An
+<code>ipv6_mode=auto</code> network that fell back to SLAAC did so before any
+DHCPv6 lease was granted, so no AAAA was ever registered for it; on a
+<code>register_dns</code> network the plugin logs a warning saying so beside the
+fallback warning.</p>
+<p><strong>A label longer than 63 characters is refused.</strong> A DNS name is made of
+labels of at most 63 characters each (RFC 1035 section 2.3.4), so a
+container hostname with a longer label cannot be sent in option 81 or
+option 39, and the attach fails on a <code>register_dns</code> network, on both
+families. A network without the option accepts that hostname.</p>
 <p>The payoff is on-mission: a container becomes resolvable <strong>by name</strong> on
 the LAN and not merely reachable by its DHCP-leased IP, with no
 per-container plumbing. The name source is the same one used for the
 hostname hint and tombstone matching (the container's hostname; the
 server supplies the domain).</p>
 <p>It is <strong>best-effort and advisory</strong>, like the preferred-address hint:
-many consumer routers ignore option 81 entirely, and registration
+many consumer routers ignore option 81 and option 39 entirely, and registration
 depends on the server being configured for dynamic DNS. The plugin's
 contract is "send the option when asked". It is never "the name will
 resolve." Off by default because DDNS registration is a deliberate
@@ -3248,6 +3281,15 @@ router is one <code>docker network create</code> line and not a contradiction.</
   any privacy addresses beside it, and an outbound connection selected
   among them per RFC 6724 rather than necessarily using the address
   <code>docker inspect</code> reports. It now carries the lease alone.</li>
+<li><strong>The container's name reaches the DHCPv6 server only with
+  <code>register_dns</code></strong> (v2.3.0+, #1029). With the option off, the DHCPv6
+  server's lease table shows no name for the container, unlike v4, where
+  option 12 carries it on every network. DHCPv6 has no plain hostname
+  option, and its Client FQDN option (39, RFC 4704) always asks the
+  server to register the name, so the plugin sends it only on a
+  <code>register_dns</code> network. Turning <code>register_dns</code> on is the way to get
+  the name there, and with it the AAAA record: see <em>Dynamic-DNS
+  registration</em> above.</li>
 <li><strong>Prefix delegation is out of scope.</strong> The client asks for an IA_NA;
   there is no IA_PD, and none is planned for 2.0.</li>
 </ul>
@@ -3943,7 +3985,7 @@ already parse it were not told to expect a new type.</p>
 <td><code>leases_renewed</code></td>
 <td>no</td>
 <td>n/a</td>
-<td>Client renewal events, including the case where the renewal returned a different address. v4+v6 aggregate, equal to its <code>_v4</code> half in 2.0. Since v2.2.0 an endpoint that takes its name after its client is already leasing renews <strong>once immediately</strong> to carry it, so on a host where that path runs this counter reads one higher per attach than the lease timers alone would put it (#961). <a href="#pluginhealth"><code>hostnames_applied_late</code></a> counts those, so the two can be read together.</td>
+<td>Client renewal events, including the case where the renewal returned a different address. v4+v6 aggregate; on an IPv4-only host it equals its <code>_v4</code> half. Since v2.2.0 an endpoint that takes its name after its client is already leasing renews <strong>once immediately</strong> to carry it, so on a host where that path runs this counter reads one higher per attach than the lease timers alone would put it (#961). <a href="#pluginhealth"><code>hostnames_applied_late</code></a> counts those, so the two can be read together. Since v2.3.0 a DHCPv6 client on a <code>register_dns</code> network also renews once when the container starts, to carry the name its address was leased without, and that renewal is not in <code>hostnames_applied_late</code> (<a href="https://github.com/claymore666/docker-net-dhcp/issues/1029">#1029</a>).</td>
 </tr>
 <tr>
 <td><code>renewals_unanswered</code></td>
@@ -4045,7 +4087,7 @@ already parse it were not told to expect a new type.</p>
 <td><code>hostnames_applied_late</code></td>
 <td>no</td>
 <td>n/a</td>
-<td><em>(v2.2.0+)</em> Container names given to a DHCP client that was already leasing (#961). Since v2.2.0 the attach starts the persistent client <strong>before</strong> it asks the daemon for the container's name, so a container leases at the speed of the segment instead of at the speed of a daemon that is busy starting it; the name is handed to the running client when the answer comes, and the client renews early to carry it (RFC 2131 section 4.4.5), so the server's table has it within one exchange. This counter is the mechanism working, and it <strong>narrows</strong> the two rows below without deciding them: zero on all three is also what a host reads when its containers were started without <code>--hostname</code>, and what it reads when every attach took the name before the client started. A non-zero value here is the only reading that says the late path ran and worked; a zero is three states and the plugin log tells them apart. It counts non-empty names only, because a container started without <code>--hostname</code> has nothing to hand over and is not an event. <strong>v4 only</strong>, because the plugin sets no DHCPv6 name yet (<a href="https://github.com/claymore666/docker-net-dhcp/issues/1029">#1029</a>), though the DHCP library can send one since dhcp-golib v1.1.0. Two populations are deliberately <strong>not</strong> counted here, because on both the name was already in the client's opening parameters: a network with <code>register_dns</code>, which needs the name at construction for option 81, and a host whose sandbox key is refused, where the container inspect the PID fallback made has already answered. <strong>Not a check:</strong> it is the normal reading on a working host and its normal value is not zero.</td>
+<td><em>(v2.2.0+)</em> Container names given to a DHCP client that was already leasing (#961). Since v2.2.0 the attach starts the persistent client <strong>before</strong> it asks the daemon for the container's name, so a container leases at the speed of the segment instead of at the speed of a daemon that is busy starting it; the name is handed to the running client when the answer comes, and the client renews early to carry it (RFC 2131 section 4.4.5), so the server's table has it within one exchange. This counter is the mechanism working, and it <strong>narrows</strong> the two rows below without deciding them: zero on all three is also what a host reads when its containers were started without <code>--hostname</code>, and what it reads when every attach took the name before the client started. A non-zero value here is the only reading that says the late path ran and worked; a zero is three states and the plugin log tells them apart. It counts non-empty names only, because a container started without <code>--hostname</code> has nothing to hand over and is not an event. <strong>v4 only</strong>, because the late path runs only on a network without <code>register_dns</code>, and there the DHCPv6 client sends no name at all: a DHCPv6 name travels only in the Client FQDN option (39), which asks the server to register it (<a href="https://github.com/claymore666/docker-net-dhcp/issues/1029">#1029</a>). Two populations are deliberately <strong>not</strong> counted here, because on both the name was already in the client's opening parameters: a network with <code>register_dns</code>, which needs the name at construction for option 81, and a host whose sandbox key is refused, where the container inspect the PID fallback made has already answered. <strong>Not a check:</strong> it is the normal reading on a working host and its normal value is not zero.</td>
 </tr>
 <tr>
 <td><code>hostname_lookup_failures</code></td>
