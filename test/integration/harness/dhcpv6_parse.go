@@ -33,6 +33,8 @@ type DHCPv6Message struct {
 	TransactionID uint32
 	// Options is every option code carried, in order with repeats; section 21.20's option has option-len 0.
 	Options []uint16
+	// ClientFQDN is the first option 39's value (flags, then the encoded name), nil when absent (RFC 4704, #1029).
+	ClientFQDN []byte
 }
 
 // RFC 9915 section 7.3's message types used here.
@@ -56,6 +58,8 @@ const (
 	DHCPv6OptElapsedTime uint16 = 8
 	// DHCPv6OptReconfigureAccept is section 21.20, the subject of #925.
 	DHCPv6OptReconfigureAccept uint16 = 20
+	// DHCPv6OptClientFQDN is RFC 4704 section 4.1's Client FQDN option (#1029).
+	DHCPv6OptClientFQDN uint16 = 39
 )
 
 // Offsets from RFC 9915 sections 7.2, 7.3 and 21.1.
@@ -128,6 +132,9 @@ func ParseDHCPv6(b []byte) (DHCPv6Message, bool) {
 			break
 		}
 		m.Options = append(m.Options, code)
+		if code == DHCPv6OptClientFQDN && m.ClientFQDN == nil {
+			m.ClientFQDN = append([]byte{}, o[dhcpv6OptHeaderLen:dhcpv6OptHeaderLen+dataLen]...)
+		}
 		o = o[dhcpv6OptHeaderLen+dataLen:]
 	}
 	return m, true
@@ -304,4 +311,14 @@ func FormatDHCPv6Messages(msgs []DHCPv6Message) string {
 		b.WriteString("  " + m.String() + "\n")
 	}
 	return b.String()
+}
+
+// ClientFQDNOption is the RFC 4704 option 39 value for a partial name, to compare ClientFQDN with (#1029).
+func ClientFQDNOption(flags uint8, name string) []byte {
+	out := []byte{flags}
+	for _, label := range strings.Split(name, ".") {
+		out = append(out, byte(len(label)))
+		out = append(out, label...)
+	}
+	return out
 }

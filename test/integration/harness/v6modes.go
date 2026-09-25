@@ -167,6 +167,19 @@ func V6DHCPOnlyDNSArgs() []string {
 	}
 }
 
+// V6DNSPort is the fixture resolver's port, beside the v4 fixture's 15353 (#1029).
+const V6DNSPort = 15354
+
+// V6DNSDomain is the names' domain; with --dhcp-fqdn only <name>.V6DNSDomain resolves, as on v4 (#261, #1029).
+const V6DNSDomain = "dh6.test"
+
+var v6DNSPortArg = fmt.Sprintf("--port=%d", V6DNSPort)
+
+// V6DNSArgs turns the resolver on, so the A and AAAA records built from the leases answer over DNSAddr (#1029).
+func V6DNSArgs() []string {
+	return []string{v6DNSPortArg, "--domain=" + V6DNSDomain, "--dhcp-fqdn"}
+}
+
 // RangeArgsFor exports rangeArgs for the drift matrix.
 func RangeArgsFor(m V6Mode) []string { return m.rangeArgs() }
 
@@ -186,6 +199,8 @@ type V6Fixture struct {
 
 	linkUp            bool
 	iptablesInstalled bool
+
+	dnsOn bool
 }
 
 // NewV6Fixture brings up a segment and returns once it is observed in the requested mode.
@@ -310,16 +325,26 @@ func (f *V6Fixture) start(rangeArgs []string) {
 	}
 	defer logF.Close()
 
+	portArg := "--port=0"
+	f.dnsOn = false
+	var extra []string
+	for _, a := range rangeArgs {
+		if a == v6DNSPortArg {
+			portArg, f.dnsOn = a, true
+			continue
+		}
+		extra = append(extra, a)
+	}
 	args := []string{
 		"--no-daemon",
 		"--conf-file=/dev/null",
-		"--port=0",
+		portArg,
 		"--interface=" + V6BridgeName,
 		"--bind-interfaces",
 		"--except-interface=lo",
 		"--dhcp-range=" + V6PoolStart + "," + V6PoolEnd + "," + LeaseTime,
 	}
-	args = append(args, rangeArgs...)
+	args = append(args, extra...)
 	args = append(args,
 		"--dhcp-option=option6:dns-server,["+V6DNSServer+"]",
 		"--dhcp-option=option6:domain-search,"+V6SearchDomain,
@@ -474,6 +499,18 @@ func (f *V6Fixture) Mode() V6Mode { return f.mode }
 
 // Bridge is the bridge name to hand the driver as `bridge=`.
 func (f *V6Fixture) Bridge() string { return V6BridgeName }
+
+// DNSAddr is the resolver's "ip:port" on the bridge; it fails the test on a fixture started without V6DNSArgs (#1029).
+func (f *V6Fixture) DNSAddr() string {
+	f.t.Helper()
+	if !f.dnsOn {
+		f.t.Fatalf("DNSAddr on a V6Fixture started without V6DNSArgs; its dnsmasq runs --port=0")
+	}
+	return fmt.Sprintf("%s:%d", strings.Split(V6BridgeAddr, "/")[0], V6DNSPort)
+}
+
+// LeaseFile is the dnsmasq lease file, which carries the name the server recorded for each v6 lease (#1029).
+func (f *V6Fixture) LeaseFile() string { return f.leaseFile }
 
 // StartedAt is when the server process started.
 func (f *V6Fixture) StartedAt() time.Time { return f.startedAt }

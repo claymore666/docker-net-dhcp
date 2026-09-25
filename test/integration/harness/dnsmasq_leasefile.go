@@ -7,6 +7,7 @@ package harness
 
 import (
 	"net"
+	"net/netip"
 	"strconv"
 	"strings"
 	"time"
@@ -35,4 +36,27 @@ func DnsmasqLeaseExpiry(leases, mac string) (time.Time, bool) {
 		return time.Unix(secs, 0), true
 	}
 	return time.Time{}, false
+}
+
+// DnsmasqLease6Name reads the name ("*" for none) on addr's v6 line, after the "duid" line (dnsmasq lease.c, #1029).
+func DnsmasqLease6Name(leases, addr string) (string, bool) {
+	want, err := netip.ParseAddr(addr)
+	if err != nil || !want.Is6() {
+		return "", false
+	}
+	v6 := false
+	for _, line := range strings.Split(leases, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) >= 1 && fields[0] == "duid" {
+			v6 = true
+			continue
+		}
+		if !v6 || len(fields) < 4 {
+			continue
+		}
+		if got, err := netip.ParseAddr(fields[2]); err == nil && got == want {
+			return fields[3], true
+		}
+	}
+	return "", false
 }
