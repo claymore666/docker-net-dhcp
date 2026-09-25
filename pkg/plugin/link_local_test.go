@@ -485,16 +485,22 @@ func TestHealth_ALinkLocalEndpointIsCountedAndShown(t *testing.T) {
 	bound.setHealthClient(&fakeJoinClient{bound: true, l: lease.Lease{Addr: netip.MustParsePrefix("192.0.2.17/24")}})
 	bound.handleEvent(dhcp.Event{Type: "bound", Data: dhcp.Info{IP: "192.0.2.17/24"}}, false)
 	p.persistentDHCP["c"] = bound
+	// Registered by Join or recovery, its client not built yet: Start is still opening the netns (#904).
+	starting := newDHCPManager(nil, JoinRequest{EndpointID: "e4", NetworkID: "n1"}, DHCPNetworkOptions{LinkLocalFallback: true}).withPlugin(p)
+	starting.setLastIP(false, &netlink.Addr{IPNet: &net.IPNet{IP: net.IPv4(169, 254, 20, 2), Mask: net.CIDRMask(16, 32)}})
+	p.persistentDHCP["d"] = starting
 
 	h := p.healthSnapshot()
-	if h.LinkLocalEndpoints != 1 {
-		t.Errorf("link_local_endpoints = %d, want 1", h.LinkLocalEndpoints)
+	if h.LinkLocalEndpoints != 2 {
+		t.Errorf("link_local_endpoints = %d, want 2", h.LinkLocalEndpoints)
 	}
 	got := map[string]string{}
 	for _, e := range h.Endpoints {
 		got[e.Endpoint] = e.LeaseState + " " + e.Address
 	}
-	want := map[string]string{"e1": "link_local 169.254.10.1/16", "e2": "acquiring ", "e3": "bound 192.0.2.17/24"}
+	want := map[string]string{
+		"e1": "link_local 169.254.10.1/16", "e2": "acquiring ", "e3": "bound 192.0.2.17/24", "e4": "link_local 169.254.20.2/16",
+	}
 	for k, w := range want {
 		if got[k] != w {
 			t.Errorf("endpoint %s = %q, want %q", k, got[k], w)
