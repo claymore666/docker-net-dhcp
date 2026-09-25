@@ -346,11 +346,6 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, callStart tim
 		}
 
 		runDHCP := func(v6 bool) error {
-			v6str := ""
-			if v6 {
-				v6str = "v6"
-			}
-
 			// Server preference ladder (#111) and deny-list (#669), shared with the bridge path.
 			pol, err := resolveServerPolicy(opts)
 			if err != nil {
@@ -368,61 +363,41 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, callStart tim
 				Records:  p.records,
 				RecordID: recordID,
 			}
+			// The v4 half runs first and its update sets hint.MacAddress to this mac, so the v6 half leaves it (#960).
 			if v6 {
-				if err := p.v6Wiring(&base, opts, identity6, recordID6, requestedV6, r.EndpointID); err != nil {
-					return err
-				}
-			}
-			if err := p.conflictWiring(&base, opts, roleAcquire, r.NetworkID, r.EndpointID, v6); err != nil {
+				addr, err := p.acquireInitialV6(ctx, opts, base, v6Acquire{iface: la.Name, networkID: r.NetworkID,
+					endpointID: r.EndpointID, callStart: callStart, timeout: timeout, pol: pol,
+					identity6: identity6, recordID6: recordID6, preferredV6: requestedV6})
+				res.Interface.AddressIPv6 = addr
 				return err
 			}
-			if !v6 {
-				base.RequestedIP = requestedIP
+			if err := p.conflictWiring(&base, opts, roleAcquire, r.NetworkID, r.EndpointID, false); err != nil {
+				return err
 			}
+			base.RequestedIP = requestedIP
 
-			var (
-				info dhcp.Info
-				ra   dhcp.RAObservation
-			)
-			if v6 {
-				acqCtx, endV6 := withV6AcquisitionDeadline(ctx, callStart)
-				defer endV6()
-				info, ra, err = p.acquireWithPolicy(acqCtx, la.Name, pol, true, timeout, r.EndpointID, base)
-			} else {
-				info, err = p.acquireV4(ctx, opts, callStart, la.Name, pol, timeout, r.EndpointID, base)
-			}
+			info, err := p.acquireV4(ctx, opts, callStart, la.Name, pol, timeout, r.EndpointID, base)
 			if err != nil {
-				// No DHCPv6 address is fatal only where the segment advertised managed DHCPv6 (#868).
-				if v6 && p.noteV6Absence(ra, la.Name, r.EndpointID, err, base.Mode6) {
-					return nil
-				}
-				return fmt.Errorf("failed to get initial IP%v address via DHCP%v: %w", v6str, v6str, err)
+				return fmt.Errorf("failed to get initial IP address via DHCP: %w", err)
 			}
 			addr, err := netlink.ParseAddr(info.IP)
 			if err != nil {
-				return fmt.Errorf("failed to parse initial IP%v address: %w", v6str, err)
+				return fmt.Errorf("failed to parse initial IP address: %w", err)
 			}
 
 			p.updateJoinHint(r.EndpointID, func(hint *joinHint) {
 				hint.MacAddress = mac
-				if v6 {
-					res.Interface.AddressIPv6 = info.IP
-					hint.IPv6 = addr
-					// DHCPv6 has no gateway option, so the v6 gateway is the advertisement's link-local source (#821).
-					fillV6Hint(hint, info)
-				} else {
-					res.Interface.Address = info.IP
-					hint.IPv4 = addr
-					hint.Gateway = info.Gateway
-					// No gateway on link-local, as in bridge mode (#904).
-					if opts.Gateway != "" && !isLinkLocalAddr(addr) {
-						hint.Gateway = opts.Gateway
-					}
-					// DHCP option-121 classless static routes (RFC 3442);
-					// any default route was already folded into
-					// info.Gateway by the parser.
-					hint.Routes = dhcpStaticRoutes(info.Routes)
+				res.Interface.Address = info.IP
+				hint.IPv4 = addr
+				hint.Gateway = info.Gateway
+				// No gateway on link-local, as in bridge mode (#904).
+				if opts.Gateway != "" && !isLinkLocalAddr(addr) {
+					hint.Gateway = opts.Gateway
 				}
+				// DHCP option-121 classless static routes (RFC 3442);
+				// any default route was already folded into
+				// info.Gateway by the parser.
+				hint.Routes = dhcpStaticRoutes(info.Routes)
 			})
 			return nil
 		}

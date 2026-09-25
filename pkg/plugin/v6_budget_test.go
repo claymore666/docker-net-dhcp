@@ -95,4 +95,12 @@ func TestV6Budget_EveryAcquisitionSiteCarriesTheDeadline(t *testing.T) {
 				name)
 		}
 	}
+	for _, name := range v6AcquireCallerFiles {
+		for _, call := range v6AcquireCallArgs(t, name) {
+			if !strings.Contains(call, "callStart: callStart") {
+				t.Errorf("%s hands %s a start other than its own callStart; the daemon's clock "+
+					"started when this CreateEndpoint did (#911):\n%s", name, v6AcquireHelperCall, call)
+			}
+		}
+	}
 }
