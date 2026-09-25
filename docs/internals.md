@@ -684,7 +684,7 @@ beside any of them (#902).
 
 What the plugin can stop is inflicting it on itself. Since v1.6.0
 creating an endpoint and the `validate_dhcp` probe, which holds its link
-for a full DHCP round trip, take a per-parent gate first, so they queue
+for a whole DHCP exchange, take a per-parent gate first, so they queue
 instead of refusing each other (#486, #549). Every later path that adds
 a link to a parent takes the same gate: the IPAM driver's address
 reservation (#110), the `vlan` sub-interface and the two trial children
