@@ -1152,7 +1152,8 @@ manual.</p>
   Without it <code>curl -s</code> prints nothing and exits 7, which is what an
   absent socket also gives, so a permission problem looks like a stopped
   plugin.</li>
-<li><strong>Mode constraints.</strong> <code>bridge</code> expects a host bridge you maintain;
+<li><strong>Mode constraints.</strong> <code>bridge</code> expects a host bridge you maintain,
+  or makes one from a spare NIC that stays up with no address (v2.3.0);
   <code>macvlan</code> and <code>ipvlan</code> attach to a host NIC and change nothing on the
   host, at the cost of the kernel rule that a child cannot reach its own
   host's address. Both in
