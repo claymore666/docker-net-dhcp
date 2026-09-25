@@ -76,8 +76,10 @@ type HealthResponse struct {
 	InstanceID      string  `json:"instance_id"`
 	UptimeSeconds   float64 `json:"uptime_seconds"`
 	ActiveEndpoints int     `json:"active_endpoints"`
-	PendingHints    int     `json:"pending_hints"`
-	RecoveredOK     int32   `json:"recovered_ok"`
+	// LinkLocalEndpoints counts endpoints on an RFC 3927 fallback address (#904).
+	LinkLocalEndpoints int   `json:"link_local_endpoints"`
+	PendingHints       int   `json:"pending_hints"`
+	RecoveredOK        int32 `json:"recovered_ok"`
 	// DisplacedStops counts managers a Join stopped because one was already registered (#338).
 	DisplacedStops int32 `json:"displaced_stops"`
 	RecoveryFailed int32 `json:"recovery_failed"`
