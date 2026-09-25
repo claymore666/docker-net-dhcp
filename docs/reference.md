@@ -1563,8 +1563,9 @@ unchanged.
 - The endpoint asks for a DHCPv4 lease as usual. If none arrives in time,
   the plugin picks an address from 169.254.1.0 to 169.254.254.255 with a
   generator seeded from the container's MAC (RFC 3927 §2.1), probes the
-  link for it with ARP (RFC 5227 §2.1.1), skips an address in use for the
-  next one, announces the one it keeps, and gives it to Docker as a `/16`.
+  link for it with ARP (RFC 5227 §2.1.1), moves on from an address in use
+  while a whole claim still fits the time left (see Timing), announces the
+  one it keeps, and gives it to Docker as a `/16`.
 - The container gets no gateway and no routes. A link-local address
   reaches its own segment and nothing else.
 - The plugin keeps asking for a lease. When one arrives, the container's
@@ -1584,7 +1585,11 @@ the option on, `lease_timeout` defaults to `16s` and a longer value is
 refused at `docker network create`. In `conflict_check=wait` that funds one acquisition and not the
 recovery from a conflict that the `34s` default funds. With no server on
 the segment, the container starts about 22 to 25 seconds after its
-endpoint was requested.
+endpoint was requested. With the `16s` default there is room for one
+claim: if the first address is in use, a second is probed only when the
+conflict shows within about a second, and otherwise the endpoint fails as
+it does with the option off. Each 9 seconds taken off `lease_timeout`
+leaves room for one more address.
 
 **Refused at `docker network create`**, with the reason in the message:
 `mode=ipvlan`, because an ipvlan child does not receive the ARP replies
@@ -1594,7 +1599,8 @@ free; IPv6 (`ipv6=true` or any `ipv6_mode` but `off`); this plugin's
 
 **Not done.** The plugin does not defend the address after the claim
 (RFC 3927 §2.5); the container's kernel answers ARP for it as for any
-address. After ten addresses found in use the endpoint fails, instead of
+address. After ten addresses found in use, or earlier when no whole claim
+fits the time left, the endpoint fails, instead of
 RFC 3927's one attempt a minute, which no endpoint's 30 seconds could
 hold. `release_lease` has nothing to hand back for an endpoint on
 link-local and counts nothing, and a removed endpoint that was on

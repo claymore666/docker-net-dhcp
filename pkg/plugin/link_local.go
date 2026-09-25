@@ -425,6 +425,20 @@ func countLinkLocal(endpoints []EndpointHealth) int {
 	return n
 }
 
+// recoveredV4 is a recovered endpoint's v4 address. Docker keeps the 169.254/16 address CreateEndpoint answered after
+// the move to a lease (#104), so a lease the endpoint's record would resume wins over it (#904).
+func (p *Plugin) recoveredV4(networkID string, key net.HardwareAddr, docker *netlink.Addr) *netlink.Addr {
+	if !isLinkLocalAddr(docker) {
+		return docker
+	}
+	_, res := p.recordResume(networkID, key)
+	if res.Lease == nil || !res.Lease.Addr.Addr().Is4() || isLinkLocalV4(res.Lease.Addr.Addr().AsSlice()) {
+		return docker
+	}
+	a := res.Lease.Addr
+	return &netlink.Addr{IPNet: &net.IPNet{IP: a.Addr().AsSlice(), Mask: net.CIDRMask(a.Bits(), 32)}}
+}
+
 // closeLinkLocalRecord closes an addressless v4 record, which on_remove would count as a failed release (#904).
 func (p *Plugin) closeLinkLocalRecord(networkID string, key net.HardwareAddr) {
 	if p.records == nil || len(key) == 0 {

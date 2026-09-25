@@ -1243,6 +1243,8 @@ func (p *Plugin) recoverOneEndpoint(ctx context.Context, containerID, networkID,
 		}
 	}
 
+	ipv4 = p.recoveredV4(networkID, endpointRecordKey(opts.Mode, endpointID, mac), ipv4)
+
 	fakeJoin := JoinRequest{
 		NetworkID:  networkID,
 		EndpointID: endpointID,

@@ -18,6 +18,7 @@ import (
 	"github.com/claymore666/dhcp-golib/lease"
 	"github.com/claymore666/dhcp-golib/proto"
 	"github.com/claymore666/dhcp-golib/wire"
+	dContainer "github.com/docker/docker/api/types/container"
 	"github.com/vishvananda/netlink"
 
 	"github.com/claymore666/docker-net-dhcp/v2/pkg/dhcp"
@@ -753,6 +754,56 @@ func TestDeleteEndpoint_ClosesTheRecordOfALinkLocalEndpointOnly(t *testing.T) {
 			}
 			if got := recordPhase(t, p, id); got != tc.want {
 				t.Errorf("record phase after DeleteEndpoint = %s, want %s", got, tc.want)
+			}
+		})
+	}
+}
+
+// After the move to a lease Docker still reports the 169.254 address (#104); recovery must hold the lease (#904).
+func TestRecoverOneEndpoint_AnEndpointThatLeftLinkLocalRecoversAsItsLease(t *testing.T) {
+	const epID = "c1a1c0ffee00deadbeef0000000000000000000000000000000000000000ab04"
+	for _, tc := range []struct {
+		name, docker, lease, want, wantTombstone string
+		wantLinkLocal                            bool
+	}{
+		{"moved to its lease", "169.254.33.7/16", "192.168.99.10/24", "192.168.99.10/24", "192.168.99.10", false},
+		{"still on link-local", "169.254.33.7/16", "", "169.254.33.7/16", "", true},
+		{"leased in Docker's view", "192.168.99.20/24", "192.168.99.10/24", "192.168.99.20/24", "192.168.99.20", false},
+		{"a record holding a 169.254 lease", "169.254.33.7/16", "169.254.20.5/16", "169.254.33.7/16", "", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			const netID, ctrID = "net-ll-rec", "ctr-ll"
+			opts := DHCPNetworkOptions{Bridge: "br-test", LinkLocalFallback: true}
+			p := recoveryPlugin(t, netID, &lockedDocker{
+				containers: map[string]dContainer.InspectResponse{ctrID: withHostname("ll-rec")},
+			})
+			p.records = recordingPlugin(t).records
+			mac, _ := net.ParseMAC("02:42:a9:fe:21:07")
+			id := p.recordCreated(netID, mac, dhcp.ClientIdentity([]byte{4}))
+			if tc.lease != "" {
+				if err := p.records.Observed(id, acquired(tc.lease, time.Hour), nil); err != nil {
+					t.Fatalf("Observed(acquired): %v", err)
+				}
+			}
+			docker, _ := netlink.ParseAddr(tc.docker)
+			got := p.recoveredV4(netID, mac, docker)
+			if got.String() != tc.want {
+				t.Fatalf("recovered v4 = %s, want %s", got, tc.want)
+			}
+			m := newDHCPManager(p.docker, JoinRequest{NetworkID: netID, EndpointID: epID}, opts).withPlugin(p)
+			m.setLastIP(false, got)
+			if state, _ := m.unboundState(); (state == linkLocalStateName) != tc.wantLinkLocal || m.onLinkLocal() != tc.wantLinkLocal {
+				t.Errorf("health lease_state %q and onLinkLocal %v, want link-local %v", state, m.onLinkLocal(), tc.wantLinkLocal)
+			}
+
+			if _, err := p.recoverOneEndpoint(context.Background(), ctrID, netID, epID, mac.String(), tc.docker, "", opts); err != nil {
+				t.Fatalf("recoverOneEndpoint: %v", err)
+			}
+			if err := p.DeleteEndpoint(context.Background(), DeleteEndpointRequest{NetworkID: netID, EndpointID: epID}); err != nil {
+				t.Fatalf("DeleteEndpoint: %v", err)
+			}
+			if _, ip4, _, _ := p.consumeTombstone(netID, dhcpHostname{name: "ll-rec"}); ip4 != tc.wantTombstone {
+				t.Errorf("tombstone IPv4 %q, want %q: recovery took %s", ip4, tc.wantTombstone, tc.docker)
 			}
 		})
 	}
