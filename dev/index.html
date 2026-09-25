@@ -1073,11 +1073,10 @@ shapes: as the network driver beside <code>--ipam-driver null</code>, which is a
 three modes, or, from v2.1.0, as the network driver and Docker's IPAM
 driver at once, which puts the leased address into Docker's own address
 management and makes <code>docker run --ip</code> and Compose <code>ipv4_address</code> work.
-The second shape covers <code>bridge</code> and <code>macvlan</code> for IPv4: <code>ipvlan</code> takes
-<code>--ipam-driver null</code>
-(<a href="https://github.com/claymore666/docker-net-dhcp/issues/949">#949</a>) and
-so does IPv6
-(<a href="https://github.com/claymore666/docker-net-dhcp/issues/960">#960</a>). The
+The second shape covers <code>bridge</code> and <code>macvlan</code>, IPv4 and IPv6
+(<a href="https://github.com/claymore666/docker-net-dhcp/issues/960">#960</a>);
+<code>ipvlan</code> takes <code>--ipam-driver null</code>
+(<a href="https://github.com/claymore666/docker-net-dhcp/issues/949">#949</a>). The
 DHCP exchange runs inside the plugin on the project's own engine, the
 <a href="https://github.com/claymore666/dhcp-golib">dhcp-golib</a> library: there is
 no external DHCP client to install and no client process per container.</p>
@@ -1190,9 +1189,9 @@ Add <code>-o ipv6_mode=dhcp</code> for a DHCPv6 lease beside the v4 one, or
 <code>-o ipv6_mode=slaac</code> to take the address from the router's
 advertisement; <code>auto</code> reads the advertisement and does what it says,
 DHCPv6 where it asks for DHCPv6 and the prefix where it does not. <code>-o
-ipv6=true</code> is the short spelling of <code>dhcp</code>. All of them need the <code>null</code>
-line, because the IPAM shape serves IPv4 only and refuses the
-combination (<a href="https://github.com/claymore666/docker-net-dhcp/issues/960">#960</a>). The modes are set out in
+ipv6=true</code> is the short spelling of <code>dhcp</code>. They work on both lines.
+On the IPAM line leave out Docker's <code>--ipv6</code>: it is refused there,
+because the plugin allocates no IPv6 pool (<a href="https://github.com/claymore666/docker-net-dhcp/issues/960">#960</a>). The modes are set out in
 <a href="reference/#driver-options-network-level">the driver reference</a>, and
 the two shapes in <a href="reference/#address-allocation">the same page</a>.</p>
 <p>After that, plain Compose. No static addresses, no sidecar, nothing per
@@ -1271,8 +1270,7 @@ driver, so a bare tag there names a plugin the host does not have.</p>
   what it says. In all three the default route and the MTU come from
   the advertisement and not from the container's own kernel, and on a
   <code>propagate_dns</code> network its resolvers reach the container too, behind
-  any a DHCPv6 server supplies. On
-  <code>--ipam-driver null</code> networks; the IPAM shape serves IPv4 only
+  any a DHCPv6 server supplies. Both shapes take it
   (<a href="reference/#driver-options-network-level">reference</a>).</li>
 <li><strong>A restart keeps the address.</strong> In <code>bridge</code> and <code>macvlan</code> the MAC is
   carried across <code>docker restart</code>, so a server-side reservation still

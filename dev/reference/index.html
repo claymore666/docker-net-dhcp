@@ -1934,8 +1934,10 @@ policy, fails the same way and leaves it stopped: then run
   example below uses, what 1.x and 2.0 shipped, and what all three modes
   take, and <code>--ipam-driver &lt;this plugin&gt;</code> (v2.1.0+, #110), which puts the
   leased address in Docker's own address management and covers <code>bridge</code>
-  and <code>macvlan</code> for IPv4. <code>ipvlan</code> is refused in that shape (#949) and so
-  is IPv6 (#960). See <a href="#address-allocation">Address allocation</a>.</li>
+  and <code>macvlan</code> for IPv4 and IPv6. <code>ipvlan</code> is refused in that shape
+  (#949). IPv6 there is switched on with <code>-o ipv6=true</code> or
+  <code>-o ipv6_mode=&lt;mode&gt;</code>, and Docker's <code>--ipv6</code> is refused (#960). See
+  <a href="#address-allocation">Address allocation</a>.</li>
 <li>One DHCP-served network per container is the supported shape.</li>
 </ul>
 <h3 id="bridge-default">bridge (default)<a class="headerlink" href="#bridge-default" title="Permanent link">&para;</a></h3>
@@ -2298,17 +2300,21 @@ and an ipvlan interface cannot change its MAC, so every container would
 fail to start. The network create is refused, and <code>--ipam-driver null</code>
 is unchanged and supported for ipvlan. Lifting the refusal needs a
 change in Docker's engine (#949).</p>
-<p><strong>IPv6 is IPv4-only in this shape, and the combination is refused.</strong> The
-plugin allocates no IPv6 pool, so Docker's <code>--ipv6</code> is refused; and so is
-every option that switches IPv6 on for the network, which is
-<code>-o ipv6=true</code> and <code>-o ipv6_mode=</code> with any mode but <code>off</code>, because the
-IPAM endpoint path runs no DHCPv6 exchange at all. A container on such a
-network would get no IPv6 address from the plugin, and the identity the
-v6 client falls back to at join time is derived from the endpoint MAC,
-which Docker regenerates at every restart in this shape. The refusals
-name #960, and the one at <code>docker network create</code> names the mode the
-network was set to. On an <code>--ipam-driver null</code> network every <code>ipv6_mode</code>
-is unchanged and supported.</p>
+<p><strong>IPv6 is switched on with a driver option, and <code>--ipv6</code> is refused.</strong>
+<code>-o ipv6=true</code> or <code>-o ipv6_mode=&lt;mode&gt;</code> switches IPv6 on, with every
+mode an <code>--ipam-driver null</code> network of the same driver mode takes, and
+nothing else on the create line changes. The address comes from the
+container's link when the endpoint is created, from the DHCPv6 server or
+the router's advertisement, and Docker shows it as <code>GlobalIPv6Address</code>.
+The plugin allocates no IPv6 pool, so Docker's <code>--ipv6</code> is refused with
+a message that names the two options, and <code>--ip6</code> is not served. The
+DHCPv6 identity (DUID and IAID) is derived from the MAC the endpoint had
+at its first start and stored, so <code>docker restart</code> keeps it, and the
+address with it, although Docker gives the endpoint a new MAC; the
+limits are the IPv4 ones, the 60 s window and two containers of one
+network restarted together, which both get a new identity (#960). A
+<code>slaac</code> address is formed from the MAC the endpoint has now, so it
+changes at every restart unless <code>--mac-address</code> pins the MAC.</p>
 <p><strong><code>link_local_fallback</code> is refused in this shape.</strong> Docker takes the
 address from the IPAM driver before the endpoint exists and never learns
 of a later change, so a container that fell back to 169.254/16 would keep
@@ -2813,9 +2819,10 @@ counter moves.</p>
 DHCPv6 equivalent of option 50 and, like option 50, a request the server
 may decline. With the null IPAM driver the documented shapes use, Docker
 hands the plugin none, so <code>--ip6</code> has no effect today (measured on engine
-29.8.1, 2026-09-24). IPv6 in IPAM mode is <a href="https://github.com/claymore666/docker-net-dhcp/issues/960">#960</a>, where <code>--ip6</code> becomes
-deliverable. The same mechanism is what makes an address survive <code>docker restart</code>: the
-tombstoned v6 address goes back out as the hint.</p>
+29.8.1, 2026-09-24). The same mechanism is what makes an address survive
+<code>docker restart</code>: the tombstoned v6 address goes back out as the hint.
+With this plugin as the IPAM driver <code>--ip6</code> is not served either: the
+plugin allocates no IPv6 pool (<a href="https://github.com/claymore666/docker-net-dhcp/issues/960">#960</a>).</p>
 <p>Container-level knobs that interact with the plugin:</p>
 <ul>
 <li><code>--mac-address</code> / Compose <code>mac_address</code> fixes the MAC so the DHCP
@@ -2913,8 +2920,9 @@ next free pool address unless a UI-side reservation exists for that MAC.</p>
 hands it at endpoint creation into the Solicit as the requested address,
 the v6 counterpart of <code>--ip</code>. With the null IPAM driver the documented
 shapes use, Docker hands none, so <code>--ip6</code> has no effect today (measured on
-engine 29.8.1, 2026-09-24). IPv6 in IPAM mode is <a href="https://github.com/claymore666/docker-net-dhcp/issues/960">#960</a>, where <code>--ip6</code>
-becomes deliverable.</p>
+engine 29.8.1, 2026-09-24). With this plugin as the IPAM driver <code>--ip6</code>
+is not served either: the plugin allocates no IPv6 pool
+(<a href="https://github.com/claymore666/docker-net-dhcp/issues/960">#960</a>).</p>
 <p>On a network created with <strong>this plugin as its IPAM driver</strong> (#110),
 <code>docker run --ip</code>, <code>docker network connect --ip</code> and Compose's
 <code>ipv4_address</code> need <code>--subnet</code> on engine 26 (26.1.4 measured
