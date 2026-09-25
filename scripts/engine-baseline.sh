@@ -233,7 +233,7 @@ OPTION_CATALOGUE='mode|shape|the null-bridge, null-macvlan, null-ipvlan and plug
 bridge|shape|the null-bridge shape step
 parent|shape|the null-macvlan, null-ipvlan and plugin-macvlan shape steps, and the null-bridge-own shape step that makes its bridge from parent
 gateway|step|container default route via the named address; control without it: via the server router
-ipv6|step|fresh DHCPv6 reply in the server log for the address the container holds; ipv6=true with ipv6_mode=off refused
+ipv6|step|fresh DHCPv6 reply in the server log for the address the container holds, with --ipam-driver null and with this plugin as IPAM driver, where Docker reports that address; ipv6=true with ipv6_mode=off refused; --ipv6 with this plugin as IPAM driver refused
 ipv6_mode|step|dhcp: fresh DHCPv6 reply for the held address; slaac: fresh router advertisement, the container holds and Docker reports an address in the ra-only prefix; control off: no global address; bad value refused
 ipv6_main_prefix|step|two advertised prefixes: Docker reports the address in the named prefix, both ways round; refused with ipv6_mode=dhcp
 ipv6_auto_strict|step|managed-flag advertisement with a silent DHCPv6 server: true fails docker run, false holds an address in the autonomous prefix
@@ -967,10 +967,33 @@ v6_dhcp_lease() {
     opt_down em-o-v6 em-c-v6
 }
 
+# The IPAM shape has no --ipv6, so Docker asks the plugin for no IPv6 pool
+# or address and still reports the address the link took at endpoint
+# creation; --ipv6 there is refused naming the option to use (#960).
 opt_ipv6() {
+    local m got out
     v6_server "--dhcp-range=${V6_PREFIX_A}10,${V6_PREFIX_A}99,$LEASE_TIME --enable-ra"
     v6_dhcp_lease -o ipv6=true
     opt_refused "contradict" -o bridge="$V6_BRIDGE" -o ipv6=true -o ipv6_mode=off
+    m="$(log_lines "$V6_LOG")"
+    d docker network create -d "$PLUGIN_NAME" --ipam-driver "$PLUGIN_NAME" -o bridge="$V6_BRIDGE" -o ipv6=true em-o-v6i >/dev/null \
+        || fail "docker network create --ipam-driver $PLUGIN_NAME -o ipv6=true was refused"
+    opt_run em-c-v6i em-o-v6i
+    wait_v6 em-c-v6i "$V6_PREFIX_A"
+    got="$(inspect_v6 em-c-v6i em-o-v6i)"
+    [ "$got" = "$V6" ] || fail "IPAM driver, ipv6=true: the container holds $V6 and Docker reports '$got'"
+    fresh_wait "$V6_LOG" "$m" "DHCPREPLY($V6_BRIDGE) $V6 " \
+        || fail "IPAM driver, ipv6=true: the container holds $V6 and the server logged no DHCPv6 reply for it"
+    opt_down em-o-v6i em-c-v6i
+    if out="$(d docker network create -d "$PLUGIN_NAME" --ipam-driver "$PLUGIN_NAME" --ipv6 \
+            -o bridge="$V6_BRIDGE" -o ipv6=true em-refused 2>&1)"; then
+        d docker network rm em-refused >/dev/null 2>&1
+        fail "--ipv6 with --ipam-driver $PLUGIN_NAME was accepted; the reference says it is refused"
+    fi
+    case "$out" in
+        *"drop --ipv6"*) ;;
+        *) fail "--ipv6 with --ipam-driver $PLUGIN_NAME was refused without naming the option to use: $out" ;;
+    esac
 }
 
 opt_ipv6_mode() {

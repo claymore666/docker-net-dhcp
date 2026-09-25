@@ -7,11 +7,10 @@ shapes: as the network driver beside `--ipam-driver null`, which is all
 three modes, or, from v2.1.0, as the network driver and Docker's IPAM
 driver at once, which puts the leased address into Docker's own address
 management and makes `docker run --ip` and Compose `ipv4_address` work.
-The second shape covers `bridge` and `macvlan` for IPv4: `ipvlan` takes
-`--ipam-driver null`
-([#949](https://github.com/claymore666/docker-net-dhcp/issues/949)) and
-so does IPv6
-([#960](https://github.com/claymore666/docker-net-dhcp/issues/960)). The
+The second shape covers `bridge` and `macvlan`, IPv4 and IPv6
+([#960](https://github.com/claymore666/docker-net-dhcp/issues/960));
+`ipvlan` takes `--ipam-driver null`
+([#949](https://github.com/claymore666/docker-net-dhcp/issues/949)). The
 DHCP exchange runs inside the plugin on the project's own engine, the
 [dhcp-golib](https://github.com/claymore666/dhcp-golib) library: there is
 no external DHCP client to install and no client process per container.
@@ -133,9 +132,9 @@ Add `-o ipv6_mode=dhcp` for a DHCPv6 lease beside the v4 one, or
 `-o ipv6_mode=slaac` to take the address from the router's
 advertisement; `auto` reads the advertisement and does what it says,
 DHCPv6 where it asks for DHCPv6 and the prefix where it does not. `-o
-ipv6=true` is the short spelling of `dhcp`. All of them need the `null`
-line, because the IPAM shape serves IPv4 only and refuses the
-combination ([#960]). The modes are set out in
+ipv6=true` is the short spelling of `dhcp`. They work on both lines.
+On the IPAM line leave out Docker's `--ipv6`: it is refused there,
+because the plugin allocates no IPv6 pool ([#960]). The modes are set out in
 [the driver reference](reference.md#driver-options-network-level), and
 the two shapes in [the same page](reference.md#address-allocation).
 
@@ -223,8 +222,7 @@ driver, so a bare tag there names a plugin the host does not have.
   what it says. In all three the default route and the MTU come from
   the advertisement and not from the container's own kernel, and on a
   `propagate_dns` network its resolvers reach the container too, behind
-  any a DHCPv6 server supplies. On
-  `--ipam-driver null` networks; the IPAM shape serves IPv4 only
+  any a DHCPv6 server supplies. Both shapes take it
   ([reference](reference.md#driver-options-network-level)).
 - **A restart keeps the address.** In `bridge` and `macvlan` the MAC is
   carried across `docker restart`, so a server-side reservation still

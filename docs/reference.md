@@ -759,17 +759,21 @@ fail to start. The network create is refused, and `--ipam-driver null`
 is unchanged and supported for ipvlan. Lifting the refusal needs a
 change in Docker's engine (#949).
 
-**IPv6 is IPv4-only in this shape, and the combination is refused.** The
-plugin allocates no IPv6 pool, so Docker's `--ipv6` is refused; and so is
-every option that switches IPv6 on for the network, which is
-`-o ipv6=true` and `-o ipv6_mode=` with any mode but `off`, because the
-IPAM endpoint path runs no DHCPv6 exchange at all. A container on such a
-network would get no IPv6 address from the plugin, and the identity the
-v6 client falls back to at join time is derived from the endpoint MAC,
-which Docker regenerates at every restart in this shape. The refusals
-name #960, and the one at `docker network create` names the mode the
-network was set to. On an `--ipam-driver null` network every `ipv6_mode`
-is unchanged and supported.
+**IPv6 is switched on with a driver option, and `--ipv6` is refused.**
+`-o ipv6=true` or `-o ipv6_mode=<mode>` switches IPv6 on, with every
+mode an `--ipam-driver null` network of the same driver mode takes, and
+nothing else on the create line changes. The address comes from the
+container's link when the endpoint is created, from the DHCPv6 server or
+the router's advertisement, and Docker shows it as `GlobalIPv6Address`.
+The plugin allocates no IPv6 pool, so Docker's `--ipv6` is refused with
+a message that names the two options, and `--ip6` is not served. The
+DHCPv6 identity (DUID and IAID) is derived from the MAC the endpoint had
+at its first start and stored, so `docker restart` keeps it, and the
+address with it, although Docker gives the endpoint a new MAC; the
+limits are the IPv4 ones, the 60 s window and two containers of one
+network restarted together, which both get a new identity (#960). A
+`slaac` address is formed from the MAC the endpoint has now, so it
+changes at every restart unless `--mac-address` pins the MAC.
 
 **`link_local_fallback` is refused in this shape.** Docker takes the
 address from the IPAM driver before the endpoint exists and never learns
