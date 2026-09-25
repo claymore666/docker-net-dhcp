@@ -216,8 +216,8 @@ func TestRequestPool_RefusesWhatV2_1DoesNotDo(t *testing.T) {
 		req  RequestPoolRequest
 		says []string
 	}{
-		// The IPAM endpoint path runs no DHCPv6 exchange either, so the message names --ipam-driver null.
-		{"an IPv6 pool", RequestPoolRequest{AddressSpace: ipamLocalAddressSpace, V6: true}, []string{"#960", "--ipam-driver null", "ipv6_mode"}},
+		// Shape A: IPv6 on an IPAM network needs no pool, so the message says what switches it on (#960).
+		{"an IPv6 pool", RequestPoolRequest{AddressSpace: ipamLocalAddressSpace, V6: true}, []string{"--ipv6", "no IPv6 pool", "-o ipv6=true", "-o ipv6_mode="}},
 		{"an --ip-range", RequestPoolRequest{AddressSpace: ipamLocalAddressSpace, Pool: ipamTestPool, SubPool: "192.168.99.128/25"}, []string{"--ip-range"}},
 	}
 	for _, c := range cases {
@@ -1106,45 +1106,22 @@ func createIPAMNetworkOptsExact(t *testing.T, generic map[string]interface{}, sp
 	})
 }
 
-// In IPAM mode ipam_endpoint.go runs no DHCPv6 exchange and returns no AddressIPv6, and a Join-time DUID from the
-// regenerated endpoint MAC changes at every restart, so ipv6 is refused at CreateNetwork (#960).
-func TestCreateNetwork_IPAMModeRefusesIPv6(t *testing.T) {
-	t.Run("an IPAM network with ipv6 is refused", func(t *testing.T) {
-		err := createIPAMBridgeNetwork(t, true, ipamLocalAddressSpace)
-		if err == nil {
-			t.Fatal("`-o ipv6=true` was accepted on a network this plugin is the IPAM driver " +
-				"for. No DHCPv6 exchange runs on that path, so the operator who asked for " +
-				"IPv6 in writing gets none, and the DUID the v6 manager falls back to at " +
-				"Join changes at every restart because the endpoint MAC does")
-		}
-		if !errors.Is(err, util.ErrIPAM) {
-			t.Errorf("the refusal %v is not a util.ErrIPAM, so it does not map to the status "+
-				"code the other IPAM refusals use", err)
-		}
-		for _, want := range []string{"ipv6", "--ipam-driver null", "#960"} {
-			if !strings.Contains(err.Error(), want) {
-				t.Errorf("the refusal is %q and does not mention %q", err, want)
-			}
-		}
-		// `-o ipv6=true` resolves to ipv6_mode=dhcp, so the message is asserted as `ipv6_mode=<value>`.
-		if want := "ipv6_mode=" + proto.Mode6DHCP.String(); !strings.Contains(err.Error(), want) {
-			t.Errorf("the refusal is %q and does not carry %q, the mode `-o ipv6=true` "+
-				"resolves to. The mode is what tells an operator which of their "+
-				"options switched IPv6 on", err, want)
+// Shape A: the IPAM endpoint path reports the link's v6 address at CreateEndpoint, so both spellings are accepted and
+// only Docker's --ipv6, which asks for a pool, is refused (#960).
+func TestCreateNetwork_IPAMModeAcceptsIPv6(t *testing.T) {
+	t.Run("an IPAM network with ipv6 is created", func(t *testing.T) {
+		if err := createIPAMBridgeNetwork(t, true, ipamLocalAddressSpace); err != nil {
+			t.Fatalf("`-o ipv6=true` was refused on a network this plugin is the IPAM driver "+
+				"for: %v. The endpoint path runs the DHCPv6 exchange on its link, so the "+
+				"operator who asked for IPv6 in writing is turned away from a shape that serves it", err)
 		}
 	})
 
 	// The modes come from dhcp.IPv6Modes and dhcp.ParseIPv6Mode, the route an operator's string takes, so a new
 	// library mode reaches this loop without an edit (#817).
-	t.Run("every ipv6_mode that switches IPv6 on is refused and named", func(t *testing.T) {
-		spellings := dhcp.IPv6Modes()
-		if len(spellings) < 2 {
-			t.Fatalf("dhcp.IPv6Modes() is %v. A loop over fewer than two modes cannot tell a "+
-				"message that names the resolved mode from one that names a literal",
-				spellings)
-		}
+	t.Run("every ipv6_mode that switches IPv6 on is accepted", func(t *testing.T) {
 		drove := 0
-		for _, spelling := range spellings {
+		for _, spelling := range dhcp.IPv6Modes() {
 			mode, set, perr := dhcp.ParseIPv6Mode(spelling)
 			if perr != nil || !set {
 				t.Fatalf("dhcp.ParseIPv6Mode(%q) did not accept a value dhcp.IPv6Modes() "+
@@ -1155,41 +1132,55 @@ func TestCreateNetwork_IPAMModeRefusesIPv6(t *testing.T) {
 			}
 			drove++
 			t.Run(spelling, func(t *testing.T) {
-				err := createIPAMBridgeNetworkOpts(t,
-					map[string]interface{}{"ipv6_mode": spelling}, ipamLocalAddressSpace)
-				if err == nil {
-					t.Fatalf("`-o ipv6_mode=%s` was accepted on a network this plugin is the "+
-						"IPAM driver for. It switches IPv6 on exactly as `-o ipv6=true` "+
-						"does, and the IPAM endpoint path runs no DHCPv6 exchange either "+
-						"way", mode)
-				}
-				if !errors.Is(err, util.ErrIPAM) {
-					t.Errorf("the refusal %v is not a util.ErrIPAM, so it does not map to the "+
-						"status code the other IPAM refusals use", err)
-				}
-				if want := "ipv6_mode=" + mode.String(); !strings.Contains(err.Error(), want) {
-					t.Errorf("the refusal is %q and does not carry %q. That is the whole "+
-						"finding: the operator is told about an option they did not "+
-						"write, and not about the one they did", err, want)
-				}
-				// `#960` is on three refusals and only this one is reachable from CreateNetwork, so the phrase's
-				// uniqueness is measured over the package (#960).
-				const want = "Two spellings reach this refusal"
-				if n := errorConstructionsNaming(t, want); n != 1 {
-					t.Fatalf("%q occurs in %d error construction(s) in this module, so it "+
-						"does not say which guard answered. Pick a phrase that occurs "+
-						"in exactly one", want, n)
-				}
-				if !strings.Contains(err.Error(), want) {
-					t.Errorf("the refusal is %q and does not carry %q, so it did not come "+
-						"from ipamRefuseIPv6. This case is measuring a different "+
-						"guard", err, want)
+				if err := createIPAMBridgeNetworkOpts(t,
+					map[string]interface{}{"ipv6_mode": spelling}, ipamLocalAddressSpace); err != nil {
+					t.Fatalf("`-o ipv6_mode=%s` was refused on an IPAM network: %v. It "+
+						"switches IPv6 on exactly as `-o ipv6=true` does", mode, err)
 				}
 			})
 		}
-		if drove == 0 {
-			t.Fatal("no mode switched IPv6 on, so every assertion in this loop was skipped " +
-				"and the arm passed by having an empty domain")
+		if drove < 2 {
+			t.Fatalf("only %d mode(s) switched IPv6 on, so this loop cannot tell a guard "+
+				"that lets one mode through from one that lets every mode through", drove)
+		}
+	})
+
+	t.Run("--ipv6 at RequestPool is refused and names every option that switches IPv6 on", func(t *testing.T) {
+		p := newPluginForTest()
+		_, err := p.RequestPool(RequestPoolRequest{AddressSpace: ipamLocalAddressSpace, V6: true})
+		if err == nil {
+			t.Fatal("an IPv6 pool was granted on a network this plugin is the IPAM driver " +
+				"for. The plugin allocates no v6 pool, so Docker would hand out addresses " +
+				"from a range no server leases")
+		}
+		if !errors.Is(err, util.ErrIPAM) {
+			t.Errorf("the refusal %v is not a util.ErrIPAM, so it does not map to the status "+
+				"code the other IPAM refusals use", err)
+		}
+		const want = "the plugin allocates no IPv6 pool"
+		if n := errorConstructionsNaming(t, want); n != 1 {
+			t.Fatalf("%q occurs in %d error construction(s) in this module, so it does not "+
+				"say which guard answered. Pick a phrase that occurs in exactly one", want, n)
+		}
+		msg := err.Error()
+		if !strings.Contains(msg, want) {
+			t.Errorf("the refusal is %q and does not carry %q, so a different guard answered", msg, want)
+		}
+		spellings := ipv6SwitchingOptions(t)
+		if len(spellings) < 2 {
+			t.Fatalf("only %v can switch IPv6 on, so a message naming one option would "+
+				"satisfy this arm", spellings)
+		}
+		for _, spelling := range spellings {
+			// `-o ipv6=`, since a bare `ipv6` is a substring of `ipv6_mode`.
+			if want := "-o " + spelling + "="; !strings.Contains(msg, want) {
+				t.Errorf("`%s` switches IPv6 on and the refusal does not name it: %q. The "+
+					"operator is told to drop --ipv6 and not told what replaces it", want, msg)
+			}
+		}
+		if strings.Contains(msg, "#960") {
+			t.Errorf("the refusal %q still points at the issue that shipped the shape it "+
+				"refuses in favour of", msg)
 		}
 	})
 
@@ -1202,23 +1193,6 @@ func TestCreateNetwork_IPAMModeRefusesIPv6(t *testing.T) {
 		}
 		arms := []arm{
 			{
-				where: "ipv6=true at CreateNetwork",
-				want:  "Two spellings reach this refusal",
-				run: func(t *testing.T) error {
-					return createIPAMBridgeNetworkOpts(t,
-						map[string]interface{}{"ipv6": true}, ipamLocalAddressSpace)
-				},
-			},
-			{
-				where: "ipv6_mode=slaac at CreateNetwork",
-				want:  "Two spellings reach this refusal",
-				run: func(t *testing.T) error {
-					return createIPAMBridgeNetworkOpts(t,
-						map[string]interface{}{"ipv6_mode": proto.Mode6SLAAC.String()},
-						ipamLocalAddressSpace)
-				},
-			},
-			{
 				where: "ipvlan at CreateNetwork",
 				want:  "#949",
 				run: func(t *testing.T) error {
@@ -1229,7 +1203,7 @@ func TestCreateNetwork_IPAMModeRefusesIPv6(t *testing.T) {
 			},
 			{
 				where: "an IPv6 pool at RequestPool",
-				want:  "does not allocate IPv6 pools",
+				want:  "the plugin allocates no IPv6 pool",
 				run: func(t *testing.T) error {
 					p := newPluginForTest()
 					_, err := p.RequestPool(RequestPoolRequest{
@@ -1254,56 +1228,19 @@ func TestCreateNetwork_IPAMModeRefusesIPv6(t *testing.T) {
 			msg := err.Error()
 			if !strings.Contains(msg, a.want) {
 				t.Errorf("%s was refused by a different guard: the message is %q and does "+
-					"not carry %q. A version check over the wrong sentence reports "+
-					"the right answer about nothing", a.where, msg, a.want)
+					"not carry %q", a.where, msg, a.want)
 				continue
 			}
 			if v := releaseVersionIn(msg); v != "" {
-				t.Errorf("the refusal for %s names the release %s: %q. The combination is "+
-					"refused in every release that carries this code, so the version "+
-					"tells the operator nothing and goes stale at the next tag",
-					a.where, v, msg)
+				t.Errorf("the refusal for %s names the release %s: %q. The version tells "+
+					"the operator nothing and goes stale at the next tag", a.where, v, msg)
 			}
-		}
-	})
-
-	t.Run("the message names every option that reaches it", func(t *testing.T) {
-		spellings := ipv6SwitchingOptions(t)
-		if len(spellings) < 2 {
-			t.Fatalf("only %v can switch IPv6 on, so a message naming one option would "+
-				"satisfy this arm and the count word below would carry no claim",
-				spellings)
-		}
-		err := createIPAMBridgeNetworkOpts(t,
-			map[string]interface{}{"ipv6_mode": proto.Mode6SLAAC.String()}, ipamLocalAddressSpace)
-		if err == nil {
-			t.Fatal("the refusal did not fire, so there is no message to read")
-		}
-		msg := err.Error()
-		for _, spelling := range spellings {
-			// `-o ipv6=`, since a bare `ipv6` is a substring of `ipv6_mode`.
-			want := "-o " + spelling + "="
-			if !strings.Contains(msg, want) {
-				t.Errorf("`%s` can switch IPv6 on and reaches this refusal, and the "+
-					"message does not name it: %q. An operator who wrote it is told "+
-					"to remove an option they never typed", want, msg)
-			}
-		}
-		t.Logf("PASS  the refusal names %v, derived by driving ipv6Mode over "+
-			"%d DHCPNetworkOptions field(s)", spellings,
-			reflect.TypeOf(DHCPNetworkOptions{}).NumField())
-		want := englishCount(t, len(spellings)) + " spellings reach this refusal"
-		if !strings.Contains(msg, want) {
-			t.Errorf("the message does not carry %q: %q. %d option(s) reach this refusal, "+
-				"and a count in a shipped sentence is a claim like any other",
-				want, msg, len(spellings))
 		}
 	})
 
 	t.Run("an IPAM network without ipv6 is created", func(t *testing.T) {
 		if err := createIPAMBridgeNetwork(t, false, ipamLocalAddressSpace); err != nil {
-			t.Fatalf("an IPAM network with no ipv6 option was refused: %v. The refusal is "+
-				"about one combination and must not reach the ordinary shape", err)
+			t.Fatalf("an IPAM network with no ipv6 option was refused: %v", err)
 		}
 	})
 
@@ -1325,9 +1262,7 @@ func TestCreateNetwork_IPAMModeRefusesIPv6(t *testing.T) {
 	t.Run("a null-IPAM network with ipv6_mode=slaac is created", func(t *testing.T) {
 		if err := createIPAMBridgeNetworkOpts(t,
 			map[string]interface{}{"ipv6_mode": proto.Mode6SLAAC.String()}, "null"); err != nil {
-			t.Fatalf("`-o ipv6_mode=slaac` was refused on a --ipam-driver null network: %v. "+
-				"The refusal is about the IPAM shape and must not reach the shape that "+
-				"serves every mode", err)
+			t.Fatalf("`-o ipv6_mode=slaac` was refused on a --ipam-driver null network: %v", err)
 		}
 	})
 }
@@ -1387,16 +1322,6 @@ func candidateOptionValues(t *testing.T, field reflect.StructField) []reflect.Va
 			"over the fields that happen to be driveable", field.Name, field.Type.Kind())
 		return nil
 	}
-}
-
-func englishCount(t *testing.T, n int) string {
-	t.Helper()
-	words := []string{"Zero", "One", "Two", "Three", "Four", "Five", "Six"}
-	if n < 0 || n >= len(words) {
-		t.Fatalf("%d has no word here, so the count in the shipped sentence cannot be "+
-			"checked. Extend the list", n)
-	}
-	return words[n]
 }
 
 // Engines below 28 lack GwAllocCheck, so moby's network.go asks the IPAM driver for a gateway with no address and

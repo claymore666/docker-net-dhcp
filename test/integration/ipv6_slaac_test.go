@@ -176,6 +176,10 @@ func TestSLAAC_AnAdvertisedPrefixReachesTheContainer_Macvlan(t *testing.T) {
 	testSLAAC_AnAdvertisedPrefixReachesTheContainer(t, onV6Macvlan)
 }
 
+func TestSLAAC_AnAdvertisedPrefixReachesTheContainer_IPAM(t *testing.T) {
+	testSLAAC_AnAdvertisedPrefixReachesTheContainer(t, onV6IPAMBridge)
+}
+
 func testSLAAC_AnAdvertisedPrefixReachesTheContainer(t *testing.T, at v6Attach) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
@@ -275,6 +279,10 @@ func TestSLAAC_ADeprecatedPrefixArrivesDeprecated_Macvlan(t *testing.T) {
 	testSLAAC_ADeprecatedPrefixArrivesDeprecated(t, onV6Macvlan)
 }
 
+func TestSLAAC_ADeprecatedPrefixArrivesDeprecated_IPAM(t *testing.T) {
+	testSLAAC_ADeprecatedPrefixArrivesDeprecated(t, onV6IPAMBridge)
+}
+
 func testSLAAC_ADeprecatedPrefixArrivesDeprecated(t *testing.T, at v6Attach) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
@@ -289,7 +297,7 @@ func testSLAAC_ADeprecatedPrefixArrivesDeprecated(t *testing.T, at v6Attach) {
 	dumpOnFailure(t, f)
 
 	// An advertisement whose prefix is not deprecated would make everything below a test of nothing.
-	frames := f.AwaitRAAfter(f.EvidenceStartedAt(), harness.RABudget())
+	frames := f.AwaitServerRA(harness.RABudget())
 	if len(frames) == 0 {
 		t.Fatalf("no router advertisement captured on the segment")
 	}
@@ -362,6 +370,10 @@ func TestSLAAC_AutoFallsBackOntoTheAdvertisedPrefix_Macvlan(t *testing.T) {
 	testSLAAC_AutoFallsBackOntoTheAdvertisedPrefix(t, onV6Macvlan)
 }
 
+func TestSLAAC_AutoFallsBackOntoTheAdvertisedPrefix_IPAM(t *testing.T) {
+	testSLAAC_AutoFallsBackOntoTheAdvertisedPrefix(t, onV6IPAMBridge)
+}
+
 func testSLAAC_AutoFallsBackOntoTheAdvertisedPrefix(t *testing.T, at v6Attach) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
@@ -422,6 +434,10 @@ func TestSLAAC_ASegmentWithNoRouterEndsAFormingEndpoint(t *testing.T) {
 
 func TestSLAAC_ASegmentWithNoRouterEndsAFormingEndpoint_Macvlan(t *testing.T) {
 	testSLAAC_ASegmentWithNoRouterEndsAFormingEndpoint(t, onV6Macvlan)
+}
+
+func TestSLAAC_ASegmentWithNoRouterEndsAFormingEndpoint_IPAM(t *testing.T) {
+	testSLAAC_ASegmentWithNoRouterEndsAFormingEndpoint(t, onV6IPAMBridge)
 }
 
 func testSLAAC_ASegmentWithNoRouterEndsAFormingEndpoint(t *testing.T, at v6Attach) {
@@ -495,6 +511,10 @@ func TestSLAAC_TheAddressComesBackAfterAPluginRestart(t *testing.T) {
 
 func TestSLAAC_TheAddressComesBackAfterAPluginRestart_Macvlan(t *testing.T) {
 	testSLAAC_TheAddressComesBackAfterAPluginRestart(t, onV6Macvlan)
+}
+
+func TestSLAAC_TheAddressComesBackAfterAPluginRestart_IPAM(t *testing.T) {
+	testSLAAC_TheAddressComesBackAfterAPluginRestart(t, onV6IPAMBridge)
 }
 
 func testSLAAC_TheAddressComesBackAfterAPluginRestart(t *testing.T, at v6Attach) {

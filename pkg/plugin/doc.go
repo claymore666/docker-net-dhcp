@@ -32,10 +32,11 @@
 //   - `--ipam-driver <this plugin>` (v2.1.0+, #110), where the
 //     /IpamDriver.* handlers put the lease into Docker's own address
 //     management, which is what makes `docker run --ip` and Compose
-//     `ipv4_address` work. `bridge` and `macvlan`, IPv4: ipvlan (#949)
-//     and IPv6 (#960) are refused at network creation, because the
-//     alternative is an endpoint that fails at container start with an
-//     error naming neither.
+//     `ipv4_address` work. `bridge` and `macvlan`: ipvlan (#949) is
+//     refused at network creation, because the alternative is an
+//     endpoint that fails at container start with an error naming
+//     neither. IPv6 is switched on with `-o ipv6=true` or
+//     `-o ipv6_mode=`, and CreateEndpoint reports the address (#960).
 //
 // # The exported surface is a wire contract, not a library API
 //

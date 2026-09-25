@@ -320,14 +320,6 @@ func (p *Plugin) CreateNetwork(r CreateNetworkRequest) error {
 		if err := ipamRefusePassthru(opts); err != nil {
 			return err
 		}
-		// validateIPv6Options already resolved this pair, so this cannot fail today; the branch keeps an off mode distinct.
-		mode6, err := opts.ipv6Mode()
-		if err != nil {
-			return err
-		}
-		if err := ipamRefuseIPv6(mode6); err != nil {
-			return err
-		}
 		if err := ipamRefuseLinkLocal(opts); err != nil {
 			return err
 		}
@@ -903,7 +895,7 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 
 	// Before the mode split: in IPAM mode the address is already leased, so neither branch runs its exchange (#110).
 	if binding != nil {
-		return p.createIPAMEndpoint(ctx, r, opts, binding)
+		return p.createIPAMEndpoint(ctx, callStart, r, opts, binding)
 	}
 
 	if m := opts.effectiveMode(); m == ModeMacvlan || m == ModeIPvlan {

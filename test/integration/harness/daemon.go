@@ -135,6 +135,36 @@ func KillDockerDaemon(t *testing.T, ctx context.Context) {
 	}
 }
 
+// DaemonLogCount counts the lines of the running dockerd's stderr that carry every needle, and ok is false when that stderr is not a regular file to read.
+func DaemonLogCount(needles ...string) (n int, path string, ok bool) {
+	pid, err := dockerdPID()
+	if err != nil {
+		return 0, "", false
+	}
+	fd := "/proc/" + strconv.Itoa(pid) + "/fd/2"
+	path, _ = os.Readlink(fd)
+	if fi, err := os.Stat(fd); err != nil || !fi.Mode().IsRegular() {
+		return 0, path, false
+	}
+	b, err := os.ReadFile(fd)
+	if err != nil {
+		return 0, path, false
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		all := true
+		for _, needle := range needles {
+			if !strings.Contains(line, needle) {
+				all = false
+				break
+			}
+		}
+		if all && line != "" {
+			n++
+		}
+	}
+	return n, path, true
+}
+
 // dockerdPID reads the pidfile, falling back to a /proc comm scan for a non-default --pidfile.
 func dockerdPID() (int, error) {
 	if b, err := os.ReadFile(dockerdPidFile); err == nil {

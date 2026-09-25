@@ -323,7 +323,7 @@ func TestIPAMRebind6_EveryGiveUpEndsBothHalvesOnOneDeadline(t *testing.T) {
 			name: "CreateEndpoint fails after the take", want4: lease.PhaseRetained, want6: lease.PhaseRetained,
 			giveUp: func(t *testing.T, p *Plugin, b *ipamBinding) {
 				p.docker = f0Docker()
-				if _, err := p.createIPAMEndpoint(context.Background(), f0CreateRequest(restarted, f0Addr), f0Options(), b); err == nil {
+				if _, err := p.createIPAMEndpoint(context.Background(), time.Now(), f0CreateRequest(restarted, f0Addr), f0Options(), b); err == nil {
 					t.Fatal("CreateEndpoint succeeded; this host has the bridge the fixture needs absent")
 				}
 			},
@@ -520,7 +520,7 @@ func TestIPAMRebind6_GapA_AnExpiredReBoundLeaseIsClosedAndNeverReleased(t *testi
 	now := time.Now()
 
 	p.docker = f0Docker()
-	if _, err := p.createIPAMEndpoint(context.Background(), f0CreateRequest(restarted, f0Addr), f0Options(), b); err == nil {
+	if _, err := p.createIPAMEndpoint(context.Background(), time.Now(), f0CreateRequest(restarted, f0Addr), f0Options(), b); err == nil {
 		t.Fatal("CreateEndpoint succeeded; this host has the bridge the fixture needs absent")
 	}
 	s2Pair(t, p, id4, id6, restarted, lease.PhaseClosed)

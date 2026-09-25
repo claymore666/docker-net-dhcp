@@ -30,10 +30,10 @@ func startOnV6SegmentWithOpts(t *testing.T, ctx context.Context, cli *docker.Cli
 	return startOnV6SegmentAs(t, ctx, cli, f, onV6Bridge, netName, extra)
 }
 
-// startContainerOn creates a network of mode with opts and starts a container on it, returning the ContainerStart error.
-func startContainerOn(t *testing.T, ctx context.Context, cli *docker.Client, netName, mode string, opts map[string]string) (string, error) {
+// startContainerOn creates the shape's network with opts and starts a container on it, returning the ContainerStart error.
+func startContainerOn(t *testing.T, ctx context.Context, cli *docker.Client, netName string, at v6Attach, opts map[string]string) (string, error) {
 	t.Helper()
-	harness.CreateNetwork(t, ctx, netName, mode, opts)
+	at.createNet(t, ctx, netName, opts)
 	ctrName := netName + "-ctr"
 	create, err := cli.ContainerCreate(ctx,
 		&container.Config{Image: harness.TestImage, Cmd: []string{"sleep", "infinity"}, Hostname: ctrName},
@@ -72,6 +72,10 @@ func TestDHCPv6_NoAddressModes_StartTheEndpoint(t *testing.T) {
 
 func TestDHCPv6_NoAddressModes_StartTheEndpoint_Macvlan(t *testing.T) {
 	testDHCPv6_NoAddressModes_StartTheEndpoint(t, onV6Macvlan)
+}
+
+func TestDHCPv6_NoAddressModes_StartTheEndpoint_IPAM(t *testing.T) {
+	testDHCPv6_NoAddressModes_StartTheEndpoint(t, onV6IPAMBridge)
 }
 
 func testDHCPv6_NoAddressModes_StartTheEndpoint(t *testing.T, at v6Attach) {
@@ -346,6 +350,10 @@ func TestDHCPv6_Managed_ServerSilent_IsStillFatal(t *testing.T) {
 
 func TestDHCPv6_Managed_ServerSilent_IsStillFatal_Macvlan(t *testing.T) {
 	testDHCPv6_Managed_ServerSilent_IsStillFatal(t, onV6Macvlan)
+}
+
+func TestDHCPv6_Managed_ServerSilent_IsStillFatal_IPAM(t *testing.T) {
+	testDHCPv6_Managed_ServerSilent_IsStillFatal(t, onV6IPAMBridge)
 }
 
 func testDHCPv6_Managed_ServerSilent_IsStillFatal(t *testing.T, at v6Attach) {
