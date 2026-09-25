@@ -297,7 +297,7 @@ func testSLAAC_ADeprecatedPrefixArrivesDeprecated(t *testing.T, at v6Attach) {
 	dumpOnFailure(t, f)
 
 	// An advertisement whose prefix is not deprecated would make everything below a test of nothing.
-	frames := f.AwaitRAAfter(f.EvidenceStartedAt(), harness.RABudget())
+	frames := f.AwaitServerRA(harness.RABudget())
 	if len(frames) == 0 {
 		t.Fatalf("no router advertisement captured on the segment")
 	}

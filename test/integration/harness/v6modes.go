@@ -549,6 +549,15 @@ func (f *V6Fixture) AwaitRAAfter(since time.Time, budget time.Duration) []RAFram
 	}
 }
 
+// dnsmasq's first RA can land before the readiness wait ends, and the next one is 5..19 s later, past RABudget, so a
+// wait from any instant after the server's start misses it on a segment that advertised (lane run 36197918499, #960).
+
+// AwaitServerRA is AwaitRAAfter from this server's start.
+func (f *V6Fixture) AwaitServerRA(budget time.Duration) []RAFrame {
+	f.t.Helper()
+	return f.AwaitRAAfter(f.startedAt, budget)
+}
+
 // AssertNoRAWithin fails the test if an RA is seen within window, which callers take from V6NoRAWindow.
 func (f *V6Fixture) AssertNoRAWithin(window time.Duration) {
 	f.t.Helper()
