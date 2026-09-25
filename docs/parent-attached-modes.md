@@ -150,8 +150,9 @@ The host's NIC config (IP, routes, netplan/`systemd-networkd`,
   is the address source of truth. Pass `--ipam-driver=null`, or, from
   v2.1.0, this plugin's own IPAM driver
   ([reference](reference.md#address-allocation)). `ipvlan` takes
-  `--ipam-driver=null` only, because an IPAM driver needs a MAC per
-  endpoint and ipvlan children share the parent's (#949).
+  `--ipam-driver=null` only: Docker sets the MAC it generates for an
+  IPAM driver on the container's interface at start, and an ipvlan
+  interface cannot change its MAC (#949).
 - One DHCP-served network per container. If a container also joins a
   bridge or other Docker network, that's its problem to coordinate.
 
