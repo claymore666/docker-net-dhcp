@@ -24,7 +24,7 @@ const fqdn6Budget = 30 * time.Second
 
 // fqdn6Start starts a dual-stack container on a V6Managed segment whose server answers DNS, capturing its DHCPv6
 // messages, and returns the capture, the container's v4 and v6 addresses and its name (#1029).
-func fqdn6Start(t *testing.T, ctx context.Context, netName string, extra map[string]string) (*harness.V6Fixture, *harness.DHCPv6Capture, string, string, string) {
+func fqdn6Start(t *testing.T, ctx context.Context, at v6Attach, netName string, extra map[string]string) (*harness.V6Fixture, *harness.DHCPv6Capture, string, string, string) {
 	t.Helper()
 	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
 	if err != nil {
@@ -46,7 +46,7 @@ func fqdn6Start(t *testing.T, ctx context.Context, netName string, extra map[str
 	for k, v := range extra {
 		opts[k] = v
 	}
-	id, err := startOnV6SegmentWithOpts(t, ctx, cli, f, netName, opts)
+	id, err := startOnV6SegmentAs(t, ctx, cli, f, at, netName, opts)
 	if err != nil {
 		t.Fatalf("ContainerStart on %s: %v", netName, err)
 	}
@@ -113,10 +113,19 @@ func fqdn6LeaseName(t *testing.T, f *harness.V6Fixture, addr, want string, budge
 
 // TestFQDN_V6RegistersAAAA checks that register_dns sends the name in option 39 and the server answers its AAAA (#1029).
 func TestFQDN_V6RegistersAAAA(t *testing.T) {
+	testFQDN_V6RegistersAAAA(t, onV6Bridge)
+}
+
+// TestFQDN_V6RegistersAAAA_IPAM is the same on a network with this plugin as its IPAM driver (#960).
+func TestFQDN_V6RegistersAAAA_IPAM(t *testing.T) {
+	testFQDN_V6RegistersAAAA(t, onV6IPAMBridge)
+}
+
+func testFQDN_V6RegistersAAAA(t *testing.T, at v6Attach) {
 	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Second)
 	defer cancel()
 
-	f, cap6, ip4, ip6, ctr := fqdn6Start(t, ctx, "dh-itest-fqdn6", map[string]string{"register_dns": "true"})
+	f, cap6, ip4, ip6, ctr := fqdn6Start(t, ctx, at, at.net("dh-itest-fqdn6"), map[string]string{"register_dns": "true"})
 	name := ctr + "." + harness.V6DNSDomain
 	res := fqdn6Resolver(f)
 
@@ -206,10 +215,19 @@ func fqdn6LogLines(window string, subs ...string) int {
 // TestFQDN_V6UnsetRegistersNoAAAA checks that without register_dns no name goes out on v6, so <ctr>.dh6.test has an A
 // record from option 12 and no AAAA (#1029, decision (a)).
 func TestFQDN_V6UnsetRegistersNoAAAA(t *testing.T) {
+	testFQDN_V6UnsetRegistersNoAAAA(t, onV6Bridge)
+}
+
+// TestFQDN_V6UnsetRegistersNoAAAA_IPAM is the same on a network with this plugin as its IPAM driver (#960).
+func TestFQDN_V6UnsetRegistersNoAAAA_IPAM(t *testing.T) {
+	testFQDN_V6UnsetRegistersNoAAAA(t, onV6IPAMBridge)
+}
+
+func testFQDN_V6UnsetRegistersNoAAAA(t *testing.T, at v6Attach) {
 	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Second)
 	defer cancel()
 
-	f, cap6, ip4, ip6, ctr := fqdn6Start(t, ctx, "dh-itest-fqdn6u", nil)
+	f, cap6, ip4, ip6, ctr := fqdn6Start(t, ctx, at, at.net("dh-itest-fqdn6u"), nil)
 	name := ctr + "." + harness.V6DNSDomain
 	res := fqdn6Resolver(f)
 

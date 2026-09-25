@@ -222,30 +222,16 @@ var refusalCases = []refusalCase{
 		},
 	},
 	{
-		name:    "-o ipv6=true is refused in IPAM mode as the dhcp mode",
-		refused: createShape{mode: "macvlan", ipam: true, opts: map[string]string{"ipv6": "true"}},
-		want: []string{"this network switches IPv6 on with ipv6_mode=dhcp, and IPv6 cannot be combined with this plugin as the IPAM driver",
-			"`-o ipv6=true`", "--ipam-driver null", "#960"},
-		controls: map[string]createShape{
-			"IPAM mode without IPv6 is accepted":    {mode: "macvlan", ipam: true},
-			"-o ipv6=true is accepted on null IPAM": {mode: "macvlan", opts: map[string]string{"ipv6": "true"}},
-		},
-	},
-	{
-		name:    "-o ipv6_mode=slaac is refused in IPAM mode naming the mode",
-		refused: createShape{mode: "macvlan", ipam: true, opts: map[string]string{"ipv6_mode": "slaac"}},
-		want: []string{"this network switches IPv6 on with ipv6_mode=slaac, and IPv6 cannot be combined with this plugin as the IPAM driver",
-			"--ipam-driver null", "#960"},
-		controls: map[string]createShape{
-			"IPAM mode with ipv6_mode=off is accepted": {mode: "macvlan", ipam: true, opts: map[string]string{"ipv6_mode": "off"}},
-		},
-	},
-	{
 		name:    "--ipv6 is refused in IPAM mode because no IPv6 pool is allocated",
 		refused: createShape{mode: "macvlan", ipam: true, enableIPv6: true},
-		want:    []string{"this plugin does not allocate IPv6 pools", "--ipam-driver null", "#960"},
+		want: []string{"--ipv6 is refused on a network that uses this plugin as its IPAM driver",
+			"the plugin allocates no IPv6 pool", "drop --ipv6", "`-o ipv6=true` or `-o ipv6_mode=<mode>`"},
 		controls: map[string]createShape{
-			"IPAM mode without --ipv6 is accepted": {mode: "macvlan", ipam: true},
+			"IPAM mode without --ipv6 is accepted":        {mode: "macvlan", ipam: true},
+			"-o ipv6=true is accepted in IPAM mode":       {mode: "macvlan", ipam: true, opts: map[string]string{"ipv6": "true"}},
+			"-o ipv6_mode=slaac is accepted in IPAM mode": {mode: "macvlan", ipam: true, opts: map[string]string{"ipv6_mode": "slaac"}},
+			"IPAM mode with ipv6_mode=off is accepted":    {mode: "macvlan", ipam: true, opts: map[string]string{"ipv6_mode": "off"}},
+			"-o ipv6=true is accepted on null IPAM":       {mode: "macvlan", opts: map[string]string{"ipv6": "true"}},
 		},
 	},
 	{

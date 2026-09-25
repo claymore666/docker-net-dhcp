@@ -16,28 +16,45 @@ import (
 )
 
 // v6Attach is the endpoint shape a v6-segment test runs on; each *_Macvlan test is its twin on the macvlan shape,
-// which reaches the DHCPv6 one-shot through parent_attached.go instead of network.go (#960).
+// which reaches the DHCPv6 one-shot through parent_attached.go, and each *_IPAM test runs it through ipam_endpoint.go
+// on a network with this plugin as its IPAM driver (#960).
 type v6Attach struct {
 	mode string
 	kind string
+	ipam bool
 }
 
 var (
-	onV6Bridge  = v6Attach{mode: "bridge", kind: "veth"}
-	onV6Macvlan = v6Attach{mode: "macvlan", kind: "macvlan"}
+	onV6Bridge      = v6Attach{mode: "bridge", kind: "veth"}
+	onV6Macvlan     = v6Attach{mode: "macvlan", kind: "macvlan"}
+	onV6IPAMBridge  = v6Attach{mode: "bridge", kind: "veth", ipam: true}
+	onV6IPAMMacvlan = v6Attach{mode: "macvlan", kind: "macvlan", ipam: true}
 )
 
 func (a v6Attach) net(name string) string {
-	if a == onV6Macvlan {
-		return name + "m"
+	if a.mode == "macvlan" {
+		name += "m"
+	}
+	if a.ipam {
+		name += "i"
 	}
 	return name
+}
+
+// createNet is harness.CreateNetwork, or CreateNetworkIPAM with no --subnet on an IPAM shape, the untyped case the
+// driver answers with 0.0.0.0/0 (#110, #960).
+func (a v6Attach) createNet(t *testing.T, ctx context.Context, name string, opts map[string]string) string {
+	t.Helper()
+	if a.ipam {
+		return harness.CreateNetworkIPAM(t, ctx, name, a.mode, "", nil, opts)
+	}
+	return harness.CreateNetwork(t, ctx, name, a.mode, opts)
 }
 
 // ctrLink names the container's link: libnetwork appends the first free index to Join's DstPrefix, which is the
 // bridge's name on the bridge shape and "eth" on the parent-attached ones (network.go Join, #125, #960).
 func (a v6Attach) ctrLink(f *harness.V6Fixture) string {
-	if a == onV6Macvlan {
+	if a.mode == "macvlan" {
 		return "eth0"
 	}
 	return f.Bridge() + "0"
@@ -54,7 +71,7 @@ func startOnV6SegmentAs(t *testing.T, ctx context.Context, cli *docker.Client, f
 		"ipv6":          "true",
 		"propagate_dns": "true",
 	}
-	if at == onV6Macvlan {
+	if at.mode == "macvlan" {
 		opts["parent"] = f.MacvlanParent()
 	} else {
 		opts["bridge"] = f.Bridge()
@@ -66,7 +83,7 @@ func startOnV6SegmentAs(t *testing.T, ctx context.Context, cli *docker.Client, f
 		}
 		opts[k] = v
 	}
-	return startContainerOn(t, ctx, cli, netName, at.mode, opts)
+	return startContainerOn(t, ctx, cli, netName, at, opts)
 }
 
 // assertAttachedAs checks that a started container's link has the shape's kind and that the fixture's own server
