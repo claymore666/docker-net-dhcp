@@ -6,6 +6,7 @@ package plugin
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"net/netip"
 	"sort"
@@ -173,5 +174,76 @@ func TestClaimLinkLocal_AnAddressTheKernelHoldsOnThePeerIsSkipped(t *testing.T) 
 	addr, tried, err := claimLinkLocal(ctx, link, acd, next)
 	if err != nil || addr != netip.MustParseAddr("169.254.10.2") || tried != 2 {
 		t.Fatalf("claim = %v after %d tried, %v; want the peer's 169.254.10.1 skipped for 169.254.10.2", addr, tried, err)
+	}
+}
+
+// createWithNoServer runs CreateEndpoint against a DHCP one-shot that finds no server, returning the response, the
+// join hint, the one-shot's deadline measured from before the call, and how often the claim opened the link.
+func createWithNoServer(t *testing.T, ep string, opts DHCPNetworkOptions) (CreateEndpointResponse, joinHint, time.Duration, int, error) {
+	t.Helper()
+	withStateDir(t, t.TempDir())
+	if err := saveOptions("n1", opts); err != nil {
+		t.Fatalf("saveOptions: %v", err)
+	}
+	var deadline time.Time
+	restore := dhcpGetIP
+	dhcpGetIP = func(ctx context.Context, _ string, _ *dhcp.DHCPClientOptions) (dhcp.Info, dhcp.RAObservation, error) {
+		deadline, _ = ctx.Deadline()
+		return dhcp.Info{}, dhcp.RAObservation{}, dhcp.ErrNoLease
+	}
+	t.Cleanup(func() { dhcpGetIP = restore })
+	opened := withFakeARP(t, newFakeARPLink("02:42:0a:00:00:09"))
+
+	p := newPluginForTest()
+	p.docker = &fakeDocker{}
+	before := time.Now()
+	res, err := p.CreateEndpoint(t.Context(), CreateEndpointRequest{NetworkID: "n1", EndpointID: ep, Interface: &EndpointInterface{}})
+	var hint joinHint
+	p.updateJoinHint(ep, func(h *joinHint) { hint = *h })
+	return res, hint, deadline.Sub(before), *opened, err
+}
+
+func TestCreateEndpoint_ANoServerStartClaimsLinkLocalInsideTheBudgetWithNoGateway(t *testing.T) {
+	if !inOwnNetns(t) {
+		return
+	}
+	h, err := netlink.NewHandle()
+	if err != nil {
+		t.Fatalf("NewHandle: %v", err)
+	}
+	addLink(t, h, &netlink.Bridge{LinkAttrs: netlink.LinkAttrs{Name: "llbr0"}})
+	addLink(t, h, &netlink.Dummy{LinkAttrs: netlink.LinkAttrs{Name: "llpa0"}})
+	for i, tc := range []struct {
+		name string
+		opts DHCPNetworkOptions
+	}{
+		{"bridge", DHCPNetworkOptions{Bridge: "llbr0"}},
+		{"macvlan", DHCPNetworkOptions{Mode: ModeMacvlan, Parent: "llpa0"}},
+	} {
+		on, off := fmt.Sprintf("a%d1%061x", i, 0), fmt.Sprintf("a%d2%061x", i, 0)
+		t.Run(tc.name, func(t *testing.T) {
+			withLL := tc.opts
+			withLL.LinkLocalFallback, withLL.Gateway = true, "192.168.99.5"
+			res, hint, dhcpBudget, opened, err := createWithNoServer(t, on, withLL)
+			if err != nil {
+				t.Fatalf("CreateEndpoint: %v", err)
+			}
+			if !isLinkLocalV4String(res.Interface.Address) || !strings.HasSuffix(res.Interface.Address, "/16") {
+				t.Errorf("address = %q, want a 169.254/16 address", res.Interface.Address)
+			}
+			if hint.Gateway != "" || hint.IPv4 == nil || opened != 1 {
+				t.Errorf("gateway = %q, hint address %v, link opened %d times; want no gateway despite the pinned one, the claimed address, one claim", hint.Gateway, hint.IPv4, opened)
+			}
+			// The one-shot must end at callStart+17s, not 17s after the hostname lookup's two seconds.
+			if dhcpBudget <= 0 || dhcpBudget > linkLocalLeaseTimeout+time.Second {
+				t.Errorf("the DHCP one-shot's deadline is %v after the call, want at most %v", dhcpBudget, linkLocalLeaseTimeout)
+			}
+
+			// The control: without the option the same failure fails the endpoint and claims nothing.
+			_, _, _, opened, err = createWithNoServer(t, off, tc.opts)
+			if !errors.Is(err, dhcp.ErrNoLease) || opened != 0 {
+				t.Errorf("option off: err = %v, link opened %d times; want ErrNoLease and no claim", err, opened)
+			}
+		})
 	}
 }

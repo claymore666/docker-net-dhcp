@@ -535,3 +535,71 @@ func TestUnboundState_OnlyAV4LinkLocalAddressReads(t *testing.T) {
 		t.Errorf("no address yet: state %q, want acquiring", got)
 	}
 }
+
+func TestJoin_ALinkLocalEndpointGetsNoGatewayAndNoHostRoutes(t *testing.T) {
+	withStateDir(t, t.TempDir())
+	_, dst, _ := net.ParseCIDR("10.88.0.0/16")
+	stubKernelRouteTable(t, []netlink.Route{
+		{Gw: net.ParseIP("192.168.99.1")},
+		{Dst: dst, Gw: net.ParseIP("192.168.99.253")},
+	}, nil, nil)
+	if err := saveOptions("n904", DHCPNetworkOptions{Bridge: "lo", LinkLocalFallback: true}); err != nil {
+		t.Fatalf("saveOptions: %v", err)
+	}
+	mac, _ := net.ParseMAC("02:42:0a:00:00:09")
+	for _, tc := range []struct {
+		addr, wantGW string
+		wantRoutes   int
+	}{
+		{"169.254.60.199/16", "", 0},
+		// The control: a leased endpoint on the same network takes the host's default and its route.
+		{"192.168.99.61/24", "192.168.99.1", 1},
+	} {
+		t.Run(tc.addr, func(t *testing.T) {
+			a, _ := netlink.ParseAddr(tc.addr)
+			p := &Plugin{docker: &blockingInspectDocker{}, awaitTimeout: time.Minute,
+				joinHints: make(map[string]joinHint), persistentDHCP: make(map[string]*dhcpManager)}
+			p.storeJoinHint("e904", joinHint{IPv4: a, MacAddress: mac})
+			res, err := p.Join(context.Background(), JoinRequest{NetworkID: "n904", EndpointID: "e904"})
+			if err != nil {
+				t.Fatalf("Join: %v", err)
+			}
+			p.mu.Lock()
+			m := p.persistentDHCP["e904"]
+			p.mu.Unlock()
+			if m != nil {
+				defer func() { m.attachCancel(); <-m.startedCh }()
+			}
+			if res.Gateway != tc.wantGW || len(res.StaticRoutes) != tc.wantRoutes {
+				t.Errorf("Join returned gateway %q and %d routes, want %q and %d", res.Gateway, len(res.StaticRoutes), tc.wantGW, tc.wantRoutes)
+			}
+		})
+	}
+}
+
+func TestSetupClient_ALinkLocalAddressIsNeverTheRequestedIP(t *testing.T) {
+	for _, tc := range []struct{ last, want string }{
+		{"169.254.60.199/16", ""},
+		// The control: a leased address is still asked for again.
+		{"192.168.99.61/24", "192.168.99.61"},
+	} {
+		t.Run(tc.last, func(t *testing.T) {
+			m, _ := daemonFreeManager(t, &fakeDocker{})
+			a, _ := netlink.ParseAddr(tc.last)
+			m.setLastIP(false, a)
+			m.ctrLink = &netlink.Device{LinkAttrs: netlink.LinkAttrs{Index: 1, Name: "lo", HardwareAddr: m.MacAddress}}
+			requested, opens := "unset", 0
+			prevNew := newDHCPClient
+			newDHCPClient = func(_ string, opts *dhcp.DHCPClientOptions) (*dhcp.DHCPClient, error) {
+				opens++
+				requested = opts.RequestedIP
+				return nil, errors.New("no client in this test")
+			}
+			t.Cleanup(func() { newDHCPClient = prevNew })
+			_, _ = m.setupClient(false)
+			if opens != 1 || requested != tc.want {
+				t.Errorf("%d clients built, requested IP %q; want one, %q", opens, requested, tc.want)
+			}
+		})
+	}
+}
