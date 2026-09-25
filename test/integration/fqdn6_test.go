@@ -10,6 +10,7 @@ import (
 	"context"
 	"net"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -133,31 +134,73 @@ func TestFQDN_V6RegistersAAAA(t *testing.T) {
 		t.Errorf("the server logged no DHCPREPLY naming %s for %s", ctr, ip6)
 	}
 
-	// The plugin's bind report, read after the server's own evidence above so it is the report of a real S=1 Reply.
-	if n := harness.CountPluginLogLines(t, ctx, "registers the AAAA record for this name", ctr); n == 0 {
+	// The plugin's report, read after the server's own evidence above so it is the report of a real S=1 Reply.
+	report := func(w string) bool { return fqdn6LogLines(w, "registers the AAAA record for this name", ctr) > 0 }
+	if !report(harness.AwaitPluginLogSince(t, ctx, 0, fqdn6Budget, report)) {
 		t.Errorf("the plugin logged no report of the server's option 39 reply for %s", ctr)
 	}
 
-	// RFC 4704 section 5: Solicit and Request carry it, with S set, and the name the lease table shows.
-	msgs, ok := cap6.AwaitClientMessages([]uint8{harness.DHCPv6Solicit, harness.DHCPv6Request}, harness.IPAcquisitionBudget)
-	if !ok {
-		t.Fatalf("no Solicit and Request captured: %s\n%s", cap6.SeenTally(), harness.FormatDHCPv6Messages(msgs))
-	}
+	// RFC 4704 section 5: Renew and Rebind carry it with S set; Solicit and Request too once Docker names the endpoint
+	// at CreateEndpoint, which current engines do not (moby/moby#52871), so the early Renew is the first carrier.
 	want := harness.ClientFQDNOption(0x01, ctr)
+	msgs := fqdn6AwaitCarrier(cap6, harness.IPAcquisitionBudget)
+	carried := false
 	for _, m := range msgs {
 		if !m.FromClient {
 			continue
 		}
-		carries := m.Type == harness.DHCPv6Solicit || m.Type == harness.DHCPv6Request ||
-			m.Type == harness.DHCPv6Renew || m.Type == harness.DHCPv6Rebind
-		if carries && !bytes.Equal(m.ClientFQDN, want) {
-			t.Errorf("client message type %d carries option 39 %x, want %x (S=1, name %s)", m.Type, m.ClientFQDN, want, ctr)
+		switch m.Type {
+		case harness.DHCPv6Renew, harness.DHCPv6Rebind:
+			if !bytes.Equal(m.ClientFQDN, want) {
+				t.Errorf("client message type %d carries option 39 %x, want %x (S=1, name %s)", m.Type, m.ClientFQDN, want, ctr)
+			}
+		case harness.DHCPv6Solicit, harness.DHCPv6Request:
+			if (carried || m.ClientFQDN != nil) && !bytes.Equal(m.ClientFQDN, want) {
+				t.Errorf("client message type %d carries option 39 %x, want %x (none only before the name first went out)",
+					m.Type, m.ClientFQDN, want)
+			}
+		default:
+			if m.ClientFQDN != nil {
+				t.Errorf("client message type %d carries option 39 %x; RFC 4704 section 5 allows it only in Solicit, "+
+					"Request, Renew and Rebind", m.Type, m.ClientFQDN)
+			}
 		}
-		if !carries && m.ClientFQDN != nil {
-			t.Errorf("client message type %d carries option 39 %x; RFC 4704 section 5 allows it only in Solicit, "+
-				"Request, Renew and Rebind", m.Type, m.ClientFQDN)
+		carried = carried || bytes.Equal(m.ClientFQDN, want)
+	}
+	if !carried {
+		t.Errorf("no client message carried option 39 %x: %s\n%s", want, cap6.SeenTally(), harness.FormatDHCPv6Messages(msgs))
+	}
+}
+
+// fqdn6AwaitCarrier waits until a client message carries option 39 and returns the whole capture.
+func fqdn6AwaitCarrier(cap6 *harness.DHCPv6Capture, within time.Duration) []harness.DHCPv6Message {
+	deadline := time.Now().Add(within)
+	for {
+		msgs := cap6.Messages()
+		for _, m := range msgs {
+			if m.FromClient && m.ClientFQDN != nil {
+				return msgs
+			}
+		}
+		if !time.Now().Before(deadline) {
+			return msgs
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+func fqdn6LogLines(window string, subs ...string) int {
+	n := 0
+	for _, line := range strings.Split(window, "\n") {
+		all := true
+		for _, sub := range subs {
+			all = all && strings.Contains(line, sub)
+		}
+		if all {
+			n++
 		}
 	}
+	return n
 }
 
 // TestFQDN_V6UnsetRegistersNoAAAA checks that without register_dns no name goes out on v6, so <ctr>.dh6.test has an A
