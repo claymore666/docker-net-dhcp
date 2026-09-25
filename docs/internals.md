@@ -47,7 +47,9 @@ namespace to it. Two things differ:
    have the name before the client starts and do not take this one: a
    `register_dns` network, whose option 81 is built when the client is
    constructed and has no setter for it, and whose DHCPv6 client builds
-   option 39 from the same name at the same time; and any attach that had to ask
+   option 39 from the same name at the same time and renews once at start
+   to carry it, since the address was leased at `CreateEndpoint` before
+   the name was known; and any attach that had to ask
    the daemon anyway to find the container's namespace, which is the
    fallback to the container's process where the sandbox key is refused,
    and the path that re-adopts a running container after a plugin

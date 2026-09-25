@@ -138,6 +138,8 @@ type DHCPClientOptions struct {
 
 	// resumedConfigTaken marks carryResumedConfig6's one chance at a resumed lease's RFC 3646 lists (#911).
 	resumedConfigTaken bool
+	// fqdnReported marks reportFQDN6's one report of the server's option 39 answer (#1029).
+	fqdnReported bool
 
 	// acdSeen is the last ACD snapshot handed to OnACDStats, which makes it a delta.
 	acdSeen ACDStats

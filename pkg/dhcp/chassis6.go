@@ -408,13 +408,18 @@ func (o *DHCPClientOptions) carryResumedConfig6(ev *lease.Event) {
 	ev.Lease.DomainSearch = append([]string(nil), o.Resume.DomainSearch...)
 }
 
-// reportFQDN6 logs the server's option 39 at bind. S set in the Reply is the server taking the AAAA (RFC 4704 section
-// 4.1); a Reply without S, or without the option, leaves the name unregistered by anyone, since the plugin does no DNS
-// update of its own (#1029).
+// reportFQDN6 logs, once, the server's answer to the first message that carried option 39. S set in the Reply is the
+// server taking the AAAA (RFC 4704 section 4.1); a Reply without S, or without the option, leaves the name unregistered
+// by anyone, since the plugin does no DNS update of its own. A resumed binding's Acquired answers a Confirm, which
+// carries no option 39, so the early Renew after it is the exchange reported (#1029).
 func (o *DHCPClientOptions) reportFQDN6(ev lease.Event) {
-	if !o.V6 || o.FQDN == "" || o.Hostname == "" || ev.Kind != lease.Acquired {
+	if !o.V6 || o.FQDN == "" || o.Hostname == "" || o.fqdnReported {
 		return
 	}
+	if ev.Kind != lease.Renewed && (ev.Kind != lease.Acquired || (o.Resume != nil && !ev.Lease.HasFQDN)) {
+		return
+	}
+	o.fqdnReported = true
 	entry := log.WithField("hostname", o.Hostname)
 	if !ev.Lease.HasFQDN {
 		entry.Info("The DHCPv6 server's Reply carried no Client FQDN option, so it did not say whether it registers " +
