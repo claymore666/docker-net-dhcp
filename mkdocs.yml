@@ -106,6 +106,7 @@ nav:
   - macvlan / ipvlan: parent-attached-modes.md
   - Driver reference: reference.md
   - How it works: internals.md
+  - Testing: testing.md
   - Roadmap: roadmap.md
   - Verifying releases: verifying-releases.md
   - Contributing: contributing.md

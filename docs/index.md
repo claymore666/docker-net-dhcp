@@ -165,6 +165,8 @@ networks:
 - **[Verifying releases](verifying-releases.md)** covers signatures, SLSA
   provenance, SBOMs, and rebuilding the binaries yourself.
 - **[How it works](internals.md)** is the mechanism, for contributors.
+- **[How this plugin is tested](testing.md)** is what is tested, where, and
+  what each result proves.
 - **[Roadmap](roadmap.md)** is where this is going, and what it will not do.
 - **[Contributing](contributing.md)** is what an acceptable pull request
   looks like.

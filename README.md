@@ -173,6 +173,8 @@ version per release; the same pages live in [`docs/`](docs).
 - **[Verifying releases](docs/verifying-releases.md)** covers signatures,
   SLSA provenance, SBOMs, and rebuilding the binaries yourself.
 - **[How it works](docs/internals.md)** is the mechanism, for contributors.
+- **[How this plugin is tested](docs/testing.md)** is what is tested, where,
+  and what each result proves.
 - **[Roadmap](docs/roadmap.md)** is where this is going, and what it will
   not do.
 - **[Contributing](docs/contributing.md)** is what an acceptable pull

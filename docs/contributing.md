@@ -43,6 +43,9 @@ New functionality is expected to ship with tests, and a per-package
 coverage ratchet enforces it at release time: a release cannot merge if a
 package's statement coverage drops below its recorded floor.
 
+What runs where, and what each result proves, is on
+[How this plugin is tested](testing.md).
+
 Run `go test ./...` for the fast loop and `sudo make integration-local`
 for the live suites. See
 [Running the tests](internals.md#running-the-tests). Use that target and
