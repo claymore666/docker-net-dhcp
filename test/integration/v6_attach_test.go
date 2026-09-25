@@ -34,6 +34,15 @@ func (a v6Attach) net(name string) string {
 	return name
 }
 
+// ctrLink names the container's link: libnetwork appends the first free index to Join's DstPrefix, which is the
+// bridge's name on the bridge shape and "eth" on the parent-attached ones (network.go Join, #125, #960).
+func (a v6Attach) ctrLink(f *harness.V6Fixture) string {
+	if a == onV6Macvlan {
+		return "eth0"
+	}
+	return f.Bridge() + "0"
+}
+
 // attachEvidenceBudget bounds the read of the server's DHCPv4 log line, written during the endpoint's creation.
 const attachEvidenceBudget = 10 * time.Second
 
@@ -64,7 +73,7 @@ func startOnV6SegmentAs(t *testing.T, ctx context.Context, cli *docker.Client, f
 // leased v4 to that link's MAC on its bridge, so the run was on this segment through this copy (#960).
 func assertAttachedAs(t *testing.T, ctx context.Context, f *harness.V6Fixture, id string, at v6Attach) {
 	t.Helper()
-	kind, _, mac := harness.ChildLinkMode(t, ctx, id, "eth0")
+	kind, _, mac := harness.ChildLinkMode(t, ctx, id, at.ctrLink(f))
 	if kind != at.kind {
 		t.Errorf("the container's link is a %q, want %q: this run did not go through the %s "+
 			"copy of CreateEndpoint it exists to cover", kind, at.kind, at.mode)
