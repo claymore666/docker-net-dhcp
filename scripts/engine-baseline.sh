@@ -251,6 +251,7 @@ audit_log|step|leases.jsonl gains a bound line for the address when true, nothin
 release_lease|step|fresh DHCPRELEASE for the address after docker stop with on_stop, none with never
 host_ifname|step|ip link in the host netns shows the container name; control the generated name; macvlan refused naming the mode; bad value refused
 require_mac|step|docker run without --mac-address refused naming the option, no fresh DHCPACK; with --mac-address a fresh ACK carries the MAC; ipvlan and a non-boolean value refused
+link_local_fallback|step|server-less bridge: the container starts on 169.254/16 with no default route; ipvlan, ipv6_mode=dhcp and lease_timeout=20s refused
 macvlan_mode|step|ip -d link in the container netns shows vepa and private, each with a fresh ACK; passthru on a parent of its own leases under the parent MAC and refuses a second container; an unknown value and mode=ipvlan refused
 ipvlan_mode|step|ip -d link in the container netns shows l2 with a fresh ACK; l3 and mode=macvlan refused
 vlan|step|a tagged server on a vlan of the segment ACKs the address the container holds; ip -d link shows <parent>.100 as 802.1Q id 100 with the plugin alias and host IPv6 off, gone after its network; bridge mode, 4095, a 17-byte sub-interface name and release_lease on a plugin-made one refused
@@ -1168,6 +1169,29 @@ opt_require_mac() {
     fresh_has "$DNSMASQ_LOG" "$m" "DHCPACK($SEGMENT) $V4 02:00:00:00:e4:01" \
         || fail "require_mac=true with --mac-address 02:00:00:00:e4:01: no fresh ACK for $V4 carries that MAC"
     opt_down em-o-rm em-c-rm0 em-c-rm1
+}
+
+# opt_link_local_fallback: on the server-less bridge the container starts on
+# an RFC 3927 address with no default route, and each refusal names its
+# reason (#904).
+opt_link_local_fallback() {
+    local addr
+    opt_refused "link_local_fallback cannot be set in mode=ipvlan" \
+        -o mode=ipvlan -o parent="$IPVLAN_PARENT" -o link_local_fallback=true
+    opt_refused "link_local_fallback cannot be combined with ipv6_mode=dhcp" \
+        -o bridge="$SEGMENT" -o ipv6_mode=dhcp -o link_local_fallback=true
+    opt_refused "is longer than link_local_fallback allows" \
+        -o bridge="$SEGMENT" -o link_local_fallback=true -o lease_timeout=20s
+    opt_net em-o-ll -o bridge=em-quiet -o link_local_fallback=true
+    opt_run em-c-ll em-o-ll
+    addr="$(d docker exec em-c-ll ip -4 addr 2>/dev/null | awk '$1 == "inet" && $2 ~ /^169\.254\./ { print $2; exit }')"
+    case "$addr" in
+        169.254.*/16) ;;
+        *) fail "link_local_fallback=true on a server-less bridge: the container holds no 169.254/16 address ('$addr')" ;;
+    esac
+    ! d docker exec em-c-ll ip route | grep '^default' >/dev/null \
+        || fail "link_local_fallback=true: the container on $addr has a default route"
+    opt_down em-o-ll em-c-ll
 }
 
 # link_submode CTR prints the kind and mode of the container's eth0 as
