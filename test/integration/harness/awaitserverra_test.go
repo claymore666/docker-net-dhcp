@@ -31,6 +31,7 @@ func TestAwaitServerRA_CountsAnAdvertisementSentDuringTheReadinessWait(t *testin
 	}
 	started := time.Now().Add(-time.Second)
 	ra := RAFrame{At: started.Add(33 * time.Millisecond)}
+	stale := RAFrame{At: started.Add(-20 * time.Millisecond)}
 	rec := &fatalRecorder{}
 	f := &V6Fixture{
 		t:                 rec,
@@ -38,7 +39,7 @@ func TestAwaitServerRA_CountsAnAdvertisementSentDuringTheReadinessWait(t *testin
 		logFile:           logFile,
 		startedAt:         started,
 		evidenceStartedAt: started.Add(72 * time.Millisecond),
-		raCap:             &RACapture{t: rec, iface: V6BridgeName, frames: []RAFrame{ra}},
+		raCap:             &RACapture{t: rec, iface: V6BridgeName, frames: []RAFrame{stale, ra}},
 	}
 	if got := f.raCap.FramesAfter(f.EvidenceStartedAt()); len(got) != 0 {
 		t.Fatalf("the case is not the lane's: %d frame(s) after the readiness wait, want 0", len(got))
@@ -49,6 +50,7 @@ func TestAwaitServerRA_CountsAnAdvertisementSentDuringTheReadinessWait(t *testin
 		t.Fatalf("AwaitServerRA failed a segment that advertised during the readiness wait: %s", rec.fatals[0])
 	}
 	if len(frames) != 1 || !frames[0].At.Equal(ra.At) {
-		t.Fatalf("AwaitServerRA returned %v, want the one frame at %s", frames, ra.At.Format("15:04:05.000"))
+		t.Fatalf("AwaitServerRA returned %v, want only the frame at %s, not the one sent before this server started",
+			frames, ra.At.Format("15:04:05.000"))
 	}
 }
