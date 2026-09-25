@@ -10,7 +10,7 @@ import (
 	"testing"
 )
 
-// The bridge and parent-attached attach paths each need #868's tolerance through the one helper, so this test reads
+// The bridge, parent-attached and IPAM endpoint paths each need #868's tolerance through the one helper, so this test reads
 // source. It keys on the call, since a site that named its context reqCtx once passed unchecked (#868, #960).
 const (
 	v6AbsenceAcquireCall = "p.acquireWithPolicy("
@@ -21,7 +21,7 @@ const (
 
 var v6AbsenceSiteFiles = []string{"v6_acquire.go"}
 
-var v6AcquireCallerFiles = []string{"network.go", "parent_attached.go"}
+var v6AcquireCallerFiles = []string{"network.go", "parent_attached.go", "ipam_endpoint.go"}
 
 // v6AcquireCallArgs returns each helper call in name with the lines up to its closing "})".
 func v6AcquireCallArgs(t *testing.T, name string) []string {

@@ -558,7 +558,7 @@ func (p *Plugin) ipamRebindCandidate(networkID string, mac net.HardwareAddr) (st
 	}
 	var siblings []lease.Record
 	if len(candidates) == 1 {
-		siblings = ipamTombstones6(rb, networkID, candidates[0].CHAddr, now)
+		siblings = p.ipamUnheldTombstones(networkID, ipamTombstones6(rb, networkID, candidates[0].CHAddr, now))
 	}
 	if len(candidates) > 1 || len(siblings) > 1 {
 		p.ipamRebindAmbiguous.Add(1)

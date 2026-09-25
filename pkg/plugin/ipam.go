@@ -135,7 +135,7 @@ func (p *Plugin) apiRequestPool(w http.ResponseWriter, r *http.Request) {
 // stored PoolID (#110).
 func (p *Plugin) RequestPool(req RequestPoolRequest) (RequestPoolResponse, error) {
 	if req.V6 {
-		return RequestPoolResponse{}, fmt.Errorf("%w: this plugin does not allocate IPv6 pools. In this shape it serves IPv4 only: `-o ipv6=true`, and `-o ipv6_mode=` with any mode but off, are refused on such a network too, because no DHCPv6 exchange runs on the IPAM endpoint path. For IPv6 today, create the network with --ipam-driver null, where every ipv6_mode is unchanged and supported. Progress on IPv6 in IPAM mode is tracked in issue #960", util.ErrIPAM)
+		return RequestPoolResponse{}, fmt.Errorf("%w: --ipv6 is refused on a network that uses this plugin as its IPAM driver, because the plugin allocates no IPv6 pool. IPv6 on such a network needs no Docker pool: drop --ipv6 and switch it on with `-o ipv6=true` or `-o ipv6_mode=<mode>`, and each container gets its IPv6 address from the DHCPv6 server or the router advertisement on its link", util.ErrIPAM)
 	}
 	if req.SubPool != "" {
 		return RequestPoolResponse{}, fmt.Errorf("%w: --ip-range is not supported: addresses come from the LAN's DHCP server, which this plugin does not narrow", util.ErrIPAM)
@@ -424,7 +424,8 @@ func (p *Plugin) ReleaseAddress(req ReleaseAddressRequest) error {
 	return nil
 }
 
-// ipamEndpointHolds keys on network and address, since two IPAM networks on one segment can issue one address (#110).
+// ipamEndpointHolds keys on network and address, since two IPAM networks on one segment can issue one address; either
+// family counts, so a v6 tombstone a running endpoint holds is not re-bound (#110, #960).
 func (p *Plugin) ipamEndpointHolds(mac net.HardwareAddr, addr string) bool {
 	if len(mac) == 0 || addr == "" {
 		return false
@@ -433,7 +434,7 @@ func (p *Plugin) ipamEndpointHolds(mac net.HardwareAddr, addr string) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	for _, fp := range p.endpointFingerprints {
-		if fp.MAC == want && fp.IPv4 == addr {
+		if fp.MAC == want && (fp.IPv4 == addr || fp.IPv6 == addr) {
 			return true
 		}
 	}

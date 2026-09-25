@@ -227,7 +227,7 @@ func TestIPAMCreateEndpoint_EveryExitAfterTheTakeHandsTheAddressBack(t *testing.
 			name: "the link build fails",
 			drive: func(t *testing.T, p *Plugin, b *ipamBinding, recordID string) {
 				f0Reservation(p, b, restarted, recordID, f0Addr, nil)
-				_, err := p.createIPAMEndpoint(context.Background(), f0CreateRequest(restarted, f0Addr), f0Options(), b)
+				_, err := p.createIPAMEndpoint(context.Background(), time.Now(), f0CreateRequest(restarted, f0Addr), f0Options(), b)
 				if err == nil {
 					t.Fatal("CreateEndpoint succeeded; this host has the bridge the fixture needs absent")
 				}
@@ -241,7 +241,7 @@ func TestIPAMCreateEndpoint_EveryExitAfterTheTakeHandsTheAddressBack(t *testing.
 				r, _ := p.ipamReserves.begin(key, time.Now())
 				p.ipamReserves.finish(key, r, ipamReservation{record: recordID}, nil)
 				r.err = errors.New("the exchange failed")
-				if _, err := p.createIPAMEndpoint(context.Background(), f0CreateRequest(restarted, f0Addr), f0Options(), b); err == nil {
+				if _, err := p.createIPAMEndpoint(context.Background(), time.Now(), f0CreateRequest(restarted, f0Addr), f0Options(), b); err == nil {
 					t.Fatal("CreateEndpoint accepted a failed reservation")
 				}
 			},
@@ -250,7 +250,7 @@ func TestIPAMCreateEndpoint_EveryExitAfterTheTakeHandsTheAddressBack(t *testing.
 			name: "Docker published a different address",
 			drive: func(t *testing.T, p *Plugin, b *ipamBinding, recordID string) {
 				f0Reservation(p, b, restarted, recordID, f0Addr, nil)
-				if _, err := p.createIPAMEndpoint(context.Background(), f0CreateRequest(restarted, "192.168.99.44/24"), f0Options(), b); err == nil {
+				if _, err := p.createIPAMEndpoint(context.Background(), time.Now(), f0CreateRequest(restarted, "192.168.99.44/24"), f0Options(), b); err == nil {
 					t.Fatal("CreateEndpoint accepted an address the reservation does not hold")
 				}
 			},
@@ -305,7 +305,7 @@ func TestIPAMCreateEndpoint_AnAddresslessRecordIsClosedNotRetained(t *testing.T)
 
 	id := p.recordReserved(ipamTestNetwork, restarted, dhcp.ClientIdentity(restarted))
 	f0Reservation(p, b, restarted, id, f0Addr, nil)
-	if _, err := p.createIPAMEndpoint(context.Background(), f0CreateRequest(restarted, "192.168.99.44/24"), f0Options(), b); err == nil {
+	if _, err := p.createIPAMEndpoint(context.Background(), time.Now(), f0CreateRequest(restarted, "192.168.99.44/24"), f0Options(), b); err == nil {
 		t.Fatal("CreateEndpoint accepted an address the reservation does not hold")
 	}
 	if got := f0Rec(t, p, id).Phase; got != lease.PhaseClosed {
@@ -382,7 +382,7 @@ func TestIPAMReserve_AnAbandonedWindowStillEndsOnTheWire(t *testing.T) {
 	id := f0Tombstone(t, p, first, f0Addr)
 	f0Rebind(t, p, restarted, "192.168.99.10")
 	f0Reservation(p, b, restarted, id, f0Addr, nil)
-	if _, err := p.createIPAMEndpoint(context.Background(), f0CreateRequest(restarted, f0Addr), f0Options(), b); err == nil {
+	if _, err := p.createIPAMEndpoint(context.Background(), time.Now(), f0CreateRequest(restarted, f0Addr), f0Options(), b); err == nil {
 		t.Fatal("CreateEndpoint succeeded; this host has the bridge the fixture needs absent")
 	}
 

@@ -10,9 +10,11 @@ import (
 	"net/netip"
 	"time"
 
+	"github.com/claymore666/dhcp-golib/lease"
 	log "github.com/sirupsen/logrus"
 	"github.com/vishvananda/netlink"
 
+	"github.com/claymore666/docker-net-dhcp/v2/pkg/dhcp"
 	"github.com/claymore666/docker-net-dhcp/v2/pkg/util"
 )
 
@@ -24,9 +26,9 @@ func ipamBindingOf(networkID string) *ipamBinding {
 	return sn.Binding
 }
 
-// createIPAMEndpoint runs no DHCP exchange, since RequestAddress already leased the address, and
-// answers an empty Interface, since libnetwork refuses an address or MAC it did not ask for (#110).
-func (p *Plugin) createIPAMEndpoint(ctx context.Context, r CreateEndpointRequest, opts DHCPNetworkOptions, binding *ipamBinding) (CreateEndpointResponse, error) {
+// createIPAMEndpoint runs no v4 exchange, since RequestAddress already leased that address, and answers only the v6
+// address, since libnetwork refuses a v4 address or MAC it did not ask for (#110, #960).
+func (p *Plugin) createIPAMEndpoint(ctx context.Context, callStart time.Time, r CreateEndpointRequest, opts DHCPNetworkOptions, binding *ipamBinding) (CreateEndpointResponse, error) {
 	res := CreateEndpointResponse{Interface: &EndpointInterface{}}
 	mode := opts.effectiveMode()
 	// CreateNetwork refuses ipvlan in IPAM mode: the kernel rejects libnetwork's generated MAC on an ipvlan link
@@ -108,9 +110,28 @@ func (p *Plugin) createIPAMEndpoint(ctx context.Context, r CreateEndpointRequest
 		h.Routes = dhcpStaticRoutes(rsv.info.Routes)
 	})
 
+	// The v6 half is the last step that can fail, after the v4 record is folded, so a fatal verdict gives up both
+	// records and no failure follows a v6 lease (#960).
+	var v6IP string
+	if opts.ipv6Enabled() {
+		addr, err := p.createIPAMEndpointV6(ctx, callStart, r, opts, mac, rsv.record6, hostname)
+		if err != nil {
+			remove()
+			giveUp()
+			return res, err
+		}
+		res.Interface.AddressIPv6 = addr
+		p.updateJoinHint(r.EndpointID, func(h *joinHint) {
+			if h.IPv6 != nil {
+				v6IP = h.IPv6.IP.String()
+			}
+		})
+	}
+
 	p.rememberEndpoint(r.EndpointID, endpointFingerprint{
 		MAC:    mac.String(),
 		IPv4:   want.Addr().String(),
+		IPv6:   v6IP,
 		Ifname: p.hintIfname(r.EndpointID),
 	}, hostname)
 
@@ -119,10 +140,86 @@ func (p *Plugin) createIPAMEndpoint(ctx context.Context, r CreateEndpointRequest
 		"endpoint": shortID(r.EndpointID),
 		"mode":     mode,
 		"ip":       rsv.info.IP,
+		"ipv6":     res.Interface.AddressIPv6,
 		"gateway":  gateway,
 	}).Info("Endpoint created from the address this plugin's IPAM driver reserved for it")
 
 	return res, nil
+}
+
+// createIPAMEndpointV6 runs null mode's DHCPv6 one-shot on the IPAM link, on the record the re-bind carried when
+// there is one (#960).
+func (p *Plugin) createIPAMEndpointV6(ctx context.Context, callStart time.Time, r CreateEndpointRequest, opts DHCPNetworkOptions, mac net.HardwareAddr, rebound string, hostname dhcpHostname) (string, error) {
+	recordID6, identity6, preferredV6, err := p.ipamIdentity6(opts, r.NetworkID, r.EndpointID, mac, rebound)
+	if err != nil {
+		return "", err
+	}
+	pol, err := resolveServerPolicy(opts)
+	if err != nil {
+		return "", err
+	}
+	base := dhcp.DHCPClientOptions{
+		Hostname:    hostname.name,
+		FQDN:        opts.fqdnMode(),
+		VendorClass: opts.VendorClass,
+		MAC:         mac,
+		Records:     p.records,
+	}
+	return p.acquireInitialV6(ctx, opts, base, v6Acquire{iface: ipamEndpointIface(opts.effectiveMode(), r.EndpointID),
+		networkID: r.NetworkID, endpointID: r.EndpointID, callStart: callStart, timeout: leaseTimeoutFor(opts),
+		pol: pol, identity6: identity6, recordID6: recordID6, preferredV6: preferredV6})
+}
+
+// ipamIdentity6 keeps the DUID and IAID of the record the re-bind moved to this MAC, since RFC 9915 section 11 says a
+// DUID "SHOULD NOT change over time"; with none it mints on the MAC the endpoint has now, as null mode does (#960).
+func (p *Plugin) ipamIdentity6(opts DHCPNetworkOptions, networkID, endpointID string, mac net.HardwareAddr, rebound string) (string, dhcp.Identity6, string, error) {
+	if rebound != "" {
+		if id6, preferred, ok := p.reboundIdentity6(rebound); ok {
+			return rebound, id6, preferred, nil
+		}
+	}
+	id6, err := resolveIdentity6(opts, endpointID, mac)
+	if err != nil {
+		return "", dhcp.Identity6{}, "", err
+	}
+	return p.recordCreated6(networkID, endpointRecordKey(opts.effectiveMode(), endpointID, mac), id6), id6, "", nil
+}
+
+// reboundIdentity6 reads the re-bound record's identity and last address, which the one-shot asks for again.
+func (p *Plugin) reboundIdentity6(id string) (dhcp.Identity6, string, bool) {
+	if p.records == nil {
+		return dhcp.Identity6{}, "", false
+	}
+	rb, err := p.records.Rebuilt()
+	if err != nil {
+		log.WithError(err).WithField("record", id).
+			Warn("Could not read the lease records back; this endpoint gets a fresh DHCPv6 identity and the server sees a new client")
+		return dhcp.Identity6{}, "", false
+	}
+	rec, ok := rb.ByID(id)
+	if !ok || rec.Phase != lease.PhaseCreated {
+		return dhcp.Identity6{}, "", false
+	}
+	id6, err := dhcp.ParseIdentity6(rec.Identity)
+	if err != nil {
+		log.WithError(err).WithField("record", id).
+			Warn("The re-bound DHCPv6 identity could not be read back; this endpoint gets a fresh one and the server sees a new client")
+		return dhcp.Identity6{}, "", false
+	}
+	preferred := ""
+	if a, ok := rec.Addr(); ok {
+		preferred = a.String()
+	}
+	return id6, preferred, true
+}
+
+// ipamEndpointIface is the container-side link addIPAMEndpointLink makes, which the DHCPv6 one-shot runs on.
+func ipamEndpointIface(mode, endpointID string) string {
+	if mode == ModeMacvlan || mode == ModeIPvlan {
+		return subLinkName(endpointID)
+	}
+	_, ctrName := vethPairNames(endpointID)
+	return ctrName
 }
 
 func (p *Plugin) addIPAMEndpointLink(ctx context.Context, endpointID, mode string, opts DHCPNetworkOptions, mac net.HardwareAddr) (func(), error) {
