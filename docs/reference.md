@@ -385,8 +385,10 @@ All modes share two invariants:
   example below uses, what 1.x and 2.0 shipped, and what all three modes
   take, and `--ipam-driver <this plugin>` (v2.1.0+, #110), which puts the
   leased address in Docker's own address management and covers `bridge`
-  and `macvlan` for IPv4. `ipvlan` is refused in that shape (#949) and so
-  is IPv6 (#960). See [Address allocation](#address-allocation).
+  and `macvlan` for IPv4 and IPv6. `ipvlan` is refused in that shape
+  (#949). IPv6 there is switched on with `-o ipv6=true` or
+  `-o ipv6_mode=<mode>`, and Docker's `--ipv6` is refused (#960). See
+  [Address allocation](#address-allocation).
 - One DHCP-served network per container is the supported shape.
 
 ### bridge (default)
@@ -1098,9 +1100,10 @@ The plugin puts the IPv6 address Docker hands it at endpoint creation
 DHCPv6 equivalent of option 50 and, like option 50, a request the server
 may decline. With the null IPAM driver the documented shapes use, Docker
 hands the plugin none, so `--ip6` has no effect today (measured on engine
-29.8.1, 2026-09-24). IPv6 in IPAM mode is [#960](https://github.com/claymore666/docker-net-dhcp/issues/960), where `--ip6` becomes
-deliverable. The same mechanism is what makes an address survive `docker restart`: the
-tombstoned v6 address goes back out as the hint.
+29.8.1, 2026-09-24). The same mechanism is what makes an address survive
+`docker restart`: the tombstoned v6 address goes back out as the hint.
+With this plugin as the IPAM driver `--ip6` is not served either: the
+plugin allocates no IPv6 pool ([#960](https://github.com/claymore666/docker-net-dhcp/issues/960)).
 
 Container-level knobs that interact with the plugin:
 
@@ -1184,8 +1187,9 @@ There is no `ip6` driver-opt. The plugin puts the IPv6 address Docker
 hands it at endpoint creation into the Solicit as the requested address,
 the v6 counterpart of `--ip`. With the null IPAM driver the documented
 shapes use, Docker hands none, so `--ip6` has no effect today (measured on
-engine 29.8.1, 2026-09-24). IPv6 in IPAM mode is [#960](https://github.com/claymore666/docker-net-dhcp/issues/960), where `--ip6`
-becomes deliverable.
+engine 29.8.1, 2026-09-24). With this plugin as the IPAM driver `--ip6`
+is not served either: the plugin allocates no IPv6 pool
+([#960](https://github.com/claymore666/docker-net-dhcp/issues/960)).
 
 On a network created with **this plugin as its IPAM driver** (#110),
 `docker run --ip`, `docker network connect --ip` and Compose's
