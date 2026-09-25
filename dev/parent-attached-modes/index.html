@@ -1206,8 +1206,9 @@ sidecar, no <code>cap_add</code>:</p>
   is the address source of truth. Pass <code>--ipam-driver=null</code>, or, from
   v2.1.0, this plugin's own IPAM driver
   (<a href="../reference/#address-allocation">reference</a>). <code>ipvlan</code> takes
-  <code>--ipam-driver=null</code> only, because an IPAM driver needs a MAC per
-  endpoint and ipvlan children share the parent's (#949).</li>
+  <code>--ipam-driver=null</code> only: Docker sets the MAC it generates for an
+  IPAM driver on the container's interface at start, and an ipvlan
+  interface cannot change its MAC (#949).</li>
 <li>One DHCP-served network per container. If a container also joins a
   bridge or other Docker network, that's its problem to coordinate.</li>
 </ul>

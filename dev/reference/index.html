@@ -2186,10 +2186,12 @@ one, and you keep the one your mode owns (#1010). Before that refusal
 the second key was accepted and dropped, and the pool identity was built
 from the first key alone.</p>
 <p><strong>Not supported.</strong> <code>ipvlan</code> networks cannot use this plugin as their
-IPAM driver: Docker generates a MAC per endpoint for an IPAM driver that
-asks for one, and ipvlan children share the parent's MAC and refuse a
-supplied one. The network create is refused, and <code>--ipam-driver null</code> is
-unchanged and supported for ipvlan (#949).</p>
+IPAM driver. Docker generates a MAC for each endpoint when the IPAM
+driver asks for one and sets it on the container's interface at start,
+and an ipvlan interface cannot change its MAC, so every container would
+fail to start. The network create is refused, and <code>--ipam-driver null</code>
+is unchanged and supported for ipvlan. Lifting the refusal needs a
+change in Docker's engine (#949).</p>
 <p><strong>IPv6 is IPv4-only in this shape, and the combination is refused.</strong> The
 plugin allocates no IPv6 pool, so Docker's <code>--ipv6</code> is refused; and so is
 every option that switches IPv6 on for the network, which is

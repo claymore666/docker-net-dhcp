@@ -1240,8 +1240,6 @@ below decide what is in a release; this page follows them.</p>
 <li><a href="https://github.com/claymore666/docker-net-dhcp/issues/903">#903</a>, a bridge the plugin creates and owns</li>
 <li><a href="https://github.com/claymore666/docker-net-dhcp/issues/904">#904</a>, link-local fallback where no server answers, off by default</li>
 <li><a href="https://github.com/claymore666/docker-net-dhcp/issues/905">#905</a>, macvlan and ipvlan sub-mode options</li>
-<li><a href="https://github.com/claymore666/docker-net-dhcp/issues/949">#949</a>, ipvlan in IPAM mode, keyed on the MAC Docker generates for the
-  endpoint</li>
 <li><a href="https://github.com/claymore666/docker-net-dhcp/issues/960">#960</a>, IPv6 in IPAM mode: the v6 exchange, the v6 record, and a DUID
   that survives a restart</li>
 <li><a href="https://github.com/claymore666/docker-net-dhcp/issues/1029">#1029</a>, the DHCPv6 Client FQDN option, so <code>register_dns</code> registers the
@@ -1412,8 +1410,8 @@ ordinary issues and generally translate into something concrete. This
 page exists because <code>documentation_roadmap</code> is one of them (<a href="https://github.com/claymore666/docker-net-dhcp/issues/452">#452</a>).</p>
 </details>
 <h2 id="blocked-upstream">Blocked upstream<a class="headerlink" href="#blocked-upstream" title="Permanent link">&para;</a></h2>
-<p>One feature is designed here and cannot ship until Docker's own engine
-carries a change. It stays open on purpose:</p>
+<p>Two features cannot ship until Docker's own engine carries a change.
+They stay open on purpose:</p>
 <table>
 <thead>
 <tr>
@@ -1428,9 +1426,14 @@ carries a change. It stays open on purpose:</p>
 <td>network drivers to receive the endpoint name at <code>CreateEndpoint</code>, as IPAM drivers already do</td>
 <td><a href="https://github.com/moby/moby/issues/52870">moby/moby#52870</a> (issue), <a href="https://github.com/moby/moby/pull/52871">moby/moby#52871</a> (PR, open)</td>
 </tr>
+<tr>
+<td><a href="https://github.com/claymore666/docker-net-dhcp/issues/949">#949</a>, ipvlan with this plugin as the IPAM driver</td>
+<td>Docker to leave the container's interface MAC alone at start when the link cannot change it. Today it sets the MAC it generated for the IPAM driver, and every ipvlan container fails to start</td>
+<td>not filed yet</td>
+</tr>
 </tbody>
 </table>
-<p>Both halves were filed in June 2026. The endpoint-name change
+<p>For <a href="https://github.com/claymore666/docker-net-dhcp/issues/218">#218</a>, both halves were filed in June 2026. The endpoint-name change
 (<a href="https://github.com/moby/moby/pull/52871">moby/moby#52871</a>) is still awaiting review, and <a href="https://github.com/claymore666/docker-net-dhcp/issues/218">#218</a> will not be
 closed as "won't fix" while that is the only thing in the way. This
 fork's own half is written and waiting.</p>
