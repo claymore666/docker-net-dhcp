@@ -81,6 +81,11 @@ func TestLinkLocalFallback_AServerlessStartThenMovesToALease(t *testing.T) {
 	if len(onLink) != 1 || !strings.HasPrefix(onLink[0], ip+"/16") {
 		t.Fatalf("the container's eth0 holds %v, want exactly %s/16", onLink, ip)
 	}
+	// With no gateway in Join the engine attaches docker_gwbridge as a second link with its own default route (#904).
+	if links := harness.ExecOutput(t, ctx, id, "ip", "-o", "-4", "addr", "show"); strings.Count(strings.TrimSpace(links), "\n") != 1 ||
+		!strings.Contains(links, " eth0 ") {
+		t.Fatalf("the container holds IPv4 on more than lo and eth0, so the engine added its gateway bridge:\n%s", links)
+	}
 	if routes := harness.ExecOutput(t, ctx, id, "ip", "-4", "route", "show"); strings.Contains(routes, "default") {
 		t.Fatalf("a link-local endpoint got a default route, which Join withholds for it (#904):\n%s", routes)
 	}
@@ -114,15 +119,16 @@ func TestLinkLocalFallback_AServerlessStartThenMovesToALease(t *testing.T) {
 	if _, ok := ef.LeaseExpiry(mac); !ok {
 		t.Errorf("the server's lease file holds no lease for %s", mac)
 	}
+	want := "default via " + ef.ServerIP() + " dev eth0"
 	routes := ""
 	for time.Now().Before(deadline) {
-		if routes = harness.ExecOutput(t, ctx, id, "ip", "-4", "route", "show"); strings.Contains(routes, "default via "+ef.ServerIP()) {
+		if routes = strings.TrimSpace(harness.ExecOutput(t, ctx, id, "ip", "-4", "route", "show", "default")); strings.HasPrefix(routes, want) {
 			break
 		}
 		time.Sleep(time.Second)
 	}
-	if !strings.Contains(routes, "default via "+ef.ServerIP()) {
-		t.Errorf("the container has no default route via the server's gateway after the move:\n%s", routes)
+	if !strings.HasPrefix(routes, want) || strings.Contains(routes, "\n") {
+		t.Errorf("after the move the container's default routes are %q, want only %q", routes, want)
 	}
 
 	logged := harness.AwaitPluginLogSince(t, ctx, mark, 20*time.Second, func(w string) bool {

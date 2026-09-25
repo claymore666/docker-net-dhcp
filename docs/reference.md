@@ -1566,8 +1566,9 @@ unchanged.
   link for it with ARP (RFC 5227 §2.1.1), moves on from an address in use
   while a whole claim still fits the time left (see Timing), announces the
   one it keeps, and gives it to Docker as a `/16`.
-- The container gets no gateway and no routes. A link-local address
-  reaches its own segment and nothing else.
+- The container gets no gateway and no routes, and the plugin tells
+  Docker not to add its `docker_gwbridge` link in their place. A
+  link-local address reaches its own segment and nothing else.
 - The plugin keeps asking for a lease. When one arrives, the container's
   address changes to it in place and the lease's gateway and routes are
   installed. This is the same change as a renewal that returns a

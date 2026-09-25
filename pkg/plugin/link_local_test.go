@@ -604,7 +604,7 @@ func abortJoinAttach(t *testing.T, p *Plugin, endpointID string, m *dhcpManager)
 	}
 }
 
-func TestJoin_ALinkLocalEndpointGetsNoGatewayAndNoHostRoutes(t *testing.T) {
+func TestJoin_ALinkLocalEndpointGetsNoGatewayNoHostRoutesAndNoGatewayBridge(t *testing.T) {
 	withStateDir(t, t.TempDir())
 	_, dst, _ := net.ParseCIDR("10.88.0.0/16")
 	stubKernelRouteTable(t, []netlink.Route{
@@ -618,10 +618,11 @@ func TestJoin_ALinkLocalEndpointGetsNoGatewayAndNoHostRoutes(t *testing.T) {
 	for _, tc := range []struct {
 		addr, wantGW string
 		wantRoutes   int
+		wantNoGWSvc  bool
 	}{
-		{"169.254.60.199/16", "", 0},
+		{"169.254.60.199/16", "", 0, true},
 		// The control: a leased endpoint on the same network takes the host's default and its route.
-		{"192.168.99.61/24", "192.168.99.1", 1},
+		{"192.168.99.61/24", "192.168.99.1", 1, false},
 	} {
 		t.Run(tc.addr, func(t *testing.T) {
 			a, _ := netlink.ParseAddr(tc.addr)
@@ -640,6 +641,9 @@ func TestJoin_ALinkLocalEndpointGetsNoGatewayAndNoHostRoutes(t *testing.T) {
 			}
 			if res.Gateway != tc.wantGW || len(res.StaticRoutes) != tc.wantRoutes {
 				t.Errorf("Join returned gateway %q and %d routes, want %q and %d", res.Gateway, len(res.StaticRoutes), tc.wantGW, tc.wantRoutes)
+			}
+			if res.DisableGatewayService != tc.wantNoGWSvc {
+				t.Errorf("Join returned DisableGatewayService %v, want %v", res.DisableGatewayService, tc.wantNoGWSvc)
 			}
 		})
 	}

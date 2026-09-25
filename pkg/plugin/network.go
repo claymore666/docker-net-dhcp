@@ -1649,6 +1649,9 @@ func (p *Plugin) Join(ctx context.Context, r JoinRequest) (JoinResponse, error) 
 			"endpoint": shortID(r.EndpointID),
 			"ip":       hint.IPv4.String(),
 		}).Info("[Join] Endpoint is on an IPv4 link-local address: no gateway and no host routes until a lease arrives")
+		// Without this the engine gives a container whose endpoints name no gateway a second link on docker_gwbridge
+		// with its default route, and the lease's default route then fails as "file exists" (moby needDefaultGW, #904).
+		res.DisableGatewayService = true
 	} else if err := p.addRoutes(&opts, false, routeSrc, r, hint, &res); err != nil {
 		return res, err
 	}
