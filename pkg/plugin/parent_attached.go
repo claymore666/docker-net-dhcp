@@ -323,10 +323,7 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, callStart tim
 			res.Interface.MacAddress = mac.String()
 		}
 
-		timeout := defaultLeaseTimeout
-		if opts.LeaseTimeout != 0 {
-			timeout = opts.LeaseTimeout
-		}
+		timeout := leaseTimeoutFor(opts)
 		// Client-id from the MAC for macvlan and from the endpoint ID for ipvlan, whose slaves share the parent MAC
 		// (#371).
 		clientID := resolveClientID(opts, r.EndpointID, mac)
@@ -388,9 +385,17 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, callStart tim
 				var endV6 context.CancelFunc
 				acqCtx, endV6 = withV6AcquisitionDeadline(ctx, callStart)
 				defer endV6()
+			} else if opts.LinkLocalFallback {
+				// DHCP gets the budget less one claim window, so the claim still ends before the daemon's deadline (#904).
+				var endV4 context.CancelFunc
+				acqCtx, endV4 = context.WithDeadline(ctx, linkLocalDHCPDeadline(callStart))
+				defer endV4()
 			}
 
 			info, ra, err := p.acquireWithPolicy(acqCtx, la.Name, pol, v6, timeout, r.EndpointID, base)
+			if err != nil && !v6 {
+				info, err = p.linkLocalFallback(ctx, opts, callStart, la.Name, r.EndpointID, err)
+			}
 			if err != nil {
 				// No DHCPv6 address is fatal only where the segment advertised managed DHCPv6 (#868).
 				if v6 && p.noteV6Absence(ra, la.Name, r.EndpointID, err, base.Mode6) {
@@ -414,7 +419,8 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, callStart tim
 					res.Interface.Address = info.IP
 					hint.IPv4 = addr
 					hint.Gateway = info.Gateway
-					if opts.Gateway != "" {
+					// No gateway on link-local, as in bridge mode (#904).
+					if opts.Gateway != "" && !isLinkLocalAddr(addr) {
 						hint.Gateway = opts.Gateway
 					}
 					// DHCP option-121 classless static routes (RFC 3442);

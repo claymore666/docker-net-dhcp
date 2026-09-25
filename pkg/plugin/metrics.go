@@ -41,6 +41,7 @@ func metricDefs() []metricDef {
 		{name: "healthy", help: "1 when the plugin reports itself healthy, 0 when an operator should look. Mirrors the healthy field of /Plugin.Health.", field: "healthy"},
 		{name: "uptime_seconds", help: "Seconds since this plugin process started.", field: "uptime_seconds"},
 		{name: "active_endpoints", help: "Endpoints with a live DHCP renewal client.", field: "active_endpoints"},
+		{name: "link_local_endpoints", help: "Endpoints on an RFC 3927 169.254/16 address because no DHCPv4 lease arrived in time; each moves to a lease when one does.", field: "link_local_endpoints"},
 		{name: "pending_hints", help: "CreateEndpoint hints waiting for their Join.", field: "pending_hints"},
 		{name: "sandbox_netns_visible", help: "Sandbox netns entries the plugin can see; -1 means the directory is unreadable and sandbox-liveness answers carry no evidence.", field: "sandbox_netns_visible"},
 		{name: "sandbox_netns_propagation", help: "Whether a mount the daemon makes under the sandbox netns directory after this process started can reach it: 1 linked, 0 private, -1 unreadable or uncovered. Answered before the directory exists, from the mount covering its parent. A 0 means every attach takes the container PID route, a 1 means every attach takes the sandbox key route, and both are ordinary.", field: "sandbox_netns_propagation"},

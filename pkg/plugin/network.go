@@ -159,6 +159,10 @@ func validateModeOptions(opts DHCPNetworkOptions) error {
 		return err
 	}
 
+	if err := validateLinkLocalFallback(opts); err != nil {
+		return err
+	}
+
 	// ipvlan children wear the parent's MAC and refuse --mac-address, so every endpoint would be refused (#1036).
 	if opts.RequireMAC && opts.effectiveMode() == ModeIPvlan {
 		return fmt.Errorf("%w: require_mac cannot be set in mode=ipvlan: ipvlan children share the parent's MAC and refuse --mac-address, so every container on the network would be refused",
@@ -322,6 +326,9 @@ func (p *Plugin) CreateNetwork(r CreateNetworkRequest) error {
 			return err
 		}
 		if err := ipamRefuseIPv6(mode6); err != nil {
+			return err
+		}
+		if err := ipamRefuseLinkLocal(opts); err != nil {
 			return err
 		}
 		iface := opts.Bridge
@@ -956,10 +963,7 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 			return fmt.Errorf("failed to attach host side link of veth peer to bridge: %w", err)
 		}
 
-		timeout := defaultLeaseTimeout
-		if opts.LeaseTimeout != 0 {
-			timeout = opts.LeaseTimeout
-		}
+		timeout := leaseTimeoutFor(opts)
 		// The MAC keys the DHCP identity, so Join and the orphan-release path re-derive it without a link to read.
 		p.updateJoinHint(r.EndpointID, func(hint *joinHint) {
 			hint.MacAddress = ctrLink.Attrs().HardwareAddr
@@ -1032,9 +1036,17 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 				var endV6 context.CancelFunc
 				acqCtx, endV6 = withV6AcquisitionDeadline(ctx, callStart)
 				defer endV6()
+			} else if opts.LinkLocalFallback {
+				// DHCP gets the budget less one claim window, so the claim still ends before the daemon's deadline (#904).
+				var endV4 context.CancelFunc
+				acqCtx, endV4 = context.WithDeadline(ctx, linkLocalDHCPDeadline(callStart))
+				defer endV4()
 			}
 
 			info, ra, err := p.acquireWithPolicy(acqCtx, ctrName, pol, v6, timeout, r.EndpointID, base)
+			if err != nil && !v6 {
+				info, err = p.linkLocalFallback(ctx, opts, callStart, ctrName, r.EndpointID, err)
+			}
 			if err != nil {
 				// An empty DHCPv6 acquisition fails only when the segment advertised managed DHCPv6; stateless and
 				// SLAAC segments have no DHCPv6 address to get (#868).
@@ -1059,7 +1071,8 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 					res.Interface.Address = info.IP
 					hint.IPv4 = ip
 					hint.Gateway = info.Gateway
-					if opts.Gateway != "" {
+					// A link-local endpoint has no gateway: one off its /16 would fail the engine's route install (#904).
+					if opts.Gateway != "" && !isLinkLocalAddr(ip) {
 						hint.Gateway = opts.Gateway
 					}
 					// Option-121 routes (RFC 3442) exclude a literal 0.0.0.0/0, folded into info.Gateway, but
@@ -1218,6 +1231,9 @@ func (p *Plugin) DeleteEndpoint(ctx context.Context, r DeleteEndpointRequest) er
 		// RETAINED on every mode and hostname decision, so plugin-restart recovery never resumes a gone endpoint's
 		// lease; keyed as the record was filed, since fp.MAC is empty on ipvlan (#899).
 		hw, _ := net.ParseMAC(fp.MAC)
+		if isLinkLocalV4String(fp.IPv4) {
+			p.closeLinkLocalRecord(r.NetworkID, endpointRecordKey(mode, r.EndpointID, hw))
+		}
 		p.retainRecordFor(r.NetworkID, endpointRecordKey(mode, r.EndpointID, hw))
 	}
 
@@ -1383,6 +1399,23 @@ func describeStaticRoutes(routes []*StaticRoute) []string {
 		out = append(out, r.Destination+" onlink")
 	}
 	return out
+}
+
+// joinRouteSource is the host link Join copies routes and the fallback gateway from: the parent, or the bridge.
+func joinRouteSource(opts DHCPNetworkOptions) (netlink.Link, error) {
+	switch opts.effectiveMode() {
+	case ModeMacvlan, ModeIPvlan:
+		l, err := nlLinkByName(opts.linkParent())
+		if err != nil {
+			return nil, fmt.Errorf("failed to get parent interface for route copy: %w", err)
+		}
+		return l, nil
+	}
+	l, err := netlink.LinkByName(opts.Bridge)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get bridge interface: %w", err)
+	}
+	return l, nil
 }
 
 // addRoutes copies the host link's non-default, non-kernel, non-DHCP-subnet routes into StaticRoutes in every
@@ -1605,20 +1638,20 @@ func (p *Plugin) Join(ctx context.Context, r JoinRequest) (JoinResponse, error) 
 	}
 
 	// Copy the host parent's non-default static routes into the container; `-o skip_routes=true` opts out (#102).
-	var routeSrc netlink.Link
-	if parentAttached {
-		routeSrc, err = nlLinkByName(opts.linkParent())
-		if err != nil {
-			return res, fmt.Errorf("failed to get parent interface for route copy: %w", err)
-		}
-	} else {
-		routeSrc, err = netlink.LinkByName(opts.Bridge)
-		if err != nil {
-			return res, fmt.Errorf("failed to get bridge interface: %w", err)
-		}
+	routeSrc, err := joinRouteSource(opts)
+	if err != nil {
+		return res, err
 	}
 
-	if err := p.addRoutes(&opts, false, routeSrc, r, hint, &res); err != nil {
+	// A link-local endpoint reaches no next hop off 169.254/16, and the engine fails the Join on a route it cannot
+	// install; the manager adds them when the lease arrives (#904).
+	if isLinkLocalAddr(hint.IPv4) {
+		log.WithFields(log.Fields{
+			"network":  shortID(r.NetworkID),
+			"endpoint": shortID(r.EndpointID),
+			"ip":       hint.IPv4.String(),
+		}).Info("[Join] Endpoint is on an IPv4 link-local address: no gateway and no host routes until a lease arrives")
+	} else if err := p.addRoutes(&opts, false, routeSrc, r, hint, &res); err != nil {
 		return res, err
 	}
 	if opts.ipv6Enabled() {

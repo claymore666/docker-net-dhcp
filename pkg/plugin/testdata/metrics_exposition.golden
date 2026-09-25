@@ -22,6 +22,10 @@ net_dhcp_uptime_seconds 1234.5
 # TYPE net_dhcp_active_endpoints gauge
 net_dhcp_active_endpoints 8870803
 
+# HELP net_dhcp_link_local_endpoints Endpoints on an RFC 3927 169.254/16 address because no DHCPv4 lease arrived in time; each moves to a lease when one does.
+# TYPE net_dhcp_link_local_endpoints gauge
+net_dhcp_link_local_endpoints 1476186
+
 # HELP net_dhcp_pending_hints CreateEndpoint hints waiting for their Join.
 # TYPE net_dhcp_pending_hints gauge
 net_dhcp_pending_hints 1152834
