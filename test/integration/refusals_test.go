@@ -91,9 +91,43 @@ type refusalCase struct {
 }
 
 // The rows are the "is refused" sentences of docs/reference.md's ipv6, ipv6_mode, host_ifname, require_mac,
-// macvlan_mode and ipvlan_mode rows and its IPAM section (#1016, #1036, #905); ErrIPAM and ErrModeMismatch prefix
-// every one of them, so no row matches on the prefix alone.
+// macvlan_mode, ipvlan_mode and vlan rows and its IPAM section (#1016, #1036, #905, #902); ErrIPAM and
+// ErrModeMismatch prefix every one of them, so no row matches on the prefix alone. A vlan control sits on the ipvlan
+// parent with id 1, since every fixture parent with a 3-digit id is over the kernel's 15 bytes.
 var refusalCases = []refusalCase{
+	{
+		name:    "vlan is refused on bridge and the message names the mode",
+		refused: createShape{mode: "bridge", opts: map[string]string{"vlan": "100"}},
+		want:    []string{"vlan cannot be set in mode=bridge"},
+		controls: map[string]createShape{
+			"bridge without it is accepted":  {mode: "bridge"},
+			"ipvlan with vlan=1 is accepted": {mode: "ipvlan", opts: map[string]string{"vlan": "1"}},
+		},
+	},
+	{
+		name:    "a vlan ID outside 1 to 4094 is refused",
+		refused: createShape{mode: "ipvlan", opts: map[string]string{"vlan": "4095"}},
+		want:    []string{`vlan "4095" is not a VLAN ID from 1 to 4094`},
+		controls: map[string]createShape{
+			"vlan=1 is accepted": {mode: "ipvlan", opts: map[string]string{"vlan": "1"}},
+		},
+	},
+	{
+		name:    "release_lease on a vlan sub-interface the plugin makes is refused",
+		refused: createShape{mode: "ipvlan", opts: map[string]string{"vlan": "1", "release_lease": "on_stop"}},
+		want:    []string{"release_lease=on_stop is refused on " + harness.IpvlanParent + ".1", "the host has none there"},
+		controls: map[string]createShape{
+			"release_lease without vlan is accepted": {mode: "ipvlan", opts: map[string]string{"release_lease": "on_stop"}},
+		},
+	},
+	{
+		name:    "a vlan sub-interface name over 15 bytes is refused",
+		refused: createShape{mode: "macvlan", opts: map[string]string{"vlan": "100"}},
+		want:    []string{`"` + harness.HostVeth + `.100"`, "at most 15 bytes"},
+		controls: map[string]createShape{
+			"a parent short enough is accepted": {mode: "macvlan", opts: map[string]string{"parent": harness.IpvlanParent, "vlan": "1"}},
+		},
+	},
 	{
 		name:    "host_ifname is refused on macvlan and the message names the mode",
 		refused: createShape{mode: "macvlan", opts: map[string]string{"host_ifname": "container_name"}},

@@ -90,7 +90,7 @@ func (p *Plugin) ipamBindingFor(networkID string, ipv4 []*IPAMData, iface string
 	if !ok {
 		// The interface mismatch is reported first: the pool was minted for the `--ipam-opt` interface, not this one.
 		if otherName != "" && otherName != iface {
-			return nil, fmt.Errorf("%w: this network's pool identity was built for interface %q (from `--ipam-opt parent=` or `--ipam-opt bridge=`) and the network itself is being created on %q (from `-o parent=` or `-o bridge=`). The two have to name the same interface: the IPAM option exists only to tell two networks with the same subnet apart, and it cannot send the addresses somewhere else. Fix whichever of the two is wrong, or drop the `--ipam-opt` if this network is the only one on this subnet", util.ErrIPAM, otherName, iface)
+			return nil, fmt.Errorf("%w: this network's pool identity was built for interface %q (from `--ipam-opt parent=` or `--ipam-opt bridge=`) and the network itself is being created on %q (from `-o parent=`, as `<parent>.<id>` with `-o vlan=`, or from `-o bridge=`). The two have to name the same interface: the IPAM option exists only to tell two networks with the same subnet apart, and it cannot send the addresses somewhere else. Fix whichever of the two is wrong, or drop the `--ipam-opt` if this network is the only one on this subnet", util.ErrIPAM, otherName, iface)
 		}
 		// No issue for this space and pool: a plugin restart between the calls, a second unsuffixed create for the same
 		// subnet, or an earlier failed create consumed it (#110).
@@ -198,7 +198,10 @@ func validateModeOptions(opts DHCPNetworkOptions) error {
 	default:
 		return fmt.Errorf("%w: %q", util.ErrInvalidMode, opts.Mode)
 	}
-	return validateSubModes(opts)
+	if err := validateSubModes(opts); err != nil {
+		return err
+	}
+	return validateVlanOption(opts)
 }
 
 // sandboxGone reads the filesystem, not the Docker API, since the API call is what times out when a container
@@ -323,7 +326,9 @@ func (p *Plugin) CreateNetwork(r CreateNetworkRequest) error {
 		}
 		iface := opts.Bridge
 		if m := opts.effectiveMode(); m == ModeMacvlan || m == ModeIPvlan {
-			iface = opts.Parent
+			// The link the children attach to, so two vlan networks on one parent are told apart by
+			// `--ipam-opt parent=<parent>.<id>` (#902).
+			iface = opts.linkParent()
 		}
 		b, err := p.ipamBindingFor(r.NetworkID, r.IPv4Data, iface)
 		if err != nil {
@@ -333,37 +338,28 @@ func (p *Plugin) CreateNetwork(r CreateNetworkRequest) error {
 	}
 
 	if mode := opts.effectiveMode(); mode == ModeMacvlan || mode == ModeIPvlan {
-		parent, err := validateParentForChild(opts.Parent)
+		// A sub-interface this create made is removed again when the create fails, unless another network uses it
+		// by then (#902).
+		if err := vlanReleaseRefusal(opts); err != nil {
+			return err
+		}
+		done := p.beginVlanCreate(opts)
+		created, err := p.ensureVlanLink(context.Background(), opts, "create_network")
+		if err == nil {
+			err = p.createParentAttachedNetwork(r.NetworkID, opts, binding)
+		}
+		done()
 		if err != nil {
-			return err
-		}
-		if err := mtuUnderParent(opts.MTU, parent); err != nil {
-			return err
-		}
-		if err := p.refuseSiblingSubMode(r.NetworkID, opts); err != nil {
-			return err
-		}
-		// Pre-flight DHCP probe, opt-in via validate_dhcp, before saveOptions so a failed probe leaves no state (#108).
-		if opts.ValidateDHCP {
-			// The budget covers the probe and its wait for the parent gate, which runDHCPProbe takes itself (#577).
-			probePolicy, err := resolveServerPolicy(opts)
-			if err != nil {
-				return err
+			if created {
+				p.retireVlanLink(context.Background(), r.NetworkID, opts, "create_network_failed")
 			}
-			ctx, cancel := context.WithTimeout(context.Background(), preflightProbeBudget+5*time.Second)
-			err = p.runDHCPProbe(ctx, opts, probePolicy)
-			cancel()
-			if err != nil {
-				return err
-			}
-		}
-		if err := p.saveNetworkAndBind(r.NetworkID, opts, binding); err != nil {
 			return err
 		}
 		log.WithFields(log.Fields{
 			"network":       r.NetworkID,
 			"mode":          mode,
 			"parent":        opts.Parent,
+			"vlan":          opts.Vlan,
 			"ipv6":          opts.ipv6Enabled(),
 			"ipv6_mode":     opts.IPv6Mode,
 			"validate_dhcp": opts.ValidateDHCP,
@@ -451,6 +447,36 @@ func (p *Plugin) CreateNetwork(r CreateNetworkRequest) error {
 	return nil
 }
 
+// createParentAttachedNetwork checks the link the children attach to, the parent or its vlan sub-interface, and
+// saves the network (#902).
+func (p *Plugin) createParentAttachedNetwork(networkID string, opts DHCPNetworkOptions, binding *ipamBinding) error {
+	parent, err := validateParentForChild(opts.linkParent())
+	if err != nil {
+		return err
+	}
+	if err := mtuUnderParent(opts.MTU, parent); err != nil {
+		return err
+	}
+	if err := p.refuseSiblingSubMode(networkID, opts); err != nil {
+		return err
+	}
+	// Pre-flight DHCP probe, opt-in via validate_dhcp, before saveOptions so a failed probe leaves no state (#108).
+	if opts.ValidateDHCP {
+		// The budget covers the probe and its wait for the parent gate, which runDHCPProbe takes itself (#577).
+		probePolicy, err := resolveServerPolicy(opts)
+		if err != nil {
+			return err
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), preflightProbeBudget+5*time.Second)
+		err = p.runDHCPProbe(ctx, opts, probePolicy)
+		cancel()
+		if err != nil {
+			return err
+		}
+	}
+	return p.saveNetworkAndBind(networkID, opts, binding)
+}
+
 // saveNetworkAndBind fails the create when an IPAM network's write fails, since the binding is in no Docker record;
 // null-mode options are recoverable from the Docker API (#110).
 func (p *Plugin) saveNetworkAndBind(networkID string, opts DHCPNetworkOptions, binding *ipamBinding) error {
@@ -484,9 +510,18 @@ func (p *Plugin) DeleteNetwork(r DeleteNetworkRequest) error {
 	// (#110).
 	p.ipamIndex.unbindNetwork(r.NetworkID)
 
+	// Read from disk before deleteOptions removes them; an unreadable or refused record keeps its sub-interface (#902).
+	opts, optsErr := loadOptions(r.NetworkID)
+	if optsErr == nil {
+		optsErr = validateVlanOption(opts)
+	}
+
 	if err := deleteOptions(r.NetworkID); err != nil {
 		log.WithError(err).WithField("network", r.NetworkID).
 			Warn("Failed to remove persisted options; harmless leftover")
+	}
+	if optsErr == nil {
+		p.retireVlanLink(context.Background(), r.NetworkID, opts, "delete_network")
 	}
 
 	orphaned := p.takeDHCPManagersForNetwork(r.NetworkID)
@@ -669,6 +704,16 @@ func (p *Plugin) checkStoredOptions(id string, opts DHCPNetworkOptions) error {
 			"macvlan_mode": fmt.Sprintf("%q", opts.MacvlanMode),
 			"ipvlan_mode":  fmt.Sprintf("%q", opts.IPvlanMode),
 		}).Error("Refusing stored network options: the sub-mode is not one this plugin builds")
+		return err
+	}
+
+	// A hand-edited vlan would name a link CreateNetwork never checked (#902).
+	if err := validateVlanOption(opts); err != nil {
+		p.networkOptionsRejected.Add(1)
+		log.WithFields(log.Fields{
+			"network": shortID(id),
+			"vlan":    fmt.Sprintf("%q", opts.Vlan),
+		}).Error("Refusing stored network options: the vlan is not one this plugin builds")
 		return err
 	}
 
@@ -1562,7 +1607,7 @@ func (p *Plugin) Join(ctx context.Context, r JoinRequest) (JoinResponse, error) 
 	// Copy the host parent's non-default static routes into the container; `-o skip_routes=true` opts out (#102).
 	var routeSrc netlink.Link
 	if parentAttached {
-		routeSrc, err = netlink.LinkByName(opts.Parent)
+		routeSrc, err = nlLinkByName(opts.linkParent())
 		if err != nil {
 			return res, fmt.Errorf("failed to get parent interface for route copy: %w", err)
 		}

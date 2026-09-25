@@ -109,7 +109,7 @@ func siblingSubMode(n dNetwork.Summary) (kind, parent, sub string, ok bool) {
 		if err != nil {
 			return "", "", "", false
 		}
-		kind, parent, sub = o.effectiveMode(), o.Parent, o.MacvlanMode
+		kind, parent, sub = o.effectiveMode(), o.linkParent(), o.MacvlanMode
 		if kind == ModeIPvlan {
 			sub = o.IPvlanMode
 		}
@@ -141,7 +141,7 @@ func (p *Plugin) refuseSiblingSubMode(networkID string, opts DHCPNetworkOptions)
 			Warn("Could not list Docker networks to compare sub-modes on the parent; creating the network unchecked")
 		return nil
 	}
-	mode, parent := opts.effectiveMode(), kernelIfaceName(opts.Parent)
+	mode, parent := opts.effectiveMode(), kernelIfaceName(opts.linkParent())
 	for _, n := range nets {
 		kind, other, sub, ok := siblingSubMode(n)
 		if !ok || n.ID == networkID || kind != mode || other != parent {

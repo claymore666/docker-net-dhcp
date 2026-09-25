@@ -396,8 +396,12 @@ func ipamACKInPool(addr netip.Addr, pool string) error {
 // rx_handler and the link lives a whole DHCP round trip; remove() runs LinkDel, then Unlock (#110).
 func (p *Plugin) addIPAMReserveLink(ctx context.Context, name, peer, mode string, opts DHCPNetworkOptions, mac net.HardwareAddr) (func(), error) {
 	if mode == ModeMacvlan || mode == ModeIPvlan {
-		guard := p.lockParent(ctx, opts.Parent, mode, "ipam_reserve")
-		parent, err := validateParentForChild(opts.Parent)
+		// The exchange runs on the link the endpoint will sit on, the vlan sub-interface when one is set (#902).
+		if _, err := p.ensureVlanLink(ctx, opts, "ipam_reserve"); err != nil {
+			return nil, err
+		}
+		guard := p.lockParent(ctx, opts.linkParent(), mode, "ipam_reserve")
+		parent, err := validateParentForChild(opts.linkParent())
 		if err != nil {
 			guard.Unlock()
 			return nil, err
@@ -409,7 +413,7 @@ func (p *Plugin) addIPAMReserveLink(ctx context.Context, name, peer, mode string
 		}
 		if err := addChildLink(guard, link); err != nil {
 			guard.Unlock()
-			return nil, explainChildLinkAdd(err, mode, opts.Parent, parent.Attrs().Index)
+			return nil, explainChildLinkAdd(err, mode, opts.linkParent(), parent.Attrs().Index)
 		}
 		if err := netlink.LinkSetUp(link); err != nil {
 			_ = netlink.LinkDel(link)

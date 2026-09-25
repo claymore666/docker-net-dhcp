@@ -127,7 +127,11 @@ func (p *Plugin) createIPAMEndpoint(ctx context.Context, r CreateEndpointRequest
 
 func (p *Plugin) addIPAMEndpointLink(ctx context.Context, endpointID, mode string, opts DHCPNetworkOptions, mac net.HardwareAddr) (func(), error) {
 	if mode == ModeMacvlan || mode == ModeIPvlan {
-		parent, err := validateParentForChild(opts.Parent)
+		// The sub-interface a host reboot lost is made again before the child (#902).
+		if _, err := p.ensureVlanLink(ctx, opts, "create_endpoint"); err != nil {
+			return nil, err
+		}
+		parent, err := validateParentForChild(opts.linkParent())
 		if err != nil {
 			return nil, err
 		}
@@ -139,11 +143,11 @@ func (p *Plugin) addIPAMEndpointLink(ctx context.Context, endpointID, mode strin
 		if err != nil {
 			return nil, err
 		}
-		guard := p.lockParent(ctx, opts.Parent, mode, "create_endpoint")
+		guard := p.lockParent(ctx, opts.linkParent(), mode, "create_endpoint")
 		err = addChildLink(guard, link)
 		guard.Unlock()
 		if err != nil {
-			return nil, explainChildLinkAdd(err, mode, opts.Parent, parent.Attrs().Index)
+			return nil, explainChildLinkAdd(err, mode, opts.linkParent(), parent.Attrs().Index)
 		}
 		remove := func() {
 			if err := netlink.LinkDel(link); err != nil {

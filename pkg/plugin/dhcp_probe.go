@@ -37,7 +37,7 @@ const preflightProbeBudget = 8 * time.Second
 //
 // Unlock is deferred before LinkDel so it runs after it: the parent gate is held until the child is gone (#577).
 func (p *Plugin) runDHCPProbe(ctx context.Context, opts DHCPNetworkOptions, pol serverPolicy) error {
-	parent, mode := opts.Parent, opts.effectiveMode()
+	parent, mode := opts.linkParent(), opts.effectiveMode()
 	guard := p.lockParent(ctx, parent, mode, "preflight_probe")
 	defer guard.Unlock()
 
