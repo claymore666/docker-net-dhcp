@@ -51,8 +51,6 @@ below decide what is in a release; this page follows them.
 - [#903], a bridge the plugin creates and owns
 - [#904], link-local fallback where no server answers, off by default
 - [#905], macvlan and ipvlan sub-mode options
-- [#949], ipvlan in IPAM mode, keyed on the MAC Docker generates for the
-  endpoint
 - [#960], IPv6 in IPAM mode: the v6 exchange, the v6 record, and a DUID
   that survives a restart
 - [#1029], the DHCPv6 Client FQDN option, so `register_dns` registers the
@@ -216,14 +214,15 @@ page exists because `documentation_roadmap` is one of them ([#452]).
 
 ## Blocked upstream
 
-One feature is designed here and cannot ship until Docker's own engine
-carries a change. It stays open on purpose:
+Two features cannot ship until Docker's own engine carries a change.
+They stay open on purpose:
 
 | Here | Needs | Upstream |
 | --- | --- | --- |
 | [#218], the deterministic MAC | network drivers to receive the endpoint name at `CreateEndpoint`, as IPAM drivers already do | [moby/moby#52870] (issue), [moby/moby#52871] (PR, open) |
+| [#949], ipvlan with this plugin as the IPAM driver | Docker to leave the container's interface MAC alone at start when the link cannot change it. Today it sets the MAC it generated for the IPAM driver, and every ipvlan container fails to start | not filed yet |
 
-Both halves were filed in June 2026. The endpoint-name change
+For [#218], both halves were filed in June 2026. The endpoint-name change
 ([moby/moby#52871]) is still awaiting review, and [#218] will not be
 closed as "won't fix" while that is the only thing in the way. This
 fork's own half is written and waiting.

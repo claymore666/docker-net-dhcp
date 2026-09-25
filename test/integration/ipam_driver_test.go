@@ -644,8 +644,8 @@ func TestIPAM_BothShapesOnOneDaemon(t *testing.T) {
 	}
 }
 
-// libnetwork generates a MAC for every endpoint of a RequiresMACAddress driver, and ipvlan children share the
-// parent's MAC and refuse a supplied one, so the refusal moves to `docker network create` (#110).
+// libnetwork sets the MAC it generates for a RequiresMACAddress driver on the container link at join, which an
+// ipvlan slave refuses, so the refusal moves to `docker network create` (#110, #949).
 
 // TestIPAM_IpvlanIsRefusedAtCreate checks that an IPAM-mode ipvlan network is refused at create and a null-shape one still works.
 func TestIPAM_IpvlanIsRefusedAtCreate(t *testing.T) {

@@ -674,10 +674,12 @@ the second key was accepted and dropped, and the pool identity was built
 from the first key alone.
 
 **Not supported.** `ipvlan` networks cannot use this plugin as their
-IPAM driver: Docker generates a MAC per endpoint for an IPAM driver that
-asks for one, and ipvlan children share the parent's MAC and refuse a
-supplied one. The network create is refused, and `--ipam-driver null` is
-unchanged and supported for ipvlan (#949).
+IPAM driver. Docker generates a MAC for each endpoint when the IPAM
+driver asks for one and sets it on the container's interface at start,
+and an ipvlan interface cannot change its MAC, so every container would
+fail to start. The network create is refused, and `--ipam-driver null`
+is unchanged and supported for ipvlan. Lifting the refusal needs a
+change in Docker's engine (#949).
 
 **IPv6 is IPv4-only in this shape, and the combination is refused.** The
 plugin allocates no IPv6 pool, so Docker's `--ipv6` is refused; and so is

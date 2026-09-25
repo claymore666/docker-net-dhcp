@@ -194,13 +194,13 @@ func ipamLiveRecordForMAC(rb lease.Rebuilt, networkID string, mac net.HardwareAd
 	return lease.Record{}, false
 }
 
-// ipamRefuseIPvlan refuses at create: with RequiresMACAddress libnetwork generates a MAC per endpoint, and ipvlan
-// CreateEndpoint refuses any supplied MAC. `--ipam-driver null` keeps ipvlan working (#110).
+// ipamRefuseIPvlan refuses at create: with RequiresMACAddress libnetwork sets the generated MAC on the container
+// link at join, which an ipvlan slave refuses with EOPNOTSUPP even for its own MAC (#949).
 func ipamRefuseIPvlan(mode string) error {
 	if mode != ModeIPvlan {
 		return nil
 	}
-	return fmt.Errorf("%w: ipvlan networks cannot use this plugin as an IPAM driver, because ipvlan children share the parent's MAC and Docker's IPAM contract requires a per-endpoint one. Create the network with --ipam-driver null instead, which is unchanged and supported. Progress on ipvlan in IPAM mode is tracked in issue #949", util.ErrIPAM)
+	return fmt.Errorf("%w: ipvlan networks cannot use this plugin as an IPAM driver. Docker generates a MAC for each endpoint when the IPAM driver asks for one and sets it on the container's interface at start, and an ipvlan interface cannot change its MAC, so every container would fail to start. Create the network with --ipam-driver null instead, which is unchanged and supported. Issue #949 tracks the engine change this needs", util.ErrIPAM)
 }
 
 // ipamRefuseIPv6 refuses IPv6 in IPAM mode: the IPAM CreateEndpoint is v4 only, and Join would mint a DUID-LL from
