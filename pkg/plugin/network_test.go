@@ -62,8 +62,18 @@ func TestValidateModeOptions(t *testing.T) {
 			wantErr: util.ErrBridgeRequired,
 		},
 		{
-			name:    "bridge_mode_with_parent_rejected",
-			opts:    DHCPNetworkOptions{Mode: ModeBridge, Bridge: "br0", Parent: "ens18"},
+			// The plugin makes br0 from ens18 (#903).
+			name: "bridge_mode_with_parent",
+			opts: DHCPNetworkOptions{Mode: ModeBridge, Bridge: "br0", Parent: "ens18"},
+		},
+		{
+			name:    "bridge_mode_with_parent_on_a_docker_bridge_name_rejected",
+			opts:    DHCPNetworkOptions{Mode: ModeBridge, Bridge: "br-lan", Parent: "ens18"},
+			wantErr: util.ErrIPAM,
+		},
+		{
+			name:    "bridge_mode_force_create_without_parent_rejected",
+			opts:    DHCPNetworkOptions{Mode: ModeBridge, Bridge: "br0", ForceCreate: true},
 			wantErr: util.ErrModeMismatch,
 		},
 		{

@@ -33,6 +33,11 @@ type parentGate struct {
 // kind and a wait on it is never reported as a pair the kernel may refuse (#902).
 const parentGateKindVlan = "vlan"
 
+// parentGateKindBridge is enslaving the parent into a bridge this plugin makes. The port takes the parent's rx_handler,
+// and the kernel refused the enslave beside a macvlan child and the child beside the port, measured on Linux 6.12, so
+// it coexists only with itself and vlan (#903).
+const parentGateKindBridge = "bridge"
+
 // kindsCoexist reports whether the kernel accepts both kinds on one parent at once. An unknown kind proves nothing,
 // so it coexists only with itself (#110, #902).
 func kindsCoexist(a, b string) bool {

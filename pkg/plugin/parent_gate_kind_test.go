@@ -61,6 +61,10 @@ func TestLockParent_TheCallSitesNameTheKindTheyAreAttaching(t *testing.T) {
 				// vlan.go adds and removes only the 802.1Q sub-interface, one kind whatever the network (#902).
 				continue
 			}
+			if s.arg == "parentGateKindBridge" && strings.HasPrefix(s.where, "bridge_own.go:") {
+				// bridge_own.go only enslaves the parent into the bridge it makes, one kind whatever the network (#903).
+				continue
+			}
 			if s.arg != "mode" && s.arg != "kind" {
 				t.Errorf("%s passes %q as lockParent's kind. The sites pass the mode they are "+
 					"attaching, named mode or kind; anything else is either the wrong "+

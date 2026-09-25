@@ -189,9 +189,6 @@ func validateModeOptions(opts DHCPNetworkOptions) error {
 		if opts.Bridge == "" {
 			return util.ErrBridgeRequired
 		}
-		if opts.Parent != "" {
-			return fmt.Errorf("%w: parent cannot be set in mode=bridge", util.ErrModeMismatch)
-		}
 		if !dhcp.ValidIfaceName(opts.Bridge) {
 			return fmt.Errorf("%w: invalid bridge %q: not a kernel-legal interface name", util.ErrIPAM, opts.Bridge)
 		}
@@ -203,6 +200,9 @@ func validateModeOptions(opts DHCPNetworkOptions) error {
 		return fmt.Errorf("%w: %q", util.ErrInvalidMode, opts.Mode)
 	}
 	if err := validateSubModes(opts); err != nil {
+		return err
+	}
+	if err := validateBridgeOwnOptions(opts); err != nil {
 		return err
 	}
 	return validateVlanOption(opts)
@@ -375,6 +375,39 @@ func (p *Plugin) CreateNetwork(r CreateNetworkRequest) error {
 		return nil
 	}
 
+	// A bridge this create made from parent is removed again when the create fails, unless another network uses it
+	// by then (#903).
+	if opts.ownsBridge() {
+		if err := firewallRefusal(opts); err != nil {
+			return err
+		}
+	}
+	done := p.beginBridgeCreate(opts)
+	created, err := p.ensureBridge(context.Background(), opts, "create_network")
+	if err == nil {
+		err = p.createBridgeNetwork(r.NetworkID, opts, binding)
+	}
+	done()
+	if err != nil {
+		if created {
+			p.retireBridge(context.Background(), r.NetworkID, opts, "create_network_failed")
+		}
+		return err
+	}
+	log.WithFields(log.Fields{
+		"network":   r.NetworkID,
+		"bridge":    opts.Bridge,
+		"parent":    opts.Parent,
+		"ipv6":      opts.ipv6Enabled(),
+		"ipv6_mode": opts.IPv6Mode,
+		"ipam":      binding != nil,
+	}).Info("Network created")
+
+	return nil
+}
+
+// createBridgeNetwork checks the bridge the veths attach to and saves the network (#903).
+func (p *Plugin) createBridgeNetwork(networkID string, opts DHCPNetworkOptions, binding *ipamBinding) error {
 	// Bridge mode goes through the netlink seam so the bridge-reuse guard is reachable without CAP_NET_ADMIN (#727).
 	link, err := nlLinkByName(opts.Bridge)
 	if err != nil {
@@ -440,18 +473,7 @@ func (p *Plugin) CreateNetwork(r CreateNetworkRequest) error {
 		}
 	}
 
-	if err := p.saveNetworkAndBind(r.NetworkID, opts, binding); err != nil {
-		return err
-	}
-	log.WithFields(log.Fields{
-		"network":   r.NetworkID,
-		"bridge":    opts.Bridge,
-		"ipv6":      opts.ipv6Enabled(),
-		"ipv6_mode": opts.IPv6Mode,
-		"ipam":      binding != nil,
-	}).Info("Network created")
-
-	return nil
+	return p.saveNetworkAndBind(networkID, opts, binding)
 }
 
 // createParentAttachedNetwork checks the link the children attach to, the parent or its vlan sub-interface, and
@@ -522,6 +544,9 @@ func (p *Plugin) DeleteNetwork(r DeleteNetworkRequest) error {
 	if optsErr == nil {
 		optsErr = validateVlanOption(opts)
 	}
+	if optsErr == nil {
+		optsErr = validateBridgeOwnOptions(opts)
+	}
 
 	if err := deleteOptions(r.NetworkID); err != nil {
 		log.WithError(err).WithField("network", r.NetworkID).
@@ -529,6 +554,7 @@ func (p *Plugin) DeleteNetwork(r DeleteNetworkRequest) error {
 	}
 	if optsErr == nil {
 		p.retireVlanLink(context.Background(), r.NetworkID, opts, "delete_network")
+		p.retireBridge(context.Background(), r.NetworkID, opts, "delete_network")
 	}
 
 	orphaned := p.takeDHCPManagersForNetwork(r.NetworkID)
@@ -724,6 +750,17 @@ func (p *Plugin) checkStoredOptions(id string, opts DHCPNetworkOptions) error {
 		return err
 	}
 
+	// A hand-edited parent or bridge would name a link CreateNetwork never checked (#903).
+	if err := validateBridgeOwnOptions(opts); err != nil {
+		p.networkOptionsRejected.Add(1)
+		log.WithFields(log.Fields{
+			"network": shortID(id),
+			"bridge":  fmt.Sprintf("%q", opts.Bridge),
+			"parent":  fmt.Sprintf("%q", opts.Parent),
+		}).Error("Refusing stored network options: the parent is not one this plugin enslaves")
+		return err
+	}
+
 	// The stored IPv6 options pass the function CreateNetwork calls, with no written-key set, so a restart cannot get
 	// a refused pair past it (#817).
 	if err := validateIPv6Options(opts, nil); err != nil {
@@ -873,6 +910,10 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 		return p.createParentAttachedEndpoint(ctx, callStart, r, opts)
 	}
 
+	// A host reboot loses the bridge made from parent while Docker keeps the network (#903).
+	if _, err := p.ensureBridge(ctx, opts, "create_endpoint"); err != nil {
+		return res, err
+	}
 	bridge, err := netlink.LinkByName(opts.Bridge)
 	if err != nil {
 		return res, fmt.Errorf("failed to get bridge interface: %w", err)

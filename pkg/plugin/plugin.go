@@ -269,6 +269,9 @@ type DHCPNetworkOptions struct {
 	IPvlanMode string `mapstructure:"ipvlan_mode"`
 	// Vlan is an 802.1Q ID; the children attach to `<parent>.<id>`, created when missing (#902).
 	Vlan string `mapstructure:"vlan"`
+	// ForceCreate creates a bridge-mode network with parent although the firewall check expects its frames dropped;
+	// the check still runs and logs its verdict (#903).
+	ForceCreate bool `mapstructure:"force_create"`
 }
 
 func (o DHCPNetworkOptions) effectiveMode() string {
@@ -443,6 +446,10 @@ type Plugin struct {
 	// between their ensure and their save; it is never held with mu (#902).
 	vlanMu      sync.Mutex
 	vlanPending map[string]int
+
+	// bridgeMu and bridgePending do the same for a bridge this plugin makes from parent (#903).
+	bridgeMu      sync.Mutex
+	bridgePending map[string]int
 
 	// tombstones serialises tombstones.json and is never held with mu; scripts/check-lock-discipline.sh enforces it.
 	tombstones tombstoneStore
