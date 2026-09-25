@@ -1158,6 +1158,14 @@ sidecar, no <code>cap_add</code>:</p>
 <li>The parent NIC must support macvlan/ipvlan children. Physical
   Ethernet, VLAN sub-interfaces, and bonds work; bridges, macvlans,
   and ipvlans do not (you can't stack these on top of each other).</li>
+<li><strong>A VLAN of the parent</strong> is one option away from v2.3.0:
+  <code>-o parent=eth0 -o vlan=100</code> attaches the children to <code>eth0.100</code>,
+  which the plugin creates when it is missing and removes with the last
+  network on it, never one it did not create. <code>&lt;parent&gt;.&lt;id&gt;</code> must fit
+  the kernel's 15 bytes. The sub-interface is a parent of its own, so a
+  macvlan network on <code>eth0.100</code> and an ipvlan network on <code>eth0</code> do not
+  clash. See
+  <a href="../reference/#vlan-sub-interfaces-vlan">VLAN sub-interfaces</a> (#902).</li>
 <li>The parent NIC must be administratively <code>UP</code> before you create the
   network. The plugin won't bring it up for you, since host config is
   off-limits.</li>
