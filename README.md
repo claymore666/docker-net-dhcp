@@ -89,7 +89,8 @@ On this page:
   `sudo`. Without it `curl -s` prints nothing and exits 7, which is what
   an absent socket also gives, so a permission problem looks like a
   stopped plugin.
-- **Mode constraints.** `bridge` expects a host bridge you maintain;
+- **Mode constraints.** `bridge` expects a host bridge you maintain,
+  or makes one from a spare NIC that stays up with no address (v2.3.0);
   `macvlan` and `ipvlan` attach to a host NIC and change nothing on the
   host, at the cost of the kernel rule that a child cannot reach its own
   host's address. Both in

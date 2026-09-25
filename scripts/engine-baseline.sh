@@ -149,11 +149,11 @@ derive_shapes() {
         printf("%s:%d: %s\n", FILENAME, lineno, why) > "/dev/stderr"
         bad = 1
     }
-    function emit(   n, i, tok, kv, drv, ipam, mode, ifk, kind, key) {
+    function emit(   n, i, tok, kv, drv, ipam, mode, ifk, hb, hp, kind, key) {
         if (cmd == "") return
         if (index(cmd, "docker network create") == 0) { cmd = ""; return }
         n = split(cmd, tok, /[ \t]+/)
-        drv = ""; ipam = ""; mode = ""; ifk = ""
+        drv = ""; ipam = ""; mode = ""; ifk = ""; hb = 0; hp = 0
         for (i = 1; i <= n; i++) {
             if (tok[i] == "-d" || tok[i] == "--driver") { i++; drv = tok[i]; continue }
             if (tok[i] == "--ipam-driver") { i++; ipam = tok[i]; continue }
@@ -161,10 +161,13 @@ derive_shapes() {
                 i++
                 split(tok[i], kv, "=")
                 if (kv[1] == "mode") mode = kv[2]
-                else if (kv[1] == "bridge" || kv[1] == "parent") ifk = kv[1]
+                else if (kv[1] == "bridge") hb = 1
+                else if (kv[1] == "parent") hp = 1
                 continue
             }
         }
+        # Both keys is a bridge the plugin makes from parent (#903).
+        ifk = (hb && hp) ? "bridge+parent" : hb ? "bridge" : hp ? "parent" : ""
         if (index(drv, PLUGIN) == 0 && index(ipam, PLUGIN) == 0) {
             if (MODE == "sources") printf("%d out-of-scope -\n", start)
             cmd = ""
@@ -228,7 +231,7 @@ derive_shapes() {
 # reference on every pull request; the cell runs the documented set.
 OPTION_CATALOGUE='mode|shape|the null-bridge, null-macvlan, null-ipvlan and plugin-macvlan shape steps
 bridge|shape|the null-bridge shape step
-parent|shape|the null-macvlan, null-ipvlan and plugin-macvlan shape steps
+parent|shape|the null-macvlan, null-ipvlan and plugin-macvlan shape steps, and the null-bridge-own shape step that makes its bridge from parent
 gateway|step|container default route via the named address; control without it: via the server router
 ipv6|step|fresh DHCPv6 reply in the server log for the address the container holds; ipv6=true with ipv6_mode=off refused
 ipv6_mode|step|dhcp: fresh DHCPv6 reply for the held address; slaac: fresh router advertisement, the container holds and Docker reports an address in the ra-only prefix; control off: no global address; bad value refused
@@ -254,6 +257,7 @@ require_mac|step|docker run without --mac-address refused naming the option, no 
 link_local_fallback|step|server-less bridge: the container starts on 169.254/16 with no default route; ipvlan, ipv6_mode=dhcp and lease_timeout=20s refused
 macvlan_mode|step|ip -d link in the container netns shows vepa and private, each with a fresh ACK; passthru on a parent of its own leases under the parent MAC and refuses a second container; an unknown value and mode=ipvlan refused
 ipvlan_mode|step|ip -d link in the container netns shows l2 with a fresh ACK; l3 and mode=macvlan refused
+force_create|step|with parent: ip -d link shows the bridge carrying the plugin alias with the parent its port, gone after its network and the parent masterless; whether the create without it is refused is recorded beside the sysctl and the FORWARD policy the cell reads, and a refusal names the DOCKER-USER rule; without parent refused
 vlan|step|a tagged server on a vlan of the segment ACKs the address the container holds; ip -d link shows <parent>.100 as 802.1Q id 100 with the plugin alias and host IPv6 off, gone after its network; bridge mode, 4095, a 17-byte sub-interface name and release_lease on a plugin-made one refused
 ip|step|fresh ACK in the server log for the requested address, held by the container
 com.docker.network.endpoint.ifname|measure|whether the container link carries the requested name is recorded; an invalid name is refused
@@ -369,6 +373,11 @@ PARENT="em-parent"
 PARENT_PEER="em-parentp"
 IPVLAN_PARENT="em-ipvl"
 IPVLAN_PEER="em-ipvlp"
+# The spare NIC the plugin enslaves into the bridge it makes (#903):
+# up, no address, its peer on the segment.
+OWN_PARENT="em-bpar"
+OWN_PARENT_PEER="em-bparp"
+OWN_BRIDGE="em-bown"
 SERVER_ADDR="192.168.99.1/24"
 PARENT_ADDR="192.168.99.2/24"
 IPVLAN_ADDR="192.168.99.3/24"
@@ -487,7 +496,7 @@ acks() {
 # scripts/engine-floor.sh reads as no evidence either way.
 lease_in_shape() {
     local ipam="$1" mode="$2" net="$3" ctr="$4"; shift 4
-    local label="$ipam-$mode" ipam_arg=""
+    local label="${SHAPE_LABEL:-$ipam-$mode}" ipam_arg=""
     MODE_ADDR=""
 
     case "$ipam" in
@@ -518,6 +527,23 @@ lease_in_shape() {
 
     say "== $label: $addr, ACKed by the DHCP server"
     MODE_ADDR="$addr"
+}
+
+# own_forward_rule adds the host rule docs/reference.md names for a bridge
+# the plugin makes (#903), in whichever iptables holds DOCKER-USER: the
+# dind entrypoint may start dockerd on iptables-legacy through its PATH.
+OWN_IPT=""
+own_forward_rule() {
+    local ipt
+    [ -n "$OWN_IPT" ] && return 0
+    for ipt in iptables iptables-legacy /usr/local/sbin/.iptables-legacy/iptables; do
+        d "$ipt" -S DOCKER-USER >/dev/null 2>&1 || continue
+        d "$ipt" -I DOCKER-USER -i "$OWN_BRIDGE" -o "$OWN_BRIDGE" -j ACCEPT \
+            || fail "$ipt could not add the DOCKER-USER rule for $OWN_BRIDGE"
+        OWN_IPT="$ipt"
+        return 0
+    done
+    fail "no iptables in the cell holds a DOCKER-USER chain, so the rule for $OWN_BRIDGE has nowhere to go"
 }
 
 # ---- step 1: the engine itself ---------------------------------------
@@ -590,6 +616,10 @@ ip link set $IPVLAN_PEER master $SEGMENT
 ip link set $IPVLAN_PEER up
 ip link set $IPVLAN_PARENT up
 ip addr add $IPVLAN_ADDR dev $IPVLAN_PARENT
+ip link add $OWN_PARENT type veth peer name $OWN_PARENT_PEER
+ip link set $OWN_PARENT_PEER master $SEGMENT
+ip link set $OWN_PARENT_PEER up
+ip link set $OWN_PARENT up
 ip link add em-sq type veth peer name em-sqp
 ip link set em-sqp master $SEGMENT
 ip link set em-sqp up
@@ -672,19 +702,28 @@ macvlan_addr=""
 DRIVEN=""
 while IFS='|' read -r shape_ipam shape_mode shape_ifk; do
     [ -n "$shape_ipam" ] || continue
-    net="em-net-$shape_ipam-$shape_mode"
-    ctr="em-ctr-$shape_ipam-$shape_mode"
-    STEP="network-create-$shape_ipam-$shape_mode"
+    SHAPE_LABEL="$shape_ipam-$shape_mode"
+    STEP="network-create-$SHAPE_LABEL"
     case "$shape_mode:$shape_ifk" in
         bridge:bridge)  dev_opt=(-o bridge="$SEGMENT") ;;
+        # The cell passes force_create because the plugin reads the
+        # FORWARD policy and cannot see this rule; option-force_create
+        # records the create without it (#903).
+        bridge:bridge+parent)
+            SHAPE_LABEL="$SHAPE_LABEL-own"
+            STEP="network-create-$SHAPE_LABEL"
+            own_forward_rule
+            dev_opt=(-o bridge="$OWN_BRIDGE" -o parent="$OWN_PARENT" -o force_create=true) ;;
         macvlan:parent) dev_opt=(-o parent="$PARENT") ;;
         ipvlan:parent)  dev_opt=(-o parent="$IPVLAN_PARENT") ;;
         *) fail "a documented shape asks for mode=$shape_mode on -o $shape_ifk=, and this fixture has no netdev for that pair" ;;
     esac
+    net="em-net-$SHAPE_LABEL"
+    ctr="em-ctr-$SHAPE_LABEL"
     lease_in_shape "$shape_ipam" "$shape_mode" "$net" "$ctr" "${dev_opt[@]}"
-    DRIVEN="$DRIVEN$net|$ctr|$shape_ipam-$shape_mode
+    DRIVEN="$DRIVEN$net|$ctr|$SHAPE_LABEL
 "
-    if [ "$shape_ipam-$shape_mode" = "null-macvlan" ]; then
+    if [ "$SHAPE_LABEL" = "null-macvlan" ]; then
         MACVLAN_NET="$net"
         MACVLAN_CTR="$ctr"
         macvlan_addr="$MODE_ADDR"
@@ -692,6 +731,7 @@ while IFS='|' read -r shape_ipam shape_mode shape_ifk; do
 done <<EOF
 $shapes
 EOF
+SHAPE_LABEL=""
 
 # The restart below is driven on the documented macvlan network. It is
 # derived like everything else, so a document that stops promising that
@@ -1254,6 +1294,47 @@ opt_ipvlan_mode() {
     opt_down em-o-im em-c-im
 }
 
+# opt_force_create: the bridge made from parent, read from the kernel,
+# and the firewall check without the override, recorded beside the two
+# inputs the plugin reads (#903).
+opt_force_create() {
+    local out got nf pol
+    opt_refused "force_create applies only with mode=bridge and parent set" -o bridge="$SEGMENT" -o force_create=true
+    own_forward_rule
+    nf="$(d cat /proc/sys/net/bridge/bridge-nf-call-iptables 2>/dev/null | tr -dc '0-9')"
+    pol="$(d "$OWN_IPT" -S FORWARD 2>/dev/null | awk '$1 == "-P" { print $3; exit }')"
+    if out="$(d docker network create -d "$PLUGIN_NAME" --ipam-driver null \
+            -o bridge="$OWN_BRIDGE" -o parent="$OWN_PARENT" em-o-fc 2>&1)"; then
+        MEASURED="$MEASURED force_create_off=created(nf=${nf:-absent},forward=${pol:-unread})"
+        opt_down em-o-fc
+    else
+        case "$out" in
+            *"iptables -I DOCKER-USER -i $OWN_BRIDGE -o $OWN_BRIDGE -j ACCEPT"*"force_create=true"*) ;;
+            *) fail "the create without force_create was refused without naming the DOCKER-USER rule and the override: $out" ;;
+        esac
+        MEASURED="$MEASURED force_create_off=refused(nf=${nf:-absent},forward=${pol:-unread})"
+        d ip link show "$OWN_BRIDGE" >/dev/null 2>&1 && fail "a refused create left $OWN_BRIDGE behind"
+    fi
+    opt_net em-o-fc -o bridge="$OWN_BRIDGE" -o parent="$OWN_PARENT" -o force_create=true
+    got="$(d ip -d link show "$OWN_BRIDGE" 2>&1)"
+    case "$got" in
+        *"bridge forward_delay"*"alias docker-net-dhcp"*) ;;
+        *) fail "force_create=true: ip -d link show $OWN_BRIDGE reads: $got" ;;
+    esac
+    d ip -o link show "$OWN_PARENT" | grep -F "master $OWN_BRIDGE " >/dev/null \
+        || fail "force_create=true: $OWN_PARENT is not a port of $OWN_BRIDGE"
+    got="$(d cat "/proc/sys/net/ipv6/conf/$OWN_BRIDGE/disable_ipv6" 2>/dev/null || echo absent)"
+    case "$got" in
+        1 | absent) ;;
+        *) fail "force_create=true: host IPv6 is on for $OWN_BRIDGE (disable_ipv6=$got)" ;;
+    esac
+    opt_down em-o-fc
+    d ip link show "$OWN_BRIDGE" >/dev/null 2>&1 && fail "$OWN_BRIDGE outlived its only network"
+    d ip -o link show "$OWN_PARENT" | grep -F " master " >/dev/null \
+        && fail "$OWN_PARENT is still a port after its network was removed"
+    return 0
+}
+
 # opt_vlan: the tagged server sits in em-ns2 on a vlan of em-s2, so only a
 # frame tagged 100 on the segment reaches it (#902).
 opt_vlan() {
@@ -1582,7 +1663,7 @@ while IFS='|' read -r opt kind obs; do
             case "$opt" in
                 mode)   want_shapes="bridge macvlan ipvlan" ;;
                 bridge) want_shapes="bridge" ;;
-                parent) want_shapes="macvlan ipvlan" ;;
+                parent) want_shapes="macvlan ipvlan bridge-own" ;;
                 *) fail "the catalogue calls $opt a shape and no shape step drives it" ;;
             esac
             for s in $want_shapes; do
