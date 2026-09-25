@@ -316,8 +316,25 @@
 #     The floors resolve at the merge base (#735), so this lowering does
 #     not change what release PR #1005 is measured against; it floors
 #     the release PRs after it.
+# v2.3.0 recorded decision (release branch, three coverage runs of the
+# v2.2.3 cycle, read with scripts/coverage-read.sh):
+#
+#   run 35657023434 (#1055)  util 97.4  plugin 91.1  dhcp 93.6  net-dhcp 83.3
+#   run 35999245766 (#1087)  util 97.4  plugin 91.1  dhcp 94.1  net-dhcp 83.3
+#   run 36046184665 (#1087)  util 97.4  plugin 91.0  dhcp 93.9  net-dhcp 83.3
+#
+#   - pkg/plugin 89.6 -> 90.5 and pkg/dhcp 90.0 -> 93.1: RAISED, each
+#     0.5 under the lowest of the three readings, this file's margin.
+#   - cmd/net-dhcp stays at 82.8, already 0.5 under its one reading.
+#   - pkg/util stays at 95.2: 97.4 is the top of the spread the v2.2.0
+#     entry above measured over unchanged code, and the floor is taken
+#     from the lowest reading.
+#   The runs predate the v2.3.0 code, since coverage runs only on PRs
+#   into main. The floors resolve at the merge base (#735), so these
+#   floor the release after v2.3.0, and the v2.3.0 release PR is
+#   measured against main's floors.
 #
 github.com/claymore666/docker-net-dhcp/v2/pkg/util 95.2
-github.com/claymore666/docker-net-dhcp/v2/pkg/plugin 89.6
-github.com/claymore666/docker-net-dhcp/v2/pkg/dhcp 90.0
+github.com/claymore666/docker-net-dhcp/v2/pkg/plugin 90.5
+github.com/claymore666/docker-net-dhcp/v2/pkg/dhcp 93.1
 github.com/claymore666/docker-net-dhcp/v2/cmd/net-dhcp 82.8
