@@ -1068,7 +1068,7 @@ The matrix is not part of CI and not a gate, while its self-test and
 the gate test run in CI like every gate self-test: a load measurement
 varies from run
 to run and would cry wolf as a red check. It is run by hand when the
-Join path changes, and the measured table lives on the issue.
+Join path changes, and each run prints its table as markdown.
 
 ## Request fixtures
 
