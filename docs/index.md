@@ -15,8 +15,8 @@ This is the successor of `devplayer0/docker-net-dhcp`, not a patched copy:
 
 ```bash
 sudo mkdir -p /var/lib/net-dhcp                      # once per host
-docker plugin install ghcr.io/claymore666/docker-net-dhcp:v2.2.3   # -arm64 on arm64
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.2.3 \
+docker plugin install ghcr.io/claymore666/docker-net-dhcp:v2.3.0   # -arm64 on arm64
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.3.0 \
   --ipam-driver null -o mode=macvlan -o parent=eth0 lan-dhcp
 docker run --rm -ti --network lan-dhcp alpine ip address show
 ```
