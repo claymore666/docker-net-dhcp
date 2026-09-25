@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"strings"
 	"testing"
 	"time"
@@ -37,6 +38,9 @@ func stubV6OneShot(t *testing.T, info6 dhcp.Info, ra dhcp.RAObservation, err6 er
 		c.deadline, _ = ctx.Deadline()
 		c.opts = *o
 		if o.V6 {
+			if o.OnConflict != nil {
+				o.OnConflict(dhcp.Conflict{Held: true, Addr: "fd00:960::61"})
+			}
 			return info6, ra, err6
 		}
 		return dhcp.Info{IP: "192.168.99.61/24", Gateway: "192.168.99.1"}, dhcp.RAObservation{}, nil
@@ -114,12 +118,20 @@ func TestCreateEndpoint_TheV6HalfOnEveryShape(t *testing.T) {
 						v6.deadline.Sub(start), want.Sub(start))
 				}
 				checkV6Wiring(t, opts, ep, v4, v6)
+				if p.addressConflictsV6.Load() != 1 || p.addressConflictsV4.Load() != 0 || v6.opts.ConflictMode != v4.opts.ConflictMode {
+					t.Errorf("a conflict on the DHCPv6 one-shot counted v6 %d and v4 %d in mode %v beside v4's %v, "+
+						"want one v6 conflict in the same mode (#524, #882)", p.addressConflictsV6.Load(),
+						p.addressConflictsV4.Load(), v6.opts.ConflictMode, v4.opts.ConflictMode)
+				}
 				if tc.wantErr != "" {
 					if err == nil || !strings.HasPrefix(err.Error(), tc.wantErr) {
 						t.Fatalf("CreateEndpoint err = %v, want the prefix %q", err, tc.wantErr)
 					}
 					if tc.err != nil && !errors.Is(err, tc.err) {
 						t.Errorf("CreateEndpoint err = %v, want it to wrap %v", err, tc.err)
+					}
+					if pe := new(*net.ParseError); tc.err == nil && !errors.As(err, pe) {
+						t.Errorf("CreateEndpoint err = %v, want it to wrap the address parser's error", err)
 					}
 					return
 				}
