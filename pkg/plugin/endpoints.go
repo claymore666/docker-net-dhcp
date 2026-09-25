@@ -256,8 +256,10 @@ type HealthResponse struct {
 	InstanceID      string  `json:"instance_id"`
 	UptimeSeconds   float64 `json:"uptime_seconds"`
 	ActiveEndpoints int     `json:"active_endpoints"`
-	PendingHints    int     `json:"pending_hints"`
-	RecoveredOK     int32   `json:"recovered_ok"`
+	// LinkLocalEndpoints counts the endpoints on the RFC 3927 fallback now, from the array's snapshot (#904).
+	LinkLocalEndpoints int   `json:"link_local_endpoints"`
+	PendingHints       int   `json:"pending_hints"`
+	RecoveredOK        int32 `json:"recovered_ok"`
 	// RecoveryFailed counts failed recoveries of a still-running container, which then has no renewal client; Healthy-affecting.
 	RecoveryFailed int32 `json:"recovery_failed"`
 	// RecoveryDeferred counts recoveries retried once the daemon socket came up (#383); not Healthy-affecting.
@@ -598,17 +600,18 @@ func (p *Plugin) healthSnapshot() HealthResponse {
 	now := time.Now()
 	h := HealthResponse{
 		// Healthy is false on the five latched conditions (#524, #724); see HealthResponse.
-		Healthy:           failed == 0 && joinFails == 0 && tsFails == 0 && conflicts == 0 && tsQuarantines == 0,
-		EngineVersion:     engine.Version,
-		APIVersion:        engine.APIVersion,
-		InstanceID:        p.instanceID,
-		UptimeSeconds:     time.Since(p.startTime).Seconds(),
-		ActiveEndpoints:   len(endpoints),
-		Endpoints:         endpoints,
-		PendingHints:      pending,
-		RecoveredOK:       p.recoveredOK.Load(),
-		RecoveryFailed:    failed,
-		JoinStartFailures: joinFails,
+		Healthy:            failed == 0 && joinFails == 0 && tsFails == 0 && conflicts == 0 && tsQuarantines == 0,
+		EngineVersion:      engine.Version,
+		APIVersion:         engine.APIVersion,
+		InstanceID:         p.instanceID,
+		UptimeSeconds:      time.Since(p.startTime).Seconds(),
+		ActiveEndpoints:    len(endpoints),
+		LinkLocalEndpoints: countLinkLocal(endpoints),
+		Endpoints:          endpoints,
+		PendingHints:       pending,
+		RecoveredOK:        p.recoveredOK.Load(),
+		RecoveryFailed:     failed,
+		JoinStartFailures:  joinFails,
 		// Deliberately absent from Healthy: a starting daemon (#383), an exited container (#376), a removed network
 		// (#648).
 		RecoveryDeferred:             p.recoveryDeferred.Load(),

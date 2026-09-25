@@ -445,8 +445,14 @@
 #              TestCreateRefusals_EachNamesTheOptionAndTheReasonAndLeavesNoNetwork
 #              grows from 45.00 to 50.00 with #902's three refusals and
 #              four accepted create and remove pairs.
-#   samples    3 for every corpus row. SIXTY-FOUR rows are not corpus
-#              samples, and the thirteen groups below are disjoint and
+#   one row    TestLinkLocalFallback_AServerlessStartThenMovesToALease
+#              (#904) is 70.00, INFERRED: no run has executed it. One
+#              ephemeral fixture and one container (12.00), plus the
+#              26s a server-less start takes at most (16s of DHCP, 1s
+#              to stop it, a 9s claim window), plus the move after the
+#              restart, one DISCOVER retransmission of at most 16s.
+#   samples    3 for every corpus row. SIXTY-FIVE rows are not corpus
+#              samples, and the fourteen groups below are disjoint and
 #              exhaust them: the five `one row` notes above -- 73.85,
 #              84.19, 0.05, 12.08 and 13.00 -- the eighteen #110 rows,
 #              the four #962 TestReleaseLease_* rows, the two
@@ -456,8 +462,8 @@
 #              advertisement rows, the three #1016 refusal rows,
 #              the #1081 renumber row, the five #1037
 #              TestMTUOption_* rows, the four #905 TestSubModes_* rows
-#              and the three #902 TestVlan_* rows.
-#              Sixty-one of the sixty-four are INFERRED; the three
+#              the three #902 TestVlan_* rows and the #904 row.
+#              Sixty-two of the sixty-five are INFERRED; the three
 #              that are measured are
 #              TestLeaseRenewIPv6_HonorsT1, from three later head runs,
 #              and TestFailure_UnansweredRenewalsCounted and
@@ -641,6 +647,7 @@ TestLifecycleBridge_IPv6_GoldenPath	16.98
 TestLifecycleIPvlan_GoldenPath	11.80
 TestLifecycleMacvlan_GoldenPath	11.61
 TestLifecycleMacvlan_IPv6_GoldenPath	17.68
+TestLinkLocalFallback_AServerlessStartThenMovesToALease	70.00
 TestMTUOption_AMacvlanParentBelowTheOptionFailsTheEndpointAndLeavesNoLink	10.00
 TestMTUOption_AnIPAMMacvlanParentBelowTheOptionFailsTheEndpointAndLeavesNoLink	15.00
 TestMTUOption_AnIPvlanChildReturnsToTheOptionOnTheNextRenew	80.00

@@ -437,6 +437,7 @@ func (m *dhcpManager) renew(v6 bool, info dhcp.Info) error {
 		v6AddrAttrs(ip, info.LeaseSeconds, info.PreferredSeconds, info.IPDeprecated)
 	}
 
+	wasLinkLocal := !v6 && m.onLinkLocal()
 	// Address first, routes after: the kernel rejects a route with no address in its subnet.
 	if err := m.applyAddressChange(v6, ip, info); err != nil {
 		return err
@@ -457,6 +458,12 @@ func (m *dhcpManager) renew(v6 bool, info dhcp.Info) error {
 		if err := m.reconcileAdvertisedRoutes(info); err != nil {
 			log.WithError(err).WithFields(m.logFields(v6)).
 				Warn("Failed to reconcile the routes the Router Advertisement asked for")
+		}
+	}
+	if wasLinkLocal && !isLinkLocalAddr(ip) {
+		if err := m.leaveLinkLocal(ip, info); err != nil {
+			log.WithError(err).WithFields(m.logFields(v6)).
+				Warn("Some of the routes Join withheld from the link-local address could not be installed")
 		}
 	}
 
@@ -1548,7 +1555,8 @@ func (m *dhcpManager) setupClient(v6 bool) (chan error, error) {
 		requestedIP = resumption.Prefer
 		v4Identity = resumption.Identity
 		if resumption.Lease == nil && requestedIP == "" {
-			if v4Addr, _ := m.lastIPs(); v4Addr != nil && v4Addr.IP != nil {
+			// Never a link-local address: a DHCP server does not lease 169.254/16 (RFC 3927 section 2.8, #904).
+			if v4Addr, _ := m.lastIPs(); v4Addr != nil && v4Addr.IP != nil && !isLinkLocalAddr(v4Addr) {
 				requestedIP = v4Addr.IP.String()
 			}
 		}

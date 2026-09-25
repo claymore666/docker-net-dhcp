@@ -260,6 +260,8 @@ type DHCPNetworkOptions struct {
 	HostIfname string `mapstructure:"host_ifname"`
 	// RequireMAC refuses an endpoint whose MAC the user did not set, so a MAC-keyed reservation always matches (#1036).
 	RequireMAC bool `mapstructure:"require_mac"`
+	// LinkLocalFallback gives an endpoint an RFC 3927 169.254/16 address when no DHCPv4 lease arrives in time (#904).
+	LinkLocalFallback bool `mapstructure:"link_local_fallback"`
 	// MacvlanMode is the macvlan child's kernel mode, bridge (the default), vepa, private or passthru (#905).
 	MacvlanMode string `mapstructure:"macvlan_mode"`
 	// IPvlanMode is the ipvlan child's kernel mode; l2 (the default) is the only accepted value, see parseIPvlanMode
@@ -982,6 +984,10 @@ func (p *Plugin) addTombstone(networkID, hostname, mac, ipv4, ipv6 string) {
 	if mac == "" {
 		return
 	}
+	// A 169.254/16 address is no lease, and the next `request ADDR` would name one no server holds (#904).
+	if isLinkLocalV4String(ipv4) {
+		ipv4 = ""
+	}
 	if err := p.tombstones.add(networkID, hostname, mac, ipv4, ipv6); err != nil {
 		p.tombstoneWriteFailures.Add(1)
 		log.WithError(err).Warn("Failed to persist tombstone; container restart may pick a new MAC/IP")
@@ -1236,6 +1242,8 @@ func (p *Plugin) recoverOneEndpoint(ctx context.Context, containerID, networkID,
 			ipv6 = a
 		}
 	}
+
+	ipv4 = p.recoveredV4(networkID, endpointRecordKey(opts.Mode, endpointID, mac), ipv4)
 
 	fakeJoin := JoinRequest{
 		NetworkID:  networkID,

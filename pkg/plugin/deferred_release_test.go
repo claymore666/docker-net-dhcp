@@ -5,6 +5,7 @@ package plugin
 
 import (
 	"bytes"
+	"fmt"
 	"net"
 	"net/netip"
 	"path/filepath"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/claymore666/dhcp-golib/lease"
 	log "github.com/sirupsen/logrus"
+	"github.com/vishvananda/netlink"
 
 	"github.com/claymore666/docker-net-dhcp/v2/pkg/dhcp"
 )
@@ -714,20 +716,26 @@ func TestDeleteNetwork_SaysSoWhenItCannotReadTheOptionsItNeeds(t *testing.T) {
 
 func TestDeferredRelease_TheStopSaysTheAddressIsBeingKept(t *testing.T) {
 	for _, tc := range []struct {
-		value    string
-		wantLine bool
-		wantSent int
+		value     string
+		linkLocal bool
+		wantLine  bool
+		wantSent  int
 	}{
 		{value: ReleaseOnRemove, wantLine: true, wantSent: 0},
+		{value: ReleaseOnRemove, linkLocal: true, wantLine: false, wantSent: 0},
 		{value: ReleaseOnStop, wantLine: false, wantSent: 1},
 		{value: ReleaseNever, wantLine: false, wantSent: 0},
 	} {
-		t.Run(tc.value, func(t *testing.T) {
+		t.Run(fmt.Sprintf("%s/link-local=%v", tc.value, tc.linkLocal), func(t *testing.T) {
 			var ledgerFailures atomic.Int32
 			p := &Plugin{}
 			p.ledger = testLedger(t, &ledgerFailures)
 			sender := installSender(t, nil)
 			m := releasingManager(t, p, tc.value, false)
+			if tc.linkLocal {
+				ll, _ := netlink.ParseAddr("169.254.33.7/16")
+				m.setLastIP(false, ll)
+			}
 
 			out := captureLog(t, func() {
 				if err := m.StopForLeave(); err != nil {

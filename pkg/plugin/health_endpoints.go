@@ -24,7 +24,8 @@ type EndpointHealth struct {
 	Mode     string `json:"mode"`
 	// Address is the lease the renewal client currently holds, in CIDR form.
 	Address string `json:"address,omitempty"`
-	// LeaseState is `bound` when the client holds the lease its last recorded event bound, `acquiring` otherwise.
+	// LeaseState is `bound` when the client holds the lease its last recorded event bound, `link_local` on the
+	// RFC 3927 fallback (#904), `acquiring` otherwise.
 	LeaseState string `json:"lease_state"`
 	// RenewAt, RebindAt and ExpiresAt are T1, T2 and the lease end as RFC 3339 times; an empty
 	// ExpiresAt on a bound endpoint is an infinite lease (RFC 2131 section 3.3).
@@ -41,6 +42,14 @@ type EndpointHealth struct {
 	ACDPhase      string `json:"acd_phase"`
 }
 
+// unboundState names an endpoint with no bound lease, which on the RFC 3927 fallback still has an address (#904).
+func (m *dhcpManager) unboundState() (state, address string) {
+	if v4, _ := m.lastIPs(); isLinkLocalAddr(v4) {
+		return linkLocalStateName, v4.String()
+	}
+	return "acquiring", ""
+}
+
 func (m *dhcpManager) healthView() EndpointHealth {
 	e := EndpointHealth{
 		Endpoint: shortID(m.joinReq.EndpointID),
@@ -55,7 +64,7 @@ func (m *dhcpManager) healthView() EndpointHealth {
 	}
 
 	if c == nil {
-		e.LeaseState = "acquiring"
+		e.LeaseState, e.Address = m.unboundState()
 		e.ConflictCheck = "unknown"
 		e.ACDPhase = "unknown"
 		return e
@@ -68,7 +77,7 @@ func (m *dhcpManager) healthView() EndpointHealth {
 	// read only ever demotes it, and every rendered field still comes from the record (#1044).
 	live, ok := c.Lease()
 	if !ok || live.Addr != rec.lease.Addr {
-		e.LeaseState = "acquiring"
+		e.LeaseState, e.Address = m.unboundState()
 		return e
 	}
 	l := rec.lease

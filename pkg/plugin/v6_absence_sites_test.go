@@ -21,9 +21,9 @@ const (
 
 var v6AbsenceSiteFiles = []string{"network.go", "parent_attached.go"}
 
-// The IPAM driver's reserve is exempt because each call passes the literal false for v6, which
-// the test checks; it moves to the list above when the driver gains IPv6 (#110).
-var v6AbsenceV4OnlySites = []string{"ipam_reserve.go"}
+// The IPAM driver's reserve and link_local.go's acquireV4 are exempt because each call passes the literal false
+// for v6, which the test checks; the reserve moves to the list above when the driver gains IPv6 (#110, #904).
+var v6AbsenceV4OnlySites = []string{"ipam_reserve.go", "link_local.go"}
 
 const v6AbsenceV4OnlyCall = ", false,"
 
