@@ -364,6 +364,10 @@
 #                  = 57.00 plus the 30s old lifetime, 1s slack and the
 #                    new prefix's formation.
 #              The first run that executes each costs it.
+#   nine rows  the #960 *_Macvlan rows are INFERRED, not measured: each
+#              is its bridge twin's row, the same body on the same
+#              fixture with a veth pair added and one server log read.
+#              The first run that executes each costs it.
 #   three rows the #1016 refusal rows are INFERRED, not measured: no
 #              run has executed them.
 #              TestCreateRefusals_EachNamesTheOptionAndTheReasonAndLeavesNoNetwork
@@ -570,13 +574,17 @@ TestDHCPv6_ARefusalLogsItsStatusCodeByNameOnce	35.00
 TestDHCPv6_ASquatOnARunningContainerIsCountedAndTheAddressChanges	38.00
 TestDHCPv6_AdvertisedMTUReachesTheContainer	30.00
 TestDHCPv6_Managed_ServerSilent_IsStillFatal	27.95
+TestDHCPv6_Managed_ServerSilent_IsStillFatal_Macvlan	27.95
 TestDHCPv6_Managed_StillRequiresALease	16.39
+TestDHCPv6_Managed_StillRequiresALease_Macvlan	16.39
 TestDHCPv6_NoAddressModes_StartTheEndpoint	80.63
+TestDHCPv6_NoAddressModes_StartTheEndpoint_Macvlan	80.63
 TestDHCPv6_NoAddressSegmentGetsNoIPv6RouteYet	170.00
 TestDHCPv6_RefusedAndSilentAreTwoRows	56.00
 TestDHCPv6_RouterDiscoveryCountersRise	35.00
 TestDHCPv6_RouterWithdrawalAndReturn	55.00
 TestDHCPv6_Stateless_ConfigurationReachesTheContainer	30.44
+TestDHCPv6_Stateless_ConfigurationReachesTheContainer_Macvlan	30.44
 TestDHCPv6_Stateless_TheClientAnnouncesReconfigureAcceptOnTheWire	50.00
 TestDHCPv6_TheClientAnnouncesReconfigureAcceptOnTheWire	35.00
 TestDNSPropagate_BridgeModeWritesResolvConfToo	11.60
@@ -686,12 +694,17 @@ TestRequireMAC_APluginRecycleKeepsAnAcceptedContainer	25.00
 TestRequireMAC_NetworkConnectIsRefused	40.00
 TestRequireMAC_WithoutAMACIsRefusedAndLeavesNothing	48.00
 TestSLAAC_ADeprecatedPrefixArrivesDeprecated	45.00
+TestSLAAC_ADeprecatedPrefixArrivesDeprecated_Macvlan	45.00
 TestSLAAC_ASegmentWithNoRouterEndsAFormingEndpoint	110.00
+TestSLAAC_ASegmentWithNoRouterEndsAFormingEndpoint_Macvlan	110.00
 TestSLAAC_AnAddressWhoseValidLifetimeRunsOutLeavesTheLink	75.00
 TestSLAAC_AnAdvertisedPrefixReachesTheContainer	45.00
+TestSLAAC_AnAdvertisedPrefixReachesTheContainer_Macvlan	45.00
 TestSLAAC_AutoFallsBackOntoTheAdvertisedPrefix	50.00
+TestSLAAC_AutoFallsBackOntoTheAdvertisedPrefix_Macvlan	50.00
 TestSLAAC_RenumberingInOneAdvertisementEndsWithExactlyTheNewSet	95.00
 TestSLAAC_TheAddressComesBackAfterAPluginRestart	60.00
+TestSLAAC_TheAddressComesBackAfterAPluginRestart_Macvlan	60.00
 TestSandboxKeyRoute_Bridge	11.89
 TestSandboxKeyRoute_Ipvlan	11.60
 TestSandboxKeyRoute_Macvlan	12.25

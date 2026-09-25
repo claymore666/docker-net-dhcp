@@ -37,6 +37,10 @@ const (
 	// link the same capture took 14 frames including two RAs. The mode is asserted before any container joins.
 	V6BridgePortName = "dh-itest-br6p"
 
+	// V6MacvlanParent is the free end of a veth pair whose peer is a port of the bridge, added by MacvlanParent (#960).
+	V6MacvlanParent     = "dh-itest-br6h"
+	v6MacvlanParentPeer = "dh-itest-br6q"
+
 	// 192.168.99/100/101/102/123 belong to other fixtures.
 	V6BridgeAddr = "192.168.103.1/24"
 	V6PoolStart  = "192.168.103.10"
@@ -675,10 +679,62 @@ func awaitNoTentativeAddr(t V6FixtureT) {
 // cleanupV6Links removes the fixture's links on teardown and at setup.
 func cleanupV6Links() {
 	// The port first: an enslaved dummy outlives its bridge and the next LinkAdd fails on the name.
-	for _, name := range []string{V6BridgePortName, V6BridgeName} {
+	for _, name := range []string{V6MacvlanParent, V6BridgePortName, V6BridgeName} {
 		if link, err := netlink.LinkByName(name); err == nil {
 			_ = netlink.LinkDel(link)
 		}
+	}
+}
+
+// MacvlanParent adds the pair on demand, since the dead-port fixture needs a bridge with no other carrier (#942); IPv6
+// is off on both ends before they come up, so the segment gains no host (#960).
+func (f *V6Fixture) MacvlanParent() string {
+	f.t.Helper()
+	if _, err := netlink.LinkByName(V6MacvlanParent); err == nil {
+		return V6MacvlanParent
+	}
+	bridge, err := netlink.LinkByName(V6BridgeName)
+	if err != nil {
+		f.t.Fatalf("LinkByName %s: %v", V6BridgeName, err)
+	}
+	la := netlink.NewLinkAttrs()
+	la.Name = V6MacvlanParent
+	if err := netlink.LinkAdd(&netlink.Veth{LinkAttrs: la, PeerName: v6MacvlanParentPeer}); err != nil {
+		f.t.Fatalf("LinkAdd veth %s: %v", V6MacvlanParent, err)
+	}
+	for _, name := range []string{V6MacvlanParent, v6MacvlanParentPeer} {
+		disable := filepath.Join("/proc/sys/net/ipv6/conf", name, "disable_ipv6")
+		if err := os.WriteFile(disable, []byte("1"), 0o644); err != nil {
+			f.t.Fatalf("disable IPv6 on %s: %v", name, err)
+		}
+	}
+	peer, err := netlink.LinkByName(v6MacvlanParentPeer)
+	if err != nil {
+		f.t.Fatalf("LinkByName %s: %v", v6MacvlanParentPeer, err)
+	}
+	if err := netlink.LinkSetMaster(peer, bridge); err != nil {
+		f.t.Fatalf("enslave %s to %s: %v", v6MacvlanParentPeer, V6BridgeName, err)
+	}
+	for _, name := range []string{v6MacvlanParentPeer, V6MacvlanParent} {
+		link, err := netlink.LinkByName(name)
+		if err != nil {
+			f.t.Fatalf("LinkByName %s: %v", name, err)
+		}
+		if err := netlink.LinkSetUp(link); err != nil {
+			f.t.Fatalf("LinkSetUp %s: %v", name, err)
+		}
+	}
+	return V6MacvlanParent
+}
+
+// AwaitLogLines is CountLogLines polled up to budget, for a read that races the server's write of the line (#960).
+func (f *V6Fixture) AwaitLogLines(budget time.Duration, substrings ...string) int {
+	deadline := time.Now().Add(budget)
+	for {
+		if n := f.CountLogLines(substrings...); n > 0 || !time.Now().Before(deadline) {
+			return n
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
 }
 

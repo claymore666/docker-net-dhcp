@@ -169,6 +169,14 @@ func assertHealthyFormedAddress(t *testing.T, addr string, f harness.V6AddrFlags
 
 // TestSLAAC_AnAdvertisedPrefixReachesTheContainer checks that with no DHCPv6 server the container forms its IPv6 address from the advertisement, with NODAD and the advertised lifetimes (#808, #818).
 func TestSLAAC_AnAdvertisedPrefixReachesTheContainer(t *testing.T) {
+	testSLAAC_AnAdvertisedPrefixReachesTheContainer(t, onV6Bridge)
+}
+
+func TestSLAAC_AnAdvertisedPrefixReachesTheContainer_Macvlan(t *testing.T) {
+	testSLAAC_AnAdvertisedPrefixReachesTheContainer(t, onV6Macvlan)
+}
+
+func testSLAAC_AnAdvertisedPrefixReachesTheContainer(t *testing.T, at v6Attach) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 
@@ -185,12 +193,13 @@ func TestSLAAC_AnAdvertisedPrefixReachesTheContainer(t *testing.T) {
 		"ipv6_slaac_addresses", "dhcpv6_not_offered", "dhcpv6_no_router_advert",
 		"dhcpv6_slaac_no_address", "dhcpv6_slaac_no_prefix")
 
-	netName := "dh-itest-slaac1"
-	id, err := startOnV6SegmentWithOpts(t, ctx, cli, f, netName,
+	netName := at.net("dh-itest-slaac1")
+	id, err := startOnV6SegmentAs(t, ctx, cli, f, at, netName,
 		map[string]string{"ipv6": "", "ipv6_mode": "slaac"})
 	if err != nil {
 		t.Fatalf("the container did not start on an ipv6_mode=slaac segment: %v", err)
 	}
+	assertAttachedAs(t, ctx, f, id, at)
 
 	prefix := v6SegmentPrefix(t)
 	addr, flags := awaitPluginAppliedV6(t, ctx, w, id, prefix, slaacAddrBudget(), v6InstalledSinceBaseline)
@@ -259,6 +268,14 @@ func TestSLAAC_AnAdvertisedPrefixReachesTheContainer(t *testing.T) {
 
 // TestSLAAC_ADeprecatedPrefixArrivesDeprecated checks that a deprecated prefix's address arrives with the kernel's deprecated flag and zero preferred lifetime (#819).
 func TestSLAAC_ADeprecatedPrefixArrivesDeprecated(t *testing.T) {
+	testSLAAC_ADeprecatedPrefixArrivesDeprecated(t, onV6Bridge)
+}
+
+func TestSLAAC_ADeprecatedPrefixArrivesDeprecated_Macvlan(t *testing.T) {
+	testSLAAC_ADeprecatedPrefixArrivesDeprecated(t, onV6Macvlan)
+}
+
+func testSLAAC_ADeprecatedPrefixArrivesDeprecated(t *testing.T, at v6Attach) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 
@@ -293,7 +310,7 @@ func TestSLAAC_ADeprecatedPrefixArrivesDeprecated(t *testing.T) {
 	// The engine's install is preferred forever and this one preferred 0sec, so the counter says when to read the line.
 	w := harness.BeginCounterWindow(t, ctx, cli, "ipv6_slaac_addresses")
 
-	id, err := startOnV6SegmentWithOpts(t, ctx, cli, f, "dh-itest-slaacdep",
+	id, err := startOnV6SegmentAs(t, ctx, cli, f, at, at.net("dh-itest-slaacdep"),
 		map[string]string{"ipv6": "", "ipv6_mode": "slaac"})
 	if err != nil {
 		t.Fatalf("the container did not start on an ipv6_mode=slaac segment whose prefix "+
@@ -301,6 +318,7 @@ func TestSLAAC_ADeprecatedPrefixArrivesDeprecated(t *testing.T) {
 			"says to keep using for existing communications, not one to refuse an endpoint "+
 			"over: %v", err)
 	}
+	assertAttachedAs(t, ctx, f, id, at)
 
 	addr, flags := awaitPluginAppliedV6(t, ctx, w, id, v6SegmentPrefix(t), slaacAddrBudget(), v6InstalledSinceBaseline)
 	t.Logf("deprecated address inside the container: %q", flags.Line)
@@ -337,6 +355,14 @@ func TestSLAAC_ADeprecatedPrefixArrivesDeprecated(t *testing.T) {
 
 // TestSLAAC_AutoFallsBackOntoTheAdvertisedPrefix checks that ipv6_mode=auto falls back to the advertised prefix when DHCPv6 is silent (#817).
 func TestSLAAC_AutoFallsBackOntoTheAdvertisedPrefix(t *testing.T) {
+	testSLAAC_AutoFallsBackOntoTheAdvertisedPrefix(t, onV6Bridge)
+}
+
+func TestSLAAC_AutoFallsBackOntoTheAdvertisedPrefix_Macvlan(t *testing.T) {
+	testSLAAC_AutoFallsBackOntoTheAdvertisedPrefix(t, onV6Macvlan)
+}
+
+func testSLAAC_AutoFallsBackOntoTheAdvertisedPrefix(t *testing.T, at v6Attach) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 
@@ -352,13 +378,14 @@ func TestSLAAC_AutoFallsBackOntoTheAdvertisedPrefix(t *testing.T) {
 	w := harness.BeginCounterWindow(t, ctx, cli,
 		"dhcpv6_auto_fallbacks", "ipv6_slaac_addresses", "dhcpv6_no_server")
 
-	id, err := startOnV6SegmentWithOpts(t, ctx, cli, f, "dh-itest-autofb",
+	id, err := startOnV6SegmentAs(t, ctx, cli, f, at, at.net("dh-itest-autofb"),
 		map[string]string{"ipv6": "", "ipv6_mode": "auto"})
 	if err != nil {
 		t.Fatalf("the container did not start on an ipv6_mode=auto segment that advertises "+
 			"DHCPv6, answers no Solicit and advertises an autonomous prefix. That segment "+
 			"is exactly what the fallback exists for: %v", err)
 	}
+	assertAttachedAs(t, ctx, f, id, at)
 
 	addr, flags := awaitPluginAppliedV6(t, ctx, w, id, v6SegmentPrefix(t), slaacAddrBudget(), v6InstalledSinceBaseline)
 	t.Logf("address formed by the auto fallback: %q", flags.Line)
@@ -390,6 +417,14 @@ func TestSLAAC_AutoFallsBackOntoTheAdvertisedPrefix(t *testing.T) {
 
 // TestSLAAC_ASegmentWithNoRouterEndsAFormingEndpoint checks that a forming IPv6 mode fails on a segment with no router advertisement (#989).
 func TestSLAAC_ASegmentWithNoRouterEndsAFormingEndpoint(t *testing.T) {
+	testSLAAC_ASegmentWithNoRouterEndsAFormingEndpoint(t, onV6Bridge)
+}
+
+func TestSLAAC_ASegmentWithNoRouterEndsAFormingEndpoint_Macvlan(t *testing.T) {
+	testSLAAC_ASegmentWithNoRouterEndsAFormingEndpoint(t, onV6Macvlan)
+}
+
+func testSLAAC_ASegmentWithNoRouterEndsAFormingEndpoint(t *testing.T, at v6Attach) {
 	cases := []struct {
 		mode      string
 		net       string
@@ -416,8 +451,13 @@ func TestSLAAC_ASegmentWithNoRouterEndsAFormingEndpoint(t *testing.T) {
 
 			w := harness.BeginCounterWindow(t, ctx, cli, "dhcpv6_no_router_advert")
 
-			_, startErr := startOnV6SegmentWithOpts(t, ctx, cli, f, c.net,
+			id, startErr := startOnV6SegmentAs(t, ctx, cli, f, at, at.net(c.net),
 				map[string]string{"ipv6": "", "ipv6_mode": c.mode})
+			if startErr == nil {
+				assertAttachedAs(t, ctx, f, id, at)
+			} else {
+				assertServedOnSegment(t, f)
+			}
 
 			switch {
 			case c.wantStart && startErr != nil:
@@ -450,6 +490,14 @@ func TestSLAAC_ASegmentWithNoRouterEndsAFormingEndpoint(t *testing.T) {
 
 // TestSLAAC_TheAddressComesBackAfterAPluginRestart checks that a formed address survives a plugin restart and is not dadfailed (#818).
 func TestSLAAC_TheAddressComesBackAfterAPluginRestart(t *testing.T) {
+	testSLAAC_TheAddressComesBackAfterAPluginRestart(t, onV6Bridge)
+}
+
+func TestSLAAC_TheAddressComesBackAfterAPluginRestart_Macvlan(t *testing.T) {
+	testSLAAC_TheAddressComesBackAfterAPluginRestart(t, onV6Macvlan)
+}
+
+func testSLAAC_TheAddressComesBackAfterAPluginRestart(t *testing.T, at v6Attach) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 
@@ -465,11 +513,12 @@ func TestSLAAC_TheAddressComesBackAfterAPluginRestart(t *testing.T) {
 	// The engine's permanent NODAD copy survives a restart untouched, so both reads are of this plugin's install.
 	w := harness.BeginCounterWindow(t, ctx, cli, "ipv6_slaac_addresses")
 
-	id, err := startOnV6SegmentWithOpts(t, ctx, cli, f, "dh-itest-slaacrs",
+	id, err := startOnV6SegmentAs(t, ctx, cli, f, at, at.net("dh-itest-slaacrs"),
 		map[string]string{"ipv6": "", "ipv6_mode": "slaac"})
 	if err != nil {
 		t.Fatalf("the container did not start on an ipv6_mode=slaac segment: %v", err)
 	}
+	assertAttachedAs(t, ctx, f, id, at)
 	prefix := v6SegmentPrefix(t)
 	addrBefore, _ := awaitPluginAppliedV6(t, ctx, w, id, prefix, slaacAddrBudget(), v6InstalledSinceBaseline)
 

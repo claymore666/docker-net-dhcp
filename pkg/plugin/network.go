@@ -995,11 +995,6 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 				endpointRecordKey(opts.effectiveMode(), r.EndpointID, ctrLink.Attrs().HardwareAddr), id6)
 		}
 		initialIP := func(v6 bool) error {
-			v6str := ""
-			if v6 {
-				v6str = "v6"
-			}
-
 			// Server preference ladder (#111) and deny-list (#669); neither set is one unrestricted attempt.
 			pol, err := resolveServerPolicy(opts)
 			if err != nil {
@@ -1018,65 +1013,42 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 				Records:  p.records,
 				RecordID: recordID,
 			}
+			// The v4 `-o gateway=` override below is not consulted for the v6 gateway (#821, #960).
 			if v6 {
-				if err := p.v6Wiring(&base, opts, identity6, recordID6, requestedV6, r.EndpointID); err != nil {
-					return err
-				}
+				addr, err := p.acquireInitialV6(ctx, opts, base, v6Acquire{iface: ctrName, networkID: r.NetworkID,
+					endpointID: r.EndpointID, callStart: callStart, timeout: timeout, pol: pol,
+					identity6: identity6, recordID6: recordID6, preferredV6: requestedV6})
+				res.Interface.AddressIPv6 = addr
+				return err
 			}
 			// Conflict detection from the stored conflict_check, set on the base so every dhcp_servers attempt shares
 			// it (#882).
-			if err := p.conflictWiring(&base, opts, roleAcquire, r.NetworkID, r.EndpointID, v6); err != nil {
+			if err := p.conflictWiring(&base, opts, roleAcquire, r.NetworkID, r.EndpointID, false); err != nil {
 				return err
 			}
-			// Preferred address per family, `request ADDR` for v4 and `ia_na / ADDR` for v6; empty omits it (#213).
-			if !v6 {
-				base.RequestedIP = requestedIP
-			}
+			// The preferred v4 address, sent as `request ADDR`; empty omits it (#213).
+			base.RequestedIP = requestedIP
 
-			// The v6 half runs second and gets what is left of the daemon's deadline; see v6AcquisitionDeadline.
-			var (
-				info dhcp.Info
-				ra   dhcp.RAObservation
-			)
-			if v6 {
-				acqCtx, endV6 := withV6AcquisitionDeadline(ctx, callStart)
-				defer endV6()
-				info, ra, err = p.acquireWithPolicy(acqCtx, ctrName, pol, true, timeout, r.EndpointID, base)
-			} else {
-				info, err = p.acquireV4(ctx, opts, callStart, ctrName, pol, timeout, r.EndpointID, base)
-			}
+			info, err := p.acquireV4(ctx, opts, callStart, ctrName, pol, timeout, r.EndpointID, base)
 			if err != nil {
-				// An empty DHCPv6 acquisition fails only when the segment advertised managed DHCPv6; stateless and
-				// SLAAC segments have no DHCPv6 address to get (#868).
-				if v6 && p.noteV6Absence(ra, ctrName, r.EndpointID, err, base.Mode6) {
-					return nil
-				}
-				return fmt.Errorf("failed to get initial IP%v address via DHCP%v: %w", v6str, v6str, err)
+				return fmt.Errorf("failed to get initial IP address via DHCP: %w", err)
 			}
 			ip, err := netlink.ParseAddr(info.IP)
 			if err != nil {
-				return fmt.Errorf("failed to parse initial IP%v address: %w", v6str, err)
+				return fmt.Errorf("failed to parse initial IP address: %w", err)
 			}
 
 			p.updateJoinHint(r.EndpointID, func(hint *joinHint) {
-				if v6 {
-					res.Interface.AddressIPv6 = info.IP
-					hint.IPv6 = ip
-					// The IPv6 gateway is the Router Advertisement's source, link-local under RFC 4861 section 4.2,
-					// read by the library's client (#821); the v4 `-o gateway=` override is not consulted for it.
-					fillV6Hint(hint, info)
-				} else {
-					res.Interface.Address = info.IP
-					hint.IPv4 = ip
-					hint.Gateway = info.Gateway
-					// A link-local endpoint has no gateway: one off its /16 would fail the engine's route install (#904).
-					if opts.Gateway != "" && !isLinkLocalAddr(ip) {
-						hint.Gateway = opts.Gateway
-					}
-					// Option-121 routes (RFC 3442) exclude a literal 0.0.0.0/0, folded into info.Gateway, but
-					// together they can still cover the whole space; see routesSupersedeDefault.
-					hint.Routes = dhcpStaticRoutes(info.Routes)
+				res.Interface.Address = info.IP
+				hint.IPv4 = ip
+				hint.Gateway = info.Gateway
+				// A link-local endpoint has no gateway: one off its /16 would fail the engine's route install (#904).
+				if opts.Gateway != "" && !isLinkLocalAddr(ip) {
+					hint.Gateway = opts.Gateway
 				}
+				// Option-121 routes (RFC 3442) exclude a literal 0.0.0.0/0, folded into info.Gateway, but
+				// together they can still cover the whole space; see routesSupersedeDefault.
+				hint.Routes = dhcpStaticRoutes(info.Routes)
 			})
 
 			return nil
