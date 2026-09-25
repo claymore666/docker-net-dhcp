@@ -26,8 +26,7 @@ import (
 	"github.com/claymore666/docker-net-dhcp/v2/pkg/util"
 )
 
-// RFC 3927 section 2.1: the first and last 256 addresses of 169.254/16 are reserved, leaving 169.254.1.0 to
-// 169.254.254.255.
+// RFC 3927 section 2.1 reserves the first and last 256 addresses of 169.254/16.
 const (
 	linkLocalFirst = 169<<24 | 254<<16 | 1<<8
 	linkLocalCount = 254 * 256
@@ -55,8 +54,7 @@ func isLinkLocalAddr(a *netlink.Addr) bool {
 	return a != nil && isLinkLocalV4(a.IP)
 }
 
-// linkLocalWindow is one whole claim: RFC 5227 section 2.1.1's probe window plus RFC 3927 section 2.4's
-// announcements after the first, which the endpoint sends before CreateEndpoint returns (#904).
+// linkLocalWindow is one claim: RFC 5227 section 2.1.1's probe window plus RFC 3927 section 2.4's later announcements.
 func linkLocalWindow(acd proto.ACDParams) time.Duration {
 	gaps := acd.AnnounceNum - 1
 	if gaps < 0 {
@@ -65,19 +63,21 @@ func linkLocalWindow(acd proto.ACDParams) time.Duration {
 	return dhcp.ConflictWindow(acd) + time.Duration(gaps)*time.Duration(acd.AnnounceInterval)
 }
 
-// linkLocalClaimDeadline is when the claim must be done, the margin v6AcquisitionDeadline keeps before the
-// engine's 30 s (#911, #904).
+// linkLocalClaimDeadline keeps v6AcquisitionDeadline's margin before the engine's 30 s (#911, #904).
 func linkLocalClaimDeadline(callStart time.Time) time.Time {
 	return callStart.Add(pluginCallBudget - pluginCallMargin)
 }
 
-// linkLocalDHCPDeadline leaves one whole claim window after the DHCP attempt: 30 - 4 - 9 = 17 s (#904).
-func linkLocalDHCPDeadline(callStart time.Time) time.Time {
-	return linkLocalClaimDeadline(callStart).Add(-linkLocalWindow(proto.DefaultACDParams()))
-}
+// linkLocalDrain is what the one-shot may take past its deadline to drain and write its record (#899, #904).
+const linkLocalDrain = time.Second
 
-// linkLocalLeaseTimeout is the most lease_timeout a link_local_fallback network can spend on DHCP.
-var linkLocalLeaseTimeout = pluginCallBudget - pluginCallMargin - linkLocalWindow(proto.DefaultACDParams())
+// linkLocalLeaseTimeout is the most lease_timeout a link_local_fallback network can spend on DHCP: 30 - 4 - 9 - 1 s.
+var linkLocalLeaseTimeout = pluginCallBudget - pluginCallMargin - linkLocalWindow(proto.DefaultACDParams()) - linkLocalDrain
+
+// linkLocalDHCPDeadline leaves the drain and one whole claim window after the DHCP attempt (#904).
+func linkLocalDHCPDeadline(callStart time.Time) time.Time {
+	return callStart.Add(linkLocalLeaseTimeout)
+}
 
 // leaseTimeoutFor is the one-shot's DHCP budget: the operator's, else the derived one for the network's shape.
 func leaseTimeoutFor(opts DHCPNetworkOptions) time.Duration {
@@ -108,15 +108,14 @@ func validateLinkLocalFallback(opts DHCPNetworkOptions) error {
 	}
 	if opts.LeaseTimeout > linkLocalLeaseTimeout {
 		acd := proto.DefaultACDParams()
-		return fmt.Errorf("%w: lease_timeout %v is longer than link_local_fallback allows: the engine gives an endpoint %v, the plugin keeps %v of it, and claiming a link-local address takes up to %v (RFC 5227 section 2.1.1's probe window %v plus RFC 3927 section 2.4's second announcement %v later), which leaves %v for DHCP. Set lease_timeout to %v or less, or leave it unset",
-			util.ErrIPAM, opts.LeaseTimeout, pluginCallBudget, pluginCallMargin, linkLocalWindow(acd),
+		return fmt.Errorf("%w: lease_timeout %v is longer than link_local_fallback allows: the engine gives an endpoint %v, the plugin keeps %v of it and %v for the DHCP attempt to stop, and claiming a link-local address takes up to %v (RFC 5227 section 2.1.1's probe window %v plus RFC 3927 section 2.4's second announcement %v later), which leaves %v for DHCP. Set lease_timeout to %v or less, or leave it unset",
+			util.ErrIPAM, opts.LeaseTimeout, pluginCallBudget, pluginCallMargin, linkLocalDrain, linkLocalWindow(acd),
 			dhcp.ConflictWindow(acd), time.Duration(acd.AnnounceInterval), linkLocalLeaseTimeout, linkLocalLeaseTimeout)
 	}
 	return nil
 }
 
-// ipamRefuseLinkLocal: in IPAM mode Docker assigns the address at RequestAddress and cannot follow the later move
-// to a lease, so the container would keep a 169.254 address in Docker's view and its DNS (#904).
+// ipamRefuseLinkLocal: in IPAM mode Docker holds the address from RequestAddress on and cannot follow a lease (#904).
 func ipamRefuseLinkLocal(opts DHCPNetworkOptions) error {
 	if !opts.LinkLocalFallback {
 		return nil
@@ -125,8 +124,7 @@ func ipamRefuseLinkLocal(opts DHCPNetworkOptions) error {
 		util.ErrIPAM)
 }
 
-// linkLocalEligible: only a DHCP attempt that ran out of time or ended without a lease falls back, never a
-// request the engine cancelled nor a socket that could not open (#904).
+// linkLocalEligible: only a DHCP timeout or a no-lease falls back, never an engine cancel or a socket error (#904).
 func linkLocalEligible(reqCtx context.Context, err error) bool {
 	if reqCtx.Err() != nil {
 		return false
@@ -156,8 +154,7 @@ var (
 	ErrLinkLocalTooManyConflicts = errors.New("every link-local address tried was in use (RFC 3927 section 2.2.1's MAX_CONFLICTS)")
 )
 
-// linkLocalFallback turns a failed DHCPv4 one-shot into a claimed 169.254/16 address with no gateway, or returns
-// the DHCP error unchanged when the network or the failure does not qualify (#904).
+// linkLocalFallback claims a 169.254/16 address after an eligible DHCPv4 failure, else returns the failure (#904).
 func (p *Plugin) linkLocalFallback(ctx context.Context, opts DHCPNetworkOptions, callStart time.Time, iface, endpointID string, acqErr error) (dhcp.Info, error) {
 	if !opts.LinkLocalFallback || !linkLocalEligible(ctx, acqErr) {
 		return dhcp.Info{}, acqErr
@@ -183,8 +180,22 @@ func (p *Plugin) linkLocalFallback(ctx context.Context, opts DHCPNetworkOptions,
 	return dhcp.Info{IP: netip.PrefixFrom(addr, 16).String()}, nil
 }
 
-// newLinkLocalPicker seeds RFC 3927 section 2.1's generator from the MAC, so one interface draws the same
-// sequence each time and two interfaces draw different ones.
+// acquireV4 ends DHCP a drain and a claim window early, so a claim on the caller's context meets the deadline (#904).
+func (p *Plugin) acquireV4(ctx context.Context, opts DHCPNetworkOptions, callStart time.Time, iface string, pol serverPolicy, timeout time.Duration, endpointID string, base dhcp.DHCPClientOptions) (dhcp.Info, error) {
+	if !opts.LinkLocalFallback {
+		info, _, err := p.acquireWithPolicy(ctx, iface, pol, false, timeout, endpointID, base)
+		return info, err
+	}
+	dhcpCtx, cancel := context.WithDeadline(ctx, linkLocalDHCPDeadline(callStart))
+	defer cancel()
+	info, _, err := p.acquireWithPolicy(dhcpCtx, iface, pol, false, timeout, endpointID, base)
+	if err != nil {
+		info, err = p.linkLocalFallback(ctx, opts, callStart, iface, endpointID, err)
+	}
+	return info, err
+}
+
+// newLinkLocalPicker seeds RFC 3927 section 2.1's generator from the MAC: one interface, one sequence.
 func newLinkLocalPicker(mac net.HardwareAddr) func() netip.Addr {
 	h := fnv.New64a()
 	_, _ = h.Write(mac)
@@ -196,8 +207,7 @@ func newLinkLocalPicker(mac net.HardwareAddr) func() netip.Addr {
 	}
 }
 
-// linkLocalConflict is RFC 5227 section 2.1.1's two rules: any ARP packet whose sender is the candidate, and any
-// ARP Probe for the candidate from another hardware address.
+// linkLocalConflict is RFC 5227 section 2.1.1: a packet sent from the candidate, or another host's Probe for it.
 func linkLocalConflict(pkt *wire.ARPPacket, candidate netip.Addr, own net.HardwareAddr) bool {
 	if bytes.Equal(pkt.SenderHW, own) {
 		return false
@@ -238,8 +248,7 @@ func claimLinkLocal(ctx context.Context, link arpLink, acd proto.ACDParams, next
 	}
 }
 
-// probeLinkLocal runs RFC 5227 section 2.1.1 once: a random wait up to PROBE_WAIT, PROBE_NUM probes spaced
-// PROBE_MIN to PROBE_MAX, then ANNOUNCE_WAIT, reading every frame for a conflict all along.
+// probeLinkLocal runs RFC 5227 section 2.1.1 once, reading every frame for a conflict.
 func probeLinkLocal(ctx context.Context, link arpLink, acd proto.ACDParams, candidate netip.Addr) (bool, error) {
 	own := link.HardwareAddr()
 	probe, err := wire.EncodeARP(&wire.ARPPacket{
@@ -416,8 +425,7 @@ func countLinkLocal(endpoints []EndpointHealth) int {
 	return n
 }
 
-// closeLinkLocalRecord closes an endpoint's addressless v4 record, which retained would reach on_remove as a failed
-// release though no lease was ever held (#904).
+// closeLinkLocalRecord closes an addressless v4 record, which on_remove would count as a failed release (#904).
 func (p *Plugin) closeLinkLocalRecord(networkID string, key net.HardwareAddr) {
 	if p.records == nil || len(key) == 0 {
 		return

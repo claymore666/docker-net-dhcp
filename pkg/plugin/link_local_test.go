@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
 	"net/netip"
 	"strings"
 	"sync"
@@ -200,7 +201,7 @@ func TestValidateLinkLocalFallback_RefusesWhatItCannotHonour(t *testing.T) {
 	}{
 		{name: "bridge", opts: DHCPNetworkOptions{LinkLocalFallback: true, Bridge: "br0"}},
 		{name: "macvlan", opts: DHCPNetworkOptions{LinkLocalFallback: true, Mode: ModeMacvlan, Parent: "eth0"}},
-		{name: "lease_timeout at the ceiling", opts: DHCPNetworkOptions{LinkLocalFallback: true, LeaseTimeout: 17 * time.Second}},
+		{name: "lease_timeout at the ceiling", opts: DHCPNetworkOptions{LinkLocalFallback: true, LeaseTimeout: 16 * time.Second}},
 		{name: "ipvlan without the option", opts: DHCPNetworkOptions{Mode: ModeIPvlan, Parent: "eth0", LeaseTimeout: time.Minute}},
 		{name: "ipvlan", opts: DHCPNetworkOptions{LinkLocalFallback: true, Mode: ModeIPvlan, Parent: "eth0"},
 			sentinel: util.ErrModeMismatch, want: "does not receive the ARP replies"},
@@ -208,8 +209,8 @@ func TestValidateLinkLocalFallback_RefusesWhatItCannotHonour(t *testing.T) {
 			sentinel: util.ErrModeMismatch, want: "ipv6_mode=dhcp"},
 		{name: "ipv6=true", opts: DHCPNetworkOptions{LinkLocalFallback: true, IPv6: true},
 			sentinel: util.ErrModeMismatch, want: "IPv4 only"},
-		{name: "lease_timeout over the ceiling", opts: DHCPNetworkOptions{LinkLocalFallback: true, LeaseTimeout: 17*time.Second + time.Millisecond},
-			sentinel: util.ErrIPAM, want: "Set lease_timeout to 17s or less"},
+		{name: "lease_timeout over the ceiling", opts: DHCPNetworkOptions{LinkLocalFallback: true, LeaseTimeout: 16*time.Second + time.Millisecond},
+			sentinel: util.ErrIPAM, want: "Set lease_timeout to 16s or less"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			err := validateLinkLocalFallback(tc.opts)
@@ -245,11 +246,11 @@ func TestLinkLocalBudget_AClaimAfterTheDHCPDeadlineEndsBeforeTheEngines(t *testi
 	if got := linkLocalClaimDeadline(start).Sub(start); got != pluginCallBudget-pluginCallMargin {
 		t.Errorf("claim deadline %v after the call, want %v", got, pluginCallBudget-pluginCallMargin)
 	}
-	if got := linkLocalDHCPDeadline(start).Add(linkLocalWindow(acd)); !got.Equal(linkLocalClaimDeadline(start)) {
-		t.Errorf("DHCP deadline plus one window = %v, want the claim deadline %v", got.Sub(start), linkLocalClaimDeadline(start).Sub(start))
+	if got := linkLocalDHCPDeadline(start).Add(linkLocalDrain + linkLocalWindow(acd)); !got.Equal(linkLocalClaimDeadline(start)) {
+		t.Errorf("DHCP deadline plus the drain and one window = %v, want the claim deadline %v", got.Sub(start), linkLocalClaimDeadline(start).Sub(start))
 	}
-	if linkLocalLeaseTimeout != 17*time.Second {
-		t.Errorf("linkLocalLeaseTimeout = %v, want 30 - 4 - 9 = 17s", linkLocalLeaseTimeout)
+	if linkLocalLeaseTimeout != 16*time.Second {
+		t.Errorf("linkLocalLeaseTimeout = %v, want 30 - 4 - 9 - 1 = 16s", linkLocalLeaseTimeout)
 	}
 	for _, tc := range []struct {
 		opts DHCPNetworkOptions
@@ -328,7 +329,10 @@ func TestClaimLinkLocal_StopsAtMaxConflicts(t *testing.T) {
 	link.onSend = func(f *fakeARPLink, pkt *wire.ARPPacket) { defendsOn(t, pkt.TargetIP)(f, pkt) }
 	next, drawn := sequence("169.254.10.1", "169.254.10.2", "169.254.10.3")
 	acd := fastACD()
-	_, tried, err := claimLinkLocal(context.Background(), link, acd, next)
+	// Bounded like every real claim, so one that ignores MAX_CONFLICTS fails here instead of hanging (#904).
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	_, tried, err := claimLinkLocal(ctx, link, acd, next)
 	if !errors.Is(err, ErrLinkLocalTooManyConflicts) || tried != acd.MaxConflicts || *drawn != acd.MaxConflicts {
 		t.Fatalf("err = %v after %d tried and %d drawn, want ErrLinkLocalTooManyConflicts after %d",
 			err, tried, *drawn, acd.MaxConflicts)
@@ -368,6 +372,32 @@ func TestClaimLinkLocal_TheSecondCandidateAlsoNeedsAWholeWindow(t *testing.T) {
 	_, tried, err := claimLinkLocal(ctx, link, acd, next)
 	if !errors.Is(err, ErrLinkLocalNoTime) || tried != 1 || *drawn != 1 {
 		t.Fatalf("err = %v after %d tried, %d drawn; want ErrLinkLocalNoTime after the defended first", err, tried, *drawn)
+	}
+}
+
+func TestAnnounceLinkLocal_SendsANNOUNCE_NUMAnnouncementsAnIntervalApart(t *testing.T) {
+	link := newFakeARPLink("02:00:00:00:00:01")
+	acd := fastACD()
+	acd.AnnounceInterval = 200 * proto.Millisecond
+	addr := netip.MustParseAddr("169.254.9.9")
+	start := time.Now()
+	if err := announceLinkLocal(context.Background(), link, acd, addr); err != nil {
+		t.Fatalf("announce: %v", err)
+	}
+	if took, gap := time.Since(start), time.Duration(acd.AnnounceInterval); took < gap*time.Duration(acd.AnnounceNum-1) {
+		t.Errorf("%d announcements took %v, want at least %v between each (RFC 5227 section 2.3)", acd.AnnounceNum, took, gap)
+	}
+	if len(link.sent) != acd.AnnounceNum || link.sent[0].SenderIP != addr || link.sent[0].TargetIP != addr {
+		t.Errorf("sent %d frames (%v), want %d announcements of %v", len(link.sent), link.sent, acd.AnnounceNum, addr)
+	}
+}
+
+func TestWatchARP_ASocketThatClosesMidProbeIsAnErrorNotSilence(t *testing.T) {
+	link := newFakeARPLink("02:00:00:00:00:01")
+	close(link.in)
+	conflict, err := watchARP(context.Background(), link, 5*time.Second, netip.MustParseAddr("169.254.9.9"), link.mac)
+	if err == nil || conflict {
+		t.Fatalf("conflict = %v, err = %v; want an error, since nothing was heard for the address", conflict, err)
 	}
 }
 
@@ -418,6 +448,18 @@ func TestLinkLocalFallback_AnExhaustedClaimFailsNamingBoth(t *testing.T) {
 		time.Now(), "veth0", "ep", dhcp.ErrNoLease)
 	if !errors.Is(err, ErrLinkLocalTooManyConflicts) || !strings.Contains(fmt.Sprint(err), dhcp.ErrNoLease.Error()) {
 		t.Fatalf("err = %v; want MAX_CONFLICTS naming the DHCP failure too", err)
+	}
+}
+
+func TestLinkLocalFallback_TheClaimEndsAtTheCallsDeadlineNotTheRequests(t *testing.T) {
+	link := newFakeARPLink("02:00:00:00:00:01")
+	opened := withFakeARP(t, link)
+	linkLocalACD = proto.DefaultACDParams
+	// 20 s into the call leaves 6 s before the 26 s mark, less than the 9 s window, on a request with no deadline (#904).
+	_, err := (&Plugin{}).linkLocalFallback(context.Background(), DHCPNetworkOptions{LinkLocalFallback: true},
+		time.Now().Add(-20*time.Second), "veth0", "ep", dhcp.ErrNoLease)
+	if !errors.Is(err, ErrLinkLocalNoTime) || *opened != 1 || len(link.sent) != 0 {
+		t.Fatalf("err = %v, link opened %d times, %d frames sent; want no time left and nothing probed", err, *opened, len(link.sent))
 	}
 }
 
@@ -536,6 +578,25 @@ func TestUnboundState_OnlyAV4LinkLocalAddressReads(t *testing.T) {
 	}
 }
 
+// abortJoinAttach aborts Join's attach as Leave does and waits until its goroutine drops the manager, its last act (#904).
+func abortJoinAttach(t *testing.T, p *Plugin, endpointID string, m *dhcpManager) {
+	t.Helper()
+	m.attachAborted.Store(true)
+	m.attachCancel()
+	<-m.startedCh
+	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(time.Millisecond) {
+		p.mu.Lock()
+		cur := p.persistentDHCP[endpointID]
+		p.mu.Unlock()
+		if cur != m {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("Join's attach goroutine for %s still holds its manager after 10s", endpointID)
+		}
+	}
+}
+
 func TestJoin_ALinkLocalEndpointGetsNoGatewayAndNoHostRoutes(t *testing.T) {
 	withStateDir(t, t.TempDir())
 	_, dst, _ := net.ParseCIDR("10.88.0.0/16")
@@ -568,7 +629,7 @@ func TestJoin_ALinkLocalEndpointGetsNoGatewayAndNoHostRoutes(t *testing.T) {
 			m := p.persistentDHCP["e904"]
 			p.mu.Unlock()
 			if m != nil {
-				defer func() { m.attachCancel(); <-m.startedCh }()
+				defer abortJoinAttach(t, p, "e904", m)
 			}
 			if res.Gateway != tc.wantGW || len(res.StaticRoutes) != tc.wantRoutes {
 				t.Errorf("Join returned gateway %q and %d routes, want %q and %d", res.Gateway, len(res.StaticRoutes), tc.wantGW, tc.wantRoutes)
@@ -599,6 +660,99 @@ func TestSetupClient_ALinkLocalAddressIsNeverTheRequestedIP(t *testing.T) {
 			_, _ = m.setupClient(false)
 			if opens != 1 || requested != tc.want {
 				t.Errorf("%d clients built, requested IP %q; want one, %q", opens, requested, tc.want)
+			}
+		})
+	}
+}
+
+func TestCreateNetwork_LinkLocalFallbackRefusalsAndTheStoredValue(t *testing.T) {
+	cases := []struct {
+		name  string
+		opts  map[string]interface{}
+		names []string // nil means accepted
+	}{
+		{"ipvlan", map[string]interface{}{"mode": "ipvlan"}, []string{"link_local_fallback", "does not receive the ARP replies"}},
+		{"ipv6", map[string]interface{}{"mode": "macvlan", "ipv6": "true"}, []string{"link_local_fallback", "IPv4 only"}},
+		{"lease_timeout over the ceiling", map[string]interface{}{"mode": "macvlan", "lease_timeout": "20s"},
+			[]string{"lease_timeout", "Set lease_timeout to 16s or less"}},
+		{"macvlan", map[string]interface{}{"mode": "macvlan"}, nil},
+		{"bridge", map[string]interface{}{"mode": "bridge"}, nil},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			withStateDir(t, t.TempDir())
+			(&mtuKernel{parentMTU: 1500}).install(t)
+			p := newPluginForTest()
+			p.docker = &fakeDocker{}
+			opts := map[string]interface{}{"parent": mtuTestParent, "link_local_fallback": "true"}
+			if c.opts["mode"] == "bridge" {
+				opts = map[string]interface{}{"bridge": mtuTestBridge, "link_local_fallback": "true"}
+			}
+			for k, v := range c.opts {
+				opts[k] = v
+			}
+			err := mtuCreateNetwork(p, opts)
+			if c.names == nil {
+				if err != nil {
+					t.Fatalf("refused: %v", err)
+				}
+				stored, err := loadOptions(mtuTestNetwork)
+				if err != nil || !stored.LinkLocalFallback {
+					t.Errorf("the state file holds link_local_fallback=%v (%v); a plugin restart would fail the endpoint instead", stored.LinkLocalFallback, err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("%v with link_local_fallback=true was accepted", c.opts)
+			}
+			if got := util.ErrToStatus(err); got != http.StatusBadRequest {
+				t.Errorf("the refusal %v maps to HTTP %d, want 400", err, got)
+			}
+			for _, n := range c.names {
+				if !strings.Contains(err.Error(), n) {
+					t.Errorf("the refusal %q does not name %q", err, n)
+				}
+			}
+		})
+	}
+}
+
+func TestCreateNetwork_IPAMModeRefusesLinkLocalFallback(t *testing.T) {
+	err := createIPAMBridgeNetworkOpts(t, map[string]interface{}{"link_local_fallback": "true"}, ipamLocalAddressSpace)
+	if err == nil {
+		t.Fatal("link_local_fallback was accepted with this plugin as the IPAM driver, where Docker keeps the " +
+			"169.254 address after the container moves to a lease")
+	}
+	if !errors.Is(err, util.ErrIPAM) || !strings.Contains(err.Error(), "--ipam-driver null") {
+		t.Errorf("the refusal %v is not a util.ErrIPAM naming --ipam-driver null", err)
+	}
+	// The control: the same option on a null-IPAM network is accepted.
+	if err := createIPAMBridgeNetworkOpts(t, map[string]interface{}{"link_local_fallback": "true"}, "null"); err != nil {
+		t.Errorf("link_local_fallback on a null-IPAM network was refused: %v", err)
+	}
+}
+
+func TestDeleteEndpoint_ClosesTheRecordOfALinkLocalEndpointOnly(t *testing.T) {
+	for _, tc := range []struct {
+		ip   string
+		want lease.Phase
+	}{
+		{"169.254.60.199/16", lease.PhaseClosed},
+		// The control: an addressless record under a leased fingerprint is retained, as before #904.
+		{"192.168.99.12/24", lease.PhaseRetained},
+	} {
+		t.Run(tc.ip, func(t *testing.T) {
+			const netID, epID = "net-ll", "c1a1c0ffee00deadbeef0000000000000000000000000000000000000000abcd"
+			p := deleteEndpointPlugin(t, netID, DHCPNetworkOptions{Bridge: "br-test", LinkLocalFallback: true})
+			p.records = recordingPlugin(t).records
+			mac, _ := net.ParseMAC("02:42:a9:fe:3c:c7")
+			id := p.recordCreated(netID, mac, dhcp.ClientIdentity([]byte{3}))
+			p.rememberEndpoint(epID, endpointFingerprint{MAC: mac.String(), IPv4: tc.ip}, dhcpHostname{name: "ll-1"})
+			if err := p.DeleteEndpoint(context.Background(), DeleteEndpointRequest{NetworkID: netID, EndpointID: epID}); err != nil {
+				t.Fatalf("DeleteEndpoint: %v", err)
+			}
+			if got := recordPhase(t, p, id); got != tc.want {
+				t.Errorf("record phase after DeleteEndpoint = %s, want %s", got, tc.want)
 			}
 		})
 	}

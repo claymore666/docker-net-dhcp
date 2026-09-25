@@ -814,10 +814,13 @@ func ipamDriverIsRemote(name string) bool {
 	}
 }
 
+// endpointCallStart is a seam for the link-local budget test, which starts a call late in its budget (#904).
+var endpointCallStart = time.Now
+
 // CreateEndpoint builds the host-side link, runs a one-shot DHCP acquisition and stashes the result for Join.
 func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (CreateEndpointResponse, error) {
 	// The daemon's deadline on this call comes first; see v6AcquisitionDeadline.
-	callStart := time.Now()
+	callStart := endpointCallStart()
 	log.WithField("options", r.Options).Debug("CreateEndpoint options")
 	res := CreateEndpointResponse{
 		Interface: &EndpointInterface{},
@@ -1031,21 +1034,16 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 			}
 
 			// The v6 half runs second and gets what is left of the daemon's deadline; see v6AcquisitionDeadline.
-			acqCtx := ctx
+			var (
+				info dhcp.Info
+				ra   dhcp.RAObservation
+			)
 			if v6 {
-				var endV6 context.CancelFunc
-				acqCtx, endV6 = withV6AcquisitionDeadline(ctx, callStart)
+				acqCtx, endV6 := withV6AcquisitionDeadline(ctx, callStart)
 				defer endV6()
-			} else if opts.LinkLocalFallback {
-				// DHCP gets the budget less one claim window, so the claim still ends before the daemon's deadline (#904).
-				var endV4 context.CancelFunc
-				acqCtx, endV4 = context.WithDeadline(ctx, linkLocalDHCPDeadline(callStart))
-				defer endV4()
-			}
-
-			info, ra, err := p.acquireWithPolicy(acqCtx, ctrName, pol, v6, timeout, r.EndpointID, base)
-			if err != nil && !v6 {
-				info, err = p.linkLocalFallback(ctx, opts, callStart, ctrName, r.EndpointID, err)
+				info, ra, err = p.acquireWithPolicy(acqCtx, ctrName, pol, true, timeout, r.EndpointID, base)
+			} else {
+				info, err = p.acquireV4(ctx, opts, callStart, ctrName, pol, timeout, r.EndpointID, base)
 			}
 			if err != nil {
 				// An empty DHCPv6 acquisition fails only when the segment advertised managed DHCPv6; stateless and

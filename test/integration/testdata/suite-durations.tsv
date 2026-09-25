@@ -448,9 +448,9 @@
 #   one row    TestLinkLocalFallback_AServerlessStartThenMovesToALease
 #              (#904) is 70.00, INFERRED: no run has executed it. One
 #              ephemeral fixture and one container (12.00), plus the
-#              26s a server-less start takes by design (17s of DHCP and
-#              a 9s claim window), plus the move after the restart, one
-#              DISCOVER retransmission of at most 16s this early.
+#              26s a server-less start takes at most (16s of DHCP, 1s
+#              to stop it, a 9s claim window), plus the move after the
+#              restart, one DISCOVER retransmission of at most 16s.
 #   samples    3 for every corpus row. SIXTY-FIVE rows are not corpus
 #              samples, and the fourteen groups below are disjoint and
 #              exhaust them: the five `one row` notes above -- 73.85,

@@ -380,21 +380,16 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, callStart tim
 				base.RequestedIP = requestedIP
 			}
 
-			acqCtx := ctx
+			var (
+				info dhcp.Info
+				ra   dhcp.RAObservation
+			)
 			if v6 {
-				var endV6 context.CancelFunc
-				acqCtx, endV6 = withV6AcquisitionDeadline(ctx, callStart)
+				acqCtx, endV6 := withV6AcquisitionDeadline(ctx, callStart)
 				defer endV6()
-			} else if opts.LinkLocalFallback {
-				// DHCP gets the budget less one claim window, so the claim still ends before the daemon's deadline (#904).
-				var endV4 context.CancelFunc
-				acqCtx, endV4 = context.WithDeadline(ctx, linkLocalDHCPDeadline(callStart))
-				defer endV4()
-			}
-
-			info, ra, err := p.acquireWithPolicy(acqCtx, la.Name, pol, v6, timeout, r.EndpointID, base)
-			if err != nil && !v6 {
-				info, err = p.linkLocalFallback(ctx, opts, callStart, la.Name, r.EndpointID, err)
+				info, ra, err = p.acquireWithPolicy(acqCtx, la.Name, pol, true, timeout, r.EndpointID, base)
+			} else {
+				info, err = p.acquireV4(ctx, opts, callStart, la.Name, pol, timeout, r.EndpointID, base)
 			}
 			if err != nil {
 				// No DHCPv6 address is fatal only where the segment advertised managed DHCPv6 (#868).

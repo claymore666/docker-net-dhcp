@@ -16,7 +16,6 @@ import (
 
 	"github.com/claymore666/dhcp-golib/proto"
 	"github.com/vishvananda/netlink"
-	"golang.org/x/sys/unix"
 
 	"github.com/claymore666/docker-net-dhcp/v2/pkg/dhcp"
 	"github.com/claymore666/docker-net-dhcp/v2/pkg/util"
@@ -31,9 +30,6 @@ func addLink(t *testing.T, h *netlink.Handle, link netlink.Link) {
 		}
 	}
 	if err := h.LinkAdd(link); err != nil {
-		if errors.Is(err, unix.EPERM) {
-			t.Skipf("no CAP_NET_ADMIN here: %v", err)
-		}
 		t.Fatalf("LinkAdd %s: %v", link.Attrs().Name, err)
 	}
 	if err := h.LinkSetUp(link); err != nil {
@@ -95,6 +91,7 @@ func TestRenew_LeavingLinkLocalInstallsWhatJoinWithheld(t *testing.T) {
 	hostRoutes := []string{"10.88.0.0/16 via 192.168.99.253", "10.99.0.0/16"}
 	for _, tc := range []struct {
 		name, last, pinned string
+		lease              *dhcp.Info
 		want               []string
 	}{
 		{name: "from link-local", last: "169.254.10.1/16",
@@ -104,6 +101,13 @@ func TestRenew_LeavingLinkLocalInstallsWhatJoinWithheld(t *testing.T) {
 		// The control: a lease-to-lease move leaves Join's routes as they were and copies nothing.
 		{name: "from a lease", last: "192.168.99.61/24",
 			want: []string{"192.168.99.0/24", "default via 192.168.99.1"}},
+		{name: "from link-local, a next hop reached through an on-link route", last: "169.254.10.1/16",
+			lease: &dhcp.Info{IP: "192.168.99.10/24", Gateway: "192.168.99.1", Routes: []dhcp.Route{
+				{Destination: "172.31.0.0/16", Gateway: "10.50.0.1"}, {Destination: "10.50.0.0/24"}}},
+			want: append([]string{"10.50.0.0/24", "172.31.0.0/16 via 10.50.0.1", "192.168.99.0/24", "default via 192.168.99.1"}, hostRoutes...)},
+		// A server handing out 169.254/16, which RFC 3927 section 1.6 says it SHOULD NOT, leaves the endpoint link-local.
+		{name: "to a leased link-local address", last: "169.254.10.1/16", lease: &dhcp.Info{IP: "169.254.20.5/16"},
+			want: []string{"169.254.0.0/16"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			l := newRenumberLink(t, 0, "", "")
@@ -117,12 +121,16 @@ func TestRenew_LeavingLinkLocalInstallsWhatJoinWithheld(t *testing.T) {
 			m := l.manager(t, tc.last).withPlugin(&Plugin{})
 			m.opts = DHCPNetworkOptions{Bridge: "hb0", LinkLocalFallback: true, Gateway: tc.pinned}
 			var err error
-			logged := captureLog(t, func() { err = m.renew(false, lease) })
+			got := lease
+			if tc.lease != nil {
+				got = *tc.lease
+			}
+			logged := captureLog(t, func() { err = m.renew(false, got) })
 			if err != nil {
 				t.Fatalf("renew: %v", err)
 			}
-			if got := allV4Addrs(t, l); !equalStrings(got, []string{"192.168.99.10/24"}) {
-				t.Errorf("link addresses = %v, want only the lease", got)
+			if addrs := allV4Addrs(t, l); !equalStrings(addrs, []string{got.IP}) {
+				t.Errorf("link addresses = %v, want only the lease", addrs)
 			}
 			want := append([]string(nil), tc.want...)
 			sort.Strings(want)
@@ -132,7 +140,7 @@ func TestRenew_LeavingLinkLocalInstallsWhatJoinWithheld(t *testing.T) {
 			if !strings.Contains(logged, "dhcp renew with changed IP") {
 				t.Errorf("the move was not logged on the lease-changed path; log:\n%s", logged)
 			}
-			if left := strings.Contains(logged, "left its link-local address"); left != strings.HasPrefix(tc.last, "169.254.") {
+			if left := strings.Contains(logged, "left its link-local address"); left != (strings.HasPrefix(tc.last, "169.254.") && !strings.HasPrefix(got.IP, "169.254.")) {
 				t.Errorf("link-local leave logged = %v for a move from %s", left, tc.last)
 			}
 		})
@@ -160,9 +168,6 @@ func TestClaimLinkLocal_AnAddressTheKernelHoldsOnThePeerIsSkipped(t *testing.T) 
 
 	link, err := openARPLink("ll0")
 	if err != nil {
-		if errors.Is(err, unix.EPERM) {
-			t.Skipf("no packet socket here: %v", err)
-		}
 		t.Fatalf("open ARP socket: %v", err)
 	}
 	defer link.Close()
@@ -177,8 +182,7 @@ func TestClaimLinkLocal_AnAddressTheKernelHoldsOnThePeerIsSkipped(t *testing.T) 
 	}
 }
 
-// createWithNoServer runs CreateEndpoint against a DHCP one-shot that finds no server, returning the response, the
-// join hint, the one-shot's deadline measured from before the call, and how often the claim opened the link.
+// createWithNoServer runs CreateEndpoint with no DHCP server; the duration is the first attempt's deadline (#904).
 func createWithNoServer(t *testing.T, ep string, opts DHCPNetworkOptions) (CreateEndpointResponse, joinHint, time.Duration, int, error) {
 	t.Helper()
 	withStateDir(t, t.TempDir())
@@ -188,7 +192,9 @@ func createWithNoServer(t *testing.T, ep string, opts DHCPNetworkOptions) (Creat
 	var deadline time.Time
 	restore := dhcpGetIP
 	dhcpGetIP = func(ctx context.Context, _ string, _ *dhcp.DHCPClientOptions) (dhcp.Info, dhcp.RAObservation, error) {
-		deadline, _ = ctx.Deadline()
+		if deadline.IsZero() {
+			deadline, _ = ctx.Deadline()
+		}
 		return dhcp.Info{}, dhcp.RAObservation{}, dhcp.ErrNoLease
 	}
 	t.Cleanup(func() { dhcpGetIP = restore })
@@ -213,12 +219,19 @@ func TestCreateEndpoint_ANoServerStartClaimsLinkLocalInsideTheBudgetWithNoGatewa
 	}
 	addLink(t, h, &netlink.Bridge{LinkAttrs: netlink.LinkAttrs{Name: "llbr0"}})
 	addLink(t, h, &netlink.Dummy{LinkAttrs: netlink.LinkAttrs{Name: "llpa0"}})
+	// Two dhcp_servers split the DHCP share, so the first attempt ends by half of it after the two-second hostname
+	// lookup; split from the 34 s default it would run to the share's end (#731, #904).
 	for i, tc := range []struct {
-		name string
-		opts DHCPNetworkOptions
+		name      string
+		opts      DHCPNetworkOptions
+		maxBudget time.Duration
 	}{
-		{"bridge", DHCPNetworkOptions{Bridge: "llbr0"}},
-		{"macvlan", DHCPNetworkOptions{Mode: ModeMacvlan, Parent: "llpa0"}},
+		{"bridge", DHCPNetworkOptions{Bridge: "llbr0"}, linkLocalLeaseTimeout + time.Second},
+		{"macvlan", DHCPNetworkOptions{Mode: ModeMacvlan, Parent: "llpa0"}, linkLocalLeaseTimeout + time.Second},
+		{"bridge, two servers", DHCPNetworkOptions{Bridge: "llbr0", DHCPServers: "192.0.2.1,192.0.2.2"},
+			linkLocalLeaseTimeout/2 + 3*time.Second},
+		{"macvlan, two servers", DHCPNetworkOptions{Mode: ModeMacvlan, Parent: "llpa0", DHCPServers: "192.0.2.1,192.0.2.2"},
+			linkLocalLeaseTimeout/2 + 3*time.Second},
 	} {
 		on, off := fmt.Sprintf("a%d1%061x", i, 0), fmt.Sprintf("a%d2%061x", i, 0)
 		t.Run(tc.name, func(t *testing.T) {
@@ -234,16 +247,67 @@ func TestCreateEndpoint_ANoServerStartClaimsLinkLocalInsideTheBudgetWithNoGatewa
 			if hint.Gateway != "" || hint.IPv4 == nil || opened != 1 {
 				t.Errorf("gateway = %q, hint address %v, link opened %d times; want no gateway despite the pinned one, the claimed address, one claim", hint.Gateway, hint.IPv4, opened)
 			}
-			// The one-shot must end at callStart+17s, not 17s after the hostname lookup's two seconds.
-			if dhcpBudget <= 0 || dhcpBudget > linkLocalLeaseTimeout+time.Second {
-				t.Errorf("the DHCP one-shot's deadline is %v after the call, want at most %v", dhcpBudget, linkLocalLeaseTimeout)
+			// The one-shot must end at callStart+16s, not 16s after the hostname lookup's two seconds.
+			if dhcpBudget <= 0 || dhcpBudget > tc.maxBudget {
+				t.Errorf("the first DHCP attempt's deadline is %v after the call, want at most %v", dhcpBudget, tc.maxBudget)
 			}
 
 			// The control: without the option the same failure fails the endpoint and claims nothing.
-			_, _, _, opened, err = createWithNoServer(t, off, tc.opts)
+			_, _, offBudget, opened, err := createWithNoServer(t, off, tc.opts)
 			if !errors.Is(err, dhcp.ErrNoLease) || opened != 0 {
 				t.Errorf("option off: err = %v, link opened %d times; want ErrNoLease and no claim", err, opened)
 			}
+			if offBudget <= linkLocalLeaseTimeout+time.Second {
+				t.Errorf("option off: the first attempt's deadline is %v after the call, want the 34 s default's share, not the link-local cap", offBudget)
+			}
 		})
+	}
+}
+
+func TestCreateEndpoint_ARealOneShotRunToItsDeadlineStillLeavesTheClaimItsWindow(t *testing.T) {
+	if !inOwnNetns(t) {
+		return
+	}
+	h, err := netlink.NewHandle()
+	if err != nil {
+		t.Fatalf("NewHandle: %v", err)
+	}
+	addLink(t, h, &netlink.Bridge{LinkAttrs: netlink.LinkAttrs{Name: "llbr1"}})
+	withStateDir(t, t.TempDir())
+	if err := saveOptions("n1", DHCPNetworkOptions{Bridge: "llbr1", LinkLocalFallback: true}); err != nil {
+		t.Fatalf("saveOptions: %v", err)
+	}
+	// The call starts three seconds before its DHCP share ends, past the two-second hostname lookup; the real
+	// one-shot, ARP socket and RFC 5227 timers run from there, so the claim gets what the drain left (#904).
+	start := time.Now().Add(-(linkLocalLeaseTimeout - 3*time.Second))
+	restore := endpointCallStart
+	endpointCallStart = func() time.Time { return start }
+	t.Cleanup(func() { endpointCallStart = restore })
+
+	realGetIP := dhcpGetIP
+	var overshoot time.Duration
+	dhcpGetIP = func(ctx context.Context, iface string, o *dhcp.DHCPClientOptions) (dhcp.Info, dhcp.RAObservation, error) {
+		dl, _ := ctx.Deadline()
+		info, ra, err := realGetIP(ctx, iface, o)
+		overshoot = time.Since(dl)
+		return info, ra, err
+	}
+	t.Cleanup(func() { dhcpGetIP = realGetIP })
+
+	p := newPluginForTest()
+	p.docker = &fakeDocker{}
+	res, err := p.CreateEndpoint(t.Context(), CreateEndpointRequest{NetworkID: "n1", EndpointID: fmt.Sprintf("b1%062x", 0), Interface: &EndpointInterface{}})
+	took := time.Since(start)
+	if err != nil {
+		t.Fatalf("CreateEndpoint with no server and the default lease_timeout: %v", err)
+	}
+	if !isLinkLocalV4String(res.Interface.Address) {
+		t.Errorf("address = %q, want a 169.254/16 address", res.Interface.Address)
+	}
+	if overshoot > linkLocalDrain {
+		t.Errorf("the one-shot returned %v after its deadline, more than the %v the budget allows it", overshoot, linkLocalDrain)
+	}
+	if took > pluginCallBudget-pluginCallMargin {
+		t.Errorf("CreateEndpoint answered %v after the call started, past the %v the claim must end by", took, pluginCallBudget-pluginCallMargin)
 	}
 }
