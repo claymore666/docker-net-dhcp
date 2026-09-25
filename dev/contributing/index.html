@@ -1065,8 +1065,9 @@ full and have no such escape.</p>
 can merge. Branch protection holds the authoritative list and the checks
 panel on the pull request shows it applied to the branch. At the time of
 writing that list is: unit tests, <code>staticcheck</code>, the live integration
-suite, <code>govulncheck</code>, <code>actionlint</code>, CodeQL (<code>Analyze (go)</code> and
-<code>Analyze (actions)</code>), <code>attribution</code>, <code>policy-gates</code>, and <code>docs-site</code>.</p>
+suite, <code>govulncheck</code>, <code>actionlint</code>, CodeQL (<code>Analyze (go)</code>,
+<code>Analyze (actions)</code> and the <code>CodeQL</code> result check, which fails when the
+analysis finds a new alert), <code>attribution</code>, <code>policy-gates</code>, and <code>docs-site</code>.</p>
 <p><code>docs-site</code> builds the documentation site with <code>mkdocs build --strict</code>. It
 runs on every pull request, including one that touches no documentation,
 because a check that is filtered out of a pull request is absent there, and
