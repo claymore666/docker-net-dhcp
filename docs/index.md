@@ -180,9 +180,11 @@ project will not do, is on the [roadmap](roadmap.md).
   plugin.
 - **Mode constraints.** `bridge` expects a host bridge you maintain,
   or makes one from a spare NIC that stays up with no address (v2.3.0);
-  `macvlan` and `ipvlan` attach to a host NIC and change nothing on the
-  host, at the cost of the kernel rule that a child cannot reach its own
-  host's address. Both in
+  `macvlan` and `ipvlan` attach to a host NIC and change nothing on it,
+  at the cost of the kernel rule that a child cannot reach its own host's
+  address. With `-o vlan=<id>` (v2.3.0) they attach to a VLAN
+  sub-interface of that NIC, which the plugin creates when it is missing
+  and removes with the last network on it. Both in
   [macvlan / ipvlan modes](parent-attached-modes.md).
 
 ## Quick start
