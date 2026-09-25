@@ -141,12 +141,33 @@ func (p *Plugin) v6Wiring(base *dhcp.DHCPClientOptions, opts DHCPNetworkOptions,
 	}
 	// Router-discovery counters are set in every mode: they describe the segment, not the mode (#814).
 	base.OnRouterStats = p.addRouterStats
+	// RFC 4704 section 5: option 39 rides stateful messages only, so a SLAAC address gets no AAAA (#1029).
+	if opts.RegisterDNS && mode == proto.Mode6SLAAC {
+		log.WithField("endpoint", shortID(endpointID)).
+			Info("ipv6_mode=slaac sends no DHCPv6 Solicit, so register_dns registers this container's A record and no AAAA")
+	}
 	if mode == proto.Mode6Auto {
 		// Only auto: the library raises SLAACFallbacks from the timer Mode6Auto arms on M=1 (proto/machine6_slaac.go)
 		// (#817).
-		base.OnV6Fallback = p.v6FallbackReporter(endpointID)
+		report := p.v6FallbackReporter(endpointID)
+		if opts.RegisterDNS {
+			report = noAAAAAfterFallback(endpointID, report)
+		}
+		base.OnV6Fallback = report
 	}
 	return nil
+}
+
+// noAAAAAfterFallback warns that a fallback, which precedes any DHCPv6 lease, leaves the name with no AAAA (#1029).
+func noAAAAAfterFallback(endpointID string, report func(uint64)) func(uint64) {
+	return func(n uint64) {
+		report(n)
+		if n != 0 {
+			log.WithField("endpoint", shortID(endpointID)).
+				Warn("register_dns: no AAAA record is registered for this container's name, since the address came " +
+					"from the router's advertised prefix and not from a DHCPv6 lease")
+		}
+	}
 }
 
 // v6FallbackReporter counts an endpoint's first fallback and warns on every one, since the address source differs

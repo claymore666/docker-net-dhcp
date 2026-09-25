@@ -5,7 +5,9 @@ package dhcp
 
 import (
 	"bytes"
+	"errors"
 	"net/netip"
+	"strings"
 	"testing"
 
 	"github.com/claymore666/dhcp-golib/proto"
@@ -155,5 +157,94 @@ func TestBuildParams6_KeepsTheLibraryRetransmissionPolicy(t *testing.T) {
 	if p.RouterSolicitInterval != d.RouterSolicitInterval {
 		t.Errorf("RouterSolicitInterval = %v, want the library default %v",
 			p.RouterSolicitInterval, d.RouterSolicitInterval)
+	}
+}
+
+// firstSolicit6 builds the library machine from p and returns the Solicit it sends once the RFC 9915 section 18.2.1
+// delay fires, the message option 39 must ride on (RFC 4704 section 5, #1029).
+func firstSolicit6(t *testing.T, p proto.Params6) *wire.MessageV6 {
+	t.Helper()
+	m, err := proto.New6(p)
+	if err != nil {
+		t.Fatalf("proto.New6: %v", err)
+	}
+	m.Step(0, 0, proto.Simple(proto.EvStart))
+	_, acts := m.Step(proto.Instant(proto.Second), 1, proto.TimerFired(proto.Timer6Delay))
+	for _, a := range acts {
+		if a.Kind == proto.ActSendV6 && a.MsgV6 != nil && a.MsgV6.Type == wire.MsgSolicit {
+			return a.MsgV6
+		}
+	}
+	t.Fatalf("no Solicit after the delay: %v", acts)
+	return nil
+}
+
+func TestBuildParams6_RegisterDNSPutsTheNameInOption39(t *testing.T) {
+	opts := testOpts6(t)
+	opts.Hostname, opts.FQDN = "web1", "both"
+	p, err := buildParams6(opts, false)
+	if err != nil {
+		t.Fatalf("buildParams6: %v", err)
+	}
+	if p.Hostname != "web1" {
+		t.Fatalf("Params6.Hostname = %q on a register_dns network, want %q: the v6 client would ask the server "+
+			"for no AAAA while the v4 client asks for the A record (#1029)", p.Hostname, "web1")
+	}
+	f, ok, err := firstSolicit6(t, p).Options.ClientFQDN()
+	if err != nil || !ok {
+		t.Fatalf("the Solicit carries option 39 %v (err %v), want it present", ok, err)
+	}
+	if f.Name != "web1" || f.Flags != wire.ClientFQDNFlagS {
+		t.Errorf("the Solicit's option 39 is %+v, want the partial name %q with S=1 O=0 N=0 (RFC 4704 section 5.2)",
+			f, "web1")
+	}
+}
+
+func TestBuildParams6_NoRegisterDNSSendsNoName(t *testing.T) {
+	opts := testOpts6(t)
+	opts.Hostname = "web1"
+	p, err := buildParams6(opts, false)
+	if err != nil {
+		t.Fatalf("buildParams6: %v", err)
+	}
+	if p.Hostname != "" {
+		t.Fatalf("Params6.Hostname = %q without register_dns, want empty: the library sends a name only as "+
+			"option 39 with S=1, which asks the server to register an AAAA nobody opted into (#1029 (a))", p.Hostname)
+	}
+	if _, ok, _ := firstSolicit6(t, p).Options.ClientFQDN(); ok {
+		t.Errorf("the Solicit carries option 39 on a network without register_dns")
+	}
+}
+
+// The label rule is unchanged: a label over 63 octets is refused on register_dns networks, both families, and a v6
+// network without register_dns never meets it (RFC 1035 section 2.3.4, #1029).
+func TestBuildParams6_LongLabelIsRefusedWhereV4RefusesIt(t *testing.T) {
+	long := strings.Repeat("a", 64)
+	mac := testMAC(t)
+
+	v4, err := buildParams(&DHCPClientOptions{MAC: mac, Hostname: long, FQDN: "both"}, false)
+	if err != nil {
+		t.Fatalf("buildParams: %v", err)
+	}
+	if _, err := proto.New(v4); !errors.Is(err, proto.ErrBadFQDN) {
+		t.Fatalf("v4 with register_dns took a 64-octet label: %v; this test pins v6 to the v4 rule", err)
+	}
+
+	opts := testOpts6(t)
+	opts.Hostname, opts.FQDN = long, "both"
+	p, err := buildParams6(opts, false)
+	if err != nil {
+		t.Fatalf("buildParams6: %v", err)
+	}
+	if _, err := proto.New6(p); err == nil {
+		t.Errorf("v6 with register_dns took a 64-octet label that v4 refuses on the same network")
+	}
+
+	opts.FQDN = ""
+	if p, err = buildParams6(opts, false); err != nil {
+		t.Fatalf("buildParams6 without register_dns: %v", err)
+	}
+	if _, err := proto.New6(p); err != nil {
+		t.Errorf("v6 without register_dns refused a 64-octet hostname it never sends: %v", err)
 	}
 }

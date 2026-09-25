@@ -244,7 +244,7 @@ type DHCPNetworkOptions struct {
 	VendorClass string `mapstructure:"vendor_class"`
 	// ValidateDHCP runs a one-shot DHCP probe on a macvlan or ipvlan parent at CreateNetwork (#108).
 	ValidateDHCP bool `mapstructure:"validate_dhcp"`
-	// RegisterDNS sends the FQDN option (81 v4, 39 v6) from the hostname, asking the server to register it (#261).
+	// RegisterDNS sends the hostname in option 81 (v4) and 39 (v6) with S=1; without it v6 sends no name (#261, #1029).
 	RegisterDNS bool `mapstructure:"register_dns"`
 	// AuditLog appends every lease event on this network to STATE_DIR/leases.jsonl (#109).
 	AuditLog bool `mapstructure:"audit_log"`

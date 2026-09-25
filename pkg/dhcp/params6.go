@@ -51,6 +51,12 @@ func buildParams6(opts *DHCPClientOptions, once bool) (proto.Params6, error) {
 	// DNS (#911).
 	p.ORO = proto.DefaultORO()
 
+	// register_dns means RFC 4704 option 39, which the library sends with S=1 on Solicit, Request, Renew and Rebind.
+	// Without it no name goes out: v6 has no option 12, and the library cannot send a name without S (#1029 (a)).
+	if opts.FQDN != "" {
+		p.Hostname = opts.Hostname
+	}
+
 	// The #213 hint: RFC 9915 section 18.2.1 lets a Solicit carry addresses "as hints to the server", which a server
 	// may ignore.
 	if opts.PreferredV6 != "" {

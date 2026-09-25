@@ -602,6 +602,8 @@ TestExtraOptions_NTPAndTFTPLogged	12.12
 TestExtraOptions_SearchListInResolvConf	12.42
 TestExtraOptions_WPADAndTimezoneLogged	11.98
 TestFQDN_RegistersInDNS	11.60
+TestFQDN_V6RegistersAAAA	15.00
+TestFQDN_V6UnsetRegistersNoAAAA	20.00
 TestFailure_IPAMResentRequestIsRefusedNotServedTwice	60.00
 TestFailure_IPAMServerDownFailsInsideTheBudget	75.00
 TestFailure_LeaseExpiry	154.61

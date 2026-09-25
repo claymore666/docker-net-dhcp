@@ -54,7 +54,7 @@ below decide what is in a release; this page follows them.
 - [#960], IPv6 in IPAM mode: the v6 exchange, the v6 record, and a DUID
   that survives a restart
 - [#1029], the DHCPv6 Client FQDN option, so `register_dns` registers the
-  AAAA record beside the A
+  AAAA record beside the A; without it a DHCPv6 lease carries no name
 - [#1036], a `require_mac` option that refuses an endpoint with no
   Docker-supplied MAC
 - [#1037], an `mtu` option that sets the endpoint link MTU explicitly

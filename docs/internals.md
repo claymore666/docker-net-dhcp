@@ -46,13 +46,19 @@ namespace to it. Two things differ:
    it, and the lease does not have to wait for that answer. Two routes
    have the name before the client starts and do not take this one: a
    `register_dns` network, whose option 81 is built when the client is
-   constructed and has no setter for it; and any attach that had to ask
+   constructed and has no setter for it, and whose DHCPv6 client builds
+   option 39 from the same name at the same time and renews once at start
+   to carry it, since the address was leased at `CreateEndpoint` before
+   the name was known; and any attach that had to ask
    the daemon anyway to find the container's namespace, which is the
    fallback to the container's process where the sandbox key is refused,
    and the path that re-adopts a running container after a plugin
    restart. A container **restart** is a different
    thing and is not one of these: Docker drives it as a detach and a
    re-attach, and the endpoint is rebuilt before the attach begins.
+   The name handed over late goes to the DHCPv4 client only: this route
+   runs without `register_dns`, and there a DHCPv6 client sends no name,
+   since option 39 would ask the server to register it (#1029).
 7. On a network that set `host_ifname` the host-side link is renamed
    now, after the container or after its hostname, at the point the
    daemon's answer is already in hand and the attach can no longer

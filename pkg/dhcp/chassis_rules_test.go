@@ -474,20 +474,42 @@ func TestSetHostname_RefusesWhatItCannotSend(t *testing.T) {
 	}
 	defer func() { _ = ns.Close() }()
 
-	v6, err := NewDHCPClient("eth0", &DHCPClientOptions{
-		MAC:                mac,
-		V6:                 true,
-		NetNS:              &ns,
-		HonorRouterAdverts: true,
-		Identity6:          Identity6{DUID: []byte{0, 3, 0, 1, 0x02, 0x42, 0xc0, 0xa8, 0x63, 0x07}, IAID: 0xc0a86307},
-	})
-	if err != nil {
-		t.Fatalf("NewDHCPClient v6: %v", err)
+	newV6 := func(fqdn string) *DHCPClient {
+		t.Helper()
+		c, err := NewDHCPClient("eth0", &DHCPClientOptions{
+			MAC:                mac,
+			V6:                 true,
+			NetNS:              &ns,
+			HonorRouterAdverts: true,
+			FQDN:               fqdn,
+			Identity6:          Identity6{DUID: []byte{0, 3, 0, 1, 0x02, 0x42, 0xc0, 0xa8, 0x63, 0x07}, IAID: 0xc0a86307},
+		})
+		if err != nil {
+			t.Fatalf("NewDHCPClient v6: %v", err)
+		}
+		return c
 	}
-	err = v6.SetHostname("web1")
-	if !errors.Is(err, ErrHostnameV6) {
-		t.Errorf("SetHostname on a v6 client = %v, want ErrHostnameV6: the plugin sets no DHCPv6 name "+
-			"until #1029, so a nil here is a name the caller believes went out", err)
+
+	// The refusal comes before the running-client check, so a started v6 client without register_dns is refused too.
+	unset := newV6("")
+	named := &recordingNamer{}
+	unset.namer = named
+	if err := unset.SetHostname("web1"); !errors.Is(err, ErrHostnameV6) {
+		t.Errorf("SetHostname on a v6 client without register_dns = %v, want ErrHostnameV6: the library sends "+
+			"a v6 name only as option 39 with S=1, an AAAA registration nobody opted into (#1029 (a))", err)
+	}
+	if len(named.names) != 0 {
+		t.Errorf("the v6 library client was given %q on a network without register_dns", named.names)
+	}
+
+	registered := newV6("both")
+	if err := registered.SetHostname("web1"); !errors.Is(err, ErrNoRunningClient) {
+		t.Errorf("SetHostname on an unstarted register_dns v6 client = %v, want ErrNoRunningClient", err)
+	}
+	registered.namer = named
+	if err := registered.SetHostname("web1"); err != nil || len(named.names) != 1 || named.names[0] != "web1" {
+		t.Errorf("SetHostname on a register_dns v6 client = %v, names %q: want the name handed to the v6 "+
+			"library client, which sends it in option 39 (#1029)", err, named.names)
 	}
 
 	v4, err := NewDHCPClient("eth0", &DHCPClientOptions{MAC: mac})
@@ -498,4 +520,12 @@ func TestSetHostname_RefusesWhatItCannotSend(t *testing.T) {
 		t.Errorf("SetHostname before Start = %v, want ErrNoRunningClient: nothing is opened until "+
 			"Start, so the name would be dropped by a client that does not exist yet", err)
 	}
+}
+
+// recordingNamer stands in for the library client SetHostname hands the name to (#1029).
+type recordingNamer struct{ names []string }
+
+func (r *recordingNamer) SetHostname(name string) error {
+	r.names = append(r.names, name)
+	return nil
 }
