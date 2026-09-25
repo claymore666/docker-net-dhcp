@@ -45,6 +45,22 @@ func validateParentForChild(name string) (netlink.Link, error) {
 	return link, nil
 }
 
+// refuseEnslavedParent refuses a parent that is a port of a link other than own: the kernel moves a bridge port or a
+// bond member into a new bridge without an error, measured on Linux 6.12. Only the bridge path reads it; a macvlan or
+// ipvlan child on a port meets the held rx_handler as EBUSY (#370, #903).
+func refuseEnslavedParent(parent netlink.Link, own int) error {
+	master := parent.Attrs().MasterIndex
+	if master == 0 || master == own {
+		return nil
+	}
+	name := fmt.Sprintf("index %d", master)
+	if m, err := netlink.LinkByIndex(master); err == nil {
+		name = m.Attrs().Name
+	}
+	return fmt.Errorf("parent %v is already a port of %v, and the kernel would move it out without an error; remove it from %v or choose another NIC: %w",
+		parent.Attrs().Name, name, name, util.ErrIPAM)
+}
+
 // newChildLink builds the child in the network's macvlan_mode or ipvlan_mode, so the endpoint, the IPAM reservation,
 // the validate_dhcp probe and a replay after a plugin restart all build the stored sub-mode (#905).
 func newChildLink(opts DHCPNetworkOptions, la netlink.LinkAttrs) (netlink.Link, error) {

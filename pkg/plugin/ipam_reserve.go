@@ -478,6 +478,10 @@ func (p *Plugin) addIPAMReserveLink(ctx context.Context, name, peer, mode string
 		}, nil
 	}
 
+	// A host reboot loses the bridge made from parent while Docker keeps the network (#903).
+	if _, err := p.ensureBridge(ctx, opts, "ipam_reserve"); err != nil {
+		return nil, err
+	}
 	bridge, err := netlink.LinkByName(opts.Bridge)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get bridge interface: %w", err)

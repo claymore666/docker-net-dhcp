@@ -165,6 +165,10 @@ func (p *Plugin) addIPAMEndpointLink(ctx context.Context, endpointID, mode strin
 		return remove, nil
 	}
 
+	// A host reboot loses the bridge made from parent while Docker keeps the network (#903).
+	if _, err := p.ensureBridge(ctx, opts, "create_endpoint"); err != nil {
+		return nil, err
+	}
 	bridge, err := netlink.LinkByName(opts.Bridge)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get bridge interface: %w", err)

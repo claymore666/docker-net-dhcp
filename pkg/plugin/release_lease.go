@@ -306,6 +306,17 @@ func (p *Plugin) countRelease(v6 bool, sent bool) {
 	bumpFamily(&p.releaseFailuresV4, &p.releaseFailuresV6, v6)
 }
 
+// bridgeReleaseRefusal refuses release_lease on a bridge this plugin makes from parent: the release is sent from the
+// host's address on the bridge, and the create leaves it none, no IPv4 and no IPv6. The caller has checked parent; an
+// unknown value is refused as such, so a hand-edited record keeps its bridge at delete (#903, #962).
+func bridgeReleaseRefusal(opts DHCPNetworkOptions) error {
+	if rl, err := parseReleaseLease(opts.ReleaseLease); err != nil || rl == ReleaseNever {
+		return err
+	}
+	return fmt.Errorf("%w: release_lease=%s is refused on %v, a bridge this plugin makes from parent: the release is sent from the host's address on the bridge, and the host has none there. Create %v yourself with a host address and drop parent, or leave release_lease unset",
+		util.ErrIPAM, opts.ReleaseLease, opts.Bridge, opts.Bridge)
+}
+
 func (o DHCPNetworkOptions) hostLink() string {
 	if o.effectiveMode() == ModeBridge {
 		return o.Bridge
