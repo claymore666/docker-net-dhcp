@@ -39,7 +39,7 @@ substitute yours, and `ip -brief link` lists them):
 # On arm64 use the -arm64 tag. A network stores this exact reference
 # as its driver, so it must name the plugin you installed.
 docker network create \
-    --driver=ghcr.io/claymore666/docker-net-dhcp:v2.2.3 \
+    --driver=ghcr.io/claymore666/docker-net-dhcp:v2.3.0 \
     --ipam-driver=null \
     -o mode=macvlan \
     -o parent=eth0 \
@@ -95,14 +95,16 @@ docker inspect app | jq '.[0].NetworkSettings.Networks'
    destroyed.
 
 The host's NIC config (IP, routes, netplan/`systemd-networkd`,
-`/etc/network/interfaces`) is **never touched**.
+`/etc/network/interfaces`) is **never touched**. The one host link the
+plugin adds is a `vlan` sub-interface (below), which it creates, marks
+and removes itself.
 
 ## Constraints
 
 - The parent NIC must support macvlan/ipvlan children. Physical
   Ethernet, VLAN sub-interfaces, and bonds work; bridges, macvlans,
   and ipvlans do not (you can't stack these on top of each other).
-- **A VLAN of the parent** is one option away from v2.3.0:
+- **A VLAN of the parent** is one option away since v2.3.0:
   `-o parent=eth0 -o vlan=100` attaches the children to `eth0.100`,
   which the plugin creates when it is missing and removes with the last
   network on it, never one it did not create. `<parent>.<id>` must fit
@@ -112,7 +114,8 @@ The host's NIC config (IP, routes, netplan/`systemd-networkd`,
   [VLAN sub-interfaces](reference.md#vlan-sub-interfaces-vlan) (#902).
 - The parent NIC must be administratively `UP` before you create the
   network. The plugin won't bring it up for you, since host config is
-  off-limits.
+  off-limits. A `vlan` sub-interface the plugin creates is brought up
+  by the plugin; its parent must be `UP` already.
 - Like any macvlan/ipvlan setup: a container on a child interface
   cannot reach the parent NIC's own host IP, and vice-versa. This is a
   kernel-level rule and never a plugin restriction. For host↔container

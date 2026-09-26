@@ -106,6 +106,14 @@ acquired, and nothing below it:
   record. Docker's request carries no hostname and no endpoint id, so
   there is nothing narrower to match on; the ambiguous case is counted
   as `ipam_rebind_ambiguous` instead of guessed.
+- IPv6 is acquired later, since v2.3.0. `RequestAddress` leases the v4
+  address only; the DHCPv6 exchange runs at `CreateEndpoint` on the
+  endpoint's own link, as the null shape's one-shot does, and
+  `CreateEndpoint` reports the v6 address to the daemon. The v6 lease
+  record is paired with the v4 one: the re-bind that carries a restarted
+  container's v4 address back carries its DUID, IAID and last v6 address
+  too, and a v6 failure that ends the endpoint gives up both records
+  (#960).
 - The pool binding lives in the network's own state file, and a file
   carrying one is stamped schema 2
   ([`pkg/plugin/state.go`](https://github.com/claymore666/docker-net-dhcp/blob/main/pkg/plugin/state.go)).
@@ -141,7 +149,8 @@ knows which client is underneath.
   `translate` goroutine maps it to the plugin's `bound` / `renew` /
   `nak` / `leasefail` and the per-endpoint goroutine in
   [`pkg/plugin/dhcp_manager.go`](https://github.com/claymore666/docker-net-dhcp/blob/main/pkg/plugin/dhcp_manager.go)
-  applies the address, routes, DNS and MTU via netlink. There is no argv
+  applies the address, routes, DNS and MTU via netlink; a network that
+  sets `mtu` keeps that value over the lease's (#1037). There is no argv
   to build, no environment to scrub, no JSON to parse and no second
   binary in the image.
 - **The first lease leaves the default route to the engine.** `Join`
@@ -666,16 +675,21 @@ attempted once and not retried.
 
 ## How operations on one parent NIC are serialised
 
-A parent NIC registers one `rx_handler`, so it is a macvlan port or an
-ipvlan port and never both. Whichever kind asks second gets `EBUSY`.
-That is a kernel rule; one mode per parent stays the operator-facing
-constraint.
+A parent NIC registers one `rx_handler`, so it is a macvlan port, an
+ipvlan port or a bridge port, and never two of them. Whichever kind asks
+second gets `EBUSY`. That is a kernel rule; one mode per parent stays
+the operator-facing constraint. An 802.1Q sub-interface claims no
+`rx_handler` on its parent, so a `vlan` network's sub-interface sits
+beside any of them (#902).
 
-What the plugin can stop is inflicting it on itself. Two of its paths
-attach a child to a parent: creating an endpoint, and the
-`validate_dhcp` probe, which holds its link for a full DHCP round trip.
-Since v1.6.0 both take a per-parent gate first, so they queue instead of
-refusing each other (#486, #549).
+What the plugin can stop is inflicting it on itself. Since v1.6.0
+creating an endpoint and the `validate_dhcp` probe, which holds its link
+for a whole DHCP exchange, take a per-parent gate first, so they queue
+instead of refusing each other (#486, #549). Every later path that adds
+a link to a parent takes the same gate: the IPAM driver's address
+reservation (#110), the `vlan` sub-interface and the two trial children
+its removal adds (#902), and the bridge the plugin makes from a spare
+NIC (#903).
 
 There used to be a third, the orphaned-lease reclaim, and it was the
 demanding one: it ran from a goroutine ordered against no Docker request
@@ -691,10 +705,12 @@ covering the holder's duration.
 
 The gate excludes more than the kernel does, and since v2.1.0 the
 reporting says so. Mutual exclusion is per parent and takes no notice of
-kind, while the kernel refuses only the cross pair: children of one
-kind coexist on a parent happily. So a caller that gives up waiting for
-a holder attaching its OWN kind has spent the budget and protected
-nothing, and it goes on to a `LinkAdd` the kernel accepts. That case is
+kind, while the kernel refuses only a pair that both claim the
+`rx_handler`: children of one kind coexist on a parent happily, and a
+`vlan` sub-interface coexists with every kind. So a caller that gives
+up waiting for a holder whose kind coexists with its own has spent the
+budget and protected nothing, and it goes on to a `LinkAdd` the kernel
+accepts. That case is
 counted as a wait, not as a timeout, which leaves the warning counter
 meaning what its action text says. It stopped being hypothetical with
 the IPAM driver: an address reservation holds a parent across a whole
@@ -721,7 +737,8 @@ which fails the build on a `parentGuard` constructed anywhere but
 `lockParent`. A second accounting file,
 [`.github/linkadd-accounting.txt`](https://github.com/claymore666/docker-net-dhcp/blob/main/.github/linkadd-accounting.txt),
 covers the way around the type entirely: a direct `netlink.LinkAdd`,
-which bridge mode needs, having no parent to contend for.
+which the veth pair of bridge mode needs, having no parent to contend
+for.
 
 Nor does the guard say *which* parent it is for, so one taken on one NIC
 and handed to a link on another compiles. That is a deliberate non-goal.

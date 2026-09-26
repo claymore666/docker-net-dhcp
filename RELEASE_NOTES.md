@@ -11,6 +11,110 @@ forks that have been waiting on review.
 
 [upstream]: https://github.com/devplayer0/docker-net-dhcp
 
+## v2.3.0
+
+New network options take over host plumbing an operator did by hand: a
+tagged VLAN off the parent, a bridge the plugin makes from a spare NIC,
+the macvlan and ipvlan kernel modes, the link MTU, a required MAC, and a
+link-local address while no DHCP server answers. A network that names
+this plugin as its IPAM driver now takes IPv6, and `register_dns` sends
+the container name over DHCPv6 so the server registers the AAAA record.
+
+### Upgrade notes
+
+Required on every host before `docker plugin install`, unchanged since v1.5.0:
+
+```bash
+sudo mkdir -p /var/lib/net-dhcp
+```
+
+**The privilege prompt does not change.** No field `docker plugin upgrade`
+prompts on has moved since v2.0.0, so the manifest-delta table in the v2.0.0
+section below is still the list the daemon shows you.
+
+| What changed | What it does to you |
+| --- | --- |
+| New network options: `vlan`, `macvlan_mode`, `ipvlan_mode`, `mtu`, `require_mac`, `link_local_fallback`, and `parent` with `force_create` in bridge mode | A network that sets none of them is built as on v2.2.3. Unset, `macvlan_mode` builds `bridge` and `ipvlan_mode` builds `l2`, the modes v2.2.3 built (#902, #903, #904, #905, #1036, #1037). |
+| `-o parent=` is accepted in bridge mode | v2.2.3 refused it at `docker network create`. It now names the spare NIC the plugin makes the bridge from (#903). |
+| `-o ipv6=true` and `-o ipv6_mode=` are accepted on a network that names this plugin as its IPAM driver | v2.2.3 refused them at `docker network create`. With them the container takes its IPv6 address when its endpoint is created, and `docker inspect` shows it. A network is given these options at create, so an existing IPAM network stays IPv4 only (#960). |
+| `--ipv6` on such a network is still refused, with a new message | The message says to drop `--ipv6` and set `-o ipv6=true` or `-o ipv6_mode=<mode>`, because the plugin allocates no IPv6 pool. The refusal of an IPv6 pool names the same two options. A script that matches the old text of either no longer matches (#960). |
+| A `docker restart` in the IPAM shape keeps the DHCPv6 identity | DUID, IAID and address come back with the IPv4 address, in the same window, although Docker gives the endpoint a new MAC. Two containers on one network restarted together each come back under a new identity. A SLAAC address follows the new MAC unless `--mac-address` pins it (#960). |
+| `register_dns=true` sends the container name over DHCPv6, in the Client FQDN option (option 39, RFC 4704) | The DHCPv6 server registers the AAAA record beside the A record, and its lease table names the container. Without `register_dns` no name goes out on DHCPv6, as on v2.2.3. `ipv6_mode=slaac` registers no AAAA, and the plugin logs that (#1029). |
+| An ipvlan network of this plugin is refused on a parent that an ipvlan network in another mode uses | The kernel keeps one ipvlan mode per parent, and a child in another mode switches every child on it. `docker network create` now refuses, naming the other network, for example one of Docker's own `ipvlan` driver in `l3` or `l3s` (#905). |
+| The refusal of `mode=ipvlan` with this plugin as IPAM driver gives a new reason | Still refused at `docker network create`. The message now says that Docker sets a MAC on each container's link at start and an ipvlan link refuses every MAC change. `--ipam-driver null` is still the way out (#949, PR #1102). |
+| `/Plugin.Health` and `/metrics` gain `link_local_endpoints`, and an endpoint's `lease_state` can read `link_local` | Only on a `link_local_fallback=true` network. A monitor that alerts on an unknown `lease_state` sees a new value (#904). |
+| The `/metrics` HELP text of `hostnames_applied_late` changed | It says the late naming path runs only without `register_dns`. The metric's name and what it counts are unchanged (#1029). |
+| New log lines | The server's answer to the Client FQDN option (#1029); a vlan sub-interface created, kept or removed (#902); a bridge the plugin made created, kept or removed, and the `force_create=true` firewall result at warning level (#903); a container started on a link-local address (#904); a `require_mac` refusal in the IPAM shape (#1036); a line starting `Refusing stored network options:` for a stored option the plugin does not build (#902, #903, #905). |
+
+### New
+
+- `-o vlan=<id>` puts a macvlan or ipvlan network on the 802.1Q
+  sub-interface `<parent>.<id>`. The plugin creates the sub-interface
+  when it is missing, marks it, and removes it with the last network on
+  it. See [VLAN sub-interfaces](docs/reference.md#vlan-sub-interfaces-vlan)
+  (#902).
+- `-o parent=<nic>` in bridge mode makes the bridge named by `bridge`
+  from a spare NIC that carries no address, and removes it with the last
+  network on it. The create is refused where the host firewall is
+  expected to drop bridged frames, and `-o force_create=true` creates it
+  anyway with a warning. See
+  [A bridge the plugin makes](docs/reference.md#a-bridge-the-plugin-makes-parent)
+  (#903).
+- `-o link_local_fallback=true` starts a container on an IPv4 link-local
+  address (RFC 3927) with no gateway when no DHCPv4 lease arrives in
+  time, and moves it to a lease when one does. Bridge and macvlan, IPv4
+  only. See
+  [Link-local fallback](docs/reference.md#link-local-fallback-link_local_fallback)
+  (#904).
+- `-o macvlan_mode=` takes `bridge`, `vepa`, `private` or `passthru`, and
+  `-o ipvlan_mode=` takes `l2`. `l3` and `l3s` are refused, since such a
+  child sends no DHCP broadcast. See
+  [macvlan and ipvlan sub-modes](docs/reference.md#macvlan-and-ipvlan-sub-modes)
+  (#905).
+- `-o mtu=<n>` sets the MTU of every container link the network creates.
+  When set, DHCP option 26 and the Router Advertisement MTU are not
+  applied (#1037).
+- `-o require_mac=true` refuses a container started without
+  `--mac-address` or Compose `mac_address`, so a reservation keyed on the
+  MAC always matches. Bridge and macvlan (#1036).
+- A network that names this plugin as its IPAM driver takes IPv6 with
+  `-o ipv6=true` or `-o ipv6_mode=<mode>`, with a lease record per
+  family and the DHCPv6 identity kept across `docker restart` (#960).
+- `register_dns` covers IPv6: the DHCPv6 client sends the Client FQDN
+  option with the container's hostname (#1029).
+- [`docs/testing.md`](docs/testing.md) says what is tested, where it
+  runs, and what each result proves (#1096).
+- The first screen of the README says what the plugin does, how to use
+  it and why (#1108).
+- The CodeQL code-scanning result is a required check on both
+  protected branches (#1045).
+
+### Fixed
+
+- The refusal of `mode=ipvlan` with this plugin as IPAM driver said that
+  ipvlan children share the parent's MAC. The cause is the MAC Docker
+  sets on the link at start, which an ipvlan link refuses (#949).
+- The `validate_dhcp` row in [`docs/reference.md`](docs/reference.md)
+  said an ipvlan probe shows the parent's MAC at the server. The probe
+  sends a random client hardware address in every mode; on ipvlan only
+  the frames carry the parent's MAC (#905).
+
+### Deferred to v2.4.0
+
+- #1027, DHCPv4 option 108, IPv6-Only Preferred
+- #1028, PREF64 from the Router Advertisement
+- #1030, option 249 where option 121 is absent
+- #1031, DHCPv4 Rapid Commit
+- #1032, `ipv6_iid=stable-privacy` (RFC 7217)
+- #1033, the DHCPv6 timezone options logged
+- #1034, the vendor-specific options logged
+- #1038, a network with no DHCPv6 server remembered for a bounded time
+- #926, DHCPv6 Rapid Commit
+- #927, DHCPv6 temporary addresses (IA_TA)
+- #214, DHCPv6 prefix delegation (IA_PD)
+- #859, the whole DHCPv6 NTP server list
+- #1035, one multi-architecture manifest list per tag
+
 ## v2.2.3
 
 A container whose first DHCP lease lands before Docker installs its gateway
