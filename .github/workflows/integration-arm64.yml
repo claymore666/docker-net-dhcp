@@ -78,20 +78,19 @@ jobs:
   suite:
     name: arm64-suite
     runs-on: [self-hosted, Linux, ARM64, dhcp-ci-arm64]
-    # A bound on a hang, not an estimate of a run. Run 35125808546
-    # (2026-09-16, v2.1.1-rc1) took 47m20s end to end on the Pi 4, and
-    # the whole 138-test suite projects to 52.5 minutes here (derivation
+    # A bound on a hang, not an estimate of a run. Run 36058028601
+    # (2026-09-24, v2.2.3-rc1) took 87m55s end to end on the Pi 4, and
+    # the whole 203-test suite projects to 110.2 minutes here (derivation
     # beside the main suite's ceiling below). The two suites hanging to
-    # their ceilings is 80 + 20 = 100 minutes, plus 1m53s of setup and 8s
-    # of teardown measured on that run: 103 minutes of worst-case wall
-    # time, rounded up. 120 holds it with 17 minutes over and is
-    # unchanged.
+    # their ceilings is 165 + 20 = 185 minutes, plus 1m57s of setup and
+    # 8s of teardown measured on that run: 188 minutes of worst-case wall
+    # time, rounded up. 190 holds it with 2 minutes over (#1112).
     #
     # check-one-process-itest-budget.sh only asks for ceilings + 1, which
-    # is 101 here: it cannot know this lane's setup time and will not
-    # guess. Everything above 101 is this lane's measured surround and
+    # is 186 here: it cannot know this lane's setup time and will not
+    # guess. Everything above 186 is this lane's measured surround and
     # spare, and nothing checks it.
-    timeout-minutes: 120
+    timeout-minutes: 190
     env:
       INTEGRATION_PLUGIN_REF: ghcr.io/claymore666/docker-net-dhcp:integration
       # Same shape and reasoning as integration.yml (#562): resolves to
@@ -188,51 +187,35 @@ jobs:
       # across nine shards, so the 20m ceiling that leaves every shard
       # idle is the whole budget here. At v2.0.0-rc2 it fired: run
       # 34368481103 panicked with "test timed out after 20m0s" having
-      # completed 56 of the 93 main tests. The 45m that replaced it then
-      # died the same way on the coverage lane on 2026-09-17: run
-      # 35182131651 panicked at 45m0s with 111 of 138 main tests done.
+      # completed 56 of the 93 main tests. The 45m and the 80m that
+      # followed died the same way on the coverage lane: run 35182131651
+      # at 45m0s with 111 of 138 main tests done, run 36205955392 at
+      # 1h20m0s with 163 of 203 passed (#1112).
       #
-      # DERIVED FROM FOUR RUNS, not from the durations table. The table is
-      # a shard-balancing artefact with inferred rows in it -- the
-      # coverage lane ran its 111 at 0.8919 of their table time -- so it
-      # is used below for two tests only.
+      # DERIVED FROM MEASURED RUNS, not from the durations table. This
+      # board's 154 are its own timers on run 36058028601 (v2.2.3-rc1),
+      # 77m57s of step wall, 97.4 percent of the 80m it fitted in. The 49
+      # it did not run are the amd64 shard lane's timers on run
+      # 36204850865 through 1.1254, this board's factor over that lane on
+      # the 154 both ran. The whole 203-test main suite projects to
+      # 6611.1s here, 110.2 minutes (#1112). The binary charges more than
+      # the per-test timers do; that sits in the headroom, not in the
+      # projection.
       #
-      #   this lane, run 35125808546 (v2.1.1-rc1): 116 main tests,
-      #     2262.91s, 37m59s of step wall -- 84.4 percent of 45m
-      #   coverage, run 35182131651: 111 tests, 2649.76s
-      #   coverage, run 35114134537: 116 tests, 2283.63s
-      #   hosted, run 35141207596: 119 tests, 2332.56s
+      # 165 / 110.2 = 1.50x of headroom over this lane's own projection,
+      # 54.8 minutes of slack, above the 1.48x floor #934 set. This board
+      # is the slowest lane; coverage.yml carries 150m over 99.5 (#1112).
       #
-      # Lane-to-lane factors on the tests two lanes both ran: this board
-      # runs at 0.9698 of the coverage lane over the 91 they share, and
-      # the hosted lane at 0.9948 of this board over 116. The 22 tests
-      # this lane has never run are filled from the coverage lane through
-      # 0.9698 where it ran them (20 of the 22, 731.62s there against
-      # 1072.58s in the table), and from the table through 0.8919 for the
-      # two tests no lane has ever completed. The whole 138-test main
-      # suite projects to 3152.4s here, 52.5 minutes. That is the sum of
-      # the per-test timers. The binary charges more than they do: on run
-      # 35125808546 the step wall reads 2279s against 2262.91s summed, so
-      # 16.1s of fixture and package setup sits outside them. Carried in
-      # the headroom below, not in the projection.
+      # It fits the job. Measured on run 36058028601: 1m57s before this
+      # step, 7m53s for the failure suite after it, 8s for the rest.
+      # Both suites hanging to their ceilings is 165 + 20 minutes plus
+      # 2m05s, 188 rounded up, inside timeout-minutes: 190 above.
       #
-      # 80 / 52.5 = 1.52x of headroom over this lane's own projection,
-      # 27.5 minutes of slack. coverage.yml is the binding lane at 54.2
-      # minutes, where the same 80m is 1.48x. The slack is sized on
-      # growth: rc1 passed the old 20m with 0.3 percent of margin and rc2
-      # was the next commit, and 45m was at 84.4 percent here while the
-      # suite went from 116 tests to 138 in one release.
-      #
-      # It fits the job. Measured on run 35125808546: 1m53s before this
-      # step, 7m20s for the failure suite after it, 8s for the rest.
-      # Both suites hanging to their ceilings is 80 + 20 + 3 = 103
-      # minutes, inside timeout-minutes: 120 above.
-      #
-      # The failure suite keeps the 20m default: it measured 7m20s here.
+      # The failure suite keeps the 20m default: it measured 7m53s here.
       - name: Run main suite
         shell: bash
         env:
-          ITEST_TIMEOUT: 80m
+          ITEST_TIMEOUT: 165m
         run: make integration-test 2>&1 | tee /tmp/itest-arm64-main.log
 
       # if: always() for the same reason as integration-hosted.yml (#742):

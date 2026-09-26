@@ -41,7 +41,7 @@
 #   <head-sha>:     the PR head commit the coverage run must cover.
 #   [wait-minutes]: how long a run may take to appear (default 75).
 #   [live-minutes]: how long a queued or running run is waited for
-#                   (default 240).
+#                   (default 355).
 #
 # Env: GATE_REPO=owner/repo (default: inferred)
 #      GATE_POLL_SECONDS=60
@@ -61,8 +61,8 @@ set -uo pipefail
 SHA="${1:-}"
 WAIT_MIN="${2:-75}"
 # One coverage run ahead in the shared concurrency group plus this one, each
-# capped by coverage.yml's 105-minute job timeout, plus runner queueing (#1042).
-LIVE_MIN="${3:-240}"
+# capped by coverage.yml's 176-minute job timeout, plus 3 of queueing (#1112).
+LIVE_MIN="${3:-355}"
 POLL="${GATE_POLL_SECONDS:-60}"
 WF="${GATE_COVERAGE_WORKFLOW:-coverage.yml}"
 

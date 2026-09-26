@@ -173,12 +173,28 @@ func TestMTUOption_AnIPvlanChildReturnsToTheOptionOnTheNextRenew(t *testing.T) {
 			t.Errorf("restore %s to mtu %d: %v", harness.IpvlanParent, was, err)
 		}
 	})
-	if err := netlink.LinkSetMTU(parent, 9000); err != nil {
-		t.Fatalf("LinkSetMTU %s 9000: %v", harness.IpvlanParent, err)
+	// A lease event between a move and its read sets the link back first (#1037), so the parent moves until one shows.
+	var moved time.Time
+	for attempt, mtu := range []int{9000, 8000, 9000, 8000} {
+		acks := fixture.CountLogLines("DHCPACK", addr+" ")
+		if err := netlink.LinkSetMTU(parent, mtu); err != nil {
+			t.Fatalf("LinkSetMTU %s %d: %v", harness.IpvlanParent, mtu, err)
+		}
+		at := time.Now()
+		got := ctrLinkMTU(t, ctx, id, addr)
+		if got == mtu {
+			moved = at
+			break
+		}
+		if got != optionMTU {
+			t.Fatalf("the container link is at %d after the ipvlan parent went to %d, want %d or the mtu option %d", got, mtu, mtu, optionMTU)
+		}
+		t.Logf("move %d: the container link read %d after the parent went to %d; ACKs for %s went from %d to %d meanwhile",
+			attempt+1, got, mtu, addr, acks, fixture.CountLogLines("DHCPACK", addr+" "))
+		time.Sleep(time.Second)
 	}
-	moved := time.Now()
-	if got := ctrLinkMTU(t, ctx, id, addr); got != 9000 {
-		t.Fatalf("the container link is at %d after the ipvlan parent went to 9000; the kernel no longer moves the child with its parent", got)
+	if moved.IsZero() {
+		t.Fatalf("the container link read the mtu option %d after every parent move; the kernel no longer moves the child with its parent, or a lease event followed each move", optionMTU)
 	}
 
 	// The fixture's 2 minute lease renews at T1, about 60 s after the bind (RFC 2131 section 4.4.5).

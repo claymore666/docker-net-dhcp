@@ -92,23 +92,22 @@ jobs:
     # A BACKSTOP ABOVE THE STEP CEILINGS, not an estimate of the suite.
     # The `full` arm below runs the WHOLE main suite in one go test
     # binary and then the whole failure suite, each under its own alarm
-    # (80m and 20m), so a job cap under their sum cannot fire second: at
+    # (145m and 20m), so a job cap under their sum cannot fire second: at
     # 40 it would have killed the job with the main suite still holding
     # most of its budget, and 40 sits UNDER the 34.6 minutes the two
     # suites cost on the 2.0 tree before any margin at all.
     #
-    # 80 + 20 = 100 minutes of ceilings, plus 57s of checkout, toolchain,
+    # 145 + 20 = 165 minutes of ceilings, plus 56s of checkout, toolchain,
     # fixture install and plugin build measured on this lane's run
-    # 35141207596 and 2s after the suites: 59s of surround over 100
-    # minutes of ceilings is 101 minutes of worst-case wall time, rounded
-    # up, and 105 leaves four minutes over that. The sharded arm keeps
-    # the Makefile's 20m per shard and is nowhere near this.
+    # 35586110297 and 3s after the suites: 166 minutes of worst-case wall
+    # time, rounded up, and 170 leaves four minutes over that (#1112). The
+    # sharded arm keeps the Makefile's 20m per shard, nowhere near this.
     #
     # check-one-process-itest-budget.sh only asks for ceilings + 1, which
-    # is 101 here: it cannot know this lane's setup time and will not
-    # guess. Everything above 101 is this lane's measured surround and
+    # is 166 here: it cannot know this lane's setup time and will not
+    # guess. Everything above 166 is this lane's measured surround and
     # spare, and nothing checks it.
-    timeout-minutes: 105
+    timeout-minutes: 170
     env:
       # Distinct tag from :integration (self-hosted) and :golang-cover
       # (coverage). The VM is ephemeral so collisions can't happen, but
@@ -291,50 +290,26 @@ jobs:
       # uses for the plugin ref.
       #
       # THIS ARM RUNS THE WHOLE MAIN SUITE IN ONE go test BINARY, like
-      # integration-arm64.yml and coverage.yml, and 80m is the ceiling
-      # all three now carry for it. The 45m it replaces died on the
-      # coverage lane on 2026-09-17: run 35182131651 panicked at 45m0s
-      # with 111 of 138 main tests done.
+      # integration-arm64.yml and coverage.yml, each with a ceiling sized
+      # on its own projection. The 80m it replaces died on the coverage
+      # lane: run 36205955392 panicked at 1h20m0s with 163 of 203 main
+      # tests passed (#1112).
       #
-      # DERIVED FROM FOUR RUNS, not from the durations table. The table
-      # is a shard-balancing artefact with inferred rows in it -- the
-      # coverage lane ran its 111 at 0.8919 of their table time -- so it
-      # is used below for two tests only.
+      # DERIVED FROM MEASURED RUNS, not from the durations table. This
+      # lane's 134 passes are its own timers on run 35586110297 (full arm,
+      # red on 3 failures, no timeout), 55m18s of step wall. The 69 it did
+      # not pass are the amd64 shard lane's timers on run 36204850865
+      # through 0.9852, this lane's factor over that lane on the 134 both
+      # passed. The whole 203-test main suite projects to 5787.6s here,
+      # 96.5 minutes (#1112). The binary charges more than the per-test
+      # timers do; that sits in the headroom, not in the projection.
       #
-      #   this lane, run 35141207596 (full arm, green): 119 main tests,
-      #     1 SKIP, 2332.56s, 39m16s of step wall -- 87.3 percent of 45m
-      #   coverage, run 35182131651: 111 tests, 2649.76s
-      #   coverage, run 35114134537: 116 tests, 2283.63s
-      #   arm64, run 35125808546: 116 tests, 2262.91s
-      #
-      # THE HOSTED FACTOR IS MEASURED, like for like, on the tests this
-      # lane and another both ran and both passed: 0.9663 of the coverage
-      # lane over the 94 they share, 0.9948 of the arm64 board over 116.
-      # Hosted is marginally FASTER than the self-hosted pool on this
-      # tree, which reverses the 1.071 the 2.0 comment carried; that
-      # number came from run 34537348413, a red run whose 15 failures did
-      # not cost what passing tests do, and a like-for-like factor now
-      # exists where it did not then.
-      #
-      # The 19 tests this lane has never run are filled from the coverage
-      # lane through 0.9663 where it ran them, and from the table through
-      # 0.8919 for the two tests no lane has ever completed
-      # (TestReleaseLease_OnRemoveHandsAnIPAMAddressBackToo and
-      # TestReleaseLease_OnRemoveHandsTheV6AddressBackToo). The whole
-      # 138-test main suite projects to 3136.3s here, 52.3 minutes. The
-      # binary charges more than the per-test timers do: run 35141207596
-      # reads 2356s of step wall against 2332.56s summed, 23.4s outside
-      # them. Carried in the headroom, not in the projection.
-      #
-      # 80 / 52.3 = 1.53x of headroom over this lane's own projection,
-      # 27.7 minutes of slack. coverage.yml is the binding lane at 54.2
-      # minutes, where the same 80m is 1.48x. Sized on growth rather than
-      # on taste: the suite went from 116 tests to 138 in one release,
-      # and 45m was already at 87.3 percent here.
+      # 145 / 96.5 = 1.50x of headroom over this lane's own projection,
+      # 48.5 minutes of slack, above the 1.48x floor #934 set (#1112).
       - name: Run integration tests
         if: matrix.shard == 'full'
         env:
-          ITEST_TIMEOUT: 80m
+          ITEST_TIMEOUT: 145m
         run: sudo env "PATH=$PATH" "INTEGRATION_PLUGIN_REF=$INTEGRATION_PLUGIN_REF" "ITEST_TIMEOUT=$ITEST_TIMEOUT" make integration-test
 
       # The sharded arm. The suite, the 1-based index and the total are
@@ -372,8 +347,8 @@ jobs:
       # 20m is the Makefile default, written out and forwarded for the
       # same two reasons as the main step: this lane's budgets are read
       # together, and under sudo an unforwarded value is not a budget at
-      # all. The suite sums to 272.3s in the durations table and took
-      # 2m02s here on run 34105560953, so 20m holds it several times over.
+      # all. The suite took 7m05s here on run 35586110297, so 20m holds
+      # it with room (#1112).
       - name: Run failure-injection tests
         if: always() && matrix.shard == 'full'
         env:
