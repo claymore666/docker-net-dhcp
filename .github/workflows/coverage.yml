@@ -121,25 +121,24 @@ jobs:
     runs-on: [self-hosted, dhcp-ci]
     # A BACKSTOP ABOVE THE STEP CEILINGS, not a second estimate of the
     # suite. Both integration steps below carry their own `go test`
-    # alarm, 80m and 20m, and a job timeout below their sum cannot fire
+    # alarm, 150m and 20m, and a job timeout below their sum cannot fire
     # second: at 35 it would have killed the job with the main suite
     # still holding ten minutes of its own budget.
     #
-    # 80 + 20 = 100 minutes of ceilings, plus what surrounds them,
-    # measured on run 35114134537: 2m45s before the main suite (setup-go
-    # 1m25s, cover build and install 1m06s) and 47s after the failure
-    # suite (counter flush, unit tests, summary, ratchet, reports,
-    # upload). 3m32s of surround over 100 minutes of ceilings is 104
-    # minutes of worst-case wall time, rounded up. 105 leaves one minute
-    # over that.
+    # 150 + 20 = 170 minutes of ceilings, plus what surrounds them,
+    # measured on run 36205955392 (#1112): 2m26s before the main suite
+    # and 2m24s after the failure suite (counter flush, unit tests,
+    # summary, ratchet, reports, upload). 4m50s of surround over 170
+    # minutes of ceilings is 175 minutes of worst-case wall time, rounded
+    # up. 176 leaves one minute over that.
     #
     # check-one-process-itest-budget.sh only asks for ceilings + 1, which
-    # is 101 here: it cannot know this lane's setup time and will not
-    # guess. The four minutes between 101 and 105 are this lane's
+    # is 171 here: it cannot know this lane's setup time and will not
+    # guess. The five minutes between 171 and 176 are this lane's
     # measured surround and one minute of spare, and nothing checks them,
-    # so a lane whose setup grows past 5 minutes goes red as a job kill
+    # so a lane whose surround grows past 6 minutes goes red as a job kill
     # naming the wrong cause.
-    timeout-minutes: 105
+    timeout-minutes: 176
     env:
       COVER_PLUGIN_REF: ghcr.io/claymore666/docker-net-dhcp:golang-cover
       COVER_DIR: /var/lib/dh-cover
@@ -242,48 +241,33 @@ jobs:
       # WHOLE MAIN SUITE IN ONE go test BINARY, as integration-arm64.yml
       # and integration-hosted.yml do; the amd64 shard lane splits the
       # same suite nine ways and Makefile:171's 20m is that lane's
-      # number. The unsharded budget has now fired twice: run 34523956617
-      # panicked at 20m0s with 56 of 93 main tests done, and run
-      # 35182131651 panicked at 45m0s with 111 of 138 done, 0 failures
-      # before the alarm.
+      # number. The unsharded budget has fired three times: run
+      # 34523956617 panicked at 20m0s with 56 of 93 main tests done, run
+      # 35182131651 at 45m0s with 111 of 138, and run 36205955392 at
+      # 1h20m0s with 163 of 203 passed (#1112).
       #
-      # DERIVED FROM FOUR RUNS, not from the durations table. The table is
-      # a shard-balancing artefact with inferred rows in it, and this lane
-      # ran its 111 at 0.8919 of their table time, so the table is used
-      # below for two tests only.
-      #
-      #   this lane, run 35182131651: 111 main tests, 2649.76s
-      #   this lane, run 35114134537 (last green): 116 tests, 2283.63s,
-      #     38m07s of step wall -- 84.7 percent of the 45m it fitted in
-      #   arm64, run 35125808546: 116 tests, 2262.91s
-      #   hosted, run 35141207596: 119 tests, 2332.56s
-      #
-      # Lane-to-lane factors on the tests two lanes both ran: arm64/this
-      # 0.9698 over 91, hosted/this 0.9663 over 94. Filling this lane's 27
-      # unreached tests from those two where they ran them, and from the
-      # table through 0.8919 for the two tests no lane has ever completed
-      # (TestReleaseLease_OnRemoveHandsAnIPAMAddressBackToo and
-      # TestReleaseLease_OnRemoveHandsTheV6AddressBackToo), the whole
-      # 138-test main suite projects to 3250.5s here, 54.2 minutes.
+      # DERIVED FROM MEASURED RUNS, not from the durations table. This
+      # lane's 163 are its own timers on run 36205955392; the 40 it never
+      # reached are the amd64 shard lane's timers on run 36204850865, the
+      # same tree, through 1.0166, this lane's factor over that lane on
+      # the 163 both ran. The whole 203-test main suite projects to
+      # 5972.1s here, 99.5 minutes (#1112).
       #
       # The binary charges more than the per-test timers do: the alarm
-      # fired at 2700s against 2649.76s summed, 50.24s for the in-flight
+      # fired at 4800s against 4753.35s summed, 46.65s for the in-flight
       # test and all setup together. Carried in the headroom, not in the
       # projection.
       #
-      # 80 / 54.2 = 1.48x of headroom over this lane's own projection,
-      # 25.8 minutes of slack. The same 80m is what integration-arm64.yml
-      # (1.52x over 52.5) and integration-hosted.yml (1.53x over 52.3)
-      # carry for the same suite in one process; the three lanes are
-      # within 3.5 percent of each other, so one number is a
-      # reconciliation rather than a coincidence. The slack is sized on
-      # growth, not on taste: the suite went from 116 tests to 138 in one
-      # release, and 45m had 15 percent of margin left when that release
-      # started.
+      # 150 / 99.5 = 1.51x of headroom over this lane's own projection,
+      # 50.5 minutes of slack, above the 1.48x floor #934 set. The other
+      # two lanes are sized the same way on their own projections:
+      # integration-arm64.yml 165m over 110.2, integration-hosted.yml 145m
+      # over 96.5. The slack is sized on growth: the suite went from 155
+      # tests to 203 in one release (#1112).
       - name: Run integration tests against cover plugin
         env:
           INTEGRATION_PLUGIN_REF: ${{ env.COVER_PLUGIN_REF }}
-          ITEST_TIMEOUT: 80m
+          ITEST_TIMEOUT: 150m
         run: make integration-test
 
       # The failure-injection suite (#128) exercises paths the main

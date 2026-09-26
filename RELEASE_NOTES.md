@@ -98,6 +98,9 @@ section below is still the list the daemon shows you.
   said an ipvlan probe shows the parent's MAC at the server. The probe
   sends a random client hardware address in every mode; on ipvlan only
   the frames carry the parent's MAC (#905).
+- The integration lanes that run the whole main suite in one process gave
+  it 80 minutes, which the grown suite outran on the coverage lane. Each
+  lane's limit is now sized on its own measured runs (#1112).
 
 ### Deferred to v2.4.0
 

@@ -329,8 +329,8 @@ jobs:
 
       # Three lanes now run a whole integration suite in ONE go test
       # binary -- arm64, coverage and the hosted cross-check -- and each
-      # derived the same 80m ceiling in its own comment, reconciled by
-      # nothing (#934). The gate derives that population from the
+      # sizes its own ceiling from its own measured runs (#1112); before
+      # #934 nothing checked them. The gate derives that population from the
       # workflows themselves and asks three things of it: the main
       # suite's ceiling is stated rather than inherited from the
       # Makefile's shard-sized default, the value survives the `sudo`
