@@ -102,21 +102,13 @@ section below is still the list the daemon shows you.
   it 80 minutes, which the grown suite outran on the coverage lane. Each
   lane's limit is now sized on its own measured runs (#1112).
 
-### Deferred to v2.4.0
+### Deferred
 
-- #1027, DHCPv4 option 108, IPv6-Only Preferred
-- #1028, PREF64 from the Router Advertisement
-- #1030, option 249 where option 121 is absent
-- #1031, DHCPv4 Rapid Commit
-- #1032, `ipv6_iid=stable-privacy` (RFC 7217)
-- #1033, the DHCPv6 timezone options logged
-- #1034, the vendor-specific options logged
-- #1038, a network with no DHCPv6 server remembered for a bounded time
-- #926, DHCPv6 Rapid Commit
-- #927, DHCPv6 temporary addresses (IA_TA)
-- #214, DHCPv6 prefix delegation (IA_PD)
-- #859, the whole DHCPv6 NTP server list
-- #1035, one multi-architecture manifest list per tag
+- #949, ipvlan with this plugin as IPAM driver, was planned for this
+  release and moved to the backlog. Docker sets the MAC it generates for
+  the IPAM driver on the container's link at start, and an ipvlan link
+  refuses every MAC change, so the feature waits on a change in Docker's
+  engine. ipvlan networks keep `--ipam-driver null`.
 
 ## v2.2.3
 
