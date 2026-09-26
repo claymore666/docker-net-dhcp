@@ -29,8 +29,8 @@ below decide what is in a release; this page follows them.
 - [#1036], a `require_mac` option that refuses an endpoint with no
   Docker-supplied MAC
 - [#1037], an `mtu` option that sets the endpoint link MTU explicitly
-- [#1045], the code-scanning result is not a required check on either
-  protected branch
+- [#1045], the code-scanning result is a required check on both protected
+  branches
 - [#1096], a page that says how the plugin is tested, linked from the
   README
 - [#1108], the first screen of the README says what, how and why
@@ -101,8 +101,9 @@ flowchart LR
 ```
 
 v2.0, v2.1, v2.2 and v2.3 are released, and v2.4 and v2.5 are planned in
-that order; the planned ones are the dashed nodes. There are no dates, and
-the patch releases on each line are on the milestone links above.
+that order; the planned ones are the dashed nodes. There are no dates. Every
+release, patches included, is in
+[the release notes](https://github.com/claymore666/docker-net-dhcp/blob/main/RELEASE_NOTES.md).
 
 ## The bar every feature is measured against
 
@@ -238,8 +239,8 @@ becomes one.
 or edit netplan or `systemd-networkd`. Two host links are inside this
 rule, because the plugin creates them for its own networks and removes
 them with the last one: since v2.3.0 a bridge made from a spare NIC that
-carries no address, with `force_create=true` ([#903]), and a VLAN
-sub-interface of the parent ([#902]).
+carries no address, when a bridge-mode network sets `parent` ([#903]), and a
+VLAN sub-interface of the parent ([#902]).
 
 **Static IPs.** A per-container static-IP option would be a second,
 silently conflicting IPAM.
