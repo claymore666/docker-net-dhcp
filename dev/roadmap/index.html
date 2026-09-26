@@ -692,33 +692,22 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#open-milestones" class="md-nav__link">
+  <a href="#milestones" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Open milestones
+        Milestones
       
     </span>
   </a>
   
-    <nav class="md-nav" aria-label="Open milestones">
+    <nav class="md-nav" aria-label="Milestones">
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#v223" class="md-nav__link">
+  <a href="#v230-released" class="md-nav__link">
     <span class="md-ellipsis">
       
-        v2.2.3
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#v230" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        v2.3.0
+        v2.3.0, released
       
     </span>
   </a>
@@ -1005,33 +994,22 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#open-milestones" class="md-nav__link">
+  <a href="#milestones" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Open milestones
+        Milestones
       
     </span>
   </a>
   
-    <nav class="md-nav" aria-label="Open milestones">
+    <nav class="md-nav" aria-label="Milestones">
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#v223" class="md-nav__link">
+  <a href="#v230-released" class="md-nav__link">
     <span class="md-ellipsis">
       
-        v2.2.3
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#v230" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        v2.3.0
+        v2.3.0, released
       
     </span>
   </a>
@@ -1173,67 +1151,38 @@ more useful half, where it deliberately is not going.</p>
 <p>This page is direction, not a delivery schedule. The project is
 solo-maintained, so nothing here carries a date. The milestone links
 below decide what is in a release; this page follows them.</p>
-<h2 id="open-milestones">Open milestones<a class="headerlink" href="#open-milestones" title="Permanent link">&para;</a></h2>
+<h2 id="milestones">Milestones<a class="headerlink" href="#milestones" title="Permanent link">&para;</a></h2>
 <table>
 <thead>
 <tr>
 <th>Release</th>
+<th>State</th>
 <th>Theme</th>
 <th>Milestone</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td>v2.2.3</td>
-<td>The default route at the first lease, a renumber inside one subnet, on-link routes after Join, a persistent client on a late link, and the tests and gates listed below</td>
-<td><a href="https://github.com/claymore666/docker-net-dhcp/milestone/37">milestone 37</a></td>
-</tr>
-<tr>
 <td>v2.3.0</td>
+<td>released</td>
 <td>The host plumbing an operator does by hand today, and the gaps the IPAM shape still refuses</td>
 <td><a href="https://github.com/claymore666/docker-net-dhcp/milestone/31">milestone 31</a></td>
 </tr>
 <tr>
 <td>v2.4.0</td>
+<td>planned</td>
 <td>The rest of IPv6, and the DHCP options the client does not read yet</td>
 <td><a href="https://github.com/claymore666/docker-net-dhcp/milestone/34">milestone 34</a></td>
 </tr>
 <tr>
 <td>v2.5.0</td>
+<td>planned</td>
 <td>CI consolidation and code debt; nothing a user sees</td>
 <td><a href="https://github.com/claymore666/docker-net-dhcp/milestone/35">milestone 35</a></td>
 </tr>
 </tbody>
 </table>
-<h3 id="v223">v2.2.3<a class="headerlink" href="#v223" title="Permanent link">&para;</a></h3>
-<ul>
-<li><a href="https://github.com/claymore666/docker-net-dhcp/issues/1084">#1084</a>, the first lease adds the default route the engine is about to
-  program, and the container fails to start</li>
-<li><a href="https://github.com/claymore666/docker-net-dhcp/issues/1081">#1081</a>, a renumber inside one subnet leaves the container with no IPv4
-  address on a host with <code>promote_secondaries=0</code></li>
-<li><a href="https://github.com/claymore666/docker-net-dhcp/issues/1065">#1065</a>, IPv6 is prepared on a link name the engine has already changed</li>
-<li><a href="https://github.com/claymore666/docker-net-dhcp/issues/1044">#1044</a>, an endpoint entry can read <code>lease_state=bound</code> with no
-  <code>last_event</code></li>
-<li><a href="https://github.com/claymore666/docker-net-dhcp/issues/1016">#1016</a>, an integration test for the v2.2.0 behaviours that only a unit
-  test drives</li>
-<li><a href="https://github.com/claymore666/docker-net-dhcp/issues/1015">#1015</a>, an engine-matrix step for every documented option</li>
-<li><a href="https://github.com/claymore666/docker-net-dhcp/issues/866">#866</a>, tests under <code>test/integration/harness/</code> run nowhere and nothing
-  says so</li>
-<li><a href="https://github.com/claymore666/docker-net-dhcp/issues/883">#883</a>, a gate counts a mention as an invocation, so an unwired gate
-  reports as wired</li>
-<li><a href="https://github.com/claymore666/docker-net-dhcp/issues/888">#888</a>, a gate resolves symbols at git HEAD, so an uncommitted rewrite
-  is never judged</li>
-<li><a href="https://github.com/claymore666/docker-net-dhcp/issues/1042">#1042</a>, the coverage-presence wait is shorter than recent coverage runs</li>
-<li><a href="https://github.com/claymore666/docker-net-dhcp/issues/1043">#1043</a>, the Docker Hub alias signature is verified before the registry
-  serves the copied referrers</li>
-<li><a href="https://github.com/claymore666/docker-net-dhcp/issues/1056">#1056</a>, the comment volume in the Go tree, and a gate on added comments</li>
-<li><a href="https://github.com/claymore666/docker-net-dhcp/issues/1088">#1088</a>, an IPv6 on-link prefix route is installed only from the Join
-  answer, never from a later router advertisement</li>
-<li><a href="https://github.com/claymore666/docker-net-dhcp/issues/1089">#1089</a>, the persistent DHCPv4 client can open before the engine sets
-  the link up and then never binds, although the server acknowledges
-  every request</li>
-</ul>
-<h3 id="v230">v2.3.0<a class="headerlink" href="#v230" title="Permanent link">&para;</a></h3>
+<h3 id="v230-released">v2.3.0, released<a class="headerlink" href="#v230-released" title="Permanent link">&para;</a></h3>
 <ul>
 <li><a href="https://github.com/claymore666/docker-net-dhcp/issues/902">#902</a>, a <code>vlan</code> option that puts the network on a tagged VLAN off the
   parent</li>
@@ -1247,8 +1196,11 @@ below decide what is in a release; this page follows them.</p>
 <li><a href="https://github.com/claymore666/docker-net-dhcp/issues/1036">#1036</a>, a <code>require_mac</code> option that refuses an endpoint with no
   Docker-supplied MAC</li>
 <li><a href="https://github.com/claymore666/docker-net-dhcp/issues/1037">#1037</a>, an <code>mtu</code> option that sets the endpoint link MTU explicitly</li>
-<li><a href="https://github.com/claymore666/docker-net-dhcp/issues/1045">#1045</a>, the code-scanning result is not a required check on either
-  protected branch</li>
+<li><a href="https://github.com/claymore666/docker-net-dhcp/issues/1045">#1045</a>, the code-scanning result is a required check on both protected
+  branches</li>
+<li><a href="https://github.com/claymore666/docker-net-dhcp/issues/1096">#1096</a>, a page that says how the plugin is tested, linked from the
+  README</li>
+<li><a href="https://github.com/claymore666/docker-net-dhcp/issues/1108">#1108</a>, the first screen of the README says what, how and why</li>
 </ul>
 <h3 id="v240">v2.4.0<a class="headerlink" href="#v240" title="Permanent link">&para;</a></h3>
 <ul>
@@ -1310,10 +1262,11 @@ below decide what is in a release; this page follows them.</p>
     v25["v2.5&lt;br/&gt;CI and code debt"]
     v20 --&gt; v21 --&gt; v22 --&gt; v23 --&gt; v24 --&gt; v25
     classDef planned stroke-dasharray: 6 4
-    class v23,v24,v25 planned</code></pre>
-<p>v2.0, v2.1 and v2.2 are released, and v2.3, v2.4 and v2.5 are planned in
-that order; the planned ones are the dashed nodes. There are no dates, and
-the patch releases on each line are on the milestone links above.</p>
+    class v24,v25 planned</code></pre>
+<p>v2.0, v2.1, v2.2 and v2.3 are released, and v2.4 and v2.5 are planned in
+that order; the planned ones are the dashed nodes. There are no dates. Every
+release, patches included, is in
+<a href="https://github.com/claymore666/docker-net-dhcp/blob/main/RELEASE_NOTES.md">the release notes</a>.</p>
 <h2 id="the-bar-every-feature-is-measured-against">The bar every feature is measured against<a class="headerlink" href="#the-bar-every-feature-is-measured-against" title="Permanent link">&para;</a></h2>
 <p>One <code>docker network create</code> line, then plain <code>networks: [lan-dhcp]</code> in
 any Compose file. No static IPs, no sidecars, no per-container plumbing,
@@ -1461,8 +1414,8 @@ read it before writing the PR.</p>
 </tr>
 <tr>
 <td>It will not change interfaces the host already has</td>
-<td>the plugin reads host configuration and does not own it</td>
-<td><a href="https://github.com/claymore666/docker-net-dhcp/issues/903">#903</a></td>
+<td>the plugin reads host configuration and does not own it; the links it creates for its own networks are listed below</td>
+<td><a href="https://github.com/claymore666/docker-net-dhcp/issues/902">#902</a>, <a href="https://github.com/claymore666/docker-net-dhcp/issues/903">#903</a></td>
 </tr>
 <tr>
 <td>It will not gain a static-IP workflow</td>
@@ -1509,11 +1462,12 @@ question, and v1.8.0 answered it: <code>dhcp_servers</code> and <code>dhcp_deny_
 decide which existing server a network leases from (<a href="https://github.com/claymore666/docker-net-dhcp/issues/111">#111</a>). That stays
 on this side of the line: the plugin picks among authorities and never
 becomes one.</p>
-<p><strong>Host interfaces.</strong> Bridge mode today needs a bridge you maintain, and
-the parent-attached modes will not bring a NIC up, add an address, or
-edit netplan or <code>systemd-networkd</code>. A bridge the plugin creates for its
-own networks and owns for as long as they exist (<a href="https://github.com/claymore666/docker-net-dhcp/issues/903">#903</a>, v2.3.0) is
-inside this rule.</p>
+<p><strong>Host interfaces.</strong> The plugin will not bring a NIC up, add an address,
+or edit netplan or <code>systemd-networkd</code>. Two host links are inside this
+rule, because the plugin creates them for its own networks and removes
+them with the last one: since v2.3.0 a bridge made from a spare NIC that
+carries no address, when a bridge-mode network sets <code>parent</code> (<a href="https://github.com/claymore666/docker-net-dhcp/issues/903">#903</a>), and a
+VLAN sub-interface of the parent (<a href="https://github.com/claymore666/docker-net-dhcp/issues/902">#902</a>).</p>
 <p><strong>Static IPs.</strong> A per-container static-IP option would be a second,
 silently conflicting IPAM.</p>
 <p><strong>Privileges.</strong> Adding a capability to
