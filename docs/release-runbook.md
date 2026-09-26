@@ -676,9 +676,12 @@ be true.
    and was rewritten to 7KB; write the short version first.
 
    - Fixed structure, in this order: a two-to-three sentence lead,
-     then `### Upgrade notes`, `### New`, `### Fixed`,
-     `### Deferred to vX.Y.Z`, `### With thanks to`. Omit a section
-     that has no content; do not add others.
+     then `### Upgrade notes`, `### New`, `### Fixed`, `### Deferred`,
+     `### With thanks to`. Omit a section that has no content; do not
+     add others. `### Deferred` lists only work that was on this
+     release's milestone and left it during the cycle, each entry with
+     its issue and where it went. The next milestone's plan is the
+     roadmap, not a note of this release.
    - Put operator-visible behaviour changes in a **table** under
      Upgrade notes: one row per change, "what changed" and "what it
      does to you". That table is the part most readers need.
