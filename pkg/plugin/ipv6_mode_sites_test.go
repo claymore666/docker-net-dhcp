@@ -22,7 +22,7 @@ const (
 	v6WiringOwner           = "ipv6_mode.go"
 )
 
-var v6WiringSiteFiles = []string{"network.go", "parent_attached.go", "dhcp_manager.go"}
+var v6WiringSiteFiles = []string{"v6_acquire.go", "dhcp_manager.go"}
 
 func pluginSourceLines(t *testing.T, name string) []string {
 	t.Helper()

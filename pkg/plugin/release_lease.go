@@ -93,6 +93,8 @@ const (
 	releaseSendFailed releaseOutcome = "send_failed"
 	// releaseWithdrawFailed: the address stayed on the link, so RFC 9915 section 18.2.7 forbids the exchange.
 	releaseWithdrawFailed releaseOutcome = "withdraw_failed"
+	// releaseLinkLocal: the endpoint holds an RFC 3927 address and no lease, so it is neither sent nor failed (#904).
+	releaseLinkLocal releaseOutcome = "link_local"
 )
 
 // releaseHeldLease builds the release from the durable record, which holds the used address, identity, chaddr and
@@ -101,6 +103,9 @@ const (
 // comes off the link first (RFC 9915 section 18.2.7); a DHCPRELEASE is unicast (RFC 2131 section 4.4.4) and names
 // the lease by ciaddr (section 3.1), so the v4 address stays.
 func (m *dhcpManager) releaseHeldLease(v6 bool) releaseOutcome {
+	if !v6 && m.onLinkLocal() {
+		return releaseLinkLocal
+	}
 	rec, ok := m.releaseRecord(v6)
 	if !ok {
 		return releaseNoRecord
@@ -218,6 +223,8 @@ func announceReleaseOutcome(entry *log.Entry, out releaseOutcome) {
 		entry.Debug("The lease was handed back before the client stopped")
 	case releaseNoAddress:
 		entry.Debug("No lease was held for this family, so there was nothing to hand back")
+	case releaseLinkLocal:
+		entry.Debug("The endpoint held only a link-local address, so there was no lease to hand back")
 	case releaseNoRecord:
 		entry.Warn("This endpoint has no lease record for this family, so no release could be built " +
 			"and the address, if there is one, is left to expire on the server")
@@ -244,7 +251,9 @@ func announceReleaseOutcome(entry *log.Entry, out releaseOutcome) {
 func (m *dhcpManager) releaseFamily(v6 bool) bool {
 	out := m.releaseHeldLease(v6)
 	sent := out == releaseSent
-	m.countRelease(v6, sent)
+	if out != releaseLinkLocal {
+		m.countRelease(v6, sent)
+	}
 	m.announceRelease(v6, out)
 	return sent
 }
@@ -265,6 +274,11 @@ func (m *dhcpManager) releaseHeldLeases() (releasedV4, releasedV6 bool) {
 
 // announceDeferredRelease logs at the stop on an `on_remove` network when the address will go back (#984).
 func (m *dhcpManager) announceDeferredRelease() {
+	if m.onLinkLocal() {
+		log.WithFields(m.logFields(false)).
+			Debug("release_lease=on_remove: the endpoint held only a link-local address, so nothing will go back")
+		return
+	}
 	entry := log.WithFields(m.logFields(false)).WithField("window", tombstoneTTL.String())
 	if v4, v6 := m.lastIPs(); v4 != nil && v4.IP != nil {
 		entry = entry.WithField("ip", v4.IP.String())
@@ -292,11 +306,22 @@ func (p *Plugin) countRelease(v6 bool, sent bool) {
 	bumpFamily(&p.releaseFailuresV4, &p.releaseFailuresV6, v6)
 }
 
+// bridgeReleaseRefusal refuses release_lease on a bridge this plugin makes from parent: the release is sent from the
+// host's address on the bridge, and the create leaves it none, no IPv4 and no IPv6. The caller has checked parent; an
+// unknown value is refused as such, so a hand-edited record keeps its bridge at delete (#903, #962).
+func bridgeReleaseRefusal(opts DHCPNetworkOptions) error {
+	if rl, err := parseReleaseLease(opts.ReleaseLease); err != nil || rl == ReleaseNever {
+		return err
+	}
+	return fmt.Errorf("%w: release_lease=%s is refused on %v, a bridge this plugin makes from parent: the release is sent from the host's address on the bridge, and the host has none there. Create %v yourself with a host address and drop parent, or leave release_lease unset",
+		util.ErrIPAM, opts.ReleaseLease, opts.Bridge, opts.Bridge)
+}
+
 func (o DHCPNetworkOptions) hostLink() string {
 	if o.effectiveMode() == ModeBridge {
 		return o.Bridge
 	}
-	return o.Parent
+	return o.linkParent()
 }
 
 var errNoHostSource = errors.New("no usable source address on the parent for this family")

@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -234,6 +235,8 @@ type DHCPNetworkOptions struct {
 	PropagateDNS bool `mapstructure:"propagate_dns"`
 	// PropagateMTU sets the container link's MTU from option 26 on every bind or renew.
 	PropagateMTU bool `mapstructure:"propagate_mtu"`
+	// MTU, 68..65535, is set on every container link this network creates and is then its only source; 0 is unset (#1037).
+	MTU int `mapstructure:"mtu"`
 	// ClientID overrides the derived option 61 for every endpoint, sent with type byte 0x00; see resolveClientID
 	// (#371).
 	ClientID string `mapstructure:"client_id"`
@@ -241,7 +244,7 @@ type DHCPNetworkOptions struct {
 	VendorClass string `mapstructure:"vendor_class"`
 	// ValidateDHCP runs a one-shot DHCP probe on a macvlan or ipvlan parent at CreateNetwork (#108).
 	ValidateDHCP bool `mapstructure:"validate_dhcp"`
-	// RegisterDNS sends the FQDN option (81 v4, 39 v6) from the hostname, asking the server to register it (#261).
+	// RegisterDNS sends the hostname in option 81 (v4) and 39 (v6) with S=1; without it v6 sends no name (#261, #1029).
 	RegisterDNS bool `mapstructure:"register_dns"`
 	// AuditLog appends every lease event on this network to STATE_DIR/leases.jsonl (#109).
 	AuditLog bool `mapstructure:"audit_log"`
@@ -255,6 +258,20 @@ type DHCPNetworkOptions struct {
 	// HostIfname names bridge mode's host-side link: empty for `dh-` plus 12 hex, or `container_name` or `hostname`
 	// (#978).
 	HostIfname string `mapstructure:"host_ifname"`
+	// RequireMAC refuses an endpoint whose MAC the user did not set, so a MAC-keyed reservation always matches (#1036).
+	RequireMAC bool `mapstructure:"require_mac"`
+	// LinkLocalFallback gives an endpoint an RFC 3927 169.254/16 address when no DHCPv4 lease arrives in time (#904).
+	LinkLocalFallback bool `mapstructure:"link_local_fallback"`
+	// MacvlanMode is the macvlan child's kernel mode, bridge (the default), vepa, private or passthru (#905).
+	MacvlanMode string `mapstructure:"macvlan_mode"`
+	// IPvlanMode is the ipvlan child's kernel mode; l2 (the default) is the only accepted value, see parseIPvlanMode
+	// (#905).
+	IPvlanMode string `mapstructure:"ipvlan_mode"`
+	// Vlan is an 802.1Q ID; the children attach to `<parent>.<id>`, created when missing (#902).
+	Vlan string `mapstructure:"vlan"`
+	// ForceCreate creates a bridge-mode network with parent although the firewall check expects its frames dropped;
+	// the check still runs and logs its verdict (#903).
+	ForceCreate bool `mapstructure:"force_create"`
 }
 
 func (o DHCPNetworkOptions) effectiveMode() string {
@@ -293,6 +310,7 @@ func decodeOptsSet(input interface{}) (DHCPNetworkOptions, map[string]bool, erro
 		Metadata:         &md,
 		DecodeHook: mapstructure.ComposeDecodeHookFunc(
 			mapstructure.StringToTimeDurationHookFunc(),
+			decimalIntHook,
 		),
 	})
 	if err != nil {
@@ -304,6 +322,19 @@ func decodeOptsSet(input interface{}) (DHCPNetworkOptions, map[string]bool, erro
 	}
 
 	return opts, normaliseOptionKeys(md.Keys), nil
+}
+
+// decimalIntHook reads an int option as base 10 only, since mapstructure's weak decode parses with base 0 and takes
+// "0x5dc" as 1500 and "01400" as octal 768 (#1037).
+func decimalIntHook(f reflect.Type, t reflect.Type, data interface{}) (interface{}, error) {
+	if f.Kind() != reflect.String || t.Kind() != reflect.Int {
+		return data, nil
+	}
+	n, err := strconv.Atoi(data.(string))
+	if err != nil {
+		return nil, fmt.Errorf("%q is not a decimal integer", data)
+	}
+	return n, nil
 }
 
 // normaliseOptionKeys maps mapstructure tags to Go field names, keeping an unmatched key as is.
@@ -410,6 +441,15 @@ type Plugin struct {
 	// endpointFingerprints keeps each endpoint's MAC and IPv4 for DeleteEndpoint's tombstone, after Leave took the
 	// manager (#46).
 	endpointFingerprints map[string]endpointFingerprint
+
+	// vlanMu serialises a vlan sub-interface's create, adoption and removal, and guards vlanPending, the creates
+	// between their ensure and their save; it is never held with mu (#902).
+	vlanMu      sync.Mutex
+	vlanPending map[string]int
+
+	// bridgeMu and bridgePending do the same for a bridge this plugin makes from parent (#903).
+	bridgeMu      sync.Mutex
+	bridgePending map[string]int
 
 	// tombstones serialises tombstones.json and is never held with mu; scripts/check-lock-discipline.sh enforces it.
 	tombstones tombstoneStore
@@ -951,6 +991,10 @@ func (p *Plugin) addTombstone(networkID, hostname, mac, ipv4, ipv6 string) {
 	if mac == "" {
 		return
 	}
+	// A 169.254/16 address is no lease, and the next `request ADDR` would name one no server holds (#904).
+	if isLinkLocalV4String(ipv4) {
+		ipv4 = ""
+	}
 	if err := p.tombstones.add(networkID, hostname, mac, ipv4, ipv6); err != nil {
 		p.tombstoneWriteFailures.Add(1)
 		log.WithError(err).Warn("Failed to persist tombstone; container restart may pick a new MAC/IP")
@@ -1152,7 +1196,8 @@ func (p *Plugin) recoveredHostname(ctx context.Context, containerID string) (dhc
 
 // recoveredMAC returns the MAC recovery runs the endpoint under. Docker reports none for ipvlan, whose slaves take
 // the parent's MAC and refuse a change with EOPNOTSUPP, so it is read from the parent; measured on the lane
-// 2026-09-06, every ipvlan endpoint failed recovery with `parse MAC "": invalid MAC address` (#911).
+// 2026-09-06, every ipvlan endpoint failed recovery with `parse MAC "": invalid MAC address` (#911). A macvlan
+// passthru child also wears the parent's MAC and reports none to Docker (#905).
 func recoveredMAC(opts DHCPNetworkOptions, macStr string) (net.HardwareAddr, error) {
 	if macStr != "" {
 		mac, err := net.ParseMAC(macStr)
@@ -1161,16 +1206,16 @@ func recoveredMAC(opts DHCPNetworkOptions, macStr string) (net.HardwareAddr, err
 		}
 		return mac, nil
 	}
-	if opts.effectiveMode() != ModeIPvlan {
+	if !opts.childWearsParentMAC() {
 		return nil, fmt.Errorf("parse MAC %q: %w", macStr, errNoRecoveryMAC)
 	}
-	parent, err := netlink.LinkByName(opts.Parent)
+	parent, err := nlLinkByName(opts.linkParent())
 	if err != nil {
-		return nil, fmt.Errorf("ipvlan parent %q: %w", opts.Parent, err)
+		return nil, fmt.Errorf("%s parent %q: %w", opts.effectiveMode(), opts.linkParent(), err)
 	}
 	hw := parent.Attrs().HardwareAddr
 	if len(hw) == 0 {
-		return nil, fmt.Errorf("ipvlan parent %q has no hardware address to inherit", opts.Parent)
+		return nil, fmt.Errorf("%s parent %q has no hardware address to inherit", opts.effectiveMode(), opts.linkParent())
 	}
 	return hw, nil
 }
@@ -1204,6 +1249,8 @@ func (p *Plugin) recoverOneEndpoint(ctx context.Context, containerID, networkID,
 			ipv6 = a
 		}
 	}
+
+	ipv4 = p.recoveredV4(networkID, endpointRecordKey(opts.Mode, endpointID, mac), ipv4)
 
 	fakeJoin := JoinRequest{
 		NetworkID:  networkID,
@@ -1284,10 +1331,11 @@ func (p *Plugin) lookupEndpointMAC(ctx context.Context, networkID, endpointID st
 	return "", fmt.Errorf("endpoint %v not found in network %v's container list", endpointID, networkID)
 }
 
-// reacquireEndpoint reruns CreateEndpoint for a Join with no hint, as on `docker restart`; ipvlan gets no MAC.
+// reacquireEndpoint reruns CreateEndpoint for a Join with no hint, as on `docker restart`; ipvlan and passthru get
+// no MAC, since their child wears the parent's (#905).
 func (p *Plugin) reacquireEndpoint(ctx context.Context, r JoinRequest, opts DHCPNetworkOptions) error {
 	macAddr := ""
-	if opts.effectiveMode() != ModeIPvlan {
+	if !opts.childWearsParentMAC() {
 		mac, err := p.lookupEndpointMAC(ctx, r.NetworkID, r.EndpointID)
 		if err != nil {
 			return fmt.Errorf("failed to look up original endpoint MAC: %w", err)
@@ -1298,6 +1346,7 @@ func (p *Plugin) reacquireEndpoint(ctx context.Context, r JoinRequest, opts DHCP
 		NetworkID:  r.NetworkID,
 		EndpointID: r.EndpointID,
 		Interface:  &EndpointInterface{MacAddress: macAddr},
+		replay:     true,
 	}
 	if _, err := p.CreateEndpoint(ctx, fakeReq); err != nil {
 		return fmt.Errorf("CreateEndpoint replay failed: %w", err)

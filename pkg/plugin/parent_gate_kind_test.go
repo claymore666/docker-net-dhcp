@@ -23,7 +23,7 @@ func TestLockParent_TheCallSitesNameTheKindTheyAreAttaching(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
 
-		_ = p.runDHCPProbe(ctx, probeGateParent, ModeMacvlan, serverPolicy{})
+		_ = p.runDHCPProbe(ctx, DHCPNetworkOptions{Mode: ModeMacvlan, Parent: probeGateParent}, serverPolicy{})
 		assertSameKindGiveUp(t, p, "dhcp_probe.go")
 	})
 
@@ -55,6 +55,14 @@ func TestLockParent_TheCallSitesNameTheKindTheyAreAttaching(t *testing.T) {
 					"kind must be the mode of the child this site is about to attach; a "+
 					"constant there makes every give-up on this path report the same way "+
 					"whatever the network is.", s.where)
+				continue
+			}
+			if s.arg == "parentGateKindVlan" && strings.HasPrefix(s.where, "vlan.go:") {
+				// vlan.go adds and removes only the 802.1Q sub-interface, one kind whatever the network (#902).
+				continue
+			}
+			if s.arg == "parentGateKindBridge" && strings.HasPrefix(s.where, "bridge_own.go:") {
+				// bridge_own.go only enslaves the parent into the bridge it makes, one kind whatever the network (#903).
 				continue
 			}
 			if s.arg != "mode" && s.arg != "kind" {

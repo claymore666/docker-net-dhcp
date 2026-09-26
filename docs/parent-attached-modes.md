@@ -7,9 +7,9 @@
 
 | mode      | how containers reach the LAN                                              | each child's MAC                  | host changes required |
 | --------- | ------------------------------------------------------------------------- | --------------------------------- | --------------------- |
-| `bridge`  | a veth pair plugged into a Linux bridge you maintain                      | random per veth                   | yes, you bring the bridge |
-| `macvlan` | a per-container macvlan child of one of the host's NICs                   | **distinct** (kernel-generated)   | **none**, the host NIC is untouched |
-| `ipvlan`  | a per-container ipvlan child (L2 mode) of one of the host's NICs          | **shared with parent**            | **none**, the host NIC is untouched |
+| `bridge`  | a veth pair plugged into a Linux bridge you maintain, or one the plugin makes from a spare NIC (`parent`, v2.3.0) | random per veth | yes: you bring the bridge, or a spare NIC that stays up with no address |
+| `macvlan` | a per-container macvlan child (`bridge` mode by default) of a host NIC    | **distinct** (kernel-generated); the parent's under `passthru` | **none**, the host NIC is untouched; `passthru` takes it from the host |
+| `ipvlan`  | a per-container ipvlan child (L2 mode) of a host NIC                      | **shared with parent**            | **none**, the host NIC is untouched |
 
 ### Picking between macvlan and ipvlan
 
@@ -20,7 +20,7 @@ The difference is at L2: each container's MAC.
   which is what most LANs and DHCP servers expect. The Fritz.Box (or
   any home/SOHO router) sees each container as a fully distinct
   device.
-- **`ipvlan`** (L2 mode) is the right pick when the upstream switch or
+- **`ipvlan`** is the right pick when the upstream switch or
   hypervisor refuses to bridge multiple MACs from one port. Common
   triggers: managed switches with sticky-MAC port-security enabled,
   Wi-Fi access points that refuse multi-MAC bridging, hypervisor
@@ -39,7 +39,7 @@ substitute yours, and `ip -brief link` lists them):
 # On arm64 use the -arm64 tag. A network stores this exact reference
 # as its driver, so it must name the plugin you installed.
 docker network create \
-    --driver=ghcr.io/claymore666/docker-net-dhcp:v2.2.3 \
+    --driver=ghcr.io/claymore666/docker-net-dhcp:v2.3.0 \
     --ipam-driver=null \
     -o mode=macvlan \
     -o parent=eth0 \
@@ -95,16 +95,27 @@ docker inspect app | jq '.[0].NetworkSettings.Networks'
    destroyed.
 
 The host's NIC config (IP, routes, netplan/`systemd-networkd`,
-`/etc/network/interfaces`) is **never touched**.
+`/etc/network/interfaces`) is **never touched**. The one host link the
+plugin adds is a `vlan` sub-interface (below), which it creates, marks
+and removes itself.
 
 ## Constraints
 
 - The parent NIC must support macvlan/ipvlan children. Physical
   Ethernet, VLAN sub-interfaces, and bonds work; bridges, macvlans,
   and ipvlans do not (you can't stack these on top of each other).
+- **A VLAN of the parent** is one option away since v2.3.0:
+  `-o parent=eth0 -o vlan=100` attaches the children to `eth0.100`,
+  which the plugin creates when it is missing and removes with the last
+  network on it, never one it did not create. `<parent>.<id>` must fit
+  the kernel's 15 bytes. The sub-interface is a parent of its own, so a
+  macvlan network on `eth0.100` and an ipvlan network on `eth0` do not
+  clash. See
+  [VLAN sub-interfaces](reference.md#vlan-sub-interfaces-vlan) (#902).
 - The parent NIC must be administratively `UP` before you create the
   network. The plugin won't bring it up for you, since host config is
-  off-limits.
+  off-limits. A `vlan` sub-interface the plugin creates is brought up
+  by the plugin; its parent must be `UP` already.
 - Like any macvlan/ipvlan setup: a container on a child interface
   cannot reach the parent NIC's own host IP, and vice-versa. This is a
   kernel-level rule and never a plugin restriction. For host↔container
@@ -123,9 +134,12 @@ The host's NIC config (IP, routes, netplan/`systemd-networkd`,
 - **ipvlan-specific:** custom MAC addresses are unsupported (children
   share the parent's MAC). Passing `--mac-address` on `docker run`
   with an ipvlan network will fail with `invalid MAC address`.
-- **ipvlan-specific:** only L2 mode is supported. ipvlan L3 / L3S
-  modes are not used because they'd break DHCP (DHCP requires L2
-  broadcast).
+- **ipvlan-specific:** only L2 mode leases. `-o ipvlan_mode=l3` and
+  `l3s` are refused at `docker network create`, because such a child
+  sends no broadcast and its DHCPDISCOVER reaches no server or relay.
+  `-o macvlan_mode=` picks `bridge`, `vepa`, `private` or `passthru`
+  for macvlan. See
+  [macvlan and ipvlan sub-modes](reference.md#macvlan-and-ipvlan-sub-modes).
 - **ipvlan-specific:** if your DHCP server keys reservations solely
   on MAC and ignores DHCP option 61 (client identifier), ipvlan
   won't work as a stability mechanism, because every ipvlan slave shares
@@ -139,8 +153,9 @@ The host's NIC config (IP, routes, netplan/`systemd-networkd`,
   is the address source of truth. Pass `--ipam-driver=null`, or, from
   v2.1.0, this plugin's own IPAM driver
   ([reference](reference.md#address-allocation)). `ipvlan` takes
-  `--ipam-driver=null` only, because an IPAM driver needs a MAC per
-  endpoint and ipvlan children share the parent's (#949).
+  `--ipam-driver=null` only: Docker sets the MAC it generates for an
+  IPAM driver on the container's interface at start, and an ipvlan
+  interface cannot change its MAC (#949).
 - One DHCP-served network per container. If a container also joins a
   bridge or other Docker network, that's its problem to coordinate.
 

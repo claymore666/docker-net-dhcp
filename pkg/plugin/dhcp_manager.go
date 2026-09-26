@@ -111,6 +111,8 @@ type dhcpManager struct {
 	engineGatewayV4 atomic.Bool
 	engineGatewayV6 atomic.Bool
 
+	suppliedMTULogged atomic.Bool
+
 	// lastAdvertRoutes holds the RA-installed more-specific routes, destination to next hop, as the diff base: an
 	// advertisement that drops a prefix withdraws it (RFC 4191 section 2.3), and the kernel table also holds routes
 	// copied from the host bridge that must stay (#821). Used by the v6 consumer goroutine only.
@@ -166,8 +168,7 @@ type dhcpManager struct {
 
 	// clientV4 is the persistent v4 client: the health document reads its lease and RFC 5227 phase, and the attach
 	// sets its hostname through it (#961). Under ipMu, released before the client is called. v6 has no counterpart:
-	// the RFC 5227 pair has no v6 meaning and the plugin sets no DHCPv6 name until #1029
-	// (TestHealthClient_IsPublishedOnlyForV4).
+	// no RFC 5227 pair on v6, and the late name runs only without register_dns, where v6 sends none (#1029).
 	clientV4 joinClient
 
 	// releasedV4 and releasedV6 record that the lease was actually handed back, set from the outcome and not the
@@ -435,6 +436,7 @@ func (m *dhcpManager) renew(v6 bool, info dhcp.Info) error {
 		v6AddrAttrs(ip, info.LeaseSeconds, info.PreferredSeconds, info.IPDeprecated)
 	}
 
+	wasLinkLocal := !v6 && m.onLinkLocal()
 	// Address first, routes after: the kernel rejects a route with no address in its subnet.
 	if err := m.applyAddressChange(v6, ip, info); err != nil {
 		return err
@@ -455,6 +457,12 @@ func (m *dhcpManager) renew(v6 bool, info dhcp.Info) error {
 		if err := m.reconcileAdvertisedRoutes(info); err != nil {
 			log.WithError(err).WithFields(m.logFields(v6)).
 				Warn("Failed to reconcile the routes the Router Advertisement asked for")
+		}
+	}
+	if wasLinkLocal && !isLinkLocalAddr(ip) {
+		if err := m.leaveLinkLocal(ip, info); err != nil {
+			log.WithError(err).WithFields(m.logFields(v6)).
+				Warn("Some of the routes Join withheld from the link-local address could not be installed")
 		}
 	}
 
@@ -855,6 +863,11 @@ func (m *dhcpManager) propagateDNS(v6 bool, info dhcp.Info) {
 // not gated on propagate_mtu because the kernel applied it on every v6 network until #821 turned accept_ra off. It
 // writes the link MTU, which bounds IPv4 too, and minPropagatedMTU still applies.
 func (m *dhcpManager) propagateMTU(v6 bool, info dhcp.Info) {
+	if m.opts.MTU != 0 {
+		m.holdOptionMTU(v6, info)
+		return
+	}
+
 	// A family whose option is off gets no vote, neither to raise the link nor to withdraw the other family's value.
 	if !v6 && !m.opts.PropagateMTU {
 		return
@@ -918,6 +931,44 @@ func (m *dhcpManager) propagateMTU(v6 bool, info dhcp.Info) {
 		WithField("new_mtu", want).
 		WithField("supplied_mtu", info.MTU).
 		Info("Applied DHCP-supplied MTU")
+}
+
+// holdOptionMTU applies no supplied MTU and sets a moved link back to the mtu option, as an ipvlan child follows its
+// parent's MTU and a lowered macvlan parent clamps its child (measured 6.12, 2026-09-24, #1037).
+func (m *dhcpManager) holdOptionMTU(v6 bool, info dhcp.Info) {
+	if info.MTU > 0 && (!v6 || info.RouterSeen) && m.suppliedMTULogged.CompareAndSwap(false, true) {
+		log.
+			WithFields(m.logFields(v6)).
+			WithField("mtu", m.opts.MTU).
+			WithField("supplied_mtu", info.MTU).
+			Info("The mtu option is set; the MTU the network supplied is not applied")
+	}
+	if m.netHandle == nil || m.ctrLink == nil {
+		return
+	}
+	link, err := nlLinkByIndex(m.netHandle, m.ctrLink.Attrs().Index)
+	if err != nil {
+		log.WithError(err).WithFields(m.logFields(v6)).Debug("reading the endpoint's link MTU failed")
+		return
+	}
+	current := link.Attrs().MTU
+	if current == m.opts.MTU {
+		return
+	}
+	if err := nlHandleLinkSetMTU(m.netHandle, link, m.opts.MTU); err != nil {
+		log.
+			WithError(err).
+			WithFields(m.logFields(v6)).
+			WithField("mtu", m.opts.MTU).
+			WithField("link_mtu", current).
+			Warn("The kernel refused to set the link back to the mtu option; the link keeps its MTU")
+		return
+	}
+	log.
+		WithFields(m.logFields(v6)).
+		WithField("old_mtu", current).
+		WithField("new_mtu", m.opts.MTU).
+		Info("Set the link back to the mtu option")
 }
 
 // rememberMTU records one family's value, zero meaning withdrawn, and the link's own MTU on the first call, the
@@ -1503,7 +1554,8 @@ func (m *dhcpManager) setupClient(v6 bool) (chan error, error) {
 		requestedIP = resumption.Prefer
 		v4Identity = resumption.Identity
 		if resumption.Lease == nil && requestedIP == "" {
-			if v4Addr, _ := m.lastIPs(); v4Addr != nil && v4Addr.IP != nil {
+			// Never a link-local address: a DHCP server does not lease 169.254/16 (RFC 3927 section 2.8, #904).
+			if v4Addr, _ := m.lastIPs(); v4Addr != nil && v4Addr.IP != nil && !isLinkLocalAddr(v4Addr) {
 				requestedIP = v4Addr.IP.String()
 			}
 		}

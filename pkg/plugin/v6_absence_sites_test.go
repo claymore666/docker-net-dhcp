@@ -10,20 +10,63 @@ import (
 	"testing"
 )
 
-// The bridge and parent-attached attach paths each need #868's tolerance and the integration
-// fixture covers only the bridge one, so this test reads source. It keys on the call, since a
-// site that named its context reqCtx once passed unchecked (#868).
+// The bridge, parent-attached and IPAM endpoint paths each need #868's tolerance through the one helper, so this test reads
+// source. It keys on the call, since a site that named its context reqCtx once passed unchecked (#868, #960).
 const (
 	v6AbsenceAcquireCall = "p.acquireWithPolicy("
 	v6AbsenceConsult     = "p.noteV6Absence("
 	v6AbsenceWindow      = 12
+	v6AcquireHelperCall  = "p.acquireInitialV6("
 )
 
-var v6AbsenceSiteFiles = []string{"network.go", "parent_attached.go"}
+var v6AbsenceSiteFiles = []string{"v6_acquire.go"}
 
-// The IPAM driver's reserve is exempt because each call passes the literal false for v6, which
-// the test checks; it moves to the list above when the driver gains IPv6 (#110).
-var v6AbsenceV4OnlySites = []string{"ipam_reserve.go"}
+var v6AcquireCallerFiles = []string{"network.go", "parent_attached.go", "ipam_endpoint.go"}
+
+// v6AcquireCallArgs returns each helper call in name with the lines up to its closing "})".
+func v6AcquireCallArgs(t *testing.T, name string) []string {
+	t.Helper()
+	body, err := os.ReadFile(filepath.Join(".", name))
+	if err != nil {
+		t.Fatalf("reading %s: %v\nIf it was renamed, rename it in v6AcquireCallerFiles too — do not drop it.", name, err)
+	}
+	lines := strings.Split(string(body), "\n")
+	var calls []string
+	for i, line := range lines {
+		if !strings.Contains(line, v6AcquireHelperCall) {
+			continue
+		}
+		end := i
+		for end < len(lines)-1 && !strings.Contains(lines[end], "})") {
+			end++
+		}
+		calls = append(calls, strings.Join(lines[i:end+1], "\n"))
+	}
+	return calls
+}
+
+func TestV6Absence_BothEndpointSitesAcquireThroughTheHelper(t *testing.T) {
+	for _, name := range v6AcquireCallerFiles {
+		calls := v6AcquireCallArgs(t, name)
+		if len(calls) != 1 {
+			t.Errorf("%s calls %s %d times, want once: this endpoint path's DHCPv6 half goes through the "+
+				"helper that consults %s, or it fails a stateless or SLAAC segment (#868).",
+				name, v6AcquireHelperCall, len(calls), v6AbsenceConsult)
+		}
+		body, err := os.ReadFile(filepath.Join(".", name))
+		if err != nil {
+			t.Fatalf("reading %s: %v", name, err)
+		}
+		if strings.Contains(string(body), v6AbsenceAcquireCall) {
+			t.Errorf("%s calls %s itself again. Its DHCPv6 half belongs in %s, and a second copy is "+
+				"what #960 removed.", name, v6AbsenceAcquireCall, v6AcquireHelperCall)
+		}
+	}
+}
+
+// The IPAM driver's reserve and link_local.go's acquireV4 are exempt because each call passes the literal false
+// for v6, which the test checks; the reserve moves to the list above when the driver gains IPv6 (#110, #904).
+var v6AbsenceV4OnlySites = []string{"ipam_reserve.go", "link_local.go"}
 
 const v6AbsenceV4OnlyCall = ", false,"
 
@@ -67,8 +110,8 @@ func TestV6Absence_EveryAcquisitionSiteConsultsTheClassifier(t *testing.T) {
 	for _, name := range v6AbsenceSiteFiles {
 		body, err := os.ReadFile(filepath.Join(".", name))
 		if err != nil {
-			t.Fatalf("reading %s: %v\nThis file is one of the two attach paths #868 had "+
-				"to change. If it was renamed, rename it in v6AbsenceSiteFiles too — "+
+			t.Fatalf("reading %s: %v\nThis file holds the DHCPv6 one-shot both attach paths "+
+				"call. If it was renamed, rename it in v6AbsenceSiteFiles too — "+
 				"do not drop it.", name, err)
 		}
 		lines := strings.Split(string(body), "\n")

@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/claymore666/dhcp-golib/lease"
-	"github.com/claymore666/dhcp-golib/proto"
 	log "github.com/sirupsen/logrus"
 
 	"github.com/claymore666/docker-net-dhcp/v2/pkg/util"
@@ -194,21 +193,11 @@ func ipamLiveRecordForMAC(rb lease.Rebuilt, networkID string, mac net.HardwareAd
 	return lease.Record{}, false
 }
 
-// ipamRefuseIPvlan refuses at create: with RequiresMACAddress libnetwork generates a MAC per endpoint, and ipvlan
-// CreateEndpoint refuses any supplied MAC. `--ipam-driver null` keeps ipvlan working (#110).
+// ipamRefuseIPvlan refuses at create: with RequiresMACAddress libnetwork sets the generated MAC on the container
+// link at join, which an ipvlan slave refuses with EOPNOTSUPP even for its own MAC (#949).
 func ipamRefuseIPvlan(mode string) error {
 	if mode != ModeIPvlan {
 		return nil
 	}
-	return fmt.Errorf("%w: ipvlan networks cannot use this plugin as an IPAM driver, because ipvlan children share the parent's MAC and Docker's IPAM contract requires a per-endpoint one. Create the network with --ipam-driver null instead, which is unchanged and supported. Progress on ipvlan in IPAM mode is tracked in issue #949", util.ErrIPAM)
-}
-
-// ipamRefuseIPv6 refuses IPv6 in IPAM mode: the IPAM CreateEndpoint is v4 only, and Join would mint a DUID-LL from
-// a MAC libnetwork regenerates per endpoint, so the DUID would change at every restart. The message names the
-// resolved mode, since two spellings switch IPv6 on (#110, #817).
-func ipamRefuseIPv6(mode proto.Mode6) error {
-	if mode == proto.Mode6Off {
-		return nil
-	}
-	return fmt.Errorf("%w: this network switches IPv6 on with ipv6_mode=%s, and IPv6 cannot be combined with this plugin as the IPAM driver. Two spellings reach this refusal: `-o ipv6_mode=` with any mode but off, and `-o ipv6=true`, which is the short spelling of the dhcp mode. This plugin's IPAM driver serves IPv4 only, so the network would run no DHCPv6 exchange and the container would get no IPv6 address from it. Create the network with --ipam-driver null instead, where every ipv6_mode is unchanged and supported, or create it without IPv6. Progress on IPv6 in IPAM mode is tracked in issue #960", util.ErrIPAM, mode)
+	return fmt.Errorf("%w: ipvlan networks cannot use this plugin as an IPAM driver. Docker generates a MAC for each endpoint when the IPAM driver asks for one and sets it on the container's interface at start, and an ipvlan interface cannot change its MAC, so every container would fail to start. Create the network with --ipam-driver null instead, which is unchanged and supported. Issue #949 tracks the engine change this needs", util.ErrIPAM)
 }

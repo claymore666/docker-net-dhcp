@@ -43,6 +43,9 @@ New functionality is expected to ship with tests, and a per-package
 coverage ratchet enforces it at release time: a release cannot merge if a
 package's statement coverage drops below its recorded floor.
 
+What runs where, and what each result proves, is on
+[How this plugin is tested](testing.md).
+
 Run `go test ./...` for the fast loop and `sudo make integration-local`
 for the live suites. See
 [Running the tests](internals.md#running-the-tests). Use that target and
@@ -77,8 +80,9 @@ Every pull request must pass the repository's required checks before it
 can merge. Branch protection holds the authoritative list and the checks
 panel on the pull request shows it applied to the branch. At the time of
 writing that list is: unit tests, `staticcheck`, the live integration
-suite, `govulncheck`, `actionlint`, CodeQL (`Analyze (go)` and
-`Analyze (actions)`), `attribution`, `policy-gates`, and `docs-site`.
+suite, `govulncheck`, `actionlint`, CodeQL (`Analyze (go)`,
+`Analyze (actions)` and the `CodeQL` result check, which fails when the
+analysis finds a new alert), `attribution`, `policy-gates`, and `docs-site`.
 
 `docs-site` builds the documentation site with `mkdocs build --strict`. It
 runs on every pull request, including one that touches no documentation,

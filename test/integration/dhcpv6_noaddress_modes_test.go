@@ -27,19 +27,13 @@ func startOnV6Segment(t *testing.T, ctx context.Context, cli *docker.Client, f *
 // startOnV6SegmentWithOpts is startOnV6Segment with driver options that replace the defaults of the same name (#817).
 func startOnV6SegmentWithOpts(t *testing.T, ctx context.Context, cli *docker.Client, f *harness.V6Fixture, netName string, extra map[string]string) (string, error) {
 	t.Helper()
-	opts := map[string]string{
-		"bridge":        f.Bridge(),
-		"ipv6":          "true",
-		"propagate_dns": "true",
-	}
-	for k, v := range extra {
-		if v == "" {
-			delete(opts, k)
-			continue
-		}
-		opts[k] = v
-	}
-	harness.CreateNetwork(t, ctx, netName, "bridge", opts)
+	return startOnV6SegmentAs(t, ctx, cli, f, onV6Bridge, netName, extra)
+}
+
+// startContainerOn creates the shape's network with opts and starts a container on it, returning the ContainerStart error.
+func startContainerOn(t *testing.T, ctx context.Context, cli *docker.Client, netName string, at v6Attach, opts map[string]string) (string, error) {
+	t.Helper()
+	at.createNet(t, ctx, netName, opts)
 	ctrName := netName + "-ctr"
 	create, err := cli.ContainerCreate(ctx,
 		&container.Config{Image: harness.TestImage, Cmd: []string{"sleep", "infinity"}, Hostname: ctrName},
@@ -73,6 +67,18 @@ func dumpOnFailure(t *testing.T, f *harness.V6Fixture) {
 
 // TestDHCPv6_NoAddressModes_StartTheEndpoint checks that a container starts on stateless, SLAAC and router-less IPv6 segments (#868).
 func TestDHCPv6_NoAddressModes_StartTheEndpoint(t *testing.T) {
+	testDHCPv6_NoAddressModes_StartTheEndpoint(t, onV6Bridge)
+}
+
+func TestDHCPv6_NoAddressModes_StartTheEndpoint_Macvlan(t *testing.T) {
+	testDHCPv6_NoAddressModes_StartTheEndpoint(t, onV6Macvlan)
+}
+
+func TestDHCPv6_NoAddressModes_StartTheEndpoint_IPAM(t *testing.T) {
+	testDHCPv6_NoAddressModes_StartTheEndpoint(t, onV6IPAMBridge)
+}
+
+func testDHCPv6_NoAddressModes_StartTheEndpoint(t *testing.T, at v6Attach) {
 	cases := []struct {
 		name string
 		mode harness.V6Mode
@@ -128,11 +134,12 @@ func TestDHCPv6_NoAddressModes_StartTheEndpoint(t *testing.T) {
 			w := harness.BeginCounterWindow(t, ctx, cli,
 				"dhcpv6_not_offered", "dhcpv6_no_router_advert")
 
-			_, err := startOnV6Segment(t, ctx, cli, f, tc.net)
+			id, err := startOnV6SegmentAs(t, ctx, cli, f, at, at.net(tc.net), nil)
 			if err != nil {
 				t.Fatalf("the container did not start on a %s segment, which is the "+
 					"defect #868 describes:\n%v", tc.mode, err)
 			}
+			assertAttachedAs(t, ctx, f, id, at)
 
 			before, after := w.End()
 			notOffered := after.DHCPv6NotOffered - before.DHCPv6NotOffered
@@ -181,6 +188,14 @@ func TestDHCPv6_NoAddressModes_StartTheEndpoint(t *testing.T) {
 
 // TestDHCPv6_Stateless_ConfigurationReachesTheContainer checks that a stateless DHCPv6 reply's configuration reaches the container's resolver (#815, #868).
 func TestDHCPv6_Stateless_ConfigurationReachesTheContainer(t *testing.T) {
+	testDHCPv6_Stateless_ConfigurationReachesTheContainer(t, onV6Bridge)
+}
+
+func TestDHCPv6_Stateless_ConfigurationReachesTheContainer_Macvlan(t *testing.T) {
+	testDHCPv6_Stateless_ConfigurationReachesTheContainer(t, onV6Macvlan)
+}
+
+func testDHCPv6_Stateless_ConfigurationReachesTheContainer(t *testing.T, at v6Attach) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
@@ -195,10 +210,11 @@ func TestDHCPv6_Stateless_ConfigurationReachesTheContainer(t *testing.T) {
 
 	w := harness.BeginCounterWindow(t, ctx, cli,
 		"dhcpv6_config_only", "ipv6_link_enable_failures", "router_advert_guard_failures")
-	id, err := startOnV6Segment(t, ctx, cli, f, "dh-itest-v6slcfg")
+	id, err := startOnV6SegmentAs(t, ctx, cli, f, at, at.net("dh-itest-v6slcfg"), nil)
 	if err != nil {
 		t.Fatalf("the container did not start on a stateless segment: %v", err)
 	}
+	assertAttachedAs(t, ctx, f, id, at)
 
 	// The information reply arrives after the endpoint is up, so the counter is awaited.
 	if _, ok := w.Await(30*time.Second, func(now, before *harness.HealthResponse) bool {
@@ -244,6 +260,14 @@ func TestDHCPv6_Stateless_ConfigurationReachesTheContainer(t *testing.T) {
 
 // TestDHCPv6_Managed_StillRequiresALease checks that a managed DHCPv6 segment still gives the container a real v6 lease (#868).
 func TestDHCPv6_Managed_StillRequiresALease(t *testing.T) {
+	testDHCPv6_Managed_StillRequiresALease(t, onV6Bridge)
+}
+
+func TestDHCPv6_Managed_StillRequiresALease_Macvlan(t *testing.T) {
+	testDHCPv6_Managed_StillRequiresALease(t, onV6Macvlan)
+}
+
+func testDHCPv6_Managed_StillRequiresALease(t *testing.T, at v6Attach) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
@@ -259,13 +283,15 @@ func TestDHCPv6_Managed_StillRequiresALease(t *testing.T) {
 	w := harness.BeginCounterWindow(t, ctx, cli,
 		"dhcpv6_not_offered", "dhcpv6_no_router_advert")
 
-	const netName = "dh-itest-v6managed"
-	id, err := startOnV6Segment(t, ctx, cli, f, netName)
+	netName := at.net("dh-itest-v6managed")
+	id, err := startOnV6SegmentAs(t, ctx, cli, f, at, netName, nil)
 	if err != nil {
 		t.Fatalf("a container failed to start on a MANAGED DHCPv6 segment, where a "+
 			"DHCPv6 address is available — this is not #868, it is a regression in "+
 			"the working case:\n%v", err)
 	}
+
+	assertAttachedAs(t, ctx, f, id, at)
 
 	inspect, err := cli.ContainerInspect(ctx, id)
 	if err != nil {
@@ -319,6 +345,18 @@ func TestDHCPv6_Managed_StillRequiresALease(t *testing.T) {
 
 // TestDHCPv6_Managed_ServerSilent_IsStillFatal checks that a container fails to start when the segment advertises managed DHCPv6 and the server stays silent (#868).
 func TestDHCPv6_Managed_ServerSilent_IsStillFatal(t *testing.T) {
+	testDHCPv6_Managed_ServerSilent_IsStillFatal(t, onV6Bridge)
+}
+
+func TestDHCPv6_Managed_ServerSilent_IsStillFatal_Macvlan(t *testing.T) {
+	testDHCPv6_Managed_ServerSilent_IsStillFatal(t, onV6Macvlan)
+}
+
+func TestDHCPv6_Managed_ServerSilent_IsStillFatal_IPAM(t *testing.T) {
+	testDHCPv6_Managed_ServerSilent_IsStillFatal(t, onV6IPAMBridge)
+}
+
+func testDHCPv6_Managed_ServerSilent_IsStillFatal(t *testing.T, at v6Attach) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
@@ -334,7 +372,7 @@ func TestDHCPv6_Managed_ServerSilent_IsStillFatal(t *testing.T) {
 	w := harness.BeginCounterWindow(t, ctx, cli,
 		"dhcpv6_not_offered", "dhcpv6_no_router_advert")
 
-	_, err = startOnV6Segment(t, ctx, cli, f, "dh-itest-v6silent")
+	_, err = startOnV6SegmentAs(t, ctx, cli, f, at, at.net("dh-itest-v6silent"), nil)
 	if err == nil {
 		t.Fatal("the container STARTED on a segment that advertised managed DHCPv6 and " +
 			"then answered nothing. The fix for #868 is keyed on the acquisition failing " +
@@ -350,6 +388,7 @@ func TestDHCPv6_Managed_ServerSilent_IsStillFatal(t *testing.T) {
 
 	// Only a refused solicit tells this segment from a plain managed one, so a broken ignore directive cannot pass.
 	f.AwaitIgnoredSolicit(30 * time.Second)
+	assertServedOnSegment(t, f)
 
 	// V6ManagedSilent's mustLine needs DHCPSOLICIT and the refusal word on one line; read on the whole log it passes on any
 	// fixture whose v4 half logged a refusal (#915).

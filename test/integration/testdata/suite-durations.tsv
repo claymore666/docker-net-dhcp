@@ -10,8 +10,8 @@
 #
 # POPULATION: TOP-LEVEL TEST FUNCTIONS, PARENTS ONLY.
 # One row per `func TestX(t *testing.T)` in test/integration/*_test.go —
-# 161 of them, the main suite's 154 and the failure suite's 7. MEASURED
-# on this table: 161 data rows, and 161 `func TestX(t *testing.T)` in
+# 210 of them, the main suite's 203 and the failure suite's 7. MEASURED
+# on this table: 210 data rows, and 210 `func TestX(t *testing.T)` in
 # test/integration/*_test.go counted independently of them.
 #
 # THIS NUMBER HAS NOW BEEN WRONG TWICE, and the second time is the
@@ -23,7 +23,7 @@
 # population from the sharder and never reads this sentence, so nothing
 # goes red when it drifts: re-measure it against the table beside it
 # rather than adding your rows to the number already written here.
-# Recounted 2026-09-24. A subtest's
+# Recounted 2026-09-25. A subtest's
 # seconds are inside its parent's figure and are NOT a row of their own.
 # That is stated because the previous edition's header did not state it
 # and the population was read back two ways: 104 rows summing 1804.88s
@@ -364,13 +364,57 @@
 #                  = 57.00 plus the 30s old lifetime, 1s slack and the
 #                    new prefix's formation.
 #              The first run that executes each costs it.
+#   nine rows  the #960 *_Macvlan rows are INFERRED, not measured: each
+#              is its bridge twin's row, the same body on the same
+#              fixture with a veth pair added and one server log read.
+#              The first run that executes each costs it.
+#   21 rows    the #960 IPAM-shape rows are INFERRED, not measured: no
+#              run has executed them. The twelve *_IPAM rows and
+#              TestIPAM_ReplayAfterDaemonRestart_IPv6 are each their
+#              twin's row: the same body on a network made with
+#              --ipam-driver. The eight TestIPAMv6_* rows are derived
+#              from a shipped row of the same shape:
+#                DockerShowsTheAddressTheServersReplyCarried  20.00
+#                  = TestLifecycleMacvlan_IPv6_GoldenPath (17.68) plus a
+#                    lease-file read.
+#                ASingleRestartChangesTheMAC*                 30.00
+#                  = TestIPAM_SingleRestartKeepsTheAddress (22.00) plus
+#                    a DHCPv6 exchange on each start.
+#                TwoRestartedTogetherIsTheDocumentedLimit     45.00
+#                  = TestIPAM_RestartedTogetherIsTheDocumentedLimit
+#                    (38.00) plus a DHCPv6 exchange on each of 4 starts.
+#                DashDashIPv6IsRefused*                       15.00
+#                  = TestIPAM_IpvlanIsRefusedAtCreate (15.00).
+#                OnStopSendsOneReleasePerFamily               20.00
+#                  = TestIPAM_AddressIsTheServersACK (13.00) plus a stop
+#                    and two log reads.
+#                ASLAACAddressFollowsTheFreshMAC*             90.00
+#                  = TestSLAAC_TheAddressComesBackAfterAPluginRestart
+#                    (60.00) plus a second container and its restart.
+#                ASilentManagedServerFailsTheStart*           35.00
+#                  = TestDHCPv6_Managed_ServerSilent_IsStillFatal (27.95)
+#                    plus the IPAM network and its v4 lease.
+#                OnRemoveHandsBothFamiliesBack               110.00
+#                  = TestReleaseLease_OnRemoveHandsAnIPAMAddressBackToo
+#                    (100.00) plus a DHCPv6 exchange and two log reads.
+#              The first run that executes each costs it.
 #   three rows the #1016 refusal rows are INFERRED, not measured: no
 #              run has executed them.
 #              TestCreateRefusals_EachNamesTheOptionAndTheReasonAndLeavesNoNetwork
-#              is 30.00: twelve refused creates, which cost what
+#              is 33.00: fourteen refused creates, which cost what
 #              TestErrors_NetworkCreateValidation's eight do (0.04), and
-#              nineteen accepted create and remove pairs at about a
-#              second each.
+#              twenty accepted create and remove pairs at about a
+#              second each (the two require_mac rows are #1036's).
+#              The three TestRequireMAC_* rows (#1036) are INFERRED too:
+#              TestRequireMAC_WithoutAMACIsRefusedAndLeavesNothing is
+#              48.00, four arms of one network, one refused start and one
+#              leased container at about 12 each;
+#              TestRequireMAC_NetworkConnectIsRefused is 40.00, two
+#              networks, one container, a refused connect, a refused
+#              restart and a start;
+#              TestRequireMAC_APluginRecycleKeepsAnAcceptedContainer is
+#              25.00, TestRecovery_PluginDisableEnable_PreservesEndpoint's
+#              12.86 plus a container restart and its lease.
 #              TestLeaseTimeout_AnEmptyValueIsTheDefaultAndTheContainerLeases
 #              is 42.00: TestIPAM_IpvlanIsRefusedAtCreate's shape (15.00,
 #              one refused create, one network, one container) plus a
@@ -389,17 +433,71 @@
 #              1.02s on a warm cache on the session box, so the figure
 #              is the package compile on a cold cache, with room.
 #              The first run that executes it costs it.
-#   samples    3 for every corpus row. FIFTY-TWO rows are not corpus
-#              samples, and the ten groups below are disjoint and
+#   five rows  the #1037 TestMTUOption_* rows are INFERRED, not measured:
+#              no run has executed them.
+#              TheContainerLinkCarriesTheOptionInEveryMode is 50.00:
+#              four subtests, each one network and one container, the
+#              shape of TestLifecycleMacvlan_GoldenPath (11.61).
+#              BridgeFollowsASmallerPortOnlyWhileItIsAttached is 15.00:
+#              TestLifecycleBridge_GoldenPath (12.19) plus a removal.
+#              AnIPvlanChildReturnsToTheOptionOnTheNextRenew is 80.00:
+#              one container (12.00) plus the wait for T1 of the
+#              fixture's 2 minute lease, about 60s.
+#              AMacvlanParentBelowTheOptionFailsTheEndpointAndLeavesNoLink
+#              is 10.00: one network and one container start that fails
+#              at CreateEndpoint, before any DHCP exchange.
+#              AnIPAMMacvlanParentBelowTheOptionFailsTheEndpointAndLeavesNoLink
+#              is 15.00: the same, plus the IPAM reservation's DHCP
+#              exchange before CreateEndpoint.
+#   four rows  the #905 TestSubModes_* rows are INFERRED, not measured:
+#              no run has executed them.
+#              EachLeasesInTheModeItWasCreatedWith is 72.00: six
+#              subtests, each one network and one container, the shape
+#              of TestLifecycleMacvlan_GoldenPath (11.61).
+#              PassthruTakesItsParentAlone is 45.00: one container
+#              (12.00), a validate_dhcp create (3.47), a second start
+#              refused after the 3s EINVAL retry, a refused
+#              --mac-address start and a docker restart (12.00).
+#              DockersOwnIPvlanL3NetworkRefusesAnIPvlanNetworkOnItsParent
+#              is 2.00: three creates, no container.
+#              APluginRecycleKeepsTheSubMode is 25.00, the shape of
+#              TestRequireMAC_APluginRecycleKeepsAnAcceptedContainer.
+#              TestCreateRefusals_EachNamesTheOptionAndTheReasonAndLeavesNoNetwork
+#              grows from 33.00 to 45.00 with #905's nine refusals and
+#              nine accepted create and remove pairs.
+#   three rows the #902 TestVlan_* rows are INFERRED, not measured:
+#              no run has executed them.
+#              TheSubInterfaceCarriesTheLeaseAndOutlivesItsLastNetworkOnlyThroughARestart
+#              is 30.00: two creates, one container (12.00) and a plugin
+#              recycle with no endpoint to rebuild.
+#              ALinkThePluginDidNotMakeOrThatIsInUseIsLeftAlone is
+#              20.00: one ipvlan container (12.00), four creates and a
+#              refused one.
+#              IPAMModeBindsThePoolToTheSubInterface is 15.00, the
+#              shape of TestIPAM_AddressIsTheServersACK (13.00) plus a
+#              refused create.
+#              TestCreateRefusals_EachNamesTheOptionAndTheReasonAndLeavesNoNetwork
+#              grows from 45.00 to 50.00 with #902's three refusals and
+#              four accepted create and remove pairs.
+#   one row    TestLinkLocalFallback_AServerlessStartThenMovesToALease
+#              (#904) is 70.00, INFERRED: no run has executed it. One
+#              ephemeral fixture and one container (12.00), plus the
+#              26s a server-less start takes at most (16s of DHCP, 1s
+#              to stop it, a 9s claim window), plus the move after the
+#              restart, one DISCOVER retransmission of at most 16s.
+#   samples    3 for every corpus row. SIXTY-FIVE rows are not corpus
+#              samples, and the fourteen groups below are disjoint and
 #              exhaust them: the five `one row` notes above -- 73.85,
 #              84.19, 0.05, 12.08 and 13.00 -- the eighteen #110 rows,
 #              the four #962 TestReleaseLease_* rows, the two
 #              #816/#817 rows, the four #984 TestReleaseLease_OnRemove*
 #              rows, the four #978 TestHostIfname_* rows, the four
 #              #1016 TestReleaseLease_* rows, the seven #1016 v6
-#              advertisement rows, the three #1016 refusal rows, and
-#              the #1081 renumber row.
-#              Forty-nine of the fifty-two are INFERRED; the three
+#              advertisement rows, the three #1016 refusal rows,
+#              the #1081 renumber row, the five #1037
+#              TestMTUOption_* rows, the four #905 TestSubModes_* rows
+#              the three #902 TestVlan_* rows and the #904 row.
+#              Sixty-two of the sixty-five are INFERRED; the three
 #              that are measured are
 #              TestLeaseRenewIPv6_HonorsT1, from three later head runs,
 #              and TestFailure_UnansweredRenewalsCounted and
@@ -500,25 +598,32 @@ TestConflictCheck_RestartInsideTheAsyncWindow	4.60
 TestConflictCheck_SquattedOfferIsDeclined	37.00
 TestConflictCheck_SquatterAfterTheFact	36.71
 TestConflictCheck_WaitAcquisitionIsTimed	9.15
-TestCreateRefusals_EachNamesTheOptionAndTheReasonAndLeavesNoNetwork	30.00
+TestCreateRefusals_EachNamesTheOptionAndTheReasonAndLeavesNoNetwork	50.00
 TestDHCPv6_ADuplicateOnTheSegmentIsRefused	30.08
 TestDHCPv6_ARefusalLogsItsStatusCodeByNameOnce	35.00
 TestDHCPv6_ASquatOnARunningContainerIsCountedAndTheAddressChanges	38.00
 TestDHCPv6_AdvertisedMTUReachesTheContainer	30.00
 TestDHCPv6_Managed_ServerSilent_IsStillFatal	27.95
+TestDHCPv6_Managed_ServerSilent_IsStillFatal_IPAM	27.95
+TestDHCPv6_Managed_ServerSilent_IsStillFatal_Macvlan	27.95
 TestDHCPv6_Managed_StillRequiresALease	16.39
+TestDHCPv6_Managed_StillRequiresALease_Macvlan	16.39
 TestDHCPv6_NoAddressModes_StartTheEndpoint	80.63
+TestDHCPv6_NoAddressModes_StartTheEndpoint_IPAM	80.63
+TestDHCPv6_NoAddressModes_StartTheEndpoint_Macvlan	80.63
 TestDHCPv6_NoAddressSegmentGetsNoIPv6RouteYet	170.00
 TestDHCPv6_RefusedAndSilentAreTwoRows	56.00
 TestDHCPv6_RouterDiscoveryCountersRise	35.00
 TestDHCPv6_RouterWithdrawalAndReturn	55.00
 TestDHCPv6_Stateless_ConfigurationReachesTheContainer	30.44
+TestDHCPv6_Stateless_ConfigurationReachesTheContainer_Macvlan	30.44
 TestDHCPv6_Stateless_TheClientAnnouncesReconfigureAcceptOnTheWire	50.00
 TestDHCPv6_TheClientAnnouncesReconfigureAcceptOnTheWire	35.00
 TestDNSPropagate_BridgeModeWritesResolvConfToo	11.60
 TestDNSPropagate_DefaultIsUnchanged	11.72
 TestDNSPropagate_OptInWritesResolvConf	12.62
 TestDUID_PersistsAcrossPluginRestart	17.79
+TestDUID_PersistsAcrossPluginRestart_IPAM	17.79
 TestDisplacedClient_TheInterfaceNeverCarriesTwoClients	30.00
 TestDockerAPI_OnlySafeMethodsReachTheDaemon	11.41
 TestEngineIdentity_HealthMatchesTheDaemonsOwnAnswer	0.05
@@ -530,6 +635,10 @@ TestExtraOptions_NTPAndTFTPLogged	12.12
 TestExtraOptions_SearchListInResolvConf	12.42
 TestExtraOptions_WPADAndTimezoneLogged	11.98
 TestFQDN_RegistersInDNS	11.60
+TestFQDN_V6RegistersAAAA	15.00
+TestFQDN_V6RegistersAAAA_IPAM	15.00
+TestFQDN_V6UnsetRegistersNoAAAA	20.00
+TestFQDN_V6UnsetRegistersNoAAAA_IPAM	20.00
 TestFailure_IPAMResentRequestIsRefusedNotServedTwice	60.00
 TestFailure_IPAMServerDownFailsInsideTheBudget	75.00
 TestFailure_LeaseExpiry	154.61
@@ -555,6 +664,7 @@ TestIPAM_GatewayAndAuxNeverLease	9.00
 TestIPAM_IpvlanIsRefusedAtCreate	15.00
 TestIPAM_NoSubnetAnswersTheAnyPool	14.00
 TestIPAM_ReplayAfterDaemonRestart	45.00
+TestIPAM_ReplayAfterDaemonRestart_IPv6	45.00
 TestIPAM_RestartedTogetherIsTheDocumentedLimit	38.00
 TestIPAM_SingleRestartKeepsTheAddress	22.00
 TestIPAM_SingleRestartNeedsAServerThatKeepsClientIDBindings	50.00
@@ -562,6 +672,14 @@ TestIPAM_StaticIPIsHonouredWithASubnet	24.00
 TestIPAM_StaticIPWithoutASubnetIsStillTheAddressAsked	7.00
 TestIPAM_TwoEndpointsCannotShareOneHardwareAddress	16.00
 TestIPAM_TwoNetworksCannotShareOnePool	40.00
+TestIPAMv6_ASLAACAddressFollowsTheFreshMACAndMacAddressPinsIt	90.00
+TestIPAMv6_ASilentManagedServerFailsTheStartInsideAMinute	35.00
+TestIPAMv6_ASingleRestartChangesTheMACAndKeepsDUIDIAIDAndAddress	30.00
+TestIPAMv6_DashDashIPv6IsRefusedNamingTheOptionsThatSwitchIPv6On	15.00
+TestIPAMv6_DockerShowsTheAddressTheServersReplyCarried	20.00
+TestIPAMv6_OnRemoveHandsBothFamiliesBack	110.00
+TestIPAMv6_OnStopSendsOneReleasePerFamily	20.00
+TestIPAMv6_TwoRestartedTogetherIsTheDocumentedLimit	45.00
 TestIPv6Mode_SurvivesAPluginRestart	28.00
 TestIPv6_AcceptedAtCreate	0.02
 TestIPv6_DNS6Propagation	34.17
@@ -580,9 +698,17 @@ TestLeaseRetention_NothingEverReleases	35.23
 TestLeaseTimeout_AnEmptyValueIsTheDefaultAndTheContainerLeases	42.00
 TestLifecycleBridge_GoldenPath	12.19
 TestLifecycleBridge_IPv6_GoldenPath	16.98
+TestLifecycleBridge_IPv6_GoldenPath_IPAM	16.98
 TestLifecycleIPvlan_GoldenPath	11.80
 TestLifecycleMacvlan_GoldenPath	11.61
 TestLifecycleMacvlan_IPv6_GoldenPath	17.68
+TestLifecycleMacvlan_IPv6_GoldenPath_IPAM	17.68
+TestLinkLocalFallback_AServerlessStartThenMovesToALease	70.00
+TestMTUOption_AMacvlanParentBelowTheOptionFailsTheEndpointAndLeavesNoLink	10.00
+TestMTUOption_AnIPAMMacvlanParentBelowTheOptionFailsTheEndpointAndLeavesNoLink	15.00
+TestMTUOption_AnIPvlanChildReturnsToTheOptionOnTheNextRenew	80.00
+TestMTUOption_BridgeFollowsASmallerPortOnlyWhileItIsAttached	15.00
+TestMTUOption_TheContainerLinkCarriesTheOptionInEveryMode	50.00
 TestMTUPropagate_DefaultIsUnchanged	12.15
 TestMTUPropagate_OptInSetsLinkMTU	11.79
 TestMainPrefix_AnUnadvertisedPrefixReportsTheFirstAdvertisedOne	60.00
@@ -612,13 +738,26 @@ TestReleaseLease_OnStopHandsTheV6AddressBackToo	32.00
 TestReleaseLease_OnStopLeavesTheAddressToExpireWhenThePluginMissedTheStop	230.00
 TestReleaseLease_TheOptionIsRefusedAtCreateOrItIsNot	0.10
 TestRenumber_ThePluginKernelTestsPassInTheirOwnNamespace	60.00
+TestRequireMAC_APluginRecycleKeepsAnAcceptedContainer	25.00
+TestRequireMAC_NetworkConnectIsRefused	40.00
+TestRequireMAC_WithoutAMACIsRefusedAndLeavesNothing	48.00
 TestSLAAC_ADeprecatedPrefixArrivesDeprecated	45.00
+TestSLAAC_ADeprecatedPrefixArrivesDeprecated_IPAM	45.00
+TestSLAAC_ADeprecatedPrefixArrivesDeprecated_Macvlan	45.00
 TestSLAAC_ASegmentWithNoRouterEndsAFormingEndpoint	110.00
+TestSLAAC_ASegmentWithNoRouterEndsAFormingEndpoint_IPAM	110.00
+TestSLAAC_ASegmentWithNoRouterEndsAFormingEndpoint_Macvlan	110.00
 TestSLAAC_AnAddressWhoseValidLifetimeRunsOutLeavesTheLink	75.00
 TestSLAAC_AnAdvertisedPrefixReachesTheContainer	45.00
+TestSLAAC_AnAdvertisedPrefixReachesTheContainer_IPAM	45.00
+TestSLAAC_AnAdvertisedPrefixReachesTheContainer_Macvlan	45.00
 TestSLAAC_AutoFallsBackOntoTheAdvertisedPrefix	50.00
+TestSLAAC_AutoFallsBackOntoTheAdvertisedPrefix_IPAM	50.00
+TestSLAAC_AutoFallsBackOntoTheAdvertisedPrefix_Macvlan	50.00
 TestSLAAC_RenumberingInOneAdvertisementEndsWithExactlyTheNewSet	95.00
 TestSLAAC_TheAddressComesBackAfterAPluginRestart	60.00
+TestSLAAC_TheAddressComesBackAfterAPluginRestart_IPAM	60.00
+TestSLAAC_TheAddressComesBackAfterAPluginRestart_Macvlan	60.00
 TestSandboxKeyRoute_Bridge	11.89
 TestSandboxKeyRoute_Ipvlan	11.60
 TestSandboxKeyRoute_Macvlan	12.25
@@ -634,6 +773,10 @@ TestStaticIP_DriverOpt	9.01
 TestStaticRoutes_BridgeCopiesToContainer	11.80
 TestStaticRoutes_MacvlanCopiesToContainer	12.23
 TestStaticRoutes_MacvlanSkipRoutesOpt	11.82
+TestSubModes_APluginRecycleKeepsTheSubMode	25.00
+TestSubModes_DockersOwnIPvlanL3NetworkRefusesAnIPvlanNetworkOnItsParent	2.00
+TestSubModes_EachLeasesInTheModeItWasCreatedWith	72.00
+TestSubModes_PassthruTakesItsParentAlone	45.00
 TestTombstoneRestart_PreservesIPv6	27.17
 TestTombstoneRestart_PreservesMACAndIP	20.39
 TestV6Fixture_AssertExchangeRefusesASegmentNoClientEverUsed	2.34
@@ -645,3 +788,6 @@ TestV6RACapture_SeesTheAdvertisementOnTheBridgeAndNotOnAQuietLink	1.46
 TestVendorClass_DefaultUsesUntaggedGateway	12.02
 TestVendorClass_NonMatchingValueUsesDefaultGateway	12.23
 TestVendorClass_OverrideRoutesViaTaggedGateway	12.30
+TestVlan_ALinkThePluginDidNotMakeOrThatIsInUseIsLeftAlone	20.00
+TestVlan_IPAMModeBindsThePoolToTheSubInterface	15.00
+TestVlan_TheSubInterfaceCarriesTheLeaseSurvivesARestartAndGoesWithItsLastNetwork	30.00

@@ -749,7 +749,8 @@ be true.
    `test`, `policy-gates`, `staticcheck`, `integration` (every PR builds
    and exercises its own plugin on the integration runner), `actionlint`,
    `govulncheck`, `attribution`, `docs-site` (`mkdocs build --strict`,
-   #889), and CodeQL's `Analyze (go)` + `Analyze (actions)`. `main`
+   #889), CodeQL's `Analyze (go)` + `Analyze (actions)`, and the `CodeQL`
+   result check, which fails when the analysis finds a new alert. `main`
    requires those **plus `coverage` and `coverage-present`**, which is why
    the ratchet first bites at the release PR in the next step and not
    before. Merge when green.

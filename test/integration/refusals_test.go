@@ -90,9 +90,44 @@ type refusalCase struct {
 	controls map[string]createShape
 }
 
-// The rows are the "is refused" sentences of docs/reference.md's ipv6, ipv6_mode and host_ifname rows and its IPAM
-// section (#1016); ErrIPAM and ErrModeMismatch prefix every one of them, so no row matches on the prefix alone.
+// The rows are the "is refused" sentences of docs/reference.md's ipv6, ipv6_mode, host_ifname, require_mac,
+// macvlan_mode, ipvlan_mode and vlan rows and its IPAM section (#1016, #1036, #905, #902); ErrIPAM and
+// ErrModeMismatch prefix every one of them, so no row matches on the prefix alone. A vlan control sits on the ipvlan
+// parent with id 1, since every fixture parent with a 3-digit id is over the kernel's 15 bytes.
 var refusalCases = []refusalCase{
+	{
+		name:    "vlan is refused on bridge and the message names the mode",
+		refused: createShape{mode: "bridge", opts: map[string]string{"vlan": "100"}},
+		want:    []string{"vlan cannot be set in mode=bridge"},
+		controls: map[string]createShape{
+			"bridge without it is accepted":  {mode: "bridge"},
+			"ipvlan with vlan=1 is accepted": {mode: "ipvlan", opts: map[string]string{"vlan": "1"}},
+		},
+	},
+	{
+		name:    "a vlan ID outside 1 to 4094 is refused",
+		refused: createShape{mode: "ipvlan", opts: map[string]string{"vlan": "4095"}},
+		want:    []string{`vlan "4095" is not a VLAN ID from 1 to 4094`},
+		controls: map[string]createShape{
+			"vlan=1 is accepted": {mode: "ipvlan", opts: map[string]string{"vlan": "1"}},
+		},
+	},
+	{
+		name:    "release_lease on a vlan sub-interface the plugin makes is refused",
+		refused: createShape{mode: "ipvlan", opts: map[string]string{"vlan": "1", "release_lease": "on_stop"}},
+		want:    []string{"release_lease=on_stop is refused on " + harness.IpvlanParent + ".1", "the host has none there"},
+		controls: map[string]createShape{
+			"release_lease without vlan is accepted": {mode: "ipvlan", opts: map[string]string{"release_lease": "on_stop"}},
+		},
+	},
+	{
+		name:    "a vlan sub-interface name over 15 bytes is refused",
+		refused: createShape{mode: "macvlan", opts: map[string]string{"vlan": "100"}},
+		want:    []string{`"` + harness.HostVeth + `.100"`, "at most 15 bytes"},
+		controls: map[string]createShape{
+			"a parent short enough is accepted": {mode: "macvlan", opts: map[string]string{"parent": harness.IpvlanParent, "vlan": "1"}},
+		},
+	},
 	{
 		name:    "host_ifname is refused on macvlan and the message names the mode",
 		refused: createShape{mode: "macvlan", opts: map[string]string{"host_ifname": "container_name"}},
@@ -109,6 +144,23 @@ var refusalCases = []refusalCase{
 		controls: map[string]createShape{
 			"the same value is accepted on bridge": {mode: "bridge", opts: map[string]string{"host_ifname": "hostname"}},
 			"ipvlan without it is accepted":        {mode: "ipvlan"},
+		},
+	},
+	{
+		name:    "require_mac is refused on ipvlan and the message says why",
+		refused: createShape{mode: "ipvlan", opts: map[string]string{"require_mac": "true"}},
+		want:    []string{"require_mac cannot be set in mode=ipvlan", "share the parent's MAC"},
+		controls: map[string]createShape{
+			"the same value is accepted on macvlan": {mode: "macvlan", opts: map[string]string{"require_mac": "true"}},
+			"ipvlan with it off is accepted":        {mode: "ipvlan", opts: map[string]string{"require_mac": "false"}},
+		},
+	},
+	{
+		name:    "require_mac with a value that is not a boolean is refused naming the option",
+		refused: createShape{mode: "bridge", opts: map[string]string{"require_mac": "yes"}},
+		want:    []string{"cannot parse 'require_mac' as bool", `parsing "yes"`},
+		controls: map[string]createShape{
+			"require_mac=true is accepted on bridge": {mode: "bridge", opts: map[string]string{"require_mac": "true"}},
 		},
 	},
 	{
@@ -170,30 +222,90 @@ var refusalCases = []refusalCase{
 		},
 	},
 	{
-		name:    "-o ipv6=true is refused in IPAM mode as the dhcp mode",
-		refused: createShape{mode: "macvlan", ipam: true, opts: map[string]string{"ipv6": "true"}},
-		want: []string{"this network switches IPv6 on with ipv6_mode=dhcp, and IPv6 cannot be combined with this plugin as the IPAM driver",
-			"`-o ipv6=true`", "--ipam-driver null", "#960"},
-		controls: map[string]createShape{
-			"IPAM mode without IPv6 is accepted":    {mode: "macvlan", ipam: true},
-			"-o ipv6=true is accepted on null IPAM": {mode: "macvlan", opts: map[string]string{"ipv6": "true"}},
-		},
-	},
-	{
-		name:    "-o ipv6_mode=slaac is refused in IPAM mode naming the mode",
-		refused: createShape{mode: "macvlan", ipam: true, opts: map[string]string{"ipv6_mode": "slaac"}},
-		want: []string{"this network switches IPv6 on with ipv6_mode=slaac, and IPv6 cannot be combined with this plugin as the IPAM driver",
-			"--ipam-driver null", "#960"},
-		controls: map[string]createShape{
-			"IPAM mode with ipv6_mode=off is accepted": {mode: "macvlan", ipam: true, opts: map[string]string{"ipv6_mode": "off"}},
-		},
-	},
-	{
 		name:    "--ipv6 is refused in IPAM mode because no IPv6 pool is allocated",
 		refused: createShape{mode: "macvlan", ipam: true, enableIPv6: true},
-		want:    []string{"this plugin does not allocate IPv6 pools", "--ipam-driver null", "#960"},
+		want: []string{"--ipv6 is refused on a network that uses this plugin as its IPAM driver",
+			"the plugin allocates no IPv6 pool", "drop --ipv6", "`-o ipv6=true` or `-o ipv6_mode=<mode>`"},
 		controls: map[string]createShape{
-			"IPAM mode without --ipv6 is accepted": {mode: "macvlan", ipam: true},
+			"IPAM mode without --ipv6 is accepted":        {mode: "macvlan", ipam: true},
+			"-o ipv6=true is accepted in IPAM mode":       {mode: "macvlan", ipam: true, opts: map[string]string{"ipv6": "true"}},
+			"-o ipv6_mode=slaac is accepted in IPAM mode": {mode: "macvlan", ipam: true, opts: map[string]string{"ipv6_mode": "slaac"}},
+			"IPAM mode with ipv6_mode=off is accepted":    {mode: "macvlan", ipam: true, opts: map[string]string{"ipv6_mode": "off"}},
+			"-o ipv6=true is accepted on null IPAM":       {mode: "macvlan", opts: map[string]string{"ipv6": "true"}},
+		},
+	},
+	{
+		name:    "an unknown macvlan_mode is refused with the accepted set",
+		refused: createShape{mode: "macvlan", opts: map[string]string{"macvlan_mode": "brigde"}},
+		want:    []string{`macvlan_mode "brigde" is not one of bridge, vepa, private, passthru`},
+		controls: map[string]createShape{
+			"macvlan_mode=vepa is accepted": {mode: "macvlan", opts: map[string]string{"macvlan_mode": "vepa"}},
+		},
+	},
+	{
+		name:    "ipvlan_mode=l3 is refused with the measured reason",
+		refused: createShape{mode: "ipvlan", opts: map[string]string{"ipvlan_mode": "l3"}},
+		want:    []string{"ipvlan_mode=l3 is refused", "reaches no DHCP server and no relay", "The accepted value is l2"},
+		controls: map[string]createShape{
+			"ipvlan_mode=l2 is accepted": {mode: "ipvlan", opts: map[string]string{"ipvlan_mode": "l2"}},
+		},
+	},
+	{
+		name:    "ipvlan_mode=l3s is refused with the measured reason",
+		refused: createShape{mode: "ipvlan", opts: map[string]string{"ipvlan_mode": "l3s"}},
+		want:    []string{"ipvlan_mode=l3s is refused", "reaches no DHCP server and no relay"},
+		controls: map[string]createShape{
+			"ipvlan with no ipvlan_mode is accepted": {mode: "ipvlan"},
+		},
+	},
+	{
+		name:    "an unknown ipvlan_mode is refused naming the accepted value",
+		refused: createShape{mode: "ipvlan", opts: map[string]string{"ipvlan_mode": "L2"}},
+		want:    []string{`ipvlan_mode "L2" is not accepted; the accepted value is l2`},
+		controls: map[string]createShape{
+			"ipvlan_mode=l2 is accepted": {mode: "ipvlan", opts: map[string]string{"ipvlan_mode": "l2"}},
+		},
+	},
+	{
+		name:    "macvlan_mode is refused on ipvlan naming the mode",
+		refused: createShape{mode: "ipvlan", opts: map[string]string{"macvlan_mode": "bridge"}},
+		want:    []string{"macvlan_mode cannot be set in mode=ipvlan"},
+		controls: map[string]createShape{
+			"the same value is accepted on macvlan": {mode: "macvlan", opts: map[string]string{"macvlan_mode": "bridge"}},
+		},
+	},
+	{
+		name:    "ipvlan_mode is refused on macvlan naming the mode",
+		refused: createShape{mode: "macvlan", opts: map[string]string{"ipvlan_mode": "l2"}},
+		want:    []string{"ipvlan_mode cannot be set in mode=macvlan"},
+		controls: map[string]createShape{
+			"the same value is accepted on ipvlan": {mode: "ipvlan", opts: map[string]string{"ipvlan_mode": "l2"}},
+		},
+	},
+	{
+		name:    "macvlan_mode is refused on bridge naming the mode",
+		refused: createShape{mode: "bridge", opts: map[string]string{"macvlan_mode": "private"}},
+		want:    []string{"macvlan_mode cannot be set in mode=bridge"},
+		controls: map[string]createShape{
+			"bridge without it is accepted": {mode: "bridge"},
+		},
+	},
+	{
+		name:    "require_mac beside macvlan_mode=passthru is refused saying why",
+		refused: createShape{mode: "macvlan", opts: map[string]string{"require_mac": "true", "macvlan_mode": "passthru"}},
+		want:    []string{"require_mac cannot be set with macvlan_mode=passthru", "wears the parent's MAC"},
+		controls: map[string]createShape{
+			"require_mac beside macvlan_mode=private is accepted": {mode: "macvlan",
+				opts: map[string]string{"require_mac": "true", "macvlan_mode": "private"}},
+		},
+	},
+	{
+		name:    "macvlan_mode=passthru is refused in IPAM mode",
+		refused: createShape{mode: "macvlan", ipam: true, opts: map[string]string{"macvlan_mode": "passthru"}},
+		want:    []string{"macvlan_mode=passthru networks cannot use this plugin as an IPAM driver", "--ipam-driver null"},
+		controls: map[string]createShape{
+			"IPAM mode with macvlan_mode=vepa is accepted": {mode: "macvlan", ipam: true,
+				opts: map[string]string{"macvlan_mode": "vepa"}},
 		},
 	},
 }

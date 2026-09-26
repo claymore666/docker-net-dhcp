@@ -176,11 +176,19 @@ func TestIPv6_TheV4OnlyPathIsUnchanged(t *testing.T) {
 
 // TestLifecycleMacvlan_IPv6_GoldenPath checks that with ipv6=true a macvlan container gets both families, inspect matches the link, and teardown stops both cleanly.
 func TestLifecycleMacvlan_IPv6_GoldenPath(t *testing.T) {
+	testLifecycleMacvlanIPv6GoldenPath(t, onV6Macvlan, "dh-itest-v6mv")
+}
+
+// TestLifecycleMacvlan_IPv6_GoldenPath_IPAM is the macvlan golden path with this plugin as the IPAM driver (#960).
+func TestLifecycleMacvlan_IPv6_GoldenPath_IPAM(t *testing.T) {
+	testLifecycleMacvlanIPv6GoldenPath(t, onV6IPAMMacvlan, "dh-itest-v6mvi")
+}
+
+func testLifecycleMacvlanIPv6GoldenPath(t *testing.T, at v6Attach, netName string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 
-	netName := "dh-itest-v6mv"
-	ctrName := "dh-itest-v6mv-ctr"
+	ctrName := netName + "-ctr"
 
 	t.Cleanup(func() {
 		if t.Failed() {
@@ -197,7 +205,7 @@ func TestLifecycleMacvlan_IPv6_GoldenPath(t *testing.T) {
 
 	w := harness.BeginCounterWindow(t, ctx, cli, "client_stop_failures")
 
-	harness.CreateNetwork(t, ctx, netName, "macvlan", map[string]string{"ipv6": "true"})
+	at.createNet(t, ctx, netName, map[string]string{"ipv6": "true"})
 
 	// Neither client releases (#800), so the test sequences the stop.
 	create, err := cli.ContainerCreate(ctx,
@@ -268,10 +276,17 @@ func TestLifecycleMacvlan_IPv6_GoldenPath(t *testing.T) {
 
 // TestLifecycleBridge_IPv6_GoldenPath checks the same dual-stack contract through the bridge wiring path.
 func TestLifecycleBridge_IPv6_GoldenPath(t *testing.T) {
+	testLifecycleBridgeIPv6GoldenPath(t, onV6Bridge, "dh-itest-v6br")
+}
+
+// TestLifecycleBridge_IPv6_GoldenPath_IPAM is the bridge golden path with this plugin as the IPAM driver (#960).
+func TestLifecycleBridge_IPv6_GoldenPath_IPAM(t *testing.T) {
+	testLifecycleBridgeIPv6GoldenPath(t, onV6IPAMBridge, "dh-itest-v6bri")
+}
+
+func testLifecycleBridgeIPv6GoldenPath(t *testing.T, at v6Attach, netName string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
-
-	netName := "dh-itest-v6br"
 
 	t.Cleanup(func() {
 		if t.Failed() {
@@ -280,8 +295,8 @@ func TestLifecycleBridge_IPv6_GoldenPath(t *testing.T) {
 		}
 	})
 
-	harness.CreateNetwork(t, ctx, netName, "bridge", map[string]string{"ipv6": "true"})
-	id, v4, _ := harness.RunContainer(t, ctx, netName, "dh-itest-v6br-ctr")
+	at.createNet(t, ctx, netName, map[string]string{"ipv6": "true"})
+	id, v4, _ := harness.RunContainer(t, ctx, netName, netName+"-ctr")
 
 	if !harness.IsInBridgePool(net.ParseIP(v4)) {
 		t.Errorf("IPv4 %s not in bridge fixture pool", v4)
@@ -546,10 +561,17 @@ func TestIPv6_DNS6Propagation(t *testing.T) {
 
 // TestDUID_PersistsAcrossPluginRestart checks that the lease DB shows the same client DUID after a plugin restart.
 func TestDUID_PersistsAcrossPluginRestart(t *testing.T) {
+	testDUIDPersistsAcrossPluginRestart(t, onV6Macvlan, "dh-itest-v6duid")
+}
+
+// TestDUID_PersistsAcrossPluginRestart_IPAM is the same check on the record ipam_endpoint.go stores (#960).
+func TestDUID_PersistsAcrossPluginRestart_IPAM(t *testing.T) {
+	testDUIDPersistsAcrossPluginRestart(t, onV6IPAMMacvlan, "dh-itest-v6duidi")
+}
+
+func testDUIDPersistsAcrossPluginRestart(t *testing.T, at v6Attach, netName string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 	defer cancel()
-
-	netName := "dh-itest-v6duid"
 
 	t.Cleanup(func() {
 		if t.Failed() {
@@ -564,8 +586,8 @@ func TestDUID_PersistsAcrossPluginRestart(t *testing.T) {
 	}
 	defer cli.Close()
 
-	harness.CreateNetwork(t, ctx, netName, "macvlan", map[string]string{"ipv6": "true"})
-	id, _, _ := harness.RunContainer(t, ctx, netName, "dh-itest-v6duid-ctr")
+	at.createNet(t, ctx, netName, map[string]string{"ipv6": "true"})
+	id, _, _ := harness.RunContainer(t, ctx, netName, netName+"-ctr")
 
 	v6 := linkGlobalV6(t, ctx, id, harness.IPAcquisitionBudget)
 	if v6 == "" {

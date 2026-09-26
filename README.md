@@ -8,32 +8,124 @@
 [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/13229/badge)](https://www.bestpractices.dev/projects/13229)
 [![Docs](https://img.shields.io/badge/docs-claymore666.github.io-blue?logo=materialformkdocs&logoColor=white)](https://claymore666.github.io/docker-net-dhcp/)
 
-A Docker network plugin that gives every container an address from the
-DHCP server your LAN already runs (your router, a Fritz!Box, dnsmasq),
-over `bridge`, `macvlan` or `ipvlan`, for IPv4 and IPv6. It runs in two
-shapes: as the network driver beside `--ipam-driver null`, which is all
-three modes, or, from v2.1.0, as the network driver and Docker's IPAM
-driver at once, which puts the leased address into Docker's own address
-management and makes `docker run --ip` and Compose `ipv4_address` work.
-The second shape covers `bridge` and `macvlan` for IPv4: `ipvlan` takes
-`--ipam-driver null` ([#949]) and so does IPv6 ([#960]).
-The DHCP exchange runs inside the plugin on the project's own engine,
-the [dhcp-golib][dhcp-golib] library: there is no external DHCP client
-to install and no client process per container.
+A Docker network plugin that leases every container's address from the
+DHCP server your LAN already runs, over `bridge`, `macvlan` or `ipvlan`,
+for IPv4 and IPv6. One `docker network create`, then `networks: [lan-dhcp]`
+in any Compose file. No static addresses, no sidecars, no plumbing per
+container.
 
-This branch is the 2.x line and every page on it describes that build.
-The snippets below install the current release.
+This is the successor of `devplayer0/docker-net-dhcp`, not a patched copy:
+2.x has its own DHCP engine and its own lifecycle code.
 
-On this page:
+```bash
+sudo mkdir -p /var/lib/net-dhcp                      # once per host
+docker plugin install ghcr.io/claymore666/docker-net-dhcp:v2.3.0   # -arm64 on arm64
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.3.0 \
+  --ipam-driver null -o mode=macvlan -o parent=eth0 lan-dhcp
+docker run --rm -ti --network lan-dhcp alpine ip address show
+```
 
-- [Requirements](#requirements)
-- [Quick start](#quick-start)
-- [Documentation](#documentation), including the [driver reference](docs/reference.md) and the [roadmap](docs/roadmap.md)
-- [Why this one](#why-this-one)
-- [Origin and licence](#origin-and-licence)
-- [Verifying releases](#verifying-releases)
-- [Project & community](#project--community)
-- [Contributing](#contributing)
+It is a privileged plugin: it runs with host networking, the Docker socket
+and `CAP_NET_ADMIN`. The full list is under [Requirements](#requirements),
+and what each item is for is in [SECURITY.md](SECURITY.md#scope--what-this-plugin-is).
+
+## Feature list
+
+- **The address is the LAN's.** The router's lease table, its MAC
+  reservations and, with `-o register_dns=true`, its DNS see the container
+  as one more host.
+- **IPv6 in the same shape as IPv4.** `-o ipv6_mode=` picks DHCPv6, SLAAC,
+  or whatever the router advertisement says, per network, with the same
+  identity rules and the same counters.
+- **One identity per container, kept across restarts.** In `bridge` and
+  `macvlan` the plugin keeps the MAC, and with it the DHCP client id and
+  the DHCPv6 DUID, across `docker restart`, a daemon restart and a plugin
+  upgrade, and asks for the old address again. A MAC reservation on the
+  router keeps matching.
+- **ipvlan gets its own client id.** ipvlan containers share the parent's
+  MAC, so each one gets its own DHCP client id (option 61) and its own
+  DUID ([#895]). That identity is new on every restart, so an ipvlan
+  container does not keep its address across `docker restart` ([#219]).
+- **VLANs, sub-modes, MTU.** `-o vlan=` puts a macvlan or ipvlan network
+  on a tagged VLAN off the parent ([#902]); `-o macvlan_mode=` and
+  `-o ipvlan_mode=` pick the kernel mode of each link ([#905]); `-o mtu=`
+  sets the link MTU ([#1037]).
+- **Bridge mode from a spare NIC.** With `-o parent=` the plugin makes the
+  bridge, enslaves the NIC and removes both with the network ([#903]);
+  `-o force_create=true` overrides the firewall check on that bridge.
+  `-o link_local_fallback=true`
+  starts a container on a 169.254 address while the DHCP server is down
+  and moves it to the lease when one arrives ([#904]).
+- **Leases follow Docker's lifecycle.** Renewal, rebind, NAK and expiry run
+  in the plugin, one client per endpoint. `-o release_lease=` hands the
+  address back at stop or at remove. Every Docker hook has a defined
+  outcome, including a container that leaves before its lease binds, a
+  network removed together with its bridge, and an endpoint Docker forgot.
+- **Measured on Docker Engine 20.10 through 29.** The engine matrix builds
+  the plugin, creates networks in every documented shape, confirms a lease
+  in the DHCP server's own log and keeps an address across
+  `docker restart`, on every engine line, weekly and on every change to
+  the measurement. Below 20.10 the plugin refuses to start and names the
+  minimum.
+
+## Two shapes
+
+| You want | Use |
+| --- | --- |
+| The container takes its address from the LAN, Docker keeps no pool | `--ipam-driver null` (the default shape, all three modes) |
+| Docker knows the address: `docker run --ip`, Compose `ipv4_address`, `docker inspect` | the plugin as IPAM driver as well (`--ipam-driver <plugin>`), `bridge` and `macvlan`, IPv4 and IPv6; `--ip6` and `ipv6_address` are not served ([#960]) |
+| `ipvlan` | `--ipam-driver null` |
+
+| | IPv4 | IPv6 | as IPAM driver |
+| --- | --- | --- | --- |
+| bridge | yes | yes | yes |
+| macvlan | yes | yes | yes |
+| ipvlan | yes | yes | no, needs a Docker change ([#949]) |
+
+## Unsupported
+
+- `ipvlan` with this plugin as IPAM driver. Docker assigns a MAC to
+  the ipvlan interface, and ipvlan interfaces cannot take one. Needs a
+  change in Docker, not planned ([#949]). `ipvlan` networks use
+  `--ipam-driver null`.
+- Docker Engine 19.03. Unmeasured, not planned.
+
+The plugin refuses these with a message that names the reason.
+
+## Planned
+
+v2.4.0: DHCPv6 Rapid Commit ([#926]), temporary addresses ([#927]) and
+prefix delegation ([#214]); DHCPv4 Rapid Commit ([#1031]) and IPv6-only
+preferred ([#1027]); stable-privacy SLAAC addresses ([#1032]); one
+multi-architecture image per tag ([#1035]). The full list, with what this
+project will not do, is on the [roadmap](docs/roadmap.md).
+
+## How to check any of this
+
+- The DHCP exchange runs inside the plugin on the project's own library,
+  [dhcp-golib](https://github.com/claymore666/dhcp-golib). No external
+  DHCP client, no client process per container.
+- Tests assert on the wire and on the server: packet captures and the
+  DHCP server's lease log, not the plugin's own counters
+  ([how this plugin is tested](docs/testing.md)).
+- Every pull request carries a public review verdict, and every release
+  ships signatures, SLSA provenance and an SBOM
+  ([verifying releases](docs/verifying-releases.md)).
+
+[#219]: https://github.com/claymore666/docker-net-dhcp/issues/219
+[#895]: https://github.com/claymore666/docker-net-dhcp/issues/895
+[#902]: https://github.com/claymore666/docker-net-dhcp/issues/902
+[#905]: https://github.com/claymore666/docker-net-dhcp/issues/905
+[#1037]: https://github.com/claymore666/docker-net-dhcp/issues/1037
+[#903]: https://github.com/claymore666/docker-net-dhcp/issues/903
+[#904]: https://github.com/claymore666/docker-net-dhcp/issues/904
+[#926]: https://github.com/claymore666/docker-net-dhcp/issues/926
+[#927]: https://github.com/claymore666/docker-net-dhcp/issues/927
+[#214]: https://github.com/claymore666/docker-net-dhcp/issues/214
+[#1031]: https://github.com/claymore666/docker-net-dhcp/issues/1031
+[#1027]: https://github.com/claymore666/docker-net-dhcp/issues/1027
+[#1032]: https://github.com/claymore666/docker-net-dhcp/issues/1032
+[#1035]: https://github.com/claymore666/docker-net-dhcp/issues/1035
 
 ## Requirements
 
@@ -89,10 +181,13 @@ On this page:
   `sudo`. Without it `curl -s` prints nothing and exits 7, which is what
   an absent socket also gives, so a permission problem looks like a
   stopped plugin.
-- **Mode constraints.** `bridge` expects a host bridge you maintain;
-  `macvlan` and `ipvlan` attach to a host NIC and change nothing on the
-  host, at the cost of the kernel rule that a child cannot reach its own
-  host's address. Both in
+- **Mode constraints.** `bridge` expects a host bridge you maintain,
+  or makes one from a spare NIC that stays up with no address (v2.3.0);
+  `macvlan` and `ipvlan` attach to a host NIC and change nothing on it,
+  at the cost of the kernel rule that a child cannot reach its own host's
+  address. With `-o vlan=<id>` (v2.3.0) they attach to a VLAN
+  sub-interface of that NIC, which the plugin creates when it is missing
+  and removes with the last network on it. Both in
   [macvlan / ipvlan modes](docs/parent-attached-modes.md).
 
 ## Quick start
@@ -102,16 +197,16 @@ On this page:
 sudo mkdir -p /var/lib/net-dhcp
 
 # amd64
-docker plugin install ghcr.io/claymore666/docker-net-dhcp:v2.2.3
+docker plugin install ghcr.io/claymore666/docker-net-dhcp:v2.3.0
 # arm64
-docker plugin install ghcr.io/claymore666/docker-net-dhcp:v2.2.3-arm64
+docker plugin install ghcr.io/claymore666/docker-net-dhcp:v2.3.0-arm64
 ```
 
 One network, created once. `macvlan` needs only a host NIC; `bridge`
 wants a bridge you bring yourself ([bridge mode](docs/bridge-mode.md)):
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.2.3 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.3.0 \
   --ipam-driver null -o mode=macvlan -o parent=eth0 lan-dhcp
 
 docker run --rm -ti --network lan-dhcp alpine ip address show
@@ -124,8 +219,8 @@ goes into Docker's own address management, which makes `--ip` and
 Compose's `ipv4_address` work.
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.2.3 \
-  --ipam-driver ghcr.io/claymore666/docker-net-dhcp:v2.2.3 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.3.0 \
+  --ipam-driver ghcr.io/claymore666/docker-net-dhcp:v2.3.0 \
   -o mode=macvlan -o parent=eth0 lan-dhcp
 ```
 
@@ -135,9 +230,9 @@ Add `-o ipv6_mode=dhcp` for a DHCPv6 lease beside the v4 one, or
 `-o ipv6_mode=slaac` to take the address from the router's
 advertisement; `auto` reads the advertisement and does what it says,
 DHCPv6 where it asks for DHCPv6 and the prefix where it does not. `-o
-ipv6=true` is the short spelling of `dhcp`. All of them need the `null`
-line, because the IPAM shape serves IPv4 only and refuses the
-combination ([#960]). The modes are set out in
+ipv6=true` is the short spelling of `dhcp`. They work on both lines.
+On the IPAM line leave out Docker's `--ipv6`: it is refused there,
+because the plugin allocates no IPv6 pool ([#960]). The modes are set out in
 [the driver reference](docs/reference.md#driver-options-network-level),
 and the two shapes in
 [the same page](docs/reference.md#address-allocation).
@@ -173,6 +268,8 @@ version per release; the same pages live in [`docs/`](docs).
 - **[Verifying releases](docs/verifying-releases.md)** covers signatures,
   SLSA provenance, SBOMs, and rebuilding the binaries yourself.
 - **[How it works](docs/internals.md)** is the mechanism, for contributors.
+- **[How this plugin is tested](docs/testing.md)** is what is tested, where,
+  and what each result proves.
 - **[Roadmap](docs/roadmap.md)** is where this is going, and what it will
   not do.
 - **[Contributing](docs/contributing.md)** is what an acceptable pull
@@ -184,46 +281,6 @@ and are mirrored to Docker Hub under two names,
 `claymore666/net-dhcp:vX.Y.Z` and
 `claymore666/docker-net-dhcp:vX.Y.Z`. The two Hub names are the same
 image at the same digest; install from either.
-
-## Why this one
-
-- **The address comes from the LAN's own server**, so the router's lease
-  table, its MAC reservations and, with `-o register_dns=true`, its DNS
-  all see the container as one more host on the network. The alternative
-  is a hand-assigned address in every Compose file.
-- **The lease is held for as long as the container runs.** Renewal, rebind, NAK and expiry
-  run in the plugin, one client per endpoint, and the lifecycle is visible
-  on [the health endpoint](docs/reference.md#pluginhealth). There is no
-  external DHCP client to install, supervise or reap.
-- **IPv6 is one line, and the network says where the address comes
-  from.** `-o ipv6_mode=` takes `off` (the default), `dhcp`, `slaac` or
-  `auto`. A `dhcp` network leases the address over DHCPv6 with its own
-  timers, its own counters and a DUID that survives a restart; a `slaac`
-  network forms it from the router's advertisement instead and holds it
-  for the advertised lifetimes; `auto` reads the advertisement and does
-  what it says. In all three the default route and the MTU come from
-  the advertisement and not from the container's own kernel, and on a
-  `propagate_dns` network its resolvers reach the container too, behind
-  any a DHCPv6 server supplies. On
-  `--ipam-driver null` networks; the IPAM shape serves IPv4 only
-  ([reference](docs/reference.md#driver-options-network-level)).
-- **A restart keeps the address.** In `bridge` and `macvlan` the MAC is
-  carried across `docker restart`, so a server-side reservation still
-  matches and the old address is re-requested; a plugin restart or upgrade
-  re-adopts running containers, so their leases do not lapse
-  ([how](docs/reference.md#restart-stability-mac-and-ip)).
-- **The lease can go back when the container stops.** `-o
-  release_lease=on_stop` hands the address to the server at `docker
-  stop`; `-o release_lease=on_remove` holds it for the restart window
-  first, so a container that comes straight back keeps it. Per network
-  and off by default
-  ([reference](docs/reference.md#driver-options-network-level)).
-- **No host plumbing per container.** `macvlan` and `ipvlan` attach to a
-  NIC that is already there: no bridge to build, no route to add, nothing
-  on the host to undo afterwards.
-
-What is planned, and what this project has decided not to do, is on the
-[roadmap](docs/roadmap.md).
 
 ## Origin and licence
 

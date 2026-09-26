@@ -4,10 +4,13 @@
 package harness
 
 import (
+	"bytes"
 	"encoding/binary"
 	"net"
 	"strings"
 	"testing"
+
+	"github.com/claymore666/dhcp-golib/wire"
 )
 
 // Frames are built field by field so a decoder reading a wrong offset disagrees about a value the test names; an
@@ -442,5 +445,43 @@ func TestReconfigureAcceptFindings_AStrangerThatNeverAnnouncesLeavesTheVerdictSt
 	if !strings.Contains(findings[0], "carried no Reconfigure Accept option") {
 		t.Errorf("the verdict was withheld because another client sent a RENEW, which announces "+
 			"nothing and leaves this endpoint's SOLICIT unambiguous: %s", findings[0])
+	}
+}
+
+func TestParseDHCPv6_KeepsTheClientFQDNValue(t *testing.T) {
+	value := ClientFQDNOption(0x01, "web1")
+	if want := []byte{0x01, 4, 'w', 'e', 'b', '1'}; !bytes.Equal(value, want) {
+		t.Fatalf("ClientFQDNOption(0x01, web1) = % x, want % x (RFC 4704 section 4.1)", value, want)
+	}
+	if got := ClientFQDNOption(0x00, "a.bc"); !bytes.Equal(got, []byte{0, 1, 'a', 2, 'b', 'c'}) {
+		t.Fatalf("ClientFQDNOption(0, a.bc) = % x", got)
+	}
+
+	frame := buildDHCPv6Frame(t, 546, 547, DHCPv6Solicit, 0x0a0b0c, clientIDOption(),
+		dhcpv6Option(DHCPv6OptClientFQDN, value), dhcpv6Option(DHCPv6OptClientFQDN, ClientFQDNOption(0x04, "x")))
+	m, ok := ParseDHCPv6(frame)
+	if !ok {
+		t.Fatal("the frame did not parse")
+	}
+	if !bytes.Equal(m.ClientFQDN, value) || !m.HasOption(DHCPv6OptClientFQDN) {
+		t.Errorf("ClientFQDN = % x, want the first option 39's value % x", m.ClientFQDN, value)
+	}
+
+	m, ok = ParseDHCPv6(buildDHCPv6Frame(t, 546, 547, DHCPv6Solicit, 0x0a0b0c, clientIDOption()))
+	if !ok || m.ClientFQDN != nil {
+		t.Errorf("a Solicit with no option 39 has ClientFQDN % x (ok %v), want nil", m.ClientFQDN, ok)
+	}
+}
+
+// The expected value must equal the client's encoding, so a mismatch is caught here, not as a wire fault (#1029).
+func TestClientFQDNOption_MatchesTheLibrarysEncoding(t *testing.T) {
+	for _, name := range []string{"web1", "dh-itest-fqdn6-ctr", "a.b"} {
+		want, err := wire.EncodeClientFQDN(wire.ClientFQDNFlagS, name)
+		if err != nil {
+			t.Fatalf("EncodeClientFQDN(%q): %v", name, err)
+		}
+		if got := ClientFQDNOption(0x01, name); !bytes.Equal(got, want) {
+			t.Errorf("ClientFQDNOption(0x01, %q) = %x, the library encodes %x", name, got, want)
+		}
 	}
 }

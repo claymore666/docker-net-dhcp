@@ -10,6 +10,7 @@ package integration
 
 import (
 	"context"
+	"net"
 	"os"
 	"os/exec"
 	"strings"
@@ -644,8 +645,8 @@ func TestIPAM_BothShapesOnOneDaemon(t *testing.T) {
 	}
 }
 
-// libnetwork generates a MAC for every endpoint of a RequiresMACAddress driver, and ipvlan children share the
-// parent's MAC and refuse a supplied one, so the refusal moves to `docker network create` (#110).
+// libnetwork sets the MAC it generates for a RequiresMACAddress driver on the container link at join, which an
+// ipvlan slave refuses, so the refusal moves to `docker network create` (#110, #949).
 
 // TestIPAM_IpvlanIsRefusedAtCreate checks that an IPAM-mode ipvlan network is refused at create and a null-shape one still works.
 func TestIPAM_IpvlanIsRefusedAtCreate(t *testing.T) {
@@ -721,16 +722,28 @@ func TestIPAM_TwoNetworksCannotShareOnePool(t *testing.T) {
 
 // TestIPAM_ReplayAfterDaemonRestart checks that a daemon restart preserves an IPAM endpoint's address by a named path and that the replayed pool still allocates.
 func TestIPAM_ReplayAfterDaemonRestart(t *testing.T) {
+	testIPAMReplayAfterDaemonRestart(t, "dh-itest-ipam-replay", nil)
+}
+
+// Engines 28 and 29 replay an endpoint whose AddressIPv6 is set against a network with no v6 pool and log one warning
+// for it (moby 28.5.2 libnetwork/controller.go:817), so the count is logged for the docs (#960).
+
+// TestIPAM_ReplayAfterDaemonRestart_IPv6 checks that both families survive a daemon restart on an IPAM network with ipv6=true.
+func TestIPAM_ReplayAfterDaemonRestart_IPv6(t *testing.T) {
+	testIPAMReplayAfterDaemonRestart(t, "dh-itest-ipam-replay6", map[string]string{"ipv6": "true"})
+}
+
+func testIPAMReplayAfterDaemonRestart(t *testing.T, netName string, opts map[string]string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
 	defer cancel()
 	ipamDumpOnFailure(t)
 
-	const netName = "dh-itest-ipam-replay"
-	const ctrName = "dh-itest-ipam-replay-ctr"
-	const afterName = "dh-itest-ipam-replay-after"
+	ctrName := netName + "-ctr"
+	afterName := netName + "-after"
+	dualStack := opts["ipv6"] == "true"
 
 	cli := ipamDockerClient(t)
-	harness.CreateNetworkIPAM(t, ctx, netName, "macvlan", harness.SubnetCIDR, nil, nil)
+	harness.CreateNetworkIPAM(t, ctx, netName, "macvlan", harness.SubnetCIDR, nil, opts)
 
 	// Without RestartPolicy=always the container comes back stopped and publishes no address (#110).
 	hostCfg := harness.HostConfig()
@@ -771,6 +784,15 @@ func TestIPAM_ReplayAfterDaemonRestart(t *testing.T) {
 
 	waitLeaseObtained(t, bindW, 30*time.Second)
 	bindW.End()
+
+	var before6 string
+	if dualStack {
+		live6 := linkGlobalV6(t, ctx, id, harness.IPAcquisitionBudget)
+		before6 = inspectV6(t, ctx, cli, id, netName)
+		if before6 == "" || !net.ParseIP(before6).Equal(net.ParseIP(live6)) {
+			t.Fatalf("before the restart docker inspect shows IPv6 %q and the link carries %q", before6, live6)
+		}
+	}
 
 	healthBefore := harness.WaitPluginHealth(t, ctx, cli, 30*time.Second)
 	restartMark := time.Now()
@@ -840,6 +862,20 @@ func TestIPAM_ReplayAfterDaemonRestart(t *testing.T) {
 	out := harness.ExecOutput(t, ctx, id, "ip", "-4", "addr", "show", "eth0")
 	if !strings.Contains(out, after) {
 		t.Errorf("eth0 inside the container does not carry %s after the restart\n%s", after, out)
+	}
+
+	if dualStack {
+		live6 := linkGlobalV6(t, ctx, id, harness.IPAcquisitionBudget)
+		after6 := inspectV6(t, ctx, cli2, id, netName)
+		if !net.ParseIP(after6).Equal(net.ParseIP(before6)) || !net.ParseIP(live6).Equal(net.ParseIP(before6)) {
+			t.Errorf("the container's IPv6 moved across the daemon restart: %s before, docker inspect "+
+				"%q and the link %q after", before6, after6, live6)
+		}
+		if n, path, ok := harness.DaemonLogCount("Failed to reserve current address for endpoint", ctrName); ok {
+			t.Logf("replay warning: the daemon log %s carries %d replay warning(s) for %s", path, n, ctrName)
+		} else {
+			t.Logf("replay warning: the daemon's stderr (%q) is not a file this test can read", path)
+		}
 	}
 
 	// A new endpoint allocates through the PoolID libnetwork replayed at startup.

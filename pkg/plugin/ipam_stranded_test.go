@@ -154,7 +154,7 @@ func f0Created(t *testing.T, p *Plugin, mac net.HardwareAddr, addr string) strin
 
 func f0Rebind(t *testing.T, p *Plugin, mac net.HardwareAddr, want string) string {
 	t.Helper()
-	id, addr, _ := p.ipamRebindCandidate(ipamTestNetwork, mac)
+	id, addr, _, _ := p.ipamRebindCandidate(ipamTestNetwork, mac)
 	if id == "" {
 		t.Fatal("nothing was re-bound; the fixture has no single tombstone")
 	}
@@ -227,7 +227,7 @@ func TestIPAMCreateEndpoint_EveryExitAfterTheTakeHandsTheAddressBack(t *testing.
 			name: "the link build fails",
 			drive: func(t *testing.T, p *Plugin, b *ipamBinding, recordID string) {
 				f0Reservation(p, b, restarted, recordID, f0Addr, nil)
-				_, err := p.createIPAMEndpoint(context.Background(), f0CreateRequest(restarted, f0Addr), f0Options(), b)
+				_, err := p.createIPAMEndpoint(context.Background(), time.Now(), f0CreateRequest(restarted, f0Addr), f0Options(), b)
 				if err == nil {
 					t.Fatal("CreateEndpoint succeeded; this host has the bridge the fixture needs absent")
 				}
@@ -241,7 +241,7 @@ func TestIPAMCreateEndpoint_EveryExitAfterTheTakeHandsTheAddressBack(t *testing.
 				r, _ := p.ipamReserves.begin(key, time.Now())
 				p.ipamReserves.finish(key, r, ipamReservation{record: recordID}, nil)
 				r.err = errors.New("the exchange failed")
-				if _, err := p.createIPAMEndpoint(context.Background(), f0CreateRequest(restarted, f0Addr), f0Options(), b); err == nil {
+				if _, err := p.createIPAMEndpoint(context.Background(), time.Now(), f0CreateRequest(restarted, f0Addr), f0Options(), b); err == nil {
 					t.Fatal("CreateEndpoint accepted a failed reservation")
 				}
 			},
@@ -250,7 +250,7 @@ func TestIPAMCreateEndpoint_EveryExitAfterTheTakeHandsTheAddressBack(t *testing.
 			name: "Docker published a different address",
 			drive: func(t *testing.T, p *Plugin, b *ipamBinding, recordID string) {
 				f0Reservation(p, b, restarted, recordID, f0Addr, nil)
-				if _, err := p.createIPAMEndpoint(context.Background(), f0CreateRequest(restarted, "192.168.99.44/24"), f0Options(), b); err == nil {
+				if _, err := p.createIPAMEndpoint(context.Background(), time.Now(), f0CreateRequest(restarted, "192.168.99.44/24"), f0Options(), b); err == nil {
 					t.Fatal("CreateEndpoint accepted an address the reservation does not hold")
 				}
 			},
@@ -284,7 +284,7 @@ func TestIPAMCreateEndpoint_EveryExitAfterTheTakeHandsTheAddressBack(t *testing.
 				t.Errorf("the hardware address is still answered as leasing, so a container pinned " +
 					"with --mac-address cannot be started again at all")
 			}
-			againID, againAddr, _ := p.ipamRebindCandidate(ipamTestNetwork, next)
+			againID, againAddr, _, _ := p.ipamRebindCandidate(ipamTestNetwork, next)
 			if againID != id || againAddr != "192.168.99.10" {
 				t.Errorf("the retry re-bound (%q, %q), want (%q, 192.168.99.10). Without the "+
 					"candidate the container takes a second lease and nothing counts it.",
@@ -305,7 +305,7 @@ func TestIPAMCreateEndpoint_AnAddresslessRecordIsClosedNotRetained(t *testing.T)
 
 	id := p.recordReserved(ipamTestNetwork, restarted, dhcp.ClientIdentity(restarted))
 	f0Reservation(p, b, restarted, id, f0Addr, nil)
-	if _, err := p.createIPAMEndpoint(context.Background(), f0CreateRequest(restarted, "192.168.99.44/24"), f0Options(), b); err == nil {
+	if _, err := p.createIPAMEndpoint(context.Background(), time.Now(), f0CreateRequest(restarted, "192.168.99.44/24"), f0Options(), b); err == nil {
 		t.Fatal("CreateEndpoint accepted an address the reservation does not hold")
 	}
 	if got := f0Rec(t, p, id).Phase; got != lease.PhaseClosed {
@@ -364,7 +364,7 @@ func TestIPAMReserve_ThePreExchangeExitsGiveTheCandidateBack(t *testing.T) {
 				t.Fatalf("the re-bound record is %v, want retained. The attempt never reached the "+
 					"server, so it must not spend the container's restart window.", got)
 			}
-			againID, againAddr, _ := p.ipamRebindCandidate(ipamTestNetwork, next)
+			againID, againAddr, _, _ := p.ipamRebindCandidate(ipamTestNetwork, next)
 			if againID != id || againAddr != "192.168.99.10" {
 				t.Errorf("the retry re-bound (%q, %q), want (%q, 192.168.99.10)", againID, againAddr, id)
 			}
@@ -382,7 +382,7 @@ func TestIPAMReserve_AnAbandonedWindowStillEndsOnTheWire(t *testing.T) {
 	id := f0Tombstone(t, p, first, f0Addr)
 	f0Rebind(t, p, restarted, "192.168.99.10")
 	f0Reservation(p, b, restarted, id, f0Addr, nil)
-	if _, err := p.createIPAMEndpoint(context.Background(), f0CreateRequest(restarted, f0Addr), f0Options(), b); err == nil {
+	if _, err := p.createIPAMEndpoint(context.Background(), time.Now(), f0CreateRequest(restarted, f0Addr), f0Options(), b); err == nil {
 		t.Fatal("CreateEndpoint succeeded; this host has the bridge the fixture needs absent")
 	}
 
@@ -443,7 +443,7 @@ func TestIPAMReserve_ARefusedACKIsNotHandedToTheNextContainer(t *testing.T) {
 			if n := f0Tombstones(t, p, now); n != 0 {
 				t.Errorf("tombstones = %d, want 0", n)
 			}
-			gotID, gotAddr, gotIdentity := p.ipamRebindCandidate(ipamTestNetwork, next)
+			gotID, gotAddr, gotIdentity, _ := p.ipamRebindCandidate(ipamTestNetwork, next)
 			if gotID != "" {
 				t.Errorf("the next container was handed record %q, carrying %q", gotID, gotAddr)
 			}
@@ -480,7 +480,7 @@ func TestIPAMReleaseAddress_GivesUpACreatedRecordWithNoEndpoint(t *testing.T) {
 	if !byAddr || !byMAC {
 		t.Errorf("after the release the address is still held (by address: %v, by hardware address: %v)", !byAddr, !byMAC)
 	}
-	againID, againAddr, _ := p.ipamRebindCandidate(ipamTestNetwork, next)
+	againID, againAddr, _, _ := p.ipamRebindCandidate(ipamTestNetwork, next)
 	if againID != id || againAddr != "192.168.99.10" {
 		t.Errorf("the retry re-bound (%q, %q), want (%q, 192.168.99.10)", againID, againAddr, id)
 	}
@@ -598,7 +598,7 @@ func TestIPAMReleaseAddress_LeavesARunningEndpointAlone(t *testing.T) {
 			if n := f0Tombstones(t, p, now); n != 0 {
 				t.Errorf("tombstones = %d, want 0", n)
 			}
-			if x, _, _ := p.ipamRebindCandidate(ipamTestNetwork, other); x != "" {
+			if x, _, _, _ := p.ipamRebindCandidate(ipamTestNetwork, other); x != "" {
 				t.Errorf("a second container re-bound the running container's record %q", x)
 			}
 			if n := p.sweepDeferredReleases(time.Now().Add(tombstoneTTL + releaseSettle)); n != 0 || sender.callCount() != 0 {
@@ -639,7 +639,7 @@ func TestIPAMReleaseAddress_OnlyTheWholeKeyBlocksTheGiveUp(t *testing.T) {
 			if n := f0Tombstones(t, p, now); n != 1 {
 				t.Errorf("tombstones = %d, want 1", n)
 			}
-			if got, _, _ := p.ipamRebindCandidate(ipamTestNetwork, f0MAC(0x02)); got == "" {
+			if got, _, _, _ := p.ipamRebindCandidate(ipamTestNetwork, f0MAC(0x02)); got == "" {
 				t.Error("the retry was offered nothing, so the address is stranded")
 			}
 			if n := p.sweepDeferredReleases(now.Add(tombstoneTTL + releaseSettle)); n != 0 || sender.callCount() != 0 {
@@ -680,7 +680,7 @@ func TestIPAMReleaseAddress_AFailedTeardownDoesNotBlockTheGiveUp(t *testing.T) {
 	if n := f0Tombstones(t, p, now); n != 1 {
 		t.Errorf("tombstones = %d, want 1", n)
 	}
-	if got, _, _ := p.ipamRebindCandidate(ipamTestNetwork, next); got == "" {
+	if got, _, _, _ := p.ipamRebindCandidate(ipamTestNetwork, next); got == "" {
 		t.Error("the retry was offered nothing, so the address is stranded until the next plugin start")
 	}
 	if n := p.sweepDeferredReleases(now.Add(tombstoneTTL + releaseSettle)); n != 0 || sender.callCount() != 0 {
@@ -763,7 +763,7 @@ func TestIPAMStrandedRecords_TheRuleKeysOnTheWriterAndTheEngineList(t *testing.T
 		t.Errorf("ipam_stranded_records = %d, want 1", n)
 	}
 
-	againID, againAddr, _ := p.ipamRebindCandidate(ipamTestNetwork, f0MAC(0x05))
+	againID, againAddr, _, _ := p.ipamRebindCandidate(ipamTestNetwork, f0MAC(0x05))
 	if againID != strandedID || againAddr != "192.168.99.11" {
 		t.Errorf("the retry re-bound (%q, %q), want (%q, 192.168.99.11)", againID, againAddr, strandedID)
 	}

@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"testing"
 	"time"
 
 	"github.com/vishvananda/netlink"
@@ -461,4 +462,218 @@ func inV6Range(ip net.IP, start, end string) bool {
 	s := net.ParseIP(start).To16()
 	e := net.ParseIP(end).To16()
 	return bytesGE(v6, s) && bytesLE(v6, e)
+}
+
+// The vlan fixture (#902) is a veth whose peer, in its own netns, carries an 802.1Q sub-interface: a tagged dnsmasq
+// serves the sub-interface and an untagged one the bare peer, each with its own subnet and lease file, so the file a
+// MAC lands in names the segment its frames used. It starts on demand, as the challenger does, so no other test sees
+// a third server. VlanSubIf is 15 bytes, the kernel's longest interface name.
+const (
+	VlanParent = "dh-itest-vl"
+	VlanID     = "100"
+	VlanSubIf  = VlanParent + "." + VlanID
+	VlanNetns  = "dh-itest-vlan"
+
+	vlanPeer       = "dh-itest-vlp"
+	vlanPeerTagged = "dh-itest-vlt"
+
+	vlanTaggedAddr        = "192.168.111.1/24"
+	VlanTaggedPoolStart   = "192.168.111.10"
+	VlanTaggedPoolEnd     = "192.168.111.99"
+	VlanTaggedCIDR        = "192.168.111.0/24"
+	vlanUntaggedAddr      = "192.168.112.1/24"
+	vlanUntaggedPoolStart = "192.168.112.10"
+	vlanUntaggedPoolEnd   = "192.168.112.99"
+)
+
+type vlanServer struct {
+	iface     string
+	cmd       *exec.Cmd
+	exited    chan struct{}
+	leaseFile string
+	logFile   string
+}
+
+// VlanFixture holds the running vlan fixture; StartVlan returns it.
+type VlanFixture struct {
+	tmpDir   string
+	tagged   vlanServer
+	untagged vlanServer
+}
+
+// StartVlan builds the vlan fixture and registers its teardown, failing the test if it cannot start.
+func StartVlan(t *testing.T) *VlanFixture {
+	t.Helper()
+	v := &VlanFixture{}
+	if err := v.start(); err != nil {
+		v.stop()
+		t.Fatalf("start vlan fixture: %v", err)
+	}
+	t.Cleanup(func() {
+		if t.Failed() {
+			v.DumpLogs(func(s string) { t.Log(s) })
+		}
+		v.stop()
+	})
+	t.Logf("vlan fixture up: tagged %s-%s on %s id %s, untagged %s-%s on %s",
+		VlanTaggedPoolStart, VlanTaggedPoolEnd, vlanPeer, VlanID, vlanUntaggedPoolStart, vlanUntaggedPoolEnd, vlanPeer)
+	return v
+}
+
+func (v *VlanFixture) start() error {
+	cleanupVlan()
+	la := netlink.NewLinkAttrs()
+	la.Name = VlanParent
+	if err := netlink.LinkAdd(&netlink.Veth{LinkAttrs: la, PeerName: vlanPeer}); err != nil {
+		return fmt.Errorf("LinkAdd vlan veth: %w", err)
+	}
+	host, err := netlink.LinkByName(VlanParent)
+	if err != nil {
+		return fmt.Errorf("LinkByName %s: %w", VlanParent, err)
+	}
+	if err := netlink.LinkSetUp(host); err != nil {
+		return fmt.Errorf("LinkSetUp %s: %w", VlanParent, err)
+	}
+	in := []string{"netns", "exec", VlanNetns, "ip"}
+	for _, args := range [][]string{
+		{"netns", "add", VlanNetns},
+		{"link", "set", vlanPeer, "netns", VlanNetns},
+		append(in, "link", "set", "lo", "up"),
+		append(in, "link", "set", vlanPeer, "up"),
+		append(in, "addr", "add", vlanUntaggedAddr, "dev", vlanPeer),
+		append(in, "link", "add", "link", vlanPeer, "name", vlanPeerTagged, "type", "vlan", "id", VlanID),
+		append(in, "link", "set", vlanPeerTagged, "up"),
+		append(in, "addr", "add", vlanTaggedAddr, "dev", vlanPeerTagged),
+	} {
+		if out, err := withCLocale(exec.Command("ip", args...)).CombinedOutput(); err != nil {
+			return fmt.Errorf("ip %s: %w (%s)", strings.Join(args, " "), err, out)
+		}
+	}
+	tmp, err := os.MkdirTemp("", "dh-itest-vlan-")
+	if err != nil {
+		return fmt.Errorf("MkdirTemp vlan: %w", err)
+	}
+	v.tmpDir = tmp
+	v.tagged = vlanServer{iface: vlanPeerTagged}
+	v.untagged = vlanServer{iface: vlanPeer}
+	if err := v.tagged.start(tmp, VlanTaggedPoolStart, VlanTaggedPoolEnd); err != nil {
+		return err
+	}
+	return v.untagged.start(tmp, vlanUntaggedPoolStart, vlanUntaggedPoolEnd)
+}
+
+// start runs one dnsmasq in the fixture's netns and waits for its bound line, since its socket is invisible to a
+// host port poll; two servers share UDP/67 there because --bind-interfaces binds each to its own interface (#902).
+func (s *vlanServer) start(dir, poolStart, poolEnd string) error {
+	s.leaseFile = filepath.Join(dir, s.iface+".leases")
+	s.logFile = filepath.Join(dir, s.iface+".log")
+	logF, err := os.Create(s.logFile)
+	if err != nil {
+		return fmt.Errorf("create %s log: %w", s.iface, err)
+	}
+	defer logF.Close()
+	s.cmd = withCLocale(exec.Command("ip", "netns", "exec", VlanNetns,
+		"/usr/sbin/dnsmasq",
+		"--no-daemon",
+		"--conf-file=/dev/null",
+		"--port=0",
+		"--interface="+s.iface,
+		"--bind-interfaces",
+		"--except-interface=lo",
+		"--dhcp-range="+poolStart+","+poolEnd+","+LeaseTime,
+		"--dhcp-leasefile="+s.leaseFile,
+		"--dhcp-no-override",
+		"--dhcp-broadcast",
+		"--log-dhcp",
+		"--log-facility=-",
+	))
+	s.cmd.Stdout = logF
+	s.cmd.Stderr = logF
+	s.cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := s.cmd.Start(); err != nil {
+		return fmt.Errorf("start %s dnsmasq: %w", s.iface, err)
+	}
+	s.exited = make(chan struct{})
+	go func() { _ = s.cmd.Wait(); close(s.exited) }()
+	want := "sockets bound exclusively to interface " + s.iface
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		data, _ := os.ReadFile(s.logFile)
+		if strings.Contains(string(data), want) {
+			return nil
+		}
+		select {
+		case <-s.exited:
+			return fmt.Errorf("%s dnsmasq exited during startup:\n%s", s.iface, data)
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+	data, _ := os.ReadFile(s.logFile)
+	return fmt.Errorf("%s dnsmasq did not announce %q within 5s:\n%s", s.iface, want, data)
+}
+
+// stop ends the server, SIGTERM first; it is idempotent.
+func (s *vlanServer) stop() {
+	if s.cmd == nil || s.cmd.Process == nil || s.exited == nil {
+		return
+	}
+	_ = s.cmd.Process.Signal(syscall.SIGTERM)
+	select {
+	case <-s.exited:
+	case <-time.After(2 * time.Second):
+		_ = s.cmd.Process.Kill()
+		<-s.exited
+	}
+	s.cmd = nil
+}
+
+// stop tears down whatever start set up, best-effort and idempotent.
+func (v *VlanFixture) stop() {
+	v.tagged.stop()
+	v.untagged.stop()
+	if v.tmpDir != "" {
+		_ = os.RemoveAll(v.tmpDir)
+		v.tmpDir = ""
+	}
+	cleanupVlan()
+}
+
+// cleanupVlan deletes the host end, which takes every sub-interface on it, and then the netns (#902).
+func cleanupVlan() {
+	if link, err := netlink.LinkByName(VlanParent); err == nil {
+		_ = netlink.LinkDel(link)
+	}
+	_ = withCLocale(exec.Command("ip", "netns", "del", VlanNetns)).Run()
+}
+
+// TaggedLeases and UntaggedLeases return each server's lease file, in LeaseFile's form.
+func (v *VlanFixture) TaggedLeases() string   { return readOrEmpty(v.tagged.leaseFile) }
+func (v *VlanFixture) UntaggedLeases() string { return readOrEmpty(v.untagged.leaseFile) }
+
+// TaggedLog returns the tagged server's log so far.
+func (v *VlanFixture) TaggedLog() string { return readOrEmpty(v.tagged.logFile) }
+
+func readOrEmpty(path string) string {
+	if path == "" {
+		return ""
+	}
+	data, _ := os.ReadFile(path)
+	return string(data)
+}
+
+// DumpLogs writes both servers' logs and lease files through write, for a failing test.
+func (v *VlanFixture) DumpLogs(write func(string)) {
+	for _, s := range []*vlanServer{&v.tagged, &v.untagged} {
+		write(fmt.Sprintf("--- vlan fixture %s dnsmasq log ---\n%s--- %s leases ---\n%s",
+			s.iface, readOrEmpty(s.logFile), s.iface, readOrEmpty(s.leaseFile)))
+	}
+}
+
+// IsInVlanTaggedPool reports whether ip came from the tagged server's pool.
+func IsInVlanTaggedPool(ip net.IP) bool {
+	v4 := ip.To4()
+	if v4 == nil {
+		return false
+	}
+	return bytesGE(v4, net.ParseIP(VlanTaggedPoolStart).To4()) && bytesLE(v4, net.ParseIP(VlanTaggedPoolEnd).To4())
 }

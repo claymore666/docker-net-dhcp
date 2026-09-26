@@ -7,61 +7,33 @@ This page is direction, not a delivery schedule. The project is
 solo-maintained, so nothing here carries a date. The milestone links
 below decide what is in a release; this page follows them.
 
-## Open milestones
+## Milestones
 
-| Release | Theme | Milestone |
-| --- | --- | --- |
-| v2.2.3 | The default route at the first lease, a renumber inside one subnet, on-link routes after Join, a persistent client on a late link, and the tests and gates listed below | [milestone 37](https://github.com/claymore666/docker-net-dhcp/milestone/37) |
-| v2.3.0 | The host plumbing an operator does by hand today, and the gaps the IPAM shape still refuses | [milestone 31](https://github.com/claymore666/docker-net-dhcp/milestone/31) |
-| v2.4.0 | The rest of IPv6, and the DHCP options the client does not read yet | [milestone 34](https://github.com/claymore666/docker-net-dhcp/milestone/34) |
-| v2.5.0 | CI consolidation and code debt; nothing a user sees | [milestone 35](https://github.com/claymore666/docker-net-dhcp/milestone/35) |
+| Release | State | Theme | Milestone |
+| --- | --- | --- | --- |
+| v2.3.0 | released | The host plumbing an operator does by hand today, and the gaps the IPAM shape still refuses | [milestone 31](https://github.com/claymore666/docker-net-dhcp/milestone/31) |
+| v2.4.0 | planned | The rest of IPv6, and the DHCP options the client does not read yet | [milestone 34](https://github.com/claymore666/docker-net-dhcp/milestone/34) |
+| v2.5.0 | planned | CI consolidation and code debt; nothing a user sees | [milestone 35](https://github.com/claymore666/docker-net-dhcp/milestone/35) |
 
-### v2.2.3
-
-- [#1084], the first lease adds the default route the engine is about to
-  program, and the container fails to start
-- [#1081], a renumber inside one subnet leaves the container with no IPv4
-  address on a host with `promote_secondaries=0`
-- [#1065], IPv6 is prepared on a link name the engine has already changed
-- [#1044], an endpoint entry can read `lease_state=bound` with no
-  `last_event`
-- [#1016], an integration test for the v2.2.0 behaviours that only a unit
-  test drives
-- [#1015], an engine-matrix step for every documented option
-- [#866], tests under `test/integration/harness/` run nowhere and nothing
-  says so
-- [#883], a gate counts a mention as an invocation, so an unwired gate
-  reports as wired
-- [#888], a gate resolves symbols at git HEAD, so an uncommitted rewrite
-  is never judged
-- [#1042], the coverage-presence wait is shorter than recent coverage runs
-- [#1043], the Docker Hub alias signature is verified before the registry
-  serves the copied referrers
-- [#1056], the comment volume in the Go tree, and a gate on added comments
-- [#1088], an IPv6 on-link prefix route is installed only from the Join
-  answer, never from a later router advertisement
-- [#1089], the persistent DHCPv4 client can open before the engine sets
-  the link up and then never binds, although the server acknowledges
-  every request
-
-### v2.3.0
+### v2.3.0, released
 
 - [#902], a `vlan` option that puts the network on a tagged VLAN off the
   parent
 - [#903], a bridge the plugin creates and owns
 - [#904], link-local fallback where no server answers, off by default
 - [#905], macvlan and ipvlan sub-mode options
-- [#949], ipvlan in IPAM mode, keyed on the MAC Docker generates for the
-  endpoint
 - [#960], IPv6 in IPAM mode: the v6 exchange, the v6 record, and a DUID
   that survives a restart
 - [#1029], the DHCPv6 Client FQDN option, so `register_dns` registers the
-  AAAA record beside the A
+  AAAA record beside the A; without it a DHCPv6 lease carries no name
 - [#1036], a `require_mac` option that refuses an endpoint with no
   Docker-supplied MAC
 - [#1037], an `mtu` option that sets the endpoint link MTU explicitly
-- [#1045], the code-scanning result is not a required check on either
-  protected branch
+- [#1045], the code-scanning result is a required check on both protected
+  branches
+- [#1096], a page that says how the plugin is tested, linked from the
+  README
+- [#1108], the first screen of the README says what, how and why
 
 ### v2.4.0
 
@@ -125,12 +97,13 @@ flowchart LR
     v25["v2.5<br/>CI and code debt"]
     v20 --> v21 --> v22 --> v23 --> v24 --> v25
     classDef planned stroke-dasharray: 6 4
-    class v23,v24,v25 planned
+    class v24,v25 planned
 ```
 
-v2.0, v2.1 and v2.2 are released, and v2.3, v2.4 and v2.5 are planned in
-that order; the planned ones are the dashed nodes. There are no dates, and
-the patch releases on each line are on the milestone links above.
+v2.0, v2.1, v2.2 and v2.3 are released, and v2.4 and v2.5 are planned in
+that order; the planned ones are the dashed nodes. There are no dates. Every
+release, patches included, is in
+[the release notes](https://github.com/claymore666/docker-net-dhcp/blob/main/RELEASE_NOTES.md).
 
 ## The bar every feature is measured against
 
@@ -216,14 +189,15 @@ page exists because `documentation_roadmap` is one of them ([#452]).
 
 ## Blocked upstream
 
-One feature is designed here and cannot ship until Docker's own engine
-carries a change. It stays open on purpose:
+Two features cannot ship until Docker's own engine carries a change.
+They stay open on purpose:
 
 | Here | Needs | Upstream |
 | --- | --- | --- |
 | [#218], the deterministic MAC | network drivers to receive the endpoint name at `CreateEndpoint`, as IPAM drivers already do | [moby/moby#52870] (issue), [moby/moby#52871] (PR, open) |
+| [#949], ipvlan with this plugin as the IPAM driver | Docker to leave the container's interface MAC alone at start when the link cannot change it. Today it sets the MAC it generated for the IPAM driver, and every ipvlan container fails to start | not filed yet |
 
-Both halves were filed in June 2026. The endpoint-name change
+For [#218], both halves were filed in June 2026. The endpoint-name change
 ([moby/moby#52871]) is still awaiting review, and [#218] will not be
 closed as "won't fix" while that is the only thing in the way. This
 fork's own half is written and waiting.
@@ -242,11 +216,11 @@ read it before writing the PR.
 | Decision | Reason | Anchor |
 | --- | --- | --- |
 | It will not become a DHCP server | your existing server is the authority; a second one would recreate the problem the plugin solves | [#111] |
-| It will not change interfaces the host already has | the plugin reads host configuration and does not own it | [#903] |
+| It will not change interfaces the host already has | the plugin reads host configuration and does not own it; the links it creates for its own networks are listed below | [#902], [#903] |
 | It will not gain a static-IP workflow | an address that must be fixed is fixed where addresses are decided, in a reservation on the DHCP server | n/a |
 | It will not ask for more privileges to buy a feature | a capability added to `config.json` forces every operator to re-approve the plugin on upgrade | [#725] |
 | It will not detect a conflicting container on the same host | RFC 5227 runs on the container's own link, and macvlan parent and child isolation hides a sibling that has taken our address | [#528] |
-| It will not support ipvlan L3 or L3S | DHCP needs L2 broadcast | n/a |
+| It refuses ipvlan L3 and L3S, see [reference](reference.md#macvlan-and-ipvlan-sub-modes) | an L3 child sends no broadcast, so DHCP cannot start | n/a |
 | It will not run its arm64 verification under qemu-user or binfmt | measured: the emulated plugin could not acquire a lease at all, and arm64 verification runs on real hardware | [#531] |
 | It will not backport security fixes | only the latest release is supported, and upgrading is one `docker plugin install` | [SECURITY.md](https://github.com/claymore666/docker-net-dhcp/blob/main/SECURITY.md) |
 | It will not carry AI-assistant attribution in its history | commits and PRs are signed by a person who stands behind them, and a CI check enforces it | n/a |
@@ -261,11 +235,12 @@ decide which existing server a network leases from ([#111]). That stays
 on this side of the line: the plugin picks among authorities and never
 becomes one.
 
-**Host interfaces.** Bridge mode today needs a bridge you maintain, and
-the parent-attached modes will not bring a NIC up, add an address, or
-edit netplan or `systemd-networkd`. A bridge the plugin creates for its
-own networks and owns for as long as they exist ([#903], v2.3.0) is
-inside this rule.
+**Host interfaces.** The plugin will not bring a NIC up, add an address,
+or edit netplan or `systemd-networkd`. Two host links are inside this
+rule, because the plugin creates them for its own networks and removes
+them with the last one: since v2.3.0 a bridge made from a spare NIC that
+carries no address, when a bridge-mode network sets `parent` ([#903]), and a
+VLAN sub-interface of the parent ([#902]).
 
 **Static IPs.** A per-container static-IP option would be a second,
 silently conflicting IPAM.
@@ -339,10 +314,7 @@ project does, that review is where it gets corrected.
 [#856]: https://github.com/claymore666/docker-net-dhcp/issues/856
 [#859]: https://github.com/claymore666/docker-net-dhcp/issues/859
 [#861]: https://github.com/claymore666/docker-net-dhcp/issues/861
-[#866]: https://github.com/claymore666/docker-net-dhcp/issues/866
-[#883]: https://github.com/claymore666/docker-net-dhcp/issues/883
 [#886]: https://github.com/claymore666/docker-net-dhcp/issues/886
-[#888]: https://github.com/claymore666/docker-net-dhcp/issues/888
 [#895]: https://github.com/claymore666/docker-net-dhcp/issues/895
 [#902]: https://github.com/claymore666/docker-net-dhcp/issues/902
 [#903]: https://github.com/claymore666/docker-net-dhcp/issues/903
@@ -352,8 +324,6 @@ project does, that review is where it gets corrected.
 [#927]: https://github.com/claymore666/docker-net-dhcp/issues/927
 [#949]: https://github.com/claymore666/docker-net-dhcp/issues/949
 [#960]: https://github.com/claymore666/docker-net-dhcp/issues/960
-[#1015]: https://github.com/claymore666/docker-net-dhcp/issues/1015
-[#1016]: https://github.com/claymore666/docker-net-dhcp/issues/1016
 [#1027]: https://github.com/claymore666/docker-net-dhcp/issues/1027
 [#1028]: https://github.com/claymore666/docker-net-dhcp/issues/1028
 [#1029]: https://github.com/claymore666/docker-net-dhcp/issues/1029
@@ -366,16 +336,9 @@ project does, that review is where it gets corrected.
 [#1036]: https://github.com/claymore666/docker-net-dhcp/issues/1036
 [#1037]: https://github.com/claymore666/docker-net-dhcp/issues/1037
 [#1038]: https://github.com/claymore666/docker-net-dhcp/issues/1038
-[#1042]: https://github.com/claymore666/docker-net-dhcp/issues/1042
-[#1043]: https://github.com/claymore666/docker-net-dhcp/issues/1043
-[#1044]: https://github.com/claymore666/docker-net-dhcp/issues/1044
 [#1045]: https://github.com/claymore666/docker-net-dhcp/issues/1045
-[#1056]: https://github.com/claymore666/docker-net-dhcp/issues/1056
-[#1065]: https://github.com/claymore666/docker-net-dhcp/issues/1065
-[#1081]: https://github.com/claymore666/docker-net-dhcp/issues/1081
-[#1084]: https://github.com/claymore666/docker-net-dhcp/issues/1084
-[#1088]: https://github.com/claymore666/docker-net-dhcp/issues/1088
-[#1089]: https://github.com/claymore666/docker-net-dhcp/issues/1089
+[#1096]: https://github.com/claymore666/docker-net-dhcp/issues/1096
+[#1108]: https://github.com/claymore666/docker-net-dhcp/issues/1108
 [moby/moby#52866]: https://github.com/moby/moby/pull/52866
 [moby/moby#52870]: https://github.com/moby/moby/issues/52870
 [moby/moby#52871]: https://github.com/moby/moby/pull/52871

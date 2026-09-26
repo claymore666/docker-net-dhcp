@@ -437,6 +437,8 @@ func TestDecodeOptsSet_EveryOptionIsReportedUnderItsFieldName(t *testing.T) {
 		switch f.Type.Kind() {
 		case reflect.Bool:
 			v = "true"
+		case reflect.Int:
+			v = "1400"
 		case reflect.Int64:
 			if f.Type == reflect.TypeOf(time.Duration(0)) {
 				v = "30s"

@@ -90,7 +90,7 @@ func (p *Plugin) ipamBindingFor(networkID string, ipv4 []*IPAMData, iface string
 	if !ok {
 		// The interface mismatch is reported first: the pool was minted for the `--ipam-opt` interface, not this one.
 		if otherName != "" && otherName != iface {
-			return nil, fmt.Errorf("%w: this network's pool identity was built for interface %q (from `--ipam-opt parent=` or `--ipam-opt bridge=`) and the network itself is being created on %q (from `-o parent=` or `-o bridge=`). The two have to name the same interface: the IPAM option exists only to tell two networks with the same subnet apart, and it cannot send the addresses somewhere else. Fix whichever of the two is wrong, or drop the `--ipam-opt` if this network is the only one on this subnet", util.ErrIPAM, otherName, iface)
+			return nil, fmt.Errorf("%w: this network's pool identity was built for interface %q (from `--ipam-opt parent=` or `--ipam-opt bridge=`) and the network itself is being created on %q (from `-o parent=`, as `<parent>.<id>` with `-o vlan=`, or from `-o bridge=`). The two have to name the same interface: the IPAM option exists only to tell two networks with the same subnet apart, and it cannot send the addresses somewhere else. Fix whichever of the two is wrong, or drop the `--ipam-opt` if this network is the only one on this subnet", util.ErrIPAM, otherName, iface)
 		}
 		// No issue for this space and pool: a plugin restart between the calls, a second unsuffixed create for the same
 		// subnet, or an earlier failed create consumed it (#110).
@@ -155,6 +155,20 @@ func validateModeOptions(opts DHCPNetworkOptions) error {
 		return err
 	}
 
+	if err := validateMTUOption(opts); err != nil {
+		return err
+	}
+
+	if err := validateLinkLocalFallback(opts); err != nil {
+		return err
+	}
+
+	// ipvlan children wear the parent's MAC and refuse --mac-address, so every endpoint would be refused (#1036).
+	if opts.RequireMAC && opts.effectiveMode() == ModeIPvlan {
+		return fmt.Errorf("%w: require_mac cannot be set in mode=ipvlan: ipvlan children share the parent's MAC and refuse --mac-address, so every container on the network would be refused",
+			util.ErrModeMismatch)
+	}
+
 	switch opts.effectiveMode() {
 	case ModeMacvlan, ModeIPvlan:
 		if opts.Parent == "" {
@@ -175,9 +189,6 @@ func validateModeOptions(opts DHCPNetworkOptions) error {
 		if opts.Bridge == "" {
 			return util.ErrBridgeRequired
 		}
-		if opts.Parent != "" {
-			return fmt.Errorf("%w: parent cannot be set in mode=bridge", util.ErrModeMismatch)
-		}
 		if !dhcp.ValidIfaceName(opts.Bridge) {
 			return fmt.Errorf("%w: invalid bridge %q: not a kernel-legal interface name", util.ErrIPAM, opts.Bridge)
 		}
@@ -188,7 +199,13 @@ func validateModeOptions(opts DHCPNetworkOptions) error {
 	default:
 		return fmt.Errorf("%w: %q", util.ErrInvalidMode, opts.Mode)
 	}
-	return nil
+	if err := validateSubModes(opts); err != nil {
+		return err
+	}
+	if err := validateBridgeOwnOptions(opts); err != nil {
+		return err
+	}
+	return validateVlanOption(opts)
 }
 
 // sandboxGone reads the filesystem, not the Docker API, since the API call is what times out when a container
@@ -300,17 +317,17 @@ func (p *Plugin) CreateNetwork(r CreateNetworkRequest) error {
 		if err := ipamRefuseIPvlan(opts.effectiveMode()); err != nil {
 			return err
 		}
-		// validateIPv6Options already resolved this pair, so this cannot fail today; the branch keeps an off mode distinct.
-		mode6, err := opts.ipv6Mode()
-		if err != nil {
+		if err := ipamRefusePassthru(opts); err != nil {
 			return err
 		}
-		if err := ipamRefuseIPv6(mode6); err != nil {
+		if err := ipamRefuseLinkLocal(opts); err != nil {
 			return err
 		}
 		iface := opts.Bridge
 		if m := opts.effectiveMode(); m == ModeMacvlan || m == ModeIPvlan {
-			iface = opts.Parent
+			// The link the children attach to, so two vlan networks on one parent are told apart by
+			// `--ipam-opt parent=<parent>.<id>` (#902).
+			iface = opts.linkParent()
 		}
 		b, err := p.ipamBindingFor(r.NetworkID, r.IPv4Data, iface)
 		if err != nil {
@@ -320,30 +337,28 @@ func (p *Plugin) CreateNetwork(r CreateNetworkRequest) error {
 	}
 
 	if mode := opts.effectiveMode(); mode == ModeMacvlan || mode == ModeIPvlan {
-		if _, err := validateParentForChild(opts.Parent); err != nil {
+		// A sub-interface this create made is removed again when the create fails, unless another network uses it
+		// by then (#902).
+		if err := vlanReleaseRefusal(opts); err != nil {
 			return err
 		}
-		// Pre-flight DHCP probe, opt-in via validate_dhcp, before saveOptions so a failed probe leaves no state (#108).
-		if opts.ValidateDHCP {
-			// The budget covers the probe and its wait for the parent gate, which runDHCPProbe takes itself (#577).
-			probePolicy, err := resolveServerPolicy(opts)
-			if err != nil {
-				return err
-			}
-			ctx, cancel := context.WithTimeout(context.Background(), preflightProbeBudget+5*time.Second)
-			err = p.runDHCPProbe(ctx, opts.Parent, mode, probePolicy)
-			cancel()
-			if err != nil {
-				return err
-			}
+		done := p.beginVlanCreate(opts)
+		created, err := p.ensureVlanLink(context.Background(), opts, "create_network")
+		if err == nil {
+			err = p.createParentAttachedNetwork(r.NetworkID, opts, binding)
 		}
-		if err := p.saveNetworkAndBind(r.NetworkID, opts, binding); err != nil {
+		done()
+		if err != nil {
+			if created {
+				p.retireVlanLink(context.Background(), r.NetworkID, opts, "create_network_failed")
+			}
 			return err
 		}
 		log.WithFields(log.Fields{
 			"network":       r.NetworkID,
 			"mode":          mode,
 			"parent":        opts.Parent,
+			"vlan":          opts.Vlan,
 			"ipv6":          opts.ipv6Enabled(),
 			"ipv6_mode":     opts.IPv6Mode,
 			"validate_dhcp": opts.ValidateDHCP,
@@ -352,6 +367,39 @@ func (p *Plugin) CreateNetwork(r CreateNetworkRequest) error {
 		return nil
 	}
 
+	// A bridge this create made from parent is removed again when the create fails, unless another network uses it
+	// by then (#903).
+	if opts.ownsBridge() {
+		if err := firewallRefusal(opts); err != nil {
+			return err
+		}
+	}
+	done := p.beginBridgeCreate(opts)
+	created, err := p.ensureBridge(context.Background(), opts, "create_network")
+	if err == nil {
+		err = p.createBridgeNetwork(r.NetworkID, opts, binding)
+	}
+	done()
+	if err != nil {
+		if created {
+			p.retireBridge(context.Background(), r.NetworkID, opts, "create_network_failed")
+		}
+		return err
+	}
+	log.WithFields(log.Fields{
+		"network":   r.NetworkID,
+		"bridge":    opts.Bridge,
+		"parent":    opts.Parent,
+		"ipv6":      opts.ipv6Enabled(),
+		"ipv6_mode": opts.IPv6Mode,
+		"ipam":      binding != nil,
+	}).Info("Network created")
+
+	return nil
+}
+
+// createBridgeNetwork checks the bridge the veths attach to and saves the network (#903).
+func (p *Plugin) createBridgeNetwork(networkID string, opts DHCPNetworkOptions, binding *ipamBinding) error {
 	// Bridge mode goes through the netlink seam so the bridge-reuse guard is reachable without CAP_NET_ADMIN (#727).
 	link, err := nlLinkByName(opts.Bridge)
 	if err != nil {
@@ -359,6 +407,9 @@ func (p *Plugin) CreateNetwork(r CreateNetworkRequest) error {
 	}
 	if link.Type() != "bridge" {
 		return util.ErrNotBridge
+	}
+	if err := mtuUnderParent(opts.MTU, link); err != nil {
+		return err
 	}
 
 	if !opts.IgnoreConflicts {
@@ -414,18 +465,37 @@ func (p *Plugin) CreateNetwork(r CreateNetworkRequest) error {
 		}
 	}
 
-	if err := p.saveNetworkAndBind(r.NetworkID, opts, binding); err != nil {
+	return p.saveNetworkAndBind(networkID, opts, binding)
+}
+
+// createParentAttachedNetwork checks the link the children attach to, the parent or its vlan sub-interface, and
+// saves the network (#902).
+func (p *Plugin) createParentAttachedNetwork(networkID string, opts DHCPNetworkOptions, binding *ipamBinding) error {
+	parent, err := validateParentForChild(opts.linkParent())
+	if err != nil {
 		return err
 	}
-	log.WithFields(log.Fields{
-		"network":   r.NetworkID,
-		"bridge":    opts.Bridge,
-		"ipv6":      opts.ipv6Enabled(),
-		"ipv6_mode": opts.IPv6Mode,
-		"ipam":      binding != nil,
-	}).Info("Network created")
-
-	return nil
+	if err := mtuUnderParent(opts.MTU, parent); err != nil {
+		return err
+	}
+	if err := p.refuseSiblingSubMode(networkID, opts); err != nil {
+		return err
+	}
+	// Pre-flight DHCP probe, opt-in via validate_dhcp, before saveOptions so a failed probe leaves no state (#108).
+	if opts.ValidateDHCP {
+		// The budget covers the probe and its wait for the parent gate, which runDHCPProbe takes itself (#577).
+		probePolicy, err := resolveServerPolicy(opts)
+		if err != nil {
+			return err
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), preflightProbeBudget+5*time.Second)
+		err = p.runDHCPProbe(ctx, opts, probePolicy)
+		cancel()
+		if err != nil {
+			return err
+		}
+	}
+	return p.saveNetworkAndBind(networkID, opts, binding)
 }
 
 // saveNetworkAndBind fails the create when an IPAM network's write fails, since the binding is in no Docker record;
@@ -461,9 +531,22 @@ func (p *Plugin) DeleteNetwork(r DeleteNetworkRequest) error {
 	// (#110).
 	p.ipamIndex.unbindNetwork(r.NetworkID)
 
+	// Read from disk before deleteOptions removes them; an unreadable or refused record keeps its sub-interface (#902).
+	opts, optsErr := loadOptions(r.NetworkID)
+	if optsErr == nil {
+		optsErr = validateVlanOption(opts)
+	}
+	if optsErr == nil {
+		optsErr = validateBridgeOwnOptions(opts)
+	}
+
 	if err := deleteOptions(r.NetworkID); err != nil {
 		log.WithError(err).WithField("network", r.NetworkID).
 			Warn("Failed to remove persisted options; harmless leftover")
+	}
+	if optsErr == nil {
+		p.retireVlanLink(context.Background(), r.NetworkID, opts, "delete_network")
+		p.retireBridge(context.Background(), r.NetworkID, opts, "delete_network")
 	}
 
 	orphaned := p.takeDHCPManagersForNetwork(r.NetworkID)
@@ -638,6 +721,38 @@ func (p *Plugin) checkStoredOptions(id string, opts DHCPNetworkOptions) error {
 		return err
 	}
 
+	// A stored sub-mode passes CreateNetwork's check, so a hand-edited value cannot build a default child (#905).
+	if err := validateSubModes(opts); err != nil {
+		p.networkOptionsRejected.Add(1)
+		log.WithFields(log.Fields{
+			"network":      shortID(id),
+			"macvlan_mode": fmt.Sprintf("%q", opts.MacvlanMode),
+			"ipvlan_mode":  fmt.Sprintf("%q", opts.IPvlanMode),
+		}).Error("Refusing stored network options: the sub-mode is not one this plugin builds")
+		return err
+	}
+
+	// A hand-edited vlan would name a link CreateNetwork never checked (#902).
+	if err := validateVlanOption(opts); err != nil {
+		p.networkOptionsRejected.Add(1)
+		log.WithFields(log.Fields{
+			"network": shortID(id),
+			"vlan":    fmt.Sprintf("%q", opts.Vlan),
+		}).Error("Refusing stored network options: the vlan is not one this plugin builds")
+		return err
+	}
+
+	// A hand-edited parent or bridge would name a link CreateNetwork never checked (#903).
+	if err := validateBridgeOwnOptions(opts); err != nil {
+		p.networkOptionsRejected.Add(1)
+		log.WithFields(log.Fields{
+			"network": shortID(id),
+			"bridge":  fmt.Sprintf("%q", opts.Bridge),
+			"parent":  fmt.Sprintf("%q", opts.Parent),
+		}).Error("Refusing stored network options: the parent is not one this plugin enslaves")
+		return err
+	}
+
 	// The stored IPv6 options pass the function CreateNetwork calls, with no written-key set, so a restart cannot get
 	// a refused pair past it (#817).
 	if err := validateIPv6Options(opts, nil); err != nil {
@@ -728,10 +843,13 @@ func ipamDriverIsRemote(name string) bool {
 	}
 }
 
+// endpointCallStart is a seam for the link-local budget test, which starts a call late in its budget (#904).
+var endpointCallStart = time.Now
+
 // CreateEndpoint builds the host-side link, runs a one-shot DHCP acquisition and stashes the result for Join.
 func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (CreateEndpointResponse, error) {
 	// The daemon's deadline on this call comes first; see v6AcquisitionDeadline.
-	callStart := time.Now()
+	callStart := endpointCallStart()
 	log.WithField("options", r.Options).Debug("CreateEndpoint options")
 	res := CreateEndpointResponse{
 		Interface: &EndpointInterface{},
@@ -754,26 +872,40 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 	if err != nil {
 		return res, err
 	}
-	if ifname != "" {
-		// The hint reaches Join on every engine; noteIfnameRequest states whether it applies (#670).
-		p.noteIfnameRequest(r.NetworkID, r.EndpointID, ifname)
-		p.updateJoinHint(r.EndpointID, func(h *joinHint) { h.Ifname = ifname })
-	}
 
 	opts, err := p.netOptions(ctx, r.NetworkID)
 	if err != nil {
 		return res, fmt.Errorf("failed to get network options: %w", err)
 	}
 
+	// Before the IPAM split, the ifname hint and a tombstone's MAC, so a refusal leaves nothing behind (#1036).
+	binding := ipamBindingOf(r.NetworkID)
+	if err := refuseWithoutUserMAC(opts, r); err != nil {
+		if binding != nil {
+			p.ipamDropRefusedReservation(r, binding)
+		}
+		return res, err
+	}
+
+	if ifname != "" {
+		// The hint reaches Join on every engine; noteIfnameRequest states whether it applies (#670).
+		p.noteIfnameRequest(r.NetworkID, r.EndpointID, ifname)
+		p.updateJoinHint(r.EndpointID, func(h *joinHint) { h.Ifname = ifname })
+	}
+
 	// Before the mode split: in IPAM mode the address is already leased, so neither branch runs its exchange (#110).
-	if binding := ipamBindingOf(r.NetworkID); binding != nil {
-		return p.createIPAMEndpoint(ctx, r, opts, binding)
+	if binding != nil {
+		return p.createIPAMEndpoint(ctx, callStart, r, opts, binding)
 	}
 
 	if m := opts.effectiveMode(); m == ModeMacvlan || m == ModeIPvlan {
 		return p.createParentAttachedEndpoint(ctx, callStart, r, opts)
 	}
 
+	// A host reboot loses the bridge made from parent while Docker keeps the network (#903).
+	if _, err := p.ensureBridge(ctx, opts, "create_endpoint"); err != nil {
+		return res, err
+	}
 	bridge, err := netlink.LinkByName(opts.Bridge)
 	if err != nil {
 		return res, fmt.Errorf("failed to get bridge interface: %w", err)
@@ -835,6 +967,11 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 	)
 
 	if err := func() error {
+		// Both ends: veth ends are independent, and with the host end at 1500 and the container end at
+		// 1400 a 1428-byte DF frame is dropped silently (measured 6.12, 2026-09-24, #1037).
+		if err := applyEndpointMTU(opts.MTU, hostLink, &netlink.Veth{LinkAttrs: netlink.LinkAttrs{Name: ctrName}}); err != nil {
+			return err
+		}
 		if err := netlink.LinkSetUp(hostLink); err != nil {
 			return fmt.Errorf("failed to set host side link of veth pair up: %w", err)
 		}
@@ -862,10 +999,7 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 			return fmt.Errorf("failed to attach host side link of veth peer to bridge: %w", err)
 		}
 
-		timeout := defaultLeaseTimeout
-		if opts.LeaseTimeout != 0 {
-			timeout = opts.LeaseTimeout
-		}
+		timeout := leaseTimeoutFor(opts)
 		// The MAC keys the DHCP identity, so Join and the orphan-release path re-derive it without a link to read.
 		p.updateJoinHint(r.EndpointID, func(hint *joinHint) {
 			hint.MacAddress = ctrLink.Attrs().HardwareAddr
@@ -894,11 +1028,6 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 				endpointRecordKey(opts.effectiveMode(), r.EndpointID, ctrLink.Attrs().HardwareAddr), id6)
 		}
 		initialIP := func(v6 bool) error {
-			v6str := ""
-			if v6 {
-				v6str = "v6"
-			}
-
 			// Server preference ladder (#111) and deny-list (#669); neither set is one unrestricted attempt.
 			pol, err := resolveServerPolicy(opts)
 			if err != nil {
@@ -917,61 +1046,42 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 				Records:  p.records,
 				RecordID: recordID,
 			}
+			// The v4 `-o gateway=` override below is not consulted for the v6 gateway (#821, #960).
 			if v6 {
-				if err := p.v6Wiring(&base, opts, identity6, recordID6, requestedV6, r.EndpointID); err != nil {
-					return err
-				}
+				addr, err := p.acquireInitialV6(ctx, opts, base, v6Acquire{iface: ctrName, networkID: r.NetworkID,
+					endpointID: r.EndpointID, callStart: callStart, timeout: timeout, pol: pol,
+					identity6: identity6, recordID6: recordID6, preferredV6: requestedV6})
+				res.Interface.AddressIPv6 = addr
+				return err
 			}
 			// Conflict detection from the stored conflict_check, set on the base so every dhcp_servers attempt shares
 			// it (#882).
-			if err := p.conflictWiring(&base, opts, roleAcquire, r.NetworkID, r.EndpointID, v6); err != nil {
+			if err := p.conflictWiring(&base, opts, roleAcquire, r.NetworkID, r.EndpointID, false); err != nil {
 				return err
 			}
-			// Preferred address per family, `request ADDR` for v4 and `ia_na / ADDR` for v6; empty omits it (#213).
-			if !v6 {
-				base.RequestedIP = requestedIP
-			}
+			// The preferred v4 address, sent as `request ADDR`; empty omits it (#213).
+			base.RequestedIP = requestedIP
 
-			// The v6 half runs second and gets what is left of the daemon's deadline; see v6AcquisitionDeadline.
-			acqCtx := ctx
-			if v6 {
-				var endV6 context.CancelFunc
-				acqCtx, endV6 = withV6AcquisitionDeadline(ctx, callStart)
-				defer endV6()
-			}
-
-			info, ra, err := p.acquireWithPolicy(acqCtx, ctrName, pol, v6, timeout, r.EndpointID, base)
+			info, err := p.acquireV4(ctx, opts, callStart, ctrName, pol, timeout, r.EndpointID, base)
 			if err != nil {
-				// An empty DHCPv6 acquisition fails only when the segment advertised managed DHCPv6; stateless and
-				// SLAAC segments have no DHCPv6 address to get (#868).
-				if v6 && p.noteV6Absence(ra, ctrName, r.EndpointID, err, base.Mode6) {
-					return nil
-				}
-				return fmt.Errorf("failed to get initial IP%v address via DHCP%v: %w", v6str, v6str, err)
+				return fmt.Errorf("failed to get initial IP address via DHCP: %w", err)
 			}
 			ip, err := netlink.ParseAddr(info.IP)
 			if err != nil {
-				return fmt.Errorf("failed to parse initial IP%v address: %w", v6str, err)
+				return fmt.Errorf("failed to parse initial IP address: %w", err)
 			}
 
 			p.updateJoinHint(r.EndpointID, func(hint *joinHint) {
-				if v6 {
-					res.Interface.AddressIPv6 = info.IP
-					hint.IPv6 = ip
-					// The IPv6 gateway is the Router Advertisement's source, link-local under RFC 4861 section 4.2,
-					// read by the library's client (#821); the v4 `-o gateway=` override is not consulted for it.
-					fillV6Hint(hint, info)
-				} else {
-					res.Interface.Address = info.IP
-					hint.IPv4 = ip
-					hint.Gateway = info.Gateway
-					if opts.Gateway != "" {
-						hint.Gateway = opts.Gateway
-					}
-					// Option-121 routes (RFC 3442) exclude a literal 0.0.0.0/0, folded into info.Gateway, but
-					// together they can still cover the whole space; see routesSupersedeDefault.
-					hint.Routes = dhcpStaticRoutes(info.Routes)
+				res.Interface.Address = info.IP
+				hint.IPv4 = ip
+				hint.Gateway = info.Gateway
+				// A link-local endpoint has no gateway: one off its /16 would fail the engine's route install (#904).
+				if opts.Gateway != "" && !isLinkLocalAddr(ip) {
+					hint.Gateway = opts.Gateway
 				}
+				// Option-121 routes (RFC 3442) exclude a literal 0.0.0.0/0, folded into info.Gateway, but
+				// together they can still cover the whole space; see routesSupersedeDefault.
+				hint.Routes = dhcpStaticRoutes(info.Routes)
 			})
 
 			return nil
@@ -1124,6 +1234,9 @@ func (p *Plugin) DeleteEndpoint(ctx context.Context, r DeleteEndpointRequest) er
 		// RETAINED on every mode and hostname decision, so plugin-restart recovery never resumes a gone endpoint's
 		// lease; keyed as the record was filed, since fp.MAC is empty on ipvlan (#899).
 		hw, _ := net.ParseMAC(fp.MAC)
+		if isLinkLocalV4String(fp.IPv4) {
+			p.closeLinkLocalRecord(r.NetworkID, endpointRecordKey(mode, r.EndpointID, hw))
+		}
 		p.retainRecordFor(r.NetworkID, endpointRecordKey(mode, r.EndpointID, hw))
 	}
 
@@ -1289,6 +1402,23 @@ func describeStaticRoutes(routes []*StaticRoute) []string {
 		out = append(out, r.Destination+" onlink")
 	}
 	return out
+}
+
+// joinRouteSource is the host link Join copies routes and the fallback gateway from: the parent, or the bridge.
+func joinRouteSource(opts DHCPNetworkOptions) (netlink.Link, error) {
+	switch opts.effectiveMode() {
+	case ModeMacvlan, ModeIPvlan:
+		l, err := nlLinkByName(opts.linkParent())
+		if err != nil {
+			return nil, fmt.Errorf("failed to get parent interface for route copy: %w", err)
+		}
+		return l, nil
+	}
+	l, err := netlink.LinkByName(opts.Bridge)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get bridge interface: %w", err)
+	}
+	return l, nil
 }
 
 // addRoutes copies the host link's non-default, non-kernel, non-DHCP-subnet routes into StaticRoutes in every
@@ -1475,8 +1605,8 @@ func (p *Plugin) Join(ctx context.Context, r JoinRequest) (JoinResponse, error) 
 
 	hint, ok := p.takeJoinHint(r.EndpointID)
 	if !ok {
-		// `docker restart` sends Leave then Join on the same EndpointID without a CreateEndpoint, so the hint and
-		// link are gone; reacquire (#46).
+		// `docker restart` sends CreateEndpoint before Join on engines 26.1.4 and 29.8.1 (measured 2026-09-24, #1036);
+		// a Join with no hint, from an engine that skips it, reacquires (#46).
 		log.WithFields(log.Fields{
 			"network":  shortID(r.NetworkID),
 			"endpoint": shortID(r.EndpointID),
@@ -1511,20 +1641,23 @@ func (p *Plugin) Join(ctx context.Context, r JoinRequest) (JoinResponse, error) 
 	}
 
 	// Copy the host parent's non-default static routes into the container; `-o skip_routes=true` opts out (#102).
-	var routeSrc netlink.Link
-	if parentAttached {
-		routeSrc, err = netlink.LinkByName(opts.Parent)
-		if err != nil {
-			return res, fmt.Errorf("failed to get parent interface for route copy: %w", err)
-		}
-	} else {
-		routeSrc, err = netlink.LinkByName(opts.Bridge)
-		if err != nil {
-			return res, fmt.Errorf("failed to get bridge interface: %w", err)
-		}
+	routeSrc, err := joinRouteSource(opts)
+	if err != nil {
+		return res, err
 	}
 
-	if err := p.addRoutes(&opts, false, routeSrc, r, hint, &res); err != nil {
+	// A link-local endpoint reaches no next hop off 169.254/16, and the engine fails the Join on a route it cannot
+	// install; the manager adds them when the lease arrives (#904).
+	if isLinkLocalAddr(hint.IPv4) {
+		log.WithFields(log.Fields{
+			"network":  shortID(r.NetworkID),
+			"endpoint": shortID(r.EndpointID),
+			"ip":       hint.IPv4.String(),
+		}).Info("[Join] Endpoint is on an IPv4 link-local address: no gateway and no host routes until a lease arrives")
+		// Without this the engine gives a container whose endpoints name no gateway a second link on docker_gwbridge
+		// with its default route, and the lease's default route then fails as "file exists" (moby needDefaultGW, #904).
+		res.DisableGatewayService = true
+	} else if err := p.addRoutes(&opts, false, routeSrc, r, hint, &res); err != nil {
 		return res, err
 	}
 	if opts.ipv6Enabled() {

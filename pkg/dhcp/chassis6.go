@@ -13,6 +13,7 @@ import (
 	"github.com/claymore666/dhcp-golib/lease"
 	"github.com/claymore666/dhcp-golib/proto"
 	dhcpruntime "github.com/claymore666/dhcp-golib/runtime"
+	"github.com/claymore666/dhcp-golib/wire"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -324,6 +325,7 @@ func runAcquisition6(ctx context.Context, iface string, client v6AcquisitionClie
 			// Before the record and the step, as in the persistent client's loop (#911).
 			opts.carryResumedConfig6(&ev)
 			opts.record(ev)
+			opts.reportFQDN6(ev)
 			out := acquireStep6(ev, hint.IsValid(), opts.MainPrefix6)
 			if out.Err != nil {
 				lastE = out.Err
@@ -404,4 +406,38 @@ func (o *DHCPClientOptions) carryResumedConfig6(ev *lease.Event) {
 	}
 	ev.Lease.DNS = append([]netip.Addr(nil), o.Resume.DNS...)
 	ev.Lease.DomainSearch = append([]string(nil), o.Resume.DomainSearch...)
+}
+
+// reportFQDN6 logs, once, the server's answer to the first message that carried option 39. S set in the Reply is the
+// server taking the AAAA (RFC 4704 section 4.1); a Reply without S, or without the option, leaves the name unregistered
+// by anyone, since the plugin does no DNS update of its own. A resumed binding's Acquired answers a Confirm, which
+// carries no option 39, so the early Renew after it is the exchange reported (#1029).
+func (o *DHCPClientOptions) reportFQDN6(ev lease.Event) {
+	if !o.V6 || o.FQDN == "" || o.Hostname == "" || o.fqdnReported {
+		return
+	}
+	if ev.Kind != lease.Renewed && (ev.Kind != lease.Acquired || (o.Resume != nil && !ev.Lease.HasFQDN)) {
+		return
+	}
+	o.fqdnReported = true
+	entry := log.WithField("hostname", o.Hostname)
+	if !ev.Lease.HasFQDN {
+		entry.Info("The DHCPv6 server's Reply carried no Client FQDN option, so it did not say whether it registers " +
+			"an AAAA record for this name")
+		return
+	}
+	flags := ev.Lease.FQDN.Flags
+	entry = entry.WithFields(log.Fields{
+		"fqdn_name":  ev.Lease.FQDN.Name,
+		"fqdn_flags": fmt.Sprintf("0x%02x", flags),
+		"fqdn_s":     flags&wire.ClientFQDNFlagS != 0,
+		"fqdn_o":     flags&wire.ClientFQDNFlagO != 0,
+		"fqdn_n":     flags&wire.ClientFQDNFlagN != 0,
+	})
+	if flags&wire.ClientFQDNFlagS == 0 {
+		entry.Warn("The DHCPv6 server answered the Client FQDN option without the S flag, so it does not register " +
+			"the AAAA record for this name and the plugin does not either")
+		return
+	}
+	entry.Info("The DHCPv6 server registers the AAAA record for this name")
 }

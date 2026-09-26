@@ -235,7 +235,7 @@
   "no_leaked_credentials_status": "Met",
   "no_leaked_credentials_justification": "No credentials are stored in the repository. GitHub secret scanning with push protection is enabled, all CI credentials are GitHub Actions repository secrets, and the working-tree secrets directory is gitignored. A scan of the full history for added key material (private keys, PEM files, credential files) returns nothing.",
   "static_analysis_status": "Met",
-  "static_analysis_justification": "staticcheck + go vet (required checks) + CodeQL",
+  "static_analysis_justification": "staticcheck + go vet + CodeQL, all three required checks on both integration branches",
   "static_analysis_common_vulnerabilities_status": "Met",
   "static_analysis_common_vulnerabilities_justification": "CodeQL security queries + govulncheck (reachability) + dependency-review",
   "static_analysis_fixed_status": "Met",

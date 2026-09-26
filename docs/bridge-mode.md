@@ -2,15 +2,71 @@
 
 Bridge mode is `docker-net-dhcp`'s default. Unlike the parent-attached
 modes ([macvlan / ipvlan](parent-attached-modes.md)), bridge mode plugs
-container `veth`s into **a Linux bridge you maintain**. It needs a small
-amount of one-time host setup, and it works anywhere a bridge can be
-bridged onto the LAN where the DHCP server lives.
+container `veth`s into **a Linux bridge**: one you maintain, or since
+v2.3.0 one the plugin makes from a spare NIC. It needs a small amount of
+one-time host setup, and it works anywhere a bridge can be bridged onto
+the LAN where the DHCP server lives.
 
 For the full option/observability/troubleshooting matrix see the
 [driver reference](reference.md). This page is the end-to-end
 walkthrough.
 
 ## 1. Prepare a host bridge
+
+There are two paths, and the host's NICs decide which:
+
+- **A spare NIC** that the host does not address: since v2.3.0 the
+  plugin makes the bridge from it
+  ([#903](https://github.com/claymore666/docker-net-dhcp/issues/903)).
+  The host keeps the NIC up with no address; that is the one line of
+  host setup. See [the next section](#a-spare-nic-the-plugin-makes-the-bridge).
+- **A single NIC** that carries the host's own address: the plugin
+  refuses to take it, because the host would stop answering on it. You
+  build the bridge yourself and move the host's address onto it, as the
+  rest of this section describes.
+
+### A spare NIC: the plugin makes the bridge
+
+The NIC must be up and carry no address other than an IPv6 link-local
+one, now and after every reboot. Tell the host's network manager so,
+once. Replace `eth1` with your NIC:
+
+| Stack | Stanza |
+|---|---|
+| Debian / ifupdown | in `/etc/network/interfaces`: `auto eth1`, `iface eth1 inet manual`, `pre-up sysctl -qw net.ipv6.conf.eth1.accept_ra=0`, `up ip link set eth1 up` |
+| Ubuntu / netplan | under `ethernets:`, `eth1: {dhcp4: false, dhcp6: false, accept-ra: false}` |
+| systemd-networkd | `/etc/systemd/network/20-eth1.network` with `[Match]` `Name=eth1` and `[Network]` `DHCP=no`, `IPv6AcceptRA=no` |
+| NetworkManager | `sudo nmcli con add type ethernet ifname eth1 con-name eth1-spare ipv4.method disabled ipv6.method disabled` |
+
+Router advertisements are turned off in each, because an address the
+kernel forms from one is an address on the NIC, and the plugin refuses
+an addressed NIC. On NetworkManager, the automatic "Wired connection"
+it makes for an unconfigured NIC runs DHCP on it; the profile above
+replaces it. A NIC that nothing configures comes back **down** after a
+reboot, and the plugin then refuses it (`parent interface is down`).
+
+Docker's `FORWARD` policy is DROP, and it drops the DHCP frames the
+bridge passes between a container and the NIC. Add the rule, persist it
+([below](#persist-the-firewall-rule-too), the iptables row), and create
+the network with `force_create=true`, which the plugin needs because it
+reads the policy and cannot see the rule:
+
+```bash
+sudo iptables -I DOCKER-USER -i lan0 -o lan0 -j ACCEPT
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.3.0 \
+  --ipam-driver null -o bridge=lan0 -o parent=eth1 -o force_create=true lan-dhcp
+```
+
+For DHCPv6 (`ipv6_mode`), add the same rule with `ip6tables`; the
+plugin checks the IPv4 policy only.
+
+The plugin creates `lan0`, enslaves `eth1`, and deletes `lan0` again
+with the network. `docker0` and `br-*` are refused as the bridge name.
+The [driver reference](reference.md#a-bridge-the-plugin-makes-parent)
+lists every refusal and what happens after a reboot. Go on with
+[3. Run containers](#3-run-containers).
+
+### A single NIC: build the bridge yourself
 
 You need a pre-configured bridge interface on the host. Enslaving the
 NIC to a bridge changes how the **host itself** is addressed, so read
@@ -254,7 +310,7 @@ iptables -S FORWARD | head -1`.
 ```bash
 # On arm64 use the -arm64 tag. A network stores this exact reference
 # as its driver, so it must name the plugin you installed.
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.2.3 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.3.0 \
   --ipam-driver null -o bridge=my-bridge my-dhcp-net
 ```
 
@@ -267,7 +323,7 @@ same day).
 
 ```bash
 # arm64: the -arm64 tag here too.
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.2.3 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.3.0 \
   --ipam-driver null -o bridge=my-bridge -o ipv6_mode=dhcp my-dhcp-net
 ```
 
@@ -349,7 +405,7 @@ services:
 networks:
   dhcp:
     # arm64: the -arm64 tag, matching the plugin you installed.
-    driver: ghcr.io/claymore666/docker-net-dhcp:v2.2.3
+    driver: ghcr.io/claymore666/docker-net-dhcp:v2.3.0
     driver_opts:
       bridge: my-bridge
       ipv6_mode: 'dhcp'

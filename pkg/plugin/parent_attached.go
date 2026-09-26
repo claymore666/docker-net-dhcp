@@ -45,19 +45,52 @@ func validateParentForChild(name string) (netlink.Link, error) {
 	return link, nil
 }
 
-// newChildLink uses macvlan bridge mode so children on one parent reach each other, and ipvlan L2 so DHCP broadcasts
-// pass (#905).
-func newChildLink(mode string, la netlink.LinkAttrs) netlink.Link {
-	if mode == ModeIPvlan {
-		return &netlink.IPVlan{LinkAttrs: la, Mode: netlink.IPVLAN_MODE_L2}
+// refuseEnslavedParent refuses a parent that is a port of a link other than own: the kernel moves a bridge port or a
+// bond member into a new bridge without an error, measured on Linux 6.12. Only the bridge path reads it; a macvlan or
+// ipvlan child on a port meets the held rx_handler as EBUSY (#370, #903).
+func refuseEnslavedParent(parent netlink.Link, own int) error {
+	master := parent.Attrs().MasterIndex
+	if master == 0 || master == own {
+		return nil
 	}
-	return &netlink.Macvlan{LinkAttrs: la, Mode: netlink.MACVLAN_MODE_BRIDGE}
+	name := fmt.Sprintf("index %d", master)
+	if m, err := netlink.LinkByIndex(master); err == nil {
+		name = m.Attrs().Name
+	}
+	return fmt.Errorf("parent %v is already a port of %v, and the kernel would move it out without an error; remove it from %v or choose another NIC: %w",
+		parent.Attrs().Name, name, name, util.ErrIPAM)
+}
+
+// newChildLink builds the child in the network's macvlan_mode or ipvlan_mode, so the endpoint, the IPAM reservation,
+// the validate_dhcp probe and a replay after a plugin restart all build the stored sub-mode (#905).
+func newChildLink(opts DHCPNetworkOptions, la netlink.LinkAttrs) (netlink.Link, error) {
+	if opts.effectiveMode() == ModeIPvlan {
+		m, err := parseIPvlanMode(opts.IPvlanMode)
+		if err != nil {
+			return nil, err
+		}
+		return &netlink.IPVlan{LinkAttrs: la, Mode: m}, nil
+	}
+	m, err := parseMacvlanMode(opts.MacvlanMode)
+	if err != nil {
+		return nil, err
+	}
+	return &netlink.Macvlan{LinkAttrs: la, Mode: m}, nil
 }
 
 // explainChildLinkAdd names the kind in the way when the kernel refuses a child with EBUSY: macvlan and ipvlan both
 // claim the parent's single rx_handler, so the second kind is refused while same-kind children coexist (#486).
 // Not a retry, since two kinds on one NIC is permanent.
 func explainChildLinkAdd(err error, mode, parent string, parentIndex int) error {
+	// A passthru child takes the parent alone, and the kernel refuses the next child EINVAL, measured on Linux 6.12;
+	// EINVAL has other causes, so the text names passthru as one (#905).
+	if mode == ModeMacvlan && errors.Is(err, unix.EINVAL) {
+		return fmt.Errorf("failed to create macvlan link on %q: %w. The kernel answers this when a "+
+			"macvlan_mode=passthru child holds the parent: a passthru network gives its parent to one container, so "+
+			"a second child is refused beside it, and a passthru child is refused while another macvlan child is on "+
+			"the parent. If so, stop the container that holds %q, or put this network on another parent",
+			parent, err, parent)
+	}
 	if !errors.Is(err, unix.EBUSY) {
 		return fmt.Errorf("failed to create %v link: %w", mode, err)
 	}
@@ -171,7 +204,10 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, callStart tim
 	res := CreateEndpointResponse{Interface: &EndpointInterface{}}
 	mode := opts.effectiveMode()
 
-	parent, err := validateParentForChild(opts.Parent)
+	if _, err := p.ensureVlanLink(ctx, opts, "create_endpoint"); err != nil {
+		return res, err
+	}
+	parent, err := validateParentForChild(opts.linkParent())
 	if err != nil {
 		return res, err
 	}
@@ -180,6 +216,10 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, callStart tim
 	effectiveMAC := ""
 	if r.Interface != nil {
 		effectiveMAC = r.Interface.MacAddress
+	}
+	// A MAC set on a passthru child changes the parent's own, so a user MAC is refused (#905).
+	if opts.macvlanPassthru() && effectiveMAC != "" {
+		return res, fmt.Errorf("%w: macvlan_mode=passthru does not support a custom MAC address: the child wears the parent's MAC, and a MAC set on it would change the parent's", util.ErrMACAddress)
 	}
 	explicitV4, err := resolveExplicitV4(r)
 	if err != nil {
@@ -195,7 +235,10 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, callStart tim
 	requestedV6 := explicitV6
 	if mode == ModeMacvlan && effectiveMAC == "" {
 		if tombMAC, tombIP, tombIPv6, ok := p.consumeTombstone(r.NetworkID, hostname); ok {
-			effectiveMAC = tombMAC
+			// The kernel ignores a passthru child's create address, and the pin below sets the parent's (#905).
+			if !opts.macvlanPassthru() {
+				effectiveMAC = tombMAC
+			}
 			if requestedIP == "" {
 				requestedIP = tombIP
 			}
@@ -232,15 +275,29 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, callStart tim
 		}
 		la.HardwareAddr = mac
 	}
-	link := newChildLink(mode, la)
+	link, err := newChildLink(opts, la)
+	if err != nil {
+		return res, err
+	}
 
 	// Queues behind the validate_dhcp probe, which holds the parent across a DHCP round trip, for the LinkAdd only
 	// (#549).
-	guard := p.lockParent(ctx, opts.Parent, mode, "create_endpoint")
-	err = addChildLink(guard, link)
+	guard := p.lockParent(ctx, opts.linkParent(), mode, "create_endpoint")
+	if opts.macvlanPassthru() {
+		var waited bool
+		waited, err = retryPassthruAdd(ctx, childLinkUpBudget, childLinkUpInterval, func() error { return addChildLink(guard, link) })
+		if waited {
+			log.WithError(err).WithFields(log.Fields{
+				"network":  shortID(r.NetworkID),
+				"endpoint": shortID(r.EndpointID),
+			}).Info("Passthru child waited for the parent's previous child to go (#905)")
+		}
+	} else {
+		err = addChildLink(guard, link)
+	}
 	guard.Unlock()
 	if err != nil {
-		return res, explainChildLinkAdd(err, mode, opts.Parent, parent.Attrs().Index)
+		return res, explainChildLinkAdd(err, mode, opts.linkParent(), parent.Attrs().Index)
 	}
 
 	var (
@@ -254,13 +311,17 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, callStart tim
 		if err != nil {
 			return fmt.Errorf("failed to re-fetch %v link: %w", mode, err)
 		}
+		if err := applyEndpointMTU(opts.MTU, fresh); err != nil {
+			return err
+		}
 		mac := fresh.Attrs().HardwareAddr
 
 		// Pin the kernel-assigned macvlan MAC (#103): udev's MACAddressPolicy=persistent, the Debian default,
 		// replaces a randomly assigned MAC just after creation, and a set addr_assign_type stops it. Without the pin
 		// the one-shot DHCPv6 poisoned the server's neighbour cache for about 45 s on the capture. ipvlan refuses any
-		// MAC set with EOPNOTSUPP.
-		if mode != ModeIPvlan && effectiveMAC == "" {
+		// MAC set with EOPNOTSUPP. A passthru child is pinned to the parent's own MAC, which leaves the parent as it is
+		// (measured on Linux 6.12); unpinned, a rewrite of the child would change the parent's (#905).
+		if opts.effectiveMode() != ModeIPvlan && effectiveMAC == "" {
 			if err := netlink.LinkSetHardwareAddr(fresh, mac); err != nil {
 				return fmt.Errorf("failed to pin %v link MAC: %w", mode, err)
 			}
@@ -272,15 +333,13 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, callStart tim
 			return fmt.Errorf("failed to set %v link up: %w", mode, err)
 		}
 
-		// libnetwork sets MacAddress at Join, which an ipvlan slave refuses with EOPNOTSUPP even for its own MAC.
-		if mode != ModeIPvlan && (r.Interface == nil || r.Interface.MacAddress == "") {
+		// libnetwork sets MacAddress at Join, which an ipvlan slave refuses with EOPNOTSUPP even for its own MAC; a
+		// passthru child already wears the parent's, pinned above (#905).
+		if !opts.childWearsParentMAC() && (r.Interface == nil || r.Interface.MacAddress == "") {
 			res.Interface.MacAddress = mac.String()
 		}
 
-		timeout := defaultLeaseTimeout
-		if opts.LeaseTimeout != 0 {
-			timeout = opts.LeaseTimeout
-		}
+		timeout := leaseTimeoutFor(opts)
 		// Client-id from the MAC for macvlan and from the endpoint ID for ipvlan, whose slaves share the parent MAC
 		// (#371).
 		clientID := resolveClientID(opts, r.EndpointID, mac)
@@ -303,11 +362,6 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, callStart tim
 		}
 
 		runDHCP := func(v6 bool) error {
-			v6str := ""
-			if v6 {
-				v6str = "v6"
-			}
-
 			// Server preference ladder (#111) and deny-list (#669), shared with the bridge path.
 			pol, err := resolveServerPolicy(opts)
 			if err != nil {
@@ -325,57 +379,41 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, callStart tim
 				Records:  p.records,
 				RecordID: recordID,
 			}
+			// The v4 half runs first and its update sets hint.MacAddress to this mac, so the v6 half leaves it (#960).
 			if v6 {
-				if err := p.v6Wiring(&base, opts, identity6, recordID6, requestedV6, r.EndpointID); err != nil {
-					return err
-				}
-			}
-			if err := p.conflictWiring(&base, opts, roleAcquire, r.NetworkID, r.EndpointID, v6); err != nil {
+				addr, err := p.acquireInitialV6(ctx, opts, base, v6Acquire{iface: la.Name, networkID: r.NetworkID,
+					endpointID: r.EndpointID, callStart: callStart, timeout: timeout, pol: pol,
+					identity6: identity6, recordID6: recordID6, preferredV6: requestedV6})
+				res.Interface.AddressIPv6 = addr
 				return err
 			}
-			if !v6 {
-				base.RequestedIP = requestedIP
+			if err := p.conflictWiring(&base, opts, roleAcquire, r.NetworkID, r.EndpointID, false); err != nil {
+				return err
 			}
+			base.RequestedIP = requestedIP
 
-			acqCtx := ctx
-			if v6 {
-				var endV6 context.CancelFunc
-				acqCtx, endV6 = withV6AcquisitionDeadline(ctx, callStart)
-				defer endV6()
-			}
-
-			info, ra, err := p.acquireWithPolicy(acqCtx, la.Name, pol, v6, timeout, r.EndpointID, base)
+			info, err := p.acquireV4(ctx, opts, callStart, la.Name, pol, timeout, r.EndpointID, base)
 			if err != nil {
-				// No DHCPv6 address is fatal only where the segment advertised managed DHCPv6 (#868).
-				if v6 && p.noteV6Absence(ra, la.Name, r.EndpointID, err, base.Mode6) {
-					return nil
-				}
-				return fmt.Errorf("failed to get initial IP%v address via DHCP%v: %w", v6str, v6str, err)
+				return fmt.Errorf("failed to get initial IP address via DHCP: %w", err)
 			}
 			addr, err := netlink.ParseAddr(info.IP)
 			if err != nil {
-				return fmt.Errorf("failed to parse initial IP%v address: %w", v6str, err)
+				return fmt.Errorf("failed to parse initial IP address: %w", err)
 			}
 
 			p.updateJoinHint(r.EndpointID, func(hint *joinHint) {
 				hint.MacAddress = mac
-				if v6 {
-					res.Interface.AddressIPv6 = info.IP
-					hint.IPv6 = addr
-					// DHCPv6 has no gateway option, so the v6 gateway is the advertisement's link-local source (#821).
-					fillV6Hint(hint, info)
-				} else {
-					res.Interface.Address = info.IP
-					hint.IPv4 = addr
-					hint.Gateway = info.Gateway
-					if opts.Gateway != "" {
-						hint.Gateway = opts.Gateway
-					}
-					// DHCP option-121 classless static routes (RFC 3442);
-					// any default route was already folded into
-					// info.Gateway by the parser.
-					hint.Routes = dhcpStaticRoutes(info.Routes)
+				res.Interface.Address = info.IP
+				hint.IPv4 = addr
+				hint.Gateway = info.Gateway
+				// No gateway on link-local, as in bridge mode (#904).
+				if opts.Gateway != "" && !isLinkLocalAddr(addr) {
+					hint.Gateway = opts.Gateway
 				}
+				// DHCP option-121 classless static routes (RFC 3442);
+				// any default route was already folded into
+				// info.Gateway by the parser.
+				hint.Routes = dhcpStaticRoutes(info.Routes)
 			})
 			return nil
 		}
@@ -417,7 +455,7 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, callStart tim
 		"network":  shortID(r.NetworkID),
 		"endpoint": shortID(r.EndpointID),
 		"mode":     mode,
-		"parent":   opts.Parent,
+		"parent":   opts.linkParent(),
 	}).Info("Endpoint created")
 	log.WithFields(log.Fields{
 		"network":     shortID(r.NetworkID),
@@ -480,7 +518,7 @@ func (p *Plugin) parentAttachedEndpointOperInfo(opts DHCPNetworkOptions, r InfoR
 
 	info := parentAttachedOperInfo{
 		Mode:     opts.effectiveMode(),
-		Parent:   opts.Parent,
+		Parent:   opts.linkParent(),
 		HostLink: name,
 	}
 	if link, err := hostLinkByGeneratedName(name); err == nil {

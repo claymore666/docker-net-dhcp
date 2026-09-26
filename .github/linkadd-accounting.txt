@@ -60,6 +60,11 @@ pkg/plugin/parent_gate.go 1
     Every parent-attached site in the plugin — the endpoint's own child
     in parent_attached.go, the validate_dhcp preflight probe in
     dhcp_probe.go — reaches the kernel through here.
+    The vlan option's 802.1Q sub-interface (vlan.go, #902) comes through
+    here too, holding the physical parent's gate, and so do the two
+    trial children its removal adds on the sub-interface, holding the
+    sub-interface's own gate. A vlan claims no rx_handler on its parent,
+    so the gate reports its kind as one that coexists with every other.
     A third site used to sit here: the orphaned-lease reclaim's
     temporary link in orphan_release.go. That whole mechanism was
     removed in v1.9.0 (#800) because it raced the tombstone that

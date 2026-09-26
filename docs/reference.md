@@ -58,7 +58,10 @@ network create -o key=value`, or `driver_opts:` in Compose:
 | ------ | ----- | ------- |
 | `mode` | all | `bridge` |
 | `bridge` | bridge | *(required)* |
-| `parent` | macvlan, ipvlan | *(required)* |
+| `parent` | all | *(required)* in macvlan and ipvlan; unset in bridge |
+| `macvlan_mode` | macvlan | `bridge` |
+| `ipvlan_mode` | ipvlan | `l2` |
+| `vlan` | macvlan, ipvlan | unset |
 | `gateway` | all | from DHCP |
 | `ipv6` | all | `false` |
 | `ipv6_mode` | all | `off` |
@@ -67,9 +70,11 @@ network create -o key=value`, or `driver_opts:` in Compose:
 | `lease_timeout` | all | `34s` |
 | `conflict_check` | all | `wait` |
 | `ignore_conflicts` | bridge | `false` |
+| `force_create` | bridge | `false` |
 | `skip_routes` | all | `false` |
 | `propagate_dns` | all | `false` |
 | `propagate_mtu` | all | `false` |
+| `mtu` | all | unset |
 | `client_id` | all | per-endpoint id |
 | `vendor_class` | all | `docker-net-dhcp` |
 | `validate_dhcp` | macvlan, ipvlan | `false` |
@@ -79,6 +84,8 @@ network create -o key=value`, or `driver_opts:` in Compose:
 | `audit_log` | all | `false` |
 | `release_lease` | all | `never` |
 | `host_ifname` | bridge | *(off)* |
+| `require_mac` | bridge, macvlan | `false` |
+| `link_local_fallback` | bridge, macvlan | `false` |
 
 **[Per-endpoint options](#driver-options-per-endpoint)**, set with
 `docker network connect --driver-opt`, or `driver_opts:` under a
@@ -158,10 +165,10 @@ for unattended):
 sudo mkdir -p /var/lib/net-dhcp
 
 # amd64
-docker plugin install ghcr.io/claymore666/docker-net-dhcp:v2.2.3
+docker plugin install ghcr.io/claymore666/docker-net-dhcp:v2.3.0
 
 # arm64 (v1.7.0 onward). The architecture is in the tag, see below
-docker plugin install ghcr.io/claymore666/docker-net-dhcp:v2.2.3-arm64
+docker plugin install ghcr.io/claymore666/docker-net-dhcp:v2.3.0-arm64
 ```
 
 **If the directory is missing**, the install pulls the plugin, then
@@ -175,7 +182,7 @@ plugin that is already there:
 
 ```bash
 sudo mkdir -p /var/lib/net-dhcp
-docker plugin enable ghcr.io/claymore666/docker-net-dhcp:v2.2.3
+docker plugin enable ghcr.io/claymore666/docker-net-dhcp:v2.3.0
 ```
 
 On arm64 that second line takes the `-arm64` tag, like every other
@@ -348,7 +355,12 @@ the supported one.)
 > server. Note that `docker network connect` has no `--mac-address`
 > flag, so the MAC has to come from the container definition: an
 > already-running container needs recreating once, after which the
-> address is stable across every future upgrade.
+> address is stable across every future upgrade. A network created with
+> `-o require_mac=true` refuses a container or a connect without one, so
+> a missing MAC shows up as an error at start (#1036). After a refused
+> connect, the container's next restart, manual or by its restart
+> policy, fails the same way and leaves it stopped: then run
+> `docker network disconnect` for that network and `docker start` it.
 
 **Uninstall:**
 
@@ -373,8 +385,10 @@ All modes share two invariants:
   example below uses, what 1.x and 2.0 shipped, and what all three modes
   take, and `--ipam-driver <this plugin>` (v2.1.0+, #110), which puts the
   leased address in Docker's own address management and covers `bridge`
-  and `macvlan` for IPv4. `ipvlan` is refused in that shape (#949) and so
-  is IPv6 (#960). See [Address allocation](#address-allocation).
+  and `macvlan` for IPv4 and IPv6. `ipvlan` is refused in that shape
+  (#949). IPv6 there is switched on with `-o ipv6=true` or
+  `-o ipv6_mode=<mode>`, and Docker's `--ipv6` is refused (#960). See
+  [Address allocation](#address-allocation).
 - One DHCP-served network per container is the supported shape.
 
 ### bridge (default)
@@ -383,25 +397,102 @@ You bring an existing Linux bridge that is L2-connected to the LAN
 (see [`bridge-mode.md`](bridge-mode.md) for the bridge setup itself):
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.2.3 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.3.0 \
     --ipam-driver null \
     -o bridge=my-bridge \
     my-dhcp-net
 ```
 
+#### A bridge the plugin makes (`parent`)
+
+Since v2.3.0 a bridge network can name a spare host NIC with
+`-o parent=<nic>`
+([#903](https://github.com/claymore666/docker-net-dhcp/issues/903)).
+The plugin then makes the bridge itself: it creates the link named by
+`-o bridge=`, marks it with the interface alias `docker-net-dhcp`, turns
+host IPv6 off on it (`disable_ipv6=1`), sets it up with STP off and
+enslaves the NIC as its port. The host takes no address on that bridge.
+Deleting the network deletes the bridge, and the kernel releases the
+NIC as it was: no master, promiscuity 0, still up.
+
+```bash
+sudo iptables -I DOCKER-USER -i lan0 -o lan0 -j ACCEPT
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.3.0 \
+    --ipam-driver null \
+    -o bridge=lan0 -o parent=eth1 -o force_create=true \
+    lan-dhcp
+```
+
+**The NIC must be up and carry no address.** That is host setup, done
+once in the host's network manager
+([bridge-mode.md](bridge-mode.md#a-spare-nic-the-plugin-makes-the-bridge)).
+The create is refused when the NIC carries any IPv4 address, any IPv6
+address other than a link-local one, or any route in the main table
+other than the kernel's own `fe80::/64`, because the host stops
+answering on an address the moment its NIC becomes a bridge port. It is
+also refused when the NIC is down (`parent interface is down`), is a
+bridge itself, or is already a port of another bridge. The kernel
+refuses a NIC that carries macvlan or ipvlan children. A host with one
+NIC keeps its address on that NIC, so it uses the manual recipe in
+[bridge-mode.md](bridge-mode.md) and leaves `parent` out.
+
+**Names.** `docker0` and names starting with `br-` are refused as the
+bridge name: Docker gives those names to its own bridges. `parent` and
+`bridge` naming the same link is refused.
+
+**Ownership.** A bridge the plugin did not make is never touched: with
+`parent` set and a link of the `bridge` name already there, the create
+is refused, and leaving `parent` out uses that bridge as it is. A
+bridge the plugin made is known by its mark, used again, and its NIC
+enslaved again when it went missing. Networks on the same bridge follow
+the usual rule (`ignore_conflicts`) and must name the same `parent`: the
+bridge takes one NIC, so a create naming another NIC is refused before
+anything is enslaved. The bridge is deleted with the last network,
+unless a link the plugin did not put there is still a port of it, which
+keeps the bridge for you to remove.
+
+**The host firewall (`force_create`).** Docker sets the policy of the
+`ip filter FORWARD` chain to DROP. With `bridge-nf-call-iptables` at 1
+the kernel sends frames bridged between two ports through that chain,
+so the DHCP frames between a container and the NIC are dropped and no
+container gets a lease. The plugin checks for this at `docker network
+create`: when the sysctl, or the bridge's own `nf_call_iptables`, is 1
+and the FORWARD policy is DROP, the create is refused with a message
+that names the rule in the example. The plugin reads the policy and not
+the rules, so it cannot see that rule: add the rule, then create with
+`-o force_create=true`. The check still runs, and its result goes to
+the plugin log at warning level. The policy is read over nf_tables; on
+a host where that read fails (iptables-legacy, no nf_tables) the create
+is refused the same way and the message says the policy could not be
+read. The rule is lost at reboot unless you persist it
+([bridge-mode.md](bridge-mode.md#persist-the-firewall-rule-too)).
+The check reads IPv4 only. With `ipv6_mode` set and
+`bridge-nf-call-ip6tables` at 1, the `ip6 filter FORWARD` policy drops
+the DHCPv6 frames the same way and the create does not warn: add
+`ip6tables -I DOCKER-USER -i lan0 -o lan0 -j ACCEPT` as well.
+
+**`release_lease`** other than `never` is refused on such a network:
+the release is sent from the host's address on the bridge, and the
+host has none there.
+
+**Restart and reboot.** See
+[A plugin-made bridge after a reboot](#a-plugin-made-bridge-after-a-reboot).
+
 ### macvlan
 
 No host changes are needed. Containers get per-container
-kernel-generated MACs as macvlan children of a host NIC:
+kernel-generated MACs as macvlan children of a host NIC
+(`macvlan_mode=passthru` is the exception, see
+[sub-modes](#macvlan-and-ipvlan-sub-modes)):
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.2.3 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.3.0 \
     --ipam-driver null \
     -o mode=macvlan -o parent=eth0 \
     lan-dhcp
 ```
 
-### ipvlan (L2)
+### ipvlan
 
 Like macvlan, but children share the parent NIC's MAC, for switches or
 hypervisors that refuse multiple MACs per port (sticky-MAC port
@@ -409,7 +500,7 @@ security, hostile vSwitches, some Wi-Fi APs). The DHCP server must key
 reservations on DHCP option 61 (client identifier) and never on MAC:
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.2.3 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.3.0 \
     --ipam-driver null \
     -o mode=ipvlan -o parent=eth0 \
     lan-dhcp
@@ -419,6 +510,164 @@ Mode-specific constraints (MAC behaviour, parent-NIC rules, kernel
 limitations) are catalogued in
 [`parent-attached-modes.md`](parent-attached-modes.md#constraints).
 
+### macvlan and ipvlan sub-modes
+
+Since v2.3.0, `-o macvlan_mode=` and `-o ipvlan_mode=` choose the kernel
+mode of each container's link
+([#905](https://github.com/claymore666/docker-net-dhcp/issues/905)).
+Left out, a macvlan link is `bridge` and an ipvlan link is `l2`, as in
+every earlier release. `ip -d link show eth0` inside the container shows
+the mode, and a plugin restart rebuilds each link in the mode its network
+was created with.
+
+| option | value | DHCP | what the mode changes |
+| ------ | ----- | ---- | --------------------- |
+| `macvlan_mode` | `bridge` (default) | leases | containers on one parent reach each other inside the host |
+| `macvlan_mode` | `vepa` | leases | every frame leaves through the parent, container to container too; two containers on one parent reach each other only through a switch port that sends frames back where they came from (hairpin, 802.1Qbg reflective relay) |
+| `macvlan_mode` | `private` | leases | containers on one parent never reach each other, not even through such a switch |
+| `macvlan_mode` | `passthru` | leases, one container per parent | the container takes the parent itself; see below |
+| `ipvlan_mode` | `l2` (default) | leases | |
+| `ipvlan_mode` | `l3`, `l3s` | refused | see below |
+
+Every value that leases was measured leasing from dnsmasq on Linux 6.12,
+and the integration suite leases in each of them. Any other value, or
+`macvlan_mode` on an ipvlan network, `ipvlan_mode` on a macvlan one, or
+either on a bridge network, is refused at `docker network create` with
+the accepted values in the error. `validate_dhcp` probes with the
+network's sub-mode.
+
+**ipvlan `l3` and `l3s` are refused.** An ipvlan child in `l3` or `l3s`
+mode sends no broadcast out of its parent, so its DHCPDISCOVER reaches no
+DHCP server and no relay. Measured on Linux 6.12.107 on 2026-09-24: a
+dnsmasq on the segment logged no DISCOVER from an `l3` or `l3s` child,
+and with dnsmasq bound to the parent itself, a capture on the parent saw
+no packet at all. No relay or server placement helps, so
+`docker network create` refuses both values with that reason. The option
+keeps its name, and `l2` is the one accepted value.
+
+**The kernel keeps one ipvlan mode per parent.** A new ipvlan child in
+another mode switches every child on that parent to its mode, including
+the running containers of other networks (measured on the same kernel).
+The plugin refuses an ipvlan network on a parent that already carries an
+ipvlan network in another mode, its own or one of Docker's `ipvlan`
+driver, and names that network in the error. It cannot refuse the
+reverse order: a Docker `ipvlan` network in `l3` created later on a
+parent this plugin uses is not the plugin's to stop. Keep `l3` ipvlan
+networks off the parents this plugin uses.
+
+**`macvlan_mode=passthru` gives the parent to one container.** Measured
+on Linux 6.12:
+
+- The container's link wears the parent's MAC, so the DHCP server sees
+  the parent's MAC for that container. The plugin sets the link's MAC to
+  that same value, which leaves the parent's MAC as it is and keeps
+  udev from rewriting it.
+- While the container runs, the host loses the parent: the host's own
+  address on it stops answering from the network, and the parent is put
+  in promiscuous mode. The address answers again once the container
+  stops. Use a NIC the host does not need.
+- A second container on the network is refused. The kernel answers
+  `invalid argument`, and the plugin's error explains it:
+  `failed to create macvlan link on "eth0": invalid argument. The kernel
+  answers this when a macvlan_mode=passthru child holds the parent: a
+  passthru network gives its parent to one container, so a second child
+  is refused beside it, ...`. Stop the container that holds the parent,
+  or put the network on another parent.
+- A passthru network and any other macvlan network, of this plugin or of
+  Docker's `macvlan` driver, cannot share a parent; the second one is
+  refused at `docker network create`, naming the first.
+- `--mac-address` is refused, because a MAC set on the passthru link
+  changes the parent's own MAC. For the same reason `require_mac=true`
+  and this plugin's IPAM mode (which gives every endpoint a MAC) are
+  refused with `passthru` at `docker network create`; use
+  `--ipam-driver null`.
+- On `docker restart` the old link can still hold the parent for a
+  moment while its namespace goes away, and the kernel refuses the new
+  one `invalid argument` in that window. The plugin retries for up to
+  3 seconds before it reports the error.
+
+### VLAN sub-interfaces (`vlan`)
+
+Since v2.3.0, `-o vlan=<id>` puts a macvlan or ipvlan network on an
+802.1Q VLAN of its parent
+([#902](https://github.com/claymore666/docker-net-dhcp/issues/902)).
+The children attach to the sub-interface `<parent>.<id>`, the name
+Docker's own `macvlan` driver uses, so their DHCP traffic and everything
+after it leaves the parent tagged:
+
+```bash
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.3.0 \
+    --ipam-driver null \
+    -o mode=macvlan -o parent=eth0 -o vlan=100 \
+    lan-vlan100
+```
+
+**Ownership.** When `eth0.100` is missing, the plugin creates it, sets
+it up and marks it with the interface alias `docker-net-dhcp`;
+`ip -d link show eth0.100` shows `vlan protocol 802.1Q id 100` and
+`alias docker-net-dhcp`. Before it comes up, the plugin turns IPv6 off
+on it for the host (`disable_ipv6=1`), so the host takes no link-local
+address, no SLAAC address and no default route from the VLAN's router,
+and services the host binds to `[::]` are not reachable from that VLAN.
+The containers on it keep their own IPv6. Measured on Linux 6.12 with
+macvlan and ipvlan children. A link of that name that already exists is used
+as it is when it is an 802.1Q VLAN on that parent with that ID: never
+marked, so the plugin never removes a sub-interface it did not create,
+and never set up, so like any parent it must be up, and a down one is
+refused as `parent interface is down: eth0.100`. Removing the mark by hand makes the link yours in the same way.
+
+**Sharing and removal.** Networks on the same parent and ID share the
+sub-interface. Deleting a network removes a marked sub-interface only
+when all of these hold: no other network uses it, of this plugin or of
+Docker's `macvlan` or `ipvlan` driver with `-o parent=eth0.100`; no
+other link sits on it on the host; and the kernel shows it free. For
+the last check the plugin adds and removes one trial macvlan and one
+trial ipvlan link on it: the kernel refuses one of the two while a
+macvlan, ipvlan or macvtap link, or a bridge, holds it in any network
+namespace, a container's included, which no host link list shows.
+Otherwise the link stays and the plugin log says why. One case is not
+seen: a VLAN stacked on the sub-interface and then moved into another
+namespace holds nothing the trial meets, and removing the sub-interface
+deletes that link too. Measured on Linux 6.12, 2026-09-24.
+
+**Restart and reboot.** A restarted plugin knows its sub-interfaces by
+the mark and removes them with their last network as before. A
+container start re-creates a missing sub-interface, after a host reboot
+or a manual `ip link del`: while a network with `vlan` exists, it owns
+that name.
+
+**Refused at `docker network create`:**
+
+- `vlan` on a bridge network: `vlan cannot be set in mode=bridge`.
+- A value that is not a decimal from 1 to 4094 written without leading
+  zeros: `vlan "4095" is not a VLAN ID from 1 to 4094`. 0 and 4095 are
+  reserved by 802.1Q.
+- A sub-interface name over 15 bytes, the kernel's limit for any
+  interface name: with `-o parent=enp129s0f0np0` and `-o vlan=100`,
+  `enp129s0f0np0.100` is 17 bytes and is refused as `at most 15 bytes`.
+  Use a shorter parent name, for example through a `.link` file.
+- An existing link of that name that is not an 802.1Q VLAN, or is one on
+  another parent, with another ID, or with protocol 802.1ad. The error
+  names the link and what it is.
+- A VLAN with that ID already on that parent under another name, for
+  example `vlan100` from netplan or systemd-networkd. The kernel takes
+  one per parent and ID; the error names the link, and `-o parent=vlan100`
+  without `vlan` uses it.
+- `release_lease=on_stop` or `on_remove` when the plugin makes the
+  sub-interface, or made it for another network: the release is sent
+  from the host's address on that link, and the host has none there,
+  no IPv4 and, as above, no IPv6. Create `eth0.100` yourself with a
+  host address and the plugin uses it, with `release_lease` accepted.
+
+The MTU check of the `mtu` option runs against the sub-interface, and
+`validate_dhcp` probes through it. In this plugin's IPAM mode the pool
+belongs to the sub-interface: a second network with the same subnet
+names it as `--ipam-opt parent=eth0.100`, and
+`--ipam-opt parent=eth0` on a `vlan` network is refused as naming
+another interface. Docker's own `macvlan` driver deletes a
+sub-interface it created itself when its network goes, even while a
+network of this plugin uses it.
+
 ### Address allocation
 
 Every example above passes `--ipam-driver null`. Since v2.1.0 the plugin
@@ -426,8 +675,8 @@ also serves an IPAM driver of its own (#110), and the line names the
 plugin twice:
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.2.3 \
-    --ipam-driver ghcr.io/claymore666/docker-net-dhcp:v2.2.3 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.3.0 \
+    --ipam-driver ghcr.io/claymore666/docker-net-dhcp:v2.3.0 \
     -o mode=macvlan -o parent=eth0 \
     lan-dhcp
 ```
@@ -489,34 +738,51 @@ they acquire during endpoint creation instead.
 only for a **second** network in this shape with the same subnet on a
 different parent. Two such networks otherwise derive the same pool
 identity, and the second `docker network create` is refused, naming this
-option. One network needs neither key.
+option. One network needs neither key. On a network with `-o vlan=<id>`
+the interface is the sub-interface, `--ipam-opt parent=<parent>.<id>`
+(#902).
 
 The two keys are exclusive. A pool names one interface, so giving both
 is refused at `docker network create`. The pool is requested before this
 network's own `-o` options reach the driver, so the refusal cannot tell
 which of the two your network is and does not pretend to: it names both,
 `-o bridge=` on a bridge network, `-o parent=` on a macvlan or ipvlan
-one, and you keep the one your mode owns (#1010). Before that refusal
+one, and you keep the one your mode owns (#1010). A bridge network that
+also names `-o parent=` (#903) keeps `bridge`: its pool's interface is
+the bridge the plugin makes. Before that refusal
 the second key was accepted and dropped, and the pool identity was built
 from the first key alone.
 
 **Not supported.** `ipvlan` networks cannot use this plugin as their
-IPAM driver: Docker generates a MAC per endpoint for an IPAM driver that
-asks for one, and ipvlan children share the parent's MAC and refuse a
-supplied one. The network create is refused, and `--ipam-driver null` is
-unchanged and supported for ipvlan (#949).
+IPAM driver. Docker generates a MAC for each endpoint when the IPAM
+driver asks for one and sets it on the container's interface at start,
+and an ipvlan interface cannot change its MAC, so every container would
+fail to start. The network create is refused, and `--ipam-driver null`
+is unchanged and supported for ipvlan. Lifting the refusal needs a
+change in Docker's engine (#949).
 
-**IPv6 is IPv4-only in this shape, and the combination is refused.** The
-plugin allocates no IPv6 pool, so Docker's `--ipv6` is refused; and so is
-every option that switches IPv6 on for the network, which is
-`-o ipv6=true` and `-o ipv6_mode=` with any mode but `off`, because the
-IPAM endpoint path runs no DHCPv6 exchange at all. A container on such a
-network would get no IPv6 address from the plugin, and the identity the
-v6 client falls back to at join time is derived from the endpoint MAC,
-which Docker regenerates at every restart in this shape. The refusals
-name #960, and the one at `docker network create` names the mode the
-network was set to. On an `--ipam-driver null` network every `ipv6_mode`
-is unchanged and supported.
+**IPv6 is switched on with a driver option, and `--ipv6` is refused.**
+`-o ipv6=true` or `-o ipv6_mode=<mode>` switches IPv6 on, with every
+mode an `--ipam-driver null` network of the same driver mode takes, and
+nothing else on the create line changes. The address comes from the
+container's link when the endpoint is created, from the DHCPv6 server or
+the router's advertisement, and Docker shows it as `GlobalIPv6Address`.
+The plugin allocates no IPv6 pool, so Docker's `--ipv6` is refused with
+a message that names the two options, and `--ip6` is not served. The
+DHCPv6 identity (DUID and IAID) is derived from the MAC the endpoint had
+at its first start and stored, so `docker restart` keeps it, and the
+address with it, although Docker gives the endpoint a new MAC; the
+limits are the IPv4 ones, the 60 s window and two containers of one
+network restarted together, which both get a new identity (#960). A
+`slaac` address is formed from the MAC the endpoint has now, so it
+changes at every restart unless `--mac-address` pins the MAC.
+
+**`link_local_fallback` is refused in this shape.** Docker takes the
+address from the IPAM driver before the endpoint exists and never learns
+of a later change, so a container that fell back to 169.254/16 would keep
+that address in Docker's records after it moved to a lease. The refusal
+comes at `docker network create`; on an `--ipam-driver null` network the
+option is supported (#904).
 
 **A network's IPAM driver is fixed when it is created.** Upgrading the
 plugin never moves an existing `--ipam-driver null` network into the new
@@ -551,9 +817,12 @@ value as an invalid duration.
 
 | option | modes | default | since | description |
 | ------ | ----- | ------- | ----- | ----------- |
-| `mode` | n/a | `bridge` | macvlan v0.2.0, ipvlan v0.4.0 | Attachment strategy: `bridge`, `macvlan`, or `ipvlan` (L2). |
+| `mode` | n/a | `bridge` | macvlan v0.2.0, ipvlan v0.4.0 | Attachment strategy: `bridge`, `macvlan`, or `ipvlan`. `macvlan_mode` and `ipvlan_mode` choose the kernel mode of the link. |
 | `bridge` | bridge | *(required)* | upstream | Existing Linux bridge to plug container veths into. |
-| `parent` | macvlan, ipvlan | *(required)* | v0.2.0 | Host NIC to attach children to (e.g. `eth0`, `ens18`). Must exist and be administratively `UP`. |
+| `parent` | all | *(required)* in macvlan and ipvlan; unset in bridge | v0.2.0; bridge **v2.3.0** | Host NIC to attach children to (e.g. `eth0`, `ens18`). Must exist and be administratively `UP`. In bridge mode (#903) it is the spare NIC the plugin enslaves into a bridge it makes under the `bridge` name, removed with the network; the NIC must carry no address. See [A bridge the plugin makes](#a-bridge-the-plugin-makes-parent). |
+| `macvlan_mode` | macvlan | `bridge` | **v2.3.0** | Kernel mode of each container's macvlan link: `bridge`, `vepa`, `private` or `passthru` (#905). Each of them leases. `passthru` gives the parent to one container, wears the parent's MAC, and is refused with `--mac-address`, `require_mac=true`, this plugin's IPAM mode, and another macvlan network on the same parent. Any other value, and the option on a network that is not macvlan, is refused at `docker network create`. See [macvlan and ipvlan sub-modes](#macvlan-and-ipvlan-sub-modes). |
+| `ipvlan_mode` | ipvlan | `l2` | **v2.3.0** | Kernel mode of each container's ipvlan link (#905). `l2` is the one accepted value. `l3` and `l3s` are refused at `docker network create`: such a child sends no broadcast, so no DHCP server or relay hears its DHCPDISCOVER (measured on Linux 6.12.107, 2026-09-24). The kernel keeps one ipvlan mode per parent, so an ipvlan network is refused on a parent that another ipvlan network uses in another mode. The option on a network that is not ipvlan is refused. See [macvlan and ipvlan sub-modes](#macvlan-and-ipvlan-sub-modes). |
+| `vlan` | macvlan, ipvlan | unset | **v2.3.0** | 802.1Q VLAN ID from 1 to 4094 (#902). Children attach to the sub-interface `<parent>.<id>`, which the plugin creates when it is missing and removes with the last network that uses it. Refused in bridge mode, for any other value, and when `<parent>.<id>` is over the kernel's 15 bytes. See [VLAN sub-interfaces](#vlan-sub-interfaces-vlan). |
 | `gateway` | all | from DHCP | v0.3.0 | Override the IPv4 default gateway returned by the DHCP server, for split-horizon LANs where containers should egress via a different router (e.g. a VPN gateway). |
 | `ipv6` | all | `false` | upstream | Lease a DHCPv6 address for every endpoint on this network, alongside its DHCPv4 one. Docker reports it as `GlobalIPv6Address`. The address is installed as a `/128` with the server's preferred and valid lifetimes, its DUID and IAID persist across restarts, and the container's link is configured to process Router Advertisements, which is what supplies the route, since DHCPv6 carries no next hop. On a segment that advertises no DHCPv6 address the endpoint still starts, without one; on a segment that advertises one and then answers nothing it fails. See [DHCPv6](#dhcpv6-ipv6true), and the ipvlan upgrade note there if you are moving from 1.x.<br><br>**Since v2.2.0 this option is the short spelling of `ipv6_mode=dhcp`** and keeps exactly that meaning. `ipv6=true` with `ipv6_mode=off` is refused at `docker network create`: the two say opposite things about the same endpoint and there is no reading of the pair that is not a guess. `ipv6=false` written out beside `ipv6_mode=dhcp`, `slaac` or `auto` is refused for the same reason. Setting `ipv6_mode` alone switches IPv6 on, so a network states it once. |
 | `ipv6_mode` | all | `off` | **v2.2.0** | Where an endpoint's IPv6 address comes from. `off` (the default) is no IPv6 from this plugin. `dhcp` leases it over DHCPv6, which is what `ipv6=true` has always meant and still means. `slaac` forms it from a router advertisement's autonomous prefix (RFC 4862 §5.5.3) and sends no Solicit. `auto` reads the router advertisement and does what it says: the managed-address flag means DHCPv6 (RFC 4861 §4.2, "When set, it indicates that addresses are available via Dynamic Host Configuration Protocol"), and a clear flag means the prefix. Any other value is refused at `docker network create` with the accepted set in the message, rather than resolved to a default, because the default is `off` and a typo would silently switch IPv6 off on a network created to have it.<br><br>**`auto` on a link whose router says DHCPv6 and whose server then says nothing** falls back to the advertised prefix after half the router-discovery window, counts it in `dhcpv6_auto_fallbacks` and logs the fallback (the address itself is subject to the boundary at the end of this row). **`-o ipv6_auto_strict=true` turns that off** and fails the endpoint instead; the row below is that option.<br><br>**`slaac` and `auto` are refused in `mode=ipvlan`.** An ipvlan L2 slave inherits the parent link's MAC, an address formed from an advertisement is derived from that MAC (RFC 4291 appendix A), and RFC 4862 gives a node with a fixed interface identifier no retry after duplicate address detection fails, so every container on such a network would form one address and the second one onwards would sit in a conflict it cannot recover from. Use `ipv6_mode=dhcp` on ipvlan, which gives each endpoint its own DUID.<br><br>**In `slaac` a stored preferred address is not asked for.** `-o ipv6=...`'s per-endpoint preferred address (`preferred_ipv6`) is still validated and still refused if malformed, and the plugin logs the address it is not requesting; there is no server to ask, because the address comes from the prefix.<br><br>**In `slaac` and `auto` the plugin installs every address the advertisement forms, on the container's link.** RFC 4862 §5.5.3 forms one address per advertised autonomous prefix, so a link advertising a unique-local prefix and a global one gives the container two, and the client caps an endpoint at eight. Each address is installed with its own preferred and valid lifetimes, taken from the Prefix Information option that formed it and refreshed by every later advertisement (RFC 4861 §6.2.1). An address whose preferred lifetime runs out is left on the link and marked deprecated (`preferred_lft 0`, RFC 4862 §5.5.4: "SHOULD continue to be used as a source address in existing communications, but SHOULD NOT be used to initiate new communications"); one whose valid lifetime runs out, or whose prefix the router stops advertising, is removed. `ip -6 addr show` inside the container is where an operator reads all of this. **The lifetimes arrive a moment after the container does.** The engine installs the address `CreateEndpoint` reported while it builds the container's sandbox, and it has no lifetimes to install, so that address is on the link as `valid_lft forever preferred_lft forever` until the endpoint's own client binds and the plugin applies the advertised numbers. `ipv6_slaac_addresses` moves on that second install, which is what makes the two visible apart. Counters: `ipv6_slaac_addresses`, `ipv6_addresses_withdrawn`, `ipv6_slaac_prefixes_ignored`.<br><br>**Docker is told one address, and `ipv6_main_prefix` chooses which.** `CreateEndpoint` returns a single `AddressIPv6` and the engine has no way to change it afterwards, so `docker inspect` and the engine's own records show the first advertised prefix's address by default, whatever else the container holds. The row below is the option that names another. The addresses the container actually has are the whole set either way. [#818](https://github.com/claymore666/docker-net-dhcp/issues/818), [#819](https://github.com/claymore666/docker-net-dhcp/issues/819) and [#808](https://github.com/claymore666/docker-net-dhcp/issues/808) are the three issues this answers. |
@@ -562,18 +831,22 @@ value as an invalid duration.
 | `lease_timeout` | all | `34s` | upstream; default **derived** since v2.0.0 | Budget for the up-front DHCP exchange at container creation. It is a deadline over one acquisition, and what happens inside it is RFC 2131 §4.1's retransmission schedule, which the plugin sets explicitly. **4s, 8s, 16s, 32s and a 64s ceiling are intervals and never elapsed times**: the first DISCOVER goes out immediately and arms a 4s timer, each retransmission arms the next interval as it goes out, and every interval carries ±1s of uniform jitter. The retransmissions therefore land at roughly **4s, 12s, 28s and 60s** after the first packet, matching the RFC's own worked example, "four times, for a total delay of 60 seconds", and after the fourth the exchange is abandoned and restarted from DISCOVER. Permanent failures, such as a missing interface or a malformed option, still fail immediately instead of waiting it out.<br><br>**The default is 34s, and it is computed, never written down.** In the default `conflict_check=wait` the acquisition is not finished at the DHCPACK: RFC 5227 §2.1's check runs before the address is used, and costs up to 7.0s (PROBE\\_WAIT 1s + two intervals of up to PROBE\\_MAX 2s + ANNOUNCE\\_WAIT 2s). One DISCOVER retransmission is 4s ±1s. One acquisition is therefore 5.0 + 7.0 = **12.0s**.<br><br>A budget of one acquisition is not enough, because the very thing the check exists to find makes a second one necessary. When the probe finds the address taken, the client sends a DHCPDECLINE, and RFC 2131 §3.1(5) requires it to wait **a minimum of ten seconds** before restarting; the address it is then offered has to clear §2.1 in its turn. So the default funds **one conflict and its recovery**: 12.0 + 10.0 + 12.0 = **34.0s**, read out of the DHCP client's own constants at startup so a change to either RFC schedule moves the default with it instead of leaving a stale literal behind. This is not theoretical: on the 2.x test lane a 12s default gave up 0.8s before the replacement lease was granted, on a run whose server log shows the whole exchange completing correctly. The old 10s literal funded the DISCOVER retransmission and nothing else.<br><br>**What the longer default costs.** On a segment with no DHCP server at all, `docker run` now fails after about 34s instead of about 12s. That is the price of not failing a container that hit a real address conflict, which is the case this option exists for; `-o lease_timeout=12s` buys the old behaviour back and gives up conflict recovery. In `conflict_check=off` nothing declines, so the extra budget is never spent.<br><br>**A `lease_timeout` shorter than the probe window is refused at `docker network create`** when `conflict_check=wait`, with the arithmetic in the message. Under it a wait acquisition cannot succeed even against an instant DHCP server, so it is a configuration that can only time out. It is accepted in `async` and `off`, where the address is handed over without waiting for the check. Raise it on slow or relayed networks: `-o lease_timeout=60s` funds three retransmissions and sits on top of the fourth. Note the interaction with `dhcp_servers`, which subdivides this budget.<br><br>**DHCPv6 does not run on this budget.** Every term in the 34s above is DHCPv4's: a DISCOVER retransmission, RFC 5227's probe window, RFC 2131 §3.1(5)'s ten-second wait after a DHCPDECLINE, and none of them describes a DHCPv6 exchange. The v6 half of `CreateEndpoint` is bounded instead by a window derived from its own RFCs: RFC 4861 §6.3.7's router discovery (**13s** with the client's constants, because a client has no reason to speak DHCPv6 until an advertisement tells it to) plus RFC 9915 §15's Solicit schedule for four transmissions (**8.7s**), so **21.7s**, and by two other bounds, whichever of the three is shortest: `lease_timeout`, and **what is left of the Docker daemon's own deadline on the call**. The daemon waits 30s for `CreateEndpoint` to answer and then stops listening, and on a dual-stack network the DHCPv4 half runs first and has already spent part of that: about 11 seconds on the project's own bridge fixture, most of it RFC 5227's probe window. So the v6 half gets what is left of 26s, the 30 the daemon allows less 4 for writing the answer, and 21.7s only when that is the smaller number. This is what #868's fix was defeated by: the verdict it produces was correct and arrived after nobody was listening, so `docker run` failed with `Client.Timeout exceeded` instead of starting the container without a v6 address.<br><br>**On a plain SLAAC segment the v6 half ends in about a second, well under 21.7.** An advertisement carrying neither the managed nor the other-configuration flag has said there is nothing to ask DHCPv6 for, and the client sends no Solicit at all on such a link, so waiting out the rest of the budget cannot change the answer. Measured on the project's own fixture, endpoint creation on a SLAAC segment costs about a second more than the same creation on an IPv4-only network. |
 | `conflict_check` | all | `wait` | **v2.0.0** | How RFC 5227 Address Conflict Detection is run for endpoints on this network, by the DHCP client, inside the container's own network namespace. **`wait`** (default) completes §2.1's probe before the address is configured: `docker run` blocks for the probe window (4.0–7.0s, 5.5s on average), a conflict is DECLINEd to the server and another address is requested, and the container never comes up on a contested address. **`async`** configures the address at the DHCPACK and probes behind it: `docker run` returns without the extra seconds, and a conflict found afterwards CHANGES the container's address while it is running, and connections on the old one are already broken for both hosts. MEASURED end to end at about **11 seconds** from the conflict appearing to the container carrying the new address, of which ten are RFC 2131 §3.1(5)'s mandatory wait between the DHCPDECLINE and the next DISCOVER; for that whole window the container still holds the contested address, exactly as any other host in a conflict does. Detection and re-acquisition together are about a second. **`off`** sends no ARP at all, neither §2.1's probes nor §2.4's ongoing listener; nothing inside the IPv4 client detects a conflict on this network, so `address_conflicts_v4` and `acd_conflicts_detected` move only for a conflict reported to the client from outside it, which nothing in the plugin does today, and `acd_probes_sent` stays where it was. **The option does not reach IPv6.** It is a DHCPv4 client parameter and the DHCPv6 client has no such parameter, so Duplicate Address Detection runs on every mode: `address_conflicts_v6`, and the `address_conflicts` total with it, still moves on an `off` network. Any other value is refused at `docker network create` with the three names in the message. Networks created before this option existed read as `wait`. **`wait` applies to acquiring an address and never to keeping one:** a container joining a network it already holds a lease on runs the check in `async` even here, so a restart is not charged the probe window a second time for an address the previous run already cleared. The probes, the §2.4 listener and the DECLINE all still run. `-o validate_dhcp=true`'s preflight probe runs `off` for the same kind of reason: the address it is offered is released at once and never configured. Both `wait` and `async` keep watching after the address is in use (§2.4), which is the case the plugin's old probe could not cover at all. **This is not `ignore_conflicts`, and the two are never alternatives:** `conflict_check` is about another *device on the LAN* holding the address your DHCP server just leased, on any mode; `ignore_conflicts` is about another *Docker network on this host* already owning the bridge you named, in bridge mode, before any lease exists. |
 | `ignore_conflicts` | bridge | `false` | upstream | Skip the bridge-already-in-use check against other Docker networks. That check is about *this host's* Docker state and never about the segment. It has nothing to do with address conflicts on the LAN; that is `conflict_check`. No-op in macvlan/ipvlan. |
+| `force_create` | bridge | `false` | **v2.3.0** | Create a bridge network with `parent` although the firewall check expects its bridged frames dropped (#903). Without it, `docker network create` is refused when `bridge-nf-call-iptables` is 1 and the `ip filter FORWARD` policy is DROP, or when that policy cannot be read over nf_tables. With it the check still runs, its result goes to the plugin log at warning level, and the network is created. Set it after adding the `DOCKER-USER` rule the refusal names: the plugin reads the policy, not the rules. Refused without `parent` and in any other mode. See [A bridge the plugin makes](#a-bridge-the-plugin-makes-parent). |
 | `skip_routes` | all | `false` | upstream; all modes since v0.9.0 | Don't copy non-default static routes from the parent (bridge or NIC) into containers, **and** don't apply DHCP-supplied classless static routes (option 121, see below), **and** (v2.2.0+, #821) don't apply the routes an IPv6 Router Advertisement asks for. v0.9.0 extended parent route-copying from bridge-only to all modes (#102); set `true` to restore the old macvlan/ipvlan no-copy behaviour. Neither default gateway is affected either way. |
 | `propagate_dns` | all | `false` | v0.9.0 | Write the DHCP-supplied DNS server list (option 6 / v6 option 23) into the container's `/etc/resolv.conf` on every bind/renew. Overrides Docker's embedded resolver for this network; the `search` line uses option 119 with fallback to option 15 on v4, and DHCPv6 option 24 on v6 (v1.9.0+, #815). Since v2.2.0 (#821) the v6 list also carries RFC 8106 RDNSS and DNSSL from the Router Advertisement, with DHCPv6's own options taking precedence (RFC 8106 §5.3.1), and it is rewritten when a later advertisement changes it. A resolver at a link-local address is written with its interface as an RFC 4007 §11 scope zone, `nameserver fe80::1%eth0`; musl does not parse that form. An empty list is never written: the container keeps the resolvers it had. |
-| `propagate_mtu` | all | `false` | v0.9.0 | Apply DHCP option 26 (Interface MTU) to the container link on bind/renew. For jumbo-frame (9000) and VPN-reduced (~1450) networks. Since v1.8.0 an MTU outside `[576, 65535]` is refused and the link keeps the MTU it had, counted by `mtu_refused`. Nothing below this plugin holds the bottom of that range, so a server-supplied 68 used to be applied verbatim. **This option governs IPv4 only.** The MTU an IPv6 Router Advertisement carries (RFC 4861 §4.6.4) is applied whatever it says, because until v2.2.0 the container's kernel applied it on every IPv6 network and an option defaulting to `false` would have taken it away; it is applied to the link, so it bounds IPv4 as well, and the refusal range still holds. On a dual-stack network where both families supply an MTU, the link takes the **smaller** of the two: the larger is a promise the link cannot keep for the family that asked for the smaller one (#821). |
+| `propagate_mtu` | all | `false` | v0.9.0 | Apply DHCP option 26 (Interface MTU) to the container link on bind/renew. For jumbo-frame (9000) and VPN-reduced (~1450) networks. Since v1.8.0 an MTU outside `[576, 65535]` is refused and the link keeps the MTU it had, counted by `mtu_refused`. With [`mtu`](#driver-options-network-level) set, `mtu` governs the link MTU and this option cannot be combined with it. Nothing below this plugin holds the bottom of that range, so a server-supplied 68 used to be applied verbatim. **This option governs IPv4 only.** The MTU an IPv6 Router Advertisement carries (RFC 4861 §4.6.4) is applied whatever it says, because until v2.2.0 the container's kernel applied it on every IPv6 network and an option defaulting to `false` would have taken it away; it is applied to the link, so it bounds IPv4 as well, and the refusal range still holds. On a dual-stack network where both families supply an MTU, the link takes the **smaller** of the two: the larger is a promise the link cannot keep for the family that asked for the smaller one (#821). |
+| `mtu` | all | unset | v2.3.0 | Set the MTU of every container link this network creates: a decimal integer from 68 to 65535. When set it is the only source of the link MTU. DHCP option 26 and the MTU an IPv6 Router Advertisement carries are not applied, one info line per endpoint names both values, and `mtu_refused` does not count it. The plugin sets the link back to this value on every bind and renew. Refused at network creation: a value outside 68..65535, a value that is not a decimal integer, a value beside `propagate_mtu=true`, and a value above the MTU of the parent (macvlan, ipvlan) or of the bridge; the error names both values. If the kernel refuses the value when a container starts, the endpoint fails with the kernel's error and leaves no link behind. In bridge mode both ends of the veth pair get the value, since ends that differ drop full-size frames without an error. **Bridge:** a bridge whose MTU was never changed follows its smallest port, so a container with a smaller mtu lowers the bridge's own host interface for as long as that container is attached, and it comes back when the container leaves; a bridge whose MTU was ever set to a value other than its current one holds it (measured 2026-09-24, kernel 6.12). The creation check reads the bridge's MTU at that moment, so while such a container is attached, a second network on that bridge with a larger mtu is refused. **ipvlan:** the child follows its parent's MTU, so a parent MTU change shows in the container until the next renew. **macvlan:** a parent lowered below the configured value clamps the child, and the re-apply is refused on every renew until the parent comes back, with one warning line each time. (#1037) |
 | `client_id` | all | per-endpoint id | v0.9.0 | Override DHCP option 61 (Client Identifier) for every endpoint on this network; sent as RFC 2132 opaque bytes (type `0x00`). The default per-endpoint id is what makes per-container reservations work, and a fixed `client_id` makes all containers look like one client to the server. Pair with `vendor_class` for class-based policy. **The derived default differs by mode** (see below). **Since v2.2.2 a change to this option does not move an endpoint that already holds a lease:** the identifier an endpoint sends is the one stored with its lease record, so the new value applies to addresses taken after the change. See [Restart stability](#restart-stability-mac-and-ip). |
 | `vendor_class` | all | `docker-net-dhcp` | v0.9.0 | Override DHCP option 60 (Vendor Class Identifier), for DHCP servers running class-based policy (different gateway/option sets per class). v4 only: the DHCPv6 client sends no vendor-class option. |
-| `validate_dhcp` | macvlan, ipvlan | `false` | v0.9.0 | Pre-flight probe at `docker network create`: one-shot DHCP exchange on a temporary child of the parent, rejecting the network if no server answers within 8s. Catches isolated parents / blocked UDP 67-68 / broken VLAN tags at create time. Costs one transient lease per probe. Bridge mode rejects the option. **Since v1.6.0 the probe link is the same kind the network's endpoints will be**: a macvlan child for a macvlan network, an ipvlan L2 child for an ipvlan one (#486). It used to build a macvlan whatever the mode was, on the reasoning that reachability is mode-agnostic; reachability is, but the parent is not. One parent cannot carry both kinds, so a macvlan probe on an ipvlan network was refused outright whenever an ipvlan container was already running on that NIC, so `validate_dhcp` failed for a reason that had nothing to do with DHCP, which is the opposite of what the flag is for. **What MAC you will see at the server:** on macvlan, a random locally-administered address. On ipvlan, the **parent's** address, because an ipvlan child cannot have its own, by kernel design. The probe is otherwise identity-neutral: it sends no hostname and no client identifier, so on ipvlan there is nothing but the shared `chaddr` to tell it apart from the containers on that NIC. Don't go looking for a random MAC in an ipvlan probe's lease log. |
+| `validate_dhcp` | macvlan, ipvlan | `false` | v0.9.0 | Pre-flight probe at `docker network create`: one-shot DHCP exchange on a temporary child of the parent, rejecting the network if no server answers within 8s. Catches isolated parents / blocked UDP 67-68 / broken VLAN tags at create time. Costs one transient lease per probe. Bridge mode rejects the option. **Since v1.6.0 the probe link is the same kind the network's endpoints will be**: a macvlan child for a macvlan network, an ipvlan child for an ipvlan one (#486), and since v2.3.0 in the network's `macvlan_mode` or `ipvlan_mode` (#905). It used to build a macvlan whatever the mode was, on the reasoning that reachability is mode-agnostic; reachability is, but the parent is not. One parent cannot carry both kinds, so a macvlan probe on an ipvlan network was refused outright whenever an ipvlan container was already running on that NIC, so `validate_dhcp` failed for a reason that had nothing to do with DHCP, which is the opposite of what the flag is for. **What MAC you will see at the server:** a random locally-administered address as the client hardware address (`chaddr`), in every mode, so that is the MAC in the server's log and lease table. On ipvlan and on `macvlan_mode=passthru` the frames leave with the parent's MAC, because such a child cannot have its own, by kernel design. The probe is otherwise identity-neutral: it sends no hostname and no client identifier. |
 | `dhcp_servers` | all | _(none)_ | v1.8.0 | Ordered preference list of DHCPv4 servers, e.g. `1.1.1.1,2.2.2.2`. The initial acquisition tries each in turn, restricted to that one server, and takes the first lease offered. **The list is exhaustive**: if none of them answers, the endpoint fails instead of accepting whichever server happened to reply. Naming your servers is what makes the list complete. The ladder **divides** the existing acquisition budget (`lease_timeout`) instead of extending it, so enabling this never makes `docker run` slower. Because it divides instead of extending, a long list cannot get one attempt each: an attempt costs entering the container's network namespace, opening a packet socket on the interface and a DHCP round trip, so a slice too small to hold one exchange is a guaranteed failure instead of a fast one. Once the list outgrows the budget the plugin keeps the top entries on their own attempts and asks **the tail as a single group**. With the default 34s budget that is the first ten individually, then the rest together, each attempt taking 3.09s of it. Nothing is dropped, the total does not grow, and what degrades is only the strict ordering *within* that last group. Lists of eleven or fewer are unaffected at that budget. (#731) Once a lease is held it stays with the server that granted it, because renewal is unicast. **DHCPv4 only**: a v6 entry is rejected at `docker network create` instead of being silently ignored, and a DHCPv6 client on a network that sets this is given no list at all instead of a v4 one it cannot use. The list itself is validated the same way: an empty entry (a trailing or doubled comma), an entry that is not an IP address, and a repeated address each fail the create instead of being quietly dropped. **2.0 matches on the Server Identifier (option 54) and never on the packet's source address**, so the list now works behind a DHCP relay, and the 1.x limitation recorded under #111 is gone. Two consequences worth knowing: a message that carries no server identifier at all is **refused** while an allow list is set (an allow list a message can satisfy by omitting the field is not a restriction), and a server identifier is a value anyone on the link can put in a datagram, so this narrows which claimed identities the client acts on and authenticates nothing. |
 | `dhcp_deny_servers` | all | _(none)_ | v1.8.0 | Unordered list of DHCPv4 servers this network must never take a lease from, e.g. `3.3.3.3`, a rogue appliance or a second router on the segment. This is a *permission* and never a preference: it composes with `dhcp_servers` instead of competing with it, and a server named in both is removed from the preference list. Denying every entry of `dhcp_servers` is refused at create time, since it would otherwise collapse to accepting any server at all. Same **DHCPv4-only** limit as `dhcp_servers`. **Deny wins** where the two lists disagree. A deny list *on its own* fails open on a message that carries no server identifier: nothing in such a message can show it came from a denied server. (The no-relay limit is gone in 2.0; see `dhcp_servers`.) (#669) |
-| `register_dns` | all | `false` | v1.3.0 | Send the DHCP FQDN option (81) built from the container's hostname, asking the DHCP server to register that name in DNS (forward A/AAAA + reverse PTR). Reuses the same hostname already sent as the option-12 hint. Best-effort and advisory, because many consumer routers ignore option 81, so this *requests* registration, it does not guarantee resolution. Off by default: dynamic-DNS registration is a network-policy decision. See below. |
+| `register_dns` | all | `false` | v1.3.0 | Send the DHCP FQDN option built from the container's hostname, asking the DHCP server to register that name in DNS: option 81 on DHCPv4 (the A record and the reverse PTR), and since v2.3.0 option 39 on a DHCPv6 lease (the AAAA record, #1029). Reuses the same hostname already sent as the option-12 hint. Best-effort and advisory, because many consumer routers ignore the option, so this *requests* registration, it does not guarantee resolution. **With the option off, the DHCPv6 server's lease table shows no name for the container**, unlike v4, where option 12 carries the name either way: DHCPv6 has no plain hostname option, and option 39 always asks the server to register the name, so the plugin sends it only when asked to. Turning the option on is the way to get the name into the DHCPv6 server's table. A hostname with a label longer than 63 characters is refused on a `register_dns` network, on both families, because it cannot be encoded as a DNS name; without the option it is accepted. `ipv6_mode=slaac` registers no AAAA, since there is no DHCPv6 lease to carry the name, and an `ipv6_mode=auto` network that fell back to SLAAC never registered one; the plugin logs both. Off by default: dynamic-DNS registration is a network-policy decision. See below. |
 | `audit_log` | all | `false` | v1.0.0 | Append every lease-lifecycle event (`bound` / `renew` / `stopped` / `stop_failed`; since v1.9.0 `config` for a DHCPv6 configuration-only reply, #864; since v2.2.0 `routeradvert` for a router advertisement, #821, and `withdrawn` for an IPv6 address the lease stopped holding, #819) to `STATE_DIR/leases.jsonl`, one JSON object per line with timestamp, network, endpoint, container, hostname, IP, MAC, and since v2.2.0 `source` = `slaac` on an address formed from a router's prefix (#818). Rotated at 16 MB or 30 days (one rotated generation kept, ≤ ~32 MB total). Append failures bump `ledger_write_failures` on `/Plugin.Health`, never affecting lease handling. Off by default: per-event disk write, and container↔IP correlation on disk is privacy-relevant in some environments. |
-| `release_lease` | all | `never` | **v2.1.1** (`on_remove`: **v2.2.0**) | Whether, and when, an endpoint hands its DHCP lease back. It leaves its sandbox at every `docker stop`, every `docker rm` of a running container and every `docker network disconnect`. **`never`** (default) sends nothing: the address stays leased until it expires, and a container that restarts before then asks for it again and gets it, exactly as a physical host on the segment does after a reboot (#800). **`on_stop`** sends a DHCPRELEASE (RFC 2131 section 4.4.6) for IPv4 and a Release (RFC 9915 section 18.2.7) for IPv6, one datagram per family, built from the endpoint's own lease record and sent from the host's address on the parent interface. The address goes back to the server's pool at once, and the container's next start is a fresh acquisition that may land on a different address. **It does not need a running DHCP client**, which matters for the shape the option is most used for: a container that stops before the plugin's persistent client has attached still hands its address back, because the address it used came from the acquisition at endpoint creation and that acquisition wrote it into the same record. Two things follow and are not configurable: the endpoint lays **no tombstone**, so it does not keep its MAC across a restart, and the lease record of each family whose address actually went back is closed rather than kept resumable. Both are the same rule, that nothing may hand on an address the server has already taken back. **One path is not covered on `never` or `on_stop`, and is covered on `on_remove`.** In IPAM mode an address reserved for an endpoint whose `CreateEndpoint` then failed is retained: retaining it is what lets a restart policy's next attempt claim the same address back instead of burning a second lease on the server, and a reservation with no endpoint reaches no `Leave`, which is the only path `on_stop` releases from. On those two values no DHCPRELEASE goes on the wire for it and the address is left to expire, exactly as any other host on the segment leaves one. On `on_remove` the retention carries a deadline like any other, so the address goes back when the window runs out and no retry has claimed it (#984). `releases_sent` and `release_failures` report what happened, per family. `on_stop` costs `docker stop` one datagram per family, sent synchronously and not retransmitted, with no reply read and no retry. Nothing waits on the server. A release the host cannot send at all fails immediately and is counted, and the address is then left to expire exactly as under `never`. The reason is in the plugin log beside the counter: no record, no leased address on it, no server named on it, no address on the parent to send from, or the socket. **`on_remove`** (v2.2.0, #984) holds the addresses for the restart window and hands back whatever nothing has claimed when the window runs out. It is a **timed** release and not a handler on removal, because there is no removal handler to hang it on: Docker deletes an endpoint when its container **stops**, not when it is removed, so a release sent from that handler would fire on every `docker stop` (which is `on_stop`) and would never fire for `docker rm` of an already-stopped container. The window is the **tombstone TTL, 60 seconds**, the same value that decides how long a stopped container keeps its MAC, so the two can never disagree and there is no second option to set. The release goes out on the sweep that follows the deadline: the sweep runs every 15 seconds and waits 5 seconds past the deadline, so the wall clock from `docker stop` to the datagram is **65 to 80 seconds**. One attempt is made and the record is closed either way; there is no retry, and a failed attempt leaves the address to expire exactly as under `never`. A container that comes back inside the window keeps its address **and** its MAC, exactly as under `never`, and `releases_reclaimed` counts it. What decides that is the **address**: a newer record on the same network holding the same address. A container pinned to a MAC that comes back on a different address does not hold the old one, and the old one goes back. Two further cases also send nothing and do **not** move `releases_reclaimed`, because neither is a container running on the address: the same address stopped a second time, where the newer record carries its own deadline and decides the address itself, and an address acquisition in flight under the same endpoint key, where the address is left to expire so it is not taken from under an exchange that may be about to be given it. The deadline is written into the lease record, so a plugin that restarts inside the window still releases at the right moment, and `docker network rm` hands the network's still-held addresses back at once instead of leaving them for deadlines on a network that no longer exists. Everything `on_stop` does at the moment of the release, `on_remove` does at the deadline: one datagram per family, built from the endpoint's own record, no running DHCP client needed, nothing waited on, and the record closed rather than kept resumable. The one difference before the deadline is that the endpoint **does** lay a tombstone, because until the window runs out the address is still the container's. **What the log says on `on_remove`**, at `info` unless noted: at the stop, one line per endpoint, `release_lease=on_remove: keeping this endpoint's addresses for the restart window`, carrying the window and the addresses; at the deadline, one line per address, `No container claimed this address back inside the restart window, so release_lease=on_remove is handing it back`, followed by the same outcome lines `on_stop` prints; at `debug`, one line per address that is not handed back, one sentence per reason, `A container is running on this address, so it was claimed back inside the restart window and nothing is handed back` (the only one that moves `releases_reclaimed`), `A newer record holds this same address with its own deadline, so this record is closed and the newer one decides when the address goes back`, and `An address acquisition is in flight under this endpoint's key, so this address is left to expire instead of being handed back from under it`, each naming the holding record; at `debug` again, `A held address belongs to a network whose options cannot be read; leaving the record as it is`, which leaves the record alone so a later pass can still decide; at `docker network rm`, one line naming how many of the network's addresses went back, and, at `warning`, `This network's stored options could not be read while it was being removed, so its held addresses could not be handed back` when the removal cannot read what it needs, which is the one case no later pass can repair, because the options and the tombstones go with the network. **What it does not cover.** If the plugin is not running at the moment a container stops, Docker's endpoint deletion never reaches it, no window opens for that endpoint, and its address is left to expire. `on_stop` misses the same stop for the same reason. The sweep deliberately does not repair it: a record the plugin still believes a container is using is never released from the background, because a pass that released those would hand back every address on the host after a restart. Any other value is refused at `docker network create`, with the reason in the message. Networks created before v2.1.1 read as `never`. |
+| `release_lease` | all | `never` | **v2.1.1** (`on_remove`: **v2.2.0**) | Whether, and when, an endpoint hands its DHCP lease back. It leaves its sandbox at every `docker stop`, every `docker rm` of a running container and every `docker network disconnect`. **`never`** (default) sends nothing: the address stays leased until it expires, and a container that restarts before then asks for it again and gets it, exactly as a physical host on the segment does after a reboot (#800). **`on_stop`** sends a DHCPRELEASE (RFC 2131 section 4.4.6) for IPv4 and a Release (RFC 9915 section 18.2.7) for IPv6, one datagram per family, built from the endpoint's own lease record and sent from the host's address on the parent interface (on a `vlan` network the sub-interface, where a plugin-made one is refused, see [VLAN sub-interfaces](#vlan-sub-interfaces-vlan)). The address goes back to the server's pool at once, and the container's next start is a fresh acquisition that may land on a different address. **It does not need a running DHCP client**, which matters for the shape the option is most used for: a container that stops before the plugin's persistent client has attached still hands its address back, because the address it used came from the acquisition at endpoint creation and that acquisition wrote it into the same record. Two things follow and are not configurable: the endpoint lays **no tombstone**, so it does not keep its MAC across a restart, and the lease record of each family whose address actually went back is closed rather than kept resumable. Both are the same rule, that nothing may hand on an address the server has already taken back. **One path is not covered on `never` or `on_stop`, and is covered on `on_remove`.** In IPAM mode an address reserved for an endpoint whose `CreateEndpoint` then failed is retained: retaining it is what lets a restart policy's next attempt claim the same address back instead of burning a second lease on the server, and a reservation with no endpoint reaches no `Leave`, which is the only path `on_stop` releases from. On those two values no DHCPRELEASE goes on the wire for it and the address is left to expire, exactly as any other host on the segment leaves one. On `on_remove` the retention carries a deadline like any other, so the address goes back when the window runs out and no retry has claimed it (#984). `releases_sent` and `release_failures` report what happened, per family. `on_stop` costs `docker stop` one datagram per family, sent synchronously and not retransmitted, with no reply read and no retry. Nothing waits on the server. A release the host cannot send at all fails immediately and is counted, and the address is then left to expire exactly as under `never`. The reason is in the plugin log beside the counter: no record, no leased address on it, no server named on it, no address on the parent to send from, or the socket. **`on_remove`** (v2.2.0, #984) holds the addresses for the restart window and hands back whatever nothing has claimed when the window runs out. It is a **timed** release and not a handler on removal, because there is no removal handler to hang it on: Docker deletes an endpoint when its container **stops**, not when it is removed, so a release sent from that handler would fire on every `docker stop` (which is `on_stop`) and would never fire for `docker rm` of an already-stopped container. The window is the **tombstone TTL, 60 seconds**, the same value that decides how long a stopped container keeps its MAC, so the two can never disagree and there is no second option to set. The release goes out on the sweep that follows the deadline: the sweep runs every 15 seconds and waits 5 seconds past the deadline, so the wall clock from `docker stop` to the datagram is **65 to 80 seconds**. One attempt is made and the record is closed either way; there is no retry, and a failed attempt leaves the address to expire exactly as under `never`. A container that comes back inside the window keeps its address **and** its MAC, exactly as under `never`, and `releases_reclaimed` counts it. What decides that is the **address**: a newer record on the same network holding the same address. A container pinned to a MAC that comes back on a different address does not hold the old one, and the old one goes back. Two further cases also send nothing and do **not** move `releases_reclaimed`, because neither is a container running on the address: the same address stopped a second time, where the newer record carries its own deadline and decides the address itself, and an address acquisition in flight under the same endpoint key, where the address is left to expire so it is not taken from under an exchange that may be about to be given it. The deadline is written into the lease record, so a plugin that restarts inside the window still releases at the right moment, and `docker network rm` hands the network's still-held addresses back at once instead of leaving them for deadlines on a network that no longer exists. Everything `on_stop` does at the moment of the release, `on_remove` does at the deadline: one datagram per family, built from the endpoint's own record, no running DHCP client needed, nothing waited on, and the record closed rather than kept resumable. The one difference before the deadline is that the endpoint **does** lay a tombstone, because until the window runs out the address is still the container's. **What the log says on `on_remove`**, at `info` unless noted: at the stop, one line per endpoint, `release_lease=on_remove: keeping this endpoint's addresses for the restart window`, carrying the window and the addresses; at the deadline, one line per address, `No container claimed this address back inside the restart window, so release_lease=on_remove is handing it back`, followed by the same outcome lines `on_stop` prints; at `debug`, one line per address that is not handed back, one sentence per reason, `A container is running on this address, so it was claimed back inside the restart window and nothing is handed back` (the only one that moves `releases_reclaimed`), `A newer record holds this same address with its own deadline, so this record is closed and the newer one decides when the address goes back`, and `An address acquisition is in flight under this endpoint's key, so this address is left to expire instead of being handed back from under it`, each naming the holding record; at `debug` again, `A held address belongs to a network whose options cannot be read; leaving the record as it is`, which leaves the record alone so a later pass can still decide; at `docker network rm`, one line naming how many of the network's addresses went back, and, at `warning`, `This network's stored options could not be read while it was being removed, so its held addresses could not be handed back` when the removal cannot read what it needs, which is the one case no later pass can repair, because the options and the tombstones go with the network. **What it does not cover.** If the plugin is not running at the moment a container stops, Docker's endpoint deletion never reaches it, no window opens for that endpoint, and its address is left to expire. `on_stop` misses the same stop for the same reason. The sweep deliberately does not repair it: a record the plugin still believes a container is using is never released from the background, because a pass that released those would hand back every address on the host after a restart. Any other value is refused at `docker network create`, with the reason in the message. Networks created before v2.1.1 read as `never`. |
 | `host_ifname` | bridge | *(off)* | **v2.2.0** | What the host-side interface this network creates is called, so `ip link` and `brctl show` read like the compose file (#978). Off by default, which is every release before v2.2.0: the link is `dh-` plus the endpoint ID's first 12 hex, unique and meaningless. **`container_name`** names it after the container, the name `docker ps` prints. **`hostname`** names it after the container's hostname (`docker run --hostname`), which defaults to the short container ID and is **not unique on a host**. Any other value is refused at `docker network create`. **Bridge mode only**, and refused in `macvlan` and `ipvlan` rather than ignored there: those children are moved into the container's namespace and leave nothing on the host to name. The name is derived and applied once per attach, from the same daemon answer the DHCP hostname comes from, and nothing about it is written down, so a restart re-derives it. See [Host-side interface names](#host-side-interface-names-host_ifname) for the derivation rule, what happens when the name is taken, and what an operator reads when it does not happen. |
+| `require_mac` | bridge, macvlan | `false` | **v2.3.0** | Refuses a container whose MAC the user did not set, so a reservation keyed on the MAC on the DHCP server always matches (#1036). Off by default, which changes nothing. **`true`** refuses, at endpoint creation, a container started without `docker run --mac-address` or Compose `mac_address`, before anything is built: no link, no endpoint and no open lease record are left, and in the `--ipam-driver null` shape no DHCP exchange happens. The error names the option and both ways to set a MAC. The plugin tells a MAC the user set from one Docker generated by the marker Docker adds to the endpoint request only for a user-set MAC (`com.docker.network.endpoint.macaddress`, measured on engines 26 and 29). The marker must decode to the MAC the endpoint carries, so the same key passed as text through `--driver-opt` is refused too. **In IPAM mode** Docker asks for the address before it creates the endpoint, so the address was already leased when the refusal comes: the plugin forgets it at once and does not reuse it, and the server's lease expires on its own. **`docker network connect`** on the command line cannot set a MAC, so a connect from it is refused on such a network, and the error says so. Docker still lists the network in the container's `docker inspect` after the refusal, so the container's next `docker restart`, or a restart by its restart policy, is refused the same way and leaves it stopped; the policy does not retry. Once it is stopped, `docker network disconnect` of that network and then `docker start` bring it back; while it still runs, Docker refuses that disconnect as "is not connected to network" (both measured on engines 26 and 29). An API or Compose connect that sets the endpoint MAC passes on engines that forward it (measured on 29; on 26 a connect of a running container did not carry it). A container already on the network is not checked again when the plugin restarts and rebuilds its endpoint. **Refused in `ipvlan`** at `docker network create`: its children share the parent's MAC and refuse `--mac-address`, so every container would be refused. A value that is not a boolean is refused at `docker network create` too. |
+| `link_local_fallback` | bridge, macvlan | `false` | **v2.3.0** | When no DHCPv4 lease arrives in time, the container starts on an IPv4 link-local address (169.254.1.0 to 169.254.254.255, RFC 3927) with no gateway, instead of failing. The plugin keeps asking for a lease and moves the container to it when one arrives (#904). IPv4 only. Off by default, which changes nothing. With it on, `lease_timeout` defaults to `16s`, and a longer value is refused. Refused in `ipvlan`, with IPv6, and in this plugin's IPAM mode. See [Link-local fallback](#link-local-fallback-link_local_fallback). |
 
 ### DHCP classless static routes (option 121)
 
@@ -616,11 +889,48 @@ the option-12 hostname hint the plugin already sends: the hostname says
 *who we are*, the FQDN option asks the server to *publish it*. The flags
 byte asks the server to perform **both** the forward (A) and the reverse
 (PTR) update; the container runs no DNS updater of its own, so the
-server does all the work. The v6 equivalent (option 39, RFC 4704) is not
-sent. The DHCP library can send it since dhcp-golib v1.1.0
-([claymore666/dhcp-golib#22](https://github.com/claymore666/dhcp-golib/pull/22)),
-but the plugin sets no DHCPv6 name yet
+server does all the work.
+
+**On a DHCPv6 lease the same option is option 39** (RFC 4704), sent
+since v2.3.0
 ([#1029](https://github.com/claymore666/docker-net-dhcp/issues/1029)).
+It carries the container's hostname with the S flag set, which asks the
+server to register the AAAA record, and it rides every Solicit,
+Request, Renew and Rebind sent once the name is known, as RFC 4704
+section 5 allows. Docker does not yet tell the plugin the container's
+name when it creates the endpoint
+([moby/moby#52871](https://github.com/moby/moby/pull/52871)), so the
+address is leased without it, and the name first reaches the server in
+a Renew sent when the container starts, a few seconds later. The server
+says in its Reply whether it took the update, and the plugin logs the
+answer to the first message that carried the name, once: `The DHCPv6
+server registers the AAAA record for this name` when the S flag comes
+back set, a warning when it comes back clear, and a note when the Reply
+carries no option 39 at all. The plugin does no DNS update of its own, so a server that
+declines leaves the name without an AAAA record.
+
+**Without `register_dns` a DHCPv6 lease carries no name at all.** The
+DHCPv6 server's lease table then shows no name for the container,
+unlike v4, where option 12 carries it on every network. DHCPv6 has no
+plain hostname option: the only way to send a name is option 39, and
+option 39 always asks the server to register it. Turning
+`register_dns` on is the way to get the name into the DHCPv6 server's
+table.
+
+**Two IPv6 modes register no AAAA.** `ipv6_mode=slaac` takes its
+address from the router's advertised prefix and sends no DHCPv6
+Solicit, so there is nothing to carry option 39; the container gets its
+A record and no AAAA, and the plugin logs that. An
+`ipv6_mode=auto` network that fell back to SLAAC did so before any
+DHCPv6 lease was granted, so no AAAA was ever registered for it; on a
+`register_dns` network the plugin logs a warning saying so beside the
+fallback warning.
+
+**A label longer than 63 characters is refused.** A DNS name is made of
+labels of at most 63 characters each (RFC 1035 section 2.3.4), so a
+container hostname with a longer label cannot be sent in option 81 or
+option 39, and the attach fails on a `register_dns` network, on both
+families. A network without the option accepts that hostname.
 
 The payoff is on-mission: a container becomes resolvable **by name** on
 the LAN and not merely reachable by its DHCP-leased IP, with no
@@ -629,7 +939,7 @@ hostname hint and tombstone matching (the container's hostname; the
 server supplies the domain).
 
 It is **best-effort and advisory**, like the preferred-address hint:
-many consumer routers ignore option 81 entirely, and registration
+many consumer routers ignore option 81 and option 39 entirely, and registration
 depends on the server being configured for dynamic DNS. The plugin's
 contract is "send the option when asked". It is never "the name will
 resolve." Off by default because DDNS registration is a deliberate
@@ -790,9 +1100,10 @@ The plugin puts the IPv6 address Docker hands it at endpoint creation
 DHCPv6 equivalent of option 50 and, like option 50, a request the server
 may decline. With the null IPAM driver the documented shapes use, Docker
 hands the plugin none, so `--ip6` has no effect today (measured on engine
-29.8.1, 2026-09-24). IPv6 in IPAM mode is [#960](https://github.com/claymore666/docker-net-dhcp/issues/960), where `--ip6` becomes
-deliverable. The same mechanism is what makes an address survive `docker restart`: the
-tombstoned v6 address goes back out as the hint.
+29.8.1, 2026-09-24). The same mechanism is what makes an address survive
+`docker restart`: the tombstoned v6 address goes back out as the hint.
+With this plugin as the IPAM driver `--ip6` is not served either: the
+plugin allocates no IPv6 pool ([#960](https://github.com/claymore666/docker-net-dhcp/issues/960)).
 
 Container-level knobs that interact with the plugin:
 
@@ -876,8 +1187,9 @@ There is no `ip6` driver-opt. The plugin puts the IPv6 address Docker
 hands it at endpoint creation into the Solicit as the requested address,
 the v6 counterpart of `--ip`. With the null IPAM driver the documented
 shapes use, Docker hands none, so `--ip6` has no effect today (measured on
-engine 29.8.1, 2026-09-24). IPv6 in IPAM mode is [#960](https://github.com/claymore666/docker-net-dhcp/issues/960), where `--ip6`
-becomes deliverable.
+engine 29.8.1, 2026-09-24). With this plugin as the IPAM driver `--ip6`
+is not served either: the plugin allocates no IPv6 pool
+([#960](https://github.com/claymore666/docker-net-dhcp/issues/960)).
 
 On a network created with **this plugin as its IPAM driver** (#110),
 `docker run --ip`, `docker network connect --ip` and Compose's
@@ -1014,6 +1326,15 @@ itself, so a MAC-keyed server is enough.
 
 To pin an address regardless of any of the above, use `--ip` or
 `--mac-address`, or use `--ipam-driver null`.
+
+To make sure every container on a network pins its MAC, create the
+network with `-o require_mac=true` (`bridge` and `macvlan`, v2.3.0,
+#1036). A container started without `--mac-address` or Compose
+`mac_address` is then refused with an error naming both, so a MAC-keyed
+reservation cannot silently miss. A refused start in IPAM mode has
+already leased an address: the plugin forgets it at once and does not
+reuse it, and the server's lease expires on its own. See
+[`require_mac`](#driver-options-network-level).
 
 Back in the `--ipam-driver null` shape, two things it deliberately does
 not do. Concurrent restarts of several
@@ -1224,7 +1545,7 @@ What the option does, concretely:
   answer's gateway, the **routes** it asks for (RFC 4191 Route
   Information options as next-hop routes, prefixes with the on-link flag
   as on-link routes), the **MTU** (RFC 4861 §4.6.4) on the container's
-  link, and the **DNS servers and search list** (RFC 8106 RDNSS and
+  link unless the network sets `mtu` (#1037), and the **DNS servers and search list** (RFC 8106 RDNSS and
   DNSSL) into `/etc/resolv.conf` when `propagate_dns=true`. All four are
   rewritten when a later advertisement changes them, without restarting
   the container, except that on-link prefixes are only added (v2.2.3+,
@@ -1252,6 +1573,15 @@ What the option does, concretely:
   any privacy addresses beside it, and an outbound connection selected
   among them per RFC 6724 rather than necessarily using the address
   `docker inspect` reports. It now carries the lease alone.
+- **The container's name reaches the DHCPv6 server only with
+  `register_dns`** (v2.3.0+, #1029). With the option off, the DHCPv6
+  server's lease table shows no name for the container, unlike v4, where
+  option 12 carries it on every network. DHCPv6 has no plain hostname
+  option, and its Client FQDN option (39, RFC 4704) always asks the
+  server to register the name, so the plugin sends it only on a
+  `register_dns` network. Turning `register_dns` on is the way to get
+  the name there, and with it the AAAA record: see *Dynamic-DNS
+  registration* above.
 - **Prefix delegation is out of scope.** The client asks for an IA_NA;
   there is no IA_PD, and none is planned for 2.0.
 
@@ -1359,6 +1689,59 @@ get DHCPv6 leases as before. On bridge and macvlan the DUID is
 unchanged, so the server hands back the same addresses; on ipvlan see
 the upgrade note above.
 
+### Link-local fallback (`link_local_fallback`)
+
+*(v2.3.0)* `-o link_local_fallback=true` lets a container start while
+the segment's DHCP server is down (#904). It covers IPv4 only; DHCPv6 is
+unchanged.
+
+- The endpoint asks for a DHCPv4 lease as usual. If none arrives in time,
+  the plugin picks an address from 169.254.1.0 to 169.254.254.255 with a
+  generator seeded from the container's MAC (RFC 3927 §2.1), probes the
+  link for it with ARP (RFC 5227 §2.1.1), moves on from an address in use
+  while a whole claim still fits the time left (see Timing), announces the
+  one it keeps, and gives it to Docker as a `/16`.
+- The container gets no gateway and no routes, and the plugin tells
+  Docker not to add its `docker_gwbridge` link in their place. A
+  link-local address reaches its own segment and nothing else.
+- The plugin keeps asking for a lease. When one arrives, the container's
+  address changes to it in place and the lease's gateway and routes are
+  installed. This is the same change as a renewal that returns a
+  different address: `lease_changed` counts it, the log says
+  `dhcp renew with changed IP`, and `docker inspect` shows the 169.254
+  address until the container is recreated (#104).
+- `/Plugin.Health` shows the endpoint with `lease_state` `link_local`, and
+  `link_local_endpoints` counts them.
+
+**Timing.** Docker waits 30 seconds for an endpoint. Claiming an address
+takes up to 9 of them (the 7-second probe window and a second
+announcement 2 seconds after the first), the plugin keeps 4 for its
+answer and 1 for the DHCP attempt to stop, so the attempt gets 16. With
+the option on, `lease_timeout` defaults to `16s` and a longer value is
+refused at `docker network create`. In `conflict_check=wait` that funds one acquisition and not the
+recovery from a conflict that the `34s` default funds. With no server on
+the segment, the container starts about 22 to 25 seconds after its
+endpoint was requested. With the `16s` default there is room for one
+claim: if the first address is in use, a second is probed only when the
+conflict shows within about a second, and otherwise the endpoint fails as
+it does with the option off. Each 9 seconds taken off `lease_timeout`
+leaves room for one more address.
+
+**Refused at `docker network create`**, with the reason in the message:
+`mode=ipvlan`, because an ipvlan child does not receive the ARP replies
+to its own probes (measured on Linux 6.12), so a used address would look
+free; IPv6 (`ipv6=true` or any `ipv6_mode` but `off`); this plugin's
+[IPAM mode](#address-allocation); and a `lease_timeout` over `16s`.
+
+**Not done.** The plugin does not defend the address after the claim
+(RFC 3927 §2.5); the container's kernel answers ARP for it as for any
+address. After ten addresses found in use, or earlier when no whole claim
+fits the time left, the endpoint fails, instead of
+RFC 3927's one attempt a minute, which no endpoint's 30 seconds could
+hold. `release_lease` has nothing to hand back for an endpoint on
+link-local and counts nothing, and a removed endpoint that was on
+link-local leaves no address in its tombstone.
+
 ### Recovery after a plugin restart
 
 `docker plugin disable && enable`, a plugin upgrade, or a plugin crash
@@ -1415,6 +1798,34 @@ client in place and counts `recovery_already_managed` (v1.8.0+). A
 manager and stops it, and that direction is `displaced_stops`. Both
 directions end with exactly one DHCP client on the interface, which is
 the property that matters (#480).
+
+### A plugin-made bridge after a reboot
+
+A plugin restart and a Docker restart leave a bridge made from `parent`
+and its port in the kernel; the plugin knows it by its mark and uses it
+as before (#903). A host reboot removes the bridge and keeps the
+network, so the next container start on the network makes the bridge
+again, and so does the next address request when this plugin is the
+IPAM driver. What happens then depends on what the host did with the
+NIC at boot:
+
+- **The NIC came up with no address** (the stanza in
+  [bridge-mode.md](bridge-mode.md#a-spare-nic-the-plugin-makes-the-bridge)):
+  the bridge is made, the NIC enslaved, and the container leases.
+- **Nothing configured the NIC**: a NIC nobody sets up comes back down,
+  and the container start is refused `parent interface is down: eth1`.
+  Add the stanza, or run `ip link set eth1 up`, and start the container
+  again.
+- **The host's network manager addressed the NIC**, for example a DHCP
+  client or NetworkManager's automatic wired connection: the container
+  start is refused with the message naming the address or route. Stop
+  that client for the NIC, remove the address, and start again.
+
+A deleted bridge is handled the same way: the next container start
+makes it again. Containers already running on it keep their address
+and lose their traffic until they are restarted. Containers with a
+restart policy come back through the same path at boot; that retry has
+not been measured on a real reboot yet.
 
 ### State persistence
 
@@ -1489,7 +1900,7 @@ socket also gives, so a permission problem looks exactly like a dead
 endpoint:
 
 ```bash
-PLUGIN_ID=$(docker plugin inspect -f '{{.Id}}' ghcr.io/claymore666/docker-net-dhcp:v2.2.3)
+PLUGIN_ID=$(docker plugin inspect -f '{{.Id}}' ghcr.io/claymore666/docker-net-dhcp:v2.3.0)
 sudo curl -s --unix-socket /run/docker/plugins/$PLUGIN_ID/net-dhcp.sock \
     http://localhost/Plugin.Health | jq .
 ```
@@ -1566,7 +1977,7 @@ already parse it were not told to expect a new type.
 | ----- | ----------------- | ----- | ------- |
 | `status` | n/a | n/a | *(2.0-alpha.1+)* `pass`, `warn` or `fail`, the worst status of any entry in `checks`, per section 3.1 of the health-check draft. `fail` and `healthy: false` are two renderings of one fact and cannot disagree: both are derived from the same five counters, in the same read. `warn` never makes `healthy` false. Like `healthy` it **latches**, because the counters behind it do. |
 | `checks` | n/a | n/a | *(2.0-alpha.1+)* One entry per counter classified `fail` or `warn` in the check column below, keyed by the counter's own name, each a single-element array (section 4). Every entry carries `status`, `observedValue` (the counter), `observedUnit`, `time`, and, only when it is not passing, `output`, the sentence saying what to do. **`time` is when that counter last moved** and never when the document was built, which is what makes a latched `fail` readable: a counter that has never moved carries the time of this reading. Not on `/metrics`: a structure of that shape has no exposition rendering, and the per-check numbers are already there as their own series. |
-| `endpoints` | n/a | n/a | *(2.0-alpha.1+)* One entry per managed endpoint, and the array is exactly `active_endpoints` long, sorted by endpoint id, so two consecutive polls of an unchanged host produce the same document. Each entry: `endpoint` and `network` (short ids), `mode`, `address` (CIDR), `lease_state` (`bound` or `acquiring`), `renew_at` / `rebind_at` / `expires_at` (T1, T2 and the lease end as **absolute** RFC 3339 times, because a remaining-seconds figure is meaningless once the document has been cached or pasted into an issue; an absent `expires_at` on a bound endpoint is the protocol's infinite lease), `server` (option 54), `last_event` and `last_event_at` (since v2.2.3 these and the lease fields come from one record, so a `bound` entry always names the event that bound it, #1044), and the RFC 5227 pair `conflict_check` (the [`conflict_check`](#plugin-settings) mode in force) and `acd_phase` (`idle`, `probing`, `settling`, `announcing`, `defending`). Read the phase **against** the mode and never alone: in `conflict_check=off` the phase is `idle` because nothing runs. `unknown` for both means the endpoint has no client yet. **On a dual-stack endpoint every field of the entry describes the IPv4 client**, which is the one the RFC 5227 pair can describe at all: a container with an `ipv6=true` network has a DHCPv6 lease this array does not report, and `docker inspect` is where to read it. Not on `/metrics`: per-endpoint labels are the thing [`SECURITY.md`](https://github.com/claymore666/docker-net-dhcp/blob/main/SECURITY.md) promises are absent from the exposition. |
+| `endpoints` | n/a | n/a | *(2.0-alpha.1+)* One entry per managed endpoint, and the array is exactly `active_endpoints` long, sorted by endpoint id, so two consecutive polls of an unchanged host produce the same document. Each entry: `endpoint` and `network` (short ids), `mode`, `address` (CIDR), `lease_state` (`bound`, `acquiring`, or since v2.3.0 `link_local` for an endpoint on its [link-local fallback](#link-local-fallback-link_local_fallback), whose `address` is then the 169.254 one), `renew_at` / `rebind_at` / `expires_at` (T1, T2 and the lease end as **absolute** RFC 3339 times, because a remaining-seconds figure is meaningless once the document has been cached or pasted into an issue; an absent `expires_at` on a bound endpoint is the protocol's infinite lease), `server` (option 54), `last_event` and `last_event_at` (since v2.2.3 these and the lease fields come from one record, so a `bound` entry always names the event that bound it, #1044), and the RFC 5227 pair `conflict_check` (the [`conflict_check`](#plugin-settings) mode in force) and `acd_phase` (`idle`, `probing`, `settling`, `announcing`, `defending`). Read the phase **against** the mode and never alone: in `conflict_check=off` the phase is `idle` because nothing runs. `unknown` for both means the endpoint has no client yet. **On a dual-stack endpoint every field of the entry describes the IPv4 client**, which is the one the RFC 5227 pair can describe at all: a container with an `ipv6=true` network has a DHCPv6 lease this array does not report, and `docker inspect` is where to read it. Not on `/metrics`: per-endpoint labels are the thing [`SECURITY.md`](https://github.com/claymore666/docker-net-dhcp/blob/main/SECURITY.md) promises are absent from the exposition. |
 | `healthy` | n/a | n/a | `false` when `recovery_failed`, `join_start_failures`, `tombstone_write_failures`, `tombstone_quarantines`, or `address_conflicts` is non-zero, and an operator should look. Those five, and only those, are the ones marked **yes** in the healthy-affecting column. The plugin keeps serving fresh attaches either way. **It latches:** every counter behind the flag is monotonic, so `false` means "a fault occurred at some point during this plugin process" and never "something is wrong right now". **Until 2.0-alpha.1 that was the end of what could be learned from this document**; each named check now carries the moment its own counter last moved, so "faulted an hour ago" and "faulting now" are no longer the same reading. Fixing the condition does not clear it. Only restarting the plugin does, and that tears down the renewal client of every managed endpoint on the host. Read it together with the *instance_id* field: the same ID means the same process is still reporting a fault it recorded earlier. |
 | `instance_id` | n/a | n/a | (v1.5.0+) Opaque identifier of the plugin **process** serving this response. Every counter below is in-memory and returns to zero when the process does, so two readings are comparable as a delta only when their `instance_id` matches. If it changed between two samples, the plugin restarted and any difference you computed is meaningless, including one that reads as zero. Prefer this over `uptime_seconds` for that check: a plugin that restarts early in a long sampling window and then runs longer than the first reading shows uptime going *up*, hiding the restart. |
 | `version` | n/a | n/a | *(2.0-alpha.1+)* The release tag this binary was built for, or `dev` for anything built outside a release. Also a label on `net_dhcp_build_info`. **Never empty**: an empty value would read as "nothing to report" instead of "this build does not know". |
@@ -1576,6 +1987,7 @@ already parse it were not told to expect a new type.
 | `api_version` | n/a | n/a | *(v2.1.0+)* The Docker API version this plugin negotiated with that daemon. It is the lower of the two maximums, so it can be below what either side supports, and a socket proxy that pins an old API shows up here. Nothing is refused on it. Reads `unknown` on the same terms as `engine_version`. |
 | `uptime_seconds` | n/a | n/a | Seconds since the plugin process started. Useful as an age, but see `instance_id` before using it to decide whether a restart happened. |
 | `active_endpoints` | n/a | n/a | DHCP managers currently registered (post-Join, pre-Leave). |
+| `link_local_endpoints` | n/a | n/a | *(v2.3.0+)* Endpoints on an IPv4 link-local address right now, because no DHCPv4 lease arrived in time on a `link_local_fallback=true` network (#904). Counted from the same snapshot as the `endpoints` array, where these entries have `lease_state` `link_local`. It falls as each endpoint moves to a lease, and that move is counted in `lease_changed`. A gauge; never accumulated. |
 | `pending_hints` | n/a | n/a | Join hints awaiting consumption; steady-state ~0. |
 | `recovered_ok` | n/a | n/a | Endpoints successfully rebuilt by plugin-restart recovery. |
 | `recovery_failed` | yes | fail | Post-restart rebuilds that failed **for a container that is still running**. It runs without lease renewal and loses its IP at expiry; restart it. Three things are deliberately *not* counted here, because none of them leaves a running container without a renewal client: a daemon that is merely still starting (`recovery_deferred`, #383), a container that had already exited when recovery reached it (`recovery_aborted_container_gone`, #376), and a network removed out from under the recovery walk (`recovery_network_gone`, #648). |
@@ -1607,7 +2019,7 @@ already parse it were not told to expect a new type.
 | `acd_resumed_unchecked` | no | warn | *(2.0-alpha.1+)* Endpoints picked up after a plugin restart from a durable record whose RFC 5227 section 2.1 check had not finished when the previous process stopped, so the address was held with no completed check behind it. **Not a fault:** the resumed client re-runs section 2.1 on its INIT-REBOOT acknowledgement whatever the record said, so the window closes on its own and the container keeps its address; this counts how often it opened. Only reachable with `conflict_check=async`, which is the mode that returns the address before the check completes. **Worth investigating** whenever it moves: zero is the normal reading, and each tick is one endpoint that held an address across a restart with no completed conflict check behind it. A segment where that window is being hit repeatedly is one where the plugin is restarting under load. The matching `endpoints` entry carries the `acd_phase` the record was resumed from. |
 | `acd_conflicts_detected` | no | n/a | (v2.0.0) Conflicts counted by the DHCP client's own state machine. It is the **same population** as `address_conflicts_v4`, counted inside the client instead of from the events it emitted, and the two are expected to be equal. It is not comparable to the unsuffixed `address_conflicts`, which carries the DHCPv6 share as well, and those conflicts come from Duplicate Address Detection, which this machine never sees. A difference is a defect in the plugin's event handling and never a property of your segment. Report it. Its `conflict_check=off` rule is its sibling's and never a different one: with no probe and no listener the only thing that can move either counter is a conflict reported to the client from outside it, and the plugin has no such caller today. |
 | `leases_obtained` | no | n/a | Client bind events: an initial bind, or a re-bind after a NAK or a lease loss. v4+v6 aggregate; on an IPv4-only host it equals its `_v4` half. |
-| `leases_renewed` | no | n/a | Client renewal events, including the case where the renewal returned a different address. v4+v6 aggregate, equal to its `_v4` half in 2.0. Since v2.2.0 an endpoint that takes its name after its client is already leasing renews **once immediately** to carry it, so on a host where that path runs this counter reads one higher per attach than the lease timers alone would put it (#961). [`hostnames_applied_late`](#pluginhealth) counts those, so the two can be read together. |
+| `leases_renewed` | no | n/a | Client renewal events, including the case where the renewal returned a different address. v4+v6 aggregate; on an IPv4-only host it equals its `_v4` half. Since v2.2.0 an endpoint that takes its name after its client is already leasing renews **once immediately** to carry it, so on a host where that path runs this counter reads one higher per attach than the lease timers alone would put it (#961). [`hostnames_applied_late`](#pluginhealth) counts those, so the two can be read together. Since v2.3.0 a DHCPv6 client on a `register_dns` network also renews once when the container starts, to carry the name its address was leased without, and that renewal is not in `hostnames_applied_late` ([#1029](https://github.com/claymore666/docker-net-dhcp/issues/1029)). |
 | `renewals_unanswered` | no | n/a | *(v2.1.0+)* Renewal requests the server did not answer, one per request, counted while the client keeps running (#940). It moves at the first retransmission of a renewal request. RFC 2131 section 4.4.5 has the client "wait one-half of the remaining time until T2 (in RENEWING state) and one-half of the remaining lease time (in REBINDING state), down to a minimum of 60 seconds", so 60 seconds is a FLOOR under that wait and not a bound on it, and the wait is long on a long lease. On the 24-hour lease this was reported from, T1 falls at 12 hours and T2 at 21 hours, so the first retransmission lands about 4.5 hours after the client's first renewal request at T1, and this counter moves there. `dhcp_timeouts` first moves for a **held** lease only when that lease ends, at 24 hours, so the gain on that lease is about 7.5 hours of warning and not a day of it. Size an alert on the lease in use: the 60-second floor is reached only when T2 is about two minutes away or less. The request currently in flight is not counted, because only the retransmission that follows a request proves that request went unanswered, so a client that has sent N requests into silence reads N-1. An answer of any kind ends the renewal and leaves this counter alone, a DHCPNAK included; `naks_received` is where that case is counted. Both families: a DHCPv6 Renew or Rebind counts the same way. Not healthy-affecting; the container keeps a working address for the rest of the lease. **Not a check:** the imperative is to read this counter *against* `leases_renewed`, because renewals completing beside it is a healthy lease and renewals flat beside it is a server that has gone quiet, and a single lost datagram moves it on a segment that is working, so non-zero on its own carries no verdict. |
 | `dhcp_server_tier_fallbacks` | no | n/a | (v1.8.0+) Steps **down** the `dhcp_servers` ladder: one per preferred entry that did not answer inside its slice of the acquisition budget and handed on to the next (#111). It counts transitions and never container starts: a single `docker run` against three silent preferred servers adds 2. That is the more useful number (it says how far down the list acquisition had to walk) and it is what the code has always produced; this row and two other copies said "acquisitions" until #731. Not healthy-affecting, because the endpoint still got an address. This is the only outside signal that a preferred server is silently dead: a steady rise while every container still starts fine is exactly the condition that otherwise goes unnoticed until the standby fails too. |
 | `dhcp_server_policy_exhausted` | no | n/a | (v1.8.0+) Initial acquisitions abandoned because **no** server listed in `dhcp_servers` answered (#111). Not healthy-affecting on its own: the acquisition failure it accompanies already fails the operation and is counted. It exists because "the servers you named are all silent" and "DHCP is broken" look identical in a timeout log and call for different action. |
@@ -1624,7 +2036,7 @@ already parse it were not told to expect a new type.
 | `parent_link_waits` | no | n/a | (v1.6.0+) Operations that had to queue for a shared parent interface before attaching their own link. A parent NIC can be a macvlan port or an ipvlan port but never both, so when networks of both kinds share one parent, or when a `validate_dhcp` probe still has its temporary link attached, the plugin serialises them per parent instead of letting the kernel refuse one with `device or resource busy` (#486, #549). Queuing is the mechanism working; a steady rise just means that NIC is busy. Since v2.1.0 this also counts the operations that gave up waiting for a holder attaching the **same** kind of child: a parent takes any number of those side by side, so the wait protected nothing and the operation goes on to succeed. Two containers starting together on one IPAM-mode network land here, because an address reservation holds the parent for its whole DHCP exchange. |
 | `parent_link_wait_timeouts` | no | warn | (v1.6.0+) The same wait giving up after its budget where the holder was attaching the **other** kind of child, or a holder the plugin could no longer identify. The operation asks the kernel anyway and may fail with `device or resource busy`. The budget is 4s, sized to absorb an ordinary DORA on the `validate_dhcp` probe, so a holder that wedges degrades to the pre-v1.6.0 behaviour instead of stalling a container start. Not `healthy`-affecting, but the actionable one of the pair: a non-zero value means a macvlan and an ipvlan operation contended for one parent NIC for longer than a DHCP round trip, and a container start there can fail. Same-kind contention is **not** counted here; it is in `parent_link_waits`, because the kernel permits it and the operation succeeds. |
 | `unsafe_hostnames_rejected` | no | n/a | (v1.8.0+) Container hostnames dropped because they carried a control character (#692). **What the drop protects changed in 2.0.** Nothing generates a client config any more. `directives_refused`, which counted values kept out of one, is removed for exactly that reason, and the hostname now goes straight into the DHCP parameters the plugin builds and onto the wire, as option 12 and, with `register_dns`, as the option-81 FQDN. The drop is still the safe outcome and the lease proceeds, because the hostname decorates the exchange and the opt-in `register_dns` registration, so this is not `healthy`-affecting. It is not purely cosmetic, though: the hostname is also the key that narrows tombstone matching to the container that wrote the tombstone, where an *empty* hostname means "match any tombstone on this network", so a refusal is deliberately kept distinguishable from an absence instead of collapsed into an empty string. Read it as an intent signal and not as a fault: Docker does not validate `--hostname`, and a legitimate one never contains a control character, so a non-zero value means something sent one on purpose. Underscores and other technically-illegal-but-common hostnames are **not** counted; the rule is about control characters and never about RFC 1123. **Not a check:** the imperative says how to *read* a non-zero value and never what to *do* about one: the same row says the drop is the safe outcome and the lease proceeds, so there is no degraded state for a check to fire on. |
-| `hostnames_applied_late` | no | n/a | *(v2.2.0+)* Container names given to a DHCP client that was already leasing (#961). Since v2.2.0 the attach starts the persistent client **before** it asks the daemon for the container's name, so a container leases at the speed of the segment instead of at the speed of a daemon that is busy starting it; the name is handed to the running client when the answer comes, and the client renews early to carry it (RFC 2131 section 4.4.5), so the server's table has it within one exchange. This counter is the mechanism working, and it **narrows** the two rows below without deciding them: zero on all three is also what a host reads when its containers were started without `--hostname`, and what it reads when every attach took the name before the client started. A non-zero value here is the only reading that says the late path ran and worked; a zero is three states and the plugin log tells them apart. It counts non-empty names only, because a container started without `--hostname` has nothing to hand over and is not an event. **v4 only**, because the plugin sets no DHCPv6 name yet ([#1029](https://github.com/claymore666/docker-net-dhcp/issues/1029)), though the DHCP library can send one since dhcp-golib v1.1.0. Two populations are deliberately **not** counted here, because on both the name was already in the client's opening parameters: a network with `register_dns`, which needs the name at construction for option 81, and a host whose sandbox key is refused, where the container inspect the PID fallback made has already answered. **Not a check:** it is the normal reading on a working host and its normal value is not zero. |
+| `hostnames_applied_late` | no | n/a | *(v2.2.0+)* Container names given to a DHCP client that was already leasing (#961). Since v2.2.0 the attach starts the persistent client **before** it asks the daemon for the container's name, so a container leases at the speed of the segment instead of at the speed of a daemon that is busy starting it; the name is handed to the running client when the answer comes, and the client renews early to carry it (RFC 2131 section 4.4.5), so the server's table has it within one exchange. This counter is the mechanism working, and it **narrows** the two rows below without deciding them: zero on all three is also what a host reads when its containers were started without `--hostname`, and what it reads when every attach took the name before the client started. A non-zero value here is the only reading that says the late path ran and worked; a zero is three states and the plugin log tells them apart. It counts non-empty names only, because a container started without `--hostname` has nothing to hand over and is not an event. **v4 only**, because the late path runs only on a network without `register_dns`, and there the DHCPv6 client sends no name at all: a DHCPv6 name travels only in the Client FQDN option (39), which asks the server to register it ([#1029](https://github.com/claymore666/docker-net-dhcp/issues/1029)). Two populations are deliberately **not** counted here, because on both the name was already in the client's opening parameters: a network with `register_dns`, which needs the name at construction for option 81, and a host whose sandbox key is refused, where the container inspect the PID fallback made has already answered. **Not a check:** it is the normal reading on a working host and its normal value is not zero. |
 | `hostname_lookup_failures` | no | warn | *(v2.2.0+)* Attaches whose container inspect never answered, so the endpoint leases with no name in the DHCP server's table (#961). **No** because the endpoint is working: it has its address and its renewal client, which is the whole point of starting the client first, and what it lacks is its name upstream until something attaches it again. The lookup runs on the attach's own context and is abandoned with it, so this is the same `awaitTimeout` + 60s window `join_attach_slow` reports on, and the two rise together when a daemon is slow. Watch it rather than page on it: a sustained rise is a daemon that is not answering, which affects a great deal more than names. |
 | `hostname_apply_failures` | no | warn | *(v2.2.0+)* Container names the running DHCP client would not take, so the endpoint leases with no name in the DHCP server's table (#961). The daemon answered here; the client refused the handover. Three causes, all from the library: a name it will not put on the wire, a request queue that was full, and no running client left to give it to. Separate from `hostname_lookup_failures` because the two describe the same endpoint and their remedies are at opposite ends of the host. Watch it: a rise with no lookup failures beside it is this side of the host and not the daemon, and the names of the containers involved are in the plugin's log at `warn`. |
 | `host_ifnames_applied` | no | n/a | *(v2.2.0+)* Host-side links renamed after the container they belong to, on a network that set `host_ifname` (#978). The mechanism working, and the **denominator** for the two rows below: all three stay at zero on a host where no network asked for named links, so their zeros mean nothing without this one beside them. **Bridge mode only**, because it is the only mode that leaves a link on the host; `macvlan` and `ipvlan` children are moved into the container and the option is refused there at `docker network create`. One per attach that renamed a link, so a container restart counts again -- the name is re-derived every time and never persisted. **Not a check:** its own value is a count of work done and carries no verdict, and on a host that set the option its normal reading is non-zero and climbing. |
@@ -1642,7 +2054,7 @@ already parse it were not told to expect a new type.
 | `netns_pid_mismatches` | no | n/a | (v1.8.0+) Sandbox network-namespace opens refused because the container PID resolved through Docker no longer belonged to that container. The sibling of `dns_propagation_pid_mismatches` above, on the path with the larger blast radius and with no opt-in: what the refusal prevents is not one file but a netlink handle carrying every address, MTU and route the plugin applies, with `CAP_NET_ADMIN`. **In 2.0 the second half of that is closer to home and never further away.** Nothing is spawned into the namespace: the plugin locks one of its own OS threads, `setns`es it into the sandbox, opens the raw packet socket that carries the whole DHCP exchange there, and returns the thread. So the wrong namespace no longer means a client process pointed at the wrong container. It means the plugin's own thread and its own `CAP_NET_RAW` socket landed on an unrelated host process's network, and the client that keeps running on that socket stays there for the life of the endpoint. Refusing fails the attach, so unlike the DNS case it is not silent, but the error reads like a slow container start, and only this counter says the PID belonged to something else. Not `healthy`-affecting: the attach failure is reported to Docker, and the container simply does not come up on this network. Any non-zero value is worth reading: it means a container exited inside the attach window and the kernel handed its PID to another task. |
 | `dhcp_routes_applied` | no | n/a | (v1.8.0+) Routes handed to Docker at Join, counted as routes and never as Joins: DHCP option-121 classless static routes, and since v2.2.0 the routes an IPv6 Router Advertisement asks for (#821). `skip_routes=true` opts out and then this never moves. Read it as the denominator for the row below. **Not a check:** the imperative is to read it as the denominator for `dhcp_default_route_superseded`, while its own value is a count of work done, carrying no verdict either way, and on a network whose server sends option 121 its normal reading is non-zero and climbing. |
 | `dhcp_default_route_superseded` | no | n/a | (v1.8.0+) Joins whose option-121 routes cover `0.0.0.0/0` **by union** instead of by a literal default entry, e.g. `0.0.0.0/1 g` plus `128.0.0.0/1 g`. Neither half is a default route, so the gateway reported to Docker (and shown by `docker inspect`) is still the one from option 3, while every packet follows the option-121 next hop instead. This is legitimate in split-tunnel setups and the routes are applied either way; the counter exists because before it, nothing in the plugin's output distinguished the two cases. The accompanying log line names each destination and next hop. |
-| `mtu_refused` | no | n/a | (v1.8.0+) MTUs outside `[576, 65535]`, refused with the container link left at the MTU it had. Each family is counted separately, and a refused value does not vote on the link MTU. Option 26 on the IPv4 path, which moves only with `propagate_mtu=true`, and since v2.2.0 the Router Advertisement's MTU option on the IPv6 path, which is not gated on it (#821). Nothing below the plugin holds the bottom of that range: a server-supplied 68 is carried through verbatim and would be accepted, and the result is destroyed throughput plus black-holed path MTU discovery, re-applied on every renewal, which looks like a slow network instead of a misconfiguration. |
+| `mtu_refused` | no | n/a | (v1.8.0+) MTUs outside `[576, 65535]`, refused with the container link left at the MTU it had. Each family is counted separately, and a refused value does not vote on the link MTU. Option 26 on the IPv4 path, which moves only with `propagate_mtu=true`, and since v2.2.0 the Router Advertisement's MTU option on the IPv6 path, which is not gated on it (#821). Neither is counted on a network that sets `mtu`, which applies neither (#1037). Nothing below the plugin holds the bottom of that range: a server-supplied 68 is carried through verbatim and would be accepted, and the result is destroyed throughput plus black-holed path MTU discovery, re-applied on every renewal, which looks like a slow network instead of a misconfiguration. |
 | `sandbox_key_entries` | no | n/a | (v2.0.0+) Container network namespaces entered through the sandbox key the daemon publishes under `/var/run/docker/netns/`. **Which attaches count here is a property of the host, reported as `sandbox_netns_propagation`**: the plugin's read-only `/var/run/docker` is a bind taken at plugin start, so a sandbox older than this plugin process is always reachable through its key, and one created afterwards is reachable only where the daemon's mount is linked to that bind. Every endpoint recovered after a plugin restart counts here on any host (measured 2026-09-05). It is the **denominator** for the two rows below and the reason they can be read at all: zero fallbacks with zero entries means nothing was entered, and never that the key route works. If it rises on attaches, the mounts do reach this plugin on your host, and the netns half of `pidhost`/`CAP_SYS_PTRACE` is not load-bearing for you. **Not a check:** the imperative is to read it as the denominator for `sandbox_key_entry_failures` and `sandbox_pid_fallbacks`: zero here means nothing was entered and never that nothing went wrong, and neither direction is abnormal on its own: zero is the normal reading on a host whose `/run` is private and non-zero is the normal reading on one where the key route works. |
 | `sandbox_key_entry_failures` | no | n/a | (v2.0.0+) Attempts to enter a container network namespace through the sandbox key that were refused. **This rises once per attach on a host whose `sandbox_netns_propagation` is `0`, and that is the expected state there, with nothing degraded and no action indicated.** On a host answering `1` it stays flat and `sandbox_key_entries` rises instead. Each refusal falls straight through to the PID route without a retry, so the endpoint still comes up; it is the counterpart of `sandbox_key_entries` staying at zero, and it means the host PID namespace and `CAP_SYS_PTRACE` are load-bearing on this host. The five rows below say WHICH refusal it was, and they sum to this counter exactly. |
 | `sandbox_key_absent` | no | n/a | *(2.0-alpha.1+)* An arm of `sandbox_key_entry_failures`: the endpoint has no sandbox key at all, so the key route was never attempted. Neither the `Join` request nor the container inspect carried one; the PID route carries the attach. **Not observed on any measured host**, since the recovery cell requires every arm to be zero on the recovered instance, and published for the same reason `sandbox_key_wrong_ns_type` is. Split out of `sandbox_key_not_permitted` in 2.0-alpha.1, where an absent key was indistinguishable from the `--exec-root` case, whose remedy is a change to this plugin. |
@@ -1694,7 +2106,7 @@ quietly go missing from your dashboards.
 On the plugin socket, always:
 
 ```bash
-PLUGIN_ID=$(docker plugin inspect -f '{{.Id}}' ghcr.io/claymore666/docker-net-dhcp:v2.2.3)
+PLUGIN_ID=$(docker plugin inspect -f '{{.Id}}' ghcr.io/claymore666/docker-net-dhcp:v2.3.0)
 sudo curl -s --unix-socket /run/docker/plugins/$PLUGIN_ID/net-dhcp.sock \
     http://localhost/metrics
 ```
@@ -1703,7 +2115,7 @@ Prometheus cannot scrape a UNIX socket, so for an actual scrape target
 set `METRICS_ADDR`:
 
 ```bash
-PLUGIN=ghcr.io/claymore666/docker-net-dhcp:v2.2.3
+PLUGIN=ghcr.io/claymore666/docker-net-dhcp:v2.3.0
 docker plugin disable "$PLUGIN"
 docker plugin set "$PLUGIN" METRICS_ADDR=127.0.0.1:9099
 docker plugin enable "$PLUGIN"
@@ -1863,7 +2275,7 @@ Raise verbosity with a disable, a set, and an enable, in that order,
 because `docker plugin set` is refused while the plugin is running:
 
 ```bash
-PLUGIN=ghcr.io/claymore666/docker-net-dhcp:v2.2.3
+PLUGIN=ghcr.io/claymore666/docker-net-dhcp:v2.3.0
 docker plugin disable "$PLUGIN"
 docker plugin set "$PLUGIN" LOG_LEVEL=trace
 docker plugin enable "$PLUGIN"
@@ -1946,7 +2358,7 @@ Compose-managed alternative (network lifecycle tied to the project):
 ```yaml
 networks:
   lan:
-    driver: ghcr.io/claymore666/docker-net-dhcp:v2.2.3
+    driver: ghcr.io/claymore666/docker-net-dhcp:v2.3.0
     driver_opts:
       mode: macvlan
       parent: eth0
@@ -2024,9 +2436,10 @@ consumer-side:
 | Container on an `ipv6=true` network has an IPv6 address but cannot reach anything off-link | No default route. DHCPv6 carries no next hop, so the route comes from a Router Advertisement, which the plugin reads and puts into the Join answer (v2.2.0+, #821) | `ip -6 route show default` inside the container: a route `via` an `fe80::` address is what should be there. If it is empty, check `ipv6_router_withdrawn` on `/Plugin.Health` (the segment's router withdrew itself) and then `router_advert_guard_failures`. A zero for both with no route means nothing advertised |
 | Container on an `ipv6=true` network has TWO IPv6 default routes | The guard did not take, so the container's kernel installed one from the advertisement beside the plugin's (v2.2.0+, #821) | `ip -6 route show default` inside the container: one of them carries `proto ra`, which is the kernel's. Check `router_advert_guard_failures` on `/Plugin.Health`; non-zero means the plugin could not write `accept_ra`, `autoconf` or `keep_addr_on_down` on the link, or could not remove a route the kernel had already installed |
 | Container on an `ipv6=true` network cannot resolve names through a `fe80::` resolver | The resolver line carries an RFC 4007 §11 scope zone, `nameserver fe80::1%eth0`, which musl (Alpine) does not parse | Use an image built against glibc, or configure the segment to advertise a global-scope resolver. The plugin writes the zone because without it the address does not work under either C library |
-| Container on a dual-stack network has an MTU smaller than either server asked for | Both families write the same link MTU, and since v2.2.0 the link takes the smaller of the two (#821). The larger value is a promise the link cannot keep for the family that asked for the smaller one | `ip link show` inside the container against the DHCPv4 option-26 value and the advertised MTU. Before v2.2.0 the two flipped the link back and forth, once per renewal of either family |
+| Container on a dual-stack network has an MTU smaller than either server asked for | Both families write the same link MTU, and since v2.2.0 the link takes the smaller of the two (#821). The larger value is a promise the link cannot keep for the family that asked for the smaller one | `ip link show` inside the container against the DHCPv4 option-26 value and the advertised MTU. Before v2.2.0 the two flipped the link back and forth, once per renewal of either family. A network that sets `mtu` applies neither value (#1037) |
 | Container on an `ipv6=true` network has a smaller MTU than expected on **IPv4** too | The segment's advertisement carried an MTU option, and the plugin applies it to the container's link, which bounds both families (v2.2.0+, #821) | `ip link show` inside the container against the advertised value. This is not governed by `propagate_mtu`: until v2.2.0 the container's kernel applied the advertised MTU on every IPv6 network and the plugin keeps that behaviour |
 | Container on an **ipvlan** network got a new IPv6 address after upgrading from 1.x | Expected, once. 1.x derived the DHCPv6 DUID from the MAC, and ipvlan slaves share the parent's MAC, so every container on the network presented one identity. 2.0 gives each endpoint its own | The new address is stable from here on. If you reserve v6 addresses server-side, re-key the reservation on the new DUID; see [DHCPv6](#dhcpv6-ipv6true) |
+| `docker run` or `docker network connect` fails with `require_mac is set on this network` | The network was created with `require_mac=true` and the container has no MAC of its own (#1036) | Set `--mac-address` or Compose `mac_address`. The `docker network connect` command line cannot set one: recreate the container with the network in its definition. After a refused connect, the container's next restart, manual or by its restart policy, fails the same way and leaves it stopped: `docker network disconnect` that network while the container is stopped (a running one is refused as not connected), then `docker start` |
 | `--mac-address` fails on an ipvlan network | ipvlan children share the parent MAC (kernel design) | Use `mode=macvlan`, or drop the custom MAC |
 | Reservations don't stick on ipvlan | DHCP server keys on MAC only, ignores option 61 | Use `mode=macvlan`, or configure the server to honor client identifiers |
 | One container on two plugin networks fails to start with `cannot program address ... conflicts with existing route` | The two networks lease from **overlapping** subnets, and libnetwork refuses to program a second sandbox address in a subnet the container already routes. Overlapping and never identical: the upstream check is containment in either direction, so `10.0.0.0/8` on one network and `10.1.2.0/24` on another are different subnets and still collide. **Which modes reach this.** In `mode=macvlan` and `mode=ipvlan` nothing stands in the way: two networks on one parent NIC are one LAN with one DHCP server, which is exactly this case. In **bridge mode**, the default when `mode` is unset, two networks on the *same* bridge are refused earlier and with a different message, at `docker network create` (see the `Bridge already in use` row above), so you never get as far as starting a container. If you are seeing *this* error in bridge mode, it is one of two things: the two networks sit on *different* bridges whose subnets overlap (the create-time guard keys on the bridge **name** and never on the subnet), or you set `-o ignore_conflicts=true`, which skips that guard and is what allowed the pair to be created. Measured identical on two daemons differing only in [moby/moby#52866](https://github.com/moby/moby/pull/52866), each with and without the endpoint interface-name option, so four cells and one error. That is the sample; it is not a claim about engines nobody has run, and the integration test pins it so a future engine that behaves differently shows up as a failure here instead of as a stale sentence | Not a plugin setting and not fixable here. Put the two networks on **non-overlapping** subnets, different *and* with neither one containing the other (different parent NICs / VLANs, each with its own DHCP scope); "different subnets" alone is not enough, since a supernet and a range carved out of it are different and still conflict. Or attach the container to one network only. In bridge mode, if you reached this through `-o ignore_conflicts=true`, drop that option and let the create-time guard refuse the pair up front, where the message names the real problem. Note the container **takes a real lease per network before it fails**, because the plugin leases in `CreateEndpoint`, before libnetwork gets as far as refusing, and on `never` and `on_stop` **nothing releases them**: the addresses are leased before the endpoint exists, so no `Leave` ever runs for them and those two values cannot reach them (see [How a lease gets handed back](internals.md#how-a-lease-gets-handed-back), #800, #962), so those addresses stay leased until the server expires them. On `release_lease=on_remove` they are reached (#984): the failed start still ends in a `DeleteEndpoint`, which retains each record with a deadline, and the addresses go back about a minute later. A repeatedly retried start therefore consumes the pool at one address per network per attempt. If addresses are scarce, shorten the lease time on the server or reserve the range, and do not wait for the plugin to hand them back |
