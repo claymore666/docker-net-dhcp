@@ -1268,7 +1268,7 @@ container that is**, and only while it is the single one being kept. So:
   [`/Plugin.Health`](#pluginhealth). The two cases above are not
   counted, because from the plugin's side nothing ambiguous happened.
 - A container whose MAC is the one a kept identity was leased under
-  claims its own, however many are kept. That is a container restarted
+  claims its own, however many others are kept. That is a container restarted
   with `--mac-address` or Compose `mac_address`, which comes back under
   the same MAC. This is not counted as `ipam_rebind_ambiguous` (#1118).
 - On a network created with `-o require_mac=true`, where every

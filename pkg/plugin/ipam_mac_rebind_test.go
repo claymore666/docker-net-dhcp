@@ -67,11 +67,18 @@ func TestIpamRebindCandidate_TheRequestingMACDecides(t *testing.T) {
 		t.Run(name+"/a tombstone of the requesting MAC a running endpoint holds is not taken", func(t *testing.T) {
 			p, _, _, _ := f0Fixture(t)
 			held := f0Tombstone(t, p, own, f0Addr)
+			theirs := f0Tombstone(t, p, neighbour, f0Addr2)
 			p.rememberEndpoint("still-running", endpointFingerprint{MAC: own.String(), IPv4: "192.168.99.10"}, dhcpHostname{})
-			if gotID, _, _, _ := p.ipamRebindCandidate(ipamTestNetwork, own, requireMAC); gotID == held {
-				t.Fatalf("re-bound %q, a record a running endpoint still holds (#1047)", held)
+			want := theirs
+			if requireMAC {
+				want = ""
+			}
+			if gotID, _, _, _ := p.ipamRebindCandidate(ipamTestNetwork, own, requireMAC); gotID != want {
+				t.Fatalf("re-bound %q, want %q: a held record is no candidate, so the MAC finds none among the rest",
+					gotID, want)
 			}
 			macRebindUntouched(t, p, held, own)
+			macRebindAmbiguous(t, p, 0)
 		})
 	}
 
