@@ -222,6 +222,16 @@ on the bridge at all. This is what `netplan` emits for the equivalent
 bridge, so it is the reference implementation's own answer and not a
 workaround.
 
+On a cloud image, cloud-init writes its own `.network` file for the NIC,
+for example `10-cloud-init-eth0.network`. `networkd` applies only the
+first file, in name order, whose `[Match]` fits a device, so the
+`20-eth0.network` above loses to it silently and the NIC is never
+enslaved. Either name the port file so it sorts before cloud-init's, or
+turn cloud-init's network configuration off
+(`/etc/cloud/cloud.cfg.d/99-disable-network-config.cfg` containing
+`network: {config: disabled}`) and remove its file. On Ubuntu, use the
+netplan recipe above instead; netplan owns the NIC there.
+
 ```bash
 sudo systemctl enable --now systemd-networkd
 ```

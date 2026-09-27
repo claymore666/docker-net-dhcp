@@ -42,6 +42,9 @@ below decide what is in a release; this page follows them.
 - [#1030], Microsoft classless static routes, option 249, where 121 is
   absent
 - [#1031], DHCPv4 Rapid Commit
+- [#1119], DHCPv4 FORCERENEW with nonce authentication (RFC 3203,
+  RFC 6704); an unauthenticated FORCERENEW is discarded and counted
+- [#1120], `user_class=`, the DHCPv4 User Class option 77 (RFC 3004)
 - [#1032], `ipv6_iid=stable-privacy`, the RFC 7217 interface identifier,
   with modified EUI-64 kept as the default
 - [#1033], the DHCPv6 timezone options logged as the v4 ones are
@@ -339,6 +342,8 @@ project does, that review is where it gets corrected.
 [#1045]: https://github.com/claymore666/docker-net-dhcp/issues/1045
 [#1096]: https://github.com/claymore666/docker-net-dhcp/issues/1096
 [#1108]: https://github.com/claymore666/docker-net-dhcp/issues/1108
+[#1119]: https://github.com/claymore666/docker-net-dhcp/issues/1119
+[#1120]: https://github.com/claymore666/docker-net-dhcp/issues/1120
 [moby/moby#52866]: https://github.com/moby/moby/pull/52866
 [moby/moby#52870]: https://github.com/moby/moby/issues/52870
 [moby/moby#52871]: https://github.com/moby/moby/pull/52871
