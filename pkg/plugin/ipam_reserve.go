@@ -236,7 +236,7 @@ func (p *Plugin) runIPAMReserve(ctx context.Context, networkID string, sn stored
 
 	// Exactly one live tombstone supplies the address and the client-id the server filed it under; with more than one,
 	// RequestAddress carries no hostname or endpoint id to choose on, so the server decides and it is counted (#110).
-	recordID, rebindAddr, rebindIdentity, recordID6 := p.ipamRebindCandidate(networkID, mac, opts.RequireMAC)
+	recordID, rebindAddr, rebindIdentity, recordID6 := p.ipamRebindCandidate(networkID, mac, opts.RequireMAC, identity)
 	rebound := recordID != ""
 	requestedIP, demanded := ipamExchangeAddresses(requestedIP, rebindAddr)
 	clientID = ipamExchangeClientID(clientID, rebindIdentity)
@@ -542,7 +542,7 @@ func (p *Plugin) recordReserved(networkID string, mac net.HardwareAddr, identity
 
 // ipamRebindCandidate re-binds exactly one live tombstone; with more than one it counts and logs, since
 // RequestAddress carries no hostname or endpoint id to choose on (#110).
-func (p *Plugin) ipamRebindCandidate(networkID string, mac net.HardwareAddr, requireMAC bool) (string, string, []byte, string) {
+func (p *Plugin) ipamRebindCandidate(networkID string, mac net.HardwareAddr, requireMAC bool, identity []byte) (string, string, []byte, string) {
 	if p.records == nil {
 		return "", "", nil, ""
 	}
@@ -552,7 +552,7 @@ func (p *Plugin) ipamRebindCandidate(networkID string, mac net.HardwareAddr, req
 		return "", "", nil, ""
 	}
 	now := time.Now()
-	candidates := ipamMACDecides(p.ipamUnheldTombstones(networkID, rb.Tombstones(networkID, now)), mac, requireMAC)
+	candidates := ipamMACDecides(p.ipamUnheldTombstones(networkID, rb.Tombstones(networkID, now)), mac, requireMAC, identity)
 	if len(candidates) == 0 {
 		return "", "", nil, ""
 	}
@@ -582,12 +582,13 @@ func (p *Plugin) ipamRebindCandidate(networkID string, mac net.HardwareAddr, req
 }
 
 // ipamMACDecides narrows the candidates to the requesting MAC's tombstones when there are any, and always on a
-// require_mac network, where every MAC is the user's, so there a pinned MAC never takes a neighbour's identity
-// (#1118).
-func ipamMACDecides(candidates []lease.Record, mac net.HardwareAddr, requireMAC bool) []lease.Record {
+// require_mac network, where every MAC is the user's, so there a pinned MAC never takes a neighbour's identity.
+// There a tombstone counts as the MAC's own only under the identity this request would mint itself: a record an
+// earlier build handed from one pinned MAC to another is left to expire, so the two stop sharing a client id (#1118).
+func ipamMACDecides(candidates []lease.Record, mac net.HardwareAddr, requireMAC bool, identity []byte) []lease.Record {
 	var own []lease.Record
 	for _, rec := range candidates {
-		if bytes.Equal(rec.CHAddr, mac) {
+		if bytes.Equal(rec.CHAddr, mac) && (!requireMAC || bytes.Equal(rec.Identity, identity)) {
 			own = append(own, rec)
 		}
 	}

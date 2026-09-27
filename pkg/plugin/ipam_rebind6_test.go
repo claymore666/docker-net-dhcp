@@ -231,7 +231,7 @@ func TestIPAMRebind6_AnotherMACsV6TombstoneIsNotPaired(t *testing.T) {
 	before := f0Rec(t, p, other6)
 
 	from := len(s2Lines(t, journal))
-	got4, _, _, got6 := p.ipamRebindCandidate(ipamTestNetwork, next, false)
+	got4, _, _, got6 := p.ipamRebindCandidate(ipamTestNetwork, next, false, nil)
 	if got4 != id4 || got6 != "" {
 		t.Fatalf("the re-bind took (%q, %q), want (%q, none): the v6 tombstone is another endpoint's", got4, got6, id4)
 	}
@@ -249,7 +249,7 @@ func TestIPAMRebind6_TwoV6TombstonesOnOneMACAreAmbiguous(t *testing.T) {
 	s2Tombstone6(t, p, m1, "2001:db8::11/64")
 
 	from := len(s2Lines(t, journal))
-	if got4, _, _, got6 := p.ipamRebindCandidate(ipamTestNetwork, f0MAC(0x02), false); got4 != "" || got6 != "" {
+	if got4, _, _, got6 := p.ipamRebindCandidate(ipamTestNetwork, f0MAC(0x02), false, nil); got4 != "" || got6 != "" {
 		t.Fatalf("the re-bind took (%q, %q), want neither: which v6 half belongs is a guess", got4, got6)
 	}
 	s2Tail(t, journal, from)
@@ -513,7 +513,7 @@ func TestIPAMRebind6_GapA_AnExpiredReBoundLeaseIsClosedAndNeverReleased(t *testi
 	first, restarted := f0MAC(0x01), f0MAC(0x02)
 	p, b, sender, journal := f0Fixture(t)
 	id4, id6 := s2Expired(t, p, first)
-	if got4, _, _, got6 := p.ipamRebindCandidate(ipamTestNetwork, restarted, false); got4 != id4 || got6 != id6 {
+	if got4, _, _, got6 := p.ipamRebindCandidate(ipamTestNetwork, restarted, false, nil); got4 != id4 || got6 != id6 {
 		t.Fatalf("the re-bind took (%q, %q), want (%q, %q)", got4, got6, id4, id6)
 	}
 	f0Reservation(p, b, restarted, id4, f0Addr, nil)
@@ -540,7 +540,7 @@ func TestIPAMRebind6_GapA_KeyingOnTheReboundMarkWouldReleaseAnExpiredLease(t *te
 	first, restarted := f0MAC(0x01), f0MAC(0x02)
 	p, _, sender, _ := f0Fixture(t)
 	id4, id6 := s2Expired(t, p, first)
-	if got4, _, _, _ := p.ipamRebindCandidate(ipamTestNetwork, restarted, false); got4 != id4 {
+	if got4, _, _, _ := p.ipamRebindCandidate(ipamTestNetwork, restarted, false, nil); got4 != id4 {
 		t.Fatalf("the re-bind took %q, want %q", got4, id4)
 	}
 	now := time.Now()

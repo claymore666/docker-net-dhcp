@@ -773,7 +773,8 @@ DHCPv6 identity (DUID and IAID) is derived from the MAC the endpoint had
 at its first start and stored, so `docker restart` keeps it, and the
 address with it, although Docker gives the endpoint a new MAC; the
 limits are the IPv4 ones, the 60 s window and two containers of one
-network restarted together, which both get a new identity (#960). A
+network restarted together with Docker-generated MACs, which both get a
+new identity (#960, #1118). A
 `slaac` address is formed from the MAC the endpoint has now, so it
 changes at every restart unless `--mac-address` pins the MAC.
 
@@ -1250,7 +1251,8 @@ separately and it is weaker.
 **The rule.** When a container on such a network stops or is removed,
 the plugin keeps its DHCP identity and address for a minute. The next
 container that starts on that network claims them: **whichever
-container that is**, and only while it is the single one being kept. So:
+container that is**, and only while it is the single one being kept.
+A MAC the user set changes this, in the last two cases below. So:
 
 - One container restarted, nothing else happening on the network: it
   claims its own, and keeps its address. This is the normal case.
@@ -1268,14 +1270,19 @@ container that is**, and only while it is the single one being kept. So:
   [`/Plugin.Health`](#pluginhealth). The two cases above are not
   counted, because from the plugin's side nothing ambiguous happened.
 - A container whose MAC is the one a kept identity was leased under
-  claims its own, however many others are kept. That is a container restarted
-  with `--mac-address` or Compose `mac_address`, which comes back under
-  the same MAC. This is not counted as `ipam_rebind_ambiguous` (#1118).
+  claims it, however many others are kept, as long as it is the only
+  one kept under that MAC. That is a container restarted with
+  `--mac-address` or Compose `mac_address`, which comes back under the
+  same MAC. This is not counted as `ipam_rebind_ambiguous`. Two kept
+  under the same MAC are counted, and neither is claimed (#1118).
 - On a network created with `-o require_mac=true`, where every
   container's MAC is one the user set, a container claims only the
   identity kept under its own MAC. Any other container gets a fresh
   identity and address, even when exactly one is kept, so a pinned
-  container never comes up on a stopped neighbour's address (#1118).
+  container never comes up on a stopped neighbour's address. An
+  identity that an earlier release handed from one pinned container to
+  another is claimed by neither: it is left to expire, and each
+  container leases under its own client id again (#1118).
 
 **A restart of the plugin does not spend the minute.** If the plugin, or
 the daemon under it, stops between Docker asking for an address and the
@@ -1294,8 +1301,8 @@ carries no hostname and no endpoint id. The only thing in it that
 identifies anything is a hardware address Docker generates fresh for
 every endpoint. There is nothing to match a request back to a
 particular previous container on, unless the MAC was set by the user,
-which is what the two exceptions above use. The `--ipam-driver null` shape has a
-hostname at that point and narrows by it.
+which is what the last two cases above use. The `--ipam-driver null`
+shape has a hostname at that point and narrows by it.
 
 **It also depends on the DHCP server.** A restarted container comes back
 under a new hardware address, so what recovers its lease is the client
@@ -2056,7 +2063,7 @@ already parse it were not told to expect a new type.
 | `network_options_rejected` | no | n/a | (v1.8.0+) Endpoint operations that met a network's stored options and would not act on them as written: an interface name the kernel would not accept, or a `mode` this plugin does not implement. Name validation runs when a network is *created* (#705); this check runs every time the stored options are *read*, which is where the name actually reaches netlink. Not healthy-affecting: refusing is the safe outcome, the operation already fails visibly to Docker, and one network's record being wrong does not make the plugin unwell, because every other network on the host keeps working. A non-zero value means one network needs recreating: either it was created before name validation existed, or its options were written directly into the state directory. `DeleteEndpoint` is deliberately exempt so a refused network can still be torn down. It counts an unknown mode and proceeds, so a rise here does not mean nothing was torn down. Only the mode: teardown reads no stored name at all (it derives the link from the endpoint ID), so there is no name refusal available to it. |
 | `ipam_replay_hits` | no | n/a | *(v2.1.0+)* Stored endpoint addresses confirmed at a daemon restart from the plugin's own lease record. Only moves on a network created with this plugin as its IPAM driver (`--ipam-driver <plugin>`); with `--ipam-driver null` it stays zero for the life of the process, which is what makes a zero here ambiguous on a mixed host. The mechanism working: when Docker restarts it asks the IPAM driver to confirm every address it already stored, and each confirmation is one container that keeps its address. Read it as the denominator for the row below, which is the only way to tell "no misses because everything matched" from "no misses because nothing was asked". **Not a check:** its own value is a count of work done and carries no verdict, and on a host that restarts Docker its normal reading is non-zero and climbing. |
 | `ipam_replay_miss` | no | warn | *(v2.1.0+)* Stored endpoint addresses the plugin would **not** confirm at a daemon restart, because no lease record in that network holds them. The refusal is the safe outcome and is not `healthy`-affecting: Docker keeps the address it stored, the refusal is logged, and the network driver's own recovery adopts the endpoint from Docker's view. It is worth investigating, because it means the lease record and Docker's store have drifted apart on a host where they are supposed to be two views of the same fact: a lost or hand-edited `lease-records.jsonl`, a state directory restored from a backup, or a network whose records were removed while its containers were not. The endpoint that missed is the one to look at; the others are unaffected. |
-| `ipam_rebind_ambiguous` | no | warn | *(v2.1.0+)* Address requests that met more than one recently-removed endpoint on the same network, so nothing said which previous address the request belonged to and the DHCP server chose. **This is a documented limit, counted.** An address request carries no hostname and no endpoint id, so when several containers on one network restart together the plugin has nothing to match them on, and guessing would hand one container's address to another. Not `healthy`-affecting: every container still gets an address. Watch it anyway: it is the one signal that addresses on this host moved for a reason an operator can act on, by pinning the ones that matter with `--ip` or `--mac-address`, by restarting containers one at a time, or by using `--ipam-driver null`, where restart stability is carried by the plugin's own tombstones instead. |
+| `ipam_rebind_ambiguous` | no | warn | *(v2.1.0+)* Address requests that met more than one recently-removed endpoint on the same network, so nothing said which previous address the request belonged to and the DHCP server chose. **This is a documented limit, counted.** An address request carries no hostname and no endpoint id, so when several containers with Docker-generated MACs on one network restart together the plugin has nothing to match them on, and guessing would hand one container's address to another. Not `healthy`-affecting: every container still gets an address. Watch it anyway: it is the one signal that addresses on this host moved for a reason an operator can act on, by pinning the ones that matter with `--ip` or `--mac-address` (a container with a MAC the user set claims the identity kept under that MAC, see [Restart stability](#restart-stability-mac-and-ip), #1118), by restarting containers one at a time, or by using `--ipam-driver null`, where restart stability is carried by the plugin's own tombstones instead. |
 | `ipam_reserve_duplicate_mac` | no | warn | *(v2.1.0+)* Address requests refused because the network was already leasing an address for that hardware address, so the container that asked second did not start. It is **not** `healthy`-affecting: refusing is the safe outcome, and the alternative is two endpoints holding one address and the loser failing later with a message about a plugin restart that did not happen. Its producer is two endpoints carrying one MAC. Docker generates a unique hardware address per endpoint and passes an operator-set one through unchanged, so `docker run --mac-address X` twice on one network, or a Compose file pinning one MAC on two services, puts two endpoints on one hardware address; a DHCP server files its lease per hardware address and would hand them the same address. Worth investigating whenever it moves, because each move is a container that did not start: give each container its own `--mac-address`, or leave it unset. It is **not** moved by Docker re-sending a request after its own plugin call timed out: that re-send carries no body (the daemon hands the same, already-drained reader to every attempt) and is refused before any handler runs, so raising `--timeout` does not change this counter. |
 | `ipam_stranded_records` | no | warn | *(v2.2.2+)* Lease records a previous plugin process left behind with no endpoint on them, handed back when this process started so their addresses can be claimed again. **A move is the repair, not the fault.** The producer is a plugin process, or a daemon under it, that ended between Docker asking for an address and the container's endpoint being created. Left alone such a record keeps the address for good: it is not one of the recently-removed endpoints a restart claims from, so the container's next attempt takes a second address; it still answers address lookups, so `--ip` on that address and a container pinned to its hardware address are both refused; and no network ever hands it back, not even `release_lease=on_remove`. Not `healthy`-affecting. Watch it: a steady rise means the plugin or the daemon is restarting while containers start, and that is worth investigating on its own. |
 | `ipam_release_unknown` | no | n/a | *(v2.1.0+)* Addresses Docker released that no lease record of the plugin's holds. Not a fault and not `healthy`-affecting: a release for an address whose record was already retained (the endpoint was deleted) or closed (its creation failed) is the normal ordering, and the counter exists so that the release path has an outside number at all. |

@@ -8,6 +8,7 @@ import (
 	"context"
 	"net"
 	"testing"
+	"time"
 
 	"github.com/claymore666/dhcp-golib/lease"
 
@@ -30,6 +31,17 @@ func macRebindAmbiguous(t *testing.T, p *Plugin, want int32) {
 	}
 }
 
+func macRebindMinted(mac net.HardwareAddr) []byte {
+	return dhcp.ClientIdentity(resolveClientID(f0Options(), "", mac))
+}
+
+func macRebindMintedIf(requireMAC bool, mac net.HardwareAddr) []byte {
+	if requireMAC {
+		return macRebindMinted(mac)
+	}
+	return nil
+}
+
 func TestIpamRebindCandidate_TheRequestingMACDecides(t *testing.T) {
 	own, neighbour, other, fresh := f0MAC(0x01), f0MAC(0x02), f0MAC(0x03), f0MAC(0x04)
 
@@ -42,7 +54,7 @@ func TestIpamRebindCandidate_TheRequestingMACDecides(t *testing.T) {
 			p, _, _, _ := f0Fixture(t)
 			mine := f0Tombstone(t, p, own, f0Addr)
 			theirs := f0Tombstone(t, p, neighbour, f0Addr2)
-			gotID, gotAddr, gotIdent, _ := p.ipamRebindCandidate(ipamTestNetwork, own, requireMAC)
+			gotID, gotAddr, gotIdent, _ := p.ipamRebindCandidate(ipamTestNetwork, own, requireMAC, macRebindMintedIf(requireMAC, own))
 			if gotID != mine || gotAddr != "192.168.99.10" || !bytes.Equal(gotIdent, dhcp.ClientIdentity(own)) {
 				t.Fatalf("re-bound (%q, %q, %x), want the requesting MAC's own (%q, 192.168.99.10)",
 					gotID, gotAddr, gotIdent, mine)
@@ -56,7 +68,7 @@ func TestIpamRebindCandidate_TheRequestingMACDecides(t *testing.T) {
 			first := f0Tombstone(t, p, own, f0Addr)
 			second := f0Tombstone(t, p, own, f0Addr2)
 			f0Tombstone(t, p, neighbour, "192.168.99.12/24")
-			if gotID, _, _, _ := p.ipamRebindCandidate(ipamTestNetwork, own, requireMAC); gotID != "" {
+			if gotID, _, _, _ := p.ipamRebindCandidate(ipamTestNetwork, own, requireMAC, macRebindMintedIf(requireMAC, own)); gotID != "" {
 				t.Fatalf("re-bound %q out of two records of one MAC; nothing tells them apart", gotID)
 			}
 			macRebindUntouched(t, p, first, own)
@@ -73,7 +85,7 @@ func TestIpamRebindCandidate_TheRequestingMACDecides(t *testing.T) {
 			if requireMAC {
 				want = ""
 			}
-			if gotID, _, _, _ := p.ipamRebindCandidate(ipamTestNetwork, own, requireMAC); gotID != want {
+			if gotID, _, _, _ := p.ipamRebindCandidate(ipamTestNetwork, own, requireMAC, macRebindMintedIf(requireMAC, own)); gotID != want {
 				t.Fatalf("re-bound %q, want %q: a held record is no candidate, so the MAC finds none among the rest",
 					gotID, want)
 			}
@@ -85,7 +97,7 @@ func TestIpamRebindCandidate_TheRequestingMACDecides(t *testing.T) {
 	t.Run("require_mac=true/a single neighbour tombstone is not taken", func(t *testing.T) {
 		p, _, _, _ := f0Fixture(t)
 		theirs := f0Tombstone(t, p, neighbour, f0Addr)
-		gotID, gotAddr, gotIdent, got6 := p.ipamRebindCandidate(ipamTestNetwork, own, true)
+		gotID, gotAddr, gotIdent, got6 := p.ipamRebindCandidate(ipamTestNetwork, own, true, macRebindMinted(own))
 		if gotID != "" || gotAddr != "" || gotIdent != nil || got6 != "" {
 			t.Fatalf("re-bound (%q, %q, %x, %q), a neighbour's identity, on a network where every MAC is "+
 				"the user's", gotID, gotAddr, gotIdent, got6)
@@ -98,8 +110,44 @@ func TestIpamRebindCandidate_TheRequestingMACDecides(t *testing.T) {
 		p, _, _, _ := f0Fixture(t)
 		f0Tombstone(t, p, neighbour, f0Addr)
 		f0Tombstone(t, p, other, f0Addr2)
-		if gotID, _, _, _ := p.ipamRebindCandidate(ipamTestNetwork, own, true); gotID != "" {
+		if gotID, _, _, _ := p.ipamRebindCandidate(ipamTestNetwork, own, true, macRebindMinted(own)); gotID != "" {
 			t.Fatalf("re-bound %q, a neighbour's", gotID)
+		}
+		macRebindAmbiguous(t, p, 0)
+	})
+
+	t.Run("require_mac=true/an own-MAC tombstone carrying a neighbour's identity is not taken", func(t *testing.T) {
+		p, _, _, journal := f0Fixture(t)
+		carried := f0Tombstone(t, p, neighbour, f0Addr)
+		if gotID, _, _, _ := p.ipamRebindCandidate(ipamTestNetwork, own, false, nil); gotID != carried {
+			t.Fatalf("setup: re-bound %q, want %q handed to the pinned MAC as an earlier build did", gotID, carried)
+		}
+		p.ipamGiveUpAttempt(carried, true, time.Now())
+		f0Reopen(t, p, journal, "proc-2")
+		if rec := f0Rec(t, p, carried); !bytes.Equal(rec.CHAddr, own) || !bytes.Equal(rec.Identity, macRebindMinted(neighbour)) {
+			t.Fatalf("setup: record is on %v under %x, want the pinned MAC under the neighbour's identity",
+				net.HardwareAddr(rec.CHAddr), rec.Identity)
+		}
+		for _, mac := range []net.HardwareAddr{own, neighbour} {
+			gotID, _, gotIdent, _ := p.ipamRebindCandidate(ipamTestNetwork, mac, true, macRebindMinted(mac))
+			if gotID != "" {
+				t.Fatalf("%v re-bound %q under %x; each pinned MAC must lease under its own client id", mac, gotID, gotIdent)
+			}
+		}
+		macRebindUntouched(t, p, carried, own)
+		macRebindAmbiguous(t, p, 0)
+	})
+
+	t.Run("require_mac=false/a pinned MAC keeps a carried identity, the documented plain-network limit", func(t *testing.T) {
+		p, _, _, _ := f0Fixture(t)
+		carried := f0Tombstone(t, p, neighbour, f0Addr)
+		if gotID, _, _, _ := p.ipamRebindCandidate(ipamTestNetwork, own, false, nil); gotID != carried {
+			t.Fatalf("setup: re-bound %q, want %q", gotID, carried)
+		}
+		p.ipamGiveUpAttempt(carried, true, time.Now())
+		f0Tombstone(t, p, f0MAC(0x03), f0Addr2)
+		if gotID, _, _, _ := p.ipamRebindCandidate(ipamTestNetwork, own, false, nil); gotID != carried {
+			t.Fatalf("re-bound %q, want the MAC's own record %q beside another tombstone", gotID, carried)
 		}
 		macRebindAmbiguous(t, p, 0)
 	})
@@ -107,7 +155,7 @@ func TestIpamRebindCandidate_TheRequestingMACDecides(t *testing.T) {
 	t.Run("require_mac=false/an unpinned restart still claims the single tombstone", func(t *testing.T) {
 		p, _, _, _ := f0Fixture(t)
 		id := f0Tombstone(t, p, neighbour, f0Addr)
-		gotID, gotAddr, gotIdent, _ := p.ipamRebindCandidate(ipamTestNetwork, fresh, false)
+		gotID, gotAddr, gotIdent, _ := p.ipamRebindCandidate(ipamTestNetwork, fresh, false, nil)
 		if gotID != id || gotAddr != "192.168.99.10" || !bytes.Equal(gotIdent, dhcp.ClientIdentity(neighbour)) {
 			t.Fatalf("re-bound (%q, %q, %x), want (%q, 192.168.99.10): a restart comes back under a MAC "+
 				"Docker minted fresh, and this is the normal case", gotID, gotAddr, gotIdent, id)
@@ -119,7 +167,7 @@ func TestIpamRebindCandidate_TheRequestingMACDecides(t *testing.T) {
 		p, _, _, _ := f0Fixture(t)
 		f0Tombstone(t, p, neighbour, f0Addr)
 		f0Tombstone(t, p, other, f0Addr2)
-		if gotID, _, _, _ := p.ipamRebindCandidate(ipamTestNetwork, fresh, false); gotID != "" {
+		if gotID, _, _, _ := p.ipamRebindCandidate(ipamTestNetwork, fresh, false, nil); gotID != "" {
 			t.Fatalf("re-bound %q with two candidates and no MAC match", gotID)
 		}
 		macRebindAmbiguous(t, p, 1)
@@ -134,7 +182,7 @@ func TestIpamRebindCandidate_TheV6TwinFollowsTheMACChosenV4Record(t *testing.T) 
 		mine4 := f0Tombstone(t, p, own, f0Addr)
 		mine6 := s2Tombstone6(t, p, own, s2Addr6)
 		theirs := f0Tombstone(t, p, neighbour, f0Addr2)
-		got4, _, _, got6 := p.ipamRebindCandidate(ipamTestNetwork, own, false)
+		got4, _, _, got6 := p.ipamRebindCandidate(ipamTestNetwork, own, false, nil)
 		if got4 != mine4 || got6 != mine6 {
 			t.Fatalf("re-bound (%q, %q), want the own pair (%q, %q)", got4, got6, mine4, mine6)
 		}
@@ -146,7 +194,7 @@ func TestIpamRebindCandidate_TheV6TwinFollowsTheMACChosenV4Record(t *testing.T) 
 		p, _, _, _ := f0Fixture(t)
 		theirs := f0Tombstone(t, p, neighbour, f0Addr)
 		mine6 := s2Tombstone6(t, p, own, s2Addr6)
-		got4, _, _, got6 := p.ipamRebindCandidate(ipamTestNetwork, own, true)
+		got4, _, _, got6 := p.ipamRebindCandidate(ipamTestNetwork, own, true, macRebindMinted(own))
 		if got4 != "" || got6 != "" {
 			t.Fatalf("re-bound (%q, %q); the only v4 candidate is a neighbour's", got4, got6)
 		}
@@ -158,7 +206,7 @@ func TestIpamRebindCandidate_TheV6TwinFollowsTheMACChosenV4Record(t *testing.T) 
 		p, _, _, _ := f0Fixture(t)
 		theirs := f0Tombstone(t, p, neighbour, f0Addr)
 		mine6 := s2Tombstone6(t, p, own, s2Addr6)
-		got4, _, _, got6 := p.ipamRebindCandidate(ipamTestNetwork, own, false)
+		got4, _, _, got6 := p.ipamRebindCandidate(ipamTestNetwork, own, false, nil)
 		if got4 != theirs || got6 != "" {
 			t.Fatalf("re-bound (%q, %q), want (%q, none)", got4, got6, theirs)
 		}
@@ -223,4 +271,34 @@ func TestIpamReserveAddress_RequireMACSendsTheOwnClientIDBesideANeighboursTombst
 			macRebindUntouched(t, p, theirs, neighbour)
 		})
 	}
+}
+
+func TestIpamReserveAddress_RequireMACReBindsTheOwnTombstoneBesideANeighbours(t *testing.T) {
+	own, neighbour := f0MAC(0x01), f0MAC(0x02)
+	p, b, _, _ := f0Fixture(t)
+	s2ReserveLink(t)
+	mine := f0Tombstone(t, p, own, f0Addr)
+	theirs := f0Tombstone(t, p, neighbour, f0Addr2)
+
+	var sent []byte
+	var asked string
+	prev := dhcpGetIP
+	dhcpGetIP = func(_ context.Context, _ string, o *dhcp.DHCPClientOptions) (dhcp.Info, dhcp.RAObservation, error) {
+		sent, asked = append([]byte(nil), o.ClientID...), o.RequestedIP
+		return dhcp.Info{IP: f0Addr, Gateway: "192.168.99.1"}, dhcp.RAObservation{}, nil
+	}
+	t.Cleanup(func() { dhcpGetIP = prev })
+
+	opts := f0Options()
+	opts.RequireMAC = true
+	res, err := s2Reserve(t, p, b, opts, own)
+	if err != nil {
+		t.Fatalf("the reserve failed: %v", err)
+	}
+	if res.record != mine || !bytes.Equal(sent, resolveClientID(opts, "", own)) || asked != "192.168.99.10" {
+		t.Fatalf("reserved under record %q with client id %x asking for %q, want the own record %q, the own client "+
+			"id and 192.168.99.10", res.record, sent, asked, mine)
+	}
+	macRebindUntouched(t, p, theirs, neighbour)
+	macRebindAmbiguous(t, p, 0)
 }
