@@ -302,3 +302,37 @@ func TestIpamReserveAddress_RequireMACReBindsTheOwnTombstoneBesideANeighbours(t 
 	macRebindUntouched(t, p, theirs, neighbour)
 	macRebindAmbiguous(t, p, 0)
 }
+
+func TestIpamReserveAddress_RequireMACWithAClientIDReBindsTheOwnTombstone(t *testing.T) {
+	own := f0MAC(0x01)
+	p, b, _, _ := f0Fixture(t)
+	s2ReserveLink(t)
+	opts := f0Options()
+	opts.RequireMAC, opts.ClientID = true, "site-wide-id"
+	minted := dhcp.ClientIdentity(resolveClientID(opts, "", own))
+	mine := p.recordCreated(ipamTestNetwork, own, minted)
+	if err := p.records.Observed(mine, acquired(f0Addr, time.Hour), nil); err != nil {
+		t.Fatalf("Observed: %v", err)
+	}
+	if err := p.records.Bound(mine); err != nil {
+		t.Fatalf("Bound: %v", err)
+	}
+	p.recordRetained(mine, time.Now().Add(tombstoneTTL))
+
+	var asked string
+	prev := dhcpGetIP
+	dhcpGetIP = func(_ context.Context, _ string, o *dhcp.DHCPClientOptions) (dhcp.Info, dhcp.RAObservation, error) {
+		asked = o.RequestedIP
+		return dhcp.Info{IP: f0Addr, Gateway: "192.168.99.1"}, dhcp.RAObservation{}, nil
+	}
+	t.Cleanup(func() { dhcpGetIP = prev })
+
+	res, err := s2Reserve(t, p, b, opts, own)
+	if err != nil {
+		t.Fatalf("the reserve failed: %v", err)
+	}
+	if res.record != mine || asked != "192.168.99.10" {
+		t.Fatalf("reserved under record %q asking for %q, want the own record %q minted under the network's "+
+			"client_id and 192.168.99.10", res.record, asked, mine)
+	}
+}
