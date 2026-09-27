@@ -1045,7 +1045,7 @@ func ipamLeaseFor(t *testing.T, ip string) []string {
 	}
 }
 
-// ipamOwnClientID is the plugin's default option 61 for a MAC, dnsmasq's lease-file spelling (#371).
+// ipamOwnClientID is the plugin's default option 61 for a MAC, dnsmasq's lease-file spelling (#371, #1118).
 func ipamOwnClientID(t *testing.T, mac string) string {
 	t.Helper()
 	hw, err := net.ParseMAC(mac)
@@ -1055,10 +1055,7 @@ func ipamOwnClientID(t *testing.T, mac string) string {
 	return "00:" + colonHex(hw)
 }
 
-// On require_mac=true the hand-over is keyed on the MAC: a pinned container started inside a neighbour's window leases
-// under its own client id, and the neighbour's restart claims its own tombstone beside the new one (#1118).
-
-// TestIPAM_RequireMACKeepsEachPinnedContainersOwnIdentityInsideTheWindow checks, on the server's lease file, that a pinned container started inside a stopped neighbour's retention window leases under its own client id and leaves the neighbour's lease alone.
+// TestIPAM_RequireMACKeepsEachPinnedContainersOwnIdentityInsideTheWindow checks, on the server's lease file, that a pinned container started inside a stopped neighbour's retention window leases under its own client id and leaves the neighbour's lease alone (#1118).
 func TestIPAM_RequireMACKeepsEachPinnedContainersOwnIdentityInsideTheWindow(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 240*time.Second)
 	defer cancel()
@@ -1067,7 +1064,7 @@ func TestIPAM_RequireMACKeepsEachPinnedContainersOwnIdentityInsideTheWindow(t *t
 	const netName = "dh-itest-ipam-macwin"
 	const nameA, nameB = "dh-itest-ipam-macwin-a", "dh-itest-ipam-macwin-b"
 	const macA, macB = "02:00:00:11:18:0a", "02:00:00:11:18:0b"
-	// retentionWindow mirrors the plugin's tombstoneTTL; a start past it has no tombstone to take either way.
+	// retentionWindow mirrors the plugin's tombstoneTTL; a start past it has no tombstone to take either way (#1118).
 	const retentionWindow = 60 * time.Second
 	kill := 0
 
