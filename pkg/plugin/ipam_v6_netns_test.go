@@ -263,7 +263,7 @@ func TestIPAMRebind6_ARunningEndpointsV6AddressIsNotOffered(t *testing.T) {
 	p.endpointFingerprints["ep-running"] = endpointFingerprint{MAC: first.String(), IPv4: "192.168.99.99",
 		IPv6: strings.Split(s2Addr6, "/")[0]}
 
-	got4, _, _, got6 := p.ipamRebindCandidate(ipamTestNetwork, restarted)
+	got4, _, _, got6 := p.ipamRebindCandidate(ipamTestNetwork, restarted, false, nil)
 	if got4 != id4 || got6 != "" {
 		t.Errorf("the re-bind took (%q, %q), want (%q, \"\"): the v6 address is held by a running endpoint", got4, got6, id4)
 	}

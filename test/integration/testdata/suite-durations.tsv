@@ -10,8 +10,8 @@
 #
 # POPULATION: TOP-LEVEL TEST FUNCTIONS, PARENTS ONLY.
 # One row per `func TestX(t *testing.T)` in test/integration/*_test.go —
-# 210 of them, the main suite's 203 and the failure suite's 7. MEASURED
-# on this table: 210 data rows, and 210 `func TestX(t *testing.T)` in
+# 211 of them, the main suite's 204 and the failure suite's 7. MEASURED
+# on this table: 211 data rows, and 211 `func TestX(t *testing.T)` in
 # test/integration/*_test.go counted independently of them.
 #
 # THIS NUMBER HAS NOW BEEN WRONG TWICE, and the second time is the
@@ -485,8 +485,14 @@
 #              26s a server-less start takes at most (16s of DHCP, 1s
 #              to stop it, a 9s claim window), plus the move after the
 #              restart, one DISCOVER retransmission of at most 16s.
-#   samples    3 for every corpus row. SIXTY-FIVE rows are not corpus
-#              samples, and the fourteen groups below are disjoint and
+#   one row    TestIPAM_RequireMACKeepsEachPinnedContainersOwnIdentity-
+#              InsideTheWindow (#1118) is 38.00, INFERRED: no run has
+#              executed it. The shape of
+#              TestIPAM_AContainerStartedInsideTheWindowTakesTheTombstone
+#              at 38.00, a network, three container starts and two
+#              stops, with both stops a kill rather than a 10s wait.
+#   samples    3 for every corpus row. SIXTY-SIX rows are not corpus
+#              samples, and the fifteen groups below are disjoint and
 #              exhaust them: the five `one row` notes above -- 73.85,
 #              84.19, 0.05, 12.08 and 13.00 -- the eighteen #110 rows,
 #              the four #962 TestReleaseLease_* rows, the two
@@ -496,8 +502,9 @@
 #              advertisement rows, the three #1016 refusal rows,
 #              the #1081 renumber row, the five #1037
 #              TestMTUOption_* rows, the four #905 TestSubModes_* rows
-#              the three #902 TestVlan_* rows and the #904 row.
-#              Sixty-two of the sixty-five are INFERRED; the three
+#              the three #902 TestVlan_* rows, the #904 row and the
+#              #1118 row.
+#              Sixty-three of the sixty-six are INFERRED; the three
 #              that are measured are
 #              TestLeaseRenewIPv6_HonorsT1, from three later head runs,
 #              and TestFailure_UnansweredRenewalsCounted and
@@ -665,6 +672,7 @@ TestIPAM_IpvlanIsRefusedAtCreate	15.00
 TestIPAM_NoSubnetAnswersTheAnyPool	14.00
 TestIPAM_ReplayAfterDaemonRestart	45.00
 TestIPAM_ReplayAfterDaemonRestart_IPv6	45.00
+TestIPAM_RequireMACKeepsEachPinnedContainersOwnIdentityInsideTheWindow	38.00
 TestIPAM_RestartedTogetherIsTheDocumentedLimit	38.00
 TestIPAM_SingleRestartKeepsTheAddress	22.00
 TestIPAM_SingleRestartNeedsAServerThatKeepsClientIDBindings	50.00
