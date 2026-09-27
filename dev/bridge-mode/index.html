@@ -1424,6 +1424,15 @@ yet has no carrier, and without it <code>networkd</code> can decline to start DH
 on the bridge at all. This is what <code>netplan</code> emits for the equivalent
 bridge, so it is the reference implementation's own answer and not a
 workaround.</p>
+<p>On a cloud image, cloud-init writes its own <code>.network</code> file for the NIC,
+for example <code>10-cloud-init-eth0.network</code>. <code>networkd</code> applies only the
+first file, in name order, whose <code>[Match]</code> fits a device, so the
+<code>20-eth0.network</code> above loses to it silently and the NIC is never
+enslaved. Either name the port file so it sorts before cloud-init's, or
+turn cloud-init's network configuration off
+(<code>/etc/cloud/cloud.cfg.d/99-disable-network-config.cfg</code> containing
+<code>network: {config: disabled}</code>) and remove its file. On Ubuntu, use the
+netplan recipe above instead; netplan owns the NIC there.</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a>sudo<span class="w"> </span>systemctl<span class="w"> </span><span class="nb">enable</span><span class="w"> </span>--now<span class="w"> </span>systemd-networkd
 </code></pre></div>
 <h4 id="networkmanager-nmcli">NetworkManager (nmcli)<a class="headerlink" href="#networkmanager-nmcli" title="Permanent link">&para;</a></h4>
