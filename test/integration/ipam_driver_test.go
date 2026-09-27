@@ -1026,6 +1026,124 @@ func TestIPAM_AContainerStartedInsideTheWindowTakesTheTombstone(t *testing.T) {
 	}
 }
 
+// ipamLeaseFor is dnsmasq's lease line for ip as "expiry MAC IP hostname client-id", polled because dnsmasq writes the
+// file after the ACK it logs (#1118).
+func ipamLeaseFor(t *testing.T, ip string) []string {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		for _, l := range leaseLines(t) {
+			if l[2] == ip {
+				return l
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the server's lease file has no line for %s", ip)
+			return nil
+		}
+		time.Sleep(150 * time.Millisecond)
+	}
+}
+
+// ipamOwnClientID is the plugin's default option 61 for a MAC, dnsmasq's lease-file spelling (#371).
+func ipamOwnClientID(t *testing.T, mac string) string {
+	t.Helper()
+	hw, err := net.ParseMAC(mac)
+	if err != nil {
+		t.Fatalf("ParseMAC(%s): %v", mac, err)
+	}
+	return "00:" + colonHex(hw)
+}
+
+// On require_mac=true the hand-over is keyed on the MAC: a pinned container started inside a neighbour's window leases
+// under its own client id, and the neighbour's restart claims its own tombstone beside the new one (#1118).
+
+// TestIPAM_RequireMACKeepsEachPinnedContainersOwnIdentityInsideTheWindow checks, on the server's lease file, that a pinned container started inside a stopped neighbour's retention window leases under its own client id and leaves the neighbour's lease alone.
+func TestIPAM_RequireMACKeepsEachPinnedContainersOwnIdentityInsideTheWindow(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 240*time.Second)
+	defer cancel()
+	ipamDumpOnFailure(t)
+
+	const netName = "dh-itest-ipam-macwin"
+	const nameA, nameB = "dh-itest-ipam-macwin-a", "dh-itest-ipam-macwin-b"
+	const macA, macB = "02:00:00:11:18:0a", "02:00:00:11:18:0b"
+	// retentionWindow mirrors the plugin's tombstoneTTL; a start past it has no tombstone to take either way.
+	const retentionWindow = 60 * time.Second
+	kill := 0
+
+	cli := ipamDockerClient(t)
+	harness.CreateNetworkIPAM(t, ctx, netName, "macvlan", harness.SubnetCIDR, nil,
+		map[string]string{"require_mac": "true"})
+
+	if err := ipamRunContainerErr(t, ctx, cli, netName, nameA, &network.EndpointSettings{MacAddress: macA}); err != nil {
+		t.Fatalf("a with --mac-address %s did not start: %v", macA, err)
+	}
+	addrA, gotA := ipamNetworkAddress(t, ctx, cli, nameA, netName)
+	if gotA != macA {
+		t.Fatalf("a carries %s, not its --mac-address %s; this test drives nothing", gotA, macA)
+	}
+	leaseA := ipamLeaseFor(t, addrA)
+	t.Logf("a started on %s, lease %v", addrA, leaseA)
+
+	w := harness.BeginCounterWindow(t, ctx, cli, "ipam_rebind_ambiguous")
+	if err := cli.ContainerStop(ctx, nameA, container.StopOptions{Timeout: &kill}); err != nil {
+		t.Fatalf("ContainerStop(a): %v", err)
+	}
+	stoppedA := time.Now()
+	logMark := fileSize(t, fixture.DnsmasqLog())
+
+	if err := ipamRunContainerErr(t, ctx, cli, netName, nameB, &network.EndpointSettings{MacAddress: macB}); err != nil {
+		t.Fatalf("b with --mac-address %s did not start: %v", macB, err)
+	}
+	addrB, _ := ipamNetworkAddress(t, ctx, cli, nameB, netName)
+	if since := time.Since(stoppedA); since >= retentionWindow {
+		t.Fatalf("b started %s after a stopped, past the %s window, so a's tombstone was gone and "+
+			"this run cannot decide the rule in either direction", since.Round(time.Second), retentionWindow)
+	}
+	leaseB := ipamLeaseFor(t, addrB)
+	t.Logf("b started on %s, lease %v", addrB, leaseB)
+
+	if addrB == addrA {
+		t.Errorf("b came up on %s, the stopped neighbour's address", addrB)
+	}
+	if want := ipamOwnClientID(t, macB); !strings.EqualFold(leaseB[4], want) || !strings.EqualFold(leaseB[1], macB) {
+		t.Errorf("the server filed b's lease as %v; want b's own MAC %s and client id %s, not a's %s",
+			leaseB, macB, want, ipamOwnClientID(t, macA))
+	}
+	if now := ipamLeaseFor(t, addrA); !strings.EqualFold(now[1], macA) ||
+		!strings.EqualFold(now[4], ipamOwnClientID(t, macA)) {
+		t.Errorf("a's lease on %s was %v before b started and is %v after: b's start moved it", addrA, leaseA, now)
+	}
+	if acked := ackedSince(t, fixture.DnsmasqLog(), logMark); acked[addrA] {
+		t.Errorf("the server ACKed %s, the stopped neighbour's address, while b started", addrA)
+	}
+
+	if err := cli.ContainerStop(ctx, nameB, container.StopOptions{Timeout: &kill}); err != nil {
+		t.Fatalf("ContainerStop(b): %v", err)
+	}
+	if err := cli.ContainerStart(ctx, nameA, container.StartOptions{}); err != nil {
+		t.Fatalf("ContainerStart(a): %v", err)
+	}
+	addrA2, _ := ipamNetworkAddress(t, ctx, cli, nameA, netName)
+	if since := time.Since(stoppedA); since >= retentionWindow {
+		t.Fatalf("a came back %s after it stopped, past the %s window; its own tombstone was gone and "+
+			"the two-tombstone case was not driven", since.Round(time.Second), retentionWindow)
+	}
+	t.Logf("a came back on %s beside b's tombstone", addrA2)
+	if addrA2 != addrA {
+		t.Errorf("a came back on %s; it held %s and its own tombstone was one of two kept", addrA2, addrA)
+	}
+	if now := ipamLeaseFor(t, addrB); !strings.EqualFold(now[1], macB) ||
+		!strings.EqualFold(now[4], ipamOwnClientID(t, macB)) {
+		t.Errorf("b's lease on %s is %v after a came back, want b's own %v", addrB, now, leaseB)
+	}
+	before, after := w.End()
+	if after.IPAMRebindAmbiguous != before.IPAMRebindAmbiguous {
+		t.Errorf("ipam_rebind_ambiguous moved (%d -> %d); on this network the MAC decided every request",
+			before.IPAMRebindAmbiguous, after.IPAMRebindAmbiguous)
+	}
+}
+
 // A restarted IPAM container has a new MAC and keeps its address only because the server matches the re-sent client
 // identifier (RFC 2131 section 4.2); with dnsmasq's --dhcp-ignore-clid it gets a different address and no counter
 // moves. Both arms run on one fixture one flag apart (#110).
