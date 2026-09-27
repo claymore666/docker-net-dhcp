@@ -1503,9 +1503,13 @@ acquired, and nothing below it:</p>
   <a href="../reference/#address-allocation">Address allocation</a>.</li>
 <li>The identity that carries a restarted container's address back is the
   client identifier of the previous endpoint, taken from the lease
-  record. Docker's request carries no hostname and no endpoint id, so
-  there is nothing narrower to match on; the ambiguous case is counted
-  as <code>ipam_rebind_ambiguous</code> instead of guessed.</li>
+  record. Docker's request carries no hostname and no endpoint id. The
+  one thing narrower to match on is the MAC, when the user set it: a
+  kept identity leased under the requesting MAC is that container's own,
+  and on a <code>require_mac=true</code> network nothing else is claimed (#1118).
+  With a Docker-generated MAC there is nothing narrower, so the
+  ambiguous case is counted as <code>ipam_rebind_ambiguous</code> instead of
+  guessed.</li>
 <li>IPv6 is acquired later, since v2.3.0. <code>RequestAddress</code> leases the v4
   address only; the DHCPv6 exchange runs at <code>CreateEndpoint</code> on the
   endpoint's own link, as the null shape's one-shot does, and
