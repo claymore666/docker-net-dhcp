@@ -2405,7 +2405,7 @@ value as an invalid duration.</p>
 <td>all</td>
 <td>from DHCP</td>
 <td>v0.3.0</td>
-<td>Override the IPv4 default gateway returned by the DHCP server, for split-horizon LANs where containers should egress via a different router (e.g. a VPN gateway).</td>
+<td>Override the IPv4 default gateway returned by the DHCP server, for split-horizon LANs where containers should egress via a different router (e.g. a VPN gateway). When neither this option nor the lease names a gateway, the default route of the bridge or parent NIC supplies it (#1125).</td>
 </tr>
 <tr>
 <td><code>ipv6</code></td>
@@ -4208,7 +4208,7 @@ already parse it were not told to expect a new type.</p>
 <td><code>dhcp_routes_applied</code></td>
 <td>no</td>
 <td>n/a</td>
-<td>(v1.8.0+) Routes handed to Docker at Join, counted as routes and never as Joins: DHCP option-121 classless static routes, and since v2.2.0 the routes an IPv6 Router Advertisement asks for (#821). <code>skip_routes=true</code> opts out and then this never moves. Read it as the denominator for the row below. <strong>Not a check:</strong> the imperative is to read it as the denominator for <code>dhcp_default_route_superseded</code>, while its own value is a count of work done, carrying no verdict either way, and on a network whose server sends option 121 its normal reading is non-zero and climbing.</td>
+<td>(v1.8.0+) Routes handed to Docker at Join, counted as routes and never as Joins: DHCP option-121 classless static routes, and since v2.2.0 the routes an IPv6 Router Advertisement asks for (#821). A route to a destination another route in the same answer already names is counted but left out of the answer, since the engine refuses a second route to one destination (#1125). <code>skip_routes=true</code> opts out and then this never moves. Read it as the denominator for the row below. <strong>Not a check:</strong> the imperative is to read it as the denominator for <code>dhcp_default_route_superseded</code>, while its own value is a count of work done, carrying no verdict either way, and on a network whose server sends option 121 its normal reading is non-zero and climbing.</td>
 </tr>
 <tr>
 <td><code>dhcp_default_route_superseded</code></td>
