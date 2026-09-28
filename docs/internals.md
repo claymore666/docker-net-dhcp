@@ -337,8 +337,8 @@ manager rewrites them when a later advertisement changes them (#821).
 That answer only reaches an endpoint that HAS a global IPv6 address.
 The daemon disables IPv6 on a container link carrying no global IPv6
 address, and the kernel refuses every IPv6 route on such a link, so an
-answer with an IPv6 half fails the sandbox outright rather than
-degrading -- and the plugin cannot clear `disable_ipv6` first, because
+answer with an IPv6 half fails the sandbox outright, it does not
+degrade, and the plugin cannot clear `disable_ipv6` first, because
 that runs in the manager goroutine `Join` spawns, after the daemon has
 moved the link and applied the answer. A segment that hands out no
 DHCPv6 address therefore gets its MTU, its resolvers on a
@@ -571,7 +571,7 @@ source is the parent's link-local address and never the address being
 released, which is the same section's second requirement.
 
 Everything else about that teardown follows from the address being
-gone. The record is `CLOSED` rather than `LEFT`, per family, so the next
+gone. The record is `CLOSED`, not `LEFT`, per family, so the next
 start cannot resume an address the server has already put back in its
 pool. No tombstone is laid, so no other container inherits the MAC and
 the addresses beside it. The tombstone is one object carrying both
@@ -639,7 +639,7 @@ duplicate assignment of #524.
 
 **And one address never reaches `Leave` at all.** In IPAM mode an
 address reserved for an endpoint whose `CreateEndpoint` then failed is
-retained by `ReleaseAddress` rather than released. Retaining it is what
+retained by `ReleaseAddress`, not released. Retaining it is what
 lets a restart policy's next attempt claim the same address back instead
 of burning a second lease on the server, and a reservation with no
 endpoint reaches no `Leave`, so nothing on the `on_stop` path can see
