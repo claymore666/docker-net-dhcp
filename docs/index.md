@@ -15,49 +15,14 @@ This is the successor of `devplayer0/docker-net-dhcp`, not a patched copy:
 
 ```bash
 sudo mkdir -p /var/lib/net-dhcp                      # once per host
-docker plugin install ghcr.io/claymore666/docker-net-dhcp:v2.3.0   # -arm64 on arm64
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.3.0 \
+docker plugin install ghcr.io/claymore666/docker-net-dhcp:v2.3.1   # -arm64 on arm64
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.3.1 \
   --ipam-driver null -o mode=macvlan -o parent=eth0 lan-dhcp
 docker run --rm -ti --network lan-dhcp alpine ip address show
 ```
 
-```mermaid
-flowchart TB
-  E["Docker Engine (libnetwork)<br/>network driver calls: CreateNetwork, CreateEndpoint, Join, Leave, DeleteEndpoint<br/>IPAM calls when the network also names the plugin as its IPAM driver: RequestPool, RequestAddress"]
-  subgraph plugin["net-dhcp plugin, privileged, host network namespace"]
-    H["pkg/plugin<br/>Docker handlers, lease records, counters and health; puts the leased address on the container's link"]
-    C["pkg/dhcp<br/>protocol parameters; enters the container's network namespace and opens the client's link"]
-    L["dhcp-golib, the project's own library<br/>DHCPv4, DHCPv6 and router advertisement client, one per endpoint and address family: renew, rebind, NAK, expiry"]
-    S[("/var/lib/net-dhcp<br/>per-network options, lease-records.jsonl")]
-    TS[("tombstones.json, same directory<br/>written at DeleteEndpoint, read at the next CreateEndpoint, kept 60 s: MAC, hostname, last IPv4 and IPv6 address")]
-  end
-  subgraph links["Links on the Docker host"]
-    direction LR
-    B["bridge mode<br/>an existing bridge, or one the plugin makes from a spare NIC, plus a veth pair per container"]
-    M["macvlan / ipvlan mode<br/>a child link on a parent NIC, optionally on a VLAN of it"]
-  end
-  subgraph lan["Your LAN"]
-    D["The DHCP server you already run<br/>router, Kea, ISC dhcpd, dnsmasq"]
-    T["Its lease table, reservations and DNS see the container as one more host"]
-  end
-  E -- "plugin socket" --> H
-  H --> C --> L
-  H <--> S
-  H <--> TS
-  L -- "client socket in the container's network namespace" --> B
-  L --> M
-  B <-- "Discover, Offer, Request, ACK" --> D
-  M <--> D
-  D --> T
-  style L fill:#0f6e63,stroke:#0f6e63,color:#ffffff
-```
-
-Docker calls the plugin over its socket; `pkg/plugin` answers Docker and
-keeps the records and tombstones, `pkg/dhcp` enters the container's
-network namespace, and the library speaks DHCP over the container's own
-link to the server on your LAN. The DHCP client is
-[claymore666/dhcp-golib](https://github.com/claymore666/dhcp-golib), this
-project's own library, pinned in `go.mod`.
+The parts and what passes between them are drawn in
+[Architecture](architecture.md).
 
 It is a privileged plugin: it runs with host networking, the Docker socket
 and `CAP_NET_ADMIN`. The full list is under [Requirements](#requirements),
@@ -232,16 +197,16 @@ project will not do, is on the [roadmap](roadmap.md).
 sudo mkdir -p /var/lib/net-dhcp
 
 # amd64
-docker plugin install ghcr.io/claymore666/docker-net-dhcp:v2.3.0
+docker plugin install ghcr.io/claymore666/docker-net-dhcp:v2.3.1
 # arm64
-docker plugin install ghcr.io/claymore666/docker-net-dhcp:v2.3.0-arm64
+docker plugin install ghcr.io/claymore666/docker-net-dhcp:v2.3.1-arm64
 ```
 
 One network, created once. `macvlan` needs only a host NIC; `bridge`
 wants a bridge you bring yourself ([Bridge mode](bridge-mode.md)):
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.3.0 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.3.1 \
   --ipam-driver null -o mode=macvlan -o parent=eth0 lan-dhcp
 
 docker run --rm -ti --network lan-dhcp alpine ip address show
@@ -254,8 +219,8 @@ goes into Docker's own address management, which makes `--ip` and
 Compose's `ipv4_address` work.
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.3.0 \
-  --ipam-driver ghcr.io/claymore666/docker-net-dhcp:v2.3.0 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.3.1 \
+  --ipam-driver ghcr.io/claymore666/docker-net-dhcp:v2.3.1 \
   -o mode=macvlan -o parent=eth0 lan-dhcp
 ```
 
