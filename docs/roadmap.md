@@ -43,7 +43,7 @@ below decide what is in a release; this page follows them.
 - [#1125], Join returns each IPv6 route once, an endpoint with no IPv6
   address no longer crashes it, and `ipv6_mode` alone gets the IPv6 default
   route
-- [#1126], an architecture diagram in the README and a picture of the
+- [#1126], an architecture page with a diagram and a picture of the
   real-server lab in the testing page
 
 ### v2.4.0

@@ -18,8 +18,8 @@ name the same destination, an endpoint with no IPv6 address no longer
 crashes the plugin in Join, and a network created with `ipv6_mode` alone
 gets its IPv6 default route. In IPAM mode a container with a fixed MAC
 takes back its own kept identity, and with `require_mac=true` no
-container takes another's. The README and the docs carry an architecture
-diagram and a picture of the real-server lab.
+container takes another's. The docs gain an architecture page with a
+diagram, and a picture of the real-server lab.
 
 ### Upgrade notes
 
@@ -45,8 +45,8 @@ section below is still the list the daemon shows you.
 
 ### New
 
-- The README and [`docs/internals.md`](docs/internals.md) show the plugin's
-  architecture as a diagram, and [`docs/testing.md`](docs/testing.md) gains
+- [`docs/architecture.md`](docs/architecture.md) draws the plugin's parts and
+  what passes between them, and [`docs/testing.md`](docs/testing.md) gains
   a "Real-server lab" section with a picture of the lab and its v0.1.0
   result over three DHCP servers, two Docker hosts and five network shapes
   ([docker-net-dhcp-lab](https://github.com/claymore666/docker-net-dhcp-lab))

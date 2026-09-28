@@ -105,6 +105,7 @@ nav:
   - Bridge mode: bridge-mode.md
   - macvlan / ipvlan: parent-attached-modes.md
   - Driver reference: reference.md
+  - Architecture: architecture.md
   - How it works: internals.md
   - Testing: testing.md
   - Roadmap: roadmap.md
