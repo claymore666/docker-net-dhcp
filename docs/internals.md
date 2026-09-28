@@ -5,14 +5,20 @@ Fundamentally, `net-dhcp` uses the same mechanism as Docker's built-in
 acts as a switch, and `veth` pairs connect each container's network
 namespace to it. Two things differ:
 
-- **An existing bridge, never a managed one.** Where Docker creates and
-  manages its own bridges (and routes/filters traffic), `net-dhcp` uses
-  an existing bridge on the host, bridged onto the desired local
-  network. (In macvlan/ipvlan mode the parent is a host NIC instead: see
+- **A bridge on the host, no routing or filtering.** Where Docker creates
+  and manages its own bridges (and routes/filters traffic), `net-dhcp`
+  uses an existing bridge on the host, bridged onto the desired local
+  network, or, since docker-net-dhcp v2.3.0, makes one from a spare NIC
+  with `-o parent=` and removes it with the network
+  ([#903](https://github.com/claymore666/docker-net-dhcp/issues/903)).
+  (In macvlan/ipvlan mode the parent is a host NIC instead: see
   [parent-attached modes](parent-attached-modes.md).)
 - **External addressing.** Instead of allocating addresses from a static
   pool on the Docker host, `net-dhcp` relies on an external DHCP server
   to provide them.
+
+The parts and what passes between them are drawn in
+[Architecture](architecture.md).
 
 ## Flow (bridge mode)
 
@@ -103,9 +109,13 @@ acquired, and nothing below it:
   [Address allocation](reference.md#address-allocation).
 - The identity that carries a restarted container's address back is the
   client identifier of the previous endpoint, taken from the lease
-  record. Docker's request carries no hostname and no endpoint id, so
-  there is nothing narrower to match on; the ambiguous case is counted
-  as `ipam_rebind_ambiguous` instead of guessed.
+  record. Docker's request carries no hostname and no endpoint id. The
+  one thing narrower to match on is the MAC, when the user set it: a
+  kept identity leased under the requesting MAC is that container's own,
+  and on a `require_mac=true` network nothing else is claimed (#1118).
+  With a Docker-generated MAC there is nothing narrower, so the
+  ambiguous case is counted as `ipam_rebind_ambiguous` instead of
+  guessed.
 - IPv6 is acquired later, since v2.3.0. `RequestAddress` leases the v4
   address only; the DHCPv6 exchange runs at `CreateEndpoint` on the
   endpoint's own link, as the null shape's one-shot does, and
@@ -292,8 +302,8 @@ manager rewrites them when a later advertisement changes them (#821).
 That answer only reaches an endpoint that HAS a global IPv6 address.
 The daemon disables IPv6 on a container link carrying no global IPv6
 address, and the kernel refuses every IPv6 route on such a link, so an
-answer with an IPv6 half fails the sandbox outright rather than
-degrading -- and the plugin cannot clear `disable_ipv6` first, because
+answer with an IPv6 half fails the sandbox outright, it does not
+degrade, and the plugin cannot clear `disable_ipv6` first, because
 that runs in the manager goroutine `Join` spawns, after the daemon has
 moved the link and applied the answer. A segment that hands out no
 DHCPv6 address therefore gets its MTU, its resolvers on a
@@ -526,7 +536,7 @@ source is the parent's link-local address and never the address being
 released, which is the same section's second requirement.
 
 Everything else about that teardown follows from the address being
-gone. The record is `CLOSED` rather than `LEFT`, per family, so the next
+gone. The record is `CLOSED`, not `LEFT`, per family, so the next
 start cannot resume an address the server has already put back in its
 pool. No tombstone is laid, so no other container inherits the MAC and
 the addresses beside it. The tombstone is one object carrying both
@@ -594,7 +604,7 @@ duplicate assignment of #524.
 
 **And one address never reaches `Leave` at all.** In IPAM mode an
 address reserved for an endpoint whose `CreateEndpoint` then failed is
-retained by `ReleaseAddress` rather than released. Retaining it is what
+retained by `ReleaseAddress`, not released. Retaining it is what
 lets a restart policy's next attempt claim the same address back instead
 of burning a second lease on the server, and a reservation with no
 endpoint reaches no `Leave`, so nothing on the `on_stop` path can see

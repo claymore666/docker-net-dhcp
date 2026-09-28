@@ -11,6 +11,86 @@ forks that have been waiting on review.
 
 [upstream]: https://github.com/devplayer0/docker-net-dhcp
 
+## v2.3.1
+
+A container with IPv6 starts when a host route and an advertised route
+name the same destination, an endpoint with no IPv6 address no longer
+crashes the plugin in Join, and a network created with `ipv6_mode` alone
+gets its IPv6 default route. In IPAM mode a container with a fixed MAC
+takes back its own kept identity, and with `require_mac=true` no
+container takes another's. The docs gain an architecture page with a
+diagram, and a picture of the real-server lab.
+
+### Upgrade notes
+
+Required on every host before `docker plugin install`, unchanged since v1.5.0:
+
+```bash
+sudo mkdir -p /var/lib/net-dhcp
+```
+
+**The privilege prompt does not change.** No field `docker plugin upgrade`
+prompts on has moved since v2.0.0, so the manifest-delta table in the v2.0.0
+section below is still the list the daemon shows you.
+
+| What changed | What it does to you |
+| --- | --- |
+| A container whose lease names no gateway, on a network without `-o gateway=`, gets the default gateway of the bridge or parent NIC | IPv4. Before this release such a container had no default route: the fallback was in the code but never ran, because the route library reports a default route as `0.0.0.0/0`, never as an empty destination. The lease's router option and the `gateway` option still win (#1125). |
+| Join returns each destination once | A host route, an option 121 route and an advertised route to one destination gave the engine the same route twice, and the container failed to start with `file exists`. The first route to a destination is kept, in the order host table, option 121, router advertisement (#1125). |
+| An endpoint with no IPv6 address gets no IPv6 host routes | The engine turns IPv6 off on such a link, so any IPv6 route failed the start. Before this release the plugin crashed in Join instead (#1125). |
+| `-o ipv6_mode=<mode>` without `-o ipv6=true` gets the advertised IPv6 default route and prefixes at start | The last place that read the raw `ipv6` flag now reads the mode too, so both spellings answer the same (#1125). |
+| `dhcp_routes_applied` counts a route that was then dropped as a duplicate | The counter counts the option 121 and advertised routes as offered, before Join removes duplicates. The reference row says so (#1125). |
+| In IPAM mode a kept identity leased under the requesting MAC goes to that request | A container started with `--mac-address` inside the one-minute window after its stop takes back its own client id and address, however many other identities are kept. It is not counted in `ipam_rebind_ambiguous` (#1118). |
+| On a `require_mac=true` IPAM network a container claims only the identity kept under its own MAC and client id | Any other container gets a fresh identity and address. A container with a Docker-generated MAC on a plain network is unchanged: a single kept identity goes to the next request, two or more are ambiguous (#1118). |
+
+### New
+
+- [`docs/architecture.md`](docs/architecture.md) draws the plugin's parts and
+  what passes between them, and [`docs/testing.md`](docs/testing.md) gains
+  a "Real-server lab" section with a picture of the lab and its v0.1.0
+  result over three DHCP servers, two Docker hosts and five network shapes
+  ([docker-net-dhcp-lab](https://github.com/claymore666/docker-net-dhcp-lab))
+  (#1126).
+- The plugin image builds on `alpine:3.24.2` and the current
+  `golang:1.27.1-alpine` digest (PR #1123). The CodeQL actions move to v4
+  (PR #1124).
+
+### Fixed
+
+- Join collected routes from the host table, from DHCP option 121 and from
+  the router advertisement, and each source removed duplicates only within
+  itself. A route to the same destination from two sources reached the
+  engine twice and the container did not start. Join now keeps the first
+  route to each destination, compared as a masked prefix, after every
+  source has added its routes (#1125).
+- With IPv6 enabled and no IPv6 address on the endpoint, a stateless
+  segment or `ipv6_mode=dhcp` with no offer, the host route copy read the
+  missing address and the plugin crashed in Join. Join now copies no IPv6
+  host route in that case, because the engine rejects every IPv6 route on
+  such a link (#1125, measured in #821).
+- A network created with `ipv6_mode` and without `ipv6=true` started its
+  containers without the advertised IPv6 default route. Join checked the
+  raw `ipv6` flag, the one place left that did not read the mode (#1125,
+  #817).
+- The IPv4 fallback to the host's default gateway tested for a route with
+  an empty destination, a shape the route library never returns, so it
+  never ran. It now recognises `0.0.0.0/0`; a host `::/0` is still never
+  copied (#1125).
+- In IPAM mode the one-minute hand-over of a stopped container's identity
+  ignored the requesting MAC, so a container with a fixed MAC could take a
+  neighbour's kept identity, or lose its own to a neighbour, and with two
+  kept identities a pinned container was counted ambiguous. The MAC now
+  decides where it can; on a `require_mac=true` network it always does.
+  The IPv6 half follows the chosen IPv4 record, and a kept identity a
+  running endpoint still holds is still not offered (#1118, #1047).
+- [`docs/reference.md`](docs/reference.md): the `gateway` row says the
+  bridge or parent NIC's default route supplies the gateway when neither
+  the option nor the lease names one, and the `dhcp_routes_applied` row
+  says a duplicate is counted; the IPAM restart-stability rule gains its
+  two MAC exceptions (#1125, #1118). [`docs/internals.md`](docs/internals.md)
+  no longer says the bridge is never a managed one, which #903 made
+  untrue in v2.3.0 (#1126).
+
 ## v2.3.0
 
 New network options take over host plumbing an operator did by hand: a

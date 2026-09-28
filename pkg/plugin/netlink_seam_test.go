@@ -159,7 +159,7 @@ func TestAddRoutes_ListError(t *testing.T) {
 
 func TestAddRoutes_DefaultGatewayV4(t *testing.T) {
 	stubRouteList(t, []netlink.Route{
-		{Dst: nil, Gw: net.IPv4(192, 168, 0, 1)},
+		{Dst: netlinkDefaultDst(false), Gw: net.IPv4(192, 168, 0, 1)},
 	}, nil)
 	p := &Plugin{}
 	res := &JoinResponse{}
@@ -173,11 +173,12 @@ func TestAddRoutes_DefaultGatewayV4(t *testing.T) {
 
 func TestAddRoutes_DoesNotTakeTheV6DefaultFromTheHost(t *testing.T) {
 	stubRouteList(t, []netlink.Route{
-		{Dst: nil, Gw: net.ParseIP("fe80::1")},
+		{Dst: netlinkDefaultDst(true), Gw: net.ParseIP("fe80::1")},
 	}, nil)
 	p := &Plugin{}
 	res := &JoinResponse{}
-	if err := p.addRoutes(&DHCPNetworkOptions{}, true, &fakeLink{}, JoinRequest{}, joinHint{}, res); err != nil {
+	own, _ := netlink.ParseAddr("fd00:99::61/64")
+	if err := p.addRoutes(&DHCPNetworkOptions{}, true, &fakeLink{}, JoinRequest{}, joinHint{IPv6: own}, res); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if res.GatewayIPv6 != "" {

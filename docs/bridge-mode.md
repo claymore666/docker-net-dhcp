@@ -53,7 +53,7 @@ reads the policy and cannot see the rule:
 
 ```bash
 sudo iptables -I DOCKER-USER -i lan0 -o lan0 -j ACCEPT
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.3.0 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.3.1 \
   --ipam-driver null -o bridge=lan0 -o parent=eth1 -o force_create=true lan-dhcp
 ```
 
@@ -222,6 +222,16 @@ on the bridge at all. This is what `netplan` emits for the equivalent
 bridge, so it is the reference implementation's own answer and not a
 workaround.
 
+On a cloud image, cloud-init writes its own `.network` file for the NIC,
+for example `10-cloud-init-eth0.network`. `networkd` applies only the
+first file, in name order, whose `[Match]` fits a device, so the
+`20-eth0.network` above loses to it silently and the NIC is never
+enslaved. Either name the port file so it sorts before cloud-init's, or
+turn cloud-init's network configuration off
+(`/etc/cloud/cloud.cfg.d/99-disable-network-config.cfg` containing
+`network: {config: disabled}`) and remove its file. On Ubuntu, use the
+netplan recipe above instead; netplan owns the NIC there.
+
 ```bash
 sudo systemctl enable --now systemd-networkd
 ```
@@ -310,7 +320,7 @@ iptables -S FORWARD | head -1`.
 ```bash
 # On arm64 use the -arm64 tag. A network stores this exact reference
 # as its driver, so it must name the plugin you installed.
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.3.0 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.3.1 \
   --ipam-driver null -o bridge=my-bridge my-dhcp-net
 ```
 
@@ -323,7 +333,7 @@ same day).
 
 ```bash
 # arm64: the -arm64 tag here too.
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.3.0 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.3.1 \
   --ipam-driver null -o bridge=my-bridge -o ipv6_mode=dhcp my-dhcp-net
 ```
 
@@ -405,7 +415,7 @@ services:
 networks:
   dhcp:
     # arm64: the -arm64 tag, matching the plugin you installed.
-    driver: ghcr.io/claymore666/docker-net-dhcp:v2.3.0
+    driver: ghcr.io/claymore666/docker-net-dhcp:v2.3.1
     driver_opts:
       bridge: my-bridge
       ipv6_mode: 'dhcp'

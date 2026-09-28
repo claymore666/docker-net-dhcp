@@ -12,6 +12,7 @@ below decide what is in a release; this page follows them.
 | Release | State | Theme | Milestone |
 | --- | --- | --- | --- |
 | v2.3.0 | released | The host plumbing an operator does by hand today, and the gaps the IPAM shape still refuses | [milestone 31](https://github.com/claymore666/docker-net-dhcp/milestone/31) |
+| v2.3.1 | released | IPv6 routes at Join, the fixed-MAC hand-over in IPAM mode, and diagrams of the plugin and the lab | [milestone 38](https://github.com/claymore666/docker-net-dhcp/milestone/38) |
 | v2.4.0 | planned | The rest of IPv6, and the DHCP options the client does not read yet | [milestone 34](https://github.com/claymore666/docker-net-dhcp/milestone/34) |
 | v2.5.0 | planned | CI consolidation and code debt; nothing a user sees | [milestone 35](https://github.com/claymore666/docker-net-dhcp/milestone/35) |
 
@@ -35,6 +36,16 @@ below decide what is in a release; this page follows them.
   README
 - [#1108], the first screen of the README says what, how and why
 
+### v2.3.1, released
+
+- [#1118], in IPAM mode the kept identity of a stopped container goes back
+  to the container with that MAC, and with `require_mac` to no other
+- [#1125], Join returns each IPv6 route once, an endpoint with no IPv6
+  address no longer crashes it, and `ipv6_mode` alone gets the IPv6 default
+  route
+- [#1126], an architecture page with a diagram and a picture of the
+  real-server lab in the testing page
+
 ### v2.4.0
 
 - [#1027], IPv6-Only Preferred, DHCPv4 option 108
@@ -42,6 +53,9 @@ below decide what is in a release; this page follows them.
 - [#1030], Microsoft classless static routes, option 249, where 121 is
   absent
 - [#1031], DHCPv4 Rapid Commit
+- [#1119], DHCPv4 FORCERENEW with nonce authentication (RFC 3203,
+  RFC 6704); an unauthenticated FORCERENEW is discarded and counted
+- [#1120], `user_class=`, the DHCPv4 User Class option 77 (RFC 3004)
 - [#1032], `ipv6_iid=stable-privacy`, the RFC 7217 interface identifier,
   with modified EUI-64 kept as the default
 - [#1033], the DHCPv6 timezone options logged as the v4 ones are
@@ -200,7 +214,7 @@ They stay open on purpose:
 For [#218], both halves were filed in June 2026. The endpoint-name change
 ([moby/moby#52871]) is still awaiting review, and [#218] will not be
 closed as "won't fix" while that is the only thing in the way. This
-fork's own half is written and waiting.
+plugin's own half is written and waiting.
 
 The second upstream dependency has moved. The `interface_name`
 pass-through ([moby/moby#52866]) merged and shipped in moby engine
@@ -339,6 +353,11 @@ project does, that review is where it gets corrected.
 [#1045]: https://github.com/claymore666/docker-net-dhcp/issues/1045
 [#1096]: https://github.com/claymore666/docker-net-dhcp/issues/1096
 [#1108]: https://github.com/claymore666/docker-net-dhcp/issues/1108
+[#1119]: https://github.com/claymore666/docker-net-dhcp/issues/1119
+[#1120]: https://github.com/claymore666/docker-net-dhcp/issues/1120
+[#1118]: https://github.com/claymore666/docker-net-dhcp/issues/1118
+[#1125]: https://github.com/claymore666/docker-net-dhcp/issues/1125
+[#1126]: https://github.com/claymore666/docker-net-dhcp/issues/1126
 [moby/moby#52866]: https://github.com/moby/moby/pull/52866
 [moby/moby#52870]: https://github.com/moby/moby/issues/52870
 [moby/moby#52871]: https://github.com/moby/moby/pull/52871
