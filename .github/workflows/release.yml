@@ -652,7 +652,7 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
           repository: ${{ env.HUB_NAME }}
-          short-description: "DHCP-leased IPs for Docker containers (bridge/macvlan/ipvlan). Fork of devplayer0/docker-net-dhcp."
+          short-description: "DHCP-leased IPs for Docker containers (bridge/macvlan/ipvlan), as Docker network or IPAM driver."
           readme-filepath: ./README.md
 
       # PER REPOSITORY, WHICH IS WHY THIS IS A SECOND STEP AND NOT A
@@ -674,7 +674,7 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
           repository: ${{ env.HUB_ALIAS }}
-          short-description: "DHCP-leased IPs for Docker containers (bridge/macvlan/ipvlan). Fork of devplayer0/docker-net-dhcp."
+          short-description: "DHCP-leased IPs for Docker containers (bridge/macvlan/ipvlan), as Docker network or IPAM driver."
           readme-filepath: ./README.md
 
       # Sign a release artifact and hand it to the github-release job.
