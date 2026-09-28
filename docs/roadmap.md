@@ -214,7 +214,7 @@ They stay open on purpose:
 For [#218], both halves were filed in June 2026. The endpoint-name change
 ([moby/moby#52871]) is still awaiting review, and [#218] will not be
 closed as "won't fix" while that is the only thing in the way. This
-fork's own half is written and waiting.
+plugin's own half is written and waiting.
 
 The second upstream dependency has moved. The `interface_name`
 pass-through ([moby/moby#52866]) merged and shipped in moby engine
