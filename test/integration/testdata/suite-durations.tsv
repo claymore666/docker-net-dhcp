@@ -10,8 +10,8 @@
 #
 # POPULATION: TOP-LEVEL TEST FUNCTIONS, PARENTS ONLY.
 # One row per `func TestX(t *testing.T)` in test/integration/*_test.go —
-# 211 of them, the main suite's 204 and the failure suite's 7. MEASURED
-# on this table: 211 data rows, and 211 `func TestX(t *testing.T)` in
+# 212 of them, the main suite's 205 and the failure suite's 7. MEASURED
+# on this table: 212 data rows, and 212 `func TestX(t *testing.T)` in
 # test/integration/*_test.go counted independently of them.
 #
 # THIS NUMBER HAS NOW BEEN WRONG TWICE, and the second time is the
@@ -23,7 +23,7 @@
 # population from the sharder and never reads this sentence, so nothing
 # goes red when it drifts: re-measure it against the table beside it
 # rather than adding your rows to the number already written here.
-# Recounted 2026-09-25. A subtest's
+# Recounted 2026-09-28. A subtest's
 # seconds are inside its parent's figure and are NOT a row of their own.
 # That is stated because the previous edition's header did not state it
 # and the population was read back two ways: 104 rows summing 1804.88s
@@ -491,8 +491,15 @@
 #              TestIPAM_AContainerStartedInsideTheWindowTakesTheTombstone
 #              at 38.00, a network, three container starts and two
 #              stops, with both stops a kill rather than a 10s wait.
-#   samples    3 for every corpus row. SIXTY-SIX rows are not corpus
-#              samples, and the fifteen groups below are disjoint and
+#   one row    TestJoin_TheAdvertisedRoutesAreInTheContainerAtStart
+#              (#1125) is 100.00, INFERRED: no run has executed it.
+#              Three arms, each the shape of
+#              TestDHCPv6_Stateless_ConfigurationReachesTheContainer
+#              (30.44): one v6 fixture, one network, one container and
+#              one read. 3 x 30.44 is 91.32, rounded up so a first run
+#              costs less than the table says.
+#   samples    3 for every corpus row. SIXTY-SEVEN rows are not corpus
+#              samples, and the sixteen groups below are disjoint and
 #              exhaust them: the five `one row` notes above -- 73.85,
 #              84.19, 0.05, 12.08 and 13.00 -- the eighteen #110 rows,
 #              the four #962 TestReleaseLease_* rows, the two
@@ -502,9 +509,9 @@
 #              advertisement rows, the three #1016 refusal rows,
 #              the #1081 renumber row, the five #1037
 #              TestMTUOption_* rows, the four #905 TestSubModes_* rows
-#              the three #902 TestVlan_* rows, the #904 row and the
-#              #1118 row.
-#              Sixty-three of the sixty-six are INFERRED; the three
+#              the three #902 TestVlan_* rows, the #904 row, the
+#              #1118 row and the #1125 row.
+#              Sixty-four of the sixty-seven are INFERRED; the three
 #              that are measured are
 #              TestLeaseRenewIPv6_HonorsT1, from three later head runs,
 #              and TestFailure_UnansweredRenewalsCounted and
@@ -699,6 +706,7 @@ TestInterfaceName_PluginHonorsOption	12.50
 TestInterfaceName_ProbeSkipPrecedesTheEphemeralFixture	0.00
 TestJoinDuration_DistributionInThisShard	13.00
 TestJoinNoContainer_AddressIsHeldUntilItExpires	26.95
+TestJoin_TheAdvertisedRoutesAreInTheContainerAtStart	100.00
 TestLeaseRenewIPv6_HonorsT1	73.85
 TestLeaseRenew_HonorsT1	27.38
 TestLeaseRetention_ARestartRebootsRatherThanDiscovers	12.92
