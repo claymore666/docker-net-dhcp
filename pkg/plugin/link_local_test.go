@@ -608,7 +608,7 @@ func TestJoin_ALinkLocalEndpointGetsNoGatewayNoHostRoutesAndNoGatewayBridge(t *t
 	withStateDir(t, t.TempDir())
 	_, dst, _ := net.ParseCIDR("10.88.0.0/16")
 	stubKernelRouteTable(t, []netlink.Route{
-		{Gw: net.ParseIP("192.168.99.1")},
+		{Dst: netlinkDefaultDst(false), Gw: net.ParseIP("192.168.99.1")},
 		{Dst: dst, Gw: net.ParseIP("192.168.99.253")},
 	}, nil, nil)
 	if err := saveOptions("n904", DHCPNetworkOptions{Bridge: "lo", LinkLocalFallback: true}); err != nil {

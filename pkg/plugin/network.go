@@ -1388,6 +1388,30 @@ func (p *Plugin) applyV6JoinHint(opts DHCPNetworkOptions, r JoinRequest, hint jo
 	}).Info("[Join] Adding IPv6 routes from the Router Advertisement")
 }
 
+// A second route to one destination fails the engine's install with EEXIST whatever its next hop (measured
+// 2026-09-28, kernel 6.12), and the host table, option 121 and the advertisement can each name it (#1125).
+
+// uniqueStaticRoutes keeps the first route to each destination, in order, keyed on the masked prefix.
+func uniqueStaticRoutes(routes []*StaticRoute) []*StaticRoute {
+	seen := make(map[string]bool, len(routes))
+	var out []*StaticRoute
+	for _, r := range routes {
+		if r == nil {
+			continue
+		}
+		key := r.Destination
+		if pfx, err := netip.ParsePrefix(r.Destination); err == nil {
+			key = pfx.Masked().String()
+		}
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, r)
+	}
+	return out
+}
+
 // describeStaticRoutes renders "dest via nexthop" or "dest onlink" for the log.
 func describeStaticRoutes(routes []*StaticRoute) []string {
 	out := make([]string, 0, len(routes))
@@ -1424,9 +1448,14 @@ func joinRouteSource(opts DHCPNetworkOptions) (netlink.Link, error) {
 // addRoutes copies the host link's non-default, non-kernel, non-DHCP-subnet routes into StaticRoutes in every
 // mode, the bridge or the parent NIC; `-o skip_routes=true` opts out (#102).
 func (p *Plugin) addRoutes(opts *DHCPNetworkOptions, v6 bool, link netlink.Link, r JoinRequest, hint joinHint, res *JoinResponse) error {
-	family := unix.AF_INET
+	family, own := unix.AF_INET, hint.IPv4
 	if v6 {
-		family = unix.AF_INET6
+		family, own = unix.AF_INET6, hint.IPv6
+		if own == nil {
+			// The engine sets disable_ipv6=1 on a link whose endpoint has no IPv6 address, and any IPv6 route then fails
+			// the sandbox with "permission denied" (measured on the lane, run 35131643324, #821, #1125).
+			return nil
+		}
 	}
 
 	routes, err := util.DumpResult(nlRouteListFiltered(family, &netlink.Route{
@@ -1443,10 +1472,11 @@ func (p *Plugin) addRoutes(opts *DHCPNetworkOptions, v6 bool, link netlink.Link,
 		"sandbox":  r.SandboxKey,
 	}
 	for _, route := range routes {
-		if route.Dst == nil {
+		// netlink 1.3.1 reports a default route as 0.0.0.0/0 or ::/0, never a nil Dst (route_linux.go, #1125).
+		if isDefaultRoute(route) {
 			// Only the IPv4 default comes from the host table: the host's v6 default is its own RA on another link,
 			// and the container's v6 gateway arrives on the hint (#821).
-			if family == unix.AF_INET && res.Gateway == "" {
+			if family == unix.AF_INET && res.Gateway == "" && route.Gw != nil {
 				res.Gateway = route.Gw.String()
 				log.
 					WithFields(logFields).
@@ -1462,9 +1492,7 @@ func (p *Plugin) addRoutes(opts *DHCPNetworkOptions, v6 bool, link netlink.Link,
 			continue
 		}
 
-		if route.Protocol == unix.RTPROT_KERNEL ||
-			(family == unix.AF_INET && route.Dst.Contains(hint.IPv4.IP)) ||
-			(family == unix.AF_INET6 && route.Dst.Contains(hint.IPv6.IP)) {
+		if route.Protocol == unix.RTPROT_KERNEL || (own != nil && route.Dst.Contains(own.IP)) {
 			// Make sure to leave out the default on-link route created automatically for the IP(s) acquired by DHCP
 			continue
 		}
@@ -1667,9 +1695,10 @@ func (p *Plugin) Join(ctx context.Context, r JoinRequest) (JoinResponse, error) 
 	}
 
 	p.appendDHCPStaticRoutes(opts, r, hint, &res)
-	if opts.IPv6 {
+	if opts.ipv6Enabled() {
 		p.applyV6JoinHint(opts, r, hint, &res)
 	}
+	res.StaticRoutes = uniqueStaticRoutes(res.StaticRoutes)
 
 	// Register before the start goroutine so a fast Leave finds the manager; Stop waits for Start.
 	m := p.newJoinManager(r, opts, hint, res)
