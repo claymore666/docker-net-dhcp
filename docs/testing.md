@@ -82,6 +82,52 @@ only in the workflows linked below.
 - Limits: the install jobs create no network and lease no address; the
   provenance attestation covers the GHCR image, not the Docker Hub copy.
 
+## Real-server lab
+- [docker-net-dhcp-lab](https://github.com/claymore666/docker-net-dhcp-lab)
+  installs a release candidate into a real Docker engine on its own VM and
+  leases from a stock DHCP server on a second VM, one isolated cell per
+  server. Every scenario is judged against the server's own lease table,
+  never against the plugin's report.
+
+```mermaid
+flowchart TB
+  subgraph labhost["Lab host, one machine; everything below is on it: the controller as its own processes, two VMs, one container, one network"]
+    CTL["labctl and scripts<br/>bring a cell up, run every scenario on every shape, tear it down"]
+    subgraph cell["One cell: an isolated segment 10.200.N.0/24"]
+      direction TB
+      SRC["Source VM<br/>Kea, ISC dhcpd or dnsmasq<br/>apt install, stock config plus a pool"]
+      DH["Docker host VM<br/>Debian 13 or Ubuntu 24.04<br/>plugin under test, five network shapes"]
+      OBS["Observer container<br/>tcpdump on the segment for the whole run"]
+    end
+    MG["Management network 10.200.255.0/24<br/>the controller's ssh path to every VM"]
+  end
+  CTL -- "ssh: run, restart, reboot, upgrade" --> DH
+  CTL -- "reads the server's own lease table" --> SRC
+  DH <-- "DHCP on the segment" --> SRC
+  OBS -.- DH
+  CTL --> EV["Evidence bundle<br/>one verdict per scenario and shape, lease snapshots, capture, plugin log"]
+  EV --> PK["pack.sh<br/>refuses any address that is not the lab's"]
+  PK --> REL["GitHub release<br/>results page plus evidence tarball"]
+```
+
+A cell is a DHCP server and a Docker host on their own segment; the
+controller runs every scenario on every shape, judges each one against
+the server's lease table, and everything that leaves the lab passes the
+address check first.
+
+- Results: 504 PASS in docker-net-dhcp-lab v0.1.0, 6 N/A, 0 FAIL, over
+  3 DHCP servers (Kea, ISC dhcpd, dnsmasq), 2 Docker hosts (Debian 13,
+  Ubuntu 24.04), 5 network shapes and 17 scenarios per shape; the plugin
+  under test was docker-net-dhcp v2.3.0-rc1
+  ([release and evidence](https://github.com/claymore666/docker-net-dhcp-lab/releases/tag/v0.1.0)).
+- Proves: the release candidate passes the everyday container journeys on
+  every shape against three stock DHCP servers on two distributions, with
+  the evidence attached to the release.
+- Limits: the 6 N/A are the fixed-MAC reboot on `ipvlan`, whose containers
+  share the parent's MAC; router-feature, failure and IPv6 scenarios are
+  planned for docker-net-dhcp-lab v0.2.0
+  ([lab #23](https://github.com/claymore666/docker-net-dhcp-lab/issues/23)).
+
 ## Supply chain
 - [CodeQL](https://github.com/claymore666/docker-net-dhcp/blob/main/.github/workflows/codeql.yml),
   [Trivy rootfs scan](https://github.com/claymore666/docker-net-dhcp/blob/main/.github/workflows/trivy.yml),
