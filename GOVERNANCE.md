@@ -2,7 +2,8 @@
 
 This document describes how `docker-net-dhcp` is governed and who is
 responsible for what. It is intentionally lightweight: this is a small,
-actively maintained fork, not a foundation project.
+actively maintained project with one maintainer, not a foundation
+project.
 
 ## Model
 

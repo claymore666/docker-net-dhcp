@@ -1,15 +1,12 @@
 # Release notes
 
-This is a maintained fork of [`devplayer0/docker-net-dhcp`][upstream]. The
-upstream repository has not been updated in several years and does not
-build on current Docker hosts; the goals of this fork are (1) keep the
-plugin building and running on modern Docker, (2) add a macvlan
-attachment mode so containers can pick up DHCP leases from the LAN
-without requiring the operator to maintain a host bridge, and (3)
-incorporate sensible improvements from open upstream PRs and other
-forks that have been waiting on review.
+`docker-net-dhcp` is the successor of [`devplayer0/docker-net-dhcp`][predecessor],
+which has not been updated since 2021 and does not build on current
+Docker hosts. The 1.x line kept that plugin running on modern Docker and
+added the macvlan mode; since 2.0 the plugin runs its own DHCP engine.
+The notes below go back to the first release of this project.
 
-[upstream]: https://github.com/devplayer0/docker-net-dhcp
+[predecessor]: https://github.com/devplayer0/docker-net-dhcp
 
 ## v2.3.1
 
