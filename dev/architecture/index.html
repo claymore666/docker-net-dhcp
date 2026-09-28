@@ -12,13 +12,13 @@
         <meta name="author" content="claymore666">
       
       
-        <link rel="canonical" href="https://claymore666.github.io/docker-net-dhcp/latest/testing/">
+        <link rel="canonical" href="https://claymore666.github.io/docker-net-dhcp/latest/architecture/">
       
       
-        <link rel="prev" href="../internals/">
+        <link rel="prev" href="../reference/">
       
       
-        <link rel="next" href="../roadmap/">
+        <link rel="next" href="../internals/">
       
       
         
@@ -29,7 +29,7 @@
     
     
       
-        <title>Testing - docker-net-dhcp</title>
+        <title>Architecture - docker-net-dhcp</title>
       
     
     
@@ -80,7 +80,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#how-this-plugin-is-tested" class="md-skip">
+        <a href="#architecture" class="md-skip">
           Skip to content
         </a>
       
@@ -118,7 +118,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              Testing
+              Architecture
             
           </span>
         </div>
@@ -305,9 +305,11 @@
   
   
   
+    
   
-    <li class="md-tabs__item">
-      <a href="../architecture/" class="md-tabs__link">
+  
+    <li class="md-tabs__item md-tabs__item--active">
+      <a href="./" class="md-tabs__link">
         
   
   
@@ -343,11 +345,9 @@
   
   
   
-    
   
-  
-    <li class="md-tabs__item md-tabs__item--active">
-      <a href="./" class="md-tabs__link">
+    <li class="md-tabs__item">
+      <a href="../testing/" class="md-tabs__link">
         
   
   
@@ -594,10 +594,19 @@
       
   
   
+    
   
   
-    <li class="md-nav__item">
-      <a href="../architecture/" class="md-nav__link">
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
         
   
   
@@ -613,6 +622,7 @@
   
 
       </a>
+      
     </li>
   
 
@@ -648,37 +658,10 @@
       
   
   
-    
   
   
-  
-    <li class="md-nav__item md-nav__item--active">
-      
-      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
-      
-      
-        
-      
-      
-        <label class="md-nav__link md-nav__link--active" for="__toc">
-          
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Testing
-  
-
-    
-  </span>
-  
-  
-
-          <span class="md-nav__icon md-icon"></span>
-        </label>
-      
-      <a href="./" class="md-nav__link md-nav__link--active">
+    <li class="md-nav__item">
+      <a href="../testing/" class="md-nav__link">
         
   
   
@@ -694,136 +677,6 @@
   
 
       </a>
-      
-        
-
-<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
-  
-  
-  
-    
-  
-  
-    <label class="md-nav__title" for="__toc">
-      <span class="md-nav__icon md-icon"></span>
-      Table of contents
-    </label>
-    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
-      
-        <li class="md-nav__item">
-  <a href="#unit-tests-and-static-analysis" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Unit tests and static analysis
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#integration-suite" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Integration suite
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#engine-matrix" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Engine matrix
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#arm64-on-a-raspberry-pi-4" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        arm64 on a Raspberry Pi 4
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#hosted-cross-check" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Hosted cross-check
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#load-on-a-small-host" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Load on a small host
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#release-verification" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Release verification
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#real-server-lab" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Real-server lab
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#supply-chain" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Supply chain
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#after-each-release" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        After each release
-      
-    </span>
-  </a>
-  
-</li>
-      
-    </ul>
-  
-</nav>
-      
     </li>
   
 
@@ -1016,124 +869,6 @@
     
   
   
-    <label class="md-nav__title" for="__toc">
-      <span class="md-nav__icon md-icon"></span>
-      Table of contents
-    </label>
-    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
-      
-        <li class="md-nav__item">
-  <a href="#unit-tests-and-static-analysis" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Unit tests and static analysis
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#integration-suite" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Integration suite
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#engine-matrix" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Engine matrix
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#arm64-on-a-raspberry-pi-4" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        arm64 on a Raspberry Pi 4
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#hosted-cross-check" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Hosted cross-check
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#load-on-a-small-host" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Load on a small host
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#release-verification" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Release verification
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#real-server-lab" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Real-server lab
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#supply-chain" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Supply chain
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#after-each-release" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        After each release
-      
-    </span>
-  </a>
-  
-</li>
-      
-    </ul>
-  
 </nav>
                   </div>
                 </div>
@@ -1149,7 +884,7 @@
 
 
   
-    <a href="https://github.com/claymore666/docker-net-dhcp/edit/dev/docs/testing.md" title="Edit this page" class="md-content__button md-icon" rel="edit">
+    <a href="https://github.com/claymore666/docker-net-dhcp/edit/dev/docs/architecture.md" title="Edit this page" class="md-content__button md-icon" rel="edit">
       
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M10 20H6V4h7v5h5v3.1l2-2V8l-6-6H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h4zm10.2-7c.1 0 .3.1.4.2l1.3 1.3c.2.2.2.6 0 .8l-1 1-2.1-2.1 1-1c.1-.1.2-.2.4-.2m0 3.9L14.1 23H12v-2.1l6.1-6.1z"/></svg>
     </a>
@@ -1157,161 +892,47 @@
   
 
 
-<h1 id="how-this-plugin-is-tested">How this plugin is tested<a class="headerlink" href="#how-this-plugin-is-tested" title="Permanent link">&para;</a></h1>
-<p>This plugin gives Docker containers addresses leased from the network's
-own DHCP server, in bridge, macvlan and ipvlan mode. A defect here leaves
-a container with no address, or with somebody else's, so most of the
-testing installs the plugin into a real Docker engine and runs it against
-a real DHCP server. This page lists what is tested, where it runs, and
-what each result does and does not prove. How to run the unit tests, the
-integration suite and the load matrix yourself is in
-<a href="../internals/#running-the-tests">Running the tests</a>; the other parts run
-only in the workflows linked below.</p>
-<h2 id="unit-tests-and-static-analysis">Unit tests and static analysis<a class="headerlink" href="#unit-tests-and-static-analysis" title="Permanent link">&para;</a></h2>
-<ul>
-<li>The <a href="https://github.com/claymore666/docker-net-dhcp/blob/main/.github/workflows/test.yaml">Test workflow</a>
-  runs the Go unit tests with the race detector, four fuzz targets on a
-  fixed execution budget, <code>staticcheck</code> and <code>govulncheck</code>, on every pull
-  request and push into <code>dev</code> and <code>main</code>, and once a week.</li>
-<li>Proves: the code builds and each package behaves as its tests say.</li>
-<li>Limits: no engine runs and no DHCP packet is sent.</li>
-</ul>
-<h2 id="integration-suite">Integration suite<a class="headerlink" href="#integration-suite" title="Permanent link">&para;</a></h2>
-<ul>
-<li>The <a href="https://github.com/claymore666/docker-net-dhcp/blob/main/.github/workflows/integration.yml">Integration workflow</a>
-  installs the plugin into a real Docker engine and runs it against a real
-  DHCP server (dnsmasq, and Kea for some tests) on isolated virtual links
-  in bridge, macvlan and ipvlan
-  mode, plus a failure suite, on the project's own amd64 runners on every
-  push and pull request into <code>dev</code> and <code>main</code>.</li>
-<li>Proves: the plugin works end to end against a real DHCP server on the
-  engine those runners carry, named under
-  <a href="../#requirements">Requirements</a> in the README.</li>
-<li>Limits: one engine version, one kind of hardware, no physical network.</li>
-</ul>
-<h2 id="engine-matrix">Engine matrix<a class="headerlink" href="#engine-matrix" title="Permanent link">&para;</a></h2>
-<ul>
-<li>The <a href="https://github.com/claymore666/docker-net-dhcp/blob/main/.github/workflows/engine-matrix.yml">Engine matrix</a>
-  drives the baseline (plugin enabled, a network in each mode, a lease in
-  the DHCP server's log, an address kept across <code>docker restart</code>) on every
-  line in <a href="https://github.com/claymore666/docker-net-dhcp/blob/main/.github/engine-rows.txt"><code>engine-rows.txt</code></a>,
-  20.10 to the current release plus 19.03, weekly and on every change to
-  the measurement.</li>
-<li>Proves: the baseline holds on each supported engine line; 19.03 is
-  <code>unsupported</code> because it is unmeasured.</li>
-<li>Limits: the baseline only, not the whole suite; the plugin is built
-  locally, never pulled from a registry.</li>
-</ul>
-<h2 id="arm64-on-a-raspberry-pi-4">arm64 on a Raspberry Pi 4<a class="headerlink" href="#arm64-on-a-raspberry-pi-4" title="Permanent link">&para;</a></h2>
-<ul>
-<li>The <a href="https://github.com/claymore666/docker-net-dhcp/blob/main/.github/workflows/integration-arm64.yml">integration-arm64 workflow</a>
-  runs the integration suite on a netbooted Raspberry Pi 4, a real arm64
-  kernel, for every release candidate tag; if the Pi is offline the check
-  fails instead of waiting.</li>
-<li>Proves: the release candidate passes the suite on arm64.</li>
-<li>Limits: one machine and one kernel; ordinary pushes do not reach it.</li>
-</ul>
-<h2 id="hosted-cross-check">Hosted cross-check<a class="headerlink" href="#hosted-cross-check" title="Permanent link">&para;</a></h2>
-<ul>
-<li>The <a href="https://github.com/claymore666/docker-net-dhcp/blob/main/.github/workflows/integration-hosted.yml">hosted cross-check</a>
-  runs the integration suite on GitHub's own runners weekly and on demand.</li>
-<li>Proves: a green suite does not depend on the project's own hardware.</li>
-<li>Limits: it runs weekly, so a failure points at a week of changes, not
-  at one.</li>
-</ul>
-<h2 id="load-on-a-small-host">Load on a small host<a class="headerlink" href="#load-on-a-small-host" title="Permanent link">&para;</a></h2>
-<ul>
-<li><a href="https://github.com/claymore666/docker-net-dhcp/blob/main/scripts/vm-load-test.sh"><code>scripts/vm-load-test.sh</code></a>
-  builds a throwaway 2 vCPU, 2 GB VM with the engine, this tree's plugin
-  and a dnsmasq server, starts bursts of 10, 20 and 50 containers at idle
-  and under three levels of pressure, and prints the attach counters
-  beside the DHCP server's lease file (defined in <a href="https://github.com/claymore666/docker-net-dhcp/issues/969">#969</a>,
-  <a href="../internals/#the-attach-budget-under-load">detail</a>).</li>
-<li>Proves: what a small, loaded host does at attach time; each run prints
-  its own table.</li>
-<li>Limits: run by hand, not part of CI; a load measurement varies from
-  run to run.</li>
-</ul>
-<h2 id="release-verification">Release verification<a class="headerlink" href="#release-verification" title="Permanent link">&para;</a></h2>
-<ul>
-<li>The <a href="https://github.com/claymore666/docker-net-dhcp/blob/main/.github/workflows/release.yml">Release workflow</a>
-  signs each image and release artifact with cosign, attests provenance
-  for the GHCR image and the release artifacts, then installs the plugin
-  from GHCR and
-  Docker Hub on hosted amd64 and arm64 runners and checks that it enables.
-  <a href="../verifying-releases/">Verifying releases</a> shows how to repeat the
-  signature and provenance checks yourself.</li>
-<li>Proves: both registries hold a signed plugin that installs and enables
-  on both architectures.</li>
-<li>Limits: the install jobs create no network and lease no address; the
-  provenance attestation covers the GHCR image, not the Docker Hub copy.</li>
-</ul>
-<h2 id="real-server-lab">Real-server lab<a class="headerlink" href="#real-server-lab" title="Permanent link">&para;</a></h2>
-<ul>
-<li><a href="https://github.com/claymore666/docker-net-dhcp-lab">docker-net-dhcp-lab</a>
-  installs a release candidate into a real Docker engine on its own VM and
-  leases from a stock DHCP server on a second VM, one isolated cell per
-  server. Every scenario is judged against the server's own lease table,
-  never against the plugin's report.</li>
-</ul>
+<h1 id="architecture">Architecture<a class="headerlink" href="#architecture" title="Permanent link">&para;</a></h1>
+<p>The plugin sits between the Docker Engine and the DHCP server you already
+run. The diagram names the parts and what passes between them.</p>
 <pre class="mermaid"><code>flowchart TB
-  subgraph labhost["Lab host, one machine; everything below is on it: the controller as its own processes, two VMs, one container, one network"]
-    CTL["labctl and scripts&lt;br/&gt;bring a cell up, run every scenario on every shape, tear it down"]
-    subgraph cell["One cell: an isolated segment 10.200.N.0/24"]
-      direction TB
-      SRC["Source VM&lt;br/&gt;Kea, ISC dhcpd or dnsmasq&lt;br/&gt;apt install, stock config plus a pool"]
-      DH["Docker host VM&lt;br/&gt;Debian 13 or Ubuntu 24.04&lt;br/&gt;plugin under test, five network shapes"]
-      OBS["Observer container&lt;br/&gt;tcpdump on the segment for the whole run"]
-    end
-    MG["Management network 10.200.255.0/24&lt;br/&gt;the controller's ssh path to every VM"]
+  E["Docker Engine (libnetwork)&lt;br/&gt;network driver calls: CreateNetwork, CreateEndpoint, Join, Leave, DeleteEndpoint&lt;br/&gt;IPAM calls when the network also names the plugin as its IPAM driver: RequestPool, RequestAddress"]
+  subgraph plugin["net-dhcp plugin, privileged, host network namespace"]
+    H["pkg/plugin&lt;br/&gt;Docker handlers, lease records, counters and health; puts the leased address on the container's link"]
+    C["pkg/dhcp&lt;br/&gt;protocol parameters; enters the container's network namespace and opens the client's link"]
+    L["dhcp-golib, the project's own library&lt;br/&gt;DHCPv4, DHCPv6 and router advertisement client, one per endpoint and address family: renew, rebind, NAK, expiry"]
+    S[("/var/lib/net-dhcp&lt;br/&gt;per-network options, lease-records.jsonl")]
+    TS[("tombstones.json, same directory&lt;br/&gt;written at DeleteEndpoint, read at the next CreateEndpoint, kept 60 s: MAC, hostname, last IPv4 and IPv6 address")]
   end
-  CTL -- "ssh: run, restart, reboot, upgrade" --&gt; DH
-  CTL -- "reads the server's own lease table" --&gt; SRC
-  DH &lt;-- "DHCP on the segment" --&gt; SRC
-  OBS -.- DH
-  CTL --&gt; EV["Evidence bundle&lt;br/&gt;one verdict per scenario and shape, lease snapshots, capture, plugin log"]
-  EV --&gt; PK["pack.sh&lt;br/&gt;refuses any address that is not the lab's"]
-  PK --&gt; REL["GitHub release&lt;br/&gt;results page plus evidence tarball"]</code></pre>
-<p>A cell is a DHCP server and a Docker host on their own segment; the
-controller runs every scenario on every shape, judges each one against
-the server's lease table, and everything that leaves the lab passes the
-address check first.</p>
-<ul>
-<li>Results: 504 PASS in docker-net-dhcp-lab v0.1.0, 6 N/A, 0 FAIL, over
-  3 DHCP servers (Kea, ISC dhcpd, dnsmasq), 2 Docker hosts (Debian 13,
-  Ubuntu 24.04), 5 network shapes and 17 scenarios per shape; the plugin
-  under test was docker-net-dhcp v2.3.0-rc1
-  (<a href="https://github.com/claymore666/docker-net-dhcp-lab/releases/tag/v0.1.0">release and evidence</a>).</li>
-<li>Proves: the release candidate passes the everyday container journeys on
-  every shape against three stock DHCP servers on two distributions, with
-  the evidence attached to the release.</li>
-<li>Limits: the 6 N/A are the fixed-MAC reboot on <code>ipvlan</code>, whose containers
-  share the parent's MAC; router-feature, failure and IPv6 scenarios are
-  planned for docker-net-dhcp-lab v0.2.0
-  (<a href="https://github.com/claymore666/docker-net-dhcp-lab/issues/23">lab #23</a>).</li>
-</ul>
-<h2 id="supply-chain">Supply chain<a class="headerlink" href="#supply-chain" title="Permanent link">&para;</a></h2>
-<ul>
-<li><a href="https://github.com/claymore666/docker-net-dhcp/blob/main/.github/workflows/codeql.yml">CodeQL</a>,
-  <a href="https://github.com/claymore666/docker-net-dhcp/blob/main/.github/workflows/trivy.yml">Trivy rootfs scan</a>,
-  <a href="https://github.com/claymore666/docker-net-dhcp/blob/main/.github/workflows/dependency-review.yml">Dependency review</a>,
-  <a href="https://github.com/claymore666/docker-net-dhcp/blob/main/.github/workflows/scorecard.yml">Scorecard</a>
-  and <a href="https://github.com/claymore666/docker-net-dhcp/blob/main/.github/workflows/reproducible-build.yml">Reproducible build</a>
-  run on GitHub's runners, each on its own trigger; between them they
-  cover pull requests, pushes to <code>dev</code> and <code>main</code>, and a weekly schedule.</li>
-<li>Proves: known vulnerable code patterns, packages and dependencies are
-  reported, and two builds of the same source give byte-identical binaries.</li>
-<li>Limits: a scanner knows only what is published on the day it runs;
-  none of these runs the plugin.</li>
-</ul>
-<h2 id="after-each-release">After each release<a class="headerlink" href="#after-each-release" title="Permanent link">&para;</a></h2>
-<ul>
-<li>The maintainer upgrades their own host to the release, where the plugin
-  runs on a home LAN against a consumer-grade router.</li>
-<li>Proves: the released plugin leases from a real router, not only from
-  the servers the suite uses.</li>
-<li>Limits: one host and one router model; CI never uses that network.</li>
-</ul>
+  subgraph links["Links on the Docker host"]
+    direction LR
+    B["bridge mode&lt;br/&gt;an existing bridge, or one the plugin makes from a spare NIC, plus a veth pair per container"]
+    M["macvlan / ipvlan mode&lt;br/&gt;a child link on a parent NIC, optionally on a VLAN of it"]
+  end
+  subgraph lan["Your LAN"]
+    D["The DHCP server you already run&lt;br/&gt;router, Kea, ISC dhcpd, dnsmasq"]
+    T["Its lease table, reservations and DNS see the container as one more host"]
+  end
+  E -- "plugin socket" --&gt; H
+  H --&gt; C --&gt; L
+  H &lt;--&gt; S
+  H &lt;--&gt; TS
+  L -- "client socket in the container's network namespace" --&gt; B
+  L --&gt; M
+  B &lt;-- "Discover, Offer, Request, ACK" --&gt; D
+  M &lt;--&gt; D
+  D --&gt; T
+  style L fill:#0f6e63,stroke:#0f6e63,color:#ffffff</code></pre>
+<p>Docker calls the plugin over its socket; <code>pkg/plugin</code> answers Docker and
+keeps the records and tombstones, <code>pkg/dhcp</code> enters the container's
+network namespace, and the library speaks DHCP over the container's own
+link to the server on your LAN. The DHCP client is
+<a href="https://github.com/claymore666/dhcp-golib">claymore666/dhcp-golib</a>, this
+project's own library, pinned in <code>go.mod</code>.</p>
+<p>It is a privileged plugin: it runs with host networking, the Docker socket
+and <code>CAP_NET_ADMIN</code>. The full list is under <a href="../#requirements">Requirements</a>,
+and what each item is for is in <a href="https://github.com/claymore666/docker-net-dhcp/blob/main/SECURITY.md#scope--what-this-plugin-is">SECURITY.md</a>.
+The call sequence behind the arrows is in <a href="../internals/">How it works</a>.</p>
 
 
 

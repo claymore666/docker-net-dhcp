@@ -15,7 +15,7 @@
         <link rel="canonical" href="https://claymore666.github.io/docker-net-dhcp/latest/internals/">
       
       
-        <link rel="prev" href="../reference/">
+        <link rel="prev" href="../architecture/">
       
       
         <link rel="next" href="../testing/">
@@ -305,6 +305,25 @@
   
   
   
+  
+    <li class="md-tabs__item">
+      <a href="../architecture/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Architecture
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
     
   
   
@@ -559,6 +578,33 @@
     
   
     Driver reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../architecture/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture
   
 
     
@@ -1028,10 +1074,10 @@
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_10" >
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_11" >
         
           
-          <label class="md-nav__link" for="__nav_10" id="__nav_10_label" tabindex="0">
+          <label class="md-nav__link" for="__nav_11" id="__nav_11_label" tabindex="0">
             
   
   
@@ -1049,8 +1095,8 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_10_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_10">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_11_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_11">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -1419,40 +1465,8 @@ namespace to it. Two things differ:</p>
   pool on the Docker host, <code>net-dhcp</code> relies on an external DHCP server
   to provide them.</li>
 </ul>
-<pre class="mermaid"><code>flowchart TB
-  E["Docker Engine (libnetwork)&lt;br/&gt;network driver calls: CreateNetwork, CreateEndpoint, Join, Leave, DeleteEndpoint&lt;br/&gt;IPAM calls when the network also names the plugin as its IPAM driver: RequestPool, RequestAddress"]
-  subgraph plugin["net-dhcp plugin, privileged, host network namespace"]
-    H["pkg/plugin&lt;br/&gt;Docker handlers, lease records, counters and health; puts the leased address on the container's link"]
-    C["pkg/dhcp&lt;br/&gt;protocol parameters; enters the container's network namespace and opens the client's link"]
-    L["dhcp-golib, the project's own library&lt;br/&gt;DHCPv4, DHCPv6 and router advertisement client, one per endpoint and address family: renew, rebind, NAK, expiry"]
-    S[("/var/lib/net-dhcp&lt;br/&gt;per-network options, lease-records.jsonl")]
-    TS[("tombstones.json, same directory&lt;br/&gt;written at DeleteEndpoint, read at the next CreateEndpoint, kept 60 s: MAC, hostname, last IPv4 and IPv6 address")]
-  end
-  subgraph links["Links on the Docker host"]
-    direction LR
-    B["bridge mode&lt;br/&gt;an existing bridge, or one the plugin makes from a spare NIC, plus a veth pair per container"]
-    M["macvlan / ipvlan mode&lt;br/&gt;a child link on a parent NIC, optionally on a VLAN of it"]
-  end
-  subgraph lan["Your LAN"]
-    D["The DHCP server you already run&lt;br/&gt;router, Kea, ISC dhcpd, dnsmasq"]
-    T["Its lease table, reservations and DNS see the container as one more host"]
-  end
-  E -- "plugin socket" --&gt; H
-  H --&gt; C --&gt; L
-  H &lt;--&gt; S
-  H &lt;--&gt; TS
-  L -- "client socket in the container's network namespace" --&gt; B
-  L --&gt; M
-  B &lt;-- "Discover, Offer, Request, ACK" --&gt; D
-  M &lt;--&gt; D
-  D --&gt; T
-  style L fill:#0f6e63,stroke:#0f6e63,color:#ffffff</code></pre>
-<p>Docker calls the plugin over its socket; <code>pkg/plugin</code> answers Docker and
-keeps the records and tombstones, <code>pkg/dhcp</code> enters the container's
-network namespace, and the library speaks DHCP over the container's own
-link to the server on your LAN. The DHCP client is
-<a href="https://github.com/claymore666/dhcp-golib">claymore666/dhcp-golib</a>, this
-project's own library, pinned in <code>go.mod</code>.</p>
+<p>The parts and what passes between them are drawn in
+<a href="../architecture/">Architecture</a>.</p>
 <h2 id="flow-bridge-mode">Flow (bridge mode)<a class="headerlink" href="#flow-bridge-mode" title="Permanent link">&para;</a></h2>
 <ol>
 <li>A container-creation request is made.</li>

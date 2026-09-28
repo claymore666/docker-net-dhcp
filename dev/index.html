@@ -307,6 +307,25 @@
   
   
     <li class="md-tabs__item">
+      <a href="architecture/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Architecture
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
       <a href="internals/" class="md-tabs__link">
         
   
@@ -755,6 +774,33 @@
   
   
     <li class="md-nav__item">
+      <a href="architecture/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="internals/" class="md-nav__link">
         
   
@@ -903,10 +949,10 @@
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_10" >
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_11" >
         
           
-          <label class="md-nav__link" for="__nav_10" id="__nav_10_label" tabindex="0">
+          <label class="md-nav__link" for="__nav_11" id="__nav_11_label" tabindex="0">
             
   
   
@@ -924,8 +970,8 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_10_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_10">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_11_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_11">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -1167,45 +1213,13 @@ container.</p>
 release. Pick a v1.x version from the selector for the 1.x manual.</p>
 </div>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>sudo<span class="w"> </span>mkdir<span class="w"> </span>-p<span class="w"> </span>/var/lib/net-dhcp<span class="w">                      </span><span class="c1"># once per host</span>
-<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>docker<span class="w"> </span>plugin<span class="w"> </span>install<span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:v2.3.0<span class="w">   </span><span class="c1"># -arm64 on arm64</span>
-<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>docker<span class="w"> </span>network<span class="w"> </span>create<span class="w"> </span>-d<span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:v2.3.0<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>docker<span class="w"> </span>plugin<span class="w"> </span>install<span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:v2.3.1<span class="w">   </span><span class="c1"># -arm64 on arm64</span>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>docker<span class="w"> </span>network<span class="w"> </span>create<span class="w"> </span>-d<span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:v2.3.1<span class="w"> </span><span class="se">\</span>
 <a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="w">  </span>--ipam-driver<span class="w"> </span>null<span class="w"> </span>-o<span class="w"> </span><span class="nv">mode</span><span class="o">=</span>macvlan<span class="w"> </span>-o<span class="w"> </span><span class="nv">parent</span><span class="o">=</span>eth0<span class="w"> </span>lan-dhcp
 <a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>docker<span class="w"> </span>run<span class="w"> </span>--rm<span class="w"> </span>-ti<span class="w"> </span>--network<span class="w"> </span>lan-dhcp<span class="w"> </span>alpine<span class="w"> </span>ip<span class="w"> </span>address<span class="w"> </span>show
 </code></pre></div>
-<pre class="mermaid"><code>flowchart TB
-  E["Docker Engine (libnetwork)&lt;br/&gt;network driver calls: CreateNetwork, CreateEndpoint, Join, Leave, DeleteEndpoint&lt;br/&gt;IPAM calls when the network also names the plugin as its IPAM driver: RequestPool, RequestAddress"]
-  subgraph plugin["net-dhcp plugin, privileged, host network namespace"]
-    H["pkg/plugin&lt;br/&gt;Docker handlers, lease records, counters and health; puts the leased address on the container's link"]
-    C["pkg/dhcp&lt;br/&gt;protocol parameters; enters the container's network namespace and opens the client's link"]
-    L["dhcp-golib, the project's own library&lt;br/&gt;DHCPv4, DHCPv6 and router advertisement client, one per endpoint and address family: renew, rebind, NAK, expiry"]
-    S[("/var/lib/net-dhcp&lt;br/&gt;per-network options, lease-records.jsonl")]
-    TS[("tombstones.json, same directory&lt;br/&gt;written at DeleteEndpoint, read at the next CreateEndpoint, kept 60 s: MAC, hostname, last IPv4 and IPv6 address")]
-  end
-  subgraph links["Links on the Docker host"]
-    direction LR
-    B["bridge mode&lt;br/&gt;an existing bridge, or one the plugin makes from a spare NIC, plus a veth pair per container"]
-    M["macvlan / ipvlan mode&lt;br/&gt;a child link on a parent NIC, optionally on a VLAN of it"]
-  end
-  subgraph lan["Your LAN"]
-    D["The DHCP server you already run&lt;br/&gt;router, Kea, ISC dhcpd, dnsmasq"]
-    T["Its lease table, reservations and DNS see the container as one more host"]
-  end
-  E -- "plugin socket" --&gt; H
-  H --&gt; C --&gt; L
-  H &lt;--&gt; S
-  H &lt;--&gt; TS
-  L -- "client socket in the container's network namespace" --&gt; B
-  L --&gt; M
-  B &lt;-- "Discover, Offer, Request, ACK" --&gt; D
-  M &lt;--&gt; D
-  D --&gt; T
-  style L fill:#0f6e63,stroke:#0f6e63,color:#ffffff</code></pre>
-<p>Docker calls the plugin over its socket; <code>pkg/plugin</code> answers Docker and
-keeps the records and tombstones, <code>pkg/dhcp</code> enters the container's
-network namespace, and the library speaks DHCP over the container's own
-link to the server on your LAN. The DHCP client is
-<a href="https://github.com/claymore666/dhcp-golib">claymore666/dhcp-golib</a>, this
-project's own library, pinned in <code>go.mod</code>.</p>
+<p>The parts and what passes between them are drawn in
+<a href="architecture/">Architecture</a>.</p>
 <p>It is a privileged plugin: it runs with host networking, the Docker socket
 and <code>CAP_NET_ADMIN</code>. The full list is under <a href="#requirements">Requirements</a>,
 and what each item is for is in <a href="https://github.com/claymore666/docker-net-dhcp/blob/main/SECURITY.md#scope--what-this-plugin-is">SECURITY.md</a>.</p>
@@ -1396,13 +1410,13 @@ project will not do, is on the <a href="roadmap/">roadmap</a>.</p>
 <a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>sudo<span class="w"> </span>mkdir<span class="w"> </span>-p<span class="w"> </span>/var/lib/net-dhcp
 <a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>
 <a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="c1"># amd64</span>
-<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a>docker<span class="w"> </span>plugin<span class="w"> </span>install<span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:v2.3.0
+<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a>docker<span class="w"> </span>plugin<span class="w"> </span>install<span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:v2.3.1
 <a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a><span class="c1"># arm64</span>
-<a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a>docker<span class="w"> </span>plugin<span class="w"> </span>install<span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:v2.3.0-arm64
+<a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a>docker<span class="w"> </span>plugin<span class="w"> </span>install<span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:v2.3.1-arm64
 </code></pre></div>
 <p>One network, created once. <code>macvlan</code> needs only a host NIC; <code>bridge</code>
 wants a bridge you bring yourself (<a href="bridge-mode/">Bridge mode</a>):</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>docker<span class="w"> </span>network<span class="w"> </span>create<span class="w"> </span>-d<span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:v2.3.0<span class="w"> </span><span class="se">\</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>docker<span class="w"> </span>network<span class="w"> </span>create<span class="w"> </span>-d<span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:v2.3.1<span class="w"> </span><span class="se">\</span>
 <a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="w">  </span>--ipam-driver<span class="w"> </span>null<span class="w"> </span>-o<span class="w"> </span><span class="nv">mode</span><span class="o">=</span>macvlan<span class="w"> </span>-o<span class="w"> </span><span class="nv">parent</span><span class="o">=</span>eth0<span class="w"> </span>lan-dhcp
 <a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>
 <a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>docker<span class="w"> </span>run<span class="w"> </span>--rm<span class="w"> </span>-ti<span class="w"> </span>--network<span class="w"> </span>lan-dhcp<span class="w"> </span>alpine<span class="w"> </span>ip<span class="w"> </span>address<span class="w"> </span>show
@@ -1412,8 +1426,8 @@ collide with the real LAN. From v2.1.0 there is a second supported
 shape: name the plugin again in place of <code>null</code> and the leased address
 goes into Docker's own address management, which makes <code>--ip</code> and
 Compose's <code>ipv4_address</code> work.</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>docker<span class="w"> </span>network<span class="w"> </span>create<span class="w"> </span>-d<span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:v2.3.0<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="w">  </span>--ipam-driver<span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:v2.3.0<span class="w"> </span><span class="se">\</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>docker<span class="w"> </span>network<span class="w"> </span>create<span class="w"> </span>-d<span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:v2.3.1<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="w">  </span>--ipam-driver<span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:v2.3.1<span class="w"> </span><span class="se">\</span>
 <a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="w">  </span>-o<span class="w"> </span><span class="nv">mode</span><span class="o">=</span>macvlan<span class="w"> </span>-o<span class="w"> </span><span class="nv">parent</span><span class="o">=</span>eth0<span class="w"> </span>lan-dhcp
 </code></pre></div>
 <p>One of the two is required. On arm64 the <code>-arm64</code> tag goes in these

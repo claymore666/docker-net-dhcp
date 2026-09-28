@@ -307,6 +307,25 @@
   
   
     <li class="md-tabs__item">
+      <a href="../architecture/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Architecture
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
       <a href="../internals/" class="md-tabs__link">
         
   
@@ -578,6 +597,33 @@
   
   
     <li class="md-nav__item">
+      <a href="../architecture/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../internals/" class="md-nav__link">
         
   
@@ -708,6 +754,17 @@
     <span class="md-ellipsis">
       
         v2.3.0, released
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#v231-released" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        v2.3.1, released
       
     </span>
   </a>
@@ -900,10 +957,10 @@
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_10" >
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_11" >
         
           
-          <label class="md-nav__link" for="__nav_10" id="__nav_10_label" tabindex="0">
+          <label class="md-nav__link" for="__nav_11" id="__nav_11_label" tabindex="0">
             
   
   
@@ -921,8 +978,8 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_10_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_10">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_11_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_11">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -1010,6 +1067,17 @@
     <span class="md-ellipsis">
       
         v2.3.0, released
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#v231-released" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        v2.3.1, released
       
     </span>
   </a>
@@ -1169,6 +1237,12 @@ below decide what is in a release; this page follows them.</p>
 <td><a href="https://github.com/claymore666/docker-net-dhcp/milestone/31">milestone 31</a></td>
 </tr>
 <tr>
+<td>v2.3.1</td>
+<td>released</td>
+<td>IPv6 routes at Join, the fixed-MAC hand-over in IPAM mode, and diagrams of the plugin and the lab</td>
+<td><a href="https://github.com/claymore666/docker-net-dhcp/milestone/38">milestone 38</a></td>
+</tr>
+<tr>
 <td>v2.4.0</td>
 <td>planned</td>
 <td>The rest of IPv6, and the DHCP options the client does not read yet</td>
@@ -1201,6 +1275,16 @@ below decide what is in a release; this page follows them.</p>
 <li><a href="https://github.com/claymore666/docker-net-dhcp/issues/1096">#1096</a>, a page that says how the plugin is tested, linked from the
   README</li>
 <li><a href="https://github.com/claymore666/docker-net-dhcp/issues/1108">#1108</a>, the first screen of the README says what, how and why</li>
+</ul>
+<h3 id="v231-released">v2.3.1, released<a class="headerlink" href="#v231-released" title="Permanent link">&para;</a></h3>
+<ul>
+<li><a href="https://github.com/claymore666/docker-net-dhcp/issues/1118">#1118</a>, in IPAM mode the kept identity of a stopped container goes back
+  to the container with that MAC, and with <code>require_mac</code> to no other</li>
+<li><a href="https://github.com/claymore666/docker-net-dhcp/issues/1125">#1125</a>, Join returns each IPv6 route once, an endpoint with no IPv6
+  address no longer crashes it, and <code>ipv6_mode</code> alone gets the IPv6 default
+  route</li>
+<li><a href="https://github.com/claymore666/docker-net-dhcp/issues/1126">#1126</a>, an architecture page with a diagram and a picture of the
+  real-server lab in the testing page</li>
 </ul>
 <h3 id="v240">v2.4.0<a class="headerlink" href="#v240" title="Permanent link">&para;</a></h3>
 <ul>
@@ -1392,7 +1476,7 @@ They stay open on purpose:</p>
 <p>For <a href="https://github.com/claymore666/docker-net-dhcp/issues/218">#218</a>, both halves were filed in June 2026. The endpoint-name change
 (<a href="https://github.com/moby/moby/pull/52871">moby/moby#52871</a>) is still awaiting review, and <a href="https://github.com/claymore666/docker-net-dhcp/issues/218">#218</a> will not be
 closed as "won't fix" while that is the only thing in the way. This
-fork's own half is written and waiting.</p>
+plugin's own half is written and waiting.</p>
 <p>The second upstream dependency has moved. The <code>interface_name</code>
 pass-through (<a href="https://github.com/moby/moby/pull/52866">moby/moby#52866</a>) merged and shipped in moby engine
 29.8.0, and <a href="https://github.com/claymore666/docker-net-dhcp/issues/125">#125</a> closed with it. Engines below that boundary ignore a
