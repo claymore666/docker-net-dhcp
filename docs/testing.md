@@ -91,7 +91,7 @@ only in the workflows linked below.
 
 ```mermaid
 flowchart TB
-  subgraph labhost["Lab host, one machine; every box below is a VM or a container on it"]
+  subgraph labhost["Lab host, one machine; everything below is on it: the controller as its own processes, two VMs, one container, one network"]
     CTL["labctl and scripts<br/>bring a cell up, run every scenario on every shape, tear it down"]
     subgraph cell["One cell: an isolated segment 10.200.N.0/24"]
       direction TB
