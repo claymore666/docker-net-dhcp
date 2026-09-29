@@ -303,10 +303,9 @@ driver, so a bare tag there names a plugin the host does not have.
 
 ## Origin and licence
 
-This began as a fork of
+This project is the successor of
 [`devplayer0/docker-net-dhcp`](https://github.com/devplayer0/docker-net-dhcp)
-(quiet since 2021); since 2.0 it is its own product, with its own DHCP
-engine.
+(quiet since 2021); since 2.0 it runs its own DHCP engine.
 
 GPL-3.0. See
 [LICENSE.md](https://github.com/claymore666/docker-net-dhcp/blob/main/LICENSE.md).

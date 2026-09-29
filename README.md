@@ -287,14 +287,13 @@ image at the same digest; install from either.
 
 ## Origin and licence
 
-This began as a fork of [`devplayer0/docker-net-dhcp`][fork-parent]
-(quiet since 2021); since 2.0 it is its own product, with its own DHCP
-engine.
+This project is the successor of [`devplayer0/docker-net-dhcp`][predecessor]
+(quiet since 2021); since 2.0 it runs its own DHCP engine.
 
 GPL-3.0. See [LICENSE.md](LICENSE.md). The upstream project is GPL-3.0
 and this derivative stays under the same licence.
 
-[fork-parent]: https://github.com/devplayer0/docker-net-dhcp
+[predecessor]: https://github.com/devplayer0/docker-net-dhcp
 [dhcp-golib]: https://github.com/claymore666/dhcp-golib
 
 ## Verifying releases
