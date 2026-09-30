@@ -404,6 +404,94 @@ fi
 rm -rf "$PREFIX_DIR"
 
 
+# --- the per-function floor file (#1117) -------------------------------
+# The same gate over .github/coverage-func-baseline.txt, rows
+# `<import path>.<Func> <percent>`. A removed row must be classed by the
+# package left after the last dot: read whole, `pkg/a.Foo` is no directory,
+# every removal would look like a deleted package and pass as a note.
+#
+# run_func_case <name> <base-floors|NONE> <head-floors|DELETE> <base-pkgs> <head-pkgs> <want-exit> [want-grep] [kind]
+run_func_case() {
+    local name="$1" base="$2" head="$3" basepkgs="$4" headpkgs="$5"
+    local want="$6" want_grep="${7-}" kind="${8-func}"
+    local dir rc out
+    guarded_tmpdir dir
+    (
+        cd "$dir" || exit 2
+        git init -q .
+        git config user.email t@t; git config user.name t
+        git config commit.gpgsign false
+        mkdir -p .github
+        [ "$base" = NONE ] || printf '%s\n' "$base" > .github/coverage-func-baseline.txt
+        printf '%s\n' "$GOMOD" > go.mod
+        for d in $basepkgs; do mkdir -p "$d"; printf 'package p\n' > "$d/p.go"; done
+        printf 'base\n' > sentinel.txt
+        git add -A; git commit -qm base
+        if [ "$head" = DELETE ]; then rm -f .github/coverage-func-baseline.txt
+        else printf '%s\n' "$head" > .github/coverage-func-baseline.txt; fi
+        for d in $basepkgs; do rm -rf "$d"; done
+        for d in $headpkgs; do mkdir -p "$d"; printf 'package p\n' > "$d/p.go"; done
+        printf 'head\n' > sentinel.txt
+        git add -A; git commit -qm "change the floors"
+        COVERAGE_FLOOR_PATH=.github/coverage-func-baseline.txt COVERAGE_FLOOR_KIND="$kind" \
+            bash "$GATE_BIN" HEAD~1..HEAD > "$dir/out" 2>&1
+        echo $? > "$dir/rc"
+    ) >/dev/null 2>&1
+    rc=$(cat "$dir/rc" 2>/dev/null)
+    out=$(cat "$dir/out" 2>/dev/null)
+    rm -rf "$dir"
+    if [ "$rc" != "$want" ]; then
+        no "$name (exit $rc, want $want)"
+        printf '%s\n' "$out" | sed 's/^/      /' >&2
+        return
+    fi
+    if [ -n "$want_grep" ] && ! printf '%s\n' "$out" | grep -F -e "$want_grep" >/dev/null; then
+        no "$name (exit $rc as wanted, but the output never said '$want_grep')"
+        printf '%s\n' "$out" | sed 's/^/      /' >&2
+        return
+    fi
+    ok "$name"
+}
+
+FTWO='example.com/mod/pkg/a.Foo 80.0
+example.com/mod/pkg/a.Bar 50.0'
+run_func_case "a lowered function floor trips the gate" "$FTWO" \
+    'example.com/mod/pkg/a.Foo 70.0
+example.com/mod/pkg/a.Bar 50.0' "pkg/a" "pkg/a" 1 "floor lowered 80.0% → 70.0%"
+run_func_case "a raised function floor passes" "$FTWO" \
+    'example.com/mod/pkg/a.Foo 90.0
+example.com/mod/pkg/a.Bar 50.0' "pkg/a" "pkg/a" 0
+run_func_case "a removed function row in a package that still exists is a finding" "$FTWO" \
+    'example.com/mod/pkg/a.Foo 80.0' "pkg/a" "pkg/a" 1 "no longer judges this function"
+run_func_case "a removed row is a note when its whole package is gone" \
+    'example.com/mod/pkg/a.Foo 80.0
+example.com/mod/pkg/zz.Only 10.0' 'example.com/mod/pkg/zz.Only 10.0' "pkg/a pkg/zz" "pkg/zz" 0 "The package is gone"
+run_func_case "the first PR that adds the file has nothing to compare against" NONE "$FTWO" "pkg/a" "pkg/a" 0 \
+    "does not exist at"
+run_func_case "deleting the function floor file trips the gate" "$FTWO" DELETE "pkg/a" "pkg/a" 1 "Coverage baseline deleted"
+run_func_case "an unknown kind refuses" "$FTWO" "$FTWO" "pkg/a" "pkg/a" 2 "COVERAGE_FLOOR_KIND" bogus
+
+FPREFIX_DIR=
+guarded_tmpdir FPREFIX_DIR
+FPREFIX="$FPREFIX_DIR/check-coverage-floor-nofunc.sh"
+if python3 - "$GATE" "$FPREFIX" <<'SURGERY'
+import sys
+src = open(sys.argv[1]).read()
+cut = src.replace('    if [ "$KIND" = func ]; then path="${path%.*}"; fi\n', '')
+assert cut != src, "the surgery removed nothing: this control is inert"
+open(sys.argv[2], "w").write(cut)
+SURGERY
+then
+    GATE_BIN="$FPREFIX"
+    run_func_case "without the .Func strip the removed row passes as a deleted package (control)" "$FTWO" \
+        'example.com/mod/pkg/a.Foo 80.0' "pkg/a" "pkg/a" 0 "The package is gone"
+    GATE_BIN="$GATE"
+else
+    no "the func-kind pre-fix control could not be built from the real script"
+fi
+rm -rf "$FPREFIX_DIR"
+
+
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

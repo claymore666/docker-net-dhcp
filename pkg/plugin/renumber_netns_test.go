@@ -6,6 +6,7 @@ package plugin
 import (
 	"bytes"
 	"errors"
+	"flag"
 	"fmt"
 	"net"
 	"os"
@@ -62,7 +63,13 @@ func renumberNetnsChild(run string) *exec.Cmd {
 	if os.Getuid() != 0 {
 		mode = "userns"
 	}
-	cmd := exec.Command(os.Args[0], "-test.run", run, "-test.v", "-test.count=1")
+	args := []string{"-test.run", run, "-test.v", "-test.count=1"}
+	// The child writes its counters where the parent's go, or the function a namespaced test drives reads 0 % in every
+	// profile although the test passes (#1117).
+	if f := flag.Lookup("test.gocoverdir"); f != nil && f.Value.String() != "" {
+		args = append(args, "-test.gocoverdir="+f.Value.String())
+	}
+	cmd := exec.Command(os.Args[0], args...)
 	cmd.Env = append(os.Environ(), renumberNetnsChildEnv+"="+mode)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Cloneflags: syscall.CLONE_NEWNET}
 	if mode == "userns" {

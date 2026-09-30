@@ -41,7 +41,16 @@
 # about lowering a floor; citing the issue you are working on is not.
 set -u
 
-BASELINE_PATH=".github/coverage-baseline.txt"
+# The gate also runs over the per-function floor file (#1117): the same
+# script with COVERAGE_FLOOR_PATH naming it and COVERAGE_FLOOR_KIND=func,
+# because its rows are `<import path>.<Func>` and the package a removed row
+# belonged to is what is left after the last dot.
+BASELINE_PATH="${COVERAGE_FLOOR_PATH:-.github/coverage-baseline.txt}"
+KIND="${COVERAGE_FLOOR_KIND:-package}"
+case "$KIND" in
+    package|func) ;;
+    *) echo "coverage-floor gate: COVERAGE_FLOOR_KIND must be package or func, got '$KIND'" >&2; exit 2 ;;
+esac
 
 if [ "$#" -lt 1 ] || [ "$#" -gt 2 ]; then
     echo "usage: $0 <commit-range> [pr-body-file]" >&2
@@ -137,6 +146,7 @@ MODULE=$(git show "$HEAD_REF:go.mod" 2>/dev/null | awk '$1 == "module" { print $
 
 package_state() { # <import path> -> prints gone | present | unknown
     local path="$1" dir
+    if [ "$KIND" = func ]; then path="${path%.*}"; fi
     if [ -z "$MODULE" ]; then echo unknown; return; fi
     case "$path" in
         "$MODULE")   dir="." ;;
@@ -249,7 +259,11 @@ while read -r pkg was; do
                 report "$pkg: floor ${was}% removed, and this gate cannot tell whether the package still exists at $HEAD_REF (its module path did not resolve). Reported rather than assumed."
                 ;;
             *)
-                report "$pkg: floor ${was}% removed from $BASELINE_PATH — the ratchet no longer judges this package."
+                if [ "$KIND" = func ]; then
+                    report "$pkg: floor ${was}% removed from $BASELINE_PATH — the ratchet no longer judges this function."
+                else
+                    report "$pkg: floor ${was}% removed from $BASELINE_PATH — the ratchet no longer judges this package."
+                fi
                 ;;
         esac
         continue
