@@ -320,8 +320,8 @@ logs a warning that names the bridge and the rule if the policy is `DROP`, or
 if the check cannot read it; it logs the same text with the error when the
 first lease attempt times out. The drop only hits frames that cross between
 two ports, so a DHCP server or relay on the bridge's own address leases
-normally beside that warning; only a server behind another port needs the
-rule. Docker gives a plugin call 30 s, so with the
+normally beside that warning; only a server or relay behind another port
+needs the rule. Docker gives a plugin call 30 s, so with the
 default 34 s `lease_timeout` look for that line in the plugin log: the error
 `docker run` prints may be Docker's own.
 
