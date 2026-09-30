@@ -165,6 +165,34 @@ func firewallRefusal(opts DHCPNetworkOptions) error {
 	return nil
 }
 
+// firewallAdvice is the one text both the create-time warning and the deadline error carry, so they cannot drift
+// apart (#1116). It names the bridge and the FORWARD rule docs/bridge-mode.md documents.
+func firewallAdvice(bridge, why string) string {
+	return fmt.Sprintf("%s, so the host drops the DHCP frames bridged between the ports of %v. If the operator holds a rule that lets them through, ignore this; otherwise run `iptables -A FORWARD -i %v -j ACCEPT` (docs/bridge-mode.md)",
+		why, bridge, bridge)
+}
+
+// warnExistingBridgeFirewall logs the firewall verdict for a bridge the operator made. It never refuses, because the
+// operator may hold a rule this check cannot see (#1116).
+func warnExistingBridgeFirewall(opts DHCPNetworkOptions) {
+	if why := firewallDropReason(opts.Bridge); why != "" {
+		log.WithField("bridge", opts.Bridge).Warn(firewallAdvice(opts.Bridge, why))
+	}
+}
+
+// withFirewallVerdict appends the firewall verdict to a first-lease deadline error and keeps the original error
+// wrapped. Any other error, and an empty verdict, come back unchanged (#1116).
+func withFirewallVerdict(bridge string, err error) error {
+	if err == nil || !errors.Is(err, context.DeadlineExceeded) {
+		return err
+	}
+	why := firewallDropReason(bridge)
+	if why == "" {
+		return err
+	}
+	return fmt.Errorf("%w: %s", err, firewallAdvice(bridge, why))
+}
+
 // bridgeOwned reports the mark #902 gives a sub-interface, so a bridge the operator or Docker made is never enslaved
 // into or removed (#903).
 func bridgeOwned(l netlink.Link) bool {
