@@ -16,6 +16,7 @@ import (
 	"github.com/claymore666/dhcp-golib/runtime"
 	"github.com/claymore666/dhcp-golib/wire"
 	"github.com/claymore666/docker-net-dhcp/v2/pkg/dhcp"
+	"github.com/claymore666/docker-net-dhcp/v2/pkg/util"
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
 )
@@ -134,8 +135,7 @@ func (s *fakeProbeServer) received(typ wire.MessageType) []probeSeen {
 	return out
 }
 
-// probeVethPair adds two up veth ends in the test's own namespace: the parent the probe runs on, and the end the fake
-// server listens on.
+// probeVethPair adds two up veth ends: the probe's parent and the end the fake server listens on.
 func probeVethPair(t *testing.T, parent, server string) (netlink.Link, netlink.Link) {
 	t.Helper()
 	if err := netlink.LinkAdd(&netlink.Veth{LinkAttrs: netlink.LinkAttrs{Name: parent}, PeerName: server}); err != nil {
@@ -155,7 +155,7 @@ func probeVethPair(t *testing.T, parent, server string) (netlink.Link, netlink.L
 // probeChildren lists the links the kernel holds as children of parent.
 func probeChildren(t *testing.T, parent netlink.Link) []string {
 	t.Helper()
-	all, err := netlink.LinkList()
+	all, err := util.DumpResult(netlink.LinkList())
 	if err != nil {
 		t.Fatalf("list links: %v", err)
 	}
@@ -181,8 +181,7 @@ const (
 	probeServerName = "dh1117b"
 )
 
-// TestRunDHCPProbe_AnAnsweringServerSeesADiscoverFromTheProbeAddressAndTheChildIsGone reads what the fake server
-// received on the wire and what the kernel holds afterwards, not what the plugin reports (#1117).
+// The answering-server test reads the wire and the kernel afterwards, not what the plugin reports (#1117).
 func TestRunDHCPProbe_AnAnsweringServerSeesADiscoverFromTheProbeAddressAndTheChildIsGone(t *testing.T) {
 	if !inOwnNetns(t) {
 		return
@@ -236,8 +235,7 @@ func TestRunDHCPProbe_AnAnsweringServerSeesADiscoverFromTheProbeAddressAndTheChi
 	}
 }
 
-// TestRunDHCPProbe_ADeniedServerIsNeverRequestedAndTheErrorNamesTheParent drives the policy the probe hands the
-// client with a server that answers: the OFFER arrives and the client must not take it (#111, #669).
+// A denied server's OFFER arrives and must not be taken (#111, #669).
 func TestRunDHCPProbe_ADeniedServerIsNeverRequestedAndTheErrorNamesTheParent(t *testing.T) {
 	if !inOwnNetns(t) {
 		return
@@ -268,8 +266,7 @@ func TestRunDHCPProbe_ADeniedServerIsNeverRequestedAndTheErrorNamesTheParent(t *
 	}
 }
 
-// TestRunDHCPProbe_AServerOutsideThePreferListIsNeverRequested is the allow side of the policy: the only server on
-// the wire is not the one the operator named, so its OFFER must not be taken (#111, #669, #1117).
+// The allow side: a server outside the prefer list is never requested from (#111, #669, #1117).
 func TestRunDHCPProbe_AServerOutsideThePreferListIsNeverRequested(t *testing.T) {
 	if !inOwnNetns(t) {
 		return
@@ -296,8 +293,7 @@ func TestRunDHCPProbe_AServerOutsideThePreferListIsNeverRequested(t *testing.T) 
 	}
 }
 
-// TestRunDHCPProbe_ASilentSegmentFailsWithTheIsolationHintAndLeavesNoChild covers the arm a firewalled or VLAN-mistagged
-// parent takes (#307).
+// A firewalled or VLAN-mistagged parent gets the isolation hint (#307).
 func TestRunDHCPProbe_ASilentSegmentFailsWithTheIsolationHintAndLeavesNoChild(t *testing.T) {
 	if !inOwnNetns(t) {
 		return

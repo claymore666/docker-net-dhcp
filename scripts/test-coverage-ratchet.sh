@@ -40,7 +40,7 @@ TREE_BEFORE=$(git -C "$REPO_UNDER_TEST" status --porcelain 2>/dev/null)
 # "deleted at head" AND unfloored at head, which is DROPPED: the vanished
 # package case at line 71 would have gone green against a rule it says
 # nothing about.
-ratchet() { RATCHET_FUNC_PROFILE= RATCHET_FUNC_REQUIRED= RATCHET_HEAD_BASELINE="${2-}" bash "$RATCHET" "$@"; }
+ratchet() { RATCHET_FUNC_PROFILE='' RATCHET_FUNC_REQUIRED='' RATCHET_HEAD_BASELINE="${2-}" bash "$RATCHET" "$@"; }
 
 BASELINE="$TMP/baseline.txt"
 cat > "$BASELINE" <<'EOF'
