@@ -64,10 +64,13 @@ func TestCreateNetwork_ExistingBridgeFirewallVerdict(t *testing.T) {
 					t.Errorf("warning %q; want it to carry %q", warning, want)
 				}
 			}
-			if claimsDrop := strings.Contains(warning, "so the host drops"); claimsDrop == tc.unknown {
+			if !strings.Contains(warning, "on the bridge's own address is not affected") {
+				t.Errorf("warning %q; it must say a server on the bridge's own address is not affected", warning)
+			}
+			if claimsDrop := strings.Contains(warning, "are dropped unless a rule accepts them"); claimsDrop == tc.unknown {
 				t.Errorf("warning %q; claims a drop = %v, want %v for unknown=%v", warning, claimsDrop, !tc.unknown, tc.unknown)
 			}
-			if unsure := strings.Contains(warning, "not known whether the host drops"); unsure != tc.unknown {
+			if unsure := strings.Contains(warning, "not known whether DHCP frames bridged between two ports"); unsure != tc.unknown {
 				t.Errorf("warning %q; says the drop is unknown = %v, want %v", warning, unsure, tc.unknown)
 			}
 			if n := strings.Count(logged, "level=warning"); n != 1 {
@@ -136,7 +139,7 @@ func TestWithFirewallVerdict(t *testing.T) {
 			if !errors.Is(got, context.DeadlineExceeded) || !strings.HasPrefix(got.Error(), deadline.Error()) || got.Error() == deadline.Error() {
 				t.Errorf("%s: err = %v; want the timeout first and a verdict after it", name, got)
 			}
-			if strings.Contains(got.Error(), "so the host drops") || !strings.Contains(got.Error(), "not known whether the host drops") {
+			if strings.Contains(got.Error(), "dropped unless a rule accepts them") || !strings.Contains(got.Error(), "not known whether DHCP frames bridged between two ports") || !strings.Contains(got.Error(), "on the bridge's own address is not affected") {
 				t.Errorf("%s: err = %v; want it to say the drop is unknown", name, got)
 			}
 		}

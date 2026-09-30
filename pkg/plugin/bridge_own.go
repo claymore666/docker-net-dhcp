@@ -172,15 +172,17 @@ func firewallRefusal(opts DHCPNetworkOptions) error {
 	return nil
 }
 
-// firewallAdvice is the one text the create warning and the deadline error carry, so they cannot drift (#1116). A
-// failed read says it is not known whether the host drops, instead of claiming a drop.
+// firewallAdvice is the one text the create warning and the deadline error carry, so they cannot drift (#1116). The
+// host state alone does not say a lease fails: a server on the bridge's own address never meets FORWARD, so the text
+// says which servers are and are not affected, and a failed read says it is not known whether frames are dropped.
 func firewallAdvice(bridge, why string, unreadable bool) string {
+	const ownAddr = "A DHCP server on the bridge's own address is not affected; one behind another port is."
 	if unreadable {
-		return fmt.Sprintf("%s, so it is not known whether the host drops the DHCP frames bridged between the ports of %v. If they are dropped, run `iptables -A FORWARD -i %v -j ACCEPT` (docs/bridge-mode.md)",
-			why, bridge, bridge)
+		return fmt.Sprintf("%s, so it is not known whether DHCP frames bridged between two ports of %v are dropped. %s If yours is behind a port and they are dropped, run `iptables -A FORWARD -i %v -j ACCEPT` (docs/bridge-mode.md)",
+			why, bridge, ownAddr, bridge)
 	}
-	return fmt.Sprintf("%s, so the host drops the DHCP frames bridged between the ports of %v. If the operator holds a rule that lets them through, ignore this; otherwise run `iptables -A FORWARD -i %v -j ACCEPT` (docs/bridge-mode.md)",
-		why, bridge, bridge)
+	return fmt.Sprintf("%s, so DHCP frames bridged between two ports of %v are dropped unless a rule accepts them. %s If yours is behind a port and no rule of yours lets the frames through, run `iptables -A FORWARD -i %v -j ACCEPT` (docs/bridge-mode.md)",
+		why, bridge, ownAddr, bridge)
 }
 
 // warnExistingBridgeFirewall never refuses: the operator may hold a rule this check cannot see (#1116).
