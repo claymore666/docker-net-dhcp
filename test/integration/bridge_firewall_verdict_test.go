@@ -20,14 +20,13 @@ import (
 
 // TestBridgeFirewallVerdict_NamedAtCreateAndAtTheDeadline checks that an existing bridge behind a dropping firewall is
 // warned about at create and named when the first lease attempt times out, under the default lease_timeout and a
-// short one. It removes the fixture's FORWARD ACCEPT rules (#103) and restores them in t.Cleanup (#1116).
+// short one. It sets FORWARD to DROP itself, since engine 29.8 leaves ACCEPT, removes the fixture's ACCEPT rules (#103)
+// and puts both back in t.Cleanup (#1116).
 func TestBridgeFirewallVerdict_NamedAtCreateAndAtTheDeadline(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 	defer cancel()
 
-	if drops, detail := harness.ForwardDropState(); !drops {
-		t.Fatalf("the host would not drop bridged frames once the fixture's rules are gone (%s), so the fixture's premise of #103 no longer holds", detail)
-	}
+	harness.WithForwardDrop(t)
 
 	t.Cleanup(func() {
 		if t.Failed() {
@@ -70,7 +69,8 @@ func TestBridgeFirewallVerdict_NamedAtCreateAndAtTheDeadline(t *testing.T) {
 			}
 		}
 		if warning == "" {
-			t.Fatalf("%s: no warning line names the bridge %s and %q in the plugin log written by the create:\n%s", tc.name, harness.BridgeName, rule, created)
+			_, detail := harness.ForwardDropState()
+			t.Fatalf("%s: no warning line names the bridge %s and %q in the plugin log written by the create (host: %s):\n%s", tc.name, harness.BridgeName, rule, detail, created)
 		}
 		for _, want := range []string{"bridge=" + harness.BridgeName, "is DROP", "docs/bridge-mode.md"} {
 			if !strings.Contains(warning, want) {
