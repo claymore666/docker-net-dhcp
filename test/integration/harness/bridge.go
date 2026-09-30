@@ -6,6 +6,7 @@
 package harness
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -13,6 +14,7 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"testing"
 	"time"
 
 	"github.com/vishvananda/netlink"
@@ -229,5 +231,77 @@ func removeBridgeForward(bridge string) {
 	} {
 		_ = withCLocale(exec.Command("iptables", args...)).Run()
 		_ = withCLocale(exec.Command("ip6tables", args...)).Run()
+	}
+}
+
+func bridgeForwardRules(bridge string) [][]string {
+	return [][]string{
+		{"FORWARD", "-i", bridge, "-j", "ACCEPT"},
+		{"FORWARD", "-o", bridge, "-j", "ACCEPT"},
+	}
+}
+
+// BridgeForwardPresent asks iptables -C whether every fixture rule of the bridge is installed (#1116).
+func BridgeForwardPresent(bridge string) (bool, error) {
+	for _, tool := range []string{"iptables", "ip6tables"} {
+		for _, rule := range bridgeForwardRules(bridge) {
+			err := withCLocale(exec.Command(tool, append([]string{"-C"}, rule...)...)).Run()
+			var exit *exec.ExitError
+			switch {
+			case err == nil:
+			case errors.As(err, &exit) && exit.ExitCode() == 1:
+				return false, nil
+			default:
+				return false, fmt.Errorf("%s -C %v: %w", tool, rule, err)
+			}
+		}
+	}
+	return true, nil
+}
+
+// ForwardDropState reads the FORWARD policy and bridge-nf-call-iptables from outside the plugin; detail names both (#1116).
+func ForwardDropState() (drops bool, detail string) {
+	out, err := withCLocale(exec.Command("iptables", "-S", "FORWARD")).Output()
+	if err != nil {
+		return false, fmt.Sprintf("iptables -S FORWARD failed: %v", err)
+	}
+	policy, _, _ := strings.Cut(string(out), "\n")
+	nf, err := os.ReadFile("/proc/sys/net/bridge/bridge-nf-call-iptables")
+	if err != nil {
+		return false, fmt.Sprintf("policy %q; bridge-nf-call-iptables: %v", policy, err)
+	}
+	call := strings.TrimSpace(string(nf))
+	return policy == "-P FORWARD DROP" && call == "1", fmt.Sprintf("policy %q; bridge-nf-call-iptables %s", policy, call)
+}
+
+// RestoreBridgeForward reinstalls the fixture rules and is idempotent, so the cleanup can run after it (#1116).
+func RestoreBridgeForward(t *testing.T, bridge string) {
+	t.Helper()
+	if present, err := BridgeForwardPresent(bridge); err != nil || !present {
+		removeBridgeForward(bridge)
+		if err := installBridgeForward(bridge); err != nil {
+			t.Errorf("restoring the FORWARD rules of %s: %v; every later bridge case would fail", bridge, err)
+			return
+		}
+	}
+	if present, err := BridgeForwardPresent(bridge); err != nil || !present {
+		t.Errorf("the FORWARD rules of %s are not back (present %v, err %v)", bridge, present, err)
+	}
+}
+
+// WithoutBridgeForward removes the fixture rules, proves they are gone, and restores them in t.Cleanup, which is
+// registered first so a failing test cannot leave later cases dropping (#1116).
+func WithoutBridgeForward(t *testing.T, bridge string) {
+	t.Helper()
+	t.Cleanup(func() { RestoreBridgeForward(t, bridge) })
+	for range 2 {
+		removeBridgeForward(bridge)
+	}
+	present, err := BridgeForwardPresent(bridge)
+	if err != nil {
+		t.Fatalf("checking the FORWARD rules of %s after removal: %v", bridge, err)
+	}
+	if present {
+		t.Fatalf("the FORWARD ACCEPT rules of %s are still installed after removal; the test would prove nothing", bridge)
 	}
 }
