@@ -499,12 +499,13 @@
 #              one read. 3 x 30.44 is 91.32, rounded up so a first run
 #              costs less than the table says.
 #   #1116 row  TestBridgeFirewallVerdict_NamedAtCreateAndAtTheDeadline
-#              (#1116) is 45.00, INFERRED: no run has executed it. It
+#              (#1116) is 75.00, INFERRED: no run has executed it. It
 #              is TestLifecycleBridge_GoldenPath (12.19) for the
-#              restored container, plus a 15s lease_timeout waited out
-#              once and 5s of network create, plugin log reads and
-#              rule restore, plus the failed start's cleanup: 32.19,
-#              rounded up so a first run costs less than the table says.
+#              restored container, plus the daemon's 30s call budget
+#              and a 15s lease_timeout each waited out once, and 5s
+#              per network create, plugin log read and rule restore:
+#              67.19, rounded up so a first run costs less than the
+#              table says.
 #   samples    3 for every corpus row. SIXTY-EIGHT rows are not corpus
 #              samples, and the seventeen groups below are disjoint and
 #              exhaust them: the five `one row` notes above -- 73.85,
@@ -607,7 +608,7 @@ TestAdvertRoutes_BecomeContainerRoutesUnlessSkipRoutes	150.00
 TestAuditLog_DefaultOff	12.63
 TestAuditLog_RecordsLifecycle	12.31
 TestAutoStrict_ASilentManagedServerFailsTheEndpointAndTheDefaultFallsBack	80.00
-TestBridgeFirewallVerdict_NamedAtCreateAndAtTheDeadline	45.00
+TestBridgeFirewallVerdict_NamedAtCreateAndAtTheDeadline	75.00
 TestClasslessStaticRoutes_AbsentWithoutOptIn	12.09
 TestClasslessStaticRoutes_AppliedFromDHCP	11.96
 TestClientID_DefaultIsMACDerived	11.50

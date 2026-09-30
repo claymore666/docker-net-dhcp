@@ -316,8 +316,11 @@ You only need this if the forwarding policy is `DROP`. Check with `sudo
 iptables -S FORWARD | head -1`.
 
 On an existing bridge the plugin checks this when the network is created and
-logs a warning that names the bridge and the rule if the policy is `DROP`;
-it logs the same text with the error when the first lease attempt times out.
+logs a warning that names the bridge and the rule if the policy is `DROP`, or
+if the check cannot read it; it logs the same text with the error when the
+first lease attempt times out. Docker gives a plugin call 30 s, so with the
+default 34 s `lease_timeout` look for that line in the plugin log: the error
+`docker run` prints may be Docker's own.
 
 ## 2. Create the network
 

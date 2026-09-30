@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	dNetwork "github.com/docker/docker/api/types/network"
 	log "github.com/sirupsen/logrus"
@@ -127,21 +128,27 @@ func nftForwardPolicy() (uint32, error) {
 // firewallDropReason says why bridged frames would be dropped, or "" when they pass: bridge-nf-call-iptables sends
 // them through iptables, where Docker's FORWARD policy drops them, measured on Linux 6.12 (#903).
 func firewallDropReason(bridge string) string {
+	why, _ := firewallCheck(bridge)
+	return why
+}
+
+// firewallCheck is firewallDropReason plus whether the verdict comes from a failed read (#1116).
+func firewallCheck(bridge string) (why string, unreadable bool) {
 	on, err := bridgeNFCallIPTables(bridge)
 	if err != nil {
-		return fmt.Sprintf("bridge-nf-call-iptables cannot be read (%v)", err)
+		return fmt.Sprintf("bridge-nf-call-iptables cannot be read (%v)", err), true
 	}
 	if !on {
-		return ""
+		return "", false
 	}
 	policy, err := readForwardPolicy()
 	if err != nil {
-		return fmt.Sprintf("bridge-nf-call-iptables is 1 and the policy of the ip filter FORWARD chain cannot be read over nf_tables (%v); this plugin reads nf_tables only, so a host on iptables-legacy or without nf_tables lands here", err)
+		return fmt.Sprintf("bridge-nf-call-iptables is 1 and the policy of the ip filter FORWARD chain cannot be read over nf_tables (%v); this plugin reads nf_tables only, so a host on iptables-legacy or without nf_tables lands here", err), true
 	}
 	if policy == nfDrop {
-		return "bridge-nf-call-iptables is 1 and the policy of the ip filter FORWARD chain is DROP"
+		return "bridge-nf-call-iptables is 1 and the policy of the ip filter FORWARD chain is DROP", false
 	}
-	return ""
+	return "", false
 }
 
 // firewallRefusal is decision D0: a create that would succeed while no container on it leases is refused, and
@@ -165,32 +172,41 @@ func firewallRefusal(opts DHCPNetworkOptions) error {
 	return nil
 }
 
-// firewallAdvice is the one text both the create-time warning and the deadline error carry, so they cannot drift
-// apart (#1116). It names the bridge and the FORWARD rule docs/bridge-mode.md documents.
-func firewallAdvice(bridge, why string) string {
+// firewallAdvice is the one text the create warning and the deadline error carry, so they cannot drift (#1116). A
+// failed read says it is not known whether the host drops, instead of claiming a drop.
+func firewallAdvice(bridge, why string, unreadable bool) string {
+	if unreadable {
+		return fmt.Sprintf("%s, so it is not known whether the host drops the DHCP frames bridged between the ports of %v. If they are dropped, run `iptables -A FORWARD -i %v -j ACCEPT` (docs/bridge-mode.md)",
+			why, bridge, bridge)
+	}
 	return fmt.Sprintf("%s, so the host drops the DHCP frames bridged between the ports of %v. If the operator holds a rule that lets them through, ignore this; otherwise run `iptables -A FORWARD -i %v -j ACCEPT` (docs/bridge-mode.md)",
 		why, bridge, bridge)
 }
 
-// warnExistingBridgeFirewall logs the firewall verdict for a bridge the operator made. It never refuses, because the
-// operator may hold a rule this check cannot see (#1116).
+// warnExistingBridgeFirewall never refuses: the operator may hold a rule this check cannot see (#1116).
 func warnExistingBridgeFirewall(opts DHCPNetworkOptions) {
-	if why := firewallDropReason(opts.Bridge); why != "" {
-		log.WithField("bridge", opts.Bridge).Warn(firewallAdvice(opts.Bridge, why))
+	if why, unreadable := firewallCheck(opts.Bridge); why != "" {
+		log.WithField("bridge", opts.Bridge).Warn(firewallAdvice(opts.Bridge, why, unreadable))
 	}
 }
 
-// withFirewallVerdict appends the firewall verdict to a first-lease deadline error and keeps the original error
-// wrapped. Any other error, and an empty verdict, come back unchanged (#1116).
-func withFirewallVerdict(bridge string, err error) error {
-	if err == nil || !errors.Is(err, context.DeadlineExceeded) {
+// withFirewallVerdict appends the verdict to a first-lease error for an attempt that ran out of time: its own
+// deadline, or a cancel once the daemon's 30 s budget less the margin had passed, which is how the default 34 s
+// lease_timeout ends (#1116). Any other error, nil and an empty verdict come back unchanged.
+func withFirewallVerdict(bridge string, callStart time.Time, err error) error {
+	if err == nil {
 		return err
 	}
-	why := firewallDropReason(bridge)
+	timedOut := errors.Is(err, context.DeadlineExceeded) ||
+		(errors.Is(err, context.Canceled) && !time.Now().Before(v6AcquisitionDeadline(callStart)))
+	if !timedOut {
+		return err
+	}
+	why, unreadable := firewallCheck(bridge)
 	if why == "" {
 		return err
 	}
-	return fmt.Errorf("%w: %s", err, firewallAdvice(bridge, why))
+	return fmt.Errorf("%w: %s", err, firewallAdvice(bridge, why, unreadable))
 }
 
 // bridgeOwned reports the mark #902 gives a sub-interface, so a bridge the operator or Docker made is never enslaved
