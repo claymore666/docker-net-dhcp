@@ -1271,6 +1271,19 @@ jobs:
           printf '%s' "$PR_BODY" > "$RUNNER_TEMP/pr-body-floor.md"
           bash scripts/check-coverage-floor.sh \
             "$BASE_SHA..$HEAD_SHA" "$RUNNER_TEMP/pr-body-floor.md"
+      # The same gate over the per-function floors (#1117), which the
+      # ratchet reads from the merge base and which this step is the only
+      # observer of on a PR into dev: the Coverage workflow does not run there.
+      - name: Check the diff for a lowered function floor
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          printf '%s' "$PR_BODY" > "$RUNNER_TEMP/pr-body-func-floor.md"
+          COVERAGE_FLOOR_PATH=.github/coverage-func-baseline.txt COVERAGE_FLOOR_KIND=func \
+            bash scripts/check-coverage-floor.sh \
+            "$BASE_SHA..$HEAD_SHA" "$RUNNER_TEMP/pr-body-func-floor.md"
 
   # Reachable-vulnerability scan. Known-and-reviewed findings without a
   # published fix live in .github/vuln-allowlist.txt; anything else

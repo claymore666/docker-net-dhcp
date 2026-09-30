@@ -1,0 +1,32 @@
+# Per-function coverage floors for pkg/plugin (#1117), in percent, checked by
+# scripts/coverage-ratchet.sh against the merged (unit + integration)
+# `go tool cover -func` table the Coverage workflow writes.
+#
+# Row: <import path>.<Func> <min-percent>. No file or line: a move inside
+# the package keeps its row. A row with no match in the table fails the run,
+# so a rename or delete edits this file, and scripts/check-coverage-floor.sh
+# reads that edit on every PR.
+#
+# Rules, as for .github/coverage-baseline.txt:
+#   - Raise a floor in the same PR that earns the improvement.
+#   - Never lower a floor without a recorded decision in the PR body.
+#
+# Seeded from the merged profile of Coverage run 36426064859 (dev at
+# 0fca080), read with go tool cover -func. One row differs from that run:
+#   - nftForwardPolicy 0.0 -> 88.2.
+#     The tests that drive it run in a child process, and the child's
+#     counters were discarded; renumberNetnsChild now passes it the parent's
+#     coverage dir. Value: that run's merged profile summed with this tree's
+#     unit profile. It is an estimate until a Coverage run reads it.
+github.com/claymore666/docker-net-dhcp/v2/pkg/plugin.CreateNetwork 100.0
+github.com/claymore666/docker-net-dhcp/v2/pkg/plugin.DeleteNetwork 93.1
+github.com/claymore666/docker-net-dhcp/v2/pkg/plugin.CreateEndpoint 91.5
+github.com/claymore666/docker-net-dhcp/v2/pkg/plugin.DeleteEndpoint 89.6
+github.com/claymore666/docker-net-dhcp/v2/pkg/plugin.Join 83.5
+github.com/claymore666/docker-net-dhcp/v2/pkg/plugin.Leave 96.3
+github.com/claymore666/docker-net-dhcp/v2/pkg/plugin.ipamBindingFor 88.5
+github.com/claymore666/docker-net-dhcp/v2/pkg/plugin.createBridgeNetwork 77.5
+github.com/claymore666/docker-net-dhcp/v2/pkg/plugin.createParentAttachedNetwork 94.1
+github.com/claymore666/docker-net-dhcp/v2/pkg/plugin.saveNetworkAndBind 50.0
+github.com/claymore666/docker-net-dhcp/v2/pkg/plugin.runDHCPProbe 77.8
+github.com/claymore666/docker-net-dhcp/v2/pkg/plugin.nftForwardPolicy 88.2

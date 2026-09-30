@@ -577,6 +577,149 @@ else
     fi
 fi
 
+# PER-FUNCTION FLOORS (#1117). A package figure hides an uneven package:
+# CreateEndpoint read 17.5 % in the unit profile under a 90 % package. The
+# floors are a second baseline, `<import path>.<Func> <percent>`, checked
+# against the `go tool cover -func` table of the MERGED profile, which the
+# workflow writes before this step and names in RATCHET_FUNC_PROFILE.
+#   - No table -> FUNC-SKIP with the reason, exit unchanged, unless
+#     RATCHET_FUNC_REQUIRED=1 (the Coverage workflow), where it is exit 2.
+#   - A row with no match in the table is FUNC-FAIL, never skipped, never
+#     DROPPED: a rename must edit the floor file, and the lowered-floor gate
+#     reads that edit.
+#   - Floors come from the merge base on a PR (RATCHET_FUNC_BASE_REF), the
+#     head copy where the base has none yet or there is no PR.
+#   - A floor row unreadable, a floored key found twice, no floors at all, or
+#     a table with no parseable row (the -func layout changed) is exit 2.
+# The verdict lines are FUNC-OK/FUNC-FAIL with one space and no colon, so
+# coverage-read.sh's package grep cannot count them.
+FUNC_PROFILE="${RATCHET_FUNC_PROFILE-}"
+FUNC_HEAD_FLOORS="${RATCHET_FUNC_HEAD_BASELINE:-$REPO_ROOT/.github/coverage-func-baseline.txt}"
+FUNC_BASE_REF="${RATCHET_FUNC_BASE_REF-}"
+FUNC_REPO="${RATCHET_FUNC_REPO:-$REPO_ROOT}"
+FUNC_FLOOR_PATH="${RATCHET_FUNC_FLOOR_PATH:-.github/coverage-func-baseline.txt}"
+
+func_refuse() { # <title> <detail>: no verdict can be rendered
+    echo "::error title=$1::$2" >&2
+    exit 2
+}
+
+func_skip_or_refuse() { # <reason>
+    if [ "${RATCHET_FUNC_REQUIRED-}" = "1" ]; then
+        func_refuse "No function table" "$1. This run requires the per-function check, so it refuses rather than pass having compared nothing (#1117)."
+    fi
+    echo "FUNC-SKIP per-function floors not checked: $1"
+}
+
+func_check() {
+    local floors_text src want key pkg name spelled n got bad checked failed rows
+    if [ -z "$FUNC_PROFILE" ]; then
+        func_skip_or_refuse "RATCHET_FUNC_PROFILE is not set, so there is no merged profile in this run"
+        return 0
+    fi
+    if [ ! -f "$FUNC_PROFILE" ] || [ ! -r "$FUNC_PROFILE" ] || [ ! -s "$FUNC_PROFILE" ]; then
+        func_skip_or_refuse "$FUNC_PROFILE is missing or empty, so there is no merged profile in this run"
+        return 0
+    fi
+
+    if [ -n "$FUNC_BASE_REF" ]; then
+        local mb
+        git -C "$FUNC_REPO" rev-parse --verify --quiet "$FUNC_BASE_REF" >/dev/null 2>&1 ||
+            func_refuse "Unknown base" "$FUNC_BASE_REF does not resolve in $FUNC_REPO; a shallow checkout is the usual cause (#1117)."
+        mb=$(git -C "$FUNC_REPO" merge-base "$FUNC_BASE_REF" HEAD 2>/dev/null) && [ -n "$mb" ] ||
+            func_refuse "No merge base" "no merge base between $FUNC_BASE_REF and HEAD (#1117)."
+        if floors_text=$(git -C "$FUNC_REPO" show "$mb:$FUNC_FLOOR_PATH" 2>/dev/null); then
+            src="the merge base $mb"
+        else
+            [ -r "$FUNC_HEAD_FLOORS" ] || func_refuse "No function floors" "$FUNC_FLOOR_PATH is absent at the merge base and $FUNC_HEAD_FLOORS is not readable."
+            floors_text=$(cat -- "$FUNC_HEAD_FLOORS")
+            src="the head copy (the merge base has no $FUNC_FLOOR_PATH yet)"
+        fi
+    else
+        [ -r "$FUNC_HEAD_FLOORS" ] || func_refuse "No function floors" "$FUNC_HEAD_FLOORS is not a readable file."
+        floors_text=$(cat -- "$FUNC_HEAD_FLOORS")
+        src="the working copy (no pull_request context)"
+    fi
+
+    # The table, reduced to "<package> <func> <percent>" by shape: a row is
+    # `<path>.go:<line>:` then a name then `NN.N%`. Anything else (the
+    # `total:` row, a changed layout) yields no row.
+    rows=$(awk 'NF >= 3 && $1 ~ /\.go:[0-9]+:$/ && $NF ~ /^[0-9]+(\.[0-9]+)?%$/ {
+                    p = $1; sub(/\/[^\/]*\.go:[0-9]+:$/, "", p)
+                    v = $NF; sub(/%$/, "", v)
+                    print p, $2, v }' "$FUNC_PROFILE")
+    if [ -z "$rows" ]; then
+        func_refuse "Function table unreadable" "$FUNC_PROFILE has no row of the shape '<file>.go:<line>: <name> <percent>%'; the go tool cover -func layout changed or the file is not that output (#1117)."
+    fi
+
+    bad=0
+    checked=0
+    failed=0
+    local seen=" "
+    while read -r key want extra; do
+        case "$key" in ''|'#'*) continue ;; esac
+        case "$want" in
+            ''|*[!0-9.]*|.*|*.|*.*.*) bad=1
+                echo "::error title=Function floor unreadable::'$key' has no readable floor (got '${want:-}'); a missing number reads as 0 and every function beats it." >&2
+                continue ;;
+        esac
+        if [ -n "${extra:-}" ]; then
+            bad=1
+            echo "::error title=Function floor unreadable::'$key' carries extra fields after its floor." >&2
+            continue
+        fi
+        case "$seen" in
+            *" $key "*) bad=1
+                echo "::error title=Function floor duplicated::'$key' is floored twice in $src." >&2
+                continue ;;
+        esac
+        seen="$seen$key "
+        case "$key" in
+            *.*) ;;
+            *) bad=1
+               echo "::error title=Function floor unreadable::'$key' is not '<import path>.<Func>'." >&2
+               continue ;;
+        esac
+        pkg="${key%.*}"
+        name="${key##*.}"
+        # `path/pkg.Func`: the package holds no dot after its last slash
+        # only when the key's last dot is the func separator; a dotted
+        # import host is earlier in the string, so the last dot is right.
+        spelled=$(renamed_path "$pkg")
+        [ -n "$spelled" ] || spelled="$pkg"
+        n=$(printf '%s\n' "$rows" | awk -v p="$spelled" -v f="$name" '$1 == p && $2 == f { c++ } END { print c + 0 }')
+        checked=$((checked + 1))
+        if [ "$n" -eq 0 ]; then
+            failed=$((failed + 1))
+            echo "FUNC-FAIL $key is floored at $want% but has no row in the merged function table (renamed, moved to another package, or deleted; the floor file moves with it)"
+            continue
+        fi
+        if [ "$n" -gt 1 ]; then
+            bad=1
+            echo "::error title=Function name ambiguous::'$key' has $n rows in the table (two receivers or init); a floor on it would read the first and ignore the rest." >&2
+            continue
+        fi
+        got=$(printf '%s\n' "$rows" | awk -v p="$spelled" -v f="$name" '$1 == p && $2 == f { print $3 }')
+        if LC_ALL=C awk -v g="$got" -v w="$want" -v e="$EPSILON" 'BEGIN { exit !(g + e >= w) }'; then
+            echo "FUNC-OK $key measured $got% floor $want%"
+        else
+            failed=$((failed + 1))
+            echo "FUNC-FAIL $key measured $got% is below its floor $want% (epsilon $EPSILON)"
+        fi
+    done <<< "$floors_text"
+
+    if [ "$bad" -ne 0 ]; then
+        func_refuse "Function floors unreadable" "the rows named above cannot be checked; the run refuses instead of comparing the rest (#1117)."
+    fi
+    if [ "$checked" -eq 0 ]; then
+        func_refuse "No function floors" "$src carries no floor row, so the check would compare nothing (#1117)."
+    fi
+    echo "FUNC-CHECK $checked floors from $src, $failed failed"
+    [ "$failed" -eq 0 ] || fail=1
+    return 0
+}
+func_check
+
 if [ "$fail" -ne 0 ]; then
     echo
     echo "Coverage ratchet failed. Add tests covering what this change touches;"
