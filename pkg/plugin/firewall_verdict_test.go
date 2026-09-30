@@ -67,6 +67,9 @@ func TestCreateNetwork_ExistingBridgeFirewallVerdict(t *testing.T) {
 			if !strings.Contains(warning, "on the bridge's own address is not affected") {
 				t.Errorf("warning %q; it must say a server on the bridge's own address is not affected", warning)
 			}
+			if affected := strings.Contains(warning, "one behind another port is."); affected == tc.unknown {
+				t.Errorf("warning %q; says a server behind a port is affected = %v, want %v for unknown=%v", warning, affected, !tc.unknown, tc.unknown)
+			}
 			if claimsDrop := strings.Contains(warning, "are dropped unless a rule accepts them"); claimsDrop == tc.unknown {
 				t.Errorf("warning %q; claims a drop = %v, want %v for unknown=%v", warning, claimsDrop, !tc.unknown, tc.unknown)
 			}

@@ -128,7 +128,11 @@ func TestBridgeFirewallVerdict_NamedAtCreateAndAtTheDeadline(t *testing.T) {
 	if got := challengerDiscovers() - discovers; got < 1 {
 		t.Errorf("the challenger logged no DISCOVER after the restore (%d); its log would not have shown the drop either", got)
 	}
-	if !ackedIn(fixture.BridgeChallengerLog(), ipv4, mac) {
+	acked := false
+	for end := time.Now().Add(policyACKBudget); !acked && time.Now().Before(end); time.Sleep(100 * time.Millisecond) {
+		acked = ackedIn(fixture.BridgeChallengerLog(), ipv4, mac)
+	}
+	if !acked {
 		t.Errorf("no DHCPACK for %s/%s in the challenger's log after the restore", ipv4, mac)
 	}
 	if w := harness.ReadPluginLogSince(t, ctx, restoreMark); strings.Contains(w, rule) {
