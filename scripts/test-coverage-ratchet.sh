@@ -99,6 +99,61 @@ check "baselined package missing from output fails" 1 "$TMP/gone.txt"
 percent "$TMP/eps.txt" 78.0 50.0
 check "wider RATCHET_EPSILON tolerates the drop" 0 "$TMP/eps.txt" 2.5
 
+# ---- a comma-decimal awk must not truncate 79.7 to 79 (#1117) ----------
+# An awk that reads "88.2" as 88 unless LC_ALL=C, the way a comma-decimal
+# locale does on an awk that honours it (#1117). This box's mawk does not, so
+# the shim is what makes the LC_ALL=C in the ratchet observable here.
+make_truncating_awk() { # make_truncating_awk <dir>
+    mkdir -p "$1"
+    cat > "$1/awk" <<'SHIM_EOF'
+#!/usr/bin/env bash
+if [ "${LC_ALL-}" = C ]; then exec "$REAL_AWK" "$@"; fi
+args=()
+while [ "$#" -gt 0 ]; do
+    if [ "$1" = -v ] && [ "$#" -ge 2 ]; then
+        v="$2"
+        case "$v" in *=[0-9]*.[0-9]*) v="${v%.*}" ;; esac
+        args+=(-v "$v")
+        shift 2
+    else
+        args+=("$1")
+        shift
+    fi
+done
+exec "$REAL_AWK" "${args[@]}"
+SHIM_EOF
+    chmod +x "$1/awk"
+}
+REAL_AWK=$(command -v awk)
+export REAL_AWK
+make_truncating_awk "$TMP/shim"
+LC_ALL=de_DE.UTF-8 PATH="$TMP/shim:$PATH" ratchet "$TMP/noise.txt" "$BASELINE" > "$TMP/out" 2>&1
+got_exit=$?
+if [ "$got_exit" -eq 0 ] && grep -F 'PASS  example.com/mod/pkg/a' "$TMP/out" > /dev/null; then
+    echo "PASS: a drop within epsilon still passes under a truncating awk (LC_ALL=C on the compare)"
+else
+    echo "FAIL: a drop within epsilon under a truncating awk (want exit 0, got $got_exit)"
+    sed 's/^/    /' "$TMP/out"
+    failures=$((failures + 1))
+fi
+PRE_LOCALE="$TMP/pre-locale.sh"
+sed 's/verdict=\$(LC_ALL=C awk /verdict=$(awk /' "$RATCHET" > "$PRE_LOCALE"
+if cmp -s "$PRE_LOCALE" "$RATCHET"; then
+    echo "FAIL: the pre-fix locale control could not be built (LC_ALL=C not found on the verdict awk)"
+    failures=$((failures + 1))
+else
+    LC_ALL=de_DE.UTF-8 PATH="$TMP/shim:$PATH" RATCHET_FUNC_PROFILE='' RATCHET_FUNC_REQUIRED='' RATCHET_HEAD_BASELINE="$BASELINE" \
+        bash "$PRE_LOCALE" "$TMP/noise.txt" "$BASELINE" > "$TMP/out" 2>&1
+    got_exit=$?
+    if [ "$got_exit" -eq 1 ] && grep -F 'FAIL  example.com/mod/pkg/a' "$TMP/out" > /dev/null; then
+        echo "PASS: without LC_ALL=C the same drop reads as a regression under a truncating awk (the defect)"
+    else
+        echo "FAIL: the pre-fix locale control did not reproduce the defect (exit $got_exit)"
+        sed 's/^/    /' "$TMP/out"
+        failures=$((failures + 1))
+    fi
+fi
+
 if ratchet "$TMP/hold.txt" > /dev/null 2>&1; [ $? -eq 2 ]; then
     echo "PASS: usage error exits 2"
 else

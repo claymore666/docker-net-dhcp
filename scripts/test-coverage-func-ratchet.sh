@@ -203,6 +203,36 @@ expect "a hold still passes under a comma-decimal locale" 0 $? "FUNC-OK $P.Foo"
 LC_ALL=de_DE.UTF-8 run_ratchet "$RATCHET" RATCHET_FUNC_PROFILE="$TMP/edge.txt" RATCHET_FUNC_HEAD_BASELINE="$FLOORS"
 expect "a fractional measurement inside epsilon is not truncated under a comma-decimal locale" 0 $? "FUNC-OK $P.Foo measured 89.5%"
 
+# An awk that reads "88.2" as 88 unless LC_ALL=C, the way a comma-decimal
+# locale does on an awk that honours it (#1117). This box's mawk does not, so
+# the shim is what makes the LC_ALL=C in the ratchet observable here.
+make_truncating_awk() { # make_truncating_awk <dir>
+    mkdir -p "$1"
+    cat > "$1/awk" <<'SHIM_EOF'
+#!/usr/bin/env bash
+if [ "${LC_ALL-}" = C ]; then exec "$REAL_AWK" "$@"; fi
+args=()
+while [ "$#" -gt 0 ]; do
+    if [ "$1" = -v ] && [ "$#" -ge 2 ]; then
+        v="$2"
+        case "$v" in *=[0-9]*.[0-9]*) v="${v%.*}" ;; esac
+        args+=(-v "$v")
+        shift 2
+    else
+        args+=("$1")
+        shift
+    fi
+done
+exec "$REAL_AWK" "${args[@]}"
+SHIM_EOF
+    chmod +x "$1/awk"
+}
+REAL_AWK=$(command -v awk)
+export REAL_AWK
+make_truncating_awk "$TMP/shim"
+run_ratchet "$RATCHET" LC_ALL=de_DE.UTF-8 PATH="$TMP/shim:$PATH" RATCHET_FUNC_PROFILE="$TMP/edge.txt" RATCHET_FUNC_HEAD_BASELINE="$FLOORS"
+expect "...and under an awk that truncates, which is what the shim models" 0 $? "FUNC-OK $P.Foo measured 89.5%"
+
 # ---- the package half is undisturbed ------------------------------------
 printf '\texample.com/mod/pkg/a\t\tcoverage: 10.0%% of statements\n' > "$TMP/pkg-low.txt"
 env RATCHET_FUNC_PROFILE="$TMP/hold.txt" RATCHET_FUNC_HEAD_BASELINE="$FLOORS" RATCHET_REPORT= RATCHET_HEAD_BASELINE="$PKG_BASE" \

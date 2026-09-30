@@ -408,7 +408,7 @@ while read -r pkg want; do
         continue
     fi
 
-    verdict=$(awk -v got="$got" -v want="$want" -v eps="$EPSILON" 'BEGIN {
+    verdict=$(LC_ALL=C awk -v got="$got" -v want="$want" -v eps="$EPSILON" 'BEGIN {
         if (got + eps < want)      print "regressed"
         else if (got > want)       print "improved"
         else                       print "held"

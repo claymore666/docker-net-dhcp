@@ -217,11 +217,11 @@ func TestRunDHCPProbe_AnAnsweringServerSeesADiscoverFromTheProbeAddressAndTheChi
 	if d.srcMAC.String() == parent.Attrs().HardwareAddr.String() {
 		t.Errorf("the DISCOVER wore the parent's MAC %v: the probe is meant to be a throwaway identity", d.srcMAC)
 	}
-	// Measured: the probe sends the library's default vendor class (option 60), so its comment's "no vendor class" is
-	// wrong; no hostname and no client id do go out (#1117).
+	// The probe sends the library's default vendor class (option 60) and no hostname or client id, as its options
+	// comment says (#1117).
 	for _, c := range []wire.OptionCode{wire.OptHostName, wire.OptClientID} {
 		if _, ok := d.options[c]; ok {
-			t.Errorf("DISCOVER carries option %d: the probe is identity-neutral so class-based policy cannot deny it (#307)", c)
+			t.Errorf("DISCOVER carries option %d: the probe sets no hostname or client id (#307)", c)
 		}
 	}
 	if got := string(d.options[wire.OptVendorClassID]); got != dhcp.VendorID {
