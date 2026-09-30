@@ -115,10 +115,13 @@ case_run "a hair past epsilon fails" 1 RATCHET_FUNC_PROFILE="$TMP/hair.txt" RATC
 
 # ---- the skip, and where it must not be allowed ------------------------
 case_run "no merged profile in this run skips with the reason and is not red" 0 RATCHET_FUNC_HEAD_BASELINE="$FLOORS" \
-    -- "FUNC-SKIP per-function floors not checked" "no merged profile"
+    -- "FUNC-SKIP per-function floors not checked" "RATCHET_FUNC_PROFILE is not set"
 case_run "a named table that does not exist skips the same way" 0 RATCHET_FUNC_PROFILE="$TMP/nosuch.txt" \
     RATCHET_FUNC_HEAD_BASELINE="$FLOORS" -- "FUNC-SKIP" "missing or empty"
 : > "$TMP/empty.txt"
+mkdir -p "$TMP/adir"
+case_run "a table named as a directory skips the same way" 0 RATCHET_FUNC_PROFILE="$TMP/adir" \
+    RATCHET_FUNC_HEAD_BASELINE="$FLOORS" -- "FUNC-SKIP" "missing or empty"
 case_run "an empty table skips the same way" 0 RATCHET_FUNC_PROFILE="$TMP/empty.txt" RATCHET_FUNC_HEAD_BASELINE="$FLOORS" -- "FUNC-SKIP"
 case_run "REQUIRED with no profile named refuses" 2 RATCHET_FUNC_REQUIRED=1 RATCHET_FUNC_HEAD_BASELINE="$FLOORS" -- "No function table"
 case_run "REQUIRED with a missing table refuses" 2 RATCHET_FUNC_REQUIRED=1 RATCHET_FUNC_PROFILE="$TMP/nosuch.txt" \
@@ -137,7 +140,7 @@ case_run "a function moved to another file of its package keeps its row" 0 RATCH
     RATCHET_FUNC_HEAD_BASELINE="$FLOORS" -- "FUNC-OK $P.Foo"
 { printf 'example.com/mod/pkg/other/o.go:5:\t\tFoo\t\t100.0%%\n'; cat "$TMP/renamed.txt"; } > "$TMP/otherpkg.txt"
 case_run "the same name in another package is not the floored function" 1 RATCHET_FUNC_PROFILE="$TMP/otherpkg.txt" \
-    RATCHET_FUNC_HEAD_BASELINE="$FLOORS" -- "FUNC-FAIL $P.Foo"
+    RATCHET_FUNC_HEAD_BASELINE="$FLOORS" -- "FUNC-FAIL $P.Foo is floored at 90.0% but has no row"
 
 # ---- refusals ----------------------------------------------------------
 table "$TMP/dupfn.txt" "a.go 10 Foo 90.0" "a2.go 11 Foo 10.0" "b.go 20 Bar 50.0"
@@ -150,6 +153,12 @@ floors "$TMP/floors-nonum.txt" "$P.Foo" "$P.Bar 50.0"
 case_run "a floor with no number refuses (it would read as 0)" 2 RATCHET_FUNC_PROFILE="$TMP/hold.txt" \
     RATCHET_FUNC_HEAD_BASELINE="$TMP/floors-nonum.txt" -- "Function floor unreadable"
 floors "$TMP/floors-nan.txt" "$P.Foo 9x0" "$P.Bar 50.0"
+floors "$TMP/floors-dots.txt" "$P.Foo 9.0.1" "$P.Bar 50.0"
+case_run "a floor with two dots refuses" 2 RATCHET_FUNC_PROFILE="$TMP/hold.txt" \
+    RATCHET_FUNC_HEAD_BASELINE="$TMP/floors-dots.txt" -- "Function floor unreadable"
+floors "$TMP/floors-trail.txt" "$P.Foo 90." "$P.Bar 50.0"
+case_run "a floor with a trailing dot refuses" 2 RATCHET_FUNC_PROFILE="$TMP/hold.txt" \
+    RATCHET_FUNC_HEAD_BASELINE="$TMP/floors-trail.txt" -- "Function floor unreadable"
 case_run "a floor that is not a number refuses" 2 RATCHET_FUNC_PROFILE="$TMP/hold.txt" \
     RATCHET_FUNC_HEAD_BASELINE="$TMP/floors-nan.txt" -- "Function floor unreadable"
 floors "$TMP/floors-extra.txt" "$P.Foo 90.0 extra" "$P.Bar 50.0"
@@ -162,7 +171,7 @@ floors "$TMP/floors-none.txt"
 case_run "a floor file with comments only refuses instead of comparing nothing" 2 RATCHET_FUNC_PROFILE="$TMP/hold.txt" \
     RATCHET_FUNC_HEAD_BASELINE="$TMP/floors-none.txt" -- "No function floors"
 case_run "a floor file that cannot be read refuses" 2 RATCHET_FUNC_PROFILE="$TMP/hold.txt" \
-    RATCHET_FUNC_HEAD_BASELINE="$TMP/no-such-floors.txt" -- "No function floors"
+    RATCHET_FUNC_HEAD_BASELINE="$TMP/no-such-floors.txt" -- "No function floors" "is not a readable file"
 
 # `go tool cover -func` layout changes: the percent column gone, the row
 # shape gone, a table that is not that output at all.
@@ -171,6 +180,9 @@ case_run "a table whose rows lost their percent sign refuses" 2 RATCHET_FUNC_PRO
     RATCHET_FUNC_HEAD_BASELINE="$FLOORS" -- "Function table unreadable"
 sed 's/\.go:\([0-9]*\):/.go (\1)/' "$TMP/hold.txt" > "$TMP/noshape.txt"
 case_run "a table whose rows lost the file:line shape refuses" 2 RATCHET_FUNC_PROFILE="$TMP/noshape.txt" \
+    RATCHET_FUNC_HEAD_BASELINE="$FLOORS" -- "Function table unreadable"
+sed 's/\.go:\([0-9]*\):/.go:x\1:/' "$TMP/hold.txt" > "$TMP/nolineno.txt"
+case_run "a table whose line numbers are not numbers refuses" 2 RATCHET_FUNC_PROFILE="$TMP/nolineno.txt" \
     RATCHET_FUNC_HEAD_BASELINE="$FLOORS" -- "Function table unreadable"
 printf 'PASS\nok  \texample.com/mod/pkg/a\t1.2s\n' > "$TMP/notatable.txt"
 case_run "a file that is not the -func output refuses" 2 RATCHET_FUNC_PROFILE="$TMP/notatable.txt" \
@@ -188,6 +200,8 @@ LC_ALL=de_DE.UTF-8 run_ratchet "$RATCHET" RATCHET_FUNC_PROFILE="$TMP/down.txt" R
 expect "a regression still fails under a comma-decimal locale" 1 $? "FUNC-FAIL $P.Foo"
 LC_ALL=de_DE.UTF-8 run_ratchet "$RATCHET" RATCHET_FUNC_PROFILE="$TMP/hold.txt" RATCHET_FUNC_HEAD_BASELINE="$FLOORS"
 expect "a hold still passes under a comma-decimal locale" 0 $? "FUNC-OK $P.Foo"
+LC_ALL=de_DE.UTF-8 run_ratchet "$RATCHET" RATCHET_FUNC_PROFILE="$TMP/edge.txt" RATCHET_FUNC_HEAD_BASELINE="$FLOORS"
+expect "a fractional measurement inside epsilon is not truncated under a comma-decimal locale" 0 $? "FUNC-OK $P.Foo measured 89.5%"
 
 # ---- the package half is undisturbed ------------------------------------
 printf '\texample.com/mod/pkg/a\t\tcoverage: 10.0%% of statements\n' > "$TMP/pkg-low.txt"
@@ -218,6 +232,16 @@ expect "...while a run with no PR context reads the head copy and passes" 0 $? "
 run_ratchet "$REPO/scripts/coverage-ratchet.sh" RATCHET_FUNC_PROFILE="$TMP/half.txt" RATCHET_FUNC_REPO="$REPO" RATCHET_FUNC_BASE_REF=deadbeefdeadbeef
 expect "a base that does not resolve refuses" 2 $? "Unknown base"
 
+# A base that shares no history with the head has no merge base.
+g checkout -q --orphan unrelated
+g rm -q -rf . > /dev/null 2>&1
+printf 'x\n' > "$REPO/x.txt"
+g add -A && g commit -q -m unrelated
+UNREL_SHA=$(g rev-parse HEAD)
+g checkout -q feature
+run_ratchet "$REPO/scripts/coverage-ratchet.sh" RATCHET_FUNC_PROFILE="$TMP/half.txt" RATCHET_FUNC_REPO="$REPO" RATCHET_FUNC_BASE_REF="$UNREL_SHA"
+expect "a base with no merge base refuses" 2 $? "No merge base"
+
 # The head drops the row of a function that is also gone from the table: the
 # base still floors it, so that is a failure and not a pass on absence.
 g checkout -q -b droprow "$BASE_SHA"
@@ -238,6 +262,9 @@ floors "$REPO/.github/coverage-func-baseline.txt" "$P.Foo 90.0" "$P.Bar 50.0"
 g add -A && g commit -q -m "add floors"
 run_ratchet "$REPO/scripts/coverage-ratchet.sh" RATCHET_FUNC_PROFILE="$TMP/half.txt" RATCHET_FUNC_REPO="$REPO" RATCHET_FUNC_BASE_REF="$BARE_SHA"
 expect "a base with no floor file falls back to the head copy and says so" 1 $? "the merge base has no" "FUNC-FAIL $P.Foo"
+run_ratchet "$REPO/scripts/coverage-ratchet.sh" RATCHET_FUNC_PROFILE="$TMP/half.txt" RATCHET_FUNC_REPO="$REPO" RATCHET_FUNC_BASE_REF="$BARE_SHA" \
+    RATCHET_FUNC_HEAD_BASELINE="$TMP/no-such-floors.txt"
+expect "a base with no floor file and no readable head copy refuses" 2 $? "No function floors" "is absent at the merge base"
 
 # A major-version rename: the floor is written under the old module path, the
 # head module carries /v2 and the table is spelled with it.

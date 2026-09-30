@@ -194,8 +194,13 @@ func TestRunDHCPProbe_AnAnsweringServerSeesADiscoverFromTheProbeAddressAndTheChi
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	opts := DHCPNetworkOptions{Mode: ModeMacvlan, Parent: probeParentName}
+	began := time.Now()
 	if err := p.runDHCPProbe(ctx, opts, serverPolicy{}); err != nil {
 		t.Fatalf("a reachable server answered and the probe failed: %v", err)
+	}
+	// RFC 5227 is off for the throwaway address: with it on, the same run takes about 7 s of the 8 s budget (#901).
+	if took := time.Since(began); took > 3*time.Second {
+		t.Errorf("the probe took %v against an answering server; the address conflict check must stay off (#901, #1117)", took)
 	}
 
 	discovers := srv.received(wire.MsgDiscover)
@@ -257,6 +262,34 @@ func TestRunDHCPProbe_ADeniedServerIsNeverRequestedAndTheErrorNamesTheParent(t *
 	}
 	if got := srv.received(wire.MsgRequest); len(got) != 0 {
 		t.Errorf("the probe REQUESTed from a denied server %d time(s)", len(got))
+	}
+	if got := probeChildren(t, parent); len(got) != 0 {
+		t.Errorf("the kernel still holds probe children %v after a failed probe (#577)", got)
+	}
+}
+
+// TestRunDHCPProbe_AServerOutsideThePreferListIsNeverRequested is the allow side of the policy: the only server on
+// the wire is not the one the operator named, so its OFFER must not be taken (#111, #669, #1117).
+func TestRunDHCPProbe_AServerOutsideThePreferListIsNeverRequested(t *testing.T) {
+	if !inOwnNetns(t) {
+		return
+	}
+	p := probeNetnsPlugin(t)
+	parent, server := probeVethPair(t, probeParentName, probeServerName)
+	srv := startFakeProbeServer(t, server.Attrs().Index, netip.MustParseAddr("192.0.2.1"), netip.MustParseAddr("192.0.2.77"))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2500*time.Millisecond)
+	defer cancel()
+	opts := DHCPNetworkOptions{Mode: ModeMacvlan, Parent: probeParentName}
+	err := p.runDHCPProbe(ctx, opts, serverPolicy{Prefer: []netip.Addr{netip.MustParseAddr("192.0.2.9")}})
+	if err == nil {
+		t.Fatal("the only server on the wire is not on the prefer list and the probe reported success")
+	}
+	if len(srv.received(wire.MsgDiscover)) == 0 {
+		t.Error("the server saw no DISCOVER, so the prefer list was never put to the test")
+	}
+	if got := srv.received(wire.MsgRequest); len(got) != 0 {
+		t.Errorf("the probe REQUESTed from a server outside the prefer list %d time(s)", len(got))
 	}
 	if got := probeChildren(t, parent); len(got) != 0 {
 		t.Errorf("the kernel still holds probe children %v after a failed probe (#577)", got)
