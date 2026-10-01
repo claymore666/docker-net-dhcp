@@ -1678,23 +1678,31 @@ plugin's client accepts one, and has since v2.1.1's DHCP library pin
 
 **There is no counter for this yet.** A Reconfigure the client accepted
 and one it discarded are both invisible on `/Plugin.Health` and on
-`/metrics`: the DHCP library records them in its own journal and exports
-no number, so the plugin has nothing to publish. The counters are part
-of [#925](https://github.com/claymore666/docker-net-dhcp/issues/925) and
-land when the library exports them.
+`/metrics`: the DHCP library counts them rule by rule in its lease
+statistics, and the plugin publishes none of those numbers. The counters
+are part of [#925](https://github.com/claymore666/docker-net-dhcp/issues/925)
+and land when the plugin reads them.
 
-**Two bounds worth knowing.** A reconfigure key does not survive a
-plugin restart. §20.4.2 has a server choose one "during the
+**Two bounds worth knowing.** A reconfigure key survives a plugin
+restart: the lease record carries the key, the replay detection value
+and whether one exists, and a resume restores them for the server that
+gave them ([dhcp-golib#28](https://github.com/claymore666/dhcp-golib/issues/28)).
+They reach the record at the next Reply that carries a lease, so a
+restart before that Reply restores the earlier key and value and a
+Reconfigure accepted since then is accepted again, and a key the server
+changed in an Information-request Reply is unknown until a lease Reply
+brings it again. A record written before the library carried the key
+holds none. §20.4.2 has a server choose one "during the
 Request/Reply, Solicit/Reply, or Information-request/Reply message
-exchange", and a restarted endpoint resumes its held lease with a
-Confirm, which carries no announcement and receives no key. It
-discards every Reconfigure from that server, and falls back on its own
-T1, until it accepts a Reply that carries a key. Which Reply that is
-belongs to the server: §20.4.2 gives it the choice of exchange, and
-this client records a key from **any** Reply it accepts that carries
-one, a renewal's Reply included. A server that sends the key only in
-the exchanges §20.4.2 names leaves the endpoint deaf until its next
-full acquisition. And an Information-request the server asks for on a
+exchange", and a resumed endpoint's Confirm carries no announcement and
+receives no key, so an endpoint whose record holds none discards every
+Reconfigure from that server, and falls back on its own T1, until it
+accepts a Reply that carries a key. Which Reply that is belongs to the
+server: §20.4.2 gives it the choice of exchange, and this client records
+a key from **any** Reply it accepts that carries one, a renewal's Reply
+included. A server that sends the key only in the exchanges §20.4.2
+names leaves an endpoint without a recorded key deaf until its next full
+acquisition. And an Information-request the server asks for on a
 **managed** segment is counted as `dhcpv6_config_only`, the same as a
 stateless answer, because it is the same message.
 
