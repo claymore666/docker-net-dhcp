@@ -54,7 +54,11 @@ below decide what is in a release; this page follows them.
   absent
 - [#1031], DHCPv4 Rapid Commit
 - [#1119], DHCPv4 FORCERENEW with nonce authentication (RFC 3203,
-  RFC 6704); an unauthenticated FORCERENEW is discarded and counted
+  RFC 6704): the plugin's own log lines and health counters. The library
+  half comes with the `dhcp-golib` v1.2.0 pin ([#1137]): option 145 in
+  every Discover and Request, and a renewal on an authenticated
+  DHCPFORCERENEW, with any other discarded and counted in the library's
+  statistics
 - [#1120], `user_class=`, the DHCPv4 User Class option 77 (RFC 3004)
 - [#1032], `ipv6_iid=stable-privacy`, the RFC 7217 interface identifier,
   with modified EUI-64 kept as the default
@@ -358,6 +362,7 @@ project does, that review is where it gets corrected.
 [#1118]: https://github.com/claymore666/docker-net-dhcp/issues/1118
 [#1125]: https://github.com/claymore666/docker-net-dhcp/issues/1125
 [#1126]: https://github.com/claymore666/docker-net-dhcp/issues/1126
+[#1137]: https://github.com/claymore666/docker-net-dhcp/issues/1137
 [moby/moby#52866]: https://github.com/moby/moby/pull/52866
 [moby/moby#52870]: https://github.com/moby/moby/issues/52870
 [moby/moby#52871]: https://github.com/moby/moby/pull/52871
