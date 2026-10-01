@@ -6,8 +6,12 @@ package dhcp
 import (
 	"bytes"
 	"net"
+	"net/netip"
 	"testing"
 	"time"
+
+	"github.com/claymore666/dhcp-golib/lease"
+	"github.com/claymore666/dhcp-golib/proto"
 )
 
 func testIdentity6(t *testing.T, mac string) Identity6 {
@@ -175,5 +179,67 @@ func TestNetworkOfScope_IsScope6Backwards(t *testing.T) {
 					"its own v4 scope", network, got, v6, network)
 			}
 		})
+	}
+}
+
+// The v1.2.0 library writes the Reconfigure key, the replay value and whether one exists into the lease record and reads
+// them back on a resume (dhcp-golib#28); the plugin hands the record's lease to the client whole (#1137).
+
+func TestRecords6_TheReconfigureKeySurvivesAReopen(t *testing.T) {
+	r, path := testRecords(t)
+	const network = "net-1"
+	mac := []byte{0x02, 0x42, 0xac, 0x11, 0x00, 0x02}
+	id6 := testIdentity6(t, "02:42:ac:11:00:02")
+	key := bytes.Repeat([]byte{0x7c}, 16)
+	now := time.Now()
+
+	held := lease.Lease{
+		Addr:                  netip.MustParsePrefix("2001:db8::5/128"),
+		Addrs:                 []lease.Addr6{{Addr: netip.MustParsePrefix("2001:db8::5/128"), Preferred: now.Add(time.Hour), Valid: now.Add(2 * time.Hour)}},
+		Acquired:              now,
+		Renew:                 now.Add(30 * time.Minute),
+		Rebind:                now.Add(time.Hour),
+		Expire:                now.Add(2 * time.Hour),
+		ServerDUID:            []byte{0, 3, 0, 1, 2, 2, 2, 2, 2, 2},
+		ReconfigureKey:        key,
+		ReconfigureReplay:     0,
+		ReconfigureReplaySeen: true,
+	}
+	if err := r.Created6("ep-v6", network, mac, id6.Bytes()); err != nil {
+		t.Fatalf("Created6: %v", err)
+	}
+	if err := r.Bound("ep-v6"); err != nil {
+		t.Fatalf("Bound: %v", err)
+	}
+	if err := r.Observed("ep-v6", lease.Event{Kind: lease.Acquired, Lease: held}, nil); err != nil {
+		t.Fatalf("Observed: %v", err)
+	}
+	if err := r.Observed("ep-v6", lease.Event{Kind: lease.Lost, Reason: proto.ReasonStopped}, nil); err != nil {
+		t.Fatalf("Observed(stopped): %v", err)
+	}
+	if err := r.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	reopened, err := OpenRecords(path, "instance-b")
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+
+	_, res, _, ok := reopened.Resume6(network, mac, now.Add(time.Minute))
+	if !ok {
+		t.Fatal("the record did not resume after a reopen")
+	}
+	if res.Lease == nil {
+		t.Fatal("the resumed record carries no lease: the client would Solicit instead of Confirm")
+	}
+	if !bytes.Equal(res.Lease.ReconfigureKey, key) {
+		t.Errorf("reconfigure key came back as %x, want %x: a restarted client would discard every Reconfigure "+
+			"until a Reply brought the key again", res.Lease.ReconfigureKey, key)
+	}
+	if !res.Lease.ReconfigureReplaySeen || res.Lease.ReconfigureReplay != 0 {
+		t.Errorf("replay floor came back as (%d, seen=%v), want (0, seen=true): a recorded zero is a floor, not none",
+			res.Lease.ReconfigureReplay, res.Lease.ReconfigureReplaySeen)
 	}
 }
