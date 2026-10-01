@@ -21,7 +21,7 @@ import (
 
 // TestBridgeFirewallVerdict_NamedAtCreateAndAtTheDeadline checks that an existing bridge behind a dropping firewall is
 // warned about at create and named when the first lease attempt times out, under the default lease_timeout and a
-// short one. It sets FORWARD to DROP itself (engine 29.8 leaves ACCEPT), drops the fixture's ACCEPT rules (#103), and
+// short one, each on its own network on the same bridge, one after the other. It sets FORWARD to DROP itself (engine 29.8 leaves ACCEPT), drops the fixture's ACCEPT rules (#103), and
 // leases only from the challenger behind a port, since the fixture's server on the bridge's address never meets
 // FORWARD. Everything is put back in t.Cleanup (#1116).
 func TestBridgeFirewallVerdict_NamedAtCreateAndAtTheDeadline(t *testing.T) {
@@ -44,6 +44,8 @@ func TestBridgeFirewallVerdict_NamedAtCreateAndAtTheDeadline(t *testing.T) {
 	t.Cleanup(func() { _ = cli.Close() })
 
 	const netName = "dh-itest-bridge-verdict"
+	const shortNet = netName + "-short"
+	const okNet = netName + "-ok"
 	rule := "iptables -A FORWARD -i " + harness.BridgeName + " -j ACCEPT"
 
 	harness.WithoutBridgeForward(t, harness.BridgeName)
@@ -52,17 +54,18 @@ func TestBridgeFirewallVerdict_NamedAtCreateAndAtTheDeadline(t *testing.T) {
 
 	// The default 34 s lease_timeout outlives moby's 30 s for the call, so the daemon ends it and the plugin sees a
 	// cancel; its log line carries the verdict, the error `docker start` returns is the daemon's own and cannot. A
-	// 15 s lease_timeout ends first, so the plugin's own error carries it to the daemon (#1116).
+	// 15 s lease_timeout ends first, so the plugin's own error carries it to the daemon. A second network on a bridge
+	// another still names is refused (ErrBridgeUsed), so each leg removes its own (#1116).
 	for _, tc := range []struct {
 		name  string
 		opts  map[string]string
 		inErr bool
 	}{
 		{name: netName, opts: map[string]string{"dhcp_servers": harness.BridgeChallengerIP}},
-		{name: netName + "-short", opts: map[string]string{"dhcp_servers": harness.BridgeChallengerIP, "lease_timeout": "15s"}, inErr: true},
+		{name: shortNet, opts: map[string]string{"dhcp_servers": harness.BridgeChallengerIP, "lease_timeout": "15s"}, inErr: true},
 	} {
 		mark := harness.MarkPluginLog(t, ctx)
-		harness.CreateNetwork(t, ctx, tc.name, "bridge", tc.opts)
+		netID := harness.CreateNetwork(t, ctx, tc.name, "bridge", tc.opts)
 		created := harness.AwaitPluginLogSince(t, ctx, mark, 10*time.Second, func(w string) bool {
 			return strings.Contains(w, "level=warning") && strings.Contains(w, rule)
 		})
@@ -112,16 +115,23 @@ func TestBridgeFirewallVerdict_NamedAtCreateAndAtTheDeadline(t *testing.T) {
 		if !strings.Contains(logged, "Error while processing request") || !strings.Contains(logged, rule) {
 			t.Errorf("%s: the plugin's log line for the failed request does not carry the verdict:\n%s", tc.name, logged)
 		}
+		if err := cli.ContainerRemove(ctx, create.ID, container.RemoveOptions{Force: true}); err != nil {
+			t.Fatalf("%s: removing the container that failed to start: %v", tc.name, err)
+		}
+		if err := cli.NetworkRemove(ctx, netID); err != nil {
+			t.Fatalf("%s: removing the network the next leg's create would be refused for: %v", tc.name, err)
+		}
 	}
 	// #1116: the challenger, behind a port in its own namespace, heard nothing while the rules were out.
 	if got := challengerDiscovers() - discovers; got != 0 {
 		t.Fatalf("the challenger heard %d DISCOVER although FORWARD drops bridged frames and its rules were removed; the firewall was not what failed the lease", got)
 	}
 
-	// #1116: with the rules back the same network leases from the challenger, and a healthy lease carries no verdict.
-	restoreMark := harness.MarkPluginLog(t, ctx)
+	// #1116: with the rules back a third network leases from the challenger and its lease logs no verdict (its create warns for the policy).
 	harness.RestoreBridgeForward(t, harness.BridgeName)
-	_, ipv4, mac := harness.RunContainer(t, ctx, netName, netName+"-ok")
+	harness.CreateNetwork(t, ctx, okNet, "bridge", map[string]string{"dhcp_servers": harness.BridgeChallengerIP})
+	restoreMark := harness.MarkPluginLog(t, ctx)
+	_, ipv4, mac := harness.RunContainer(t, ctx, okNet, okNet+"-ctr")
 	if ip := net.ParseIP(ipv4); ip == nil || !harness.IsInBridgeChallengerPool(ip) {
 		t.Errorf("leased %q after the restore, want an address of the challenger's pool", ipv4)
 	}

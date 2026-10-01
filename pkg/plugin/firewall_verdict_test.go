@@ -10,6 +10,10 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	dNetwork "github.com/docker/docker/api/types/network"
+
+	"github.com/claymore666/docker-net-dhcp/v2/pkg/util"
 )
 
 // #1116 item 1: the verdict of an existing bridge is logged at create, never refused.
@@ -183,6 +187,42 @@ func TestWithFirewallVerdict(t *testing.T) {
 		stubFirewall(t, true, nil, nfDrop, nil)
 		if got := withFirewallVerdict("br0", late, boom); got != boom {
 			t.Errorf("err = %v; a NAK late in the budget is still not the firewall", got)
+		}
+	})
+}
+
+// #1116: the integration case's two networks share one bridge, so the second create is refused while the first is
+// listed and is warned about once the daemon no longer lists it.
+func TestCreateNetwork_SecondNetworkOnTheVerdictBridge(t *testing.T) {
+	opts := map[string]interface{}{"bridge": bridgeTestBridge, "dhcp_servers": "192.0.2.9", "lease_timeout": "15s"}
+	setup := func(t *testing.T, listed ...dNetwork.Summary) *Plugin {
+		withStateDir(t, t.TempDir())
+		stubFirewall(t, true, nil, nfDrop, nil)
+		stubBridgeKernel(t, bridgeTestBridgeLink(""))
+		p := newPluginForTest()
+		p.docker = &fakeDocker{listResult: listed}
+		return p
+	}
+	t.Run("refused while the first network is listed, with no verdict logged", func(t *testing.T) {
+		p := setup(t, existingDHCPNetwork(bridgeTestBridge))
+		var err error
+		logged := captureLog(t, func() { err = bridgeCreate(p, opts) })
+		if !errors.Is(err, util.ErrBridgeUsed) {
+			t.Fatalf("err = %v; want ErrBridgeUsed for a second network on a bridge another lists", err)
+		}
+		if strings.Contains(logged, "docs/bridge-mode.md") {
+			t.Errorf("log %q; a refused create must not log the verdict", logged)
+		}
+	})
+	t.Run("created and warned once the first network is gone", func(t *testing.T) {
+		p := setup(t)
+		var err error
+		logged := captureLog(t, func() { err = bridgeCreate(p, opts) })
+		if err != nil {
+			t.Fatalf("err = %v; want the create to pass once no network lists the bridge", err)
+		}
+		if n := strings.Count(logged, "docs/bridge-mode.md"); n != 1 {
+			t.Errorf("%d verdict lines in %q, want 1", n, logged)
 		}
 	})
 }
