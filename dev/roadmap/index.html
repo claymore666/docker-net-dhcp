@@ -1294,7 +1294,11 @@ below decide what is in a release; this page follows them.</p>
   absent</li>
 <li><a href="https://github.com/claymore666/docker-net-dhcp/issues/1031">#1031</a>, DHCPv4 Rapid Commit</li>
 <li><a href="https://github.com/claymore666/docker-net-dhcp/issues/1119">#1119</a>, DHCPv4 FORCERENEW with nonce authentication (RFC 3203,
-  RFC 6704); an unauthenticated FORCERENEW is discarded and counted</li>
+  RFC 6704): the plugin's own log lines and health counters. The library
+  half comes with the <code>dhcp-golib</code> v1.2.0 pin (<a href="https://github.com/claymore666/docker-net-dhcp/issues/1137">#1137</a>): option 145 in
+  every Discover and Request, and a renewal on an authenticated
+  DHCPFORCERENEW, with any other discarded and counted in the library's
+  statistics</li>
 <li><a href="https://github.com/claymore666/docker-net-dhcp/issues/1120">#1120</a>, <code>user_class=</code>, the DHCPv4 User Class option 77 (RFC 3004)</li>
 <li><a href="https://github.com/claymore666/docker-net-dhcp/issues/1032">#1032</a>, <code>ipv6_iid=stable-privacy</code>, the RFC 7217 interface identifier,
   with modified EUI-64 kept as the default</li>
