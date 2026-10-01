@@ -386,6 +386,9 @@ func (p *Plugin) CreateNetwork(r CreateNetworkRequest) error {
 		}
 		return err
 	}
+	if !opts.ownsBridge() {
+		warnExistingBridgeFirewall(opts)
+	}
 	log.WithFields(log.Fields{
 		"network":   r.NetworkID,
 		"bridge":    opts.Bridge,
@@ -1064,7 +1067,7 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 
 			info, err := p.acquireV4(ctx, opts, callStart, ctrName, pol, timeout, r.EndpointID, base)
 			if err != nil {
-				return fmt.Errorf("failed to get initial IP address via DHCP: %w", err)
+				return fmt.Errorf("failed to get initial IP address via DHCP: %w", withFirewallVerdict(opts.Bridge, callStart, err))
 			}
 			ip, err := netlink.ParseAddr(info.IP)
 			if err != nil {
