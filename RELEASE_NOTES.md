@@ -36,6 +36,10 @@ prompts on has moved since v2.0.0. This release changes the manifest's
   `nat64` on each lease event that carries it and shown per endpoint as
   `nat64_prefixes` on `/Plugin.Health`; nothing is installed in the
   container (#1028).
+- The "DHCP options received" log line carries the DHCPv4 vendor-specific
+  options, hex-encoded and never interpreted: option 43 as `vendor_43` and
+  option 125 as `vendor_125`, one `enterprise:hex` entry per enterprise
+  (#1034).
 
 ### Fixed
 

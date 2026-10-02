@@ -1496,6 +1496,7 @@ the plugin does not read or log any of them yet
 ([#1034](https://github.com/claymore666/docker-net-dhcp/issues/1034),
 [#1033](https://github.com/claymore666/docker-net-dhcp/issues/1033),
 [#859](https://github.com/claymore666/docker-net-dhcp/issues/859)).
+The DHCPv4 vendor options 43 and 125 are logged, as described below.
 
 **Logged** at info level on every bind and renew, and only when at least
 one is present, so plain LANs get no extra noise: option 42 (NTP), 66
@@ -1508,6 +1509,18 @@ level=info msg="DHCP options received" ntp=[192.168.0.123]
   search=[corp.example internal.example]
   wpad=http://wpad.example/wpad.dat posix_tz=PST8PDT
   tzdb_tz=Europe/Berlin time_offset=3600 ...
+```
+
+The vendor-specific options of DHCPv4 are logged the same way, hex-encoded
+and never interpreted ([#1034](https://github.com/claymore666/docker-net-dhcp/issues/1034)):
+option 43 (RFC 2132 section 8.4) as `vendor_43`, and option 125 (RFC 3925
+section 4) as `vendor_125`, one `enterprise-number:hex` entry per
+enterprise in the order they arrived. An option 43 of zero octets and a
+malformed option 125 are left out.
+
+```text
+level=info msg="DHCP options received" vendor_43=0104c0a86301
+  vendor_125="[9:aabb 3561:]" ...
 ```
 
 These are not auto-applied because the consuming application owns those

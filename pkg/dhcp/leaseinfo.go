@@ -4,6 +4,7 @@
 package dhcp
 
 import (
+	"encoding/hex"
 	"net/netip"
 	"strconv"
 	"time"
@@ -71,6 +72,8 @@ func infoFromLease(l lease.Lease, r proto.RouterObservation, now time.Time, main
 		info.TimeOffset = strconv.Itoa(int(v))
 	}
 
+	fillVendorOptions(&info, l.Options)
+
 	// sanitizeInfo runs at the one point every lease enters the plugin and feeds unsafe_option_values_dropped (#703).
 	dropped := sanitizeInfo(&info)
 
@@ -84,6 +87,27 @@ func infoFromLease(l lease.Lease, r proto.RouterObservation, now time.Time, main
 	}
 
 	return info, dropped
+}
+
+// Hex digits are never control characters, so sanitizeInfo has nothing to drop from these; the reflection test walks the
+// new fields anyway (#1034, #703).
+
+// fillVendorOptions records option 43 and option 125's blocks as hex. A malformed 125 is left out whole, and an empty 43
+// encodes to nothing, which the log treats as absent (#1034).
+func fillVendorOptions(info *Info, o wire.Options) {
+	if v, ok := o.VendorSpecific(); ok {
+		info.VendorSpecific = hex.EncodeToString(v)
+	}
+	blocks, err := o.VendorIdentifying()
+	if err != nil {
+		return
+	}
+	for _, b := range blocks {
+		info.VendorIdentifying = append(info.VendorIdentifying, VendorBlock{
+			Enterprise: b.Enterprise,
+			Data:       hex.EncodeToString(b.Data),
+		})
+	}
 }
 
 // A zero Expire is an infinite lease (0xFFFFFFFF on the wire); without this branch the deadline lands in year 1 (#899).
