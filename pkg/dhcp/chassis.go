@@ -105,7 +105,8 @@ type DHCPClientOptions struct {
 	// UserClass is the one class value of option 77 (RFC 3004); empty sends no option, and v6 never sends it (#1120).
 	UserClass string
 
-	// RapidCommit puts option 80 (RFC 4039) in the DISCOVER; v4 only, never in the parameter list (#1031).
+	// RapidCommit puts option 80 (RFC 4039) in the DISCOVER, never in the parameter list, and option 14 (RFC 8415 section
+	// 18.2.1) in the Solicit (#1031, #926).
 	RapidCommit bool
 
 	// ConflictMode is the parsed RFC 5227 `conflict_check` mode, zero being proto.ConflictWait (D23, #882).

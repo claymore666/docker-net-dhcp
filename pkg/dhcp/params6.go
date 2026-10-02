@@ -45,6 +45,9 @@ func buildParams6(opts *DHCPClientOptions, once bool) (proto.Params6, error) {
 	if opts.StrictAuto6 {
 		p.AutoFallback = strictAutoFallback
 	}
+	// RFC 8415 section 18.2.1: option 14 rides in the Solicit only, so slaac sends none; the library never puts it on
+	// another message (#926).
+	p.RapidCommit = opts.RapidCommit
 
 	// The library adds the mandatory codes itself, so this is the caller's RFC 3646 half. DefaultParams6 leaves ORO
 	// nil, and dnsmasq answers an Information-request with only what was requested, so a stateless client would get no

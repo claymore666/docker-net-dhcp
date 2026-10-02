@@ -162,6 +162,7 @@ func (p *Plugin) createIPAMEndpointV6(ctx context.Context, callStart time.Time, 
 		Hostname:    hostname.name,
 		FQDN:        opts.fqdnMode(),
 		VendorClass: opts.VendorClass,
+		RapidCommit: opts.RapidCommit,
 		MAC:         mac,
 		Records:     p.records,
 	}
