@@ -205,6 +205,41 @@ func TestParseKea6Leases_RefusesAFieldThatDoesNotFitItsType(t *testing.T) {
 	}
 }
 
+func TestParseKea6Leases_EmptyAndMissingFieldsReadAsZeroAndErrorsNameTheirPlace(t *testing.T) {
+	na := "fd00:6470:6865::1000," + keaDUID + ",600,2000000600,1,400,0,11,128,0,0,,,0,,,,\n"
+	t.Run("an empty numeric column is 0, no error", func(t *testing.T) {
+		row := strings.Replace(na, ",600,2000000600,1,400,0,11,128,0,0,,,0,", ",,2000000600,1,400,0,11,,0,0,,,,", 1)
+		rows, err := ParseKea6Leases(kea24Header + row)
+		if err != nil || len(rows) != 1 || rows[0].Valid != 0 || rows[0].PrefixLen != 0 || rows[0].State != 0 || rows[0].Expire != 2000000600 {
+			t.Errorf("rows=%+v err=%v, want one row with the empty fields 0", rows, err)
+		}
+	})
+	t.Run("a header without the state column reads state 0", func(t *testing.T) {
+		header := strings.Replace(kea24Header, ",state", "", 1)
+		rows, err := ParseKea6Leases(header + na)
+		if err != nil || len(rows) != 1 || rows[0].State != 0 || rows[0].LeaseType != Kea6LeaseNA || rows[0].Valid != 600 {
+			t.Errorf("rows=%+v err=%v, want one row, state 0, the other columns intact", rows, err)
+		}
+	})
+	t.Run("a half-written last line is no error and never carries the full address", func(t *testing.T) {
+		half := "fd00:6470:6865::10"
+		rows, err := ParseKea6Leases(kea24Header + na + half)
+		if err != nil || len(rows) != 2 {
+			t.Fatalf("rows=%+v err=%v, want both rows and no error", rows, err)
+		}
+		if rows[1].Addr == "fd00:6470:6865::1000" || rows[1].Valid != 0 || len(Kea6Held(rows[1:], keaDUID, Kea6LeaseNA, 1000)) != 0 {
+			t.Errorf("the half-written row = %+v: it must not read as a held lease for the full address", rows[1])
+		}
+	})
+	t.Run("an error names the line and the quoted value", func(t *testing.T) {
+		bad := strings.Replace(na, ",600,2000000600,", ",600,soon,", 1)
+		_, err := ParseKea6Leases(kea24Header + na + bad)
+		if err == nil || !strings.Contains(err.Error(), "line 3") || !strings.Contains(err.Error(), `expire = "soon"`) {
+			t.Errorf("err = %v, want it to name line 3 (header is line 1) and the quoted value \"soon\"", err)
+		}
+	})
+}
+
 func TestKea6LeaseTypeConstantsAreKeas(t *testing.T) {
 	if Kea6LeaseNA != 0 || Kea6LeaseTA != 1 || Kea6LeasePD != 2 {
 		t.Errorf("NA/TA/PD = %d/%d/%d, Kea writes 0/1/2: type 1 is a temporary address, not a prefix", Kea6LeaseNA, Kea6LeaseTA, Kea6LeasePD)
