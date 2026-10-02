@@ -22,8 +22,6 @@ var (
 	apparmorProfilesPath = "/sys/kernel/security/apparmor/profiles"
 	// keaProfilePath is the profile as shipped on disk; present does not mean loaded.
 	keaProfilePath = "/etc/apparmor.d/usr.sbin.kea-dhcp4"
-	// kea6ProfilePath is the dhcp6 profile as shipped on Ubuntu; Debian ships none (#214).
-	kea6ProfilePath = "/etc/apparmor.d/usr.sbin.kea-dhcp6"
 	// readKernelLog returns the kernel ring buffer, root-only under Debian's kernel.dmesg_restrict=1.
 	readKernelLog = func() (string, error) {
 		out, err := withCLocale(exec.Command("dmesg")).Output()
@@ -197,24 +195,6 @@ type kea6Confinement struct {
 	installed     bool
 	kernelLogRead bool
 	denial        string
-}
-
-// kea6ConfinementEvidence performs the reads. Only an enforcing profile can have produced a denial (#214).
-func kea6ConfinementEvidence() kea6Confinement {
-	var c kea6Confinement
-	if data, err := os.ReadFile(apparmorProfilesPath); err == nil {
-		c.listRead = true
-		c.mode = kea6ProfileMode(string(data))
-	}
-	_, statErr := os.Stat(kea6ProfilePath)
-	c.installed = statErr == nil
-	if c.mode == "enforce" {
-		if kernelLog, err := readKernelLog(); err == nil {
-			c.kernelLogRead = true
-			c.denial = kea6DenialRecord(kernelLog)
-		}
-	}
-	return c
 }
 
 // String is the measured state in one line, for the fixture's start log.

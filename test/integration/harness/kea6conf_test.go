@@ -161,7 +161,10 @@ func TestParseKea6Leases_ReadsByNameAcrossBothHeaders(t *testing.T) {
 			data := header +
 				"fd00:6470:6865::1000," + keaDUID + ",600,2000000600,1,400,0,11,128,0,0,,,0,,,,\n" +
 				"fd00:98:0:1::,00:03:00:01:AA:BB:CC:DD:EE:FF,600,2000000601,1,400,2,12,64,0,0,,,0,,,,\n"
-			rows := ParseKea6Leases(data)
+			rows, err := ParseKea6Leases(data)
+			if err != nil {
+				t.Fatalf("ParseKea6Leases: %v", err)
+			}
 			if len(rows) != 2 {
 				t.Fatalf("got %d rows, want 2: %+v", len(rows), rows)
 			}
@@ -174,6 +177,31 @@ func TestParseKea6Leases_ReadsByNameAcrossBothHeaders(t *testing.T) {
 				t.Errorf("IA_PD row = %+v: lease_type 2 is a delegated prefix, DUIDs are lower-cased", pd)
 			}
 		})
+	}
+}
+
+func TestParseKea6Leases_RefusesAFieldThatDoesNotFitItsType(t *testing.T) {
+	good := "fd00:6470:6865::1000," + keaDUID + ",600,2000000600,1,400,0,11,128,0,0,,,0,,,,\n"
+	for name, tc := range map[string]struct{ old, new, col string }{
+		"lease_type past 32 bits":     {",400,0,11,128,", ",400,4294967296,11,128,", "lease_type"},
+		"prefix_len past 32 bits":     {",400,0,11,128,", ",400,0,11,9999999999,", "prefix_len"},
+		"state past 32 bits":          {",0,0,,,0,,,,", ",0,0,,,-4294967297,,,,", "state"},
+		"valid_lifetime past 64":      {",600,2000000600,", ",99999999999999999999,2000000600,", "valid_lifetime"},
+		"expire that is not a number": {",600,2000000600,", ",600,soon,", "expire"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			bad := strings.Replace(good, tc.old, tc.new, 1)
+			if bad == good {
+				t.Fatalf("the mutation %q did not change the row", tc.new)
+			}
+			rows, err := ParseKea6Leases(kea24Header + bad)
+			if err == nil || !strings.Contains(err.Error(), tc.col) {
+				t.Errorf("got rows=%+v err=%v, want an error naming %s", rows, err, tc.col)
+			}
+		})
+	}
+	if rows, err := ParseKea6Leases(kea24Header + good); err != nil || len(rows) != 1 {
+		t.Errorf("the unmutated row: rows=%+v err=%v, want one row", rows, err)
 	}
 }
 

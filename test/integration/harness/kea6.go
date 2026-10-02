@@ -218,6 +218,27 @@ func (k *Kea6Fixture) listensOn547() bool {
 	return err == nil && strings.Contains(strings.ToUpper(string(out)), udp547)
 }
 
+// kea6ProfilePath is the dhcp6 profile as shipped on Ubuntu; Debian ships none (#214).
+var kea6ProfilePath = "/etc/apparmor.d/usr.sbin.kea-dhcp6"
+
+// kea6ConfinementEvidence performs the reads. Only an enforcing profile can have produced a denial (#214).
+func kea6ConfinementEvidence() kea6Confinement {
+	var c kea6Confinement
+	if data, err := os.ReadFile(apparmorProfilesPath); err == nil {
+		c.listRead = true
+		c.mode = kea6ProfileMode(string(data))
+	}
+	_, statErr := os.Stat(kea6ProfilePath)
+	c.installed = statErr == nil
+	if c.mode == "enforce" {
+		if kernelLog, err := readKernelLog(); err == nil {
+			c.kernelLogRead = true
+			c.denial = kea6DenialRecord(kernelLog)
+		}
+	}
+	return c
+}
+
 // readLog is Kea's own log file (on the profile's allowed path, so readiness does not depend on an inherited fd) and
 // what the process wrote to stdout and stderr before its logger was up (#214).
 func (k *Kea6Fixture) readLog() string {
@@ -292,7 +313,11 @@ func (k *Kea6Fixture) Rows() []Kea6Row {
 		}
 		return nil
 	}
-	return ParseKea6Leases(string(data))
+	rows, err := ParseKea6Leases(string(data))
+	if err != nil {
+		k.t.Fatalf("read Kea's lease file: %v\n%s", err, data)
+	}
+	return rows
 }
 
 func (k *Kea6Fixture) LeaseFileText() string {

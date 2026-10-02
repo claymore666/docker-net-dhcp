@@ -242,11 +242,12 @@ type Kea6Row struct {
 }
 
 // ParseKea6Leases reads every row of the lease file, oldest first, by column name: the 2.4 and 2.6 headers differ. Kea
-// appends a row for each renewal and release, so the same address repeats; use Latest or Held to read the state (#214).
-func ParseKea6Leases(data string) []Kea6Row {
+// appends a row for each renewal and release, so the same address repeats; use Latest or Held to read the state. An
+// empty numeric field is 0; a field that is not a number or does not fit its type is an error, not a wrapped value (#214).
+func ParseKea6Leases(data string) ([]Kea6Row, error) {
 	var col map[string]int
 	var rows []Kea6Row
-	for _, line := range strings.Split(data, "\n") {
+	for n, line := range strings.Split(data, "\n") {
 		line = strings.TrimRight(line, "\r")
 		if line == "" {
 			continue
@@ -254,28 +255,56 @@ func ParseKea6Leases(data string) []Kea6Row {
 		fields := strings.Split(line, ",")
 		if col == nil {
 			col = map[string]int{}
-			for i, n := range fields {
-				col[n] = i
+			for i, name := range fields {
+				col[name] = i
 			}
 			continue
 		}
-		get := func(n string) string {
-			if i, ok := col[n]; ok && i < len(fields) {
+		get := func(name string) string {
+			if i, ok := col[name]; ok && i < len(fields) {
 				return fields[i]
 			}
 			return ""
 		}
-		atoi := func(n string) int64 {
-			v, _ := strconv.ParseInt(get(n), 10, 64)
+		var perr error
+		fail := func(name, text string, err error) {
+			if perr == nil {
+				perr = fmt.Errorf("lease file line %d: column %s = %q: %w", n+1, name, text, err)
+			}
+		}
+		num64 := func(name string) int64 {
+			text := get(name)
+			if text == "" {
+				return 0
+			}
+			v, err := strconv.ParseInt(text, 10, 64)
+			if err != nil {
+				fail(name, text, err)
+			}
 			return v
 		}
-		rows = append(rows, Kea6Row{
+		num32 := func(name string) int {
+			text := get(name)
+			if text == "" {
+				return 0
+			}
+			v, err := strconv.ParseInt(text, 10, 32)
+			if err != nil {
+				fail(name, text, err)
+			}
+			return int(v)
+		}
+		row := Kea6Row{
 			Addr: get("address"), DUID: strings.ToLower(get("duid")),
-			Valid: atoi("valid_lifetime"), Expire: atoi("expire"),
-			LeaseType: int(atoi("lease_type")), PrefixLen: int(atoi("prefix_len")), State: int(atoi("state")),
-		})
+			Valid: num64("valid_lifetime"), Expire: num64("expire"),
+			LeaseType: num32("lease_type"), PrefixLen: num32("prefix_len"), State: num32("state"),
+		}
+		if perr != nil {
+			return nil, perr
+		}
+		rows = append(rows, row)
 	}
-	return rows
+	return rows, nil
 }
 
 type kea6Key struct {
