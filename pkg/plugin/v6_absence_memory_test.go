@@ -245,6 +245,23 @@ func TestV6AbsenceMemory_ZeroWindowNeverRecordsNorReads(t *testing.T) {
 	if got := r.p.dhcpv6AbsenceRemembered.Load(); got != 0 {
 		t.Errorf("dhcpv6_absence_remembered = %d with the memory off, want 0", got)
 	}
+	r.p.v6Absence.mu.Lock()
+	defer r.p.v6Absence.mu.Unlock()
+	if n := len(r.p.v6Absence.at); n != 0 {
+		t.Errorf("the memory holds %d network(s) with DHCPV6_ABSENCE_MEMORY=0, want none: off keeps no state", n)
+	}
+}
+
+func TestV6AbsenceMemory_AStrictAttachNeverRecords(t *testing.T) {
+	r := newAbsenceRig(t, 10*time.Minute)
+	strict := DHCPNetworkOptions{IPv6Mode: "auto", IPv6AutoStrict: true}
+	if _, err := r.attach(t, absenceNetA, "ep-strict", strict); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := r.p.v6Absence.age(absenceNetA); ok {
+		t.Errorf("a strict auto attach whose client reported a fallback set the memory; strict " +
+			"fails instead of falling back, so it has no silence to remember")
+	}
 }
 
 func TestV6AbsenceMemory_NewPluginWindow(t *testing.T) {
