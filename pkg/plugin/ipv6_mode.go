@@ -136,6 +136,10 @@ func (p *Plugin) v6Wiring(base *dhcp.DHCPClientOptions, opts DHCPNetworkOptions,
 	base.PreferredV6 = preferredV6
 	base.Mode6 = mode
 	base.StrictAuto6 = opts.IPv6AutoStrict
+	if mode == proto.Mode6Auto && p != nil && p.v6AbsenceServedEndpoint(endpointID) {
+		// The persistent client follows its attach: soliciting in auto could bind a lease and move the address (#1038).
+		base.Mode6 = proto.Mode6SLAAC
+	}
 	main, err := opts.ipv6MainPrefix()
 	if err != nil {
 		return err
@@ -154,7 +158,7 @@ func (p *Plugin) v6Wiring(base *dhcp.DHCPClientOptions, opts DHCPNetworkOptions,
 		log.WithField("endpoint", shortID(endpointID)).
 			Info("ipv6_mode=slaac sends no DHCPv6 Solicit, so register_dns registers this container's A record and no AAAA")
 	}
-	if mode == proto.Mode6Auto {
+	if base.Mode6 == proto.Mode6Auto {
 		// Only auto: the library raises SLAACFallbacks from the timer Mode6Auto arms on M=1 (proto/machine6_slaac.go)
 		// (#817).
 		report := p.v6FallbackReporter(endpointID)

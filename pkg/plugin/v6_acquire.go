@@ -32,6 +32,7 @@ func (p *Plugin) acquireInitialV6(ctx context.Context, opts DHCPNetworkOptions, 
 	if err := p.v6Wiring(&base, opts, a.identity6, a.recordID6, a.preferredV6, a.endpointID); err != nil {
 		return "", err
 	}
+	p.v6AbsenceWiring(&base, opts, a.networkID, a.endpointID)
 	if err := p.conflictWiring(&base, opts, roleAcquire, a.networkID, a.endpointID, true); err != nil {
 		return "", err
 	}
@@ -46,6 +47,10 @@ func (p *Plugin) acquireInitialV6(ctx context.Context, opts DHCPNetworkOptions, 
 			return "", nil
 		}
 		return "", fmt.Errorf("failed to get initial IPv6 address via DHCPv6: %w", err)
+	}
+	if !info.SLAAC {
+		// A granted address proves a DHCPv6 server on this network (#1038).
+		p.v6Absence.forget(a.networkID)
 	}
 	ip, err := netlink.ParseAddr(info.IP)
 	if err != nil {
