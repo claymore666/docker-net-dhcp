@@ -52,6 +52,7 @@ func infoFromLease(l lease.Lease, r proto.RouterObservation, now time.Time, main
 	}
 	info.OnLinkPrefixes = onLinkPrefixes(r)
 	info.WithdrawnOnLinkPrefixes = withdrawnOnLinkPrefixes(r)
+	info.NAT64Prefixes = nat64Prefixes(r)
 
 	// DHCPv6 has no MTU option (option 26 is DHCPv4's, RFC 2132 section 5.1), so RFC 4861 section 4.6.4's is the v6
 	// MTU; the kernel stopped copying it at accept_ra=0 (#821). Guarded on Seen, and a server's option 26 still wins.
@@ -116,6 +117,20 @@ func defaultDestination(r wire.Route) bool { return r.Dest.Bits() == 0 }
 
 // onLinkPrefixes renders the advertisement's L-flag Prefix Information options as CIDR.
 func onLinkPrefixes(r proto.RouterObservation) []string { return lFlagPrefixes(r, false) }
+
+// nat64Prefixes renders the PREF64 entries as masked IPv6 CIDR without repeats (RFC 8781 section 4, #1028).
+func nat64Prefixes(r proto.RouterObservation) []string {
+	var out []string
+	for _, p := range r.PREF64 {
+		if !p.IsValid() || !p.Addr().Is6() || p.Addr().Is4In6() {
+			continue
+		}
+		if s := p.Masked().String(); !containsString(out, s) {
+			out = append(out, s)
+		}
+	}
+	return out
+}
 
 // withdrawnOnLinkPrefixes renders the L-flag options that carry Valid Lifetime 0 as CIDR.
 func withdrawnOnLinkPrefixes(r proto.RouterObservation) []string { return lFlagPrefixes(r, true) }
