@@ -131,7 +131,7 @@ func TestRapidCommitV6_MacvlanWithoutTheOptionKeepsTheFourMessageExchange(t *tes
 	duid := "00:03:00:01:" + strings.ToLower(mac)
 
 	assertPoolAddress(t, ipv4, harness.IsInPool)
-	wantFirstKinds(t, fixture.DnsmasqLog(), mac, "DISCOVER", "OFFER", "REQUEST", "ACK")
+	wantFourMessageExchange(t, fixture.DnsmasqLog(), mac)
 	kinds, addr := waitRapid6Reply(t, fixture.DnsmasqLog(), duid)
 	assertFourMessageV6(t, kinds, duid)
 	assertHeldV6(t, ctx, id, addr)
