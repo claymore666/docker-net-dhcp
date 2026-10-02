@@ -1616,6 +1616,7 @@ func (m *dhcpManager) setupClient(v6 bool) (chan error, error) {
 		ClientID:    m.clientID(v4Identity),
 		VendorClass: m.opts.VendorClass,
 		UserClass:   m.opts.UserClass,
+		RapidCommit: m.opts.RapidCommit,
 		// HonorRouterAdverts is required on a persistent v6 client and refused elsewhere (#875, D30 Q3).
 		HonorRouterAdverts: v6,
 	}

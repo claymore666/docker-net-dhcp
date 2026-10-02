@@ -277,6 +277,7 @@ func (f *Fixture) startDnsmasq() error {
 		"--dhcp-option=tag:"+dnsmasqVCTag+",3,"+TestTaggedGateway,
 		"--dhcp-userclass=set:"+dnsmasqUCTag+","+TestUserClass,
 		"--dhcp-option=tag:"+dnsmasqUCTag+",3,"+TestUserClassGateway,
+		"--dhcp-rapid-commit",
 		// Option 121 only for clients tagged via TestClasslessVendorClass (#260), to a non-default destination.
 		"--dhcp-vendorclass=set:"+dnsmasqCSRTag+","+TestClasslessVendorClass,
 		"--dhcp-option=tag:"+dnsmasqCSRTag+",121,"+TestClasslessRoute+","+TestClasslessRouteGW,

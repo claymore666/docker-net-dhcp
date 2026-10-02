@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net"
 	"net/netip"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -354,6 +355,32 @@ func TestBuildParams_UserClassIsOneInstanceOrNothing(t *testing.T) {
 		if len(p.UserClass) != 1 || string(p.UserClass[0]) != v {
 			t.Errorf("user_class %q became %q, want one instance carrying exactly those bytes", v, p.UserClass)
 		}
+	}
+}
+
+func TestBuildParams_RapidCommitIsTheFlagOrNothing(t *testing.T) {
+	mac := testMAC(t)
+
+	p, err := buildParams(&DHCPClientOptions{MAC: mac}, true)
+	if err != nil {
+		t.Fatalf("buildParams: %v", err)
+	}
+	if p.RapidCommit {
+		t.Error("with no rapid_commit set, Params.RapidCommit is true: a network that did not ask for option 80 must not send it (#1031)")
+	}
+
+	p, err = buildParams(&DHCPClientOptions{MAC: mac, RapidCommit: true}, false)
+	if err != nil {
+		t.Fatalf("buildParams(rapid commit): %v", err)
+	}
+	if !p.RapidCommit {
+		t.Error("rapid_commit=true left Params.RapidCommit false")
+	}
+	if slices.Contains(p.ParameterList, wire.OptRapidCommit) {
+		t.Errorf("the parameter list %v names option 80; RFC 4039 section 3 forbids it", p.ParameterList)
+	}
+	if _, err := proto.New(p); err != nil {
+		t.Errorf("proto.New refused the rapid-commit Params: %v", err)
 	}
 }
 

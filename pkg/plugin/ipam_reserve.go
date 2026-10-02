@@ -256,6 +256,7 @@ func (p *Plugin) runIPAMReserve(ctx context.Context, networkID string, sn stored
 		ClientID:    clientID,
 		VendorClass: opts.VendorClass,
 		UserClass:   opts.UserClass,
+		RapidCommit: opts.RapidCommit,
 		MAC:         mac,
 		Records:     p.records,
 		RecordID:    recordID,

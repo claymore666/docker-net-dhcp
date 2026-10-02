@@ -1051,6 +1051,7 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 				ClientID:    clientID,
 				VendorClass: opts.VendorClass,
 				UserClass:   opts.UserClass,
+				RapidCommit: opts.RapidCommit,
 				// Pin the DUID-LL and IAID to the container veth's MAC, so this one-shot and the persistent client
 				// share one binding (#152).
 				MAC:      ctrLink.Attrs().HardwareAddr,

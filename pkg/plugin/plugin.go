@@ -244,6 +244,8 @@ type DHCPNetworkOptions struct {
 	VendorClass string `mapstructure:"vendor_class"`
 	// UserClass is the one class value of DHCPv4 option 77 (RFC 3004), 1 to 254 octets; empty sends no option (#1120).
 	UserClass string `mapstructure:"user_class"`
+	// RapidCommit puts DHCPv4 option 80 (RFC 4039) in every DISCOVER; a server without it answers OFFER as before (#1031).
+	RapidCommit bool `mapstructure:"rapid_commit"`
 	// ValidateDHCP runs a one-shot DHCP probe on a macvlan or ipvlan parent at CreateNetwork (#108).
 	ValidateDHCP bool `mapstructure:"validate_dhcp"`
 	// RegisterDNS sends the hostname in option 81 (v4) and 39 (v6) with S=1; without it v6 sends no name (#261, #1029).
