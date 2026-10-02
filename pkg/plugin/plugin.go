@@ -762,8 +762,8 @@ type Plugin struct {
 	// (#818).
 	ipv6MainPrefixUnmatched atomic.Int32
 
-	// routerAdvertGuardFailures counts RA guard steps that failed, a sysctl write or read-back, at most six per
-	// endpoint (#875). A failed guard looks healthy until the router lifetime expires, since DHCPv6 carries no router
+	// routerAdvertGuardFailures counts RA guard steps that failed, a sysctl write or read-back, at most eight per
+	// endpoint, two of them at Join (#875, #1145). A failed guard looks healthy until the router lifetime expires, since DHCPv6 carries no router
 	// (RFC 9915 section 21, RFC 5942 section 4). A privileged container process rewriting the knobs is not counted
 	// (D30 Q3).
 	routerAdvertGuardFailures atomic.Int32
@@ -1334,6 +1334,9 @@ func (p *Plugin) lookupEndpointMAC(ctx context.Context, networkID, endpointID st
 	}
 	return "", fmt.Errorf("endpoint %v not found in network %v's container list", endpointID, networkID)
 }
+
+// reacquireEndpointFn is a var so a Join test reaches the no-hint branch without a veth (#1145).
+var reacquireEndpointFn = (*Plugin).reacquireEndpoint
 
 // reacquireEndpoint reruns CreateEndpoint for a Join with no hint, as on `docker restart`; ipvlan and passthru get
 // no MAC, since their child wears the parent's (#905).
