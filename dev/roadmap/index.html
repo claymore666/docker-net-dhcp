@@ -1290,7 +1290,10 @@ below decide what is in a release; this page follows them.</p>
 <ul>
 <li><a href="https://github.com/claymore666/docker-net-dhcp/issues/1028">#1028</a>, PREF64 from the Router Advertisement, the NAT64 prefix</li>
 <li><a href="https://github.com/claymore666/docker-net-dhcp/issues/1030">#1030</a>, Microsoft classless static routes, option 249, where 121 is
-  absent</li>
+  absent. The library half comes with the <code>dhcp-golib</code> v1.3.0 pin
+  (<a href="https://github.com/claymore666/docker-net-dhcp/issues/1157">#1157</a>): option 249 directly after 121 in the request list, and its
+  routes read when 121 is absent; what stays is the plugin's <code>[Join]</code> log
+  line naming the option and its test against a server that sends 249 alone</li>
 <li><a href="https://github.com/claymore666/docker-net-dhcp/issues/1031">#1031</a>, DHCPv4 Rapid Commit</li>
 <li><a href="https://github.com/claymore666/docker-net-dhcp/issues/1119">#1119</a>, DHCPv4 FORCERENEW with nonce authentication (RFC 3203,
   RFC 6704): the plugin's own log lines and health counters. The library
