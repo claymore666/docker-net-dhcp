@@ -885,7 +885,13 @@ ones. v4 only: DHCPv6 defines no equivalent option, and an IPv6
 endpoint's route comes from the Router Advertisement instead. Option 33, the
 legacy static-route option, **is** honoured in 2.0: it is asked for
 alongside option 121 and used when option 121 is absent or does not decode.
-Option 121 supersedes it whenever both arrive.
+Option 121 supersedes it whenever both arrive. Option 249, Microsoft's
+older form of option 121, is asked for directly after 121 since the
+`dhcp-golib` v1.3.0 pin and read when 121 is absent; it supersedes options
+3 and 33 as 121 does, and it is ignored whenever a 121 is present, decoded
+or not. The `[Join]` log line for such routes still says option 121
+([#1157](https://github.com/claymore666/docker-net-dhcp/issues/1157),
+[#1030](https://github.com/claymore666/docker-net-dhcp/issues/1030)).
 
 ### Dynamic-DNS registration (`register_dns`, option 81 / 39)
 
@@ -1467,17 +1473,25 @@ in every mode:
 #### Options captured from the server
 
 Everything the server returns is captured. Some is applied, the rest is
-logged:
+logged, except the vendor-specific options 43 and 125, which the client asks
+for since the `dhcp-golib` v1.3.0 pin and the plugin neither applies nor logs
+([#1034](https://github.com/claymore666/docker-net-dhcp/issues/1034)):
 
 **Applied**, when the matching option is enabled: option 6 (DNS servers)
 and option 119 (search list, falling back to option 15) into
 `/etc/resolv.conf` with `propagate_dns`; option 26 into the link MTU
-with `propagate_mtu`; option 121, or option 33 in its absence, as routes
-(see [classless static
+with `propagate_mtu`; option 121, or option 249 in its absence, or option
+33 when neither arrives, as routes (see [classless static
 routes](#dhcp-classless-static-routes-option-121)). The v6 equivalents,
 options 23 and 24, are asked for and applied on a DHCPv6 network,
 including on a stateless one, where they arrive in an
-Information-request reply that carries no address at all.
+Information-request reply that carries no address at all. Since the
+`dhcp-golib` v1.3.0 pin the DHCPv6 client also asks for the vendor options
+(17), the timezone options (41, 42) and the NTP Server option (56), and
+the plugin does not read or log any of them yet
+([#1034](https://github.com/claymore666/docker-net-dhcp/issues/1034),
+[#1033](https://github.com/claymore666/docker-net-dhcp/issues/1033),
+[#859](https://github.com/claymore666/docker-net-dhcp/issues/859)).
 
 **Logged** at info level on every bind and renew, and only when at least
 one is present, so plain LANs get no extra noise: option 42 (NTP), 66
