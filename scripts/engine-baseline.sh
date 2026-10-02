@@ -1047,25 +1047,31 @@ EOF
 }
 
 # v6_start_rate starts and removes a container on one IPv6 network N
-# times and reports how many starts the engine refused, and for each
-# start that worked how long until its default route via the router's
-# link-local was there (#1149).
+# times and reports how many starts the engine refused, how many Joins
+# handed the engine the IPv6 gateway, how many containers had their
+# default route via the router's link-local when the start returned, how
+# long each start took and how long until the route was there (#1149).
 v6_start_rate() {
-    local n="$1" i out fails=0 routed=0 t0 t waits="" msg=""
+    local n="$1" i j out fails=0 routed=0 joined=0 atstart=0 g0 g1 t0 t waits="" runs="" msg=""
     v6_server "--dhcp-range=${V6_PREFIX_A}10,${V6_PREFIX_A}99,$LEASE_TIME --enable-ra"
     opt_net em-o-v6 -o bridge="$V6_BRIDGE" -o ipv6=true
     for i in $(seq 1 "$n"); do
+        g0="$(join_gw6_lines)"
         t0="$(date +%s%N)"
         if ! out="$(d docker run -d --name em-c-v6 --network em-o-v6 "$TEST_IMAGE" sleep 600 2>&1)"; then
             fails=$((fails + 1))
-            [ -n "$msg" ] || msg="$out"
+            [ -n "$msg" ] || msg="$(printf '%s\n' "$out" | tail -1)"
             d docker rm -f em-c-v6 >/dev/null 2>&1
             continue
         fi
+        runs="$runs $(( ($(date +%s%N) - t0) / 1000000 ))"
+        g1="$(join_gw6_lines)"
+        [ "$g1" -gt "$g0" ] && joined=$((joined + 1))
         t=""
-        for _ in $(seq 1 150); do
+        for j in $(seq 1 150); do
             if d docker exec em-c-v6 ip -6 route 2>/dev/null | grep -q '^default via fe80:'; then
                 t="$(( ($(date +%s%N) - t0) / 1000000 ))"
+                [ "$j" = 1 ] && atstart=$((atstart + 1))
                 break
             fi
             sleep 0.1
@@ -1075,7 +1081,13 @@ v6_start_rate() {
     done
     opt_down em-o-v6
     [ -z "$msg" ] || say "first refused start: $msg"
-    say "ENGINE_MATRIX_V6RATE tag=$ENGINE_TAG engine=$ENGINE_VERSION starts=$n refused=$fails default_route=$routed ms_to_route=[${waits# }]"
+    say "ENGINE_MATRIX_V6RATE tag=$ENGINE_TAG engine=$ENGINE_VERSION starts=$n refused=$fails join_gateway=$joined route_at_start=$atstart default_route=$routed ms_run=[${runs# }] ms_to_route=[${waits# }]"
+}
+
+# join_gw6_lines counts the plugin's log lines saying Join handed the
+# engine the IPv6 gateway (#1149).
+join_gw6_lines() {
+    d sh -c 'cat /var/lib/docker/plugins/*/rootfs/var/log/net-dhcp.log 2>/dev/null | grep -c "Setting IPv6 gateway"' | tr -dc '0-9'
 }
 second_server() {
     case "$1" in
