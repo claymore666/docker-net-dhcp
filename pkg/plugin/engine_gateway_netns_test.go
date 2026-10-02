@@ -263,6 +263,12 @@ func TestFirstLease_LeavesTheJoinGatewayToTheEngineInEitherOrder_IPv6(t *testing
 		{name: "a Join that returned no IPv6 gateway carries no mark, and a lease that has seen no router still keeps the route",
 			res:   JoinResponse{Gateway: "192.168.99.1"},
 			steps: []gatewayRaceStep{engine(joinGw), bound(""), table(viaJoin)}},
+		{name: "below engine 28 Join withholds the gateway, a bind that has seen no router adds nothing, the advertisement after it adds the route",
+			res:   JoinResponse{Gateway: "192.168.99.1"},
+			steps: []gatewayRaceStep{bound(""), table(), advert(joinGw), table(viaJoin)}},
+		{name: "below engine 28 Join withholds the gateway and the engine installs nothing, the first renew adds the route",
+			res:   JoinResponse{},
+			steps: []gatewayRaceStep{renewed(joinGw), table(viaJoin)}},
 		{name: "a router's withdrawal still removes the route", res: joined,
 			steps: []gatewayRaceStep{engine(joinGw), bound(joinGw), withdrawal(), table()}},
 	} {

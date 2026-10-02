@@ -151,6 +151,24 @@ func TestTakeAdvertChange_FirstSightIsSilent(t *testing.T) {
 	}
 }
 
+// Below engine 28 the plugin installs the IPv6 default route itself; a bind before any advertisement must not hide
+// the router that arrives after it (#1149).
+func TestTakeAdvertChange_AGatewayAfterABindWithoutOneIsReported(t *testing.T) {
+	c := &DHCPClient{}
+	l := lease.Lease{}
+	c.view = func() (lease.Lease, bool) { return l, true }
+	c.baselineAdvert(time.Now())
+
+	l.Gateway = addr(t, "fe80::1")
+	ev, ok := c.takeAdvertChange(time.Now())
+	if !ok {
+		t.Fatal("a router first seen after the bind was not reported")
+	}
+	if ev.Data.Gateway != "fe80::1" {
+		t.Errorf("event gateway %q, want fe80::1", ev.Data.Gateway)
+	}
+}
+
 // With accept_ra=0 nothing else takes the container's default route away (#821).
 
 func TestTakeAdvertChange_ReportsAWithdrawal(t *testing.T) {
