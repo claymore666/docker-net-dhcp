@@ -1652,7 +1652,7 @@ func (p *Plugin) Join(ctx context.Context, r JoinRequest) (JoinResponse, error) 
 			"endpoint": shortID(r.EndpointID),
 			"sandbox":  r.SandboxKey,
 		}).Info("[Join] No hint; attempting endpoint reacquisition (likely container restart)")
-		if err := p.reacquireEndpoint(ctx, r, opts); err != nil {
+		if err := reacquireEndpointFn(p, ctx, r, opts); err != nil {
 			return res, fmt.Errorf("failed to reacquire endpoint after restart: %w", err)
 		}
 		hint, ok = p.takeJoinHint(r.EndpointID)
@@ -1708,6 +1708,8 @@ func (p *Plugin) Join(ctx context.Context, r JoinRequest) (JoinResponse, error) 
 
 	p.appendDHCPStaticRoutes(opts, r, hint, &res)
 	if opts.ipv6Enabled() {
+		// Hint or reacquired, before the engine moves the link in, so no advertisement wins the default route (#1145).
+		p.guardSandboxDefaults(r)
 		p.applyV6JoinHint(opts, r, hint, &res)
 	}
 	res.StaticRoutes = uniqueStaticRoutes(res.StaticRoutes)
