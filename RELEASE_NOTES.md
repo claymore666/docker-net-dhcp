@@ -8,6 +8,28 @@ The notes below go back to the first release of this project.
 
 [predecessor]: https://github.com/devplayer0/docker-net-dhcp
 
+## v2.4.0 (unreleased)
+
+**The privilege prompt does not change.** No field `docker plugin upgrade`
+prompts on has moved since v2.0.0. This release changes the manifest's
+`env` list only, by one setting, and the daemon does not prompt on it.
+
+<!-- manifest-delta: begin baseline=v2.3.1 -->
+
+| field | v2.3.1 | v2.4.0 | prompted |
+| --- | --- | --- | --- |
+| `linux.capabilities` | `CAP_NET_ADMIN`, `CAP_NET_RAW`, `CAP_SYS_ADMIN`, `CAP_SYS_PTRACE` | `CAP_NET_ADMIN`, `CAP_NET_RAW`, `CAP_SYS_ADMIN`, `CAP_SYS_PTRACE` | no change |
+| `network.type` | `host` | `host` | no change |
+| `ipchost` | `false` | `false` | no change |
+| `pidhost` | `true` | `true` | no change |
+| `mounts` | `/var/run/docker.sock:bind`, `/var/lib/net-dhcp:rbind,rw`, `/var/run/docker:rbind,ro` | `/var/run/docker.sock:bind`, `/var/lib/net-dhcp:rbind,rw`, `/var/run/docker:rbind,ro` | no change |
+| `propagatedmount` | `(absent)` | `(absent)` | no change |
+| `linux.devices` | `(absent)` | `(absent)` | no change |
+| `linux.allowalldevices` | `false` | `false` | no change |
+| `env` | `LOG_LEVEL`, `AWAIT_TIMEOUT`, `STATE_DIR`, `METRICS_ADDR`, `DOCKER_HOST` | `LOG_LEVEL`, `AWAIT_TIMEOUT`, `DHCPV6_ABSENCE_MEMORY`, `STATE_DIR`, `METRICS_ADDR`, `DOCKER_HOST` | no: a setting is not a privilege |
+
+<!-- manifest-delta: end -->
+
 ## v2.3.1
 
 A container with IPv6 starts when a host route and an advertised route
@@ -1049,13 +1071,11 @@ table are read differently: the first is what the prompt shows you, the
 second is not prompted at all.
 
 Every cell below is the full set for that field, not a description of how
-it changed. `scripts/check-manifest-delta-table.sh` derives both columns,
-the left from `v1.9.0:config.json` in git and the right from the manifest
-in the tree, and fails if either disagrees with what is written here. The
+it changed. `scripts/check-manifest-delta-table.sh` derived both columns
+at release, the left from `v1.9.0:config.json` in git and the right from
+the v2.0.0 manifest; it now checks the newest section's table instead. The
 `prompted` column is not derived: which fields the daemon prompts on is a
 property of Docker, not of this manifest.
-
-<!-- manifest-delta: begin baseline=v1.9.0 -->
 
 | field | v1.9.0 | v2.0.0 | prompted |
 | --- | --- | --- | --- |
@@ -1068,8 +1088,6 @@ property of Docker, not of this manifest.
 | `linux.devices` | `(absent)` | `(absent)` | no change |
 | `linux.allowalldevices` | `false` | `false` | **yes**, when true |
 | `env` | `LOG_LEVEL`, `AWAIT_TIMEOUT`, `STATE_DIR`, `OUTAGE_TICK`, `OUTAGE_GRACE`, `METRICS_ADDR` | `LOG_LEVEL`, `AWAIT_TIMEOUT`, `STATE_DIR`, `METRICS_ADDR`, `DOCKER_HOST` | no: a setting is not a privilege |
-
-<!-- manifest-delta: end -->
 
 Read the `env` row against **Removed plugin settings** below: the delta
 is one added and two removed, not one added. `OUTAGE_TICK` and

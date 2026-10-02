@@ -502,6 +502,8 @@ type HealthResponse struct {
 	// DHCPv6AutoFallbacks counts `ipv6_mode=auto` endpoints that formed a SLAAC address after DHCPv6 went silent
 	// (#817).
 	DHCPv6AutoFallbacks int32 `json:"dhcpv6_auto_fallbacks"`
+	// DHCPv6AbsenceRemembered counts auto attaches that skipped the Solicit on a network remembered silent (#1038).
+	DHCPv6AbsenceRemembered int32 `json:"dhcpv6_absence_remembered"`
 	// IPv6LinkEnableFailures counts container links IPv6 could not be enabled on before the DHCPv6 client started.
 	IPv6LinkEnableFailures int32 `json:"ipv6_link_enable_failures"`
 	// RouterAdvertGuardFailures counts RA guard sysctl steps that failed or read back wrong on a container link (#875).
@@ -723,6 +725,7 @@ func (p *Plugin) healthSnapshot() HealthResponse {
 		IPv6SLAACPrefixesIgnored:     p.ipv6SLAACPrefixesIgnored.Load(),
 		IPv6MainPrefixUnmatched:      p.ipv6MainPrefixUnmatched.Load(),
 		DHCPv6AutoFallbacks:          p.dhcpv6AutoFallbacks.Load(),
+		DHCPv6AbsenceRemembered:      p.dhcpv6AbsenceRemembered.Load(),
 		IPv6LinkEnableFailures:       p.ipv6LinkEnableFailures.Load(),
 		RouterAdvertGuardFailures:    p.routerAdvertGuardFailures.Load(),
 		IPv6RouterWithdrawn:          p.ipv6RouterWithdrawn.Load(),

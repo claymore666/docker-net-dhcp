@@ -209,6 +209,7 @@ type HealthResponse struct {
 	DHCPv6SLAACNoPrefix      int32 `json:"dhcpv6_slaac_no_prefix"`
 	DHCPv6SLAACNoAddress     int32 `json:"dhcpv6_slaac_no_address"`
 	DHCPv6AutoFallbacks      int32 `json:"dhcpv6_auto_fallbacks"`
+	DHCPv6AbsenceRemembered  int32 `json:"dhcpv6_absence_remembered"`
 	IPv6SLAACAddresses       int32 `json:"ipv6_slaac_addresses"`
 	IPv6AddressesWithdrawn   int32 `json:"ipv6_addresses_withdrawn"`
 	IPv6SLAACPrefixesIgnored int32 `json:"ipv6_slaac_prefixes_ignored"`

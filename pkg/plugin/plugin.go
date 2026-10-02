@@ -416,6 +416,10 @@ type Options struct {
 	// AwaitTimeout caps the polling helpers (sandbox readiness, link rename, netns appearance).
 	AwaitTimeout time.Duration
 
+	// DHCPv6AbsenceMemory is how long an auto network remembers a silent DHCPv6 server; nil is the default, zero is
+	// off (#1038).
+	DHCPv6AbsenceMemory *time.Duration
+
 	// RequestCaptureDir tees libnetwork request bodies into that directory for replay fixtures, test builds only
 	// (#644).
 	RequestCaptureDir string
@@ -739,6 +743,13 @@ type Plugin struct {
 	// autoFallbackCounted holds the endpoint IDs already in dhcpv6AutoFallbacks: the Join client and the persistent
 	// client each fall back on a silent server, and the counter counts endpoints (#1016).
 	autoFallbackCounted sync.Map
+
+	// dhcpv6AbsenceRemembered counts auto attaches that skipped the Solicit because v6Absence remembered a silent
+	// server (#1038).
+	dhcpv6AbsenceRemembered atomic.Int32
+	v6Absence               v6AbsenceMemory
+	// v6AbsenceServed holds the endpoint IDs whose attach v6Absence served, so their persistent client runs slaac too.
+	v6AbsenceServed sync.Map
 
 	// ipv6LinkEnableFailures counts links whose engine-set disable_ipv6=1 could not be cleared (#868); nothing IPv6
 	// arrives on such a link, so it would otherwise read as a DHCPv6 timeout.
@@ -1421,6 +1432,7 @@ func NewPlugin(opts Options) (*Plugin, error) {
 		ipamIndex:    newIPAMIndex(),
 		ipamReserves: newIPAMReserves(),
 	}
+	p.v6Absence.window = absenceWindowFor(opts)
 
 	// The Docker client is built after p, since the GET-only transport counts refusals on p (#691).
 	client, err := newDockerClient(dockerHostFromEnv(os.Getenv), &p)

@@ -116,6 +116,10 @@ net_dhcp_dhcpv6_slaac_no_prefix_total 6989731
 # TYPE net_dhcp_dhcpv6_auto_fallbacks_total counter
 net_dhcp_dhcpv6_auto_fallbacks_total 1307764
 
+# HELP net_dhcp_dhcpv6_absence_remembered_total Endpoints on an ipv6_mode=auto network that formed their IPv6 address from the router's advertised prefix without soliciting DHCPv6, because an earlier endpoint on the same network fell back after no DHCPv6 server answered, within the plugin's DHCPV6_ABSENCE_MEMORY window. Not a fault: each one skipped the fallback window an attach would otherwise wait out. The memory is cleared when the window runs out, when the network is removed, when an endpoint on the network is granted a DHCPv6 address, and when the plugin restarts. DHCPV6_ABSENCE_MEMORY=0 turns it off.
+# TYPE net_dhcp_dhcpv6_absence_remembered_total counter
+net_dhcp_dhcpv6_absence_remembered_total 2312663
+
 # HELP net_dhcp_dhcpv6_no_router_advert_total Endpoints started on an IPv6 network where no router advertisement arrived inside the acquisition budget. The endpoint keeps running with no IPv6 address. Usually a missing or misconfigured router rather than a plugin fault, but unlike dhcpv6_not_offered it is not a configuration the operator chose.
 # TYPE net_dhcp_dhcpv6_no_router_advert_total counter
 net_dhcp_dhcpv6_no_router_advert_total 2266478

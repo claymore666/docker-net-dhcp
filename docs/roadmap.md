@@ -66,8 +66,11 @@ below decide what is in a release; this page follows them.
   with modified EUI-64 kept as the default
 - [#1033], the DHCPv6 timezone options logged as the v4 ones are
 - [#1034], the vendor-specific options logged
-- [#1038], a network with no DHCPv6 server remembered for a bounded time,
-  so a SLAAC-only segment stops paying a full solicitation per attach
+- [#1038], an `ipv6_mode=auto` network remembers a silent DHCPv6 server
+  for `DHCPV6_ABSENCE_MEMORY` (default ten minutes, `0` turns it off):
+  further endpoints form their address from the advertised prefix without
+  soliciting, counted in `dhcpv6_absence_remembered`; a granted DHCPv6
+  address, removing the network or a restart clears it
 - [#926], DHCPv6 Rapid Commit, the two-message exchange
 - [#927], DHCPv6 temporary addresses (IA_TA)
 - [#214], DHCPv6 prefix delegation (IA_PD), designed first
