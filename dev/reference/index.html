@@ -2573,7 +2573,7 @@ value as an invalid duration.</p>
 <td>all</td>
 <td><code>false</code></td>
 <td>v2.4.0</td>
-<td>Put DHCP option 80 (Rapid Commit, RFC 4039) in every DISCOVER. A server that supports it (dnsmasq <code>dhcp-rapid-commit</code>, Kea <code>rapid-commit</code>) answers with the ACK and the lease takes two messages instead of four; a server that does not answers OFFER and the exchange continues unchanged. A boolean (<code>true</code>, <code>false</code>, <code>1</code>, <code>0</code>); an empty value is unset, and a word that is not a boolean is refused at <code>docker network create</code>. v4 only: the DHCPv6 client sends no Rapid Commit option, and the <code>validate_dhcp</code> probe does not send it. (#1031)</td>
+<td>Put DHCPv4 option 80 (Rapid Commit, RFC 4039) in every DISCOVER and DHCPv6 option 14 (RFC 8415 section 18.2.1) in every Solicit. A server that supports it answers with the ACK or the Reply and the lease takes two messages instead of four; a server that does not answers OFFER or Advertise and the exchange continues unchanged. dnsmasq needs <code>dhcp-rapid-commit</code> for DHCPv4 and nothing for DHCPv6; Kea needs <code>rapid-commit</code> in both. A boolean (<code>true</code>, <code>false</code>, <code>1</code>, <code>0</code>); an empty value is unset, and a word that is not a boolean is refused at <code>docker network create</code>. <code>ipv6_mode=slaac</code> sends no Solicit, so the option changes nothing there, and the <code>validate_dhcp</code> probe does not send it. (#1031, #926)</td>
 </tr>
 <tr>
 <td><code>validate_dhcp</code></td>
@@ -3206,7 +3206,8 @@ in every mode:</p>
 <li><strong>Rapid Commit (option 80)</strong> is not sent unless the network sets
   <code>rapid_commit=true</code>; then every DISCOVER carries it (RFC 4039) and a
   server that allows it answers with the ACK. It is never in the
-  parameter request list. v4 only.</li>
+  parameter request list. The same key puts DHCPv6 option 14 in the
+  Solicit.</li>
 <li><strong>Client identifier (option 61)</strong> is type-byte <code>0x00</code> (RFC 2132 opaque),
   with a payload that depends on the mode:</li>
 </ul>
@@ -3580,6 +3581,21 @@ names leaves an endpoint without a recorded key deaf until its next full
 acquisition. And an Information-request the server asks for on a
 <strong>managed</strong> segment is counted as <code>dhcpv6_config_only</code>, the same as a
 stateless answer, because it is the same message.</p>
+<h4 id="rapid-commit">Rapid Commit<a class="headerlink" href="#rapid-commit" title="Permanent link">&para;</a></h4>
+<table>
+<thead>
+<tr>
+<th>What the client does</th>
+<th>Where it comes from</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Asks for the two-message exchange with option 14 in its Solicit when the network sets <code>rapid_commit=true</code>, and takes a Reply that carries it as the lease (RFC 8415 §18.2.1)</td>
+<td>The DHCP library, <code>rapid_commit</code> (<a href="https://github.com/claymore666/docker-net-dhcp/issues/926">#926</a>)</td>
+</tr>
+</tbody>
+</table>
 <h4 id="if-you-upgrade-onto-20-with-an-ipv6-network-already-created">If you upgrade onto 2.0 with an IPv6 network already created<a class="headerlink" href="#if-you-upgrade-onto-20-with-an-ipv6-network-already-created" title="Permanent link">&para;</a></h4>
 <p>Nothing to do. A network record written by a 1.x build carries
 <code>ipv6=true</code>, that option means the same thing here, and endpoints on it
