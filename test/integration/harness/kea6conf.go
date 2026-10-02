@@ -17,10 +17,11 @@ import (
 	"strings"
 )
 
-// Kea as the DHCPv6 server of the lane (#214). Its AppArmor profile on Ubuntu lets kea-dhcp6 read /etc/kea/**, keep
-// leases only at /var/lib/kea/kea-leases6.csv*, its PID file under /run/kea and its lock under /run/lock/kea, so the
-// fixture keeps every state file there; the packaged Debian server has no profile, so a path outside the list passes on
-// the pool and is denied on an enforcing Ubuntu host (dhcp-golib runtime/kea6_linux_test.go measured the same).
+// Kea as the DHCPv6 server of the lane (#214). Its Ubuntu AppArmor profile lets kea-dhcp6 read /etc/kea/**, own
+// /var/lib/kea/kea-leases6.csv*, /var/lib/kea/kea-dhcp6-serverid, one PID file, one lock file and
+// /var/log/kea/kea-dhcp6.log*. The fixture keeps every file Kea or the readiness wait touches there, the log included:
+// an fd inherited from a temp directory is denied on an enforcing host. Debian ships no profile, so a path outside the
+// list passes on the pool and fails only there (dhcp-golib runtime/kea6_linux_test.go measured the same).
 const (
 	// Kea6ConfDir is a subdirectory of /etc/kea so the packaged kea-dhcp6.conf is never touched and a leftover server
 	// is found by its command line; the file keeps the basename the profile's PID-file rule is written for (#214).
@@ -31,7 +32,11 @@ const (
 	Kea6LeaseFile    = "kea-leases6.csv"
 	Kea6ServerIDFile = "kea-dhcp6-serverid"
 	Kea6PidDir       = "/run/kea"
+	Kea6PidFile      = "kea-dhcp6.kea-dhcp6.pid"
 	Kea6LockDir      = "/run/lock/kea"
+	Kea6LockFile     = "logger_lockfile"
+	Kea6LogDir       = "/var/log/kea"
+	Kea6LogFile      = "kea-dhcp6.log"
 )
 
 // Kea6 pools, inside the V6 fixture's segment and clear of its dnsmasq pool (::10 to ::99) and the bridge's ::1.
@@ -62,10 +67,13 @@ const (
 	Kea6LeasePD = 2
 )
 
-// What the packaged AppArmor profile of kea-dhcp6 allows: the directories whose whole tree is allowed, and the files
-// that are allowed by name pattern (#214).
-var kea6AllowedPrefixes = []string{"/etc/kea/", "/run/kea/", "/run/lock/kea/"}
-var kea6AllowedGlobs = []string{"/var/lib/kea/kea-leases6.csv*", "/var/lib/kea/kea-dhcp6-serverid"}
+// What the packaged AppArmor profile of kea-dhcp6 allows, rule by rule: a directory tree, and files by name pattern
+// (#214). The PID and lock files are single names, not trees.
+var kea6AllowedPrefixes = []string{"/etc/kea/"}
+var kea6AllowedGlobs = []string{
+	"/var/lib/kea/kea-leases6.csv*", "/var/lib/kea/kea-dhcp6-serverid",
+	"/run/kea/kea-dhcp6.kea-dhcp6.pid", "/run/lock/kea/logger_lockfile", "/var/log/kea/kea-dhcp6.log*",
+}
 
 func Kea6PathAllowed(p string) bool {
 	for _, pre := range kea6AllowedPrefixes {
@@ -196,7 +204,7 @@ func (c Kea6Config) JSON() string {
 		Valid: valid, Renew: renew, Rebind: rebind, Preferred: pref,
 		Subnets: []keaSubnet6{s},
 		Loggers: []keaLogger{{Name: "kea-dhcp6", Severity: "INFO",
-			OutputOptions: []keaLogOut{{Output: "stdout", Flush: true}}}},
+			OutputOptions: []keaLogOut{{Output: path.Join(Kea6LogDir, Kea6LogFile), Flush: true}}}},
 	}}
 	b, err := json.MarshalIndent(conf, "", "  ")
 	if err != nil {

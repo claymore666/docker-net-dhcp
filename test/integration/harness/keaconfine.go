@@ -231,7 +231,8 @@ func (c kea6Confinement) String() string {
 // kea6ConfinementHint explains why AppArmor did or may have stopped kea-dhcp6, or returns "" (#214).
 func kea6ConfinementHint(c kea6Confinement) string {
 	const paths = "  The fixture keeps every file where the profile allows it: config under /etc/kea/, leases at\n" +
-		"  /var/lib/kea/kea-leases6.csv, the PID file under /run/kea and the lock under /run/lock/kea.\n"
+		"  /var/lib/kea/kea-leases6.csv, the log at /var/log/kea/kea-dhcp6.log, the PID file at /run/kea and the lock at\n" +
+		"  /run/lock/kea. Kea's own stdout and stderr go to a temp file the profile may deny; readiness does not read it.\n"
 	switch {
 	case c.mode == "enforce" && c.denial != "":
 		return "APPARMOR: the kea-dhcp6 profile is enforcing and the kernel logged a denial:\n    " + c.denial + "\n" + paths

@@ -89,7 +89,7 @@ func NewKea6Fixture(t V6FixtureT, f *V6Fixture, opts ...Kea6Option) *Kea6Fixture
 	}
 	k.tmpDir = tmp
 	k.logFile = filepath.Join(tmp, "kea-dhcp6.log")
-	for _, d := range []string{Kea6ConfDir, Kea6PidDir, Kea6LockDir, Kea6LeaseDir} {
+	for _, d := range []string{Kea6ConfDir, Kea6PidDir, Kea6LockDir, Kea6LeaseDir, Kea6LogDir} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			t.Fatalf("mkdir %s: %v", d, err)
 		}
@@ -218,12 +218,18 @@ func (k *Kea6Fixture) listensOn547() bool {
 	return err == nil && strings.Contains(strings.ToUpper(string(out)), udp547)
 }
 
+// readLog is Kea's own log file (on the profile's allowed path, so readiness does not depend on an inherited fd) and
+// what the process wrote to stdout and stderr before its logger was up (#214).
 func (k *Kea6Fixture) readLog() string {
-	data, err := os.ReadFile(k.logFile)
-	if err != nil {
-		return fmt.Sprintf("(could not read the kea6 log: %v)", err)
+	var sb strings.Builder
+	for _, p := range []string{filepath.Join(Kea6LogDir, Kea6LogFile), k.logFile} {
+		data, err := os.ReadFile(p)
+		if err != nil && !os.IsNotExist(err) {
+			fmt.Fprintf(&sb, "(could not read %s: %v)\n", p, err)
+		}
+		sb.Write(data)
 	}
-	return string(data)
+	return sb.String()
 }
 
 func (k *Kea6Fixture) Stop() {
@@ -263,7 +269,9 @@ func cleanupKea6() {
 	}
 	_ = os.RemoveAll(Kea6ConfDir)
 	leases, _ := filepath.Glob(filepath.Join(Kea6LeaseDir, Kea6LeaseFile+"*"))
-	for _, p := range append(leases, filepath.Join(Kea6LeaseDir, Kea6ServerIDFile)) {
+	logs, _ := filepath.Glob(filepath.Join(Kea6LogDir, Kea6LogFile+"*"))
+	stale := append(leases, logs...)
+	for _, p := range append(stale, filepath.Join(Kea6LeaseDir, Kea6ServerIDFile)) {
 		_ = os.Remove(p)
 	}
 }

@@ -165,9 +165,12 @@ The DHCPv6 fixture (`harness/kea6.go`, [#214](https://github.com/claymore666/doc
 runs `kea-dhcp6` in a namespace on a port of a `V6Fixture` bridge. Unlike the
 v4 fixture it keeps its files on the paths the Ubuntu `kea-dhcp6` profile
 allows: the config at `/etc/kea/dh-itest/kea-dhcp6.conf`, leases at
-`/var/lib/kea/kea-leases6.csv`, the PID file under `/run/kea` and the lock under
-`/run/lock/kea`, so an enforcing host would run it unchanged. It deletes that
-lease file at start and end, so stop the packaged `kea-dhcp6-server` service
+`/var/lib/kea/kea-leases6.csv`, the log at `/var/log/kea/kea-dhcp6.log`, the
+PID file under `/run/kea` and the lock under `/run/lock/kea`. A unit test pins
+every one of those paths against the profile's rules; no enforcing Ubuntu run
+has measured it yet, so the hosted lane (profile in complain mode) logs the
+profile state it found. It deletes the lease file, server id and log at start
+and end, so stop the packaged `kea-dhcp6-server` service
 before a local run.
 
 ## What's covered

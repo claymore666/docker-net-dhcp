@@ -92,7 +92,7 @@ if [[ -n "$pids" ]]; then
 fi
 
 # The Kea6 fixture's server runs from /etc/kea/dh-itest/ (its state files sit on the paths the packaged AppArmor
-# profile allows, so the temp-dir pattern above cannot find it) and keeps files there and in /var/lib/kea.
+# profile allows, so the temp-dir pattern above cannot find it) and keeps files there, in /var/lib/kea and in /var/log/kea.
 pids=$(pgrep -f -- 'kea-dhcp6 -c /etc/kea/dh-itest/' || true)
 if [[ -n "$pids" ]]; then
     kill -TERM $pids 2>/dev/null || true
@@ -101,6 +101,7 @@ if [[ -n "$pids" ]]; then
     echo "  killed: $pids"
 fi
 rm -rf /etc/kea/dh-itest
+rm -f /var/lib/kea/kea-leases6.csv* /var/lib/kea/kea-dhcp6-serverid /var/log/kea/kea-dhcp6.log*
 
 echo "=== removing harness-installed iptables FORWARD rules ==="
 # The bridge fixture inserts ACCEPT rules so docker's default-deny

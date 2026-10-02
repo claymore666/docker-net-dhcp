@@ -117,22 +117,35 @@ func TestKea6Config_AnUnsetTimerIsTheDefaultNotZero(t *testing.T) {
 func TestKea6StatePathsAreOnThePackagedProfilesAllowList(t *testing.T) {
 	conf := path.Join(Kea6ConfDir, Kea6ConfFile)
 	lease := path.Join(Kea6LeaseDir, Kea6LeaseFile)
-	for _, p := range []string{
+	p := parseKea6(t, baseKea6())
+	paths := []string{
 		conf, lease, path.Join(Kea6LeaseDir, Kea6ServerIDFile), lease + ".completed",
-		path.Join(Kea6PidDir, "kea-dhcp6.kea-dhcp6.pid"), path.Join(Kea6LockDir, "logger_lockfile"),
-		parseKea6(t, baseKea6()).Dhcp6.Lease.Name,
-	} {
-		if !Kea6PathAllowed(p) {
+		path.Join(Kea6PidDir, Kea6PidFile), path.Join(Kea6LockDir, Kea6LockFile), path.Join(Kea6LogDir, Kea6LogFile),
+		p.Dhcp6.Lease.Name,
+	}
+	for _, l := range p.Dhcp6.Loggers {
+		for _, o := range l.OutputOptions {
+			out, _ := o["output"].(string)
+			if out == "stdout" || out == "stderr" || out == "syslog" {
+				t.Errorf("logger output %q: a stream is an fd the profile re-checks on an enforcing host, and readiness reads "+
+					"the log file", out)
+			}
+			paths = append(paths, out)
+		}
+	}
+	for _, q := range paths {
+		if !Kea6PathAllowed(q) {
 			t.Errorf("%s is outside what the Ubuntu kea-dhcp6 profile allows: it would pass on the Debian pool and be denied "+
-				"on an enforcing host", p)
+				"on an enforcing host", q)
 		}
 	}
 	if path.Base(conf) != "kea-dhcp6.conf" {
 		t.Errorf("the config is named %q: the profile's PID-file rule is written for kea-dhcp6.conf", path.Base(conf))
 	}
-	for _, p := range []string{"/tmp/kea-leases6.csv", "/var/lib/kea/kea-leases4.csv", "/var/lib/kea/other", "/var/lib/keax/kea-leases6.csv", "/etc/keax/a"} {
-		if Kea6PathAllowed(p) {
-			t.Errorf("Kea6PathAllowed(%q) = true, want false", p)
+	for _, q := range []string{"/tmp/kea-leases6.csv", "/var/lib/kea/kea-leases4.csv", "/var/lib/kea/other", "/var/lib/keax/kea-leases6.csv",
+		"/etc/keax/a", "/run/kea/other.pid", "/run/lock/kea/other", "/tmp/dh-itest-kea6-1/kea-dhcp6.log", "/var/log/kea/kea-dhcp4.log"} {
+		if Kea6PathAllowed(q) {
+			t.Errorf("Kea6PathAllowed(%q) = true, want false", q)
 		}
 	}
 }
