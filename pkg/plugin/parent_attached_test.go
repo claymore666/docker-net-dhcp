@@ -8,6 +8,7 @@ import (
 	"errors"
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
+	"net"
 	"strings"
 	"testing"
 	"time"
@@ -244,5 +245,79 @@ func TestRestartLinkUpCounters_AreNotHealthyAffecting(t *testing.T) {
 	if h.RestartLinkUpWaited != 3 || h.RestartLinkUpTimeouts != 2 {
 		t.Errorf("counters not reported: waited=%d timeouts=%d, want 3 and 2",
 			h.RestartLinkUpWaited, h.RestartLinkUpTimeouts)
+	}
+}
+
+func TestPinChildMAC_PassthruPinsTheParentsMACNotTheChilds(t *testing.T) {
+	parentMAC := net.HardwareAddr{0x5a, 0xa3, 0xda, 0x29, 0x72, 0x98}
+	childMAC := net.HardwareAddr{0xbe, 0xf2, 0x27, 0x8b, 0x4e, 0x1c}
+	parent := &netlink.Device{LinkAttrs: netlink.LinkAttrs{Name: "eth-par", HardwareAddr: parentMAC}}
+	child := func() netlink.Link {
+		return &netlink.Macvlan{LinkAttrs: netlink.LinkAttrs{Name: "dh-child", HardwareAddr: childMAC}}
+	}
+	for _, c := range []struct {
+		name    string
+		opts    DHCPNetworkOptions
+		user    bool
+		wantMAC net.HardwareAddr
+		wantPin net.HardwareAddr
+	}{
+		{"passthru on a kernel that gives the child a random MAC (#1147)",
+			DHCPNetworkOptions{Mode: ModeMacvlan, MacvlanMode: MacvlanModePassthru}, false, parentMAC, parentMAC},
+		{"macvlan bridge keeps pinning the child's own MAC (#103)",
+			DHCPNetworkOptions{Mode: ModeMacvlan, MacvlanMode: MacvlanModeBridge}, false, childMAC, childMAC},
+		{"macvlan with no sub-mode keeps pinning the child's own MAC (#103)",
+			DHCPNetworkOptions{Mode: ModeMacvlan}, false, childMAC, childMAC},
+		{"macvlan with a user MAC is not pinned again",
+			DHCPNetworkOptions{Mode: ModeMacvlan, MacvlanMode: MacvlanModeBridge}, true, childMAC, nil},
+		{"ipvlan is never pinned, the kernel refuses it",
+			DHCPNetworkOptions{Mode: ModeIPvlan}, false, childMAC, nil},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			prev := nlLinkSetHardwareAddr
+			t.Cleanup(func() { nlLinkSetHardwareAddr = prev })
+			var pins []net.HardwareAddr
+			nlLinkSetHardwareAddr = func(_ netlink.Link, hw net.HardwareAddr) error {
+				pins = append(pins, hw)
+				return nil
+			}
+			got, err := pinChildMAC(c.opts, c.user, child(), parent)
+			if err != nil {
+				t.Fatalf("pinChildMAC: %v", err)
+			}
+			if got.String() != c.wantMAC.String() {
+				t.Errorf("returned MAC = %v, want %v: the lease and the client id key on it", got, c.wantMAC)
+			}
+			switch {
+			case c.wantPin == nil && len(pins) != 0:
+				t.Errorf("pinned %v, want no pin", pins)
+			case c.wantPin != nil && (len(pins) != 1 || pins[0].String() != c.wantPin.String()):
+				t.Errorf("pinned %v, want exactly %v", pins, c.wantPin)
+			}
+		})
+	}
+}
+
+func TestPinChildMAC_PassthruWithoutAParentMACIsRefusedBeforeAnyPin(t *testing.T) {
+	prev := nlLinkSetHardwareAddr
+	t.Cleanup(func() { nlLinkSetHardwareAddr = prev })
+	pinned := false
+	nlLinkSetHardwareAddr = func(netlink.Link, net.HardwareAddr) error { pinned = true; return nil }
+	parent := &netlink.Device{LinkAttrs: netlink.LinkAttrs{Name: "eth-par"}}
+	child := &netlink.Macvlan{LinkAttrs: netlink.LinkAttrs{Name: "dh-child", HardwareAddr: net.HardwareAddr{2, 0, 0, 0, 0, 1}}}
+	if _, err := pinChildMAC(DHCPNetworkOptions{Mode: ModeMacvlan, MacvlanMode: MacvlanModePassthru}, false, child, parent); err == nil || pinned {
+		t.Errorf("err = %v, pinned = %v: an empty parent MAC must fail before a pin", err, pinned)
+	}
+}
+
+func TestPinChildMAC_APinErrorNamesTheMode(t *testing.T) {
+	prev := nlLinkSetHardwareAddr
+	t.Cleanup(func() { nlLinkSetHardwareAddr = prev })
+	nlLinkSetHardwareAddr = func(netlink.Link, net.HardwareAddr) error { return unix.EPERM }
+	parent := &netlink.Device{LinkAttrs: netlink.LinkAttrs{Name: "eth-par", HardwareAddr: net.HardwareAddr{2, 0, 0, 0, 0, 2}}}
+	child := &netlink.Macvlan{LinkAttrs: netlink.LinkAttrs{Name: "dh-child", HardwareAddr: net.HardwareAddr{2, 0, 0, 0, 0, 1}}}
+	_, err := pinChildMAC(DHCPNetworkOptions{Mode: ModeMacvlan}, false, child, parent)
+	if !errors.Is(err, unix.EPERM) || !strings.Contains(err.Error(), "failed to pin macvlan link MAC") {
+		t.Errorf("err = %v, want the pin failure wrapped with the mode", err)
 	}
 }
