@@ -410,12 +410,16 @@ func (o *DHCPClientOptions) carryResumedConfig6(ev *lease.Event) {
 	ev.Lease.DomainSearch = append([]string(nil), o.Resume.DomainSearch...)
 }
 
-// carryResumedTemp6 gives a resumed binding its remembered temporary addresses on every event that has none. The
-// library asks for no IA_TA on a resume (RFC 9915 section 18.2.3: a Confirm), and the persistent client always resumes
-// the one-shot's record, so without this the address never reaches the link. It is kept until its own valid lifetime
-// ends and never renewed (RFC 8415 section 21.5, #927).
+// carryResumedTemp6 gives a resumed binding its remembered temporary addresses on every event that has none, until
+// the binding is Lost. The library asks for no IA_TA on a resume (RFC 9915 section 18.2.3: a Confirm), so without this
+// the address never reaches the link; it ends with its own valid lifetime and is never renewed (RFC 8415 section
+// 21.5, #927).
 func (o *DHCPClientOptions) carryResumedTemp6(ev *lease.Event) {
-	if !o.V6 || !o.IPv6Temporary || o.Resume == nil || len(o.Resume.TempAddrs) == 0 {
+	if !o.V6 || !o.IPv6Temporary || o.Resume == nil || len(o.Resume.TempAddrs) == 0 || o.resumedTempDropped {
+		return
+	}
+	if ev.Kind == lease.Lost {
+		o.resumedTempDropped = true
 		return
 	}
 	switch ev.Kind {

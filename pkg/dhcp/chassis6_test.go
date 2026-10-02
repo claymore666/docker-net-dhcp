@@ -710,6 +710,19 @@ func TestCarryResumedTemp6(t *testing.T) {
 		}
 	})
 
+	t.Run("a fresh lease after the resumed one was lost keeps nothing of the old address", func(t *testing.T) {
+		o := &DHCPClientOptions{V6: true, IPv6Temporary: true, Resume: resume()}
+		first := lease.Event{Kind: lease.Renewed}
+		o.carryResumedTemp6(&first)
+		o.carryResumedTemp6(&lease.Event{Kind: lease.Lost})
+		fresh := lease.Event{Kind: lease.Acquired}
+		o.carryResumedTemp6(&fresh)
+		if len(first.Lease.TempAddrs) != 1 || len(fresh.Lease.TempAddrs) != 0 {
+			t.Errorf("before the loss %v, after it %v; want the address, then none (a server that grants no IA_TA)",
+				first.Lease.TempAddrs, fresh.Lease.TempAddrs)
+		}
+	})
+
 	t.Run("the carried slice is a copy", func(t *testing.T) {
 		o := &DHCPClientOptions{V6: true, IPv6Temporary: true, Resume: resume()}
 		ev := lease.Event{Kind: lease.Renewed}

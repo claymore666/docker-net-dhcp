@@ -148,6 +148,8 @@ type DHCPClientOptions struct {
 
 	// resumedConfigTaken marks carryResumedConfig6's one chance at a resumed lease's RFC 3646 lists (#911).
 	resumedConfigTaken bool
+	// resumedTempDropped marks that the resumed binding was Lost, so carryResumedTemp6 stops (#927).
+	resumedTempDropped bool
 	// fqdnReported marks reportFQDN6's one report of the server's option 39 answer (#1029).
 	fqdnReported bool
 

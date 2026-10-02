@@ -168,6 +168,10 @@ func tmp6AssertNone(t *testing.T, ctx context.Context, read tmp6Leases, ctrID, n
 	}
 	if len(stable) > 0 {
 		tmp6AwaitHeld(t, ctx, ctrID, stable[0])
+		time.Sleep(3 * time.Second)
+		if held := tmp6GlobalSet(t, ctx, ctrID); len(held) != 1 {
+			t.Errorf("the container holds %d global IPv6 addresses %v without the option, want the stable one only", len(held), held)
+		}
 	}
 	if e := tmp6EndpointHealth(t, ctx, netID); e.IPv6TemporaryAddress != "" {
 		t.Errorf("/Plugin.Health shows ipv6_temporary_address=%q on a network without the option", e.IPv6TemporaryAddress)
