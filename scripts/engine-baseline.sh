@@ -233,8 +233,8 @@ OPTION_CATALOGUE='mode|shape|the null-bridge, null-macvlan, null-ipvlan and plug
 bridge|shape|the null-bridge shape step
 parent|shape|the null-macvlan, null-ipvlan and plugin-macvlan shape steps, and the null-bridge-own shape step that makes its bridge from parent
 gateway|step|container default route via the named address; control without it: via the server router
-ipv6|step|fresh DHCPv6 reply in the server log for the address the container holds, with --ipam-driver null and with this plugin as IPAM driver, where Docker reports that address; ipv6=true with ipv6_mode=off refused; --ipv6 with this plugin as IPAM driver refused
-ipv6_mode|step|dhcp: fresh DHCPv6 reply for the held address; slaac: fresh router advertisement, the container holds and Docker reports an address in the ra-only prefix; control off: no global address; bad value refused
+ipv6|step|fresh DHCPv6 reply in the server log for the address the container holds and an IPv6 default route via the router link-local address, with --ipam-driver null and with this plugin as IPAM driver, where Docker reports that address; ipv6=true with ipv6_mode=off refused; --ipv6 with this plugin as IPAM driver refused
+ipv6_mode|step|dhcp: fresh DHCPv6 reply for the held address; slaac: fresh router advertisement, the container holds and Docker reports an address in the ra-only prefix; both: an IPv6 default route via the router link-local address; control off: no global address; bad value refused
 ipv6_main_prefix|step|two advertised prefixes: Docker reports the address in the named prefix, both ways round; refused with ipv6_mode=dhcp
 ipv6_temporary|step|a range 2^32 + 1 wide: the container holds two addresses in the prefix, Docker reports one of them, the server logged a DHCPv6 reply for each; control without it: one address; refused with ipv6_mode=slaac and off
 ipv6_auto_strict|step|managed-flag advertisement with a silent DHCPv6 server: true fails docker run, false holds an address in the autonomous prefix
@@ -1053,7 +1053,7 @@ EOF
 # long each start took and how long until the route was there; a refused
 # start, a missing route or a second link fails the cell (#1149).
 v6_start_rate() {
-    local n="$1" i j out fails=0 routed=0 joined=0 atstart=0 extra=0 links g0 g1 t0 t waits="" runs="" msg=""
+    local n="$1" i j out fails=0 routed=0 joined=0 atstart=0 extra=0 links g0 g1 t0 t waits="" runs="" msg="" major
     v6_server "--dhcp-range=${V6_PREFIX_A}10,${V6_PREFIX_A}99,$LEASE_TIME --enable-ra"
     opt_net em-o-v6 -o bridge="$V6_BRIDGE" -o ipv6=true
     for i in $(seq 1 "$n"); do
@@ -1088,12 +1088,30 @@ v6_start_rate() {
     [ "$fails" = 0 ] || fail "the engine refused $fails of $n starts on em-o-v6: $msg"
     [ "$routed" = "$n" ] || fail "$((n - routed)) of $n containers on em-o-v6 had no IPv6 default route via the router's link-local"
     [ "$extra" = 0 ] || fail "$extra of $n containers on em-o-v6 had a second link besides eth0"
+    major="${ENGINE_VERSION%%.*}"
+    case "$major" in ''|*[!0-9]*) fail "engine version '$ENGINE_VERSION' has no numeric major" ;; esac
+    [ "$major" -ge 28 ] || n=0
+    [ "$joined" = "$n" ] || fail "Join handed the engine the IPv6 gateway in $joined starts on $ENGINE_VERSION, want $n"
 }
 
 # join_gw6_lines counts the plugin's log lines saying Join handed the
 # engine the IPv6 gateway (#1149).
 join_gw6_lines() {
     d sh -c 'cat /var/lib/docker/plugins/*/rootfs/var/log/net-dhcp.log 2>/dev/null | grep -c "Setting IPv6 gateway"' | tr -dc '0-9'
+}
+
+# wait_v6_default C LABEL fails unless container C gets an IPv6 default
+# route via the router's link-local; below engine 28 the plugin installs
+# it, on every IPv6 mode (#1149).
+wait_v6_default() {
+    local j
+    for j in $(seq 1 150); do
+        if d docker exec "$1" ip -6 route 2>/dev/null | grep '^default via fe80:' >/dev/null; then
+            return 0
+        fi
+        sleep 0.1
+    done
+    fail "$2: the container has no IPv6 default route via the router's link-local"
 }
 second_server() {
     case "$1" in
@@ -1128,6 +1146,7 @@ v6_dhcp_lease() {
     wait_v6 em-c-v6 "$V6_PREFIX_A"
     fresh_wait "$V6_LOG" "$m" "DHCPREPLY($V6_BRIDGE) $V6 " \
         || fail "$*: the container holds $V6 and the server logged no DHCPv6 reply for it"
+    wait_v6_default em-c-v6 "$*"
     opt_down em-o-v6 em-c-v6
 }
 
@@ -1172,6 +1191,7 @@ opt_ipv6_mode() {
     wait_v6 em-c-v6 "$V6_PREFIX_A"
     addr="$(inspect_v6 em-c-v6 em-o-v6)"
     [ "$addr" = "$V6" ] || fail "ipv6_mode=slaac: the container holds $V6 and Docker reports '$addr'"
+    wait_v6_default em-c-v6 "ipv6_mode=slaac"
     fresh_wait "$V6_LOG" "$m" "RTR-ADVERT($V6_BRIDGE)" \
         || fail "ipv6_mode=slaac: the server logged no router advertisement during the step"
     opt_down em-o-v6 em-c-v6
