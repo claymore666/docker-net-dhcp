@@ -318,8 +318,8 @@ integration-test-shard:
 	     -run '$$sel' ./test/integration/ 2>&1 | tee $(ITEST_LOG_DIR)/$(SUITE)-shard$(SHARD).log"
 	# The harness package, unfiltered, in EVERY shard.
 	#
-	# Three of its test files carry the integration build tag. A -run
-	# regex naming suite tests matches none of them, so sharding without
+	# Its test files carry the integration build tag. A -run regex
+	# naming suite tests matches none of them, so sharding without
 	# this line would drop an entire package, including the guards that
 	# stop a hand-rolled counter read (#405) and a bare HostConfig
 	# literal (#367) creeping back. Silently, with the gate still green.
