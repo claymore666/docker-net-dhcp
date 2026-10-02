@@ -156,8 +156,8 @@ func TestJoin_WritesTheSandboxDefaultsForAnIPv6NetworkAndCountsAFailureWithoutRe
 			}
 			t.Cleanup(func() { v6SandboxDefaultsWriter = prev })
 
-			p := &Plugin{docker: &blockingInspectDocker{}, awaitTimeout: time.Minute,
-				joinHints: make(map[string]joinHint), persistentDHCP: make(map[string]*dhcpManager)}
+			p := onWaitingEngine(&Plugin{docker: &blockingInspectDocker{}, awaitTimeout: time.Minute,
+				joinHints: make(map[string]joinHint), persistentDHCP: make(map[string]*dhcpManager)})
 			mac, _ := net.ParseMAC("02:42:c0:a8:63:3d")
 			a6, _ := netlink.ParseAddr("fd00:99::61/64")
 			hint := joinHint{IPv6: a6, MacAddress: mac, GatewayIPv6: tc.gateway6}

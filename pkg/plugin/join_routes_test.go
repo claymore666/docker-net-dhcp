@@ -70,8 +70,8 @@ func runJoin(t *testing.T, opts DHCPNetworkOptions, hint joinHint) JoinResponse 
 	if err := saveOptions("n1125", opts); err != nil {
 		t.Fatalf("saveOptions: %v", err)
 	}
-	p := &Plugin{docker: &blockingInspectDocker{}, awaitTimeout: time.Minute,
-		joinHints: make(map[string]joinHint), persistentDHCP: make(map[string]*dhcpManager)}
+	p := onWaitingEngine(&Plugin{docker: &blockingInspectDocker{}, awaitTimeout: time.Minute,
+		joinHints: make(map[string]joinHint), persistentDHCP: make(map[string]*dhcpManager)})
 	if hint.MacAddress == nil {
 		hint.MacAddress, _ = net.ParseMAC("02:42:c0:a8:63:3d")
 	}
