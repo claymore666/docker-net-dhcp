@@ -1741,6 +1741,19 @@ stateless answer, because it is the same message.
 |---|---|
 | Asks for the two-message exchange with option 14 in its Solicit when the network sets `rapid_commit=true`, and takes a Reply that carries it as the lease (RFC 8415 §18.2.1) | The DHCP library, `rapid_commit` ([#926](https://github.com/claymore666/docker-net-dhcp/issues/926)) |
 
+#### IPv6-Only Preferred
+
+The client never asks for IPv6-Only Preferred (DHCPv4 option 108, RFC
+8925), and there is no option to turn it on. An endpoint on a network
+with an IPv4 pool must hold an IPv4 address, which makes it an
+IPv4-requiring host, and RFC 8925 section 3.2 forbids such a host from
+putting the option code in its parameter request list. On an
+"IPv6-mostly" LAN the endpoint therefore keeps its IPv4 lease, as RFC
+8925 says a host that did not ask must. The DHCP library implements the
+option for consumers whose endpoints can live on IPv6 alone, and refuses
+a parameter request list that names it unless that consumer says so
+([#1027](https://github.com/claymore666/docker-net-dhcp/issues/1027)).
+
 #### If you upgrade onto 2.0 with an IPv6 network already created
 
 Nothing to do. A network record written by a 1.x build carries
