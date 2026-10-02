@@ -226,9 +226,10 @@ jobs:
       # inside the suite.
       - name: Verify kea resolves in the PATH the suite will use
         run: |
-          sudo env "PATH=$PATH" sh -c 'command -v kea-dhcp4' \
+          sudo env "PATH=$PATH" sh -c 'command -v kea-dhcp4 && command -v kea-dhcp6' \
             || { echo "::error title=kea not on the suite PATH::installed, but not resolvable under sudo env PATH=$PATH"; exit 1; }
           sudo env "PATH=$PATH" kea-dhcp4 -V | head -1
+          sudo env "PATH=$PATH" kea-dhcp6 -V | head -1
 
       # The check that would have caught the first attempt. Whether a
       # unit is masked is the plugin's own opinion of the situation; what
