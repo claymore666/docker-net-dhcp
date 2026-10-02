@@ -1924,10 +1924,11 @@ opt___ip() {
 }
 
 # The engines that program the IPv6 gateway with no wait for the link
-# (#1149) are measured on a bare netns and on the plugin's own network.
+# (#1149) are measured on a bare netns and on the plugin's own network;
+# 8 starts keep the step under two minutes per cell.
 STEP=v6-start-rate
 v6_race_probe 50
-v6_start_rate 10
+v6_start_rate 8
 
 STEP=option-steps
 option_steps="$(derive_option_steps)" \
