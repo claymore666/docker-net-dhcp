@@ -151,8 +151,6 @@ func TestTakeAdvertChange_FirstSightIsSilent(t *testing.T) {
 	}
 }
 
-// Below engine 28 the plugin installs the IPv6 default route itself; a bind before any advertisement must not hide
-// the router that arrives after it (#1149).
 func TestTakeAdvertChange_AGatewayAfterABindWithoutOneIsReported(t *testing.T) {
 	c := &DHCPClient{}
 	l := lease.Lease{}
