@@ -262,7 +262,7 @@ func TestPinChildMAC_PassthruPinsTheParentsMACNotTheChilds(t *testing.T) {
 		wantMAC net.HardwareAddr
 		wantPin net.HardwareAddr
 	}{
-		{"passthru on a kernel that gives the child a random MAC (#1147)",
+		{"passthru whose child MAC differs from the parent's is pinned to the parent's (#1147)",
 			DHCPNetworkOptions{Mode: ModeMacvlan, MacvlanMode: MacvlanModePassthru}, false, parentMAC, parentMAC},
 		{"macvlan bridge keeps pinning the child's own MAC (#103)",
 			DHCPNetworkOptions{Mode: ModeMacvlan, MacvlanMode: MacvlanModeBridge}, false, childMAC, childMAC},

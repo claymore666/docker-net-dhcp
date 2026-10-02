@@ -121,8 +121,8 @@ func preflightProbeOptions(probeMAC net.HardwareAddr, pol serverPolicy) *dhcp.DH
 }
 
 // pinPassthruProbe pins a passthru probe child to the parent's MAC, read before the child was added and shared with
-// CreateEndpoint's pin: the child's own MAC may be a random one on a newer kernel, which the pin would write onto the
-// parent for the probe's duration, and an unpinned child is rewritten by udev with the same effect (#103, #905, #1147).
+// CreateEndpoint's pin: an unpinned passthru child is rewritten by udev and the rewrite lands on the parent, and a pin
+// to a MAC read from the child afterwards would write that rewritten address onto the parent (#103, #905, #1147).
 func pinPassthruProbe(opts DHCPNetworkOptions, parent netlink.Link, name string) error {
 	if !opts.macvlanPassthru() {
 		return nil

@@ -203,9 +203,9 @@ func (p *Plugin) noteRestartLinkUpWait(r CreateEndpointRequest, waited bool, err
 // pinChildMAC returns the MAC the child's lease is keyed on and pins it (#103): udev's MACAddressPolicy=persistent, the
 // Debian default, replaces a randomly assigned MAC just after creation, and a set addr_assign_type stops it. Without the
 // pin the one-shot DHCPv6 poisoned the server's neighbour cache for about 45 s on the capture. ipvlan refuses any MAC set
-// with EOPNOTSUPP and a user MAC is already on the child. A passthru child is pinned to the parent's MAC, read before the
-// add: the kernel gives it either the parent's or a random one (random on the hosted runner image 20260927.320.1), and
-// pinning the child's own would write that random MAC onto the parent (#1147, #905).
+// with EOPNOTSUPP and a user MAC is already on the child. A passthru child shares its parent's MAC and an address set
+// or rewritten on the child lands on the parent, so it is pinned to the parent's MAC read before the add, never to one
+// read from the child afterwards, which udev may already have rewritten (#1147, #905).
 func pinChildMAC(opts DHCPNetworkOptions, userMAC bool, fresh, parent netlink.Link) (net.HardwareAddr, error) {
 	mac := fresh.Attrs().HardwareAddr
 	if opts.macvlanPassthru() {
