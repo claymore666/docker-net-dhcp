@@ -32,8 +32,7 @@ type EndpointHealth struct {
 	RenewAt   string `json:"renew_at,omitempty"`
 	RebindAt  string `json:"rebind_at,omitempty"`
 	ExpiresAt string `json:"expires_at,omitempty"`
-	// IPv6TemporaryAddress is the first IA_TA address of the endpoint's DHCPv6 lease, in CIDR form, empty when it has none
-	// (#927).
+	// IPv6TemporaryAddress is the first IA_TA address of the endpoint's DHCPv6 lease, CIDR form, empty if none (#927).
 	IPv6TemporaryAddress string `json:"ipv6_temporary_address,omitempty"`
 	// Server is the DHCP server that granted the lease (option 54).
 	Server string `json:"server,omitempty"`

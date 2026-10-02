@@ -87,8 +87,7 @@ type dhcpManager struct {
 	// seenV4 is the v4 client as its event goroutine last recorded it; the health entry renders its lease from here
 	// because the library marks a lease held before it emits the event (#1044).
 	seenV4 v4Record
-	// tempV6 is the first IA_TA address of the DHCPv6 lease the event goroutine last applied, for the health entry
-	// (#927).
+	// tempV6 is the first IA_TA address of the DHCPv6 lease last applied, for the health entry (#927).
 	tempV6 v6TempRecord
 
 	// recordID is the durable lease record (#899); empty in unit tests and adopted endpoints, where record calls no-op.
@@ -296,8 +295,7 @@ type v6TempRecord struct {
 	validUntil time.Time
 }
 
-// noteTempV6 records the v6 lease's first temporary address, or clears the record when the lease carries none, so a
-// withdrawn address is not shown (#927).
+// noteTempV6 records the v6 lease's first temporary address, or clears it when the lease has none (#927).
 func (m *dhcpManager) noteTempV6(temps []dhcp.V6Addr, now time.Time) {
 	var rec v6TempRecord
 	if len(temps) > 0 {
@@ -736,8 +734,7 @@ func v6WantedAddrs(main *netlink.Addr, info dhcp.Info) ([]wantedV6Addr, error) {
 		}
 		out = append(out, w)
 	}
-	// The IA_TA addresses come last, so a failure on one never keeps the stable address off the link; a temporary
-	// address the lease no longer carries is withdrawn like any other (#927).
+	// The IA_TA addresses come last, so a failure on one never keeps the stable address off the link (#927).
 	held := make(map[string]bool, len(out))
 	for _, w := range out {
 		held[w.key] = true

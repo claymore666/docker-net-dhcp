@@ -114,8 +114,7 @@ func TestClientOptionLiterals_EverySiteCarriesIPv6Temporary(t *testing.T) {
 				if kv, ok := e.(*ast.KeyValueExpr); ok {
 					if id, ok := kv.Key.(*ast.Ident); ok {
 						keys[id.Name] = true
-						// The value is the network's own field: a constant or a negation asks the wrong thing at every
-						// site (#927).
+						// The value is the network's own field: a constant or a negation asks wrongly (#927).
 						if sel, isSel := kv.Value.(*ast.SelectorExpr); id.Name == "IPv6Temporary" && (!isSel || sel.Sel.Name != "IPv6Temporary") {
 							t.Errorf("%s: IPv6Temporary is not copied from the network's IPv6Temporary field", fset.Position(kv.Pos()))
 						}
@@ -294,8 +293,7 @@ func TestTempV6Address_IsEmptyOnceItsValidLifetimeHasPassed(t *testing.T) {
 	}
 }
 
-// A renewal is what feeds the health record in production; the tests above fill it by hand, so this one goes
-// through renew() itself (#927, RFC 8415 section 21.5).
+// A renewal feeds the health record in production; this one goes through renew() itself (#927).
 func TestRenew_ARenewedV6LeaseFeedsTheTemporaryAddressRecord(t *testing.T) {
 	m := &dhcpManager{plugin: &Plugin{}}
 

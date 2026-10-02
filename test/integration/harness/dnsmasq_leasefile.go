@@ -61,8 +61,7 @@ func DnsmasqLease6Name(leases, addr string) (string, bool) {
 	return "", false
 }
 
-// DnsmasqLease6Addrs returns the stable and the temporary addresses dnsmasq holds for duid. dnsmasq writes an IA_TA
-// lease with an IAID of "T" and the number, an IA_NA lease with the bare number (dnsmasq lease.c, #927).
+// DnsmasqLease6Addrs splits duid's lease lines into IA_NA and IA_TA (IAID "T" plus a number) addresses (#927).
 func DnsmasqLease6Addrs(leases, duid string) (stable, temporary []string) {
 	v6 := false
 	for _, line := range strings.Split(leases, "\n") {

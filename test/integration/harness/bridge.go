@@ -39,8 +39,7 @@ const (
 
 	// Dual-stack constants for the bridge fixture (#103), on a ULA prefix distinct from the macvlan fixture's.
 	BridgeAddrV6 = "fd00:6470:6864::1/64"
-	// The range spans 2^32 + 1 addresses: dnsmasq draws a client's stable and temporary addresses from one range at a
-	// random start, so a collision is about 2.3e-10 here against 1 in 138 on the former ::10 to ::99 (#927).
+	// 2^32 + 1 addresses, so a stable and a temporary draw collide in about 2.3e-10 of runs (#927).
 	BridgeDHCPv6PoolStart = "fd00:6470:6864::10"
 	BridgeDHCPv6PoolEnd   = "fd00:6470:6864::1:0:10"
 	BridgeSubnetV6CIDR    = "fd00:6470:6864::/64"
@@ -194,7 +193,6 @@ func (f *Fixture) DumpBridgeLogs(write func(string)) {
 // BridgeDnsmasqLogPath returns the path of the bridge fixture's dnsmasq log, empty if it never started (#875).
 func (f *Fixture) BridgeDnsmasqLogPath() string { return f.bridgeDnsmasqLog }
 
-// BridgeLeaseFile is the bridge dnsmasq's lease file (#927).
 func (f *Fixture) BridgeLeaseFile() string { return f.bridgeLeaseFile }
 
 // CountBridgeLogLines counts bridge dnsmasq log lines containing every substring, case-insensitively.

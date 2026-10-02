@@ -25,8 +25,7 @@ import (
 // tmp6Leases reads the stable and temporary addresses the server holds for duid.
 type tmp6Leases func(duid string) (stable, temporary []string)
 
-// tmp6AwaitLeases polls the server's lease file until it holds a stable address for duid and, when wantTemp is set, a
-// temporary one too.
+// tmp6AwaitLeases polls the lease file until duid holds a stable and, with wantTemp, a temporary address (#927).
 func tmp6AwaitLeases(t *testing.T, read tmp6Leases, duid string, wantTemp bool) (stable, temporary []string) {
 	t.Helper()
 	for end := time.Now().Add(30 * time.Second); time.Now().Before(end); time.Sleep(250 * time.Millisecond) {

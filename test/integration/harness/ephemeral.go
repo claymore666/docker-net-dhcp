@@ -44,10 +44,8 @@ const (
 	EphemeralShiftedPoolStart = "192.168.101.150"
 	EphemeralShiftedPoolEnd   = "192.168.101.199"
 
-	// The v6 prefix is distinct from the shared fixture's and the bridge fixture's, so a stray lease cannot be read as theirs.
 	EphemeralServerAddrV6 = "fd00:6470:6866::1/64"
-	// EphemeralWideV6Start and End span 2^32 + 1 addresses. dnsmasq draws a client's stable and temporary addresses from
-	// one range at a random start, so a collision is about 2.3e-10 here against 1 in 138 on the shared fixture's range (#927).
+	// EphemeralWideV6Start and End span 2^32 + 1 addresses, as the bridge pool does (#927).
 	EphemeralWideV6Start = "fd00:6470:6866::10"
 	EphemeralWideV6End   = "fd00:6470:6866::1:0:10"
 
@@ -106,7 +104,6 @@ type EphemeralFixture struct {
 	dnsDomain string
 	dnsPort   int
 
-	// v6Start, v6End and v6ServerCIDR give the dnsmasq backend a DHCPv6 range; empty serves IPv4 only (#927).
 	v6Start, v6End, v6ServerCIDR string
 
 	started bool
@@ -182,9 +179,7 @@ func WithDnsmasqBackend() EphemeralOption {
 	}
 }
 
-// WithV6Range makes the dnsmasq backend also serve stateful DHCPv6 from start to end, with serverCIDR on the server end (#927).
-//
-// A test that must tell a stable address from a temporary one needs a range wide enough that the two cannot collide.
+// WithV6Range makes the dnsmasq backend also serve DHCPv6 from start to end, serverCIDR on the server end (#927).
 func WithV6Range(serverCIDR, start, end string) EphemeralOption {
 	return func(ef *EphemeralFixture) {
 		ef.backend = backendDnsmasq
@@ -750,7 +745,6 @@ func (ef *EphemeralFixture) LeaseExpiry(mac string) (time.Time, bool) {
 	return DnsmasqLeaseExpiry(string(b), mac)
 }
 
-// V6LeaseAddrs returns the stable and the temporary DHCPv6 addresses the dnsmasq backend wrote for duid (#927).
 func (ef *EphemeralFixture) V6LeaseAddrs(duid string) (stable, temporary []string) {
 	ef.t.Helper()
 	if ef.backend != backendDnsmasq {
