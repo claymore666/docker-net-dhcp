@@ -1379,8 +1379,7 @@ func (p *Plugin) appendDHCPStaticRoutes(opts DHCPNetworkOptions, r JoinRequest, 
 func (p *Plugin) applyV6JoinHint(opts DHCPNetworkOptions, r JoinRequest, hint joinHint, res *JoinResponse) {
 	routes := hint.RoutesIPv6
 	if !p.engineWaitsForV6Link() {
-		// The persistent client installs both on its first lease or advertisement (reconcileV6DefaultRoute,
-		// reconcileAdvertisedRoutes), so the engine is not asked to look them up (#1149).
+		// The persistent client installs both on its first lease or advertisement (#1149).
 		var withheld []*StaticRoute
 		routes, withheld = splitLinkLocalNextHops(routes)
 		if hint.GatewayIPv6 != "" || len(withheld) > 0 {

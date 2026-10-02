@@ -115,14 +115,11 @@ func (p *Plugin) engineSnapshot() engineIdentity {
 	return engineIdentity{Version: unknownEngineField, APIVersion: unknownEngineField}
 }
 
-// MinEngineV6GatewayWaitVersion is the first engine line whose libnetwork waits for the moved-in link to run before
-// it looks up the route to the IPv6 gateway and next hops (osl AddInterface waitForIfUpped, read in 28.0.4, absent in
-// 24.0.9 and 27.5.1). Without the wait the lookup can come before the kernel's fe80::/64 route and the start fails
-// "route for the gateway ... could not be found"; 24.0.9 and 27.5.1 each refused 1 start in 20 (#1149).
+// MinEngineV6GatewayWaitVersion is the first engine line that waits for the link to run before it looks up the IPv6
+// gateway's route; 24.0.9 and 27.5.1 do not and refused 1 start in 20 each, route not found (moby osl, #1149).
 const MinEngineV6GatewayWaitVersion = "28.0"
 
-// engineWaitsForV6Link is false on an unknown engine: a withheld gateway costs the container a short wait for the
-// plugin's route, a returned one can fail the start (#1149).
+// engineWaitsForV6Link is false on an unknown engine: withheld, the gateway costs a wait; returned, a start (#1149).
 func (p *Plugin) engineWaitsForV6Link() bool {
 	below, known := engineBelowFloor(p.engineSnapshot().Version, MinEngineV6GatewayWaitVersion)
 	return known && !below

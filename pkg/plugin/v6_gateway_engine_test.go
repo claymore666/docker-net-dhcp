@@ -12,7 +12,6 @@ import (
 	"github.com/vishvananda/netlink"
 )
 
-// onWaitingEngine runs p on an engine that waits for the link before it programs the IPv6 gateway (#1149).
 func onWaitingEngine(p *Plugin) *Plugin {
 	p.engine.Store(&engineIdentity{Version: "28.5.2", APIVersion: "1.51"})
 	return p
@@ -51,7 +50,6 @@ func TestEngineWaitsForV6Link_OnEachSideOfThe28Line(t *testing.T) {
 	}
 }
 
-// joinOnEngine runs the whole Join on one engine version and returns the answer and the manager's v6 mark.
 func joinOnEngine(t *testing.T, version string, opts DHCPNetworkOptions, hint joinHint) (JoinResponse, bool, string) {
 	t.Helper()
 	withStateDir(t, t.TempDir())
