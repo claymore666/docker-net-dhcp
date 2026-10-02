@@ -1585,6 +1585,11 @@ network create -o key=value</code>, or <code>driver_opts:</code> in Compose:</p>
 <td>(first advertised)</td>
 </tr>
 <tr>
+<td><code>ipv6_temporary</code></td>
+<td>all</td>
+<td><code>false</code></td>
+</tr>
+<tr>
 <td><code>ipv6_auto_strict</code></td>
 <td>all</td>
 <td><code>false</code></td>
@@ -2483,6 +2488,13 @@ value as an invalid duration.</p>
 <td>(first advertised)</td>
 <td><strong>v2.2.0</strong></td>
 <td>Which of an endpoint's IPv6 addresses is the one Docker is told about. A prefix in CIDR form with no host bits set, for example <code>2001:db8:1::/64</code>. The endpoint's address inside that prefix becomes the <code>AddressIPv6</code> <code>docker inspect</code> shows and the one the engine records; the container keeps every address the advertisement formed regardless. Use it on a link that advertises both a unique-local and a global prefix, where the address other hosts reach the container on is the global one and the plugin would otherwise report whichever prefix the router lists first. If no address falls inside the named prefix, the first advertised one is reported instead, <code>ipv6_main_prefix_unmatched</code> moves once for the endpoint, and the log line names both prefixes; the endpoint is not failed, because the container's addresses are correct and only the name Docker shows is not the one asked for. <strong>Accepted only where the addresses are formed from advertisements</strong>, <code>ipv6_mode=slaac</code> and <code>ipv6_mode=auto</code>. On <code>ipv6_mode=dhcp</code> there is one server-granted address and the option could only ever do nothing, so it is refused at <code>docker network create</code> rather than accepted and ignored.</td>
+</tr>
+<tr>
+<td><code>ipv6_temporary</code></td>
+<td>all</td>
+<td><code>false</code></td>
+<td>v2.4.0</td>
+<td>Ask the DHCPv6 server for a temporary address (an IA_TA, RFC 8415 section 21.5) in every Solicit and Request, beside the stable one. The address is installed on the container link next to the stable address with its own preferred and valid lifetimes. It is never the address Docker is told about (<code>GlobalIPv6Address</code> stays the stable one), it is never renewed, and it is removed when its valid lifetime ends or the library drops it. It is shown on <code>/Plugin.Health</code> as <code>ipv6_temporary_address</code>. A server that grants no temporary address answers the IA_NA alone and the endpoint runs as without the key. A boolean (<code>true</code>, <code>false</code>, <code>1</code>, <code>0</code>); an empty value is unset, and a word that is not a boolean is refused at <code>docker network create</code>. Refused with <code>ipv6_mode=off</code> and <code>ipv6_mode=slaac</code>, which send no Solicit; with <code>ipv6_mode=auto</code> it applies when the network leases over DHCPv6 and does nothing on the SLAAC fallback. No kernel temporary flag is set on the address, so the kernel does not regenerate it and does not rank it below the stable one: with both on the link, Linux takes the most recently added address as the source of a new connection, which is the temporary one. A plugin restart resumes the lease with a Confirm, which carries no IA_TA, so the plugin keeps the remembered temporary address until its own valid lifetime ends and asks for no other. dnsmasq grants one from its range; Kea needs a <code>temporary</code> pool. (#927)</td>
 </tr>
 <tr>
 <td><code>ipv6_auto_strict</code></td>
@@ -3607,6 +3619,25 @@ putting the option code in its parameter request list. On an
 option for consumers whose endpoints can live on IPv6 alone, and refuses
 a parameter request list that names it unless that consumer says so
 (<a href="https://github.com/claymore666/docker-net-dhcp/issues/1027">#1027</a>).</p>
+<h4 id="temporary-addresses">Temporary addresses<a class="headerlink" href="#temporary-addresses" title="Permanent link">&para;</a></h4>
+<table>
+<thead>
+<tr>
+<th>What the client does</th>
+<th>Where it comes from</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Puts an IA_TA beside the IA_NA in its Solicit and Request when the network sets <code>ipv6_temporary=true</code>, installs the temporary address next to the stable one with its own lifetimes, and never renews it (RFC 8415 §13.2, §21.5)</td>
+<td>The DHCP library, <code>ipv6_temporary</code> (<a href="https://github.com/claymore666/docker-net-dhcp/issues/927">#927</a>)</td>
+</tr>
+<tr>
+<td>Reports the stable address to Docker and the temporary one on <code>/Plugin.Health</code> as <code>ipv6_temporary_address</code></td>
+<td>The plugin, <code>ipv6_temporary</code> (<a href="https://github.com/claymore666/docker-net-dhcp/issues/927">#927</a>)</td>
+</tr>
+</tbody>
+</table>
 <h4 id="if-you-upgrade-onto-20-with-an-ipv6-network-already-created">If you upgrade onto 2.0 with an IPv6 network already created<a class="headerlink" href="#if-you-upgrade-onto-20-with-an-ipv6-network-already-created" title="Permanent link">&para;</a></h4>
 <p>Nothing to do. A network record written by a 1.x build carries
 <code>ipv6=true</code>, that option means the same thing here, and endpoints on it
@@ -3887,7 +3918,7 @@ already parse it were not told to expect a new type.</p>
 <td><code>endpoints</code></td>
 <td>n/a</td>
 <td>n/a</td>
-<td><em>(2.0-alpha.1+)</em> One entry per managed endpoint, and the array is exactly <code>active_endpoints</code> long, sorted by endpoint id, so two consecutive polls of an unchanged host produce the same document. Each entry: <code>endpoint</code> and <code>network</code> (short ids), <code>mode</code>, <code>address</code> (CIDR), <code>lease_state</code> (<code>bound</code>, <code>acquiring</code>, or since v2.3.0 <code>link_local</code> for an endpoint on its <a href="#link-local-fallback-link_local_fallback">link-local fallback</a>, whose <code>address</code> is then the 169.254 one), <code>renew_at</code> / <code>rebind_at</code> / <code>expires_at</code> (T1, T2 and the lease end as <strong>absolute</strong> RFC 3339 times, because a remaining-seconds figure is meaningless once the document has been cached or pasted into an issue; an absent <code>expires_at</code> on a bound endpoint is the protocol's infinite lease), <code>server</code> (option 54), <code>last_event</code> and <code>last_event_at</code> (since v2.2.3 these and the lease fields come from one record, so a <code>bound</code> entry always names the event that bound it, #1044), and the RFC 5227 pair <code>conflict_check</code> (the <a href="#plugin-settings"><code>conflict_check</code></a> mode in force) and <code>acd_phase</code> (<code>idle</code>, <code>probing</code>, <code>settling</code>, <code>announcing</code>, <code>defending</code>). Read the phase <strong>against</strong> the mode and never alone: in <code>conflict_check=off</code> the phase is <code>idle</code> because nothing runs. <code>unknown</code> for both means the endpoint has no client yet. <strong>On a dual-stack endpoint every field of the entry describes the IPv4 client</strong>, which is the one the RFC 5227 pair can describe at all: a container with an <code>ipv6=true</code> network has a DHCPv6 lease this array does not report, and <code>docker inspect</code> is where to read it. Not on <code>/metrics</code>: per-endpoint labels are the thing <a href="https://github.com/claymore666/docker-net-dhcp/blob/main/SECURITY.md"><code>SECURITY.md</code></a> promises are absent from the exposition.</td>
+<td><em>(2.0-alpha.1+)</em> One entry per managed endpoint, and the array is exactly <code>active_endpoints</code> long, sorted by endpoint id, so two consecutive polls of an unchanged host produce the same document. Each entry: <code>endpoint</code> and <code>network</code> (short ids), <code>mode</code>, <code>address</code> (CIDR), <code>lease_state</code> (<code>bound</code>, <code>acquiring</code>, or since v2.3.0 <code>link_local</code> for an endpoint on its <a href="#link-local-fallback-link_local_fallback">link-local fallback</a>, whose <code>address</code> is then the 169.254 one), <code>renew_at</code> / <code>rebind_at</code> / <code>expires_at</code> (T1, T2 and the lease end as <strong>absolute</strong> RFC 3339 times, because a remaining-seconds figure is meaningless once the document has been cached or pasted into an issue; an absent <code>expires_at</code> on a bound endpoint is the protocol's infinite lease), <code>server</code> (option 54), <code>last_event</code> and <code>last_event_at</code> (since v2.2.3 these and the lease fields come from one record, so a <code>bound</code> entry always names the event that bound it, #1044), and the RFC 5227 pair <code>conflict_check</code> (the <a href="#plugin-settings"><code>conflict_check</code></a> mode in force) and <code>acd_phase</code> (<code>idle</code>, <code>probing</code>, <code>settling</code>, <code>announcing</code>, <code>defending</code>). Read the phase <strong>against</strong> the mode and never alone: in <code>conflict_check=off</code> the phase is <code>idle</code> because nothing runs. <code>unknown</code> for both means the endpoint has no client yet. <strong>On a dual-stack endpoint every field of the entry describes the IPv4 client</strong>, which is the one the RFC 5227 pair can describe at all, with one exception: since v2.4.0 <code>ipv6_temporary_address</code> (CIDR, absent when there is none) is the temporary address of the endpoint's DHCPv6 lease on a network with <a href="#driver-options-network-level"><code>ipv6_temporary</code></a>. The rest of a container's DHCPv6 lease this array does not report, and <code>docker inspect</code> is where to read it. Not on <code>/metrics</code>: per-endpoint labels are the thing <a href="https://github.com/claymore666/docker-net-dhcp/blob/main/SECURITY.md"><code>SECURITY.md</code></a> promises are absent from the exposition.</td>
 </tr>
 <tr>
 <td><code>healthy</code></td>
