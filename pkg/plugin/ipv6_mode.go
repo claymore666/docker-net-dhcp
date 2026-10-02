@@ -137,7 +137,7 @@ func (p *Plugin) v6Wiring(base *dhcp.DHCPClientOptions, opts DHCPNetworkOptions,
 	base.Mode6 = mode
 	base.StrictAuto6 = opts.IPv6AutoStrict
 	if mode == proto.Mode6Auto && p != nil && p.v6AbsenceServedEndpoint(endpointID) {
-		// The persistent client follows its attach: soliciting in auto could bind a lease and move the address (#1038).
+		// A served endpoint runs slaac at both clients: soliciting in auto could bind a lease and move the address (#1038).
 		base.Mode6 = proto.Mode6SLAAC
 	}
 	main, err := opts.ipv6MainPrefix()

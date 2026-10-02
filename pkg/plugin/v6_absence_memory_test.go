@@ -358,3 +358,26 @@ func TestV6AbsenceMemory_ThePersistentClientFollowsItsAttach(t *testing.T) {
 		t.Errorf("a deleted endpoint is still marked served")
 	}
 }
+
+func TestV6AbsenceMemory_AFailedServedAttachLeavesNoServedMark(t *testing.T) {
+	r := newAbsenceRig(t, 10*time.Minute)
+	if _, err := r.attach(t, absenceNetA, "ep-1", autoOpts()); err != nil {
+		t.Fatalf("first attach: %v", err)
+	}
+	r.set(outcomeSilentFatal)
+	m, err := r.attach(t, absenceNetA, "ep-failed", autoOpts())
+	if m != proto.Mode6SLAAC || err == nil {
+		t.Fatalf("served attach whose acquisition fails: mode %v err %v, want slaac and an error", m, err)
+	}
+	if r.p.v6AbsenceServedEndpoint("ep-failed") {
+		t.Errorf("a served attach that failed is still marked served; Docker sends no DeleteEndpoint " +
+			"for a CreateEndpoint that failed, so nothing would ever remove the mark")
+	}
+	r.set(outcomeSLAAC)
+	if _, err := r.attach(t, absenceNetA, "ep-ok", autoOpts()); err != nil {
+		t.Fatalf("served attach: %v", err)
+	}
+	if !r.p.v6AbsenceServedEndpoint("ep-ok") {
+		t.Errorf("a served attach that succeeded is not marked served, so its persistent client would solicit")
+	}
+}

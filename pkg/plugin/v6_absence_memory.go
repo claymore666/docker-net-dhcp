@@ -78,28 +78,35 @@ func (m *v6AbsenceMemory) age(networkID string) (time.Duration, bool) {
 	return age, true
 }
 
-// v6AbsenceWiring runs an auto attach as slaac while its network remembers a silent server, else arms the record.
-// The library reads Params6.AutoFallback zero as its 6 s default and negative as strict, so no value skips the
-// Solicit; Mode6SLAAC does (#1038).
-func (p *Plugin) v6AbsenceWiring(base *dhcp.DHCPClientOptions, opts DHCPNetworkOptions, networkID, endpointID string) {
-	if base.Mode6 != proto.Mode6Auto || base.StrictAuto6 {
-		return
+// v6AbsenceServe marks an auto endpoint served while its network remembers a silent server, so v6Wiring runs both
+// of its clients as slaac. The library reads Params6.AutoFallback zero as its 6 s default and negative as strict, so
+// no value skips the Solicit; Mode6SLAAC does (#1038).
+func (p *Plugin) v6AbsenceServe(opts DHCPNetworkOptions, networkID, endpointID string) bool {
+	if mode, err := opts.ipv6Mode(); err != nil || mode != proto.Mode6Auto || opts.IPv6AutoStrict {
+		return false
 	}
-	if age, ok := p.v6Absence.age(networkID); ok {
-		base.Mode6 = proto.Mode6SLAAC
-		base.OnV6Fallback = nil
-		p.v6AbsenceServed.Store(endpointID, struct{}{})
-		p.dhcpv6AbsenceRemembered.Add(1)
-		log.WithFields(log.Fields{
-			"network":  shortID(networkID),
-			"endpoint": shortID(endpointID),
-			"age":      age.Round(time.Second).String(),
-			"window":   p.v6Absence.window.String(),
-		}).Info("ipv6_mode=auto: an earlier attach on this network found no DHCPv6 server inside the fallback window, " +
-			"so this endpoint forms its address from the router's advertised prefix without soliciting")
-		if opts.RegisterDNS {
-			noAAAAAfterFallback(endpointID, func(uint64) {})(1)
-		}
+	age, ok := p.v6Absence.age(networkID)
+	if !ok {
+		return false
+	}
+	p.v6AbsenceServed.Store(endpointID, struct{}{})
+	p.dhcpv6AbsenceRemembered.Add(1)
+	log.WithFields(log.Fields{
+		"network":  shortID(networkID),
+		"endpoint": shortID(endpointID),
+		"age":      age.Round(time.Second).String(),
+		"window":   p.v6Absence.window.String(),
+	}).Info("ipv6_mode=auto: an earlier attach on this network found no DHCPv6 server inside the fallback window, " +
+		"so this endpoint forms its address from the router's advertised prefix without soliciting")
+	if opts.RegisterDNS {
+		noAAAAAfterFallback(endpointID, func(uint64) {})(1)
+	}
+	return true
+}
+
+// v6AbsenceRecord makes an auto attach's fallback set its network's memory; the persistent client's never does.
+func (p *Plugin) v6AbsenceRecord(base *dhcp.DHCPClientOptions, networkID string) {
+	if base.Mode6 != proto.Mode6Auto || base.StrictAuto6 {
 		return
 	}
 	report := base.OnV6Fallback

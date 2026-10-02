@@ -28,11 +28,19 @@ type v6Acquire struct {
 
 // acquireInitialV6 runs an endpoint's DHCPv6 one-shot on the site's shared base and returns the address, or "" when
 // the segment explains its absence (#868, #960).
-func (p *Plugin) acquireInitialV6(ctx context.Context, opts DHCPNetworkOptions, base dhcp.DHCPClientOptions, a v6Acquire) (string, error) {
+func (p *Plugin) acquireInitialV6(ctx context.Context, opts DHCPNetworkOptions, base dhcp.DHCPClientOptions, a v6Acquire) (_ string, err error) {
+	if p.v6AbsenceServe(opts, a.networkID, a.endpointID) {
+		// A failed CreateEndpoint gets no DeleteEndpoint, so the served mark goes here (#1038).
+		defer func() {
+			if err != nil {
+				p.v6AbsenceServed.Delete(a.endpointID)
+			}
+		}()
+	}
 	if err := p.v6Wiring(&base, opts, a.identity6, a.recordID6, a.preferredV6, a.endpointID); err != nil {
 		return "", err
 	}
-	p.v6AbsenceWiring(&base, opts, a.networkID, a.endpointID)
+	p.v6AbsenceRecord(&base, a.networkID)
 	if err := p.conflictWiring(&base, opts, roleAcquire, a.networkID, a.endpointID, true); err != nil {
 		return "", err
 	}
