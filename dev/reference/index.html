@@ -1645,6 +1645,11 @@ network create -o key=value</code>, or <code>driver_opts:</code> in Compose:</p>
 <td><em>(none)</em></td>
 </tr>
 <tr>
+<td><code>rapid_commit</code></td>
+<td>all</td>
+<td><code>false</code></td>
+</tr>
+<tr>
 <td><code>validate_dhcp</code></td>
 <td>macvlan, ipvlan</td>
 <td><code>false</code></td>
@@ -2564,6 +2569,13 @@ value as an invalid duration.</p>
 <td>Send DHCP option 77 (User Class, RFC 3004) with this value in every DISCOVER and REQUEST, for DHCP servers that give each class its own pool, gateway or lease time (dnsmasq <code>dhcp-userclass</code>, Kea client classes, ISC <code>user-class</code>). One class value of 1 to 254 octets, the same for every container on the network; a longer value is refused at <code>docker network create</code> with the length and the bound. Without the option nothing is sent. v4 only: the DHCPv6 client sends no user-class option, and the <code>validate_dhcp</code> probe does not send it. (#1120)</td>
 </tr>
 <tr>
+<td><code>rapid_commit</code></td>
+<td>all</td>
+<td><code>false</code></td>
+<td>v2.4.0</td>
+<td>Put DHCP option 80 (Rapid Commit, RFC 4039) in every DISCOVER. A server that supports it (dnsmasq <code>dhcp-rapid-commit</code>, Kea <code>rapid-commit</code>) answers with the ACK and the lease takes two messages instead of four; a server that does not answers OFFER and the exchange continues unchanged. A boolean (<code>true</code>, <code>false</code>, <code>1</code>, <code>0</code>); an empty value is unset, and a word that is not a boolean is refused at <code>docker network create</code>. v4 only: the DHCPv6 client sends no Rapid Commit option, and the <code>validate_dhcp</code> probe does not send it. (#1031)</td>
+</tr>
+<tr>
 <td><code>validate_dhcp</code></td>
 <td>macvlan, ipvlan</td>
 <td><code>false</code></td>
@@ -3191,6 +3203,10 @@ in every mode:</p>
 <li><strong>User class (option 77)</strong> is not sent unless the network sets
   <code>user_class</code>; then every DISCOVER and REQUEST carries that one class
   value (RFC 3004). v4 only.</li>
+<li><strong>Rapid Commit (option 80)</strong> is not sent unless the network sets
+  <code>rapid_commit=true</code>; then every DISCOVER carries it (RFC 4039) and a
+  server that allows it answers with the ACK. It is never in the
+  parameter request list. v4 only.</li>
 <li><strong>Client identifier (option 61)</strong> is type-byte <code>0x00</code> (RFC 2132 opaque),
   with a payload that depends on the mode:</li>
 </ul>
