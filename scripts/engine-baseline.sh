@@ -247,6 +247,7 @@ mtu|step|macvlan container link at mtu=1450 on a 1500 parent; 67, a value above 
 client_id|step|client-id in the server lease file equals the option; control differs
 vendor_class|step|fresh vendor class line in the server log names the option; control the default
 user_class|step|fresh user class line in the server log names the option; control has none
+rapid_commit|step|server log shows DISCOVER then ACK and no OFFER for the client when true; the control is offered
 validate_dhcp|step|server-less parent refused, served parent accepted, false on the server-less parent accepted, bridge mode refused
 dhcp_servers|step|second server on the segment: the allowed server ACKs the address, both ways round
 dhcp_deny_servers|step|second server on the segment: the other server ACKs the address, both ways round
@@ -653,7 +654,7 @@ dnsmasq --interface=$SEGMENT --bind-interfaces --except-interface=lo \\
   --dhcp-option=tag:emopt,option:dns-server,192.168.99.53 \\
   --dhcp-option=tag:emopt,option:classless-static-route,10.77.0.0/16,192.168.99.1 \\
   --dhcp-option=tag:emmtu,option:mtu,400 \\
-  --log-facility=$DNSMASQ_LOG --port=0 \\
+  --dhcp-rapid-commit --log-facility=$DNSMASQ_LOG --port=0 \\
   --dhcp-leasefile=$FIXTURE_DIR/leases --pid-file=$FIXTURE_DIR/dnsmasq.pid
 EOF
 
@@ -1412,7 +1413,7 @@ identity_pair() {
     a="$(log_lines "$AUDIT_LOG")"
     m="$(log_lines "$DNSMASQ_LOG")"
     opt_net em-o-id -o bridge="$SEGMENT" -o client_id=em-cid-1 -o vendor_class=em-vc-1 -o user_class=em-uc-1 \
-        -o register_dns=true -o audit_log=true
+        -o rapid_commit=true -o register_dns=true -o audit_log=true
     opt_run em-c-id em-o-id --mac-address 02:00:00:00:e3:01 --hostname em-host-1
     wait_v4 em-c-id
     ID_ON_ADDR="$V4"
@@ -1420,6 +1421,7 @@ identity_pair() {
     fresh_has "$DNSMASQ_LOG" "$m" "DHCPACK($SEGMENT) $V4 02:00:00:00:e3:01" && ID_ON_MAC=1 || ID_ON_MAC=0
     fresh_has "$DNSMASQ_LOG" "$m" "vendor class: em-vc-1" && ID_ON_VC=1 || ID_ON_VC=0
     fresh_has "$DNSMASQ_LOG" "$m" "user class: em-uc-1" && ID_ON_UC=1 || ID_ON_UC=0
+    fresh_has "$DNSMASQ_LOG" "$m" "DHCPOFFER($SEGMENT) $V4 02:00:00:00:e3:01" && ID_ON_OFFER=1 || ID_ON_OFFER=0
     fresh_has "$DNSMASQ_LOG" "$m" "option: 81 " && ID_ON_FQDN=1 || ID_ON_FQDN=0
     ID_ON_CID="$(d awk '$2 == "02:00:00:00:e3:01" { print $5 }' "$FIXTURE_DIR/leases" | tr -d '\r')"
     fresh_has "$AUDIT_LOG" "$a" "\"ip\":\"$V4\"" && fresh_has "$AUDIT_LOG" "$a" '"kind":"bound"' \
@@ -1435,6 +1437,7 @@ identity_pair() {
         || fail "control: the server never logged the name em-host-2, so the absence checks below would prove nothing"
     fresh_has "$DNSMASQ_LOG" "$m" "vendor class: docker-net-dhcp" && ID_OFF_VC=1 || ID_OFF_VC=0
     fresh_has "$DNSMASQ_LOG" "$m" "user class:" && ID_OFF_UC=1 || ID_OFF_UC=0
+    fresh_has "$DNSMASQ_LOG" "$m" "DHCPOFFER($SEGMENT) $V4 02:00:00:00:e3:02" && ID_OFF_OFFER=1 || ID_OFF_OFFER=0
     fresh_has "$DNSMASQ_LOG" "$m" "option: 81 " && ID_OFF_FQDN=1 || ID_OFF_FQDN=0
     ID_OFF_CID="$(d awk '$2 == "02:00:00:00:e3:02" { print $5 }' "$FIXTURE_DIR/leases" | tr -d '\r')"
     ID_OFF_AUDIT="$(( $(log_lines "$AUDIT_LOG") - a ))"
@@ -1461,6 +1464,15 @@ opt_user_class() {
     identity_pair
     [ "$ID_ON_UC" = 1 ] || fail "user_class=em-uc-1: no fresh 'user class: em-uc-1' in the server log"
     [ "$ID_OFF_UC" = 0 ] || fail "control: a fresh 'user class' line in the server log without the option"
+}
+
+# Option 80 in the DISCOVER makes dnsmasq (--dhcp-rapid-commit) answer with the ACK, so the log has no OFFER for the
+# client; the control, on the same server, is offered (#1031).
+opt_rapid_commit() {
+    identity_pair
+    [ "$ID_ON_MAC" = 1 ] || fail "rapid_commit=true: the server logged no DHCPACK for the client"
+    [ "$ID_ON_OFFER" = 0 ] || fail "rapid_commit=true: the server logged a DHCPOFFER, so the DISCOVER carried no option 80"
+    [ "$ID_OFF_OFFER" = 1 ] || fail "control: no DHCPOFFER in the server log without the option, so the absence above proves nothing"
 }
 
 opt_register_dns() {
