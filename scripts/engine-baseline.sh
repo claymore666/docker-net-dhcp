@@ -246,6 +246,7 @@ propagate_mtu|step|option 26 sets the link MTU when true, not when false; an MTU
 mtu|step|macvlan container link at mtu=1450 on a 1500 parent; 67, a value above the parent and a value beside propagate_mtu=true refused
 client_id|step|client-id in the server lease file equals the option; control differs
 vendor_class|step|fresh vendor class line in the server log names the option; control the default
+user_class|step|fresh user class line in the server log names the option; control has none
 validate_dhcp|step|server-less parent refused, served parent accepted, false on the server-less parent accepted, bridge mode refused
 dhcp_servers|step|second server on the segment: the allowed server ACKs the address, both ways round
 dhcp_deny_servers|step|second server on the segment: the other server ACKs the address, both ways round
@@ -1410,7 +1411,7 @@ identity_pair() {
     [ -n "$ID_DONE" ] && return 0
     a="$(log_lines "$AUDIT_LOG")"
     m="$(log_lines "$DNSMASQ_LOG")"
-    opt_net em-o-id -o bridge="$SEGMENT" -o client_id=em-cid-1 -o vendor_class=em-vc-1 \
+    opt_net em-o-id -o bridge="$SEGMENT" -o client_id=em-cid-1 -o vendor_class=em-vc-1 -o user_class=em-uc-1 \
         -o register_dns=true -o audit_log=true
     opt_run em-c-id em-o-id --mac-address 02:00:00:00:e3:01 --hostname em-host-1
     wait_v4 em-c-id
@@ -1418,6 +1419,7 @@ identity_pair() {
     fresh_wait "$DNSMASQ_LOG" "$m" "client provides name: em-host-1" 20 && ID_ON_NAME=1 || ID_ON_NAME=0
     fresh_has "$DNSMASQ_LOG" "$m" "DHCPACK($SEGMENT) $V4 02:00:00:00:e3:01" && ID_ON_MAC=1 || ID_ON_MAC=0
     fresh_has "$DNSMASQ_LOG" "$m" "vendor class: em-vc-1" && ID_ON_VC=1 || ID_ON_VC=0
+    fresh_has "$DNSMASQ_LOG" "$m" "user class: em-uc-1" && ID_ON_UC=1 || ID_ON_UC=0
     fresh_has "$DNSMASQ_LOG" "$m" "option: 81 " && ID_ON_FQDN=1 || ID_ON_FQDN=0
     ID_ON_CID="$(d awk '$2 == "02:00:00:00:e3:01" { print $5 }' "$FIXTURE_DIR/leases" | tr -d '\r')"
     fresh_has "$AUDIT_LOG" "$a" "\"ip\":\"$V4\"" && fresh_has "$AUDIT_LOG" "$a" '"kind":"bound"' \
@@ -1432,6 +1434,7 @@ identity_pair() {
     fresh_wait "$DNSMASQ_LOG" "$m" "client provides name: em-host-2" 20 \
         || fail "control: the server never logged the name em-host-2, so the absence checks below would prove nothing"
     fresh_has "$DNSMASQ_LOG" "$m" "vendor class: docker-net-dhcp" && ID_OFF_VC=1 || ID_OFF_VC=0
+    fresh_has "$DNSMASQ_LOG" "$m" "user class:" && ID_OFF_UC=1 || ID_OFF_UC=0
     fresh_has "$DNSMASQ_LOG" "$m" "option: 81 " && ID_OFF_FQDN=1 || ID_OFF_FQDN=0
     ID_OFF_CID="$(d awk '$2 == "02:00:00:00:e3:02" { print $5 }' "$FIXTURE_DIR/leases" | tr -d '\r')"
     ID_OFF_AUDIT="$(( $(log_lines "$AUDIT_LOG") - a ))"
@@ -1452,6 +1455,12 @@ opt_vendor_class() {
     identity_pair
     [ "$ID_ON_VC" = 1 ] || fail "vendor_class=em-vc-1: no fresh 'vendor class: em-vc-1' in the server log"
     [ "$ID_OFF_VC" = 1 ] || fail "control: no fresh 'vendor class: docker-net-dhcp' in the server log"
+}
+
+opt_user_class() {
+    identity_pair
+    [ "$ID_ON_UC" = 1 ] || fail "user_class=em-uc-1: no fresh 'user class: em-uc-1' in the server log"
+    [ "$ID_OFF_UC" = 0 ] || fail "control: a fresh 'user class' line in the server log without the option"
 }
 
 opt_register_dns() {
