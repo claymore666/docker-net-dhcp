@@ -247,7 +247,7 @@ mtu|step|macvlan container link at mtu=1450 on a 1500 parent; 67, a value above 
 client_id|step|client-id in the server lease file equals the option; control differs
 vendor_class|step|fresh vendor class line in the server log names the option; control the default
 user_class|step|fresh user class line in the server log names the option; control has none
-rapid_commit|step|server log shows DISCOVER then ACK and no OFFER for the client when true; the control is offered
+rapid_commit|step|server log shows DISCOVER then ACK and no OFFER for the client when true, and on the IPv6 segment a DHCPv6 REPLY and no ADVERTISE for the client DUID; the controls are offered and advertised
 validate_dhcp|step|server-less parent refused, served parent accepted, false on the server-less parent accepted, bridge mode refused
 dhcp_servers|step|second server on the segment: the allowed server ACKs the address, both ways round
 dhcp_deny_servers|step|second server on the segment: the other server ACKs the address, both ways round
@@ -1528,13 +1528,45 @@ opt_user_class() {
     [ "$ID_OFF_UC" = 0 ] || fail "control: a fresh 'user class' line in the server log without the option"
 }
 
+# fresh_kind_for LOG FROM KIND DUID: a line after line FROM names both KIND and the client DUID; both travel as the
+# inner shell's arguments, so no quoting is needed (#926).
+fresh_kind_for() {
+    d sh -c "tail -n +$(( $2 + 1 )) $1 | grep -F -- \"\$0\" | grep -F -q -- \"\$1\"" "$3" "$4"
+}
+
 # Option 80 in the DISCOVER makes dnsmasq (--dhcp-rapid-commit) answer with the ACK, so the log has no OFFER for the
-# client; the control, on the same server, is offered (#1031).
+# client; the control, on the same server, is offered (#1031). The IPv6 half: option 14 in the Solicit makes dnsmasq
+# answer with the Reply and log no ADVERTISE for the client's DUID (DUID-LL of the pinned MAC); it has no DHCPv6 switch,
+# so the control, on the same server, is advertised (#926).
 opt_rapid_commit() {
+    local m duid_on="00:03:00:01:02:00:00:00:e6:01" duid_off="00:03:00:01:02:00:00:00:e6:02"
     identity_pair
     [ "$ID_ON_MAC" = 1 ] || fail "rapid_commit=true: the server logged no DHCPACK for the client"
     [ "$ID_ON_OFFER" = 0 ] || fail "rapid_commit=true: the server logged a DHCPOFFER, so the DISCOVER carried no option 80"
     [ "$ID_OFF_OFFER" = 1 ] || fail "control: no DHCPOFFER in the server log without the option, so the absence above proves nothing"
+
+    v6_server "--dhcp-range=${V6_PREFIX_A}10,${V6_PREFIX_A}99,$LEASE_TIME --enable-ra"
+    m="$(log_lines "$V6_LOG")"
+    opt_net em-o-v6 -o bridge="$V6_BRIDGE" -o ipv6_mode=dhcp -o rapid_commit=true
+    opt_run em-c-v6 em-o-v6 --mac-address 02:00:00:00:e6:01
+    wait_v6 em-c-v6 "$V6_PREFIX_A"
+    fresh_wait "$V6_LOG" "$m" "DHCPREPLY($V6_BRIDGE) $V6 " \
+        || fail "rapid_commit=true: the container holds $V6 and the server logged no DHCPv6 reply for it"
+    fresh_kind_for "$V6_LOG" "$m" "DHCPSOLICIT(" "$duid_on" \
+        || fail "rapid_commit=true: the server logged no DHCPSOLICIT for $duid_on"
+    ! fresh_kind_for "$V6_LOG" "$m" "DHCPADVERTISE(" "$duid_on" \
+        || fail "rapid_commit=true: the server logged a DHCPADVERTISE for $duid_on, so the Solicit carried no option 14"
+    opt_down em-o-v6 em-c-v6
+
+    m="$(log_lines "$V6_LOG")"
+    opt_net em-o-v6 -o bridge="$V6_BRIDGE" -o ipv6_mode=dhcp
+    opt_run em-c-v6 em-o-v6 --mac-address 02:00:00:00:e6:02
+    wait_v6 em-c-v6 "$V6_PREFIX_A"
+    fresh_wait "$V6_LOG" "$m" "DHCPREPLY($V6_BRIDGE) $V6 " \
+        || fail "control: the container holds $V6 and the server logged no DHCPv6 reply for it"
+    fresh_kind_for "$V6_LOG" "$m" "DHCPADVERTISE(" "$duid_off" \
+        || fail "control: no DHCPADVERTISE for $duid_off without the option, so the absence above proves nothing"
+    opt_down em-o-v6 em-c-v6
 }
 
 opt_register_dns() {
