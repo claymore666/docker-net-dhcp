@@ -10,8 +10,8 @@
 #
 # POPULATION: TOP-LEVEL TEST FUNCTIONS, PARENTS ONLY.
 # One row per `func TestX(t *testing.T)` in test/integration/*_test.go —
-# 231 of them, the main suite's 224 and the failure suite's 7. MEASURED
-# on this table: 231 data rows, and 231 `func TestX(t *testing.T)` in
+# 235 of them, the main suite's 228 and the failure suite's 7. MEASURED
+# on this table: 235 data rows, and 235 `func TestX(t *testing.T)` in
 # test/integration/*_test.go counted independently of them.
 #
 # THIS NUMBER HAS NOW BEEN WRONG TWICE, and the second time is the
@@ -705,6 +705,10 @@ TestIPAMv6_OnRemoveHandsBothFamiliesBack	110.00
 TestIPAMv6_OnStopSendsOneReleasePerFamily	20.00
 TestIPAMv6_TwoRestartedTogetherIsTheDocumentedLimit	45.00
 TestIPv6Mode_SurvivesAPluginRestart	28.00
+TestIPv6Temporary_BridgeHoldsAStableAndATemporaryAddress	20.00
+TestIPv6Temporary_IPAMMacvlanHoldsAStableAndATemporaryAddress	30.00
+TestIPv6Temporary_MacvlanHoldsAStableAndATemporaryAddress	25.00
+TestIPv6Temporary_MacvlanWithoutTheOptionAsksForNoIATA	25.00
 TestIPv6_AcceptedAtCreate	0.02
 TestIPv6_DNS6Propagation	34.17
 TestIPv6_TheV4OnlyPathIsUnchanged	11.57

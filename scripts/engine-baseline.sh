@@ -236,6 +236,7 @@ gateway|step|container default route via the named address; control without it: 
 ipv6|step|fresh DHCPv6 reply in the server log for the address the container holds, with --ipam-driver null and with this plugin as IPAM driver, where Docker reports that address; ipv6=true with ipv6_mode=off refused; --ipv6 with this plugin as IPAM driver refused
 ipv6_mode|step|dhcp: fresh DHCPv6 reply for the held address; slaac: fresh router advertisement, the container holds and Docker reports an address in the ra-only prefix; control off: no global address; bad value refused
 ipv6_main_prefix|step|two advertised prefixes: Docker reports the address in the named prefix, both ways round; refused with ipv6_mode=dhcp
+ipv6_temporary|step|a range 2^32 + 1 wide: the container holds two addresses in the prefix, Docker reports one of them, the server logged a DHCPv6 reply for each; control without it: one address; refused with ipv6_mode=slaac and off
 ipv6_auto_strict|step|managed-flag advertisement with a silent DHCPv6 server: true fails docker run, false holds an address in the autonomous prefix
 lease_timeout|step|server-less bridge: docker run fails within the short timeout and not within the long one; a value under the probe window refused
 conflict_check|step|server pins the MAC to an address a veth holds: wait logs the DHCPDECLINE before docker run returns, async runs on the address first, off sends no DHCPDECLINE
@@ -1103,6 +1104,41 @@ opt_ipv6_main_prefix() {
         opt_down em-o-v6 em-c-v6
     done
     opt_refused "ipv6_main_prefix" -o bridge="$V6_BRIDGE" -o ipv6_mode=dhcp -o ipv6_main_prefix="$V6_PREFIX_B/64"
+}
+
+# dnsmasq draws the stable and the temporary address from one range at a random start, so a range 2^32 + 1 wide makes
+# two draws collide about once in 4e9 runs, against 1 in 138 on the 10 to 99 pool above (#927).
+opt_ipv6_temporary() {
+    local _ m a n held got
+    v6_server "--dhcp-range=${V6_PREFIX_A}10,${V6_PREFIX_A}1:0:10,$LEASE_TIME --enable-ra"
+    m="$(log_lines "$V6_LOG")"
+    opt_net em-o-v6 -o bridge="$V6_BRIDGE" -o ipv6_mode=dhcp -o ipv6_temporary=true
+    opt_run em-c-v6 em-o-v6
+    wait_v6 em-c-v6 "$V6_PREFIX_A"
+    for _ in $(seq 1 30); do
+        held="$(d docker exec em-c-v6 ip -6 addr 2>/dev/null \
+            | awk -v P="$V6_PREFIX_A" '$1 == "inet6" && index($2, P) == 1 { sub(/\/.*/, "", $2); print $2 }')"
+        n="$(printf '%s\n' "$held" | grep -c .)"
+        [ "$n" -ge 2 ] && break
+        sleep 1
+    done
+    [ "$n" -eq 2 ] || fail "ipv6_temporary=true: the container holds $n address(es) in $V6_PREFIX_A, want the stable and the temporary one: $held"
+    got="$(inspect_v6 em-c-v6 em-o-v6)"
+    printf '%s\n' "$held" | grep -x "$got" >/dev/null || fail "ipv6_temporary=true: Docker reports '$got', which the container does not hold: $held"
+    for a in $held; do
+        fresh_wait "$V6_LOG" "$m" "DHCPREPLY($V6_BRIDGE) $a " \
+            || fail "ipv6_temporary=true: the container holds $a and the server logged no DHCPv6 reply for it"
+    done
+    opt_down em-o-v6 em-c-v6
+    opt_net em-o-v6 -o bridge="$V6_BRIDGE" -o ipv6_mode=dhcp
+    opt_run em-c-v6 em-o-v6
+    wait_v6 em-c-v6 "$V6_PREFIX_A"
+    sleep 3
+    n="$(d docker exec em-c-v6 ip -6 addr 2>/dev/null | awk -v P="$V6_PREFIX_A" '$1 == "inet6" && index($2, P) == 1' | grep -c .)"
+    [ "$n" -eq 1 ] || fail "control without ipv6_temporary: the container holds $n address(es) in $V6_PREFIX_A, want one"
+    opt_down em-o-v6 em-c-v6
+    opt_refused "ipv6_temporary" -o bridge="$V6_BRIDGE" -o ipv6_mode=slaac -o ipv6_temporary=true
+    opt_refused "ipv6_temporary" -o bridge="$V6_BRIDGE" -o ipv6_mode=off -o ipv6_temporary=true
 }
 
 # The managed flag with a server that ignores every DHCPv6 message stands

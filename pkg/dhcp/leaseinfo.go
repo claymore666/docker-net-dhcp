@@ -155,6 +155,27 @@ func containsString(in []string, s string) bool {
 // since the lease's pair is an aggregate. Docker's endpoint has one AddressIPv6: the first address inside
 // `ipv6_main_prefix`, else the lease's first, reported as MainAddrFallback (#818).
 
+// v6AddrsAt renders the entries still valid at now, with the entries kept beside them.
+func v6AddrsAt(entries []lease.Addr6, now time.Time) ([]lease.Addr6, []V6Addr) {
+	kept := make([]lease.Addr6, 0, len(entries))
+	out := make([]V6Addr, 0, len(entries))
+	for _, a := range entries {
+		// An expired address would render as infinite, since zero is netlink's no-IFA_CACHEINFO; a deadline can pass
+		// after the event (#818).
+		if !a.Addr.IsValid() || (!a.Valid.IsZero() && !a.Valid.After(now)) {
+			continue
+		}
+		kept = append(kept, a)
+		out = append(out, V6Addr{
+			IP:               a.Addr.String(),
+			ValidSeconds:     secondsUntil(a.Valid, now),
+			PreferredSeconds: v6PreferredSeconds(a, now),
+			Deprecated:       v6Deprecated(a, now),
+		})
+	}
+	return kept, out
+}
+
 // fillV6Addrs renders every address of a v6 lease with its own lifetimes and chooses the one reported to Docker.
 func fillV6Addrs(info *Info, l lease.Lease, now time.Time, main netip.Prefix) {
 	entries := l.Addrs
@@ -166,24 +187,14 @@ func fillV6Addrs(info *Info, l lease.Lease, now time.Time, main netip.Prefix) {
 		}
 		entries = []lease.Addr6{{Addr: l.Addr, Preferred: l.Preferred, Valid: l.Expire}}
 	}
-	info.Addrs = make([]V6Addr, 0, len(entries))
-	kept := make([]lease.Addr6, 0, len(entries))
-	for _, a := range entries {
-		// An expired address would render as infinite, since zero is netlink's no-IFA_CACHEINFO; a deadline can pass
-		// after the event (#818).
-		if !a.Addr.IsValid() || (!a.Valid.IsZero() && !a.Valid.After(now)) {
-			continue
-		}
-		kept = append(kept, a)
-		info.Addrs = append(info.Addrs, V6Addr{
-			IP:               a.Addr.String(),
-			ValidSeconds:     secondsUntil(a.Valid, now),
-			PreferredSeconds: v6PreferredSeconds(a, now),
-			Deprecated:       v6Deprecated(a, now),
-		})
-	}
+	var kept []lease.Addr6
+	kept, info.Addrs = v6AddrsAt(entries, now)
 	if len(info.Addrs) == 0 {
 		return
+	}
+	// The IA_TA addresses take the same lifetime rules and stay out of kept, so the choice below never sees one (#927).
+	if _, temp := v6AddrsAt(l.TempAddrs, now); len(temp) > 0 {
+		info.TempAddrs = temp
 	}
 
 	chosen := 0

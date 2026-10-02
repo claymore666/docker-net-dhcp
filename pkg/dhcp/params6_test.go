@@ -317,3 +317,31 @@ func TestBuildParams6_LongLabelIsRefusedWhereV4RefusesIt(t *testing.T) {
 		t.Errorf("v6 without register_dns refused a 64-octet hostname it never sends: %v", err)
 	}
 }
+
+func TestBuildParams6_IPv6TemporaryIsOffByDefault(t *testing.T) {
+	p, err := buildParams6(testOpts6(t), false)
+	if err != nil {
+		t.Fatalf("buildParams6: %v", err)
+	}
+	if p.Temporary {
+		t.Fatal("Params6.Temporary = true on a network without ipv6_temporary; the Solicit would carry an IA_TA (#927)")
+	}
+	if n := firstSolicit6(t, p).Options.Count(wire.OptV6IATA); n != 0 {
+		t.Errorf("the default Solicit carries %d IA_TA option(s), want none (#927)", n)
+	}
+}
+
+func TestBuildParams6_IPv6TemporaryPutsOneIATAInTheSolicit(t *testing.T) {
+	opts := testOpts6(t)
+	opts.IPv6Temporary = true
+	p, err := buildParams6(opts, false)
+	if err != nil {
+		t.Fatalf("buildParams6: %v", err)
+	}
+	if !p.Temporary {
+		t.Fatal("Params6.Temporary = false on an ipv6_temporary network: the IA_TA is never asked for (#927)")
+	}
+	if n := firstSolicit6(t, p).Options.Count(wire.OptV6IATA); n != 1 {
+		t.Errorf("the Solicit carries %d IA_TA option(s), want exactly one (RFC 8415 section 21.5, #927)", n)
+	}
+}

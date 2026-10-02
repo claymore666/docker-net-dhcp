@@ -60,3 +60,27 @@ func DnsmasqLease6Name(leases, addr string) (string, bool) {
 	}
 	return "", false
 }
+
+// DnsmasqLease6Addrs splits duid's lease lines into IA_NA and IA_TA (IAID "T" plus a number) addresses (#927).
+func DnsmasqLease6Addrs(leases, duid string) (stable, temporary []string) {
+	v6 := false
+	for _, line := range strings.Split(leases, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) >= 1 && fields[0] == "duid" {
+			v6 = true
+			continue
+		}
+		if !v6 || len(fields) < 5 || !strings.EqualFold(fields[len(fields)-1], duid) {
+			continue
+		}
+		if _, err := netip.ParseAddr(fields[2]); err != nil {
+			continue
+		}
+		if strings.HasPrefix(fields[1], "T") {
+			temporary = append(temporary, fields[2])
+		} else {
+			stable = append(stable, fields[2])
+		}
+	}
+	return stable, temporary
+}

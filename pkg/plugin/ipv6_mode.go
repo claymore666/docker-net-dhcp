@@ -86,6 +86,14 @@ func validateIPv6Options(opts DHCPNetworkOptions, set map[string]bool) error {
 		return err
 	}
 
+	// ipv6_temporary rides in a Solicit, which off and slaac never send, so there it could only do nothing (#927).
+	if opts.IPv6Temporary && mode != proto.Mode6DHCP && mode != proto.Mode6Auto {
+		return fmt.Errorf("%w: ipv6_temporary needs an ipv6_mode that sends a DHCPv6 Solicit, and this "+
+			"network is ipv6_mode=%s: the temporary address is requested with an IA_TA in the Solicit "+
+			"and the Request (RFC 8415 section 21.5), and this mode sends neither. Use ipv6_mode=dhcp "+
+			"or ipv6_mode=auto, or drop ipv6_temporary. See issue #927", util.ErrIPAM, mode)
+	}
+
 	return nil
 }
 

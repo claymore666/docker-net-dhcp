@@ -44,6 +44,11 @@ const (
 	EphemeralShiftedPoolStart = "192.168.101.150"
 	EphemeralShiftedPoolEnd   = "192.168.101.199"
 
+	EphemeralServerAddrV6 = "fd00:6470:6866::1/64"
+	// EphemeralWideV6Start and End span 2^32 + 1 addresses, as the bridge pool does (#927).
+	EphemeralWideV6Start = "fd00:6470:6866::10"
+	EphemeralWideV6End   = "fd00:6470:6866::1:0:10"
+
 	// EphemeralDefaultLeaseSeconds is 120 s, the floor dnsmasq imposed, so older tests keep their timing (#356).
 	EphemeralDefaultLeaseSeconds = 120
 
@@ -98,6 +103,8 @@ type EphemeralFixture struct {
 	// dnsDomain selects dnsmasq with its resolver and --dhcp-fqdn, which registers only option-81 clients (#261).
 	dnsDomain string
 	dnsPort   int
+
+	v6Start, v6End, v6ServerCIDR string
 
 	started bool
 }
@@ -169,6 +176,16 @@ func WithLeaseSeconds(seconds int) EphemeralOption {
 func WithDnsmasqBackend() EphemeralOption {
 	return func(ef *EphemeralFixture) {
 		ef.backend = backendDnsmasq
+	}
+}
+
+// WithV6Range makes the dnsmasq backend also serve DHCPv6 from start to end, serverCIDR on the server end (#927).
+func WithV6Range(serverCIDR, start, end string) EphemeralOption {
+	return func(ef *EphemeralFixture) {
+		ef.backend = backendDnsmasq
+		ef.v6ServerCIDR = serverCIDR
+		ef.v6Start = start
+		ef.v6End = end
 	}
 }
 
@@ -260,6 +277,16 @@ func NewEphemeralFixture(t *testing.T, opts ...EphemeralOption) *EphemeralFixtur
 		}
 		if err := netlink.AddrAdd(dhcpLink, addr); err != nil {
 			t.Fatalf("AddrAdd %s: %v", ephemeralDhcpVeth, err)
+		}
+		if ef.v6ServerCIDR != "" {
+			// dnsmasq refuses a v6 dhcp-range with "no address range available" until the prefix is on the interface.
+			addr6, err := netlink.ParseAddr(ef.v6ServerCIDR)
+			if err != nil {
+				t.Fatalf("ParseAddr %s: %v", ef.v6ServerCIDR, err)
+			}
+			if err := netlink.AddrAdd(dhcpLink, addr6); err != nil {
+				t.Fatalf("AddrAdd %s on %s: %v", ef.v6ServerCIDR, ephemeralDhcpVeth, err)
+			}
 		}
 	}
 
@@ -540,6 +567,11 @@ func (ef *EphemeralFixture) startDnsmasq() {
 		"--log-dhcp",
 		"--log-facility=-",
 	}
+	if ef.v6Start != "" {
+		args = append(args,
+			fmt.Sprintf("--dhcp-range=%s,%s,%ds", ef.v6Start, ef.v6End, ef.leaseSeconds),
+			"--enable-ra")
+	}
 	if ef.ignoreClientID {
 		args = append(args, "--dhcp-ignore-clid")
 	}
@@ -711,6 +743,21 @@ func (ef *EphemeralFixture) LeaseExpiry(mac string) (time.Time, bool) {
 		ef.t.Fatalf("read the dnsmasq lease file: %v", err)
 	}
 	return DnsmasqLeaseExpiry(string(b), mac)
+}
+
+func (ef *EphemeralFixture) V6LeaseAddrs(duid string) (stable, temporary []string) {
+	ef.t.Helper()
+	if ef.backend != backendDnsmasq {
+		ef.t.Fatal("V6LeaseAddrs reads dnsmasq's lease file; this fixture runs another server")
+	}
+	b, err := os.ReadFile(ef.leaseFile)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		ef.t.Fatalf("read the dnsmasq lease file: %v", err)
+	}
+	return DnsmasqLease6Addrs(string(b), duid)
 }
 
 // ServerIP returns the server's bare IP.

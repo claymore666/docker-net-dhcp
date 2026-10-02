@@ -369,12 +369,13 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, callStart tim
 			}
 
 			base := dhcp.DHCPClientOptions{
-				Hostname:    hostname.name,
-				FQDN:        opts.fqdnMode(),
-				ClientID:    clientID,
-				VendorClass: opts.VendorClass,
-				UserClass:   opts.UserClass,
-				RapidCommit: opts.RapidCommit,
+				Hostname:      hostname.name,
+				FQDN:          opts.fqdnMode(),
+				ClientID:      clientID,
+				VendorClass:   opts.VendorClass,
+				UserClass:     opts.UserClass,
+				RapidCommit:   opts.RapidCommit,
+				IPv6Temporary: opts.IPv6Temporary,
 				// The MAC keys the v4 lease and the v6 DUID-LL, except on ipvlan, where both come from the endpoint
 				// (#152, #895).
 				MAC:      mac,
