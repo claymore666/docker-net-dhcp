@@ -324,6 +324,7 @@ func runAcquisition6(ctx context.Context, iface string, client v6AcquisitionClie
 			}
 			// Before the record and the step, as in the persistent client's loop (#911).
 			opts.carryResumedConfig6(&ev)
+			opts.carryResumedTemp6(&ev)
 			opts.record(ev)
 			opts.reportFQDN6(ev)
 			out := acquireStep6(ev, hint.IsValid(), opts.MainPrefix6)
@@ -341,6 +342,7 @@ func runAcquisition6(ctx context.Context, iface string, client v6AcquisitionClie
 	// Drained in the foreground for the reason GetIP's drain gives (#911).
 	for ev := range client.Events() {
 		opts.carryResumedConfig6(&ev)
+		opts.carryResumedTemp6(&ev)
 		opts.record(ev)
 	}
 	if err := <-done; err != nil && !errors.Is(err, context.Canceled) {
@@ -406,6 +408,25 @@ func (o *DHCPClientOptions) carryResumedConfig6(ev *lease.Event) {
 	}
 	ev.Lease.DNS = append([]netip.Addr(nil), o.Resume.DNS...)
 	ev.Lease.DomainSearch = append([]string(nil), o.Resume.DomainSearch...)
+}
+
+// carryResumedTemp6 gives a resumed binding its remembered temporary addresses on every event that has none. The
+// library asks for no IA_TA on a resume (RFC 9915 section 18.2.3: a Confirm), and the persistent client always resumes
+// the one-shot's record, so without this the address never reaches the link. It is kept until its own valid lifetime
+// ends and never renewed (RFC 8415 section 21.5, #927).
+func (o *DHCPClientOptions) carryResumedTemp6(ev *lease.Event) {
+	if !o.V6 || !o.IPv6Temporary || o.Resume == nil || len(o.Resume.TempAddrs) == 0 {
+		return
+	}
+	switch ev.Kind {
+	case lease.Acquired, lease.Renewed, lease.Changed:
+	default:
+		return
+	}
+	if len(ev.Lease.TempAddrs) > 0 {
+		return
+	}
+	ev.Lease.TempAddrs = append([]lease.Addr6(nil), o.Resume.TempAddrs...)
 }
 
 // reportFQDN6 logs, once, the server's answer to the first message that carried option 39. S set in the Reply is the

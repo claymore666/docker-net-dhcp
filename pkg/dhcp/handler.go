@@ -79,6 +79,10 @@ type Info struct {
 	// Addrs is every address a DHCPv6 or SLAAC lease holds, IP being the one reported to Docker; empty for v4.
 	Addrs []V6Addr `json:",omitempty"`
 
+	// TempAddrs is the IA_TA addresses beside Addrs and never inside it, so none is ever IP, the one reported to Docker
+	// (#927).
+	TempAddrs []V6Addr `json:",omitempty"`
+
 	// SLAAC says the addresses were formed from an advertisement (RFC 4862 section 5.5.3), not granted by a server
 	// (#818).
 	SLAAC bool `json:",omitempty"`

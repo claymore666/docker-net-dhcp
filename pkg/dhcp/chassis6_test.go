@@ -8,6 +8,8 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -656,5 +658,81 @@ func TestRunAcquisition6_AHintedConflictEndsTheLoop(t *testing.T) {
 	if took < time.Second {
 		t.Errorf("the unhinted acquisition ended after %v, before its window was out; "+
 			"the library's own recovery never got to run", took)
+	}
+}
+
+// The library asks for no IA_TA on a resumed lease and the persistent client resumes the one-shot's record, so the
+// remembered temporary address is what reaches the link (#927).
+func TestCarryResumedTemp6(t *testing.T) {
+	temp := func() []lease.Addr6 {
+		return []lease.Addr6{{Addr: netip.MustParsePrefix("2001:db8::77/64")}}
+	}
+	resume := func() *lease.Lease { return &lease.Lease{TempAddrs: temp()} }
+
+	t.Run("every lease-bearing event of a resumed binding gets the remembered address", func(t *testing.T) {
+		o := &DHCPClientOptions{V6: true, IPv6Temporary: true, Resume: resume()}
+		for _, k := range []lease.EventKind{lease.Acquired, lease.Renewed, lease.Changed} {
+			ev := lease.Event{Kind: k}
+			o.carryResumedTemp6(&ev)
+			if len(ev.Lease.TempAddrs) != 1 || ev.Lease.TempAddrs[0].Addr.String() != "2001:db8::77/64" {
+				t.Errorf("kind %v: TempAddrs = %v, want the remembered address", k, ev.Lease.TempAddrs)
+			}
+		}
+	})
+
+	t.Run("an address the server granted is left alone", func(t *testing.T) {
+		o := &DHCPClientOptions{V6: true, IPv6Temporary: true, Resume: resume()}
+		own := []lease.Addr6{{Addr: netip.MustParsePrefix("2001:db8::88/64")}}
+		ev := lease.Event{Kind: lease.Acquired, Lease: lease.Lease{TempAddrs: own}}
+		o.carryResumedTemp6(&ev)
+		if len(ev.Lease.TempAddrs) != 1 || ev.Lease.TempAddrs[0].Addr.String() != "2001:db8::88/64" {
+			t.Errorf("TempAddrs = %v, want the server's own address untouched", ev.Lease.TempAddrs)
+		}
+	})
+
+	t.Run("nothing is carried without the option, without a resume, on v4 or on a lost lease", func(t *testing.T) {
+		for name, o := range map[string]*DHCPClientOptions{
+			"option off": {V6: true, Resume: resume()},
+			"no resume":  {V6: true, IPv6Temporary: true},
+			"v4":         {IPv6Temporary: true, Resume: resume()},
+		} {
+			ev := lease.Event{Kind: lease.Acquired}
+			o.carryResumedTemp6(&ev)
+			if len(ev.Lease.TempAddrs) != 0 {
+				t.Errorf("%s: TempAddrs = %v, want none", name, ev.Lease.TempAddrs)
+			}
+		}
+		o := &DHCPClientOptions{V6: true, IPv6Temporary: true, Resume: resume()}
+		lost := lease.Event{Kind: lease.Lost}
+		o.carryResumedTemp6(&lost)
+		if len(lost.Lease.TempAddrs) != 0 {
+			t.Errorf("a Lost was filled in: %v", lost.Lease.TempAddrs)
+		}
+	})
+
+	t.Run("the carried slice is a copy", func(t *testing.T) {
+		o := &DHCPClientOptions{V6: true, IPv6Temporary: true, Resume: resume()}
+		ev := lease.Event{Kind: lease.Renewed}
+		o.carryResumedTemp6(&ev)
+		ev.Lease.TempAddrs[0].Addr = netip.MustParsePrefix("2001:db8::99/64")
+		if got := o.Resume.TempAddrs[0].Addr.String(); got != "2001:db8::77/64" {
+			t.Errorf("the memory became %s after the event was edited", got)
+		}
+	})
+}
+
+// A call site that skips the carry loses the address on that path with nothing failing (#927).
+func TestCarryResumedTemp6_EveryCarryResumedConfig6SiteHasOne(t *testing.T) {
+	var cfg, tmp int
+	for _, f := range []string{"chassis.go", "chassis6.go"} {
+		src, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cfg += strings.Count(string(src), ".carryResumedConfig6(&ev)")
+		tmp += strings.Count(string(src), ".carryResumedTemp6(&ev)")
+	}
+	if cfg != 3 || tmp != cfg {
+		t.Errorf("carryResumedConfig6 sites = %d, carryResumedTemp6 sites = %d, want 3 and 3", cfg, tmp)
 	}
 }

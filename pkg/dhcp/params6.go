@@ -48,6 +48,9 @@ func buildParams6(opts *DHCPClientOptions, once bool) (proto.Params6, error) {
 	// RFC 8415 section 18.2.1: option 14 rides in the Solicit only, so slaac sends none; the library never puts it on
 	// another message (#926).
 	p.RapidCommit = opts.RapidCommit
+	// RFC 8415 section 21.5: the IA_TA rides in the Solicit and the Request, never in a Renew or Rebind, so slaac sends
+	// none; the library never puts it on another message (#927).
+	p.Temporary = opts.IPv6Temporary
 
 	// The library adds the mandatory codes itself, so this is the caller's RFC 3646 half. DefaultParams6 leaves ORO
 	// nil, and dnsmasq answers an Information-request with only what was requested, so a stateless client would get no

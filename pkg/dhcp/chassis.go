@@ -109,6 +109,9 @@ type DHCPClientOptions struct {
 	// 18.2.1) in the Solicit (#1031, #926).
 	RapidCommit bool
 
+	// IPv6Temporary puts an IA_TA (RFC 8415 section 21.5) in the Solicit and the Request, and nothing in v4 (#927).
+	IPv6Temporary bool
+
 	// ConflictMode is the parsed RFC 5227 `conflict_check` mode, zero being proto.ConflictWait (D23, #882).
 	ConflictMode proto.ConflictMode
 
@@ -593,6 +596,7 @@ func (c *DHCPClient) translate() {
 		now := time.Now()
 		// Before the record is written, so a second restart still finds the resolver (#911).
 		c.opts.carryResumedConfig6(&ev)
+		c.opts.carryResumedTemp6(&ev)
 		// Recorded before translation: translateOne drops the coalesced Changed and the stop, and the record must not
 		// (#899).
 		c.opts.record(ev)
