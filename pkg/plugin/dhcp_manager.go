@@ -1466,6 +1466,10 @@ func (m *dhcpManager) handleEvent(event dhcp.Event, v6 bool) {
 			Warn("DHCP option values dropped before use: they carried control characters")
 	}
 
+	if v6 && m.plugin != nil && (event.Type == "bound" || event.Type == "renew") {
+		m.plugin.v6AbsenceLeaseSeen(m.joinReq.NetworkID, event.Data)
+	}
+
 	switch event.Type {
 	// "deconfig" is ignored: deleting the address would also wipe the routes Join copied off the host bridge (#102).
 	case "bound":

@@ -81,15 +81,20 @@ func (m *v6AbsenceMemory) age(networkID string) (time.Duration, bool) {
 // v6AbsenceServe marks an auto endpoint served while its network remembers a silent server, so v6Wiring runs both
 // of its clients as slaac. The library reads Params6.AutoFallback zero as its 6 s default and negative as strict, so
 // no value skips the Solicit; Mode6SLAAC does (#1038).
-func (p *Plugin) v6AbsenceServe(opts DHCPNetworkOptions, networkID, endpointID string) bool {
+func (p *Plugin) v6AbsenceServe(opts DHCPNetworkOptions, networkID, endpointID string) (time.Duration, bool) {
 	if mode, err := opts.ipv6Mode(); err != nil || mode != proto.Mode6Auto || opts.IPv6AutoStrict {
-		return false
+		return 0, false
 	}
 	age, ok := p.v6Absence.age(networkID)
 	if !ok {
-		return false
+		return 0, false
 	}
 	p.v6AbsenceServed.Store(endpointID, struct{}{})
+	return age, true
+}
+
+// v6AbsenceFormed counts and logs a served endpoint once it holds its address, so a failed attach is neither (#1038).
+func (p *Plugin) v6AbsenceFormed(opts DHCPNetworkOptions, networkID, endpointID string, age time.Duration) {
 	p.dhcpv6AbsenceRemembered.Add(1)
 	log.WithFields(log.Fields{
 		"network":  shortID(networkID),
@@ -97,11 +102,18 @@ func (p *Plugin) v6AbsenceServe(opts DHCPNetworkOptions, networkID, endpointID s
 		"age":      age.Round(time.Second).String(),
 		"window":   p.v6Absence.window.String(),
 	}).Info("ipv6_mode=auto: an earlier attach on this network found no DHCPv6 server inside the fallback window, " +
-		"so this endpoint forms its address from the router's advertised prefix without soliciting")
+		"so this endpoint formed its address from the router's advertised prefix without soliciting")
 	if opts.RegisterDNS {
 		noAAAAAfterFallback(endpointID, func(uint64) {})(1)
 	}
-	return true
+}
+
+// v6AbsenceLeaseSeen clears the network's memory on any endpoint's DHCPv6 lease, persistent clients included: the
+// lease proves a server (#1038).
+func (p *Plugin) v6AbsenceLeaseSeen(networkID string, info dhcp.Info) {
+	if !info.SLAAC {
+		p.v6Absence.forget(networkID)
+	}
 }
 
 // v6AbsenceRecord makes an auto attach's fallback set its network's memory; the persistent client's never does.

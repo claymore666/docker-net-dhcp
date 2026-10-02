@@ -382,9 +382,19 @@ func TestV6AbsenceMemory_AFailedServedAttachLeavesNoServedMark(t *testing.T) {
 		t.Fatalf("first attach: %v", err)
 	}
 	r.set(outcomeSilentFatal)
+	hook := logtest.NewLocal(log.StandardLogger())
+	defer hook.Reset()
 	m, err := r.attach(t, absenceNetA, "ep-failed", autoOpts())
 	if m != proto.Mode6SLAAC || err == nil {
 		t.Fatalf("served attach whose acquisition fails: mode %v err %v, want slaac and an error", m, err)
+	}
+	if got := r.p.dhcpv6AbsenceRemembered.Load(); got != 0 {
+		t.Errorf("dhcpv6_absence_remembered = %d after a served attach that formed no address, want 0", got)
+	}
+	for _, e := range hook.AllEntries() {
+		if strings.Contains(e.Message, "without soliciting") {
+			t.Errorf("a served attach that failed logged %q", e.Message)
+		}
 	}
 	if r.p.v6AbsenceServedEndpoint("ep-failed") {
 		t.Errorf("a served attach that failed is still marked served; Docker sends no DeleteEndpoint " +
@@ -396,5 +406,37 @@ func TestV6AbsenceMemory_AFailedServedAttachLeavesNoServedMark(t *testing.T) {
 	}
 	if !r.p.v6AbsenceServedEndpoint("ep-ok") {
 		t.Errorf("a served attach that succeeded is not marked served, so its persistent client would solicit")
+	}
+	if got := r.p.dhcpv6AbsenceRemembered.Load(); got != 1 {
+		t.Errorf("dhcpv6_absence_remembered = %d after one served attach formed its address, want 1", got)
+	}
+}
+
+func TestV6AbsenceMemory_APersistentClientLeaseClearsIt(t *testing.T) {
+	cases := []struct {
+		name  string
+		event dhcp.Event
+		v6    bool
+		clear bool
+	}{
+		{"v6 bound with a lease", dhcp.Event{Type: "bound", Data: dhcp.Info{IP: "2001:db8::100/128"}}, true, true},
+		{"v6 renew with a lease", dhcp.Event{Type: "renew", Data: dhcp.Info{IP: "2001:db8::100/128"}}, true, true},
+		{"v6 bound by slaac", dhcp.Event{Type: "bound", Data: dhcp.Info{IP: "2001:db8::1/64", SLAAC: true}}, true, false},
+		{"v6 config without an address", dhcp.Event{Type: "config"}, true, false},
+		{"v4 bound", dhcp.Event{Type: "bound", Data: dhcp.Info{IP: "192.0.2.17/24"}}, false, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newAbsenceRig(t, 10*time.Minute)
+			if _, err := r.attach(t, absenceNetA, "ep-1", autoOpts()); err != nil {
+				t.Fatal(err)
+			}
+			m := &dhcpManager{plugin: r.p, joinReq: JoinRequest{NetworkID: absenceNetA, EndpointID: "ep-1"}}
+			m.handleEvent(tc.event, tc.v6)
+			mode, _ := r.attach(t, absenceNetA, "ep-2", autoOpts())
+			if want := map[bool]proto.Mode6{true: proto.Mode6Auto, false: proto.Mode6SLAAC}[tc.clear]; mode != want {
+				t.Errorf("the next attach ran %v, want %v", mode, want)
+			}
+		})
 	}
 }
