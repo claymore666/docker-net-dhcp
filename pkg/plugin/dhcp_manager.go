@@ -1615,6 +1615,7 @@ func (m *dhcpManager) setupClient(v6 bool) (chan error, error) {
 		// derived from the one-shot's MAC honouring client_id (#371).
 		ClientID:    m.clientID(v4Identity),
 		VendorClass: m.opts.VendorClass,
+		UserClass:   m.opts.UserClass,
 		// HonorRouterAdverts is required on a persistent v6 client and refused elsewhere (#875, D30 Q3).
 		HonorRouterAdverts: v6,
 	}

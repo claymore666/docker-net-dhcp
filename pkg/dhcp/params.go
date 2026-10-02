@@ -66,6 +66,10 @@ func buildParams(opts *DHCPClientOptions, once bool) (proto.Params, error) {
 	if p.VendorClass == "" {
 		p.VendorClass = VendorID
 	}
+	// No default class, unlike option 60: an empty user_class leaves the option out (#1120).
+	if opts.UserClass != "" {
+		p.UserClass = [][]byte{[]byte(opts.UserClass)}
+	}
 	p.ClientID = ClientIdentity(opts.ClientID)
 
 	// RFC 5227 per network; the zero value is proto.ConflictWait. Both managers get the same mode: the one-shot wins

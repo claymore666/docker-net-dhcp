@@ -107,7 +107,8 @@ func (p *Plugin) runDHCPProbe(ctx context.Context, opts DHCPNetworkOptions, pol 
 func preflightProbeOptions(probeMAC net.HardwareAddr, pol serverPolicy) *dhcp.DHCPClientOptions {
 	return &dhcp.DHCPClientOptions{
 		// No hostname or client id is set; the vendor class is the library default, dhcp.VendorID, so option 60 does go
-		// out, as the probe test's fake server measures (#307, #1117).
+		// out, as the probe test's fake server measures (#307, #1117). No user class either: this takes no network
+		// options, so option 77 is never in the probe (#1120).
 		MAC: probeMAC,
 		// The network's server policy applies (#111, #669), as flat lists: any acceptable server answers the question.
 		AllowServers: pol.allowList(),

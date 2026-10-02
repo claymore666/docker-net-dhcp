@@ -255,6 +255,7 @@ func (p *Plugin) runIPAMReserve(ctx context.Context, networkID string, sn stored
 		FQDN:        opts.fqdnMode(),
 		ClientID:    clientID,
 		VendorClass: opts.VendorClass,
+		UserClass:   opts.UserClass,
 		MAC:         mac,
 		Records:     p.records,
 		RecordID:    recordID,

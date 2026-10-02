@@ -10,8 +10,8 @@
 #
 # POPULATION: TOP-LEVEL TEST FUNCTIONS, PARENTS ONLY.
 # One row per `func TestX(t *testing.T)` in test/integration/*_test.go —
-# 213 of them, the main suite's 206 and the failure suite's 7. MEASURED
-# on this table: 213 data rows, and 213 `func TestX(t *testing.T)` in
+# 218 of them, the main suite's 211 and the failure suite's 7. MEASURED
+# on this table: 218 data rows, and 218 `func TestX(t *testing.T)` in
 # test/integration/*_test.go counted independently of them.
 #
 # THIS NUMBER HAS NOW BEEN WRONG TWICE, and the second time is the
@@ -804,6 +804,11 @@ TestSubModes_EachLeasesInTheModeItWasCreatedWith	72.00
 TestSubModes_PassthruTakesItsParentAlone	45.00
 TestTombstoneRestart_PreservesIPv6	27.17
 TestTombstoneRestart_PreservesMACAndIP	20.39
+TestUserClass_BridgeRoutesViaTaggedGateway	11.90
+TestUserClass_BridgeWithoutTheOptionUsesDefaultGateway	11.56
+TestUserClass_IPAMMacvlanRoutesViaTaggedGateway	11.71
+TestUserClass_MacvlanRoutesViaTaggedGateway	12.08
+TestUserClass_MacvlanWithoutTheOptionUsesDefaultGateway	11.72
 TestV6Fixture_AssertExchangeRefusesASegmentNoClientEverUsed	2.34
 TestV6Fixture_AwaitRAAfterAndItsNegative	48.13
 TestV6Fixture_ModesComeUpAsRequested	17.89
