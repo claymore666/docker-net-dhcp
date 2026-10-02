@@ -1306,8 +1306,11 @@ below decide what is in a release; this page follows them.</p>
   with modified EUI-64 kept as the default</li>
 <li><a href="https://github.com/claymore666/docker-net-dhcp/issues/1033">#1033</a>, the DHCPv6 timezone options logged as the v4 ones are</li>
 <li><a href="https://github.com/claymore666/docker-net-dhcp/issues/1034">#1034</a>, the vendor-specific options logged</li>
-<li><a href="https://github.com/claymore666/docker-net-dhcp/issues/1038">#1038</a>, a network with no DHCPv6 server remembered for a bounded time,
-  so a SLAAC-only segment stops paying a full solicitation per attach</li>
+<li><a href="https://github.com/claymore666/docker-net-dhcp/issues/1038">#1038</a>, an <code>ipv6_mode=auto</code> network remembers a silent DHCPv6 server
+  for <code>DHCPV6_ABSENCE_MEMORY</code> (default ten minutes, <code>0</code> turns it off):
+  further endpoints form their address from the advertised prefix without
+  soliciting, counted in <code>dhcpv6_absence_remembered</code>; a granted DHCPv6
+  address, removing the network or a restart clears it</li>
 <li><a href="https://github.com/claymore666/docker-net-dhcp/issues/926">#926</a>, DHCPv6 Rapid Commit, the two-message exchange</li>
 <li><a href="https://github.com/claymore666/docker-net-dhcp/issues/927">#927</a>, DHCPv6 temporary addresses (IA_TA)</li>
 <li><a href="https://github.com/claymore666/docker-net-dhcp/issues/214">#214</a>, DHCPv6 prefix delegation (IA_PD), designed first</li>
