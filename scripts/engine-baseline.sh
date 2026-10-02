@@ -1070,7 +1070,7 @@ v6_start_rate() {
         [ "$g1" -gt "$g0" ] && joined=$((joined + 1))
         t=""
         for j in $(seq 1 150); do
-            if d docker exec em-c-v6 ip -6 route 2>/dev/null | grep -q '^default via fe80:'; then
+            if d docker exec em-c-v6 ip -6 route 2>/dev/null | grep '^default via fe80:' >/dev/null; then
                 t="$(( ($(date +%s%N) - t0) / 1000000 ))"
                 [ "$j" = 1 ] && atstart=$((atstart + 1))
                 break
