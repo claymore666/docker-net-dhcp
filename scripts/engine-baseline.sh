@@ -1124,7 +1124,7 @@ opt_ipv6_temporary() {
     done
     [ "$n" -eq 2 ] || fail "ipv6_temporary=true: the container holds $n address(es) in $V6_PREFIX_A, want the stable and the temporary one: $held"
     got="$(inspect_v6 em-c-v6 em-o-v6)"
-    printf '%s\n' "$held" | grep -qx "$got" || fail "ipv6_temporary=true: Docker reports '$got', which the container does not hold: $held"
+    printf '%s\n' "$held" | grep -x "$got" >/dev/null || fail "ipv6_temporary=true: Docker reports '$got', which the container does not hold: $held"
     for a in $held; do
         fresh_wait "$V6_LOG" "$m" "DHCPREPLY($V6_BRIDGE) $a " \
             || fail "ipv6_temporary=true: the container holds $a and the server logged no DHCPv6 reply for it"
