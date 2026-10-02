@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -53,6 +54,20 @@ func wantFirstKinds(t *testing.T, logPath, mac string, want ...string) []string 
 		t.Errorf("the server logged %v for %s, want it to start with %v", got, mac, want)
 	}
 	return got
+}
+
+// wantFourMessageExchange waits for an ACK logged for the MAC, then requires the exchange to be (DISCOVER OFFER)+ REQUEST ACK (#1154).
+func wantFourMessageExchange(t *testing.T, logPath, mac string) {
+	t.Helper()
+	var got []string
+	for end := time.Now().Add(15 * time.Second); time.Now().Before(end); time.Sleep(100 * time.Millisecond) {
+		if got = serverKinds(logPath, mac); slices.Contains(got, "ACK") {
+			break
+		}
+	}
+	if err := harness.FourMessageExchange(got); err != nil {
+		t.Errorf("%s: %v", mac, err)
+	}
 }
 
 func rapidCommitDump(t *testing.T) {
@@ -105,7 +120,7 @@ func TestRapidCommit_MacvlanWithoutTheOptionKeepsTheFourMessageExchange(t *testi
 	_, ipv4, mac := harness.RunContainer(t, ctx, "dh-itest-rc-off", "dh-itest-rc-off-ctr")
 
 	assertPoolAddress(t, ipv4, harness.IsInPool)
-	wantFirstKinds(t, fixture.DnsmasqLog(), mac, "DISCOVER", "OFFER", "REQUEST", "ACK")
+	wantFourMessageExchange(t, fixture.DnsmasqLog(), mac)
 }
 
 // TestRapidCommit_BridgeTakesTheTwoMessageLease checks that rapid_commit reaches the bridge-mode one-shot in CreateEndpoint (#1031).
@@ -131,7 +146,7 @@ func TestRapidCommit_BridgeWithoutTheOptionKeepsTheFourMessageExchange(t *testin
 	_, ipv4, mac := harness.RunContainer(t, ctx, "dh-itest-rc-br-off", "dh-itest-rc-br-off-ctr")
 
 	assertPoolAddress(t, ipv4, harness.IsInBridgePool)
-	wantFirstKinds(t, fixture.BridgeDnsmasqLogPath(), mac, "DISCOVER", "OFFER", "REQUEST", "ACK")
+	wantFourMessageExchange(t, fixture.BridgeDnsmasqLogPath(), mac)
 }
 
 // TestRapidCommit_IPAMMacvlanTakesTheTwoMessageLease checks that rapid_commit reaches the IPAM-mode lease at RequestAddress (#1031).
