@@ -2468,7 +2468,7 @@ value as an invalid duration.</p>
 <td>all</td>
 <td><code>false</code></td>
 <td>upstream</td>
-<td>Lease a DHCPv6 address for every endpoint on this network, alongside its DHCPv4 one. Docker reports it as <code>GlobalIPv6Address</code>. The address is installed as a <code>/128</code> with the server's preferred and valid lifetimes, its DUID and IAID persist across restarts, and the container's link is configured to process Router Advertisements, which is what supplies the route, since DHCPv6 carries no next hop. On a segment that advertises no DHCPv6 address the endpoint still starts, without one; on a segment that advertises one and then answers nothing it fails. See <a href="#dhcpv6-ipv6true">DHCPv6</a>, and the ipvlan upgrade note there if you are moving from 1.x.<br><br><strong>Since v2.2.0 this option is the short spelling of <code>ipv6_mode=dhcp</code></strong> and keeps exactly that meaning. <code>ipv6=true</code> with <code>ipv6_mode=off</code> is refused at <code>docker network create</code>: the two say opposite things about the same endpoint and there is no reading of the pair that is not a guess. <code>ipv6=false</code> written out beside <code>ipv6_mode=dhcp</code>, <code>slaac</code> or <code>auto</code> is refused for the same reason. Setting <code>ipv6_mode</code> alone switches IPv6 on, so a network states it once.</td>
+<td>Lease a DHCPv6 address for every endpoint on this network, alongside its DHCPv4 one. Docker reports it as <code>GlobalIPv6Address</code>. The address is installed as a <code>/128</code> with the server's preferred and valid lifetimes, its DUID and IAID persist across restarts, and the plugin hands Docker the gateway it learned from the router's advertisement, since DHCPv6 carries no next hop. The container's kernel does not act on advertisements itself (see the Router Advertisement guard under <a href="#dhcpv6-ipv6true">DHCPv6</a>). On a segment that advertises no DHCPv6 address the endpoint still starts, without one; on a segment that advertises one and then answers nothing it fails. See <a href="#dhcpv6-ipv6true">DHCPv6</a>, and the ipvlan upgrade note there if you are moving from 1.x.<br><br><strong>Since v2.2.0 this option is the short spelling of <code>ipv6_mode=dhcp</code></strong> and keeps exactly that meaning. <code>ipv6=true</code> with <code>ipv6_mode=off</code> is refused at <code>docker network create</code>: the two say opposite things about the same endpoint and there is no reading of the pair that is not a guess. <code>ipv6=false</code> written out beside <code>ipv6_mode=dhcp</code>, <code>slaac</code> or <code>auto</code> is refused for the same reason. Setting <code>ipv6_mode</code> alone switches IPv6 on, so a network states it once.</td>
 </tr>
 <tr>
 <td><code>ipv6_mode</code></td>
@@ -3382,7 +3382,24 @@ router is one <code>docker network create</code> line and not a contradiction.</
   such a container used to carry the lease, a kernel-formed address and
   any privacy addresses beside it, and an outbound connection selected
   among them per RFC 6724 rather than necessarily using the address
-  <code>docker inspect</code> reports. It now carries the lease alone.</li>
+  <code>docker inspect</code> reports. It now carries the lease alone.
+  (v2.3.0+, #1145) The plugin also writes <code>accept_ra=0</code> and <code>autoconf=0</code>
+  as the container's <em>defaults</em> in <code>Join</code>, before Docker moves the link
+  in. A router that advertises in the instant between the link coming up
+  and Docker adding the default route would otherwise get its own
+  route in first, and the container would fail to start. Three things
+  follow from writing the defaults. Every interface that appears in the
+  container afterwards starts with <code>accept_ra=0</code> and <code>autoconf=0</code>; a program
+  that adds a link inside the container, such as a VPN, can set the keys back
+  on that link. A <code>--sysctl</code> you pass to <code>docker run</code> for another interface
+  of the container is applied after the plugin's write and wins on that
+  interface; the plugin's own link always ends at 0. Nothing is undone when the
+  endpoint leaves, and a later <code>docker network connect</code> of another network of
+  this plugin writes the two defaults to 0 again. The write takes where the
+  engine has created the sandbox before it calls <code>Join</code>, which is Docker
+  Engine 28 and later (measured on the engine matrix). On 26 and 27 the engine
+  builds the sandbox after <code>Join</code>, the plugin finds no namespace to write into
+  and the guard cannot run, so the race above stays open on those engines.</li>
 <li><strong>The container's name reaches the DHCPv6 server only with
   <code>register_dns</code></strong> (v2.3.0+, #1029). With the option off, the DHCPv6
   server's lease table shows no name for the container, unlike v4, where
@@ -4455,7 +4472,7 @@ already parse it were not told to expect a new type.</p>
 <td><code>router_advert_guard_failures</code></td>
 <td>no</td>
 <td>n/a</td>
-<td>(v2.0.0+, #911; widened in v2.2.0, #821) Steps of the DHCPv6 Router Advertisement guard that did not take. The guard writes three sysctls on the container's link, <code>accept_ra=0</code>, <code>autoconf=0</code> and <code>keep_addr_on_down=1</code>, reads each one back, and then removes any route the kernel had already installed from an advertisement, so it is <strong>six steps plus the route purge per IPv6 endpoint</strong> and this counter is bounded by seven times the number of them. Only IPv6 endpoints run it, so it cannot move on an IPv4-only host. Not <code>healthy</code>-affecting and never fatal: a kernel built without one of these knobs, or a <code>/proc/sys</code> the plugin cannot write in, is not a reason to refuse the container an address. It <strong>is</strong> a reason to know, because the plugin puts the IPv6 gateway into the Join answer itself and a kernel still acting on advertisements adds a second default route beside it. If this rises, check <code>ip -6 route</code> inside the container: there should be exactly one default route, via an <code>fe80::</code> address, and none with <code>proto ra</code>.</td>
+<td>(v2.0.0+, #911; widened in v2.2.0, #821) Steps of the DHCPv6 Router Advertisement guard that did not take. The guard writes three sysctls on the container's link, <code>accept_ra=0</code>, <code>autoconf=0</code> and <code>keep_addr_on_down=1</code>, reads each one back, and then removes any route the kernel had already installed from an advertisement, so it is <strong>six steps plus the route purge per IPv6 endpoint</strong> and, since v2.3.0 (#1145), two more at <code>Join</code>: the <code>default/accept_ra</code> and <code>default/autoconf</code> writes in the container's network namespace, which make the interfaces that appear afterwards start with the guard already on. A failure of those is logged with <code>step=sandbox_default</code>, and this counter is bounded by nine times the number of endpoints. A <code>Join</code> that finds no sandbox namespace yet, as on Engine 26 and 27, is not a failure: it is logged at debug and not counted. Only IPv6 endpoints run it, so it cannot move on an IPv4-only host. Not <code>healthy</code>-affecting and never fatal: a kernel built without one of these knobs, or a <code>/proc/sys</code> the plugin cannot write in, is not a reason to refuse the container an address. It <strong>is</strong> a reason to know, because the plugin puts the IPv6 gateway into the Join answer itself and a kernel still acting on advertisements adds a second default route beside it. If this rises, check <code>ip -6 route</code> inside the container: there should be exactly one default route, via an <code>fe80::</code> address, and none with <code>proto ra</code>.</td>
 </tr>
 <tr>
 <td><code>ipv6_router_withdrawn</code></td>
