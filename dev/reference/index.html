@@ -3596,6 +3596,17 @@ stateless answer, because it is the same message.</p>
 </tr>
 </tbody>
 </table>
+<h4 id="ipv6-only-preferred">IPv6-Only Preferred<a class="headerlink" href="#ipv6-only-preferred" title="Permanent link">&para;</a></h4>
+<p>The client never asks for IPv6-Only Preferred (DHCPv4 option 108, RFC
+8925), and there is no option to turn it on. An endpoint on a network
+with an IPv4 pool must hold an IPv4 address, which makes it an
+IPv4-requiring host, and RFC 8925 section 3.2 forbids such a host from
+putting the option code in its parameter request list. On an
+"IPv6-mostly" LAN the endpoint therefore keeps its IPv4 lease, as RFC
+8925 says a host that did not ask must. The DHCP library implements the
+option for consumers whose endpoints can live on IPv6 alone, and refuses
+a parameter request list that names it unless that consumer says so
+(<a href="https://github.com/claymore666/docker-net-dhcp/issues/1027">#1027</a>).</p>
 <h4 id="if-you-upgrade-onto-20-with-an-ipv6-network-already-created">If you upgrade onto 2.0 with an IPv6 network already created<a class="headerlink" href="#if-you-upgrade-onto-20-with-an-ipv6-network-already-created" title="Permanent link">&para;</a></h4>
 <p>Nothing to do. A network record written by a 1.x build carries
 <code>ipv6=true</code>, that option means the same thing here, and endpoints on it

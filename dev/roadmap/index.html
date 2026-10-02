@@ -1288,7 +1288,6 @@ below decide what is in a release; this page follows them.</p>
 </ul>
 <h3 id="v240">v2.4.0<a class="headerlink" href="#v240" title="Permanent link">&para;</a></h3>
 <ul>
-<li><a href="https://github.com/claymore666/docker-net-dhcp/issues/1027">#1027</a>, IPv6-Only Preferred, DHCPv4 option 108</li>
 <li><a href="https://github.com/claymore666/docker-net-dhcp/issues/1028">#1028</a>, PREF64 from the Router Advertisement, the NAT64 prefix</li>
 <li><a href="https://github.com/claymore666/docker-net-dhcp/issues/1030">#1030</a>, Microsoft classless static routes, option 249, where 121 is
   absent</li>
@@ -1543,6 +1542,11 @@ read it before writing the PR.</p>
 <td>commits and PRs are signed by a person who stands behind them, and a CI check enforces it</td>
 <td>n/a</td>
 </tr>
+<tr>
+<td>It will not ask for IPv6-Only Preferred (option 108)</td>
+<td>an endpoint on a network with an IPv4 pool must hold an IPv4 address, which makes it an IPv4-requiring host, and RFC 8925 section 3.2 forbids such a host from asking</td>
+<td><a href="https://github.com/claymore666/docker-net-dhcp/issues/1027">#1027</a></td>
+</tr>
 </tbody>
 </table>
 <details>
@@ -1587,6 +1591,14 @@ acquire a lease at all. The 2.0 client is a different program and has not
 been re-measured under emulation; the conclusion is unchanged either way,
 because arm64 verification runs on real hardware and there is nothing to
 be gained by finding out which syscall the emulator drops next.</p>
+<p><strong>IPv6-Only Preferred.</strong> An endpoint on a network with an IPv4 pool must
+hold an IPv4 address: Docker's IPAM path refuses an answer with none, and
+the driver's own endpoint creation fails without one. That makes every
+DHCPv4 client of the plugin an IPv4-requiring host, and RFC 8925 section
+3.2 says such a host must not put option 108 in its parameter request
+list. The plugin sets nothing and has no option for it; the DHCP library
+implements the option for consumers whose endpoints can live on IPv6
+alone (<a href="https://github.com/claymore666/docker-net-dhcp/issues/1027">#1027</a>).</p>
 </details>
 <h2 id="how-this-page-is-kept-honest">How this page is kept honest<a class="headerlink" href="#how-this-page-is-kept-honest" title="Permanent link">&para;</a></h2>
 <p>The release runbook makes a top-to-bottom documentation review a release
