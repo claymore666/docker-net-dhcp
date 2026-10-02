@@ -1050,9 +1050,10 @@ EOF
 # times and reports how many starts the engine refused, how many Joins
 # handed the engine the IPv6 gateway, how many containers had their
 # default route via the router's link-local when the start returned, how
-# long each start took and how long until the route was there (#1149).
+# long each start took and how long until the route was there; a refused
+# start, a missing route or a second link fails the cell (#1149).
 v6_start_rate() {
-    local n="$1" i j out fails=0 routed=0 joined=0 atstart=0 g0 g1 t0 t waits="" runs="" msg=""
+    local n="$1" i j out fails=0 routed=0 joined=0 atstart=0 extra=0 links g0 g1 t0 t waits="" runs="" msg=""
     v6_server "--dhcp-range=${V6_PREFIX_A}10,${V6_PREFIX_A}99,$LEASE_TIME --enable-ra"
     opt_net em-o-v6 -o bridge="$V6_BRIDGE" -o ipv6=true
     for i in $(seq 1 "$n"); do
@@ -1077,11 +1078,16 @@ v6_start_rate() {
             sleep 0.1
         done
         if [ -n "$t" ]; then routed=$((routed + 1)); waits="$waits $t"; fi
+        links="$(d docker exec em-c-v6 ip -o link show 2>/dev/null | grep -vc ': lo:')"
+        [ "$links" = 1 ] || extra=$((extra + 1))
         d docker rm -f em-c-v6 >/dev/null 2>&1
     done
     opt_down em-o-v6
     [ -z "$msg" ] || say "first refused start: $msg"
-    say "ENGINE_MATRIX_V6RATE tag=$ENGINE_TAG engine=$ENGINE_VERSION starts=$n refused=$fails join_gateway=$joined route_at_start=$atstart default_route=$routed ms_run=[${runs# }] ms_to_route=[${waits# }]"
+    say "ENGINE_MATRIX_V6RATE tag=$ENGINE_TAG engine=$ENGINE_VERSION starts=$n refused=$fails join_gateway=$joined route_at_start=$atstart default_route=$routed extra_links=$extra ms_run=[${runs# }] ms_to_route=[${waits# }]"
+    [ "$fails" = 0 ] || fail "the engine refused $fails of $n starts on em-o-v6: $msg"
+    [ "$routed" = "$n" ] || fail "$((n - routed)) of $n containers on em-o-v6 had no IPv6 default route via the router's link-local"
+    [ "$extra" = 0 ] || fail "$extra of $n containers on em-o-v6 had a second link besides eth0"
 }
 
 # join_gw6_lines counts the plugin's log lines saying Join handed the
