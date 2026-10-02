@@ -102,6 +102,11 @@ const (
 	TestClasslessRoute       = "192.168.123.0/24"
 	TestClasslessRouteGW     = "192.168.99.249"
 	dnsmasqCSRTag            = "dh-itest-csr"
+
+	TestUserClass          = "docker-net-dhcp-test-uc"
+	TestUserClassGateway   = "192.168.99.248"
+	dnsmasqUCTag           = "dh-itest-uc"
+	BridgeUserClassGateway = "192.168.100.248"
 )
 
 // DefaultGateway is the gateway untagged clients receive, dnsmasq's own address.
@@ -270,6 +275,8 @@ func (f *Fixture) startDnsmasq() error {
 		// Vendor-class tagging: the tag overrides option 3 only for clients sending TestVendorClass.
 		"--dhcp-vendorclass=set:"+dnsmasqVCTag+","+TestVendorClass,
 		"--dhcp-option=tag:"+dnsmasqVCTag+",3,"+TestTaggedGateway,
+		"--dhcp-userclass=set:"+dnsmasqUCTag+","+TestUserClass,
+		"--dhcp-option=tag:"+dnsmasqUCTag+",3,"+TestUserClassGateway,
 		// Option 121 only for clients tagged via TestClasslessVendorClass (#260), to a non-default destination.
 		"--dhcp-vendorclass=set:"+dnsmasqCSRTag+","+TestClasslessVendorClass,
 		"--dhcp-option=tag:"+dnsmasqCSRTag+",121,"+TestClasslessRoute+","+TestClasslessRouteGW,

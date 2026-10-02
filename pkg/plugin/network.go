@@ -129,6 +129,8 @@ func kernelIfaceName(name string) string {
 	return name
 }
 
+const maxUserClassOctets = 254
+
 // validateModeOptions is CreateNetwork's pure validation. Interface names pass ValidIfaceName here, since the
 // daemon forwards a NUL in a driver option verbatim and "br0\x00evil" would slip past ErrBridgeUsed (#705).
 func validateModeOptions(opts DHCPNetworkOptions) error {
@@ -143,6 +145,11 @@ func validateModeOptions(opts DHCPNetworkOptions) error {
 	}
 	if err := dhcp.CheckLeaseTimeout(opts.LeaseTimeout, mode); err != nil {
 		return fmt.Errorf("%w: %v", util.ErrIPAM, err)
+	}
+
+	// One instance is 1 to 254 octets (RFC 3004 section 4); the library would refuse more at `docker run` (#1120).
+	if n := len(opts.UserClass); n > maxUserClassOctets {
+		return fmt.Errorf("%w: user_class is %d octets, the most option 77 carries is %d", util.ErrIPAM, n, maxUserClassOctets)
 	}
 
 	// Whether this network hands leases back (#962); every mode sends DHCP.
@@ -1043,6 +1050,7 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 				FQDN:        opts.fqdnMode(),
 				ClientID:    clientID,
 				VendorClass: opts.VendorClass,
+				UserClass:   opts.UserClass,
 				// Pin the DUID-LL and IAID to the container veth's MAC, so this one-shot and the persistent client
 				// share one binding (#152).
 				MAC:      ctrLink.Attrs().HardwareAddr,

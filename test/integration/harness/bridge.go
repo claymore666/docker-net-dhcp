@@ -110,6 +110,8 @@ func (f *Fixture) startBridge() error {
 		"--enable-ra",
 		"--dhcp-option=option6:dns-server,["+TestDNS6Server+"]",
 		"--dhcp-option=6,"+BridgeTestDNSServer,
+		"--dhcp-userclass=set:"+dnsmasqUCTag+","+TestUserClass,
+		"--dhcp-option=tag:"+dnsmasqUCTag+",3,"+BridgeUserClassGateway,
 		"--dhcp-leasefile="+f.bridgeLeaseFile,
 		"--dhcp-no-override",
 		"--dhcp-broadcast",

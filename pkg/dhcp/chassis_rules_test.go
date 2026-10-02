@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net"
 	"net/netip"
+	"strings"
 	"testing"
 	"time"
 
@@ -331,6 +332,67 @@ func TestBuildParams_TheVendorClassDefaultIsTheChassisS(t *testing.T) {
 	if p.VendorClass != "acme" {
 		t.Errorf("the operator's vendor_class was replaced by %q", p.VendorClass)
 	}
+}
+
+func TestBuildParams_UserClassIsOneInstanceOrNothing(t *testing.T) {
+	mac := testMAC(t)
+
+	p, err := buildParams(&DHCPClientOptions{MAC: mac}, true)
+	if err != nil {
+		t.Fatalf("buildParams: %v", err)
+	}
+	if p.UserClass != nil {
+		t.Errorf("with no user_class set, Params.UserClass is %q, want nil: a network that did not ask for option 77 "+
+			"must not send it", p.UserClass)
+	}
+
+	for _, v := range []string{"acme", "web, tier 1"} {
+		p, err = buildParams(&DHCPClientOptions{MAC: mac, UserClass: v}, false)
+		if err != nil {
+			t.Fatalf("buildParams(%q): %v", v, err)
+		}
+		if len(p.UserClass) != 1 || string(p.UserClass[0]) != v {
+			t.Errorf("user_class %q became %q, want one instance carrying exactly those bytes", v, p.UserClass)
+		}
+	}
+}
+
+func TestBuildParams_UserClassBoundMatchesTheLibrary(t *testing.T) {
+	mac := testMAC(t)
+	for _, tc := range []struct {
+		octets int
+		ok     bool
+	}{{254, true}, {255, false}} {
+		p, err := buildParams(&DHCPClientOptions{MAC: mac, UserClass: strings.Repeat("a", tc.octets)}, true)
+		if err != nil {
+			t.Fatalf("buildParams: %v", err)
+		}
+		_, err = proto.New(p)
+		if (err == nil) != tc.ok {
+			t.Errorf("proto.New with a %d-octet user class returned %v, want ok=%v", tc.octets, err, tc.ok)
+		}
+	}
+
+	p, err := buildParams(&DHCPClientOptions{MAC: mac, UserClass: "acme"}, true)
+	if err != nil {
+		t.Fatalf("buildParams: %v", err)
+	}
+	m, err := proto.New(p)
+	if err != nil {
+		t.Fatalf("proto.New: %v", err)
+	}
+	_, acts := m.Step(0, 0, proto.Simple(proto.EvStart))
+	for _, a := range acts {
+		if a.Kind != proto.ActSend || a.Msg == nil {
+			continue
+		}
+		got, ok, err := a.Msg.Options.UserClass()
+		if err != nil || !ok || len(got) != 1 || string(got[0]) != "acme" {
+			t.Errorf("the first message carries user class %q (present %v, err %v), want one instance \"acme\"", got, ok, err)
+		}
+		return
+	}
+	t.Fatal("EvStart emitted no ActSend, so the option check judged nothing")
 }
 
 // RFC 2132 section 9.14: option 61 is a type byte then the value, and the library sends ClientID verbatim (D10).

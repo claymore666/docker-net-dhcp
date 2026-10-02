@@ -102,6 +102,9 @@ type DHCPClientOptions struct {
 	// VendorClass overrides option 60, VendorID when empty.
 	VendorClass string
 
+	// UserClass is the one class value of option 77 (RFC 3004); empty sends no option, and v6 never sends it (#1120).
+	UserClass string
+
 	// ConflictMode is the parsed RFC 5227 `conflict_check` mode, zero being proto.ConflictWait (D23, #882).
 	ConflictMode proto.ConflictMode
 
