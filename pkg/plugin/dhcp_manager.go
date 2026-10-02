@@ -87,6 +87,9 @@ type dhcpManager struct {
 	// seenV4 is the v4 client as its event goroutine last recorded it; the health entry renders its lease from here
 	// because the library marks a lease held before it emits the event (#1044).
 	seenV4 v4Record
+	// tempV6 is the first IA_TA address of the DHCPv6 lease the event goroutine last applied, for the health entry
+	// (#927).
+	tempV6 v6TempRecord
 
 	// recordID is the durable lease record (#899); empty in unit tests and adopted endpoints, where record calls no-op.
 	recordID string
@@ -287,6 +290,37 @@ func (m *dhcpManager) noteEvent(event dhcp.Event, v6 bool) {
 	m.seenV4 = rec
 }
 
+// v6TempRecord is the temporary address a DHCPv6 event carried and when its valid lifetime ends, zero meaning no end.
+type v6TempRecord struct {
+	addr       string
+	validUntil time.Time
+}
+
+// noteTempV6 records the v6 lease's first temporary address, or clears the record when the lease carries none, so a
+// withdrawn address is not shown (#927).
+func (m *dhcpManager) noteTempV6(temps []dhcp.V6Addr, now time.Time) {
+	var rec v6TempRecord
+	if len(temps) > 0 {
+		rec.addr = temps[0].IP
+		if temps[0].ValidSeconds > 0 {
+			rec.validUntil = now.Add(time.Duration(temps[0].ValidSeconds) * time.Second)
+		}
+	}
+	m.ipMu.Lock()
+	defer m.ipMu.Unlock()
+	m.tempV6 = rec
+}
+
+// tempV6Address is the recorded temporary address, empty once its valid lifetime has passed (#927).
+func (m *dhcpManager) tempV6Address(now time.Time) string {
+	m.ipMu.Lock()
+	defer m.ipMu.Unlock()
+	if r := m.tempV6; r.validUntil.IsZero() || r.validUntil.After(now) {
+		return r.addr
+	}
+	return ""
+}
+
 func (m *dhcpManager) healthSnapshot() (v4Record, joinClient) {
 	m.ipMu.Lock()
 	defer m.ipMu.Unlock()
@@ -446,6 +480,9 @@ func (m *dhcpManager) renew(v6 bool, info dhcp.Info) error {
 
 	// Tracked after applyAddressChange, which needs the previous value, so Leave tombstones the current lease (#46).
 	m.setLastIP(v6, ip)
+	if v6 {
+		m.noteTempV6(info.TempAddrs, time.Now())
+	}
 
 	m.propagateDNS(v6, info)
 	m.propagateMTU(v6, info)
@@ -698,6 +735,23 @@ func v6WantedAddrs(main *netlink.Addr, info dhcp.Info) ([]wantedV6Addr, error) {
 			continue
 		}
 		out = append(out, w)
+	}
+	// The IA_TA addresses come last, so a failure on one never keeps the stable address off the link; a temporary
+	// address the lease no longer carries is withdrawn like any other (#927).
+	held := make(map[string]bool, len(out))
+	for _, w := range out {
+		held[w.key] = true
+	}
+	for _, a := range info.TempAddrs {
+		addr, err := netlink.ParseAddr(a.IP)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse the IPv6 temporary address %q: %w", a.IP, err)
+		}
+		v6AddrAttrs(addr, a.ValidSeconds, a.PreferredSeconds, a.Deprecated)
+		if key := addr.String(); !held[key] {
+			held[key] = true
+			out = append(out, wantedV6Addr{addr: addr, key: key})
+		}
 	}
 	return out, nil
 }
@@ -1619,6 +1673,7 @@ func (m *dhcpManager) setupClient(v6 bool) (chan error, error) {
 		RapidCommit: m.opts.RapidCommit,
 		// HonorRouterAdverts is required on a persistent v6 client and refused elsewhere (#875, D30 Q3).
 		HonorRouterAdverts: v6,
+		IPv6Temporary:      m.opts.IPv6Temporary,
 	}
 	if v6 {
 		// The v6 record id is restated; what this adds is the mode, which renewals and rebinds run under (#817).

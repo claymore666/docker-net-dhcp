@@ -1046,12 +1046,13 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 
 			base := dhcp.DHCPClientOptions{
 				// .name only: a refused hostname is simply absent from the exchange.
-				Hostname:    hostname.name,
-				FQDN:        opts.fqdnMode(),
-				ClientID:    clientID,
-				VendorClass: opts.VendorClass,
-				UserClass:   opts.UserClass,
-				RapidCommit: opts.RapidCommit,
+				Hostname:      hostname.name,
+				FQDN:          opts.fqdnMode(),
+				ClientID:      clientID,
+				VendorClass:   opts.VendorClass,
+				UserClass:     opts.UserClass,
+				RapidCommit:   opts.RapidCommit,
+				IPv6Temporary: opts.IPv6Temporary,
 				// Pin the DUID-LL and IAID to the container veth's MAC, so this one-shot and the persistent client
 				// share one binding (#152).
 				MAC:      ctrLink.Attrs().HardwareAddr,

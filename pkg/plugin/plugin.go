@@ -223,8 +223,11 @@ type DHCPNetworkOptions struct {
 	IPv6AutoStrict bool `mapstructure:"ipv6_auto_strict"`
 	// IPv6MainPrefix, a CIDR, picks which SLAAC address Docker is told about, since RFC 4862 section 5.5.3 forms one
 	// per autonomous prefix; unset or unmatched uses the first advertised prefix (#818).
-	IPv6MainPrefix string        `mapstructure:"ipv6_main_prefix"`
-	LeaseTimeout   time.Duration `mapstructure:"lease_timeout"`
+	IPv6MainPrefix string `mapstructure:"ipv6_main_prefix"`
+	// IPv6Temporary puts an IA_TA (RFC 8415 section 21.5) beside the IA_NA in every Solicit and Request, so the server's
+	// temporary address is installed next to the stable one; never the address Docker reports (#927).
+	IPv6Temporary bool          `mapstructure:"ipv6_temporary"`
+	LeaseTimeout  time.Duration `mapstructure:"lease_timeout"`
 	// IgnoreConflicts skips CreateNetwork's check for another Docker network on this bridge or range; it is unrelated
 	// to conflict_check's RFC 5227 detection on the wire.
 	IgnoreConflicts bool `mapstructure:"ignore_conflicts"`
