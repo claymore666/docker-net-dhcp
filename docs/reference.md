@@ -1605,6 +1605,13 @@ What the option does, concretely:
   advertisement keeps its route until the container restarts. Before
   v2.2.3 the on-link prefixes were set once, when the container started,
   and a lease that finished before the first advertisement got none.
+  On an engine below 28.0, or one whose version the plugin could not
+  read, Join leaves out the gateway and the next-hop routes via a
+  link-local address, which the plugin installs itself when the first
+  lease or advertisement arrives, because those engines look up the
+  route to them before the container's link has one and the start then
+  failed now and then with "route for the gateway ... could not be
+  found" (v2.4.0+, #1149).
   The gateway and the routes need the endpoint to have
   a global IPv6 address: see *Networks where DHCPv6 offers no address*
   below for what a segment without one gets, and why.

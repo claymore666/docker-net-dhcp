@@ -30,6 +30,15 @@ prompts on has moved since v2.0.0. This release changes the manifest's
 
 <!-- manifest-delta: end -->
 
+### Fixed
+
+- On an engine below 28.0 a container with IPv6 no longer fails to start
+  now and then with "failed to set IPv6 gateway ... route for the
+  gateway fe80::... could not be found". On those engines the plugin
+  installs the IPv6 default route and the advertised routes via a
+  link-local next hop itself, when the first lease or advertisement
+  arrives, instead of handing them to the engine in Join (#1149).
+
 ## v2.3.1
 
 A container with IPv6 starts when a host route and an advertised route
