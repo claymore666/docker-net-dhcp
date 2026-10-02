@@ -339,6 +339,64 @@ derive_option_steps() {
     }'
 }
 
+# drive_options CATALOGUE runs every catalogue line. The lines are read
+# from descriptor 3: `di` is `docker exec -i` and drains whatever stdin it
+# inherits, so with the catalogue on stdin the loop ended after
+# macvlan_mode and 29 of 37 entries were never driven while the verdict
+# counted the list (#1141). OPTIONS_DRIVEN counts the entries completed.
+drive_options() {
+    local opt kind obs fn s lopt first=""
+    OPTIONS_DRIVEN=0
+    OPTIONS_LISTED=0
+    OPTIONS_SEEN=$'\n'
+    while IFS='|' read -r -u 3 opt kind obs; do
+        [ -n "$opt" ] || continue
+        STEP="option-$opt"
+        fn="opt_$(printf '%s' "$opt" | tr -c 'a-zA-Z0-9' '_')"
+        case "$kind" in
+            shape)
+                case "$opt" in
+                    mode)   want_shapes="bridge macvlan ipvlan" ;;
+                    bridge) want_shapes="bridge" ;;
+                    parent) want_shapes="macvlan ipvlan bridge-own" ;;
+                    *) fail "the catalogue calls $opt a shape and no shape step drives it" ;;
+                esac
+                for s in $want_shapes; do
+                    case "$DRIVEN" in
+                        *"-$s
+"*) ;;
+                        *) fail "$opt is covered by the shape steps and no $s shape was driven" ;;
+                    esac
+                done ;;
+            step|measure)
+                declare -F "$fn" >/dev/null || fail "$opt is a documented $kind and this cell has no $fn"
+                say "== option $opt ($kind)"
+                "$fn" ;;
+            not-driven) say "== option $opt not driven: $obs" ;;
+            '') fail "$SHAPES_DOC documents $opt and the option catalogue has no line for it" ;;
+            *) fail "the option catalogue gives $opt the unknown kind '$kind'" ;;
+        esac
+        OPTIONS_DRIVEN=$((OPTIONS_DRIVEN + 1))
+        OPTIONS_SEEN="$OPTIONS_SEEN$opt"$'\n'
+    done 3<<EOF
+$1
+EOF
+    while IFS='|' read -r -u 4 lopt _; do
+        [ -n "$lopt" ] || continue
+        OPTIONS_LISTED=$((OPTIONS_LISTED + 1))
+        case "$OPTIONS_SEEN" in
+            *$'\n'"$lopt"$'\n'*) ;;
+            *) [ -n "$first" ] || first="$lopt" ;;
+        esac
+    done 4<<EOF
+$1
+EOF
+    if [ -n "$first" ]; then
+        STEP="option-$first"
+        fail "option $first is in the catalogue and was never driven ($OPTIONS_DRIVEN of $OPTIONS_LISTED driven)"
+    fi
+}
+
 case "${1:-}" in
     --print-shapes)              derive_shapes shapes;  exit $? ;;
     --print-shape-sources)       derive_shapes sources; exit $? ;;
@@ -1686,36 +1744,7 @@ STEP=option-steps
 option_steps="$(derive_option_steps)" \
     || fail "the documented options could not be derived from $SHAPES_DOC; the messages above name the source"
 MEASURED=""
-while IFS='|' read -r opt kind obs; do
-    [ -n "$opt" ] || continue
-    STEP="option-$opt"
-    fn="opt_$(printf '%s' "$opt" | tr -c 'a-zA-Z0-9' '_')"
-    case "$kind" in
-        shape)
-            case "$opt" in
-                mode)   want_shapes="bridge macvlan ipvlan" ;;
-                bridge) want_shapes="bridge" ;;
-                parent) want_shapes="macvlan ipvlan bridge-own" ;;
-                *) fail "the catalogue calls $opt a shape and no shape step drives it" ;;
-            esac
-            for s in $want_shapes; do
-                case "$DRIVEN" in
-                    *"-$s
-"*) ;;
-                    *) fail "$opt is covered by the shape steps and no $s shape was driven" ;;
-                esac
-            done ;;
-        step|measure)
-            declare -F "$fn" >/dev/null || fail "$opt is a documented $kind and this cell has no $fn"
-            say "== option $opt ($kind)"
-            "$fn" ;;
-        not-driven) say "== option $opt not driven: $obs" ;;
-        '') fail "$SHAPES_DOC documents $opt and the option catalogue has no line for it" ;;
-        *) fail "the option catalogue gives $opt the unknown kind '$kind'" ;;
-    esac
-done <<EOF
-$option_steps
-EOF
+drive_options "$option_steps"
 
 # ---- step 9: the plugin reads the engine it runs on (#1015) -----------
 STEP=health-engine-version
@@ -1731,5 +1760,5 @@ done
     || fail "Plugin.Health reports engine_version '$health_engine' and the nested daemon answers $ENGINE_VERSION"
 
 STEP=complete
-verdict pass "macvlan=$macvlan_addr after_restart=$after engine_version=$health_engine options=$(printf '%s\n' "$option_steps" | grep -c .)$MEASURED"
+verdict pass "macvlan=$macvlan_addr after_restart=$after engine_version=$health_engine options=$OPTIONS_DRIVEN/$OPTIONS_LISTED$MEASURED"
 exit 0
