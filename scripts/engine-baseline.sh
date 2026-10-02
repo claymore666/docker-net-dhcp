@@ -343,7 +343,8 @@ derive_option_steps() {
 # from descriptor 3: `di` is `docker exec -i` and drains whatever stdin it
 # inherits, so with the catalogue on stdin the loop ended after
 # macvlan_mode and 29 of 37 entries were never driven while the verdict
-# counted the list (#1141). OPTIONS_DRIVEN counts the entries completed.
+# counted the list (#1141). OPTIONS_DRIVEN counts the entries completed,
+# not-driven lines excluded, so such a line shows as a short count.
 drive_options() {
     local opt kind obs fn s lopt first=""
     OPTIONS_DRIVEN=0
@@ -372,7 +373,10 @@ drive_options() {
                 declare -F "$fn" >/dev/null || fail "$opt is a documented $kind and this cell has no $fn"
                 say "== option $opt ($kind)"
                 "$fn" ;;
-            not-driven) say "== option $opt not driven: $obs" ;;
+            not-driven)
+                say "== option $opt not driven: $obs"
+                OPTIONS_SEEN="$OPTIONS_SEEN$opt"$'\n'
+                continue ;;
             '') fail "$SHAPES_DOC documents $opt and the option catalogue has no line for it" ;;
             *) fail "the option catalogue gives $opt the unknown kind '$kind'" ;;
         esac
