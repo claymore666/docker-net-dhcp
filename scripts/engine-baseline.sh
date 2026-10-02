@@ -233,8 +233,8 @@ OPTION_CATALOGUE='mode|shape|the null-bridge, null-macvlan, null-ipvlan and plug
 bridge|shape|the null-bridge shape step
 parent|shape|the null-macvlan, null-ipvlan and plugin-macvlan shape steps, and the null-bridge-own shape step that makes its bridge from parent
 gateway|step|container default route via the named address; control without it: via the server router
-ipv6|step|fresh DHCPv6 reply in the server log for the address the container holds, with --ipam-driver null and with this plugin as IPAM driver, where Docker reports that address; ipv6=true with ipv6_mode=off refused; --ipv6 with this plugin as IPAM driver refused
-ipv6_mode|step|dhcp: fresh DHCPv6 reply for the held address; slaac: fresh router advertisement, the container holds and Docker reports an address in the ra-only prefix; control off: no global address; bad value refused
+ipv6|step|fresh DHCPv6 reply in the server log for the address the container holds and an IPv6 default route via the router link-local address, with --ipam-driver null and with this plugin as IPAM driver, where Docker reports that address; ipv6=true with ipv6_mode=off refused; --ipv6 with this plugin as IPAM driver refused
+ipv6_mode|step|dhcp: fresh DHCPv6 reply for the held address; slaac: fresh router advertisement, the container holds and Docker reports an address in the ra-only prefix; both: an IPv6 default route via the router link-local address; control off: no global address; bad value refused
 ipv6_main_prefix|step|two advertised prefixes: Docker reports the address in the named prefix, both ways round; refused with ipv6_mode=dhcp
 ipv6_temporary|step|a range 2^32 + 1 wide: the container holds two addresses in the prefix, Docker reports one of them, the server logged a DHCPv6 reply for each; control without it: one address; refused with ipv6_mode=slaac and off
 ipv6_auto_strict|step|managed-flag advertisement with a silent DHCPv6 server: true fails docker run, false holds an address in the autonomous prefix
@@ -509,6 +509,9 @@ fail() {
     plugin_log || true
     say "--- dnsmasq log (tail) ---"
     d sh -c "tail -40 $DNSMASQ_LOG" 2>/dev/null || true
+    case "$detail" in
+        *"IPv6 gateway"*|*"could not be found"*) v6_diag ;;
+    esac
     verdict fail "$detail"
     exit 1
 }
@@ -932,9 +935,9 @@ opt_refused() {
 }
 
 opt_run() {
-    local ctr="$1" net="$2"; shift 2
-    d docker run -d --name "$ctr" --network "$net" "$@" "$TEST_IMAGE" sleep 600 >/dev/null \
-        || fail "the container did not start on $net ($*)"
+    local ctr="$1" net="$2" out; shift 2
+    out="$(d docker run -d --name "$ctr" --network "$net" "$@" "$TEST_IMAGE" sleep 600 2>&1)" \
+        || fail "the container did not start on $net ($*): $(printf '%s' "$out" | tail -1)"
 }
 
 opt_down() {
@@ -996,6 +999,120 @@ v6_server() {
         || fail "the IPv6 server did not start with $*"
 }
 
+
+# v6_diag prints what a failed IPv6 start leaves to read: the segment's
+# addresses and routes, the kernel's tail, and the engine's and the
+# plugin's lines about the gateway (#1149).
+v6_diag() {
+    say "--- IPv6 start diagnostic (#1149) ---"
+    d ip -6 addr show dev "$V6_BRIDGE" 2>&1 || true
+    d ip -6 route show table all 2>&1 | grep -v '^local\|^multicast\|^anycast' || true
+    d sh -c 'dmesg 2>/dev/null | tail -20' || true
+    docker logs --tail 400 "$CONTAINER" 2>&1 | grep -i 'gateway\|could not be found' | tail -10 || true
+    d sh -c 'for f in /var/lib/docker/plugins/*/rootfs/var/log/net-dhcp.log; do
+        [ -f "$f" ] && grep -i "gateway\|Router Advertisement\|sandbox" "$f" | tail -15
+    done' 2>/dev/null || true
+}
+
+# v6_race_probe replays libnetwork's order before 28 on a bare netns: a
+# veth bridged to the IPv6 segment is moved in, given its address, set
+# up and the router's link-local looked up at once, as programGateway
+# does with no wait for the link to run (#1149). It prints the count and
+# the first failure's state taken in the same ip process.
+v6_race_probe() {
+    local n="$1"
+    di sh -s <<EOF
+ll="\$(ip -6 addr show dev $V6_BRIDGE scope link | awk '\$1 == "inet6" { sub(/\/.*/, "", \$2); print \$2; exit }')"
+ip netns add em-race
+fails=0
+first=""
+for i in \$(seq 1 $n); do
+    ip link add em-rh type veth peer name em-rc
+    ip link set em-rh master $V6_BRIDGE
+    ip link set em-rh up
+    ip link set em-rc netns em-race
+    ip -n em-race addr add ${V6_PREFIX_A}f0/64 dev em-rc nodad
+    out="\$(printf 'link set em-rc up\nroute get %s\naddr show dev em-rc\nroute show table all dev em-rc\nlink show em-rc\n' "\$ll" \
+        | ip -n em-race -6 -force -batch - 2>&1)"
+    case "\$out" in
+        *nreachable*)
+            fails=\$((fails + 1))
+            if [ -z "\$first" ]; then first=1; echo "first failure, iteration \$i:"; echo "\$out"; fi ;;
+    esac
+    ip link del em-rh
+done
+ip netns del em-race
+echo "ENGINE_MATRIX_V6RACE router=\$ll lookups=$n unreachable=\$fails"
+EOF
+}
+
+# v6_start_rate starts and removes a container on one IPv6 network N
+# times and reports how many starts the engine refused, how many Joins
+# handed the engine the IPv6 gateway, how many containers had their
+# default route via the router's link-local when the start returned, how
+# long each start took and how long until the route was there; a refused
+# start, a missing route or a second link fails the cell (#1149).
+v6_start_rate() {
+    local n="$1" i j out fails=0 routed=0 joined=0 atstart=0 extra=0 links g0 g1 t0 t waits="" runs="" msg="" major
+    v6_server "--dhcp-range=${V6_PREFIX_A}10,${V6_PREFIX_A}99,$LEASE_TIME --enable-ra"
+    opt_net em-o-v6 -o bridge="$V6_BRIDGE" -o ipv6=true
+    for i in $(seq 1 "$n"); do
+        g0="$(join_gw6_lines)"
+        t0="$(date +%s%N)"
+        if ! out="$(d docker run -d --name em-c-v6 --network em-o-v6 "$TEST_IMAGE" sleep 600 2>&1)"; then
+            fails=$((fails + 1))
+            [ -n "$msg" ] || msg="$(printf '%s\n' "$out" | tail -1)"
+            d docker rm -f em-c-v6 >/dev/null 2>&1
+            continue
+        fi
+        runs="$runs $(( ($(date +%s%N) - t0) / 1000000 ))"
+        g1="$(join_gw6_lines)"
+        [ "$g1" -gt "$g0" ] && joined=$((joined + 1))
+        t=""
+        for j in $(seq 1 150); do
+            if d docker exec em-c-v6 ip -6 route 2>/dev/null | grep '^default via fe80:' >/dev/null; then
+                t="$(( ($(date +%s%N) - t0) / 1000000 ))"
+                [ "$j" = 1 ] && atstart=$((atstart + 1))
+                break
+            fi
+            sleep 0.1
+        done
+        if [ -n "$t" ]; then routed=$((routed + 1)); waits="$waits $t"; fi
+        links="$(d docker exec em-c-v6 ip -o link show 2>/dev/null | grep -vc ': lo:')"
+        [ "$links" = 1 ] || extra=$((extra + 1))
+        d docker rm -f em-c-v6 >/dev/null 2>&1
+    done
+    opt_down em-o-v6
+    [ -z "$msg" ] || say "first refused start: $msg"
+    say "ENGINE_MATRIX_V6RATE tag=$ENGINE_TAG engine=$ENGINE_VERSION starts=$n refused=$fails join_gateway=$joined route_at_start=$atstart default_route=$routed extra_links=$extra ms_run=[${runs# }] ms_to_route=[${waits# }]"
+    [ "$fails" = 0 ] || fail "the engine refused $fails of $n starts on em-o-v6: $msg"
+    [ "$routed" = "$n" ] || fail "$((n - routed)) of $n containers on em-o-v6 had no IPv6 default route via the router's link-local"
+    [ "$extra" = 0 ] || fail "$extra of $n containers on em-o-v6 had a second link besides eth0"
+    major="${ENGINE_VERSION%%.*}"
+    case "$major" in ''|*[!0-9]*) fail "engine version '$ENGINE_VERSION' has no numeric major" ;; esac
+    [ "$major" -ge 28 ] || n=0
+    [ "$joined" = "$n" ] || fail "Join handed the engine the IPv6 gateway in $joined starts on $ENGINE_VERSION, want $n"
+}
+
+# join_gw6_lines counts the plugin's log lines saying Join handed the
+# engine the IPv6 gateway (#1149).
+join_gw6_lines() {
+    d sh -c 'cat /var/lib/docker/plugins/*/rootfs/var/log/net-dhcp.log 2>/dev/null | grep -c "Setting IPv6 gateway"' | tr -dc '0-9'
+}
+
+# wait_v6_default C LABEL fails unless container C gets an IPv6 default
+# route via the router's link-local; below engine 28 the plugin installs
+# it, on every IPv6 mode (#1149).
+wait_v6_default() {
+    local j
+    for j in $(seq 1 150); do
+        if d docker exec "$1" ip -6 route 2>/dev/null | grep '^default via fe80:' >/dev/null; then
+            return 0
+        fi
+        sleep 0.1
+    done
+    fail "$2: the container has no IPv6 default route via the router's link-local"
+}
 second_server() {
     case "$1" in
         up) d ip netns exec em-ns2 dnsmasq --interface=em-s2 --bind-interfaces --except-interface=lo \
@@ -1029,6 +1146,7 @@ v6_dhcp_lease() {
     wait_v6 em-c-v6 "$V6_PREFIX_A"
     fresh_wait "$V6_LOG" "$m" "DHCPREPLY($V6_BRIDGE) $V6 " \
         || fail "$*: the container holds $V6 and the server logged no DHCPv6 reply for it"
+    wait_v6_default em-c-v6 "$*"
     opt_down em-o-v6 em-c-v6
 }
 
@@ -1073,6 +1191,7 @@ opt_ipv6_mode() {
     wait_v6 em-c-v6 "$V6_PREFIX_A"
     addr="$(inspect_v6 em-c-v6 em-o-v6)"
     [ "$addr" = "$V6" ] || fail "ipv6_mode=slaac: the container holds $V6 and Docker reports '$addr'"
+    wait_v6_default em-c-v6 "ipv6_mode=slaac"
     fresh_wait "$V6_LOG" "$m" "RTR-ADVERT($V6_BRIDGE)" \
         || fail "ipv6_mode=slaac: the server logged no router advertisement during the step"
     opt_down em-o-v6 em-c-v6
@@ -1823,6 +1942,13 @@ opt___ip() {
     fresh_has "$DNSMASQ_LOG" "$m" "DHCPACK($SEGMENT) $want " || fail "--ip $want with --subnet: no fresh ACK for it"
     opt_down em-o-ipam em-c-ipam
 }
+
+# The engines that program the IPv6 gateway with no wait for the link
+# (#1149) are measured on a bare netns and on the plugin's own network;
+# 8 starts keep the step under two minutes per cell.
+STEP=v6-start-rate
+v6_race_probe 50
+v6_start_rate 8
 
 STEP=option-steps
 option_steps="$(derive_option_steps)" \

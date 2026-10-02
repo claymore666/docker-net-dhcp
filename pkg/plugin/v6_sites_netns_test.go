@@ -184,7 +184,7 @@ func checkV6Outcome(t *testing.T, opts DHCPNetworkOptions, res CreateEndpointRes
 		t.Errorf("the Join hint carries MAC %v, want the one-shot's %v", hint.MacAddress, v6.opts.MAC)
 	}
 	var join JoinResponse
-	p := newPluginForTest()
+	p := onWaitingEngine(newPluginForTest())
 	p.applyV6JoinHint(opts, JoinRequest{}, hint, &join)
 	if join.GatewayIPv6 != info.Gateway || len(join.StaticRoutes) != 1 || join.StaticRoutes[0].Destination != "fd00:960::/64" {
 		t.Errorf("Join would answer gateway %q and routes %v, want %q and the on-link fd00:960::/64 (#821)",

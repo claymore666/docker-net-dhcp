@@ -1377,6 +1377,22 @@ func (p *Plugin) appendDHCPStaticRoutes(opts DHCPNetworkOptions, r JoinRequest, 
 // applyV6JoinHint sets the RA gateway and routes from the hint, and `skip_routes=true` drops the routes but keeps
 // the gateway, as on v4; nothing reads the host's table (#821).
 func (p *Plugin) applyV6JoinHint(opts DHCPNetworkOptions, r JoinRequest, hint joinHint, res *JoinResponse) {
+	routes := hint.RoutesIPv6
+	if !p.engineWaitsForV6Link() {
+		// The persistent client installs both on its first lease or advertisement (#1149).
+		var withheld []*StaticRoute
+		routes, withheld = splitLinkLocalNextHops(routes)
+		if hint.GatewayIPv6 != "" || len(withheld) > 0 {
+			log.WithFields(log.Fields{
+				"network":        shortID(r.NetworkID),
+				"endpoint":       shortID(r.EndpointID),
+				"gateway":        hint.GatewayIPv6,
+				"routes":         describeStaticRoutes(withheld),
+				"engine_version": p.engineSnapshot().Version,
+			}).Info("[Join] Leaving the IPv6 gateway and link-local next hops to the plugin: this engine looks up their route before the link is up")
+		}
+		hint.GatewayIPv6 = ""
+	}
 	if hint.GatewayIPv6 != "" {
 		log.WithFields(log.Fields{
 			"network":  shortID(r.NetworkID),
@@ -1387,20 +1403,34 @@ func (p *Plugin) applyV6JoinHint(opts DHCPNetworkOptions, r JoinRequest, hint jo
 		res.GatewayIPv6 = hint.GatewayIPv6
 	}
 
-	if opts.SkipRoutes || len(hint.RoutesIPv6) == 0 {
+	if opts.SkipRoutes || len(routes) == 0 {
 		return
 	}
 
-	res.StaticRoutes = append(res.StaticRoutes, hint.RoutesIPv6...)
-	p.dhcpRoutesApplied.Add(int32(len(hint.RoutesIPv6)))
+	res.StaticRoutes = append(res.StaticRoutes, routes...)
+	p.dhcpRoutesApplied.Add(int32(len(routes)))
 
 	log.WithFields(log.Fields{
 		"network":  shortID(r.NetworkID),
 		"endpoint": shortID(r.EndpointID),
 		"sandbox":  r.SandboxKey,
-		"routes":   describeStaticRoutes(hint.RoutesIPv6),
+		"routes":   describeStaticRoutes(routes),
 		"gateway":  res.GatewayIPv6,
 	}).Info("[Join] Adding IPv6 routes from the Router Advertisement")
+}
+
+// splitLinkLocalNextHops separates the next-hop routes whose next hop is an IPv6 link-local address.
+func splitLinkLocalNextHops(routes []*StaticRoute) (kept, linkLocal []*StaticRoute) {
+	for _, r := range routes {
+		if r != nil && r.RouteType == RouteTypeNextHop {
+			if nh := net.ParseIP(r.NextHop); nh != nil && nh.To4() == nil && nh.IsLinkLocalUnicast() {
+				linkLocal = append(linkLocal, r)
+				continue
+			}
+		}
+		kept = append(kept, r)
+	}
+	return kept, linkLocal
 }
 
 // A second route to one destination fails the engine's install with EEXIST whatever its next hop (measured

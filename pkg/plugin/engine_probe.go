@@ -115,6 +115,16 @@ func (p *Plugin) engineSnapshot() engineIdentity {
 	return engineIdentity{Version: unknownEngineField, APIVersion: unknownEngineField}
 }
 
+// MinEngineV6GatewayWaitVersion is the first engine line that waits for the link to run before it looks up the IPv6
+// gateway's route; 24.0.9 and 27.5.1 do not and refused 1 start in 20 each, route not found (moby osl, #1149).
+const MinEngineV6GatewayWaitVersion = "28.0"
+
+// engineWaitsForV6Link is false on an unknown engine: withheld, the gateway costs a wait; returned, a start (#1149).
+func (p *Plugin) engineWaitsForV6Link() bool {
+	below, known := engineBelowFloor(p.engineSnapshot().Version, MinEngineV6GatewayWaitVersion)
+	return known && !below
+}
+
 // MinEngineIfnameVersion is the lowest engine measured to apply a requested interface name: 28.5.2 and 29.7.2 ignored
 // it and 29.8.0 applied it (moby/moby#52866, #125, #670).
 const MinEngineIfnameVersion = "29.8"

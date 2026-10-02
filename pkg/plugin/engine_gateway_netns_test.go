@@ -263,6 +263,12 @@ func TestFirstLease_LeavesTheJoinGatewayToTheEngineInEitherOrder_IPv6(t *testing
 		{name: "a Join that returned no IPv6 gateway carries no mark, and a lease that has seen no router still keeps the route",
 			res:   JoinResponse{Gateway: "192.168.99.1"},
 			steps: []gatewayRaceStep{engine(joinGw), bound(""), table(viaJoin)}},
+		{name: "below engine 28 Join withholds the gateway, a bind that has seen no router adds nothing, the advertisement after it adds the route",
+			res:   JoinResponse{Gateway: "192.168.99.1"},
+			steps: []gatewayRaceStep{bound(""), table(), advert(joinGw), table(viaJoin)}},
+		{name: "below engine 28 Join withholds the gateway and the engine installs nothing, the first renew adds the route",
+			res:   JoinResponse{},
+			steps: []gatewayRaceStep{renewed(joinGw), table(viaJoin)}},
 		{name: "a router's withdrawal still removes the route", res: joined,
 			steps: []gatewayRaceStep{engine(joinGw), bound(joinGw), withdrawal(), table()}},
 	} {
@@ -297,8 +303,8 @@ func TestJoin_MarksExactlyTheFamiliesWhoseGatewayItReturned(t *testing.T) {
 		{}, {gw4: "192.168.99.1"}, {gw6: "fe80::1"}, {gw4: "192.168.99.1", gw6: "fe80::1"},
 	} {
 		t.Run(fmt.Sprintf("gateway=%q gateway6=%q", tc.gw4, tc.gw6), func(t *testing.T) {
-			p := &Plugin{docker: &blockingInspectDocker{}, awaitTimeout: time.Minute,
-				joinHints: make(map[string]joinHint), persistentDHCP: make(map[string]*dhcpManager)}
+			p := onWaitingEngine(&Plugin{docker: &blockingInspectDocker{}, awaitTimeout: time.Minute,
+				joinHints: make(map[string]joinHint), persistentDHCP: make(map[string]*dhcpManager)})
 			p.storeJoinHint("ep-1084", joinHint{IPv4: a4, IPv6: a6, MacAddress: mac, Gateway: tc.gw4, GatewayIPv6: tc.gw6})
 			res, err := p.Join(context.Background(), JoinRequest{NetworkID: "net-1084", EndpointID: "ep-1084"})
 			if err != nil {
