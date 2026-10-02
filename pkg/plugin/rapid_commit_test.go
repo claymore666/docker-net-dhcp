@@ -46,14 +46,12 @@ func TestDecodeOpts_RapidCommitAcceptsOnlyABoolean(t *testing.T) {
 	}
 }
 
-// Each client's options are copied from the network's by hand, and a literal that forgets rapid_commit sends nothing
-// with no other test failing; the IPAM DHCPv6 path is exempt, option 80 being v4 only (#1031).
-func TestClientOptionLiterals_EveryV4SiteCarriesRapidCommit(t *testing.T) {
+// A hand-copied client-options literal that forgets rapid_commit sends nothing and no other test fails (#1031, #926).
+func TestClientOptionLiterals_EverySiteCarriesRapidCommit(t *testing.T) {
 	files, err := filepath.Glob("*.go")
 	if err != nil {
 		t.Fatal(err)
 	}
-	v6Only := map[string]bool{"ipam_endpoint.go": true}
 	seen := map[string]bool{}
 	fset := token.NewFileSet()
 	for _, f := range files {
@@ -90,12 +88,6 @@ func TestClientOptionLiterals_EveryV4SiteCarriesRapidCommit(t *testing.T) {
 				return true // the probe: no network options
 			}
 			seen[f] = true
-			if v6Only[f] {
-				if keys["RapidCommit"] {
-					t.Errorf("%s: the DHCPv6 literal sets RapidCommit; option 80 is DHCPv4 only", fset.Position(lit.Pos()))
-				}
-				return true
-			}
 			if !keys["RapidCommit"] {
 				t.Errorf("%s: DHCPClientOptions sets VendorClass but not RapidCommit, so rapid_commit is never sent from here",
 					fset.Position(lit.Pos()))

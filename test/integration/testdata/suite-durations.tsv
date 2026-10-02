@@ -10,8 +10,8 @@
 #
 # POPULATION: TOP-LEVEL TEST FUNCTIONS, PARENTS ONLY.
 # One row per `func TestX(t *testing.T)` in test/integration/*_test.go —
-# 223 of them, the main suite's 216 and the failure suite's 7. MEASURED
-# on this table: 223 data rows, and 223 `func TestX(t *testing.T)` in
+# 231 of them, the main suite's 224 and the failure suite's 7. MEASURED
+# on this table: 231 data rows, and 231 `func TestX(t *testing.T)` in
 # test/integration/*_test.go counted independently of them.
 #
 # THIS NUMBER HAS NOW BEEN WRONG TWICE, and the second time is the
@@ -751,6 +751,10 @@ TestPreflightProbe_FailsWhenServerUnreachable	8.15
 TestPreflightProbe_IPvlanProbeCoexistsWithIPvlanEndpoints	14.96
 TestPreflightProbe_PassesOnReachableServer	3.47
 TestPreflightProbe_RejectedInBridgeMode	0.01
+TestRapidCommitV6_BridgeTakesTheTwoMessageLease	17.00
+TestRapidCommitV6_IPAMMacvlanTakesTheTwoMessageLease	17.00
+TestRapidCommitV6_MacvlanTakesTheTwoMessageLease	17.00
+TestRapidCommitV6_MacvlanWithoutTheOptionKeepsTheFourMessageExchange	17.00
 TestRapidCommit_BridgeTakesTheTwoMessageLease	11.90
 TestRapidCommit_BridgeWithoutTheOptionKeepsTheFourMessageExchange	11.56
 TestRapidCommit_IPAMMacvlanTakesTheTwoMessageLease	11.71
