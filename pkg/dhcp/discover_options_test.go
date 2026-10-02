@@ -75,6 +75,34 @@ func TestBuildParams_TheDiscoverCarriesTheForcerenewNonceAndNothingElseNew(t *te
 	}
 }
 
+// RFC 8925 section 3.2 forbids an IPv4-requiring host to ask for option 108, and every endpoint here needs an IPv4 lease
+// (#1027); the test above reads a bare client, this one every option at once.
+func TestBuildParams_NeverAsksForIPv6OnlyPreferred(t *testing.T) {
+	p, err := buildParams(&DHCPClientOptions{
+		MAC:         testMAC(t),
+		RapidCommit: true,
+		FQDN:        "register",
+		Hostname:    "ctr",
+		UserClass:   "class",
+		VendorClass: "vendor",
+		ClientID:    []byte{0x01, 0x02, 0x03},
+		RequestedIP: "192.0.2.77",
+	}, false)
+	if err != nil {
+		t.Fatalf("buildParams: %v", err)
+	}
+	if p.IPv6OnlyPreferred {
+		t.Error("Params.IPv6OnlyPreferred = true, want false")
+	}
+	if slices.Contains(p.ParameterList, wire.OptIPv6OnlyPreferred) {
+		t.Errorf("ParameterList %v names option 108", p.ParameterList)
+	}
+	msg := firstDiscover(t, p)
+	if bytes.IndexByte(msg.Options[wire.OptParameterList], byte(wire.OptIPv6OnlyPreferred)) >= 0 {
+		t.Errorf("the first DISCOVER's option 55 %v names option 108", msg.Options[wire.OptParameterList])
+	}
+}
+
 // With rapid_commit the first DISCOVER carries option 80 as an empty flag, the parameter request list does not name it,
 // and a requested address (option 50) rides beside it (RFC 4039 section 3, #1031).
 func TestBuildParams_RapidCommitPutsOption80OnTheDiscoverOnly(t *testing.T) {

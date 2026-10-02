@@ -48,7 +48,6 @@ below decide what is in a release; this page follows them.
 
 ### v2.4.0
 
-- [#1027], IPv6-Only Preferred, DHCPv4 option 108
 - [#1028], PREF64 from the Router Advertisement, the NAT64 prefix
 - [#1030], Microsoft classless static routes, option 249, where 121 is
   absent
@@ -242,6 +241,7 @@ read it before writing the PR.
 | It will not run its arm64 verification under qemu-user or binfmt | measured: the emulated plugin could not acquire a lease at all, and arm64 verification runs on real hardware | [#531] |
 | It will not backport security fixes | only the latest release is supported, and upgrading is one `docker plugin install` | [SECURITY.md](https://github.com/claymore666/docker-net-dhcp/blob/main/SECURITY.md) |
 | It will not carry AI-assistant attribution in its history | commits and PRs are signed by a person who stands behind them, and a CI check enforces it | n/a |
+| It will not ask for IPv6-Only Preferred (option 108) | an endpoint on a network with an IPv4 pool must hold an IPv4 address, which makes it an IPv4-requiring host, and RFC 8925 section 3.2 forbids such a host from asking | [#1027] |
 
 <details markdown="1">
 <summary>The reasoning behind the refusals</summary>
@@ -292,6 +292,15 @@ acquire a lease at all. The 2.0 client is a different program and has not
 been re-measured under emulation; the conclusion is unchanged either way,
 because arm64 verification runs on real hardware and there is nothing to
 be gained by finding out which syscall the emulator drops next.
+
+**IPv6-Only Preferred.** An endpoint on a network with an IPv4 pool must
+hold an IPv4 address: Docker's IPAM path refuses an answer with none, and
+the driver's own endpoint creation fails without one. That makes every
+DHCPv4 client of the plugin an IPv4-requiring host, and RFC 8925 section
+3.2 says such a host must not put option 108 in its parameter request
+list. The plugin sets nothing and has no option for it; the DHCP library
+implements the option for consumers whose endpoints can live on IPv6
+alone ([#1027]).
 
 </details>
 
