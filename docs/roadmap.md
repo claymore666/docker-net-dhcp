@@ -50,7 +50,10 @@ below decide what is in a release; this page follows them.
 
 - [#1028], PREF64 from the Router Advertisement, the NAT64 prefix
 - [#1030], Microsoft classless static routes, option 249, where 121 is
-  absent
+  absent. The library half comes with the `dhcp-golib` v1.3.0 pin
+  ([#1157]): option 249 directly after 121 in the request list, and its
+  routes read when 121 is absent; what stays is the plugin's `[Join]` log
+  line naming the option and its test against a server that sends 249 alone
 - [#1031], DHCPv4 Rapid Commit
 - [#1119], DHCPv4 FORCERENEW with nonce authentication (RFC 3203,
   RFC 6704): the plugin's own log lines and health counters. The library
@@ -372,6 +375,7 @@ project does, that review is where it gets corrected.
 [#1125]: https://github.com/claymore666/docker-net-dhcp/issues/1125
 [#1126]: https://github.com/claymore666/docker-net-dhcp/issues/1126
 [#1137]: https://github.com/claymore666/docker-net-dhcp/issues/1137
+[#1157]: https://github.com/claymore666/docker-net-dhcp/issues/1157
 [moby/moby#52866]: https://github.com/moby/moby/pull/52866
 [moby/moby#52870]: https://github.com/moby/moby/issues/52870
 [moby/moby#52871]: https://github.com/moby/moby/pull/52871
