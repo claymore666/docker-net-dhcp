@@ -24,19 +24,21 @@ type HealthCheck struct {
 
 // EndpointHealth mirrors pkg/plugin.EndpointHealth.
 type EndpointHealth struct {
-	Endpoint      string `json:"endpoint"`
-	Network       string `json:"network"`
-	Mode          string `json:"mode"`
-	Address       string `json:"address,omitempty"`
-	LeaseState    string `json:"lease_state"`
-	RenewAt       string `json:"renew_at,omitempty"`
-	RebindAt      string `json:"rebind_at,omitempty"`
-	ExpiresAt     string `json:"expires_at,omitempty"`
-	Server        string `json:"server,omitempty"`
-	LastEvent     string `json:"last_event,omitempty"`
-	LastEventAt   string `json:"last_event_at,omitempty"`
-	ConflictCheck string `json:"conflict_check"`
-	ACDPhase      string `json:"acd_phase"`
+	Endpoint string `json:"endpoint"`
+	Network  string `json:"network"`
+	Mode     string `json:"mode"`
+	Address  string `json:"address,omitempty"`
+	// IPv6TemporaryAddress is the DHCPv6 IA_TA address, present only while the lease holds one (#927).
+	IPv6TemporaryAddress string `json:"ipv6_temporary_address,omitempty"`
+	LeaseState           string `json:"lease_state"`
+	RenewAt              string `json:"renew_at,omitempty"`
+	RebindAt             string `json:"rebind_at,omitempty"`
+	ExpiresAt            string `json:"expires_at,omitempty"`
+	Server               string `json:"server,omitempty"`
+	LastEvent            string `json:"last_event,omitempty"`
+	LastEventAt          string `json:"last_event_at,omitempty"`
+	ConflictCheck        string `json:"conflict_check"`
+	ACDPhase             string `json:"acd_phase"`
 }
 
 // HealthFieldSeries names the series for health fields not exposed as net_dhcp_<tag> or net_dhcp_<tag>_total.
