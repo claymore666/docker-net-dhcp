@@ -6,6 +6,7 @@ package plugin
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -269,6 +270,8 @@ type v6SandboxDefaultsResult struct {
 	PriorAcceptRA string
 	Failures      int
 	Err           error
+	// SandboxNotBuilt marks an open that found no namespace file yet: not a failure, not counted (#1145).
+	SandboxNotBuilt bool
 }
 
 // v6SandboxDefaultsWriter is a var so a Join test runs without a namespace (#1145).
@@ -315,7 +318,13 @@ func writeV6SandboxDefaultsUnder(dir string) v6SandboxDefaultsResult {
 func writeV6SandboxDefaults(sandboxKey string) v6SandboxDefaultsResult {
 	ns, err := openSandboxNetNSByKeyIn(sandboxNetnsDirs, sandboxKey)
 	if err != nil {
-		return v6SandboxDefaultsResult{Failures: 1, Err: fmt.Errorf("open the sandbox: %w", err)}
+		res := v6SandboxDefaultsResult{Err: fmt.Errorf("open the sandbox: %w", err)}
+		if errors.Is(err, fs.ErrNotExist) {
+			res.SandboxNotBuilt = true
+			return res
+		}
+		res.Failures = 1
+		return res
 	}
 	defer closeNsHandle(ns)
 
@@ -331,6 +340,15 @@ func writeV6SandboxDefaults(sandboxKey string) v6SandboxDefaultsResult {
 // guardSandboxDefaults writes the sandbox defaults at Join and counts what failed (#1145).
 func (p *Plugin) guardSandboxDefaults(r JoinRequest) {
 	res := v6SandboxDefaultsWriter(r.SandboxKey)
+	if res.SandboxNotBuilt {
+		// Engines 26 and 27 call Join before SetKey creates the namespace; the guard cannot run there (#1145).
+		log.WithError(res.Err).WithFields(log.Fields{
+			"network":  shortID(r.NetworkID),
+			"endpoint": shortID(r.EndpointID),
+			"sandbox":  r.SandboxKey,
+		}).Debug("[Join] No sandbox namespace yet: this engine builds it after Join, so the Router Advertisement defaults are not written")
+		return
+	}
 	if res.Failures == 0 {
 		return
 	}

@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	log "github.com/sirupsen/logrus"
+	logtest "github.com/sirupsen/logrus/hooks/test"
 	"github.com/vishvananda/netlink"
 
 	"github.com/claymore666/docker-net-dhcp/v2/pkg/dhcp"
@@ -208,5 +210,56 @@ func TestWriteV6SandboxDefaultsUnder_ASecondWriteIntoASandboxAlreadyAtZeroCounts
 		if res := writeV6SandboxDefaultsUnder(dir); res.Failures != 0 || res.Err != nil {
 			t.Fatalf("write %d counted %d failure(s): %v", i+1, res.Failures, res.Err)
 		}
+	}
+}
+
+func guardWarnings(t *testing.T) *logtest.Hook {
+	t.Helper()
+	prev := log.GetLevel()
+	log.SetLevel(log.DebugLevel)
+	hook := logtest.NewLocal(log.StandardLogger())
+	t.Cleanup(func() { hook.Reset(); log.SetLevel(prev) })
+	return hook
+}
+
+func TestGuardSandboxDefaults_ASandboxNotBuiltYetIsDebugAndNeverCounted(t *testing.T) {
+	root := t.TempDir()
+	withSandboxNetnsDirs(t, []string{root})
+	hook := guardWarnings(t)
+	p := &Plugin{}
+	p.guardSandboxDefaults(JoinRequest{NetworkID: "n1145", EndpointID: "e1145", SandboxKey: filepath.Join(root, "not-built-yet")})
+	if got := p.routerAdvertGuardFailures.Load(); got != 0 {
+		t.Errorf("router_advert_guard_failures = %d for a sandbox the engine has not built yet (#1145), want 0", got)
+	}
+	var debugSeen bool
+	for _, e := range hook.AllEntries() {
+		if e.Level <= log.WarnLevel {
+			t.Errorf("logged at %v for a sandbox the engine has not built yet: %s", e.Level, e.Message)
+		}
+		debugSeen = debugSeen || e.Level == log.DebugLevel
+	}
+	if !debugSeen {
+		t.Error("no debug line records why the guard did not apply")
+	}
+}
+
+func TestGuardSandboxDefaults_APathThatIsNoNamespaceStillCountsAndWarns(t *testing.T) {
+	root := t.TempDir()
+	withSandboxNetnsDirs(t, []string{root})
+	hook := guardWarnings(t)
+	if err := os.WriteFile(filepath.Join(root, "placeholder"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	p := &Plugin{}
+	p.guardSandboxDefaults(JoinRequest{NetworkID: "n1145", EndpointID: "e1145", SandboxKey: filepath.Join(root, "placeholder")})
+	if got := p.routerAdvertGuardFailures.Load(); got != 1 {
+		t.Errorf("router_advert_guard_failures = %d for a file that is no namespace, want 1", got)
+	}
+	var warned bool
+	for _, e := range hook.AllEntries() {
+		warned = warned || (e.Level == log.WarnLevel && e.Data["step"] == "sandbox_default")
+	}
+	if !warned {
+		t.Error("no warning with step=sandbox_default for a sandbox that could not be opened as a namespace")
 	}
 }
