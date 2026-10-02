@@ -374,6 +374,7 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, callStart tim
 				ClientID:    clientID,
 				VendorClass: opts.VendorClass,
 				UserClass:   opts.UserClass,
+				RapidCommit: opts.RapidCommit,
 				// The MAC keys the v4 lease and the v6 DUID-LL, except on ipvlan, where both come from the endpoint
 				// (#152, #895).
 				MAC:      mac,
