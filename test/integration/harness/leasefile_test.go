@@ -138,6 +138,21 @@ func TestLeaseFileHolds_AFileEmptyForTheWholeWindowIsReleased(t *testing.T) {
 	}
 }
 
+func TestLeaseExpiry_AnEmptyReadInsideTheRewriteIsNotNoLease(t *testing.T) {
+	path := writeLeaseFile(t, "")
+	ef := &EphemeralFixture{t: t, backend: backendDnsmasq, leaseFile: path}
+	defer func(old func(time.Duration)) { leaseFileSleep = old }(leaseFileSleep)
+	leaseFileSleep = func(time.Duration) {
+		if err := os.WriteFile(path, []byte(leaseFileThreeLines), 0o644); err != nil {
+			t.Errorf("rewrite: %v", err)
+		}
+	}
+	expiry, found := ef.LeaseExpiry("aa:bb:cc:00:00:02")
+	if !found || expiry.Unix() != 1790000200 {
+		t.Fatalf("empty file refilled during the re-read: expiry=%v found=%v, want 1790000200 true", expiry, found)
+	}
+}
+
 func TestLeaseFileHolds_AbsenceIsConfirmedByEveryRead(t *testing.T) {
 	path := writeLeaseFile(t, leaseFileThreeLines)
 	sleeps := 0
