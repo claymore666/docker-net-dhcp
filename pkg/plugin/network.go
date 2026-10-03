@@ -20,6 +20,7 @@ import (
 	"time"
 
 	cerrdefs "github.com/containerd/errdefs"
+	dContainer "github.com/docker/docker/api/types/container"
 	dNetwork "github.com/docker/docker/api/types/network"
 	"github.com/mitchellh/mapstructure"
 	log "github.com/sirupsen/logrus"
@@ -1801,49 +1802,7 @@ func (p *Plugin) Join(ctx context.Context, r JoinRequest) (JoinResponse, error) 
 			}).Debug("Attach completed")
 		}
 		if err != nil {
-			fields := log.Fields{
-				"network":  shortID(r.NetworkID),
-				"endpoint": shortID(r.EndpointID),
-				"sandbox":  r.SandboxKey,
-			}
-			// Per-phase timing rides the failure line, since a bare deadline hides which phase spent the budget
-			// (#401, #406).
-			if m.startPhases != "" {
-				fields["phases"] = m.startPhases
-				fields["phase_total"] = m.startTotal
-			}
-			// An exited container is not join_start_failures, which means a running container without a renewal
-			// client (#373, #367); an attach cancelled because the endpoint left is checked first, being the stronger
-			// evidence (#406).
-			if m.attachAborted.Load() {
-				p.joinAbortedEndpointLeft.Add(1)
-				log.WithError(err).WithFields(fields).
-					Info("Attach cancelled because the endpoint is leaving; no persistent client needed")
-				p.removeDHCPManagerIfSame(r.EndpointID, m)
-				return
-			}
-			if joinAbortedByVanish(err, r.SandboxKey) {
-				p.joinAbortedContainerGone.Add(1)
-				log.WithError(err).WithFields(fields).
-					Info("Container went away during attach; no persistent client needed")
-				p.removeDHCPManagerIfSame(r.EndpointID, m)
-				// No persistent client; the one-shot's address expires on the server (#800).
-				return
-			}
-			// No container claimed the endpoint (#566), not a plugin fault; the address is left to expire (#800).
-			if joinFailureLeavesAddressUnused(err) {
-				p.joinAbortedNoContainer.Add(1)
-				log.WithError(err).WithFields(fields).
-					Info("No container claimed the endpoint; its address is left to expire on the server")
-				p.removeDHCPManagerIfSame(r.EndpointID, m)
-				return
-			}
-
-			p.joinStartFailures.Add(1)
-			log.WithError(err).WithFields(fields).
-				Error("Failed to start persistent DHCP client; lease will not be renewed")
-			// De-register a failed Start, identity-checked, since a fast Leave and Join may have installed a new manager.
-			p.removeDHCPManagerIfSame(r.EndpointID, m)
+			p.settleFailedAttach(r, m, err)
 		}
 	}()
 
@@ -1854,6 +1813,101 @@ func (p *Plugin) Join(ctx context.Context, r JoinRequest) (JoinResponse, error) 
 	}).Info("Joined sandbox to endpoint")
 
 	return res, nil
+}
+
+// vanishConfirmTimeout bounds the daemon question, which dockerd may never answer inside ContainerStart (#406, #1186).
+var vanishConfirmTimeout = 3 * time.Second
+
+// joinVanished confirms the key and ENOENT evidence with the daemon, since engines 26 and 27 create the sandbox key
+// after Join and a slow start looks the same; the daemon's own "no such container" needs no second question (#1186).
+func (p *Plugin) joinVanished(err error, r JoinRequest) bool {
+	if cerrdefs.IsNotFound(err) {
+		return true
+	}
+	if !joinAbortedByVanish(err, r.SandboxKey) {
+		return false
+	}
+	return p.daemonSaysContainerGone(r)
+}
+
+// daemonSaysContainerGone is true only for not-found, exited or dead; any other answer, or none, is a start
+// failure (#1186).
+func (p *Plugin) daemonSaysContainerGone(r JoinRequest) bool {
+	if p.docker == nil {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), vanishConfirmTimeout)
+	defer cancel()
+
+	nw, err := p.docker.NetworkInspect(ctx, r.NetworkID, dNetwork.InspectOptions{})
+	if err != nil {
+		return false
+	}
+	ctrID := ""
+	for id, info := range nw.Containers {
+		if info.EndpointID == r.EndpointID {
+			ctrID = id
+			break
+		}
+	}
+	if ctrID == "" || strings.HasPrefix(ctrID, "ep-") {
+		return false
+	}
+	ctr, err := p.docker.ContainerInspect(ctx, ctrID)
+	if err != nil {
+		return cerrdefs.IsNotFound(err)
+	}
+	if ctr.State == nil {
+		return false
+	}
+	return ctr.State.Status == dContainer.StateExited || ctr.State.Status == dContainer.StateDead
+}
+
+// settleFailedAttach counts a failed attach once: endpoint left, vanished, no container, start failure (#1186).
+func (p *Plugin) settleFailedAttach(r JoinRequest, m *dhcpManager, err error) {
+	fields := log.Fields{
+		"network":  shortID(r.NetworkID),
+		"endpoint": shortID(r.EndpointID),
+		"sandbox":  r.SandboxKey,
+	}
+	// Per-phase timing rides the failure line, since a bare deadline hides which phase spent the budget
+	// (#401, #406).
+	if m.startPhases != "" {
+		fields["phases"] = m.startPhases
+		fields["phase_total"] = m.startTotal
+	}
+	// An exited container is not join_start_failures, which means a running container without a renewal
+	// client (#373, #367); an attach cancelled because the endpoint left is checked first, being the stronger
+	// evidence (#406).
+	if m.attachAborted.Load() {
+		p.joinAbortedEndpointLeft.Add(1)
+		log.WithError(err).WithFields(fields).
+			Info("Attach cancelled because the endpoint is leaving; no persistent client needed")
+		p.removeDHCPManagerIfSame(r.EndpointID, m)
+		return
+	}
+	if p.joinVanished(err, r) {
+		p.joinAbortedContainerGone.Add(1)
+		log.WithError(err).WithFields(fields).
+			Info("Container went away during attach; no persistent client needed")
+		p.removeDHCPManagerIfSame(r.EndpointID, m)
+		// No persistent client; the one-shot's address expires on the server (#800).
+		return
+	}
+	// No container claimed the endpoint (#566), not a plugin fault; the address is left to expire (#800).
+	if joinFailureLeavesAddressUnused(err) {
+		p.joinAbortedNoContainer.Add(1)
+		log.WithError(err).WithFields(fields).
+			Info("No container claimed the endpoint; its address is left to expire on the server")
+		p.removeDHCPManagerIfSame(r.EndpointID, m)
+		return
+	}
+
+	p.joinStartFailures.Add(1)
+	log.WithError(err).WithFields(fields).
+		Error("Failed to start persistent DHCP client; lease will not be renewed")
+	// De-register a failed Start, identity-checked, since a fast Leave and Join may have installed a new manager.
+	p.removeDHCPManagerIfSame(r.EndpointID, m)
 }
 
 // Leave stops the persistent DHCP client for an endpoint
