@@ -106,6 +106,12 @@ prompts on has moved since v2.0.0. This release changes the manifest's
   its lease ran out no longer names its old address in its request
   (DHCP option 50), so it keeps that address only if the server keeps
   it for that client on its own (#1182).
+- With `audit_log=true` the `container` field of the audit log `leases.jsonl` no
+  longer stays empty, or shows Docker's `ep-` placeholder, for the rest of
+  an endpoint's life when the first lookup ran before the container
+  existed or while the daemon was slow. A lookup that finds no container
+  yet, only the placeholder, or fails is repeated on the next entry, and
+  the real container ID is looked up once (#1189).
 
 ## v2.3.1
 
