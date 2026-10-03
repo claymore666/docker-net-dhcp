@@ -58,6 +58,11 @@ prompts on has moved since v2.0.0. This release changes the manifest's
 
 ### Fixed
 
+- Two `docker network create` commands started at the same moment on one
+  parent or one bridge no longer both succeed where the second would have
+  been refused had the first finished. The plugin now counts a network
+  whose creation is still running, or whose record it has saved and Docker
+  does not list yet, as a sibling, with the same refusal message (#1187).
 - On an engine below 28.0 a container with IPv6 no longer fails to start
   now and then with "failed to set IPv6 gateway ... route for the
   gateway fe80::... could not be found". On those engines the plugin

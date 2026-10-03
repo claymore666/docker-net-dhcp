@@ -465,6 +465,11 @@ type Plugin struct {
 	bridgeMu      sync.Mutex
 	bridgePending map[string]int
 
+	// createMu guards creating, the CreateNetwork calls not yet returned, in no network list; a leaf lock (#1187).
+	createMu  sync.Mutex
+	createSeq uint64
+	creating  map[string]pendingCreate
+
 	// tombstones serialises tombstones.json and is never held with mu; scripts/check-lock-discipline.sh enforces it.
 	tombstones tombstoneStore
 

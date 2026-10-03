@@ -320,6 +320,9 @@ func (p *Plugin) CreateNetwork(r CreateNetworkRequest) error {
 		return err
 	}
 
+	// Left on every return; the sibling checks below read it (#1187).
+	defer p.beginCreate(r.NetworkID, opts)()
+
 	var binding *ipamBinding
 	if ipamDataIsOurs(r.IPv4Data) {
 		if err := ipamRefuseIPvlan(opts.effectiveMode()); err != nil {
@@ -433,6 +436,19 @@ func (p *Plugin) createBridgeNetwork(networkID string, opts DHCPNetworkOptions, 
 			return fmt.Errorf("failed to retrieve IPv6 addresses for %v: %w", opts.Bridge, err)
 		}
 		bridgeAddrs := append(v4Addrs, v6Addrs...)
+
+		// Both before the list: a create returning between the reads would be in neither (#1187).
+		inflight, stored := p.siblingsBeforeList(networkID)
+		for _, other := range inflight {
+			if kernelIfaceName(other.Bridge) == kernelIfaceName(opts.Bridge) {
+				return util.ErrBridgeUsed
+			}
+		}
+		for _, o := range stored {
+			if kernelIfaceName(o.Bridge) == kernelIfaceName(opts.Bridge) {
+				return util.ErrBridgeUsed
+			}
+		}
 
 		nets, err := p.docker.NetworkList(context.Background(), dNetwork.ListOptions{})
 		if err != nil {
