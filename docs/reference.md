@@ -1480,8 +1480,9 @@ in every mode:
 
 #### Options captured from the server
 
-Everything the server returns is captured. Some is applied, the rest is
-logged. The vendor-specific options 43 and 125 are logged but never applied
+Everything the server returns is captured. Some is applied, most of the rest
+is logged; DHCPv6 option 17 is captured but not logged yet. The
+vendor-specific options 43 and 125 are logged but never applied
 ([#1034](https://github.com/claymore666/docker-net-dhcp/issues/1034)):
 
 **Applied**, when the matching option is enabled: option 6 (DNS servers)
@@ -1496,8 +1497,11 @@ Information-request reply that carries no address at all. Since the
 `dhcp-golib` v1.3.0 pin the DHCPv6 client also asks for the vendor options
 (17), the timezone options (41, 42) and the NTP Server option (56). Since
 the v1.4.0 pin the lease carries every option of the Reply it came from,
-unparsed, and the lease record keeps them as `options_v6`; a lease resumed
-from its record after a restart has them again only from the next Reply.
+unparsed, and the lease record keeps them as `options_v6`. A lease resumed
+from its record after a restart is confirmed by a Reply that carries no
+options 41, 42 or 56, so the plugin fills them in from the record at once:
+the bind line, the router-advertisement line and the record hold them from
+the first event, and the next Reply's own options replace them.
 The plugin logs the timezone options 41 and 42 and the NTP Server option
 56, as described below
 ([#1033](https://github.com/claymore666/docker-net-dhcp/issues/1033),
