@@ -75,7 +75,7 @@ func infoFromLease(l lease.Lease, r proto.RouterObservation, now time.Time, main
 	}
 
 	fillVendorOptions(&info, l.Options)
-	fillV6Observed(&info, l.OptionsV6)
+	fillV6Observed(&info, l.OptionsV6, l.ServerDUID)
 
 	// sanitizeInfo runs at the one point every lease enters the plugin and feeds unsafe_option_values_dropped (#703).
 	dropped := sanitizeInfo(&info)
@@ -96,23 +96,24 @@ func infoFromLease(l lease.Lease, r proto.RouterObservation, now time.Time, main
 // are plain strings with the same trailing-NUL tolerance as v4's Text, and they enter Info before sanitizeInfo, so a
 // control character is dropped and counted exactly as for options 100 and 101 (#1033). A nil bag, a v4 lease or one
 // resumed from its record, fills nothing.
-func fillV6Observed(info *Info, o wire.OptionsV6) {
+func fillV6Observed(info *Info, o wire.OptionsV6, server []byte) {
 	info.PosixTimezone = firstNonEmpty(info.PosixTimezone, optTextV6(o, wire.OptV6PosixTimezone))
 	info.TZDBTimezone = firstNonEmpty(info.TZDBTimezone, optTextV6(o, wire.OptV6TZDatabase))
 	if len(info.NTPServers) == 0 {
-		info.NTPServers = ntpServersV6(o)
+		info.NTPServers = ntpServersV6(o, server)
 	}
 }
 
 // ntpServersV6 is every option 56 instance (RFC 5908 section 4) as one string, in wire order: an address as its text,
 // multicast included, a name as the name. wire.OptionsV6.NTPServers returns no list beside ErrMalformedNTP, so one bad
-// instance leaves the whole list empty, warned once per distinct offer (#859).
-func ntpServersV6(o wire.OptionsV6) []string {
+// instance leaves the whole list empty, warned once per server and distinct offer. infoFromLease has no endpoint, so
+// the warning names the server, whose configuration is the cause (#859).
+func ntpServersV6(o wire.OptionsV6, server []byte) []string {
 	servers, err := o.NTPServers()
 	if err != nil {
-		if firstSightOfMalformedNTP(o) {
-			log.WithError(err).Warn("DHCPv6 NTP server option (56) is malformed; no NTP server is recorded for this " +
-				"lease (#859)")
+		if firstSightOfMalformedNTP(server, o) {
+			log.WithError(err).WithField("server_duid", hex.EncodeToString(server)).
+				Warn("DHCPv6 NTP server option (56) is malformed; no NTP server is recorded for this lease (#859)")
 		}
 		return nil
 	}
@@ -127,7 +128,7 @@ func ntpServersV6(o wire.OptionsV6) []string {
 	return out
 }
 
-// ntpMalformedSeen holds the option 56 bytes already warned about: the router-advert watch renders the lease every
+// ntpMalformedSeen holds each server's option 56 bytes already warned about: the router-advert watch renders the lease every
 // 750 ms, so one warning per rendering would be a flood. Bounded, cleared when full (#859).
 var ntpMalformedSeen = struct {
 	sync.Mutex
@@ -136,9 +137,9 @@ var ntpMalformedSeen = struct {
 
 const ntpMalformedSeenMax = 64
 
-// firstSightOfMalformedNTP is true once for each distinct set of option 56 instances.
-func firstSightOfMalformedNTP(o wire.OptionsV6) bool {
-	var key []byte
+// firstSightOfMalformedNTP is true once for each server DUID and distinct set of option 56 instances.
+func firstSightOfMalformedNTP(server []byte, o wire.OptionsV6) bool {
+	key := append([]byte{byte(len(server) >> 8), byte(len(server))}, server...)
 	for _, v := range o.All(wire.OptV6NTPServer) {
 		key = append(key, byte(len(v)>>8), byte(len(v)))
 		key = append(key, v...)

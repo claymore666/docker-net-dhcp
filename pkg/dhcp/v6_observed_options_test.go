@@ -4,6 +4,7 @@
 package dhcp
 
 import (
+	"encoding/hex"
 	"net/netip"
 	"reflect"
 	"strings"
@@ -14,6 +15,7 @@ import (
 	"github.com/claymore666/dhcp-golib/proto"
 	"github.com/claymore666/dhcp-golib/wire"
 	log "github.com/sirupsen/logrus"
+	logtest "github.com/sirupsen/logrus/hooks/test"
 )
 
 func v6Lease(o wire.OptionsV6) lease.Lease {
@@ -292,4 +294,73 @@ func resetNTPWarnings(t *testing.T) {
 	ntpMalformedSeen.Lock()
 	clear(ntpMalformedSeen.m)
 	ntpMalformedSeen.Unlock()
+}
+
+func malformedNTPWarnings(hook *logtest.Hook) []log.Entry {
+	var out []log.Entry
+	for _, e := range hook.AllEntries() {
+		if e.Level == log.WarnLevel && strings.Contains(e.Message, "#859") {
+			out = append(out, *e)
+		}
+	}
+	return out
+}
+
+func malformedNTPOffer(i int) wire.OptionsV6 {
+	return wire.OptionsV6{ntpOpt(ntpSub(1, []byte{byte(i >> 8), byte(i)}))}
+}
+
+func renderFromServer(t *testing.T, server []byte, o wire.OptionsV6) {
+	t.Helper()
+	l := v6Lease(o)
+	l.ServerDUID = server
+	infoFromLease(l, proto.RouterObservation{}, time.Now(), netip.Prefix{})
+}
+
+func TestInfoFromLease_V6MalformedNTPWarnsOncePerServerAndOffer(t *testing.T) {
+	hook := captureLog(t)
+	resetNTPWarnings(t)
+	a, b := []byte{0, 3, 0, 1, 2, 0, 0, 0, 0, 0xa}, []byte{0, 3, 0, 1, 2, 0, 0, 0, 0, 0xb}
+
+	for range 2 {
+		renderFromServer(t, a, malformedNTPOffer(1))
+		renderFromServer(t, a, malformedNTPOffer(2))
+		renderFromServer(t, b, malformedNTPOffer(1))
+	}
+
+	warns := malformedNTPWarnings(hook)
+	if len(warns) != 3 {
+		t.Fatalf("%d warnings over two renderings each of three (server, offer) pairs, want 3", len(warns))
+	}
+	for i, server := range [][]byte{a, a, b} {
+		if got, want := warns[i].Data["server_duid"], hex.EncodeToString(server); got != want {
+			t.Errorf("warning %d names server_duid=%v, want %s", i, got, want)
+		}
+	}
+}
+
+// The set is process-wide and fed every 750 ms, so its bound is what keeps a churning server from growing it (#859).
+func TestInfoFromLease_V6MalformedNTPSetForgetsWhenFullAndKeepsWarning(t *testing.T) {
+	hook := captureLog(t)
+	resetNTPWarnings(t)
+	server := []byte{0, 3, 0, 1, 2, 0, 0, 0, 0, 1}
+
+	for i := range ntpMalformedSeenMax + 1 {
+		renderFromServer(t, server, malformedNTPOffer(i))
+	}
+	if n := len(malformedNTPWarnings(hook)); n != ntpMalformedSeenMax+1 {
+		t.Errorf("%d warnings over %d distinct offers, want one each: a full set must not silence new offers",
+			n, ntpMalformedSeenMax+1)
+	}
+	ntpMalformedSeen.Lock()
+	size := len(ntpMalformedSeen.m)
+	ntpMalformedSeen.Unlock()
+	if size > ntpMalformedSeenMax {
+		t.Errorf("the set holds %d offers, want at most %d", size, ntpMalformedSeenMax)
+	}
+
+	renderFromServer(t, server, malformedNTPOffer(0))
+	if n := len(malformedNTPWarnings(hook)); n != ntpMalformedSeenMax+2 {
+		t.Errorf("the first offer did not warn again after the set was cleared (%d warnings)", n)
+	}
 }
