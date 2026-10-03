@@ -636,6 +636,7 @@ TestDHCPv6_NoAddressModes_StartTheEndpoint	80.63
 TestDHCPv6_NoAddressModes_StartTheEndpoint_IPAM	80.63
 TestDHCPv6_NoAddressModes_StartTheEndpoint_Macvlan	80.63
 TestDHCPv6_NoAddressSegmentGetsNoIPv6RouteYet	170.00
+TestDHCPv6_ObservedOptionsReachTheOptionsLogLine	20.00
 TestDHCPv6_RefusedAndSilentAreTwoRows	56.00
 TestDHCPv6_RouterDiscoveryCountersRise	35.00
 TestDHCPv6_RouterWithdrawalAndReturn	55.00

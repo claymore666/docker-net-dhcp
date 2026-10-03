@@ -7,11 +7,13 @@ import (
 	"encoding/hex"
 	"net/netip"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/claymore666/dhcp-golib/lease"
 	"github.com/claymore666/dhcp-golib/proto"
 	"github.com/claymore666/dhcp-golib/wire"
+	log "github.com/sirupsen/logrus"
 )
 
 // The library has merged the advertisement's gateway, MTU, resolvers, search list and routes into the lease (RFC 4861
@@ -20,7 +22,14 @@ import (
 
 // infoFromLease renders one library lease and its link's router observation as the Info the plugin applies.
 func infoFromLease(l lease.Lease, r proto.RouterObservation, now time.Time, main netip.Prefix) (Info, int) {
-	info := Info{
+	info, dropped, unsafe := renderLease(l, r, now, main)
+	warnDropped(unsafe)
+	return info, dropped
+}
+
+// renderLease is infoFromLease without the control-character warning; unsafe holds the values dropped for one.
+func renderLease(l lease.Lease, r proto.RouterObservation, now time.Time, main netip.Prefix) (info Info, dropped int, unsafe []string) {
+	info = Info{
 		MTU:          l.MTU,
 		SearchList:   append([]string(nil), l.DomainSearch...),
 		LeaseSeconds: leaseSeconds(l, now),
@@ -73,9 +82,11 @@ func infoFromLease(l lease.Lease, r proto.RouterObservation, now time.Time, main
 	}
 
 	fillVendorOptions(&info, l.Options)
+	fillV6Observed(&info, l.OptionsV6, l.ServerDUID)
 
 	// sanitizeInfo runs at the one point every lease enters the plugin and feeds unsafe_option_values_dropped (#703).
-	dropped := sanitizeInfo(&info)
+	unsafe = sanitizeInfoQuietly(&info)
+	dropped = len(unsafe)
 
 	// SafeValue passes the space that separates `search` entries (#704); applied after sanitizeInfo so the two counts
 	// add.
@@ -86,7 +97,78 @@ func infoFromLease(l lease.Lease, r proto.RouterObservation, now time.Time, main
 		info.Domain = d
 	}
 
-	return info, dropped
+	return info, dropped, unsafe
+}
+
+// fillV6Observed reads the RFC 4833 section 3 timezone strings, options 41 and 42, out of a DHCPv6 lease's options. They
+// are plain strings with the same trailing-NUL tolerance as v4's Text, and they enter Info before sanitizeInfo, so a
+// control character is dropped and counted exactly as for options 100 and 101 (#1033). A nil bag, as on a v4 lease,
+// fills nothing.
+func fillV6Observed(info *Info, o wire.OptionsV6, server []byte) {
+	info.PosixTimezone = firstNonEmpty(info.PosixTimezone, optTextV6(o, wire.OptV6PosixTimezone))
+	info.TZDBTimezone = firstNonEmpty(info.TZDBTimezone, optTextV6(o, wire.OptV6TZDatabase))
+	if len(info.NTPServers) == 0 {
+		info.NTPServers = ntpServersV6(o, server)
+	}
+}
+
+// ntpServersV6 is every option 56 instance (RFC 5908 section 4) as one string, in wire order: an address as its text,
+// multicast included, a name as the name. wire.OptionsV6.NTPServers returns no list beside ErrMalformedNTP, so one bad
+// instance leaves the whole list empty, warned once per server and distinct offer. infoFromLease has no endpoint, so
+// the warning names the server, whose configuration is the cause (#859).
+func ntpServersV6(o wire.OptionsV6, server []byte) []string {
+	servers, err := o.NTPServers()
+	if err != nil {
+		if firstSightOfMalformedNTP(server, o) {
+			log.WithError(err).WithField("server_duid", hex.EncodeToString(server)).
+				Warn("DHCPv6 NTP server option (56) is malformed; no NTP server is recorded for this lease (#859)")
+		}
+		return nil
+	}
+	var out []string
+	for _, s := range servers {
+		if s.FQDN != "" {
+			out = append(out, s.FQDN)
+		} else {
+			out = append(out, s.Addr.String())
+		}
+	}
+	return out
+}
+
+// ntpMalformedSeen holds each server's option 56 bytes already warned about: the router-advert watch renders the lease every
+// 750 ms, so one warning per rendering would be a flood. Bounded, cleared when full (#859).
+var ntpMalformedSeen = struct {
+	sync.Mutex
+	m map[string]struct{}
+}{m: map[string]struct{}{}}
+
+const ntpMalformedSeenMax = 64
+
+// firstSightOfMalformedNTP is true once for each server DUID and distinct set of option 56 instances.
+func firstSightOfMalformedNTP(server []byte, o wire.OptionsV6) bool {
+	key := append([]byte{byte(len(server) >> 8), byte(len(server))}, server...)
+	for _, v := range o.All(wire.OptV6NTPServer) {
+		key = append(key, byte(len(v)>>8), byte(len(v)))
+		key = append(key, v...)
+	}
+	ntpMalformedSeen.Lock()
+	defer ntpMalformedSeen.Unlock()
+	if _, seen := ntpMalformedSeen.m[string(key)]; seen {
+		return false
+	}
+	if len(ntpMalformedSeen.m) >= ntpMalformedSeenMax {
+		clear(ntpMalformedSeen.m)
+	}
+	ntpMalformedSeen.m[string(key)] = struct{}{}
+	return true
+}
+
+func firstNonEmpty(a, b string) string {
+	if a != "" {
+		return a
+	}
+	return b
 }
 
 // Hex digits are never control characters, so sanitizeInfo has nothing to drop from these; the reflection test walks the
@@ -299,4 +381,15 @@ func optText(o wire.Options, c wire.OptionCode) string {
 		return ""
 	}
 	return s
+}
+
+func optTextV6(o wire.OptionsV6, c wire.OptionCodeV6) string {
+	v, ok := o.First(c)
+	if !ok {
+		return ""
+	}
+	for len(v) > 0 && v[len(v)-1] == 0 {
+		v = v[:len(v)-1]
+	}
+	return string(v)
 }

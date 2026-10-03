@@ -14,7 +14,8 @@ type Info struct {
 	// MTU is option 26; 0 means leave the link MTU alone, and a renewal re-applies only a changed value (#101).
 	MTU int `json:",omitempty"`
 
-	// NTPServers is option 42, logged on bind and renew and never applied to the container (#105).
+	// NTPServers is option 42 (v4) or 56 (v6, one entry per instance, wire order), logged on bind and renew and never
+	// applied to the container (#105, #859).
 	NTPServers []string `json:",omitempty"`
 
 	// SearchList is option 119, the resolv.conf `search` line under PropagateDNS, falling back to Domain (option 15)
@@ -27,8 +28,8 @@ type Info struct {
 	// BootFile is option 67, logged like TFTPServer (#105).
 	BootFile string `json:",omitempty"`
 
-	// WPAD (option 252), the RFC 4833 timezones (options 100 and 101) and TimeOffset (option 2) are logged only, never
-	// pushed into the container, to keep the no-plumbing bar (#262).
+	// WPAD (option 252), the RFC 4833 timezones (options 100 and 101 on v4, 41 and 42 on v6) and TimeOffset (option 2) are
+	// logged only, never pushed into the container, to keep the no-plumbing bar (#262, #1033).
 	WPAD          string `json:",omitempty"`
 	PosixTimezone string `json:",omitempty"`
 	TZDBTimezone  string `json:",omitempty"`

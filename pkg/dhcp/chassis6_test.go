@@ -736,7 +736,7 @@ func TestCarryResumedTemp6(t *testing.T) {
 
 // A call site that skips the carry loses the address on that path with nothing failing (#927).
 func TestCarryResumedTemp6_EveryCarryResumedConfig6SiteHasOne(t *testing.T) {
-	var cfg, tmp int
+	var cfg, tmp, opts int
 	for _, f := range []string{"chassis.go", "chassis6.go"} {
 		src, err := os.ReadFile(f)
 		if err != nil {
@@ -744,8 +744,10 @@ func TestCarryResumedTemp6_EveryCarryResumedConfig6SiteHasOne(t *testing.T) {
 		}
 		cfg += strings.Count(string(src), ".carryResumedConfig6(&ev)")
 		tmp += strings.Count(string(src), ".carryResumedTemp6(&ev)")
+		opts += strings.Count(string(src), ".carryResumedOptions6(&ev)")
 	}
-	if cfg != 3 || tmp != cfg {
-		t.Errorf("carryResumedConfig6 sites = %d, carryResumedTemp6 sites = %d, want 3 and 3", cfg, tmp)
+	if cfg != 3 || tmp != cfg || opts != cfg {
+		t.Errorf("carryResumedConfig6 sites = %d, carryResumedTemp6 sites = %d, carryResumedOptions6 sites = %d, "+
+			"want 3, 3 and 3 (#1033)", cfg, tmp, opts)
 	}
 }
