@@ -109,6 +109,32 @@ func TestCountLinesWithNeedles_CountsEveryLineCarryingAllNeedles(t *testing.T) {
 	}
 }
 
+// A needle planted at every offset around the first and second fragment cut, from one that ends just before the cut to
+// one that starts on it, so the extremes are in: the needle whose first byte is the last before the cut, and the one
+// whose last byte is the first after it. The latter is the one a carry shorter than len(needle)-1 bytes loses (#1180).
+func TestCountLinesWithNeedles_NeedleAtEveryOffsetAroundACut(t *testing.T) {
+	const lineLen = 3*logScanBuf + 100
+	for _, straddler := range []string{needleA, needleB} {
+		other := needleB
+		if straddler == needleB {
+			other = needleA
+		}
+		for _, cut := range []int{logScanBuf, 2 * logScanBuf} {
+			for off := cut - len(straddler) - 1; off <= cut+1; off++ {
+				for _, otherAt := range []int{3, lineLen - len(other) - 3} {
+					b := []byte(strings.Repeat("x", lineLen))
+					copy(b[otherAt:], other)
+					copy(b[off:], straddler)
+					got, err := countLinesWithNeedles(strings.NewReader(string(b)+"\n"), needleA, needleB)
+					if err != nil || got != 1 {
+						t.Errorf("%q at %d (cut %d, %q at %d): counted %d, %v; want 1", straddler, off, cut, other, otherAt, got, err)
+					}
+				}
+			}
+		}
+	}
+}
+
 // With no needles every non-empty line counts and an empty one never does, as the whole-file read did (#1180).
 func TestCountLinesWithNeedles_NoNeedlesCountsNonEmptyLines(t *testing.T) {
 	for _, tc := range []struct {

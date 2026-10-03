@@ -184,9 +184,18 @@ trim_dockerd_log() {
     local size
     size=$(stat -c %s "$DOCKERD_LOG" 2>/dev/null) || return 0
     ((size > DOCKERD_LOG_CAP)) || return 0
-    tail -c "$DOCKERD_LOG_KEEP" "$DOCKERD_LOG" >"$DOCKERD_LOG.keep" || return 0
-    cat "$DOCKERD_LOG.keep" >"$DOCKERD_LOG"
-    rm -f "$DOCKERD_LOG.keep"
+    # A failed trim must not end the supervise loop under set -e: dockerd starts on whatever the log is (#1180).
+    if ! tail -c "$DOCKERD_LOG_KEEP" "$DOCKERD_LOG" >"$DOCKERD_LOG.keep"; then
+        log "could not cut $DOCKERD_LOG ($size bytes); leaving it whole (#1180)"
+        rm -f "$DOCKERD_LOG.keep" || true
+        return 0
+    fi
+    if ! cat "$DOCKERD_LOG.keep" >"$DOCKERD_LOG"; then
+        log "could not rewrite $DOCKERD_LOG ($size bytes); starting dockerd on it as it is (#1180)"
+        rm -f "$DOCKERD_LOG.keep" || true
+        return 0
+    fi
+    rm -f "$DOCKERD_LOG.keep" || true
     log "$DOCKERD_LOG was $size bytes; kept its last $DOCKERD_LOG_KEEP (#1180)"
 }
 
