@@ -10,6 +10,8 @@
 #   - dh-itest-* docker containers
 #   - dh-itest-* host network interfaces (veth pair, etc.)
 #   - lingering dnsmasq processes started by the harness
+#   - plugin state records (<network id>.json under NET_DHCP_STATE_DIR) of any
+#     network the engine no longer has (#1174)
 
 set -u
 
