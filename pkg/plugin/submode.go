@@ -139,12 +139,13 @@ func normalSubMode(kind, parent, sub string) (string, string, string, bool) {
 
 // refuseSiblingSubMode refuses a network the kernel would break against another on the same parent: a passthru child
 // takes the parent alone, and the ipvlan mode is one per parent, so a new child switches every existing child to its
-// mode (both measured on Linux 6.12, 2026-09-24). The networks whose create is still running count beside the listed
-// ones, since dockerd lists a network only after its driver returned (#1187). A failed network list is logged, and the
-// kernel's refusal at the endpoint remains (#905).
+// mode (both measured on Linux 6.12, 2026-09-24). The networks whose create is still running and the stored records
+// count beside the listed ones, since dockerd lists a network only after its driver returned (#1187). A failed network
+// list is logged, and the kernel's refusal at the endpoint remains (#905).
 func (p *Plugin) refuseSiblingSubMode(networkID string, opts DHCPNetworkOptions) error {
 	mode, parent := opts.effectiveMode(), kernelIfaceName(opts.linkParent())
-	for id, o := range p.earlierCreates(networkID) {
+	inflight, stored := p.siblingsBeforeList(networkID)
+	for id, o := range inflight {
 		if kind, other, sub, ok := optsSubMode(o); ok {
 			if err := subModeConflict(opts, mode, parent, shortID(id), kind, other, sub); err != nil {
 				return err
@@ -154,16 +155,27 @@ func (p *Plugin) refuseSiblingSubMode(networkID string, opts DHCPNetworkOptions)
 	nets, err := p.docker.NetworkList(context.Background(), dNetwork.ListOptions{})
 	if err != nil {
 		log.WithError(err).WithField("network", shortID(networkID)).
-			Warn("Could not list Docker networks to compare sub-modes on the parent; creating the network unchecked")
-		return nil
+			Warn("Could not list Docker networks to compare sub-modes on the parent; checking the stored records only")
 	}
+	listed := make(map[string]bool, len(nets))
 	for _, n := range nets {
+		listed[n.ID] = true
 		kind, other, sub, ok := siblingSubMode(n)
 		if !ok || n.ID == networkID {
 			continue
 		}
 		if err := subModeConflict(opts, mode, parent, n.Name, kind, other, sub); err != nil {
 			return err
+		}
+	}
+	for _, id := range sortedIDs(stored) {
+		if listed[id] {
+			continue
+		}
+		if kind, other, sub, ok := optsSubMode(stored[id]); ok {
+			if err := subModeConflict(opts, mode, parent, shortID(id), kind, other, sub); err != nil {
+				return err
+			}
 		}
 	}
 	return nil

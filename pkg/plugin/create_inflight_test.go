@@ -367,3 +367,113 @@ func TestCreateNetwork_AFirstCreateThatReturnsDuringTheSecondsListReadIsStillSee
 		})
 	}
 }
+
+// The window after the first create returned and before dockerd lists it: the in-flight entry is gone, the list does
+// not show the network yet, and the stored record is the only evidence (#1187).
+func TestCreateNetwork_RefusesASiblingWhoseCreateReturnedAndWhoseRecordIsOnDiskBeforeDockerListsIt(t *testing.T) {
+	passthru := map[string]interface{}{"mode": "macvlan", "parent": inflightParentA, "macvlan_mode": "passthru"}
+	cases := []struct {
+		name          string
+		first, second map[string]interface{}
+		want          error // nil means the second create is accepted
+		listFails     bool
+	}{
+		{"passthru returned, bridge second", passthru, map[string]interface{}{"mode": "macvlan", "parent": inflightParentA}, util.ErrModeMismatch, false},
+		{"passthru returned, bridge second, the list fails", passthru, map[string]interface{}{"mode": "macvlan", "parent": inflightParentA}, util.ErrModeMismatch, true},
+		{"bridge returned, passthru second", map[string]interface{}{"mode": "macvlan", "parent": inflightParentA},
+			map[string]interface{}{"mode": "macvlan", "parent": inflightParentA, "macvlan_mode": "passthru"}, util.ErrModeMismatch, false},
+		{"passthru returned, another parent second", passthru, map[string]interface{}{"mode": "macvlan", "parent": inflightParentB}, nil, false},
+		{"bridge returned, same bridge second", map[string]interface{}{"bridge": inflightBridge}, map[string]interface{}{"bridge": inflightBridge}, util.ErrBridgeUsed, false},
+		{"bridge returned, same bridge second with ignore_conflicts", map[string]interface{}{"bridge": inflightBridge},
+			map[string]interface{}{"bridge": inflightBridge, "ignore_conflicts": "true"}, nil, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			withStateDir(t, t.TempDir())
+			installInflightKernel(t)
+			p := newPluginForTest()
+			p.docker = &fakeDocker{}
+
+			if err := inflightCreate(p, inflightIDA, c.first); err != nil {
+				t.Fatalf("the first create failed: %v", err)
+			}
+			if n := inflightCount(p); n != 0 {
+				t.Fatalf("%d create(s) still in flight; the window this test needs is the one after the return", n)
+			}
+			if _, err := loadOptions(inflightIDA); err != nil {
+				t.Fatalf("the first create returned without its record on disk: %v", err)
+			}
+			if c.listFails {
+				p.docker = &fakeDocker{listErr: errors.New("daemon busy")}
+			}
+			err := inflightCreate(p, inflightIDB, c.second)
+			switch {
+			case c.want == nil && err != nil && !c.listFails:
+				t.Errorf("a second create that is no sibling was refused: %v", err)
+			case c.want != nil && !errors.Is(err, c.want):
+				t.Errorf("err = %v; want %v while the first network's record was on disk and Docker did not list it", err, c.want)
+			}
+		})
+	}
+}
+
+// A record whose network Docker lists is one sibling: the refusal is the listed network's, named as before (#1187).
+func TestCreateNetwork_AStoredRecordOfAListedNetworkIsNotCountedTwice(t *testing.T) {
+	withStateDir(t, t.TempDir())
+	installInflightKernel(t)
+	p := newPluginForTest()
+	listedOpts := map[string]string{"mode": "macvlan", "parent": inflightParentA, "macvlan_mode": "passthru"}
+	p.docker = &fakeDocker{listResult: []dNetwork.Summary{subModeNet(inflightIDA, "lan-a", testDHCPDriver, listedOpts)}}
+	if err := saveOptions(inflightIDA, DHCPNetworkOptions{Mode: ModeMacvlan, Parent: inflightParentA, MacvlanMode: "passthru"}); err != nil {
+		t.Fatal(err)
+	}
+
+	err := inflightCreate(p, inflightIDB, map[string]interface{}{"mode": "macvlan", "parent": inflightParentA})
+	if !errors.Is(err, util.ErrModeMismatch) || !strings.Contains(err.Error(), `"lan-a"`) {
+		t.Errorf("err = %v; want the sub-mode refusal naming the listed network lan-a", err)
+	}
+	if err := inflightCreate(p, inflightIDB, map[string]interface{}{"mode": "macvlan", "parent": inflightParentB}); err != nil {
+		t.Errorf("a network on another parent was refused beside a listed and stored one: %v", err)
+	}
+	if got := storedSiblings(inflightIDB); len(got) != 1 {
+		t.Errorf("storedSiblings read %d records, want the one saved", len(got))
+	}
+}
+
+// After a crash between the save and the return, dockerd retries the same network id; its own record is no sibling (#1187).
+func TestCreateNetwork_ARetryOfANetworkWhoseRecordIsOnDiskIsNotItsOwnSibling(t *testing.T) {
+	cases := []struct {
+		name string
+		opts map[string]interface{}
+	}{
+		{"passthru macvlan", map[string]interface{}{"mode": "macvlan", "parent": inflightParentA, "macvlan_mode": "passthru"}},
+		{"bridge", map[string]interface{}{"bridge": inflightBridge}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			withStateDir(t, t.TempDir())
+			installInflightKernel(t)
+			p := newPluginForTest()
+			p.docker = &fakeDocker{}
+			if err := inflightCreate(p, inflightIDA, c.opts); err != nil {
+				t.Fatalf("the first attempt failed: %v", err)
+			}
+			if err := inflightCreate(p, inflightIDA, c.opts); err != nil {
+				t.Errorf("the retry of the same id was refused for its own record: %v", err)
+			}
+			if got := storedSiblings(inflightIDA); len(got) != 0 {
+				t.Errorf("storedSiblings returned the network's own record: %v", got)
+			}
+		})
+	}
+}
+
+func TestCreateNetwork_ANeverCreatedStateDirectoryIsNoSiblingAndNoError(t *testing.T) {
+	withStateDir(t, t.TempDir()+"/not-yet")
+	installInflightKernel(t)
+	p := newPluginForTest()
+	p.docker = &fakeDocker{}
+	if err := inflightCreate(p, inflightIDA, map[string]interface{}{"mode": "macvlan", "parent": inflightParentA}); err != nil {
+		t.Errorf("the first create on a host with no state directory failed: %v", err)
+	}
+}

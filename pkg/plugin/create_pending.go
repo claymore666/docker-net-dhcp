@@ -3,6 +3,14 @@
 
 package plugin
 
+import (
+	"errors"
+	"io/fs"
+	"sort"
+
+	log "github.com/sirupsen/logrus"
+)
+
 // pendingCreate is a CreateNetwork that has not returned; seq orders the entries so that of two creates, only the
 // later one sees the earlier (#1187).
 type pendingCreate struct {
@@ -44,4 +52,35 @@ func (p *Plugin) earlierCreates(networkID string) map[string]DHCPNetworkOptions 
 		out[id] = c.opts
 	}
 	return out
+}
+
+// storedSiblings returns the stored records of the networks other than networkID, the ones a create that has returned
+// leaves behind before dockerd lists it. A record of a network Docker no longer has lives until dropStaleNetworks at
+// the next start, as in bridgeUsers; an unreadable store is logged and the in-flight set and the list remain (#1187).
+func storedSiblings(networkID string) map[string]DHCPNetworkOptions {
+	stored, err := storedNetworkOptions()
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		log.WithError(err).WithField("network", shortID(networkID)).
+			Warn("Could not read the stored network records to look for siblings; checking the in-flight creates and the Docker list only")
+	}
+	delete(stored, networkID)
+	return stored
+}
+
+// sortedIDs gives the check a fixed order, so the sibling a refusal names does not depend on map order (#1187).
+func sortedIDs(m map[string]DHCPNetworkOptions) []string {
+	ids := make([]string, 0, len(m))
+	for id := range m {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids
+}
+
+// siblingsBeforeList returns the creates in flight and the stored records, in that order and both before the caller
+// reads Docker's list. A create enters the set, saves its record, leaves the set and is listed last, so a sibling that
+// left the set before the first read has its record on disk by the second (#1187).
+func (p *Plugin) siblingsBeforeList(networkID string) (inflight, stored map[string]DHCPNetworkOptions) {
+	inflight = p.earlierCreates(networkID)
+	return inflight, storedSiblings(networkID)
 }

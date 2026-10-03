@@ -437,9 +437,15 @@ func (p *Plugin) createBridgeNetwork(networkID string, opts DHCPNetworkOptions, 
 		}
 		bridgeAddrs := append(v4Addrs, v6Addrs...)
 
-		// Before the list, not after: a create returning between the two reads would be in neither (#1187).
-		for _, other := range p.earlierCreates(networkID) {
+		// Both before the list: a create returning between the reads would be in neither (#1187).
+		inflight, stored := p.siblingsBeforeList(networkID)
+		for _, other := range inflight {
 			if kernelIfaceName(other.Bridge) == kernelIfaceName(opts.Bridge) {
+				return util.ErrBridgeUsed
+			}
+		}
+		for _, o := range stored {
+			if kernelIfaceName(o.Bridge) == kernelIfaceName(opts.Bridge) {
 				return util.ErrBridgeUsed
 			}
 		}
