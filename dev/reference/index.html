@@ -4560,7 +4560,7 @@ already parse it were not told to expect a new type.</p>
 <td><code>sandbox_key_not_a_namespace</code></td>
 <td>no</td>
 <td>n/a</td>
-<td>(v2.0.0+) An arm of <code>sandbox_key_entry_failures</code>, and <strong>the expected one where <code>sandbox_netns_propagation</code> is <code>0</code>: it rises once per attach there, and stays flat where it is <code>1</code>.</strong> The entry opened and was not a namespace. It is the ordinary empty file libnetwork creates before bind-mounting the sandbox netns over it, seen through a mount namespace that bind never reached. This row is the measured evidence for the reason <a href="https://github.com/claymore666/docker-net-dhcp/blob/main/SECURITY.md"><code>SECURITY.md</code></a> gives for keeping the host PID namespace and <code>CAP_SYS_PTRACE</code>.</td>
+<td>(v2.0.0+) An arm of <code>sandbox_key_entry_failures</code>, and <strong>the expected one where <code>sandbox_netns_propagation</code> is <code>0</code>: it rises once per attach there, and stays flat where it is <code>1</code>.</strong> The entry opened and was not a namespace. It is the ordinary empty file libnetwork creates before bind-mounting the sandbox netns over it, seen through a mount namespace that bind never reached. It counts only an empty file still there two poll intervals after the first poll saw it; one that turns into the namespace sooner is the bind arriving and counts nothing. This row is the measured evidence for the reason <a href="https://github.com/claymore666/docker-net-dhcp/blob/main/SECURITY.md"><code>SECURITY.md</code></a> gives for keeping the host PID namespace and <code>CAP_SYS_PTRACE</code>.</td>
 </tr>
 <tr>
 <td><code>sandbox_key_wrong_ns_type</code></td>
