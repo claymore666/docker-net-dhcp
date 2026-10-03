@@ -89,7 +89,8 @@ prompts on has moved since v2.0.0. This release changes the manifest's
   after either (#1183).
 - The log-once set behind the plugin's read-only Docker API log no longer
   grows with every inspected container. Container and network ids in a
-  request path count as one call shape (#1184).
+  request path count as one call shape; the debug log still writes one
+  line per distinct path (#1184).
 
 ## v2.3.1
 

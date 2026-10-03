@@ -433,11 +433,50 @@ func TestReadOnlyTransport_SeenKeysKeepDifferentShapesApart(t *testing.T) {
 		{"GET", "/v1.47/networks/" + id, "GET /v1.47/networks/{id}"},
 		{"POST", "/v1.47/containers/create", "POST /v1.47/containers/create"},
 		{"POST", "/v1.47/containers/" + id + "/kill", "POST /v1.47/containers/{id}/kill"},
+		{"GET", "/v1.47/containers/", "GET /v1.47/containers/"},
 		{"HEAD", "/_ping", "HEAD /_ping"},
 		{"GET", "/v1.47/version", "GET /v1.47/version"},
 	} {
 		if got := seenKey(tc.method, tc.path); got != tc.want {
 			t.Errorf("seenKey(%s %s) = %q, want %q", tc.method, tc.path, got, tc.want)
 		}
+	}
+}
+
+// The integration test reads a container-inspect line for its own container, so each container logs once (#1184).
+func TestReadOnlyTransport_EveryDistinctContainerInspectIsLogged(t *testing.T) {
+	var buf strings.Builder
+	restoreOut, restoreLevel := log.StandardLogger().Out, log.GetLevel()
+	log.SetOutput(&buf)
+	log.SetLevel(log.DebugLevel)
+	t.Cleanup(func() {
+		log.SetOutput(restoreOut)
+		log.SetLevel(restoreLevel)
+	})
+
+	tr := newReadOnlyTransport(&countingBase{}, nil)
+	ids := []string{strings.Repeat("a", 64), strings.Repeat("b", 64)}
+	for _, id := range append(ids, ids...) {
+		req, _ := http.NewRequest(http.MethodGet, "http://docker/v1.47/containers/"+id+"/json", nil)
+		if resp, err := tr.RoundTrip(req); err == nil {
+			resp.Body.Close()
+		}
+	}
+
+	out := buf.String()
+	for _, id := range ids {
+		if n := strings.Count(out, "path=/v1.47/containers/"+id+"/json"); n != 1 {
+			t.Errorf("container %.4s was logged %d time(s), want 1.\n%s", id, n, out)
+		}
+	}
+}
+
+func TestReadOnlyTransport_LoggedSetStaysBounded(t *testing.T) {
+	tr := newReadOnlyTransport(&countingBase{}, nil)
+	for i := 0; i < 3*maxLoggedPaths; i++ {
+		tr.record(http.MethodGet, fmt.Sprintf("/v1.47/containers/%064x/json", i))
+	}
+	if n := len(tr.logged); n > maxLoggedPaths {
+		t.Errorf("logged holds %d paths after %d distinct ones, want at most %d", n, 3*maxLoggedPaths, maxLoggedPaths)
 	}
 }
