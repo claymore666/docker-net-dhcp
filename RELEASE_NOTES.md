@@ -87,6 +87,9 @@ prompts on has moved since v2.0.0. This release changes the manifest's
   without ever starting, no longer leaves a pending hint behind for the
   life of the plugin. `pending_hints` on `/Plugin.Health` returns to zero
   after either (#1183).
+- The log-once set behind the plugin's read-only Docker API log no longer
+  grows with every inspected container. Container and network ids in a
+  request path count as one call shape (#1184).
 
 ## v2.3.1
 

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -73,8 +74,27 @@ func (t *readOnlyTransport) RoundTrip(req *http.Request) (*http.Response, error)
 	return t.base.RoundTrip(req)
 }
 
+var idCollections = map[string]bool{
+	"containers": true, "networks": true, "volumes": true, "exec": true, "images": true, "plugins": true,
+}
+
+var collectionVerbs = map[string]bool{
+	"json": true, "create": true, "prune": true, "search": true, "load": true, "get": true, "ls": true,
+}
+
+// seenKey collapses an id or name after a collection to `{id}`: one key per call shape, not per container (#1184).
+func seenKey(method, path string) string {
+	segs := strings.Split(path, "/")
+	for i := 1; i < len(segs); i++ {
+		if idCollections[segs[i-1]] && !collectionVerbs[segs[i]] && segs[i] != "" {
+			segs[i] = "{id}"
+		}
+	}
+	return method + " " + strings.Join(segs, "/")
+}
+
 func (t *readOnlyTransport) record(method, path string) {
-	key := method + " " + path
+	key := seenKey(method, path)
 	t.mu.Lock()
 	n := t.seen[key]
 	t.seen[key] = n + 1
