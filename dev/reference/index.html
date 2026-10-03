@@ -1590,6 +1590,11 @@ network create -o key=value</code>, or <code>driver_opts:</code> in Compose:</p>
 <td><code>false</code></td>
 </tr>
 <tr>
+<td><code>ipv6_iid</code></td>
+<td>all</td>
+<td><code>eui64</code></td>
+</tr>
+<tr>
 <td><code>ipv6_auto_strict</code></td>
 <td>all</td>
 <td><code>false</code></td>
@@ -2499,6 +2504,13 @@ value as an invalid duration.</p>
 <td><code>false</code></td>
 <td>v2.4.0</td>
 <td>Ask the DHCPv6 server for a temporary address (an IA_TA, RFC 8415 section 21.5) in every Solicit and Request, beside the stable one. The address is installed on the container link next to the stable address with its own preferred and valid lifetimes. It is never the address Docker is told about (<code>GlobalIPv6Address</code> stays the stable one), it is never renewed, and it is removed when its valid lifetime ends or the library drops it. It is shown on <code>/Plugin.Health</code> as <code>ipv6_temporary_address</code>. A server that grants no temporary address answers the IA_NA alone and the endpoint runs as without the key. A boolean (<code>true</code>, <code>false</code>, <code>1</code>, <code>0</code>); an empty value is unset, and a word that is not a boolean is refused at <code>docker network create</code>. Refused with <code>ipv6_mode=off</code> and <code>ipv6_mode=slaac</code>, which send no Solicit; with <code>ipv6_mode=auto</code> it applies when the network leases over DHCPv6 and does nothing on the SLAAC fallback. No kernel temporary flag is set on the address, so the kernel does not regenerate it and does not rank it below the stable one: with both on the link, Linux takes the most recently added address as the source of a new connection, which is the temporary one. A plugin restart resumes the lease with a Confirm, which carries no IA_TA, so the plugin keeps the remembered temporary address until its own valid lifetime ends and asks for no other. dnsmasq grants one from its range; Kea needs a <code>temporary</code> pool. (#927)</td>
+</tr>
+<tr>
+<td><code>ipv6_iid</code></td>
+<td>all</td>
+<td><code>eui64</code></td>
+<td>v2.4.0</td>
+<td>How SLAAC forms the interface identifier, the low 64 bits, of an address built from a router advertisement. <code>eui64</code> (the default, and what an unset or empty value means) is the modified EUI-64 of the endpoint's MAC (RFC 4291 appendix A). <code>stable-privacy</code> is the RFC 7217 identifier: a hash of the advertised prefix, the MAC, the Docker network id and a secret, so the address does not show the MAC and is the same every time those inputs are the same. The secret is 32 random bytes in <code>ipv6-iid-secret</code> in <code>STATE_DIR</code>, created with mode 0600 the first time a <code>stable-privacy</code> network needs it, logged once at Info, never regenerated and never read by a network that does not set the option; a file shorter than 16 bytes stops the endpoint with an error naming it. <strong>If that file is lost, every <code>stable-privacy</code> address changes at its next formation</strong>, so keep it with the rest of <code>STATE_DIR</code>. The address also changes when the network is recreated (a new network id) and, on an <code>--ipam-driver null</code> network, at every <code>docker restart</code> unless <code>--mac-address</code> pins the MAC, because Docker gives that endpoint a new MAC each start. A duplicate-address collision is retried with the next counter value (RFC 7217 section 6). Any value other than <code>eui64</code> and <code>stable-privacy</code> is refused at <code>docker network create</code>; <code>stable-privacy</code> is refused with <code>ipv6_mode=off</code> and <code>ipv6_mode=dhcp</code>, which form no address from an advertisement, and in <code>ipv6_mode=auto</code> it applies whenever the address is formed from the advertisement, which is when the router does not say DHCPv6 or the server stays silent, and does nothing on a DHCPv6 lease. (#1032)</td>
 </tr>
 <tr>
 <td><code>ipv6_auto_strict</code></td>
@@ -3723,6 +3735,25 @@ event on, and a prefix the router withdrew leaves them at that event too
 <tr>
 <td>Reports the stable address to Docker and the temporary one on <code>/Plugin.Health</code> as <code>ipv6_temporary_address</code></td>
 <td>The plugin, <code>ipv6_temporary</code> (<a href="https://github.com/claymore666/docker-net-dhcp/issues/927">#927</a>)</td>
+</tr>
+</tbody>
+</table>
+<h4 id="stable-privacy-interface-identifiers">Stable-privacy interface identifiers<a class="headerlink" href="#stable-privacy-interface-identifiers" title="Permanent link">&para;</a></h4>
+<table>
+<thead>
+<tr>
+<th>What the client does</th>
+<th>Where it comes from</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Forms the identifier of a SLAAC address as RFC 7217 section 5 defines it, from the prefix, the MAC, the Docker network id and a secret, when the network sets <code>ipv6_iid=stable-privacy</code>; retries a duplicate-address collision with the next counter value</td>
+<td>The DHCP library, <code>ipv6_iid</code> (<a href="https://github.com/claymore666/docker-net-dhcp/issues/1032">#1032</a>)</td>
+</tr>
+<tr>
+<td>Reads or creates the 32-byte secret <code>ipv6-iid-secret</code> in <code>STATE_DIR</code> (mode 0600) and passes it with the network id to the client</td>
+<td>The plugin, <code>ipv6_iid</code> (<a href="https://github.com/claymore666/docker-net-dhcp/issues/1032">#1032</a>)</td>
 </tr>
 </tbody>
 </table>
