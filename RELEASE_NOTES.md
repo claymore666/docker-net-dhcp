@@ -42,7 +42,11 @@ prompts on has moved since v2.0.0. This release changes the manifest's
   (#1034).
 - The DHCPv4 client tells the server on every DISCOVER and REQUEST that it can
   authenticate a FORCERENEW (option 145). An authenticated FORCERENEW renews
-  the lease and any other is refused (#1119).
+  the lease and any other is refused. Each endpoint's FORCERENEW and DHCPv6
+  Reconfigure counts are logged when they move and served as six health
+  counters, `forcerenews_renewed`, `forcerenews_already_renewing`,
+  `forcerenews_refused`, `forcerenews_ack_refused`, `reconfigures_accepted` and
+  `reconfigures_refused`, none of them `healthy`-affecting (#1119).
 - A DHCP server that sends the Microsoft classless static routes, option
   249, and no option 121 now gets its routes installed in the container,
   and the default route among them replaces option 3's router as 121's
