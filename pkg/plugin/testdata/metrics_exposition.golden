@@ -180,6 +180,30 @@ net_dhcp_router_table_entries_dropped_total 6046670
 # TYPE net_dhcp_router_table_entries_evicted_total counter
 net_dhcp_router_table_entries_evicted_total 2018064
 
+# HELP net_dhcp_forcerenews_renewed_total DHCPv4 FORCERENEW messages (RFC 3203) whose Authentication option verified against the nonce the server gave with the ACK (RFC 6704) and that started a renewal at once. Only a server that sends FORCERENEW moves it.
+# TYPE net_dhcp_forcerenews_renewed_total counter
+net_dhcp_forcerenews_renewed_total 1768490
+
+# HELP net_dhcp_forcerenews_already_renewing_total Authenticated FORCERENEW messages that arrived while a renewal was already under way. The lease was already being renewed, so nothing more was started.
+# TYPE net_dhcp_forcerenews_already_renewing_total counter
+net_dhcp_forcerenews_already_renewing_total 6186009
+
+# HELP net_dhcp_forcerenews_refused_total DHCPv4 FORCERENEW messages the client discarded: no valid Authentication option, no nonce held for this lease, or any other rule of RFC 3203 section 4 and RFC 6704 section 3.1.4. Not healthy-affecting: a discarded message is the protection working, and the lease is unchanged. An unauthenticated sender on the segment moves it.
+# TYPE net_dhcp_forcerenews_refused_total counter
+net_dhcp_forcerenews_refused_total 3723998
+
+# HELP net_dhcp_forcerenews_ack_refused_total DHCPACKs discarded for lacking the Authentication option an OFFER had promised (RFC 6704 section 3.1.4). Counted apart from forcerenews_refused, which does not include them. The client goes back to INIT (RFC 6704 section 3.1.4) and the ACK is not a lease. Not healthy-affecting: the acquisition starts over and the usual acquisition deadline applies.
+# TYPE net_dhcp_forcerenews_ack_refused_total counter
+net_dhcp_forcerenews_ack_refused_total 1201041
+
+# HELP net_dhcp_reconfigures_accepted_total DHCPv6 Reconfigure messages (RFC 8415 section 20.4) that authenticated and started the renewal or information request they asked for.
+# TYPE net_dhcp_reconfigures_accepted_total counter
+net_dhcp_reconfigures_accepted_total 6512576
+
+# HELP net_dhcp_reconfigures_refused_total DHCPv6 Reconfigure messages the client refused, by any of the library's rules. Not a fault count. Not healthy-affecting: a client that resumed a lease after a restart holds no reconfigure key and refuses every one while working as asked, and the log line beside each refusal names the rule.
+# TYPE net_dhcp_reconfigures_refused_total counter
+net_dhcp_reconfigures_refused_total 5665187
+
 # HELP net_dhcp_dhcp_routes_applied_total DHCP option-121 classless static routes handed to Docker. Counts routes, not Joins.
 # TYPE net_dhcp_dhcp_routes_applied_total counter
 net_dhcp_dhcp_routes_applied_total 1196133

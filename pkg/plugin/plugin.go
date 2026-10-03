@@ -791,6 +791,16 @@ type Plugin struct {
 	routerTableEntriesDropped  atomic.Int32
 	routerTableEntriesEvicted  atomic.Int32
 
+	// The library's FORCERENEW (RFC 3203, RFC 6704) and DHCPv6 Reconfigure counters, folded from every persistent
+	// manager (#1119). Refused is not a fault count: a resumed lease holds no key and a client with AcceptReconfigure
+	// off refuses every Reconfigure while working as asked, so none of the six affects healthy.
+	forcerenewsRenewed         atomic.Int32
+	forcerenewsAlreadyRenewing atomic.Int32
+	forcerenewsAckRefused      atomic.Int32
+	forcerenewsRefused         atomic.Int32
+	reconfiguresAccepted       atomic.Int32
+	reconfiguresRefused        atomic.Int32
+
 	// ipv6RouterWithdrawn counts default routes removed after a Router Lifetime 0 (RFC 4861 sections 4.2 and 6.3.4),
 	// counting removals since a shutting-down router sends several (section 6.2.5) (#821). Not healthy-affecting.
 	ipv6RouterWithdrawn atomic.Int32

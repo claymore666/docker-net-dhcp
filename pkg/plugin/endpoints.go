@@ -523,6 +523,15 @@ type HealthResponse struct {
 	RouterTableEntriesDropped int32 `json:"router_table_entries_dropped"`
 	RouterTableEntriesEvicted int32 `json:"router_table_entries_evicted"`
 
+	// The FORCERENEW and Reconfigure counters, folded across every persistent DHCP client (#1119). The refused ones
+	// describe the server's messages, not a fault, and are not healthy-affecting.
+	ForcerenewsRenewed         int32 `json:"forcerenews_renewed"`
+	ForcerenewsAlreadyRenewing int32 `json:"forcerenews_already_renewing"`
+	ForcerenewsRefused         int32 `json:"forcerenews_refused"`
+	ForcerenewsAckRefused      int32 `json:"forcerenews_ack_refused"`
+	ReconfiguresAccepted       int32 `json:"reconfigures_accepted"`
+	ReconfiguresRefused        int32 `json:"reconfigures_refused"`
+
 	// Checks is one single-element array per named check, as the health-check draft's section 4 asks.
 	Checks map[string][]HealthCheck `json:"checks"`
 	// Endpoints is one entry per registered manager, kept out of /metrics as a cardinality decision.
@@ -735,6 +744,12 @@ func (p *Plugin) healthSnapshot() HealthResponse {
 		RouterAdvertOptionsIgnored:   p.routerAdvertOptionsIgnored.Load(),
 		RouterTableEntriesDropped:    p.routerTableEntriesDropped.Load(),
 		RouterTableEntriesEvicted:    p.routerTableEntriesEvicted.Load(),
+		ForcerenewsRenewed:           p.forcerenewsRenewed.Load(),
+		ForcerenewsAlreadyRenewing:   p.forcerenewsAlreadyRenewing.Load(),
+		ForcerenewsRefused:           p.forcerenewsRefused.Load(),
+		ForcerenewsAckRefused:        p.forcerenewsAckRefused.Load(),
+		ReconfiguresAccepted:         p.reconfiguresAccepted.Load(),
+		ReconfiguresRefused:          p.reconfiguresRefused.Load(),
 		Version:                      buildinfo.Version,
 		Commit:                       buildinfo.Commit,
 		Library:                      buildinfo.Library,
