@@ -106,6 +106,14 @@ prompts on has moved since v2.0.0. This release changes the manifest's
   its lease ran out no longer names its old address in its request
   (DHCP option 50), so it keeps that address only if the server keeps
   it for that client on its own (#1182).
+- A container that is still starting when the attach budget runs out is
+  no longer counted as one that went away. On engines 26 and 27 the
+  sandbox key does not exist until after the plugin's Join returns, so a
+  slow start looked like a vanished container, logged at Info, with no
+  renewal client and `healthy` still true. The plugin now asks the
+  daemon before counting a vanish: only "no such container", exited or
+  dead counts; a running container, an error or no answer is a start
+  failure (`join_start_failures`) (#1186).
 
 ## v2.3.1
 
