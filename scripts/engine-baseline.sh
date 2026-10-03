@@ -237,6 +237,7 @@ ipv6|step|fresh DHCPv6 reply in the server log for the address the container hol
 ipv6_mode|step|dhcp: fresh DHCPv6 reply for the held address; slaac: fresh router advertisement, the container holds and Docker reports an address in the ra-only prefix; both: an IPv6 default route via the router link-local address; control off: no global address; bad value refused
 ipv6_main_prefix|step|two advertised prefixes: Docker reports the address in the named prefix, both ways round; refused with ipv6_mode=dhcp
 ipv6_temporary|step|a range 2^32 + 1 wide: the container holds two addresses in the prefix, Docker reports one of them, the server logged a DHCPv6 reply for each; control without it: one address; refused with ipv6_mode=slaac and off
+ipv6_iid|step|ipv6_mode=slaac on a container with a fixed MAC: the held address is not the modified EUI-64 of the MAC and Docker reports it; control without it: the EUI-64 address; refused with ipv6_mode=dhcp and off, and with a value that is not a mode
 ipv6_auto_strict|step|managed-flag advertisement with a silent DHCPv6 server: true fails docker run, false holds an address in the autonomous prefix
 lease_timeout|step|server-less bridge: docker run fails within the short timeout and not within the long one; a value under the probe window refused
 conflict_check|step|server pins the MAC to an address a veth holds: wait logs the DHCPDECLINE before docker run returns, async runs on the address first, off sends no DHCPDECLINE
@@ -1206,6 +1207,32 @@ opt_ipv6_mode() {
         || fail "control ipv6_mode=off: the container formed an address in $V6_PREFIX_A by itself"
     opt_down em-o-v6 em-c-v6
     opt_refused "is not one of" -o bridge="$V6_BRIDGE" -o ipv6_mode=bogus
+}
+
+# The MAC is fixed so the modified EUI-64 identifier it would form is known: 02:..:e0:11 is ::ff:fe00:e011 (#1032).
+opt_ipv6_iid() {
+    local got
+    v6_server "--dhcp-range=$V6_PREFIX_A,ra-only,$LEASE_TIME --enable-ra"
+    opt_net em-o-v6 -o bridge="$V6_BRIDGE" -o ipv6_mode=slaac -o ipv6_iid=stable-privacy
+    opt_run em-c-v6 em-o-v6 --mac-address 02:00:00:00:e0:11
+    wait_v6 em-c-v6 "$V6_PREFIX_A"
+    case "$V6" in
+        *ff:fe00:e011) fail "ipv6_iid=stable-privacy: the container holds $V6, the modified EUI-64 of its MAC" ;;
+    esac
+    got="$(inspect_v6 em-c-v6 em-o-v6)"
+    [ "$got" = "$V6" ] || fail "ipv6_iid=stable-privacy: the container holds $V6 and Docker reports '$got'"
+    opt_down em-o-v6 em-c-v6
+    opt_net em-o-v6 -o bridge="$V6_BRIDGE" -o ipv6_mode=slaac
+    opt_run em-c-v6 em-o-v6 --mac-address 02:00:00:00:e0:11
+    wait_v6 em-c-v6 "$V6_PREFIX_A"
+    case "$V6" in
+        *ff:fe00:e011) ;;
+        *) fail "control without ipv6_iid: the container holds $V6, not the modified EUI-64 of its MAC" ;;
+    esac
+    opt_down em-o-v6 em-c-v6
+    opt_refused "ipv6_iid" -o bridge="$V6_BRIDGE" -o ipv6_mode=dhcp -o ipv6_iid=stable-privacy
+    opt_refused "ipv6_iid" -o bridge="$V6_BRIDGE" -o ipv6_mode=off -o ipv6_iid=stable-privacy
+    opt_refused "ipv6_iid" -o bridge="$V6_BRIDGE" -o ipv6_mode=slaac -o ipv6_iid=bogus
 }
 
 opt_ipv6_main_prefix() {
