@@ -359,7 +359,7 @@ func TestV6AbsenceMemory_ThePersistentClientFollowsItsAttach(t *testing.T) {
 		{"ep-unserved", proto.Mode6Auto, true},
 	} {
 		var o dhcp.DHCPClientOptions
-		if err := r.p.v6Wiring(&o, autoOpts(), dhcp.Identity6{}, "", "", tc.endpoint); err != nil {
+		if err := r.p.v6Wiring(&o, autoOpts(), dhcp.Identity6{}, "", "", tc.endpoint, "net-1"); err != nil {
 			t.Fatal(err)
 		}
 		if o.Mode6 != tc.want || (o.OnV6Fallback != nil) != tc.fallback {

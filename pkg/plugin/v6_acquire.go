@@ -38,7 +38,7 @@ func (p *Plugin) acquireInitialV6(ctx context.Context, opts DHCPNetworkOptions, 
 			}
 		}()
 	}
-	if err := p.v6Wiring(&base, opts, a.identity6, a.recordID6, a.preferredV6, a.endpointID); err != nil {
+	if err := p.v6Wiring(&base, opts, a.identity6, a.recordID6, a.preferredV6, a.endpointID, a.networkID); err != nil {
 		return "", err
 	}
 	p.v6AbsenceRecord(&base, a.networkID)
