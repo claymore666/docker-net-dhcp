@@ -106,6 +106,13 @@ prompts on has moved since v2.0.0. This release changes the manifest's
   its lease ran out no longer names its old address in its request
   (DHCP option 50), so it keeps that address only if the server keeps
   it for that client on its own (#1182).
+- After a Docker restart or at boot, the plugin opens its socket within the
+  time the daemon allows, also on a slow host. Docker enables the plugin
+  before it answers its own API and disables a plugin whose socket is
+  still missing after about 10 seconds. When the plugin cannot reach the
+  daemon at startup, recovery and the second engine check now run after
+  the socket opens, where before the plugin waited about 7 seconds on the
+  daemon first (#1176).
 
 ## v2.3.1
 
