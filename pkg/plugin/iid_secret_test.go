@@ -125,6 +125,74 @@ func TestLoadIIDSecret_ConcurrentFirstReadersAgree(t *testing.T) {
 	}
 }
 
+// The loser is held after its temporary file is complete and before it publishes, the winner completes in that gap,
+// and the loser is then released. The order is forced by two channels, so a loser that replaces the winner's file
+// fails here on every run, whatever the scheduler does (#1032).
+func TestLoadIIDSecret_ALoserHeldBeforePublishingNeverReplacesTheWinnersFile(t *testing.T) {
+	dir := t.TempDir()
+	withStateDir(t, dir)
+	reached, release := make(chan struct{}), make(chan struct{})
+	var calls atomic.Int32
+	iidBeforePublish = func() {
+		if calls.Add(1) == 1 {
+			close(reached)
+			<-release
+		}
+	}
+	defer func() { iidBeforePublish = nil }()
+
+	type result struct {
+		secret []byte
+		err    error
+	}
+	loserDone := make(chan result, 1)
+	go func() {
+		s, err := loadIIDSecret()
+		loserDone <- result{s, err}
+	}()
+	<-reached
+
+	winner, err := loadIIDSecret()
+	if err != nil {
+		t.Fatalf("the winner: %v", err)
+	}
+	close(release)
+	loser := <-loserDone
+	if loser.err != nil {
+		t.Fatalf("the loser: %v", loser.err)
+	}
+	if n := calls.Load(); n != 2 {
+		t.Fatalf("the creation ran %d times, want 2 (one held, one winning): the test did not force the race", n)
+	}
+	if !bytes.Equal(loser.secret, winner) {
+		t.Errorf("the loser returned %x, the winner %x: a lost create race must re-read the winner's file (#1032)", loser.secret, winner)
+	}
+	onDisk, err := os.ReadFile(filepath.Join(dir, "ipv6-iid-secret"))
+	if err != nil || !bytes.Equal(onDisk, winner) {
+		t.Errorf("the file holds %x, %v after the loser published, want the winner's %x: its endpoints would form another address (#1032)", onDisk, err, winner)
+	}
+	if entries, _ := os.ReadDir(dir); len(entries) != 1 {
+		t.Errorf("STATE_DIR holds %d entries, want only the secret: the loser's temporary file leaked", len(entries))
+	}
+}
+
+func TestLoadIIDSecret_ASixteenOctetFileIsTheFloorAndIsAccepted(t *testing.T) {
+	dir := t.TempDir()
+	withStateDir(t, dir)
+	want := bytes.Repeat([]byte{0x3c}, 16)
+	path := filepath.Join(dir, "ipv6-iid-secret")
+	if err := os.WriteFile(path, want, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := loadIIDSecret()
+	if err != nil || !bytes.Equal(got, want) {
+		t.Fatalf("loadIIDSecret = %x, %v, want the 16-octet file %x: RFC 7217 section 5 sets 128 bits as the floor (#1032)", got, err, want)
+	}
+	if after, _ := os.ReadFile(path); !bytes.Equal(after, want) {
+		t.Errorf("the 16-octet file was changed to %x", after)
+	}
+}
+
 func TestLoadIIDSecret_AMissingStateDirIsAnErrorNotAPanic(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "gone")
 	withStateDir(t, dir)

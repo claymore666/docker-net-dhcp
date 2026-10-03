@@ -21,6 +21,10 @@ const iidSecretFile = "ipv6-iid-secret"
 // iidSecretLen is 256 bits, twice the 128-bit floor RFC 7217 section 5 sets as a SHOULD (#1032).
 const iidSecretLen = 32
 
+// iidBeforePublish, when set, runs in createIIDSecret between the temporary file being complete and its publication, so
+// a test can hold one creator at the moment a second one wins (#1032).
+var iidBeforePublish func()
+
 func iidSecretPath() string { return filepath.Join(stateDir, iidSecretFile) }
 
 // loadIIDSecret reads the secret and mints it once when the file does not exist. A file under proto.MinIIDSecretLen is
@@ -74,6 +78,9 @@ func createIIDSecret(path string) (created bool, err error) {
 	}
 	if err := tmp.Sync(); err != nil {
 		return false, fmt.Errorf("failed to flush the IPv6 interface identifier secret: %w", err)
+	}
+	if iidBeforePublish != nil {
+		iidBeforePublish()
 	}
 	if err := os.Link(tmp.Name(), path); err != nil {
 		if errors.Is(err, fs.ErrExist) {
