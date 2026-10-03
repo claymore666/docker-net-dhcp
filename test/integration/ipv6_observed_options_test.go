@@ -24,35 +24,51 @@ func TestDHCPv6_ObservedOptionsReachTheOptionsLogLine(t *testing.T) {
 		append(harness.RangeArgsFor(harness.V6Managed), harness.V6ObservedOptionsArgs()...))
 	dumpOnFailure(t, f)
 
-	// A line with all three values is the v6 one: this fixture serves no v4 options 42, 100 or 101. The strings are
-	// comma-free because dnsmasq splits a value on commas; 41 and 42 are numeric because dnsmasq 2.91 names neither
-	// (dhcp-common.c). Syntax checked with `dnsmasq --test` on 2.91; the wire half runs on the lane (#1033).
+	// The strings are comma-free because dnsmasq splits a value on commas; 41 and 42 are numeric because dnsmasq 2.91
+	// names neither (dhcp-common.c). The first v6 line is the bind's, after a Confirm whose Reply carries none of the
+	// three, so a later line would pass at T1 (#1033).
 	logMark := harness.MarkPluginLog(t, ctx)
-	if _, err := startOnV6SegmentWithOpts(t, ctx, cli, f, "dh-itest-v6obs", nil); err != nil {
+	const netName = "dh-itest-v6obs"
+	id, err := startOnV6SegmentWithOpts(t, ctx, cli, f, netName, nil)
+	if err != nil {
 		t.Fatalf("the container did not start on a managed segment with a DHCPv6 server: %v", err)
 	}
+	ins, err := cli.ContainerInspect(ctx, id)
+	if err != nil {
+		t.Fatalf("ContainerInspect: %v", err)
+	}
+	ep := ins.NetworkSettings.Networks[netName]
+	if ep == nil || len(ep.NetworkID) < 12 {
+		t.Fatalf("the container has no endpoint on %s: %+v", netName, ins.NetworkSettings.Networks)
+	}
+	ours := []string{"DHCP options received", "is_ipv6=true", "network=" + ep.NetworkID[:12]}
 
 	want := []string{
 		"posix_tz=" + harness.V6ObservedPosixTZ,
 		"tzdb_tz=" + harness.V6ObservedTZDBTZ,
 		"ntp=",
 		harness.V6ObservedNTPServer,
+		harness.V6SearchDomain,
 	}
 	deadline := time.Now().Add(persistentV6BindBudget)
 	var got string
 	for {
 		got = harness.ReadPluginLogSince(t, ctx, logMark)
 		for _, line := range strings.Split(got, "\n") {
-			if strings.Contains(line, "DHCP options received") && containsAll(line, want) {
-				t.Logf("options line carries %v", want)
-				return
+			if !containsAll(line, ours) {
+				continue
 			}
+			if !containsAll(line, want) {
+				t.Fatalf("the first v6 \"DHCP options received\" line lacks some of %v:\n%s", want, line)
+			}
+			t.Logf("the bind's options line carries %v", want)
+			return
 		}
 		if !time.Now().Before(deadline) {
 			break
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
-	t.Errorf("no single \"DHCP options received\" line carried %v within %s; the fixture's dnsmasq log is dumped "+
-		"above, and the plugin log since the mark was:\n%s", want, persistentV6BindBudget, got)
+	t.Errorf("no v6 \"DHCP options received\" line within %s; the fixture's dnsmasq log is dumped above, and the "+
+		"plugin log since the mark was:\n%s", persistentV6BindBudget, got)
 }

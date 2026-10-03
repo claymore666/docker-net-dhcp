@@ -627,6 +627,7 @@ func (c *DHCPClient) translate() {
 		// Before the record is written, so a second restart still finds the resolver (#911).
 		c.opts.carryResumedConfig6(&ev)
 		c.opts.carryResumedTemp6(&ev)
+		c.opts.carryResumedOptions6(&ev)
 		// Recorded before translation: translateOne drops the coalesced Changed and the stop, and the record must not
 		// (#899).
 		c.opts.record(ev)
@@ -692,10 +693,14 @@ func newStoppedTicker() *time.Ticker {
 
 // leaseView is what the advertisement watch reads.
 func (c *DHCPClient) leaseView() (lease.Lease, bool) {
+	view := c.Lease
 	if c.view != nil {
-		return c.view()
+		view = c.view
 	}
-	return c.Lease()
+	l, ok := view()
+	// The library's own lease has no options until a Reply, so the routeradvert line would lose 41, 42 and 56 (#1033).
+	c.opts.withResumedOptions6(&l)
+	return l, ok
 }
 
 // DHCPv6 has no MTU option (RFC 2132 section 5.1 is DHCPv4's), so the RFC 4861 section 4.6.4 MTU arrives only by the
