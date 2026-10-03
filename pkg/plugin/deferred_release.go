@@ -233,6 +233,23 @@ func acquisitionInFlight(rb lease.Rebuilt, rec lease.Record) (string, claimKind)
 func (p *Plugin) sweepRecords(now time.Time) {
 	p.sweepIPAMReservations(now)
 	p.sweepDeferredReleases(now)
+	p.compactRecords(now)
+}
+
+// compactRecords runs last, so the records this tick closed are counted from now; tombstoneTTL is the age past
+// which no reader of a closed or expired record is still in flight (#1182).
+func (p *Plugin) compactRecords(now time.Time) {
+	if p.records == nil {
+		return
+	}
+	done, err := p.records.CompactIfDue(now, tombstoneTTL)
+	if err != nil {
+		log.WithError(err).WithField("file", p.records.Path()).Error("Could not compact the lease record file; the next sweep retries")
+		return
+	}
+	if done {
+		log.Debug("Compacted the lease record file")
+	}
 }
 
 func (p *Plugin) recordSweeper(stop <-chan struct{}) {
