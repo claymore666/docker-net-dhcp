@@ -455,3 +455,30 @@ func TestStaleNetworks_ARecordIsStillDroppedBesideFilesThatAreNot(t *testing.T) 
 		t.Errorf("stale_networks_dropped = %d, want 1", got)
 	}
 }
+
+// The drop is for any saved network, not only an IPAM-mode one: a bridge network has no pool binding to refuse a
+// create, but its file is as stale (#1174).
+func TestStaleNetworks_ASavedNetworkWithoutAPoolBindingIsDroppedToo(t *testing.T) {
+	p := startWith(t, func() {
+		if err := saveNetwork(staleNet, DHCPNetworkOptions{Mode: ModeBridge, Bridge: "br0"}, nil); err != nil {
+			t.Fatalf("saveNetwork: %v", err)
+		}
+	})
+	if sn, err := loadNetwork(staleNet); err != nil || sn.Binding != nil {
+		t.Fatalf("the planted network is not a plain bridge record: binding=%v err=%v", sn.Binding, err)
+	}
+	f := &fakeDocker{inspectErr: networkNotFound()}
+	p.docker = f
+
+	recoverOnce(p)
+
+	if fileExists(t, staleNet) {
+		t.Error("the saved file of a bridge network Docker answered not-found for is still on disk")
+	}
+	if got := p.staleNetworksDropped.Load(); got != 1 {
+		t.Errorf("stale_networks_dropped = %d, want 1", got)
+	}
+	if f.inspectCalls != 1 {
+		t.Errorf("NetworkInspect called %d times, want 1", f.inspectCalls)
+	}
+}
