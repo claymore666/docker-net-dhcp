@@ -97,6 +97,15 @@ prompts on has moved since v2.0.0. This release changes the manifest's
   memory use as `integration memory:` at exit, and the arm64 lane fails the
   suite when that use passes 256 MB. The runner image also cuts the daemon
   log to its last megabyte once it passes 160 MB (#1180).
+- The lease record file `lease-records.jsonl` in `STATE_DIR` no longer
+  grows by about 5 KB per container lifecycle for the life of the host.
+  The plugin compacts it on its sweep once it reaches 256 KiB and twice
+  its size after the last compaction, dropping closed records and held
+  records whose restart window has run out and whose server lease has
+  expired. The cost: a container pinned to a MAC that comes back after
+  its lease ran out no longer names its old address in its request
+  (DHCP option 50), so it keeps that address only if the server keeps
+  it for that client on its own (#1182).
 
 ## v2.3.1
 

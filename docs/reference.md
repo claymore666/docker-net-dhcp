@@ -2014,6 +2014,22 @@ networks fall back to the Docker API on first read, which back-fills the
 file, so by the second endpoint operation everything is served from disk
 again.
 
+The lease record, `STATE_DIR/lease-records.jsonl`, gets one line per
+lease event, about 5 KB per container lifecycle. Since v2.4.0 the plugin
+compacts it on its 15-second sweep once the file is at least 256 KiB and
+twice the size it had after the last compaction; the first sweep after a
+start compacts any file of 256 KiB or more. A closed record is dropped 60
+seconds after its last line. A held record, one kept so a restarted
+container gets its address back, is dropped once its restart window has
+run out and its server lease expired more than 60 seconds ago; a record
+whose lease never expires is kept. Every other line is copied unchanged,
+unreadable lines too. The new file is written beside the old one as
+`lease-records.jsonl.compact`, flushed to disk and renamed over it, so a
+crash leaves one whole file, and a leftover `.compact` file is removed at
+the next start. If the plugin cannot reopen the file after the rename, it
+logs an error naming the file and refuses every lease event write, with
+an error that says why, until the next sweep reopens it (#1182).
+
 #### File permissions after an upgrade
 
 Since v1.8.0 the plugin writes everything under `STATE_DIR` with mode
