@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -475,5 +476,90 @@ func TestCreateNetwork_ANeverCreatedStateDirectoryIsNoSiblingAndNoError(t *testi
 	p.docker = &fakeDocker{}
 	if err := inflightCreate(p, inflightIDA, map[string]interface{}{"mode": "macvlan", "parent": inflightParentA}); err != nil {
 		t.Errorf("the first create on a host with no state directory failed: %v", err)
+	}
+}
+
+// waitParkedInEarlierCreates returns once a goroutine waits on createMu inside earlierCreates, the point after which
+// the in-flight read is the next thing it does and before which a read of the stored records has or has not happened,
+// whichever order the code reads them in (#1187).
+func waitParkedInEarlierCreates(t *testing.T) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	buf := make([]byte, 1<<20)
+	for time.Now().Before(deadline) {
+		for _, g := range strings.Split(string(buf[:runtime.Stack(buf, true)]), "\n\n") {
+			if strings.Contains(g, "plugin.(*Plugin).earlierCreates") && strings.Contains(g, "sync.(*Mutex).Lock") {
+				return
+			}
+		}
+		runtime.Gosched()
+	}
+	t.Fatal("the second create never reached earlierCreates")
+}
+
+// A sibling that saves its record and leaves the set between the second create's two reads is in neither read unless
+// the set is read first: the record is not there at the first read and the entry is gone at the second (#1187).
+func TestCreateNetwork_ASiblingThatSavesItsRecordAndLeavesBetweenTheTwoReadsIsStillSeen(t *testing.T) {
+	cases := []struct {
+		name          string
+		parent        string // the link the second create looks up before its sibling reads
+		first, second map[string]interface{}
+		want          error
+	}{
+		{"sub-mode", inflightParentA, map[string]interface{}{"mode": "macvlan", "parent": inflightParentA, "macvlan_mode": "passthru"},
+			map[string]interface{}{"mode": "macvlan", "parent": inflightParentA}, util.ErrModeMismatch},
+		{"bridge", inflightBridge, map[string]interface{}{"bridge": inflightBridge}, map[string]interface{}{"bridge": inflightBridge}, util.ErrBridgeUsed},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			withStateDir(t, t.TempDir())
+			installInflightKernel(t)
+			p := newPluginForTest()
+			p.docker = &fakeDocker{}
+
+			firstOpts, err := decodeOpts(c.first)
+			if err != nil {
+				t.Fatal(err)
+			}
+			p.beginCreate(inflightIDA, firstOpts)
+
+			held := make(chan struct{})
+			var once sync.Once
+			prev := nlLinkByName
+			nlLinkByName = func(name string) (netlink.Link, error) {
+				if name == c.parent {
+					once.Do(func() {
+						p.createMu.Lock()
+						close(held)
+					})
+				}
+				return prev(name)
+			}
+			t.Cleanup(func() { nlLinkByName = prev })
+
+			res := make(chan error, 1)
+			go func() { res <- inflightCreate(p, inflightIDB, c.second) }()
+			select {
+			case <-held:
+			case <-time.After(5 * time.Second):
+				t.Fatal("the second create never looked up the link")
+			}
+			waitParkedInEarlierCreates(t)
+
+			if err := saveNetwork(inflightIDA, firstOpts, nil); err != nil {
+				t.Fatal(err)
+			}
+			delete(p.creating, inflightIDA)
+			p.createMu.Unlock()
+
+			select {
+			case err := <-res:
+				if !errors.Is(err, c.want) {
+					t.Errorf("err = %v; want %v for a sibling that saved its record and left between the two reads", err, c.want)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("the second create did not finish")
+			}
+		})
 	}
 }
