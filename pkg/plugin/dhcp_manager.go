@@ -852,7 +852,7 @@ func (m *dhcpManager) forgetV6Addr(key string) {
 func (m *dhcpManager) logObservedOptions(v6 bool, info dhcp.Info) {
 	if len(info.NTPServers) == 0 && info.TFTPServer == "" && info.BootFile == "" && len(info.SearchList) == 0 &&
 		info.WPAD == "" && info.PosixTimezone == "" && info.TZDBTimezone == "" && info.TimeOffset == "" &&
-		len(info.NAT64Prefixes) == 0 {
+		len(info.NAT64Prefixes) == 0 && info.VendorSpecific == "" && len(info.VendorIdentifying) == 0 {
 		return
 	}
 
@@ -884,6 +884,17 @@ func (m *dhcpManager) logObservedOptions(v6 bool, info dhcp.Info) {
 	}
 	if len(info.NAT64Prefixes) > 0 {
 		fields["nat64"] = info.NAT64Prefixes
+	}
+	// Vendor blobs (options 43 and 125) are hex, 125 as "enterprise:hex" per block; never interpreted (#1034).
+	if info.VendorSpecific != "" {
+		fields["vendor_43"] = info.VendorSpecific
+	}
+	if len(info.VendorIdentifying) > 0 {
+		blocks := make([]string, 0, len(info.VendorIdentifying))
+		for _, b := range info.VendorIdentifying {
+			blocks = append(blocks, fmt.Sprintf("%d:%s", b.Enterprise, b.Data))
+		}
+		fields["vendor_125"] = blocks
 	}
 	log.WithFields(fields).Info("DHCP options received")
 }

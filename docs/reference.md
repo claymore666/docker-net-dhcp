@@ -890,7 +890,9 @@ Option 121 supersedes it whenever both arrive. Option 249, Microsoft's
 older form of option 121, is asked for directly after 121 since the
 `dhcp-golib` v1.3.0 pin and read when 121 is absent; it supersedes options
 3 and 33 as 121 does, and it is ignored whenever a 121 is present, decoded
-or not. The `[Join]` log line for such routes still says option 121
+or not. The integration suite runs a server that sends 249 alone and reads
+the route from inside the container. The `[Join]` log line for such routes
+still says option 121
 ([#1157](https://github.com/claymore666/docker-net-dhcp/issues/1157),
 [#1030](https://github.com/claymore666/docker-net-dhcp/issues/1030)).
 
@@ -1496,6 +1498,7 @@ the plugin does not read or log any of them yet
 ([#1034](https://github.com/claymore666/docker-net-dhcp/issues/1034),
 [#1033](https://github.com/claymore666/docker-net-dhcp/issues/1033),
 [#859](https://github.com/claymore666/docker-net-dhcp/issues/859)).
+The DHCPv4 vendor options 43 and 125 are logged, as described below.
 
 **Logged** at info level on every bind and renew, and only when at least
 one is present, so plain LANs get no extra noise: option 42 (NTP), 66
@@ -1510,9 +1513,32 @@ level=info msg="DHCP options received" ntp=[192.168.0.123]
   tzdb_tz=Europe/Berlin time_offset=3600 ...
 ```
 
+The vendor-specific options of DHCPv4 are logged the same way, hex-encoded
+and never interpreted ([#1034](https://github.com/claymore666/docker-net-dhcp/issues/1034)):
+option 43 (RFC 2132 section 8.4) as `vendor_43`, and option 125 (RFC 3925
+section 4) as `vendor_125`, one `enterprise-number:hex` entry per
+enterprise in the order they arrived. An option 43 of zero octets and a
+malformed option 125 are left out.
+
+```text
+level=info msg="DHCP options received" vendor_43=0104c0a86301
+  vendor_125="[9:aabb 3561:]" ...
+```
+
 These are not auto-applied because the consuming application owns those
 config files, and writing into them would mean another setns into the
 container's mount namespace on every renewal.
+
+### DHCPv4 FORCERENEW (RFC 3203, RFC 6704)
+
+Every DHCPDISCOVER and DHCPREQUEST the plugin sends carries option 145,
+which tells the server the client can authenticate a FORCERENEW (RFC 6704
+section 3.1.1). There is no network option for it. A server that then sends
+an authenticated DHCPFORCERENEW makes the lease renew at once; one that
+fails the authentication, or arrives on any other terms the RFC rules out, is
+discarded and counted in the library's statistics. The rules live in
+[dhcp-golib](https://github.com/claymore666/dhcp-golib), not in the plugin
+([#1119](https://github.com/claymore666/docker-net-dhcp/issues/1119)).
 
 ### DHCPv6 (`ipv6=true`)
 
