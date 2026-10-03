@@ -106,15 +106,16 @@ func (x *ipamIndex) len() int {
 	return len(x.m)
 }
 
-func rebuildIPAMIndex(x *ipamIndex) {
+// rebuildIPAMIndex returns the ids it listed, the start-up snapshot that dropStaleNetworks later tests (#1174).
+func rebuildIPAMIndex(x *ipamIndex) []string {
 	if x == nil {
-		return
+		return nil
 	}
 	ids, err := listStateNetworks()
 	if err != nil {
 		x.markIncomplete()
 		log.WithError(err).Warn("Could not list the state directory; IPAM-mode networks will refuse until their state is readable")
-		return
+		return nil
 	}
 	for _, id := range ids {
 		sn, err := loadNetwork(id)
@@ -129,6 +130,7 @@ func rebuildIPAMIndex(x *ipamIndex) {
 		}
 		x.bind(sn.Binding.PoolID, id)
 	}
+	return ids
 }
 
 // ipamNetwork reads disk only: IPAM RPCs arrive during the daemon's start-up replay, before its API serves (#110).
