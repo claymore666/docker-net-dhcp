@@ -83,6 +83,10 @@ prompts on has moved since v2.0.0. This release changes the manifest's
   empty file is read again for up to half a second before the address
   counts as released; a line that is really gone is still reported within
   about 40 ms (#1173).
+- A container whose network setup fails, or that is created and removed
+  without ever starting, no longer leaves a pending hint behind for the
+  life of the plugin. `pending_hints` on `/Plugin.Health` returns to zero
+  after either (#1183).
 
 ## v2.3.1
 
