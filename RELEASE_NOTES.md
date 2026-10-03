@@ -30,6 +30,13 @@ prompts on has moved since v2.0.0. This release changes the manifest's
 
 <!-- manifest-delta: end -->
 
+### New
+
+- The NAT64 prefix a router advertises (PREF64, RFC 8781) is logged as
+  `nat64` on each lease event that carries it and shown per endpoint as
+  `nat64_prefixes` on `/Plugin.Health`; nothing is installed in the
+  container (#1028).
+
 ### Fixed
 
 - On an engine below 28.0 a container with IPv6 no longer fails to start

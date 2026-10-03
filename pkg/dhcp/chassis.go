@@ -680,7 +680,7 @@ func (c *DHCPClient) advertRouterView() proto.RouterObservation {
 	} else if c.client6 != nil {
 		r = c.client6.Router()
 	}
-	return proto.RouterObservation{Seen: r.Seen, MTU: r.MTU, Prefixes: r.Prefixes}
+	return proto.RouterObservation{Seen: r.Seen, MTU: r.MTU, Prefixes: r.Prefixes, PREF64: r.PREF64}
 }
 
 // baselineAdvert records the advertised configuration without reporting it, for a caller that has just applied it.

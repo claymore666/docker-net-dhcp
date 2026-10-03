@@ -50,6 +50,9 @@ type Info struct {
 	// WithdrawnOnLinkPrefixes are those options carrying Valid Lifetime 0; v6 only.
 	WithdrawnOnLinkPrefixes []string `json:",omitempty"`
 
+	// NAT64Prefixes are RFC 8781 section 4's PREF64 options as CIDR; logged and reported, never applied (#1028).
+	NAT64Prefixes []string `json:",omitempty"`
+
 	// RFC 9915 section 18.2.1's Solicit does not wait for router discovery, so an MTU of 0 before an advertisement is
 	// silence while an MTU of 0 after one is a withdrawal; folding them flips the link MTU per event (#821).
 

@@ -89,6 +89,8 @@ type dhcpManager struct {
 	seenV4 v4Record
 	// tempV6 is the first IA_TA address of the DHCPv6 lease last applied, for the health entry (#927).
 	tempV6 v6TempRecord
+	// nat64 is the PREF64 list of the last v6 event with router state (#1028).
+	nat64 []string
 
 	// recordID is the durable lease record (#899); empty in unit tests and adopted endpoints, where record calls no-op.
 	recordID string
@@ -317,6 +319,20 @@ func (m *dhcpManager) tempV6Address(now time.Time) string {
 		return r.addr
 	}
 	return ""
+}
+
+// noteNAT64 replaces the recorded PREF64 list, so an event without the option clears it (#1028).
+func (m *dhcpManager) noteNAT64(prefixes []string) {
+	m.ipMu.Lock()
+	defer m.ipMu.Unlock()
+	m.nat64 = append([]string(nil), prefixes...)
+}
+
+// nat64Prefixes is a copy of the recorded PREF64 list.
+func (m *dhcpManager) nat64Prefixes() []string {
+	m.ipMu.Lock()
+	defer m.ipMu.Unlock()
+	return append([]string(nil), m.nat64...)
 }
 
 func (m *dhcpManager) healthSnapshot() (v4Record, joinClient) {
@@ -835,7 +851,8 @@ func (m *dhcpManager) forgetV6Addr(key string) {
 // logObservedOptions logs captured options the plugin does not apply, only when at least one is set.
 func (m *dhcpManager) logObservedOptions(v6 bool, info dhcp.Info) {
 	if len(info.NTPServers) == 0 && info.TFTPServer == "" && info.BootFile == "" && len(info.SearchList) == 0 &&
-		info.WPAD == "" && info.PosixTimezone == "" && info.TZDBTimezone == "" && info.TimeOffset == "" {
+		info.WPAD == "" && info.PosixTimezone == "" && info.TZDBTimezone == "" && info.TimeOffset == "" &&
+		len(info.NAT64Prefixes) == 0 {
 		return
 	}
 
@@ -864,6 +881,9 @@ func (m *dhcpManager) logObservedOptions(v6 bool, info dhcp.Info) {
 	}
 	if info.TimeOffset != "" {
 		fields["time_offset"] = info.TimeOffset
+	}
+	if len(info.NAT64Prefixes) > 0 {
+		fields["nat64"] = info.NAT64Prefixes
 	}
 	log.WithFields(fields).Info("DHCP options received")
 }
@@ -1468,6 +1488,11 @@ func (m *dhcpManager) handleEvent(event dhcp.Event, v6 bool) {
 
 	if v6 && m.plugin != nil && (event.Type == "bound" || event.Type == "renew") {
 		m.plugin.v6AbsenceLeaseSeen(m.joinReq.NetworkID, event.Data)
+	}
+
+	// Only events built from a router observation: "config" and v4 Info carry no PREF64 and may not clear it (#1028).
+	if v6 && (event.Type == "bound" || event.Type == "renew" || event.Type == "routeradvert") {
+		m.noteNAT64(event.Data.NAT64Prefixes)
 	}
 
 	switch event.Type {
