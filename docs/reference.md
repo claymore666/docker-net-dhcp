@@ -1542,7 +1542,9 @@ discarded and counted in the library's statistics. The rules live in
 
 The plugin logs one line per endpoint each time those counts move: at info
 while only obeyed messages moved, at warn once any refusal did, with the
-endpoint, the network and each gained count as fields. The same counts are the
+endpoint, the network and each gained count as fields. A line from the IPAM reserve
+acquisition, which runs before any endpoint exists, has no `endpoint` field and
+`acquisition=ipam-reserve` instead. The same counts are the
 `forcerenews_*` and `reconfigures_*` rows in
 [`/Plugin.Health`](#pluginhealth). The test suite has no
 integration scenario for them: neither `dnsmasq` nor Kea sends a

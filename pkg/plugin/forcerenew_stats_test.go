@@ -166,8 +166,9 @@ func TestForcerenewReporter_TheReserveOneShotLogsNoEmptyEndpoint(t *testing.T) {
 	if v, ok := d["endpoint"]; ok {
 		t.Errorf("endpoint field = %q on a reservation with no endpoint, want the field omitted", v)
 	}
-	if d["phase"] != "ipam-reserve" {
-		t.Errorf("phase = %v, want ipam-reserve; without it the line names neither an endpoint nor a path", d["phase"])
+	if d["acquisition"] != "ipam-reserve" {
+		t.Errorf("acquisition = %v, want ipam-reserve; without it the line names neither an endpoint nor a path",
+			d["acquisition"])
 	}
 	if d["ack_refused"] != uint64(1) {
 		t.Errorf("ack_refused = %v, want 1", d["ack_refused"])
@@ -178,8 +179,9 @@ func TestForcerenewReporter_TheReserveOneShotLogsNoEmptyEndpoint(t *testing.T) {
 
 	hook.Reset()
 	p.forcerenewReporter("net1234567890", "ep1234567890")(dhcp.ForcerenewStats{AckRefused: 1})
-	if got := hook.LastEntry().Data; got["phase"] != nil || got["endpoint"] != "ep1234567890" {
-		t.Errorf("an endpoint line carries phase=%v endpoint=%v, want no phase and the endpoint", got["phase"], got["endpoint"])
+	if got := hook.LastEntry().Data; got["acquisition"] != nil || got["endpoint"] != "ep1234567890" {
+		t.Errorf("an endpoint line carries acquisition=%v endpoint=%v, want no acquisition and the endpoint",
+			got["acquisition"], got["endpoint"])
 	}
 }
 

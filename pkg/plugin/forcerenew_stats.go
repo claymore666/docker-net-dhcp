@@ -29,7 +29,7 @@ func (p *Plugin) forcerenewWiring(o *dhcp.DHCPClientOptions, networkID, endpoint
 
 // forcerenewReporter folds a manager's delta into the totals and logs one line naming the endpoint, which the
 // plugin-wide counters cannot: info while only obeyed messages moved, a warning once any refusal did. The IPAM
-// reserve one-shot has no endpoint yet, so its line says phase=ipam-reserve instead (#1119).
+// reserve one-shot has no endpoint yet, so its line says acquisition=ipam-reserve instead (#1119).
 func (p *Plugin) forcerenewReporter(networkID, endpointID string) func(dhcp.ForcerenewStats) {
 	return func(d dhcp.ForcerenewStats) {
 		if d.IsZero() {
@@ -46,7 +46,7 @@ func (p *Plugin) forcerenewReporter(networkID, endpointID string) func(dhcp.Forc
 			"reconfigures_refused":  d.ReconfiguresRefused,
 		})
 		if endpointID == "" {
-			entry = entry.WithField("phase", "ipam-reserve")
+			entry = entry.WithField("acquisition", "ipam-reserve")
 		} else {
 			entry = entry.WithField("endpoint", shortID(endpointID))
 		}
