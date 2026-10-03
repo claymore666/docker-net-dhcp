@@ -1685,7 +1685,11 @@ What the option does, concretely:
   endpoint leaves, and a later `docker network connect` of another network of
   this plugin writes the two defaults to 0 again. The write takes where the
   engine has created the sandbox before it calls `Join`, which is Docker
-  Engine 28 and later (measured on the engine matrix). On 26 and 27 the engine
+  Engine 28 and later (measured on the engine matrix), and where the daemon's
+  sandbox mounts reach the plugin's mount namespace
+  (`sandbox_netns_propagation` 1). On a 28+ host whose mounts do not reach
+  it the write is skipped, counted in `router_advert_guard_failures` and
+  warned with `step=sandbox_default`. On 26 and 27 the engine
   builds the sandbox after `Join`, the plugin finds no namespace to write into
   and the guard cannot run, so the race above stays open on those engines.
 - **The container's name reaches the DHCPv6 server only with
@@ -1960,6 +1964,17 @@ against the very daemon being waited on, so recovery is instead retried
 once the socket is listening, and the wait is counted as
 `recovery_deferred` and not as a failure (v1.4.0+, #383). Only a retry
 that runs out of budget counts `recovery_failed`.
+
+The plugin tells the two cases apart by whether its startup engine check
+reached the daemon at all. A daemon that answers with an error status is
+up and only not ready, and recovery may still wait up to 3 s for the
+network list before the socket opens. A daemon that cannot be reached
+(connection refused, no socket, no reply in time) is not waited on again:
+recovery and the second engine check start as soon as the socket is
+listening, because Docker disables a plugin whose socket is still missing
+about 10 s after it starts it. A daemon that answered but failed the
+version query gets its second engine check after the socket opens too
+(#1176).
 
 The same path covers `systemctl restart docker`. In practice the address
 is preserved either by recovery (when the daemon's shutdown never called

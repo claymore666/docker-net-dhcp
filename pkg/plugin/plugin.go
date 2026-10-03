@@ -79,8 +79,8 @@ const recoveryBudget = 30 * time.Second
 // recoveryPerNetworkTimeout caps each recovery Docker call so one wedged call cannot consume recoveryBudget (#76).
 const recoveryPerNetworkTimeout = 3 * time.Second
 
-// recoverySyncDaemonWait caps the pre-Listen wait for the daemon, which respawns the plugin during its own startup
-// and adds this window to plugin-enable latency (#383). On expiry recovery moves to the post-Listen retry.
+// recoverySyncDaemonWait caps the pre-Listen wait for a daemon that answered the engine probe but has no network
+// store yet (#383); a daemon the probe could not reach is not waited on (#1176). On expiry recovery moves to Listen.
 const recoverySyncDaemonWait = 3 * time.Second
 
 // recoveryDeferredDaemonWait caps the post-Listen retry, cheap because the socket already serves.
@@ -438,8 +438,9 @@ type Plugin struct {
 	docker dockerClient
 
 	// engine is the startup probe's result, swapped atomically so a reader never mixes two probes (#670).
-	engine atomic.Pointer[engineIdentity]
-	server http.Server
+	engine         atomic.Pointer[engineIdentity]
+	daemonAnswered atomic.Bool
+	server         http.Server
 
 	// metricsServer is the optional METRICS_ADDR listener, a separate server serving only /metrics, since p.server
 	// carries every libnetwork RPC with CAP_NET_ADMIN, CAP_SYS_ADMIN and CAP_SYS_PTRACE (#772).
@@ -480,7 +481,8 @@ type Plugin struct {
 	recoveryDeferred atomic.Int32
 
 	// recoveryPending is set by NewPlugin when recovery must be retried after Listen, and consumed there.
-	recoveryPending bool
+	recoveryPending      bool
+	engineReprobePending bool
 
 	// recoveryCancel stops the deferred-recovery goroutine at Close; nil when recovery finished synchronously.
 	recoveryCancel context.CancelFunc
@@ -1504,22 +1506,34 @@ func NewPlugin(opts Options) (*Plugin, error) {
 
 	// No orphan sweep: the DHCP client is an in-process goroutine; a lease left unrenewed is resumed via the record.
 
-	// Recovery runs before NewPlugin returns, so a CreateEndpoint cannot race recovery's Start; recoveryBudget bounds
-	// enable latency. A daemon not serving yet defers recovery to Listen (#383).
-	{
-		ctx, cancel := context.WithTimeout(context.Background(), recoveryBudget)
-		p.recoveryPending = p.recoverEndpoints(ctx, recoverySyncDaemonWait)
-		cancel()
-	}
-
-	// Re-probe the engine if it came up after the probe above; a no-op otherwise (#670).
-	p.reprobeEngine(context.Background())
+	p.startRecovery()
 	// The record sweeper starts last, after recovery adopted running containers: it drops unclaimed IPAM reservations
 	// and runs `release_lease=on_remove`'s deferred releases (#984).
 	p.recordSweepStop = make(chan struct{})
 	go p.recordSweeper(p.recordSweepStop)
 
 	return &p, nil
+}
+
+// startRecovery runs before Listen, so a CreateEndpoint cannot race recovery's Start. A daemon the probe could not
+// reach is not waited on: dockerd disables the plugin if its socket is missing ~10 s after the start (#1176).
+func (p *Plugin) startRecovery() {
+	if !p.daemonAnsweredAtStart() {
+		log.WithField("probe_timeout", engineProbeTimeout).
+			Info("startup: the daemon did not answer the engine probe; recovery and the engine check run after the socket opens")
+		p.recoveryPending = true
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), recoveryBudget)
+	p.recoveryPending = p.recoverEndpoints(ctx, recoverySyncDaemonWait)
+	cancel()
+	// The daemon answered but the version query failed: Listen asks again once the socket serves, off the clock (#1176).
+	p.engineReprobePending = !p.recoveryPending && !p.engineAnswered()
+}
+
+func (p *Plugin) engineAnswered() bool {
+	cur := p.engine.Load()
+	return cur != nil && cur.Version != unknownEngineField
 }
 
 // Listen starts the plugin server
@@ -1546,6 +1560,10 @@ func (p *Plugin) Listen(bindSock string) error {
 		ctx, cancel := context.WithCancel(context.Background())
 		p.recoveryCancel = cancel
 		go p.recoverEndpointsDeferred(ctx, recoveryDeferredDaemonWait)
+	}
+	if p.engineReprobePending {
+		p.engineReprobePending = false
+		go p.reprobeEngine(context.Background())
 	}
 
 	return p.server.Serve(l)

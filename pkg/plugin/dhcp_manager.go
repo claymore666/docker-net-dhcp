@@ -149,9 +149,9 @@ type dhcpManager struct {
 	errChan   chan error
 	errChanV6 chan error
 
-	// ctrID caches the container ID for ledger entries, resolved once via ctrIDOnce.
-	ctrIDOnce sync.Once
-	ctrID     string
+	// ctrID caches the container ID for ledger entries once a real one was seen; ctrIDMu serialises the lookup (#1189).
+	ctrIDMu sync.Mutex
+	ctrID   string
 
 	// startedCh closes when Start finishes, so Stop can wait out a Start that Join's goroutine is still running.
 	startedCh chan struct{}
@@ -387,27 +387,33 @@ func auditSource(info dhcp.Info) string {
 	return ""
 }
 
-// containerID resolves the endpoint's container ID once for ledger entries; a failure leaves the field empty.
+// containerID returns the endpoint's container ID for ledger entries, empty while it is not known. Only a real ID is
+// kept: dockerd lists "ep-<endpoint>" until the sandbox exists and a lookup can fail, and neither is stored, so the
+// next call asks again (#1189).
 func (m *dhcpManager) containerID() string {
-	m.ctrIDOnce.Do(func() {
-		if m.docker == nil {
-			return
+	m.ctrIDMu.Lock()
+	defer m.ctrIDMu.Unlock()
+	if m.ctrID != "" || m.docker == nil {
+		return m.ctrID
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	dockerNet, err := m.docker.NetworkInspect(ctx, m.joinReq.NetworkID, dNetwork.InspectOptions{})
+	if err != nil {
+		log.WithError(err).WithFields(m.logFields(false)).Debug("ledger container lookup failed")
+		return ""
+	}
+	for ctrID, info := range dockerNet.Containers {
+		if info.EndpointID != m.joinReq.EndpointID {
+			continue
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		defer cancel()
-		dockerNet, err := m.docker.NetworkInspect(ctx, m.joinReq.NetworkID, dNetwork.InspectOptions{})
-		if err != nil {
-			log.WithError(err).WithFields(m.logFields(false)).Debug("ledger container lookup failed")
-			return
+		if strings.HasPrefix(ctrID, "ep-") {
+			return ""
 		}
-		for ctrID, info := range dockerNet.Containers {
-			if info.EndpointID == m.joinReq.EndpointID {
-				m.ctrID = ctrID
-				return
-			}
-		}
-	})
-	return m.ctrID
+		m.ctrID = ctrID
+		return ctrID
+	}
+	return ""
 }
 
 // endpointMAC returns the MAC the endpoint's DHCP identity is keyed to, from the join hint or the tombstone, falling
