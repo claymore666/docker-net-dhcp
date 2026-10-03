@@ -45,6 +45,11 @@ prompts on has moved since v2.0.0. This release changes the manifest's
   installs the IPv6 default route and the advertised routes via a
   link-local next hop itself, when the first lease or advertisement
   arrives, instead of handing them to the engine in Join (#1149).
+- The lease record of a removed network no longer stays held for the
+  life of the plugin, re-read every 15 seconds. Once its restart window
+  has run out and Docker answers that the network no longer exists, the
+  record is closed and nothing is sent; one line at `info` names the
+  network and how many records were closed (#1158).
 
 ## v2.3.1
 
