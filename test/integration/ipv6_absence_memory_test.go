@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/claymore666/dhcp-golib/proto"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/network"
 	docker "github.com/docker/docker/client"
@@ -17,9 +18,13 @@ import (
 	"github.com/claymore666/docker-net-dhcp/v2/test/integration/harness"
 )
 
-// The library's default fallback window is half the router-solicitation schedule, 6 s, armed after a Solicit delay of
-// up to 1 s (RFC 8415 SOL_MAX_DELAY), so a remembered attach is at least 5 s faster on a silent segment (#1038).
-const absenceMemorySaving = 5 * time.Second
+// The saving is the 6 s window (the library's timer adds the Solicit delay to it) less 3 s, three times the 0.96 s
+// attach noise: 28 pool pairs, runs 37091993592 to 37117065629, saving mean 6.46 s, sd 1.00 s (#1172).
+const (
+	absenceWindow       = time.Duration(proto.DefaultAutoFallback)
+	attachNoise         = 3 * time.Second
+	absenceMemorySaving = absenceWindow - attachNoise
+)
 
 // solicitQuiet outlasts one client's whole Solicit run: the 1 s delay, the 6 s window and a retransmission (#1038).
 const solicitQuiet = 10 * time.Second
@@ -79,10 +84,11 @@ func testSLAAC_AutoRemembersASilentServer(t *testing.T, at v6Attach) {
 	t.Logf("first attach %s, second attach %s", firstWall.Round(100*time.Millisecond),
 		secondWall.Round(100*time.Millisecond))
 	if saved := firstWall - secondWall; saved < absenceMemorySaving {
-		t.Errorf("the second endpoint started %s faster than the first, want at least %s. The "+
-			"first one waited out the fallback window on a server that answers nothing; the "+
-			"second one is on the same network inside DHCPV6_ABSENCE_MEMORY and should not "+
-			"have solicited at all", saved, absenceMemorySaving)
+		t.Errorf("the second endpoint started %s faster than the first, want at least %s (the %s "+
+			"fallback window less %s of attach noise). The first one waited out the window on "+
+			"a server that answers nothing; the second one is on the same network inside "+
+			"DHCPV6_ABSENCE_MEMORY and should not have solicited at all",
+			saved, absenceMemorySaving, absenceWindow, attachNoise)
 	}
 
 	if after := awaitSolicitsQuiet(t, f); after != solicits {
