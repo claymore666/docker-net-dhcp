@@ -40,6 +40,9 @@ prompts on has moved since v2.0.0. This release changes the manifest's
   options, hex-encoded and never interpreted: option 43 as `vendor_43` and
   option 125 as `vendor_125`, one `enterprise:hex` entry per enterprise
   (#1034).
+- The DHCPv4 client tells the server on every DISCOVER and REQUEST that it can
+  authenticate a FORCERENEW (option 145). An authenticated FORCERENEW renews
+  the lease and any other is refused (#1119).
 - A DHCP server that sends the Microsoft classless static routes, option
   249, and no option 121 now gets its routes installed in the container,
   and the default route among them replaces option 3's router as 121's

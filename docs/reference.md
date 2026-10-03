@@ -1529,6 +1529,17 @@ These are not auto-applied because the consuming application owns those
 config files, and writing into them would mean another setns into the
 container's mount namespace on every renewal.
 
+### DHCPv4 FORCERENEW (RFC 3203, RFC 6704)
+
+Every DHCPDISCOVER and DHCPREQUEST the plugin sends carries option 145,
+which tells the server the client can authenticate a FORCERENEW (RFC 6704
+section 3.1.1). There is no network option for it. A server that then sends
+an authenticated DHCPFORCERENEW makes the lease renew at once; one that
+fails the authentication, or arrives on any other terms the RFC rules out, is
+discarded and counted in the library's statistics. The rules live in
+[dhcp-golib](https://github.com/claymore666/dhcp-golib), not in the plugin
+([#1119](https://github.com/claymore666/docker-net-dhcp/issues/1119)).
+
 ### DHCPv6 (`ipv6=true`)
 
 `-o ipv6=true` gives every container on the network a **DHCPv6 lease
