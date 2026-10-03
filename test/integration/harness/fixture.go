@@ -103,6 +103,11 @@ const (
 	TestClasslessRouteGW     = "192.168.99.249"
 	dnsmasqCSRTag            = "dh-itest-csr"
 
+	TestClassless249VendorClass = "docker-net-dhcp-test-csr249"
+	TestClassless249Route       = "192.168.124.0/24"
+	TestClassless249RouteGW     = "192.168.99.247"
+	dnsmasqCSR249Tag            = "dh-itest-csr249"
+
 	TestUserClass          = "docker-net-dhcp-test-uc"
 	TestUserClassGateway   = "192.168.99.248"
 	dnsmasqUCTag           = "dh-itest-uc"
@@ -281,6 +286,8 @@ func (f *Fixture) startDnsmasq() error {
 		// Option 121 only for clients tagged via TestClasslessVendorClass (#260), to a non-default destination.
 		"--dhcp-vendorclass=set:"+dnsmasqCSRTag+","+TestClasslessVendorClass,
 		"--dhcp-option=tag:"+dnsmasqCSRTag+",121,"+TestClasslessRoute+","+TestClasslessRouteGW,
+		"--dhcp-vendorclass=set:"+dnsmasqCSR249Tag+","+TestClassless249VendorClass,
+		"--dhcp-option=tag:"+dnsmasqCSR249Tag+",249,"+TestClassless249Route+","+TestClassless249RouteGW,
 		// No --dhcp-broadcast: dnsmasq honours the client's BROADCAST flag, which ipvlan L2 needs because children share the
 		// parent's MAC (#243). Forcing it here would mask a regression in the client-side flag.
 		"--log-dhcp",

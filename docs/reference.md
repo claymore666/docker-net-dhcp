@@ -890,7 +890,9 @@ Option 121 supersedes it whenever both arrive. Option 249, Microsoft's
 older form of option 121, is asked for directly after 121 since the
 `dhcp-golib` v1.3.0 pin and read when 121 is absent; it supersedes options
 3 and 33 as 121 does, and it is ignored whenever a 121 is present, decoded
-or not. The `[Join]` log line for such routes still says option 121
+or not. The integration suite runs a server that sends 249 alone and reads
+the route from inside the container. The `[Join]` log line for such routes
+still says option 121
 ([#1157](https://github.com/claymore666/docker-net-dhcp/issues/1157),
 [#1030](https://github.com/claymore666/docker-net-dhcp/issues/1030)).
 

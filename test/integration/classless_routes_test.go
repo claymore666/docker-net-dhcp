@@ -92,3 +92,34 @@ func hasRoute(out, dest string) bool {
 	}
 	return false
 }
+
+// A server that sends option 249 and no 121 still gets its route applied (#1030).
+func TestClasslessStaticRoutes_Option249AloneIsApplied(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	netName := "dh-itest-csr249"
+	ctrName := "dh-itest-csr249-ctr"
+
+	t.Cleanup(func() {
+		if t.Failed() {
+			fixture.DumpLogs(func(s string) { t.Log(s) })
+			harness.DumpPluginLog(t)
+		}
+	})
+
+	harness.CreateNetwork(t, ctx, netName, "macvlan", map[string]string{
+		"vendor_class": harness.TestClassless249VendorClass,
+	})
+	id, _, _ := harness.RunContainer(t, ctx, netName, ctrName)
+
+	out := harness.ExecOutput(t, ctx, id, "ip", "route", "show")
+	if gw := routeGateway(t, out, harness.TestClassless249Route); gw != harness.TestClassless249RouteGW {
+		t.Errorf("route to %s via %q, want DHCP-pushed gateway %s — option 249 didn't reach the container:\n%s",
+			harness.TestClassless249Route, gw, harness.TestClassless249RouteGW, out)
+	}
+	if hasRoute(out, harness.TestClasslessRoute) {
+		t.Errorf("route to %s present for the 249 vendor class — the fixture sent option 121 as well:\n%s",
+			harness.TestClasslessRoute, out)
+	}
+}
