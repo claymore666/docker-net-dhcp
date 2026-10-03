@@ -194,7 +194,7 @@ func TestJoin_SetsTheV6GatewayFromTheHint(t *testing.T) {
 	hint := joinHint{GatewayIPv6: "fe80::1", RoutesIPv6: []*StaticRoute{
 		{Destination: "2001:db8::/64", RouteType: RouteTypeOnLink},
 	}}
-	p := &Plugin{}
+	p := onWaitingEngine(&Plugin{})
 	p.applyV6JoinHint(DHCPNetworkOptions{IPv6: true}, JoinRequest{}, hint, &res)
 	if res.GatewayIPv6 != "fe80::1" {
 		t.Fatalf("v6 gateway: got %q want fe80::1", res.GatewayIPv6)
@@ -209,7 +209,7 @@ func TestJoin_SkipRoutesKeepsTheV6Gateway(t *testing.T) {
 	hint := joinHint{GatewayIPv6: "fe80::1", RoutesIPv6: []*StaticRoute{
 		{Destination: "2001:db8::/64", RouteType: RouteTypeOnLink},
 	}}
-	p := &Plugin{}
+	p := onWaitingEngine(&Plugin{})
 	p.applyV6JoinHint(DHCPNetworkOptions{IPv6: true, SkipRoutes: true}, JoinRequest{}, hint, &res)
 	if res.GatewayIPv6 != "fe80::1" {
 		t.Fatalf("skip_routes took the gateway away: %q", res.GatewayIPv6)

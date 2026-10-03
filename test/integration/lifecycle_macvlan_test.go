@@ -53,6 +53,12 @@ func TestMain(m *testing.M) {
 		rc = code
 	}
 
+	memLine, memExceeded := harness.MemoryReport(os.Getenv("ITEST_HEAP_BOUND_MB"))
+	fmt.Fprintln(os.Stderr, memLine)
+	if memExceeded && rc == 0 {
+		rc = 1
+	}
+
 	if err := f.Teardown(); err != nil {
 		fmt.Fprintln(os.Stderr, "TEARDOWN:", err)
 	}

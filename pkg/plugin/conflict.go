@@ -45,6 +45,9 @@ func (p *Plugin) conflictWiring(o *dhcp.DHCPClientOptions, opts DHCPNetworkOptio
 	}
 	o.OnConflict = p.conflictReporter(networkID, endpointID, v6)
 	o.OnACDStats = p.addACDStats
+	// Every client built here, the one-shots too: an ACK discarded for lacking option 90 is counted while acquiring,
+	// before any lease is bound (#1119).
+	p.forcerenewWiring(o, networkID, endpointID)
 	return nil
 }
 

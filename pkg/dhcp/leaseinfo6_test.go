@@ -242,3 +242,54 @@ func TestInfoFromLease_ADeprecatedAddressWithNoValidDeadlineIsNotAPermanentOne(t
 		}
 	})
 }
+
+// An IA_TA address is rendered beside Addrs with its own lifetimes, never inside it, and Info.IP, the address Docker
+// reports, stays the stable one however the lists are ordered (#927).
+func TestInfoFromLease_TempAddrsRenderBesideTheStableOnesAndNeverBecomeTheReportedAddress(t *testing.T) {
+	now := time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC)
+	stable := netip.MustParsePrefix("fd00:6470::1000/64")
+	temp := netip.MustParsePrefix("fd00:6470::1:0:77/64")
+	expired := netip.MustParsePrefix("fd00:6470::1:0:78/64")
+
+	l := lease.Lease{
+		Addr:   stable,
+		Expire: now.Add(time.Hour),
+		Addrs:  []lease.Addr6{{Addr: stable, Valid: now.Add(time.Hour), Preferred: now.Add(30 * time.Minute)}},
+		TempAddrs: []lease.Addr6{
+			{Addr: expired, Valid: now.Add(-time.Second), Preferred: now.Add(-time.Minute)},
+			{Addr: temp, Valid: now.Add(15 * time.Minute), Preferred: now.Add(10 * time.Minute)},
+		},
+	}
+
+	for name, main := range map[string]netip.Prefix{
+		"no main prefix":                 {},
+		"a main prefix the temp is in":   netip.MustParsePrefix("fd00:6470::1:0:0/96"),
+		"a main prefix the stable is in": netip.MustParsePrefix("fd00:6470::/112"),
+	} {
+		info, _ := infoFromLease(l, proto.RouterObservation{}, now, main)
+		if info.IP != "fd00:6470::1000/64" {
+			t.Errorf("%s: Info.IP = %q, want the stable address: Docker is told this one", name, info.IP)
+		}
+		if len(info.Addrs) != 1 || info.Addrs[0].IP != "fd00:6470::1000/64" {
+			t.Errorf("%s: Info.Addrs = %+v, want the stable address alone", name, info.Addrs)
+		}
+		want := []V6Addr{{IP: "fd00:6470::1:0:77/64", ValidSeconds: 900, PreferredSeconds: 600}}
+		if len(info.TempAddrs) != 1 || info.TempAddrs[0] != want[0] {
+			t.Errorf("%s: Info.TempAddrs = %+v, want %+v (the expired one dropped, its own lifetimes)", name, info.TempAddrs, want)
+		}
+		if info.LeaseSeconds != 3600 || info.PreferredSeconds != 1800 {
+			t.Errorf("%s: the reported address got LeaseSeconds=%d PreferredSeconds=%d, want the stable address's 3600/1800",
+				name, info.LeaseSeconds, info.PreferredSeconds)
+		}
+	}
+}
+
+func TestInfoFromLease_NoTempAddrsLeavesTheFieldNil(t *testing.T) {
+	now := time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC)
+	a := netip.MustParsePrefix("fd00:6470::1000/64")
+	info, _ := infoFromLease(lease.Lease{Addr: a, Addrs: []lease.Addr6{{Addr: a, Valid: now.Add(time.Hour)}}},
+		proto.RouterObservation{}, now, netip.Prefix{})
+	if info.TempAddrs != nil {
+		t.Errorf("Info.TempAddrs = %+v on a lease with no IA_TA, want nil", info.TempAddrs)
+	}
+}

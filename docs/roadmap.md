@@ -48,10 +48,12 @@ below decide what is in a release; this page follows them.
 
 ### v2.4.0
 
-- [#1027], IPv6-Only Preferred, DHCPv4 option 108
 - [#1028], PREF64 from the Router Advertisement, the NAT64 prefix
 - [#1030], Microsoft classless static routes, option 249, where 121 is
-  absent
+  absent. The library half comes with the `dhcp-golib` v1.3.0 pin
+  ([#1157]): option 249 directly after 121 in the request list, and its
+  routes read when 121 is absent; what stays is the plugin's `[Join]` log
+  line naming the option and its test against a server that sends 249 alone
 - [#1031], DHCPv4 Rapid Commit
 - [#1119], DHCPv4 FORCERENEW with nonce authentication (RFC 3203,
   RFC 6704): the plugin's own log lines and health counters. The library
@@ -61,11 +63,19 @@ below decide what is in a release; this page follows them.
   statistics
 - [#1120], `user_class=`, the DHCPv4 User Class option 77 (RFC 3004)
 - [#1032], `ipv6_iid=stable-privacy`, the RFC 7217 interface identifier,
-  with modified EUI-64 kept as the default
-- [#1033], the DHCPv6 timezone options logged as the v4 ones are
-- [#1034], the vendor-specific options logged
-- [#1038], a network with no DHCPv6 server remembered for a bounded time,
-  so a SLAAC-only segment stops paying a full solicitation per attach
+  with modified EUI-64 kept as the default. The library half comes with the
+  `dhcp-golib` v1.4.0 pin ([#1177]): `Params6.IID`, off by default; what
+  stays is the plugin's option and the identifier inputs it passes
+- [#1033], the DHCPv6 timezone options logged as the v4 ones are. The
+  library half comes with the v1.4.0 pin ([#1177]): the Reply's options on
+  the lease
+- [#1034], the vendor-specific options logged. The DHCPv6 half's library
+  side comes with the v1.4.0 pin ([#1177]): option 17 on the lease
+- [#1038], an `ipv6_mode=auto` network remembers a silent DHCPv6 server
+  for `DHCPV6_ABSENCE_MEMORY` (default ten minutes, `0` turns it off):
+  further endpoints form their address from the advertised prefix without
+  soliciting, counted in `dhcpv6_absence_remembered`; a granted DHCPv6
+  address, removing the network or a restart clears it
 - [#926], DHCPv6 Rapid Commit, the two-message exchange
 - [#927], DHCPv6 temporary addresses (IA_TA)
 - [#214], DHCPv6 prefix delegation (IA_PD), designed first
@@ -242,6 +252,7 @@ read it before writing the PR.
 | It will not run its arm64 verification under qemu-user or binfmt | measured: the emulated plugin could not acquire a lease at all, and arm64 verification runs on real hardware | [#531] |
 | It will not backport security fixes | only the latest release is supported, and upgrading is one `docker plugin install` | [SECURITY.md](https://github.com/claymore666/docker-net-dhcp/blob/main/SECURITY.md) |
 | It will not carry AI-assistant attribution in its history | commits and PRs are signed by a person who stands behind them, and a CI check enforces it | n/a |
+| It will not ask for IPv6-Only Preferred (option 108) | an endpoint on a network with an IPv4 pool must hold an IPv4 address, which makes it an IPv4-requiring host, and RFC 8925 section 3.2 forbids such a host from asking | [#1027] |
 
 <details markdown="1">
 <summary>The reasoning behind the refusals</summary>
@@ -292,6 +303,15 @@ acquire a lease at all. The 2.0 client is a different program and has not
 been re-measured under emulation; the conclusion is unchanged either way,
 because arm64 verification runs on real hardware and there is nothing to
 be gained by finding out which syscall the emulator drops next.
+
+**IPv6-Only Preferred.** An endpoint on a network with an IPv4 pool must
+hold an IPv4 address: Docker's IPAM path refuses an answer with none, and
+the driver's own endpoint creation fails without one. That makes every
+DHCPv4 client of the plugin an IPv4-requiring host, and RFC 8925 section
+3.2 says such a host must not put option 108 in its parameter request
+list. The plugin sets nothing and has no option for it; the DHCP library
+implements the option for consumers whose endpoints can live on IPv6
+alone ([#1027]).
 
 </details>
 
@@ -363,6 +383,8 @@ project does, that review is where it gets corrected.
 [#1125]: https://github.com/claymore666/docker-net-dhcp/issues/1125
 [#1126]: https://github.com/claymore666/docker-net-dhcp/issues/1126
 [#1137]: https://github.com/claymore666/docker-net-dhcp/issues/1137
+[#1157]: https://github.com/claymore666/docker-net-dhcp/issues/1157
+[#1177]: https://github.com/claymore666/docker-net-dhcp/issues/1177
 [moby/moby#52866]: https://github.com/moby/moby/pull/52866
 [moby/moby#52870]: https://github.com/moby/moby/issues/52870
 [moby/moby#52871]: https://github.com/moby/moby/pull/52871

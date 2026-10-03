@@ -28,10 +28,20 @@ type v6Acquire struct {
 
 // acquireInitialV6 runs an endpoint's DHCPv6 one-shot on the site's shared base and returns the address, or "" when
 // the segment explains its absence (#868, #960).
-func (p *Plugin) acquireInitialV6(ctx context.Context, opts DHCPNetworkOptions, base dhcp.DHCPClientOptions, a v6Acquire) (string, error) {
-	if err := p.v6Wiring(&base, opts, a.identity6, a.recordID6, a.preferredV6, a.endpointID); err != nil {
+func (p *Plugin) acquireInitialV6(ctx context.Context, opts DHCPNetworkOptions, base dhcp.DHCPClientOptions, a v6Acquire) (_ string, err error) {
+	age, served := p.v6AbsenceServe(opts, a.networkID, a.endpointID)
+	if served {
+		// A failed CreateEndpoint gets no DeleteEndpoint, so the served mark goes here (#1038).
+		defer func() {
+			if err != nil {
+				p.v6AbsenceServed.Delete(a.endpointID)
+			}
+		}()
+	}
+	if err := p.v6Wiring(&base, opts, a.identity6, a.recordID6, a.preferredV6, a.endpointID, a.networkID); err != nil {
 		return "", err
 	}
+	p.v6AbsenceRecord(&base, a.networkID)
 	if err := p.conflictWiring(&base, opts, roleAcquire, a.networkID, a.endpointID, true); err != nil {
 		return "", err
 	}
@@ -47,9 +57,13 @@ func (p *Plugin) acquireInitialV6(ctx context.Context, opts DHCPNetworkOptions, 
 		}
 		return "", fmt.Errorf("failed to get initial IPv6 address via DHCPv6: %w", err)
 	}
+	p.v6AbsenceLeaseSeen(a.networkID, info)
 	ip, err := netlink.ParseAddr(info.IP)
 	if err != nil {
 		return "", fmt.Errorf("failed to parse initial IPv6 address: %w", err)
+	}
+	if served {
+		p.v6AbsenceFormed(opts, a.networkID, a.endpointID, age)
 	}
 
 	p.updateJoinHint(a.endpointID, func(hint *joinHint) {

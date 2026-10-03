@@ -8,14 +8,14 @@ package harness
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
-	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
+	"unsafe"
 
 	docker "github.com/docker/docker/client"
 )
@@ -114,37 +114,57 @@ func WaitPluginHealthFor(t *testing.T, ctx context.Context, cli *docker.Client, 
 }
 
 // ReadWholePluginLog returns the plugin's whole log, which spans the suite; most callers want MarkPluginLog (#933).
+// A log over PluginLogWholeMax fails the test: a whole-log assertion over a cut log would pass on missing evidence.
 func ReadWholePluginLog(t *testing.T, ctx context.Context) string {
 	t.Helper()
 	_, data, err := PluginLog(ctx)
+	if errors.Is(err, errPluginLogOverCap) {
+		t.Fatalf("ReadWholePluginLog: %v", err)
+	}
 	if err != nil {
 		t.Logf("ReadWholePluginLog: %v", err)
 		return ""
 	}
-	return string(data)
+	// The log is up to PluginLogWholeMax and is not written to again, so the string shares its bytes (#1168).
+	return unsafe.String(unsafe.SliceData(data), len(data))
 }
 
 // MarkPluginLog returns the plugin log's current size for ReadPluginLogSince, failing the test if it cannot be read.
 func MarkPluginLog(t *testing.T, ctx context.Context) int64 {
 	t.Helper()
-	path, data, err := PluginLog(ctx)
-	if err != nil {
-		t.Fatalf("marking the plugin log (%s): %v\n"+
-			"Without a mark the window is the whole log, and an assertion over the whole log "+
-			"is satisfied by another test's lines.", path, err)
+	path, err := pluginLogPath(ctx)
+	if err == nil {
+		var size int64
+		if size, err = pluginLogSizeFile(path); err == nil {
+			return size
+		}
 	}
-	return int64(len(data))
+	t.Fatalf("marking the plugin log (%s): %v\n"+
+		"Without a mark the window is the whole log, and an assertion over the whole log "+
+		"is satisfied by another test's lines.", path, err)
+	return 0
+}
+
+// ReadPluginLogWindow returns the plugin log's path and what was written after mark, at most PluginLogWindowMax of it;
+// a window cut there ends with a line saying so. An unreadable log is an error, a mark past the end an empty window (#1168).
+func ReadPluginLogWindow(ctx context.Context, mark int64) (string, []byte, error) {
+	path, err := pluginLogPath(ctx)
+	if err != nil {
+		return "", nil, err
+	}
+	data, err := readPluginLogWindowFile(path, mark)
+	return path, data, err
 }
 
 // ReadPluginLogSince returns the plugin log written after mark, empty when the log cannot be read.
 func ReadPluginLogSince(t *testing.T, ctx context.Context, mark int64) string {
 	t.Helper()
-	_, data, err := PluginLog(ctx)
+	_, data, err := ReadPluginLogWindow(ctx, mark)
 	if err != nil {
 		t.Logf("ReadPluginLogSince: %v", err)
 		return ""
 	}
-	return string(PluginLogWindow(data, mark))
+	return string(data)
 }
 
 // AwaitPluginLogSince polls the window after mark until want accepts it and returns the last read; a single read races
@@ -167,58 +187,70 @@ func AwaitPluginLogSince(t *testing.T, ctx context.Context, mark int64, budget t
 }
 
 // CountPluginLogLines returns how many plugin log lines contain every one of subs, for endpoint attribution (#278).
+// It streams the file, so a log of any size costs one buffer.
 func CountPluginLogLines(t *testing.T, ctx context.Context, subs ...string) int {
 	t.Helper()
 	if len(subs) == 0 {
 		return 0
 	}
-	n := 0
-	for _, line := range strings.Split(ReadWholePluginLog(t, ctx), "\n") {
-		matched := true
-		for _, sub := range subs {
-			if !strings.Contains(line, sub) {
-				matched = false
-				break
-			}
-		}
-		if matched {
-			n++
-		}
+	path, err := pluginLogPath(ctx)
+	if err != nil {
+		t.Logf("CountPluginLogLines: %v", err)
+		return 0
+	}
+	n, err := countPluginLogLinesFile(path, subs...)
+	if err != nil {
+		t.Logf("CountPluginLogLines: %v", err)
 	}
 	return n
 }
 
-// DumpPluginLog logs the plugin's /var/log/net-dhcp.log into t.Log, best-effort.
+// DumpPluginLog logs the last PluginLogDumpMax bytes of the plugin's /var/log/net-dhcp.log into t.Log, best-effort.
 func DumpPluginLog(t *testing.T) {
 	t.Helper()
 	// Cleanup runs after the test's deferred cancel, so it needs a fresh context.
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	logPath, data, err := PluginLog(ctx)
+	logPath, err := pluginLogPath(ctx)
 	if err != nil {
 		t.Logf("DumpPluginLog: %v", err)
 		return
 	}
-	t.Logf("--- net-dhcp plugin log (%s) ---\n%s", logPath, data)
+	tail, size, err := readPluginLogTailFile(logPath, PluginLogDumpMax)
+	if err != nil {
+		t.Logf("DumpPluginLog: %v", err)
+		return
+	}
+	t.Log(FormatPluginLogDump(logPath, tail, size))
 }
 
-// PluginLog returns the plugin's on-disk log and its path, for TestMain's health floor which has no *testing.T (#385).
-func PluginLog(ctx context.Context) (string, []byte, error) {
+// pluginLogPath is where the plugin's log sits on the host, found through the daemon.
+func pluginLogPath(ctx context.Context) (string, error) {
 	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
 	if err != nil {
-		return "", nil, fmt.Errorf("docker client: %w", err)
+		return "", fmt.Errorf("docker client: %w", err)
 	}
 	defer cli.Close()
 
 	p, _, err := cli.PluginInspectWithRaw(ctx, PluginRef)
 	if err != nil {
-		return "", nil, fmt.Errorf("PluginInspect: %w", err)
+		return "", fmt.Errorf("PluginInspect: %w", err)
 	}
-	logPath := filepath.Join(dockerDataRoot(ctx, cli), "plugins", p.ID, "rootfs/var/log/net-dhcp.log")
-	data, err := os.ReadFile(logPath)
+	return filepath.Join(dockerDataRoot(ctx, cli), "plugins", p.ID, "rootfs/var/log/net-dhcp.log"), nil
+}
+
+// PluginLog returns the plugin's on-disk log and its path, for TestMain's health floor which has no *testing.T (#385).
+// It is the one read of the whole run: its censuses cover every line, so a log over PluginLogWholeMax is an error
+// and not a short read (#1168).
+func PluginLog(ctx context.Context) (string, []byte, error) {
+	logPath, err := pluginLogPath(ctx)
 	if err != nil {
-		return logPath, nil, fmt.Errorf("read %s: %w", logPath, err)
+		return "", nil, err
+	}
+	data, err := readWholeCapped(logPath, PluginLogWholeMax)
+	if err != nil {
+		return logPath, nil, err
 	}
 	return logPath, data, nil
 }
@@ -226,11 +258,15 @@ func PluginLog(ctx context.Context) (string, []byte, error) {
 // PluginLogSize returns the plugin log's size as a baseline offset, or 0 when unreadable. The counters reset with the
 // plugin process and the log does not, so a counter-only floor let three failed Joins go green (#385, #406).
 func PluginLogSize(ctx context.Context) int64 {
-	_, data, err := PluginLog(ctx)
+	path, err := pluginLogPath(ctx)
 	if err != nil {
 		return 0
 	}
-	return int64(len(data))
+	size, err := pluginLogSizeFile(path)
+	if err != nil {
+		return 0
+	}
+	return size
 }
 
 // WaitPluginEnabled polls PluginInspect until Enabled matches want or budget elapses.

@@ -233,9 +233,11 @@ OPTION_CATALOGUE='mode|shape|the null-bridge, null-macvlan, null-ipvlan and plug
 bridge|shape|the null-bridge shape step
 parent|shape|the null-macvlan, null-ipvlan and plugin-macvlan shape steps, and the null-bridge-own shape step that makes its bridge from parent
 gateway|step|container default route via the named address; control without it: via the server router
-ipv6|step|fresh DHCPv6 reply in the server log for the address the container holds, with --ipam-driver null and with this plugin as IPAM driver, where Docker reports that address; ipv6=true with ipv6_mode=off refused; --ipv6 with this plugin as IPAM driver refused
-ipv6_mode|step|dhcp: fresh DHCPv6 reply for the held address; slaac: fresh router advertisement, the container holds and Docker reports an address in the ra-only prefix; control off: no global address; bad value refused
+ipv6|step|fresh DHCPv6 reply in the server log for the address the container holds and an IPv6 default route via the router link-local address, with --ipam-driver null and with this plugin as IPAM driver, where Docker reports that address; ipv6=true with ipv6_mode=off refused; --ipv6 with this plugin as IPAM driver refused
+ipv6_mode|step|dhcp: fresh DHCPv6 reply for the held address; slaac: fresh router advertisement, the container holds and Docker reports an address in the ra-only prefix; both: an IPv6 default route via the router link-local address; control off: no global address; bad value refused
 ipv6_main_prefix|step|two advertised prefixes: Docker reports the address in the named prefix, both ways round; refused with ipv6_mode=dhcp
+ipv6_temporary|step|a range 2^32 + 1 wide: the container holds two addresses in the prefix, Docker reports one of them, the server logged a DHCPv6 reply for each; control without it: one address; refused with ipv6_mode=slaac and off
+ipv6_iid|step|ipv6_mode=slaac on a container with a fixed MAC: the held address is not the modified EUI-64 of the MAC and Docker reports it; control without it: the EUI-64 address; refused with ipv6_mode=dhcp and off, and with a value that is not a mode
 ipv6_auto_strict|step|managed-flag advertisement with a silent DHCPv6 server: true fails docker run, false holds an address in the autonomous prefix
 lease_timeout|step|server-less bridge: docker run fails within the short timeout and not within the long one; a value under the probe window refused
 conflict_check|step|server pins the MAC to an address a veth holds: wait logs the DHCPDECLINE before docker run returns, async runs on the address first, off sends no DHCPDECLINE
@@ -247,6 +249,7 @@ mtu|step|macvlan container link at mtu=1450 on a 1500 parent; 67, a value above 
 client_id|step|client-id in the server lease file equals the option; control differs
 vendor_class|step|fresh vendor class line in the server log names the option; control the default
 user_class|step|fresh user class line in the server log names the option; control has none
+rapid_commit|step|server log shows DISCOVER then ACK and no OFFER for the client when true, and on the IPv6 segment a DHCPv6 REPLY and no ADVERTISE for the client DUID; the controls are offered and advertised
 validate_dhcp|step|server-less parent refused, served parent accepted, false on the server-less parent accepted, bridge mode refused
 dhcp_servers|step|second server on the segment: the allowed server ACKs the address, both ways round
 dhcp_deny_servers|step|second server on the segment: the other server ACKs the address, both ways round
@@ -337,6 +340,68 @@ derive_option_steps() {
         for (i = 1; i <= n; i++) { if (d[i] == "") continue; if (d[i] in cat) print cat[d[i]]; else print d[i] "||" }
         for (j = 1; j <= m; j++) if (!(order[j] in isdoc)) print cat[order[j]]
     }'
+}
+
+# drive_options CATALOGUE runs every catalogue line. The lines are read
+# from descriptor 3: `di` is `docker exec -i` and drains whatever stdin it
+# inherits, so with the catalogue on stdin the loop ended after
+# macvlan_mode and 29 of 37 entries were never driven while the verdict
+# counted the list (#1141). OPTIONS_DRIVEN counts the entries completed,
+# not-driven lines excluded, so such a line shows as a short count.
+drive_options() {
+    local opt kind obs fn s lopt first=""
+    OPTIONS_DRIVEN=0
+    OPTIONS_LISTED=0
+    OPTIONS_SEEN=$'\n'
+    while IFS='|' read -r -u 3 opt kind obs; do
+        [ -n "$opt" ] || continue
+        STEP="option-$opt"
+        fn="opt_$(printf '%s' "$opt" | tr -c 'a-zA-Z0-9' '_')"
+        case "$kind" in
+            shape)
+                case "$opt" in
+                    mode)   want_shapes="bridge macvlan ipvlan" ;;
+                    bridge) want_shapes="bridge" ;;
+                    parent) want_shapes="macvlan ipvlan bridge-own" ;;
+                    *) fail "the catalogue calls $opt a shape and no shape step drives it" ;;
+                esac
+                for s in $want_shapes; do
+                    case "$DRIVEN" in
+                        *"-$s
+"*) ;;
+                        *) fail "$opt is covered by the shape steps and no $s shape was driven" ;;
+                    esac
+                done ;;
+            step|measure)
+                declare -F "$fn" >/dev/null || fail "$opt is a documented $kind and this cell has no $fn"
+                say "== option $opt ($kind)"
+                "$fn" ;;
+            not-driven)
+                say "== option $opt not driven: $obs"
+                OPTIONS_SEEN="$OPTIONS_SEEN$opt"$'\n'
+                continue ;;
+            '') fail "$SHAPES_DOC documents $opt and the option catalogue has no line for it" ;;
+            *) fail "the option catalogue gives $opt the unknown kind '$kind'" ;;
+        esac
+        OPTIONS_DRIVEN=$((OPTIONS_DRIVEN + 1))
+        OPTIONS_SEEN="$OPTIONS_SEEN$opt"$'\n'
+    done 3<<EOF
+$1
+EOF
+    while IFS='|' read -r -u 4 lopt _; do
+        [ -n "$lopt" ] || continue
+        OPTIONS_LISTED=$((OPTIONS_LISTED + 1))
+        case "$OPTIONS_SEEN" in
+            *$'\n'"$lopt"$'\n'*) ;;
+            *) [ -n "$first" ] || first="$lopt" ;;
+        esac
+    done 4<<EOF
+$1
+EOF
+    if [ -n "$first" ]; then
+        STEP="option-$first"
+        fail "option $first is in the catalogue and was never driven ($OPTIONS_DRIVEN of $OPTIONS_LISTED driven)"
+    fi
 }
 
 case "${1:-}" in
@@ -445,6 +510,9 @@ fail() {
     plugin_log || true
     say "--- dnsmasq log (tail) ---"
     d sh -c "tail -40 $DNSMASQ_LOG" 2>/dev/null || true
+    case "$detail" in
+        *"IPv6 gateway"*|*"could not be found"*) v6_diag ;;
+    esac
     verdict fail "$detail"
     exit 1
 }
@@ -653,7 +721,7 @@ dnsmasq --interface=$SEGMENT --bind-interfaces --except-interface=lo \\
   --dhcp-option=tag:emopt,option:dns-server,192.168.99.53 \\
   --dhcp-option=tag:emopt,option:classless-static-route,10.77.0.0/16,192.168.99.1 \\
   --dhcp-option=tag:emmtu,option:mtu,400 \\
-  --log-facility=$DNSMASQ_LOG --port=0 \\
+  --dhcp-rapid-commit --log-facility=$DNSMASQ_LOG --port=0 \\
   --dhcp-leasefile=$FIXTURE_DIR/leases --pid-file=$FIXTURE_DIR/dnsmasq.pid
 EOF
 
@@ -868,9 +936,9 @@ opt_refused() {
 }
 
 opt_run() {
-    local ctr="$1" net="$2"; shift 2
-    d docker run -d --name "$ctr" --network "$net" "$@" "$TEST_IMAGE" sleep 600 >/dev/null \
-        || fail "the container did not start on $net ($*)"
+    local ctr="$1" net="$2" out; shift 2
+    out="$(d docker run -d --name "$ctr" --network "$net" "$@" "$TEST_IMAGE" sleep 600 2>&1)" \
+        || fail "the container did not start on $net ($*): $(printf '%s' "$out" | tail -1)"
 }
 
 opt_down() {
@@ -932,6 +1000,120 @@ v6_server() {
         || fail "the IPv6 server did not start with $*"
 }
 
+
+# v6_diag prints what a failed IPv6 start leaves to read: the segment's
+# addresses and routes, the kernel's tail, and the engine's and the
+# plugin's lines about the gateway (#1149).
+v6_diag() {
+    say "--- IPv6 start diagnostic (#1149) ---"
+    d ip -6 addr show dev "$V6_BRIDGE" 2>&1 || true
+    d ip -6 route show table all 2>&1 | grep -v '^local\|^multicast\|^anycast' || true
+    d sh -c 'dmesg 2>/dev/null | tail -20' || true
+    docker logs --tail 400 "$CONTAINER" 2>&1 | grep -i 'gateway\|could not be found' | tail -10 || true
+    d sh -c 'for f in /var/lib/docker/plugins/*/rootfs/var/log/net-dhcp.log; do
+        [ -f "$f" ] && grep -i "gateway\|Router Advertisement\|sandbox" "$f" | tail -15
+    done' 2>/dev/null || true
+}
+
+# v6_race_probe replays libnetwork's order before 28 on a bare netns: a
+# veth bridged to the IPv6 segment is moved in, given its address, set
+# up and the router's link-local looked up at once, as programGateway
+# does with no wait for the link to run (#1149). It prints the count and
+# the first failure's state taken in the same ip process.
+v6_race_probe() {
+    local n="$1"
+    di sh -s <<EOF
+ll="\$(ip -6 addr show dev $V6_BRIDGE scope link | awk '\$1 == "inet6" { sub(/\/.*/, "", \$2); print \$2; exit }')"
+ip netns add em-race
+fails=0
+first=""
+for i in \$(seq 1 $n); do
+    ip link add em-rh type veth peer name em-rc
+    ip link set em-rh master $V6_BRIDGE
+    ip link set em-rh up
+    ip link set em-rc netns em-race
+    ip -n em-race addr add ${V6_PREFIX_A}f0/64 dev em-rc nodad
+    out="\$(printf 'link set em-rc up\nroute get %s\naddr show dev em-rc\nroute show table all dev em-rc\nlink show em-rc\n' "\$ll" \
+        | ip -n em-race -6 -force -batch - 2>&1)"
+    case "\$out" in
+        *nreachable*)
+            fails=\$((fails + 1))
+            if [ -z "\$first" ]; then first=1; echo "first failure, iteration \$i:"; echo "\$out"; fi ;;
+    esac
+    ip link del em-rh
+done
+ip netns del em-race
+echo "ENGINE_MATRIX_V6RACE router=\$ll lookups=$n unreachable=\$fails"
+EOF
+}
+
+# v6_start_rate starts and removes a container on one IPv6 network N
+# times and reports how many starts the engine refused, how many Joins
+# handed the engine the IPv6 gateway, how many containers had their
+# default route via the router's link-local when the start returned, how
+# long each start took and how long until the route was there; a refused
+# start, a missing route or a second link fails the cell (#1149).
+v6_start_rate() {
+    local n="$1" i j out fails=0 routed=0 joined=0 atstart=0 extra=0 links g0 g1 t0 t waits="" runs="" msg="" major
+    v6_server "--dhcp-range=${V6_PREFIX_A}10,${V6_PREFIX_A}99,$LEASE_TIME --enable-ra"
+    opt_net em-o-v6 -o bridge="$V6_BRIDGE" -o ipv6=true
+    for i in $(seq 1 "$n"); do
+        g0="$(join_gw6_lines)"
+        t0="$(date +%s%N)"
+        if ! out="$(d docker run -d --name em-c-v6 --network em-o-v6 "$TEST_IMAGE" sleep 600 2>&1)"; then
+            fails=$((fails + 1))
+            [ -n "$msg" ] || msg="$(printf '%s\n' "$out" | tail -1)"
+            d docker rm -f em-c-v6 >/dev/null 2>&1
+            continue
+        fi
+        runs="$runs $(( ($(date +%s%N) - t0) / 1000000 ))"
+        g1="$(join_gw6_lines)"
+        [ "$g1" -gt "$g0" ] && joined=$((joined + 1))
+        t=""
+        for j in $(seq 1 150); do
+            if d docker exec em-c-v6 ip -6 route 2>/dev/null | grep '^default via fe80:' >/dev/null; then
+                t="$(( ($(date +%s%N) - t0) / 1000000 ))"
+                [ "$j" = 1 ] && atstart=$((atstart + 1))
+                break
+            fi
+            sleep 0.1
+        done
+        if [ -n "$t" ]; then routed=$((routed + 1)); waits="$waits $t"; fi
+        links="$(d docker exec em-c-v6 ip -o link show 2>/dev/null | grep -vc ': lo:')"
+        [ "$links" = 1 ] || extra=$((extra + 1))
+        d docker rm -f em-c-v6 >/dev/null 2>&1
+    done
+    opt_down em-o-v6
+    [ -z "$msg" ] || say "first refused start: $msg"
+    say "ENGINE_MATRIX_V6RATE tag=$ENGINE_TAG engine=$ENGINE_VERSION starts=$n refused=$fails join_gateway=$joined route_at_start=$atstart default_route=$routed extra_links=$extra ms_run=[${runs# }] ms_to_route=[${waits# }]"
+    [ "$fails" = 0 ] || fail "the engine refused $fails of $n starts on em-o-v6: $msg"
+    [ "$routed" = "$n" ] || fail "$((n - routed)) of $n containers on em-o-v6 had no IPv6 default route via the router's link-local"
+    [ "$extra" = 0 ] || fail "$extra of $n containers on em-o-v6 had a second link besides eth0"
+    major="${ENGINE_VERSION%%.*}"
+    case "$major" in ''|*[!0-9]*) fail "engine version '$ENGINE_VERSION' has no numeric major" ;; esac
+    [ "$major" -ge 28 ] || n=0
+    [ "$joined" = "$n" ] || fail "Join handed the engine the IPv6 gateway in $joined starts on $ENGINE_VERSION, want $n"
+}
+
+# join_gw6_lines counts the plugin's log lines saying Join handed the
+# engine the IPv6 gateway (#1149).
+join_gw6_lines() {
+    d sh -c 'cat /var/lib/docker/plugins/*/rootfs/var/log/net-dhcp.log 2>/dev/null | grep -c "Setting IPv6 gateway"' | tr -dc '0-9'
+}
+
+# wait_v6_default C LABEL fails unless container C gets an IPv6 default
+# route via the router's link-local; below engine 28 the plugin installs
+# it, on every IPv6 mode (#1149).
+wait_v6_default() {
+    local j
+    for j in $(seq 1 150); do
+        if d docker exec "$1" ip -6 route 2>/dev/null | grep '^default via fe80:' >/dev/null; then
+            return 0
+        fi
+        sleep 0.1
+    done
+    fail "$2: the container has no IPv6 default route via the router's link-local"
+}
 second_server() {
     case "$1" in
         up) d ip netns exec em-ns2 dnsmasq --interface=em-s2 --bind-interfaces --except-interface=lo \
@@ -965,6 +1147,7 @@ v6_dhcp_lease() {
     wait_v6 em-c-v6 "$V6_PREFIX_A"
     fresh_wait "$V6_LOG" "$m" "DHCPREPLY($V6_BRIDGE) $V6 " \
         || fail "$*: the container holds $V6 and the server logged no DHCPv6 reply for it"
+    wait_v6_default em-c-v6 "$*"
     opt_down em-o-v6 em-c-v6
 }
 
@@ -1009,6 +1192,7 @@ opt_ipv6_mode() {
     wait_v6 em-c-v6 "$V6_PREFIX_A"
     addr="$(inspect_v6 em-c-v6 em-o-v6)"
     [ "$addr" = "$V6" ] || fail "ipv6_mode=slaac: the container holds $V6 and Docker reports '$addr'"
+    wait_v6_default em-c-v6 "ipv6_mode=slaac"
     fresh_wait "$V6_LOG" "$m" "RTR-ADVERT($V6_BRIDGE)" \
         || fail "ipv6_mode=slaac: the server logged no router advertisement during the step"
     opt_down em-o-v6 em-c-v6
@@ -1023,6 +1207,32 @@ opt_ipv6_mode() {
         || fail "control ipv6_mode=off: the container formed an address in $V6_PREFIX_A by itself"
     opt_down em-o-v6 em-c-v6
     opt_refused "is not one of" -o bridge="$V6_BRIDGE" -o ipv6_mode=bogus
+}
+
+# The MAC is fixed so the modified EUI-64 identifier it would form is known: 02:..:e0:11 is ::ff:fe00:e011 (#1032).
+opt_ipv6_iid() {
+    local got
+    v6_server "--dhcp-range=$V6_PREFIX_A,ra-only,$LEASE_TIME --enable-ra"
+    opt_net em-o-v6 -o bridge="$V6_BRIDGE" -o ipv6_mode=slaac -o ipv6_iid=stable-privacy
+    opt_run em-c-v6 em-o-v6 --mac-address 02:00:00:00:e0:11
+    wait_v6 em-c-v6 "$V6_PREFIX_A"
+    case "$V6" in
+        *ff:fe00:e011) fail "ipv6_iid=stable-privacy: the container holds $V6, the modified EUI-64 of its MAC" ;;
+    esac
+    got="$(inspect_v6 em-c-v6 em-o-v6)"
+    [ "$got" = "$V6" ] || fail "ipv6_iid=stable-privacy: the container holds $V6 and Docker reports '$got'"
+    opt_down em-o-v6 em-c-v6
+    opt_net em-o-v6 -o bridge="$V6_BRIDGE" -o ipv6_mode=slaac
+    opt_run em-c-v6 em-o-v6 --mac-address 02:00:00:00:e0:11
+    wait_v6 em-c-v6 "$V6_PREFIX_A"
+    case "$V6" in
+        *ff:fe00:e011) ;;
+        *) fail "control without ipv6_iid: the container holds $V6, not the modified EUI-64 of its MAC" ;;
+    esac
+    opt_down em-o-v6 em-c-v6
+    opt_refused "ipv6_iid" -o bridge="$V6_BRIDGE" -o ipv6_mode=dhcp -o ipv6_iid=stable-privacy
+    opt_refused "ipv6_iid" -o bridge="$V6_BRIDGE" -o ipv6_mode=off -o ipv6_iid=stable-privacy
+    opt_refused "ipv6_iid" -o bridge="$V6_BRIDGE" -o ipv6_mode=slaac -o ipv6_iid=bogus
 }
 
 opt_ipv6_main_prefix() {
@@ -1040,6 +1250,41 @@ opt_ipv6_main_prefix() {
         opt_down em-o-v6 em-c-v6
     done
     opt_refused "ipv6_main_prefix" -o bridge="$V6_BRIDGE" -o ipv6_mode=dhcp -o ipv6_main_prefix="$V6_PREFIX_B/64"
+}
+
+# dnsmasq draws the stable and the temporary address from one range at a random start, so a range 2^32 + 1 wide makes
+# two draws collide about once in 4e9 runs, against 1 in 138 on the 10 to 99 pool above (#927).
+opt_ipv6_temporary() {
+    local _ m a n held got
+    v6_server "--dhcp-range=${V6_PREFIX_A}10,${V6_PREFIX_A}1:0:10,$LEASE_TIME --enable-ra"
+    m="$(log_lines "$V6_LOG")"
+    opt_net em-o-v6 -o bridge="$V6_BRIDGE" -o ipv6_mode=dhcp -o ipv6_temporary=true
+    opt_run em-c-v6 em-o-v6
+    wait_v6 em-c-v6 "$V6_PREFIX_A"
+    for _ in $(seq 1 30); do
+        held="$(d docker exec em-c-v6 ip -6 addr 2>/dev/null \
+            | awk -v P="$V6_PREFIX_A" '$1 == "inet6" && index($2, P) == 1 { sub(/\/.*/, "", $2); print $2 }')"
+        n="$(printf '%s\n' "$held" | grep -c .)"
+        [ "$n" -ge 2 ] && break
+        sleep 1
+    done
+    [ "$n" -eq 2 ] || fail "ipv6_temporary=true: the container holds $n address(es) in $V6_PREFIX_A, want the stable and the temporary one: $held"
+    got="$(inspect_v6 em-c-v6 em-o-v6)"
+    printf '%s\n' "$held" | grep -x "$got" >/dev/null || fail "ipv6_temporary=true: Docker reports '$got', which the container does not hold: $held"
+    for a in $held; do
+        fresh_wait "$V6_LOG" "$m" "DHCPREPLY($V6_BRIDGE) $a " \
+            || fail "ipv6_temporary=true: the container holds $a and the server logged no DHCPv6 reply for it"
+    done
+    opt_down em-o-v6 em-c-v6
+    opt_net em-o-v6 -o bridge="$V6_BRIDGE" -o ipv6_mode=dhcp
+    opt_run em-c-v6 em-o-v6
+    wait_v6 em-c-v6 "$V6_PREFIX_A"
+    sleep 3
+    n="$(d docker exec em-c-v6 ip -6 addr 2>/dev/null | awk -v P="$V6_PREFIX_A" '$1 == "inet6" && index($2, P) == 1' | grep -c .)"
+    [ "$n" -eq 1 ] || fail "control without ipv6_temporary: the container holds $n address(es) in $V6_PREFIX_A, want one"
+    opt_down em-o-v6 em-c-v6
+    opt_refused "ipv6_temporary" -o bridge="$V6_BRIDGE" -o ipv6_mode=slaac -o ipv6_temporary=true
+    opt_refused "ipv6_temporary" -o bridge="$V6_BRIDGE" -o ipv6_mode=off -o ipv6_temporary=true
 }
 
 # The managed flag with a server that ignores every DHCPv6 message stands
@@ -1412,7 +1657,7 @@ identity_pair() {
     a="$(log_lines "$AUDIT_LOG")"
     m="$(log_lines "$DNSMASQ_LOG")"
     opt_net em-o-id -o bridge="$SEGMENT" -o client_id=em-cid-1 -o vendor_class=em-vc-1 -o user_class=em-uc-1 \
-        -o register_dns=true -o audit_log=true
+        -o rapid_commit=true -o register_dns=true -o audit_log=true
     opt_run em-c-id em-o-id --mac-address 02:00:00:00:e3:01 --hostname em-host-1
     wait_v4 em-c-id
     ID_ON_ADDR="$V4"
@@ -1420,6 +1665,7 @@ identity_pair() {
     fresh_has "$DNSMASQ_LOG" "$m" "DHCPACK($SEGMENT) $V4 02:00:00:00:e3:01" && ID_ON_MAC=1 || ID_ON_MAC=0
     fresh_has "$DNSMASQ_LOG" "$m" "vendor class: em-vc-1" && ID_ON_VC=1 || ID_ON_VC=0
     fresh_has "$DNSMASQ_LOG" "$m" "user class: em-uc-1" && ID_ON_UC=1 || ID_ON_UC=0
+    fresh_has "$DNSMASQ_LOG" "$m" "DHCPOFFER($SEGMENT) $V4 02:00:00:00:e3:01" && ID_ON_OFFER=1 || ID_ON_OFFER=0
     fresh_has "$DNSMASQ_LOG" "$m" "option: 81 " && ID_ON_FQDN=1 || ID_ON_FQDN=0
     ID_ON_CID="$(d awk '$2 == "02:00:00:00:e3:01" { print $5 }' "$FIXTURE_DIR/leases" | tr -d '\r')"
     fresh_has "$AUDIT_LOG" "$a" "\"ip\":\"$V4\"" && fresh_has "$AUDIT_LOG" "$a" '"kind":"bound"' \
@@ -1435,6 +1681,7 @@ identity_pair() {
         || fail "control: the server never logged the name em-host-2, so the absence checks below would prove nothing"
     fresh_has "$DNSMASQ_LOG" "$m" "vendor class: docker-net-dhcp" && ID_OFF_VC=1 || ID_OFF_VC=0
     fresh_has "$DNSMASQ_LOG" "$m" "user class:" && ID_OFF_UC=1 || ID_OFF_UC=0
+    fresh_has "$DNSMASQ_LOG" "$m" "DHCPOFFER($SEGMENT) $V4 02:00:00:00:e3:02" && ID_OFF_OFFER=1 || ID_OFF_OFFER=0
     fresh_has "$DNSMASQ_LOG" "$m" "option: 81 " && ID_OFF_FQDN=1 || ID_OFF_FQDN=0
     ID_OFF_CID="$(d awk '$2 == "02:00:00:00:e3:02" { print $5 }' "$FIXTURE_DIR/leases" | tr -d '\r')"
     ID_OFF_AUDIT="$(( $(log_lines "$AUDIT_LOG") - a ))"
@@ -1461,6 +1708,47 @@ opt_user_class() {
     identity_pair
     [ "$ID_ON_UC" = 1 ] || fail "user_class=em-uc-1: no fresh 'user class: em-uc-1' in the server log"
     [ "$ID_OFF_UC" = 0 ] || fail "control: a fresh 'user class' line in the server log without the option"
+}
+
+# fresh_kind_for LOG FROM KIND DUID: a line after line FROM names both KIND and the client DUID; both travel as the
+# inner shell's arguments, so no quoting is needed (#926).
+fresh_kind_for() {
+    d sh -c "tail -n +$(( $2 + 1 )) $1 | grep -F -- \"\$0\" | grep -F -q -- \"\$1\"" "$3" "$4"
+}
+
+# Option 80 in the DISCOVER makes dnsmasq (--dhcp-rapid-commit) answer with the ACK, so the log has no OFFER for the
+# client; the control, on the same server, is offered (#1031). The IPv6 half: option 14 in the Solicit makes dnsmasq
+# answer with the Reply and log no ADVERTISE for the client's DUID (DUID-LL of the pinned MAC); it has no DHCPv6 switch,
+# so the control, on the same server, is advertised (#926).
+opt_rapid_commit() {
+    local m duid_on="00:03:00:01:02:00:00:00:e6:01" duid_off="00:03:00:01:02:00:00:00:e6:02"
+    identity_pair
+    [ "$ID_ON_MAC" = 1 ] || fail "rapid_commit=true: the server logged no DHCPACK for the client"
+    [ "$ID_ON_OFFER" = 0 ] || fail "rapid_commit=true: the server logged a DHCPOFFER, so the DISCOVER carried no option 80"
+    [ "$ID_OFF_OFFER" = 1 ] || fail "control: no DHCPOFFER in the server log without the option, so the absence above proves nothing"
+
+    v6_server "--dhcp-range=${V6_PREFIX_A}10,${V6_PREFIX_A}99,$LEASE_TIME --enable-ra"
+    m="$(log_lines "$V6_LOG")"
+    opt_net em-o-v6 -o bridge="$V6_BRIDGE" -o ipv6_mode=dhcp -o rapid_commit=true
+    opt_run em-c-v6 em-o-v6 --mac-address 02:00:00:00:e6:01
+    wait_v6 em-c-v6 "$V6_PREFIX_A"
+    fresh_wait "$V6_LOG" "$m" "DHCPREPLY($V6_BRIDGE) $V6 " \
+        || fail "rapid_commit=true: the container holds $V6 and the server logged no DHCPv6 reply for it"
+    fresh_kind_for "$V6_LOG" "$m" "DHCPSOLICIT(" "$duid_on" \
+        || fail "rapid_commit=true: the server logged no DHCPSOLICIT for $duid_on"
+    ! fresh_kind_for "$V6_LOG" "$m" "DHCPADVERTISE(" "$duid_on" \
+        || fail "rapid_commit=true: the server logged a DHCPADVERTISE for $duid_on, so the Solicit carried no option 14"
+    opt_down em-o-v6 em-c-v6
+
+    m="$(log_lines "$V6_LOG")"
+    opt_net em-o-v6 -o bridge="$V6_BRIDGE" -o ipv6_mode=dhcp
+    opt_run em-c-v6 em-o-v6 --mac-address 02:00:00:00:e6:02
+    wait_v6 em-c-v6 "$V6_PREFIX_A"
+    fresh_wait "$V6_LOG" "$m" "DHCPREPLY($V6_BRIDGE) $V6 " \
+        || fail "control: the container holds $V6 and the server logged no DHCPv6 reply for it"
+    fresh_kind_for "$V6_LOG" "$m" "DHCPADVERTISE(" "$duid_off" \
+        || fail "control: no DHCPADVERTISE for $duid_off without the option, so the absence above proves nothing"
+    opt_down em-o-v6 em-c-v6
 }
 
 opt_register_dns() {
@@ -1682,40 +1970,18 @@ opt___ip() {
     opt_down em-o-ipam em-c-ipam
 }
 
+# The engines that program the IPv6 gateway with no wait for the link
+# (#1149) are measured on a bare netns and on the plugin's own network;
+# 8 starts keep the step under two minutes per cell.
+STEP=v6-start-rate
+v6_race_probe 50
+v6_start_rate 8
+
 STEP=option-steps
 option_steps="$(derive_option_steps)" \
     || fail "the documented options could not be derived from $SHAPES_DOC; the messages above name the source"
 MEASURED=""
-while IFS='|' read -r opt kind obs; do
-    [ -n "$opt" ] || continue
-    STEP="option-$opt"
-    fn="opt_$(printf '%s' "$opt" | tr -c 'a-zA-Z0-9' '_')"
-    case "$kind" in
-        shape)
-            case "$opt" in
-                mode)   want_shapes="bridge macvlan ipvlan" ;;
-                bridge) want_shapes="bridge" ;;
-                parent) want_shapes="macvlan ipvlan bridge-own" ;;
-                *) fail "the catalogue calls $opt a shape and no shape step drives it" ;;
-            esac
-            for s in $want_shapes; do
-                case "$DRIVEN" in
-                    *"-$s
-"*) ;;
-                    *) fail "$opt is covered by the shape steps and no $s shape was driven" ;;
-                esac
-            done ;;
-        step|measure)
-            declare -F "$fn" >/dev/null || fail "$opt is a documented $kind and this cell has no $fn"
-            say "== option $opt ($kind)"
-            "$fn" ;;
-        not-driven) say "== option $opt not driven: $obs" ;;
-        '') fail "$SHAPES_DOC documents $opt and the option catalogue has no line for it" ;;
-        *) fail "the option catalogue gives $opt the unknown kind '$kind'" ;;
-    esac
-done <<EOF
-$option_steps
-EOF
+drive_options "$option_steps"
 
 # ---- step 9: the plugin reads the engine it runs on (#1015) -----------
 STEP=health-engine-version
@@ -1731,5 +1997,5 @@ done
     || fail "Plugin.Health reports engine_version '$health_engine' and the nested daemon answers $ENGINE_VERSION"
 
 STEP=complete
-verdict pass "macvlan=$macvlan_addr after_restart=$after engine_version=$health_engine options=$(printf '%s\n' "$option_steps" | grep -c .)$MEASURED"
+verdict pass "macvlan=$macvlan_addr after_restart=$after engine_version=$health_engine options=$OPTIONS_DRIVEN/$OPTIONS_LISTED$MEASURED"
 exit 0

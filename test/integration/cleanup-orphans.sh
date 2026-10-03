@@ -6,16 +6,95 @@
 # test panics mid-setup. Safe to run repeatedly.
 #
 # Removes:
+#   - a previous job's suite processes (test binary, go test, make) and the
+#     dnsmasq/kea fixtures they started
 #   - dh-itest-* docker networks
 #   - dh-itest-* docker containers
 #   - dh-itest-* host network interfaces (veth pair, etc.)
-#   - lingering dnsmasq processes started by the harness
+#   - plugin state records (<network id>.json under NET_DHCP_STATE_DIR) of any
+#     network the engine no longer has (#1174)
 
 set -u
 
 if [[ $EUID -ne 0 ]]; then
     echo "must run as root" >&2
     exit 1
+fi
+
+# Pids whose command line matches the ERE $1, never this script or an
+# ancestor, never a zombie (it has no code left to run) (#1147).
+suite_pids() {
+    local pat=$1 p
+    for p in $(pgrep -f -- "$pat" || true); do
+        [[ " $protected " == *" $p "* ]] && continue
+        [[ "$(ps -o stat= -p "$p" 2>/dev/null)" == Z* ]] && continue
+        echo "$p"
+    done
+}
+
+all_suite_pids() {
+    local pat
+    for pat in "${suite_patterns[@]}"; do suite_pids "$pat"; done | sort -un
+}
+
+# Full command lines (#1147): the test binary's comm is cut at 15 characters
+# ("integration.tes") and it lives in a go-build temp dir, so `pgrep -x` never
+# sees it. Both dnsmasq fixtures share the --interface=dh-itest- prefix; the
+# ephemeral kea is told apart by its config dir, and outlives its deleted netns.
+suite_patterns=(
+    '(^|/)integration\.test( |$)'
+    '(^|[ /])go test .*-tags integration'
+    '(^|[ /])make .*integration-test'
+    '--interface=dh-itest-'
+    'kea-dhcp[46] .*dh-itest-ephemeral-'
+    'kea-dhcp6 -c /etc/kea/dh-itest/'
+)
+
+# This script and every ancestor up to init are protected by pid.
+protected=$$
+for _ in $(seq 1 64); do
+    ppid=$(ps -o ppid= -p "${protected##* }" 2>/dev/null | tr -d ' ')
+    [[ -z "$ppid" || "$ppid" -le 1 ]] && break
+    protected="$protected $ppid"
+done
+
+echo "=== killing the previous job's suite processes and fixtures ==="
+# A cancelled job leaves its test binary running (#1147): it runs its own
+# teardown minutes later and deletes the dh-itest-* links of the NEXT job.
+# Parents, binary and fixtures go in one batch so a dying `make` cannot start
+# the next package; the second collection catches anything spawned meanwhile.
+pids=$(all_suite_pids)
+if [[ -z "$pids" ]]; then
+    echo "  none"
+else
+    for p in $pids; do
+        echo "  found pid=$p age=$(ps -o etimes= -p "$p" 2>/dev/null | tr -d ' ')s: $(ps -o args= -p "$p" 2>/dev/null | cut -c1-120)"
+    done
+    # shellcheck disable=SC2086
+    kill -TERM $pids 2>/dev/null || true
+    for _ in $(seq 1 10); do
+        [[ -z "$(all_suite_pids)" ]] && break
+        sleep 0.5
+    done
+    pids=$(all_suite_pids)
+    if [[ -n "$pids" ]]; then
+        echo "  still running after TERM, KILL: ${pids//$'\n'/ }"
+        # shellcheck disable=SC2086
+        kill -KILL $pids 2>/dev/null || true
+        for _ in $(seq 1 6); do
+            [[ -z "$(all_suite_pids)" ]] && break
+            sleep 0.5
+        done
+    fi
+    left=$(all_suite_pids)
+    if [[ -n "$left" ]]; then
+        for p in $left; do
+            echo "  SURVIVOR pid=$p state=$(ps -o stat= -p "$p" 2>/dev/null | tr -d ' '): $(ps -o args= -p "$p" 2>/dev/null | cut -c1-120)" >&2
+        done
+        echo "a suite process survived KILL; the links below would be deleted again by it, stopping" >&2
+        exit 1
+    fi
+    echo "  all gone"
 fi
 
 echo "=== removing dh-itest-* containers ==="
@@ -28,6 +107,29 @@ echo "=== removing dh-itest-* networks ==="
 nets=$(docker network ls --filter 'name=dh-itest-' --format '{{.ID}}')
 if [[ -n "$nets" ]]; then
     docker network rm $nets 2>&1 | sed 's/^/  /'
+fi
+
+echo "=== removing plugin state records of networks the engine no longer has ==="
+# The plugin keeps one <network id>.json per network and rebinds every
+# persisted IPAM pool at start. Only DeleteNetwork removes the file, so a
+# network removed above after its plugin was torn down leaves a record
+# that refuses the next run's pool (#1174, #1165). The live set is read
+# once; a failed read must not look like "every network is gone".
+state_dir="${NET_DHCP_STATE_DIR:-/var/lib/net-dhcp}"
+if [[ -d "$state_dir" ]]; then
+    if live=$(docker network ls --no-trunc -q 2>/dev/null); then
+        for f in "$state_dir"/*.json; do
+            [[ -f "$f" ]] || continue
+            id=$(basename "$f" .json)
+            [[ "$id" =~ ^[0-9a-f]{64}$ ]] || continue
+            if ! grep -qFx -- "$id" <<<"$live"; then
+                rm -f -- "$f"
+                echo "  removed $id.json (network gone)"
+            fi
+        done
+    else
+        echo "  engine unreachable; state records left alone"
+    fi
 fi
 
 echo "=== removing dh-itest-* network namespaces ==="
@@ -65,41 +167,10 @@ if docker plugin inspect "$plugin_ref" >/dev/null 2>&1; then
     docker plugin enable "$plugin_ref" 2>&1 | sed 's/^/  /' || true
 fi
 
-echo "=== killing lingering dnsmasq processes started by the harness ==="
-# Both fixtures share the dh-itest-* prefix on their --interface= flag,
-# so a single pgrep pattern catches both the macvlan-side dnsmasq
-# (--interface=dh-itest-dhcp) and the bridge-side one
-# (--interface=dh-itest-br2).
-pids=$(pgrep -f -- '--interface=dh-itest-' || true)
-if [[ -n "$pids" ]]; then
-    kill -TERM $pids 2>/dev/null || true
-    sleep 1
-    kill -KILL $pids 2>/dev/null || true
-    echo "  killed: $pids"
-fi
-
-echo "=== killing lingering kea processes started by the harness ==="
-# The ephemeral fixture's kea is identified by its config path, which
-# always lives under a dh-itest-ephemeral-* temp dir. Deleting the
-# namespace above does not kill it — a process whose netns disappears
-# keeps running, just with no interfaces.
-pids=$(pgrep -f -- 'kea-dhcp4 .*dh-itest-ephemeral-' || true)
-if [[ -n "$pids" ]]; then
-    kill -TERM $pids 2>/dev/null || true
-    sleep 1
-    kill -KILL $pids 2>/dev/null || true
-    echo "  killed: $pids"
-fi
-
-# The Kea6 fixture's server runs from /etc/kea/dh-itest/ (its state files sit on the paths the packaged AppArmor
-# profile allows, so the temp-dir pattern above cannot find it) and keeps files there, in /var/lib/kea and in /var/log/kea.
-pids=$(pgrep -f -- 'kea-dhcp6 -c /etc/kea/dh-itest/' || true)
-if [[ -n "$pids" ]]; then
-    kill -TERM $pids 2>/dev/null || true
-    sleep 1
-    kill -KILL $pids 2>/dev/null || true
-    echo "  killed: $pids"
-fi
+echo "=== removing the Kea6 fixture's state files ==="
+# The Kea6 fixture's server runs from /etc/kea/dh-itest/ and keeps files
+# there, in /var/lib/kea and in /var/log/kea, the paths the packaged
+# AppArmor profile allows (#214). Its process went with the batch above.
 rm -rf /etc/kea/dh-itest
 rm -f /var/lib/kea/kea-leases6.csv* /var/lib/kea/kea-dhcp6-serverid /var/log/kea/kea-dhcp6.log*
 

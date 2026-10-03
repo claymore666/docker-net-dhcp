@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -44,10 +45,12 @@ type readOnlyTransport struct {
 
 	mu   sync.Mutex
 	seen map[string]int
+	// logged holds the exact paths already written, so each container's inspect still logs once (#1184).
+	logged map[string]struct{}
 }
 
 func newReadOnlyTransport(base http.RoundTripper, onRefusal func()) *readOnlyTransport {
-	return &readOnlyTransport{base: base, onRefusal: onRefusal, seen: make(map[string]int)}
+	return &readOnlyTransport{base: base, onRefusal: onRefusal, seen: make(map[string]int), logged: make(map[string]struct{})}
 }
 
 // RoundTrip refuses any method outside safeDaemonMethods, compared case-sensitively (RFC 9110 section 9.1).
@@ -73,13 +76,42 @@ func (t *readOnlyTransport) RoundTrip(req *http.Request) (*http.Response, error)
 	return t.base.RoundTrip(req)
 }
 
+var idCollections = map[string]bool{
+	"containers": true, "networks": true, "volumes": true, "exec": true, "images": true, "plugins": true,
+}
+
+var collectionVerbs = map[string]bool{
+	"json": true, "create": true, "prune": true, "search": true, "load": true, "get": true, "ls": true,
+}
+
+// seenKey collapses an id or name after a collection to `{id}`: one key per call shape, not per container (#1184).
+func seenKey(method, path string) string {
+	segs := strings.Split(path, "/")
+	for i := 1; i < len(segs); i++ {
+		if idCollections[segs[i-1]] && !collectionVerbs[segs[i]] && segs[i] != "" {
+			segs[i] = "{id}"
+		}
+	}
+	return method + " " + strings.Join(segs, "/")
+}
+
+// maxLoggedPaths bounds logged; a full set is cleared, so each path logs at most once more (#1184).
+const maxLoggedPaths = 1024
+
 func (t *readOnlyTransport) record(method, path string) {
-	key := method + " " + path
+	key := seenKey(method, path)
+	exact := method + " " + path
 	t.mu.Lock()
-	n := t.seen[key]
-	t.seen[key] = n + 1
+	t.seen[key]++
+	_, again := t.logged[exact]
+	if !again {
+		if len(t.logged) >= maxLoggedPaths {
+			t.logged = make(map[string]struct{})
+		}
+		t.logged[exact] = struct{}{}
+	}
 	t.mu.Unlock()
-	if n == 0 {
+	if !again {
 		log.WithFields(log.Fields{"method": method, "path": path}).
 			Debug("docker-api call")
 	}

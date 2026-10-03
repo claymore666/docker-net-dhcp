@@ -10,8 +10,8 @@
 #
 # POPULATION: TOP-LEVEL TEST FUNCTIONS, PARENTS ONLY.
 # One row per `func TestX(t *testing.T)` in test/integration/*_test.go —
-# 218 of them, the main suite's 211 and the failure suite's 7. MEASURED
-# on this table: 218 data rows, and 218 `func TestX(t *testing.T)` in
+# 235 of them, the main suite's 228 and the failure suite's 7. MEASURED
+# on this table: 235 data rows, and 235 `func TestX(t *testing.T)` in
 # test/integration/*_test.go counted independently of them.
 #
 # THIS NUMBER HAS NOW BEEN WRONG TWICE, and the second time is the
@@ -611,6 +611,7 @@ TestAutoStrict_ASilentManagedServerFailsTheEndpointAndTheDefaultFallsBack	80.00
 TestBridgeFirewallVerdict_NamedAtCreateAndAtTheDeadline	75.00
 TestClasslessStaticRoutes_AbsentWithoutOptIn	12.09
 TestClasslessStaticRoutes_AppliedFromDHCP	11.96
+TestClasslessStaticRoutes_Option249AloneIsApplied	12.00
 TestClientID_DefaultIsMACDerived	11.50
 TestClientID_OverrideAppearsInLeaseFile	11.98
 TestConcurrency_DistinctLeases	45.25
@@ -705,6 +706,10 @@ TestIPAMv6_OnRemoveHandsBothFamiliesBack	110.00
 TestIPAMv6_OnStopSendsOneReleasePerFamily	20.00
 TestIPAMv6_TwoRestartedTogetherIsTheDocumentedLimit	45.00
 TestIPv6Mode_SurvivesAPluginRestart	28.00
+TestIPv6Temporary_BridgeHoldsAStableAndATemporaryAddress	20.00
+TestIPv6Temporary_IPAMMacvlanHoldsAStableAndATemporaryAddress	30.00
+TestIPv6Temporary_MacvlanHoldsAStableAndATemporaryAddress	25.00
+TestIPv6Temporary_MacvlanWithoutTheOptionAsksForNoIATA	25.00
 TestIPv6_AcceptedAtCreate	0.02
 TestIPv6_DNS6Propagation	34.17
 TestIPv6_TheV4OnlyPathIsUnchanged	11.57
@@ -714,6 +719,10 @@ TestInterfaceName_MultiNetworkDeterministic	12.08
 TestInterfaceName_PluginHonorsOption	12.50
 TestInterfaceName_ProbeSkipPrecedesTheEphemeralFixture	0.00
 TestJoinDuration_DistributionInThisShard	13.00
+TestJoinGuard_ARestartedContainerIsGuardedAgain	60.00
+TestJoinGuard_ARestartedContainerIsGuardedAgain_Macvlan	60.00
+TestJoinGuard_AStartInsideAForcedAdvertisementWindowKeepsTheGateway	40.00
+TestJoinGuard_AStartInsideAForcedAdvertisementWindowKeepsTheGateway_Macvlan	40.00
 TestJoinNoContainer_AddressIsHeldUntilItExpires	26.95
 TestJoin_TheAdvertisedRoutesAreInTheContainerAtStart	100.00
 TestLeaseRenewIPv6_HonorsT1	73.85
@@ -747,6 +756,15 @@ TestPreflightProbe_FailsWhenServerUnreachable	8.15
 TestPreflightProbe_IPvlanProbeCoexistsWithIPvlanEndpoints	14.96
 TestPreflightProbe_PassesOnReachableServer	3.47
 TestPreflightProbe_RejectedInBridgeMode	0.01
+TestRapidCommitV6_BridgeTakesTheTwoMessageLease	17.00
+TestRapidCommitV6_IPAMMacvlanTakesTheTwoMessageLease	17.00
+TestRapidCommitV6_MacvlanTakesTheTwoMessageLease	17.00
+TestRapidCommitV6_MacvlanWithoutTheOptionKeepsTheFourMessageExchange	17.00
+TestRapidCommit_BridgeTakesTheTwoMessageLease	11.90
+TestRapidCommit_BridgeWithoutTheOptionKeepsTheFourMessageExchange	11.56
+TestRapidCommit_IPAMMacvlanTakesTheTwoMessageLease	11.71
+TestRapidCommit_MacvlanTakesTheTwoMessageLease	12.08
+TestRapidCommit_MacvlanWithoutTheOptionKeepsTheFourMessageExchange	11.72
 TestRecovery_DaemonKilled_LeaseIsHeldUntilItExpires	31.98
 TestRecovery_DaemonRestart_PreservesContainer	30.00
 TestRecovery_PluginDisableEnable_PreservesEndpoint	12.86
@@ -779,7 +797,11 @@ TestSLAAC_AnAdvertisedPrefixReachesTheContainer_Macvlan	45.00
 TestSLAAC_AutoFallsBackOntoTheAdvertisedPrefix	50.00
 TestSLAAC_AutoFallsBackOntoTheAdvertisedPrefix_IPAM	50.00
 TestSLAAC_AutoFallsBackOntoTheAdvertisedPrefix_Macvlan	50.00
+TestSLAAC_AutoRemembersASilentServer	70.00
+TestSLAAC_AutoRemembersASilentServer_IPAM	70.00
+TestSLAAC_AutoRemembersASilentServer_Macvlan	70.00
 TestSLAAC_RenumberingInOneAdvertisementEndsWithExactlyTheNewSet	95.00
+TestSLAAC_StablePrivacyFormsAnAddressThatIsNotTheMACsAndSurvivesARestart	50.00
 TestSLAAC_TheAddressComesBackAfterAPluginRestart	60.00
 TestSLAAC_TheAddressComesBackAfterAPluginRestart_IPAM	60.00
 TestSLAAC_TheAddressComesBackAfterAPluginRestart_Macvlan	60.00

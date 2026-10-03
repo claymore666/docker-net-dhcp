@@ -155,6 +155,8 @@ func TestLogObservedOptions_SilentUnlessSomethingWasObserved(t *testing.T) {
 		{"posix timezone", dhcp.Info{PosixTimezone: "CET-1CEST,M3.5.0,M10.5.0/3"}, "posix_tz"},
 		{"tzdb timezone", dhcp.Info{TZDBTimezone: "Europe/Berlin"}, "tzdb_tz"},
 		{"time offset", dhcp.Info{TimeOffset: "3600"}, "time_offset"},
+		{"vendor option 43", dhcp.Info{VendorSpecific: "0104c0a86301"}, "vendor_43"},
+		{"vendor option 125", dhcp.Info{VendorIdentifying: []dhcp.VendorBlock{{Enterprise: 9, Data: "aabb"}}}, "vendor_125"},
 	} {
 		t.Run(tc.name+" alone triggers the line and is named in it", func(t *testing.T) {
 			out := captureLog(t, func() {
@@ -167,6 +169,41 @@ func TestLogObservedOptions_SilentUnlessSomethingWasObserved(t *testing.T) {
 				t.Errorf("logged %q, want it to name field %q", out, tc.field)
 			}
 		})
+	}
+}
+
+func TestLogObservedOptions_AnotherOptionsLineCarriesNoVendorField(t *testing.T) {
+	out := captureLog(t, func() {
+		(&dhcpManager{}).logObservedOptions(false, dhcp.Info{NTPServers: []string{"192.168.0.1"}})
+	})
+	if !strings.Contains(out, "DHCP options received") {
+		t.Fatalf("logged %q, want the observed-options line", out)
+	}
+	for _, key := range []string{"vendor_43", "vendor_125"} {
+		if strings.Contains(out, key) {
+			t.Errorf("logged %q, want no %s on a lease that carried no such option", out, key)
+		}
+	}
+}
+
+func TestLogObservedOptions_NamesTheVendorBlobsByOption(t *testing.T) {
+	out := captureLog(t, func() {
+		(&dhcpManager{}).logObservedOptions(false, dhcp.Info{
+			VendorSpecific: "0104c0a86301",
+			VendorIdentifying: []dhcp.VendorBlock{
+				{Enterprise: 9, Data: "aabb"},
+				{Enterprise: 3561, Data: ""},
+			},
+		})
+	})
+	if !strings.Contains(out, "vendor_43=0104c0a86301") {
+		t.Errorf("logged %q, want vendor_43=0104c0a86301", out)
+	}
+	if !strings.Contains(out, `vendor_125="[9:aabb 3561:]"`) {
+		t.Errorf("logged %q, want vendor_125 with both blocks in wire order", out)
+	}
+	if strings.Count(strings.TrimRight(out, "\n"), "\n") != 0 {
+		t.Errorf("one observation logged as several lines: %q", out)
 	}
 }
 

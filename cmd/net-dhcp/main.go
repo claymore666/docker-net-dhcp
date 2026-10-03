@@ -99,21 +99,19 @@ func main() {
 
 	// An unset knob stays zero so plugin.NewPlugin applies its default, which config.json must declare.
 	var opts plugin.Options
-	durationEnv := func(name string, into *time.Duration) {
-		raw, ok := os.LookupEnv(name)
-		if !ok || raw == "" {
-			return
+	durationEnv := func(name string, allowZero bool) (time.Duration, bool) {
+		d, set, err := durationSetting(os.LookupEnv, name, allowZero)
+		if err != nil {
+			fatalCleanup(err, "Invalid "+name)
 		}
-		d, perr := time.ParseDuration(raw)
-		if perr != nil {
-			fatalCleanup(perr, "Failed to parse "+name)
-		}
-		if d <= 0 {
-			fatalCleanup(fmt.Errorf("%s must be positive, got %s", name, raw), "Invalid "+name)
-		}
-		*into = d
+		return d, set
 	}
-	durationEnv("AWAIT_TIMEOUT", &opts.AwaitTimeout)
+	if d, set := durationEnv("AWAIT_TIMEOUT", false); set {
+		opts.AwaitTimeout = d
+	}
+	if d, set := durationEnv("DHCPV6_ABSENCE_MEMORY", true); set {
+		opts.DHCPv6AbsenceMemory = &d
+	}
 
 	// Replay-fixture capture, declared in config-cover.json only (#644).
 	opts.RequestCaptureDir = os.Getenv("REQUEST_CAPTURE_DIR")
@@ -143,4 +141,24 @@ func main() {
 	if err := p.Close(); err != nil {
 		fatalCleanup(err, "Failed to stop plugin")
 	}
+}
+
+// durationSetting parses a config.json duration; set is false when it is unset or empty, leaving the plugin default.
+// Only a setting where zero means off takes allowZero, as DHCPV6_ABSENCE_MEMORY does (#1038).
+func durationSetting(lookup func(string) (string, bool), name string, allowZero bool) (time.Duration, bool, error) {
+	raw, ok := lookup(name)
+	if !ok || raw == "" {
+		return 0, false, nil
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil {
+		return 0, false, fmt.Errorf("failed to parse %s: %w", name, err)
+	}
+	if d < 0 || (d == 0 && !allowZero) {
+		if allowZero {
+			return 0, false, fmt.Errorf("%s must be zero or positive, got %s", name, raw)
+		}
+		return 0, false, fmt.Errorf("%s must be positive, got %s", name, raw)
+	}
+	return d, true, nil
 }

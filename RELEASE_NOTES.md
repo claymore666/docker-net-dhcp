@@ -8,6 +8,137 @@ The notes below go back to the first release of this project.
 
 [predecessor]: https://github.com/devplayer0/docker-net-dhcp
 
+## v2.4.0 (unreleased)
+
+**The privilege prompt does not change.** No field `docker plugin upgrade`
+prompts on has moved since v2.0.0. This release changes the manifest's
+`env` list only, by one setting, and the daemon does not prompt on it.
+
+<!-- manifest-delta: begin baseline=v2.3.1 -->
+
+| field | v2.3.1 | v2.4.0 | prompted |
+| --- | --- | --- | --- |
+| `linux.capabilities` | `CAP_NET_ADMIN`, `CAP_NET_RAW`, `CAP_SYS_ADMIN`, `CAP_SYS_PTRACE` | `CAP_NET_ADMIN`, `CAP_NET_RAW`, `CAP_SYS_ADMIN`, `CAP_SYS_PTRACE` | no change |
+| `network.type` | `host` | `host` | no change |
+| `ipchost` | `false` | `false` | no change |
+| `pidhost` | `true` | `true` | no change |
+| `mounts` | `/var/run/docker.sock:bind`, `/var/lib/net-dhcp:rbind,rw`, `/var/run/docker:rbind,ro` | `/var/run/docker.sock:bind`, `/var/lib/net-dhcp:rbind,rw`, `/var/run/docker:rbind,ro` | no change |
+| `propagatedmount` | `(absent)` | `(absent)` | no change |
+| `linux.devices` | `(absent)` | `(absent)` | no change |
+| `linux.allowalldevices` | `false` | `false` | no change |
+| `env` | `LOG_LEVEL`, `AWAIT_TIMEOUT`, `STATE_DIR`, `METRICS_ADDR`, `DOCKER_HOST` | `LOG_LEVEL`, `AWAIT_TIMEOUT`, `DHCPV6_ABSENCE_MEMORY`, `STATE_DIR`, `METRICS_ADDR`, `DOCKER_HOST` | no: a setting is not a privilege |
+
+<!-- manifest-delta: end -->
+
+### New
+
+- `ipv6_iid=stable-privacy` forms a SLAAC address's interface identifier per
+  RFC 7217 from a secret kept in `STATE_DIR`, so the address does not show the
+  MAC and survives a restart; `eui64` stays the default. Losing the secret
+  file changes every such address at its next formation (#1032).
+- The NAT64 prefix a router advertises (PREF64, RFC 8781) is logged as
+  `nat64` on each lease event that carries it and shown per endpoint as
+  `nat64_prefixes` on `/Plugin.Health`; nothing is installed in the
+  container (#1028).
+- The "DHCP options received" log line carries the DHCPv4 vendor-specific
+  options, hex-encoded and never interpreted: option 43 as `vendor_43` and
+  option 125 as `vendor_125`, one `enterprise:hex` entry per enterprise
+  (#1034).
+- The DHCPv4 client tells the server on every DISCOVER and REQUEST that it can
+  authenticate a FORCERENEW (option 145). An authenticated FORCERENEW renews
+  the lease and any other is refused. Each endpoint's FORCERENEW and DHCPv6
+  Reconfigure counts are logged when they move and served as six health
+  counters, `forcerenews_renewed`, `forcerenews_already_renewing`,
+  `forcerenews_refused`, `forcerenews_ack_refused`, `reconfigures_accepted` and
+  `reconfigures_refused`, none of them `healthy`-affecting (#1119).
+- A DHCP server that sends the Microsoft classless static routes, option
+  249, and no option 121 now gets its routes installed in the container,
+  and the default route among them replaces option 3's router as 121's
+  does. When both options arrive 121 wins (#1030).
+
+### Fixed
+
+- On an engine below 28.0 a container with IPv6 no longer fails to start
+  now and then with "failed to set IPv6 gateway ... route for the
+  gateway fe80::... could not be found". On those engines the plugin
+  installs the IPv6 default route and the advertised routes via a
+  link-local next hop itself, when the first lease or advertisement
+  arrives, instead of handing them to the engine in Join (#1149).
+- The lease record of a removed network no longer stays held for the
+  life of the plugin, re-read every 15 seconds. Once its restart window
+  has run out and Docker answers that the network no longer exists, the
+  record is closed and nothing is sent; one line at `info` names the
+  network and how many records were closed (#1158).
+- A network removed while the plugin was not running (a stopped or
+  removed plugin, then `docker network rm`) no longer keeps its subnet
+  refused for later `docker network create` calls with "network <id>
+  already holds pool <subnet>". At start, a saved network that Docker
+  answers is gone has its saved file, pool binding and held records
+  removed; a slow or unreachable daemon leaves everything as it is. One
+  line at `info` names each network, and `stale_networks_dropped` on
+  `/Plugin.Health` counts them (#1174).
+- The SLAAC absence-memory integration test no longer fails now and then on
+  a slow runner. Its timing check derives its floor from the 6 s fallback
+  window less the measured spread of the two attaches, instead of assuming
+  the worst case of the Solicit delay; the Solicit count and the counters
+  stay the proof that the second endpoint did not solicit (#1172).
+- The integration lane's lease-file reader no longer calls a lease released
+  because the DHCP server was in the middle of rewriting its lease file. An
+  empty file is read again for up to half a second before the address
+  counts as released; a line that is really gone is still reported within
+  about 40 ms (#1173).
+- A container whose network setup fails, or that is created and removed
+  without ever starting, no longer leaves a pending hint behind for the
+  life of the plugin. `pending_hints` on `/Plugin.Health` returns to zero
+  after either (#1183).
+- The log-once set behind the plugin's read-only Docker API log no longer
+  grows with every inspected container. Container and network ids in a
+  request path count as one call shape; the debug log still writes one
+  line per distinct path (#1184).
+- The integration suite's test binary on the arm64 lane no longer reads the
+  Docker daemon's whole log into memory, which killed it twice with the
+  log at over 840 MB. It now reads the log in small pieces, prints its own
+  memory use as `integration memory:` at exit, and the arm64 lane fails the
+  suite when that use passes 256 MB. The runner image also cuts the daemon
+  log to its last megabyte once it passes 160 MB (#1180).
+- The lease record file `lease-records.jsonl` in `STATE_DIR` no longer
+  grows by about 5 KB per container lifecycle for the life of the host.
+  The plugin compacts it on its sweep once it reaches 256 KiB and twice
+  its size after the last compaction, dropping closed records and held
+  records whose restart window has run out and whose server lease has
+  expired. The cost: a container pinned to a MAC that comes back after
+  its lease ran out no longer names its old address in its request
+  (DHCP option 50), so it keeps that address only if the server keeps
+  it for that client on its own (#1182).
+- With `audit_log=true` the `container` field of the audit log `leases.jsonl` no
+  longer stays empty, or shows Docker's `ep-` placeholder, for the rest of
+  an endpoint's life when the first lookup ran before the container
+  existed or while the daemon was slow. A lookup that finds no container
+  yet, only the placeholder, or fails is repeated on the next entry, and
+  the real container ID is looked up once (#1189).
+- After a Docker restart or at boot, the plugin opens its socket within the
+  time the daemon allows, also on a slow host. Docker enables the plugin
+  before it answers its own API and disables a plugin whose socket is
+  still missing after about 10 seconds. When the plugin cannot reach the
+  daemon at startup, recovery and the second engine check now run after
+  the socket opens, where before the plugin waited about 7 seconds on the
+  daemon first (#1176).
+- The reference no longer says the IPv6 defaults write in `Join` takes on
+  every Docker Engine 28+ host: it takes only where the daemon's sandbox
+  mounts reach the plugin (`sandbox_netns_propagation` 1), and is otherwise
+  skipped, counted and warned (#1165).
+- The integration cleanup step also drops the plugin's state records of
+  networks the engine no longer has, so a killed run cannot refuse the
+  next run's IPAM networks (#1174 for the plugin-side fix; #1165).
+- A container that is still starting when the attach budget runs out is
+  no longer counted as one that went away. On engines 26 and 27 the
+  sandbox key does not exist until after the plugin's Join returns, so a
+  slow start looked like a vanished container, logged at Info, with no
+  renewal client and `healthy` still true. The plugin now asks the
+  daemon before counting a vanish: only "no such container", exited or
+  dead counts; a running container, an error or no answer is a start
+  failure (`join_start_failures`) (#1186).
+
 ## v2.3.1
 
 A container with IPv6 starts when a host route and an advertised route
@@ -1049,13 +1180,11 @@ table are read differently: the first is what the prompt shows you, the
 second is not prompted at all.
 
 Every cell below is the full set for that field, not a description of how
-it changed. `scripts/check-manifest-delta-table.sh` derives both columns,
-the left from `v1.9.0:config.json` in git and the right from the manifest
-in the tree, and fails if either disagrees with what is written here. The
+it changed. `scripts/check-manifest-delta-table.sh` derived both columns
+at release, the left from `v1.9.0:config.json` in git and the right from
+the v2.0.0 manifest; it now checks the newest section's table instead. The
 `prompted` column is not derived: which fields the daemon prompts on is a
 property of Docker, not of this manifest.
-
-<!-- manifest-delta: begin baseline=v1.9.0 -->
 
 | field | v1.9.0 | v2.0.0 | prompted |
 | --- | --- | --- | --- |
@@ -1068,8 +1197,6 @@ property of Docker, not of this manifest.
 | `linux.devices` | `(absent)` | `(absent)` | no change |
 | `linux.allowalldevices` | `false` | `false` | **yes**, when true |
 | `env` | `LOG_LEVEL`, `AWAIT_TIMEOUT`, `STATE_DIR`, `OUTAGE_TICK`, `OUTAGE_GRACE`, `METRICS_ADDR` | `LOG_LEVEL`, `AWAIT_TIMEOUT`, `STATE_DIR`, `METRICS_ADDR`, `DOCKER_HOST` | no: a setting is not a privilege |
-
-<!-- manifest-delta: end -->
 
 Read the `env` row against **Removed plugin settings** below: the delta
 is one added and two removed, not one added. `OUTAGE_TICK` and

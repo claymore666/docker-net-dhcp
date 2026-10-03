@@ -92,15 +92,20 @@ and what each item is for is in [SECURITY.md](SECURITY.md#scope--what-this-plugi
   change in Docker, not planned ([#949]). `ipvlan` networks use
   `--ipam-driver null`.
 - Docker Engine 19.03. Unmeasured, not planned.
+- IPv6-Only Preferred (DHCPv4 option 108, RFC 8925) is never requested. A
+  Docker endpoint on a network with an IPv4 pool must hold an IPv4
+  address, which makes it an IPv4-requiring host, and RFC 8925 section 3.2
+  forbids such a host from asking for the option. The DHCP library
+  implements the option for consumers that are not ([#1027]).
 
-The plugin refuses these with a message that names the reason.
+Where the plugin refuses, the message names the reason.
 
 ## Planned
 
 v2.4.0: DHCPv6 Rapid Commit ([#926]), temporary addresses ([#927]) and
-prefix delegation ([#214]); DHCPv4 Rapid Commit ([#1031]) and IPv6-only
-preferred ([#1027]); stable-privacy SLAAC addresses ([#1032]); one
-multi-architecture image per tag ([#1035]). The full list, with what this
+prefix delegation ([#214]); DHCPv4 Rapid Commit ([#1031]);
+stable-privacy SLAAC addresses ([#1032]); one multi-architecture image per
+tag ([#1035]). The full list, with what this
 project will not do, is on the [roadmap](docs/roadmap.md).
 
 ## How to check any of this

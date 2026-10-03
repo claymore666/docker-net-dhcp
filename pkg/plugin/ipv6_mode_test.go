@@ -178,6 +178,28 @@ func TestValidateIPv6Options_SLAACOnIPvlan(t *testing.T) {
 	}
 }
 
+// The ipvlan refusal says what ipv6_iid=stable-privacy does there: it separates slaves only through the DAD counter, so
+// the address depends on start order, and it does not lift the refusal (#1032).
+func TestValidateIPv6Options_IPvlanRefusalSaysWhatStablePrivacyDoes(t *testing.T) {
+	for _, mode := range []string{"slaac", "auto"} {
+		opts := DHCPNetworkOptions{Mode: ModeIPvlan, Parent: "eth0", IPv6Mode: mode, IPv6IID: "stable-privacy"}
+		err := validateIPv6Options(opts, map[string]bool{"IPv6Mode": true, "IPv6IID": true})
+		if !errors.Is(err, util.ErrModeMismatch) {
+			t.Fatalf("ipv6_mode=%s with stable-privacy on ipvlan = %v, want the ErrModeMismatch refusal", mode, err)
+		}
+		for _, want := range []string{"stable-privacy does not lift this", "duplicate-address counter", "order they start in", "ipv6_mode=dhcp"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("the refusal lacks %q: %v", want, err)
+			}
+		}
+		opts.IPv6IID = "eui64"
+		err = validateIPv6Options(opts, map[string]bool{"IPv6Mode": true, "IPv6IID": true})
+		if !errors.Is(err, util.ErrModeMismatch) || strings.Contains(err.Error(), "stable-privacy") {
+			t.Errorf("an eui64 network's refusal is %v, want the ipvlan refusal with no word on stable-privacy", err)
+		}
+	}
+}
+
 // Docker replays CreateNetwork at every plugin start, so the create and stored paths must refuse the same set (#817).
 func TestIPv6Mode_TheCreateAndStoredPathsRefuseTheSameSet(t *testing.T) {
 	cases := []struct {
@@ -268,7 +290,7 @@ func TestV6Wiring_CarriesEveryFieldTheV6ClientNeeds(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			p := &Plugin{}
 			var base dhcp.DHCPClientOptions
-			if err := p.v6Wiring(&base, tc.opts, id6, "rec-1", "2001:db8::5", "endpoint-1"); err != nil {
+			if err := p.v6Wiring(&base, tc.opts, id6, "rec-1", "2001:db8::5", "endpoint-1", "net-1"); err != nil {
 				t.Fatalf("v6Wiring: %v", err)
 			}
 			if base.Mode6 != tc.wantMode {
@@ -313,7 +335,7 @@ func TestV6Wiring_CarriesEveryFieldTheV6ClientNeeds(t *testing.T) {
 
 	var base dhcp.DHCPClientOptions
 	p := &Plugin{}
-	if err := p.v6Wiring(&base, DHCPNetworkOptions{Bridge: "br0"}, id6, "rec-1", "", "endpoint-1"); err == nil {
+	if err := p.v6Wiring(&base, DHCPNetworkOptions{Bridge: "br0"}, id6, "rec-1", "", "endpoint-1", "net-1"); err == nil {
 		t.Error("v6Wiring accepted a network whose ipv6_mode is off")
 	} else if !errors.Is(err, util.ErrIPAM) {
 		t.Errorf("the refusal is not an ErrIPAM: %v", err)
@@ -325,7 +347,7 @@ func TestV6Wiring_CarriesEveryFieldTheV6ClientNeeds(t *testing.T) {
 
 	var noPlugin dhcp.DHCPClientOptions
 	var nilP *Plugin
-	if err := nilP.v6Wiring(&noPlugin, DHCPNetworkOptions{Bridge: "br0", IPv6Mode: "auto"}, id6, "rec-1", "", "e"); err != nil {
+	if err := nilP.v6Wiring(&noPlugin, DHCPNetworkOptions{Bridge: "br0", IPv6Mode: "auto"}, id6, "rec-1", "", "e", "net-1"); err != nil {
 		t.Fatalf("v6Wiring with a nil plugin: %v", err)
 	}
 	if noPlugin.Mode6 != proto.Mode6Auto || noPlugin.Identity6.IAID != id6.IAID {

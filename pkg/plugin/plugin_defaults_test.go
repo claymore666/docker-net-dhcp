@@ -24,7 +24,8 @@ func TestNewPluginOptions_ZeroValueIsProductionDefault(t *testing.T) {
 
 func TestConfigJSONMatchesCodeDefaults(t *testing.T) {
 	want := map[string]time.Duration{
-		"AWAIT_TIMEOUT": defaultAwaitTimeout,
+		"AWAIT_TIMEOUT":         defaultAwaitTimeout,
+		"DHCPV6_ABSENCE_MEMORY": defaultDHCPv6AbsenceMemory,
 	}
 
 	for _, path := range []string{"../../config.json", "../../config-cover.json"} {

@@ -252,14 +252,16 @@ func (p *Plugin) runIPAMReserve(ctx context.Context, networkID string, sn stored
 		return ipamReservation{record: recordID}, err
 	}
 	base := dhcp.DHCPClientOptions{
-		FQDN:        opts.fqdnMode(),
-		ClientID:    clientID,
-		VendorClass: opts.VendorClass,
-		UserClass:   opts.UserClass,
-		MAC:         mac,
-		Records:     p.records,
-		RecordID:    recordID,
-		RequestedIP: requestedIP,
+		FQDN:          opts.fqdnMode(),
+		ClientID:      clientID,
+		VendorClass:   opts.VendorClass,
+		UserClass:     opts.UserClass,
+		RapidCommit:   opts.RapidCommit,
+		IPv6Temporary: opts.IPv6Temporary,
+		MAC:           mac,
+		Records:       p.records,
+		RecordID:      recordID,
+		RequestedIP:   requestedIP,
 	}
 	if err := p.conflictWiring(&base, opts, roleAcquire, networkID, "", false); err != nil {
 		giveUp(rebound)

@@ -38,9 +38,10 @@ const (
 	BridgeTestDNSServer = "192.168.100.53"
 
 	// Dual-stack constants for the bridge fixture (#103), on a ULA prefix distinct from the macvlan fixture's.
-	BridgeAddrV6          = "fd00:6470:6864::1/64"
+	BridgeAddrV6 = "fd00:6470:6864::1/64"
+	// 2^32 + 1 addresses, so a stable and a temporary draw collide in about 2.3e-10 of runs (#927).
 	BridgeDHCPv6PoolStart = "fd00:6470:6864::10"
-	BridgeDHCPv6PoolEnd   = "fd00:6470:6864::99"
+	BridgeDHCPv6PoolEnd   = "fd00:6470:6864::1:0:10"
 	BridgeSubnetV6CIDR    = "fd00:6470:6864::/64"
 )
 
@@ -112,6 +113,7 @@ func (f *Fixture) startBridge() error {
 		"--dhcp-option=6,"+BridgeTestDNSServer,
 		"--dhcp-userclass=set:"+dnsmasqUCTag+","+TestUserClass,
 		"--dhcp-option=tag:"+dnsmasqUCTag+",3,"+BridgeUserClassGateway,
+		"--dhcp-rapid-commit",
 		"--dhcp-leasefile="+f.bridgeLeaseFile,
 		"--dhcp-no-override",
 		"--dhcp-broadcast",
@@ -190,6 +192,8 @@ func (f *Fixture) DumpBridgeLogs(write func(string)) {
 
 // BridgeDnsmasqLogPath returns the path of the bridge fixture's dnsmasq log, empty if it never started (#875).
 func (f *Fixture) BridgeDnsmasqLogPath() string { return f.bridgeDnsmasqLog }
+
+func (f *Fixture) BridgeLeaseFile() string { return f.bridgeLeaseFile }
 
 // CountBridgeLogLines counts bridge dnsmasq log lines containing every substring, case-insensitively.
 func (f *Fixture) CountBridgeLogLines(substrings ...string) int {

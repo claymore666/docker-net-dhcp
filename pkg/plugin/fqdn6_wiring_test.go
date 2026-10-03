@@ -45,7 +45,7 @@ func TestV6Wiring_SaysWhenRegisterDNSGetsNoAAAA(t *testing.T) {
 			defer hook.Reset()
 			p := &Plugin{}
 			var base dhcp.DHCPClientOptions
-			if err := p.v6Wiring(&base, tc.opts, id6, "rec-1", "", "0123456789abcdef"); err != nil {
+			if err := p.v6Wiring(&base, tc.opts, id6, "rec-1", "", "0123456789abcdef", "net-1"); err != nil {
 				t.Fatalf("v6Wiring: %v", err)
 			}
 			if got := noAAAALines(hook); got != tc.atWiring {

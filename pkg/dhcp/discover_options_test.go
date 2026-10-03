@@ -6,6 +6,7 @@ package dhcp
 import (
 	"bytes"
 	"fmt"
+	"net"
 	"slices"
 	"testing"
 
@@ -65,11 +66,62 @@ func TestBuildParams_TheDiscoverCarriesTheForcerenewNonceAndNothingElseNew(t *te
 	}
 	for _, off := range []wire.OptionCode{wire.OptUserClass, wire.OptRapidCommit} {
 		if _, there := msg.Options[off]; there {
-			t.Errorf("option %d is on the DHCPDISCOVER, but the plugin sets no Params field for it (#1120, #1031)", off)
+			t.Errorf("option %d is on the DHCPDISCOVER of a client whose network did not ask for it (#1120, #1031)", off)
 		}
 	}
 	if pl := msg.Options[wire.OptParameterList]; bytes.IndexByte(pl, byte(wire.OptIPv6OnlyPreferred)) >= 0 {
 		t.Errorf("option 108 is in the parameter request list %v, but the plugin sets no IPv6OnlyPreferred (#1027)",
 			fmt.Sprint(pl))
+	}
+}
+
+// RFC 8925 section 3.2 forbids an IPv4-requiring host to ask for option 108, and every endpoint here needs an IPv4 lease
+// (#1027); the test above reads a bare client, this one every option at once.
+func TestBuildParams_NeverAsksForIPv6OnlyPreferred(t *testing.T) {
+	p, err := buildParams(&DHCPClientOptions{
+		MAC:         testMAC(t),
+		RapidCommit: true,
+		FQDN:        "register",
+		Hostname:    "ctr",
+		UserClass:   "class",
+		VendorClass: "vendor",
+		ClientID:    []byte{0x01, 0x02, 0x03},
+		RequestedIP: "192.0.2.77",
+	}, false)
+	if err != nil {
+		t.Fatalf("buildParams: %v", err)
+	}
+	if p.IPv6OnlyPreferred {
+		t.Error("Params.IPv6OnlyPreferred = true, want false")
+	}
+	if slices.Contains(p.ParameterList, wire.OptIPv6OnlyPreferred) {
+		t.Errorf("ParameterList %v names option 108", p.ParameterList)
+	}
+	msg := firstDiscover(t, p)
+	if bytes.IndexByte(msg.Options[wire.OptParameterList], byte(wire.OptIPv6OnlyPreferred)) >= 0 {
+		t.Errorf("the first DISCOVER's option 55 %v names option 108", msg.Options[wire.OptParameterList])
+	}
+}
+
+// With rapid_commit the first DISCOVER carries option 80 as an empty flag, the parameter request list does not name it,
+// and a requested address (option 50) rides beside it (RFC 4039 section 3, #1031).
+func TestBuildParams_RapidCommitPutsOption80OnTheDiscoverOnly(t *testing.T) {
+	for _, requested := range []string{"", "192.0.2.77"} {
+		p, err := buildParams(&DHCPClientOptions{MAC: testMAC(t), RapidCommit: true, RequestedIP: requested}, false)
+		if err != nil {
+			t.Fatalf("buildParams: %v", err)
+		}
+		msg := firstDiscover(t, p)
+
+		if v, there := msg.Options[wire.OptRapidCommit]; !there || len(v) != 0 {
+			t.Errorf("requested %q: option 80 = %x (present %v), want present and empty on the DISCOVER", requested, v, there)
+		}
+		if pl := msg.Options[wire.OptParameterList]; bytes.IndexByte(pl, byte(wire.OptRapidCommit)) >= 0 {
+			t.Errorf("requested %q: option 80 is in the parameter request list %v", requested, fmt.Sprint(pl))
+		}
+		got, there := msg.Options[wire.OptRequestedIP]
+		if (requested != "") != there || (there && !slices.Equal(got, net.ParseIP(requested).To4())) {
+			t.Errorf("requested %q: option 50 = %v (present %v), want the requested address beside option 80", requested, got, there)
+		}
 	}
 }

@@ -4,6 +4,7 @@
 package dhcp
 
 import (
+	"encoding/hex"
 	"net/netip"
 	"strconv"
 	"time"
@@ -52,6 +53,7 @@ func infoFromLease(l lease.Lease, r proto.RouterObservation, now time.Time, main
 	}
 	info.OnLinkPrefixes = onLinkPrefixes(r)
 	info.WithdrawnOnLinkPrefixes = withdrawnOnLinkPrefixes(r)
+	info.NAT64Prefixes = nat64Prefixes(r)
 
 	// DHCPv6 has no MTU option (option 26 is DHCPv4's, RFC 2132 section 5.1), so RFC 4861 section 4.6.4's is the v6
 	// MTU; the kernel stopped copying it at accept_ra=0 (#821). Guarded on Seen, and a server's option 26 still wins.
@@ -70,6 +72,8 @@ func infoFromLease(l lease.Lease, r proto.RouterObservation, now time.Time, main
 		info.TimeOffset = strconv.Itoa(int(v))
 	}
 
+	fillVendorOptions(&info, l.Options)
+
 	// sanitizeInfo runs at the one point every lease enters the plugin and feeds unsafe_option_values_dropped (#703).
 	dropped := sanitizeInfo(&info)
 
@@ -83,6 +87,27 @@ func infoFromLease(l lease.Lease, r proto.RouterObservation, now time.Time, main
 	}
 
 	return info, dropped
+}
+
+// Hex digits are never control characters, so sanitizeInfo has nothing to drop from these; the reflection test walks the
+// new fields anyway (#1034, #703).
+
+// fillVendorOptions records option 43 and option 125's blocks as hex. A malformed 125 is left out whole, and an empty 43
+// encodes to nothing, which the log treats as absent (#1034).
+func fillVendorOptions(info *Info, o wire.Options) {
+	if v, ok := o.VendorSpecific(); ok {
+		info.VendorSpecific = hex.EncodeToString(v)
+	}
+	blocks, err := o.VendorIdentifying()
+	if err != nil {
+		return
+	}
+	for _, b := range blocks {
+		info.VendorIdentifying = append(info.VendorIdentifying, VendorBlock{
+			Enterprise: b.Enterprise,
+			Data:       hex.EncodeToString(b.Data),
+		})
+	}
 }
 
 // A zero Expire is an infinite lease (0xFFFFFFFF on the wire); without this branch the deadline lands in year 1 (#899).
@@ -116,6 +141,20 @@ func defaultDestination(r wire.Route) bool { return r.Dest.Bits() == 0 }
 
 // onLinkPrefixes renders the advertisement's L-flag Prefix Information options as CIDR.
 func onLinkPrefixes(r proto.RouterObservation) []string { return lFlagPrefixes(r, false) }
+
+// nat64Prefixes renders the PREF64 entries as masked IPv6 CIDR without repeats (RFC 8781 section 4, #1028).
+func nat64Prefixes(r proto.RouterObservation) []string {
+	var out []string
+	for _, p := range r.PREF64 {
+		if !p.IsValid() || !p.Addr().Is6() || p.Addr().Is4In6() {
+			continue
+		}
+		if s := p.Masked().String(); !containsString(out, s) {
+			out = append(out, s)
+		}
+	}
+	return out
+}
 
 // withdrawnOnLinkPrefixes renders the L-flag options that carry Valid Lifetime 0 as CIDR.
 func withdrawnOnLinkPrefixes(r proto.RouterObservation) []string { return lFlagPrefixes(r, true) }
@@ -155,6 +194,27 @@ func containsString(in []string, s string) bool {
 // since the lease's pair is an aggregate. Docker's endpoint has one AddressIPv6: the first address inside
 // `ipv6_main_prefix`, else the lease's first, reported as MainAddrFallback (#818).
 
+// v6AddrsAt renders the entries still valid at now, with the entries kept beside them.
+func v6AddrsAt(entries []lease.Addr6, now time.Time) ([]lease.Addr6, []V6Addr) {
+	kept := make([]lease.Addr6, 0, len(entries))
+	out := make([]V6Addr, 0, len(entries))
+	for _, a := range entries {
+		// An expired address would render as infinite, since zero is netlink's no-IFA_CACHEINFO; a deadline can pass
+		// after the event (#818).
+		if !a.Addr.IsValid() || (!a.Valid.IsZero() && !a.Valid.After(now)) {
+			continue
+		}
+		kept = append(kept, a)
+		out = append(out, V6Addr{
+			IP:               a.Addr.String(),
+			ValidSeconds:     secondsUntil(a.Valid, now),
+			PreferredSeconds: v6PreferredSeconds(a, now),
+			Deprecated:       v6Deprecated(a, now),
+		})
+	}
+	return kept, out
+}
+
 // fillV6Addrs renders every address of a v6 lease with its own lifetimes and chooses the one reported to Docker.
 func fillV6Addrs(info *Info, l lease.Lease, now time.Time, main netip.Prefix) {
 	entries := l.Addrs
@@ -166,24 +226,14 @@ func fillV6Addrs(info *Info, l lease.Lease, now time.Time, main netip.Prefix) {
 		}
 		entries = []lease.Addr6{{Addr: l.Addr, Preferred: l.Preferred, Valid: l.Expire}}
 	}
-	info.Addrs = make([]V6Addr, 0, len(entries))
-	kept := make([]lease.Addr6, 0, len(entries))
-	for _, a := range entries {
-		// An expired address would render as infinite, since zero is netlink's no-IFA_CACHEINFO; a deadline can pass
-		// after the event (#818).
-		if !a.Addr.IsValid() || (!a.Valid.IsZero() && !a.Valid.After(now)) {
-			continue
-		}
-		kept = append(kept, a)
-		info.Addrs = append(info.Addrs, V6Addr{
-			IP:               a.Addr.String(),
-			ValidSeconds:     secondsUntil(a.Valid, now),
-			PreferredSeconds: v6PreferredSeconds(a, now),
-			Deprecated:       v6Deprecated(a, now),
-		})
-	}
+	var kept []lease.Addr6
+	kept, info.Addrs = v6AddrsAt(entries, now)
 	if len(info.Addrs) == 0 {
 		return
+	}
+	// The IA_TA addresses take the same lifetime rules and stay out of kept, so the choice below never sees one (#927).
+	if _, temp := v6AddrsAt(l.TempAddrs, now); len(temp) > 0 {
+		info.TempAddrs = temp
 	}
 
 	chosen := 0
