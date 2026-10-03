@@ -8,7 +8,7 @@ The notes below go back to the first release of this project.
 
 [predecessor]: https://github.com/devplayer0/docker-net-dhcp
 
-## v2.4.0 (unreleased)
+## v2.4.0
 
 The client reads and sends more DHCP options: Rapid Commit on both address
 families, User Class, FORCERENEW, the Microsoft classless routes, the
@@ -42,12 +42,12 @@ prompts on has moved since v2.0.0. This release changes the manifest's
 
 | What changed | What it does to you |
 | --- | --- |
-| Every interface that appears in the container starts with `accept_ra=0` and `autoconf=0` (#1145, PR #1146) | The kernel's own Router Advertisement processing no longer races the engine's IPv6 gateway install at Join. A per-interface `--sysctl` on another link wins on that link ([`reference.md`](docs/reference.md)) |
+| On a network with IPv6 on, every interface that appears in the container afterwards starts with `accept_ra=0` and `autoconf=0`, where Docker Engine 28 or later creates the sandbox before Join and the daemon's sandbox mounts reach the plugin (`sandbox_netns_propagation` 1) (#1145, PR #1146) | The kernel's own Router Advertisement processing no longer races the engine's IPv6 gateway install at Join. A per-interface `--sysctl` on another link wins on that link. Elsewhere the write is skipped, counted in `router_advert_guard_failures` and warned ([`reference.md`](docs/reference.md)) |
 | An `ipv6_mode=auto` network remembers a silent DHCPv6 server for `DHCPV6_ABSENCE_MEMORY`, ten minutes by default (#1038, PR #1160) | A second endpoint within the window forms its address from the advertised prefix without soliciting. `0` turns the memory off; a granted DHCPv6 address, removing the network or a plugin restart clears it |
 | Every DHCPv4 DISCOVER and REQUEST carries option 145 (#1119, PR #1164) | A server that sends FORCERENEW can now renew a lease with an authenticated message; any other FORCERENEW is refused and counted |
 | A server that sends option 249 and no option 121 gets its routes installed (#1030, PR #1164) | The container has routes it did not have before, the default route among them |
 | The lease record file is compacted on the sweep (#1182, PR #1194) | A container pinned to a MAC that comes back after its lease ran out no longer names its old address in its request |
-| A network on an existing bridge logs the host firewall verdict at create, and at the lease deadline (#1116, PR #1136) | A `warning` line names the bridge and the documented `FORWARD` rule when the host would drop the DHCP frames. Nothing is refused |
+| A network on an existing bridge logs the host firewall verdict at create, and again when its first lease attempt runs out of time (#1116, PR #1136) | At create a `warning` line names the bridge and the documented `FORWARD` rule when the host would drop the DHCP frames; at the deadline the verdict is appended to the failed request's error line. Nothing is refused |
 
 ### New
 
@@ -204,9 +204,10 @@ prompts on has moved since v2.0.0. This release changes the manifest's
   daemon before counting a vanish: only "no such container", exited or
   dead counts; a running container, an error or no answer is a start
   failure (`join_start_failures`) (#1186, PR #1196).
-- On a newer runner kernel a macvlan `passthru` child pinned a random MAC
-  onto its parent, because a passthru child shares the parent's MAC. The pin
-  now takes the parent's MAC for passthru (#1147, PR #1150).
+- A macvlan `passthru` network changed its parent's MAC: a passthru child
+  shares the parent's MAC, so the random MAC the plugin pinned onto the child
+  landed on the parent. The pin now takes the parent's MAC for passthru
+  (#1147, PR #1150).
 - The bridge-mode firewall test no longer fails on a host where
   `br_netfilter` is not loaded; the hosted lane loads it and reads
   `bridge-nf-call-iptables` back (#1148, PR #1150).
@@ -219,18 +220,23 @@ prompts on has moved since v2.0.0. This release changes the manifest's
 - The engine-matrix option loop reads the option catalogue from its own
   descriptor and counts what ran; before, it stopped after `macvlan_mode`
   and 29 of 37 catalogue entries were never driven (#1141, PR #1142).
-- The coverage lane reports per-function floors for `pkg/plugin`, as a table
-  in the summary and as an artifact (#1117, PR #1134).
-- Kea is the DHCPv6 server of the integration lane, in the harness and on
-  the hosted and arm64 lanes (#214, PR #1144).
+- The coverage lane had no floor per function for `pkg/plugin`; it now
+  reports one, as a table in the summary and as an artifact (#1117,
+  PR #1134).
 - The docs say what the plugin never asks for: IPv6-Only Preferred
   (option 108) is never requested, and a guard keeps it so (#1027,
   PR #1152). The docs call the project the successor of
   `devplayer0/docker-net-dhcp`, and not a fork, in the README, the release
   notes preamble, the governance document, the badge answers and the Docker
-  Hub text (#1126, PRs #1131, #1133). The systemd-networkd bridge recipe
+  Hub text (PRs #1131, #1133). The systemd-networkd bridge recipe
   says what happens on a cloud image, where cloud-init's own `.network`
   file for the NIC wins (PR #1122).
+
+### Deferred
+
+- DHCPv6 prefix delegation (IA_PD), designed first (#214): moved to v2.5.0.
+  Only its Kea DHCPv6 test fixture, the DHCPv6 server of the integration
+  lane, is in this release (PR #1144).
 
 ## v2.3.1
 

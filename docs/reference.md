@@ -1720,7 +1720,7 @@ What the option does, concretely:
 - **Prefix delegation is not implemented.** The client asks for an IA_NA;
   there is no IA_PD. It is open as
   [#214](https://github.com/claymore666/docker-net-dhcp/issues/214),
-  designed first, with no release yet.
+  designed first; the [roadmap](roadmap.md) says where it stands.
 
 #### The DUID differs by mode, and it matters on ipvlan
 

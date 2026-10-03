@@ -102,10 +102,9 @@ Where the plugin refuses, the message names the reason.
 
 ## Planned
 
-v2.5.0 is CI consolidation and code debt, nothing a user sees. DHCPv6
-prefix delegation ([#214]) and the whole DHCPv6 NTP server list ([#859])
-are open and have no release yet. The full list, with what this
-project will not do, is on the [roadmap](docs/roadmap.md).
+v2.5.0 is CI consolidation and code debt, plus DHCPv6 prefix
+delegation ([#214]), which is designed first. The full list, with what
+this project will not do, is on the [roadmap](docs/roadmap.md).
 
 ## How to check any of this
 
@@ -127,7 +126,6 @@ project will not do, is on the [roadmap](docs/roadmap.md).
 [#903]: https://github.com/claymore666/docker-net-dhcp/issues/903
 [#904]: https://github.com/claymore666/docker-net-dhcp/issues/904
 [#214]: https://github.com/claymore666/docker-net-dhcp/issues/214
-[#859]: https://github.com/claymore666/docker-net-dhcp/issues/859
 [#1027]: https://github.com/claymore666/docker-net-dhcp/issues/1027
 
 ## Requirements

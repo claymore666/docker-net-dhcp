@@ -14,7 +14,7 @@ below decide what is in a release; this page follows them.
 | v2.3.0 | released | The host plumbing an operator does by hand today, and the gaps the IPAM shape still refuses | [milestone 31](https://github.com/claymore666/docker-net-dhcp/milestone/31) |
 | v2.3.1 | released | IPv6 routes at Join, the fixed-MAC hand-over in IPAM mode, and diagrams of the plugin and the lab | [milestone 38](https://github.com/claymore666/docker-net-dhcp/milestone/38) |
 | v2.4.0 | released | The rest of IPv6, and the DHCP options the client does not read yet | [milestone 34](https://github.com/claymore666/docker-net-dhcp/milestone/34) |
-| v2.5.0 | planned | CI consolidation and code debt; nothing a user sees | [milestone 35](https://github.com/claymore666/docker-net-dhcp/milestone/35) |
+| v2.5.0 | planned | CI consolidation and code debt, and DHCPv6 prefix delegation, designed first | [milestone 35](https://github.com/claymore666/docker-net-dhcp/milestone/35) |
 
 ### v2.3.0, released
 
@@ -69,6 +69,8 @@ below decide what is in a release; this page follows them.
 - [#1033], the DHCPv6 timezone options logged as the v4 ones are. The
   library half comes with the v1.4.0 pin ([#1177]): the Reply's options on
   the lease
+- [#859], the whole DHCPv6 NTP server list, option 56, in the same log
+  line, one entry per instance
 - [#1034], the vendor-specific options logged. The DHCPv6 half's library
   side comes with the v1.4.0 pin ([#1177]): option 17 on the lease
 - [#1038], an `ipv6_mode=auto` network remembers a silent DHCPv6 server
@@ -79,13 +81,10 @@ below decide what is in a release; this page follows them.
 - [#926], DHCPv6 Rapid Commit, the two-message exchange
 - [#927], DHCPv6 temporary addresses (IA_TA)
 
-### Open, no release yet
-
-- [#214], DHCPv6 prefix delegation (IA_PD), designed first
-- [#859], the whole DHCPv6 NTP server list
-
 ### v2.5.0
 
+- [#214], DHCPv6 prefix delegation (IA_PD), designed first; only its Kea
+  DHCPv6 test fixture is in v2.4.0
 - [#733], the tracking issue for the CI consolidation programme
 - [#744], one subject discovery, one refusal and one collation in a
   shared shell library
@@ -123,7 +122,7 @@ flowchart LR
     v22["v2.2<br/>IPv6 modes and<br/>router discovery"]
     v23["v2.3<br/>host plumbing"]
     v24["v2.4<br/>the rest of IPv6"]
-    v25["v2.5<br/>CI and code debt"]
+    v25["v2.5<br/>CI, code debt and<br/>prefix delegation"]
     v20 --> v21 --> v22 --> v23 --> v24 --> v25
     classDef planned stroke-dasharray: 6 4
     class v25 planned
