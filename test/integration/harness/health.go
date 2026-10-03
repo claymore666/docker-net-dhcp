@@ -248,7 +248,7 @@ func PluginLog(ctx context.Context) (string, []byte, error) {
 	if err != nil {
 		return "", nil, err
 	}
-	data, err := readPluginLogWholeFile(logPath)
+	data, err := readWholeCapped(logPath, PluginLogWholeMax)
 	if err != nil {
 		return logPath, nil, err
 	}

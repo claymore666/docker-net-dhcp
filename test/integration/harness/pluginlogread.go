@@ -129,12 +129,8 @@ func readTailRange(path string, off, max int64, header string) ([]byte, int64, e
 	return buf[start-hl : end], size, nil
 }
 
-// readPluginLogWholeFile returns the log from byte 0 for the health floor, which judges the whole run: a cut there
-// would let faults past the cap read as a clean log, so an over-cap log is an error and not a short read (#1168).
-func readPluginLogWholeFile(path string) ([]byte, error) {
-	return readWholeCapped(path, PluginLogWholeMax)
-}
-
+// readWholeCapped returns the log from byte 0 for the health floor, which judges the whole run: a cut there would let
+// faults past max read as a clean log, so an over-cap log is an error and not a short read (#1168).
 func readWholeCapped(path string, max int64) ([]byte, error) {
 	data, size, cut, err := readLogRange(path, 0, max)
 	if err != nil {
