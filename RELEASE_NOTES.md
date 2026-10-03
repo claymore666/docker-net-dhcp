@@ -97,6 +97,13 @@ prompts on has moved since v2.0.0. This release changes the manifest's
   memory use as `integration memory:` at exit, and the arm64 lane fails the
   suite when that use passes 256 MB. The runner image also cuts the daemon
   log to its last megabyte once it passes 160 MB (#1180).
+- After a Docker restart or at boot, the plugin opens its socket within the
+  time the daemon allows, also on a slow host. Docker enables the plugin
+  before it answers its own API and disables a plugin whose socket is
+  still missing after about 10 seconds. When the plugin cannot reach the
+  daemon at startup, recovery and the second engine check now run after
+  the socket opens, where before the plugin waited about 7 seconds on the
+  daemon first (#1176).
 
 ## v2.3.1
 
