@@ -78,6 +78,11 @@ prompts on has moved since v2.0.0. This release changes the manifest's
   window less the measured spread of the two attaches, instead of assuming
   the worst case of the Solicit delay; the Solicit count and the counters
   stay the proof that the second endpoint did not solicit (#1172).
+- The integration lane's lease-file reader no longer calls a lease released
+  because the DHCP server was in the middle of rewriting its lease file. An
+  empty file is read again for up to half a second before the address
+  counts as released; a line that is really gone is still reported within
+  about 40 ms (#1173).
 
 ## v2.3.1
 
