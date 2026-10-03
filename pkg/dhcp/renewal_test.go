@@ -184,11 +184,18 @@ type fakeLib struct {
 	mu    sync.Mutex
 	stats lease.Stats
 	src   chan lease.Event
+	held  func() (lease.Lease, bool)
 }
 
 func (f *fakeLib) Run(ctx context.Context) error { return nil }
 func (f *fakeLib) Events() <-chan lease.Event    { return f.src }
-func (f *fakeLib) Lease() (lease.Lease, bool)    { return lease.Lease{}, false }
+
+func (f *fakeLib) Lease() (lease.Lease, bool) {
+	if f.held == nil {
+		return lease.Lease{}, false
+	}
+	return f.held()
+}
 
 func (f *fakeLib) Stats() lease.Stats {
 	f.mu.Lock()

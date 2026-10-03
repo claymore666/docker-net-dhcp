@@ -922,6 +922,8 @@ func (c *DHCPClient) Wait(ctx context.Context) error {
 // Lease is the lease the client currently holds, for the durable record.
 func (c *DHCPClient) Lease() (lease.Lease, bool) {
 	switch {
+	case c.runner != nil:
+		return c.runner.Lease()
 	case c.client6 != nil:
 		return c.client6.Lease()
 	case c.client != nil:

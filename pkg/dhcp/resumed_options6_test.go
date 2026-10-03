@@ -40,6 +40,7 @@ func TestCarryResumedOptions6_LeavesWhatItMustNotFill(t *testing.T) {
 		{"no remembered lease", DHCPClientOptions{V6: true}, lease.Event{Kind: lease.Acquired}},
 		{"a Lost", DHCPClientOptions{V6: true, Resume: rememberedTZ()}, lease.Event{Kind: lease.Lost}},
 		{"a Failed", DHCPClientOptions{V6: true, Resume: rememberedTZ()}, lease.Event{Kind: lease.Failed}},
+		{"a Configured", DHCPClientOptions{V6: true, Resume: rememberedTZ()}, lease.Event{Kind: lease.Configured}},
 	}
 	for _, tc := range cases {
 		tc.o.carryResumedOptions6(&tc.ev)
@@ -64,6 +65,27 @@ func TestTakeAdvertChange_AConfirmedLeaseKeepsTheRememberedOptions(t *testing.T)
 	c := &DHCPClient{opts: DHCPClientOptions{V6: true, Resume: rememberedTZ()}}
 	l := lease.Lease{Addr: netip.MustParsePrefix("fd00:6470:6865::61/128"), Gateway: addr(t, "fe80::1")}
 	c.view = func() (lease.Lease, bool) { return l, true }
+
+	c.takeAdvertChange(time.Now())
+	l.Gateway = addr(t, "fe80::2")
+	out, ok := c.takeAdvertChange(time.Now())
+	if !ok {
+		t.Fatal("a changed gateway was not reported")
+	}
+	if out.Data.PosixTimezone != "PST8PDT" {
+		t.Errorf("the routeradvert render has posix_tz=%q, want the remembered option 41", out.Data.PosixTimezone)
+	}
+}
+
+// The same scenario through the lease source production uses: an endpoint restarted, its confirmed lease has no
+// options, and the router advertisement changes before the first renewal (#1033).
+func TestTakeAdvertChange_TheDefaultLeaseSourceKeepsTheRememberedOptions(t *testing.T) {
+	l := lease.Lease{Addr: netip.MustParsePrefix("fd00:6470:6865::61/128"), Gateway: addr(t, "fe80::1")}
+	lib := &fakeLib{src: make(chan lease.Event), held: func() (lease.Lease, bool) { return l, true }}
+	c := &DHCPClient{opts: DHCPClientOptions{V6: true, Resume: rememberedTZ()}, runner: lib}
+	if c.view != nil {
+		t.Fatal("the test must read the default lease source, not the test seam")
+	}
 
 	c.takeAdvertChange(time.Now())
 	l.Gateway = addr(t, "fe80::2")
