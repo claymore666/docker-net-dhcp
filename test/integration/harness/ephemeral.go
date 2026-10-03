@@ -729,13 +729,25 @@ func (ef *EphemeralFixture) SeedStolenLease(ip string) {
 	}
 }
 
+// readLeaseFileSettled reads the lease file, re-reading an empty one up to LeaseFileRewriteWindow (#1173).
+func readLeaseFileSettled(path string) ([]byte, error) {
+	deadline := time.Now().Add(LeaseFileRewriteWindow)
+	for {
+		data, err := os.ReadFile(path)
+		if err != nil || len(strings.TrimSpace(string(data))) > 0 || !time.Now().Before(deadline) {
+			return data, err
+		}
+		leaseFileSleep(LeaseFileRereadGap)
+	}
+}
+
 // LeaseExpiry returns the expiry the dnsmasq backend last wrote for mac to its lease file.
 func (ef *EphemeralFixture) LeaseExpiry(mac string) (time.Time, bool) {
 	ef.t.Helper()
 	if ef.backend != backendDnsmasq {
 		ef.t.Fatal("LeaseExpiry reads dnsmasq's lease file; this fixture runs another server")
 	}
-	b, err := os.ReadFile(ef.leaseFile)
+	b, err := readLeaseFileSettled(ef.leaseFile)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return time.Time{}, false

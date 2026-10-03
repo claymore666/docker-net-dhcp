@@ -100,6 +100,59 @@ func TestLeaseFileHolds_AnEmptyFileThatFillsDuringTheGapIsHeld(t *testing.T) {
 	}
 }
 
+// A writer parked past the old 40 ms confirmation is still a rewrite in flight (#1173).
+func TestLeaseFileHolds_AnEmptyFileParkedPastTheOldBudgetIsHeld(t *testing.T) {
+	path := writeLeaseFile(t, "")
+	const oldBudget = 40 * time.Millisecond
+	sleeps := 0
+	defer func(old func(time.Duration)) { leaseFileSleep = old }(leaseFileSleep)
+	leaseFileSleep = func(d time.Duration) {
+		time.Sleep(d)
+		if sleeps++; sleeps == 6 {
+			if err := os.WriteFile(path, []byte(leaseFileThreeLines), 0o644); err != nil {
+				t.Errorf("rewrite: %v", err)
+			}
+		}
+	}
+	start := time.Now()
+	held, err := LeaseFileHolds(path, "192.168.99.45")
+	took := time.Since(start)
+	if err != nil || !held {
+		t.Fatalf("empty file refilled after %v: held=%v err=%v, want true", took, held, err)
+	}
+	if took <= oldBudget {
+		t.Fatalf("returned after %v, want past the old %v budget: the test did not park the writer long enough", took, oldBudget)
+	}
+}
+
+func TestLeaseFileHolds_AFileEmptyForTheWholeWindowIsReleased(t *testing.T) {
+	path := writeLeaseFile(t, "")
+	start := time.Now()
+	held, err := LeaseFileHolds(path, "192.168.99.45")
+	took := time.Since(start)
+	if err != nil || held {
+		t.Fatalf("held=%v err=%v, want false", held, err)
+	}
+	if took < LeaseFileRewriteWindow {
+		t.Fatalf("an empty file was confirmed absent after %v, want at least the %v window", took, LeaseFileRewriteWindow)
+	}
+}
+
+func TestLeaseExpiry_AnEmptyReadInsideTheRewriteIsNotNoLease(t *testing.T) {
+	path := writeLeaseFile(t, "")
+	ef := &EphemeralFixture{t: t, backend: backendDnsmasq, leaseFile: path}
+	defer func(old func(time.Duration)) { leaseFileSleep = old }(leaseFileSleep)
+	leaseFileSleep = func(time.Duration) {
+		if err := os.WriteFile(path, []byte(leaseFileThreeLines), 0o644); err != nil {
+			t.Errorf("rewrite: %v", err)
+		}
+	}
+	expiry, found := ef.LeaseExpiry("aa:bb:cc:00:00:02")
+	if !found || expiry.Unix() != 1790000200 {
+		t.Fatalf("empty file refilled during the re-read: expiry=%v found=%v, want 1790000200 true", expiry, found)
+	}
+}
+
 func TestLeaseFileHolds_AbsenceIsConfirmedByEveryRead(t *testing.T) {
 	path := writeLeaseFile(t, leaseFileThreeLines)
 	sleeps := 0
