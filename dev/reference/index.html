@@ -3476,7 +3476,11 @@ router is one <code>docker network create</code> line and not a contradiction.</
   endpoint leaves, and a later <code>docker network connect</code> of another network of
   this plugin writes the two defaults to 0 again. The write takes where the
   engine has created the sandbox before it calls <code>Join</code>, which is Docker
-  Engine 28 and later (measured on the engine matrix). On 26 and 27 the engine
+  Engine 28 and later (measured on the engine matrix), and where the daemon's
+  sandbox mounts reach the plugin's mount namespace
+  (<code>sandbox_netns_propagation</code> 1). On a 28+ host whose mounts do not reach
+  it the write is skipped, counted in <code>router_advert_guard_failures</code> and
+  warned with <code>step=sandbox_default</code>. On 26 and 27 the engine
   builds the sandbox after <code>Join</code>, the plugin finds no namespace to write into
   and the guard cannot run, so the race above stays open on those engines.</li>
 <li><strong>The container's name reaches the DHCPv6 server only with
