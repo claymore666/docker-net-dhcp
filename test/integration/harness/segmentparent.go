@@ -7,6 +7,8 @@ package harness
 
 import (
 	"net"
+	"os"
+	"strings"
 	"testing"
 
 	"github.com/vishvananda/netlink"
@@ -46,4 +48,14 @@ func LinkMAC(t *testing.T, name string) net.HardwareAddr {
 		t.Fatalf("LinkByName %s: %v", name, err)
 	}
 	return l.Attrs().HardwareAddr
+}
+
+// LinkAddrAssignType is the kernel's mark of where a host link's address came from: 3 is an address set by a caller.
+func LinkAddrAssignType(t *testing.T, name string) string {
+	t.Helper()
+	b, err := os.ReadFile("/sys/class/net/" + name + "/addr_assign_type")
+	if err != nil {
+		t.Fatalf("read addr_assign_type of %s: %v", name, err)
+	}
+	return strings.TrimSpace(string(b))
 }

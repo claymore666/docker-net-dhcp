@@ -334,11 +334,13 @@ func (f *Fixture) Teardown() error {
 	return firstErr
 }
 
-// addParentVeth creates the veth pair name<->peer, enslaves peer to the segment and returns the parent end.
+// addParentVeth creates the veth pair name<->peer with set MACs (#1147), enslaves peer to the segment, returns the parent.
 func addParentVeth(segment netlink.Link, name, peer string) (netlink.Link, error) {
 	la := netlink.NewLinkAttrs()
 	la.Name = name
-	if err := netlink.LinkAdd(&netlink.Veth{LinkAttrs: la, PeerName: peer}); err != nil {
+	la.HardwareAddr = macForName(name)
+	veth := &netlink.Veth{LinkAttrs: la, PeerName: peer, PeerHardwareAddr: macForName(peer)}
+	if err := netlink.LinkAdd(veth); err != nil {
 		return nil, fmt.Errorf("LinkAdd veth %s: %w", name, err)
 	}
 	parent, err := netlink.LinkByName(name)
@@ -539,7 +541,8 @@ func (v *VlanFixture) start() error {
 	cleanupVlan()
 	la := netlink.NewLinkAttrs()
 	la.Name = VlanParent
-	if err := netlink.LinkAdd(&netlink.Veth{LinkAttrs: la, PeerName: vlanPeer}); err != nil {
+	la.HardwareAddr = macForName(VlanParent)
+	if err := netlink.LinkAdd(&netlink.Veth{LinkAttrs: la, PeerName: vlanPeer, PeerHardwareAddr: macForName(vlanPeer)}); err != nil {
 		return fmt.Errorf("LinkAdd vlan veth: %w", err)
 	}
 	host, err := netlink.LinkByName(VlanParent)

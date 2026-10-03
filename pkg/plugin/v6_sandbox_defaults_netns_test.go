@@ -5,6 +5,7 @@ package plugin
 
 import (
 	"errors"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -174,5 +175,37 @@ func TestWriteV6SandboxDefaults_ASteadyPlaceholderIsOneFailureAfterTheBound(t *t
 	}
 	if elapsed < placeholderBoundIntervals*pollTime || elapsed > 4*pollTime {
 		t.Errorf("returned after %s, want about the bound %s", elapsed, placeholderBoundIntervals*pollTime)
+	}
+}
+
+// Only a placeholder is awaited: a key with no entry yet, or no directory, returns as SandboxNotBuilt at once and not
+// after the await's own 300 ms context (#1185).
+func TestWriteV6SandboxDefaults_OnlyAPlaceholderIsAwaited(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		key  func(dir string) string
+	}{
+		{"absent entry in a permitted directory", func(dir string) string { return filepath.Join(dir, "sandbox") }},
+		{"permitted directory that does not exist", func(dir string) string { return filepath.Join(dir, "gone", "sandbox") }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			key := tc.key(dir)
+			prev := sandboxNetnsDirs
+			sandboxNetnsDirs = []string{filepath.Dir(key)}
+			t.Cleanup(func() { sandboxNetnsDirs = prev })
+
+			start := time.Now()
+			res := writeV6SandboxDefaults(key)
+			elapsed := time.Since(start)
+			if !res.SandboxNotBuilt || res.Failures != 0 || !errors.Is(res.Err, fs.ErrNotExist) {
+				t.Fatalf("SandboxNotBuilt=%v failures=%d err=%v; want SandboxNotBuilt, no failure, an fs.ErrNotExist err",
+					res.SandboxNotBuilt, res.Failures, res.Err)
+			}
+			if elapsed >= 2*pollTime {
+				t.Errorf("returned after %s: a refusal that is not the placeholder was awaited (await ctx %s)",
+					elapsed, (placeholderBoundIntervals+1)*pollTime)
+			}
+		})
 	}
 }

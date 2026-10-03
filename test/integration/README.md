@@ -549,7 +549,10 @@ answered first.
 3. `t.Cleanup` is best-effort. If a test panics mid-setup, run
    `sudo bash test/integration/cleanup-orphans.sh` to remove
    leftover `dh-itest-*` interfaces, networks, and the `dnsmasq`
-   process if it's still running.
+   process if it's still running. It first stops a previous run's
+   test binary, `go test`, `make` and fixture servers (a binary left
+   behind by a cancelled job deletes the new job's links when its
+   teardown runs, #1147) and exits non-zero if one survives `KILL`.
 
 ## Coverage harvesting
 

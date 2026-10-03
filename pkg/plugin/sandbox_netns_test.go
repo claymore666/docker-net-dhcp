@@ -509,3 +509,42 @@ func TestOpenSandboxNetNS_BothRoutesFailingNamesTheKeyErrorToo(t *testing.T) {
 		t.Errorf("the combined error does not carry errPIDNotContainer: %v", err)
 	}
 }
+
+// An entry that stops being a placeholder (here: it vanishes) starts the bound over when a placeholder returns (#1185).
+func TestAwaitSandboxNetNSByKey_PlaceholderBoundRestartsAfterTheEntryStopsBeingOne(t *testing.T) {
+	dir := t.TempDir()
+	key := filepath.Join(dir, "5e6f7a8b")
+	if err := os.WriteFile(key, nil, 0o600); err != nil {
+		t.Fatalf("write placeholder: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	defer cancel()
+
+	const interval = 200 * time.Millisecond
+	const recreatedAt = 900 * time.Millisecond
+	flipped := make(chan struct{})
+	defer func() { <-flipped }()
+	go func() {
+		defer close(flipped)
+		time.Sleep(interval + interval/2)
+		_ = os.Remove(key)
+		time.Sleep(recreatedAt - interval - interval/2)
+		_ = os.WriteFile(key, nil, 0o600)
+	}()
+
+	start := time.Now()
+	ns, err := awaitSandboxNetNSByKeyIn(ctx, []string{dir}, key, interval)
+	elapsed := time.Since(start)
+	if err == nil {
+		closeNsHandle(ns)
+		t.Fatal("accepted an empty file as a namespace")
+	}
+	if !errors.Is(err, errSandboxKeyPlaceholder) {
+		t.Fatalf("err = %v after %s, want errSandboxKeyPlaceholder", err, elapsed)
+	}
+	if elapsed < recreatedAt+2*interval {
+		t.Errorf("returned after %s: the bound ran from the sighting before the entry vanished, not from the one at %s",
+			elapsed, recreatedAt)
+	}
+}

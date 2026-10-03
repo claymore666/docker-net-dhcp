@@ -95,7 +95,7 @@ func TestV6Wiring_ArmsTheRouterStatsCallbackInEveryMode(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			p := &Plugin{}
 			var base dhcp.DHCPClientOptions
-			if err := p.v6Wiring(&base, tc.opts, id6, "rec-1", "", "endpoint-1"); err != nil {
+			if err := p.v6Wiring(&base, tc.opts, id6, "rec-1", "", "endpoint-1", "net-1"); err != nil {
 				t.Fatalf("v6Wiring: %v", err)
 			}
 			if base.OnRouterStats == nil {
@@ -115,7 +115,7 @@ func TestV6Wiring_ANilPluginArmsNoCallbackAndStillCarriesTheMode(t *testing.T) {
 	var p *Plugin
 	var base dhcp.DHCPClientOptions
 	if err := p.v6Wiring(&base, DHCPNetworkOptions{Bridge: "br0", IPv6Mode: "slaac"},
-		dhcp.Identity6{DUID: []byte{0, 4, 1}, IAID: 1}, "rec-1", "", "endpoint-1"); err != nil {
+		dhcp.Identity6{DUID: []byte{0, 4, 1}, IAID: 1}, "rec-1", "", "endpoint-1", "net-1"); err != nil {
 		t.Fatalf("v6Wiring: %v", err)
 	}
 	if base.OnRouterStats != nil {

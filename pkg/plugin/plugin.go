@@ -225,8 +225,11 @@ type DHCPNetworkOptions struct {
 	// per autonomous prefix; unset or unmatched uses the first advertised prefix (#818).
 	IPv6MainPrefix string `mapstructure:"ipv6_main_prefix"`
 	// IPv6Temporary puts an IA_TA (RFC 8415 section 21.5) beside the IA_NA in every Solicit and Request (#927).
-	IPv6Temporary bool          `mapstructure:"ipv6_temporary"`
-	LeaseTimeout  time.Duration `mapstructure:"lease_timeout"`
+	IPv6Temporary bool `mapstructure:"ipv6_temporary"`
+	// IPv6IID is how SLAAC forms the interface identifier: eui64 (unset) from the MAC, or stable-privacy per RFC 7217
+	// from a secret in STATE_DIR (#1032).
+	IPv6IID      string        `mapstructure:"ipv6_iid"`
+	LeaseTimeout time.Duration `mapstructure:"lease_timeout"`
 	// IgnoreConflicts skips CreateNetwork's check for another Docker network on this bridge or range; it is unrelated
 	// to conflict_check's RFC 5227 detection on the wire.
 	IgnoreConflicts bool `mapstructure:"ignore_conflicts"`

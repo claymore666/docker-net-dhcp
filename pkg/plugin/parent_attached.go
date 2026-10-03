@@ -200,6 +200,28 @@ func (p *Plugin) noteRestartLinkUpWait(r CreateEndpointRequest, waited bool, err
 		Info("Child link came up after waiting out the departing link's address (#408)")
 }
 
+// pinChildMAC returns the MAC the child's lease is keyed on and pins it (#103): udev's MACAddressPolicy=persistent, the
+// Debian default, replaces a randomly assigned MAC just after creation, and a set addr_assign_type stops it. Without the
+// pin the one-shot DHCPv6 poisoned the server's neighbour cache for about 45 s on the capture. ipvlan refuses any MAC set
+// with EOPNOTSUPP and a user MAC is already on the child. A passthru child shares its parent's MAC and an address set
+// or rewritten on the child lands on the parent, so it is pinned to the parent's MAC read before the add, never to one
+// read from the child afterwards, which udev may already have rewritten (#1147, #905).
+func pinChildMAC(opts DHCPNetworkOptions, userMAC bool, fresh, parent netlink.Link) (net.HardwareAddr, error) {
+	mac := fresh.Attrs().HardwareAddr
+	if opts.macvlanPassthru() {
+		mac = parent.Attrs().HardwareAddr
+		if len(mac) == 0 {
+			return nil, fmt.Errorf("parent %v has no MAC to pin a passthru child to (#1147)", parent.Attrs().Name)
+		}
+	}
+	if opts.effectiveMode() != ModeIPvlan && !userMAC {
+		if err := nlLinkSetHardwareAddr(fresh, mac); err != nil {
+			return nil, fmt.Errorf("failed to pin %v link MAC: %w", opts.effectiveMode(), err)
+		}
+	}
+	return mac, nil
+}
+
 func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, callStart time.Time, r CreateEndpointRequest, opts DHCPNetworkOptions) (CreateEndpointResponse, error) {
 	res := CreateEndpointResponse{Interface: &EndpointInterface{}}
 	mode := opts.effectiveMode()
@@ -314,17 +336,9 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, callStart tim
 		if err := applyEndpointMTU(opts.MTU, fresh); err != nil {
 			return err
 		}
-		mac := fresh.Attrs().HardwareAddr
-
-		// Pin the kernel-assigned macvlan MAC (#103): udev's MACAddressPolicy=persistent, the Debian default,
-		// replaces a randomly assigned MAC just after creation, and a set addr_assign_type stops it. Without the pin
-		// the one-shot DHCPv6 poisoned the server's neighbour cache for about 45 s on the capture. ipvlan refuses any
-		// MAC set with EOPNOTSUPP. A passthru child is pinned to the parent's own MAC, which leaves the parent as it is
-		// (measured on Linux 6.12); unpinned, a rewrite of the child would change the parent's (#905).
-		if opts.effectiveMode() != ModeIPvlan && effectiveMAC == "" {
-			if err := netlink.LinkSetHardwareAddr(fresh, mac); err != nil {
-				return fmt.Errorf("failed to pin %v link MAC: %w", mode, err)
-			}
+		mac, err := pinChildMAC(opts, effectiveMAC != "", fresh, parent)
+		if err != nil {
+			return err
 		}
 
 		waited, err := linkUpAwaitingAddress(ctx, fresh, childLinkUpBudget)
