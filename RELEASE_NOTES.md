@@ -51,7 +51,8 @@ prompts on has moved since v2.0.0. This release changes the manifest's
   server's timezone options, 41 as `posix_tz` and 42 as `tzdb_tz`, and its
   NTP servers, option 56, as `ntp`: every instance in the order it arrived,
   an address as text or a server name as the name. One malformed instance
-  leaves `ntp` out and logs a warning once (#1033, #859).
+  leaves `ntp` out and logs a warning once per server and offer (#1033,
+  #859).
 - A DHCP server that sends the Microsoft classless static routes, option
   249, and no option 121 now gets its routes installed in the container,
   and the default route among them replaces option 3's router as 121's
