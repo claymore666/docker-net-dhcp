@@ -1507,7 +1507,7 @@ The plugin logs the timezone options 41 and 42 and the NTP Server option
 ([#1033](https://github.com/claymore666/docker-net-dhcp/issues/1033),
 [#859](https://github.com/claymore666/docker-net-dhcp/issues/859)); it
 does not read or log option 17 yet
-([#1034](https://github.com/claymore666/docker-net-dhcp/issues/1034)).
+([#1203](https://github.com/claymore666/docker-net-dhcp/issues/1203)).
 The DHCPv4 vendor options 43 and 125 are logged, as described below.
 
 **Logged** at info level on every bind and renew, and only when at least

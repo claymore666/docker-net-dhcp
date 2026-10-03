@@ -42,7 +42,7 @@ prompts on has moved since v2.0.0. This release changes the manifest's
 
 | What changed | What it does to you |
 | --- | --- |
-| On a network with IPv6 on, every interface that appears in the container afterwards starts with `accept_ra=0` and `autoconf=0`, where Docker Engine 28 or later creates the sandbox before Join and the daemon's sandbox mounts reach the plugin (`sandbox_netns_propagation` 1) (#1145, PR #1146) | The kernel's own Router Advertisement processing no longer races the engine's IPv6 gateway install at Join. A per-interface `--sysctl` on another link wins on that link. Elsewhere the write is skipped, counted in `router_advert_guard_failures` and warned ([`reference.md`](docs/reference.md)) |
+| On a network with IPv6 on, every interface that appears in the container afterwards starts with `accept_ra=0` and `autoconf=0`, where Docker Engine 28 or later creates the sandbox before Join and the daemon's sandbox mounts reach the plugin (`sandbox_netns_propagation` 1) (#1145, PR #1146) | The kernel's own Router Advertisement processing no longer races the engine's IPv6 gateway install at Join. A per-interface `--sysctl` on another link wins on that link. On Docker Engine 26 and 27 the sandbox does not exist at Join yet, so nothing is written, counted or warned and the race stays open there; on engine 28 or later a failed write is counted in `router_advert_guard_failures` and warned with `step=sandbox_default` ([`reference.md`](docs/reference.md)) |
 | An `ipv6_mode=auto` network remembers a silent DHCPv6 server for `DHCPV6_ABSENCE_MEMORY`, ten minutes by default (#1038, PR #1160) | A second endpoint within the window forms its address from the advertised prefix without soliciting. `0` turns the memory off; a granted DHCPv6 address, removing the network or a plugin restart clears it |
 | Every DHCPv4 DISCOVER and REQUEST carries option 145 (#1119, PR #1164) | A server that sends FORCERENEW can now renew a lease with an authenticated message; any other FORCERENEW is refused and counted |
 | A server that sends option 249 and no option 121 gets its routes installed (#1030, PR #1164) | The container has routes it did not have before, the default route among them |
@@ -237,6 +237,10 @@ prompts on has moved since v2.0.0. This release changes the manifest's
 - DHCPv6 prefix delegation (IA_PD), designed first (#214): moved to v2.5.0.
   Only its Kea DHCPv6 test fixture, the DHCPv6 server of the integration
   lane, is in this release (PR #1144).
+- The plugin's logging of DHCPv6 option 17 (vendor-specific information), the
+  v6 half of #1034: left the v2.4.0 milestone for v2.5.0 (#1203). The library
+  half is in the v1.4.0 pin (#1177) and the DHCPv4 half, options 43 and 125,
+  is in this release (PR #1164).
 
 ## v2.3.1
 
