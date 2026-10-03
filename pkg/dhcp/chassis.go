@@ -636,6 +636,7 @@ func (c *DHCPClient) translate() {
 		// Before the record is written, so a second restart still finds the resolver (#911).
 		c.opts.carryResumedConfig6(&ev)
 		c.opts.carryResumedTemp6(&ev)
+		c.opts.carryResumedOptions6(&ev)
 		// Recorded before translation: translateOne drops the coalesced Changed and the stop, and the record must not
 		// (#899).
 		c.opts.record(ev)
@@ -701,10 +702,14 @@ func newStoppedTicker() *time.Ticker {
 
 // leaseView is what the advertisement watch reads.
 func (c *DHCPClient) leaseView() (lease.Lease, bool) {
+	view := c.Lease
 	if c.view != nil {
-		return c.view()
+		view = c.view
 	}
-	return c.Lease()
+	l, ok := view()
+	// The library's own lease has no options until a Reply, so the routeradvert line would lose 41, 42 and 56 (#1033).
+	c.opts.withResumedOptions6(&l)
+	return l, ok
 }
 
 // DHCPv6 has no MTU option (RFC 2132 section 5.1 is DHCPv4's), so the RFC 4861 section 4.6.4 MTU arrives only by the
@@ -736,7 +741,8 @@ func (c *DHCPClient) takeAdvertChange(now time.Time) (Event, bool) {
 		return Event{}, false
 	}
 	// Rendered with the network's main prefix, as bound and renew are, so the choice is not itself a change (#818).
-	info, dropped := infoFromLease(l, c.advertRouterView(), now, c.opts.MainPrefix6)
+	// The bind already warned about these values; only a reported change repeats it, not every pass (#1033).
+	info, dropped, unsafe := renderLease(l, c.advertRouterView(), now, c.opts.MainPrefix6)
 	info.OnLinkPrefixes = foldOnLink(c.advert.OnLinkPrefixes, info)
 	first := !c.advertKnown
 	same := c.advertKnown && !advertisedDiffers(c.advert, info)
@@ -744,6 +750,7 @@ func (c *DHCPClient) takeAdvertChange(now time.Time) (Event, bool) {
 	if first || same {
 		return Event{}, false
 	}
+	warnDropped(unsafe)
 	return Event{
 		Type:                "routeradvert",
 		Data:                info,
@@ -915,6 +922,8 @@ func (c *DHCPClient) Wait(ctx context.Context) error {
 // Lease is the lease the client currently holds, for the durable record.
 func (c *DHCPClient) Lease() (lease.Lease, bool) {
 	switch {
+	case c.runner != nil:
+		return c.runner.Lease()
 	case c.client6 != nil:
 		return c.client6.Lease()
 	case c.client != nil:

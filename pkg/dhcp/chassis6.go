@@ -325,6 +325,7 @@ func runAcquisition6(ctx context.Context, iface string, client v6AcquisitionClie
 			// Before the record and the step, as in the persistent client's loop (#911).
 			opts.carryResumedConfig6(&ev)
 			opts.carryResumedTemp6(&ev)
+			opts.carryResumedOptions6(&ev)
 			opts.record(ev)
 			opts.reportFQDN6(ev)
 			out := acquireStep6(ev, hint.IsValid(), opts.MainPrefix6)
@@ -343,6 +344,7 @@ func runAcquisition6(ctx context.Context, iface string, client v6AcquisitionClie
 	for ev := range client.Events() {
 		opts.carryResumedConfig6(&ev)
 		opts.carryResumedTemp6(&ev)
+		opts.carryResumedOptions6(&ev)
 		opts.record(ev)
 	}
 	if err := <-done; err != nil && !errors.Is(err, context.Canceled) {
@@ -431,6 +433,24 @@ func (o *DHCPClientOptions) carryResumedTemp6(ev *lease.Event) {
 		return
 	}
 	ev.Lease.TempAddrs = append([]lease.Addr6(nil), o.Resume.TempAddrs...)
+}
+
+// carryResumedOptions6 gives a resumed binding the remembered Reply's options on every event whose own bag is empty: the
+// library builds the confirmed lease from Resume6, which keeps the RFC 3646 lists only, so options 41, 42 and 56 were
+// missing until T1 (RFC 9915 section 18.2.3, measured on the lane 2026-10-03, #1033). The library discards a Reply
+// with no option 2 (RFC 9915 section 16.10), so a bag from the wire is never empty and always wins.
+func (o *DHCPClientOptions) carryResumedOptions6(ev *lease.Event) {
+	switch ev.Kind {
+	case lease.Acquired, lease.Renewed, lease.Changed:
+		o.withResumedOptions6(&ev.Lease)
+	}
+}
+
+func (o *DHCPClientOptions) withResumedOptions6(l *lease.Lease) {
+	if !o.V6 || o.Resume == nil || len(l.OptionsV6) > 0 {
+		return
+	}
+	l.OptionsV6 = o.Resume.OptionsV6.Clone()
 }
 
 // reportFQDN6 logs, once, the server's answer to the first message that carried option 39. S set in the Reply is the

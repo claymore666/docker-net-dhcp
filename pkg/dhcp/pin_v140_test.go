@@ -89,8 +89,8 @@ func TestRecords6_TheReplyOptionsOfAV6LeaseReachTheRecord(t *testing.T) {
 	}
 }
 
-// translateV6EventIntoRecord returns the record text after one v6 Acquired went through translate (#1177).
-func translateV6EventIntoRecord(t *testing.T, resume *lease.Lease, l lease.Lease) string {
+// translateV6EventIntoRecord returns the event translate emitted and the record text after one v6 Acquired (#1177).
+func translateV6EventIntoRecord(t *testing.T, resume *lease.Lease, l lease.Lease) (Event, string) {
 	t.Helper()
 	c, src, path := newTranslateHarness(t)
 	c.opts.V6 = true
@@ -103,8 +103,9 @@ func translateV6EventIntoRecord(t *testing.T, resume *lease.Lease, l lease.Lease
 	case <-time.After(wedgeBudget):
 		t.Fatalf("the event could not be handed to translate within %v", wedgeBudget)
 	}
+	var out Event
 	select {
-	case <-c.events:
+	case out = <-c.events:
 	case <-time.After(wedgeBudget):
 		t.Fatalf("translate emitted nothing within %v", wedgeBudget)
 	}
@@ -114,12 +115,12 @@ func translateV6EventIntoRecord(t *testing.T, resume *lease.Lease, l lease.Lease
 	if err != nil {
 		t.Fatalf("reading the record file: %v", err)
 	}
-	return string(raw)
+	return out, string(raw)
 }
 
 func TestTranslate_ARecordedV6EventKeepsTheReplyOptions(t *testing.T) {
 	ntp := []byte{0, 1, 0, 16, 0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x7b}
-	raw := translateV6EventIntoRecord(t, nil, lease.Lease{
+	_, raw := translateV6EventIntoRecord(t, nil, lease.Lease{
 		Addr:      netip.MustParsePrefix("fd00:6470:6865::61/128"),
 		OptionsV6: wire.OptionsV6{{Code: wire.OptV6NTPServer, Data: ntp}},
 	})
@@ -129,14 +130,64 @@ func TestTranslate_ARecordedV6EventKeepsTheReplyOptions(t *testing.T) {
 	}
 }
 
-// The library's note for #53: a lease resumed from its record has no OptionsV6 until the next Reply, and the plugin
-// copies none from the remembered lease (carryResumedConfig6 carries the resolver lists only).
-func TestTranslate_AResumedV6EventDoesNotInventTheRememberedReplyOptions(t *testing.T) {
-	raw := translateV6EventIntoRecord(t, &lease.Lease{
-		OptionsV6: wire.OptionsV6{{Code: wire.OptV6NTPServer, Data: []byte{0, 1, 0, 16, 0x20, 0x01, 0x0d, 0xb8}}},
-	}, lease.Lease{Addr: netip.MustParsePrefix("fd00:6470:6865::61/128")})
-	if strings.Contains(raw, `"options_v6"`) {
-		t.Errorf("the record translate wrote for a v6 event that carried no options holds an options_v6 key, "+
-			"which only a Reply may fill. Record file:\n%s", raw)
+// The library's note for #53: a lease resumed from its record has no OptionsV6 until the next Reply. The confirmed
+// lease's bind event carries the remembered ones to the options line and into the record, so a second restart still
+// has them (#1033); this test was "DoesNotInvent" until #1033 edited it.
+func TestTranslate_AResumedV6EventCarriesTheRememberedReplyOptions(t *testing.T) {
+	ntp := []byte{0, 1, 0, 16, 0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x7b}
+	remembered := wire.OptionsV6{
+		{Code: wire.OptV6PosixTimezone, Data: []byte("PST8PDT")},
+		{Code: wire.OptV6TZDatabase, Data: []byte("America/Los_Angeles")},
+		{Code: wire.OptV6NTPServer, Data: ntp},
+	}
+	out, raw := translateV6EventIntoRecord(t, &lease.Lease{OptionsV6: remembered},
+		lease.Lease{Addr: netip.MustParsePrefix("fd00:6470:6865::61/128")})
+
+	if out.Data.PosixTimezone != "PST8PDT" || out.Data.TZDBTimezone != "America/Los_Angeles" ||
+		len(out.Data.NTPServers) != 1 || out.Data.NTPServers[0] != "2001:db8::7b" {
+		t.Errorf("the bound event of a confirmed lease rendered posix_tz=%q tzdb_tz=%q ntp=%v, want the remembered "+
+			"Reply's options 41, 42 and 56", out.Data.PosixTimezone, out.Data.TZDBTimezone, out.Data.NTPServers)
+	}
+	if !strings.Contains(raw, `"options_v6"`) || !strings.Contains(raw, base64.StdEncoding.EncodeToString(ntp)) {
+		t.Errorf("the record translate wrote for the confirmed lease does not hold the remembered option 56 %x, so a "+
+			"second restart would lose it. Record file:\n%s", ntp, raw)
+	}
+}
+
+func TestTranslate_AResumedV6EventKeepsItsOwnReplyOptions(t *testing.T) {
+	out, _ := translateV6EventIntoRecord(t,
+		&lease.Lease{OptionsV6: wire.OptionsV6{{Code: wire.OptV6PosixTimezone, Data: []byte("PST8PDT")}}},
+		lease.Lease{
+			Addr: netip.MustParsePrefix("fd00:6470:6865::61/128"),
+			OptionsV6: wire.OptionsV6{
+				{Code: wire.OptV6ServerID, Data: []byte{0, 3, 0, 1, 2, 0, 0, 0, 0, 1}},
+				{Code: wire.OptV6TZDatabase, Data: []byte("Europe/Berlin")},
+			},
+		})
+
+	if out.Data.PosixTimezone != "" || out.Data.TZDBTimezone != "Europe/Berlin" {
+		t.Errorf("posix_tz=%q tzdb_tz=%q, want the Reply's own bag alone: a server that stopped sending 41 has said so",
+			out.Data.PosixTimezone, out.Data.TZDBTimezone)
+	}
+}
+
+// dnsmasq packs every configured NTP source of option6:ntp-server,[a],[b] into one option 56 instance (rfc3315.c in 2.91);
+// v1.4.0's reader takes one source per instance (RFC 5908 section 4), so the list is dropped with one warning. A pin that
+// reads the shape flips this test (#859).
+func TestInfoFromLease_TheV140PinDropsAnNTPInstanceWithTwoSources(t *testing.T) {
+	hook := captureLog(t)
+	resetNTPWarnings(t)
+	o := wire.OptionsV6{ntpOpt(ntpAddrSub(1, "2001:db8::123"), ntpAddrSub(1, "2001:db8::45"))}
+
+	var info Info
+	for range 3 {
+		info, _ = v6Info(t, o)
+	}
+
+	if len(info.NTPServers) != 0 {
+		t.Errorf("NTPServers = %v, want none under the v1.4.0 pin", info.NTPServers)
+	}
+	if got := len(malformedNTPWarnings(hook)); got != 1 {
+		t.Errorf("%d #859 warnings over three renderings, want 1", got)
 	}
 }
