@@ -117,6 +117,9 @@ prompts on has moved since v2.0.0. This release changes the manifest's
   every Docker Engine 28+ host: it takes only where the daemon's sandbox
   mounts reach the plugin (`sandbox_netns_propagation` 1), and is otherwise
   skipped, counted and warned (#1165).
+- The integration cleanup step also drops the plugin's state records of
+  networks the engine no longer has, so a killed run cannot refuse the
+  next run's IPAM networks (#1174 for the plugin-side fix; #1165).
 
 ## v2.3.1
 

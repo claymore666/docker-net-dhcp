@@ -30,6 +30,29 @@ if [[ -n "$nets" ]]; then
     docker network rm $nets 2>&1 | sed 's/^/  /'
 fi
 
+echo "=== removing plugin state records of networks the engine no longer has ==="
+# The plugin keeps one <network id>.json per network and rebinds every
+# persisted IPAM pool at start. Only DeleteNetwork removes the file, so a
+# network removed above after its plugin was torn down leaves a record
+# that refuses the next run's pool (#1174, #1165). The live set is read
+# once; a failed read must not look like "every network is gone".
+state_dir="${NET_DHCP_STATE_DIR:-/var/lib/net-dhcp}"
+if [[ -d "$state_dir" ]]; then
+    if live=$(docker network ls --no-trunc -q 2>/dev/null); then
+        for f in "$state_dir"/*.json; do
+            [[ -f "$f" ]] || continue
+            id=$(basename "$f" .json)
+            [[ "$id" =~ ^[0-9a-f]{64}$ ]] || continue
+            if ! grep -qFx -- "$id" <<<"$live"; then
+                rm -f -- "$f"
+                echo "  removed $id.json (network gone)"
+            fi
+        done
+    else
+        echo "  engine unreachable; state records left alone"
+    fi
+fi
+
 echo "=== removing dh-itest-* network namespaces ==="
 # The ephemeral (failure-suite) fixture runs its kea in its own netns
 # and moves the server end of the veth pair into it (#356). Delete the
