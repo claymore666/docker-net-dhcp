@@ -109,14 +109,21 @@ func siblingSubMode(n dNetwork.Summary) (kind, parent, sub string, ok bool) {
 		if err != nil {
 			return "", "", "", false
 		}
-		kind, parent, sub = o.effectiveMode(), o.linkParent(), o.MacvlanMode
-		if kind == ModeIPvlan {
-			sub = o.IPvlanMode
-		}
-	} else {
-		kind, parent = n.Driver, n.Options["parent"]
-		sub = n.Options[n.Driver+"_mode"]
+		return optsSubMode(o)
 	}
+	return normalSubMode(n.Driver, n.Options["parent"], n.Options[n.Driver+"_mode"])
+}
+
+// optsSubMode is siblingSubMode for this plugin's own options, which a create in flight has and no list does (#1187).
+func optsSubMode(o DHCPNetworkOptions) (kind, parent, sub string, ok bool) {
+	kind, parent, sub = o.effectiveMode(), o.linkParent(), o.MacvlanMode
+	if kind == ModeIPvlan {
+		sub = o.IPvlanMode
+	}
+	return normalSubMode(kind, parent, sub)
+}
+
+func normalSubMode(kind, parent, sub string) (string, string, string, bool) {
 	switch {
 	case parent == "":
 		return "", "", "", false
@@ -132,29 +139,48 @@ func siblingSubMode(n dNetwork.Summary) (kind, parent, sub string, ok bool) {
 
 // refuseSiblingSubMode refuses a network the kernel would break against another on the same parent: a passthru child
 // takes the parent alone, and the ipvlan mode is one per parent, so a new child switches every existing child to its
-// mode (both measured on Linux 6.12, 2026-09-24). A failed network list is logged, and the kernel's refusal at the
-// endpoint remains (#905).
+// mode (both measured on Linux 6.12, 2026-09-24). The networks whose create is still running count beside the listed
+// ones, since dockerd lists a network only after its driver returned (#1187). A failed network list is logged, and the
+// kernel's refusal at the endpoint remains (#905).
 func (p *Plugin) refuseSiblingSubMode(networkID string, opts DHCPNetworkOptions) error {
+	mode, parent := opts.effectiveMode(), kernelIfaceName(opts.linkParent())
+	for id, o := range p.earlierCreates(networkID) {
+		if kind, other, sub, ok := optsSubMode(o); ok {
+			if err := subModeConflict(opts, mode, parent, shortID(id), kind, other, sub); err != nil {
+				return err
+			}
+		}
+	}
 	nets, err := p.docker.NetworkList(context.Background(), dNetwork.ListOptions{})
 	if err != nil {
 		log.WithError(err).WithField("network", shortID(networkID)).
 			Warn("Could not list Docker networks to compare sub-modes on the parent; creating the network unchecked")
 		return nil
 	}
-	mode, parent := opts.effectiveMode(), kernelIfaceName(opts.linkParent())
 	for _, n := range nets {
 		kind, other, sub, ok := siblingSubMode(n)
-		if !ok || n.ID == networkID || kind != mode || other != parent {
+		if !ok || n.ID == networkID {
 			continue
 		}
-		if mode == ModeMacvlan && (sub == MacvlanModePassthru || opts.macvlanPassthru()) {
-			return fmt.Errorf("%w: network %q already uses parent %q with macvlan_mode=%s. A macvlan_mode=passthru network takes its parent alone, so it cannot share the parent with another macvlan network; use another parent",
-				util.ErrModeMismatch, n.Name, parent, sub)
+		if err := subModeConflict(opts, mode, parent, n.Name, kind, other, sub); err != nil {
+			return err
 		}
-		if mode == ModeIPvlan && sub != IPvlanModeL2 {
-			return fmt.Errorf("%w: network %q already uses parent %q with ipvlan_mode=%s. The kernel keeps one ipvlan mode per parent, and a child of this l2 network would switch that network's containers to l2; use another parent",
-				util.ErrModeMismatch, n.Name, parent, sub)
-		}
+	}
+	return nil
+}
+
+// subModeConflict is the refusal for one sibling, or nil (#1187).
+func subModeConflict(opts DHCPNetworkOptions, mode, parent, name, kind, other, sub string) error {
+	if kind != mode || other != parent {
+		return nil
+	}
+	if mode == ModeMacvlan && (sub == MacvlanModePassthru || opts.macvlanPassthru()) {
+		return fmt.Errorf("%w: network %q already uses parent %q with macvlan_mode=%s. A macvlan_mode=passthru network takes its parent alone, so it cannot share the parent with another macvlan network; use another parent",
+			util.ErrModeMismatch, name, parent, sub)
+	}
+	if mode == ModeIPvlan && sub != IPvlanModeL2 {
+		return fmt.Errorf("%w: network %q already uses parent %q with ipvlan_mode=%s. The kernel keeps one ipvlan mode per parent, and a child of this l2 network would switch that network's containers to l2; use another parent",
+			util.ErrModeMismatch, name, parent, sub)
 	}
 	return nil
 }
