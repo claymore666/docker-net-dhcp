@@ -1479,8 +1479,7 @@ in every mode:
 #### Options captured from the server
 
 Everything the server returns is captured. Some is applied, the rest is
-logged, except the vendor-specific options 43 and 125, which the client asks
-for since the `dhcp-golib` v1.3.0 pin and the plugin neither applies nor logs
+logged. The vendor-specific options 43 and 125 are logged but never applied
 ([#1034](https://github.com/claymore666/docker-net-dhcp/issues/1034)):
 
 **Applied**, when the matching option is enabled: option 6 (DNS servers)
@@ -1497,16 +1496,18 @@ Information-request reply that carries no address at all. Since the
 the v1.4.0 pin the lease carries every option of the Reply it came from,
 unparsed, and the lease record keeps them as `options_v6`; a lease resumed
 from its record after a restart has them again only from the next Reply.
-The plugin does not read or log any of them yet
+The plugin logs the timezone options 41 and 42, as described below
+([#1033](https://github.com/claymore666/docker-net-dhcp/issues/1033)); it
+does not read or log options 17 and 56 yet
 ([#1034](https://github.com/claymore666/docker-net-dhcp/issues/1034),
-[#1033](https://github.com/claymore666/docker-net-dhcp/issues/1033),
 [#859](https://github.com/claymore666/docker-net-dhcp/issues/859)).
 The DHCPv4 vendor options 43 and 125 are logged, as described below.
 
 **Logged** at info level on every bind and renew, and only when at least
 one is present, so plain LANs get no extra noise: option 42 (NTP), 66
 (TFTP server), 67 (boot file), 119 (when `propagate_dns` is off), 252
-(WPAD), 100/101 (RFC 4833 timezone) and 2 (legacy time offset):
+(WPAD), 100/101 (RFC 4833 timezone; 41/42 on DHCPv6) and 2 (legacy time
+offset):
 
 ```text
 level=info msg="DHCP options received" ntp=[192.168.0.123]

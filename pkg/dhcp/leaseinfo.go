@@ -73,6 +73,7 @@ func infoFromLease(l lease.Lease, r proto.RouterObservation, now time.Time, main
 	}
 
 	fillVendorOptions(&info, l.Options)
+	fillV6Observed(&info, l.OptionsV6)
 
 	// sanitizeInfo runs at the one point every lease enters the plugin and feeds unsafe_option_values_dropped (#703).
 	dropped := sanitizeInfo(&info)
@@ -87,6 +88,22 @@ func infoFromLease(l lease.Lease, r proto.RouterObservation, now time.Time, main
 	}
 
 	return info, dropped
+}
+
+// fillV6Observed reads the RFC 4833 section 3 timezone strings, options 41 and 42, out of a DHCPv6 lease's options. They
+// are plain strings with the same trailing-NUL tolerance as v4's Text, and they enter Info before sanitizeInfo, so a
+// control character is dropped and counted exactly as for options 100 and 101 (#1033). A nil bag, a v4 lease or one
+// resumed from its record, fills nothing.
+func fillV6Observed(info *Info, o wire.OptionsV6) {
+	info.PosixTimezone = firstNonEmpty(info.PosixTimezone, optTextV6(o, wire.OptV6PosixTimezone))
+	info.TZDBTimezone = firstNonEmpty(info.TZDBTimezone, optTextV6(o, wire.OptV6TZDatabase))
+}
+
+func firstNonEmpty(a, b string) string {
+	if a != "" {
+		return a
+	}
+	return b
 }
 
 // Hex digits are never control characters, so sanitizeInfo has nothing to drop from these; the reflection test walks the
@@ -299,4 +316,15 @@ func optText(o wire.Options, c wire.OptionCode) string {
 		return ""
 	}
 	return s
+}
+
+func optTextV6(o wire.OptionsV6, c wire.OptionCodeV6) string {
+	v, ok := o.First(c)
+	if !ok {
+		return ""
+	}
+	for len(v) > 0 && v[len(v)-1] == 0 {
+		v = v[:len(v)-1]
+	}
+	return string(v)
 }

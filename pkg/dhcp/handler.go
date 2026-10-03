@@ -27,8 +27,8 @@ type Info struct {
 	// BootFile is option 67, logged like TFTPServer (#105).
 	BootFile string `json:",omitempty"`
 
-	// WPAD (option 252), the RFC 4833 timezones (options 100 and 101) and TimeOffset (option 2) are logged only, never
-	// pushed into the container, to keep the no-plumbing bar (#262).
+	// WPAD (option 252), the RFC 4833 timezones (options 100 and 101 on v4, 41 and 42 on v6) and TimeOffset (option 2) are
+	// logged only, never pushed into the container, to keep the no-plumbing bar (#262, #1033).
 	WPAD          string `json:",omitempty"`
 	PosixTimezone string `json:",omitempty"`
 	TZDBTimezone  string `json:",omitempty"`
