@@ -133,7 +133,7 @@ jobs:
       - name: Verify capture dependencies
         run: |
           missing=""
-          for tool in dnsmasq kea-dhcp4 ip iptables jq; do
+          for tool in dnsmasq kea-dhcp4 kea-dhcp6 ip iptables jq; do
             command -v "$tool" >/dev/null || missing="$missing $tool"
           done
           if [ -n "$missing" ]; then

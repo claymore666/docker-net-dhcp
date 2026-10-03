@@ -47,6 +47,7 @@ suite_patterns=(
     '(^|[ /])make .*integration-test'
     '--interface=dh-itest-'
     'kea-dhcp[46] .*dh-itest-ephemeral-'
+    'kea-dhcp6 -c /etc/kea/dh-itest/'
 )
 
 # This script and every ancestor up to init are protected by pid.
@@ -165,6 +166,13 @@ plugin_ref="${INTEGRATION_PLUGIN_REF:-ghcr.io/claymore666/docker-net-dhcp:golang
 if docker plugin inspect "$plugin_ref" >/dev/null 2>&1; then
     docker plugin enable "$plugin_ref" 2>&1 | sed 's/^/  /' || true
 fi
+
+echo "=== removing the Kea6 fixture's state files ==="
+# The Kea6 fixture's server runs from /etc/kea/dh-itest/ and keeps files
+# there, in /var/lib/kea and in /var/log/kea, the paths the packaged
+# AppArmor profile allows (#214). Its process went with the batch above.
+rm -rf /etc/kea/dh-itest
+rm -f /var/lib/kea/kea-leases6.csv* /var/lib/kea/kea-dhcp6-serverid /var/log/kea/kea-dhcp6.log*
 
 echo "=== removing harness-installed iptables FORWARD rules ==="
 # The bridge fixture inserts ACCEPT rules so docker's default-deny
