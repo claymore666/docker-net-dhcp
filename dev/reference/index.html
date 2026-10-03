@@ -3813,6 +3813,16 @@ against the very daemon being waited on, so recovery is instead retried
 once the socket is listening, and the wait is counted as
 <code>recovery_deferred</code> and not as a failure (v1.4.0+, #383). Only a retry
 that runs out of budget counts <code>recovery_failed</code>.</p>
+<p>The plugin tells the two cases apart by whether its startup engine check
+reached the daemon at all. A daemon that answers with an error status is
+up and only not ready, and recovery may still wait up to 3 s for the
+network list before the socket opens. A daemon that cannot be reached
+(connection refused, no socket, no reply in time) is not waited on again:
+recovery and the second engine check start as soon as the socket is
+listening, because Docker disables a plugin whose socket is still missing
+about 10 s after it starts it. A daemon that answered but failed the
+version query gets its second engine check after the socket opens too
+(#1176).</p>
 <p>The same path covers <code>systemctl restart docker</code>. In practice the address
 is preserved either by recovery (when the daemon's shutdown never called
 <code>Leave</code>) or by the tombstone (when it did), and the outcome is the same
