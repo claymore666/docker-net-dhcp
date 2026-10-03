@@ -20,6 +20,7 @@ import (
 	"time"
 
 	cerrdefs "github.com/containerd/errdefs"
+	dContainer "github.com/docker/docker/api/types/container"
 	dNetwork "github.com/docker/docker/api/types/network"
 	"github.com/mitchellh/mapstructure"
 	log "github.com/sirupsen/logrus"
@@ -1814,8 +1815,55 @@ func (p *Plugin) Join(ctx context.Context, r JoinRequest) (JoinResponse, error) 
 	return res, nil
 }
 
-// settleFailedAttach counts and logs a failed attach exactly once, in the order endpoint-left, vanished, no container,
-// start failure (#373, #406, #566, #1186).
+// vanishConfirmTimeout bounds the daemon question, which dockerd may never answer inside ContainerStart (#406, #1186).
+var vanishConfirmTimeout = 3 * time.Second
+
+// joinVanished confirms the key and ENOENT evidence with the daemon, since engines 26 and 27 create the sandbox key
+// after Join and a slow start looks the same; the daemon's own "no such container" needs no second question (#1186).
+func (p *Plugin) joinVanished(err error, r JoinRequest) bool {
+	if cerrdefs.IsNotFound(err) {
+		return true
+	}
+	if !joinAbortedByVanish(err, r.SandboxKey) {
+		return false
+	}
+	return p.daemonSaysContainerGone(r)
+}
+
+// daemonSaysContainerGone is true only for not-found, exited or dead; any other answer, or none, is a start
+// failure (#1186).
+func (p *Plugin) daemonSaysContainerGone(r JoinRequest) bool {
+	if p.docker == nil {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), vanishConfirmTimeout)
+	defer cancel()
+
+	nw, err := p.docker.NetworkInspect(ctx, r.NetworkID, dNetwork.InspectOptions{})
+	if err != nil {
+		return false
+	}
+	ctrID := ""
+	for id, info := range nw.Containers {
+		if info.EndpointID == r.EndpointID {
+			ctrID = id
+			break
+		}
+	}
+	if ctrID == "" || strings.HasPrefix(ctrID, "ep-") {
+		return false
+	}
+	ctr, err := p.docker.ContainerInspect(ctx, ctrID)
+	if err != nil {
+		return cerrdefs.IsNotFound(err)
+	}
+	if ctr.State == nil {
+		return false
+	}
+	return ctr.State.Status == dContainer.StateExited || ctr.State.Status == dContainer.StateDead
+}
+
+// settleFailedAttach counts a failed attach once: endpoint left, vanished, no container, start failure (#1186).
 func (p *Plugin) settleFailedAttach(r JoinRequest, m *dhcpManager, err error) {
 	fields := log.Fields{
 		"network":  shortID(r.NetworkID),
@@ -1838,7 +1886,7 @@ func (p *Plugin) settleFailedAttach(r JoinRequest, m *dhcpManager, err error) {
 		p.removeDHCPManagerIfSame(r.EndpointID, m)
 		return
 	}
-	if joinAbortedByVanish(err, r.SandboxKey) {
+	if p.joinVanished(err, r) {
 		p.joinAbortedContainerGone.Add(1)
 		log.WithError(err).WithFields(fields).
 			Info("Container went away during attach; no persistent client needed")
