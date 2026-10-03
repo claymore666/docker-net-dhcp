@@ -258,6 +258,21 @@ func TestWriteResolvConfFile_FinalBytesAndMode(t *testing.T) {
 		}
 	})
 
+	t.Run("same_length_change_is_written", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "resolv.conf")
+		if err := os.WriteFile(path, []byte("nameserver 192.0.2.1\n"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		want := []byte("nameserver 192.0.2.2\n")
+		if err := writeResolvConfFile(path, want); err != nil {
+			t.Fatal(err)
+		}
+		got, _ := os.ReadFile(path)
+		if !bytes.Equal(got, want) {
+			t.Errorf("a renewal that swaps a resolver for another of the same length left %q, want %q", got, want)
+		}
+	})
+
 	t.Run("missing_file_is_created_0644", func(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "resolv.conf")
 		if err := writeResolvConfFile(path, short); err != nil {
