@@ -177,6 +177,61 @@ func TestStaleNetworks_OnlyNotFoundCountsAsGone(t *testing.T) {
 	}
 }
 
+func TestStaleNetworks_AnUnlistedNetworkDockerStillAnswersForIsKept(t *testing.T) {
+	p, bound := stalePlugin(t, staleNet)
+	recID := retainedOn(t, p, staleNet)
+	f := &fakeDocker{}
+	p.docker = f
+
+	recoverOnce(p)
+
+	if f.inspectCalls != 1 {
+		t.Fatalf("NetworkInspect called %d times, want 1: the list lacked the network, so it is asked", f.inspectCalls)
+	}
+	if !fileExists(t, staleNet) {
+		t.Error("the file of a network whose inspect succeeded was removed")
+	}
+	if n, ok := p.ipamIndex.network(bound[staleNet].PoolID); !ok || n != staleNet {
+		t.Errorf("the pool binding is (%q, %v), want it kept", n, ok)
+	}
+	if got := recordPhase(t, p, recID); got != lease.PhaseRetained {
+		t.Errorf("the record is %v, want RETAINED: the daemon still has the network", got)
+	}
+	if got := p.staleNetworksDropped.Load(); got != 0 {
+		t.Errorf("stale_networks_dropped = %d, want 0", got)
+	}
+}
+
+func TestStaleNetworks_OnlyTheDroppedNetworksRetainedRecordsAreClosed(t *testing.T) {
+	p, _ := stalePlugin(t, staleNet, liveNet)
+	staleRetained := retainedOn(t, p, staleNet)
+	liveRetained := retainedOn(t, p, liveNet)
+	mac := deferredMAC(0x03)
+	staleCreated := p.recordCreated(staleNet, mac, dhcp.ClientIdentity(mac))
+	if staleCreated == "" {
+		t.Fatal("no record was created")
+	}
+	if err := p.records.Observed(staleCreated, acquired("192.168.90.11/24", time.Hour), nil); err != nil {
+		t.Fatalf("Observed: %v", err)
+	}
+	p.docker = &fakeDocker{
+		listResult: []dNetwork.Summary{{ID: liveNet, Driver: "bridge"}},
+		inspectErr: networkNotFound(),
+	}
+
+	recoverOnce(p)
+
+	if got := recordPhase(t, p, staleRetained); got != lease.PhaseClosed {
+		t.Fatalf("the dropped network's retained record is %v, want CLOSED", got)
+	}
+	if got := recordPhase(t, p, liveRetained); got != lease.PhaseRetained {
+		t.Errorf("a listed network's retained record is %v, want RETAINED", got)
+	}
+	if got := recordPhase(t, p, staleCreated); got != lease.PhaseCreated {
+		t.Errorf("the dropped network's created record is %v, want CREATED: only RETAINED records are closed", got)
+	}
+}
+
 func TestStaleNetworks_ANetworkPersistedAfterStartIsNeverACandidate(t *testing.T) {
 	p, _ := stalePlugin(t)
 	late := persistStale(t, lateNet, 95)
