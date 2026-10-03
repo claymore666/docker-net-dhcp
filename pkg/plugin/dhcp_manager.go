@@ -875,7 +875,7 @@ func (m *dhcpManager) logObservedOptions(v6 bool, info dhcp.Info) {
 	if len(info.SearchList) > 0 {
 		fields["search"] = info.SearchList
 	}
-	// Observe-only extras (#262): WPAD URL (opt 252), RFC 4833 timezone (opt 100/101), time offset (opt 2).
+	// Observe-only extras (#262): WPAD URL (opt 252), RFC 4833 timezone (opt 100/101, DHCPv6 41/42, #1033), time offset (opt 2).
 	if info.WPAD != "" {
 		fields["wpad"] = info.WPAD
 	}

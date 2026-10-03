@@ -1511,7 +1511,7 @@ off), 252 (WPAD), 100/101 (RFC 4833 timezone; 41/42 on DHCPv6) and 2
 (legacy time offset):
 
 ```text
-level=info msg="DHCP options received" ntp=[192.168.0.123]
+level=info msg="DHCP options received" ntp=[192.0.2.123]
   tftp=tftp.example.test bootfile=pxelinux.0
   search=[corp.example internal.example]
   wpad=http://wpad.example/wpad.dat posix_tz=PST8PDT
@@ -1522,8 +1522,11 @@ On DHCPv6, `ntp` lists every instance of option 56 in the order they
 arrived, one entry each: an address as text, a multicast group address the
 same, a server name as the name (RFC 5908 section 4). One malformed instance
 leaves the whole `ntp` list out, because the client library returns no list
-beside the error, and the plugin warns once about that offer
-([#859](https://github.com/claymore666/docker-net-dhcp/issues/859)).
+beside the error, and the plugin warns once per server and offer, naming
+the server's DUID ([#859](https://github.com/claymore666/docker-net-dhcp/issues/859)).
+dnsmasq's `dhcp-option=option6:ntp-server,[a],[b]` packs both sources into
+one instance, which RFC 5908 does not allow and which is not read today:
+`ntp` is absent and the warning is logged.
 
 The vendor-specific options of DHCPv4 are logged the same way, hex-encoded
 and never interpreted ([#1034](https://github.com/claymore666/docker-net-dhcp/issues/1034)):

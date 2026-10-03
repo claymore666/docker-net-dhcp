@@ -170,3 +170,24 @@ func TestTranslate_AResumedV6EventKeepsItsOwnReplyOptions(t *testing.T) {
 			out.Data.PosixTimezone, out.Data.TZDBTimezone)
 	}
 }
+
+// dnsmasq packs every configured NTP source of option6:ntp-server,[a],[b] into one option 56 instance (rfc3315.c in 2.91);
+// v1.4.0's reader takes one source per instance (RFC 5908 section 4), so the list is dropped with one warning. A pin that
+// reads the shape flips this test (#859).
+func TestInfoFromLease_TheV140PinDropsAnNTPInstanceWithTwoSources(t *testing.T) {
+	hook := captureLog(t)
+	resetNTPWarnings(t)
+	o := wire.OptionsV6{ntpOpt(ntpAddrSub(1, "2001:db8::123"), ntpAddrSub(1, "2001:db8::45"))}
+
+	var info Info
+	for range 3 {
+		info, _ = v6Info(t, o)
+	}
+
+	if len(info.NTPServers) != 0 {
+		t.Errorf("NTPServers = %v, want none under the v1.4.0 pin", info.NTPServers)
+	}
+	if got := len(malformedNTPWarnings(hook)); got != 1 {
+		t.Errorf("%d #859 warnings over three renderings, want 1", got)
+	}
+}
