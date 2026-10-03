@@ -98,6 +98,24 @@ $(echo "$out" | sed 's/^/    /')"
     else
         fail "$target: log path is not printed before the run (echo=${echo_line:-none} test=${test_line:-none})"
     fi
+
+    # One package, so go test streams instead of buffering the suite in
+    # its own process (#1147), and the harness package on its own line:
+    # without it the integration-tagged harness tests run nowhere.
+    suite_line="$(grep -E 'go test .*-tags integration' <<<"$out" | grep -vF '/harness/')"
+    # The package arguments are the words holding a slash: the flags and
+    # their values here (-timeout 20m, -skip "TestFailure_") have none.
+    suite_pkgs="$(sed 's/ 2>&1.*//' <<<"$suite_line" | tr ' ' '\n' | grep -F '/')"
+    if [ "$(grep -c . <<<"$suite_line")" -eq 1 ] && [ "$suite_pkgs" = "./test/integration/" ]; then
+        pass "$target: the suite line names the one package ./test/integration/"
+    else
+        fail "$target: the suite line must name only ./test/integration/ (#1147): $suite_line"
+    fi
+    if grep -qE '^go test .*-tags integration .*\./test/integration/harness/$' <<<"$out"; then
+        pass "$target: runs the harness package on its own line"
+    else
+        fail "$target: no go test line for ./test/integration/harness/, so its tagged tests run nowhere (#1147)"
+    fi
 done
 
 echo

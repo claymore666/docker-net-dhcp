@@ -48,3 +48,27 @@ const strictAutoFallback proto.Duration = -1
 func IPv6ModeFormsAddresses(m proto.Mode6) bool {
 	return m == proto.Mode6SLAAC || m == proto.Mode6Auto
 }
+
+// IPv6IIDs is every `ipv6_iid` value, derived from proto.IIDMode like IPv6Modes (#1032).
+func IPv6IIDs() []string {
+	all := proto.AllIIDModes()
+	out := make([]string, 0, len(all))
+	for _, m := range all {
+		out = append(out, m.String())
+	}
+	return out
+}
+
+// ParseIPv6IID turns an `ipv6_iid` value into the library's identifier mode; unset is eui64, what #818 shipped, and a
+// value outside the set is refused so a typo cannot run as eui64 (#1032).
+func ParseIPv6IID(v string) (proto.IIDMode, error) {
+	if v == "" {
+		return proto.IIDModeEUI64, nil
+	}
+	for _, m := range proto.AllIIDModes() {
+		if m.String() == v {
+			return m, nil
+		}
+	}
+	return proto.IIDModeEUI64, fmt.Errorf("ipv6_iid %q is not one of %s", v, strings.Join(IPv6IIDs(), ", "))
+}

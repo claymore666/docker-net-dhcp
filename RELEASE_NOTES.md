@@ -32,6 +32,10 @@ prompts on has moved since v2.0.0. This release changes the manifest's
 
 ### New
 
+- `ipv6_iid=stable-privacy` forms a SLAAC address's interface identifier per
+  RFC 7217 from a secret kept in `STATE_DIR`, so the address does not show the
+  MAC and survives a restart; `eui64` stays the default. Losing the secret
+  file changes every such address at its next formation (#1032).
 - The NAT64 prefix a router advertises (PREF64, RFC 8781) is logged as
   `nat64` on each lease event that carries it and shown per endpoint as
   `nat64_prefixes` on `/Plugin.Health`; nothing is installed in the

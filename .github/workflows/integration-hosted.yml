@@ -132,6 +132,8 @@ jobs:
       - name: Show environment under test
         run: |
           go version
+          uname -r
+          head -2 /etc/os-release
           docker version
           server_major="$(docker version -f '{{.Server.Version}}' | cut -d. -f1)"
           if [ "${server_major}" -lt 28 ]; then
@@ -258,6 +260,23 @@ jobs:
             exit 1
           fi
           echo "no kea profile in enforce mode — the fixture can write its own temp dir"
+
+      # A stock hosted runner does not load br_netfilter, which the bridge
+      # firewall verdict test reads (#1116) through WithForwardDrop. The lane
+      # establishes it; if the module cannot be loaded the job fails here with
+      # the cause, never as a skipped test (#1148).
+      - name: Load br_netfilter
+        run: |
+          set -euo pipefail
+          if ! out="$(sudo modprobe br_netfilter 2>&1)"; then
+            echo "::error title=br_netfilter cannot be loaded (#1148)::${out}"
+            exit 1
+          fi
+          if ! val="$(cat /proc/sys/net/bridge/bridge-nf-call-iptables 2>&1)"; then
+            echo "::error title=br_netfilter loaded but bridge-nf-call-iptables is unreadable (#1148)::${val}"
+            exit 1
+          fi
+          echo "br_netfilter loaded; bridge-nf-call-iptables=${val}"
 
       # Build + install the plugin from THIS tree, exactly as
       # integration.yml does, just under a hosted-specific tag.

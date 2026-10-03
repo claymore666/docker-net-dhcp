@@ -101,6 +101,12 @@ func TestSubModes_PassthruTakesItsParentAlone(t *testing.T) {
 
 	parent := harness.AddSegmentParent(t, "dh-itest-pt", "dh-itest-ptp")
 	parentMAC := harness.LinkMAC(t, parent).String()
+	typ := harness.LinkAddrAssignType(t, parent)
+	t.Logf("parent %s: MAC %s, addr_assign_type %s", parent, parentMAC, typ)
+	if typ != "3" {
+		t.Fatalf("parent %s reads addr_assign_type %s, want 3: the harness sets its MAC at creation, or udev rewrites it by "+
+			"name right after and the MAC read here is not the one the test ends with (#1147)", parent, typ)
+	}
 	const netName, plainNet = "dh-itest-passthru", "dh-itest-passthru-plain"
 
 	plainID := harness.CreateNetwork(t, ctx, plainNet, "macvlan", map[string]string{"parent": parent})

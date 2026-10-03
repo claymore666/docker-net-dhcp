@@ -251,7 +251,15 @@ integration-test:
 	 if [ -n "$$id" ]; then \
 		echo "==> plugin log:  /var/lib/docker/plugins/$$id/rootfs/var/log/net-dhcp.log"; \
 	 fi
-	@bash -o pipefail -c 'go test -v -tags integration -count=1 -timeout $(ITEST_TIMEOUT) -skip "TestFailure_" ./test/integration/... 2>&1 | tee $(ITEST_MAIN_LOG)'
+# One package, so go test streams its output (#1147). Two packages, as
+# the old ./test/integration/... glob named (harness/ is the second),
+# make go buffer each package's whole output in its own process; a
+# failure cascade dumps the plugin log once per failure, and the arm64
+# runner's 1.8 GB could not hold it (run 37049272627: oom-killed at
+# 1.0 GB after 46 minutes of a 0-byte log). The harness package is its
+# own line, as in integration-test-shard.
+	@bash -o pipefail -c 'go test -v -tags integration -count=1 -timeout $(ITEST_TIMEOUT) -skip "TestFailure_" ./test/integration/ 2>&1 | tee $(ITEST_MAIN_LOG)'
+	@go test -tags integration -count=1 ./test/integration/harness/
 # The ceiling is ITEST_TIMEOUT, not a literal. On the one-job arm64 lane
 # this target IS the whole main suite, and at v2.0.0-rc2 it hit the 20m
 # alarm with 37 of 93 tests still queued (run 34368481103).
@@ -310,13 +318,11 @@ integration-test-shard:
 	     -run '$$sel' ./test/integration/ 2>&1 | tee $(ITEST_LOG_DIR)/$(SUITE)-shard$(SHARD).log"
 	# The harness package, unfiltered, in EVERY shard.
 	#
-	# Three of its test files carry the integration build tag, and today
-	# they run only because the unsharded main target globs
-	# ./test/integration/... with a -skip. A -run regex naming suite
-	# tests matches none of them, so sharding without this line would
-	# drop an entire package — including the guards that stop a
-	# hand-rolled counter read (#405) and a bare HostConfig literal
-	# (#367) creeping back. Silently, with the gate still green.
+	# Its test files carry the integration build tag. A -run regex
+	# naming suite tests matches none of them, so sharding without
+	# this line would drop an entire package, including the guards that
+	# stop a hand-rolled counter read (#405) and a bare HostConfig
+	# literal (#367) creeping back. Silently, with the gate still green.
 	#
 	# Run in every shard rather than one: it needs no fixture and takes
 	# milliseconds, and "which shard owns it" is one more thing to get
@@ -334,7 +340,9 @@ integration-test-failure:
 	 if [ -n "$$id" ]; then \
 		echo "==> plugin log:  /var/lib/docker/plugins/$$id/rootfs/var/log/net-dhcp.log"; \
 	 fi
-	@bash -o pipefail -c 'go test -v -tags integration -count=1 -timeout $(ITEST_TIMEOUT) -run "TestFailure_" ./test/integration/... 2>&1 | tee $(ITEST_FAILURE_LOG)'
+# One package for the same reason as integration-test (#1147).
+	@bash -o pipefail -c 'go test -v -tags integration -count=1 -timeout $(ITEST_TIMEOUT) -run "TestFailure_" ./test/integration/ 2>&1 | tee $(ITEST_FAILURE_LOG)'
+	@go test -tags integration -count=1 ./test/integration/harness/
 
 # Manual orphan cleanup for when an integration test panics mid-setup
 # and leaves dh-itest-* interfaces / containers / networks behind.
