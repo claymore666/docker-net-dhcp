@@ -110,6 +110,12 @@ prompts on has moved since v2.0.0. This release changes the manifest's
   its lease ran out no longer names its old address in its request
   (DHCP option 50), so it keeps that address only if the server keeps
   it for that client on its own (#1182).
+- With `propagate_dns`, a container's `/etc/resolv.conf` is no longer
+  emptied for a moment on every renewal. The plugin now leaves the file
+  alone when the DHCP-supplied resolvers have not changed, which is
+  almost every renewal, and otherwise overwrites it in place without
+  truncating it first, so a lookup running at that instant no longer
+  finds an empty file and falls back to 127.0.0.1 (#1188).
 - On a host where the daemon's sandbox mounts do reach the plugin, an
   attach that polled the sandbox key in the moment between Docker
   creating the empty key file and mounting the namespace over it no
