@@ -133,6 +133,11 @@ type DHCPClientOptions struct {
 	// OnRouterStats gets the delta in the RFC 4861 router-discovery counters, read on the watch tick too, v6 only.
 	OnRouterStats func(RouterStats)
 
+	// OnForcerenewStats gets the delta in the FORCERENEW and Reconfigure counters, on the persistent client and, for
+	// the ACK discarded while acquiring, on the DHCPv4 one-shot. A refused FORCERENEW produces no lease event, so the
+	// fold also runs on the renewal timer (#1119).
+	OnForcerenewStats func(ForcerenewStats)
+
 	// Resume is a lease from a previous run, sent as an INIT-REBOOT DHCPREQUEST (RFC 2131 section 4.4.2).
 	Resume *lease.Lease
 
@@ -162,6 +167,9 @@ type DHCPClientOptions struct {
 
 	// routerSeen does the same for OnRouterStats.
 	routerSeen RouterStats
+
+	// forcerenewSeen does the same for OnForcerenewStats.
+	forcerenewSeen ForcerenewStats
 }
 
 // record writes one manager event, if this manager has a record.
@@ -261,6 +269,20 @@ func (o *DHCPClientOptions) routerReport(s lease.Stats) {
 	o.OnRouterStats(delta)
 }
 
+// forcerenewReport hands the caller the FORCERENEW and Reconfigure counter gains since the last call (#1119).
+func (o *DHCPClientOptions) forcerenewReport(s lease.Stats) {
+	if o.OnForcerenewStats == nil {
+		return
+	}
+	cur := forcerenewStats(s)
+	delta := cur.Sub(o.forcerenewSeen)
+	o.forcerenewSeen = cur
+	if delta.IsZero() {
+		return
+	}
+	o.OnForcerenewStats(delta)
+}
+
 // getIP6 retries through one options value with a fresh manager; stale snapshots halved the reported counts (#814).
 
 // managerStarted forgets every delta snapshot on this options value.
@@ -269,6 +291,7 @@ func (o *DHCPClientOptions) managerStarted() {
 	o.fallbacksSeen = 0
 	o.prefixesIgnoredSeen = 0
 	o.routerSeen = RouterStats{}
+	o.forcerenewSeen = ForcerenewStats{}
 }
 
 // v6ModeReport hands the caller the Mode6Auto fallbacks counted since the last call, on the v6 paths only (#817).
@@ -418,6 +441,8 @@ func GetIP(ctx context.Context, iface string, opts *DHCPClientOptions) (Info, RA
 	}
 	final := client.Stats()
 	opts.acdReport(final)
+	// A discarded ACK happens while acquiring, so a one-shot is where ForcerenewsAckRefused is first counted (#1119).
+	opts.forcerenewReport(final)
 	opts.count(manager, final)
 
 	if info.IP == "" {
@@ -559,6 +584,7 @@ func (c *DHCPClient) translate() {
 		c.opts.v6ModeReport(final)
 		c.opts.v6PrefixReport(final)
 		c.opts.routerReport(final)
+		c.opts.forcerenewReport(final)
 		c.renewals.report(final, c.opts.OnRenewalStats)
 		c.opts.count(c.manager, final)
 	}()
@@ -580,7 +606,9 @@ func (c *DHCPClient) translate() {
 		var ev lease.Event
 		select {
 		case <-poll.C:
-			c.renewals.report(c.Stats(), c.opts.OnRenewalStats)
+			stats := c.Stats()
+			c.renewals.report(stats, c.opts.OnRenewalStats)
+			c.opts.forcerenewReport(stats)
 			continue
 		case <-raWatch.C:
 			// Counted on every advertisement, not only on those that change something (#814).
@@ -609,6 +637,7 @@ func (c *DHCPClient) translate() {
 		c.opts.v6ModeReport(stats)
 		c.opts.v6PrefixReport(stats)
 		c.opts.routerReport(stats)
+		c.opts.forcerenewReport(stats)
 		c.renewals.report(stats, c.opts.OnRenewalStats)
 		c.renewals.cycleEnded(stats)
 		c.opts.conflict(ev)
