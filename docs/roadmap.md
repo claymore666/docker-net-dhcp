@@ -63,9 +63,14 @@ below decide what is in a release; this page follows them.
   statistics
 - [#1120], `user_class=`, the DHCPv4 User Class option 77 (RFC 3004)
 - [#1032], `ipv6_iid=stable-privacy`, the RFC 7217 interface identifier,
-  with modified EUI-64 kept as the default
-- [#1033], the DHCPv6 timezone options logged as the v4 ones are
-- [#1034], the vendor-specific options logged
+  with modified EUI-64 kept as the default. The library half comes with the
+  `dhcp-golib` v1.4.0 pin ([#1177]): `Params6.IID`, off by default; what
+  stays is the plugin's option and the identifier inputs it passes
+- [#1033], the DHCPv6 timezone options logged as the v4 ones are. The
+  library half comes with the v1.4.0 pin ([#1177]): the Reply's options on
+  the lease
+- [#1034], the vendor-specific options logged. The DHCPv6 half's library
+  side comes with the v1.4.0 pin ([#1177]): option 17 on the lease
 - [#1038], an `ipv6_mode=auto` network remembers a silent DHCPv6 server
   for `DHCPV6_ABSENCE_MEMORY` (default ten minutes, `0` turns it off):
   further endpoints form their address from the advertised prefix without
@@ -379,6 +384,7 @@ project does, that review is where it gets corrected.
 [#1126]: https://github.com/claymore666/docker-net-dhcp/issues/1126
 [#1137]: https://github.com/claymore666/docker-net-dhcp/issues/1137
 [#1157]: https://github.com/claymore666/docker-net-dhcp/issues/1157
+[#1177]: https://github.com/claymore666/docker-net-dhcp/issues/1177
 [moby/moby#52866]: https://github.com/moby/moby/pull/52866
 [moby/moby#52870]: https://github.com/moby/moby/issues/52870
 [moby/moby#52871]: https://github.com/moby/moby/pull/52871
