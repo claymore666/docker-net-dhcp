@@ -3301,8 +3301,11 @@ options 23 and 24, are asked for and applied on a DHCPv6 network,
 including on a stateless one, where they arrive in an
 Information-request reply that carries no address at all. Since the
 <code>dhcp-golib</code> v1.3.0 pin the DHCPv6 client also asks for the vendor options
-(17), the timezone options (41, 42) and the NTP Server option (56), and
-the plugin does not read or log any of them yet
+(17), the timezone options (41, 42) and the NTP Server option (56). Since
+the v1.4.0 pin the lease carries every option of the Reply it came from,
+unparsed, and the lease record keeps them as <code>options_v6</code>; a lease resumed
+from its record after a restart has them again only from the next Reply.
+The plugin does not read or log any of them yet
 (<a href="https://github.com/claymore666/docker-net-dhcp/issues/1034">#1034</a>,
 <a href="https://github.com/claymore666/docker-net-dhcp/issues/1033">#1033</a>,
 <a href="https://github.com/claymore666/docker-net-dhcp/issues/859">#859</a>).

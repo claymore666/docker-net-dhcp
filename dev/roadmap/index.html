@@ -1303,9 +1303,14 @@ below decide what is in a release; this page follows them.</p>
   statistics</li>
 <li><a href="https://github.com/claymore666/docker-net-dhcp/issues/1120">#1120</a>, <code>user_class=</code>, the DHCPv4 User Class option 77 (RFC 3004)</li>
 <li><a href="https://github.com/claymore666/docker-net-dhcp/issues/1032">#1032</a>, <code>ipv6_iid=stable-privacy</code>, the RFC 7217 interface identifier,
-  with modified EUI-64 kept as the default</li>
-<li><a href="https://github.com/claymore666/docker-net-dhcp/issues/1033">#1033</a>, the DHCPv6 timezone options logged as the v4 ones are</li>
-<li><a href="https://github.com/claymore666/docker-net-dhcp/issues/1034">#1034</a>, the vendor-specific options logged</li>
+  with modified EUI-64 kept as the default. The library half comes with the
+  <code>dhcp-golib</code> v1.4.0 pin (<a href="https://github.com/claymore666/docker-net-dhcp/issues/1177">#1177</a>): <code>Params6.IID</code>, off by default; what
+  stays is the plugin's option and the identifier inputs it passes</li>
+<li><a href="https://github.com/claymore666/docker-net-dhcp/issues/1033">#1033</a>, the DHCPv6 timezone options logged as the v4 ones are. The
+  library half comes with the v1.4.0 pin (<a href="https://github.com/claymore666/docker-net-dhcp/issues/1177">#1177</a>): the Reply's options on
+  the lease</li>
+<li><a href="https://github.com/claymore666/docker-net-dhcp/issues/1034">#1034</a>, the vendor-specific options logged. The DHCPv6 half's library
+  side comes with the v1.4.0 pin (<a href="https://github.com/claymore666/docker-net-dhcp/issues/1177">#1177</a>): option 17 on the lease</li>
 <li><a href="https://github.com/claymore666/docker-net-dhcp/issues/1038">#1038</a>, an <code>ipv6_mode=auto</code> network remembers a silent DHCPv6 server
   for <code>DHCPV6_ABSENCE_MEMORY</code> (default ten minutes, <code>0</code> turns it off):
   further endpoints form their address from the advertised prefix without
