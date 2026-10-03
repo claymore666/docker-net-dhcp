@@ -338,6 +338,8 @@ integration-test-failure:
 
 # Manual orphan cleanup for when an integration test panics mid-setup
 # and leaves dh-itest-* interfaces / containers / networks behind.
+# It also removes the plugin's state records of any network the engine
+# no longer has (#1174).
 integration-cleanup:
 	@if [ "$$(id -u)" -ne 0 ]; then \
 		echo "integration-cleanup must run as root. Re-run with sudo."; \
