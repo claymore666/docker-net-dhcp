@@ -220,3 +220,32 @@ func TestDeferredRelease_ARestartClosesRecordsOfANetworkRemovedBeforeIt(t *testi
 		t.Errorf("%d release(s) went out, want 0", got)
 	}
 }
+
+func TestDeferredRelease_ARemovedNetworksRecordIsNotClosedInsideItsRestartWindow(t *testing.T) {
+	p, sender := deferredPlugin(t, ReleaseNever)
+	docker := &fakeDocker{inspectErr: networkNotFound()}
+	p.docker = docker
+	deadline := time.Now().Add(time.Hour)
+	id := heldRecord(t, p, deferredMAC(0x02), "192.168.99.10/24", deadline)
+	if err := deleteOptions(deferredTestNetwork); err != nil {
+		t.Fatalf("deleteOptions: %v", err)
+	}
+
+	p.sweepDeferredReleases(deadline.Add(releaseSettle - time.Second))
+
+	if got := recordPhase(t, p, id); got != lease.PhaseRetained {
+		t.Errorf("the record is %v before its deadline and the settle, want RETAINED", got)
+	}
+	if got := docker.inspectCalls; got != 0 {
+		t.Errorf("NetworkInspect was called %d time(s) for a record not yet due, want 0", got)
+	}
+
+	p.sweepDeferredReleases(deadline.Add(releaseSettle))
+
+	if got := recordPhase(t, p, id); got != lease.PhaseClosed {
+		t.Errorf("the record is %v once due, want CLOSED", got)
+	}
+	if got := sender.callCount(); got != 0 {
+		t.Errorf("%d release(s) went out, want 0", got)
+	}
+}
