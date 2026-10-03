@@ -103,7 +103,7 @@ const (
 	TestClasslessRouteGW     = "192.168.99.249"
 	dnsmasqCSRTag            = "dh-itest-csr"
 
-	TestClassless249VendorClass = "docker-net-dhcp-test-csr249"
+	TestClassless249VendorClass = "docker-net-dhcp-test-249"
 	TestClassless249Route       = "192.168.124.0/24"
 	TestClassless249RouteGW     = "192.168.99.247"
 	dnsmasqCSR249Tag            = "dh-itest-csr249"
