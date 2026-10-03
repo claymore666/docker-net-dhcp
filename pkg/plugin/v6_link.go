@@ -4,6 +4,7 @@
 package plugin
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -317,6 +318,13 @@ func writeV6SandboxDefaultsUnder(dir string) v6SandboxDefaultsResult {
 // failure is a counted step, not a Join verdict (#1145).
 func writeV6SandboxDefaults(sandboxKey string) v6SandboxDefaultsResult {
 	ns, err := openSandboxNetNSByKeyIn(sandboxNetnsDirs, sandboxKey)
+	if errors.Is(err, errSandboxKeyPlaceholder) {
+		// Only a placeholder is awaited; an absent entry returns at once above. The context outlasts the bound by one
+		// interval, so the await ends on its own bound (#1185).
+		ctx, cancel := context.WithTimeout(context.Background(), (placeholderBoundIntervals+1)*pollTime)
+		defer cancel()
+		ns, err = awaitSandboxNetNSByKeyIn(ctx, sandboxNetnsDirs, sandboxKey, pollTime)
+	}
 	if err != nil {
 		res := v6SandboxDefaultsResult{Err: fmt.Errorf("open the sandbox: %w", err)}
 		if errors.Is(err, fs.ErrNotExist) {

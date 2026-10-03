@@ -31,6 +31,9 @@ var (
 	errSandboxKeyNotANamespace = errors.New("sandbox key entry is not a namespace")
 
 	errSandboxKeyWrongNSType = errors.New("sandbox key entry is a namespace of the wrong type")
+
+	// errSandboxKeyPlaceholder: an empty regular file, "not yet" until the await's bound runs out (#1185).
+	errSandboxKeyPlaceholder = errors.New("sandbox key entry is the empty placeholder")
 )
 
 // openSandboxNetNSByKeyIn opens the sandbox netns libnetwork bind-mounts at the key; unlike /proc/<pid>/ns/net it
@@ -64,9 +67,16 @@ func openSandboxNetNSByKeyIn(dirs []string, sandboxKey string) (netns.NsHandle, 
 	// on a regular file (#725).
 	nsType, err := unix.IoctlRetInt(fd, unix.NS_GET_NSTYPE)
 	if err != nil {
+		var st unix.Stat_t
+		placeholder := unix.Fstat(fd, &st) == nil && st.Mode&unix.S_IFMT == unix.S_IFREG && st.Size == 0
 		unix.Close(fd)
-		return netns.None(), fmt.Errorf("%w (%w): %s/%s opened, but it is not a namespace (%w) — the "+
-			"daemon's sandbox mounts are not propagated into this plugin's mount namespace",
+		if placeholder {
+			return netns.None(), fmt.Errorf("%w (%w) (%w): %s/%s is still the empty file libnetwork creates "+
+				"before it bind-mounts the namespace over it, or the daemon's sandbox mounts are not propagated "+
+				"into this plugin's mount namespace (%w)",
+				errNoSandboxKey, errSandboxKeyNotANamespace, errSandboxKeyPlaceholder, dir, name, err)
+		}
+		return netns.None(), fmt.Errorf("%w (%w): %s/%s opened, but it is not a namespace (%w)",
 			errNoSandboxKey, errSandboxKeyNotANamespace, dir, name, err)
 	}
 	if nsType != unix.CLONE_NEWNET {
@@ -78,20 +88,37 @@ func openSandboxNetNSByKeyIn(dirs []string, sandboxKey string) (netns.NsHandle, 
 }
 
 // awaitSandboxNetNSByKey retries until ctx ends; the deadline error carries the last cause (#317), and
-// errNoSandboxKey is final at once (#401).
+// errNoSandboxKey is final at once (#401) unless the entry is the empty placeholder (#1185).
 func awaitSandboxNetNSByKey(ctx context.Context, sandboxKey string, interval time.Duration) (netns.NsHandle, error) {
 	return awaitSandboxNetNSByKeyIn(ctx, sandboxNetnsDirs, sandboxKey, interval)
 }
 
+// placeholderBoundIntervals bounds how long the empty placeholder is read as "not yet" (#1185). libnetwork's create
+// and bind mount are consecutive steps of one function (moby libnetwork/osl, createNetworkNamespace), so two polls
+// outlast the window. A host whose propagation is 0 sees the placeholder on every attach and must still fall back to
+// the PID route after two intervals, not poll to the deadline.
+const placeholderBoundIntervals = 2
+
 func awaitSandboxNetNSByKeyIn(ctx context.Context, dirs []string, sandboxKey string, interval time.Duration) (netns.NsHandle, error) {
 	var lastErr error
+	var placeholderSince time.Time
 	for {
 		ns, err := openSandboxNetNSByKeyIn(dirs, sandboxKey)
 		if err == nil {
 			return ns, nil
 		}
-		if errors.Is(err, errNoSandboxKey) {
-			return netns.None(), err
+		if errors.Is(err, errSandboxKeyPlaceholder) {
+			if placeholderSince.IsZero() {
+				placeholderSince = time.Now()
+			}
+			if time.Since(placeholderSince) >= placeholderBoundIntervals*interval {
+				return netns.None(), err
+			}
+		} else {
+			placeholderSince = time.Time{}
+			if errors.Is(err, errNoSandboxKey) {
+				return netns.None(), err
+			}
 		}
 		lastErr = err
 		select {

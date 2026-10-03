@@ -4,6 +4,8 @@
 package plugin
 
 import (
+	"errors"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,6 +14,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/vishvananda/netns"
 )
@@ -96,5 +99,113 @@ func TestWriteV6SandboxDefaults_GuardsTheNamedSandboxAndNotTheCallersNamespace(t
 	}
 	if got := readDefaultAcceptRA(t, self); got != "1" {
 		t.Errorf("the caller's own default/accept_ra reads %q: the write landed in the wrong namespace", got)
+	}
+}
+
+// A key that is still libnetwork's empty placeholder when Join writes the defaults is not a failure if the namespace
+// arrives within the bound (#1185).
+func TestWriteV6SandboxDefaults_WaitsForAPlaceholderThatBecomesTheSandbox(t *testing.T) {
+	if !inOwnNetns(t) {
+		return
+	}
+	child := exec.Command("sleep", "30")
+	child.SysProcAttr = &syscall.SysProcAttr{Cloneflags: syscall.CLONE_NEWNET}
+	if err := child.Start(); err != nil {
+		t.Fatalf("cannot create the sandbox namespace inside the namespaced run: %v", err)
+	}
+	t.Cleanup(func() { _ = child.Process.Kill(); _, _ = child.Process.Wait() })
+
+	dir := t.TempDir()
+	key := filepath.Join(dir, "sandbox")
+	if err := os.WriteFile(key, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	prev := sandboxNetnsDirs
+	sandboxNetnsDirs = []string{dir}
+	t.Cleanup(func() { sandboxNetnsDirs = prev })
+
+	sandbox, err := netns.GetFromPid(child.Process.Pid)
+	if err != nil {
+		t.Fatalf("open the sandbox: %v", err)
+	}
+	defer sandbox.Close()
+
+	swapped := make(chan struct{})
+	defer func() { <-swapped }()
+	go func() {
+		defer close(swapped)
+		time.Sleep(150 * time.Millisecond)
+		tmp := key + ".swap"
+		// proc-path-discipline: allow -- the key is a test fixture standing in for libnetwork's bind mount (#1185).
+		if err := os.Symlink("/proc/"+strconv.Itoa(child.Process.Pid)+"/ns/net", tmp); err != nil {
+			t.Errorf("link the sandbox: %v", err)
+			return
+		}
+		if err := os.Rename(tmp, key); err != nil {
+			t.Errorf("swap the placeholder: %v", err)
+		}
+	}()
+
+	res := writeV6SandboxDefaults(key)
+	if res.Failures != 0 || res.Err != nil {
+		t.Fatalf("a placeholder that became the sandbox inside the bound counted %d failure(s): %v", res.Failures, res.Err)
+	}
+	if got := readDefaultAcceptRA(t, sandbox); got != "0" {
+		t.Errorf("the sandbox's default/accept_ra reads %q after the write, want 0", got)
+	}
+}
+
+// A placeholder that never becomes a namespace is still one counted failure, after the bound and not at the deadline
+// of a context nobody set (#1185).
+func TestWriteV6SandboxDefaults_ASteadyPlaceholderIsOneFailureAfterTheBound(t *testing.T) {
+	dir := t.TempDir()
+	key := filepath.Join(dir, "sandbox")
+	if err := os.WriteFile(key, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	prev := sandboxNetnsDirs
+	sandboxNetnsDirs = []string{dir}
+	t.Cleanup(func() { sandboxNetnsDirs = prev })
+
+	start := time.Now()
+	res := writeV6SandboxDefaults(key)
+	elapsed := time.Since(start)
+	if res.Failures != 1 || res.Err == nil || !errors.Is(res.Err, errSandboxKeyPlaceholder) {
+		t.Errorf("a steady placeholder gave %d failure(s), err %v; want 1 wrapping errSandboxKeyPlaceholder", res.Failures, res.Err)
+	}
+	if elapsed < placeholderBoundIntervals*pollTime || elapsed > 4*pollTime {
+		t.Errorf("returned after %s, want about the bound %s", elapsed, placeholderBoundIntervals*pollTime)
+	}
+}
+
+// Only a placeholder is awaited: a key with no entry yet, or no directory, returns as SandboxNotBuilt at once and not
+// after the await's own 300 ms context (#1185).
+func TestWriteV6SandboxDefaults_OnlyAPlaceholderIsAwaited(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		key  func(dir string) string
+	}{
+		{"absent entry in a permitted directory", func(dir string) string { return filepath.Join(dir, "sandbox") }},
+		{"permitted directory that does not exist", func(dir string) string { return filepath.Join(dir, "gone", "sandbox") }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			key := tc.key(dir)
+			prev := sandboxNetnsDirs
+			sandboxNetnsDirs = []string{filepath.Dir(key)}
+			t.Cleanup(func() { sandboxNetnsDirs = prev })
+
+			start := time.Now()
+			res := writeV6SandboxDefaults(key)
+			elapsed := time.Since(start)
+			if !res.SandboxNotBuilt || res.Failures != 0 || !errors.Is(res.Err, fs.ErrNotExist) {
+				t.Fatalf("SandboxNotBuilt=%v failures=%d err=%v; want SandboxNotBuilt, no failure, an fs.ErrNotExist err",
+					res.SandboxNotBuilt, res.Failures, res.Err)
+			}
+			if elapsed >= 2*pollTime {
+				t.Errorf("returned after %s: a refusal that is not the placeholder was awaited (await ctx %s)",
+					elapsed, (placeholderBoundIntervals+1)*pollTime)
+			}
+		})
 	}
 }
