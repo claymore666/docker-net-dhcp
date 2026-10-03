@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -442,19 +443,10 @@ func TestWriteResolvConfFile_TwoWritersLeaveOneOfTheInputs(t *testing.T) {
 	}
 }
 
-// A write parked on a blocking file holds nothing another container's write needs (#1188); a FIFO stands in for a
-// hung mount over /etc/resolv.conf, and the writer is parked once our write end finds its reader.
-func TestWriteResolvConfFile_BlockedWriteDoesNotDelayAnotherContainer(t *testing.T) {
-	dir := t.TempDir()
-	fifo := filepath.Join(dir, "fifo")
-	if err := unix.Mkfifo(fifo, 0644); err != nil {
-		t.Fatal(err)
-	}
-	content := buildResolvConf([]string{"192.0.2.1"}, nil, "", "")
-
-	parked := make(chan error, 1)
-	go func() { parked <- writeResolvConfFile("ctr-blocked", fifo, content) }()
-
+// parkOnFIFO waits until a writer, whose result arrives on parked, is parked on the FIFO at fifo (our write end
+// finds its reader), and returns the release that lets it finish (#1188).
+func parkOnFIFO(t *testing.T, fifo string, parked <-chan error) func() {
+	t.Helper()
 	var hold int
 	deadline := time.Now().Add(5 * time.Second)
 	for {
@@ -468,7 +460,7 @@ func TestWriteResolvConfFile_BlockedWriteDoesNotDelayAnotherContainer(t *testing
 		}
 		time.Sleep(time.Millisecond)
 	}
-	release := func() {
+	return func() {
 		rd, err := unix.Open(fifo, unix.O_RDONLY|unix.O_NONBLOCK, 0)
 		if err != nil {
 			t.Errorf("open reader: %v", err)
@@ -483,7 +475,21 @@ func TestWriteResolvConfFile_BlockedWriteDoesNotDelayAnotherContainer(t *testing
 			unix.Close(rd)
 		}
 	}
-	defer release()
+}
+
+// A write parked on a blocking file holds nothing another container's write needs (#1188); a FIFO stands in for a
+// hung mount over /etc/resolv.conf.
+func TestWriteResolvConfFile_BlockedWriteDoesNotDelayAnotherContainer(t *testing.T) {
+	dir := t.TempDir()
+	fifo := filepath.Join(dir, "fifo")
+	if err := unix.Mkfifo(fifo, 0644); err != nil {
+		t.Fatal(err)
+	}
+	content := buildResolvConf([]string{"192.0.2.1"}, nil, "", "")
+
+	parked := make(chan error, 1)
+	go func() { parked <- writeResolvConfFile("ctr-blocked", fifo, content) }()
+	defer parkOnFIFO(t, fifo, parked)()
 
 	other := filepath.Join(dir, "other.conf")
 	done := make(chan error, 1)
@@ -497,6 +503,55 @@ func TestWriteResolvConfFile_BlockedWriteDoesNotDelayAnotherContainer(t *testing
 		t.Fatal("a second container's write was still blocked after 2 s behind a parked writer")
 	}
 	got, err := os.ReadFile(other)
+	if err != nil || !bytes.Equal(got, content) {
+		t.Errorf("second container file = %q, %v; want %q", got, err, content)
+	}
+}
+
+// Production shape: every container's path is the same string, which only the container's mount namespace resolves.
+// A per-thread cwd gives two threads one relative name for two files, so a lock keyed on the path would stall both (#1188).
+func TestWriteResolvConfFile_SamePathStringTwoContainers(t *testing.T) {
+	root := t.TempDir()
+	dirA, dirB := filepath.Join(root, "a"), filepath.Join(root, "b")
+	for _, d := range []string{dirA, dirB} {
+		if err := os.Mkdir(d, 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	fifo := filepath.Join(dirA, "resolv.conf")
+	if err := unix.Mkfifo(fifo, 0644); err != nil {
+		t.Fatal(err)
+	}
+	content := buildResolvConf([]string{"192.0.2.1"}, nil, "", "")
+
+	// The thread stays locked, so the runtime retires it with the goroutine and its cwd never reaches another test.
+	write := func(id, dir string, out chan<- error) {
+		runtime.LockOSThread()
+		if err := unix.Unshare(unix.CLONE_FS); err != nil {
+			out <- err
+			return
+		}
+		if err := os.Chdir(dir); err != nil {
+			out <- err
+			return
+		}
+		out <- writeResolvConfFile(id, "resolv.conf", content)
+	}
+	parked := make(chan error, 1)
+	go write("ctr-a", dirA, parked)
+	defer parkOnFIFO(t, fifo, parked)()
+
+	done := make(chan error, 1)
+	go write("ctr-b", dirB, done)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("second container write: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("a second container's write to the same path string was still blocked after 2 s")
+	}
+	got, err := os.ReadFile(filepath.Join(dirB, "resolv.conf"))
 	if err != nil || !bytes.Equal(got, content) {
 		t.Errorf("second container file = %q, %v; want %q", got, err, content)
 	}
