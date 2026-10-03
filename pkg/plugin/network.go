@@ -857,8 +857,17 @@ func ipamDriverIsRemote(name string) bool {
 // endpointCallStart is a seam for the link-local budget test, which starts a call late in its budget (#904).
 var endpointCallStart = time.Now
 
-// CreateEndpoint builds the host-side link, runs a one-shot DHCP acquisition and stashes the result for Join.
+// CreateEndpoint builds the host-side link, runs a one-shot DHCP acquisition and stashes the result for Join. A failed
+// create gets no Join or DeleteEndpoint, so the hint is dropped here, where every path returns (#1183).
 func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (CreateEndpointResponse, error) {
+	res, err := p.createEndpoint(ctx, r)
+	if err != nil {
+		p.takeJoinHint(r.EndpointID)
+	}
+	return res, err
+}
+
+func (p *Plugin) createEndpoint(ctx context.Context, r CreateEndpointRequest) (CreateEndpointResponse, error) {
 	// The daemon's deadline on this call comes first; see v6AcquisitionDeadline.
 	callStart := endpointCallStart()
 	log.WithField("options", r.Options).Debug("CreateEndpoint options")
@@ -1198,6 +1207,8 @@ func (p *Plugin) EndpointOperInfo(ctx context.Context, r InfoRequest) (InfoRespo
 func (p *Plugin) DeleteEndpoint(ctx context.Context, r DeleteEndpointRequest) error {
 	p.autoFallbackCounted.Delete(r.EndpointID)
 	p.v6AbsenceServed.Delete(r.EndpointID)
+	// Only Join reads the hint, and a container that never started gets none (#1183).
+	p.takeJoinHint(r.EndpointID)
 	// netMode, not netOptions: teardown must not be blocked by a stored name it never reads (#727).
 	mode, modeKnown, err := p.netMode(ctx, r.NetworkID)
 	if err != nil {
