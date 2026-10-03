@@ -94,7 +94,29 @@ func validateIPv6Options(opts DHCPNetworkOptions, set map[string]bool) error {
 			"or ipv6_mode=auto, or drop ipv6_temporary. See issue #927", util.ErrIPAM, mode)
 	}
 
+	// ipv6_iid=stable-privacy shapes the identifier of an address formed from a router advertisement, which off and
+	// dhcp never form, so there it could only do nothing (#1032).
+	iid, err := opts.ipv6IID()
+	if err != nil {
+		return err
+	}
+	if iid == proto.IIDModeStablePrivacy && !dhcp.IPv6ModeFormsAddresses(mode) {
+		return fmt.Errorf("%w: ipv6_iid=stable-privacy needs an ipv6_mode that forms addresses from a "+
+			"router advertisement, and this network is ipv6_mode=%s: it sets the interface identifier "+
+			"of that address (RFC 7217), and a DHCPv6 lease carries the address the server granted. "+
+			"Use ipv6_mode=slaac or ipv6_mode=auto, or drop ipv6_iid. See issue #1032", util.ErrIPAM, mode)
+	}
+
 	return nil
+}
+
+// ipv6IID: unset is eui64; a value outside the library's set is refused, never run as eui64 (#1032).
+func (o DHCPNetworkOptions) ipv6IID() (proto.IIDMode, error) {
+	m, err := dhcp.ParseIPv6IID(o.IPv6IID)
+	if err != nil {
+		return proto.IIDModeEUI64, fmt.Errorf("%w: %v", util.ErrIPAM, err)
+	}
+	return m, nil
 }
 
 // ipv6MainPrefix: unset is the zero prefix. A value with host bits is refused, since ParsePrefix accepts it and
@@ -122,7 +144,7 @@ func (o DHCPNetworkOptions) ipv6MainPrefix() (netip.Prefix, error) {
 
 // v6Wiring sets identity, record and mode together: proto.Mode6's zero is Mode6DHCP, and buildParams6 refuses
 // an empty Identity6, so a site that skips it fails to start instead of running the wrong mode (#817).
-func (p *Plugin) v6Wiring(base *dhcp.DHCPClientOptions, opts DHCPNetworkOptions, id6 dhcp.Identity6, recordID6, preferredV6, endpointID string) error {
+func (p *Plugin) v6Wiring(base *dhcp.DHCPClientOptions, opts DHCPNetworkOptions, id6 dhcp.Identity6, recordID6, preferredV6, endpointID, networkID string) error {
 	mode, err := opts.ipv6Mode()
 	if err != nil {
 		return err
@@ -145,6 +167,21 @@ func (p *Plugin) v6Wiring(base *dhcp.DHCPClientOptions, opts DHCPNetworkOptions,
 		return err
 	}
 	base.MainPrefix6 = main
+	// Every DHCPv6 client starts here, and only stable-privacy reads the secret, so an eui64 network never touches the
+	// file (#1032).
+	iid, err := opts.ipv6IID()
+	if err != nil {
+		return err
+	}
+	base.IPv6IID = iid
+	if iid == proto.IIDModeStablePrivacy {
+		secret, err := loadIIDSecret()
+		if err != nil {
+			return err
+		}
+		base.IPv6IIDSecret = secret
+		base.IPv6IIDNetworkID = []byte(networkID)
+	}
 	if p == nil {
 		return nil
 	}

@@ -112,6 +112,15 @@ type DHCPClientOptions struct {
 	// IPv6Temporary puts an IA_TA (RFC 8415 section 21.5) in the Solicit and the Request, and nothing in v4 (#927).
 	IPv6Temporary bool
 
+	// IPv6IID is how SLAAC forms the interface identifier, the zero value being RFC 4291 Appendix A's modified EUI-64
+	// (#1032).
+	IPv6IID proto.IIDMode
+
+	// IPv6IIDSecret is RFC 7217 section 5's secret key and IPv6IIDNetworkID its Network_ID; both are read for
+	// stable-privacy only (#1032).
+	IPv6IIDSecret    []byte
+	IPv6IIDNetworkID []byte
+
 	// ConflictMode is the parsed RFC 5227 `conflict_check` mode, zero being proto.ConflictWait (D23, #882).
 	ConflictMode proto.ConflictMode
 

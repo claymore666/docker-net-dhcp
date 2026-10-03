@@ -268,7 +268,7 @@ func TestV6Wiring_CarriesEveryFieldTheV6ClientNeeds(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			p := &Plugin{}
 			var base dhcp.DHCPClientOptions
-			if err := p.v6Wiring(&base, tc.opts, id6, "rec-1", "2001:db8::5", "endpoint-1"); err != nil {
+			if err := p.v6Wiring(&base, tc.opts, id6, "rec-1", "2001:db8::5", "endpoint-1", "net-1"); err != nil {
 				t.Fatalf("v6Wiring: %v", err)
 			}
 			if base.Mode6 != tc.wantMode {
@@ -313,7 +313,7 @@ func TestV6Wiring_CarriesEveryFieldTheV6ClientNeeds(t *testing.T) {
 
 	var base dhcp.DHCPClientOptions
 	p := &Plugin{}
-	if err := p.v6Wiring(&base, DHCPNetworkOptions{Bridge: "br0"}, id6, "rec-1", "", "endpoint-1"); err == nil {
+	if err := p.v6Wiring(&base, DHCPNetworkOptions{Bridge: "br0"}, id6, "rec-1", "", "endpoint-1", "net-1"); err == nil {
 		t.Error("v6Wiring accepted a network whose ipv6_mode is off")
 	} else if !errors.Is(err, util.ErrIPAM) {
 		t.Errorf("the refusal is not an ErrIPAM: %v", err)
@@ -325,7 +325,7 @@ func TestV6Wiring_CarriesEveryFieldTheV6ClientNeeds(t *testing.T) {
 
 	var noPlugin dhcp.DHCPClientOptions
 	var nilP *Plugin
-	if err := nilP.v6Wiring(&noPlugin, DHCPNetworkOptions{Bridge: "br0", IPv6Mode: "auto"}, id6, "rec-1", "", "e"); err != nil {
+	if err := nilP.v6Wiring(&noPlugin, DHCPNetworkOptions{Bridge: "br0", IPv6Mode: "auto"}, id6, "rec-1", "", "e", "net-1"); err != nil {
 		t.Fatalf("v6Wiring with a nil plugin: %v", err)
 	}
 	if noPlugin.Mode6 != proto.Mode6Auto || noPlugin.Identity6.IAID != id6.IAID {

@@ -1714,7 +1714,7 @@ func (m *dhcpManager) setupClient(v6 bool) (chan error, error) {
 	}
 	if v6 {
 		// The v6 record id is restated; what this adds is the mode, which renewals and rebinds run under (#817).
-		if err := m.plugin.v6Wiring(&clientOpts, m.opts, identity6, recordID, preferredV6, m.joinReq.EndpointID); err != nil {
+		if err := m.plugin.v6Wiring(&clientOpts, m.opts, identity6, recordID, preferredV6, m.joinReq.EndpointID, m.joinReq.NetworkID); err != nil {
 			return nil, err
 		}
 	}
