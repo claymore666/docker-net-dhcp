@@ -216,6 +216,12 @@ jobs:
         shell: bash
         env:
           ITEST_TIMEOUT: 165m
+          # The test binary's Go runtime memory (Sys) at exit may not pass 256 MB (#1180). Measured: Sys 36 MB
+          # and 23 MB in the two amd64 shards with the bound off (run 37126837978); RSS peak 24 MB over an
+          # 80-minute arm64 run that skipped the log read and 13 IPAM tests. The whole-suite arm64 Sys is not
+          # measured yet; 256 is margin for it. The read that killed the binary twice (an 842 MB dockerd log
+          # held whole, about 2.1x at once) puts Sys near 1.8 GB.
+          ITEST_HEAP_BOUND_MB: 256
         run: make integration-test 2>&1 | tee /tmp/itest-arm64-main.log
 
       # if: always() for the same reason as integration-hosted.yml (#742):
