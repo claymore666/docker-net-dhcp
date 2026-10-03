@@ -19,8 +19,8 @@ This is the successor of `devplayer0/docker-net-dhcp`, not a patched copy:
 
 ```bash
 sudo mkdir -p /var/lib/net-dhcp                      # once per host
-docker plugin install ghcr.io/claymore666/docker-net-dhcp:v2.3.1   # -arm64 on arm64
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.3.1 \
+docker plugin install ghcr.io/claymore666/docker-net-dhcp:v2.4.0   # -arm64 on arm64
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.4.0 \
   --ipam-driver null -o mode=macvlan -o parent=eth0 lan-dhcp
 docker run --rm -ti --network lan-dhcp alpine ip address show
 ```
@@ -102,11 +102,9 @@ Where the plugin refuses, the message names the reason.
 
 ## Planned
 
-v2.4.0: DHCPv6 Rapid Commit ([#926]), temporary addresses ([#927]) and
-prefix delegation ([#214]); DHCPv4 Rapid Commit ([#1031]);
-stable-privacy SLAAC addresses ([#1032]); one multi-architecture image per
-tag ([#1035]). The full list, with what this
-project will not do, is on the [roadmap](docs/roadmap.md).
+v2.5.0 is CI consolidation and code debt, plus DHCPv6 prefix
+delegation ([#214]), which is designed first. The full list, with what
+this project will not do, is on the [roadmap](docs/roadmap.md).
 
 ## How to check any of this
 
@@ -127,13 +125,8 @@ project will not do, is on the [roadmap](docs/roadmap.md).
 [#1037]: https://github.com/claymore666/docker-net-dhcp/issues/1037
 [#903]: https://github.com/claymore666/docker-net-dhcp/issues/903
 [#904]: https://github.com/claymore666/docker-net-dhcp/issues/904
-[#926]: https://github.com/claymore666/docker-net-dhcp/issues/926
-[#927]: https://github.com/claymore666/docker-net-dhcp/issues/927
 [#214]: https://github.com/claymore666/docker-net-dhcp/issues/214
-[#1031]: https://github.com/claymore666/docker-net-dhcp/issues/1031
 [#1027]: https://github.com/claymore666/docker-net-dhcp/issues/1027
-[#1032]: https://github.com/claymore666/docker-net-dhcp/issues/1032
-[#1035]: https://github.com/claymore666/docker-net-dhcp/issues/1035
 
 ## Requirements
 
@@ -150,7 +143,7 @@ project will not do, is on the [roadmap](docs/roadmap.md).
   because it is unmeasured: on a cgroup v2 host it cannot start a
   container at all, so nothing there tests this plugin.
   Every change is also tested against the engine the integration suite
-  runs on, **29.8.1** today, read from that run's `Fixture engine drift`
+  runs on, **29.8.2** today, read from that run's `Fixture engine drift`
   step.
 - **Plugin interface `docker.networkdriver/1.0`**, which is what the
   plugin manifest declares. The plugin negotiates the Docker API version
@@ -205,16 +198,16 @@ project will not do, is on the [roadmap](docs/roadmap.md).
 sudo mkdir -p /var/lib/net-dhcp
 
 # amd64
-docker plugin install ghcr.io/claymore666/docker-net-dhcp:v2.3.1
+docker plugin install ghcr.io/claymore666/docker-net-dhcp:v2.4.0
 # arm64
-docker plugin install ghcr.io/claymore666/docker-net-dhcp:v2.3.1-arm64
+docker plugin install ghcr.io/claymore666/docker-net-dhcp:v2.4.0-arm64
 ```
 
 One network, created once. `macvlan` needs only a host NIC; `bridge`
 wants a bridge you bring yourself ([bridge mode](docs/bridge-mode.md)):
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.3.1 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.4.0 \
   --ipam-driver null -o mode=macvlan -o parent=eth0 lan-dhcp
 
 docker run --rm -ti --network lan-dhcp alpine ip address show
@@ -227,8 +220,8 @@ goes into Docker's own address management, which makes `--ip` and
 Compose's `ipv4_address` work.
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.3.1 \
-  --ipam-driver ghcr.io/claymore666/docker-net-dhcp:v2.3.1 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v2.4.0 \
+  --ipam-driver ghcr.io/claymore666/docker-net-dhcp:v2.4.0 \
   -o mode=macvlan -o parent=eth0 lan-dhcp
 ```
 

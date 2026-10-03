@@ -357,6 +357,14 @@ advertisement with the M bit set is fatal. The wire beats the
 diagnostic, because a later advertisement on the same link can set M
 after the segment has already answered.
 
+**A silent DHCPv6 server is remembered** (v2.4.0, #1038). On an
+`ipv6_mode=auto` network the first endpoint that solicits and hears
+nothing records that in `pkg/plugin/v6_absence_memory.go`, per network and
+in memory only. For `DHCPV6_ABSENCE_MEMORY` (ten minutes by default) the
+next endpoint skips the Solicit and forms its address from the advertised
+prefix at once; `dhcpv6_absence_remembered` counts each. A granted DHCPv6
+address, removing the network or a plugin restart clears the record.
+
 ## How a network chooses its DHCP server
 
 `dhcp_servers` ranks the servers a network may lease from and
@@ -810,6 +818,17 @@ kinds of restart. Their *observable* behaviour is documented in the
   *has* a renewal client, and it is the only outward sign the race
   happened at all (#480, #679).
 
+Two more files in `STATE_DIR` are kept by the plugin and not by the
+mechanisms above. The lease record `lease-records.jsonl` is compacted on
+the 15-second sweep, so it stops growing by about 5 KB per container
+lifecycle (v2.4.0, #1182); the rule and the crash behaviour are in the
+[driver reference](reference.md#state-persistence). At start, a saved
+network file whose network Docker answers is gone is removed together with
+its pool binding and held records, and `stale_networks_dropped` counts it
+(v2.4.0, #1174); a slow or unreachable daemon leaves everything as it is.
+`ipv6-iid-secret` holds the 32-byte secret behind `ipv6_iid=stable-privacy`
+(v2.4.0, #1032), mode 0600, created on first use.
+
 The plugin's identity is a MAC. Both stability mechanisms exist because
 DHCP servers key on it, and everything above is in service of presenting
 the same MAC to the server across an event the container did not choose.
@@ -1050,7 +1069,7 @@ container and checks the interface the engine actually created. There is
 no version threshold to hit. The upstream fix (moby/moby#52866,
 stopping the remote-driver proxy from dropping `DstName`) merged to moby
 master on 2026-08-26, is milestoned for engine 29.8.0, and that engine
-was released on 2026-09-03. The lane's engine is 29.8.1, read from the
+was released on 2026-09-03. The lane's engine is 29.8.2, read from the
 run's `Fixture engine drift` step, so the probe now succeeds there and
 the dependent tests run. They still skip on any box whose engine is
 older, and a skip there is expected and is not a signal that the run
