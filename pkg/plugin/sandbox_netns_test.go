@@ -84,23 +84,53 @@ func TestOpenSandboxNetNSByKey_OpensTheEntryOfAPermittedDirectory(t *testing.T) 
 	}
 }
 
+// An empty regular file is "not yet"; every other non-namespace entry is final (#1185).
 func TestOpenSandboxNetNSByKey_RefusesAnEntryThatIsNotANamespace(t *testing.T) {
-	dir := t.TempDir()
 	const name = "8fc1a2b3c4d5"
-	if err := os.WriteFile(filepath.Join(dir, name), []byte{}, 0o600); err != nil {
-		t.Fatalf("write fixture entry: %v", err)
-	}
 
-	ns, err := openSandboxNetNSByKeyIn([]string{dir}, filepath.Join(dir, name))
-	if err == nil {
-		closeNsHandle(ns)
-		t.Fatal("accepted an ordinary file as a sandbox network namespace. That is not a hypothetical: " +
-			"it is exactly what the plugin sees when the daemon's sandbox mounts are not propagated " +
-			"into its mount namespace, and accepting it costs the endpoint its persistent client")
-	}
-	if !errors.Is(err, errNoSandboxKey) {
-		t.Errorf("err = %v, want errNoSandboxKey so the await refuses it without spending the "+
-			"attach budget and the caller falls back at once", err)
+	for _, tc := range []struct {
+		name        string
+		make        func(t *testing.T, path string)
+		placeholder bool
+	}{
+		{"an empty regular file is the placeholder, not yet", func(t *testing.T, path string) {
+			if err := os.WriteFile(path, []byte{}, 0o600); err != nil {
+				t.Fatalf("write fixture entry: %v", err)
+			}
+		}, true},
+		{"a non-empty regular file is final", func(t *testing.T, path string) {
+			if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
+				t.Fatalf("write fixture entry: %v", err)
+			}
+		}, false},
+		{"a handle that is not a namespace is final", func(t *testing.T, path string) {
+			if err := os.Symlink("/dev/null", path); err != nil {
+				t.Fatalf("link fixture entry: %v", err)
+			}
+		}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			tc.make(t, filepath.Join(dir, name))
+
+			ns, err := openSandboxNetNSByKeyIn([]string{dir}, filepath.Join(dir, name))
+			if err == nil {
+				closeNsHandle(ns)
+				t.Fatal("accepted a file as a sandbox network namespace. That is not a hypothetical: " +
+					"it is exactly what the plugin sees when the daemon's sandbox mounts are not propagated " +
+					"into its mount namespace, and accepting it costs the endpoint its persistent client")
+			}
+			if !errors.Is(err, errNoSandboxKey) {
+				t.Errorf("err = %v, want errNoSandboxKey so a direct caller still refuses it", err)
+			}
+			if !errors.Is(err, errSandboxKeyNotANamespace) {
+				t.Errorf("err = %v, want errSandboxKeyNotANamespace so the arm counter still names it", err)
+			}
+			if got := errors.Is(err, errSandboxKeyPlaceholder); got != tc.placeholder {
+				t.Errorf("errors.Is(err, errSandboxKeyPlaceholder) = %v, want %v: only an empty regular file "+
+					"is \"not yet\"; anything else that is not a namespace never becomes one", got, tc.placeholder)
+			}
+		})
 	}
 }
 
@@ -163,6 +193,211 @@ func TestAwaitSandboxNetNSByKey_WaitsForAnEntryThatArrivesLate(t *testing.T) {
 		t.Fatalf("gave up on an entry that arrived late: %v", err)
 	}
 	closeNsHandle(ns)
+}
+
+// makeThePlaceholderANamespace stands in for libnetwork's bind mount, by rename or by bind mount (#1185).
+func makeThePlaceholderANamespace(t *testing.T, key string, bind bool) {
+	t.Helper()
+	if bind {
+		if err := unix.Mount("/proc/self/ns/net", key, "", unix.MS_BIND, ""); err != nil {
+			t.Errorf("bind-mount the namespace over the placeholder: %v", err)
+			return
+		}
+		t.Cleanup(func() { _ = unix.Unmount(key, unix.MNT_DETACH) })
+		return
+	}
+	tmp := key + ".swap"
+	if err := linkANetnsEntry(tmp); err != nil {
+		t.Errorf("link fixture entry: %v", err)
+		return
+	}
+	if err := os.Rename(tmp, key); err != nil {
+		t.Errorf("swap the placeholder for a namespace handle: %v", err)
+	}
+}
+
+// canBindMountHere: whether a bind mount over a file works here (#1185).
+func canBindMountHere(t *testing.T) bool {
+	t.Helper()
+	probe := filepath.Join(t.TempDir(), "probe")
+	if err := os.WriteFile(probe, nil, 0o600); err != nil {
+		t.Fatalf("write probe: %v", err)
+	}
+	if err := unix.Mount("/proc/self/ns/net", probe, "", unix.MS_BIND, ""); err != nil {
+		return false
+	}
+	_ = unix.Unmount(probe, unix.MNT_DETACH)
+	return true
+}
+
+func TestAwaitSandboxNetNSByKey_WaitsForAPlaceholderThatBecomesANamespace(t *testing.T) {
+	variants := []bool{false}
+	if canBindMountHere(t) {
+		variants = append(variants, true)
+	}
+	for _, bind := range variants {
+		name := "swapped for a handle"
+		if bind {
+			name = "bind-mounted over"
+		}
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			key := filepath.Join(dir, "aa11bb22")
+			if err := os.WriteFile(key, nil, 0o600); err != nil {
+				t.Fatalf("write placeholder: %v", err)
+			}
+
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+
+			swapped := make(chan struct{})
+			defer func() { <-swapped }()
+			go func() {
+				defer close(swapped)
+				time.Sleep(300 * time.Millisecond)
+				makeThePlaceholderANamespace(t, key, bind)
+			}()
+
+			ns, err := awaitSandboxNetNSByKeyIn(ctx, []string{dir}, key, 200*time.Millisecond)
+			if err != nil {
+				t.Fatalf("gave up on a placeholder that became a namespace: %v", err)
+			}
+			closeNsHandle(ns)
+		})
+	}
+}
+
+func TestOpenSandboxNetNSLazyPID_PlaceholderWindowMovesNoRefusalCounter(t *testing.T) {
+	dir := t.TempDir()
+	key := filepath.Join(dir, "cc33dd44")
+	if err := os.WriteFile(key, nil, 0o600); err != nil {
+		t.Fatalf("write placeholder: %v", err)
+	}
+	withSandboxNetnsDirs(t, []string{dir})
+
+	p := &Plugin{}
+	m := &dhcpManager{plugin: p}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	swapped := make(chan struct{})
+	defer func() { <-swapped }()
+	go func() {
+		defer close(swapped)
+		time.Sleep(300 * time.Millisecond)
+		makeThePlaceholderANamespace(t, key, false)
+	}()
+
+	noPID := func() (int, string, error) { return 0, "", errors.New("the PID route must not be needed") }
+	ns, err := m.openSandboxNetNSLazyPID(ctx, key, 200*time.Millisecond, noPID)
+	if err != nil {
+		t.Fatalf("the key route gave up inside the placeholder window: %v", err)
+	}
+	closeNsHandle(ns)
+
+	if got := p.sandboxKeyEntries.Load(); got != 1 {
+		t.Errorf("sandbox_key_entries = %d, want 1", got)
+	}
+	for name, got := range map[string]int64{
+		"sandbox_key_entry_failures":  int64(p.sandboxKeyEntryFailures.Load()),
+		"sandbox_key_not_a_namespace": int64(p.sandboxKeyNotANamespace.Load()),
+		"sandbox_key_unavailable":     int64(p.sandboxKeyUnavailable.Load()),
+		"sandbox_pid_fallbacks":       int64(p.sandboxPIDFallbacks.Load()),
+	} {
+		if got != 0 {
+			t.Errorf("%s = %d, want 0: a placeholder that became a namespace was counted as a refusal", name, got)
+		}
+	}
+}
+
+func TestAwaitSandboxNetNSByKey_SteadyPlaceholderFallsBackWithinTheBound(t *testing.T) {
+	dir := t.TempDir()
+	key := filepath.Join(dir, "ee55ff66")
+	if err := os.WriteFile(key, nil, 0o600); err != nil {
+		t.Fatalf("write placeholder: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	const interval = 50 * time.Millisecond
+	start := time.Now()
+	ns, err := awaitSandboxNetNSByKeyIn(ctx, []string{dir}, key, interval)
+	elapsed := time.Since(start)
+	if err == nil {
+		closeNsHandle(ns)
+		t.Fatal("accepted an empty file as a namespace")
+	}
+	if errors.Is(err, context.DeadlineExceeded) || ctx.Err() != nil {
+		t.Fatalf("err = %v after %s: a steady placeholder was polled to the attach deadline", err, elapsed)
+	}
+	if !errors.Is(err, errNoSandboxKey) || !errors.Is(err, errSandboxKeyNotANamespace) {
+		t.Errorf("err = %v, want errNoSandboxKey wrapping errSandboxKeyNotANamespace, so the caller falls back and "+
+			"the same arm counts", err)
+	}
+	if elapsed < 2*interval {
+		t.Errorf("returned after %s, before the %s a placeholder is given to turn into a namespace", elapsed, 2*interval)
+	}
+	if elapsed > 10*interval {
+		t.Errorf("returned after %s, want within a few intervals of the bound %s", elapsed, 2*interval)
+	}
+}
+
+func TestAwaitSandboxNetNSByKey_PlaceholderBoundRunsFromItsFirstSighting(t *testing.T) {
+	dir := t.TempDir()
+	key := filepath.Join(dir, "0a1b2c3d")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	const interval = 50 * time.Millisecond
+	created := make(chan struct{})
+	defer func() { <-created }()
+	go func() {
+		defer close(created)
+		time.Sleep(400 * time.Millisecond)
+		_ = os.WriteFile(key, nil, 0o600)
+	}()
+
+	start := time.Now()
+	ns, err := awaitSandboxNetNSByKeyIn(ctx, []string{dir}, key, interval)
+	elapsed := time.Since(start)
+	if err == nil {
+		closeNsHandle(ns)
+		t.Fatal("accepted an empty file as a namespace")
+	}
+	if !errors.Is(err, errSandboxKeyNotANamespace) {
+		t.Fatalf("err = %v after %s, want errSandboxKeyNotANamespace", err, elapsed)
+	}
+	if elapsed < 400*time.Millisecond+2*interval {
+		t.Errorf("returned after %s: it did not wait the bound from the placeholder's first sighting at 400 ms", elapsed)
+	}
+}
+
+func TestAwaitSandboxNetNSByKey_AnEntryThatIsNotAPlaceholderIsFinalAtOnce(t *testing.T) {
+	dir := t.TempDir()
+	key := filepath.Join(dir, "99887766")
+	if err := os.WriteFile(key, []byte("not empty"), 0o600); err != nil {
+		t.Fatalf("write entry: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	start := time.Now()
+	ns, err := awaitSandboxNetNSByKeyIn(ctx, []string{dir}, key, 200*time.Millisecond)
+	elapsed := time.Since(start)
+	if err == nil {
+		closeNsHandle(ns)
+		t.Fatal("accepted a non-empty file as a namespace")
+	}
+	if !errors.Is(err, errNoSandboxKey) || !errors.Is(err, errSandboxKeyNotANamespace) {
+		t.Errorf("err = %v, want errNoSandboxKey wrapping errSandboxKeyNotANamespace", err)
+	}
+	if elapsed > 150*time.Millisecond {
+		t.Errorf("took %s: an entry that can never become a namespace was polled", elapsed)
+	}
 }
 
 func TestAwaitSandboxNetNSByKey_DeadlineNamesTheLastAttempt(t *testing.T) {

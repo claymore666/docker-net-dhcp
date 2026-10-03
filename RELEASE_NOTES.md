@@ -106,6 +106,14 @@ prompts on has moved since v2.0.0. This release changes the manifest's
   its lease ran out no longer names its old address in its request
   (DHCP option 50), so it keeps that address only if the server keeps
   it for that client on its own (#1182).
+- On a host where the daemon's sandbox mounts do reach the plugin, an
+  attach that polled the sandbox key in the moment between Docker
+  creating the empty key file and mounting the namespace over it no
+  longer ends the key route and no longer counts
+  `sandbox_key_not_a_namespace`. The plugin waits up to two poll
+  intervals for the file to become the namespace. A host where it stays an
+  empty file still falls back to the container PID route, after that
+  short wait (#1185).
 
 ## v2.3.1
 
