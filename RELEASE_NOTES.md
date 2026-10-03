@@ -111,6 +111,42 @@ prompts on has moved since v2.0.0. This release changes the manifest's
   its lease ran out no longer names its old address in its request
   (DHCP option 50), so it keeps that address only if the server keeps
   it for that client on its own (#1182).
+- With `propagate_dns`, a container's `/etc/resolv.conf` is no longer
+  emptied for a moment on every renewal. The plugin now leaves the file
+  alone when the DHCP-supplied resolvers have not changed, which is
+  almost every renewal, and otherwise overwrites it in place without
+  truncating it first, so a lookup running at that instant no longer
+  finds an empty file and falls back to 127.0.0.1 (#1188).
+- On a host where the daemon's sandbox mounts do reach the plugin, an
+  attach that polled the sandbox key in the moment between Docker
+  creating the empty key file and mounting the namespace over it no
+  longer ends the key route and no longer counts
+  `sandbox_key_not_a_namespace`. The plugin waits up to two poll
+  intervals for the file to become the namespace. A host where it stays an
+  empty file still falls back to the container PID route, after that
+  short wait. Writing the IPv6 sandbox defaults at Join waits the same
+  way and no longer counts a failure for a placeholder that becomes the
+  namespace in time (#1185).
+- With `audit_log=true` the `container` field of the audit log `leases.jsonl` no
+  longer stays empty, or shows Docker's `ep-` placeholder, for the rest of
+  an endpoint's life when the first lookup ran before the container
+  existed or while the daemon was slow. A lookup that finds no container
+  yet, only the placeholder, or fails is repeated on the next entry, and
+  the real container ID is looked up once (#1189).
+- After a Docker restart or at boot, the plugin opens its socket within the
+  time the daemon allows, also on a slow host. Docker enables the plugin
+  before it answers its own API and disables a plugin whose socket is
+  still missing after about 10 seconds. When the plugin cannot reach the
+  daemon at startup, recovery and the second engine check now run after
+  the socket opens, where before the plugin waited about 7 seconds on the
+  daemon first (#1176).
+- The reference no longer says the IPv6 defaults write in `Join` takes on
+  every Docker Engine 28+ host: it takes only where the daemon's sandbox
+  mounts reach the plugin (`sandbox_netns_propagation` 1), and is otherwise
+  skipped, counted and warned (#1165).
+- The integration cleanup step also drops the plugin's state records of
+  networks the engine no longer has, so a killed run cannot refuse the
+  next run's IPAM networks (#1174 for the plugin-side fix; #1165).
 - A container that is still starting when the attach budget runs out is
   no longer counted as one that went away. On engines 26 and 27 the
   sandbox key does not exist until after the plugin's Join returns, so a
