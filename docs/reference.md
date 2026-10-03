@@ -1701,8 +1701,10 @@ What the option does, concretely:
   `register_dns` network. Turning `register_dns` on is the way to get
   the name there, and with it the AAAA record: see *Dynamic-DNS
   registration* above.
-- **Prefix delegation is out of scope.** The client asks for an IA_NA;
-  there is no IA_PD, and none is planned for 2.0.
+- **Prefix delegation is not implemented.** The client asks for an IA_NA;
+  there is no IA_PD. It is open as
+  [#214](https://github.com/claymore666/docker-net-dhcp/issues/214),
+  designed first, with no release yet.
 
 #### The DUID differs by mode, and it matters on ipvlan
 

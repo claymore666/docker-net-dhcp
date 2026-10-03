@@ -102,10 +102,9 @@ Where the plugin refuses, the message names the reason.
 
 ## Planned
 
-v2.4.0: DHCPv6 Rapid Commit ([#926]), temporary addresses ([#927]) and
-prefix delegation ([#214]); DHCPv4 Rapid Commit ([#1031]);
-stable-privacy SLAAC addresses ([#1032]); one multi-architecture image per
-tag ([#1035]). The full list, with what this
+v2.5.0 is CI consolidation and code debt, nothing a user sees. DHCPv6
+prefix delegation ([#214]) and the whole DHCPv6 NTP server list ([#859])
+are open and have no release yet. The full list, with what this
 project will not do, is on the [roadmap](docs/roadmap.md).
 
 ## How to check any of this
@@ -127,13 +126,9 @@ project will not do, is on the [roadmap](docs/roadmap.md).
 [#1037]: https://github.com/claymore666/docker-net-dhcp/issues/1037
 [#903]: https://github.com/claymore666/docker-net-dhcp/issues/903
 [#904]: https://github.com/claymore666/docker-net-dhcp/issues/904
-[#926]: https://github.com/claymore666/docker-net-dhcp/issues/926
-[#927]: https://github.com/claymore666/docker-net-dhcp/issues/927
 [#214]: https://github.com/claymore666/docker-net-dhcp/issues/214
-[#1031]: https://github.com/claymore666/docker-net-dhcp/issues/1031
+[#859]: https://github.com/claymore666/docker-net-dhcp/issues/859
 [#1027]: https://github.com/claymore666/docker-net-dhcp/issues/1027
-[#1032]: https://github.com/claymore666/docker-net-dhcp/issues/1032
-[#1035]: https://github.com/claymore666/docker-net-dhcp/issues/1035
 
 ## Requirements
 
@@ -150,7 +145,7 @@ project will not do, is on the [roadmap](docs/roadmap.md).
   because it is unmeasured: on a cgroup v2 host it cannot start a
   container at all, so nothing there tests this plugin.
   Every change is also tested against the engine the integration suite
-  runs on, **29.8.1** today, read from that run's `Fixture engine drift`
+  runs on, **29.8.2** today, read from that run's `Fixture engine drift`
   step.
 - **Plugin interface `docker.networkdriver/1.0`**, which is what the
   plugin manifest declares. The plugin negotiates the Docker API version

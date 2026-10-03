@@ -13,7 +13,7 @@ below decide what is in a release; this page follows them.
 | --- | --- | --- | --- |
 | v2.3.0 | released | The host plumbing an operator does by hand today, and the gaps the IPAM shape still refuses | [milestone 31](https://github.com/claymore666/docker-net-dhcp/milestone/31) |
 | v2.3.1 | released | IPv6 routes at Join, the fixed-MAC hand-over in IPAM mode, and diagrams of the plugin and the lab | [milestone 38](https://github.com/claymore666/docker-net-dhcp/milestone/38) |
-| v2.4.0 | planned | The rest of IPv6, and the DHCP options the client does not read yet | [milestone 34](https://github.com/claymore666/docker-net-dhcp/milestone/34) |
+| v2.4.0 | released | The rest of IPv6, and the DHCP options the client does not read yet | [milestone 34](https://github.com/claymore666/docker-net-dhcp/milestone/34) |
 | v2.5.0 | planned | CI consolidation and code debt; nothing a user sees | [milestone 35](https://github.com/claymore666/docker-net-dhcp/milestone/35) |
 
 ### v2.3.0, released
@@ -46,7 +46,7 @@ below decide what is in a release; this page follows them.
 - [#1126], an architecture page with a diagram and a picture of the
   real-server lab in the testing page
 
-### v2.4.0
+### v2.4.0, released
 
 - [#1028], PREF64 from the Router Advertisement, the NAT64 prefix
 - [#1030], Microsoft classless static routes, option 249, where 121 is
@@ -78,10 +78,11 @@ below decide what is in a release; this page follows them.
   address, removing the network or a restart clears it
 - [#926], DHCPv6 Rapid Commit, the two-message exchange
 - [#927], DHCPv6 temporary addresses (IA_TA)
+
+### Open, no release yet
+
 - [#214], DHCPv6 prefix delegation (IA_PD), designed first
 - [#859], the whole DHCPv6 NTP server list
-- [#1035], one multi-architecture manifest list per tag, which also
-  settles the arm64 claim in the table below
 
 ### v2.5.0
 
@@ -125,11 +126,11 @@ flowchart LR
     v25["v2.5<br/>CI and code debt"]
     v20 --> v21 --> v22 --> v23 --> v24 --> v25
     classDef planned stroke-dasharray: 6 4
-    class v24,v25 planned
+    class v25 planned
 ```
 
-v2.0, v2.1, v2.2 and v2.3 are released, and v2.4 and v2.5 are planned in
-that order; the planned ones are the dashed nodes. There are no dates. Every
+v2.0 to v2.4 are released and v2.5 is planned; the planned one is the
+dashed node. There are no dates. Every
 release, patches included, is in
 [the release notes](https://github.com/claymore666/docker-net-dhcp/blob/main/RELEASE_NOTES.md).
 
@@ -197,8 +198,10 @@ settled the DHCPv6 half: an ipvlan endpoint now gets a DUID of its own
 ([#531]). Per-architecture tags (`vX.Y.Z-arm64`, `latest-arm64`) were
 first published with v1.7.0 ([#507]). This page long held that a Docker
 plugin cannot be installed from a multi-architecture manifest list at
-all, so the architecture lives in the tag. That claim is contested by a
-registry that serves one, and [#1035] measures it.
+all, so the architecture lives in the tag. A third-party
+registry serves one, and [#1035] measured it: `docker plugin install`
+refuses a manifest list, and an OCI image index, on every engine from 20.10 to
+29.8, by tag and by digest, while the per-architecture tags install.
 
 **A test substrate that cannot lie.** This is infrastructure work with a
 user-visible reason: on this project, every timing crutch removed from CI
@@ -234,7 +237,7 @@ The second upstream dependency has moved. The `interface_name`
 pass-through ([moby/moby#52866]) merged and shipped in moby engine
 29.8.0, and [#125] closed with it. Engines below that boundary ignore a
 remote driver's requested interface name, the integration lane runs
-29.8.0, and the plugin counts `ifname_unsupported` below it.
+an engine above it, and the plugin counts `ifname_unsupported` below it.
 
 ## Out of scope
 
