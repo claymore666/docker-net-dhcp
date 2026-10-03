@@ -113,7 +113,9 @@ prompts on has moved since v2.0.0. This release changes the manifest's
   `sandbox_key_not_a_namespace`. The plugin waits up to two poll
   intervals for the file to become the namespace. A host where it stays an
   empty file still falls back to the container PID route, after that
-  short wait (#1185).
+  short wait. Writing the IPv6 sandbox defaults at Join waits the same
+  way and no longer counts a failure for a placeholder that becomes the
+  namespace in time (#1185).
 
 ## v2.3.1
 
