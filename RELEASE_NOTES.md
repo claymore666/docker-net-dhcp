@@ -73,6 +73,11 @@ prompts on has moved since v2.0.0. This release changes the manifest's
   removed; a slow or unreachable daemon leaves everything as it is. One
   line at `info` names each network, and `stale_networks_dropped` on
   `/Plugin.Health` counts them (#1174).
+- The SLAAC absence-memory integration test no longer fails now and then on
+  a slow runner. Its timing check derives its floor from the 6 s fallback
+  window less the measured spread of the two attaches, instead of assuming
+  the worst case of the Solicit delay; the Solicit count and the counters
+  stay the proof that the second endpoint did not solicit (#1172).
 
 ## v2.3.1
 
