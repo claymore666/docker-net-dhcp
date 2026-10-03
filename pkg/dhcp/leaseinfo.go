@@ -22,7 +22,14 @@ import (
 
 // infoFromLease renders one library lease and its link's router observation as the Info the plugin applies.
 func infoFromLease(l lease.Lease, r proto.RouterObservation, now time.Time, main netip.Prefix) (Info, int) {
-	info := Info{
+	info, dropped, unsafe := renderLease(l, r, now, main)
+	warnDropped(unsafe)
+	return info, dropped
+}
+
+// renderLease is infoFromLease without the control-character warning; unsafe holds the values dropped for one.
+func renderLease(l lease.Lease, r proto.RouterObservation, now time.Time, main netip.Prefix) (info Info, dropped int, unsafe []string) {
+	info = Info{
 		MTU:          l.MTU,
 		SearchList:   append([]string(nil), l.DomainSearch...),
 		LeaseSeconds: leaseSeconds(l, now),
@@ -78,7 +85,8 @@ func infoFromLease(l lease.Lease, r proto.RouterObservation, now time.Time, main
 	fillV6Observed(&info, l.OptionsV6, l.ServerDUID)
 
 	// sanitizeInfo runs at the one point every lease enters the plugin and feeds unsafe_option_values_dropped (#703).
-	dropped := sanitizeInfo(&info)
+	unsafe = sanitizeInfoQuietly(&info)
+	dropped = len(unsafe)
 
 	// SafeValue passes the space that separates `search` entries (#704); applied after sanitizeInfo so the two counts
 	// add.
@@ -89,13 +97,13 @@ func infoFromLease(l lease.Lease, r proto.RouterObservation, now time.Time, main
 		info.Domain = d
 	}
 
-	return info, dropped
+	return info, dropped, unsafe
 }
 
 // fillV6Observed reads the RFC 4833 section 3 timezone strings, options 41 and 42, out of a DHCPv6 lease's options. They
 // are plain strings with the same trailing-NUL tolerance as v4's Text, and they enter Info before sanitizeInfo, so a
-// control character is dropped and counted exactly as for options 100 and 101 (#1033). A nil bag, a v4 lease or one
-// resumed from its record, fills nothing.
+// control character is dropped and counted exactly as for options 100 and 101 (#1033). A nil bag, as on a v4 lease,
+// fills nothing.
 func fillV6Observed(info *Info, o wire.OptionsV6, server []byte) {
 	info.PosixTimezone = firstNonEmpty(info.PosixTimezone, optTextV6(o, wire.OptV6PosixTimezone))
 	info.TZDBTimezone = firstNonEmpty(info.TZDBTimezone, optTextV6(o, wire.OptV6TZDatabase))

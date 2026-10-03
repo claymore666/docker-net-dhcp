@@ -14,21 +14,36 @@ import (
 // other layer, which nothing pins (#703). Reflection covers a field added later, and a kind it does not handle fails
 // TestSanitizeInfo_NoFieldEscapesTheFilter; dropping is chosen over escaping because the sinks share no escaping.
 
-// sanitizeInfo drops every string value in an Info that carries a control character and returns how many it dropped.
+// sanitizeInfo drops every string value in an Info that carries a control character, warns, and returns how many.
 func sanitizeInfo(info *Info) int {
-	return sanitizeValue(reflect.ValueOf(info).Elem())
+	dropped := sanitizeInfoQuietly(info)
+	warnDropped(dropped)
+	return len(dropped)
+}
+
+// sanitizeInfoQuietly is sanitizeInfo without the warning, for a render that may not be reported: the router-advert
+// watch renders every 750 ms and warned on each pass (#1033).
+func sanitizeInfoQuietly(info *Info) []string {
+	var dropped []string
+	sanitizeValue(reflect.ValueOf(info).Elem(), &dropped)
+	return dropped
+}
+
+// warnDropped logs each value a sanitizing pass dropped.
+func warnDropped(dropped []string) {
+	for _, s := range dropped {
+		log.WithField("value", quoteForLog(s)).
+			Warn("Dropping DHCP-supplied option value: it carries a control character")
+	}
 }
 
 // sanitizeValue is sanitizeInfo's recursive worker; a kind that could carry a string is caught by the reflection test.
-func sanitizeValue(v reflect.Value) int {
-	dropped := 0
+func sanitizeValue(v reflect.Value, dropped *[]string) {
 	switch v.Kind() {
 	case reflect.String:
 		if s := v.String(); s != "" && !SafeValue(s) {
-			log.WithField("value", quoteForLog(s)).
-				Warn("Dropping DHCP-supplied option value: it carries a control character")
+			*dropped = append(*dropped, s)
 			v.SetString("")
-			return 1
 		}
 	case reflect.Slice:
 		if v.Type().Elem().Kind() == reflect.String {
@@ -36,28 +51,25 @@ func sanitizeValue(v reflect.Value) int {
 			for i := 0; i < v.Len(); i++ {
 				s := v.Index(i).String()
 				if s != "" && !SafeValue(s) {
-					log.WithField("value", quoteForLog(s)).
-						Warn("Dropping DHCP-supplied option value: it carries a control character")
-					dropped++
+					*dropped = append(*dropped, s)
 					continue
 				}
 				kept = reflect.Append(kept, v.Index(i))
 			}
 			v.Set(kept)
-			return dropped
+			return
 		}
 		for i := 0; i < v.Len(); i++ {
-			dropped += sanitizeValue(v.Index(i))
+			sanitizeValue(v.Index(i), dropped)
 		}
 	case reflect.Struct:
 		for i := 0; i < v.NumField(); i++ {
 			if !v.Field(i).CanSet() {
 				continue
 			}
-			dropped += sanitizeValue(v.Field(i))
+			sanitizeValue(v.Field(i), dropped)
 		}
 	}
-	return dropped
 }
 
 // quoteForLog escapes control characters here, so the forgery warning is not itself a forgery under any formatter

@@ -5,6 +5,7 @@ package dhcp
 
 import (
 	"net/netip"
+	"strings"
 	"testing"
 	"time"
 
@@ -72,5 +73,42 @@ func TestTakeAdvertChange_AConfirmedLeaseKeepsTheRememberedOptions(t *testing.T)
 	}
 	if out.Data.PosixTimezone != "PST8PDT" {
 		t.Errorf("the routeradvert render has posix_tz=%q, want the remembered option 41", out.Data.PosixTimezone)
+	}
+}
+
+func TestTakeAdvertChange_WarnsAboutAControlCharacterOnlyWhenItReports(t *testing.T) {
+	hook := captureLog(t)
+	c := &DHCPClient{opts: DHCPClientOptions{V6: true}}
+	l := lease.Lease{
+		Addr:      netip.MustParsePrefix("fd00:6470:6865::61/128"),
+		Gateway:   addr(t, "fe80::1"),
+		OptionsV6: wire.OptionsV6{{Code: wire.OptV6TZDatabase, Data: []byte("Europe/Berlin\n")}},
+	}
+	c.view = func() (lease.Lease, bool) { return l, true }
+	warnings := func() int {
+		n := 0
+		for _, e := range hook.AllEntries() {
+			if strings.Contains(e.Message, "control character") {
+				n++
+			}
+		}
+		return n
+	}
+
+	for range 5 {
+		if _, ok := c.takeAdvertChange(time.Now()); ok {
+			t.Fatal("an unchanged view was reported")
+		}
+	}
+	if got := warnings(); got != 0 {
+		t.Errorf("%d control-character warnings over five unreported passes, want 0", got)
+	}
+	l.Gateway = addr(t, "fe80::2")
+	out, ok := c.takeAdvertChange(time.Now())
+	if !ok {
+		t.Fatal("a changed gateway was not reported")
+	}
+	if got := warnings(); got != 1 || out.UnsafeValuesDropped != 1 || out.Data.TZDBTimezone != "" {
+		t.Errorf("reported pass: %d warnings, %d dropped, tzdb_tz=%q; want 1, 1, empty", got, out.UnsafeValuesDropped, out.Data.TZDBTimezone)
 	}
 }

@@ -732,7 +732,8 @@ func (c *DHCPClient) takeAdvertChange(now time.Time) (Event, bool) {
 		return Event{}, false
 	}
 	// Rendered with the network's main prefix, as bound and renew are, so the choice is not itself a change (#818).
-	info, dropped := infoFromLease(l, c.advertRouterView(), now, c.opts.MainPrefix6)
+	// The bind already warned about these values; only a reported change repeats it, not every pass (#1033).
+	info, dropped, unsafe := renderLease(l, c.advertRouterView(), now, c.opts.MainPrefix6)
 	info.OnLinkPrefixes = foldOnLink(c.advert.OnLinkPrefixes, info)
 	first := !c.advertKnown
 	same := c.advertKnown && !advertisedDiffers(c.advert, info)
@@ -740,6 +741,7 @@ func (c *DHCPClient) takeAdvertChange(now time.Time) (Event, bool) {
 	if first || same {
 		return Event{}, false
 	}
+	warnDropped(unsafe)
 	return Event{
 		Type:                "routeradvert",
 		Data:                info,
