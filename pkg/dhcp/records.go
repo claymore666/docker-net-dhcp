@@ -4,9 +4,12 @@
 package dhcp
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -28,11 +31,15 @@ import (
 type Records struct {
 	path string
 
-	store *dhcpruntime.RecordStore
+	store atomic.Pointer[dhcpruntime.RecordStore]
 	lock  *os.File
 
 	mu  sync.Mutex
 	seq map[string]uint64
+
+	// compacted is the file size after the last compaction, 0 at open; reopen is set while a swap is unfinished (#1182).
+	compacted int64
+	reopen    bool
 
 	// instance names the process, not the manager; one id for two managers freezes the wire counters (#950).
 	instance string
@@ -94,13 +101,20 @@ func OpenRecords(path, instance string) (*Records, error) {
 		return nil, lockRefused(path, err)
 	}
 
-	store, err := dhcpruntime.OpenRecordStore(path)
+	// A leftover is a compaction that died before its rename; the record file beside it is whole (#1182).
+	if err := os.Remove(path + compactSuffix); err != nil && !errors.Is(err, os.ErrNotExist) {
+		_ = lock.Close()
+		return nil, fmt.Errorf("dhcp: removing an unfinished compaction of %s: %w", path, err)
+	}
+
+	store, err := openRecordStore(path)
 	if err != nil {
 		_ = lock.Close()
 		return nil, err
 	}
 
-	r := &Records{path: path, store: store, lock: lock, seq: map[string]uint64{}, instance: instance}
+	r := &Records{path: path, lock: lock, instance: instance}
+	r.store.Store(store)
 
 	// The sequence floor comes from the file; restarting at 1 makes Fold reject later events as stale, silently (#950).
 	evs, err := store.Load()
@@ -109,17 +123,23 @@ func OpenRecords(path, instance string) (*Records, error) {
 		_ = lock.Close()
 		return nil, err
 	}
+	r.seq = seqFloor(evs)
+	return r, nil
+}
+
+func seqFloor(evs []lease.RecordEvent) map[string]uint64 {
+	seq := map[string]uint64{}
 	for _, ev := range evs {
-		if ev.Seq > r.seq[ev.ID] {
-			r.seq[ev.ID] = ev.Seq
+		if ev.Seq > seq[ev.ID] {
+			seq[ev.ID] = ev.Seq
 		}
 	}
-	return r, nil
+	return seq
 }
 
 // Close releases the file and the lock.
 func (r *Records) Close() error {
-	err := r.store.Close()
+	err := r.store.Load().Close()
 	if cerr := r.lock.Close(); err == nil {
 		err = cerr
 	}
@@ -127,14 +147,17 @@ func (r *Records) Close() error {
 }
 
 // Damage is what the store could not read, a torn tail or unreadable lines.
-func (r *Records) Damage() lease.StoreDamage { return r.store.Damage() }
+func (r *Records) Damage() lease.StoreDamage { return r.store.Load().Damage() }
+
+// Path is the record file.
+func (r *Records) Path() string { return r.path }
 
 // Instance is the id every line this store writes is stamped with (#1047).
 func (r *Records) Instance() string { return r.instance }
 
 // Rebuilt folds the whole file.
 func (r *Records) Rebuilt() (lease.Rebuilt, error) {
-	evs, err := r.store.Load()
+	evs, err := r.store.Load().Load()
 	if err != nil {
 		return lease.Rebuilt{}, err
 	}
@@ -153,13 +176,16 @@ func (r *Records) append(ev lease.RecordEvent) error {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.reopen {
+		return fmt.Errorf("dhcp: %s was compacted and could not be reopened; the event is not written (#1182)", r.path)
+	}
 	r.seq[ev.ID]++
 	ev.Seq = r.seq[ev.ID]
 	ev.Instance = r.instance
 	if ev.At.IsZero() {
 		ev.At = time.Now()
 	}
-	if err := r.store.Append(ev); err != nil {
+	if err := r.store.Load().Append(ev); err != nil {
 		// An Append that did not land gives its sequence number back; a gap reads as a lost line in the fold (#950).
 		r.seq[ev.ID]--
 		return err
@@ -364,4 +390,197 @@ func (r *Records) Resume(scope string, chaddr []byte, now time.Time) (string, Re
 		return rec.ID, res, true
 	}
 	return "", Resumption{}, false
+}
+
+// compactSuffix names the rewrite's temporary file, in the record's own directory so the rename stays atomic (#1182).
+const compactSuffix = ".compact"
+
+// Swapped by the tests to inject a failed rename or reopen (#1182).
+var (
+	openRecordStore = func(path string) (*dhcpruntime.RecordStore, error) { return dhcpruntime.OpenRecordStore(path) }
+	renameRecords   = os.Rename
+)
+
+// A rewrite of S bytes runs only after S/2 bytes were appended since the last one, so it costs at most two written
+// bytes per appended byte. 256 KiB is about 45 closed lifecycles at the measured 5.66 KB each, below which a rewrite
+// saves less than a read the sweep already does. The baseline is 0 at open, so a large file left by an older
+// version compacts on the first tick (#1182).
+const compactMinSize = 256 << 10
+
+// CompactIfDue runs from the 15 s record sweep: it first retries a reopen a failed swap left, then compacts when
+// the file is due. It reports whether a rewrite happened (#1182).
+func (r *Records) CompactIfDue(now time.Time, retain time.Duration) (bool, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.reopen {
+		if err := r.reopenLocked(); err != nil {
+			return false, err
+		}
+	}
+	fi, err := os.Stat(r.path)
+	if err != nil {
+		return false, fmt.Errorf("dhcp: sizing %s for compaction: %w", r.path, err)
+	}
+	if fi.Size() < compactMinSize || fi.Size() < 2*r.compacted {
+		return false, nil
+	}
+	return true, r.compactLocked(now, retain)
+}
+
+// compactLocked rewrites the file without the records nothing reads any more, under mu, which every append takes.
+// Kept lines are copied byte for byte, unreadable ones too, so the fold of a kept record and Damage are unchanged.
+// Before the rename the old file is whole; after it the old store points at an unlinked file and must go (#1182).
+func (r *Records) compactLocked(now time.Time, retain time.Duration) error {
+	b, err := os.ReadFile(r.path)
+	if err != nil {
+		return fmt.Errorf("dhcp: reading %s for compaction: %w", r.path, err)
+	}
+	kept, seq := keptLines(b, now, retain)
+
+	tmp := r.path + compactSuffix
+	if err := writeSynced(tmp, kept); err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("dhcp: writing the compacted %s: %w", r.path, err)
+	}
+	if err := renameRecords(tmp, r.path); err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("dhcp: replacing %s with its compaction: %w", r.path, err)
+	}
+	dirErr := syncDir(filepath.Dir(r.path))
+
+	r.compacted = int64(len(kept))
+	r.seq = seq
+	_ = r.store.Load().Close()
+	r.reopen = true
+	if err := r.reopenLocked(); err != nil {
+		return err
+	}
+	if dirErr != nil {
+		return fmt.Errorf("dhcp: syncing the directory of the compacted %s: %w", r.path, dirErr)
+	}
+	return nil
+}
+
+func (r *Records) reopenLocked() error {
+	s, err := openRecordStore(r.path)
+	if err != nil {
+		return fmt.Errorf("dhcp: reopening %s after compaction, appends fail until the next sweep retries: %w", r.path, err)
+	}
+	r.store.Store(s)
+	r.reopen = false
+	return nil
+}
+
+func writeSynced(path string, b []byte) error {
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if errors.Is(err, os.ErrExist) {
+		if err = os.Remove(path); err == nil {
+			f, err = os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+		}
+	}
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(b); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return err
+	}
+	return f.Close()
+}
+
+func syncDir(dir string) error {
+	d, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = d.Close() }()
+	return d.Sync()
+}
+
+// keptLines is the file minus every line of a dropped record, and the sequence floor of what is left.
+func keptLines(b []byte, now time.Time, retain time.Duration) ([]byte, map[string]uint64) {
+	lines := bytes.Split(b, []byte("\n"))
+	ids := make([]string, len(lines))
+	parsed := make([]bool, len(lines))
+	var evs []lease.RecordEvent
+	last := map[string]time.Time{}
+	for i, line := range lines {
+		var ev lease.RecordEvent
+		if len(bytes.TrimSpace(line)) == 0 || json.Unmarshal(line, &ev) != nil {
+			continue
+		}
+		ids[i], parsed[i] = ev.ID, true
+		evs = append(evs, ev)
+		if ev.At.After(last[ev.ID]) {
+			last[ev.ID] = ev.At
+		}
+	}
+	keep := keptRecords(lease.Rebuild(evs), last, now, retain)
+
+	var out []byte
+	var keptEvs []lease.RecordEvent
+	for i, line := range lines {
+		if len(bytes.TrimSpace(line)) == 0 || (parsed[i] && !keep[ids[i]]) {
+			continue
+		}
+		out = append(out, line...)
+		// The last line keeps its missing newline, so a torn tail reads as torn after the rewrite too.
+		if i < len(lines)-1 {
+			out = append(out, '\n')
+		}
+	}
+	for _, ev := range evs {
+		if keep[ev.ID] {
+			keptEvs = append(keptEvs, ev)
+		}
+	}
+	return out, seqFloor(keptEvs)
+}
+
+// The newest record of a (scope, hardware address) group stays while an older one does: retainRecordFor and
+// releaseRecord stop at a CLOSED newest record, and without it they would act on the older one (#962, #1182).
+func keptRecords(rb lease.Rebuilt, last map[string]time.Time, now time.Time, retain time.Duration) map[string]bool {
+	keep := make(map[string]bool, len(rb.Records))
+	newest := map[string]int{}
+	others := map[string]bool{}
+	for i, rec := range rb.Records {
+		keep[rec.ID] = !spent(rec, last[rec.ID], now, retain)
+		if len(rec.CHAddr) == 0 {
+			continue
+		}
+		group := rec.Scope + "\x00" + string(rec.CHAddr)
+		if j, seen := newest[group]; seen && keep[rb.Records[j].ID] {
+			others[group] = true
+		}
+		newest[group] = i
+	}
+	for group, i := range newest {
+		if others[group] {
+			keep[rb.Records[i].ID] = true
+		}
+	}
+	return keep
+}
+
+// spent: a CLOSED record is read by nothing once its last line is retain old; an expired RETAINED one can offer only
+// option 50 once its server lease ran out retain ago. A zero expiry on a held address is an infinite lease (#1182).
+func spent(rec lease.Record, last, now time.Time, retain time.Duration) bool {
+	switch rec.Phase {
+	case lease.PhaseClosed:
+		return !now.Before(last.Add(retain))
+	case lease.PhaseRetained:
+		if !rec.Deadline.IsZero() && now.Before(rec.Deadline) {
+			return false
+		}
+		if !rec.Lease.Addr.IsValid() {
+			return true
+		}
+		return !rec.Lease.Expire.IsZero() && !now.Before(rec.Lease.Expire.Add(retain))
+	default:
+		return false
+	}
 }

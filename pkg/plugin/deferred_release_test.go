@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -513,6 +514,41 @@ func TestDeferredRelease_TheTickRunsBothPasses(t *testing.T) {
 		t.Errorf("the orphaned reservation is %v, want RETAINED: the reservation pass did "+
 			"not run on this tick", got)
 	}
+}
+
+func TestDeferredRelease_TheTickCompactsTheRecords(t *testing.T) {
+	p, sender := deferredPlugin(t, ReleaseOnRemove)
+	now := time.Now()
+	live := liveRecord(t, p, deferredMAC(0x01), "192.168.99.10/24")
+	for i := 0; fileSize(t, p.records.Path()) < 256<<10; i++ {
+		mac := net.HardwareAddr{0x02, 0x42, 0x01, byte(i >> 16), byte(i >> 8), byte(i)}
+		id := heldRecord(t, p, mac, "192.168.99.11/24", now)
+		if err := p.records.Closed(id); err != nil {
+			t.Fatalf("Closed: %v", err)
+		}
+	}
+	before := fileSize(t, p.records.Path())
+
+	p.sweepRecords(now.Add(time.Hour))
+
+	if after := fileSize(t, p.records.Path()); after*10 > before {
+		t.Errorf("the record file is %d B after the tick, was %d B: the sweep did not compact it", after, before)
+	}
+	if got := recordPhase(t, p, live); got != lease.PhaseJoined {
+		t.Errorf("the live record is %v after the tick, want JOINED", got)
+	}
+	if got := sender.callCount(); got != 0 {
+		t.Errorf("the tick sent %d release(s) for records that were already closed", got)
+	}
+}
+
+func fileSize(t *testing.T, path string) int64 {
+	t.Helper()
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return fi.Size()
 }
 
 func TestDeferredRelease_APluginRestartInsideTheWindowStillReleases(t *testing.T) {

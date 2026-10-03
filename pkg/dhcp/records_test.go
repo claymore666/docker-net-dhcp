@@ -6,15 +6,20 @@ package dhcp
 import (
 	"bytes"
 	"errors"
+	"fmt"
+	"maps"
+	"net"
 	"net/netip"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/claymore666/dhcp-golib/lease"
 	"github.com/claymore666/dhcp-golib/proto"
+	dhcpruntime "github.com/claymore666/dhcp-golib/runtime"
 	"golang.org/x/sys/unix"
 )
 
@@ -604,5 +609,529 @@ func TestResumption_IdleIsNotEvidenceOfAnUncheckedAddress(t *testing.T) {
 	unknown := proto.ACDPhase(len(proto.AllACDPhases()) + 7)
 	if !(Resumption{ACD: unknown}).ACDUnfinished() {
 		t.Errorf("ACDUnfinished(%v) = false for a phase this build does not know; an unknown phase must cost a log line, not read as clean", unknown)
+	}
+}
+
+var compactMAC = net.HardwareAddr{0x02, 0x42, 0xac, 0x11, 0x00, 0x02}
+
+func compactLease(expire time.Time) lease.Lease {
+	return lease.Lease{
+		Addr:    netip.MustParsePrefix("192.0.2.10/24"),
+		Gateway: netip.MustParseAddr("192.0.2.1"),
+		Expire:  expire,
+	}
+}
+
+func mustRecord(t *testing.T, err error) {
+	t.Helper()
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// joinedRecord is the findings' lifecycle up to the running manager (#1182).
+func joinedRecord(t *testing.T, r *Records, id string, mac net.HardwareAddr, expire time.Time) {
+	t.Helper()
+	ls := compactLease(expire)
+	mustRecord(t, r.Created(id, "net-c", mac, []byte{1, 2, 3, 4, 5, 6, 7}))
+	mustRecord(t, r.Observed(id, lease.Event{Kind: lease.Acquired, Lease: ls}, nil))
+	mustRecord(t, r.Counted(id, r.NewManagerID(), lease.Stats{}))
+	mustRecord(t, r.Bound(id))
+	mustRecord(t, r.Observed(id, lease.Event{Kind: lease.Acquired, Lease: ls}, nil))
+	mustRecord(t, r.Observed(id, lease.Event{Kind: lease.Renewed, Lease: ls}, nil))
+	mustRecord(t, r.Counted(id, r.NewManagerID(), lease.Stats{}))
+}
+
+func retainedRecord(t *testing.T, r *Records, id string, mac net.HardwareAddr, expire, deadline time.Time) {
+	t.Helper()
+	joinedRecord(t, r, id, mac, expire)
+	mustRecord(t, r.Left(id))
+	mustRecord(t, r.Retained(id, deadline))
+}
+
+func closedRecord(t *testing.T, r *Records, id string, mac net.HardwareAddr) {
+	t.Helper()
+	retainedRecord(t, r, id, mac, time.Now().Add(time.Hour), time.Now().Add(time.Minute))
+	mustRecord(t, r.Closed(id))
+}
+
+func compactNow(t *testing.T, r *Records, now time.Time) error {
+	t.Helper()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.compactLocked(now, compactRetain)
+}
+
+const compactRetain = time.Minute
+
+func seqLen(r *Records) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.seq)
+}
+
+func fileSize(t *testing.T, path string) int64 {
+	t.Helper()
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return fi.Size()
+}
+
+func uniqueMAC(i int) net.HardwareAddr {
+	return net.HardwareAddr{0x02, 0x42, byte(i >> 24), byte(i >> 16), byte(i >> 8), byte(i)}
+}
+
+func TestRecords_CompactionBoundsTheFile(t *testing.T) {
+	now := time.Now()
+	sets := map[string]func(t *testing.T, r *Records, id string, mac net.HardwareAddr){
+		"closed": closedRecord,
+		"retained-expired": func(t *testing.T, r *Records, id string, mac net.HardwareAddr) {
+			retainedRecord(t, r, id, mac, now.Add(time.Hour), now.Add(time.Minute))
+		},
+	}
+	for name, spend := range sets {
+		for _, n := range []int{100, 1000} {
+			t.Run(fmt.Sprintf("%s-%d", name, n), func(t *testing.T) {
+				r, path := testRecords(t)
+				joinedRecord(t, r, "live-1", uniqueMAC(-1), time.Time{})
+				retainedRecord(t, r, "live-2", uniqueMAC(-2), now.Add(5*time.Hour), now.Add(time.Minute))
+				live := fileSize(t, path)
+				for i := 0; i < n; i++ {
+					spend(t, r, fmt.Sprintf("spent-%d", i), uniqueMAC(i))
+				}
+				before := fileSize(t, path)
+
+				if err := compactNow(t, r, now.Add(3*time.Hour)); err != nil {
+					t.Fatalf("compaction: %v", err)
+				}
+				rb, err := r.Rebuilt()
+				if err != nil {
+					t.Fatal(err)
+				}
+				after := fileSize(t, path)
+				t.Logf("N=%d %s: %d B before, %d B after, live set %d B, seq %d, records %d",
+					n, name, before, after, live, seqLen(r), len(rb.Records))
+				if after != live {
+					t.Errorf("the file is %d B after compaction, want the live set's %d B", after, live)
+				}
+				if got := seqLen(r); got != 2 {
+					t.Errorf("seq holds %d ids, want the 2 live ones", got)
+				}
+				if len(rb.Records) != 2 {
+					t.Errorf("the file folds to %d records, want the 2 live ones", len(rb.Records))
+				}
+			})
+		}
+	}
+}
+
+func keptOnly(rb lease.Rebuilt, ids ...string) []lease.Record {
+	want := map[string]bool{}
+	for _, id := range ids {
+		want[id] = true
+	}
+	var out []lease.Record
+	for _, rec := range rb.Records {
+		if want[rec.ID] {
+			out = append(out, rec)
+		}
+	}
+	return out
+}
+
+func TestRecords_CompactionKeepsWhatIsStillRead(t *testing.T) {
+	r, _ := testRecords(t)
+	now := time.Now()
+	at := now.Add(3 * time.Hour)
+
+	joinedRecord(t, r, "joined-expired-lease", uniqueMAC(1), now.Add(time.Minute))
+	joinedRecord(t, r, "left", uniqueMAC(2), now.Add(time.Minute))
+	mustRecord(t, r.Left("left"))
+	retainedRecord(t, r, "tombstone-unexpired", uniqueMAC(3), now.Add(time.Hour), at.Add(time.Minute))
+	retainedRecord(t, r, "lease-not-yet-expired", uniqueMAC(4), at.Add(-compactRetain+time.Second), now)
+	retainedRecord(t, r, "infinite-lease", uniqueMAC(5), time.Time{}, now)
+	mac6 := uniqueMAC(6)
+	duid, err := DUIDLL(mac6)
+	mustRecord(t, err)
+	iaid, err := IAIDFromMAC(mac6)
+	mustRecord(t, err)
+	mustRecord(t, r.Created6("v6", "net-c", mac6, Identity6{DUID: duid, IAID: iaid}.Bytes()))
+	closedRecord(t, r, "spent-closed", uniqueMAC(7))
+	retainedRecord(t, r, "spent-retained", uniqueMAC(8), now.Add(time.Hour), now)
+	mustRecord(t, r.Created("spent-addressless", "net-c", uniqueMAC(10), nil))
+	mustRecord(t, r.Retained("spent-addressless", time.Time{}))
+
+	kept := []string{"joined-expired-lease", "left", "tombstone-unexpired", "lease-not-yet-expired", "infinite-lease", "v6"}
+	before, err := r.Rebuilt()
+	mustRecord(t, err)
+	_, _, ident6, ok := r.Resume6("net-c", mac6, at)
+	if !ok {
+		t.Fatal("the v6 record does not resume before compaction")
+	}
+
+	if err := compactNow(t, r, at); err != nil {
+		t.Fatalf("compaction: %v", err)
+	}
+	after, err := r.Rebuilt()
+	mustRecord(t, err)
+	if !reflect.DeepEqual(keptOnly(before, kept...), after.Records) {
+		t.Errorf("the kept records fold differently after compaction:\nbefore %+v\nafter  %+v", keptOnly(before, kept...), after.Records)
+	}
+	if _, _, got, ok := r.Resume6("net-c", mac6, at); !ok || !reflect.DeepEqual(got, ident6) {
+		t.Errorf("the v6 identity after compaction is %+v (resumed %v), want %+v", got, ok, ident6)
+	}
+}
+
+func TestRecords_CompactionKeepsTheNewestClosedRecordOverAnOlderOne(t *testing.T) {
+	r, _ := testRecords(t)
+	now := time.Now()
+	retainedRecord(t, r, "older", compactMAC, time.Time{}, now)
+	closedRecord(t, r, "newer", compactMAC)
+	closedRecord(t, r, "alone-a", uniqueMAC(9))
+	closedRecord(t, r, "alone-b", uniqueMAC(9))
+
+	if err := compactNow(t, r, now.Add(3*time.Hour)); err != nil {
+		t.Fatalf("compaction: %v", err)
+	}
+	rb, err := r.Rebuilt()
+	mustRecord(t, err)
+	matches := rb.ByScopeMAC("net-c", compactMAC)
+	if len(matches) != 2 || matches[1].ID != "newer" || matches[1].Phase != lease.PhaseClosed {
+		t.Fatalf("the group reads %+v, want the older record under the newer CLOSED one, "+
+			"or retainRecordFor would re-tombstone an address already handed back (#962)", matches)
+	}
+	if got := rb.ByScopeMAC("net-c", uniqueMAC(9)); len(got) != 0 {
+		t.Errorf("a group with nothing kept still holds %d records", len(got))
+	}
+}
+
+func TestRecords_ARecentlyClosedRecordIsKept(t *testing.T) {
+	r, _ := testRecords(t)
+	closedRecord(t, r, "recent", compactMAC)
+	closedAt := time.Now()
+
+	if err := compactNow(t, r, closedAt.Add(compactRetain-time.Second)); err != nil {
+		t.Fatalf("compaction: %v", err)
+	}
+	rb, err := r.Rebuilt()
+	mustRecord(t, err)
+	if _, ok := rb.ByID("recent"); !ok {
+		t.Fatal("a record closed 59 s ago was dropped; a reader that read it before the rewrite may still write to it")
+	}
+	if err := compactNow(t, r, closedAt.Add(compactRetain+time.Second)); err != nil {
+		t.Fatalf("compaction: %v", err)
+	}
+	rb, err = r.Rebuilt()
+	mustRecord(t, err)
+	if _, ok := rb.ByID("recent"); ok {
+		t.Error("a record closed 61 s ago was kept")
+	}
+}
+
+func TestRecords_SeqAfterCompactionIsWhatAFreshOpenReads(t *testing.T) {
+	r, path := testRecords(t)
+	joinedRecord(t, r, "live", uniqueMAC(1), time.Time{})
+	closedRecord(t, r, "spent", uniqueMAC(2))
+	mustRecord(t, compactNow(t, r, time.Now().Add(time.Hour)))
+	r.mu.Lock()
+	got := maps.Clone(r.seq)
+	r.mu.Unlock()
+	mustRecord(t, r.Close())
+
+	fresh, err := OpenRecords(path, "instance-b")
+	mustRecord(t, err)
+	defer func() { _ = fresh.Close() }()
+	if !reflect.DeepEqual(got, fresh.seq) {
+		t.Errorf("seq after compaction is %v, a fresh open of the compacted file reads %v", got, fresh.seq)
+	}
+}
+
+func TestRecords_AppendsAfterCompactionLandInTheFile(t *testing.T) {
+	r, path := testRecords(t)
+	closedRecord(t, r, "spent", uniqueMAC(1))
+	mustRecord(t, compactNow(t, r, time.Now().Add(time.Hour)))
+	joinedRecord(t, r, "after", uniqueMAC(2), time.Time{})
+	mustRecord(t, r.Close())
+
+	fresh, err := OpenRecords(path, "instance-b")
+	mustRecord(t, err)
+	defer func() { _ = fresh.Close() }()
+	rb, err := fresh.Rebuilt()
+	mustRecord(t, err)
+	if rec, ok := rb.ByID("after"); !ok || rec.Phase != lease.PhaseJoined {
+		t.Errorf("a record written after compaction reads back as %+v (found %v), want JOINED", rec, ok)
+	}
+}
+
+func TestRecords_ALeftoverCompactFileIsRemovedAtOpen(t *testing.T) {
+	r, path := testRecords(t)
+	joinedRecord(t, r, "live", uniqueMAC(1), time.Time{})
+	before, err := r.Rebuilt()
+	mustRecord(t, err)
+	mustRecord(t, r.Close())
+	mustRecord(t, os.WriteFile(path+compactSuffix, []byte("{\"id\":\"half"), 0o600))
+
+	fresh, err := OpenRecords(path, "instance-b")
+	mustRecord(t, err)
+	defer func() { _ = fresh.Close() }()
+	if _, err := os.Stat(path + compactSuffix); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the unfinished compaction is still there after open: %v", err)
+	}
+	after, err := fresh.Rebuilt()
+	mustRecord(t, err)
+	if !reflect.DeepEqual(before.Records, after.Records) {
+		t.Errorf("the record folds differently after a crashed compaction")
+	}
+}
+
+func TestRecords_AFailedRenameLeavesTheOriginal(t *testing.T) {
+	r, path := testRecords(t)
+	closedRecord(t, r, "spent", uniqueMAC(1))
+	orig, err := os.ReadFile(path)
+	mustRecord(t, err)
+	renameRecords = func(string, string) error { return errors.New("injected") }
+	t.Cleanup(func() { renameRecords = os.Rename })
+
+	if err := compactNow(t, r, time.Now().Add(time.Hour)); err == nil {
+		t.Fatal("a failed rename reported success")
+	}
+	got, err := os.ReadFile(path)
+	mustRecord(t, err)
+	if !bytes.Equal(got, orig) {
+		t.Error("the record file changed although the rename failed")
+	}
+	if _, err := os.Stat(path + compactSuffix); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the temporary file is left behind: %v", err)
+	}
+	joinedRecord(t, r, "after", uniqueMAC(2), time.Time{})
+	rb, err := r.Rebuilt()
+	mustRecord(t, err)
+	if _, ok := rb.ByID("after"); !ok {
+		t.Error("an append after a failed rename did not land")
+	}
+}
+
+func TestRecords_AFailedReopenFailsAppendsAndIsRetried(t *testing.T) {
+	r, path := testRecords(t)
+	closedRecord(t, r, "spent", uniqueMAC(1))
+	opener := openRecordStore
+	openRecordStore = func(string) (*dhcpruntime.RecordStore, error) { return nil, errors.New("injected") }
+	restore := func() { openRecordStore = opener }
+	t.Cleanup(restore)
+
+	err := compactNow(t, r, time.Now().Add(time.Hour))
+	if err == nil || !strings.Contains(err.Error(), path) {
+		t.Fatalf("a failed reopen reported %v, want an error naming %s", err, path)
+	}
+	if err := r.Created("lost", "net-c", uniqueMAC(2), nil); err == nil || !strings.Contains(err.Error(), "compacted") {
+		t.Fatalf("an append while the store is not reopened reported %v, want an error that says the file was compacted", err)
+	}
+	if _, err := r.CompactIfDue(time.Now(), compactRetain); err == nil {
+		t.Fatal("the retry reported success while the reopen still fails")
+	}
+
+	restore()
+	if _, err := r.CompactIfDue(time.Now(), compactRetain); err != nil {
+		t.Fatalf("the next tick did not reopen the store: %v", err)
+	}
+	joinedRecord(t, r, "after", uniqueMAC(3), time.Time{})
+	rb, err := r.Rebuilt()
+	mustRecord(t, err)
+	if _, ok := rb.ByID("after"); !ok {
+		t.Error("an append after the retried reopen did not land")
+	}
+	if _, ok := rb.ByID("lost"); ok {
+		t.Error("the append refused during the failure is in the file")
+	}
+}
+
+func TestRecords_CompactionKeepsDamagedLines(t *testing.T) {
+	r, path := testRecords(t)
+	joinedRecord(t, r, "live", uniqueMAC(1), time.Time{})
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0o600)
+	mustRecord(t, err)
+	_, err = f.WriteString("not json\n")
+	mustRecord(t, err)
+	closedRecord(t, r, "spent", uniqueMAC(2))
+	_, err = f.WriteString("{\"id\":\"torn")
+	mustRecord(t, err)
+	mustRecord(t, f.Close())
+	_, err = r.Rebuilt()
+	mustRecord(t, err)
+	before := r.Damage()
+
+	mustRecord(t, compactNow(t, r, time.Now().Add(time.Hour)))
+	_, err = r.Rebuilt()
+	mustRecord(t, err)
+	after := r.Damage()
+	if before.Skipped+before.TornTail != 2 || after.Skipped+after.TornTail != 2 {
+		t.Errorf("damaged lines before %+v, after %+v, want both lines kept", before, after)
+	}
+}
+
+func TestRecords_AQuietFileIsNotRewritten(t *testing.T) {
+	r, path := testRecords(t)
+	for i := 0; i < 10; i++ {
+		closedRecord(t, r, fmt.Sprintf("spent-%d", i), uniqueMAC(i))
+	}
+	before, err := os.Stat(path)
+	mustRecord(t, err)
+	if before.Size() >= compactMinSize {
+		t.Fatalf("the quiet file is %d B, not below the %d B floor", before.Size(), compactMinSize)
+	}
+
+	done, err := r.CompactIfDue(time.Now().Add(time.Hour), compactRetain)
+	mustRecord(t, err)
+	after, err := os.Stat(path)
+	mustRecord(t, err)
+	if done || !os.SameFile(before, after) || after.Size() != before.Size() {
+		t.Errorf("a %d B file was rewritten (reported %v, same inode %v)", before.Size(), done, os.SameFile(before, after))
+	}
+}
+
+func TestRecords_ALargeFileCompactsOnTheFirstTick(t *testing.T) {
+	r, path := testRecords(t)
+	for i := 0; fileSize(t, path) < compactMinSize; i++ {
+		closedRecord(t, r, fmt.Sprintf("spent-%d", i), uniqueMAC(i))
+	}
+	mustRecord(t, r.Close())
+	fresh, err := OpenRecords(path, "instance-b")
+	mustRecord(t, err)
+	defer func() { _ = fresh.Close() }()
+
+	done, err := fresh.CompactIfDue(time.Now().Add(time.Hour), compactRetain)
+	mustRecord(t, err)
+	if !done || fileSize(t, path) != 0 {
+		t.Errorf("the first tick after open compacted %v and left %d B, want a rewrite to 0 B", done, fileSize(t, path))
+	}
+}
+
+func TestRecords_CompactionDoesNotRaceReaders(t *testing.T) {
+	r, _ := testRecords(t)
+	for i := 0; i < 50; i++ {
+		closedRecord(t, r, fmt.Sprintf("spent-%d", i), uniqueMAC(i))
+	}
+	joinedRecord(t, r, "live", uniqueMAC(-1), time.Time{})
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			rb, err := r.Rebuilt()
+			if err != nil {
+				t.Errorf("a reader during compaction failed: %v", err)
+				return
+			}
+			if _, ok := rb.ByID("live"); !ok {
+				t.Error("a reader during compaction did not see the live record")
+				return
+			}
+			_ = r.Damage()
+		}
+	}()
+	for i := 0; i < 5; i++ {
+		mustRecord(t, compactNow(t, r, time.Now().Add(time.Hour)))
+		mustRecord(t, r.Observed("live", lease.Event{Kind: lease.Renewed, Lease: compactLease(time.Time{})}, nil))
+	}
+	close(stop)
+	<-done
+}
+
+func TestRecords_ASecondTickDoesNotRewriteAFileThatDidNotDouble(t *testing.T) {
+	r, path := testRecords(t)
+	for i := 0; fileSize(t, path) < compactMinSize; i++ {
+		joinedRecord(t, r, fmt.Sprintf("live-%d", i), uniqueMAC(i), time.Time{})
+	}
+	now := time.Now()
+
+	done, err := r.CompactIfDue(now, compactRetain)
+	mustRecord(t, err)
+	if !done {
+		t.Fatal("the first tick did not compact a file at the floor, the control for the second tick")
+	}
+	first, err := os.Stat(path)
+	mustRecord(t, err)
+	if first.Size() < compactMinSize {
+		t.Fatalf("the kept set is %d B, below the %d B floor, so only the doubling rule can hold the second tick back", first.Size(), compactMinSize)
+	}
+
+	done, err = r.CompactIfDue(now, compactRetain)
+	mustRecord(t, err)
+	second, err := os.Stat(path)
+	mustRecord(t, err)
+	if done || !os.SameFile(first, second) {
+		t.Errorf("a %d B file that grew by nothing was rewritten again (reported %v, same inode %v)",
+			second.Size(), done, os.SameFile(first, second))
+	}
+
+	for i := 0; fileSize(t, path) < 2*first.Size(); i++ {
+		joinedRecord(t, r, fmt.Sprintf("more-%d", i), uniqueMAC(-1-i), time.Time{})
+	}
+	if done, err = r.CompactIfDue(now, compactRetain); err != nil || !done {
+		t.Errorf("a file that doubled since the last rewrite was not compacted (reported %v, err %v)", done, err)
+	}
+}
+
+func TestRecords_CompactionKeepsTheNewestClosedRecordOfEachScope(t *testing.T) {
+	r, _ := testRecords(t)
+	now := time.Now()
+	retainedRecord(t, r, "v4-older", compactMAC, time.Time{}, now)
+	closedRecord(t, r, "v4-newer", compactMAC)
+	duid, err := DUIDLL(compactMAC)
+	mustRecord(t, err)
+	iaid, err := IAIDFromMAC(compactMAC)
+	mustRecord(t, err)
+	mustRecord(t, r.Created6("v6-closed", "net-c", compactMAC, Identity6{DUID: duid, IAID: iaid}.Bytes()))
+	mustRecord(t, r.Closed("v6-closed"))
+
+	if err := compactNow(t, r, now.Add(3*time.Hour)); err != nil {
+		t.Fatalf("compaction: %v", err)
+	}
+	rb, err := r.Rebuilt()
+	mustRecord(t, err)
+	matches := rb.ByScopeMAC("net-c", compactMAC)
+	if len(matches) != 2 || matches[1].ID != "v4-newer" || matches[1].Phase != lease.PhaseClosed {
+		var got []string
+		for _, m := range matches {
+			got = append(got, m.ID+":"+m.Phase.String())
+		}
+		t.Errorf("the v4 group of the dual-stack client reads %v, want the older record under the newer CLOSED one "+
+			"even though a newer CLOSED record of the other scope shares the hardware address (#962)", got)
+	}
+	if _, ok := rb.ByID("v6-closed"); ok {
+		t.Error("a CLOSED v6 record nothing shadows was kept")
+	}
+}
+
+func TestRecords_ARecordIsAgedFromItsLastLineNotItsFirst(t *testing.T) {
+	r, _ := testRecords(t)
+	created := time.Now().Add(-3 * time.Hour)
+	mustRecord(t, r.append(lease.RecordEvent{
+		ID: "long-lived", Op: lease.OpCreate, Scope: "net-c", Family: lease.FamilyV4,
+		CHAddr: compactMAC, Identity: []byte{1, 2, 3, 4, 5, 6, 7}, At: created,
+	}))
+	ls := compactLease(time.Now().Add(time.Hour))
+	mustRecord(t, r.Observed("long-lived", lease.Event{Kind: lease.Acquired, Lease: ls}, nil))
+	mustRecord(t, r.Counted("long-lived", r.NewManagerID(), lease.Stats{}))
+	mustRecord(t, r.Bound("long-lived"))
+	mustRecord(t, r.Left("long-lived"))
+	mustRecord(t, r.Retained("long-lived", time.Now().Add(time.Minute)))
+	mustRecord(t, r.Closed("long-lived"))
+	closedAt := time.Now()
+
+	if err := compactNow(t, r, closedAt.Add(compactRetain-5*time.Second)); err != nil {
+		t.Fatalf("compaction: %v", err)
+	}
+	rb, err := r.Rebuilt()
+	mustRecord(t, err)
+	if _, ok := rb.ByID("long-lived"); !ok {
+		t.Error("a record created 3 h ago and closed 55 s ago was dropped; the retention is counted from its last line")
 	}
 }
