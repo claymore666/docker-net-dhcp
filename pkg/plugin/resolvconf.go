@@ -130,7 +130,7 @@ func writeContainerResolvConf(pid int, ctrID string, dns []string, searchList []
 		return fmt.Errorf("setns into container mnt ns: %w", err)
 	}
 
-	writeErr := writeResolvConfFile("/etc/resolv.conf", buildResolvConf(dns, searchList, searchDomain, iface))
+	writeErr := writeResolvConfFile(ctrID, "/etc/resolv.conf", buildResolvConf(dns, searchList, searchDomain, iface))
 
 	if err := unix.Setns(int(origMnt.Fd()), unix.CLONE_NEWNS); err != nil {
 		// The thread is now in the container's mount namespace, so it is not unlocked.
@@ -158,17 +158,45 @@ func resolvPadTo(content []byte, size int) []byte {
 	return append(out, '\n')
 }
 
-// resolvWriteMu serializes the plugin's own writers (#1188). The path is /etc/resolv.conf in every container's mount
-// namespace, so the lock is process-wide. Docker's own rewrite is not covered.
-var resolvWriteMu sync.Mutex
+// resolvLocks holds one mutex per container with a writer in flight (#1188). The path is /etc/resolv.conf in every
+// mount namespace, so the container id is the key; a write that never returns stalls only its own container.
+var resolvLocks = struct {
+	mu sync.Mutex
+	m  map[string]*resolvLock
+}{m: map[string]*resolvLock{}}
+
+type resolvLock struct {
+	mu   sync.Mutex
+	refs int
+}
+
+// lockResolv takes ctrID's lock and returns its release; the entry is dropped with its last holder or waiter.
+func lockResolv(ctrID string) func() {
+	resolvLocks.mu.Lock()
+	l := resolvLocks.m[ctrID]
+	if l == nil {
+		l = &resolvLock{}
+		resolvLocks.m[ctrID] = l
+	}
+	l.refs++
+	resolvLocks.mu.Unlock()
+	l.mu.Lock()
+	return func() {
+		l.mu.Unlock()
+		resolvLocks.mu.Lock()
+		if l.refs--; l.refs == 0 {
+			delete(resolvLocks.m, ctrID)
+		}
+		resolvLocks.mu.Unlock()
+	}
+}
 
 // writeResolvConfFile rewrites path without an empty window (#1188). Docker bind-mounts the file, so rename is out and
 // os.WriteFile truncates first. Equal bytes are not written. Otherwise the new bytes go in at offset 0, then Truncate;
 // until then the file is never shorter than old or new: a growing write extends it with filler first, a shrinking one
 // carries filler (resolvPadTo). A reader's own copy can still interleave with a write's.
-func writeResolvConfFile(path string, content []byte) error {
-	resolvWriteMu.Lock()
-	defer resolvWriteMu.Unlock()
+func writeResolvConfFile(ctrID, path string, content []byte) error {
+	defer lockResolv(ctrID)()
 
 	old, readErr := os.ReadFile(path)
 	if readErr == nil && bytes.Equal(old, content) {

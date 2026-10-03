@@ -12,7 +12,11 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
+
+const testCtr = "0123456789abcdef"
 
 func TestBuildResolvConf_SearchListPrecedence(t *testing.T) {
 	dns := []string{"192.0.2.1"}
@@ -168,7 +172,7 @@ func readWhileRewriting(t *testing.T, path string, contents [][]byte, rounds int
 		}
 	}()
 	for i := 0; i < rounds; i++ {
-		if err := writeResolvConfFile(path, contents[i%len(contents)]); err != nil {
+		if err := writeResolvConfFile(testCtr, path, contents[i%len(contents)]); err != nil {
 			close(stop)
 			<-done
 			t.Fatalf("write %d: %v", i, err)
@@ -221,7 +225,7 @@ func TestWriteResolvConfFile_FinalBytesAndMode(t *testing.T) {
 		if err := os.WriteFile(path, long, 0644); err != nil {
 			t.Fatal(err)
 		}
-		if err := writeResolvConfFile(path, short); err != nil {
+		if err := writeResolvConfFile(testCtr, path, short); err != nil {
 			t.Fatal(err)
 		}
 		got, _ := os.ReadFile(path)
@@ -235,7 +239,7 @@ func TestWriteResolvConfFile_FinalBytesAndMode(t *testing.T) {
 		if err := os.WriteFile(path, long, 0644); err != nil {
 			t.Fatal(err)
 		}
-		if err := writeResolvConfFile(path, longer); err != nil {
+		if err := writeResolvConfFile(testCtr, path, longer); err != nil {
 			t.Fatal(err)
 		}
 		got, _ := os.ReadFile(path)
@@ -250,7 +254,7 @@ func TestWriteResolvConfFile_FinalBytesAndMode(t *testing.T) {
 			t.Fatal(err)
 		}
 		want := []byte("nameserver 192.0.2.1\n")
-		if err := writeResolvConfFile(path, want); err != nil {
+		if err := writeResolvConfFile(testCtr, path, want); err != nil {
 			t.Fatal(err)
 		}
 		got, _ := os.ReadFile(path)
@@ -265,7 +269,7 @@ func TestWriteResolvConfFile_FinalBytesAndMode(t *testing.T) {
 			t.Fatal(err)
 		}
 		want := []byte("nameserver 192.0.2.2\n")
-		if err := writeResolvConfFile(path, want); err != nil {
+		if err := writeResolvConfFile(testCtr, path, want); err != nil {
 			t.Fatal(err)
 		}
 		got, _ := os.ReadFile(path)
@@ -276,7 +280,7 @@ func TestWriteResolvConfFile_FinalBytesAndMode(t *testing.T) {
 
 	t.Run("missing_file_is_created_0644", func(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "resolv.conf")
-		if err := writeResolvConfFile(path, short); err != nil {
+		if err := writeResolvConfFile(testCtr, path, short); err != nil {
 			t.Fatal(err)
 		}
 		fi, err := os.Stat(path)
@@ -294,14 +298,14 @@ func TestWriteResolvConfFile_FinalBytesAndMode(t *testing.T) {
 
 	t.Run("unchanged_write_leaves_mtime_alone", func(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "resolv.conf")
-		if err := writeResolvConfFile(path, long); err != nil {
+		if err := writeResolvConfFile(testCtr, path, long); err != nil {
 			t.Fatal(err)
 		}
 		past := time.Now().Add(-time.Hour).Truncate(time.Second)
 		if err := os.Chtimes(path, past, past); err != nil {
 			t.Fatal(err)
 		}
-		if err := writeResolvConfFile(path, long); err != nil {
+		if err := writeResolvConfFile(testCtr, path, long); err != nil {
 			t.Fatal(err)
 		}
 		fi, _ := os.Stat(path)
@@ -309,13 +313,13 @@ func TestWriteResolvConfFile_FinalBytesAndMode(t *testing.T) {
 			t.Errorf("mtime moved to %v on an unchanged write, want %v", fi.ModTime(), past)
 		}
 
-		if err := writeResolvConfFile(path, short); err != nil {
+		if err := writeResolvConfFile(testCtr, path, short); err != nil {
 			t.Fatal(err)
 		}
 		if err := os.Chtimes(path, past, past); err != nil {
 			t.Fatal(err)
 		}
-		if err := writeResolvConfFile(path, short); err != nil {
+		if err := writeResolvConfFile(testCtr, path, short); err != nil {
 			t.Fatal(err)
 		}
 		fi, _ = os.Stat(path)
@@ -372,7 +376,7 @@ func TestWriteResolvConfFile_EveryInstantIsOldOrNew(t *testing.T) {
 				}
 			}
 			t.Cleanup(func() { resolvRewriteStep = func(string) {} })
-			if err := writeResolvConfFile(path, tc.new); err != nil {
+			if err := writeResolvConfFile(testCtr, path, tc.new); err != nil {
 				t.Fatal(err)
 			}
 			want := []string{"opened", "written"}
@@ -413,7 +417,7 @@ func TestWriteResolvConfFile_TwoWritersLeaveOneOfTheInputs(t *testing.T) {
 				defer wg.Done()
 				ready.Done()
 				<-gate
-				if err := writeResolvConfFile(path, c); err != nil {
+				if err := writeResolvConfFile(testCtr, path, c); err != nil {
 					t.Errorf("write: %v", err)
 				}
 			}()
@@ -434,5 +438,91 @@ func TestWriteResolvConfFile_TwoWritersLeaveOneOfTheInputs(t *testing.T) {
 	}
 	if bad != 0 {
 		t.Errorf("%d of %d finals were neither input; first: %q", bad, rounds, firstBad)
+	}
+}
+
+// A write parked on a blocking file holds nothing another container's write needs (#1188); a FIFO stands in for a
+// hung mount over /etc/resolv.conf, and the writer is parked once our write end finds its reader.
+func TestWriteResolvConfFile_BlockedWriteDoesNotDelayAnotherContainer(t *testing.T) {
+	dir := t.TempDir()
+	fifo := filepath.Join(dir, "fifo")
+	if err := unix.Mkfifo(fifo, 0644); err != nil {
+		t.Fatal(err)
+	}
+	content := buildResolvConf([]string{"192.0.2.1"}, nil, "", "")
+
+	parked := make(chan error, 1)
+	go func() { parked <- writeResolvConfFile("ctr-blocked", fifo, content) }()
+
+	var hold int
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		fd, err := unix.Open(fifo, unix.O_WRONLY|unix.O_NONBLOCK, 0)
+		if err == nil {
+			hold = fd
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the blocked writer never opened the FIFO: %v", err)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	release := func() {
+		rd, err := unix.Open(fifo, unix.O_RDONLY|unix.O_NONBLOCK, 0)
+		if err != nil {
+			t.Errorf("open reader: %v", err)
+		}
+		unix.Close(hold)
+		select {
+		case <-parked:
+		case <-time.After(5 * time.Second):
+			t.Error("the blocked writer did not return after release")
+		}
+		if err == nil {
+			unix.Close(rd)
+		}
+	}
+	defer release()
+
+	other := filepath.Join(dir, "other.conf")
+	done := make(chan error, 1)
+	go func() { done <- writeResolvConfFile("ctr-other", other, content) }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("second container write: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("a second container's write was still blocked after 2 s behind a parked writer")
+	}
+	got, err := os.ReadFile(other)
+	if err != nil || !bytes.Equal(got, content) {
+		t.Errorf("second container file = %q, %v; want %q", got, err, content)
+	}
+}
+
+// No entry outlives its writers, whether they succeed or fail, so a container that is gone leaves no lock (#1188).
+func TestWriteResolvConfFile_LockEntryDoesNotOutliveItsWriters(t *testing.T) {
+	dir := t.TempDir()
+	content := buildResolvConf([]string{"192.0.2.1"}, nil, "", "")
+	var wg sync.WaitGroup
+	for i := 0; i < 24; i++ {
+		id := string(rune('a' + i%3))
+		path := filepath.Join(dir, id+".conf")
+		if i%4 == 3 {
+			path = filepath.Join(dir, "missing", id+".conf")
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_ = writeResolvConfFile(id, path, content)
+		}()
+	}
+	wg.Wait()
+	resolvLocks.mu.Lock()
+	left := len(resolvLocks.m)
+	resolvLocks.mu.Unlock()
+	if left != 0 {
+		t.Errorf("%d lock entries left after every writer returned", left)
 	}
 }
