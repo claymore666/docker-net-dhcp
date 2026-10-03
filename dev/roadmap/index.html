@@ -772,10 +772,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#v240" class="md-nav__link">
+  <a href="#v240-released" class="md-nav__link">
     <span class="md-ellipsis">
       
-        v2.4.0
+        v2.4.0, released
       
     </span>
   </a>
@@ -1085,10 +1085,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#v240" class="md-nav__link">
+  <a href="#v240-released" class="md-nav__link">
     <span class="md-ellipsis">
       
-        v2.4.0
+        v2.4.0, released
       
     </span>
   </a>
@@ -1244,14 +1244,14 @@ below decide what is in a release; this page follows them.</p>
 </tr>
 <tr>
 <td>v2.4.0</td>
-<td>planned</td>
+<td>released</td>
 <td>The rest of IPv6, and the DHCP options the client does not read yet</td>
 <td><a href="https://github.com/claymore666/docker-net-dhcp/milestone/34">milestone 34</a></td>
 </tr>
 <tr>
 <td>v2.5.0</td>
 <td>planned</td>
-<td>CI consolidation and code debt; nothing a user sees</td>
+<td>CI consolidation and code debt, and DHCPv6 prefix delegation, designed first</td>
 <td><a href="https://github.com/claymore666/docker-net-dhcp/milestone/35">milestone 35</a></td>
 </tr>
 </tbody>
@@ -1286,7 +1286,7 @@ below decide what is in a release; this page follows them.</p>
 <li><a href="https://github.com/claymore666/docker-net-dhcp/issues/1126">#1126</a>, an architecture page with a diagram and a picture of the
   real-server lab in the testing page</li>
 </ul>
-<h3 id="v240">v2.4.0<a class="headerlink" href="#v240" title="Permanent link">&para;</a></h3>
+<h3 id="v240-released">v2.4.0, released<a class="headerlink" href="#v240-released" title="Permanent link">&para;</a></h3>
 <ul>
 <li><a href="https://github.com/claymore666/docker-net-dhcp/issues/1028">#1028</a>, PREF64 from the Router Advertisement, the NAT64 prefix</li>
 <li><a href="https://github.com/claymore666/docker-net-dhcp/issues/1030">#1030</a>, Microsoft classless static routes, option 249, where 121 is
@@ -1309,8 +1309,11 @@ below decide what is in a release; this page follows them.</p>
 <li><a href="https://github.com/claymore666/docker-net-dhcp/issues/1033">#1033</a>, the DHCPv6 timezone options logged as the v4 ones are. The
   library half comes with the v1.4.0 pin (<a href="https://github.com/claymore666/docker-net-dhcp/issues/1177">#1177</a>): the Reply's options on
   the lease</li>
+<li><a href="https://github.com/claymore666/docker-net-dhcp/issues/859">#859</a>, the whole DHCPv6 NTP server list, option 56, in the same log
+  line, one entry per instance</li>
 <li><a href="https://github.com/claymore666/docker-net-dhcp/issues/1034">#1034</a>, the vendor-specific options logged. The DHCPv6 half's library
-  side comes with the v1.4.0 pin (<a href="https://github.com/claymore666/docker-net-dhcp/issues/1177">#1177</a>): option 17 on the lease</li>
+  side comes with the v1.4.0 pin (<a href="https://github.com/claymore666/docker-net-dhcp/issues/1177">#1177</a>): option 17 on the lease. The
+  plugin's log line for option 17 is <a href="https://github.com/claymore666/docker-net-dhcp/issues/1203">#1203</a>, planned for v2.5.0</li>
 <li><a href="https://github.com/claymore666/docker-net-dhcp/issues/1038">#1038</a>, an <code>ipv6_mode=auto</code> network remembers a silent DHCPv6 server
   for <code>DHCPV6_ABSENCE_MEMORY</code> (default ten minutes, <code>0</code> turns it off):
   further endpoints form their address from the advertised prefix without
@@ -1318,13 +1321,11 @@ below decide what is in a release; this page follows them.</p>
   address, removing the network or a restart clears it</li>
 <li><a href="https://github.com/claymore666/docker-net-dhcp/issues/926">#926</a>, DHCPv6 Rapid Commit, the two-message exchange</li>
 <li><a href="https://github.com/claymore666/docker-net-dhcp/issues/927">#927</a>, DHCPv6 temporary addresses (IA_TA)</li>
-<li><a href="https://github.com/claymore666/docker-net-dhcp/issues/214">#214</a>, DHCPv6 prefix delegation (IA_PD), designed first</li>
-<li><a href="https://github.com/claymore666/docker-net-dhcp/issues/859">#859</a>, the whole DHCPv6 NTP server list</li>
-<li><a href="https://github.com/claymore666/docker-net-dhcp/issues/1035">#1035</a>, one multi-architecture manifest list per tag, which also
-  settles the arm64 claim in the table below</li>
 </ul>
 <h3 id="v250">v2.5.0<a class="headerlink" href="#v250" title="Permanent link">&para;</a></h3>
 <ul>
+<li><a href="https://github.com/claymore666/docker-net-dhcp/issues/214">#214</a>, DHCPv6 prefix delegation (IA_PD), designed first; only its Kea
+  DHCPv6 test fixture is in v2.4.0</li>
 <li><a href="https://github.com/claymore666/docker-net-dhcp/issues/733">#733</a>, the tracking issue for the CI consolidation programme</li>
 <li><a href="https://github.com/claymore666/docker-net-dhcp/issues/744">#744</a>, one subject discovery, one refusal and one collation in a
   shared shell library</li>
@@ -1360,12 +1361,12 @@ below decide what is in a release; this page follows them.</p>
     v22["v2.2&lt;br/&gt;IPv6 modes and&lt;br/&gt;router discovery"]
     v23["v2.3&lt;br/&gt;host plumbing"]
     v24["v2.4&lt;br/&gt;the rest of IPv6"]
-    v25["v2.5&lt;br/&gt;CI and code debt"]
+    v25["v2.5&lt;br/&gt;CI, code debt and&lt;br/&gt;prefix delegation"]
     v20 --&gt; v21 --&gt; v22 --&gt; v23 --&gt; v24 --&gt; v25
     classDef planned stroke-dasharray: 6 4
-    class v24,v25 planned</code></pre>
-<p>v2.0, v2.1, v2.2 and v2.3 are released, and v2.4 and v2.5 are planned in
-that order; the planned ones are the dashed nodes. There are no dates. Every
+    class v25 planned</code></pre>
+<p>v2.0 to v2.4 are released and v2.5 is planned; the planned one is the
+dashed node. There are no dates. Every
 release, patches included, is in
 <a href="https://github.com/claymore666/docker-net-dhcp/blob/main/RELEASE_NOTES.md">the release notes</a>.</p>
 <h2 id="the-bar-every-feature-is-measured-against">The bar every feature is measured against<a class="headerlink" href="#the-bar-every-feature-is-measured-against" title="Permanent link">&para;</a></h2>
@@ -1449,8 +1450,10 @@ settled the DHCPv6 half: an ipvlan endpoint now gets a DUID of its own
 (<a href="https://github.com/claymore666/docker-net-dhcp/issues/531">#531</a>). Per-architecture tags (<code>vX.Y.Z-arm64</code>, <code>latest-arm64</code>) were
 first published with v1.7.0 (<a href="https://github.com/claymore666/docker-net-dhcp/issues/507">#507</a>). This page long held that a Docker
 plugin cannot be installed from a multi-architecture manifest list at
-all, so the architecture lives in the tag. That claim is contested by a
-registry that serves one, and <a href="https://github.com/claymore666/docker-net-dhcp/issues/1035">#1035</a> measures it.</p>
+all, so the architecture lives in the tag. A third-party
+registry serves one, and <a href="https://github.com/claymore666/docker-net-dhcp/issues/1035">#1035</a> measured it: <code>docker plugin install</code>
+refuses a manifest list, and an OCI image index, on every engine from 20.10 to
+29.8, by tag and by digest, while the per-architecture tags install.</p>
 <p><strong>A test substrate that cannot lie.</strong> This is infrastructure work with a
 user-visible reason: on this project, every timing crutch removed from CI
 turned out to be hiding a real defect. An opt-out helper added to make a
@@ -1495,7 +1498,7 @@ plugin's own half is written and waiting.</p>
 pass-through (<a href="https://github.com/moby/moby/pull/52866">moby/moby#52866</a>) merged and shipped in moby engine
 29.8.0, and <a href="https://github.com/claymore666/docker-net-dhcp/issues/125">#125</a> closed with it. Engines below that boundary ignore a
 remote driver's requested interface name, the integration lane runs
-29.8.0, and the plugin counts <code>ifname_unsupported</code> below it.</p>
+an engine above it, and the plugin counts <code>ifname_unsupported</code> below it.</p>
 <h2 id="out-of-scope">Out of scope<a class="headerlink" href="#out-of-scope" title="Permanent link">&para;</a></h2>
 <p>These are decided, and the reasoning is recorded so a contributor can
 read it before writing the PR.</p>

@@ -1213,8 +1213,8 @@ container.</p>
 release. Pick a v1.x version from the selector for the 1.x manual.</p>
 </div>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>sudo<span class="w"> </span>mkdir<span class="w"> </span>-p<span class="w"> </span>/var/lib/net-dhcp<span class="w">                      </span><span class="c1"># once per host</span>
-<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>docker<span class="w"> </span>plugin<span class="w"> </span>install<span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:v2.3.1<span class="w">   </span><span class="c1"># -arm64 on arm64</span>
-<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>docker<span class="w"> </span>network<span class="w"> </span>create<span class="w"> </span>-d<span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:v2.3.1<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>docker<span class="w"> </span>plugin<span class="w"> </span>install<span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:v2.4.0<span class="w">   </span><span class="c1"># -arm64 on arm64</span>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>docker<span class="w"> </span>network<span class="w"> </span>create<span class="w"> </span>-d<span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:v2.4.0<span class="w"> </span><span class="se">\</span>
 <a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="w">  </span>--ipam-driver<span class="w"> </span>null<span class="w"> </span>-o<span class="w"> </span><span class="nv">mode</span><span class="o">=</span>macvlan<span class="w"> </span>-o<span class="w"> </span><span class="nv">parent</span><span class="o">=</span>eth0<span class="w"> </span>lan-dhcp
 <a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>docker<span class="w"> </span>run<span class="w"> </span>--rm<span class="w"> </span>-ti<span class="w"> </span>--network<span class="w"> </span>lan-dhcp<span class="w"> </span>alpine<span class="w"> </span>ip<span class="w"> </span>address<span class="w"> </span>show
 </code></pre></div>
@@ -1322,14 +1322,17 @@ and what each item is for is in <a href="https://github.com/claymore666/docker-n
   change in Docker, not planned (<a href="https://github.com/claymore666/docker-net-dhcp/issues/949">#949</a>). <code>ipvlan</code> networks use
   <code>--ipam-driver null</code>.</li>
 <li>Docker Engine 19.03. Unmeasured, not planned.</li>
+<li>IPv6-Only Preferred (DHCPv4 option 108, RFC 8925) is never requested. A
+  Docker endpoint on a network with an IPv4 pool must hold an IPv4
+  address, which makes it an IPv4-requiring host, and RFC 8925 section 3.2
+  forbids such a host from asking for the option. The DHCP library
+  implements the option for consumers that are not (<a href="https://github.com/claymore666/docker-net-dhcp/issues/1027">#1027</a>).</li>
 </ul>
 <p>The plugin refuses these with a message that names the reason.</p>
 <h2 id="planned">Planned<a class="headerlink" href="#planned" title="Permanent link">&para;</a></h2>
-<p>v2.4.0: DHCPv6 Rapid Commit (<a href="https://github.com/claymore666/docker-net-dhcp/issues/926">#926</a>), temporary addresses (<a href="https://github.com/claymore666/docker-net-dhcp/issues/927">#927</a>) and
-prefix delegation (<a href="https://github.com/claymore666/docker-net-dhcp/issues/214">#214</a>); DHCPv4 Rapid Commit (<a href="https://github.com/claymore666/docker-net-dhcp/issues/1031">#1031</a>) and IPv6-only
-preferred (<a href="https://github.com/claymore666/docker-net-dhcp/issues/1027">#1027</a>); stable-privacy SLAAC addresses (<a href="https://github.com/claymore666/docker-net-dhcp/issues/1032">#1032</a>); one
-multi-architecture image per tag (<a href="https://github.com/claymore666/docker-net-dhcp/issues/1035">#1035</a>). The full list, with what this
-project will not do, is on the <a href="roadmap/">roadmap</a>.</p>
+<p>v2.5.0 is CI consolidation and code debt, plus DHCPv6 prefix
+delegation (<a href="https://github.com/claymore666/docker-net-dhcp/issues/214">#214</a>), which is designed first. The full list, with what
+this project will not do, is on the <a href="roadmap/">roadmap</a>.</p>
 <h2 id="how-to-check-any-of-this">How to check any of this<a class="headerlink" href="#how-to-check-any-of-this" title="Permanent link">&para;</a></h2>
 <ul>
 <li>The DHCP exchange runs inside the plugin on the project's own library,
@@ -1357,7 +1360,7 @@ project will not do, is on the <a href="roadmap/">roadmap</a>.</p>
   because it is unmeasured: on a cgroup v2 host it cannot start a
   container at all, so nothing there tests this plugin.
   Every change is also tested against the engine the integration suite
-  runs on, <strong>29.8.1</strong> today, read from that run's <code>Fixture engine drift</code>
+  runs on, <strong>29.8.2</strong> today, read from that run's <code>Fixture engine drift</code>
   step.</li>
 <li><strong>Plugin interface <code>docker.networkdriver/1.0</code></strong>, which is what the
   plugin manifest declares. The plugin negotiates the Docker API version
@@ -1410,13 +1413,13 @@ project will not do, is on the <a href="roadmap/">roadmap</a>.</p>
 <a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>sudo<span class="w"> </span>mkdir<span class="w"> </span>-p<span class="w"> </span>/var/lib/net-dhcp
 <a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>
 <a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="c1"># amd64</span>
-<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a>docker<span class="w"> </span>plugin<span class="w"> </span>install<span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:v2.3.1
+<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a>docker<span class="w"> </span>plugin<span class="w"> </span>install<span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:v2.4.0
 <a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a><span class="c1"># arm64</span>
-<a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a>docker<span class="w"> </span>plugin<span class="w"> </span>install<span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:v2.3.1-arm64
+<a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a>docker<span class="w"> </span>plugin<span class="w"> </span>install<span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:v2.4.0-arm64
 </code></pre></div>
 <p>One network, created once. <code>macvlan</code> needs only a host NIC; <code>bridge</code>
 wants a bridge you bring yourself (<a href="bridge-mode/">Bridge mode</a>):</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>docker<span class="w"> </span>network<span class="w"> </span>create<span class="w"> </span>-d<span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:v2.3.1<span class="w"> </span><span class="se">\</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>docker<span class="w"> </span>network<span class="w"> </span>create<span class="w"> </span>-d<span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:v2.4.0<span class="w"> </span><span class="se">\</span>
 <a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="w">  </span>--ipam-driver<span class="w"> </span>null<span class="w"> </span>-o<span class="w"> </span><span class="nv">mode</span><span class="o">=</span>macvlan<span class="w"> </span>-o<span class="w"> </span><span class="nv">parent</span><span class="o">=</span>eth0<span class="w"> </span>lan-dhcp
 <a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>
 <a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>docker<span class="w"> </span>run<span class="w"> </span>--rm<span class="w"> </span>-ti<span class="w"> </span>--network<span class="w"> </span>lan-dhcp<span class="w"> </span>alpine<span class="w"> </span>ip<span class="w"> </span>address<span class="w"> </span>show
@@ -1426,8 +1429,8 @@ collide with the real LAN. From v2.1.0 there is a second supported
 shape: name the plugin again in place of <code>null</code> and the leased address
 goes into Docker's own address management, which makes <code>--ip</code> and
 Compose's <code>ipv4_address</code> work.</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>docker<span class="w"> </span>network<span class="w"> </span>create<span class="w"> </span>-d<span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:v2.3.1<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="w">  </span>--ipam-driver<span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:v2.3.1<span class="w"> </span><span class="se">\</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>docker<span class="w"> </span>network<span class="w"> </span>create<span class="w"> </span>-d<span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:v2.4.0<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="w">  </span>--ipam-driver<span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:v2.4.0<span class="w"> </span><span class="se">\</span>
 <a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="w">  </span>-o<span class="w"> </span><span class="nv">mode</span><span class="o">=</span>macvlan<span class="w"> </span>-o<span class="w"> </span><span class="nv">parent</span><span class="o">=</span>eth0<span class="w"> </span>lan-dhcp
 </code></pre></div>
 <p>One of the two is required. On arm64 the <code>-arm64</code> tag goes in these
