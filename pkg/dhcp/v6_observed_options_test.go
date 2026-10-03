@@ -339,6 +339,24 @@ func TestInfoFromLease_V6MalformedNTPWarnsOncePerServerAndOffer(t *testing.T) {
 	}
 }
 
+// A server whose DUID is another DUID plus the first offer instance, answering with the second, must not share a key
+// with the shorter DUID answering with both: only the server's length keeps the two apart (#859).
+func TestInfoFromLease_V6MalformedNTPKeyKeepsTheServerBoundary(t *testing.T) {
+	hook := captureLog(t)
+	resetNTPWarnings(t)
+	one, two := malformedNTPOffer(1)[0], malformedNTPOffer(2)[0]
+	short := []byte{0, 3, 0, 1, 2, 0, 0, 0, 0, 1}
+	long := append(append([]byte(nil), short...), byte(len(one.Data)>>8), byte(len(one.Data)))
+	long = append(long, one.Data...)
+
+	renderFromServer(t, short, wire.OptionsV6{one, two})
+	renderFromServer(t, long, wire.OptionsV6{two})
+
+	if n := len(malformedNTPWarnings(hook)); n != 2 {
+		t.Errorf("%d warnings for two different servers, want 2: the keys collided across the server boundary", n)
+	}
+}
+
 // The set is process-wide and fed every 750 ms, so its bound is what keeps a churning server from growing it (#859).
 func TestInfoFromLease_V6MalformedNTPSetForgetsWhenFullAndKeepsWarning(t *testing.T) {
 	hook := captureLog(t)
