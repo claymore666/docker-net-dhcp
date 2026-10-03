@@ -4143,7 +4143,7 @@ already parse it were not told to expect a new type.</p>
 <td><code>join_aborted_container_gone</code></td>
 <td>no</td>
 <td>n/a</td>
-<td>(v1.4.0+) Attaches abandoned because the container exited before the persistent client was up. Not a fault: there is no running container missing a renewal client, so this never flips <code>healthy</code>. A sustained rise still says something real: containers dying seconds after start, e.g. a crash-loop (#373). Recognised three ways: the daemon answering "no such container", the container's netns having gone, or its sandbox key being unlinked. An attach that fails for any other reason is counted as a fault and never excused (#401).</td>
+<td>(v1.4.0+) Attaches abandoned because the container exited before the persistent client was up. Not a fault: there is no running container missing a renewal client, so this never flips <code>healthy</code>. A sustained rise still says something real: containers dying seconds after start, e.g. a crash-loop (#373). Recognised three ways: the daemon answering "no such container", the container's netns having gone, or its sandbox key being unlinked; for the last two the daemon must also report the container removed, exited or dead, since a missing key also describes a container that is still starting on engines 26 and 27, and a running container or an unanswered question is a fault (#1186). An attach that fails for any other reason is counted as a fault and never excused (#401).</td>
 </tr>
 <tr>
 <td><code>join_aborted_no_container</code></td>
