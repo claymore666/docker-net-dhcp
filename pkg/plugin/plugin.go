@@ -609,6 +609,13 @@ type Plugin struct {
 	ipamPools    *issuedPools
 	ipamIndex    *ipamIndex
 	ipamReserves *ipamReserves
+	// persistedAtStart is the state directory's network ids as read before the socket listened; dropStaleNetworks
+	// consumes it once, under staleMu (#1174).
+	persistedAtStart []string
+	staleMu          sync.Mutex
+	// staleNetworksDropped counts persisted networks Docker answered not-found for at recovery, whose file and pool
+	// binding were removed (#1174); not healthy-affecting.
+	staleNetworksDropped atomic.Int32
 	// recordSweepStop ends the record sweeper; closed by Close, which refuses to run twice (#984).
 	recordSweepStop chan struct{}
 
@@ -1088,6 +1095,7 @@ func (p *Plugin) recoverEndpoints(ctx context.Context, daemonWait time.Duration)
 			Warn("recovery: daemon did not answer within the wait budget")
 		return true
 	}
+	p.dropStaleNetworks(ctx, nets)
 	for _, n := range nets {
 		if !IsDHCPPlugin(n.Driver) {
 			continue
@@ -1476,7 +1484,7 @@ func NewPlugin(opts Options) (*Plugin, error) {
 	}
 
 	// Before the socket listens: libnetwork.New replays RequestPool and RequestAddress before serving its API (#110).
-	rebuildIPAMIndex(p.ipamIndex)
+	p.persistedAtStart = rebuildIPAMIndex(p.ipamIndex)
 	retainOrphanedReservations(p.records, time.Now())
 
 	mux := p.newServeMux()

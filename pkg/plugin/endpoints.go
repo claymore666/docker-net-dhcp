@@ -269,6 +269,9 @@ type HealthResponse struct {
 	RecoveryAbortedContainerGone int32 `json:"recovery_aborted_container_gone"`
 	// RecoveryNetworkGone counts networks removed between NetworkList and NetworkInspect (#648); not Healthy-affecting.
 	RecoveryNetworkGone int32 `json:"recovery_network_gone"`
+	// StaleNetworksDropped counts persisted networks Docker no longer had at start, whose file and pool binding were
+	// removed (#1174); not Healthy-affecting.
+	StaleNetworksDropped int32 `json:"stale_networks_dropped"`
 	// RecoveryFingerprintsSkipped counts adopted endpoints with no hostname to fingerprint, so no tombstone (#721);
 	// not Healthy-affecting.
 	RecoveryFingerprintsSkipped int32 `json:"recovery_fingerprints_skipped"`
@@ -628,6 +631,7 @@ func (p *Plugin) healthSnapshot() HealthResponse {
 		RecoveryDeferred:             p.recoveryDeferred.Load(),
 		RecoveryAbortedContainerGone: p.recoveryAbortedContainerGone.Load(),
 		RecoveryNetworkGone:          p.recoveryNetworkGone.Load(),
+		StaleNetworksDropped:         p.staleNetworksDropped.Load(),
 		RecoveryFingerprintsSkipped:  p.recoveryFingerprintsSkipped.Load(),
 		RecoveryAlreadyManaged:       p.recoveryAlreadyManaged.Load(),
 		JoinAbortedContainerGone:     p.joinAbortedContainerGone.Load(),

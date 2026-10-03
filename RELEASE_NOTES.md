@@ -65,6 +65,14 @@ prompts on has moved since v2.0.0. This release changes the manifest's
   has run out and Docker answers that the network no longer exists, the
   record is closed and nothing is sent; one line at `info` names the
   network and how many records were closed (#1158).
+- A network removed while the plugin was not running (a stopped or
+  removed plugin, then `docker network rm`) no longer keeps its subnet
+  refused for later `docker network create` calls with "network <id>
+  already holds pool <subnet>". At start, a saved network that Docker
+  answers is gone has its saved file, pool binding and held records
+  removed; a slow or unreachable daemon leaves everything as it is. One
+  line at `info` names each network, and `stale_networks_dropped` on
+  `/Plugin.Health` counts them (#1174).
 
 ## v2.3.1
 
