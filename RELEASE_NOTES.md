@@ -104,6 +104,10 @@ prompts on has moved since v2.0.0. This release changes the manifest's
   daemon at startup, recovery and the second engine check now run after
   the socket opens, where before the plugin waited about 7 seconds on the
   daemon first (#1176).
+- The reference no longer says the IPv6 defaults write in `Join` takes on
+  every Docker Engine 28+ host: it takes only where the daemon's sandbox
+  mounts reach the plugin (`sandbox_netns_propagation` 1), and is otherwise
+  skipped, counted and warned (#1165).
 
 ## v2.3.1
 

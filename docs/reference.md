@@ -1683,7 +1683,11 @@ What the option does, concretely:
   endpoint leaves, and a later `docker network connect` of another network of
   this plugin writes the two defaults to 0 again. The write takes where the
   engine has created the sandbox before it calls `Join`, which is Docker
-  Engine 28 and later (measured on the engine matrix). On 26 and 27 the engine
+  Engine 28 and later (measured on the engine matrix), and where the daemon's
+  sandbox mounts reach the plugin's mount namespace
+  (`sandbox_netns_propagation` 1). On a 28+ host whose mounts do not reach
+  it the write is skipped, counted in `router_advert_guard_failures` and
+  warned with `step=sandbox_default`. On 26 and 27 the engine
   builds the sandbox after `Join`, the plugin finds no namespace to write into
   and the guard cannot run, so the race above stays open on those engines.
 - **The container's name reaches the DHCPv6 server only with
