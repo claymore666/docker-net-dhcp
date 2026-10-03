@@ -4101,6 +4101,12 @@ already parse it were not told to expect a new type.</p>
 <td>(v1.8.0+) Networks skipped during post-restart recovery because they had been removed between the listing that found them and the read of their detail. Not a fault: a network that is gone leaves no running container without a renewal client, so this never flips <code>healthy</code>. Counted instead of passed over in silence: a host where this climbs steadily is churning networks under a restarting daemon, which is worth knowing even though no single occurrence is a problem. Until v1.8.0 it landed in <code>recovery_failed</code>, where an ordinary <code>docker network rm</code> racing a daemon restart reported the plugin's most serious fault (#648).</td>
 </tr>
 <tr>
+<td><code>stale_networks_dropped</code></td>
+<td>no</td>
+<td>n/a</td>
+<td><em>(v2.4.0+)</em> Networks the plugin had saved state for at start that Docker no longer had, so their saved file and address-pool binding were removed (#1174). Such a network was removed while the plugin was not running (<code>docker plugin rm</code> or a stopped plugin, then <code>docker network rm</code>); its leftover bound the subnet, and every later <code>docker network create</code> for it was refused with <code>network &lt;id&gt; already holds pool &lt;subnet&gt;</code>. Only Docker's not-found answer counts, so a daemon that is slow or unreachable at start leaves the state alone. Not a fault, so it never flips <code>healthy</code>.</td>
+</tr>
+<tr>
 <td><code>recovery_fingerprints_skipped</code></td>
 <td>no</td>
 <td>n/a</td>
