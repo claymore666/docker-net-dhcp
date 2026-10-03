@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+	"unsafe"
 
 	docker "github.com/docker/docker/client"
 )
@@ -124,7 +125,8 @@ func ReadWholePluginLog(t *testing.T, ctx context.Context) string {
 		t.Logf("ReadWholePluginLog: %v", err)
 		return ""
 	}
-	return string(data)
+	// The log is up to PluginLogWholeMax and is not written to again, so the string shares its bytes (#1168).
+	return unsafe.String(unsafe.SliceData(data), len(data))
 }
 
 // MarkPluginLog returns the plugin log's current size for ReadPluginLogSince, failing the test if it cannot be read.

@@ -77,7 +77,7 @@ func TestReadPluginLogWindow_AllocationFollowsTheWindowNotTheFile(t *testing.T) 
 	}
 }
 
-func TestReadPluginLogWindow_AWindowOverTheCapIsCutAndSaysSo(t *testing.T) {
+func TestReadPluginLogWindow_AWindowOverTheCapKeepsItsNewestBytesAndSaysSo(t *testing.T) {
 	path := writeBigLog(t, bigLogSize)
 
 	got, err := readPluginLogWindowFile(path, 0)
@@ -85,17 +85,64 @@ func TestReadPluginLogWindow_AWindowOverTheCapIsCutAndSaysSo(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	marker := fmt.Sprintf("[window cut at %d bytes, #1168]\n", PluginLogWindowMax)
-	if !strings.HasSuffix(string(got), marker) {
-		t.Fatalf("a %d byte window over the %d cap ends without the cut line, so an assertion that misses its "+
-			"evidence cannot say why; the end is %.120q", bigLogSize, PluginLogWindowMax, got[len(got)-120:])
+	marker := pluginLogCutLine(PluginLogWindowMax)
+	if !strings.HasPrefix(string(got), marker) {
+		t.Fatalf("a %d byte window over the %d cap opens without the cut line, so an assertion that misses its "+
+			"evidence cannot say why; it opens %.120q", bigLogSize, PluginLogWindowMax, got)
 	}
-	body := got[:len(got)-len(marker)]
+	body := got[len(marker):]
 	if len(body) > PluginLogWindowMax {
 		t.Errorf("the window body holds %d bytes, over the %d cap", len(body), PluginLogWindowMax)
 	}
-	if body[len(body)-1] != '\n' {
-		t.Errorf("the cut left half a line at the end of the body: %.80q", body[len(body)-80:])
+	lastLine := fmt.Sprintf("line=%09d", bigLogSize/logLineSize-1)
+	if !strings.Contains(string(body[len(body)-logLineSize:]), lastLine) {
+		t.Errorf("the window does not end with the log's last line %s: %.100q", lastLine, body[len(body)-logLineSize:])
+	}
+	if !strings.HasPrefix(string(body), "level=debug") {
+		t.Errorf("the cut left half a line at the start of the body: %.80q", body)
+	}
+}
+
+// fqdn6_test.go reads from mark 0 for the plugin's newest report, on a log grown past the cap (#1168).
+func TestReadPluginLogWindow_MarkZeroOverACapSizedLogStillHoldsTheNewestLine(t *testing.T) {
+	path := writeBigLog(t, 20<<20)
+	const evidence = `level=info msg="the server registers the AAAA record for this name" endpoint=dh-itest-fqdn6-ctr`
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString(evidence + "\n"); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+
+	got, err := readPluginLogWindowFile(path, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !strings.Contains(string(got), evidence) {
+		t.Errorf("a window from mark 0 over a %d byte log lost the line written last, so a poller waiting for "+
+			"its own report times out (#1168); the window holds %d bytes and ends %.100q",
+			20<<20, len(got), got[len(got)-100:])
+	}
+}
+
+func TestReadPluginLogWindow_ACutWindowCostsOneCapNotTheFile(t *testing.T) {
+	path := writeBigLog(t, bigLogSize)
+
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	got, err := readPluginLogWindowFile(path, 0)
+	runtime.ReadMemStats(&after)
+
+	if err != nil || len(got) == 0 {
+		t.Fatalf("%d bytes, err %v", len(got), err)
+	}
+	if alloc := after.TotalAlloc - before.TotalAlloc; alloc > PluginLogWindowMax+1<<20 {
+		t.Errorf("a cut window of a %d byte log allocated %d bytes, over the %d cap plus its header room (#1168)",
+			bigLogSize, alloc, PluginLogWindowMax)
 	}
 }
 
@@ -236,8 +283,8 @@ func TestCountPluginLogLinesFile_MatchesTheSplitCountAcrossChunkEdges(t *testing
 	}
 }
 
-func TestReadCappedFrom_ACutNeverEndsInHalfALine(t *testing.T) {
-	// 70-byte lines against a 1000-byte cap: the cap falls inside the 15th line.
+func TestReadTailFrom_ACutNeverStartsInHalfALine(t *testing.T) {
+	// 70-byte lines: the kept span begins inside a line for cap 1000 and on one for 1050 (#1168).
 	var b strings.Builder
 	for i := 0; i < 100; i++ {
 		fmt.Fprintf(&b, "line=%03d %s\n", i, strings.Repeat("y", 70-9-1))
@@ -246,19 +293,27 @@ func TestReadCappedFrom_ACutNeverEndsInHalfALine(t *testing.T) {
 	if err := os.WriteFile(path, []byte(b.String()), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	const header = "[cut]\n"
 
-	got, err := readCappedFrom(path, 0, 1000)
-	if err != nil {
-		t.Fatal(err)
+	for _, max := range []int64{1000, 1050} {
+		got, err := readTailFrom(path, 0, max, header)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body := strings.TrimPrefix(string(got), header)
+		if body == string(got) {
+			t.Fatalf("max %d: no header at the start: %.40q", max, got)
+		}
+		if len(body)%70 != 0 || len(body) == 0 || int64(len(body)) > max {
+			t.Errorf("max %d: the body holds %d bytes; want whole 70-byte lines inside the cap", max, len(body))
+		}
+		if !strings.HasPrefix(body, "line=") || !strings.HasSuffix(body, "line=099 "+strings.Repeat("y", 60)+"\n") {
+			t.Errorf("max %d: the body is not the end of the log on a line boundary: %.40q", max, body)
+		}
 	}
-
-	marker := pluginLogCutLine(1000)
-	body := strings.TrimSuffix(string(got), marker)
-	if body == string(got) {
-		t.Fatalf("no cut line at the end: %.100q", got[len(got)-100:])
-	}
-	if len(body)%70 != 0 || len(body) == 0 || len(body) > 1000 {
-		t.Errorf("the body holds %d bytes; want whole 70-byte lines inside the cap, with no half line before the "+
-			"cut line", len(body))
+	// 1050 is fifteen whole lines: the kept span starts on a line, and that first line must survive.
+	got, _ := readTailFrom(path, 0, 1050, "")
+	if len(got) != 1050 {
+		t.Errorf("a cap of fifteen whole lines kept %d bytes, want 1050: the first line was dropped though whole", len(got))
 	}
 }
