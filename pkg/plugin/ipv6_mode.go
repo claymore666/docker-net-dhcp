@@ -66,12 +66,18 @@ func validateIPv6Options(opts DHCPNetworkOptions, set map[string]bool) error {
 	// interface identifier from it, and RFC 4862 gives no retry after DAD fails. dhcp is allowed because its
 	// identity is a per-endpoint DUID-UUID (#895).
 	if dhcp.IPv6ModeFormsAddresses(mode) && opts.effectiveMode() == ModeIPvlan {
+		stable := ""
+		if iid, _ := opts.ipv6IID(); iid == proto.IIDModeStablePrivacy {
+			stable = " ipv6_iid=stable-privacy does not lift this: its inputs are the same on every slave, so the slaves " +
+				"separate only through the duplicate-address counter, and which one gets which address depends on the " +
+				"order they start in (RFC 7217 section 6)."
+		}
 		return fmt.Errorf("%w: ipv6_mode=%s is not supported in mode=ipvlan: "+
 			"ipvlan slaves share the parent link's MAC address, an address formed from a "+
 			"router advertisement is derived from that MAC (RFC 4291 appendix A), and every "+
-			"container on this network would form the same IPv6 address. "+
+			"container on this network would form the same IPv6 address.%s "+
 			"Use ipv6_mode=dhcp on ipvlan, which gives each endpoint its own DUID. See issue #817",
-			util.ErrModeMismatch, mode)
+			util.ErrModeMismatch, mode, stable)
 	}
 
 	// ipv6_main_prefix is refused on a mode that forms no addresses, where it could only do nothing (#818).
