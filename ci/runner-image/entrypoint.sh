@@ -173,9 +173,27 @@ prepare_mount_propagation
 # Plain relaunch loop. dockerd must NOT be the container's main
 # process: the daemon-restart test SIGTERMs it and expects a fresh
 # daemon to appear while the environment stays up.
+# The log is never rotated and the runner container is long-lived: it grew about 80 MB per suite run and was
+# 842 MB and 875 MB when the test binary was killed reading it (#1180). Over DOCKERD_LOG_CAP, about two runs
+# kept for diagnosis, only the last DOCKERD_LOG_KEEP is kept. It runs between two dockerd processes, so nothing
+# writes the file and an in-place rewrite is safe.
+DOCKERD_LOG=/var/log/dockerd.log
+DOCKERD_LOG_CAP=$((160 * 1024 * 1024))
+DOCKERD_LOG_KEEP=$((1024 * 1024))
+trim_dockerd_log() {
+    local size
+    size=$(stat -c %s "$DOCKERD_LOG" 2>/dev/null) || return 0
+    ((size > DOCKERD_LOG_CAP)) || return 0
+    tail -c "$DOCKERD_LOG_KEEP" "$DOCKERD_LOG" >"$DOCKERD_LOG.keep" || return 0
+    cat "$DOCKERD_LOG.keep" >"$DOCKERD_LOG"
+    rm -f "$DOCKERD_LOG.keep"
+    log "$DOCKERD_LOG was $size bytes; kept its last $DOCKERD_LOG_KEEP (#1180)"
+}
+
 supervise_dockerd() {
     while :; do
-        dockerd >>/var/log/dockerd.log 2>&1 || true
+        trim_dockerd_log
+        dockerd >>"$DOCKERD_LOG" 2>&1 || true
         log "dockerd exited; relaunching in 1s"
         sleep 1
     done
@@ -187,7 +205,7 @@ wait_daemon() {
     until docker info >/dev/null 2>&1; do
         if ((SECONDS >= deadline)); then
             log "dockerd did not become ready within 60s; tail of its log:"
-            tail -20 /var/log/dockerd.log >&2 || true
+            tail -20 "$DOCKERD_LOG" >&2 || true
             return 1
         fi
         sleep 1

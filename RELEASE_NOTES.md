@@ -91,6 +91,12 @@ prompts on has moved since v2.0.0. This release changes the manifest's
   grows with every inspected container. Container and network ids in a
   request path count as one call shape; the debug log still writes one
   line per distinct path (#1184).
+- The integration suite's test binary on the arm64 lane no longer reads the
+  Docker daemon's whole log into memory, which killed it twice with the
+  log at over 840 MB. It now reads the log in small pieces, prints its own
+  memory use as `integration memory:` at exit, and the arm64 lane fails the
+  suite when that use passes 256 MB. The runner image also cuts the daemon
+  log to its last megabyte once it passes 160 MB (#1180).
 
 ## v2.3.1
 

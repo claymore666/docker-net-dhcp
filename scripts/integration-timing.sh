@@ -57,9 +57,18 @@ phase_rows="$(
     | sed -E 's/^PHASE ([a-z_]+) ([0-9.]+)s$/\1 \2/'
 )"
 
+# The test binary's exit-time memory line (#1180); absent in a log from before it.
+mem_rows="$(
+  for f in "$@"; do
+    [ -f "$f" ] || continue
+    grep -a '^integration memory: ' "$f" || true
+  done
+)"
+
 emit() {
   printf 'Integration test timing — %s tests, sum %ss (~%s min)\n\n' \
     "$count" "$total" "$((total / 60))"
+  [ -z "$mem_rows" ] || printf '%s\n\n' "$mem_rows"
   printf '| # | secs | result | test |\n'
   printf '|--:|-----:|:------:|:-----|\n'
   printf '%s\n' "$rows" | head -n "$TOPN" \
