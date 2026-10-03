@@ -72,7 +72,7 @@ func TestLeaseFileHolds_AReadInsideTheRewriteIsNotARelease(t *testing.T) {
 			t.Fatalf("LeaseFileHolds: %v", err)
 		}
 		if !held {
-			t.Fatalf("read %d reported the address released while the file was only being rewritten )", reads)
+			t.Fatalf("read %d reported the address released while the file was only being rewritten", reads)
 		}
 	}
 	t.Logf("%d reads inside the rewrite window, none reported a release", reads)
