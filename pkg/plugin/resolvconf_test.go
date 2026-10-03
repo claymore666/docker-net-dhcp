@@ -5,6 +5,7 @@ package plugin
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -524,5 +525,46 @@ func TestWriteResolvConfFile_LockEntryDoesNotOutliveItsWriters(t *testing.T) {
 	resolvLocks.mu.Unlock()
 	if left != 0 {
 		t.Errorf("%d lock entries left after every writer returned", left)
+	}
+}
+
+// A third writer arriving while the second holds the lock waits for it; an entry dropped early would give it a
+// second mutex (#1188).
+func TestLockResolv_ThirdWriterWaitsBehindTheSecond(t *testing.T) {
+	id := fmt.Sprintf("ctr-three-%d", time.Now().UnixNano())
+	unlockA := lockResolv(id)
+	gotB, gotC := make(chan func(), 1), make(chan func(), 1)
+	go func() { gotB <- lockResolv(id) }()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		resolvLocks.mu.Lock()
+		l := resolvLocks.m[id]
+		refs := 0
+		if l != nil {
+			refs = l.refs
+		}
+		resolvLocks.mu.Unlock()
+		if refs == 2 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the second writer never queued")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	unlockA()
+	unlockB := <-gotB
+	go func() { gotC <- lockResolv(id) }()
+	select {
+	case <-gotC:
+		t.Fatal("the third writer took the lock while the second held it")
+	case <-time.After(200 * time.Millisecond):
+	}
+	unlockB()
+	select {
+	case unlockC := <-gotC:
+		unlockC()
+	case <-time.After(5 * time.Second):
+		t.Fatal("the third writer never got the lock after the second released it")
 	}
 }
