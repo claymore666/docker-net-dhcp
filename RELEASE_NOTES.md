@@ -120,6 +120,14 @@ prompts on has moved since v2.0.0. This release changes the manifest's
 - The integration cleanup step also drops the plugin's state records of
   networks the engine no longer has, so a killed run cannot refuse the
   next run's IPAM networks (#1174 for the plugin-side fix; #1165).
+- A container that is still starting when the attach budget runs out is
+  no longer counted as one that went away. On engines 26 and 27 the
+  sandbox key does not exist until after the plugin's Join returns, so a
+  slow start looked like a vanished container, logged at Info, with no
+  renewal client and `healthy` still true. The plugin now asks the
+  daemon before counting a vanish: only "no such container", exited or
+  dead counts; a running container, an error or no answer is a start
+  failure (`join_start_failures`) (#1186).
 
 ## v2.3.1
 
