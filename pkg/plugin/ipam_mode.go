@@ -106,7 +106,8 @@ func (x *ipamIndex) len() int {
 	return len(x.m)
 }
 
-// rebuildIPAMIndex returns the ids it listed, the start-up snapshot that dropStaleNetworks later tests (#1174).
+// rebuildIPAMIndex returns the ids of the network records it read, the start-up snapshot that dropStaleNetworks later
+// tests: a Docker network id whose file loaded, never an unreadable file or one that is not a network's (#1174).
 func rebuildIPAMIndex(x *ipamIndex) []string {
 	if x == nil {
 		return nil
@@ -117,6 +118,7 @@ func rebuildIPAMIndex(x *ipamIndex) []string {
 		log.WithError(err).Warn("Could not list the state directory; IPAM-mode networks will refuse until their state is readable")
 		return nil
 	}
+	var records []string
 	for _, id := range ids {
 		sn, err := loadNetwork(id)
 		if err != nil {
@@ -125,12 +127,15 @@ func rebuildIPAMIndex(x *ipamIndex) []string {
 				Warn("Could not read a persisted network; if it is in IPAM mode its endpoint calls will be refused")
 			continue
 		}
+		if isDockerNetworkID(id) {
+			records = append(records, id)
+		}
 		if sn.Binding == nil {
 			continue
 		}
 		x.bind(sn.Binding.PoolID, id)
 	}
-	return ids
+	return records
 }
 
 // ipamNetwork reads disk only: IPAM RPCs arrive during the daemon's start-up replay, before its API serves (#110).

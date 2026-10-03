@@ -24,9 +24,9 @@ import (
 // A network removed while the plugin was absent leaves its file and pool binding behind (#1174).
 
 const (
-	staleNet = "stalenet0001"
-	liveNet  = "livenet00001"
-	lateNet  = "latenet00001"
+	staleNet = "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+	liveNet  = "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2"
+	lateNet  = "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3"
 )
 
 func staleBinding(t *testing.T, third int) *ipamBinding {
@@ -337,6 +337,119 @@ func TestStaleNetworks_StartDropsWhatTheDaemonNoLongerHas(t *testing.T) {
 	}
 	if n, ok := p.ipamIndex.network(b.PoolID); ok {
 		t.Errorf("start left the pool bound to %q", n)
+	}
+	if got := p.staleNetworksDropped.Load(); got != 1 {
+		t.Errorf("stale_networks_dropped = %d, want 1", got)
+	}
+}
+
+const (
+	foreignFile  = "pre-existing-state"
+	foreignBytes = `{"kept":true}`
+)
+
+// plantStateFile writes a file the plugin did not author into the state directory before the snapshot is read.
+func plantStateFile(t *testing.T, name, content string) {
+	t.Helper()
+	if err := os.WriteFile(stateDir+"/"+name+".json", []byte(content), 0o644); err != nil {
+		t.Fatalf("plant %s: %v", name, err)
+	}
+}
+
+func readState(t *testing.T, name string) string {
+	t.Helper()
+	b, err := os.ReadFile(stateDir + "/" + name + ".json")
+	if err != nil {
+		return "<" + err.Error() + ">"
+	}
+	return string(b)
+}
+
+// inspectLog records which ids were asked, on top of the fake's answers.
+type inspectLog struct {
+	*fakeDocker
+	asked []string
+}
+
+func (l *inspectLog) NetworkInspect(ctx context.Context, id string, o dNetwork.InspectOptions) (dNetwork.Inspect, error) {
+	l.asked = append(l.asked, id)
+	return l.fakeDocker.NetworkInspect(ctx, id, o)
+}
+
+func startWith(t *testing.T, plant func()) *Plugin {
+	t.Helper()
+	withStateDir(t, t.TempDir())
+	plant()
+	p := withRecords(t, &Plugin{ipamIndex: newIPAMIndex()})
+	p.persistedAtStart = rebuildIPAMIndex(p.ipamIndex)
+	return p
+}
+
+// #440 documents the state directory as lossless: a file that is not a network record is not the drop's to touch.
+func TestStaleNetworks_AFileThatIsNotANetworkRecordSurvivesTheDrop(t *testing.T) {
+	p := startWith(t, func() { plantStateFile(t, foreignFile, foreignBytes) })
+	f := &fakeDocker{inspectErr: networkNotFound()}
+	p.docker = f
+
+	recoverOnce(p)
+
+	if got := readState(t, foreignFile); got != foreignBytes {
+		t.Errorf("the planted file is %q afterwards, want it byte-identical to %q", got, foreignBytes)
+	}
+	if f.inspectCalls != 0 {
+		t.Errorf("NetworkInspect called %d times, want 0: a file that is not a network id is no candidate", f.inspectCalls)
+	}
+	if got := p.staleNetworksDropped.Load(); got != 0 {
+		t.Errorf("stale_networks_dropped = %d, want 0", got)
+	}
+}
+
+// An unreadable file is not a confirmed network: it keeps the index incomplete and stays where it is (#1174).
+func TestStaleNetworks_ANetworkIdFileThatIsNotReadableIsNeverACandidate(t *testing.T) {
+	const torn = "{not json"
+	p := startWith(t, func() { plantStateFile(t, staleNet, torn) })
+	f := &fakeDocker{inspectErr: networkNotFound()}
+	p.docker = f
+
+	recoverOnce(p)
+
+	if got := readState(t, staleNet); got != torn {
+		t.Errorf("the unreadable file is %q afterwards, want it byte-identical to %q", got, torn)
+	}
+	if f.inspectCalls != 0 {
+		t.Errorf("NetworkInspect called %d times, want 0: an unreadable file is no confirmed network", f.inspectCalls)
+	}
+	if got := p.staleNetworksDropped.Load(); got != 0 {
+		t.Errorf("stale_networks_dropped = %d, want 0", got)
+	}
+	if !p.ipamIndex.isIncomplete() {
+		t.Error("the index is complete although a file could not be read")
+	}
+}
+
+func TestStaleNetworks_ARecordIsStillDroppedBesideFilesThatAreNot(t *testing.T) {
+	const torn = "{not json"
+	p := startWith(t, func() {
+		persistStale(t, staleNet, 90)
+		plantStateFile(t, foreignFile, foreignBytes)
+		plantStateFile(t, liveNet, torn)
+	})
+	f := &inspectLog{fakeDocker: &fakeDocker{inspectErr: networkNotFound()}}
+	p.docker = f
+
+	recoverOnce(p)
+
+	if fileExists(t, staleNet) {
+		t.Error("the readable record of a network Docker answered not-found for is still on disk")
+	}
+	if got := readState(t, foreignFile); got != foreignBytes {
+		t.Errorf("the planted file is %q afterwards, want %q", got, foreignBytes)
+	}
+	if got := readState(t, liveNet); got != torn {
+		t.Errorf("the unreadable file is %q afterwards, want %q", got, torn)
+	}
+	if len(f.asked) != 1 || f.asked[0] != staleNet {
+		t.Errorf("NetworkInspect asked for %v, want only %s", f.asked, staleNet)
 	}
 	if got := p.staleNetworksDropped.Load(); got != 1 {
 		t.Errorf("stale_networks_dropped = %d, want 1", got)
