@@ -523,7 +523,7 @@ type HealthResponse struct {
 	RouterTableEntriesDropped int32 `json:"router_table_entries_dropped"`
 	RouterTableEntriesEvicted int32 `json:"router_table_entries_evicted"`
 
-	// The FORCERENEW and Reconfigure counters, folded across every persistent DHCP client (#1119). The refused ones
+	// The FORCERENEW and Reconfigure counters, folded across every DHCP client, persistent and one-shot (#1119). The refused ones
 	// describe the server's messages, not a fault, and are not healthy-affecting.
 	ForcerenewsRenewed         int32 `json:"forcerenews_renewed"`
 	ForcerenewsAlreadyRenewing int32 `json:"forcerenews_already_renewing"`

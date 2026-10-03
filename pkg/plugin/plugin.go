@@ -791,8 +791,8 @@ type Plugin struct {
 	routerTableEntriesDropped  atomic.Int32
 	routerTableEntriesEvicted  atomic.Int32
 
-	// The library's FORCERENEW (RFC 3203, RFC 6704) and DHCPv6 Reconfigure counters, folded from every persistent
-	// manager (#1119). Refused is not a fault count: a resumed lease holds no key and a client with AcceptReconfigure
+	// The library's FORCERENEW (RFC 3203, RFC 6704) and DHCPv6 Reconfigure counters, folded from every manager,
+	// persistent and one-shot (#1119). Refused is not a fault count: a resumed lease holds no key and a client with AcceptReconfigure
 	// off refuses every Reconfigure while working as asked, so none of the six affects healthy.
 	forcerenewsRenewed         atomic.Int32
 	forcerenewsAlreadyRenewing atomic.Int32

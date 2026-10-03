@@ -133,10 +133,9 @@ type DHCPClientOptions struct {
 	// OnRouterStats gets the delta in the RFC 4861 router-discovery counters, read on the watch tick too, v6 only.
 	OnRouterStats func(RouterStats)
 
-	// A refused FORCERENEW produces no lease event, so the fold also runs on the renewal timer (#1119).
-
 	// OnForcerenewStats gets the delta in the FORCERENEW and Reconfigure counters, on the persistent client and, for
-	// the ACK discarded while acquiring, on the DHCPv4 one-shot (#1119).
+	// the ACK discarded while acquiring, on the DHCPv4 one-shot. A refused FORCERENEW produces no lease event, so the
+	// fold also runs on the renewal timer (#1119).
 	OnForcerenewStats func(ForcerenewStats)
 
 	// Resume is a lease from a previous run, sent as an INIT-REBOOT DHCPREQUEST (RFC 2131 section 4.4.2).

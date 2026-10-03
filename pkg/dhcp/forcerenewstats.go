@@ -5,8 +5,8 @@ package dhcp
 
 import "github.com/claymore666/dhcp-golib/lease"
 
-// A FORCERENEW or a Reconfigure arrives on a bound lease only, so the fold is on the persistent client and the
-// one-shot paths need none (#1119).
+// A FORCERENEW or a Reconfigure arrives on a bound lease, so the persistent client folds them; the DHCPv4 one-shot
+// folds too, for an ACK discarded while it acquires (#1119).
 
 // ForcerenewStats is what the library counted of DHCPv4 FORCERENEW (RFC 3203, RFC 6704) and DHCPv6 Reconfigure
 // (RFC 8415 section 20.4) on one lease.

@@ -200,7 +200,7 @@ net_dhcp_forcerenews_ack_refused_total 1201041
 # TYPE net_dhcp_reconfigures_accepted_total counter
 net_dhcp_reconfigures_accepted_total 6512576
 
-# HELP net_dhcp_reconfigures_refused_total DHCPv6 Reconfigure messages the client refused, by any of the library's rules. Not a fault count. Not healthy-affecting: a client that resumed a lease after a restart holds no reconfigure key and refuses every one while working as asked, and the log line beside each refusal names the rule.
+# HELP net_dhcp_reconfigures_refused_total DHCPv6 Reconfigure messages the client refused, by any of the library's rules. Not a fault count. Not healthy-affecting: a client that resumed a lease after a restart holds no reconfigure key and refuses every one while working as asked, and the library's journal names the rule.
 # TYPE net_dhcp_reconfigures_refused_total counter
 net_dhcp_reconfigures_refused_total 5665187
 

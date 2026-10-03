@@ -28,7 +28,8 @@ func (p *Plugin) forcerenewWiring(o *dhcp.DHCPClientOptions, networkID, endpoint
 }
 
 // forcerenewReporter folds a manager's delta into the totals and logs one line naming the endpoint, which the
-// plugin-wide counters cannot: info while only obeyed messages moved, a warning once any refusal did (#1119).
+// plugin-wide counters cannot: info while only obeyed messages moved, a warning once any refusal did. The IPAM
+// reserve one-shot has no endpoint yet, so its line says phase=ipam-reserve instead (#1119).
 func (p *Plugin) forcerenewReporter(networkID, endpointID string) func(dhcp.ForcerenewStats) {
 	return func(d dhcp.ForcerenewStats) {
 		if d.IsZero() {
@@ -37,7 +38,6 @@ func (p *Plugin) forcerenewReporter(networkID, endpointID string) func(dhcp.Forc
 		p.addForcerenewStats(d)
 		entry := log.WithFields(log.Fields{
 			"network":               shortID(networkID),
-			"endpoint":              shortID(endpointID),
 			"renewed":               d.Renewed,
 			"already_renewing":      d.AlreadyRenewing,
 			"refused":               d.Refused,
@@ -45,6 +45,11 @@ func (p *Plugin) forcerenewReporter(networkID, endpointID string) func(dhcp.Forc
 			"reconfigures_accepted": d.ReconfiguresAccepted,
 			"reconfigures_refused":  d.ReconfiguresRefused,
 		})
+		if endpointID == "" {
+			entry = entry.WithField("phase", "ipam-reserve")
+		} else {
+			entry = entry.WithField("endpoint", shortID(endpointID))
+		}
 		if d.AnyRefused() {
 			entry.Warn("The client refused a DHCP server message under the FORCERENEW or Reconfigure rules; the fields " +
 				"hold the counts. A refusal is not a fault by itself: a lease resumed after a restart holds no " +

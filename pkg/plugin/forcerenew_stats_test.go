@@ -146,6 +146,43 @@ func TestForcerenewReporter_LogsAtTheLevelTheDeltaDeserves(t *testing.T) {
 	}
 }
 
+// The IPAM reserve one-shot has no endpoint, so its line must not carry an empty one (#1119).
+func TestForcerenewReporter_TheReserveOneShotLogsNoEmptyEndpoint(t *testing.T) {
+	p := &Plugin{}
+	hook := logtest.NewLocal(log.StandardLogger())
+	defer hook.Reset()
+
+	var o dhcp.DHCPClientOptions
+	if err := p.conflictWiring(&o, DHCPNetworkOptions{}, roleAcquire, "net1234567890", "", false); err != nil {
+		t.Fatalf("conflictWiring: %v", err)
+	}
+	o.OnForcerenewStats(dhcp.ForcerenewStats{AckRefused: 1})
+
+	entries := hook.AllEntries()
+	if len(entries) != 1 {
+		t.Fatalf("logged %d line(s), want exactly 1", len(entries))
+	}
+	d := entries[0].Data
+	if v, ok := d["endpoint"]; ok {
+		t.Errorf("endpoint field = %q on a reservation with no endpoint, want the field omitted", v)
+	}
+	if d["phase"] != "ipam-reserve" {
+		t.Errorf("phase = %v, want ipam-reserve; without it the line names neither an endpoint nor a path", d["phase"])
+	}
+	if d["ack_refused"] != uint64(1) {
+		t.Errorf("ack_refused = %v, want 1", d["ack_refused"])
+	}
+	if got := p.forcerenewsAckRefused.Load(); got != 1 {
+		t.Errorf("forcerenews_ack_refused = %d, want 1; the fold must still happen", got)
+	}
+
+	hook.Reset()
+	p.forcerenewReporter("net1234567890", "ep1234567890")(dhcp.ForcerenewStats{AckRefused: 1})
+	if got := hook.LastEntry().Data; got["phase"] != nil || got["endpoint"] != "ep1234567890" {
+		t.Errorf("an endpoint line carries phase=%v endpoint=%v, want no phase and the endpoint", got["phase"], got["endpoint"])
+	}
+}
+
 func TestForcerenewReporter_AZeroDeltaLogsNothingAndFoldsNothing(t *testing.T) {
 	p := &Plugin{}
 	hook := logtest.NewLocal(log.StandardLogger())
