@@ -1043,3 +1043,95 @@ func TestRecords_CompactionDoesNotRaceReaders(t *testing.T) {
 	close(stop)
 	<-done
 }
+
+func TestRecords_ASecondTickDoesNotRewriteAFileThatDidNotDouble(t *testing.T) {
+	r, path := testRecords(t)
+	for i := 0; fileSize(t, path) < compactMinSize; i++ {
+		joinedRecord(t, r, fmt.Sprintf("live-%d", i), uniqueMAC(i), time.Time{})
+	}
+	now := time.Now()
+
+	done, err := r.CompactIfDue(now, compactRetain)
+	mustRecord(t, err)
+	if !done {
+		t.Fatal("the first tick did not compact a file at the floor, the control for the second tick")
+	}
+	first, err := os.Stat(path)
+	mustRecord(t, err)
+	if first.Size() < compactMinSize {
+		t.Fatalf("the kept set is %d B, below the %d B floor, so only the doubling rule can hold the second tick back", first.Size(), compactMinSize)
+	}
+
+	done, err = r.CompactIfDue(now, compactRetain)
+	mustRecord(t, err)
+	second, err := os.Stat(path)
+	mustRecord(t, err)
+	if done || !os.SameFile(first, second) {
+		t.Errorf("a %d B file that grew by nothing was rewritten again (reported %v, same inode %v)",
+			second.Size(), done, os.SameFile(first, second))
+	}
+
+	for i := 0; fileSize(t, path) < 2*first.Size(); i++ {
+		joinedRecord(t, r, fmt.Sprintf("more-%d", i), uniqueMAC(-1-i), time.Time{})
+	}
+	if done, err = r.CompactIfDue(now, compactRetain); err != nil || !done {
+		t.Errorf("a file that doubled since the last rewrite was not compacted (reported %v, err %v)", done, err)
+	}
+}
+
+func TestRecords_CompactionKeepsTheNewestClosedRecordOfEachScope(t *testing.T) {
+	r, _ := testRecords(t)
+	now := time.Now()
+	retainedRecord(t, r, "v4-older", compactMAC, time.Time{}, now)
+	closedRecord(t, r, "v4-newer", compactMAC)
+	duid, err := DUIDLL(compactMAC)
+	mustRecord(t, err)
+	iaid, err := IAIDFromMAC(compactMAC)
+	mustRecord(t, err)
+	mustRecord(t, r.Created6("v6-closed", "net-c", compactMAC, Identity6{DUID: duid, IAID: iaid}.Bytes()))
+	mustRecord(t, r.Closed("v6-closed"))
+
+	if err := compactNow(t, r, now.Add(3*time.Hour)); err != nil {
+		t.Fatalf("compaction: %v", err)
+	}
+	rb, err := r.Rebuilt()
+	mustRecord(t, err)
+	matches := rb.ByScopeMAC("net-c", compactMAC)
+	if len(matches) != 2 || matches[1].ID != "v4-newer" || matches[1].Phase != lease.PhaseClosed {
+		var got []string
+		for _, m := range matches {
+			got = append(got, m.ID+":"+m.Phase.String())
+		}
+		t.Errorf("the v4 group of the dual-stack client reads %v, want the older record under the newer CLOSED one "+
+			"even though a newer CLOSED record of the other scope shares the hardware address (#962)", got)
+	}
+	if _, ok := rb.ByID("v6-closed"); ok {
+		t.Error("a CLOSED v6 record nothing shadows was kept")
+	}
+}
+
+func TestRecords_ARecordIsAgedFromItsLastLineNotItsFirst(t *testing.T) {
+	r, _ := testRecords(t)
+	created := time.Now().Add(-3 * time.Hour)
+	mustRecord(t, r.append(lease.RecordEvent{
+		ID: "long-lived", Op: lease.OpCreate, Scope: "net-c", Family: lease.FamilyV4,
+		CHAddr: compactMAC, Identity: []byte{1, 2, 3, 4, 5, 6, 7}, At: created,
+	}))
+	ls := compactLease(time.Now().Add(time.Hour))
+	mustRecord(t, r.Observed("long-lived", lease.Event{Kind: lease.Acquired, Lease: ls}, nil))
+	mustRecord(t, r.Counted("long-lived", r.NewManagerID(), lease.Stats{}))
+	mustRecord(t, r.Bound("long-lived"))
+	mustRecord(t, r.Left("long-lived"))
+	mustRecord(t, r.Retained("long-lived", time.Now().Add(time.Minute)))
+	mustRecord(t, r.Closed("long-lived"))
+	closedAt := time.Now()
+
+	if err := compactNow(t, r, closedAt.Add(compactRetain-5*time.Second)); err != nil {
+		t.Fatalf("compaction: %v", err)
+	}
+	rb, err := r.Rebuilt()
+	mustRecord(t, err)
+	if _, ok := rb.ByID("long-lived"); !ok {
+		t.Error("a record created 3 h ago and closed 55 s ago was dropped; the retention is counted from its last line")
+	}
+}
