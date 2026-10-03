@@ -3338,6 +3338,16 @@ fails the authentication, or arrives on any other terms the RFC rules out, is
 discarded and counted in the library's statistics. The rules live in
 <a href="https://github.com/claymore666/dhcp-golib">dhcp-golib</a>, not in the plugin
 (<a href="https://github.com/claymore666/docker-net-dhcp/issues/1119">#1119</a>).</p>
+<p>The plugin logs one line per endpoint each time those counts move: at info
+while only obeyed messages moved, at warn once any refusal did, with the
+endpoint, the network and each gained count as fields. A line from the IPAM reserve
+acquisition, which runs before any endpoint exists, has no <code>endpoint</code> field and
+<code>acquisition=ipam-reserve</code> instead. The same counts are the
+<code>forcerenews_*</code> and <code>reconfigures_*</code> rows in
+<a href="#pluginhealth"><code>/Plugin.Health</code></a>. The test suite has no
+integration scenario for them: neither <code>dnsmasq</code> nor Kea sends a
+DHCPFORCERENEW or a DHCPv6 Reconfigure, so the wire half is tested in the
+library.</p>
 <h3 id="dhcpv6-ipv6true">DHCPv6 (<code>ipv6=true</code>)<a class="headerlink" href="#dhcpv6-ipv6true" title="Permanent link">&para;</a></h3>
 <p><code>-o ipv6=true</code> gives every container on the network a <strong>DHCPv6 lease
 alongside its DHCPv4 one</strong>. Docker reports it as <code>GlobalIPv6Address</code>,
@@ -4638,6 +4648,42 @@ already parse it were not told to expect a new type.</p>
 <td>no</td>
 <td>n/a</td>
 <td><em>(v2.2.0+, #814)</em> Options inside an advertisement refused by that option's own standard, while the rest of the advertisement was read. It counts <strong>options and not frames</strong>, and it rises on advertisements that are otherwise fine, so it is not part of <code>router_adverts_refused</code>. Two things put entries in it: an option the decoder cannot read by its own rule (a Route Information Option whose length and prefix length contradict each other, RFC 4191 §2.3; a malformed RDNSS or DNSSL, RFC 8106 §5.1 and §5.2), and a value the client read and may not use, which today is a link MTU outside the range RFC 4861 §6.3.4 lets a host copy. Not <code>healthy</code>-affecting: a router offering one option nobody can use still supplies everything else in the same frame.</td>
+</tr>
+<tr>
+<td><code>forcerenews_renewed</code></td>
+<td>no</td>
+<td>n/a</td>
+<td><em>(v2.4.0+, #1119)</em> DHCPv4 FORCERENEW messages (RFC 3203) whose Authentication option verified against the nonce the server gave with the ACK (RFC 6704) and that started a renewal at once. Only a server that sends FORCERENEW moves it, and none of the integration fixtures does.</td>
+</tr>
+<tr>
+<td><code>forcerenews_already_renewing</code></td>
+<td>no</td>
+<td>n/a</td>
+<td><em>(v2.4.0+, #1119)</em> Authenticated FORCERENEW messages that arrived while a renewal was already under way, so nothing more was started.</td>
+</tr>
+<tr>
+<td><code>forcerenews_refused</code></td>
+<td>no</td>
+<td>n/a</td>
+<td><em>(v2.4.0+, #1119)</em> DHCPv4 FORCERENEW messages the client discarded: no valid Authentication option, no nonce held for the lease, or another rule of RFC 3203 section 4 and RFC 6704 section 3.1.4. Not <code>healthy</code>-affecting and not a fault count: a discarded message is the protection working and the lease is unchanged. Any host on the segment can raise it by sending one. The log line is a warning with the endpoint.</td>
+</tr>
+<tr>
+<td><code>forcerenews_ack_refused</code></td>
+<td>no</td>
+<td>n/a</td>
+<td><em>(v2.4.0+, #1119)</em> DHCPACKs discarded for lacking the Authentication option an OFFER had promised (RFC 6704 section 3.1.4). Counted apart from <code>forcerenews_refused</code>, which does not include them. The client goes back to INIT and the ACK is not a lease. Not <code>healthy</code>-affecting: the acquisition starts over under the usual deadline. Counted on the <code>CreateEndpoint</code> acquisition as well as on the running client.</td>
+</tr>
+<tr>
+<td><code>reconfigures_accepted</code></td>
+<td>no</td>
+<td>n/a</td>
+<td><em>(v2.4.0+, #1119)</em> DHCPv6 Reconfigure messages (RFC 8415 section 20.4) that authenticated and started the renewal or information request they asked for.</td>
+</tr>
+<tr>
+<td><code>reconfigures_refused</code></td>
+<td>no</td>
+<td>n/a</td>
+<td><em>(v2.4.0+, #1119)</em> DHCPv6 Reconfigure messages the client refused, by any of the library's rules. <strong>Not a fault count, and not <code>healthy</code>-affecting:</strong> a client that resumed a lease after a restart holds no reconfigure key, and a client with Reconfigure acceptance switched off refuses every message, and both work as asked. Which rule refused is in the library's journal, not in this number.</td>
 </tr>
 <tr>
 <td><code>router_table_entries_dropped</code></td>
