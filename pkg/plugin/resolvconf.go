@@ -12,6 +12,7 @@ import (
 	"os"
 	"runtime"
 	"strings"
+	"sync"
 	"unicode"
 
 	log "github.com/sirupsen/logrus"
@@ -157,11 +158,18 @@ func resolvPadTo(content []byte, size int) []byte {
 	return append(out, '\n')
 }
 
+// resolvWriteMu serializes the plugin's own writers (#1188). The path is /etc/resolv.conf in every container's mount
+// namespace, so the lock is process-wide. Docker's own rewrite is not covered.
+var resolvWriteMu sync.Mutex
+
 // writeResolvConfFile rewrites path without an empty window (#1188). Docker bind-mounts the file, so rename is out and
 // os.WriteFile truncates first. Equal bytes are not written. Otherwise the new bytes go in at offset 0, then Truncate;
 // until then the file is never shorter than old or new: a growing write extends it with filler first, a shrinking one
 // carries filler (resolvPadTo). A reader's own copy can still interleave with a write's.
 func writeResolvConfFile(path string, content []byte) error {
+	resolvWriteMu.Lock()
+	defer resolvWriteMu.Unlock()
+
 	old, readErr := os.ReadFile(path)
 	if readErr == nil && bytes.Equal(old, content) {
 		return nil

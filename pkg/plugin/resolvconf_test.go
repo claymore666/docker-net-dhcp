@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -56,8 +57,8 @@ func TestBuildResolvConf_SearchListPrecedence(t *testing.T) {
 }
 
 // resolvReadStats counts what a reader saw during a rewrite (#1188). New content plus blank or comment filler is the
-// new content. Trailing NULs are trimmed: on tmpfs (kernel 6.12.107, measured 2026-10-03) a growing write shows at its
-// new size before its bytes, as the old content plus NULs.
+// new content. Trailing NULs are trimmed: a plain growing write was seen as the old content plus a NUL, or as the new
+// content cut at the old length (tmpfs, 1 to 3 in 400000 reads); the hook test below pins the extension.
 type resolvReadStats struct {
 	reads, empty, torn, spliced int
 }
@@ -386,5 +387,52 @@ func TestWriteResolvConfFile_EveryInstantIsOldOrNew(t *testing.T) {
 				t.Errorf("final content %q, want %q", got, tc.new)
 			}
 		})
+	}
+}
+
+// Two renewals for one container can write at once; unserialized, 1.2 % of 20000 finals kept no nameserver (#1188).
+func TestWriteResolvConfFile_TwoWritersLeaveOneOfTheInputs(t *testing.T) {
+	a := buildResolvConf([]string{"192.0.2.1"}, nil, "", "")
+	b := buildResolvConf([]string{"192.0.2.1", "192.0.2.2", "192.0.2.3"}, []string{"a.example", "b.example"}, "", "")
+	start := a[:len(a)-1]
+	path := filepath.Join(t.TempDir(), "resolv.conf")
+
+	const rounds = 5000
+	bad := 0
+	var firstBad []byte
+	for i := 0; i < rounds; i++ {
+		if err := os.WriteFile(path, start, 0644); err != nil {
+			t.Fatal(err)
+		}
+		var ready, wg sync.WaitGroup
+		gate := make(chan struct{})
+		for _, c := range [][]byte{a, b} {
+			ready.Add(1)
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				ready.Done()
+				<-gate
+				if err := writeResolvConfFile(path, c); err != nil {
+					t.Errorf("write: %v", err)
+				}
+			}()
+		}
+		ready.Wait()
+		close(gate)
+		wg.Wait()
+		got, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(got, a) && !bytes.Equal(got, b) {
+			if bad == 0 {
+				firstBad = got
+			}
+			bad++
+		}
+	}
+	if bad != 0 {
+		t.Errorf("%d of %d finals were neither input; first: %q", bad, rounds, firstBad)
 	}
 }
