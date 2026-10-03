@@ -167,6 +167,21 @@ func V6DHCPOnlyDNSArgs() []string {
 	}
 }
 
+const (
+	V6ObservedNTPServer = "fd00:6470:6865::123"
+	V6ObservedPosixTZ   = "PST8PDT"
+	V6ObservedTZDBTZ    = "America/Los_Angeles"
+)
+
+// V6ObservedOptionsArgs makes every DHCPv6 reply carry options 41, 42 and 56 (#1033, #859).
+func V6ObservedOptionsArgs() []string {
+	return []string{
+		"--dhcp-option=option6:41," + V6ObservedPosixTZ,
+		"--dhcp-option=option6:42," + V6ObservedTZDBTZ,
+		"--dhcp-option=option6:ntp-server,[" + V6ObservedNTPServer + "]",
+	}
+}
+
 // V6DNSPort is the fixture resolver's port, beside the v4 fixture's 15353 (#1029).
 const V6DNSPort = 15354
 

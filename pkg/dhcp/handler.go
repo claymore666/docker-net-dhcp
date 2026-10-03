@@ -14,7 +14,8 @@ type Info struct {
 	// MTU is option 26; 0 means leave the link MTU alone, and a renewal re-applies only a changed value (#101).
 	MTU int `json:",omitempty"`
 
-	// NTPServers is option 42, logged on bind and renew and never applied to the container (#105).
+	// NTPServers is option 42 (v4) or 56 (v6, one entry per instance, wire order), logged on bind and renew and never
+	// applied to the container (#105, #859).
 	NTPServers []string `json:",omitempty"`
 
 	// SearchList is option 119, the resolv.conf `search` line under PropagateDNS, falling back to Domain (option 15)

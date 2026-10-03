@@ -7,11 +7,13 @@ import (
 	"encoding/hex"
 	"net/netip"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/claymore666/dhcp-golib/lease"
 	"github.com/claymore666/dhcp-golib/proto"
 	"github.com/claymore666/dhcp-golib/wire"
+	log "github.com/sirupsen/logrus"
 )
 
 // The library has merged the advertisement's gateway, MTU, resolvers, search list and routes into the lease (RFC 4861
@@ -97,6 +99,60 @@ func infoFromLease(l lease.Lease, r proto.RouterObservation, now time.Time, main
 func fillV6Observed(info *Info, o wire.OptionsV6) {
 	info.PosixTimezone = firstNonEmpty(info.PosixTimezone, optTextV6(o, wire.OptV6PosixTimezone))
 	info.TZDBTimezone = firstNonEmpty(info.TZDBTimezone, optTextV6(o, wire.OptV6TZDatabase))
+	if len(info.NTPServers) == 0 {
+		info.NTPServers = ntpServersV6(o)
+	}
+}
+
+// ntpServersV6 is every option 56 instance (RFC 5908 section 4) as one string, in wire order: an address as its text,
+// multicast included, a name as the name. wire.OptionsV6.NTPServers returns no list beside ErrMalformedNTP, so one bad
+// instance leaves the whole list empty, warned once per distinct offer (#859).
+func ntpServersV6(o wire.OptionsV6) []string {
+	servers, err := o.NTPServers()
+	if err != nil {
+		if firstSightOfMalformedNTP(o) {
+			log.WithError(err).Warn("DHCPv6 NTP server option (56) is malformed; no NTP server is recorded for this " +
+				"lease (#859)")
+		}
+		return nil
+	}
+	var out []string
+	for _, s := range servers {
+		if s.FQDN != "" {
+			out = append(out, s.FQDN)
+		} else {
+			out = append(out, s.Addr.String())
+		}
+	}
+	return out
+}
+
+// ntpMalformedSeen holds the option 56 bytes already warned about: the router-advert watch renders the lease every
+// 750 ms, so one warning per rendering would be a flood. Bounded, cleared when full (#859).
+var ntpMalformedSeen = struct {
+	sync.Mutex
+	m map[string]struct{}
+}{m: map[string]struct{}{}}
+
+const ntpMalformedSeenMax = 64
+
+// firstSightOfMalformedNTP is true once for each distinct set of option 56 instances.
+func firstSightOfMalformedNTP(o wire.OptionsV6) bool {
+	var key []byte
+	for _, v := range o.All(wire.OptV6NTPServer) {
+		key = append(key, byte(len(v)>>8), byte(len(v)))
+		key = append(key, v...)
+	}
+	ntpMalformedSeen.Lock()
+	defer ntpMalformedSeen.Unlock()
+	if _, seen := ntpMalformedSeen.m[string(key)]; seen {
+		return false
+	}
+	if len(ntpMalformedSeen.m) >= ntpMalformedSeenMax {
+		clear(ntpMalformedSeen.m)
+	}
+	ntpMalformedSeen.m[string(key)] = struct{}{}
+	return true
 }
 
 func firstNonEmpty(a, b string) string {
